@@ -17,7 +17,7 @@ static RewriteRule create_growth_rule() {
 }
 
 // Test 1: Max Successors Per Parent - Hard Limit
-TEST(UnifiedEvolutionLimits, MaxSuccessorsPerParentHardLimit) {
+TEST(EvolutionLimits, MaxSuccessorsPerParentHardLimit) {
     Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 2);
     engine.add_rule(create_growth_rule());
@@ -34,7 +34,7 @@ TEST(UnifiedEvolutionLimits, MaxSuccessorsPerParentHardLimit) {
 }
 
 // Test 2: Max States Per Step - Hard Limit
-TEST(UnifiedEvolutionLimits, MaxStatesPerStepHardLimit) {
+TEST(EvolutionLimits, MaxStatesPerStepHardLimit) {
     Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 4);
     engine.add_rule(create_growth_rule());
@@ -58,7 +58,7 @@ TEST(UnifiedEvolutionLimits, MaxStatesPerStepHardLimit) {
 //
 // So the invariant a capped run offers is the BOUND, at every thread count, and that is what is
 // asserted. The determinism contract is stated over uncapped runs for this reason.
-TEST(UnifiedEvolutionLimits, MaxStatesPerStepIsRespectedAtEveryThreadCount) {
+TEST(EvolutionLimits, MaxStatesPerStepIsRespectedAtEveryThreadCount) {
     auto states_at = [](unsigned threads) {
         Hypergraph hg;
         ParallelEvolutionEngine engine(&hg, threads);
@@ -83,7 +83,7 @@ TEST(UnifiedEvolutionLimits, MaxStatesPerStepIsRespectedAtEveryThreadCount) {
 // Test 3: Random Exploration Probability (Statistical Test)
 // Note: exploration_probability affects whether NEW states are explored further,
 // not whether events are created. Events are created first, then exploration may be skipped.
-TEST(UnifiedEvolutionLimits, RandomExplorationProbability) {
+TEST(EvolutionLimits, RandomExplorationProbability) {
     std::vector<std::vector<VertexId>> initial = {{0, 1}};
 
     // Run with p=0.5 for 2+ steps - the effect is seen in subsequent steps
@@ -108,7 +108,7 @@ TEST(UnifiedEvolutionLimits, RandomExplorationProbability) {
 }
 
 // Test 4: Combined Limits
-TEST(UnifiedEvolutionLimits, CombinedLimitsInteraction) {
+TEST(EvolutionLimits, CombinedLimitsInteraction) {
     Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 4);
     engine.add_rule(create_growth_rule());
@@ -124,7 +124,7 @@ TEST(UnifiedEvolutionLimits, CombinedLimitsInteraction) {
 }
 
 // Test 5: Edge Cases - Unlimited (defaults)
-TEST(UnifiedEvolutionLimits, UnlimitedDefaults) {
+TEST(EvolutionLimits, UnlimitedDefaults) {
     Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 4);
     engine.add_rule(create_growth_rule());
@@ -139,7 +139,7 @@ TEST(UnifiedEvolutionLimits, UnlimitedDefaults) {
 // Test 6: Probability = 0 (reject all exploration)
 // Note: With p=0, step 1 events ARE created (initial state is always explored),
 // but the resulting states won't be explored further (step 2+ skipped)
-TEST(UnifiedEvolutionLimits, ExplorationProbabilityZero) {
+TEST(EvolutionLimits, ExplorationProbabilityZero) {
     Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 1);
     engine.add_rule(create_growth_rule());
@@ -165,7 +165,7 @@ TEST(UnifiedEvolutionLimits, ExplorationProbabilityZero) {
 }
 
 // Test 7: Limit = 1 (degenerate case)
-TEST(UnifiedEvolutionLimits, LimitOfOne) {
+TEST(EvolutionLimits, LimitOfOne) {
     Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 2);
     engine.add_rule(create_growth_rule());
@@ -180,7 +180,7 @@ TEST(UnifiedEvolutionLimits, LimitOfOne) {
 }
 
 // Test 8: Early Termination + Limits (composition)
-TEST(UnifiedEvolutionLimits, EarlyTerminationWithLimits) {
+TEST(EvolutionLimits, EarlyTerminationWithLimits) {
     // Rule that creates cycles: {{x,y}} -> {{y,x}}
     auto rule = make_rule(0)
         .lhs({0, 1})
@@ -203,7 +203,7 @@ TEST(UnifiedEvolutionLimits, EarlyTerminationWithLimits) {
 // Test 9: steps is a literal generation budget -- steps == 0 yields the initial state
 // alone and RETURNS (the budget guards compare `step > max_steps_` directly, so a zero
 // budget rejects the very first match task instead of running unbounded).
-TEST(UnifiedEvolutionLimits, ZeroStepsYieldsInitialStateOnly) {
+TEST(EvolutionLimits, ZeroStepsYieldsInitialStateOnly) {
     for (int threads : {1, 4}) {
         Hypergraph hg;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
@@ -226,7 +226,7 @@ TEST(UnifiedEvolutionLimits, ZeroStepsYieldsInitialStateOnly) {
 // arrival keeps a different set at a different worker count. That is what these three assert --
 // the count is bounded, the SET is identical across worker counts, and a rule with fewer than k
 // matches is not padded.
-TEST(UnifiedEvolutionLimits, MatchesPerStateRuleBoundsAndReproduces) {
+TEST(EvolutionLimits, MatchesPerStateRuleBoundsAndReproduces) {
     auto run = [](size_t k, unsigned threads) {
         Hypergraph hg;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);

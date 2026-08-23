@@ -40,7 +40,7 @@ static RewriteRule par_branching_rule() {
 // Basic Parallel Evolution Tests
 // =============================================================================
 
-TEST(Unified_ParallelEvolution, BasicConstruction) {
+TEST(ParallelEvolution, BasicConstruction) {
     Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 2);  // 2 threads
 
@@ -49,7 +49,7 @@ TEST(Unified_ParallelEvolution, BasicConstruction) {
     EXPECT_EQ(engine.num_events(), 0);
 }
 
-TEST(Unified_ParallelEvolution, SimpleRule_OneStep) {
+TEST(ParallelEvolution, SimpleRule_OneStep) {
     Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 2);
 
@@ -66,7 +66,7 @@ TEST(Unified_ParallelEvolution, SimpleRule_OneStep) {
     EXPECT_GE(engine.num_events(), 0);  // May or may not have events depending on matches
 }
 
-TEST(Unified_ParallelEvolution, SimpleRule_TwoSteps) {
+TEST(ParallelEvolution, SimpleRule_TwoSteps) {
     Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 4);
 
@@ -83,7 +83,7 @@ TEST(Unified_ParallelEvolution, SimpleRule_TwoSteps) {
 // Determinism Tests
 // =============================================================================
 
-TEST(Unified_ParallelEvolution, Determinism_SimpleRule) {
+TEST(ParallelEvolution, Determinism_SimpleRule) {
     // Run parallel evolution multiple times and verify same results
 
     std::set<size_t> state_counts;
@@ -107,7 +107,7 @@ TEST(Unified_ParallelEvolution, Determinism_SimpleRule) {
     EXPECT_EQ(event_counts.size(), 1) << "Event counts vary across runs!";
 }
 
-TEST(Unified_ParallelEvolution, Determinism_TwoEdgeRule) {
+TEST(ParallelEvolution, Determinism_TwoEdgeRule) {
     std::set<size_t> state_counts;
     std::set<size_t> event_counts;
 
@@ -129,7 +129,7 @@ TEST(Unified_ParallelEvolution, Determinism_TwoEdgeRule) {
     EXPECT_EQ(event_counts.size(), 1) << "Event counts vary across runs!";
 }
 
-TEST(Unified_ParallelEvolution, Determinism_BranchingRule) {
+TEST(ParallelEvolution, Determinism_BranchingRule) {
     std::set<size_t> state_counts;
     std::set<size_t> event_counts;
 
@@ -154,7 +154,7 @@ TEST(Unified_ParallelEvolution, Determinism_BranchingRule) {
 // Thread Count Variations
 // =============================================================================
 
-TEST(Unified_ParallelEvolution, DifferentThreadCounts) {
+TEST(ParallelEvolution, DifferentThreadCounts) {
     std::vector<std::vector<VertexId>> initial = {{0, 1}, {1, 2}};
 
     size_t reference_canonical_states = 0;
@@ -195,7 +195,7 @@ TEST(Unified_ParallelEvolution, DifferentThreadCounts) {
 // A stale forwarded match can carry a state ID past num_states(); the
 // rewriter must degrade gracefully so callers can discard the match.
 
-TEST(Unified_Rewriter, StaleStateId_ReturnsEmptyResult) {
+TEST(Rewriter, StaleStateId_ReturnsEmptyResult) {
     Hypergraph hg;
     Rewriter rewriter(&hg);
 
@@ -223,32 +223,32 @@ TEST(Unified_Rewriter, StaleStateId_ReturnsEmptyResult) {
 // These types hold fixed-size buffers of MAX_ARITY / MAX_PATTERN_EDGES.
 // Over-size input must raise std::length_error rather than silently truncate.
 
-TEST(Unified_Bounds, CreateEdge_Pointer_OverMaxArity_Throws) {
+TEST(EvolutionBounds, CreateEdge_Pointer_OverMaxArity_Throws) {
     Hypergraph hg;
     VertexId over[MAX_ARITY + 1] = {};
     EXPECT_THROW(hg.create_edge(over, MAX_ARITY + 1), std::length_error);
 }
 
-TEST(Unified_Bounds, CreateEdge_InitList_OverMaxArity_Throws) {
+TEST(EvolutionBounds, CreateEdge_InitList_OverMaxArity_Throws) {
     Hypergraph hg;
     EXPECT_THROW(
         hg.create_edge({0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16}),
         std::length_error);
 }
 
-TEST(Unified_Bounds, CreateEdge_AtMaxArity_Succeeds) {
+TEST(EvolutionBounds, CreateEdge_AtMaxArity_Succeeds) {
     Hypergraph hg;
     VertexId at_max[MAX_ARITY] = {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15};
     EXPECT_NO_THROW(hg.create_edge(at_max, MAX_ARITY));
 }
 
-TEST(Unified_Bounds, PatternEdge_InitList_OverMaxArity_Throws) {
+TEST(EvolutionBounds, PatternEdge_InitList_OverMaxArity_Throws) {
     EXPECT_THROW(
         (PatternEdge{0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16}),
         std::length_error);
 }
 
-TEST(Unified_Bounds, RuleBuilder_OverMaxPatternEdges_Throws) {
+TEST(EvolutionBounds, RuleBuilder_OverMaxPatternEdges_Throws) {
     auto builder = make_rule(0);
     for (int i = 0; i < MAX_PATTERN_EDGES; ++i) {
         builder.lhs({0, 1});
@@ -256,7 +256,7 @@ TEST(Unified_Bounds, RuleBuilder_OverMaxPatternEdges_Throws) {
     EXPECT_THROW(builder.lhs({0, 1}), std::length_error);
 }
 
-TEST(Unified_Bounds, RuleBuilder_VectorOverload_OverMaxArity_Throws) {
+TEST(EvolutionBounds, RuleBuilder_VectorOverload_OverMaxArity_Throws) {
     std::vector<uint8_t> huge(MAX_ARITY + 1, 0);
     EXPECT_THROW(make_rule(0).lhs(huge), std::length_error);
 }

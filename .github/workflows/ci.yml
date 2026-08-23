@@ -185,7 +185,7 @@ jobs:
       - name: TSan — no data race in the concurrent structures
         run: |
           TSAN_OPTIONS=halt_on_error=0 ./build_tsan/all_tests \
-            --gtest_filter='ConcurrentMapTest.*:ConcurrentMapFuzz.*:CausalDeterminism.*:Unified_ParallelEvolution.*:QuotientCompletenessTest.*' \
+            --gtest_filter='ConcurrentMapTest.*:ConcurrentMapFuzz.*:CausalDeterminism.*:ParallelEvolution.*:QuotientCompletenessTest.*' \
             2>&1 | tee tsan.log
           if grep -q "WARNING: ThreadSanitizer" tsan.log; then
             echo "ThreadSanitizer reported a race"; exit 1

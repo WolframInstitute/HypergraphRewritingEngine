@@ -5,7 +5,7 @@
 
 using namespace hypergraph;
 
-class UnifiedMultipleInitialStatesTest : public ::testing::Test {
+class MultipleInitialStates : public ::testing::Test {
 protected:
     // Helper to create a simple rule: {{x, y}} -> {{x, y}, {y, z}}
     static RewriteRule create_test_rule() {
@@ -19,7 +19,7 @@ protected:
 
 // === BASIC FUNCTIONALITY TESTS ===
 
-TEST_F(UnifiedMultipleInitialStatesTest, TwoInitialStates) {
+TEST_F(MultipleInitialStates, TwoInitialStates) {
     Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 2);
     engine.add_rule(create_test_rule());
@@ -36,7 +36,7 @@ TEST_F(UnifiedMultipleInitialStatesTest, TwoInitialStates) {
     EXPECT_GT(hg.num_events(), 0) << "Should have at least some events";
 }
 
-TEST_F(UnifiedMultipleInitialStatesTest, ThreeInitialStates) {
+TEST_F(MultipleInitialStates, ThreeInitialStates) {
     Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 2);
     engine.add_rule(create_test_rule());
@@ -54,7 +54,7 @@ TEST_F(UnifiedMultipleInitialStatesTest, ThreeInitialStates) {
     EXPECT_GE(hg.num_events(), 3) << "Should have at least 3 events (one per initial state)";
 }
 
-TEST_F(UnifiedMultipleInitialStatesTest, SingleStateViaMultiStateAPI) {
+TEST_F(MultipleInitialStates, SingleStateViaMultiStateAPI) {
     Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 2);
     engine.add_rule(create_test_rule());
@@ -72,7 +72,7 @@ TEST_F(UnifiedMultipleInitialStatesTest, SingleStateViaMultiStateAPI) {
 
 // === EDGE CASE TESTS ===
 
-TEST_F(UnifiedMultipleInitialStatesTest, EmptyStatesList) {
+TEST_F(MultipleInitialStates, EmptyStatesList) {
     Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 2);
     engine.add_rule(create_test_rule());
@@ -86,7 +86,7 @@ TEST_F(UnifiedMultipleInitialStatesTest, EmptyStatesList) {
     EXPECT_EQ(hg.num_events(), 0) << "Should have 0 events";
 }
 
-TEST_F(UnifiedMultipleInitialStatesTest, StateWithNoMatches) {
+TEST_F(MultipleInitialStates, StateWithNoMatches) {
     Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 2);
     engine.add_rule(create_test_rule());  // Rule matches binary edges
@@ -105,7 +105,7 @@ TEST_F(UnifiedMultipleInitialStatesTest, StateWithNoMatches) {
 
 // === EVOLUTION BEHAVIOR TESTS ===
 
-TEST_F(UnifiedMultipleInitialStatesTest, MultiStepEvolution) {
+TEST_F(MultipleInitialStates, MultiStepEvolution) {
     Hypergraph hg;
     ParallelEvolutionEngine engine(&hg, 4);
     engine.add_rule(create_test_rule());
@@ -127,7 +127,7 @@ TEST_F(UnifiedMultipleInitialStatesTest, MultiStepEvolution) {
 
 // === DETERMINISM TEST ===
 
-TEST_F(UnifiedMultipleInitialStatesTest, DeterministicBehavior) {
+TEST_F(MultipleInitialStates, DeterministicBehavior) {
     std::vector<std::vector<std::vector<VertexId>>> initial_states = {
         {{1, 2}},
         {{3, 4}}
@@ -151,7 +151,7 @@ TEST_F(UnifiedMultipleInitialStatesTest, DeterministicBehavior) {
 
 // === COMPLEX MULTI-EDGE RULE TEST ===
 
-TEST_F(UnifiedMultipleInitialStatesTest, MultiEdgeRuleWithMultipleInitialStates) {
+TEST_F(MultipleInitialStates, MultiEdgeRuleWithMultipleInitialStates) {
     // Rule: {{x,y}, {y,z}} -> {{x,z}, {y,z}, {z,w}}
     auto rule = make_rule(0)
         .lhs({0, 1})

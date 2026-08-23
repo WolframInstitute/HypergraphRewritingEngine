@@ -60,7 +60,7 @@ public:
 // Signature Tests
 // =============================================================================
 
-TEST(Unified_Signature, EdgeSignature_AllDifferent) {
+TEST(Signature, EdgeSignature_AllDifferent) {
     VertexId verts[] = {5, 6, 8};
     EdgeSignature sig = EdgeSignature::from_edge(verts, 3);
     EXPECT_EQ(sig.arity, 3);
@@ -69,7 +69,7 @@ TEST(Unified_Signature, EdgeSignature_AllDifferent) {
     EXPECT_EQ(sig.pattern[2], 2);
 }
 
-TEST(Unified_Signature, EdgeSignature_FirstTwoSame) {
+TEST(Signature, EdgeSignature_FirstTwoSame) {
     VertexId verts[] = {3, 3, 4};
     EdgeSignature sig = EdgeSignature::from_edge(verts, 3);
     EXPECT_EQ(sig.arity, 3);
@@ -78,7 +78,7 @@ TEST(Unified_Signature, EdgeSignature_FirstTwoSame) {
     EXPECT_EQ(sig.pattern[2], 1);
 }
 
-TEST(Unified_Signature, EdgeSignature_AllSame) {
+TEST(Signature, EdgeSignature_AllSame) {
     VertexId verts[] = {1, 1, 1};
     EdgeSignature sig = EdgeSignature::from_edge(verts, 3);
     EXPECT_EQ(sig.pattern[0], 0);
@@ -86,7 +86,7 @@ TEST(Unified_Signature, EdgeSignature_AllSame) {
     EXPECT_EQ(sig.pattern[2], 0);
 }
 
-TEST(Unified_Signature, EdgeSignature_FirstLastSame) {
+TEST(Signature, EdgeSignature_FirstLastSame) {
     VertexId verts[] = {7, 8, 7};
     EdgeSignature sig = EdgeSignature::from_edge(verts, 3);
     EXPECT_EQ(sig.pattern[0], 0);
@@ -94,7 +94,7 @@ TEST(Unified_Signature, EdgeSignature_FirstLastSame) {
     EXPECT_EQ(sig.pattern[2], 0);
 }
 
-TEST(Unified_Signature, Compatibility_DistinctVarsMatch) {
+TEST(Signature, Compatibility_DistinctVarsMatch) {
     // Pattern [0,1] (distinct vars) matches both [0,0] and [0,1]
     uint8_t pattern_vars[] = {0, 1};
     EdgeSignature pattern_sig = EdgeSignature::from_pattern(pattern_vars, 2);
@@ -108,7 +108,7 @@ TEST(Unified_Signature, Compatibility_DistinctVarsMatch) {
     EXPECT_TRUE(signature_compatible(data_sig2, pattern_sig));
 }
 
-TEST(Unified_Signature, Compatibility_SameVarConstraint) {
+TEST(Signature, Compatibility_SameVarConstraint) {
     // Pattern [0,0] (same var) only matches [0,0]
     uint8_t pattern_vars[] = {0, 0};
     EdgeSignature pattern_sig = EdgeSignature::from_pattern(pattern_vars, 2);
@@ -126,7 +126,7 @@ TEST(Unified_Signature, Compatibility_SameVarConstraint) {
 // Pattern Matching Tests
 // =============================================================================
 
-TEST(Unified_PatternMatching, SingleEdgePattern) {
+TEST(PatternMatching, SingleEdgePattern) {
     TestHypergraph hg;
 
     // Add edges: {0,1}, {1,2}, {2,0}
@@ -163,7 +163,7 @@ TEST(Unified_PatternMatching, SingleEdgePattern) {
     }
 }
 
-TEST(Unified_PatternMatching, SelfLoopPattern) {
+TEST(PatternMatching, SelfLoopPattern) {
     TestHypergraph hg;
 
     // Add edges: {0,0}, {1,1}, {0,1}
@@ -199,7 +199,7 @@ TEST(Unified_PatternMatching, SelfLoopPattern) {
     }
 }
 
-TEST(Unified_PatternMatching, TwoEdgePattern) {
+TEST(PatternMatching, TwoEdgePattern) {
     TestHypergraph hg;
 
     // Triangle: {0,1}, {1,2}, {2,0}
@@ -242,7 +242,7 @@ TEST(Unified_PatternMatching, TwoEdgePattern) {
     }
 }
 
-TEST(Unified_PatternMatching, NoDuplicateEdgeUse) {
+TEST(PatternMatching, NoDuplicateEdgeUse) {
     TestHypergraph hg;
 
     // Single edge: {0, 1}
@@ -272,7 +272,7 @@ TEST(Unified_PatternMatching, NoDuplicateEdgeUse) {
     EXPECT_EQ(match_count, 0);
 }
 
-TEST(Unified_PatternMatching, VariableBindingConsistency) {
+TEST(PatternMatching, VariableBindingConsistency) {
     TestHypergraph hg;
 
     // Edges: {0,1}, {1,0}, {2,3}
@@ -315,7 +315,7 @@ TEST(Unified_PatternMatching, VariableBindingConsistency) {
     }
 }
 
-TEST(Unified_PatternMatching, TernaryEdges) {
+TEST(PatternMatching, TernaryEdges) {
     TestHypergraph hg;
 
     // Ternary edges: {0,1,2}, {1,2,3}, {0,0,0}
@@ -350,7 +350,7 @@ TEST(Unified_PatternMatching, TernaryEdges) {
 // Index Tests
 // =============================================================================
 
-TEST(Unified_Index, SignatureIndex_QueryDistinctVars) {
+TEST(SignatureIndex, SignatureIndex_QueryDistinctVars) {
     ConcurrentHeterogeneousArena arena;
     SignatureIndex index;
     SparseBitset state_edges;
@@ -384,7 +384,7 @@ TEST(Unified_Index, SignatureIndex_QueryDistinctVars) {
     EXPECT_EQ(candidates.size(), 4);
 }
 
-TEST(Unified_Index, SignatureIndex_QuerySameVar) {
+TEST(SignatureIndex, SignatureIndex_QuerySameVar) {
     ConcurrentHeterogeneousArena arena;
     SignatureIndex index;
     SparseBitset state_edges;
@@ -418,7 +418,7 @@ TEST(Unified_Index, SignatureIndex_QuerySameVar) {
     EXPECT_EQ(candidates.size(), 2);
 }
 
-TEST(Unified_Index, InvertedIndex_SingleVertex) {
+TEST(SignatureIndex, InvertedIndex_SingleVertex) {
     ConcurrentHeterogeneousArena arena;
     InvertedVertexIndex index;
     SparseBitset state_edges;
@@ -449,7 +449,7 @@ TEST(Unified_Index, InvertedIndex_SingleVertex) {
     EXPECT_EQ(edges.size(), 2);
 }
 
-TEST(Unified_Index, InvertedIndex_MultipleVertices) {
+TEST(SignatureIndex, InvertedIndex_MultipleVertices) {
     ConcurrentHeterogeneousArena arena;
     InvertedVertexIndex index;
     SparseBitset state_edges;
@@ -495,7 +495,7 @@ TEST(Unified_Index, InvertedIndex_MultipleVertices) {
 // Hypergraph Tests
 // =============================================================================
 
-TEST(Unified_Hypergraph, CreateEdgesAndState) {
+TEST(HypergraphCore, CreateEdgesAndState) {
     Hypergraph hg;
 
     // Create edges
@@ -528,7 +528,7 @@ TEST(Unified_Hypergraph, CreateEdgesAndState) {
     EXPECT_EQ(hg.num_states(), 1);
 }
 
-TEST(Unified_Hypergraph, VertexAllocation) {
+TEST(HypergraphCore, VertexAllocation) {
     Hypergraph hg;
 
     // Allocate vertices
@@ -546,7 +546,7 @@ TEST(Unified_Hypergraph, VertexAllocation) {
     EXPECT_EQ(hg.num_vertices(), 8);
 }
 
-TEST(Unified_Hypergraph, PatternMatchingOnHypergraph) {
+TEST(HypergraphCore, PatternMatchingOnHypergraph) {
     Hypergraph hg;
 
     // Create triangle: {0,1}, {1,2}, {2,0}
@@ -583,7 +583,7 @@ TEST(Unified_Hypergraph, PatternMatchingOnHypergraph) {
 // Rewriter Tests
 // =============================================================================
 
-TEST(Unified_Rewriter, SimpleRewrite) {
+TEST(Rewriter, SimpleRewrite) {
     Hypergraph hg;
 
     // Create initial state: {0, 1}, {1, 2}
@@ -628,7 +628,7 @@ TEST(Unified_Rewriter, SimpleRewrite) {
     EXPECT_EQ(produced.vertices[1], 2);
 }
 
-TEST(Unified_Rewriter, RewriteWithFreshVertex) {
+TEST(Rewriter, RewriteWithFreshVertex) {
     Hypergraph hg;
 
     // Reserve vertices 0, 1, 2
@@ -671,7 +671,7 @@ TEST(Unified_Rewriter, RewriteWithFreshVertex) {
     EXPECT_GE(prod1.vertices[1], 3);  // Fresh vertex
 }
 
-TEST(Unified_Rewriter, EventCreation) {
+TEST(Rewriter, EventCreation) {
     Hypergraph hg;
 
     // Create initial state
@@ -710,7 +710,7 @@ TEST(Unified_Rewriter, EventCreation) {
 // End-to-End Integration Tests
 // =============================================================================
 
-TEST(Unified_Integration, SingleStepEvolution) {
+TEST(EngineIntegration, SingleStepEvolution) {
     Hypergraph hg;
     // Enable canonicalization for this test
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
@@ -788,7 +788,7 @@ TEST(Unified_Integration, SingleStepEvolution) {
     EXPECT_EQ(hg.num_events(), 1);
 }
 
-TEST(Unified_Integration, MultiStepEvolution) {
+TEST(EngineIntegration, MultiStepEvolution) {
     Hypergraph hg;
 
     // Initial state: single edge {0, 1}
@@ -858,7 +858,7 @@ TEST(Unified_Integration, MultiStepEvolution) {
     }
 }
 
-TEST(Unified_Integration, SelfLoopEvolution) {
+TEST(EngineIntegration, SelfLoopEvolution) {
     Hypergraph hg;
 
     // Initial state with self-loop and regular edge: {0,0}, {0,1}

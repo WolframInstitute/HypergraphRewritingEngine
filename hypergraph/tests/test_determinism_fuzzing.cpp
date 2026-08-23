@@ -14,12 +14,12 @@
 
 
 // =============================================================================
-// Unified Determinism Fuzzing Tests
+// Determinism fuzzing
 // =============================================================================
 // Comprehensive determinism testing modeled after v1 DeterminismFuzzing tests.
 // Runs evolution multiple times to detect any non-determinism in the system.
 
-class Unified_DeterminismFuzzingTest : public ::testing::Test {
+class DeterminismFuzzing : public ::testing::Test {
 protected:
     struct TestResult {
         size_t num_states;
@@ -202,7 +202,7 @@ protected:
 // TestCase1: Simple Rule {{x,y}} -> {{x,y},{y,z}}
 // =============================================================================
 
-TEST_F(Unified_DeterminismFuzzingTest, TestCase1_SimpleRule_Fuzz) {
+TEST_F(DeterminismFuzzing, TestCase1_SimpleRule_Fuzz) {
     // Rule: {{x,y}} -> {{x,y},{y,z}}
     hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
@@ -215,7 +215,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase1_SimpleRule_Fuzz) {
     fuzz_test_rules("SimpleRule", {rule}, initial, 4, 50);  // 50 runs
 }
 
-TEST_F(Unified_DeterminismFuzzingTest, TestCase1_SimpleRule_Steps) {
+TEST_F(DeterminismFuzzing, TestCase1_SimpleRule_Steps) {
     hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
         .rhs({0, 1})
@@ -238,7 +238,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase1_SimpleRule_Steps) {
 // TestCase2: Two-Edge Rule {{x,y},{y,z}} -> {{x,y},{y,z},{y,w}}
 // =============================================================================
 
-TEST_F(Unified_DeterminismFuzzingTest, TestCase2_TwoEdgeRule_Fuzz) {
+TEST_F(DeterminismFuzzing, TestCase2_TwoEdgeRule_Fuzz) {
     // Rule: {{x,y},{y,z}} -> {{x,y},{y,z},{y,w}}
     hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
@@ -254,7 +254,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase2_TwoEdgeRule_Fuzz) {
     fuzz_test_rules("TwoEdgeRule_Triangle", {rule}, initial, 3, 50);
 }
 
-TEST_F(Unified_DeterminismFuzzingTest, TestCase2_TwoEdgeRule_Chain) {
+TEST_F(DeterminismFuzzing, TestCase2_TwoEdgeRule_Chain) {
     hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
         .lhs({1, 2})
@@ -273,7 +273,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase2_TwoEdgeRule_Chain) {
 // TestCase3: Hyperedge Rule {{x,y,z}} -> {{x,y},{x,z},{x,w}}
 // =============================================================================
 
-TEST_F(Unified_DeterminismFuzzingTest, TestCase3_HyperedgeRule_Fuzz) {
+TEST_F(DeterminismFuzzing, TestCase3_HyperedgeRule_Fuzz) {
     // Rule: {{x,y,z}} -> {{x,y},{x,z},{x,w}}
     hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1, 2})
@@ -291,7 +291,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase3_HyperedgeRule_Fuzz) {
 // TestCase4: Multi-Rule System
 // =============================================================================
 
-TEST_F(Unified_DeterminismFuzzingTest, TestCase4_MultiRule_Fuzz) {
+TEST_F(DeterminismFuzzing, TestCase4_MultiRule_Fuzz) {
     // Rule 1: {{x,y,z}} -> {{x,y},{x,z},{x,w}}
     hg::engine::RewriteRule rule1 = hg::engine::make_rule(0)
         .lhs({0, 1, 2})
@@ -316,7 +316,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase4_MultiRule_Fuzz) {
 // TestCase5: Complex Two-Rule System
 // =============================================================================
 
-TEST_F(Unified_DeterminismFuzzingTest, TestCase5_ComplexTwoRuleSystem_Fuzz) {
+TEST_F(DeterminismFuzzing, TestCase5_ComplexTwoRuleSystem_Fuzz) {
     // Rule 1: {{x,y,z}} -> {{x,y},{x,z},{x,w}}
     hg::engine::RewriteRule rule1 = hg::engine::make_rule(0)
         .lhs({0, 1, 2})
@@ -343,7 +343,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase5_ComplexTwoRuleSystem_Fuzz) {
 // TestCase6: Two-Edge Rule Variant with Chain Initial
 // =============================================================================
 
-TEST_F(Unified_DeterminismFuzzingTest, TestCase6_TwoEdgeRuleVariant_Fuzz) {
+TEST_F(DeterminismFuzzing, TestCase6_TwoEdgeRuleVariant_Fuzz) {
     // Rule: {{x,y},{y,z}} -> {{x,y},{y,z},{y,w}}
     hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
@@ -362,7 +362,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase6_TwoEdgeRuleVariant_Fuzz) {
 // TestCase7: Self-Loop Initial State
 // =============================================================================
 
-TEST_F(Unified_DeterminismFuzzingTest, TestCase7_SelfLoops_Fuzz) {
+TEST_F(DeterminismFuzzing, TestCase7_SelfLoops_Fuzz) {
     // Rule: {{x,y},{y,z}} -> {{x,y},{y,z},{y,w}}
     hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
@@ -382,7 +382,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase7_SelfLoops_Fuzz) {
 // TestCase8: Complex Two-Edge Rule
 // =============================================================================
 
-TEST_F(Unified_DeterminismFuzzingTest, TestCase8_ComplexTwoEdgeRule_Fuzz) {
+TEST_F(DeterminismFuzzing, TestCase8_ComplexTwoEdgeRule_Fuzz) {
     // Rule: {{x,y},{y,z}} -> {{w,x},{x,w},{y,z},{w,z}}
     hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
@@ -402,7 +402,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase8_ComplexTwoEdgeRule_Fuzz) {
 // TestCase9: Complex Two-Edge Rule with Self-Loops
 // =============================================================================
 
-TEST_F(Unified_DeterminismFuzzingTest, TestCase9_ComplexTwoEdgeRuleSelfLoops_Fuzz) {
+TEST_F(DeterminismFuzzing, TestCase9_ComplexTwoEdgeRuleSelfLoops_Fuzz) {
     // Rule: {{x,y},{y,z}} -> {{w,x},{x,w},{y,z},{w,z}}
     hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
@@ -422,7 +422,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase9_ComplexTwoEdgeRuleSelfLoops_Fuz
 // TestCase10: Another Two-Edge Rule
 // =============================================================================
 
-TEST_F(Unified_DeterminismFuzzingTest, TestCase10_AnotherTwoEdgeRule_Fuzz) {
+TEST_F(DeterminismFuzzing, TestCase10_AnotherTwoEdgeRule_Fuzz) {
     // Rule: {{x,y},{y,z}} -> {{x,z},{y,z},{z,w}}
     hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
@@ -441,7 +441,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase10_AnotherTwoEdgeRule_Fuzz) {
 // TestCase11: Another Two-Edge Rule with Self-Loops
 // =============================================================================
 
-TEST_F(Unified_DeterminismFuzzingTest, TestCase11_AnotherTwoEdgeRuleSelfLoops_Fuzz) {
+TEST_F(DeterminismFuzzing, TestCase11_AnotherTwoEdgeRuleSelfLoops_Fuzz) {
     // Rule: {{x,y},{y,z}} -> {{x,z},{y,z},{z,w}}
     hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
@@ -460,7 +460,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase11_AnotherTwoEdgeRuleSelfLoops_Fu
 // TestCase12: Complex Three-Edge Rule (Ternary Edge)
 // =============================================================================
 
-TEST_F(Unified_DeterminismFuzzingTest, TestCase12_ComplexThreeEdgeRule_Fuzz) {
+TEST_F(DeterminismFuzzing, TestCase12_ComplexThreeEdgeRule_Fuzz) {
     // Rule: {{x,y,z},{w,x}} -> {{x,w,u},{z,y},{z,w}}
     hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1, 2})
@@ -479,7 +479,7 @@ TEST_F(Unified_DeterminismFuzzingTest, TestCase12_ComplexThreeEdgeRule_Fuzz) {
 // Match Forwarding Validation Tests
 // =============================================================================
 
-TEST_F(Unified_DeterminismFuzzingTest, MatchForwarding_SimpleRule) {
+TEST_F(DeterminismFuzzing, MatchForwarding_SimpleRule) {
     hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
         .rhs({0, 1})
@@ -541,7 +541,7 @@ TEST_F(Unified_DeterminismFuzzingTest, MatchForwarding_SimpleRule) {
 // Extended Fuzz Tests (longer evolution)
 // =============================================================================
 
-TEST_F(Unified_DeterminismFuzzingTest, Extended_SimpleRule_5Steps) {
+TEST_F(DeterminismFuzzing, Extended_SimpleRule_5Steps) {
     hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
         .rhs({0, 1})
@@ -553,7 +553,7 @@ TEST_F(Unified_DeterminismFuzzingTest, Extended_SimpleRule_5Steps) {
     fuzz_test_rules("SimpleRule_5Steps", {rule}, initial, 5, 30);
 }
 
-TEST_F(Unified_DeterminismFuzzingTest, Extended_TwoEdgeRule_4Steps) {
+TEST_F(DeterminismFuzzing, Extended_TwoEdgeRule_4Steps) {
     hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
         .lhs({1, 2})
@@ -571,7 +571,7 @@ TEST_F(Unified_DeterminismFuzzingTest, Extended_TwoEdgeRule_4Steps) {
 // Stress Test: Many Runs
 // =============================================================================
 
-TEST_F(Unified_DeterminismFuzzingTest, StressTest_100Runs) {
+TEST_F(DeterminismFuzzing, StressTest_100Runs) {
     hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1})
         .rhs({0, 1})

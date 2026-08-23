@@ -52,7 +52,7 @@ RewriteRule create_two_edge_rule() {
 // CausalGraph Basic Tests
 // =============================================================================
 
-TEST(Unified_CausalGraph, BasicConstruction) {
+TEST(CausalGraphTracking, BasicConstruction) {
     ConcurrentHeterogeneousArena arena;
     CausalGraph cg(&arena);
 
@@ -60,7 +60,7 @@ TEST(Unified_CausalGraph, BasicConstruction) {
     EXPECT_EQ(cg.num_branchial_edges(), 0u);
 }
 
-TEST(Unified_CausalGraph, SetEdgeProducer) {
+TEST(CausalGraphTracking, SetEdgeProducer) {
     ConcurrentHeterogeneousArena arena;
     CausalGraph cg(&arena);
 
@@ -78,7 +78,7 @@ TEST(Unified_CausalGraph, SetEdgeProducer) {
     EXPECT_EQ(cg.get_edge_producer(CanonicalEdgeKey{0}), 99u);
 }
 
-TEST(Unified_CausalGraph, ProducerConsumerCausalEdge) {
+TEST(CausalGraphTracking, ProducerConsumerCausalEdge) {
     ConcurrentHeterogeneousArena arena;
     CausalGraph cg(&arena);
 
@@ -98,7 +98,7 @@ TEST(Unified_CausalGraph, ProducerConsumerCausalEdge) {
     EXPECT_EQ(edges[0].edge, 5u);
 }
 
-TEST(Unified_CausalGraph, ConsumerBeforeProducer_Rendezvous) {
+TEST(CausalGraphTracking, ConsumerBeforeProducer_Rendezvous) {
     ConcurrentHeterogeneousArena arena;
     CausalGraph cg(&arena);
 
@@ -120,7 +120,7 @@ TEST(Unified_CausalGraph, ConsumerBeforeProducer_Rendezvous) {
     EXPECT_EQ(edges[0].consumer, 1u);
 }
 
-TEST(Unified_CausalGraph, MultipleConsumers) {
+TEST(CausalGraphTracking, MultipleConsumers) {
     ConcurrentHeterogeneousArena arena;
     CausalGraph cg(&arena);
 
@@ -145,7 +145,7 @@ TEST(Unified_CausalGraph, MultipleConsumers) {
     }
 }
 
-TEST(Unified_CausalGraph, BranchialEdgeManual) {
+TEST(CausalGraphTracking, BranchialEdgeManual) {
     ConcurrentHeterogeneousArena arena;
     CausalGraph cg(&arena);
 
@@ -165,7 +165,7 @@ TEST(Unified_CausalGraph, BranchialEdgeManual) {
 // Rewriter Integration Tests (Online Causal/Branchial)
 // =============================================================================
 
-TEST(Unified_Rewriter, SingleRewrite_CausalTracking) {
+TEST(Rewriter, SingleRewrite_CausalTracking) {
     Hypergraph hg;
 
     // Create initial state with edge {0, 1}
@@ -203,7 +203,7 @@ TEST(Unified_Rewriter, SingleRewrite_CausalTracking) {
     EXPECT_EQ(hg.num_causal_edges(), 0u);
 }
 
-TEST(Unified_Rewriter, ChainedRewrites_CausalChain) {
+TEST(Rewriter, ChainedRewrites_CausalChain) {
     Hypergraph hg;
 
     // Create initial edge {0, 1}
@@ -257,7 +257,7 @@ TEST(Unified_Rewriter, ChainedRewrites_CausalChain) {
     EXPECT_EQ(causal_edges[0].edge, e1);
 }
 
-TEST(Unified_Rewriter, ParallelRewrites_BranchialEdges) {
+TEST(Rewriter, ParallelRewrites_BranchialEdges) {
     Hypergraph hg;
 
     // Create initial state with two edges: {0, 1}, {1, 2}
@@ -297,7 +297,7 @@ TEST(Unified_Rewriter, ParallelRewrites_BranchialEdges) {
     EXPECT_EQ(hg.num_branchial_edges(), 0u);
 }
 
-TEST(Unified_Rewriter, OverlappingRewrites_BranchialEdges) {
+TEST(Rewriter, OverlappingRewrites_BranchialEdges) {
     Hypergraph hg;
 
     // Create initial state with one edge: {0, 1}
@@ -345,7 +345,7 @@ TEST(Unified_Rewriter, OverlappingRewrites_BranchialEdges) {
     EXPECT_EQ(branchial_edges[0].shared_edge, e0);
 }
 
-TEST(Unified_Rewriter, TwoEdgeRule_CausalTracking) {
+TEST(Rewriter, TwoEdgeRule_CausalTracking) {
     Hypergraph hg;
 
     // Create initial state with edges forming a path: {0, 1}, {1, 2}
@@ -388,7 +388,7 @@ TEST(Unified_Rewriter, TwoEdgeRule_CausalTracking) {
 // Stress Tests
 // =============================================================================
 
-TEST(Unified_CausalGraph, ManyEdges) {
+TEST(CausalGraphTracking, ManyEdges) {
     ConcurrentHeterogeneousArena arena;
     CausalGraph cg(&arena);
 
@@ -408,7 +408,7 @@ TEST(Unified_CausalGraph, ManyEdges) {
     EXPECT_EQ(edges.size(), static_cast<size_t>(NUM_EVENTS - 1));
 }
 
-TEST(Unified_CausalGraph, MultipleProducersMultipleConsumers) {
+TEST(CausalGraphTracking, MultipleProducersMultipleConsumers) {
     ConcurrentHeterogeneousArena arena;
     CausalGraph cg(&arena);
 
@@ -437,7 +437,7 @@ TEST(Unified_CausalGraph, MultipleProducersMultipleConsumers) {
 // it -- so it gets a hash of its own, stable and distinct from the two other meanings
 // carried by 0: "canonical hash not computed" (State::canonical_hash) and ConcurrentMap's
 // EMPTY_KEY, which no storable key may equal.
-TEST(Unified_CanonicalHash, CanonicalHash_EmptyState) {
+TEST(CanonicalHash, CanonicalHash_EmptyState) {
     Hypergraph hg;
     SparseBitset empty_edges;
 
@@ -456,7 +456,7 @@ TEST(Unified_CanonicalHash, CanonicalHash_EmptyState) {
 // configure_identity_and_quotient routes Automatic to the quotient reconstruction and everything
 // else to the raw-edge rendezvous in rewriter.cpp -- so fixing one mode here tested one
 // mechanism and left the other unexercised on the empty state.
-TEST(Unified_CanonicalHash, EmptyingRuleEvolvesWithoutError) {
+TEST(CanonicalHash, EmptyingRuleEvolvesWithoutError) {
     struct Mode { const char* name; hgcommon::EventSignatureKeys keys; };
     const Mode modes[] = {
         {"None",              hgcommon::EVENT_SIG_NONE},
@@ -489,7 +489,7 @@ TEST(Unified_CanonicalHash, EmptyingRuleEvolvesWithoutError) {
     }
 }
 
-TEST(Unified_CanonicalHash, CanonicalHash_SingleEdge) {
+TEST(CanonicalHash, CanonicalHash_SingleEdge) {
     Hypergraph hg;
 
     VertexId v0 = hg.alloc_vertex();
@@ -503,7 +503,7 @@ TEST(Unified_CanonicalHash, CanonicalHash_SingleEdge) {
     EXPECT_NE(hash, 0u);  // Should produce non-zero hash
 }
 
-TEST(Unified_CanonicalHash, CanonicalHash_IsomorphicStates) {
+TEST(CanonicalHash, CanonicalHash_IsomorphicStates) {
     Hypergraph hg;
 
     // State 1: Triangle with vertices 0, 1, 2
@@ -542,7 +542,7 @@ TEST(Unified_CanonicalHash, CanonicalHash_IsomorphicStates) {
     EXPECT_EQ(hash1, hash2);
 }
 
-TEST(Unified_CanonicalHash, CanonicalHash_NonIsomorphicStates) {
+TEST(CanonicalHash, CanonicalHash_NonIsomorphicStates) {
     Hypergraph hg;
 
     // State 1: Triangle with vertices 0, 1, 2
@@ -582,7 +582,7 @@ TEST(Unified_CanonicalHash, CanonicalHash_NonIsomorphicStates) {
     EXPECT_NE(triangle_hash, path_hash);
 }
 
-TEST(Unified_CanonicalHash, CanonicalHash_SelfLoop) {
+TEST(CanonicalHash, CanonicalHash_SelfLoop) {
     Hypergraph hg;
 
     // State 1: Self-loop at vertex 0
@@ -606,7 +606,7 @@ TEST(Unified_CanonicalHash, CanonicalHash_SelfLoop) {
     EXPECT_EQ(hash1, hash2);
 }
 
-TEST(Unified_CanonicalHash, CanonicalInfo_VertexClasses) {
+TEST(CanonicalHash, CanonicalInfo_VertexClasses) {
     Hypergraph hg;
 
     // Create a star graph: center vertex 0 connected to 1, 2, 3
@@ -655,7 +655,7 @@ TEST(Unified_CanonicalHash, CanonicalInfo_VertexClasses) {
 // These tests verify that event canonicalization correctly identifies equivalent
 // events using on-the-fly edge correspondence computation.
 
-TEST(Unified_EventCanonicalization, CorrespondingEdges_SameCanonicalEvent) {
+TEST(EventCanonicalizationModes, CorrespondingEdges_SameCanonicalEvent) {
     // Test that events from isomorphic states consuming corresponding edges
     // are identified as the same canonical event.
     Hypergraph hg;
@@ -732,7 +732,7 @@ TEST(Unified_EventCanonicalization, CorrespondingEdges_SameCanonicalEvent) {
     EXPECT_EQ(result1.canonical_event_id, result2.canonical_event_id);
 }
 
-TEST(Unified_EventCanonicalization, DifferentEdges_DifferentCanonicalEvent) {
+TEST(EventCanonicalizationModes, DifferentEdges_DifferentCanonicalEvent) {
     // Test that events consuming non-corresponding edges have different canonical events.
     Hypergraph hg;
     hg.set_event_signature_keys(EVENT_SIG_FULL);
@@ -784,7 +784,7 @@ TEST(Unified_EventCanonicalization, DifferentEdges_DifferentCanonicalEvent) {
     EXPECT_TRUE(result2.is_canonical);
 }
 
-TEST(Unified_EventCanonicalization, DifferentRules_DifferentCanonicalEvent) {
+TEST(EventCanonicalizationModes, DifferentRules_DifferentCanonicalEvent) {
     // Test that events with different rules have different canonical events.
     Hypergraph hg;
     // Include Rule in signature so different rules produce different canonical events
@@ -820,7 +820,7 @@ TEST(Unified_EventCanonicalization, DifferentRules_DifferentCanonicalEvent) {
     EXPECT_TRUE(result2.is_canonical);
 }
 
-TEST(Unified_EventCanonicalization, NoSignatureKeys_AllCanonical) {
+TEST(EventCanonicalizationModes, NoSignatureKeys_AllCanonical) {
     // Test that with EVENT_SIG_NONE, all events are canonical.
     Hypergraph hg;
     hg.set_event_signature_keys(EVENT_SIG_NONE);  // No canonicalization
@@ -856,7 +856,7 @@ TEST(Unified_EventCanonicalization, NoSignatureKeys_AllCanonical) {
 // Online Transitive Reduction Tests (Goranci Algorithm)
 // =============================================================================
 
-TEST(Unified_CausalGraph, OnlineTransitiveReduction_Basic) {
+TEST(CausalGraphTracking, OnlineTransitiveReduction_Basic) {
     ConcurrentHeterogeneousArena arena;
     CausalGraph cg(&arena);
 
@@ -877,7 +877,7 @@ TEST(Unified_CausalGraph, OnlineTransitiveReduction_Basic) {
     EXPECT_EQ(cg.num_redundant_edges_skipped(), 0u);
 }
 
-TEST(Unified_CausalGraph, OnlineTransitiveReduction_SkipsRedundant) {
+TEST(CausalGraphTracking, OnlineTransitiveReduction_SkipsRedundant) {
     ConcurrentHeterogeneousArena arena;
     CausalGraph cg(&arena);
 
@@ -917,7 +917,7 @@ TEST(Unified_CausalGraph, OnlineTransitiveReduction_SkipsRedundant) {
 // the relation is a set and a DAG's reduction is unique. The engine's full-capture path keeps
 // the promise and keeps the incremental rule; the quotient reconstruction cannot and takes this
 // path.
-TEST(Unified_CausalGraph, OnlineTransitiveReduction_OutOfOrderArrivalStillMinimal) {
+TEST(CausalGraphTracking, OnlineTransitiveReduction_OutOfOrderArrivalStillMinimal) {
     ConcurrentHeterogeneousArena arena;
     CausalGraph cg(&arena);
 
@@ -947,7 +947,7 @@ TEST(Unified_CausalGraph, OnlineTransitiveReduction_OutOfOrderArrivalStillMinima
     EXPECT_FALSE(has02) << "0->2 is implied by 0->1->2 and must not remain in the reduction";
 }
 
-TEST(Unified_CausalGraph, OnlineTransitiveReduction_LongerPath) {
+TEST(CausalGraphTracking, OnlineTransitiveReduction_LongerPath) {
     ConcurrentHeterogeneousArena arena;
     CausalGraph cg(&arena);
 
@@ -975,7 +975,7 @@ TEST(Unified_CausalGraph, OnlineTransitiveReduction_LongerPath) {
     EXPECT_EQ(cg.num_redundant_edges_skipped() - skipped_before, 6u);
 }
 
-TEST(Unified_CausalGraph, OnlineTransitiveReduction_DiamondPattern) {
+TEST(CausalGraphTracking, OnlineTransitiveReduction_DiamondPattern) {
     ConcurrentHeterogeneousArena arena;
     CausalGraph cg(&arena);
 
@@ -1001,7 +1001,7 @@ TEST(Unified_CausalGraph, OnlineTransitiveReduction_DiamondPattern) {
     EXPECT_EQ(cg.num_redundant_edges_skipped(), 1u);
 }
 
-TEST(Unified_CausalGraph, OnlineTransitiveReduction_DisabledByDefault) {
+TEST(CausalGraphTracking, OnlineTransitiveReduction_DisabledByDefault) {
     ConcurrentHeterogeneousArena arena;
     CausalGraph cg(&arena);
 
@@ -1032,7 +1032,7 @@ TEST(Unified_CausalGraph, OnlineTransitiveReduction_DisabledByDefault) {
 //
 // The IR canonical hash is the oracle for "same graph"; the cases below are the smallest
 // that trip the truncation, and the no-repeat cases are the control that never could.
-TEST(Unified_CanonicalHash, WLHashIsIsomorphismInvariant) {
+TEST(CanonicalHash, WLHashIsIsomorphismInvariant) {
     auto wl_of = [](const std::vector<std::vector<VertexId>>& edges) {
         Hypergraph hg;
         SparseBitset set;

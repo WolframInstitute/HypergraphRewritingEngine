@@ -65,7 +65,7 @@ say ""
 say "## Correctness"
 run_or_skip "Oracle corpus, static analysis, record set, serial, continuation" \
     "test -x $BUILD/all_tests" \
-    "$BUILD/all_tests" --gtest_filter='OracleCorpus.*:Unified_CanonicalHash.*:GoldenMatrix.*'
+    "$BUILD/all_tests" --gtest_filter='OracleCorpus.*:CanonicalHash.*:GoldenMatrix.*'
 
 run_or_skip "Match completeness: late arrivals separated from real losses" \
     "test -x $BUILD/all_tests" \

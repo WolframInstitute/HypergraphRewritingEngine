@@ -78,10 +78,10 @@ static void print_timing(const std::string& label, double ms) {
 }
 
 // Profiling test - single step, max_successor=1
-TEST(GridPerformanceTest, UnifiedProfiledEvolution) {
+TEST(GridPerformanceTest, ProfiledEvolution) {
     auto edges = create_grid_with_holes();
 
-    std::cout << "\n=== Unified Profiled Evolution ===" << std::endl;
+    std::cout << "\n=== Profiled Evolution ===" << std::endl;
     std::cout << "Graph: " << edges.size() << " edges" << std::endl;
 
     auto t1 = std::chrono::high_resolution_clock::now();
