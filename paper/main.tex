@@ -875,18 +875,20 @@ insertion, the retained edge set is the transitive reduction of the causal DAG s
 
 \paragraph{Procedure.}
 Let $e = (p, c)$ be a new causal edge, meaning event $p$ produced an edge that event $c$ consumed.
-Insertion asks whether $c$ is already reachable from $p$ through the retained edges. If it is, $e$
-is implied and is not retained; if it is not, $e$ is retained, and any retained edge $(p', c)$ whose
-producer $p'$ is now reachable from $p$ becomes implied and is dropped. Both directions are needed:
-the first prevents an implied edge entering, the second removes an edge that a later, shorter
-arrival has made implied.
-
-The order in which a consumer's incoming edges are examined determines how much work the
-reachability queries do. They are processed in descending producer-event order, so that the
+Insertion asks whether $c$ is already reachable from $p$ through the retained edges; if it is, $e$
+is implied and is not retained, and if it is not, $e$ is retained. There is no removal step, and
+its absence is what the arrival discipline buys. A consumer's incoming edges are registered by
+that consumer's own worker in descending producer-event order, and an ancestor's id is strictly
+smaller than its descendant's. A retained $(p', c)$ could become implied only through a path
+$p' \rightarrow \cdots \rightarrow x \rightarrow c$; if $(x, c)$ was registered before $(p', c)$
+then the path was already visible to the arrival query, which drops $(p', c)$ on the spot, and if
+after, then $x < p'$ in the descending order while reachability from $p'$ requires $p' < x$---a
+contradiction. An edge accepted at arrival therefore stays non-implied forever, and deciding each
+edge once maintains the exact reduction. The descending order also makes the queries cheap: the
 closure reachable from nearer producers is established before farther producers are tested against
-it, and a farther producer is then usually eliminated by a query that terminates early. Because
-events are numbered in creation order and an event's producers necessarily precede it, this
-ordering is available without sorting.
+it, and a farther producer is usually eliminated by a query that terminates early. Because events
+are numbered in creation order and an event's producers necessarily precede it, the order is
+available without sorting.
 
 \paragraph{What the arrival order establishes.}
 Two properties of this setting make the problem strictly easier than the fully dynamic one. Causal
@@ -904,10 +906,14 @@ which edges were inserted. This is not automatic: a concurrent evolution inserts
 several workers, and a reduction that depended on interleaving would produce different graphs on
 different runs of the same input. The requirement is the same schedule-independence property as
 Section~\ref{sec:determinism} and is checked by the same gate, which compares the reduced edge set
-across thread counts and seeds. The property is secured by the definition rather than by the
-insertion protocol: a finite directed acyclic graph has exactly one transitive reduction, so the
-retained set is determined by the relation the run produces, and the engine reduces the stored
-relation rather than deciding each edge against the edges already present when it arrives.
+across thread counts and seeds. It is secured differently on the two paths that serve the
+relation. Full capture holds the arrival discipline of the procedure above---each incoming edge
+registered by its consumer's own worker, in descending producer order, against ancestors whose own
+registration is complete---and under it the drop-at-arrival decision is exact whatever the
+interleaving of consumers. The quotient reconstruction emits between canonical event ids, which
+are not monotonic under recurrence, so no arrival discipline exists there; it stores the relation
+unreduced and reduces on read, where the uniqueness of a finite DAG's transitive reduction makes
+the answer a function of the stored set alone.
 
 The reduction applies only to the causal graph. States, events and the branchial relation are never
 reduced: branchial edges connect states at the same step and carry no transitivity to remove.
