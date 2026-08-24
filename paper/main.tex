@@ -181,6 +181,41 @@ Given initial state $\state_0$ and rule set $\{\rewriterule_i\}$, the evolution 
 \end{itemize}
 \end{definition}
 
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    st/.style={rectangle, draw, rounded corners, inner sep=3pt, font=\scriptsize},
+    ev/.style={->, >=latex, thin},
+    cau/.style={->, >=latex, thick, densely dashed},
+    lbl/.style={font=\scriptsize\itshape, inner sep=1pt}
+]
+\node[st] (s0) at (0,0)      {$\{0,1\}$};
+\node[st] (s1) at (2.6,0)    {$\{0,2\},\{2,1\}$};
+\node[st] (s2) at (5.9,0.75) {$\{2,1\},\{0,3\},\{3,2\}$};
+\node[st] (s3) at (5.9,-0.75){$\{0,2\},\{2,4\},\{4,1\}$};
+\draw[ev] (s0) -- node[lbl,above]{$e_0$} (s1);
+\draw[ev] (s1) -- node[lbl,above left, pos=0.6]{$e_1$} (s2);
+\draw[ev] (s1) -- node[lbl,below left, pos=0.6]{$e_2$} (s3);
+\draw[<->, gray, thin] (s2) -- node[lbl, right, text width=2.1cm]{one canonical state} (s3);
+\node[lbl, anchor=west] at (-0.6,-1.9) {causal:};
+\node[font=\scriptsize] (c0) at (0.9,-1.9) {$e_0$};
+\node[font=\scriptsize] (c1) at (2.4,-1.55) {$e_1$};
+\node[font=\scriptsize] (c2) at (2.4,-2.25) {$e_2$};
+\draw[cau] (c0) -- (c1);
+\draw[cau] (c0) -- (c2);
+\node[lbl, anchor=west, text width=6.2cm] at (3.2,-1.9)
+  {no branchial pair: $e_1$ and $e_2$ consume \emph{different} edges of $\{0,2\},\{2,1\}$};
+\end{tikzpicture}
+\caption{Two steps of $\{x,y\} \rightarrow \{x,z\},\{z,y\}$ from a single edge, exactly as the
+engine reports it. Four raw states become three canonical ones: the two depth-2 results are
+isomorphic and are identified. Both causal edges descend from $e_0$, because each depth-2 event
+consumes one of the two edges $e_0$ produced. The branchial relation is empty here, and for a
+reason worth stating: $e_1$ and $e_2$ share an input state, which resembles a sibling pair, but
+branchial edges connect co-consumers of a \emph{common} edge and these consume different ones.
+Every element is output of \texttt{canonical\_causal\_oracle -{}-dump 2}.}
+\label{fig:worked-example}
+\end{figure}
+
 The \emph{causal graph} captures dependencies between events based on shared hyperedges. The \emph{branchial graph} connects states reachable at the same evolution step, encoding branching structure analogous to quantum superposition~\cite{wolfram2020project}.
 
 \subsection{The Graph Isomorphism Problem}
