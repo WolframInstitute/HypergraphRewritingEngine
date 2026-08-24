@@ -37,3 +37,6 @@ evidence/
 # tree); regenerated on demand, never hand-edited.
 /SOURCE_MAP.md
 /SOURCE_AUDIT.md
+
+# Local artifacts pulled off a rented measurement box (tools/dev/remote_drive.sh).
+remote_runs/
