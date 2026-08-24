@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The P7.6 measurement session, run on a RENTED, EPHEMERAL box.
 #
-#   bash remote_session.sh [commit] [phase]      phase: prep | tables | sweep | floor | all
+#   bash remote_session.sh [commit] [phase]
+#      phase: prep | sync | tables | sweep | floor | attrib | all
 #
 # NOTHING HERE MAY BE THE ONLY COPY OF ANYTHING. The box can vanish between one command and
 # the next -- a reassignment, a reboot that wipes the local disk, the day simply ending -- so
@@ -35,7 +36,16 @@ mkdir -p "$ROOT"
 
 say()  { echo "==> $*" | tee -a "$LOG"; }
 fail() { echo "XX  $*" | tee -a "$LOG"; echo "PHASE FAILED — artifacts so far are already local; see the log"; exit 1; }
-want() { [ "$PHASE" = all ] || [ "$PHASE" = "$1" ]; }
+# `all` is the measurement pass: prep, then the three measuring phases. `sync` and `attrib`
+# are opt-in only -- sync because prep already covers a first run, and attrib because it
+# builds a second, instrumented tree and runs callgrind, which is orders of magnitude slower
+# than the thing it attributes and has no place in a timing pass.
+want() {
+  [ "$PHASE" = "$1" ] && return 0
+  [ "$PHASE" = all ] || return 1
+  case " prep tables sweep floor " in *" $1 "*) return 0 ;; esac
+  return 1
+}
 
 # Root already (a rented container), sudo available (a bare-metal login), or neither. The
 # privileged steps are all optional -- governor, persistence mode, counter permission -- so
@@ -76,6 +86,46 @@ wait_quiet() {
     [ "$waited" -ge 120 ] && fail "load $load after ${waited}s — not a quiet box. Re-run with HG_ACCEPT_CONTENDED=1 to measure anyway."
     sleep 10; waited=$((waited + 10))
   done
+}
+
+# BUILD_WOLFRAM_LANGUAGE_PACLET DEFAULTS ON AND IS FATAL WITHOUT A WOLFRAM INSTALL:
+# paclet_source does find_package(WolframLanguage REQUIRED), so on a box with no Wolfram the
+# configure aborts before a single file compiles. Off here, as CI has it.
+#
+# Release is the TIMING build and is what the tables are measured with: it carries the
+# project's LTO (CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE), so cross-TU inlining is the same
+# as a shipped build, and it defines no instrumentation macro. Nothing is added here that
+# could move a number -- the instrumented build is a separate directory (`attrib`).
+COMMON_FLAGS=(-DCMAKE_BUILD_TYPE=Release -DBUILD_WOLFRAM_LANGUAGE_PACLET=OFF -DBUILD_VISUALIZATION=OFF)
+
+# Both builds, incremental. Called by `prep` on a new box and by `sync` for every commit
+# after, so the iteration loop and the first setup cannot drift apart.
+build_all() {
+  # The two probes are EXCLUDE_FROM_ALL (every tools/*.cpp is), and paper_tables.py runs BOTH:
+  # quotient_reconstruction_cost_probe for the C/R ratio table and mode_matrix_probe for the
+  # identity-mode matrix. A default build does not produce them.
+  say "build host (-j$(nproc))"
+  cmake -S . -B build_linux "${COMMON_FLAGS[@]}" -DBUILD_GPU=OFF >> "$LOG" 2>&1 || fail "host configure"
+  cmake --build build_linux -j"$(nproc)" --target all_tests bench_cpu_evolve cost_matrix \
+    mode_matrix_probe quotient_reconstruction_cost_probe >> "$LOG" 2>&1 || fail "host build"
+
+  # nvcc forks a multi-GB cicc per translation unit, so the CUDA build's width is bounded by
+  # MEMORY, not by cores.
+  local MEM_GB GPU_J ARCH
+  MEM_GB=$(free -g | awk '/^Mem:/ {print $2}')
+  GPU_J=$(( MEM_GB / 6 )); [ "$GPU_J" -lt 1 ] && GPU_J=1; [ "$GPU_J" -gt 8 ] && GPU_J=8
+  ARCH="$("$NVSMI" --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')"
+  [ -n "$ARCH" ] || ARCH=89          # 4090 = sm_89; the query is the authority when it answers
+  say "build gpu (sm_$ARCH, -j$GPU_J from ${MEM_GB}G RAM)"
+  cmake -S . -B build_gpu "${COMMON_FLAGS[@]}" -DBUILD_GPU=ON \
+    -DCMAKE_CUDA_ARCHITECTURES="$ARCH" >> "$LOG" 2>&1 || fail "gpu configure"
+  # CMake DISABLES GPU SUPPORT AND EXITS 0 when it cannot find a CUDA compiler, so a successful
+  # configure proves nothing. Reproduced deliberately: without /usr/local/cuda/bin on PATH the
+  # configure returns 0, logs "CUDA not found - GPU support disabled", and emits no targets.
+  (cd build_gpu && make help 2>/dev/null | grep -qx "... bench_gpu_evolve") \
+    || fail "the GPU configure produced no GPU targets: CUDA was not found. Ensure nvcc is on PATH."
+  cmake --build build_gpu -j"$GPU_J" --target hg_gpu_tests gpu_differential_tests bench_gpu_evolve \
+    >> "$LOG" 2>&1 || fail "gpu build"
 }
 
 # --------------------------------------------------------------------------- prep
@@ -130,36 +180,7 @@ if want prep; then
   say "HEAD: $(git -C "$SRC" rev-parse --short HEAD)  $(git -C "$SRC" log -1 --format=%s | head -c 60)"
 
   cd "$SRC" || fail "no $SRC"
-
-  # BUILD_WOLFRAM_LANGUAGE_PACLET DEFAULTS ON AND IS FATAL WITHOUT A WOLFRAM INSTALL:
-  # paclet_source does find_package(WolframLanguage REQUIRED), so on a box with no Wolfram the
-  # configure aborts before a single file compiles. Off here, as CI has it.
-  COMMON_FLAGS=(-DCMAKE_BUILD_TYPE=Release -DBUILD_WOLFRAM_LANGUAGE_PACLET=OFF -DBUILD_VISUALIZATION=OFF)
-
-  # The two probes are EXCLUDE_FROM_ALL (every tools/*.cpp is), and paper_tables.py runs BOTH:
-  # quotient_reconstruction_cost_probe for the C/R ratio table and mode_matrix_probe for the
-  # identity-mode matrix. A default build does not produce them.
-  say "build host (-j$(nproc))"
-  cmake -S . -B build_linux "${COMMON_FLAGS[@]}" -DBUILD_GPU=OFF >> "$LOG" 2>&1 || fail "host configure"
-  cmake --build build_linux -j"$(nproc)" --target all_tests bench_cpu_evolve cost_matrix \
-    mode_matrix_probe quotient_reconstruction_cost_probe >> "$LOG" 2>&1 || fail "host build"
-
-  # nvcc forks a multi-GB cicc per translation unit, so the CUDA build's width is bounded by
-  # MEMORY, not by cores.
-  MEM_GB=$(free -g | awk '/^Mem:/ {print $2}')
-  GPU_J=$(( MEM_GB / 6 )); [ "$GPU_J" -lt 1 ] && GPU_J=1; [ "$GPU_J" -gt 8 ] && GPU_J=8
-  ARCH="$("$NVSMI" --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')"
-  [ -n "$ARCH" ] || ARCH=89          # 4090 = sm_89; the query is the authority when it answers
-  say "build gpu (sm_$ARCH, -j$GPU_J from ${MEM_GB}G RAM)"
-  cmake -S . -B build_gpu "${COMMON_FLAGS[@]}" -DBUILD_GPU=ON \
-    -DCMAKE_CUDA_ARCHITECTURES="$ARCH" >> "$LOG" 2>&1 || fail "gpu configure"
-  # CMake DISABLES GPU SUPPORT AND EXITS 0 when it cannot find a CUDA compiler, so a successful
-  # configure proves nothing. Reproduced deliberately: without /usr/local/cuda/bin on PATH the
-  # configure returns 0, logs "CUDA not found - GPU support disabled", and emits no targets.
-  (cd build_gpu && make help 2>/dev/null | grep -qx "... bench_gpu_evolve") \
-    || fail "the GPU configure produced no GPU targets: CUDA was not found. Ensure nvcc is on PATH."
-  cmake --build build_gpu -j"$GPU_J" --target hg_gpu_tests gpu_differential_tests bench_gpu_evolve \
-    >> "$LOG" 2>&1 || fail "gpu build"
+  build_all
 
   # A number from an unverified box is not a measurement.
   say "gates"
@@ -169,7 +190,46 @@ if want prep; then
   say "gates green: $(grep -h "PASSED" "$ROOT"/gate_*.log | tr '\n' ' ')"
 fi
 
+# --------------------------------------------------------------------------- sync
+# THE ITERATION LOOP: pull a newly pushed commit and rebuild incrementally. No apt, no gates,
+# no reconfigure -- seconds to a couple of minutes for a host-only change, because CMake
+# rebuilds what the edit touched. Use `prep` once per box and `sync` for every commit after.
+if want sync; then
+  [ -d "$SRC/.git" ] || fail "no clone on this box — run the prep phase first"
+  git -C "$SRC" fetch --all -q >> "$LOG" 2>&1 || fail "fetch failed"
+  git -C "$SRC" checkout -q "$COMMIT" >> "$LOG" 2>&1 || fail "checkout $COMMIT failed"
+  say "sync -> $(git -C "$SRC" rev-parse --short HEAD)  $(git -C "$SRC" log -1 --format=%s | head -c 60)"
+  cd "$SRC" || fail "no $SRC"
+  build_all
+fi
+
 cd "$SRC" 2>/dev/null || { want prep || fail "no clone on this box — run the prep phase first"; }
+
+# --------------------------------------------------------------------------- attrib
+# THE INSTRUMENTED BUILD, IN ITS OWN DIRECTORY, AND NEVER THE SOURCE OF A WALL NUMBER.
+# HG_PHASE_TIMING compiles in per-phase cycle counters; the option is off by default precisely
+# so the timing build carries none of it, and mixing the two would report an instrumented
+# workload's wall time as the engine's. Same optimisation as the timing build (Release, which
+# turns on LTO) plus -g, which adds symbols WITHOUT changing codegen, so callgrind and perf
+# attribute to file and line instead of to a mangled name.
+if want attrib; then
+  say "instrumented build (separate dir; wall numbers never come from here)"
+  cmake -S . -B build_instr "${COMMON_FLAGS[@]}" -DBUILD_GPU=OFF -DHG_PHASE_TIMING=ON \
+    -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG -g" >> "$LOG" 2>&1 || fail "instr configure"
+  cmake --build build_instr -j"$(nproc)" --target bench_cpu_evolve >> "$LOG" 2>&1 || fail "instr build"
+  wait_quiet
+  say "phase attribution (wpp d7 and the quotient workload)"
+  ./build_instr/bench_cpu_evolve 7 3 "$SWEEP" wpp "$CPUSET" > "$ROOT/attrib_wpp.log" 2>&1 || true
+  ./build_instr/bench_cpu_evolve 3 3 "$SWEEP" disc-l3a2g2r2 "$CPUSET" \
+    > "$ROOT/attrib_disc.log" 2>&1 || true
+  if command -v valgrind >/dev/null; then
+    say "callgrind (single thread, file:line attribution)"
+    valgrind --tool=callgrind --callgrind-out-file="$ROOT/cg_wpp.out" \
+      ./build_instr/bench_cpu_evolve 6 1 1 wpp >> "$LOG" 2>&1 || true
+    command -v callgrind_annotate >/dev/null \
+      && callgrind_annotate "$ROOT/cg_wpp.out" > "$ROOT/cg_wpp.txt" 2>/dev/null || true
+  fi
+fi
 
 # --------------------------------------------------------------------------- tables
 if want tables; then

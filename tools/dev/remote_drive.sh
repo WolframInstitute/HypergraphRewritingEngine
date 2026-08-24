@@ -27,6 +27,23 @@ PHASES=("$@")
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
+
+# THE BOX MEASURES WHAT GITHUB HAS, NOT WHAT IS IN THIS WORKING TREE. It clones over HTTPS, so
+# an unpushed commit is one it cannot check out, and a table stamped with a commit no one else
+# can obtain is not a reproducible measurement. Resolved and verified here rather than
+# discovered as a checkout failure after the ssh.
+if [ "$COMMIT" = HEAD ] || [ "$COMMIT" = . ]; then
+  COMMIT="$(git -C "$ROOT" rev-parse HEAD)"
+fi
+if git -C "$ROOT" cat-file -e "${COMMIT}^{commit}" 2>/dev/null; then
+  if ! git -C "$ROOT" branch -r --contains "$COMMIT" 2>/dev/null | grep -q .; then
+    echo "refusing: commit $COMMIT is on no remote branch — push it first, or the box cannot check it out" >&2
+    exit 2
+  fi
+fi
+if [ -n "$(git -C "$ROOT" status --porcelain 2>/dev/null)" ]; then
+  echo "NOTE: this working tree has uncommitted changes; the box measures $COMMIT, not them." >&2
+fi
 RUN="$ROOT/remote_runs/$(date -u +%Y%m%dT%H%M%SZ)_${TARGET//[^A-Za-z0-9]/_}"
 mkdir -p "$RUN"
 echo "local run directory: $RUN"
