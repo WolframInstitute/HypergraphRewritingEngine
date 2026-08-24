@@ -83,7 +83,7 @@ say "deps"
 export DEBIAN_FRONTEND=noninteractive
 $SUDO apt-get update -qq >> "$LOG" 2>&1 || true
 $SUDO apt-get install -y -qq build-essential cmake ninja-build git python3 valgrind \
-  linux-tools-common "linux-tools-$(uname -r)" >> "$LOG" 2>&1 || true
+  linux-tools-common "linux-tools-$(uname -r)" numactl >> "$LOG" 2>&1 || true
 command -v nvcc >/dev/null || $SUDO apt-get install -y -qq nvidia-cuda-toolkit >> "$LOG" 2>&1 || true
 command -v nvcc >/dev/null || fail "no nvcc — install a CUDA toolkit matching the driver first"
 
