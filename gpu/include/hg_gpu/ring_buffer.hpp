@@ -15,6 +15,10 @@
 namespace HG_NAMESPACE {
 namespace gpu {
 
+// Writes seq[i] = i on the device; the launching wrapper is defined in persistent.cu because
+// this header reaches host-only translation units that cannot hold a kernel.
+void ring_seq_ramp_device(uint64_t* seq, uint32_t n);
+
 // Bounded lock-free MPMC ring buffer for device-resident work queues.
 //
 // Every slot carries a SEQUENCE NUMBER, and that number alone says whose turn the slot is:
@@ -144,10 +148,12 @@ public:
     void clear() {
         HG_CUDA_CHECK(cudaMemset(head_, 0, sizeof(uint64_t)), "RingBuffer clear head");
         HG_CUDA_CHECK(cudaMemset(tail_, 0, sizeof(uint64_t)), "RingBuffer clear tail");
-        std::vector<uint64_t> ramp(capacity_);
-        for (uint32_t i = 0; i < capacity_; ++i) ramp[i] = i;
-        HG_CUDA_CHECK(cudaMemcpy(seq_, ramp.data(), sizeof(uint64_t) * capacity_,
-                         cudaMemcpyHostToDevice), "RingBuffer seq init");
+        // The ramp is written ON DEVICE. Building it host-side and copying it up cost eight
+        // bytes per slot per clear -- 8 MB and 1.45 ms of H2D per run at the launch chain's
+        // 2^20 capacity, about a quarter of the device's per-call floor -- for values that
+        // are just the slot indices. Defined in persistent.cu because this header reaches
+        // host-only translation units.
+        ring_seq_ramp_device(seq_, capacity_);
     }
 
     uint64_t head_host() const {

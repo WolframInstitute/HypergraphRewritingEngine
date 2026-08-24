@@ -71,6 +71,11 @@ __global__ void k_seed_match_queue_counted(
 // expand them. Unlike the root seeder there is no hashing and no dedup consultation -- these
 // states are already known and already deduplicated, and consulting dedup here is exactly what
 // makes an extend reach nothing (measured: 5 states where one run gives 7).
+__global__ void k_seq_ramp(uint64_t* seq, uint32_t n) {
+    const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) seq[i] = i;
+}
+
 __global__ void k_seed_frontier(typename RingBuffer<MatchWorkItem>::DeviceView queue,
                                 const StateId* ids, const uint32_t* steps,
                                 const uint32_t* count, uint32_t cap,
@@ -907,6 +912,15 @@ __global__ void k_persistent_evolve(
 }
 
 }  // namespace
+
+// The RingBuffer's sequence init; declared in ring_buffer.hpp, whose class cannot hold a
+// kernel because the header reaches host-only translation units. External linkage: every
+// RingBuffer constructor everywhere calls this.
+void ring_seq_ramp_device(uint64_t* seq, uint32_t n) {
+    const uint32_t block = 256;
+    k_seq_ramp<<<(n + block - 1) / block, block>>>(seq, n);
+    HG_CUDA_CHECK(cudaGetLastError(), "ring seq ramp launch");
+}
 
 // Declared in hg_gpu/persistent.hpp, which carries the contract. One resident block per SM:
 // a persistent kernel's blocks do not retire and get replaced, so the grid IS the worker count.
