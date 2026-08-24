@@ -27,6 +27,14 @@ cd "$ROOT"
 say()  { echo "==> $*" | tee -a "$LOG"; }
 fail() { echo "XX  $*" | tee -a "$LOG"; echo "BUNDLE INCOMPLETE — do not tear down without reading $LOG"; exit 1; }
 
+# Root already (a rented container), sudo available (a bare-metal login), or neither. The
+# privileged steps are all optional -- governor, persistence mode, counter permission -- so
+# "neither" degrades rather than fails, and the log says which box this was.
+if   [ "$(id -u)" = 0 ];        then SUDO=""
+elif command -v sudo >/dev/null; then SUDO="sudo"
+else                                 SUDO="";  say "no root and no sudo: skipping governor/clock/counter setup"
+fi
+
 # --------------------------------------------------------------------------- 0 preflight
 say "preflight: $(date -u +%FT%TZ)"
 {
@@ -39,8 +47,16 @@ say "preflight: $(date -u +%FT%TZ)"
 } > "$ROOT/preflight.txt" 2>&1
 cat "$ROOT/preflight.txt" | tee -a "$LOG"
 LOAD1=$(awk '{print $1}' /proc/loadavg)
-awk -v l="$LOAD1" 'BEGIN { exit (l < 0.7) ? 0 : 1 }' \
-  || fail "load ${LOAD1} >= 0.7 — this box is not quiet; a table stamped CONTENDED is not worth the rental"
+# A rented container reports the HOST's load average, so this also catches a rental that is
+# not the whole machine. HG_ACCEPT_CONTENDED=1 proceeds anyway -- the generator stamps every
+# table CONTENDED, so the override cannot quietly produce a number that reads as clean.
+if ! awk -v l="$LOAD1" 'BEGIN { exit (l < 0.7) ? 0 : 1 }'; then
+  if [ "${HG_ACCEPT_CONTENDED:-0}" = 1 ]; then
+    say "load ${LOAD1} >= 0.7 and HG_ACCEPT_CONTENDED=1: proceeding, every table will be stamped CONTENDED"
+  else
+    fail "load ${LOAD1} >= 0.7 — not a quiet box. Re-run with HG_ACCEPT_CONTENDED=1 to measure anyway."
+  fi
+fi
 
 # The pinned set: one hardware thread per physical core, and the sweep in powers of two up
 # to the physical-core count. A homogeneous box is the whole point of the rental; the
@@ -53,22 +69,22 @@ say "physical cores: $NPHYS   pin set: ${CPUSET:0:60}...   sweep: $SWEEP"
 
 say "deps"
 export DEBIAN_FRONTEND=noninteractive
-sudo apt-get update -qq >> "$LOG" 2>&1
-sudo apt-get install -y -qq build-essential cmake ninja-build git python3 valgrind \
-  linux-tools-common "linux-tools-$(uname -r)" || true >> "$LOG" 2>&1
-command -v nvcc >/dev/null || sudo apt-get install -y -qq nvidia-cuda-toolkit >> "$LOG" 2>&1
+$SUDO apt-get update -qq >> "$LOG" 2>&1 || true
+$SUDO apt-get install -y -qq build-essential cmake ninja-build git python3 valgrind \
+  linux-tools-common "linux-tools-$(uname -r)" >> "$LOG" 2>&1 || true
+command -v nvcc >/dev/null || $SUDO apt-get install -y -qq nvidia-cuda-toolkit >> "$LOG" 2>&1 || true
 command -v nvcc >/dev/null || fail "no nvcc — install a CUDA toolkit matching the driver first"
 
 say "governor + clocks"
-echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor > /dev/null 2>&1 || true
-sudo nvidia-smi -pm 1 >> "$LOG" 2>&1 || true
+echo performance | $SUDO tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor > /dev/null 2>&1 || true
+$SUDO nvidia-smi -pm 1 >> "$LOG" 2>&1 || true
 
 # GPU counter permission: ncu needs it for the P7.5 device captures. Recorded, not fatal —
 # the wall-clock tables do not depend on it.
 NCU_OK=no
 if command -v ncu >/dev/null; then
   ncu --query-metrics >/dev/null 2>&1 && NCU_OK=yes
-  [ "$NCU_OK" = no ] && sudo sh -c 'echo options nvidia NVreg_RestrictProfilingToAdminUsers=0 > /etc/modprobe.d/ncu.conf' 2>/dev/null || true
+  [ "$NCU_OK" = no ] && $SUDO sh -c 'echo options nvidia NVreg_RestrictProfilingToAdminUsers=0 > /etc/modprobe.d/ncu.conf' 2>/dev/null || true
 fi
 say "ncu counters: $NCU_OK"
 
