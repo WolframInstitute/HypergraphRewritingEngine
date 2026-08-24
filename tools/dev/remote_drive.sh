@@ -19,6 +19,16 @@
 # The pull uses tar over ssh rather than rsync: ssh and tar are on every box, rsync is not.
 set -uo pipefail
 
+# A FRESH RENTED BOX HAS AN UNKNOWN HOST KEY, and the default prompt would hang a
+# non-interactive run forever; accept-new records it without ever silently accepting a
+# CHANGED one. The keepalives matter because a measuring phase can be silent for many minutes
+# -- paper_tables between tables, a CUDA build between targets -- and a NAT or firewall that
+# times an idle connection out would kill the phase in flight.
+SSH_OPTS=(-o StrictHostKeyChecking=accept-new
+          -o ConnectTimeout=15
+          -o ServerAliveInterval=30
+          -o ServerAliveCountMax=10)
+
 TARGET="${1:?usage: remote_drive.sh <ssh-target> [commit] [phase...]}"
 COMMIT="${2:-master}"
 shift 2 2>/dev/null || shift $#
@@ -56,7 +66,7 @@ pull() {
   local phase="$1" dest="$RUN/$phase"
   mkdir -p "$dest"
   # shellcheck disable=SC2029  # deliberate remote-side expansion of $HOME
-  ssh "$TARGET" 'cd "$HOME/hg_session" 2>/dev/null && tar cz --ignore-failed-read \
+  ssh "${SSH_OPTS[@]}" "$TARGET" 'cd "$HOME/hg_session" 2>/dev/null && tar cz --ignore-failed-read \
       preflight.txt session.log ./*.log ./*.tsv ./ncu_* src/paper/tables 2>/dev/null' \
     | tar xz -C "$dest" 2>/dev/null || true
   local n; n=$(find "$dest" -type f | wc -l)
@@ -74,10 +84,10 @@ for phase in "${PHASES[@]}"; do
   # The script is piped in rather than copied, so the box never holds a stale version of it,
   # and HG_ACCEPT_CONTENDED is forwarded if the caller set it.
   if [ "$phase" = tuning ]; then
-    ssh "$TARGET" "HG_ACCEPT_CONTENDED=${HG_ACCEPT_CONTENDED:-0} bash -s" < "$script" \
+    ssh "${SSH_OPTS[@]}" "$TARGET" "HG_ACCEPT_CONTENDED=${HG_ACCEPT_CONTENDED:-0} bash -s" < "$script" \
       2>&1 | tee -a "$RUN/driver.log"
   else
-    ssh "$TARGET" "HG_ACCEPT_CONTENDED=${HG_ACCEPT_CONTENDED:-0} bash -s -- '$COMMIT' '$phase'" < "$script" \
+    ssh "${SSH_OPTS[@]}" "$TARGET" "HG_ACCEPT_CONTENDED=${HG_ACCEPT_CONTENDED:-0} bash -s -- '$COMMIT' '$phase'" < "$script" \
       2>&1 | tee -a "$RUN/driver.log"
   fi
   rc=${PIPESTATUS[0]}
