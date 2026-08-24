@@ -28,6 +28,7 @@
 // it.
 
 #include <cstddef>
+#include <vector>
 
 namespace HG_NAMESPACE {
 namespace common {
@@ -56,6 +57,28 @@ constexpr bool affinity_supported() {
 // effect, so a caller that needs a homogeneous core set can fail loudly rather than report a
 // scaling curve it did not actually measure.
 bool pin_this_thread_to_cpu(unsigned cpu);
+
+// THE FASTEST CLASS OF CORE ON THIS MACHINE, as logical CPU indices, or EMPTY when the
+// question has no answer here.
+//
+// Pinning needs a set to pin TO, and until now the caller had to write one by hand -- which
+// means knowing the machine, and getting it wrong silently produces the mixed-speed curve the
+// pinning exists to prevent. This answers it from the operating system:
+//
+//   Windows  GetLogicalProcessorInformationEx(RelationProcessorCore) reports an
+//            EfficiencyClass per core; the highest value is the performance class. This is
+//            what makes a Windows speedup curve honest on a P/E part.
+//   Linux    /sys/devices/cpu_core/cpus lists the P-cores on an Intel hybrid part; on ARM
+//            big.LITTLE the same question is cpu_capacity per CPU, highest value wins.
+//
+// EMPTY means "no distinction available", NOT "no fast cores": a homogeneous machine, macOS,
+// or a hypervisor that flattens the topology all answer empty, and the caller should then use
+// every CPU rather than none. WSL is the flattening case that matters here -- it presents a
+// 14900K as 16 uniform SMT cores, so this returns empty there and says nothing false.
+//
+// One entry per PHYSICAL core of that class (the first hardware thread of each), because a
+// speedup denominator counts cores, not siblings that share one.
+std::vector<unsigned> performance_cpus();
 
 }  // namespace common
 }  // namespace HG_NAMESPACE

@@ -690,6 +690,44 @@ TEST(JobSystemAffinity, PinningBindsEveryWorkerOrSaysItCouldNot) {
     js.shutdown();
 }
 
+// performance_cpus() answers a question about THIS machine, so the test cannot assert a
+// particular set. What it can assert is the contract every caller relies on, and each half
+// has a way to be wrong: a duplicate would double-count a core in a speedup denominator, an
+// unbindable index would make a pinned run silently unpinned, and a set that is every CPU on
+// a machine with two core types would defeat the purpose. Empty is a legitimate answer -- a
+// homogeneous machine, macOS, or a hypervisor that flattens the topology (WSL reports a
+// 14900K as uniform SMT cores) -- and is distinct from "no fast cores".
+TEST(JobSystemAffinity, PerformanceCpusAreDistinctAndBindable) {
+    const std::vector<unsigned> p = hgcommon::performance_cpus();
+    if (p.empty()) {
+        SUCCEED() << "this machine reports no core-type distinction; every CPU is equivalent";
+        return;
+    }
+    // Printed, not just asserted: the set is a fact about the machine the suite is running
+    // on, and a reader checking whether the answer is RIGHT (eight P-cores on a 14900K, say)
+    // cannot get that from a green tick.
+    std::string listed;
+    for (unsigned c : p) listed += (listed.empty() ? "" : ",") + std::to_string(c);
+    std::cout << "[          ] performance cores: " << p.size() << " of "
+              << std::thread::hardware_concurrency() << " logical CPUs -> " << listed << "\n";
+    std::set<unsigned> distinct(p.begin(), p.end());
+    EXPECT_EQ(distinct.size(), p.size())
+        << "performance_cpus() repeated a CPU, so a speedup denominator would count one core twice";
+    EXPECT_LE(p.size(), static_cast<size_t>(std::thread::hardware_concurrency()))
+        << "more performance cores than the machine has logical CPUs";
+    if (hgcommon::affinity_supported()) {
+        // Each named CPU must actually be bindable: a name that cannot be pinned to is worse
+        // than no name, because the run reports a pinned curve it did not measure.
+        std::atomic<int> bound{0};
+        for (unsigned cpu : p) {
+            std::thread t([&, cpu] { if (hgcommon::pin_this_thread_to_cpu(cpu)) ++bound; });
+            t.join();
+        }
+        EXPECT_EQ(bound.load(), static_cast<int>(p.size()))
+            << "performance_cpus() named a CPU that pin_this_thread_to_cpu refuses";
+    }
+}
+
 // The default must stay exactly what it was: nothing pinned, placement left to the OS.
 TEST(JobSystemAffinity, NothingIsPinnedUnlessAsked) {
     job_system::JobSystem<TestJobType> js(4);

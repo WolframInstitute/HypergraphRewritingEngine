@@ -23,6 +23,16 @@ target_link_libraries(job_system PUBLIC
     lockfree_deque
 )
 
+# WaitOnAddress / WakeByAddress* live in the api-ms-win-core-synch API set, surfaced by MinGW
+# and MSVC alike as `synchronization`. THIS library is the one whose source calls them --
+# park.cpp is built here -- so it declares the dependency itself. It linked until now only
+# through consumers that also link `hypergraph`, which declares the same thing; a target that
+# uses job_system WITHOUT the engine got an undefined reference instead, which is why
+# test_job_system has never been linked on Windows and its suites have never run there.
+if(WIN32)
+    target_link_libraries(job_system PUBLIC synchronization)
+endif()
+
 option(BUILD_TESTS "Build tests" ON)
 if(BUILD_TESTS)
     enable_testing()
