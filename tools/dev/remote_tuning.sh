@@ -37,6 +37,25 @@ if [ "$(id -u)" = 0 ]; then SUDO=""; else SUDO="sudo"; fi
 mapfile -t FIRST_THREADS < <(lscpu -p=CPU,CORE | grep -v '^#' | awk -F, '!seen[$2]++ {print $1}')
 NPHYS=${#FIRST_THREADS[@]}
 NNODES=$(lscpu | awk '/^NUMA node\(s\)/ {print $3}')
+# ---------------------------------------------------------------------------
+# THE BOX IS SHARED with the other project on this machine, and both do
+# timing-sensitive work: a build or a benchmark from one destroys the other's
+# numbers. The lock is taken HERE rather than by whoever invokes this script,
+# because a caller that forgets to wrap protects nothing, and this script is
+# often piped in over ssh where it has no path to re-exec itself.
+#
+# Held for the lifetime of this process on file descriptor 9. The kernel
+# releases it when the process dies, so a dropped ssh or a killed phase leaves
+# no stale lock to clear by hand.
+exec 9>/tmp/hgbox.lock 2>/dev/null || true
+if command -v flock >/dev/null 2>&1; then
+  if ! flock -w "${LOCK_WAIT:-7200}" 9; then
+    echo "the box is busy: $(cat /tmp/hgbox.holder 2>/dev/null || echo 'holder unknown')" >&2
+    echo "waited ${LOCK_WAIT:-7200}s for /tmp/hgbox.lock; not starting." >&2
+    exit 75
+  fi
+fi
+
 BOX_HOLDER=/tmp/hgbox.holder
 printf 'hypergraph-engine | phase=tuning | pid=%s | since=%s\n' "$$" "$(date -u +%FT%TZ)" \
   > "$BOX_HOLDER" 2>/dev/null || true

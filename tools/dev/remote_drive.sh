@@ -33,9 +33,11 @@ set -uo pipefail
 # process dies -- a dropped ssh, a killed phase, a rebooted box leave NO stale lock, which on
 # an ephemeral machine is the failure that would otherwise need manual clearing.
 #
-# THE CONTRACT, for the other project to honour verbatim:
-#   ssh <box> "flock -w 7200 /tmp/hgbox.lock <your command>"
-#   ... and write one line naming yourself to /tmp/hgbox.holder while you hold it.
+# THE LOCK IS TAKEN BY THE REMOTE SCRIPTS THEMSELVES, not wrapped around them here: a
+# caller that forgets to wrap protects nothing, and wrapping here as well would make parent
+# and child contend for the same lock and deadlock until the timeout. The contract for the
+# other project is therefore the same one this project follows -- take the lock inside your
+# remote entry point, on a held file descriptor, and name yourself in /tmp/hgbox.holder.
 # Whoever waits can then read that file to see who has the box and since when.
 BOX_LOCK=/tmp/hgbox.lock
 BOX_HOLDER_PATH=/tmp/hgbox.holder
@@ -101,10 +103,10 @@ for phase in "${PHASES[@]}"; do
   # The script is piped in rather than copied, so the box never holds a stale version of it,
   # and HG_ACCEPT_CONTENDED is forwarded if the caller set it.
   if [ "$phase" = tuning ]; then
-    ssh "${SSH_OPTS[@]}" "$TARGET" "HG_ACCEPT_CONTENDED=${HG_ACCEPT_CONTENDED:-0} flock -w $LOCK_WAIT $BOX_LOCK bash -s" < "$script" \
+    ssh "${SSH_OPTS[@]}" "$TARGET" "HG_ACCEPT_CONTENDED=${HG_ACCEPT_CONTENDED:-0} bash -s" < "$script" \
       2>&1 | tee -a "$RUN/driver.log"
   else
-    ssh "${SSH_OPTS[@]}" "$TARGET" "HG_ACCEPT_CONTENDED=${HG_ACCEPT_CONTENDED:-0} flock -w $LOCK_WAIT $BOX_LOCK bash -s -- '$COMMIT' '$phase'" < "$script" \
+    ssh "${SSH_OPTS[@]}" "$TARGET" "HG_ACCEPT_CONTENDED=${HG_ACCEPT_CONTENDED:-0} bash -s -- '$COMMIT' '$phase'" < "$script" \
       2>&1 | tee -a "$RUN/driver.log"
   fi
   rc=${PIPESTATUS[0]}
