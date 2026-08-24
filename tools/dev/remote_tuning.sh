@@ -37,6 +37,11 @@ if [ "$(id -u)" = 0 ]; then SUDO=""; else SUDO="sudo"; fi
 mapfile -t FIRST_THREADS < <(lscpu -p=CPU,CORE | grep -v '^#' | awk -F, '!seen[$2]++ {print $1}')
 NPHYS=${#FIRST_THREADS[@]}
 NNODES=$(lscpu | awk '/^NUMA node\(s\)/ {print $3}')
+BOX_HOLDER=/tmp/hgbox.holder
+printf 'hypergraph-engine | phase=tuning | pid=%s | since=%s\n' "$$" "$(date -u +%FT%TZ)" \
+  > "$BOX_HOLDER" 2>/dev/null || true
+trap 'rm -f "$BOX_HOLDER" 2>/dev/null' EXIT
+
 say() { echo "==> $*"; }
 say "$NPHYS physical cores, $NNODES NUMA node(s), workload=$WORKLOAD depth=$DEPTH"
 

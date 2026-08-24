@@ -34,6 +34,16 @@ SRC="$ROOT/src"
 LOG="$ROOT/session.log"
 mkdir -p "$ROOT"
 
+# WHO HOLDS THE BOX. This process already runs under the shared flock (the driver wraps it),
+# so writing the holder here is what lets the other tenant -- the plr project shares this
+# machine -- see who is measuring and since when, rather than only that something is. Removed
+# on exit, including on a crash or a dropped connection, because the trap fires either way and
+# the lock itself is released by the kernel when the file descriptor closes.
+BOX_HOLDER=/tmp/hgbox.holder
+printf 'hypergraph-engine | phase=%s | commit=%s | pid=%s | since=%s\n' \
+  "${2:-all}" "${1:-master}" "$$" "$(date -u +%FT%TZ)" > "$BOX_HOLDER" 2>/dev/null || true
+trap 'rm -f "$BOX_HOLDER" 2>/dev/null' EXIT
+
 say()  { echo "==> $*" | tee -a "$LOG"; }
 fail() { echo "XX  $*" | tee -a "$LOG"; echo "PHASE FAILED — artifacts so far are already local; see the log"; exit 1; }
 # `all` is the measurement pass: prep, then the three measuring phases. `sync` and `attrib`

@@ -24,6 +24,23 @@ set -uo pipefail
 # CHANGED one. The keepalives matter because a measuring phase can be silent for many minutes
 # -- paper_tables between tables, a CUDA build between targets -- and a NAT or firewall that
 # times an idle connection out would kill the phase in flight.
+# SHARING THE BOX WITH THE OTHER PROJECT (../plr). Both sides do timing-sensitive work, so a
+# build or a benchmark from one destroys the other's numbers. Every remote invocation here is
+# wrapped in flock on a well-known path, which gives mutual exclusion AND a queue: a waiting
+# side blocks until the holder finishes rather than racing it.
+#
+# flock was chosen over a hand-rolled lock because the kernel releases it when the holding
+# process dies -- a dropped ssh, a killed phase, a rebooted box leave NO stale lock, which on
+# an ephemeral machine is the failure that would otherwise need manual clearing.
+#
+# THE CONTRACT, for the other project to honour verbatim:
+#   ssh <box> "flock -w 7200 /tmp/hgbox.lock <your command>"
+#   ... and write one line naming yourself to /tmp/hgbox.holder while you hold it.
+# Whoever waits can then read that file to see who has the box and since when.
+BOX_LOCK=/tmp/hgbox.lock
+BOX_HOLDER_PATH=/tmp/hgbox.holder
+LOCK_WAIT="${LOCK_WAIT:-7200}"          # 2h: longer than any single phase, shorter than a day
+
 SSH_OPTS=(-o StrictHostKeyChecking=accept-new
           -o ConnectTimeout=15
           -o ServerAliveInterval=30
@@ -84,16 +101,19 @@ for phase in "${PHASES[@]}"; do
   # The script is piped in rather than copied, so the box never holds a stale version of it,
   # and HG_ACCEPT_CONTENDED is forwarded if the caller set it.
   if [ "$phase" = tuning ]; then
-    ssh "${SSH_OPTS[@]}" "$TARGET" "HG_ACCEPT_CONTENDED=${HG_ACCEPT_CONTENDED:-0} bash -s" < "$script" \
+    ssh "${SSH_OPTS[@]}" "$TARGET" "HG_ACCEPT_CONTENDED=${HG_ACCEPT_CONTENDED:-0} flock -w $LOCK_WAIT $BOX_LOCK bash -s" < "$script" \
       2>&1 | tee -a "$RUN/driver.log"
   else
-    ssh "${SSH_OPTS[@]}" "$TARGET" "HG_ACCEPT_CONTENDED=${HG_ACCEPT_CONTENDED:-0} bash -s -- '$COMMIT' '$phase'" < "$script" \
+    ssh "${SSH_OPTS[@]}" "$TARGET" "HG_ACCEPT_CONTENDED=${HG_ACCEPT_CONTENDED:-0} flock -w $LOCK_WAIT $BOX_LOCK bash -s -- '$COMMIT' '$phase'" < "$script" \
       2>&1 | tee -a "$RUN/driver.log"
   fi
   rc=${PIPESTATUS[0]}
 
   pull "$phase"                       # ALWAYS, including after a failure
   if [ "$rc" != 0 ]; then
+    # A flock timeout is indistinguishable from any other non-zero exit unless we say so.
+    holder=$(ssh "${SSH_OPTS[@]}" "$TARGET" "cat $BOX_HOLDER_PATH 2>/dev/null" 2>/dev/null)
+    [ -n "$holder" ] && echo "    the box is held by: $holder" | tee -a "$RUN/driver.log"
     echo "phase '$phase' exited $rc — stopping; what it produced is in $RUN/$phase" | tee -a "$RUN/driver.log"
     status=$rc
     break
