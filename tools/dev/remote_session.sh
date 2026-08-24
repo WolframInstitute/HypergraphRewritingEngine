@@ -35,6 +35,13 @@ elif command -v sudo >/dev/null; then SUDO="sudo"
 else                                 SUDO="";  say "no root and no sudo: skipping governor/clock/counter setup"
 fi
 
+# nvidia-smi is on PATH on a rented box and is NOT under WSL (/usr/lib/wsl/lib), and nvcc
+# is at /usr/local/cuda/bin, which no distro puts on PATH. CMake's CUDA probe reads PATH and
+# DISABLES GPU SUPPORT WITH EXIT 0 when it finds nothing, so both are resolved before any
+# configure runs -- see the assertion after the GPU configure for why exit 0 is not enough.
+export PATH="/usr/local/cuda/bin:$PATH"
+NVSMI="$(command -v nvidia-smi || echo /usr/lib/wsl/lib/nvidia-smi)"
+
 # --------------------------------------------------------------------------- 0 preflight
 say "preflight: $(date -u +%FT%TZ)"
 {
@@ -42,10 +49,15 @@ say "preflight: $(date -u +%FT%TZ)"
   echo "--- cpu";     lscpu | grep -E "Model name|Socket|Core|Thread|NUMA node\(s\)|MHz"
   echo "--- mem";     free -g
   echo "--- load";    uptime
-  echo "--- gpu";     nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv || true
+  echo "--- gpu";     "$NVSMI" --query-gpu=name,driver_version,memory.total,compute_cap --format=csv || true
   echo "--- tenants"; ps -eo comm,pcpu --sort=-pcpu --no-headers | head -5
 } > "$ROOT/preflight.txt" 2>&1
 cat "$ROOT/preflight.txt" | tee -a "$LOG"
+# Disk: the clone plus a host build plus a CUDA build with its object files. A box that
+# cannot hold them fails at link time, an hour in.
+FREE_GB=$(df -BG --output=avail "$HOME" | tail -1 | tr -dc '0-9')
+[ "${FREE_GB:-0}" -ge 25 ] || fail "only ${FREE_GB}G free under $HOME; the two builds need ~25G"
+
 LOAD1=$(awk '{print $1}' /proc/loadavg)
 # A rented container reports the HOST's load average, so this also catches a rental that is
 # not the whole machine. HG_ACCEPT_CONTENDED=1 proceeds anyway -- the generator stamps every
@@ -77,7 +89,7 @@ command -v nvcc >/dev/null || fail "no nvcc — install a CUDA toolkit matching 
 
 say "governor + clocks"
 echo performance | $SUDO tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor > /dev/null 2>&1 || true
-$SUDO nvidia-smi -pm 1 >> "$LOG" 2>&1 || true
+$SUDO "$NVSMI" -pm 1 >> "$LOG" 2>&1 || true
 
 # GPU counter permission: ncu needs it for the P7.5 device captures. Recorded, not fatal —
 # the wall-clock tables do not depend on it.
@@ -90,18 +102,45 @@ say "ncu counters: $NCU_OK"
 
 # --------------------------------------------------------------------------- 1 source
 say "clone @ $COMMIT"
-git clone --recurse-submodules "$REPO" src >> "$LOG" 2>&1 || fail "clone failed"
+# No --recurse-submodules: the only submodule is the markdown-to-notebook converter,
+# which nothing in this session builds, and it drags several nested repositories.
+git clone "$REPO" src >> "$LOG" 2>&1 || fail "clone failed"
 cd src && git checkout "$COMMIT" >> "$LOG" 2>&1 || fail "checkout $COMMIT failed"
 say "HEAD: $(git rev-parse --short HEAD)  $(git log -1 --format=%s | head -c 60)"
 
 # --------------------------------------------------------------------------- 2 build
-say "build host (build_linux, -j$(nproc))"
-cmake -S . -B build_linux -DCMAKE_BUILD_TYPE=Release >> "$LOG" 2>&1 || fail "host configure"
-cmake --build build_linux --target all_tests bench_cpu_evolve cost_matrix -j"$(nproc)" >> "$LOG" 2>&1 || fail "host build"
+# BUILD_WOLFRAM_LANGUAGE_PACLET DEFAULTS ON AND IS FATAL WITHOUT A WOLFRAM INSTALL:
+# paclet_source does find_package(WolframLanguage REQUIRED), so on a box with no Wolfram the
+# configure aborts before a single file compiles. Off here, as CI has it. The paclet targets
+# are the serialization tests, which this session does not measure.
+COMMON_FLAGS=(-DCMAKE_BUILD_TYPE=Release -DBUILD_WOLFRAM_LANGUAGE_PACLET=OFF -DBUILD_VISUALIZATION=OFF)
 
-say "build gpu (build_gpu, -j8 — dedicated box, RAM permitting)"
-cmake -S . -B build_gpu -DCMAKE_BUILD_TYPE=Release -DBUILD_GPU=ON >> "$LOG" 2>&1 || fail "gpu configure"
-cmake --build build_gpu --target hg_gpu_tests gpu_differential_tests bench_gpu_evolve -j8 >> "$LOG" 2>&1 || fail "gpu build"
+# The two probes are EXCLUDE_FROM_ALL (every tools/*.cpp is), and paper_tables.py runs BOTH:
+# quotient_reconstruction_cost_probe for the C/R ratio table and mode_matrix_probe for the
+# identity-mode matrix. Named here because a default build does not produce them and the
+# generator would exit an hour into the session saying so.
+say "build host (build_linux, -j$(nproc))"
+cmake -S . -B build_linux "${COMMON_FLAGS[@]}" -DBUILD_GPU=OFF >> "$LOG" 2>&1 || fail "host configure"
+cmake --build build_linux -j"$(nproc)" --target all_tests bench_cpu_evolve cost_matrix \
+  mode_matrix_probe quotient_reconstruction_cost_probe >> "$LOG" 2>&1 || fail "host build"
+
+# nvcc forks a multi-GB cicc per translation unit, so the CUDA build's width is bounded by
+# MEMORY, not by cores: a 64-core box with modest RAM would swap and take longer than -j1.
+MEM_GB=$(free -g | awk '/^Mem:/ {print $2}')
+GPU_J=$(( MEM_GB / 6 )); [ "$GPU_J" -lt 1 ] && GPU_J=1; [ "$GPU_J" -gt 8 ] && GPU_J=8
+
+ARCH="$("$NVSMI" --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')"
+[ -n "$ARCH" ] || ARCH=89          # 4090 = sm_89; the query is the authority when it answers
+say "build gpu (build_gpu, sm_$ARCH, -j$GPU_J from ${MEM_GB}G RAM)"
+cmake -S . -B build_gpu "${COMMON_FLAGS[@]}" -DBUILD_GPU=ON \
+  -DCMAKE_CUDA_ARCHITECTURES="$ARCH" >> "$LOG" 2>&1 || fail "gpu configure"
+# CMake DISABLES GPU SUPPORT AND EXITS 0 when it cannot find a CUDA compiler, so a successful
+# configure proves nothing. Reproduced deliberately: without /usr/local/cuda/bin on PATH the
+# configure above returns 0, logs "CUDA not found - GPU support disabled", and emits none of
+# these targets -- which would surface an hour later as a missing binary.
+(cd build_gpu && make help 2>/dev/null | grep -qx "... bench_gpu_evolve") \
+  || fail "the GPU configure produced no GPU targets: CUDA was not found. Install a toolkit and ensure nvcc is on PATH."
+cmake --build build_gpu -j"$GPU_J" --target hg_gpu_tests gpu_differential_tests bench_gpu_evolve >> "$LOG" 2>&1 || fail "gpu build"
 
 # --------------------------------------------------------------------------- 3 gates
 # A number from an unverified box is not a measurement. Full suites, once, before anything
