@@ -1,5 +1,6 @@
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/device_arena.hpp"
+#include "hg_gpu/match.hpp"
 #include "hg_gpu/signature_index.hpp"
 #include "hg_gpu/vertex_inverted_index.hpp"
 
@@ -214,6 +215,12 @@ EngineState::~EngineState() {
         if (successors_per_parent_)  cudaFree(successors_per_parent_);
         // The scalar counters and the pool counters are slices of block_, which frees itself;
         // nothing here is freed individually.
+        if (launch_scratch_.rules)        cudaFree(launch_scratch_.rules);
+        if (launch_scratch_.states)       cudaFree(launch_scratch_.states);
+        if (launch_scratch_.kept)         cudaFree(launch_scratch_.kept);
+        if (launch_scratch_.kept_count)   cudaFree(launch_scratch_.kept_count);
+        if (launch_scratch_.cursor)       cudaFree(launch_scratch_.cursor);
+        if (launch_scratch_.phase_cycles) cudaFree(launch_scratch_.phase_cycles);
         if (state_canonical_hash_)   cudaFree(state_canonical_hash_);
         if (state_exact_hash_)       cudaFree(state_exact_hash_);
         if (state_edge_rank_)        cudaFree(state_edge_rank_);
@@ -616,6 +623,37 @@ std::vector<EdgeId> EngineState::state_edges_host(StateId sid) const {
 Edge*     EngineState::edge_pool_view_data()    const { return edge_pool_.view().data; }
 
 VertexId* EngineState::vertex_pool_view_data()  const { return vertex_pool_.view().data; }
+
+// Grow-only: an array whose capacity fits is reused as-is, one that does not is freed and
+// reallocated to the request. The fixed buffers are allocated on first use and live with the
+// engine. Callers run serially against one engine, so there is no aliasing to guard.
+EngineState::LaunchScratch& EngineState::launch_scratch(uint32_t num_rules,
+                                                        uint32_t num_states) const {
+        LaunchScratch& s = launch_scratch_;
+        if (s.rules_cap < num_rules) {
+            if (s.rules) cudaFree(s.rules);
+            HG_CUDA_CHECK(cudaMalloc(&s.rules, sizeof(DeviceRule) * num_rules),
+                  "launch scratch rules");
+            s.rules_cap = num_rules;
+        }
+        if (s.states_cap < num_states) {
+            if (s.states) cudaFree(s.states);
+            if (s.kept)   cudaFree(s.kept);
+            HG_CUDA_CHECK(cudaMalloc(&s.states, sizeof(StateId) * num_states),
+                  "launch scratch states");
+            HG_CUDA_CHECK(cudaMalloc(&s.kept, sizeof(StateId) * num_states),
+                  "launch scratch kept");
+            s.states_cap = num_states;
+            s.kept_cap   = num_states;
+        }
+        if (!s.kept_count) {
+            HG_CUDA_CHECK(cudaMalloc(&s.kept_count, sizeof(uint32_t)), "launch scratch kc");
+            HG_CUDA_CHECK(cudaMalloc(&s.cursor, sizeof(uint32_t) * 2), "launch scratch cursor");
+            HG_CUDA_CHECK(cudaMalloc(&s.phase_cycles, sizeof(unsigned long long) * 16),
+                  "launch scratch phases");
+        }
+        return s;
+    }
 
 EngineState::CounterSnapshot EngineState::counters_snapshot_host() const {
         // The pools' counters LIVE in slots 6..10 -- the pools were constructed onto the

@@ -23,6 +23,9 @@
 namespace HG_NAMESPACE {
 namespace gpu {
 
+// Defined in match.hpp, which includes this header; the launch scratch holds only a pointer.
+struct DeviceRule;
+
 // EngineConfig is declared in evolve.hpp so host-only translation units
 // (the bench harness, the differential test driver) can include it without
 // pulling in cuda_runtime.h. The full definition lives there; this header
@@ -412,6 +415,22 @@ private:
     // Alias of block_.p, kept because the slot pointers below are offsets into it.
     uint32_t*                          counter_block_          = nullptr;
 public:
+    // GROW-ONLY DEVICE SCRATCH for the launch chain's per-run buffers (rules, seed states,
+    // kept-roots compaction, counters, phase cycles). Allocating these per run cost ~34
+    // cudaMalloc + 34 cudaFree API calls per call on the per-call floor; sized to the largest
+    // run seen, they cost the first run what they always cost and later runs nothing. Mutable
+    // through a const accessor because a scratch buffer is not logical engine state.
+    struct LaunchScratch {
+        DeviceRule*         rules        = nullptr;  uint32_t rules_cap  = 0;
+        StateId*            states       = nullptr;  uint32_t states_cap = 0;
+        StateId*            kept         = nullptr;  uint32_t kept_cap   = 0;
+        uint32_t*           kept_count   = nullptr;  // 1 slot
+        uint32_t*           cursor       = nullptr;  // 2 slots
+        unsigned long long* phase_cycles = nullptr;  // 16 slots
+    };
+private:
+    mutable LaunchScratch              launch_scratch_;
+public:
     // Every host-read scalar counter, in ONE transfer.
     //
     // Read individually these cost one cudaMemcpy API call each, and the call dominates: a
@@ -433,6 +452,7 @@ public:
         uint32_t branchial      = 0;   // slot 10, staged from branchial_edge_pool_
     };
     CounterSnapshot counters_snapshot_host() const;
+    LaunchScratch& launch_scratch(uint32_t num_rules, uint32_t num_states) const;
     // all_state_edges_host with the four sizing counts taken from a snapshot instead of four
     // cudaMemcpy calls. Declared here because the snapshot type is.
     std::vector<std::vector<std::vector<VertexId>>> all_state_edges_host(
