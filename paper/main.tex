@@ -1628,6 +1628,71 @@ by contention. Data as in Tables~\ref{tab:t12-shapes} and~\ref{tab:t13-memory}.}
 \input{tables/t12_rule_shapes}
 \end{table}
 
+\subsection{How Far Each Shape Evolves, and How Large Its Relations Become}
+\label{sec:shape-space}
+
+Wall time is one property of a workload and the sizes of the objects it constructs are another.
+Two runs can agree on state count and differ by three orders of magnitude in the number of
+branchial edges they build---the relation is over \emph{pairs} of events sharing a parent, so its
+size is governed by how many matches overlap rather than by how many states exist.
+Figure~\ref{fig:shape-space} plots both, and Table~\ref{tab:t14-shape-space} gives the deepest
+point reached by each shape.
+
+The one-edge left-hand side is the boundary case: it produces \emph{no} branchial edges at any
+depth, because a single-edge pattern cannot have two overlapping matches at one state to be
+branchially related. Every shape with two or more edges does.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    width=0.46\textwidth, height=4.7cm,
+    xlabel={Evolution depth}, ylabel={States},
+    ymode=log, log basis y=10, grid=major, grid style={gray!25},
+    legend style={font=\tiny, at={(0.5,-0.32)}, anchor=north, legend columns=2,
+                  draw=none, fill=none, column sep=6pt},
+    label style={font=\small}, tick label style={font=\scriptsize},
+]
+\input{tables/f_states_depth}
+\end{axis}
+\end{tikzpicture}
+\hfill
+\begin{tikzpicture}
+\begin{axis}[
+    width=0.46\textwidth, height=4.7cm,
+    xlabel={Causal edges}, ylabel={Branchial edges},
+    xmode=log, log basis x=10, ymode=log, log basis y=10,
+    grid=major, grid style={gray!25},
+    legend style={font=\tiny, at={(0.5,-0.32)}, anchor=north, legend columns=2,
+                  draw=none, fill=none, column sep=6pt},
+    label style={font=\small}, tick label style={font=\scriptsize},
+]
+\input{tables/f_relations}
+\end{axis}
+\end{tikzpicture}
+\caption{\textbf{The state space and the relations over it, by left-hand side shape.} Left: states
+against evolution depth, logarithmic in states. Each shape is evolved one depth at a time until a
+single run exceeds the collection budget, so the right-hand end of each curve is a measured
+boundary for that shape rather than a depth chosen in advance for all of them. Right: branchial
+edges against causal edges, both logarithmic, every point one $(\text{shape}, \text{depth})$ run.
+A shape's position on this plot is a property of its rule rather than of how long it was run: the
+shapes that generate many overlapping sibling matches sit high whatever depth they reached.
+Source: \texttt{tools/dev/rich\_sweep.sh} over \texttt{tools/sampling\_cost\_smoke}.}
+\label{fig:shape-space}
+\end{figure}
+
+\begin{table}[htbp]
+\centering
+\caption{\textbf{T14 --- The deepest point reached by each left-hand side shape.} One row per
+shape, at the greatest depth whose single run fitted the collection budget, so the depths differ
+between rows by construction and are reported rather than held equal. \texttt{Shape} is the
+connectivity, \texttt{Arity} the vertices per edge, \texttt{LHS} the number of edges in the
+pattern. The state, causal and branchial columns are the sizes of the three objects the run
+built. Source: \texttt{tools/dev/rich\_sweep.sh} over \texttt{tools/sampling\_cost\_smoke}.}
+\label{tab:t14-shape-space}
+\input{tables/t14_shape_space}
+\end{table}
+
 \subsection{What the Lost Efficiency Is Spent On (Table T13)}
 
 \begin{table}[htbp]
