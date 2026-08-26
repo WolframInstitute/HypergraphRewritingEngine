@@ -148,12 +148,20 @@ build_host() {
 build_gpu_targets() {
   # nvcc forks a multi-GB cicc per translation unit, so the CUDA build's width is bounded by
   # MEMORY, not by cores.
-  local MEM_GB GPU_J ARCH
+  # BOUNDED BY MEMORY AND BY CORES, AND BY NOTHING ELSE. nvcc forks a multi-GB cicc per
+  # translation unit, so RAM is the real ceiling -- but the ceiling is not a constant. An
+  # earlier fixed cap of 8 was this developer's 19 GB shared laptop leaking into a script that
+  # runs on rented hardware: on a 503 GB, 32-thread box it left three quarters of the machine
+  # idle through every CUDA build. The bound is now whichever of the two is smaller.
+  local MEM_GB GPU_J ARCH NPROC
   MEM_GB=$(free -g | awk '/^Mem:/ {print $2}')
-  GPU_J=$(( MEM_GB / 6 )); [ "$GPU_J" -lt 1 ] && GPU_J=1; [ "$GPU_J" -gt 8 ] && GPU_J=8
+  NPROC=$(nproc)
+  GPU_J=$(( MEM_GB / 6 ))
+  [ "$GPU_J" -gt "$NPROC" ] && GPU_J="$NPROC"
+  [ "$GPU_J" -lt 1 ] && GPU_J=1
   ARCH="$("$NVSMI" --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')"
   [ -n "$ARCH" ] || ARCH=89          # 4090 = sm_89; the query is the authority when it answers
-  say "build gpu (sm_$ARCH, -j$GPU_J from ${MEM_GB}G RAM)"
+  say "build gpu (sm_$ARCH, -j$GPU_J from ${MEM_GB}G RAM and ${NPROC} threads)"
   cmake -S . -B build_gpu "${COMMON_FLAGS[@]}" -DBUILD_GPU=ON \
     -DCMAKE_CUDA_ARCHITECTURES="$ARCH" >> "$LOG" 2>&1 || fail "gpu configure"
   # CMake DISABLES GPU SUPPORT AND EXITS 0 when it cannot find a CUDA compiler, so a successful
