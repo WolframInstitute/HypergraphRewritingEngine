@@ -68,16 +68,22 @@ say() { printf '[%s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
 # ever. QUIET_LOAD is compared against the 1-minute average, which decays, so a machine that was
 # busy a moment ago waits rather than reporting a contended number as a quiet one.
 QUIET_LOAD=${QUIET_LOAD:-1.5}
-QUIET_NAMES=${QUIET_NAMES:-"genmc cc1plus cicc nvcc java valgrind bench_cpu_evolve all_tests"}
+QUIET_NAMES=${QUIET_NAMES:-"genmc cc1plus cicc nvcc java valgrind bench_cpu_evolve all_tests gpu_differential_tests hg_gpu_tests"}
 wait_quiet() {                 # wait_quiet <what-for>
     local what="$1" waited=0 busy l1 mine
     while :; do
         busy=""
         for n in $QUIET_NAMES; do
-            [ "$(pgrep -c -x "$n" 2>/dev/null || echo 0)" -gt 0 ] && busy="$busy $n"
+            # THE KERNEL TRUNCATES A PROCESS NAME TO 15 CHARACTERS, so a -x pattern longer than
+            # that matches NOTHING and pgrep says so on stderr while exiting non-zero. Both
+            # sampling_cost_smoke (20) and bench_cpu_evolve (16) are over the limit: unfixed,
+            # this gate reported a quiet machine while its own binary was running. Compare
+            # against the truncated name, which is what ps and pgrep actually see.
+            [ "$(pgrep -c -x "$(printf '%.15s' "$n")" 2>/dev/null || echo 0)" -gt 0 ] \
+                && busy="$busy $n"
         done
-        # This sweep's own binary: one is this run's predecessor finishing, more is contention.
-        mine=$(pgrep -c -x sampling_cost_smoke 2>/dev/null || echo 0)
+        # This sweep's own binary, by its truncated name for the same reason.
+        mine=$(pgrep -c -x sampling_cost_s 2>/dev/null || echo 0)
         [ "$mine" -gt 0 ] && busy="$busy sampling_cost_smoke($mine)"
         l1=$(awk '{print $1}' /proc/loadavg)
         if [ -z "$busy" ] && awk "BEGIN{exit !($l1 < $QUIET_LOAD)}"; then
