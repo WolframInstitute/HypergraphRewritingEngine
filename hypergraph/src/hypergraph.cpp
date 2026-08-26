@@ -1464,7 +1464,10 @@ std::vector<uint32_t> Hypergraph::applied_shape() const {
 }
 
 uint64_t Hypergraph::applied_shape_fingerprint() const {
-    uint64_t h = 1469598103934665603ULL;
+    // hgcommon::FNV_OFFSET, not a retyped literal: the digit-dropped 1469598103934665603 sat
+    // here (17 digits against the basis's 20), so this fold started from a value that is not
+    // the FNV-1a basis while two other folds in this file used the real one.
+    uint64_t h = hgcommon::FNV_OFFSET;
     for (uint32_t v : applied_shape()) { h ^= v; h *= 1099511628211ULL; }
     return h;
 }

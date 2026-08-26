@@ -89,3 +89,11 @@ Print[If[tdCPU === tdGPU === {5, 33, 32, 43}, "PASS", "FAIL"],
 If[useArchive,
   PacletUninstall["WolframInstitute/HypergraphRewriteEngine"];
   Print["\nuninstalled: the user's paclet directory is as it was found"]];
+
+(* THE GATE MUST BE ABLE TO FAIL. Every case printed PASS or FAIL and appended to
+   `failed`, and the script then exited 0 regardless -- its only Exit[1]s are for a
+   missing archive and a failed PacletInstall. The CI step runs this file and reads
+   its status, so a golden corpus disagreeing on every case was a green run, and
+   "verify_paclet 12/12" was recorded as closure evidence from a script that could
+   not report otherwise. *)
+Exit[If[Length[failed] == 0, 0, 1]]

@@ -140,8 +140,16 @@ build_host() {
   # identity-mode matrix. A default build does not produce them.
   say "build host (-j$(nproc))"
   cmake -S . -B build_linux "${COMMON_FLAGS[@]}" -DBUILD_GPU=OFF >> "$LOG" 2>&1 || fail "host configure"
+  # THE COMPLETE SET THE GENERATORS INVOKE, derived from them rather than remembered:
+  #   grep -ohE 'binary\((build|a\.build_dir)[^)]*"[a-z_0-9]+"' tools/dev/paper_tables.py \
+  #     tools/dev/scaling_sweep.py | grep -oE '"[a-z_0-9]+"'
+  # Every tools/*.cpp is EXCLUDE_FROM_ALL, so a default build produces none of them. An earlier
+  # list here was assembled by a pattern matching bench|probe|matrix|tests|suite, which cannot
+  # match sampling_cost_smoke -- so the tables phase ran five tables and died on the sixth,
+  # after the measurement time for those five had already been spent on a rented box.
   cmake --build build_linux -j"$(nproc)" --target all_tests bench_cpu_evolve cost_matrix \
-    mode_matrix_probe quotient_reconstruction_cost_probe >> "$LOG" 2>&1 || fail "host build"
+    mode_matrix_probe quotient_reconstruction_cost_probe sampling_cost_smoke \
+    >> "$LOG" 2>&1 || fail "host build"
 
 }
 

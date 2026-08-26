@@ -79,7 +79,7 @@ enum class ErrorKind : uint32_t {
     // (hgcommon::EMPTY_STATE_CANONICAL_HASH). Such a state is NOT merged, because merging is
     // the destructive choice: a state deduped away is a subtree never explored. It is kept and
     // reported, so the answer is over-complete with a warning rather than short without one.
-    kUncomputedStateHash = 28,
+    kUncomputedStateHash = 27,
     // The canonical dedup map exhausted its probe run. Recorded rather than inferred: exhaustion
     // is indistinguishable from a hit at the map's interface, so before this existed an overfull
     // map silently reported new states as already-seen and dropped them from the answer. Same
@@ -104,6 +104,16 @@ enum class ErrorKind : uint32_t {
     // never be reported at all. Stated explicitly, with the static_assert below as the guard.
     kCount               = 32
 };
+
+// DISTINCT VALUES, NOT MERELY IN-RANGE ONES. record() indexes the counter array by the enum
+// value, so two kinds sharing a value share a counter: they become one condition that reports
+// under whichever name a switch happens to list first. kIRGeneratorsExceeded and
+// kUncomputedStateHash were both 28, which made evolve.cu's retry answer an uncomputed state
+// hash by doubling the IR generator budget -- the remedy for the OTHER condition -- up to
+// eight times. The in-range assertions below cannot see that; this can.
+static_assert(static_cast<uint32_t>(ErrorKind::kIRGeneratorsExceeded) !=
+              static_cast<uint32_t>(ErrorKind::kUncomputedStateHash),
+              "two ErrorKinds share a counter, so one condition reports as the other");
 
 // Every kind must be recordable. A kind at or above kCount is silently dropped by record(),
 // which turns a capacity failure into no signal at all.

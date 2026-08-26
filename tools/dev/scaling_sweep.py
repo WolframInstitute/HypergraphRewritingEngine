@@ -120,11 +120,23 @@ ROW_RE = re.compile(r"threads=(\d+)\s+steps=(\d+)\s+canonical=(\d+)\s+raw=(\d+)\
                     r"efficiency=([\d.]+)")
 
 
-def cpu_scaling(build, steps_list, iters):
-    """One strong-scaling curve per depth, so the input axis is visible next to the thread axis."""
+def cpu_scaling(build, steps_list, iters, cpus="", sweep=""):
+    """One strong-scaling curve per depth, so the input axis is visible next to the thread axis.
+
+    PINNED WHEN A CPU SET IS GIVEN, because this is the table the paper renders. It writes
+    t8_scaling.tex, the same name paper_tables.py's own scaling() writes, and it runs second --
+    so the pinned six-column table that generator produced was being replaced by this one, and
+    the paper's strong-scaling figure was the UNPINNED measurement. A speedup column taken
+    across cores of different speeds divides by a quantity that is not compute, which is the
+    whole reason the pin set exists.
+    """
     per_depth = {}
     for steps in steps_list:
-        out = run([os.path.join(build, "bench_cpu_evolve"), str(steps), str(iters)], timeout=7200)
+        argv = [os.path.join(build, "bench_cpu_evolve"), str(steps), str(iters)]
+        if cpus:
+            # bench_cpu_evolve is positional: steps iters sweep workload cpus.
+            argv += [sweep or "", "wpp", cpus]
+        out = run(argv, timeout=7200)
         rows = [m.groups() for m in (ROW_RE.search(l) for l in out.splitlines()) if m]
         if not rows:
             raise SystemExit("bench_cpu_evolve produced no rows:\n%s" % out[-2000:])
@@ -132,7 +144,7 @@ def cpu_scaling(build, steps_list, iters):
         print("  depth %d: %s" % (steps, " ".join("%st=%.2fx" % (r[0], float(r[6])) for r in rows)))
 
     threads = [r[0] for r in per_depth[steps_list[0]]]
-    b = [pt.provenance("tools/bench_cpu_evolve.cpp"),
+    b = [pt.provenance("tools/bench_cpu_evolve.cpp", pinned=bool(cpus)),
          r"\begin{tabular}{r" + "rr" * len(steps_list) + "}", r"\toprule",
          "Threads & " + " & ".join(r"\multicolumn{2}{c}{depth %d}" % s for s in steps_list) + r" \\",
          " & " + " & ".join("ms & eff." for _ in steps_list) + r" \\", r"\midrule"]
@@ -368,11 +380,26 @@ def main():
     ap.add_argument("--steps", default="5,6,7")
     ap.add_argument("--iters", type=int, default=9)
     ap.add_argument("--sm-count", type=int, default=128)   # RTX 4090
+    ap.add_argument("--cpus", default="",
+                    help="logical CPUs to pin workers to; the table says so in its stamp")
+    ap.add_argument("--thread-sweep", default="",
+                    help="thread counts; must not exceed --cpus")
     ap.add_argument("--shape-depths", default="growth:1:9,pair:4:7",
                     help="rule:edges:steps triples for the rule-shape sweep")
     ap.add_argument("--sections", default="cpu",
                     help="comma-separated subset of: cpu, shapes, memory, gpu")
     a = ap.parse_args()
+
+    # SEED THE STAMP THIS GENERATOR BORROWS. Its tables go through paper_tables.provenance(),
+    # whose CONTENDED marker reads paper_tables._BASELINE_LOAD -- a module global that only
+    # paper_tables' own main() was setting. Unset, _load_note() returns "" and every table
+    # scaling_sweep writes (t8, t11, t12, t13) claimed nothing about the load it was taken
+    # under, while remote_session.sh advertised that every table is stamped.
+    try:
+        pt._BASELINE_LOAD = os.getloadavg()
+    except (OSError, AttributeError):
+        pt._BASELINE_LOAD = None
+    pt._PINNED_CPUS = a.cpus
 
     sections = [x.strip() for x in a.sections.split(",") if x.strip()]
     unknown = [x for x in sections if x not in ("cpu", "shapes", "memory", "gpu")]
@@ -384,7 +411,7 @@ def main():
     steps_list = [int(s) for s in a.steps.split(",") if s.strip()]
     if "cpu" in sections:
         print("CPU strong scaling, depths %s" % steps_list)
-        cpu_scaling(a.build_dir, steps_list, a.iters)
+        cpu_scaling(a.build_dir, steps_list, a.iters, a.cpus, a.thread_sweep)
     if "shapes" in sections:
         print("Rule-shape scaling")
         rule_shape_scaling(a.build_dir, a.shape_depths, a.iters)
