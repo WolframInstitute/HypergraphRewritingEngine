@@ -1,6 +1,43 @@
 #include "hypergraph/arena.hpp"
 #include "hypergraph/scratch_alloc.hpp"
 
+// ASAN CONTAINER ANNOTATIONS.
+//
+// A bump allocator hands out slices of ONE large allocation, so a write past the end of an
+// object lands in the next object's bytes -- inside a region the sanitizer sees as a single
+// valid buffer, and therefore invisible to it. That is the shape of a defect this engine
+// currently carries: bench_cpu_evolve.exe at one worker exits STATUS_HEAP_CORRUPTION on
+// Windows, deterministically, while Linux under valgrind is clean at the same configuration.
+//
+// Poisoning a block when it is created and unpoisoning exactly the bytes each request returns
+// puts the object boundaries back where the sanitizer can see them, so an intra-block overrun
+// reports where it happens instead of corrupting whatever is next.
+//
+// The granularity is eight bytes, so two small allocations sharing a granule cannot be
+// separated; an overrun that stays inside one is still invisible. It is a partial instrument,
+// and the boundaries it does place are the ones a bump allocator erases.
+//
+// Present only under a sanitizer build. Both macros are empty otherwise, so nothing here
+// reaches the shipping allocator.
+#if defined(__has_feature)
+#  if __has_feature(address_sanitizer)
+#    define HG_ARENA_ASAN 1
+#  endif
+#elif defined(__SANITIZE_ADDRESS__)
+#  define HG_ARENA_ASAN 1
+#endif
+
+#ifdef HG_ARENA_ASAN
+extern "C" void __asan_poison_memory_region(void const volatile* addr, size_t size);
+extern "C" void __asan_unpoison_memory_region(void const volatile* addr, size_t size);
+#  define HG_ARENA_POISON(addr, size)   __asan_poison_memory_region((addr), (size))
+#  define HG_ARENA_UNPOISON(addr, size) __asan_unpoison_memory_region((addr), (size))
+#else
+#  define HG_ARENA_POISON(addr, size)   ((void)(addr), (void)(size))
+#  define HG_ARENA_UNPOISON(addr, size) ((void)(addr), (void)(size))
+#endif
+
+
 namespace HG_NAMESPACE {
 namespace engine {
 
@@ -57,6 +94,8 @@ ConcurrentHeterogeneousArena::~ConcurrentHeterogeneousArena() {
     Block* block = head_.load(std::memory_order_acquire);
     while (block) {
         Block* prev = block->prev;
+        // operator delete must not be handed a region this file poisoned.
+        HG_ARENA_UNPOISON(block->data, block->capacity);
         ::operator delete(block);
         block = prev;
     }
@@ -65,10 +104,18 @@ ConcurrentHeterogeneousArena::~ConcurrentHeterogeneousArena() {
 }
 
 void* ConcurrentHeterogeneousArena::allocate_raw(size_t size, size_t alignment) {
-    if (recycle_) return allocate_single(size, alignment);
-    int wi = arena_worker_index();
-    if (wi >= 0) return allocate_local(cursors_[wi], size, alignment);
-    return allocate_shared(size, alignment);
+    // One choke point for every request, which is where the unpoison belongs: the three paths
+    // below differ in which block they take from, not in what they hand back.
+    void* p;
+    if (recycle_) {
+        p = allocate_single(size, alignment);
+    } else {
+        const int wi = arena_worker_index();
+        p = (wi >= 0) ? allocate_local(cursors_[wi], size, alignment)
+                      : allocate_shared(size, alignment);
+    }
+    HG_ARENA_UNPOISON(p, size);
+    return p;
 }
 
 size_t ConcurrentHeterogeneousArena::bytes_allocated() const {
@@ -98,7 +145,13 @@ void ConcurrentHeterogeneousArena::reset() {
     destructor_head_.store(nullptr, std::memory_order_relaxed);
     Block* b = head_.load(std::memory_order_relaxed);
     Block* first = b;
-    while (b) { b->offset.store(0, std::memory_order_relaxed); first = b; b = b->prev; }
+    while (b) {
+        b->offset.store(0, std::memory_order_relaxed);
+        // Its bytes are unallocated again, and the next request will unpoison what it takes.
+        HG_ARENA_POISON(b->data, b->capacity);
+        first = b;
+        b = b->prev;
+    }
     current_block_.store(first, std::memory_order_relaxed);
 }
 
@@ -110,6 +163,7 @@ ConcurrentHeterogeneousArena::Block::create(size_t data_capacity) {
     block->next = nullptr;
     block->capacity = data_capacity;
     block->offset.store(0, std::memory_order_relaxed);
+    HG_ARENA_POISON(block->data, data_capacity);
     return block;
 }
 
