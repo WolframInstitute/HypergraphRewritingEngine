@@ -1167,24 +1167,28 @@ eight, once the evolution itself dominates the constant being amortized.
     node distance=0pt,
     stage/.style={rectangle, draw, minimum width=2.4cm, minimum height=0.8cm,
                   align=center, font=\small},
-    shell/.style={rectangle, draw, thick, minimum width=10.2cm, minimum height=3.3cm},
+    % Tall enough that the feedback edge AND its label sit inside the frame. At 3.3cm the label
+    % baseline fell on the bottom rule and the rule struck the text out.
+    shell/.style={rectangle, draw, thick, minimum width=10.2cm, minimum height=4.0cm},
     flow/.style={->, >=latex}
 ]
 \node[shell] (mega) at (0,0) {};
 \node[font=\small\bfseries, anchor=north] at ([yshift=-0.18cm]mega.north) {Resident kernel};
 
-\node[stage] (match)   at (-3.4,-0.35) {Match\\queue};
-\node[stage] (rewrite) at ( 0.0,-0.35) {Rewrite\\queue};
-\node[stage] (state)   at ( 3.4,-0.35) {State\\queue};
+% Boxes narrower and further apart: at 2.4cm wide on a 3.4cm pitch the edge labels were wider
+% than the 1.0cm gap between them and ran into the boxes on either side.
+\node[stage, minimum width=2.1cm] (match)   at (-3.6,-0.10) {Match\\queue};
+\node[stage, minimum width=2.1cm] (rewrite) at ( 0.0,-0.10) {Rewrite\\queue};
+\node[stage, minimum width=2.1cm] (state)   at ( 3.6,-0.10) {State\\queue};
 
 \draw[flow] (match)   -- node[above, font=\scriptsize] {matches}  (rewrite);
 \draw[flow] (rewrite) -- node[above, font=\scriptsize] {children} (state);
 
-% Feedback edge routed below the row so it crosses no label.
-\draw[flow] (state.south) -- ++(0,-0.55) -- node[below, font=\scriptsize, pos=0.5]
-      {expanded states re-enter as match tasks} ++(-6.8,0) -- (match.south);
+% Feedback edge below the row, with its label inside the frame rather than on its bottom rule.
+\draw[flow] (state.south) -- ++(0,-0.75) -- node[below, font=\scriptsize, pos=0.5]
+      {expanded states re-enter as match tasks} ++(-7.2,0) -- (match.south);
 
-\node[font=\scriptsize, anchor=south] at ([yshift=0.12cm]mega.south) {epoch counter (no host round trip)};
+\node[font=\scriptsize, anchor=north] at ([yshift=-0.62cm]mega.north) {epoch counter (no host round trip)};
 \end{tikzpicture}
 \caption{Queue structure of the resident device kernel. Work circulates between the
 three queues without returning to the host; an epoch counter separates evolution steps.}
