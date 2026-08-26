@@ -2026,7 +2026,7 @@ We report these bounds rather than a closed gap. The decomposition that would ra
 \subsection{Ablation (Table T9)}
 Only two of the engine's contributions remain run-time switches; the rest were replaced outright
 and their predecessors deleted in the same commit, so no ``off'' arm exists to measure. Match
-forwarding is the interesting case: it is worth $1.46\times$ on a two-edge left-hand side and
+forwarding is the interesting case: it is worth $1.47\times$ on a two-edge left-hand side and
 \emph{costs} $1.26\times$ on a one-edge one, which is why it is decided per rule set by the
 static analysis of Section~\ref{sec:static-analysis} rather than being switched on globally. Both
 arms of every row compute the same state and event counts.
