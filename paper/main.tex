@@ -1146,7 +1146,17 @@ blocks, and how memory is managed when no allocator is available.
 
 \subsection{Megakernel Architecture}
 
-Traditional GPU algorithms launch separate kernels for each operation, incurring synchronization overhead. Our \emph{megakernel} approach runs a single persistent kernel throughout evolution:
+Traditional GPU algorithms launch separate kernels for each operation, incurring a host round
+trip between every stage. That cost is fixed per launch and does not shrink with the problem, so
+it dominates exactly where multiway evolution spends most of its steps: the early frontiers, which
+are small and numerous. Our \emph{megakernel} approach instead runs a single persistent kernel for
+the whole evolution, keeping the frontier, the match queues and the epoch counter resident on the
+device between steps, so a step costs a device-side barrier rather than a launch.
+Figure~\ref{fig:megakernel} shows the arrangement: the queues and the shell that services them,
+with expanded states re-entering as match tasks without returning to the host. What the design
+buys and where it stops paying are measured in Section~\ref{sec:benchmarks}---it is
+$16.5\times$ a per-step \texttt{evolve()} at depth four and indistinguishable from it by depth
+eight, once the evolution itself dominates the constant being amortised.
 
 \begin{figure}[htbp]
 \centering
@@ -1997,7 +2007,7 @@ arms of every row compute the same state and event counts.
 
 \begin{table}[htbp]
 \centering
-\caption{\textbf{T9 --- Per-contribution ablation over the run-time switches present in the shipped binary.} No compiled-out ablation builds exist: when a replacement lands in this engine the replaced path is deleted in the same commit, so an ``off'' arm exists only where the choice remains a run-time switch. Those are match forwarding, whose applicability depends on the rule set (Section~\ref{sec:pattern-matching}), and the state-canonicalization mode; quotient exploration is reported separately in Table~\ref{tab:t6-quotient}. Each arm is a best-of-$N$ wall time on the same workload. State and event counts are compared across arms, so a switch that alters the computed result is identified as such rather than reported as a change in speed. Source: \texttt{tools/sampling\_cost\_smoke}.}
+\caption{\textbf{T9 --- Per-contribution ablation over the run-time switches present in the shipped binary.} No compiled-out ablation builds exist: when a replacement lands in this engine the replaced path is deleted in the same commit, so an ``off'' arm exists only where the choice remains a run-time switch. Those are match forwarding, whose applicability depends on the rule set (Section~\ref{sec:pattern-matching}), and the state-canonicalization mode; quotient exploration is reported separately in Table~\ref{tab:t6-quotient}. Each arm is a best-of-$N$ wall time. The forwarding rows use a one-edge left-hand side at depth eight and a two-edge left-hand side at depth six; the canonicalization row uses the two-edge side at depth six. State and event counts are compared across arms, so a switch that alters the computed result is identified as such rather than reported as a change in speed---but that column is a statement about \emph{these} workloads. The state-canonicalization mode does change the computed answer on other inputs: Section~\ref{sec:event-canon} gives a corpus case where the exact and approximate modes report eight events and six. The row below reports agreement because the two-edge left-hand side at depth six is not such a case, which is exactly why the workload is named here rather than left implicit. Source: \texttt{tools/sampling\_cost\_smoke}.}
 \label{tab:t9-ablation}
 \input{tables/t9_ablation}
 \end{table}
