@@ -45,7 +45,10 @@ IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # Directories whose contents CODEMAP deliberately summarises rather than enumerates:
 # one line for a family of near-identical files is the useful description, and demanding
 # an entry per file would make the map longer and worse.
-SUMMARISED = ("tools/", "benchmarks/", "benchmarking/", "paclet/", "visualisation/")
+# `verification/` holds no sources directly -- its harnesses live in genmc/ and tla/ -- and the
+# map describes the two suites and the discipline they follow rather than listing 30 files.
+SUMMARISED = ("tools/", "benchmarks/", "benchmarking/", "paclet/", "visualisation/",
+              "verification/")
 
 # Words that are backticked in CODEMAP as prose or as non-C++ names. Each is spelled the
 # way an identifier is, so the pattern cannot tell them apart and the list is the only
@@ -57,6 +60,9 @@ NOT_IDENTIFIERS = {
     "std", "gtest", "cmake", "nvcc", "clang", "gcc", "msvc", "wasm", "emscripten",
     "python", "bash", "make", "git", "CMakeLists", "README", "LICENSE",
     "venv",
+    # Python functions in tools/dev, external tools, and a kernel field -- all spelled like C++
+    # identifiers, none of them in a tracked C++ source.
+    "_fit", "callgrind_annotate", "comm",
 }
 
 

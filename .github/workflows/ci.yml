@@ -309,8 +309,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The set the document actually names: pgfplots and tikz for the figures, algorithm and
-      # subcaption and multirow from latex-extra, natbib and booktabs from latex-recommended.
+      # The set the document actually names, checked against its preamble: pgfplots, tikz and
+      # placeins from latex-extra; algorithm/algpseudocode, microtype and listings from the same;
+      # natbib, booktabs, geometry and amsthm from latex-recommended; lmodern from fonts.
       - name: Install TeX
         run: |
           sudo apt-get update
