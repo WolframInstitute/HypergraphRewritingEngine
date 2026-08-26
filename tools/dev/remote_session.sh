@@ -359,8 +359,19 @@ fi
 # --------------------------------------------------------------------------- sweep
 if want sweep; then
   wait_quiet
-  say "scaling sweep"
+  say "scaling sweep (pinned to $CPUSET, sweep $SWEEP)"
+  # --cpus AND --thread-sweep, because without them cpu_scaling measures UNPINNED and this
+  # phase runs AFTER tables -- so its t8_scaling.tex replaces the pinned one that generator
+  # wrote, and the figure the paper renders is the unpinned measurement. That is the exact
+  # substitution cpu_scaling's docstring says was fixed: the fix added the parameters, and this
+  # caller never passed them, so the defect survived its own repair.
+  #
+  # Measured on this box, wpp depth 7, the two side by side: 2 threads is 2.09x pinned and
+  # 1.69x unpinned. All sixteen cores are the same speed here, so what the pin set buys is
+  # PLACEMENT -- an EPYC 9174F gives 16 cores eight L3 instances, and the same pair of threads
+  # differs by 21% depending on whether they share one.
   python3 -u tools/dev/scaling_sweep.py --sections cpu,shapes,memory,gpu \
+    --cpus "$CPUSET" --thread-sweep "$SWEEP" \
     --build-dir build_linux --gpu-build-dir build_gpu 2>&1 | tee "$ROOT/scaling_sweep.log"
   [ "${PIPESTATUS[0]}" = 0 ] || fail "scaling_sweep failed"
 fi
