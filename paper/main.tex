@@ -1692,8 +1692,8 @@ Source: \texttt{tools/dev/scaling\_sweep.py} over \texttt{tools/bench\_cpu\_evol
 \end{axis}
 \end{tikzpicture}
 \caption{User and system time against worker count, for the runs of
-Table~\ref{tab:t13-memory}. Across a $32\times$ increase in workers user time rises by $5.4\times$
-($2.70$\,s to $14.69$\,s) while system time rises by $32\times$ ($0.32$\,s to $10.29$\,s). System
+Table~\ref{tab:t13-memory}. Across a $\ThreadSweepFactor\times$ increase in workers user time rises
+by $\UserTimeGrowth\times$ while system time rises by $\SysTimeGrowth\times$. System
 time is the faster-growing term and it tracks the resident set, so what the efficiency decline of
 Figure~\ref{fig:lhs-scaling} is spent on is memory acquisition rather than lock contention.}
 \label{fig:scaling}
@@ -1714,10 +1714,11 @@ axis at four sizes and two further properties of the left-hand side.
 much parallel work exists, so a scaling curve measured on one rule characterizes that rule. Two
 shapes are measured at every thread count: a one-edge left-hand side, which re-matches by scanning
 an index and expands each state narrowly, and a two-edge left-hand side, which performs a join and
-produces a wider frontier. The two-edge rule holds efficiency at $0.80$ to eight threads and $0.65$
-at 32, while the one-edge rule falls to $0.35$ and $0.12$ over the same range---and its wall time
-stops improving after 24 threads, rising from $761.0$\,ms to $799.1$\,ms at 32. The decline is not
-thread setup: the serial points are $3.0$\,s and $34.1$\,s. This table gives the wall times behind
+produces a wider frontier. The one-edge rule reaches $\EffAtEight$ at eight threads and
+$\EffAtSixteen$ at sixteen, and its wall time stops improving before the sweep ends; the two-edge
+rule holds more than twice that efficiency at every thread count, as the table's second pair of
+columns shows. The decline is not thread setup---both serial points are seconds, not
+milliseconds. This table gives the wall times behind
 the size axis of Figure~\ref{fig:lhs-scaling}, which sweeps the same axis at four sizes.
 Source: \texttt{tools/dev/scaling\_sweep.py} over \texttt{tools/sampling\_cost\_smoke}.}
 \label{tab:t12-shapes}
@@ -1923,7 +1924,7 @@ resident set and the fault count, which identifies memory acquisition as the cos
 
 \begin{table}[htbp]
 \centering
-\caption{\textbf{T13 --- User and system time, resident set and page faults against thread count.} A declining efficiency curve does not by itself identify the resource being consumed, and the two candidate explanations---contention on shared structures, and the cost of memory the run acquires---imply different remedies. Both are read from \texttt{getrusage} on the same runs. Across a $32\times$ increase in worker count, user time increases by a factor of $5.4$ ($2.70$\,s to $14.69$\,s)---far less than the thread count, so the added workers are not simply spinning against each other. System time increases by a factor of $32$ ($0.32$\,s to $10.29$\,s), tracking peak resident set ($624$\,MB to $8.0$\,GB, $12.9\times$) and minor page faults ($160{,}034$ to $2{,}298{,}943$, $14.4\times$): each worker draws its own arena blocks, so the run acquires memory in proportion to its width and faults each page in. System time is the faster-growing of the two and the one that scales with the resident set, which is what identifies memory acquisition rather than contention as the cost. Wall time is minimized at sixteen threads ($1.12$\,s, against $3.03$\,s serial), and rises to $1.38$\,s at 32, beyond which this kernel cost exceeds the parallel gain. This result is specific to the host measured; a host with different memory bandwidth or huge pages enabled would place the minimum elsewhere. Source: \texttt{tools/dev/scaling\_sweep.py} over \texttt{tools/sampling\_cost\_smoke} under \texttt{/usr/bin/time -v}.}
+\caption{\textbf{T13 --- User and system time, resident set and page faults against thread count.} A declining efficiency curve does not by itself identify the resource being consumed, and the two candidate explanations---contention on shared structures, and the cost of memory the run acquires---imply different remedies. Both are read from \texttt{getrusage} on the same runs. Across a $\ThreadSweepFactor\times$ increase in worker count, user time increases by a factor of $\UserTimeGrowth$---far less than the thread count, so the added workers are not simply spinning against each other---while system time increases by a factor of $\SysTimeGrowth$ and tracks the peak resident set and minor-fault count the table gives per row. Each worker draws its own arena blocks, so the run acquires memory in proportion to its width and faults each page in. System time is the faster-growing of the two and the one that scales with the resident set, which is what identifies memory acquisition rather than contention as the cost. Wall time is minimized at sixteen threads and rises again at 32, beyond which this kernel cost exceeds the parallel gain. This result is specific to the host measured; a host with different memory bandwidth or huge pages enabled would place the minimum elsewhere. Source: \texttt{tools/dev/scaling\_sweep.py} over \texttt{tools/sampling\_cost\_smoke} under \texttt{/usr/bin/time -v}.}
 \label{tab:t13-memory}
 \input{tables/t13_thread_memory}
 \end{table}
