@@ -93,8 +93,59 @@ std::vector<unsigned> first_thread_per_core(const std::vector<unsigned>& cpus) {
     }
     return out;
 }
+
+// The kernel's own id for the DEEPEST cache instance `cpu` reports, packed above its level so
+// that two levels which both number their instances from zero cannot be read as one cache.
+// False when the CPU exposes no cache index carrying an id, which is the answer under a
+// hypervisor that presents no cache topology.
+bool deepest_cache_key(unsigned cpu, unsigned long long& key) {
+    bool found = false;
+    unsigned long best_level = 0;
+    for (unsigned idx = 0; idx < 16; ++idx) {
+        char path[160];
+        std::snprintf(path, sizeof(path),
+                      "/sys/devices/system/cpu/cpu%u/cache/index%u/level", cpu, idx);
+        std::FILE* f = std::fopen(path, "r");
+        if (!f) break;                       // the indices are contiguous; a gap ends the list
+        unsigned long level = 0;
+        const int got = std::fscanf(f, "%lu", &level);
+        std::fclose(f);
+        if (got != 1) continue;
+        if (found && level <= best_level) continue;
+        std::snprintf(path, sizeof(path),
+                      "/sys/devices/system/cpu/cpu%u/cache/index%u/id", cpu, idx);
+        f = std::fopen(path, "r");
+        if (!f) continue;                    // an index with no id cannot name an instance
+        unsigned long id = 0;
+        const int got_id = std::fscanf(f, "%lu", &id);
+        std::fclose(f);
+        if (got_id != 1) continue;
+        best_level = level;
+        key = (static_cast<unsigned long long>(level) << 32) | id;
+        found = true;
+    }
+    return found;
+}
 }  // namespace
 #endif
+
+namespace {
+// Dense 0..k-1 ids for a list of opaque cache keys, preserving "equal key means equal domain".
+// One entry per worker CPU, and the distinct keys number the caches on the machine, so the
+// inner scan is over a handful of entries.
+std::vector<unsigned> densify_keys(const std::vector<unsigned long long>& keys) {
+    std::vector<unsigned long long> distinct;
+    std::vector<unsigned> out;
+    out.reserve(keys.size());
+    for (unsigned long long k : keys) {
+        size_t d = 0;
+        for (; d < distinct.size(); ++d) if (distinct[d] == k) break;
+        if (d == distinct.size()) distinct.push_back(k);
+        out.push_back(static_cast<unsigned>(d));
+    }
+    return out;
+}
+}  // namespace
 
 #if defined(_WIN32)
 namespace {
@@ -184,6 +235,61 @@ std::vector<unsigned> performance_cpus() {
     return out;
 #else
     return out;                                   // macOS: no binding, so no set to name
+#endif
+}
+
+std::vector<unsigned> cache_domains_of([[maybe_unused]] const std::vector<unsigned>& cpus) {
+    std::vector<unsigned> out;
+    if (cpus.empty()) return out;
+#if defined(__linux__)
+    std::vector<unsigned long long> keys;
+    keys.reserve(cpus.size());
+    for (unsigned c : cpus) {
+        unsigned long long key = 0;
+        if (!deepest_cache_key(c, key)) return {};   // one unreadable CPU voids the whole answer
+        keys.push_back(key);
+    }
+    return densify_keys(keys);
+#elif defined(_WIN32)
+    // The deepest level present is the last-level cache. Each RelationCache entry at that level
+    // is one instance, and its GroupMask names the CPUs that share it.
+    DWORD bytes = 0;
+    ::GetLogicalProcessorInformationEx(RelationCache, nullptr, &bytes);
+    if (bytes == 0) return out;
+    std::unique_ptr<unsigned char[]> buf(new unsigned char[bytes]);
+    auto* info = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buf.get());
+    if (!::GetLogicalProcessorInformationEx(RelationCache, info, &bytes)) return out;
+
+    BYTE deepest = 0;
+    for (DWORD off = 0; off < bytes; ) {
+        auto* e = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buf.get() + off);
+        if (e->Relationship == RelationCache && e->Cache.Level > deepest) deepest = e->Cache.Level;
+        off += e->Size;
+    }
+    if (deepest == 0) return out;
+
+    std::vector<unsigned long long> keys(cpus.size(), 0);
+    unsigned long long instance = 1;              // 0 stays free to mean "matched no instance"
+    for (DWORD off = 0; off < bytes; ) {
+        auto* e = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buf.get() + off);
+        if (e->Relationship == RelationCache && e->Cache.Level == deepest) {
+            // SetThreadAffinityMask addresses group 0, so a cache instance in another group
+            // describes CPUs this process cannot pin to and is skipped rather than aliased.
+            const GROUP_AFFINITY& ga = e->Cache.GroupMask;
+            if (ga.Group == 0) {
+                for (size_t i = 0; i < cpus.size(); ++i) {
+                    if (cpus[i] < 64 && (ga.Mask & (static_cast<KAFFINITY>(1) << cpus[i])))
+                        keys[i] = instance;
+                }
+            }
+            ++instance;
+        }
+        off += e->Size;
+    }
+    for (unsigned long long k : keys) if (k == 0) return {};
+    return densify_keys(keys);
+#else
+    return out;                                   // macOS: no binding, so nothing to group
 #endif
 }
 

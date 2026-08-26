@@ -753,6 +753,103 @@ TEST(JobSystemAffinity, PerformanceCpusAreDistinctAndBindable) {
     }
 }
 
+TEST(JobSystemAffinity, CacheDomainsPartitionTheCpusAsked) {
+    const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
+    std::vector<unsigned> cpus;
+    for (unsigned c = 0; c < hw; ++c) cpus.push_back(c);
+    const std::vector<unsigned> d = hgcommon::cache_domains_of(cpus);
+    if (d.empty()) {
+        SUCCEED() << "this machine publishes no cache topology; every CPU counts as one domain";
+        return;
+    }
+    // Printed for the same reason the core set is: whether EIGHT domains over sixteen CPUs is
+    // the RIGHT answer for the machine under test is not something a green tick can say.
+    std::string listed;
+    for (size_t i = 0; i < d.size(); ++i)
+        listed += (listed.empty() ? "" : " ") + ("cpu" + std::to_string(cpus[i]) + "->" + std::to_string(d[i]));
+    std::set<unsigned> distinct(d.begin(), d.end());
+    std::cout << "[          ] last-level caches: " << distinct.size() << " over " << hw
+              << " logical CPUs -> " << listed << "\n";
+
+    ASSERT_EQ(d.size(), cpus.size()) << "an answer must cover every CPU asked about or be empty";
+    // Dense from zero: the ids index the steal-preference groups directly, so a gap would size
+    // an array by a number larger than the group count.
+    unsigned max_id = 0;
+    for (unsigned id : d) max_id = std::max(max_id, id);
+    EXPECT_EQ(static_cast<size_t>(max_id) + 1, distinct.size())
+        << "cache domain ids are not dense from zero";
+    // The grouping is a property of the MACHINE, so asking about a subset must not change who
+    // shares with whom. This is what makes it safe to call with any worker CPU set.
+    if (cpus.size() >= 4) {
+        const std::vector<unsigned> sub{cpus[0], cpus[1], cpus[2], cpus[3]};
+        const std::vector<unsigned> ds = hgcommon::cache_domains_of(sub);
+        ASSERT_EQ(ds.size(), sub.size());
+        for (size_t i = 0; i < sub.size(); ++i)
+            for (size_t j = 0; j < sub.size(); ++j)
+                EXPECT_EQ(ds[i] == ds[j], d[i] == d[j])
+                    << "cpu" << sub[i] << " and cpu" << sub[j]
+                    << " share a cache in the full query but not the subset query";
+    }
+}
+
+TEST(JobSystemAffinity, StealsPreferAVictimSharingTheThiefsCache) {
+    // A machine with one cache across every core has nothing to prefer, and most machines the
+    // suite runs on are that machine -- so the grouping is STATED here rather than queried.
+    // Four workers in two pairs: worker 1's only near victim is worker 0, and worker 0 is given
+    // every job, so a thief that consults its near set at all must find work there.
+    job_system::JobSystem<TestJobType> js(4);
+    js.set_worker_cache_domains({0, 0, 1, 1});
+    js.start();
+    ASSERT_EQ(js.cache_peer_groups(), 4u)
+        << "every one of the four workers should have a peer under the stated domains";
+
+    std::atomic<int> ran{0};
+    const int kJobs = 800;
+    // NESTED submission is what piles work on ONE deque: a job submitted from a worker thread
+    // goes to that worker's own deque, while a submission from this thread goes to the shared
+    // injector, where a taker is not a thief and no steal is counted at all.
+    js.submit(job_system::make_job([&] {
+        for (int i = 0; i < kJobs; ++i) {
+            js.submit(job_system::make_job([&] {
+                ++ran;
+                std::this_thread::sleep_for(std::chrono::microseconds(50));
+            }, TestJobType::GRAPHICS));
+        }
+    }, TestJobType::GRAPHICS));
+    js.wait_for_completion();
+    js.shutdown();
+
+    const auto stats = js.get_statistics();
+    std::cout << "[          ] stolen " << stats.total_jobs_stolen << ", of which near "
+              << stats.total_jobs_stolen_near << "\n";
+    // Correctness first: a steal preference reorders who runs what and must not lose a job.
+    EXPECT_EQ(ran.load(), kJobs) << "the locality-preferring steal path dropped work";
+    EXPECT_LE(stats.total_jobs_stolen_near, stats.total_jobs_stolen)
+        << "more near steals counted than steals";
+    // Unconditional, because a run where nothing was stolen tests nothing and must fail rather
+    // than pass quietly: one worker holds every job and three have none.
+    ASSERT_GT(stats.total_jobs_stolen, 0u)
+        << "no steal happened, so this test exercised none of the path it exists to cover";
+    EXPECT_GT(stats.total_jobs_stolen_near, 0u)
+        << "the whole backlog sat on one worker, whose peer had nothing, yet no steal was near "
+           "-- the near set is not being consulted";
+}
+
+TEST(JobSystemAffinity, StatedDomainsThatGroupNothingLeaveTheDrawUndivided) {
+    // One domain for everybody is the ordinary machine, and the preference must switch itself
+    // off there rather than build a near set equal to the whole pool and pay for scanning it.
+    job_system::JobSystem<TestJobType> js(4);
+    js.set_worker_cache_domains({7, 7, 7, 7});
+    js.start();
+    EXPECT_EQ(js.cache_peer_groups(), 0u) << "a single domain still produced a near set";
+    std::atomic<int> ran{0};
+    for (int i = 0; i < 200; ++i)
+        js.submit_to_worker(0, job_system::make_job([&] { ++ran; }, TestJobType::GRAPHICS));
+    js.wait_for_completion();
+    js.shutdown();
+    EXPECT_EQ(ran.load(), 200);
+}
+
 // The default must stay exactly what it was: nothing pinned, placement left to the OS.
 TEST(JobSystemAffinity, NothingIsPinnedUnlessAsked) {
     job_system::JobSystem<TestJobType> js(4);

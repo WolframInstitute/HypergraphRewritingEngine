@@ -80,5 +80,32 @@ bool pin_this_thread_to_cpu(unsigned cpu);
 // speedup denominator counts cores, not siblings that share one.
 std::vector<unsigned> performance_cpus();
 
+// WHICH CPUS SHARE A LAST-LEVEL CACHE, as one dense domain id per entry of `cpus`, in the same
+// order. Two entries are equal exactly when those two CPUs share an LLC.
+//
+// WHY THE ENGINE WANTS THIS. A core count says nothing about how expensive it is for two
+// workers to share data. On a part with one LLC across every core, two threads touching the
+// same line settle it on-die. On a chiplet part they may not share any cache at all, and the
+// line moves over an off-die fabric instead. The difference is not a detail: on an EPYC 9174F,
+// which gives 16 cores EIGHT separate L3 instances -- two cores each -- the same two-thread
+// workload takes 1519 ms when both threads share an L3 and 1852 ms when they do not, a 21%
+// penalty for identical work, decided entirely by placement.
+//
+// A work-stealing pool can act on that: a steal moves a job to a thief that will then touch the
+// data the victim just touched, so drawing the victim from the thief's own domain keeps the
+// transfer inside a cache both ends share. That is the one use here, and it is a preference
+// rather than a restriction -- a thief that finds nothing near still steals from anywhere,
+// because leaving a core idle costs more than a distant line.
+//
+//   Linux    the deepest /sys/devices/system/cpu/cpuN/cache/indexK that reports an `id`; the
+//            kernel already numbers each cache instance, so equal ids mean one cache.
+//   Windows  GetLogicalProcessorInformationEx(RelationCache), taking the deepest level and
+//            grouping by the GroupMask of each cache instance.
+//
+// EMPTY means the topology could not be read -- no sysfs, no cache relationship, a hypervisor
+// that does not present one. A caller must then treat every CPU as one domain rather than
+// invent a grouping, since a wrong grouping steers steals at data that is not there.
+std::vector<unsigned> cache_domains_of(const std::vector<unsigned>& cpus);
+
 }  // namespace common
 }  // namespace HG_NAMESPACE

@@ -10,7 +10,6 @@
 #include <hgcommon/capacity.hpp>  // the one error kind that is not a defect
 #include <thread>
 #include <vector>
-#include <mutex>
 #include <atomic>
 #include <cstring>
 #include <chrono>
@@ -59,6 +58,10 @@ private:
         std::atomic<size_t> jobs_executed{0};
         std::atomic<size_t> jobs_executing{0};
         std::atomic<size_t> jobs_stolen{0};
+        // Of those, the ones taken from a worker sharing this one's last-level cache. The
+        // ratio to jobs_stolen is how a run reports whether the locality preference found
+        // anything to prefer, rather than it being assumed from the topology.
+        std::atomic<size_t> jobs_stolen_near{0};
         explicit WorkerData(size_t cap) : deque(cap) {}
     };
 
@@ -70,6 +73,19 @@ private:
     bool serial_ = false;
     // Logical CPUs the workers bind to, empty meaning the operating system places them.
     std::vector<unsigned> worker_cpus_;
+    // WHICH WORKERS SHARE A LAST-LEVEL CACHE, as a CSR over worker indices: the peers of worker
+    // i are peers_[peer_begin_[i]) .. peers_[peer_begin_[i+1]), i itself excluded. Written once
+    // by start() before any worker thread exists and read-only thereafter, so the steal path
+    // reads it without synchronisation.
+    //
+    // BOTH EMPTY means there is no grouping worth preferring -- an unreadable topology, a
+    // machine whose cores all share one cache, or a set where no two workers share one -- and
+    // find_work then draws from the whole pool, which is what it does on such a machine anyway.
+    std::vector<unsigned> peer_begin_;
+    std::vector<unsigned> peers_;
+    // A caller-stated domain per worker, which start() uses in place of asking the platform.
+    // Empty means ask. See set_worker_cache_domains.
+    std::vector<unsigned> worker_cache_domains_;
     std::atomic<size_t> pin_failures_{0};
     // Workers that have passed their binding attempt this start; start() waits for all of
     // them, which is what makes pin_failures() settled rather than racing worker startup.
@@ -191,6 +207,43 @@ private:
         hgcommon::unpark_all(work_seq_);
     }
 
+    // Group the workers by the cache their bound CPU sits behind, filling peer_begin_/peers_.
+    // Called by start() before the first worker thread exists, which is what lets the steal
+    // path read the result without synchronisation.
+    //
+    // It answers "leave it off" in every case where a preference would decide nothing: fewer
+    // than three workers (a thief has one possible victim), no pinning (the operating system
+    // moves the thread, so a binding-derived grouping describes where it was, not where it is),
+    // an unreadable topology, and a machine whose workers all share one cache.
+    void build_cache_peers() {
+        peer_begin_.clear();
+        peers_.clear();
+        const size_t n = workers_.size();
+        if (n < 3) return;
+        std::vector<unsigned> domain = worker_cache_domains_;
+        if (domain.empty()) {
+            if (worker_cpus_.empty()) return;
+            std::vector<unsigned> cpus;
+            cpus.reserve(n);
+            for (size_t i = 0; i < n; ++i) cpus.push_back(worker_cpus_[i % worker_cpus_.size()]);
+            domain = hgcommon::cache_domains_of(cpus);
+        }
+        if (domain.size() != n) return;
+
+        peer_begin_.assign(n + 1, 0);
+        for (size_t i = 0; i < n; ++i) {
+            for (size_t j = 0; j < n; ++j)
+                if (j != i && domain[j] == domain[i]) peers_.push_back(static_cast<unsigned>(j));
+            peer_begin_[i + 1] = static_cast<unsigned>(peers_.size());
+        }
+        // Nobody shares, or everybody does: either way the near set is not a subset worth
+        // drawing from first, and the empty pair restores the undivided draw.
+        if (peers_.empty() || peers_.size() == n * (n - 1)) {
+            peer_begin_.clear();
+            peers_.clear();
+        }
+    }
+
     // Exhaustive version, used only immediately before parking. find_work picks victims at
     // RANDOM with a bounded number of attempts, so it can come back empty while a deque still
     // holds work -- fine when the caller loops, but not as the basis for going to sleep. The
@@ -219,9 +272,33 @@ private:
     // The draw does not have to be reproducible: which worker a job is stolen from does not
     // change what the run computes, only who computes it. The gates that assert results are
     // independent of thread count already cover that.
-    JobRaw find_work(WorkerData* data, uint64_t& rng) {
+    //
+    // A VICTIM THAT SHARES THIS WORKER'S CACHE IS TRIED FIRST. A stolen job goes on to touch
+    // the data the victim was working, so where that data already sits decides what the steal
+    // costs. Cores that share a last-level cache pass it between them at cache speed; cores on
+    // separate caches move it over an off-die fabric. Measured on an EPYC 9174F, which splits
+    // 16 cores across EIGHT L3 instances: the same two-thread run takes 1519 ms when the pair
+    // shares an L3 and 1852 ms when it does not, 21% for placement alone. A part with one
+    // shared cache has nothing to prefer and build_cache_peers leaves the preference off.
+    //
+    // It stays a PREFERENCE. Near victims are tried, then the draw widens to the whole pool: an
+    // idle core costs more than a distant line, so a thief never declines a far steal it could
+    // have taken.
+    JobRaw find_work(WorkerData* data, uint64_t& rng, size_t self) {
         if (JobRaw j = data->deque.pop()) return j;            // own work (LIFO)
         size_t n = workers_.size();
+        if (!peer_begin_.empty()) {                             // near victims first
+            const unsigned lo = peer_begin_[self];
+            const unsigned span = peer_begin_[self + 1] - lo;
+            for (unsigned attempt = 0; attempt < span; ++attempt) {
+                WorkerData* victim = workers_[peers_[lo + hgcommon::splitmix64(++rng) % span]].get();
+                if (JobRaw j = victim->deque.steal()) {
+                    data->jobs_stolen.fetch_add(1, std::memory_order_relaxed);
+                    data->jobs_stolen_near.fetch_add(1, std::memory_order_relaxed);
+                    return j;
+                }
+            }
+        }
         if (n > 1) {                                            // steal a victim's top
             for (size_t attempt = 0; attempt < n; ++attempt) {
                 WorkerData* victim = workers_[hgcommon::splitmix64(++rng) % n].get();
@@ -305,7 +382,7 @@ private:
         uint64_t rng = static_cast<uint64_t>(index) * 2654435761ull + 1ull;
 
         while (true) {
-            if (JobRaw job = find_work(data, rng)) {
+            if (JobRaw job = find_work(data, rng, index)) {
                 run_job(data, job);
                 continue;
             }
@@ -432,6 +509,21 @@ public:
     // start() returns -- start() waits for every worker to pass its binding attempt.
     void set_worker_cpus(std::vector<unsigned> cpus) { worker_cpus_ = std::move(cpus); }
     const std::vector<unsigned>& worker_cpus() const { return worker_cpus_; }
+
+    // State which workers share a cache, one id per worker, instead of having start() ask the
+    // platform. Equal ids mean "these two workers are cheap to pass work between"; the steal
+    // path prefers a victim carrying the thief's id.
+    //
+    // The platform answer covers the ordinary case and needs pinning to mean anything, since an
+    // unpinned thread migrates away from the CPU its grouping was derived from. A caller that
+    // places its threads by some other route -- a container CPU set, a NUMA policy, a machine
+    // whose topology the kernel does not publish -- knows the grouping the platform cannot be
+    // asked for, and this is where it says so. An empty vector, the default, means ask.
+    //
+    // Read by start(); changing it while running does nothing until the next start().
+    void set_worker_cache_domains(std::vector<unsigned> domains) {
+        worker_cache_domains_ = std::move(domains);
+    }
     size_t pin_failures() const { return pin_failures_.load(std::memory_order_relaxed); }
 
     void start() {
@@ -445,6 +537,7 @@ public:
             workers_[i]->stop.store(false, std::memory_order_relaxed);
         }
         workers_entered_.store(0, std::memory_order_relaxed);
+        build_cache_peers();                      // before any worker exists: see peer_begin_
         for (size_t i = 0; i < workers_.size(); ++i) {
             auto* worker = workers_[i].get();
             worker->thread = std::thread([this, worker, i] { worker_loop(worker, i); });
@@ -625,15 +718,30 @@ public:
         size_t total_jobs_executed;
         size_t total_jobs_stolen;
         size_t total_jobs_deferred;
+        // Of total_jobs_stolen, those taken from a victim sharing the thief's last-level cache.
+        // Zero with a non-zero steal count means the locality preference is off on this machine
+        // or found nothing near, which is a fact about the run and not a failure.
+        size_t total_jobs_stolen_near;
     };
 
     SystemStatistics get_statistics() const {
-        size_t total_executed = 0, total_stolen = 0;
+        size_t total_executed = 0, total_stolen = 0, total_near = 0;
         for (const auto& worker : workers_) {
             total_executed += worker->jobs_executed.load();
             total_stolen += worker->jobs_stolen.load();
+            total_near += worker->jobs_stolen_near.load();
         }
-        return SystemStatistics{total_executed, total_stolen, 0};
+        return SystemStatistics{total_executed, total_stolen, 0, total_near};
+    }
+
+    // Whether the steal path is preferring cache-local victims on this machine, and how many
+    // workers the average thief has near it. Zero means the undivided draw is in use.
+    size_t cache_peer_groups() const {
+        if (peer_begin_.empty()) return 0;
+        size_t domains = 0;
+        for (size_t i = 0; i + 1 < peer_begin_.size(); ++i)
+            if (peer_begin_[i + 1] > peer_begin_[i]) ++domains;
+        return domains;
     }
 
     // Compatibility stubs (no per-type incompatibility model in this scheduler).
