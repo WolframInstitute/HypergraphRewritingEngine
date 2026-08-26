@@ -161,6 +161,7 @@ enum class EvolutionJobType {
     EXPAND,     // Extend partial match by one edge
     MATCH,      // Orchestrate matching for a state (spawn SCAN tasks or fallback to sync)
     REWRITE,    // Apply a contiguous RANGE of one state's matches
+    REDRIVE,    // Expand one quotient point that a previous run's depth bound left standing
 };
 
 // A contiguous range of one state's matches, applied by a single task.

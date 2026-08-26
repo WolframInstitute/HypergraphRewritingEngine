@@ -865,7 +865,39 @@ public:
     // Extend the reconstruction's depth budget for a continued run. The replay refuses to
     // expand an instance past it, so a continuation that raised the engine's budget and not
     // this one resumes the exploration and leaves the reconstruction where it stopped.
-    void raise_quotient_max_steps(int max_steps);
+    //
+    // Returns the budget this call REPLACED, or -1 when it raised nothing. Raising the bound
+    // creates work -- the points the old bound left standing -- and that work is the caller's
+    // to place, because the caller is what owns a thread pool. Enumerate it with
+    // for_each_quotient_blocked_point and drive each point with quotient_redrive_point.
+    int raise_quotient_max_steps(int max_steps);
+
+    // The points that the OLD bound made terminal: reached, their producers and instances
+    // recorded, and every transition out of them declined by the bound. Under the raised bound
+    // they are ordinary interior points and each is one independent unit of work.
+    //
+    // Enumerate BEFORE driving any of them. The drive cascades -- a point's expansion reaches
+    // deeper points and drives them inline on the same thread -- and those land in this list
+    // too, so enumerating while drives are running walks a list that is growing underneath it.
+    // Everything the cascade creates is already driven by its creator, so the snapshot is
+    // complete.
+    template <typename F>
+    void for_each_quotient_blocked_point(int old_bound, int new_bound, F&& f) const {
+        qc_reached_list_.for_each([&](const QcReachPoint& p) {
+            // Below the old bound the point was already driven, and AT the new bound it must
+            // not be: the final depth is produced into and never read, so expanding it would
+            // replay a step the run was not asked for.
+            const int d = static_cast<int>(p.depth);
+            if (d < old_bound || d >= new_bound) return;
+            f(p.state_hash, p.depth);
+        });
+    }
+
+    // Drive one blocked point: its declined transitions, then its instances against the
+    // expansion's matches. Independent of every other point -- each step is claimed
+    // (qc_reached_, qc_dsup_seen_, qc_applied_), so two threads driving the same point, or one
+    // driving a point the cascade already reached, is a no-op rather than a race.
+    void quotient_redrive_point(uint64_t state_hash, uint32_t depth);
 
     // Visit the distinct canonical transitions out of the canonical state `from_hash`.
     template <typename F>

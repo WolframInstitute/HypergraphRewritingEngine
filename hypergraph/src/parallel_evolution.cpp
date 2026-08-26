@@ -1261,7 +1261,7 @@ void ParallelEvolutionEngine::evolve_more(size_t additional_steps,
     // raising the engine's alone leaves the replay standing at the depth the first call
     // stopped on while the exploration goes on past it, and the two then answer about
     // different depths.
-    hg_->raise_quotient_max_steps(static_cast<int>(
+    const int quotient_old_bound = hg_->raise_quotient_max_steps(static_cast<int>(
         std::min<size_t>(max_steps_, static_cast<size_t>((std::numeric_limits<int>::max)()))));
     should_stop_.store(false, std::memory_order_relaxed);
     reset_depth_join();
@@ -1275,6 +1275,31 @@ void ParallelEvolutionEngine::evolve_more(size_t additional_steps,
     deferred_frontier_.reset();   // quiescent: no worker is running between evolve calls
     deferred_rewrites_.reset();
     deferred_count_.store(0, std::memory_order_release);
+
+    // THE RAISED BOUND'S WORK GOES INTO THE POOL. The points the old bound left standing are
+    // independent of one another and of the frontier resumed below, so they are submitted as
+    // ordinary jobs and drain in the same wait_for_completion. A continuation therefore has no
+    // pass in it: nothing runs with the workers idle, and the reconstruction's catch-up
+    // overlaps the exploration it is catching up to instead of preceding it.
+    //
+    // Enumerated in FULL before the first submit. Driving a point cascades onto the same list
+    // it was read from, so a walk racing running drives would be reading a list they are
+    // extending -- and it need not, because everything the cascade reaches is driven inline by
+    // whichever job reached it.
+    if (quotient_old_bound >= 0) {
+        ArenaVector<std::pair<uint64_t, uint32_t>> redrive(worker_scratch(), 64);
+        hg_->for_each_quotient_blocked_point(
+            quotient_old_bound,
+            static_cast<int>(std::min<size_t>(max_steps_,
+                                              static_cast<size_t>((std::numeric_limits<int>::max)()))),
+            [&](uint64_t h, uint32_t d) { redrive.push_back({h, d}); });
+        Hypergraph* hg = hg_;
+        for (const std::pair<uint64_t, uint32_t>& p : redrive) {
+            job_system_->submit(job_system::make_job<EvolutionJobType>(
+                [hg, p]() { hg->quotient_redrive_point(p.first, p.second); },
+                EvolutionJobType::REDRIVE));
+        }
+    }
 
     // A SUBSET CONTINUATION STEERS THE EXPLORATION: expand the named frontier states and put the
     // rest BACK, so a later call can still resume them. Retention is the whole point -- dropping
