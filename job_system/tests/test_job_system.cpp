@@ -520,6 +520,31 @@ TEST_F(JobSystemTest, ParkIsReleasedByUnpark) {
 // Serial mode: no workers, wait_for_completion() drains inline, FIFO order.
 // =============================================================================
 
+// EXACTLY ONE WORKER, which no other test here covers: the suite tests serial (no workers at
+// all) and several multi-worker counts, and skips the configuration between them. One worker
+// is the case with no work-stealing, so a wakeup that goes missing has no second worker to
+// pick the job up and mask it -- a lost wakeup is a hang rather than a slowdown. It is also a
+// configuration a user can ask for.
+TEST(JobSystemSingleWorker, RunsEveryJobIncludingNestedSubmissions) {
+    job_system::JobSystem<TestJobType> js(1);
+    js.start();
+    std::atomic<int> ran{0};
+    // Nested submission is what evolution does: a running job submits more work. With one
+    // worker the submitter and the executor are the same thread, which is where a park/unpark
+    // protocol has nobody else to depend on.
+    for (int i = 0; i < 8; ++i) {
+        js.submit(job_system::make_job([&] {
+            ++ran;
+            for (int k = 0; k < 4; ++k)
+                js.submit(job_system::make_job([&] { ++ran; }, TestJobType::GRAPHICS));
+        }, TestJobType::GRAPHICS));
+    }
+    js.wait_for_completion();
+    EXPECT_EQ(ran.load(), 8 + 8 * 4)
+        << "a job submitted from inside a job was never run with a single worker";
+    js.shutdown();
+}
+
 TEST(JobSystemSerial, DrainsInlineInSubmissionOrder) {
     job_system::JobSystem<TestJobType> js(0, 4096, /*serial=*/true);
     EXPECT_EQ(js.get_num_workers(), 0u);
