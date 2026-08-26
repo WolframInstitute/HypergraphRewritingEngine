@@ -134,14 +134,24 @@ int main(int argc, char** argv) {
                 out.push_back(e);
             }
         } else {   // chain, cycle, mixed -- all paths; cycle closes the last edge onto the first
-            std::vector<uint32_t> path{fresh()};
+            // CONSECUTIVE EDGES OVERLAP IN arity-1 VERTICES: edge i covers i..i+arity-1. That
+            // overlap is the whole content of the arity axis. Giving each edge its own fresh
+            // extra vertices instead makes them degree-one, constraining nothing, so a path of
+            // n arity-a edges has exactly the join structure of n binary edges -- measured, and
+            // it showed as arity 2, 3 and 4 returning IDENTICAL states, canonical states and
+            // causal edges (61,048 / 2,356 / 92,164 at depth 5). An axis that changes no
+            // measured quantity is not an axis.
+            uint32_t maxv = 0;
             for (size_t i = 0; i < n; ++i) {
-                std::vector<uint32_t> e{path.back()};
-                for (size_t vi = 1; vi < arity_at(i); ++vi) {
-                    const uint32_t v = fresh(); e.push_back(v); path.push_back(v);
+                std::vector<uint32_t> e;
+                for (size_t vi = 0; vi < arity_at(i); ++vi) {
+                    const auto v = static_cast<uint32_t>(i + vi);
+                    e.push_back(v);
+                    if (v > maxv) maxv = v;
                 }
                 out.push_back(e);
             }
+            next = maxv + 1;
             if (shape == "cycle" && n >= 2) out.back().back() = out.front().front();
         }
         return out;
