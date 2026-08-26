@@ -185,3 +185,35 @@ endforeach()
     )
     target_link_libraries(gpu_rank_order_probe PRIVATE hg_gpu)
 endif()
+
+# DEVICE LTO IS OFF FOR EVERY CUDA TARGET, NOT JUST TWO OF THEM.
+#
+# The opt-out above names hg_gpu and hg_gpu_tests and sits inside the test-only block, so
+# gpu_differential_tests, bench_gpu_evolve and the probes inherited the root's
+# CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE=TRUE. Linking those LTO device objects against
+# hg_gpu's non-LTO ones is what produced, on the rented box:
+#
+#   nvlink fatal : elfLink linker library load error
+#   gpu/CMakeFiles/gpu_differential_tests.dir/cmake_device_link.o
+#
+# and with BUILD_TESTS=OFF -- the shipping GPU configuration -- the block does not run at all,
+# so hg_gpu itself gets device LTO: the case whose measured cost is recorded above (a 61,616
+# byte frame, occupancy collapsed, the suite at 23.6 s against 7.5 with one test faulting).
+#
+# Applied here, at file scope, after every target exists, so a CUDA target added later cannot
+# miss it by being declared outside one particular if().
+foreach(hg_cuda_tgt hg_gpu hg_gpu_tests gpu_differential_tests bench_cpu_vs_gpu
+                    bench_gpu_evolve quotient_causal_probe_gpu gpu_rank_order_probe)
+    if(TARGET ${hg_cuda_tgt})
+        set_target_properties(${hg_cuda_tgt} PROPERTIES
+            INTERPROCEDURAL_OPTIMIZATION FALSE
+            INTERPROCEDURAL_OPTIMIZATION_RELEASE FALSE
+            INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO FALSE
+            INTERPROCEDURAL_OPTIMIZATION_MINSIZEREL FALSE
+            INTERPROCEDURAL_OPTIMIZATION_DEBUG FALSE)
+        get_target_property(hg_ipo_chk ${hg_cuda_tgt} INTERPROCEDURAL_OPTIMIZATION_RELEASE)
+        if(hg_ipo_chk)
+            message(FATAL_ERROR "device LTO still on for ${hg_cuda_tgt}")
+        endif()
+    endif()
+endforeach()
