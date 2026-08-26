@@ -17,15 +17,56 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <algorithm>
 #include <cctype>
 #include <string>
 #include <vector>
 
+#if defined(__unix__) || defined(__APPLE__)
+#include <sys/resource.h>
+#include <unistd.h>
+#endif
+
 using namespace hypergraph;
+
+// THE RUN CAPS ITS OWN ADDRESS SPACE. STANDING.
+//
+// Deep configurations of the disconnected shapes take gigabytes each. A batch of them was once
+// launched on a 19 GB workstation shared with a dozen other sessions and no limit; it drove the
+// machine into swap and had to be killed by hand, repeatedly, while every other project on the
+// box waited. Capping in the DRIVING SCRIPT is not enough, because the batch that did it invoked
+// this binary directly. So the binary refuses to be unbounded whoever starts it.
+//
+// The cap is a share of what the machine has FREE at start-up, not a constant: the same binary
+// runs on a 19 GB desktop and a 503 GB box. HG_MEM_CAP_MB overrides it for a configuration known
+// to need more, and 0 disables it for a machine where the caller has arranged its own limit.
+//
+// Exceeding it is a clean std::bad_alloc the engine reports as a truncated graph -- a RESULT.
+// Paging the machine into swap is not a result; it is an outage for everyone else on the host.
+static void cap_address_space() {
+#if defined(__unix__) && !defined(__APPLE__)
+    if (const char* env = std::getenv("HG_MEM_CAP_MB")) {
+        const long mb = std::atol(env);
+        if (mb <= 0) return;                       // explicit opt-out
+        rlimit rl{static_cast<rlim_t>(mb) << 20, static_cast<rlim_t>(mb) << 20};
+        setrlimit(RLIMIT_AS, &rl);
+        return;
+    }
+    const long pages = sysconf(_SC_AVPHYS_PAGES), page = sysconf(_SC_PAGESIZE);
+    if (pages <= 0 || page <= 0) return;
+    // Six tenths of free memory, so the rest of the machine keeps a working margin.
+    const auto cap = static_cast<rlim_t>(static_cast<double>(pages) * page * 0.6);
+    rlimit rl{cap, cap};
+    setrlimit(RLIMIT_AS, &rl);
+    std::printf("mem cap: %.1f GB of %.1f GB free (HG_MEM_CAP_MB overrides, 0 disables)\n",
+                cap / 1073741824.0, static_cast<double>(pages) * page / 1073741824.0);
+#endif
+}
 
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
+    cap_address_space();
 
     const std::string arm  = (argc > 1) ? argv[1] : "cap";
     const std::string rule = (argc > 2) ? argv[2] : "growth";
