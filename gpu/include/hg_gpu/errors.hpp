@@ -34,11 +34,23 @@ struct DeviceErrors {
     struct DeviceView {
         uint32_t* counters;  // [kMaxKinds]
 
+        // AFFORDABLE ONCE, RUINOUS IN BULK -- the same shape ConcurrentMap's `saturated` latch
+        // has. Under saturation this is reached by every thread of every block on every inner
+        // loop iteration (kQcNodes fires on each failed claim), and they all atomicAdd one
+        // 4-byte address, which serialises the whole device precisely when it is already
+        // running degraded. A kind that has been recorded needs no further recording: the
+        // counter says WHICH capacity ran out, and the retry path doubles that field regardless
+        // of the number. So the first observers pay the atomic and the rest read and leave.
+        //
+        // The load races the add, so a bounded handful of threads may add before any of them
+        // observes a non-zero counter. That bound is the concurrency, not the iteration count,
+        // which is the entire difference.
         __device__ void record(ErrorKind k) {
             uint32_t idx = static_cast<uint32_t>(k);
-            if (idx < kMaxKinds) {
-                atomicAdd(&counters[idx], 1u);
-            }
+            if (idx >= kMaxKinds) return;
+            cuda::atomic_ref<uint32_t, cuda::thread_scope_device> c(counters[idx]);
+            if (c.load(cuda::memory_order_relaxed) != 0) return;
+            c.fetch_add(1u, cuda::memory_order_relaxed);
         }
     };
 

@@ -134,7 +134,7 @@ static_assert(static_cast<uint32_t>(ErrorKind::kDrainCapBufferFull) <
 
 const char* error_kind_name(ErrorKind k);
 
-// One occurrence of a capacity overflow during evolve(). Counts are the
+// One occurrence of a capacity overflow during evolve(). A count is the
 // per-kernel-launch tally observed on the device, not a cumulative
 // total across the whole evolve — that means the same ErrorKind may
 // appear multiple times in EvolveResult.warnings if the kernel that
@@ -142,8 +142,16 @@ const char* error_kind_name(ErrorKind k);
 //
 // `context` names the phase ("match kernel step 3", "rewrite kernel
 // step 5", "ir hash", etc.) so the operator can locate the bottleneck
-// quickly. `count` is a lower bound on how much more capacity was
-// needed in that phase — at least N more pool slots, etc.
+// quickly.
+//
+// `count` SAYS THAT A KIND FIRED, NOT HOW MUCH CAPACITY WAS MISSING.
+// DeviceErrors::DeviceView::record latches: the first observers of a
+// kind pay the atomic and every later one reads the counter and leaves,
+// because under saturation the unlatched tally was one atomicAdd per
+// thread per inner-loop iteration onto a single 4-byte address. So the
+// number is a small count of racing observers. Nothing decides on its
+// magnitude — the retry loop doubles the field the kind names whatever
+// the number is (evolve.cu, grow_config_for).
 struct OverflowWarning {
     ErrorKind   kind;
     uint32_t    count;
