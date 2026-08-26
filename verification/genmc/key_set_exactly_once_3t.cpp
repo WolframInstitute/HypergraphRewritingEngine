@@ -40,9 +40,10 @@
 // RC11 at that bound, not about unbounded thread counts. The bound is one rather than the four
 // its ConcurrentMap counterpart uses because an eight-slot table is what the free-slot condition
 // costs: the seal pass, the migration and a sixteen-slot successor make each extra context an
-// order of magnitude of executions. One context is 19,414 complete executions and seconds; two
-// is 178,914 and 846.8s, also clean (AMD EPYC 9174F, GenMC v0.17.0, 2026-08-26); four does not
-// return inside the 580s a gate can give it.
+// order of magnitude of executions, and the ladder has been walked rather than extrapolated
+// (AMD EPYC 9174F, GenMC v0.17.0, 2026-08-26). One context is 19,414 complete executions and
+// seconds; two is 178,914 and 846.8s; THREE is 1,028,952 and 4,866.6s, and all three are clean.
+// Four does not return inside the 580s a gate can give it.
 //
 // THE COMMITTED BOUND IS A BUDGET, NOT A CEILING. One context is what fits the per-harness
 // budget in tools/safe_verify.sh. Append `--bound=2` when there is a quarter of an hour to give
