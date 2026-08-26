@@ -11,11 +11,19 @@
 //
 // The deque commits both ends with a SINGLE compare-exchange on one packed word
 // {tag:32, head:16, tail:16}, so the claim is that two pops racing for the last element see the
-// same word and only one CAS succeeds. The 32-bit tag is what makes that argument hold: (head,
-// tail) recurs as both ends move in both directions, so without the tag a CAS could commit
-// against a word that had returned to its loaded value after other operations -- and a stale item
-// pointer would be claimed twice. The tag is incremented on every successful operation, so this
-// harness exercises the ABA defence rather than assuming it.
+// same word and only one CAS succeeds.
+//
+// THE TAG IS NOT WHAT THIS HARNESS CHECKS, and the boundary is worth being exact about. The
+// packed word carries a 32-bit tag against ABA, but this configuration cannot exercise it:
+// with one item pushed before the consumers start and one pop attempt each, no (head,tail)
+// pair recurs inside a popper's load-to-exchange window, so the tag is never what makes a
+// compare-exchange fail here. Measured, not argued -- freezing the tag at all four commit
+// sites leaves this harness passing in the same 6 executions. The tag has its own harness,
+// deque_tag_defeats_aba, where freezing it does produce a violation.
+//
+// CALIBRATED. Committing the pop without winning the compare-exchange -- the double extraction
+// A1 names -- makes this harness report a safety violation (genmc exit 42). What it verifies,
+// it verifies; it is the tag that is out of its reach.
 //
 // The assertions cover both directions of the conservation argument:
 //   A1  the one item is handed to AT MOST ONE consumer
