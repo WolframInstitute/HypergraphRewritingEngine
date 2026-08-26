@@ -1856,9 +1856,10 @@ the minimum of its repeats.}
 
 Wall time is one property of a workload and the sizes of the objects it constructs are another.
 Two runs can agree on state count and still differ by more than an order of magnitude in the
-number of branchial edges they build---at $\approx$1.4M states the disconnected shape reaches
-$29.2$M against $1.2$M for the two-edge chain---and across the sweep the relation ranges from
-empty to $387$M---the relation is over \emph{pairs} of events sharing a parent, so its
+number of branchial edges they build. At around $300$k states the two-component shape reaches
+$3.2$M of them while a mixed-arity chain of comparable size builds \emph{none}, and across the
+sweep the relation ranges from empty to $58.8$M---it is over \emph{pairs} of events sharing a
+parent, so its
 size is governed by how many matches overlap rather than by how many states exist.
 Figure~\ref{fig:shape-space} plots both, and Table~\ref{tab:t14-shape-space} gives the deepest
 point reached by each shape.
@@ -1898,7 +1899,12 @@ branchially related. Every shape with two or more edges does.
 \caption{\textbf{The state space and the relations over it, by left-hand side shape.} Left: states
 against evolution depth, logarithmic in states. Each shape is evolved one depth at a time until a
 single run exceeds the collection budget, so the right-hand end of each curve is a measured
-boundary for that shape rather than a depth chosen in advance for all of them. Right: branchial
+boundary for that shape rather than a depth chosen in advance for all of them.
+\textbf{Runs that reached a container ceiling are excluded.} The engine returns a truncated graph
+with a warning when a container fills, and such a run reports where it filled rather than how
+large the state space is: measured, one shape totals the same $2{,}097{,}149$ states whether asked
+for depth 9, 10 or 11, redistributing that ceiling over however many levels were requested. Of the
+$192$ collected points, $41$ are excluded on that basis. Right: branchial
 edges against causal edges, both logarithmic, every point one $(\text{shape}, \text{depth})$ run.
 A shape's position on this plot is a property of its rule rather than of how long it was run: the
 shapes that generate many overlapping sibling matches sit high whatever depth they reached.
@@ -1909,7 +1915,8 @@ Source: \texttt{tools/dev/rich\_sweep.sh} over \texttt{tools/sampling\_cost\_smo
 \begin{table}[htbp]
 \centering
 \caption{\textbf{T14 --- The deepest point reached by each left-hand side shape.} One row per
-shape, at the greatest depth whose single run fitted the collection budget, so the depths differ
+shape, at the greatest depth that both fitted the collection budget and did not reach a
+container ceiling (see Figure~\ref{fig:shape-space}), so the depths differ
 between rows by construction and are reported rather than held equal. \texttt{Shape} is the
 connectivity, \texttt{Arity} the vertices per edge, \texttt{LHS} the number of edges in the
 pattern. The state, causal and branchial columns are the sizes of the three objects the run

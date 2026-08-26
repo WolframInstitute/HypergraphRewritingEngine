@@ -25,6 +25,7 @@ Usage: rich_plots.py <rich-dir> [--out paper/tables]
 """
 
 import argparse
+import collections
 import os
 import sys
 
@@ -66,6 +67,48 @@ def curve(i, coords, label):
     return (r"\addplot[mark=%s, black, %s, mark size=1.4pt] coordinates {%s};"
             % (MARKS[i % len(MARKS)], DASHES[i % len(DASHES)], coords)
             + "\n" + r"\addlegendentry{%s}" % label)
+
+
+
+# SATURATED RUNS ARE NOT DATA ABOUT THE STATE SPACE, and they have to be removed before anything
+# is plotted against depth.
+#
+# The engine catches a container ceiling, records a warning and returns a TRUNCATED graph rather
+# than throwing (parallel_evolution.cpp, the CapacityExhausted case). sampling_cost_smoke did not
+# read those warnings, so the sweep collected saturated runs as ordinary rows. Their signature is
+# unmistakable once looked for: chain1a2 totals 2,097,149 states whether asked for depth 9, 10 or
+# 11, and the width at depth 9 comes out 1,965,054 / 116,128 / 6,528 in those three runs, because
+# the ceiling is redistributed over however many levels were requested. Plotted, that reads as a
+# state space that stopped growing.
+#
+# The tool now emits truncated=1, so newly collected rows say so directly. Rows collected before
+# that are classified here by the PLATEAU they form: within one shape, if two or more depths
+# report essentially the same state count as the shape's maximum, every one of them is at the
+# ceiling. A shape whose deepest run merely happens to be its largest forms no plateau and is
+# kept -- which is why the test is "two or more at the maximum" and not "equal to the maximum".
+#
+# VALIDATED against the flag on 13 re-run rows: chain1a2 depths 5 and 6 (103,761 and 1,339,281
+# states, still growing) report truncated=0, depths 7 through 14 (all 2,097,148-149) report
+# truncated=1, and this rule agrees on every one.
+def saturated_depths(rows):
+    """Return {(rule, steps)} for rows sitting at a shape's capacity ceiling."""
+    by_rule = collections.defaultdict(list)
+    for r in rows:
+        rule = r.get("rule")
+        if rule:
+            by_rule[rule].append(r)
+    out = set()
+    for rule, rs in by_rule.items():
+        if any(r.get("truncated") == "1" for r in rs):
+            out |= {(rule, int(num(r, "steps"))) for r in rs if r.get("truncated") == "1"}
+            continue
+        peak = max((num(r, "states") for r in rs), default=0.0)
+        if peak <= 0:
+            continue
+        at_peak = [r for r in rs if num(r, "states") >= 0.999 * peak]
+        if len(at_peak) >= 2:
+            out |= {(rule, int(num(r, "steps"))) for r in at_peak}
+    return out
 
 
 def scaling_figure(rows, rules, labels, fname, tool, out, metric="eff"):
@@ -111,8 +154,12 @@ def scaling_figure(rows, rules, labels, fname, tool, out, metric="eff"):
     return drawn
 
 
-def depth_figure(rows, rules, labels, fname, tool, out, ykey):
-    """A count against evolution depth, one curve per shape, for whatever count is asked for."""
+def depth_figure(rows, rules, labels, fname, tool, out, ykey, sat=frozenset()):
+    """A count against evolution depth, one curve per shape, for whatever count is asked for.
+
+    Points at a shape's capacity ceiling are DROPPED, not drawn: a truncated run's counts say
+    where the container filled up, not how large the state space is at that depth.
+    """
     body = [pt.provenance(tool)]
     drawn = 0
     for rule in rules:
@@ -121,6 +168,8 @@ def depth_figure(rows, rules, labels, fname, tool, out, ykey):
             if r.get("rule") != rule:
                 continue
             d = int(num(r, "steps", 0))
+            if (rule, d) in sat:
+                continue
             y = num(r, ykey, 0.0)
             if d <= 0 or y <= 0:
                 continue
@@ -136,7 +185,7 @@ def depth_figure(rows, rules, labels, fname, tool, out, ykey):
     return drawn
 
 
-def relation_figure(rows, rules, labels, fname, tool, out):
+def relation_figure(rows, rules, labels, fname, tool, out, sat=frozenset()):
     """Branchial edges against causal edges, one curve per shape.
 
     Both axes are sizes of relations over the SAME state set, so a shape's position on this plot
@@ -149,6 +198,8 @@ def relation_figure(rows, rules, labels, fname, tool, out):
         pts = []
         for r in rows:
             if r.get("rule") != rule:
+                continue
+            if (rule, int(num(r, "steps"))) in sat:
                 continue
             c, b = num(r, "causal_edges"), num(r, "branchial_edges")
             if c > 0 and b > 0:
@@ -165,7 +216,7 @@ def relation_figure(rows, rules, labels, fname, tool, out):
     return drawn
 
 
-def shape_table(rows, out, tool):
+def shape_table(rows, out, tool, sat=frozenset()):
     """One row per shape: how deep it reached and how large its relations became there.
 
     The deepest row per shape, because that is the point where the shape is most itself -- the
@@ -177,6 +228,8 @@ def shape_table(rows, out, tool):
         if not rule:
             continue
         d = int(num(r, "steps", 0))
+        if (rule, d) in sat:
+            continue
         if rule not in best or d > int(num(best[rule], "steps", 0)):
             best[rule] = r
     if not best:
@@ -261,6 +314,10 @@ def main():
     print("depth rows %d, scaling rows %d" % (len(depth), len(scale)))
 
     tool = "tools/dev/rich_sweep.sh over tools/sampling_cost_smoke.cpp"
+    sat = saturated_depths(depth)
+    if sat:
+        print("dropping %d saturated (shape, depth) points: %s"
+              % (len(sat), ", ".join("%s@%d" % t for t in sorted(sat))))
     n = 0
     n += scaling_figure(scale, SIZE_RULES, SIZE_LABELS, "f_eff_size.tex", tool, a.out)
     n += scaling_figure(scale, SIZE_RULES, SIZE_LABELS, "f_speedup_size.tex", tool, a.out,
@@ -268,12 +325,12 @@ def main():
     n += scaling_figure(scale, SHAPE_RULES, SHAPE_LABELS, "f_eff_shape.tex", tool, a.out)
     n += scaling_figure(scale, ARITY_RULES, ARITY_LABELS, "f_eff_arity.tex", tool, a.out)
     n += depth_figure(depth, DEPTH_RULES, DEPTH_LABELS,
-                      "f_states_depth.tex", tool, a.out, "states")
+                      "f_states_depth.tex", tool, a.out, "states", sat)
     n += depth_figure(depth, DEPTH_RULES, DEPTH_LABELS,
-                      "f_branchial_depth.tex", tool, a.out, "branchial_edges")
+                      "f_branchial_depth.tex", tool, a.out, "branchial_edges", sat)
     n += relation_figure(depth, DEPTH_RULES, DEPTH_LABELS,
-                         "f_relations.tex", tool, a.out)
-    rows = shape_table(depth, a.out, tool)
+                         "f_relations.tex", tool, a.out, sat)
+    rows = shape_table(depth, a.out, tool, sat)
     print("wrote %d curves across the figures, %d rows in t14_shape_space" % (n, rows))
 
 
