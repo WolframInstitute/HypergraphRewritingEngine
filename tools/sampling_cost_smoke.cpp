@@ -344,7 +344,10 @@ int main(int argc, char** argv) {
                 " threads=%zu canon_mode=%s"
                 " ms=%.3f states=%zu canonical=%zu events=%zu matches=%zu"
                 " causal_edges=%zu causal_pairs=%zu branchial_edges=%zu branchial_claimed=%zu"
-                " max_width=%zu depth_reached=%zu truncated=%d\n",
+                " max_width=%zu depth_reached=%zu truncated=%d"
+                " main_arena_b=%zu arena_blocks_b=%zu"
+                " discovered=%zu forwarded=%zu invalidated=%zu rewalks=%zu"
+                " discarded_tables_b=%zu\n",
                 rule.c_str(),
                 is_family ? fam_shape.c_str()
                           : (rule == "disc" ? "disc" : "chain"),
@@ -359,6 +362,10 @@ int main(int argc, char** argv) {
                 static_cast<size_t>(hg.num_events()), e.total_matches(),
                 cg.num_causal_edges(), cg.num_causal_event_pairs(),
                 cg.num_branchial_edges(), cg.num_branchial_pairs_claimed(),
-                max_width, depth_reached, truncated ? 1 : 0);
+                max_width, depth_reached, truncated ? 1 : 0,
+                hg.arena().bytes_allocated(), arena_block_bytes_live(),
+                e.stats().new_matches_discovered.load(), e.stats().matches_forwarded.load(),
+                e.stats().matches_invalidated.load(), e.stats().forwarding_rewalks.load(),
+                discarded_table_bytes());
     return 0;
 }

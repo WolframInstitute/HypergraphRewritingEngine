@@ -82,6 +82,11 @@ ConcurrentHeterogeneousArena::ConcurrentHeterogeneousArena(size_t block_size,
     }
 }
 
+// Bytes held by every live ConcurrentHeterogeneousArena block. Bumped where blocks are created
+// and freed, which is once per 1 MB rather than once per allocation, so nothing on the hot path
+// touches it. Relaxed throughout: it is read for reporting, never to decide anything.
+static std::atomic<size_t> g_arena_block_bytes{0};
+
 ConcurrentHeterogeneousArena::~ConcurrentHeterogeneousArena() {
     // Call destructors in reverse allocation order
     DestructorNode* node = destructor_head_.load(std::memory_order_acquire);
@@ -96,6 +101,7 @@ ConcurrentHeterogeneousArena::~ConcurrentHeterogeneousArena() {
         Block* prev = block->prev;
         // operator delete must not be handed a region this file poisoned.
         HG_ARENA_UNPOISON(block->data, block->capacity);
+        g_arena_block_bytes.fetch_sub(sizeof(Block) + block->capacity, std::memory_order_relaxed);
         ::operator delete(block);
         block = prev;
     }
@@ -164,6 +170,7 @@ ConcurrentHeterogeneousArena::Block::create(size_t data_capacity) {
     block->capacity = data_capacity;
     block->offset.store(0, std::memory_order_relaxed);
     HG_ARENA_POISON(block->data, data_capacity);
+    g_arena_block_bytes.fetch_add(sizeof(Block) + data_capacity, std::memory_order_relaxed);
     return block;
 }
 
@@ -338,6 +345,20 @@ ConcurrentHeterogeneousArena& worker_scratch() {
     static thread_local ConcurrentHeterogeneousArena scratch(
         ConcurrentHeterogeneousArena::DEFAULT_BLOCK_SIZE, /*recycle_blocks=*/true);
     return scratch;
+}
+
+size_t arena_block_bytes_live() {
+    return g_arena_block_bytes.load(std::memory_order_relaxed);
+}
+
+static std::atomic<size_t> g_discarded_table_bytes{0};
+
+void note_discarded_table_bytes(size_t bytes) {
+    g_discarded_table_bytes.fetch_add(bytes, std::memory_order_relaxed);
+}
+
+size_t discarded_table_bytes() {
+    return g_discarded_table_bytes.load(std::memory_order_relaxed);
 }
 
 

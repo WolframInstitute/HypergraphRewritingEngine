@@ -547,6 +547,29 @@ private:
 // every call. One instance per thread ⇒ no contention, never freed mid-task.
 ConcurrentHeterogeneousArena& worker_scratch();
 
+// TOTAL BYTES CURRENTLY HELD BY ConcurrentHeterogeneousArena BLOCKS, summed over every arena on
+// every thread. bytes_allocated() answers a different question -- the live high-water offset
+// inside one arena -- and neither the main arena's figure nor the sum of them says how much the
+// process is HOLDING, because a block stays owned once grown: reset() rewinds offsets and keeps
+// the chain, which is what makes the next task's allocations free.
+//
+// That distinction is the whole reason this exists. Resident set grows about 200 MB per worker
+// on the shape workload (tools/dev/worker_memory_slope.sh: 624 MB at one thread, 1211 MB at
+// four), and "the workers are each holding an arena grown to their own high-water mark" and
+// "the workers have more live data" predict the same RSS curve. This number separates them.
+size_t arena_block_bytes_live();
+
+// BYTES OF ConcurrentMap TABLES THAT LOST THEIR INSTALL RACE and were abandoned in an arena.
+//
+// resize() allocates the new table BEFORE the compare-exchange that installs it, so under
+// contention every thread but one has allocated a full table it then discards. A heap-backed
+// map deletes it; an arena-backed one cannot, and the comment at the discard site calls that
+// "rare, small". Whether it is rare and small is a measurement, not a property of the code, and
+// this is the number that decides it: it scales with contention where the map's live table
+// bytes do not.
+void note_discarded_table_bytes(size_t bytes);
+size_t discarded_table_bytes();
+
 // =============================================================================
 // ArenaVector<T>: Vector that allocates from ConcurrentHeterogeneousArena
 // =============================================================================

@@ -136,24 +136,32 @@ public:
         // per-map heap contention) and is NEVER individually freed — it is reclaimed in
         // bulk when the arena is. When arena == nullptr it falls back to ::operator new
         // (freed in the destructor), for standalone/test use.
+        // THE ONE STATEMENT OF A TABLE'S FOOTPRINT. create() allocates this many bytes and the
+        // discard-accounting in resize() reports this many; a second expression of the same rule
+        // is how the two stop agreeing the first time either is edited.
+        //
+        // THE ENTRY ARRAY STARTS ON A CACHE LINE, which the header size otherwise decides for
+        // it. Table is 40 bytes and Entry is 16, so entries placed immediately after the header
+        // begin at a 40-byte phase: the third Entry of every four spans two lines, and a probe
+        // run pays a second line fetch one time in four, on every map, for the life of the run.
+        // The alignment is applied to the POINTER inside an over-allocated block rather than to
+        // the allocation, so it holds whatever the base alignment is -- ::operator new gives only
+        // max_align_t -- and the three ::operator delete sites keep freeing the address they were
+        // given.
+        static constexpr size_t kLine = 64;
+        static size_t round_capacity(size_t cap) {
+            size_t actual = 1;
+            while (actual < cap) actual <<= 1;
+            return actual;
+        }
+        static size_t bytes_for(size_t cap) {
+            return sizeof(Table) + kLine + sizeof(Entry) * round_capacity(cap);
+        }
+
         static Table* create(size_t cap, Table* prev_table,
                              ConcurrentHeterogeneousArena* arena) {
-            // Capacity must be power of 2
-            size_t actual_cap = 1;
-            while (actual_cap < cap) actual_cap <<= 1;
-
-            // THE ENTRY ARRAY STARTS ON A CACHE LINE, which the header size otherwise decides
-            // for it. Table is 40 bytes and Entry is 16, so entries placed immediately after the
-            // header begin at a 40-byte phase: the third Entry of every four spans two lines, and
-            // a probe run pays a second line fetch one time in four, on every map, for the life
-            // of the run.
-            //
-            // The alignment is applied to the POINTER inside an over-allocated block rather than
-            // to the allocation, so it holds whatever the base alignment is -- ::operator new
-            // gives only max_align_t -- and the three ::operator delete sites keep freeing the
-            // same address they were given.
-            constexpr size_t kLine = 64;
-            size_t bytes = sizeof(Table) + kLine + sizeof(Entry) * actual_cap;
+            const size_t actual_cap = round_capacity(cap);
+            const size_t bytes = bytes_for(cap);
             void* mem = arena ? arena->allocate_raw(bytes, kLine)
                               : ::operator new(bytes);
             Table* table = static_cast<Table*>(mem);
@@ -771,9 +779,14 @@ private:
                 old_table, new_table,
                 std::memory_order_release,
                 std::memory_order_acquire)) {
-            // Another thread resized first. Discard our table: only free if heap-backed;
-            // an arena-backed loser is reclaimed in bulk with the arena (rare, small).
-            if (!arena_) ::operator delete(new_table);
+            // Another thread resized first. Discard our table: only free if heap-backed; an
+            // arena-backed loser cannot be freed individually, so it is counted instead -- the
+            // number is what says whether "rare, small" holds under contention.
+            if (!arena_) {
+                ::operator delete(new_table);
+            } else {
+                note_discarded_table_bytes(Table::bytes_for(new_capacity));
+            }
             return;
         }
 
