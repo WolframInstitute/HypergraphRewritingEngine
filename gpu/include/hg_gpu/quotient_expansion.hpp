@@ -656,6 +656,25 @@ struct DeviceQrCtx {
     QeView& qe;
     QeWork& work;
 
+    // COUNTED INTO LOCALS AND PUBLISHED ONCE, when this context is destroyed at the end of the
+    // application it was made for. Incremented in place each is one global atomicAdd per
+    // emission, from every resident thread onto a single address, and the L2 serialises those
+    // one at a time -- the branchial count alone is 133,218,996 emissions against 970,584
+    // applications on disc-l3a2g2r2 depth 3. An application emits far fewer than 2^32, so the
+    // published totals are identical to counting in place.
+    //
+    // Its host twin is Hypergraph::QrCtx, which batches the same three for the same reason and
+    // publishes them from its own destructor.
+    uint32_t branchial_seen = 0;
+    uint32_t causal_edges_seen = 0;
+    uint32_t causal_pairs_seen = 0;
+
+    __device__ ~DeviceQrCtx() {
+        if (branchial_seen)    atomicAdd(qe.num_branchial, branchial_seen);
+        if (causal_edges_seen) atomicAdd(qe.num_causal_edges, causal_edges_seen);
+        if (causal_pairs_seen) atomicAdd(qe.num_causal_pairs, causal_pairs_seen);
+    }
+
     __device__ bool claim(uint64_t apply_key) {
         return qe.applied.insert_if_absent(apply_key, 1u).inserted;
     }
@@ -689,10 +708,10 @@ struct DeviceQrCtx {
         return qe.arr_words[inst.prod_offset + slot];
     }
     __device__ void record_causal(uint32_t producer, uint32_t consumer) {
-        atomicAdd(qe.num_causal_edges, 1u);
+        ++causal_edges_seen;
         const uint64_t pk = hgcommon::id_key(producer, consumer);
         if (!qe.causal_pairs.insert_if_absent(pk, 1u).inserted) return;
-        atomicAdd(qe.num_causal_pairs, 1u);
+        ++causal_pairs_seen;
         // THE BASE SET, and nothing else. Which pairs survive transitive reduction is a
         // property of the finished relation, so it is decided by hgcommon::tr_reduce when the
         // relation is handed back -- see reconstructed_pairs_host. Deciding it here would ask
@@ -733,7 +752,7 @@ struct DeviceQrCtx {
         // map is storage for the readback, not a dedup the count depends on.
         (void)lo;
         (void)hi;
-        atomicAdd(qe.num_branchial, 1u);
+        ++branchial_seen;
     }
     // __forceinline__ so its 1104-byte depot merges into qr_apply's frame rather than taking
     // one of its own. That frame is now paid ONCE per drive rather than once per level of

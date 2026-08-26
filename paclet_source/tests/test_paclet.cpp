@@ -129,6 +129,59 @@ TEST_F(PacletTest, TestPacletBasicFunctionality) {
         << "HGEvolve returned a non-association result. WolframScript output:\n" << out;
 }
 
+// THE ENGINE BINARY IS A ROUTE ON ITS OWN, and this is the only test that says so.
+//
+// HGEvolve prefers the persistent worker, then a one-shot RunProcess of the engine binary, and
+// falls back to the in-process LibraryLink last. Every other test here runs where BOTH are
+// present, so a dispatch that quietly requires the library passes all of them -- which is what
+// happened: HGEvolve refused every call on a platform shipping hg_evolve and no library, and
+// the Linux CI that builds both could not see it.
+//
+// Block'ing performRewriting to a plain symbol is exactly the state FindLibrary leaves it in
+// when the platform has no library, and it does it without removing a file the other tests in
+// this process need.
+TEST_F(PacletTest, EvolveWorksThroughTheBinaryWhenNoLibraryIsLoaded) {
+    const std::string paclet_dir =
+        test_utils::wlStringLiteralBody(test_utils::hostVisiblePath(
+            std::string(HG_SOURCE_DIR) + "/paclet"));
+
+    const std::string code =
+        "PacletDirectoryLoad[\"" + paclet_dir + "\"]; "
+        "<< \"HypergraphRewriting`\"; "
+        "If[!MemberQ[$Packages, \"HypergraphRewriting`\"], Print[\"NOLIB_LOAD_FAIL\"]; Exit[0]]; "
+        // Nothing to prove if this build ships no binary either: then the library IS the only
+        // route and refusing without it is correct.
+        "If[!HypergraphRewriting`Private`hgCpuBinaryAvailableQ[], Print[\"NOLIB_SKIP: no engine "
+        "binary for \", $SystemID]; Exit[0]]; "
+        "r = Block[{HypergraphRewriting`Private`performRewriting = Null}, "
+        "  HypergraphRewriting`HGEvolve[{{{1, 2}, {2, 3}} -> {{3, 2}, {2, 1}, {1, 4}}}, "
+        "                               {{1, 2}, {2, 3}}, 4, \"Debug\"]]; "
+        "If[AssociationQ[r] && IntegerQ[r[\"NumStates\"]] && r[\"NumStates\"] > 0, "
+        "  Print[\"NOLIB_OK states=\", r[\"NumStates\"]], Print[\"NOLIB_FAIL: \", r]]";
+
+    constexpr int kMaxAttempts = 3;
+    std::string out;
+    for (int attempts = 0; attempts < kMaxAttempts; ++attempts) {
+        out = test_utils::executeWolframScriptCapture(code);
+        const bool verdict = out.find("NOLIB_OK") != std::string::npos ||
+                             out.find("NOLIB_FAIL") != std::string::npos ||
+                             out.find("NOLIB_SKIP") != std::string::npos ||
+                             out.find("NOLIB_LOAD_FAIL") != std::string::npos;
+        if (verdict) break;
+    }
+
+    if (out.find("NOLIB_SKIP") != std::string::npos) {
+        GTEST_SKIP() << "this build ships no engine binary for this platform, so the library is "
+                        "the only route: " << out;
+    }
+    ASSERT_EQ(out.find("NOLIB_LOAD_FAIL"), std::string::npos)
+        << "the paclet did not load, so nothing below was exercised:\n" << out;
+    EXPECT_NE(out.find("NOLIB_OK"), std::string::npos)
+        << "HGEvolve did not evolve with the library absent, though an engine binary is present. "
+           "The dispatch is requiring a route it documents as the LAST fallback. WolframScript "
+           "output:\n" << out;
+}
+
 #else
 
 TEST_F(PacletTest, SkipPacletTests) {
