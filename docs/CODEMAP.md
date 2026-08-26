@@ -257,6 +257,56 @@ Physics hunches: `branchial_flux_probe`, `budget_collapse_probe`, `higgs_shadow_
 Profiling: `profile_evolve` (single-threaded, for callgrind/cachegrind), `bench_gpu_evolve` (GPU evolve() vs PersistentEvolver timing; `HG_GPU_DBG_TIME=1` prints the persistent scheduler's phase-cycle attribution), `bench_cpu_evolve` (the CPU twin of the same workload).
 Build/docs: `build_paclet.wls` (CreatePacletArchive), `build_docs.wls` (markdown -> paclet notebooks).
 
+## `tools/dev/` -- the measurement pipeline behind the paper
+
+Nothing here is part of the engine; each writes a fragment under `paper/tables/` or drives a
+rented box that does.
+
+- **`paper_tables.py`** -- writes every generated fragment. `_fit` shrinks type before geometry, so
+  a table's rendered size is a decision rather than a residue of its column count; `provenance()`
+  stamps the commit, the machine MEASURED on and (when they differ) the machine the table was
+  generated on. One `cost_matrix` run is shared by every table quoting it: they used to invoke it
+  separately and disagreed on `multi-rule`, which is nondeterministic there.
+- **`scaling_sweep.py`** -- the thread-scaling and rule-shape tables (T8, T12, T13) plus their
+  figures. Writes `t8_scaling.tex` under the same name `paper_tables` does and runs second, which
+  is why the pinned three-depth version is the one that survives.
+- **`rich_sweep.sh`** -- collects the left-hand-side data set: a DEPTH phase that saturates the box
+  (counts are deterministic, so concurrency is free) and a SCALING phase that runs one job at a
+  time behind the quiet gate. Records `measured_on.txt` beside the data so the figures cannot
+  claim they were measured where they were drawn.
+- **`rich_plots.py`** -- turns that data set into the LHS-space figures and T14. Refuses to run
+  rather than guess the measuring machine.
+- **`quiet_gate.sh`** -- the single quiet check, shared by `rich_sweep.sh` and the Wolfram
+  comparison. Watch-list process names are compared TRUNCATED TO 15 CHARACTERS, which is all
+  `comm` holds and all `pgrep -x` can match; a longer pattern matches nothing and turns the gate
+  into a rubber stamp.
+- **`instruction_profile.py`** -- T15, from `callgrind_annotate` output. Sums the flat
+  per-function block only; the per-file annotations that follow it cover the same functions again.
+- **`remote_session.sh`** / **`remote_drive.sh`** -- the phase runner on a rented box and the
+  driver that pulls each phase's artifacts as soon as it returns. A bare branch name resolves to
+  `origin/<name>`: `git fetch` does not advance a local branch, so a reused clone would otherwise
+  rebuild whatever it last checked out and report that as the commit under measurement.
+- **`evidence.sh`** -- the evidence report, including the four device sanitizers, each scoped in a
+  comment to what it actually sees (racecheck is shared memory only).
+
+## `verification/` -- model checking
+
+Neither suite is part of any build; both are gates run by `ctest`.
+
+- **`verification/genmc/`** -- 23 harnesses over RC11, driven by `run.sh` (compile to LLVM IR with
+  clang taking SYSTEM headers, then hand the IR to GenMC) and registered as the `genmc_harnesses`
+  ctest, which SKIPS where genmc is absent. Every harness is CALIBRATED: the defect it claims to
+  catch is injected and the harness must report a violation. That is the only thing that makes a
+  small execution count meaningful -- one of these passed with both of its memory fences deleted
+  before it was reworked, and `deque_no_double_extraction` still passes with the deque's ABA tag
+  removed entirely, which is why `deque_tag_defeats_aba` exists to cover the tag.
+- **`verification/tla/`** -- 7 TLC cells over two specs, driven by `run.sh` and registered as the
+  `tla_cells` ctest. Each `.cfg` declares its own expected verdict on line 1 and the runner checks
+  against it, because TWO OF THE SEVEN MUST VIOLATE: a spec edit that turns a calibration cell
+  green has deleted the calibration while every other signal stays clean, and a table of results
+  cannot catch that. State counts are reported but not asserted -- TLC stops a violating cell at
+  the first counterexample, so its generated count varies with `-workers`.
+
 ## Tests
 
 - **`testing/`** -- `main.cpp` (gtest entry), `test_helpers.hpp` + **`test_helpers.cpp`** (the canonical-form comparisons and the WolframScript shell-out, in all six test targets), `CMakeLists.txt` (fetches GoogleTest, builds `all_tests` + subset targets `core_tests`/`evolution_tests`/`causal_tests`/`stress_tests`/`integration_tests`).
