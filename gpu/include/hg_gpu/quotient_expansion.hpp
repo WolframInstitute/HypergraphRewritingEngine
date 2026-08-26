@@ -344,6 +344,27 @@ __device__ __forceinline__ void qe_register_frame(QeView qe, uint64_t class_hash
         qe.frame_step.insert_if_absent(class_hash, step + 1u);
 }
 
+// Alignment outcomes counted into a caller's local and published when it returns.
+//
+// qe_capture_expansion calls qe_frame_slot_of up to 2n times for an n-edge state, and each call
+// scans the frame's whole slice, so an atomic per call sits inside an O(n^2) nest -- on one
+// address, from every block. These are statistics with no in-run reader: only
+// num_aligned_host/num_align_failures_host and the differential suite read them, after the run.
+//
+// The destructor publishes, because the capture returns from inside its loops on exactly the
+// paths a failure is counted on -- a publish written at the end would drop the counts it exists
+// to record.
+struct QeAlignTally {
+    uint32_t* moved_out;
+    uint32_t* failed_out;
+    uint32_t  moved  = 0;
+    uint32_t  failed = 0;
+    __device__ ~QeAlignTally() {
+        if (moved)  atomicAdd(moved_out, moved);
+        if (failed) atomicAdd(failed_out, failed);
+    }
+};
+
 // The slot `edge` of `sid` occupies IN ITS CLASS'S FRAME.
 //
 // When `sid` holds the frame this is its own slot. Otherwise the two states are isomorphic and
@@ -356,14 +377,14 @@ __device__ __forceinline__ void qe_register_frame(QeView qe, uint64_t class_hash
 // UINT32_MAX when no image exists, which every caller turns into dropping the capture rather
 // than recording a slot that means nothing.
 __device__ inline uint32_t qe_frame_slot_of(DeviceState ds, QeView qe, uint64_t class_hash,
-                                            StateId sid, EdgeId edge) {
+                                            StateId sid, EdgeId edge, QeAlignTally& tally) {
     const auto held = qe.frame.lookup_waiting(class_hash);
-    if (!held.found || held.value == 0) { atomicAdd(qe.align_fail, 1u); return UINT32_MAX; }
+    if (!held.found || held.value == 0) { ++tally.failed; return UINT32_MAX; }
     const StateId frame = static_cast<StateId>(held.value - 1u);
     if (frame == sid) return qe_slot_of(ds, sid, edge);
 
     if (!ds.state_edge_rank || !ds.state_edge_orbit || frame >= ds.max_states) {
-        atomicAdd(qe.align_fail, 1u);
+        ++tally.failed;
         return UINT32_MAX;
     }
     const uint32_t r = qe_rank_of(ds, sid, edge);
@@ -372,11 +393,11 @@ __device__ inline uint32_t qe_frame_slot_of(DeviceState ds, QeView qe, uint64_t 
         for (uint32_t k = 0; k < fsl.count; ++k) {
             if (ds.state_edge_rank[fsl.offset + k] != r) continue;
             const uint32_t fs = hgcommon::slot_rank(ds.state_edge_orbit + fsl.offset, fsl.count, k);
-            if (fs != qe_slot_of(ds, sid, edge)) atomicAdd(qe.align_moved, 1u);
+            if (fs != qe_slot_of(ds, sid, edge)) ++tally.moved;
             return fs;
         }
     }
-    atomicAdd(qe.align_fail, 1u);
+    ++tally.failed;
     return UINT32_MAX;
 }
 
@@ -414,14 +435,18 @@ __device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
     const DeviceEvent& ev = ds.event_pool.at(event);
     const uint32_t nc = ev.num_consumed, np = ev.num_produced;
 
+    // Publishes on every path out of this function, including the drop-the-capture returns
+    // below, which are the ones a failure is counted on.
+    QeAlignTally align{qe.align_moved, qe.align_fail};
+
     uint32_t consumed[kMaxPatternEdges];
     uint32_t produced[kMaxPatternEdges];
     for (uint32_t i = 0; i < nc; ++i) {
-        consumed[i] = qe_frame_slot_of(ds, qe, from, parent, ev.consumed_edges[i]);
+        consumed[i] = qe_frame_slot_of(ds, qe, from, parent, ev.consumed_edges[i], align);
         if (consumed[i] == UINT32_MAX) return;   // no frame slot: drop rather than corrupt
     }
     for (uint32_t i = 0; i < np; ++i) {
-        produced[i] = qe_frame_slot_of(ds, qe, to, child, ev.produced_edges[i]);
+        produced[i] = qe_frame_slot_of(ds, qe, to, child, ev.produced_edges[i], align);
         if (produced[i] == UINT32_MAX) return;
     }
 
@@ -438,8 +463,8 @@ __device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
             for (uint32_t j = 0; j < np; ++j)
                 if (ev.produced_edges[j] == oe) { produced_here = true; break; }
             if (produced_here) continue;
-            const uint32_t ps = qe_frame_slot_of(ds, qe, from, parent, oe);
-            const uint32_t cs = qe_frame_slot_of(ds, qe, to, child, oe);
+            const uint32_t ps = qe_frame_slot_of(ds, qe, from, parent, oe, align);
+            const uint32_t cs = qe_frame_slot_of(ds, qe, to, child, oe, align);
             if (ps == UINT32_MAX || cs == UINT32_MAX) continue;
             if (ns >= kQeMaxSurvivors) { ds.errors.record(ErrorKind::kScratchOverflow); return; }
             surv[ns++] = (static_cast<uint64_t>(ps) << 32) | cs;

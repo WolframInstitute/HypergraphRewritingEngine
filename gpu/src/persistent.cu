@@ -627,6 +627,11 @@ __global__ void k_persistent_evolve(
     // hot loop carries no extra atomics. See PersistentEvolveStats for what the four mean.
     unsigned long long acc_match = 0, acc_rewrite = 0, acc_canon = 0, acc_idle = 0,
                        acc_wait = 0;
+    // Slots 11-15, the parts acc_canon spans, accumulated the same way and for the same reason.
+    // Written in place they were five more global atomicAdds per RECORD, and the sixteen
+    // counters are one 128-byte allocation, so every block's every record queued on one L2
+    // line. The published totals are identical -- the same sums, added once per flush.
+    unsigned long long acc_key = 0, acc_dedup = 0, acc_sig = 0, acc_qc = 0, acc_qe = 0;
     auto flush_cycles = [&] {
         if (threadIdx.x == 0 && phase_cycles) {
             atomicAdd(&phase_cycles[0], acc_match);
@@ -634,7 +639,13 @@ __global__ void k_persistent_evolve(
             atomicAdd(&phase_cycles[2], acc_canon);
             atomicAdd(&phase_cycles[3], acc_idle);
             atomicAdd(&phase_cycles[4], acc_wait);
+            atomicAdd(&phase_cycles[11], acc_key);
+            atomicAdd(&phase_cycles[12], acc_dedup);
+            atomicAdd(&phase_cycles[13], acc_sig);
+            atomicAdd(&phase_cycles[14], acc_qc);
+            atomicAdd(&phase_cycles[15], acc_qe);
             acc_match = acc_rewrite = acc_canon = acc_idle = acc_wait = 0;
+            acc_key = acc_dedup = acc_sig = acc_qc = acc_qe = 0;
         }
     };
 
@@ -697,7 +708,7 @@ __global__ void k_persistent_evolve(
                     const ExactHashStatus key_st =
                         state_key_device(ds, child_sid, state_mode, arena, ir_slot,
                                          ir_slot_words, h, need_ranks, qc.enabled != 0);
-                    if (phase_cycles) atomicAdd(&phase_cycles[11], clock64() - sub0);
+                    acc_key += clock64() - sub0;
                     if (key_st != ExactHashStatus::kOk) {
                         ds.errors.record(error_kind_for(key_st));
                     } else {
@@ -739,7 +750,7 @@ __global__ void k_persistent_evolve(
                                                   ds.state_exact_hash[rec.state_id], exact,
                                                   rec.state_id, child_sid, step + 1u,
                                                   rec.rule_id, event_map);
-                            if (phase_cycles) atomicAdd(&phase_cycles[12], clock64() - s1);
+                            acc_dedup += clock64() - s1;
                         }
 
                         // Quotient causal: register this raw event's canonical transition and
@@ -758,7 +769,7 @@ __global__ void k_persistent_evolve(
                                 qc_register_transition(ds, qc, rec.state_id, child_sid,
                                                        child_event, rec.rule_id, step,
                                                        blockIdx.x);
-                                if (phase_cycles) atomicAdd(&phase_cycles[13], clock64() - s2);
+                                acc_sig += clock64() - s2;
                             }
                             // Same event, same endpoints: the class frame's match record.
                             const uint64_t s3 = clock64();
@@ -766,7 +777,7 @@ __global__ void k_persistent_evolve(
                             // `threadIdx.x == 0`, so blockIdx is the slice.
                             qe_capture_expansion(ds, qe, rec.state_id, child_sid,
                                                  child_event, rec.rule_id, step, blockIdx.x);
-                            if (phase_cycles) atomicAdd(&phase_cycles[14], clock64() - s3);
+                            acc_qc += clock64() - s3;
                         }
 
                         if (child_step < max_steps) {
@@ -775,7 +786,7 @@ __global__ void k_persistent_evolve(
                                                                 dedup, explore_threshold_u32,
                                                                 explore_seed, child_step,
                                                                 rec.state_id);
-                            if (phase_cycles) atomicAdd(&phase_cycles[15], clock64() - s4);
+                            acc_qe += clock64() - s4;
                         } else if (sess.enabled) {
                             // AT THE BUDGET, AND THE RUN IS CONTINUABLE. Consult dedup anyway --
                             // a duplicate needs no frontier entry, someone else's copy carries
@@ -837,7 +848,14 @@ __global__ void k_persistent_evolve(
             if (threadIdx.x == 0) {
                 __threadfence();
                 atomicAdd(rewrites_done, 1u);
-                if (++records_since_flush >= 8u) {
+                // 1024, which is what the detector's note beside the progress print already
+                // states this to be. A flush is ten atomics on one 128-byte line, shared by
+                // every block, so at eight it cost 1.25 per record -- and the reason the
+                // interval exists at all is that a run which never finishes is still
+                // attributable, which 1024 serves exactly as well as 8. A block leaving the
+                // loop flushes on the way out either way (exit_requested, stalled), so a run
+                // shorter than the interval loses nothing.
+                if (++records_since_flush >= 1024u) {
                     flush_cycles();
                     records_since_flush = 0;
                 }
