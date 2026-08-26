@@ -61,6 +61,29 @@ EXPECTED_VARIANT = {
     "hg_evolve_gpu.exe": "hg_evolve_gpu",
 }
 
+# WHAT A POPULATED PLATFORM DIRECTORY MUST HOLD, keyed by the prefix of the SystemID.
+#
+# Stamping only says whether the files PRESENT are current. It cannot see a file that is not
+# there, and a platform missing one is not a cosmetic gap: HGEvolve reaches the engine through
+# the persistent worker, then the binary, then the in-process library, and a paclet carrying a
+# subset serves only the callers whose route survived. Windows-x86-64 shipping hg_evolve.exe
+# and no HypergraphRewriting.dll is the shape this catches.
+#
+# hg_evolve_gpu is deliberately NOT required: it is built only where CUDA is, and
+# build_all_platforms.sh routes its failure to SKIPPED so the platform libraries still ship.
+REQUIRED_BY_PLATFORM = {
+    "Linux":   ("libHypergraphRewriting.so", "hg_evolve"),
+    "MacOSX":  ("libHypergraphRewriting.dylib", "hg_evolve"),
+    "Windows": ("HypergraphRewriting.dll", "hg_evolve.exe"),
+}
+
+
+def required_for(platform):
+    for prefix, names in REQUIRED_BY_PLATFORM.items():
+        if platform.startswith(prefix):
+            return names
+    return ()
+
 
 def head_commit():
     return subprocess.run(
@@ -106,6 +129,18 @@ def main():
             continue
         if args.platform and args.platform not in platform:
             continue
+        present = {n for n in os.listdir(pdir) if n in EXPECTED_VARIANT}
+        # Only a directory that was populated at all is held to the full set. One holding
+        # nothing was not built for this platform, which the scanned == 0 check below answers
+        # for the tree as a whole; one holding SOME of its artifacts is a partial build, and
+        # that is the state that ships a paclet which fails for half its callers.
+        if present:
+            for need in required_for(platform):
+                if need not in present:
+                    findings.append(
+                        f"{os.path.relpath(pdir, REPO)}: {need} is MISSING while "
+                        f"{sorted(present)} are present -- a partial build for this platform")
+
         for name in sorted(os.listdir(pdir)):
             expected = EXPECTED_VARIANT.get(name)
             if expected is None:

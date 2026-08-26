@@ -55,9 +55,32 @@ def case(name):
     return deco
 
 
-@case("a current, correctly-stamped artifact passes")
+@case("a current, correctly-stamped, COMPLETE platform passes")
 def _(root):
+    # Both required artifacts: a platform holding only one of them is a partial build, which is
+    # a separate case below. The passing fixture has to be a platform that would actually ship.
     write(root, "Linux-x86-64", "hg_evolve", stamp(HEAD, "hg_evolve"))
+    write(root, "Linux-x86-64", "libHypergraphRewriting.so", stamp(HEAD, "paclet-library"))
+    rc, out = run_checker(root)
+    return rc == 0 and "0 findings" in out, out
+
+
+@case("a platform holding a binary but no library is caught")
+def _(root):
+    # The shape that shipped: LibraryResources/Windows-x86-64 carried hg_evolve.exe and no
+    # HypergraphRewriting.dll. Every file present was current, so a check that only reads
+    # stamps saw nothing wrong, while HGEvolve had one fewer route than the paclet claims.
+    write(root, "Windows-x86-64", "hg_evolve.exe", stamp(HEAD, "hg_evolve"))
+    rc, out = run_checker(root)
+    return rc == 1 and "HypergraphRewriting.dll is MISSING" in out, out
+
+
+@case("the optional GPU binary is not required")
+def _(root):
+    # hg_evolve_gpu is built only where CUDA is, and build_all_platforms routes its failure to
+    # SKIPPED on purpose. Requiring it would fail every platform that legitimately has none.
+    write(root, "Linux-x86-64", "hg_evolve", stamp(HEAD, "hg_evolve"))
+    write(root, "Linux-x86-64", "libHypergraphRewriting.so", stamp(HEAD, "paclet-library"))
     rc, out = run_checker(root)
     return rc == 0 and "0 findings" in out, out
 
