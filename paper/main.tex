@@ -155,6 +155,15 @@ The remainder of this paper is organized as follows. Section~\ref{sec:background
 \section{Background and Related Work}
 \label{sec:background}
 
+This section fixes the objects the rest of the paper measures and states which of
+their properties are the expensive ones. Hypergraph rewriting supplies the rule and
+the match; multiway evolution supplies the branching structure that makes a state
+space rather than a trajectory, together with the causal and branchial relations
+derived from it. The cost of the whole construction concentrates in one place: to
+know whether two states are the same state, the system must decide hypergraph
+isomorphism, and it must decide it once per produced state rather than once per
+query. We close with the systems and libraries this work is measured against.
+
 \subsection{Hypergraph Rewriting Systems}
 
 A \emph{hypergraph} $\hypergraph = (V, E)$ consists of a vertex set $V$ and a set of hyperedges $E$, where each hyperedge $e \in E$ is an ordered tuple of vertices $(v_1, v_2, \ldots, v_k)$ with $v_i \in V$. Unlike standard graphs where edges connect exactly two vertices, hyperedges may connect any number of vertices with arbitrary arity.
@@ -547,6 +556,17 @@ only when the number of comparisons performed is not.
 
 \section{System Architecture}
 \label{sec:architecture}
+
+The architecture follows from two commitments that constrain every structure below.
+The first is that a rule---an ordering, an identity, a hash, a predicate---has exactly
+one implementation, compiled for both the host and the device, so the two targets
+cannot diverge on what a state \emph{is}. The second is that no thread ever blocks
+another: every shared structure is lock-free, and where a protocol needs agreement it
+reaches it by a single compare-exchange whose loser adopts the winner's answer rather
+than waiting. The subsections take these in turn---the shared core, the storage the
+states live in, the lock-free structures, the allocator that keeps them off the global
+heap, the memory model that makes their orderings checkable, and the static analysis
+that decides how a rule will be matched before any matching happens.
 
 \subsection{One Implementation per Rule, Compiled for Both Targets}
 \label{sec:shared-core}
@@ -1104,6 +1124,16 @@ indistinguishable from the requested one at the call site.
 
 \section{GPU Acceleration}
 \label{sec:gpu}
+
+Multiway evolution is a poor fit for the shape of work a GPU is usually given. The
+frontier is irregular and data-dependent, its width is not known before the step that
+produces it, and each state must be canonicalized---a refinement loop with data-dependent
+control flow---before it can be compared with any other. A per-phase kernel launch would
+put a host round trip between every one of those stages. The design here is therefore a
+single resident megakernel that keeps the frontier on the device across steps, and the
+subsections describe what that costs: how canonicalization and matching are expressed
+without host control flow, how work is queued and termination detected among resident
+blocks, and how memory is managed when no allocator is available.
 
 \subsection{Megakernel Architecture}
 
@@ -1836,6 +1866,13 @@ The author thanks Stephen Wolfram for foundational work on the Wolfram Physics P
 
 \section{Complexity Analysis Details}
 \label{app:complexity}
+
+This appendix gives the bounds quoted in the body, for the two operations that dominate
+a run: deciding whether a produced state has been seen before, and finding the matches of
+a rule in a state. Both have a worst case far above their observed cost, and in both the
+gap is a property of the \emph{input} rather than of the implementation---symmetry in the
+first case, left-hand side connectivity in the second---so each bound is stated together
+with what makes it attainable.
 
 \subsection{Canonicalization Complexity}
 
