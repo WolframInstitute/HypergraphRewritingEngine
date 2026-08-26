@@ -293,7 +293,7 @@ rented box that does.
 
 Neither suite is part of any build; both are gates run by `ctest`.
 
-- **`verification/genmc/`** -- 23 harnesses over RC11, driven by `run.sh` (compile to LLVM IR with
+- **`verification/genmc/`** -- 24 harnesses over RC11, driven by `run.sh` (compile to LLVM IR with
   clang taking SYSTEM headers, then hand the IR to GenMC) and registered as the `genmc_harnesses`
   ctest, which SKIPS where genmc is absent. Every harness is CALIBRATED: the defect it claims to
   catch is injected and the harness must report a violation. That is the only thing that makes a

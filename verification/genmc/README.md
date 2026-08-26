@@ -130,6 +130,7 @@ handling of thread_local class types is what blocked in the first place.
 | `lock_free_list_pairs_meet_once` | two concurrent pushers MEET EXACTLY ONCE under `push` + `for_each_before` -- the pairing rule the quotient branchial relation is built on, which `lock_free_list_completeness` does not state because it walks from the head after the pushers have joined | 2 threads, 1 push each, each scanning the nodes older than its own and counting sightings of the other; their sum must be 1 | **No errors, 8 complete executions** |
 | `arena_worker_index_exclusive` | Two live holders never share a worker index, which is the invariant `allocate_local`'s plain non-atomic cursor bump rests on | 2 threads, 1 acquire each, no release, `HG_MAX_ARENA_WORKERS=2` | **No errors, 4 complete executions** |
 | `claim_match_rendezvous` | The match-dedup rendezvous claims exactly once (two claimants of one match agree on one winner) and never drops on collision (two matches sharing a 64-bit hash BOTH win — the root of #74) | 2 threads per phase, 2 phases, capacity 8, probe depth 8 | **No errors, 2500 complete executions** |
+| `frame_publication_is_atomic` | a class's frame OWNER and its STEP are observed together or not at all. The caller-side shape only, over the real host map: the device map's own atomics are not compiled here (see the device section below) | 2 threads, one class, two differing (step, sid) offers, capacity 4 | **No errors, 32 complete executions** |
 
 ### What this found
 
@@ -208,6 +209,7 @@ assertion inverted, and the checker must report a safety violation:
 | `concurrent_map_resize` | both callers report `was_inserted` | `Error: Safety violation!`, exit 42 |
 | `deque_no_double_extraction` | both consumers receive the item | `Error: Safety violation!`, exit 42 |
 | `claim_match_rendezvous` | P1 inverted (both claimants win); P2 inverted (a colliding claim loses) | `Error: Safety violation!`, exit 42, both |
+| `frame_publication_is_atomic` | the two-map publication reinstated (`-DHG_TWO_MAP_FRAME`), which is the protocol that shipped | `Verification unsuccesful`, exit 42, 0 executions |
 
 Do this for any harness added here, before believing its clean run.
 
@@ -307,3 +309,24 @@ device protocol expressed in shared `HG_HD` code that both engines compile -- th
 `hgcommon/` already makes for the matcher and the IR core. The second is a design change to the
 GPU termination path, not a verification task, and it should be weighed on its own merits rather
 than undertaken to satisfy a harness.
+
+### The one device-originated property that IS checked, and how far it goes
+
+The reasoning above says a transcription of device code proves nothing about what ships, and that
+stands. `frame_publication_is_atomic` is admitted under a narrower claim, which is worth stating
+because the difference is the whole justification.
+
+The quotient expansion published a class's frame owner and its step as TWO inserts under one flag
+(`gpu/include/hg_gpu/quotient_expansion.hpp`). A thread losing the first insert read the second,
+found it EMPTY -- not locked, so nothing to wait on -- and substituted its own depth. The events
+it replayed then signed with an instance depth rather than the class's, and the two signature sets
+came out disjoint. That is a defect of the CALLER'S PUBLICATION SHAPE: two exchanges where one was
+needed. It is not a defect of any map's atomics, and it reproduces against any structure offering
+insert-if-absent with no ordering across keys -- which both the host and the device map offer.
+
+So the harness runs that shape over the real host `ConcurrentMap`, and its calibration arm
+reinstates the two-insert form and gets the violation. What it does NOT do is compile
+`gpu/include/hg_gpu/hash_table.hpp`, whose atomics stay unchecked exactly as the termination
+protocol's do. A shape defect in device code is now reachable by this directory; a memory-ordering
+defect in device code is not, and the fix for that remains the one named above -- device protocols
+expressed as shared `HG_HD` code.

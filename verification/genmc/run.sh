@@ -42,6 +42,10 @@
 #   GENMC_INCLUDE  path to its runtime-include/c   (default: derived from GENMC)
 #   CLANGXX        clang++ to emit the IR          (default: /usr/lib/llvm-18/bin/clang++)
 #   OPT            matching llvm opt               (default: /usr/lib/llvm-18/bin/opt)
+#   HG_HARNESS_DEFINES  extra -D flags for the harness compile. A harness carrying a CALIBRATION
+#                  arm -- the defect reinstated behind an ifdef -- is run through it with this,
+#                  so the calibration is a command anyone can repeat rather than a claim in a
+#                  comment. Word-split on purpose; pass several as one string.
 
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -126,7 +130,7 @@ run_one() {
     # inlines but never runs loop-idiom. instcombine and simplifycfg preserve atomic operations,
     # which is what the checker reads the program from.
     if ! "$CLANGXX" -std=c++17 -O0 -Xclang -disable-O0-optnone -S -emit-llvm \
-            "${INCLUDES[@]}" -DHG_VERIFICATION=1 \
+            "${INCLUDES[@]}" -DHG_VERIFICATION=1 ${HG_HARNESS_DEFINES:-} \
             -o "$WORK/$name.raw.ll" "$src" 2>"$WORK/$name.cc.err"; then
         echo "--- $name: COMPILE FAILED"
         tail -30 "$WORK/$name.cc.err"
