@@ -203,6 +203,22 @@ build_gpu_targets() {
 
 # DISCARD THE BOX'S LOCAL MODIFICATIONS, AFTER WRITING THEM DOWN.
 #
+# A BRANCH NAME MEANS THE REMOTE'S BRANCH, NOT THIS CLONE'S STALE COPY OF IT. `git fetch`
+# advances origin/master and leaves the local master exactly where it was, so `git checkout
+# master` on a REUSED clone checks out whatever that box last built and then reports it as the
+# commit under measurement. Observed: a box sitting on a local master 33 commits behind
+# origin/master announced "sync -> 12191ff" and would have measured that tree.
+#
+# A raw SHA has no origin/<sha>, so it falls through unchanged and still works.
+resolve_ref() {
+    local want="$1"
+    if git -C "$SRC" rev-parse -q --verify "origin/$want^{commit}" >/dev/null 2>&1; then
+        echo "origin/$want"
+    else
+        echo "$want"
+    fi
+}
+
 # A checkout onto a dirty tree fails, and this tree gets dirty in the ordinary course of a
 # session: the generators write paper/tables/*.tex, and a device change under test is copied in
 # by hand. Both are safe to drop HERE and only here -- the driver pulls every phase's artifacts
@@ -271,7 +287,8 @@ if want prep || [ "$PHASE" = prep-host ]; then
     git clone "$REPO" "$SRC" >> "$LOG" 2>&1 || fail "clone failed"
   fi
   clean_tree
-  git -C "$SRC" checkout -q "$COMMIT" >> "$LOG" 2>&1 || fail "checkout $COMMIT failed"
+  git -C "$SRC" checkout -q --detach "$(resolve_ref "$COMMIT")" >> "$LOG" 2>&1 \
+    || fail "checkout $COMMIT failed"
   say "HEAD: $(git -C "$SRC" rev-parse --short HEAD)  $(git -C "$SRC" log -1 --format=%s | head -c 60)"
 
   cd "$SRC" || fail "no $SRC"
@@ -309,7 +326,8 @@ if want sync; then
   [ -d "$SRC/.git" ] || fail "no clone on this box — run the prep phase first"
   git -C "$SRC" fetch --all -q >> "$LOG" 2>&1 || fail "fetch failed"
   clean_tree
-  git -C "$SRC" checkout -q "$COMMIT" >> "$LOG" 2>&1 || fail "checkout $COMMIT failed"
+  git -C "$SRC" checkout -q --detach "$(resolve_ref "$COMMIT")" >> "$LOG" 2>&1 \
+    || fail "checkout $COMMIT failed"
   say "sync -> $(git -C "$SRC" rev-parse --short HEAD)  $(git -C "$SRC" log -1 --format=%s | head -c 60)"
   cd "$SRC" || fail "no $SRC"
   build_host
