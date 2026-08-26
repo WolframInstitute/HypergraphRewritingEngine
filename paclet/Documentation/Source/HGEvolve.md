@@ -65,8 +65,8 @@ are the edges its id list names, and two states sharing an edge name the same id
 | `"MaxSuccessorStatesPerParent"` | `0` | cap the successor states generated from each parent (0 = unlimited); the bound holds at any thread count, which successors meet it is not reproducible |
 | `"MaxStatesPerStep"` | `0` | cap the states retained per evolution step (0 = unlimited); the bound holds at any thread count, which states meet it is not reproducible |
 | `"ExplorationProbability"` | `1.` | probability of exploring each branch; below 1 prunes stochastically |
-| `"TransitionRate"` | `1.` | probability of keeping each transition; reproducible from `"RandomSeed"`, and reaches full depth at any rate (CPU only) |
-| `"RuleWeights"` | `{}` | per-rule multipliers on `"TransitionRate"`, in rule order (CPU only) |
+| `"TransitionRate"` | `1.` | probability of keeping each transition; reproducible from `"RandomSeed"`, and reaches full depth at any rate |
+| `"RuleWeights"` | `{}` | per-rule multipliers on `"TransitionRate"`, in rule order |
 | `"UniformRandom"` | `False` | with `"MatchesPerStep"`, cap the states kept per step by arrival order; see `"TransitionRate"` for sampling that is actually uniform |
 | `"MatchesPerStep"` | `0` | with `"UniformRandom"`, the per-step cap described above (0 = all) |
 | `"BranchialStep"` | `Automatic` | step at which branchial edges are computed: `Automatic`, `All`, `-1` (final), or a 1-based step |
@@ -361,7 +361,7 @@ HGEvolve[rules, {{1, 1}, {1, 1}}, 6, "StatesGraphStructure",
   "TransitionRate" -> 0.125, "RandomSeed" -> 7]
 ```
 
-`"TransitionRate"` applies on the CPU. Under `"TargetDevice" -> "GPU"` it is reported in `"Warnings"` and the evolution runs unsampled, rather than silently returning a different answer per device.
+`"TransitionRate"` applies on BOTH devices, and the same seed selects the same subgraph on either: the keep-or-drop decision is one shared body reached from the host engine and from the device rewrite kernel alike, keyed on the transition's own isomorphism-invariant identity rather than on any scheduling order.
 
 ### "RuleWeights"
 
@@ -375,7 +375,7 @@ HGEvolve[rules, {{1, 1}, {1, 1}}, 4, "StatesGraphStructure",
   "RuleWeights" -> {1., 0.25}, "RandomSeed" -> 7]
 ```
 
-`"RuleWeights"` applies on the CPU. Under `"TargetDevice" -> "GPU"` it is reported in `"Warnings"` and every rule is weighted equally.
+`"RuleWeights"` applies on both devices; the weights are uploaded with the run and multiply `"TransitionRate"` in the same shared decision.
 
 ### "UniformRandom"
 
@@ -485,4 +485,4 @@ HGEvolve[rules, {{1, 2}}, 4, "NumStates", "MatchesPerStateRule" -> 1]
 
 The distinction from the other caps is what it is for. `"MaxSuccessorStatesPerParent"` bounds children per parent regardless of which rule produced them. `"MatchesPerStep"` bounds by **arrival order**, which depends on the schedule, so two runs of the same evolution can keep different states. `"MatchesPerStateRule"` ranks a state's transitions by their own isomorphism-invariant identity and the `"RandomSeed"`, so the kept set is the same at any thread count — choosing `k` of `M` needs all `M`, and all `M` exist only once that state's matching has finished.
 
-Applies to a state's **own** matches. A match forwarded into a state from an ancestor arrives asynchronously and is not counted against the cap, for the same reason: its arrival races the point where the count would be taken. CPU only.
+Applies to a state's **own** matches. A match forwarded into a state from an ancestor arrives asynchronously and is not counted against the cap, for the same reason: its arrival races the point where the count would be taken. Applies on both devices.
