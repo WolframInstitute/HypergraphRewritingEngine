@@ -158,7 +158,11 @@ def main():
         print(f_)
     print(f"\n{len(findings)} findings over {len(documented)} documented directories, "
           f"{len(idents)} identifiers, {len(sources)} tracked sources")
-    return len(findings)
+    # 1, not the count. sys.exit() takes the low 8 bits of what it is given, so a run with
+    # exactly 256 findings -- or 512 -- exits 0 and the gate reports success on its worst
+    # result. The count is already printed above; the STATUS only has to say whether the
+    # check passed.
+    return 1 if findings else 0
 
 
 if __name__ == "__main__":
