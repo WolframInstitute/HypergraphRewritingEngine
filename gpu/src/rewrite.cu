@@ -1,5 +1,6 @@
 #include "hgcommon/namespace.hpp"
 #include "hg_gpu/edge_signature.hpp"
+#include "hgcommon/core.hpp"          // id_key -- the packed-pair rule, shared with the host
 #include "hgcommon/rewrite_core.hpp"  // shared with the host rewriter
 #include "hg_gpu/rewrite.hpp"
 
@@ -27,17 +28,22 @@ __device__ uint64_t hash_causal_triple(EventId p, EventId c, EdgeId e) {
     h ^= p; h *= 1099511628211ULL;
     h ^= c; h *= 1099511628211ULL;
     h ^= e; h *= 1099511628211ULL;
-    // Guarantee non-zero (the ConcurrentMap uses 0 as EMPTY sentinel).
+    // BOTH reserved keys, not just EMPTY. The map reserves 0 and ~0, and a hash is as able to
+    // land on one as the other -- qc_seen_key, qc_transition_sig and qe_apply_key each guard
+    // the pair, and this guarded only the first.
     if (h == 0) h = 1;
+    if (h == ~0ULL) h = ~0ULL - 1ULL;
     return h;
 }
 
 __device__ uint64_t branchial_pair_key(EventId a, EventId b) {
-    uint32_t lo = a < b ? a : b;
-    uint32_t hi = a < b ? b : a;
-    uint64_t k = (static_cast<uint64_t>(lo) << 32) | hi;
-    if (k == 0) k = 1;
-    return k;
+    const uint32_t lo = a < b ? a : b;
+    const uint32_t hi = a < b ? b : a;
+    // hgcommon::id_key, which is where the offset that keeps a packed pair off the EMPTY
+    // sentinel is stated for both engines. Packed here instead, the pair (0,0) would BE the
+    // sentinel, and the `if (k == 0) k = 1` that guarded it was a second statement of a rule
+    // that already has one.
+    return hgcommon::id_key(lo, hi);
 }
 
 // Online-TR redundancy oracle, the device twin of causal_graph.cpp::is_reachable: a candidate
@@ -116,7 +122,7 @@ __device__ void try_add_causal_edge(DeviceState ds, EventId p, EventId c, EdgeId
     // - TR enabled AND pair (p,c) already seen: always add (multiplicity —
     //   different shared edges between the same pair are all kept)
     // - TR disabled: always add
-    uint64_t pair_key = (static_cast<uint64_t>(p) << 32) | c;
+    const uint64_t pair_key = hgcommon::id_key(p, c);
     if (ds.tr_enabled) {
         auto pair_lookup = ds.causal_pair_dedup.lookup(pair_key);
         if (!pair_lookup.found && is_reachable_preds(ds, p, c)) return;

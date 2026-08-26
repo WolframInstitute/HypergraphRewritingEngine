@@ -251,8 +251,13 @@ struct DeviceQcTransition {
 
 struct DeviceQcCtx {
     using Transition = DeviceQcTransition;
-    DeviceState ds;
-    QcView qc;
+    // REFERENCES, not copies -- the same reason DeviceQrCtx gives next door. DeviceState and
+    // QcView are large aggregates (this context is 928 bytes holding them by value against
+    // DeviceQrCtx's 40 holding them by reference), and one is constructed per registered
+    // transition. Every construction site takes `ds` and `qc` as its own by-value parameters,
+    // so the referents outlive the context that binds them.
+    DeviceState& ds;
+    QcView& qc;
     QcWork* work = nullptr;
 
     __device__ uint32_t max_steps() const { return qc.max_steps; }
