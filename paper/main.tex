@@ -1628,6 +1628,124 @@ by contention. Data as in Tables~\ref{tab:t12-shapes} and~\ref{tab:t13-memory}.}
 \input{tables/t12_rule_shapes}
 \end{table}
 
+\subsection{The Three Properties of a Left-Hand Side}
+\label{sec:lhs-space}
+
+Table~\ref{tab:t12-shapes} varies one property of the rule---how many edges its left-hand
+side has---and holds two others fixed without naming them. A left-hand side has three
+independent properties, and each changes the matching problem in a different way:
+
+\begin{itemize}
+\item \textbf{Size}: the number of edges to bind. Each additional edge is another factor in
+      the search, and another constraint that prunes it.
+\item \textbf{Arity}: the number of vertices per edge. Arity changes how much of the state a
+      single edge determines once bound, without changing how many edges must be found.
+\item \textbf{Connectivity}: how the edges share vertices. A path shares one vertex between
+      consecutive edges; a star shares one vertex among all of them; a ring has no endpoint
+      to anchor at; and a left-hand side whose components share \emph{no} vertex cannot be
+      joined at all, so it is matched by enumerating a cartesian product---quadratic in the
+      state size for two components, and worse for more.
+\end{itemize}
+
+Figure~\ref{fig:lhs-scaling} sweeps each axis separately, and the result on the first axis runs
+opposite to the intuition that a larger pattern is harder to parallelise. Parallel efficiency at
+32 threads \emph{rises} monotonically with left-hand side size: $0.15$, $0.49$, $0.67$, $0.73$
+for one, two, three and four edges. The one-edge rule is the worst-scaling shape measured, and it
+is not scaling badly for want of work---its serial time is $17.9$\,s, the largest of the four,
+against $5.7$\,s for the two-edge rule. A one-edge pattern binds one edge per match, so the work
+between two synchronisations is small and the fixed cost of publishing a state dominates; each
+further edge adds join work per match without adding a synchronisation.
+
+Connectivity moves the curve much further than size does, and in both directions. At 32 threads
+the ring reaches $1.06$ and the branching tree $0.96$---superlinear, because a wider frontier
+lets workers deduplicate states that a serial order would expand---while the path and the hub sit
+at $0.67$ and $0.62$. The disconnected shape reaches $0.06$: seventeen times worse than the ring
+on the same machine and the same thread count. That is the widest spread in the whole sweep, and
+it is the reason connectivity rather than size is the property to state when a rule set's scaling
+is being predicted. The disconnected case is reported here rather than in a section of its own,
+because it is this same axis taken to its limit. Its cost is also not only the cartesian product:
+on a processor whose cores do not share one last-level cache it is dominated by coherence traffic.
+Measured on the evaluation machine at a fixed two threads, so scheduling and work distribution are
+held constant, the same disconnected workload takes $976$\,ms when both threads share an L3
+instance and $1494$\,ms when they do not, against $1322$\,ms on one thread---two threads that share
+a cache speed it up, two that do not are slower than serial.
+
+Edge arity is the weakest of the three. At a fixed three-edge left-hand side, efficiency at 32
+threads is $0.67$ at arity two and $0.69$ at arity three.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    width=0.46\textwidth, height=4.7cm,
+    xlabel={Worker threads}, ylabel={Parallel efficiency},
+    xmode=log, log basis x=2, xtick={1,2,4,8,16,32}, xticklabels={1,2,4,8,16,32},
+    ymin=0, ymax=1.25, grid=major, grid style={gray!25},
+    legend style={font=\tiny, at={(0.5,-0.32)}, anchor=north, legend columns=2,
+                  draw=none, fill=none, column sep=6pt},
+    label style={font=\small}, tick label style={font=\scriptsize},
+]
+\input{tables/f_eff_size}
+\end{axis}
+\end{tikzpicture}
+\hfill
+\begin{tikzpicture}
+\begin{axis}[
+    width=0.46\textwidth, height=4.7cm,
+    xlabel={Worker threads}, ylabel={Speedup over one thread},
+    xmode=log, log basis x=2, ymode=log, log basis y=2,
+    xtick={1,2,4,8,16,32}, xticklabels={1,2,4,8,16,32},
+    grid=major, grid style={gray!25},
+    legend style={font=\tiny, at={(0.5,-0.32)}, anchor=north, legend columns=2,
+                  draw=none, fill=none, column sep=6pt},
+    label style={font=\small}, tick label style={font=\scriptsize},
+]
+\input{tables/f_speedup_size}
+\end{axis}
+\end{tikzpicture}
+
+\vspace{2mm}
+\begin{tikzpicture}
+\begin{axis}[
+    width=0.46\textwidth, height=4.7cm,
+    xlabel={Worker threads}, ylabel={Parallel efficiency},
+    xmode=log, log basis x=2, xtick={1,2,4,8,16,32}, xticklabels={1,2,4,8,16,32},
+    ymin=0, ymax=1.25, grid=major, grid style={gray!25},
+    legend style={font=\tiny, at={(0.5,-0.32)}, anchor=north, legend columns=2,
+                  draw=none, fill=none, column sep=6pt},
+    label style={font=\small}, tick label style={font=\scriptsize},
+]
+\input{tables/f_eff_shape}
+\end{axis}
+\end{tikzpicture}
+\hfill
+\begin{tikzpicture}
+\begin{axis}[
+    width=0.46\textwidth, height=4.7cm,
+    xlabel={Worker threads}, ylabel={Parallel efficiency},
+    xmode=log, log basis x=2, xtick={1,2,4,8,16,32}, xticklabels={1,2,4,8,16,32},
+    ymin=0, ymax=1.25, grid=major, grid style={gray!25},
+    legend style={font=\tiny, at={(0.5,-0.32)}, anchor=north, legend columns=2,
+                  draw=none, fill=none, column sep=6pt},
+    label style={font=\small}, tick label style={font=\scriptsize},
+]
+\input{tables/f_eff_arity}
+\end{axis}
+\end{tikzpicture}
+\caption{\textbf{Parallel efficiency across the three axes of a left-hand side.} Every curve is
+normalised by its \emph{own} single-thread time, on the same binary, workload and canonicalization
+mode, so the curves are comparable to each other and none is relative to another system. The grey
+reference is ideal scaling: $y=1$ on the efficiency panels, $y=x$ on the speedup panel (upper
+right, logarithmic on both axes, so ideal scaling is the diagonal). Upper panels: left-hand side
+size, one to four edges, all binary chains. Lower left: connectivity at comparable size---path,
+hub, branching tree, ring, and two components sharing no vertex. Lower right: edge arity two,
+three and four, and a mixed-arity left-hand side alternating two and three. Measured by
+\texttt{tools/dev/rich\_sweep.sh}, which admits a timed run only after confirming no other
+process of this project is running and the one-minute load average is below $1.5$; each point is
+the minimum of its repeats.}
+\label{fig:lhs-scaling}
+\end{figure}
+
 \subsection{How Far Each Shape Evolves, and How Large Its Relations Become}
 \label{sec:shape-space}
 

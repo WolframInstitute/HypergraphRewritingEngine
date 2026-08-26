@@ -208,9 +208,13 @@ SHAPE_LABELS = {"chain3a2": "chain (path)", "star3a2": "star (hub)",
                 "tree4a2": "tree (branching)", "cycle4a2": "cycle (ring)",
                 "disc2a2": "disconnected"}
 
-ARITY_RULES = ["chain2a2", "chain2a3", "chain2a4", "mixed3"]
-ARITY_LABELS = {"chain2a2": "arity 2", "chain2a3": "arity 3",
-                "chain2a4": "arity 4", "mixed3": "mixed arity 2/3"}
+# THE ARITY PANEL COMPARES AT FIXED SIZE, and its rules have to be ones the TIMED phase actually
+# runs -- the first list named two-edge shapes that only the depth phase sweeps, so the panel
+# could draw exactly one curve however much data was collected. Three edges is the size the timed
+# phase carries at arity 2 and 3 and mixed, so that is where arity is compared.
+ARITY_RULES = ["chain3a2", "chain3a3", "mixed3"]
+ARITY_LABELS = {"chain3a2": "arity 2", "chain3a3": "arity 3",
+                "mixed3": "mixed arity 2/3"}
 
 # THE DEPTH PANELS GET THEIR OWN LIST, NOT THE UNION OF THE SCALING LISTS. Concatenating those
 # lists put chain3a2 in twice -- it is the 3-edge point of the size axis AND the path point of
