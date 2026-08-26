@@ -67,12 +67,18 @@ public:
             uint32_t prev = href.load(cuda::memory_order_relaxed);
             while (true) {
                 n.next = prev;
-                // Publish the node (with release) before swinging the head.
-                // The release on compare_exchange ensures the next field is
-                // visible to walkers that load head with acquire.
+                // ACQ_REL, not release. The release half publishes this node's fields to a
+                // walker that loads the head with acquire -- that much release alone gives. The
+                // ACQUIRE half is for THIS thread: a successful exchange also READS the old
+                // head, and a pusher goes on to walk the chain below its own node
+                // (for_each_before), reading values another thread published. Under a relaxed
+                // load of the head there is no happens-before for those reads, and today the
+                // only thing supplying it is a __threadfence() in publish_applied placed for a
+                // different purpose -- so the ordering the walk needs is stated here, where the
+                // read that needs it happens, rather than borrowed from a caller.
                 if (href.compare_exchange_weak(
                         prev, idx,
-                        cuda::memory_order_release,
+                        cuda::memory_order_acq_rel,
                         cuda::memory_order_relaxed)) {
                     return idx;
                 }

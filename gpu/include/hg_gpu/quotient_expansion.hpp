@@ -338,10 +338,23 @@ __device__ __forceinline__ uint32_t qe_rank_of(DeviceState ds, StateId sid, Edge
 // Register `sid` as the frame of its class if no state holds it yet, recording the step the
 // signature reads. Idempotent, and the winner is whichever state gets there first -- which is
 // all the frame has to be, since every state of the class is isomorphic to it.
-__device__ __forceinline__ void qe_register_frame(QeView qe, uint64_t class_hash, StateId sid,
+// TRUE when the class's frame or its step could not be recorded because a table is full.
+//
+// The caller has to be told, because the failure LATCHES and is otherwise silent: once a table
+// saturates every later insert returns immediately, so from the first overflow onward no class
+// receives a frame step, every replayed event signs with its instance depth instead of the
+// class's, and the signature sets go disjoint. The engine's contract is a partial answer with a
+// warning, not a quiet substitution -- state_survives_dedup records kCanonicalMapFull for the
+// same condition on the dedup map.
+//
+// frame_step_ is the one that saturates first: quotient.cu sizes it at max_events while frame_
+// gets max_events * 2, and the two hold the same key set.
+__device__ __forceinline__ bool qe_register_frame(QeView qe, uint64_t class_hash, StateId sid,
                                                   uint32_t step) {
-    if (qe.frame.insert_if_absent(class_hash, static_cast<uint32_t>(sid) + 1u).inserted)
-        qe.frame_step.insert_if_absent(class_hash, step + 1u);
+    const auto f = qe.frame.insert_if_absent(class_hash, static_cast<uint32_t>(sid) + 1u);
+    if (f.overflowed) return true;
+    if (f.inserted) return qe.frame_step.insert_if_absent(class_hash, step + 1u).overflowed;
+    return false;
 }
 
 // Alignment outcomes counted into a caller's local and published when it returns.
@@ -428,9 +441,13 @@ __device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
     const uint32_t claim = static_cast<uint32_t>(parent) + 1u;
     if (qe.rep.insert_if_absent(from, claim).value != claim) return;
 
-    // Both endpoints are given a frame before any slot is taken, so every slot below resolves.
-    qe_register_frame(qe, from, parent, depth);
-    qe_register_frame(qe, to, child, depth + 1u);
+    // Both endpoints are given a frame before any slot is taken, so every slot below resolves --
+    // which is why both are registered before the verdict is taken. A short-circuiting || would
+    // skip the second whenever the first overflowed, and the second is what the child side's
+    // slots resolve against.
+    const bool frame_from = qe_register_frame(qe, from, parent, depth);
+    const bool frame_to   = qe_register_frame(qe, to, child, depth + 1u);
+    if (frame_from || frame_to) ds.errors.record(ErrorKind::kCanonicalMapFull);
 
     const DeviceEvent& ev = ds.event_pool.at(event);
     const uint32_t nc = ev.num_consumed, np = ev.num_produced;
@@ -567,7 +584,7 @@ __device__ inline void qe_seed_root_instance(DeviceState ds, QeView qe, StateId 
     const uint64_t h = ds.state_canonical_hash[root];
     const uint32_t nslots = ds.state_edge_slices[root].count;
 
-    qe_register_frame(qe, h, root, 0u);
+    if (qe_register_frame(qe, h, root, 0u)) ds.errors.record(ErrorKind::kCanonicalMapFull);
 
     // The frame above is registered whatever the caller records: event identity reads it. The
     // instance below is the root of the replay, and without it no descendant instance exists,
