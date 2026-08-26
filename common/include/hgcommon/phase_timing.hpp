@@ -53,8 +53,14 @@ enum class Phase : uint32_t {
 // cannot manufacture the contention they are measuring.
 struct alignas(64) PhaseSlot {
     uint64_t cycles[static_cast<uint32_t>(Phase::Count)] = {};
-    char pad[64 - (sizeof(uint64_t) * static_cast<uint32_t>(Phase::Count)) % 64] = {};
 };
+// alignas(64) already makes sizeof a multiple of 64 -- a type's size is always a multiple of its
+// alignment -- so the slot occupies whole lines without a padding member, and the assertion is
+// what says so rather than a comment. A hand-computed `64 - (8*Count) % 64` filler cannot state
+// it: at Count == 8 that expression is 64, which appends a whole dead line to every one of the
+// 256 slots at the exact point the counters start needing a second line anyway.
+static_assert(sizeof(PhaseSlot) % 64 == 0,
+              "a PhaseSlot must occupy whole cache lines, so two threads never share one");
 
 inline constexpr uint32_t kMaxTimedThreads = 256;
 inline PhaseSlot g_phase_slots[kMaxTimedThreads];
