@@ -6,7 +6,7 @@
 // std::atomic<T>::wait would express this in one line, and the standard requires only that it
 // block until notified -- it says nothing about how. libstdc++ shows what that licenses: with
 // _GLIBCXX_HAVE_PLATFORM_WAIT it issues SYS_futex, and WITHOUT it the waiter pool holds a
-// std::mutex and a __condvar and the wait takes the lock. So on a platform lacking that macro,
+// std::mutex and a __condvar and the wait takes the lock, which is why that rung is gone. So on a platform lacking that macro,
 // "we replaced the condition variable with std::atomic::wait" replaces a condition variable we
 // can see with one we cannot. Same for libc++ and the MSVC STL: each has a lock-free path and
 // a lock-based fallback, and which one is compiled is not visible from the call site.
@@ -53,11 +53,17 @@
 // and NEITHER of the two primitives was reachable.
 //
 // So: the library says whether the feature is usable, and this asks it.
+// NO MUTEX RUNG. There used to be one below this: a shared std::mutex and condition_variable
+// for every parked address, selected when a platform offered none of the three address-waits.
+// It was the only lock in the tree, and the engine's design is that there is none -- a claim
+// the paper makes and the GPU table was fixed to honour. A platform that cannot wait on an
+// address does not get a lock here; it gets a compile error, which is the honest answer and
+// keeps "no mutex anywhere" checkable by grep rather than by argument.
 #if !defined(HG_PARK_FUTEX) && !defined(HG_PARK_WAIT_ON_ADDRESS) && !defined(HG_PARK_OS_SYNC)
 #  if defined(__cpp_lib_atomic_wait)
 #    define HG_PARK_STD_ATOMIC_WAIT 1
 #  else
-#    define HG_PARK_CONDVAR 1
+#    error "no address-wait primitive on this platform; the engine takes no lock as a fallback"
 #  endif
 #endif
 

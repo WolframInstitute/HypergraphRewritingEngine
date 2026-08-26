@@ -24,23 +24,11 @@
 #  endif
 #elif defined(HG_PARK_OS_SYNC)
 #  include <os/os_sync_wait_on_address.h>
-#elif defined(HG_PARK_CONDVAR)
-#  include <condition_variable>
-#  include <mutex>
 #endif
 
 namespace HG_NAMESPACE {
 namespace common {
 
-#if defined(HG_PARK_CONDVAR)
-namespace detail {
-// One mutex and condition variable shared by every parked address. Function-local so it has no
-// static-initialisation order to depend on, and process-lifetime so a wake never touches a
-// destroyed object.
-struct ParkCondVar { std::mutex m; std::condition_variable cv; };
-static ParkCondVar& park_condvar() { static ParkCondVar g; return g; }
-}  // namespace detail
-#endif
 
 void park_if_equal(const std::atomic<uint32_t>& addr, uint32_t expected) {
 #if defined(HG_PARK_FUTEX)
@@ -56,18 +44,6 @@ void park_if_equal(const std::atomic<uint32_t>& addr, uint32_t expected) {
                               OS_SYNC_WAIT_ON_ADDRESS_NONE);
 #elif defined(HG_PARK_STD_ATOMIC_WAIT)
     addr.wait(expected, std::memory_order_acquire);
-#else
-    // THE PORTABLE FLOOR, and it takes a lock -- park_is_lock_free() reports that rather than
-    // hiding it. One shared mutex and condition variable for every address: this backend is
-    // reached only where the platform offers no address-wait at all, the waiter is an IDLE
-    // worker with nothing to do, and a wake is O(waiters) rather than O(1). Correct everywhere,
-    // and slower where it is the only thing that compiles.
-    //
-    // The predicate is re-read under the lock, so the store-then-wake a waker performs cannot
-    // land between this thread's check and its wait.
-    auto& g = detail::park_condvar();
-    std::unique_lock<std::mutex> lk(g.m);
-    if (addr.load(std::memory_order_acquire) == expected) g.cv.wait(lk);
 #endif
 }
 
@@ -84,11 +60,6 @@ void unpark_one(const std::atomic<uint32_t>& addr) {
     // wait() is const-qualified but notify_one()/notify_all() are not; the wake mutates no
     // atomic value, and this API takes const& to mirror the futex path, so cast it away.
     const_cast<std::atomic<uint32_t>&>(addr).notify_one();
-#else
-    (void)addr;   // one shared variable: a waiter on any address may be the one woken
-    auto& g = detail::park_condvar();
-    std::lock_guard<std::mutex> lk(g.m);
-    g.cv.notify_all();   // notify_ONE could wake a waiter on a different address and lose this
 #endif
 }
 
@@ -103,11 +74,6 @@ void unpark_all(const std::atomic<uint32_t>& addr) {
                                   sizeof(uint32_t), OS_SYNC_WAKE_BY_ADDRESS_NONE);
 #elif defined(HG_PARK_STD_ATOMIC_WAIT)
     const_cast<std::atomic<uint32_t>&>(addr).notify_all();
-#else
-    (void)addr;
-    auto& g = detail::park_condvar();
-    std::lock_guard<std::mutex> lk(g.m);
-    g.cv.notify_all();
 #endif
 }
 
