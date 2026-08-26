@@ -29,6 +29,12 @@
 // no resize. Resize is a separate harness -- it is a different algorithm (rehash-then-CAS-install)
 // and mixing it in here would blow up the state space without sharpening either question.
 //
+// CALIBRATED. The election is publish_value's ABSENT-to-value compare-exchange, so the defect is
+// the losing caller keeping its own answer: return (value, true) where it returns (current,
+// false). That is A1 and A2 broken at once -- two callers told they inserted, each handed a
+// different value -- and this harness reports a safety violation for it (genmc exit 42). Restored,
+// it is clean in 32 complete executions.
+//
 // Build/run: verification/genmc/run.sh concurrent_map_agreement
 
 #include <pthread.h>

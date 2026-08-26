@@ -20,6 +20,10 @@
 //       real matches. The probe walk is the fix, and this enumerates every interleaving of two
 //       colliding claims racing through it.
 //
+// CALIBRATED against P2's own history. Restoring #74 -- returning false on a probe hit without
+// comparing contents, dropping the second claim on hash equality alone -- makes this harness
+// report a safety violation in 4 executions (genmc exit 42). Restored, it is clean in 2,500.
+//
 // GENMC-ARGS: --disable-estimation
 
 #include <pthread.h>

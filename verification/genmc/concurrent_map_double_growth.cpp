@@ -29,6 +29,13 @@
 // The assertions: exactly one of the two K-claims reports was_inserted, both observe the same
 // stored value, lookup agrees, and nothing else was lost while the tables churned.
 //
+// CALIBRATED, which matters more here than anywhere else in this directory: a sampler that
+// samples nothing also reports no violation. Two defects are recorded. The un-anchored map -- a
+// re-drive claiming at the head on an absence verdict formed against an older table -- is
+// refuted in 0.10s. So is the losing caller keeping its own answer in publish_value, returning
+// (value, true) where it returns (current, false): estimation reports a safety violation and
+// exits 42 rather than completing. This harness samples, and what it samples reaches the defects.
+//
 // GENMC-ARGS: --mode=estimate
 // GENMC-EXPECT: pass
 

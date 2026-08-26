@@ -21,6 +21,11 @@
 // WHAT IS BOUNDED. Two threads, two DISTINCT keys, an initial capacity of one so the first
 // insertion crosses a growth. Both must be told they inserted; neither may be rejected.
 //
+// CALIBRATED with the false positive the window paragraph describes: find_in_table stopping at
+// any occupant rather than at the key, `cur != EMPTY_KEY` where it tests `cur == key`. That is a
+// key found in a retiring table that is not this key, and this harness reports a safety violation
+// for it (genmc exit 42). Restored, it is clean in 102 complete executions.
+//
 // GENMC-ARGS: --disable-estimation
 // GENMC-EXPECT: pass
 //

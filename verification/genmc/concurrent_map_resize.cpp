@@ -30,6 +30,11 @@
 // A5 is the one that would catch the split rendezvous. A4 is the one that would catch a rehash
 // dropping an entry, or an insert completing into a table that lost the race and was discarded.
 //
+// CALIBRATED against A4, which is the assertion this harness exists for. Deleting resize()'s
+// carry -- the loop that re-inserts every settled entry of the retiring table into the new head
+// -- makes it report a safety violation (genmc exit 42): the pre-existing keys stop resolving
+// once the table they lived in is replaced. Restored, it is clean in 528 complete executions.
+//
 // WHAT IS BOUNDED. Two threads, capacity 2 growing to 4, three keys total, one resize round.
 
 #include <pthread.h>
