@@ -152,6 +152,22 @@ run_or_skip "Device unit suite" \
     "test -x $GPU_BUILD/hg_gpu_tests && nvidia-smi" \
     "$GPU_BUILD/hg_gpu_tests"
 
+# THE FOUR DEVICE SANITIZERS, EACH SCOPED TO WHAT IT ACTUALLY SEES. memcheck is out-of-bounds
+# and misaligned device accesses; initcheck is reads of uninitialised device memory; synccheck
+# is illegal __syncthreads/__syncwarp use; racecheck is SHARED-MEMORY hazards ONLY -- it does
+# not see races on global memory, which is where this engine's lock-free device structures
+# live, and only two files under gpu/ use __shared__ at all. A clean racecheck is therefore a
+# statement about a small surface, and the device map's global-memory election is checked by
+# gpu_differential_tests, not here.
+# compute-sanitizer needs /usr/lib/wsl/lib on PATH under WSL, which this script exports above;
+# without it the tool reports "Unable to find injection library" and exits non-zero.
+CS=${COMPUTE_SANITIZER:-/usr/local/cuda/bin/compute-sanitizer}
+for cs_tool in memcheck initcheck synccheck racecheck; do
+    run_or_skip "Device sanitizer: $cs_tool" \
+        "test -x $GPU_BUILD/hg_gpu_tests && test -x $CS && nvidia-smi" \
+        "$CS" --tool "$cs_tool" --error-exitcode 9 "$GPU_BUILD/hg_gpu_tests"
+done
+
 # Reads a built object, so it needs no GPU and no run -- the only leg here that
 # reports a device number on a machine with no device.
 run_or_skip "Replay recursion: device stack depot per level" \
