@@ -289,9 +289,9 @@ rented box that does.
 - **`evidence.sh`** -- the evidence report, including the four device sanitizers, each scoped in a
   comment to what it actually sees (racecheck is shared memory only).
 
-## `verification/` -- model checking
+## `verification/` -- model checking and toolchain cells
 
-Neither suite is part of any build; both are gates run by `ctest`.
+No suite here is part of any build; all three are gates run by `ctest`.
 
 - **`verification/genmc/`** -- 24 harnesses over RC11, driven by `run.sh` (compile to LLVM IR with
   clang taking SYSTEM headers, then hand the IR to GenMC) and registered as the `genmc_harnesses`
@@ -306,6 +306,15 @@ Neither suite is part of any build; both are gates run by `ctest`.
   green has deleted the calibration while every other signal stays clean, and a table of results
   cannot catch that. State counts are reported but not asserted -- TLC stops a violating cell at
   the first counterexample, so its generated count varies with `-workers`.
+- **`verification/mingw/`** -- 7 toolchain cells, driven by `run.sh` and registered as the
+  `mingw_tls_teardown` ctest, which SKIPS where the mingw cross-compiler is absent or a Windows
+  binary cannot be executed. `tls_teardown.cpp` is the smallest program that makes mingw-w64
+  corrupt the heap at worker-thread exit, with NO engine code in it, and the corrupting cell is a
+  PINNED REPRODUCER in the same sense as the genmc violation harnesses: it passes while the defect
+  is still reachable, and says so when a toolchain fixes it. This is what the shipped Windows
+  x86-64 artifacts being MSVC-native rests on; the identical source under MSVC is clean. The
+  manifestation is heap-layout sensitive -- the output filename alone flips it -- so every cell is
+  built to the same binary name in its own directory, and a CLEAN cell means clean at that layout.
 
 ## Tests
 

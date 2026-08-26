@@ -771,3 +771,16 @@ add_test(NAME tla_cells
 set_tests_properties(tla_cells PROPERTIES
                      TIMEOUT 600
                      SKIP_RETURN_CODE 2)
+
+# THE MINGW TEARDOWN CELLS RUN TOO, for the same reason the other two suites do: the decision to
+# build the shipped Windows x86-64 artifacts natively with MSVC rests on mingw-w64 corrupting the
+# heap at worker-thread exit, and until these cells existed the only account of that was a comment
+# in build_all_platforms.sh that nothing checked. Each cell declares CLEAN or CORRUPT and the
+# runner checks it, so a toolchain that fixes the defect is noticed instead of assumed. SKIPS
+# (exit 2) where the mingw cross-compiler is absent or a Windows binary cannot be executed, which
+# is every Linux CI runner.
+add_test(NAME mingw_tls_teardown
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/verification/mingw/run.sh)
+set_tests_properties(mingw_tls_teardown PROPERTIES
+                     TIMEOUT 600
+                     SKIP_RETURN_CODE 2)

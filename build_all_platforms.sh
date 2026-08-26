@@ -122,12 +122,19 @@ fi
 # ---- Windows x86-64 ----
 if selected "Windows-x86-64"; then
     # THE WINDOWS CPU ARTIFACTS ARE BUILT NATIVELY WHERE MSVC EXISTS, and cross-compiled only
-    # where it does not. mingw-w64 corrupts the heap destroying a thread_local object with a
-    # non-trivial destructor at WORKER-THREAD exit -- 20/20 runs against 0/20 under MSVC on the
-    # same machine, reproduced in twenty-five lines with no engine code. The engine runs every
-    # evolution on worker threads and keeps thread_local scratch, so a mingw-built binary hits it
-    # on any threaded run. It went unnoticed because the corruption is detected at teardown,
-    # after the answer has been written to stdout.
+    # where it does not. mingw-w64 corrupts the heap at WORKER-THREAD exit: the engine runs every
+    # evolution on worker threads and keeps thread_local scratch, so a mingw-built binary faults
+    # at teardown on a threaded run, after the answer has been written to stdout -- which is why
+    # it went unnoticed.
+    #
+    # THE CLAIM IS CHECKED, not asserted here: verification/mingw/ holds the smallest program that
+    # shows it, with no engine code in it, run by ctest as `mingw_tls_teardown` with each cell
+    # declaring CLEAN or CORRUPT. The identical source under MSVC 14.42 is clean 5/5 where mingw
+    # is 116 (STATUS_HEAP_CORRUPTION) 10/10, so the variable is the toolchain. Note what the cells
+    # also establish: a thread_local with a non-trivial destructor is NOT on its own enough -- the
+    # baseline cell is exactly that and is clean -- and the manifestation is heap-layout sensitive
+    # enough that the output filename alone flips it. A mingw configuration that looks clean has
+    # not been shown to be clean.
     #
     # A Linux host with no Visual Studio still gets a cross-built pair, because a binary with a
     # teardown fault beats no binary at all -- but it is the fallback, not the shipping route.
@@ -141,8 +148,9 @@ if selected "Windows-x86-64"; then
         fi
     elif have x86_64-w64-mingw32-gcc; then
         echo -e "${YELLOW}Windows-x86-64: no Visual Studio found; cross-compiling with mingw-w64.${NC}"
-        echo    "  mingw-w64 corrupts the heap when it destroys a thread_local object with a"
-        echo    "  non-trivial destructor at worker-thread exit (20/20 runs here; 0/20 under MSVC)."
+        echo    "  mingw-w64 corrupts the heap at worker-thread exit; see verification/mingw/,"
+        echo    "  which reproduces it with no engine code and is run by ctest. The identical"
+        echo    "  source is clean under MSVC, so the variable is the toolchain."
         echo    "  The engine keeps thread_local scratch and runs on worker threads, so the binary"
         echo    "  this produces faults at teardown on any threaded run. The answer it writes is"
         echo    "  correct and complete; the process exit code is not. Install Visual Studio 2022"
