@@ -43,15 +43,6 @@ import procstat            # machine facts and child resource usage, one impleme
 NVIDIA_SMI = procstat.nvidia_smi_path() or "/usr/lib/wsl/lib/nvidia-smi"
 
 
-def physical_cores():
-    """Physical cores on this host, counted rather than assumed.
-
-    The efficiency figure marks this count, and it is the point the two series are read against,
-    so writing it as a literal would state a property of one machine in a document generated on
-    another. procstat counts them on whichever platform this is running on.
-    """
-    return procstat.physical_cores()
-
 
 def run(cmd, env=None, timeout=3600):
     e = dict(os.environ)
@@ -278,32 +269,12 @@ def rule_shape_scaling(build, shapes, iters):
         if effs:
             pt.value("EffAt" + word, "%.2f" % min(effs))
 
-    # Left panel of the scaling figure: parallel efficiency against worker count, one series per
-    # rule shape, computed from the same medians the table prints.
-    styles = [r"[mark=*, black]", r"[mark=square, black, dashed]"]
-    labels = {"growth": "one-edge LHS", "pair": "two-edge LHS"}
-    f = [pt.provenance("tools/sampling_cost_smoke.cpp")]
-    for i, r in enumerate(rows):
-        base = rows[r][0][1]
-        pts = "".join("(%d,%.2f)" % (t, (base / ms) / t) for (t, ms, _s, _e) in rows[r])
-        f.append(r"\addplot%s coordinates {%s};" % (styles[i % len(styles)], pts))
-        f.append(r"\addlegendentry{%s}" % labels.get(r, r))
-    # The dotted rule marks this host's physical core count, which is a property of the machine
-    # rather than of the measurement, so it is written from the same place the sweep reads it.
-    #
-    # NO RULE RATHER THAN A RULE IN THE WRONG PLACE. procstat returns None when the topology on
-    # offer is a hypervisor's, because the flattened view of a hybrid part is not the machine --
-    # an i9-14900K reports as 16 cores x 2 threads against its real 24 physical and 32 logical.
-    # A reader takes that rule as the point where cores run out and reads the curve against it,
-    # so drawing it at a count this host does not have misstates the figure's whole argument.
-    cores = physical_cores()
-    if cores:
-        f.append(r"\addplot[gray, dotted, thick, forget plot] coordinates {(%d,0)(%d,1.25)};"
-                 % (cores, cores))
-    else:
-        f.append(r"%% no physical-core rule: this topology is a hypervisor's, so the count "
-                 r"cannot be stated for this hardware")
-    pt.write_raw("f_efficiency.tex", "\n".join(f) + "\n")
+    # NO f_efficiency FRAGMENT. This block used to draw a two-curve efficiency panel of the
+    # same axis Figure~\ref{fig:lhs-scaling} now sweeps at four sizes with a stated method, and
+    # the paper stopped inputting it. Two live generators for one measurement is how the table
+    # and the figure drifted into stating opposite trends in the first place, so the second one
+    # is deleted rather than left writing a fragment nothing reads. The macros above
+    # (EffAtEight, EffAtSixteen) are still emitted -- the conclusion cites them.
     return rows
 
 
