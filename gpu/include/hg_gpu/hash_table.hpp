@@ -14,12 +14,29 @@
 namespace HG_NAMESPACE {
 namespace gpu {
 
-// Open-addressing linear-probe concurrent hash table with EMPTY/LOCKED key
+// Open-addressing linear-probe concurrent hash table. LOCK-FREE: NO OPERATION WAITS ON ANOTHER
+// THREAD.
+//
+// It used to reserve a slot by exchanging EMPTY -> LOCKED, write the value, then publish the
+// key, and readers meeting LOCKED spun on __nanosleep until the claimant published. That is a
+// per-slot lock however it is spelled, and on a device it is worse than on a host: lanes of one
+// warp advance together, so a waiting lane can hold back the very lane that owns the slot, and a
+// spinning warp occupies an SM doing nothing while hammering one cache line. The engine's design
+// is that no thread waits on another; the host containers already meet it, and this did not.
+//
+// Now the key goes straight from EMPTY to its final value in one exchange -- there is no
+// intermediate state to observe -- and the value is published under a SECOND exchange against
+// UNPUBLISHED. A thread that finds the key present but the value unpublished offers its own
+// value rather than waiting; whichever offer wins the exchange is what every caller answers
+// with, so "first writer wins" still holds and nobody blocks. Uncontended this is the same two
+// atomics the locked version issued; contended it makes progress instead of spinning.
+//
+// Reserved keys: EMPTY marks a free slot, and
 // sentinels. Mirrors hypergraph/include/hypergraph/concurrent_map.hpp:
 //
-//   insert: atomicCAS(keys[slot], EMPTY, LOCKED) → write value → release-store
-//           the key. Readers skip LOCKED slots without spinning (non-waiting
-//           variant) or __nanosleep-spin (waiting variant). First writer wins;
+//   insert: atomicCAS(keys[slot], EMPTY, key) publishes the key; a second
+//           atomicCAS(values[slot], UNPUBLISHED, value) publishes the value.
+//           A reader that meets an unpublished value offers its own. First writer wins;
 //           later inserters with the same key see the published key on retry
 //           and return the existing value.
 //
@@ -35,8 +52,8 @@ namespace gpu {
 //            keys[slot].store(release)   ──┼─> pair with
 //   Reader:  keys[slot].load(acquire)    <─┤  acquire load
 //            values[slot].load(acquire)  <─┘  of the key
-//   CAS EMPTY→LOCKED: acq_rel (writer's reservation is release; losers'
-//                     observation is acquire).
+//   CAS EMPTY→key:    acq_rel (the winner's publication is release; the
+//                     losers' observation is acquire).
 //   The publish store on keys must happen AFTER the values write to
 //   establish happens-before; otherwise a reader observing our key could
 //   load a stale value. This is enforced by the release semantics on the
@@ -90,6 +107,15 @@ public:
     };
 
     struct DeviceView {
+        // THE VALUE THAT MEANS "CLAIMED, NOT YET PUBLISHED".
+        //
+        // Every map in this engine stores its values BIASED (+1) -- a state id lands as sid+1,
+        // a presence marker as 1 -- so zero is a value no caller ever stores, and the callers
+        // already read it as "not set" (see qe_frame_slot_of and frame_step). That is what lets
+        // the value be published under its own exchange instead of behind a lock: a thread that
+        // finds it unpublished OFFERS its own rather than waiting for the claimant.
+        static constexpr V UNPUBLISHED = V{0};
+
         // Fold the two reserved sentinels onto neighbouring keys.
         //
         // EMPTY marks a free slot and LOCKED marks one mid-publication, so a genuine key equal to
@@ -175,10 +201,6 @@ public:
             for (uint32_t i = 0; i < capacity; ++i) {
                 cuda::atomic_ref<K, cuda::thread_scope_device> kref(keys[slot]);
                 K cur = kref.load(cuda::memory_order_acquire);
-                while (cur == LOCKED) {
-                    __nanosleep(32);
-                    cur = kref.load(cuda::memory_order_acquire);
-                }
                 if (cur == key) {
                     cuda::atomic_ref<V, cuda::thread_scope_device> vref(values[slot]);
                     return LookupResult{vref.load(cuda::memory_order_acquire), true};
@@ -212,24 +234,37 @@ public:
                     K cur = kref.load(cuda::memory_order_acquire);
 
                     if (cur == key) {
+                        // Claimed, possibly not yet published. OFFER rather than wait: the
+                        // value exchange decides among everyone holding this key, and the
+                        // thread that claimed it has no special standing. Whoever wins the
+                        // exchange defines the stored value and every caller answers from it.
                         cuda::atomic_ref<V, cuda::thread_scope_device> vref(values[slot]);
-                        return InsertResult{vref.load(cuda::memory_order_acquire), false};
-                    }
-
-                    if (cur == LOCKED) {
-                        __nanosleep(32);
-                        continue;
+                        V seen = vref.load(cuda::memory_order_acquire);
+                        if (seen == UNPUBLISHED) {
+                            V expect_v = UNPUBLISHED;
+                            if (vref.compare_exchange_strong(expect_v, value,
+                                    cuda::memory_order_acq_rel, cuda::memory_order_acquire))
+                                seen = value;
+                            else
+                                seen = expect_v;   // someone else's value won; take it
+                        }
+                        return InsertResult{seen, false};
                     }
 
                     if (cur == EMPTY) {
+                        // STRAIGHT TO THE KEY, no reservation state. The key exchange alone
+                        // decides the winner; the value follows under its own exchange, so no
+                        // thread ever waits on another to publish.
                         K expected = EMPTY;
                         bool ok = kref.compare_exchange_strong(
-                            expected, LOCKED,
+                            expected, key,
                             cuda::memory_order_acq_rel, cuda::memory_order_acquire);
                         if (ok) {
                             cuda::atomic_ref<V, cuda::thread_scope_device> vref(values[slot]);
-                            vref.store(value, cuda::memory_order_release);
-                            kref.store(key, cuda::memory_order_release);
+                            V expect_v = UNPUBLISHED;
+                            if (!vref.compare_exchange_strong(expect_v, value,
+                                    cuda::memory_order_acq_rel, cuda::memory_order_acquire))
+                                return InsertResult{expect_v, true};
                             return InsertResult{value, true};
                         }
                         // CAS failed — expected now holds whatever raced ahead
