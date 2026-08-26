@@ -348,6 +348,13 @@ class Hypergraph {
         using Match    = SlotMatch;
         using Applied  = QcAppliedMatch;
         Hypergraph& hg;
+        // Branchial pairs counted into a LOCAL and published once, by the destructor, at the
+        // end of the apply this context was made for. Incremented in place it is one atomic
+        // read-modify-write per pair on a counter every worker shares -- 133,218,996 of them
+        // on disc-l3a2g2r2 depth 3, against 970,584 applies -- so the line carrying it moves
+        // between cores once per pair. The published total is identical.
+        size_t branchial_seen = 0;
+        ~QrCtx();
 
         bool claim(uint64_t apply_key);
         uint32_t mint_event();
@@ -372,12 +379,20 @@ class Hypergraph {
             // instance. Measured on disc-l3a2g2r2 depth 3: 970,584 scans, 163,228,620 visits,
             // 133,218,996 pairs -- 81.6% of visits emit, so the visits are not the waste and an
             // inverted index by (instance, slot) would save 18% rather than a quadratic.
+            //
+            // The visit count is summed in a LOCAL and published once per scan. Incremented in
+            // the loop it is one atomic read-modify-write per visit on a counter every worker
+            // shares -- 163,228,620 of them on the workload above against 970,584 scans -- so
+            // the line carrying it moves between cores once per visit and the instrument costs
+            // more than the scan it measures. Per scan the published total is identical.
             hg.qc_applied_scans_.fetch_add(1, std::memory_order_relaxed);
+            size_t visits = 0;
             hg.qc_inst_applied_.get_or_default(inst.id, hg.arena_).for_each_before(
                 mine, [&](const QcAppliedMatch& a) {
-                    hg.qc_applied_visits_.fetch_add(1, std::memory_order_relaxed);
+                    ++visits;
                     f(a);
                 });
+            hg.qc_applied_visits_.fetch_add(visits, std::memory_order_relaxed);
         }
         void record_branchial_pair(uint32_t lo, uint32_t hi);
         void descend(const SlotMatch& m, uint32_t depth, uint32_t ev, const QcInstance& parent);

@@ -1884,7 +1884,12 @@ Hypergraph::QrCtx::AppliedRef Hypergraph::QrCtx::publish_applied(const QcInstanc
 
 void Hypergraph::QrCtx::record_branchial_pair(uint32_t lo, uint32_t hi) {
     (void)lo; (void)hi;
-    hg.qc_num_branchial_.fetch_add(1, std::memory_order_relaxed);
+    ++branchial_seen;
+}
+
+Hypergraph::QrCtx::~QrCtx() {
+    if (branchial_seen)
+        hg.qc_num_branchial_.fetch_add(branchial_seen, std::memory_order_relaxed);
 }
 
 // The child instance: survivors carry their producer across, produced slots take THIS event.
