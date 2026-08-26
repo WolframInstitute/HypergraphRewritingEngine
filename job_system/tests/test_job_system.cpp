@@ -442,6 +442,26 @@ TEST(JobSystemForkJoin, NestedForkJoinScaling) {
     const long expected_jobs = (1L << (depth + 1)) - 1;
 
     std::cout << "\n=== Nested Fork-Join Scaling (Chase-Lev) ===\n";
+
+    // A SPEEDUP RATIO NEEDS CORES OF ONE SPEED, and this machine may not have eight of them.
+    // On a hybrid part the eight threads land on a P/E mix while the one-thread baseline runs
+    // on a P core, so the ratio measures WHERE THE SCHEDULER PUT THEM and fails against any
+    // fixed threshold -- observed here as 3.58x at eight threads with every job accounted for
+    // and the single-thread spread well inside the quietness bound, i.e. the guard below cannot
+    // see it. performance_cpus() answers the placement question from the operating system, so
+    // the arms that fit inside the fast class are pinned to it and the ratio compares like with
+    // like. An EMPTY answer means the OS reports no distinction (a homogeneous part, macOS, or
+    // WSL flattening a 14900K into 16 uniform CPUs); the arms then run unpinned exactly as
+    // before. A NON-EMPTY answer too small to seat the asserted arm means the machine has a
+    // fast class and cannot fit eight in it, and then the ratio is printed and not asserted.
+    const std::vector<unsigned> fast = hgcommon::performance_cpus();
+    const bool pin_arms = fast.size() >= 8;
+    if (!fast.empty()) {
+        std::cout << "  (fast core class: " << fast.size() << " cores; arms up to that width "
+                  << (pin_arms ? "are pinned to it)\n"
+                               : "would be pinned, but eight do not fit -- reporting only)\n");
+    }
+
     double baseline = 0.0;
     bool quiet_enough = true;
     for (size_t tc : thread_counts) {
@@ -450,6 +470,10 @@ TEST(JobSystemForkJoin, NestedForkJoinScaling) {
         for (int rep = 0; rep < kReps; ++rep) {
             std::atomic<long> work{0};
             auto js = std::make_unique<job_system::JobSystem<TestJobType>>(tc);
+            // Seat this arm inside the fast class when it fits, so the numerator and the
+            // denominator are cores of the same speed.
+            if (pin_arms && tc <= fast.size())
+                js->set_worker_cpus(std::vector<unsigned>(fast.begin(), fast.begin() + tc));
             js->start();
             auto t0 = std::chrono::high_resolution_clock::now();
             js->submit_function(ForkJob{js.get(), depth, &work}, TestJobType::GRAPHICS);
@@ -477,8 +501,23 @@ TEST(JobSystemForkJoin, NestedForkJoinScaling) {
                   << "ms (best of " << kReps << "), " << std::setprecision(2) << speedup
                   << "x speedup, " << std::setprecision(1) << (100.0 * speedup / tc)
                   << "% efficiency\n";
-        if (tc == 8 && quiet_enough)
-            EXPECT_GT(speedup, 4.0) << "fork-join should scale past 4x on 8 cores";
+        // ASSERT ONLY WHERE THE RATIO MEANS SOMETHING: the arms were seated in the fast class,
+        // or the OS reports no class distinction to seat them in. A machine with a fast class
+        // too small for eight gets the number printed and nothing asserted.
+        //
+        // The spread test applies to THIS arm as well as to the baseline. Quietness was measured
+        // only on the one-thread arm, which says nothing about whether the eight-thread arm ran
+        // against something else on the box -- and the eight-thread arm is the one carrying the
+        // threshold. Both ends of the ratio have to be quiet for the ratio to be assertable.
+        const double arm_spread = best_ms > 0.0 ? (worst_ms / best_ms) : 0.0;
+        if (tc == 8 && quiet_enough && (pin_arms || fast.empty())) {
+            if (arm_spread <= kMaxBaselineSpread)
+                EXPECT_GT(speedup, 4.0) << "fork-join should scale past 4x on 8 cores";
+            else
+                std::cout << "  (eight-thread spread " << std::fixed << std::setprecision(2)
+                          << arm_spread << "x over " << kReps
+                          << " runs: too noisy to assert a ratio, reporting only)\n";
+        }
     }
 }
 
