@@ -142,12 +142,23 @@ public:
             size_t actual_cap = 1;
             while (actual_cap < cap) actual_cap <<= 1;
 
-            size_t bytes = sizeof(Table) + sizeof(Entry) * actual_cap;
-            void* mem = arena ? arena->allocate_raw(bytes, alignof(std::max_align_t))
+            // THE ENTRY ARRAY STARTS ON A CACHE LINE, which the header size otherwise decides
+            // for it. Table is 40 bytes and Entry is 16, so entries placed immediately after the
+            // header begin at a 40-byte phase: the third Entry of every four spans two lines, and
+            // a probe run pays a second line fetch one time in four, on every map, for the life
+            // of the run.
+            //
+            // The alignment is applied to the POINTER inside an over-allocated block rather than
+            // to the allocation, so it holds whatever the base alignment is -- ::operator new
+            // gives only max_align_t -- and the three ::operator delete sites keep freeing the
+            // same address they were given.
+            constexpr size_t kLine = 64;
+            size_t bytes = sizeof(Table) + kLine + sizeof(Entry) * actual_cap;
+            void* mem = arena ? arena->allocate_raw(bytes, kLine)
                               : ::operator new(bytes);
             Table* table = static_cast<Table*>(mem);
-            table->entries = reinterpret_cast<Entry*>(
-                static_cast<char*>(mem) + sizeof(Table));
+            auto raw = reinterpret_cast<uintptr_t>(static_cast<char*>(mem) + sizeof(Table));
+            table->entries = reinterpret_cast<Entry*>((raw + (kLine - 1)) & ~(uintptr_t)(kLine - 1));
             table->capacity = actual_cap;
             table->mask = actual_cap - 1;
             table->prev = prev_table;
