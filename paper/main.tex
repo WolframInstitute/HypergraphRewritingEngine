@@ -1344,7 +1344,7 @@ Section~\ref{sec:capacity}.
 The engine holds no lock, so every property that a lock would have enforced is instead a
 consequence of an ordering argument. Arguments of that kind are checked poorly by testing. A stress test samples
 interleavings, so a clean run bounds nothing: on this engine a determinism gate of 150 runs --
-90 recorded, then 40 and 20 more under load -- explores a vanishing fraction of the schedules
+90 recorded, then 40 and 20 more under load---explores a vanishing fraction of the schedules
 its own thread count admits, and the schedules that matter are not the likely ones. Two verification layers are
 therefore maintained alongside the test suite, and they are bounded in different directions.
 
@@ -2218,7 +2218,8 @@ a run: deciding whether a produced state has been seen before, and finding the m
 a rule in a state. Both have a worst case far above their observed cost, and in both the
 gap is a property of the \emph{input} rather than of the implementation---symmetry in the
 first case, left-hand side connectivity in the second---so each bound is stated together
-with what makes it attainable.
+with what makes it attainable. Appendix~\ref{app:data-structures} gives the per-operation costs
+of the concurrent structures these bounds are realized on (Table~\ref{tab:lockfree-costs}).
 
 \subsection{Canonicalization Complexity}
 
