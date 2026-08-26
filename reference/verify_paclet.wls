@@ -86,6 +86,24 @@ Print["CPU: ", tdCPU, "   GPU: ", tdGPU];
 Print[If[tdCPU === tdGPU === {5, 33, 32, 43}, "PASS", "FAIL"],
       "  TargetDevice CPU == GPU == golden {5,33,32,43}"];
 
+Print["\n=== engine route: the binary alone must serve HGEvolve ==="];
+(* HGEvolve prefers the persistent worker, then a one-shot RunProcess of the engine binary,
+   and falls back to the in-process LibraryLink LAST. A build carrying the binary and no
+   library is an ordinary shipping configuration -- LibraryResources/Windows-x86-64 is one --
+   and a dispatch that quietly requires the library refuses every call there. Nothing else in
+   CI can see it: this job builds the library, so the guard it needs is the one where the
+   library is taken away. Blocking performRewriting to a plain symbol is exactly what
+   FindLibrary leaves behind on a platform that has none. *)
+If[HypergraphRewriting`Private`hgCpuBinaryAvailableQ[],
+  Module[{rNoLib},
+    rNoLib = Block[{HypergraphRewriting`Private`performRewriting = Null},
+      HGEvolve[(Rule @@ # &) /@ {{{{1, 2}, {2, 3}}, {{1, 2}, {2, 3}, {2, 4}}}},
+               {{1, 2}, {2, 3}}, 4, "NumStates"]];
+    Print[If[IntegerQ[rNoLib] && rNoLib > 0, "PASS", "FAIL"],
+          "  HGEvolve evolves through the engine binary with no library loaded -> ", rNoLib];
+    If[!(IntegerQ[rNoLib] && rNoLib > 0), AppendTo[failed, "binary-only route"]]],
+  Print["SKIP  no engine binary for ", $SystemID, "; the library is the only route here"]];
+
 If[useArchive,
   PacletUninstall["WolframInstitute/HypergraphRewriteEngine"];
   Print["\nuninstalled: the user's paclet directory is as it was found"]];
