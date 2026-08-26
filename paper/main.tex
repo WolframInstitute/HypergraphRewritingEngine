@@ -13,13 +13,11 @@
 
 % Mathematics
 \usepackage{amsmath,amssymb,amsthm}
-\usepackage{mathtools}
 \usepackage{algorithm}
 \usepackage{algpseudocode}
 
 % Graphics and figures
 \usepackage{graphicx}
-\usepackage{subcaption}
 \usepackage{tikz}
 \usepackage{pgfplots}
 \pgfplotsset{compat=1.18}
@@ -28,9 +26,7 @@
 % Tables
 \usepackage{booktabs}
 \usepackage[section]{placeins}
-\usepackage{multirow}
 \usepackage{array}
-\usepackage{tabularx}
 
 % Code listings
 \usepackage{listings}
@@ -49,8 +45,6 @@
 % Colors
 \usepackage{xcolor}
 \definecolor{wolfram}{RGB}{221,51,51}
-\definecolor{cpublue}{RGB}{51,102,204}
-\definecolor{gpugreen}{RGB}{51,153,51}
 
 % Hyperlinks
 \usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
@@ -128,7 +122,7 @@ The engine is compared against two implementations of the same definition, run o
 
 The Wolfram Physics Project~\cite{wolfram2020project} proposes that the fundamental structure of the universe emerges from the repeated application of simple rewriting rules to hypergraphs. This approach generates three derived structures: causal graphs, recording dependencies between rewriting events; branchial graphs, connecting states reachable at the same evolution step; and multiway evolution graphs, representing the set of all reachable histories.
 
-Exhaustive multiway evolution is computationally demanding. The number of reachable states grows exponentially with the number of evolution steps, and each step requires pattern matching against the current hypergraphs, canonicalization to identify isomorphic duplicates, and event recording to construct the causal and branchial structures. The existing Wolfram Language implementation is mathematically complete but slow enough that its running time, not the definition, sets what can be explored: Section~\ref{sec:benchmarks} measures it at $3.9$\,s to reach the six canonical states of depth five on the canonical rule, against $0.3$\,ms for the engine on the same evolution, and the gap widens with depth over the range measured.
+Exhaustive multiway evolution is computationally demanding. The number of reachable states grows exponentially with the number of evolution steps, and each step requires pattern matching against the current hypergraphs, canonicalization to identify isomorphic duplicates, and event recording to construct the causal and branchial structures. The existing Wolfram Language implementation is mathematically complete but slow enough that its running time, not the definition, sets what can be explored: Section~\ref{sec:benchmarks} measures it at $3.7$\,s to reach the six canonical states of depth five on the canonical rule, against $0.3$\,ms for the engine on the same evolution, and the gap widens with depth over the range measured.
 
 This paper presents a high-performance implementation addressing these challenges through:
 

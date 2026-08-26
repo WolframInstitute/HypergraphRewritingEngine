@@ -154,10 +154,18 @@ def tex_escape(s):
 # leaves a table that already fits completely untouched, so nothing that currently typesets
 # correctly changes shape. Wrapping at the single point every table is written means a future
 # measurement cannot reintroduce the problem in one table and not another.
+# SHRINK THE TYPE FIRST, THE GEOMETRY ONLY IF THAT IS NOT ENOUGH. \resizebox alone scales a wide
+# table by whatever factor it takes, and the factor is decided by the column count: a ten-column
+# table rendered at roughly half the size of the six-column table directly beneath it, smaller
+# than its own caption. Setting \footnotesize and a tighter \tabcolsep first reduces the natural
+# width by about a fifth, so most tables then fit with no scaling at all and the ones that still
+# need it are scaled far less. The result is a type size chosen on purpose rather than one that
+# falls out of how many columns the data happened to have.
 def _fit(inner):
     """Wrap a tabular so it shrinks to the line width only when it would otherwise overflow."""
-    return ("\\resizebox{\\ifdim\\width>\\linewidth\\linewidth\\else\\width\\fi}{!}{%\n"
-            + inner + "\n}\n")
+    return ("{\\footnotesize\\setlength{\\tabcolsep}{4pt}%\n"
+            "\\resizebox{\\ifdim\\width>\\linewidth\\linewidth\\else\\width\\fi}{!}{%\n"
+            + inner + "\n}}\n")
 
 
 # Values the PROSE cites. A number quoted in a sentence drifts from the table it came from as
