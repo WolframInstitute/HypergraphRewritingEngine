@@ -127,6 +127,22 @@ jobs:
           test_lockfree_deque test_job_system test_work_stealing_deque
           quotient_reconstruction_probe causal_tr_exactness_probe
 
+      # tla_cells SKIPS without a JVM and tla2tools.jar, and a silent skip is the same as no
+      # coverage. The jar is 2.3 MB and the --quick cells are ~20s, so it is fetched here and the
+      # gate runs for real. Two of those cells are CALIBRATIONS that must VIOLATE; a spec edit
+      # that turns one green is exactly what this catches.
+      #
+      # PINNED, and the pin is checked rather than assumed: v1.7.4 carries TLC2 2.19, the version
+      # verification/tla/README.md records its counts against, and that jar reproduces all four
+      # PASS cells exactly (117,005 / 85,777 / 479,005 / 2,284 distinct states) and both VIOLATION
+      # verdicts. A toolchain bump is then a deliberate edit against a known baseline.
+      - name: Install TLC
+        run: |
+          mkdir -p "$HOME/tla"
+          curl -fsSL -o "$HOME/tla/tla2tools.jar" \
+            https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
+          java -version
+
       - name: Run ctest suite
         run: ctest --test-dir build -E genmc --output-on-failure
 
