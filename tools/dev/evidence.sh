@@ -33,6 +33,33 @@ BUILD=build_linux
 GPU_BUILD=build_gpu
 export PATH="$PATH:/usr/lib/wsl/lib"
 
+# BUILD WHAT IS ABOUT TO BE MEASURED, because "one command regenerates every number" is false if
+# the command reports whatever binary happened to be left in the build directory.
+#
+# It reads as a stale-number machine otherwise, and silently: this script measures arena bytes
+# out of cost_matrix, and a cost_matrix built from a stash during an unrelated A/B reported the
+# arena of the tree BEFORE a change that had already landed -- the same figures, no warning, and
+# nothing in the report to say which tree they came from.
+#
+# HOST ONLY. The GPU legs are left to the caller: a CUDA build is minutes to the better part of
+# an hour and must not be started implicitly, and each GPU leg already reports SKIPPED when its
+# binary is absent, which is the honest answer for a box without one.
+# JOBS IS BOUNDED BY MEMORY, NOT BY CORE COUNT. This script runs on a 19 GB laptop shared with
+# other work and on a 503 GB box, and -j$(nproc) is right on exactly one of them: the same rule
+# remote_session.sh uses, min(cores, RAM/6GB), is right on both.
+JOBS=$(awk '/MemTotal/ {m=int($2/1024/1024/6)} END {c='"$(nproc)"'; print (m<c && m>0)?m:c}' /proc/meminfo 2>/dev/null || echo 4)
+[ -n "$JOBS" ] && [ "$JOBS" -ge 1 ] 2>/dev/null || JOBS=4
+
+if [ -d "$BUILD" ]; then
+    printf 'building host targets (so the numbers below are this tree, not the last one)...\n' >&2
+    if ! cmake --build "$BUILD" --target all_tests cost_matrix profile_evolve \
+            quotient_determinism_rate_probe quotient_reconstruction_observables_probe \
+            -j"$JOBS" >/dev/null 2>&1; then
+        printf 'error: host build failed; refusing to report numbers from stale binaries\n' >&2
+        exit 1
+    fi
+fi
+
 say() { printf '%s\n' "$*" >>"$OUT"; }
 run_or_skip() {   # run_or_skip <label> <guard-command> <command...>
     local label="$1"; shift
