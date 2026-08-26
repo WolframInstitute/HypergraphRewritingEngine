@@ -21,7 +21,7 @@
 \usepackage{tikz}
 \usepackage{pgfplots}
 \pgfplotsset{compat=1.18}
-\usetikzlibrary{shapes,arrows,positioning,calc,patterns,decorations.pathreplacing}
+\usetikzlibrary{shapes,arrows,positioning,calc}
 
 % Tables
 \usepackage{booktabs}
@@ -102,7 +102,7 @@
 % ----------------------------------------------------------------------------
 
 \begin{abstract}
-The Wolfram Physics Project models fundamental physics through hypergraph rewriting systems, where the evolution of simple rules generates complex causal and branchial structures. However, exhaustive multiway evolution is computationally intensive, with naive implementations exhibiting exponential time complexity in the number of evolution steps. We present a high-performance implementation built around three components: (1) exact graph canonicalization by McKay-style individualization--refinement (IR), which under the exact mode runs on every state and whose hash serves directly as the deduplication key. We show that interposing a cheaper Weisfeiler--Leman filter cannot reduce the number of IR invocations by more than the ratio of canonical classes to raw states, a ratio that decreases with evolution depth; (2) lock-free concurrent data structures enabling parallel evolution across many CPU cores; and (3) a GPU evolution backend. Canonicalization is validated for exactness against a brute-force isomorphism oracle and cross-checked against the \texttt{Wolfram/\allowbreak Multicomputation} paclet's \texttt{MultiwaySystem}, so state and event deduplication are exact rather than heuristic.
+The Wolfram Physics Project models fundamental physics through hypergraph rewriting systems, where the evolution of simple rules generates complex causal and branchial structures. However, exhaustive multiway evolution is computationally intensive, with naive implementations exhibiting exponential time complexity in the number of evolution steps. We present a high-performance implementation whose three principal components are: (1) exact graph canonicalization by McKay-style individualization--refinement (IR), which under the exact mode runs on every state and whose hash serves directly as the deduplication key. We show that interposing a cheaper Weisfeiler--Leman filter cannot reduce the number of IR invocations by more than the ratio of canonical classes to raw states, a ratio that decreases with evolution depth; (2) lock-free concurrent data structures enabling parallel evolution across many CPU cores; and (3) a GPU evolution backend. Canonicalization is validated for exactness against a brute-force isomorphism oracle and cross-checked against the \texttt{Wolfram/\allowbreak Multicomputation} paclet's \texttt{MultiwaySystem}, so state and event deduplication are exact rather than heuristic.
 
 The engine is compared against two implementations of the same definition, run on the same rule and initial condition, and agreeing with the engine on state and causal-edge counts at every depth. The first is the \texttt{Wolfram/\allowbreak Multicomputation} paclet's \texttt{MultiwaySystem}, the implementation a user would otherwise run; the second is this project's own brute-force reference implementation, which returns data rather than graph objects and so measures the definition without the cost of constructing them. Against the first, the engine is faster by a factor of $\SpeedupAtLowDepth$ at depth \SpeedupLowDepth{}, rising to $\SpeedupAtHighDepth$ at depth \SpeedupHighDepth{}. The system is available as a standalone C++/CUDA library and as a Wolfram Language paclet.
 
@@ -352,7 +352,7 @@ as in Table~\ref{tab:crratio}.}
 
 Two options require automorphism data: quotient exploration, and the event canonicalization conventions of Section~\ref{sec:event-canon}. Both obtain the edge orbits from the same IR pass, so no second canonicalization is performed.
 
-\begin{algorithm}
+\begin{algorithm}[htbp]
 \caption{Weisfeiler--Leman Hash}
 \label{alg:wl}
 \begin{algorithmic}[1]
@@ -454,7 +454,7 @@ This enables efficient candidate generation when pattern variables are already a
 
 Pattern matching proceeds through the task-based system of Algorithm~\ref{alg:matching}:
 
-\begin{algorithm}
+\begin{algorithm}[htbp]
 \caption{Task-Based Pattern Matching}
 \label{alg:matching}
 \begin{algorithmic}[1]
@@ -1485,7 +1485,7 @@ change the computed answer rather than its speed? (Tables~\ref{tab:t9-ablation},
 \ref{tab:t6-quotient}, \ref{tab:event-canon})
 \end{description}
 
-Every table below is written by \texttt{tools/dev/paper\_tables.py} from the instrument named in its caption, and records the commit and machine it was produced on. The one exception is Table~\ref{tab:device-occupancy}, transcribed from an Nsight Compute session because its reports are not text; its caption says so. Numbers are medians over repeated runs in one session; a comparison between two arms is always taken in the same session, because this machine's run-to-run drift exceeds most of the effects being reported.
+Every table below is written by \texttt{tools/dev/paper\_tables.py} from the instrument named in its caption, and records the commit and machine it was produced on. The one exception is Table~\ref{tab:device-occupancy}, transcribed from an Nsight Compute session because its reports are not text; its caption says so. Captions carry a \textbf{T}$n$ identifier alongside the float number: \textbf{T}$n$ names the generated fragment (\texttt{paper/tables/t}$n$\texttt{\_*.tex}) and so ties a table to the tool that wrote it, while the float number is LaTeX's. The two do not correspond, and the \textbf{T} sequence has gaps where a fragment was retired. Numbers are medians over repeated runs in one session; a comparison between two arms is always taken in the same session, because this machine's run-to-run drift exceeds most of the effects being reported.
 
 \subsection{Experimental Setup}
 
@@ -1683,7 +1683,7 @@ Source: \texttt{tools/dev/scaling\_sweep.py} over \texttt{tools/bench\_cpu\_evol
 \begin{axis}[
     width=0.48\textwidth, height=5.0cm,
     xlabel={Worker threads}, ylabel={Time (s)},
-    xmode=log, log basis x=2, xtick={1,8,16,24,32}, xticklabels={1,8,16,24,32},
+    xmode=log, log basis x=2, xtick={1,8,32}, xticklabels={1,8,32},
     ymin=0, grid=major, grid style={gray!25},
     legend style={font=\scriptsize, at={(0.03,0.97)}, anchor=north west, draw=none, fill=none},
     label style={font=\small}, tick label style={font=\scriptsize},
@@ -2144,6 +2144,7 @@ stress-tested (Section~\ref{sec:verification})
 returning to the host between evolution steps
     \item Independent, exact state and event equivalencing axes with configurable granularity
     \item Quotient exploration, transition-level sampling, and an online transitive reduction of the causal graph, each preserving the observable contract of Section~\ref{sec:determinism}
+    \item A determinism contract: the state set, event set and causal and branchial relations are a function of the inputs alone, independent of thread count and scheduling order (Section~\ref{sec:determinism})
 \end{enumerate}
 
 \subsection{Future Directions}
@@ -2243,7 +2244,8 @@ For pattern with $|L|$ edges and state with $|S|$ edges:
 
 \begin{table}[htbp]
 \centering
-\caption{Lock-free data structure complexity}
+\caption{\textbf{Per-operation costs of the concurrent data structures.} Amortized where the structure grows; $p$ is the number of participating threads.}
+\label{tab:lockfree-costs}
 \begin{tabular}{lcccc}
 \toprule
 Structure & Insert & Lookup & Delete & Memory \\
