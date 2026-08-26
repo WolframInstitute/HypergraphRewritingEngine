@@ -495,7 +495,8 @@ factors~\cite{ngo2018worst}. Our join is edge-at-a-time: it binds one pattern hy
 expansion, in the connectivity order of Section~\ref{sec:matching-algorithm}.
 
 For left-hand sides of one or two hyperedges, an edge-at-a-time join meets the bound, and every
-rule in the corpus of Section~\ref{sec:benchmarks} is of that form. It does not meet the bound in
+rule in the ORACLE corpus of Section~\ref{sec:benchmarks} is of that form; the left-hand-side
+sweep of Section~\ref{sec:lhs-space} deliberately goes past it, to three and four edges. It does not meet the bound in
 general. On a cyclic left-hand side of three hyperedges the AGM bound is $N^{1.5}$ for a state of
 $N$ edges, while an edge-at-a-time join performs $\Omega(N^2)$ work: two of the three edges can be
 bound before the third constrains anything, and the intermediate result is already quadratic. No
@@ -1853,8 +1854,10 @@ the minimum of its repeats.}
 \label{sec:shape-space}
 
 Wall time is one property of a workload and the sizes of the objects it constructs are another.
-Two runs can agree on state count and differ by three orders of magnitude in the number of
-branchial edges they build---the relation is over \emph{pairs} of events sharing a parent, so its
+Two runs can agree on state count and still differ by more than an order of magnitude in the
+number of branchial edges they build---at $\approx$1.4M states the disconnected shape reaches
+$29.2$M against $1.2$M for the two-edge chain---and across the sweep the relation ranges from
+empty to $387$M---the relation is over \emph{pairs} of events sharing a parent, so its
 size is governed by how many matches overlap rather than by how many states exist.
 Figure~\ref{fig:shape-space} plots both, and Table~\ref{tab:t14-shape-space} gives the deepest
 point reached by each shape.

@@ -147,6 +147,18 @@ def cpu_scaling(build, steps_list, iters, cpus="", sweep=""):
         b.append("%s & %s \\\\" % (t, " & ".join(cells)))
     b += [r"\bottomrule", r"\end{tabular}"]
     pt.write("t8_scaling.tex", "\n".join(b) + "\n")
+
+    # THE MACRO MUST COME FROM THE ROWS THAT SURVIVE. paper_tables.scaling() emits
+    # MaxHostSpeedup from its OWN invocation and then this function overwrites t8_scaling.tex,
+    # so the conclusion quoted a speedup from a measurement the published table does not
+    # contain -- 6.5 against the table's own 3184.4/494.2 = 6.4. Re-emitting here, after the
+    # table this function writes, makes the sentence and the table one measurement.
+    deepest = steps_list[-1]
+    base = float(per_depth[deepest][0][4])
+    best_t, best_s = max(((int(r[0]), base / float(r[4])) for r in per_depth[deepest]),
+                         key=lambda pr: pr[1])
+    pt.value("MaxHostSpeedup", "%.1f" % best_s)
+    pt.value("MaxHostSpeedupThreads", "%d" % best_t)
     return per_depth
 
 
