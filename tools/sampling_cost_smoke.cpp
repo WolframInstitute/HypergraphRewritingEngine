@@ -280,6 +280,21 @@ int main(int argc, char** argv) {
     // at t1 above.
     //
     // key=value, one line, stable key order, so a sweep can parse it without a format per plot.
+    // WARNINGS ARE PART OF THE RESULT, NOT DECORATION. The engine catches a container ceiling,
+    // pushes a warning and returns a TRUNCATED graph rather than throwing -- and
+    // parallel_evolution.cpp says why in the comment on that path: "a caller that reads the count
+    // and not the warnings gets a smaller multiway system with no indication it is smaller, which
+    // is the one outcome worse than the throw." This tool WAS that caller. A depth sweep built on
+    // it plotted saturated runs as though the state space had stopped growing: measured,
+    // chain1a2 totals exactly 2,097,149 states whether asked for depth 9, 10 or 11, and the width
+    // at depth 9 comes out 1,965,054 / 116,128 / 6,528 in those three runs because the ceiling is
+    // redistributed over however many levels were requested.
+    //
+    // truncated=1 in the RICH line is therefore a FIELD, so a consumer can drop those rows
+    // without re-deriving the ceiling from the numbers.
+    const bool truncated = !e.warnings().empty();
+    for (const auto& w : e.warnings()) std::printf("WARNING %s\n", w.c_str());
+
     // The causal and branchial sizes come from the CausalGraph the full-capture run actually
     // built. The num_reconstructed_* accessors report the quotient reconstruction and read zero
     // outside quotient mode, so they are the wrong instrument for this sweep.
@@ -288,7 +303,7 @@ int main(int argc, char** argv) {
                 " threads=%zu canon_mode=%s"
                 " ms=%.3f states=%zu canonical=%zu events=%zu matches=%zu"
                 " causal_edges=%zu causal_pairs=%zu branchial_edges=%zu branchial_claimed=%zu"
-                " max_width=%zu depth_reached=%zu\n",
+                " max_width=%zu depth_reached=%zu truncated=%d\n",
                 rule.c_str(),
                 is_family ? fam_shape.c_str()
                           : (rule == "disc" ? "disc" : "chain"),
@@ -303,6 +318,6 @@ int main(int argc, char** argv) {
                 static_cast<size_t>(hg.num_events()), e.total_matches(),
                 cg.num_causal_edges(), cg.num_causal_event_pairs(),
                 cg.num_branchial_edges(), cg.num_branchial_pairs_claimed(),
-                max_width, depth_reached);
+                max_width, depth_reached, truncated ? 1 : 0);
     return 0;
 }
