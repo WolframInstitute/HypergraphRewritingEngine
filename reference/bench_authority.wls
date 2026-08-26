@@ -43,11 +43,19 @@
      AUTH d=<depth> states=<n> causal=<n> ms=<median of reps>
      HGEV d=<depth> states=<n> causal=<n> ms=<median of reps>
 
-   Usage: wolframscript -file bench_authority.wls [maxDepth] [reps]
+   Usage: wolframscript -file bench_authority.wls [maxDepth] [reps] [minDepth]
+
+   minDepth EXISTS BECAUSE THE DEEP POINTS ARE THE EXPENSIVE ONES AND THE SHALLOW ONES ARE NOT
+   FREE TO REPEAT. The authority's cost grows about sevenfold per depth, so reaching depth 7
+   from depth 2 spends minutes re-measuring depths already recorded, and a kernel that exits on
+   a licence error part-way through loses the deep point and keeps only what it had already
+   printed. Starting at the depth actually wanted makes a deep point one short run instead of a
+   long one that must survive the whole ladder.
 *)
 
 maxDepth = If[Length[$ScriptCommandLine] >= 2, ToExpression[ToString[$ScriptCommandLine[[2]]]], 5];
 reps     = If[Length[$ScriptCommandLine] >= 3, ToExpression[ToString[$ScriptCommandLine[[3]]]], 3];
+minDepth = If[Length[$ScriptCommandLine] >= 4, ToExpression[ToString[$ScriptCommandLine[[4]]]], 2];
 
 mwSystem = PacletSymbol["Wolfram/Multicomputation", "Wolfram`Multicomputation`MultiwaySystem"];
 
@@ -118,7 +126,7 @@ Do[
     Print["HGEV d=", d, " states=", hgRuns[[1, 2]], " causal=", hgRuns[[1, 3]],
           " ms=", ToString[Round[hgMs, 0.1]]];
   ],
-  {d, 2, maxDepth}
+  {d, minDepth, maxDepth}
 ];
 
 Print["AUTH_DONE"];
