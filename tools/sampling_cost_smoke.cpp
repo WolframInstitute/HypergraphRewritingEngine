@@ -17,6 +17,8 @@
 
 #include <chrono>
 #include <cstdio>
+#include <algorithm>
+#include <cctype>
 #include <string>
 #include <vector>
 
@@ -55,22 +57,151 @@ int main(int argc, char** argv) {
         return b.build();
     };
 
+    // THE LEFT-HAND SIDE HAS THREE INDEPENDENT PROPERTIES, AND A SWEEP OVER ONE OF THEM SAYS
+    // NOTHING ABOUT THE OTHER TWO. They are: how MANY edges it has, what ARITY those edges are,
+    // and how they are CONNECTED to each other. A chain of binary edges varies only the first.
+    //
+    //   shape        how the n edges share vertices
+    //     chain      e_i covers vertices i..i+a-1, so consecutive edges overlap in a-1
+    //     star       every edge contains vertex 0 and is otherwise fresh -- one join point of
+    //                degree n, against the chain's n-1 join points of degree 2
+    //     cycle      a chain whose last edge closes back onto vertex 0, so the LHS has no
+    //                endpoint to anchor a match at and every vertex has the same degree
+    //     tree       edge i attaches to vertex i/2, giving a branching LHS that is neither a
+    //                path nor a single hub
+    //     disc       n components sharing no vertex, so matching cannot join at all and
+    //                enumerates a cartesian product
+    //   arity        2, 3 or 4 vertices per edge; "mixed" alternates arity 2 and 3, which is
+    //                the case a uniform-arity sweep cannot produce
+    //
+    // Named <shape><n>a<arity>, e.g. star3a2, cycle4a2, chain2a3, tree4a2, mixed3.
+    //
+    // ONE RIGHT-HAND SIDE CONVENTION ACROSS THE WHOLE FAMILY: keep every matched edge and append
+    // ONE fresh edge of the same arity hanging off the LHS's highest vertex. Net effect is +1
+    // edge for every shape, arity and size, so a difference between two runs is a difference in
+    // the LEFT-hand side and not in how much the rule grows the state.
+    auto parse_family = [](const std::string& s, size_t& n, size_t& arity,
+                           std::string& shape) -> bool {
+        static const char* kShapes[] = {"chain", "star", "cycle", "tree", "disc", "mixed"};
+        for (const char* sh : kShapes) {
+            const std::string p(sh);
+            if (s.rfind(p, 0) != 0) continue;
+            const std::string rest = s.substr(p.size());
+            if (rest.empty() || !std::isdigit(static_cast<unsigned char>(rest[0]))) continue;
+            n = static_cast<size_t>(rest[0] - '0');
+            arity = 2;
+            const size_t ap = rest.find('a');
+            if (ap != std::string::npos && ap + 1 < rest.size())
+                arity = static_cast<size_t>(rest[ap + 1] - '0');
+            shape = p;
+            return n >= 1 && n <= 6 && arity >= 2 && arity <= 4;
+        }
+        return false;
+    };
+
+    // ONE GENERATOR FOR THE PATTERN AND FOR THE STATE IT RUNS ON, which is not a tidiness point
+    // but a correctness one. The initial state used to be a chain of binary edges whatever the
+    // rule was, so a star, a cycle, a tree or any arity above two matched NOTHING: those runs
+    // reported one state and zero events, and a sweep over them would have collected empty rows
+    // that look like data. The state is now the same shape as the pattern, built by this
+    // function with a different edge count, so a match exists by construction.
+    auto build_shape = [](const std::string& shape, size_t n, size_t arity) {
+        std::vector<std::vector<uint32_t>> out;
+        uint32_t next = 0;
+        auto fresh = [&next]() { return next++; };
+        auto arity_at = [&](size_t i) { return (shape == "mixed") ? (2 + (i % 2)) : arity; };
+
+        if (shape == "star") {
+            const uint32_t hub = fresh();
+            for (size_t i = 0; i < n; ++i) {
+                std::vector<uint32_t> e{hub};
+                for (size_t vi = 1; vi < arity_at(i); ++vi) e.push_back(fresh());
+                out.push_back(e);
+            }
+        } else if (shape == "disc") {
+            for (size_t i = 0; i < n; ++i) {
+                std::vector<uint32_t> e;
+                for (size_t vi = 0; vi < arity_at(i); ++vi) e.push_back(fresh());
+                out.push_back(e);
+            }
+        } else if (shape == "tree") {
+            std::vector<uint32_t> verts{fresh()};
+            for (size_t i = 0; i < n; ++i) {
+                std::vector<uint32_t> e{verts[i / 2]};
+                for (size_t vi = 1; vi < arity_at(i); ++vi) {
+                    const uint32_t v = fresh(); e.push_back(v); verts.push_back(v);
+                }
+                out.push_back(e);
+            }
+        } else {   // chain, cycle, mixed -- all paths; cycle closes the last edge onto the first
+            std::vector<uint32_t> path{fresh()};
+            for (size_t i = 0; i < n; ++i) {
+                std::vector<uint32_t> e{path.back()};
+                for (size_t vi = 1; vi < arity_at(i); ++vi) {
+                    const uint32_t v = fresh(); e.push_back(v); path.push_back(v);
+                }
+                out.push_back(e);
+            }
+            if (shape == "cycle" && n >= 2) out.back().back() = out.front().front();
+        }
+        return out;
+    };
+
+    auto family_rule = [&build_shape](const std::string& shape, size_t n, size_t arity) {
+        auto b = make_rule(0);
+        const auto lhs = build_shape(shape, n, arity);
+        uint32_t next = 0;
+        for (const auto& e : lhs) for (uint32_t v : e) next = std::max(next, v + 1);
+
+        for (const auto& e : lhs) {
+            std::vector<uint8_t> t; t.reserve(e.size());
+            for (uint32_t v : e) t.push_back(static_cast<uint8_t>(v));
+            b.lhs(t);
+            b.rhs(t);
+        }
+        // The appended edge: same arity as the family, anchored on the highest LHS vertex.
+        const size_t a_out = (shape == "mixed") ? 2 : arity;
+        std::vector<uint8_t> add{static_cast<uint8_t>(next - 1)};
+        for (size_t vi = 1; vi < a_out; ++vi) add.push_back(static_cast<uint8_t>(next++));
+        b.rhs(add);
+        return b.build();
+    };
+
+    size_t fam_n = 0, fam_arity = 0;
+    std::string fam_shape;
+    const bool is_family = parse_family(rule, fam_n, fam_arity, fam_shape);
+
     RewriteRule r =
+        is_family        ? family_rule(fam_shape, fam_n, fam_arity) :
         rule == "pair"   ? chain_rule(2) :
         rule == "triple" ? chain_rule(3) :
         rule == "quad"   ? chain_rule(4) :
-        // TWO COMPONENTS SHARING NO VARIABLE. Matching this cannot join -- there is no shared
-        // vertex to join on -- so it enumerates the cartesian product of the state's edges,
-        // quadratic in state size. It is the shape the engine warns about, and it belongs in
-        // the LHS-size sweep as the point where connectedness rather than size is what changed.
+        // The published two-component shape, kept under its published name so the existing
+        // table's rows keep meaning what they meant. disc2a2 is the same idea in the family
+        // grammar, with the family's own right-hand side convention.
         rule == "disc"   ? make_rule(0).lhs({0, 1}).lhs({2, 3})
                                        .rhs({0, 1}).rhs({2, 4}).rhs({4, 3}).build() :
         // "growth": the one-edge LHS, which keeps its edge and appends rather than subdividing.
                            make_rule(0).lhs({0, 1}).rhs({0, 1}).rhs({1, 2}).build();
 
+    // The initial state is the SAME SHAPE as the pattern, with `edges` edges rather than the
+    // pattern's. For the named legacy rules that is a binary chain, which is what they have
+    // always run on.
     std::vector<std::vector<VertexId>> init;
-    for (size_t i = 0; i < edges; ++i)
-        init.push_back({static_cast<VertexId>(i), static_cast<VertexId>(i + 1)});
+    {
+        // A CYCLE IS THE ONE SHAPE WHOSE STATE CANNOT BE MADE LARGER THAN ITS PATTERN. An
+        // n-edge cycle pattern matches an L-edge cycle only when L == n -- a longer ring
+        // contains no shorter ring -- so scaling the seed by `edges` would produce a state the
+        // rule can never fire on, which is what "states=1, events=0" meant before this.
+        const size_t seed_n = (is_family && fam_shape == "cycle") ? fam_n : edges;
+        const auto seed = is_family ? build_shape(fam_shape, seed_n, fam_arity)
+                                    : build_shape("chain", seed_n, 2);
+        for (const auto& e : seed) {
+            std::vector<VertexId> t; t.reserve(e.size());
+            for (uint32_t v : e) t.push_back(static_cast<VertexId>(v));
+            init.push_back(t);
+        }
+    }
 
     Hypergraph hg;
     hg.set_state_canonicalization_mode(
@@ -143,13 +274,19 @@ int main(int argc, char** argv) {
     // built. The num_reconstructed_* accessors report the quotient reconstruction and read zero
     // outside quotient mode, so they are the wrong instrument for this sweep.
     const auto& cg = hg.causal_graph();
-    std::printf("RICH rule=%s lhs_edges=%zu init_edges=%zu steps=%zu threads=%zu canon_mode=%s"
+    std::printf("RICH rule=%s shape=%s arity=%zu lhs_edges=%zu init_edges=%zu steps=%zu"
+                " threads=%zu canon_mode=%s"
                 " ms=%.3f states=%zu canonical=%zu events=%zu matches=%zu"
                 " causal_edges=%zu causal_pairs=%zu branchial_edges=%zu branchial_claimed=%zu"
                 " max_width=%zu depth_reached=%zu\n",
                 rule.c_str(),
-                rule == "pair" ? size_t{2} : rule == "triple" ? size_t{3}
-                    : rule == "quad" ? size_t{4} : rule == "disc" ? size_t{2} : size_t{1},
+                is_family ? fam_shape.c_str()
+                          : (rule == "disc" ? "disc" : "chain"),
+                is_family ? fam_arity : size_t{2},
+                is_family ? fam_n
+                          : (rule == "pair" ? size_t{2} : rule == "triple" ? size_t{3}
+                             : rule == "quad" ? size_t{4} : rule == "disc" ? size_t{2}
+                             : size_t{1}),
                 edges, steps, threads, canon.c_str(),
                 std::chrono::duration<double, std::milli>(t1 - t0).count(),
                 hg.num_states(), hg.num_canonical_states(),

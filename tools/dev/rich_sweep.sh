@@ -11,8 +11,9 @@
 #   as one; it exists only to decide when to stop going deeper.
 #
 #   SCALING phase -- wall time against thread count. A timing run shares nothing: one job at a
-#   time, everything else on the box quiet, or the number reports the other tenants. This phase
-#   is therefore serial by construction and is the long pole.
+#   time. The box is dedicated, so the interference this guards against is THIS SWEEP's own
+#   concurrency: four saturating jobs would each report the other three. Serial by construction,
+#   and the long pole.
 #
 # HOW DEEP. Each shape is pushed one depth at a time until a run exceeds DEPTH_BUDGET_S, then
 # stopped. That is what makes "as deep as this shape goes" a measured boundary per shape rather
