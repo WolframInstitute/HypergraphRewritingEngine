@@ -1589,19 +1589,6 @@ measurement.}
 \begin{tikzpicture}
 \begin{axis}[
     width=0.48\textwidth, height=5.0cm,
-    xlabel={Worker threads}, ylabel={Parallel efficiency},
-    xmode=log, log basis x=2, xtick={1,2,4,8,16,32}, xticklabels={1,2,4,8,16,32},
-    ymin=0, ymax=1.25, grid=major, grid style={gray!25},
-    legend style={font=\scriptsize, at={(0.03,0.03)}, anchor=south west, draw=none, fill=none},
-    label style={font=\small}, tick label style={font=\scriptsize},
-]
-\input{tables/f_efficiency}
-\end{axis}
-\end{tikzpicture}
-\hfill
-\begin{tikzpicture}
-\begin{axis}[
-    width=0.48\textwidth, height=5.0cm,
     xlabel={Worker threads}, ylabel={Time (s)},
     xmode=log, log basis x=2, xtick={1,8,16,24,32}, xticklabels={1,8,16,24,32},
     ymin=0, grid=major, grid style={gray!25},
@@ -1611,11 +1598,10 @@ measurement.}
 \input{tables/f_thread_memory}
 \end{axis}
 \end{tikzpicture}
-\caption{Left: parallel efficiency against worker count for two rule shapes; the dotted line marks
-the physical core count this host reports. Right: user and system time for the same runs. User time increases
-by a factor of $2.1$ across a $32\times$ increase in workers, while system time increases by a
-factor of $206$; the efficiency decline in the left panel is accounted for by the right panel, not
-by contention. Data as in Tables~\ref{tab:t12-shapes} and~\ref{tab:t13-memory}.}
+\caption{User and system time against worker count, for the runs of
+Table~\ref{tab:t13-memory}. User time increases by a factor of $2.1$ across a $32\times$ increase
+in workers, while system time increases by a factor of $206$. This is what the efficiency decline
+of Figure~\ref{fig:lhs-scaling} is spent on: memory acquisition rather than lock contention.}
 \label{fig:scaling}
 \end{figure}
 
@@ -1623,7 +1609,16 @@ by contention. Data as in Tables~\ref{tab:t12-shapes} and~\ref{tab:t13-memory}.}
 
 \begin{table}[htbp]
 \centering
-\caption{\textbf{T12 --- Parallel efficiency by rule shape.} The rule set determines how much parallel work is available, so a scaling curve measured on a single rule characterises that rule. Two shapes are measured at each thread count: a one-edge left-hand side, which re-matches by scanning an index and expands each state narrowly, and a two-edge left-hand side, which performs a join and produces a wider frontier. Both scale linearly to four threads. The two-edge rule maintains efficiency at or above unity to eight threads ($1.14$; the superlinear value arises because a wider frontier deduplicates work that the serial order performs) and attains its minimum wall time at sixteen. The one-edge rule reaches $0.78$ at eight threads. At 24 threads---all physical cores, before any simultaneous multithreading---efficiency is $0.26$ for both shapes. Serial times are $5.7$\,s and $92.6$\,s respectively, so the decline is not attributable to thread setup; the same curve shape was obtained at a problem size $100\times$ smaller. Source: \texttt{tools/dev/scaling\_sweep.py} over \texttt{tools/sampling\_cost\_smoke}.}
+\caption{\textbf{T12 --- Wall time and parallel efficiency by rule shape.} The rule set decides how
+much parallel work exists, so a scaling curve measured on one rule characterises that rule. Two
+shapes are measured at every thread count: a one-edge left-hand side, which re-matches by scanning
+an index and expands each state narrowly, and a two-edge left-hand side, which performs a join and
+produces a wider frontier. The two-edge rule holds efficiency at $0.80$ to eight threads and $0.65$
+at 32, while the one-edge rule falls to $0.35$ and $0.12$ over the same range---and its wall time
+stops improving after 24 threads, rising from $761.0$\,ms to $799.1$\,ms at 32. The decline is not
+thread setup: the serial points are $3.0$\,s and $34.1$\,s. This table gives the wall times behind
+the size axis of Figure~\ref{fig:lhs-scaling}, which sweeps the same axis at four sizes.
+Source: \texttt{tools/dev/scaling\_sweep.py} over \texttt{tools/sampling\_cost\_smoke}.}
 \label{tab:t12-shapes}
 \input{tables/t12_rule_shapes}
 \end{table}

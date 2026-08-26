@@ -231,9 +231,31 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("rich_dir")
     ap.add_argument("--out", default="paper/tables")
+    ap.add_argument("--measured-on", default="",
+                    help="machine string for the provenance line; defaults to measured_on.txt "
+                         "in the data directory. Required: a figure must not claim it was "
+                         "measured where it was drawn.")
     a = ap.parse_args()
 
     pt.OUT = a.out
+
+    # THE FRAGMENT MUST NAME THE MACHINE THAT MEASURED, NOT THE ONE THAT DREW. paper_tables
+    # stamps pt.machine() -- the host running the generator -- and these rows are produced on a
+    # remote box and plotted here. Left alone, every figure in this set claimed it was measured
+    # on the developer's desktop. rich_sweep.sh writes measured_on.txt beside the data; --measured-on
+    # overrides it for a data set collected before that file existed.
+    measured = a.measured_on
+    if not measured:
+        mf = os.path.join(a.rich_dir, "measured_on.txt")
+        if os.path.exists(mf):
+            measured = open(mf).read().strip()
+    if measured:
+        pt._MEASURED_ON = measured
+        print("measured on: %s" % measured)
+    else:
+        raise SystemExit("no measured_on.txt in %s and no --measured-on given: refusing to stamp "
+                         "these fragments with this machine's name" % a.rich_dir)
+
     depth = parse(os.path.join(a.rich_dir, "rich_depth.txt"))
     scale = parse(os.path.join(a.rich_dir, "rich_scaling.txt"))
     print("depth rows %d, scaling rows %d" % (len(depth), len(scale)))

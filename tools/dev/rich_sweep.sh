@@ -36,6 +36,16 @@ BIN="$BUILD/sampling_cost_smoke"
 [ -x "$BIN" ] || { echo "no $BIN" >&2; exit 1; }
 mkdir -p "$OUT"
 
+# RECORD THE MACHINE THAT MEASURED, next to the data it measured. The figures are drawn later,
+# often on a different computer from the one that produced the rows, and paper_tables stamps the
+# machine it is RUNNING on. Without this file the fragments claim they were measured wherever
+# they were drawn, which is a false statement about provenance in a paper whose whole table
+# convention is that a table carries its machine with it.
+mkdir -p "$OUT"
+{ command -v lscpu >/dev/null 2>&1 && lscpu | awk -F: '/Model name/{gsub(/^ +/,"",$2); print $2; exit}'; } \
+    > "$OUT/measured_on.txt" 2>/dev/null || true
+[ -s "$OUT/measured_on.txt" ] || uname -srm > "$OUT/measured_on.txt"
+
 NPROC=$(nproc)
 DEPTH_BUDGET_S=${DEPTH_BUDGET_S:-240}     # stop deepening a shape once one run costs this much
 SCALE_BUDGET_S=${SCALE_BUDGET_S:-900}     # a single scaling point may not exceed this
