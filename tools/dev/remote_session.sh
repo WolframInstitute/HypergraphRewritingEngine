@@ -162,8 +162,14 @@ build_gpu_targets() {
   ARCH="$("$NVSMI" --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')"
   [ -n "$ARCH" ] || ARCH=89          # 4090 = sm_89; the query is the authority when it answers
   say "build gpu (sm_$ARCH, -j$GPU_J from ${MEM_GB}G RAM and ${NPROC} threads)"
+  # HG_GPU_ARCHS IS THE KNOB, not CMAKE_CUDA_ARCHITECTURES. gpu/CMakeLists.txt caches
+  # "75;80;86;89;90" and sets each target's CUDA_ARCHITECTURES property from it, so passing
+  # CMAKE_CUDA_ARCHITECTURES is silently ignored and every build compiles SASS for five
+  # architectures. Measured on the rented box: cicc/ptxas in flight carried compute_75, 80,
+  # 86, 89 and 90 simultaneously -- five times the work, for one card whose arch is known.
+  # A rented box builds for the device it has.
   cmake -S . -B build_gpu "${COMMON_FLAGS[@]}" -DBUILD_GPU=ON \
-    -DCMAKE_CUDA_ARCHITECTURES="$ARCH" >> "$LOG" 2>&1 || fail "gpu configure"
+    -DHG_GPU_ARCHS="$ARCH" >> "$LOG" 2>&1 || fail "gpu configure"
   # CMake DISABLES GPU SUPPORT AND EXITS 0 when it cannot find a CUDA compiler, so a successful
   # configure proves nothing. Reproduced deliberately: without /usr/local/cuda/bin on PATH the
   # configure returns 0, logs "CUDA not found - GPU support disabled", and emits no targets.
