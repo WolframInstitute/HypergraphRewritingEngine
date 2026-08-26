@@ -21,6 +21,25 @@ self-consistent.
 
 Run (needs `~/tla/tla2tools.jar`, any Java ≥ 11):
 
+    verification/tla/run.sh            # every cell
+    verification/tla/run.sh --quick    # every cell but the deep one
+    verification/tla/run.sh MCMatchForwardingEagerBroken
+
+`run.sh` checks each cell against the verdict its own `.cfg` declares on line 1
+(`Expected: PASS` or `Expected: VIOLATION`) and exits non-zero on a mismatch. It
+is registered as the `tla_cells` ctest, `--quick`, and skips rather than fails
+where Java or `tla2tools.jar` is absent. **Two of the seven cells must
+VIOLATE** — `MCSegmentedArrayBroken` and `MCMatchForwardingEagerBroken` — and a
+spec edit that turns one of those into a pass has disabled a calibration, which
+is the case a results table cannot catch and the runner can.
+
+It reports distinct-state counts but does not assert them: TLC stops a violating
+cell at the first counterexample, so how far the other workers had gone varies
+with `-workers`, and the two VIOLATION rows below are not reproducible numbers.
+The PASS rows are, and `run.sh` reproduces them exactly.
+
+The single command underneath, for one cell by hand:
+
     cd verification/tla
     java -cp ~/tla/tla2tools.jar tlc2.TLC -workers 8 -deadlock \
          -config <cell>.cfg MCMatchForwarding.tla

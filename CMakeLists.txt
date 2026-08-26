@@ -751,3 +751,23 @@ add_test(NAME genmc_harnesses
 set_tests_properties(genmc_harnesses PROPERTIES
                      TIMEOUT 1500
                      SKIP_RETURN_CODE 2)
+
+# THE TLC CELLS RUN TOO, and for the same reason the GenMC harnesses do. Each .cfg declares its
+# own verdict on line 1 -- `Expected: PASS` or `Expected: VIOLATION` -- and run.sh checks the
+# verdict TLC produces against it. Two of the seven cells are CALIBRATIONS that must VIOLATE:
+# MCSegmentedArrayBroken and MCMatchForwardingEagerBroken. A spec edit that quietly turns one of
+# those into a pass has disabled the calibration, and only a runner that knows the expected
+# verdict can see that; a table of results in a README cannot.
+#
+# --quick drops the deep SegmentedArray cell, which is about a minute on its own against seconds
+# for the other six (measured here at -workers 6: 2s, 3s, 3s, 8s, 1s, 2s -- 19s combined). The
+# deep cell is run from the full `run.sh` when a minute is available, and its numbers live in
+# verification/tla/README.md.
+#
+# SKIPPED where the toolchain is absent, as with genmc: TLC needs a JVM and tla2tools.jar, and
+# neither is a dependency of this project, so run.sh exits 2 and that is mapped to a skip.
+add_test(NAME tla_cells
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/verification/tla/run.sh --quick)
+set_tests_properties(tla_cells PROPERTIES
+                     TIMEOUT 600
+                     SKIP_RETURN_CODE 2)
