@@ -212,6 +212,16 @@ ARITY_RULES = ["chain2a2", "chain2a3", "chain2a4", "mixed3"]
 ARITY_LABELS = {"chain2a2": "arity 2", "chain2a3": "arity 3",
                 "chain2a4": "arity 4", "mixed3": "mixed arity 2/3"}
 
+# THE DEPTH PANELS GET THEIR OWN LIST, NOT THE UNION OF THE SCALING LISTS. Concatenating those
+# lists put chain3a2 in twice -- it is the 3-edge point of the size axis AND the path point of
+# the connectivity axis -- so the figure drew it twice under two different names, and it mixed
+# two naming schemes ("3-edge LHS" beside "chain (path)") inside one legend. Six shapes, each
+# named the same way: connectivity first, then size, so one legend reads consistently.
+DEPTH_RULES = ["chain1a2", "chain2a2", "chain4a2", "star3a2", "cycle4a2", "disc2a2"]
+DEPTH_LABELS = {"chain1a2": "chain, 1 edge", "chain2a2": "chain, 2 edges",
+                "chain4a2": "chain, 4 edges", "star3a2": "star, 3 edges",
+                "cycle4a2": "ring, 4 edges", "disc2a2": "disconnected, 2 parts"}
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -231,11 +241,11 @@ def main():
                         metric="speedup")
     n += scaling_figure(scale, SHAPE_RULES, SHAPE_LABELS, "f_eff_shape.tex", tool, a.out)
     n += scaling_figure(scale, ARITY_RULES, ARITY_LABELS, "f_eff_arity.tex", tool, a.out)
-    n += depth_figure(depth, SIZE_RULES + SHAPE_RULES, {**SIZE_LABELS, **SHAPE_LABELS},
+    n += depth_figure(depth, DEPTH_RULES, DEPTH_LABELS,
                       "f_states_depth.tex", tool, a.out, "states")
-    n += depth_figure(depth, SIZE_RULES + SHAPE_RULES, {**SIZE_LABELS, **SHAPE_LABELS},
+    n += depth_figure(depth, DEPTH_RULES, DEPTH_LABELS,
                       "f_branchial_depth.tex", tool, a.out, "branchial_edges")
-    n += relation_figure(depth, SIZE_RULES + SHAPE_RULES, {**SIZE_LABELS, **SHAPE_LABELS},
+    n += relation_figure(depth, DEPTH_RULES, DEPTH_LABELS,
                          "f_relations.tex", tool, a.out)
     rows = shape_table(depth, a.out, tool)
     print("wrote %d curves across the figures, %d rows in t14_shape_space" % (n, rows))
