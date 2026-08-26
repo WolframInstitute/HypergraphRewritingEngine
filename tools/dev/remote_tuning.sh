@@ -8,7 +8,7 @@
 # THE CLAIM UNDER TEST (paper, sec:evaluation): efficiency falls beyond sixteen workers
 # because of MEMORY ACQUISITION rather than lock contention -- system time grows with the
 # per-worker resident set and minor-fault count while user time grows far less. That was
-# measured to 24 threads on a heterogeneous laptop-class part. A 64-core homogeneous box
+# measured to 24 threads on a heterogeneous i9-14900K desktop. A 64-core homogeneous box
 # either reproduces it with a steeper slope or refutes it, and the difference decides
 # whether the lever is allocation (arena block size, huge pages, NUMA placement) or the
 # scheduler.

@@ -162,13 +162,11 @@ build_host() {
 }
 
 build_gpu_targets() {
-  # nvcc forks a multi-GB cicc per translation unit, so the CUDA build's width is bounded by
-  # MEMORY, not by cores.
   # BOUNDED BY MEMORY AND BY CORES, AND BY NOTHING ELSE. nvcc forks a multi-GB cicc per
-  # translation unit, so RAM is the real ceiling -- but the ceiling is not a constant. An
-  # earlier fixed cap of 8 was this developer's 19 GB shared laptop leaking into a script that
-  # runs on rented hardware: on a 503 GB, 32-thread box it left three quarters of the machine
-  # idle through every CUDA build. The bound is now whichever of the two is smaller.
+  # translation unit, so RAM is the real ceiling -- but the ceiling is not a constant, and it
+  # is not this developer's. A cap sized for the 19 GB shared desktop this script is written
+  # on leaves three quarters of a 503 GB, 32-thread rented box idle through every CUDA build,
+  # so the width is whichever of memory and cores is smaller, computed here.
   local MEM_GB GPU_J ARCH NPROC
   MEM_GB=$(free -g | awk '/^Mem:/ {print $2}')
   NPROC=$(nproc)

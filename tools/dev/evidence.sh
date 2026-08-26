@@ -44,7 +44,7 @@ export PATH="$PATH:/usr/lib/wsl/lib"
 # HOST ONLY. The GPU legs are left to the caller: a CUDA build is minutes to the better part of
 # an hour and must not be started implicitly, and each GPU leg already reports SKIPPED when its
 # binary is absent, which is the honest answer for a box without one.
-# JOBS IS BOUNDED BY MEMORY, NOT BY CORE COUNT. This script runs on a 19 GB laptop shared with
+# JOBS IS BOUNDED BY MEMORY, NOT BY CORE COUNT. This script runs on a 19 GB desktop shared with
 # other work and on a 503 GB box, and -j$(nproc) is right on exactly one of them: the same rule
 # remote_session.sh uses, min(cores, RAM/6GB), is right on both.
 JOBS=$(awk '/MemTotal/ {m=int($2/1024/1024/6)} END {c='"$(nproc)"'; print (m<c && m>0)?m:c}' /proc/meminfo 2>/dev/null || echo 4)
