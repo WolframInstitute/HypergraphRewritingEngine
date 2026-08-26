@@ -42,8 +42,19 @@ SCALE_BUDGET_S=${SCALE_BUDGET_S:-900}     # a single scaling point may not excee
 CONC=${CONC:-4}                           # concurrent jobs in the depth phase
 THREADS_PER=$(( NPROC / CONC )); [ "$THREADS_PER" -lt 1 ] && THREADS_PER=1
 
-# rule:init_edges -- the initial chain has to be at least as long as the LHS or nothing matches.
-SHAPES="growth:1 pair:4 triple:5 quad:6 disc:4"
+# rule:init_edges. The seed must be at least as large as the pattern or nothing matches, and the
+# star shapes get a SMALL seed on purpose: a hub of degree d offers C(d,n) matches for an n-edge
+# star, so a seed sized like the chains' would spend the whole budget at depth 2.
+#
+# The DEPTH phase takes every shape -- it is cheap per shape and the counts are the point. The
+# SCALING phase takes a subset, because it is serial and seven thread points per shape is the
+# long pole: one representative of each axis (size 1-4, hub, tree, ring, disconnected, arity).
+SHAPES=${SHAPES:-"chain1a2:8 chain2a2:8 chain3a2:8 chain4a2:8 \
+star2a2:4 star3a2:4 star4a2:4 tree3a2:8 tree4a2:8 cycle3a2:3 cycle4a2:4 \
+disc2a2:4 disc3a2:3 chain2a3:8 chain3a3:8 chain2a4:8 mixed2:8 mixed3:8 mixed4:8 \
+growth:1 pair:4 triple:5 quad:6 disc:4"}
+SCALE_SHAPES=${SCALE_SHAPES:-"chain1a2:8 chain2a2:8 chain3a2:8 chain4a2:8 \
+star3a2:4 tree4a2:8 cycle4a2:4 disc2a2:4 chain3a3:8 mixed3:8"}
 
 say() { printf '[%s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
 
@@ -126,8 +137,8 @@ fi
 # The depth used for each shape is the DEEPEST one whose serial cost is inside SCALE_BUDGET_S.
 # Read from the depth phase's own rows, so the two phases cannot disagree about what was run.
 if [ "$WHICH" = scaling ] || [ "$WHICH" = all ]; then
-    say "SCALING phase: one job at a time"
-    for s in $SHAPES; do
+    say "SCALING phase: one job at a time, quiet-gated"
+    for s in $SCALE_SHAPES; do
         rule="${s%%:*}"; init="${s##*:}"
         best_d=""
         for d in $(seq 14 -1 1); do
