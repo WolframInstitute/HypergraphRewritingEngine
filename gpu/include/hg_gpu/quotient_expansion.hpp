@@ -248,8 +248,7 @@ struct QeView {
     // that state's step. Separate from `rep`: a class is given a frame by both endpoints of
     // every captured transition, so a class first seen as an output owns its frame from a state
     // that need never expand. The step is what the Automatic signature keys on.
-    DedupMap::DeviceView frame;
-    DedupMap::DeviceView frame_step;   // canonical hash -> step + 1
+    FrameMap::DeviceView frame;        // canonical hash -> (sid+1) | (step+1)<<32
 
     // Bump arena for the matches' slot arrays.
     uint32_t* arr_words;
@@ -347,14 +346,17 @@ __device__ __forceinline__ uint32_t qe_rank_of(DeviceState ds, StateId sid, Edge
 // warning, not a quiet substitution -- state_survives_dedup records kCanonicalMapFull for the
 // same condition on the dedup map.
 //
-// frame_step_ is the one that saturates first: quotient.cu sizes it at max_events while frame_
-// gets max_events * 2, and the two hold the same key set.
+// The owner and the step are ONE value in ONE map, so a class is either published complete or
+// not published at all. Two maps under one flag left a loser of the first insert reading the
+// second before the winner wrote it -- finding the slot EMPTY rather than locked, so there was
+// nothing to wait on -- and taking its own depth as the class's.
 __device__ __forceinline__ bool qe_register_frame(QeView qe, uint64_t class_hash, StateId sid,
                                                   uint32_t step) {
-    const auto f = qe.frame.insert_if_absent(class_hash, static_cast<uint32_t>(sid) + 1u);
-    if (f.overflowed) return true;
-    if (f.inserted) return qe.frame_step.insert_if_absent(class_hash, step + 1u).overflowed;
-    return false;
+    // ONE insert. The owner and its step are published together or not at all, so a thread that
+    // loses this exchange cannot observe the class mid-publication -- there is no second write
+    // for it to arrive ahead of.
+    return qe.frame.insert_if_absent(
+        class_hash, hgcommon::id_key(step, static_cast<uint32_t>(sid))).overflowed;
 }
 
 // Alignment outcomes counted into a caller's local and published when it returns.
@@ -391,9 +393,9 @@ struct QeAlignTally {
 // than recording a slot that means nothing.
 __device__ inline uint32_t qe_frame_slot_of(DeviceState ds, QeView qe, uint64_t class_hash,
                                             StateId sid, EdgeId edge, QeAlignTally& tally) {
-    const auto held = qe.frame.lookup_waiting(class_hash);
+    const auto held = qe.frame.lookup(class_hash);
     if (!held.found || held.value == 0) { ++tally.failed; return UINT32_MAX; }
-    const StateId frame = static_cast<StateId>(held.value - 1u);
+    const StateId frame = static_cast<StateId>(hgcommon::id_pair_from_key(held.value).b);
     if (frame == sid) return qe_slot_of(ds, sid, edge);
 
     if (!ds.state_edge_rank || !ds.state_edge_orbit || frame >= ds.max_states) {
@@ -468,8 +470,10 @@ __device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
     }
 
     // Survivors: child edges that were not freshly produced passed through from the parent (the
-    // child's slice is parent-minus-consumed plus produced by construction). Recorded as
-    // (slot in parent << 32 | slot in child) so one sort orders the pairs.
+    // child's slice is parent-minus-consumed plus produced by construction). Recorded as one
+    // packed (parent slot, child slot) pair so a single sort orders them, through
+    // hgcommon::id_key like every other pair in this engine -- its +1 offset is applied to both
+    // halves, so it preserves the ordering the sort relies on.
     uint64_t surv[kQeMaxSurvivors];
     uint32_t ns = 0;
     {
@@ -484,7 +488,7 @@ __device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
             const uint32_t cs = qe_frame_slot_of(ds, qe, to, child, oe, align);
             if (ps == UINT32_MAX || cs == UINT32_MAX) continue;
             if (ns >= kQeMaxSurvivors) { ds.errors.record(ErrorKind::kScratchOverflow); return; }
-            surv[ns++] = (static_cast<uint64_t>(ps) << 32) | cs;
+            surv[ns++] = hgcommon::id_key(ps, cs);
         }
         hgcommon::isort_u64(surv, ns);
     }
@@ -499,8 +503,8 @@ __device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
         uint32_t* w = qe.arr_words + off;
         for (uint32_t i = 0; i < nc; ++i) *w++ = consumed[i];
         for (uint32_t i = 0; i < np; ++i) *w++ = produced[i];
-        for (uint32_t i = 0; i < ns; ++i) *w++ = static_cast<uint32_t>(surv[i] >> 32);
-        for (uint32_t i = 0; i < ns; ++i) *w++ = static_cast<uint32_t>(surv[i]);
+        for (uint32_t i = 0; i < ns; ++i) *w++ = hgcommon::id_pair_from_key(surv[i]).a;
+        for (uint32_t i = 0; i < ns; ++i) *w++ = hgcommon::id_pair_from_key(surv[i]).b;
     }
 
     const uint32_t rec = qe.matches.claim();
@@ -737,8 +741,9 @@ struct DeviceQrCtx {
     // The canonical OUTPUT class's step, which is one value per class rather than the depth this
     // instance happens to sit at; the caller's depth stands in when the class holds no frame.
     __device__ uint32_t frame_step(uint64_t class_hash, uint32_t fallback) const {
-        const auto fs = qe.frame_step.lookup_waiting(class_hash);
-        return (fs.found && fs.value != 0) ? fs.value - 1u : fallback;
+        const auto fs = qe.frame.lookup(class_hash);
+        if (!fs.found || fs.value == 0) return fallback;
+        return hgcommon::id_pair_from_key(fs.value).a;
     }
     __device__ void record_runsig(uint32_t ev, uint64_t csig) {
         if (ev < qe.event_sig_capacity) qe.event_runsig[ev] = csig;
@@ -927,7 +932,6 @@ private:
     Pool<DeviceQcInstance>    instances_;
     LockFreeList<QeInstRef>   by_key_;
     DedupMap                  rep_;
-    DedupMap                  frame_step_;
     DedupMap                  applied_;
     DedupMap                  canon_seen_;
     DedupMap                  causal_pairs_;
@@ -943,7 +947,7 @@ private:
     uint64_t*                 event_sig_        = nullptr;
     uint64_t*                 event_runsig_     = nullptr;
     uint32_t                  event_sig_capacity_ = 0;
-    DedupMap                  frame_;
+    FrameMap                  frame_;
     uint32_t*                 arr_ = nullptr;
     // The eleven scalars above and below live in ONE allocation; these pointers index into it,
     // so counters_host() reads them all in a single transfer.

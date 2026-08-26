@@ -93,7 +93,6 @@ QeState::QeState(bool on, uint32_t max_events): matches_(on ? max_events : 1u),
           instances_(on ? max_events : 1u),
           by_key_(on ? (1u << 16) : 1u, on ? max_events : 1u),
           rep_(on ? max_events : 8u),
-          frame_step_(on ? max_events : 8u),
           applied_(on ? max_events * 4u : 8u),
           canon_seen_(on ? max_events * 2u : 8u),
           causal_pairs_(on ? max_events * 4u : 8u),
@@ -146,7 +145,6 @@ void QeState::clear() {
         by_key_.clear();
         instances_.reset();
         rep_.clear();
-        frame_step_.clear();
         applied_.clear();
         canon_seen_.clear();
         causal_pairs_.clear();
@@ -345,7 +343,6 @@ QeView QeState::view(uint32_t max_steps, EventSignatureKeys keys,
         q.by_key         = by_key_.view();
         q.inst_next_id   = inst_next_id_;
         q.rep            = rep_.view();
-        q.frame_step     = frame_step_.view();
         q.applied        = applied_.view();
         q.align_moved    = align_moved_;
         q.canon_seen     = canon_seen_.view();

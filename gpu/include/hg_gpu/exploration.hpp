@@ -24,6 +24,30 @@ namespace gpu {
 // the one that gets expanded.
 using DedupMap = ConcurrentMap<uint64_t, uint32_t>;
 
+// ONE PUBLICATION PER CLASS: the frame owner AND the step it reads, in a single value.
+//
+// These were two maps under one flag, and a thread that lost the `frame` insert went on to read
+// `frame_step` before the winner had written it. It found the slot EMPTY -- not locked, so there
+// was nothing to wait on -- took the caller's own depth as the fallback, and every event it
+// replayed signed with its instance depth instead of the class's, which makes the two signature
+// sets disjoint (quotient_replay_core.hpp:141).
+//
+// The old spin in `lookup_waiting` never closed this. It waited on LOCKED, and the losing thread
+// arrives at a slot the winner has not claimed AT ALL, which is EMPTY. Removing the lock
+// narrowed the window; it did not open it.
+//
+// A pair in one value removes it by construction: there is one insert, so there is no second
+// publication to race. It also deletes the map `quotient.cu` sized at max_events while its twin
+// got max_events*2 -- the one that saturates first -- so the device holds less, not more.
+using FrameMap = ConcurrentMap<uint64_t, uint64_t>;
+
+// The value is a packed (step, sid) pair through hgcommon::id_key, NOT a hand-rolled shift.
+// core.hpp says why in the one place the rule lives: "Every map keyed by ids goes through this,
+// on BOTH engines. Two sites packing ids their own way is how one of them ends up without the
+// offset." It also supplies exactly the property this map needs -- the pair is injective and
+// cannot produce zero, because the high word is at least one -- so a published frame is never
+// mistaken for an absent one.
+
 // True when `sid` should be expanded.
 //
 // `dedup` selects the exploration semantics. True: only the first state of each canonical hash
