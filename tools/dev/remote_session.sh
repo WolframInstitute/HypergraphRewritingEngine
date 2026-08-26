@@ -2,7 +2,12 @@
 # The P7.6 measurement session, run on a RENTED, EPHEMERAL box.
 #
 #   bash remote_session.sh [commit] [phase]
-#      phase: prep | sync | tables | sweep | floor | attrib | all
+#      phase: prep | prep-host | prep-gpu | sync | tables | sweep | floor | attrib | all
+#
+# prep-host and prep-gpu exist because a box can arrive with the GPU present but no
+# driver installed, and the CPU half of the session needs no GPU at all. Splitting them
+# lets the host tables be measured while the driver question is still open, instead of
+# the whole session waiting on it.
 #
 # NOTHING HERE MAY BE THE ONLY COPY OF ANYTHING. The box can vanish between one command and
 # the next -- a reassignment, a reboot that wipes the local disk, the day simply ending -- so
@@ -129,7 +134,7 @@ COMMON_FLAGS=(-DCMAKE_BUILD_TYPE=Release -DBUILD_WOLFRAM_LANGUAGE_PACLET=OFF -DB
 
 # Both builds, incremental. Called by `prep` on a new box and by `sync` for every commit
 # after, so the iteration loop and the first setup cannot drift apart.
-build_all() {
+build_host() {
   # The two probes are EXCLUDE_FROM_ALL (every tools/*.cpp is), and paper_tables.py runs BOTH:
   # quotient_reconstruction_cost_probe for the C/R ratio table and mode_matrix_probe for the
   # identity-mode matrix. A default build does not produce them.
@@ -138,6 +143,9 @@ build_all() {
   cmake --build build_linux -j"$(nproc)" --target all_tests bench_cpu_evolve cost_matrix \
     mode_matrix_probe quotient_reconstruction_cost_probe >> "$LOG" 2>&1 || fail "host build"
 
+}
+
+build_gpu_targets() {
   # nvcc forks a multi-GB cicc per translation unit, so the CUDA build's width is bounded by
   # MEMORY, not by cores.
   local MEM_GB GPU_J ARCH
@@ -158,7 +166,7 @@ build_all() {
 }
 
 # --------------------------------------------------------------------------- prep
-if want prep; then
+if want prep || [ "$PHASE" = prep-host ]; then
   say "prep on $(hostname) at $(date -u +%FT%TZ), commit=$COMMIT"
   {
     echo "--- os";      grep -E "^(NAME|VERSION)=" /etc/os-release
@@ -209,14 +217,30 @@ if want prep; then
   say "HEAD: $(git -C "$SRC" rev-parse --short HEAD)  $(git -C "$SRC" log -1 --format=%s | head -c 60)"
 
   cd "$SRC" || fail "no $SRC"
-  build_all
+  build_host
+  [ "$PHASE" = prep-host ] || build_gpu_targets
 
   # A number from an unverified box is not a measurement.
   say "gates"
   ./build_linux/all_tests > "$ROOT/gate_all_tests.log" 2>&1 || fail "all_tests red"
+  if [ "$PHASE" != prep-host ]; then
+    ./build_gpu/hg_gpu_tests > "$ROOT/gate_gpu_tests.log" 2>&1 || fail "hg_gpu_tests red"
+    ./build_gpu/gpu_differential_tests > "$ROOT/gate_differential.log" 2>&1 || fail "differential red"
+  else
+    say "host-only prep: the GPU build and its two suites are deferred to prep-gpu"
+  fi
+  say "gates green: $(grep -h "PASSED" "$ROOT"/gate_*.log | tr '\n' ' ')"
+fi
+
+# --------------------------------------------------------------------------- prep-gpu
+# The GPU half alone, for a box whose driver arrived after the host work started.
+if want prep-gpu; then
+  [ -d "$SRC/.git" ] || fail "no clone on this box — run prep-host or prep first"
+  cd "$SRC" || fail "no $SRC"
+  build_gpu_targets
   ./build_gpu/hg_gpu_tests > "$ROOT/gate_gpu_tests.log" 2>&1 || fail "hg_gpu_tests red"
   ./build_gpu/gpu_differential_tests > "$ROOT/gate_differential.log" 2>&1 || fail "differential red"
-  say "gates green: $(grep -h "PASSED" "$ROOT"/gate_*.log | tr '\n' ' ')"
+  say "gpu gates green: $(grep -h "PASSED" "$ROOT"/gate_gpu_tests.log "$ROOT"/gate_differential.log | tr '\n' ' ')"
 fi
 
 # --------------------------------------------------------------------------- sync
@@ -229,7 +253,8 @@ if want sync; then
   git -C "$SRC" checkout -q "$COMMIT" >> "$LOG" 2>&1 || fail "checkout $COMMIT failed"
   say "sync -> $(git -C "$SRC" rev-parse --short HEAD)  $(git -C "$SRC" log -1 --format=%s | head -c 60)"
   cd "$SRC" || fail "no $SRC"
-  build_all
+  build_host
+  build_gpu_targets
 fi
 
 cd "$SRC" 2>/dev/null || { want prep || fail "no clone on this box — run the prep phase first"; }
