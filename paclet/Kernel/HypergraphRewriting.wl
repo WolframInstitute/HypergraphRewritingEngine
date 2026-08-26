@@ -165,6 +165,15 @@ $HypergraphEngineBinary = hgFindEngineBinary["hg_evolve"];
    CPU binary. *)
 $HypergraphEngineBinaryGPU = hgFindEngineBinary["hg_evolve_gpu"];
 hgGpuBinaryAvailableQ[] := StringQ[$HypergraphEngineBinaryGPU] && FileExistsQ[$HypergraphEngineBinaryGPU];
+hgCpuBinaryAvailableQ[] := StringQ[$HypergraphEngineBinary] && FileExistsQ[$HypergraphEngineBinary];
+
+(* Whether ANY route to the engine exists, which is what an entry point has to ask before it
+   builds a job. The three routes are not interchangeable in preference but they are in
+   availability: the binary supersedes LibraryLink, so asking for the library specifically
+   refuses a build that shipped the binary and no library -- which is what a paclet carrying
+   hg_evolve.exe and no DLL is. *)
+hgEngineAvailableQ[] := hgCpuBinaryAvailableQ[] || hgGpuBinaryAvailableQ[] ||
+                        Head[performRewriting] === LibraryFunction;
 
 (* Run an engine binary on the WXF job fed to its stdin, and collect the WXF
    result from its stdout. Progress/diagnostics arrive on stderr. stdout carries
@@ -351,6 +360,7 @@ HGEvolve::unknownic = "Unknown initial condition type `1`.";
 HGEvolve::unknownprop = "Unknown property(s): `1`. Valid properties are: States, Events, CausalEdges, BranchialEdges, StatesGraph, CausalGraph, BranchialGraph, EvolutionGraph, their Structure variants, GlobalEdges, StateBitvectors, All.";
 HGEvolve::missingdata = "FFI did not return requested data: `1`. This indicates a bug in the FFI layer.";
 HGEvolve::gpudev = "TargetDevice -> \"GPU\" requested but no GPU engine binary (hg_evolve_gpu) is present for `1`; evaluating on the CPU. Build the paclet with BUILD_GPU to include it.";
+HGEvolve::noengine = "This paclet carries no engine for `1`: LibraryResources/`1` holds neither an hg_evolve binary nor a HypergraphRewriting library. Build the paclet for this platform, or install one that was.";
 HGEvolve::baddev = "TargetDevice -> `1` is not valid; use \"CPU\" or \"GPU\". Using CPU.";
 HGEvolve::enginemsg = "Engine binary reported: `1`";
 HGEvolve::enginefail = "Engine binary exited with code `1` and produced no result.";
@@ -1250,7 +1260,8 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
    includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, graphProperties, colorByRule,
    normalizedRules, rulesAssoc, initialStatesData},
 
-  If[Head[performRewriting] =!= LibraryFunction,
+  If[!hgEngineAvailableQ[],
+    Message[HGEvolve::noengine, $SystemID];
     Return[$Failed]
   ];
 
