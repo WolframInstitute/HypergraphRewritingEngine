@@ -30,6 +30,15 @@
 // does, and --check-liveness reports a spin that can never exit. A lost wakeup therefore shows up
 // as a liveness violation rather than as a failed assertion.
 //
+// CALIBRATED, which is what makes five complete executions worth stating. The property rests
+// entirely on seq_cst, so seq_cst is what the calibration removes: with the parking worker's
+// fetch_add, both fences and the submitter's load weakened to release/acquire, this harness
+// reports `Non-terminating spinloop: thread 1`. The counterexample is store buffering exactly as
+// the header describes it -- the submitter reads idle_workers_ as its initial 0 while the worker
+// reads work_available_ as its initial 0, both stale, so the submitter skips the wake and the
+// worker parks with the job queued and nobody left to wake it. Restore the orders and it is
+// clean. The five executions are few because the program is small, not because it is inert.
+//
 // WHAT IS BOUNDED. One worker, one submitter, one job. Two workers contending for one job is a
 // different question (which one claims it) and is not what the wake protocol is about.
 
