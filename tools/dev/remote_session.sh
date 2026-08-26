@@ -159,8 +159,16 @@ build_gpu_targets() {
   # CMake DISABLES GPU SUPPORT AND EXITS 0 when it cannot find a CUDA compiler, so a successful
   # configure proves nothing. Reproduced deliberately: without /usr/local/cuda/bin on PATH the
   # configure returns 0, logs "CUDA not found - GPU support disabled", and emits no targets.
-  (cd build_gpu && make help 2>/dev/null | grep -qx "... bench_gpu_evolve") \
-    || fail "the GPU configure produced no GPU targets: CUDA was not found. Ensure nvcc is on PATH."
+  # NO PIPE HERE, DELIBERATELY. `make help | grep -q` returns NON-ZERO under `set -o
+  # pipefail` even when the pattern matches: grep -q exits at the first match, make gets
+  # SIGPIPE, and pipefail reports make's death as the pipeline's status. That cost two failed
+  # phases on a rented box, each looking like "CUDA was not found" while CUDA was present and
+  # the targets existed. The output is captured first and matched as a string.
+  gpu_help="$( (cd build_gpu && make help 2>/dev/null) || true )"
+  case "$gpu_help" in
+    *"... bench_gpu_evolve"*) ;;
+    *) fail "the GPU configure produced no GPU targets. CUDA was not found, or the build directory did not generate." ;;
+  esac
   cmake --build build_gpu -j"$GPU_J" --target hg_gpu_tests gpu_differential_tests bench_gpu_evolve \
     >> "$LOG" 2>&1 || fail "gpu build"
 }

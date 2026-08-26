@@ -65,7 +65,10 @@ if [ "$COMMIT" = HEAD ] || [ "$COMMIT" = . ]; then
   COMMIT="$(git -C "$ROOT" rev-parse HEAD)"
 fi
 if git -C "$ROOT" cat-file -e "${COMMIT}^{commit}" 2>/dev/null; then
-  if ! git -C "$ROOT" branch -r --contains "$COMMIT" 2>/dev/null | grep -q .; then
+  # Captured rather than piped into grep -q: under pipefail a matching grep -q can still
+  # report failure, because it exits at the first line and the writer dies on SIGPIPE.
+  remote_branches="$(git -C "$ROOT" branch -r --contains "$COMMIT" 2>/dev/null || true)"
+  if [ -z "$remote_branches" ]; then
     echo "refusing: commit $COMMIT is on no remote branch — push it first, or the box cannot check it out" >&2
     exit 2
   fi
