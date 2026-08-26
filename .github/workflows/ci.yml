@@ -152,8 +152,15 @@ jobs:
         run: |
           UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=0 \
             ./build_ubsan/all_tests --gtest_filter=-PacletTest.* 2>&1 | tee ubsan.log
+          # PIPESTATUS[0], not $?, which is tee's and is always 0. The sanitizer's own finding
+          # does not move the exit status, so the grep has to gate -- but the SUITE's status
+          # does move, and discarding it passed a job whose tests failed or crashed outright.
+          suite_status=${PIPESTATUS[0]}
           if grep -q "runtime error" ubsan.log; then
             echo "UBSan reported a runtime error"; exit 1
+          fi
+          if [ "$suite_status" -ne 0 ]; then
+            echo "the suite itself exited $suite_status under this sanitizer"; exit "$suite_status"
           fi
 
       # detect_leaks=0 because LeakSanitizer cannot run where this was verified: under WSL2 it
@@ -171,8 +178,15 @@ jobs:
         run: |
           ASAN_OPTIONS=detect_leaks=0:halt_on_error=0 \
             ./build_asan/all_tests --gtest_filter=-PacletTest.* 2>&1 | tee asan.log
+          # PIPESTATUS[0], not $?, which is tee's and is always 0. The sanitizer's own finding
+          # does not move the exit status, so the grep has to gate -- but the SUITE's status
+          # does move, and discarding it passed a job whose tests failed or crashed outright.
+          suite_status=${PIPESTATUS[0]}
           if grep -q "ERROR: AddressSanitizer" asan.log; then
             echo "AddressSanitizer reported an error"; exit 1
+          fi
+          if [ "$suite_status" -ne 0 ]; then
+            echo "the suite itself exited $suite_status under this sanitizer"; exit "$suite_status"
           fi
 
       # LeakSanitizer executes HERE and nowhere else: under WSL2 it dies before any test runs
@@ -182,10 +196,17 @@ jobs:
         run: |
           ASAN_OPTIONS=detect_leaks=1:halt_on_error=0 \
             ./build_asan/all_tests --gtest_filter=-PacletTest.* 2>&1 | tee lsan.log
+          # PIPESTATUS[0], not $?, which is tee's and is always 0. The sanitizer's own finding
+          # does not move the exit status, so the grep has to gate -- but the SUITE's status
+          # does move, and discarding it passed a job whose tests failed or crashed outright.
+          suite_status=${PIPESTATUS[0]}
           if grep -q "ERROR: LeakSanitizer" lsan.log; then
             echo "LeakSanitizer reported leaks"
             grep -A4 "SUMMARY: AddressSanitizer" lsan.log || true
             exit 1
+          fi
+          if [ "$suite_status" -ne 0 ]; then
+            echo "the suite itself exited $suite_status under this sanitizer"; exit "$suite_status"
           fi
           echo "no leaks reported"
 
@@ -201,8 +222,15 @@ jobs:
           TSAN_OPTIONS=halt_on_error=0 ./build_tsan/all_tests \
             --gtest_filter='ConcurrentMapTest.*:ConcurrentMapFuzz.*:CausalDeterminism.*:ParallelEvolution.*:QuotientCompletenessTest.*' \
             2>&1 | tee tsan.log
+          # PIPESTATUS[0], not $?, which is tee's and is always 0. The sanitizer's own finding
+          # does not move the exit status, so the grep has to gate -- but the SUITE's status
+          # does move, and discarding it passed a job whose tests failed or crashed outright.
+          suite_status=${PIPESTATUS[0]}
           if grep -q "WARNING: ThreadSanitizer" tsan.log; then
             echo "ThreadSanitizer reported a race"; exit 1
+          fi
+          if [ "$suite_status" -ne 0 ]; then
+            echo "the suite itself exited $suite_status under this sanitizer"; exit "$suite_status"
           fi
 
   # The engine on wasm32, where no thread exists. The compile leg alone does not say the
