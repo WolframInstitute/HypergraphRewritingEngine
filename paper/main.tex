@@ -1618,7 +1618,7 @@ from depth six the device is ahead, reaching $28.6\times$ a single CPU thread an
 eight of them at depth seven.
 
 The resident-kernel design has its own boundary, on the same workload and measured by the same
-tool. Against a conventional per-step \texttt{evolve()} the persistent evolver is $16.5\times$
+tool (Table~\ref{tab:t16-persistent}). Against a conventional per-step \texttt{evolve()} the persistent evolver is $16.5\times$
 faster at depth four, $13.2\times$ at five, $5.6\times$ at six and $4.2\times$ at seven---and
 $0.97\times$ at depth eight and $0.98\times$ at nine, where the two are indistinguishable. The
 advantage is the elimination of a fixed per-call cost, which is visible directly in the
@@ -1634,6 +1634,21 @@ be a statement about small problems.
 \caption{\textbf{T7 --- GPU against CPU.} Match-kernel time and end-to-end evolution time for GPU and CPU at increasing depth on the Wolfram rule, including the lazy-index variant; branchial edges are constructed through a per-(state, edge) index. Both sides use the same rule, initial condition, canonicalization mode and exploration strategy, and report medians from a single session on the machine recorded in the table's provenance line. The GPU is slower than the CPU at depth five, where the work per launch does not amortize the launch cost, and faster from depth six onward. Source: \texttt{tools/bench\_gpu\_evolve} and \texttt{tools/bench\_cpu\_evolve}.}
 \label{tab:t7-gpu}
 \input{tables/t7_gpu}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{\textbf{T16 --- The resident kernel against a per-step \texttt{evolve()}, by depth.}
+Both arms are on the device, on the same rule and initial condition, so no CPU arm is involved and
+the sweep reaches depth nine in minutes. The persistent evolver's advantage is the elimination of
+a fixed per-call cost, which the \texttt{evolve()} column shows directly: about $50$\,ms at depths
+four, five and six while the state count grows from $53$ to $3{,}867$. Once the evolution itself
+dominates that constant---by depth eight, at $262{,}144$ states---the two are indistinguishable.
+A speedup for this design quoted without the depth it was measured at is therefore a statement
+about small problems. Source: \texttt{tools/dev/persistent\_depth\_table.py} over
+\texttt{tools/bench\_gpu\_evolve}.}
+\label{tab:t16-persistent}
+\input{tables/t16_persistent_depth}
 \end{table}
 
 \subsection{Thread Scaling (Table T8)}
