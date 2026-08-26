@@ -31,6 +31,9 @@ evidence/
 /paper/*.log
 /paper/*.out
 /paper/*.pdf
+# `make arxiv` builds and packs a submission tree; both are outputs of a target in this repo.
+/paper/arxiv-submission.tar.gz
+/paper/arxiv-submission/
 /paper/*.toc
 
 # Reports written by tools/dev/source_map.py and tools/dev/source_audit.py (libclang over the

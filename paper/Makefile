@@ -8,7 +8,12 @@ BIBTEX = bibtex
 
 all: $(MAIN).pdf
 
-$(MAIN).pdf: $(MAIN).tex references.bib
+# THE TABLES ARE INPUTS, so the pdf depends on them. Without this, regenerating every fragment
+# and running `make` reports "Nothing to be done": main.tex has not changed, and the pdf that
+# ships still carries the previous run's numbers. The fragments are the numbers.
+TABLES := $(wildcard tables/*.tex)
+
+$(MAIN).pdf: $(MAIN).tex references.bib $(TABLES)
 	$(LATEX) $(MAIN)
 	$(BIBTEX) $(MAIN)
 	$(LATEX) $(MAIN)
@@ -37,6 +42,14 @@ arxiv: $(MAIN).pdf
 	cp $(MAIN).tex arxiv-submission/
 	cp references.bib arxiv-submission/
 	cp -r figures arxiv-submission/ 2>/dev/null || true
-	tar -czvf arxiv-submission.tar.gz arxiv-submission/
+	# tables/ is not optional: main.tex \input's every fragment in it, so a submission
+	# without them does not compile at the other end. Copied unconditionally, and the
+	# build below fails loudly rather than shipping a tarball that cannot be built.
+	mkdir -p arxiv-submission/tables
+	cp tables/*.tex arxiv-submission/tables/
+	cd arxiv-submission && $(LATEX) -interaction=nonstopmode $(MAIN) >/dev/null 2>&1 \
+		|| { echo "error: the submission tree does not compile on its own"; exit 1; }
+	rm -f arxiv-submission/*.aux arxiv-submission/*.log arxiv-submission/*.out
+	tar -czf arxiv-submission.tar.gz arxiv-submission/
 	rm -rf arxiv-submission/
-	@echo "Created arxiv-submission.tar.gz"
+	@echo "Created arxiv-submission.tar.gz (compiled from its own copy before packing)"
