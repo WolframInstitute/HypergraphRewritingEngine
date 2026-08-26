@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# Collect the LHS-shape data set: how far each rule shape evolves, how big the relations it
+# builds are, and how its parallel efficiency behaves.
+#
+# WHY IT IS TWO PHASES WITH DIFFERENT CONCURRENCY. The two things being collected have opposite
+# requirements and mixing them silently corrupts one of them.
+#
+#   DEPTH phase -- states, events, causal edges, branchial edges at each depth. These counts are
+#   DETERMINISTIC and thread-independent, so the machine can be saturated: several runs at once,
+#   each on a share of the cores. Wall time from this phase is NOT a measurement and is not used
+#   as one; it exists only to decide when to stop going deeper.
+#
+#   SCALING phase -- wall time against thread count. A timing run shares nothing: one job at a
+#   time, everything else on the box quiet, or the number reports the other tenants. This phase
+#   is therefore serial by construction and is the long pole.
+#
+# HOW DEEP. Each shape is pushed one depth at a time until a run exceeds DEPTH_BUDGET_S, then
+# stopped. That is what makes "as deep as this shape goes" a measured boundary per shape rather
+# than one depth guessed for all of them -- the shapes differ by orders of magnitude in cost per
+# depth, so a single fixed depth would either truncate the cheap ones or never finish the dear.
+#
+# Every run emits one RICH key=value line; nothing here parses or aggregates, so a partial run is
+# still a usable data set and re-running appends rather than replaces.
+#
+# Usage:  tools/dev/rich_sweep.sh <build-dir> <out-dir> [depth|scaling|all]
+
+set -uo pipefail
+
+BUILD="${1:?build dir}"
+OUT="${2:?out dir}"
+WHICH="${3:-all}"
+BIN="$BUILD/sampling_cost_smoke"
+
+[ -x "$BIN" ] || { echo "no $BIN" >&2; exit 1; }
+mkdir -p "$OUT"
+
+NPROC=$(nproc)
+DEPTH_BUDGET_S=${DEPTH_BUDGET_S:-240}     # stop deepening a shape once one run costs this much
+SCALE_BUDGET_S=${SCALE_BUDGET_S:-900}     # a single scaling point may not exceed this
+CONC=${CONC:-4}                           # concurrent jobs in the depth phase
+THREADS_PER=$(( NPROC / CONC )); [ "$THREADS_PER" -lt 1 ] && THREADS_PER=1
+
+# rule:init_edges -- the initial chain has to be at least as long as the LHS or nothing matches.
+SHAPES="growth:1 pair:4 triple:5 quad:6 disc:4"
+
+say() { printf '[%s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
+
+# ---------------------------------------------------------------- depth phase
+depth_one() {          # depth_one <rule> <init_edges> <max_depth_file>
+    local rule="$1" init="$2" marker="$3"
+    local d=1 secs
+    while [ "$d" -le 14 ]; do
+        local log="$OUT/depth_${rule}_d${d}.log"
+        local t0=$(date +%s)
+        timeout $(( DEPTH_BUDGET_S * 3 )) "$BIN" off "$rule" "$init" "$d" "$THREADS_PER" 4 full \
+            > "$log" 2>&1
+        local rc=$?
+        secs=$(( $(date +%s) - t0 ))
+        if [ $rc -ne 0 ]; then
+            say "$rule depth $d: exit $rc after ${secs}s -- stopping this shape"
+            echo "$rule stopped_at_depth $d reason exit$rc" >> "$marker"
+            return
+        fi
+        grep -h "^RICH" "$log" >> "$OUT/rich_depth.txt"
+        say "$rule depth $d: ${secs}s  $(grep -oE 'states=[0-9]+ .*branchial_edges=[0-9]+' "$log" | head -1)"
+        if [ "$secs" -ge "$DEPTH_BUDGET_S" ]; then
+            echo "$rule stopped_at_depth $d reason budget${secs}s" >> "$marker"
+            return
+        fi
+        d=$(( d + 1 ))
+    done
+    echo "$rule stopped_at_depth 14 reason depth_cap" >> "$marker"
+}
+
+if [ "$WHICH" = depth ] || [ "$WHICH" = all ]; then
+    say "DEPTH phase: $CONC concurrent, $THREADS_PER threads each, budget ${DEPTH_BUDGET_S}s/run"
+    : > "$OUT/depth_markers.txt"
+    for s in $SHAPES; do
+        depth_one "${s%%:*}" "${s##*:}" "$OUT/depth_markers.txt" &
+        while [ "$(jobs -rp | wc -l)" -ge "$CONC" ]; do wait -n; done
+    done
+    wait
+    say "DEPTH phase done: $(grep -c . "$OUT/rich_depth.txt" 2>/dev/null || echo 0) rows"
+fi
+
+# -------------------------------------------------------------- scaling phase
+# The depth used for each shape is the DEEPEST one whose serial cost is inside SCALE_BUDGET_S.
+# Read from the depth phase's own rows, so the two phases cannot disagree about what was run.
+if [ "$WHICH" = scaling ] || [ "$WHICH" = all ]; then
+    say "SCALING phase: one job at a time"
+    for s in $SHAPES; do
+        rule="${s%%:*}"; init="${s##*:}"
+        best_d=""
+        for d in $(seq 14 -1 1); do
+            row=$(grep -h "rule=$rule .*steps=$d " "$OUT/rich_depth.txt" 2>/dev/null | head -1)
+            [ -z "$row" ] && continue
+            ms=$(echo "$row" | grep -oE 'ms=[0-9.]+' | cut -d= -f2)
+            # The depth-phase run used THREADS_PER threads; a serial run is slower, so allow
+            # headroom rather than pretending that time is the serial time.
+            if awk "BEGIN{exit !($ms/1000.0 * $THREADS_PER < $SCALE_BUDGET_S)}"; then
+                best_d="$d"; break
+            fi
+        done
+        [ -z "$best_d" ] && { say "$rule: no depth fits the scaling budget, skipped"; continue; }
+        say "$rule: scaling at depth $best_d"
+        for th in 1 2 4 8 16 24 32; do
+            [ "$th" -gt "$NPROC" ] && continue
+            for rep in 1 2 3; do
+                timeout "$SCALE_BUDGET_S" "$BIN" off "$rule" "$init" "$best_d" "$th" 4 full \
+                    > "$OUT/scale_${rule}_d${best_d}_t${th}_r${rep}.log" 2>&1 || break
+                grep -h "^RICH" "$OUT/scale_${rule}_d${best_d}_t${th}_r${rep}.log" \
+                    >> "$OUT/rich_scaling.txt"
+                # One repeat is enough once a point runs long: scheduling noise is milliseconds.
+                ms=$(grep -oE 'ms=[0-9.]+' "$OUT/scale_${rule}_d${best_d}_t${th}_r${rep}.log" \
+                     | cut -d= -f2 | head -1)
+                awk "BEGIN{exit !($ms > 10000)}" && break
+            done
+            say "  $rule t=$th done"
+        done
+    done
+    say "SCALING phase done: $(grep -c . "$OUT/rich_scaling.txt" 2>/dev/null || echo 0) rows"
+fi
+
+say "ALL DONE"
