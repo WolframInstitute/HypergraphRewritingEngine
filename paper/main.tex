@@ -398,7 +398,7 @@ Child states differ from their parents by only the consumed and produced edges, 
 \section{Pattern Matching}
 \label{sec:pattern-matching}
 
-Pattern matching---finding all instances of a rule's left-hand side in a hypergraph---accounts for a large fraction of evolution time; the instruction profile in Section~\ref{sec:benchmarks} attributes $23\%$ of executed instructions to the join's expansion step alone. We use multi-level indexing to restrict candidate enumeration.
+Pattern matching---finding all instances of a rule's left-hand side in a hypergraph---accounts for a large fraction of evolution time; the instruction profile of Table~\ref{tab:t15-instructions} attributes $24.8\%$ of executed instructions to the join's expansion step alone, the largest single component. We use multi-level indexing to restrict candidate enumeration.
 
 \subsection{Edge Signature Indexing}
 
@@ -1992,6 +1992,30 @@ arms of every row compute the same state and event counts.
 \input{tables/t9_ablation}
 \end{table}
 
+\subsection{Where the Instructions Go (Table T15)}
+\label{sec:instruction-profile}
+
+Wall time says how long a run took; it does not say which part of the engine spent it, and on a
+machine whose clock drifts between sessions it is the wrong instrument for attribution. Executed
+instruction counts are deterministic, so this table is taken once under \texttt{callgrind} on a
+single-threaded depth-six run and needs neither repeats nor a quiet machine. Matching, not
+canonicalization, is the largest component; canonicalization is second. The unattributed share is
+the standard library, the runtime and functions below the reporting threshold, and it is reported
+rather than distributed over the named buckets.
+
+\begin{table}[htbp]
+\centering
+\caption{\textbf{T15 --- Executed instructions by component.} A single-threaded depth-six
+evolution of the Wolfram rule under \texttt{callgrind}, grouped by the file each function is
+defined in. Instruction counts are exact and reproducible, which is why attribution uses them
+rather than wall time. The flat per-function profile covers $99.0\%$ of the program total; the
+remainder is below \texttt{callgrind\_annotate}'s reporting threshold. Source:
+\texttt{tools/dev/instruction\_profile.py} over the \texttt{attrib} phase of
+\texttt{tools/dev/remote\_session.sh}.}
+\label{tab:t15-instructions}
+\input{tables/t15_instruction_profile}
+\end{table}
+
 \subsection{Event Canonicalization Overhead}
 Event identity is not one convention but three, and they disagree in general rather than in
 corner cases. Table~\ref{tab:event-canon} evolves each workload once and counts the distinct
@@ -2085,8 +2109,9 @@ parent's surviving matches by forwarding and scans only for matches anchored on 
 (Sections~\ref{sec:pattern-matching} and~\ref{sec:delta})---while canonicalization is not: the
 individualization--refinement pass runs on each state from its complete edge set, though a child
 differs from its parent by only the consumed and produced edges. Warm-starting that pass from the
-parent's partition is the remaining incremental step, and it is the one that would act on the cost
-Section~\ref{sec:benchmarks} attributes the majority of instructions to.
+parent's partition is the remaining incremental step, and Table~\ref{tab:t15-instructions} puts
+$16.7\%$ of executed instructions in its reach---second only to matching, and the largest share
+that a purely incremental change could still address.
 
 \textbf{Instance-parallel replay:} The reconstruction descends each instance subtree inline on the
 thread that discovered it, so the width it exploits is the class count rather than the instance
@@ -2153,7 +2178,7 @@ For a hypergraph with $|V|$ vertices and $|E|$ hyperedges of maximum arity $k$, 
 
 \textbf{Weisfeiler--Leman signature.} One refinement round aggregates, for each vertex, the multiset of neighbor colors: $\BigO(k \cdot |E|)$ work per round, with at most $|V|$ rounds before the coloring stabilizes, giving $\BigO(|V| \cdot k \cdot |E|)$ in the worst case and far less in practice (the partition typically stabilizes in a few rounds). WL is a sound but incomplete invariant: identical hashes are necessary but not sufficient for isomorphism.
 
-\textbf{Individualization--refinement (exact).} IR interleaves color refinement with individualization of vertices in non-singleton cells, exploring a search tree pruned by discovered automorphisms. It is polynomial on instances that refinement alone resolves, but---like nauty and Traces---exponential in the worst case, with the blow-up concentrated on highly symmetric (high-automorphism) states. We claim no polynomial-time bound. Under the exact mode IR is applied to every state, and profiling attributes approximately half of the engine's executed instructions to it. Bucketing by a cheaper hash and invoking IR only on collisions does not reduce this cost, by Proposition~\ref{prop:wlceiling}: a repeated bucket is consistent with a genuine duplicate, which IR must still confirm, so such a filter elides at most a fraction $C/R$ of the invocations it precedes.
+\textbf{Individualization--refinement (exact).} IR interleaves color refinement with individualization of vertices in non-singleton cells, exploring a search tree pruned by discovered automorphisms. It is polynomial on instances that refinement alone resolves, but---like nauty and Traces---exponential in the worst case, with the blow-up concentrated on highly symmetric (high-automorphism) states. We claim no polynomial-time bound. Under the exact mode IR is applied to every state, and profiling attributes $16.7\%$ of the engine's executed instructions to it (Table~\ref{tab:t15-instructions}). Bucketing by a cheaper hash and invoking IR only on collisions does not reduce this cost, by Proposition~\ref{prop:wlceiling}: a repeated bucket is consistent with a genuine duplicate, which IR must still confirm, so such a filter elides at most a fraction $C/R$ of the invocations it precedes.
 
 \subsection{Pattern Matching Complexity}
 
