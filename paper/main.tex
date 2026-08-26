@@ -581,7 +581,8 @@ share therefore exists once, as an annotated function compiled for host and devi
 source: the join that enumerates matches, the edge-signature rule, the rewrite semantics
 determining which vertices a produced edge carries, the event identity, the Weisfeiler--Leman
 hash, the individualization--refinement canonical hash, and the quotient-causal dynamic program
-and its per-instance replay. Ten such cores are shared in total.
+and its per-instance replay. Eleven such cores are shared in total; the three not named here are
+the matcher's task core, the sampling draw and the slot rule.
 
 The consequence is that host and device agree by compilation rather than by testing, and a
 differential test between them can be reserved for the parts that genuinely differ---scheduling,
@@ -1547,7 +1548,7 @@ on the Wolfram side, and this engine's times at depths 3--5 are near the timer's
 The comparison is against the \texttt{Wolfram/Multicomputation} \texttt{MultiwaySystem}, the
 authority this engine reproduces, and against our own reference implementation. All three compute
 the same state and event counts at every depth, which is what makes the ratio meaningful. The
-engine is between $1528\times$ and $12218\times$ faster than the authority over depths two to
+engine is between $1{,}528\times$ and $12{,}218\times$ faster than the authority over depths two to
 five. The ratio is not monotone---depth three is the weakest point at $1528\times$---and at
 depths three to five the engine's own time is $0.1$ to $0.3$\,ms, close enough to the timer's
 resolution that the ratios there should be read as lower bounds on the gap rather than as precise
@@ -1752,7 +1753,7 @@ for one, two, three and four edges. The one-edge rule is the worst-scaling shape
 is not scaling badly for want of work: across the four chain sizes of this figure its serial time
 is the largest. It runs $17.9$\,s, against $5.7$, $10.3$ and $12.7$\,s for two, three and four
 edges. (Table~\ref{tab:t12-shapes} sweeps two different rules at different depths, so its serial
-column is not comparable with these) A one-edge pattern binds one edge per match, so the work
+column is not comparable with these.) A one-edge pattern binds one edge per match, so the work
 between two synchronizations is small and the fixed cost of publishing a state dominates; each
 further edge adds join work per match without adding a synchronization.
 
@@ -2035,6 +2036,15 @@ forwarding is the interesting case: it is worth $1.47\times$ on a two-edge left-
 \emph{costs} $1.26\times$ on a one-edge one, which is why it is decided per rule set by the
 static analysis of Section~\ref{sec:static-analysis} rather than being switched on globally. Both
 arms of every row compute the same state and event counts.
+
+The canonicalization row is the one that cuts against the framing of
+Section~\ref{sec:canonicalization}. Exact individualization--refinement is not the expensive
+option here: it runs at $195.3$\,ms against $211.3$\,ms for the cheaper content hash, a ratio of
+$0.92$. The hash does not remove the refinement pass, it adds a second key on top of it---the
+sampling draw is keyed on \texttt{canonical\_transition\_key}, whose first act is the same
+refinement---so on this workload the approximate mode pays for both. That is the same result
+Proposition~\ref{prop:wlceiling} predicts from the other direction: a cheaper filter in front of
+IR cannot remove the IR invocations, so it can only add to them.
 
 
 \begin{table}[htbp]
