@@ -237,9 +237,18 @@ endif()
 include(CheckIPOSupported)
 check_ipo_supported(RESULT HG_IPO_SUPPORTED OUTPUT HG_IPO_WHY)
 if(HG_IPO_SUPPORTED)
-    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
-    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO TRUE)
-    message(STATUS "Link-time optimisation: enabled for Release")
+    # A PLAIN set() SHADOWS THE CACHE, so -DCMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE=FALSE
+    # was accepted and then overridden: the caller got LTO anyway and nothing said so. That is
+    # the same defect class as HG_GPU_ARCHS forcing CUDA_ARCHITECTURES, and it invalidated a
+    # measurement -- a Windows crash was tested with LTO "off" and the flag never took.
+    # Defaulted, not forced, and the choice is printed.
+    if(NOT DEFINED CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+    endif()
+    if(NOT DEFINED CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO TRUE)
+    endif()
+    message(STATUS "Link-time optimisation (Release): ${CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE}")
 else()
     message(STATUS "Link-time optimisation: unavailable (${HG_IPO_WHY})")
 endif()
