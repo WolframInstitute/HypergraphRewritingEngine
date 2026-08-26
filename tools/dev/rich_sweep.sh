@@ -66,6 +66,34 @@ growth:1 pair:4 triple:5 quad:6 disc:4"}
 SCALE_SHAPES=${SCALE_SHAPES:-"chain1a2:8 chain2a2:8 chain3a2:8 chain4a2:8 \
 star3a2:4 tree4a2:8 cycle4a2:4 disc2a2:4 chain3a3:8 mixed3:8"}
 
+# EVERY MEASUREMENT RUNS UNDER A HARD ADDRESS-SPACE CAP. STANDING, NON-NEGOTIABLE.
+#
+# This is not hypothetical and the cost was not mine to pay. A sweep over deep configurations of
+# the disconnected shapes -- millions of states, tens of millions of branchial pairs, several GB
+# each -- was launched on a 19 GB workstation shared with a dozen other agent sessions and no
+# limit. It drove the box into swap and had to be killed by hand from htop, repeatedly, while
+# every other project on the machine waited.
+#
+# A run that needs more than MEM_CAP_MB dies immediately with a clean allocation failure, which
+# is a result. A run that pages the machine into swap is not a result; it is an outage for
+# everyone else on the box. `ulimit -v` is per-process and inherited, so the cap applies to the
+# measurement and nothing else.
+#
+# THE DEFAULT IS DERIVED FROM THIS HOST AND THIS SWEEP'S OWN CONCURRENCY, not written as a
+# constant. A per-process cap alone is not a bound on the sweep: the depth phase runs CONC jobs
+# at once, so the number that matters is CONC * cap. Sized at 60% of the memory currently
+# AVAILABLE divided by CONC, so a 19 GB workstation and a 503 GB box each get a limit that fits
+# them, and the 40% headroom is what the rest of the machine keeps. Floor of 512 MB so a busy
+# host produces a cap that can still run something rather than one that fails instantly.
+_avail_mb=$(awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 4096)
+MEM_CAP_MB=${MEM_CAP_MB:-$(( _avail_mb * 6 / 10 / CONC ))}
+[ "$MEM_CAP_MB" -lt 512 ] && MEM_CAP_MB=512
+capped() {                      # capped <timeout-seconds> <command...>
+    local t="$1"; shift
+    ( ulimit -v $(( MEM_CAP_MB * 1024 )) 2>/dev/null || true
+      exec timeout "$t" "$@" )
+}
+
 say() { printf '[%s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
 
 # A TIMING RUN STARTS ONLY ON A QUIET MACHINE, CHECKED, NOT ASSUMED. This is not hypothetical:
@@ -97,7 +125,7 @@ depth_one() {          # depth_one <rule> <init_edges> <max_depth_file>
     while [ "$d" -le 14 ]; do
         local log="$OUT/depth_${rule}_d${d}.log"
         local t0=$(date +%s)
-        timeout $(( DEPTH_BUDGET_S * 3 )) "$BIN" off "$rule" "$init" "$d" "$THREADS_PER" 4 full \
+        capped $(( DEPTH_BUDGET_S * 3 )) "$BIN" off "$rule" "$init" "$d" "$THREADS_PER" 4 full \
             > "$log" 2>&1
         local rc=$?
         secs=$(( $(date +%s) - t0 ))
@@ -154,7 +182,7 @@ if [ "$WHICH" = scaling ] || [ "$WHICH" = all ]; then
                 wait_quiet "$rule t=$th rep=$rep"
                 echo "QUIET rule=$rule threads=$th rep=$rep load=$LAST_QUIET_LOAD" \
                     >> "$OUT/quiet_log.txt"
-                timeout "$SCALE_BUDGET_S" "$BIN" off "$rule" "$init" "$best_d" "$th" 4 full \
+                capped "$SCALE_BUDGET_S" "$BIN" off "$rule" "$init" "$best_d" "$th" 4 full \
                     > "$OUT/scale_${rule}_d${best_d}_t${th}_r${rep}.log" 2>&1 || break
                 grep -h "^RICH" "$OUT/scale_${rule}_d${best_d}_t${th}_r${rep}.log" \
                     >> "$OUT/rich_scaling.txt"
