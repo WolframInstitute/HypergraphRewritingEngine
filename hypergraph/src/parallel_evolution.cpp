@@ -160,7 +160,7 @@ void ParallelEvolutionEngine::evolve(
     }
 
     // Mark initial state as matched (waiting version for correctness)
-    matched_raw_states_.insert_if_absent_waiting(raw_state, true);
+    matched_raw_states_.insert(raw_state);
 
     // Under quotient exploration the initial state sits at depth zero and is expanded here.
     if (explore_from_canonical_states_only_) {
@@ -298,7 +298,7 @@ StateId ParallelEvolutionEngine::create_initial_state_only(
     }
 
     // Mark as seen but do NOT submit match task
-    matched_raw_states_.insert_if_absent_waiting(raw_state, true);
+    matched_raw_states_.insert(raw_state);
 
     return raw_state;
 }
@@ -338,7 +338,7 @@ StateId ParallelEvolutionEngine::create_and_register_initial_state(
             canonical_state, static_cast<int>(std::min<size_t>(max_steps_, (std::numeric_limits<int>::max)())));
 
     // Mark initial state as matched and submit for pattern matching
-    matched_raw_states_.insert_if_absent_waiting(raw_state, true);
+    matched_raw_states_.insert(raw_state);
 
     // Under quotient exploration every initial state sits at depth zero. The claim
     // succeeds for the first root of each canonical class; when quotienting the
@@ -1724,8 +1724,7 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
 #endif
 
     // Spawn MATCH task for the new raw state if it hasn't been matched yet
-    auto [existing, inserted] = matched_raw_states_.insert_if_absent_waiting(
-        rr.raw_state, true);
+    const bool inserted = matched_raw_states_.insert(rr.raw_state);
 
     if (inserted) {
         DEBUG_LOG("STATE parent=%u -> child=%u (canonical=%u) rule=%u step=%u new=%d",
