@@ -75,7 +75,16 @@ def _load_note():
     # box is two per cent utilisation, so every table taken on a large host was stamped
     # CONTENDED for background noise, and the marker stopped meaning anything.
     limit = max(0.7, (os.cpu_count() or 4) * 0.1)
-    flag = "" if max(one, fifteen) < limit else "  *** CONTENDED"
+    # JUDGED ON THE ONE-MINUTE FIGURE, which is the same quantity remote_session.sh's wait_quiet
+    # gates on. Judging on max(1m, 15m) made the gate and the stamp disagree about one run: the
+    # session measured because the box was quiet (1.78 against a limit of 3.2) and then stamped
+    # the result CONTENDED because the fifteen-minute average was 3.29 -- and that average is the
+    # SESSION'S OWN -j32 build decaying, not anything competing with the measurement. Eight
+    # fragments carried the marker from a box that was 5.6% utilised.
+    #
+    # Both figures are still printed. The fifteen-minute number is context a reader may want; it
+    # is not evidence about the minute the timings were taken in.
+    flag = "" if one < limit else "  *** CONTENDED"
     return " | load at start %.2f/%.2f (1m/15m)%s" % (one, fifteen, flag)
 
 
