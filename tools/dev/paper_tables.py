@@ -223,8 +223,36 @@ def write(name, body):
 
 # --- T1: exactness and deterministic memory, one row per corpus workload ------------
 
+
+# ONE cost_matrix RUN, SHARED BY EVERY TABLE THAT READS IT.
+#
+# T1 and T3 both report per-workload columns from this tool and each used to invoke it
+# separately. That is two measurements presented as one: the tables carry the same provenance
+# line, name the same tool at the same commit, and disagreed on `multi-rule` -- 672608 arena
+# bytes and 59 heap allocations against 672692 and 60.
+#
+# The divergence is real and it is in the tool, not in the plumbing. Measured on the evaluation
+# box, two consecutive runs of the SAME binary differ on that one workload out of seventeen, and
+# the heap figure is bimodal between exactly 1,536,060 and 2,060,428 bytes -- a difference of
+# 524,368, which is one arena block. Whether a worker needs that block depends on scheduling.
+# It is not ASLR (identical under `setarch -R`) and not thread count (`--serial` varies too,
+# by 96 arena bytes, though its allocation count is stable).
+#
+# Sharing one run cannot make the tool deterministic, but it makes the PAPER consistent: every
+# table quoting cost_matrix quotes the same run of it, which is what their shared provenance
+# line already claims.
+_COST_MATRIX_OUT = None
+
+
+def cost_matrix_out(build):
+    global _COST_MATRIX_OUT
+    if _COST_MATRIX_OUT is None:
+        _COST_MATRIX_OUT = run([binary(build, "cost_matrix")])
+    return _COST_MATRIX_OUT
+
+
 def t1(build):
-    out = run([binary(build, "cost_matrix")])
+    out = cost_matrix_out(build)
     rows = []
     total = ""
     for line in out.splitlines():
@@ -621,7 +649,7 @@ def t3(build):
     grow with the work. cost_matrix counts every global operator new during the measured
     evolution, so the table below puts that count next to the size of the run it served.
     """
-    out = run([binary(build, "cost_matrix")])
+    out = cost_matrix_out(build)
     rows = []
     for line in out.splitlines():
         m = re.match(r"^(\S+)\s+(\S+)\s+(EXACT|INEXACT|\S+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+"
