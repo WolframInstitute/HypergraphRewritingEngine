@@ -351,15 +351,32 @@ size_t arena_block_bytes_live() {
     return g_arena_block_bytes.load(std::memory_order_relaxed);
 }
 
+static std::atomic<size_t> g_discarded_tables{0};
 static std::atomic<size_t> g_discarded_table_bytes{0};
 
 void note_discarded_table_bytes(size_t bytes) {
+    g_discarded_tables.fetch_add(1, std::memory_order_relaxed);
     g_discarded_table_bytes.fetch_add(bytes, std::memory_order_relaxed);
 }
 
 size_t discarded_table_bytes() {
     return g_discarded_table_bytes.load(std::memory_order_relaxed);
 }
+
+// Installs, beside the discards, because the ratio is the actionable part: the same waste is a
+// tuning problem when it comes from many growth rounds and a protocol problem when it comes from
+// a few. Counts as well as bytes, since a table's size varies across the maps.
+static std::atomic<size_t> g_installed_table_bytes{0};
+static std::atomic<size_t> g_installed_tables{0};
+
+void note_installed_table_bytes(size_t bytes) {
+    g_installed_table_bytes.fetch_add(bytes, std::memory_order_relaxed);
+    g_installed_tables.fetch_add(1, std::memory_order_relaxed);
+}
+
+size_t installed_table_bytes() { return g_installed_table_bytes.load(std::memory_order_relaxed); }
+size_t installed_table_count() { return g_installed_tables.load(std::memory_order_relaxed); }
+size_t discarded_table_count() { return g_discarded_tables.load(std::memory_order_relaxed); }
 
 
 // =============================================================================

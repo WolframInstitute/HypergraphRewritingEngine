@@ -790,6 +790,8 @@ private:
             return;
         }
 
+        note_installed_table_bytes(Table::bytes_for(new_capacity));
+
         // SEAL. Every EMPTY key becomes LOCKED (no new claims here; a probe run ends at the
         // first LOCKED exactly as it ended at the first EMPTY) and every ABSENT value becomes
         // FORWARDED (no late settle; the publisher that loses this exchange re-drives at the

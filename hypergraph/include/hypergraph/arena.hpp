@@ -569,6 +569,10 @@ size_t arena_block_bytes_live();
 // bytes do not.
 void note_discarded_table_bytes(size_t bytes);
 size_t discarded_table_bytes();
+void note_installed_table_bytes(size_t bytes);
+size_t installed_table_bytes();
+size_t installed_table_count();
+size_t discarded_table_count();
 
 // =============================================================================
 // ArenaVector<T>: Vector that allocates from ConcurrentHeterogeneousArena
