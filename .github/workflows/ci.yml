@@ -37,6 +37,25 @@ jobs:
       - name: The documentation names only symbols the paclet exports
         run: python3 tools/dev/doc_symbols_check.py
 
+      # A DOCUMENT MAY NOT POINT AT A FILE THAT IS NOT THERE. This project folds documents into
+      # V1_PLAN.md and deletes them, which is the right way to keep one live source -- but the
+      # pointers to them are left behind, and a reader following one gets nothing. Found by
+      # looking: the shipped comparison document sent readers to docs/PAPER_RESULTS.md,
+      # docs/OBJECTIVE.md and docs/MEMORY_ARCHITECTURE_DESIGN.md, none of which had existed for
+      # some time, and V1_PLAN.md still told a reader that docs/RELEASE_CHECKLIST.md was the
+      # acceptance gate "neither file should be read alone" -- of a file folded into it and
+      # deleted. Nothing rebuilds a markdown link, so nothing else was ever going to catch this.
+      - name: Every docs/ path a tracked document names actually exists
+        run: |
+          fail=0
+          for d in $(git ls-files '*.md'); do
+            for f in $(grep -ohE 'docs/[A-Za-z0-9_]+\.md' "$d" | sort -u); do
+              if [ ! -f "$f" ]; then echo "$d points at $f, which does not exist"; fail=1; fi
+            done
+          done
+          [ "$fail" = 0 ] && echo "every docs/ reference in every tracked markdown resolves"
+          exit "$fail"
+
       # artifact_stamp_check.py runs at release sign-off, over binaries a hosted runner does
       # not have. What CI can check is that the checker still catches what it claims to: its
       # self-test builds one fixture per defect class (stale commit, absent stamp, wrong
