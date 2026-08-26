@@ -400,7 +400,7 @@ Child states differ from their parents by only the consumed and produced edges, 
 \section{Pattern Matching}
 \label{sec:pattern-matching}
 
-Pattern matching---finding all instances of a rule's left-hand side in a hypergraph---accounts for a large fraction of evolution time; the instruction profile of Table~\ref{tab:t15-instructions} attributes $24.8\%$ of executed instructions to the join's expansion step alone, the largest single component. We use multi-level indexing to restrict candidate enumeration.
+Pattern matching---finding all instances of a rule's left-hand side in a hypergraph---accounts for a large fraction of evolution time; the instruction profile of Table~\ref{tab:t15-instructions} attributes $24.8\%$ of executed instructions to matching and its join---the largest named component, though the unattributed remainder is larger still. We use multi-level indexing to restrict candidate enumeration.
 
 \subsection{Edge Signature Indexing}
 
@@ -1509,7 +1509,7 @@ does not grow with the work.
 
 \begin{table}[htbp]
 \centering
-\caption{\textbf{T1 --- Exactness and deterministic memory.} One row per corpus workload: canonical states, events, causal edges, branchial edges, arena bytes, heap bytes and heap allocations, all in \textsc{Full} (exact) mode, single-threaded. The \emph{Exactness} column must read \textsc{Exact} for every row, checked against the brute-force isomorphism oracle. Deterministic memory is measured as arena \texttt{bytes\_allocated()}, not RSS, for reproducibility. Source tool: \texttt{tools/cost\_matrix.cpp}.}
+\caption{\textbf{T1 --- Exactness and deterministic memory.} One row per corpus workload: canonical states, events, causal edges, branchial edges, arena bytes, heap bytes and heap allocations, all in \textsc{Full} (exact) mode, single-threaded. Each workload is evolved to its own depth, the \texttt{oracle\_steps} recorded with it in \texttt{reference/oracle\_corpus.hpp}, chosen so the brute-force cross-check stays tractable; counts are therefore comparable down a column and not across rows. The \emph{Exactness} column must read \textsc{Exact} for every row, checked against the brute-force isomorphism oracle. Deterministic memory is measured as arena \texttt{bytes\_allocated()}, not RSS, for reproducibility. Source tool: \texttt{tools/cost\_matrix.cpp}.}
 \label{tab:t1-exactness}
 \input{tables/t1_exactness}
 \end{table}
@@ -1920,7 +1920,10 @@ container ceiling (see Figure~\ref{fig:shape-space}), so the depths differ
 between rows by construction and are reported rather than held equal. \texttt{Shape} is the
 connectivity, \texttt{Arity} the vertices per edge, \texttt{LHS} the number of edges in the
 pattern. The state, causal and branchial columns are the sizes of the three objects the run
-built. Source: \texttt{tools/dev/rich\_sweep.sh} over \texttt{tools/sampling\_cost\_smoke}.}
+built. Rows that agree exactly are not duplicates: raising a path's arity past three changes
+nothing the matcher sees, because consecutive edges already overlap in enough vertices to pin a
+match's orientation, so \texttt{chain2a3} and \texttt{chain2a4} describe the same search and
+report the same counts. Source: \texttt{tools/dev/rich\_sweep.sh} over \texttt{tools/sampling\_cost\_smoke}.}
 \label{tab:t14-shape-space}
 \input{tables/t14_shape_space}
 \end{table}
