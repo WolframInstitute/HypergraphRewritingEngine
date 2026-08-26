@@ -60,45 +60,24 @@ say() { printf '[%s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
 
 # A TIMING RUN STARTS ONLY ON A QUIET MACHINE, CHECKED, NOT ASSUMED. This is not hypothetical:
 # a verification campaign left one process alive into the first scaling shape of this sweep's own
-# first run, and those timings had to be thrown away. The check is cheap and the alternative is a
-# number nobody can defend, so it runs before EVERY timed point rather than once at the start.
+# first run, and those timings had to be thrown away. The check runs before EVERY timed point.
 #
-# pgrep -x matches the process NAME, never the command line, so this cannot match itself or the
-# ssh command that launched it -- a -f pattern here would find its own invocation and wait for
-# ever. QUIET_LOAD is compared against the 1-minute average, which decays, so a machine that was
-# busy a moment ago waits rather than reporting a contended number as a quiet one.
-QUIET_LOAD=${QUIET_LOAD:-1.5}
-QUIET_NAMES=${QUIET_NAMES:-"genmc cc1plus cicc nvcc java valgrind bench_cpu_evolve all_tests gpu_differential_tests hg_gpu_tests"}
+# The check itself lives in quiet_gate.sh and is shared with the Wolfram comparison in
+# paper_tables.py, which needs the same guarantee on a desktop that is never idle by default.
+# One implementation: a second copy would drift, and this one already carried a defect worth not
+# repeating twice (process names truncate at 15 characters, so a longer pgrep -x pattern matches
+# nothing and the gate becomes a rubber stamp).
+. "$(dirname "${BASH_SOURCE[0]}")/quiet_gate.sh"
+
 wait_quiet() {                 # wait_quiet <what-for>
-    local what="$1" waited=0 busy l1 mine
-    while :; do
-        busy=""
-        for n in $QUIET_NAMES; do
-            # THE KERNEL TRUNCATES A PROCESS NAME TO 15 CHARACTERS, so a -x pattern longer than
-            # that matches NOTHING and pgrep says so on stderr while exiting non-zero. Both
-            # sampling_cost_smoke (20) and bench_cpu_evolve (16) are over the limit: unfixed,
-            # this gate reported a quiet machine while its own binary was running. Compare
-            # against the truncated name, which is what ps and pgrep actually see.
-            [ "$(pgrep -c -x "$(printf '%.15s' "$n")" 2>/dev/null || echo 0)" -gt 0 ] \
-                && busy="$busy $n"
-        done
-        # This sweep's own binary, by its truncated name for the same reason.
-        mine=$(pgrep -c -x sampling_cost_s 2>/dev/null || echo 0)
-        [ "$mine" -gt 0 ] && busy="$busy sampling_cost_smoke($mine)"
-        l1=$(awk '{print $1}' /proc/loadavg)
-        if [ -z "$busy" ] && awk "BEGIN{exit !($l1 < $QUIET_LOAD)}"; then
-            [ "$waited" -gt 0 ] && say "  quiet after ${waited}s (load $l1)"
-            LAST_QUIET_LOAD="$l1"
-            return 0
-        fi
-        if [ "$waited" -ge 600 ]; then
-            say "  NOT QUIET after ${waited}s (load $l1, busy:$busy) -- $what measured anyway, marked"
-            LAST_QUIET_LOAD="$l1!contended"
-            return 1
-        fi
-        [ "$waited" = 0 ] && say "  waiting for quiet before $what (load $l1, busy:$busy)"
-        sleep 5; waited=$(( waited + 5 ))
-    done
+    local what="$1"
+    if quiet_wait 600; then
+        LAST_QUIET_LOAD="$QUIET_LOAD1"
+        return 0
+    fi
+    say "  NOT QUIET -- $what measured anyway, marked"
+    LAST_QUIET_LOAD="$QUIET_LOAD1!contended"
+    return 1
 }
 
 # ---------------------------------------------------------------- depth phase
