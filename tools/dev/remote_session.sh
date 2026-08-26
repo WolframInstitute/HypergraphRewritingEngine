@@ -203,6 +203,26 @@ build_gpu_targets() {
     >> "$LOG" 2>&1 || fail "gpu build"
 }
 
+# DISCARD THE BOX'S LOCAL MODIFICATIONS, AFTER WRITING THEM DOWN.
+#
+# A checkout onto a dirty tree fails, and this tree gets dirty in the ordinary course of a
+# session: the generators write paper/tables/*.tex, and a device change under test is copied in
+# by hand. Both are safe to drop HERE and only here -- the driver pulls every phase's artifacts
+# before the next one starts, including a failed phase's, so anything present when sync runs was
+# already brought home.
+#
+# "Safe to drop" is not the same as "dropped without a record": the diff goes to a timestamped
+# patch beside the log first, because a box that is ephemeral is exactly where a lost edit cannot
+# be recovered from.
+clean_tree() {
+  git -C "$SRC" diff --quiet && git -C "$SRC" diff --cached --quiet && return 0
+  local keep="$ROOT/dirty-$(date -u +%Y%m%dT%H%M%SZ).patch"
+  git -C "$SRC" diff HEAD > "$keep" 2>/dev/null || true
+  say "working tree was dirty; its diff is saved at $keep before discarding:"
+  git -C "$SRC" status --short >> "$LOG" 2>&1 || true
+  git -C "$SRC" checkout -- . >> "$LOG" 2>&1 || fail "could not discard local modifications"
+}
+
 # --------------------------------------------------------------------------- prep
 if want prep || [ "$PHASE" = prep-host ]; then
   say "prep on $(hostname) at $(date -u +%FT%TZ), commit=$COMMIT"
@@ -242,6 +262,7 @@ if want prep || [ "$PHASE" = prep-host ]; then
   fi
   say "ncu counters: $NCU_OK"
 
+
   # No --recurse-submodules: the only submodule is the markdown-to-notebook converter, which
   # nothing here builds. A clone that is already present is reused and moved to the commit.
   if [ -d "$SRC/.git" ]; then
@@ -251,6 +272,7 @@ if want prep || [ "$PHASE" = prep-host ]; then
     say "clone @ $COMMIT"
     git clone "$REPO" "$SRC" >> "$LOG" 2>&1 || fail "clone failed"
   fi
+  clean_tree
   git -C "$SRC" checkout -q "$COMMIT" >> "$LOG" 2>&1 || fail "checkout $COMMIT failed"
   say "HEAD: $(git -C "$SRC" rev-parse --short HEAD)  $(git -C "$SRC" log -1 --format=%s | head -c 60)"
 
@@ -288,6 +310,7 @@ fi
 if want sync; then
   [ -d "$SRC/.git" ] || fail "no clone on this box — run the prep phase first"
   git -C "$SRC" fetch --all -q >> "$LOG" 2>&1 || fail "fetch failed"
+  clean_tree
   git -C "$SRC" checkout -q "$COMMIT" >> "$LOG" 2>&1 || fail "checkout $COMMIT failed"
   say "sync -> $(git -C "$SRC" rev-parse --short HEAD)  $(git -C "$SRC" log -1 --format=%s | head -c 60)"
   cd "$SRC" || fail "no $SRC"
