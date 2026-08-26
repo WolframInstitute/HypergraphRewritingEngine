@@ -348,7 +348,7 @@ as in Table~\ref{tab:crratio}.}
 \label{fig:crratio}
 \end{figure}
 
-\noindent For every rule that continues to rewrite, $C/R$ decreases with depth. Reaching the same state along several distinct histories is characteriztic of multiway evolution, and each such arrival produces a repeated WL hash that IR must resolve. The cases that retain a high ratio are those reaching a fixed point after one or two steps: \texttt{self-loop} has $C/R = 100\%$ over two raw states and one event. The fraction a filter could elide is therefore largest on the workloads with the least work to elide.
+\noindent For every rule that continues to rewrite, $C/R$ decreases with depth. Reaching the same state along several distinct histories is characteristic of multiway evolution, and each such arrival produces a repeated WL hash that IR must resolve. The cases that retain a high ratio are those reaching a fixed point after one or two steps: \texttt{self-loop} has $C/R = 100\%$ over two raw states and one event. The fraction a filter could elide is therefore largest on the workloads with the least work to elide.
 
 Two options require automorphism data: quotient exploration, and the event canonicalization conventions of Section~\ref{sec:event-canon}. Both obtain the edge orbits from the same IR pass, so no second canonicalization is performed.
 
@@ -728,8 +728,8 @@ Evolution allocates from per-worker arenas rather than from the global allocator
 holds a bump cursor into blocks it owns, so allocation on the matching and rewriting paths is a
 pointer increment with no synchronization, and memory is reclaimed in bulk by resetting the arena
 rather than by freeing individual objects. Calls to the global allocator are consequently confined
-to acquiring those blocks: Table~\ref{tab:t3-deheap} reports $55$ to $225$ such calls for an
-entire run, which on the largest workload measured is $0.0033$ calls per event.
+to acquiring those blocks: Table~\ref{tab:t3-deheap} reports $55$ to $218$ such calls for an
+entire run, which on the largest workload measured is $0.0032$ calls per event.
 
 \subsection{Memory Model}
 
@@ -1035,7 +1035,7 @@ events that create them, so one coin per new state and one coin per transition a
 under quotient exploration a canonical state has many incoming transitions and the two separate.
 
 \paragraph{Sampling and synchronization.}
-Sampling constrains parallelizm through the order in which decisions become final. A sample cannot
+Sampling constrains parallelism through the order in which decisions become final. A sample cannot
 be acted on before its population is complete: a rewrite cannot be undone, so a match that has been applied
 cannot later be evicted by a match that arrives afterwards. Any reservoir must therefore be
 finalised before its members are rewritten, and finalising requires knowing that the stream of
@@ -1226,7 +1226,7 @@ hash for a given state by construction rather than by two implementations being 
 is device-specific is the orchestration only: how a state is flattened out of the adjacency
 representation, and where the core's scratch comes from.
 
-The parallelizm is across states, not within one. A worker canonicalizes one state per call,
+The parallelism is across states, not within one. A worker canonicalizes one state per call,
 running the shared body serially, which suits a workload whose states arrive continuously and
 number in the thousands rather than one whose individual instances are large. The scratch for that
 call is sized from the state's own edge and occurrence counts and claimed from the device arena of
@@ -1252,7 +1252,7 @@ totals across devices see that it occurred rather than infer a disagreement in t
 \subsection{GPU Pattern Matching}
 
 The unit of matching work on the device is a (state, rule) pair, handled by one block whose threads
-stripe the candidates for the first pattern edge. Parallelizm across states and rules is therefore
+stripe the candidates for the first pattern edge. Parallelism across states and rules is therefore
 the outer axis, with the inner axis inside a single join.
 
 The two indices of Section~\ref{sec:matching-algorithm} divide the work between them exactly as on
@@ -1507,7 +1507,7 @@ does not grow with the work.
 
 \begin{table}[htbp]
 \centering
-\caption{\textbf{T1 --- Exactness and deterministic memory.} One row per corpus workload: canonical states, raw states, events, causal edges, branchial edges, arena bytes, heap allocations, and heap bytes, all in \textsc{Full} (exact) mode, single-threaded. The \emph{Exactness} column must read \textsc{Exact} for every row, checked against the brute-force isomorphism oracle. Deterministic memory is measured as arena \texttt{bytes\_allocated()}, not RSS, for reproducibility. Source tool: \texttt{tools/cost\_matrix.cpp}.}
+\caption{\textbf{T1 --- Exactness and deterministic memory.} One row per corpus workload: canonical states, events, causal edges, branchial edges, arena bytes, heap bytes and heap allocations, all in \textsc{Full} (exact) mode, single-threaded. The \emph{Exactness} column must read \textsc{Exact} for every row, checked against the brute-force isomorphism oracle. Deterministic memory is measured as arena \texttt{bytes\_allocated()}, not RSS, for reproducibility. Source tool: \texttt{tools/cost\_matrix.cpp}.}
 \label{tab:t1-exactness}
 \input{tables/t1_exactness}
 \end{table}
@@ -1570,7 +1570,7 @@ those classes exactly. The saving is in what is expanded, not in what is reporte
 
 \begin{table}[htbp]
 \centering
-\caption{\textbf{T6 --- Quotient against full expansion.} Raw states expanded and wall time for quotient exploration---expanding each canonical state once, at its shortest reachable depth---against full expansion, at increasing depth on the Wolfram rule and with the same canonical closure. Both modes produce the same canonical state set; the columns report the difference in raw states expanded and in wall time. The quotient arm expands 28 events at depth seven where full expansion reaches 5{,}913, and reconstruction recovers all 5{,}913 exactly from those 28. Reconstruction's own cost is \emph{below the resolution of this measurement}: the \texttt{quot.+recon} column is at or a little under the \texttt{quot.} column at every depth ($5.0$ against $5.4$\,ms at depth seven), which is run-to-run variation on sub-ten-millisecond timings and not a negative cost. What the table establishes is that reconstruction is exact and that it is cheap enough not to register beside the evolution it reconstructs from; a workload large enough to separate the two would be needed to price it. Source: \texttt{tools/quotient\_reconstruction\_cost\_probe}.}
+\caption{\textbf{T6 --- Quotient against full expansion.} Events produced and wall time for quotient exploration---expanding each canonical state once, at its shortest reachable depth---against full expansion, at increasing depth on the Wolfram rule and with the same canonical closure. Both modes produce the same canonical state set; the columns report the difference in events produced and in wall time. The quotient arm expands 28 events at depth seven where full expansion reaches 5{,}913, and reconstruction recovers all 5{,}913 exactly from those 28. Reconstruction's own cost is \emph{below the resolution of this measurement}: the \texttt{quot.+recon} column lands at or a little under the \texttt{quot.} column at most depths ($4.8$ against $5.5$\,ms at depth seven), which is run-to-run variation on sub-ten-millisecond timings and not a negative cost. What the table establishes is that reconstruction is exact and that it is cheap enough not to register beside the evolution it reconstructs from; a workload large enough to separate the two would be needed to price it. Source: \texttt{tools/quotient\_reconstruction\_cost\_probe}.}
 \label{tab:t6-quotient}
 \input{tables/t6_quotient}
 \end{table}
@@ -1631,7 +1631,7 @@ be a statement about small problems.
 
 \begin{table}[htbp]
 \centering
-\caption{\textbf{T7 --- GPU against CPU.} Match-kernel time and end-to-end evolution time for GPU and CPU at increasing depth on the Wolfram rule, including the lazy-index variant; branchial edges are constructed through a per-(state, edge) index. Both sides use the same rule, initial condition, canonicalization mode and exploration strategy, and report medians from a single session on the machine recorded in the table's provenance line. At depth five the GPU is slower than eight CPU threads, where the work per launch does not amortize the launch cost; from depth six it is ahead of both columns, and the margin widens with depth. Source: \texttt{tools/bench\_gpu\_evolve} and \texttt{tools/bench\_cpu\_evolve}.}
+\caption{\textbf{T7 --- GPU against CPU.} End-to-end evolution time for the GPU and for the CPU at one and at eight threads, at increasing depth on the Wolfram rule; branchial edges are constructed through a per-(state, edge) index. Both sides use the same rule, initial condition, canonicalization mode and exploration strategy, and report medians from a single session on the machine recorded in the table's provenance line. At depth five the GPU is slower than eight CPU threads, where the work per launch does not amortize the launch cost; from depth six it is ahead of both columns, and the margin widens with depth. Source: \texttt{tools/bench\_gpu\_evolve} and \texttt{tools/bench\_cpu\_evolve}.}
 \label{tab:t7-gpu}
 \input{tables/t7_gpu}
 \end{table}
@@ -1669,7 +1669,7 @@ sibling threads would not be dividing by compute. Efficiency, rather than speedu
 where added threads cease to contribute. It is higher at every thread count on the larger problem
 ---$0.56$ at eight threads against $0.20$ at depth five---because the fixed serial cost is
 amortized over more work, and the depth-seven curve is superlinear at two threads ($1.04$).
-At sixteen threads the three depths give $0.11$, $0.14$ and $0.39$.
+At sixteen threads the three depths give $0.11$, $0.14$ and $0.40$.
 Table~\ref{tab:t13-memory} identifies what the shortfall is spent on. The expanded state set and
 the (input, output, rule) transition multiset are identical at every thread count and seed.
 Source: \texttt{tools/dev/scaling\_sweep.py} over \texttt{tools/bench\_cpu\_evolve}.}
@@ -1703,7 +1703,7 @@ Figure~\ref{fig:lhs-scaling} is spent on is memory acquisition rather than lock 
 The rule set decides how much parallel work exists, so a scaling curve characterizes the rule as
 much as the engine. A one-edge left-hand side re-matches by scanning an index and expands each
 state narrowly; a two-edge left-hand side joins and produces a wider frontier. The two hold
-efficiency very differently---$0.65$ against $0.12$ at 32 threads---and the one-edge rule's wall
+efficiency very differently---$0.67$ against $0.11$ at 32 threads---and the one-edge rule's wall
 time stops improving after 24 threads and rises at 32. Section~\ref{sec:lhs-space} sweeps this
 axis at four sizes and two further properties of the left-hand side.
 
@@ -1716,8 +1716,8 @@ shapes are measured at every thread count: a one-edge left-hand side, which re-m
 an index and expands each state narrowly, and a two-edge left-hand side, which performs a join and
 produces a wider frontier. The one-edge rule reaches $\EffAtEight$ at eight threads and
 $\EffAtSixteen$ at sixteen, and its wall time stops improving before the sweep ends; the two-edge
-rule holds more than twice that efficiency at every thread count, as the table's second pair of
-columns shows. The decline is not thread setup---both serial points are seconds, not
+rule holds well above it from two threads onward---$0.95$ against $0.68$ at two, and $0.67$
+against $0.11$ at 32---as the table's second pair of columns shows. The decline is not thread setup---both serial points are seconds, not
 milliseconds. This table gives the wall times behind
 the size axis of Figure~\ref{fig:lhs-scaling}, which sweeps the same axis at four sizes.
 Source: \texttt{tools/dev/scaling\_sweep.py} over \texttt{tools/sampling\_cost\_smoke}.}
@@ -1841,8 +1841,8 @@ mode, so the curves are comparable to each other and none is relative to another
 reference is ideal scaling: $y=1$ on the efficiency panels, $y=x$ on the speedup panel (upper
 right, logarithmic on both axes, so ideal scaling is the diagonal). Upper panels: left-hand side
 size, one to four edges, all binary chains. Lower left: connectivity at comparable size---path,
-hub, branching tree, ring, and two components sharing no vertex. Lower right: edge arity two,
-three and four, and a mixed-arity left-hand side alternating two and three. Measured by
+hub, branching tree, ring, and two components sharing no vertex. Lower right: edge arity two and
+three at a fixed three-edge left-hand side, and one alternating the two. Measured by
 \texttt{tools/dev/rich\_sweep.sh}, which admits a timed run only after confirming no other
 process of this project is running and the one-minute load average is below $1.5$; each point is
 the minimum of its repeats.}
@@ -1933,7 +1933,7 @@ resident set and the fault count, which identifies memory acquisition as the cos
 The megakernel is launched at a fixed number of blocks per streaming multiprocessor, so that
 number is a tuning parameter rather than a property of the problem. Throughput improves to eight
 blocks per SM and is flat thereafter, which is where the resident frontier stops being the limit.
-Reported occupancy is $100\%$ at every point, so the flattening is not an occupancy ceiling.
+The reported utilization upper bound is $100\%$ at every point, so the flattening is not that bound being reached.
 
 
 \begin{table}[htbp]
@@ -1958,7 +1958,7 @@ Hardware counters exclude every memory and arithmetic alternative, and a direct 
 
 Occupancy requires more care than the register figure alone suggests, because two independent limits coincide. The resident kernel is allocated 255 registers, which over a 32-thread block permits eight blocks per streaming multiprocessor; the kernel is also launched with a grid of eight blocks per multiprocessor. Both give eight warps of a possible forty-eight, or $16.7\%$, and a measured $16.95\%$ of peak warp slots active is consistent with either. They are separable by experiment. Capping the whole device library at 128 registers halves the allocation and leaves occupancy unchanged at $16.66\%$, so the register ceiling was never the binding constraint. Raising the grid with that cap in place does raise residency---to $33.30\%$ at sixteen blocks per multiprocessor---and the kernel becomes \emph{slower}, $1.23$\,ms to $1.31$\,ms, degrading further to $1.43$\,ms as the grid grows. This is consistent with the behavioral saturation of Table~\ref{tab:t11-saturation} and identifies its cause: additional resident warps contend for the shared work cursors without contributing independent work.
 
-The device is therefore limited neither by bandwidth, nor by queue contention, nor by occupancy. It is limited by the dependency structure of the work itself. Individualization--refinement is a depth-first backtracking search in which each step depends on its predecessor, and no quantity of resident parallelizm executes a dependent chain faster. Of the refinement's instruction count, $40\%$ lies in scans over vertices and edges that could be distributed across a warp and $60\%$ in the search itself; distributing the former perfectly bounds the phase at $1.63\times$, and at $51$--$77\%$ of block cycles that is $1.25$--$1.42\times$ overall. That is the ceiling for this algorithm on this architecture, and it is a property of canonicalization rather than of the implementation.
+The device is therefore limited neither by bandwidth, nor by queue contention, nor by occupancy. It is limited by the dependency structure of the work itself. Individualization--refinement is a depth-first backtracking search in which each step depends on its predecessor, and no quantity of resident parallelism executes a dependent chain faster. Of the refinement's instruction count, $40\%$ lies in scans over vertices and edges that could be distributed across a warp and $60\%$ in the search itself; distributing the former perfectly bounds the phase at $1.63\times$, and at $51$--$77\%$ of block cycles that is $1.25$--$1.42\times$ overall. That is the ceiling for this algorithm on this architecture, and it is a property of canonicalization rather than of the implementation.
 
 Taken as a product, under $1\%$ of the device's arithmetic capability is reachable by the dominant phase. This is what the measured throughput reflects, and it is a structural property of the current work decomposition rather than a scheduling artifact or a stall: an independent instrument (below) reports zero time spent waiting on unpublished work.
 
@@ -2114,10 +2114,14 @@ object (Section~\ref{sec:background}), so no wall-time comparison against it is 
 second is written by the same author as the engine, from the same definition, which makes it an
 independent implementation of the definition but not an independent party's implementation.
 
-\textbf{Workload scope.} The corpus is 24 rule-type workloads plus deeper runs of one canonical
-rule. It was constructed to cover rule shapes---productive, reductive, idempotent, mixed arity,
-disconnected and high-automorphism---rather than to sample rules found in practice, and the
-observed behavior of $C/R$ and of parallel efficiency is a property of those shapes.
+\textbf{Workload scope.} Two corpora are used and they are different sizes. The oracle corpus of
+\texttt{reference/oracle\_corpus.hpp} is 17 rule-type workloads and is what Tables~\ref{tab:t1-exactness},
+\ref{tab:t3-deheap} and~\ref{tab:event-canon} report; the left-hand-side sweep of
+Section~\ref{sec:lhs-space} generates 24 shapes of its own, which is what
+Table~\ref{tab:t14-shape-space} reports. Both were constructed to cover rule
+shapes---productive, reductive, idempotent, mixed arity, disconnected and
+high-automorphism---rather than to sample rules found in practice, and the observed behavior of
+$C/R$ and of parallel efficiency is a property of those shapes.
 
 \textbf{Scope of the concurrency results.} The model-checked properties hold for the thread and
 operation counts given, which are small; they are not proofs for unbounded thread counts. The
@@ -2134,7 +2138,7 @@ realized, and Proposition~\ref{prop:wlceiling} shows that a cheaper pre-filter c
 \section{Conclusion and Future Work}
 \label{sec:conclusion}
 
-We have presented an implementation of multiway hypergraph evolution built on exact canonicalization and lock-free concurrency. Compared with the \texttt{Wolfram/\allowbreak Multicomputation} paclet's \texttt{MultiwaySystem} on the same rule and initial condition, and producing identical state and causal-edge counts at every depth, the engine is faster by a factor of $\SpeedupAtLowDepth$ at depth \SpeedupLowDepth{}, rising to $\SpeedupAtHighDepth$ at depth \SpeedupHighDepth{} (Table~\ref{tab:t2-speedup}). The ratio is not monotone across the four depths measured---the depth-three point is the weakest, at $1{,}528\times$---but it rises from there, and at the three deepest points the engine's own time is $0.1$ to $0.3$\,ms, close enough to the timer's resolution that those ratios are better read as lower bounds on the gap than as exact factors. The same table compares the engine against this project's own reference implementation, which computes the same object from the same definition and returns data rather than graph objects, so that ratio is not attributable to graph construction on the slower side; all three agree on state and causal-edge counts at every depth. On the host, evolution attains a speedup of $\MaxHostSpeedup\times$ at \MaxHostSpeedupThreads{} worker threads, with parallel efficiency higher on the larger of the two problem sizes (Table~\ref{tab:t8-scaling}). Efficiency remains at or above $\EffAtEight$ up to eight workers and at or above $\EffAtSixteen$ up to sixteen, depending on the rule's shape, and declines beyond that (Table~\ref{tab:t12-shapes}). The measured cause is memory acquisition rather than contention: across a $\ThreadSweepFactor\times$ increase in worker count, user time increases by a factor of $\UserTimeGrowth$ while system time increases by a factor of $\SysTimeGrowth$ and tracks the per-worker resident set and minor-fault count (Table~\ref{tab:t13-memory}). On the device, wall time ceases to improve beyond \SaturationBlocks{} blocks per streaming multiprocessor (Table~\ref{tab:t11-saturation}), and the GPU is $\GpuSpeedupAtDeepest\times$ faster than eight CPU threads at depth \GpuDeepestDepth{} (Table~\ref{tab:t7-gpu}). The contributions are:
+We have presented an implementation of multiway hypergraph evolution built on exact canonicalization and lock-free concurrency. Compared with the \texttt{Wolfram/\allowbreak Multicomputation} paclet's \texttt{MultiwaySystem} on the same rule and initial condition, and producing identical state and causal-edge counts at every depth, the engine is faster by a factor of $\SpeedupAtLowDepth$ at depth \SpeedupLowDepth{}, rising to $\SpeedupAtHighDepth$ at depth \SpeedupHighDepth{} (Table~\ref{tab:t2-speedup}). The ratio is not monotone across the four depths measured---the depth-three point is the weakest, at $1{,}528\times$---but it rises from there, and at the three deepest points the engine's own time is $0.1$ to $0.3$\,ms, close enough to the timer's resolution that those ratios are better read as lower bounds on the gap than as exact factors. The same table compares the engine against this project's own reference implementation, which computes the same object from the same definition and returns data rather than graph objects, so that ratio is not attributable to graph construction on the slower side; all three agree on state and causal-edge counts at every depth. On the host, evolution attains a speedup of $\MaxHostSpeedup\times$ at \MaxHostSpeedupThreads{} worker threads, with parallel efficiency higher on the larger problem at every thread count beyond the first (Table~\ref{tab:t8-scaling}). Efficiency remains at or above $\EffAtEight$ up to eight workers and at or above $\EffAtSixteen$ up to sixteen, depending on the rule's shape, and declines beyond that (Table~\ref{tab:t12-shapes}). The measured cause is memory acquisition rather than contention: across a $\ThreadSweepFactor\times$ increase in worker count, user time increases by a factor of $\UserTimeGrowth$ while system time increases by a factor of $\SysTimeGrowth$ and tracks the per-worker resident set and minor-fault count (Table~\ref{tab:t13-memory}). On the device, wall time ceases to improve beyond \SaturationBlocks{} blocks per streaming multiprocessor (Table~\ref{tab:t11-saturation}), and the GPU is $\GpuSpeedupAtDeepest\times$ faster than eight CPU threads at depth \GpuDeepestDepth{} (Table~\ref{tab:t7-gpu}). The contributions are:
 
 \begin{enumerate}
     \item Exact canonicalization via individualization--refinement (IR) computed on every state, its hash serving directly as the deduplication key, validated against a brute-force isomorphism oracle
@@ -2245,7 +2249,7 @@ For pattern with $|L|$ edges and state with $|S|$ edges:
 
 \begin{table}[htbp]
 \centering
-\caption{\textbf{Per-operation costs of the concurrent data structures.} Amortized where the structure grows; $p$ is the number of participating threads.}
+\caption{\textbf{Per-operation costs of the concurrent data structures.} Amortized where the structure grows; $n$ is the number of elements held.}
 \label{tab:lockfree-costs}
 \begin{tabular}{lcccc}
 \toprule
