@@ -326,8 +326,10 @@ def main():
     n += scaling_figure(scale, ARITY_RULES, ARITY_LABELS, "f_eff_arity.tex", tool, a.out)
     n += depth_figure(depth, DEPTH_RULES, DEPTH_LABELS,
                       "f_states_depth.tex", tool, a.out, "states", sat)
-    n += depth_figure(depth, DEPTH_RULES, DEPTH_LABELS,
-                      "f_branchial_depth.tex", tool, a.out, "branchial_edges", sat)
+    # No branchial-against-depth fragment: f_relations already plots the branchial relation, and
+    # against causal edges rather than depth, which is the axis that makes a shape's position a
+    # property of its RULE instead of how long it ran. A second view of one quantity is a
+    # fragment nothing inputs.
     n += relation_figure(depth, DEPTH_RULES, DEPTH_LABELS,
                          "f_relations.tex", tool, a.out, sat)
     rows = shape_table(depth, a.out, tool, sat)
