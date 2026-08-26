@@ -1,5 +1,20 @@
+# CMAKE_CUDA_ARCHITECTURES IS THE KNOB. It is CMake's own since 3.18, every CUDA target
+# honours it without being told, it accepts `native` (3.24+) to mean "the card in this
+# machine", and it is what a user, a CI lane or a packager will reach for. HG_GPU_ARCHS is
+# only the SHIPPING DEFAULT -- the set a release artifact carries SASS for -- and it applies
+# solely when the caller has not said otherwise.
+#
+# It used to be the other way round: HG_GPU_ARCHS was forced onto every target's
+# CUDA_ARCHITECTURES property, so -DCMAKE_CUDA_ARCHITECTURES=89 was accepted and silently
+# ignored, and a measurement box with ONE card compiled SASS for five architectures. Setting
+# the standard variable and letting the targets inherit it is what makes the standard knob
+# work; overriding a per-target property is what broke it.
 set(HG_GPU_ARCHS "75;80;86;89;90" CACHE STRING
-    "CUDA architectures for the hg_gpu library (semicolon-separated CC numbers)")
+    "Default CUDA architectures for shipped artifacts; CMAKE_CUDA_ARCHITECTURES overrides")
+if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+    set(CMAKE_CUDA_ARCHITECTURES ${HG_GPU_ARCHS})
+endif()
+message(STATUS "CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
 
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
@@ -21,7 +36,6 @@ add_library(hg_gpu STATIC
     src/content_hash.cu
 )
 
-set_property(TARGET hg_gpu PROPERTY CUDA_ARCHITECTURES ${HG_GPU_ARCHS})
 
 # hg_gpu is built with separable compilation (relocatable device code), so its device symbols
 # need a device-link (nvcc -dlink) step before it can be linked into a plain C++ target such as
@@ -92,7 +106,6 @@ if(BUILD_TESTING OR CMAKE_TESTING_ENABLED OR TARGET gtest)
         tests/test_ir_canon.cu
         tests/test_exploration_probability.cu
     )
-    set_property(TARGET hg_gpu_tests PROPERTY CUDA_ARCHITECTURES ${HG_GPU_ARCHS})
     target_link_libraries(hg_gpu_tests PRIVATE hg_gpu gtest gtest_main)
 
 # NO DEVICE LTO, AND THE PER-CONFIG PROPERTY IS THE ONE THAT DECIDES. The root sets
