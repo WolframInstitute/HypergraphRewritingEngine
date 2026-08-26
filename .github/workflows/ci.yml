@@ -262,3 +262,44 @@ jobs:
       - name: Run the oracle corpus on wasm32
         run: node build_wasm/cost_matrix.js --serial
 
+
+  # THE PAPER IS A DELIVERABLE AND NOTHING BUILT IT. Two defects shipped in its build unnoticed:
+  # main.pdf did not depend on the twenty-one generated fragments it \input's, so regenerating
+  # every number and running `make` reported "Nothing to be done" and left the previous run's
+  # numbers in the pdf; and `make arxiv` packed main.tex, references.bib and figures/ without
+  # tables/, so the submission could not compile at the other end. Both are the kind of thing a
+  # build catches immediately and a human catches at the worst moment.
+  paper:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The set the document actually names: pgfplots and tikz for the figures, algorithm and
+      # subcaption and multirow from latex-extra, natbib and booktabs from latex-recommended.
+      - name: Install TeX
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            texlive-latex-base texlive-latex-recommended texlive-latex-extra \
+            texlive-fonts-recommended texlive-pictures texlive-science
+
+      # Not `make`: a target that decides there is nothing to do would pass this job without
+      # compiling anything, which is the defect above rather than a check for it.
+      - name: The paper compiles from a clean tree
+        run: make -C paper -B
+
+      # Builds a copy of the submission from its own files before packing, so a fragment missing
+      # from the tarball fails HERE rather than on submission.
+      - name: The arXiv submission compiles on its own
+        run: make -C paper arxiv
+
+      - name: Every fragment the paper inputs is present, and every fragment is inputted
+        run: |
+          cd paper
+          grep -oE '\\input\{tables/[a-z0-9_]+\}' main.tex | sed 's/.*tables\///; s/}//' | sort -u > /tmp/inputs
+          ls tables/*.tex | xargs -n1 basename | sed 's/\.tex$//' | sort -u > /tmp/have
+          if ! diff -u /tmp/inputs /tmp/have; then
+            echo "the set of \\input'd fragments and the set of shipped fragments differ"
+            exit 1
+          fi
+          echo "$(wc -l < /tmp/have) fragments, all inputted, all present"
