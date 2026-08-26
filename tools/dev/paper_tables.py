@@ -71,7 +71,11 @@ def _load_note():
     # A quiet box sits near zero. Anything above a core's worth of sustained background work
     # means the timings below were taken in competition with it, and the table has to say so
     # rather than leave a reader to assume otherwise.
-    flag = "" if max(one, fifteen) < 0.7 else "  *** CONTENDED"
+    # Relative to the machine, for the reason remote_session.sh's gate is: 0.7 on a 32-thread
+    # box is two per cent utilisation, so every table taken on a large host was stamped
+    # CONTENDED for background noise, and the marker stopped meaning anything.
+    limit = max(0.7, (os.cpu_count() or 4) * 0.1)
+    flag = "" if max(one, fifteen) < limit else "  *** CONTENDED"
     return " | load at start %.2f/%.2f (1m/15m)%s" % (one, fifteen, flag)
 
 

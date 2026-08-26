@@ -106,18 +106,26 @@ SWEEP="1"; n=2; while [ "$n" -lt "$NPHYS" ]; do SWEEP="$SWEEP,$n"; n=$((n*2)); d
 # average of the phase before it. HG_ACCEPT_CONTENDED=1 measures anyway; it cannot produce a
 # number that reads as clean, because the generator stamps every table CONTENDED.
 wait_quiet() {
-  local waited=0 load
+  # QUIET IS RELATIVE TO THE MACHINE, NOT AN ABSOLUTE NUMBER. The threshold was 0.7 whatever
+  # the box was, which on 32 hardware threads is two per cent utilisation -- and the kernel's
+  # one-minute average decays with a time constant near sixty seconds, so after a -j32 build
+  # and two threaded gate suites it CANNOT reach 0.7 inside this function's own 120s budget.
+  # It duly refused to measure on an otherwise idle rented box at load 1.18, having first
+  # spent the full 120 seconds of it. The bar is now a tenth of a core per hardware thread,
+  # floored at 0.7 so a small box is not held to a looser standard than before.
+  local waited=0 load limit
+  limit=$(awk -v n="$(nproc)" 'BEGIN { l = n * 0.1; print (l < 0.7) ? 0.7 : l }')
   while :; do
     load=$(awk '{print $1}' /proc/loadavg)
-    awk -v l="$load" 'BEGIN { exit (l < 0.7) ? 0 : 1 }' && return 0
+    awk -v l="$load" -v lim="$limit" 'BEGIN { exit (l < lim) ? 0 : 1 }' && return 0
     # The override short-circuits the wait rather than serving it out: a caller who has
     # already accepted contention would otherwise pay 120s of rented time per phase to be
     # told what they said.
     if [ "${HG_ACCEPT_CONTENDED:-0}" = 1 ]; then
-      say "load $load, HG_ACCEPT_CONTENDED=1: measuring anyway, tables stamped CONTENDED"
+      say "load $load over limit $limit, HG_ACCEPT_CONTENDED=1: measuring anyway, tables stamped CONTENDED"
       return 0
     fi
-    [ "$waited" -ge 120 ] && fail "load $load after ${waited}s — not a quiet box. Re-run with HG_ACCEPT_CONTENDED=1 to measure anyway."
+    [ "$waited" -ge 120 ] && fail "load $load exceeds $limit after ${waited}s — not a quiet box. Re-run with HG_ACCEPT_CONTENDED=1 to measure anyway."
     sleep 10; waited=$((waited + 10))
   done
 }
