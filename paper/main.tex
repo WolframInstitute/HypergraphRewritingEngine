@@ -251,7 +251,8 @@ canonicalization, rather than matching, the dominant cost. The two are therefore
 rather than competing: a token--event graph is cheaper and is the right object when history is
 what matters, and a deduplicated states graph is the right object when the reachable state space
 is. We compare against two implementations in Section~\ref{sec:benchmarks}, both of which compute the
-same object we do: the \texttt{Wolfram/\allowbreak Multicomputation} paclet's \texttt{MultiwaySystem}, and this
+same object we do: the \texttt{Wolfram/\allowbreak Multicomputation} paclet's
+\texttt{MultiwaySystem}~\citep{wolframmulticomputation}, and this
 project's own reference implementation (\texttt{reference/MultiwayReference.wl}), a direct
 transcription of the definition used as the correctness oracle throughout this work. The two
 answer different questions. \texttt{MultiwaySystem} is the implementation a user would otherwise
@@ -315,9 +316,16 @@ WL is isomorphism-invariant, so states in the same class share a WL hash and the
 
 The bound is only useful with $C/R$ in hand, and that ratio is a property of the rule and the depth. Measured across the rule-type corpus, reported per case beside the event count, since the two must be read together:
 
-\begin{center}
+\begin{table}[htbp]
+\centering
+\caption{\textbf{Canonical-class to raw-state ratio, per corpus workload.} $C/R$ is the fraction
+of raw states that are distinct up to isomorphism, reported beside the event count because the
+two must be read together: a small ratio on a small run says less than the same ratio on a large
+one. This is the quantity Proposition~\ref{prop:wlceiling} bounds the achievable saving by.
+Source: \texttt{tools/cost\_matrix.cpp}.}
+\label{tab:crratio}
 \input{tables/t_crratio}
-\end{center}
+\end{table}
 
 \input{tables/f_crratio_syms}
 \begin{figure}[htbp]
@@ -342,7 +350,7 @@ depth samples per rule and not a continuum, so the figure shows direction rather
 case that continues to rewrite decreases. A case that does not decrease is one whose two samples
 produced the same class-to-raw ratio, which happens where the rule reaches a fixed point before the
 higher depth---\texttt{self-loop} does so after one event, and its ratio is $100\%$ at both. Values
-as in the table above.}
+as in Table~\ref{tab:crratio}.}
 \label{fig:crratio}
 \end{figure}
 
@@ -1506,8 +1514,9 @@ does not grow with the work.
 \begin{axis}[
     width=0.62\textwidth, height=5.2cm,
     xlabel={Evolution depth}, ylabel={Time (ms)},
-    ymode=log, xtick={2,3,4,5,6,7}, grid=major, grid style={gray!25},
-    legend style={font=\scriptsize, at={(0.03,0.97)}, anchor=north west, draw=none, fill=none},
+    ymode=log, xtick={2,3,4,5}, grid=major, grid style={gray!25},
+    legend style={font=\scriptsize, at={(0.5,-0.30)}, anchor=north, legend columns=3,
+                  draw=none, fill=none, column sep=6pt},
     label style={font=\small}, tick label style={font=\scriptsize},
 ]
 \input{tables/f_speedup}
@@ -1561,8 +1570,9 @@ those classes exactly. The saving is in what is expanded, not in what is reporte
 \begin{axis}[
     width=0.46\textwidth, height=4.8cm,
     xlabel={Evolution depth}, ylabel={Evolution time (ms)},
-    ymode=log, grid=major, grid style={gray!25},
-    legend style={font=\scriptsize, at={(0.03,0.97)}, anchor=north west, draw=none, fill=none},
+    ymode=log, xtick={4,5,6,7,8,9}, grid=major, grid style={gray!25},
+    legend style={font=\scriptsize, at={(0.5,-0.30)}, anchor=north, legend columns=2,
+                  draw=none, fill=none, column sep=6pt},
     label style={font=\small}, tick label style={font=\scriptsize},
 ]
 \input{tables/f_gpu_depth}
