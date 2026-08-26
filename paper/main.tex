@@ -1590,10 +1590,21 @@ measurement.}
 \end{figure}
 
 \subsection{GPU (Table T7)}
-The device is not uniformly faster: at depth five the CPU wins, because the work per launch does
-not amortise the cost of getting it there. The crossover is at depth six, and by depth seven the
-device is $28.6\times$ the CPU on the match kernel and $6.63\times$ end to end. The gap widens
-with depth because the frontier that a single resident kernel keeps on the device grows with it.
+The device is not uniformly faster, and the range over which it is faster has both ends. At depth
+five the CPU wins, because the work per launch does not amortise the cost of getting it there;
+from depth six the device is ahead, reaching $28.6\times$ a single CPU thread and $6.63\times$
+eight of them at depth seven.
+
+The resident-kernel design has its own boundary, on the same workload and measured by the same
+tool. Against a conventional per-step \texttt{evolve()} the persistent evolver is $16.5\times$
+faster at depth four, $13.2\times$ at five, $5.6\times$ at six and $4.2\times$ at seven---and
+$0.97\times$ at depth eight and $0.98\times$ at nine, where the two are indistinguishable. The
+advantage is the elimination of a fixed per-call cost, which is visible directly in the
+\texttt{evolve()} column: it is $49$--$55$\,ms at depths four, five and six, almost independent of
+a state count that grows from $53$ to $3867$ over that range. Once the evolution itself is large
+enough to dominate that constant---by depth eight, at $262{,}144$ states---keeping the kernel
+resident buys nothing. Reporting the speedup without the depth it is measured at would therefore
+be a statement about small problems.
 
 
 \begin{table}[htbp]

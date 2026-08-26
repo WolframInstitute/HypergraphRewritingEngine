@@ -767,7 +767,13 @@ def main():
     n = t6(a.build_dir, a.quotient_depth)
     print("T6: %d depths" % n)
     if a.gpu:
-        n = t7(a.build_dir, a.gpu_build_dir, [5, 6, 7], a.iters)
+        # DEPTHS 4 TO 9, NOT 5 TO 7. The persistent evolver's advantage is amortising a fixed
+        # per-call cost, so a range that stops where it is still winning reports the favourable
+        # half of a curve that turns over. Measured on the evaluation box: 16.5x at depth four,
+        # 13.2x at five, 5.6x at six, 4.2x at seven, and 0.97x at eight, where real compute
+        # dominates the fixed cost and the two converge. The crossover is the result; the
+        # speedup on its own is a statement about small problems.
+        n = t7(a.build_dir, a.gpu_build_dir, [4, 5, 6, 7, 8, 9], a.iters)
         print("T7: %d depths" % n)
     write_values()
     return 0
