@@ -30,6 +30,21 @@ if(POLICY CMP0091)
 endif()
 project(HypergraphEngine VERSION 0.0.1 LANGUAGES CXX)
 
+# ENABLE_TESTING() MUST PRECEDE EVERY add_subdirectory(), AND DID NOT.
+#
+# A directory processed before this call gets no CTestTestfile.cmake, and its add_test() and
+# gtest_discover_tests() registrations are dropped WITHOUT A WARNING. It used to sit near the
+# end of this file, after all twenty-odd subdirectories, so `ctest -N` listed 49 tests -- the
+# lockfree_deque and job_system suites, which call enable_testing() in their own scopes, plus
+# four root tests -- and NONE of the engine suites. all_tests (296 tests), hg_gpu_tests and
+# gpu_differential_tests were registered into files nothing included.
+#
+# That is not cosmetic: .github/workflows/windows.yml gates on `ctest -E genmc` and nothing
+# else, so the Windows lane ran 49 concurrency tests and never once ran the engine suite. The
+# Linux, macOS and GPU lanes invoke their binaries directly and were unaffected, which is why
+# this stayed invisible.
+enable_testing()
+
 # Shared CPU/GPU definitions (hgcommon)
 include_directories(${CMAKE_SOURCE_DIR}/common/include)
 
@@ -675,7 +690,7 @@ endforeach()
 #
 # It stays EXCLUDE_FROM_ALL as a tool; `ctest` builds and runs it. A probe that already computes
 # a pass/fail is a gate that was never wired up, not a tool.
-enable_testing()
+# enable_testing() is called immediately after project(); see the note there.
 #
 # causal_tr_exactness_probe is the second: it checks that online transitive reduction emits
 # exactly the minimal edge set, at every thread count, and likewise returns non-zero on any
