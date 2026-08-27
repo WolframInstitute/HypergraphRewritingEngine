@@ -87,6 +87,30 @@ Measured on the same six: 6.9 / 9.5 / 12.3 / 15.2 / 36.2 ms against 69-101 ms. C
 The GPU is 1.75x the 16-worker CPU and 22x one worker. The residual GPU floor is about 7 ms of
 launch and synchronization, which is why the CPU wins below roughly 10 ms of work.
 
+## Compiler-level levers, all three measured
+
+The shipping build is `-O3 -DNDEBUG` with no architecture flag. Three levers were untested; each
+was built and measured on the same box against the same three workloads, one worker, median of 3.
+
+| lever | `path-l2a2g1r1` d5 | `disc-l2amg2r2` d4 | `star-l1a2g2r1` d5 |
+|---|---|---|---|
+| `-march=native -mtune=native` | 0.971x | 0.939x | 0.962x |
+| link-time optimisation | 1.019x | 0.996x | -- |
+| profile-guided optimisation | 1.004x | 1.019x | 1.036x |
+
+`-march=native` is REFUTED and it is not marginal: it is 3% to 6% SLOWER on all three. The IR
+loops are branchy and comparison-heavy rather than vectorizable, so the wider ISA buys nothing and
+is paid for anyway. It would also have been wrong to ship, since the artifacts are built once and
+run on machines that are not the builder.
+
+LTO is REFUTED as neutral -- 1.019x and 0.996x is the box's own drift.
+
+PGO is the only one that helps, consistently but slightly: +0.4%, +1.9%, +3.6%, trained on four
+corpus workloads at depths three and four and measured at four and five. It is MEASURED AND NOT
+ADOPTED, and the reason is a cost rather than a doubt: it makes every shipped artifact a two-pass
+build with a training run in between, and the release ships fourteen of them across six platforms.
+The number is recorded here so the trade is a decision rather than an omission.
+
 ## The parallel overhead is not work
 
 Callgrind, `path-l2a2g1r1` at depth five, total instructions with `--separate-threads=no`:
