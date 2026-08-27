@@ -746,6 +746,16 @@ set_tests_properties(quotient_twin_check PROPERTIES TIMEOUT 60)
 # four it reports one. Shrinking the table instead (working_capacity 16 -> 4) does not help,
 # since the cost is the three-thread interleaving space and not the table width. So the budget
 # is stated from the measurement, with room for a loaded box.
+# NOT REGISTERED ON WINDOWS. All three of these gates are driven by a POSIX shell script, and
+# ctest on a Windows runner cannot launch one: it reports BAD_COMMAND, which is a FAILURE and not
+# a skip, so SKIP_RETURN_CODE never gets a chance to apply. That is not a hypothetical -- it is
+# what the Windows leg reported for tla_cells and mingw_tls_teardown, two failures out of 348.
+#
+# Nothing is lost. Each of the three is a host-side gate whose toolchain is Linux: genmc needs a
+# local LLVM/GenMC build, the TLA cells need a JVM and tla2tools.jar, and the mingw cells need the
+# mingw-w64 CROSS compiler, which is by definition not what a native Windows runner has. They run
+# on Linux CI and locally; registering them here only manufactures red.
+if(NOT WIN32)
 add_test(NAME genmc_harnesses
          COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/verification/genmc/run.sh all)
 set_tests_properties(genmc_harnesses PROPERTIES
@@ -784,3 +794,4 @@ add_test(NAME mingw_tls_teardown
 set_tests_properties(mingw_tls_teardown PROPERTIES
                      TIMEOUT 600
                      SKIP_RETURN_CODE 2)
+endif()
