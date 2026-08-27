@@ -30,8 +30,18 @@ uint64_t ir_core_call(const SVec<SVec<VertexId>>& edges,
                       uint32_t* rank, uint32_t* orbit, uint32_t* klass,
                       CoreForm* form_out = nullptr) {
     const uint32_t n_edges = static_cast<uint32_t>(edges.size());
-    std::vector<uint8_t> ea;
-    std::vector<uint32_t> eoff, ev;
+    // PER-THREAD AND REUSED, for the reason the scratch buffer below already records: as locals
+    // these four allocate and free on EVERY call, and this function runs once per raw state.
+    // Callgrind on path-l2a2g1r1 put malloc, _int_malloc and _int_free together at 5.32% of all
+    // instructions with 2.3 million allocations in a single-worker run. The allocator is also a
+    // shared lock, so the cost is not only the instructions -- it is a serialization point that
+    // every worker reaches once per state, which is parallel efficiency spent on nothing.
+    //
+    // clear() keeps the capacity, so a thread pays for its largest state once and reuses it.
+    // Not reentrant, and does not need to be: ir_core_call calls the core, never itself.
+    static thread_local std::vector<uint8_t> ea;
+    static thread_local std::vector<uint32_t> eoff, ev, sorted;
+    ea.clear(); eoff.clear(); ev.clear();
     ea.reserve(n_edges); eoff.reserve(n_edges);
     for (const auto& e : edges) {
         eoff.push_back(static_cast<uint32_t>(ev.size()));
@@ -46,7 +56,7 @@ uint64_t ir_core_call(const SVec<SVec<VertexId>>& edges,
     // disagreeing about which edge holds which RANK. Measured: encounter order differs from
     // this on 103 of the equivalence probe's 4063 states, all of them the symmetric ones.
     // This class's callers expect the sorted convention, which is what build_adjacency used.
-    std::vector<uint32_t> sorted(ev.begin(), ev.end());
+    sorted.assign(ev.begin(), ev.end());
     std::sort(sorted.begin(), sorted.end());
     sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
     const uint32_t n_verts = static_cast<uint32_t>(sorted.size());
