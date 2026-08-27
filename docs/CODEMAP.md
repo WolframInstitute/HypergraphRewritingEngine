@@ -267,6 +267,21 @@ rented box that does.
   stamps the commit, the machine MEASURED on and (when they differ) the machine the table was
   generated on. One `cost_matrix` run is shared by every table quoting it: they used to invoke it
   separately and disagreed on `multi-rule`, which is nondeterministic there.
+- **`paper_style_check.py`** -- refuses three things in `paper/main.tex`: LLM writing tells, which
+  a reader recognises and discounts the content for; war stories, because the paper describes the
+  system AS IT IS rather than the history of arriving at it; and any sentence naming remaining
+  performance work, which under the v1.0.0 standard is a work item and not a claim to publish.
+  Reference list: claudisms.ai. Exit status, never the finding count -- a count landing on 256
+  exits 0, which is what was fixed in three other checkers here. A CI gate.
+- **`docs_fresh_check.py`** -- the notebooks under `paclet/Documentation/English` are GENERATED
+  from `paclet/Documentation/Source/*.md` and committed, so a commit that edits the markdown
+  without rerunning `build_docs.sh` ships a page describing behaviour the engine no longer has.
+  Compares the last COMMIT touching each, not mtimes, because a fresh clone gives every file the
+  same timestamp. Maps source to notebook through the Template frontmatter, since the generator
+  names notebooks after the document title. A CI gate; it has caught this twice.
+- **`worker_memory_slope.sh`** -- resident set against worker count on a thread list that fits a
+  19 GB box, each measurement alone and under `ulimit -v`. The sweep in `scaling_sweep.py` reaches
+  7.5 GB at 32 workers and cannot run there; this asks the same question at 1/2/4.
 - **`scaling_sweep.py`** -- the thread-scaling and rule-shape tables (T8, T12, T13) plus their
   figures. Writes `t8_scaling.tex` under the same name `paper_tables` does and runs second, which
   is why the pinned three-depth version is the one that survives.
