@@ -137,6 +137,30 @@ thousand states cannot fill a 4090 whatever the scheduler does, and 22% on the l
 is the FLOOR this measurement reaches rather than a defect sitting on top of it. REFUTED as a
 scheduling target.
 
+## OPEN: parallelize individualization-refinement WITHIN a state
+
+Both engines run IR one state at a time and parallelize ACROSS states -- the host by giving each
+worker whole states, the device by `k_exact_hash_range`, which is a grid-stride loop assigning one
+THREAD per state. The refinement itself is serial in that thread.
+
+That is the largest identified win in the codebase and it is open rather than refuted, so it is
+stated with what it would attack:
+
+- Canonicalization is 79.0% of device cycles and 58% to 92% of host instructions.
+- On the device, 32 lanes of a warp each run an INDEPENDENT search on a different state. Those
+  searches differ in length by more than a factor of two -- 16 refinements per state on a
+  low-symmetry workload against 45 on a high-symmetry one -- so a warp runs at its slowest lane
+  and the lanes that finish early stall. That divergence is inside the warp and the block-level
+  idle counter cannot see it: it reports 22.0% idle on the workload where canonicalization is
+  77.4% of cycles.
+- Refinement is data-parallel over cells and over the vertices in a cell, so a warp cooperating on
+  ONE state is the shape that removes the divergence rather than tolerating it.
+
+WHY IT IS NOT LANDED HERE. `ir_core.hpp` is `HG_HD`: the same code runs on host and device, so a
+warp-cooperative refinement changes both engines at once, and the determinism contract -- the
+canonical form must be a function of the state alone -- has to be re-established for both before
+any measurement in this file or in the paper can be trusted again.
+
 ## What individualization-refinement would take
 
 Every cheap lever above is refuted with its measurement. The remaining one is the trick a
