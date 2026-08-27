@@ -472,5 +472,77 @@ private:
     std::atomic<bool> growing_{false};
 };
 
+// INDEPENDENT TABLES CHOSEN BY THE KEY, for a set whose insert rate is the workload.
+//
+// ConcurrentKeySet is one table, so every worker inserting probes slots every other worker is
+// writing. Those probes are plain LOADS of contended lines, which is why neither the growth
+// election nor the count_/table_ line separation removed the cost: there is no single hot field
+// left, the traffic is the table itself. MEASURED on cycle4, four workers spanning two L3
+// instances of an EPYC 9174F: insert is 12.9% of the run at one thread and 41.2% at four, and
+// the run takes 44.0 ms against 19.8 ms serial.
+//
+// A KEY ALWAYS SELECTS THE SAME SHARD, so dedup stays EXACT -- two workers racing the same key
+// meet in the same table and exactly one wins, which is the property the claim depends on.
+// Sharding by WORKER would break that, because the two paths into qc_apply can offer one
+// (instance, match) pair from different workers and both would win.
+//
+// This is the vendor-agnostic half of the fix. Confining workers to one cache domain also
+// removes the penalty (measured: four workers inside one L3 instance show none at all) but
+// needs the topology, differs per part, and caps the run at one domain's cores.
+//
+// The shard index takes the HIGH bits: keys here are already avalanched (qr_apply_key is an FNV
+// mix, qc_pair_key packs two dense ids), and the low bits are what the tables' own probe uses,
+// so taking the same bits for both would correlate the shard with the slot.
+template <typename K = uint64_t,
+          K EMPTY_SENTINEL = K{0},
+          K LOCKED_SENTINEL = ~K{0},
+          size_t SHARDS = 64>
+class ShardedKeySet {
+    static_assert((SHARDS & (SHARDS - 1)) == 0, "SHARDS must be a power of two");
+
+public:
+    using Shard = ConcurrentKeySet<K, EMPTY_SENTINEL, LOCKED_SENTINEL>;
+
+    // BY VALUE, not pointers: the engine is de-heaped and a shard array of `new` would put 64
+    // allocations back per set. DEFAULT_INITIAL_CAPACITY is 1, so an unused shard costs a table
+    // of one slot and the array is cheap until keys arrive.
+    ShardedKeySet() = default;
+
+    // The same spelling every other arena-backed member uses, so an owner seats this exactly as
+    // it seats a plain ConcurrentKeySet and nothing has to know it is sharded.
+    void set_arena(ConcurrentHeterogeneousArena* arena) {
+        for (Shard& s : shard_) s.set_arena(arena);
+    }
+
+    ShardedKeySet(const ShardedKeySet&) = delete;
+    ShardedKeySet& operator=(const ShardedKeySet&) = delete;
+
+    bool insert(K key) { return shard_[index(key)].insert(key); }
+
+    // A key lives in exactly one shard, so this asks exactly one of them.
+    bool contains(K key) const { return shard_[index(key)].contains(key); }
+
+    template <typename F>
+    void for_each(F&& f) const { for (const Shard& s : shard_) s.for_each(f); }
+
+    size_t size() const {
+        size_t n = 0;
+        for (const Shard& s : shard_) n += s.size();
+        return n;
+    }
+
+    size_t count_enumerated() const {
+        size_t n = 0;
+        for (const Shard& s : shard_) n += s.count_enumerated();
+        return n;
+    }
+
+private:
+    static size_t index(K key) {
+        return static_cast<size_t>((static_cast<uint64_t>(key) >> 40)) & (SHARDS - 1);
+    }
+    Shard shard_[SHARDS];
+};
+
 }  // namespace engine
 }  // namespace HG_NAMESPACE

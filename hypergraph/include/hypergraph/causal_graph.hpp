@@ -106,11 +106,11 @@ class CausalGraph {
 
     // Deduplication map for causal edges: hash(producer, consumer, edge) -> true
     // The rendezvous pattern can cause both producer and consumer to add the same edge
-    ConcurrentKeySet<uint64_t> seen_causal_triples_;
+    ShardedKeySet<uint64_t> seen_causal_triples_;
 
     // Deduplication map for causal event pairs: (producer << 32 | consumer) -> true
     // Counts unique event pairs that have a causal relationship.
-    ConcurrentKeySet<uint64_t> seen_causal_event_pairs_;
+    ShardedKeySet<uint64_t> seen_causal_event_pairs_;
 
     // Pack an ordered event pair into a map key. Both ids are offset by one so that the
     // self-loop (0,0) -- a real canonical self-loop under quotient, where distinct raw events
@@ -122,7 +122,7 @@ class CausalGraph {
     std::atomic<bool> ids_are_topological_{true};
 
     // Deduplication map for branchial edges: (e1 << 32 | e2) -> true
-    ConcurrentKeySet<uint64_t> seen_branchial_pairs_;
+    ShardedKeySet<uint64_t> seen_branchial_pairs_;
 
     // =========================================================================
     // Online Transitive Reduction (backward-reachability oracle)

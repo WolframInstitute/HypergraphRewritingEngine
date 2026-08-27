@@ -1976,8 +1976,13 @@ Hypergraph::Hypergraph()
           decltype(event_canonical_state_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
     , wl_hash_(std::make_unique<WLHash>(&arena_))
     , canonical_event_map_(decltype(canonical_event_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
+
 {
     causal_graph_.set_arena(&arena_);
+    // The replay's hot sets are sharded; they are seated exactly as any other arena-backed
+    // member. See ShardedKeySet for why these two and not the rest.
+    qc_applied_.set_arena(&arena_);
+    qc_causal_pairs_.set_arena(&arena_);
 }
 
 // An ordered pair of event ids as one map key. Both ids are offset by one before packing, which

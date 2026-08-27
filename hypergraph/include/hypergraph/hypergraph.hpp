@@ -127,7 +127,7 @@ class Hypergraph {
     // transition signatures. Built online as events fire in quotient mode; the depth-indexed
     // producer-set reconstruction propagates over it.
     ConcurrentMap<uint64_t, LockFreeList<CanonicalTransition>*> transitions_from_;
-    ConcurrentKeySet<uint64_t> seen_transitions_;
+    ShardedKeySet<uint64_t> seen_transitions_;
 
     // Depth-indexed producer-set reconstruction (the online form of the validated DP).
     // qc_dsup_ maps key(state_hash, depth, orbit) -> set of producer canonical-event ids
@@ -135,7 +135,7 @@ class Hypergraph {
     // depth). Producers cascade forward monotonically as transitions and reachability are
     // discovered, emitting causal edges into causal_graph_. Bounded by qc_max_steps_.
     ConcurrentMap<uint64_t, LockFreeList<EventId>*> qc_dsup_;
-    ConcurrentKeySet<uint64_t> qc_dsup_seen_;
+    ShardedKeySet<uint64_t> qc_dsup_seen_;
     ConcurrentKeySet<uint64_t> qc_reached_;
     // The same points qc_reached_ marks, enumerable. The map's key mixes the hash and the
     // depth irreversibly, and raising the depth budget has to revisit the points that stood
@@ -196,7 +196,7 @@ class Hypergraph {
     // Claims a (instance, match) application. Both the instance side and the match side drive
     // the rendezvous, and unlike the producer-set DP an application is NOT idempotent -- each
     // one emits a raw event -- so the pair must be claimed exactly once. O(raw) entries.
-    ConcurrentKeySet<uint64_t> qc_applied_;
+    ShardedKeySet<uint64_t> qc_applied_;
     // Claims an unordered branchial pair {instance, match a, match b}. Both members of a pair
     // can see each other, so the pair is claimed directly rather than a reporter being elected.
 
@@ -228,6 +228,7 @@ class Hypergraph {
     SegmentedArray<LockFreeList<QcAppliedMatch>> qc_inst_applied_;
     std::atomic<uint32_t> qc_next_instance_{0};
     std::atomic<uint32_t> qc_next_raw_event_{0};
+
     // Reconstructed events under the RUN'S event identity, as opposed to the raw count above.
     // qc_event_sig_ carries a fixed (input, output, rule) triple, which is its own identity and
     // not the one the caller selected -- EVENT_SIG_FULL keys on the endpoint states alone,
@@ -246,7 +247,7 @@ class Hypergraph {
     // path bypasses it, which is a property of the finished relation; deciding it as each pair
     // lands answers against the pairs seen so far and gets a different answer depending on
     // whether the bypassing path arrived first.
-    ConcurrentKeySet<uint64_t> qc_causal_pairs_;                    // distinct (producer, consumer)
+    ShardedKeySet<uint64_t> qc_causal_pairs_;                    // distinct (producer, consumer)
     // Isomorphism-invariant signature per reconstructed event: fnv(from hash, to hash, rule).
     // Reconstructed events carry no Event record, so this is the only description they have --
     // it is what schedule-independence is fingerprinted on, and what a graph over reconstructed
