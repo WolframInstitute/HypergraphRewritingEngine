@@ -122,9 +122,20 @@ tenths of one percent of the run and is not a target.
 13 launches, so kernel-granularity profiling reports the kernel and stops. The in-engine phase
 counters are the instrument that resolves it.
 
-OPEN, AND NAMED RATHER THAN LEFT IMPLICIT. The device idles 20.3% of its cycles, which is load
-imbalance in the persistent kernel rather than canonicalization, and it is the one GPU-specific
-figure that is neither closed nor refuted here.
+**The device's idle is available parallelism, not imbalance.** Idle against workload size, same
+instrument, three workloads spanning an order of magnitude:
+
+| workload | states | canonicalization | idle |
+|---|---|---|---|
+| `disc-l2amg2r2` d4 | 18,206 | 77.4% | 22.0% |
+| `star-l1a2g2r1` d5 | 5,019 | 32.0% | 67.6% |
+| `path-l2a2g1r1` d6 | 1,161 | 15.7% | 84.2% |
+
+Idle falls monotonically as the state count rises, which is what running out of concurrent work
+looks like and is not what imbalance looks like -- imbalance would persist at the large end. A
+thousand states cannot fill a 4090 whatever the scheduler does, and 22% on the largest workload
+is the FLOOR this measurement reaches rather than a defect sitting on top of it. REFUTED as a
+scheduling target.
 
 ## What individualization-refinement would take
 
