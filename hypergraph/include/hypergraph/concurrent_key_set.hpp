@@ -123,7 +123,7 @@ public:
     explicit ConcurrentKeySet(size_t initial_capacity = DEFAULT_INITIAL_CAPACITY,
                               ConcurrentHeterogeneousArena* arena = nullptr,
                               size_t working_capacity = WORKING_CAPACITY)
-        : count_(0), arena_(arena), working_capacity_(working_capacity) {
+        : arena_(arena), working_capacity_(working_capacity), count_(0) {
         table_.store(Table::create(initial_capacity, nullptr, arena_), std::memory_order_release);
     }
 
@@ -172,7 +172,27 @@ public:
         for (;;) {
             Table* head = table_.load(std::memory_order_acquire);
             if (count_.load(std::memory_order_relaxed) > head->capacity * LOAD_FACTOR_THRESHOLD) {
-                grow(head);
+                // ONE GROWER PER CROSSING, AND NOBODY WAITS -- the same election ConcurrentMap
+                // makes, for the same reason and with the same premise. grow() builds its
+                // replacement BEFORE the exchange that installs it, so every thread that observes
+                // a count past the threshold used to build one and all but one abandoned it in an
+                // arena that cannot free it.
+                //
+                // The premise is that the table has room, which a load factor of 0.75 gives; at
+                // or past CAPACITY it does not, and then everyone grows as before. A thread that
+                // does not take the ticket falls through to the probe below rather than waiting,
+                // and an exhausted probe run re-drives at the head, which is what makes progress
+                // independent of who holds the ticket.
+                const size_t c = count_.load(std::memory_order_relaxed);
+                if (c >= head->capacity) {
+                    grow(head);
+                } else if (!growing_.exchange(true, std::memory_order_acquire)) {
+                    struct ReleaseTicket {
+                        std::atomic<bool>& flag;
+                        ~ReleaseTicket() { flag.store(false, std::memory_order_release); }
+                    } release{growing_};
+                    grow(head);
+                }
                 continue;
             }
             // A key already settled in a superseded table must not be claimed again at the head.
@@ -435,10 +455,21 @@ private:
         return false;
     }
 
+    // THE HOTTEST READ AND THE HOTTEST WRITE DO NOT SHARE A LINE, for the reason ConcurrentMap
+    // gives at the same place. table_ is loaded by every operation and written only when a growth
+    // installs one; count_ is a read-modify-write on every accepted key, which takes its line
+    // EXCLUSIVE and invalidates it in every other core's cache. Adjacent, each accepted key
+    // evicts the pointer every other worker is about to load. This set backs the causal
+    // seen-sets, which the instruction profile puts at 7.5% of the engine, so the interference is
+    // on a path that runs constantly.
     std::atomic<Table*> table_{nullptr};
-    std::atomic<size_t> count_;
     ConcurrentHeterogeneousArena* arena_;
     size_t working_capacity_ = WORKING_CAPACITY;
+
+    alignas(64) std::atomic<size_t> count_;
+    // The growth ticket; see insert. Not a lock -- a thread that fails to take it proceeds to its
+    // probe without waiting, and the re-drive on an exhausted run is not ticketed at all.
+    std::atomic<bool> growing_{false};
 };
 
 }  // namespace engine
