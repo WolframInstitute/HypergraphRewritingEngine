@@ -57,7 +57,24 @@ inline const char* shape_name(Shape s) {
     }
 }
 
-// Left-hand side of `n` edges in the given shape, over arity-`ar` edges.
+// The arity axis. A number is that width for every edge; ARITY_MIXED gives edge `i` width
+// 2 + (i % 3), so one rule carries edges of three different widths.
+//
+// MIXED IS ITS OWN CASE, not a convenience. Both the matcher and the canonicalizer key on edge
+// width -- the candidate scan indexes by arity and the refinement signature counts incidences per
+// width -- so a corpus where every edge in a rule is the same width exercises neither on the input
+// that separates them.
+constexpr uint32_t ARITY_MIXED = 0;
+
+inline uint32_t edge_arity(uint32_t ar, uint32_t i) {
+    return ar == ARITY_MIXED ? 2 + (i % 3) : ar;
+}
+
+inline std::string arity_name(uint32_t ar) {
+    return ar == ARITY_MIXED ? std::string("m") : std::to_string(ar);
+}
+
+// Left-hand side of `n` edges in the given shape, over edges of width `edge_arity(ar, i)`.
 inline std::vector<std::vector<uint32_t>> make_lhs(Shape s, uint32_t n, uint32_t ar) {
     std::vector<std::vector<uint32_t>> e;
     if (n == 0) return e;
@@ -65,26 +82,32 @@ inline std::vector<std::vector<uint32_t>> make_lhs(Shape s, uint32_t n, uint32_t
         case Shape::Path:
             for (uint32_t i = 0; i < n; ++i) {
                 std::vector<uint32_t> t;
-                for (uint32_t a = 0; a < ar; ++a) t.push_back(i + a);
+                const uint32_t w = edge_arity(ar, i);
+                for (uint32_t a = 0; a < w; ++a) t.push_back(i + a);
                 e.push_back(std::move(t));
             }
             break;
         case Shape::Cycle:
             for (uint32_t i = 0; i < n; ++i) {
                 std::vector<uint32_t> t;
-                for (uint32_t a = 0; a < ar; ++a) t.push_back((i + a) % n);
+                const uint32_t w = edge_arity(ar, i);
+                for (uint32_t a = 0; a < w; ++a) t.push_back((i + a) % n);
                 e.push_back(std::move(t));
             }
             break;
-        case Shape::Star:
+        case Shape::Star: {
             // Every edge touches vertex 0. The leaves are interchangeable, which is precisely the
-            // automorphism that makes individualization-refinement branch.
+            // automorphism that makes individualization-refinement branch. A running leaf counter
+            // keeps the leaves disjoint when the edges differ in width.
+            uint32_t leaf = 1;
             for (uint32_t i = 0; i < n; ++i) {
                 std::vector<uint32_t> t{0};
-                for (uint32_t a = 1; a < ar; ++a) t.push_back(1 + i * (ar - 1) + (a - 1));
+                const uint32_t w = edge_arity(ar, i);
+                for (uint32_t a = 1; a < w; ++a) t.push_back(leaf++);
                 e.push_back(std::move(t));
             }
             break;
+        }
         case Shape::Disconnected:
             // n SINGLETON components: `i * ar` already gives every edge its own variables, so
             // disc-lNaK is N components of one edge each and the bases below only space the
@@ -97,20 +120,26 @@ inline std::vector<std::vector<uint32_t>> make_lhs(Shape s, uint32_t n, uint32_t
             // component of two or more edges, whose internal join can fail; that shape is
             // measured there rather than generated here, because putting it in this corpus
             // would move every disc-* row in the paper to buy a 1.29x on candidates.
-            for (uint32_t i = 0; i < n; ++i) {
-                std::vector<uint32_t> t;
-                const uint32_t base = (i < (n + 1) / 2) ? 0u : 100u;
-                for (uint32_t a = 0; a < ar; ++a) t.push_back(base + i * ar + a);
-                e.push_back(std::move(t));
+            {
+                uint32_t next = 0;
+                for (uint32_t i = 0; i < n; ++i) {
+                    std::vector<uint32_t> t;
+                    const uint32_t base = (i < (n + 1) / 2) ? 0u : 100u;
+                    const uint32_t w = edge_arity(ar, i);
+                    for (uint32_t a = 0; a < w; ++a) t.push_back(base + next + a);
+                    next += w;
+                    e.push_back(std::move(t));
+                }
             }
             break;
         case Shape::Repeated:
             // Positions 0 and 1 are the SAME variable, so every left edge constrains a vertex
-            // against itself. Arity 3 and above chains the trailing position onto the next edge;
-            // at arity 2 the edges are self-loops and share nothing, which is the shape.
+            // against itself. Width 3 and above chains the trailing position onto the next edge;
+            // at width 2 the edge is a self-loop and shares nothing, which is the shape.
             for (uint32_t i = 0; i < n; ++i) {
                 std::vector<uint32_t> t{i, i};
-                for (uint32_t a = 2; a < ar; ++a) t.push_back(i + a - 1);
+                const uint32_t w = edge_arity(ar, i);
+                for (uint32_t a = 2; a < w; ++a) t.push_back(i + a - 1);
                 e.push_back(std::move(t));
             }
             break;
@@ -144,12 +173,37 @@ inline std::vector<std::vector<uint32_t>> make_rhs(
         for (uint32_t g = 0; g < grow; ++g) {
             const auto& anchor = lhs[g % lhs.size()];
             const uint32_t v = fresh++;
+            const uint32_t w = edge_arity(ar, g);
             std::vector<uint32_t> link{anchor[0], v};
-            for (uint32_t a = 2; a < ar; ++a) link.push_back(fresh++);
+            for (uint32_t a = 2; a < w; ++a) link.push_back(fresh++);
             e.push_back(std::move(link));
             std::vector<uint32_t> rep{v, v};
-            for (uint32_t a = 2; a < ar; ++a) rep.push_back(fresh++);
+            for (uint32_t a = 2; a < w; ++a) rep.push_back(fresh++);
             e.push_back(std::move(rep));
+        }
+        return e;
+    }
+    if (s == Shape::Cycle) {
+        // A CYCLE LEFT SIDE IS RIGID: it matches a cycle of its own length and nothing else, so
+        // the pendant growth below -- which adds trees -- creates no new match site and the
+        // workload fires once and stops. Each step therefore adds a WHOLE FRESH CYCLE of the left
+        // side's length, joined to a bound vertex by one link edge so the state stays connected.
+        // One new cycle per application is the branching condition, and it is the same argument
+        // the repeated case above makes for its own shape.
+        const uint32_t len = static_cast<uint32_t>(lhs.size());
+        for (uint32_t g = 0; g < grow; ++g) {
+            const auto& anchor = lhs[g % lhs.size()];
+            std::vector<uint32_t> ring;
+            for (uint32_t i = 0; i < len; ++i) ring.push_back(fresh++);
+            std::vector<uint32_t> link{anchor[g % anchor.size()], ring[0]};
+            for (uint32_t a = 2; a < edge_arity(ar, g); ++a) link.push_back(fresh++);
+            e.push_back(std::move(link));
+            for (uint32_t i = 0; i < len; ++i) {
+                std::vector<uint32_t> t;
+                const uint32_t w = edge_arity(ar, i);
+                for (uint32_t a = 0; a < w; ++a) t.push_back(ring[(i + a) % len]);
+                e.push_back(std::move(t));
+            }
         }
         return e;
     }
@@ -159,7 +213,8 @@ inline std::vector<std::vector<uint32_t>> make_rhs(
         // rather than piling onto one vertex.
         const auto& anchor = lhs[g % lhs.size()];
         t.push_back(anchor[g % anchor.size()]);
-        for (uint32_t a = 1; a < ar; ++a) t.push_back(fresh++);
+        const uint32_t w = edge_arity(ar, g);
+        for (uint32_t a = 1; a < w; ++a) t.push_back(fresh++);
         e.push_back(std::move(t));
     }
     return e;
@@ -180,8 +235,16 @@ inline void compact_vars(Rule& r) {
     for (auto& e : r.rhs) for (auto& v : e) v = idx(v);
 }
 
-// Initial states, varied on the axes that drive canonicalization rather than on size alone.
-inline std::vector<std::vector<uint32_t>> make_init(Shape s, uint32_t n, uint32_t ar) {
+// Initial state for a left side of `nl` edges, varied on the axes that drive canonicalization
+// rather than on size alone.
+//
+// One size larger than the left side is what gives the left side somewhere to match: a path
+// embeds in a longer path, a star in a wider star, n singleton components in n+1, n self-loops
+// in n+1. A CYCLE IS THE EXCEPTION AND HAS TO BE STATED, because an n-cycle embeds in no cycle
+// but one of length exactly n -- an (n+1)-cycle contains no n-cycle. The cycle initial state is
+// therefore the left side's own length, which is the smallest state it can match at all.
+inline std::vector<std::vector<uint32_t>> make_init(Shape s, uint32_t nl, uint32_t ar) {
+    const uint32_t n = (s == Shape::Cycle) ? nl : nl + 1;
     auto e = make_lhs(s, n, ar);
     Rule tmp; tmp.lhs = e; compact_vars(tmp);   // dense vertex ids, same renumbering rule
     return tmp.lhs;
@@ -194,12 +257,12 @@ inline std::vector<Workload> corpus() {
     for (uint32_t sh = 0; sh < static_cast<uint32_t>(Shape::Count); ++sh) {
         const Shape s = static_cast<Shape>(sh);
         for (uint32_t nl : {1u, 2u, 3u}) {
-            for (uint32_t ar : {2u, 3u}) {
+            for (uint32_t ar : {2u, 3u, 4u, ARITY_MIXED}) {
                 for (uint32_t grow : {1u, 2u}) {
                     for (uint32_t nrules : {1u, 2u}) {
                         Workload w;
                         w.name = std::string(shape_name(s)) + "-l" + std::to_string(nl) +
-                                 "a" + std::to_string(ar) + "g" + std::to_string(grow) +
+                                 "a" + arity_name(ar) + "g" + std::to_string(grow) +
                                  "r" + std::to_string(nrules);
                         for (uint32_t r = 0; r < nrules; ++r) {
                             Rule rule;
@@ -213,7 +276,7 @@ inline std::vector<Workload> corpus() {
                             compact_vars(rule);
                             if (!rule.lhs.empty()) w.rules.push_back(std::move(rule));
                         }
-                        w.init = make_init(s, nl + 1, ar);
+                        w.init = make_init(s, nl, ar);
                         if (!w.rules.empty() && !w.init.empty()) out.push_back(std::move(w));
                     }
                 }
