@@ -754,8 +754,12 @@ struct DeviceQrCtx {
     __device__ uint32_t producer_at(const DeviceQcInstance& inst, uint32_t slot) const {
         return qe.arr_words[inst.prod_offset + slot];
     }
-    __device__ void record_causal(uint32_t producer, uint32_t consumer) {
+    __device__ void record_causal(uint32_t producer, uint32_t consumer, bool distinct_pair) {
         ++causal_edges_seen;
+        // A repeat of the previous producer in this application's own list is not a new pair;
+        // the caller has already decided that, and the map is left to answer the question it is
+        // actually here for -- whether some OTHER application recorded this pair.
+        if (!distinct_pair) return;
         const uint64_t pk = hgcommon::id_key(producer, consumer);
         if (!qe.causal_pairs.insert_if_absent(pk, 1u).inserted) return;
         ++causal_pairs_seen;

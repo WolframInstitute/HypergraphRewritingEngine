@@ -101,6 +101,26 @@ public:
         return nullptr;  // empty or lost the race
     }
 
+    // THIEF FAST PATH, for a caller that may retry. Two relaxed loads and no fence when the
+    // deque looks empty; the full protocol only when it looks worth trying.
+    //
+    // A FAILING steal() IS NOT FREE: it pays a seq_cst fence between its two loads, which is a
+    // full barrier, and a worker with nothing to do issues one per victim per find_work call.
+    // On a workload with fewer states than workers that is the whole cost -- triangle at depth 6
+    // executes 48.0M instructions on one thread and 108.3M on eight, with 6.9x the context
+    // switches, and the extra work is idle workers fencing against each other's empty deques.
+    //
+    // ONLY SOUND WHERE A FALSE "EMPTY" IS ALLOWED. The relaxed loads can be stale, so this may
+    // return nullptr while the victim holds work. find_work already documents that outcome as
+    // acceptable -- it draws victims at random with a bounded attempt count and its caller
+    // loops. find_work_exhaustive must NOT use this: it is the basis for going to sleep, and a
+    // false empty there is a lost wakeup with no timeout to recover it.
+    T steal_if_nonempty() {
+        if (bottom_.load(std::memory_order_relaxed) <= top_.load(std::memory_order_relaxed))
+            return nullptr;
+        return steal();
+    }
+
     // Observers (approximate under concurrency).
     bool empty() const {
         return bottom_.load(std::memory_order_acquire) <= top_.load(std::memory_order_acquire);

@@ -990,13 +990,18 @@ void Hypergraph::quotient_causal_seed(StateId initial_state, int max_steps) {
 }
 
 
-void Hypergraph::qc_record_causal(uint32_t producer, uint32_t consumer) {
+void Hypergraph::qc_record_causal(uint32_t producer, uint32_t consumer, bool distinct_pair) {
     // Per-consumed-edge relationships (the T1 multiset) count every occurrence.
-    qc_num_causal_edges_.fetch_add(1, std::memory_order_relaxed);
+    qc_bump(qc_ctr_causal_edges_);
 
-    const uint64_t pk = qc_pair_key(producer, consumer);
-    if (!qc_causal_pairs_.insert(pk)) return;                          // pair already recorded
-    qc_num_causal_pairs_.fetch_add(1, std::memory_order_relaxed);
+    // NO DEDUP STRUCTURE, and none is needed. `consumer` is the event this application just
+    // minted, so the pair cannot repeat across applications; within this one the caller has
+    // already marked the adjacent repeats, which are the only other way it can repeat.
+    // Appending to this worker's own list touches no line another worker reads.
+    if (!distinct_pair) return;
+    const int w = arena_worker_index();
+    qc_causal_pairs_[w >= 0 ? w : 0].push(qc_pair_key(producer, consumer), arena_);
+    qc_bump(qc_ctr_causal_pairs_);
 
 }
 
@@ -1419,7 +1424,7 @@ size_t Hypergraph::num_reconstructed_instances() const {
 }
 
 size_t Hypergraph::num_reconstructed_causal_edges() const {
-    return qc_num_causal_edges_.load(std::memory_order_relaxed);
+    return qc_ctr_total(qc_ctr_causal_edges_);
 }
 
 size_t Hypergraph::num_reconstructed_causal_pairs(bool transitively_reduced) const {
@@ -1430,11 +1435,11 @@ size_t Hypergraph::num_reconstructed_causal_pairs(bool transitively_reduced) con
             [&](uint64_t, uint64_t) { ++n; });
         return n;
     }
-    return qc_causal_pairs_.count_enumerated();
+    return qc_causal_pairs_count();
 }
 
 size_t Hypergraph::applied_scans() const {
-    return qc_applied_scans_.load(std::memory_order_relaxed);
+    return qc_ctr_total(qc_ctr_applied_scans_);
 }
 
 size_t Hypergraph::applied_claims() const { return qc_applied_.size(); }
@@ -1472,7 +1477,7 @@ size_t Hypergraph::capture_skipped_not_representative() const {
 }
 
 size_t Hypergraph::applied_visits() const {
-    return qc_applied_visits_.load(std::memory_order_relaxed);
+    return qc_ctr_total(qc_ctr_applied_visits_);
 }
 
 size_t Hypergraph::captured_matches() const {
@@ -1502,7 +1507,7 @@ uint64_t Hypergraph::compute_state_hash(const SparseBitset& edges) {
 // The schedule-stable content triple of ONE reconstructed event: hash(input class, output class,
 // rule). 0 when the event has no recorded triple.
 uint64_t Hypergraph::reconstructed_raw_triple(uint32_t e) const {
-    const QcEventContent* c = qc_event_sig_.get(e);
+    const QcEventContent* c = qc_event_sig_.get(qc_ev_slot(e));
     return c ? c->triple_hash() : 0;
 }
 
@@ -1834,7 +1839,8 @@ uint32_t Hypergraph::QrCtx::mint_event() {
 
 void Hypergraph::QrCtx::record_content(uint32_t ev, uint64_t from_class, uint64_t to_class,
                                        uint32_t rule) {
-    hg.qc_event_sig_.emplace_at(ev, hg.arena_, QcEventContent{from_class, to_class, rule});
+    hg.qc_event_sig_.emplace_at(Hypergraph::qc_ev_slot(ev), hg.arena_,
+                                QcEventContent{from_class, to_class, rule});
 }
 
 hgcommon::EventSignatureKeys Hypergraph::QrCtx::keys() const {
@@ -1860,8 +1866,8 @@ uint32_t Hypergraph::QrCtx::producer_at(const QcInstance& inst, uint32_t slot) c
     return inst.prod[slot];
 }
 
-void Hypergraph::QrCtx::record_causal(uint32_t producer, uint32_t consumer) {
-    hg.qc_record_causal(producer, consumer);
+void Hypergraph::QrCtx::record_causal(uint32_t producer, uint32_t consumer, bool distinct_pair) {
+    hg.qc_record_causal(producer, consumer, distinct_pair);
 }
 
 bool Hypergraph::QrCtx::applied_ref_valid(AppliedRef r) { return r != nullptr; }
@@ -1869,7 +1875,7 @@ bool Hypergraph::QrCtx::applied_ref_valid(AppliedRef r) { return r != nullptr; }
 Hypergraph::QrCtx::AppliedRef Hypergraph::QrCtx::publish_applied(const QcInstance& inst,
                                                                  const SlotMatch& m,
                                                                  uint32_t ev) {
-    auto& applied = hg.qc_inst_applied_.get_or_default(inst.id, hg.arena_);
+    auto& applied = hg.qc_inst_applied_.get_or_default(qc_ev_slot(inst.id), hg.arena_);
     return applied.push(QcAppliedMatch{m.id, ev, m.num_consumed, m.consumed_slots}, hg.arena_);
 }
 
@@ -1880,7 +1886,8 @@ void Hypergraph::QrCtx::record_branchial_pair(uint32_t lo, uint32_t hi) {
 
 Hypergraph::QrCtx::~QrCtx() {
     if (branchial_seen)
-        hg.qc_num_branchial_.fetch_add(branchial_seen, std::memory_order_relaxed);
+        { const int w = arena_worker_index();
+          hg.qc_ctr_branchial_[w >= 0 ? w : 0].v += branchial_seen; }
 }
 
 // The child instance: survivors carry their producer across, produced slots take THIS event.
@@ -1923,7 +1930,7 @@ bool Hypergraph::is_full_canonicalization() const {
 }
 
 size_t Hypergraph::num_reconstructed_branchial() const {
-    return qc_num_branchial_.load(std::memory_order_relaxed);
+    return qc_ctr_total(qc_ctr_branchial_);
 }
 
 size_t Hypergraph::num_frame_alignment_disagreements() const {
@@ -1958,7 +1965,7 @@ uint64_t Hypergraph::event_pair_signature(uint32_t e) const {
 
 // The event's content itself, for a caller that must DESCRIBE the event rather than identify it.
 const QcEventContent* Hypergraph::reconstructed_event_content(uint32_t e) const {
-    return qc_event_sig_.get(e);
+    return qc_event_sig_.get(qc_ev_slot(e));
 }
 
 uint32_t Hypergraph::count_state_edges(StateId sid) const {
@@ -1982,7 +1989,6 @@ Hypergraph::Hypergraph()
     // The replay's hot sets are sharded; they are seated exactly as any other arena-backed
     // member. See ShardedKeySet for why these two and not the rest.
     qc_applied_.set_arena(&arena_);
-    qc_causal_pairs_.set_arena(&arena_);
 }
 
 // An ordered pair of event ids as one map key. Both ids are offset by one before packing, which

@@ -292,7 +292,7 @@ private:
             const unsigned span = peer_begin_[self + 1] - lo;
             for (unsigned attempt = 0; attempt < span; ++attempt) {
                 WorkerData* victim = workers_[peers_[lo + hgcommon::splitmix64(++rng) % span]].get();
-                if (JobRaw j = victim->deque.steal()) {
+                if (JobRaw j = victim->deque.steal_if_nonempty()) {
                     data->jobs_stolen.fetch_add(1, std::memory_order_relaxed);
                     data->jobs_stolen_near.fetch_add(1, std::memory_order_relaxed);
                     return j;
@@ -303,7 +303,7 @@ private:
             for (size_t attempt = 0; attempt < n; ++attempt) {
                 WorkerData* victim = workers_[hgcommon::splitmix64(++rng) % n].get();
                 if (victim == data) continue;
-                if (JobRaw j = victim->deque.steal()) {
+                if (JobRaw j = victim->deque.steal_if_nonempty()) {
                     data->jobs_stolen.fetch_add(1, std::memory_order_relaxed);
                     return j;
                 }

@@ -247,13 +247,60 @@ class Hypergraph {
     // path bypasses it, which is a property of the finished relation; deciding it as each pair
     // lands answers against the pairs seen so far and gets a different answer depending on
     // whether the bypassing path arrived first.
-    ShardedKeySet<uint64_t> qc_causal_pairs_;                    // distinct (producer, consumer)
+    // (producer, consumer) PAIRS, ONE APPEND-ONLY LIST PER WORKER, and no dedup structure.
+    //
+    // This was a shared set because the pairs looked like they needed deduplicating. They do
+    // not: record_causal is reached only from qr_apply's producer loop, whose consumer is the
+    // event THIS application just minted, so (producer, ev) cannot repeat across applications.
+    // The one way it repeats is a producer appearing twice in a single application's own
+    // producer list, and that list is local, bounded by MAX_PATTERN_EDGES and already sorted --
+    // qr_collect_producers drops the adjacent repeats before they are recorded.
+    //
+    // So the set's only remaining job was STORAGE for the enumeration below, and storage needs
+    // no shared line: each worker appends to its own list and a reader walks all of them.
+    // MEASURED as the reason: this set took 95,600 inserts on cycle4 against qc_applied_'s
+    // 68,184, and ConcurrentKeySet::insert went from 12.9% of the run at one thread to 41.2% at
+    // four on a part whose cores do not share a last-level cache.
+    LockFreeList<uint64_t> qc_causal_pairs_[MAX_ARENA_WORKERS];
+
+    template <typename F>
+    void qc_causal_pairs_for_each(F&& f) const {
+        for (const LockFreeList<uint64_t>& l : qc_causal_pairs_) l.for_each(f);
+    }
+    size_t qc_causal_pairs_count() const {
+        size_t n = 0;
+        for (const LockFreeList<uint64_t>& l : qc_causal_pairs_) n += l.size();
+        return n;
+    }
     // Isomorphism-invariant signature per reconstructed event: fnv(from hash, to hash, rule).
     // Reconstructed events carry no Event record, so this is the only description they have --
     // it is what schedule-independence is fingerprinted on, and what a graph over reconstructed
     // events is built from. Held as the three COMPONENTS rather than their hash: the hash
     // identifies an event and cannot describe one, and a vertex needs its endpoints.
     SegmentedArray<QcEventContent> qc_event_sig_;
+
+    // WHERE EVENT `e`'S CONTENT LIVES, which is deliberately NOT slot e.
+    //
+    // QcEventContent is 24 bytes, so nearly three of them share a cache line. Event ids come
+    // from one global counter, so concurrent workers mint ADJACENT ids and write ADJACENT
+    // slots -- three workers to a line, every one of them taking it exclusive. Measured on the
+    // EPYC 9174F, whose cores do not share a last-level cache: separating these entries moved
+    // cycle4 from 0.89x to 0.98x at eight workers.
+    //
+    // Separating them by PADDING the record to a line works and costs 34% of the run's resident
+    // set (45.8 MB to 61.4 MB on cycle4). Permuting the index costs nothing: a stride of K
+    // slots inside a block of B, with K odd and B a power of two, is a bijection on the block,
+    // so every id still has exactly one home and the array is the same size. K*24 = 4,104 bytes
+    // puts consecutive ids on different lines by a wide margin.
+    //
+    // EVERY reader goes through this. A reader that indexed by the raw id would read another
+    // event's content, so the permutation is spelled once and the array is private.
+    static constexpr uint32_t QC_EV_BLOCK = 4096;   // power of two
+    static constexpr uint32_t QC_EV_STRIDE = 171;   // odd => coprime with the block
+    static uint32_t qc_ev_slot(uint32_t e) {
+        return (e / QC_EV_BLOCK) * QC_EV_BLOCK
+             + ((e % QC_EV_BLOCK) * QC_EV_STRIDE) % QC_EV_BLOCK;
+    }
     // The same events under the RUN'S event identity, indexed the same way. The pair accessors
     // need this and not qc_event_sig_: a caller comparing the reconstructed causal or branchial
     // relation against full capture is comparing against Event::signature, which is the run's
@@ -261,8 +308,31 @@ class Hypergraph {
     // every pair looks like a disagreement. Left at 0 when no identity mode is selected, which
     // is what full capture leaves Event::signature at in that case.
     SegmentedArray<uint64_t> qc_event_runsig_;
-    std::atomic<size_t> qc_num_causal_edges_{0};   // per consumed edge (the T1 multiset)
-    std::atomic<size_t> qc_num_causal_pairs_{0};   // distinct pairs, un-reduced view
+
+    // PER-WORKER SLOTS FOR THE COUNTERS BUMPED ONCE PER ITEM. A single atomic incremented per
+    // causal edge, per pair or per branchial pair is one cache line taken exclusive by every
+    // worker in turn, and the count IS the workload: 129,384 causal-edge bumps on cycle4 at
+    // depth 6, and 133,218,996 branchial bumps on disc-l3a2g2r2 at depth 3. EvolutionStats was
+    // given this treatment already; the audit that did it named these four and did not move
+    // them.
+    //
+    // Safe here in a way the event-id allocator is NOT: these are REPORTING counters. Nothing
+    // reads them to decide anything, so a per-worker sum changes no output -- where per-worker
+    // event id BLOCKS changed which raw event represents an identity and broke three gates.
+    struct alignas(64) QcCounterSlot { size_t v = 0; };
+    mutable QcCounterSlot qc_ctr_causal_edges_[MAX_ARENA_WORKERS];
+    mutable QcCounterSlot qc_ctr_causal_pairs_[MAX_ARENA_WORKERS];
+    mutable QcCounterSlot qc_ctr_branchial_[MAX_ARENA_WORKERS];
+    static void qc_bump(QcCounterSlot* slots) {
+        const int w = arena_worker_index();
+        ++slots[w >= 0 ? w : 0].v;
+    }
+    static size_t qc_ctr_total(const QcCounterSlot* slots) {
+        size_t n = 0;
+        for (size_t i = 0; i < MAX_ARENA_WORKERS; ++i) n += slots[i].v;
+        return n;
+    }
+
     // Scans of an instance's applied list, and elements visited across them. visits/scans is
     // the mean fan-out m; pairs are bounded by sum m(m-1)/2 while the SCAN costs sum m^2.
     // CAPTURES DROPPED BECAUSE AN ENDPOINT'S ORBITS WERE NOT THERE YET.
@@ -282,10 +352,14 @@ class Hypergraph {
     // raw state per class captures -- but counted, because "by design" and "measured" are
     // different claims and only one of them was on record.
     mutable std::atomic<size_t> qc_capture_not_rep_{0};
-    mutable std::atomic<size_t> qc_applied_scans_{0};
-    mutable std::atomic<size_t> qc_applied_visits_{0};
-    std::atomic<size_t> qc_num_branchial_{0};      // sibling matches of one instance, overlapping
-    void qc_record_causal(uint32_t producer, uint32_t consumer);
+    // PER-WORKER, like the other per-item counters. Both are bumped once per SCAN -- 146,598
+    // times on multirule at depth 6 -- and a scan is exactly the hot path the branchial
+    // relation is built on. The comment that used to sit beside the visits counter recorded
+    // that the line moves between cores once per visit and that the instrument cost more than
+    // the scan it measured; it stayed a shared atomic anyway.
+    mutable QcCounterSlot qc_ctr_applied_scans_[MAX_ARENA_WORKERS];
+    mutable QcCounterSlot qc_ctr_applied_visits_[MAX_ARENA_WORKERS];
+    void qc_record_causal(uint32_t producer, uint32_t consumer, bool distinct_pair);
 
     // An ordered pair of event ids as one map key, for the causal and branchial pair sets.
     //
@@ -369,7 +443,7 @@ class Hypergraph {
         bool want_causal() const;
         bool want_branchial() const;
         uint32_t producer_at(const QcInstance& inst, uint32_t slot) const;
-        void record_causal(uint32_t producer, uint32_t consumer);
+        void record_causal(uint32_t producer, uint32_t consumer, bool distinct_pair);
         using AppliedRef = const LockFreeList<QcAppliedMatch>::Node*;
         static bool applied_ref_valid(AppliedRef r);
         AppliedRef publish_applied(const QcInstance& inst, const SlotMatch& m, uint32_t ev);
@@ -386,14 +460,15 @@ class Hypergraph {
             // shares -- 163,228,620 of them on the workload above against 970,584 scans -- so
             // the line carrying it moves between cores once per visit and the instrument costs
             // more than the scan it measures. Per scan the published total is identical.
-            hg.qc_applied_scans_.fetch_add(1, std::memory_order_relaxed);
+            qc_bump(hg.qc_ctr_applied_scans_);
             size_t visits = 0;
-            hg.qc_inst_applied_.get_or_default(inst.id, hg.arena_).for_each_before(
+            hg.qc_inst_applied_.get_or_default(qc_ev_slot(inst.id), hg.arena_).for_each_before(
                 mine, [&](const QcAppliedMatch& a) {
                     ++visits;
                     f(a);
                 });
-            hg.qc_applied_visits_.fetch_add(visits, std::memory_order_relaxed);
+            { const int w = arena_worker_index();
+              hg.qc_ctr_applied_visits_[w >= 0 ? w : 0].v += visits; }
         }
         void record_branchial_pair(uint32_t lo, uint32_t hi);
         void descend(const SlotMatch& m, uint32_t depth, uint32_t ev, const QcInstance& parent);
@@ -1024,7 +1099,7 @@ public:
         std::set<uint64_t> seen;
         uint32_t dense = 0;
         for (uint32_t e = 0; e < n; ++e) {
-            const QcEventContent* c = qc_event_sig_.get(e);
+            const QcEventContent* c = qc_event_sig_.get(qc_ev_slot(e));
             if (!c) continue;
             if (by_identity) {
                 const uint64_t* sig = qc_event_runsig_.get(e);
@@ -1044,7 +1119,7 @@ public:
     void for_each_reconstructed_raw_triple(F&& f) const {
         const uint32_t n = qc_next_raw_event_.load(std::memory_order_relaxed);
         for (uint32_t i = 0; i < n; ++i) {
-            const QcEventContent* c = qc_event_sig_.get(i);
+            const QcEventContent* c = qc_event_sig_.get(qc_ev_slot(i));
             if (c) f(c->triple_hash());
         }
     }
@@ -1088,7 +1163,7 @@ public:
             // bypass (p,c) may land after it and nothing retracts the tag.
             hgcommon::tr_reduce(
                 [&](auto&& add) {
-                    qc_causal_pairs_.for_each([&](uint64_t k) {
+                    qc_causal_pairs_for_each([&](uint64_t k) {
                         const IdPair q = id_pair_from_key(k);
                         add(q.a, q.b);
                     });
@@ -1098,7 +1173,7 @@ public:
                 // application mints the consumer's, so ids increase along every edge here.
                 /*ids_topological=*/true);
         } else {
-            qc_causal_pairs_.for_each([&](uint64_t k) {
+            qc_causal_pairs_for_each([&](uint64_t k) {
                 const IdPair p = id_pair_from_key(k);
                 f(id(p.a), id(p.b));
             });
