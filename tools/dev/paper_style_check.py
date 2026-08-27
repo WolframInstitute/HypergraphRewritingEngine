@@ -39,7 +39,9 @@ TELLS = [
     # Elevated diction where a plain word exists.
     (r"\bdelve[sd]?\b", "elevated diction: delve"),
     (r"\bleverag(e|es|ed|ing)\b", "elevated diction: leverage -- say 'use'"),
-    (r"\bharness(es|ed|ing)\b(?! )", "elevated diction: harness as a verb"),
+    # "harness" the NOUN is what verification/genmc holds and the paper says so legitimately;
+    # only the verb is a tell, so the pattern requires an object after it.
+    (r"\bharness(es|ed|ing) (the|a|this|its)\b", "elevated diction: harness as a verb"),
     (r"\bseamless(ly)?\b", "elevated diction: seamless"),
     (r"\bintricate(ly)?\b", "elevated diction: intricate"),
     (r"\bholistic(ally)?\b", "elevated diction: holistic"),

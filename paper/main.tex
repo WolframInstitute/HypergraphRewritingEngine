@@ -290,7 +290,7 @@ Like nauty, IR is exponential in the worst case and terminates in time polynomia
 
 The automorphism generators and edge orbits produced by IR are reused elsewhere in the engine: they define the canonical edge-orbit equivalence used for principled event canonicalization and for exact reconstruction of causal and branchial multiplicities.
 
-\paragraph{Two bounds, and only one of them is evident when it is exceeded.} The search is bounded twice: by the individualization depth it may descend to, and by the number of automorphism generators it may record. Exceeding either is reported to the caller, which raises the bound and re-runs, so neither is a silent truncation. The two are not symmetric in what a truncation would cost. A depth bound reached before a discrete coloring means no canonical form was produced at all, and the failure is evident. A generator table filled to capacity, by contrast, yields a canonical form that is correct: the hash is exact regardless of how many generators were recorded. What degrades is the orbit partition, which is obtained by fusing edges over the generators found---fewer generators fuse fewer edges, so the orbits come out too \emph{fine}. Since the orbits are what the quotient reconstruction identifies instances by (Section~\ref{sec:quotient}), a short generator table produces a wrong identification rather than a slow run, and it produces one that looks like an ordinary answer. This is why the generator bound escalates on the same footing as the depth bound rather than being treated as a performance parameter. More generators cannot repair a depth failure, so escalation stops at the first depth report.
+\paragraph{Two bounds, and only one of them is evident when it is exceeded.} The search is bounded twice: by the individualization depth it may descend to, and by the number of automorphism generators it may record. Exceeding either is reported to the caller, which raises the bound and re-runs, so neither is a silent truncation. The two are not symmetric in what a truncation would cost. A depth bound reached before a discrete coloring means no canonical form was produced at all, and the failure is evident. A generator table filled to capacity, by contrast, yields a canonical form that is correct: the hash is exact regardless of how many generators were recorded. What degrades is the orbit partition, which is obtained by fusing edges over the generators found---fewer generators fuse fewer edges, so the orbits come out too \emph{fine}. Since the orbits are how the quotient reconstruction identifies instances (Section~\ref{sec:quotient}), a short generator table produces a wrong identification rather than a slow run, and it produces one that looks like an ordinary answer. This is why the generator bound escalates on the same footing as the depth bound rather than being treated as a performance parameter. More generators cannot repair a depth failure, so escalation stops at the first depth report.
 
 \paragraph{The canonical labeling of a symmetric state is a coset.} When the automorphism group is nontrivial, IR does not determine a single labeling but a coset of them, and the algorithm's within-cell tie-break selects one representative. That tie-break reads the vertex numbering it was handed. Two conventions for numbering a state's vertices therefore select two different representatives, each internally consistent and both agreeing on the canonical \emph{hash}, while disagreeing about which edge receives which rank. Ranks are what identify consumed and produced edges across a rewrite, so the convention has to be fixed once and shared by every caller rather than chosen locally: measured on the equivalence probe's 4063-state corpus, encounter-order numbering and sorted-unique numbering disagree on 103 states, all of them states with nontrivial automorphisms.
 
@@ -806,8 +806,7 @@ separately makes the gate sensitive: the causal relation can move on its own, by
 edge, while the state set, the transition multiset and the branchial relation stay identical, so a
 gate that compared one aggregate fingerprint would not distinguish that from agreement.
 
-The capping options are outside it, and the reason is the same one that shapes the sampling
-design. \textsc{MaxStatesPerStep} admits states until a per-step counter reaches its bound, so
+The capping options are outside it, for the reason that shapes the sampling design: \textsc{MaxStatesPerStep} admits states until a per-step counter reaches its bound, so
 which states are admitted follows the order they arrive in and varies with the worker count. An
 exact cap that was also schedule-independent would have to hold every candidate at that depth
 until the depth settled, which is the barrier Section~\ref{sec:sampling} declines: only a
@@ -1025,7 +1024,7 @@ skeleton---so the union over seeds grows in reachability, which is the quantity 
 
 The selection is made when the state's matching completes rather than as matches arrive, because
 choosing $k$ of $M$ requires all $M$, and $M$ is known only at that point. Selecting by arrival
-order would instead make the retained set depend on the schedule. For the same reason the cap
+order would instead make the retained set depend on the schedule. On the same ground the cap
 ranges over a state's own matches only and not over matches forwarded to it from an ancestor: a
 forwarded match races the completion, so a cap that counted them would retain a different set at a
 different worker count. Forwarded matches are instead thinned individually, on the same terms as
@@ -1982,7 +1981,7 @@ A third bound sits outside the kernel, in the per-call bracket rather than in th
 
 \paragraph{Every device figure above is measured with the record set off, and that configuration hides a second regime.} The reconstruction of the raw causal and branchial relations is selectable independently of the evolution, and the measurements reported so far switch all of it off. Re-measured with causal recording on, the device and host agree \emph{exactly} on the reconstructed relation for the eight corpus workloads the device backend supports, at depth six---identical distinct-pair counts and identical counts surviving transitive reduction. The two implementations share no code below the shared replay core, so the agreement is between two separate schedulers, memory layouts and queueing disciplines. On the densest workload available, a three-edge disconnected left side at depth three, the two engines agree on $1{,}661{,}760$ causal pairs and $970{,}560$ surviving reduction.
 
-Reaching that agreement is a property of how the reduction is defined rather than of how it is computed. A finite directed acyclic graph has exactly one transitive reduction, so membership is a function of the finished relation; both engines therefore store the relation and reduce it on demand, rather than deciding each pair as it arrives against the pairs seen so far. The two engines share that body. Deciding on arrival is what makes the answer depend on the schedule: a pair reaching the relation before the longer path that bypasses it is kept, the same pair reaching it afterwards is dropped, and an append-only adjacency never retracts the difference. The reduction is computed once per source rather than once per pair---every edge leaving a given event shares the set reachable from it in two or more steps---and where event identifiers increase along every causal edge the search is bounded by the largest target of that source. The branchial relation is handled the same way: a branchial pair is two applications of one instance sharing a consumed slot, so neither engine stores the pairs, and both derive them from the applications on demand.
+Reaching that agreement is a property of how the reduction is defined rather than of how it is computed. A finite directed acyclic graph has exactly one transitive reduction, so membership is a function of the finished relation; both engines therefore store the relation and reduce it on demand, rather than deciding each pair as it arrives against the pairs seen so far. The two engines share that body. Deciding on arrival makes the answer depend on the schedule: a pair reaching the relation before the longer path that bypasses it is kept, the same pair reaching it afterwards is dropped, and an append-only adjacency never retracts the difference. The reduction is computed once per source rather than once per pair---every edge leaving a given event shares the set reachable from it in two or more steps---and where event identifiers increase along every causal edge the search is bounded by the largest target of that source. The branchial relation is handled the same way: a branchial pair is two applications of one instance sharing a consumed slot, so neither engine stores the pairs, and both derive them from the applications on demand.
 
 \paragraph{The idle fraction of the low-work shapes is not, in general, the absence of work.} The attribution above reports that the corpus shapes producing few states are $97.4$--$99.9\%$ idle and reads that as work not existing. With causal recording on this reading no longer holds for two of them: at depth six \texttt{cycle4} carries $95{,}600$ causal pairs and \texttt{multirule} $177{,}201$, and both remain above $98.7\%$ idle while taking $69$ and $104$\,ms. Hardware counters place them far from every ceiling---SM throughput $1.55\%$ of peak and DRAM $0.01\%$ on \texttt{cycle4}---and its lane efficiency is the corpus's \emph{best} at $11.37$ of $32$, against $1.29$ on \texttt{wolfram24}, which the device completes $3.4\times$ faster than the host. The decisive comparison is that the kernel is slower on $49$ states ($104$\,ms) than on $9{,}820$ ($9.7$\,ms).
 
@@ -1990,7 +1989,26 @@ A depth sweep identifies what binds, and rules out the reading that first sugges
 
 What separates the two regimes is the parallel width, and the corpus supplies a controlled comparison for it. At depth six \texttt{cycle4} carries $95{,}600$ pairs over $40$ states and loses to the host; \texttt{wolfram24} carries a comparable $130{,}476$ pairs over $9{,}820$ states and beats it by $3.4\times$. The pair counts are within $40\%$ of each other and the outcomes are opposite, so neither the size of the relation nor the depth of the recursion is the discriminator. The state count is: a class is the unit over which the replay's instances are independent, and a run that collapses to forty classes has forty-fold width available however much work those classes carry. \texttt{cycle4} begins from a deliberately automorphic initial state, which is exactly the condition that collapses classes. The device's disadvantage on these shapes is therefore a shortage of independent work rather than an inability to execute the work it has, and raising occupancy against it would raise the idle count rather than the throughput.
 
-The instances \emph{within} a class can be replayed concurrently, and are serialized by an implementation choice rather than by the reconstruction. The thread that creates a child instance drives it immediately and recursively, in the same thread, so the whole subtree below an instance is walked depth-first by whichever thread discovered it; on a run that collapses to forty classes, forty such walks proceed while the remainder of the grid spins. Nothing in the reconstruction requires this. The child instance is already published to the instance index behind a fence before the descent begins, and each (instance, match) application is already claimed through a device-wide set, so an application is idempotent and safe from any thread---which is what makes the recursive call replaceable by a queue push without changing the result. The available width is therefore the instance count rather than the class count, and the two are far apart on exactly the shapes that lose. At depth six \texttt{cycle4} materialises $68{,}185$ instances over $40$ classes and \texttt{multirule} $146{,}599$ over $49$---deficits of $1{,}705\times$ and $2{,}992\times$---while \texttt{wolfram24} materialises $86{,}086$ over $9{,}820$ and \texttt{wpp} $15{,}967$ over $3{,}867$, deficits of $8.8\times$ and $4.1\times$. The instance counts are comparable across all four, between $16$ and $147$ thousand, while the class counts vary by a factor of $250$: the independent work available is similar everywhere, and only the width the implementation exploits differs. The shapes that lose are those whose initial state collapses classes, which is precisely the condition that concentrates instances into few of them.
+The instances \emph{within} a class can be replayed concurrently. They are serialized by an
+implementation choice rather than by the reconstruction: each driver takes its instances from a
+worklist private to it, so a class is walked by one driver and, on a run that collapses to forty
+classes, forty such walks proceed while the remainder of the grid spins.
+
+Nothing in the reconstruction requires this. A child instance is published to the instance index
+behind a fence before it is driven, and each (instance, match) application is claimed through a
+device-wide set, so an application is idempotent and safe from any thread. A push visible across
+drivers would therefore produce the same result as one confined to the driver that discovered the
+instance, and the available width would be the instance count rather than the class count.
+
+The two are far apart on exactly the shapes that lose. At depth six \texttt{cycle4} materialises
+$68{,}185$ instances over $40$ classes and \texttt{multirule} $146{,}599$ over $49$---deficits of
+$1{,}705\times$ and $2{,}992\times$---while \texttt{wolfram24} materialises $86{,}086$ over
+$9{,}820$ and \texttt{wpp} $15{,}967$ over $3{,}867$, deficits of $8.8\times$ and $4.1\times$. The
+instance counts are comparable across all four, between $16$ and $147$ thousand, while the class
+counts vary by a factor of $250$: the independent work available is similar everywhere and only the
+width the implementation exploits differs. The shapes that lose are those whose initial state
+collapses classes, and that collapse is the same condition that concentrates instances into few of
+them.
 
 The residual on these two workloads is accordingly attributed to a named and evidenced cause that is \emph{reducible}: a depth-first descent performed inline by the discovering thread, in a design whose own publication and claim machinery already admits the alternative. It is not claimed as a lower bound, and the corresponding optimisation is identified and unimplemented rather than refuted.
 
@@ -2030,19 +2048,19 @@ workload & kernel (ms) & warps active & SM thr. & DRAM thr. \\
 \end{tabular}
 \end{table}
 
-An occupancy that is constant across a corpus this varied is what a grid-determined limit looks like, and confirms from a third direction that it is not determined by register allocation.
+A grid-determined limit produces exactly this: an occupancy constant across a corpus this varied, and confirms from a third direction that it is not determined by register allocation.
 
 Two entries in that table are artifacts of the profiler rather than properties of the workloads. The profiler serializes execution and fixes clocks, so a kernel whose resident blocks sit in a backoff loop rather than computing has its duration inflated by one to two orders of magnitude. Measured unprofiled, \texttt{binary} completes in $3.87$\,ms and \texttt{triangle} in $3.39$\,ms against the $857$\,ms and $209$\,ms above, while \texttt{wpp}, which is genuinely computing throughout, takes $7.52$\,ms unprofiled against the $2.97$\,ms the profiler reports---lower there because the profiler excludes the host-side bracket around the launch. The workloads that generate little work are therefore faster than the ones that generate much, as expected, and their $99.5\%$ and $99.7\%$ idle phase readings are $99.5\%$ of four milliseconds rather than of a second.
 
-The occupancy and throughput columns are unaffected. Those are ratios and structural properties rather than elapsed times, and they are what the table is for: an occupancy invariant at $16.6\%$ across workloads whose real durations span a factor of two, and utilisation figures that never approach any unit's limit.
+The occupancy and throughput columns are unaffected. Those are ratios and structural properties rather than elapsed times, and the table reports them for that reason: an occupancy invariant at $16.6\%$ across workloads whose real durations span a factor of two, and utilisation figures that never approach any unit's limit.
 
-We report these bounds rather than a closed gap. The decomposition that would raise lane efficiency---distributing canonicalization across the warp---and the compile-time separation that would relax the register ceiling are identified and unimplemented at the time of writing. Raising occupancy alone would multiply a $3.1\%$ lane efficiency by a larger factor and report a speedup while the device continued to run one lane in thirty-two, which is why the ordering matters and why the ceiling is stated here as measured rather than as addressed.
+We report these bounds rather than a closed gap. The decomposition that would raise lane efficiency---distributing canonicalization across the warp---and the compile-time separation that would relax the register ceiling are identified and unimplemented at the time of writing. Raising occupancy alone would multiply a $3.1\%$ lane efficiency by a larger factor and report a speedup while the device continued to run one lane in thirty-two, so the ordering matters and the ceiling is stated here as measured rather than as addressed.
 
 \subsection{Ablation (Table T9)}
 Only two of the engine's contributions remain run-time switches; the rest were replaced outright
 and their predecessors deleted in the same commit, so no ``off'' arm exists to measure. Match
 forwarding is the interesting case: it is worth $1.47\times$ on a two-edge left-hand side and
-\emph{costs} $1.26\times$ on a one-edge one, which is why it is decided per rule set by the
+\emph{costs} $1.26\times$ on a one-edge one, so it is decided per rule set by the
 static analysis of Section~\ref{sec:static-analysis} rather than being switched on globally. Both
 arms of every row compute the same state and event counts.
 
@@ -2078,7 +2096,7 @@ rather than distributed over the named buckets.
 \centering
 \caption{\textbf{T15 --- Executed instructions by component.} A single-threaded depth-six
 evolution of the Wolfram rule under \texttt{callgrind}, grouped by the file each function is
-defined in. Instruction counts are exact and reproducible, which is why attribution uses them
+defined in. Instruction counts are exact and reproducible, so attribution uses them
 rather than wall time. The flat per-function profile covers $99.0\%$ of the program total; the
 remainder is below \texttt{callgrind\_annotate}'s reporting threshold. Source:
 \texttt{tools/dev/instruction\_profile.py} over the \texttt{attrib} phase of
@@ -2141,8 +2159,8 @@ independent implementation of the definition but not an independent party's impl
 \textbf{Workload scope.} Two corpora are used and they are different sizes. The oracle corpus of
 \texttt{reference/oracle\_corpus.hpp} is 17 rule-type workloads and is what Tables~\ref{tab:t1-exactness},
 \ref{tab:t3-deheap} and~\ref{tab:event-canon} report; the left-hand-side sweep of
-Section~\ref{sec:lhs-space} generates 24 shapes of its own, which is what
-Table~\ref{tab:t14-shape-space} reports. Both were constructed to cover rule
+Section~\ref{sec:lhs-space} generates 24 shapes of its own, reported by
+Table~\ref{tab:t14-shape-space}. Both were constructed to cover rule
 shapes---productive, reductive, idempotent, mixed arity, disconnected and
 high-automorphism---rather than to sample rules found in practice, and the observed behavior of
 $C/R$ and of parallel efficiency is a property of those shapes.
