@@ -1357,6 +1357,15 @@ it is given---that thread count, that operation count, those inputs---it explore
 interleaving and every reads-from choice the model permits, so a clean run is a statement about all
 executions within the bound rather than about the ones that happened to be scheduled.
 
+Three harnesses carry a weaker guarantee than that, and each says so in place. Two of them bound
+the number of context switches, which the checker permits only under sequential consistency, so
+those two establish their property for the sequentially consistent executions of their program
+rather than for every RC11 execution of it. A third samples executions instead of enumerating
+them, because its shape cannot be exhausted at the size that exhibits the behaviour it is about; a
+clean sample is evidence rather than proof, and the same property is proved by enumeration at a
+smaller shape by a separate harness. The remaining harnesses are exhaustive over RC11 within their
+stated bound.
+
 Each harness is a small program that includes the engine's own header and calls its own functions,
 rather than a hand-written model of the algorithm. The constraint is deliberate: a model drifts
 from the code as soon as the code changes, and a re-implementation establishes a property of the
