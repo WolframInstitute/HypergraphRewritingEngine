@@ -27,7 +27,15 @@ while read -r w d; do
     [ -z "${w:-}" ] && continue
     case "$w" in \#*) continue;; esac
 
-    base=$(timeout "$PER_RUN_TIMEOUT" "$BIN" "$d" 1 1 "$w" 2>/dev/null \
+    # Truncated runs are excluded, not compared. Past a container ceiling the engine returns
+    # valid partial work and which states got in is the arrival race, so a difference there is
+    # the ceiling talking, not the determinism contract.
+    b_out=$(timeout "$PER_RUN_TIMEOUT" "$BIN" "$d" 1 1 "$w" 2>&1)
+    if printf '%s\n' "$b_out" | grep -q 'capacity limit reached'; then
+        printf '%-22s %-6s %-26s %s\n' "$w" "$d" "-" "SKIP(truncated)"
+        continue
+    fi
+    base=$(printf '%s\n' "$b_out" \
            | grep -oE 'canonical=[0-9]+ raw=[0-9]+' | head -1 | grep -oE 'canonical=[0-9]+' | cut -d= -f2)
     if [ -z "$base" ]; then
         printf '%-22s %-6s %-26s %s\n' "$w" "$d" "-" "TIMEOUT_OR_FAIL(1t)"

@@ -28,6 +28,15 @@ while read -r w d; do
         printf '%-22s %-6s TIMEOUT_OR_FAIL rc=%d\n' "$w" "$d" "$rc"
         continue
     fi
+    # A TRUNCATED RUN IS NOT A MEASUREMENT. Past a container ceiling the engine returns valid
+    # partial work with a warning, and WHICH states got in is decided by the arrival race -- so
+    # the counts, and any ratio taken from them, vary between runs and between thread counts for
+    # a reason that has nothing to do with the engine's concurrency. Such a row is marked, never
+    # averaged in.
+    if printf '%s\n' "$out" | grep -q 'capacity limit reached'; then
+        printf '%-22s %-6s %s\n' "$w" "$d" "TRUNCATED (capacity ceiling; depth too deep)"
+        continue
+    fi
     sp=$(printf '%s\n' "$out" | grep -oE 'speedup=[0-9.]+' | cut -d= -f2 | tr '\n' ' ')
     raw=$(printf '%s\n' "$out" | grep -oE 'raw=[0-9]+' | head -1 | cut -d= -f2)
     printf '%-22s %-6s %s raw=%s\n' "$w" "$d" "$sp" "${raw:-?}"
