@@ -12,6 +12,7 @@ Run:  python3 tools/dev/paper_tables.py [--gpu] [--build-dir build_linux]
 """
 
 import argparse
+import glob
 import os
 
 import procstat
@@ -189,13 +190,23 @@ def write_values(name="values_tables.tex"):
     the run that measured it; regenerating its section replaces it and the marker."""
     if not VALUES:
         return
+    # Names a SIBLING values file already defines are not carried: that file measured them and
+    # this one did not, so carrying would recreate the duplicate-definition error the drop below
+    # exists to prevent, and would do it with the staler of the two values.
+    elsewhere = set()
+    for sibling in glob.glob(os.path.join(OUT, "values_*.tex")):
+        if os.path.basename(sibling) == os.path.basename(name):
+            continue
+        with open(sibling) as f:
+            elsewhere.update(re.findall(r"\\newcommand\{\\([A-Za-z]+)\}", f.read()))
+
     carried = {}
     path = os.path.join(OUT, name)
     if os.path.exists(path):
         with open(path) as f:
             for m in re.finditer(r"\\newcommand\{\\([A-Za-z]+)\}\{(.*)\}\s*$",
                                  f.read(), re.MULTILINE):
-                if m.group(1) not in VALUES:
+                if m.group(1) not in VALUES and m.group(1) not in elsewhere:
                     carried[m.group(1)] = m.group(2)
     body = [provenance("the generators in this file")]
     body += [r"\newcommand{\%s}{%s}" % (k, v) for k, v in sorted(VALUES.items())]
@@ -204,6 +215,46 @@ def write_values(name="values_tables.tex"):
         body.append("% measurement did not run in this invocation, and the prose cites them.")
         body += [r"\newcommand{\%s}{%s}" % (k, v) for k, v in sorted(carried.items())]
     write_raw(name, "\n".join(body) + "\n")
+    # ONLY WHAT THIS RUN MEASURED displaces a sibling. Passing the carried names too would let a
+    # value this invocation did not measure evict a sibling's fresher one: --authority-only
+    # carries MaxHostSpeedup forward from an older scaling run while values_sweep.tex may hold
+    # the one scaling_sweep emitted beside the t8_scaling.tex it actually published.
+    _drop_from_sibling_values(name, set(VALUES))
+
+
+def _drop_from_sibling_values(mine, defined):
+    r"""A macro is defined in exactly ONE values file: the one written most recently.
+
+    \newcommand is an error on a name that already exists, so two values files defining the same
+    macro do not produce a last-one-wins -- they produce "Command \X already defined" and no PDF.
+    That is reachable through the documented pass: scaling_sweep OVERWRITES t8_scaling.tex and
+    therefore re-emits MaxHostSpeedup so the quoted number matches the table it published
+    (scaling_sweep.py's own comment records the defect that motivated it), while paper_tables has
+    already written the same name into its own file from its own scaling run.
+
+    Neither generator can drop it unilaterally -- each must still define it when it is the only
+    one that ran, which is exactly what the carry-forward above protects. So the rule is
+    positional rather than by owner: writing a values file removes those names from every OTHER
+    values file, leaving the most recent measurement as the definition. Running the pass in its
+    documented order therefore lands scaling_sweep's value, which is the one whose table shipped.
+    """
+    for sibling in sorted(glob.glob(os.path.join(OUT, "values_*.tex"))):
+        if os.path.basename(sibling) == os.path.basename(mine):
+            continue
+        with open(sibling) as f:
+            lines = f.read().splitlines()
+        kept, dropped = [], []
+        for line in lines:
+            m = re.match(r"\\newcommand\{\\([A-Za-z]+)\}", line)
+            if m and m.group(1) in defined:
+                dropped.append(m.group(1))
+            else:
+                kept.append(line)
+        if dropped:
+            print("  %s: dropped %d macro(s) now defined by %s: %s"
+                  % (os.path.basename(sibling), len(dropped), os.path.basename(mine),
+                     ", ".join(sorted(dropped))))
+            write_raw(os.path.basename(sibling), "\n".join(kept) + "\n")
 
 
 def write_raw(name, body):
