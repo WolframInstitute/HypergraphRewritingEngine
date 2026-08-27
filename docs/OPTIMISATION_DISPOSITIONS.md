@@ -155,6 +155,24 @@ stated with what it would attack:
   77.4% of cycles.
 - Refinement is data-parallel over cells and over the vertices in a cell, so a warp cooperating on
   ONE state is the shape that removes the divergence rather than tolerating it.
+- The device's IR is already known to be far slower per state than the host's: an isolated
+  measurement recorded at the call site in `persistent.cu` puts device IR at 62.9x the host on
+  one state. Combined with IR being 72.8% of device cycles, that is where the device's time goes.
+
+MEASURED AND REFUTED ON THE WAY. The block shape is not the lever: `kMatchBlockThreads` is 32
+because the MATCHER stripes across the block, and match is 0.0% of cycles, so the shape is set by
+a phase that costs nothing. The matcher stripes on `blockDim.x`, so the constant can move -- at
+128 the state counts are identical and the run is slower, `disc-l2amg2r2` 144.6 ms to 315.2 ms and
+`star-l1a2g2r1` 36.2 ms to 45.6 ms. One warp per block is already right.
+
+WHAT THE CHANGE ACTUALLY IS, from the code rather than from estimate. Each thread calls
+`state_key_device` on its OWN child state (`persistent.cu`, the worker loop). Cooperation needs
+two things together: a `__shfl_sync` loop so the warp takes one lane's state at a time, AND
+lane-strided inner loops inside `ir_refine`. Without the second, the first makes the run ~32x
+slower rather than faster, because 31 lanes idle while one works. `ir_refine`'s inner loops carry
+sequential accumulators -- the incident-edge count, the epoch stamping, the per-vertex signature
+prefix sum, and a heapsort -- so each needs a warp scan or ballot to split, in `HG_HD` code that
+is compiled for both engines.
 
 WHY IT IS NOT LANDED HERE. `ir_core.hpp` is `HG_HD`: the same code runs on host and device, so a
 warp-cooperative refinement changes both engines at once, and the determinism contract -- the
