@@ -181,6 +181,7 @@ create_test_executable(all_tests
     ../hypergraph/tests/test_causal_branchial.cpp
     ../hypergraph/tests/test_event_canonicalization.cpp
     ../hypergraph/tests/test_determinism_fuzzing.cpp
+    ../hypergraph/tests/test_segmented_array.cpp
     ../hypergraph/tests/test_blackhole_idempotent.cpp
     ../hypergraph/tests/test_grid_performance.cpp
     ../hypergraph/tests/test_repeated_invocation.cpp
@@ -261,6 +262,7 @@ create_test_executable(stress_tests
     test_helpers.hpp
     test_helpers.cpp
     ../hypergraph/tests/test_determinism_fuzzing.cpp
+    ../hypergraph/tests/test_segmented_array.cpp
     ../hypergraph/tests/test_grid_performance.cpp
     ../hypergraph/tests/test_repeated_invocation.cpp
 )
