@@ -583,3 +583,94 @@ TEST_F(DeterminismFuzzing, StressTest_100Runs) {
     fuzz_test_rules("StressTest_100Runs", {rule}, initial, 3, 100);
 }
 
+
+// =============================================================================
+// Rule order, and when it is allowed to be random
+// =============================================================================
+// The engine permutes rule submission order to remove the bias a fixed order gives rule 0 when a
+// mode DISCARDS transitions -- whichever rule is offered first decides which survivors are kept.
+// The permutation comes from std::random_device unless a seed is set, so it is the one place a
+// run stops being a function of its inputs, and these pin where that is allowed to happen.
+//
+// Two-rule workloads, because a permutation of one rule is the identity and would pass whatever
+// the engine did.
+
+namespace {
+
+std::vector<hg::engine::RewriteRule> two_rules() {
+    return {
+        hg::engine::make_rule(0).lhs({0, 1}).rhs({0, 1}).rhs({1, 2}).build(),
+        hg::engine::make_rule(1).lhs({0, 1}).rhs({0, 2}).rhs({2, 1}).build(),
+    };
+}
+
+}  // namespace
+
+// A run that discards nothing must not consult the generator at all: every rule is matched
+// against every state, so the submission order changes no state, event or relation, and drawing
+// an order would cost the run its reproducibility for nothing.
+TEST_F(DeterminismFuzzing, DefaultRunIsReproducibleAndWarnsAboutNothing) {
+    const auto rules = two_rules();
+    const std::vector<std::vector<hg::engine::VertexId>> initial = {{0, 1}, {1, 2}};
+
+    // THE ORDER, NOT THE COUNTS. With nothing dropping work the order changes no count, so
+    // comparing counts across repeats passes whether or not the order was drawn from
+    // std::random_device -- it is the divergence that only surfaces once a ceiling or a cap makes
+    // which-rule-first decide what is kept, and by then the run is already unreproducible.
+    // Sixteen rules, so a drawn permutation coincides with the identity at a negligible rate.
+    auto hg = std::make_unique<hg::engine::Hypergraph>();
+    hg::engine::ParallelEvolutionEngine e(hg.get(), 1);
+    for (uint16_t r = 0; r < 16; ++r)
+        e.add_rule(hg::engine::make_rule(r).lhs({0, 1}).rhs({0, 1}).rhs({1, 2}).build());
+
+    for (int i = 0; i < 8; ++i) {
+        const auto order = e.get_shuffled_rule_indices();
+        ASSERT_EQ(order.size(), 16u);
+        for (uint16_t k = 0; k < 16; ++k)
+            ASSERT_EQ(order[k], k)
+                << "a run that discards nothing permuted its rule order, so it drew from "
+                   "std::random_device and is not a function of its inputs";
+    }
+
+    for (const auto& r : rules) (void)r;
+    e.evolve(initial, 3);
+    for (const std::string& w : e.warnings())
+        EXPECT_EQ(w.find("no random seed was set"), std::string::npos)
+            << "a run that discards nothing reported itself unreproducible: " << w;
+}
+
+// With a cap the order IS observable, so a seeded run has to pin it: same seed, same answer.
+TEST_F(DeterminismFuzzing, CappedRunWithASeedIsReproducible) {
+    const auto rules = two_rules();
+    const std::vector<std::vector<hg::engine::VertexId>> initial = {{0, 1}, {1, 2}};
+
+    std::set<size_t> states;
+    for (int i = 0; i < 5; ++i) {
+        auto hg = std::make_unique<hg::engine::Hypergraph>();
+        hg::engine::ParallelEvolutionEngine e(hg.get(), 1);
+        e.set_max_states(40);
+        e.set_random_seed(0x5eed);
+        for (const auto& r : rules) e.add_rule(r);
+        e.evolve(initial, 5);
+        states.insert(e.num_canonical_states());
+    }
+    EXPECT_EQ(states.size(), 1u) << "a seeded capped run is not reproducible";
+}
+
+// And an UNSEEDED capped run is allowed to differ between invocations -- that is what an unseeded
+// sample is for -- but it must say so, because a caller cannot tell that answer from a defect.
+TEST_F(DeterminismFuzzing, UnseededCappedRunWarnsThatItIsNotReproducible) {
+    const auto rules = two_rules();
+    const std::vector<std::vector<hg::engine::VertexId>> initial = {{0, 1}, {1, 2}};
+
+    auto hg = std::make_unique<hg::engine::Hypergraph>();
+    hg::engine::ParallelEvolutionEngine e(hg.get(), 1);
+    e.set_max_states(40);
+    for (const auto& r : rules) e.add_rule(r);
+    e.evolve(initial, 5);
+
+    bool warned = false;
+    for (const std::string& w : e.warnings())
+        if (w.find("no random seed was set") != std::string::npos) warned = true;
+    EXPECT_TRUE(warned) << "an unseeded run that discards work did not report itself unreproducible";
+}

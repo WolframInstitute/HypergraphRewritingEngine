@@ -1043,6 +1043,14 @@ public:
     const EvolutionStats& stats() const;
     const std::vector<std::string>& warnings() const;
 
+    // The order rules are submitted in. PUBLIC BECAUSE IT IS THE INVARIANT A DETERMINISM GATE HAS
+    // TO ASSERT: a run that discards nothing must submit rules in identity order, because the only
+    // alternative is a draw from std::random_device, and then the run is not a function of its
+    // inputs. Asserting the run's COUNTS instead cannot see that -- with nothing dropping work the
+    // order changes no count, so the counts agree whether or not the order was drawn, and the
+    // divergence only appears once a ceiling or a cap makes which-rule-first decide what is kept.
+    SVec<uint16_t> get_shuffled_rule_indices() const;
+
     // Request early termination of evolution
     // This is non-blocking; evolution will stop as soon as currently queued jobs check the flag.
     // Call wait_for_idle() after request_stop() to ensure all jobs have completed.
@@ -1376,8 +1384,6 @@ private:
     bool claim_canonical_for_expansion(StateId canonical_state);
 
     // Bias mitigation: returns rule indices in shuffled order
-    SVec<uint16_t> get_shuffled_rule_indices() const;
-
     // Whether this run DISCARDS work it could have done -- a probability, a rate, or any of the
     // four caps. It is the condition under which rule order becomes observable, because which
     // rule is offered first then decides which survivors are kept, and it is therefore the
