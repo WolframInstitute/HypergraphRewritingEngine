@@ -1,4 +1,6 @@
 #pragma once
+#include "hgcommon/core.hpp"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -148,74 +150,84 @@ inline std::vector<std::vector<uint32_t>> make_lhs(Shape s, uint32_t n, uint32_t
     return e;
 }
 
-// Right-hand side: keep EVERY left edge, then add `grow` fresh edges that attach to vertices the
-// left side already binds.
+// Right-hand side: keep EVERY left edge, then add `grow` FRESH COPIES OF THE LEFT SIDE, each on
+// its own fresh vertices and joined to a bound vertex by one link edge.
 //
-// Both halves matter and an earlier version got both wrong. Keeping only the FIRST left edge made
-// any rule with two or three left edges net-destructive, so it could not grow: of 96 workloads
-// generated that way, 84 were flat and the twelve that grew reached twenty-eight states at depth
-// six. And attaching growth to fresh vertices only would extend the state without creating new
-// places for the left side to match, which grows the state linearly rather than branching. The
-// shape that branches -- `wpp`, the one workload in the hand-picked set that reaches thousands of
-// states -- rewrites two connected edges into four that share its vertices, so each application
-// creates several new match sites. That is what is reproduced here: every new edge touches an
-// existing bound vertex as well as a fresh one.
+// GROWTH HAS TO CREATE THE SHAPE THE LEFT SIDE MATCHES, or the workload does not branch, and a
+// workload that does not branch measures the engine's per-call floor rather than its concurrency.
+// A pendant edge onto a fresh vertex fails that on both counts: it adds a TREE, so a left side
+// wanting a cycle or a repeated vertex finds nothing new to match at all; and where it does still
+// match -- a star hub, a path end -- every child is isomorphic to every other, canonical dedup
+// collapses them to one, and the state count rises by exactly one per step. Copying the whole
+// left side instead gives `grow` new match sites per application for EVERY shape, which is the
+// branching condition, and it is one rule rather than one per shape.
+//
+// Keeping every left edge is the other half. Dropping any of them makes a rule with two or three
+// left edges net-destructive, and a net-destructive rule cannot grow whatever the right side adds.
+//
+// The link edge is what keeps the state one component. Without it each application would strew
+// `grow` unconnected copies, which turns every shape into the disconnected one and collapses that
+// axis into the others.
 inline std::vector<std::vector<uint32_t>> make_rhs(
-        Shape s, const std::vector<std::vector<uint32_t>>& lhs, uint32_t grow, uint32_t ar) {
+        const std::vector<std::vector<uint32_t>>& lhs, uint32_t grow, uint32_t ar) {
     std::vector<std::vector<uint32_t>> e = lhs;      // non-destructive: the left side survives
     if (lhs.empty()) return e;
+
+    // The left side's distinct vertices in first-seen order. A copy renames them as a block, which
+    // preserves WHICH POSITIONS SHARE A VARIABLE -- for the repeated shape that sharing is the
+    // shape, and renaming per edge would destroy it.
+    std::vector<uint32_t> src;
+    for (const auto& edge : lhs)
+        for (uint32_t v : edge) {
+            bool have = false;
+            for (uint32_t u : src) if (u == v) { have = true; break; }
+            if (!have) src.push_back(v);
+        }
+
+    auto src_index = [&](uint32_t v) {
+        for (size_t i = 0; i < src.size(); ++i) if (src[i] == v) return i;
+        return src.size();
+    };
+
+    // A copy costs one fresh variable per left-side vertex, and the engine binds variables into a
+    // MAX_VARS-entry array, so copies are added EDGE BY EDGE while they fit. The bound binds only
+    // where the left side is disconnected at the widest arity -- disc-l3a4 wants 36 -- and a
+    // partial copy is still a new match site there precisely because the components are
+    // independent: a disconnected left side matches any combination of them, so adding edges to
+    // one component adds combinations. Every connected left side in the corpus copies whole.
+    size_t vars = src.size();
     uint32_t fresh = 200;
-    if (s == Shape::Repeated) {
-        // A repeated-variable left side only matches a vertex that repeats, so growth has to
-        // create that shape or the workload is flat. Each step adds a link to a fresh vertex
-        // and the repeat on it, giving one new match site per application -- the branching
-        // condition the rest of this file exists to satisfy.
-        for (uint32_t g = 0; g < grow; ++g) {
-            const auto& anchor = lhs[g % lhs.size()];
-            const uint32_t v = fresh++;
-            const uint32_t w = edge_arity(ar, g);
-            std::vector<uint32_t> link{anchor[0], v};
-            for (uint32_t a = 2; a < w; ++a) link.push_back(fresh++);
-            e.push_back(std::move(link));
-            std::vector<uint32_t> rep{v, v};
-            for (uint32_t a = 2; a < w; ++a) rep.push_back(fresh++);
-            e.push_back(std::move(rep));
-        }
-        return e;
-    }
-    if (s == Shape::Cycle) {
-        // A CYCLE LEFT SIDE IS RIGID: it matches a cycle of its own length and nothing else, so
-        // the pendant growth below -- which adds trees -- creates no new match site and the
-        // workload fires once and stops. Each step therefore adds a WHOLE FRESH CYCLE of the left
-        // side's length, joined to a bound vertex by one link edge so the state stays connected.
-        // One new cycle per application is the branching condition, and it is the same argument
-        // the repeated case above makes for its own shape.
-        const uint32_t len = static_cast<uint32_t>(lhs.size());
-        for (uint32_t g = 0; g < grow; ++g) {
-            const auto& anchor = lhs[g % lhs.size()];
-            std::vector<uint32_t> ring;
-            for (uint32_t i = 0; i < len; ++i) ring.push_back(fresh++);
-            std::vector<uint32_t> link{anchor[g % anchor.size()], ring[0]};
-            for (uint32_t a = 2; a < edge_arity(ar, g); ++a) link.push_back(fresh++);
-            e.push_back(std::move(link));
-            for (uint32_t i = 0; i < len; ++i) {
-                std::vector<uint32_t> t;
-                const uint32_t w = edge_arity(ar, i);
-                for (uint32_t a = 0; a < w; ++a) t.push_back(ring[(i + a) % len]);
-                e.push_back(std::move(t));
-            }
-        }
-        return e;
-    }
     for (uint32_t g = 0; g < grow; ++g) {
-        std::vector<uint32_t> t;
-        // Anchor on a DIFFERENT bound vertex per added edge, so growth spreads over the match
-        // rather than piling onto one vertex.
+        std::vector<uint32_t> mapped(src.size(), 0u);
+        std::vector<bool> have(src.size(), false);
+        std::vector<std::vector<uint32_t>> copy;
+        for (const auto& edge : lhs) {
+            std::vector<size_t> wanted;
+            for (uint32_t v : edge) {
+                const size_t i = src_index(v);
+                if (have[i]) continue;
+                bool dup = false;
+                for (size_t j : wanted) if (j == i) { dup = true; break; }
+                if (!dup) wanted.push_back(i);
+            }
+            if (vars + wanted.size() > hgcommon::MAX_VARS) break;
+            for (size_t i : wanted) { mapped[i] = fresh++; have[i] = true; ++vars; }
+            std::vector<uint32_t> t;
+            for (uint32_t v : edge) t.push_back(mapped[src_index(v)]);
+            copy.push_back(std::move(t));
+        }
+        if (copy.empty()) break;
+
+        // Anchor each copy on a DIFFERENT bound vertex, so growth spreads over the match rather
+        // than piling onto one vertex. The link edge carries the workload's own arity and fills
+        // its trailing positions from the copy, so an arity-4 workload gains no binary edge and
+        // the link costs no variable.
         const auto& anchor = lhs[g % lhs.size()];
-        t.push_back(anchor[g % anchor.size()]);
-        const uint32_t w = edge_arity(ar, g);
-        for (uint32_t a = 1; a < w; ++a) t.push_back(fresh++);
-        e.push_back(std::move(t));
+        std::vector<uint32_t> link{anchor[g % anchor.size()], copy.front().front()};
+        for (uint32_t a = 2; a < edge_arity(ar, g); ++a)
+            link.push_back(copy[(a - 1) % copy.size()].front());
+        e.push_back(std::move(link));
+        for (auto& t : copy) e.push_back(std::move(t));
     }
     return e;
 }
@@ -272,7 +284,7 @@ inline std::vector<Workload> corpus() {
                                            : static_cast<Shape>((sh + 1) %
                                                  static_cast<uint32_t>(Shape::Count));
                             rule.lhs = make_lhs(rs, nl, ar);
-                            rule.rhs = make_rhs(rs, rule.lhs, grow, ar);
+                            rule.rhs = make_rhs(rule.lhs, grow, ar);
                             compact_vars(rule);
                             if (!rule.lhs.empty()) w.rules.push_back(std::move(rule));
                         }
