@@ -20,6 +20,27 @@ PacletDirectoryUnload[FileNameJoin[{repo, "paclet"}]];
 PacletDirectoryLoad[FileNameJoin[{repo, "paclet"}]];
 Needs["HypergraphRewriting`"];
 
+(* WARM THE KERNEL BEFORE ANY BLOCK IS JUDGED.
+   The FIRST call into the package in a fresh kernel drags in the paclet manager, the stream
+   method table and the front-end probe, and offline they emit a pile of messages that have
+   nothing to do with the documentation: URLFetch::offline, URLSubmit::offline,
+   RemoveInputStreamMethod::name, MIMETypeToFormatList::fmterr, DeleteFile::fdnfnd,
+   RenameFile::eexist, Extract::keyw, "A front end is not available". Measured: that call
+   returns a Graph with failureQ False, and the IDENTICAL call immediately after it in the same
+   kernel emits NOTHING. So the messages are startup, not the example.
+   This is why two GettingStarted blocks were recorded as known failures. They were never
+   failures -- the gate was reporting the kernel's own first-use noise, and a gate that fails on
+   something the code did not do teaches its reader to ignore it.
+   Warming here rather than quieting there keeps the check strict: after this line, any message a
+   block emits is the block's. *)
+Quiet@Check[HGEvolve[{{1, 2}} -> {{1, 2}, {2, 3}}, {{1, 2}}, 1], Null];
+(* And the device path separately: its first call spawns a process, which touches the stream and
+   MIME tables and emits MIMETypeToFormatList::fmterr the once. On a machine with no device this
+   returns unevaluated or $Failed, which Quiet@Check absorbs -- warming a path that is not there
+   costs nothing and judging a block on its absence would be wrong anyway. *)
+Quiet@Check[HGEvolve[{{1, 2}} -> {{1, 2}, {2, 3}}, {{1, 2}}, 1, "NumStates",
+                     "TargetDevice" -> "GPU"], Null];
+
 (* Fenced blocks, in file order. A fence line opens or closes; text between an odd and an
    even fence is code. Blocks tagged with a non-Wolfram language are skipped. *)
 blocksOf[path_] := Module[{lines, out = {}, cur = {}, inside = False},
