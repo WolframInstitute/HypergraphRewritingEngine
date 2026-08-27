@@ -14,6 +14,13 @@ User-visible semantic changes since v0.0.1-alpha.6, carried here so the release 
   settled key while a table growth carried it, dropping one causal edge from a full-capture run
   (seen once on a 4-core ARM64 CI machine at 16 threads). Model-checked exhaustively after the
   fix.
+- Parallel evolution is faster and uses far less memory at high worker counts. Two concurrent
+  structures built a replacement hash table before the exchange that installs it, so every worker
+  but one abandoned a full table on each growth; one worker is now elected per crossing and the
+  others carry on without waiting. On a 409k-state run at sixteen threads this is 841 ms to 630 ms
+  and 4.3 GB of arena to 1.8 GB, with 2.36 GB of abandoned tables gone entirely. Separately, the
+  pointer every operation reads no longer shares a cache line with the counter every insert
+  writes. Output is unchanged at every worker count.
 - Fixed a device-only defect in quotient reconstruction: a canonical class published its frame
   owner and its step as two separate map insertions, so a thread that lost the first read the
   second before it existed and signed its events with its own depth instead of the class's,
