@@ -240,11 +240,11 @@ single growing token pool: it records which rewrites occurred and what each cons
 and does not canonicalize or deduplicate states during evolution, so two structurally identical
 states reached along different histories remain distinct vertices. The object this engine
 enumerates is the states graph under an exact isomorphism identity, which requires canonicalizing
-every state as it is produced (Section~\ref{sec:canonicalization}) and is what makes
-canonicalization, rather than matching, the dominant cost. The two are therefore complementary
-rather than competing: a token--event graph is cheaper and is the right object when history is
-what matters, and a deduplicated states graph is the right object when the reachable state space
-is. We compare against two implementations in Section~\ref{sec:benchmarks}, both of which compute the
+every state as it is produced (Section~\ref{sec:canonicalization}); canonicalization therefore
+dominates the cost, rather than matching. The two objects are complementary rather than
+competing: a token--event graph is cheaper and suits an analysis of history, while a
+deduplicated states graph suits an analysis of the reachable state space.
+We compare against two implementations in Section~\ref{sec:benchmarks}, both of which compute the
 same object we do: the \texttt{Wolfram/\allowbreak Multicomputation} paclet's
 \texttt{MultiwaySystem}~\citep{wolframmulticomputation}, and this
 project's own reference implementation (\texttt{reference/MultiwayReference.wl}), a direct
@@ -546,7 +546,7 @@ touches a produced edge or does not, forwarding covers the second class and the 
 first. What does overlap is the delta scan with itself. A match touching $k$ produced edges is
 discovered $k$ times, once with each of them as the anchor, so the results are deduplicated on
 content rather than on the anchor that found them; duplicates here are routine rather than
-exceptional, which is why the deduplicating lookup precedes the allocation of a match record
+exceptional, so the deduplicating lookup precedes the allocation of a match record
 rather than following it.
 
 Because the partition is an argument rather than a measurement, the engine carries a validation
@@ -644,8 +644,8 @@ each key into the new table and then seals the slot it came from with a second r
 key reachable through two tables is enumerated once, and a table whose slots are all sealed is
 skipped rather than probed---without which a retired table is scanned in full on every operation,
 because sealing removes the empty slot linear probing stops at. Membership queries walk the chain
-oldest table first, which is what Section~\ref{sec:verification}'s reader-visibility harness
-checks. The quotient reconstruction's
+oldest table first, and Section~\ref{sec:verification}'s reader-visibility harness
+checks that order. The quotient reconstruction's
 membership marks use it (Section~\ref{sec:quotient}).
 
 \item[SegmentedArray$\langle$T$\rangle$:] Dynamically growing array stored in fixed-size segments. Append-only with atomic size tracking.
@@ -661,7 +661,7 @@ tasks extend it, and completed matches are handed to rewriting, with work steali
 balance across a frontier whose width is not known in advance.
 
 \item[Job pool:] Tasks are drawn from a per-thread slab rather than allocated, so submitting a task
-performs no call to the global allocator. This is what makes the allocation figures of
+performs no call to the global allocator, so the allocation figures of
 Section~\ref{sec:allocation} hold for a workload that submits one task per candidate expansion.
 Allocation and same-thread release touch only the owning thread's private free list, with no
 atomic and no contention. Work stealing means a task allocated on one thread is often released on
@@ -670,7 +670,7 @@ compare-and-swap, and the owner reclaims the whole accumulated batch with one ex
 private list empties. That shape is free of the ABA problem by construction rather than by a tag:
 producers only ever prepend, and the single consumer takes the entire list at once, so there is no
 node for a compare-and-swap to observe unchanged after reuse. Each slot carries a header naming
-its owning pool, which is what lets a release on any thread reach the pool the slot came from; an
+its owning pool, so a release on any thread reaches the pool the slot came from; an
 object too large for a slot falls back to the general allocator, so correctness does not depend on the slot size being
 estimated correctly. Pools are never destroyed and are recycled through a fixed array of claimable
 slots when a thread exits---an array rather than a stack of free pools, because a pool that is
@@ -685,7 +685,7 @@ indices, so one compare-exchange commits both ends at once and a pop at each end
 last item resolves by one of the two exchanges failing. The three fields share a word because a
 128-bit compare-exchange is not lock-free on the supported targets; the indices need 16 bits each
 for a capacity of 32{,}768 entries, which leaves 32 bits for the tag. Because both ends move in
-both directions, the index pair recurs, and the tag is what makes a compare-exchange commit only
+both directions, the index pair recurs, and the tag lets a compare-exchange commit only
 if nothing changed since the load.
 
 A 32-bit tag wraps, so the defence is conditional, and the condition is stated here rather than
@@ -697,7 +697,7 @@ $8.16 \times 10^6$ operations per second, so $2^{32}$ of them take on the order 
 continuous stall while every other thread runs flat out. The same measurement gives the cost of
 sharing one word: $1.33 \times 10^8$ operations per second at one thread against $8.16 \times
 10^6$ at eight. Per-worker deques are near-exclusive to their owners and do not incur that
-reduction; the injector is shared and does, which is why it holds only overflow and external
+reduction; the injector is shared and does, so it holds only overflow and external
 submissions.
 
 Neither queue offers a blocking push or pop. For a worker this is not a preference but a
