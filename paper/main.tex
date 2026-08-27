@@ -802,7 +802,7 @@ observable defined above is stated over canonical identities and is invariant. T
 checked by a determinism gate that fingerprints the expanded state set, the (input, output, rule)
 transition multiset, and the causal and branchial relations across thread counts and seeds, and on
 a divergence reports which component moved and under which configuration. Reporting the components
-separately is what makes the gate sensitive: the causal relation can move on its own, by a single
+separately makes the gate sensitive: the causal relation can move on its own, by a single
 edge, while the state set, the transition multiset and the branchial relation stay identical, so a
 gate that compared one aggregate fingerprint would not distinguish that from agreement.
 
@@ -940,8 +940,8 @@ insertion, the retained edge set is the transitive reduction of the causal DAG s
 \paragraph{Procedure.}
 Let $e = (p, c)$ be a new causal edge, meaning event $p$ produced an edge that event $c$ consumed.
 Insertion asks whether $c$ is already reachable from $p$ through the retained edges; if it is, $e$
-is implied and is not retained, and if it is not, $e$ is retained. There is no removal step, and
-its absence is what the arrival discipline buys. A consumer's incoming edges are registered by
+is implied and is not retained, and if it is not, $e$ is retained. There is no removal step;
+the arrival discipline makes one unnecessary. A consumer's incoming edges are registered by
 that consumer's own worker in descending producer-event order, and an ancestor's id is strictly
 smaller than its descendant's. A retained $(p', c)$ could become implied only through a path
 $p' \rightarrow \cdots \rightarrow x \rightarrow c$; if $(x, c)$ was registered before $(p', c)$
@@ -960,7 +960,7 @@ edges are only inserted, never deleted, so no retained edge can become non-impli
 edge dropped as implied never has to be reconsidered. And edges arrive in an order consistent with
 a topological order of the causal DAG: an event exists only once its producers do, so when $(p,c)$
 arrives, every edge into $p$ has already been processed and the closure below $p$ is final. A fully
-dynamic algorithm must maintain reachability under deletions, which is what forces the
+dynamic algorithm must maintain reachability under deletions, and that requirement forces the
 $\BigO(m + n\log n)$ amortized bound of Goranci et al.; neither of the two properties above is
 available to it.
 
@@ -1309,7 +1309,7 @@ by a backoff interval, so that nothing was pushed during the window between them
 exit flag at the top of their outer loop, and read it with acquire ordering so a worker that sees
 it also sees everything the detector saw before setting it.
 
-Detecting termination incorrectly truncates the evolution without an error, which is why the device
+Detecting termination incorrectly truncates the evolution without an error, so the device
 result is compared against the host's on every corpus workload rather than only checked for the
 absence of reported errors.
 
@@ -1377,7 +1377,7 @@ the single configuration where the two ends address the same slot. For the match
 a match is claimed exactly once and never dropped on a collision, and, for the rendezvous between
 an instance and the matches captured for its class, that every pair meets. For the per-instance
 application list: that of any two applications linked into one list exactly one observes the
-other, which is what permits the branchial pair they induce to be emitted once with nothing to
+other, permitting the branchial pair they induce to be emitted once with nothing to
 deduplicate it against (Section~\ref{sec:quotient}), and that a walk from a node enumerates every
 node linked before it. For the per-worker scratch arena: that no two workers are handed the same
 index. For the key set: that two
@@ -1452,7 +1452,7 @@ the tools of the previous layer because that checker does not survive constructi
 structure---a limitation of the tool, recorded where it applies rather than presented as a choice.
 
 \paragraph{What a sampled execution reports.} The two layers above bound the schedule; the test
-suite does not, and no sanitizer changes that. What a sanitizer changes is what a given execution
+suite does not, and no sanitizer changes that. A sanitizer changes what a given execution
 is able to report, which is the second half of the objection to testing: a stress run samples few
 schedules, and the schedules it does sample can still pass while holding a race, an
 out-of-bounds access, or a read of memory nothing wrote. The suite is therefore run under
@@ -1491,7 +1491,7 @@ Every table below is written by \texttt{tools/dev/paper\_tables.py} from the ins
 \subsection{Experimental Setup}
 
 \begin{description}
-\item[Hardware:] AMD EPYC 9174F (16 cores, 32 threads, one socket), 503\,GB RAM, NVIDIA RTX 4090 (24\,GB, compute capability 8.9), on bare metal. The cores are homogeneous, which is what makes a speedup column divide by a comparable quantity: worker threads are pinned to one hardware thread per physical core, and each table's provenance line names the CPU set it was pinned to, the machine, and the load at the moment the measurement started. A table moved to another machine carries that machine with it. The Wolfram comparison of Table~\ref{tab:t2-speedup} is the only measurement not on this host: it needs a licensed kernel, and its provenance line names the machine it was taken on. The remaining tables and figures were not all produced by one invocation and their provenance lines name several commits, but that spread is bookkeeping rather than a difference in what was measured: no file under the engine's own source directories differs between any of those commits and the one this document was built from. Table~\ref{tab:t2-speedup} and Figure~\ref{fig:speedup} are the exception in this sense too---they were taken at an earlier commit, across which 114 engine files have since changed---so they are the one measurement here that describes an older engine than the rest.
+\item[Hardware:] AMD EPYC 9174F (16 cores, 32 threads, one socket), 503\,GB RAM, NVIDIA RTX 4090 (24\,GB, compute capability 8.9), on bare metal. The cores are homogeneous, so a speedup column divides by a comparable quantity: worker threads are pinned to one hardware thread per physical core, and each table's provenance line names the CPU set it was pinned to, the machine, and the load at the moment the measurement started. A table moved to another machine carries that machine with it. The Wolfram comparison of Table~\ref{tab:t2-speedup} is the only measurement not on this host: it needs a licensed kernel, and its provenance line names the machine it was taken on. The remaining tables and figures were not all produced by one invocation and their provenance lines name several commits, but that spread is bookkeeping rather than a difference in what was measured: no file under the engine's own source directories differs between any of those commits and the one this document was built from. Table~\ref{tab:t2-speedup} and Figure~\ref{fig:speedup} are the exception in this sense too---they were taken at an earlier commit, across which 114 engine files have since changed---so they are the one measurement here that describes an older engine than the rest.
 \item[Software:] Ubuntu 24.04, Linux 6.8, GCC with C++20, CUDA 12.0, Wolfram Language 14.3.
 \item[Workloads:] The rule-type corpus of 17 workloads from \texttt{reference/oracle\_corpus.hpp} (single/multi rule; productive, idempotent, reductive, and mixed-arity rules; several initial-state shapes), plus larger depths of the canonical Wolfram rule $\{\{x,y,z\}\} \to \{\{x,y,w\},\{y,z,w\}\}$ for the scaling and GPU curves.
 \item[Methodology:] Wall-clock figures are medians over repeated runs on an otherwise idle machine, with the workers pinned to a named homogeneous core set; a run taken while the machine was loaded is marked in the table's provenance line rather than published as though it were quiet. Counts, instruction-level measurements and \texttt{getrusage} figures are deterministic and are reported from a single run. One exception is stated where it applies: the left-hand-side sweep of Figure~\ref{fig:lhs-scaling} reports the \emph{minimum} of its repeats rather than the median, because contention can only make a run slower, so the minimum is the estimate interference cannot inflate---and that sweep admits a timed run only after checking the machine is quiet.
@@ -1546,7 +1546,7 @@ on the Wolfram side, and this engine's times at depths 3--5 are near the timer's
 \subsection{Wall-Time Speedup (Table T2)}
 The comparison is against the \texttt{Wolfram/Multicomputation} \texttt{MultiwaySystem}, the
 authority this engine reproduces, and against our own reference implementation. All three compute
-the same state and event counts at every depth, which is what makes the ratio meaningful. The
+the same state and event counts at every depth, without which the ratio would not be a comparison. The
 engine is between $1{,}528\times$ and $12{,}218\times$ faster than the authority over depths two to
 five. The ratio is not monotone---depth three is the weakest point at $1528\times$---and at
 depths three to five the engine's own time is $0.1$ to $0.3$\,ms, close enough to the timer's
@@ -1937,7 +1937,7 @@ resident set and the fault count, which identifies memory acquisition as the cos
 
 \begin{table}[htbp]
 \centering
-\caption{\textbf{T13 --- User and system time, resident set and page faults against thread count.} A declining efficiency curve does not by itself identify the resource being consumed, and the two candidate explanations---contention on shared structures, and the cost of memory the run acquires---imply different remedies. Both are read from \texttt{getrusage} on the same runs. Across a $\ThreadSweepFactor\times$ increase in worker count, user time increases by a factor of $\UserTimeGrowth$---far less than the thread count, so the added workers are not simply spinning against each other---while system time increases by a factor of $\SysTimeGrowth$ and tracks the peak resident set and minor-fault count the table gives per row. Each worker draws its own arena blocks, so the run acquires memory in proportion to its width and faults each page in. System time is the faster-growing of the two and the one that scales with the resident set, which is what identifies memory acquisition rather than contention as the cost. Wall time is minimized at sixteen threads and rises again at 32, beyond which this kernel cost exceeds the parallel gain. This result is specific to the host measured; a host with different memory bandwidth or huge pages enabled would place the minimum elsewhere. Source: \texttt{tools/dev/scaling\_sweep.py} over \texttt{tools/sampling\_cost\_smoke} under \texttt{/usr/bin/time -v}.}
+\caption{\textbf{T13 --- User and system time, resident set and page faults against thread count.} A declining efficiency curve does not by itself identify the resource being consumed, and the two candidate explanations---contention on shared structures, and the cost of memory the run acquires---imply different remedies. Both are read from \texttt{getrusage} on the same runs. Across a $\ThreadSweepFactor\times$ increase in worker count, user time increases by a factor of $\UserTimeGrowth$---far less than the thread count, so the added workers are not simply spinning against each other---while system time increases by a factor of $\SysTimeGrowth$ and tracks the peak resident set and minor-fault count the table gives per row. Each worker draws its own arena blocks, so the run acquires memory in proportion to its width and faults each page in. System time is the faster-growing of the two and the one that scales with the resident set, identifying memory acquisition rather than contention as the cost. Wall time is minimized at sixteen threads and rises again at 32, beyond which this kernel cost exceeds the parallel gain. This result is specific to the host measured; a host with different memory bandwidth or huge pages enabled would place the minimum elsewhere. Source: \texttt{tools/dev/scaling\_sweep.py} over \texttt{tools/sampling\_cost\_smoke} under \texttt{/usr/bin/time -v}.}
 \label{tab:t13-memory}
 \input{tables/t13_thread_memory}
 \end{table}
@@ -1973,7 +1973,7 @@ Occupancy requires more care than the register figure alone suggests, because tw
 
 The device is therefore limited neither by bandwidth, nor by queue contention, nor by occupancy. It is limited by the dependency structure of the work itself. Individualization--refinement is a depth-first backtracking search in which each step depends on its predecessor, and no quantity of resident parallelism executes a dependent chain faster. Of the refinement's instruction count, $40\%$ lies in scans over vertices and edges that could be distributed across a warp and $60\%$ in the search itself; distributing the former perfectly bounds the phase at $1.63\times$, and at $51$--$77\%$ of block cycles that is $1.25$--$1.42\times$ overall. That is the ceiling for this algorithm on this architecture, and it is a property of canonicalization rather than of the implementation.
 
-Taken as a product, under $1\%$ of the device's arithmetic capability is reachable by the dominant phase. This is what the measured throughput reflects, and it is a structural property of the current work decomposition rather than a scheduling artifact or a stall: an independent instrument (below) reports zero time spent waiting on unpublished work.
+Taken as a product, under $1\%$ of the device's arithmetic capability is reachable by the dominant phase. The measured throughput reflects that bound, and it is a structural property of the current work decomposition rather than a scheduling artifact or a stall: an independent instrument (below) reports zero time spent waiting on unpublished work.
 
 Per-phase attribution, taken from \texttt{clock64} deltas accumulated per block and summed at exit, locates the cost. On the two corpus workloads that generate enough work at depth six to attribute anything---\texttt{wolfram24} at 9{,}820 states and \texttt{wpp} at 3{,}867---canonicalization accounts for $76.7\%$ and $51.0\%$ of block cycles respectively, against $2.7\%$ for rewriting and $0.3\%$ for matching in both. The remaining corpus shapes produce between four and 104 states and are $97.4\%$ to $99.9\%$ idle; that is the absence of work rather than a property of the scheduler, and their idle fraction should not be read as a device inefficiency. Canonicalization is thus both the dominant phase and resident in the single-lane region, and the two bounds above identify the same site in the code by independent routes.
 
