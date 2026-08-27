@@ -30,6 +30,16 @@
 
 using namespace hypergraph;
 
+// HG_CAPACITY_SCALE multiplies every append-only array's segment size. A workload that exceeds
+// the default ceiling returns a TRUNCATED evolution with a warning, and its counts are then
+// decided by the arrival race rather than by the rules -- so a benchmark row taken from one is
+// measuring the ceiling. Raising the scale is how a run gets the whole evolution.
+static uint32_t capacity_scale_from_env() {
+    const char* s = std::getenv("HG_CAPACITY_SCALE");
+    const int v = s ? std::atoi(s) : 1;
+    return v > 0 ? static_cast<uint32_t>(v) : 1u;
+}
+
 // The thread counts to sweep. THE POINT OF A SCALING RUN IS WHERE IT STOPS SCALING, so the
 // sweep has to reach the machine's width: stopping at 8 on a 32-thread host measures the easy
 // half and reports the ratio there as if it were the answer. Any count above the host's
@@ -178,7 +188,7 @@ int main(int argc, char** argv) {
         for (const auto& w : generated) {
             size_t lo_c = 0, hi_c = 0, lo_r = 0, hi_r = 0;
             for (int d : {2, 3}) {
-                Hypergraph g;
+                Hypergraph g(capacity_scale_from_env());
                 g.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
                 hgcommon::RecordSet rs;
                 rs.causal = rs.branchial = rs.state_events = rs.raw_events = false;
@@ -215,7 +225,7 @@ int main(int argc, char** argv) {
         std::vector<double> ms;
         size_t states = 0, raw = 0;
         for (int i = 0; i < iters; ++i) {
-            Hypergraph g;
+            Hypergraph g(capacity_scale_from_env());
             g.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
             // Same knob as bench_gpu_evolve, so a CPU row and a GPU row record the same
             // artifacts. Without it the CPU would be reconstructing the raw unfolding while the

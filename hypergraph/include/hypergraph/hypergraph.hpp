@@ -530,7 +530,20 @@ class Hypergraph {
     std::atomic<StateId> genesis_state_{INVALID_ID};
 
 public:
-    Hypergraph();
+    // capacity_scale multiplies the segment size of every append-only array, and it is the ONLY
+    // way past the container ceiling. The arrays hold MAX_SEGMENTS segments of segment_size
+    // elements; past that the engine raises CapacityExhausted, serves the states, events and
+    // relations it has, and warns that the evolution is truncated. A caller that hits it and
+    // wants the whole evolution passes a larger scale.
+    //
+    // IT IS A SEGMENT SIZE AND NOT A SEGMENT COUNT because the segment table is an inline array:
+    // raising MAX_SEGMENTS grows every Hypergraph object by eight bytes per segment per array,
+    // and this type is constructed on the stack in places with a one-megabyte limit. Segments
+    // are allocated on demand, so a larger scale costs nothing until the elements exist -- only
+    // the first segment of each array is bigger.
+    //
+    // Rounded up to a power of two, because the index decomposition is a shift and a mask.
+    explicit Hypergraph(uint32_t capacity_scale = 1);
 
     // Non-copyable
     Hypergraph(const Hypergraph&) = delete;

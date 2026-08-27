@@ -1976,10 +1976,27 @@ uint32_t Hypergraph::count_state_edges(StateId sid) const {
 // Route every map's table storage through the arena (no malloc, no per-map heap contention).
 // The initialiser order follows member declaration order; arena_ is declared before these maps,
 // so it is fully constructed by the time they take its address.
-Hypergraph::Hypergraph()
-    : canonical_state_map_(decltype(canonical_state_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
+namespace {
+// Segment size for a given capacity scale, rounded up to a power of two because the index
+// decomposition is a shift and a mask rather than a divide.
+size_t seg_size_for(uint32_t scale) {
+    size_t s = 1;
+    while (s < (scale ? scale : 1u)) s <<= 1;
+    return SegmentedArray<Edge>::DEFAULT_SEGMENT_SIZE * s;
+}
+}  // namespace
+
+Hypergraph::Hypergraph(uint32_t capacity_scale)
+    : edges_(seg_size_for(capacity_scale))
+    , edge_signatures_(seg_size_for(capacity_scale))
+    , states_(seg_size_for(capacity_scale))
+    , events_(seg_size_for(capacity_scale))
+    , canonical_state_map_(decltype(canonical_state_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
     , event_canonical_state_map_(
           decltype(event_canonical_state_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
+    , qc_inst_applied_(seg_size_for(capacity_scale))
+    , qc_event_sig_(seg_size_for(capacity_scale))
+    , qc_event_runsig_(seg_size_for(capacity_scale))
     , wl_hash_(std::make_unique<WLHash>(&arena_))
     , canonical_event_map_(decltype(canonical_event_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
 
