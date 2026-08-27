@@ -285,6 +285,20 @@ rented box that does.
   stamps the commit, the machine MEASURED on and (when they differ) the machine the table was
   generated on. One `cost_matrix` run is shared by every table quoting it: they used to invoke it
   separately and disagreed on `multi-rule`, which is nondeterministic there.
+- **`corpus_depth_plan.py`** -- picks, per generated workload, the depth whose work lands closest
+  to a target in log space, from a `bench_cpu_evolve corpusgrow` run. The corpus spans four orders
+  of magnitude in work at a fixed depth, so one depth for all of it measures the large workloads
+  and measures process startup on the small ones, and a floor-dominated row reports a speedup that
+  is a statement about the harness.
+- **`corpus_scale_sweep.sh`** -- runs that plan and prints one row per workload: the depth, the
+  capacity scale, the speedup at each thread count, and the raw count the run actually reached.
+  A row that hits the container ceiling raises `HG_CAPACITY_SCALE` before it gives up depth,
+  because a deeper run that fits is worth more than a shallow one; a run that still does not fit
+  says so rather than being dropped.
+- **`corpus_determinism_sweep.sh`** -- one worker against many over the same workloads, comparing
+  canonical state counts. One worker is the ground truth: with a single worker there is no
+  interleaving to depend on. Truncated runs are skipped rather than compared, since past the
+  ceiling which states got in is the arrival race.
 - **`paper_style_check.py`** -- refuses three things in `paper/main.tex`: LLM writing tells, which
   a reader recognises and discounts the content for; war stories, because the paper describes the
   system AS IT IS rather than the history of arriving at it; and any sentence naming remaining

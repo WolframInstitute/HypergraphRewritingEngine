@@ -126,7 +126,16 @@ Boundary + tooling:
   key reports itself as newly inserted, which is what every dedup decision reads. A
   key equal to a sentinel is unstorable and is rejected loudly. `SegmentedArray`'s
   `count_` is a high-water mark, so an index is readable only after its own `emplace`
-  returned. A worker must never block pushing to the injector, since a worker parked
+  returned, and its capacity is a CONFIGURED CEILING rather than an assumption: the
+  segment table is an inline array of `MAX_SEGMENTS` pointers, so a workload past
+  `MAX_SEGMENTS * segment_size` elements raises `CapacityExhausted`, and the engine
+  serves the states, events and relations it reached with a warning instead of
+  terminating the caller. Past that point WHICH states got in is decided by the arrival
+  race, so a truncated run is not a measurement and any two of them may disagree.
+  `Hypergraph(capacity_scale)` multiplies the segment size and is the only way past it;
+  raising the segment COUNT instead would grow every `Hypergraph` object by eight bytes
+  per segment per array, and this type is constructed on stacks with a one-megabyte
+  limit. A worker must never block pushing to the injector, since a worker parked
   in a push cannot pop. Election among concurrent participants must key on a CLAIM,
   never on an id ordering that is not the visibility ordering.
 - **The GPU mirrors the CPU algorithms.** Never drop a CPU data structure in a kernel
