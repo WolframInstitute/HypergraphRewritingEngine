@@ -30,11 +30,22 @@ while read -r w d; do
     # a truncated depth is retried one shallower, down to one, and the depth it settled on is
     # printed in the row. A workload that truncates even at depth one is reported as such, never
     # dropped, so the summary cannot read as coverage it does not have.
+    #
+    # CAPACITY FIRST, DEPTH SECOND. A deeper run that fits is worth more than a shallow one, and
+    # the ceiling is a configured limit rather than a property of the rules -- so the scale is
+    # raised until the evolution fits, and only a workload that still does not fit at the largest
+    # scale gives up depth. Both the depth and the scale the row settled on are printed, because a
+    # speedup is only comparable against another row at the same two.
     out=""
     rc=0
+    scale=1
     while [ "$d" -ge 1 ]; do
-        out=$(timeout "$PER_RUN_TIMEOUT" "$BIN" "$d" "$ITERS" "$THREADS" "$w" 2>/dev/null)
-        rc=$?
+        for scale in 1 4 16 64; do
+            out=$(HG_CAPACITY_SCALE=$scale timeout "$PER_RUN_TIMEOUT" "$BIN" "$d" "$ITERS" "$THREADS" "$w" 2>/dev/null)
+            rc=$?
+            [ $rc -ne 0 ] && break
+            printf '%s\n' "$out" | grep -q 'capacity limit reached' || break
+        done
         [ $rc -ne 0 ] && break
         printf '%s\n' "$out" | grep -q 'capacity limit reached' || break
         d=$((d - 1))
@@ -49,5 +60,5 @@ while read -r w d; do
     fi
     sp=$(printf '%s\n' "$out" | grep -oE 'speedup=[0-9.]+' | cut -d= -f2 | tr '\n' ' ')
     raw=$(printf '%s\n' "$out" | grep -oE 'raw=[0-9]+' | head -1 | cut -d= -f2)
-    printf '%-22s %-6s %s raw=%s\n' "$w" "$d" "$sp" "${raw:-?}"
+    printf '%-22s %-6s x%-3s %s raw=%s\n' "$w" "$d" "$scale" "$sp" "${raw:-?}"
 done
