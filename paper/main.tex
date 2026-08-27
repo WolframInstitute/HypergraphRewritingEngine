@@ -624,7 +624,7 @@ state that differs from its parent by a few edges stores that difference and not
 \label{fig:storage}
 \end{figure}
 
-This design eliminates edge duplication across states, since each state is a bitset view over the shared pool rather than an independent copy of its edges. The bitset is chunked and the chunks are shared: a child state initially references its parent's chunks, and a chunk is copied only when the child first mutates it. A rewrite that touches a few edges therefore allocates a few chunks rather than a copy of the parent's membership, and chunks are immutable once shared, so concurrent readers of a parent are unaffected by a child's mutation. Table~\ref{tab:t3-deheap} reports the arena bytes each corpus workload actually consumes; no ratio against a hypothetical per-state copy is asserted, because that representation was deleted when this one replaced it and cannot be measured on this tree.
+This design eliminates edge duplication across states, since each state is a bitset view over the shared pool rather than an independent copy of its edges. The bitset is chunked and the chunks are shared: a child state initially references its parent's chunks, and a chunk is copied only when the child first mutates it. A rewrite that touches a few edges therefore allocates a few chunks rather than a copy of the parent's membership, and chunks are immutable once shared, so concurrent readers of a parent are unaffected by a child's mutation. Table~\ref{tab:t3-deheap} reports the arena bytes each corpus workload consumes.
 
 \subsection{Lock-Free Data Structures}
 
