@@ -37,6 +37,13 @@ jobs:
       - name: The documentation names only symbols the paclet exports
         run: python3 tools/dev/doc_symbols_check.py
 
+      # THE SHIPPED NOTEBOOKS ARE GENERATED, AND A COMMIT CAN EDIT THE MARKDOWN WITHOUT RERUNNING
+      # THE GENERATOR. Both files stay present and valid, so nothing notices, and the paclet ships
+      # a page describing behaviour the engine no longer has. That happened twice before this
+      # check existed.
+      - name: The documentation notebooks match their markdown
+        run: python3 tools/dev/docs_fresh_check.py
+
       # A DOCUMENT MAY NOT POINT AT A FILE THAT IS NOT THERE. This project folds documents into
       # V1_PLAN.md and deletes them, which is the right way to keep one live source -- but the
       # pointers to them are left behind, and a reader following one gets nothing. Found by
