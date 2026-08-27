@@ -50,6 +50,15 @@ while read -r w d; do
         printf '%s\n' "$out" | grep -q 'capacity limit reached' || break
         d=$((d - 1))
     done
+    # A TIMEOUT BACKS OFF THE SAME WAY A CEILING USED TO. Segments grow now, so a workload that
+    # once stopped at the container ceiling runs its real state space instead -- correct, and
+    # sometimes much longer than the depth plan estimated from a shallower pair. Losing a level
+    # is better than losing the row.
+    while [ $rc -ne 0 ] && [ "$d" -gt 1 ]; do
+        d=$((d - 1))
+        out=$(HG_CAPACITY_SCALE=1 timeout "$PER_RUN_TIMEOUT" "$BIN" "$d" "$ITERS" "$THREADS" "$w" 2>/dev/null)
+        rc=$?
+    done
     if [ $rc -ne 0 ]; then
         printf '%-22s %-6s TIMEOUT_OR_FAIL rc=%d\n' "$w" "$d" "$rc"
         continue
