@@ -75,6 +75,19 @@ class Writer;
 
 // Heterogeneous value type for arbitrary WXF data structures
 // Supports recursive nesting via std::variant
+// SUPPRESSED FOR ONE COMPILER, AND SCOPED TO ONE STRUCT. MinGW's GCC reported a spurious
+// -Wmaybe-uninitialized inside std::variant's machinery for this type; the warning is a known
+// false positive of the variant implementation and not a statement about this code. The push/pop
+// pair below bounds it to WXFValue's definition, so nothing a caller writes is covered by it --
+// a blanket suppression in a header is how a genuine uninitialized-use warning goes unseen in
+// every file that includes it.
+//
+// CURRENTLY INERT ON EVERY GCC AVAILABLE HERE, checked 2026-08-27 by neutralising the pragma and
+// recompiling: host GCC 15.2.0, aarch64-linux-gnu-g++ 13.3.0, and x86_64-w64-mingw32-g++ 13 all
+// report ZERO maybe-uninitialized on wxf.cpp, and mingw reports zero on the variant-heavy
+// test_wxf.cpp as well. It is kept because those three are not every toolchain this ships to and
+// the pragma costs nothing where the warning does not fire; it retires when the same check is run
+// across the full platform set with the pragma removed and stays clean.
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
