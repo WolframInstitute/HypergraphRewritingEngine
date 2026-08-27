@@ -747,6 +747,11 @@ def main():
                          "not compute, so a published curve names a homogeneous set.")
     ap.add_argument("--thread-sweep", default="",
                     help="thread counts for the scaling table; must not exceed --cpus")
+    ap.add_argument("--authority-only", action="store_true",
+                    help="regenerate ONLY T2 and its macros, carrying every other macro "
+                         "forward. For the split the release actually runs: the authority "
+                         "needs a Wolfram licence and the timing tables need a quiet "
+                         "homogeneous box, and those are different machines.")
     a = ap.parse_args()
 
     global _BASELINE_LOAD, _PINNED_CPUS
@@ -755,6 +760,22 @@ def main():
         _BASELINE_LOAD = os.getloadavg()
     except (OSError, AttributeError):
         _BASELINE_LOAD = None
+
+    # THE AUTHORITY AND THE TIMING TABLES ARE MEASURED ON DIFFERENT MACHINES, and until this
+    # existed the file could not say so. T2 needs a Wolfram licence; every other table needs a
+    # quiet homogeneous box, and the rented one has no licence. Running the box pass first and
+    # this second is what write_values' carry-forward is for -- each invocation replaces the
+    # macros its own sections measured and keeps the rest. Running the FULL generator on the
+    # licensed machine instead would silently restate every timing table on the wrong hardware,
+    # which is the mistake this flag removes rather than documents.
+    if a.authority_only:
+        if not a.wolfram:
+            print("--authority-only implies --wolfram; enabling it")
+            a.wolfram = True
+        n = t2(a.build_dir, a.authority_depth, a.reps)
+        print("T2: %d depths" % n)
+        write_values()
+        return 0
 
     n = t1(a.build_dir)
     print("T1: %d workloads" % n)

@@ -240,6 +240,24 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 
 ## `reference/` -- validation oracle
 
+### What each comparison target is called, and what it actually is
+
+Four different things get compared against here and the short names for them are not
+self-explanatory, so they are stated once. The paper names the artifacts directly rather than
+using these role-words; this table is the mapping between the two.
+
+| name in code | the actual thing | what it answers | where |
+|---|---|---|---|
+| **the authority** | `Wolfram/Multicomputation`'s `MultiwaySystem` (Murzin's implementation) | what a user would otherwise run -- both its ANSWER (event identity ground truth) and its RUNNING TIME | `bench_authority.wls`, `authority_properties.wls`, `adjudicate_gap1_authority.wls`, `test_event_identity_authority.cpp` |
+| **the reference** | `MultiwayReference.wl`, this project's own brute-force Wolfram evolver | the same definition computed directly and unoptimised; returns DATA, not `Graph` objects, so a ratio against it is not attributable to graph construction | `MultiwayReference.wl`, `validate.wls` |
+| **the oracle** | the reference used as ground truth by the C++ gates | correctness only, never timing | `oracle_corpus.hpp`, `HG_REQUIRE_ORACLE`, `ReferenceOracle` tests |
+| **the golden corpus** | recorded expected outputs checked into the tree | regression pinning, in milliseconds, without wolframscript | `golden_corpus.wl`, `golden_matrix.hpp` |
+
+The word "authority" therefore covers two distinct uses of ONE object: a performance baseline in
+T2 and a ground-truth answer for event identity. Both are `MultiwaySystem`; only the question
+differs. "Reference" is the overloaded one -- it is also the directory name -- so in prose the
+implementation is written `MultiwayReference` and the directory `reference/`.
+
 - **`oracle_corpus.hpp`** -- the shared measurement substrate: `corpus()` (the named rule cases spanning the rule-type space -- single/mixed arity, productive/idempotent/reductive, self-loop, disconnected LHS, multi-rule, automorphic), `Case`/`Counts`/`LatticeCounts`, the engine drivers `engine_full_count`/`engine_counts`, and the brute-force isomorphism oracle `brute_force_iso_count`/`brute_canonical`/`content_canonical`, which is INDEPENDENT of the engine's WL and IR. One source of truth for what is tested and how it is checked, used by the oracle gate and by `tools/cost_matrix.cpp`
 - **`golden_matrix.hpp`** -- the cached identity matrix: every corpus workload across every identity mode, each `Row` carrying the `Provenance` that says what checked it. The brute-force oracle is `O(V! * E log E)` and the WL reference needs wolframscript, so neither runs on every build; caching the expected values lets the gate compare in milliseconds. `event_keys_from_name`/`state_mode_from_name`
 - **`MultiwayReference.wl`** -- brute-force ground-truth oracle: `MultiwayEvolve`, `CanonicalForm` (refinement + lex-min), helpers `refineColors`/`findMatches`/`eventSig*`
