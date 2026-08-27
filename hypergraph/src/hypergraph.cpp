@@ -992,7 +992,7 @@ void Hypergraph::quotient_causal_seed(StateId initial_state, int max_steps) {
 
 void Hypergraph::qc_record_causal(uint32_t producer, uint32_t consumer, bool distinct_pair) {
     // Per-consumed-edge relationships (the T1 multiset) count every occurrence.
-    qc_bump(qc_ctr_causal_edges_);
+    ++qc_slot(qc_ctr_).causal_edges;
 
     // NO DEDUP STRUCTURE, and none is needed. `consumer` is the event this application just
     // minted, so the pair cannot repeat across applications; within this one the caller has
@@ -1001,7 +1001,7 @@ void Hypergraph::qc_record_causal(uint32_t producer, uint32_t consumer, bool dis
     if (!distinct_pair) return;
     const int w = arena_worker_index();
     qc_causal_pairs_[w >= 0 ? w : 0].push(qc_pair_key(producer, consumer), arena_);
-    qc_bump(qc_ctr_causal_pairs_);
+    ++qc_slot(qc_ctr_).causal_pairs;
 
 }
 
@@ -1424,7 +1424,7 @@ size_t Hypergraph::num_reconstructed_instances() const {
 }
 
 size_t Hypergraph::num_reconstructed_causal_edges() const {
-    return qc_ctr_total(qc_ctr_causal_edges_);
+    return qc_ctr_total(&QcCounterSlot::causal_edges);
 }
 
 size_t Hypergraph::num_reconstructed_causal_pairs(bool transitively_reduced) const {
@@ -1439,7 +1439,7 @@ size_t Hypergraph::num_reconstructed_causal_pairs(bool transitively_reduced) con
 }
 
 size_t Hypergraph::applied_scans() const {
-    return qc_ctr_total(qc_ctr_applied_scans_);
+    return qc_ctr_total(&QcCounterSlot::applied_scans);
 }
 
 size_t Hypergraph::applied_claims() const { return qc_applied_.size(); }
@@ -1477,7 +1477,7 @@ size_t Hypergraph::capture_skipped_not_representative() const {
 }
 
 size_t Hypergraph::applied_visits() const {
-    return qc_ctr_total(qc_ctr_applied_visits_);
+    return qc_ctr_total(&QcCounterSlot::applied_visits);
 }
 
 size_t Hypergraph::captured_matches() const {
@@ -1886,8 +1886,7 @@ void Hypergraph::QrCtx::record_branchial_pair(uint32_t lo, uint32_t hi) {
 
 Hypergraph::QrCtx::~QrCtx() {
     if (branchial_seen)
-        { const int w = arena_worker_index();
-          hg.qc_ctr_branchial_[w >= 0 ? w : 0].v += branchial_seen; }
+        qc_slot(hg.qc_ctr_).branchial += branchial_seen;
 }
 
 // The child instance: survivors carry their producer across, produced slots take THIS event.
@@ -1930,7 +1929,7 @@ bool Hypergraph::is_full_canonicalization() const {
 }
 
 size_t Hypergraph::num_reconstructed_branchial() const {
-    return qc_ctr_total(qc_ctr_branchial_);
+    return qc_ctr_total(&QcCounterSlot::branchial);
 }
 
 size_t Hypergraph::num_frame_alignment_disagreements() const {

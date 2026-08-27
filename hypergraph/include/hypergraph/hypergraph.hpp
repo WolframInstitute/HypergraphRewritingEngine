@@ -319,17 +319,30 @@ class Hypergraph {
     // Safe here in a way the event-id allocator is NOT: these are REPORTING counters. Nothing
     // reads them to decide anything, so a per-worker sum changes no output -- where per-worker
     // event id BLOCKS changed which raw event represents an identity and broke three gates.
-    struct alignas(64) QcCounterSlot { size_t v = 0; };
-    mutable QcCounterSlot qc_ctr_causal_edges_[MAX_ARENA_WORKERS];
-    mutable QcCounterSlot qc_ctr_causal_pairs_[MAX_ARENA_WORKERS];
-    mutable QcCounterSlot qc_ctr_branchial_[MAX_ARENA_WORKERS];
-    static void qc_bump(QcCounterSlot* slots) {
+    // ONE LINE PER WORKER, HOLDING EVERY COUNTER THAT WORKER BUMPS -- not one padded array per
+    // counter. Five separate alignas(64) arrays of MAX_ARENA_WORKERS entries is 80 KB of member
+    // data for 40 bytes of counters per worker, and Hypergraph is stack-allocated by several
+    // probes: at 399 KB it overflowed the 1 MB default stack on Windows and
+    // ctest's quotient_reconstruction died with SEGFAULT. Packed this way the same separation
+    // costs 16 KB, because the point was never a line per COUNTER -- it was a line per WORKER,
+    // so that two workers never share one.
+    struct alignas(64) QcCounterSlot {
+        size_t causal_edges = 0;
+        size_t causal_pairs = 0;
+        size_t branchial = 0;
+        size_t applied_scans = 0;
+        size_t applied_visits = 0;
+    };
+    mutable QcCounterSlot qc_ctr_[MAX_ARENA_WORKERS];
+
+    static QcCounterSlot& qc_slot(QcCounterSlot* slots) {
         const int w = arena_worker_index();
-        ++slots[w >= 0 ? w : 0].v;
+        return slots[w >= 0 ? w : 0];
     }
-    static size_t qc_ctr_total(const QcCounterSlot* slots) {
+    template <typename M>
+    size_t qc_ctr_total(M member) const {
         size_t n = 0;
-        for (size_t i = 0; i < MAX_ARENA_WORKERS; ++i) n += slots[i].v;
+        for (const QcCounterSlot& s : qc_ctr_) n += s.*member;
         return n;
     }
 
@@ -352,13 +365,6 @@ class Hypergraph {
     // raw state per class captures -- but counted, because "by design" and "measured" are
     // different claims and only one of them was on record.
     mutable std::atomic<size_t> qc_capture_not_rep_{0};
-    // PER-WORKER, like the other per-item counters. Both are bumped once per SCAN -- 146,598
-    // times on multirule at depth 6 -- and a scan is exactly the hot path the branchial
-    // relation is built on. The comment that used to sit beside the visits counter recorded
-    // that the line moves between cores once per visit and that the instrument cost more than
-    // the scan it measured; it stayed a shared atomic anyway.
-    mutable QcCounterSlot qc_ctr_applied_scans_[MAX_ARENA_WORKERS];
-    mutable QcCounterSlot qc_ctr_applied_visits_[MAX_ARENA_WORKERS];
     void qc_record_causal(uint32_t producer, uint32_t consumer, bool distinct_pair);
 
     // An ordered pair of event ids as one map key, for the causal and branchial pair sets.
@@ -460,15 +466,14 @@ class Hypergraph {
             // shares -- 163,228,620 of them on the workload above against 970,584 scans -- so
             // the line carrying it moves between cores once per visit and the instrument costs
             // more than the scan it measures. Per scan the published total is identical.
-            qc_bump(hg.qc_ctr_applied_scans_);
+            ++qc_slot(hg.qc_ctr_).applied_scans;
             size_t visits = 0;
             hg.qc_inst_applied_.get_or_default(qc_ev_slot(inst.id), hg.arena_).for_each_before(
                 mine, [&](const QcAppliedMatch& a) {
                     ++visits;
                     f(a);
                 });
-            { const int w = arena_worker_index();
-              hg.qc_ctr_applied_visits_[w >= 0 ? w : 0].v += visits; }
+            qc_slot(hg.qc_ctr_).applied_visits += visits;
         }
         void record_branchial_pair(uint32_t lo, uint32_t hi);
         void descend(const SlotMatch& m, uint32_t depth, uint32_t ev, const QcInstance& parent);
