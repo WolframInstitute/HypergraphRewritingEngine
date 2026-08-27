@@ -152,15 +152,31 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    // GROWTH CLASSIFICATION. A workload whose canonical state count does not increase with depth
-    // cannot distinguish two engines: it measures their per-call floor and nothing else. Running
-    // such a workload and reporting a CPU/GPU ratio from it is measuring the harness. This mode
-    // reports the state count at two depths for every generated workload so the corpus can be
-    // filtered to the ones that actually evolve, and prints the ratio that decides it.
+    // GROWTH CLASSIFICATION. A workload whose work does not increase with depth cannot distinguish
+    // two engines, and cannot show a scaling curve either: it measures their per-call floor and
+    // nothing else. Reporting a CPU/GPU ratio or a thread-scaling ratio from one is measuring the
+    // harness. This mode reports every generated workload at two depths so the corpus can be
+    // checked rather than assumed, and prints canonical and raw counts at each.
+    //
+    // THE VERDICT IS ON RAW STATES, NOT CANONICAL ONES. A workload can hold its canonical count
+    // nearly fixed while exploring thousands of raw states -- star-l3a2g1r2 reaches 22 canonical
+    // over 6071 raw at depth three -- so the canonical count answers a different question than the
+    // one asked here, and answers it wrongly for any workload whose states are largely isomorphic.
+    //
+    // AND IT IS UNCAPPED. A state cap decides the outcome: it truncates the deeper run toward the
+    // shallower one, which reads as exactly the saturation this mode exists to detect. Depths two
+    // and three are what keep it cheap without one -- a rule that cannot fire reports equal counts
+    // there, and a rule that reaches a fixed point stops increasing there. The floor rejects the
+    // THE VERDICT IS TERMINATION, NOT RATE. A workload is rejected when it stops producing states
+    // -- the rule cannot fire, or the system reaches a fixed point -- because from that step on
+    // every deeper run repeats the same work and the wall time is the per-call floor. A workload
+    // that grows slowly is NOT rejected: slow growth is a workload property the corpus is supposed
+    // to contain, and it is where added threads have least to work with, which is exactly the
+    // region a scaling curve has to cover rather than exclude.
     if (std::strcmp(want, "corpusgrow") == 0) {
         for (const auto& w : generated) {
-            size_t lo = 0, hi = 0;
-            for (int d : {3, 6}) {
+            size_t lo_c = 0, hi_c = 0, lo_r = 0, hi_r = 0;
+            for (int d : {2, 3}) {
                 Hypergraph g;
                 g.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
                 hgcommon::RecordSet rs;
@@ -178,10 +194,12 @@ int main(int argc, char** argv) {
             }
                 for (const auto& r : w.rules) e.add_rule(r);
                 e.evolve(w.init, d);
-                (d == 3 ? lo : hi) = g.num_canonical_states();
+                (d == 2 ? lo_c : hi_c) = g.num_canonical_states();
+                (d == 2 ? lo_r : hi_r) = g.num_states();
             }
-            std::printf("%-18s d3=%-6zu d6=%-8zu %s\n", w.name, lo, hi,
-                        (hi > lo * 2 && hi >= 20) ? "GROWS" : "flat");
+            std::printf("%-20s d2=%-5zu/%-6zu d3=%-6zu/%-8zu %s\n",
+                        w.name, lo_c, lo_r, hi_c, hi_r,
+                        (hi_r > lo_r) ? "GROWS" : "dead");
         }
         return 0;
     }
