@@ -36,12 +36,26 @@ template<typename T>
 class SegmentedArray {
 public:
     static constexpr size_t DEFAULT_SEGMENT_SIZE = 1024;
-    static constexpr size_t MAX_SEGMENTS = 4096;  // Supports up to 4M elements with 1K segments
+    static constexpr size_t MAX_SEGMENTS = 4096;
+
+    // SEGMENTS GROW, so the capacity is the INDEX TYPE's limit and not the container's. Segment k
+    // holds segment_size << min(k, GROWTH_STEPS) elements: the first is exactly as small as a
+    // uniform one, so a run with ten edges still allocates ten edges' worth, and 4096 segments
+    // reach 2^32 elements -- which is every value a uint32_t index can name. A workload cannot
+    // exhaust this array without first exhausting the ids that address it.
+    //
+    // The doublings stop at GROWTH_STEPS so that no single segment allocation is unbounded: past
+    // it every segment is segment_size << GROWTH_STEPS, and the growth that remains is in the
+    // COUNT of segments rather than their size.
+    static constexpr uint32_t GROWTH_STEPS = 10;
 
     explicit SegmentedArray(size_t segment_size = DEFAULT_SEGMENT_SIZE)
         : segment_size_(segment_size)
         , seg_shift_(hgcommon::ctz64(segment_size))
         , seg_mask_(segment_size - 1)
+        , geom_end_(segment_size * ((size_t(1) << (GROWTH_STEPS + 1)) - 1))
+        , cap_shift_(static_cast<uint32_t>(hgcommon::ctz64(segment_size)) + GROWTH_STEPS)
+        , cap_mask_((segment_size << GROWTH_STEPS) - 1)
         , claim_(0)
         , count_(0) {
         // segment_size must be a power of two so index decomposition is a shift/mask
@@ -110,14 +124,14 @@ public:
                 "SegmentedArray: index is not published yet. Access an index only after its "
                 "own emplace() has returned, or iterate only while emplaces are quiescent.");
         }
-        const size_t seg_idx = idx >> seg_shift_;
-        T* segment = segments_[seg_idx].load(std::memory_order_acquire);
+        const Loc L = locate(idx);
+        T* segment = segments_[L.seg].load(std::memory_order_acquire);
         if (!segment) {
             throw std::logic_error(
                 "SegmentedArray: segment for this index is not published yet (count_ is a "
                 "high-water mark, so a LOWER index can still be in flight).");
         }
-        return segment[idx & seg_mask_];
+        return segment[L.off];
     }
 
     T& operator[](uint32_t idx) {
@@ -131,20 +145,18 @@ public:
         if (idx >= count_.load(std::memory_order_acquire)) {
             return nullptr;
         }
-        size_t seg_idx = idx >> seg_shift_;
-        size_t offset = idx & seg_mask_;
-        T* segment = segments_[seg_idx].load(std::memory_order_acquire);
-        return segment ? &segment[offset] : nullptr;
+        const Loc L = locate(idx);
+        T* segment = segments_[L.seg].load(std::memory_order_acquire);
+        return segment ? &segment[L.off] : nullptr;
     }
 
     const T* get(uint32_t idx) const {
         if (idx >= count_.load(std::memory_order_acquire)) {
             return nullptr;
         }
-        size_t seg_idx = idx >> seg_shift_;
-        size_t offset = idx & seg_mask_;
-        T* segment = segments_[seg_idx].load(std::memory_order_acquire);
-        return segment ? &segment[offset] : nullptr;
+        const Loc L = locate(idx);
+        T* segment = segments_[L.seg].load(std::memory_order_acquire);
+        return segment ? &segment[L.off] : nullptr;
     }
 
     // Current number of elements
@@ -208,8 +220,8 @@ public:
     // different indices. Only one will create the segment, others will use it.
     template<typename Arena>
     T& get_or_default(uint32_t idx, Arena& arena) {
-        size_t seg_idx = idx >> seg_shift_;
-        size_t offset = idx & seg_mask_;
+        const Loc L = locate(idx);
+        const size_t seg_idx = L.seg, offset = L.off;
 
         // Ensure segment exists (thread-safe via CAS in get_or_create_segment)
         // When segment is created, all elements are default-constructed by arena
@@ -241,15 +253,15 @@ public:
     // 4. Therefore: element data is visible to threads that load the segment
     template<typename Arena, typename... Args>
     void emplace_at(uint32_t idx, Arena& arena, Args&&... args) {
-        size_t seg_idx = idx >> seg_shift_;
-        size_t offset = idx & seg_mask_;
+        const Loc L = locate(idx);
+        const size_t seg_idx = L.seg, offset = L.off;
 
         // Ensure segment exists (thread-safe)
         T* segment = get_or_create_segment(seg_idx, arena);
 
         // Pre-create next segment when nearing end of current. Skipped at the last
         // segment: this is a look-ahead, and the element being placed here still fits.
-        if (offset >= segment_size_ - 1 && seg_idx + 1 < MAX_SEGMENTS) {
+        if (offset >= segment_capacity(seg_idx) - 1 && seg_idx + 1 < MAX_SEGMENTS) {
             get_or_create_segment(seg_idx + 1, arena);
         }
 
@@ -280,6 +292,25 @@ public:
     }
 
 private:
+    // Segment and offset for an index. Two regimes, and the branch is predictable because a run
+    // spends almost all of its accesses in whichever one its size puts it in.
+    struct Loc { size_t seg; size_t off; };
+    Loc locate(size_t idx) const {
+        if (idx < geom_end_) {
+            // idx lies in segment k where segment_size * (2^k - 1) <= idx, so k is the highest
+            // set bit of idx/segment_size + 1.
+            const size_t q = (idx >> seg_shift_) + 1;
+            const size_t k = static_cast<size_t>(hgcommon::floor_log2_64(q));
+            return { k, idx - (((size_t(1) << k) - 1) << seg_shift_) };
+        }
+        const size_t r = idx - geom_end_;
+        return { (GROWTH_STEPS + 1) + (r >> cap_shift_), r & cap_mask_ };
+    }
+
+    size_t segment_capacity(size_t seg_idx) const {
+        return segment_size_ << (seg_idx <= GROWTH_STEPS ? seg_idx : GROWTH_STEPS);
+    }
+
     template<typename Arena>
     T* get_or_create_segment(size_t seg_idx, Arena& arena) {
         // The segment table is a fixed inline array, so an index past it would CAS into
@@ -292,8 +323,9 @@ private:
             // system classifies on and what lets the engine serve the truncated graph with a
             // warning instead of terminating the caller. See hgcommon/capacity.hpp.
             throw hgcommon::CapacityExhausted(
-                "SegmentedArray: capacity exhausted (MAX_SEGMENTS segments). Raise "
-                "MAX_SEGMENTS or the segment size.");
+                "SegmentedArray: capacity exhausted. Segments grow, so this is reached only "
+                "once the array holds about 2^32 elements -- the whole range of the uint32_t "
+                "index that names them. Widening the index is the only thing past it.");
         }
 
         T* segment = segments_[seg_idx].load(std::memory_order_acquire);
@@ -326,7 +358,7 @@ private:
         }
 
         // Need to allocate new segment
-        T* new_segment = arena.template allocate_array<T>(segment_size_);
+        T* new_segment = arena.template allocate_array<T>(segment_capacity(seg_idx));
 
         // Try to install it
         T* expected = nullptr;
@@ -345,6 +377,9 @@ private:
     size_t segment_size_;
     uint32_t seg_shift_;   // log2(segment_size_)
     size_t seg_mask_;      // segment_size_ - 1
+    size_t geom_end_;      // first index past the doubling region
+    uint32_t cap_shift_;   // log2(segment_size_ << GROWTH_STEPS)
+    size_t cap_mask_;      // (segment_size_ << GROWTH_STEPS) - 1
     // claim_ hands out unique slot indices to concurrent emplace() callers. count_ is
     // the reader-visible high-water mark, advanced (by emplace_at) only after an
     // element's segment is published -- so a reader that sees count_ > idx never

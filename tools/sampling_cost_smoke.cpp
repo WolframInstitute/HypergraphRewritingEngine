@@ -254,7 +254,15 @@ int main(int argc, char** argv) {
         }
     }
 
-    Hypergraph hg;
+    // HG_CAPACITY_SCALE multiplies every append-only array's segment size, and it is the only way
+    // past the container ceiling. A shape that saturates produces rows this tool marks truncated
+    // and every consumer drops, so without it the shape is simply absent from the evidence.
+    uint32_t cap_scale = 1;
+    if (const char* cs = std::getenv("HG_CAPACITY_SCALE")) {
+        const int v = std::atoi(cs);
+        if (v > 0) cap_scale = static_cast<uint32_t>(v);
+    }
+    Hypergraph hg(cap_scale);
     hg.set_state_canonicalization_mode(
         canon == "none"      ? StateCanonicalizationMode::None :
         canon == "automatic" ? StateCanonicalizationMode::Automatic
@@ -335,7 +343,16 @@ int main(int argc, char** argv) {
     //
     // truncated=1 in the RICH line is therefore a FIELD, so a consumer can drop those rows
     // without re-deriving the ceiling from the numbers.
-    const bool truncated = !e.warnings().empty();
+    //
+    // IT TESTS FOR THE CEILING AND NOT FOR "A WARNING". The engine warns about things that are
+    // not truncation -- a disconnected left side costs a cartesian product and says so, and a run
+    // that discards work without a seed says it is not reproducible. Treating any warning as
+    // truncation marks every disconnected workload truncated whether or not it reached the
+    // ceiling, which silently deletes the disconnected shape from every figure that filters on
+    // this field.
+    bool truncated = false;
+    for (const auto& w : e.warnings())
+        if (w.find("capacity limit reached") != std::string::npos) truncated = true;
     for (const auto& w : e.warnings()) std::printf("WARNING %s\n", w.c_str());
 
     // The causal and branchial sizes come from the CausalGraph the full-capture run actually

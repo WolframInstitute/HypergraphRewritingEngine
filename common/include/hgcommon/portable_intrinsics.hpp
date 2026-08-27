@@ -100,5 +100,19 @@ inline int ctz64(uint64_t x) {
 #endif
 }
 
+// Count leading zeros. Undefined for x == 0, matching __builtin_clzll.
+inline int clz64(uint64_t x) {
+#if defined(_MSC_VER)
+    unsigned long i;
+    _BitScanReverse64(&i, x);
+    return 63 - static_cast<int>(i);
+#else
+    return __builtin_clzll(x);
+#endif
+}
+
+// Index of the highest set bit, i.e. floor(log2(x)). Undefined for x == 0.
+inline int floor_log2_64(uint64_t x) { return 63 - clz64(x); }
+
 }  // namespace common
 }  // namespace HG_NAMESPACE
