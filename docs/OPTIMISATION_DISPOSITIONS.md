@@ -109,12 +109,24 @@ nothing, two on different instances cost 2.7x. Worker threads are NOT pinned by 
 than where it is -- so which L3 instances two workers land on is the operating system's choice,
 and on a part with eight two-core instances the likely choice is two different ones.
 
-THE FIX IS PLACEMENT AND IT IS NOT FREE. Packing workers into cache domains in order, rather than
-leaving them to the scheduler, makes two workers share an instance and removes these four. The
-cost is that the engine would then claim specific cores by default: impolite on a shared machine,
-and two engine instances would pin to the same cores and contend. That trade is recorded rather
-than taken, and the workloads it affects are the smallest in the corpus -- 527 to 3,344 raw
-states, where two workers have almost nothing to divide.
+CLOSED BY PLACEMENT. Workers now fill cache domains in order rather than being left to the
+scheduler, so the second worker shares the first's cache instead of racing it. Every one of the
+four is now faster with two workers than with one, and the large end gains as well:
+
+| workload | 2 workers | 4 workers |
+|---|---|---|
+| `path-l1a2g1r1` | 0.91 -> 1.69 | 1.04 -> 2.05 |
+| `path-l1a2g1r2` | 0.96 -> 1.70 | 1.14 -> 2.19 |
+| `path-l2a2g1r2` | 0.97 -> 1.66 | 1.28 -> 2.18 |
+| `star-l1a2g1r1` | 0.73 -> 1.50 | 0.85 -> 1.79 |
+| `disc-l2amg2r2` | -- | 13.47x -> 18.19x at 32 workers |
+
+Canonical counts are unchanged everywhere, so this moves time and not answers.
+
+The reason it had to be found rather than read off: `performance_cpus()` names the fast cores of a
+HETEROGENEOUS part and returns EMPTY on a homogeneous one -- zero cpus on this EPYC -- so a
+default built on it fell through its first guard silently. Empty means no core is PREFERABLE, not
+that none is usable.
 
 ## Compiler-level levers, all three measured
 
