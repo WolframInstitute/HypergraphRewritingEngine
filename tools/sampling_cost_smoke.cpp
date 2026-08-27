@@ -309,7 +309,9 @@ int main(int argc, char** argv) {
 
     std::printf("done %.2f ms  states=%zu canon=%zu events=%zu matches=%zu drained=%zu\n",
                 std::chrono::duration<double, std::milli>(t1 - t0).count(),
-                hg.num_states(), hg.num_canonical_states(), hg.num_events(),
+                static_cast<size_t>(hg.num_states()),
+                static_cast<size_t>(hg.num_canonical_states()),
+                static_cast<size_t>(hg.num_events()),
                 e.total_matches(), e.states_drained());
 
     // ONE MACHINE-READABLE LINE CARRYING EVERY COUNT THIS RUN ALREADY COMPUTED. The `done` line
@@ -359,7 +361,8 @@ int main(int argc, char** argv) {
                              : size_t{1}),
                 edges, steps, threads, canon.c_str(),
                 std::chrono::duration<double, std::milli>(t1 - t0).count(),
-                hg.num_states(), hg.num_canonical_states(),
+                static_cast<size_t>(hg.num_states()),
+                static_cast<size_t>(hg.num_canonical_states()),
                 static_cast<size_t>(hg.num_events()), e.total_matches(),
                 cg.num_causal_edges(), cg.num_causal_event_pairs(),
                 cg.num_branchial_edges(), cg.num_branchial_pairs_claimed(),

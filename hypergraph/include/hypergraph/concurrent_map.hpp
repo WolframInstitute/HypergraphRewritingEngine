@@ -199,7 +199,7 @@ public:
     explicit ConcurrentMap(size_t initial_capacity = LAZY_INITIAL_CAPACITY,
                            ConcurrentHeterogeneousArena* arena = nullptr,
                            size_t working_capacity = DEFAULT_INITIAL_CAPACITY)
-        : count_(0), arena_(arena), working_capacity_(working_capacity) {
+        : arena_(arena), working_capacity_(working_capacity), count_(0) {
         table_.store(Table::create(initial_capacity, nullptr, arena_), std::memory_order_release);
     }
 
@@ -301,7 +301,7 @@ public:
             // growth hardest, which is what the harnesses construct.
             if (current_count >= table->capacity) {
                 resize();
-            } else
+            }
             // ONE GROWER PER CROSSING, AND NOBODY WAITS FOR IT. The check above is a LOAD, so every
             // thread that observes a count past the threshold used to enter resize(), and each built
             // a full replacement table before the exchange that installs one of them. The rest were
@@ -317,7 +317,7 @@ public:
             // deliberately NOT ticketed -- an exhausted probe run at the head must grow it, and that
             // is the path that guarantees progress no matter who holds the ticket or how long they
             // hold it.
-            if (!growing_.exchange(true, std::memory_order_acquire)) {
+            else if (!growing_.exchange(true, std::memory_order_acquire)) {
                 // Released however resize() leaves: an allocation failure inside it would otherwise
                 // strand the ticket and retire the load-factor path for the rest of the run.
                 struct ReleaseTicket {
@@ -868,12 +868,26 @@ private:
             new_table->chain_clear.store(true, std::memory_order_release);
     }
 
+    // THE HOTTEST READ AND THE HOTTEST WRITE DO NOT SHARE A LINE.
+    //
+    // table_ is loaded by every operation this class has and is written only when a growth
+    // installs one, so it is read-mostly and every core wants it resident. count_ is a
+    // read-modify-write on every successful insert, which takes its line EXCLUSIVE and
+    // invalidates it in every other core's cache. Adjacent, as they were, each insert's counter
+    // bump evicts the pointer that each of the other workers is about to load -- pure
+    // interference between two fields that have nothing to do with each other, on the single
+    // hottest structure in the engine.
+    //
+    // So the read-mostly group comes first and the written group starts a line of its own. The
+    // ticket sits with count_ deliberately: it is also a read-modify-write, it is taken only at
+    // a crossing, and the line it lands on is one count_ already owns exclusively.
     std::atomic<Table*> table_;
-    std::atomic<size_t> count_;
     // When non-null, all tables are arena-allocated (no malloc) and bulk-reclaimed.
     ConcurrentHeterogeneousArena* arena_ = nullptr;
     // The size the first growth jumps to; see the constructor.
     size_t working_capacity_ = DEFAULT_INITIAL_CAPACITY;
+
+    alignas(64) std::atomic<size_t> count_;
     // The growth ticket; see insert_if_absent. Not a lock -- a thread that fails to take it
     // proceeds without waiting, and the probe-exhaustion backstop is not ticketed at all.
     std::atomic<bool> growing_{false};
