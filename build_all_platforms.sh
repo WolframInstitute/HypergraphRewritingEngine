@@ -122,9 +122,14 @@ if selected "Linux-x86-64"; then
         gpu_out="$LR/Linux-x86-64/hg_evolve_gpu"
         rm -f "$gpu_out"          # so a failed build cannot pass on the previous file
         (( CLEAN )) && rm -rf build_linux_gpu
+        # NO -DCMAKE_CUDA_ARCHITECTURES HERE. gpu/CMakeLists.txt owns the shipping architecture
+        # set as HG_GPU_ARCHS and derives CMAKE_CUDA_ARCHITECTURES from it only when the caller
+        # has not set it, so naming an architecture here both defeats that branch and ships a
+        # Linux binary carrying SASS for one card -- correct on the measurement box and unable
+        # to start anywhere else. The Windows leg leaves it alone for the same reason, so both
+        # GPU artifacts carry whatever that one definition says. HG_GPU_ARCHS narrows it.
         if cmake -S . -B build_linux_gpu -DCMAKE_BUILD_TYPE=Release \
                  -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON -DBUILD_GPU=ON \
-                 -DCMAKE_CUDA_ARCHITECTURES=89 \
            && cmake --build build_linux_gpu --target hg_evolve_gpu -j"$BUILD_JOBS" \
            && [[ -f "$gpu_out" ]]; then
             echo -e "${GREEN}Linux-x86-64/hg_evolve_gpu: OK${NC}"

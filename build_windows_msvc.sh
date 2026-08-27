@@ -50,7 +50,15 @@ if [[ "$DO_CPU" == "0" && "$DO_GPU" == "0" ]]; then DO_CPU=1; DO_GPU=1; fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
-ARCHS="${HG_GPU_ARCHS:-75;80;86;89;90}"   # CC numbers; broad = runs on many GPUs
+# THE SHIPPING ARCHITECTURE SET IS DEFINED ONCE, IN gpu/CMakeLists.txt (HG_GPU_ARCHS). This
+# script used to carry its own copy of the same literal, which is one rule written twice: the
+# two agree until one is edited, and the failure that produces is a release whose Windows and
+# Linux GPU binaries carry SASS for different cards. Nothing is passed unless the caller asked
+# for something, and then only HG_GPU_ARCHS -- CMAKE_CUDA_ARCHITECTURES is deliberately NOT
+# forwarded, because gpu/CMakeLists.txt derives it from HG_GPU_ARCHS only when the caller has
+# not set it, so setting both here would make the default branch unreachable.
+GPU_ARCH_ARGS=()
+[[ -n "${HG_GPU_ARCHS:-}" ]] && GPU_ARCH_ARGS=(-DHG_GPU_ARCHS="$HG_GPU_ARCHS")
 # One build directory PER MODE. The two configures differ in BUILD_GPU and in whether a CUDA
 # toolset is pinned, and CMake cannot switch a cache between them without a wipe -- sharing one
 # directory would make every alternating call a full native rebuild.
@@ -173,8 +181,7 @@ fi
 
 if [[ "$DO_GPU" == "1" ]]; then
     configure_and_build gpu "$BUILD_WIN_GPU" "$BUILD_WSL_GPU" \
-        -T "cuda=$CUDA_DIR_WIN" -DBUILD_GPU=ON \
-        -DHG_GPU_ARCHS="$ARCHS" -DCMAKE_CUDA_ARCHITECTURES="$ARCHS"
+        -T "cuda=$CUDA_DIR_WIN" -DBUILD_GPU=ON "${GPU_ARCH_ARGS[@]+"${GPU_ARCH_ARGS[@]}"}"
     # The generator only emits the CUDA targets if CMake found the compiler. Without this the
     # build below dies with a confusing MSB1009.
     [[ -f "$BUILD_WSL_GPU/paclet_source/hg_evolve_gpu.vcxproj" ]] || {
