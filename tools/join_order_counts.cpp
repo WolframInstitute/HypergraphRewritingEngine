@@ -23,6 +23,7 @@
 
 #include "hypergraph/index.hpp"
 #include "hypergraph/pattern.hpp"
+#include "hypergraph/rule_analysis.hpp"
 #include "hypergraph/pattern_matcher.hpp"
 #include "hypergraph/types.hpp"
 #include "hgcommon/join_core.hpp"
@@ -202,12 +203,114 @@ const std::vector<RuleSpec>& rule_corpus() {
     return rules;
 }
 
+// DISCONNECTED LEFT-HAND SIDES, which the corpus above deliberately excludes because no
+// connected order exists for them. They are measured differently: not one order against another,
+// but the shipped join against what the SAME join costs when each component is enumerated once
+// and the results composed.
+//
+// The sizes matter and are the point of the set. A component of ONE edge is enumerated by a
+// single scan whose every candidate survives, so the product is the output and there is nothing
+// to hoist; a component of TWO OR MORE edges has a join of its own, and the shipped schedule
+// re-runs that join once per partial match of the components before it.
+const std::vector<RuleSpec>& disc_corpus() {
+    static const std::vector<RuleSpec> rules = {
+        {"1+1",       {{0, 1}, {2, 3}}},
+        {"1+1+1",     {{0, 1}, {2, 3}, {4, 5}}},
+        {"2+1",       {{0, 1}, {1, 2}, {3, 4}}},
+        {"2+2",       {{0, 1}, {1, 2}, {3, 4}, {4, 5}}},
+        {"3+1",       {{0, 1}, {1, 2}, {2, 3}, {4, 5}}},
+        {"tri+1",     {{0, 1}, {1, 2}, {2, 0}, {3, 4}}},
+    };
+    return rules;
+}
+
+// The candidate count of one component, taken by running the REAL join over a rule holding only
+// that component's edges. Its match count comes back too: the product of the per-component match
+// counts is how many times the composition would fire, which is the term no factoring removes.
+struct CompCost {
+    uint64_t candidates = 0;
+    uint64_t matches    = 0;
+};
+
+CompCost component_cost(const RuleSpec& spec, const uint8_t* comp, uint8_t id,
+                        ProbeState& state) {
+    RuleBuilder b(0);
+    bool any = false;
+    for (uint8_t e = 0; e < spec.lhs.size(); ++e)
+        if (comp[e] == id) { b.lhs(spec.lhs[e]); any = true; }
+    if (!any) return {};
+    b.rhs(spec.lhs.front());
+    RewriteRule sub = b.build();          // build() re-runs compute_match_order for the subset
+    const RunResult r = run_order(sub, state);
+    return {r.candidates, r.matches};
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     const uint32_t n_edges    = argc > 1 ? std::stoul(argv[1]) : 400;
     const uint32_t n_vertices = argc > 2 ? std::stoul(argv[2]) : 120;
     const uint32_t n_seeds    = argc > 3 ? std::stoul(argv[3]) : 5;
+
+    if (argc > 4 && std::string(argv[4]) == "disc") {
+        // WHAT FACTORING A DISCONNECTED LEFT-HAND SIDE IS WORTH, in candidates rather than in
+        // seconds. `shipped` is what the join examines today. `factored` is the same join run
+        // once per component and its results composed: the components share no variable, so
+        // their match sets are independent and their product IS the match set, minus the pairs
+        // that would take the same data edge twice.
+        std::printf("disconnected LHS: candidates examined   edges=%u vertices=%u seeds=%u\n",
+                    n_edges, n_vertices, n_seeds);
+        std::printf("%-8s %5s %10s %12s %12s %12s %7s  %s\n", "rule", "comps", "matches",
+                    "shipped", "enum", "enum+prod", "ratio", "per-component matches");
+        for (const RuleSpec& spec : disc_corpus()) {
+            RuleBuilder b(0);
+            for (const auto& e : spec.lhs) b.lhs(e);
+            b.rhs(spec.lhs.front());
+            RewriteRule rule = b.build();
+
+            uint8_t comp[MAX_PATTERN_EDGES];
+            const uint8_t ncomp = lhs_components(rule, comp);
+
+            uint64_t shipped = 0, factored = 0, matches = 0, product = 0;
+            std::vector<uint64_t> per_comp(ncomp, 0);
+            for (uint32_t seed = 0; seed < n_seeds; ++seed) {
+                ProbeState state;
+                make_state(state, n_edges, n_vertices, seed + 1,
+                           /*ternary=*/spec.lhs.front().size() == 3);
+                const RunResult full = run_order(rule, state);
+                shipped += full.candidates;
+                matches += full.matches;
+
+                uint64_t prod = 1;
+                for (uint8_t c = 0; c < ncomp; ++c) {
+                    const CompCost cc = component_cost(spec, comp, c, state);
+                    factored += cc.candidates;
+                    prod *= cc.matches;
+                    if (seed == 0) per_comp[c] = cc.matches;
+                }
+                product += prod;
+            }
+            // THE COMPARISON THAT DECIDES IT IS shipped AGAINST enum+prod, NOT AGAINST enum.
+            // Factoring hoists each component's enumeration out of the loop, and `enum` is what
+            // that costs; but the composition still has to walk the product, because every
+            // element of it is a match the caller is owed. So the factored plan pays
+            // enum + product, and the product is the OUTPUT -- a term no plan can be under.
+            // Reporting `enum` alone would credit factoring with removing the answer.
+            //
+            // The product counts pairs that take the same data edge twice; the join rejects
+            // those, so it is an upper bound on the match set and the gap is the collisions.
+            const uint64_t total = factored + product;
+            std::printf("%-8s %5u %10llu %12llu %12llu %12llu %6.2fx  ",
+                        spec.name, ncomp, (unsigned long long)matches,
+                        (unsigned long long)shipped, (unsigned long long)factored,
+                        (unsigned long long)total,
+                        total ? double(shipped) / double(total) : 0.0);
+            for (uint8_t c = 0; c < ncomp; ++c)
+                std::printf("%s%llu", c ? " x " : "", (unsigned long long)per_comp[c]);
+            std::printf("   product=%llu\n", (unsigned long long)product);
+        }
+        return 0;
+    }
 
     if (argc > 4 && std::string(argv[4]) == "diff") {
         // MINIMISATION MODE. One rule, one small state, every connected order: print the

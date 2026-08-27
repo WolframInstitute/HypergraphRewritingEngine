@@ -86,8 +86,17 @@ inline std::vector<std::vector<uint32_t>> make_lhs(Shape s, uint32_t n, uint32_t
             }
             break;
         case Shape::Disconnected:
-            // Two components with disjoint variables: the matcher cannot join them and must take
-            // a product. Kept small deliberately -- this is quadratic per extra component.
+            // n SINGLETON components: `i * ar` already gives every edge its own variables, so
+            // disc-lNaK is N components of one edge each and the bases below only space the
+            // numbering. The matcher cannot join them and must take a product, which is
+            // quadratic per extra component -- kept small deliberately.
+            //
+            // A component of ONE edge is enumerated by a single scan whose candidates all
+            // survive, so the product IS the match set and the shipped join is already within
+            // 0.25% of it (tools/join_order_counts.cpp, `disc` mode). The shape with slack is a
+            // component of two or more edges, whose internal join can fail; that shape is
+            // measured there rather than generated here, because putting it in this corpus
+            // would move every disc-* row in the paper to buy a 1.29x on candidates.
             for (uint32_t i = 0; i < n; ++i) {
                 std::vector<uint32_t> t;
                 const uint32_t base = (i < (n + 1) / 2) ? 0u : 100u;

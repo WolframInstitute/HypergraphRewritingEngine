@@ -8,24 +8,34 @@
 namespace HG_NAMESPACE {
 namespace engine {
 
-bool lhs_is_connected(const RewriteRule& r) {
+uint8_t lhs_components(const RewriteRule& r, uint8_t* out) {
     const uint8_t n = r.num_lhs_edges;
-    if (n <= 1) return true;
-    bool seen[MAX_PATTERN_EDGES] = {false};
+    for (uint8_t i = 0; i < n; ++i) out[i] = 0xFFu;
+
     uint8_t stack[MAX_PATTERN_EDGES];
-    uint8_t top = 0, count = 1;
-    seen[0] = true;
-    stack[top++] = 0;
-    while (top) {
-        const uint8_t e = stack[--top];
-        for (uint8_t o = 0; o < n; ++o) {
-            if (seen[o] || !r.lhs_edges_connected(e, o)) continue;
-            seen[o] = true;
-            ++count;
-            stack[top++] = o;
+    uint8_t ncomp = 0;
+    for (uint8_t seed = 0; seed < n; ++seed) {
+        if (out[seed] != 0xFFu) continue;          // already in a component
+        const uint8_t id = ncomp++;
+        uint8_t top = 0;
+        out[seed] = id;
+        stack[top++] = seed;
+        while (top) {
+            const uint8_t e = stack[--top];
+            for (uint8_t o = 0; o < n; ++o) {
+                if (out[o] != 0xFFu || !r.lhs_edges_connected(e, o)) continue;
+                out[o] = id;
+                stack[top++] = o;
+            }
         }
     }
-    return count == n;
+    return ncomp;
+}
+
+bool lhs_is_connected(const RewriteRule& r) {
+    if (r.num_lhs_edges <= 1) return true;
+    uint8_t comp[MAX_PATTERN_EDGES];
+    return lhs_components(r, comp) == 1;
 }
 
 bool lhs_is_acyclic(const RewriteRule& r) {

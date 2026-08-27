@@ -56,6 +56,13 @@ struct RuleFacts {
 // the state size per additional component. The rule set decides that, so it is worth saying so
 // once rather than discovering it as a run that does not come back.
 //
+// THE PARTITION ITSELF, which is what both callers of the reachability actually want.
+// `out` takes one component id per LHS edge, in pattern-edge order, numbered from 0 in order of
+// first appearance; it must have room for MAX_PATTERN_EDGES. Returns the number of components,
+// so lhs_is_connected below is that count being 1 and there is no second walk of the predicate.
+// Body in src/rule_analysis.cpp: run once per rule, never per state.
+uint8_t lhs_components(const RewriteRule& r, uint8_t* out);
+
 // Reachability over the pairwise predicate the rule already carries, from edge 0.
 // Body in src/rule_analysis.cpp: run once per rule, never per state.
 bool lhs_is_connected(const RewriteRule& r);
