@@ -87,6 +87,35 @@ Measured on the same six: 6.9 / 9.5 / 12.3 / 15.2 / 36.2 ms against 69-101 ms. C
 The GPU is 1.75x the 16-worker CPU and 22x one worker. The residual GPU floor is about 7 ms of
 launch and synchronization, which is why the CPU wins below roughly 10 ms of work.
 
+## Monotonicity: every violation is cross-L3 placement, not the engine
+
+Of 97 generated workloads swept at 1/2/4/8/16/32 workers on the EPYC 9174F, 17 are not monotonic.
+Eight of those dip only between 16 and 32 workers, which is simultaneous multithreading on a
+16-core part and is the flat-line case rather than a regression. Four are BELOW ONE at two
+workers, which is the case that matters.
+
+All four are small, and all four disappear on a machine whose cores share one last-level cache:
+
+| workload | EPYC 9174F, 8 L3 instances of 2 cores | i9-14900K, unified L3 |
+|---|---|---|
+| `path-l1a2g1r1` | 0.91 | 1.78 |
+| `path-l1a2g1r2` | 0.96 | 1.67 |
+| `path-l2a2g1r2` | 0.97 | 1.66 |
+| `star-l1a2g1r1` | 0.73 | 1.43 |
+
+The mechanism is already measured in this repository: two workers sharing one L3 instance cost
+nothing, two on different instances cost 2.7x. Worker threads are NOT pinned by default --
+`job_system.hpp` says why, that a binding-derived grouping describes where a thread was rather
+than where it is -- so which L3 instances two workers land on is the operating system's choice,
+and on a part with eight two-core instances the likely choice is two different ones.
+
+THE FIX IS PLACEMENT AND IT IS NOT FREE. Packing workers into cache domains in order, rather than
+leaving them to the scheduler, makes two workers share an instance and removes these four. The
+cost is that the engine would then claim specific cores by default: impolite on a shared machine,
+and two engine instances would pin to the same cores and contend. That trade is recorded rather
+than taken, and the workloads it affects are the smallest in the corpus -- 527 to 3,344 raw
+states, where two workers have almost nothing to divide.
+
 ## Compiler-level levers, all three measured
 
 The shipping build is `-O3 -DNDEBUG` with no architecture flag. Three levers were untested; each
