@@ -2177,23 +2177,15 @@ returning to the host between evolution steps
 
 \subsection{Future Directions}
 
-Four directions remain open. The first two are performance, and both are named by a
-measurement in this paper rather than by expectation; the last two are scope.
+Four directions remain open. The first is performance and is named by a measurement in this
+paper rather than by expectation; the other three are scope.
 
-\textbf{Incremental canonicalization:} Matching is already incremental---a child inherits its
-parent's surviving matches by forwarding and scans only for matches anchored on a produced edge
-(Sections~\ref{sec:pattern-matching} and~\ref{sec:delta})---while canonicalization is not: the
-individualization--refinement pass runs on each state from its complete edge set, though a child
-differs from its parent by only the consumed and produced edges. Warm-starting that pass from the
-parent's partition is the remaining incremental step, and Table~\ref{tab:t15-instructions} puts
-$16.7\%$ of executed instructions in its reach---second only to matching, and the largest share
-that a purely incremental change could still address.
-
-\textbf{Instance-parallel replay:} The reconstruction descends each instance subtree inline on the
-thread that discovered it, so the width it exploits is the class count rather than the instance
-count. The two differ by three orders of magnitude on the shapes where the device loses. The
-publication and claim machinery that would make a queue push equivalent to the recursive call is
-already present.
+\textbf{Instance-parallel replay:} The reconstruction drives each instance from a worklist rather
+than by recursion, but the worklist is private to one driver, so the width it exploits is the
+class count rather than the instance count. On the class-collapsed workloads the two differ by
+four orders of magnitude: \texttt{pair} on a 24-edge path expands 373{,}176 states that fall into
+5 canonical classes. Making the worklist visible across drivers is what would spend the instance
+count instead, and the publication and claim machinery a shared push requires is already present.
 
 \textbf{Distributed computation:} The current design targets single-node execution. Extending to distributed memory systems would enable exploration of larger state spaces than one machine's memory admits.
 
