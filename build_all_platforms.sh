@@ -109,6 +109,40 @@ if selected "Linux-x86-64"; then
     fi
 fi
 
+# ---- Linux x86-64 CUDA engine ----
+# The GPU engine is a SEPARATE binary from the CPU one and is built from its own directory, so
+# the CPU leg above stays a pure host build. It is the same deliverable the Windows leg below
+# produces -- the paclet's TargetDevice -> "GPU" runs whichever hg_evolve_gpu it finds for the
+# running platform -- and it is required on a release for the same reason: SKIPPING does not
+# remove a previous binary from the platform directory, so on a release the difference between
+# skipping and failing is the difference between shipping a stale binary and knowing you cannot.
+if selected "Linux-x86-64"; then
+    if [[ "$HOST_OS" == "Linux" ]] && have nvcc; then
+        echo -e "\n${GREEN}=== Linux-x86-64/hg_evolve_gpu ===${NC}"
+        gpu_out="$LR/Linux-x86-64/hg_evolve_gpu"
+        rm -f "$gpu_out"          # so a failed build cannot pass on the previous file
+        (( CLEAN )) && rm -rf build_linux_gpu
+        if cmake -S . -B build_linux_gpu -DCMAKE_BUILD_TYPE=Release \
+                 -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON -DBUILD_GPU=ON \
+                 -DCMAKE_CUDA_ARCHITECTURES=89 \
+           && cmake --build build_linux_gpu --target hg_evolve_gpu -j"$BUILD_JOBS" \
+           && [[ -f "$gpu_out" ]]; then
+            echo -e "${GREEN}Linux-x86-64/hg_evolve_gpu: OK${NC}"
+            BUILT+=("Linux-x86-64/hg_evolve_gpu")
+        elif [[ "${HG_REQUIRE_GPU:-0}" == "1" ]]; then
+            echo -e "${RED}Linux-x86-64/hg_evolve_gpu: build failed and HG_REQUIRE_GPU=1${NC}"
+            FAILED+=("Linux-x86-64/hg_evolve_gpu")
+        else
+            skip "Linux-x86-64/hg_evolve_gpu" "optional GPU build did not complete; shipping CPU-only Linux"
+        fi
+    elif [[ "${HG_REQUIRE_GPU:-0}" == "1" ]]; then
+        echo -e "${RED}Linux-x86-64/hg_evolve_gpu: nvcc not found and HG_REQUIRE_GPU=1${NC}"
+        FAILED+=("Linux-x86-64/hg_evolve_gpu (toolchain absent)")
+    else
+        skip "Linux-x86-64/hg_evolve_gpu" "nvcc not found (CUDA Toolkit)"
+    fi
+fi
+
 # ---- Linux ARM64 ----
 if selected "Linux-ARM64"; then
     if have aarch64-linux-gnu-gcc; then
@@ -217,13 +251,18 @@ macos_native() {  # native slices on a macOS host
 macos_cross() {   # OSXCross from a non-macOS host
     export OSXCROSS_ROOT PATH="$OSXCROSS_ROOT/target/bin:$PATH"
     # THE DEPLOYMENT TARGET IS PASSED EVERY TIME, not left to the toolchain's default. The
-    # toolchain sets 11.0 only `if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)`, so a build directory
-    # configured once at 10.15 keeps 10.15 forever -- and at 10.15 the engine does not compile:
-    # os_sync_wait_on_address needs SDK 14.4+ and std::atomic::wait needs a macOS 11 runtime, so
-    # BOTH of park.hpp's primitives are unavailable and neither the error nor the cache says why.
-    # A release run that silently builds against a floor nobody chose is the hazard; passing it
-    # on the command line makes the toolchain's answer win on every configure.
-    local osx_min="${HG_MACOS_DEPLOYMENT_TARGET:-11.0}"
+    # toolchain sets it only `if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)`, so a build directory
+    # configured once at some other floor keeps that floor forever. A release run that silently
+    # builds against a floor nobody chose is the hazard; passing it on the command line makes
+    # the toolchain's answer win on every configure.
+    #
+    # 14.4 IS THE FLOOR BECAUSE park.hpp SELECTS ON THE HEADER, NOT ON THE TARGET. With a 14.4
+    # SDK installed, `__has_include(<os/os_sync_wait_on_address.h>)` succeeds and HG_PARK_OS_SYNC
+    # is chosen -- so the objects call os_sync_wait_on_address, which does not exist before macOS
+    # 14.4. A lower floor here does not widen support; it produces a dylib whose load command
+    # advertises a system the code cannot run on. The engine takes no mutex fallback, so the
+    # choice is 14.4 or no macOS build, and this is the former stated once.
+    local osx_min="${HG_MACOS_DEPLOYMENT_TARGET:-14.4}"
     selected "MacOSX-x86-64" && build_target "MacOSX-x86-64" build_macos \
         "$LR/MacOSX-x86-64/libHypergraphRewriting.dylib" \
         -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/macos-cross.cmake -DCMAKE_SYSTEM_PROCESSOR=x86_64 \
