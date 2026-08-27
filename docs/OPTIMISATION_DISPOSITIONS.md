@@ -87,6 +87,58 @@ Measured on the same six: 6.9 / 9.5 / 12.3 / 15.2 / 36.2 ms against 69-101 ms. C
 The GPU is 1.75x the 16-worker CPU and 22x one worker. The residual GPU floor is about 7 ms of
 launch and synchronization, which is why the CPU wins below roughly 10 ms of work.
 
+## The parallel overhead is not work
+
+Callgrind, `path-l2a2g1r1` at depth five, total instructions with `--separate-threads=no`:
+
+| workers | instructions |
+|---|---|
+| 1 | 196,868,220 |
+| 8 | 197,289,633 |
+
+Eight times the workers costs 0.21% more instructions. There is no spinning, no retry storm and
+no duplicated computation to remove: whatever parallel efficiency is lost is lost to STALLS --
+memory and coherence -- and not to work the engine could stop doing. A single-worker profile
+cannot see that distinction, which is why it is measured here rather than assumed either way.
+
+## The device spends its time where the host does
+
+`HG_GPU_DBG_TIME=1`, `disc-l2amg2r2` at depth four, persistent evolver, cycles by phase:
+
+| phase | share |
+|---|---|
+| canonicalization | 79.0% |
+| idle | 20.3% |
+| rewrite | 0.6% |
+| match | 0.0% |
+| wait | 0.0% |
+
+BOTH ENGINES ARE CANONICALIZATION-BOUND, and by the same margin -- 79% of device cycles against
+58% to 92% of host instructions depending on the state's symmetry. Matching is free on the device
+and the rewrite is 0.6%, so the internal split of the rewrite (branchial 53%, emit 25%) is three
+tenths of one percent of the run and is not a target.
+
+`nsys` cannot see this: the persistent evolver is one kernel holding 99.9% of kernel time across
+13 launches, so kernel-granularity profiling reports the kernel and stops. The in-engine phase
+counters are the instrument that resolves it.
+
+OPEN, AND NAMED RATHER THAN LEFT IMPLICIT. The device idles 20.3% of its cycles, which is load
+imbalance in the persistent kernel rather than canonicalization, and it is the one GPU-specific
+figure that is neither closed nor refuted here.
+
+## What individualization-refinement would take
+
+Every cheap lever above is refuted with its measurement. The remaining one is the trick a
+branch-and-bound canonical labelling uses: compare a node's PARTIAL certificate against the best
+complete one and abandon the branch as soon as it cannot win.
+
+It does not fit this certificate. `ir_build_form` sorts every edge by its relabeled tuple, so the
+form exists only once the partition is discrete -- at a leaf. Pruning during descent needs an
+incremental node invariant that is comparable prefix-wise, which is a redesign of the certificate
+in `ir_core.hpp`, and that file is `HG_HD`: it is the same code on both engines, so the change
+lands on the host and the device together and the determinism contract has to be re-established
+for both.
+
 ## Determinism, and what it cost to find
 
 Not an optimisation, recorded because it shaped every measurement above: the rule submission order
