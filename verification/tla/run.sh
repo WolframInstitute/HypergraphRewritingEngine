@@ -57,6 +57,7 @@ module_for() {
     case "$1" in
         MCMatchForwarding*) echo "MCMatchForwarding.tla" ;;
         MCSegmentedArray*)  echo "SegmentedArray.tla" ;;
+        MCDepthRelaxation*) echo "DepthRelaxation.tla" ;;
         *) return 1 ;;
     esac
 }

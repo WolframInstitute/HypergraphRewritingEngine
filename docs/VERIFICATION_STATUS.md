@@ -31,6 +31,8 @@ TLA+, 7 configurations, all matching their declared verdict:
 | `MCMatchForwardingEagerFix` | PASS | 479,005 |
 | `MCMatchForwardingEagerBroken` | VIOLATION as declared | 305,493 |
 | `MCMatchForwardingBatchedBroken` | PASS as declared | 85,777 |
+| `MCDepthRelaxation` | PASS | 14 |
+| `MCDepthRelaxationBroken` | VIOLATION as declared | 12 |
 
 The `Broken` configurations are what make the rest evidence: a model that cannot report a
 violation has not been shown to be able to detect one.
@@ -43,8 +45,18 @@ distributed termination problem and nothing models it. A false positive ends a r
 returns a smaller multiway system with no indication it is smaller -- the same failure the
 container ceiling used to produce, and harder to see, because there is no warning attached to it.
 
-**The depth-relaxation cascade.** `try_lower_explore_depth`, `propagate_explore_depth`,
-`claim_canonical_for_expansion` and the budget frontier together are a shortest-path relaxation
-racing a claim-that-happens-once. GenMC covers one edge of it, `depth_relax_child_registration`.
-The cascade as a whole is not covered, and it is what decides WHICH STATES EXIST when the step
-budget is below the closure depth -- a region where a nondeterminism defect has lived before.
+~~**The depth-relaxation cascade.**~~ COVERED by `DepthRelaxation.tla`. The property is that at
+quiescence the claimed set is exactly the nodes whose SHORTEST-PATH depth is below the budget, so
+a truncated run returns the same subset every time rather than one decided by the order paths were
+found. `MCDepthRelaxationBroken` derives a child's depth from the depth its parent carried WHEN
+CLAIMED instead of from its live minimum, which freezes an early long path into every descendant,
+and TLC reports the violation -- so the model is a gate rather than decoration.
+
+The graph is five nodes and the state counts are 14 and 12, which is small. It is sized to the
+shape that makes relaxation matter -- a node reachable both directly and through a longer path,
+with a descendant whose place under the budget depends on that lowering arriving -- rather than
+to breadth.
+
+`MCMatchForwardingBatchedBroken` is named for the code it models, not for its verdict: the
+ownership defect IS present there and the batched gate masks it, which is why the eager variant
+is the one that reports a violation.
