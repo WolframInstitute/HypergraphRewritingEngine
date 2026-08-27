@@ -1543,6 +1543,17 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
             "it takes a cartesian product over the state's edges -- quadratic in the state size "
             "per extra component. Joining the components with a shared variable removes it.");
     }
+    // A RUN THAT IS NOT REPRODUCIBLE SAYS SO. Dropping work makes rule order observable, and the
+    // order is then drawn from std::random_device unless a seed was set, so two invocations of
+    // the same call return different answers. That is what an unseeded sampled run is for, and it
+    // is indistinguishable from a defect unless the run states it.
+    if (drops_work() && random_seed_ == 0) {
+        warnings_.push_back(
+            "this run discards work (a sampling probability, a transition rate, or a cap) and no "
+            "random seed was set, so the rule order is drawn afresh each run and the states, "
+            "events and relations returned WILL DIFFER between invocations of the same call. Set "
+            "a random seed to make the sample reproducible.");
+    }
     if (facts.has_cyclic_multiedge_lhs) {
         warnings_.push_back(
             "a rule's left-hand side is cyclic over three or more edges. The matcher runs a "
@@ -1618,6 +1629,12 @@ bool ParallelEvolutionEngine::should_explore() {
     return dist(rng) < exploration_probability_;
 }
 
+bool ParallelEvolutionEngine::drops_work() const {
+    return exploration_probability_ < 1.0 || transition_rate_ < 1.0 ||
+           max_states_ != 0 || max_events_ != 0 ||
+           max_states_per_step_ != 0 || max_successor_states_per_parent_ != 0;
+}
+
 SVec<uint16_t> ParallelEvolutionEngine::get_shuffled_rule_indices() const {
     SVec<uint16_t> indices(rules_.size());
     std::iota(indices.begin(), indices.end(), 0);
@@ -1632,11 +1649,7 @@ SVec<uint16_t> ParallelEvolutionEngine::get_shuffled_rule_indices() const {
     // when random_seed_ is 0, which is the default, so an unguarded shuffle makes every
     // invocation of an unsampled run a different run. That is intended for a sampled run and is
     // a defect for an unsampled one, which is every run the determinism contract covers.
-    const bool drops_work =
-        exploration_probability_ < 1.0 || transition_rate_ < 1.0 ||
-        max_states_ != 0 || max_events_ != 0 ||
-        max_states_per_step_ != 0 || max_successor_states_per_parent_ != 0;
-    if (!drops_work) return indices;
+    if (!drops_work()) return indices;
 
     std::shuffle(indices.begin(), indices.end(),
                  sampling_rng(sampling_generation_.load(std::memory_order_relaxed),

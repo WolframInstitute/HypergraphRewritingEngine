@@ -1377,6 +1377,12 @@ private:
 
     // Bias mitigation: returns rule indices in shuffled order
     SVec<uint16_t> get_shuffled_rule_indices() const;
+
+    // Whether this run DISCARDS work it could have done -- a probability, a rate, or any of the
+    // four caps. It is the condition under which rule order becomes observable, because which
+    // rule is offered first then decides which survivors are kept, and it is therefore the
+    // condition under which the order is shuffled and the run stops being reproducible.
+    bool drops_work() const;
 };
 
 }  // namespace engine
