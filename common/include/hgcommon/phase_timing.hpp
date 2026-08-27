@@ -38,12 +38,25 @@
 namespace HG_NAMESPACE {
 namespace common {
 
+// THE BUCKETS COVER GUARDED REGIONS, NOT A WORKER'S WHOLE LIFE. A phase is entered by a
+// PhaseTimer on the stack, so time outside every guard -- looking for work, stealing, parking,
+// the wake that follows -- falls in NO bucket, and the fractions reported below are of the
+// guarded total rather than of the run.
+//
+// EVERY MEMBER HERE IS ENTERED SOMEWHERE. A phase nothing enters reports a structural zero that
+// reads as the measurement "no time was spent here", which is a stronger claim than this
+// instrument can make; on a workload with fewer states than workers it is also the opposite of
+// the truth. Adding a member without a PhaseTimer that enters it makes the report lie.
+//
+// Idle is entered by the job system's worker loop, around the failed search and the park it
+// leads to. It is the bucket that says whether adding workers bought work or bought waiting,
+// and without it the other four are fractions of a total that silently excludes the answer.
 enum class Phase : uint32_t {
     Match = 0,      // candidate enumeration and the join, including delta matching
     Rewrite,        // applying a match: consuming edges, producing edges, minting the event
     Canon,          // canonicalization and the state identity it decides
     Quotient,       // quotient registration and the reconstruction's bookkeeping
-    Idle,           // a worker with no work: stealing attempts and the park
+    Idle,           // a worker with no job: the search that failed, the park, and the wake
     Count
 };
 

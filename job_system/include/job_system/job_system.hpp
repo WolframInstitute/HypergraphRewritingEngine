@@ -7,6 +7,7 @@
 #include <hgcommon/park.hpp>
 #include <hgcommon/affinity.hpp>
 #include <hgcommon/core.hpp>  // splitmix64 -- the steal victim draw
+#include <hgcommon/phase_timing.hpp>  // the idle bucket, entered below
 #include <hgcommon/capacity.hpp>  // the one error kind that is not a defect
 #include <thread>
 #include <vector>
@@ -388,6 +389,13 @@ private:
             }
             if (error_type_.load(std::memory_order_acquire) != ErrorType::None) break;
             if (data->stop.load(std::memory_order_acquire)) break;  // shutdown, drained
+
+            // FROM HERE TO THE TOP OF THE LOOP THIS WORKER HAS NO JOB. The announcement, the
+            // last exhaustive look and the park all belong to one bucket, because the question
+            // the instrument exists to answer is whether adding a worker bought work or bought
+            // waiting -- and a report whose buckets cover only the guarded work says nothing
+            // about the workers that found none.
+            hgcommon::PhaseTimer _idle(hgcommon::Phase::Idle);
 
             // Sample the counter BEFORE the last look for work. Anything submitted after this
             // point moves the counter, so the wait below returns immediately rather than
