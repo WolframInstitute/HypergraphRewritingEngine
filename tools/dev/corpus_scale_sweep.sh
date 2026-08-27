@@ -20,21 +20,31 @@ PER_RUN_TIMEOUT=${PER_RUN_TIMEOUT:-900}
 printf '%-22s %-6s %s\n' workload depth "speedup per thread count ($THREADS)"
 while read -r w d; do
     [ -z "${w:-}" ] && continue
-    out=$(timeout "$PER_RUN_TIMEOUT" "$BIN" "$d" "$ITERS" "$THREADS" "$w" 2>/dev/null)
-    rc=$?
-    if [ $rc -ne 0 ]; then
-        # Never dropped silently: a workload that does not complete is a row that says so, so the
-        # summary cannot read as coverage it does not have.
-        printf '%-22s %-6s TIMEOUT_OR_FAIL rc=%d\n' "$w" "$d" "$rc"
-        continue
-    fi
     # A TRUNCATED RUN IS NOT A MEASUREMENT. Past a container ceiling the engine returns valid
     # partial work with a warning, and WHICH states got in is decided by the arrival race -- so
     # the counts, and any ratio taken from them, vary between runs and between thread counts for
-    # a reason that has nothing to do with the engine's concurrency. Such a row is marked, never
-    # averaged in.
+    # a reason that has nothing to do with the engine's concurrency.
+    #
+    # The depth plan estimates work from a growth rate and cannot predict the ceiling, which the
+    # match storage reaches at a state count that depends on the shape. So the sweep BACKS OFF:
+    # a truncated depth is retried one shallower, down to one, and the depth it settled on is
+    # printed in the row. A workload that truncates even at depth one is reported as such, never
+    # dropped, so the summary cannot read as coverage it does not have.
+    out=""
+    rc=0
+    while [ "$d" -ge 1 ]; do
+        out=$(timeout "$PER_RUN_TIMEOUT" "$BIN" "$d" "$ITERS" "$THREADS" "$w" 2>/dev/null)
+        rc=$?
+        [ $rc -ne 0 ] && break
+        printf '%s\n' "$out" | grep -q 'capacity limit reached' || break
+        d=$((d - 1))
+    done
+    if [ $rc -ne 0 ]; then
+        printf '%-22s %-6s TIMEOUT_OR_FAIL rc=%d\n' "$w" "$d" "$rc"
+        continue
+    fi
     if printf '%s\n' "$out" | grep -q 'capacity limit reached'; then
-        printf '%-22s %-6s %s\n' "$w" "$d" "TRUNCATED (capacity ceiling; depth too deep)"
+        printf '%-22s %-6s %s\n' "$w" "$d" "TRUNCATED even at depth 1 (capacity ceiling)"
         continue
     fi
     sp=$(printf '%s\n' "$out" | grep -oE 'speedup=[0-9.]+' | cut -d= -f2 | tr '\n' ' ')
