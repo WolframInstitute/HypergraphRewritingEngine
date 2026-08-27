@@ -141,8 +141,18 @@ function(create_test_executable TARGET_NAME)
         add_dependencies(${TARGET_NAME} paclet)
     endif()
 
-    include(GoogleTest)
-    gtest_discover_tests(${TARGET_NAME})
+    # ONLY all_tests IS A CTEST CITIZEN. gtest_discover_tests registers a `<target>_NOT_BUILT`
+    # FAILING test for a binary that does not exist, and it does not build it -- so registering
+    # the subset targets made ctest report five permanent failures on every CI run, because CI
+    # builds all_tests and deliberately not the subsets. They are strict subsets of all_tests:
+    # discovering them would also run every one of their cases a second time.
+    #
+    # The subsets exist for a developer who wants one slice, and the run_<name> custom targets
+    # below are how that is done. Nothing is lost from the gate by leaving them out of it.
+    if(TARGET_NAME STREQUAL "all_tests")
+        include(GoogleTest)
+        gtest_discover_tests(${TARGET_NAME})
+    endif()
 endfunction()
 
 # =============================================================================

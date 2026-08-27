@@ -311,13 +311,15 @@ jobs:
 
       # The set the document actually names, checked against its preamble: pgfplots, tikz and
       # placeins from latex-extra; algorithm/algpseudocode, microtype and listings from the same;
-      # natbib, booktabs, geometry and amsthm from latex-recommended; lmodern from fonts.
+      # natbib, booktabs, geometry and amsthm from latex-recommended. lmodern is named EXPLICITLY:
+      # texlive-fonts-recommended no longer pulls it on the current runner image, and the paper
+      # job failed on every run with "File `lmodern.sty' not found" until it was listed here.
       - name: Install TeX
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             texlive-latex-base texlive-latex-recommended texlive-latex-extra \
-            texlive-fonts-recommended texlive-pictures texlive-science
+            texlive-fonts-recommended texlive-pictures texlive-science lmodern
 
       # Not `make`: a target that decides there is nothing to do would pass this job without
       # compiling anything, which is the defect above rather than a check for it.
