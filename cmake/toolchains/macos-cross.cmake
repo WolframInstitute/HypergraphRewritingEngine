@@ -5,7 +5,7 @@
 # Usage:
 #   cmake -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/macos-cross.cmake \
 #         -DCMAKE_SYSTEM_PROCESSOR=x86_64|arm64 \
-#         -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
+#         -DCMAKE_OSX_DEPLOYMENT_TARGET=14.4 \
 #         ..
 #
 # Environment variables:
@@ -38,7 +38,7 @@ endif()
 # to a mutex and a condition variable -- which this engine does not permit anywhere. Lowering
 # this reintroduces that lock rather than merely widening support.
 if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
-    set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "14.4" CACHE STRING "Minimum macOS version")
 endif()
 
 # Helper function to find macOS compiler
@@ -64,7 +64,26 @@ function(find_macos_compiler)
     file(GLOB OSXCROSS_TARGETS "${OSXCROSS_ROOT}/target/bin/${CMAKE_SYSTEM_PROCESSOR}-apple-darwin*-clang")
 
     if(OSXCROSS_TARGETS)
-        list(GET OSXCROSS_TARGETS 0 OSXCROSS_CLANG)
+        # THE NEWEST WRAPPER, NOT THE FIRST. Each osxcross wrapper is built against one SDK and
+        # REFUSES a deployment target above it -- "targeted macOS version must be <= 12.3.0
+        # (SDK)" -- so with darwin21.4 and darwin23.4 both installed, taking element 0 picks the
+        # 12.3-era wrapper and the 14.4 target it is handed cannot be honoured. The failure names
+        # the version cap and not the wrapper, so the cause is a directory listing away.
+        set(_hg_best_cc "")
+        set(_hg_best_dv "0")
+        foreach(_hg_cc IN LISTS OSXCROSS_TARGETS)
+            if(_hg_cc MATCHES "-apple-darwin([0-9]+(\\.[0-9]+)*)-clang$")
+                if(CMAKE_MATCH_1 VERSION_GREATER _hg_best_dv)
+                    set(_hg_best_dv "${CMAKE_MATCH_1}")
+                    set(_hg_best_cc "${_hg_cc}")
+                endif()
+            endif()
+        endforeach()
+        if(NOT _hg_best_cc)
+            list(GET OSXCROSS_TARGETS 0 _hg_best_cc)
+        endif()
+        set(OSXCROSS_CLANG "${_hg_best_cc}")
+        message(STATUS "Using OSXCross wrapper: ${OSXCROSS_CLANG}")
         string(REGEX REPLACE "-clang$" "" OSXCROSS_PREFIX "${OSXCROSS_CLANG}")
 
         set(FOUND_CC "${OSXCROSS_PREFIX}-clang" PARENT_SCOPE)
@@ -126,8 +145,39 @@ if(COMPILER_TYPE STREQUAL "osxcross")
     string(REGEX REPLACE "target/bin/[^/]*$" "target/SDK/" OSXCROSS_SDK_DIR "${OSXCROSS_PREFIX}")
     file(GLOB OSXCROSS_SDKS "${OSXCROSS_SDK_DIR}MacOSX*.sdk")
     if(OSXCROSS_SDKS)
-        list(GET OSXCROSS_SDKS 0 CMAKE_OSX_SYSROOT)
-        message(STATUS "Using OSXCross SDK: ${CMAKE_OSX_SYSROOT}")
+        # THE NEWEST SDK, NOT THE FIRST ONE THE GLOB RETURNS. The glob comes back in
+        # lexicographic order, which puts MacOSX12.3.sdk ahead of MacOSX14.4.sdk, so taking
+        # element 0 selects the OLDEST installed SDK. That choice is invisible at configure time
+        # and surfaces much later as park.hpp's #error, which names a missing wait primitive --
+        # a true statement about the 12.3 sysroot and a wrong diagnosis of the build, because
+        # the 14.4 sysroot sitting beside it has the primitive.
+        set(_hg_best_sdk "")
+        set(_hg_best_ver "0")
+        foreach(_hg_sdk IN LISTS OSXCROSS_SDKS)
+            if(_hg_sdk MATCHES "MacOSX([0-9]+(\\.[0-9]+)*)\\.sdk$")
+                if(CMAKE_MATCH_1 VERSION_GREATER _hg_best_ver)
+                    set(_hg_best_ver "${CMAKE_MATCH_1}")
+                    set(_hg_best_sdk "${_hg_sdk}")
+                endif()
+            endif()
+        endforeach()
+        if(_hg_best_sdk)
+            set(CMAKE_OSX_SYSROOT "${_hg_best_sdk}")
+            message(STATUS "Using OSXCross SDK: ${CMAKE_OSX_SYSROOT} (newest of ${OSXCROSS_SDKS})")
+        else()
+            list(GET OSXCROSS_SDKS 0 CMAKE_OSX_SYSROOT)
+            message(STATUS "Using OSXCross SDK: ${CMAKE_OSX_SYSROOT} (no parseable version)")
+        endif()
+        # FAIL AT CONFIGURE, WHERE THE CAUSE IS READABLE. Without this the build gets all the way
+        # to compiling park.cpp before stopping, and the message it stops with describes the
+        # platform rather than the missing SDK.
+        if(_hg_best_ver VERSION_LESS CMAKE_OSX_DEPLOYMENT_TARGET)
+            message(FATAL_ERROR
+                "newest OSXCross SDK is ${_hg_best_ver}, but the deployment target is "
+                "${CMAKE_OSX_DEPLOYMENT_TARGET}. os_sync_wait_on_address arrived in the 14.4 SDK "
+                "and hgcommon/park.hpp takes no mutex fallback, so a lower SDK cannot build this "
+                "engine. Install a 14.4-or-newer SDK into ${OSXCROSS_SDK_DIR}.")
+        endif()
     endif()
 
     set(CMAKE_FIND_ROOT_PATH "${OSXCROSS_SDK_DIR}")
