@@ -14,6 +14,16 @@ User-visible semantic changes since v0.0.1-alpha.6, carried here so the release 
   settled key while a table growth carried it, dropping one causal edge from a full-capture run
   (seen once on a 4-core ARM64 CI machine at 16 threads). Model-checked exhaustively after the
   fix.
+- Fixed a device-only defect in quotient reconstruction: a canonical class published its frame
+  owner and its step as two separate map insertions, so a thread that lost the first read the
+  second before it existed and signed its events with its own depth instead of the class's,
+  making the two signature sets disjoint. Both halves now publish in one exchange. This affected
+  `TargetDevice -> "GPU"` runs with quotient exploration under contention.
+- Device capacity-overflow warnings: the `count` field now reports THAT a kind of overflow
+  occurred, not how many times. It never was a count of missing capacity -- it counted inner-loop
+  iterations -- and recording each one serialised the whole device on a single counter precisely
+  when a run was already degraded. The retry path doubles the configuration field the KIND names
+  and never read the number.
 
 ---
 
