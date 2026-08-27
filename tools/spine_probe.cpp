@@ -60,7 +60,7 @@ Out run(double q, int threads, int steps) {
     }
     o.fp = 1469598103934665603ULL;
     for (uint64_t h : hashes) o.fp = fnv(o.fp, h);
-    o.spine = e.stats().spine_forced.load();
+    o.spine = e.stats().total().spine_forced;
     o.taken = e.draws_taken();
     o.survived = e.draws_survived();
     o.drained = e.states_drained();

@@ -365,8 +365,8 @@ int main(int argc, char** argv) {
                 cg.num_branchial_edges(), cg.num_branchial_pairs_claimed(),
                 max_width, depth_reached, truncated ? 1 : 0,
                 hg.arena().bytes_allocated(), arena_block_bytes_live(),
-                e.stats().new_matches_discovered.load(), e.stats().matches_forwarded.load(),
-                e.stats().matches_invalidated.load(), e.stats().forwarding_rewalks.load(),
+                e.stats().total().new_matches_discovered, e.stats().total().matches_forwarded,
+                e.stats().total().matches_invalidated, e.stats().total().forwarding_rewalks,
                 discarded_table_bytes(), discarded_table_count(),
                 installed_table_bytes(), installed_table_count());
     return 0;

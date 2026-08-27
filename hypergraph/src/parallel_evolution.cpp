@@ -502,7 +502,7 @@ void ParallelEvolutionEngine::push_match_to_children(
     push_match_to_children_impl(parent, match, step, site);
     uintptr_t after = child_epoch(parent);
     while (after != before) {
-        stats_.forwarding_rewalks.fetch_add(1, std::memory_order_relaxed);
+        stats_.mine().forwarding_rewalks.bump(1);
         before = after;
         push_match_to_children_impl(parent, match, step, site);
         after = child_epoch(parent);
@@ -517,15 +517,16 @@ void ParallelEvolutionEngine::push_match_to_children_impl(
 ) {
     // Counted before the early return, so the denominator is every call and not only the ones
     // that found work. The question this answers is how often the call has anything to do.
-    auto& calls = site == PushSite::Discovery ? stats_.push_discovery_calls
-                                              : stats_.push_forwarding_calls;
-    auto& empty = site == PushSite::Discovery ? stats_.push_discovery_empty
-                                              : stats_.push_forwarding_empty;
-    calls.fetch_add(1, std::memory_order_relaxed);
+    EvolutionStats::Slot& slot = stats_.mine();
+    auto& calls = site == PushSite::Discovery ? slot.push_discovery_calls
+                                              : slot.push_forwarding_calls;
+    auto& empty = site == PushSite::Discovery ? slot.push_discovery_empty
+                                              : slot.push_forwarding_empty;
+    calls.bump();
 
     auto result = state_children_.lookup_waiting(id_key(parent));
     if (!result.has_value()) {
-        empty.fetch_add(1, std::memory_order_relaxed);
+        empty.bump();
         return;  // No children registered
     }
 
@@ -538,7 +539,7 @@ void ParallelEvolutionEngine::push_match_to_children_impl(
         any_child = true;
         // Skip if match overlaps with consumed edges
         if (child_info.match_overlaps_consumed(match.matched_edges(), match.num_edges())) {
-            stats_.matches_invalidated.fetch_add(1, std::memory_order_relaxed);
+            stats_.mine().matches_invalidated.bump(1);
             return;
         }
 
@@ -561,7 +562,7 @@ void ParallelEvolutionEngine::push_match_to_children_impl(
         note_late_arrival(h);
 
         total_matches_found_.fetch_add(1, std::memory_order_relaxed);
-        stats_.matches_forwarded.fetch_add(1, std::memory_order_relaxed);
+        stats_.mine().matches_forwarded.bump(1);
 
         DEBUG_LOG("PUSH parent=%u -> child=%u rule=%u hash=%lu step=%u",
                   parent, child_info.child_state, match.rule_index(), h, step);
@@ -588,7 +589,7 @@ void ParallelEvolutionEngine::push_match_to_children_impl(
         submit_rewrite_task(forwarded, child_step);
     });
 
-    if (!any_child) empty.fetch_add(1, std::memory_order_relaxed);
+    if (!any_child) empty.bump();
 }
 
 void ParallelEvolutionEngine::forward_from_ancestor_chain(
@@ -655,7 +656,7 @@ void ParallelEvolutionEngine::forward_existing_parent_matches(
     for (;;) {
         const uintptr_t epoch_after = ancestor_match_epoch(parent);
         if (epoch_after == epoch_before) break;
-        stats_.forwarding_rewalks.fetch_add(1, std::memory_order_relaxed);
+        stats_.mine().forwarding_rewalks.bump(1);
         epoch_before = epoch_after;
         forward_from_ancestor_chain(parent, child, consumed_edges, num_consumed, step, batch);
     }
@@ -693,7 +694,7 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor(
         }
 
         if (overlaps) {
-            stats_.matches_invalidated.fetch_add(1, std::memory_order_relaxed);
+            stats_.mine().matches_invalidated.bump(1);
             return;
         }
 
@@ -717,7 +718,7 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor(
         note_late_arrival(h);
 
         total_matches_found_.fetch_add(1, std::memory_order_relaxed);
-        stats_.matches_forwarded.fetch_add(1, std::memory_order_relaxed);
+        stats_.mine().matches_forwarded.bump(1);
 
         DEBUG_LOG("FWD ancestor=%u -> child=%u rule=%u hash=%lu step=%u",
                   ancestor, child, ancestor_match.rule_index(), h, step);
@@ -1160,7 +1161,7 @@ void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
             ++submitted;
         }
     }
-    if (submitted) stats_.spine_forced.fetch_add(submitted, std::memory_order_relaxed);
+    if (submitted) stats_.mine().spine_forced.bump(submitted);
 }
 
 void ParallelEvolutionEngine::spine_at_drain(StateId state, uint32_t step, MatchJoin* join) {
@@ -1182,7 +1183,7 @@ void ParallelEvolutionEngine::spine_at_drain(StateId state, uint32_t step, Match
     });
     if (!found) return;
 
-    stats_.spine_forced.fetch_add(1, std::memory_order_relaxed);
+    stats_.mine().spine_forced.bump(1);
     join->own_spawned.store(1, std::memory_order_release);
     submit_rewrite_task(best, step);
 }
@@ -1904,7 +1905,7 @@ void ParallelEvolutionEngine::execute_match_task(
         }
 
         total_matches_found_.fetch_add(1, std::memory_order_relaxed);
-        stats_.new_matches_discovered.fetch_add(1, std::memory_order_relaxed);
+        stats_.mine().new_matches_discovered.bump(1);
         match_join_for(state)->matches.fetch_add(1, std::memory_order_acq_rel);
 
         DEBUG_LOG("NEW state=%u rule=%u hash=%lu step=%u", state, rule_index, h, step);
@@ -1942,7 +1943,7 @@ void ParallelEvolutionEngine::execute_match_task(
 
     if (enable_match_forwarding_ && ctx.has_parent()) {
         // DELTA MATCHING MODE (child state)
-        stats_.delta_pattern_matches.fetch_add(1, std::memory_order_relaxed);
+        stats_.mine().delta_pattern_matches.bump(1);
 
         // A batching caller collects the survivors and dispatches them with its own; an
         // immediate one submits each as it is found, which is the only difference between the
@@ -2040,7 +2041,7 @@ void ParallelEvolutionEngine::execute_match_task(
         }
     } else {
         // FULL MATCHING MODE (initial state or forwarding disabled)
-        stats_.full_pattern_matches.fetch_add(1, std::memory_order_relaxed);
+        stats_.mine().full_pattern_matches.bump(1);
 
         if (task_based_matching_) {
             // Task-based matching: spawn SCAN tasks for each rule
@@ -2342,7 +2343,7 @@ bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRe
     }
 
     total_matches_found_.fetch_add(1, std::memory_order_relaxed);
-    stats_.new_matches_discovered.fetch_add(1, std::memory_order_relaxed);
+    stats_.mine().new_matches_discovered.bump(1);
     match_join_for(data.state)->matches.fetch_add(1, std::memory_order_acq_rel);
 
     DEBUG_LOG("SINK state=%u rule=%u hash=%lu step=%u", data.state, data.rule_index, h, data.step);

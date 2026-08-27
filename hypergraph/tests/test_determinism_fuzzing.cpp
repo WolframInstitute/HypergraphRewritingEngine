@@ -85,7 +85,7 @@ protected:
 
         engine.evolve(initial, steps);
 
-        const auto& stats = engine.stats();
+        const auto totals = engine.stats().total();
 
         // Use canonical states (not raw states) for determinism checking
         // Raw state count includes "wasted" states from parallel race conditions
@@ -97,9 +97,9 @@ protected:
             hg->num_vertices(),
             hg->num_edges(),
             static_cast<uint32_t>(engine.num_events()),
-            stats.matches_forwarded.load(),
-            stats.matches_invalidated.load(),
-            stats.new_matches_discovered.load()
+            totals.matches_forwarded,
+            totals.matches_invalidated,
+            totals.new_matches_discovered
         };
     }
 
@@ -508,10 +508,10 @@ TEST_F(DeterminismFuzzing, MatchForwarding_SimpleRule) {
         unique_states.insert(engine.num_canonical_states());
         unique_events.insert(engine.num_events());
 
-        const auto& stats = engine.stats();
-        unique_forwarded.insert(stats.matches_forwarded.load());
-        unique_invalidated.insert(stats.matches_invalidated.load());
-        unique_new_discovered.insert(stats.new_matches_discovered.load());
+        const auto stats = engine.stats().total();
+        unique_forwarded.insert(stats.matches_forwarded);
+        unique_invalidated.insert(stats.matches_invalidated);
+        unique_new_discovered.insert(stats.new_matches_discovered);
     }
 
     std::cout << "Match forwarding semantic results over 20 runs:\n";

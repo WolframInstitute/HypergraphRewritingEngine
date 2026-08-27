@@ -81,8 +81,8 @@ void run(const Workload& w, size_t threads, bool quotient) {
 
     e.evolve(w.initial, w.steps);
 
-    const size_t discovered = e.stats().new_matches_discovered.load();
-    const size_t forwarded  = e.stats().matches_forwarded.load();
+    const size_t discovered = e.stats().total().new_matches_discovered;
+    const size_t forwarded  = e.stats().total().matches_forwarded;
     const size_t records    = e.total_matches();
     const double ratio = discovered ? double(records) / double(discovered) : 0.0;
 

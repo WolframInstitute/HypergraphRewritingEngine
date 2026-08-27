@@ -112,45 +112,97 @@ struct MatchRecord {
 // Evolution Statistics
 // =============================================================================
 
-// Every worker bumps several of these per match and per state. Packed, nine of them fit
-// in barely more than one cache line, so counters that record unrelated events would
-// contend for the same line -- pure interference, since nothing ever reads them during a
-// run. One line each; the struct is a singleton, so the padding is free.
-struct EvolutionStats {
-    alignas(64) std::atomic<size_t> states_created{0};
-    alignas(64) std::atomic<size_t> events_created{0};
-    alignas(64) std::atomic<size_t> matches_found{0};
-    alignas(64) std::atomic<size_t> matches_forwarded{0};
-    alignas(64) std::atomic<size_t> matches_invalidated{0};
-    alignas(64) std::atomic<size_t> new_matches_discovered{0};
-    alignas(64) std::atomic<size_t> full_pattern_matches{0};
-    alignas(64) std::atomic<size_t> delta_pattern_matches{0};
-    // Extra ancestor re-walks / child re-scans the forwarding rendezvous performs
-    // when its epoch changes during a push or pull (a measure of cross-worker churn).
-    alignas(64) std::atomic<size_t> forwarding_rewalks{0};
+// THE FIELD SET, STATED ONCE. Three things are generated from this list -- a worker's slot, the
+// summed totals a reader gets, and the summation itself. Written out three times instead, the
+// first counter added to one of them and not the others is a silent zero.
+#define HG_EVOLUTION_COUNTERS(X)                                                              \
+    X(states_created) X(events_created) X(matches_found) X(matches_forwarded)                 \
+    X(matches_invalidated) X(new_matches_discovered) X(full_pattern_matches)                  \
+    X(delta_pattern_matches)                                                                  \
+    /* Extra ancestor re-walks / child re-scans the forwarding rendezvous performs when its    \
+       epoch changes during a push or pull (a measure of cross-worker churn). */              \
+    X(forwarding_rewalks)                                                                     \
+    /* Whether push_match_to_children finds anything to push to, split by WHEN it is called.   \
+       The two sites answer different questions and the split is the measurement.              \
+                                                                                              \
+       DISCOVERY -- from SINK, as a match is first completed. Under batched submission a       \
+       state's matching finishes before any of its rewrites are submitted, so no child of that \
+       state should exist yet and every one of these calls should find an empty registry. If   \
+       that holds, the call is a no-op under batched and the work the child would have         \
+       received arrives instead through its pull at creation, when the parent's match set is   \
+       already complete.                                                                       \
+                                                                                              \
+       FORWARDING -- a match arriving from an ancestor, propagated onward. These CAN find      \
+       children, because the state was matched earlier and its children already exist.         \
+                                                                                              \
+       An empty-registry fraction below 1.0 at the discovery site falsifies the reasoning      \
+       above about when children become visible, and the cause is then elsewhere. */           \
+    X(push_discovery_calls) X(push_discovery_empty)                                           \
+    X(push_forwarding_calls) X(push_forwarding_empty)                                         \
+    /* Transitions kept by the spine rather than by a passing draw (drain minimum-key spawns   \
+       plus late spines). draws_survived_ does not include these, so                            \
+       kept = survived + spine_forced. */                                                     \
+    X(spine_forced)
 
-    // Whether push_match_to_children finds anything to push to, split by WHEN it is called.
-    // The two sites answer different questions and the split is the measurement:
-    //
-    //   DISCOVERY -- from SINK, as a match is first completed. Under batched submission a
-    //   state's matching finishes before any of its rewrites are submitted, so no child of
-    //   that state should exist yet and every one of these calls should find an empty
-    //   registry. If that holds, the call is a no-op under batched and the work the child
-    //   would have received arrives instead through its pull at creation, when the parent's
-    //   match set is already complete.
-    //
-    //   FORWARDING -- a match arriving from an ancestor, propagated onward. These CAN find
-    //   children, because the state was matched earlier and its children already exist.
-    //
-    // An empty-registry fraction below 1.0 at the discovery site falsifies the reasoning
-    // above about when children become visible, and the cause is then elsewhere.
-    alignas(64) std::atomic<size_t> push_discovery_calls{0};
-    alignas(64) std::atomic<size_t> push_discovery_empty{0};
-    alignas(64) std::atomic<size_t> push_forwarding_calls{0};
-    alignas(64) std::atomic<size_t> push_forwarding_empty{0};
-    // Transitions kept by the spine rather than by a passing draw (drain minimum-key spawns plus
-    // late spines). draws_survived_ does not include these, so kept = survived + spine_forced.
-    alignas(64) std::atomic<size_t> spine_forced{0};
+// ONE SLOT PER WORKER, NOT ONE COUNTER SHARED BY ALL OF THEM.
+//
+// Every counter here is bumped per MATCH or per STATE. A single shared atomic bumped per match is
+// a serialisation point placed exactly where the work is: a disconnected left-hand side
+// enumerates a cartesian product over the state's edges, so "per match" IS the blow-up, and each
+// worker's increment is a locked read-modify-write landing on ONE line, millions of times. Giving
+// each counter its own line stops counters interfering with EACH OTHER; it does nothing about the
+// workers interfering over one counter, which is the larger of the two.
+//
+// The increment is now a relaxed load, an add, and a relaxed store to a line no other thread
+// writes -- a plain mov on x86, where fetch_add is a locked RMW even uncontended. Relaxed atomics
+// rather than plain size_t because total() reads these while workers are still writing them, and
+// a data race on a non-atomic is undefined however benign the arithmetic looks.
+//
+// A worker beyond MAX_ARENA_WORKERS gets index -1 from arena_worker_index() and is folded into
+// slot 0, which it then shares. That is the same fallback the arena's own cursors take, and it
+// costs contention only in a configuration that already exceeds the registry.
+struct EvolutionStats {
+    struct Counter {
+        std::atomic<size_t> v{0};
+        void bump(size_t n = 1) {
+            v.store(v.load(std::memory_order_relaxed) + n, std::memory_order_relaxed);
+        }
+        size_t get() const { return v.load(std::memory_order_relaxed); }
+    };
+
+    struct alignas(64) Slot {
+#define HG_DECL_COUNTER(name) Counter name;
+        HG_EVOLUTION_COUNTERS(HG_DECL_COUNTER)
+#undef HG_DECL_COUNTER
+    };
+
+    // Plain values, because a reader wants numbers and a Slot holds atomics it cannot copy.
+    struct Totals {
+#define HG_DECL_TOTAL(name) size_t name = 0;
+        HG_EVOLUTION_COUNTERS(HG_DECL_TOTAL)
+#undef HG_DECL_TOTAL
+    };
+
+    Slot per_worker[MAX_ARENA_WORKERS];
+
+    Slot& mine() {
+        const int w = arena_worker_index();
+        return per_worker[w >= 0 ? w : 0];
+    }
+
+    // Summed across every slot. Not a snapshot: workers may be writing while this runs, so the
+    // result is a sum of values each of which was current at some point during the call. Nothing
+    // in the engine reads these to decide anything -- they are reported after a run or sampled by
+    // a probe -- so a torn total is a reporting artefact and never a correctness one.
+    Totals total() const {
+        Totals t;
+        for (const Slot& s : per_worker) {
+#define HG_SUM_COUNTER(name) t.name += s.name.get();
+            HG_EVOLUTION_COUNTERS(HG_SUM_COUNTER)
+#undef HG_SUM_COUNTER
+        }
+        return t;
+    }
 };
 
 // =============================================================================
