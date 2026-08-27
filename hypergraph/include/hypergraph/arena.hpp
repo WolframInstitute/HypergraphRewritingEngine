@@ -567,12 +567,29 @@ size_t arena_block_bytes_live();
 // "rare, small". Whether it is rare and small is a measurement, not a property of the code, and
 // this is the number that decides it: it scales with contention where the map's live table
 // bytes do not.
+//
+// EMPTY UNDER HG_VERIFICATION, which is a real change to what the checker sees and is listed in
+// verification/genmc/README.md with the others. A GenMC harness compiles concurrent_map.hpp and
+// links no library, so these would be unresolved externals -- and defining them inline for its
+// benefit would be worse than that: every table create, install and discard would become a
+// racing read-modify-write on one shared location, multiplying the execution count of the
+// growth harnesses over a variable no property here mentions. Nothing reads a counter to decide
+// anything; they are relaxed diagnostics beside the protocol, never in it.
+#ifdef HG_VERIFICATION
+inline void note_discarded_table_bytes(size_t) {}
+inline size_t discarded_table_bytes() { return 0; }
+inline void note_installed_table_bytes(size_t) {}
+inline size_t installed_table_bytes() { return 0; }
+inline size_t installed_table_count() { return 0; }
+inline size_t discarded_table_count() { return 0; }
+#else
 void note_discarded_table_bytes(size_t bytes);
 size_t discarded_table_bytes();
 void note_installed_table_bytes(size_t bytes);
 size_t installed_table_bytes();
 size_t installed_table_count();
 size_t discarded_table_count();
+#endif
 
 // =============================================================================
 // ArenaVector<T>: Vector that allocates from ConcurrentHeterogeneousArena
