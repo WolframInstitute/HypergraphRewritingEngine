@@ -1622,6 +1622,22 @@ SVec<uint16_t> ParallelEvolutionEngine::get_shuffled_rule_indices() const {
     SVec<uint16_t> indices(rules_.size());
     std::iota(indices.begin(), indices.end(), 0);
 
+    // THE SHUFFLE IS ONLY FOR MODES THAT DROP WORK. When a probability, a rate or a cap discards
+    // transitions, which rule is offered first decides which survivors are kept, and a fixed
+    // order biases the sample toward rule 0. Nothing is dropped otherwise: every rule is matched
+    // against every state, so the order they are submitted in changes no state, event or relation
+    // the engine reports.
+    //
+    // AND DRAWING ONE COSTS THE RUN ITS DETERMINISM. sampling_rng seeds from std::random_device
+    // when random_seed_ is 0, which is the default, so an unguarded shuffle makes every
+    // invocation of an unsampled run a different run. That is intended for a sampled run and is
+    // a defect for an unsampled one, which is every run the determinism contract covers.
+    const bool drops_work =
+        exploration_probability_ < 1.0 || transition_rate_ < 1.0 ||
+        max_states_ != 0 || max_events_ != 0 ||
+        max_states_per_step_ != 0 || max_successor_states_per_parent_ != 0;
+    if (!drops_work) return indices;
+
     std::shuffle(indices.begin(), indices.end(),
                  sampling_rng(sampling_generation_.load(std::memory_order_relaxed),
                               random_seed_));

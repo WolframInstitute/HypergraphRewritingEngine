@@ -15,6 +15,7 @@
 #include "hypergraph/bitset.hpp"
 #include "hypergraph/pattern_matcher.hpp"
 
+#include <atomic>
 #include <algorithm>
 #include <chrono>
 #include <cstring>
