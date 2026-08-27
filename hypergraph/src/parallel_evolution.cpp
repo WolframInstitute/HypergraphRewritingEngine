@@ -2088,9 +2088,14 @@ void ParallelEvolutionEngine::execute_match_task(
 // =============================================================================
 
 void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
-    hgcommon::PhaseTimer _pt(hgcommon::Phase::Match);
-
+    // THE JOIN GUARD IS DECLARED FIRST SO ITS DESTRUCTOR RUNS LAST, outside the match bucket.
+    // note_match_task_done is depth-join bookkeeping, not matching, and charging it to Match
+    // made that bucket grow 17.7x from one worker to eight on triangle while the match counters
+    // were identical at both -- a number that says "matching got dearer" about work that is not
+    // matching.
     MatchTaskGuard join_guard(*this, data.state, data.step);
+
+    hgcommon::PhaseTimer _pt(hgcommon::Phase::Match);
 
     if (should_stop_.load(std::memory_order_relaxed)) return;
     if (data.step > max_steps_) return;
@@ -2214,9 +2219,14 @@ void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
 // =============================================================================
 
 void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
-    hgcommon::PhaseTimer _pt(hgcommon::Phase::Match);
-
+    // THE JOIN GUARD IS DECLARED FIRST SO ITS DESTRUCTOR RUNS LAST, outside the match bucket.
+    // note_match_task_done is depth-join bookkeeping, not matching, and charging it to Match
+    // made that bucket grow 17.7x from one worker to eight on triangle while the match counters
+    // were identical at both -- a number that says "matching got dearer" about work that is not
+    // matching.
     MatchTaskGuard join_guard(*this, data.state, data.step);
+
+    hgcommon::PhaseTimer _pt(hgcommon::Phase::Match);
 
     if (should_stop_.load(std::memory_order_relaxed)) return;
     if (data.step > max_steps_) return;
