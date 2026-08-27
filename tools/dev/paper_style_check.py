@@ -89,6 +89,21 @@ TELLS = [
     (r"\bthe whole (game|ballgame|point)\b", "totalizing superlative"),
     (r"\bthe only thing that matters\b", "totalizing superlative"),
     (r"\bthe entire point\b", "totalizing superlative"),
+    # PSEUDO-EXPLANATORY CLEFTS. These gesture at a reason instead of stating it: "the capping
+    # options are outside it, and the reason is the same one that shapes the sampling design"
+    # says a reason exists and makes the reader find it. Academic prose states the reason.
+    # Rewrite as a plain causal clause -- "because X" -- or as a direct statement of the fact.
+    (r"\band the reason is\b", "cleft: state the reason, do not point at it"),
+    (r"\bthe reason is the same\b", "cleft: state the reason, do not point at it"),
+    (r"\bfor the same reason\b", "cleft: name the reason again or restructure"),
+    (r"\bis what makes\b", "cleft: state the property directly"),
+    (r"\bwhich is what\b", "cleft: state the property directly"),
+    (r"\b(is|are) what (the|a|this)\b", "cleft: state the property directly"),
+    (r"\bwhich is why\b", "cleft: use 'because' on the causal clause"),
+    (r"\bis exactly what\b", "cleft: state the property directly"),
+    (r"\bis precisely (what|the)\b", "cleft: state the property directly"),
+    (r"\bthat is what .{1,30} is for\b", "cleft: state the purpose directly"),
+    (r"\bis the thing that\b", "cleft: state the property directly"),
     # Self-qualifiers about one's own claims.
     (r"\bhonest(ly)?\b", "self-qualifier"),
     (r"\bto be clear\b", "self-qualifier"),
