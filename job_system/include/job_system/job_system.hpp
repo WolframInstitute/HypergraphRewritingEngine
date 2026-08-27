@@ -63,6 +63,9 @@ private:
         // ratio to jobs_stolen is how a run reports whether the locality preference found
         // anything to prefer, rather than it being assumed from the topology.
         std::atomic<size_t> jobs_stolen_near{0};
+        // The cache domain this worker parks on and submits into. Written once by
+        // build_domain_map before any worker thread exists, read-only thereafter.
+        unsigned domain = 0;
         explicit WorkerData(size_t cap) : deque(cap) {}
     };
 
@@ -130,7 +133,41 @@ private:
     // std::atomic::wait blocks only while the value still equals the one the caller sampled,
     // so a submit racing with a park cannot be lost: the counter has already moved and the
     // wait returns at once. The fast path is a plain load with no syscall and no lock.
-    std::atomic<uint32_t> work_seq_{0};
+    // ONE PARK WORD PER CACHE DOMAIN, not one for the machine.
+    //
+    // A parked worker waits on a futex word and a submitter wakes ONE waiter on it. With a
+    // single word that waiter is arbitrary, so a submitter on one cache domain routinely wakes a
+    // worker on another, which then steals the job across the fabric. The steal path is already
+    // topology-aware (see build_cache_peers) and the wake path was not, so the placement it
+    // achieves is undone at the moment work is handed out.
+    //
+    // MEASURED. On a part whose cores share one last-level cache the difference is nil, and the
+    // engine scales monotonically -- 14900K, eight workers: wolfram24 6.50x, wpp 5.67x,
+    // disc2x2 4.35x, multirule 2.21x, cycle4 2.14x. On an EPYC 9174F, which is sixteen cores
+    // over EIGHT L3 instances of two cores each, the same workloads dip at exactly four workers
+    // -- the first count that must cross a domain -- and the curve stops being monotonic.
+    //
+    // Waking within the submitter's own domain first keeps a job and the worker that takes it in
+    // one cache. Falling back to the other domains when no local worker is idle is what keeps
+    // this from being a lost wakeup; see wake_one_worker.
+    //
+    // Padded because these are written by every submit: two domains' words on one line would
+    // reintroduce, between domains, precisely the sharing this exists to remove.
+    struct alignas(64) DomainSlot {
+        std::atomic<uint32_t> seq{0};
+        std::atomic<int> idle{0};
+    };
+    std::unique_ptr<DomainSlot[]> domains_;
+    size_t num_domains_ = 1;
+    // Domain of each worker, dense from 0. Always the full width, even where build_cache_peers
+    // declines to prefer peers -- a single domain is the correct answer for a machine whose
+    // cores share one cache, and it makes every path below topology-agnostic rather than
+    // conditional.
+    std::vector<unsigned> worker_domain_;
+
+    unsigned domain_of_worker(size_t i) const {
+        return i < worker_domain_.size() ? worker_domain_[i] : 0u;
+    }
 
     std::atomic<ErrorType> error_type_{ErrorType::None};
 
@@ -197,15 +234,35 @@ private:
     void wake_one_worker() {
         std::atomic_thread_fence(std::memory_order_seq_cst);
         if (idle_workers_.load(std::memory_order_seq_cst) <= 0) return;
-        work_seq_.fetch_add(1, std::memory_order_release);
-        hgcommon::unpark_one(work_seq_);
+
+        // The submitter's own domain first: a job pushed here is warm here.
+        const unsigned home = (t_sys_ == this && t_worker_ != nullptr) ? t_worker_->domain : 0u;
+        if (domains_[home].idle.load(std::memory_order_seq_cst) > 0) {
+            domains_[home].seq.fetch_add(1, std::memory_order_release);
+            hgcommon::unpark_one(domains_[home].seq);
+            return;
+        }
+
+        // Nobody idle at home. Somebody elsewhere must take it, or the job waits for a steal
+        // that may never be attempted -- so this scans rather than gives up, and only skips
+        // domains it can see are empty. A stale read here costs a wake that finds nothing; the
+        // job itself is still in a deque or the injector and is never stranded.
+        for (size_t d = 0; d < num_domains_; ++d) {
+            const size_t k = (home + 1 + d) % num_domains_;
+            if (domains_[k].idle.load(std::memory_order_seq_cst) <= 0) continue;
+            domains_[k].seq.fetch_add(1, std::memory_order_release);
+            hgcommon::unpark_one(domains_[k].seq);
+            return;
+        }
     }
 
     // Unconditional: used by error latching and shutdown, where a parked worker must be
     // released whether or not the idle count says one is there.
     void wake_all_workers() {
-        work_seq_.fetch_add(1, std::memory_order_release);
-        hgcommon::unpark_all(work_seq_);
+        for (size_t d = 0; d < num_domains_; ++d) {
+            domains_[d].seq.fetch_add(1, std::memory_order_release);
+            hgcommon::unpark_all(domains_[d].seq);
+        }
     }
 
     // Group the workers by the cache their bound CPU sits behind, filling peer_begin_/peers_.
@@ -216,6 +273,48 @@ private:
     // than three workers (a thief has one possible victim), no pinning (the operating system
     // moves the thread, so a binding-derived grouping describes where it was, not where it is),
     // an unreadable topology, and a machine whose workers all share one cache.
+    // THE DOMAIN MAP, and the ONLY place the topology is consulted for the wake path.
+    //
+    // ONE DOMAIN IS ALWAYS A CORRECT ANSWER and is what every uncertain case returns: an
+    // unreadable topology, a machine whose cores all share one cache, workers whose placement
+    // the operating system chose, or a platform hgcommon::cache_domains_of does not know. In
+    // that shape every path below is exactly what it was before domains existed -- one park
+    // word, one idle count, one wake -- so a part this cannot describe is never worse off, it
+    // simply gains nothing. That matters most where the answer is least certain: an ARM part may
+    // report no last-level cache index at all, or clusters that share L2 rather than L3.
+    //
+    // The engine's correctness never depends on the map being RIGHT, only on it being
+    // CONSISTENT -- a worker parks on the word its own index selects and a submitter that finds
+    // no idle worker there scans the rest, so a wrong grouping costs locality and not progress.
+    void build_domain_map() {
+        const size_t n = workers_.size();
+        worker_domain_.assign(n, 0u);
+        num_domains_ = 1;
+
+        std::vector<unsigned> domain = worker_cache_domains_;
+        if (domain.empty() && !worker_cpus_.empty()) {
+            std::vector<unsigned> cpus;
+            cpus.reserve(n);
+            for (size_t i = 0; i < n; ++i) cpus.push_back(worker_cpus_[i % worker_cpus_.size()]);
+            domain = hgcommon::cache_domains_of(cpus);
+        }
+        if (domain.size() == n) {
+            // Densify whatever the platform reported: the ids are opaque and need only be
+            // distinct, and this indexes an array with them.
+            std::vector<unsigned> seen;
+            for (size_t i = 0; i < n; ++i) {
+                size_t k = 0;
+                while (k < seen.size() && seen[k] != domain[i]) ++k;
+                if (k == seen.size()) seen.push_back(domain[i]);
+                worker_domain_[i] = static_cast<unsigned>(k);
+            }
+            if (seen.size() > 1) num_domains_ = seen.size();
+            else worker_domain_.assign(n, 0u);      // everybody shares: one domain
+        }
+        domains_ = std::unique_ptr<DomainSlot[]>(new DomainSlot[num_domains_]);
+        for (size_t i = 0; i < n; ++i) workers_[i]->domain = worker_domain_[i];
+    }
+
     void build_cache_peers() {
         peer_begin_.clear();
         peers_.clear();
@@ -409,10 +508,18 @@ private:
             // sequentially consistent fence on BOTH sides forbids them from both reading stale.
             // Without it the submitter can read this worker as not-yet-idle while this worker
             // reads the deque as still empty, and the job is left queued with the worker parked.
+            const unsigned home = data->domain;
+            // BOTH COUNTS ARE ANNOUNCED BEFORE THE LAST LOOK, and both are released on every
+            // path out. The global one is what lets a submit skip the wake machinery entirely;
+            // the per-domain one is what tells a submitter whether a worker sharing its cache is
+            // available. Announcing before sampling the sequence and before the last look is
+            // what the fence pairing needs -- see wake_one_worker.
             idle_workers_.fetch_add(1, std::memory_order_seq_cst);
+            domains_[home].idle.fetch_add(1, std::memory_order_seq_cst);
             std::atomic_thread_fence(std::memory_order_seq_cst);
-            const uint32_t seq = work_seq_.load(std::memory_order_acquire);
+            const uint32_t seq = domains_[home].seq.load(std::memory_order_acquire);
             if (JobRaw job = find_work_exhaustive(data)) {
+                domains_[home].idle.fetch_sub(1, std::memory_order_relaxed);
                 idle_workers_.fetch_sub(1, std::memory_order_relaxed);
                 run_job(data, job);
                 continue;
@@ -420,8 +527,9 @@ private:
             if (error_type_.load(std::memory_order_acquire) == ErrorType::None &&
                 !data->stop.load(std::memory_order_acquire)) {
                 park_waits_.fetch_add(1, std::memory_order_relaxed);
-                hgcommon::park_if_equal(work_seq_, seq);
+                hgcommon::park_if_equal(domains_[home].seq, seq);
             }
+            domains_[home].idle.fetch_sub(1, std::memory_order_relaxed);
             idle_workers_.fetch_sub(1, std::memory_order_relaxed);
             if (error_type_.load(std::memory_order_acquire) != ErrorType::None) break;
             if (data->stop.load(std::memory_order_acquire)) break;
@@ -545,6 +653,7 @@ public:
             workers_[i]->stop.store(false, std::memory_order_relaxed);
         }
         workers_entered_.store(0, std::memory_order_relaxed);
+        build_domain_map();                       // before any worker exists: parks index it
         build_cache_peers();                      // before any worker exists: see peer_begin_
         for (size_t i = 0; i < workers_.size(); ++i) {
             auto* worker = workers_[i].get();
