@@ -177,8 +177,17 @@ if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Windows")
     else()
         # Clang with MSVC target (e.g., ARM64) uses lld-link with MSVC-style flags
         # Use /WHOLEARCHIVE to force inclusion of all symbols from static libraries
+        #
+        # job_system IS NAMED HERE and the other two are not enough. hypergraph links it PUBLIC,
+        # so on every other configuration its objects arrive transitively; on this one the
+        # generated link line carries wxf.lib and hypergraph.lib and nothing else, and the DLL
+        # fails with eight undefined symbols that are exactly job_system's four sources --
+        # park.cpp (park_if_equal, unpark_all, unpark_one), job_pool.cpp (JobSlotPool::allocate,
+        # ::deallocate), affinity.cpp (cache_domains_of, pin_this_thread_to_cpu) and
+        # capacity.cpp (CapacityExhausted). The archive is present and correct (coff-arm64, the
+        # symbols defined) -- it is simply never handed to the linker, so naming it is the fix.
         set_target_properties(HypergraphRewriting PROPERTIES
-            LINK_FLAGS "-Xlinker /DEF:${CMAKE_CURRENT_SOURCE_DIR}/HypergraphRewriting.def -Xlinker /WHOLEARCHIVE:${CMAKE_BINARY_DIR}/wxf.lib -Xlinker /WHOLEARCHIVE:${CMAKE_BINARY_DIR}/hypergraph.lib"
+            LINK_FLAGS "-Xlinker /DEF:${CMAKE_CURRENT_SOURCE_DIR}/HypergraphRewriting.def -Xlinker /WHOLEARCHIVE:${CMAKE_BINARY_DIR}/wxf.lib -Xlinker /WHOLEARCHIVE:${CMAKE_BINARY_DIR}/hypergraph.lib -Xlinker /WHOLEARCHIVE:${CMAKE_BINARY_DIR}/job_system.lib"
         )
     endif()
 endif()
