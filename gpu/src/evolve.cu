@@ -487,6 +487,19 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
                          st.cycles_rw_sub[0] * rpct, st.cycles_rw_sub[1] * rpct,
                          st.cycles_rw_sub[2] * rpct, st.cycles_rw_sub[3] * rpct,
                          st.cycles_rw_sub[4] * rpct, st.cycles_rw_sub[5] * rpct);
+            // The canon bucket's parts, in the order the kernel accumulates them. An
+            // optimisation aimed at "canonicalization" has to know which of the five it is
+            // aiming at, and the bucket is the largest single phase on the device.
+            const double cb = double(st.cycles_canon_sub[0]) + double(st.cycles_canon_sub[1]) +
+                              double(st.cycles_canon_sub[2]) + double(st.cycles_canon_sub[3]) +
+                              double(st.cycles_canon_sub[4]);
+            const double cpct = cb > 0 ? 100.0 / cb : 0.0;
+            std::fprintf(stderr,
+                         "[persistent canon] irkey=%.1f%% dedup=%.1f%% sig=%.1f%% qc=%.1f%% "
+                         "qe=%.1f%%\n",
+                         st.cycles_canon_sub[0] * cpct, st.cycles_canon_sub[1] * cpct,
+                         st.cycles_canon_sub[2] * cpct, st.cycles_canon_sub[3] * cpct,
+                         st.cycles_canon_sub[4] * cpct);
         }
     }
 

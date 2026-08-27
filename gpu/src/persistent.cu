@@ -1271,6 +1271,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     stats.cycles_idle    = phase[3];
     stats.cycles_wait    = phase[4];
     for (int i = 0; i < 6; ++i) stats.cycles_rw_sub[i] = phase[5 + i];
+    for (int i = 0; i < 5; ++i) stats.cycles_canon_sub[i] = phase[11 + i];
 
     // The buffers are the engine's grow-only launch scratch and outlive this run.
     return stats;
