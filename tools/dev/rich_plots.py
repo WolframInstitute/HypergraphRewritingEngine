@@ -111,17 +111,27 @@ def saturated_depths(rows):
     return out
 
 
-def scaling_figure(rows, rules, labels, fname, tool, out, metric="eff"):
+def scaling_figure(rows, rules, labels, fname, tool, out, metric="eff", sat=frozenset()):
     """Efficiency or speedup against thread count, one curve per rule.
 
     The baseline is the SAME rule at one thread, so each curve is normalised by its own serial
     point and the curves are comparable to each other rather than to a shared constant.
+
+    SATURATED RUNS ARE DROPPED HERE TOO, and the reason is sharper than for the depth plots. A run
+    at the container ceiling does a FIXED amount of work whatever depth it was asked for, so its
+    wall time measures how fast the ceiling is REACHED rather than how fast the evolution runs.
+    More workers reach it sooner but cannot make a capped total smaller, so the curve flattens and
+    the efficiency it reports belongs to the ceiling and not to the engine: disc2a2 at depth 13
+    reports 1,398,101 states at every one of seven thread counts, and 3 x 1,398,101 is one below
+    MAX_SEGMENTS x segment_size. Plotted unfiltered, that reads as an engine that stops scaling.
     """
     body = [pt.provenance(tool)]
     drawn = 0
     for rule in rules:
         pts = {}
         for r in rows:
+            if (rule, int(num(r, "steps"))) in sat:
+                continue
             if r.get("rule") != rule:
                 continue
             th = int(num(r, "threads", 0))
@@ -319,11 +329,11 @@ def main():
         print("dropping %d saturated (shape, depth) points: %s"
               % (len(sat), ", ".join("%s@%d" % t for t in sorted(sat))))
     n = 0
-    n += scaling_figure(scale, SIZE_RULES, SIZE_LABELS, "f_eff_size.tex", tool, a.out)
+    n += scaling_figure(scale, SIZE_RULES, SIZE_LABELS, "f_eff_size.tex", tool, a.out, sat=sat)
     n += scaling_figure(scale, SIZE_RULES, SIZE_LABELS, "f_speedup_size.tex", tool, a.out,
-                        metric="speedup")
-    n += scaling_figure(scale, SHAPE_RULES, SHAPE_LABELS, "f_eff_shape.tex", tool, a.out)
-    n += scaling_figure(scale, ARITY_RULES, ARITY_LABELS, "f_eff_arity.tex", tool, a.out)
+                        metric="speedup", sat=sat)
+    n += scaling_figure(scale, SHAPE_RULES, SHAPE_LABELS, "f_eff_shape.tex", tool, a.out, sat=sat)
+    n += scaling_figure(scale, ARITY_RULES, ARITY_LABELS, "f_eff_arity.tex", tool, a.out, sat=sat)
     n += depth_figure(depth, DEPTH_RULES, DEPTH_LABELS,
                       "f_states_depth.tex", tool, a.out, "states", sat)
     # No branchial-against-depth fragment: f_relations already plots the branchial relation, and
