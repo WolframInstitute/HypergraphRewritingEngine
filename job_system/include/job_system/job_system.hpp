@@ -6,6 +6,10 @@
 #include <lockfree_deque/deque.hpp>
 #include <hgcommon/park.hpp>
 #include <hgcommon/affinity.hpp>
+
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <hgcommon/core.hpp>  // splitmix64 -- the steal victim draw
 #include <hgcommon/phase_timing.hpp>  // the idle bucket, entered below
 #include <hgcommon/capacity.hpp>  // the one error kind that is not a defect
@@ -286,6 +290,62 @@ private:
     // The engine's correctness never depends on the map being RIGHT, only on it being
     // CONSISTENT -- a worker parks on the word its own index selects and a submitter that finds
     // no idle worker there scans the rest, so a wrong grouping costs locality and not progress.
+    // DEFAULT PLACEMENT: FILL CACHE DOMAINS IN ORDER.
+    //
+    // Without this the topology machinery below decides nothing. build_domain_map derives its
+    // grouping from the pinned CPUs, so a run that pins nothing reports ONE domain, and then the
+    // per-domain parking and the cache-peer steal order are exactly the single-domain fallback --
+    // present, correct, and inert. The engine knew the topology and did not use it.
+    //
+    // The cost of not using it is measured. On a part with eight two-core L3 instances, two
+    // workers left to the scheduler often land on two different instances, and two workers on
+    // different instances cost 2.7x against two that share one. Four corpus workloads come in
+    // BELOW ONE at two workers there -- 0.73 to 0.97 -- and the same four reach 1.43x to 1.78x on
+    // a part whose cores share a single L3.
+    //
+    // Ordering the CPUs domain-major and handing worker i the i-th of them is what makes the
+    // second worker share the first's cache instead of racing it. performance_cpus() supplies the
+    // set, so a heterogeneous part contributes only cores of one kind -- a speedup column across
+    // cores of different speeds divides by a quantity that is not compute.
+    //
+    // AN EXPLICIT SET ALWAYS WINS: a caller that named CPUs gets exactly those, and this does
+    // nothing. It also does nothing when the topology is unreadable or there is one core to give,
+    // which is the same "leave it off" the grouping below applies to every uncertain case.
+    void ensure_default_cpu_order() {
+        const bool dbg = std::getenv("HG_DBG_PLACEMENT") != nullptr;
+        if (!worker_cpus_.empty()) return;        // a caller that named CPUs gets exactly those
+        if (!hgcommon::affinity_supported()) return;
+        // performance_cpus() names the fast cores of a HETEROGENEOUS part and is empty on a
+        // homogeneous one -- measured: it returns zero CPUs on an EPYC 9174F, where every core is
+        // the same and the question it answers does not arise. Empty therefore means "no core is
+        // preferable", not "no core is usable", so the fallback is every core.
+        std::vector<unsigned> cpus = hgcommon::performance_cpus();
+        if (cpus.empty()) {
+            const unsigned hw = std::thread::hardware_concurrency();
+            for (unsigned c = 0; c < hw; ++c) cpus.push_back(c);
+        }
+        if (cpus.size() < 2) return;
+        const std::vector<unsigned> dom = hgcommon::cache_domains_of(cpus);
+        if (dom.size() != cpus.size()) return;
+        bool many = false;
+        for (size_t i = 1; i < dom.size(); ++i) if (dom[i] != dom[0]) { many = true; break; }
+        if (!many) return;                        // one shared cache: placement decides nothing
+        std::vector<size_t> idx(cpus.size());
+        for (size_t i = 0; i < idx.size(); ++i) idx[i] = i;
+        std::stable_sort(idx.begin(), idx.end(),
+                         [&](size_t a, size_t b) { return dom[a] < dom[b]; });
+        std::vector<unsigned> packed;
+        packed.reserve(cpus.size());
+        for (size_t i : idx) packed.push_back(cpus[i]);
+        if (dbg) {
+            std::fprintf(stderr, "[placement] worker cpus, domain-major:");
+            for (size_t i = 0; i < packed.size() && i < 8; ++i)
+                std::fprintf(stderr, " %u(d%u)", packed[i], dom[idx[i]]);
+            std::fprintf(stderr, "%s (%zu cpus)\n", packed.size() > 8 ? " ..." : "", packed.size());
+        }
+        worker_cpus_ = std::move(packed);
+    }
+
     void build_domain_map() {
         const size_t n = workers_.size();
         worker_domain_.assign(n, 0u);
@@ -653,6 +713,7 @@ public:
             workers_[i]->stop.store(false, std::memory_order_relaxed);
         }
         workers_entered_.store(0, std::memory_order_relaxed);
+        ensure_default_cpu_order();               // before the map: the map is derived from it
         build_domain_map();                       // before any worker exists: parks index it
         build_cache_peers();                      // before any worker exists: see peer_begin_
         for (size_t i = 0; i < workers_.size(); ++i) {
