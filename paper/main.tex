@@ -801,9 +801,10 @@ states and events are allocated in arrival order and therefore do vary between r
 observable defined above is stated over canonical identities and is invariant. This property is
 checked by a determinism gate that fingerprints the expanded state set, the (input, output, rule)
 transition multiset, and the causal and branchial relations across thread counts and seeds, and on
-a divergence reports which component moved and under which configuration. The causal component is
-what caught the reader-visibility defect of Section~\ref{sec:verification} in the field: one
-sixteen-thread run on four cores with one causal edge missing and everything else identical.
+a divergence reports which component moved and under which configuration. Reporting the components
+separately is what makes the gate sensitive: the causal relation can move on its own, by a single
+edge, while the state set, the transition multiset and the branchial relation stay identical, so a
+gate that compared one aggregate fingerprint would not distinguish that from agreement.
 
 The capping options are outside it, and the reason is the same one that shapes the sampling
 design. \textsc{MaxStatesPerStep} admits states until a per-step counter reaches its bound, so
@@ -1382,17 +1383,15 @@ node linked before it. For the per-worker scratch arena: that no two workers are
 index. For the key set: that two
 threads inserting one key while a third insertion forces a growth beneath them produce exactly one
 reported insertion, and that enumeration emits each key once across that growth---two properties
-that failed independently in earlier designs of the same structure, which is why they are checked
-by separate harnesses rather than by one. A third property class covers \emph{readers} racing a
-growth: a membership query for a key that settled before the query began must answer present in
-every execution, even mid-carry, when the key's slot in the retiring table is already sealed and
-its copy has just landed in the successor. This one was found in the field before it was checked:
-a continuous-integration run on an oversubscribed ARM64 machine produced a full-capture evolution
-with one causal edge missing---states, events and branchial identical---which minimized to a
-newest-first chain walk visiting each table on the wrong side of the carry hand-off. The
-twenty-execution counterexample, and the oldest-first walk that closes it, are both in the
-harness; the same read-order condition recurs in the map's drained-table skip, where the
-calibrated break is reading a table's skip flag only when the walk arrives at it. For the
+checked by separate harnesses, because they are independent and a single harness that bundled them
+would not say which one a violation belonged to. A third property class covers \emph{readers}
+racing a growth: a membership query for a key that settled before the query began must answer
+present in every execution, even mid-carry, when the key's slot in the retiring table is already
+sealed and its copy has just landed in the successor. The chain walk is oldest-first for that
+reason: a newest-first walk visits each table on the wrong side of the carry hand-off and can
+report absent for a key that is present, and the twenty-execution counterexample distinguishing
+the two orders is in the harness. The same read-order condition governs the map's drained-table
+skip, where the calibrated break is reading a table's skip flag only when the walk arrives at it. For the
 scheduler: that a worker
 which parks is always woken, which is a liveness property and is checked as one---removing either
 of the two sequentially consistent fences in the submit/park protocol makes the checker report a
