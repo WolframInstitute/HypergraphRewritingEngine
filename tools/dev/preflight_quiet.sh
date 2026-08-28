@@ -4,46 +4,48 @@
 #
 #   tools/dev/preflight_quiet.sh -- ./tools/dev/corpus_scale_sweep.sh ...
 #
-# WHY IT IS A GATE AND NOT A WARNING. A timing run on a machine with someone else's work on it
-# produces a number that looks exactly like a clean one, and nothing downstream can tell them
-# apart afterwards. The only place the distinction survives is here, before the run starts.
+# WHY IT IS A GATE AND NOT A WARNING. A timing run on a machine with other work on it produces a
+# number that looks exactly like a clean one, and nothing downstream can tell them apart
+# afterwards. The only place the distinction survives is here, before the run starts.
 #
-# WHAT IT IS FOR, measured rather than supposed: a wait-loop left behind by an earlier session --
-# `until ! pgrep -f ...; do sleep 10; done` -- ran `pgrep` across the whole process table every ten
-# seconds on the benchmark box for an entire evening of measurements, and was found only when the
-# box was handed to someone else. A poller is invisible in `top` and it is not invisible in a
-# median.
+# AN ALLOWLIST, NOT A LIST OF THINGS TO LOOK FOR. Anything running that is not part of a logged-in
+# session is a failure, whatever it is. A list of patterns to catch only catches what someone
+# thought of: the wait-loop left by an earlier session -- `until ! pgrep -f ...; do sleep 10; done`
+# -- ran across the whole process table every ten seconds on the benchmark box through an entire
+# evening of measurements, and was found only when the box was handed to another project. It is
+# not a benchmark, not a build, and has no binary of its own, so no denylist would have named it.
+# It IS an unexpected process, which is all this needs to know.
 #
-# SELF-EXCLUSION IS THE HARD PART. `pgrep -f <pattern>` matches the command line running it, and
-# this script's own command line contains every pattern it searches for. Bracketing the pattern is
-# not enough once a chained command also names a real path. So this excludes BY PID: itself, every
-# ancestor up to init, and every descendant.
+# SELF-EXCLUSION IS BY PID, not by matching on names. This script's own lineage is the one thing
+# legitimately running, and when a sweep chains this in front of itself the tree is
+# `timeout -> sweep -> preflight`, so ancestors count as much as descendants.
 set -u
 
-MAX_LOAD=${MAX_LOAD:-1.0}
 WAIT_S=0
 STRICT_USERS=${STRICT_USERS:-1}
+EXTRA_ALLOW=${PREFLIGHT_ALLOW:-}
 
 usage() {
     cat <<'USAGE'
-usage: preflight_quiet.sh [--max-load N] [--wait SECONDS] [--allow-users] [-- CMD ...]
+usage: preflight_quiet.sh [--wait S] [--allow REGEX] [--allow-users] [-- CMD ...]
 
-  --max-load N     1-minute load average must be below N (default 1.0, or $MAX_LOAD)
-  --wait SECONDS   poll until quiet, up to SECONDS, instead of failing immediately.
-                   Load average is a DECAYING mean, so a machine that has just finished
-                   a build reads busy for minutes after it is idle. This waits that out.
-  --allow-users    do not fail when another user is logged in
-  -- CMD ...       run CMD only if every check passes; its exit status becomes ours
+  --wait S       poll until quiet, up to S seconds, instead of failing at once. For a machine
+                 whose last job is still exiting; the check itself is instantaneous.
+  --allow REGEX  also treat processes whose command line matches REGEX as expected. For a
+                 workstation that legitimately runs an editor or an agent; a rented benchmark
+                 box needs none. Also settable as $PREFLIGHT_ALLOW.
+  --allow-users  do not fail when another user is logged in
+  -- CMD ...     run CMD only if every check passes; its exit status becomes ours
 
-Exit: 0 quiet (and CMD succeeded, when given); 1 not quiet; 2 usage.
+Exit: 0 quiet (and CMD's status, when given); 1 not quiet; 2 usage.
 USAGE
 }
 
 CMD=()
 while [ $# -gt 0 ]; do
     case "$1" in
-        --max-load) MAX_LOAD="${2:?}"; shift 2 ;;
         --wait)     WAIT_S="${2:?}"; shift 2 ;;
+        --allow)    EXTRA_ALLOW="${EXTRA_ALLOW:+$EXTRA_ALLOW|}${2:?}"; shift 2 ;;
         --allow-users) STRICT_USERS=0; shift ;;
         -h|--help)  usage; exit 2 ;;
         --)         shift; CMD=("$@"); break ;;
@@ -51,22 +53,14 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# Every PID in this script's own LINEAGE -- ancestors as well as descendants.
-#
-# ANCESTORS ARE THE HALF THAT IS EASY TO MISS, and leaving them out makes the gate reject every
-# legitimate run rather than every dirty one. When a sweep chains this in front of itself the
-# process tree is `timeout -> sweep -> preflight`, so the sweep is this script's PARENT and the
-# timeout its GRANDPARENT; both carry the sweep's name on their command line and both match the
-# patterns below. Caught by running the gate from inside a sweep, which reported the sweep itself.
+# This script's own lineage: itself, every ancestor to init, every descendant.
 own_pids() {
     local out="$$" frontier="$$" next child p
-    # up: every ancestor to init
     p=$$
     while [ -n "$p" ] && [ "$p" -gt 1 ] 2>/dev/null; do
         p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
         [ -n "$p" ] && out="$out $p"
     done
-    # down: every descendant
     for _ in 1 2 3 4 5; do
         next=""
         for p in $frontier; do
@@ -80,57 +74,45 @@ own_pids() {
     echo "$out"
 }
 
-# Work this project starts, and the leftovers it starts them from. Grouped so a report names the
-# kind of thing found rather than only a pattern.
-BENCH_RE='all_tests|bench_cpu_evolve|bench_gpu_evolve|sampling_cost_smoke|profile_evolve|hg_evolve|ir_vs_wl|benchmark_suite'
-SWEEP_RE='corpus_scale_sweep|corpus_determinism_sweep|corpus_depth_plan|rich_sweep|rich_plots|paper_tables|run_sweep|run_rich|hunt\.sh'
-BUILD_RE='cmake|ninja|cc1plus|nvcc|cicc|ptxas|ld\.lld|collect2'
-VERIFY_RE='genmc|tlc|tla2tools|valgrind|callgrind'
-# A poller has no binary of its own: it is a shell holding a sleep loop, which is what makes it
-# survive a session and stay invisible.
-POLLER_RE='until +!|while +true|while +:|pgrep -f|sleep [0-9]+; *done'
+# What a logged-in session legitimately consists of, and nothing else: session plumbing and the
+# small utilities a shell forks. No compilers, no interpreters, no shell running a loop. A rented
+# box that has only been ssh'd into shows exactly these and nothing more.
+ALLOW_COMM='^(sshd|systemd|\(sd-pam\)|dbus-daemon|bash|sh|zsh|dash|login|ps|awk|grep|sed|tr|head|tail|which|env)$'
 
+# REAL USERS ONLY, by uid, not by "not root". A service account is not root either -- rabbitmq,
+# syslog, polkitd, systemd-resolved and epmd all own long-lived daemons on an otherwise idle
+# machine, and none of them is work someone put there. Login accounts start at 1000 on every
+# distribution this runs on, and a benchmark is something a login account started.
 offenders() {
     local mine; mine=" $(own_pids) "
-    ps -eo pid,user,etimes,args --no-headers 2>/dev/null | while read -r pid user etimes args; do
+    ps -eo pid,ppid,uid,user,etimes,comm,args --no-headers 2>/dev/null |
+    while read -r pid ppid uid user etimes comm args; do
         case "$mine" in *" $pid "*) continue ;; esac
-        case "$args" in *preflight_quiet*) continue ;; esac
-        local kind=""
-        case "$args" in
-            *[Cc]laude*|*clangd*|*node_modules*) continue ;;
-        esac
-        if   printf '%s' "$args" | grep -qE "$BENCH_RE";  then kind="benchmark"
-        elif printf '%s' "$args" | grep -qE "$SWEEP_RE";  then kind="sweep"
-        elif printf '%s' "$args" | grep -qE "$BUILD_RE";  then kind="build"
-        elif printf '%s' "$args" | grep -qE "$VERIFY_RE"; then kind="verification"
-        elif printf '%s' "$args" | grep -qE "$POLLER_RE"; then kind="poller/orphan"
-        fi
-        [ -n "$kind" ] && printf '%-14s pid=%-7s user=%-10s age=%-7ss %s\n' \
-            "$kind" "$pid" "$user" "$etimes" "$(printf '%.100s' "$args")"
+        # Kernel threads are the kernel, not work on the machine: pid 2 and its children.
+        { [ "$pid" = "2" ] || [ "$ppid" = "2" ]; } && continue
+        [ "$uid" -lt 1000 ] 2>/dev/null && continue
+        printf '%s' "$comm" | grep -qE "$ALLOW_COMM" && continue
+        [ -n "$EXTRA_ALLOW" ] && printf '%s' "$args" | grep -qE "$EXTRA_ALLOW" && continue
+        printf '  pid=%-8s user=%-10s age=%-8ss %s\n' \
+            "$pid" "$user" "$etimes" "$(printf '%.110s' "$args")"
     done
 }
 
-load1() { awk '{print $1}' /proc/loadavg 2>/dev/null || echo 0; }
+other_users() { who 2>/dev/null | awk '{print $1}' | sort -u | grep -vx "$(id -un)" | tr '\n' ' '; }
 
-other_users() {
-    who 2>/dev/null | awk '{print $1}' | sort -u | grep -vx "$(id -un)" | tr '\n' ' '
-}
-
+# NO LOAD-AVERAGE CHECK. It is a decaying mean over a minute, so it reports a machine busy long
+# after its last job exited and reports it idle for the first seconds of a new one -- late in both
+# directions. The process list answers the same question exactly and at the instant it is asked.
 check_once() {
-    local bad=0
-    FOUND="$(offenders)"
-    if [ -n "$FOUND" ]; then
-        echo "preflight: FAIL -- work already running:" >&2
-        printf '%s\n' "$FOUND" >&2
-        bad=1
-    fi
-    local l; l="$(load1)"
-    if awk -v a="$l" -v b="$MAX_LOAD" 'BEGIN{exit !(a >= b)}'; then
-        echo "preflight: FAIL -- 1-minute load $l is not below $MAX_LOAD" >&2
+    local bad=0 found u
+    found="$(offenders)"
+    if [ -n "$found" ]; then
+        echo "preflight: FAIL -- unexpected processes running:" >&2
+        printf '%s\n' "$found" >&2
         bad=1
     fi
     if [ "$STRICT_USERS" = "1" ]; then
-        local u; u="$(other_users)"
+        u="$(other_users)"
         if [ -n "$u" ]; then
             echo "preflight: FAIL -- other users logged in: $u" >&2
             bad=1
@@ -149,6 +131,6 @@ while :; do
     sleep 5
 done
 
-echo "preflight: quiet (load $(load1), no foreign work, no orphans)"
+echo "preflight: quiet (nothing running but this session)"
 [ ${#CMD[@]} -eq 0 ] && exit 0
 exec "${CMD[@]}"
