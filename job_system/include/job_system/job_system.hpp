@@ -345,6 +345,16 @@ private:
             const unsigned hw = std::thread::hardware_concurrency();
             for (unsigned c = 0; c < hw; ++c) cpus.push_back(c);
         }
+        // Only CPUs this process was given. A taskset mask is inherited, not enforced, so a
+        // worker pinned by index would otherwise leave the caller's allowance -- and a caller
+        // confining the engine to four CPUs would get sixteen workers spread over the machine.
+        const std::vector<unsigned> allowed = hgcommon::allowed_cpus();
+        if (!allowed.empty()) {
+            std::vector<unsigned> kept;
+            for (unsigned c : cpus)
+                if (std::find(allowed.begin(), allowed.end(), c) != allowed.end()) kept.push_back(c);
+            cpus = std::move(kept);
+        }
         if (cpus.size() < 2) return;
         const std::vector<unsigned> dom = hgcommon::cache_domains_of(cpus);
         if (dom.size() != cpus.size()) return;

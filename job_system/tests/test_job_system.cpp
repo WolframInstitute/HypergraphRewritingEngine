@@ -773,6 +773,52 @@ TEST(JobSystemAffinity, PinningBindsEveryWorkerOrSaysItCouldNot) {
     js.shutdown();
 }
 
+// A process confined to two CPUs keeps its workers on those two. The confinement is set on
+// the calling thread, which is what taskset does and what every worker inherits; the default
+// placement must then pin nowhere else. On a machine with one cache domain the default pins
+// nothing and the inherited mask alone holds; on a chiplet part (eight L3s on an EPYC 9174F)
+// the default pins domain-major, and without the intersection the workers left the mask.
+TEST(JobSystemAffinity, DefaultPlacementStaysInsideTheProcessMask) {
+#if defined(__linux__)
+    cpu_set_t original;
+    CPU_ZERO(&original);
+    ASSERT_EQ(pthread_getaffinity_np(pthread_self(), sizeof(original), &original), 0);
+    if (CPU_COUNT(&original) < 2 || !CPU_ISSET(0, &original) || !CPU_ISSET(1, &original)) {
+        SUCCEED() << "the suite itself is not allowed CPUs 0 and 1; nothing to confine";
+        return;
+    }
+    cpu_set_t two;
+    CPU_ZERO(&two);
+    CPU_SET(0, &two);
+    CPU_SET(1, &two);
+    ASSERT_EQ(pthread_setaffinity_np(pthread_self(), sizeof(two), &two), 0);
+
+    const std::vector<unsigned> allowed = hgcommon::allowed_cpus();
+    EXPECT_EQ(allowed, (std::vector<unsigned>{0u, 1u}));
+
+    {
+        job_system::JobSystem<TestJobType> js(8);
+        js.start();
+        std::atomic<int> outside{0};
+        for (int i = 0; i < 64; ++i) {
+            js.submit(job_system::make_job([&] {
+                cpu_set_t got;
+                CPU_ZERO(&got);
+                if (pthread_getaffinity_np(pthread_self(), sizeof(got), &got) != 0) { ++outside; return; }
+                for (unsigned c = 0; c < CPU_SETSIZE; ++c)
+                    if (CPU_ISSET(c, &got) && c > 1) { ++outside; return; }
+            }, TestJobType::GRAPHICS));
+        }
+        js.wait_for_completion();
+        EXPECT_EQ(outside.load(), 0) << "a worker's mask reached past CPUs 0-1";
+        js.shutdown();
+    }
+    ASSERT_EQ(pthread_setaffinity_np(pthread_self(), sizeof(original), &original), 0);
+#else
+    SUCCEED() << "the confinement this checks is a Linux mask";
+#endif
+}
+
 // performance_cpus() answers a question about THIS machine, so the test cannot assert a
 // particular set. What it can assert is the contract every caller relies on, and each half
 // has a way to be wrong: a duplicate would double-count a core in a speedup denominator, an

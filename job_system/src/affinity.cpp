@@ -161,6 +161,23 @@ inline BYTE efficiency_class_of(const PROCESSOR_RELATIONSHIP* p) {
 }  // namespace
 #endif
 
+std::vector<unsigned> allowed_cpus() {
+    std::vector<unsigned> out;
+#if defined(__linux__)
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    if (sched_getaffinity(0, sizeof(set), &set) != 0) return out;
+    for (unsigned c = 0; c < CPU_SETSIZE; ++c)
+        if (CPU_ISSET(c, &set)) out.push_back(c);
+#elif defined(_WIN32)
+    DWORD_PTR process = 0, system = 0;
+    if (!::GetProcessAffinityMask(::GetCurrentProcess(), &process, &system)) return out;
+    for (unsigned c = 0; c < 64; ++c)
+        if (process & (static_cast<DWORD_PTR>(1) << c)) out.push_back(c);
+#endif
+    return out;
+}
+
 std::vector<unsigned> performance_cpus() {
     std::vector<unsigned> out;
 #if defined(__linux__)

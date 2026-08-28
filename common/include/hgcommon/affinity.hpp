@@ -107,5 +107,21 @@ std::vector<unsigned> performance_cpus();
 // invent a grouping, since a wrong grouping steers steals at data that is not there.
 std::vector<unsigned> cache_domains_of(const std::vector<unsigned>& cpus);
 
+// THE CPUS THIS THREAD IS ALLOWED TO RUN ON, as logical CPU indices, or EMPTY when the
+// operating system does not say.
+//
+// A process under taskset, a cpuset cgroup or a container is confined to a subset of the
+// machine, and a thread can still bind itself outside that subset: on Linux the taskset mask is
+// inherited, not enforced, so a worker pinned by index to a CPU the caller was not given runs
+// there anyway. Every default placement therefore intersects the machine's CPUs with this set,
+// and a caller that named CPUs explicitly is trusted to have meant them.
+//
+//   Linux    sched_getaffinity of the calling thread; a worker inherits its creator's mask.
+//   Windows  GetProcessAffinityMask, group 0 (the same reach as SetThreadAffinityMask).
+//
+// EMPTY means "unknown", never "none": macOS has no mask to read, and the caller then uses
+// every CPU.
+std::vector<unsigned> allowed_cpus();
+
 }  // namespace common
 }  // namespace HG_NAMESPACE
