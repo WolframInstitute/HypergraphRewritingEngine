@@ -172,6 +172,13 @@ struct Counts {
     size_t causal_edges;
     size_t causal_event_pairs;
     size_t branchial_edges;
+    // THE RUN'S OWN ACCOUNT OF WHERE AN APPLICATION CAN GO MISSING, carried so a firing names the
+    // mechanism instead of only the shortfall. One lost raw event is one match that was never
+    // applied: submitted after its depth had settled (late submit), a fresh child the dedup set
+    // called seen (dropped child), a forwarded match refused at apply (invalid match), a
+    // forwarding chain past the accumulator (truncated), or a claim lost to a colliding hash.
+    // Every one is zero on a run that lost nothing, and they are zero on every run measured.
+    std::string diag;
 };
 
 inline Counts engine_counts(const std::vector<RewriteRule>& rules,
@@ -191,6 +198,14 @@ inline Counts engine_counts(const std::vector<RewriteRule>& rules,
     c.causal_edges        = hg.causal_graph().num_causal_edges();
     c.causal_event_pairs  = hg.causal_graph().num_causal_event_pairs();
     c.branchial_edges     = hg.causal_graph().num_branchial_edges();
+    c.diag = "late_submits=" + std::to_string(engine.late_submits()) +
+             " dropped_children=" + std::to_string(engine.dropped_fresh_children()) +
+             " invalid_matches=" + std::to_string(hg.invalid_matches()) +
+             " fwd_truncated=" + std::to_string(engine.forwarding_consumed_truncated()) +
+             " hash_collisions=" + std::to_string(engine.hash_collisions()) +
+             " probe_exhaustions=" + std::to_string(engine.dedup_probe_exhaustions()) +
+             " matches=" + std::to_string(engine.total_matches()) +
+             " warnings=" + std::to_string(engine.warnings().size());
     return c;
 }
 

@@ -84,7 +84,8 @@ TEST(OracleCorpus, CausalBranchialCountsDeterministicAcrossThreads) {
                 EXPECT_EQ(got.canonical_states, ref.canonical_states)
                     << c.name << ": canonical_states differ @" << t << " threads (rep " << rep << ")";
                 EXPECT_EQ(got.events, ref.events)
-                    << c.name << ": events differ @" << t << " threads (rep " << rep << ")";
+                    << c.name << ": events differ @" << t << " threads (rep " << rep << ")\n"
+                    << "  this run: " << got.diag << "\n  reference: " << ref.diag;
                 EXPECT_EQ(got.causal_edges, ref.causal_edges)
                     << c.name << ": causal_edges differ @" << t << " threads (rep " << rep << ")";
                 EXPECT_EQ(got.causal_event_pairs, ref.causal_event_pairs)
