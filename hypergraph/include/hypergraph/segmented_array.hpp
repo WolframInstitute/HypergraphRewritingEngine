@@ -4,6 +4,7 @@
 #include "hgcommon/capacity.hpp"
 
 #include <atomic>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include "hgcommon/portable_intrinsics.hpp"
@@ -35,7 +36,8 @@ namespace engine {
 template<typename T>
 class SegmentedArray {
 public:
-    static constexpr size_t DEFAULT_SEGMENT_SIZE = 1024;
+    static constexpr uint32_t DEFAULT_SEGMENT_SHIFT = 10;
+    static constexpr size_t DEFAULT_SEGMENT_SIZE = size_t(1) << DEFAULT_SEGMENT_SHIFT;
     static constexpr size_t MAX_SEGMENTS = 4096;
 
     // SEGMENTS GROW, so the capacity is the INDEX TYPE's limit and not the container's. Segment k
@@ -49,21 +51,33 @@ public:
     // COUNT of segments rather than their size.
     static constexpr uint32_t GROWTH_STEPS = 10;
 
-    explicit SegmentedArray(size_t segment_size = DEFAULT_SEGMENT_SIZE)
-        : segment_size_(segment_size)
-        , seg_shift_(hgcommon::ctz64(segment_size))
-        , seg_mask_(segment_size - 1)
-        , geom_end_(segment_size * ((size_t(1) << (GROWTH_STEPS + 1)) - 1))
-        , cap_shift_(static_cast<uint32_t>(hgcommon::ctz64(segment_size)) + GROWTH_STEPS)
-        , cap_mask_((segment_size << GROWTH_STEPS) - 1)
+    // THE SIZE IS GIVEN AS A SHIFT, so a segment size that is not a power of two cannot be
+    // expressed. The index decomposition is a shift and a mask rather than a 64-bit divide, which
+    // is only valid for a power of two, and that was previously a runtime PRECONDITION -- checked
+    // in the constructor and announced by printing to stderr and aborting.
+    //
+    // A constructor with an error state is the wrong shape for a constraint the caller can always
+    // satisfy: every call site either takes the default or derives the value, so the check was
+    // guarding against a mistake no caller could make while giving every caller a way to die.
+    // Taking log2 as the parameter makes the illegal value unrepresentable instead of reported,
+    // which removes the check, the abort, the stderr write and the ctz64 call together.
+    //
+    // It also removes the reason this class could not be model-checked. GenMC v0.17.0 crashes on
+    // BOTH ways that precondition could announce itself -- std::fprintf segfaults it, and so does
+    // a throw inside a constructor -- which is why an earlier attempt that removed only one of
+    // them still saw the crash and concluded the class itself was untakeable. With no error state
+    // there is nothing to announce.
+    explicit SegmentedArray(uint32_t segment_shift = DEFAULT_SEGMENT_SHIFT)
+        : segment_size_(size_t(1) << segment_shift)
+        , seg_shift_(segment_shift)
+        , seg_mask_(segment_size_ - 1)
+        , geom_end_(segment_size_ * ((size_t(1) << (GROWTH_STEPS + 1)) - 1))
+        , cap_shift_(segment_shift + GROWTH_STEPS)
+        , cap_mask_((segment_size_ << GROWTH_STEPS) - 1)
         , claim_(0)
         , count_(0) {
         // segment_size must be a power of two so index decomposition is a shift/mask
         // rather than a 64-bit divide on the hottest accessor path.
-        if ((segment_size & (segment_size - 1)) != 0) {
-            std::fprintf(stderr, "SegmentedArray: segment_size must be a power of two\n");
-            std::abort();
-        }
         // Initialize segment pointers to null
         for (size_t i = 0; i < MAX_SEGMENTS; ++i) {
             segments_[i].store(nullptr, std::memory_order_relaxed);

@@ -1977,26 +1977,27 @@ uint32_t Hypergraph::count_state_edges(StateId sid) const {
 // The initialiser order follows member declaration order; arena_ is declared before these maps,
 // so it is fully constructed by the time they take its address.
 namespace {
-// Segment size for a given capacity scale, rounded up to a power of two because the index
-// decomposition is a shift and a mask rather than a divide.
-size_t seg_size_for(uint32_t scale) {
-    size_t s = 1;
-    while (s < (scale ? scale : 1u)) s <<= 1;
-    return SegmentedArray<Edge>::DEFAULT_SEGMENT_SIZE * s;
+// Segment SHIFT for a given capacity scale. The arrays take log2 of the segment size rather than
+// the size, so a scale that is not a power of two is rounded up here and a segment size that is
+// not one cannot be constructed at all.
+uint32_t seg_shift_for(uint32_t scale) {
+    uint32_t extra = 0;
+    for (uint32_t s = 1; s < (scale ? scale : 1u); s <<= 1) ++extra;
+    return SegmentedArray<Edge>::DEFAULT_SEGMENT_SHIFT + extra;
 }
 }  // namespace
 
 Hypergraph::Hypergraph(uint32_t capacity_scale)
-    : edges_(seg_size_for(capacity_scale))
-    , edge_signatures_(seg_size_for(capacity_scale))
-    , states_(seg_size_for(capacity_scale))
-    , events_(seg_size_for(capacity_scale))
+    : edges_(seg_shift_for(capacity_scale))
+    , edge_signatures_(seg_shift_for(capacity_scale))
+    , states_(seg_shift_for(capacity_scale))
+    , events_(seg_shift_for(capacity_scale))
     , canonical_state_map_(decltype(canonical_state_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
     , event_canonical_state_map_(
           decltype(event_canonical_state_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
-    , qc_inst_applied_(seg_size_for(capacity_scale))
-    , qc_event_sig_(seg_size_for(capacity_scale))
-    , qc_event_runsig_(seg_size_for(capacity_scale))
+    , qc_inst_applied_(seg_shift_for(capacity_scale))
+    , qc_event_sig_(seg_shift_for(capacity_scale))
+    , qc_event_runsig_(seg_shift_for(capacity_scale))
     , wl_hash_(std::make_unique<WLHash>(&arena_))
     , canonical_event_map_(decltype(canonical_event_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
 
