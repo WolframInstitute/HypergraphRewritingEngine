@@ -1322,6 +1322,16 @@ private:
     // scan/expand task completes (validate_match_forwarding_ only).
     void validate_state_at_drain(StateId state);
     std::string probe_match(StateId state, const MatchCore& core) const;
+    // THE LAST CLAIMS EACH WORKER MADE (stats builds): hash, state and the answer, in a ring
+    // per arena worker index. A match still missing at the end of the run is looked up here:
+    // present with an answer names what claim_match said; absent means complete_match never
+    // presented it.
+    static constexpr size_t kClaimRing = 8192;
+    static constexpr size_t kClaimRingWorkers = 64;
+    struct ClaimTrace { uint64_t h; StateId state; uint8_t answer; };
+    std::vector<ClaimTrace> claim_ring_ = std::vector<ClaimTrace>(kClaimRingWorkers * kClaimRing);   // heap: 8 MB
+    std::atomic<uint32_t> claim_ring_pos_[kClaimRingWorkers] = {};
+    void note_claim(uint64_t h, StateId state, uint8_t answer);
     static constexpr size_t kDrainProbes = 16;
     std::atomic<size_t> drain_probe_count_{0};
     uint64_t drain_probe_hash_[kDrainProbes] = {};

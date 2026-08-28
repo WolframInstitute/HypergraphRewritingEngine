@@ -491,6 +491,24 @@ public:
     // So: walk the chain, and emit an entry only if no NEWER table already carries that key.
     // The probe is O(1) and allocation-free -- superseded tables halve in size going back, so
     // the extra probing is bounded by roughly the current table's size.
+    // DIAGNOSTIC WALK, every table of the chain, every settled entry, no shadowing: f(key,
+    // value, depth) where depth 0 is the head. What a lookup answers for the same key is the
+    // caller's to ask; the two together say whether a settled entry has become unreachable.
+    template<typename F>
+    void for_each_in_every_table(F&& f) const {
+        Table* head = table_.load(std::memory_order_acquire);
+        size_t depth = 0;
+        for (Table* t = head; t; t = t->prev, ++depth) {
+            for (size_t i = 0; i < t->capacity; ++i) {
+                const K key = t->entries[i].key.load(std::memory_order_acquire);
+                if (key == EMPTY_KEY || key == LOCKED_KEY) continue;
+                const V v = t->entries[i].value.load(std::memory_order_acquire);
+                if (v == ABSENT_VALUE || v == forwarded_value()) continue;
+                f(key, v, depth);
+            }
+        }
+    }
+
     template<typename F>
     void for_each(F&& f) const {
         Table* head = table_.load(std::memory_order_acquire);

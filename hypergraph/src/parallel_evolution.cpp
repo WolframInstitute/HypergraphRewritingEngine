@@ -2389,6 +2389,7 @@ bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRe
         })) {
         HG_STAT(rejected_duplicates_.fetch_add(1, std::memory_order_relaxed));
         HG_STAT(match_join_for(data.state)->trace.fetch_or(128u, std::memory_order_relaxed));
+        HG_STAT(note_claim(h, data.state, 2));
         return false;  // Already seen
     }
 
@@ -2396,6 +2397,7 @@ bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRe
     HG_STAT(stats_.mine().new_matches_discovered.bump(1));
     match_join_for(data.state)->matches.fetch_add(1, std::memory_order_acq_rel);
     HG_STAT(match_join_for(data.state)->trace.fetch_or(64u, std::memory_order_relaxed));
+    HG_STAT(note_claim(h, data.state, 1));
 
     DEBUG_LOG("SINK state=%u rule=%u hash=%lu step=%u", data.state, data.rule_index, h, data.step);
 
@@ -2833,6 +2835,13 @@ void ParallelEvolutionEngine::validate_state_at_drain(StateId state) {
     if (missing > 0) validation_mismatches_.fetch_add(missing, std::memory_order_relaxed);
 }
 
+void ParallelEvolutionEngine::note_claim(uint64_t h, StateId state, uint8_t answer) {
+    int w = arena_worker_index();
+    if (w < 0 || static_cast<size_t>(w) >= kClaimRingWorkers) w = kClaimRingWorkers - 1;
+    const uint32_t i = claim_ring_pos_[w].fetch_add(1, std::memory_order_relaxed) % kClaimRing;
+    claim_ring_[static_cast<size_t>(w) * kClaimRing + i] = ClaimTrace{h, state, answer};
+}
+
 std::string ParallelEvolutionEngine::validation_witness() const {
     std::string out;
     size_t shown = 0;
@@ -2850,7 +2859,25 @@ std::string ParallelEvolutionEngine::validation_witness() const {
         for (size_t i = 0; i < probes; ++i)
             if (drain_probe_hash_[i] == h) { out += drain_probe_text_[i]; found = true; break; }
         if (!found) out += "(no drain probe kept)";
-        out += " | at end: " + probe_match(rec->source_state, *rec->core) + "] ";
+        out += " | at end: " + probe_match(rec->source_state, *rec->core);
+        // Was the claim ever presented, and what did it answer?
+        std::string seen = "never presented to claim_match";
+        for (size_t w = 0; w < kClaimRingWorkers; ++w)
+            for (size_t i = 0; i < kClaimRing; ++i)
+                if (claim_ring_[w * kClaimRing + i].h == h && claim_ring_[w * kClaimRing + i].state == rec->source_state)
+                    seen = std::string("claim_match answered ") + (claim_ring_[w * kClaimRing + i].answer == 1 ? "WON" : "DUPLICATE") + " (worker " + std::to_string(w) + ")";
+        out += " | " + seen;
+        // Is an equal record anywhere in the dedup map's chain, reachable or not?
+        std::string where = "no record in any table";
+        for (uint32_t n = 0; n < 8; ++n) {
+            const uint64_t key = dedup_probe_key(h, n);
+            seen_match_hashes_.for_each_in_every_table([&](uint64_t k, const MatchRecord* r, size_t depth) {
+                if (k == key && r && match_records_equal(*r, *rec))
+                    where = "equal record at probe " + std::to_string(n) + " in table depth " + std::to_string(depth) +
+                            (seen_match_hashes_.lookup(key).has_value() ? " (lookup finds the key)" : " (LOOKUP MISSES THE KEY)");
+            });
+        }
+        out += " | " + where + "] ";
     });
     return out;
 }
