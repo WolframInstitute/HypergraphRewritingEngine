@@ -1,3 +1,4 @@
+#include "hgcommon/core.hpp"
 #include "hgcommon/namespace.hpp"
 #include "hypergraph/ir_canonicalization.hpp"
 #include "hgcommon/ir_core.hpp"
@@ -39,8 +40,10 @@ uint64_t ir_core_call(const SVec<SVec<VertexId>>& edges,
     //
     // clear() keeps the capacity, so a thread pays for its largest state once and reuses it.
     // Not reentrant, and does not need to be: ir_core_call calls the core, never itself.
-    static thread_local std::vector<uint8_t> ea;
-    static thread_local std::vector<uint32_t> eoff, ev, sorted;
+    HG_THREAD_LOCAL(std::vector<uint8_t>, ea);
+    HG_THREAD_LOCAL(std::vector<uint32_t>, eoff);
+    HG_THREAD_LOCAL(std::vector<uint32_t>, ev);
+    HG_THREAD_LOCAL(std::vector<uint32_t>, sorted);
     ea.clear(); eoff.clear(); ev.clear();
     ea.reserve(n_edges); eoff.reserve(n_edges);
     for (const auto& e : edges) {
@@ -91,7 +94,7 @@ uint64_t ir_core_call(const SVec<SVec<VertexId>>& edges,
     // per-worker arena instead and does not zero at all, on the stated grounds that the core
     // writes every word it later reads. That is the stronger claim; this is the one that needs
     // no claim.
-    static thread_local std::vector<uint32_t> scratch;
+    HG_THREAD_LOCAL(std::vector<uint32_t>, scratch);
     for (uint32_t depth : {1u, 8u, hgcommon::IR_MAX_DEPTH_DEFAULT}) {
         for (uint32_t gens = hgcommon::IR_HOST_GENERATORS; gens <= gen_hi; gens *= 4u) {
             const uint64_t words =

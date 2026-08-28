@@ -1,3 +1,4 @@
+#include "hgcommon/core.hpp"
 #include "hgcommon/phase_timing.hpp"
 #include "hgcommon/namespace.hpp"
 // parallel_evolution.cpp - Implementation of ParallelEvolutionEngine class
@@ -1446,7 +1447,7 @@ void ParallelEvolutionEngine::release_step_slot(uint32_t step) {
 namespace {
 
 std::mt19937& sampling_rng(uint64_t generation, uint64_t seed) {
-    thread_local std::mt19937 rng;
+    HG_THREAD_LOCAL(std::mt19937, rng);
     thread_local uint64_t seen_gen = std::numeric_limits<uint64_t>::max();
     if (seen_gen != generation) {
         uint64_t s = seed
@@ -1614,7 +1615,7 @@ bool ParallelEvolutionEngine::should_explore() {
 
     auto& rng = sampling_rng(sampling_generation_.load(std::memory_order_relaxed),
                              random_seed_);
-    thread_local std::uniform_real_distribution<double> dist(0.0, 1.0);
+    HG_THREAD_LOCAL(std::uniform_real_distribution<double>, dist, 0.0, 1.0);
 
     return dist(rng) < exploration_probability_;
 }

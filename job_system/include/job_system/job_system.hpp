@@ -16,6 +16,9 @@
 #include <hgcommon/phase_timing.hpp>  // the idle bucket, entered below
 #include <hgcommon/capacity.hpp>  // the one error kind that is not a defect
 #include <thread>
+#if defined(HG_VERIFICATION)
+#include <pthread.h>
+#endif
 #include <vector>
 #include <atomic>
 #include <cstring>
@@ -58,9 +61,45 @@ class JobSystem {
 private:
     using JobRaw = Job<JobType>*;
 
+    struct WorkerData;
+    struct SpawnArgs { JobSystem* sys; WorkerData* worker; size_t index; };
+#if defined(HG_VERIFICATION)
+    struct WorkerThread {
+        pthread_t handle{};
+        bool live = false;
+        SpawnArgs args{};
+        static void* run(void* p) {
+            auto* a = static_cast<SpawnArgs*>(p);
+            a->sys->worker_loop(a->worker, a->index);
+            return nullptr;
+        }
+        void spawn(JobSystem* sys, WorkerData* worker, size_t index) {
+            args = SpawnArgs{sys, worker, index};
+            pthread_create(&handle, nullptr, &run, &args);
+            live = true;
+        }
+        void join() { if (live) { pthread_join(handle, nullptr); live = false; } }
+    };
+#else
+    struct WorkerThread {
+        std::thread handle;
+        void spawn(JobSystem* sys, WorkerData* worker, size_t index) {
+            handle = std::thread([sys, worker, index] { sys->worker_loop(worker, index); });
+        }
+        void join() { if (handle.joinable()) handle.join(); }
+    };
+#endif
+
     struct WorkerData {
         WorkStealingDeque<JobRaw> deque;
-        std::thread thread;
+        // The worker's OS thread. Under HG_VERIFICATION it is a pthread_t spawned with
+        // pthread_create, which is the primitive the model checker models
+        // (__VERIFIER_thread_create); std::thread wraps the same call in a heap-allocated
+        // polymorphic state whose typeinfo derives from libstdc++'s, an external constant the
+        // interpreter cannot materialise and dies on before the first thread runs. The body,
+        // its arguments and the join are identical either way, and the substitution touches
+        // no memory any other thread reads.
+        WorkerThread thread;
         std::atomic<bool> stop{false};
         std::atomic<size_t> jobs_executed{0};
         std::atomic<size_t> jobs_executing{0};
@@ -728,7 +767,7 @@ public:
         build_cache_peers();                      // before any worker exists: see peer_begin_
         for (size_t i = 0; i < workers_.size(); ++i) {
             auto* worker = workers_[i].get();
-            worker->thread = std::thread([this, worker, i] { worker_loop(worker, i); });
+            worker->thread.spawn(this, worker, i);
         }
         // Wait until every worker has passed its binding attempt, so pin_failures() is a
         // settled count when start() returns rather than a snapshot racing worker startup --
@@ -759,7 +798,7 @@ public:
         for (auto& worker : workers_) worker->stop.store(true, std::memory_order_release);
         wake_all_workers();
         for (auto& worker : workers_) {
-            if (worker->thread.joinable()) worker->thread.join();
+            worker->thread.join();
         }
         drain_and_delete();  // free any jobs abandoned without wait_for_completion
         is_running_.store(false);

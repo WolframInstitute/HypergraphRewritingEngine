@@ -51,10 +51,18 @@ what `main` reaches:
 |---|---|---|
 | construct a `Hypergraph` | 5,452 | verifies, 118.7s |
 | the same, with `HG_SEGMENTED_ARRAY_MAX_SEGMENTS=8` and `HG_CONCURRENT_MAP_INITIAL_CAPACITY=16` | 5,452 | verifies, 4.9s |
-| add the engine and a rule | 19,477 | transforms, then the interpreter stops |
-| reach `evolve()` | 110,932 | no verdict; transformation alone exceeds 540s |
+| construct the evolution engine, two workers started (`engine_construct`) | -- | verifies, 2 executions, 1.5s |
+| add a rule (`engine_rule`) | 19,477 | verifies, 2 executions, 14.9s |
+| reach `evolve()` | 110,932 | in progress |
 | construct a `JobSystem` | 2,659 | verifies |
-| `JobSystem::start()` | 8,952 | transforms, then GenMC segfaults |
+| `JobSystem::start()` | 8,952 | verifies, inside `engine_construct` |
+
+The three rows that used to stop were the interpreter's materialisation phase, and each was one
+global it could not build. What lifted them is a pipeline of four rewrites, each applied to the
+code as it is and each recorded with its justification in `verification/genmc/README.md`: a
+thread_local aggregate becomes a thread_local pointer, worker threads are spawned with the
+primitive the checker models, every data symbol the link leaves undefined is defined zero-filled
+from the link's own declarations, and loops are bounded with `--unroll`.
 
 The `JobSystem` row is the same story at a smaller scale: construction is checkable and starting
 is not. Getting that far needed two more shims -- GenMC's address allocator refuses a zero-size

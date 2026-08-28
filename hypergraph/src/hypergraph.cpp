@@ -1,3 +1,4 @@
+#include "hgcommon/core.hpp"
 #include "hgcommon/rendezvous.hpp"
 #include "hgcommon/phase_timing.hpp"
 #include "hgcommon/namespace.hpp"
@@ -348,7 +349,7 @@ uint64_t Hypergraph::cache_state_edge_ranks(StateId state_id, const SparseBitset
         }
         if (!ok) {
             IRCanonicalizer ir;
-            thread_local std::vector<uint32_t> fallback_ranks;
+            HG_THREAD_LOCAL(std::vector<uint32_t>, fallback_ranks);
             hash = ir.compute_canonical_hash_with_edge_rank(edge_vectors, fallback_ranks);
             for (uint32_t i = 0; i < n; ++i) ranks[i] = fallback_ranks[i];
         }
@@ -693,8 +694,8 @@ uint64_t Hypergraph::compute_exact_canonical_hash(const SparseBitset& edges) con
     //
     // The table is per-worker and grows monotonically; a generation stamp makes reuse O(1)
     // instead of clearing it, so its cost amortises to nothing across states.
-    static thread_local std::vector<uint32_t> local_index;
-    static thread_local std::vector<uint32_t> stamp;
+    HG_THREAD_LOCAL(std::vector<uint32_t>, local_index);
+    HG_THREAD_LOCAL(std::vector<uint32_t>, stamp);
     static thread_local uint32_t generation = 0;
     uint32_t max_vid = 0;
     for (uint32_t x : ev) max_vid = std::max(max_vid, x);
@@ -873,7 +874,8 @@ uint64_t Hypergraph::compute_and_cache_state_orbits(StateId s, const SparseBitse
         // Reused per worker rather than allocated per state: this runs once for every state
         // created under quotient, and the vectors would otherwise be a heap round-trip each
         // time.
-        thread_local std::vector<uint32_t> orbit, klass;
+        HG_THREAD_LOCAL(std::vector<uint32_t>, orbit);
+        HG_THREAD_LOCAL(std::vector<uint32_t>, klass);
         orbit.assign(n, 0);
         klass.assign(n, 0);
 
@@ -1372,7 +1374,8 @@ void Hypergraph::causal_edge_keys(StateId state, const EdgeId* edges, uint32_t n
         return;
     }
 
-    thread_local std::vector<uint32_t> orbit, klass;
+    HG_THREAD_LOCAL(std::vector<uint32_t>, orbit);
+    HG_THREAD_LOCAL(std::vector<uint32_t>, klass);
     const uint64_t chash = ir_hash_and_orbits(edge_vecs, orbit, klass);
 
     for (uint32_t i = 0; i < n; ++i) {

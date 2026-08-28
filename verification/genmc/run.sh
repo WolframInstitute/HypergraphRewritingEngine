@@ -224,6 +224,47 @@ run_one() {
         fi
         to_opt="$WORK/$name.linked.ll"
 
+        # LIBSTDC++'S TYPEINFO OBJECTS ARE DEFINED HERE, ZERO-FILLED. A class derived from a
+        # standard exception carries a typeinfo whose initializer points at the base's --
+        # hg::common::CapacityExhausted's at _ZTISt12length_error -- and that base typeinfo is
+        # declared in the module and defined only in the C++ runtime. The interpreter assigns no
+        # address to an undefined global, so materialising the derived initializer dereferences
+        # null in ExecutionEngine::InitializeMemory and the checker segfaults before the first
+        # thread runs. MEASURED on the composed engine: every attempt to construct the evolution
+        # engine died there.
+        #
+        # A typeinfo object is read by throw, catch and dynamic_cast and by nothing else. The
+        # engine throws only on a programmer error and never catches or downcasts, so on every
+        # path the checker explores no thread reads these bytes; a zero-filled definition
+        # changes no shared memory and no control flow. The declarations' own types are kept.
+        # THE SAME HOLDS FOR EVERY OTHER UNDEFINED DATA SYMBOL, for a reason one line above the
+        # typeinfo one in the interpreter: collectStaticAddresses (lli/Runtime/Interpreter.cpp)
+        # walks every global variable of the module, declarations included, and re-initialises
+        # each from its initializer -- which a declaration does not have. @stderr (the
+        # placement diagnostic's fprintf, never enabled by a harness) and std::nothrow (a tag
+        # object, never read) are the two the engine declares.
+        local ti_ll="$WORK/$name.typeinfo.ll"
+        grep -oE '^@[A-Za-z0-9_.$"]+ = external (unnamed_addr )?(global|constant) [^,]+' \
+            "$WORK/$name.linked.ll" \
+          | sed -E 's/^(@[^ ]+) = external (unnamed_addr )?(global|constant) (.*)$/\1 = \2\3 \4 zeroinitializer/' \
+          > "$ti_ll"
+        # A definition of a named struct type has to travel with a declaration that uses it.
+        if [ -s "$ti_ll" ]; then
+            local ty_ll="$WORK/$name.typeinfo.types.ll"
+            : > "$ty_ll"
+            for t in $(grep -oE '%"[^"]+"' "$ti_ll" | sort -u); do
+                grep -F "$t = type " "$WORK/$name.linked.ll" >> "$ty_ll"
+            done
+            cat "$ti_ll" >> "$ty_ll"; mv "$ty_ll" "$ti_ll"
+        fi
+        if [ -s "$ti_ll" ]; then
+            if ! "$LLVM_LINK" -S "$WORK/$name.linked.ll" "$ti_ll" -o "$WORK/$name.linked2.ll" \
+                    2>>"$WORK/$name.link.err"; then
+                echo "--- $name: TYPEINFO LINK FAILED"; tail -20 "$WORK/$name.link.err"; return 3
+            fi
+            to_opt="$WORK/$name.linked2.ll"
+        fi
+
         # INTERNALIZE BEFORE globaldce, or the prune does nothing. Linking the engine brings in
         # every exported symbol, and globaldce cannot prove any of them dead while they are
         # externally visible -- so the checker is handed the whole engine whether or not main

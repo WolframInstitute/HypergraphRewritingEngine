@@ -1,3 +1,4 @@
+#include "hgcommon/core.hpp"
 #include "hypergraph/arena.hpp"
 #if defined(__linux__)
 #include <sys/mman.h>
@@ -376,8 +377,8 @@ void ConcurrentHeterogeneousArena::register_destructor(void* obj, void (*destroy
 }
 
 ConcurrentHeterogeneousArena& worker_scratch() {
-    static thread_local ConcurrentHeterogeneousArena scratch(
-        ConcurrentHeterogeneousArena::DEFAULT_BLOCK_SIZE, /*recycle_blocks=*/true);
+    HG_THREAD_LOCAL(ConcurrentHeterogeneousArena, scratch,
+                    ConcurrentHeterogeneousArena::DEFAULT_BLOCK_SIZE, /*recycle_blocks=*/true);
     return scratch;
 }
 
@@ -436,7 +437,7 @@ size_t discarded_table_count() { return g_discarded_tables.load(std::memory_orde
 // ScratchIdSet comes with them because it allocates from worker_scratch().
 
 ConcurrentHeterogeneousArena*& worker_persistent_target() {
-    static thread_local ConcurrentHeterogeneousArena default_arena;
+    HG_THREAD_LOCAL(ConcurrentHeterogeneousArena, default_arena);
     static thread_local ConcurrentHeterogeneousArena* current = &default_arena;
     return current;
 }

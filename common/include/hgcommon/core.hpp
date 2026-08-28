@@ -47,6 +47,24 @@ constexpr uint32_t INVALID_ID = 0xFFFFFFFFu;  // == UINT32_MAX
 
 // Fixed-size structural limits (stack/shared-memory buffers rely on these).
 constexpr uint8_t MAX_ARITY         = 16;
+
+// A THREAD-PRIVATE OBJECT WITH THREAD LIFETIME, spelled once. Every use expands to a
+// `static thread_local` of the object under a normal build. Under HG_VERIFICATION it expands to a
+// `thread_local` POINTER filled on first use: the model checker's interpreter materialises a
+// thread_local scalar or pointer and cannot materialise a thread_local aggregate -- "Constant
+// unimplemented for type" before the first thread runs -- and the object behind the pointer is
+// exactly as thread-private, so no shared-memory behaviour differs between the two spellings.
+// The one difference is that the verification object is never destroyed, which for a checker's
+// bounded run is the same lifetime.
+#if defined(HG_VERIFICATION)
+#  define HG_THREAD_LOCAL(Type, name, ...)                                   \
+       static thread_local Type* name##_tls_ptr = nullptr;                   \
+       if (!name##_tls_ptr) name##_tls_ptr = new Type{__VA_ARGS__};          \
+       Type& name = *name##_tls_ptr
+#else
+#  define HG_THREAD_LOCAL(Type, name, ...) static thread_local Type name{__VA_ARGS__}
+#endif
+
 constexpr uint8_t MAX_PATTERN_EDGES = 16;
 // Producers one consumed edge's causal registration reads. A raw edge has exactly one; a
 // canonical edge orbit under quotient can have several, bounded by the class's automorphisms.

@@ -65,7 +65,7 @@ struct BitsetStatsTLS {
     }
 };
 inline BitsetStats& bitset_stats() {
-    static thread_local BitsetStatsTLS t;
+    HG_THREAD_LOCAL(BitsetStatsTLS, t);
     return t.s;
 }
 // Folds the CALLING thread in as well, so a single-threaded run reports without waiting on
