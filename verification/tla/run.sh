@@ -58,6 +58,7 @@ module_for() {
         MCMatchForwarding*) echo "MCMatchForwarding.tla" ;;
         MCSegmentedArray*)  echo "SegmentedArray.tla" ;;
         MCDepthRelaxation*) echo "DepthRelaxation.tla" ;;
+        MCQuiescence*)      echo "Quiescence.tla" ;;
         *) return 1 ;;
     esac
 }
