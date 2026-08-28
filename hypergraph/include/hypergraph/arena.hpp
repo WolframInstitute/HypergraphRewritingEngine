@@ -365,7 +365,12 @@ int arena_worker_index();
 
 class ConcurrentHeterogeneousArena {
 public:
-    static constexpr size_t DEFAULT_BLOCK_SIZE = 1024 * 1024;  // 1 MB
+    // THE HUGE PAGE IS THE REASON FOR THE SIZE. A block below 2 MB, or not 2 MB aligned, cannot be
+    // backed by one however it is advised, so the default block is exactly one huge page. Measured
+    // on the EPYC at 32 workers: the 1 MB default took 1,060,520 minor faults on wpp depth 7, with
+    // 9.3% of cycles in the kernel's fault and page-zeroing path.
+    static constexpr size_t kHugePageBytes = 2u * 1024u * 1024u;
+    static constexpr size_t DEFAULT_BLOCK_SIZE = kHugePageBytes;
 
     // The first block reserved (per arena, and per worker cursor) is small, and each
     // successive block doubles up to block_size_. A lightly-used arena therefore
@@ -479,6 +484,10 @@ private:
         Block* next;   // newer block; lets reset() walk forward to recycle blocks
         size_t capacity;
         std::atomic<size_t> offset;
+        // WHICH ALLOCATOR PRODUCED THIS BLOCK, recorded rather than inferred. A huge-page block
+        // comes from posix_memalign and must go back through free(); an ordinary one comes from
+        // operator new. Deducing it from the size would be wrong the moment the threshold moves.
+        bool huge;
         alignas(std::max_align_t) char data[];
 
         static Block* create(size_t data_capacity);

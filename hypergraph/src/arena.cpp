@@ -1,4 +1,8 @@
 #include "hypergraph/arena.hpp"
+#if defined(__linux__)
+#include <sys/mman.h>
+#endif
+#include <cstdlib>
 #include "hypergraph/scratch_alloc.hpp"
 
 // ASAN CONTAINER ANNOTATIONS.
@@ -102,7 +106,8 @@ ConcurrentHeterogeneousArena::~ConcurrentHeterogeneousArena() {
         // operator delete must not be handed a region this file poisoned.
         HG_ARENA_UNPOISON(block->data, block->capacity);
         g_arena_block_bytes.fetch_sub(sizeof(Block) + block->capacity, std::memory_order_relaxed);
-        ::operator delete(block);
+        // Freed by whichever allocator produced it; see Block::create.
+        if (block->huge) std::free(block); else ::operator delete(block);
         block = prev;
     }
 
@@ -161,13 +166,42 @@ void ConcurrentHeterogeneousArena::reset() {
     current_block_.store(first, std::memory_order_relaxed);
 }
 
+// HUGE PAGES, ASKED FOR EXPLICITLY. Measured on the EPYC at 32 workers, wpp depth 7: 1,060,520
+// minor page faults, and 9.3% of all cycles inside the kernel -- clear_page_erms zeroing fresh
+// 4 KB pages, down_read_trylock on mmap_sem, and native_queued_spin_lock_slowpath where 32
+// threads meet on it. That is the fault path, not the engine.
+//
+// Two things are needed together and neither works alone. The mapping must be 2 MB ALIGNED and at
+// least 2 MB, or there is no huge page for the kernel to use; and it must be ASKED FOR, because
+// transparent huge pages run in `madvise` mode on this box and on most distributions, where an
+// unrequested mapping gets 4 KB pages however large it is.
+//
+// The pairing matters: a posix_memalign block is freed with free(), never operator delete, so the
+// flag records which allocator this block came from rather than inferring it from the size.
 ConcurrentHeterogeneousArena::Block*
 ConcurrentHeterogeneousArena::Block::create(size_t data_capacity) {
-    void* mem = ::operator new(sizeof(Block) + data_capacity);
+    const size_t total = sizeof(Block) + data_capacity;
+    void* mem = nullptr;
+    bool  aligned = false;
+#if defined(__linux__)
+    if (total >= kHugePageBytes) {
+        const size_t rounded = (total + kHugePageBytes - 1) & ~(kHugePageBytes - 1);
+        if (posix_memalign(&mem, kHugePageBytes, rounded) == 0 && mem) {
+            // Advisory: a kernel that cannot back it says so and the mapping still works.
+            ::madvise(mem, rounded, MADV_HUGEPAGE);
+            aligned = true;
+            data_capacity = rounded - sizeof(Block);   // the slack is usable, not wasted
+        } else {
+            mem = nullptr;
+        }
+    }
+#endif
+    if (!mem) mem = ::operator new(total);
     Block* block = static_cast<Block*>(mem);
     block->prev = nullptr;
     block->next = nullptr;
     block->capacity = data_capacity;
+    block->huge = aligned;
     block->offset.store(0, std::memory_order_relaxed);
     HG_ARENA_POISON(block->data, data_capacity);
     g_arena_block_bytes.fetch_add(sizeof(Block) + data_capacity, std::memory_order_relaxed);
