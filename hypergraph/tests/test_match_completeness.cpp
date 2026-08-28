@@ -91,7 +91,13 @@ Outcome run_validated(const oracle::Case& c, unsigned threads, bool batched,
 // The standing gate. Every corpus case, a spread of worker counts, repeated -- because the
 // hazard is a race and a race is a rate, not a verdict.
 TEST(MatchCompleteness, ForwardedPlusDeltaFindsEveryMatch) {
-    const std::vector<unsigned> worker_counts = {1, 2, 4, 8};
+    // SIXTEEN AND THIRTY-TWO ARE THE POINT, not a wider sweep for its own sake. This is the exact
+    // detector for a lost match -- and a lost match deletes its whole subtree while the run stays
+    // self-consistent, which is precisely the shape
+    // CausalDeterminism.NonQuotientFullyDeterministic fires with. Every one of that gate's
+    // thirteen firings in a week of CI was at 16 or 32 threads, and this validator stopped at 8,
+    // so the one instrument that could name the cause had never run where the failure appears.
+    const std::vector<unsigned> worker_counts = {1, 2, 4, 8, 16, 32};
     constexpr int kReps = 3;
 
     size_t total_runs = 0, failing_runs = 0, total_missing = 0, runs_that_validated = 0;
@@ -183,7 +189,11 @@ TEST(MatchCompleteness, ForwardedPlusDeltaFindsEveryMatch) {
 // shows a loss batched does not, the two arms separate them rather than leaving the default to
 // an argument.
 TEST(MatchCompleteness, BatchedSubmissionIsAlsoComplete) {
-    const std::vector<unsigned> worker_counts = {1, 4, 8};
+    // THE SHIPPING PATH, AND IT STOPPED AT EIGHT. batched_matching_ defaults to true, so this arm
+    // covers what actually runs -- and it covered it at 1, 4 and 8 workers while every firing of
+    // the determinism gate is at 16 or 32. A lost match here deletes its whole subtree and leaves
+    // the run self-consistent, which is exactly what that gate reports and cannot explain.
+    const std::vector<unsigned> worker_counts = {1, 4, 8, 16, 32};
 
     size_t total_runs = 0, failing_runs = 0, runs_that_validated = 0;
     for (const auto& c : oracle::corpus()) {
