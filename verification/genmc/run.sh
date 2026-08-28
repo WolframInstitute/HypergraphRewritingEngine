@@ -337,6 +337,10 @@ run_one() {
     # bound a harness needs is stated next to the property it bounds.
     local extra
     extra="$(sed -n 's|^// GENMC-ARGS: *||p' "$src" | head -1)"
+    # A bound the caller passes overrides the harness's: the checker keeps the FIRST --unroll it
+    # sees (three runs meant as unroll 2/3/4 produced byte-identical modules), so the harness's
+    # own --unroll is dropped when the extra arguments carry one.
+    case " $* " in *" --unroll="*) extra="$(sed -E 's/--unroll=[0-9]+ ?//g' <<<"$extra")" ;; esac
 
     # A `// GENMC-EXPECT: violation` harness is a PINNED REPRODUCER of a known-reachable defect:
     # it passes exactly when the checker still finds the violation, so the suite notices if the
