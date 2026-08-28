@@ -674,23 +674,6 @@ TEST(JobSystemSerial, ErrorLatchesAndStopsTheDrain) {
     js.shutdown();
 }
 
-TEST(JobSystemSerial, AbortPollRunsBetweenJobs) {
-    job_system::JobSystem<TestJobType> js(0, 4096, /*serial=*/true);
-    js.start();
-
-    int executed = 0;
-    for (int i = 0; i < 10; ++i) {
-        js.submit(job_system::make_job([&executed] { ++executed; },
-                                       TestJobType::GRAPHICS));
-    }
-    // Abort after 3 jobs: the poll fires before each job.
-    const bool aborted =
-        js.wait_for_completion_with_abort([&] { return executed >= 3; });
-    EXPECT_TRUE(aborted);
-    EXPECT_EQ(executed, 3);
-    js.shutdown();
-}
-
 // A CONFIGURED LIMIT IS ITS OWN ERROR KIND, and the classification happens HERE because here is
 // where the type is still known.
 //

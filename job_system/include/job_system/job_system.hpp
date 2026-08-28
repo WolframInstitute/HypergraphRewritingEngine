@@ -821,38 +821,6 @@ public:
         submit(make_job(std::forward<F>(func), job_type, priority), mode);
     }
 
-    // Wait for completion with an abort callback. Returns true if aborted (by the
-    // callback or a worker error), false if completed normally.
-    template<typename AbortCheck>
-    bool wait_for_completion_with_abort(AbortCheck&& abort_check) {
-        if (serial_) {
-            // Serial: this thread IS the executor; the abort poll runs between jobs,
-            // a strictly finer granularity than the parallel path's bounded sleep.
-            while (error_type_.load(std::memory_order_acquire) == ErrorType::None) {
-                if (abort_check()) return true;
-                auto opt = injector_.try_pop_front();
-                if (!opt) return false;   // drained: serial has no other queue to wait on
-                run_job(nullptr, *opt, /*recycle_scratch=*/true);
-            }
-            return true;
-        }
-        // abort_check is a caller-supplied poll, so this one keeps a bounded sleep -- there
-        // is nothing to be notified BY when the abort condition lives outside the system.
-        completion_waiters_.fetch_add(1, std::memory_order_seq_cst);
-        struct Leave { std::atomic<int>& n; ~Leave() { n.fetch_sub(1, std::memory_order_release); } }
-            leave{completion_waiters_};
-
-        while (true) {
-            if (abort_check()) return true;
-            if (error_type_.load(std::memory_order_acquire) != ErrorType::None) return true;
-            if (is_quiescent()) return false;
-
-            const uint32_t q = quiescence_seq_.load(std::memory_order_acquire);
-            if (is_quiescent()) return false;
-            hgcommon::park_if_equal(quiescence_seq_, q);
-        }
-    }
-
     void wait_for_completion() {
         if (serial_) { drain_serial(); return; }
         // No timeout and no polling: this blocks on the completion counter itself and is
