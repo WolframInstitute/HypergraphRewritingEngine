@@ -954,8 +954,14 @@ TEST(JobSystemAffinity, StatedDomainsThatGroupNothingLeaveTheDrawUndivided) {
     EXPECT_EQ(ran.load(), 200);
 }
 
-// The default must stay exactly what it was: nothing pinned, placement left to the OS.
-TEST(JobSystemAffinity, NothingIsPinnedUnlessAsked) {
+// THE DEFAULT PLACEMENT IS DECIDED BY THE TOPOLOGY. On a machine whose CPUs span more than
+// one last-level cache the workers are pinned domain-major, so the domain map the engine reads
+// is the topology it runs on; on a machine with one cache domain, or one the OS cannot
+// describe, nothing is pinned and placement is the OS's. Either way no worker leaves the
+// process's CPU mask and no binding is refused. The branch is decided from the same two
+// queries the default reads, so the test states the contract on every machine rather than
+// passing only where the default happens to pin nothing.
+TEST(JobSystemAffinity, DefaultPlacementFollowsTheTopology) {
     job_system::JobSystem<TestJobType> js(4);
     js.start();
     std::atomic<int> ran{0};
@@ -963,7 +969,30 @@ TEST(JobSystemAffinity, NothingIsPinnedUnlessAsked) {
         js.submit(job_system::make_job([&] { ++ran; }, TestJobType::GRAPHICS));
     js.wait_for_completion();
     EXPECT_EQ(ran.load(), 32);
-    EXPECT_TRUE(js.worker_cpus().empty());
-    EXPECT_EQ(js.pin_failures(), 0u) << "a system that never asked to pin cannot have failed to";
+    EXPECT_EQ(js.pin_failures(), 0u) << "a default placement must never be refused";
+
+    std::vector<unsigned> cpus = hgcommon::performance_cpus();
+    if (cpus.empty())
+        for (unsigned c = 0; c < std::thread::hardware_concurrency(); ++c) cpus.push_back(c);
+    const std::vector<unsigned> allowed = hgcommon::allowed_cpus();
+    if (!allowed.empty()) {
+        std::vector<unsigned> kept;
+        for (unsigned c : cpus)
+            if (std::find(allowed.begin(), allowed.end(), c) != allowed.end()) kept.push_back(c);
+        cpus = kept;
+    }
+    const std::vector<unsigned> dom = hgcommon::cache_domains_of(cpus);
+    bool many = false;
+    if (hgcommon::affinity_supported() && cpus.size() >= 2 && dom.size() == cpus.size())
+        for (size_t i = 1; i < dom.size(); ++i) if (dom[i] != dom[0]) { many = true; break; }
+
+    if (!many) {
+        EXPECT_TRUE(js.worker_cpus().empty()) << "one cache domain: placement decides nothing";
+    } else {
+        EXPECT_EQ(js.worker_cpus().size(), cpus.size()) << "every allowed CPU is placed once";
+        for (unsigned c : js.worker_cpus())
+            EXPECT_NE(std::find(cpus.begin(), cpus.end(), c), cpus.end())
+                << "worker CPU " << c << " is outside the allowed set";
+    }
     js.shutdown();
 }
