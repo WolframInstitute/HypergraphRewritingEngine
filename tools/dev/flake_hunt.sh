@@ -22,9 +22,12 @@ OUT="${HG_HUNT_OUT:-$HOME/flake_hunt}"
 BIN="$ROOT/build_linux/all_tests"
 TAG=hg_flake_hunt
 
-# The whole determinism family, not just the one that fires most: they share a cause often enough
-# that a firing of any of them is evidence about all of them.
-FILTER='CausalDeterminism.*:FeatureMatrix.CanonModeEventCanonThreadDeterminism:OracleCorpus.CausalBranchialCountsDeterministicAcrossThreads:SamplingReproducibility.DepthCompletesOnceAfterEveryStateAtItHasDrained'
+# ROUNDS PER HOUR IS THE WHOLE POINT, so the default is the test that fires most rather than the
+# whole family. Of twenty firings in a week of CI, thirteen were
+# NonQuotientFullyDeterministic; it also runs in about six seconds against the family's forty-odd,
+# and under this much contention the difference decides whether a rare event is reached at all.
+# The family is still reachable -- pass a filter as the third argument.
+FILTER="${3:-CausalDeterminism.NonQuotientFullyDeterministic}"
 
 case "${1:-status}" in
 start)
