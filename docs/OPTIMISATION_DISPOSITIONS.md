@@ -202,6 +202,52 @@ thousand states cannot fill a 4090 whatever the scheduler does, and 22% on the l
 is the FLOOR this measurement reaches rather than a defect sitting on top of it. REFUTED as a
 scheduling target.
 
+## CLOSED: arena blocks are one huge page
+
+A cycles profile at 32 workers put 9.3% of the run inside the kernel -- 5.99%
+`native_queued_spin_lock_slowpath`, 1.70% `down_read_trylock`, 1.65% `clear_page_erms`. That is
+the page-fault path: 1,060,520 minor faults on wpp depth 7, which is 4.3 GB arriving 4 KB at a
+time, with 32 threads meeting on `mmap_sem`.
+
+Blocks were 1 MB from `operator new`, aligned to nothing, and transparent huge pages run in
+`madvise` mode on this box and most distributions -- so an unrequested mapping gets 4 KB pages
+however large it is. Both halves were missing: the block is now exactly one 2 MB huge page,
+allocated 2 MB aligned, and advised.
+
+| threads | before | after | change |
+|---|---|---|---|
+| 1 | 3179.3 ms | 2747.2 ms | -13.6% |
+| 2 | 1489.1 | 1320.9 | -11.3% |
+| 4 | 859.1 | 772.3 | -10.1% |
+| 8 | 499.3 | 455.8 | -8.7% |
+| 16 | 293.2 | 268.3 | -8.5% |
+| 32 | 184.0 | 174.5 | -5.2% |
+
+Minor faults 1,060,520 -> 175,725. Peak resident set 1,313,488 KB -> 1,309,336 KB, so the
+footprint did not grow: a 2 MB block carries one header where two 1 MB blocks carried two, and the
+alignment slack is usable space. `native_queued_spin_lock_slowpath` and `down_read_trylock` left
+the profile entirely.
+
+## REFUTED: spreading workers across cache domains to get more physical cores
+
+The EPYC 9174F is 16 cores over 8 L3 instances, so a domain holds 2 physical cores and 4 logical
+CPUs. Domain-major placement therefore puts four workers on CPUs 0,1,16,17 -- two physical cores
+and their SMT siblings -- and the obvious reading is that it is leaving two cores idle. Efficiency
+does dip there: 0.67 at four workers against 0.80 at sixteen, on wpp depth 7, full multiway.
+
+Measured, wpp depth 6, four workers, medians of five:
+
+| CPUs | physical cores | L3 domains | median |
+|---|---|---|---|
+| 0,1,16,17 | 2 | 1 | 60.9 ms |
+| 0,1,2,3 | 4 | 2 | 73.9 ms |
+| 0,2,4,6 | 4 | 4 | 87.3 ms |
+
+Sharing one L3 beats having twice the physical cores, and the penalty grows with the number of
+domains spanned. The placement is already right and the dip is a property of the part -- a domain
+has two cores, so four workers inside one cannot have four. Four workers on two cores reaching
+2.69x is SMT and cache locality doing better than the core count suggests, not worse.
+
 ## OPEN: parallelize individualization-refinement WITHIN a state
 
 Both engines run IR one state at a time and parallelize ACROSS states -- the host by giving each
