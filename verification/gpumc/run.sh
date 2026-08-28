@@ -24,6 +24,12 @@
 # machine to run one checker is not a trade worth making. The image is the CAV 2025 artifact
 # (figshare 28789703, GPL-3.0+), loaded once with `docker load`. Set HG_GPUMC_IMAGE to override.
 #
+# A 32-BIT COMPARE-EXCHANGE ALWAYS REPORTS FAILURE in this build, while reading exactly the
+# expected value. The trace shows the CAS read and no CAS write, so no execution completes and
+# the harness's own assertion fires as though the protocol were broken. The same exchange on a
+# 64-bit word, under the same memory orders, succeeds. Widen the harness's word before suspecting
+# the code; verification/gpumc/hash_insert_elects_one.cpp records where this was measured.
+#
 # ONE STEP, unlike the GenMC runner. This driver compiles the input itself and handles C++ -- the
 # harness drives a shared template, so that matters -- and takes compiler flags after `--`.
 # The documented --input-from-bitcode-file path is NOT used: it segfaults in this build on

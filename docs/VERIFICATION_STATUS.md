@@ -12,8 +12,8 @@ stated absence rather than an unexamined one.
   CTAs and every access carries a SCOPE, so whether two threads synchronise depends on how close
   they are. RC11 has no scopes, so GenMC would check a program the device does not run. It runs
   from a container -- it is a fork of GenMC 0.9 supporting LLVM up to 15, and this tree builds
-  against 18. `verification/gpumc/run.sh <name>`. Two harnesses: the termination decision and the
-  device work queue.
+  against 18. `verification/gpumc/run.sh <name>`. Three harnesses: the termination decision, the
+  device work queue and the dedup map's election.
 - **TLA+** models a protocol rather than a translation unit, which is what makes it the right tool
   where the property is about an ordering across many participants rather than about one
   structure's memory operations. `verification/tla/run.sh <config>`.
@@ -178,6 +178,29 @@ The checker reports one item handed to two consumers.
 
 The reservation CAS is modelled WEAK, as the device writes it. Modelling it strong would remove
 the spurious-failure retries, and removing behaviours from a checker is the unsound direction.
+
+**The DEVICE's dedup map election**, covered by `verification/gpumc/hash_insert_elects_one.cpp`.
+The insert rule is `hgcommon/hash_insert_core.hpp` and the harness runs THAT -- the same
+`hash_insert_claim` body `gpu/include/hg_gpu/hash_table.hpp` drives. The host `ConcurrentMap` had
+six GenMC harnesses and the device table had none, though it is what decides state and event
+identity on the GPU.
+
+The property has two halves and needs both: exactly one thread is told `inserted`, AND the value
+that is stored is that thread's. `inserted` is not a courtesy flag -- `event_identity` marks an
+event canonical on it and points every later event at the STORED value, and `qe.applied` gates an
+application on it -- so a run in which one thread reports inserted while another's value stands
+gives one signature two canonical events. One slot, two threads, the same key, distinct values.
+4 complete executions, clean.
+
+Calibrated by `-DCALIBRATE_ELECT_ON_KEY`, which elects on the key exchange instead of the value
+exchange. That elects one thread too, but a different one: the key winner can lose the value
+exchange. The checker reports the elected thread not being the one whose value stands.
+
+A CHECKER LIMITATION WORTH KNOWING, because it reads exactly like a defect: a 32-bit
+compare-exchange always reports failure in this build, while reading precisely the expected value
+-- the trace shows the CAS read and no CAS write. The same exchange on a 64-bit word under the
+same orders succeeds. The harness's values are 64-bit for that reason; the device's are 32-bit ids
+and the election does not depend on the width.
 
 ~~**The depth-relaxation cascade.**~~ COVERED by `DepthRelaxation.tla`. The property is that at
 quiescence the claimed set is exactly the nodes whose SHORTEST-PATH depth is below the budget, so

@@ -1,6 +1,8 @@
 #pragma once
 #include "hgcommon/namespace.hpp"
 
+#include "hgcommon/hash_insert_core.hpp"
+
 #include "hg_gpu/types.hpp"
 #include "hg_gpu/cuda_check.hpp"
 
@@ -229,15 +231,55 @@ public:
             return lookup(key);
         }
 
-        // Insert-if-absent. Returns the existing value if the key is already
-        // present; otherwise atomically claims the slot, writes the value,
-        // and returns it. inserted == true iff this thread won the slot.
+        // The storage face hgcommon::hash_insert_claim drives. Everything here is HOW a key or
+        // value word is exchanged and at what scope; nothing here decides anything, including
+        // which thread is told it inserted -- that is the value exchange, and the rule that it
+        // is the value exchange lives in the shared body.
+        struct InsertOps {
+            DeviceView* v;
+            K           key;     // normalized by the caller
+            V           value;   // what this thread offers
+            V           stood;   // what actually stood, when another thread's offer won
+
+            __device__ uint32_t capacity() const { return v->capacity; }
+            __device__ uint32_t initial_slot() const { return v->initial_slot(key); }
+            __device__ uint32_t next_slot(uint32_t s) const { return (s + 1) % v->capacity; }
+
+            __device__ hgcommon::KeyState key_state(uint32_t s) const {
+                cuda::atomic_ref<K, cuda::thread_scope_device> kref(v->keys[s]);
+                const K cur = kref.load(cuda::memory_order_acquire);
+                if (cur == key)   return hgcommon::KeyState::Ours;
+                if (cur == EMPTY) return hgcommon::KeyState::Empty;
+                return hgcommon::KeyState::Other;   // LOCKED included: skipped without a spin
+            }
+
+            __device__ bool claim_key(uint32_t s) {
+                cuda::atomic_ref<K, cuda::thread_scope_device> kref(v->keys[s]);
+                K expected = EMPTY;
+                return kref.compare_exchange_strong(expected, key,
+                                                    cuda::memory_order_acq_rel,
+                                                    cuda::memory_order_acquire);
+            }
+
+            __device__ hgcommon::InsertOutcome offer_value(uint32_t s) {
+                cuda::atomic_ref<V, cuda::thread_scope_device> vref(v->values[s]);
+                V expect_v = UNPUBLISHED;
+                if (vref.compare_exchange_strong(expect_v, value,
+                                                 cuda::memory_order_acq_rel,
+                                                 cuda::memory_order_acquire))
+                    return hgcommon::InsertOutcome::Inserted;
+                stood = expect_v;   // someone else's exchange won; take its value
+                return hgcommon::InsertOutcome::Present;
+            }
+        };
+
+        // Insert-if-absent. Returns the existing value if the key is already present; otherwise
+        // claims the slot, offers the value, and returns it. inserted == true iff this thread's
+        // VALUE exchange won -- see hgcommon/hash_insert_core.hpp, where that rule lives and
+        // where the argument for why it cannot be the key exchange is written out.
         //
-        // Per-slot inner loop handles three resolutions: (1) slot already holds
-        // our key → return existing value, (2) slot is LOCKED → wait for the
-        // owner to publish, (3) slot is EMPTY → CAS to LOCKED, write, publish.
-        // The outer loop only advances when the slot is firmly held by a
-        // different key.
+        // Everything below the sentinel guard and the saturation latch is that shared body;
+        // InsertOps supplies only how a word is exchanged and at what scope.
         __device__ InsertResult insert_if_absent(K key, V value) {
             // A caller storing the reserved value would publish a slot that every reader takes
             // for unclaimed. Keys can be folded onto a neighbour; a value cannot, because
@@ -255,74 +297,11 @@ public:
                 if (sref.load(cuda::memory_order_relaxed)) return InsertResult{V{}, false, true};
             }
             key = normalize(key);
-            uint32_t slot = initial_slot(key);
-            for (uint32_t i = 0; i < capacity; ++i) {
-                cuda::atomic_ref<K, cuda::thread_scope_device> kref(keys[slot]);
+            InsertOps ops{const_cast<DeviceView*>(this), key, value, V{}};
+            const hgcommon::InsertOutcome outcome = hgcommon::hash_insert_claim(ops);
+            if (outcome == hgcommon::InsertOutcome::Inserted) return InsertResult{value, true};
+            if (outcome == hgcommon::InsertOutcome::Present)  return InsertResult{ops.stood, false};
 
-                while (true) {
-                    K cur = kref.load(cuda::memory_order_acquire);
-
-                    if (cur == key) {
-                        // OFFER, do not wait. The value exchange is what elects the inserter:
-                        // UNPUBLISHED -> something happens exactly ONCE per slot, so exactly one
-                        // thread's exchange succeeds however many offer and whatever they offer.
-                        // That is the election, and the thread it elects is by construction the
-                        // one whose value is stored -- which is the property `inserted` has to
-                        // carry, because event_identity marks itself canonical on `inserted` and
-                        // points every later event at the STORED value.
-                        //
-                        // It cannot be the KEY exchange. That elects one thread too, but a
-                        // different one: the key winner can lose the value exchange, and then it
-                        // reports inserted while carrying a stranger's value and the value's
-                        // owner reports not-inserted -- one signature, two canonical events.
-                        // Nor can it be a comparison of the stored value against the caller's:
-                        // most callers here offer a constant presence marker, so every one of
-                        // them would match and every one would be told it inserted, and
-                        // qe.applied gates an APPLICATION on that flag. The host map states the
-                        // same rule for the same reason.
-                        cuda::atomic_ref<V, cuda::thread_scope_device> vref(values[slot]);
-                        V seen = vref.load(cuda::memory_order_acquire);
-                        if (seen == UNPUBLISHED) {
-                            V expect_v = UNPUBLISHED;
-                            if (vref.compare_exchange_strong(expect_v, value,
-                                    cuda::memory_order_acq_rel, cuda::memory_order_acquire))
-                                return InsertResult{value, true};
-                            seen = expect_v;   // someone else's exchange won; take its value
-                        }
-                        return InsertResult{seen, false};
-                    }
-
-                    if (cur == EMPTY) {
-                        // STRAIGHT TO THE KEY, no reservation state. The key exchange alone
-                        // decides the winner, and the winner then owns the value slot, so no
-                        // thread ever waits on another to publish.
-                        K expected = EMPTY;
-                        bool ok = kref.compare_exchange_strong(
-                            expected, key,
-                            cuda::memory_order_acq_rel, cuda::memory_order_acquire);
-                        if (ok) {
-                            // Publishing the KEY is not the election -- see above. This thread
-                            // now offers its value like any other and is the inserter only if
-                            // that exchange is the one that succeeds.
-                            cuda::atomic_ref<V, cuda::thread_scope_device> vref(values[slot]);
-                            V expect_v = UNPUBLISHED;
-                            if (vref.compare_exchange_strong(expect_v, value,
-                                    cuda::memory_order_acq_rel, cuda::memory_order_acquire))
-                                return InsertResult{value, true};
-                            return InsertResult{expect_v, false};
-                        }
-                        // CAS failed — expected now holds whatever raced ahead
-                        // of us (could be our key, LOCKED, or another key).
-                        // Loop to re-evaluate.
-                        continue;
-                    }
-
-                    // cur is some other published key — advance probe.
-                    break;
-                }
-
-                slot = (slot + 1) % capacity;
-            }
             // Exhausted every slot without finding the key or a free one. NOT a hit: say so, so
             // the caller can record a capacity overflow instead of treating this as "seen".
             // Latch it, so the next caller pays one load rather than another full scan.
