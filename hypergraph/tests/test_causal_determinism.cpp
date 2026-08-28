@@ -43,6 +43,7 @@ struct Fingerprint {
     long stored_before_walk = 0;
     long branchial_pairs = 0;
     long late_submits = 0;
+    long dropped_children = 0;
     std::string warnings;
 };
 
@@ -206,6 +207,7 @@ Fingerprint run(const std::vector<hg::engine::RewriteRule>& rules,
     // READ BEFORE THE ENGINE GOES OUT OF SCOPE. This is the precondition the quiescence
     // predicate rests on, not a property of the hypergraph, so it comes from the engine.
     fp.late_submits = static_cast<long>(e.late_submits());
+    fp.dropped_children = static_cast<long>(e.dropped_fresh_children());
     // A CAPACITY OVERFLOW RETURNS A PARTIAL RESULT AND SAYS SO, by design -- errors are for
     // programmer mistakes, not for a run that outgrew a container. So a truncated run looks
     // exactly like a short one and differs only here, and nothing was reading it.
@@ -423,6 +425,14 @@ Spread spread(const Workload& w, bool quotient) {
                     << "a warning, so what it returned is a PARTIAL result and any shortfall "
                     << "against another configuration is that, not non-determinism -- "
                     << f.warnings;
+                // A SUBTREE THAT WAS NEVER EXPLORED, and the only symptom is a shorter run.
+                // Every rewrite creates a NEW raw state, so the set that decides whether to
+                // match it cannot already hold that id; if it says otherwise the child and
+                // everything below it is dropped silently.
+                EXPECT_EQ(f.dropped_children, 0)
+                    << w.name << " at threads=" << th << " rep=" << rep << ": "
+                    << f.dropped_children << " freshly-created state(s) were reported as already "
+                       "matched, so their subtrees were never explored.";
                 EXPECT_EQ(f.late_submits, 0)
                     << w.name << " at threads=" << th << " rep=" << rep << ": "
                     << f.late_submits << " submit(s) came from a worker that was not inside a "

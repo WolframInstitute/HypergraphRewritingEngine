@@ -495,6 +495,8 @@ private:
     // legal here as there -- StateId is 32-bit and a raw state of 0 is an ordinary one, which a
     // set defaulting to 0 for EMPTY would drop without saying so.
     ConcurrentKeySet<uint64_t, STATE_MAP_EMPTY, STATE_MAP_LOCKED> matched_raw_states_;
+    // See execute_rewrite_task: a fresh raw id reported as already present, which drops a subtree.
+    std::atomic<size_t> dropped_fresh_child_{0};
 
     // Per-state match storage for match forwarding
     // Maps state -> list of matches found in that state
@@ -961,6 +963,10 @@ public:
     // is sound only while this is zero -- a child owed after its parent was booked complete is
     // invisible to any ordering of the reads. See JobSystem::enqueue.
     size_t late_submits() const;
+    // Rewrites whose freshly-created raw state was reported as already matched. Must be zero:
+    // the id is new, so the dedup set cannot have seen it. A non-zero value is a subtree that
+    // was never explored. See execute_rewrite_task.
+    size_t dropped_fresh_children() const;
     size_t states_drained() const;
 
     // Matches this state has accepted so far. Read inside the drain callback it is that state's

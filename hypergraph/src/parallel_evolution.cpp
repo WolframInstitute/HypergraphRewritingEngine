@@ -1729,6 +1729,16 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
 
     // Spawn MATCH task for the new raw state if it hasn't been matched yet
     const bool inserted = matched_raw_states_.insert(rr.raw_state);
+    // A FRESH ID CANNOT ALREADY BE PRESENT. create_or_get_canonical_state allocates a new raw
+    // state for every rewrite -- the canonical id may be one that already existed, the RAW one
+    // never is -- so this insert must always win. If it ever reports otherwise, the dedup set
+    // said present for a key it has not seen, and the whole subtree below this state is never
+    // matched: the run comes back short, with no error and no warning, and looks exactly like
+    // non-determinism when compared against another thread count.
+    //
+    // Counted rather than asserted here because this runs on a worker, where a throw would
+    // surface as an unrelated failure; the gate reads it after the run.
+    if (!inserted) dropped_fresh_child_.fetch_add(1, std::memory_order_relaxed);
 
     if (inserted) {
         DEBUG_LOG("STATE parent=%u -> child=%u (canonical=%u) rule=%u step=%u new=%d",
@@ -2710,6 +2720,10 @@ void ParallelEvolutionEngine::set_on_depth_complete(std::function<void(uint32_t)
 
 size_t ParallelEvolutionEngine::depth_late_arrivals() const {
     return depth_join_.late_arrivals();
+}
+
+size_t ParallelEvolutionEngine::dropped_fresh_children() const {
+    return dropped_fresh_child_.load(std::memory_order_relaxed);
 }
 
 size_t ParallelEvolutionEngine::late_submits() const {
