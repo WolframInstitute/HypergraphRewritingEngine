@@ -43,6 +43,7 @@ struct Fingerprint {
     long stored_before_walk = 0;
     long branchial_pairs = 0;
     long late_submits = 0;
+    std::string warnings;
 };
 
 Fingerprint fingerprint(hg::engine::Hypergraph& g) {
@@ -205,6 +206,13 @@ Fingerprint run(const std::vector<hg::engine::RewriteRule>& rules,
     // READ BEFORE THE ENGINE GOES OUT OF SCOPE. This is the precondition the quiescence
     // predicate rests on, not a property of the hypergraph, so it comes from the engine.
     fp.late_submits = static_cast<long>(e.late_submits());
+    // A CAPACITY OVERFLOW RETURNS A PARTIAL RESULT AND SAYS SO, by design -- errors are for
+    // programmer mistakes, not for a run that outgrew a container. So a truncated run looks
+    // exactly like a short one and differs only here, and nothing was reading it.
+    for (const std::string& w : e.warnings()) {
+        if (!fp.warnings.empty()) fp.warnings += "; ";
+        fp.warnings += w;
+    }
     return fp;
 }
 
@@ -410,6 +418,11 @@ Spread spread(const Workload& w, bool quotient) {
                 // early, and the run comes back short with no warning and no other symptom.
                 // verification/tla/Quiescence.tla reports exactly that as MCQuiescenceLateSubmit;
                 // this is the same precondition checked against the running engine.
+                EXPECT_EQ(f.warnings, "")
+                    << w.name << " at threads=" << th << " rep=" << rep << ": the run reported "
+                    << "a warning, so what it returned is a PARTIAL result and any shortfall "
+                    << "against another configuration is that, not non-determinism -- "
+                    << f.warnings;
                 EXPECT_EQ(f.late_submits, 0)
                     << w.name << " at threads=" << th << " rep=" << rep << ": "
                     << f.late_submits << " submit(s) came from a worker that was not inside a "
