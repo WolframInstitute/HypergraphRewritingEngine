@@ -46,6 +46,13 @@ struct Fingerprint {
     long dropped_children = 0;
     long invalid_matches = 0;
     long fwd_truncated = 0;
+    // THE TWO WAYS ONE EXTRA CAUSAL EDGE CAN EXIST, separated. The reduction either kept a pair
+    // it should have dropped -- which shows as FEWER skips -- or the triple set stored the same
+    // triple twice, which shows as the same skips and one more edge. The counts alone cannot
+    // tell those apart, and the firing this exists for differs by exactly one edge with states,
+    // events and branchial all identical.
+    long tr_skipped = 0;
+    long causal_pairs = 0;
     std::string warnings;
 };
 
@@ -210,6 +217,8 @@ Fingerprint run(const std::vector<hg::engine::RewriteRule>& rules,
     // predicate rests on, not a property of the hypergraph, so it comes from the engine.
     fp.late_submits = static_cast<long>(e.late_submits());
     fp.dropped_children = static_cast<long>(e.dropped_fresh_children());
+    fp.tr_skipped   = static_cast<long>(g.causal_graph().num_redundant_edges_skipped());
+    fp.causal_pairs = static_cast<long>(g.causal_graph().num_causal_event_pairs());
     fp.invalid_matches  = static_cast<long>(g.invalid_matches());
     fp.fwd_truncated    = static_cast<long>(e.forwarding_consumed_truncated());
     // A CAPACITY OVERFLOW RETURNS A PARTIAL RESULT AND SAYS SO, by design -- errors are for
@@ -267,6 +276,7 @@ struct Variant {
     // Each of these is a silent drop that changes every relation while leaving the STATE set
     // alone -- the observed shape -- and each was invisible until it was counted.
     long claims, drops, align_fail, badcorr;
+    long tr_skipped, causal_pairs;
     long not_rep, visits;
     long matches, instances, unique;
     uint64_t shape;
@@ -299,6 +309,8 @@ std::string describe(const Spread& s, const std::map<uint64_t, Variant>& v,
                " width_dropped=" + std::to_string(var.claims - var.ne) +
                " no_orbits=" + std::to_string(var.drops) +
                " not_rep=" + std::to_string(var.not_rep) +
+               " tr_skipped=" + std::to_string(var.tr_skipped) +
+               " causal_pairs=" + std::to_string(var.causal_pairs) +
                " visits=" + std::to_string(var.visits) +
                " matches=" + std::to_string(var.matches) +
                " instances=" + std::to_string(var.instances) +
@@ -468,6 +480,7 @@ Spread spread(const Workload& w, bool quotient) {
                 const Variant var{0, cfg, f.num_states, f.num_events,
                                   f.num_causal, f.num_branchial,
                                   f.claims, f.drops, f.align_fail, f.badcorr,
+                                  f.tr_skipped, f.causal_pairs,
                                   f.not_rep, f.visits, f.matches, f.instances, f.unique,
                                   f.shape, f.shape_v};
                 s.states_v.emplace(f.states, var);
