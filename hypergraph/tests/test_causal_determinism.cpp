@@ -58,6 +58,7 @@ struct Fingerprint {
     // tell those apart, and the firing this exists for differs by exactly one edge with states,
     // events and branchial all identical.
     long tr_skipped = 0;
+    long producer_side = 0;
     long causal_pairs = 0;
     std::string warnings;
 };
@@ -252,6 +253,7 @@ Fingerprint run(const std::vector<hg::engine::RewriteRule>& rules,
     fp.late_submits = static_cast<long>(e.late_submits());
     fp.dropped_children = static_cast<long>(e.dropped_fresh_children());
     fp.tr_skipped   = static_cast<long>(g.causal_graph().num_redundant_edges_skipped());
+    fp.producer_side = static_cast<long>(g.causal_graph().producer_side_emissions());
     fp.causal_pairs = static_cast<long>(g.causal_graph().num_causal_event_pairs());
     fp.invalid_matches  = static_cast<long>(g.invalid_matches());
     fp.fwd_truncated    = static_cast<long>(e.forwarding_consumed_truncated());
@@ -438,6 +440,17 @@ Spread spread(const Workload& w, bool quotient) {
                 // a path through other kept pairs already implies is a fault whatever the other
                 // thirty-nine did, so it is asserted here, per run.
                 if (!quotient) {
+                    // The other way an in-edge can arrive outside the reduction's discipline:
+                    // from the PRODUCER's thread, because a consumer registered against an edge
+                    // before its producer did. The rewriter registers a rewrite's produced
+                    // edges before its child state exists to anyone, so this is zero by
+                    // construction, and a firing names a consumer that reached an edge early.
+                    EXPECT_EQ(f.producer_side, 0)
+                        << w.name << " at threads=" << th << ": " << f.producer_side
+                        << " causal edge(s) were emitted by the producer side of the "
+                           "rendezvous, so a consumer registered against an edge before its "
+                           "producer had, and that in-edge arrived outside the order the "
+                           "online reduction is exact under.";
                     EXPECT_EQ(f.tr_surplus, 0)
                         << w.name << " at threads=" << th << " seed="
                         << (seed ? "fixed" : "random") << " rep=" << rep << ": the kept causal "
