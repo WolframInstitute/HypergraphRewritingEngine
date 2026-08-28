@@ -20,7 +20,7 @@ def load(path):
         if p[0] == 'S':
             states[int(p[1])] = int(p[2])
             if 'M' in p:
-                m = p.index('M'); counts[int(p[1])] = tuple(int(x) for x in p[m+1:m+4])
+                m = p.index('M'); counts[int(p[1])] = tuple(int(x) for x in p[m+1:m+4]) + ((int(p[p.index('T')+1]),) if 'T' in p else ())
         elif p[0] == 'E':
             i = p.index('C'); j = p.index('P')
             events.append(dict(id=int(p[1]), in_raw=int(p[2]), out_raw=int(p[3]), in_c=int(p[4]),

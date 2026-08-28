@@ -295,9 +295,9 @@ Fingerprint run(const std::vector<hg::engine::RewriteRule>& rules,
             for (uint32_t st = 0; st < g.num_published_states(); ++st)
                 if (g.get_state(st).id != hg::engine::INVALID_ID) {
                     const auto mc = e.match_task_counts(st);
-                    std::fprintf(f, "S %u %llu M %zu %zu %zu\n", st,
+                    std::fprintf(f, "S %u %llu M %zu %zu %zu T %u\n", st,
                                  (unsigned long long)g.get_or_compute_canonical_hash(st),
-                                 mc.pushed, mc.completed, mc.matches);
+                                 mc.pushed, mc.completed, mc.matches, mc.trace);
                 }
             for (uint32_t ev = 0; ev < g.num_events(); ++ev) {
                 const hg::engine::Event& x = g.get_event(ev);

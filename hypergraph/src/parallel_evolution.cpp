@@ -2128,12 +2128,14 @@ void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
 
     hgcommon::PhaseTimer _pt(hgcommon::Phase::Match);
 
+    HG_STAT(match_join_for(data.state)->trace.fetch_or(1u, std::memory_order_relaxed));
     if (should_stop_.load(std::memory_order_relaxed)) return;
     if (data.step > max_steps_) return;
 
     // Early exit if rewrites are impossible due to limits
     if (!can_create_states_at_step(data.step + 1)) return;
     if (!can_have_more_children(data.state)) return;
+    HG_STAT(match_join_for(data.state)->trace.fetch_or(2u, std::memory_order_relaxed));
 
     DEBUG_LOG("EXEC_SCAN state=%u rule=%u step=%u delta=%d",
               data.state, data.rule_index, data.step, data.is_delta);
@@ -2167,6 +2169,7 @@ void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
         for (uint8_t p = 0; p < data.num_produced; ++p) {
             EdgeId produced = data.produced_edges[p];
             if (!s.edges.contains(produced)) continue;
+            HG_STAT(match_join_for(data.state)->trace.fetch_or(4u, std::memory_order_relaxed));
 
             // Try this produced edge at each pattern position
             for (uint8_t pos = 0; pos < rule.num_lhs_edges; ++pos) {
@@ -2178,10 +2181,12 @@ void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
                 // Check signature compatibility
                 const EdgeSignature& data_sig = get_signature(produced);
                 if (!signature_compatible(data_sig, rule.lhs_sig[pos])) continue;
+                HG_STAT(match_join_for(data.state)->trace.fetch_or(8u, std::memory_order_relaxed));
 
                 // Validate candidate
                 VariableBinding binding;
                 if (!validate_candidate(edge.vertices, edge.arity, pattern_edge, binding)) continue;
+                HG_STAT(match_join_for(data.state)->trace.fetch_or(16u, std::memory_order_relaxed));
 
                 // Create EXPAND task data
                 ExpandTaskData expand_data;
@@ -2266,6 +2271,7 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
     if (!can_create_states_at_step(data.step + 1)) return;
     if (!can_have_more_children(data.state)) return;
 
+    HG_STAT(match_join_for(data.state)->trace.fetch_or(256u, std::memory_order_relaxed));
     DEBUG_LOG("EXEC_EXPAND state=%u rule=%u matched=%u/%u step=%u",
               data.state, data.rule_index, data.num_matched, data.num_pattern_edges, data.step);
 
@@ -2315,6 +2321,7 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
 
             // Skip if already matched
             if (data.contains_edge(candidate)) return;
+            HG_STAT(match_join_for(data.state)->trace.fetch_or(512u, std::memory_order_relaxed));
 
             VariableBinding extended = data.binding;
             if (!validate_candidate(edge.vertices, edge.arity, pattern_edge, extended)) return;
@@ -2350,6 +2357,7 @@ bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRe
     if (!can_create_states_at_step(data.step + 1)) return false;
     if (!can_have_more_children(data.state)) return false;
 
+    HG_STAT(match_join_for(data.state)->trace.fetch_or(32u, std::memory_order_relaxed));
     DEBUG_LOG("EXEC_SINK state=%u rule=%u matched=%u step=%u",
               data.state, data.rule_index, data.num_matched, data.step);
 
@@ -2380,12 +2388,14 @@ bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRe
             return hg_->arena().template create<MatchRecord>(match);
         })) {
         HG_STAT(rejected_duplicates_.fetch_add(1, std::memory_order_relaxed));
+        HG_STAT(match_join_for(data.state)->trace.fetch_or(128u, std::memory_order_relaxed));
         return false;  // Already seen
     }
 
     HG_STAT(total_matches_found_.fetch_add(1, std::memory_order_relaxed));
     HG_STAT(stats_.mine().new_matches_discovered.bump(1));
     match_join_for(data.state)->matches.fetch_add(1, std::memory_order_acq_rel);
+    HG_STAT(match_join_for(data.state)->trace.fetch_or(64u, std::memory_order_relaxed));
 
     DEBUG_LOG("SINK state=%u rule=%u hash=%lu step=%u", data.state, data.rule_index, h, data.step);
 
@@ -2755,6 +2765,7 @@ ParallelEvolutionEngine::MatchTaskCounts ParallelEvolutionEngine::match_task_cou
     c.pushed = (*r)->pushed.load(std::memory_order_acquire);
     c.completed = (*r)->completed.load(std::memory_order_acquire);
     c.matches = (*r)->matches.load(std::memory_order_acquire);
+    c.trace = (*r)->trace.load(std::memory_order_acquire);
     return c;
 }
 

@@ -734,6 +734,12 @@ private:
         // Matches this state has accepted, post-dedup. The drain gate needs it to show the
         // drain fired after the last one rather than merely once.
         std::atomic<size_t> matches{0};
+        // Stages the state's scan and expand tasks reached, ORed (stats builds): a lost
+        // claim reads back as the highest stage its tasks got to. Bits: 1 scan entered,
+        // 2 scan past its gates, 4 a produced edge was in the state's set, 8 a signature
+        // matched, 16 a candidate validated, 32 complete_match reached, 64 a claim won,
+        // 128 a claim answered duplicate, 256 expand entered, 512 expand saw a candidate.
+        std::atomic<uint32_t> trace{0};
         // Sampling spine bookkeeping (transition_rate_ < 1 only). A fixed rate is a knife-edge:
         // below 1/branching the sampled evolution goes extinct before reaching depth. The spine
         // keeps the minimum-canonical-key OWN-FOUND transition alive when none of the state's
@@ -993,7 +999,7 @@ public:
     // A state's match-task join, read after the run: scan and expand tasks pushed for it and
     // completed, and matches it accepted post-dedup. Protocol state, not a diagnostic counter:
     // the drain gate reads the same words. Zeros for a state that never had a match task.
-    struct MatchTaskCounts { size_t pushed = 0, completed = 0, matches = 0; };
+    struct MatchTaskCounts { size_t pushed = 0, completed = 0, matches = 0; uint32_t trace = 0; };
     MatchTaskCounts match_task_counts(StateId state);
     // Rewrites whose freshly-created raw state was reported as already matched. Must be zero:
     // the id is new, so the dedup set cannot have seen it. A non-zero value is a subtree that
