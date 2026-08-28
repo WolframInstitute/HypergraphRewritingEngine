@@ -94,6 +94,43 @@ constexpr bool park_is_lock_free() {
            park_backend() != ParkBackend::CondVar;
 }
 
+// A LOCK DOES NOT ENTER THE BUILD UNNOTICED. Until this, park_is_lock_free() was a fact a caller
+// could ask for and nothing refused a build on, so a platform that fell through to
+// std::atomic::wait would ship a waiter pool holding a std::mutex and a __condvar behind a call
+// named park -- the exact substitution this file exists to prevent, arriving silently through the
+// standard library rather than through anything greppable.
+//
+// It fires at COMPILE time and in every translation unit that parks, which is what makes "no
+// mutex anywhere" a property of the build rather than of a reviewer's attention. A bring-up on a
+// platform with no address-wait syscall can still proceed by saying so, and park_backend() then
+// still reports which primitive it got.
+// Spelled as a constant in the idiom of std::atomic<T>::is_always_lock_free, and for the same
+// reason: the answer is fixed by the build rather than discovered at runtime, so it belongs where
+// a caller can static_assert on it too, not only where this file happens to check it.
+inline constexpr bool park_is_always_lock_free = park_is_lock_free();
+
+#if !defined(HG_PARK_ALLOW_LOCKING_FALLBACK)
+static_assert(park_is_always_lock_free,
+              "park() would take a lock in this build: std::atomic::wait is permitted to hold a "
+              "mutex and a condition variable in its waiter pool, and the engine's charter is "
+              "that nothing waits on a lock. Define HG_PARK_ALLOW_LOCKING_FALLBACK to accept it "
+              "deliberately.");
+#endif
+
+// THE SAME SUBSTITUTION ARRIVES THROUGH std::atomic ITSELF. An atomic whose type is too wide for
+// the target's native compare-exchange is implemented with a lock table, and it says so only if
+// asked: the call sites look identical to the lock-free ones. These are the widths the engine's
+// hot paths depend on -- the 32-bit park word, the 64-bit counters and keys, and the pointers the
+// deques and segment tables publish -- so a target that would silently lock any of them fails
+// here rather than in a profile.
+static_assert(std::atomic<uint32_t>::is_always_lock_free,
+              "std::atomic<uint32_t> takes a lock on this target; the park word is 32-bit");
+static_assert(std::atomic<uint64_t>::is_always_lock_free,
+              "std::atomic<uint64_t> takes a lock on this target; counters and keys are 64-bit");
+static_assert(std::atomic<void*>::is_always_lock_free,
+              "std::atomic<pointer> takes a lock on this target; the deques and the segment "
+              "tables publish pointers");
+
 
 // Block while *addr == expected. May return spuriously; callers must re-check, which they
 // have to do anyway since the value can change and change back.
