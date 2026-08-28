@@ -33,17 +33,29 @@ TLA+, 7 configurations, all matching their declared verdict:
 | `MCMatchForwardingBatchedBroken` | PASS as declared | 85,777 |
 | `MCDepthRelaxation` | PASS | 14 |
 | `MCDepthRelaxationBroken` | VIOLATION as declared | 12 |
+| `MCQuiescence` | PASS | 22 |
+| `MCQuiescenceBroken` | PASS as declared | 22 |
+| `MCQuiescenceLateSubmit` | VIOLATION as declared | 34 |
 
 The `Broken` configurations are what make the rest evidence: a model that cannot report a
 violation has not been shown to be able to detect one.
 
 ## What is NOT covered, and why each matters
 
-**Termination detection.** The persistent kernel's `TerminationDetector` and the host's quiescence
-protocol together decide when a run is FINISHED across many workers. That is the classic
-distributed termination problem and nothing models it. A false positive ends a run early and
-returns a smaller multiway system with no indication it is smaller -- the same failure the
-container ceiling used to produce, and harder to see, because there is no warning attached to it.
+~~**Termination detection.**~~ COVERED for the HOST by `Quiescence.tla`. The checker reads its two
+halves in SEPARATE steps with workers running in between, because TLA+ evaluates a conjunction
+atomically and a single-step predicate cannot express the race at all.
+
+What the three cells establish together: the COUNTERS are load-bearing and the queue scan is
+defence in depth -- omitting `jobs_executing` still passes, because a worker inside a job has not
+completed and so `submitted` and `completed` cannot agree while it runs. And the soundness rests
+on a precondition: A JOB SUBMITS ITS CHILDREN BEFORE IT RETURNS. Complete-then-submit opens a
+window where the counters agree and every queue is empty while a child is still owed, and no
+ordering of the reads defends it, because at that instant there is nothing to see.
+`MCQuiescenceLateSubmit` is that defect, and TLC reports it.
+
+STILL OPEN: the DEVICE's `TerminationDetector`. This models the host's protocol; the persistent
+kernel's detector is a separate mechanism and is not covered.
 
 ~~**The depth-relaxation cascade.**~~ COVERED by `DepthRelaxation.tla`. The property is that at
 quiescence the claimed set is exactly the nodes whose SHORTEST-PATH depth is below the budget, so
