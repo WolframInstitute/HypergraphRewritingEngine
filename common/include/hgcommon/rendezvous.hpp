@@ -49,6 +49,10 @@
 // is one thing a reader can look at.
 
 #include <atomic>
+#include <cstdint>
+#if defined(HG_RENDEZVOUS_CHAOS)
+#  include <sched.h>
+#endif
 
 namespace HG_NAMESPACE {
 namespace common {
@@ -77,10 +81,27 @@ struct DequeTakeSteal {};         // work_stealing_deque: the owner taking / a t
 
 // publish() the caller's own arrival, then scan() for the other side's. See above for the
 // argument, and for the two shapes that must NOT be routed through here.
+// SCHEDULE CHAOS, test builds only (-DHG_RENDEZVOUS_CHAOS=1). Every handshake in the engine passes
+// through here, so yielding the CPU with probability 1/8 between publish and fence, and between
+// fence and scan, puts the other side's whole action into exactly the windows a missed rendezvous
+// would need. Nothing else changes: the fence and the order are the shipped ones.
+#if defined(HG_RENDEZVOUS_CHAOS)
+inline void rendezvous_chaos_point() {
+    static thread_local uint32_t s = 0x9E3779B9u ^ static_cast<uint32_t>(
+        reinterpret_cast<uintptr_t>(&s) >> 4);
+    s ^= s << 13; s ^= s >> 17; s ^= s << 5;
+    if ((s & 7u) == 0u) sched_yield();
+}
+#else
+inline void rendezvous_chaos_point() {}
+#endif
+
 template <class Tag, class Publish, class Scan>
 inline void rendezvous(Publish&& publish, Scan&& scan) {
     publish();
+    rendezvous_chaos_point();
     std::atomic_thread_fence(std::memory_order_seq_cst);
+    rendezvous_chaos_point();
     scan();
 }
 
@@ -90,7 +111,9 @@ inline void rendezvous(Publish&& publish, Scan&& scan) {
 // counted and greppable with the rest rather than carrying a bare fence.
 template <class Tag>
 inline void rendezvous_barrier() {
+    rendezvous_chaos_point();
     std::atomic_thread_fence(std::memory_order_seq_cst);
+    rendezvous_chaos_point();
 }
 
 }  // namespace common
