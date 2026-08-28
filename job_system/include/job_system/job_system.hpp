@@ -142,6 +142,13 @@ private:
     // Submits made from a worker that is not inside a job. The quiescence predicate's soundness
     // rests on this being zero; see enqueue().
     std::atomic<size_t> late_submits_{0};
+    // TWO HALVES OF ONE FAULT, counted separately. A job entered by run_job a second time was
+    // handed out twice; a job found still queued once the system reads as quiescent was never
+    // handed out at all. The counters balance when the two pair up, so neither shows in
+    // submitted == completed, and the run comes back one job short with no error.
+    std::atomic<size_t> double_executions_{0};
+    std::atomic<size_t> abandoned_at_quiescence_{0};
+    std::atomic<size_t> abandoned_already_run_{0};
     size_t queue_capacity_;
     std::atomic<bool> is_running_{false};
 
@@ -514,6 +521,8 @@ private:
     // `data` is null when a non-worker submitter runs an overflowed job on its own thread;
     // the per-worker counters simply do not apply to it.
     void run_job(WorkerData* data, JobRaw job, bool recycle_scratch = true) {
+        HG_STAT(if (job->runs.fetch_add(1, std::memory_order_acq_rel) != 0)
+                    double_executions_.fetch_add(1, std::memory_order_relaxed));
         if (data) data->jobs_executing.fetch_add(1);
         try {
             job->execute();
@@ -759,12 +768,19 @@ public:
 
     // Zero, or the quiescence predicate is unsound for this run. See enqueue().
     size_t late_submits() const { return late_submits_.load(std::memory_order_relaxed); }
+    // Zero on every sound run: see the counters' comment.
+    size_t double_executions() const { return double_executions_.load(std::memory_order_relaxed); }
+    size_t abandoned_at_quiescence() const { return abandoned_at_quiescence_.load(std::memory_order_relaxed); }
+    size_t abandoned_already_run() const { return abandoned_already_run_.load(std::memory_order_relaxed); }
 
     void start() {
         if (is_running_.load()) return;
         total_submitted_.store(0);
         total_completed_.store(0);
         late_submits_.store(0, std::memory_order_relaxed);
+        double_executions_.store(0, std::memory_order_relaxed);
+        abandoned_at_quiescence_.store(0, std::memory_order_relaxed);
+        abandoned_already_run_.store(0, std::memory_order_relaxed);
         error_type_.store(ErrorType::None, std::memory_order_relaxed);
         error_message_state_.store(0, std::memory_order_relaxed);
 
@@ -857,13 +873,36 @@ public:
 
         while (true) {
             if (error_type_.load(std::memory_order_acquire) != ErrorType::None) return;
-            if (is_quiescent()) return;
+            if (is_quiescent()) { HG_STAT(count_abandoned()); return; }
 
             const uint32_t q = quiescence_seq_.load(std::memory_order_acquire);
-            if (is_quiescent()) return;
+            if (is_quiescent()) { HG_STAT(count_abandoned()); return; }
             hgcommon::park_if_equal(quiescence_seq_, q);
         }
     }
+
+private:
+    // Stats builds only. The system reads as quiescent, so every worker is parked or between
+    // jobs and nothing is being handed out: any job the queues still hold is one quiescence
+    // should have waited for. Taken through steal(), the entry any thread may use, and freed;
+    // a run that counts one here has already lost it.
+    void count_abandoned() {
+        for (auto& w : workers_) {
+            while (JobRaw j = w->deque.steal()) {
+                abandoned_at_quiescence_.fetch_add(1, std::memory_order_relaxed);
+                if (j->runs.load(std::memory_order_acquire) != 0)
+                    abandoned_already_run_.fetch_add(1, std::memory_order_relaxed);
+                delete j;
+            }
+        }
+        while (auto opt = injector_.try_pop_front()) {
+            abandoned_at_quiescence_.fetch_add(1, std::memory_order_relaxed);
+            if ((*opt)->runs.load(std::memory_order_acquire) != 0)
+                abandoned_already_run_.fetch_add(1, std::memory_order_relaxed);
+            delete *opt;
+        }
+    }
+public:
 
 private:
     // True when all submitted work has completed and nothing is queued or executing.

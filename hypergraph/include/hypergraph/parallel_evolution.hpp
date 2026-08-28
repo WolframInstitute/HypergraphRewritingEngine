@@ -985,6 +985,11 @@ public:
     // is sound only while this is zero -- a child owed after its parent was booked complete is
     // invisible to any ordering of the reads. See JobSystem::enqueue.
     size_t late_submits() const;
+    // The job system's two halves of a lost job (stats builds): a job run twice, and a job
+    // still queued once the run read as quiescent. Zero on every sound run.
+    size_t double_executions() const;
+    size_t abandoned_at_quiescence() const;
+    size_t abandoned_already_run() const;
     // A state's match-task join, read after the run: scan and expand tasks pushed for it and
     // completed, and matches it accepted post-dedup. Protocol state, not a diagnostic counter:
     // the drain gate reads the same words. Zeros for a state that never had a match task.

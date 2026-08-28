@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include "hgcommon/namespace.hpp"
 
 #include <cstddef>
@@ -17,6 +18,11 @@ template<typename JobType>
 class Job {
 public:
     virtual ~Job() = default;
+
+    // Times run_job has entered this job. Exactly one on every job of a sound run; a second
+    // entry is a job taken twice by the queues, and one still queued at quiescence with a
+    // count of one is the other half of the same fault. Read by the job system's diagnostics.
+    std::atomic<uint32_t> runs{0};
 
     virtual void execute() = 0;
     virtual JobType get_type() const = 0;

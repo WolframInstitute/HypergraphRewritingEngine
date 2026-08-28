@@ -55,6 +55,7 @@ struct Fingerprint {
     long dropped_children = 0;
     long invalid_matches = 0;
     long fwd_truncated = 0;
+    long double_executions = 0, abandoned_jobs = 0, abandoned_already_run = 0;
     std::string dump_path;   // HG_DET_DUMP: this run's state/event/causal listing, or empty
     // THE TWO WAYS ONE EXTRA CAUSAL EDGE CAN EXIST, separated. The reduction either kept a pair
     // it should have dropped -- which shows as FEWER skips -- or the triple set stored the same
@@ -265,6 +266,9 @@ Fingerprint run(const std::vector<hg::engine::RewriteRule>& rules,
     fp.causal_pairs = static_cast<long>(g.causal_graph().num_causal_event_pairs());
     fp.invalid_matches  = static_cast<long>(g.invalid_matches());
     fp.fwd_truncated    = static_cast<long>(e.forwarding_consumed_truncated());
+    fp.double_executions = static_cast<long>(e.double_executions());
+    fp.abandoned_jobs = static_cast<long>(e.abandoned_at_quiescence());
+    fp.abandoned_already_run = static_cast<long>(e.abandoned_already_run());
     // A CAPACITY OVERFLOW RETURNS A PARTIAL RESULT AND SAYS SO, by design -- errors are for
     // programmer mistakes, not for a run that outgrew a container. So a truncated run looks
     // exactly like a short one and differs only here, and nothing was reading it.
@@ -597,6 +601,13 @@ Spread spread(const Workload& w, bool quotient) {
                     << w.name << " at threads=" << th << " rep=" << rep << ": "
                     << f.dropped_children << " freshly-created state(s) were reported as already "
                        "matched, so their subtrees were never explored.";
+                EXPECT_EQ(f.double_executions, 0)
+                    << w.name << " at threads=" << th << " rep=" << rep << ": "
+                    << f.double_executions << " job(s) were entered by run_job twice.";
+                EXPECT_EQ(f.abandoned_jobs, 0)
+                    << w.name << " at threads=" << th << " rep=" << rep << ": "
+                    << f.abandoned_jobs << " job(s) were still queued when the run read as "
+                       "quiescent (" << f.abandoned_already_run << " of them already run once).";
                 EXPECT_EQ(f.late_submits, 0)
                     << w.name << " at threads=" << th << " rep=" << rep << ": "
                     << f.late_submits << " submit(s) came from a worker that was not inside a "
