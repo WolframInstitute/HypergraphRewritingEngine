@@ -5,7 +5,7 @@ stated absence rather than an unexamined one.
 
 - **GenMC** enumerates executions of the RC11 memory model for a bounded program. A harness under
   `verification/genmc/` includes the engine's own header and calls its own functions, so it breaks
-  when the header breaks. `verification/genmc/run.sh <name>`. TWO DO NOT, and are listed as a gap
+  when the header breaks. `verification/genmc/run.sh <name>`. ONE DOES NOT, and is listed as a gap
   below. A harness marked `// GENMC-LINK: engine` is instead compiled against every engine
   translation unit, linked, so it can call code whose body is in a `.cpp`.
 - **GPUMC** is GenMC's scoped-RC11 sibling, for the GPU memory model: threads are organised into
@@ -27,6 +27,15 @@ extraction, no double take, tag defeats ABA), the lock-free list (completeness, 
 meeting once), the job system's wake protocol (no lost wakeup, and the per-domain variant),
 the arena's exclusive worker index, frame publication atomicity, depth-relax child registration,
 the claim and quotient-instance rendezvous, and the depth join's report ordering.
+
+`claim_match_rendezvous` runs `hgcommon/dedup_claim_core.hpp` itself. It was a TRANSCRIPTION --
+claim_match's loop copied out of `parallel_evolution.hpp` with a comment on each side asking the
+next reader to mirror a change into the other, which is the arrangement that let a fix to the
+original leave the harness verifying a rendezvous the engine no longer ran. The rule is now one
+body and the harness drives it; the storage half (which set, which probe-key derivation, which
+content comparison) stays the caller's, which is what makes the rule separable from a header the
+interpreter cannot take. Clean in 2,500 executions, and `HG_CALIBRATE_DEDUP_HASH_ONLY` -- deciding
+on hash equality without comparing contents, which is what dropped real matches -- fails in 4.
 
 `depth_report_order` runs `hgcommon/depth_join.hpp` itself. It is the reason that protocol was
 lifted out of `ParallelEvolutionEngine`: it touches nothing but its own atomics, so the checker

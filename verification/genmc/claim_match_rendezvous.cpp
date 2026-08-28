@@ -1,12 +1,14 @@
 // GenMC harness: the match-dedup rendezvous claims exactly once, and NEVER drops on collision.
 //
-// TRANSCRIPTION, with the REAL primitive underneath. claim_match lives in
-// parallel_evolution.hpp, which the interpreter cannot take (1130 lines, <thread>); its ~20-line
-// loop is transcribed here VERBATIM over the real ConcurrentMap -- the lock-free structure whose
-// interleavings are the actual question. The loop's constants and probe-key derivation are copied
-// from parallel_evolution.hpp:402,422-425; both files carry a comment pointing at the other, and
-// the job-system harness already demonstrated why (fixing the original did not fix the
-// transcription until the change was mirrored).
+// IT RUNS THE ENGINE'S OWN RULE, over the real ConcurrentMap. claim_match's loop is
+// hgcommon/dedup_claim_core.hpp and this drives THAT body, so the harness cannot describe a
+// rendezvous the engine has stopped running. It could not include the rule in place for a real
+// reason: claim_match is a member of ParallelEvolutionEngine, whose header the interpreter cannot
+// take (1130 lines, <thread>) -- which is why the decision is separable and the storage is not.
+//
+// The Ops below supply the set, the probe-key derivation and the content comparison. The
+// arena-backed make_stable is a plain pointer here: the allocation strategy is not what is under
+// test, the exchange discipline is.
 //
 // TWO PROPERTIES, each the site of a shipped defect class:
 //
@@ -20,9 +22,10 @@
 //       real matches. The probe walk is the fix, and this enumerates every interleaving of two
 //       colliding claims racing through it.
 //
-// CALIBRATED against P2's own history. Restoring #74 -- returning false on a probe hit without
-// comparing contents, dropping the second claim on hash equality alone -- makes this harness
-// report a safety violation in 4 executions (genmc exit 42). Restored, it is clean in 2,500.
+// CALIBRATED against P2's own history. HG_CALIBRATE_DEDUP_HASH_ONLY treats a probe hit as a
+// duplicate without comparing contents -- deciding on hash equality alone, which is what dropped
+// real matches -- and the checker must report a safety violation. The defect is reinstated in the
+// SHARED body, in the real path, rather than in a copy of it that could drift from what ships.
 //
 // GENMC-ARGS: --disable-estimation
 
@@ -31,6 +34,7 @@
 #include <cstdint>
 
 #include "genmc_support.hpp"
+#include "hgcommon/dedup_claim_core.hpp"
 #include "hypergraph/concurrent_map.hpp"
 
 namespace {
@@ -38,8 +42,8 @@ namespace {
 struct Rec { uint32_t a, b; };
 bool recs_equal(const Rec& x, const Rec& y) { return x.a == y.a && x.b == y.b; }
 
-// parallel_evolution.hpp:402,422-425, transcribed. MATCH_MAP sentinels there are the map's
-// EMPTY/LOCKED defaults (0 and ~0), which the derivation dodges by construction.
+// The engine's own constants. MATCH_MAP's sentinels are the map's EMPTY/LOCKED defaults (0 and
+// ~0), which the derivation dodges by construction.
 constexpr uint32_t kMaxDedupProbes = 8;
 uint64_t dedup_probe_key(uint64_t h, uint32_t n) {
     uint64_t k = h + static_cast<uint64_t>(n) * 0x9E3779B97F4A7C15ull;
@@ -51,23 +55,38 @@ using Map = hypergraph::ConcurrentMap<uint64_t, const Rec*>;
 Map* g_map;
 Rec g_recs[2];
 
-// parallel_evolution.hpp:450-489 claim_match, transcribed over the real map. The arena-backed
-// make_stable is a plain pointer here: the allocation strategy is not what is under test, the
-// exchange discipline is.
-bool claim_match(uint64_t h, const Rec& rec, const Rec* stable_src) {
-    const Rec* stable = nullptr;
-    for (uint32_t n = 0; n < kMaxDedupProbes; ++n) {
-        const uint64_t key = dedup_probe_key(h, n);
-        if (auto seen = g_map->lookup(key)) {
-            if (*seen && recs_equal(**seen, rec)) return false;
-            continue;                              // collision: probe on, never drop
-        }
-        if (!stable) stable = stable_src;
-        auto [existing, inserted] = g_map->insert_if_absent(key, stable);
-        if (inserted) return true;
-        if (existing && recs_equal(*existing, rec)) return false;
+struct Ops {
+    uint64_t    h;
+    const Rec&  rec;
+    const Rec*  stable_src;
+    const Rec*  stable = nullptr;
+
+    uint32_t max_probes() const { return kMaxDedupProbes; }
+    uint64_t probe_key(uint32_t n) const { return dedup_probe_key(h, n); }
+
+    hgcommon::ProbeState probe(uint64_t key) const {
+        auto seen = g_map->lookup(key);
+        if (!seen) return hgcommon::ProbeState::Miss;
+        if (*seen && recs_equal(**seen, rec)) return hgcommon::ProbeState::Duplicate;
+        return hgcommon::ProbeState::Collision;
     }
-    return true;                                   // probes exhausted: process rather than lose
+
+    void make_stable() { stable = stable_src; }
+
+    hgcommon::ClaimState offer(uint64_t key) {
+        auto [existing, inserted] = g_map->insert_if_absent(key, stable);
+        if (inserted) return hgcommon::ClaimState::Won;
+        if (existing && recs_equal(*existing, rec)) return hgcommon::ClaimState::Duplicate;
+        return hgcommon::ClaimState::Collision;
+    }
+
+    void note_collision() {}
+    void note_exhausted() {}
+};
+
+bool claim_match(uint64_t h, const Rec& rec, const Rec* stable_src) {
+    Ops ops{h, rec, stable_src};
+    return hgcommon::dedup_claim(ops);
 }
 
 bool g_won[2];

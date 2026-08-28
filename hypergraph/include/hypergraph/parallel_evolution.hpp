@@ -17,6 +17,7 @@
 #include "arena.hpp"
 #include "bitset.hpp"
 #include "hypergraph.hpp"
+#include "hgcommon/dedup_claim_core.hpp"
 #include "hgcommon/depth_join.hpp"
 #include "hgcommon/rendezvous.hpp"
 #include "hgcommon/portable_intrinsics.hpp"
@@ -397,10 +398,10 @@ public:
     // already astronomically unlikely; needing this many consecutive ones is not a scenario that
     // occurs, and the counter below exists so the assumption is measured rather than believed.
     //
-    // claim_match's loop, this constant, and dedup_probe_key are TRANSCRIBED in
-    // verification/genmc/claim_match_rendezvous.cpp, which model-checks exactly-once claiming and
-    // no-drop-on-collision over the real ConcurrentMap. A change here must be mirrored there or
-    // the harness verifies a rendezvous the engine no longer runs.
+    // claim_match's loop is hgcommon/dedup_claim_core.hpp, and
+    // verification/genmc/claim_match_rendezvous.cpp drives THAT body over a real ConcurrentMap --
+    // so the harness checks the rendezvous the engine runs rather than a copy of it. This
+    // constant and dedup_probe_key are supplied to it by the Ops below.
     static constexpr uint32_t kMaxDedupProbes = 8;
     std::atomic<size_t> hash_collisions_{0};
     std::atomic<size_t> dedup_probe_exhaustions_{0};
@@ -441,35 +442,53 @@ public:
 
     template <typename MakeStable>
     bool claim_match(uint64_t h, const MatchRecord& rec, MakeStable&& make_stable) {
-        const MatchRecord* stable = nullptr;
-        for (uint32_t n = 0; n < kMaxDedupProbes; ++n) {
-            const uint64_t key = dedup_probe_key(h, n);
-            if (auto seen = seen_match_hashes_.lookup(key)) {
-                if (*seen && match_records_equal(**seen, rec)) return false;   // true duplicate
-                // Same key, a different match: a hash collision. Probing rather than discarding
-                // is the whole point -- discarding here is what silently loses work.
-                hash_collisions_.fetch_add(1, std::memory_order_relaxed);
-                continue;
+        // The storage face hgcommon::dedup_claim drives: which set, which probe-key derivation,
+        // which content comparison, which counters move. Nothing here decides anything.
+        struct Ops {
+            ParallelEvolutionEngine* self;
+            uint64_t                 h;
+            const MatchRecord&       rec;
+            MakeStable&              make;
+            const MatchRecord*       stable = nullptr;
+
+            uint32_t max_probes() const { return kMaxDedupProbes; }
+            uint64_t probe_key(uint32_t n) const { return dedup_probe_key(h, n); }
+
+            hgcommon::ProbeState probe(uint64_t key) const {
+                auto seen = self->seen_match_hashes_.lookup(key);
+                if (!seen) return hgcommon::ProbeState::Miss;
+                if (*seen && match_records_equal(**seen, rec))
+                    return hgcommon::ProbeState::Duplicate;
+                return hgcommon::ProbeState::Collision;
             }
-            // The stable copy has to exist before the exchange that publishes it, so it is
-            // allocated on the strength of a lookup that just missed. Another thread can claim
-            // the key in that window, and the arena is bump-allocated with no per-object free,
-            // so a copy that loses is a permanent cost. Counted rather than assumed: this is the
-            // arena the batched default pays for over eager, and a fix has to move THIS number.
-            if (!stable) {
-                stable = make_stable();
-                dedup_allocs_.fetch_add(1, std::memory_order_relaxed);
+
+            // Counted rather than assumed: a copy that loses the exchange is permanent, because
+            // the arena is a bump pointer with no per-object free. This is the arena the batched
+            // default pays for over eager, and a fix has to move THIS number.
+            void make_stable() {
+                stable = make();
+                self->dedup_allocs_.fetch_add(1, std::memory_order_relaxed);
             }
-            auto [existing, inserted] = seen_match_hashes_.insert_if_absent(key, stable);
-            if (inserted) return true;
-            if (existing && match_records_equal(*existing, rec)) {
-                dedup_allocs_wasted_.fetch_add(1, std::memory_order_relaxed);
-                return false;
+
+            hgcommon::ClaimState offer(uint64_t key) {
+                auto [existing, inserted] = self->seen_match_hashes_.insert_if_absent(key, stable);
+                if (inserted) return hgcommon::ClaimState::Won;
+                if (existing && match_records_equal(*existing, rec)) {
+                    self->dedup_allocs_wasted_.fetch_add(1, std::memory_order_relaxed);
+                    return hgcommon::ClaimState::Duplicate;
+                }
+                return hgcommon::ClaimState::Collision;
             }
-            hash_collisions_.fetch_add(1, std::memory_order_relaxed);
-        }
-        dedup_probe_exhaustions_.fetch_add(1, std::memory_order_relaxed);
-        return true;   // process it: a redundant rewrite is recoverable, a lost one is not
+
+            void note_collision() {
+                self->hash_collisions_.fetch_add(1, std::memory_order_relaxed);
+            }
+            void note_exhausted() {
+                self->dedup_probe_exhaustions_.fetch_add(1, std::memory_order_relaxed);
+            }
+        };
+        Ops ops{this, h, rec, make_stable};
+        return hgcommon::dedup_claim(ops);
     }
 
     // Distinct matches that landed on an equal key, and claims that ran out of probes. Both are
