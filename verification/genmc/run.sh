@@ -154,7 +154,11 @@ run_one() {
     # engine build rather than a stale one or a global rebuild.
     local file_defines
     file_defines="$(sed -n 's|^// GENMC-DEFINES: *||p' "$src" | head -1)"
-    local HG_HARNESS_DEFINES="${HG_HARNESS_DEFINES:-} $file_defines"
+    # The CALLER'S defines come last: a macro defined twice takes its last definition, so the
+    # harness file's GENMC-DEFINES are the defaults and the environment overrides them (a growth
+    # arm passing -DHG_CONCURRENT_MAP_INITIAL_CAPACITY=4 over the file's 16 was silently the
+    # file's 16 the other way round).
+    local HG_HARNESS_DEFINES="$file_defines ${HG_HARNESS_DEFINES:-}"
 
     # Compile at -O0, then optimise with a chosen pass list. Neither half is arbitrary.
     #
@@ -337,9 +341,9 @@ run_one() {
     # bound a harness needs is stated next to the property it bounds.
     local extra
     extra="$(sed -n 's|^// GENMC-ARGS: *||p' "$src" | head -1)"
-    # A bound the caller passes overrides the harness's: the checker keeps the FIRST --unroll it
-    # sees (three runs meant as unroll 2/3/4 produced byte-identical modules), so the harness's
-    # own --unroll is dropped when the extra arguments carry one.
+    # A bound the caller passes overrides the harness's: with both on the command line the
+    # checker takes one of them silently, so the harness's own --unroll is dropped when the
+    # extra arguments carry one and the bound in effect is the one the caller named.
     case " $* " in *" --unroll="*) extra="$(sed -E 's/--unroll=[0-9]+ ?//g' <<<"$extra")" ;; esac
 
     # A `// GENMC-EXPECT: violation` harness is a PINNED REPRODUCER of a known-reachable defect:
