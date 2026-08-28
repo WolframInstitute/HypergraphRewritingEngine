@@ -600,8 +600,18 @@ void ParallelEvolutionEngine::forward_from_ancestor_chain(
     uint32_t step,
     SVec<MatchRecord>* batch
 ) {
-    // The edges consumed between each ancestor and this child, accumulated on the way up.
+    // The edges consumed between each ancestor and this child, accumulated on the way up. A
+    // match is forwarded only if it overlaps NONE of them, so an edge missing from here is a
+    // match that passes a filter it should have failed -- and it is then invalid for the child,
+    // refused by Rewriter::apply, and the event never happens.
     EdgeId accumulated_consumed[MAX_PATTERN_EDGES * 8];
+    // THE COUNTER MUST BE ABLE TO INDEX THE ARRAY. It is a uint8_t here and the array is sized
+    // from MAX_PATTERN_EDGES, so raising that constant to 32 would make this cast 256 -> 0, the
+    // accumulator would hold nothing, every match would pass an empty filter, and the failure
+    // would be silent. Loud instead.
+    static_assert(MAX_PATTERN_EDGES * 8 <= 255,
+                  "accumulated_consumed is indexed by a uint8_t; widen total_consumed and the "
+                  "loops below before raising MAX_PATTERN_EDGES");
     constexpr uint8_t kMaxConsumed =
         static_cast<uint8_t>(sizeof(accumulated_consumed) / sizeof(EdgeId));
     uint8_t total_consumed = 0;
@@ -624,6 +634,12 @@ void ParallelEvolutionEngine::forward_from_ancestor_chain(
         ParentInfo* pi = *parent_result;
         if (!pi || !pi->has_parent()) break;
 
+        // A CHAIN LONGER THAN THE ACCUMULATOR IS A FILTER THAT STOPS BEING COMPLETE, and every
+        // ancestor above this point is then checked against a partial set. Counted rather than
+        // ignored: the symptom is a match forwarded that should not have been, refused at apply,
+        // and one event missing with nothing said.
+        if (total_consumed + pi->num_consumed > kMaxConsumed)
+            forwarding_consumed_truncated_.fetch_add(1, std::memory_order_relaxed);
         for (uint8_t i = 0; i < pi->num_consumed && total_consumed < kMaxConsumed; ++i) {
             accumulated_consumed[total_consumed++] = pi->consumed_edges[i];
         }
@@ -2720,6 +2736,10 @@ void ParallelEvolutionEngine::set_on_depth_complete(std::function<void(uint32_t)
 
 size_t ParallelEvolutionEngine::depth_late_arrivals() const {
     return depth_join_.late_arrivals();
+}
+
+size_t ParallelEvolutionEngine::forwarding_consumed_truncated() const {
+    return forwarding_consumed_truncated_.load(std::memory_order_relaxed);
 }
 
 size_t ParallelEvolutionEngine::dropped_fresh_children() const {

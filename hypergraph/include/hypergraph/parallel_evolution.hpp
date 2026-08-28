@@ -497,6 +497,8 @@ private:
     ConcurrentKeySet<uint64_t, STATE_MAP_EMPTY, STATE_MAP_LOCKED> matched_raw_states_;
     // See execute_rewrite_task: a fresh raw id reported as already present, which drops a subtree.
     std::atomic<size_t> dropped_fresh_child_{0};
+    // See forward_from_ancestor_chain: the overlap filter ran against a partial consumed set.
+    std::atomic<size_t> forwarding_consumed_truncated_{0};
 
     // Per-state match storage for match forwarding
     // Maps state -> list of matches found in that state
@@ -967,6 +969,9 @@ public:
     // the id is new, so the dedup set cannot have seen it. A non-zero value is a subtree that
     // was never explored. See execute_rewrite_task.
     size_t dropped_fresh_children() const;
+    // Ancestor chains longer than the consumed-edge accumulator, where the overlap filter stops
+    // being complete. See forward_from_ancestor_chain.
+    size_t forwarding_consumed_truncated() const;
     size_t states_drained() const;
 
     // Matches this state has accepted so far. Read inside the drain callback it is that state's

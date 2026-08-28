@@ -1,107 +1,87 @@
+// GENMC-LINK: job_system
 // GENMC-ARGS: --check-liveness
 //
 // GenMC harness: a worker that parks is always woken, so no submitted job is left unclaimed.
 //
-// THIS ONE IS A TRANSCRIPTION, NOT AN INCLUDE. Every other harness in this directory includes the
-// engine header and calls its own functions. This one cannot: the protocol lives inside
-// JobSystem's worker loop, which spawns its own threads and blocks in park_if_equal, and neither
-// std::thread's libstdc++ machinery nor syscall(SYS_futex, ...) is something the checker can run.
-// So the two sides are transcribed here, with the SAME memory orders as
-// job_system/include/job_system/job_system.hpp. Those orders are the entire content of the
-// property -- if they drift there and not here, this harness verifies something the engine no
-// longer does. Re-read both sides together when either changes.
+// IT INCLUDES THE PROTOCOL, and drives it. Until hgcommon/park_gate.hpp existed this was a
+// TRANSCRIPTION -- the two sides copied out of JobSystem's worker loop with the same memory
+// orders, and a comment asking the next reader to re-read both sides together whenever either
+// changed. A harness maintained that way verifies the transcription, and stops describing the
+// engine the moment the engine moves. Driving the real ParkGate cannot drift.
 //
-// WHAT IS BEING PROVED. wake_one_worker() SKIPS the wake when idle_workers_ reads zero, and the
-// header states why that is safe:
+// It could not include the old shape for a real reason: the protocol lived inside a worker loop
+// that spawns its own threads and blocks in a futex. That is still true of JobSystem -- measured,
+// constructing one prunes to 2,659 lines and verifies, starting one prunes to 8,952 and segfaults
+// GenMC v0.17.0 -- which is why the protocol is a unit and not checked in place.
 //
-//     "The two sides are a store-then-load on different locations: the submitter pushes then
-//      reads idle_workers_; a parking worker increments idle_workers_ then looks for work. At
-//      least one of them must observe the other, so a worker that this call skips is a worker
-//      whose own final look for work happens after the push and therefore finds it."
+// WHAT IS BEING PROVED. wake_one SKIPS the wake when the idle count reads zero, and that is safe
+// only because of what the two sides do in which order:
 //
-// That is store buffering, and "at least one must observe the other" is a guarantee ONLY under
-// sequential consistency -- under acquire/release both sides can read stale and both conclude
-// there is nothing to do. Both sides use seq_cst, so the claim should hold; this harness is what
-// makes that a checked fact rather than a stated one. A failure is a worker asleep with a job
-// queued and nobody left to wake it: the engine hangs.
+//     the submitter  publishes the job, then reads the idle count
+//     the worker     announces itself idle, then takes one last look for work
 //
-// HOW PARKING IS REPRESENTED. park_if_equal blocks while the word still holds the value the
-// caller sampled. That is transcribed as a spin on the same condition, which is what the futex
-// does, and --check-liveness reports a spin that can never exit. A lost wakeup therefore shows up
-// as a liveness violation rather than as a failed assertion.
+// Each writes one location and reads the other, so at least one must observe the other -- a
+// guarantee under sequential consistency and NOT under acquire/release, where both may read stale
+// and both conclude there is nothing to do. A failure is a worker asleep with a job queued and
+// nobody left to wake it: the engine hangs.
 //
-// CALIBRATED, which is what makes five complete executions worth stating. The property rests
-// entirely on seq_cst, so seq_cst is what the calibration removes: with the parking worker's
-// fetch_add, both fences and the submitter's load weakened to release/acquire, this harness
-// reports `Non-terminating spinloop: thread 1`. The counterexample is store buffering exactly as
-// the header describes it -- the submitter reads idle_workers_ as its initial 0 while the worker
-// reads work_available_ as its initial 0, both stale, so the submitter skips the wake and the
-// worker parks with the job queued and nobody left to wake it. Restore the orders and it is
-// clean. The five executions are few because the program is small, not because it is inert.
+// HOW PARKING IS REPRESENTED. Under HG_PARK_VERIFICATION park_if_equal spins on the word instead
+// of entering a futex, which is a conforming park -- the contract permits spurious return and
+// every caller re-tests -- and it is something the checker can see. A wake that never comes is
+// then a loop that never exits, which --check-liveness reports.
 //
-// WHAT IS BOUNDED. One worker, one submitter, one job. Two workers contending for one job is a
-// different question (which one claims it) and is not what the wake protocol is about.
+// CALIBRATED. The property rests entirely on the seq_cst pairing, so that is what the calibration
+// removes: HG_HARNESS_DEFINES=-DHG_PARK_GATE_WEAK_ORDERS drops both sides to release/acquire and
+// the checker reports a non-terminating spinloop. The counterexample is store buffering exactly as
+// described above -- the submitter reads the idle count as its initial zero while the worker reads
+// the work flag as its initial zero, both stale -- so the submitter skips the wake and the worker
+// parks with the job queued.
+//
+// WHAT IS BOUNDED. One worker, one submitter, one job, one domain. Two workers contending for one
+// job is a different question (which one claims it) and is not what the wake protocol is about;
+// the per-domain fallback is the subject of the _domains harness beside this one.
+#include "hgcommon/park_gate.hpp"
 
-#include <pthread.h>
 #include <atomic>
 #include <cassert>
-#include <cstdint>
 
-#include "genmc_support.hpp"
+#include <pthread.h>
+
 
 namespace {
 
-// Transcribed from JobSystem. work_available_ stands for "a job is reachable in some deque"; the
-// deque itself is verified separately and its internals are not what this protocol turns on.
+hgcommon::ParkGate::Domain g_domains[1];
+hgcommon::ParkGate        g_gate;
+
+// Stands for "a job is reachable in some deque". The deque itself is verified separately and its
+// internals are not what this protocol turns on.
 std::atomic<bool> g_work_available{false};
-std::atomic<int> g_idle_workers{0};
-std::atomic<uint32_t> g_work_seq{0};
 
 bool g_worker_got_work = false;
 
-// job_system.hpp:232-245, worker loop.
 void* worker(void*) {
-    // "Announce the park BEFORE sampling the counter and taking the last look for work, so a
-    // submitter either sees this worker as parked and wakes it, or is ordered before that last
-    // look and is found by it."
-    g_idle_workers.fetch_add(1, std::memory_order_seq_cst);
-    std::atomic_thread_fence(std::memory_order_seq_cst);
-    const uint32_t seq = g_work_seq.load(std::memory_order_acquire);
+    // look() is the worker's last exhaustive search; keep_waiting() is false once it must leave.
+    // Neither is part of the protocol, which is why the gate takes them from the caller.
+    auto look = [] { return g_work_available.load(std::memory_order_acquire); };
+    const bool took = g_gate.park_unless(0, look, [] { return true; });
 
-    if (g_work_available.load(std::memory_order_acquire)) {
-        g_idle_workers.fetch_sub(1, std::memory_order_relaxed);
-        g_worker_got_work = true;
-        return nullptr;
-    }
-
-    // park_if_equal(work_seq_, seq): block while the word still reads what was sampled. If the
-    // submitter has already bumped it, this falls through immediately -- that is what makes a
-    // wake issued before the park not a lost one.
-    while (g_work_seq.load(std::memory_order_acquire) == seq) {
-        // Spin. --check-liveness reports an execution in which this can never exit, which is
-        // exactly a worker asleep with a job queued.
-    }
-
-    g_idle_workers.fetch_sub(1, std::memory_order_relaxed);
-
-    // Woken: the job is there to be taken.
-    g_worker_got_work = g_work_available.load(std::memory_order_acquire);
+    // Either it found the job on its last look, or it parked and was woken to find it there.
+    g_worker_got_work = took || g_work_available.load(std::memory_order_acquire);
     return nullptr;
 }
 
-// job_system.hpp:124-128, wake_one_worker(), preceded by the submit that makes work reachable.
 void* submitter(void*) {
+    // The push comes first: wake_one's barrier sits between it and the read of the idle counts.
     g_work_available.store(true, std::memory_order_release);
-
-    std::atomic_thread_fence(std::memory_order_seq_cst);
-    if (g_idle_workers.load(std::memory_order_seq_cst) <= 0) return nullptr;   // skip the wake
-    g_work_seq.fetch_add(1, std::memory_order_release);
+    g_gate.wake_one(0);
     return nullptr;
 }
 
 }  // namespace
 
 int main() {
+    g_gate.seat(g_domains, 1);
+
     pthread_t w, s;
     pthread_create(&w, nullptr, worker, nullptr);
     pthread_create(&s, nullptr, submitter, nullptr);
@@ -111,8 +91,7 @@ int main() {
     // Reaching here at all is most of the property: a lost wakeup leaves the worker spinning and
     // the join never completes, which the liveness check reports.
     //
-    // The rest is that the worker did not wake to an empty world -- it either took the job on its
-    // last look or was woken to find it still there.
+    // The rest is that the worker did not wake to an empty world.
     assert(g_worker_got_work);
     return 0;
 }

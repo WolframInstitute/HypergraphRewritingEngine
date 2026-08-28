@@ -90,10 +90,18 @@ violation has not been shown to be able to detect one.
 
 ## What is NOT covered, and why each matters
 
-**Two harnesses check a re-implementation, not the code.** `job_system_no_lost_wakeup.cpp` and
-`job_system_no_lost_wakeup_domains.cpp` include nothing from `job_system/`: they re-state the
-wake protocol and check the re-statement, which is evidence about the re-statement. Every other
-harness includes the header it is about.
+~~**Two harnesses check a re-implementation, not the code.**~~ CLOSED. Both now drive
+`hgcommon/park_gate.hpp`, which is the park/wake protocol lifted out of `JobSystem`'s worker loop
+and `wake_one_worker`. They could not include the old shape for a real reason -- the protocol lived
+inside a loop that spawns threads and blocks in a futex, and a JobSystem is not reachable under
+GenMC (construction prunes to 2,659 lines and verifies; `start()` prunes to 8,952 and segfaults
+v0.17.0) -- so the protocol is a unit and is checked as one.
+
+Both are calibrated against the real path rather than a copy: `HG_PARK_GATE_WEAK_ORDERS` drops the
+handshake to release/acquire and `HG_PARK_GATE_NO_REMOTE_SCAN` removes the cross-domain fallback,
+and each makes the checker report a non-terminating spinloop -- a worker asleep with a job queued.
+
+EVERY harness under `verification/genmc/` now includes the header it is about.
 
 ~~**The job system's completion handshake is barriered on one side.**~~ EXAMINED AND REFUTED.
 The completer bumps `quiescence_seq_` (release) and then reads `completion_waiters_` (acquire),

@@ -21,8 +21,13 @@
 // operator new rather than malloc is what makes it visible: GenMC models the C++ allocation
 // functions, and run.sh takes the SYSTEM stdlib.h rather than the checker's, so a direct malloc
 // call reaches the interpreter as an unknown external function.
-void* operator new(std::size_t n, std::align_val_t) { return ::operator new(n); }
-void* operator new[](std::size_t n, std::align_val_t) { return ::operator new(n); }
+//
+// ZERO IS CLAMPED TO ONE. The standard requires operator new(0) to return a distinct non-null
+// pointer, and GenMC's address allocator refuses a zero-size request outright (an internal check,
+// not a diagnostic). One byte satisfies both: the pointer is distinct, and nothing reads it,
+// because a zero-size object has nothing to read.
+void* operator new(std::size_t n, std::align_val_t) { return ::operator new(n ? n : 1); }
+void* operator new[](std::size_t n, std::align_val_t) { return ::operator new(n ? n : 1); }
 void operator delete(void* p, std::align_val_t) noexcept { ::operator delete(p); }
 void operator delete[](void* p, std::align_val_t) noexcept { ::operator delete(p); }
 void operator delete(void* p, std::size_t, std::align_val_t) noexcept { ::operator delete(p); }
@@ -42,3 +47,23 @@ void* __dso_handle = nullptr;
 int __cxa_atexit(void (*)(void*), void*, void*) { return 0; }
 
 }  // extern "C"
+
+// THE ABI's TYPE-INFO VTABLES, which libstdc++ declares as `[0 x ptr]` -- an external global of
+// SIZE ZERO. GenMC materialises every external global through an address allocator that refuses a
+// zero-size request outright, as an internal check rather than a diagnostic, so a module
+// referencing one aborts the run before it starts. Any translation unit with a polymorphic class
+// references them; std::thread's state class is enough, which is why a harness that constructs a
+// JobSystem is fine and one that STARTS it is not.
+//
+// Only their ADDRESS is used: a typeinfo object's first word is this vtable's address offset past
+// its header, and nothing here dereferences it, because nothing in a harness does a dynamic_cast
+// or catches by base. Four words with the right symbol names give the linker something of
+// non-zero size to point at.
+//
+// Spelled through asm labels because the names are Itanium-mangled and cannot be written as C++
+// identifiers.
+// External linkage on purpose: these must DEFINE the symbols libstdc++ declares, and an internal
+// one would leave the zero-size declaration standing beside it.
+void* g_class_type_info_vtable[4] asm("_ZTVN10__cxxabiv117__class_type_infoE") = {};
+void* g_si_class_type_info_vtable[4] asm("_ZTVN10__cxxabiv120__si_class_type_infoE") = {};
+void* g_vmi_class_type_info_vtable[4] asm("_ZTVN10__cxxabiv121__vmi_class_type_infoE") = {};

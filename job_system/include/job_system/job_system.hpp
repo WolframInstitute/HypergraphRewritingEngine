@@ -6,6 +6,7 @@
 #include <lockfree_deque/deque.hpp>
 #include <hgcommon/park.hpp>
 #include <hgcommon/rendezvous.hpp>
+#include <hgcommon/park_gate.hpp>
 #include <hgcommon/affinity.hpp>
 
 #include <algorithm>
@@ -110,11 +111,11 @@ private:
     // How many workers are parked. Submitting is the hot path and parking is rare, so this
     // exists to keep the common submit free of any read-modify-write: with nobody parked
     // there is nobody to wake, and the counter bump and notify are both skipped.
-    std::atomic<int> idle_workers_{0};
+
     // Times a worker actually blocked. Worth keeping visible: this system is designed on the
     // assumption that parking is rare, and the number confirms it -- a depth-6 Wolfram run of
     // 15,966 events parks 14 times at 4 threads and 27 at 8.
-    std::atomic<size_t> park_waits_{0};
+
     // How many threads are inside wait_for_completion. Completion is signalled per job, and
     // notifying an address with no waiter is not free -- the implementation hashes it into a
     // process-wide waiter table, so every worker would touch one shared line on every job.
@@ -161,11 +162,12 @@ private:
     //
     // Padded because these are written by every submit: two domains' words on one line would
     // reintroduce, between domains, precisely the sharing this exists to remove.
-    struct alignas(64) DomainSlot {
-        std::atomic<uint32_t> seq{0};
-        std::atomic<int> idle{0};
-    };
-    std::unique_ptr<DomainSlot[]> domains_;
+    // The park/wake handshake is hgcommon::ParkGate; this owns only the storage it runs over.
+    // Keeping the protocol there is what makes it checkable --
+    // verification/genmc/job_system_no_lost_wakeup.cpp drives the same header this does, where it
+    // used to drive a transcription of it.
+    std::unique_ptr<hgcommon::ParkGate::Domain[]> domains_;
+    hgcommon::ParkGate park_gate_;
     size_t num_domains_ = 1;
     // Domain of each worker, dense from 0. Always the full width, even where build_cache_peers
     // declines to prefer peers -- a single domain is the correct answer for a machine whose
@@ -239,39 +241,15 @@ private:
     //
     // The caller pushes immediately before calling this, so the fence sits between the push and
     // the read. The worker's matching fence is in the park path.
-    void wake_one_worker() {
-        hgcommon::rendezvous_barrier<hgcommon::rv::WorkerParkWake>();
-        if (idle_workers_.load(std::memory_order_seq_cst) <= 0) return;
-
-        // The submitter's own domain first: a job pushed here is warm here.
-        const unsigned home = (t_sys_ == this && t_worker_ != nullptr) ? t_worker_->domain : 0u;
-        if (domains_[home].idle.load(std::memory_order_seq_cst) > 0) {
-            domains_[home].seq.fetch_add(1, std::memory_order_release);
-            hgcommon::unpark_one(domains_[home].seq);
-            return;
-        }
-
-        // Nobody idle at home. Somebody elsewhere must take it, or the job waits for a steal
-        // that may never be attempted -- so this scans rather than gives up, and only skips
-        // domains it can see are empty. A stale read here costs a wake that finds nothing; the
-        // job itself is still in a deque or the injector and is never stranded.
-        for (size_t d = 0; d < num_domains_; ++d) {
-            const size_t k = (home + 1 + d) % num_domains_;
-            if (domains_[k].idle.load(std::memory_order_seq_cst) <= 0) continue;
-            domains_[k].seq.fetch_add(1, std::memory_order_release);
-            hgcommon::unpark_one(domains_[k].seq);
-            return;
-        }
+    // The submitter's own domain, so a job pushed here is offered first to a worker sharing this
+    // cache. Zero off a worker thread, where there is no such preference to express.
+    unsigned current_worker_domain() const {
+        return (t_sys_ == this && t_worker_ != nullptr) ? t_worker_->domain : 0u;
     }
 
-    // Unconditional: used by error latching and shutdown, where a parked worker must be
-    // released whether or not the idle count says one is there.
-    void wake_all_workers() {
-        for (size_t d = 0; d < num_domains_; ++d) {
-            domains_[d].seq.fetch_add(1, std::memory_order_release);
-            hgcommon::unpark_all(domains_[d].seq);
-        }
-    }
+    void wake_one_worker() { park_gate_.wake_one(current_worker_domain()); }
+
+    void wake_all_workers() { park_gate_.wake_all(); }
 
     // Group the workers by the cache their bound CPU sits behind, filling peer_begin_/peers_.
     // Called by start() before the first worker thread exists, which is what lets the steal
@@ -375,7 +353,9 @@ private:
             if (seen.size() > 1) num_domains_ = seen.size();
             else worker_domain_.assign(n, 0u);      // everybody shares: one domain
         }
-        domains_ = std::unique_ptr<DomainSlot[]>(new DomainSlot[num_domains_]);
+        domains_ = std::unique_ptr<hgcommon::ParkGate::Domain[]>(
+            new hgcommon::ParkGate::Domain[num_domains_]);
+        park_gate_.seat(domains_.get(), static_cast<uint32_t>(num_domains_));
         for (size_t i = 0; i < n; ++i) workers_[i]->domain = worker_domain_[i];
     }
 
@@ -583,29 +563,21 @@ private:
             // sequentially consistent fence on BOTH sides forbids them from both reading stale.
             // Without it the submitter can read this worker as not-yet-idle while this worker
             // reads the deque as still empty, and the job is left queued with the worker parked.
-            const unsigned home = data->domain;
-            // BOTH COUNTS ARE ANNOUNCED BEFORE THE LAST LOOK, and both are released on every
-            // path out. The global one is what lets a submit skip the wake machinery entirely;
-            // the per-domain one is what tells a submitter whether a worker sharing its cache is
-            // available. Announcing before sampling the sequence and before the last look is
-            // what the fence pairing needs -- see wake_one_worker.
-            idle_workers_.fetch_add(1, std::memory_order_seq_cst);
-            domains_[home].idle.fetch_add(1, std::memory_order_seq_cst);
-            hgcommon::rendezvous_barrier<hgcommon::rv::WorkerParkWake>();
-            const uint32_t seq = domains_[home].seq.load(std::memory_order_acquire);
-            if (JobRaw job = find_work_exhaustive(data)) {
-                domains_[home].idle.fetch_sub(1, std::memory_order_relaxed);
-                idle_workers_.fetch_sub(1, std::memory_order_relaxed);
+            // ANNOUNCING, THE LAST LOOK AND THE PARK ARE ONE STEP, and the gate owns their order:
+            // both idle counts are published before the sequence is sampled and before the last
+            // look, which is what the barrier pairing in wake_one needs. The two callables are
+            // the caller's -- where work is found, and whether this worker must leave -- and are
+            // no part of the protocol.
+            if (JobRaw job = park_gate_.park_unless(
+                    data->domain,
+                    [&] { return find_work_exhaustive(data); },
+                    [&] {
+                        return error_type_.load(std::memory_order_acquire) == ErrorType::None &&
+                               !data->stop.load(std::memory_order_acquire);
+                    })) {
                 run_job(data, job);
                 continue;
             }
-            if (error_type_.load(std::memory_order_acquire) == ErrorType::None &&
-                !data->stop.load(std::memory_order_acquire)) {
-                park_waits_.fetch_add(1, std::memory_order_relaxed);
-                hgcommon::park_if_equal(domains_[home].seq, seq);
-            }
-            domains_[home].idle.fetch_sub(1, std::memory_order_relaxed);
-            idle_workers_.fetch_sub(1, std::memory_order_relaxed);
             if (error_type_.load(std::memory_order_acquire) != ErrorType::None) break;
             if (data->stop.load(std::memory_order_acquire)) break;
         }
@@ -873,7 +845,7 @@ public:
 
     bool is_running() const { return is_running_.load(); }
 
-    size_t park_waits() const { return park_waits_.load(std::memory_order_relaxed); }
+    size_t park_waits() const { return park_gate_.park_waits(); }
 
     ErrorType get_error_type() const { return error_type_.load(std::memory_order_acquire); }
     bool has_error() const { return get_error_type() != ErrorType::None; }

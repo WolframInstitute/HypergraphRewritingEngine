@@ -147,8 +147,18 @@ run_one() {
     # Without it a harness sees only what its own includes define, and a defect that lives in the
     # composition of the structures is invisible to it -- which is what every harness here was
     # before.
-    local link_engine
+    # The marker's VALUE picks the source set. `engine` is everything; `job_system` is the job
+    # system alone, which is 543 lines against the engine's tens of thousands -- so a harness about
+    # the job system is checkable where one reaching evolve() is not.
+    local link_engine link_srcs=()
     link_engine="$(sed -n 's|^// GENMC-LINK: *||p' "$src" | head -1)"
+    case "$link_engine" in
+        "")         ;;
+        engine)     link_srcs=("$ROOT"/hypergraph/src/*.cpp "$ROOT"/job_system/src/*.cpp
+                               "$HERE"/genmc_support.cpp) ;;
+        job_system) link_srcs=("$ROOT"/job_system/src/*.cpp "$HERE"/genmc_support.cpp) ;;
+        *) echo "--- $name: unknown GENMC-LINK target '$link_engine'" >&2; return 2 ;;
+    esac
 
     # Two declarations the composed build needs and a single-header harness does not.
     #
@@ -186,13 +196,13 @@ run_one() {
                      "$ROOT"/hypergraph/include/hypergraph/*.hpp "$ROOT"/common/include/hgcommon/*.hpp \
                      "$ROOT"/job_system/include/job_system/*.hpp "$ROOT"/lockfree_deque/include/*/*.hpp \
                      "$HERE"/genmc_pthread_shim.h "$HERE"/genmc_support.cpp 2>/dev/null
-                 echo "${HG_HARNESS_DEFINES:-}"; "$CLANGXX" --version | head -1
+                 echo "${HG_HARNESS_DEFINES:-}" "$link_engine"; "$CLANGXX" --version | head -1
                } | md5sum | cut -c1-16 )"
         local cache="${GENMC_IR_CACHE:-$ROOT/.genmc_ir_cache}/$key"
         mkdir -p "$cache"
 
         local units=()
-        for u in "$ROOT"/hypergraph/src/*.cpp "$ROOT"/job_system/src/*.cpp "$HERE"/genmc_support.cpp; do
+        for u in "${link_srcs[@]}"; do
             local un; un="$(basename "$u" .cpp)"
             if [ ! -s "$cache/$un.ll" ]; then
                 if ! "$CLANGXX" -std=c++17 -O0 -Xclang -disable-O0-optnone -S -emit-llvm \

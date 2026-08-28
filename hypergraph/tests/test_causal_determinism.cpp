@@ -45,6 +45,7 @@ struct Fingerprint {
     long late_submits = 0;
     long dropped_children = 0;
     long invalid_matches = 0;
+    long fwd_truncated = 0;
     std::string warnings;
 };
 
@@ -210,6 +211,7 @@ Fingerprint run(const std::vector<hg::engine::RewriteRule>& rules,
     fp.late_submits = static_cast<long>(e.late_submits());
     fp.dropped_children = static_cast<long>(e.dropped_fresh_children());
     fp.invalid_matches  = static_cast<long>(g.invalid_matches());
+    fp.fwd_truncated    = static_cast<long>(e.forwarding_consumed_truncated());
     // A CAPACITY OVERFLOW RETURNS A PARTIAL RESULT AND SAYS SO, by design -- errors are for
     // programmer mistakes, not for a run that outgrew a container. So a truncated run looks
     // exactly like a short one and differs only here, and nothing was reading it.
@@ -427,6 +429,14 @@ Spread spread(const Workload& w, bool quotient) {
                     << "a warning, so what it returned is a PARTIAL result and any shortfall "
                     << "against another configuration is that, not non-determinism -- "
                     << f.warnings;
+                // THE OVERLAP FILTER RAN AGAINST A PARTIAL SET. A match is forwarded down a
+                // chain only if it overlaps none of the edges consumed on the way; a chain longer
+                // than the accumulator drops some, so a match can pass a filter it should have
+                // failed and is then refused at apply.
+                EXPECT_EQ(f.fwd_truncated, 0)
+                    << w.name << " at threads=" << th << " rep=" << rep << ": "
+                    << f.fwd_truncated << " ancestor chain(s) exceeded the consumed-edge "
+                       "accumulator, so the forwarding overlap filter was incomplete.";
                 // AN EVENT THAT NEVER HAPPENED, and the only symptom is a shorter run. A match
                 // naming an edge its input state does not hold is refused by Rewriter::apply and
                 // returns an empty result, which the caller reads as "produced nothing". Every
