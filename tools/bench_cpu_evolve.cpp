@@ -246,7 +246,15 @@ int main(int argc, char** argv) {
                 g.set_record_set(rs);
             }
             ParallelEvolutionEngine e(&g, threads, ParallelEvolutionEngine::ExecutionMode::Parallel, worker_cpus);
-            e.set_explore_from_canonical_states_only(true);
+            // QUOTIENT IS NOT THE ENGINE'S DEFAULT. explore_from_canonical_states_only_ is false
+            // in ParallelEvolutionEngine; this bench turned it on unconditionally, so every
+            // number it has produced describes the quotient path and none describes the one a
+            // caller gets without asking. Overridable like every other record-set switch beside
+            // it, and still on by default so existing comparisons stay comparable.
+            {
+                const char* co = std::getenv("HG_BENCH_CANON_ONLY");
+                e.set_explore_from_canonical_states_only(!(co && co[0] == '0'));
+            }
             for (const auto& r : sel->rules) e.add_rule(r);
             const auto t0 = std::chrono::steady_clock::now();
             e.evolve(sel->init, steps);
