@@ -1354,6 +1354,7 @@ void ParallelEvolutionEngine::reset_depth_join() {
     depth_join_ = std::vector<DepthJoin>(max_steps_ + 2);
     roots_seeded_.store(false, std::memory_order_release);
     depth_late_arrivals_.store(0, std::memory_order_relaxed);
+    depth_notified_.store(0, std::memory_order_relaxed);
 }
 
 void ParallelEvolutionEngine::note_depth_task_pushed(uint32_t depth) {
@@ -1383,18 +1384,36 @@ void ParallelEvolutionEngine::try_complete_depth(uint32_t depth) {
     for (uint32_t d = (depth == 0 ? 1u : depth); d < depth_join_.size(); ++d) {
         if (depth_join_[d].complete.load(std::memory_order_acquire)) continue;
         if (d == 1) {
-            if (!roots_seeded_.load(std::memory_order_acquire)) return;
+            if (!roots_seeded_.load(std::memory_order_acquire)) break;
         } else if (!depth_join_[d - 1].complete.load(std::memory_order_acquire)) {
-            return;
+            break;
         }
-        if (depth_join_[d].live.load(std::memory_order_acquire) != 0) return;
+        if (depth_join_[d].live.load(std::memory_order_acquire) != 0) break;
 
         uint8_t expected = 0;
         if (!depth_join_[d].complete.compare_exchange_strong(
                 expected, 1, std::memory_order_acq_rel, std::memory_order_acquire)) {
             continue;   // another thread settled it; its cascade covers the depths above
         }
-        if (on_depth_complete_) on_depth_complete_(d);
+    }
+    notify_completed_depths();
+}
+
+void ParallelEvolutionEngine::notify_completed_depths() {
+    if (!on_depth_complete_) return;
+    for (;;) {
+        uint32_t n = depth_notified_.load(std::memory_order_acquire);
+        const uint32_t next = n + 1;
+        if (next >= depth_join_.size()) return;
+        if (!depth_join_[next].complete.load(std::memory_order_acquire)) return;
+        // The winner of this step OWNS the report for `next`, and every other thread is held at
+        // the same step until it is issued. That is what orders the reports against each other:
+        // settling is already ordered, and this makes reporting inherit that order rather than
+        // the order the settling threads happen to be scheduled in.
+        if (depth_notified_.compare_exchange_strong(n, next, std::memory_order_acq_rel,
+                                                    std::memory_order_acquire)) {
+            on_depth_complete_(next);
+        }
     }
 }
 

@@ -5,6 +5,7 @@
 // offline reduction here is the same reference the standalone probe uses.
 #include <gtest/gtest.h>
 #include <hypergraph/parallel_evolution.hpp>
+#include <hgcommon/transitive_reduction.hpp>
 
 #include <functional>
 #include <set>
@@ -99,5 +100,46 @@ TEST(CausalTrExactnessTest, OnlineTrMatchesOfflineTr) {
         EXPECT_EQ(online, offline)
             << c.name << ": online TR (" << online.size() << " edges) != offline TR ("
             << offline.size() << ") of full (" << full.size() << ")";
+    }
+}
+
+// A REDUCTION IS ITS OWN REDUCTION, and that is checkable at any thread count.
+//
+// The reduction of a DAG preserves its reachability, so no edge of the reduction is implied by a
+// path through the others: for a kept set K that is the reduction of the full relation F,
+// tr_reduce(K) == K. A kept edge that a path through other kept edges already implies is a
+// definite fault in the online rule, whatever F was.
+//
+// This needs neither a second run nor a mapping between two runs' event ids, which is what
+// confines OnlineTrMatchesOfflineTr above to one thread. So it runs where the online rule is
+// actually under pressure, and it names the fault on the run that produced it -- the determinism
+// gate can only report, later, that two runs disagreed.
+TEST(CausalTrExactnessTest, OnlineTrIsItsOwnReductionUnderConcurrency) {
+    const std::vector<Case> cases = {
+        // The depths the determinism gate runs, so this checks the reduction on the same
+        // relation sizes that gate compares -- a reduction that is exact on a hundred edges
+        // says nothing about one on twenty-five thousand.
+        {"wolfram/s6", rWolfram, {{0u, 1u}, {0u, 2u}}, 6},
+        {"mixed/s5",   rMixed,   {{0u, 1u}, {1u, 2u}}, 5},
+        {"split/s6",   rSplit,   {{0u, 1u}}, 6},
+    };
+    const unsigned hw = std::max(4u, std::thread::hardware_concurrency());
+    for (const auto& c : cases) {
+        for (unsigned th : {4u, hw, hw * 2}) {
+            for (int rep = 0; rep < 4; ++rep) {
+                const PairSet online = run(c.rule(), c.init, c.steps, /*tr=*/true, th);
+                PairSet self;
+                // ids_topological is left off: the oracle then assumes nothing about the ids of
+                // the set it is handed, so it stays a check on the online rule rather than on
+                // the same premise the online rule was written under.
+                hgcommon::tr_reduce(
+                    [&](auto&& add) { for (const auto& pc : online) add(pc.first, pc.second); },
+                    [&](uint32_t p, uint32_t q) { self.insert({p, q}); });
+                ASSERT_EQ(online.size(), self.size())
+                    << c.name << " at threads=" << th << " rep=" << rep << ": the kept set holds "
+                    << (online.size() - self.size()) << " edge(s) that a path through other kept "
+                       "edges already implies, so it is not the reduction of anything.";
+            }
+        }
     }
 }

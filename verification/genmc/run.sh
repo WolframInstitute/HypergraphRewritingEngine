@@ -84,8 +84,13 @@ if [ -z "${GENMC_INCLUDE:-}" ] || [ ! -f "$GENMC_INCLUDE/pthread.h" ]; then
     exit 2
 fi
 
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+# GENMC_WORK names a directory to build in and KEEPS it, so the module the checker was handed can
+# be read after the run. Diagnosing a composed harness means looking at the pruned .ll.
+if [ -n "${GENMC_WORK:-}" ]; then
+    WORK="$GENMC_WORK"; mkdir -p "$WORK"
+else
+    WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+fi
 
 # Exactly the headers the checker must interpret. Everything else resolves to the system
 # library, so the harness compiles against the same declarations the engine does.
@@ -109,7 +114,13 @@ INCLUDES=(
 
 run_one() {
     local name="$1"; shift
-    local src="$HERE/$name.cpp"
+    # A PATH runs a harness that is not in this directory, which is how one under development is
+    # exercised without `all` picking it up before it is ready.
+    local src
+    case "$name" in
+        */*|*.cpp) src="$name"; name="$(basename "$name" .cpp)" ;;
+        *)         src="$HERE/$name.cpp" ;;
+    esac
     [ -f "$src" ] || { echo "run.sh: no such harness '$src'" >&2; return 2; }
 
     echo "=== $name ==="
@@ -174,14 +185,14 @@ run_one() {
         key="$( { ls -lL --time-style=+%s "$ROOT"/hypergraph/src/*.cpp "$ROOT"/job_system/src/*.cpp \
                      "$ROOT"/hypergraph/include/hypergraph/*.hpp "$ROOT"/common/include/hgcommon/*.hpp \
                      "$ROOT"/job_system/include/job_system/*.hpp "$ROOT"/lockfree_deque/include/*/*.hpp \
-                     "$HERE"/genmc_pthread_shim.h 2>/dev/null
+                     "$HERE"/genmc_pthread_shim.h "$HERE"/genmc_support.cpp 2>/dev/null
                  echo "${HG_HARNESS_DEFINES:-}"; "$CLANGXX" --version | head -1
                } | md5sum | cut -c1-16 )"
         local cache="${GENMC_IR_CACHE:-$ROOT/.genmc_ir_cache}/$key"
         mkdir -p "$cache"
 
         local units=()
-        for u in "$ROOT"/hypergraph/src/*.cpp "$ROOT"/job_system/src/*.cpp; do
+        for u in "$ROOT"/hypergraph/src/*.cpp "$ROOT"/job_system/src/*.cpp "$HERE"/genmc_support.cpp; do
             local un; un="$(basename "$u" .cpp)"
             if [ ! -s "$cache/$un.ll" ]; then
                 if ! "$CLANGXX" -std=c++17 -O0 -Xclang -disable-O0-optnone -S -emit-llvm \
@@ -224,6 +235,13 @@ run_one() {
         echo "--- $name: OPT FAILED"
         tail -20 "$WORK/$name.opt.err"
         return 3
+    fi
+
+    # What the checker was actually handed. For a composed harness this is the number that
+    # decides whether it finishes: the module is the whole engine minus whatever main cannot
+    # reach, and a harness that reaches more of it costs more before a single execution runs.
+    if [ -n "$link_engine" ]; then
+        echo "    composed: $(wc -l < "$to_opt") lines linked, $(wc -l < "$WORK/$name.ll") after prune"
     fi
 
     # Harness-specific GenMC flags travel with the harness in a `// GENMC-ARGS:` line, so the

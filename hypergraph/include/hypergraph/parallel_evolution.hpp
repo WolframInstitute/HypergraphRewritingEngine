@@ -769,6 +769,14 @@ private:
     // cannot happen, so it is counted rather than assumed: a non-zero value means a depth was
     // reported complete while work could still land in it.
     std::atomic<size_t> depth_late_arrivals_{0};
+    // The deepest depth whose completion has been REPORTED. Settling a depth and reporting it
+    // are two steps, so the thread that settles one can be descheduled between them while
+    // another settles the depth above -- and a callback that arrives out of order describes a
+    // run that never happened. Advancing this one step at a time makes the report order the
+    // depth order: whoever wins the step for d is the one that reports d, and no thread can
+    // report d+1 until that step is won. Depth 0 runs no task and is never reported, so the
+    // cursor starts there.
+    std::atomic<uint32_t> depth_notified_{0};
 
     void reset_depth_join();
     // Every task is booked at the depth it RUNS at: pushed before it can be seen, done after
@@ -776,6 +784,10 @@ private:
     void note_depth_task_pushed(uint32_t depth);
     void note_depth_task_done(uint32_t depth);
     void try_complete_depth(uint32_t depth);
+    // Reports every settled depth the cursor has not yet reached, in order. Called on every exit
+    // from try_complete_depth, including the early ones: a thread that settles a depth and then
+    // returns because the one above is not ready still owes that depth's report.
+    void notify_completed_depths();
 
     // Books one task against its depth however its function exits.
     class DepthTaskGuard {
