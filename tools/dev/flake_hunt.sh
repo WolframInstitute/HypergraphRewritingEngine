@@ -66,8 +66,16 @@ start)
                 round=$((round + 1))
                 log="$out/run_${i}_${round}.log"
                 if ! $runner "$bin" --gtest_filter="$filter" > "$log" 2>&1; then
-                    # A FIRING IS THE WHOLE POINT: keep it entire, and keep going.
-                    mv "$log" "$out/FIRING_${i}_${round}_$(date -u +%Y%m%dT%H%M%SZ).log"
+                    # A KILL IS NOT A FIRING. `stop` pkills the binaries, so every run in flight
+                    # exits non-zero with nothing flushed -- and recording those as firings
+                    # manufactures a reproduction that did not happen. Measured: one stop produced
+                    # sixteen empty FIRING logs. A real firing names the failing test.
+                    if [ -f "$out/STOP" ] || ! grep -q '\[  FAILED  \]' "$log"; then
+                        rm -f "$log"
+                    else
+                        # A FIRING IS THE WHOLE POINT: keep it entire, and keep going.
+                        mv "$log" "$out/FIRING_${i}_${round}_$(date -u +%Y%m%dT%H%M%SZ).log"
+                    fi
                 else
                     rm -f "$log"
                 fi
@@ -85,6 +93,9 @@ status)
     ls "$OUT"/FIRING_* 2>/dev/null | tail -5
     ;;
 stop)
+    # The flag goes down BEFORE the kill, so a run cut short by it is discarded rather than
+    # recorded. See the loop above.
+    mkdir -p "$OUT"
     touch "$OUT/STOP"
     # Bracket the pattern so this command's own line does not match it, and kill the test
     # binaries directly rather than the shells, which exit on their own once the round ends.
