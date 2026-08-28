@@ -6,6 +6,9 @@
 // oracle" guarantee that every optimization must keep passing.
 #include <gtest/gtest.h>
 
+#include <cstdlib>
+#include <string>
+
 #include "hypergraph/rule_analysis.hpp"
 #include "reference/oracle_corpus.hpp"
 
@@ -94,6 +97,38 @@ TEST(OracleCorpus, CausalBranchialCountsDeterministicAcrossThreads) {
                     << c.name << ": branchial_edges differ @" << t << " threads (rep " << rep << ")";
             }
         }
+    }
+}
+
+// THE ONE CELL THAT HAS FIRED, REPEATED ON ITS OWN. CI run 33187909565 (9635ffaf) reported
+// cycle4-automorphic at 16 threads one event short (68183 of 68184, with the causal edge, the
+// causal pair and the two branchial edges of that event missing with it) once, on a 4-vCPU
+// runner, and no repeat of the corpus test has reproduced it since. The corpus test pays a
+// serial reference run per repeat; this one pays it once and then repeats only the cell that
+// fired, so a machine can take thousands of samples an hour. HG_ORACLE_REPEAT sets the sample
+// count (3 when unset, which is what CI runs); the first mismatch stops the test and prints the
+// engine's own drop counters for both runs.
+TEST(OracleCorpus, Cycle4AutomorphicAtSixteenThreadsRepeated) {
+    const std::vector<oracle::Case> cases = oracle::corpus();
+    const oracle::Case* c = nullptr;
+    for (const auto& k : cases) if (std::string(k.name) == "cycle4-automorphic") c = &k;
+    ASSERT_NE(c, nullptr);
+    const char* env = std::getenv("HG_ORACLE_REPEAT");
+    const int reps = env ? std::atoi(env) : 3;
+    const oracle::Counts ref = oracle::engine_counts(c->rules, c->init, c->measure_steps, 1);
+    for (int rep = 0; rep < reps; ++rep) {
+        const oracle::Counts got = oracle::engine_counts(c->rules, c->init, c->measure_steps, 16);
+        const bool same = got.canonical_states == ref.canonical_states && got.events == ref.events &&
+                          got.causal_edges == ref.causal_edges &&
+                          got.causal_event_pairs == ref.causal_event_pairs &&
+                          got.branchial_edges == ref.branchial_edges;
+        ASSERT_TRUE(same) << "cycle4-automorphic @16 threads, sample " << rep << " of " << reps
+            << ": states " << got.canonical_states << "/" << ref.canonical_states
+            << " events " << got.events << "/" << ref.events
+            << " causal " << got.causal_edges << "/" << ref.causal_edges
+            << " pairs " << got.causal_event_pairs << "/" << ref.causal_event_pairs
+            << " branchial " << got.branchial_edges << "/" << ref.branchial_edges
+            << "\n  this run: " << got.diag << "\n  reference: " << ref.diag;
     }
 }
 
