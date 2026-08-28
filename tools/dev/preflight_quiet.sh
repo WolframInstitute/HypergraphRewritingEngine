@@ -16,8 +16,8 @@
 #
 # SELF-EXCLUSION IS THE HARD PART. `pgrep -f <pattern>` matches the command line running it, and
 # this script's own command line contains every pattern it searches for. Bracketing the pattern is
-# not enough once a chained command also names a real path. So this excludes BY PID: itself, its
-# parent, and every descendant of itself.
+# not enough once a chained command also names a real path. So this excludes BY PID: itself, every
+# ancestor up to init, and every descendant.
 set -u
 
 MAX_LOAD=${MAX_LOAD:-1.0}
@@ -51,9 +51,22 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# Every PID in this script's own tree, so nothing it starts is mistaken for someone else's work.
+# Every PID in this script's own LINEAGE -- ancestors as well as descendants.
+#
+# ANCESTORS ARE THE HALF THAT IS EASY TO MISS, and leaving them out makes the gate reject every
+# legitimate run rather than every dirty one. When a sweep chains this in front of itself the
+# process tree is `timeout -> sweep -> preflight`, so the sweep is this script's PARENT and the
+# timeout its GRANDPARENT; both carry the sweep's name on their command line and both match the
+# patterns below. Caught by running the gate from inside a sweep, which reported the sweep itself.
 own_pids() {
-    local out="$$ $PPID" frontier="$$" next child
+    local out="$$" frontier="$$" next child p
+    # up: every ancestor to init
+    p=$$
+    while [ -n "$p" ] && [ "$p" -gt 1 ] 2>/dev/null; do
+        p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
+        [ -n "$p" ] && out="$out $p"
+    done
+    # down: every descendant
     for _ in 1 2 3 4 5; do
         next=""
         for p in $frontier; do
