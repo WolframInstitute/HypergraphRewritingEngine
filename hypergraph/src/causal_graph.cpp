@@ -187,7 +187,15 @@ void CausalGraph::add_causal_edge(EventId producer, EventId consumer, EdgeId edg
         ids_are_topological_.load(std::memory_order_relaxed)) {
         const uint64_t pair_key = causal_pair_key(producer, consumer);
         if (!seen_causal_event_pairs_.contains(pair_key)) {
+            // HG_CALIBRATE_TR_NEVER_SKIP answers the redundancy question "no" every time, so
+            // every offered pair is kept and the kept set is the full relation rather than its
+            // reduction. The determinism gate's per-run tr_surplus check must then fail; a gate
+            // that stays green under it is not testing the reduction.
+#if defined(HG_CALIBRATE_TR_NEVER_SKIP)
+            if (false) {
+#else
             if (is_reachable(producer, consumer)) {
+#endif
                 num_redundant_edges_skipped_.fetch_add(1, std::memory_order_relaxed);
                 return;
             }

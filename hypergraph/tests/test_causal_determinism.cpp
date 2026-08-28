@@ -9,6 +9,7 @@
 
 #include "hypergraph/hypergraph.hpp"
 #include "hypergraph/parallel_evolution.hpp"
+#include "hgcommon/transitive_reduction.hpp"
 
 // =============================================================================
 // Canonical determinism gate.
@@ -36,6 +37,9 @@ struct Fingerprint {
     long num_states = 0, num_events = 0, num_causal = 0, num_branchial = 0;
     long claims = 0, drops = 0, align_fail = 0, badcorr = 0;
     long rebuilds = 0;
+    // Kept causal pairs that a path through other kept pairs already implies. Zero on a run
+    // whose online reduction was exact; a positive value names that run as the faulty one.
+    long tr_surplus = 0;
     std::string drop_witness;
     long not_rep = 0, visits = 0;
     long matches = 0, instances = 0, unique = 0;
@@ -94,10 +98,25 @@ Fingerprint fingerprint(hg::engine::Hypergraph& g) {
             [&](uint32_t e) { return g.reconstructed_raw_triple(e); },
             [&](uint64_t p, uint64_t c) { ce.push_back(fnv(fnv(0, p), c)); });
     } else {
+        // A REDUCTION IS ITS OWN REDUCTION, and off quotient the kept set is meant to be one.
+        // The online rule decides redundancy when a pair is FIRST offered, against whatever
+        // paths exist at that moment, so a kept edge that a path through other kept edges
+        // already implies is a fault in that decision -- and it is visible on the run that
+        // made it, with no second run to compare against. The spread can only say later that
+        // two runs disagreed, which it does about once in forty; this says which run was wrong.
+        std::set<std::pair<uint32_t, uint32_t>> kept;
         for (const auto& c : g.causal_graph().get_causal_edges()) {
             if (c.producer == hg::engine::INVALID_ID || c.consumer == hg::engine::INVALID_ID) continue;
             ce.push_back(fnv(fnv(0, esig(c.producer)), esig(c.consumer)));
+            kept.insert({c.producer, c.consumer});
         }
+        size_t self_reduced = 0;
+        // ids_topological is left off, so the oracle assumes nothing about the ids of the set
+        // it is handed and stays a check on the online rule rather than on its own premise.
+        hgcommon::tr_reduce(
+            [&](auto&& add) { for (const auto& pc : kept) add(pc.first, pc.second); },
+            [&](uint32_t, uint32_t) { ++self_reduced; });
+        fp.tr_surplus = static_cast<long>(kept.size() - self_reduced);
     }
     std::sort(ce.begin(), ce.end());
     fp.causal = 1469598103934665603ULL; for (uint64_t v : ce) fp.causal = fnv(fp.causal, v);
@@ -411,6 +430,23 @@ Spread spread(const Workload& w, bool quotient) {
                 //
                 // Zero on every quotient run of all three workloads at 1, 2, 8, 16 and 32
                 // threads, both seeds, four repetitions.
+                // THE ONLINE REDUCTION IS CHECKED ON THE RUN THAT PRODUCED IT, off quotient,
+                // where it is the rule that decides which pairs are kept. Every firing of this
+                // gate in CI has been one extra causal edge with the states, events and
+                // branchial counts identical, and a spread over forty runs can only report that
+                // afterwards, once one run in forty has differed from the rest. A kept pair that
+                // a path through other kept pairs already implies is a fault whatever the other
+                // thirty-nine did, so it is asserted here, per run.
+                if (!quotient) {
+                    EXPECT_EQ(f.tr_surplus, 0)
+                        << w.name << " at threads=" << th << " seed="
+                        << (seed ? "fixed" : "random") << " rep=" << rep << ": the kept causal "
+                        << "set holds " << f.tr_surplus << " pair(s) that a path through other "
+                           "kept pairs already implies, so it is not the reduction of anything. "
+                           "The online rule answers reachability when a pair is first offered, "
+                           "so a pair offered before the path that implies it was stored is "
+                           "kept and never revisited.";
+                }
                 if (quotient) {
 #if defined(HG_CALIBRATE_ORBIT_CACHE_COLD)
                     // THE ARM HAS TO BE COLD FOR ITS PASS TO MEAN ANYTHING. With the warm fill
