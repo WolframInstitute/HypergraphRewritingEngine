@@ -1,4 +1,8 @@
 #pragma once
+#include "hgcommon/core.hpp"
+#include <atomic>
+#include <algorithm>
+#include <string>
 #include "hgcommon/namespace.hpp"
 
 #include <cstdint>
@@ -132,6 +136,37 @@ public:
 // - Each vertex's edge list is a LockFreeList
 
 class InvertedVertexIndex {
+    static constexpr size_t kMissWitness = 8;
+    std::atomic<size_t> lookup_misses_{0};
+    std::atomic<size_t> lookup_miss_retry_hits_{0};
+    std::atomic<size_t> empty_seed_walks_{0};
+    std::atomic<size_t> miss_witness_count_{0};
+    std::string miss_witness_[kMissWitness];
+    void note_lookup_miss(VertexId v) const {
+        auto* self = const_cast<InvertedVertexIndex*>(this);
+        self->lookup_misses_.fetch_add(1, std::memory_order_relaxed);
+        const auto retry = vertex_to_edges_.lookup(v);
+        size_t len = 0;
+        if (retry.has_value()) {
+            self->lookup_miss_retry_hits_.fetch_add(1, std::memory_order_relaxed);
+            retry.value()->for_each([&](EdgeId) { ++len; });
+        }
+        const size_t slot = self->miss_witness_count_.fetch_add(1, std::memory_order_acq_rel);
+        if (slot < kMissWitness)
+            self->miss_witness_[slot] = "lookup-miss v=" + std::to_string(v) + " retry=" +
+                (retry.has_value() ? "found(" + std::to_string(len) + " edges)" : "miss") +
+                " map=" + std::to_string(vertex_to_edges_.size());
+    }
+    void note_empty_walk(VertexId v) const {
+        auto* self = const_cast<InvertedVertexIndex*>(this);
+        self->empty_seed_walks_.fetch_add(1, std::memory_order_relaxed);
+        size_t len = 0;
+        const auto retry = vertex_to_edges_.lookup(v);
+        if (retry.has_value()) retry.value()->for_each([&](EdgeId) { ++len; });
+        const size_t slot = self->miss_witness_count_.fetch_add(1, std::memory_order_acq_rel);
+        if (slot < kMissWitness)
+            self->miss_witness_[slot] = "empty-walk v=" + std::to_string(v) + " retry-walk=" + std::to_string(len);
+    }
     // vertex_id → list of edges containing that vertex
     // Using ConcurrentMap for lock-free, wait-free access
     // EMPTY_KEY = 0xFFFFFFFE, LOCKED_KEY = 0xFFFFFFFF (both are INVALID_ID-ish values)
@@ -160,6 +195,20 @@ public:
     // a full rematch finds and the task-based path did not, checked against what the index
     // answers for that edge's vertices right after the miss.
     bool has_vertex(VertexId v) const { return vertex_to_edges_.lookup(v).has_value(); }
+
+    // A LOOKUP THAT MISSES A BOUND VERTEX IS A DEFECT: every bound vertex came off an edge that
+    // is in the index, so its list exists. Stats builds count the misses in the candidate
+    // walks, retry the lookup at once, count the retries that then succeed, and keep the first
+    // few as text -- which is what separates a transient answer from a permanent one.
+    size_t lookup_misses() const { return lookup_misses_.load(std::memory_order_relaxed); }
+    size_t lookup_miss_retry_hits() const { return lookup_miss_retry_hits_.load(std::memory_order_relaxed); }
+    size_t empty_seed_walks() const { return empty_seed_walks_.load(std::memory_order_relaxed); }
+    std::string miss_witness() const {
+        std::string out;
+        const size_t n = std::min(miss_witness_count_.load(std::memory_order_acquire), kMissWitness);
+        for (size_t i = 0; i < n; ++i) out += miss_witness_[i] + " ";
+        return out;
+    }
 
     template<typename Visitor>
     void for_each_edge(
@@ -202,7 +251,10 @@ public:
             // length-probing pass. Its occurrence list IS the scan seed (the dominant
             // chain-rule case, where each later edge shares a single bound variable).
             auto result = vertex_to_edges_.lookup(vertices[0]);
-            if (!result.has_value()) return;  // vertex occurs nowhere -> empty intersection
+            if (!result.has_value()) {
+                HG_STAT(note_lookup_miss(vertices[0]));
+                return;  // vertex occurs nowhere -> empty intersection
+            }
             seed_list = result.value();
             // seed_idx stays 0
         } else {
@@ -221,7 +273,10 @@ public:
 
             for (uint8_t i = 0; i < count; ++i) {
                 auto result = vertex_to_edges_.lookup(vertices[i]);
-                if (!result.has_value()) return;  // vertex occurs nowhere -> empty intersection
+                if (!result.has_value()) {
+                    HG_STAT(note_lookup_miss(vertices[i]));
+                    return;  // vertex occurs nowhere -> empty intersection
+                }
                 const LockFreeList<EdgeId>* list = result.value();
 
                 // Probe length only far enough to decide whether this list beats the
@@ -245,7 +300,9 @@ public:
         // Iterate the seed vertex's edge list; keep edges present in state that also
         // contain every OTHER bound vertex. This is O(arity * count) per edge instead
         // of an O(edges_per_vertex * count) list membership scan.
+        [[maybe_unused]] size_t walked = 0;   // stats builds: nodes the seed walk visited
         seed_list->for_each([&](EdgeId eid) {
+            HG_STAT(++walked);
             if (!state_edges.contains(eid)) return;
 
             const auto& edge = get_edge(eid);
@@ -268,6 +325,7 @@ public:
                 visit(eid, edge);
             }
         });
+        HG_STAT(if (walked == 0) note_empty_walk(vertices[seed_idx]));
     }
 
     // Get count of edges containing vertex

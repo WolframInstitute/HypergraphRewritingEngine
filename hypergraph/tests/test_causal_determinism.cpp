@@ -62,6 +62,8 @@ struct Fingerprint {
     long invalid_matches = 0;
     long fwd_truncated = 0;
     long double_executions = 0, abandoned_jobs = 0, abandoned_already_run = 0;
+    long index_misses = 0, index_miss_retry_hits = 0, empty_walks = 0;
+    std::string index_witness;
     std::string dump_path;   // HG_DET_DUMP: this run's state/event/causal listing, or empty
     // THE TWO WAYS ONE EXTRA CAUSAL EDGE CAN EXIST, separated. The reduction either kept a pair
     // it should have dropped -- which shows as FEWER skips -- or the triple set stored the same
@@ -261,8 +263,10 @@ Fingerprint run(const std::vector<hg::engine::RewriteRule>& rules,
     e.evolve(init, steps);
     Fingerprint fp = fingerprint(g);
     if (std::getenv("HG_DET_VALIDATE") && e.still_missing() > 0)
-        std::fprintf(stderr, "HG_DET_VALIDATE: %zu match(es) still missing at the end (%zu recorded at drain, %zu arrived late); %s\n",
-                     e.still_missing(), e.validation_mismatches(), e.late_arrivals(), e.validation_witness().c_str());
+        std::fprintf(stderr, "HG_DET_VALIDATE: %zu match(es) still missing at the end (%zu recorded at drain, %zu arrived late); %s index: misses=%zu retry_hits=%zu empty_walks=%zu %s\n",
+                     e.still_missing(), e.validation_mismatches(), e.late_arrivals(), e.validation_witness().c_str(),
+                     g.inverted_index().lookup_misses(), g.inverted_index().lookup_miss_retry_hits(),
+                     g.inverted_index().empty_seed_walks(), g.inverted_index().miss_witness().c_str());
     // READ BEFORE THE ENGINE GOES OUT OF SCOPE. This is the precondition the quiescence
     // predicate rests on, not a property of the hypergraph, so it comes from the engine.
     fp.late_submits = static_cast<long>(e.late_submits());
@@ -275,6 +279,10 @@ Fingerprint run(const std::vector<hg::engine::RewriteRule>& rules,
     fp.double_executions = static_cast<long>(e.double_executions());
     fp.abandoned_jobs = static_cast<long>(e.abandoned_at_quiescence());
     fp.abandoned_already_run = static_cast<long>(e.abandoned_already_run());
+    fp.index_misses = static_cast<long>(g.inverted_index().lookup_misses());
+    fp.index_miss_retry_hits = static_cast<long>(g.inverted_index().lookup_miss_retry_hits());
+    fp.empty_walks = static_cast<long>(g.inverted_index().empty_seed_walks());
+    fp.index_witness = g.inverted_index().miss_witness();
     // A CAPACITY OVERFLOW RETURNS A PARTIAL RESULT AND SAYS SO, by design -- errors are for
     // programmer mistakes, not for a run that outgrew a container. So a truncated run looks
     // exactly like a short one and differs only here, and nothing was reading it.
@@ -607,6 +615,11 @@ Spread spread(const Workload& w, bool quotient) {
                     << w.name << " at threads=" << th << " rep=" << rep << ": "
                     << f.dropped_children << " freshly-created state(s) were reported as already "
                        "matched, so their subtrees were never explored.";
+                EXPECT_EQ(f.index_misses, 0)
+                    << w.name << " at threads=" << th << " rep=" << rep << ": the inverted index "
+                       "answered absent for a bound vertex " << f.index_misses << " time(s), "
+                    << f.index_miss_retry_hits << " of which an immediate retry found; "
+                    << f.empty_walks << " seed walk(s) visited nothing. " << f.index_witness;
                 EXPECT_EQ(f.double_executions, 0)
                     << w.name << " at threads=" << th << " rep=" << rep << ": "
                     << f.double_executions << " job(s) were entered by run_job twice.";
