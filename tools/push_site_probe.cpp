@@ -117,10 +117,13 @@ Row run(const Workload& w, int threads, int steps, bool batched) {
     for (const auto& r : w.rules) e.add_rule(r);
     e.evolve(w.init, steps);
 
-    const auto& s = e.stats();
+    // The counters are PER WORKER now -- one slot each, summed on read -- so a shared counter is
+    // not on the path every worker takes. total() is the sum; reading the struct directly stopped
+    // compiling when that changed, and this probe was left broken by it.
+    const auto s = e.stats().total();
     return {w.name, threads,
-            s.push_discovery_calls.load(), s.push_discovery_empty.load(),
-            s.push_forwarding_calls.load(), s.push_forwarding_empty.load(),
+            s.push_discovery_calls, s.push_discovery_empty,
+            s.push_forwarding_calls, s.push_forwarding_empty,
             e.dedup_allocs(), e.dedup_allocs_wasted()};
 }
 
@@ -156,10 +159,16 @@ size_t total_allocs(const std::vector<Row>& rows, bool wasted) {
 
 int main(int argc, char** argv) {
     const int steps = argc > 1 ? std::atoi(argv[1]) : 4;
+    // THE THREAD PAIR IS AN ARGUMENT because the question changed. Four workers was enough to see
+    // the batched/eager split; the open question now is why the engine executes 19% MORE
+    // instructions at 32 workers than at 1 on the same workload (measured, EPYC, wpp depth 7),
+    // and that is only visible by comparing a low count against a high one.
+    const int t_lo = argc > 2 ? std::atoi(argv[2]) : 1;
+    const int t_hi = argc > 3 ? std::atoi(argv[3]) : 4;
 
     std::vector<Row> batched, eager;
     for (const auto& w : workloads()) {
-        for (int t : {1, 4}) {
+        for (int t : {t_lo, t_hi}) {
             batched.push_back(run(w, t, steps, /*batched=*/true));
             eager.push_back(run(w, t, steps, /*batched=*/false));
         }
