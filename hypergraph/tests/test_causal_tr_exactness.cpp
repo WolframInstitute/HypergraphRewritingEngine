@@ -8,7 +8,9 @@
 #include <hgcommon/transitive_reduction.hpp>
 
 #include <functional>
+#include <map>
 #include <set>
+#include <string>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -81,6 +83,56 @@ RewriteRule rMixed() {
 }
 
 struct Case { const char* name; RewriteRule (*rule)(); std::vector<std::vector<VertexId>> init; int steps; };
+
+// A SURPLUS EDGE AND THE PATH THAT IMPLIES IT, in the failure message.
+//
+// The count says the online rule kept something it should not have; it does not say which pair,
+// or which path was already there to make it redundant. Those are what identify the moment the
+// rule answered, because the answer is a search over exactly that path -- so a firing that names
+// them is a diagnosis, and one that reports only a number costs a rare interleaving to learn
+// nothing new.
+std::string witness(const PairSet& online, const PairSet& self) {
+    std::string out;
+    int shown = 0;
+    for (const auto& pc : online) {
+        if (self.count(pc) || shown >= 3) continue;
+        ++shown;
+        // Shortest path p -> .. -> c through the kept set, avoiding the direct edge. Its
+        // interior nodes are the events whose in-edges had to be present for the rule to have
+        // answered "redundant", and their ids say where they sit relative to p and c.
+        std::map<uint32_t, uint32_t> prev;
+        std::vector<uint32_t> frontier{pc.first};
+        prev[pc.first] = pc.first;
+        while (!frontier.empty() && !prev.count(pc.second)) {
+            std::vector<uint32_t> next;
+            for (uint32_t u : frontier)
+                for (const auto& e : online) {
+                    if (e.first != u) continue;
+                    if (e.first == pc.first && e.second == pc.second) continue;  // not the edge itself
+                    if (prev.count(e.second)) continue;
+                    prev[e.second] = u;
+                    next.push_back(e.second);
+                }
+            frontier.swap(next);
+        }
+        out += "  surplus edge " + std::to_string(pc.first) + " -> " + std::to_string(pc.second);
+        if (prev.count(pc.second)) {
+            std::vector<uint32_t> path;
+            for (uint32_t x = pc.second; x != pc.first; x = prev[x]) path.push_back(x);
+            path.push_back(pc.first);
+            out += ", implied by ";
+            for (size_t i = path.size(); i-- > 0;) {
+                out += std::to_string(path[i]);
+                if (i) out += "->";
+            }
+        } else {
+            out += ", and NO path through the kept set implies it -- the oracle and the online "
+                   "rule disagree about the same set, which is a fault in one of them";
+        }
+        out += "\n";
+    }
+    return out;
+}
 }  // namespace
 
 TEST(CausalTrExactnessTest, OnlineTrMatchesOfflineTr) {
@@ -138,7 +190,8 @@ TEST(CausalTrExactnessTest, OnlineTrIsItsOwnReductionUnderConcurrency) {
                 ASSERT_EQ(online.size(), self.size())
                     << c.name << " at threads=" << th << " rep=" << rep << ": the kept set holds "
                     << (online.size() - self.size()) << " edge(s) that a path through other kept "
-                       "edges already implies, so it is not the reduction of anything.";
+                       "edges already implies, so it is not the reduction of anything.\n"
+                    << witness(online, self);
             }
         }
     }
