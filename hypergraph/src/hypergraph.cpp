@@ -202,7 +202,15 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
             // from the same IR canonicalization (the quotient causal reconstruction needs
             // the orbits; there is no extra canon pass). Otherwise just the dedup hash.
             if (quotient_causal_.load(std::memory_order_relaxed))
+                // WARM FILL. Suppressed by HG_CALIBRATE_ORBIT_CACHE_COLD so that every capture
+                // misses and rebuilds, which is how the rebuild path gets exercised at all --
+                // it is unreachable on a run whose cache is always warm, and an unexercised
+                // path is not one the reconstruction may depend on.
+#if defined(HG_CALIBRATE_ORBIT_CACHE_COLD)
+                canonical_hash = compute_and_cache_state_orbits(new_sid, edges, /*cache=*/false);
+#else
                 canonical_hash = compute_and_cache_state_orbits(new_sid, edges);
+#endif
             else if (need_ranks)
                 canonical_hash = ranked_hash;   // exact IR, already computed with the ranks
             else
@@ -828,7 +836,11 @@ uint64_t ir_hash_and_orbits(const SVec<SVec<VertexId>>& edge_vecs,
 
 }  // namespace
 
-uint64_t Hypergraph::compute_and_cache_state_orbits(StateId s, const SparseBitset& edges) {
+// `cache` is false only under HG_CALIBRATE_ORBIT_CACHE_COLD, which suppresses the warm fill so
+// that every capture has to take qc_orbits_or_build's rebuild path. The hash is returned either
+// way, so the state's identity does not depend on the arm.
+uint64_t Hypergraph::compute_and_cache_state_orbits(StateId s, const SparseBitset& edges,
+                                                    bool cache) {
     hgcommon::PhaseTimer _pt(hgcommon::Phase::Canon);
     canonical_hash_computations_.fetch_add(1, std::memory_order_relaxed);
     // Materialize the state's edges (id-sorted via SparseBitset iteration) into scratch,
@@ -897,7 +909,7 @@ uint64_t Hypergraph::compute_and_cache_state_orbits(StateId s, const SparseBitse
     // be stored or found -- the initial state would silently have no orbit table, which
     // skipped INIT seeding in the producer-set DP and dropped the root class's matches from
     // the reconstruction. Same offset, same reason, as the None-mode dedup key.
-    state_orbit_tables_.insert_if_absent(static_cast<uint64_t>(s) + 1, tbl);
+    if (cache) state_orbit_tables_.insert_if_absent(static_cast<uint64_t>(s) + 1, tbl);
     return hash;
 }
 
@@ -968,7 +980,10 @@ void Hypergraph::quotient_redrive_point(uint64_t state_hash, uint32_t depth) {
 
 void Hypergraph::quotient_causal_seed(StateId initial_state, int max_steps) {
     qc_max_steps_.store(max_steps, std::memory_order_relaxed);
-    const EdgeOrbitTable* orb = state_orbits(initial_state);
+    // Through the builder: a miss here leaves the root class with no INIT producers and no root
+    // instance, so the whole reconstruction hangs off nothing and every relation under it is
+    // absent. Nothing counted that, because the seed simply did less.
+    const EdgeOrbitTable* orb = qc_orbits_or_build(initial_state);
     const uint64_t h = get_state(initial_state).canonical_hash;
     if (orb) for (uint32_t j = 0; j < orb->num_orbits; ++j)
         qc_add_producer(h, 0, j, INVALID_ID);   // INIT sentinel producer
@@ -1054,8 +1069,11 @@ bool Hypergraph::qc_frame_slots(uint64_t state_hash, StateId s, const EdgeOrbitT
         return true;
     }
     const StateId frame = static_cast<StateId>(held - 1);
-    const EdgeOrbitTable* forb = state_orbits(frame);
-    if (!forb || !forb->slot || forb->n != orb->n) return false;
+    // Through the builder for the same reason: a state cannot be aligned onto a frame whose
+    // slots are not there, and returning false here drops the capture. A differing edge count
+    // is a real mismatch and stays a refusal.
+    const EdgeOrbitTable* forb = qc_orbits_or_build(frame);
+    if (!forb || forb->n != orb->n) return false;
 
     // Align this state's edges onto the frame's. The two states are isomorphic, so the
     // correspondence exists; it is defined up to an automorphism, which is exactly the
@@ -1083,15 +1101,54 @@ void Hypergraph::qc_check_frame_stable(StateId s, const uint32_t* slots, uint32_
     if (!r.second && r.first != h) qc_frame_disagree_.fetch_add(1, std::memory_order_relaxed);
 }
 
+// The edge-orbit table of a state, built here if it is not cached yet.
+//
+// state_orbit_tables_ is a CACHE, filled when a state is canonicalized so the reconstruction
+// does not re-run IR canonicalization for every event. A miss therefore has to be FILLED. Read
+// as "this state has no orbits" it silently removes the match from its class frame, and the
+// replay then produces neither the raw events that match would have made nor the causal and
+// branchial pairs under them -- a shortfall that leaves the state and canonical event counts
+// untouched, so it looks like a run that simply found less.
+//
+// REBUILDING NEEDS NOTHING FROM ANY OTHER THREAD, which is what makes it the right answer here
+// rather than waiting for the table to appear. The table is a function of the state's edge set,
+// that set is immutable once the state exists, and insert_if_absent keeps whichever copy lands
+// first -- so two threads that both rebuild publish identical slots and the reconstruction is a
+// function of the inputs either way.
+const EdgeOrbitTable* Hypergraph::qc_orbits_or_build(StateId s) {
+    // A lookup on an id that names no state answered null; a rebuild would index the state
+    // array with it. Every caller already treats null as "no orbits here", so the bound is
+    // checked once rather than at each of them.
+    if (s == INVALID_ID || s >= num_states()) return nullptr;
+    const EdgeOrbitTable* t = state_orbits(s);
+    if (t && t->slot) return t;
+
+    // The first miss keeps its evidence: the state, and whether the entry was absent or present
+    // with no slot array. Those have different causes, and one count reports them as one thing.
+    qc_capture_orbit_rebuilds_.fetch_add(1, std::memory_order_relaxed);
+    uint64_t none = ~uint64_t{0};
+    qc_no_orbits_witness_.compare_exchange_strong(
+        none, (static_cast<uint64_t>(t ? 2u : 1u) << 32) | s,
+        std::memory_order_release, std::memory_order_relaxed);
+
+    compute_and_cache_state_orbits(s, get_state(s).edges);
+    t = state_orbits(s);
+    return (t && t->slot) ? t : nullptr;
+}
+
 void Hypergraph::qc_capture_expansion(EventId e) {
     // Record this match of the expanded representative, in slots, undeduplicated. One
     // canonical state's expansion is defined by exactly one raw state: the first to publish
     // itself here wins, and events of any other raw state in the same class are ignored, so a
     // dedup race cannot double the expansion.
     const Event& ev = get_event(e);
-    const EdgeOrbitTable* in_orb = state_orbits(ev.input_state);
-    const EdgeOrbitTable* out_orb = state_orbits(ev.output_state);
-    if (!in_orb || !out_orb || !in_orb->slot || !out_orb->slot) {
+    const EdgeOrbitTable* in_orb = qc_orbits_or_build(ev.input_state);
+    const EdgeOrbitTable* out_orb = qc_orbits_or_build(ev.output_state);
+    if (!in_orb || !out_orb) {
+        // A REBUILD THAT ALSO CAME BACK EMPTY. qc_orbits_or_build recomputes from the state's
+        // own edges, so reaching here means the state has no usable edge set at all, which is
+        // not something a schedule can produce. Counted rather than asserted because a capture
+        // lost is a quiet shortfall in the relations, and a count is what makes it audible.
         qc_capture_no_orbits_.fetch_add(1, std::memory_order_relaxed);
         return;
     }
@@ -1194,8 +1251,11 @@ void Hypergraph::register_quotient_transition(EventId e) {
     hgcommon::PhaseTimer _pt(hgcommon::Phase::Quotient);
     qc_capture_expansion(e);
     const Event& ev = get_event(e);
-    const EdgeOrbitTable* in_orb = state_orbits(ev.input_state);
-    const EdgeOrbitTable* out_orb = state_orbits(ev.output_state);
+    // Through the builder for the same reason the capture is: a miss here drops the transition
+    // out of the causal skeleton the reconstruction propagates over. qc_capture_expansion has
+    // already built both, so these are cache hits.
+    const EdgeOrbitTable* in_orb = qc_orbits_or_build(ev.input_state);
+    const EdgeOrbitTable* out_orb = qc_orbits_or_build(ev.output_state);
     if (!in_orb || !out_orb) return;
     const uint64_t from = get_state(ev.input_state).canonical_hash;
     const uint64_t to   = get_state(ev.output_state).canonical_hash;
@@ -1475,6 +1535,20 @@ size_t Hypergraph::capture_dropped_no_orbits() const {
 
 size_t Hypergraph::capture_skipped_not_representative() const {
     return qc_capture_not_rep_.load(std::memory_order_relaxed);
+}
+
+size_t Hypergraph::capture_orbit_rebuilds() const {
+    return qc_capture_orbit_rebuilds_.load(std::memory_order_relaxed);
+}
+
+StateId Hypergraph::capture_no_orbits_state() const {
+    const uint64_t w = qc_no_orbits_witness_.load(std::memory_order_acquire);
+    return w == ~uint64_t{0} ? INVALID_ID : static_cast<StateId>(w & 0xFFFFFFFFULL);
+}
+
+uint32_t Hypergraph::capture_no_orbits_reason() const {
+    const uint64_t w = qc_no_orbits_witness_.load(std::memory_order_acquire);
+    return w == ~uint64_t{0} ? 0u : static_cast<uint32_t>(w >> 32);
 }
 
 size_t Hypergraph::applied_visits() const {

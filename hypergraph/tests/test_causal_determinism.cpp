@@ -35,6 +35,8 @@ struct Fingerprint {
     uint64_t states = 0, causal = 0, branchial = 0;
     long num_states = 0, num_events = 0, num_causal = 0, num_branchial = 0;
     long claims = 0, drops = 0, align_fail = 0, badcorr = 0;
+    long rebuilds = 0;
+    std::string drop_witness;
     long not_rep = 0, visits = 0;
     long matches = 0, instances = 0, unique = 0;
     uint64_t shape = 0;
@@ -183,6 +185,19 @@ Fingerprint fingerprint(hg::engine::Hypergraph& g) {
     fp.num_events = static_cast<long>(g.observable_num_events());
     fp.claims     = static_cast<long>(g.applied_claims());
     fp.drops      = static_cast<long>(g.capture_dropped_no_orbits());
+    // THE REBUILDS ARE NOT COMPARED ACROSS RUNS, and must not be: a cache miss depends on the
+    // schedule, while the table it rebuilds does not depend on anything but the state's edges.
+    // Putting it in the compared key would make a miss look like a difference in the answer,
+    // which is the confusion this counter exists to end. What IS compared is everything the
+    // reconstruction produced, and that is what says a rebuild changed nothing.
+    fp.rebuilds = static_cast<long>(g.capture_orbit_rebuilds());
+    if (fp.rebuilds > 0 || fp.drops > 0) {
+        const hg::engine::StateId ws = g.capture_no_orbits_state();
+        const uint32_t why = g.capture_no_orbits_reason();
+        fp.drop_witness = std::to_string(fp.rebuilds) + " rebuild(s), first on state " +
+                          std::to_string(ws) + ", for which the cache held " +
+                          (why == 1u ? "no entry" : "an entry with no slot array");
+    }
     fp.align_fail = static_cast<long>(g.num_alignment_failures());
     fp.badcorr    = static_cast<long>(g.num_bad_correspondences());
     // THE THREE THE ENGINE ALREADY COUNTED AND NOTHING READ. A firing whose EVENT count moved
@@ -397,12 +412,22 @@ Spread spread(const Workload& w, bool quotient) {
                 // Zero on every quotient run of all three workloads at 1, 2, 8, 16 and 32
                 // threads, both seeds, four repetitions.
                 if (quotient) {
+#if defined(HG_CALIBRATE_ORBIT_CACHE_COLD)
+                    // THE ARM HAS TO BE COLD FOR ITS PASS TO MEAN ANYTHING. With the warm fill
+                    // suppressed every state's table is built on its first read, so a run that
+                    // rebuilt nothing did not exercise the path this arm exists to exercise and
+                    // its agreement with the warm run says nothing about it.
+                    EXPECT_GT(f.rebuilds, 0)
+                        << w.name << " at threads=" << th << ": the cold arm rebuilt nothing, so "
+                           "the warm fill it is meant to suppress was still filling the cache.";
+#endif
                     EXPECT_EQ(f.drops, 0)
                         << w.name << " at threads=" << th << ": " << f.drops << " capture(s) "
-                        << "dropped because an endpoint's orbits were not visible yet. The "
-                           "match is then absent from the class frame, so the replay never "
-                           "applies it to any instance and every causal and branchial pair it "
-                           "would have produced is missing.";
+                        << "dropped because an endpoint had no edge-orbit table even after one "
+                           "was rebuilt from its edges. The match is then absent from the class "
+                           "frame, so the replay never applies it to any instance and every "
+                           "causal and branchial pair it would have produced is missing. "
+                        << f.drop_witness;
                     EXPECT_EQ(f.align_fail, 0)
                         << w.name << " at threads=" << th << ": " << f.align_fail
                         << " capture(s) lost aligning a raw state onto its class frame.";

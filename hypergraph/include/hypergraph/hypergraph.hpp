@@ -361,6 +361,18 @@ class Hypergraph {
     // explored. That is the exact shape of the intermittent quotient determinism failures, and
     // every instrument reported zero because nothing was looking here.
     mutable std::atomic<size_t> qc_capture_no_orbits_{0};
+    // Times an endpoint's table was not cached and qc_orbits_or_build rebuilt it. The
+    // reconstruction is unaffected -- the rebuilt table is the same function of the same edge
+    // set -- so this is a cache-miss rate and not a correctness signal, and it is deliberately
+    // absent from the compared fingerprint for that reason.
+    mutable std::atomic<size_t> qc_capture_orbit_rebuilds_{0};
+    // THE FIRST DROP KEEPS ITS EVIDENCE, because a count alone cannot say which of two defects
+    // it is. Packed as (endpoint << 32) | state id, endpoint 0 for the event's input and 1 for
+    // its output, claimed once by compare-exchange from the all-ones initial value. Which
+    // endpoint separates a state another thread is still creating from one this thread made
+    // itself; the state id lets a reader ask, after the run, whether that state EVER got a
+    // table -- never computed and not yet visible are different bugs with different fixes.
+    mutable std::atomic<uint64_t> qc_no_orbits_witness_{~uint64_t{0}};
     // The class already has a representative raw state and it is not this one. BY DESIGN -- one
     // raw state per class captures -- but counted, because "by design" and "measured" are
     // different claims and only one of them was on record.
@@ -479,6 +491,7 @@ class Hypergraph {
         void descend(const SlotMatch& m, uint32_t depth, uint32_t ev, const QcInstance& parent);
     };
     void qc_capture_expansion(EventId e);
+    const EdgeOrbitTable* qc_orbits_or_build(StateId s);
     void qc_add_instance(uint64_t state_hash, uint32_t depth, const uint32_t* prod, uint32_t nslots);
     void qc_apply(const QcInstance& inst, const SlotMatch& m, uint64_t state_hash, uint32_t depth);
     void qc_add_producer(uint64_t state_hash, uint32_t depth, uint32_t orbit, EventId producer);
@@ -955,7 +968,8 @@ public:
     // Compute the canonical edge-orbit table for `edges` and cache it under state id `s`,
     // returning the state's canonical hash (the same IR canonicalization serves both, so
     // this replaces the plain dedup hash in quotient mode at no extra canon cost).
-    uint64_t compute_and_cache_state_orbits(StateId s, const SparseBitset& edges);
+    uint64_t compute_and_cache_state_orbits(StateId s, const SparseBitset& edges,
+                                            bool cache = true);
 
     // The cached edge-orbit table for a state (null if not computed -- e.g. full-capture
     // mode, or before canonicalization).
@@ -1067,10 +1081,18 @@ public:
     std::vector<uint32_t> applied_shape() const;
     uint64_t applied_shape_fingerprint() const;
 
-    // Matches the capture never recorded. The first is a race and a defect; the second is the
-    // one-representative-per-class rule doing its job.
+    // Matches the capture never recorded. The first cannot happen for a state with an edge set
+    // -- the table is rebuilt on a miss -- and the second is the one-representative-per-class
+    // rule doing its job.
     size_t capture_dropped_no_orbits() const;
+    // Endpoint tables that were not cached and were rebuilt. A cache-miss rate: the rebuilt
+    // table is the same function of the same immutable edge set, so nothing downstream moves.
+    size_t capture_orbit_rebuilds() const;
     size_t capture_skipped_not_representative() const;
+    // The first cache miss's evidence: the state it was on, INVALID_ID when there was none, and
+    // why -- 1 the map held no entry, 2 it held one with no slot array.
+    StateId capture_no_orbits_state() const;
+    uint32_t capture_no_orbits_reason() const;
     size_t applied_visits() const;
 
     // THE TWO POPULATIONS THE APPLICATIONS ARE DRAWN FROM. An application is one (instance,
