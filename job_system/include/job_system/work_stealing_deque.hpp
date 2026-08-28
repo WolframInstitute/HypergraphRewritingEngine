@@ -1,5 +1,6 @@
 #pragma once
 #include "hgcommon/namespace.hpp"
+#include "hgcommon/rendezvous.hpp"
 
 #include <atomic>
 #include <cstddef>
@@ -66,7 +67,7 @@ public:
     T pop() {
         std::int64_t b = bottom_.load(std::memory_order_relaxed) - 1;
         bottom_.store(b, std::memory_order_relaxed);
-        std::atomic_thread_fence(std::memory_order_seq_cst);  // order bottom store vs top load
+        hgcommon::rendezvous_barrier<hgcommon::rv::DequeTakeSteal>();  // bottom store vs top load
         std::int64_t t = top_.load(std::memory_order_relaxed);
         T x = nullptr;
         if (t <= b) {
@@ -89,7 +90,7 @@ public:
     // THIEF (any thread). Returns nullptr if empty or it lost the race.
     T steal() {
         std::int64_t t = top_.load(std::memory_order_acquire);
-        std::atomic_thread_fence(std::memory_order_seq_cst);  // order top load vs bottom load
+        hgcommon::rendezvous_barrier<hgcommon::rv::DequeTakeSteal>();  // top load vs bottom load
         std::int64_t b = bottom_.load(std::memory_order_acquire);
         if (t < b) {
             T x = buffer_[t & mask_].load(std::memory_order_acquire);

@@ -5,6 +5,7 @@
 #include <job_system/work_stealing_deque.hpp>
 #include <lockfree_deque/deque.hpp>
 #include <hgcommon/park.hpp>
+#include <hgcommon/rendezvous.hpp>
 #include <hgcommon/affinity.hpp>
 
 #include <algorithm>
@@ -236,7 +237,7 @@ private:
     // The caller pushes immediately before calling this, so the fence sits between the push and
     // the read. The worker's matching fence is in the park path.
     void wake_one_worker() {
-        std::atomic_thread_fence(std::memory_order_seq_cst);
+        hgcommon::rendezvous_barrier<hgcommon::rv::WorkerParkWake>();
         if (idle_workers_.load(std::memory_order_seq_cst) <= 0) return;
 
         // The submitter's own domain first: a job pushed here is warm here.
@@ -576,7 +577,7 @@ private:
             // what the fence pairing needs -- see wake_one_worker.
             idle_workers_.fetch_add(1, std::memory_order_seq_cst);
             domains_[home].idle.fetch_add(1, std::memory_order_seq_cst);
-            std::atomic_thread_fence(std::memory_order_seq_cst);
+            hgcommon::rendezvous_barrier<hgcommon::rv::WorkerParkWake>();
             const uint32_t seq = domains_[home].seq.load(std::memory_order_acquire);
             if (JobRaw job = find_work_exhaustive(data)) {
                 domains_[home].idle.fetch_sub(1, std::memory_order_relaxed);

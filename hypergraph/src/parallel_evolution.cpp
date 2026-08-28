@@ -172,7 +172,7 @@ void ParallelEvolutionEngine::evolve(
     // runs at step 1 -- the step of the states it will create -- so the depth this signal is
     // indexed by is the step a task RUNS at, and depth 0 holds nothing.
     submit_match_task(raw_state, 1);
-    roots_seeded_.store(true, std::memory_order_release);
+    depth_join_.mark_roots_seeded();
     try_complete_depth(0);
 
     // Single synchronization point at the end
@@ -202,7 +202,7 @@ void ParallelEvolutionEngine::evolve(
     }
     // Depth 0's arrivals are all booked: it may now settle. A root that already drained left
     // the counters equal without settling, so the attempt is made here rather than waited for.
-    roots_seeded_.store(true, std::memory_order_release);
+    depth_join_.mark_roots_seeded();
     try_complete_depth(0);
 
     // Single synchronization point at the end
@@ -391,7 +391,7 @@ void ParallelEvolutionEngine::store_match_for_state(
     // Eager pushes immediately after this call returns, so the store must be visible to the
     // scan; batched fences once after the whole batch instead of once per match.
     if (with_fence) {
-        std::atomic_thread_fence(std::memory_order_seq_cst);
+        hgcommon::rendezvous_barrier<hgcommon::rv::MatchStoreScan>();
     }
 }
 
@@ -784,7 +784,7 @@ void ParallelEvolutionEngine::propagate_explore_depth(StateId canonical_state, u
     // reads this parent's depth, both across a seq_cst fence) is either seen here or sees
     // the lowered depth itself -- never stranded at a stale depth. Same fence guards each
     // deeper scan against its own just-completed relaxation store.
-    std::atomic_thread_fence(std::memory_order_seq_cst);
+    hgcommon::rendezvous_barrier<hgcommon::rv::CanonChildDepth>();
     const LockFreeList<StateId>* kids = canon_children_.get(canonical_state);
     if (!kids) return;
 
@@ -814,7 +814,7 @@ void ParallelEvolutionEngine::propagate_explore_depth(StateId canonical_state, u
         if (d >= budget) defer_match_task(s, d + 1);
         else if (claim_canonical_for_expansion(s))
             submit_match_task(s, d + 1);  // a canonical state is its own representative
-        std::atomic_thread_fence(std::memory_order_seq_cst);
+        hgcommon::rendezvous_barrier<hgcommon::rv::CanonChildDepth>();
         if (const LockFreeList<StateId>* more = canon_children_.get(s)) {
             more->for_each([&](StateId child) { pending.emplace_back(child, d + 1); });
         }
@@ -1334,7 +1334,7 @@ void ParallelEvolutionEngine::evolve_more(size_t additional_steps,
         else if (claim_canonical_for_expansion(d.state)) submit_match_task(d.state, d.step);
     }
     // The frontier is in: depth 0 may settle, exactly as after the roots are seeded.
-    roots_seeded_.store(true, std::memory_order_release);
+    depth_join_.mark_roots_seeded();
     try_complete_depth(0);
 
     job_system_->wait_for_completion();
@@ -1351,70 +1351,25 @@ void ParallelEvolutionEngine::note_match_task_pushed(StateId state) {
 // nothing waits on it.
 void ParallelEvolutionEngine::reset_depth_join() {
     depth_signal_available_ = depth_signal_available() && on_depth_complete_ != nullptr;
-    depth_join_ = std::vector<DepthJoin>(max_steps_ + 2);
-    roots_seeded_.store(false, std::memory_order_release);
-    depth_late_arrivals_.store(0, std::memory_order_relaxed);
-    depth_notified_.store(0, std::memory_order_relaxed);
+    // Rebuilt rather than resized: Slot holds atomics, so it is neither copyable nor movable and
+    // a vector of them cannot grow. Sized once per run, which is the only time this runs.
+    depth_slots_ = std::vector<hgcommon::DepthJoin::Slot>(max_steps_ + 2);
+    depth_join_.seat(depth_slots_.data(), static_cast<uint32_t>(depth_slots_.size()));
 }
 
 void ParallelEvolutionEngine::note_depth_task_pushed(uint32_t depth) {
-    if (!depth_signal_available_ || depth >= depth_join_.size()) return;
-    depth_join_[depth].live.fetch_add(1, std::memory_order_acq_rel);
-    if (depth_join_[depth].complete.load(std::memory_order_acquire))
-        depth_late_arrivals_.fetch_add(1, std::memory_order_relaxed);
+    if (!depth_signal_available_) return;
+    depth_join_.push(depth);
 }
 
 void ParallelEvolutionEngine::note_depth_task_done(uint32_t depth) {
-    if (!depth_signal_available_ || depth >= depth_join_.size()) return;
-    // Settle only on the transition to zero: any other decrement leaves work live here.
-    if (depth_join_[depth].live.fetch_sub(1, std::memory_order_acq_rel) == 1)
-        try_complete_depth(depth);
+    if (!depth_signal_available_) return;
+    depth_join_.done(depth, [this](uint32_t d) { on_depth_complete_(d); });
 }
 
-// Settle `depth` if it can be, then cascade: the depth above may have been waiting only on
-// this one, and may already have no live work of its own.
-//
-// A task at depth d submits only at depths ABOVE d, so a settled d-1 means nothing can put work
-// at d. That is the whole argument, and it is why the two conditions below are enough without
-// any wait: no live work here, and the depth below already settled.
 void ParallelEvolutionEngine::try_complete_depth(uint32_t depth) {
     if (!depth_signal_available_) return;
-    // Depth 0 runs no task -- a root's match task runs at step 1 -- so it is complete by
-    // definition once the roots are in, and the chain starts above it.
-    for (uint32_t d = (depth == 0 ? 1u : depth); d < depth_join_.size(); ++d) {
-        if (depth_join_[d].complete.load(std::memory_order_acquire)) continue;
-        if (d == 1) {
-            if (!roots_seeded_.load(std::memory_order_acquire)) break;
-        } else if (!depth_join_[d - 1].complete.load(std::memory_order_acquire)) {
-            break;
-        }
-        if (depth_join_[d].live.load(std::memory_order_acquire) != 0) break;
-
-        uint8_t expected = 0;
-        if (!depth_join_[d].complete.compare_exchange_strong(
-                expected, 1, std::memory_order_acq_rel, std::memory_order_acquire)) {
-            continue;   // another thread settled it; its cascade covers the depths above
-        }
-    }
-    notify_completed_depths();
-}
-
-void ParallelEvolutionEngine::notify_completed_depths() {
-    if (!on_depth_complete_) return;
-    for (;;) {
-        uint32_t n = depth_notified_.load(std::memory_order_acquire);
-        const uint32_t next = n + 1;
-        if (next >= depth_join_.size()) return;
-        if (!depth_join_[next].complete.load(std::memory_order_acquire)) return;
-        // The winner of this step OWNS the report for `next`, and every other thread is held at
-        // the same step until it is issued. That is what orders the reports against each other:
-        // settling is already ordered, and this makes reporting inherit that order rather than
-        // the order the settling threads happen to be scheduled in.
-        if (depth_notified_.compare_exchange_strong(n, next, std::memory_order_acq_rel,
-                                                    std::memory_order_acquire)) {
-            on_depth_complete_(next);
-        }
-    }
+    depth_join_.settle_from(depth, [this](uint32_t d) { on_depth_complete_(d); });
 }
 
 void ParallelEvolutionEngine::note_match_task_done(StateId state, uint32_t step) {
@@ -1806,7 +1761,7 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
             // parent's true minimum depth even across the publish/relax race.
             canon_children_.get_or_default(parent_canonical, hg_->arena())
                            .push(rr.new_state, hg_->arena());
-            std::atomic_thread_fence(std::memory_order_seq_cst);
+            hgcommon::rendezvous_barrier<hgcommon::rv::CanonChildDepth>();
 
             // The child's arrival depth is one past the parent's CURRENT minimum depth, not
             // the depth the parent happened to be expanded at. A shorter path to the parent
@@ -2124,7 +2079,7 @@ void ParallelEvolutionEngine::execute_match_task(
             for (size_t i = delta_start; i < batch.size(); ++i) {
                 store_match_for_state(state, batch[i]);
             }
-            std::atomic_thread_fence(std::memory_order_seq_cst);
+            hgcommon::rendezvous_barrier<hgcommon::rv::MatchStoreScan>();
         }
 
         dispatch_expansion(state, step, batch.data(), batch.size());
@@ -2754,7 +2709,7 @@ void ParallelEvolutionEngine::set_on_depth_complete(std::function<void(uint32_t)
 }
 
 size_t ParallelEvolutionEngine::depth_late_arrivals() const {
-    return depth_late_arrivals_.load(std::memory_order_relaxed);
+    return depth_join_.late_arrivals();
 }
 
 void ParallelEvolutionEngine::set_explore_from_canonical_states_only(bool enable) {

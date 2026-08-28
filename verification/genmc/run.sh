@@ -274,6 +274,10 @@ run_one() {
 if [ "${1:-}" = "all" ]; then
     fail=0
     for src in "$HERE"/*.cpp; do
+        # genmc_support.cpp is LINKED INTO composed harnesses, not run as one -- it supplies the
+        # definitions the interpreter lacks and has no main. Running it reports an error about
+        # this directory's layout rather than about the engine.
+        [ "$(basename "$src")" = "genmc_support.cpp" ] && continue
         run_one "$(basename "$src" .cpp)" || fail=1
         echo
     done

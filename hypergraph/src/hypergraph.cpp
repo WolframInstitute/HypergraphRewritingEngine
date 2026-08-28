@@ -1,3 +1,4 @@
+#include "hgcommon/rendezvous.hpp"
 #include "hgcommon/phase_timing.hpp"
 #include "hgcommon/namespace.hpp"
 // hypergraph.cpp - Implementation of Hypergraph class non-template methods
@@ -1037,8 +1038,8 @@ void Hypergraph::qc_add_instance(uint64_t state_hash, uint32_t depth,
     if (static_cast<int>(depth) >= maxs) return;
 
     // Publish before scanning, so a match captured concurrently cannot be missed by both
-    // sides (pairs with the fence in qc_capture_expansion).
-    std::atomic_thread_fence(std::memory_order_seq_cst);
+    // sides. The push above is this side's publish; the partner is in qc_capture_expansion.
+    hgcommon::rendezvous_barrier<hgcommon::rv::QuotientInstanceMatch>();
     for_each_expansion_match(state_hash, [&](const SlotMatch& m) { qc_apply(inst, m, state_hash, depth); });
 }
 
@@ -1175,10 +1176,10 @@ void Hypergraph::qc_capture_expansion(EventId e) {
 
     // Match side of the rendezvous: replay this newly-captured match against every instance
     // already standing at this state, at every depth. Publish (the push above) before the
-    // scan; pairs with the fence in qc_add_instance so a concurrent instance and match cannot
-    // both miss each other. The per-pair claim in qc_apply makes the overlap harmless.
+    // scan, so a concurrent instance and match cannot both miss each other. The per-pair claim
+    // in qc_apply makes the overlap harmless.
     if (!quotient_reconstruction_.load(std::memory_order_relaxed)) return;
-    std::atomic_thread_fence(std::memory_order_seq_cst);
+    hgcommon::rendezvous_barrier<hgcommon::rv::QuotientInstanceMatch>();
     const int maxs = qc_max_steps_.load(std::memory_order_relaxed);
     for (int d = 0; d < maxs; ++d) {
         auto ri = qc_instances_.lookup(qc_key(from, static_cast<uint32_t>(d), 0));
@@ -1267,10 +1268,10 @@ void Hypergraph::register_quotient_transition(EventId e) {
     lst->push(*t, arena_);
 
     // Drive the reconstruction: apply this newly-discovered transition at every depth its
-    // source state is already reachable at. seq_cst fence pairs with qc_reach's fence so a
-    // concurrent "reach (from,d)" and "register t from `from`" cannot both miss each other
-    // (whichever publishes second sees the other and processes the (t, d) pair).
-    std::atomic_thread_fence(std::memory_order_seq_cst);
+    // source state is already reachable at. The partner is in qc_reach, so a concurrent
+    // "reach (from,d)" and "register t from `from`" cannot both miss each other -- whichever
+    // publishes second sees the other and processes the (t, d) pair.
+    hgcommon::rendezvous_barrier<hgcommon::rv::QuotientCoreHook>();
     const int maxs = qc_max_steps_.load(std::memory_order_relaxed);
     for (int d = 0; d <= maxs; ++d)
         if (qc_reached_.contains(qc_rkey(from, static_cast<uint32_t>(d))))
@@ -1825,7 +1826,11 @@ void Hypergraph::QcCtx::emit(uint32_t producer, uint32_t consumer) {
     hg.qc_emit(producer, consumer);
 }
 
-void Hypergraph::QcCtx::fence() { std::atomic_thread_fence(std::memory_order_seq_cst); }
+// The host side of the shared quotient core's rendezvous hook. The core calls it at three
+// publish-then-scan points (quotient_causal_core.hpp: qc_process_transition, qc_reach,
+// qc_add_producer); the device supplies its own, which is why this is a hook and not a direct
+// barrier. One tag for the hook rather than three, because one body serves all three sites.
+void Hypergraph::QcCtx::fence() { hgcommon::rendezvous_barrier<hgcommon::rv::QuotientCoreHook>(); }
 
 Hypergraph::QcCtx Hypergraph::qc_ctx() {
     return QcCtx{*this, static_cast<uint32_t>(qc_max_steps_.load(std::memory_order_relaxed))};

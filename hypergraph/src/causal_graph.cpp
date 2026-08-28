@@ -1,3 +1,4 @@
+#include "hgcommon/rendezvous.hpp"
 #include "hgcommon/transitive_reduction.hpp"
 #include "hgcommon/namespace.hpp"
 // causal_graph.cpp - Implementation of CausalGraph class
@@ -117,17 +118,14 @@ bool CausalGraph::set_edge_producer(CanonicalEdgeKey edge_key, EventId producer,
     // harmless; we report novelty for callers/tests that care.
     bool newly_added = true;
     producers->for_each([&](EventId p) { if (p == producer) newly_added = false; });
-    producers->push(producer, *arena_);
 
-    // StoreLoad barrier: pushing self (store to producers.head_) must be ordered before
-    // scanning consumers (load of consumers.head_). Paired with the identical fence in
-    // add_edge_consumer this makes the handshake sequentially consistent, so at least
-    // one side sees the other for every (producer,consumer) pair -- no store-buffer miss.
-    std::atomic_thread_fence(std::memory_order_seq_cst);
-
-    consumers->for_each([&](EventId consumer) {
-        add_causal_edge(producer, consumer, raw_edge);
-    });
+    // Producer side of the symmetric rendezvous, and the barrier between the halves is what
+    // makes at least one side see the other for every (producer, consumer) pair.
+    hgcommon::rendezvous<hgcommon::rv::EdgeProducerConsumer>(
+        [&] { producers->push(producer, *arena_); },
+        [&] { consumers->for_each([&](EventId consumer) {
+                  add_causal_edge(producer, consumer, raw_edge);
+              }); });
 
     return newly_added;
 }
@@ -136,16 +134,13 @@ void CausalGraph::add_edge_consumer(CanonicalEdgeKey edge_key, EventId consumer,
     LockFreeList<EventId>* producers = get_or_create_edge_producers(edge_key);
     LockFreeList<EventId>* consumers = get_or_create_edge_consumers(edge_key);
 
-    // Consumer side of the symmetric rendezvous: publish self into the consumer set,
-    // then scan the producer set and emit an edge from every producer.
-    consumers->push(consumer, *arena_);
-
-    // StoreLoad barrier, mirror of set_edge_producer -- see there.
-    std::atomic_thread_fence(std::memory_order_seq_cst);
-
-    producers->for_each([&](EventId producer) {
-        add_causal_edge(producer, consumer, raw_edge);
-    });
+    // Consumer side of the same rendezvous: publish self into the consumer set, then scan the
+    // producer set and emit an edge from every producer.
+    hgcommon::rendezvous<hgcommon::rv::EdgeProducerConsumer>(
+        [&] { consumers->push(consumer, *arena_); },
+        [&] { producers->for_each([&](EventId producer) {
+                  add_causal_edge(producer, consumer, raw_edge);
+              }); });
 }
 
 void CausalGraph::propagate_producers(CanonicalEdgeKey from_key, CanonicalEdgeKey to_key,
