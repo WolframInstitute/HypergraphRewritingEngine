@@ -35,8 +35,16 @@ RewriteResult Rewriter::apply(
     // If they don't, this match was incorrectly forwarded and is invalid
     for (uint8_t i = 0; i < num_matched; ++i) {
         if (!input_edges.contains(matched_edges[i])) {
-            // Match is invalid for this state - edges don't exist
-            // This can happen due to forwarding bugs
+            // A MATCH DROPPED HERE IS AN EVENT THAT NEVER HAPPENS, and the caller cannot tell:
+            // it reads the empty result as "this rewrite produced nothing", gives back its
+            // budget slots and moves on. The run then returns one event short, with no error and
+            // no warning, which is exactly what non-determinism looks like when two thread counts
+            // are compared. So it is counted, and the determinism gate asserts it is zero.
+            //
+            // It should be unreachable. A match is either produced by matching the very state it
+            // is applied to, or FORWARDED to a child from its parent -- and forwarding is
+            // supposed to carry only the matches that survive the parent's rewrite.
+            hg_->note_invalid_match();
             return result;  // Return empty result (match not applied)
         }
     }

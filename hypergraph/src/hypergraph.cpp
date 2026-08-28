@@ -1623,6 +1623,14 @@ uint64_t Hypergraph::event_signature_raw_fallbacks() const {
     return event_sig_raw_fallbacks_.load(std::memory_order_relaxed);
 }
 
+uint64_t Hypergraph::invalid_matches() const {
+    return invalid_matches_.load(std::memory_order_relaxed);
+}
+
+void Hypergraph::note_invalid_match() {
+    invalid_matches_.fetch_add(1, std::memory_order_relaxed);
+}
+
 uint64_t Hypergraph::canonical_hash_computations() const {
     return canonical_hash_computations_.load(std::memory_order_relaxed);
 }

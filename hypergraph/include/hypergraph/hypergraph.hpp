@@ -504,6 +504,9 @@ class Hypergraph {
     // Such a signature is not an isomorphism invariant, so a non-zero count means the event
     // set is approximate; see the fallback in create_event.
     std::atomic<uint64_t> event_sig_raw_fallbacks_{0};
+    // Matches that named an edge their input state does not hold, and were therefore dropped
+    // without being applied. See Rewriter::apply and note_invalid_match().
+    std::atomic<uint64_t> invalid_matches_{0};
 
     // Times a canonical hash was actually COMPUTED, against the number of states that hold
     // one. Both are needed: the ratio is the question, and a raw call count says nothing
@@ -776,6 +779,18 @@ public:
     // Event signatures that fell back to a raw edge id. Non-zero means the event identity is
     // approximate rather than canonical.
     uint64_t event_signature_raw_fallbacks() const;
+
+    // A MATCH THAT WAS DROPPED RATHER THAN APPLIED. Rewriter::apply refuses a match naming an
+    // edge the input state does not hold, and returns an empty result; the caller reads that as
+    // "this rewrite produced nothing", releases its budget slots and moves on. Nothing else
+    // records it, so the run simply comes back one event short with no error and no warning --
+    // indistinguishable from non-determinism when compared against another thread count.
+    //
+    // It should be zero. A match is either produced by matching the state it is applied to, or
+    // FORWARDED to a child from its parent, and the forwarding is supposed to carry only matches
+    // that survive the parent's rewrite.
+    uint64_t invalid_matches() const;
+    void note_invalid_match();
 
     // How many times a reported canonical hash was computed. Divide by the state count for the
     // per-state figure; anything above 1.0 is duplication, and under contention a small excess
