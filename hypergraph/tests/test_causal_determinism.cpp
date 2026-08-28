@@ -249,9 +249,13 @@ Fingerprint run(const std::vector<hg::engine::RewriteRule>& rules,
     e.set_transitive_reduction(true);
     e.set_explore_from_canonical_states_only(quotient);
     e.set_random_seed(seed);
+    if (std::getenv("HG_DET_VALIDATE")) e.set_validate_match_forwarding(true);
     for (const auto& r : rules) e.add_rule(r);
     e.evolve(init, steps);
     Fingerprint fp = fingerprint(g);
+    if (std::getenv("HG_DET_VALIDATE") && e.still_missing() > 0)
+        std::fprintf(stderr, "HG_DET_VALIDATE: %zu match(es) still missing at the end (%zu recorded at drain, %zu arrived late); %s\n",
+                     e.still_missing(), e.validation_mismatches(), e.late_arrivals(), e.validation_witness().c_str());
     // READ BEFORE THE ENGINE GOES OUT OF SCOPE. This is the precondition the quiescence
     // predicate rests on, not a property of the hypergraph, so it comes from the engine.
     fp.late_submits = static_cast<long>(e.late_submits());
@@ -299,6 +303,8 @@ Fingerprint run(const std::vector<hg::engine::RewriteRule>& rules,
             for (const auto& c : g.causal_graph().get_causal_edges())
                 if (c.producer != hg::engine::INVALID_ID && c.consumer != hg::engine::INVALID_ID)
                     std::fprintf(f, "K %u %u\n", c.producer, c.consumer);
+            if (e.still_missing() > 0)
+                std::fprintf(f, "W %zu %s\n", e.still_missing(), e.validation_witness().c_str());
             std::fclose(f);
             fp.dump_path = name;
         }

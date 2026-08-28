@@ -156,6 +156,11 @@ public:
     );
 
     // Get all edges containing vertex, filtered by state
+    // Whether the index holds a list for `v` at this moment. A validator's probe: an edge that
+    // a full rematch finds and the task-based path did not, checked against what the index
+    // answers for that edge's vertices right after the miss.
+    bool has_vertex(VertexId v) const { return vertex_to_edges_.lookup(v).has_value(); }
+
     template<typename Visitor>
     void for_each_edge(
         VertexId v,

@@ -1032,6 +1032,11 @@ public:
     size_t matches_per_state_rule() const;
 
     size_t validation_mismatches() const;
+    // Up to three matches a drain-point validation recorded missing that are STILL missing at
+    // the end of the run, as text: state, rule, binding, what the state's edge set and the
+    // inverted index answered for the match's edges and vertices at the drain, and again now.
+    // Empty when nothing is still missing.
+    std::string validation_witness() const;
     size_t validations_performed() const;
     size_t missing_owed_by_forwarding() const;
     size_t missing_owed_by_delta() const;
@@ -1302,6 +1307,14 @@ private:
     // Together they give exactly-one drain per state: when completed equals pushed, every
     // counted task has finished, and only a running task could push another.
     MatchJoin* match_join_for(StateId state);
+    // Full rematch of `state` against what the task-based path claimed, run when its last
+    // scan/expand task completes (validate_match_forwarding_ only).
+    void validate_state_at_drain(StateId state);
+    std::string probe_match(StateId state, const MatchCore& core) const;
+    static constexpr size_t kDrainProbes = 16;
+    std::atomic<size_t> drain_probe_count_{0};
+    uint64_t drain_probe_hash_[kDrainProbes] = {};
+    std::string drain_probe_text_[kDrainProbes];
     void note_match_task_pushed(StateId state);
     void note_match_task_done(StateId state, uint32_t step);
 

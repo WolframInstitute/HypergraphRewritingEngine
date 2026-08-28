@@ -1399,6 +1399,7 @@ void ParallelEvolutionEngine::note_match_task_done(StateId state, uint32_t step)
     if (done != join->pushed.load(std::memory_order_acquire)) return;
 
     HG_STAT(states_drained_.fetch_add(1, std::memory_order_relaxed));
+    if (validate_match_forwarding_ && task_based_matching_) validate_state_at_drain(state);
     // The cap REPLACES the spine when it is set: both decide which of a state's own transitions
     // survive, and the cap already keeps at least one per rule, which is what the spine exists to
     // guarantee. Running both would submit the spine's pick a second time.
@@ -2755,6 +2756,92 @@ ParallelEvolutionEngine::MatchTaskCounts ParallelEvolutionEngine::match_task_cou
     c.completed = (*r)->completed.load(std::memory_order_acquire);
     c.matches = (*r)->matches.load(std::memory_order_acquire);
     return c;
+}
+
+// What the state's edge set and the inverted index answer for a match's edges and vertices
+// at the moment of asking, as text.
+std::string ParallelEvolutionEngine::probe_match(StateId state, const MatchCore& core) const {
+    const State& s = hg_->get_state(state);
+    std::string w;
+    for (uint8_t i = 0; i < core.num_edges; ++i) {
+        const EdgeId eid = core.matched_edges[i];
+        const Edge& e = hg_->get_edge(eid);
+        w += std::string(i ? "," : "") + std::to_string(eid) + "(in_state=" + (s.edges.contains(eid) ? "1" : "0") + ";verts=";
+        for (uint8_t k = 0; k < e.arity; ++k) {
+            bool listed = false;
+            hg_->inverted_index().for_each_edge(e.vertices[k], s.edges, [&](EdgeId x) { if (x == eid) listed = true; });
+            w += std::string(k ? "/" : "") + std::to_string(e.vertices[k]) + ":" +
+                 (hg_->inverted_index().has_vertex(e.vertices[k]) ? "present" : "ABSENT") +
+                 (listed ? "+listed" : "+UNLISTED");
+        }
+        w += ")";
+    }
+    return w;
+}
+
+// Full rematch of `state` when its last scan/expand task completes. A match the task-based
+// path has not claimed by then is RECORDED, not judged: a push from an ancestor still in
+// flight may deliver it later, which late_arrivals() counts. still_missing() is the verdict
+// at the end of the run, and for the first few misses the drain-time probe is kept so a
+// still-missing match can say what the index answered when the tasks were looking.
+void ParallelEvolutionEngine::validate_state_at_drain(StateId state) {
+    const State& s = hg_->get_state(state);
+    auto get_edge = [this](EdgeId eid) -> const Edge& { return hg_->get_edge(eid); };
+    auto get_signature = [this](EdgeId eid) -> const EdgeSignature& { return hg_->edge_signature(eid); };
+    size_t missing = 0;
+    auto check = [&](uint16_t rule_index, const EdgeId* edges, uint8_t num_edges,
+                     const VariableBinding& binding, StateId) {
+        MatchCore core_tmp;
+        core_tmp.rule_index = rule_index;
+        core_tmp.num_edges = num_edges;
+        core_tmp.binding = binding;
+        for (uint8_t i = 0; i < num_edges; ++i) core_tmp.matched_edges[i] = edges[i];
+        MatchRecord match;
+        match.core = &core_tmp;
+        match.source_state = state;
+        const uint64_t h = match.hash();
+        if (contains_match(h, match)) return;
+        ++missing;
+        MatchCore* core_copy = hg_->arena().template create<MatchCore>(core_tmp);
+        MatchRecord* stable = hg_->arena().template create<MatchRecord>();
+        stable->core = core_copy;
+        stable->source_state = state;
+        if (!missing_match_hashes_.insert_if_absent(h, stable).second) return;
+        const size_t slot = drain_probe_count_.fetch_add(1, std::memory_order_acq_rel);
+        if (slot < kDrainProbes) {
+            drain_probe_hash_[slot] = h;
+            drain_probe_text_[slot] = probe_match(state, core_tmp) + " tasks=" +
+                std::to_string(match_task_counts(state).pushed) + "/" +
+                std::to_string(match_task_counts(state).completed) + " matches=" +
+                std::to_string(match_task_counts(state).matches);
+        }
+    };
+    for (uint16_t r = 0; r < rules_.size(); ++r)
+        find_matches(rules_[r], r, state, s.edges, hg_->signature_index(), hg_->inverted_index(),
+                     get_edge, get_signature, check);
+    if (missing > 0) validation_mismatches_.fetch_add(missing, std::memory_order_relaxed);
+}
+
+std::string ParallelEvolutionEngine::validation_witness() const {
+    std::string out;
+    size_t shown = 0;
+    const size_t probes = std::min(drain_probe_count_.load(std::memory_order_acquire), kDrainProbes);
+    missing_match_hashes_.for_each([&](uint64_t h, const MatchRecord* rec) {
+        if (!rec || shown >= 3 || contains_match(h, *rec)) return;
+        ++shown;
+        out += "[still-missing state=" + std::to_string(rec->source_state) + " rule=" +
+               std::to_string(rec->core->rule_index) + " binding=";
+        for (uint8_t v = 0; v < MAX_VARS; ++v)
+            if (rec->core->binding.is_bound(v))
+                out += std::to_string(v) + "=" + std::to_string(rec->core->binding.get(v)) + " ";
+        out += "| at drain: ";
+        bool found = false;
+        for (size_t i = 0; i < probes; ++i)
+            if (drain_probe_hash_[i] == h) { out += drain_probe_text_[i]; found = true; break; }
+        if (!found) out += "(no drain probe kept)";
+        out += " | at end: " + probe_match(rec->source_state, *rec->core) + "] ";
+    });
+    return out;
 }
 
 size_t ParallelEvolutionEngine::late_submits() const {
