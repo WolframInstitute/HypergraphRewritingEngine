@@ -1,6 +1,8 @@
 #pragma once
 #include "hgcommon/namespace.hpp"
 
+#include "hgcommon/ring_core.hpp"
+
 #include "hg_gpu/types.hpp"
 #include "hg_gpu/cuda_check.hpp"
 
@@ -59,52 +61,46 @@ public:
         uint32_t  capacity; // power of two
         uint32_t  mask;     // capacity - 1
 
-        __device__ bool try_push(const T& value) {
-            cuda::atomic_ref<uint64_t, cuda::thread_scope_device> tref(*tail);
-            uint64_t pos = tref.load(cuda::memory_order_relaxed);
-            for (;;) {
-                const uint32_t s = static_cast<uint32_t>(pos) & mask;
-                cuda::atomic_ref<uint64_t, cuda::thread_scope_device> sref(seq[s]);
-                const int64_t dif = static_cast<int64_t>(sref.load(cuda::memory_order_acquire))
-                                  - static_cast<int64_t>(pos);
-                if (dif == 0) {
-                    // The slot is ours if we also win the cursor.
-                    if (tref.compare_exchange_weak(pos, pos + 1,
-                                                   cuda::memory_order_relaxed)) {
-                        slots[s] = value;
-                        sref.store(pos + 1, cuda::memory_order_release);
-                        return true;
-                    }
-                    // compare_exchange_weak refreshed pos; retry at the new position.
-                } else if (dif < 0) {
-                    return false;   // a full lap ahead of the consumer: the queue is full
-                } else {
-                    pos = tref.load(cuda::memory_order_relaxed);
-                }
+        // The storage face hgcommon::ring_claim drives. Everything here is HOW a word is
+        // touched and at what scope; nothing here decides anything. A producer carries the
+        // value it is publishing and a consumer the destination it is filling, and transfer()
+        // is the one place the two roles differ.
+        template <bool kPush>
+        struct Ops {
+            DeviceView* v;
+            const T*    in;    // the value a producer is publishing
+            T*          out;   // where a consumer puts what it took
+
+            __device__ uint32_t mask() const { return v->mask; }
+            __device__ uint64_t cursor_load() const {
+                cuda::atomic_ref<uint64_t, cuda::thread_scope_device> c(kPush ? *v->tail : *v->head);
+                return c.load(cuda::memory_order_relaxed);
             }
+            __device__ bool cursor_cas(uint64_t& expected, uint64_t desired) {
+                cuda::atomic_ref<uint64_t, cuda::thread_scope_device> c(kPush ? *v->tail : *v->head);
+                return c.compare_exchange_weak(expected, desired, cuda::memory_order_relaxed);
+            }
+            __device__ uint64_t seq_load(uint32_t s) const {
+                cuda::atomic_ref<uint64_t, cuda::thread_scope_device> r(v->seq[s]);
+                return r.load(cuda::memory_order_acquire);
+            }
+            __device__ void seq_store(uint32_t s, uint64_t value) {
+                cuda::atomic_ref<uint64_t, cuda::thread_scope_device> r(v->seq[s]);
+                r.store(value, cuda::memory_order_release);
+            }
+            __device__ void transfer(uint32_t s) {
+                if constexpr (kPush) v->slots[s] = *in; else *out = v->slots[s];
+            }
+        };
+
+        __device__ bool try_push(const T& value) {
+            Ops<true> ops{this, &value, nullptr};
+            return hgcommon::ring_claim(ops, /*want=*/0, /*leave=*/1);
         }
 
         __device__ bool try_pop(T& out) {
-            cuda::atomic_ref<uint64_t, cuda::thread_scope_device> href(*head);
-            uint64_t pos = href.load(cuda::memory_order_relaxed);
-            for (;;) {
-                const uint32_t s = static_cast<uint32_t>(pos) & mask;
-                cuda::atomic_ref<uint64_t, cuda::thread_scope_device> sref(seq[s]);
-                const int64_t dif = static_cast<int64_t>(sref.load(cuda::memory_order_acquire))
-                                  - static_cast<int64_t>(pos + 1);
-                if (dif == 0) {
-                    if (href.compare_exchange_weak(pos, pos + 1,
-                                                   cuda::memory_order_relaxed)) {
-                        out = slots[s];
-                        sref.store(pos + mask + 1, cuda::memory_order_release);
-                        return true;
-                    }
-                } else if (dif < 0) {
-                    return false;   // nothing published at this position: the queue is empty
-                } else {
-                    pos = href.load(cuda::memory_order_relaxed);
-                }
-            }
+            Ops<false> ops{this, nullptr, &out};
+            return hgcommon::ring_claim(ops, /*want=*/1, /*leave=*/mask + 1);
         }
 
         __device__ uint32_t size_approx() const {

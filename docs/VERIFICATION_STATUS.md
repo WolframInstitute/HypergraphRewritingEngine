@@ -12,7 +12,8 @@ stated absence rather than an unexamined one.
   CTAs and every access carries a SCOPE, so whether two threads synchronise depends on how close
   they are. RC11 has no scopes, so GenMC would check a program the device does not run. It runs
   from a container -- it is a fork of GenMC 0.9 supporting LLVM up to 15, and this tree builds
-  against 18. `verification/gpumc/run.sh <name>`.
+  against 18. `verification/gpumc/run.sh <name>`. Two harnesses: the termination decision and the
+  device work queue.
 - **TLA+** models a protocol rather than a translation unit, which is what makes it the right tool
   where the property is about an ordering across many participants rather than about one
   structure's memory operations. `verification/tla/run.sh <config>`.
@@ -156,6 +157,27 @@ clean at first: the property must be asserted AT THE INSTANT OF THE DECISION, si
 threads are joined the worker has always finished; and it must be stated in the COUNTERS rather
 than in a "finished" flag, since a flag is set after the last counter write and so lags a state
 that is genuinely complete.
+
+**The DEVICE's work queue**, covered under scoped-RC11 by
+`verification/gpumc/ring_exactly_once.cpp`. The claim rule is `hgcommon/ring_core.hpp` and the
+harness runs THAT -- the same `ring_claim` body `gpu/include/hg_gpu/ring_buffer.hpp` drives for
+both of its roles. Producing and consuming are the same rule with two constants (a producer waits
+for `seq == pos` and leaves `pos + 1`; a consumer waits for `pos + 1` and leaves `pos + capacity`),
+so they are one body rather than two that agree until one is edited.
+
+The property: no item is handed to two consumers, and none is handed out that no producer
+published. For this queue that is a TERMINATION property rather than a throughput one -- the
+persistent kernel's producers are its own consumers, so an item that vanishes is a completion that
+can never be booked, and the detector above then waits for it forever. 8 complete executions, 14
+blocked on the retry loop, clean.
+
+Calibrated by `-DCALIBRATE_BUMP_CURSOR`, which reserves a position with an unconditional
+`fetch_add` instead of a compare-exchange. The cursor then hands out a position whose slot is not
+yet the reserver's, and with producers that are also consumers there is nothing to roll back with.
+The checker reports one item handed to two consumers.
+
+The reservation CAS is modelled WEAK, as the device writes it. Modelling it strong would remove
+the spurious-failure retries, and removing behaviours from a checker is the unsound direction.
 
 ~~**The depth-relaxation cascade.**~~ COVERED by `DepthRelaxation.tla`. The property is that at
 quiescence the claimed set is exactly the nodes whose SHORTEST-PATH depth is below the budget, so
