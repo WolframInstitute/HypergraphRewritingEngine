@@ -54,6 +54,19 @@
 // reachability, which is what the checker is for.
 #if defined(HG_PARK_VERIFICATION)
 #  define HG_PARK_SPIN 1
+// A BUILD WITH NO THREADS HAS NOTHING TO WAIT FOR. Emscripten without -pthread is that build: the
+// engine runs the job system's SERIAL mode there, which drains on the calling thread and starts
+// no worker, so park() is unreachable. It still has to COMPILE, and the platform offers no
+// address-wait primitive -- so this target used to reach the fallback ladder and be refused,
+// either by the #error or, where libc++ does define __cpp_lib_atomic_wait, by the lock-free
+// assertion. Neither refusal was about a lock it could ever take.
+//
+// The spin is the honest backend for it: lock-free, and unreachable. A threadless build that did
+// somehow park would spin forever, which is what a park with no other thread to wake it means on
+// any backend.
+#elif defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
+#  define HG_PARK_NO_THREADS 1
+#  define HG_PARK_SPIN 1
 #elif defined(__linux__)
 #  define HG_PARK_FUTEX 1
 #elif defined(_WIN32)
