@@ -17,6 +17,17 @@ THREADS=${2:-1,2,4,8,16}
 ITERS=${3:-5}
 PER_RUN_TIMEOUT=${PER_RUN_TIMEOUT:-900}
 
+# THE QUIET GATE, AND IT IS NOT OPTIONAL. A timing run on a machine with other work on it produces
+# a number indistinguishable from a clean one, and nothing downstream can separate them later. An
+# orphaned poller left by an earlier session ran `pgrep` across the whole process table every ten
+# seconds through an entire evening of measurements on the benchmark box, and was found only when
+# the box was handed to someone else.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"$HERE/preflight_quiet.sh" --wait "${PREFLIGHT_WAIT:-120}" || {
+    echo "$(basename "$0"): refusing to measure on a machine that is not quiet" >&2
+    exit 1
+}
+
 printf '%-22s %-6s %s\n' workload depth "speedup per thread count ($THREADS)"
 while read -r w d; do
     [ -z "${w:-}" ] && continue
