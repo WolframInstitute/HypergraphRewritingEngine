@@ -630,7 +630,16 @@ void ParallelEvolutionEngine::forward_from_ancestor_chain(
                                              accumulated_consumed, total_consumed, step, batch);
 
         auto parent_result = state_parent_.lookup_waiting(id_key(current_ancestor));
-        if (!parent_result.has_value()) break;
+        if (!parent_result.has_value()) {
+            HG_STAT(if (hg_->get_state(current_ancestor).parent_event != INVALID_ID) {
+                chain_parent_misses_.fetch_add(1, std::memory_order_relaxed);
+                const bool again = state_parent_.lookup(id_key(current_ancestor)).has_value();
+                note_silent("chain-parent-miss child=" + std::to_string(child) + " ancestor=" +
+                            std::to_string(current_ancestor) + " retry=" + (again ? "found" : "miss") +
+                            " map=" + std::to_string(state_parent_.size()));
+            });
+            break;
+        }
 
         ParentInfo* pi = *parent_result;
         if (!pi || !pi->has_parent()) break;
@@ -688,7 +697,16 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor(
     SVec<MatchRecord>* batch
 ) {
     auto result = state_matches_.lookup_waiting(id_key(ancestor));
-    if (!result.has_value()) return;  // Ancestor has no matches yet
+    if (!result.has_value()) {
+        HG_STAT(if (hg_->get_state(ancestor).parent_event != INVALID_ID) {
+            chain_list_misses_.fetch_add(1, std::memory_order_relaxed);
+            const bool again = state_matches_.lookup(id_key(ancestor)).has_value();
+            note_silent("chain-list-miss child=" + std::to_string(child) + " ancestor=" +
+                        std::to_string(ancestor) + " retry=" + (again ? "found" : "miss") +
+                        " map=" + std::to_string(state_matches_.size()));
+        });
+        return;  // Ancestor has no matches yet
+    }
 
     // The draw site, derived from the submission mode rather than passed: a sampling draw is
     // keyed by where it is taken, so the two modes must not share a site, and deriving it here
@@ -2310,6 +2328,7 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
     // below, so the parent's data is loaded once for the whole family instead of once per
     // child on whichever worker happened to steal it.
     SVec<MatchRecord> completed;
+    [[maybe_unused]] size_t seen = 0;   // stats builds: candidates the walk handed over
 
     // Generate candidates
     generate_candidates(
@@ -2321,6 +2340,7 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
 
             // Skip if already matched
             if (data.contains_edge(candidate)) return;
+            HG_STAT(++seen);
             HG_STAT(match_join_for(data.state)->trace.fetch_or(512u, std::memory_order_relaxed));
 
             VariableBinding extended = data.binding;
@@ -2342,6 +2362,22 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
         }
     );
 
+    HG_STAT(if (seen == 0) {
+        // The same walk again, at once. Candidates now where there were none is the walk
+        // answering differently to the same question.
+        size_t again = 0;
+        generate_candidates(
+            pattern_edge, pattern_sig, sig_cache,
+            data.binding.bindings, data.binding.bound_mask, s.edges,
+            hg_->signature_index(), hg_->inverted_index(), get_edge,
+            [&](EdgeId candidate, const auto&) { if (!data.contains_edge(candidate)) ++again; });
+        if (again > 0) {
+            expand_retry_found_.fetch_add(1, std::memory_order_relaxed);
+            note_silent("expand-retry state=" + std::to_string(data.state) + " rule=" +
+                        std::to_string(data.rule_index) + " anchor=" + std::to_string(data.matched_edges[0]) +
+                        " pos=" + std::to_string(pattern_idx) + " first=0 retry=" + std::to_string(again));
+        }
+    });
     dispatch_expansion(data.state, data.step, completed.data(), completed.size());
 }
 
@@ -2840,6 +2876,18 @@ void ParallelEvolutionEngine::note_claim(uint64_t h, StateId state, uint8_t answ
     if (w < 0 || static_cast<size_t>(w) >= kClaimRingWorkers) w = kClaimRingWorkers - 1;
     const uint32_t i = claim_ring_pos_[w].fetch_add(1, std::memory_order_relaxed) % kClaimRing;
     claim_ring_[static_cast<size_t>(w) * kClaimRing + i] = ClaimTrace{h, state, answer};
+}
+
+void ParallelEvolutionEngine::note_silent(const std::string& text) {
+    const size_t slot = silent_witness_count_.fetch_add(1, std::memory_order_acq_rel);
+    if (slot < kSilentWitness) silent_witness_[slot] = text;
+}
+
+std::string ParallelEvolutionEngine::silent_witness() const {
+    std::string out;
+    const size_t n = std::min(silent_witness_count_.load(std::memory_order_acquire), kSilentWitness);
+    for (size_t i = 0; i < n; ++i) out += silent_witness_[i] + " ";
+    return out;
 }
 
 std::string ParallelEvolutionEngine::validation_witness() const {

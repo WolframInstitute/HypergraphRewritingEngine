@@ -1332,6 +1332,24 @@ private:
     std::vector<ClaimTrace> claim_ring_ = std::vector<ClaimTrace>(kClaimRingWorkers * kClaimRing);   // heap: 8 MB
     std::atomic<uint32_t> claim_ring_pos_[kClaimRingWorkers] = {};
     void note_claim(uint64_t h, StateId state, uint8_t answer);
+    // SILENT ENDINGS, counted (stats builds). A chain walk that finds no parent link on a
+    // NON-root ancestor stops early and every ancestor above it is never pulled; an expanded
+    // ancestor with no match list yields nothing; an expand task whose candidate walk visits
+    // nothing gets the same walk again at once. Each is retried immediately and the first
+    // few are kept as text, so a transient answer is told from a permanent one.
+    std::atomic<size_t> chain_parent_misses_{0};
+    std::atomic<size_t> chain_list_misses_{0};
+    std::atomic<size_t> expand_retry_found_{0};
+    static constexpr size_t kSilentWitness = 8;
+    std::atomic<size_t> silent_witness_count_{0};
+    std::string silent_witness_[kSilentWitness];
+    void note_silent(const std::string& text);
+public:
+    size_t chain_parent_misses() const { return chain_parent_misses_.load(std::memory_order_relaxed); }
+    size_t chain_list_misses() const { return chain_list_misses_.load(std::memory_order_relaxed); }
+    size_t expand_retry_found() const { return expand_retry_found_.load(std::memory_order_relaxed); }
+    std::string silent_witness() const;
+private:
     static constexpr size_t kDrainProbes = 16;
     std::atomic<size_t> drain_probe_count_{0};
     uint64_t drain_probe_hash_[kDrainProbes] = {};
