@@ -12,8 +12,8 @@ stated absence rather than an unexamined one.
   CTAs and every access carries a SCOPE, so whether two threads synchronise depends on how close
   they are. RC11 has no scopes, so GenMC would check a program the device does not run. It runs
   from a container -- it is a fork of GenMC 0.9 supporting LLVM up to 15, and this tree builds
-  against 18. `verification/gpumc/run.sh <name>`. Three harnesses: the termination decision, the
-  device work queue and the dedup map's election.
+  against 18. `verification/gpumc/run.sh <name>`. Four harnesses: the termination decision, the
+  device work queue, the dedup map's election and the replay rendezvous.
 - **TLA+** models a protocol rather than a translation unit, which is what makes it the right tool
   where the property is about an ordering across many participants rather than about one
   structure's memory operations. `verification/tla/run.sh <config>`.
@@ -198,6 +198,15 @@ The checker reports one item handed to two consumers.
 
 The reservation CAS is modelled WEAK, as the device writes it. Modelling it strong would remove
 the spurious-failure retries, and removing behaviours from a checker is the unsound direction.
+
+**The DEVICE's replay rendezvous**, covered by `verification/gpumc/replay_rendezvous_meets.cpp`.
+The device list's prepend and walk are `hgcommon/list_core.hpp` -- the body
+`gpu/include/hg_gpu/lock_free_list.hpp` drives -- and the harness runs THAT with the shape the
+quotient replay puts around it: push, `__threadfence()`, walk the other side's list. The property
+is the host twin's (`quotient_instance_match_rendezvous`): an instance and a match arriving
+concurrently cannot both miss each other, or a raw event and every relation under it is dropped
+with the canonical counts untouched. 3 executions, clean; `-DCALIBRATE_NO_FENCE` removes both
+fences and the checker reports both walks missing.
 
 **The DEVICE's dedup map election**, covered by `verification/gpumc/hash_insert_elects_one.cpp`.
 The insert rule is `hgcommon/hash_insert_core.hpp` and the harness runs THAT -- the same

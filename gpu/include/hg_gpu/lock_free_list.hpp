@@ -3,6 +3,8 @@
 #include "hgcommon/namespace.hpp"
 
 #include "hg_gpu/atomic_pool.hpp"
+#include "hgcommon/list_core.hpp"
+
 #include "hg_gpu/types.hpp"
 #include "hg_gpu/cuda_check.hpp"
 
@@ -53,37 +55,40 @@ public:
         uint32_t* heads;     // size = num_keys
         uint32_t  num_keys;
 
-        // Push value onto list[key]. Returns the node index, or kInvalid on
-        // pool exhaustion or out-of-range key.
+        // The storage face hgcommon::list_push / list_for_each drive: how the head word and a
+        // node's next field are touched and at what scope. Nothing here decides anything.
+        struct Ops {
+            DeviceView* v;   // the walks only read; they cast away const to share one face
+            uint32_t key;
+            __device__ uint32_t invalid() const { return Pool<Node>::kInvalid; }
+            __device__ uint32_t head_load_relaxed() const {
+                cuda::atomic_ref<uint32_t, cuda::thread_scope_device> h(v->heads[key]);
+                return h.load(cuda::memory_order_relaxed);
+            }
+            __device__ uint32_t head_load_acquire() const {
+                cuda::atomic_ref<uint32_t, cuda::thread_scope_device> h(v->heads[key]);
+                return h.load(cuda::memory_order_acquire);
+            }
+            __device__ bool head_cas(uint32_t& expected, uint32_t desired) {
+                cuda::atomic_ref<uint32_t, cuda::thread_scope_device> h(v->heads[key]);
+                return h.compare_exchange_weak(expected, desired, cuda::memory_order_acq_rel,
+                                               cuda::memory_order_relaxed);
+            }
+            __device__ void set_next(uint32_t node, uint32_t next) { v->pool.at(node).next = next; }
+            __device__ uint32_t next_of(uint32_t node) const { return v->pool.at(node).next; }
+        };
+
+        // Push value onto list[key]. Returns the node index, or kInvalid on pool exhaustion or
+        // out-of-range key. The exchange is ACQ_REL for the reason hgcommon/list_core.hpp gives:
+        // release publishes the node, acquire covers the pusher's own walk below it.
         __device__ uint32_t push(uint32_t key, const T& value) {
             if (key >= num_keys) return Pool<Node>::kInvalid;
             uint32_t idx = pool.claim();
             if (idx == Pool<Node>::kInvalid) return Pool<Node>::kInvalid;
-
-            Node& n = pool.at(idx);
-            n.value = value;
-
-            cuda::atomic_ref<uint32_t, cuda::thread_scope_device> href(heads[key]);
-            uint32_t prev = href.load(cuda::memory_order_relaxed);
-            while (true) {
-                n.next = prev;
-                // ACQ_REL, not release. The release half publishes this node's fields to a
-                // walker that loads the head with acquire -- that much release alone gives. The
-                // ACQUIRE half is for THIS thread: a successful exchange also READS the old
-                // head, and a pusher goes on to walk the chain below its own node
-                // (for_each_before), reading values another thread published. Under a relaxed
-                // load of the head there is no happens-before for those reads, and today the
-                // only thing supplying it is a __threadfence() in publish_applied placed for a
-                // different purpose -- so the ordering the walk needs is stated here, where the
-                // read that needs it happens, rather than borrowed from a caller.
-                if (href.compare_exchange_weak(
-                        prev, idx,
-                        cuda::memory_order_acq_rel,
-                        cuda::memory_order_relaxed)) {
-                    return idx;
-                }
-                // prev was updated by the failed CAS; retry with new prev.
-            }
+            pool.at(idx).value = value;
+            Ops ops{this, key};
+            hgcommon::list_push(ops, idx);
+            return idx;
         }
 
         __device__ uint32_t head_index(uint32_t key) const {
@@ -96,39 +101,23 @@ public:
             return (idx == Pool<Node>::kInvalid) ? nullptr : &pool.at(idx);
         }
 
-        // Every node linked STRICTLY BEFORE `mine`, most-recent-first.
-        //
-        // This is what lets two pushers meet exactly once. If each visits only the nodes older
-        // than its own, then of any two exactly one is older, so exactly one of the two scans
-        // sees the other -- no dedup structure, and no dependence on which warp ran first.
-        // Walking from the HEAD instead makes both see each other whenever the pushes and the
-        // scans interleave, which is a pair reported twice.
-        //
-        // The next chain below `mine` is fixed once `mine` is linked, since push only prepends.
+        // Every node linked STRICTLY BEFORE `mine`, most-recent-first. This is what lets two
+        // pushers meet exactly once: of any two, exactly one is older, so exactly one of the two
+        // scans sees the other. Walking from the head instead reports a pair twice whenever the
+        // pushes and the scans interleave. `key` is only what the walk needs to name its pool.
         template <typename Fn>
         __device__ void for_each_before(uint32_t mine, Fn fn) const {
-            if (mine == Pool<Node>::kInvalid) return;
-            uint32_t idx = pool.at(mine).next;
-            while (idx != Pool<Node>::kInvalid) {
-                const Node& n = pool.at(idx);
-                fn(n.value);
-                idx = n.next;
-            }
+            Ops ops{const_cast<DeviceView*>(this), 0u};
+            hgcommon::list_for_each_before(ops, mine, [&](uint32_t idx) { fn(pool.at(idx).value); });
         }
 
-        // Functional iteration: invoke fn(value) for each node in list[key].
-        // Order is most-recent-first (stack semantics). Safe concurrent with
-        // pushes from other threads — visits exactly the nodes published
-        // before head was loaded.
+        // Every node in list[key], most-recent-first: exactly the nodes published before the
+        // head was loaded, so it is safe concurrent with pushes.
         template <typename Fn>
         __device__ void for_each(uint32_t key, Fn fn) const {
             if (key >= num_keys) return;
-            uint32_t idx = head_index(key);
-            while (idx != Pool<Node>::kInvalid) {
-                const Node& n = pool.at(idx);
-                fn(n.value);
-                idx = n.next;
-            }
+            Ops ops{const_cast<DeviceView*>(this), key};
+            hgcommon::list_for_each(ops, [&](uint32_t idx) { fn(pool.at(idx).value); });
         }
     };
 
