@@ -26,8 +26,19 @@ Linux, and the GPU binary) are described in
 The C++ suites gate correctness; run them before opening a change.
 
 ```bash
-cmake --build build --target all_tests
-./build/all_tests
+cmake --build build
+ctest --test-dir build -j4 --output-on-failure
+```
+
+RUN CTEST, NOT `all_tests` ALONE. `all_tests` is the aggregate of the engine suites and is not
+the whole gate: the job system and the two deques build their own binaries, so a change to
+`job_system/` or `lockfree_deque/` is not covered by running `all_tests` and will look green
+while its own suites were never executed. ctest runs every binary.
+
+For a fast loop while working, the aggregate and the subset targets are still the right thing:
+
+```bash
+cmake --build build --target all_tests && ./build/all_tests --gtest_filter='Causal*'
 ```
 
 GPU (when built with `-DBUILD_GPU=ON`):

@@ -209,7 +209,9 @@ the drain fires once per state), `RuleWeights.*`.
 ## Validation
 
 Ground truth is `reference/MultiwayReference.wl`, cross-checked against the Wolfram
-`Multicomputation` `MultiwaySystem` paclet. C++: `all_tests` (+ `hg_gpu_tests`,
-`gpu_differential_tests`). Paclet: `reference/verify_paclet.wls` (golden corpus via
+`Multicomputation` `MultiwaySystem` paclet. C++: `ctest`, which is the whole gate --
+`all_tests` aggregates the ENGINE suites only, and the job system and the two deques build their
+own binaries, so running it alone leaves those unexecuted and green. GPU adds `hg_gpu_tests` and
+`gpu_differential_tests`. Paclet: `reference/verify_paclet.wls` (golden corpus via
 wolframscript). The `ReferenceOracle` test compares canonical-state counts to a
 brute-force isomorphism oracle — the decisive correctness check.
