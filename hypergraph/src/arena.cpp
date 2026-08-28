@@ -351,6 +351,18 @@ size_t arena_block_bytes_live() {
     return g_arena_block_bytes.load(std::memory_order_relaxed);
 }
 
+// NOT DEFINED UNDER HG_VERIFICATION, because arena.hpp already defines them there as inline
+// no-ops and defining them again here is a redefinition the moment this translation unit is
+// LINKED INTO a harness rather than left out of one.
+//
+// The header's reasoning stands and is why the no-ops win rather than these: nothing reads a
+// counter to decide anything -- they are relaxed diagnostics beside the protocol, never in it --
+// and giving the checker real ones turns every table create, install and discard into a racing
+// read-modify-write on one shared location, multiplying executions over a variable no property
+// mentions. What has changed is only that a harness can now link the engine, so "the library is
+// absent" is no longer what keeps these from colliding; this guard is.
+#ifndef HG_VERIFICATION
+
 static std::atomic<size_t> g_discarded_tables{0};
 static std::atomic<size_t> g_discarded_table_bytes{0};
 
@@ -377,6 +389,8 @@ void note_installed_table_bytes(size_t bytes) {
 size_t installed_table_bytes() { return g_installed_table_bytes.load(std::memory_order_relaxed); }
 size_t installed_table_count() { return g_installed_tables.load(std::memory_order_relaxed); }
 size_t discarded_table_count() { return g_discarded_tables.load(std::memory_order_relaxed); }
+
+#endif  // !HG_VERIFICATION
 
 
 // =============================================================================

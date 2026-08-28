@@ -1,0 +1,73 @@
+verification: GenMC checks the composed engine, not one header at a time
+
+Every harness here compiled its own translation unit and saw only what that
+harness included. A defect that lives in the composition -- the job system
+driving the evolution engine driving the hypergraph's maps and arrays -- was
+invisible to all fifteen of them, and the intermittent
+CausalDeterminism.NonQuotientFullyDeterministic failure lives exactly there.
+
+A harness that declares `// GENMC-LINK: engine` is now compiled against the
+whole engine: all eighteen translation units under hypergraph/src and
+job_system/src go to LLVM IR, llvm-link joins them to the harness, and the
+checker runs the real evolve().
+
+Five things had to change for that to be possible.
+
+The pthread surface. GenMC's pthread.h models thread creation and joining and
+comments out the condition-variable, once, key and affinity families. That is
+enough for a harness written against one structure, and not enough for any
+translation unit that reaches <memory>: libstdc++'s bits/gthr-default.h builds
+weak aliases for the whole pthread surface, so a unique_ptr is sufficient to
+fail the compile. genmc_pthread_shim.h supplies the missing declarations and
+is force-included into composed builds only. Nothing in the engine calls them;
+if anything did, GenMC would report an unknown external function rather than
+execute something it has not modelled.
+
+Parking. On Linux the engine parks in syscall(SYS_futex), which the checker
+cannot see, so a parked worker would leave the exploration. HG_PARK_VERIFICATION
+selects a spin on the same word -- already permitted by park's contract, which
+allows spurious return -- and composed builds set it.
+
+Pruning. Linking the engine leaves every symbol externally visible, so
+globaldce can prove nothing dead and the checker is handed the whole engine
+whether or not main reaches it. MEASURED: a SegmentedArray probe is 154 lines
+and verifies in 0s alone, 130,815 lines and does not finish in 90s when linked.
+internalize with main as the only public symbol, run before globaldce, takes
+that to 140 lines and 0s.
+
+Intrinsics. __builtin_constant_p survives the link as llvm.is.constant, which
+GenMC's code generator does not implement. lower-constant-intrinsics runs after
+inline; naming a function pass first makes opt parse the whole list as a
+function pipeline and reject the module passes in it.
+
+Two counters. arena.cpp's table-byte counters are already inline no-ops under
+HG_VERIFICATION in arena.hpp, which collides the moment the translation unit is
+linked in rather than left out. The definitions are now guarded. Their reason
+for existing as no-ops is unchanged: nothing reads a counter to decide
+anything, and real ones would turn every table create and discard into a racing
+read-modify-write on one shared location.
+
+SegmentedArray::MAX_SEGMENTS and ConcurrentMap::DEFAULT_INITIAL_CAPACITY are
+overridable at compile time. A Hypergraph holds seven segmented arrays whose
+constructors store nullptr into 4096 directory slots each, and three maps that
+initialise 1024 entries before anything is inserted; the checker models each as
+an event, so an empty engine costs more to construct than the step under test
+costs to run. Only the starting size moves -- the growth schedule, the index
+decomposition, the probe chain and the sentinel rules are untouched -- so a
+harness that shrinks them checks the same algorithm, and a smaller table
+crosses a growth sooner, which is where the map's own harnesses aim.
+
+The engine's IR is cached under .genmc_ir_cache, keyed on a digest of every
+source and header it is built from plus the flags, so `run.sh all` compiles the
+engine once rather than once per composed harness and no tree edit can be
+served a stale module.
+
+engine_link_smoke.cpp is the pipeline's own gate. It links the engine and
+asserts a fresh SegmentedArray is empty -- trivial on purpose. It fails if any
+of the four ways this path has broken recurs: a missing pthread declaration, an
+unresolved definition, an intrinsic the code generator lacks, or a prune that
+removes main. Each of those was previously silent until something downstream
+timed out.
+
+Gates: verification/genmc/run.sh all -> 16/16 exit 0 (was 15/15).
+build_linux/all_tests -> 304/304.

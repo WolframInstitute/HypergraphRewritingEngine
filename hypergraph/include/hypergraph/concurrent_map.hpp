@@ -70,7 +70,18 @@ template<typename K, typename V, K EMPTY_KEY = K{0}, K LOCKED_KEY = K{~0ULL},
          V ABSENT_VALUE = V{}>
 class ConcurrentMap {
 public:
-    static constexpr size_t DEFAULT_INITIAL_CAPACITY = 1024;
+    // OVERRIDABLE SO A MODEL CHECKER CAN AFFORD TO CONSTRUCT ONE. A table of this many entries is
+    // initialised before anything is inserted, and a Hypergraph builds three such maps, so the
+    // default costs thousands of atomic initialisations to reach an empty engine. A checker
+    // models each as an event and never reaches the property under test.
+    //
+    // Only the STARTING size changes. Growth, the probe chain, the sentinel rules and the claim
+    // protocol are unchanged, so a harness that shrinks it checks the same algorithm -- and a
+    // small table crosses a growth SOONER, which is the region the map's own harnesses target.
+#ifndef HG_CONCURRENT_MAP_INITIAL_CAPACITY
+#define HG_CONCURRENT_MAP_INITIAL_CAPACITY 1024
+#endif
+    static constexpr size_t DEFAULT_INITIAL_CAPACITY = HG_CONCURRENT_MAP_INITIAL_CAPACITY;
 
     // What a map allocates before anyone puts anything in it.
     //

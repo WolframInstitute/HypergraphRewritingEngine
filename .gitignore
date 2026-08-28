@@ -43,3 +43,6 @@ evidence/
 
 # Local artifacts pulled off a rented measurement box (tools/dev/remote_drive.sh).
 remote_runs/
+
+# GenMC caches the engine IR here, keyed on the sources it was built from.
+.genmc_ir_cache/

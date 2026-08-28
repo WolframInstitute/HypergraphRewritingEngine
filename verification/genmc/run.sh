@@ -53,6 +53,7 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 
 GENMC="${GENMC:-$HOME/genmc/build/bin/genmc}"
 CLANGXX="${CLANGXX:-/usr/lib/llvm-18/bin/clang++}"
+LLVM_LINK="${LLVM_LINK:-$(dirname "$CLANGXX")/llvm-link}"
 OPT="${OPT:-/usr/lib/llvm-18/bin/opt}"
 
 if [ ! -x "$GENMC" ]; then
@@ -129,15 +130,97 @@ run_one() {
     # optnone (which would make every subsequent pass a no-op), and a pass list that promotes and
     # inlines but never runs loop-idiom. instcombine and simplifycfg preserve atomic operations,
     # which is what the checker reads the program from.
+    # A harness that declares `// GENMC-LINK: engine` is checked against the COMPOSED engine
+    # rather than one header: every engine translation unit is compiled to IR and linked in, so
+    # the checker runs the real evolve(), the real job system and the real structures together.
+    # Without it a harness sees only what its own includes define, and a defect that lives in the
+    # composition of the structures is invisible to it -- which is what every harness here was
+    # before.
+    local link_engine
+    link_engine="$(sed -n 's|^// GENMC-LINK: *||p' "$src" | head -1)"
+
+    # Two declarations the composed build needs and a single-header harness does not.
+    #
+    # The pthread shim: GenMC's pthread.h covers what a harness written against one structure
+    # touches and leaves the condition-variable, once, key and affinity families commented out.
+    # libstdc++ does not know that -- bits/gthr-default.h aliases the whole pthread surface as
+    # soon as a translation unit reaches <memory>, which anything holding a unique_ptr does.
+    #
+    # HG_PARK_VERIFICATION: on Linux the engine parks in syscall(SYS_futex), which the checker
+    # cannot see, so a parked worker would vanish from the exploration. The verification backend
+    # spins on the same word, which the contract already permits (park may return spuriously).
+    local extra_cc=()
+    if [ -n "$link_engine" ]; then
+        extra_cc=(-include "$HERE/genmc_pthread_shim.h" -DHG_PARK_VERIFICATION=1)
+    fi
+
     if ! "$CLANGXX" -std=c++17 -O0 -Xclang -disable-O0-optnone -S -emit-llvm \
-            "${INCLUDES[@]}" -DHG_VERIFICATION=1 ${HG_HARNESS_DEFINES:-} \
+            "${INCLUDES[@]}" "${extra_cc[@]}" -DHG_VERIFICATION=1 ${HG_HARNESS_DEFINES:-} \
             -o "$WORK/$name.raw.ll" "$src" 2>"$WORK/$name.cc.err"; then
         echo "--- $name: COMPILE FAILED"
         tail -30 "$WORK/$name.cc.err"
         return 3
     fi
-    if ! "$OPT" -passes='always-inline,inline,sroa,early-cse,instcombine,simplifycfg,adce,globaldce,strip-dead-prototypes' \
-            -S "$WORK/$name.raw.ll" -o "$WORK/$name.ll" 2>"$WORK/$name.opt.err"; then
+
+    local to_opt="$WORK/$name.raw.ll"
+    local opt_extra=()
+    local passes='always-inline,inline,sroa,early-cse,instcombine,simplifycfg,adce,globaldce,strip-dead-prototypes'
+    if [ -n "$link_engine" ]; then
+        # The engine's IR is CACHED, keyed on the inputs that produce it: every source and header
+        # it is built from, plus the flags. Any change to any of them gives a different key and a
+        # cold directory, so the cache cannot serve a stale module -- and an unchanged tree makes
+        # `run.sh all` compile the engine once for the whole suite rather than once per harness.
+        local key
+        key="$( { ls -lL --time-style=+%s "$ROOT"/hypergraph/src/*.cpp "$ROOT"/job_system/src/*.cpp \
+                     "$ROOT"/hypergraph/include/hypergraph/*.hpp "$ROOT"/common/include/hgcommon/*.hpp \
+                     "$ROOT"/job_system/include/job_system/*.hpp "$ROOT"/lockfree_deque/include/*/*.hpp \
+                     "$HERE"/genmc_pthread_shim.h 2>/dev/null
+                 echo "${HG_HARNESS_DEFINES:-}"; "$CLANGXX" --version | head -1
+               } | md5sum | cut -c1-16 )"
+        local cache="${GENMC_IR_CACHE:-$ROOT/.genmc_ir_cache}/$key"
+        mkdir -p "$cache"
+
+        local units=()
+        for u in "$ROOT"/hypergraph/src/*.cpp "$ROOT"/job_system/src/*.cpp; do
+            local un; un="$(basename "$u" .cpp)"
+            if [ ! -s "$cache/$un.ll" ]; then
+                if ! "$CLANGXX" -std=c++17 -O0 -Xclang -disable-O0-optnone -S -emit-llvm \
+                        "${INCLUDES[@]}" "${extra_cc[@]}" -DHG_VERIFICATION=1 ${HG_HARNESS_DEFINES:-} \
+                        -o "$cache/$un.ll.tmp" "$u" 2>"$WORK/engine_$un.cc.err"; then
+                    echo "--- $name: ENGINE TU $un FAILED TO COMPILE"
+                    tail -20 "$WORK/engine_$un.cc.err"
+                    return 3
+                fi
+                mv "$cache/$un.ll.tmp" "$cache/$un.ll"
+            fi
+            units+=("$cache/$un.ll")
+        done
+        if ! "$LLVM_LINK" -S "$WORK/$name.raw.ll" "${units[@]}" -o "$WORK/$name.linked.ll" \
+                2>"$WORK/$name.link.err"; then
+            echo "--- $name: LINK FAILED"
+            tail -20 "$WORK/$name.link.err"
+            return 3
+        fi
+        to_opt="$WORK/$name.linked.ll"
+
+        # INTERNALIZE BEFORE globaldce, or the prune does nothing. Linking the engine brings in
+        # every exported symbol, and globaldce cannot prove any of them dead while they are
+        # externally visible -- so the checker is handed the whole engine whether or not main
+        # reaches it. MEASURED: the same probe is 154 lines and verifies in 0s when linked alone,
+        # and 130,815 lines and does not finish in 90s when linked with the engine. Internalizing
+        # everything but main takes that back to 140 lines and 0s.
+        passes="internalize,globaldce,$passes"
+        opt_extra=(-internalize-public-api-list=main)
+
+        # lower-constant-intrinsics because __builtin_constant_p survives the link as
+        # llvm.is.constant, which GenMC's code generator does not implement. It goes AFTER inline
+        # -- naming a function pass first makes opt parse the whole list as a function pipeline
+        # and reject the module passes in it.
+        passes="${passes/inline,/inline,lower-constant-intrinsics,}"
+    fi
+
+    if ! "$OPT" ${opt_extra[@]+"${opt_extra[@]}"} -passes="$passes" \
+            -S "$to_opt" -o "$WORK/$name.ll" 2>"$WORK/$name.opt.err"; then
         echo "--- $name: OPT FAILED"
         tail -20 "$WORK/$name.opt.err"
         return 3

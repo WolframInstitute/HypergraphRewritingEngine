@@ -38,7 +38,21 @@ class SegmentedArray {
 public:
     static constexpr uint32_t DEFAULT_SEGMENT_SHIFT = 10;
     static constexpr size_t DEFAULT_SEGMENT_SIZE = size_t(1) << DEFAULT_SEGMENT_SHIFT;
-    static constexpr size_t MAX_SEGMENTS = 4096;
+
+    // OVERRIDABLE SO A MODEL CHECKER CAN AFFORD TO CONSTRUCT ONE. The directory is an inline array
+    // of this many atomics and the constructor stores nullptr into every one, so a Hypergraph --
+    // which holds seven of these, before the causal graph and the evolution engine add more --
+    // costs 28,672 atomic stores to build. A checker models each as an event, so the object is
+    // more expensive to construct than the step under test is to run, and the exploration never
+    // reaches the property.
+    //
+    // The value changes CAPACITY and nothing else: segments are still created in order, the index
+    // decomposition is unchanged, and the growth schedule is unchanged. A harness that shrinks it
+    // checks the same algorithm on a smaller directory.
+#ifndef HG_SEGMENTED_ARRAY_MAX_SEGMENTS
+#define HG_SEGMENTED_ARRAY_MAX_SEGMENTS 4096
+#endif
+    static constexpr size_t MAX_SEGMENTS = HG_SEGMENTED_ARRAY_MAX_SEGMENTS;
 
     // SEGMENTS GROW, so the capacity is the INDEX TYPE's limit and not the container's. Segment k
     // holds segment_size << min(k, GROWTH_STEPS) elements: the first is exactly as small as a
