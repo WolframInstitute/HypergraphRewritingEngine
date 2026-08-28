@@ -957,6 +957,10 @@ public:
     bool depth_signal_available() const;
     // States that arrived at a depth already reported complete. Must be zero.
     size_t depth_late_arrivals() const;
+    // Submits made by a worker that was not inside a job. The job system's quiescence predicate
+    // is sound only while this is zero -- a child owed after its parent was booked complete is
+    // invisible to any ordering of the reads. See JobSystem::enqueue.
+    size_t late_submits() const;
     size_t states_drained() const;
 
     // Matches this state has accepted so far. Read inside the drain callback it is that state's

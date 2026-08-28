@@ -2712,6 +2712,10 @@ size_t ParallelEvolutionEngine::depth_late_arrivals() const {
     return depth_join_.late_arrivals();
 }
 
+size_t ParallelEvolutionEngine::late_submits() const {
+    return job_system_ ? job_system_->late_submits() : 0;
+}
+
 void ParallelEvolutionEngine::set_explore_from_canonical_states_only(bool enable) {
     explore_from_canonical_states_only_ = enable;
 }

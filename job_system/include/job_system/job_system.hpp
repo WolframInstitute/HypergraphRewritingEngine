@@ -99,6 +99,9 @@ private:
     // Workers that have passed their binding attempt this start; start() waits for all of
     // them, which is what makes pin_failures() settled rather than racing worker startup.
     std::atomic<size_t> workers_entered_{0};
+    // Submits made from a worker that is not inside a job. The quiescence predicate's soundness
+    // rests on this being zero; see enqueue().
+    std::atomic<size_t> late_submits_{0};
     size_t queue_capacity_;
     std::atomic<bool> is_running_{false};
 
@@ -639,6 +642,25 @@ private:
         }
         const bool on_worker = (t_sys_ == this && t_worker_ != nullptr);
 
+        // COMPLETE-THEN-SUBMIT IS THE ONE THING QUIESCENCE CANNOT DEFEND AGAINST, so it is
+        // counted rather than assumed. The predicate is sound only while a job submits its
+        // children BEFORE it returns: a submit made after the submitting job has been booked
+        // complete opens a window in which the counters agree and every queue is empty while a
+        // child is still owed, and NO ordering of the reads closes it, because at that instant
+        // there is nothing to see. verification/tla/Quiescence.tla is that argument, and
+        // MCQuiescenceLateSubmit is the violation -- so this is a precondition the engine owes
+        // the protocol, and this is where it is checked.
+        //
+        // jobs_executing is decremented after the job body returns, so a worker enqueuing with a
+        // zero count is enqueuing from outside any job. Off-worker submits are the caller seeding
+        // work and are not this.
+        //
+        // One relaxed load of a line this worker already owns -- run_job writes jobs_executing on
+        // every job -- and a branch that predicts perfectly, on a path that then pushes to a
+        // deque.
+        if (on_worker && t_worker_->jobs_executing.load(std::memory_order_relaxed) == 0)
+            late_submits_.fetch_add(1, std::memory_order_relaxed);
+
         if (on_worker && t_worker_->deque.push(raw)) {        // node-local, the common case
             wake_one_worker();
             return;
@@ -714,10 +736,14 @@ public:
     }
     size_t pin_failures() const { return pin_failures_.load(std::memory_order_relaxed); }
 
+    // Zero, or the quiescence predicate is unsound for this run. See enqueue().
+    size_t late_submits() const { return late_submits_.load(std::memory_order_relaxed); }
+
     void start() {
         if (is_running_.load()) return;
         total_submitted_.store(0);
         total_completed_.store(0);
+        late_submits_.store(0, std::memory_order_relaxed);
         error_type_.store(ErrorType::None, std::memory_order_relaxed);
         error_message_state_.store(0, std::memory_order_relaxed);
 

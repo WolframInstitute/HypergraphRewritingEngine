@@ -42,6 +42,7 @@ struct Fingerprint {
     long branchial_stored = 0;
     long stored_before_walk = 0;
     long branchial_pairs = 0;
+    long late_submits = 0;
 };
 
 Fingerprint fingerprint(hg::engine::Hypergraph& g) {
@@ -200,7 +201,11 @@ Fingerprint run(const std::vector<hg::engine::RewriteRule>& rules,
     e.set_random_seed(seed);
     for (const auto& r : rules) e.add_rule(r);
     e.evolve(init, steps);
-    return fingerprint(g);
+    Fingerprint fp = fingerprint(g);
+    // READ BEFORE THE ENGINE GOES OUT OF SCOPE. This is the precondition the quiescence
+    // predicate rests on, not a property of the hypergraph, so it comes from the engine.
+    fp.late_submits = static_cast<long>(e.late_submits());
+    return fp;
 }
 
 struct Workload {
@@ -398,6 +403,17 @@ Spread spread(const Workload& w, bool quotient) {
                            "it, so the difference is captures whose recorded class width "
                            "disagreed with the instance they were replayed against.";
                 }
+                // THE ONE THING QUIESCENCE CANNOT DEFEND AGAINST, asserted on every
+                // configuration rather than inferred from a shortfall. A job that submits a child
+                // AFTER it has been booked complete leaves a window in which the counters agree
+                // and every queue is empty while work is still owed -- so evolve() can return
+                // early, and the run comes back short with no warning and no other symptom.
+                // verification/tla/Quiescence.tla reports exactly that as MCQuiescenceLateSubmit;
+                // this is the same precondition checked against the running engine.
+                EXPECT_EQ(f.late_submits, 0)
+                    << w.name << " at threads=" << th << " rep=" << rep << ": "
+                    << f.late_submits << " submit(s) came from a worker that was not inside a "
+                       "job, so quiescence could be declared with a child still owed.";
                 s.states.insert(f.states); s.causal.insert(f.causal); s.branchial.insert(f.branchial);
                 s.ns.insert(f.num_states); s.ne.insert(f.num_events);
                 s.nc.insert(f.num_causal); s.nb.insert(f.num_branchial);
