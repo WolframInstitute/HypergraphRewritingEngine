@@ -42,6 +42,10 @@
 #   GENMC_INCLUDE  path to its runtime-include/c   (default: derived from GENMC)
 #   CLANGXX        clang++ to emit the IR          (default: /usr/lib/llvm-18/bin/clang++)
 #   OPT            matching llvm opt               (default: /usr/lib/llvm-18/bin/opt)
+#   HG_GENMC_DEBUG_INFO set to compile with -g, so the checker's --print-error-trace names source
+#                  lines. Off by default: debug metadata more than doubles the pruned module
+#                  (111,538 -> 274,828 lines on the evolve() harness) and the transformation
+#                  phase's memory with it.
 #   HG_HARNESS_DEFINES  extra -D flags for the harness compile. A harness carrying a CALIBRATION
 #                  arm -- the defect reinstated behind an ifdef -- is run through it with this,
 #                  so the calibration is a command anyone can repeat rather than a claim in a
@@ -125,6 +129,15 @@ run_one() {
 
     echo "=== $name ==="
 
+    # Compile-time defines travel with the harness in a `// GENMC-DEFINES:` line, scoped to this
+    # invocation by shadowing HG_HARNESS_DEFINES locally. They reach the engine translation
+    # units as well as the harness and are part of the IR cache key, so a harness can bound a
+    # structure the engine instantiates -- a map's working capacity, say -- and get its own
+    # engine build rather than a stale one or a global rebuild.
+    local file_defines
+    file_defines="$(sed -n 's|^// GENMC-DEFINES: *||p' "$src" | head -1)"
+    local HG_HARNESS_DEFINES="${HG_HARNESS_DEFINES:-} $file_defines"
+
     # Compile at -O0, then optimise with a chosen pass list. Neither half is arbitrary.
     #
     # -O0 alone gives the checker an event for every access to every local, which is a state
@@ -175,7 +188,7 @@ run_one() {
         extra_cc=(-include "$HERE/genmc_pthread_shim.h" -DHG_PARK_VERIFICATION=1)
     fi
 
-    if ! "$CLANGXX" -std=c++17 -O0 -Xclang -disable-O0-optnone -S -emit-llvm \
+    if ! "$CLANGXX" -std=c++17 -O0 ${HG_GENMC_DEBUG_INFO:+-g} -Xclang -disable-O0-optnone -S -emit-llvm \
             "${INCLUDES[@]}" "${extra_cc[@]}" -DHG_VERIFICATION=1 ${HG_HARNESS_DEFINES:-} \
             -o "$WORK/$name.raw.ll" "$src" 2>"$WORK/$name.cc.err"; then
         echo "--- $name: COMPILE FAILED"
@@ -185,7 +198,13 @@ run_one() {
 
     local to_opt="$WORK/$name.raw.ll"
     local opt_extra=()
-    local passes='always-inline,inline,sroa,early-cse,instcombine,simplifycfg,adce,globaldce,strip-dead-prototypes'
+    # NO instcombine. It folds a small constant-aggregate memcpy into ONE integer store of the
+    # whole aggregate -- `uint32_t raws[2] = {10, 12}` became `store i64 51539607562` -- and
+    # the program then reads the halves as i32. The checker resolves a read by the write of the
+    # same width, so a 32-bit read of a 64-bit store finds nothing and the checker stops with
+    # an internal check (resolveAccessValue) instead of a verdict. Measured on the composition
+    # harness for the causal in-edge order; the same module verifies with instcombine removed.
+    local passes='always-inline,inline,sroa,early-cse,simplifycfg,adce,globaldce,strip-dead-prototypes'
     if [ -n "$link_engine" ]; then
         # The engine's IR is CACHED, keyed on the inputs that produce it: every source and header
         # it is built from, plus the flags. Any change to any of them gives a different key and a
@@ -196,7 +215,7 @@ run_one() {
                      "$ROOT"/hypergraph/include/hypergraph/*.hpp "$ROOT"/common/include/hgcommon/*.hpp \
                      "$ROOT"/job_system/include/job_system/*.hpp "$ROOT"/lockfree_deque/include/*/*.hpp \
                      "$HERE"/genmc_pthread_shim.h "$HERE"/genmc_support.cpp 2>/dev/null
-                 echo "${HG_HARNESS_DEFINES:-}" "$link_engine"; "$CLANGXX" --version | head -1
+                 echo "${HG_HARNESS_DEFINES:-}" "$link_engine" "${HG_GENMC_DEBUG_INFO:-}"; "$CLANGXX" --version | head -1
                } | md5sum | cut -c1-16 )"
         local cache="${GENMC_IR_CACHE:-$ROOT/.genmc_ir_cache}/$key"
         mkdir -p "$cache"
@@ -205,7 +224,7 @@ run_one() {
         for u in "${link_srcs[@]}"; do
             local un; un="$(basename "$u" .cpp)"
             if [ ! -s "$cache/$un.ll" ]; then
-                if ! "$CLANGXX" -std=c++17 -O0 -Xclang -disable-O0-optnone -S -emit-llvm \
+                if ! "$CLANGXX" -std=c++17 -O0 ${HG_GENMC_DEBUG_INFO:+-g} -Xclang -disable-O0-optnone -S -emit-llvm \
                         "${INCLUDES[@]}" "${extra_cc[@]}" -DHG_VERIFICATION=1 ${HG_HARNESS_DEFINES:-} \
                         -o "$cache/$un.ll.tmp" "$u" 2>"$WORK/engine_$un.cc.err"; then
                     echo "--- $name: ENGINE TU $un FAILED TO COMPILE"
@@ -288,6 +307,7 @@ run_one() {
         return 3
     fi
 
+
     # What the checker was actually handed. For a composed harness this is the number that
     # decides whether it finishes: the module is the whole engine minus whatever main cannot
     # reach, and a harness that reaches more of it costs more before a single execution runs.
@@ -306,8 +326,20 @@ run_one() {
     local expect
     expect="$(sed -n 's|^// GENMC-EXPECT: *||p' "$src" | head -1)"
 
+    # A COMPOSED HARNESS RUNS UNDER A MEMORY CAP. The checker's analysis of a module the size of
+    # the engine is measured at 18 GB of resident memory on evolve(), which on a shared 19 GB box
+    # is a machine in swap. The cap is half of what is available at launch (HG_GENMC_MEM_MB
+    # overrides it), and a checker that needs more fails inside its own process instead of
+    # taking the box down: the same self-capping every numerical run and CUDA build here uses.
+    local mem_cap_kb=""
+    if [ -n "$link_engine" ]; then
+        local avail_kb; avail_kb="$(awk '/MemAvailable/ {print $2}' /proc/meminfo)"
+        mem_cap_kb="${HG_GENMC_MEM_MB:+$((HG_GENMC_MEM_MB * 1024))}"
+        mem_cap_kb="${mem_cap_kb:-$((avail_kb / 2))}"
+        echo "    memory cap: $((mem_cap_kb / 1024)) MB (address space)"
+    fi
     # shellcheck disable=SC2086
-    "$GENMC" $extra "$@" "$WORK/$name.ll"
+    ( [ -n "$mem_cap_kb" ] && ulimit -v "$mem_cap_kb"; exec "$GENMC" $extra "$@" "$WORK/$name.ll" )
     local rc=$?
     if [ "$expect" = "violation" ]; then
         if [ $rc -eq 42 ]; then

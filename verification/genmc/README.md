@@ -84,6 +84,40 @@ So `run.sh` compiles the IR itself:
    The pass list promotes and inlines and never runs loop-idiom. `instcombine` and `simplifycfg`
    preserve atomic operations, which is what the checker reads the program from.
 
+
+## The checker is patched, and the patch ships here
+
+`genmc-0.17.0-fixes.patch` applies to GenMC v0.17.0 (`git apply` in the checker's tree, then
+rebuild). Every hunk was forced by this engine and each is a defect in the checker, not a
+concession to it; each is reproduced by a program of under thirty lines under `checker/`, and `checker/run.sh` runs them all against the built checker.
+Without the patch the composed engine and the composition harness stop inside the checker
+instead of reaching a verdict.
+
+| fix | what the checker did | how it showed | reproducer |
+|---|---|---|---|
+| `InternalFunctions.cpp`: `_Znam`/`_ZdaPv` intercepted as allocation/free | Only `operator new` (`_Znwm`) was an allocation; `operator new[]` was an unknown external returning an unmodelled pointer. | `new LocalCursor[N]` gave every per-worker cursor an address outside any allocation; "Attempt to access non-allocated memory" on the first cursor write. | `checker/new_array_is_allocation.cpp` |
+| `PromoteMemIntrinsicPass.cpp`: promotion type from a zero-index GEP's **source** element type; a copy shorter than its last leaf finishes as byte stores; an opaque-destination `memset` of constant length promotes at the width its alignment asserts | A `getelementptr [2 x i32], p, 0, 0` names the array, and the pass promoted by its result element (`i32`) and tripped `typeSizeDst >= len`; an opaque destination was skipped outright, leaving memory the model never saw written. | Internal checks in `resolveAccessValue` and `typeSizeDst >= len`; a constructor loop zeroing `std::atomic<bool>` fields one `memset(p, 0, 1)` at a time is what the registry harness compiles to once `instcombine` no longer folds it. | `checker/zero_index_gep_copy.cpp`, `arena_worker_index_exclusive` |
+| `Execution.cpp` + `GenMCDriver::noteCasFailure`: a **failed** compare-exchange's read takes the failure ordering | The read label carried the success ordering only, so a failed CAS with `memory_order_acquire` failure ordering synchronised with nothing. | The block another thread published through a release CAS, taken by this thread's failed acquire-CAS, was "non-allocated" when written to: `grab_block`'s `old_head->next = new_block`. | `checker/failed_cas_acquire.cpp` |
+| `GenMCDriver::checkLiveness`: no liveness report while any thread is blocked by an assume, a helped CAS or a confirmation (upstream PR #58, ported to v0.17.0) | An execution being pruned could report a spinning thread as non-terminating. | Not observed here; applied because the park/wake harnesses run under `--check-liveness`. Their calibration arms still report the violation with it applied, so those violations are not of this class. | -- |
+
+What the upstream tracker says about each, checked 2026-08-28: #49 is the thread-local
+aggregate limitation `HG_THREAD_LOCAL` works around; #60 is about LKMM's `cmpxchg` wrappers,
+whose failure orderings are never stronger than their success orderings, so the third fix does
+not change LKMM behaviour; PR #58 is the fourth row.
+
+## Two things the pipeline does not do, and why
+
+**It does not run `instcombine`.** That pass folds a small constant-aggregate copy into ONE
+integer store of the whole aggregate -- `uint32_t raws[2] = {10, 12}` became
+`store i64 51539607562` -- and the program then reads the halves as `i32`. The checker resolves a
+read by a write of the same width; a 32-bit read of a 64-bit store finds nothing and the checker
+stops with an internal check. The same module verifies with the pass removed.
+
+**It does not lower memory intrinsics to byte loops.** That was tried as an `opt` plugin and
+broke harnesses that verified before it: a byte loop is a mixed-size access by construction, for
+the same reason. Where the checker's own promotion cannot see a destination, the fix is in the
+checker (second row above), which promotes at the width the program will read.
+
 ## What `HG_VERIFICATION` changes, and why each change is sound
 
 `run.sh` defines `HG_VERIFICATION=1`. Three places in the engine compile differently under it. Each
@@ -133,7 +167,7 @@ handling of thread_local class types is what blocked in the first place.
 | `quotient_instance_match_rendezvous` | the quotient replay's (instance, match) rendezvous never drops a pair: both sides publish then scan through a ConcurrentMap lookup, and if BOTH scans miss, one raw event never happens and every causal and branchial pair it belonged to goes with it -- while the state and canonical event counts a caller reads stay unchanged | 2 threads, one class, one instance and one match, over the REAL ConcurrentMap and LockFreeList | **No errors, 14 complete executions** |
 | `depth_relax_child_registration` | a child never strands at a stale depth when its parent is relaxed concurrently: the registrar pushes the child then reads the parent's depth, the relaxer lowers that depth then scans the child list, and the forbidden outcome is BOTH misses -- expansion would then depend on which side won a race, which the determinism contract says it never does. Transcribed rather than included: the protocol lives inside engine methods that need a Hypergraph, a job system and an arena to call at all, so the child list is the REAL LockFreeList and the ordering is transcribed from execute_rewrite_task and propagate_explore_depth | 2 threads, one parent, one child, one relaxation | **No errors, 3 complete executions** |
 | `lock_free_list_pairs_meet_once` | two concurrent pushers MEET EXACTLY ONCE under `push` + `for_each_before` -- the pairing rule the quotient branchial relation is built on, which `lock_free_list_completeness` does not state because it walks from the head after the pushers have joined | 2 threads, 1 push each, each scanning the nodes older than its own and counting sightings of the other; their sum must be 1 | **No errors, 8 complete executions** |
-| `arena_worker_index_exclusive` | Two live holders never share a worker index, which is the invariant `allocate_local`'s plain non-atomic cursor bump rests on | 2 threads, 1 acquire each, no release, `HG_MAX_ARENA_WORKERS=2` | **No errors, 4 complete executions** |
+| `checker/zero_index_gep_copy.cpp`, `arena_worker_index_exclusive` | Two live holders never share a worker index, which is the invariant `allocate_local`'s plain non-atomic cursor bump rests on | 2 threads, 1 acquire each, no release, `HG_MAX_ARENA_WORKERS=2` | **No errors, 4 complete executions** |
 | `claim_match_rendezvous` | The match-dedup rendezvous claims exactly once (two claimants of one match agree on one winner) and never drops on collision (two matches sharing a 64-bit hash BOTH win — the root of #74) | 2 threads per phase, 2 phases, capacity 8, probe depth 8 | **No errors, 2500 complete executions** |
 | `frame_publication_is_atomic` | a class's frame OWNER and its STEP are observed together or not at all. The caller-side shape only, over the real host map: the device map's own atomics are not compiled here (see the device section below) | 2 threads, one class, two differing (step, sid) offers, capacity 4 | **No errors, 32 complete executions** |
 
@@ -209,7 +243,7 @@ assertion inverted, and the checker must report a safety violation:
 | `quotient_instance_match_rendezvous` | either seq_cst fence removed | `Verification unsuccesful`, exit 42, 0 executions |
 | `concurrent_map_double_growth_3t` | the shipped code before the conjunction fix (verdict from the exchange alone) | `Safety violation`, exit 42, at a 4-context bound and clean at 3 |
 | `lock_free_list_pairs_meet_once` | `for_each_before(mine, ...)` replaced with `for_each(...)`, the walk from the head | `Verification unsuccesful`, exit 42 |
-| `arena_worker_index_exclusive` | `acquire()`'s compare-exchange replaced with check-then-act | `Error: Safety violation!`, exit 42 |
+| `checker/zero_index_gep_copy.cpp`, `arena_worker_index_exclusive` | `acquire()`'s compare-exchange replaced with check-then-act | `Error: Safety violation!`, exit 42 |
 | `concurrent_map_agreement` | both callers report `was_inserted` | `Error: Safety violation!`, exit 42 |
 | `concurrent_map_resize` | both callers report `was_inserted` | `Error: Safety violation!`, exit 42 |
 | `deque_no_double_extraction` | both consumers receive the item | `Error: Safety violation!`, exit 42 |

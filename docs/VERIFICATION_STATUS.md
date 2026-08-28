@@ -28,6 +28,14 @@ meeting once), the job system's wake protocol (no lost wakeup, and the per-domai
 the arena's exclusive worker index, frame publication atomicity, depth-relax child registration,
 the claim and quotient-instance rendezvous, and the depth join's report ordering.
 
+`causal_in_edge_order` is the COMPOSITION the transitive-reduction defect lived in: one thread
+registering an event's in-edges through `CausalGraph::consume_edges` while another forces the
+producer map through two growths -- the real ConcurrentMap, LockFreeList and arena, no models.
+Working capacity 2 by `GENMC-DEFINES`, so the growths happen under the registration. 1,035
+executions, clean; `HG_CALIBRATE_IN_EDGE_ORDER_ASCENDING` reverses the recorded order and the
+checker reports the redundant pair kept, in 17s. Reaching that verdict took four fixes to the
+checker itself, recorded with their reproducers in `verification/genmc/README.md`.
+
 `claim_match_rendezvous` runs `hgcommon/dedup_claim_core.hpp` itself. It was a TRANSCRIPTION --
 claim_match's loop copied out of `parallel_evolution.hpp` with a comment on each side asking the
 next reader to mirror a change into the other, which is the arrangement that let a fix to the
@@ -53,7 +61,7 @@ what `main` reaches:
 | the same, with `HG_SEGMENTED_ARRAY_MAX_SEGMENTS=8` and `HG_CONCURRENT_MAP_INITIAL_CAPACITY=16` | 5,452 | verifies, 4.9s |
 | construct the evolution engine, two workers started (`engine_construct`) | -- | verifies, 2 executions, 1.5s |
 | add a rule (`engine_rule`) | 19,477 | verifies, 2 executions, 14.9s |
-| reach `evolve()` | 110,932 | in progress |
+| reach `evolve()` | 111,538 | the checker's transformation phase, not its interpreter, is the ceiling: 18 GB of resident memory before the first execution, on a 19 GB box |
 | construct a `JobSystem` | 2,659 | verifies |
 | `JobSystem::start()` | 8,952 | verifies, inside `engine_construct` |
 

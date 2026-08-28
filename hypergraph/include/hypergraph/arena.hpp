@@ -370,7 +370,15 @@ public:
     // on the EPYC at 32 workers: the 1 MB default took 1,060,520 minor faults on wpp depth 7, with
     // 9.3% of cycles in the kernel's fault and page-zeroing path.
     static constexpr size_t kHugePageBytes = 2u * 1024u * 1024u;
+#if defined(HG_VERIFICATION)
+    // Under the model checker a block is small and comes from operator new: the huge-page path
+    // calls posix_memalign, which the interpreter does not model, and a 2 MB block is a 2 MB
+    // memset it has to promote. Block size and source are allocation policy on thread-private
+    // memory; nothing another thread reads depends on either.
+    static constexpr size_t DEFAULT_BLOCK_SIZE = 4096;
+#else
     static constexpr size_t DEFAULT_BLOCK_SIZE = kHugePageBytes;
+#endif
 
     // The first block reserved (per arena, and per worker cursor) is small, and each
     // successive block doubles up to block_size_. A lightly-used arena therefore

@@ -163,7 +163,14 @@ void CausalGraph::consume_edges(const CanonicalEdgeKey* keys, const EdgeId* raw_
             in_edge_producers_truncated_.fetch_add(1, std::memory_order_relaxed);
     }
     std::sort(in_edges, in_edges + count, [](const InEdge& a, const InEdge& b) {
+#if defined(HG_CALIBRATE_IN_EDGE_ORDER_ASCENDING)
+        // THE DEFECT, reinstated for verification/genmc/causal_in_edge_order.cpp: the farther
+        // producer's edge is judged before the closer one's is present, so the path that would
+        // make it redundant is not there yet and it is kept for good.
+        if (a.producer != b.producer) return a.producer < b.producer;
+#else
         if (a.producer != b.producer) return a.producer > b.producer;
+#endif
         return a.idx < b.idx;
     });
     for (uint32_t k = 0; k < count; ++k)
