@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 #include <vector>
 #include <cstdio>
+#include <cstdlib>
+#include <atomic>
+#include <unistd.h>
 #include <map>
 #include <set>
 #include <string>
@@ -52,6 +55,7 @@ struct Fingerprint {
     long dropped_children = 0;
     long invalid_matches = 0;
     long fwd_truncated = 0;
+    std::string dump_path;   // HG_DET_DUMP: this run's state/event/causal listing, or empty
     // THE TWO WAYS ONE EXTRA CAUSAL EDGE CAN EXIST, separated. The reduction either kept a pair
     // it should have dropped -- which shows as FEWER skips -- or the triple set stored the same
     // triple twice, which shows as the same skips and one more edge. The counts alone cannot
@@ -264,6 +268,37 @@ Fingerprint run(const std::vector<hg::engine::RewriteRule>& rules,
         if (!fp.warnings.empty()) fp.warnings += "; ";
         fp.warnings += w;
     }
+    // HG_DET_DUMP=<dir>: write this run's listing so a run that disagrees with the reference can
+    // be diffed against it offline and the missing event NAMED -- its input and output states
+    // by canonical hash, its rule, its consumed and produced edges, and every kept causal pair.
+    // spread() deletes the file again when the run's fingerprints equal the reference's.
+    if (const char* dir = std::getenv("HG_DET_DUMP")) {
+        static std::atomic<unsigned> counter{0};
+        char name[512];
+        std::snprintf(name, sizeof name, "%s/run_%ld_%dt_%s_%u.txt", dir, (long)getpid(), threads,
+                      seed ? "fixed" : "random", counter.fetch_add(1));
+        if (FILE* f = std::fopen(name, "w")) {
+            for (uint32_t st = 0; st < g.num_published_states(); ++st)
+                if (g.get_state(st).id != hg::engine::INVALID_ID)
+                    std::fprintf(f, "S %u %llu\n", st, (unsigned long long)g.get_or_compute_canonical_hash(st));
+            for (uint32_t ev = 0; ev < g.num_events(); ++ev) {
+                const hg::engine::Event& x = g.get_event(ev);
+                std::fprintf(f, "E %u %u %u %llu %llu %u C", ev, x.input_state, x.output_state,
+                             (unsigned long long)g.get_or_compute_canonical_hash(x.input_state),
+                             (unsigned long long)g.get_or_compute_canonical_hash(x.output_state),
+                             (unsigned)x.rule_index);
+                for (uint8_t i = 0; i < x.num_consumed; ++i) std::fprintf(f, " %u", x.consumed_edges[i]);
+                std::fprintf(f, " P");
+                for (uint8_t i = 0; i < x.num_produced; ++i) std::fprintf(f, " %u", x.produced_edges[i]);
+                std::fprintf(f, "\n");
+            }
+            for (const auto& c : g.causal_graph().get_causal_edges())
+                if (c.producer != hg::engine::INVALID_ID && c.consumer != hg::engine::INVALID_ID)
+                    std::fprintf(f, "K %u %u\n", c.producer, c.consumer);
+            std::fclose(f);
+            fp.dump_path = name;
+        }
+    }
     return fp;
 }
 
@@ -319,6 +354,7 @@ struct Variant {
     std::vector<uint32_t> shape_v;
 };
 struct Spread {
+    std::string reference_dump;   // HG_DET_DUMP: the first run's listing
     std::set<uint64_t> states, causal, branchial;
     std::set<long> ns, ne, nc, nb;
     std::map<uint64_t, Variant> states_v, causal_v, branchial_v;
@@ -404,6 +440,17 @@ Spread spread(const Workload& w, bool quotient) {
         for (int rep = 0; rep < 4; ++rep)
             for (int th : {1, 2, 8, 16, 32}) {
                 Fingerprint f = run(w.rules, w.init, quotient, th, seed, w.steps);
+                if (!f.dump_path.empty()) {
+                    if (s.runs == 0) {
+                        s.reference_dump = f.dump_path;
+                    } else if (!s.states.empty() && s.states.count(f.states) && s.causal.count(f.causal) &&
+                               s.branchial.count(f.branchial)) {
+                        std::remove(f.dump_path.c_str());
+                    } else {
+                        std::fprintf(stderr, "HG_DET_DUMP kept: %s (reference %s)\n",
+                                     f.dump_path.c_str(), s.reference_dump.c_str());
+                    }
+                }
                 EXPECT_EQ(f.stored_before_walk, f.branchial_stored)
                     << w.name << ": pushes were IN FLIGHT during the walk at threads=" << th
                     << " rep=" << rep << " -- " << f.stored_before_walk << " edges stored before "
