@@ -202,6 +202,35 @@ thousand states cannot fill a 4090 whatever the scheduler does, and 22% on the l
 is the FLOOR this measurement reaches rather than a defect sitting on top of it. REFUTED as a
 scheduling target.
 
+## The default exploration path has a different profile from the one measured
+
+Everything under "Where the time actually goes" was measured with quotient exploration on. That is
+not the engine's default -- ParallelEvolutionEngine leaves explore_from_canonical_states_only
+false, and full multiway expands every raw state -- so those shares describe a mode the caller has
+to ask for. On wpp at depth 6 the two are different workloads: quotient explores 3,867 raw states,
+full multiway explores 15,967.
+
+Callgrind, one worker, full multiway, wpp depth 6, 1.43G instructions, inclusive:
+
+| subtree | inclusive |
+|---|---|
+| the expand task body | 82.6% |
+| `execute_rewrite_task` | 29.9% |
+| `Rewriter::apply` | 28.8% |
+| `create_or_get_canonical_state` | 16.7% |
+| `compute_exact_canonical_hash` | 16.2% |
+
+CANONICALIZATION IS 16.2% HERE, against the 58% to 92% recorded above for the corpus workloads
+under quotient. The rewrite subtree costs more than it does. So "both engines are
+canonicalization-bound" is a statement about the workloads and the mode it was measured in, and
+the lever it points at is not the lever on the default path with this rule.
+
+A cycles profile at 32 workers on the quotient path agrees that the mode matters: 14% of the run
+is ConcurrentKeySet::insert, and 8.57 of those 14 points are under qc_add_producer -- the
+quotient-causal producer-set dedup, which does not execute at all on the default path.
+
+MEASURE THE MODE YOU MEAN TO OPTIMISE. A profile of one is not a profile of the other.
+
 ## CLOSED: arena blocks are one huge page
 
 A cycles profile at 32 workers put 9.3% of the run inside the kernel -- 5.99%
