@@ -55,6 +55,17 @@ oracle::Counts run_counts(const std::vector<RewriteRule>& rules,
     for (const auto& r : rules) engine.add_rule(r);
     engine.evolve(initial, steps);
 
+    // AN APPROXIMATE EVENT IDENTITY IS NOT A DETERMINISM FAILURE, and until now nothing could
+    // tell the two apart. When a state has no rank table, or the edge is not in it, the event
+    // signature substitutes the RAW EDGE ID -- which is allocation order, so that event's
+    // identity stops being an isomorphism invariant and the counts this function returns can
+    // legitimately differ between runs. The engine counts it for exactly that reason ("a caller
+    // comparing event counts across runs needs to know it happened") and no caller read it.
+    EXPECT_EQ(hg.event_signature_raw_fallbacks(), 0u)
+        << "event identity fell back to a raw edge id " << hg.event_signature_raw_fallbacks()
+        << " time(s) at threads=" << threads << ", so it is approximate rather than canonical "
+        << "and a count comparison against another run is not a determinism claim";
+
     oracle::Counts c;
     c.canonical_states   = hg.num_canonical_states();
     c.events             = hg.num_events();
@@ -75,6 +86,17 @@ oracle::Counts run_counts_multi(const std::vector<RewriteRule>& rules,
     engine.set_explore_from_canonical_states_only(cfg.quotient);
     for (const auto& r : rules) engine.add_rule(r);
     engine.evolve(inits, steps);
+
+    // AN APPROXIMATE EVENT IDENTITY IS NOT A DETERMINISM FAILURE, and until now nothing could
+    // tell the two apart. When a state has no rank table, or the edge is not in it, the event
+    // signature substitutes the RAW EDGE ID -- which is allocation order, so that event's
+    // identity stops being an isomorphism invariant and the counts this function returns can
+    // legitimately differ between runs. The engine counts it for exactly that reason ("a caller
+    // comparing event counts across runs needs to know it happened") and no caller read it.
+    EXPECT_EQ(hg.event_signature_raw_fallbacks(), 0u)
+        << "event identity fell back to a raw edge id " << hg.event_signature_raw_fallbacks()
+        << " time(s) at threads=" << threads << ", so it is approximate rather than canonical "
+        << "and a count comparison against another run is not a determinism claim";
 
     oracle::Counts c;
     c.canonical_states   = hg.num_canonical_states();
