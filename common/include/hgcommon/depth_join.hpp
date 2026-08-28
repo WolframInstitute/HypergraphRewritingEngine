@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/core.hpp"
 #include "hgcommon/namespace.hpp"
 //
 // THE DEPTH JOIN: deciding that a depth of a breadth-first exploration can receive no more work,
@@ -76,7 +77,7 @@ public:
         if (depth >= n_) return;
         slot_[depth].live.fetch_add(1, std::memory_order_acq_rel);
         if (slot_[depth].complete.load(std::memory_order_acquire))
-            late_arrivals_.fetch_add(1, std::memory_order_relaxed);
+            HG_STAT(late_arrivals_.fetch_add(1, std::memory_order_relaxed));
     }
 
     template <class Emit>

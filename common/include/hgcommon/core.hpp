@@ -65,6 +65,24 @@ constexpr uint8_t MAX_ARITY         = 16;
 #  define HG_THREAD_LOCAL(Type, name, ...) static thread_local Type name{__VA_ARGS__}
 #endif
 
+// DIAGNOSTIC COUNTERS ARE COMPILED OUT OF SHIPPED AND VERIFIED BUILDS. Every counter that
+// exists so a gate or an instrument can read it -- drops, rebuilds, collisions, steals, spins --
+// is bumped through HG_STAT. Under HG_ENGINE_STATS=1 (the default, which the test suite
+// builds with, because the determinism gates assert on these) the statement runs; under
+// HG_ENGINE_STATS=0 it is nothing. Two reasons, both measured: a relaxed fetch_add on a hot
+// path is a contended cache line in a release build, and under a model checker every one of
+// them is a graph event with coherence choices that multiply the state space while carrying no
+// property. Counts the engine's own logic or its public results depend on -- ids, event and
+// edge totals, capacities -- are not statistics and do not go through this.
+#ifndef HG_ENGINE_STATS
+#  define HG_ENGINE_STATS 1
+#endif
+#if HG_ENGINE_STATS
+#  define HG_STAT(...) do { __VA_ARGS__; } while (0)
+#else
+#  define HG_STAT(...) ((void)0)
+#endif
+
 constexpr uint8_t MAX_PATTERN_EDGES = 16;
 // Producers one consumed edge's causal registration reads. A raw edge has exactly one; a
 // canonical edge orbit under quotient can have several, bounded by the class's automorphisms.

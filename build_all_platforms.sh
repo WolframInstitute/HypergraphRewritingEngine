@@ -77,7 +77,7 @@ build_target() {
     mkdir -p "$dir"
     # Clear the artifacts we verify so a failed build can't pass on stale files.
     rm -f "$out" "$platdir"/hg_evolve "$platdir"/hg_evolve.exe
-    if ! cmake -S . -B "$dir" -DCMAKE_BUILD_TYPE=Release -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON "$@"; then
+    if ! cmake -S . -B "$dir" -DCMAKE_BUILD_TYPE=Release -DHG_ENGINE_STATS=OFF -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON "$@"; then
         echo -e "${RED}$name: CMake configuration failed${NC}"; FAILED+=("$name"); return 1
     fi
     # Build BOTH the LibraryLink library (paclet) AND the standalone evolution process (hg_evolve).
@@ -128,7 +128,7 @@ if selected "Linux-x86-64"; then
         # Linux binary carrying SASS for one card -- correct on the measurement box and unable
         # to start anywhere else. The Windows leg leaves it alone for the same reason, so both
         # GPU artifacts carry whatever that one definition says. HG_GPU_ARCHS narrows it.
-        if cmake -S . -B build_linux_gpu -DCMAKE_BUILD_TYPE=Release \
+        if cmake -S . -B build_linux_gpu -DCMAKE_BUILD_TYPE=Release -DHG_ENGINE_STATS=OFF \
                  -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON -DBUILD_GPU=ON \
            && cmake --build build_linux_gpu --target hg_evolve_gpu -j"$BUILD_JOBS" \
            && [[ -f "$gpu_out" ]]; then

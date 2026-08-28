@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/core.hpp"
 #include "hgcommon/transitive_reduction.hpp"
 #include "hgcommon/namespace.hpp"
 
@@ -478,14 +479,14 @@ class Hypergraph {
             // shares -- 163,228,620 of them on the workload above against 970,584 scans -- so
             // the line carrying it moves between cores once per visit and the instrument costs
             // more than the scan it measures. Per scan the published total is identical.
-            ++qc_slot(hg.qc_ctr_).applied_scans;
+            HG_STAT(++qc_slot(hg.qc_ctr_).applied_scans);
             size_t visits = 0;
             hg.qc_inst_applied_.get_or_default(qc_ev_slot(inst.id), hg.arena_).for_each_before(
                 mine, [&](const QcAppliedMatch& a) {
                     ++visits;
                     f(a);
                 });
-            qc_slot(hg.qc_ctr_).applied_visits += visits;
+            HG_STAT(qc_slot(hg.qc_ctr_).applied_visits += visits);
         }
         void record_branchial_pair(uint32_t lo, uint32_t hi);
         void descend(const SlotMatch& m, uint32_t depth, uint32_t ev, const QcInstance& parent);

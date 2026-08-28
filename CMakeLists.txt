@@ -9,6 +9,9 @@ cmake_minimum_required(VERSION 3.14)
 # this off the header defines PhaseTimer as an empty object and no storage exists at all.
 # Turn it on only to answer "where do this run's cycles go", which is a question the wall clock
 # and the instruction count both answer wrongly here.
+option(HG_ENGINE_STATS "Diagnostic counters the determinism gates and instruments read; ON for test and development builds, OFF for shipped and verified ones" ON)
+add_compile_definitions(HG_ENGINE_STATS=$<BOOL:${HG_ENGINE_STATS}>)
+
 option(HG_PHASE_TIMING "Host per-phase cycle counters (measurement builds only)" OFF)
 if(HG_PHASE_TIMING)
     add_compile_definitions(HG_PHASE_TIMING)

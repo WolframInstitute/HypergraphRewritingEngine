@@ -437,7 +437,7 @@ private:
         for (auto& w : workers_) {
             if (w.get() == data) continue;
             if (JobRaw j = w->deque.steal()) {
-                data->jobs_stolen.fetch_add(1, std::memory_order_relaxed);
+                HG_STAT(data->jobs_stolen.fetch_add(1, std::memory_order_relaxed));
                 return j;
             }
         }
@@ -476,8 +476,8 @@ private:
             for (unsigned attempt = 0; attempt < span; ++attempt) {
                 WorkerData* victim = workers_[peers_[lo + hgcommon::splitmix64(++rng) % span]].get();
                 if (JobRaw j = victim->deque.steal_if_nonempty()) {
-                    data->jobs_stolen.fetch_add(1, std::memory_order_relaxed);
-                    data->jobs_stolen_near.fetch_add(1, std::memory_order_relaxed);
+                    HG_STAT(data->jobs_stolen.fetch_add(1, std::memory_order_relaxed));
+                    HG_STAT(data->jobs_stolen_near.fetch_add(1, std::memory_order_relaxed));
                     return j;
                 }
             }
@@ -487,7 +487,7 @@ private:
                 WorkerData* victim = workers_[hgcommon::splitmix64(++rng) % n].get();
                 if (victim == data) continue;
                 if (JobRaw j = victim->deque.steal_if_nonempty()) {
-                    data->jobs_stolen.fetch_add(1, std::memory_order_relaxed);
+                    HG_STAT(data->jobs_stolen.fetch_add(1, std::memory_order_relaxed));
                     return j;
                 }
             }
@@ -530,7 +530,7 @@ private:
         if (recycle_scratch && on_job_complete_) on_job_complete_();  // recycle per-worker scratch
         if (data) {
             data->jobs_executing.fetch_sub(1);
-            data->jobs_executed.fetch_add(1, std::memory_order_relaxed);
+            HG_STAT(data->jobs_executed.fetch_add(1, std::memory_order_relaxed));
         }
 
         // Notify the completion waiter only at quiescence (this job brings completed up to
@@ -567,7 +567,7 @@ private:
         if (!worker_cpus_.empty()) {
             const unsigned cpu = worker_cpus_[index % worker_cpus_.size()];
             if (!hgcommon::pin_this_thread_to_cpu(cpu))
-                pin_failures_.fetch_add(1, std::memory_order_relaxed);
+                HG_STAT(pin_failures_.fetch_add(1, std::memory_order_relaxed));
         }
         // Past the binding attempt: start() waits on this, which is what makes pin_failures()
         // a settled count once start() returns. Release pairs with start()'s acquire so the
@@ -670,7 +670,7 @@ private:
         // every job -- and a branch that predicts perfectly, on a path that then pushes to a
         // deque.
         if (on_worker && t_worker_->jobs_executing.load(std::memory_order_relaxed) == 0)
-            late_submits_.fetch_add(1, std::memory_order_relaxed);
+            HG_STAT(late_submits_.fetch_add(1, std::memory_order_relaxed));
 
         if (on_worker && t_worker_->deque.push(raw)) {        // node-local, the common case
             wake_one_worker();

@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/core.hpp"
 #include "hgcommon/namespace.hpp"
 
 #include <atomic>
@@ -451,7 +452,7 @@ private:
         // leave the source slot unsealed and the table undrained; returning void here is what
         // put the key in neither table while count_ still counted its claim. Counted here so the loss is measurable instead of
         // silent; see #167.
-        migrate_deferrals().fetch_add(1, std::memory_order_relaxed);
+        HG_STAT(migrate_deferrals().fetch_add(1, std::memory_order_relaxed));
         return false;
     }
 

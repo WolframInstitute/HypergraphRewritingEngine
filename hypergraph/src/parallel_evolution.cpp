@@ -464,7 +464,7 @@ void ParallelEvolutionEngine::note_late_arrival(uint64_t match_hash) {
     if (validate_match_forwarding_) {
         auto missing = missing_match_hashes_.lookup(match_hash);
         if (missing.has_value()) {
-            late_arrivals_.fetch_add(1, std::memory_order_relaxed);
+            HG_STAT(late_arrivals_.fetch_add(1, std::memory_order_relaxed));
         }
     }
 }
@@ -503,7 +503,7 @@ void ParallelEvolutionEngine::push_match_to_children(
     push_match_to_children_impl(parent, match, step, site);
     uintptr_t after = child_epoch(parent);
     while (after != before) {
-        stats_.mine().forwarding_rewalks.bump(1);
+        HG_STAT(stats_.mine().forwarding_rewalks.bump(1));
         before = after;
         push_match_to_children_impl(parent, match, step, site);
         after = child_epoch(parent);
@@ -523,11 +523,11 @@ void ParallelEvolutionEngine::push_match_to_children_impl(
                                               : slot.push_forwarding_calls;
     auto& empty = site == PushSite::Discovery ? slot.push_discovery_empty
                                               : slot.push_forwarding_empty;
-    calls.bump();
+    HG_STAT(calls.bump());
 
     auto result = state_children_.lookup_waiting(id_key(parent));
     if (!result.has_value()) {
-        empty.bump();
+        HG_STAT(empty.bump());
         return;  // No children registered
     }
 
@@ -540,7 +540,7 @@ void ParallelEvolutionEngine::push_match_to_children_impl(
         any_child = true;
         // Skip if match overlaps with consumed edges
         if (child_info.match_overlaps_consumed(match.matched_edges(), match.num_edges())) {
-            stats_.mine().matches_invalidated.bump(1);
+            HG_STAT(stats_.mine().matches_invalidated.bump(1));
             return;
         }
 
@@ -562,8 +562,8 @@ void ParallelEvolutionEngine::push_match_to_children_impl(
         // Check if this was a "missing" match that arrived late via push
         note_late_arrival(h);
 
-        total_matches_found_.fetch_add(1, std::memory_order_relaxed);
-        stats_.mine().matches_forwarded.bump(1);
+        HG_STAT(total_matches_found_.fetch_add(1, std::memory_order_relaxed));
+        HG_STAT(stats_.mine().matches_forwarded.bump(1));
 
         DEBUG_LOG("PUSH parent=%u -> child=%u rule=%u hash=%lu step=%u",
                   parent, child_info.child_state, match.rule_index(), h, step);
@@ -590,7 +590,7 @@ void ParallelEvolutionEngine::push_match_to_children_impl(
         submit_rewrite_task(forwarded, child_step);
     });
 
-    if (!any_child) empty.bump();
+    if (!any_child) HG_STAT(empty.bump());
 }
 
 void ParallelEvolutionEngine::forward_from_ancestor_chain(
@@ -640,7 +640,7 @@ void ParallelEvolutionEngine::forward_from_ancestor_chain(
         // ignored: the symptom is a match forwarded that should not have been, refused at apply,
         // and one event missing with nothing said.
         if (total_consumed + pi->num_consumed > kMaxConsumed)
-            forwarding_consumed_truncated_.fetch_add(1, std::memory_order_relaxed);
+            HG_STAT(forwarding_consumed_truncated_.fetch_add(1, std::memory_order_relaxed));
         for (uint8_t i = 0; i < pi->num_consumed && total_consumed < kMaxConsumed; ++i) {
             accumulated_consumed[total_consumed++] = pi->consumed_edges[i];
         }
@@ -673,7 +673,7 @@ void ParallelEvolutionEngine::forward_existing_parent_matches(
     for (;;) {
         const uintptr_t epoch_after = ancestor_match_epoch(parent);
         if (epoch_after == epoch_before) break;
-        stats_.mine().forwarding_rewalks.bump(1);
+        HG_STAT(stats_.mine().forwarding_rewalks.bump(1));
         epoch_before = epoch_after;
         forward_from_ancestor_chain(parent, child, consumed_edges, num_consumed, step, batch);
     }
@@ -711,7 +711,7 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor(
         }
 
         if (overlaps) {
-            stats_.mine().matches_invalidated.bump(1);
+            HG_STAT(stats_.mine().matches_invalidated.bump(1));
             return;
         }
 
@@ -734,8 +734,8 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor(
         // Check if this was a "missing" match that arrived late via forward_existing
         note_late_arrival(h);
 
-        total_matches_found_.fetch_add(1, std::memory_order_relaxed);
-        stats_.mine().matches_forwarded.bump(1);
+        HG_STAT(total_matches_found_.fetch_add(1, std::memory_order_relaxed));
+        HG_STAT(stats_.mine().matches_forwarded.bump(1));
 
         DEBUG_LOG("FWD ancestor=%u -> child=%u rule=%u hash=%lu step=%u",
                   ancestor, child, ancestor_match.rule_index(), h, step);
@@ -1178,7 +1178,7 @@ void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
             ++submitted;
         }
     }
-    if (submitted) stats_.mine().spine_forced.bump(submitted);
+    if (submitted) HG_STAT(stats_.mine().spine_forced.bump(submitted));
 }
 
 void ParallelEvolutionEngine::spine_at_drain(StateId state, uint32_t step, MatchJoin* join) {
@@ -1200,7 +1200,7 @@ void ParallelEvolutionEngine::spine_at_drain(StateId state, uint32_t step, Match
     });
     if (!found) return;
 
-    stats_.mine().spine_forced.bump(1);
+    HG_STAT(stats_.mine().spine_forced.bump(1));
     join->own_spawned.store(1, std::memory_order_release);
     submit_rewrite_task(best, step);
 }
@@ -1213,13 +1213,13 @@ bool ParallelEvolutionEngine::transition_survives(uint64_t transition_key, int s
     const double rate = rate_for_rule(rule);
     if (rate >= 1.0) return true;
     if (rate <= 0.0) return false;
-    draws_taken_.fetch_add(1, std::memory_order_relaxed);
-    if (site >= 0 && site < 5) draws_by_site_[site].fetch_add(1, std::memory_order_relaxed);
+    HG_STAT(draws_taken_.fetch_add(1, std::memory_order_relaxed));
+    if (site >= 0 && site < 5) HG_STAT(draws_by_site_[site].fetch_add(1, std::memory_order_relaxed));
 
     // The draw itself lives in hgcommon so the device runs THIS rule and not a second copy of
     // it; keyed on the transition rather than on thread state, for the reason recorded there.
     const bool survives = hgcommon::transition_survives(transition_key, random_seed_, rate);
-    if (survives) draws_survived_.fetch_add(1, std::memory_order_relaxed);
+    if (survives) HG_STAT(draws_survived_.fetch_add(1, std::memory_order_relaxed));
     return survives;
 }
 
@@ -1398,7 +1398,7 @@ void ParallelEvolutionEngine::note_match_task_done(StateId state, uint32_t step)
     // has moved on since, this task is simply not the last one and whichever is will fire.
     if (done != join->pushed.load(std::memory_order_acquire)) return;
 
-    states_drained_.fetch_add(1, std::memory_order_relaxed);
+    HG_STAT(states_drained_.fetch_add(1, std::memory_order_relaxed));
     // The cap REPLACES the spine when it is set: both decide which of a state's own transitions
     // survive, and the cap already keeps at least one per rule, which is what the spine exists to
     // guarantee. Running both would submit the spine's pick a second time.
@@ -1755,7 +1755,7 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
     //
     // Counted rather than asserted here because this runs on a worker, where a throw would
     // surface as an unrelated failure; the gate reads it after the run.
-    if (!inserted) dropped_fresh_child_.fetch_add(1, std::memory_order_relaxed);
+    if (!inserted) HG_STAT(dropped_fresh_child_.fetch_add(1, std::memory_order_relaxed));
 
     if (inserted) {
         DEBUG_LOG("STATE parent=%u -> child=%u (canonical=%u) rule=%u step=%u new=%d",
@@ -1930,12 +1930,12 @@ void ParallelEvolutionEngine::execute_match_task(
                 match.core = hg_->arena().template create<MatchCore>(core_tmp);
                 return hg_->arena().template create<MatchRecord>(match);
             })) {
-            rejected_duplicates_.fetch_add(1, std::memory_order_relaxed);
+            HG_STAT(rejected_duplicates_.fetch_add(1, std::memory_order_relaxed));
             return;
         }
 
-        total_matches_found_.fetch_add(1, std::memory_order_relaxed);
-        stats_.mine().new_matches_discovered.bump(1);
+        HG_STAT(total_matches_found_.fetch_add(1, std::memory_order_relaxed));
+        HG_STAT(stats_.mine().new_matches_discovered.bump(1));
         match_join_for(state)->matches.fetch_add(1, std::memory_order_acq_rel);
 
         DEBUG_LOG("NEW state=%u rule=%u hash=%lu step=%u", state, rule_index, h, step);
@@ -1973,7 +1973,7 @@ void ParallelEvolutionEngine::execute_match_task(
 
     if (enable_match_forwarding_ && ctx.has_parent()) {
         // DELTA MATCHING MODE (child state)
-        stats_.mine().delta_pattern_matches.bump(1);
+        HG_STAT(stats_.mine().delta_pattern_matches.bump(1));
 
         // A batching caller collects the survivors and dispatches them with its own; an
         // immediate one submits each as it is found, which is the only difference between the
@@ -2020,7 +2020,7 @@ void ParallelEvolutionEngine::execute_match_task(
 
         // VALIDATION: Compare forwarded+delta vs full matching
         if (validate_match_forwarding_) {
-            validations_performed_.fetch_add(1, std::memory_order_relaxed);
+            HG_STAT(validations_performed_.fetch_add(1, std::memory_order_relaxed));
             size_t missing = 0;
             auto count_missing = [&, state](
                 uint16_t rule_index,
@@ -2048,8 +2048,8 @@ void ParallelEvolutionEngine::execute_match_task(
                     for (uint8_t i = 0; i < num_edges && !touches_produced; ++i)
                         for (uint8_t j = 0; j < ctx.num_produced; ++j)
                             if (edges[i] == ctx.produced_edges[j]) { touches_produced = true; break; }
-                    if (touches_produced) missing_owed_by_delta_.fetch_add(1, std::memory_order_relaxed);
-                    else missing_owed_by_forwarding_.fetch_add(1, std::memory_order_relaxed);
+                    if (touches_produced) HG_STAT(missing_owed_by_delta_.fetch_add(1, std::memory_order_relaxed));
+                    else HG_STAT(missing_owed_by_forwarding_.fetch_add(1, std::memory_order_relaxed));
                     // A stable copy, because the record above is a stack temporary and the
                     // end-of-run test needs to compare against the real match.
                     MatchCore* core_copy = hg_->arena().template create<MatchCore>(core_tmp);
@@ -2071,7 +2071,7 @@ void ParallelEvolutionEngine::execute_match_task(
         }
     } else {
         // FULL MATCHING MODE (initial state or forwarding disabled)
-        stats_.mine().full_pattern_matches.bump(1);
+        HG_STAT(stats_.mine().full_pattern_matches.bump(1));
 
         if (task_based_matching_) {
             // Task-based matching: spawn SCAN tasks for each rule
@@ -2378,12 +2378,12 @@ bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRe
             match.core = hg_->arena().template create<MatchCore>(core_tmp);
             return hg_->arena().template create<MatchRecord>(match);
         })) {
-        rejected_duplicates_.fetch_add(1, std::memory_order_relaxed);
+        HG_STAT(rejected_duplicates_.fetch_add(1, std::memory_order_relaxed));
         return false;  // Already seen
     }
 
-    total_matches_found_.fetch_add(1, std::memory_order_relaxed);
-    stats_.mine().new_matches_discovered.bump(1);
+    HG_STAT(total_matches_found_.fetch_add(1, std::memory_order_relaxed));
+    HG_STAT(stats_.mine().new_matches_discovered.bump(1));
     match_join_for(data.state)->matches.fetch_add(1, std::memory_order_acq_rel);
 
     DEBUG_LOG("SINK state=%u rule=%u hash=%lu step=%u", data.state, data.rule_index, h, data.step);

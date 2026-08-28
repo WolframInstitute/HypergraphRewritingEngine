@@ -189,7 +189,7 @@ run_one() {
     fi
 
     if ! "$CLANGXX" -std=c++17 -O0 ${HG_GENMC_DEBUG_INFO:+-g} -Xclang -disable-O0-optnone -S -emit-llvm \
-            "${INCLUDES[@]}" "${extra_cc[@]}" -DHG_VERIFICATION=1 ${HG_HARNESS_DEFINES:-} \
+            "${INCLUDES[@]}" "${extra_cc[@]}" -DHG_VERIFICATION=1 -DHG_ENGINE_STATS=0 ${HG_HARNESS_DEFINES:-} \
             -o "$WORK/$name.raw.ll" "$src" 2>"$WORK/$name.cc.err"; then
         echo "--- $name: COMPILE FAILED"
         tail -30 "$WORK/$name.cc.err"
@@ -215,7 +215,7 @@ run_one() {
                      "$ROOT"/hypergraph/include/hypergraph/*.hpp "$ROOT"/common/include/hgcommon/*.hpp \
                      "$ROOT"/job_system/include/job_system/*.hpp "$ROOT"/lockfree_deque/include/*/*.hpp \
                      "$HERE"/genmc_pthread_shim.h "$HERE"/genmc_support.cpp 2>/dev/null
-                 echo "${HG_HARNESS_DEFINES:-}" "$link_engine" "${HG_GENMC_DEBUG_INFO:-}"; "$CLANGXX" --version | head -1
+                 echo "${HG_HARNESS_DEFINES:-}" "$link_engine" "${HG_GENMC_DEBUG_INFO:-}" "stats0"; "$CLANGXX" --version | head -1
                } | md5sum | cut -c1-16 )"
         local cache="${GENMC_IR_CACHE:-$ROOT/.genmc_ir_cache}/$key"
         mkdir -p "$cache"
@@ -225,7 +225,7 @@ run_one() {
             local un; un="$(basename "$u" .cpp)"
             if [ ! -s "$cache/$un.ll" ]; then
                 if ! "$CLANGXX" -std=c++17 -O0 ${HG_GENMC_DEBUG_INFO:+-g} -Xclang -disable-O0-optnone -S -emit-llvm \
-                        "${INCLUDES[@]}" "${extra_cc[@]}" -DHG_VERIFICATION=1 ${HG_HARNESS_DEFINES:-} \
+                        "${INCLUDES[@]}" "${extra_cc[@]}" -DHG_VERIFICATION=1 -DHG_ENGINE_STATS=0 ${HG_HARNESS_DEFINES:-} \
                         -o "$cache/$un.ll.tmp" "$u" 2>"$WORK/engine_$un.cc.err"; then
                     echo "--- $name: ENGINE TU $un FAILED TO COMPILE"
                     tail -20 "$WORK/engine_$un.cc.err"

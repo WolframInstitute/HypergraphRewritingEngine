@@ -474,7 +474,7 @@ Hypergraph::CreateEventResult Hypergraph::create_event(
             for (uint8_t i = 0; i < num_consumed; ++i) {
                 uint32_t r = edge_rank_in_state(input_state, consumed[i]);
                 if (r == UINT32_MAX) {
-                    event_sig_raw_fallbacks_.fetch_add(1, std::memory_order_relaxed);
+                    HG_STAT(event_sig_raw_fallbacks_.fetch_add(1, std::memory_order_relaxed));
                     r = consumed[i];
                 }
                 consumed_ranks[i] = r;
@@ -484,7 +484,7 @@ Hypergraph::CreateEventResult Hypergraph::create_event(
             for (uint8_t i = 0; i < num_produced; ++i) {
                 uint32_t r = edge_rank_in_state(output_state, produced[i]);
                 if (r == UINT32_MAX) {
-                    event_sig_raw_fallbacks_.fetch_add(1, std::memory_order_relaxed);
+                    HG_STAT(event_sig_raw_fallbacks_.fetch_add(1, std::memory_order_relaxed));
                     r = produced[i];
                 }
                 produced_ranks[i] = r;
@@ -655,7 +655,7 @@ uint64_t Hypergraph::compute_reported_canonical_hash(const SparseBitset& edges) 
 
 uint64_t Hypergraph::compute_exact_canonical_hash(const SparseBitset& edges) const {
     hgcommon::PhaseTimer _pt(hgcommon::Phase::Canon);
-    canonical_hash_computations_.fetch_add(1, std::memory_order_relaxed);
+    HG_STAT(canonical_hash_computations_.fetch_add(1, std::memory_order_relaxed));
     // Exact canonical hash via individualization-refinement.
     // Flattened straight from the edge set into the per-worker scratch arena (no heap) and
     // handed to the shared CPU/GPU core, so both devices agree bit for bit.
@@ -749,7 +749,7 @@ uint64_t Hypergraph::compute_exact_canonical_hash(const SparseBitset& edges) con
 
 uint64_t Hypergraph::compute_wl_hash(const SparseBitset& edges) const {
     hgcommon::PhaseTimer _pt(hgcommon::Phase::Canon);
-    canonical_hash_computations_.fetch_add(1, std::memory_order_relaxed);
+    HG_STAT(canonical_hash_computations_.fetch_add(1, std::memory_order_relaxed));
     if (edges.empty()) {
         return EMPTY_STATE_CANONICAL_HASH;
     }
@@ -843,7 +843,7 @@ uint64_t ir_hash_and_orbits(const SVec<SVec<VertexId>>& edge_vecs,
 uint64_t Hypergraph::compute_and_cache_state_orbits(StateId s, const SparseBitset& edges,
                                                     bool cache) {
     hgcommon::PhaseTimer _pt(hgcommon::Phase::Canon);
-    canonical_hash_computations_.fetch_add(1, std::memory_order_relaxed);
+    HG_STAT(canonical_hash_computations_.fetch_add(1, std::memory_order_relaxed));
     // Materialize the state's edges (id-sorted via SparseBitset iteration) into scratch,
     // run the exact IR canonicalization with edge orbits, then copy a compact table into
     // the persistent arena and publish it under the state id. Called once per state on its
@@ -1010,7 +1010,7 @@ void Hypergraph::quotient_causal_seed(StateId initial_state, int max_steps) {
 
 void Hypergraph::qc_record_causal(uint32_t producer, uint32_t consumer, bool distinct_pair) {
     // Per-consumed-edge relationships (the T1 multiset) count every occurrence.
-    ++qc_slot(qc_ctr_).causal_edges;
+    HG_STAT(++qc_slot(qc_ctr_).causal_edges);
 
     // NO DEDUP STRUCTURE, and none is needed. `consumer` is the event this application just
     // minted, so the pair cannot repeat across applications; within this one the caller has
@@ -1019,7 +1019,7 @@ void Hypergraph::qc_record_causal(uint32_t producer, uint32_t consumer, bool dis
     if (!distinct_pair) return;
     const int w = arena_worker_index();
     qc_causal_pairs_[w >= 0 ? w : 0].push(qc_pair_key(producer, consumer), arena_);
-    ++qc_slot(qc_ctr_).causal_pairs;
+    HG_STAT(++qc_slot(qc_ctr_).causal_pairs);
 
 }
 
@@ -1084,7 +1084,7 @@ bool Hypergraph::qc_frame_slots(uint64_t state_hash, StateId s, const EdgeOrbitT
     // is what this removes.
     EdgeCorrespondence c =
         find_edge_correspondence_dispatch(get_state(s).edges, get_state(frame).edges);
-    if (!c.valid || c.count != orb->n) { qc_align_badcorr_.fetch_add(1, std::memory_order_relaxed); return false; }
+    if (!c.valid || c.count != orb->n) { HG_STAT(qc_align_badcorr_.fetch_add(1, std::memory_order_relaxed)); return false; }
     for (uint32_t i = 0; i < orb->n; ++i) out[i] = UINT32_MAX;
     for (uint32_t k = 0; k < c.count; ++k) {
         const uint32_t idx = orb->index_of(c.state1_edges[k]);
@@ -1100,7 +1100,7 @@ void Hypergraph::qc_check_frame_stable(StateId s, const uint32_t* slots, uint32_
     for (uint32_t i = 0; i < n; ++i) h = hgcommon::fnv_hash(h, slots[i]);
     h = h ? h : 1;
     auto r = qc_frame_sig_.insert_if_absent(static_cast<uint64_t>(s) + 1, h);
-    if (!r.second && r.first != h) qc_frame_disagree_.fetch_add(1, std::memory_order_relaxed);
+    if (!r.second && r.first != h) HG_STAT(qc_frame_disagree_.fetch_add(1, std::memory_order_relaxed));
 }
 
 // The edge-orbit table of a state, built here if it is not cached yet.
@@ -1127,7 +1127,7 @@ const EdgeOrbitTable* Hypergraph::qc_orbits_or_build(StateId s) {
 
     // The first miss keeps its evidence: the state, and whether the entry was absent or present
     // with no slot array. Those have different causes, and one count reports them as one thing.
-    qc_capture_orbit_rebuilds_.fetch_add(1, std::memory_order_relaxed);
+    HG_STAT(qc_capture_orbit_rebuilds_.fetch_add(1, std::memory_order_relaxed));
     uint64_t none = ~uint64_t{0};
     qc_no_orbits_witness_.compare_exchange_strong(
         none, (static_cast<uint64_t>(t ? 2u : 1u) << 32) | s,
@@ -1151,7 +1151,7 @@ void Hypergraph::qc_capture_expansion(EventId e) {
         // own edges, so reaching here means the state has no usable edge set at all, which is
         // not something a schedule can produce. Counted rather than asserted because a capture
         // lost is a quiet shortfall in the relations, and a count is what makes it audible.
-        qc_capture_no_orbits_.fetch_add(1, std::memory_order_relaxed);
+        HG_STAT(qc_capture_no_orbits_.fetch_add(1, std::memory_order_relaxed));
         return;
     }
     const uint64_t from = get_state(ev.input_state).canonical_hash;
@@ -1159,7 +1159,7 @@ void Hypergraph::qc_capture_expansion(EventId e) {
     const uint64_t claim = static_cast<uint64_t>(ev.input_state) + 1;
     auto rep = qc_expansion_rep_.insert_if_absent(from, claim);
     if (!rep.second && rep.first != claim) {         // a different raw state owns this class
-        qc_capture_not_rep_.fetch_add(1, std::memory_order_relaxed);
+        HG_STAT(qc_capture_not_rep_.fetch_add(1, std::memory_order_relaxed));
         return;
     }
 
@@ -1182,7 +1182,7 @@ void Hypergraph::qc_capture_expansion(EventId e) {
             const uint64_t to = get_state(ev.output_state).canonical_hash;
             if (!qc_frame_slots(from, ev.input_state, in_orb, in_slot.data()) ||
                 !qc_frame_slots(to, ev.output_state, out_orb, out_slot.data())) {
-                qc_align_fail_.fetch_add(1, std::memory_order_relaxed);
+                HG_STAT(qc_align_fail_.fetch_add(1, std::memory_order_relaxed));
                 return;                          // cannot align; drop rather than mix frames
             }
             auto in_slot_of  = [&](EdgeId x) { const uint32_t i = in_orb->index_of(x);
@@ -1705,7 +1705,7 @@ uint64_t Hypergraph::invalid_matches() const {
 }
 
 void Hypergraph::note_invalid_match() {
-    invalid_matches_.fetch_add(1, std::memory_order_relaxed);
+    HG_STAT(invalid_matches_.fetch_add(1, std::memory_order_relaxed));
 }
 
 uint64_t Hypergraph::canonical_hash_computations() const {
@@ -1966,7 +1966,7 @@ void Hypergraph::QrCtx::record_branchial_pair(uint32_t lo, uint32_t hi) {
 
 Hypergraph::QrCtx::~QrCtx() {
     if (branchial_seen)
-        qc_slot(hg.qc_ctr_).branchial += branchial_seen;
+        HG_STAT(qc_slot(hg.qc_ctr_).branchial += branchial_seen);
 }
 
 // The child instance: survivors carry their producer across, produced slots take THIS event.

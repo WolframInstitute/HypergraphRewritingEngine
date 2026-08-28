@@ -402,8 +402,8 @@ static std::atomic<size_t> g_discarded_tables{0};
 static std::atomic<size_t> g_discarded_table_bytes{0};
 
 void note_discarded_table_bytes(size_t bytes) {
-    g_discarded_tables.fetch_add(1, std::memory_order_relaxed);
-    g_discarded_table_bytes.fetch_add(bytes, std::memory_order_relaxed);
+    HG_STAT(g_discarded_tables.fetch_add(1, std::memory_order_relaxed));
+    HG_STAT(g_discarded_table_bytes.fetch_add(bytes, std::memory_order_relaxed));
 }
 
 size_t discarded_table_bytes() {
@@ -417,8 +417,8 @@ static std::atomic<size_t> g_installed_table_bytes{0};
 static std::atomic<size_t> g_installed_tables{0};
 
 void note_installed_table_bytes(size_t bytes) {
-    g_installed_table_bytes.fetch_add(bytes, std::memory_order_relaxed);
-    g_installed_tables.fetch_add(1, std::memory_order_relaxed);
+    HG_STAT(g_installed_table_bytes.fetch_add(bytes, std::memory_order_relaxed));
+    HG_STAT(g_installed_tables.fetch_add(1, std::memory_order_relaxed));
 }
 
 size_t installed_table_bytes() { return g_installed_table_bytes.load(std::memory_order_relaxed); }

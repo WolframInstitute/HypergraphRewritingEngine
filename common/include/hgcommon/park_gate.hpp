@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/core.hpp"
 #include "hgcommon/namespace.hpp"
 //
 // THE PARK/WAKE HANDSHAKE: a worker with nothing to do sleeps, and a submitter wakes one.
@@ -145,7 +146,7 @@ public:
             return job;
         }
         if (keep_waiting()) {
-            park_waits_.fetch_add(1, std::memory_order_relaxed);
+            HG_STAT(park_waits_.fetch_add(1, std::memory_order_relaxed));
             park_if_equal(dom_[home].seq, seq);
         }
         dom_[home].idle.fetch_sub(1, std::memory_order_relaxed);

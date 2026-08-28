@@ -1,3 +1,4 @@
+#include "hgcommon/core.hpp"
 #include "hgcommon/rendezvous.hpp"
 #include "hgcommon/transitive_reduction.hpp"
 #include "hgcommon/namespace.hpp"
@@ -125,7 +126,7 @@ bool CausalGraph::set_edge_producer(CanonicalEdgeKey edge_key, EventId producer,
     hgcommon::rendezvous<hgcommon::rv::EdgeProducerConsumer>(
         [&] { producers->push(producer, *arena_); },
         [&] { consumers->for_each([&](EventId consumer) {
-                  producer_side_emissions_.fetch_add(1, std::memory_order_relaxed);
+                  HG_STAT(producer_side_emissions_.fetch_add(1, std::memory_order_relaxed));
                   add_causal_edge(producer, consumer, raw_edge);
               }); });
 
@@ -160,7 +161,7 @@ void CausalGraph::consume_edges(const CanonicalEdgeKey* keys, const EdgeId* raw_
         // several. Past the bound the surplus producers' edges are not recorded, and that is
         // counted as the capacity overflow it is rather than treated as a run that found less.
         if (met > hgcommon::MAX_IN_EDGE_PRODUCERS)
-            in_edge_producers_truncated_.fetch_add(1, std::memory_order_relaxed);
+            HG_STAT(in_edge_producers_truncated_.fetch_add(1, std::memory_order_relaxed));
     }
     std::sort(in_edges, in_edges + count, [](const InEdge& a, const InEdge& b) {
 #if defined(HG_CALIBRATE_IN_EDGE_ORDER_ASCENDING)
@@ -204,7 +205,7 @@ void CausalGraph::add_causal_edge(EventId producer, EventId consumer, EdgeId edg
 #else
             if (is_reachable(producer, consumer)) {
 #endif
-                num_redundant_edges_skipped_.fetch_add(1, std::memory_order_relaxed);
+                HG_STAT(num_redundant_edges_skipped_.fetch_add(1, std::memory_order_relaxed));
                 return;
             }
         }

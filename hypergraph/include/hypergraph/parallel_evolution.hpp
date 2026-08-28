@@ -1,4 +1,5 @@
 #pragma once
+#include "hgcommon/core.hpp"
 #include "hgcommon/namespace.hpp"
 
 #include <atomic>
@@ -467,24 +468,24 @@ public:
             // default pays for over eager, and a fix has to move THIS number.
             void make_stable() {
                 stable = make();
-                self->dedup_allocs_.fetch_add(1, std::memory_order_relaxed);
+                HG_STAT(self->dedup_allocs_.fetch_add(1, std::memory_order_relaxed));
             }
 
             hgcommon::ClaimState offer(uint64_t key) {
                 auto [existing, inserted] = self->seen_match_hashes_.insert_if_absent(key, stable);
                 if (inserted) return hgcommon::ClaimState::Won;
                 if (existing && match_records_equal(*existing, rec)) {
-                    self->dedup_allocs_wasted_.fetch_add(1, std::memory_order_relaxed);
+                    HG_STAT(self->dedup_allocs_wasted_.fetch_add(1, std::memory_order_relaxed));
                     return hgcommon::ClaimState::Duplicate;
                 }
                 return hgcommon::ClaimState::Collision;
             }
 
             void note_collision() {
-                self->hash_collisions_.fetch_add(1, std::memory_order_relaxed);
+                HG_STAT(self->hash_collisions_.fetch_add(1, std::memory_order_relaxed));
             }
             void note_exhausted() {
-                self->dedup_probe_exhaustions_.fetch_add(1, std::memory_order_relaxed);
+                HG_STAT(self->dedup_probe_exhaustions_.fetch_add(1, std::memory_order_relaxed));
             }
         };
         Ops ops{this, h, rec, make_stable};
