@@ -116,6 +116,19 @@ violation has not been shown to be able to detect one.
 
 ## What is NOT covered, and why each matters
 
+**The DEVICE's kernel composition.** The persistent kernel (`gpu/src/persistent.cu`,
+`k_persistent_evolve`) is not run under GPUMC as one program. GPUMC is a fork of GenMC 0.9 on
+LLVM 15 and takes C++ with scope annotations; the kernel and every header it calls are CUDA
+device code on `cuda::atomic_ref`, `__threadfence`, `__syncthreads` and the thread indices, and
+a host shim for that surface is what a run would need. What the device DECIDES is not in that
+remainder: the ring's claim (`ring_core`), the dedup map's election (`hash_insert_core`), the
+match claim (`dedup_claim_core`), the replay lists (`list_core`), the termination decision
+(`termination_core`) and the quotient-causal DP (`quotient_causal_core`) are shared bodies the
+device drives, and each is checked under scoped RC11 by `verification/gpumc/`. The device-only
+code outside them, enumerated by every atomic site in `gpu/include/hg_gpu/`, is storage,
+monotonic counters, bump allocators and one release/acquire publish flag (`match.hpp`). The
+host's composition -- the whole engine as one program -- is `verification/genmc/engine_evolve.cpp`.
+
 ~~**Two harnesses check a re-implementation, not the code.**~~ CLOSED. Both now drive
 `hgcommon/park_gate.hpp`, which is the park/wake protocol lifted out of `JobSystem`'s worker loop
 and `wake_one_worker`. They could not include the old shape for a real reason -- the protocol lived
