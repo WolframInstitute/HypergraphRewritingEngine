@@ -173,6 +173,41 @@ jobs:
   # TSan is scoped rather than run over everything: the three suites below take about 8.5 minutes
   # under it while the rest of the suite adds hours, and they are where the engine's lock-free
   # structures are actually exercised concurrently.
+  # ThreadSanitizer, as its own job because it is the slowest leg: every atomic in a lock-free
+  # engine is instrumented and the suite runs under it in tens of minutes. It reports a data race
+  # -- a non-atomic access unordered against another thread's -- and every one is a defect in an
+  # engine whose contract is that its output is a function of its inputs. Measured clean before
+  # this leg existed: 291 tests, no report, 2026-08-28.
+  tsan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ ninja-build
+
+      - name: Configure + build TSan
+        run: >
+          cmake -S . -B build_tsan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DENABLE_TSAN=ON -DBUILD_GPU=OFF -DBUILD_WOLFRAM_LANGUAGE_PACLET=OFF
+          -DBUILD_VISUALIZATION=OFF &&
+          cmake --build build_tsan --target all_tests
+
+      # halt_on_error=0 so one report does not hide the rest; the grep gates, because the
+      # sanitizer's report does not move the process exit status -- and the suite's own status
+      # gates too, for the same reason as the other legs.
+      - name: TSan — the suite reports no data race
+        run: |
+          TSAN_OPTIONS=halt_on_error=0:report_bugs=1 \
+            ./build_tsan/all_tests --gtest_filter=-PacletTest.* 2>&1 | tee tsan.log
+          suite_status=${PIPESTATUS[0]}
+          if grep -q "WARNING: ThreadSanitizer" tsan.log; then
+            echo "ThreadSanitizer reported a race"; exit 1
+          fi
+          if [ "$suite_status" -ne 0 ]; then
+            echo "the suite itself exited $suite_status under this sanitizer"; exit "$suite_status"
+          fi
+
   sanitizers:
     runs-on: ubuntu-latest
     steps:
