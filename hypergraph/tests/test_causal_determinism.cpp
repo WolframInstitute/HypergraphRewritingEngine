@@ -279,8 +279,12 @@ Fingerprint run(const std::vector<hg::engine::RewriteRule>& rules,
                       seed ? "fixed" : "random", counter.fetch_add(1));
         if (FILE* f = std::fopen(name, "w")) {
             for (uint32_t st = 0; st < g.num_published_states(); ++st)
-                if (g.get_state(st).id != hg::engine::INVALID_ID)
-                    std::fprintf(f, "S %u %llu\n", st, (unsigned long long)g.get_or_compute_canonical_hash(st));
+                if (g.get_state(st).id != hg::engine::INVALID_ID) {
+                    const auto mc = e.match_task_counts(st);
+                    std::fprintf(f, "S %u %llu M %zu %zu %zu\n", st,
+                                 (unsigned long long)g.get_or_compute_canonical_hash(st),
+                                 mc.pushed, mc.completed, mc.matches);
+                }
             for (uint32_t ev = 0; ev < g.num_events(); ++ev) {
                 const hg::engine::Event& x = g.get_event(ev);
                 std::fprintf(f, "E %u %u %u %llu %llu %u C", ev, x.input_state, x.output_state,

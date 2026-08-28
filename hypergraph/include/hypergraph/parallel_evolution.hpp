@@ -985,6 +985,11 @@ public:
     // is sound only while this is zero -- a child owed after its parent was booked complete is
     // invisible to any ordering of the reads. See JobSystem::enqueue.
     size_t late_submits() const;
+    // A state's match-task join, read after the run: scan and expand tasks pushed for it and
+    // completed, and matches it accepted post-dedup. Protocol state, not a diagnostic counter:
+    // the drain gate reads the same words. Zeros for a state that never had a match task.
+    struct MatchTaskCounts { size_t pushed = 0, completed = 0, matches = 0; };
+    MatchTaskCounts match_task_counts(StateId state);
     // Rewrites whose freshly-created raw state was reported as already matched. Must be zero:
     // the id is new, so the dedup set cannot have seen it. A non-zero value is a subtree that
     // was never explored. See execute_rewrite_task.

@@ -2747,6 +2747,16 @@ size_t ParallelEvolutionEngine::dropped_fresh_children() const {
     return dropped_fresh_child_.load(std::memory_order_relaxed);
 }
 
+ParallelEvolutionEngine::MatchTaskCounts ParallelEvolutionEngine::match_task_counts(StateId state) {
+    MatchTaskCounts c;
+    auto r = match_join_.lookup(id_key(state));
+    if (!r.has_value() || !*r) return c;
+    c.pushed = (*r)->pushed.load(std::memory_order_acquire);
+    c.completed = (*r)->completed.load(std::memory_order_acquire);
+    c.matches = (*r)->matches.load(std::memory_order_acquire);
+    return c;
+}
+
 size_t ParallelEvolutionEngine::late_submits() const {
     return job_system_ ? job_system_->late_submits() : 0;
 }
