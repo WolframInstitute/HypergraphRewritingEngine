@@ -36,7 +36,25 @@
 // windows.h, os_sync_wait_on_address.h, condition_variable -- are included by park.cpp, so a
 // translation unit that parks does not also parse windows.h. park_backend() is constexpr and
 // callers assert on its value, so the choice itself must be visible.
-#if defined(__linux__)
+// A MODEL CHECKER CANNOT SEE A SYSCALL. GenMC interprets LLVM IR and models the memory
+// operations it can see; `syscall(SYS_futex, ...)` is an opaque external call, so a worker that
+// parks becomes invisible to it and the interleavings around the wake go unexplored -- which is
+// exactly the region a harness over the composed engine exists to search.
+//
+// THIS BACKEND IS LICENSED BY THE CONTRACT RATHER THAN BY CONVENIENCE. park_if_equal is
+// documented to return SPURIOUSLY, and every caller re-checks in a loop because the value can
+// change and change back. A park that spins on the word and returns when it differs therefore
+// satisfies the same contract, and admits exactly the executions the futex admits -- both may
+// return at any moment and both callers re-test -- so a violation found under it is a violation
+// of the shipping engine and not an artifact of the model.
+//
+// It never reaches a shipped build: it is selected only when HG_PARK_VERIFICATION is defined,
+// which nothing but the verification build defines. It is lock-free, so the refusal below still
+// holds. What it does NOT model is scheduling fairness or wake latency; it verifies ordering and
+// reachability, which is what the checker is for.
+#if defined(HG_PARK_VERIFICATION)
+#  define HG_PARK_SPIN 1
+#elif defined(__linux__)
 #  define HG_PARK_FUTEX 1
 #elif defined(_WIN32)
 #  define HG_PARK_WAIT_ON_ADDRESS 1
@@ -59,7 +77,8 @@
 // the paper makes and the GPU table was fixed to honour. A platform that cannot wait on an
 // address does not get a lock here; it gets a compile error, which is the honest answer and
 // keeps "no mutex anywhere" checkable by grep rather than by argument.
-#if !defined(HG_PARK_FUTEX) && !defined(HG_PARK_WAIT_ON_ADDRESS) && !defined(HG_PARK_OS_SYNC)
+#if !defined(HG_PARK_FUTEX) && !defined(HG_PARK_WAIT_ON_ADDRESS) && !defined(HG_PARK_OS_SYNC) \
+    && !defined(HG_PARK_SPIN)
 #  if defined(__cpp_lib_atomic_wait)
 #    define HG_PARK_STD_ATOMIC_WAIT 1
 #  else
@@ -70,11 +89,13 @@
 namespace HG_NAMESPACE {
 namespace common {
 
-enum class ParkBackend { Futex, WaitOnAddress, OsSync, StdAtomicWait, CondVar };
+enum class ParkBackend { Futex, WaitOnAddress, OsSync, Spin, StdAtomicWait, CondVar };
 
 // Which primitive this build uses. StdAtomicWait is the only one that may block on a lock.
 constexpr ParkBackend park_backend() {
-#if defined(HG_PARK_FUTEX)
+#if defined(HG_PARK_SPIN)
+    return ParkBackend::Spin;
+#elif defined(HG_PARK_FUTEX)
     return ParkBackend::Futex;
 #elif defined(HG_PARK_WAIT_ON_ADDRESS)
     return ParkBackend::WaitOnAddress;

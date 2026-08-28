@@ -31,7 +31,13 @@ namespace common {
 
 
 void park_if_equal(const std::atomic<uint32_t>& addr, uint32_t expected) {
-#if defined(HG_PARK_FUTEX)
+#if defined(HG_PARK_SPIN)
+    // THE MODEL-CHECKING BACKEND. A syscall is opaque to a checker that interprets IR, so under
+    // verification the wait is expressed in operations it can see. This is a CONFORMING park:
+    // the contract permits a spurious return and every caller re-tests in a loop, so returning
+    // as soon as the word differs admits exactly the executions the futex admits.
+    while (addr.load(std::memory_order_acquire) == expected) { }
+#elif defined(HG_PARK_FUTEX)
     ::syscall(SYS_futex, reinterpret_cast<const uint32_t*>(&addr),
               FUTEX_WAIT_PRIVATE, expected, nullptr, nullptr, 0);
 #elif defined(HG_PARK_WAIT_ON_ADDRESS)
@@ -48,7 +54,12 @@ void park_if_equal(const std::atomic<uint32_t>& addr, uint32_t expected) {
 }
 
 void unpark_one(const std::atomic<uint32_t>& addr) {
-#if defined(HG_PARK_FUTEX)
+#if defined(HG_PARK_SPIN)
+    // Nothing to wake: the spinning waiter is watching the word itself, and the caller has
+    // already changed it. Named rather than left to the empty #else so that a reader sees the
+    // wake is accounted for on this backend and not merely absent.
+    (void)addr;
+#elif defined(HG_PARK_FUTEX)
     ::syscall(SYS_futex, reinterpret_cast<const uint32_t*>(&addr),
               FUTEX_WAKE_PRIVATE, 1, nullptr, nullptr, 0);
 #elif defined(HG_PARK_WAIT_ON_ADDRESS)
@@ -64,7 +75,12 @@ void unpark_one(const std::atomic<uint32_t>& addr) {
 }
 
 void unpark_all(const std::atomic<uint32_t>& addr) {
-#if defined(HG_PARK_FUTEX)
+#if defined(HG_PARK_SPIN)
+    // Nothing to wake: the spinning waiter is watching the word itself, and the caller has
+    // already changed it. Named rather than left to the empty #else so that a reader sees the
+    // wake is accounted for on this backend and not merely absent.
+    (void)addr;
+#elif defined(HG_PARK_FUTEX)
     ::syscall(SYS_futex, reinterpret_cast<const uint32_t*>(&addr),
               FUTEX_WAKE_PRIVATE, INT32_MAX, nullptr, nullptr, 0);
 #elif defined(HG_PARK_WAIT_ON_ADDRESS)
