@@ -38,6 +38,14 @@ what `main` reaches:
 | the same, with `HG_SEGMENTED_ARRAY_MAX_SEGMENTS=8` and `HG_CONCURRENT_MAP_INITIAL_CAPACITY=16` | 5,452 | verifies, 4.9s |
 | add the engine and a rule | 19,477 | transforms, then the interpreter stops |
 | reach `evolve()` | 110,932 | no verdict; transformation alone exceeds 540s |
+| construct a `JobSystem` | 2,659 | verifies |
+| `JobSystem::start()` | 8,952 | transforms, then GenMC segfaults |
+
+The `JobSystem` row is the same story at a smaller scale: construction is checkable and starting
+is not. Getting that far needed two more shims -- GenMC's address allocator refuses a zero-size
+request, and libstdc++ declares the ABI's type-info vtables as `[0 x ptr]`, which every
+polymorphic class references and `std::thread`'s state class drags in -- and the segfault survives
+both those and `-fno-rtti`.
 
 Two ceilings, and they are different. The first is SIZE: GenMC's own transformation phase, before
 a single execution is explored, does not finish on the `evolve()` module. The mass is spread --
@@ -82,14 +90,22 @@ violation has not been shown to be able to detect one.
 wake protocol and check the re-statement, which is evidence about the re-statement. Every other
 harness includes the header it is about.
 
-**The job system's completion handshake is barriered on one side.** The completer bumps
-`quiescence_seq_` (release) and then reads `completion_waiters_` (acquire), which is not a
-StoreLoad; the waiter's own registration is `seq_cst` and so is barriered. Each side writes one
-location and reads the other, so the completer may see no waiter and skip the wake while the
-waiter sees the old sequence and parks. The comment defending it -- that the waiter also polls on
-a timeout -- is contradicted by `wait_for_completion`'s own "No timeout and no polling", so the
-argument rests entirely on `park_if_equal`'s compare. No harness covers it: the two that name the
-job system check a re-implementation, and neither is about the completion half.
+~~**The job system's completion handshake is barriered on one side.**~~ EXAMINED AND REFUTED.
+The completer bumps `quiescence_seq_` (release) and then reads `completion_waiters_` (acquire),
+which is not a StoreLoad, and each side writes one location and reads the other -- the shape of
+the class. It is not an instance of it, because the two reads do not gate the same thing: missing
+the waiter count skips a WAKE, while missing the sequence loses nothing, since the waiter parks on
+that very word under a value compare and the write it might have missed is the value it compares
+against. What makes it safe is the ORDER -- publish the sequence, then look for a waiter -- and
+inverting that is what would lose the wakeup.
+
+Checked rather than argued: the protocol was extracted and run under GenMC with and without the
+barrier, and the checker cannot tell the two arms apart. The extraction was then deleted, because
+it corrected nothing. What survives is in `job_system.hpp`, where the comment that used to defend
+this ordering by a timeout the waiter does not have now states the argument that holds.
+
+The general lesson is recorded in `hgcommon/rendezvous.hpp`: the test is not whether both sides
+read, but whether missing the read LOSES THE EVENT with no other path to it.
 
 **`wait_for_completion_with_abort` is dead in the parallel path.** Its only caller is its own
 test, which runs it with `serial=true` and so exercises the other branch. The parallel branch

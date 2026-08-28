@@ -511,9 +511,20 @@ private:
             data->jobs_executed.fetch_add(1, std::memory_order_relaxed);
         }
 
-        // Notify the completion waiter only at quiescence (this job brings completed up
-        // to submitted), not on every job. The waiter also polls on a timeout, so a
-        // missed wakeup from a racing submit only adds latency, never a hang.
+        // Notify the completion waiter only at quiescence (this job brings completed up to
+        // submitted), not on every job.
+        //
+        // THE ORDER IS THE MECHANISM, and the wake is only an optimisation. Bumping the sequence
+        // BEFORE reading the waiter count is what makes a stale read of that count harmless: a
+        // waiter that already sampled the old sequence finds it stale and re-checks rather than
+        // parking, and one that has not yet sampled reads the new value. The waiter parks on this
+        // very word under a value compare, so the write this might miss is the one it compares
+        // against.
+        //
+        // No StoreLoad barrier is needed between the two, and that is checked rather than
+        // assumed: with the barrier removed a model checker cannot tell the two apart. Inverting
+        // the order -- decide the wake, then publish -- is what would lose the wakeup, and is why
+        // it is written this way round.
         const size_t done = total_completed_.fetch_add(1, std::memory_order_acq_rel) + 1;
         if (done == total_submitted_.load(std::memory_order_acquire)) {
             // Bump before notifying: a waiter that sampled the old value finds it stale and

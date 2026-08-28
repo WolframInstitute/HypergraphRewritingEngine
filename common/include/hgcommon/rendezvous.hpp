@@ -27,6 +27,19 @@
 // and then walk that same list are ordered by coherence on the head: whichever pushes second
 // necessarily sees the first. The engine's branchial co-consumer bucket is that case.
 //
+// NOR IS A READ THAT ONLY SKIPS AN OPTIMISATION. The job system's completion notify writes the
+// sequence counter and then reads the waiter count, and the waiter writes the waiter count and
+// then reads the sequence -- which looks exactly like the class. It is not, because the two reads
+// do not gate the same thing. Missing the waiter count skips a wake; missing the sequence does
+// not lose anything, because the waiter parks on that very word under a value compare and the
+// write it might have missed is the value it compares against. What makes it safe is the ORDER --
+// publish the sequence, THEN look for a waiter -- not a barrier between them. Checked: removing
+// the barrier leaves a checker unable to tell the two apart.
+//
+// So the test is not "do both sides read". It is: DOES MISSING THE READ LOSE THE EVENT WITH NO
+// OTHER PATH TO IT. In the depth join it did -- a depth that neither thread settles is never
+// settled by anything later.
+//
 // COST. Both callables inline and what is emitted is publish(); mfence; scan(); -- the same
 // instructions the hand-written sites had. The tag is a compile-time name and generates nothing.
 //
