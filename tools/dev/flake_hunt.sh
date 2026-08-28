@@ -1,9 +1,21 @@
 #!/usr/bin/env bash
 # Hunt the determinism family under OVERSUBSCRIPTION, and keep every firing.
 #
-#   flake_hunt.sh start [instances]     launch, detached, survives logout
+#   flake_hunt.sh start [instances] [filter] [cpus]
+#                                       launch, detached, survives logout
 #   flake_hunt.sh status                how many rounds, how many firings
 #   flake_hunt.sh stop                  stop it -- REQUIRED before any timing runs
+#
+# WHY A NARROW CPU SET, and not just many threads. The engine PINS its workers, but only when
+# ensure_default_cpu_order finds at least two CPUs spanning more than one cache domain. A CI
+# runner has 2-4 cores in one domain, so it bails and every worker is placed by the OS; this box
+# has 32 cores over 8 L3 instances, so every worker is pinned. Those are different regimes, and
+# the firings all come from the unpinned one. Confining the process to two CPUs reproduces it:
+# hardware_concurrency then reports 2, the domain check finds one domain and declines to pin, and
+# 32 requested workers land unpinned on two cores -- which is what CI does.
+#
+# taskset therefore works here, though it does NOT work against a run that pins: there the pin
+# overrides the mask.
 #
 # WHY OVERSUBSCRIPTION. Every CI firing of CausalDeterminism.NonQuotientFullyDeterministic came
 # from a runner with 2-4 cores answering a request for up to 32 threads. A 32-core box running
@@ -32,16 +44,28 @@ FILTER="${3:-CausalDeterminism.NonQuotientFullyDeterministic}"
 case "${1:-status}" in
 start)
     instances="${2:-12}"
+    # Each instance gets its OWN pair of CPUs, so it sees a two-core machine exactly as a CI
+    # runner does, while as many run at once as the box has pairs. Sharing one pair between all
+    # of them would be a different regime again -- 32 workers per instance times twelve on two
+    # cores is not what CI does.
+    ncpu="$(nproc)"
+    cpus="${4:-auto}"
     [ -x "$BIN" ] || { echo "no test binary at $BIN" >&2; exit 2; }
     mkdir -p "$OUT"
     for i in $(seq 1 "$instances"); do
+        if [ "$cpus" = auto ]; then
+            a=$(( (2 * (i - 1)) % ncpu )); b=$(( (2 * (i - 1) + 1) % ncpu ))
+            runner="taskset -c $a,$b"
+        else
+            runner="taskset -c $cpus"
+        fi
         setsid nohup bash -c '
-            out="'"$OUT"'"; bin="'"$BIN"'"; filter="'"$FILTER"'"; i="'"$i"'"
+            out="'"$OUT"'"; bin="'"$BIN"'"; filter="'"$FILTER"'"; i="'"$i"'"; runner="'"$runner"'"
             round=0
             while [ ! -f "$out/STOP" ]; do
                 round=$((round + 1))
                 log="$out/run_${i}_${round}.log"
-                if ! "$bin" --gtest_filter="$filter" > "$log" 2>&1; then
+                if ! $runner "$bin" --gtest_filter="$filter" > "$log" 2>&1; then
                     # A FIRING IS THE WHOLE POINT: keep it entire, and keep going.
                     mv "$log" "$out/FIRING_${i}_${round}_$(date -u +%Y%m%dT%H%M%SZ).log"
                 else

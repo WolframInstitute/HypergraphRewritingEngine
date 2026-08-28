@@ -11,8 +11,15 @@
 
 #if defined(__CUDACC__)
   #define HG_HD __host__ __device__
+  // DEVICE-ONLY, for a shared body that reaches something the host has no version of --
+  // __nanosleep, a device-scoped atomic_ref, a __device__ member. Marking such a body HG_HD is
+  // rejected by nvcc (a __host__ __device__ function may not call a __device__ one), and marking
+  // it __device__ unconditionally would not compile off CUDA at all. Empty elsewhere, exactly as
+  // HG_HD is, so the same body still builds for a host harness or a model checker.
+  #define HG_DEV __device__
 #else
   #define HG_HD
+  #define HG_DEV
 #endif
 
 // For a function whose inlining must not be at the mercy of unrelated code size. `inline` is

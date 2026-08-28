@@ -8,6 +8,11 @@ stated absence rather than an unexamined one.
   when the header breaks. `verification/genmc/run.sh <name>`. TWO DO NOT, and are listed as a gap
   below. A harness marked `// GENMC-LINK: engine` is instead compiled against every engine
   translation unit, linked, so it can call code whose body is in a `.cpp`.
+- **GPUMC** is GenMC's scoped-RC11 sibling, for the GPU memory model: threads are organised into
+  CTAs and every access carries a SCOPE, so whether two threads synchronise depends on how close
+  they are. RC11 has no scopes, so GenMC would check a program the device does not run. It runs
+  from a container -- it is a fork of GenMC 0.9 supporting LLVM up to 15, and this tree builds
+  against 18. `verification/gpumc/run.sh <name>`.
 - **TLA+** models a protocol rather than a translation unit, which is what makes it the right tool
   where the property is about an ordering across many participants rather than about one
   structure's memory operations. `verification/tla/run.sh <config>`.
@@ -124,8 +129,25 @@ window where the counters agree and every queue is empty while a child is still 
 ordering of the reads defends it, because at that instant there is nothing to see.
 `MCQuiescenceLateSubmit` is that defect, and TLC reports it.
 
-STILL OPEN: the DEVICE's `TerminationDetector`. This models the host's protocol; the persistent
-kernel's detector is a separate mechanism and is not covered.
+~~STILL OPEN: the DEVICE's `TerminationDetector`.~~ COVERED, under scoped-RC11, by
+`verification/gpumc/termination_no_early_exit.cpp`. The decision the persistent kernel's detector
+makes is `hgcommon/termination_core.hpp` and the harness runs THAT -- the same body both device
+detectors drive, not a model of it. It was written twice in `gpu/src/persistent.cu` before this,
+once per kernel, which is why it was neither shared nor checkable.
+
+The property: if the detector signals exit through the QUIESCENT path, every piece of work the run
+will ever complete has completed. A stall exit is a recorded defect returning partial work
+deliberately and claims nothing. 2,265 executions, clean.
+
+Calibrated by `-DCALIBRATE_COMPLETE_THEN_PUSH`, which books a worker complete BEFORE announcing
+the child it owes -- the same precondition the host's quiescence rests on, and the one
+`MCQuiescenceLateSubmit` reports there. The checker finds the early exit.
+
+Two things about the harness are worth keeping, because both made it report the defect arm as
+clean at first: the property must be asserted AT THE INSTANT OF THE DECISION, since after the
+threads are joined the worker has always finished; and it must be stated in the COUNTERS rather
+than in a "finished" flag, since a flag is set after the last counter write and so lags a state
+that is genuinely complete.
 
 ~~**The depth-relaxation cascade.**~~ COVERED by `DepthRelaxation.tla`. The property is that at
 quiescence the claimed set is exactly the nodes whose SHORTEST-PATH depth is below the budget, so

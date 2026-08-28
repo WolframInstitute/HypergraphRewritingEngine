@@ -1,4 +1,5 @@
 #include "hgcommon/namespace.hpp"
+#include "hgcommon/termination_core.hpp"
 // Device-resident scheduling: workers that pull work from a queue rather than being launched
 // once per phase per step. See gpu/include/hg_gpu/persistent.hpp and
 // gpu/ARCHITECTURE.md sec 2.
@@ -324,54 +325,33 @@ __global__ void k_persistent_match_rewrite(
         // any of them moves resets the budget; only rounds where nothing changes count against it.
         // A deadlock still trips it -- nothing moves, by definition -- while arbitrarily slow
         // forward progress never does.
-        uint32_t stagnant = 0;
-        uint32_t last_prod = 0xFFFFFFFFu, last_done = 0xFFFFFFFFu;
-        uint64_t last_pc = 0xFFFFFFFFFFFFFFFFull;
-        for (uint32_t round = 0; ; ++round) {
-            if (stagnant >= kMaxDetectorRounds) {
+        // The decision is hgcommon::term_detect_loop; this supplies only where the counters live
+        // and what to do at the edges. The rewriting detector below drives the same body with a
+        // different consumed-cursor and its own diagnostics.
+        struct MatchDetectorCtx {
+            typename TerminationDetector::DeviceView& term;
+            typename Pool<MatchRecord>::DeviceView&   found;
+            uint32_t*                                 consume_cursor;
+            DeviceState&                              ds;
+
+            HG_DEV uint32_t num_roles() const { return term.num_roles; }
+            HG_DEV uint32_t max_stagnant_rounds() const { return kMaxDetectorRounds; }
+            HG_DEV bool snapshot(uint64_t* p, uint64_t* c) const {
+                return term.snapshot_quiescent(p, c);
+            }
+            HG_DEV uint32_t produced() const { return readable_records(found); }
+            HG_DEV uint32_t consumed() const { return *consume_cursor; }
+            HG_DEV void on_round(uint32_t, uint32_t, uint32_t) const {}
+            HG_DEV void on_stall(uint32_t, const uint64_t*, const uint64_t*) const {
                 ds.errors.record(ErrorKind::kPersistentStall);
-                term.signal_exit();
-                return;
             }
-            // Finished means BOTH: every seeded match item accounted for, and every match that
-            // matching produced already consumed. Checking only the match role would exit with
-            // rewrites outstanding; checking only the cursor would exit before matching had
-            // produced anything at all.
-            const bool q1 = term.snapshot_quiescent(p1, c1);
-            const uint32_t prod1 = readable_records(found);
-            const uint32_t done1 = *consume_cursor;
-            {   // Progress check: any movement resets the stagnation budget. Role counters are
-                // summed rather than compared elementwise -- any move changes the sum.
-                uint64_t pc = 0;
-                for (uint32_t r = 0; r < term.num_roles; ++r) pc += p1[r] + c1[r];
-                if (prod1 != last_prod || done1 != last_done || pc != last_pc) {
-                    last_prod = prod1; last_done = done1; last_pc = pc;
-                    stagnant = 0;
-                } else {
-                    ++stagnant;
-                }
-            }
-            if (q1 && done1 >= prod1) {
-                // Quiescent once is not enough: an in-flight match may have just completed
-                // without its matches yet being visible. Look again after a backoff, and
-                // require every observed quantity to be UNCHANGED across the window -- each
-                // is monotone, so a worker that started and finished inside it must have
-                // moved one. Re-testing the conditions alone would accept two distinct
-                // quiescent moments with activity between them.
-                __nanosleep(4000);
-                const bool q2 = term.snapshot_quiescent(p2, c2);
-                const uint32_t prod2 = readable_records(found);
-                const uint32_t done2 = *consume_cursor;
-                bool unchanged = (prod1 == prod2) && (done1 == done2);
-                for (uint32_t r = 0; r < term.num_roles && unchanged; ++r)
-                    unchanged = (p1[r] == p2[r]) && (c1[r] == c2[r]);
-                if (q2 && done2 >= prod2 && unchanged) {
-                    term.signal_exit();
-                    return;
-                }
-            }
-            __nanosleep(2000);
-        }
+            HG_DEV void backoff_long() const { __nanosleep(4000); }
+            HG_DEV void backoff_short() const { __nanosleep(2000); }
+            HG_DEV void signal_exit() const { term.signal_exit(); }
+        } dctx{term, found, consume_cursor, ds};
+
+        hgcommon::term_detect_loop(dctx, p1, c1, p2, c2);
+        return;
     }
 
     __shared__ MatchWorkItem mitem;
@@ -496,11 +476,28 @@ __global__ void k_persistent_evolve(
         // any of them moves resets the budget; only rounds where nothing changes count against it.
         // A deadlock still trips it -- nothing moves, by definition -- while arbitrarily slow
         // forward progress never does.
-        uint32_t stagnant = 0;
-        uint32_t last_prod = 0xFFFFFFFFu, last_done = 0xFFFFFFFFu;
-        uint64_t last_pc = 0xFFFFFFFFFFFFFFFFull;
-        for (uint32_t round = 0; ; ++round) {
-            if (stagnant >= kMaxDetectorRounds) {
+        // The decision is hgcommon::term_detect_loop -- the same body the matching detector above
+        // drives. This one counts consumed work with rewrites_done and carries the stall dump and
+        // the periodic progress report, which are diagnostics rather than part of the decision.
+        struct RewriteDetectorCtx {
+            typename TerminationDetector::DeviceView& term;
+            typename Pool<MatchRecord>::DeviceView&   found;
+            uint32_t*                                 rewrites_done;
+            DeviceState&                              ds;
+            unsigned long long*                       phase_cycles;
+
+            HG_DEV uint32_t num_roles() const { return term.num_roles; }
+            HG_DEV uint32_t max_stagnant_rounds() const { return kMaxDetectorRounds; }
+            HG_DEV bool snapshot(uint64_t* p, uint64_t* c) const {
+                return term.snapshot_quiescent(p, c);
+            }
+            HG_DEV uint32_t produced() const { return readable_records(found); }
+            HG_DEV uint32_t consumed() const { return *rewrites_done; }
+            HG_DEV void backoff_long() const { __nanosleep(4000); }
+            HG_DEV void backoff_short() const { __nanosleep(2000); }
+            HG_DEV void signal_exit() const { term.signal_exit(); }
+
+            HG_DEV void on_stall(uint32_t round, const uint64_t* p1, const uint64_t* c1) const {
                 // Quiescence never held. Signal exit anyway so the workers leave and the
                 // launch returns: a recorded defect with partial work beats holding the device.
                 //
@@ -534,77 +531,44 @@ __global__ void k_persistent_evolve(
                     if (shown == 0) printf("[hg_gpu STALL] every record below prod IS published\n");
                 }
                 ds.errors.record(ErrorKind::kPersistentStall);
-                term.signal_exit();
-                return;
-            }
-            const bool q1  = term.snapshot_quiescent(p1, c1);
-            const uint32_t prod1 = readable_records(found);
-            const uint32_t done1 = *rewrites_done;
-
-            // PERIODIC PROGRESS, so a long run is observable rather than opaque.
-            //
-            // A run that does not finish tells you nothing about WHY unless you can see whether it
-            // is grinding steadily or decaying. This prints the counters roughly every two million
-            // detector rounds -- about four seconds at the 2 us backoff -- and only when the run
-            // has already lasted that long, so an ordinary evolution prints nothing at all. It
-            // exists because ten hypotheses about a non-finishing workload were each eliminated by
-            // a separate measurement, and none of them could be tested against the run itself.
-            if (round > 0 && (round % 2000000u) == 0u) {
-                // The phase counters too, read from device memory by the detector block -- the
-                // host is blocked in its sync and cannot see them, and the workers now flush
-                // every 1024 records precisely so a run that never finishes is still
-                // attributable. Fractions of their sum, the same reading as PersistentEvolveStats.
-                unsigned long long m = 0, rw = 0, cn = 0, id = 0, wt = 0;
-                if (phase_cycles) {
-                    m = phase_cycles[0]; rw = phase_cycles[1]; cn = phase_cycles[2];
-                    id = phase_cycles[3]; wt = phase_cycles[4];
-                }
-                const unsigned long long tot = m + rw + cn + id + wt;
-                // The canon bucket's five parts, as fractions of the bucket. Without this the
-                // bucket reads as "canonicalization" while containing four other calls.
-                unsigned long long ir = 0, sg = 0, qc_ = 0, qe_ = 0, dd = 0;
-                if (phase_cycles) {
-                    ir = phase_cycles[11]; sg = phase_cycles[12]; qc_ = phase_cycles[13];
-                    qe_ = phase_cycles[14]; dd = phase_cycles[15];
-                }
-                const unsigned long long cb = ir + sg + qc_ + qe_ + dd;
-                printf("[hg_gpu PROGRESS] round=%u prod=%u done=%u | "
-                       "match=%llu%% rewrite=%llu%% canonblk=%llu%% idle=%llu%% || "
-                       "ir=%llu%% sig=%llu%% qc=%llu%% qe=%llu%% dedup=%llu%%\n",
-                       round, prod1, done1,
-                       tot ? 100ull * m  / tot : 0ull, tot ? 100ull * rw / tot : 0ull,
-                       tot ? 100ull * cn / tot : 0ull, tot ? 100ull * id / tot : 0ull,
-                       cb ? 100ull * ir  / cb : 0ull, cb ? 100ull * sg  / cb : 0ull,
-                       cb ? 100ull * qc_ / cb : 0ull, cb ? 100ull * qe_ / cb : 0ull,
-                       cb ? 100ull * dd  / cb : 0ull);
             }
 
-            {   // Progress check: any movement resets the stagnation budget. Role counters are
-                // summed rather than compared elementwise -- any move changes the sum.
-                uint64_t pc = 0;
-                for (uint32_t r = 0; r < term.num_roles; ++r) pc += p1[r] + c1[r];
-                if (prod1 != last_prod || done1 != last_done || pc != last_pc) {
-                    last_prod = prod1; last_done = done1; last_pc = pc;
-                    stagnant = 0;
-                } else {
-                    ++stagnant;
+            HG_DEV void on_round(uint32_t round, uint32_t prod1, uint32_t done1) const {
+
+                if (round > 0 && (round % 2000000u) == 0u) {
+                    // The phase counters too, read from device memory by the detector block -- the
+                    // host is blocked in its sync and cannot see them, and the workers now flush
+                    // every 1024 records precisely so a run that never finishes is still
+                    // attributable. Fractions of their sum, the same reading as PersistentEvolveStats.
+                    unsigned long long m = 0, rw = 0, cn = 0, id = 0, wt = 0;
+                    if (phase_cycles) {
+                        m = phase_cycles[0]; rw = phase_cycles[1]; cn = phase_cycles[2];
+                        id = phase_cycles[3]; wt = phase_cycles[4];
+                    }
+                    const unsigned long long tot = m + rw + cn + id + wt;
+                    // The canon bucket's five parts, as fractions of the bucket. Without this the
+                    // bucket reads as "canonicalization" while containing four other calls.
+                    unsigned long long ir = 0, sg = 0, qc_ = 0, qe_ = 0, dd = 0;
+                    if (phase_cycles) {
+                        ir = phase_cycles[11]; sg = phase_cycles[12]; qc_ = phase_cycles[13];
+                        qe_ = phase_cycles[14]; dd = phase_cycles[15];
+                    }
+                    const unsigned long long cb = ir + sg + qc_ + qe_ + dd;
+                    printf("[hg_gpu PROGRESS] round=%u prod=%u done=%u | "
+                           "match=%llu%% rewrite=%llu%% canonblk=%llu%% idle=%llu%% || "
+                           "ir=%llu%% sig=%llu%% qc=%llu%% qe=%llu%% dedup=%llu%%\n",
+                           round, prod1, done1,
+                           tot ? 100ull * m  / tot : 0ull, tot ? 100ull * rw / tot : 0ull,
+                           tot ? 100ull * cn / tot : 0ull, tot ? 100ull * id / tot : 0ull,
+                           cb ? 100ull * ir  / cb : 0ull, cb ? 100ull * sg  / cb : 0ull,
+                           cb ? 100ull * qc_ / cb : 0ull, cb ? 100ull * qe_ / cb : 0ull,
+                           cb ? 100ull * dd  / cb : 0ull);
                 }
             }
-            if (q1 && done1 >= prod1) {
-                __nanosleep(4000);
-                const bool q2 = term.snapshot_quiescent(p2, c2);
-                const uint32_t prod2 = readable_records(found);
-                const uint32_t done2 = *rewrites_done;
-                bool unchanged = (prod1 == prod2) && (done1 == done2);
-                for (uint32_t r = 0; r < term.num_roles && unchanged; ++r)
-                    unchanged = (p1[r] == p2[r]) && (c1[r] == c2[r]);
-                if (q2 && done2 >= prod2 && unchanged) {
-                    term.signal_exit();
-                    return;
-                }
-            }
-            __nanosleep(2000);
-        }
+        } dctx{term, found, rewrites_done, ds, phase_cycles};
+
+        hgcommon::term_detect_loop(dctx, p1, c1, p2, c2);
+        return;
     }
 
     // Per-block IR scratch, carried across items: claimed on first use and re-claimed only
