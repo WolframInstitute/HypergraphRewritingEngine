@@ -1,11 +1,12 @@
 #include <pthread.h>
 #include <atomic>
 /* A loop whose header condition depends on a value with an exponential number of operand paths.
- * b_n = a_(n-1) + b_(n-1), a_n = b_(n-1): the dependence DAG of b_40 has Fibonacci(40) paths
+ * b_n = a_(n-1) + b_(n-1), a_n = b_(n-1): the dependence DAG of b_60 has Fibonacci(60) paths
  * back to the load. LoopJumpThreadingPass asks whether the header's branch depends on the
- * header PHI (i); the branch's first operand is b_40, so a search that enumerates paths walks
+ * header PHI (i); the branch's first operand is b_60, so a search that enumerates paths walks
  * every one of them before it reaches i. The patched checker's reachability search visits each
- * of the 80 values once. */
+ * of the 120 values once. Measured on v0.17.0: 40 steps 18 s, 60 steps no verdict in 300 s;
+ * patched, 0.06 s. */
 std::atomic<int> x{0};
 #define STEP(p, n) int a##n = b##p; int b##n = a##p + b##p;
 void* w(void*) { x.store(1, std::memory_order_release); return nullptr; }
@@ -52,8 +53,28 @@ int main() {
   STEP(37,38)
   STEP(38,39)
   STEP(39,40)
+  STEP(40,41)
+  STEP(41,42)
+  STEP(42,43)
+  STEP(43,44)
+  STEP(44,45)
+  STEP(45,46)
+  STEP(46,47)
+  STEP(47,48)
+  STEP(48,49)
+  STEP(49,50)
+  STEP(50,51)
+  STEP(51,52)
+  STEP(52,53)
+  STEP(53,54)
+  STEP(54,55)
+  STEP(55,56)
+  STEP(56,57)
+  STEP(57,58)
+  STEP(58,59)
+  STEP(59,60)
   int i = 0;
-  while (b40 > i) { i += b40; }
+  while (b60 > i) { i += b60; }
   pthread_join(t, 0);
   return 0;
 }
