@@ -156,46 +156,14 @@ RewriteResult Rewriter::apply(
         hg_->set_edge_producer(produced_keys[i], result.event, result.produced_edges[i]);
     }
 
-    // Register consumed edges (add this event as consumer)
-    // This triggers causal edge creation via rendezvous pattern
-    //
-    // IMPORTANT: For correct online transitive reduction, we must process
-    // edges in DESCENDING order by producer event ID. This ensures edges
-    // from closer (newer) producers are added first, propagating transitive
-    // closure to farther (older) producers before checking their edges.
-    //
-    // Example: If P1→P2 path exists and consumer C has edges from both:
-    // - Add P2→C first: Desc[P1] gets C (via Anc[P2] containing P1)
-    // - Add P1→C second: Check Desc[P1] → C found → SKIP (correct!)
-    // Wrong order would store P1→C before P2→C updates Desc[P1].
-
-    // The consumed edges live in input_state; key each by its canonical edge identity so a
-    // consumer rendezvous with every producer of that canonical edge (not just the one
-    // parent whose raw output became the representative).
+    // Register this event as a consumer of each consumed edge. The consumed edges live in
+    // input_state; key each by its canonical edge identity so a consumer meets every producer
+    // of that canonical edge, not just the one parent whose raw output became the
+    // representative. The order the in-edges are recorded in is the reduction's business and
+    // is decided in consume_edges.
     CanonicalEdgeKey consumed_keys[MAX_PATTERN_EDGES];
     hg_->causal_edge_keys(input_state, matched_edges, num_matched, consumed_keys);
-
-    // Collect (producer_id, edge_index) pairs for sorting (per-worker scratch arena;
-    // recycled after the task, so no heap allocation on the rewrite hot path)
-    ArenaVector<std::pair<EventId, uint8_t>> sorted_consumed(worker_scratch(), num_matched);
-    for (uint8_t i = 0; i < num_matched; ++i) {
-        EventId producer = hg_->get_edge_producer(consumed_keys[i]);
-        sorted_consumed.emplace_back(producer, i);
-    }
-
-    // Sort by producer ID DESCENDING (newest producers first)
-    // INVALID_ID producers (initial edges with no producer) sort to end
-    std::sort(sorted_consumed.begin(), sorted_consumed.end(),
-        [](const auto& a, const auto& b) {
-            if (a.first == INVALID_ID) return false;
-            if (b.first == INVALID_ID) return true;
-            return a.first > b.first;
-        });
-
-    // Add causal edges in sorted order
-    for (const auto& [producer, idx] : sorted_consumed) {
-        hg_->add_edge_consumer(consumed_keys[idx], result.event, matched_edges[idx]);
-    }
+    hg_->causal_graph().consume_edges(consumed_keys, matched_edges, num_matched, result.event);
     }  // end !quotient_causal (full-capture rendezvous)
 
     // Branchial, in two independent recordings. Grouping is by the RAW input state id: two

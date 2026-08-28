@@ -4,6 +4,7 @@
 // causal_graph.cpp - Implementation of CausalGraph class
 
 #include "hypergraph/causal_graph.hpp"
+#include <algorithm>
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
@@ -124,37 +125,52 @@ bool CausalGraph::set_edge_producer(CanonicalEdgeKey edge_key, EventId producer,
     hgcommon::rendezvous<hgcommon::rv::EdgeProducerConsumer>(
         [&] { producers->push(producer, *arena_); },
         [&] { consumers->for_each([&](EventId consumer) {
+                  producer_side_emissions_.fetch_add(1, std::memory_order_relaxed);
                   add_causal_edge(producer, consumer, raw_edge);
               }); });
 
     return newly_added;
 }
 
-void CausalGraph::add_edge_consumer(CanonicalEdgeKey edge_key, EventId consumer, EdgeId raw_edge) {
-    LockFreeList<EventId>* producers = get_or_create_edge_producers(edge_key);
-    LockFreeList<EventId>* consumers = get_or_create_edge_consumers(edge_key);
-
-    // Consumer side of the same rendezvous: publish self into the consumer set, then scan the
-    // producer set and emit an edge from every producer.
-    hgcommon::rendezvous<hgcommon::rv::EdgeProducerConsumer>(
-        [&] { consumers->push(consumer, *arena_); },
-        [&] { producers->for_each([&](EventId producer) {
-                  add_causal_edge(producer, consumer, raw_edge);
-              }); });
-}
-
-EventId CausalGraph::get_edge_producer(CanonicalEdgeKey edge_key) const {
-    // A key with no producer set materialized has no producer.
-    auto result = edge_producers_.lookup(edge_key.value);
-    if (!result.has_value()) return INVALID_ID;
-    // The largest producer id in the set is the closest (latest) producer; returning it
-    // is a deterministic function of the order-independent set. INVALID_ID if empty.
-    EventId best = INVALID_ID;
-    (*result)->for_each([&](EventId p) {
-        if (best == INVALID_ID || p > best) best = p;
+void CausalGraph::consume_edges(const CanonicalEdgeKey* keys, const EdgeId* raw_edges,
+                                uint8_t n, EventId consumer) {
+    // ONE READ decides the order AND supplies the edges. The online transitive reduction is
+    // exact only if every in-edge of an event arrives from that event's own thread in
+    // DESCENDING producer id: a closer producer's edge recorded first is what lets a farther
+    // producer's edge be found redundant. Deciding the order from one lookup and emitting from
+    // a second read of the same concurrently growing map let the two disagree -- an edge
+    // ordered as having no producer, then emitted with one, arrived after everything placed
+    // before it. Measured: exactly one such edge per firing of CausalTrExactnessTest, and one
+    // surplus edge kept.
+    struct InEdge { EventId producer; uint8_t idx; };
+    InEdge in_edges[hgcommon::MAX_PATTERN_EDGES * hgcommon::MAX_IN_EDGE_PRODUCERS];
+    uint32_t count = 0;
+    for (uint8_t i = 0; i < n; ++i) {
+        LockFreeList<EventId>* producers = get_or_create_edge_producers(keys[i]);
+        LockFreeList<EventId>* consumers = get_or_create_edge_consumers(keys[i]);
+        // Consumer side of the symmetric rendezvous: publish self, then read the producers.
+        uint32_t met = 0;
+        hgcommon::rendezvous<hgcommon::rv::EdgeProducerConsumer>(
+            [&] { consumers->push(consumer, *arena_); },
+            [&] { producers->for_each([&](EventId producer) {
+                      if (met < hgcommon::MAX_IN_EDGE_PRODUCERS) in_edges[count++] = InEdge{producer, i};
+                      ++met;
+                  }); });
+        // A raw edge has exactly one producer; a canonical edge orbit under quotient can have
+        // several. Past the bound the surplus producers' edges are not recorded, and that is
+        // counted as the capacity overflow it is rather than treated as a run that found less.
+        if (met > hgcommon::MAX_IN_EDGE_PRODUCERS)
+            in_edge_producers_truncated_.fetch_add(1, std::memory_order_relaxed);
+    }
+    std::sort(in_edges, in_edges + count, [](const InEdge& a, const InEdge& b) {
+        if (a.producer != b.producer) return a.producer > b.producer;
+        return a.idx < b.idx;
     });
-    return best;
+    for (uint32_t k = 0; k < count; ++k)
+        add_causal_edge(in_edges[k].producer, consumer, raw_edges[in_edges[k].idx]);
 }
+
+
 
 // =============================================================================
 // Branchial Tracking

@@ -48,6 +48,9 @@ constexpr uint32_t INVALID_ID = 0xFFFFFFFFu;  // == UINT32_MAX
 // Fixed-size structural limits (stack/shared-memory buffers rely on these).
 constexpr uint8_t MAX_ARITY         = 16;
 constexpr uint8_t MAX_PATTERN_EDGES = 16;
+// Producers one consumed edge's causal registration reads. A raw edge has exactly one; a
+// canonical edge orbit under quotient can have several, bounded by the class's automorphisms.
+constexpr uint32_t MAX_IN_EDGE_PRODUCERS = 64;
 constexpr uint8_t MAX_VARS          = 32;
 
 // FNV-1a constants.

@@ -1318,11 +1318,7 @@ public:
     size_t observable_num_causal_pairs(bool transitively_reduced) const;
     size_t observable_num_branchial() const;
 
-    // Get a representative edge producer for a canonical edge key (INVALID_ID if none).
-    EventId get_edge_producer(CanonicalEdgeKey key) const;
 
-    // Add edge consumer: register `consumer` as a consumer of the canonical edge `key`.
-    void add_edge_consumer(CanonicalEdgeKey key, EventId consumer, EdgeId raw_edge);
 
 
     // Whether causal edges are keyed by canonical edge orbit (quotient exploration). Set

@@ -1810,13 +1810,7 @@ size_t Hypergraph::observable_num_branchial() const {
                                      : causal_graph_.num_branchial_edges();
 }
 
-EventId Hypergraph::get_edge_producer(CanonicalEdgeKey key) const {
-    return causal_graph_.get_edge_producer(key);
-}
 
-void Hypergraph::add_edge_consumer(CanonicalEdgeKey key, EventId consumer, EdgeId raw_edge) {
-    causal_graph_.add_edge_consumer(key, consumer, raw_edge);
-}
 
 
 void Hypergraph::set_quotient_causal(bool q) {

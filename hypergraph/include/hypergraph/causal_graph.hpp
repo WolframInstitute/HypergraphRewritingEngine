@@ -153,7 +153,10 @@ class CausalGraph {
     //      consumer's, descending id is reverse topological order: when p reaches x
     //      and both produce edges consumed by c, x->c is processed before p->c, so x
     //      is already in preds_[c] when the p->c redundancy search runs and the path
-    //      p->..->x->c is found.
+    //      p->..->x->c is found. consume_edges is the ONE place this order is decided,
+    //      and it decides it over the same read of the producer sets it then emits
+    //      from -- ordering on one read and emitting from another lets the two
+    //      disagree, and one disagreement is one redundant edge kept for good.
     // Ancestors of an event have completed their own causal registration before it
     // runs, so the backward search reads a settled sub-DAG above c.
 
@@ -168,6 +171,20 @@ class CausalGraph {
 
     // Statistics for TR
     std::atomic<size_t> num_redundant_edges_skipped_{0};
+    std::atomic<uint64_t> in_edge_producers_truncated_{0};
+    // Causal edges emitted by the PRODUCER side of the rendezvous, i.e. by a thread other than
+    // the consumer's. The online reduction's arrival discipline is stated per consumer -- all
+    // of a consumer's in-edges, from its own thread, in descending producer id -- so an edge
+    // that arrives this way is outside it. Zero on every run whose producers are registered
+    // before their edges can be consumed, which the rewriter guarantees by registering a
+    // rewrite's produced edges before its child state exists to anyone; the determinism gate
+    // asserts it.
+    mutable std::atomic<size_t> producer_side_emissions_{0};
+public:
+    size_t producer_side_emissions() const {
+        return producer_side_emissions_.load(std::memory_order_relaxed);
+    }
+private:
 
     // Arena for allocations (supports concurrent access)
     ConcurrentHeterogeneousArena* arena_;
@@ -239,15 +256,17 @@ public:
     // this producer was newly added (not already in the set).
     bool set_edge_producer(CanonicalEdgeKey edge_key, EventId producer, EdgeId raw_edge);
 
-    // Called when a canonical edge (edge_key) is consumed by an event.
-    void add_edge_consumer(CanonicalEdgeKey edge_key, EventId consumer, EdgeId raw_edge);
+    // Register `consumer` against each consumed edge and record its in-edges, in the one order
+    // the online reduction is exact under. keys and raw_edges are parallel, n of each.
+    void consume_edges(const CanonicalEdgeKey* keys, const EdgeId* raw_edges, uint8_t n,
+                       EventId consumer);
+    // Consumed edges whose producer set exceeded MAX_IN_EDGE_PRODUCERS; the surplus producers'
+    // causal edges are not recorded.
+    uint64_t in_edge_producers_truncated() const {
+        return in_edge_producers_truncated_.load(std::memory_order_relaxed);
+    }
 
 
-    // A representative producer of a canonical edge -- the largest producer event id in
-    // the set (the closest producer, for the reverse-topological TR insertion heuristic),
-    // or INVALID_ID if the edge has no producer. Deterministic: a function of the
-    // order-independent producer set, not of arrival order.
-    EventId get_edge_producer(CanonicalEdgeKey edge_key) const;
 
     // =========================================================================
     // Branchial Tracking
