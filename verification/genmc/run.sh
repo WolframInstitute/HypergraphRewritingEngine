@@ -46,6 +46,14 @@
 #                  lines. Off by default: debug metadata more than doubles the pruned module
 #                  (111,538 -> 274,828 lines on the evolve() harness) and the transformation
 #                  phase's memory with it.
+#   HG_GENMC_PROGRESS  set (to a number N) to have the patched checker report progress on stderr:
+#                  one line per transformation pass (name, seconds, resident MB, instruction
+#                  count) and one line per completed execution for the first ten and then every
+#                  N (executions so far, events in this one, elapsed, rate). This is what says
+#                  whether a large module is worth waiting for.
+#   HG_GENMC_HEARTBEAT  seconds between heartbeat lines (30 unset; needs HG_GENMC_PROGRESS): the
+#                  pass and function the transformation is on, or the exploration's executions,
+#                  queued revisits and instructions interpreted, at that moment.
 #   HG_HARNESS_DEFINES  extra -D flags for the harness compile. A harness carrying a CALIBRATION
 #                  arm -- the defect reinstated behind an ifdef -- is run through it with this,
 #                  so the calibration is a command anyone can repeat rather than a claim in a

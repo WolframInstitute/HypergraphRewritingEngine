@@ -99,6 +99,25 @@ instead of reaching a verdict.
 | `PromoteMemIntrinsicPass.cpp`: promotion type from a zero-index GEP's **source** element type; a copy shorter than its last leaf finishes as byte stores; an opaque-destination `memset` of constant length promotes at the width its alignment asserts | A `getelementptr [2 x i32], p, 0, 0` names the array, and the pass promoted by its result element (`i32`) and tripped `typeSizeDst >= len`; an opaque destination was skipped outright, leaving memory the model never saw written. | Internal checks in `resolveAccessValue` and `typeSizeDst >= len`; a constructor loop zeroing `std::atomic<bool>` fields one `memset(p, 0, 1)` at a time is what the registry harness compiles to once `instcombine` no longer folds it. | `checker/zero_index_gep_copy.cpp`, `arena_worker_index_exclusive` |
 | `Execution.cpp` + `GenMCDriver::noteCasFailure`: a **failed** compare-exchange's read takes the failure ordering | The read label carried the success ordering only, so a failed CAS with `memory_order_acquire` failure ordering synchronised with nothing. | The block another thread published through a release CAS, taken by this thread's failed acquire-CAS, was "non-allocated" when written to: `grab_block`'s `old_head->next = new_block`. | `checker/failed_cas_acquire.cpp` |
 | `GenMCDriver::checkLiveness`: no liveness report while any thread is blocked by an assume, a helped CAS or a confirmation (upstream PR #58, ported to v0.17.0) | An execution being pruned could report a spinning thread as non-terminating. | Not observed here; applied because the park/wake harnesses run under `--check-liveness`. Their calibration arms still report the violation with it applied, so those violations are not of this class. | -- |
+| `FunctionInlinerPass.cpp`: call sites from each function's use list, functions visited in SCC post-order | Scanned the whole module once per function and walked the call graph's SCCs once per function: quadratic in the module. | 40 minutes and 10 GB inlining the engine's evolve() module. 72 seconds after. | -- (module-scale only) |
+| `LLVMUtils.cpp`: `isDependentOn` is visited-set reachability | Enumerated every operand path from the branch to the PHI, with the visited set copied per call: exponential in the dependence DAG. | LoopJumpThreading spent over thirty minutes on one loop header of the evolve() module (stack-sampled). | `checker/dependence_dag_paths.cpp`: a Fibonacci DAG of 40 steps, 10^8 paths; patched, 0.07 s |
+
+Two of the rows are not wrong answers but no answer: the checker as released does not reach a
+verdict on a module of this size in any time worth waiting, and the composed engine is that
+module. Both rewrites are gated on execution counts: every harness explores exactly the number
+of executions it explored before (`concurrent_map_double_growth_2t`: 131,817).
+
+One hunk is not a fix but an instrument: with `HG_GENMC_PROGRESS=N` in the environment the
+checker reports each module-level transformation pass (name, seconds, resident MB, instruction
+count) and each completed execution (count, events in it, elapsed, rate), and a heartbeat thread
+prints every `HG_GENMC_HEARTBEAT` seconds (30 unset) what the checker is on at that moment:
+during the transformation the pass, the function it is on, that function's instruction count
+and the seconds spent on it; during exploration the executions completed and blocked, the
+execution-stack depth, the revisits still queued, the instructions interpreted in the current
+execution and in total, and the rate. The checker has no verbosity in a release build; a pass
+that sits on one function for an hour, or an execution that interprets millions of
+instructions, produces no per-pass or per-execution line, and the heartbeat is what says
+whether it is moving.
 
 What the upstream tracker says about each, checked 2026-08-28: #49 is the thread-local
 aggregate limitation `HG_THREAD_LOCAL` works around; #60 is about LKMM's `cmpxchg` wrappers,

@@ -1,8 +1,194 @@
+diff --git a/genmc/genmc/Support/HgProgress.hpp b/genmc/genmc/Support/HgProgress.hpp
+new file mode 100644
+index 0000000..d146b40
+--- /dev/null
++++ b/genmc/genmc/Support/HgProgress.hpp
+@@ -0,0 +1,130 @@
++/*
++ * Progress reporting for long runs (HG_GENMC_PROGRESS). A heartbeat thread prints, every
++ * HG_GENMC_HEARTBEAT seconds (30 when unset), what the checker is doing RIGHT NOW: during the
++ * transformation the pass and the function it is on, that function's size and how long the
++ * pass has been on it; during exploration the executions completed, the revisit stack, the
++ * instructions interpreted in the current execution and in total. The point is a run inside
++ * one long pass or one long execution, where no per-pass or per-execution line is coming.
++ */
++#pragma once
++
++#include <atomic>
++#include <chrono>
++#include <cstdint>
++#include <cstdlib>
++#include <fstream>
++#include <iostream>
++#include <mutex>
++#include <string>
++#include <thread>
++
++namespace hgprog {
++
++struct State {
++	std::mutex mtx;                 // guards the strings
++	std::string phase{"startup"};
++	std::string pass;
++	std::string function;
++	std::atomic<uint64_t> functionInsts{0};
++	std::atomic<int64_t> passStartNs{0};
++	std::atomic<uint64_t> explored{0};
++	std::atomic<uint64_t> blocked{0};
++	std::atomic<uint64_t> execDepth{0};
++	std::atomic<uint64_t> pendingRevisits{0};
++	std::atomic<uint64_t> instsThisExec{0};
++	std::atomic<uint64_t> instsTotal{0};
++	std::atomic<int64_t> exploreStartNs{0};
++};
++
++inline State &state()
++{
++	static State s;
++	return s;
++}
++
++inline bool enabled() { return std::getenv("HG_GENMC_PROGRESS") != nullptr; }
++
++inline int64_t nowNs()
++{
++	return std::chrono::duration_cast<std::chrono::nanoseconds>(
++		       std::chrono::steady_clock::now().time_since_epoch())
++		.count();
++}
++
++inline unsigned long rssMb()
++{
++	std::ifstream f("/proc/self/statm");
++	unsigned long size = 0, resident = 0;
++	f >> size >> resident;
++	return resident * 4096UL / (1024UL * 1024UL);
++}
++
++inline void setPass(const std::string &pass, const std::string &function, uint64_t functionInsts)
++{
++	auto &s = state();
++	std::lock_guard<std::mutex> lk(s.mtx);
++	s.phase = "transform";
++	s.pass = pass;
++	s.function = function;
++	s.functionInsts.store(functionInsts, std::memory_order_relaxed);
++	s.passStartNs.store(nowNs(), std::memory_order_relaxed);
++}
++
++inline void setPhase(const char *phase)
++{
++	auto &s = state();
++	std::lock_guard<std::mutex> lk(s.mtx);
++	s.phase = phase;
++	if (s.phase == "explore" && s.exploreStartNs.load(std::memory_order_relaxed) == 0)
++		s.exploreStartNs.store(nowNs(), std::memory_order_relaxed);
++}
++
++inline void heartbeat()
++{
++	auto &s = state();
++	std::string phase, pass, function;
++	{
++		std::lock_guard<std::mutex> lk(s.mtx);
++		phase = s.phase;
++		pass = s.pass;
++		function = s.function;
++	}
++	const auto now = nowNs();
++	std::cerr << "HG-HEARTBEAT phase=" << phase << " rss_mb=" << rssMb();
++	if (phase == "transform") {
++		const double inPass = (now - s.passStartNs.load(std::memory_order_relaxed)) / 1e9;
++		std::cerr << " pass=" << pass << " fn=" << function
++			  << " fn_insts=" << s.functionInsts.load(std::memory_order_relaxed)
++			  << " in_pass_s=" << inPass;
++	} else if (phase == "explore") {
++		const double secs = (now - s.exploreStartNs.load(std::memory_order_relaxed)) / 1e9;
++		const auto n = s.explored.load(std::memory_order_relaxed);
++		std::cerr << " explored=" << n << " blocked=" << s.blocked.load(std::memory_order_relaxed)
++			  << " exec_depth=" << s.execDepth.load(std::memory_order_relaxed)
++			  << " pending_revisits=" << s.pendingRevisits.load(std::memory_order_relaxed)
++			  << " insts_this_exec=" << s.instsThisExec.load(std::memory_order_relaxed)
++			  << " insts_total=" << s.instsTotal.load(std::memory_order_relaxed)
++			  << " elapsed_s=" << secs << " rate_per_s=" << (secs > 0 ? n / secs : 0.0);
++	}
++	std::cerr << "\n";
++}
++
++/* Idempotent; the thread is detached and dies with the process. */
++inline void start()
++{
++	static std::once_flag once;
++	if (!enabled())
++		return;
++	std::call_once(once, [] {
++		const char *hb = std::getenv("HG_GENMC_HEARTBEAT");
++		const int secs = hb ? std::max(1, std::atoi(hb)) : 30;
++		std::thread([secs] {
++			for (;;) {
++				std::this_thread::sleep_for(std::chrono::seconds(secs));
++				heartbeat();
++			}
++		}).detach();
++	});
++}
++
++}  // namespace hgprog
 diff --git a/genmc/genmc/Verification/GenMCDriver.cpp b/genmc/genmc/Verification/GenMCDriver.cpp
-index a0d1865..0a9f869 100644
+index a0d1865..9159870 100644
 --- a/genmc/genmc/Verification/GenMCDriver.cpp
 +++ b/genmc/genmc/Verification/GenMCDriver.cpp
-@@ -804,7 +804,16 @@ auto GenMCDriver::checkLiveness() -> std::optional<VerificationError>
+@@ -11,6 +11,8 @@
+  *     https://opensource.org/licenses/MIT
+  */
+ 
++#include <cstdlib>
++#include "genmc/Support/HgProgress.hpp"
+ #include "GenMCDriver.hpp"
+ #include "genmc/Execution/Consistency/BoundDecider.hpp"
+ #include "genmc/Execution/Consistency/ConsistencyChecker.hpp"
+@@ -366,6 +368,24 @@ auto GenMCDriver::handleExecutionEnd() -> std::optional<VerificationError>
+ 	GENMC_DEBUG(if (getConf()->boundsHistogram && inVerificationMode()) trackExecutionBound(););
+ 
+ 	++result.explored;
++	hgprog::state().explored.store(result.explored, std::memory_order_relaxed);
++	hgprog::state().blocked.store(result.exploredBlocked, std::memory_order_relaxed);
++	hgprog::state().instsThisExec.store(0, std::memory_order_relaxed);
++	/* Progress, when asked for: how many executions so far, how large this one was, and the
++	 * rate -- the numbers that let a run on a large module be extrapolated or abandoned. */
++	if (const char *hgProg = std::getenv("HG_GENMC_PROGRESS")) {
++		static const auto hgStart = std::chrono::steady_clock::now();
++		static const long hgEvery = std::max(1L, std::atol(hgProg));
++		const auto n = result.explored;
++		if (n <= 10 || n % hgEvery == 0) {
++			unsigned long events = 0;
++			for (auto t = 0u; t < g.getNumThreads(); ++t) events += g.getThreadSize(t);
++			const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - hgStart).count();
++			std::cerr << "HG-PROGRESS explored=" << n << " blocked=" << result.exploredBlocked
++				  << " events_in_this=" << events << " elapsed_s=" << secs
++				  << " rate_per_s=" << (secs > 0 ? n / secs : 0.0) << "\n";
++		}
++	}
+ 	if (fullExecutionExceedsBound())
+ 		++result.boundExceeding;
+ 
+@@ -395,7 +415,15 @@ auto GenMCDriver::handleExecutionEnd() -> std::optional<VerificationError>
+ bool GenMCDriver::done()
+ {
+ 	auto validExecution = false;
++	hgprog::setPhase("explore");
+ 	while (!isHalting() && !validExecution) {
++		{
++			size_t pending = 0;
++			for (const auto &e : execStack)
++				pending += e.getWorkqueue().size();
++			hgprog::state().execDepth.store(execStack.size(), std::memory_order_relaxed);
++			hgprog::state().pendingRevisits.store(pending, std::memory_order_relaxed);
++		}
+ 		auto item = getExec().getWorkqueue().getNext();
+ 		if (!item) {
+ 			if (popExecution())
+@@ -804,7 +832,16 @@ auto GenMCDriver::checkLiveness() -> std::optional<VerificationError>
  	/* Collect all threads blocked at spinloops */
  	std::vector<int> spinBlocked;
  	for (auto i = 0U; i < g.getNumThreads(); i++) {
@@ -20,7 +206,7 @@ index a0d1865..0a9f869 100644
  			spinBlocked.push_back(i);
  	}
  
-@@ -1061,6 +1070,28 @@ EventLabel *GenMCDriver::findConsistentCo(WriteLabel *wLab, std::vector<EventLab
+@@ -1061,6 +1098,28 @@ EventLabel *GenMCDriver::findConsistentCo(WriteLabel *wLab, std::vector<EventLab
  	return nullptr;
  }
  
@@ -66,11 +252,33 @@ index 59b5337..7ce36c9 100644
  	/** This method blocks the current thread  */
  	HandleResult<std::monostate> handleAssume(const EventDbgInfo *dbg, Event pos,
  						  AssumeType type);
+diff --git a/genmc/genmc/Verification/WorkList.hpp b/genmc/genmc/Verification/WorkList.hpp
+index 4866e5e..d00da8a 100644
+--- a/genmc/genmc/Verification/WorkList.hpp
++++ b/genmc/genmc/Verification/WorkList.hpp
+@@ -31,6 +31,9 @@ public:
+ 	/** Returns whether this worklist is empty */
+ 	[[nodiscard]] auto empty() const -> bool { return wlist_.empty(); }
+ 
++	/** Items still to examine */
++	[[nodiscard]] auto size() const -> size_t { return wlist_.size(); }
++
+ 	/** Adds an item to the worklist */
+ 	void add(auto &&item) { wlist_.emplace_back(std::move(item)); }
+ 
 diff --git a/lli/Runtime/Execution.cpp b/lli/Runtime/Execution.cpp
-index fe659e6..2788a86 100644
+index fe659e6..36df16c 100644
 --- a/lli/Runtime/Execution.cpp
 +++ b/lli/Runtime/Execution.cpp
-@@ -1691,8 +1691,10 @@ void Interpreter::visitAtomicCmpXchgInst(AtomicCmpXchgInst &I)
+@@ -31,6 +31,7 @@
+ #include "Runtime/Interpreter.h"
+ #include "passes/LLVMUtils.hpp"
+ #include "genmc/Support/Error.hpp"
++#include "genmc/Support/HgProgress.hpp"
+ #include "genmc/Support/SExprVisitor.hpp"
+ #include "genmc/Verification/GenMCDriver.hpp"
+ #include "llvm/ADT/APInt.h"
+@@ -1691,8 +1692,10 @@ void Interpreter::visitAtomicCmpXchgInst(AtomicCmpXchgInst &I)
  		cmpRes = res == GV_TO_SVAL(cmpVal, typ);                                           \
  		updateDataDeps(getCurThr().id, &I, currPos());                                     \
  		updateAddrPoDeps(getCurThr().id, I.getPointerOperand());                           \
@@ -82,6 +290,15 @@ index fe659e6..2788a86 100644
  		auto sDeps = makeEventDeps(getDataDeps(getCurThr().id, I.getPointerOperand()),     \
  					   getDataDeps(getCurThr().id, I.getNewValOperand()),      \
  					   getCtrlDeps(getCurThr().id), getAddrPoDeps(thr.id),     \
+@@ -3612,6 +3615,8 @@ void Interpreter::run()
+ 		llvm::ExecutionContext &SF = ECStack().back();
+ 		llvm::Instruction &I = *SF.CurInst++;
+ 		visit(I);
++		hgprog::state().instsThisExec.fetch_add(1, std::memory_order_relaxed);
++		hgprog::state().instsTotal.fetch_add(1, std::memory_order_relaxed);
+ 		if (!ECStack().empty()) {
+ 			dynState.globalInstructions[currPos().thread].kind =
+ 				getInstKind(&*ECStack().back().CurInst);
 diff --git a/passes/passes/InternalFunctions.cpp b/passes/passes/InternalFunctions.cpp
 index 22631de..553b75f 100644
 --- a/passes/passes/InternalFunctions.cpp
@@ -94,6 +311,243 @@ index 22631de..553b75f 100644
  	{"_ZdlPv", InternalFunctions::Free},
 +	{"_ZdaPv", InternalFunctions::Free},
  };
+diff --git a/passes/passes/LLVMModule.cpp b/passes/passes/LLVMModule.cpp
+index 80ed9cd..dce0fc9 100644
+--- a/passes/passes/LLVMModule.cpp
++++ b/passes/passes/LLVMModule.cpp
+@@ -11,7 +11,13 @@
+  *     https://opensource.org/licenses/MIT
+  */
+ 
++#include "llvm/IR/PassInstrumentation.h"
++#include <iostream>
++#include <fstream>
++#include <cstdlib>
++#include <chrono>
+ #include "LLVMModule.hpp"
++#include "genmc/Support/HgProgress.hpp"
+ #include "passes/LLIConfig.hpp"
+ #include "passes/Transforms/BarrierResultCheckerPass.hpp"
+ #include "passes/Transforms/BisimilarityCheckerPass.hpp"
+@@ -206,7 +212,60 @@ auto transformLLVMModule(llvm::Module &mod, ModuleInfo &MI, const LLIConfig *con
+ 	fam.registerPass([&] { return BisimilarityAnalysis(); });
+ 	fam.registerPass([&] { return LoadAnnotationAnalysis(); });
+ 
+-	llvm::PassBuilder pb;
++	/* Progress through the transformation, when asked for: which pass is running, how long it
++	 * took, the resident set after it and the module's instruction count -- the numbers that
++	 * say where the time and memory of a large module go, and whether to keep waiting. */
++	llvm::PassInstrumentationCallbacks pic;
++	const bool hgProgress = std::getenv("HG_GENMC_PROGRESS") != nullptr;
++	static std::chrono::steady_clock::time_point hgPassStart;
++	auto hgRss = [] {
++		std::ifstream f("/proc/self/statm");
++		unsigned long size = 0, resident = 0;
++		f >> size >> resident;
++		return resident * 4096UL / (1024UL * 1024UL);
++	};
++	auto hgInsts = [&mod] {
++		unsigned long n = 0;
++		for (auto &F : mod)
++			for (auto &BB : F)
++				n += BB.size();
++		return n;
++	};
++	if (hgProgress) {
++		hgprog::start();
++		pic.registerBeforeNonSkippedPassCallback([&](llvm::StringRef name, llvm::Any ir) {
++			/* A function pass is reported to the heartbeat only: which function it is on
++			 * and how large, so a pass that stays on one function for an hour is
++			 * visible from outside. */
++			if (const auto *fp = llvm::any_cast<const llvm::Function *>(&ir)) {
++				const auto *F = *fp;
++				unsigned long n = 0;
++				for (auto &BB : *F)
++					n += BB.size();
++				hgprog::setPass(name.str(), F->getName().str(), n);
++				return;
++			}
++			if (llvm::any_cast<const llvm::Module *>(&ir) == nullptr)
++				return;
++			hgprog::setPass(name.str(), "<module>", 0);
++			hgPassStart = std::chrono::steady_clock::now();
++			std::cerr << "HG-PASS begin " << name.str() << " rss_mb=" << hgRss() << "\n";
++		});
++		pic.registerAfterPassCallback([&](llvm::StringRef name, llvm::Any ir, const llvm::PreservedAnalyses &) {
++			/* Function passes run once per function; counting the whole module after each
++			 * of them is quadratic and was itself the slowest part of the transform. */
++			const bool modulePass = llvm::any_cast<const llvm::Module *>(&ir) != nullptr;
++			if (!modulePass)
++				return;
++			const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - hgPassStart).count();
++			std::cerr << "HG-PASS end   " << name.str() << " secs=" << secs << " rss_mb=" << hgRss()
++				  << " insts=" << hgInsts() << "\n";
++		});
++		mam.registerPass([&] { return llvm::PassInstrumentationAnalysis(&pic); });
++		fam.registerPass([&] { return llvm::PassInstrumentationAnalysis(&pic); });
++	}
++
++	llvm::PassBuilder pb(nullptr, llvm::PipelineTuningOptions(), std::nullopt, &pic);
+ 	pb.registerModuleAnalyses(mam);
+ 	pb.registerCGSCCAnalyses(cgam);
+ 	pb.registerFunctionAnalyses(fam);
+diff --git a/passes/passes/LLVMUtils.cpp b/passes/passes/LLVMUtils.cpp
+index c4e90d2..aef0139 100644
+--- a/passes/passes/LLVMUtils.cpp
++++ b/passes/passes/LLVMUtils.cpp
+@@ -12,6 +12,8 @@
+  */
+ 
+ #include "LLVMUtils.hpp"
++#include <llvm/ADT/DenseSet.h>
++#include <llvm/ADT/SmallVector.h>
+ #include <llvm/IR/Constants.h>
+ #include <llvm/IR/Dominators.h>
+ #include <llvm/IR/ValueHandle.h>
+@@ -114,28 +116,34 @@ AtomicCmpXchgInst *extractsFromCAS(ExtractValueInst *extract)
+ 	return dyn_cast<AtomicCmpXchgInst>(extract->getAggregateOperand());
+ }
+ 
+-bool isDependentOn(const Instruction *i1, const Instruction *i2, VSet<const Instruction *> chain)
++/* i1 depends on i2 iff i2 is reachable from i1 through operand edges. Reachability is a
++ * visited-set search: an instruction that has been explored once does not reach i2 through
++ * any path, so it is never explored again. Iterative, so a long dependence chain cannot
++ * exhaust the stack. */
++bool isDependentOn(const Instruction *i1, const Instruction *i2)
+ {
+-	if (!i1 || !i2 || chain.find(i1) != chain.end())
++	if (!i1 || !i2)
+ 		return false;
+ 
+-	for (auto &u : i1->operands()) {
+-		if (auto *i = dyn_cast<Instruction>(u.get())) {
+-			chain.insert(i1);
+-			if (i == i2 || isDependentOn(i, i2, chain))
+-				return true;
+-			chain.erase(i1);
++	llvm::DenseSet<const Instruction *> visited;
++	llvm::SmallVector<const Instruction *, 64> work;
++	work.push_back(i1);
++	while (!work.empty()) {
++		const auto *cur = work.pop_back_val();
++		if (!visited.insert(cur).second)
++			continue;
++		for (auto &u : cur->operands()) {
++			if (auto *i = dyn_cast<Instruction>(u.get())) {
++				if (i == i2)
++					return true;
++				if (!visited.count(i))
++					work.push_back(i);
++			}
+ 		}
+ 	}
+ 	return false;
+ }
+ 
+-bool isDependentOn(const Instruction *i1, const Instruction *i2)
+-{
+-	VSet<const Instruction *> chain;
+-	return isDependentOn(i1, i2, chain);
+-}
+-
+ bool hasSideEffects(const Instruction *i, const VSet<Function *> *cleanFuns /* = nullptr */)
+ {
+ 	if (isa<AllocaInst>(i))
+diff --git a/passes/passes/Transforms/FunctionInlinerPass.cpp b/passes/passes/Transforms/FunctionInlinerPass.cpp
+index d49a945..45ae518 100644
+--- a/passes/passes/Transforms/FunctionInlinerPass.cpp
++++ b/passes/passes/Transforms/FunctionInlinerPass.cpp
+@@ -29,24 +29,9 @@ using namespace llvm;
+  * f->f1->f2->f3->f4->f2->f3->f4... => f->f2->f3->f4->f2->f3->f4
+  * f->f1->f2->f2->f2->... => main->f2->f2->f2...
+  */
+-static auto isRecursive(CallGraph &CG, Function &F) -> bool
+-{
+-	for (auto sccIt = scc_begin(&CG); !sccIt.isAtEnd(); ++sccIt) {
+-		if (std::ranges::find(*sccIt, CG[&F]) != sccIt->end() && sccIt.hasCycle())
+-			return true;
+-	}
+-	return false;
+-}
+-
+-static auto isInlinable(CallGraph &CG, Function &F) -> bool
+-{
+-	return !F.isDeclaration() && !isInternalFunction(F.getName().str()) && !isRecursive(CG, F);
+-}
+-
+ static auto inlineCall(CallBase *cb) -> bool
+ {
+ 	llvm::InlineFunctionInfo ifi;
+-
+ #if LLVM_VERSION_MAJOR >= 11
+ 	return InlineFunction(*cb, ifi).isSuccess();
+ #else
+@@ -54,27 +39,23 @@ static auto inlineCall(CallBase *cb) -> bool
+ #endif
+ }
+ 
+-static auto inlineFunction(Module &M, Function *toInline) -> bool
++/* Inline every call to `toInline`. The call sites come from the function's own use list, which
++ * LLVM maintains, rather than from a scan of every instruction in the module: on a module of a
++ * few million instructions the scan was the whole cost of this pass, once per function. */
++static auto inlineFunction(Function *toInline) -> bool
+ {
+ 	std::vector<CallBase *> calls;
+-	for (auto &F : M) {
+-		if (&F == toInline) /* No need to inline calls to itself */
++	for (auto *u : toInline->users()) {
++		auto *cb = dyn_cast<CallBase>(u);
++		if (!cb || cb->getCalledFunction() != toInline)
+ 			continue;
+-
+-		for (auto &iit : instructions(F)) {
+-			if (!isa<InvokeInst>(&iit) && !isa<CallInst>(&iit))
+-				continue;
+-
+-			auto *cb = dyn_cast<CallBase>(&iit);
+-			if (cb->getCalledFunction() == toInline)
+-				calls.push_back(cb);
+-		}
++		if (cb->getFunction() == toInline) /* No need to inline calls to itself */
++			continue;
++		calls.push_back(cb);
+ 	}
+-
+ 	auto changed = false;
+-	for (auto *ci : calls) {
++	for (auto *ci : calls)
+ 		changed |= inlineCall(ci);
+-	}
+ 	return changed;
+ }
+ 
+@@ -82,12 +63,21 @@ auto FunctionInlinerPass::run(Module &M, ModuleAnalysisManager &AM) -> Preserved
+ {
+ 	CallGraph CG(M);
+ 
++	/* The SCC iteration is post-order -- a function's callees come before it -- so by the
++	 * time a function is inlined into its callers its own inlinable calls are already gone,
++	 * and nothing is inlined twice. One walk of the SCC forest decides recursion for every
++	 * function at once; deciding it per function re-walked the forest that many times. */
+ 	auto changed = false;
+-	for (auto &F : M) {
+-		/* Don't try on functions with empty bodies, external declarations, GenMCs own
+-		 * functions and (mutually) recursive functions */
+-		if (!F.empty() && isInlinable(CG, F))
+-			changed |= inlineFunction(M, &F);
++	for (auto sccIt = scc_begin(&CG); !sccIt.isAtEnd(); ++sccIt) {
++		if (sccIt.hasCycle())
++			continue; /* (mutually) recursive: never inlined */
++		for (auto *node : *sccIt) {
++			auto *F = node->getFunction();
++			/* Skip functions with empty bodies, external declarations and GenMC's own */
++			if (!F || F->isDeclaration() || isInternalFunction(F->getName().str()))
++				continue;
++			changed |= inlineFunction(F);
++		}
+ 	}
+ 	return changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
+ }
 diff --git a/passes/passes/Transforms/PromoteMemIntrinsicPass.cpp b/passes/passes/Transforms/PromoteMemIntrinsicPass.cpp
 index b31c6cd..508240e 100644
 --- a/passes/passes/Transforms/PromoteMemIntrinsicPass.cpp
