@@ -208,6 +208,17 @@ concurrently cannot both miss each other, or a raw event and every relation unde
 with the canonical counts untouched. 3 executions, clean; `-DCALIBRATE_NO_FENCE` removes both
 fences and the checker reports both walks missing.
 
+**The quotient-causal DP's producer/transition rendezvous, on BOTH engines**, covered by
+`verification/genmc/dp_producer_meets_transition.cpp` (RC11) and
+`verification/gpumc/dp_producer_meets_transition.cpp` (scoped RC11). Both drive
+`hgcommon/quotient_causal_core.hpp` itself -- `qc_add_producer` and `qc_process_transition`, the
+bodies the host's `QcCtx` and the device's `DeviceQcCtx` run -- with the shape each engine puts
+around them: the producer side pushes at (S, d, orbit), fences, scans the transitions out of S;
+the transition side pushes the transition, fences, and with (S, d) reached scans the producers.
+A pair both scans miss is a causal edge the reconstruction never emits, with every count that
+does not read edges untouched. GenMC 6 executions, GPUMC 7, both clean; `-DCALIBRATE_NO_FENCE`
+makes `Ctx::fence()` a no-op and both checkers report the edge missing.
+
 **The DEVICE's dedup map election**, covered by `verification/gpumc/hash_insert_elects_one.cpp`.
 The insert rule is `hgcommon/hash_insert_core.hpp` and the harness runs THAT -- the same
 `hash_insert_claim` body `gpu/include/hg_gpu/hash_table.hpp` drives. The host `ConcurrentMap` had
