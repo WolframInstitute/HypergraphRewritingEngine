@@ -3,7 +3,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <atomic>
-#include <unistd.h>
+#if defined(_WIN32)
+#  include <process.h>
+#  define HG_TEST_GETPID _getpid
+#else
+#  include <unistd.h>
+#  define HG_TEST_GETPID getpid
+#endif
 #include <map>
 #include <set>
 #include <string>
@@ -283,7 +289,7 @@ Fingerprint run(const std::vector<hg::engine::RewriteRule>& rules,
     if (const char* dir = std::getenv("HG_DET_DUMP")) {
         static std::atomic<unsigned> counter{0};
         char name[512];
-        std::snprintf(name, sizeof name, "%s/run_%ld_%dt_%s_%u.txt", dir, (long)getpid(), threads,
+        std::snprintf(name, sizeof name, "%s/run_%ld_%dt_%s_%u.txt", dir, (long)HG_TEST_GETPID(), threads,
                       seed ? "fixed" : "random", counter.fetch_add(1));
         if (FILE* f = std::fopen(name, "w")) {
             for (uint32_t st = 0; st < g.num_published_states(); ++st)
