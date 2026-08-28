@@ -1,9 +1,9 @@
 diff --git a/genmc/genmc/Support/HgProgress.hpp b/genmc/genmc/Support/HgProgress.hpp
 new file mode 100644
-index 0000000..d146b40
+index 0000000..aec30b8
 --- /dev/null
 +++ b/genmc/genmc/Support/HgProgress.hpp
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,197 @@
 +/*
 + * Progress reporting for long runs (HG_GENMC_PROGRESS). A heartbeat thread prints, every
 + * HG_GENMC_HEARTBEAT seconds (30 when unset), what the checker is doing RIGHT NOW: during the
@@ -20,6 +20,9 @@ index 0000000..d146b40
 +#include <cstdlib>
 +#include <fstream>
 +#include <iostream>
++#include <map>
++#include <vector>
++#include <algorithm>
 +#include <mutex>
 +#include <string>
 +#include <thread>
@@ -40,6 +43,14 @@ index 0000000..d146b40
 +	std::atomic<uint64_t> instsThisExec{0};
 +	std::atomic<uint64_t> instsTotal{0};
 +	std::atomic<int64_t> exploreStartNs{0};
++	// The current pass group: how much of the module it has been through, and what each
++	// pass has cost so far. A function is counted when its first pass of the group starts.
++	std::atomic<uint64_t> groupTotalFns{0};
++	std::atomic<uint64_t> groupTotalInsts{0};
++	std::atomic<uint64_t> groupDoneFns{0};
++	std::atomic<uint64_t> groupDoneInsts{0};
++	std::map<std::string, double> passSeconds;      // guarded by mtx
++	std::map<std::string, uint64_t> passInsts;      // instructions the pass has been over
 +};
 +
 +inline State &state()
@@ -65,15 +76,66 @@ index 0000000..d146b40
 +	return resident * 4096UL / (1024UL * 1024UL);
 +}
 +
++/* A module-level pass (or a pass group) starts: the whole module is its problem size. */
++inline void beginGroup(uint64_t totalFns, uint64_t totalInsts)
++{
++	auto &s = state();
++	std::lock_guard<std::mutex> lk(s.mtx);
++	s.groupTotalFns.store(totalFns, std::memory_order_relaxed);
++	s.groupTotalInsts.store(totalInsts, std::memory_order_relaxed);
++	s.groupDoneFns.store(0, std::memory_order_relaxed);
++	s.groupDoneInsts.store(0, std::memory_order_relaxed);
++	s.function.clear();
++}
++
 +inline void setPass(const std::string &pass, const std::string &function, uint64_t functionInsts)
 +{
 +	auto &s = state();
 +	std::lock_guard<std::mutex> lk(s.mtx);
 +	s.phase = "transform";
++	if (function != s.function) {
++		s.groupDoneFns.fetch_add(1, std::memory_order_relaxed);
++		s.groupDoneInsts.fetch_add(functionInsts, std::memory_order_relaxed);
++	}
 +	s.pass = pass;
 +	s.function = function;
 +	s.functionInsts.store(functionInsts, std::memory_order_relaxed);
 +	s.passStartNs.store(nowNs(), std::memory_order_relaxed);
++}
++
++/* A pass finished on a function: charge its time and the function's size to that pass. */
++inline void endPass(const std::string &pass, double secs, uint64_t functionInsts)
++{
++	auto &s = state();
++	std::lock_guard<std::mutex> lk(s.mtx);
++	s.passSeconds[pass] += secs;
++	s.passInsts[pass] += functionInsts;
++}
++
++/* The costliest passes so far, "name=secs/Minsts" -- seconds per million instructions is the
++ * number that says whether a pass is growing faster than the module. */
++inline std::string passTable(size_t top)
++{
++	auto &s = state();
++	std::vector<std::pair<std::string, double>> v;
++	{
++		std::lock_guard<std::mutex> lk(s.mtx);
++		for (auto &kv : s.passSeconds)
++			v.emplace_back(kv.first, kv.second);
++	}
++	std::sort(v.begin(), v.end(), [](auto &a, auto &b) { return a.second > b.second; });
++	std::string out;
++	for (size_t i = 0; i < v.size() && i < top; ++i) {
++		uint64_t insts = 0;
++		{
++			std::lock_guard<std::mutex> lk(s.mtx);
++			insts = s.passInsts[v[i].first];
++		}
++		const double perM = insts ? v[i].second / (insts / 1e6) : 0.0;
++		out += (i ? " " : "") + v[i].first + "=" + std::to_string(v[i].second).substr(0, 7) + "s/" +
++		       std::to_string(perM).substr(0, 6) + "s.per.Minst";
++	}
++	return out;
 +}
 +
 +inline void setPhase(const char *phase)
@@ -101,7 +163,12 @@ index 0000000..d146b40
 +		const double inPass = (now - s.passStartNs.load(std::memory_order_relaxed)) / 1e9;
 +		std::cerr << " pass=" << pass << " fn=" << function
 +			  << " fn_insts=" << s.functionInsts.load(std::memory_order_relaxed)
-+			  << " in_pass_s=" << inPass;
++			  << " in_pass_s=" << inPass
++			  << " group_fns=" << s.groupDoneFns.load(std::memory_order_relaxed) << "/"
++			  << s.groupTotalFns.load(std::memory_order_relaxed)
++			  << " group_insts=" << s.groupDoneInsts.load(std::memory_order_relaxed) << "/"
++			  << s.groupTotalInsts.load(std::memory_order_relaxed)
++			  << " top=[" << passTable(3) << "]";
 +	} else if (phase == "explore") {
 +		const double secs = (now - s.exploreStartNs.load(std::memory_order_relaxed)) / 1e9;
 +		const auto n = s.explored.load(std::memory_order_relaxed);
@@ -267,7 +334,7 @@ index 4866e5e..d00da8a 100644
  	void add(auto &&item) { wlist_.emplace_back(std::move(item)); }
  
 diff --git a/lli/Runtime/Execution.cpp b/lli/Runtime/Execution.cpp
-index fe659e6..36df16c 100644
+index fe659e6..de561c0 100644
 --- a/lli/Runtime/Execution.cpp
 +++ b/lli/Runtime/Execution.cpp
 @@ -31,6 +31,7 @@
@@ -290,7 +357,23 @@ index fe659e6..36df16c 100644
  		auto sDeps = makeEventDeps(getDataDeps(getCurThr().id, I.getPointerOperand()),     \
  					   getDataDeps(getCurThr().id, I.getNewValOperand()),      \
  					   getCtrlDeps(getCurThr().id), getAddrPoDeps(thr.id),     \
-@@ -3612,6 +3615,8 @@ void Interpreter::run()
+@@ -3202,6 +3205,15 @@ void Interpreter::callAtExit(Function *F, const std::vector<GenericValue> &ArgVa
+ 	returnValueToCaller(F->getReturnType(), INT_TO_GV(F->getReturnType(), 0));
+ }
+ 
++/* __cxa_thread_atexit(dtor, obj, dso): the registration a thread_local with a destructor
++ * makes on first use. The checker runs no thread-exit destructors -- a thread's end is the
++ * end of its events -- so the registration records nothing and reports success. */
++void Interpreter::callThreadAtExit(Function *F, const std::vector<GenericValue> &ArgVals,
++				   const std::unique_ptr<EventDeps> &specialDeps)
++{
++	returnValueToCaller(F->getReturnType(), INT_TO_GV(F->getReturnType(), 0));
++}
++
+ void Interpreter::callMutexInit(Function *F, const std::vector<GenericValue> &ArgVals,
+ 				const std::unique_ptr<EventDeps> &specialDeps)
+ {
+@@ -3612,6 +3624,8 @@ void Interpreter::run()
  		llvm::ExecutionContext &SF = ECStack().back();
  		llvm::Instruction &I = *SF.CurInst++;
  		visit(I);
@@ -299,6 +382,81 @@ index fe659e6..36df16c 100644
  		if (!ECStack().empty()) {
  			dynState.globalInstructions[currPos().thread].kind =
  				getInstKind(&*ECStack().back().CurInst);
+diff --git a/lli/Runtime/Interpreter.cpp b/lli/Runtime/Interpreter.cpp
+index 3cabc7a..e4cdb0b 100644
+--- a/lli/Runtime/Interpreter.cpp
++++ b/lli/Runtime/Interpreter.cpp
+@@ -140,6 +140,29 @@ Thread &Interpreter::createAddNewThread(llvm::Function *F, SVal arg, int tid, in
+ 	return addNewThread(std::move(thr));
+ }
+ 
++void Interpreter::initThreadLocal(char *base, const Constant *init, Type *ty)
++{
++	const auto &DL = getDataLayout();
++	if (auto *st = dyn_cast<StructType>(ty)) {
++		const auto *SL = DL.getStructLayout(st);
++		for (unsigned i = 0, n = st->getNumElements(); i < n; ++i)
++			initThreadLocal(base + SL->getElementOffset(i), init->getAggregateElement(i),
++					st->getElementType(i));
++		return;
++	}
++	if (auto *at = dyn_cast<ArrayType>(ty)) {
++		const uint64_t elemSize = DL.getTypeAllocSize(at->getElementType());
++		for (uint64_t i = 0, n = at->getNumElements(); i < n; ++i)
++			initThreadLocal(base + i * elemSize, init->getAggregateElement(i),
++					at->getElementType());
++		return;
++	}
++	const uint64_t size = DL.getTypeAllocSize(ty);
++	const GenericValue gv = getConstantValue(const_cast<Constant *>(init));
++	for (uint64_t b = 0; b < size; ++b)
++		threadLocalVars[base + b] = gv;
++}
++
+ void Interpreter::collectStaticAddresses()
+ {
+ 	auto *M = Modules.back().get();
+@@ -149,10 +172,11 @@ void Interpreter::collectStaticAddresses()
+ 		char *ptr = static_cast<char *>(GVTOP(getConstantValue(&v)));
+ 		const uint64_t typeSize = getDataLayout().getTypeAllocSize(v.getValueType());
+ 
+-		/* Record whether this is a thread local variable or not */
++		/* Record whether this is a thread local variable or not. A thread-local is held
++		 * as one value per byte of its storage; an aggregate initializer is walked to its
++		 * scalar leaves, each stored at the bytes its layout gives it. */
+ 		if (v.isThreadLocal()) {
+-			for (auto i = 0u; i < typeSize; i++)
+-				threadLocalVars[ptr + i] = getConstantValue(v.getInitializer());
++			initThreadLocal(ptr, v.getInitializer(), v.getValueType());
+ 			continue;
+ 		}
+ 
+diff --git a/lli/Runtime/Interpreter.h b/lli/Runtime/Interpreter.h
+index 4ab7493..a872f70 100644
+--- a/lli/Runtime/Interpreter.h
++++ b/lli/Runtime/Interpreter.h
+@@ -586,6 +586,7 @@ private: // Helper functions
+ 
+ 	/* Collects the addresses (and some naming information) for all variables with
+ 	 * static storage. Also calculates the starting address of the allocation pool */
++	void initThreadLocal(char *base, const llvm::Constant *init, llvm::Type *ty);
+ 	void collectStaticAddresses();
+ 
+ 	/* Sets up how some errors will be reported to the user */
+diff --git a/passes/passes/InternalFunction.def b/passes/passes/InternalFunction.def
+index 517cbac..1c13957 100644
+--- a/passes/passes/InternalFunction.def
++++ b/passes/passes/InternalFunction.def
+@@ -179,7 +179,8 @@ HANDLE_OTHER_FUNCTION(39, "__VERIFIER_thread_create_symmetric", ThreadCreateSymm
+ HANDLE_OTHER_FUNCTION(40, "__VERIFIER_thread_join", ThreadJoin)
+ HANDLE_OTHER_FUNCTION(41, "__VERIFIER_thread_exit", ThreadExit)
+ HANDLE_OTHER_FUNCTION(42, "__VERIFIER_atexit", AtExit)
+-LAST_OTHER_FUNCTION(42)
++HANDLE_OTHER_FUNCTION(43, "__cxa_thread_atexit", ThreadAtExit)
++LAST_OTHER_FUNCTION(43)
+ 
+ #undef FIRST_PURE_FUNCTION
+ #undef HANDLE_PURE_FUNCTION
 diff --git a/passes/passes/InternalFunctions.cpp b/passes/passes/InternalFunctions.cpp
 index 22631de..553b75f 100644
 --- a/passes/passes/InternalFunctions.cpp
@@ -312,7 +470,7 @@ index 22631de..553b75f 100644
 +	{"_ZdaPv", InternalFunctions::Free},
  };
 diff --git a/passes/passes/LLVMModule.cpp b/passes/passes/LLVMModule.cpp
-index 80ed9cd..dce0fc9 100644
+index 80ed9cd..e1fb881 100644
 --- a/passes/passes/LLVMModule.cpp
 +++ b/passes/passes/LLVMModule.cpp
 @@ -11,7 +11,13 @@
@@ -329,7 +487,7 @@ index 80ed9cd..dce0fc9 100644
  #include "passes/LLIConfig.hpp"
  #include "passes/Transforms/BarrierResultCheckerPass.hpp"
  #include "passes/Transforms/BisimilarityCheckerPass.hpp"
-@@ -206,7 +212,60 @@ auto transformLLVMModule(llvm::Module &mod, ModuleInfo &MI, const LLIConfig *con
+@@ -206,7 +212,73 @@ auto transformLLVMModule(llvm::Module &mod, ModuleInfo &MI, const LLIConfig *con
  	fam.registerPass([&] { return BisimilarityAnalysis(); });
  	fam.registerPass([&] { return LoadAnnotationAnalysis(); });
  
@@ -369,6 +527,13 @@ index 80ed9cd..dce0fc9 100644
 +			}
 +			if (llvm::any_cast<const llvm::Module *>(&ir) == nullptr)
 +				return;
++			{
++				unsigned long fns = 0;
++				for (auto &F : mod)
++					if (!F.isDeclaration())
++						++fns;
++				hgprog::beginGroup(fns, hgInsts());
++			}
 +			hgprog::setPass(name.str(), "<module>", 0);
 +			hgPassStart = std::chrono::steady_clock::now();
 +			std::cerr << "HG-PASS begin " << name.str() << " rss_mb=" << hgRss() << "\n";
@@ -377,11 +542,17 @@ index 80ed9cd..dce0fc9 100644
 +			/* Function passes run once per function; counting the whole module after each
 +			 * of them is quadratic and was itself the slowest part of the transform. */
 +			const bool modulePass = llvm::any_cast<const llvm::Module *>(&ir) != nullptr;
-+			if (!modulePass)
++			if (!modulePass) {
++				if (const auto *fp = llvm::any_cast<const llvm::Function *>(&ir)) {
++					auto &st = hgprog::state();
++					const double secs = (hgprog::nowNs() - st.passStartNs.load(std::memory_order_relaxed)) / 1e9;
++					hgprog::endPass(name.str(), secs, st.functionInsts.load(std::memory_order_relaxed));
++				}
 +				return;
++			}
 +			const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - hgPassStart).count();
 +			std::cerr << "HG-PASS end   " << name.str() << " secs=" << secs << " rss_mb=" << hgRss()
-+				  << " insts=" << hgInsts() << "\n";
++				  << " insts=" << hgInsts() << " passes=[" << hgprog::passTable(6) << "]\n";
 +		});
 +		mam.registerPass([&] { return llvm::PassInstrumentationAnalysis(&pic); });
 +		fam.registerPass([&] { return llvm::PassInstrumentationAnalysis(&pic); });
@@ -453,6 +624,53 @@ index c4e90d2..aef0139 100644
  bool hasSideEffects(const Instruction *i, const VSet<Function *> *cleanFuns /* = nullptr */)
  {
  	if (isa<AllocaInst>(i))
+diff --git a/passes/passes/LLVMUtils.hpp b/passes/passes/LLVMUtils.hpp
+index 4f86c4f..cf64a90 100644
+--- a/passes/passes/LLVMUtils.hpp
++++ b/passes/passes/LLVMUtils.hpp
+@@ -14,6 +14,9 @@
+ #ifndef GENMC_LLVM_UTILS_HPP
+ #define GENMC_LLVM_UTILS_HPP
+ 
++#include <llvm/ADT/SmallPtrSet.h>
++#include <llvm/ADT/SmallVector.h>
++#include <llvm/IR/CFG.h>
+ #include "genmc/ADT/VSet.hpp"
+ #include "genmc/Execution/EventAttr.hpp"
+ #include "passes/InternalFunctions.hpp"
+@@ -218,6 +221,32 @@ void foreachInBackPathTo(llvm::BasicBlock *from, llvm::BasicBlock *to, F &&fun)
+ 	::details::foreachInBackPathTo(from, to, path, fun);
+ }
+ 
++/**
++ * Executes FUN once for every instruction of every block that lies on SOME path from FROM back
++ * to TO (TO included), in reverse iteration order within a block. The set of such blocks is
++ * what a path enumeration visits, minus the repetition: a caller whose FUN only accumulates
++ * sets or flags gets the same result, and the walk is linear in the blocks rather than
++ * exponential in the paths. A caller whose FUN carries per-path state uses foreachInBackPathTo.
++ */
++template <typename F>
++void foreachInBackBlocksTo(llvm::BasicBlock *from, llvm::BasicBlock *to, F &&fun)
++{
++	llvm::SmallPtrSet<llvm::BasicBlock *, 32> visited;
++	llvm::SmallVector<llvm::BasicBlock *, 32> work;
++	work.push_back(from);
++	while (!work.empty()) {
++		auto *bb = work.pop_back_val();
++		if (!visited.insert(bb).second)
++			continue;
++		std::for_each(bb->rbegin(), bb->rend(), fun);
++		if (bb == to)
++			continue;
++		for (auto *pred : llvm::predecessors(bb))
++			if (!visited.count(pred))
++				work.push_back(pred);
++	}
++}
++
+ /*
+  * LLVM Utilities for older LLVM versions
+  */
 diff --git a/passes/passes/Transforms/FunctionInlinerPass.cpp b/passes/passes/Transforms/FunctionInlinerPass.cpp
 index d49a945..45ae518 100644
 --- a/passes/passes/Transforms/FunctionInlinerPass.cpp
@@ -727,3 +945,55 @@ index b31c6cd..508240e 100644
  	});
  	promoted.push_back(MS);
  	return true;
+diff --git a/passes/passes/Transforms/SpinAssumePass.cpp b/passes/passes/Transforms/SpinAssumePass.cpp
+index cfc466b..ae80e02 100644
+--- a/passes/passes/Transforms/SpinAssumePass.cpp
++++ b/passes/passes/Transforms/SpinAssumePass.cpp
+@@ -11,6 +11,7 @@
+  *     https://opensource.org/licenses/MIT
+  */
+ 
++#include "genmc/Support/HgProgress.hpp"
+ #include "SpinAssumePass.hpp"
+ #include "genmc/ADT/VSet.hpp"
+ #include "genmc/Execution/LoadAnnotation.hpp"
+@@ -370,7 +371,7 @@ static auto isPathToHeaderEffectFree(BasicBlock *latch, Loop *l, ModuleAnalysisM
+ 	auto effects = false;
+ 	std::vector<AtomicCmpXchgInst *> cass;
+ 
+-	foreachInBackPathTo(latch, l->getHeader(), [&](Instruction &i) {
++	foreachInBackBlocksTo(latch, l->getHeader(), [&](Instruction &i) {
+ 		/* Try to prove that failed CASes imply another iteration */
+ 		if (auto *casi = dyn_cast<AtomicCmpXchgInst>(&i)) {
+ 			cass.push_back(casi);
+@@ -462,7 +463,7 @@ static auto isPathToHeaderFAIZNE(BasicBlock *latch, Loop *l, ModuleAnalysisManag
+ 	VSet<AtomicCmpXchgInst *> cass;
+ 	VSet<AtomicRMWInst *> fais;
+ 
+-	foreachInBackPathTo(latch, l->getHeader(), [&](Instruction &i) {
++	foreachInBackBlocksTo(latch, l->getHeader(), [&](Instruction &i) {
+ 		if (auto *faii = dyn_cast<AtomicRMWInst>(&i)) {
+ 			fais.insert(faii);
+ 			return;
+@@ -520,7 +521,7 @@ static auto isPathToHeaderLockZNE(BasicBlock *latch, Loop *l, ModuleAnalysisMana
+ 	VSet<CallInst *> unlocks;
+ 	VSet<PHINode *> phis;
+ 
+-	foreachInBackPathTo(latch, l->getHeader(), [&](Instruction &i) {
++	foreachInBackBlocksTo(latch, l->getHeader(), [&](Instruction &i) {
+ 		if (auto *ci = dyn_cast<CallInst>(&i)) {
+ 			auto name = getCalledFunOrStripValName(*ci);
+ 			if (isInternalFunction(name)) {
+@@ -689,6 +690,12 @@ auto SpinAssumePass::run(Module &M, ModuleAnalysisManager &MAM) -> PreservedAnal
+ 	auto &FAM = MAM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
+ 	auto modified = false;
+ 	for (auto &F : M | std::views::filter([&](auto &F) { return !F.isDeclaration(); })) {
++		if (hgprog::enabled()) {
++			unsigned long n = 0;
++			for (auto &BB : F)
++				n += BB.size();
++			hgprog::setPass("SpinAssumePass", F.getName().str(), n);
++		}
+ 		auto &LI = FAM.getResult<LoopAnalysis>(F);
+ 		for (auto &L : std::views::reverse(LI.getLoopsInPreorder())) {
+ 			modified |= checkLoop(L, MAM, markStarts_);
