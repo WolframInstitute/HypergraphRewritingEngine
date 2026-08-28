@@ -70,7 +70,11 @@ start)
                     # exits non-zero with nothing flushed -- and recording those as firings
                     # manufactures a reproduction that did not happen. Measured: one stop produced
                     # sixteen empty FIRING logs. A real firing names the failing test.
-                    if [ -f "$out/STOP" ] || ! grep -q '\[  FAILED  \]' "$log"; then
+                    # DOUBLE QUOTES, NOT SINGLE. The whole loop body is a single-quoted argument
+                    # to bash -c, so a single quote here closes it and every detached shell dies
+                    # on a syntax error -- which is exactly what happened, silently, and read as
+                    # "rounds: 0" for as long as it took to notice.
+                    if [ -f "$out/STOP" ] || ! grep -q "FAILED  ]" "$log"; then
                         rm -f "$log"
                     else
                         # A FIRING IS THE WHOLE POINT: keep it entire, and keep going.
