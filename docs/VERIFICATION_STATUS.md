@@ -5,9 +5,9 @@ stated absence rather than an unexamined one.
 
 - **GenMC** enumerates executions of the RC11 memory model for a bounded program. A harness under
   `verification/genmc/` includes the engine's own header and calls its own functions, so it breaks
-  when the header breaks. `verification/genmc/run.sh <name>`. ONE DOES NOT, and is listed as a gap
-  below. A harness marked `// GENMC-LINK: engine` is instead compiled against every engine
-  translation unit, linked, so it can call code whose body is in a `.cpp`.
+  when the header breaks. `verification/genmc/run.sh <name>`. A harness marked
+  `// GENMC-LINK: engine` is instead compiled against every engine translation unit, linked, so it
+  can call code whose body is in a `.cpp`.
 - **GPUMC** is GenMC's scoped-RC11 sibling, for the GPU memory model: threads are organised into
   CTAs and every access carries a SCOPE, so whether two threads synchronise depends on how close
   they are. RC11 has no scopes, so GenMC would check a program the device does not run. It runs
@@ -129,11 +129,6 @@ this ordering by a timeout the waiter does not have now states the argument that
 
 The general lesson is recorded in `hgcommon/rendezvous.hpp`: the test is not whether both sides
 read, but whether missing the read LOSES THE EVENT with no other path to it.
-
-**`wait_for_completion_with_abort` is dead in the parallel path.** Its only caller is its own
-test, which runs it with `serial=true` and so exercises the other branch. The parallel branch
-parks with no timeout, so an abort that becomes true while parked is not noticed until something
-else moves the sequence.
 
 ~~**Termination detection.**~~ COVERED for the HOST by `Quiescence.tla`. The checker reads its two
 halves in SEPARATE steps with workers running in between, because TLA+ evaluates a conjunction
