@@ -128,6 +128,17 @@ aggregate limitation `HG_THREAD_LOCAL` works around; #60 is about LKMM's `cmpxch
 whose failure orderings are never stronger than their success orderings, so the third fix does
 not change LKMM behaviour; PR #58 is the fourth row.
 
+## The transform is paid once per bound
+
+The checker re-runs its transformation passes on every invocation, and on the fully inlined
+evolve() module they take ~58 minutes. `--output-llvm-after=<file>` writes the transformed
+module; feeding that file back to the checker with the same `--unroll` and mode arguments
+re-runs the passes on already transformed code in seconds and reaches the same verdict
+(engine_rule: 8.7 s to 0.96 s, 2 executions both ways). The saved module carries its unroll
+bound, so it serves every estimate and exhaustive run at that bound; widening the bound is a
+new transform. The full-engine ladder on the box saves one module per rung
+(`/tmp/gw3/live_u{2,3,4}_after.ll`).
+
 ## Two things the pipeline does not do, and why
 
 **It does not run `instcombine`.** That pass folds a small constant-aggregate copy into ONE

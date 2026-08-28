@@ -54,6 +54,16 @@
 #   HG_GENMC_HEARTBEAT  seconds between heartbeat lines (30 unset; needs HG_GENMC_PROGRESS): the
 #                  pass and function the transformation is on, or the exploration's executions,
 #                  queued revisits and instructions interpreted, at that moment.
+#   THE TRANSFORM IS PAID ONCE PER BOUND. The checker's own passes take ~58 minutes on the
+#                  fully inlined evolve() module (43M instructions; the inliner, SROA and stock
+#                  LLVM JumpThreading are the cost), and they run again on every invocation.
+#                  Pass --output-llvm-after=<file> as an extra argument and the transformed
+#                  module is written out; feeding THAT file to the checker directly
+#                  (`genmc <same --unroll and mode args> <file>`) re-runs the passes on already
+#                  transformed code in seconds and reaches the same verdict (engine_rule:
+#                  8.7 s -> 0.96 s, 2 executions both ways). The saved module carries its
+#                  --unroll bound, so it serves every estimate and exhaustive run AT THAT BOUND;
+#                  a wider bound is a new transform.
 #   HG_HARNESS_DEFINES  extra -D flags for the harness compile. A harness carrying a CALIBRATION
 #                  arm -- the defect reinstated behind an ifdef -- is run through it with this,
 #                  so the calibration is a command anyone can repeat rather than a claim in a
