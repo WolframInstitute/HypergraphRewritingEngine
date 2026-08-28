@@ -1818,10 +1818,6 @@ void Hypergraph::add_edge_consumer(CanonicalEdgeKey key, EventId consumer, EdgeI
     causal_graph_.add_edge_consumer(key, consumer, raw_edge);
 }
 
-void Hypergraph::propagate_producers(CanonicalEdgeKey from, CanonicalEdgeKey to,
-                                     EdgeId raw_edge) {
-    causal_graph_.propagate_producers(from, to, raw_edge);
-}
 
 void Hypergraph::set_quotient_causal(bool q) {
     quotient_causal_.store(q, std::memory_order_relaxed);

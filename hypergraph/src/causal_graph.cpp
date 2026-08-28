@@ -143,21 +143,6 @@ void CausalGraph::add_edge_consumer(CanonicalEdgeKey edge_key, EventId consumer,
               }); });
 }
 
-void CausalGraph::propagate_producers(CanonicalEdgeKey from_key, CanonicalEdgeKey to_key,
-                                      EdgeId raw_edge) {
-    // A surviving edge carries its producers across a rewrite: whoever produced the
-    // parent orbit (from_key) also "produces" the same edge in the child orbit (to_key),
-    // because it is literally the same edge instance passing through. Register each as a
-    // producer of to_key so a downstream consumer of that orbit rendezvous with the
-    // edge's original creators, not just events that freshly produced into the child.
-    // Reuses set_edge_producer so the rendezvous + (producer,consumer) dedup are shared.
-    auto result = edge_producers_.lookup(from_key.value);
-    if (!result.has_value()) return;
-    (*result)->for_each([&](EventId p) {
-        set_edge_producer(to_key, p, raw_edge);
-    });
-}
-
 EventId CausalGraph::get_edge_producer(CanonicalEdgeKey edge_key) const {
     // A key with no producer set materialized has no producer.
     auto result = edge_producers_.lookup(edge_key.value);

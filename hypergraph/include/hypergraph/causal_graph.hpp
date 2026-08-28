@@ -242,9 +242,6 @@ public:
     // Called when a canonical edge (edge_key) is consumed by an event.
     void add_edge_consumer(CanonicalEdgeKey edge_key, EventId consumer, EdgeId raw_edge);
 
-    // Carry an edge's producer set across a rewrite it survives: register every producer
-    // of from_key as a producer of to_key (rendezvous-emitting to to_key's consumers).
-    void propagate_producers(CanonicalEdgeKey from_key, CanonicalEdgeKey to_key, EdgeId raw_edge);
 
     // A representative producer of a canonical edge -- the largest producer event id in
     // the set (the closest producer, for the reverse-topological TR insertion heuristic),

@@ -1324,9 +1324,6 @@ public:
     // Add edge consumer: register `consumer` as a consumer of the canonical edge `key`.
     void add_edge_consumer(CanonicalEdgeKey key, EventId consumer, EdgeId raw_edge);
 
-    // Carry a surviving edge's producers from its parent-state orbit key to its
-    // child-state orbit key (see CausalGraph::propagate_producers).
-    void propagate_producers(CanonicalEdgeKey from, CanonicalEdgeKey to, EdgeId raw_edge);
 
     // Whether causal edges are keyed by canonical edge orbit (quotient exploration). Set
     // by the evolution engine before evolving; read when minting causal edge keys.
