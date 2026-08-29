@@ -340,7 +340,10 @@ private:
     // nothing. It also does nothing when the topology is unreadable or there is one core to give,
     // which is the same "leave it off" the grouping below applies to every uncertain case.
     void ensure_default_cpu_order() {
-        const bool dbg = std::getenv("HG_DBG_PLACEMENT") != nullptr;
+        // The placement trace is a diagnostic of stats builds; a release build reads no
+        // environment here, and under the model checker getenv is a call it cannot execute.
+        bool dbg = false;
+        HG_STAT(dbg = std::getenv("HG_DBG_PLACEMENT") != nullptr);
         if (!worker_cpus_.empty()) return;        // a caller that named CPUs gets exactly those
         if (!hgcommon::affinity_supported()) return;
         // performance_cpus() names the fast cores of a HETEROGENEOUS part and is empty on a

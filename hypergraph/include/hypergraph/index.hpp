@@ -136,6 +136,10 @@ public:
 // - Each vertex's edge list is a LockFreeList
 
 class InvertedVertexIndex {
+#if HG_ENGINE_STATS
+    // Stats builds only: counters and a few lines of text about transient misses. Their
+    // storage would otherwise be part of every index, and a std::string constructed with the
+    // index is a call the model checker's interpreter cannot execute.
     static constexpr size_t kMissWitness = 8;
     std::atomic<size_t> lookup_misses_{0};
     std::atomic<size_t> lookup_miss_retry_hits_{0};
@@ -167,6 +171,7 @@ class InvertedVertexIndex {
         if (slot < kMissWitness)
             self->miss_witness_[slot] = "empty-walk v=" + std::to_string(v) + " retry-walk=" + std::to_string(len);
     }
+#endif
     // vertex_id → list of edges containing that vertex
     // Using ConcurrentMap for lock-free, wait-free access
     // EMPTY_KEY = 0xFFFFFFFE, LOCKED_KEY = 0xFFFFFFFF (both are INVALID_ID-ish values)
@@ -200,6 +205,7 @@ public:
     // is in the index, so its list exists. Stats builds count the misses in the candidate
     // walks, retry the lookup at once, count the retries that then succeed, and keep the first
     // few as text -- which is what separates a transient answer from a permanent one.
+#if HG_ENGINE_STATS
     size_t lookup_misses() const { return lookup_misses_.load(std::memory_order_relaxed); }
     size_t lookup_miss_retry_hits() const { return lookup_miss_retry_hits_.load(std::memory_order_relaxed); }
     size_t empty_seed_walks() const { return empty_seed_walks_.load(std::memory_order_relaxed); }
@@ -209,6 +215,7 @@ public:
         for (size_t i = 0; i < n; ++i) out += miss_witness_[i] + " ";
         return out;
     }
+#endif
 
     template<typename Visitor>
     void for_each_edge(

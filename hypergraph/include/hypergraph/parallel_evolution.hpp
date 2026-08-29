@@ -1047,7 +1047,9 @@ public:
     // the end of the run, as text: state, rule, binding, what the state's edge set and the
     // inverted index answered for the match's edges and vertices at the drain, and again now.
     // Empty when nothing is still missing.
+#if HG_ENGINE_STATS
     std::string validation_witness() const;
+#endif
     size_t validations_performed() const;
     size_t missing_owed_by_forwarding() const;
     size_t missing_owed_by_delta() const;
@@ -1321,6 +1323,11 @@ private:
     // Full rematch of `state` against what the task-based path claimed, run when its last
     // scan/expand task completes (validate_match_forwarding_ only).
     void validate_state_at_drain(StateId state);
+#if HG_ENGINE_STATS
+    // THE STORAGE BELOW EXISTS IN STATS BUILDS ONLY: an 8 MB ring and two arrays of strings,
+    // constructed with the engine, would otherwise be a release footprint and construction cost
+    // that no shipped output reads, and under the checker a bounded loop of thousands of
+    // writes plus a std::string constructor the interpreter cannot execute.
     std::string probe_match(StateId state, const MatchCore& core) const;
     // THE LAST CLAIMS EACH WORKER MADE (stats builds): hash, state and the answer, in a ring
     // per arena worker index. A match still missing at the end of the run is looked up here:
@@ -1354,6 +1361,7 @@ private:
     std::atomic<size_t> drain_probe_count_{0};
     uint64_t drain_probe_hash_[kDrainProbes] = {};
     std::string drain_probe_text_[kDrainProbes];
+#endif
     void note_match_task_pushed(StateId state);
     void note_match_task_done(StateId state, uint32_t step);
 

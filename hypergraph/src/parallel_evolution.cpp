@@ -2809,6 +2809,7 @@ ParallelEvolutionEngine::MatchTaskCounts ParallelEvolutionEngine::match_task_cou
 
 // What the state's edge set and the inverted index answer for a match's edges and vertices
 // at the moment of asking, as text.
+#if HG_ENGINE_STATS
 std::string ParallelEvolutionEngine::probe_match(StateId state, const MatchCore& core) const {
     const State& s = hg_->get_state(state);
     std::string w;
@@ -2833,6 +2834,7 @@ std::string ParallelEvolutionEngine::probe_match(StateId state, const MatchCore&
 // flight may deliver it later, which late_arrivals() counts. still_missing() is the verdict
 // at the end of the run, and for the first few misses the drain-time probe is kept so a
 // still-missing match can say what the index answered when the tasks were looking.
+#endif
 void ParallelEvolutionEngine::validate_state_at_drain(StateId state) {
     const State& s = hg_->get_state(state);
     auto get_edge = [this](EdgeId eid) -> const Edge& { return hg_->get_edge(eid); };
@@ -2856,6 +2858,7 @@ void ParallelEvolutionEngine::validate_state_at_drain(StateId state) {
         stable->core = core_copy;
         stable->source_state = state;
         if (!missing_match_hashes_.insert_if_absent(h, stable).second) return;
+#if HG_ENGINE_STATS
         const size_t slot = drain_probe_count_.fetch_add(1, std::memory_order_acq_rel);
         if (slot < kDrainProbes) {
             drain_probe_hash_[slot] = h;
@@ -2864,6 +2867,7 @@ void ParallelEvolutionEngine::validate_state_at_drain(StateId state) {
                 std::to_string(match_task_counts(state).completed) + " matches=" +
                 std::to_string(match_task_counts(state).matches);
         }
+#endif
     };
     for (uint16_t r = 0; r < rules_.size(); ++r)
         find_matches(rules_[r], r, state, s.edges, hg_->signature_index(), hg_->inverted_index(),
@@ -2871,6 +2875,7 @@ void ParallelEvolutionEngine::validate_state_at_drain(StateId state) {
     if (missing > 0) validation_mismatches_.fetch_add(missing, std::memory_order_relaxed);
 }
 
+#if HG_ENGINE_STATS
 void ParallelEvolutionEngine::note_claim(uint64_t h, StateId state, uint8_t answer) {
     int w = arena_worker_index();
     if (w < 0 || static_cast<size_t>(w) >= kClaimRingWorkers) w = kClaimRingWorkers - 1;
@@ -2929,6 +2934,7 @@ std::string ParallelEvolutionEngine::validation_witness() const {
     });
     return out;
 }
+#endif
 
 size_t ParallelEvolutionEngine::late_submits() const {
     return job_system_ ? job_system_->late_submits() : 0;
