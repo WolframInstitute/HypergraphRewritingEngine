@@ -3,6 +3,7 @@
 
 #include "hgcommon/capacity.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <cstddef>
@@ -52,6 +53,13 @@ public:
 #ifndef HG_SEGMENTED_ARRAY_MAX_SEGMENTS
 #define HG_SEGMENTED_ARRAY_MAX_SEGMENTS 4096
 #endif
+    // The largest segment shift a constructor is given effect for. A segment is zero-filled when
+    // it is allocated, one store per element, and the engine's arrays hold elements of tens of
+    // bytes; a checker bounding every loop needs the first segment small. The engine harnesses
+    // define this (verification/genmc/engine_*.cpp); the shipped value caps nothing.
+#ifndef HG_SEGMENTED_ARRAY_MAX_SHIFT
+#define HG_SEGMENTED_ARRAY_MAX_SHIFT 63
+#endif
     static constexpr size_t MAX_SEGMENTS = HG_SEGMENTED_ARRAY_MAX_SEGMENTS;
 
     // SEGMENTS GROW, so the capacity is the INDEX TYPE's limit and not the container's. Segment k
@@ -82,8 +90,8 @@ public:
     // them still saw the crash and concluded the class itself was untakeable. With no error state
     // there is nothing to announce.
     explicit SegmentedArray(uint32_t segment_shift = DEFAULT_SEGMENT_SHIFT)
-        : segment_size_(size_t(1) << segment_shift)
-        , seg_shift_(segment_shift)
+        : segment_size_(size_t(1) << std::min<uint32_t>(segment_shift, HG_SEGMENTED_ARRAY_MAX_SHIFT))
+        , seg_shift_(std::min<uint32_t>(segment_shift, HG_SEGMENTED_ARRAY_MAX_SHIFT))
         , seg_mask_(segment_size_ - 1)
         , geom_end_(segment_size_ * ((size_t(1) << (GROWTH_STEPS + 1)) - 1))
         , cap_shift_(segment_shift + GROWTH_STEPS)

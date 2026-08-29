@@ -83,7 +83,12 @@ constexpr uint8_t MAX_ARITY         = 16;
 #  define HG_STAT(...) ((void)0)
 #endif
 
-constexpr uint8_t MAX_PATTERN_EDGES = 16;
+// Overridable so a harness can bound the rule's arrays (verification/genmc/engine_*.cpp); the
+// shipped value is 16 on both ports, which read this one definition.
+#ifndef HG_MAX_PATTERN_EDGES
+#define HG_MAX_PATTERN_EDGES 16
+#endif
+constexpr uint8_t MAX_PATTERN_EDGES = HG_MAX_PATTERN_EDGES;
 // Producers one consumed edge's causal registration reads. A raw edge has exactly one; a
 // canonical edge orbit under quotient can have several, bounded by the class's automorphisms.
 constexpr uint32_t MAX_IN_EDGE_PRODUCERS = 64;

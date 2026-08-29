@@ -123,7 +123,12 @@ void enumerate_compatible_signatures(
 // [0, 0] and [0, 1]. These are computed once at rule initialization.
 
 struct CompatibleSignatureCache {
-    static constexpr uint8_t MAX_CACHED_SIGS = 64;  // Bell(5)=52, Bell(6)=203
+    // Bell(5)=52, Bell(6)=203. Overridable so a harness can bound the cache
+    // (verification/genmc/engine_*.cpp); the shipped value is 64.
+#ifndef HG_MAX_CACHED_SIGS
+#define HG_MAX_CACHED_SIGS 64
+#endif
+    static constexpr uint8_t MAX_CACHED_SIGS = HG_MAX_CACHED_SIGS;
 
     EdgeSignature signatures[MAX_CACHED_SIGS];
     EdgeSignature source_pattern_sig;   // kept for the overflow fallback (re-enumerate live)

@@ -236,7 +236,13 @@ class Hypergraph {
     // EVENT_SIG_AUTOMATIC adds the step and the canonical ranks. Under an identity mode the
     // observable is the count of DISTINCT identities, so the mode's signature is computed here
     // and the distinct ones counted.
-    ConcurrentKeySet<uint64_t> qc_canon_event_seen_{4096};
+    // Eager initial capacity: the set is built with its table, one placement-new per slot, so
+    // under the model checker the capacity is a loop bound; the engine harnesses define it
+    // small (verification/genmc/engine_*.cpp), the shipped value is 4096.
+#ifndef HG_QC_CANON_EVENT_SEEN_CAPACITY
+#define HG_QC_CANON_EVENT_SEEN_CAPACITY 4096
+#endif
+    ConcurrentKeySet<uint64_t> qc_canon_event_seen_{HG_QC_CANON_EVENT_SEEN_CAPACITY};
     std::atomic<size_t> qc_num_canon_events_{0};
     std::atomic<bool> quotient_reconstruction_{false};
 

@@ -373,9 +373,14 @@ public:
 #if defined(HG_VERIFICATION)
     // Under the model checker a block is small and comes from operator new: the huge-page path
     // calls posix_memalign, which the interpreter does not model, and a 2 MB block is a 2 MB
-    // memset it has to promote. Block size and source are allocation policy on thread-private
-    // memory; nothing another thread reads depends on either.
-    static constexpr size_t DEFAULT_BLOCK_SIZE = 4096;
+    // memset it has to promote -- one store per byte, each a bounded-loop iteration, so the
+    // engine harnesses define the size (verification/genmc/engine_*.cpp). Block size and source
+    // are allocation policy on thread-private memory; nothing another thread reads depends on
+    // either.
+#ifndef HG_ARENA_BLOCK_SIZE
+#define HG_ARENA_BLOCK_SIZE 4096
+#endif
+    static constexpr size_t DEFAULT_BLOCK_SIZE = HG_ARENA_BLOCK_SIZE;
 #else
     static constexpr size_t DEFAULT_BLOCK_SIZE = kHugePageBytes;
 #endif

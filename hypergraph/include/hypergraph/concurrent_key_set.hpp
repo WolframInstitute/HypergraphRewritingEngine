@@ -494,10 +494,16 @@ private:
 // The shard index takes the HIGH bits: keys here are already avalanched (qr_apply_key is an FNV
 // mix, qc_pair_key packs two dense ids), and the low bits are what the tables' own probe uses,
 // so taking the same bits for both would correlate the shard with the slot.
+// The shard count of the sharded key sets, and so the size of every object that holds one
+// (Hypergraph, CausalGraph). The engine harnesses define it small (verification/genmc/engine_*.cpp)
+// so the checker zero-fills a few shards per replay instead of 64; the shipped value is below.
+#ifndef HG_KEY_SET_SHARDS
+#define HG_KEY_SET_SHARDS 64
+#endif
 template <typename K = uint64_t,
           K EMPTY_SENTINEL = K{0},
           K LOCKED_SENTINEL = ~K{0},
-          size_t SHARDS = 64>
+          size_t SHARDS = HG_KEY_SET_SHARDS>
 class ShardedKeySet {
     static_assert((SHARDS & (SHARDS - 1)) == 0, "SHARDS must be a power of two");
 
