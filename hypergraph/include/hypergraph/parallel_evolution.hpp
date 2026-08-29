@@ -248,17 +248,21 @@ struct ExpandChunk {
 // When a REWRITE creates a new state, it passes this context to enable
 // forwarding valid parent matches and finding only NEW matches.
 
+// Every field initialised and no padding (fields ordered by size, counts widened to 16 bits): a
+// context is copied whole, and a copy of an object with an unwritten byte reads an
+// indeterminate value, which the model checker reports.
 struct MatchContext {
     StateId parent_state{INVALID_ID};
-    EdgeId consumed_edges[MAX_PATTERN_EDGES];
-    uint8_t num_consumed{0};
-    EdgeId produced_edges[MAX_PATTERN_EDGES];
-    uint8_t num_produced{0};
-
+    EdgeId consumed_edges[MAX_PATTERN_EDGES]{};
+    EdgeId produced_edges[MAX_PATTERN_EDGES]{};
+    uint16_t num_consumed{0};
+    uint16_t num_produced{0};
     bool has_parent() const;
     bool edge_was_consumed(EdgeId eid) const;
     bool edge_was_produced(EdgeId eid) const;
 };
+static_assert(sizeof(MatchContext) == sizeof(StateId) + 2 * sizeof(EdgeId) * MAX_PATTERN_EDGES + 2 + 2,
+              "MatchContext has padding");
 
 // =============================================================================
 // SCAN/EXPAND Task Data Structures (HGMatch Dataflow Model)
@@ -310,13 +314,14 @@ static_assert(sizeof(ExpandTaskData) == sizeof(StateId) + sizeof(uint32_t) + siz
 // Tracks child states and their consumed edges so parent can push matches.
 
 struct ChildInfo {
-    StateId child_state;
-    EdgeId consumed_edges[MAX_PATTERN_EDGES];
-    uint8_t num_consumed;
+    StateId child_state{INVALID_ID};
     uint32_t creation_step{0};  // Step at which child was created
-
+    EdgeId consumed_edges[MAX_PATTERN_EDGES]{};
+    uint32_t num_consumed{0};
     bool match_overlaps_consumed(const EdgeId* matched_edges, uint8_t num_edges) const;
 };
+static_assert(sizeof(ChildInfo) == sizeof(StateId) + sizeof(uint32_t) + sizeof(EdgeId) * MAX_PATTERN_EDGES + sizeof(uint32_t),
+              "ChildInfo has padding");
 
 // =============================================================================
 // ParentInfo for Match Forwarding (Pull Model from Ancestors)
@@ -324,14 +329,15 @@ struct ChildInfo {
 // Tracks each state's parent and consumed edges so we can forward from ancestors.
 
 struct ParentInfo {
-    StateId parent_state;
-    EdgeId consumed_edges[MAX_PATTERN_EDGES];
-    uint8_t num_consumed;
-
+    StateId parent_state{INVALID_ID};
+    EdgeId consumed_edges[MAX_PATTERN_EDGES]{};
+    uint32_t num_consumed{0};
     ParentInfo();
     bool has_parent() const;
     bool match_overlaps_consumed(const EdgeId* matched_edges, uint8_t num_edges) const;
 };
+static_assert(sizeof(ParentInfo) == sizeof(StateId) + sizeof(EdgeId) * MAX_PATTERN_EDGES + sizeof(uint32_t),
+              "ParentInfo has padding");
 
 // =============================================================================
 // ParallelEvolutionEngine
