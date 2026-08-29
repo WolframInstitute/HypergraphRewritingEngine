@@ -1,5 +1,8 @@
 #include "hgcommon/core.hpp"
 #include "hypergraph/arena.hpp"
+#include <algorithm>
+#include <vector>
+#include <cstdio>
 #if defined(__linux__)
 #include <sys/mman.h>
 #endif
@@ -91,6 +94,18 @@ ConcurrentHeterogeneousArena::ConcurrentHeterogeneousArena(size_t block_size,
 // and freed, which is once per 1 MB rather than once per allocation, so nothing on the hot path
 // touches it. Relaxed throughout: it is read for reporting, never to decide anything.
 static std::atomic<size_t> g_arena_block_bytes{0};
+// The largest the live total has been: what the arenas contributed to the resident set's
+// high-water mark, which a count at the end of a run (blocks already freed) cannot say.
+static std::atomic<size_t> g_arena_block_bytes_high_water{0};
+// The same high-water kept per arena kind: the recycling (per-worker scratch) arenas and
+// the rest, so a footprint that grows with the worker count is attributed to one of them.
+static std::atomic<size_t> g_scratch_block_bytes{0};
+static std::atomic<size_t> g_scratch_block_bytes_high_water{0};
+static void note_block_grab(std::atomic<size_t>& live, std::atomic<size_t>& high_water, size_t bytes) {
+    const size_t now = live.fetch_add(bytes, std::memory_order_relaxed) + bytes;
+    size_t hw = high_water.load(std::memory_order_relaxed);
+    while (now > hw && !high_water.compare_exchange_weak(hw, now, std::memory_order_relaxed)) {}
+}
 
 ConcurrentHeterogeneousArena::~ConcurrentHeterogeneousArena() {
     // Call destructors in reverse allocation order
@@ -107,6 +122,7 @@ ConcurrentHeterogeneousArena::~ConcurrentHeterogeneousArena() {
         // operator delete must not be handed a region this file poisoned.
         HG_ARENA_UNPOISON(block->data, block->capacity);
         g_arena_block_bytes.fetch_sub(sizeof(Block) + block->capacity, std::memory_order_relaxed);
+        if (recycle_) g_scratch_block_bytes.fetch_sub(sizeof(Block) + block->capacity, std::memory_order_relaxed);
         // Freed by whichever allocator produced it; see Block::create.
         if (block->huge) std::free(block); else ::operator delete(block);
         block = prev;
@@ -115,9 +131,47 @@ ConcurrentHeterogeneousArena::~ConcurrentHeterogeneousArena() {
     delete[] cursors_;
 }
 
+#if HG_ENGINE_STATS
+// BYTES PER ALLOCATION SITE (stats builds). The site is the return address of allocate_raw,
+// which the inline create<T>/allocate_array<T> wrappers make the engine function that asked;
+// a run at two worker counts with the same output and the same call counts per site but
+// more bytes is then attributed to the sites whose requests grew. Fixed open-addressed table,
+// relaxed atomics: an instrument, not a protocol.
+namespace {
+struct AllocSite { std::atomic<void*> addr{nullptr}; std::atomic<size_t> bytes{0}; std::atomic<size_t> calls{0}; };
+constexpr size_t kAllocSites = 4096;
+AllocSite g_alloc_sites[kAllocSites];
+void note_alloc_site(void* ret, size_t size) {
+    size_t h = (reinterpret_cast<size_t>(ret) >> 2) * 0x9E3779B97F4A7C15ULL;
+    for (size_t i = 0; i < kAllocSites; ++i) {
+        AllocSite& e = g_alloc_sites[(h + i) & (kAllocSites - 1)];
+        void* cur = e.addr.load(std::memory_order_relaxed);
+        if (cur == ret || (cur == nullptr && (e.addr.compare_exchange_strong(cur, ret, std::memory_order_relaxed) || cur == ret))) {
+            e.bytes.fetch_add(size, std::memory_order_relaxed);
+            e.calls.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+    }
+}
+}  // namespace
+
+void arena_alloc_profile_dump(FILE* out, size_t top) {
+    std::vector<const AllocSite*> v;
+    for (const AllocSite& e : g_alloc_sites)
+        if (e.addr.load(std::memory_order_relaxed)) v.push_back(&e);
+    std::sort(v.begin(), v.end(), [](const AllocSite* a, const AllocSite* b) {
+        return a->bytes.load(std::memory_order_relaxed) > b->bytes.load(std::memory_order_relaxed);
+    });
+    for (size_t i = 0; i < v.size() && i < top; ++i)
+        std::fprintf(out, "alloc_site %p bytes=%zu calls=%zu\n", v[i]->addr.load(std::memory_order_relaxed),
+                     v[i]->bytes.load(std::memory_order_relaxed), v[i]->calls.load(std::memory_order_relaxed));
+}
+#endif
+
 void* ConcurrentHeterogeneousArena::allocate_raw(size_t size, size_t alignment) {
     // One choke point for every request, which is where the unpoison belongs: the three paths
     // below differ in which block they take from, not in what they hand back.
+    HG_STAT(note_alloc_site(__builtin_return_address(0), size));
     void* p;
     if (recycle_) {
         p = allocate_single(size, alignment);
@@ -205,7 +259,7 @@ ConcurrentHeterogeneousArena::Block::create(size_t data_capacity) {
     block->huge = aligned;
     block->offset.store(0, std::memory_order_relaxed);
     HG_ARENA_POISON(block->data, data_capacity);
-    g_arena_block_bytes.fetch_add(sizeof(Block) + data_capacity, std::memory_order_relaxed);
+    note_block_grab(g_arena_block_bytes, g_arena_block_bytes_high_water, sizeof(Block) + data_capacity);
     return block;
 }
 
@@ -305,6 +359,8 @@ void* ConcurrentHeterogeneousArena::allocate_shared(size_t size, size_t alignmen
 ConcurrentHeterogeneousArena::Block*
 ConcurrentHeterogeneousArena::grab_block(size_t cap) {
     Block* new_block = Block::create(cap);
+    if (recycle_) note_block_grab(g_scratch_block_bytes, g_scratch_block_bytes_high_water, sizeof(Block) + cap);
+    note_block_grab(block_bytes_, block_bytes_high_water_, sizeof(Block) + cap);
 
     Block* old_head = head_.load(std::memory_order_acquire);
     do {
@@ -384,6 +440,14 @@ ConcurrentHeterogeneousArena& worker_scratch() {
 
 size_t arena_block_bytes_live() {
     return g_arena_block_bytes.load(std::memory_order_relaxed);
+}
+
+size_t arena_block_bytes_high_water() {
+    return g_arena_block_bytes_high_water.load(std::memory_order_relaxed);
+}
+
+size_t arena_scratch_block_bytes_high_water() {
+    return g_scratch_block_bytes_high_water.load(std::memory_order_relaxed);
 }
 
 // NOT DEFINED UNDER HG_VERIFICATION, because arena.hpp already defines them there as inline

@@ -224,6 +224,7 @@ int main(int argc, char** argv) {
     for (int threads : sweep) {
         std::vector<double> ms;
         size_t states = 0, raw = 0;
+        size_t hg_arena_hw = 0, hg_arena_used = 0;  // the hypergraph arena's share, read per run
         for (int i = 0; i < iters; ++i) {
             Hypergraph g(capacity_scale_from_env());
             g.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
@@ -260,6 +261,12 @@ int main(int argc, char** argv) {
             e.evolve(sel->init, steps);
             const auto t1 = std::chrono::steady_clock::now();
             ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+            hg_arena_hw = g.arena().block_bytes_high_water();
+            hg_arena_used = g.arena().bytes_allocated();
+#if HG_ENGINE_STATS
+            if (std::getenv("HG_BENCH_ALLOC_PROFILE") && i == iters - 1)
+                hg::engine::arena_alloc_profile_dump(stdout, 24);
+#endif
             // A TRUNCATED RUN IS NOT A MEASUREMENT. Hitting a container ceiling makes the
             // engine return valid partial work with a warning rather than throwing, so a bench
             // that reads only the counts reports a number for a workload it never finished --
@@ -356,10 +363,17 @@ int main(int argc, char** argv) {
         // Speedup and EFFICIENCY together: a speedup alone reads as success at any thread count,
         // while speedup/threads says how much of each added core the run actually used, and it
         // is the column that shows where scaling stops.
+        // The arenas' share of the resident set's high-water mark, so a footprint that grows
+        // with the worker count is split between the arena blocks (per-worker high-water) and
+        // everything else (allocator arenas, stacks, tables).
         std::printf("threads=%d steps=%d canonical=%zu raw=%zu median_ms=%.3f min_ms=%.3f "
-                    "speedup=%.2f efficiency=%.2f\n",
+                    "speedup=%.2f efficiency=%.2f arena_block_hw_mb=%.1f scratch_hw_mb=%.1f hg_arena_hw_mb=%.1f hg_arena_used_mb=%.1f\n",
                     threads, steps, states, raw, med, ms.front(),
-                    base_ms / med, (base_ms / med) / threads);
+                    base_ms / med, (base_ms / med) / threads,
+                    static_cast<double>(hg::engine::arena_block_bytes_high_water()) / (1024.0 * 1024.0),
+                    static_cast<double>(hg::engine::arena_scratch_block_bytes_high_water()) / (1024.0 * 1024.0),
+                    static_cast<double>(hg_arena_hw) / (1024.0 * 1024.0),
+                    static_cast<double>(hg_arena_used) / (1024.0 * 1024.0));
     }
         if (hgcommon::phase_timing_compiled()) {
         uint64_t total = 0;

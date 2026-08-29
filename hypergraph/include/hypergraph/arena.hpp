@@ -2,6 +2,7 @@
 #include "hgcommon/namespace.hpp"
 
 #include <atomic>
+#include <cstdio>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -474,6 +475,10 @@ public:
 
     // Statistics
     size_t bytes_allocated() const;
+    // Bytes of blocks this arena holds, and the most it has held: its share of the resident
+    // set, against bytes_allocated() which is what the blocks contain.
+    size_t block_bytes() const { return block_bytes_.load(std::memory_order_relaxed); }
+    size_t block_bytes_high_water() const { return block_bytes_high_water_.load(std::memory_order_relaxed); }
 
     // Stack-discipline checkpoint into a recycling scratch arena. mark() captures the
     // current position; release(m) rewinds to it, reclaiming everything allocated
@@ -552,6 +557,8 @@ private:
 
     size_t block_size_;
     bool recycle_;
+    std::atomic<size_t> block_bytes_{0};
+    std::atomic<size_t> block_bytes_high_water_{0};
     std::atomic<Block*> head_{nullptr};
     std::atomic<Block*> current_block_{nullptr};
     std::atomic<DestructorNode*> destructor_head_;
@@ -580,6 +587,16 @@ ConcurrentHeterogeneousArena& worker_scratch();
 // four), and "the workers are each holding an arena grown to their own high-water mark" and
 // "the workers have more live data" predict the same RSS curve. This number separates them.
 size_t arena_block_bytes_live();
+// The largest that total has been since the process started: the arenas' share of the
+// resident set's high-water mark.
+size_t arena_block_bytes_high_water();
+// The same high-water for the recycling (per-worker scratch) arenas alone.
+size_t arena_scratch_block_bytes_high_water();
+#if HG_ENGINE_STATS
+// Stats builds: bytes and calls per allocation site (the engine function that asked), the
+// largest first. Addresses are symbolised with addr2line against the binary.
+void arena_alloc_profile_dump(FILE* out, size_t top);
+#endif
 
 // BYTES OF ConcurrentMap TABLES THAT LOST THEIR INSTALL RACE and were abandoned in an arena.
 //
