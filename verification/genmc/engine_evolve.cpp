@@ -13,6 +13,9 @@
 //   default                     two workers, rule {0,1} -> {0,1},{1,2}, one edge, one step, no
 //                               canonicalisation. The smallest run that goes through everything
 //                               once: 1 event, 2 states.
+//   -DHG_EVOLVE_TWO_STEP=1      two workers, two steps, no canonicalisation, the one-edge rule:
+//                               the smallest run that forwards a parent's matches to its child
+//                               and delta-matches produced edges (3 events, 4 raw states).
 //   -DHG_EVOLVE_CANON_SHAPE=1   the two-edge rule under Full canonicalisation, two workers, one
 //                               step: the middle rung between the default and the live shape.
 //                               Measured 2026-08-29: the live shape's first execution did not
@@ -52,7 +55,21 @@
 
 int main() {
     hg::engine::Hypergraph g;
-#if defined(HG_EVOLVE_CANON_SHAPE)
+#if defined(HG_EVOLVE_TWO_STEP)
+    // Two workers, TWO steps, no canonicalisation, the one-edge rule: the smallest run in
+    // which a child inherits its parent's matches (forwarding) and delta-matches its produced
+    // edges -- the path the lost-event defect lived on. Step 1: one match, one child with two
+    // edges; step 2: two matches on that child, two grandchildren. 3 events, 4 raw states.
+    g.set_state_canonicalization_mode(hg::engine::StateCanonicalizationMode::None);
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
+        .lhs({0, 1}).rhs({0, 1}).rhs({1, 2}).build();
+    hg::engine::ParallelEvolutionEngine e(&g, 2);
+    e.add_rule(rule);
+    std::vector<std::vector<hg::engine::VertexId>> init = {{0, 1}};
+    e.evolve(init, 2);
+    assert(e.num_events() == 3);
+    assert(g.num_states() == 4);
+#elif defined(HG_EVOLVE_CANON_SHAPE)
     // The middle rung: the two-edge rule under Full canonicalisation, TWO workers, ONE step --
     // the canonicaliser and the dedup rendezvous on the smallest run that reaches them.
     g.set_state_canonicalization_mode(hg::engine::StateCanonicalizationMode::Full);
