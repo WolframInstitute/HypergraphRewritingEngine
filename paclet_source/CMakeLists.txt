@@ -166,13 +166,16 @@ else()  # Linux and others
     )
 endif()
 
-# For Windows, use the .def file to ensure proper exports
+# For Windows, the .def file is the export list. --export-all-symbols is not added beside it:
+# with it, mingw's ld refuses the DLL over the comparator structs local to ir_canonical_hash
+# ("cannot export ...: symbol wrong type"), and the LibraryLink entry points the paclet loads
+# are the .def's.
 if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Windows")
     # Check if using MinGW (GNU toolchain) or Clang/MSVC
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64"))
         # MinGW uses GNU-style linker flags
         set_target_properties(HypergraphRewriting PROPERTIES
-            LINK_FLAGS "-Wl,--out-implib,HypergraphRewriting.lib -Wl,--export-all-symbols -Wl,${CMAKE_CURRENT_SOURCE_DIR}/HypergraphRewriting.def"
+            LINK_FLAGS "-Wl,--out-implib,HypergraphRewriting.lib -Wl,${CMAKE_CURRENT_SOURCE_DIR}/HypergraphRewriting.def"
         )
     else()
         # Clang with MSVC target (e.g., ARM64) uses lld-link with MSVC-style flags
