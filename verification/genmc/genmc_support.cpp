@@ -12,6 +12,8 @@
 
 #include <cstddef>
 #include <new>
+#include <unordered_map>
+#include <utility>
 
 // ALIGNED ALLOCATION. Types the engine over-aligns to a cache line -- the map entry arrays, the
 // per-worker blocks -- compile to operator new[](size_t, align_val_t), which GenMC does not
@@ -48,6 +50,26 @@ int __cxa_atexit(void (*)(void*), void*, void*) { return 0; }
 // std::this_thread::yield() is this call. A yield is a scheduling hint with no memory
 // semantics; under the checker every interleaving is explored regardless, so it is nothing.
 int sched_yield() noexcept { return 0; }
+// The libc string and memory functions the engine's normal path can reach, each a plain loop
+// the interpreter executes: std::equal on integer ranges (memcmp), std::string construction
+// from a literal (strlen), and the exception-message comparison in run_job (strcmp).
+int memcmp(const void* a, const void* b, std::size_t n) noexcept {
+    const auto* x = static_cast<const unsigned char*>(a);
+    const auto* y = static_cast<const unsigned char*>(b);
+    for (std::size_t i = 0; i < n; ++i)
+        if (x[i] != y[i]) return x[i] < y[i] ? -1 : 1;
+    return 0;
+}
+std::size_t strlen(const char* s) noexcept {
+    std::size_t n = 0;
+    while (s[n] != '\0') ++n;
+    return n;
+}
+int strcmp(const char* a, const char* b) noexcept {
+    std::size_t i = 0;
+    while (a[i] != '\0' && a[i] == b[i]) ++i;
+    return static_cast<unsigned char>(a[i]) - static_cast<unsigned char>(b[i]);
+}
 // llvm.memmove has no promotion in the checker (memcpy and memset have), so the interpreter
 // lowers it to this libcall; a definition in the module is what it then executes. Overlap-safe:
 // the copy runs backwards when the destination starts inside the source.
@@ -84,3 +106,37 @@ void* memmove(void* dst, const void* src, std::size_t n) noexcept {
 void* g_class_type_info_vtable[4] asm("_ZTVN10__cxxabiv117__class_type_infoE") = {};
 void* g_si_class_type_info_vtable[4] asm("_ZTVN10__cxxabiv120__si_class_type_infoE") = {};
 void* g_vmi_class_type_info_vtable[4] asm("_ZTVN10__cxxabiv121__vmi_class_type_infoE") = {};
+
+// libstdc++ keeps two things out of its headers that the engine's normal path reaches: the
+// byte hash behind std::hash<std::string>/<std::thread::id>, and the prime rehash policy of
+// std::unordered_map/set. Neither has a body in the module, so each is defined here with the
+// semantics the container relies on: a hash that is a function of the bytes, and a bucket
+// policy that grows the table before the load factor is exceeded.
+namespace std {
+size_t _Hash_bytes(const void* p, size_t n, size_t seed) {
+    const auto* b = static_cast<const unsigned char*>(p);
+    size_t h = seed ^ 0xcbf29ce484222325ULL;
+    for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 0x100000001b3ULL; }
+    return h;
+}
+namespace __detail {
+size_t _Prime_rehash_policy::_M_next_bkt(size_t n) const {
+    size_t b = 2;
+    while (b < n) b *= 2;
+    b += 1;  // odd, so a power-of-two-poor hash still spreads
+    _M_next_resize = static_cast<size_t>(static_cast<float>(b) * _M_max_load_factor);
+    return b;
+}
+pair<bool, size_t> _Prime_rehash_policy::_M_need_rehash(size_t n_bkt, size_t n_elt, size_t n_ins) const {
+    if (n_elt + n_ins > _M_next_resize) {
+        const float min_bkts = static_cast<float>(n_elt + n_ins) / _M_max_load_factor;
+        if (min_bkts >= static_cast<float>(n_bkt)) {
+            const size_t want = static_cast<size_t>(min_bkts) + 1;
+            return {true, _M_next_bkt(want > n_bkt * 2 ? want : n_bkt * 2)};
+        }
+        _M_next_resize = static_cast<size_t>(static_cast<float>(n_bkt) * _M_max_load_factor);
+    }
+    return {false, 0};
+}
+}  // namespace __detail
+}  // namespace std
