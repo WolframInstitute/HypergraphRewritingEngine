@@ -41,7 +41,7 @@ namespace engine {
 // - State hash computation: Thread-safe, uses shared read-only data
 // - Hash caching: Lock-free via ConcurrentMap
 //
-// Note: EdgeCorrespondence, EventSignature and the FNV constants are defined in
+// Note: EventSignature and the FNV constants are defined in
 // types.hpp; VertexHashCache is below, because this file is its only consumer.
 
 // The per-state vertex-hash cache. It lives here rather than in types.hpp because this
@@ -264,103 +264,6 @@ public:
         return compute_state_hash_impl(state_edges, edge_vertices, edge_arities, nullptr);
     }
 
-
-    // =========================================================================
-    // Edge Correspondence (O(E) algorithm)
-    // =========================================================================
-
-    // Find edge correspondence between two isomorphic states
-    // Uses vertex subtree hashes - no O(E^2) search needed
-    template<typename VertexAccessor, typename ArityAccessor>
-    EdgeCorrespondence find_edge_correspondence(
-        const SparseBitset& state1_edges,
-        const SparseBitset& state2_edges,
-        const VertexAccessor& edge_vertices,
-        const ArityAccessor& edge_arities
-    ) const {
-        EdgeCorrespondence result;
-
-        // Compute vertex hashes for both states
-        auto [hash1, cache1] = compute_state_hash_with_cache(state1_edges, edge_vertices, edge_arities);
-        auto [hash2, cache2] = compute_state_hash_with_cache(state2_edges, edge_vertices, edge_arities);
-
-        // Quick check: must have same canonical hash
-        if (hash1 != hash2) {
-            return result;  // Not isomorphic
-        }
-
-        // Must have same number of vertices
-        if (cache1.count != cache2.count) {
-            return result;
-        }
-
-        // Build edge signature -> list of edges map for state2
-        // Edge signature = tuple of vertex subtree hashes (in order)
-        // Multiple edges can have the same signature (automorphic edges)
-        SUMap<uint64_t, SVec<EdgeId>> edge2_by_sig;   // worker-local scratch
-
-        state2_edges.for_each([&](EdgeId eid) {
-            uint8_t arity = edge_arities[eid];
-            const VertexId* verts = edge_vertices[eid];
-
-            uint64_t sig = compute_edge_signature(verts, arity, cache2);
-            edge2_by_sig[sig].push_back(eid);
-        });
-
-        // Collect edges from state1
-        SVec<EdgeId> edges1;
-        state1_edges.for_each([&](EdgeId eid) {
-            edges1.push_back(eid);
-        });
-
-        // Collect edges from state2
-        size_t edge2_count = 0;
-        state2_edges.for_each([&](EdgeId) { ++edge2_count; });
-
-        if (edges1.size() != edge2_count) {
-            return result;  // Different edge counts
-        }
-
-        // Allocate result arrays
-        result.count = static_cast<uint32_t>(edges1.size());
-        result.state1_edges = arena_->allocate_array<EdgeId>(result.count);
-        result.state2_edges = arena_->allocate_array<EdgeId>(result.count);
-
-        // Track which edges from state2 have been used
-        SUMap<uint64_t, size_t> sig_next_idx;  // automorphic edges: next available (worker scratch)
-
-        // Find correspondence for each edge in state1
-        for (size_t i = 0; i < edges1.size(); ++i) {
-            EdgeId e1 = edges1[i];
-            uint8_t arity = edge_arities[e1];
-            const VertexId* verts = edge_vertices[e1];
-
-            uint64_t sig = compute_edge_signature(verts, arity, cache1);
-
-            auto e2_it = edge2_by_sig.find(sig);
-            if (e2_it == edge2_by_sig.end()) {
-                // No matching edge found - states not actually isomorphic
-                result.valid = false;
-                return result;
-            }
-
-            // For automorphic edges (same signature), use next available
-            // This is valid because automorphic edges are interchangeable
-            size_t& idx = sig_next_idx[sig];
-            if (idx >= e2_it->second.size()) {
-                // More edges in state1 with this signature than in state2
-                result.valid = false;
-                return result;
-            }
-
-            result.state1_edges[i] = e1;
-            result.state2_edges[i] = e2_it->second[idx];
-            ++idx;
-        }
-
-        result.valid = true;
-        return result;
-    }
 
     // =========================================================================
     // Event Signature Computation (for Full deduplication)

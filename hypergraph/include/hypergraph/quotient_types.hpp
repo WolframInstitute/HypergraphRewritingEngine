@@ -100,6 +100,10 @@ struct EdgeOrbitTable {
     // within-orbit permutation maps matches to matches and the emitted set is unchanged.
     const uint32_t* slot = nullptr;     // length n, parallel to edges
     const uint32_t* klass = nullptr;    // length n, parallel to edges (canonical content class)
+    // The edge's rank in the canonical form, from the same search as its orbit: a permutation
+    // of [0,n). Two raw states of one canonical class have the same form, so equal rank is
+    // the isomorphism between them, and a state is aligned onto its class frame by rank.
+    const uint32_t* rank = nullptr;     // length n, parallel to edges
 
     // Binary search the sorted edge array; returns n if absent (edge not in state).
     uint32_t index_of(EdgeId e) const;

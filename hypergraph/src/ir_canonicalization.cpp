@@ -258,7 +258,8 @@ uint64_t IRCanonicalizer::compute_canonical_hash_with_edge_rank(
 uint64_t IRCanonicalizer::compute_canonical_hash_with_edge_orbits(
     const SVec<SVec<VertexId>>& edges,
     std::vector<uint32_t>& out_edge_orbit,
-    std::vector<uint32_t>* out_edge_class) const {
+    std::vector<uint32_t>* out_edge_class,
+    uint32_t* out_edge_rank) const {
     out_edge_orbit.assign(edges.size(), 0u);
     if (out_edge_class) out_edge_class->assign(edges.size(), 0u);
     if (edges.empty()) return 0;
@@ -272,7 +273,7 @@ uint64_t IRCanonicalizer::compute_canonical_hash_with_edge_orbits(
     std::vector<uint32_t> klass_local;
     uint32_t* klass = out_edge_class ? out_edge_class->data()
                                      : (klass_local.assign(edges.size(), 0u), klass_local.data());
-    const uint64_t hash = ir_core_call(edges, nullptr, out_edge_orbit.data(), klass);
+    const uint64_t hash = ir_core_call(edges, out_edge_rank, out_edge_orbit.data(), klass);
     worker_scratch().release(scratch_mark);
     return hash;
 }

@@ -859,6 +859,7 @@ namespace {
 uint64_t ir_hash_and_orbits(const SVec<SVec<VertexId>>& edge_vecs,
                             std::vector<uint32_t>& orbit,
                             std::vector<uint32_t>& klass,
+                            std::vector<uint32_t>& rank,
                             Hypergraph::IrBooking& booking) {
     const uint32_t n = static_cast<uint32_t>(edge_vecs.size());
     orbit.assign(n, 0);
@@ -895,7 +896,7 @@ uint64_t ir_hash_and_orbits(const SVec<SVec<VertexId>>& edge_vecs,
             hgcommon::IrWork work{};
             auto r = hgcommon::ir_canonical_hash(
                 ea.data(), eoff.data(), ev.data(), n, n_verts, total_occ, scratch, depth,
-                nullptr, gens, orbit.data(), klass.data(), nullptr, nullptr, &work);
+                rank.data(), gens, orbit.data(), klass.data(), nullptr, nullptr, &work);
             booking.calls += 1;
             booking.searched += work.searched;
             booking.leaves += work.leaves;
@@ -912,7 +913,7 @@ uint64_t ir_hash_and_orbits(const SVec<SVec<VertexId>>& edge_vecs,
     // Past every depth AND generator budget above: the unbounded implementation rather than
     // orbits the automorphism group does not license.
     IRCanonicalizer ir;
-    return ir.compute_canonical_hash_with_edge_orbits(edge_vecs, orbit, &klass);
+    return ir.compute_canonical_hash_with_edge_orbits(edge_vecs, orbit, &klass, rank.data());
 }
 
 }  // namespace
@@ -943,6 +944,7 @@ uint64_t Hypergraph::compute_and_cache_state_orbits(StateId s, const SparseBitse
     uint32_t* arr_orbit = arena_.allocate_array<uint32_t>(n ? n : 1);
     uint32_t* arr_slot  = arena_.allocate_array<uint32_t>(n ? n : 1);
     uint32_t* arr_class = arena_.allocate_array<uint32_t>(n ? n : 1);
+    uint32_t* arr_rank  = arena_.allocate_array<uint32_t>(n ? n : 1);
     // The empty state's hash, for the n == 0 case that skips the canonicalizer below. It is the
     // same value compute_state_ranks_and_hash gives an empty edge set, because the empty state
     // is one state and must have one hash however it was reached. Zero is additionally the
@@ -956,17 +958,19 @@ uint64_t Hypergraph::compute_and_cache_state_orbits(StateId s, const SparseBitse
         // time.
         HG_THREAD_LOCAL(std::vector<uint32_t>, orbit);
         HG_THREAD_LOCAL(std::vector<uint32_t>, klass);
+        HG_THREAD_LOCAL(std::vector<uint32_t>, rank);
         orbit.assign(n, 0);
         klass.assign(n, 0);
-
+        rank.assign(n, 0);
         IrBooking booking{};
-        hash = ir_hash_and_orbits(edge_vecs, orbit, klass, booking);
+        hash = ir_hash_and_orbits(edge_vecs, orbit, klass, rank, booking);
         book_ir(booking);
         // ids are already ascending (SparseBitset iterates in id order), orbit is parallel.
         for (uint32_t i = 0; i < n; ++i) {
             arr_edges[i] = ids[i];
             arr_orbit[i] = orbit[i];
             arr_class[i] = klass[i];
+            arr_rank[i] = rank[i];
             if (orbit[i] + 1 > num_orbits) num_orbits = orbit[i] + 1;
         }
         // Slot = rank under (ORBIT, EdgeId). The rule and its rationale live in
@@ -988,7 +992,7 @@ uint64_t Hypergraph::compute_and_cache_state_orbits(StateId s, const SparseBitse
     EdgeOrbitTable* tbl = arena_.template create<EdgeOrbitTable>();
     tbl->n = n; tbl->num_orbits = num_orbits;
     tbl->edges = arr_edges; tbl->orbit = arr_orbit; tbl->orbit_size = arr_osize;
-    tbl->slot = arr_slot; tbl->klass = arr_class;
+    tbl->slot = arr_slot; tbl->klass = arr_class; tbl->rank = arr_rank;
     // +1: the map reserves 0 as its EMPTY-slot sentinel, so a raw key of StateId 0 can never
     // be stored or found -- the initial state would silently have no orbit table, which
     // skipped INIT seeding in the producer-set DP and dropped the root class's matches from
@@ -1159,20 +1163,25 @@ bool Hypergraph::qc_frame_slots(uint64_t state_hash, StateId s, const EdgeOrbitT
     const EdgeOrbitTable* forb = qc_orbits_or_build(frame);
     if (!forb || forb->n != orb->n) return false;
 
-    // Align this state's edges onto the frame's. The two states are isomorphic, so the
-    // correspondence exists; it is defined up to an automorphism, which is exactly the
+    // Align this state's edges onto the frame's. The two states are one canonical class, so
+    // their canonical forms are equal and the edge at rank r here is the edge at rank r in
+    // the frame: that is the isomorphism, defined up to an automorphism, which is exactly the
     // freedom that is harmless -- an automorphism permutes the frame coherently, mapping
     // matches to matches. What is NOT harmless is each state using its own labeling, which
-    // is what this removes.
-    EdgeCorrespondence c =
-        find_edge_correspondence_dispatch(get_state(s).edges, get_state(frame).edges);
-    if (!c.valid || c.count != orb->n) { HG_STAT(qc_align_badcorr_.fetch_add(1, std::memory_order_relaxed)); return false; }
-    for (uint32_t i = 0; i < orb->n; ++i) out[i] = UINT32_MAX;
-    for (uint32_t k = 0; k < c.count; ++k) {
-        const uint32_t idx = orb->index_of(c.state1_edges[k]);
-        if (idx < orb->n) out[idx] = forb->slot_of(c.state2_edges[k]);
+    // is what this removes. Both ranks come from the search each state ran at creation.
+    auto mk = worker_scratch().mark();
+    SVec<uint32_t> frame_at_rank(orb->n, UINT32_MAX);
+    for (uint32_t i = 0; i < forb->n; ++i)
+        if (forb->rank[i] < forb->n) frame_at_rank[forb->rank[i]] = i;
+    bool aligned = true;
+    for (uint32_t i = 0; i < orb->n && aligned; ++i) {
+        const uint32_t rk = orb->rank[i];
+        const uint32_t fi = rk < orb->n ? frame_at_rank[rk] : UINT32_MAX;
+        if (fi == UINT32_MAX) aligned = false;
+        else out[i] = forb->slot[fi];
     }
-    for (uint32_t i = 0; i < orb->n; ++i) if (out[i] == UINT32_MAX) return false;
+    worker_scratch().release(mk);
+    if (!aligned) { HG_STAT(qc_align_badcorr_.fetch_add(1, std::memory_order_relaxed)); return false; }
     qc_check_frame_stable(s, out, orb->n);
     return true;
 }
@@ -1480,8 +1489,10 @@ void Hypergraph::causal_edge_keys(StateId state, const EdgeId* edges, uint32_t n
     }
     HG_THREAD_LOCAL(std::vector<uint32_t>, orbit);
     HG_THREAD_LOCAL(std::vector<uint32_t>, klass);
+    HG_THREAD_LOCAL(std::vector<uint32_t>, rank);
+    rank.assign(edge_vecs.size(), 0);
     IrBooking booking{};
-    const uint64_t chash = ir_hash_and_orbits(edge_vecs, orbit, klass, booking);
+    const uint64_t chash = ir_hash_and_orbits(edge_vecs, orbit, klass, rank, booking);
     book_ir(booking);
     for (uint32_t i = 0; i < n; ++i) {
         uint32_t orb = 0;
@@ -1494,61 +1505,6 @@ void Hypergraph::causal_edge_keys(StateId state, const EdgeId* edges, uint32_t n
     worker_scratch().release(mk);
 }
 
-EdgeCorrespondence Hypergraph::find_edge_correspondence_dispatch(
-    const SparseBitset& state1_edges,
-    const SparseBitset& state2_edges
-) const {
-    EdgeVertexAccessorRaw vert_acc(this);
-    EdgeArityAccessorRaw arity_acc(this);
-
-    if (is_full_canonicalization()) {
-        // Materialize both states' edges into the per-worker scratch arena (no heap),
-        // reclaimed after the result (which uses the persistent global arena) is built.
-        auto mk = worker_scratch().mark();
-        auto extract_edges = [&](const SparseBitset& state_edges,
-                                 SVec<SVec<VertexId>>& edge_vecs, SVec<EdgeId>& edge_ids) {
-            state_edges.for_each([&](EdgeId eid) {
-                const Edge& e = edges_[eid];
-                edge_vecs.emplace_back(e.vertices, e.vertices + e.arity);
-                edge_ids.push_back(eid);
-            });
-        };
-
-        SVec<SVec<VertexId>> vecs1, vecs2;
-        SVec<EdgeId> ids1, ids2;
-        extract_edges(state1_edges, vecs1, ids1);
-        extract_edges(state2_edges, vecs2, ids2);
-
-        IRCanonicalizer ir;
-        auto r1 = ir.canonicalize_edges(vecs1);
-        auto r2 = ir.canonicalize_edges(vecs2);
-
-        if (r1.canonical_form != r2.canonical_form) {
-            worker_scratch().release(mk);
-            return EdgeCorrespondence{};
-        }
-
-        EdgeCorrespondence result;
-        result.count = static_cast<uint32_t>(ids1.size());
-        result.state1_edges = const_cast<ConcurrentHeterogeneousArena&>(arena_).allocate_array<EdgeId>(result.count);
-        result.state2_edges = const_cast<ConcurrentHeterogeneousArena&>(arena_).allocate_array<EdgeId>(result.count);
-
-        for (uint32_t ci = 0; ci < result.count; ++ci) {
-            size_t orig1 = r1.vertex_mapping.canonical_edge_to_original[ci];
-            size_t orig2 = r2.vertex_mapping.canonical_edge_to_original[ci];
-            result.state1_edges[ci] = ids1[orig1];
-            result.state2_edges[ci] = ids2[orig2];
-        }
-        result.valid = true;
-        worker_scratch().release(mk);
-        return result;
-    }
-
-    if (wl_hash_) {
-        return wl_hash_->find_edge_correspondence(state1_edges, state2_edges, vert_acc, arity_acc);
-    }
-    return EdgeCorrespondence{};
-}
 
 // =============================================================================
 // Reconstruction observables and replay diagnostics

@@ -246,56 +246,6 @@ TEST_F(IRCanonicalizationTest, HandlesLargerGraphs) {
 // Integration: IR verification in Hypergraph
 // =============================================================================
 
-TEST_F(IRCanonicalizationTest, IRVerificationExactEdgeCorrespondence) {
-    Hypergraph hg;
-    hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-
-    // Create two isomorphic states: {v0,v1},{v1,v2} and {v3,v4},{v4,v5}
-    VertexId v0 = hg.alloc_vertex();
-    VertexId v1 = hg.alloc_vertex();
-    VertexId v2 = hg.alloc_vertex();
-    EdgeId e0 = hg.create_edge({v0, v1});
-    EdgeId e1 = hg.create_edge({v1, v2});
-    StateId s1 = hg.create_state({e0, e1});
-
-    VertexId v3 = hg.alloc_vertex();
-    VertexId v4 = hg.alloc_vertex();
-    VertexId v5 = hg.alloc_vertex();
-    EdgeId e2 = hg.create_edge({v3, v4});
-    EdgeId e3 = hg.create_edge({v4, v5});
-    StateId s2 = hg.create_state({e2, e3});
-
-    // IR verification should produce valid edge correspondence
-    auto corr = hg.find_edge_correspondence_dispatch(
-        hg.get_state_edges(s1), hg.get_state_edges(s2));
-    EXPECT_TRUE(corr.valid);
-    EXPECT_EQ(corr.count, 2u);
-}
-
-TEST_F(IRCanonicalizationTest, IRVerificationNonIsomorphicNoCorrespondence) {
-    Hypergraph hg;
-    hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
-
-    // Path: {v0,v1},{v1,v2} vs Star: {v3,v4},{v3,v5}
-    VertexId v0 = hg.alloc_vertex();
-    VertexId v1 = hg.alloc_vertex();
-    VertexId v2 = hg.alloc_vertex();
-    EdgeId e0 = hg.create_edge({v0, v1});
-    EdgeId e1 = hg.create_edge({v1, v2});
-    StateId s1 = hg.create_state({e0, e1});
-
-    VertexId v3 = hg.alloc_vertex();
-    VertexId v4 = hg.alloc_vertex();
-    VertexId v5 = hg.alloc_vertex();
-    EdgeId e2 = hg.create_edge({v3, v4});
-    EdgeId e3 = hg.create_edge({v3, v5});
-    StateId s2 = hg.create_state({e2, e3});
-
-    auto corr = hg.find_edge_correspondence_dispatch(
-        hg.get_state_edges(s1), hg.get_state_edges(s2));
-    EXPECT_FALSE(corr.valid);
-}
-
 TEST_F(IRCanonicalizationTest, AreIsomorphicMethod) {
     std::vector<std::vector<VertexId>> path = {{1, 2}, {2, 3}};
     std::vector<std::vector<VertexId>> path2 = {{10, 20}, {20, 30}};

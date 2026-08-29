@@ -78,7 +78,8 @@ public:
     uint64_t compute_canonical_hash_with_edge_orbits(
         const SVec<SVec<VertexId>>& edges,
         std::vector<uint32_t>& out_edge_orbit,
-        std::vector<uint32_t>* out_edge_class = nullptr) const;
+        std::vector<uint32_t>* out_edge_class = nullptr,
+        uint32_t* out_edge_rank = nullptr) const;
     uint64_t compute_canonical_hash_with_edge_orbits(
         const std::vector<std::vector<VertexId>>& edges,
         std::vector<uint32_t>& out_edge_orbit,

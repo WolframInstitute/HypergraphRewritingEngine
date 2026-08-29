@@ -1424,14 +1424,6 @@ public:
     uint64_t compute_wl_hash(const SparseBitset& edges) const;
 
 
-    // Find edge correspondence between two isomorphic states. Uses IR in Full
-    // canonicalization mode, WL subtree hashes otherwise.
-    // Returns mapping from state1 edges to state2 edges.
-    EdgeCorrespondence find_edge_correspondence_dispatch(
-        const SparseBitset& state1_edges,
-        const SparseBitset& state2_edges
-    ) const;
-
     // Count edges in a state
     uint32_t count_state_edges(StateId sid) const;
 };

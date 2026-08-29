@@ -342,19 +342,6 @@ enum class StateCanonicalizationMode : uint8_t {
 };
 
 // =============================================================================
-// EdgeCorrespondence: Mapping between edges in two isomorphic states
-// =============================================================================
-
-struct EdgeCorrespondence {
-    EdgeId* state1_edges;
-    EdgeId* state2_edges;
-    uint32_t count;
-    bool valid;
-
-    EdgeCorrespondence();
-};
-
-// =============================================================================
 // EventSignature: Signature for event deduplication
 // =============================================================================
 

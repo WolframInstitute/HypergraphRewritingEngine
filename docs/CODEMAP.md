@@ -83,7 +83,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 
 - **`types.hpp`** -- core value types, IDs, bindings, mode enums.
 - **`quotient_types.hpp`** -- what a state, an edge and an event ARE once isomorphic states are identified: `QcEventContent`, `CanonicalEdgeKey`, `EdgeRankTable`, `EdgeOrbitTable`, `CanonicalTransition`, `SlotMatch`. Separate from `types.hpp` because they are the only types needing `hgcommon/quotient_replay_core.hpp`, which `types.hpp` would otherwise hand to every engine header.
-  - structs `Edge`, `Event`, `State`, `VariableBinding`, `GlobalCounters` (each counter `alignas(64)`), `CausalEdge`, `BranchialEdge`, `EdgeCorrespondence`, `EventSignature`; enums `StateCanonicalizationMode`, `EventSignatureKey(s)`; `AbortedException`
+  - structs `Edge`, `Event`, `State`, `VariableBinding`, `GlobalCounters` (each counter `alignas(64)`), `CausalEdge`, `BranchialEdge`, `EventSignature`; enums `StateCanonicalizationMode`, `EventSignatureKey(s)`; `AbortedException`
   - quotient reconstruction types: `CanonicalEdgeKey` (the quotient-aware edge identity that meets producers with consumers -- orbit-keyed under quotient, raw `EdgeId` otherwise), `EdgeOrbitTable` (per-state edge orbits + SLOTS), `CanonicalTransition` (orbit-deduplicated), `SlotMatch` (undeduplicated, slot-named)
   - `EMPTY_STATE_CANONICAL_HASH` -- the empty state's own canonical hash; it cannot be 0, which means "not computed" for `State::canonical_hash` and is `ConcurrentMap`'s `EMPTY_KEY`
 - **`atomic_compat.hpp`** -- `hypergraph::atomic_ref<T>`: an atomic view over a plain, non-atomic member. `State` keeps some fields as plain scalars so it stays trivially copyable and single-threaded paths touch them directly, while concurrent paths need atomic access to the same words. Selects `std::atomic_ref` where it exists and falls back where it does not -- the OSXCross SDK's bundled libc++ predates C++20, so the macOS cross build cannot name it directly
@@ -120,7 +120,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
   - `PatternMatchingContext<>`, `HostJoinContext<>` (the join's Ctx: `Candidate` carries the edge the enumerator already fetched)
   - free templates `validate_candidate`, `generate_candidates`, `emit_match`, `scan_pattern[_from_edge]`, `find_matches`, `find_delta_matches`
 - **`wl_hash.hpp`** -- Weisfeiler-Leman approximate hashing + O(E) edge correspondence; owns `VertexHashCache`, the per-state vertex-hash cache, because it is its only consumer.
-  - `WLHash` (`compute_state_hash_with_cache`, `find_edge_correspondence`, `compute_event_signature`)
+  - `WLHash` (`compute_state_hash_with_cache`, `compute_event_signature`)
 - **`canonical_types.hpp`** -- shared canonicalization result types.
   - `CanonicalForm`, `VertexMapping`, `CanonicalizationResult` (`are_isomorphic`)
 - **`ir_canonicalization.hpp`** -- host face of the McKay individualization-refinement exact canonicalizer; the algorithm is `hgcommon/ir_core.hpp`, shared with the device.

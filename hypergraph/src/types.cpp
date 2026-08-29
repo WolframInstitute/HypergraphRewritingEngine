@@ -257,11 +257,8 @@ bool BranchialEdge::operator==(const BranchialEdge& other) const {
 }
 
 // =============================================================================
-// EdgeCorrespondence / EventSignature
+// EventSignature
 // =============================================================================
-
-EdgeCorrespondence::EdgeCorrespondence()
-    : state1_edges(nullptr), state2_edges(nullptr), count(0), valid(false) {}
 
 uint64_t EventSignature::hash() const {
     uint64_t h = FNV_OFFSET;
