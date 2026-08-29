@@ -12,8 +12,9 @@ stated absence rather than an unexamined one.
   CTAs and every access carries a SCOPE, so whether two threads synchronise depends on how close
   they are. RC11 has no scopes, so GenMC would check a program the device does not run. It runs
   from a container -- it is a fork of GenMC 0.9 supporting LLVM up to 15, and this tree builds
-  against 18. `verification/gpumc/run.sh <name>`. Four harnesses: the termination decision, the
-  device work queue, the dedup map's election and the replay rendezvous.
+  against 18. `verification/gpumc/run.sh <name>`. Six harnesses: the termination decision, the
+  device work queue, the dedup map's election, the replay rendezvous, the DP producer, and the
+  kernel's loop with the ring, the record pool and the detector composed.
 - **TLA+** models a protocol rather than a translation unit, which is what makes it the right tool
   where the property is about an ordering across many participants rather than about one
   structure's memory operations. `verification/tla/run.sh <config>`.
@@ -149,18 +150,22 @@ head after an absent verdict -- is what "searching for the class" means here.
 
 ## What is NOT covered, and why each matters
 
-**The DEVICE's kernel composition.** The persistent kernel (`gpu/src/persistent.cu`,
-`k_persistent_evolve`) is not run under GPUMC as one program. GPUMC is a fork of GenMC 0.9 on
-LLVM 15 and takes C++ with scope annotations; the kernel and every header it calls are CUDA
+**The DEVICE's kernel body.** The persistent kernel (`gpu/src/persistent.cu`,
+`k_persistent_evolve`) is not run under GPUMC from its own source. GPUMC is a fork of GenMC 0.9
+on LLVM 15 and takes C++ with scope annotations; the kernel and every header it calls are CUDA
 device code on `cuda::atomic_ref`, `__threadfence`, `__syncthreads` and the thread indices, and
-a host shim for that surface is what a run would need. What the device DECIDES is not in that
-remainder: the ring's claim (`ring_core`), the dedup map's election (`hash_insert_core`), the
+a host shim for that surface is what a run of the body would need. What the kernel DECIDES is
+covered: the ring's claim (`ring_core`), the dedup map's election (`hash_insert_core`), the
 match claim (`dedup_claim_core`), the replay lists (`list_core`), the termination decision
 (`termination_core`) and the quotient-causal DP (`quotient_causal_core`) are shared bodies the
-device drives, and each is checked under scoped RC11 by `verification/gpumc/`. The device-only
-code outside them, enumerated by every atomic site in `gpu/include/hg_gpu/`, is storage,
-monotonic counters, bump allocators and one release/acquire publish flag (`match.hpp`). The
-host's composition -- the whole engine as one program -- is `verification/genmc/engine_evolve.cpp`.
+device drives, each checked under scoped RC11 by `verification/gpumc/`, and the loop that
+composes the ring, the record pool and the detector -- the order it books pushed/completed
+around the pushes, pops, claims and publishes -- is run as one program by
+`evolve_ring_termination.cpp` with those cores. Outside both is the per-item work thread 0
+performs between the bookings (matching, rewriting, canonicalization, the arena), enumerated by
+every atomic site in `gpu/include/hg_gpu/`: storage, monotonic counters, bump allocators and one
+release/acquire publish flag (`match.hpp`). The host's composition -- the whole engine as one
+program -- is `verification/genmc/engine_evolve.cpp`.
 
 ~~**Two harnesses check a re-implementation, not the code.**~~ CLOSED. Both now drive
 `hgcommon/park_gate.hpp`, which is the park/wake protocol lifted out of `JobSystem`'s worker loop
@@ -244,6 +249,37 @@ The checker reports one item handed to two consumers.
 
 The reservation CAS is modelled WEAK, as the device writes it. Modelling it strong would remove
 the spurious-failure retries, and removing behaviours from a checker is the unsound direction.
+
+**The DEVICE's loop as one program**, covered under scoped-RC11 by
+`verification/gpumc/evolve_ring_termination.cpp`. `k_persistent_evolve` runs the ring, the
+record pool and the detector in one loop per block, and the order that loop books
+`pushed[match]`/`completed[match]` around `try_push`, `try_pop`, the record claim and the
+publish is what the detector's decision rests on. The harness runs that loop's control flow
+with the shared cores themselves (`ring_core`, `termination_core`) and the pool protocol as
+`persistent.cu` and `match.hpp` define it (cursor CAS below the readable count, acquire spin on
+the published flag, release publish), so the decision is checked against the composition
+rather than against either part alone. Bound: a two-slot ring and three rules, so the seed's
+rewrite pushes two children and runs the third inline through the full-ring path; one seed,
+three child items, four records; `HG_WORKERS` sets the worker count. 133,202 executions, clean (19.6 s), with the detector limited to one stagnant round -- the bound that lets the run finish; at two rounds the same program exceeds 480 s.
+
+Calibrated twice. `-DCALIBRATE_PUSH_THEN_BOOK` books the push after it lands, and a snapshot
+between the two sees `pushed == completed` with the item in the ring: the checker reports the
+early exit. `-DCALIBRATE_ONE_SLOT` shrinks the ring to one slot: the checker reports the same
+early exit after 6 executions, because at capacity one the value a consumer releases with
+(`pos + 1`) is the value the next producer position tests as "holds an item", so the second push
+overwrites a live item and the pop after it never matches. That arm is a finding, not only a
+calibration: `run_persistent_match` and `run_persistent_match_rewrite` sized their ring as the
+smallest power of two at or above the seed count, which is ONE for one state and one rule.
+The floor is two in both derivations and in the `RingBuffer` constructor
+(`gpu/tests/test_ring_buffer.cu`, `CapacityBelowTwoIsRejected`).
+
+The default arm found a second defect before it was clean. The kernel's detector read the
+record count and the rewrites-done count as plain loads while its snapshot of
+`pushed`/`completed` was acquire; under scoped RC11 a stale `pushed == completed` pair can be
+read beside a fresh `consumed >= produced`, the pair repeats across the two snapshots, and the
+quiescent exit fires with two items in the ring (45,259 executions to the counterexample).
+Both reads are acquire loads now, in `readable_records` and the two detector views in
+`persistent.cu`, and the harness's transcription of them is acquire for the same reason.
 
 **The DEVICE's replay rendezvous**, covered by `verification/gpumc/replay_rendezvous_meets.cpp`.
 The device list's prepend and walk are `hgcommon/list_core.hpp` -- the body

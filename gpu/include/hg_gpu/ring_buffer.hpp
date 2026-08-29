@@ -31,7 +31,9 @@ void ring_seq_ramp_device(uint64_t* seq, uint32_t n);
 //
 // seq[i] starts at i, a producer publishes with seq = pos + 1, and a consumer releases with
 // seq = pos + capacity, so a slot advances by exactly `capacity` per lap and the three tests
-// above stay exact across wraps.
+// above stay exact across wraps. The capacity is at least two: at one, the value a consumer
+// releases with (pos + 1) is the value the NEXT producer position tests as "holds an item"
+// (pos + 1), so a second push lands on a live slot and the pop that follows never matches.
 //
 // The reservation is a CAS on head/tail rather than an unconditional bump. That is what makes
 // the queue safe when the SAME workers both produce and consume, which is how a device-resident
@@ -114,8 +116,8 @@ public:
 
     explicit RingBuffer(uint32_t capacity_pow2)
         : capacity_(capacity_pow2), mask_(capacity_pow2 - 1) {
-        if ((capacity_ & mask_) != 0 || capacity_ == 0) {
-            throw std::invalid_argument("RingBuffer capacity must be a power of two ≥ 1");
+        if ((capacity_ & mask_) != 0 || capacity_ < 2) {
+            throw std::invalid_argument("RingBuffer capacity must be a power of two >= 2");
         }
         HG_CUDA_CHECK(cudaMalloc(&slots_, sizeof(T)        * capacity_), "RingBuffer slots");
         HG_CUDA_CHECK(cudaMalloc(&seq_,   sizeof(uint64_t) * capacity_), "RingBuffer seq");

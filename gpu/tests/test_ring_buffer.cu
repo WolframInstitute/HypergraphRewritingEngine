@@ -55,6 +55,20 @@ TEST(RingBuffer, SingleThreadPushPopFifo) {
     EXPECT_EQ(ring.head_host(), n);
 }
 
+// =============================================================================
+// Capacity floor
+// =============================================================================
+// At capacity one the sequence a consumer releases with (pos + 1) is the value the next
+// producer position tests as "holds an item", so a second push overwrites a live slot and the
+// pop after it never matches; verification/gpumc/evolve_ring_termination.cpp's
+// -DCALIBRATE_ONE_SLOT arm shows the overwrite under the checker. The constructor rejects it.
+TEST(RingBuffer, CapacityBelowTwoIsRejected) {
+    EXPECT_THROW(Ring(1), std::invalid_argument);
+    EXPECT_THROW(Ring(0), std::invalid_argument);
+    EXPECT_THROW(Ring(3), std::invalid_argument);
+    EXPECT_NO_THROW(Ring(2));
+}
+
 TEST(RingBuffer, PopOnEmptyReturnsFalse) {
     Ring ring(4);
     uint32_t* d_out = nullptr; cudaMalloc(&d_out, sizeof(uint32_t));

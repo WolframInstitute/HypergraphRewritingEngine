@@ -219,7 +219,12 @@ __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_
 // the allocation.
 __device__ __forceinline__ uint32_t readable_records(
         const typename Pool<MatchRecord>::DeviceView& found) {
-    const uint32_t claimed = *found.counter;
+    // Acquire: the detector pairs this with its acquire snapshot of pushed/completed, and a
+    // producer publishes its claim after the item it took was booked. A plain load here can
+    // pair a fresh value with a stale snapshot and pass both quiescence checks with work
+    // outstanding (verification/gpumc/evolve_ring_termination.cpp reports that execution).
+    cuda::atomic_ref<uint32_t, cuda::thread_scope_device> cref(*found.counter);
+    const uint32_t claimed = cref.load(cuda::memory_order_acquire);
     return claimed < found.capacity ? claimed : found.capacity;
 }
 
@@ -340,7 +345,10 @@ __global__ void k_persistent_match_rewrite(
                 return term.snapshot_quiescent(p, c);
             }
             HG_DEV uint32_t produced() const { return readable_records(found); }
-            HG_DEV uint32_t consumed() const { return *consume_cursor; }
+            HG_DEV uint32_t consumed() const {
+                cuda::atomic_ref<uint32_t, cuda::thread_scope_device> r(*consume_cursor);
+                return r.load(cuda::memory_order_acquire);
+            }
             HG_DEV void on_round(uint32_t, uint32_t, uint32_t) const {}
             HG_DEV void on_stall(uint32_t, const uint64_t*, const uint64_t*) const {
                 ds.errors.record(ErrorKind::kPersistentStall);
@@ -492,7 +500,10 @@ __global__ void k_persistent_evolve(
                 return term.snapshot_quiescent(p, c);
             }
             HG_DEV uint32_t produced() const { return readable_records(found); }
-            HG_DEV uint32_t consumed() const { return *rewrites_done; }
+            HG_DEV uint32_t consumed() const {
+                cuda::atomic_ref<uint32_t, cuda::thread_scope_device> r(*rewrites_done);
+                return r.load(cuda::memory_order_acquire);
+            }
             HG_DEV void backoff_long() const { __nanosleep(4000); }
             HG_DEV void backoff_short() const { __nanosleep(2000); }
             HG_DEV void signal_exit() const { term.signal_exit(); }
@@ -967,7 +978,7 @@ uint32_t run_persistent_match(const EngineState& engine,
     HG_CUDA_CHECK(cudaMemcpy(sc.states, states.data(), sizeof(StateId) * states.size(),
                      cudaMemcpyHostToDevice), "states copy");
 
-    uint32_t cap = 1;
+    uint32_t cap = 2;
     while (cap < num_items) cap <<= 1;
     RingBuffer<MatchWorkItem> queue(cap);
 
@@ -1014,7 +1025,7 @@ PersistentRunStats run_persistent_match_rewrite(EngineState& engine,
     HG_CUDA_CHECK(cudaMemcpy(sc.states, states.data(), sizeof(StateId) * states.size(),
                      cudaMemcpyHostToDevice), "states copy");
 
-    uint32_t cap = 1;
+    uint32_t cap = 2;
     while (cap < num_items) cap <<= 1;
     RingBuffer<MatchWorkItem> match_q(cap);
     {
@@ -1090,7 +1101,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     // The ring holds work in flight, not the whole evolution: a run that outgrows it does not
     // fail, it runs the excess inline on the pushing block. Sized to the match pool so the
     // inline path is an escape valve rather than the normal case.
-    uint32_t cap = 1;
+    uint32_t cap = 2;
     while (cap < num_seed) cap <<= 1;
     while (cap < scratch_matches.capacity() && cap < (1u << 20)) cap <<= 1;
     RingBuffer<MatchWorkItem> match_q(cap);

@@ -58,7 +58,7 @@ run_one() {
     # The tree is mounted READ-ONLY: a checker must not be able to edit the sources it checks.
     # Scratch goes to a tmpfs the container owns.
     docker run --rm -v "$ROOT:/src:ro" --entrypoint /bin/sh "$IMAGE" -c "
-        genmc $* -- -std=c++17 -I /src/common/include ${HG_HARNESS_DEFINES:-} \
+        timeout ${HG_GPUMC_TIMEOUT:-0} genmc $* -- -std=c++17 -I /src/common/include ${HG_HARNESS_DEFINES:-} \
             /src/verification/gpumc/$name.cpp
     "
     local rc=$?
