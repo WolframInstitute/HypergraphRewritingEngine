@@ -69,7 +69,11 @@ struct PatternEdge {
 // Variables are numbered 0, 1, 2, ... in order of first appearance in LHS.
 // RHS may introduce new variables (numbered after LHS variables).
 
-struct RewriteRule {
+// 8-byte aligned so that a copy or fill of the whole object (RuleBuilder::build, the rule
+// table, the constructor's zeroing) moves 8 bytes at a time; the model checker lowers those
+// copies to per-element stores at the object's alignment, and at the 2 bytes `index` alone
+// would give, an 18,552-byte rule was 9,276 events per copy.
+struct alignas(8) RewriteRule {
     uint16_t index;                        // Rule ID (for identification)
     PatternEdge lhs[MAX_PATTERN_EDGES];    // Left-hand side (pattern to match)
     uint8_t num_lhs_edges;                 // Number of edges in LHS
