@@ -289,12 +289,23 @@ HG_HD inline void ir_refine(
     IrPartition& pi,
     uint64_t* worklist, uint32_t* inc_edges, uint32_t* edge_epoch,
     uint32_t* touched, uint32_t* on_touched, uint32_t* torder,   // torder holds 2n: order, then split staging
-    uint32_t* sig_off, uint32_t* sig_cnt, uint32_t* gstart, uint64_t* sig_buf)
+    uint32_t* sig_off, uint32_t* sig_cnt, uint32_t* gstart, uint64_t* sig_buf,
+    uint32_t seed0 = 0xFFFFFFFFu, uint32_t seed1 = 0xFFFFFFFFu)
 {
     const uint32_t n = pi.n;
     const uint32_t wl_words = ir_bitset_words(n);
     for (uint32_t w = 0; w < wl_words; ++w) worklist[w] = 0;
-    for (uint32_t c = 0; c < pi.ncells; ++c) worklist[c >> 6] |= (uint64_t(1) << (c & 63));
+    if (seed0 == 0xFFFFFFFFu) {
+        for (uint32_t c = 0; c < pi.ncells; ++c) worklist[c >> 6] |= (uint64_t(1) << (c & 63));
+    } else {
+        // The partition is an equitable one with one cell split in two (an individualisation):
+        // every other cell is a splitter it was already stable against, so only the two new
+        // cells can move anything, and the pieces they produce enqueue themselves below.
+        // Seeding every cell instead re-signed the whole state per search node: measured on
+        // disc-l3a2g2r2 depth 2 as 54% of all instructions in this function at 16.6k per node.
+        worklist[seed0 >> 6] |= (uint64_t(1) << (seed0 & 63));
+        if (seed1 != 0xFFFFFFFFu) worklist[seed1 >> 6] |= (uint64_t(1) << (seed1 & 63));
+    }
     for (uint32_t e = 0; e < n_edges; ++e) edge_epoch[e] = 0;
     for (uint32_t v = 0; v < n; ++v) on_touched[v] = 0;
     uint32_t epoch = 0;
@@ -941,9 +952,12 @@ HG_HD inline IrResult ir_canonical_hash(
 
         IrPartition child = fresh(d + 1);
         ir_individualize(view(d), child, target_of(d), v);
+        // The singleton takes the target's id and the remainder the next one (cells are
+        // renumbered in source order), so those two seed the refinement.
         ir_refine(ea, eoff, ev, n_edges, occ_off, occ_edge, child,
                   worklist, inc_edges, edge_epoch, touched, on_touched, torder,
-                  sig_off, sig_cnt, gstart, sig_buf);
+                  sig_off, sig_cnt, gstart, sig_buf,
+                  target_of(d), cell_n_of(d) > 1 ? target_of(d) + 1 : 0xFFFFFFFFu);
         store_ncells(d + 1, child.ncells);
         ++d;
         if (out_work) {
