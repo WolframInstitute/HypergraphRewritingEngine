@@ -10,6 +10,25 @@
 #include <type_traits>
 #include <utility>
 
+// ASan: a block is poisoned as it is grabbed and each allocation unpoisons what it hands out,
+// so a read past an allocation's end is reported even inside the arena's own memory.
+#if defined(__has_feature)
+#  if __has_feature(address_sanitizer)
+#    define HG_ARENA_ASAN 1
+#  endif
+#elif defined(__SANITIZE_ADDRESS__)
+#  define HG_ARENA_ASAN 1
+#endif
+#ifdef HG_ARENA_ASAN
+extern "C" void __asan_poison_memory_region(void const volatile* addr, size_t size);
+extern "C" void __asan_unpoison_memory_region(void const volatile* addr, size_t size);
+#  define HG_ARENA_POISON(addr, size)   __asan_poison_memory_region((addr), (size))
+#  define HG_ARENA_UNPOISON(addr, size) __asan_unpoison_memory_region((addr), (size))
+#else
+#  define HG_ARENA_POISON(addr, size)   ((void)(addr), (void)(size))
+#  define HG_ARENA_UNPOISON(addr, size) ((void)(addr), (void)(size))
+#endif
+
 namespace HG_NAMESPACE {
 namespace engine {
 
@@ -449,7 +468,34 @@ public:
     // A recycling arena is single-threaded, so it bumps current_block_'s offset with
     // no read-modify-write at all. Any thread past the worker ceiling (index < 0)
     // falls through to the atomic shared bump path.
-    void* allocate_raw(size_t size, size_t alignment = alignof(std::max_align_t));
+    // The bump on this worker's own cursor, inline: a fit in the current block is an
+    // alignment, a compare and two stores, and it is what nearly every allocation is.
+    // Everything else -- a full block, a recycling arena, a thread with no cursor -- is the
+    // out-of-line path. Stats builds take the out-of-line path for every allocation, which
+    // is where the per-site profile is booked.
+    void* allocate_raw(size_t size, size_t alignment = alignof(std::max_align_t)) {
+#if !HG_ENGINE_STATS
+        if (!recycle_) {
+            const int wi = arena_worker_index();
+            if (wi >= 0) {
+                LocalCursor& c = cursors_[wi];
+                if (c.block) {
+                    const size_t aligned = (c.offset + alignment - 1) & ~(alignment - 1);
+                    const size_t new_offset = aligned + size;
+                    if (new_offset <= c.capacity) {
+                        c.offset = new_offset;
+                        c.block->offset.store(new_offset, std::memory_order_relaxed);
+                        void* p = c.block->data + aligned;
+                        HG_ARENA_UNPOISON(p, size);
+                        return p;
+                    }
+                }
+            }
+        }
+#endif
+        return allocate_raw_slow(size, alignment);
+    }
+    void* allocate_raw_slow(size_t size, size_t alignment);
 
     // Allocate array of T (default constructed, destructors tracked if needed)
     template<typename T>
