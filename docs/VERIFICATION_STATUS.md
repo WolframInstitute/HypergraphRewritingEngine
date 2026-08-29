@@ -132,7 +132,9 @@ growers whose growths overlap -- reports the violation in 7,508 executions (9 s)
 walk as it was. The one-grower harness (`map_lookup_during_growth`) cannot reach it: with one
 grower the growths never overlap. The rule that closes it: an absent answer is final only if
 `table_` is still the head the walk started from; otherwise the walk restarts from the head it
-now loads. The same shape on the map's claim (`map_insert_existing_during_double_growth`) and
+now loads. With the rule in place the same harness is exhaustively clean: **No errors, 18,112,955
+complete executions** (78 min at six exploration threads); its three-insert spelling, which
+violates at 9,620 executions without the rule, is clean at 781,465. The same shape on the map's claim (`map_insert_existing_during_double_growth`) and
 on the key set (`key_set_contains_during_double_growth`, 4,020 executions;
 `key_set_insert_existing_during_double_growth`, 305,072) -- the key set already re-checks the
 head after an absent verdict -- is what "searching for the class" means here.
