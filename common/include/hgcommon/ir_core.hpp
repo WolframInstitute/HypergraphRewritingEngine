@@ -646,12 +646,20 @@ HG_HD inline IrResult ir_canonical_hash(
     // Per-depth block: five partition arrays, the sorted target cell, its covered flags, and
     // the frame scalars.
     auto block = [&](uint32_t d) -> uint32_t* { return depths + uint64_t(d) * ir_depth_words(n); };
-    auto view = [&](uint32_t d) -> IrPartition {
+    // A depth's partition over its block. `fresh` is the view of a block nothing has written
+    // yet -- the one the initial partition or an individualisation is about to fill -- and it
+    // reads no cell of it; `view` is the view of a block whose ncells has been stored.
+    auto fresh = [&](uint32_t d) -> IrPartition {
         uint32_t* b = block(d);
         IrPartition p;
         p.lab = b; p.pos = b + n; p.cell_of = b + 2 * n;
         p.cstart = b + 3 * n; p.clen = b + 4 * n;
-        p.ncells = b[7 * n + 0]; p.n = n;
+        p.ncells = 0; p.n = n;
+        return p;
+    };
+    auto view = [&](uint32_t d) -> IrPartition {
+        IrPartition p = fresh(d);
+        p.ncells = block(d)[7 * n + 0];
         return p;
     };
     auto store_ncells = [&](uint32_t d, uint32_t v) { block(d)[7 * n + 0] = v; };
@@ -664,7 +672,7 @@ HG_HD inline IrResult ir_canonical_hash(
 
     ir_build_occurrences(ea, eoff, ev, n_edges, n, occ_off, occ_edge, occ_pos, cursor);
 
-    IrPartition pi = view(0);
+    IrPartition pi = fresh(0);
     ir_initial_partition(ea, occ_off, occ_edge, occ_pos, n, pi, sig_buf, torder);
     ir_refine(ea, eoff, ev, n_edges, occ_off, occ_edge, pi,
               worklist, inc_edges, edge_epoch, touched, on_touched, torder,
@@ -931,7 +939,7 @@ HG_HD inline IrResult ir_canonical_hash(
         path[d] = v;
         if (d + 1 >= max_depth) { out.status = IR_NEED_DEPTH; return out; }
 
-        IrPartition child = view(d + 1);
+        IrPartition child = fresh(d + 1);
         ir_individualize(view(d), child, target_of(d), v);
         ir_refine(ea, eoff, ev, n_edges, occ_off, occ_edge, child,
                   worklist, inc_edges, edge_epoch, touched, on_touched, torder,
