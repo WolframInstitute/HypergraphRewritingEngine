@@ -31,7 +31,7 @@ endif()
 if(POLICY CMP0091)
     cmake_policy(SET CMP0091 NEW)
 endif()
-project(HypergraphEngine VERSION 0.0.1 LANGUAGES CXX)
+project(HypergraphEngine VERSION 1.0.0 LANGUAGES CXX)
 
 # ENABLE_TESTING() MUST PRECEDE EVERY add_subdirectory(), AND DID NOT.
 #

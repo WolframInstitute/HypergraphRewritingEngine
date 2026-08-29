@@ -4,7 +4,7 @@ PacletObject[<|
     "Creator" -> "Richard Assar",
     "License" -> "MIT",
     "PublisherID" -> "WolframInstitute",
-    "Version" -> "0.0.1",
+    "Version" -> "1.0.0",
     "WolframVersion" -> "13.0+",
     "SystemID" -> {"Linux-x86-64", "Linux-ARM64", "MacOSX-x86-64", "MacOSX-ARM64", "Windows-x86-64", "Windows-ARM64"},
     "Extensions" -> {
