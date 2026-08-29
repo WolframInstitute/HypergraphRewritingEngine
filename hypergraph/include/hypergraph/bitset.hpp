@@ -43,11 +43,16 @@ struct BitsetStats {
     uint64_t entries = 0;        // sum of num_entries_ seen, for the mean chunk count
     uint64_t dense = 0;          // calls whose entries_ were a contiguous chunk_id run
     uint64_t hits = 0;           // calls that found the chunk
+    uint64_t last = 0;           // calls whose chunk is the LAST entry (newest chunk)
+    uint64_t first = 0;          // calls whose chunk is the FIRST entry
+    uint64_t beyond = 0;         // calls whose chunk id is past the last entry (a certain miss)
+    uint64_t within64 = 0;       // calls whose chunk id is within 64 of the first entry's
 };
 // Global accumulators. Each worker's thread_local folds itself in when the thread ends, so a
 // reader after the join sees every worker without any synchronisation on the hot path.
 struct BitsetStatsGlobal {
     std::atomic<uint64_t> calls{0}, iters{0}, entries{0}, dense{0}, hits{0};
+    std::atomic<uint64_t> last{0}, first{0}, beyond{0}, within64{0};
 };
 inline BitsetStatsGlobal& bitset_stats_global() {
     static BitsetStatsGlobal g;
@@ -62,6 +67,10 @@ struct BitsetStatsTLS {
         g.entries.fetch_add(s.entries, std::memory_order_relaxed);
         g.dense.fetch_add(s.dense, std::memory_order_relaxed);
         g.hits.fetch_add(s.hits, std::memory_order_relaxed);
+        g.last.fetch_add(s.last, std::memory_order_relaxed);
+        g.first.fetch_add(s.first, std::memory_order_relaxed);
+        g.beyond.fetch_add(s.beyond, std::memory_order_relaxed);
+        g.within64.fetch_add(s.within64, std::memory_order_relaxed);
     }
 };
 inline BitsetStats& bitset_stats() {
@@ -78,15 +87,23 @@ inline void bitset_stats_report(const char* tag) {
     uint64_t entries = g.entries.load(std::memory_order_relaxed) + me.entries;
     uint64_t dense   = g.dense.load(std::memory_order_relaxed)   + me.dense;
     uint64_t hits    = g.hits.load(std::memory_order_relaxed)    + me.hits;
+    uint64_t last    = g.last.load(std::memory_order_relaxed)    + me.last;
+    uint64_t first   = g.first.load(std::memory_order_relaxed)   + me.first;
+    uint64_t beyond  = g.beyond.load(std::memory_order_relaxed)  + me.beyond;
+    uint64_t within  = g.within64.load(std::memory_order_relaxed) + me.within64;
     std::fprintf(stderr,
         "[bitset:%s] contains_calls=%llu mean_entries=%.2f mean_search_depth=%.2f "
-        "dense_frac=%.4f hit_frac=%.4f\n",
+        "dense_frac=%.4f hit_frac=%.4f last_frac=%.4f first_frac=%.4f beyond_frac=%.4f within64_frac=%.4f\n",
         tag,
         (unsigned long long)calls,
         calls ? double(entries) / double(calls) : 0.0,
         calls ? double(iters) / double(calls) : 0.0,
         calls ? double(dense) / double(calls) : 0.0,
-        calls ? double(hits) / double(calls) : 0.0);
+        calls ? double(hits) / double(calls) : 0.0,
+        calls ? double(last) / double(calls) : 0.0,
+        calls ? double(first) / double(calls) : 0.0,
+        calls ? double(beyond) / double(calls) : 0.0,
+        calls ? double(within) / double(calls) : 0.0);
 }
 #endif
 
@@ -178,6 +195,10 @@ public:
                 if (entries_[i].chunk_id != entries_[i - 1].chunk_id + 1) { contiguous = false; break; }
             }
             if (contiguous) ++st.dense;
+            if (entries_[n - 1].chunk_id == chunk_id) ++st.last;
+            if (entries_[0].chunk_id == chunk_id) ++st.first;
+            if (chunk_id > entries_[n - 1].chunk_id) ++st.beyond;
+            if (chunk_id >= entries_[0].chunk_id && chunk_id < entries_[0].chunk_id + 64) ++st.within64;
         }
 #endif
 
