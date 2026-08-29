@@ -120,6 +120,28 @@ HG_HD inline uint64_t qc_transition_sig(uint64_t from, uint64_t to, uint32_t rul
     return (sig == 0 || sig == ~uint64_t(0)) ? 1 : sig;
 }
 
+// The edges an event carries across unchanged -- every edge of its output state it did not
+// produce -- as index pairs into the input and output states' edge arrays, which both list
+// edges in ascending id, so one merge walk pairs them. An output edge the event did not produce
+// is an input edge by construction; the walk skips one that is not. ONE BODY on both engines:
+// the host's transition record and capture read orbit and slot through the indices, the device
+// reads its per-state orbit array through them, and the transition signature both compute
+// over the survivors is one function of the same pairs in the same order.
+template <class F>
+HG_HD inline void qc_for_each_survivor(const EdgeId* in_edges, uint32_t in_n,
+                                       const EdgeId* out_edges, uint32_t out_n,
+                                       const EdgeId* produced, uint32_t num_produced, F&& f) {
+    for (uint32_t i = 0, j = 0; i < out_n; ++i) {
+        const EdgeId oe = out_edges[i];
+        bool produced_here = false;
+        for (uint32_t k = 0; k < num_produced; ++k)
+            if (produced[k] == oe) { produced_here = true; break; }
+        if (produced_here) continue;
+        while (j < in_n && in_edges[j] < oe) ++j;
+        if (j < in_n && in_edges[j] == oe) f(j, i);
+    }
+}
+
 template <class Ctx>
 HG_HD void qc_add_producer(Ctx& c, uint64_t state_hash, uint32_t depth, uint32_t orbit,
                            uint32_t producer);

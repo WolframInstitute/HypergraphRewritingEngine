@@ -435,18 +435,19 @@ __device__ inline void qc_register_transition(DeviceState ds, QcView qc,
     uint64_t surv[kQcMaxSurvivors];
     uint32_t ns = 0;
     {
+        // The parent's and the child's slices both list edges in ascending id; the shared merge
+        // walk pairs the survivors, and the orbits are read through the indices it yields.
+        const StateEdgeSlice psl = ds.state_edge_slices[parent];
         const StateEdgeSlice csl = ds.state_edge_slices[child];
-        for (uint32_t k = 0; k < csl.count; ++k) {
-            const EdgeId oe = ds.state_edge_ids[csl.offset + k];
-            bool produced_here = false;
-            for (uint32_t j = 0; j < np; ++j)
-                if (ev.produced_edges[j] == oe) { produced_here = true; break; }
-            if (produced_here) continue;
-            const uint32_t po = qc_orbit_of(ds, qc, parent, oe);
-            if (po == UINT32_MAX) continue;
-            if (ns >= kQcMaxSurvivors) { ds.errors.record(ErrorKind::kScratchOverflow); return; }
-            surv[ns++] = (static_cast<uint64_t>(po) << 32) | ds.state_edge_orbit[csl.offset + k];
-        }
+        bool overflow = false;
+        hgcommon::qc_for_each_survivor(
+            ds.state_edge_ids + psl.offset, psl.count, ds.state_edge_ids + csl.offset, csl.count,
+            ev.produced_edges, np, [&](uint32_t pi, uint32_t ci) {
+                if (ns >= kQcMaxSurvivors) { overflow = true; return; }
+                surv[ns++] = (static_cast<uint64_t>(ds.state_edge_orbit[psl.offset + pi]) << 32) |
+                             ds.state_edge_orbit[csl.offset + ci];
+            });
+        if (overflow) { ds.errors.record(ErrorKind::kScratchOverflow); return; }
         hgcommon::isort_u64(surv, ns);
     }
 

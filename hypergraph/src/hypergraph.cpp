@@ -1229,23 +1229,13 @@ const EdgeOrbitTable* Hypergraph::qc_orbits_or_build(StateId s) {
     return (t && t->slot) ? t : nullptr;
 }
 
-// The edges an event carries across unchanged -- every edge of its output state it did not
-// produce -- paired by their positions in the input and output orbit tables, which both list
-// edges in ascending id, so one merge walk pairs them. An output edge the event did not
-// produce is an input edge by construction; the walk skips one that is not. ONE BODY for the
-// transition record (orbit pairs) and the capture (slot pairs), which must enumerate the same
-// edges in the same order.
+// Both orbit tables list their edges in ascending id: the shared merge walk pairs them
+// (hgcommon::qc_for_each_survivor), and the callers read orbit or slot through the indices.
 template <typename F>
 static void for_each_survivor(const EdgeOrbitTable& in_orb, const EdgeOrbitTable& out_orb,
                               const EdgeId* produced, uint8_t num_produced, F&& f) {
-    for (uint32_t i = 0, j = 0; i < out_orb.n; ++i) {
-        const EdgeId oe = out_orb.edges[i];
-        bool produced_here = false;
-        for (uint8_t k = 0; k < num_produced; ++k) if (produced[k] == oe) { produced_here = true; break; }
-        if (produced_here) continue;
-        while (j < in_orb.n && in_orb.edges[j] < oe) ++j;
-        if (j < in_orb.n && in_orb.edges[j] == oe) f(j, i);
-    }
+    hgcommon::qc_for_each_survivor(in_orb.edges, in_orb.n, out_orb.edges, out_orb.n,
+                                   produced, num_produced, f);
 }
 
 void Hypergraph::qc_capture_expansion(EventId e) {
