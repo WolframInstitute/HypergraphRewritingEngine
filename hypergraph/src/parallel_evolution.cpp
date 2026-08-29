@@ -518,16 +518,13 @@ void ParallelEvolutionEngine::push_match_to_children_impl(
 ) {
     // Counted before the early return, so the denominator is every call and not only the ones
     // that found work. The question this answers is how often the call has anything to do.
-    EvolutionStats::Slot& slot = stats_.mine();
-    auto& calls = site == PushSite::Discovery ? slot.push_discovery_calls
-                                              : slot.push_forwarding_calls;
-    auto& empty = site == PushSite::Discovery ? slot.push_discovery_empty
-                                              : slot.push_forwarding_empty;
-    HG_STAT(calls.bump());
+    HG_STAT((site == PushSite::Discovery ? stats_.mine().push_discovery_calls
+                                          : stats_.mine().push_forwarding_calls).bump());
 
     auto result = state_children_.lookup_waiting(id_key(parent));
     if (!result.has_value()) {
-        HG_STAT(empty.bump());
+        HG_STAT((site == PushSite::Discovery ? stats_.mine().push_discovery_empty
+                                              : stats_.mine().push_forwarding_empty).bump());
         return;  // No children registered
     }
 
@@ -590,7 +587,9 @@ void ParallelEvolutionEngine::push_match_to_children_impl(
         submit_rewrite_task(forwarded, child_step);
     });
 
-    if (!any_child) HG_STAT(empty.bump());
+    if (!any_child)
+        HG_STAT((site == PushSite::Discovery ? stats_.mine().push_discovery_empty
+                                              : stats_.mine().push_forwarding_empty).bump());
 }
 
 void ParallelEvolutionEngine::forward_from_ancestor_chain(
@@ -2654,7 +2653,9 @@ size_t ParallelEvolutionEngine::num_causal_edges() const { return hg_ ? hg_->cau
 
 size_t ParallelEvolutionEngine::num_branchial_edges() const { return hg_ ? hg_->causal_graph().num_branchial_edges() : 0; }
 
+#if HG_ENGINE_STATS
 const EvolutionStats& ParallelEvolutionEngine::stats() const { return stats_; }
+#endif
 
 const std::vector<std::string>& ParallelEvolutionEngine::warnings() const { return warnings_; }
 

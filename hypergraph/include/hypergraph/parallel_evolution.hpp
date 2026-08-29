@@ -815,7 +815,11 @@ private:
     alignas(64) std::atomic<size_t> rejected_duplicates_{0};
 
     // Evolution statistics
+#if HG_ENGINE_STATS
+    // Stats builds only: MAX_ARENA_WORKERS line-sized slots of counters, which no shipped
+    // output reads; every bump site is an HG_STAT expression.
     EvolutionStats stats_;
+#endif
 
 public:
     ParallelEvolutionEngine();
@@ -1086,7 +1090,9 @@ public:
     size_t num_branchial_edges() const;
     size_t num_redundant_edges_skipped() const;
 
+#if HG_ENGINE_STATS
     const EvolutionStats& stats() const;
+#endif
     const std::vector<std::string>& warnings() const;
 
     // The order rules are submitted in. PUBLIC BECAUSE IT IS THE INVARIANT A DETERMINISM GATE HAS
