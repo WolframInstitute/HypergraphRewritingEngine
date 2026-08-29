@@ -64,8 +64,16 @@ public:
     }
 
     // OWNER only. Returns nullptr if empty.
+    //
+    // Empty is decided before anything is written: bottom_ is the owner's own value and top_
+    // only ever grows, so bottom_ <= top_ stays true until this owner pushes, and a stale top_
+    // can only be smaller, which only sends a non-empty deque down the full protocol. An idle
+    // owner therefore never touches bottom_, and the thieves polling it read one settled
+    // value rather than a decrement and its restore on every empty pop.
     T pop() {
-        std::int64_t b = bottom_.load(std::memory_order_relaxed) - 1;
+        std::int64_t b = bottom_.load(std::memory_order_relaxed);
+        if (b <= top_.load(std::memory_order_relaxed)) return nullptr;
+        b -= 1;
         bottom_.store(b, std::memory_order_relaxed);
         hgcommon::rendezvous_barrier<hgcommon::rv::DequeTakeSteal>();  // bottom store vs top load
         std::int64_t t = top_.load(std::memory_order_relaxed);
