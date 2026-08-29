@@ -1,3 +1,24 @@
+diff --git a/genmc/genmc/Execution/ExecutionGraph.cpp b/genmc/genmc/Execution/ExecutionGraph.cpp
+index 9131b56..1da6fca 100644
+--- a/genmc/genmc/Execution/ExecutionGraph.cpp
++++ b/genmc/genmc/Execution/ExecutionGraph.cpp
+@@ -28,7 +28,15 @@
+ 
+ 	/* Special case for initializer */
+ 	if (lab->getPos().isInitializer()) {
+-		VERIFY(!(haveNAs_ && access.addr.isDynamic()));
++		/* A heap location no write in the graph covers, read while non-atomic accesses
++		 * are tracked: a read of uninitialised memory that reached value resolution.
++		 * Reported with the address, where an internal check named nothing. */
++		if (haveNAs_ && access.addr.isDynamic()) {
++			std::cerr << "Read of uninitialised heap memory during value resolution: address "
++				  << access.addr.get() << " width " << access.size.get() << " at event ("
++				  << lab->getPos().thread << ", " << lab->getPos().index << ")\n";
++			ERROR("Read of uninitialised heap memory during value resolution\n");
++		}
+ 		auto val = access.addr.isDynamic() ? SVal(0) : getInitVal(access);
+ 		/* TODO (WRD): View{} assumes the graph is complete here */
+ 		return haveNAs_ ? val : state.reconstructMemValue(access, View{}, val);
 diff --git a/genmc/genmc/Support/HgProgress.hpp b/genmc/genmc/Support/HgProgress.hpp
 new file mode 100644
 index 0000000..bccbbf8
@@ -401,7 +422,7 @@ index 4866e5e..d00da8a 100644
  	void add(auto &&item) { wlist_.emplace_back(std::move(item)); }
  
 diff --git a/lli/Runtime/Execution.cpp b/lli/Runtime/Execution.cpp
-index fe659e6..a480a76 100644
+index fe659e6..d30ff84 100644
 --- a/lli/Runtime/Execution.cpp
 +++ b/lli/Runtime/Execution.cpp
 @@ -31,6 +31,7 @@
@@ -412,7 +433,25 @@ index fe659e6..a480a76 100644
  #include "genmc/Support/SExprVisitor.hpp"
  #include "genmc/Verification/GenMCDriver.hpp"
  #include "llvm/ADT/APInt.h"
-@@ -1691,8 +1692,10 @@ void Interpreter::visitAtomicCmpXchgInst(AtomicCmpXchgInst &I)
+@@ -1366,6 +1367,17 @@ void Interpreter::visitReturnInst(ReturnInst &I)
+ 	popStackAndReturnValueToCaller(RetTy, Result, &I);
+ }
+ 
++/* freeze yields its operand: the interpreter's values are never poison, so the instruction
++ * that LLVM's own loop passes insert when they hoist a condition (a loop whose bound is a
++ * runtime value, once the mem-intrinsic promotion emits one) is the identity here. */
++void Interpreter::visitFreezeInst(FreezeInst &I)
++{
++	ExecutionContext &SF = ECStack().back();
++	GenericValue V = getOperandValue(I.getOperand(0), SF);
++	updateDataDeps(getCurThr().id, &I, I.getOperand(0));
++	SetValue(&I, V, SF);
++}
++
+ void Interpreter::visitUnreachableInst(UnreachableInst &I)
+ {
+ 	report_fatal_error("Program executed an 'unreachable' instruction!");
+@@ -1691,8 +1703,10 @@ void Interpreter::visitAtomicCmpXchgInst(AtomicCmpXchgInst &I)
  		cmpRes = res == GV_TO_SVAL(cmpVal, typ);                                           \
  		updateDataDeps(getCurThr().id, &I, currPos());                                     \
  		updateAddrPoDeps(getCurThr().id, I.getPointerOperand());                           \
@@ -424,7 +463,7 @@ index fe659e6..a480a76 100644
  		auto sDeps = makeEventDeps(getDataDeps(getCurThr().id, I.getPointerOperand()),     \
  					   getDataDeps(getCurThr().id, I.getNewValOperand()),      \
  					   getCtrlDeps(getCurThr().id), getAddrPoDeps(thr.id),     \
-@@ -3202,6 +3205,15 @@ void Interpreter::callAtExit(Function *F, const std::vector<GenericValue> &ArgVa
+@@ -3202,6 +3216,15 @@ void Interpreter::callAtExit(Function *F, const std::vector<GenericValue> &ArgVa
  	returnValueToCaller(F->getReturnType(), INT_TO_GV(F->getReturnType(), 0));
  }
  
@@ -440,7 +479,7 @@ index fe659e6..a480a76 100644
  void Interpreter::callMutexInit(Function *F, const std::vector<GenericValue> &ArgVals,
  				const std::unique_ptr<EventDeps> &specialDeps)
  {
-@@ -3612,6 +3624,20 @@ void Interpreter::run()
+@@ -3612,6 +3635,20 @@ void Interpreter::run()
  		llvm::ExecutionContext &SF = ECStack().back();
  		llvm::Instruction &I = *SF.CurInst++;
  		visit(I);
@@ -511,10 +550,18 @@ index 3cabc7a..e4cdb0b 100644
  		}
  
 diff --git a/lli/Runtime/Interpreter.h b/lli/Runtime/Interpreter.h
-index 4ab7493..a872f70 100644
+index 4ab7493..c92cc21 100644
 --- a/lli/Runtime/Interpreter.h
 +++ b/lli/Runtime/Interpreter.h
-@@ -586,6 +586,7 @@ private: // Helper functions
+@@ -497,6 +497,7 @@ public:
+ 	void visitCallBase(CallBase &CB) { visitCallInstWrapper(CallInstWrapper(CB)); }
+ #endif
+ 	void visitUnreachableInst(UnreachableInst &I);
++	void visitFreezeInst(FreezeInst &I);
+ 
+ 	void visitShl(BinaryOperator &I);
+ 	void visitLShr(BinaryOperator &I);
+@@ -586,6 +587,7 @@ private: // Helper functions
  
  	/* Collects the addresses (and some naming information) for all variables with
  	 * static storage. Also calculates the starting address of the allocation pool */
@@ -894,10 +941,21 @@ index d49a945..45ae518 100644
  	return changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
  }
 diff --git a/passes/passes/Transforms/PromoteMemIntrinsicPass.cpp b/passes/passes/Transforms/PromoteMemIntrinsicPass.cpp
-index b31c6cd..508240e 100644
+index b31c6cd..0241c1e 100644
 --- a/passes/passes/Transforms/PromoteMemIntrinsicPass.cpp
 +++ b/passes/passes/Transforms/PromoteMemIntrinsicPass.cpp
-@@ -157,24 +157,62 @@ static auto getPromotionGEPType(Value *op) -> Type *
+@@ -23,6 +23,10 @@
+ #include <llvm/IR/Instruction.h>
+ #include <llvm/IR/Instructions.h>
+ #include <llvm/IR/Module.h>
++#include <llvm/IR/Verifier.h>
++#include <llvm/Support/raw_ostream.h>
++#include <cstdlib>
++#include <algorithm>
+ #include <llvm/IR/Type.h>
+ 
+ #include <ranges>
+@@ -157,24 +161,62 @@ static auto getPromotionGEPType(Value *op) -> Type *
  		return v->getValueType();
  	if (auto *ai = dyn_cast<AllocaInst>(op))
  		return ai->getAllocatedType();
@@ -967,7 +1025,7 @@ index b31c6cd..508240e 100644
  
  	remainingLen -= len;
  	auto *srcLoad = builder.CreateLoad(typ, srcGEP, "memcpy.src.load");
-@@ -182,7 +220,7 @@ static void promoteMemCpy(IRBuilder<> &builder, Value *dst, Value *src,
+@@ -182,7 +224,7 @@ static void promoteMemCpy(IRBuilder<> &builder, Value *dst, Value *src,
  }
  
  static void promoteMemSet(IRBuilder<> &builder, Value *dst, Value *argVal,
@@ -976,7 +1034,7 @@ index b31c6cd..508240e 100644
  {
  	VERIFY(typ->isIntegerTy() || typ->isPointerTy());
  	VERIFY(isa<ConstantInt>(argVal));
-@@ -193,8 +231,7 @@ static void promoteMemSet(IRBuilder<> &builder, Value *dst, Value *argVal,
+@@ -193,8 +235,7 @@ static void promoteMemSet(IRBuilder<> &builder, Value *dst, Value *argVal,
  	long int ival = dyn_cast<ConstantInt>(argVal)->getSExtValue();
  	Value *val = Constant::getIntegerValue(typ, APInt(sizeInBits, ival));
  
@@ -986,7 +1044,7 @@ index b31c6cd..508240e 100644
  	Value *dstStore = builder.CreateStore(val, dstGEP);
  }
  
-@@ -340,23 +377,65 @@ static auto tryPromoteMemCpy(MemCpyInst *MI, SmallVector<llvm::MemIntrinsic *, 8
+@@ -340,23 +381,65 @@ static auto tryPromoteMemCpy(MemCpyInst *MI, SmallVector<llvm::MemIntrinsic *, 8
  
  	/* Recast args to same types for GEP indexing later */
  	auto [src, dst] = getRecastedOperands(MI, builder);
@@ -1055,7 +1113,7 @@ index b31c6cd..508240e 100644
  	if (!canPromoteMemIntrinsic(MS))
  		return false;
  
-@@ -367,12 +446,15 @@ static auto tryPromoteMemSet(MemSetInst *MS, SmallVector<MemIntrinsic *, 8> &pro
+@@ -367,12 +450,15 @@ static auto tryPromoteMemSet(MemSetInst *MS, SmallVector<MemIntrinsic *, 8> &pro
  	auto *nullInt = Constant::getNullValue(i64Ty);
  	auto *dstTyp = getPromotionGEPType(dst);
  	VERIFY(dstTyp);
@@ -1072,6 +1130,203 @@ index b31c6cd..508240e 100644
  	});
  	promoted.push_back(MS);
  	return true;
+@@ -395,6 +481,148 @@ static void removePromoted(std::ranges::input_range auto &&promoted)
+ 	}
+ }
+ 
++/* A mem intrinsic whose length is not a constant, and every memmove, becomes a byte loop:
++ *
++ *     i = 0
++ *   hdr: if (i < len) goto body else goto post
++ *   body: dst[k] = (memset ? val : src[k]), where k = i, or len-1-i when a memmove's
++ *         destination starts inside its source; i = i + 1; goto hdr
++ *
++ * Each iteration is one load and one store the checker models like any other access, and the
++ * loop is bounded like every other loop. Without this the intrinsic reached the interpreter,
++ * whose memset()/memcpy() handlers are an unconditional error (they cannot know the width of
++ * the accesses that follow), and a program with a single runtime-length memset -- a vector
++ * assign, a bitset clear -- could not be explored past it. Measured on a hypergraph rewriting
++ * engine: the composed program stopped at "Invalid call to memset()" inside its first rewrite.
++ */
++static auto promoteRuntimeLength(MemIntrinsic *MI, SmallVector<MemIntrinsic *, 8> &promoted) -> bool
++{
++	auto &ctx = MI->getContext();
++	auto *F = MI->getFunction();
++	auto *len = MI->getLength();
++	auto *lenTy = len->getType();
++	auto *i8Ty = IntegerType::getInt8Ty(ctx);
++	auto *dst = MI->getRawDest();
++	Value *src = nullptr;
++	if (auto *MT = dyn_cast<MemTransferInst>(MI))
++		src = MT->getRawSource();
++	const bool backwardIfOverlapping = isa<MemMoveInst>(MI);
++
++	/* The width of the loop's accesses: the scalar the destination (and source) names, so a
++	 * store here is the width of the load that reads it back -- the same rule the constant
++	 * case follows -- and a copy of n words is n iterations rather than 8n. A byte loop over
++	 * the remainder covers a length that is not a multiple of the width. */
++	const auto &DL = F->getParent()->getDataLayout();
++	auto scalarWidth = [&](Value *op) -> uint64_t {
++		if (!op || !isPromotableMemIntrinsicOperand(op))
++			return 0;
++		Type *t = getPromotionGEPType(op);
++		while (auto *at = dyn_cast<ArrayType>(t))
++			t = at->getElementType();
++		if (!t->isIntegerTy() && !t->isPointerTy())
++			return 0;
++		const auto w = DL.getTypeStoreSize(t).getFixedValue();
++		return (w == 1 || w == 2 || w == 4 || w == 8) ? w : 0;
++	};
++	uint64_t w = scalarWidth(dst);
++	if (src) {
++		const auto ws = scalarWidth(src);
++		if (w == 0) w = ws;
++		else if (ws != 0 && ws != w) w = 1;
++	}
++	if (w == 0) {
++		/* Operands the pass cannot see through (parameters, phis, call results): the
++		 * alignment the intrinsic asserts is the element width clang gives a copy of
++		 * T[n] -- alignof(T) -- capped at a word and at both operands' alignments. */
++		uint64_t a = MI->getDestAlign().valueOrOne().value();
++		if (auto *MT = dyn_cast<MemTransferInst>(MI))
++			a = std::min<uint64_t>(a, MT->getSourceAlign().valueOrOne().value());
++		w = std::min<uint64_t>(a, 8);
++		while (w > 1 && (w & (w - 1)) != 0) --w;
++	}
++	auto *elemTy = IntegerType::get(ctx, 8 * static_cast<unsigned>(w));
++
++	BasicBlock *pre = MI->getParent();
++	BasicBlock *post = pre->splitBasicBlock(MI, "memintr.post");
++	BasicBlock *hdr = BasicBlock::Create(ctx, "memintr.hdr", F, post);
++	BasicBlock *body = BasicBlock::Create(ctx, "memintr.body", F, post);
++
++	pre->getTerminator()->eraseFromParent();
++	IRBuilder<> b(pre);
++	Value *backward = nullptr;
++	if (backwardIfOverlapping) {
++		/* dst inside [src, src+len): copy from the top down so no byte is overwritten
++		 * before it is read */
++		auto *dstI = b.CreatePtrToInt(dst, lenTy);
++		auto *srcI = b.CreatePtrToInt(src, lenTy);
++		auto *srcEnd = b.CreateAdd(srcI, len);
++		backward = b.CreateAnd(b.CreateICmpUGT(dstI, srcI), b.CreateICmpULT(dstI, srcEnd));
++	}
++
++	/* Two loops: `words` elements of width w, then the byte remainder. Each is the same
++	 * shape: hdr tests i < count, body moves element k and advances. */
++	auto *wC = ConstantInt::get(lenTy, w);
++	Value *words = (w == 1) ? len : b.CreateUDiv(len, wC, "memintr.words");
++	Value *tail = (w == 1) ? ConstantInt::get(lenTy, 0)
++			       : b.CreateSub(len, b.CreateMul(words, wC), "memintr.tail");
++	/* The pattern of a memset at width w: the byte replicated */
++	Value *setVal = nullptr, *setByte = nullptr;
++	if (!src) {
++		setByte = b.CreateTrunc(cast<MemSetInst>(MI)->getValue(), i8Ty);
++		Value *wide = b.CreateZExt(setByte, elemTy);
++		setVal = wide;
++		for (uint64_t k = 1; k < w; ++k)
++			setVal = b.CreateOr(setVal, b.CreateShl(wide, ConstantInt::get(elemTy, 8 * k)));
++	}
++	BasicBlock *tailHdr = BasicBlock::Create(ctx, "memintr.tail.hdr", F, post);
++	BasicBlock *tailBody = BasicBlock::Create(ctx, "memintr.tail.body", F, post);
++	/* Everything the loops read from `pre` is computed before its branch. */
++	Value *tailOff = (w == 1) ? nullptr : b.CreateMul(words, wC);
++	b.CreateBr(hdr);
++
++	auto emitLoop = [&](BasicBlock *h, BasicBlock *bd, BasicBlock *from, BasicBlock *to, Value *count,
++			    Type *ty, Value *base, Value *val, uint64_t width, Value *byteOffset) {
++		IRBuilder<> lb(h);
++		auto *i = lb.CreatePHI(lenTy, 2, "memintr.i");
++		i->addIncoming(ConstantInt::get(lenTy, 0), from);
++		lb.CreateCondBr(lb.CreateICmpULT(i, count), bd, to);
++		lb.SetInsertPoint(bd);
++		Value *k = i;
++		if (backward) {
++			auto *fromTop = lb.CreateSub(lb.CreateSub(count, ConstantInt::get(lenTy, 1)), i);
++			k = lb.CreateSelect(backward, fromTop, i);
++		}
++		/* byte address = base + byteOffset + k * width, indexed in units of the type */
++		Value *dstBase = byteOffset ? lb.CreateInBoundsGEP(i8Ty, dst, {byteOffset}) : dst;
++		auto *dstElem = lb.CreateInBoundsGEP(ty, dstBase, {k}, "memintr.dst");
++		Value *v = val;
++		if (src) {
++			Value *srcBase = byteOffset ? lb.CreateInBoundsGEP(i8Ty, src, {byteOffset}) : src;
++			auto *srcElem = lb.CreateInBoundsGEP(ty, srcBase, {k}, "memintr.src");
++			v = lb.CreateLoad(ty, srcElem);
++		}
++		lb.CreateStore(v, dstElem);
++		i->addIncoming(lb.CreateAdd(i, ConstantInt::get(lenTy, 1)), bd);
++		lb.CreateBr(h);
++		(void)base; (void)width;
++	};
++	/* The word loop: memmove copies from the top when overlapping, so its index runs down;
++	 * the tail follows the words either way, at offset words*w. */
++	emitLoop(hdr, body, pre, tailHdr, words, elemTy, dst, setVal, w, nullptr);
++	if (w == 1) {
++		/* No tail: the word loop was the whole copy */
++		IRBuilder<> tb(tailHdr);
++		tb.CreateBr(post);
++		IRBuilder<> tbb(tailBody);
++		tbb.CreateUnreachable();
++	} else {
++		emitLoop(tailHdr, tailBody, hdr, post, tail, i8Ty, dst, setByte, 1, tailOff);
++	}
++
++	promoted.push_back(MI);
++	return true;
++}
++
+ auto PromoteMemIntrinsicPass::run(Function &F, FunctionAnalysisManager &FAM) -> PreservedAnalyses
+ {
+ 	/* Locate mem intrinsics of interest */
+@@ -402,14 +630,43 @@ auto PromoteMemIntrinsicPass::run(Function &F, FunctionAnalysisManager &FAM) ->
+ 	auto modified = false;
+ 
+ 	modified |= lowerFortifiedCalls(F);
+-	for (auto &I : instructions(F)) {
+-		if (auto *MI = dyn_cast<MemCpyInst>(&I))
+-			modified |= tryPromoteMemCpy(MI, promoted);
+-		if (auto *MS = dyn_cast<MemSetInst>(&I))
++	/* Gathered first: the runtime-length promotion splits blocks, which an instruction
++	 * iterator over the function must not see mid-walk. */
++	SmallVector<MemIntrinsic *, 8> found;
++	for (auto &I : instructions(F))
++		if (auto *MI = dyn_cast<MemIntrinsic>(&I))
++			found.push_back(MI);
++	for (auto *MI : found) {
++		/* The loop form covers what the typed promotion cannot: a runtime length, a memmove,
++		 * a memcpy whose operands are both opaque, a memset whose destination is opaque and
++		 * whose value or length is not a constant. Left alone, each reaches the
++		 * interpreter's handler, which is an unconditional error. */
++		auto *MC = dyn_cast<MemCpyInst>(MI);
++		auto *MS = dyn_cast<MemSetInst>(MI);
++		const bool constLen = isa<ConstantInt>(MI->getLength());
++		const bool opaqueCpy = MC && !isPromotableMemIntrinsicOperand(MC->getDest()) &&
++				       !isPromotableMemIntrinsicOperand(MC->getSource());
++		const bool opaqueSet = MS && !isPromotableMemIntrinsicOperand(MS->getDest()) &&
++				       !(constLen && isa<ConstantInt>(MS->getValue()));
++		if (isa<MemMoveInst>(MI) || !constLen || opaqueCpy || opaqueSet) {
++			if (MC && MC->getSourceAddressSpace() != MC->getDestAddressSpace())
++				continue;
++			modified |= promoteRuntimeLength(MI, promoted);
++			continue;
++		}
++		if (auto *MC = dyn_cast<MemCpyInst>(MI))
++			modified |= tryPromoteMemCpy(MC, promoted);
++		if (auto *MS = dyn_cast<MemSetInst>(MI))
+ 			modified |= tryPromoteMemSet(MS, promoted);
+ 	}
+ 
+ 	/* Erase promoted intrinsics from the code */
+ 	removePromoted(promoted);
++	if (std::getenv("HG_GENMC_VERIFY_IR") && llvm::verifyFunction(F, &llvm::errs())) {
++		llvm::errs() << "PromoteMemIntrinsicPass: malformed IR in " << F.getName() << "\n";
++		std::error_code ec;
++		llvm::raw_fd_ostream os("/tmp/malformed_fn.ll", ec);
++		F.print(os);
++	}
+ 	return modified ? PreservedAnalyses::none() : PreservedAnalyses::all();
+ }
 diff --git a/passes/passes/Transforms/SpinAssumePass.cpp b/passes/passes/Transforms/SpinAssumePass.cpp
 index cfc466b..ae80e02 100644
 --- a/passes/passes/Transforms/SpinAssumePass.cpp
