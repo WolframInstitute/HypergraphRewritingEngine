@@ -1,5 +1,5 @@
 // GENMC-LINK: engine
-// GENMC-ARGS: --unroll=2
+// GENMC-ARGS: --unroll=64
 // GENMC-DEFINES: -DHG_SEGMENTED_ARRAY_MAX_SEGMENTS=8 -DHG_CONCURRENT_MAP_INITIAL_CAPACITY=16
 //
 // GenMC harness: THE WHOLE ENGINE, one evolve() call. Every job-system path (submit, steal,
@@ -12,7 +12,7 @@
 //
 //   default                     two workers, rule {0,1} -> {0,1},{1,2}, one edge, one step, no
 //                               canonicalisation. The smallest run that goes through everything
-//                               once: 1 event, 2 states. Sized 2026-08-28: 1 execution.
+//                               once: 1 event, 2 states.
 //   -DHG_EVOLVE_LIVE_SHAPE=1    the shape of the live nondeterminism failures (cycle4-automorphic
 //                               at 16 threads, Full canonicalisation): THREE workers, the
 //                               two-edge rule {0,1},{1,2} -> {0,1},{1,3},{3,2}, a two-edge path,
@@ -24,10 +24,22 @@
 //                               a third worker can interleave every rendezvous the other two
 //                               are in. 3 events, 4 raw states, 3 canonical.
 //
-// WHAT IS BOUNDED. Every loop unrolled twice, which ends a thread that exceeds it as blocked,
-// never as an error. The module is the fully inlined engine (43M LLVM instructions before the
-// checker's own passes), so this is run with HG_GENMC_PROGRESS and sized with --mode=estimate
-// before an exhaustive run.
+//   -DHG_EVOLVE_CALIBRATE_END=1 either arm, with an assertion that FAILS after the contract
+//                               asserts. The checker must report it: a bound under which it
+//                               does not is a bound that never reaches the end of evolve(),
+//                               and the verdict of the property arm under that bound covers
+//                               only the prefix the bound allows.
+//
+// WHAT IS BOUNDED. Every loop is bounded to --unroll iterations per entry; a thread that
+// exceeds the bound is KILLED there, and an execution whose threads were killed still counts
+// as complete with no error. So a bound has to be shown to reach the end before its verdict
+// means anything, which is what the calibration arm is for. Measured 2026-08-29 on the live
+// arm at --unroll=2 (execution graph of the saved module): the main thread is killed after
+// 1,237 events inside construction, before any worker thread exists, so "No errors, 2
+// executions" at that bound covered construction alone. The bound is baked into the module by
+// the checker's unroll pass, so each bound is its own transform. The module is the fully
+// inlined engine (43M LLVM instructions before the checker's own passes), so this is run with
+// HG_GENMC_PROGRESS and saved with --output-llvm-after=<file>.bc once per bound and arm.
 #include "hypergraph/hypergraph.hpp"
 #include "hypergraph/parallel_evolution.hpp"
 #include "hypergraph/pattern.hpp"
@@ -56,6 +68,9 @@ int main() {
     e.evolve(init, 1);
     assert(e.num_events() == 1);
     assert(g.num_states() == 2);
+#endif
+#if defined(HG_EVOLVE_CALIBRATE_END)
+    assert(!"the end of evolve() is reachable under this bound");
 #endif
     return 0;
 }
