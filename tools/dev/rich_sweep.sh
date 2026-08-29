@@ -48,6 +48,8 @@ mkdir -p "$OUT"
 
 NPROC=$(nproc)
 DEPTH_BUDGET_S=${DEPTH_BUDGET_S:-240}     # stop deepening a shape once one run costs this much
+# THREADS: the scaling phase's thread counts (default the ladder below); the monotonicity gate
+# wants every count the machine has: THREADS="$(seq 1 $(nproc))".
 SCALE_BUDGET_S=${SCALE_BUDGET_S:-900}     # a single scaling point may not exceed this
 CONC=${CONC:-4}                           # concurrent jobs in the depth phase
 THREADS_PER=$(( NPROC / CONC )); [ "$THREADS_PER" -lt 1 ] && THREADS_PER=1
@@ -166,7 +168,7 @@ if [ "$WHICH" = scaling ] || [ "$WHICH" = all ]; then
         done
         [ -z "$best_d" ] && { say "$rule: no depth fits the scaling budget, skipped"; continue; }
         say "$rule: scaling at depth $best_d"
-        for th in 1 2 4 8 16 24 32; do
+        for th in ${THREADS:-1 2 4 8 16 24 32}; do   # THREADS="$(seq 1 32)" for every count the box has
             [ "$th" -gt "$NPROC" ] && continue
             for rep in 1 2 3; do
                 wait_quiet "$rule t=$th rep=$rep"
