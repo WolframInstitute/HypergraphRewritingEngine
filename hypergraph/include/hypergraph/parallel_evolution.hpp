@@ -630,7 +630,9 @@ private:
     // AND compares the record. A hash alone cannot be re-tested that way -- a colliding different
     // match occupying the probe slot reads as "arrived" -- and the state/rule pair a debug word
     // carries is recoverable from the record anyway (source_state, core->rule_index).
-    ConcurrentMap<uint64_t, const MatchRecord*> missing_match_hashes_{4096};
+    // Lazily sized: the validator (validate_match_forwarding_) is the only writer, so a run
+    // without it allocates nothing here, and one with it grows the table as it fills.
+    ConcurrentMap<uint64_t, const MatchRecord*> missing_match_hashes_;
     std::atomic<size_t> late_arrivals_{0};  // Matches that arrived after validation
 
     // Job system
