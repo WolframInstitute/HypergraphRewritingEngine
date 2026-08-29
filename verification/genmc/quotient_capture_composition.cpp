@@ -27,8 +27,8 @@ using namespace hg::engine;
 
 Hypergraph* g_hg;
 StateId g_parent;
-EdgeId g_e0, g_e1;
-VertexId g_v0, g_v1, g_v2;
+EdgeId g_e0, g_e1, g_e2;
+VertexId g_v0, g_v1, g_v2, g_v3;
 RewriteRule g_rule;
 
 void* rewrite(void* arg) {
@@ -36,8 +36,9 @@ void* rewrite(void* arg) {
     Rewriter rw(g_hg);
     VariableBinding b;
     // Two distinct matches of {x,y} on the parent's two edges.
-    if (which == 0) { b.bind(0, g_v0); b.bind(1, g_v1); EdgeId m[1] = {g_e0}; (void)rw.apply(g_rule, g_parent, m, 1, b, 1); }
-    else            { b.bind(0, g_v1); b.bind(1, g_v2); EdgeId m[1] = {g_e1}; (void)rw.apply(g_rule, g_parent, m, 1, b, 1); }
+    if (which == 0)      { b.bind(0, g_v0); b.bind(1, g_v1); EdgeId m[1] = {g_e0}; (void)rw.apply(g_rule, g_parent, m, 1, b, 1); }
+    else if (which == 1) { b.bind(0, g_v1); b.bind(1, g_v2); EdgeId m[1] = {g_e1}; (void)rw.apply(g_rule, g_parent, m, 1, b, 1); }
+    else                 { b.bind(0, g_v2); b.bind(1, g_v3); EdgeId m[1] = {g_e2}; (void)rw.apply(g_rule, g_parent, m, 1, b, 1); }
     return nullptr;
 }
 }  // namespace
@@ -54,8 +55,26 @@ int main() {
     g_e0 = hg.create_edge({g_v0, g_v1});
     g_e1 = hg.create_edge({g_v1, g_v2});
     SparseBitset init; init.set(g_e0, hg.arena()); init.set(g_e1, hg.arena());
+#if defined(HG_QCC_THREE_REWRITES)
+    // THREE rewriting threads: the shape the map-growth defect needs (a lookup overtaken by two
+    // overlapping growths), so the known-bad arm -DHG_CALIBRATE_MAP_LOOKUP_STALE=1 with
+    // -DHG_CONCURRENT_MAP_INITIAL_CAPACITY=2 is reachable here.
+    g_v3 = hg.alloc_vertex();
+    g_e2 = hg.create_edge({g_v2, g_v3});
+    init.set(g_e2, hg.arena());
+#endif
     auto r = hg.create_or_get_canonical_state(std::move(init), 0, INVALID_ID, INVALID_ID, nullptr, 0, nullptr, 0);
     g_parent = r.created_state_id;
+#if defined(HG_QCC_THREE_REWRITES)
+    hg.quotient_causal_seed(r.canonical_state_id, 3);
+    pthread_t a, b, c;
+    pthread_create(&a, nullptr, rewrite, reinterpret_cast<void*>(0L));
+    pthread_create(&b, nullptr, rewrite, reinterpret_cast<void*>(1L));
+    pthread_create(&c, nullptr, rewrite, reinterpret_cast<void*>(2L));
+    pthread_join(a, nullptr);
+    pthread_join(b, nullptr);
+    pthread_join(c, nullptr);
+#else
     hg.quotient_causal_seed(r.canonical_state_id, 2);
 
     pthread_t a, b;
@@ -63,10 +82,16 @@ int main() {
     pthread_create(&b, nullptr, rewrite, reinterpret_cast<void*>(1L));
     pthread_join(a, nullptr);
     pthread_join(b, nullptr);
+#endif
 
     assert(hg.capture_dropped_no_orbits() == 0 && "a capture was dropped for want of an orbit table");
+#if defined(HG_QCC_THREE_REWRITES)
+    assert(hg.captured_matches() == 3 && "a match of the expanded representative was not captured");
+    assert(hg.num_events() == 3);
+#else
     assert(hg.captured_matches() == 2 && "a match of the expanded representative was not captured");
     assert(hg.num_events() == 2);
+#endif
 #if defined(HG_HARNESS_CALIBRATE_END)
     // A bound reaches the end of this harness iff the checker reports this assertion; a bound
     // under which it does not kills a thread earlier, and the verdict covers that prefix alone.
