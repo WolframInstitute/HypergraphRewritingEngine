@@ -62,10 +62,10 @@ index b869518..ccea4dc 100644
  
 diff --git a/genmc/genmc/Support/HgProgress.hpp b/genmc/genmc/Support/HgProgress.hpp
 new file mode 100644
-index 0000000..bccbbf8
+index 0000000..9f2df81
 --- /dev/null
 +++ b/genmc/genmc/Support/HgProgress.hpp
-@@ -0,0 +1,255 @@
+@@ -0,0 +1,361 @@
 +/*
 + * Progress reporting for long runs (HG_GENMC_PROGRESS). A heartbeat thread prints, every
 + * HG_GENMC_HEARTBEAT seconds (30 when unset), what the checker is doing RIGHT NOW: during the
@@ -77,6 +77,9 @@ index 0000000..bccbbf8
 +#pragma once
 +
 +#include <atomic>
++#include <cmath>
++#include <cstdio>
++#include <string>
 +#include <chrono>
 +#include <cstdint>
 +#include <cstdlib>
@@ -88,6 +91,10 @@ index 0000000..bccbbf8
 +#include <mutex>
 +#include <string>
 +#include <thread>
++
++namespace llvm {
++class Instruction;
++}
 +
 +namespace hgprog {
 +
@@ -124,7 +131,25 @@ index 0000000..bccbbf8
 +	std::atomic<uint64_t> starts{0};
 +	static constexpr size_t kThreads = 64;
 +	std::atomic<uint64_t> threadInsts[kThreads] = {};
++	// The instruction the interpreter is executing.
++	std::atomic<const llvm::Instruction *> curInst{nullptr};
++	// Choice attribution (estimation mode). The state-space estimate of an execution is the
++	// product, over its reads and writes, of the number of alternatives each one has; every
++	// alternative set larger than one is booked here against the site of the instruction
++	// being interpreted, weighted by log2 of its size, so the table at the end names where
++	// the estimate comes from. A store that becomes a new alternative for earlier loads is
++	// booked at the store's site with the log2 growth it causes.
++	std::map<std::string, std::pair<uint64_t, double>> choices; // site -> (count, sum log2); mtx
++	uint64_t execChoicePoints{0};                                // this execution; mtx
++	double execChoiceLog2{0};                                    // this execution; mtx
++	uint64_t log2Samples{0};                                     // Welford over executions; mtx
++	long double log2Mean{0}, log2M2{0};                          // of log2(sample); mtx
++	long double residualSum{0};                                  // |log2 sample - booked|; mtx
++	uint64_t choicePointsSum{0};                                 // over executions; mtx
 +};
++
++/* The function and source line of an instruction, "fn[:line]"; defined by the interpreter. */
++std::string siteName(const llvm::Instruction *I);
 +
 +inline State &state()
 +{
@@ -152,6 +177,87 @@ index 0000000..bccbbf8
 +	std::lock_guard<std::mutex> g(s.mtx);
 +	++s.profile[site];
 +	++s.profileSamples;
++}
++
++inline void choice(size_t alternatives)
++{
++	auto &s = state();
++	const auto *I = s.curInst.load(std::memory_order_relaxed);
++	const double w = std::log2(static_cast<double>(alternatives));
++	std::lock_guard<std::mutex> g(s.mtx);
++	auto &e = s.choices[siteName(I)];
++	++e.first;
++	e.second += w;
++	++s.execChoicePoints;
++	s.execChoiceLog2 += w;
++}
++
++inline void choiceRevisit(double log2Growth)
++{
++	if (log2Growth <= 0)
++		return;
++	auto &s = state();
++	const auto *I = s.curInst.load(std::memory_order_relaxed);
++	std::lock_guard<std::mutex> g(s.mtx);
++	auto &e = s.choices[siteName(I) + " (store revisits earlier loads)"];
++	++e.first;
++	e.second += log2Growth;
++	++s.execChoicePoints;
++	s.execChoiceLog2 += log2Growth;
++}
++
++/* One estimation sample ended: SAMPLE is the product of the alternative counts. */
++inline void endEstimationSample(long double sample)
++{
++	auto &s = state();
++	std::lock_guard<std::mutex> g(s.mtx);
++	const long double l = std::log2(sample);
++	++s.log2Samples;
++	const long double d = l - s.log2Mean;
++	s.log2Mean += d / s.log2Samples;
++	s.log2M2 += d * (l - s.log2Mean);
++	s.residualSum += std::fabs(l - (long double)s.execChoiceLog2);
++	s.choicePointsSum += s.execChoicePoints;
++	s.execChoicePoints = 0;
++	s.execChoiceLog2 = 0;
++}
++
++inline std::string choiceTable(size_t n)
++{
++	auto &s = state();
++	std::vector<std::pair<std::string, std::pair<uint64_t, double>>> v;
++	long double mean = 0, sd = 0, residual = 0;
++	uint64_t samples = 0, points = 0;
++	{
++		std::lock_guard<std::mutex> g(s.mtx);
++		v.assign(s.choices.begin(), s.choices.end());
++		samples = s.log2Samples;
++		mean = s.log2Mean;
++		sd = samples > 1 ? std::sqrt(s.log2M2 / (samples - 1)) : 0;
++		residual = samples ? s.residualSum / samples : 0;
++		points = s.choicePointsSum;
++	}
++	std::sort(v.begin(), v.end(),
++		  [](auto &a, auto &b) { return a.second.second > b.second.second; });
++	double total = 0;
++	for (auto &e : v)
++		total += e.second.second;
++	char buf[256];
++	std::snprintf(buf, sizeof(buf),
++		      "HG-CHOICES samples=%llu log2_mean=%.2Lf log2_sd=%.2Lf booked_residual=%.3Lf "
++		      "choice_points_per_exec=%.1f booked_log2_per_exec=%.2f\n",
++		      (unsigned long long)samples, mean, sd, residual,
++		      samples ? (double)points / samples : 0.0, samples ? total / samples : 0.0);
++	std::string out = buf;
++	for (size_t i = 0; i < v.size() && i < n; ++i) {
++		std::snprintf(buf, sizeof(buf), "HG-CHOICE %6.2f%% log2/exec=%8.2f n/exec=%8.2f %s\n",
++			      total > 0 ? 100.0 * v[i].second.second / total : 0.0,
++			      samples ? v[i].second.second / samples : 0.0,
++			      samples ? (double)v[i].second.first / samples : 0.0,
++			      v[i].first.c_str());
++		out += buf;
++	}
++	return out;
 +}
 +
 +inline std::string profileTable(size_t n)
@@ -321,20 +427,39 @@ index 0000000..bccbbf8
 +}
 +
 +}  // namespace hgprog
+diff --git a/genmc/genmc/Verification/ChoiceMap.hpp b/genmc/genmc/Verification/ChoiceMap.hpp
+index f1e772d..2fede01 100644
+--- a/genmc/genmc/Verification/ChoiceMap.hpp
++++ b/genmc/genmc/Verification/ChoiceMap.hpp
+@@ -47,6 +47,13 @@ public:
+ 
+ 	void cut(const VectorClock &v);
+ 
++	/** The number of alternatives registered for E (0 when E is not registered) */
++	[[nodiscard]] auto sizeOf(Event e) const -> size_t
++	{
++		auto it = cmap_.find(e);
++		return it == cmap_.end() ? 0 : it->second.size();
++	}
++
+ private:
+ 	std::unordered_map<Event, VSet<Event>> cmap_;
+ };
 diff --git a/genmc/genmc/Verification/GenMCDriver.cpp b/genmc/genmc/Verification/GenMCDriver.cpp
-index a0d1865..9f5a944 100644
+index a0d1865..dba598d 100644
 --- a/genmc/genmc/Verification/GenMCDriver.cpp
 +++ b/genmc/genmc/Verification/GenMCDriver.cpp
-@@ -11,6 +11,8 @@
+@@ -11,6 +11,9 @@
   *     https://opensource.org/licenses/MIT
   */
  
 +#include <cstdlib>
 +#include "genmc/Support/HgProgress.hpp"
++#include <cmath>
  #include "GenMCDriver.hpp"
  #include "genmc/Execution/Consistency/BoundDecider.hpp"
  #include "genmc/Execution/Consistency/ConsistencyChecker.hpp"
-@@ -216,6 +218,7 @@ static void reconstructState(ExecutionGraph &g, ExecutionState &state)
+@@ -216,6 +219,7 @@ static void reconstructState(ExecutionGraph &g, ExecutionState &state)
  
  bool GenMCDriver::handleExecutionStart()
  {
@@ -342,7 +467,16 @@ index a0d1865..9f5a944 100644
  	auto &g = getExec().getGraph();
  	auto &state = getExec().getGraph().getState();
  
-@@ -366,6 +369,25 @@ auto GenMCDriver::handleExecutionEnd() -> std::optional<VerificationError>
+@@ -289,6 +293,8 @@ void GenMCDriver::updateStSpaceEstimation()
+ 	auto &choices = getExec().getChoiceMap();
+ 	auto sample = std::accumulate(choices.begin(), choices.end(), 1.0L,
+ 				      [](auto sum, auto &kv) { return sum *= kv.second.size(); });
++	if (hgprog::enabled())
++		hgprog::endEstimationSample(sample);
+ 
+ 	/* This is the (i+1)-th exploration */
+ 	auto totalExplored = (long double)result.explored + result.exploredBlocked + 1L;
+@@ -366,6 +372,25 @@ auto GenMCDriver::handleExecutionEnd() -> std::optional<VerificationError>
  	GENMC_DEBUG(if (getConf()->boundsHistogram && inVerificationMode()) trackExecutionBound(););
  
  	++result.explored;
@@ -368,7 +502,7 @@ index a0d1865..9f5a944 100644
  	if (fullExecutionExceedsBound())
  		++result.boundExceeding;
  
-@@ -395,7 +417,15 @@ auto GenMCDriver::handleExecutionEnd() -> std::optional<VerificationError>
+@@ -395,7 +420,15 @@ auto GenMCDriver::handleExecutionEnd() -> std::optional<VerificationError>
  bool GenMCDriver::done()
  {
  	auto validExecution = false;
@@ -384,7 +518,7 @@ index a0d1865..9f5a944 100644
  		auto item = getExec().getWorkqueue().getNext();
  		if (!item) {
  			if (popExecution())
-@@ -804,7 +834,16 @@ auto GenMCDriver::checkLiveness() -> std::optional<VerificationError>
+@@ -804,7 +837,16 @@ auto GenMCDriver::checkLiveness() -> std::optional<VerificationError>
  	/* Collect all threads blocked at spinloops */
  	std::vector<int> spinBlocked;
  	for (auto i = 0U; i < g.getNumThreads(); i++) {
@@ -402,7 +536,7 @@ index a0d1865..9f5a944 100644
  			spinBlocked.push_back(i);
  	}
  
-@@ -1061,6 +1100,28 @@ EventLabel *GenMCDriver::findConsistentCo(WriteLabel *wLab, std::vector<EventLab
+@@ -1061,6 +1103,28 @@ EventLabel *GenMCDriver::findConsistentCo(WriteLabel *wLab, std::vector<EventLab
  	return nullptr;
  }
  
@@ -431,6 +565,52 @@ index a0d1865..9f5a944 100644
  auto GenMCDriver::handleThreadKill(std::unique_ptr<ThreadKillLabel> kLab)
  	-> HandleResult<std::monostate>
  {
+@@ -1474,8 +1538,11 @@ GenMCDriver::HandleResult<SVal> GenMCDriver::handleLoad(std::unique_ptr<ReadLabe
+ 	EventLabel *rf = nullptr;
+ 
+ 	if (inEstimationMode() || inRandomMode()) {
+-		if (inEstimationMode())
++		if (inEstimationMode()) {
++			if (hgprog::enabled() && stores.size() > 1)
++				hgprog::choice(stores.size());
+ 			getExec().getChoiceMap().update(lab, stores);
++		}
+ 		filterAtomicityViolations(lab, stores);
+ 		rf = pickRandomRf(lab, stores);
+ 	} else {
+@@ -1867,8 +1934,11 @@ GenMCDriver::HandleResult<bool> GenMCDriver::handleStore(std::unique_ptr<WriteLa
+ 	EventLabel *co = nullptr;
+ 	if (inEstimationMode() || inRandomMode()) {
+ 		co = pickRandomCo(lab, cos);
+-		if (inEstimationMode())
++		if (inEstimationMode()) {
++			if (hgprog::enabled() && cos.size() > 1)
++				hgprog::choice(cos.size());
+ 			getExec().getChoiceMap().update(lab, cos);
++		}
+ 	} else {
+ 		co = findConsistentCo(lab, cos);
+ 		calcCoOrderings(lab, cos);
+@@ -2955,8 +3025,18 @@ void GenMCDriver::calcRevisits(WriteLabel *sLab)
+ 
+ 	/* If operating in estimation/random mode, don't actually revisit */
+ 	if (inEstimationMode() || inRandomMode()) {
+-		if (inEstimationMode())
++		if (inEstimationMode()) {
++			if (hgprog::enabled()) {
++				double growth = 0;
++				for (const auto *l : loads) {
++					const auto k = getExec().getChoiceMap().sizeOf(l->getPos());
++					if (k > 0)
++						growth += std::log2((double)(k + 1) / (double)k);
++				}
++				hgprog::choiceRevisit(growth);
++			}
+ 			getExec().getChoiceMap().update(loads, sLab);
++		}
+ 		return;
+ 	}
+ 
 diff --git a/genmc/genmc/Verification/GenMCDriver.hpp b/genmc/genmc/Verification/GenMCDriver.hpp
 index 59b5337..7ce36c9 100644
 --- a/genmc/genmc/Verification/GenMCDriver.hpp
@@ -463,7 +643,7 @@ index 4866e5e..d00da8a 100644
  	void add(auto &&item) { wlist_.emplace_back(std::move(item)); }
  
 diff --git a/lli/Runtime/Execution.cpp b/lli/Runtime/Execution.cpp
-index fe659e6..ca13ca3 100644
+index fe659e6..e2342df 100644
 --- a/lli/Runtime/Execution.cpp
 +++ b/lli/Runtime/Execution.cpp
 @@ -31,6 +31,7 @@
@@ -520,40 +700,52 @@ index fe659e6..ca13ca3 100644
  void Interpreter::callMutexInit(Function *F, const std::vector<GenericValue> &ArgVals,
  				const std::unique_ptr<EventDeps> &specialDeps)
  {
-@@ -3604,6 +3627,28 @@ void Interpreter::runAtExitHandlers()
+@@ -3604,14 +3627,59 @@ void Interpreter::runAtExitHandlers()
  	setProgramState(oldState);
  }
  
-+/* The instruction the interpreter is executing, for the report a checker-side stop leaves
-+ * behind: at exit, under HG_GENMC_PROFILE, its function and source line are printed, which
-+ * is the site of the access an internal stop was resolving. */
-+static std::atomic<const llvm::Instruction *> &hgLastInst()
++std::string hgprog::siteName(const llvm::Instruction *I)
 +{
-+	static std::atomic<const llvm::Instruction *> inst{nullptr};
++	if (!I)
++		return "?";
++	std::string site = I->getFunction() ? I->getFunction()->getName().str() : "?";
++	if (const auto &loc = I->getDebugLoc()) {
++		/* The line is the callee's after inlining, so the file is named with it. */
++		std::string file = loc->getFilename().str();
++		const auto slash = file.find_last_of('/');
++		if (slash != std::string::npos)
++			file = file.substr(slash + 1);
++		site += " " + file + ":" + std::to_string(loc.getLine());
++	}
++	return site;
++}
++
++/* At exit, under HG_GENMC_PROFILE, the instruction the interpreter is executing is printed:
++ * the site of the access a checker-side stop was resolving. */
++static void hgRegisterLastInstructionReport()
++{
 +	static const bool registered = [] {
 +		if (std::getenv("HG_GENMC_PROFILE"))
 +			std::atexit([] {
-+				const auto *I = inst.load(std::memory_order_relaxed);
-+				if (!I) return;
-+				std::string site = I->getFunction() ? I->getFunction()->getName().str() : "?";
-+				if (const auto &loc = I->getDebugLoc())
-+					site += ":" + std::to_string(loc.getLine());
-+				std::cerr << "HG-LAST-INSTRUCTION at exit: " << site << "\n";
++				const auto *I = hgprog::state().curInst.load(std::memory_order_relaxed);
++				if (I)
++					std::cerr << "HG-LAST-INSTRUCTION at exit: " << hgprog::siteName(I)
++						  << "\n";
 +			});
 +		return true;
 +	}();
 +	(void)registered;
-+	return inst;
 +}
 +
  void Interpreter::run()
  {
++	hgRegisterLastInstructionReport();
  	auto tid = driver->scheduleNext(dynState.globalInstructions);
-@@ -3611,7 +3656,22 @@ void Interpreter::run()
+ 	while (std::holds_alternative<int>(tid)) {
  		scheduleThread(std::get<int>(tid));
  		llvm::ExecutionContext &SF = ECStack().back();
  		llvm::Instruction &I = *SF.CurInst++;
-+		hgLastInst().store(&I, std::memory_order_relaxed);
++		hgprog::state().curInst.store(&I, std::memory_order_relaxed);
  		visit(I);
 +		const auto instsSoFar =
 +			hgprog::state().instsThisExec.fetch_add(1, std::memory_order_relaxed);
@@ -563,12 +755,8 @@ index fe659e6..ca13ca3 100644
 +				hgprog::state().threadInsts[t].fetch_add(1, std::memory_order_relaxed);
 +		}
 +		hgprog::state().instsTotal.fetch_add(1, std::memory_order_relaxed);
-+		if ((instsSoFar & 4095) == 0 && hgprog::profiling()) {
-+			std::string site = I.getFunction() ? I.getFunction()->getName().str() : "?";
-+			if (const auto &loc = I.getDebugLoc())
-+				site += ":" + std::to_string(loc.getLine());
-+			hgprog::sample(site);
-+		}
++		if ((instsSoFar & 4095) == 0 && hgprog::profiling())
++			hgprog::sample(hgprog::siteName(&I));
  		if (!ECStack().empty()) {
  			dynState.globalInstructions[currPos().thread].kind =
  				getInstKind(&*ECStack().back().CurInst);
@@ -641,6 +829,39 @@ index 4ab7493..c92cc21 100644
  	void collectStaticAddresses();
  
  	/* Sets up how some errors will be reported to the user */
+diff --git a/lli/main.cpp b/lli/main.cpp
+index 4fbfa13..f20165b 100644
+--- a/lli/main.cpp
++++ b/lli/main.cpp
+@@ -14,6 +14,7 @@
+ #include "Runtime/Interpreter.h"
+ #include "passes/LLIConfig.hpp"
+ #include "passes/LLVMModule.hpp"
++#include "genmc/Support/HgProgress.hpp"
+ #include "genmc/lli_config.h"
+ #include "genmc/Support/Error.hpp"
+ #include "genmc/Support/Logger.hpp"
+@@ -734,11 +735,16 @@ static void printEstimationResults(const std::shared_ptr<const Config> &conf,
+ 	      (!res.status.has_value() ? "*** Estimation complete"
+ 				       : "\n*** Estimation unsuccessful"));
+ 
+-	long long mean = std::llround(res.estimationMean);
+-	long long sd = std::llround(std::sqrt(res.estimationVariance));
++	const long double mean = res.estimationMean;
++	const long double sd = std::sqrt(res.estimationVariance);
+ 	auto meanTimeSecs = getElapsedSecs(begin) / (res.explored + res.exploredBlocked);
+-	PRINT(VerbosityLevel::Error, "Total executions estimate: {} (+- {})\n", mean, sd);
+-	PRINT(VerbosityLevel::Error, "Time to completion estimate: {:.2f}s\n", meanTimeSecs * mean);
++	PRINT(VerbosityLevel::Error, "Total executions estimate: {:.4Le} (+- {:.4Le}) = 2^{:.1Lf}\n",
++	      mean, sd, std::log2(mean));
++	const long double secs = meanTimeSecs * mean;
++	PRINT(VerbosityLevel::Error, "Time to completion estimate: {:.2Le}s = {:.3Le} years\n", secs,
++	      secs / (365.25L * 86400.0L));
++	if (hgprog::enabled())
++		std::cerr << hgprog::choiceTable(30);
+ 	GENMC_DEBUG(if (conf->printEstimationStats) {
+ 		PRINT(VerbosityLevel::Error, "Estimation moot: {}\n", res.exploredMoot);
+ 		PRINT(VerbosityLevel::Error, "Estimation blocked: {}\n", res.exploredBlocked);
 diff --git a/passes/passes/InternalFunction.def b/passes/passes/InternalFunction.def
 index 517cbac..1c13957 100644
 --- a/passes/passes/InternalFunction.def

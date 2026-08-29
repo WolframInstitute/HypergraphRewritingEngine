@@ -121,8 +121,18 @@ execution-stack depth, the revisits still queued, the instructions interpreted s
 completed execution and in total, the rate, the executions STARTED (each replay of a revisit is
 one) and the instructions each thread has interpreted since the last completion. With
 `HG_GENMC_PROFILE=1` every 4096th interpreted instruction is attributed to its function and,
-under `HG_GENMC_DEBUG_INFO=1`, its source line, and the top eight are printed in the heartbeat
-and at exit. The checker has no verbosity in a release build; a pass that sits on one function
+under `HG_GENMC_DEBUG_INFO=1`, its source line (with the inlined-at chain back to the caller),
+and the top eight are printed in the heartbeat and at exit. In `--mode=estimate` under
+`HG_GENMC_PROGRESS` the checker also prints `HG-CHOICES`: the state-space estimate is the product,
+over an execution's reads and writes, of the number of alternatives each one has, and every
+alternative set larger than one is booked against the site of the instruction being interpreted,
+weighted by log2 of its size (a store that becomes a new alternative for earlier loads is booked
+at its own site with the log2 growth it causes). The table lists the sites by their share of the
+booked log2 with per-execution counts; the booked total equals log2 of the estimator's sample
+per execution (`booked_residual`, 0.000 on `key_set_contains_during_double_growth`), which is the
+instrument's own check. The estimator's absolute mean is not the count: on that harness it is
+9.2e4 against an exhaustive 4,020, so the shares are what the table is for. The estimate is
+printed in scientific form with its log2 and the time to completion in years. The checker has no verbosity in a release build; a pass that sits on one function
 for an hour, or an execution that interprets millions of instructions, produces no per-pass or
 per-execution line, and the heartbeat is what says whether it is moving. What the counts
 answered on the composed engine: `engine_construct` at `--unroll=16384` reached its first
