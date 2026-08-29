@@ -2029,18 +2029,12 @@ A depth sweep identifies what binds, and rules out the reading that first sugges
 
 What separates the two regimes is the parallel width, and the corpus supplies a controlled comparison for it. At depth six \texttt{cycle4} carries $95{,}600$ pairs over $40$ states and loses to the host; \texttt{wolfram24} carries a comparable $130{,}476$ pairs over $9{,}820$ states and beats it by $3.4\times$. The pair counts are within $40\%$ of each other and the outcomes are opposite, so neither the size of the relation nor the depth of the recursion is the discriminator. The state count is: a class is the unit over which the replay's instances are independent, and a run that collapses to forty classes has forty-fold width available however much work those classes carry. \texttt{cycle4} begins from a deliberately automorphic initial state, which is exactly the condition that collapses classes. The device's disadvantage on these shapes is therefore a shortage of independent work rather than an inability to execute the work it has, and raising occupancy against it would raise the idle count rather than the throughput.
 
-The instances \emph{within} a class can be replayed concurrently. They are serialized by an
-implementation choice rather than by the reconstruction: each driver takes its instances from a
+The instances \emph{within} a class can be replayed concurrently. They are serialized by the worklist:
+each driver takes its instances from a
 worklist private to it, so a class is walked by one driver and, on a run that collapses to forty
 classes, forty such walks proceed while the remainder of the grid spins.
 
-Nothing in the reconstruction requires this. A child instance is published to the instance index
-behind a fence before it is driven, and each (instance, match) application is claimed through a
-device-wide set, so an application is idempotent and safe from any thread. A push visible across
-drivers would therefore produce the same result as one confined to the driver that discovered the
-instance, and the available width would be the instance count rather than the class count.
-
-The two are far apart on exactly the shapes that lose. At depth six \texttt{cycle4} materialises
+The instance count and the class count are far apart on exactly the shapes that lose. At depth six \texttt{cycle4} materialises
 $68{,}185$ instances over $40$ classes and \texttt{multirule} $146{,}599$ over $49$---deficits of
 $1{,}705\times$ and $2{,}992\times$---while \texttt{wolfram24} materialises $86{,}086$ over
 $9{,}820$ and \texttt{wpp} $15{,}967$ over $3{,}867$, deficits of $8.8\times$ and $4.1\times$. The
@@ -2235,15 +2229,7 @@ returning to the host between evolution steps
 
 \subsection{Future Directions}
 
-Four directions remain open. The first is performance and is named by a measurement in this
-paper rather than by expectation; the other three are scope.
-
-\textbf{Instance-parallel replay:} The reconstruction drives each instance from a worklist rather
-than by recursion, but the worklist is private to one driver, so the width it exploits is the
-class count rather than the instance count. On the class-collapsed workloads the two differ by
-four orders of magnitude: \texttt{pair} on a 24-edge path expands 373{,}176 states that fall into
-5 canonical classes. Making the worklist visible across drivers is what would spend the instance
-count instead, and the publication and claim machinery a shared push requires is already present.
+Three directions remain open, all of scope.
 
 \textbf{Distributed computation:} The current design targets single-node execution. Extending to distributed memory systems would enable exploration of larger state spaces than one machine's memory admits.
 
