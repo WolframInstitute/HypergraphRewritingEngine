@@ -1,5 +1,6 @@
 // GENMC-LINK: engine
 // GENMC-ARGS: --unroll=2
+// GENMC-DEFINES: -DHG_SEGMENTED_ARRAY_MAX_SEGMENTS=8 -DHG_CONCURRENT_MAP_INITIAL_CAPACITY=16 -DHG_JOB_QUEUE_CAPACITY=16 -DHG_JOB_INJECTOR_CAPACITY=64
 //
 // GenMC harness: THE COMPOSED ENGINE, constructed. Every engine translation unit is linked, and
 // what main reaches is what the checker is handed -- a Hypergraph, a ParallelEvolutionEngine with

@@ -4,6 +4,16 @@
 #include <job_system/job.hpp>
 #include <job_system/work_stealing_deque.hpp>
 #include <lockfree_deque/deque.hpp>
+
+// Queue sizes at construction. Each is a buffer filled slot by slot when the system is built,
+// so under a model checker they set the loop bound construction needs; the harnesses define
+// them small (verification/genmc/engine_*.cpp), the shipped defaults are below.
+#ifndef HG_JOB_QUEUE_CAPACITY
+#define HG_JOB_QUEUE_CAPACITY 4096
+#endif
+#ifndef HG_JOB_INJECTOR_CAPACITY
+#define HG_JOB_INJECTOR_CAPACITY 32768
+#endif
 #include <hgcommon/park.hpp>
 #include <hgcommon/rendezvous.hpp>
 #include <hgcommon/park_gate.hpp>
@@ -715,13 +725,13 @@ public:
     // run is deterministic by construction. This is the single-threaded execution mode
     // (and the WebAssembly path, where spawning threads is not available): everything
     // the workers would do happens on the thread that waits.
-    explicit JobSystem(size_t num_threads = 0, size_t queue_capacity = 4096,
+    explicit JobSystem(size_t num_threads = 0, size_t queue_capacity = HG_JOB_QUEUE_CAPACITY,
                        bool serial = false)
-        : injector_(32768),
+        : injector_(HG_JOB_INJECTOR_CAPACITY),
           num_threads_(serial ? 0
                               : (num_threads == 0 ? std::thread::hardware_concurrency()
                                                   : num_threads)),
-          queue_capacity_(queue_capacity == 0 ? 4096 : queue_capacity),
+          queue_capacity_(queue_capacity == 0 ? HG_JOB_QUEUE_CAPACITY : queue_capacity),
           serial_(serial) {
         if (!serial_ && num_threads_ == 0) num_threads_ = 1;
         workers_.reserve(num_threads_);

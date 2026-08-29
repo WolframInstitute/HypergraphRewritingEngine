@@ -1,6 +1,6 @@
 // GENMC-LINK: engine
 // GENMC-ARGS: --unroll=64
-// GENMC-DEFINES: -DHG_SEGMENTED_ARRAY_MAX_SEGMENTS=8 -DHG_CONCURRENT_MAP_INITIAL_CAPACITY=16
+// GENMC-DEFINES: -DHG_SEGMENTED_ARRAY_MAX_SEGMENTS=8 -DHG_CONCURRENT_MAP_INITIAL_CAPACITY=16 -DHG_JOB_QUEUE_CAPACITY=16 -DHG_JOB_INJECTOR_CAPACITY=64
 //
 // GenMC harness: THE WHOLE ENGINE, one evolve() call. Every job-system path (submit, steal,
 // park, wake, quiescence), the matcher, the rewriter, the causal graph and the state and event

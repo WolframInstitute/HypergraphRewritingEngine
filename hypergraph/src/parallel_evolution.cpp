@@ -51,7 +51,7 @@ ParallelEvolutionEngine::ParallelEvolutionEngine(Hypergraph* hg, size_t num_thre
     match_join_.set_arena(arena);
 
     job_system_ = std::make_unique<job_system::JobSystem<EvolutionJobType>>(
-        mode_ == ExecutionMode::Serial ? 0 : num_threads_, 4096,
+        mode_ == ExecutionMode::Serial ? 0 : num_threads_, HG_JOB_QUEUE_CAPACITY,
         /*serial=*/mode_ == ExecutionMode::Serial);
     // Recycle each worker's scratch arena after every job — temporaries allocated
     // during a task are reclaimed in bulk, keeping malloc off the hot path.
