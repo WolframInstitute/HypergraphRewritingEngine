@@ -1408,6 +1408,31 @@ which parks is always woken, which is a liveness property and is checked as one-
 of the two sequentially consistent fences in the submit/park protocol makes the checker report a
 non-terminating spin loop.
 
+\paragraph{The checker itself.}
+Running an engine of this size through GenMC required changes to the checker, all of which are
+shipped with the engine as a patch against release 0.17.0. Four are correctness fixes:
+\texttt{operator new[]} is intercepted as an allocation, as \texttt{operator new} already was;
+a \texttt{memcpy} is promoted over the element type its destination names, with byte stores for
+a tail shorter than the last element and alignment-width stores for an opaque \texttt{memset};
+the read half of a failed compare-exchange carries the failure ordering rather than the success
+ordering; and no liveness violation is reported while a thread is blocked by an assume, a helped
+compare-exchange or a confirmation (upstream pull request 58). One is a limitation in the
+lowering of copies whose operands the promotion pass cannot type---a call result, or a load from
+a lambda's closure field---which were lowered as loops at the intrinsic's alignment, so that a
+program's two-byte field read fell inside a four-byte store, an access the checker's value
+resolution does not answer and reported as uninitialised memory; the promotion now runs once
+before and once after scalar replacement and register promotion, when such operands have become
+the allocas they held, and the report names a read that lies inside a wider write. The rest are
+instruments: a progress heartbeat over the transformation passes and the exploration, and, in
+estimation mode, an attribution of the state-space estimate to the reads and writes that
+produce it---every access with more than one alternative is booked against its source line
+with weight $\log_2$ of the alternative count, and the booked total equals $\log_2$ of the
+estimator's sample per execution. That attribution is what identified the two changes that
+made the composed harnesses tractable: an idle worker's empty pop of its deque wrote its
+\texttt{bottom} word twice per look, giving every thief's read of that word one reads-from
+alternative per store, and the workers were spawned with distinct arguments, which kept the
+checker's symmetry reduction from applying.
+
 \paragraph{Unbounded worker count, a transcribed model.}
 The second layer uses TLA+ and its model checker~\cite{lamport2002specifying} on the match
 forwarding protocol, which is the property whose silent failure is most costly: a lost match
