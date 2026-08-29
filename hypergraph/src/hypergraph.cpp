@@ -1415,11 +1415,34 @@ void Hypergraph::causal_edge_keys(StateId state, const EdgeId* edges, uint32_t n
         for (uint32_t i = 0; i < n; ++i) out[i] = raw_key(edges[i]);
         return;
     }
-
-    // Quotient + Full: key by iso-invariant canonical edge orbit. Extract the state's
-    // edges once, compute the canonical hash and per-edge orbit ids (numbered canonically,
-    // so the numbering itself is invariant), then key each queried edge by
-    // fnv(canonical_hash, orbit). All scratch lives in the per-worker arena.
+    // The key of an edge is its state's canonical hash and its automorphism orbit in that
+    // state; an edge the state does not hold keys on its raw id, and is counted.
+    auto mint = [](uint64_t chash, bool found, uint32_t orb, EdgeId e) {
+        uint64_t key = 14695981039346656037ULL;
+        key ^= chash;                    key *= 1099511628211ULL;
+        key ^= found ? static_cast<uint64_t>(orb)
+                     : (0xFFFFFFFF00000000ULL | e);
+        key *= 1099511628211ULL;
+        // Clear the top bit so the key lands in [0, 2^63), below the storage map's reserved
+        // sentinel band -- costs one hash bit, still ample for collision resistance.
+        key &= ~(1ULL << 63);
+        return CanonicalEdgeKey{key};
+    };
+    // The orbits were computed and cached when the state was created
+    // (compute_and_cache_state_orbits), by the same search that set its canonical hash, so
+    // the keys are read from that table: one search per state, not one per event end.
+    if (const EdgeOrbitTable* tbl = state_orbits(state); tbl && tbl->edges) {
+        const uint64_t chash =
+            hgcommon::atomic_ref<uint64_t>(const_cast<uint64_t&>(get_state(state).canonical_hash))
+                .load(std::memory_order_acquire);
+        for (uint32_t i = 0; i < n; ++i) {
+            const uint32_t idx = tbl->index_of(edges[i]);
+            out[i] = mint(chash, idx < tbl->n, idx < tbl->n ? tbl->orbit[idx] : 0, edges[i]);
+        }
+        return;
+    }
+    // No cached table for this state (a cold cache under HG_CALIBRATE_ORBIT_CACHE_COLD): the
+    // same search, run here.
     auto mk = worker_scratch().mark();
     SVec<SVec<VertexId>> edge_vecs;
     SVec<EdgeId> ids;
@@ -1429,37 +1452,23 @@ void Hypergraph::causal_edge_keys(StateId state, const EdgeId* edges, uint32_t n
         edge_vecs.emplace_back(e.vertices, e.vertices + e.arity);
         ids.push_back(eid);
     });
-
     if (edge_vecs.empty()) {
         worker_scratch().release(mk);
         for (uint32_t i = 0; i < n; ++i) out[i] = raw_key(edges[i]);
         return;
     }
-
     HG_THREAD_LOCAL(std::vector<uint32_t>, orbit);
     HG_THREAD_LOCAL(std::vector<uint32_t>, klass);
     IrBooking booking{};
     const uint64_t chash = ir_hash_and_orbits(edge_vecs, orbit, klass, booking);
     book_ir(booking);
-
     for (uint32_t i = 0; i < n; ++i) {
-        // Find the queried edge's orbit via the parallel id array (edge counts are small).
         uint32_t orb = 0;
         bool found = false;
         for (size_t k = 0; k < ids.size(); ++k) {
             if (ids[k] == edges[i]) { orb = orbit[k]; found = true; break; }
         }
-        uint64_t key = 14695981039346656037ULL;
-        key ^= chash;                    key *= 1099511628211ULL;
-        // A queried edge always belongs to `state`; the guarded fallback keeps a stray
-        // edge from silently colliding on orbit 0 rather than crashing.
-        key ^= found ? static_cast<uint64_t>(orb)
-                     : (0xFFFFFFFF00000000ULL | edges[i]);
-        key *= 1099511628211ULL;
-        // Clear the top bit so the key lands in [0, 2^63), below the storage map's reserved
-        // sentinel band -- costs one hash bit, still ample for collision resistance.
-        key &= ~(1ULL << 63);
-        out[i] = CanonicalEdgeKey{key};
+        out[i] = mint(chash, found, orb, edges[i]);
     }
     worker_scratch().release(mk);
 }
