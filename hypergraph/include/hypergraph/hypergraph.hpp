@@ -19,6 +19,7 @@
 #include "segmented_array.hpp"
 #include "hgcommon/quotient_causal_core.hpp"
 #include "hgcommon/quotient_replay_core.hpp"
+#include "hgcommon/ir_core.hpp"
 #include "lock_free_list.hpp"
 #include "causal_graph.hpp"
 #include "wl_hash.hpp"
@@ -542,6 +543,13 @@ class Hypergraph {
     // state plus whatever racing writers duplicate -- and NOTHING MEASURED THAT. A number that
     // cannot be re-derived is not a number to plan against.
     mutable std::atomic<uint64_t> canonical_hash_computations_{0};
+    // The individualisation-refinement search's work, summed over every host canonicalisation
+    // (stats builds): calls, calls that went past the discrete fast path, leaves (discrete
+    // partitions reached), nodes (individualisations), the sum of the deepest level reached,
+    // calls retried at a larger depth or generator budget, and calls that fell back to the
+    // unbounded implementation. Leaves per searched call is the search's size on a workload.
+    mutable std::atomic<uint64_t> ir_calls_{0}, ir_searched_{0}, ir_leaves_{0}, ir_nodes_{0},
+        ir_depth_sum_{0}, ir_retries_{0}, ir_fallbacks_{0};
     EventSignatureKeys event_signature_keys_{EVENT_SIG_NONE};
     std::atomic<bool> positional_event_identity_{false};
 
@@ -820,6 +828,18 @@ public:
     // is expected rather than a defect (racing writers compute the same value and the last
     // store wins).
     uint64_t canonical_hash_computations() const;
+    struct IrWorkTotals {
+        uint64_t calls, searched, leaves, nodes, depth_sum, retries, fallbacks;
+    };
+    IrWorkTotals ir_work() const;
+    // One canonicalisation's search work as its calls accumulate it, booked into the totals
+    // by book_ir once the escalation over depths and generator budgets has settled.
+    struct IrBooking {
+        uint64_t calls = 0, searched = 0, leaves = 0, nodes = 0, depth_sum = 0, retries = 0;
+        bool fallback = false;
+    };
+    void book_ir(const IrBooking& b) const;
+    void book_ir_call(const hgcommon::IrWork& work, bool retried) const;
 
     // Quotient exploration support. try_lower_explore_depth records a shorter path to a
     // canonical state, returning true only when it improved on what was known. Depth is a

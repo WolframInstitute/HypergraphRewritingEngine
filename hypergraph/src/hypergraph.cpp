@@ -383,13 +383,17 @@ uint64_t Hypergraph::cache_state_edge_ranks(StateId state_id, const SparseBitset
             const uint64_t words = hgcommon::ir_scratch_words(n_verts, n, total_occ, depth);
             auto* scratch = static_cast<uint32_t*>(
                 worker_scratch().allocate_raw((words + 2) * sizeof(uint32_t), alignof(uint64_t)));
+            hgcommon::IrWork work{};
             auto r = hgcommon::ir_canonical_hash(ea.data(), eoff.data(), ev.data(),
                                                  n, n_verts, total_occ, scratch, depth,
-                                                 ranks.data());
+                                                 ranks.data(), hgcommon::IR_HOST_GENERATORS,
+                                                 nullptr, nullptr, nullptr, nullptr, &work);
+            book_ir_call(work, r.status == hgcommon::IR_NEED_DEPTH);
             if (r.status == hgcommon::IR_OK) { hash = r.hash; ok = true; break; }
             if (r.status == hgcommon::IR_EMPTY) break;
         }
         if (!ok) {
+            HG_STAT(ir_fallbacks_.fetch_add(1, std::memory_order_relaxed));
             IRCanonicalizer ir;
             HG_THREAD_LOCAL(std::vector<uint32_t>, fallback_ranks);
             hash = ir.compute_canonical_hash_with_edge_rank(edge_vectors, fallback_ranks);
@@ -767,14 +771,18 @@ uint64_t Hypergraph::compute_exact_canonical_hash(const SparseBitset& edges) con
         // later reads. 8-byte aligned for the uint64 views it takes inside the span.
         auto* scratch = static_cast<uint32_t*>(
             worker_scratch().allocate_raw((words + 2) * sizeof(uint32_t), alignof(uint64_t)));
+        hgcommon::IrWork work{};
         auto r = hgcommon::ir_canonical_hash(
-            ea.data(), eoff.data(), ev.data(), n_edges, n_verts, total_occ, scratch, depth);
+            ea.data(), eoff.data(), ev.data(), n_edges, n_verts, total_occ, scratch, depth,
+            nullptr, hgcommon::IR_HOST_GENERATORS, nullptr, nullptr, nullptr, nullptr, &work);
+        book_ir_call(work, r.status == hgcommon::IR_NEED_DEPTH);
         if (r.status == hgcommon::IR_OK) {
             worker_scratch().release(mk);
             return r.hash;
         }
         if (r.status == hgcommon::IR_EMPTY) break;
     }
+    HG_STAT(ir_fallbacks_.fetch_add(1, std::memory_order_relaxed));
 
     // A state whose individualization path outruns even the largest depth: fall back to the
     // unbounded-depth implementation, which allocates per level.
@@ -831,7 +839,8 @@ namespace {
 // `orbit` and `klass` are resized to the edge count and filled. Returns the canonical hash.
 uint64_t ir_hash_and_orbits(const SVec<SVec<VertexId>>& edge_vecs,
                             std::vector<uint32_t>& orbit,
-                            std::vector<uint32_t>& klass) {
+                            std::vector<uint32_t>& klass,
+                            Hypergraph::IrBooking& booking) {
     const uint32_t n = static_cast<uint32_t>(edge_vecs.size());
     orbit.assign(n, 0);
     klass.assign(n, 0);
@@ -863,14 +872,23 @@ uint64_t ir_hash_and_orbits(const SVec<SVec<VertexId>>& edge_vecs,
             const uint64_t words = hgcommon::ir_scratch_words(n_verts, n, total_occ, depth, gens);
             auto* scratch = static_cast<uint32_t*>(worker_scratch().allocate_raw(
                 (words + 2) * sizeof(uint32_t), alignof(uint64_t)));
+            hgcommon::IrWork work{};
             auto r = hgcommon::ir_canonical_hash(
                 ea.data(), eoff.data(), ev.data(), n, n_verts, total_occ, scratch, depth,
-                nullptr, gens, orbit.data(), klass.data());
+                nullptr, gens, orbit.data(), klass.data(), nullptr, nullptr, &work);
+            booking.calls += 1;
+            booking.searched += work.searched;
+            booking.leaves += work.leaves;
+            booking.nodes += work.nodes;
+            booking.depth_sum += work.max_depth;
+            if (r.status == hgcommon::IR_NEED_DEPTH || r.status == hgcommon::IR_NEED_GENERATORS)
+                booking.retries += 1;
             if (r.status == hgcommon::IR_OK)    return r.hash;
             if (r.status == hgcommon::IR_EMPTY) return EMPTY_STATE_CANONICAL_HASH;
             if (r.status == hgcommon::IR_NEED_DEPTH) break;
         }
     }
+    booking.fallback = true;
     // Past every depth AND generator budget above: the unbounded implementation rather than
     // orbits the automorphism group does not license.
     IRCanonicalizer ir;
@@ -921,7 +939,9 @@ uint64_t Hypergraph::compute_and_cache_state_orbits(StateId s, const SparseBitse
         orbit.assign(n, 0);
         klass.assign(n, 0);
 
-        hash = ir_hash_and_orbits(edge_vecs, orbit, klass);
+        IrBooking booking{};
+        hash = ir_hash_and_orbits(edge_vecs, orbit, klass, booking);
+        book_ir(booking);
         // ids are already ascending (SparseBitset iterates in id order), orbit is parallel.
         for (uint32_t i = 0; i < n; ++i) {
             arr_edges[i] = ids[i];
@@ -1418,7 +1438,9 @@ void Hypergraph::causal_edge_keys(StateId state, const EdgeId* edges, uint32_t n
 
     HG_THREAD_LOCAL(std::vector<uint32_t>, orbit);
     HG_THREAD_LOCAL(std::vector<uint32_t>, klass);
-    const uint64_t chash = ir_hash_and_orbits(edge_vecs, orbit, klass);
+    IrBooking booking{};
+    const uint64_t chash = ir_hash_and_orbits(edge_vecs, orbit, klass, booking);
+    book_ir(booking);
 
     for (uint32_t i = 0; i < n; ++i) {
         // Find the queried edge's orbit via the parallel id array (edge counts are small).
@@ -1752,6 +1774,41 @@ void Hypergraph::note_invalid_match() {
 
 uint64_t Hypergraph::canonical_hash_computations() const {
     return canonical_hash_computations_.load(std::memory_order_relaxed);
+}
+
+void Hypergraph::book_ir_call(const hgcommon::IrWork& work, bool retried) const {
+    HG_STAT(ir_calls_.fetch_add(1, std::memory_order_relaxed));
+    HG_STAT(ir_searched_.fetch_add(work.searched, std::memory_order_relaxed));
+    HG_STAT(ir_leaves_.fetch_add(work.leaves, std::memory_order_relaxed));
+    HG_STAT(ir_nodes_.fetch_add(work.nodes, std::memory_order_relaxed));
+    HG_STAT(ir_depth_sum_.fetch_add(work.max_depth, std::memory_order_relaxed));
+    HG_STAT(if (retried) ir_retries_.fetch_add(1, std::memory_order_relaxed));
+#if !HG_ENGINE_STATS
+    (void)work; (void)retried;
+#endif
+}
+
+void Hypergraph::book_ir(const IrBooking& b) const {
+    HG_STAT(ir_calls_.fetch_add(b.calls, std::memory_order_relaxed));
+    HG_STAT(ir_searched_.fetch_add(b.searched, std::memory_order_relaxed));
+    HG_STAT(ir_leaves_.fetch_add(b.leaves, std::memory_order_relaxed));
+    HG_STAT(ir_nodes_.fetch_add(b.nodes, std::memory_order_relaxed));
+    HG_STAT(ir_depth_sum_.fetch_add(b.depth_sum, std::memory_order_relaxed));
+    HG_STAT(ir_retries_.fetch_add(b.retries, std::memory_order_relaxed));
+    HG_STAT(if (b.fallback) ir_fallbacks_.fetch_add(1, std::memory_order_relaxed));
+#if !HG_ENGINE_STATS
+    (void)b;
+#endif
+}
+
+Hypergraph::IrWorkTotals Hypergraph::ir_work() const {
+    return IrWorkTotals{ir_calls_.load(std::memory_order_relaxed),
+                        ir_searched_.load(std::memory_order_relaxed),
+                        ir_leaves_.load(std::memory_order_relaxed),
+                        ir_nodes_.load(std::memory_order_relaxed),
+                        ir_depth_sum_.load(std::memory_order_relaxed),
+                        ir_retries_.load(std::memory_order_relaxed),
+                        ir_fallbacks_.load(std::memory_order_relaxed)};
 }
 
 // =============================================================================

@@ -304,6 +304,18 @@ int main(int argc, char** argv) {
             std::printf("  replay: claims=%zu events=%zu captured=%zu instances=%zu\n",
                         g.applied_claims(), g.num_reconstructed_events(),
                         g.captured_matches(), g.reconstruction_instances());
+            {
+                const auto ir = g.ir_work();
+                std::printf("  ir: calls=%llu searched=%llu leaves=%llu nodes=%llu "
+                            "leaves/searched=%.1f nodes/searched=%.1f mean_depth=%.2f "
+                            "retries=%llu fallbacks=%llu\n",
+                            (unsigned long long)ir.calls, (unsigned long long)ir.searched,
+                            (unsigned long long)ir.leaves, (unsigned long long)ir.nodes,
+                            ir.searched ? double(ir.leaves) / double(ir.searched) : 0.0,
+                            ir.searched ? double(ir.nodes) / double(ir.searched) : 0.0,
+                            ir.searched ? double(ir.depth_sum) / double(ir.searched) : 0.0,
+                            (unsigned long long)ir.retries, (unsigned long long)ir.fallbacks);
+            }
             states = g.num_canonical_states();
             raw = g.num_states();
             // Discriminates a dedup defect from a COUNTING defect. num_canonical_states is
