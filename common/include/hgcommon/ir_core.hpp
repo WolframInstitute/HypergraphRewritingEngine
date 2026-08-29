@@ -89,10 +89,11 @@ enum IrStatus : uint32_t {
     IR_OK = 0, IR_EMPTY = 1, IR_NEED_DEPTH = 2, IR_NEED_GENERATORS = 3
 };
 
-// Per-depth partition snapshot: lab, pos, cell_of, cstart, clen, plus the sorted target cell
-// and its covered flags. A search node writes the next depth from the current one and refines
-// it in place, so backtracking is a return -- no undo trail, and nothing is ever allocated.
-HG_HD inline uint64_t ir_depth_words(uint32_t n_verts) { return 7ull * n_verts + 8ull; }
+// Per-depth partition snapshot: lab, pos, cell_of, cstart, clen, plus the sorted target cell,
+// its covered flags, and the orbit partition of the generators fixing the path to this depth.
+// A search node writes the next depth from the current one and refines it in place, so
+// backtracking is a return -- no undo trail, and nothing is ever allocated.
+HG_HD inline uint64_t ir_depth_words(uint32_t n_verts) { return 8ull * n_verts + 8ull; }
 
 // Total uint32 words of scratch for a given problem size.
 HG_HD inline uint64_t ir_scratch_words(uint32_t n_verts, uint32_t n_edges,
@@ -105,7 +106,7 @@ HG_HD inline uint64_t ir_scratch_words(uint32_t n_verts, uint32_t n_edges,
       + e + e + e                           // inc_edges, edge_epoch, form_order
       + n + n + 2 * n                       // touched, on_touched, torder (2n: split staging)
       + n + n + (n + 1) + 2 * occ           // sig_off, sig_cnt, gstart, sig_buf as uint64
-      + n + n + n + n + n + n               // path, uf, labeling, first_labeling, inv, best_lab
+      + n + n + n + n + n                   // path, labeling, first_labeling, inv, best_lab
       + 3 * (occ + e) + e                   // cur_form, best_form, first_form, best_order
       + d * ir_depth_words(n_verts)         // per-depth partition + cell + covered
       + uint64_t(ir_generator_cap(max_depth, max_generators)) * n  // generators, row-major
@@ -636,7 +637,6 @@ HG_HD inline IrResult ir_canonical_hash(
     uint32_t* sig_cnt   = sc.u32(n);
     uint32_t* gstart    = sc.u32(n + 1);
     uint32_t* path      = sc.u32(n);
-    uint32_t* uf        = sc.u32(n);
     uint32_t* labeling  = sc.u32(n);
     uint32_t* first_lab = sc.u32(n);
     // The WINNING leaf's labelling. first_lab is the FIRST leaf's, which the generator
@@ -670,16 +670,19 @@ HG_HD inline IrResult ir_canonical_hash(
     };
     auto view = [&](uint32_t d) -> IrPartition {
         IrPartition p = fresh(d);
-        p.ncells = block(d)[7 * n + 0];
+        p.ncells = block(d)[8 * n + 0];
         return p;
     };
-    auto store_ncells = [&](uint32_t d, uint32_t v) { block(d)[7 * n + 0] = v; };
+    auto store_ncells = [&](uint32_t d, uint32_t v) { block(d)[8 * n + 0] = v; };
     auto cell_buf  = [&](uint32_t d) -> uint32_t* { return block(d) + 5 * n; };
     auto covered   = [&](uint32_t d) -> uint32_t* { return block(d) + 6 * n; };
-    auto target_of = [&](uint32_t d) -> uint32_t& { return block(d)[7 * n + 1]; };
-    auto next_of   = [&](uint32_t d) -> uint32_t& { return block(d)[7 * n + 2]; };
-    auto cell_n_of = [&](uint32_t d) -> uint32_t& { return block(d)[7 * n + 3]; };
-    auto chosen_of = [&](uint32_t d) -> uint32_t& { return block(d)[7 * n + 4]; };
+    auto uf_of     = [&](uint32_t d) -> uint32_t* { return block(d) + 7 * n; };
+    auto target_of = [&](uint32_t d) -> uint32_t& { return block(d)[8 * n + 1]; };
+    auto next_of   = [&](uint32_t d) -> uint32_t& { return block(d)[8 * n + 2]; };
+    auto cell_n_of = [&](uint32_t d) -> uint32_t& { return block(d)[8 * n + 3]; };
+    auto chosen_of = [&](uint32_t d) -> uint32_t& { return block(d)[8 * n + 4]; };
+    // How many generators this depth's orbit partition already holds.
+    auto merged_of = [&](uint32_t d) -> uint32_t& { return block(d)[8 * n + 5]; };
 
     ir_build_occurrences(ea, eoff, ev, n_edges, n, occ_off, occ_edge, occ_pos, cursor);
 
@@ -909,17 +912,26 @@ HG_HD inline IrResult ir_canonical_hash(
             // is what refinement has already narrowed the choice down to.
             uint32_t* cov = covered(d);
             for (uint32_t k = 0; k < cl; ++k) cov[cell[k]] = 0;
+            // A fresh node: no generator has been merged into its orbit partition yet.
+            uint32_t* ufd = uf_of(d);
+            for (uint32_t i = 0; i < n; ++i) ufd[i] = i;
+            merged_of(d) = 0;
         } else {
             returning = false;
             // The branch just explored is done; mark every target-cell vertex automorphic to
             // its representative, under the generators that fix the path above this node.
             const uint32_t v = chosen_of(d);
-            for (uint32_t i = 0; i < n; ++i) uf[i] = i;
+            // The orbit partition of the generators fixing the path above this node, kept per
+            // depth and extended by each generator once, on the first return after its
+            // discovery. Rebuilding it from every generator on every return was O(generators
+            // x n) per node: measured on disc-l3a2g2r2 depth 2, after the refinement seeding,
+            // as the bulk of the 35% of instructions this function kept, over 222k nodes.
+            uint32_t* uf = uf_of(d);
             auto find = [&](uint32_t x) {
                 while (uf[x] != x) { uf[x] = uf[uf[x]]; x = uf[x]; }
                 return x;
             };
-            for (uint32_t gi = 0; gi < n_gens; ++gi) {
+            for (uint32_t gi = merged_of(d); gi < n_gens; ++gi) {
                 const uint32_t* g = gens + uint64_t(gi) * n;
                 bool fixes_path = true;
                 for (uint32_t k = 0; k < d; ++k) if (g[path[k]] != path[k]) { fixes_path = false; break; }
@@ -929,6 +941,7 @@ HG_HD inline IrResult ir_canonical_hash(
                     if (a != b) uf[a] = b;
                 }
             }
+            merged_of(d) = n_gens;
             const uint32_t rv = find(v);
             uint32_t* cov = covered(d);
             const uint32_t* cell = cell_buf(d);
