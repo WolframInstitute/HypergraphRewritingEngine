@@ -1,6 +1,6 @@
 // GENMC-LINK: engine
 // GENMC-ARGS: --unroll=2
-// GENMC-DEFINES: -DHG_SEGMENTED_ARRAY_MAX_SEGMENTS=8 -DHG_CONCURRENT_MAP_INITIAL_CAPACITY=16
+// GENMC-DEFINES: -DHG_SEGMENTED_ARRAY_MAX_SEGMENTS=8 -DHG_SEGMENTED_ARRAY_MAX_SHIFT=4 -DHG_CONCURRENT_MAP_INITIAL_CAPACITY=16 -DHG_QC_CANON_EVENT_SEEN_CAPACITY=16 -DHG_JOB_QUEUE_CAPACITY=16 -DHG_JOB_INJECTOR_CAPACITY=64 -DHG_MAX_ARENA_WORKERS=8 -DHG_KEY_SET_SHARDS=4 -DHG_MAX_PATTERN_EDGES=4 -DHG_MAX_CACHED_SIGS=8 -DHG_ARENA_BLOCK_SIZE=512
 //
 // GenMC harness: TWO REWRITES OF ONE PARENT UNDER QUOTIENT RECONSTRUCTION, through the real
 // Rewriter::apply. Each thread runs create_or_get_canonical_state (which fills the edge-orbit
@@ -67,5 +67,10 @@ int main() {
     assert(hg.capture_dropped_no_orbits() == 0 && "a capture was dropped for want of an orbit table");
     assert(hg.captured_matches() == 2 && "a match of the expanded representative was not captured");
     assert(hg.num_events() == 2);
+#if defined(HG_HARNESS_CALIBRATE_END)
+    // A bound reaches the end of this harness iff the checker reports this assertion; a bound
+    // under which it does not kills a thread earlier, and the verdict covers that prefix alone.
+    assert(!"the end of the harness is reachable under this bound");
+#endif
     return 0;
 }
