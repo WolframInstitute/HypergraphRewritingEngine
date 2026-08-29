@@ -10,7 +10,9 @@
 // three concern storage layout or process teardown; none is reachable from any inter-thread
 // ordering, so none changes the set of executions the checker explores.
 
+#include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <new>
 #include <unordered_map>
 #include <utility>
@@ -47,6 +49,23 @@ void* __dso_handle = nullptr;
 // participate in. Recording nothing and reporting success leaves the checker with the same set of
 // executions and one less external symbol to resolve.
 int __cxa_atexit(void (*)(void*), void*, void*) { return 0; }
+// The guard of a function-local static (`static T x = ...;` reached on the evolve path).
+// acquire returns 1 to the thread that will initialise (it takes the guard 0 -> 1); a thread
+// that finds it taken spins until release stores 2 -- the loop is a plain re-read the
+// checker's SpinAssume pass turns into an assume, so no execution is lost to it.
+int __cxa_guard_acquire(std::uint64_t* guard) noexcept {
+    auto* g = reinterpret_cast<std::atomic<char>*>(guard);
+    char expected = 0;
+    if (g->compare_exchange_strong(expected, 1, std::memory_order_acq_rel)) return 1;
+    while (g->load(std::memory_order_acquire) != 2) {}
+    return 0;
+}
+void __cxa_guard_release(std::uint64_t* guard) noexcept {
+    reinterpret_cast<std::atomic<char>*>(guard)->store(2, std::memory_order_release);
+}
+void __cxa_guard_abort(std::uint64_t* guard) noexcept {
+    reinterpret_cast<std::atomic<char>*>(guard)->store(0, std::memory_order_release);
+}
 // std::this_thread::yield() is this call. A yield is a scheduling hint with no memory
 // semantics; under the checker every interleaving is explored regardless, so it is nothing.
 int sched_yield() noexcept { return 0; }
