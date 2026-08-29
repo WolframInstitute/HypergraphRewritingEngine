@@ -301,9 +301,10 @@ int main(int argc, char** argv) {
             // capture and instance disagree on the class width runs against the pair after it.
             // claims/events is therefore the share of claims spent on pairs that mint nothing,
             // and it is the only number that says whether the order of those two tests matters.
-            std::printf("  replay: claims=%zu events=%zu captured=%zu instances=%zu\n",
+            std::printf("  replay: claims=%zu events=%zu captured=%zu instances=%zu orbit_rebuilds=%zu\n",
                         g.applied_claims(), g.num_reconstructed_events(),
-                        g.captured_matches(), g.reconstruction_instances());
+                        g.captured_matches(), g.reconstruction_instances(),
+                        g.capture_orbit_rebuilds());
             {
                 const auto ir = g.ir_work();
                 std::printf("  ir: calls=%llu searched=%llu leaves=%llu nodes=%llu "
