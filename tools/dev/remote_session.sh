@@ -101,6 +101,11 @@ mapfile -t FIRST_THREADS < <(lscpu -p=CPU,CORE | grep -v '^#' | awk -F, '!seen[$
 NPHYS=${#FIRST_THREADS[@]}
 CPUSET=$(IFS=,; echo "${FIRST_THREADS[*]}")
 SWEEP="1"; n=2; while [ "$n" -lt "$NPHYS" ]; do SWEEP="$SWEEP,$n"; n=$((n*2)); done; SWEEP="$SWEEP,$NPHYS"
+# A caller that wants every count, or a different CPU set (the SMT siblings for counts past
+# the physical cores), names them: HG_SWEEP is the comma list of thread counts, HG_CPUSET the
+# comma list of logical CPUs the workers are pinned to.
+SWEEP="${HG_SWEEP:-$SWEEP}"
+CPUSET="${HG_CPUSET:-$CPUSET}"
 
 # A measurement phase waits for the box to settle rather than failing on the decaying load
 # average of the phase before it. HG_ACCEPT_CONTENDED=1 measures anyway; it cannot produce a

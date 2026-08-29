@@ -106,10 +106,10 @@ for phase in "${PHASES[@]}"; do
   # The script is piped in rather than copied, so the box never holds a stale version of it,
   # and HG_ACCEPT_CONTENDED is forwarded if the caller set it.
   if [ "$phase" = tuning ]; then
-    ssh "${SSH_OPTS[@]}" "$TARGET" "HG_ACCEPT_CONTENDED=${HG_ACCEPT_CONTENDED:-0} bash -s" < "$script" \
+    ssh "${SSH_OPTS[@]}" "$TARGET" "HG_ACCEPT_CONTENDED=${HG_ACCEPT_CONTENDED:-0} HG_SWEEP=${HG_SWEEP:-} HG_CPUSET=${HG_CPUSET:-} bash -s" < "$script" \
       2>&1 | tee -a "$RUN/driver.log"
   else
-    ssh "${SSH_OPTS[@]}" "$TARGET" "HG_ACCEPT_CONTENDED=${HG_ACCEPT_CONTENDED:-0} bash -s -- '$COMMIT' '$phase'" < "$script" \
+    ssh "${SSH_OPTS[@]}" "$TARGET" "HG_ACCEPT_CONTENDED=${HG_ACCEPT_CONTENDED:-0} HG_SWEEP=${HG_SWEEP:-} HG_CPUSET=${HG_CPUSET:-} bash -s -- '$COMMIT' '$phase'" < "$script" \
       2>&1 | tee -a "$RUN/driver.log"
   fi
   rc=${PIPESTATUS[0]}
