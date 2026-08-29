@@ -1,9 +1,9 @@
 diff --git a/genmc/genmc/Support/HgProgress.hpp b/genmc/genmc/Support/HgProgress.hpp
 new file mode 100644
-index 0000000..bafa53a
+index 0000000..bccbbf8
 --- /dev/null
 +++ b/genmc/genmc/Support/HgProgress.hpp
-@@ -0,0 +1,236 @@
+@@ -0,0 +1,255 @@
 +/*
 + * Progress reporting for long runs (HG_GENMC_PROGRESS). A heartbeat thread prints, every
 + * HG_GENMC_HEARTBEAT seconds (30 when unset), what the checker is doing RIGHT NOW: during the
@@ -56,6 +56,12 @@ index 0000000..bafa53a
 +	// spends its instructions -- the loop that iterates to the bound, not a guess about it.
 +	std::map<std::string, uint64_t> profile;        // guarded by mtx
 +	uint64_t profileSamples{0};                     // guarded by mtx
++	// Executions started (each replay of a revisit is one), and the instructions each thread
++	// has interpreted since the last completed execution: a first execution that never
++	// completes is then attributed to the thread that runs it.
++	std::atomic<uint64_t> starts{0};
++	static constexpr size_t kThreads = 64;
++	std::atomic<uint64_t> threadInsts[kThreads] = {};
 +};
 +
 +inline State &state()
@@ -65,9 +71,16 @@ index 0000000..bafa53a
 +}
 +
 +inline bool enabled() { return std::getenv("HG_GENMC_PROGRESS") != nullptr; }
++inline std::string profileTable(size_t n);
++
 +inline bool profiling()
 +{
-+	static const bool on = std::getenv("HG_GENMC_PROFILE") != nullptr;
++	static const bool on = [] {
++		const bool v = std::getenv("HG_GENMC_PROFILE") != nullptr;
++		if (v)
++			std::atexit([] { std::cerr << "HG-PROFILE at exit: [" << profileTable(12) << "]\n"; });
++		return v;
++	}();
 +	return on;
 +}
 +
@@ -215,6 +228,12 @@ index 0000000..bafa53a
 +			  << " insts_this_exec=" << s.instsThisExec.load(std::memory_order_relaxed)
 +			  << " insts_total=" << s.instsTotal.load(std::memory_order_relaxed)
 +			  << " elapsed_s=" << secs << " rate_per_s=" << (secs > 0 ? n / secs : 0.0);
++		std::cerr << " starts=" << s.starts.load(std::memory_order_relaxed) << " thread_insts=[";
++		for (size_t t = 0; t < State::kThreads; ++t) {
++			const auto v = s.threadInsts[t].load(std::memory_order_relaxed);
++			if (v) std::cerr << t << ":" << v << " ";
++		}
++		std::cerr << "]";
 +		if (profiling())
 +			std::cerr << " profile=[" << profileTable(8) << "]";
 +	}
@@ -241,7 +260,7 @@ index 0000000..bafa53a
 +
 +}  // namespace hgprog
 diff --git a/genmc/genmc/Verification/GenMCDriver.cpp b/genmc/genmc/Verification/GenMCDriver.cpp
-index a0d1865..9159870 100644
+index a0d1865..9f5a944 100644
 --- a/genmc/genmc/Verification/GenMCDriver.cpp
 +++ b/genmc/genmc/Verification/GenMCDriver.cpp
 @@ -11,6 +11,8 @@
@@ -253,13 +272,22 @@ index a0d1865..9159870 100644
  #include "GenMCDriver.hpp"
  #include "genmc/Execution/Consistency/BoundDecider.hpp"
  #include "genmc/Execution/Consistency/ConsistencyChecker.hpp"
-@@ -366,6 +368,24 @@ auto GenMCDriver::handleExecutionEnd() -> std::optional<VerificationError>
+@@ -216,6 +218,7 @@ static void reconstructState(ExecutionGraph &g, ExecutionState &state)
+ 
+ bool GenMCDriver::handleExecutionStart()
+ {
++	hgprog::state().starts.fetch_add(1, std::memory_order_relaxed);
+ 	auto &g = getExec().getGraph();
+ 	auto &state = getExec().getGraph().getState();
+ 
+@@ -366,6 +369,25 @@ auto GenMCDriver::handleExecutionEnd() -> std::optional<VerificationError>
  	GENMC_DEBUG(if (getConf()->boundsHistogram && inVerificationMode()) trackExecutionBound(););
  
  	++result.explored;
 +	hgprog::state().explored.store(result.explored, std::memory_order_relaxed);
 +	hgprog::state().blocked.store(result.exploredBlocked, std::memory_order_relaxed);
 +	hgprog::state().instsThisExec.store(0, std::memory_order_relaxed);
++	for (auto &t : hgprog::state().threadInsts) t.store(0, std::memory_order_relaxed);
 +	/* Progress, when asked for: how many executions so far, how large this one was, and the
 +	 * rate -- the numbers that let a run on a large module be extrapolated or abandoned. */
 +	if (const char *hgProg = std::getenv("HG_GENMC_PROGRESS")) {
@@ -278,7 +306,7 @@ index a0d1865..9159870 100644
  	if (fullExecutionExceedsBound())
  		++result.boundExceeding;
  
-@@ -395,7 +415,15 @@ auto GenMCDriver::handleExecutionEnd() -> std::optional<VerificationError>
+@@ -395,7 +417,15 @@ auto GenMCDriver::handleExecutionEnd() -> std::optional<VerificationError>
  bool GenMCDriver::done()
  {
  	auto validExecution = false;
@@ -294,7 +322,7 @@ index a0d1865..9159870 100644
  		auto item = getExec().getWorkqueue().getNext();
  		if (!item) {
  			if (popExecution())
-@@ -804,7 +832,16 @@ auto GenMCDriver::checkLiveness() -> std::optional<VerificationError>
+@@ -804,7 +834,16 @@ auto GenMCDriver::checkLiveness() -> std::optional<VerificationError>
  	/* Collect all threads blocked at spinloops */
  	std::vector<int> spinBlocked;
  	for (auto i = 0U; i < g.getNumThreads(); i++) {
@@ -312,7 +340,7 @@ index a0d1865..9159870 100644
  			spinBlocked.push_back(i);
  	}
  
-@@ -1061,6 +1098,28 @@ EventLabel *GenMCDriver::findConsistentCo(WriteLabel *wLab, std::vector<EventLab
+@@ -1061,6 +1100,28 @@ EventLabel *GenMCDriver::findConsistentCo(WriteLabel *wLab, std::vector<EventLab
  	return nullptr;
  }
  
@@ -373,7 +401,7 @@ index 4866e5e..d00da8a 100644
  	void add(auto &&item) { wlist_.emplace_back(std::move(item)); }
  
 diff --git a/lli/Runtime/Execution.cpp b/lli/Runtime/Execution.cpp
-index fe659e6..4f3e25b 100644
+index fe659e6..a480a76 100644
 --- a/lli/Runtime/Execution.cpp
 +++ b/lli/Runtime/Execution.cpp
 @@ -31,6 +31,7 @@
@@ -412,12 +440,17 @@ index fe659e6..4f3e25b 100644
  void Interpreter::callMutexInit(Function *F, const std::vector<GenericValue> &ArgVals,
  				const std::unique_ptr<EventDeps> &specialDeps)
  {
-@@ -3612,6 +3624,15 @@ void Interpreter::run()
+@@ -3612,6 +3624,20 @@ void Interpreter::run()
  		llvm::ExecutionContext &SF = ECStack().back();
  		llvm::Instruction &I = *SF.CurInst++;
  		visit(I);
 +		const auto instsSoFar =
 +			hgprog::state().instsThisExec.fetch_add(1, std::memory_order_relaxed);
++		{
++			const auto t = static_cast<size_t>(currPos().thread);
++			if (t < hgprog::State::kThreads)
++				hgprog::state().threadInsts[t].fetch_add(1, std::memory_order_relaxed);
++		}
 +		hgprog::state().instsTotal.fetch_add(1, std::memory_order_relaxed);
 +		if ((instsSoFar & 4095) == 0 && hgprog::profiling()) {
 +			std::string site = I.getFunction() ? I.getFunction()->getName().str() : "?";
