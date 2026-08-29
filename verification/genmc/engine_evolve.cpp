@@ -13,6 +13,10 @@
 //   default                     two workers, rule {0,1} -> {0,1},{1,2}, one edge, one step, no
 //                               canonicalisation. The smallest run that goes through everything
 //                               once: 1 event, 2 states.
+//   -DHG_EVOLVE_CANON_SHAPE=1   the two-edge rule under Full canonicalisation, two workers, one
+//                               step: the middle rung between the default and the live shape.
+//                               Measured 2026-08-29: the live shape's first execution did not
+//                               complete in 23 minutes of exploration at --unroll=2048.
 //   -DHG_EVOLVE_LIVE_SHAPE=1    the shape of the live nondeterminism failures (cycle4-automorphic
 //                               at 16 threads, Full canonicalisation): THREE workers, the
 //                               two-edge rule {0,1},{1,2} -> {0,1},{1,3},{3,2}, a two-edge path,
@@ -48,7 +52,19 @@
 
 int main() {
     hg::engine::Hypergraph g;
-#if defined(HG_EVOLVE_LIVE_SHAPE)
+#if defined(HG_EVOLVE_CANON_SHAPE)
+    // The middle rung: the two-edge rule under Full canonicalisation, TWO workers, ONE step --
+    // the canonicaliser and the dedup rendezvous on the smallest run that reaches them.
+    g.set_state_canonicalization_mode(hg::engine::StateCanonicalizationMode::Full);
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
+        .lhs({0, 1}).lhs({1, 2}).rhs({0, 1}).rhs({1, 3}).rhs({3, 2}).build();
+    hg::engine::ParallelEvolutionEngine e(&g, 2);
+    e.add_rule(rule);
+    std::vector<std::vector<hg::engine::VertexId>> init = {{0, 1}, {1, 2}};
+    e.evolve(init, 1);
+    assert(e.num_events() == 1);
+    assert(g.num_states() == 2);
+#elif defined(HG_EVOLVE_LIVE_SHAPE)
     g.set_state_canonicalization_mode(hg::engine::StateCanonicalizationMode::Full);
     hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1}).lhs({1, 2}).rhs({0, 1}).rhs({1, 3}).rhs({3, 2}).build();
