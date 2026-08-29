@@ -1,5 +1,6 @@
 #include "hgcommon/core.hpp"
 #include "hypergraph/arena.hpp"
+#include <hgcommon/portable_intrinsics.hpp>
 #include <algorithm>
 #include <vector>
 #include <cstdio>
@@ -171,7 +172,7 @@ void arena_alloc_profile_dump(FILE* out, size_t top) {
 void* ConcurrentHeterogeneousArena::allocate_raw(size_t size, size_t alignment) {
     // One choke point for every request, which is where the unpoison belongs: the three paths
     // below differ in which block they take from, not in what they hand back.
-    HG_STAT(note_alloc_site(__builtin_return_address(0), size));
+    HG_STAT(note_alloc_site(HG_RETURN_ADDRESS(), size));
     void* p;
     if (recycle_) {
         p = allocate_single(size, alignment);

@@ -77,6 +77,16 @@ inline int popcount64(uint64_t x) {
 #endif
 }
 
+// The return address of the function that expands this, for an instrument that attributes a
+// request to the site that made it. A macro, because the address wanted is the caller's of the
+// function the macro sits in, which a helper function would replace with its own.
+#if defined(_MSC_VER) && !defined(__clang__)
+#include <intrin.h>
+#define HG_RETURN_ADDRESS() _ReturnAddress()
+#else
+#define HG_RETURN_ADDRESS() __builtin_return_address(0)
+#endif
+
 // Count trailing zeros. Undefined for x == 0, matching __builtin_ctz.
 HG_HD inline int ctz(uint32_t x) {
 #if defined(__CUDA_ARCH__)
