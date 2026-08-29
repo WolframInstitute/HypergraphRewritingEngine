@@ -264,6 +264,7 @@ Fingerprint run(const std::vector<hg::engine::RewriteRule>& rules,
     for (const auto& r : rules) e.add_rule(r);
     e.evolve(init, steps);
     Fingerprint fp = fingerprint(g);
+#if HG_ENGINE_STATS
     if (std::getenv("HG_DET_VALIDATE") && e.still_missing() > 0)
         std::fprintf(stderr, "HG_DET_VALIDATE: %zu match(es) still missing at the end (%zu recorded at drain, %zu arrived late); %s index: misses=%zu retry_hits=%zu empty_walks=%zu %s\n",
                      e.still_missing(), e.validation_mismatches(), e.late_arrivals(), e.validation_witness().c_str(),
@@ -272,6 +273,7 @@ Fingerprint run(const std::vector<hg::engine::RewriteRule>& rules,
     if (std::getenv("HG_DET_VALIDATE") && (e.chain_parent_misses() || e.chain_list_misses() || e.expand_retry_found()))
         std::fprintf(stderr, "HG_DET_SILENT: parent-misses=%zu list-misses=%zu expand-retry-found=%zu %s\n",
                      e.chain_parent_misses(), e.chain_list_misses(), e.expand_retry_found(), e.silent_witness().c_str());
+#endif
     // READ BEFORE THE ENGINE GOES OUT OF SCOPE. This is the precondition the quiescence
     // predicate rests on, not a property of the hypergraph, so it comes from the engine.
     fp.late_submits = static_cast<long>(e.late_submits());
@@ -284,6 +286,7 @@ Fingerprint run(const std::vector<hg::engine::RewriteRule>& rules,
     fp.double_executions = static_cast<long>(e.double_executions());
     fp.abandoned_jobs = static_cast<long>(e.abandoned_at_quiescence());
     fp.abandoned_already_run = static_cast<long>(e.abandoned_already_run());
+#if HG_ENGINE_STATS
     fp.index_misses = static_cast<long>(g.inverted_index().lookup_misses());
     fp.index_miss_retry_hits = static_cast<long>(g.inverted_index().lookup_miss_retry_hits());
     fp.empty_walks = static_cast<long>(g.inverted_index().empty_seed_walks());
@@ -292,6 +295,7 @@ Fingerprint run(const std::vector<hg::engine::RewriteRule>& rules,
     fp.chain_list_misses = static_cast<long>(e.chain_list_misses());
     fp.expand_retry_found = static_cast<long>(e.expand_retry_found());
     fp.silent_witness = e.silent_witness();
+#endif
     // A CAPACITY OVERFLOW RETURNS A PARTIAL RESULT AND SAYS SO, by design -- errors are for
     // programmer mistakes, not for a run that outgrew a container. So a truncated run looks
     // exactly like a short one and differs only here, and nothing was reading it.
@@ -330,8 +334,10 @@ Fingerprint run(const std::vector<hg::engine::RewriteRule>& rules,
             for (const auto& c : g.causal_graph().get_causal_edges())
                 if (c.producer != hg::engine::INVALID_ID && c.consumer != hg::engine::INVALID_ID)
                     std::fprintf(f, "K %u %u\n", c.producer, c.consumer);
+#if HG_ENGINE_STATS
             if (e.still_missing() > 0)
                 std::fprintf(f, "W %zu %s\n", e.still_missing(), e.validation_witness().c_str());
+#endif
             std::fclose(f);
             fp.dump_path = name;
         }
@@ -624,6 +630,7 @@ Spread spread(const Workload& w, bool quotient) {
                     << w.name << " at threads=" << th << " rep=" << rep << ": "
                     << f.dropped_children << " freshly-created state(s) were reported as already "
                        "matched, so their subtrees were never explored.";
+#if HG_ENGINE_STATS
                 EXPECT_EQ(f.chain_parent_misses + f.chain_list_misses + f.expand_retry_found, 0)
                     << w.name << " at threads=" << th << " rep=" << rep << ": silent endings -- "
                     << f.chain_parent_misses << " chain walk(s) found no parent link on a non-root "
@@ -635,6 +642,7 @@ Spread spread(const Workload& w, bool quotient) {
                        "answered absent for a bound vertex " << f.index_misses << " time(s), "
                     << f.index_miss_retry_hits << " of which an immediate retry found; "
                     << f.empty_walks << " seed walk(s) visited nothing. " << f.index_witness;
+#endif
                 EXPECT_EQ(f.double_executions, 0)
                     << w.name << " at threads=" << th << " rep=" << rep << ": "
                     << f.double_executions << " job(s) were entered by run_job twice.";

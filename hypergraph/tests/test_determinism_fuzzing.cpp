@@ -85,7 +85,12 @@ protected:
 
         engine.evolve(initial, steps);
 
+#if HG_ENGINE_STATS
         const auto totals = engine.stats().total();
+#else
+        // A stats-off build has no counters; the three fields are then zero on every run.
+        struct { size_t matches_forwarded = 0, matches_invalidated = 0, new_matches_discovered = 0; } totals;
+#endif
 
         // Use canonical states (not raw states) for determinism checking
         // Raw state count includes "wasted" states from parallel race conditions
@@ -508,7 +513,11 @@ TEST_F(DeterminismFuzzing, MatchForwarding_SimpleRule) {
         unique_states.insert(engine.num_canonical_states());
         unique_events.insert(engine.num_events());
 
+#if HG_ENGINE_STATS
         const auto stats = engine.stats().total();
+#else
+        struct { size_t matches_forwarded = 0, matches_invalidated = 0, new_matches_discovered = 0; } stats;
+#endif
         unique_forwarded.insert(stats.matches_forwarded);
         unique_invalidated.insert(stats.matches_invalidated);
         unique_new_discovered.insert(stats.new_matches_discovered);

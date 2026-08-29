@@ -73,7 +73,9 @@ Outcome run_validated(const oracle::Case& c, unsigned threads, bool batched,
     Outcome o;
     o.mismatches = engine.validation_mismatches();
     o.states = hg.num_states();
+#if HG_ENGINE_STATS
     o.delta_matches = engine.stats().total().delta_pattern_matches;
+#endif
     o.validations = engine.validations_performed();
     o.owed_fwd = engine.missing_owed_by_forwarding();
     o.owed_delta = engine.missing_owed_by_delta();
