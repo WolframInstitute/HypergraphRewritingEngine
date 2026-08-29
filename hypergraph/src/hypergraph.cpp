@@ -1220,6 +1220,25 @@ const EdgeOrbitTable* Hypergraph::qc_orbits_or_build(StateId s) {
     return (t && t->slot) ? t : nullptr;
 }
 
+// The edges an event carries across unchanged -- every edge of its output state it did not
+// produce -- paired by their positions in the input and output orbit tables, which both list
+// edges in ascending id, so one merge walk pairs them. An output edge the event did not
+// produce is an input edge by construction; the walk skips one that is not. ONE BODY for the
+// transition record (orbit pairs) and the capture (slot pairs), which must enumerate the same
+// edges in the same order.
+template <typename F>
+static void for_each_survivor(const EdgeOrbitTable& in_orb, const EdgeOrbitTable& out_orb,
+                              const EdgeId* produced, uint8_t num_produced, F&& f) {
+    for (uint32_t i = 0, j = 0; i < out_orb.n; ++i) {
+        const EdgeId oe = out_orb.edges[i];
+        bool produced_here = false;
+        for (uint8_t k = 0; k < num_produced; ++k) if (produced[k] == oe) { produced_here = true; break; }
+        if (produced_here) continue;
+        while (j < in_orb.n && in_orb.edges[j] < oe) ++j;
+        if (j < in_orb.n && in_orb.edges[j] == oe) f(j, i);
+    }
+}
+
 void Hypergraph::qc_capture_expansion(EventId e) {
     // Record this match of the expanded representative, in slots, undeduplicated. One
     // canonical state's expansion is defined by exactly one raw state: the first to publish
@@ -1277,17 +1296,10 @@ void Hypergraph::qc_capture_expansion(EventId e) {
             for (uint8_t i = 0; i < ev.num_consumed; ++i) cs[i] = in_slot_of(ev.consumed_edges[i]);
             for (uint8_t i = 0; i < nprod; ++i) ps[i] = out_slot_of(ev.produced_edges[i]);
 
-            // Survivors: output edges present in the input and not freshly produced.
-            const SparseBitset& in_edges = get_state(ev.input_state).edges;
             SVec<std::pair<uint32_t,uint32_t>> surv;
-            for (uint32_t i = 0; i < out_orb->n; ++i) {
-                const EdgeId oe = out_orb->edges[i];
-                bool produced_here = false;
-                for (uint8_t j = 0; j < nprod; ++j)
-                    if (ev.produced_edges[j] == oe) { produced_here = true; break; }
-                if (produced_here || !in_edges.contains(oe)) continue;
-                surv.push_back({in_slot_of(oe), out_slot[i]});
-            }
+            for_each_survivor(*in_orb, *out_orb, ev.produced_edges, nprod, [&](uint32_t j, uint32_t i) {
+                surv.push_back({in_slot[j], out_slot[i]});
+            });
             nsurv = static_cast<uint32_t>(surv.size());
             sfs = nsurv ? arena_.allocate_array<uint32_t>(nsurv) : nullptr;
             sts = nsurv ? arena_.allocate_array<uint32_t>(nsurv) : nullptr;
@@ -1355,17 +1367,10 @@ void Hypergraph::register_quotient_transition(EventId e) {
     // produced -- they passed through, carrying their producer forward. Packed as
     // (orbit in `from` << 32 | orbit in `to`) and sorted, which is the order and the layout
     // hgcommon::qc_transition_sig reads them in.
-    const SparseBitset& in_edges = get_state(ev.input_state).edges;
     SVec<uint64_t> survivors;
-    for (uint32_t i = 0; i < out_orb->n; ++i) {
-        const EdgeId oe = out_orb->edges[i];
-        bool produced_here = false;
-        for (uint8_t j = 0; j < ev.num_produced; ++j) if (ev.produced_edges[j] == oe) { produced_here = true; break; }
-        if (produced_here) continue;
-        if (in_edges.contains(oe))
-            survivors.push_back((static_cast<uint64_t>(in_orb->orbit_of(oe)) << 32) |
-                                out_orb->orbit[i]);
-    }
+    for_each_survivor(*in_orb, *out_orb, ev.produced_edges, ev.num_produced, [&](uint32_t j, uint32_t i) {
+        survivors.push_back((static_cast<uint64_t>(in_orb->orbit[j]) << 32) | out_orb->orbit[i]);
+    });
     std::sort(survivors.begin(), survivors.end());
 
     const uint64_t sig = hgcommon::qc_transition_sig(
