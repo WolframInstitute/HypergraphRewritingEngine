@@ -1307,10 +1307,18 @@ index d49a945..45ae518 100644
  	return changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
  }
 diff --git a/passes/passes/Transforms/PromoteMemIntrinsicPass.cpp b/passes/passes/Transforms/PromoteMemIntrinsicPass.cpp
-index b31c6cd..efaed51 100644
+index b31c6cd..369297a 100644
 --- a/passes/passes/Transforms/PromoteMemIntrinsicPass.cpp
 +++ b/passes/passes/Transforms/PromoteMemIntrinsicPass.cpp
-@@ -23,6 +23,10 @@
+@@ -11,6 +11,7 @@
+  *     https://opensource.org/licenses/MIT
+  */
+ 
++#include <llvm/IR/Operator.h>
+ #include "PromoteMemIntrinsicPass.hpp"
+ #include "genmc/Support/Error.hpp"
+ #include <llvm/ADT/Twine.h>
+@@ -23,6 +24,10 @@
  #include <llvm/IR/Instruction.h>
  #include <llvm/IR/Instructions.h>
  #include <llvm/IR/Module.h>
@@ -1321,25 +1329,45 @@ index b31c6cd..efaed51 100644
  #include <llvm/IR/Type.h>
  
  #include <ranges>
-@@ -157,24 +161,62 @@ static auto getPromotionGEPType(Value *op) -> Type *
+@@ -144,37 +149,73 @@ static auto lowerFortifiedCalls(Function &F) -> bool
+ 	return modified;
+ }
+ 
+-static auto isPromotableMemIntrinsicOperand(Value *op) -> bool
+-{
+-	/* Constant to capture MemSet too */
+-	return isa<Constant>(op) || isa<AllocaInst>(op) || isa<GetElementPtrInst>(op);
+-}
+-
++/* The type an operand names, or null when the pass cannot type it: a global, an alloca, or a
++ * GEP -- instruction or constant expression -- whose all-zero indices name the object it
++ * indexes into (`getelementptr [2 x i32], ptr %a, i64 0, i64 0` is the array; promoting by its
++ * result element type would copy one element of several) and whose other indices name the
++ * member. A null, an undef, a cast expression, a load, a call result or a parameter has no
++ * type here, and an intrinsic over it is lowered to a loop instead. */
+ static auto getPromotionGEPType(Value *op) -> Type *
+ {
+-	VERIFY(isPromotableMemIntrinsicOperand(op));
+ 	if (auto *v = dyn_cast<GlobalVariable>(op))
  		return v->getValueType();
  	if (auto *ai = dyn_cast<AllocaInst>(op))
  		return ai->getAllocatedType();
 -	if (auto *gepi = dyn_cast<GetElementPtrInst>(op))
-+	if (auto *gepi = dyn_cast<GetElementPtrInst>(op)) {
-+		/* A GEP whose indices are all zero names the object it indexes into, not a
-+		 * member of it: `getelementptr [2 x i32], ptr %a, i64 0, i64 0` is the array,
-+		 * and a memcpy of the whole array through it must be promoted field by field
-+		 * over the array's type. Its result element type (i32 here) is only the first
-+		 * element, and promoting by that either trips typeSizeDst >= len or copies one
-+		 * element of several. */
-+		if (gepi->hasAllZeroIndices())
-+			return gepi->getSourceElementType();
- 		return gepi->getResultElementType();
+-		return gepi->getResultElementType();
+-	UNREACHABLE();
++	if (auto *gep = dyn_cast<GEPOperator>(op)) {
++		if (gep->hasAllZeroIndices())
++			return gep->getSourceElementType();
++		return gep->getResultElementType();
 +	}
- 	UNREACHABLE();
- }
- 
++	return nullptr;
++}
++
++static auto isPromotableMemIntrinsicOperand(Value *op) -> bool
++{
++	return getPromotionGEPType(op) != nullptr;
++}
++
 +/* The type a mem intrinsic of `len` bytes is promoted over, given the type its destination
 + * names. After SROA a copy is often byte-addressed -- `getelementptr i8, ptr %p, i64 5` for a
 + * three-byte tail of a struct -- and the named type (i8) is then smaller than the copy. Such a
@@ -1353,8 +1381,8 @@ index b31c6cd..efaed51 100644
 +	if ((named->isIntegerTy() || named->isPointerTy()) && len % size == 0)
 +		return ArrayType::get(named, len / size);
 +	return named;
-+}
-+
+ }
+ 
  static void promoteMemCpy(IRBuilder<> &builder, Value *dst, Value *src,
 -			  const std::vector<Value *> &args, Type *typ, uint64_t &remainingLen)
 +			  const std::vector<Value *> &args, Type *typ, uint64_t &remainingLen,
@@ -1391,7 +1419,7 @@ index b31c6cd..efaed51 100644
  
  	remainingLen -= len;
  	auto *srcLoad = builder.CreateLoad(typ, srcGEP, "memcpy.src.load");
-@@ -182,7 +224,7 @@ static void promoteMemCpy(IRBuilder<> &builder, Value *dst, Value *src,
+@@ -182,7 +223,7 @@ static void promoteMemCpy(IRBuilder<> &builder, Value *dst, Value *src,
  }
  
  static void promoteMemSet(IRBuilder<> &builder, Value *dst, Value *argVal,
@@ -1400,7 +1428,7 @@ index b31c6cd..efaed51 100644
  {
  	VERIFY(typ->isIntegerTy() || typ->isPointerTy());
  	VERIFY(isa<ConstantInt>(argVal));
-@@ -193,8 +235,7 @@ static void promoteMemSet(IRBuilder<> &builder, Value *dst, Value *argVal,
+@@ -193,8 +234,7 @@ static void promoteMemSet(IRBuilder<> &builder, Value *dst, Value *argVal,
  	long int ival = dyn_cast<ConstantInt>(argVal)->getSExtValue();
  	Value *val = Constant::getIntegerValue(typ, APInt(sizeInBits, ival));
  
@@ -1410,7 +1438,7 @@ index b31c6cd..efaed51 100644
  	Value *dstStore = builder.CreateStore(val, dstGEP);
  }
  
-@@ -340,23 +381,65 @@ static auto tryPromoteMemCpy(MemCpyInst *MI, SmallVector<llvm::MemIntrinsic *, 8
+@@ -340,23 +380,65 @@ static auto tryPromoteMemCpy(MemCpyInst *MI, SmallVector<llvm::MemIntrinsic *, 8
  
  	/* Recast args to same types for GEP indexing later */
  	auto [src, dst] = getRecastedOperands(MI, builder);
@@ -1479,7 +1507,7 @@ index b31c6cd..efaed51 100644
  	if (!canPromoteMemIntrinsic(MS))
  		return false;
  
-@@ -367,12 +450,15 @@ static auto tryPromoteMemSet(MemSetInst *MS, SmallVector<MemIntrinsic *, 8> &pro
+@@ -367,12 +449,15 @@ static auto tryPromoteMemSet(MemSetInst *MS, SmallVector<MemIntrinsic *, 8> &pro
  	auto *nullInt = Constant::getNullValue(i64Ty);
  	auto *dstTyp = getPromotionGEPType(dst);
  	VERIFY(dstTyp);
@@ -1496,7 +1524,7 @@ index b31c6cd..efaed51 100644
  	});
  	promoted.push_back(MS);
  	return true;
-@@ -395,6 +481,152 @@ static void removePromoted(std::ranges::input_range auto &&promoted)
+@@ -395,6 +480,154 @@ static void removePromoted(std::ranges::input_range auto &&promoted)
  	}
  }
  
@@ -1536,6 +1564,8 @@ index b31c6cd..efaed51 100644
 +		if (!op || !isPromotableMemIntrinsicOperand(op))
 +			return 0;
 +		Type *t = getPromotionGEPType(op);
++		if (!t)
++			return 0;
 +		while (auto *at = dyn_cast<ArrayType>(t))
 +			t = at->getElementType();
 +		if (!t->isIntegerTy() && !t->isPointerTy())
@@ -1649,7 +1679,7 @@ index b31c6cd..efaed51 100644
  auto PromoteMemIntrinsicPass::run(Function &F, FunctionAnalysisManager &FAM) -> PreservedAnalyses
  {
  	/* Locate mem intrinsics of interest */
-@@ -402,14 +634,45 @@ auto PromoteMemIntrinsicPass::run(Function &F, FunctionAnalysisManager &FAM) ->
+@@ -402,14 +635,45 @@ auto PromoteMemIntrinsicPass::run(Function &F, FunctionAnalysisManager &FAM) ->
  	auto modified = false;
  
  	modified |= lowerFortifiedCalls(F);
