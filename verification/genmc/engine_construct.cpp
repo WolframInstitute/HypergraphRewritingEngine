@@ -30,5 +30,10 @@ int main() {
     g.set_state_canonicalization_mode(hg::engine::StateCanonicalizationMode::None);
     hg::engine::ParallelEvolutionEngine e(&g, 2);
     assert(e.num_events() == 0);
+#if defined(HG_HARNESS_CALIBRATE_END)
+    // A bound reaches the end of this harness iff the checker reports this assertion; a bound
+    // under which it does not kills a thread earlier, and the verdict covers that prefix alone.
+    assert(!"the end of the harness is reachable under this bound");
+#endif
     return 0;
 }

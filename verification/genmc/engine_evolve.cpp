@@ -24,7 +24,7 @@
 //                               a third worker can interleave every rendezvous the other two
 //                               are in. 3 events, 4 raw states, 3 canonical.
 //
-//   -DHG_EVOLVE_CALIBRATE_END=1 either arm, with an assertion that FAILS after the contract
+//   -DHG_HARNESS_CALIBRATE_END=1 either arm, with an assertion that FAILS after the contract
 //                               asserts. The checker must report it: a bound under which it
 //                               does not is a bound that never reaches the end of evolve(),
 //                               and the verdict of the property arm under that bound covers
@@ -69,7 +69,7 @@ int main() {
     assert(e.num_events() == 1);
     assert(g.num_states() == 2);
 #endif
-#if defined(HG_EVOLVE_CALIBRATE_END)
+#if defined(HG_HARNESS_CALIBRATE_END)
     assert(!"the end of evolve() is reachable under this bound");
 #endif
     return 0;

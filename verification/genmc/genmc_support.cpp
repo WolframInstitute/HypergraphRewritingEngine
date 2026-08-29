@@ -45,6 +45,9 @@ void* __dso_handle = nullptr;
 // participate in. Recording nothing and reporting success leaves the checker with the same set of
 // executions and one less external symbol to resolve.
 int __cxa_atexit(void (*)(void*), void*, void*) { return 0; }
+// std::this_thread::yield() is this call. A yield is a scheduling hint with no memory
+// semantics; under the checker every interleaving is explored regardless, so it is nothing.
+int sched_yield() noexcept { return 0; }
 
 }  // extern "C"
 
