@@ -470,14 +470,15 @@ index 22631de..553b75f 100644
 +	{"_ZdaPv", InternalFunctions::Free},
  };
 diff --git a/passes/passes/LLVMModule.cpp b/passes/passes/LLVMModule.cpp
-index 80ed9cd..e1fb881 100644
+index 80ed9cd..62f7bdb 100644
 --- a/passes/passes/LLVMModule.cpp
 +++ b/passes/passes/LLVMModule.cpp
-@@ -11,7 +11,13 @@
+@@ -11,7 +11,14 @@
   *     https://opensource.org/licenses/MIT
   */
  
 +#include "llvm/IR/PassInstrumentation.h"
++#include "llvm/Bitcode/BitcodeWriter.h"
 +#include <iostream>
 +#include <fstream>
 +#include <cstdlib>
@@ -487,7 +488,7 @@ index 80ed9cd..e1fb881 100644
  #include "passes/LLIConfig.hpp"
  #include "passes/Transforms/BarrierResultCheckerPass.hpp"
  #include "passes/Transforms/BisimilarityCheckerPass.hpp"
-@@ -206,7 +212,73 @@ auto transformLLVMModule(llvm::Module &mod, ModuleInfo &MI, const LLIConfig *con
+@@ -206,7 +213,73 @@ auto transformLLVMModule(llvm::Module &mod, ModuleInfo &MI, const LLIConfig *con
  	fam.registerPass([&] { return BisimilarityAnalysis(); });
  	fam.registerPass([&] { return LoadAnnotationAnalysis(); });
  
@@ -562,6 +563,31 @@ index 80ed9cd..e1fb881 100644
  	pb.registerModuleAnalyses(mam);
  	pb.registerCGSCCAnalyses(cgam);
  	pb.registerFunctionAnalyses(fam);
+@@ -310,6 +383,24 @@ void printLLVMModule(llvm::Module &mod, const std::string &out)
+ #endif
+ 	std::error_code errs;
+ 	auto os = std::make_unique<llvm::raw_fd_ostream>(out.c_str(), errs, flags);
++	/* A ".bc" name writes bitcode: it round-trips exactly and parses in seconds, where the
++	 * textual form of a multi-gigabyte module emits block labels its own reader rejects. */
++	if (out.size() > 3 && out.compare(out.size() - 3, 3, ".bc") == 0) {
++		/* Block and value names that the transformation has grown by repeated splitting
++		 * (".loopexit.split-lp.loopexit.split-lp...", kilobytes long on a large module)
++		 * are rejected by LLVM's textual reader past 1024 bytes
++		 * (-non-global-value-max-name-size), and a re-fed module passes through that
++		 * reader. Exploration needs no local names, so every one of them is dropped. */
++		for (auto &F : mod)
++			for (auto &BB : F) {
++				BB.setName("");
++				for (auto &I : BB)
++					if (I.hasName())
++						I.setName("");
++			}
++		llvm::WriteBitcodeToFile(mod, *os);
++		return;
++	}
+ 
+ 	/* TODO: Do we need an exception? If yes, properly handle it */
+ 	if (errs) {
 diff --git a/passes/passes/LLVMUtils.cpp b/passes/passes/LLVMUtils.cpp
 index c4e90d2..aef0139 100644
 --- a/passes/passes/LLVMUtils.cpp
