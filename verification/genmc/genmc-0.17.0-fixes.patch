@@ -1,9 +1,9 @@
 diff --git a/genmc/genmc/Support/HgProgress.hpp b/genmc/genmc/Support/HgProgress.hpp
 new file mode 100644
-index 0000000..aec30b8
+index 0000000..bafa53a
 --- /dev/null
 +++ b/genmc/genmc/Support/HgProgress.hpp
-@@ -0,0 +1,197 @@
+@@ -0,0 +1,236 @@
 +/*
 + * Progress reporting for long runs (HG_GENMC_PROGRESS). A heartbeat thread prints, every
 + * HG_GENMC_HEARTBEAT seconds (30 when unset), what the checker is doing RIGHT NOW: during the
@@ -51,6 +51,11 @@ index 0000000..aec30b8
 +	std::atomic<uint64_t> groupDoneInsts{0};
 +	std::map<std::string, double> passSeconds;      // guarded by mtx
 +	std::map<std::string, uint64_t> passInsts;      // instructions the pass has been over
++	// Exploration profile (HG_GENMC_PROFILE): every 4096th interpreted instruction is
++	// attributed to its function and source line, so the heartbeat names where an execution
++	// spends its instructions -- the loop that iterates to the bound, not a guess about it.
++	std::map<std::string, uint64_t> profile;        // guarded by mtx
++	uint64_t profileSamples{0};                     // guarded by mtx
 +};
 +
 +inline State &state()
@@ -60,6 +65,38 @@ index 0000000..aec30b8
 +}
 +
 +inline bool enabled() { return std::getenv("HG_GENMC_PROGRESS") != nullptr; }
++inline bool profiling()
++{
++	static const bool on = std::getenv("HG_GENMC_PROFILE") != nullptr;
++	return on;
++}
++
++inline void sample(const std::string &site)
++{
++	auto &s = state();
++	std::lock_guard<std::mutex> g(s.mtx);
++	++s.profile[site];
++	++s.profileSamples;
++}
++
++inline std::string profileTable(size_t n)
++{
++	auto &s = state();
++	std::vector<std::pair<std::string, uint64_t>> v;
++	uint64_t total = 0;
++	{
++		std::lock_guard<std::mutex> g(s.mtx);
++		v.assign(s.profile.begin(), s.profile.end());
++		total = s.profileSamples;
++	}
++	std::sort(v.begin(), v.end(), [](auto &a, auto &b) { return a.second > b.second; });
++	std::string out;
++	for (size_t i = 0; i < v.size() && i < n; ++i) {
++		if (i) out += " ";
++		out += v[i].first + "=" + std::to_string(total ? 100 * v[i].second / total : 0) + "%";
++	}
++	return out;
++}
 +
 +inline int64_t nowNs()
 +{
@@ -178,6 +215,8 @@ index 0000000..aec30b8
 +			  << " insts_this_exec=" << s.instsThisExec.load(std::memory_order_relaxed)
 +			  << " insts_total=" << s.instsTotal.load(std::memory_order_relaxed)
 +			  << " elapsed_s=" << secs << " rate_per_s=" << (secs > 0 ? n / secs : 0.0);
++		if (profiling())
++			std::cerr << " profile=[" << profileTable(8) << "]";
 +	}
 +	std::cerr << "\n";
 +}
@@ -334,7 +373,7 @@ index 4866e5e..d00da8a 100644
  	void add(auto &&item) { wlist_.emplace_back(std::move(item)); }
  
 diff --git a/lli/Runtime/Execution.cpp b/lli/Runtime/Execution.cpp
-index fe659e6..de561c0 100644
+index fe659e6..4f3e25b 100644
 --- a/lli/Runtime/Execution.cpp
 +++ b/lli/Runtime/Execution.cpp
 @@ -31,6 +31,7 @@
@@ -373,12 +412,19 @@ index fe659e6..de561c0 100644
  void Interpreter::callMutexInit(Function *F, const std::vector<GenericValue> &ArgVals,
  				const std::unique_ptr<EventDeps> &specialDeps)
  {
-@@ -3612,6 +3624,8 @@ void Interpreter::run()
+@@ -3612,6 +3624,15 @@ void Interpreter::run()
  		llvm::ExecutionContext &SF = ECStack().back();
  		llvm::Instruction &I = *SF.CurInst++;
  		visit(I);
-+		hgprog::state().instsThisExec.fetch_add(1, std::memory_order_relaxed);
++		const auto instsSoFar =
++			hgprog::state().instsThisExec.fetch_add(1, std::memory_order_relaxed);
 +		hgprog::state().instsTotal.fetch_add(1, std::memory_order_relaxed);
++		if ((instsSoFar & 4095) == 0 && hgprog::profiling()) {
++			std::string site = I.getFunction() ? I.getFunction()->getName().str() : "?";
++			if (const auto &loc = I.getDebugLoc())
++				site += ":" + std::to_string(loc.getLine());
++			hgprog::sample(site);
++		}
  		if (!ECStack().empty()) {
  			dynState.globalInstructions[currPos().thread].kind =
  				getInstKind(&*ECStack().back().CurInst);
