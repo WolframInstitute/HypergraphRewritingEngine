@@ -1,3 +1,32 @@
+diff --git a/genmc/genmc/Execution/EventLabel.cpp b/genmc/genmc/Execution/EventLabel.cpp
+index 95fe963..38a33b4 100644
+--- a/genmc/genmc/Execution/EventLabel.cpp
++++ b/genmc/genmc/Execution/EventLabel.cpp
+@@ -14,6 +14,8 @@
+ #include "genmc/Execution/EventLabel.hpp"
+ #include "genmc/Execution/Consistency/ConsistencyChecker.hpp"
+ #include "genmc/Execution/ExecutionGraph.hpp"
++#include <cstdlib>
++#include <iostream>
+ #include "genmc/Support/ModuleVarID.hpp"
+ #include "genmc/Support/SExprVisitor.hpp"
+ 
+@@ -23,6 +25,15 @@ SVal EventLabel::getAccessValue(const AAccess &access) const
+ 
+ 	VERIFY(getPos().isInitializer() || genmc::isa<MemAccessLabel>(this));
+ 	const auto *rLab = genmc::dyn_cast<ReadLabel>(this);
++	/* A read of a heap location no write covers, while non-atomic accesses are tracked:
++	 * the report below names the READER and the interpreter's exit report names the
++	 * instruction being executed (HG_GENMC_PROFILE); resolveAccessValue then stops. */
++	if (rLab && rLab->getRf() && rLab->getRf()->getPos().isInitializer() && access.addr.isDynamic() &&
++	    g.hasNAs()) {
++		std::cerr << "Read of uninitialised heap memory: reader at (" << getPos().thread << ", "
++			  << getPos().index << ") address " << access.addr.get() << " width "
++			  << access.size.get() << "\n";
++	}
+ 	return g.resolveAccessValue(rLab ? rLab->getRf() : this, access);
+ }
+ 
 diff --git a/genmc/genmc/Execution/ExecutionGraph.cpp b/genmc/genmc/Execution/ExecutionGraph.cpp
 index 9131b56..1da6fca 100644
 --- a/genmc/genmc/Execution/ExecutionGraph.cpp
@@ -19,6 +48,18 @@ index 9131b56..1da6fca 100644
  		auto val = access.addr.isDynamic() ? SVal(0) : getInitVal(access);
  		/* TODO (WRD): View{} assumes the graph is complete here */
  		return haveNAs_ ? val : state.reconstructMemValue(access, View{}, val);
+diff --git a/genmc/genmc/Execution/ExecutionGraph.hpp b/genmc/genmc/Execution/ExecutionGraph.hpp
+index b869518..ccea4dc 100644
+--- a/genmc/genmc/Execution/ExecutionGraph.hpp
++++ b/genmc/genmc/Execution/ExecutionGraph.hpp
+@@ -967,6 +967,7 @@ public:
+ 	}
+ 	auto containsLoc(SAddr addr) const -> bool { return coherence.contains(addr); }
+ 
++	[[nodiscard]] auto hasNAs() const -> bool { return haveNAs_; }
+ 	[[nodiscard]] auto resolveAccessValue(const EventLabel *lab, const AAccess &access) const
+ 		-> SVal;
+ 
 diff --git a/genmc/genmc/Support/HgProgress.hpp b/genmc/genmc/Support/HgProgress.hpp
 new file mode 100644
 index 0000000..bccbbf8
@@ -422,7 +463,7 @@ index 4866e5e..d00da8a 100644
  	void add(auto &&item) { wlist_.emplace_back(std::move(item)); }
  
 diff --git a/lli/Runtime/Execution.cpp b/lli/Runtime/Execution.cpp
-index fe659e6..d30ff84 100644
+index fe659e6..ca13ca3 100644
 --- a/lli/Runtime/Execution.cpp
 +++ b/lli/Runtime/Execution.cpp
 @@ -31,6 +31,7 @@
@@ -479,9 +520,40 @@ index fe659e6..d30ff84 100644
  void Interpreter::callMutexInit(Function *F, const std::vector<GenericValue> &ArgVals,
  				const std::unique_ptr<EventDeps> &specialDeps)
  {
-@@ -3612,6 +3635,20 @@ void Interpreter::run()
+@@ -3604,6 +3627,28 @@ void Interpreter::runAtExitHandlers()
+ 	setProgramState(oldState);
+ }
+ 
++/* The instruction the interpreter is executing, for the report a checker-side stop leaves
++ * behind: at exit, under HG_GENMC_PROFILE, its function and source line are printed, which
++ * is the site of the access an internal stop was resolving. */
++static std::atomic<const llvm::Instruction *> &hgLastInst()
++{
++	static std::atomic<const llvm::Instruction *> inst{nullptr};
++	static const bool registered = [] {
++		if (std::getenv("HG_GENMC_PROFILE"))
++			std::atexit([] {
++				const auto *I = inst.load(std::memory_order_relaxed);
++				if (!I) return;
++				std::string site = I->getFunction() ? I->getFunction()->getName().str() : "?";
++				if (const auto &loc = I->getDebugLoc())
++					site += ":" + std::to_string(loc.getLine());
++				std::cerr << "HG-LAST-INSTRUCTION at exit: " << site << "\n";
++			});
++		return true;
++	}();
++	(void)registered;
++	return inst;
++}
++
+ void Interpreter::run()
+ {
+ 	auto tid = driver->scheduleNext(dynState.globalInstructions);
+@@ -3611,7 +3656,22 @@ void Interpreter::run()
+ 		scheduleThread(std::get<int>(tid));
  		llvm::ExecutionContext &SF = ECStack().back();
  		llvm::Instruction &I = *SF.CurInst++;
++		hgLastInst().store(&I, std::memory_order_relaxed);
  		visit(I);
 +		const auto instsSoFar =
 +			hgprog::state().instsThisExec.fetch_add(1, std::memory_order_relaxed);
@@ -941,7 +1013,7 @@ index d49a945..45ae518 100644
  	return changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
  }
 diff --git a/passes/passes/Transforms/PromoteMemIntrinsicPass.cpp b/passes/passes/Transforms/PromoteMemIntrinsicPass.cpp
-index b31c6cd..0241c1e 100644
+index b31c6cd..06cd5f9 100644
 --- a/passes/passes/Transforms/PromoteMemIntrinsicPass.cpp
 +++ b/passes/passes/Transforms/PromoteMemIntrinsicPass.cpp
 @@ -23,6 +23,10 @@
@@ -1130,7 +1202,7 @@ index b31c6cd..0241c1e 100644
  	});
  	promoted.push_back(MS);
  	return true;
-@@ -395,6 +481,148 @@ static void removePromoted(std::ranges::input_range auto &&promoted)
+@@ -395,6 +481,152 @@ static void removePromoted(std::ranges::input_range auto &&promoted)
  	}
  }
  
@@ -1183,15 +1255,19 @@ index b31c6cd..0241c1e 100644
 +		if (w == 0) w = ws;
 +		else if (ws != 0 && ws != w) w = 1;
 +	}
-+	if (w == 0) {
-+		/* Operands the pass cannot see through (parameters, phis, call results): the
-+		 * alignment the intrinsic asserts is the element width clang gives a copy of
-+		 * T[n] -- alignof(T) -- capped at a word and at both operands' alignments. */
++	if (w <= 1) {
++		/* Operands the pass cannot see through (parameters, phis, call results), and a
++		 * byte-addressed GEP after SROA (`getelementptr i8, ptr %p, i64 k`) that names i8
++		 * for memory written at word width: the alignment the intrinsic asserts is the
++		 * element width clang gives a copy of T[n] -- alignof(T) -- capped at a word and
++		 * at both operands' alignments. A byte loop over word-written memory reads bytes
++		 * no write label covers, which the checker reports as an uninitialised read. */
 +		uint64_t a = MI->getDestAlign().valueOrOne().value();
 +		if (auto *MT = dyn_cast<MemTransferInst>(MI))
 +			a = std::min<uint64_t>(a, MT->getSourceAlign().valueOrOne().value());
-+		w = std::min<uint64_t>(a, 8);
++		w = std::max<uint64_t>(w, std::min<uint64_t>(a, 8));
 +		while (w > 1 && (w & (w - 1)) != 0) --w;
++		if (w == 0) w = 1;
 +	}
 +	auto *elemTy = IntegerType::get(ctx, 8 * static_cast<unsigned>(w));
 +
@@ -1279,7 +1355,7 @@ index b31c6cd..0241c1e 100644
  auto PromoteMemIntrinsicPass::run(Function &F, FunctionAnalysisManager &FAM) -> PreservedAnalyses
  {
  	/* Locate mem intrinsics of interest */
-@@ -402,14 +630,43 @@ auto PromoteMemIntrinsicPass::run(Function &F, FunctionAnalysisManager &FAM) ->
+@@ -402,14 +634,43 @@ auto PromoteMemIntrinsicPass::run(Function &F, FunctionAnalysisManager &FAM) ->
  	auto modified = false;
  
  	modified |= lowerFortifiedCalls(F);
