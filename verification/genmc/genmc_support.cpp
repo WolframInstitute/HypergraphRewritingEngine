@@ -49,6 +49,20 @@ void* __dso_handle = nullptr;
 // participate in. Recording nothing and reporting success leaves the checker with the same set of
 // executions and one less external symbol to resolve.
 int __cxa_atexit(void (*)(void*), void*, void*) { return 0; }
+// The C allocation functions over the checker's own primitives. Every engine allocation but
+// one goes through operator new, which the interpreter models; the job slot pool calls
+// std::malloc through <cstdlib>, which the checker's C runtime override does not reach, and the
+// call arrived at the interpreter as an unknown external (the default evolve arm, main:57).
+void* __VERIFIER_malloc(std::size_t);
+void __VERIFIER_free(void*);
+void* malloc(std::size_t n) noexcept { return __VERIFIER_malloc(n ? n : 1); }
+void free(void* p) noexcept { if (p) __VERIFIER_free(p); }
+void* calloc(std::size_t count, std::size_t size) noexcept {
+    const std::size_t n = count * size;
+    auto* p = static_cast<unsigned char*>(__VERIFIER_malloc(n ? n : 1));
+    for (std::size_t i = 0; i < n; ++i) p[i] = 0;
+    return p;
+}
 // The guard of a function-local static (`static T x = ...;` reached on the evolve path).
 // acquire returns 1 to the thread that will initialise (it takes the guard 0 -> 1); a thread
 // that finds it taken spins until release stores 2 -- the loop is a plain re-read the
