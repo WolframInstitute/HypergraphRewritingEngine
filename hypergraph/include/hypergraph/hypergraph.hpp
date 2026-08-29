@@ -14,7 +14,6 @@
 #include "atomic_compat.hpp"
 #include "signature.hpp"
 #include "pattern.hpp"
-#include "index.hpp"
 #include "arena.hpp"
 #include "bitset.hpp"
 #include "segmented_array.hpp"
@@ -69,7 +68,6 @@ class Hypergraph {
     SegmentedArray<Event> events_;
 
     // Pattern matching indices
-    PatternMatchingIndex match_index_;
 
     // Causal and branchial graph
     CausalGraph causal_graph_;
@@ -946,9 +944,6 @@ public:
     // Index Access
     // =========================================================================
 
-    const SignatureIndex& signature_index() const;
-    const InvertedVertexIndex& inverted_index() const;
-    const PatternMatchingIndex& match_index() const;
 
     // =========================================================================
     // Causal Graph Access

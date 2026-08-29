@@ -4,6 +4,7 @@
 // parallel_evolution.cpp - Implementation of ParallelEvolutionEngine class
 
 #include "hypergraph/parallel_evolution.hpp"
+#include "hypergraph/ancestry.hpp"
 
 #include "hgcommon/sampling_core.hpp"
 #include "hypergraph/rule_analysis.hpp"
@@ -1099,6 +1100,7 @@ ParallelEvolutionEngine::MatchJoin* ParallelEvolutionEngine::match_join_for(Stat
 uint64_t ParallelEvolutionEngine::canonical_transition_key(StateId state,
                                                           const MatchRecord& match) {
     const State& s = hg_->get_state(state);
+    const AncestryCandidates cands{hg_, state, &s.edges};
 
     // Ranks come from the same individualization-refinement pass as the state's canonical
     // hash, so asking for them costs one IR pass per state and nothing per match after that.
@@ -1893,6 +1895,7 @@ void ParallelEvolutionEngine::execute_match_task(
     if (!can_have_more_children(state)) return;
 
     const State& s = hg_->get_state(state);
+    const AncestryCandidates cands{hg_, state, &s.edges};
 
     // Edge accessor
     auto get_edge = [this](EdgeId eid) -> const Edge& {
@@ -2030,8 +2033,7 @@ void ParallelEvolutionEngine::execute_match_task(
                   state, step, rules_.size(), ctx.num_produced);
         for (uint16_t r = 0; r < rules_.size(); ++r) {
             find_delta_matches(
-                rules_[r], r, state, s.edges,
-                hg_->signature_index(), hg_->inverted_index(), get_edge, get_signature, on_match,
+                rules_[r], r, state, s.edges, cands, get_edge, get_signature, on_match,
                 ctx.produced_edges, ctx.num_produced
             );
         }
@@ -2078,10 +2080,7 @@ void ParallelEvolutionEngine::execute_match_task(
                 }
             };
             for (uint16_t r = 0; r < rules_.size(); ++r) {
-                find_matches(
-                    rules_[r], r, state, s.edges,
-                    hg_->signature_index(), hg_->inverted_index(), get_edge, get_signature, count_missing
-                );
+                find_matches(rules_[r], r, state, s.edges, cands, get_edge, get_signature, count_missing);
             }
             if (missing > 0) {
                 validation_mismatches_.fetch_add(missing, std::memory_order_relaxed);
@@ -2111,10 +2110,7 @@ void ParallelEvolutionEngine::execute_match_task(
         DEBUG_LOG("SYNC_MATCH state=%u step=%u rules=%zu",
                   state, step, rules_.size());
         for (uint16_t r = 0; r < rules_.size(); ++r) {
-            find_matches(
-                rules_[r], r, state, s.edges,
-                hg_->signature_index(), hg_->inverted_index(), get_edge, get_signature, on_match
-            );
+            find_matches(rules_[r], r, state, s.edges, cands, get_edge, get_signature, on_match);
         }
     }
 
@@ -2158,6 +2154,7 @@ void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
               data.state, data.rule_index, data.step, data.is_delta);
 
     const State& s = hg_->get_state(data.state);
+    const AncestryCandidates cands{hg_, data.state, &s.edges};
     const RewriteRule& rule = rules_[data.rule_index];
 
     if (rule.num_lhs_edges == 0) return;
@@ -2235,8 +2232,7 @@ void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
         const VariableBinding unbound;
         generate_candidates(
             first_edge, first_sig, first_cache,
-            unbound.bindings, unbound.bound_mask, s.edges,
-            hg_->signature_index(), hg_->inverted_index(), get_edge,
+            unbound.bindings, unbound.bound_mask, s.edges, cands, get_edge,
             [&](EdgeId candidate, const auto& edge) {
                 if (should_stop_.load(std::memory_order_relaxed)) return;
 
@@ -2300,6 +2296,7 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
     }
 
     const State& s = hg_->get_state(data.state);
+    const AncestryCandidates cands{hg_, data.state, &s.edges};
     const RewriteRule& rule = rules_[data.rule_index];
 
     // Edge accessor
@@ -2332,8 +2329,7 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
     // Generate candidates
     generate_candidates(
         pattern_edge, pattern_sig, sig_cache,
-        data.binding.bindings, data.binding.bound_mask, s.edges,
-        hg_->signature_index(), hg_->inverted_index(), get_edge,
+        data.binding.bindings, data.binding.bound_mask, s.edges, cands, get_edge,
         [&](EdgeId candidate, const auto& edge) {
             if (should_stop_.load(std::memory_order_relaxed)) return;
 
@@ -2367,8 +2363,7 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
         size_t again = 0;
         generate_candidates(
             pattern_edge, pattern_sig, sig_cache,
-            data.binding.bindings, data.binding.bound_mask, s.edges,
-            hg_->signature_index(), hg_->inverted_index(), get_edge,
+            data.binding.bindings, data.binding.bound_mask, s.edges, cands, get_edge,
             [&](EdgeId candidate, const auto&) { if (!data.contains_edge(candidate)) ++again; });
         if (again > 0) {
             expand_retry_found_.fetch_add(1, std::memory_order_relaxed);
@@ -2808,23 +2803,18 @@ ParallelEvolutionEngine::MatchTaskCounts ParallelEvolutionEngine::match_task_cou
     return c;
 }
 
-// What the state's edge set and the inverted index answer for a match's edges and vertices
-// at the moment of asking, as text.
+// What the state's edge set answers for a match's edges at the moment of asking, as text.
 #if HG_ENGINE_STATS
 std::string ParallelEvolutionEngine::probe_match(StateId state, const MatchCore& core) const {
     const State& s = hg_->get_state(state);
+    const AncestryCandidates cands{hg_, state, &s.edges};
     std::string w;
     for (uint8_t i = 0; i < core.num_edges; ++i) {
         const EdgeId eid = core.matched_edges[i];
         const Edge& e = hg_->get_edge(eid);
         w += std::string(i ? "," : "") + std::to_string(eid) + "(in_state=" + (s.edges.contains(eid) ? "1" : "0") + ";verts=";
-        for (uint8_t k = 0; k < e.arity; ++k) {
-            bool listed = false;
-            hg_->inverted_index().for_each_edge(e.vertices[k], s.edges, [&](EdgeId x) { if (x == eid) listed = true; });
-            w += std::string(k ? "/" : "") + std::to_string(e.vertices[k]) + ":" +
-                 (hg_->inverted_index().has_vertex(e.vertices[k]) ? "present" : "ABSENT") +
-                 (listed ? "+listed" : "+UNLISTED");
-        }
+        for (uint8_t k = 0; k < e.arity; ++k)
+            w += std::string(k ? "/" : "") + std::to_string(e.vertices[k]);
         w += ")";
     }
     return w;
@@ -2838,6 +2828,7 @@ std::string ParallelEvolutionEngine::probe_match(StateId state, const MatchCore&
 #endif
 void ParallelEvolutionEngine::validate_state_at_drain(StateId state) {
     const State& s = hg_->get_state(state);
+    const AncestryCandidates cands{hg_, state, &s.edges};
     auto get_edge = [this](EdgeId eid) -> const Edge& { return hg_->get_edge(eid); };
     auto get_signature = [this](EdgeId eid) -> const EdgeSignature& { return hg_->edge_signature(eid); };
     size_t missing = 0;
@@ -2871,8 +2862,7 @@ void ParallelEvolutionEngine::validate_state_at_drain(StateId state) {
 #endif
     };
     for (uint16_t r = 0; r < rules_.size(); ++r)
-        find_matches(rules_[r], r, state, s.edges, hg_->signature_index(), hg_->inverted_index(),
-                     get_edge, get_signature, check);
+        find_matches(rules_[r], r, state, s.edges, cands, get_edge, get_signature, check);
     if (missing > 0) validation_mismatches_.fetch_add(missing, std::memory_order_relaxed);
 }
 

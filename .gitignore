@@ -24,13 +24,13 @@ evidence/
 # the paper, which states the commit they were taken at.
 /benchmark_results/
 
-# LaTeX build output. The paper source is tracked; what pdflatex writes from it is not.
+# LaTeX build output. The paper source and the built main.pdf are tracked; the rest of
+# what pdflatex writes is not.
 /paper/*.aux
 /paper/*.bbl
 /paper/*.blg
 /paper/*.log
 /paper/*.out
-/paper/*.pdf
 # `make arxiv` builds and packs a submission tree; both are outputs of a target in this repo.
 /paper/arxiv-submission.tar.gz
 /paper/arxiv-submission/

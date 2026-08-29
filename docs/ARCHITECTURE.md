@@ -53,7 +53,7 @@ Core engine:
   (`parallel_evolution.*`) drives the lock-free dataflow: match → rewrite → dedup as
   states are produced. `Hypergraph` (`hypergraph.*`) stores edges/states/events and
   owns canonical-state dedup. Matching is a worst-case-optimal join
-  (`pattern_matcher.hpp`, `index.hpp`, `signature.hpp`). Canonicalization under the exact
+  (`pattern_matcher.hpp`, `ancestry.hpp`, `signature.hpp`). Canonicalization under the exact
   mode is McKay individualization-refinement (`ir_canonicalization.*`) on every
   state, its hash serving as the dedup key directly; `compute_canonical_hash`
   reaches the Weisfeiler-Leman hash (`wl_hash.hpp`, fast, may collide) only when

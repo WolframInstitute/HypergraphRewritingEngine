@@ -13,7 +13,7 @@
 #include "pattern.hpp"
 #include "hgcommon/match_core.hpp"
 #include "hgcommon/join_core.hpp"
-#include "index.hpp"
+#include "ancestry.hpp"
 #include "arena.hpp"
 #include "bitset.hpp"
 #include "segmented_array.hpp"
@@ -95,7 +95,7 @@ inline uint64_t match_branch_count(int i) {
 //   already reached the best binary plan, so no further ordering effort can close this.
 //
 // A worst-case-optimal join would additionally need per-position sorted access -- "given the
-// binding so far, seek the next vertex value at this position" -- which InvertedVertexIndex does
+// binding so far, seek the next vertex value at this position" -- which the ancestry walk does
 // not provide; it answers set containment, not ordered seek.
 
 
@@ -127,9 +127,7 @@ struct PatternMatchingContext {
     StateId state_id;
     const SparseBitset* state_edges;  // Bitset of edges in this state
 
-    // Indices for candidate generation
-    const SignatureIndex* sig_index;
-    const InvertedVertexIndex* inv_index;
+    const AncestryCandidates* candidates;  // the state's edges by ancestry (ancestry.hpp)
 
     // Edge accessor
     EdgeAccessor get_edge;
@@ -158,8 +156,7 @@ struct PatternMatchingContext {
         uint16_t ridx,
         StateId sid,
         const SparseBitset* edges,
-        const SignatureIndex* sig,
-        const InvertedVertexIndex* inv,
+        const AncestryCandidates* cands,
         EdgeAccessor accessor,
         SignatureAccessor sig_accessor,
         MatchCallback callback
@@ -168,8 +165,7 @@ struct PatternMatchingContext {
         , rule_index(ridx)
         , state_id(sid)
         , state_edges(edges)
-        , sig_index(sig)
-        , inv_index(inv)
+        , candidates(cands)
         , get_edge(accessor)
         , get_signature(sig_accessor)
         , should_terminate(nullptr)
@@ -191,8 +187,7 @@ void generate_candidates(
     const VertexId* bindings,                   // indexed by variable; read only where bound
     uint32_t bound_mask,
     const SparseBitset& state_edges,
-    const SignatureIndex& sig_index,
-    const InvertedVertexIndex& inv_index,
+    const AncestryCandidates& candidates,
     const EdgeAccessor& get_edge,
     CandidateCallback&& on_candidate
 ) {
@@ -232,16 +227,21 @@ void generate_candidates(
             // Repeated-variable seed edge: the signature level genuinely prunes, so scan
             // the compatible signature partition using the pre-computed cache.
             HG_MATCH_BRANCH_HIT(1);
-            sig_index.for_each_candidate_cached(sig_cache, state_edges, [&](EdgeId eid) {
-                on_candidate(eid, get_edge(eid));
-            });
+            (void)sig_cache;
+            candidates.for_each_edge_compatible(
+                pattern_sig,
+                [&](EdgeId eid) {
+                    const auto& edge = get_edge(eid);
+                    return EdgeSignature::from_edge(edge.vertices, edge.arity);
+                },
+                [&](EdgeId eid) { on_candidate(eid, get_edge(eid)); });
         }
     } else {
         // Have bound variables: use inverted index intersection. The intersection has
         // already fetched each edge to test containment; it hands that edge to us.
         HG_MATCH_BRANCH_HIT(2);
-        inv_index.for_each_edge_containing_all(
-            bound_vertices, num_bound, state_edges, get_edge,
+        candidates.for_each_edge_containing_all(
+            bound_vertices, num_bound,
             [&](EdgeId eid, const auto& edge) {
                 // Check bound vertices at the required positions. No signature test here:
                 // validate_candidate (run by on_candidate) binds each variable on first
@@ -317,7 +317,7 @@ struct HostJoinContext {
         generate_candidates(
             mc->rule->lhs[p], mc->rule->lhs_sig[p], mc->rule->lhs_cache[p],
             st.binding, st.bound_mask, *mc->state_edges,
-            *mc->sig_index, *mc->inv_index, mc->get_edge,
+            *mc->candidates, mc->get_edge,
             [&](EdgeId eid, const EdgeType& edge) { f(Candidate{eid, &edge}); });
     }
 };
@@ -391,8 +391,7 @@ void find_matches(
     uint16_t rule_index,
     StateId state_id,
     const SparseBitset& state_edges,
-    const SignatureIndex& sig_index,
-    const InvertedVertexIndex& inv_index,
+    const AncestryCandidates& candidates,
     EdgeAccessor get_edge,
     SignatureAccessor get_signature,
     MatchCallback&& on_match,
@@ -402,7 +401,7 @@ void find_matches(
 ) {
     PatternMatchingContext<EdgeAccessor, SignatureAccessor> ctx(
         &rule, rule_index, state_id, &state_edges,
-        &sig_index, &inv_index, get_edge, get_signature,
+        &candidates, get_edge, get_signature,
         std::forward<MatchCallback>(on_match)
     );
 
@@ -421,8 +420,7 @@ void find_matches(
     uint16_t rule_index,
     StateId state_id,
     const SparseBitset& state_edges,
-    const SignatureIndex& sig_index,
-    const InvertedVertexIndex& inv_index,
+    const AncestryCandidates& candidates,
     EdgeAccessor get_edge,
     MatchCallback&& on_match,
     std::atomic<bool>* should_terminate = nullptr,
@@ -436,7 +434,7 @@ void find_matches(
     };
 
     find_matches(rule, rule_index, state_id, state_edges,
-                 sig_index, inv_index, get_edge, compute_signature,
+                 candidates, get_edge, compute_signature,
                  std::forward<MatchCallback>(on_match),
                  should_terminate, matches_found, max_matches);
 }
@@ -481,8 +479,7 @@ void find_delta_matches(
     uint16_t rule_index,
     StateId state_id,
     const SparseBitset& state_edges,
-    const SignatureIndex& sig_index,
-    const InvertedVertexIndex& inv_index,
+    const AncestryCandidates& candidates,
     EdgeAccessor get_edge,
     SignatureAccessor get_signature,
     MatchCallback&& on_match,
@@ -496,7 +493,7 @@ void find_delta_matches(
 
     PatternMatchingContext<EdgeAccessor, SignatureAccessor> ctx(
         &rule, rule_index, state_id, &state_edges,
-        &sig_index, &inv_index, get_edge, get_signature,
+        &candidates, get_edge, get_signature,
         std::forward<MatchCallback>(on_match)
     );
 

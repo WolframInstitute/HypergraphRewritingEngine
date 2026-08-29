@@ -402,29 +402,19 @@ Child states differ from their parents by only the consumed and produced edges, 
 
 Pattern matching---finding all instances of a rule's left-hand side in a hypergraph---accounts for a large fraction of evolution time; the instruction profile of Table~\ref{tab:t15-instructions} attributes $24.8\%$ of executed instructions to matching and its join---the largest named component, though the unattributed remainder is larger still. We use multi-level indexing to restrict candidate enumeration.
 
-\subsection{Edge Signature Indexing}
+\subsection{Edge Signatures}
 
 \begin{definition}[Edge Signature]
 \label{def:signature}
 The \emph{signature} of hyperedge $e = (v_1, \ldots, v_k)$ is the pattern $\sigma(e) = (s_1, \ldots, s_k)$ where $s_i = s_j$ iff $v_i = v_j$.
 \end{definition}
 
-For example, edge $(3, 3, 7)$ has signature $(0, 0, 1)$, capturing the repetition pattern without specific vertex labels. Our signature index maps signatures to edge lists:
-
-\begin{equation}
-    \text{SigIndex}: \sigma \mapsto \{e \in E : \sigma(e) = \sigma\}
-\end{equation}
-
+For example, edge $(3, 3, 7)$ has signature $(0, 0, 1)$, capturing the repetition pattern without specific vertex labels.
 Pattern edges can match data edges only with compatible signatures. For pattern signature
 $\sigma_p$ with $d$ distinct variables, the number of compatible data signatures is the Bell number
-$B_d$~\cite{rota1964number}; Table~\ref{tab:bell} gives the first few, and shows why enumerating
-compatible signatures is only viable for small $d$.
-
-Both this index and the vertex index of Section~\ref{sec:vertex-index} are maintained
-incrementally: an edge is inserted into its signature bucket and into the incidence list of each
-vertex it contains as it is created, rather than the indices being rebuilt per state. Since states
-share their edges through the pool of Section~\ref{sec:storage}, the indices are shared with them,
-and a state's matching consults the same structures as its parent's.
+$B_d$~\cite{rota1964number}; Table~\ref{tab:bell} gives the first few. The host tests each candidate
+edge's signature against the pattern's directly; the device precomputes the compatible set per
+pattern edge (Section~\ref{sec:gpu}).
 
 \begin{table}[htbp]
 \centering
@@ -439,15 +429,26 @@ $B_d$ & 1 & 2 & 5 & 15 & 52 & 203 & 877 & 4140 \\
 \end{tabular}
 \end{table}
 
-\subsection{Vertex Index}
+\subsection{Candidate Edges by Ancestry}
 \label{sec:vertex-index}
 
-For bound pattern variables, we maintain an inverted index:
+A state is a view into the shared edge pool (Section~\ref{sec:storage}), and its matching asks two
+questions of that view: which of its edges contain a given vertex, once a pattern variable is bound,
+and which of its edges carry a compatible signature, for the seed. Both are answered from the
+state's ancestry. Every edge of a state was produced by exactly one event on the state's chain of
+parent events, or belongs to the root state at the end of that chain, whose edges no event
+produced. The edges of a state that contain $v$ are therefore
 \begin{equation}
-    \text{VertexIndex}: v \mapsto \{(e, i) : e_i = v\}
+    \{e \in \text{produced}(\epsilon) : v \in e,\ e \in S\}_{\epsilon \in \text{chain}(S)}
+    \;\cup\; \{e \in \text{Root}(S)[v] : e \in S\},
 \end{equation}
-
-This enables efficient candidate generation when pattern variables are already assigned from prior edge matches.
+where $\text{Root}(S)[v]$ is the root's own incidence list for $v$, built once when the root is
+created, and membership $e \in S$ excludes an edge that a later event on the chain consumed. A
+query costs the chain's length times the few edges each event produced, and nearly every edge it
+tests is in the state; nothing is maintained per edge when an edge is created. A global index over
+the whole evolution's edges, filtered per state, answers the same question at a cost proportional
+to every edge ever created at $v$ in any state, of which a state at depth seven holds under two
+percent.
 
 \subsection{Matching Algorithm}
 \label{sec:matching-algorithm}
@@ -464,7 +465,7 @@ Pattern matching proceeds through the task-based system of Algorithm~\ref{alg:ma
     \While{task queue non-empty}
         \State $\tau \gets \textsc{Dequeue}()$
         \If{$\tau$ is $\textsc{ScanTask}(e_i, \phi)$}
-            \State \textbf{for} each $e \in \text{SigIndex}[\sigma(e_i)]$ \textbf{do}
+            \State \textbf{for} each $e \in S$ with $\sigma(e)$ compatible with $\sigma(e_i)$ \textbf{do}
             \State \quad \textbf{if} $\textsc{Compatible}(e, e_i, \phi)$ \textbf{then}
             \State \quad\quad Enqueue $\textsc{ExpandTask}(e_{i+1}, \phi')$
         \ElsIf{$\tau$ is $\textsc{ExpandTask}(e_i, \phi)$ with $i > k$}
@@ -1257,14 +1258,16 @@ The unit of matching work on the device is a (state, rule) pair, handled by one 
 stripe the candidates for the first pattern edge. Parallelism across states and rules is therefore
 the outer axis, with the inner axis inside a single join.
 
-The two indices of Section~\ref{sec:matching-algorithm} divide the work between them exactly as on
-the host. The signature index seeds the first pattern edge; every subsequent edge is driven by the
-vertex inverted index through a \emph{pivot variable}---a left-hand-side variable that is
-guaranteed to be bound by the time that edge runs, which the connectivity ordering of the pattern
-edges establishes. Looking the pivot's binding up in the inverted index yields a candidate list
-bounded by that vertex's degree, typically a few entries, in place of a signature bucket that holds
+The device keeps two indices over the edge pool, a signature index and a vertex inverted index,
+each filtered by the state's edge set at query time, and divides the work between them: the
+signature index seeds the first pattern edge; every subsequent edge is driven by the vertex
+inverted index through a \emph{pivot variable}---a left-hand-side variable that is guaranteed to
+be bound by the time that edge runs, which the connectivity ordering of the pattern edges
+establishes. Looking the pivot's binding up in the inverted index yields a candidate list bounded
+by that vertex's degree, typically a few entries, in place of a signature bucket that holds
 thousands on a dense state. This is the division adapted from HGMatch~\cite{yang2023hgmatch}:
-signature index for the seed, inverted index for the extensions.
+signature index for the seed, inverted index for the extensions. The host answers the same two
+questions from the state's ancestry (Section~\ref{sec:vertex-index}).
 
 One detail of the semantics is computed on the host so that the device does not recompute it per
 match. Because distinct pattern variables may bind to the same vertex, a single pattern signature is

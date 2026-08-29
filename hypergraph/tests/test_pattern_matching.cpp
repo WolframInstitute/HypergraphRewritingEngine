@@ -4,7 +4,7 @@
 #include "hypergraph/bitset.hpp"
 #include "hypergraph/signature.hpp"
 #include "hypergraph/pattern.hpp"
-#include "hypergraph/index.hpp"
+#include "hypergraph/ancestry.hpp"
 #include "hypergraph/pattern_matcher.hpp"
 #include "hypergraph/hypergraph.hpp"
 #include "hypergraph/rewriter.hpp"
@@ -17,43 +17,34 @@ using namespace hypergraph;
 // Test Helpers
 // =============================================================================
 
-struct TestEdge {
-    EdgeId id;
-    VertexId vertices[MAX_ARITY];
-    uint8_t arity;
-};
-
-// Create simple test hypergraph
+// A hypergraph whose edges all belong to one root state, with the state's edge set and its
+// ancestry candidate source for the matcher.
 class TestHypergraph {
 public:
-    ConcurrentHeterogeneousArena arena;
-    std::vector<TestEdge> edges;
-    SparseBitset state_edges;
-    PatternMatchingIndex index;
+    Hypergraph hg;
+    std::vector<EdgeId> ids;
 
     EdgeId add_edge(std::initializer_list<VertexId> verts) {
-        TestEdge e;
-        e.id = static_cast<EdgeId>(edges.size());
-        e.arity = 0;
-        for (VertexId v : verts) {
-            e.vertices[e.arity++] = v;
-        }
-        edges.push_back(e);
-
-        // Add to index
-        index.add_edge(e.id, e.vertices, e.arity, arena);
-
-        // Add to state
-        state_edges.set(e.id, arena);
-
-        return e.id;
+        EdgeId eid = hg.create_edge(verts);
+        ids.push_back(eid);
+        return eid;
     }
+
+    // The root state over every edge added so far; created once, on first use.
+    StateId state() {
+        if (state_ == INVALID_ID) state_ = hg.create_state(ids.data(), static_cast<uint32_t>(ids.size()));
+        return state_;
+    }
+    const SparseBitset& edges() { return hg.get_state(state()).edges; }
+    AncestryCandidates candidates() { return AncestryCandidates{&hg, state(), &edges()}; }
+    const Edge& edge(EdgeId eid) const { return hg.get_edge(eid); }
 
     auto get_edge_accessor() {
-        return [this](EdgeId eid) -> const TestEdge& {
-            return edges[eid];
-        };
+        return [this](EdgeId eid) -> const Edge& { return hg.get_edge(eid); };
     }
+
+private:
+    StateId state_ = INVALID_ID;
 };
 
 // =============================================================================
@@ -144,9 +135,8 @@ TEST(PatternMatching, SingleEdgePattern) {
 
     find_matches(
         rule, 0, 0,
-        hg.state_edges,
-        hg.index.signature_index(),
-        hg.index.inverted_index(),
+        hg.edges(),
+        hg.candidates(),
         hg.get_edge_accessor(),
         [&](uint16_t, const EdgeId* edges, uint8_t, const VariableBinding& binding, StateId) {
             matches.push_back({edges[0], binding});
@@ -157,7 +147,7 @@ TEST(PatternMatching, SingleEdgePattern) {
 
     // Check bindings
     for (const auto& [eid, binding] : matches) {
-        const auto& edge = hg.edges[eid];
+        const auto& edge = hg.edge(eid);
         EXPECT_EQ(binding.get(0), edge.vertices[0]);
         EXPECT_EQ(binding.get(1), edge.vertices[1]);
     }
@@ -181,9 +171,8 @@ TEST(PatternMatching, SelfLoopPattern) {
 
     find_matches(
         rule, 0, 0,
-        hg.state_edges,
-        hg.index.signature_index(),
-        hg.index.inverted_index(),
+        hg.edges(),
+        hg.candidates(),
         hg.get_edge_accessor(),
         [&](uint16_t, const EdgeId* edges, uint8_t, const VariableBinding&, StateId) {
             matches.push_back(edges[0]);
@@ -194,7 +183,7 @@ TEST(PatternMatching, SelfLoopPattern) {
 
     // Verify they are the self-loops
     for (EdgeId eid : matches) {
-        const auto& edge = hg.edges[eid];
+        const auto& edge = hg.edge(eid);
         EXPECT_EQ(edge.vertices[0], edge.vertices[1]);
     }
 }
@@ -218,9 +207,8 @@ TEST(PatternMatching, TwoEdgePattern) {
 
     find_matches(
         rule, 0, 0,
-        hg.state_edges,
-        hg.index.signature_index(),
-        hg.index.inverted_index(),
+        hg.edges(),
+        hg.candidates(),
         hg.get_edge_accessor(),
         [&](uint16_t, const EdgeId* edges, uint8_t, const VariableBinding&, StateId) {
             matches.push_back({edges[0], edges[1]});
@@ -235,8 +223,8 @@ TEST(PatternMatching, TwoEdgePattern) {
 
     // Verify connectivity
     for (const auto& [e1, e2] : matches) {
-        const auto& edge1 = hg.edges[e1];
-        const auto& edge2 = hg.edges[e2];
+        const auto& edge1 = hg.edge(e1);
+        const auto& edge2 = hg.edge(e2);
         // y is at position 1 of first edge and position 0 of second edge
         EXPECT_EQ(edge1.vertices[1], edge2.vertices[0]);
     }
@@ -259,9 +247,8 @@ TEST(PatternMatching, NoDuplicateEdgeUse) {
 
     find_matches(
         rule, 0, 0,
-        hg.state_edges,
-        hg.index.signature_index(),
-        hg.index.inverted_index(),
+        hg.edges(),
+        hg.candidates(),
         hg.get_edge_accessor(),
         [&](uint16_t, const EdgeId*, uint8_t, const VariableBinding&, StateId) {
             match_count++;
@@ -291,9 +278,8 @@ TEST(PatternMatching, VariableBindingConsistency) {
 
     find_matches(
         rule, 0, 0,
-        hg.state_edges,
-        hg.index.signature_index(),
-        hg.index.inverted_index(),
+        hg.edges(),
+        hg.candidates(),
         hg.get_edge_accessor(),
         [&](uint16_t, const EdgeId* edges, uint8_t, const VariableBinding&, StateId) {
             matches.push_back({edges[0], edges[1]});
@@ -307,8 +293,8 @@ TEST(PatternMatching, VariableBindingConsistency) {
 
     // Verify binding consistency
     for (const auto& [e1, e2] : matches) {
-        const auto& edge1 = hg.edges[e1];
-        const auto& edge2 = hg.edges[e2];
+        const auto& edge1 = hg.edge(e1);
+        const auto& edge2 = hg.edge(e2);
         // First edge: {x, y}, Second edge: {y, x}
         EXPECT_EQ(edge1.vertices[0], edge2.vertices[1]);  // x
         EXPECT_EQ(edge1.vertices[1], edge2.vertices[0]);  // y
@@ -333,9 +319,8 @@ TEST(PatternMatching, TernaryEdges) {
 
     find_matches(
         rule, 0, 0,
-        hg.state_edges,
-        hg.index.signature_index(),
-        hg.index.inverted_index(),
+        hg.edges(),
+        hg.candidates(),
         hg.get_edge_accessor(),
         [&](uint16_t, const EdgeId*, uint8_t, const VariableBinding&, StateId) {
             match_count++;
@@ -347,148 +332,92 @@ TEST(PatternMatching, TernaryEdges) {
 }
 
 // =============================================================================
-// Index Tests
+// Candidate Tests
 // =============================================================================
 
-TEST(SignatureIndex, SignatureIndex_QueryDistinctVars) {
-    ConcurrentHeterogeneousArena arena;
-    SignatureIndex index;
-    SparseBitset state_edges;
+// The candidate source is the state's ancestry: a root state's own edges through its vertex
+// index, and every derived state's edges through its chain of parent events (ancestry.hpp).
+TEST(AncestryCandidates, RootEdgesBySignature) {
+    Hypergraph hg;
+    EdgeId e0 = hg.create_edge({0, 1});   // [0,1]
+    EdgeId e1 = hg.create_edge({2, 2});   // [0,0]
+    EdgeId e2 = hg.create_edge({3, 4});   // [0,1]
+    EdgeId e3 = hg.create_edge({5, 5});   // [0,0]
+    StateId s0 = hg.create_state({e0, e1, e2, e3});
+    const State& st = hg.get_state(s0);
+    AncestryCandidates cands{&hg, s0, &st.edges};
+    auto get_signature = [&](EdgeId eid) { return hg.edge_signature(eid); };
 
-    // Add edges with different signatures
-    VertexId e0[] = {0, 1};      // [0,1]
-    VertexId e1[] = {2, 2};      // [0,0]
-    VertexId e2[] = {3, 4};      // [0,1]
-    VertexId e3[] = {5, 5};      // [0,0]
+    // [0,0] is compatible with the self-loops only; [0,1] with every edge.
+    uint8_t same[] = {0, 0};
+    std::set<EdgeId> found;
+    cands.for_each_edge_compatible(EdgeSignature::from_pattern(same, 2), get_signature,
+                                   [&](EdgeId eid) { found.insert(eid); });
+    EXPECT_EQ(found, (std::set<EdgeId>{e1, e3}));
 
-    index.add_edge(0, EdgeSignature::from_edge(e0, 2), arena);
-    index.add_edge(1, EdgeSignature::from_edge(e1, 2), arena);
-    index.add_edge(2, EdgeSignature::from_edge(e2, 2), arena);
-    index.add_edge(3, EdgeSignature::from_edge(e3, 2), arena);
-
-    state_edges.set(0, arena);
-    state_edges.set(1, arena);
-    state_edges.set(2, arena);
-    state_edges.set(3, arena);
-
-    // Query for [0,1] pattern signature
-    uint8_t pattern_vars[] = {0, 1};
-    EdgeSignature pattern_sig = EdgeSignature::from_pattern(pattern_vars, 2);
-
-    std::vector<EdgeId> candidates;
-    index.for_each_candidate(pattern_sig, state_edges, [&](EdgeId eid) {
-        candidates.push_back(eid);
-    });
-
-    // Should find all 4 edges (pattern [0,1] is compatible with both [0,0] and [0,1])
-    EXPECT_EQ(candidates.size(), 4);
+    uint8_t distinct[] = {0, 1};
+    found.clear();
+    cands.for_each_edge_compatible(EdgeSignature::from_pattern(distinct, 2), get_signature,
+                                   [&](EdgeId eid) { found.insert(eid); });
+    EXPECT_EQ(found, (std::set<EdgeId>{e0, e1, e2, e3}));
 }
 
-TEST(SignatureIndex, SignatureIndex_QuerySameVar) {
-    ConcurrentHeterogeneousArena arena;
-    SignatureIndex index;
-    SparseBitset state_edges;
+TEST(AncestryCandidates, RootEdgesByVertex) {
+    Hypergraph hg;
+    EdgeId e0 = hg.create_edge({0, 1});
+    EdgeId e1 = hg.create_edge({1, 2});
+    EdgeId e2 = hg.create_edge({2, 0});
+    EdgeId e3 = hg.create_edge({3, 4});
+    StateId s0 = hg.create_state({e0, e1, e2, e3});
+    const State& st = hg.get_state(s0);
+    AncestryCandidates cands{&hg, s0, &st.edges};
 
-    // Add edges with different signatures
-    VertexId e0[] = {0, 1};      // [0,1]
-    VertexId e1[] = {2, 2};      // [0,0]
-    VertexId e2[] = {3, 4};      // [0,1]
-    VertexId e3[] = {5, 5};      // [0,0]
+    std::set<EdgeId> at1;
+    cands.for_each_edge_at(1, [&](EdgeId eid, const Edge&) { at1.insert(eid); });
+    EXPECT_EQ(at1, (std::set<EdgeId>{e0, e1}));
 
-    index.add_edge(0, EdgeSignature::from_edge(e0, 2), arena);
-    index.add_edge(1, EdgeSignature::from_edge(e1, 2), arena);
-    index.add_edge(2, EdgeSignature::from_edge(e2, 2), arena);
-    index.add_edge(3, EdgeSignature::from_edge(e3, 2), arena);
+    VertexId both[] = {0, 1};
+    std::vector<EdgeId> containing;
+    cands.for_each_edge_containing_all(both, 2, [&](EdgeId eid, const Edge&) { containing.push_back(eid); });
+    ASSERT_EQ(containing.size(), 1u);
+    EXPECT_EQ(containing[0], e0);
 
-    state_edges.set(0, arena);
-    state_edges.set(1, arena);
-    state_edges.set(2, arena);
-    state_edges.set(3, arena);
-
-    // Query for [0,0] pattern signature (self-loops only)
-    uint8_t pattern_vars[] = {0, 0};
-    EdgeSignature pattern_sig = EdgeSignature::from_pattern(pattern_vars, 2);
-
-    std::vector<EdgeId> candidates;
-    index.for_each_candidate(pattern_sig, state_edges, [&](EdgeId eid) {
-        candidates.push_back(eid);
-    });
-
-    // Should find only edges 1 and 3 ([0,0] signature)
-    EXPECT_EQ(candidates.size(), 2);
+    std::set<EdgeId> at9;
+    cands.for_each_edge_at(9, [&](EdgeId eid, const Edge&) { at9.insert(eid); });
+    EXPECT_TRUE(at9.empty());
 }
 
-TEST(SignatureIndex, InvertedIndex_SingleVertex) {
-    ConcurrentHeterogeneousArena arena;
-    InvertedVertexIndex index;
-    SparseBitset state_edges;
+// A derived state reaches its parent's surviving edges and its own produced edges through
+// the chain, and an edge its event consumed is not yielded.
+TEST(AncestryCandidates, DerivedStateWalksItsChain) {
+    Hypergraph hg;
+    EdgeId e0 = hg.create_edge({0, 1});
+    EdgeId e1 = hg.create_edge({1, 2});
+    StateId s0 = hg.create_state({e0, e1});
 
-    // Add edges
-    VertexId e0[] = {0, 1};
-    VertexId e1[] = {1, 2};
-    VertexId e2[] = {2, 0};
-    VertexId e3[] = {3, 4};
+    // The event consumes e0 and produces e2 = (0,3), e3 = (3,1).
+    EdgeId e2 = hg.create_edge({0, 3});
+    EdgeId e3 = hg.create_edge({3, 1});
+    EdgeId consumed[] = {e0};
+    EdgeId produced[] = {e2, e3};
+    StateId s1 = hg.create_state({e1, e2, e3});
+    EventId ev = hg.create_event(s0, s1, 0, consumed, 1, produced, 2).event_id;
+    // The state was created before its event existed: bind it to the event.
+    hg.get_state(s1).parent_event = ev;
+    const State& st1 = hg.get_state(s1);
+    AncestryCandidates cands{&hg, s1, &st1.edges};
 
-    index.add_edge(0, e0, 2, arena);
-    index.add_edge(1, e1, 2, arena);
-    index.add_edge(2, e2, 2, arena);
-    index.add_edge(3, e3, 2, arena);
+    std::set<EdgeId> at1;
+    cands.for_each_edge_at(1, [&](EdgeId eid, const Edge&) { at1.insert(eid); });
+    EXPECT_EQ(at1, (std::set<EdgeId>{e1, e3}));   // e0 was consumed
 
-    state_edges.set(0, arena);
-    state_edges.set(1, arena);
-    state_edges.set(2, arena);
-    state_edges.set(3, arena);
+    std::set<EdgeId> at3;
+    cands.for_each_edge_at(3, [&](EdgeId eid, const Edge&) { at3.insert(eid); });
+    EXPECT_EQ(at3, (std::set<EdgeId>{e2, e3}));
 
-    // Query edges containing vertex 1
-    std::vector<EdgeId> edges;
-    index.for_each_edge(1, state_edges, [&](EdgeId eid) {
-        edges.push_back(eid);
-    });
-
-    // Edges 0 and 1 contain vertex 1
-    EXPECT_EQ(edges.size(), 2);
-}
-
-TEST(SignatureIndex, InvertedIndex_MultipleVertices) {
-    ConcurrentHeterogeneousArena arena;
-    InvertedVertexIndex index;
-    SparseBitset state_edges;
-
-    // Add edges
-    VertexId e0[] = {0, 1};
-    VertexId e1[] = {1, 2};
-    VertexId e2[] = {2, 0};
-    VertexId e3[] = {3, 4};
-
-    index.add_edge(0, e0, 2, arena);
-    index.add_edge(1, e1, 2, arena);
-    index.add_edge(2, e2, 2, arena);
-    index.add_edge(3, e3, 2, arena);
-
-    state_edges.set(0, arena);
-    state_edges.set(1, arena);
-    state_edges.set(2, arena);
-    state_edges.set(3, arena);
-
-    // Query edges containing both 0 and 1
-    VertexId verts[] = {0, 1};
-    std::vector<EdgeId> edges;
-
-    // Mock edge accessor for test - stores the edge data we added above
-    struct MockEdge {
-        VertexId vertices[2];
-        uint8_t arity = 2;
-    };
-    MockEdge mock_edges[] = {{0, 1}, {1, 2}, {2, 0}, {3, 4}};
-    auto get_edge = [&](EdgeId eid) -> const MockEdge& { return mock_edges[eid]; };
-
-    index.for_each_edge_containing_all(verts, 2, state_edges, get_edge, [&](EdgeId eid, const auto&) {
-        edges.push_back(eid);
-    });
-
-    // Only edge 0 contains both 0 and 1
-    EXPECT_EQ(edges.size(), 1);
-    EXPECT_EQ(edges[0], 0);
+    std::set<EdgeId> at0;
+    cands.for_each_edge_at(0, [&](EdgeId eid, const Edge&) { at0.insert(eid); });
+    EXPECT_EQ(at0, (std::set<EdgeId>{e2}));
 }
 
 // =============================================================================
@@ -568,8 +497,7 @@ TEST(HypergraphCore, PatternMatchingOnHypergraph) {
     find_matches(
         rule, 0, s0,
         state.edges,
-        hg.signature_index(),
-        hg.inverted_index(),
+        AncestryCandidates{&hg, s0, &state.edges},
         hg.edge_accessor(),
         [&](uint16_t, const EdgeId* edges, uint8_t, const VariableBinding&, StateId) {
             matches.push_back(edges[0]);
@@ -745,8 +673,7 @@ TEST(EngineIntegration, SingleStepEvolution) {
     find_matches(
         rule, 0, initial,
         state.edges,
-        hg.signature_index(),
-        hg.inverted_index(),
+        AncestryCandidates{&hg, initial, &state.edges},
         hg.edge_accessor(),
         [&](uint16_t, const EdgeId* edges, uint8_t, const VariableBinding& binding, StateId) {
             matches.push_back({edges[0], edges[1], binding});
@@ -820,8 +747,7 @@ TEST(EngineIntegration, MultiStepEvolution) {
             find_matches(
                 rule, 0, sid,
                 state.edges,
-                hg.signature_index(),
-                hg.inverted_index(),
+                AncestryCandidates{&hg, sid, &state.edges},
                 hg.edge_accessor(),
                 [&](uint16_t, const EdgeId* edges, uint8_t, const VariableBinding& binding, StateId) {
                     matches.push_back({edges[0], binding});
@@ -878,8 +804,7 @@ TEST(EngineIntegration, SelfLoopEvolution) {
     find_matches(
         rule, 0, s0,
         state.edges,
-        hg.signature_index(),
-        hg.inverted_index(),
+        AncestryCandidates{&hg, s0, &state.edges},
         hg.edge_accessor(),
         [&](uint16_t, const EdgeId* edges, uint8_t, const VariableBinding& binding, StateId) {
             matches.push_back({edges[0], binding});
@@ -914,25 +839,16 @@ TEST(EngineIntegration, SelfLoopEvolution) {
     EXPECT_EQ(unary.vertices[0], 0);
 }
 
-// Regression (F8): a high-arity all-distinct pattern edge has more compatible data
-// signatures (Bell(arity)) than the CompatibleSignatureCache can hold (64). The cached
-// candidate-generation path must NOT silently drop the overflow tail — it must find
-// every matching edge, identical to the complete (uncached) enumeration. Before the fix
-// the cached path returned only the first 64 signatures' edges, silently missing matches.
-TEST(PatternMatchingBellOverflow, CachedOverflowFindsAllMatches) {
-    ConcurrentHeterogeneousArena arena;
-    SignatureIndex index;
-    SparseBitset state_edges;
-
-    // All-distinct arity-6 pattern {a,b,c,d,e,f}: compatible signatures are all Bell(6)=203
-    // partitions of 6 positions, which overflow the 64-slot cache.
+// A high-arity all-distinct pattern edge has more compatible data signatures (Bell(arity)) than
+// the CompatibleSignatureCache holds (64). Candidate generation tests each edge's signature
+// directly, so every one of the Bell(6) = 203 signature classes is found.
+TEST(PatternMatchingBellOverflow, EveryCompatibleSignatureIsFound) {
     const uint8_t arity = 6;
     uint8_t pattern_vars[arity] = {0, 1, 2, 3, 4, 5};
     EdgeSignature pattern_sig = EdgeSignature::from_pattern(pattern_vars, arity);
     CompatibleSignatureCache cache = CompatibleSignatureCache::from_pattern(pattern_sig);
     ASSERT_TRUE(cache.overflowed) << "arity-6 all-distinct should overflow the signature cache";
 
-    // Collect every compatible signature and realise one distinct data edge per signature.
     std::vector<EdgeSignature> sigs;
     enumerate_compatible_signatures(
         pattern_sig,
@@ -942,23 +858,20 @@ TEST(PatternMatchingBellOverflow, CachedOverflowFindsAllMatches) {
         &sigs);
     ASSERT_GT(sigs.size(), static_cast<size_t>(CompatibleSignatureCache::MAX_CACHED_SIGS));
 
+    // One data edge per compatible signature, all in one root state.
+    Hypergraph hg;
+    std::vector<EdgeId> ids;
     for (size_t i = 0; i < sigs.size(); ++i) {
         VertexId verts[arity];
         VertexId base = static_cast<VertexId>(i) * arity + 1000;
         for (uint8_t p = 0; p < arity; ++p) verts[p] = base + sigs[i].pattern[p];
-        EdgeId eid = static_cast<EdgeId>(i);
-        index.add_edge(eid, EdgeSignature::from_edge(verts, arity), arena);
-        state_edges.set(eid, arena);
+        ids.push_back(hg.create_edge(verts, arity));
     }
-
-    std::set<EdgeId> complete, cached;
-    index.for_each_candidate(pattern_sig, state_edges,
-                             [&](EdgeId e) { complete.insert(e); });
-    index.for_each_candidate_cached(cache, state_edges,
-                                    [&](EdgeId e) { cached.insert(e); });
-
-    EXPECT_EQ(complete.size(), sigs.size());
-    EXPECT_EQ(cached.size(), sigs.size())
-        << "cached path missed high-arity matches (Bell overflow silently truncated)";
-    EXPECT_EQ(cached, complete);
+    StateId s0 = hg.create_state(ids.data(), static_cast<uint32_t>(ids.size()));
+    const State& st = hg.get_state(s0);
+    AncestryCandidates cands{&hg, s0, &st.edges};
+    std::set<EdgeId> found;
+    cands.for_each_edge_compatible(pattern_sig, [&](EdgeId eid) { return hg.edge_signature(eid); },
+                                   [&](EdgeId e) { found.insert(e); });
+    EXPECT_EQ(found.size(), sigs.size());
 }

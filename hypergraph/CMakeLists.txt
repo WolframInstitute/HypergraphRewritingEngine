@@ -9,7 +9,6 @@ add_library(hypergraph
     src/arena.cpp
     src/types.cpp
     src/bitset.cpp
-    src/index.cpp
     src/wl_hash.cpp
     src/debug_log.cpp
     src/hypergraph.cpp

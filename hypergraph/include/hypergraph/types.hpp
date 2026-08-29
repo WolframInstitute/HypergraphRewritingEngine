@@ -172,6 +172,15 @@ struct Event {
 // Immutable after creation.
 // Allocated from arena.
 
+// One (vertex, edge) occurrence of a root state's own edges, sorted by vertex then edge. A
+// state with no parent event is the root of every chain that descends from it, and its edges
+// were produced by no event, so they are indexed here once at creation; every other state's
+// edges are reached through its chain of parent events (see AncestryCandidates).
+struct RootVertexEntry {
+    VertexId vertex;
+    EdgeId edge;
+};
+
 struct State {
     StateId id;
     SparseBitset edges;       // Which edges are present in this state
@@ -185,6 +194,9 @@ struct State {
     // Both are reached through std::atomic_ref, never assigned directly after creation.
     uint32_t explore_depth;
     uint32_t expanded;
+    // The root's own edges by vertex; null and 0 on every state that has a parent event.
+    const RootVertexEntry* root_index;
+    uint32_t root_index_size;
 
     State(StateId id_, SparseBitset&& edge_set, uint32_t step_,
           uint64_t hash, EventId parent, StateId canonical = INVALID_ID);

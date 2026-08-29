@@ -62,10 +62,8 @@ struct Fingerprint {
     long invalid_matches = 0;
     long fwd_truncated = 0;
     long double_executions = 0, abandoned_jobs = 0, abandoned_already_run = 0;
-    long index_misses = 0, index_miss_retry_hits = 0, empty_walks = 0;
     long chain_parent_misses = 0, chain_list_misses = 0, expand_retry_found = 0;
     std::string silent_witness;
-    std::string index_witness;
     std::string dump_path;   // HG_DET_DUMP: this run's state/event/causal listing, or empty
     // THE TWO WAYS ONE EXTRA CAUSAL EDGE CAN EXIST, separated. The reduction either kept a pair
     // it should have dropped -- which shows as FEWER skips -- or the triple set stored the same
@@ -266,10 +264,8 @@ Fingerprint run(const std::vector<hg::engine::RewriteRule>& rules,
     Fingerprint fp = fingerprint(g);
 #if HG_ENGINE_STATS
     if (std::getenv("HG_DET_VALIDATE") && e.still_missing() > 0)
-        std::fprintf(stderr, "HG_DET_VALIDATE: %zu match(es) still missing at the end (%zu recorded at drain, %zu arrived late); %s index: misses=%zu retry_hits=%zu empty_walks=%zu %s\n",
-                     e.still_missing(), e.validation_mismatches(), e.late_arrivals(), e.validation_witness().c_str(),
-                     g.inverted_index().lookup_misses(), g.inverted_index().lookup_miss_retry_hits(),
-                     g.inverted_index().empty_seed_walks(), g.inverted_index().miss_witness().c_str());
+        std::fprintf(stderr, "HG_DET_VALIDATE: %zu match(es) still missing at the end (%zu recorded at drain, %zu arrived late); %s\n",
+                     e.still_missing(), e.validation_mismatches(), e.late_arrivals(), e.validation_witness().c_str());
     if (std::getenv("HG_DET_VALIDATE") && (e.chain_parent_misses() || e.chain_list_misses() || e.expand_retry_found()))
         std::fprintf(stderr, "HG_DET_SILENT: parent-misses=%zu list-misses=%zu expand-retry-found=%zu %s\n",
                      e.chain_parent_misses(), e.chain_list_misses(), e.expand_retry_found(), e.silent_witness().c_str());
@@ -287,10 +283,6 @@ Fingerprint run(const std::vector<hg::engine::RewriteRule>& rules,
     fp.abandoned_jobs = static_cast<long>(e.abandoned_at_quiescence());
     fp.abandoned_already_run = static_cast<long>(e.abandoned_already_run());
 #if HG_ENGINE_STATS
-    fp.index_misses = static_cast<long>(g.inverted_index().lookup_misses());
-    fp.index_miss_retry_hits = static_cast<long>(g.inverted_index().lookup_miss_retry_hits());
-    fp.empty_walks = static_cast<long>(g.inverted_index().empty_seed_walks());
-    fp.index_witness = g.inverted_index().miss_witness();
     fp.chain_parent_misses = static_cast<long>(e.chain_parent_misses());
     fp.chain_list_misses = static_cast<long>(e.chain_list_misses());
     fp.expand_retry_found = static_cast<long>(e.expand_retry_found());
@@ -637,11 +629,6 @@ Spread spread(const Workload& w, bool quotient) {
                        "ancestor, " << f.chain_list_misses << " expanded ancestor(s) had no match list, "
                     << f.expand_retry_found << " expand walk(s) found candidates only on retry. "
                     << f.silent_witness;
-                EXPECT_EQ(f.index_misses, 0)
-                    << w.name << " at threads=" << th << " rep=" << rep << ": the inverted index "
-                       "answered absent for a bound vertex " << f.index_misses << " time(s), "
-                    << f.index_miss_retry_hits << " of which an immediate retry found; "
-                    << f.empty_walks << " seed walk(s) visited nothing. " << f.index_witness;
 #endif
                 EXPECT_EQ(f.double_executions, 0)
                     << w.name << " at threads=" << th << " rep=" << rep << ": "

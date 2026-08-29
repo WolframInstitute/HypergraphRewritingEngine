@@ -27,7 +27,7 @@
 #include "pattern.hpp"
 #include "pattern_matcher.hpp"
 #include "rewriter.hpp"
-#include "index.hpp"
+#include "ancestry.hpp"
 #include "causal_graph.hpp"
 #include "concurrent_map.hpp"
 #include "concurrent_key_set.hpp"

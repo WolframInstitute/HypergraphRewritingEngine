@@ -50,8 +50,6 @@ EdgeId Hypergraph::create_edge(
     // Compute and cache edge signature (immutable after creation)
     edge_signatures_.emplace_at(eid, arena_, EdgeSignature::from_edge(vertices, arity));
 
-    // Update indices
-    match_index_.add_edge(eid, vertices, arity, arena_);
 
     return eid;
 }
@@ -83,13 +81,38 @@ StateId Hypergraph::create_state(
     EventId parent_event
 ) {
     StateId sid = counters_.alloc_state();
-
+    // A state with no parent event is the root of every chain that descends from it, and its
+    // edges were produced by no event: they are indexed by vertex here, once, for the ancestry
+    // walk (ancestry.hpp). Every other state's edges are reached through its parent events.
+    const RootVertexEntry* root_index = nullptr;
+    uint32_t root_index_size = 0;
+    if (parent_event == INVALID_ID) {
+        uint32_t n = 0;
+        edge_set.for_each([&](EdgeId eid) { n += get_edge(eid).arity; });
+        if (n > 0) {
+            auto* entries = arena_.allocate_array<RootVertexEntry>(n);
+            uint32_t k = 0;
+            edge_set.for_each([&](EdgeId eid) {
+                const Edge& e = get_edge(eid);
+                for (uint8_t i = 0; i < e.arity; ++i) entries[k++] = RootVertexEntry{e.vertices[i], eid};
+            });
+            std::sort(entries, entries + n, [](const RootVertexEntry& x, const RootVertexEntry& y) {
+                return x.vertex != y.vertex ? x.vertex < y.vertex : x.edge < y.edge;
+            });
+            // A vertex repeated within one edge lists that edge once.
+            root_index_size = static_cast<uint32_t>(
+                std::unique(entries, entries + n, [](const RootVertexEntry& x, const RootVertexEntry& y) {
+                    return x.vertex == y.vertex && x.edge == y.edge;
+                }) - entries);
+            root_index = entries;
+        }
+    }
     // Directly construct state at slot sid using emplace_at
     states_.emplace_at(sid, arena_, sid, std::move(edge_set), step, canonical_hash, parent_event);
-
+    states_[sid].root_index = root_index;
+    states_[sid].root_index_size = root_index_size;
     // CRITICAL: Release fence to ensure state data is visible
     std::atomic_thread_fence(std::memory_order_release);
-
     return sid;
 }
 
@@ -1761,15 +1784,6 @@ bool Hypergraph::positional_event_identity() const {
     return positional_event_identity_.load(std::memory_order_relaxed);
 }
 
-const SignatureIndex& Hypergraph::signature_index() const {
-    return match_index_.signature_index();
-}
-
-const InvertedVertexIndex& Hypergraph::inverted_index() const {
-    return match_index_.inverted_index();
-}
-
-const PatternMatchingIndex& Hypergraph::match_index() const { return match_index_; }
 
 CausalGraph& Hypergraph::causal_graph() { return causal_graph_; }
 const CausalGraph& Hypergraph::causal_graph() const { return causal_graph_; }
