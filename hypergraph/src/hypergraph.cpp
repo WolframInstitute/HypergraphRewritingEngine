@@ -76,6 +76,22 @@ EdgeId Hypergraph::create_edge(std::initializer_list<VertexId> vertices,
 // State Management
 // =============================================================================
 
+// The depth rung an individualisation-refinement search starts at, per thread: one above the
+// deepest level the previous search on this thread reached. The search reports IR_NEED_DEPTH
+// when its path reaches the rung, and the attempt below the need is a search run to its limit
+// and thrown away -- two of every three attempts on disc-l3a2g2r2 at depth 2 -- while a rung
+// above the need costs scratch words and nothing else, since the search stops at a discrete
+// partition. Escalation past the hint stays: a state deeper than its predecessor climbs.
+namespace {
+constexpr uint32_t kIrDepthRungs[] = {1u, 8u, hgcommon::IR_MAX_DEPTH_DEFAULT};
+uint32_t& ir_depth_hint() {
+    HG_THREAD_LOCAL(uint32_t, hint);
+    return hint;
+}
+inline bool ir_rung_below_hint(uint32_t rung) { return rung < ir_depth_hint(); }
+inline void ir_note_search(const hgcommon::IrWork& work) { ir_depth_hint() = work.max_depth + 1; }
+}  // namespace
+
 StateId Hypergraph::create_state(
     SparseBitset&& edge_set,
     uint32_t step,
@@ -379,7 +395,8 @@ uint64_t Hypergraph::cache_state_edge_ranks(StateId state_id, const SparseBitset
         const uint32_t total_occ = static_cast<uint32_t>(ev.size());
         SVec<uint32_t> ranks(n);
         bool ok = false;
-        for (uint32_t depth : {1u, 8u, hgcommon::IR_MAX_DEPTH_DEFAULT}) {
+        for (uint32_t depth : kIrDepthRungs) {
+            if (ir_rung_below_hint(depth)) continue;
             const uint64_t words = hgcommon::ir_scratch_words(n_verts, n, total_occ, depth);
             auto* scratch = static_cast<uint32_t*>(
                 worker_scratch().allocate_raw((words + 2) * sizeof(uint32_t), alignof(uint64_t)));
@@ -389,7 +406,7 @@ uint64_t Hypergraph::cache_state_edge_ranks(StateId state_id, const SparseBitset
                                                  ranks.data(), hgcommon::IR_HOST_GENERATORS,
                                                  nullptr, nullptr, nullptr, nullptr, &work);
             book_ir_call(work, r.status == hgcommon::IR_NEED_DEPTH);
-            if (r.status == hgcommon::IR_OK) { hash = r.hash; ok = true; break; }
+            if (r.status == hgcommon::IR_OK) { ir_note_search(work); hash = r.hash; ok = true; break; }
             if (r.status == hgcommon::IR_EMPTY) break;
         }
         if (!ok) {
@@ -764,7 +781,8 @@ uint64_t Hypergraph::compute_exact_canonical_hash(const SparseBitset& edges) con
     // depth 1 the core sizes for exactly that: no per-level partition blocks, no generator
     // rows. Only a state that actually needs the individualization search pays for it, and
     // it pays on the retry -- where the search dominates the re-run anyway.
-    for (uint32_t depth : {1u, 8u, hgcommon::IR_MAX_DEPTH_DEFAULT}) {
+    for (uint32_t depth : kIrDepthRungs) {
+        if (ir_rung_below_hint(depth)) continue;
         const uint64_t words =
             hgcommon::ir_scratch_words(n_verts, n_edges, total_occ, depth);
         // Raw, so the buffer is not zeroed on the way in: the core writes every word it
@@ -777,6 +795,7 @@ uint64_t Hypergraph::compute_exact_canonical_hash(const SparseBitset& edges) con
             nullptr, hgcommon::IR_HOST_GENERATORS, nullptr, nullptr, nullptr, nullptr, &work);
         book_ir_call(work, r.status == hgcommon::IR_NEED_DEPTH);
         if (r.status == hgcommon::IR_OK) {
+            ir_note_search(work);
             worker_scratch().release(mk);
             return r.hash;
         }
@@ -867,7 +886,8 @@ uint64_t ir_hash_and_orbits(const SVec<SVec<VertexId>>& edge_vecs,
     }
     const uint32_t total_occ = static_cast<uint32_t>(ev.size());
 
-    for (uint32_t depth : {1u, 8u, hgcommon::IR_MAX_DEPTH_DEFAULT}) {
+    for (uint32_t depth : kIrDepthRungs) {
+        if (ir_rung_below_hint(depth)) continue;
         for (uint32_t gens = hgcommon::IR_HOST_GENERATORS; gens <= (1u << 16); gens *= 4u) {
             const uint64_t words = hgcommon::ir_scratch_words(n_verts, n, total_occ, depth, gens);
             auto* scratch = static_cast<uint32_t*>(worker_scratch().allocate_raw(
@@ -883,7 +903,7 @@ uint64_t ir_hash_and_orbits(const SVec<SVec<VertexId>>& edge_vecs,
             booking.depth_sum += work.max_depth;
             if (r.status == hgcommon::IR_NEED_DEPTH || r.status == hgcommon::IR_NEED_GENERATORS)
                 booking.retries += 1;
-            if (r.status == hgcommon::IR_OK)    return r.hash;
+            if (r.status == hgcommon::IR_OK)    { ir_note_search(work); return r.hash; }
             if (r.status == hgcommon::IR_EMPTY) return EMPTY_STATE_CANONICAL_HASH;
             if (r.status == hgcommon::IR_NEED_DEPTH) break;
         }
@@ -1404,10 +1424,6 @@ void Hypergraph::register_quotient_transition(EventId e) {
 
 void Hypergraph::causal_edge_keys(StateId state, const EdgeId* edges, uint32_t n,
                                   CanonicalEdgeKey* out) const {
-    // Without quotient, or when orbits are unavailable (WL / non-Full canonicalization),
-    // the key is the raw EdgeId: isomorphic-but-distinct raw states must keep disjoint
-    // causal edges, and there is no automorphism collapse to account for. A 32-bit EdgeId
-    // is always below the storage map's reserved high sentinel band, so no adjustment.
     auto raw_key = [](EdgeId e) { return CanonicalEdgeKey{static_cast<uint64_t>(e)}; };
     const bool full = state_canonicalization_mode_.load(std::memory_order_acquire)
                       == StateCanonicalizationMode::Full;
