@@ -269,33 +269,40 @@ struct MatchContext {
 // matches one task completes are expanded together.
 
 // SCAN task: Find initial candidates for first pattern edge
+// Fields ordered by size so the struct has no padding: a task is copied whole into its job's
+// closure, and a copy of an object with an unwritten byte reads an indeterminate value, which
+// the model checker reported on the composed evolve run (parallel_evolution.cpp:998).
 struct ScanTaskData {
     StateId state{INVALID_ID};              // State to match in
-    uint16_t rule_index{0};                 // Which rule to match
     uint32_t step{0};                       // Evolution step
+    EdgeId produced_edges[MAX_PATTERN_EDGES]{};  // Zero-initialized
+    uint16_t rule_index{0};                 // Which rule to match
+    uint8_t num_produced{0};
     // For delta matching (only find NEW matches involving produced edges)
     bool is_delta{false};                   // If true, only match involving produced_edges
-    EdgeId produced_edges[MAX_PATTERN_EDGES]{};  // Zero-initialized
-    uint8_t num_produced{0};
 };
+static_assert(sizeof(ScanTaskData) == sizeof(StateId) + sizeof(uint32_t) + sizeof(EdgeId) * MAX_PATTERN_EDGES + 2 + 1 + 1,
+              "ScanTaskData has padding; its job copy would read indeterminate bytes");
 
 // EXPAND task: Extend partial match by one edge
 // Also carries a completed match into complete_match
 struct ExpandTaskData {
     StateId state{INVALID_ID};              // State being matched
+    uint32_t step{0};                       // Evolution step
+    EdgeId matched_edges[MAX_PATTERN_EDGES]{};  // Data edges matched so far
+    VariableBinding binding{};              // Current variable bindings
+    uint8_t match_order[MAX_PATTERN_EDGES]{};   // Pattern indices in match order
     uint16_t rule_index{0};                 // Rule being matched
     uint8_t num_pattern_edges{0};           // Total edges in pattern
-    EdgeId matched_edges[MAX_PATTERN_EDGES]{};  // Data edges matched so far
-    uint8_t match_order[MAX_PATTERN_EDGES]{};   // Pattern indices in match order
     uint8_t num_matched{0};                 // Number of edges matched
-    VariableBinding binding{};              // Current variable bindings
-    uint32_t step{0};                       // Evolution step
-
     bool is_complete() const;
     bool contains_edge(EdgeId eid) const;
     // Convert matched edges to pattern order
     void to_pattern_order(EdgeId* out) const;
 };
+static_assert(sizeof(ExpandTaskData) == sizeof(StateId) + sizeof(uint32_t) + sizeof(EdgeId) * MAX_PATTERN_EDGES +
+                                            sizeof(VariableBinding) + MAX_PATTERN_EDGES + 2 + 1 + 1,
+              "ExpandTaskData has padding; its job copy would read indeterminate bytes");
 
 // =============================================================================
 // ChildInfo for Match Forwarding (Push Model)
