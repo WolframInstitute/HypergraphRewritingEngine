@@ -40,7 +40,11 @@ enum class AffinityBackend {
 };
 
 constexpr AffinityBackend affinity_backend() {
-#if defined(__linux__)
+#if defined(HG_VERIFICATION)
+    // Under the model checker there is no CPU to bind and no /sys to read a topology from:
+    // the interpreter cannot execute the calls the Linux backend makes to find one.
+    return AffinityBackend::None;
+#elif defined(__linux__)
     return AffinityBackend::SchedSetAffinity;
 #elif defined(_WIN32)
     return AffinityBackend::SetThreadAffinityMask;
