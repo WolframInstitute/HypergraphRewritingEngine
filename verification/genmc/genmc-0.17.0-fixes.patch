@@ -470,7 +470,7 @@ index 22631de..553b75f 100644
 +	{"_ZdaPv", InternalFunctions::Free},
  };
 diff --git a/passes/passes/LLVMModule.cpp b/passes/passes/LLVMModule.cpp
-index 80ed9cd..62f7bdb 100644
+index 80ed9cd..82be15b 100644
 --- a/passes/passes/LLVMModule.cpp
 +++ b/passes/passes/LLVMModule.cpp
 @@ -11,7 +11,14 @@
@@ -488,7 +488,29 @@ index 80ed9cd..62f7bdb 100644
  #include "passes/LLIConfig.hpp"
  #include "passes/Transforms/BarrierResultCheckerPass.hpp"
  #include "passes/Transforms/BisimilarityCheckerPass.hpp"
-@@ -206,7 +213,73 @@ auto transformLLVMModule(llvm::Module &mod, ModuleInfo &MI, const LLIConfig *con
+@@ -48,6 +55,7 @@
+ #include <llvm/IR/PassManager.h>
+ #include <llvm/IR/Verifier.h>
+ #include <llvm/IRReader/IRReader.h>
++#include <llvm/Support/CommandLine.h>
+ #include <llvm/Linker/Linker.h>
+ #include <llvm/Passes/PassBuilder.h>
+ #include <llvm/Passes/PassPlugin.h>
+@@ -70,6 +78,13 @@ auto parseLLVMModule(const std::string &filename, const std::unique_ptr<llvm::LL
+ {
+ 	llvm::SMDiagnostic err;
+ 
++	/* A saved module of a large program carries block names that repeated splitting has
++	 * grown past the reader's 1024-byte default (-non-global-value-max-name-size), and the
++	 * reader refuses the file. It is told the size to accept before it opens one. */
++	auto &opts = llvm::cl::getRegisteredOptions();
++	if (auto it = opts.find("non-global-value-max-name-size"); it != opts.end())
++		it->second->addOccurrence(0, "non-global-value-max-name-size", "1048576");
++
+ 	auto mod = llvm::parseIRFile(filename, err, *ctx);
+ 	if (!mod) {
+ 		err.print(filename.c_str(), llvm::dbgs());
+@@ -206,7 +221,73 @@ auto transformLLVMModule(llvm::Module &mod, ModuleInfo &MI, const LLIConfig *con
  	fam.registerPass([&] { return BisimilarityAnalysis(); });
  	fam.registerPass([&] { return LoadAnnotationAnalysis(); });
  
@@ -563,7 +585,7 @@ index 80ed9cd..62f7bdb 100644
  	pb.registerModuleAnalyses(mam);
  	pb.registerCGSCCAnalyses(cgam);
  	pb.registerFunctionAnalyses(fam);
-@@ -310,6 +383,24 @@ void printLLVMModule(llvm::Module &mod, const std::string &out)
+@@ -310,6 +391,24 @@ void printLLVMModule(llvm::Module &mod, const std::string &out)
  #endif
  	std::error_code errs;
  	auto os = std::make_unique<llvm::raw_fd_ostream>(out.c_str(), errs, flags);
