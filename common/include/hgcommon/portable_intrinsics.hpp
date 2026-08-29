@@ -83,6 +83,10 @@ inline int popcount64(uint64_t x) {
 #if defined(_MSC_VER) && !defined(__clang__)
 #include <intrin.h>
 #define HG_RETURN_ADDRESS() _ReturnAddress()
+#elif defined(__EMSCRIPTEN__)
+// The builtin needs the offset converter at run time under Emscripten (it aborts without
+// -sUSE_OFFSET_CONVERTER); the instrument that reads it attributes nothing there.
+#define HG_RETURN_ADDRESS() ((void*)nullptr)
 #else
 #define HG_RETURN_ADDRESS() __builtin_return_address(0)
 #endif
