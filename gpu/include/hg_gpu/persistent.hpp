@@ -208,8 +208,9 @@ struct PersistentEvolveStats {
     // reserve, emit, csr, event, causal, branchial.
     uint64_t cycles_rw_sub[6] = {0, 0, 0, 0, 0, 0};
     // The canonicalization bucket's parts, in the order the kernel accumulates them:
-    // key (the exact IR hash), dedup, signature, quotient-causal, quotient-expansion. Without
-    // these the bucket reads as "canonicalization" while containing four other calls, and an
+    // the exact IR key, the event key, the quotient-causal transition registration, the
+    // expansion capture, the dedup decision. Without these the bucket reads as
+    // "canonicalization" while containing four other calls, and an
     // optimisation aimed at the bucket cannot tell which of the five it would be aiming at.
     uint64_t cycles_canon_sub[5] = {0, 0, 0, 0, 0};
 };

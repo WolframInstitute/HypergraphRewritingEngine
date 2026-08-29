@@ -595,7 +595,7 @@ __global__ void k_persistent_evolve(
     // Written in place they were five more global atomicAdds per RECORD, and the sixteen
     // counters are one 128-byte allocation, so every block's every record queued on one L2
     // line. The published totals are identical -- the same sums, added once per flush.
-    unsigned long long acc_key = 0, acc_dedup = 0, acc_sig = 0, acc_qc = 0, acc_qe = 0;
+    unsigned long long acc_irkey = 0, acc_evkey = 0, acc_qc = 0, acc_qe = 0, acc_dedup = 0;
     auto flush_cycles = [&] {
         if (threadIdx.x == 0 && phase_cycles) {
             atomicAdd(&phase_cycles[0], acc_match);
@@ -603,13 +603,13 @@ __global__ void k_persistent_evolve(
             atomicAdd(&phase_cycles[2], acc_canon);
             atomicAdd(&phase_cycles[3], acc_idle);
             atomicAdd(&phase_cycles[4], acc_wait);
-            atomicAdd(&phase_cycles[11], acc_key);
-            atomicAdd(&phase_cycles[12], acc_dedup);
-            atomicAdd(&phase_cycles[13], acc_sig);
-            atomicAdd(&phase_cycles[14], acc_qc);
-            atomicAdd(&phase_cycles[15], acc_qe);
+            atomicAdd(&phase_cycles[11], acc_irkey);
+            atomicAdd(&phase_cycles[12], acc_evkey);
+            atomicAdd(&phase_cycles[13], acc_qc);
+            atomicAdd(&phase_cycles[14], acc_qe);
+            atomicAdd(&phase_cycles[15], acc_dedup);
             acc_match = acc_rewrite = acc_canon = acc_idle = acc_wait = 0;
-            acc_key = acc_dedup = acc_sig = acc_qc = acc_qe = 0;
+            acc_irkey = acc_evkey = acc_qc = acc_qe = acc_dedup = 0;
         }
     };
 
@@ -672,7 +672,7 @@ __global__ void k_persistent_evolve(
                     const ExactHashStatus key_st =
                         state_key_device(ds, child_sid, state_mode, arena, ir_slot,
                                          ir_slot_words, h, need_ranks, qc.enabled != 0);
-                    acc_key += clock64() - sub0;
+                    acc_irkey += clock64() - sub0;
                     if (key_st != ExactHashStatus::kOk) {
                         ds.errors.record(error_kind_for(key_st));
                     } else {
@@ -714,7 +714,7 @@ __global__ void k_persistent_evolve(
                                                   ds.state_exact_hash[rec.state_id], exact,
                                                   rec.state_id, child_sid, step + 1u,
                                                   rec.rule_id, event_map);
-                            acc_dedup += clock64() - s1;
+                            acc_evkey += clock64() - s1;
                         }
 
                         // Quotient causal: register this raw event's canonical transition and
@@ -733,7 +733,7 @@ __global__ void k_persistent_evolve(
                                 qc_register_transition(ds, qc, rec.state_id, child_sid,
                                                        child_event, rec.rule_id, step,
                                                        blockIdx.x);
-                                acc_sig += clock64() - s2;
+                                acc_qc += clock64() - s2;
                             }
                             // Same event, same endpoints: the class frame's match record.
                             const uint64_t s3 = clock64();
@@ -741,7 +741,7 @@ __global__ void k_persistent_evolve(
                             // `threadIdx.x == 0`, so blockIdx is the slice.
                             qe_capture_expansion(ds, qe, rec.state_id, child_sid,
                                                  child_event, rec.rule_id, step, blockIdx.x);
-                            acc_qc += clock64() - s3;
+                            acc_qe += clock64() - s3;
                         }
 
                         if (child_step < max_steps) {
@@ -750,7 +750,7 @@ __global__ void k_persistent_evolve(
                                                                 dedup, explore_threshold_u32,
                                                                 explore_seed, child_step,
                                                                 rec.state_id);
-                            acc_qe += clock64() - s4;
+                            acc_dedup += clock64() - s4;
                         } else if (sess.enabled) {
                             // AT THE BUDGET, AND THE RUN IS CONTINUABLE. Consult dedup anyway --
                             // a duplicate needs no frontier entry, someone else's copy carries
