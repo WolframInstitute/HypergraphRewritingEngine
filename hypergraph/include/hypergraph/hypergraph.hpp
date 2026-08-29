@@ -661,11 +661,16 @@ public:
     // =========================================================================
 
     // Create a new state from edge set
+    // A state with no parent state is a root and indexes every edge it has; a derived state
+    // indexes the edges it produced and continues its chain at `parent_state` (ancestry.hpp).
     StateId create_state(
         SparseBitset&& edge_set,
         uint32_t step = 0,
         uint64_t canonical_hash = 0,
-        EventId parent_event = INVALID_ID
+        EventId parent_event = INVALID_ID,
+        StateId parent_state = INVALID_ID,
+        const EdgeId* produced = nullptr,
+        uint8_t num_produced = 0
     );
 
     // Create state from edge IDs (convenience)

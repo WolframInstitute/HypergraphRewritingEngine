@@ -13,6 +13,8 @@
 #include "hypergraph/atomic_compat.hpp"
 #include <thread>
 
+
+
 namespace HG_NAMESPACE {
 namespace engine {
 
@@ -78,39 +80,55 @@ StateId Hypergraph::create_state(
     SparseBitset&& edge_set,
     uint32_t step,
     uint64_t canonical_hash,
-    EventId parent_event
+    EventId parent_event,
+    StateId parent_state,
+    const EdgeId* produced,
+    uint8_t num_produced
 ) {
     StateId sid = counters_.alloc_state();
-    // A state with no parent event is the root of every chain that descends from it, and its
-    // edges were produced by no event: they are indexed by vertex here, once, for the ancestry
-    // walk (ancestry.hpp). Every other state's edges are reached through its parent events.
-    const RootVertexEntry* root_index = nullptr;
-    uint32_t root_index_size = 0;
-    if (parent_event == INVALID_ID) {
+    // The state's contribution to its chain, indexed by vertex once, here: every edge of a
+    // root, the produced edges of a derived state (ancestry.hpp walks the chain of these).
+    const RootVertexEntry* vertex_index = nullptr;
+    uint32_t vertex_index_size = 0;
+    const EdgeId* delta_edges = nullptr;
+    uint32_t num_delta_edges = 0;
+    auto index_edges = [&](auto&& for_each_edge) {
         uint32_t n = 0;
-        edge_set.for_each([&](EdgeId eid) { n += get_edge(eid).arity; });
-        if (n > 0) {
-            auto* entries = arena_.allocate_array<RootVertexEntry>(n);
-            uint32_t k = 0;
-            edge_set.for_each([&](EdgeId eid) {
-                const Edge& e = get_edge(eid);
-                for (uint8_t i = 0; i < e.arity; ++i) entries[k++] = RootVertexEntry{e.vertices[i], eid};
-            });
-            std::sort(entries, entries + n, [](const RootVertexEntry& x, const RootVertexEntry& y) {
-                return x.vertex != y.vertex ? x.vertex < y.vertex : x.edge < y.edge;
-            });
-            // A vertex repeated within one edge lists that edge once.
-            root_index_size = static_cast<uint32_t>(
-                std::unique(entries, entries + n, [](const RootVertexEntry& x, const RootVertexEntry& y) {
-                    return x.vertex == y.vertex && x.edge == y.edge;
-                }) - entries);
-            root_index = entries;
-        }
+        for_each_edge([&](EdgeId eid) { n += get_edge(eid).arity; });
+        if (n == 0) return;
+        auto* entries = arena_.allocate_array<RootVertexEntry>(n);
+        uint32_t k = 0;
+        for_each_edge([&](EdgeId eid) {
+            const Edge& e = get_edge(eid);
+            for (uint8_t i = 0; i < e.arity; ++i) entries[k++] = RootVertexEntry{e.vertices[i], eid};
+        });
+        std::sort(entries, entries + n, [](const RootVertexEntry& x, const RootVertexEntry& y) {
+            return x.vertex != y.vertex ? x.vertex < y.vertex : x.edge < y.edge;
+        });
+        // A vertex repeated within one edge lists that edge once.
+        vertex_index_size = static_cast<uint32_t>(
+            std::unique(entries, entries + n, [](const RootVertexEntry& x, const RootVertexEntry& y) {
+                return x.vertex == y.vertex && x.edge == y.edge;
+            }) - entries);
+        vertex_index = entries;
+    };
+    if (parent_state == INVALID_ID) {
+        index_edges([&](auto&& f) { edge_set.for_each(f); });
+    } else if (num_produced > 0) {
+        index_edges([&](auto&& f) { for (uint8_t i = 0; i < num_produced; ++i) f(produced[i]); });
+        auto* ids = arena_.allocate_array<EdgeId>(num_produced);
+        for (uint8_t i = 0; i < num_produced; ++i) ids[i] = produced[i];
+        delta_edges = ids;
+        num_delta_edges = num_produced;
     }
     // Directly construct state at slot sid using emplace_at
     states_.emplace_at(sid, arena_, sid, std::move(edge_set), step, canonical_hash, parent_event);
-    states_[sid].root_index = root_index;
-    states_[sid].root_index_size = root_index_size;
+    State& st = states_[sid];
+    st.vertex_index = vertex_index;
+    st.vertex_index_size = vertex_index_size;
+    st.delta_edges = delta_edges;
+    st.num_delta_edges = num_delta_edges;
+    st.parent_state = parent_state;
     // CRITICAL: Release fence to ensure state data is visible
     std::atomic_thread_fence(std::memory_order_release);
     return sid;
@@ -185,7 +203,8 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
     const EdgeId* incr_produced, uint8_t incr_num_produced
 ) {
     // Create the state; its canonical hash is filled in below.
-    StateId new_sid = create_state(std::move(edge_set), step, 0, parent_event);
+    StateId new_sid = create_state(std::move(edge_set), step, 0, parent_event,
+                                   incr_parent, incr_produced, incr_num_produced);
     const SparseBitset& edges = get_state(new_sid).edges;
 
     // Reported hash for None/Automatic modes: the exact invariant when event

@@ -435,20 +435,20 @@ $B_d$ & 1 & 2 & 5 & 15 & 52 & 203 & 877 & 4140 \\
 A state is a view into the shared edge pool (Section~\ref{sec:storage}), and its matching asks two
 questions of that view: which of its edges contain a given vertex, once a pattern variable is bound,
 and which of its edges carry a compatible signature, for the seed. Both are answered from the
-state's ancestry. Every edge of a state was produced by exactly one event on the state's chain of
-parent events, or belongs to the root state at the end of that chain, whose edges no event
-produced. The edges of a state that contain $v$ are therefore
+state's ancestry. Every edge of a state was brought by exactly one state on its chain of parent
+states: the root brought all of its edges, and each derived state brought the edges its event
+produced. Each state indexes its own contribution by vertex once, when it is created, so the edges
+of $S$ that contain $v$ are
 \begin{equation}
-    \{e \in \text{produced}(\epsilon) : v \in e,\ e \in S\}_{\epsilon \in \text{chain}(S)}
-    \;\cup\; \{e \in \text{Root}(S)[v] : e \in S\},
+    \bigcup_{A \in \text{chain}(S)} \{e \in \text{Contrib}(A)[v] : e \in S\},
 \end{equation}
-where $\text{Root}(S)[v]$ is the root's own incidence list for $v$, built once when the root is
-created, and membership $e \in S$ excludes an edge that a later event on the chain consumed. A
-query costs the chain's length times the few edges each event produced, and nearly every edge it
-tests is in the state; nothing is maintained per edge when an edge is created. A global index over
-the whole evolution's edges, filtered per state, answers the same question at a cost proportional
-to every edge ever created at $v$ in any state, of which a state at depth seven holds under two
-percent.
+where $\text{Contrib}(A)[v]$ is $A$'s sorted incidence list for $v$ and membership $e \in S$
+excludes an edge that a later event on the chain consumed. A query costs the chain's length times
+one search of a small sorted array, nearly every edge it tests is in the state, the index of a
+derived state is the size of its event's right-hand side, and nothing is maintained per edge when
+an edge is created. A global index over the whole evolution's edges, filtered per state, answers
+the same question at a cost proportional to every edge ever created at $v$ in any state, of which
+a state at depth seven holds under two percent.
 
 \subsection{Matching Algorithm}
 \label{sec:matching-algorithm}

@@ -400,10 +400,10 @@ TEST(AncestryCandidates, DerivedStateWalksItsChain) {
     EdgeId e3 = hg.create_edge({3, 1});
     EdgeId consumed[] = {e0};
     EdgeId produced[] = {e2, e3};
-    StateId s1 = hg.create_state({e1, e2, e3});
-    EventId ev = hg.create_event(s0, s1, 0, consumed, 1, produced, 2).event_id;
-    // The state was created before its event existed: bind it to the event.
-    hg.get_state(s1).parent_event = ev;
+    SparseBitset child_edges;
+    for (EdgeId e : {e1, e2, e3}) child_edges.set(e, hg.arena());
+    StateId s1 = hg.create_state(std::move(child_edges), 1, 0, INVALID_ID, s0, produced, 2);
+    hg.create_event(s0, s1, 0, consumed, 1, produced, 2);
     const State& st1 = hg.get_state(s1);
     AncestryCandidates cands{&hg, s1, &st1.edges};
 

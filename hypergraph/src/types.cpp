@@ -143,8 +143,11 @@ State::State(StateId id_, SparseBitset&& edge_set, uint32_t step_,
     , canonical_id(canonical == INVALID_ID ? id_ : canonical)
     , explore_depth(INVALID_ID)
     , expanded(0)
-    , root_index(nullptr)
-    , root_index_size(0)
+    , vertex_index(nullptr)
+    , vertex_index_size(0)
+    , delta_edges(nullptr)
+    , num_delta_edges(0)
+    , parent_state(INVALID_ID)
 {}
 
 State::State()
@@ -156,8 +159,11 @@ State::State()
     , canonical_id(INVALID_ID)
     , explore_depth(INVALID_ID)
     , expanded(0)
-    , root_index(nullptr)
-    , root_index_size(0)
+    , vertex_index(nullptr)
+    , vertex_index_size(0)
+    , delta_edges(nullptr)
+    , num_delta_edges(0)
+    , parent_state(INVALID_ID)
 {}
 
 State::State(State&& other) noexcept
@@ -169,8 +175,11 @@ State::State(State&& other) noexcept
     , canonical_id(other.canonical_id)
     , explore_depth(other.explore_depth)
     , expanded(other.expanded)
-    , root_index(other.root_index)
-    , root_index_size(other.root_index_size)
+    , vertex_index(other.vertex_index)
+    , vertex_index_size(other.vertex_index_size)
+    , delta_edges(other.delta_edges)
+    , num_delta_edges(other.num_delta_edges)
+    , parent_state(other.parent_state)
 {
     other.id = INVALID_ID;
 }
@@ -185,8 +194,11 @@ State& State::operator=(State&& other) noexcept {
         canonical_id = other.canonical_id;
         explore_depth = other.explore_depth;
         expanded = other.expanded;
-        root_index = other.root_index;
-        root_index_size = other.root_index_size;
+        vertex_index = other.vertex_index;
+        vertex_index_size = other.vertex_index_size;
+        delta_edges = other.delta_edges;
+        num_delta_edges = other.num_delta_edges;
+        parent_state = other.parent_state;
         other.id = INVALID_ID;
     }
     return *this;
