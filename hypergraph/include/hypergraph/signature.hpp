@@ -30,8 +30,11 @@ using hgcommon::MAX_ARITY;
 //   Edge {a, b, a} → Signature [0, 1, 0] (positions 0,2 same; position 1 different)
 
 struct EdgeSignature {
-    uint8_t arity;
-    uint8_t pattern[MAX_ARITY];  // Vertex repetition pattern
+    // Value-initialised, as the device port's is (hg_gpu/edge_signature.hpp): a signature is
+    // copied whole, and the bytes past `arity` are then a defined value rather than
+    // indeterminate ones every copy reads.
+    uint8_t arity = 0;
+    uint8_t pattern[MAX_ARITY] = {};  // Vertex repetition pattern
 
     // Compute signature from edge vertices
     static EdgeSignature from_edge(const VertexId* vertices, uint8_t arity);

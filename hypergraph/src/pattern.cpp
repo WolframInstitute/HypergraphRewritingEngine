@@ -145,6 +145,10 @@ RewriteRule::RewriteRule()
     , num_rhs_vars(0)
     , num_new_vars(0)
 {
+    // The whole object representation is defined, padding included: a rule is copied whole
+    // (RuleBuilder::build, the rule table), and a copy of an object with an unwritten byte
+    // reads an indeterminate value, which the model checker reports.
+    std::memset(static_cast<void*>(this), 0, sizeof(*this));
     for (uint8_t i = 0; i < MAX_PATTERN_EDGES; ++i) match_order[i] = i;
 }
 
