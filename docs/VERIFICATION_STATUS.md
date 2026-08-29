@@ -59,11 +59,18 @@ what `main` reaches:
 |---|---|---|
 | construct a `Hypergraph` | 5,452 | verifies, 118.7s |
 | the same, with `HG_SEGMENTED_ARRAY_MAX_SEGMENTS=8` and `HG_CONCURRENT_MAP_INITIAL_CAPACITY=16` | 5,452 | verifies, 4.9s |
-| construct the evolution engine, two workers started (`engine_construct`) | -- | verifies, 2 executions, 1.5s |
-| add a rule (`engine_rule`) | 19,477 | verifies, 2 executions, 14.9s |
-| reach `evolve()` | 111,538 | the checker's transformation phase, not its interpreter, is the ceiling: 18 GB of resident memory before the first execution, on a 19 GB box |
+| construct the evolution engine, two workers started (`engine_construct`) | 118,165 | its end is reachable at `--unroll=16384` (calibration arm fires at event 54,611); the exhaustive verdict at that bound is being computed (1.2 executions/s, 468 blocked per 10 complete at the start) |
+| add a rule (`engine_rule`) | 19,477 | its end is reachable at `--unroll=16384` (event 136,431); the property arm at that bound stops in a checker segfault under investigation |
+| reach `evolve()` (`engine_evolve`) | 118,165 | the transform is ~60 min on the box and ~100 min locally (once per bound, saved as bitcode); the calibration transform at `--unroll=16384` is running on both |
 | construct a `JobSystem` | 2,659 | verifies |
 | `JobSystem::start()` | 8,952 | verifies, inside `engine_construct` |
+
+A bound has to be shown to reach a rung's end before its verdict means anything: the checker
+kills a thread that exceeds `--unroll` and counts the execution complete with no error, and at
+`--unroll=2` the main thread was killed inside construction after 1,237 events, before any
+worker existed (the execution graph of the saved live-shape module). Every rung carries
+`-DHG_HARNESS_CALIBRATE_END=1`, an assertion that fails at its end, and a bound's verdict is
+reported only alongside the calibration that reaches it.
 
 The three rows that used to stop were the interpreter's materialisation phase, and each was one
 global it could not build. What lifted them is a pipeline of four rewrites, each applied to the
