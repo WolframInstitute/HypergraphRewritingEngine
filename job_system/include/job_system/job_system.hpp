@@ -14,6 +14,9 @@
 #ifndef HG_JOB_INJECTOR_CAPACITY
 #define HG_JOB_INJECTOR_CAPACITY 32768
 #endif
+#if defined(HG_VERIFICATION)
+#include <genmc.h>  // __VERIFIER_thread_create_symmetric
+#endif
 #include <hgcommon/park.hpp>
 #include <hgcommon/rendezvous.hpp>
 #include <hgcommon/park_gate.hpp>
@@ -72,24 +75,39 @@ private:
     using JobRaw = Job<JobType>*;
 
     struct WorkerData;
-    struct SpawnArgs { JobSystem* sys; WorkerData* worker; size_t index; };
 #if defined(HG_VERIFICATION)
+    // The checker's symmetry reduction treats threads as interchangeable only when they run
+    // the same function with the same argument and nothing touches memory between the spawn
+    // calls. Every worker is therefore started on run_worker with the JobSystem as its only
+    // argument and claims its index from spawn_claim_ on entry; the thread ids stay in
+    // registers until the last worker is running and are stored afterwards.
     struct WorkerThread {
         pthread_t handle{};
         bool live = false;
-        SpawnArgs args{};
-        static void* run(void* p) {
-            auto* a = static_cast<SpawnArgs*>(p);
-            a->sys->worker_loop(a->worker, a->index);
-            return nullptr;
-        }
-        void spawn(JobSystem* sys, WorkerData* worker, size_t index) {
-            args = SpawnArgs{sys, worker, index};
-            pthread_create(&handle, nullptr, &run, &args);
-            live = true;
-        }
         void join() { if (live) { pthread_join(handle, nullptr); live = false; } }
     };
+    static void* run_worker(void* p) {
+        auto* sys = static_cast<JobSystem*>(p);
+        const size_t index = sys->spawn_claim_.fetch_add(1, std::memory_order_relaxed);
+        sys->worker_loop(sys->workers_[index].get(), index);
+        return nullptr;
+    }
+    std::atomic<size_t> spawn_claim_{0};
+    static constexpr size_t kMaxVerifiedWorkers = 4;
+    void spawn_workers() {
+        const size_t n = workers_.size();
+        if (n > kMaxVerifiedWorkers) std::abort();
+        spawn_claim_.store(0, std::memory_order_relaxed);
+        const pthread_t t0 = __VERIFIER_thread_create(nullptr, &run_worker, this);
+        const pthread_t t1 = n > 1 ? __VERIFIER_thread_create_symmetric(nullptr, &run_worker, this, t0) : t0;
+        const pthread_t t2 = n > 2 ? __VERIFIER_thread_create_symmetric(nullptr, &run_worker, this, t1) : t1;
+        const pthread_t t3 = n > 3 ? __VERIFIER_thread_create_symmetric(nullptr, &run_worker, this, t2) : t2;
+        const pthread_t ids[kMaxVerifiedWorkers] = {t0, t1, t2, t3};
+        for (size_t i = 0; i < n; ++i) {
+            workers_[i]->thread.handle = ids[i];
+            workers_[i]->thread.live = true;
+        }
+    }
 #else
     struct WorkerThread {
         std::thread handle;
@@ -804,9 +822,15 @@ public:
         ensure_default_cpu_order();               // before the map: the map is derived from it
         build_domain_map();                       // before any worker exists: parks index it
         build_cache_peers();                      // before any worker exists: see peer_begin_
+#if defined(HG_VERIFICATION)
+        spawn_workers();
+        for (size_t i = 0; i < workers_.size(); ++i) {
+            auto* worker = workers_[i].get();
+#else
         for (size_t i = 0; i < workers_.size(); ++i) {
             auto* worker = workers_[i].get();
             worker->thread.spawn(this, worker, i);
+#endif
         }
         // Wait until every worker has passed its binding attempt, so pin_failures() is a
         // settled count when start() returns rather than a snapshot racing worker startup --

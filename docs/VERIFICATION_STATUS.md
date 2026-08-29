@@ -59,7 +59,7 @@ what `main` reaches:
 |---|---|---|
 | construct a `Hypergraph` | 5,452 | verifies, 118.7s |
 | the same, with `HG_SEGMENTED_ARRAY_MAX_SEGMENTS=8` and `HG_CONCURRENT_MAP_INITIAL_CAPACITY=16` | 5,452 | verifies, 4.9s |
-| construct the evolution engine, two workers started (`engine_construct`) | 118,165 | its end is reachable at `--unroll=1024` under the harness sizes (calibration arm at event 3,851); the exhaustive verdict at that bound is being computed |
+| construct the evolution engine, two workers started (`engine_construct`) | 118,165 | **verifies at `--unroll=1024`: 442 complete executions, no errors** (884 with `--disable-sr`); its end is reachable at that bound (calibration arm at event 3,851). Before the empty-pop change the same exploration passed 252,000 executions without finishing. |
 | add a rule (`engine_rule`) | 19,477 | its end is reachable at `--unroll=1024` (event 9,083); the exhaustive verdict at that bound is being computed |
 | two rewrites under quotient reconstruction through the real `Rewriter::apply` (`quotient_capture_composition`) | engine linked | its end is reachable at `--unroll=2048` (calibration arm at event 16,761; at 1024 a copy loop is killed first) -- the first composed rewrite run to reach its end; the exhaustive verdict at that bound is being computed (1.7 executions/s, 49 k events each) |
 | reach `evolve()` (`engine_evolve`) | 118,165 | the transform is ~60 min on the box (once per bound, saved as bitcode); the default and live arms' calibrations at `--unroll=2048` are running there |
