@@ -114,6 +114,29 @@ TLA+, 7 configurations, all matching their declared verdict:
 The `Broken` configurations are what make the rest evidence: a model that cannot report a
 violation has not been shown to be able to detect one.
 
+## A lookup overtaken by two growths (found by the checker, 2026-08-28/29)
+
+`ConcurrentMap::lookup` answered ABSENT for a key settled before the call when two growths
+overlapped: the walk loaded head T1, a grower installed T2, a migrator carried T0's entries
+into T2 (the head as it stood at carry time) and drained T0; the walk's snapshot read T0 as
+drained and T1 as not, skipped T0, probed T1 -- which never held the key -- and stopped. The
+`drained` promise is "a settled copy strictly above", and "above" can be a table the walk
+never loaded. The engine's forwarding chain (`state_parent_`, `state_matches_`), the inverted
+index and the dedup map are this map; every lost event of the live nondeterminism failures
+sat at the last expanded level, where those maps' last growth lands, and the engine-side
+witness (an index lookup missing a bound vertex once and finding it on immediate retry, at a
+map size near a growth threshold) named the same window from inside a firing run.
+
+`verification/genmc/map_lookup_during_double_growth.cpp` -- one reader of a settled key, two
+growers whose growths overlap -- reports the violation in 7,508 executions (9 s) against the
+walk as it was. The one-grower harness (`map_lookup_during_growth`) cannot reach it: with one
+grower the growths never overlap. The rule that closes it: an absent answer is final only if
+`table_` is still the head the walk started from; otherwise the walk restarts from the head it
+now loads. The same shape on the map's claim (`map_insert_existing_during_double_growth`) and
+on the key set (`key_set_contains_during_double_growth`, 4,020 executions;
+`key_set_insert_existing_during_double_growth`, 305,072) -- the key set already re-checks the
+head after an absent verdict -- is what "searching for the class" means here.
+
 ## What is NOT covered, and why each matters
 
 **The DEVICE's kernel composition.** The persistent kernel (`gpu/src/persistent.cu`,

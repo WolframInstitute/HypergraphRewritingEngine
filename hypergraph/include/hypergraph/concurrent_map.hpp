@@ -423,12 +423,31 @@ public:
     }
 
     // Lookup value by key
+    // A WALK STARTS FROM THE HEAD IT LOADED, AND A GROWTH CAN OVERTAKE IT. `drained` promises
+    // every settled key of a table a settled copy STRICTLY ABOVE it -- in the head as it stood
+    // when the carry ran, which can be a table installed AFTER the head this walk loaded. A
+    // lookup that loaded head T1, while a grower installed T2 and another carried T0's entries
+    // into T2 and drained T0, snapshots T0 as drained and T1 as not: it skips T0, probes T1
+    // (which never held the key) and answers absent for a key settled since before the call.
+    // Checked rather than argued: verification/genmc/map_lookup_during_double_growth.cpp
+    // reports exactly that execution without the restart below.
+    //
+    // THE RULE: an absent answer is final only if table_ is still the head the walk started
+    // from. table_ only advances, so equality means no growth was installed during the walk,
+    // every carry the walk observed as drained targeted a table at or below its start, and
+    // that table was probed (a drained one hands over to a settled copy at or below the head
+    // by the same argument, inductively). Otherwise the walk restarts from the head it now
+    // loads, which the drain's release orders after the install of the table the copies went
+    // to. Restarts are bounded by the growths that overtake the call.
     std::optional<V> lookup(K key) const {
-        Table* table = table_.load(std::memory_order_acquire);
-        // Read before the probe, which is what makes the skip sound; see drive_at_head.
-        if (table->chain_clear.load(std::memory_order_acquire))
-            return lookup_in_table(table, key);
-        return lookup_in_chain(table, key);
+        for (;;) {
+            Table* table = table_.load(std::memory_order_acquire);
+            // Read before the probe, which is what makes the skip sound; see drive_at_head.
+            auto r = table->chain_clear.load(std::memory_order_acquire) ? lookup_in_table(table, key)
+                                                                        : lookup_in_chain(table, key);
+            if (r.has_value()) return r;
+            if (table_.load(std::memory_order_acquire) == table) return std::nullopt;
+        }
     }
 
     // Retained spelling of lookup, for the same reason as insert_if_absent_waiting.
