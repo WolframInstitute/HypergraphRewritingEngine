@@ -117,11 +117,18 @@ count) and each completed execution (count, events in it, elapsed, rate), and a 
 prints every `HG_GENMC_HEARTBEAT` seconds (30 unset) what the checker is on at that moment:
 during the transformation the pass, the function it is on, that function's instruction count
 and the seconds spent on it; during exploration the executions completed and blocked, the
-execution-stack depth, the revisits still queued, the instructions interpreted in the current
-execution and in total, and the rate. The checker has no verbosity in a release build; a pass
-that sits on one function for an hour, or an execution that interprets millions of
-instructions, produces no per-pass or per-execution line, and the heartbeat is what says
-whether it is moving.
+execution-stack depth, the revisits still queued, the instructions interpreted since the last
+completed execution and in total, the rate, the executions STARTED (each replay of a revisit is
+one) and the instructions each thread has interpreted since the last completion. With
+`HG_GENMC_PROFILE=1` every 4096th interpreted instruction is attributed to its function and,
+under `HG_GENMC_DEBUG_INFO=1`, its source line, and the top eight are printed in the heartbeat
+and at exit. The checker has no verbosity in a release build; a pass that sits on one function
+for an hour, or an execution that interprets millions of instructions, produces no per-pass or
+per-execution line, and the heartbeat is what says whether it is moving. What the counts
+answered on the composed engine: `engine_construct` at `--unroll=16384` reached its first
+completed execution after 453 starts and 99 M instructions, all but 0.2 M of them on the main
+thread -- the exploration was replays of the construction prefix -- and the profile named the
+zero-fills of the engine, hypergraph and rule objects that the size knobs then shrank.
 
 What the upstream tracker says about each, checked 2026-08-28: #49 is the thread-local
 aggregate limitation `HG_THREAD_LOCAL` works around; #60 is about LKMM's `cmpxchg` wrappers,
