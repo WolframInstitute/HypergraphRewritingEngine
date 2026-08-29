@@ -20,6 +20,9 @@
 //                               step: the middle rung between the default and the live shape.
 //                               Measured 2026-08-29: the live shape's first execution did not
 //                               complete in 23 minutes of exploration at --unroll=2048.
+//   -DHG_EVOLVE_TWO_STEP_CANON=1 two workers, two steps, Full canonicalisation, the two-edge
+//                               rule: forwarding and delta matching under the canonicaliser and
+//                               the dedup rendezvous. 3 events, 4 raw states, 3 canonical.
 //   -DHG_EVOLVE_LIVE_SHAPE=1    the shape of the live nondeterminism failures (cycle4-automorphic
 //                               at 16 threads, Full canonicalisation): THREE workers, the
 //                               two-edge rule {0,1},{1,2} -> {0,1},{1,3},{3,2}, a two-edge path,
@@ -81,6 +84,21 @@ int main() {
     e.evolve(init, 1);
     assert(e.num_events() == 1);
     assert(g.num_states() == 2);
+#elif defined(HG_EVOLVE_TWO_STEP_CANON)
+    // Two workers, TWO steps, Full canonicalisation, the two-edge rule: forwarding, delta
+    // matching, the canonicaliser and the dedup rendezvous on one run. Step 1: one match, one
+    // child (the path 0-1-3-2). Step 2: two matches on that child, two grandchildren that are
+    // both the five-vertex path, so the canonical dedup merges them. 3 events, 4 raw states,
+    // 3 canonical.
+    g.set_state_canonicalization_mode(hg::engine::StateCanonicalizationMode::Full);
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
+        .lhs({0, 1}).lhs({1, 2}).rhs({0, 1}).rhs({1, 3}).rhs({3, 2}).build();
+    hg::engine::ParallelEvolutionEngine e(&g, 2);
+    e.add_rule(rule);
+    std::vector<std::vector<hg::engine::VertexId>> init = {{0, 1}, {1, 2}};
+    e.evolve(init, 2);
+    assert(e.num_events() == 3);
+    assert(g.num_states() == 4);
 #elif defined(HG_EVOLVE_LIVE_SHAPE)
     g.set_state_canonicalization_mode(hg::engine::StateCanonicalizationMode::Full);
     hg::engine::RewriteRule rule = hg::engine::make_rule(0)
