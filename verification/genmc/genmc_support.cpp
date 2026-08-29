@@ -48,6 +48,20 @@ int __cxa_atexit(void (*)(void*), void*, void*) { return 0; }
 // std::this_thread::yield() is this call. A yield is a scheduling hint with no memory
 // semantics; under the checker every interleaving is explored regardless, so it is nothing.
 int sched_yield() noexcept { return 0; }
+// llvm.memmove has no promotion in the checker (memcpy and memset have), so the interpreter
+// lowers it to this libcall; a definition in the module is what it then executes. Overlap-safe:
+// the copy runs backwards when the destination starts inside the source.
+void* memmove(void* dst, const void* src, std::size_t n) noexcept {
+    auto* d = static_cast<unsigned char*>(dst);
+    const auto* s = static_cast<const unsigned char*>(src);
+    if (d == s || n == 0) return dst;
+    if (d < s || d >= s + n) {
+        for (std::size_t i = 0; i < n; ++i) d[i] = s[i];
+    } else {
+        for (std::size_t i = n; i > 0; --i) d[i - 1] = s[i - 1];
+    }
+    return dst;
+}
 
 }  // extern "C"
 
