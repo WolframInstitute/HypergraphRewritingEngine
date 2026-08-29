@@ -28,10 +28,18 @@ index 95fe963..38a33b4 100644
  }
  
 diff --git a/genmc/genmc/Execution/ExecutionGraph.cpp b/genmc/genmc/Execution/ExecutionGraph.cpp
-index 9131b56..1da6fca 100644
+index 9131b56..6172024 100644
 --- a/genmc/genmc/Execution/ExecutionGraph.cpp
 +++ b/genmc/genmc/Execution/ExecutionGraph.cpp
-@@ -28,7 +28,15 @@
+@@ -12,6 +12,7 @@
+  */
+ 
+ #include "genmc/Execution/ExecutionGraph.hpp"
++#include "genmc/Support/HgProgress.hpp"
+ #include "genmc/Execution/Consistency/ConsistencyChecker.hpp"
+ 
+ #include <iostream>
+@@ -28,7 +29,38 @@
  
  	/* Special case for initializer */
  	if (lab->getPos().isInitializer()) {
@@ -41,8 +49,31 @@ index 9131b56..1da6fca 100644
 +		 * Reported with the address, where an internal check named nothing. */
 +		if (haveNAs_ && access.addr.isDynamic()) {
 +			std::cerr << "Read of uninitialised heap memory during value resolution: address "
-+				  << access.addr.get() << " width " << access.size.get() << " at event ("
-+				  << lab->getPos().thread << ", " << lab->getPos().index << ")\n";
++				  << access.addr.get() << " width " << access.size.get()
++				  << " reader instruction "
++				  << hgprog::siteName(hgprog::state().curInst.load(std::memory_order_relaxed))
++				  << "\n";
++			if (hgprog::state().stackDump)
++				std::cerr << "  reader's frames, innermost first:\n" << hgprog::state().stackDump();
++			/* Every write in the graph within 32 bytes of the address, so the object the
++			 * reader holds can be told from one that was never written there. */
++			std::cerr << "  writes within 32 bytes of the address:\n";
++			bool covered = false;
++			for (const auto &l : labels()) {
++				const auto *w = genmc::dyn_cast<WriteLabel>(&l);
++				if (!w) continue;
++				const auto a = w->getAddr().get(), b = access.addr.get();
++				const auto wa = w->getSize().get(), wb = access.size.get();
++				if (a + 32 < b || a > b + 32) continue;
++				if (a <= b && b + wb <= a + wa && (a != b || wa != wb)) covered = true;
++				std::cerr << "    (" << w->getPos().thread << ", " << w->getPos().index
++					  << ") addr " << a << " width " << wa << "\n";
++			}
++			if (covered)
++				std::cerr << "  The read lies inside a wider write: a mixed-size access the "
++					     "checker does not resolve, not a read of unwritten memory. "
++					     "The write is a copy promoted at alignment width; see "
++					     "PromoteMemIntrinsicPass.\n";
 +			ERROR("Read of uninitialised heap memory during value resolution\n");
 +		}
  		auto val = access.addr.isDynamic() ? SVal(0) : getInitVal(access);
@@ -62,10 +93,10 @@ index b869518..ccea4dc 100644
  
 diff --git a/genmc/genmc/Support/HgProgress.hpp b/genmc/genmc/Support/HgProgress.hpp
 new file mode 100644
-index 0000000..9f2df81
+index 0000000..fa2d96a
 --- /dev/null
 +++ b/genmc/genmc/Support/HgProgress.hpp
-@@ -0,0 +1,361 @@
+@@ -0,0 +1,364 @@
 +/*
 + * Progress reporting for long runs (HG_GENMC_PROGRESS). A heartbeat thread prints, every
 + * HG_GENMC_HEARTBEAT seconds (30 when unset), what the checker is doing RIGHT NOW: during the
@@ -77,6 +108,7 @@ index 0000000..9f2df81
 +#pragma once
 +
 +#include <atomic>
++#include <functional>
 +#include <cmath>
 +#include <cstdio>
 +#include <string>
@@ -131,8 +163,10 @@ index 0000000..9f2df81
 +	std::atomic<uint64_t> starts{0};
 +	static constexpr size_t kThreads = 64;
 +	std::atomic<uint64_t> threadInsts[kThreads] = {};
-+	// The instruction the interpreter is executing.
++	// The instruction the interpreter is executing, and the interpreter's own account of the
++	// executing thread's call stack (set by the interpreter; empty until it runs).
 +	std::atomic<const llvm::Instruction *> curInst{nullptr};
++	std::function<std::string()> stackDump;
 +	// Choice attribution (estimation mode). The state-space estimate of an execution is the
 +	// product, over its reads and writes, of the number of alternatives each one has; every
 +	// alternative set larger than one is booked here against the site of the instruction
@@ -643,7 +677,7 @@ index 4866e5e..d00da8a 100644
  	void add(auto &&item) { wlist_.emplace_back(std::move(item)); }
  
 diff --git a/lli/Runtime/Execution.cpp b/lli/Runtime/Execution.cpp
-index fe659e6..e2342df 100644
+index fe659e6..5f2b93c 100644
 --- a/lli/Runtime/Execution.cpp
 +++ b/lli/Runtime/Execution.cpp
 @@ -31,6 +31,7 @@
@@ -700,7 +734,7 @@ index fe659e6..e2342df 100644
  void Interpreter::callMutexInit(Function *F, const std::vector<GenericValue> &ArgVals,
  				const std::unique_ptr<EventDeps> &specialDeps)
  {
-@@ -3604,14 +3627,59 @@ void Interpreter::runAtExitHandlers()
+@@ -3604,14 +3627,74 @@ void Interpreter::runAtExitHandlers()
  	setProgramState(oldState);
  }
  
@@ -709,13 +743,15 @@ index fe659e6..e2342df 100644
 +	if (!I)
 +		return "?";
 +	std::string site = I->getFunction() ? I->getFunction()->getName().str() : "?";
-+	if (const auto &loc = I->getDebugLoc()) {
-+		/* The line is the callee's after inlining, so the file is named with it. */
++	/* After inlining the location is the callee's; the inlined-at chain leads back out to
++	 * the caller's line, and every frame is named, innermost first. */
++	for (const llvm::DILocation *loc = I->getDebugLoc().get(); loc; loc = loc->getInlinedAt()) {
 +		std::string file = loc->getFilename().str();
 +		const auto slash = file.find_last_of('/');
 +		if (slash != std::string::npos)
 +			file = file.substr(slash + 1);
-+		site += " " + file + ":" + std::to_string(loc.getLine());
++		site += (loc == I->getDebugLoc().get() ? " " : " <- ") + file + ":" +
++			std::to_string(loc->getLine());
 +	}
 +	return site;
 +}
@@ -740,6 +776,19 @@ index fe659e6..e2342df 100644
  void Interpreter::run()
  {
 +	hgRegisterLastInstructionReport();
++	/* The executing thread's frames, innermost first, for the reports raised below the
++	 * interpreter: each frame is named by the instruction it is at. */
++	hgprog::state().stackDump = [this]() {
++		std::string out;
++		const auto &stack = ECStack();
++		for (size_t i = stack.size(); i-- > 0;) {
++			const llvm::Instruction *I = stack[i].CurInst == stack[i].CurBB->end()
++							     ? nullptr
++							     : &*stack[i].CurInst;
++			out += "    " + hgprog::siteName(I) + "\n";
++		}
++		return out;
++	};
  	auto tid = driver->scheduleNext(dynState.globalInstructions);
  	while (std::holds_alternative<int>(tid)) {
  		scheduleThread(std::get<int>(tid));
@@ -889,7 +938,7 @@ index 22631de..553b75f 100644
 +	{"_ZdaPv", InternalFunctions::Free},
  };
 diff --git a/passes/passes/LLVMModule.cpp b/passes/passes/LLVMModule.cpp
-index 80ed9cd..82be15b 100644
+index 80ed9cd..a2c1ac6 100644
 --- a/passes/passes/LLVMModule.cpp
 +++ b/passes/passes/LLVMModule.cpp
 @@ -11,7 +11,14 @@
@@ -1004,7 +1053,31 @@ index 80ed9cd..82be15b 100644
  	pb.registerModuleAnalyses(mam);
  	pb.registerCGSCCAnalyses(cgam);
  	pb.registerFunctionAnalyses(fam);
-@@ -310,6 +391,24 @@ void printLLVMModule(llvm::Module &mod, const std::string &out)
+@@ -226,9 +307,9 @@ auto transformLLVMModule(llvm::Module &mod, ModuleInfo &MI, const LLIConfig *con
+ 		basicOptsMGR.addPass(FunctionInlinerPass());
+ 	{
+ 		llvm::FunctionPassManager fpm;
+-		/* Run after the inliner because it might generate new memcpys */
+-		fpm.addPass(PromoteMemIntrinsicPass());
+-		fpm.addPass(IntrinsicLoweringPass());
++		/* Run after the inliner because it might generate new memcpys. Typed operands only
++		 * here; the opaque ones wait for SROA and mem2reg below. */
++		fpm.addPass(PromoteMemIntrinsicPass(/*lowerOpaque=*/false));
+ 		if (conf->castElimination)
+ 			fpm.addPass(EliminateCastsPass());
+ #if LLVM_VERSION_MAJOR < 14
+@@ -239,6 +320,10 @@ auto transformLLVMModule(llvm::Module &mod, ModuleInfo &MI, const LLIConfig *con
+ 		fpm.addPass(SROAPass(SROAOptions::PreserveCFG));
+ #endif
+ 		fpm.addPass(PromotePass()); // Mem2Reg
++		/* Now that closure fields and pointer slots are the allocas they held, the copies
++		 * that were opaque above are typed; what is still opaque is lowered to a loop. */
++		fpm.addPass(PromoteMemIntrinsicPass(/*lowerOpaque=*/true));
++		fpm.addPass(IntrinsicLoweringPass());
+ 		basicOptsMGR.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(fpm)));
+ 	}
+ 	basicOptsMGR.addPass(DeadArgumentEliminationPass());
+@@ -310,6 +395,24 @@ void printLLVMModule(llvm::Module &mod, const std::string &out)
  #endif
  	std::error_code errs;
  	auto os = std::make_unique<llvm::raw_fd_ostream>(out.c_str(), errs, flags);
@@ -1234,7 +1307,7 @@ index d49a945..45ae518 100644
  	return changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
  }
 diff --git a/passes/passes/Transforms/PromoteMemIntrinsicPass.cpp b/passes/passes/Transforms/PromoteMemIntrinsicPass.cpp
-index b31c6cd..06cd5f9 100644
+index b31c6cd..efaed51 100644
 --- a/passes/passes/Transforms/PromoteMemIntrinsicPass.cpp
 +++ b/passes/passes/Transforms/PromoteMemIntrinsicPass.cpp
 @@ -23,6 +23,10 @@
@@ -1576,7 +1649,7 @@ index b31c6cd..06cd5f9 100644
  auto PromoteMemIntrinsicPass::run(Function &F, FunctionAnalysisManager &FAM) -> PreservedAnalyses
  {
  	/* Locate mem intrinsics of interest */
-@@ -402,14 +634,43 @@ auto PromoteMemIntrinsicPass::run(Function &F, FunctionAnalysisManager &FAM) ->
+@@ -402,14 +634,45 @@ auto PromoteMemIntrinsicPass::run(Function &F, FunctionAnalysisManager &FAM) ->
  	auto modified = false;
  
  	modified |= lowerFortifiedCalls(F);
@@ -1603,6 +1676,8 @@ index b31c6cd..06cd5f9 100644
 +		const bool opaqueSet = MS && !isPromotableMemIntrinsicOperand(MS->getDest()) &&
 +				       !(constLen && isa<ConstantInt>(MS->getValue()));
 +		if (isa<MemMoveInst>(MI) || !constLen || opaqueCpy || opaqueSet) {
++			if (!lowerOpaque_)
++				continue; /* the second instance, after SROA and mem2reg */
 +			if (MC && MC->getSourceAddressSpace() != MC->getDestAddressSpace())
 +				continue;
 +			modified |= promoteRuntimeLength(MI, promoted);
@@ -1624,6 +1699,28 @@ index b31c6cd..06cd5f9 100644
 +	}
  	return modified ? PreservedAnalyses::none() : PreservedAnalyses::all();
  }
+diff --git a/passes/passes/Transforms/PromoteMemIntrinsicPass.hpp b/passes/passes/Transforms/PromoteMemIntrinsicPass.hpp
+index 4cb68da..6fb61ec 100644
+--- a/passes/passes/Transforms/PromoteMemIntrinsicPass.hpp
++++ b/passes/passes/Transforms/PromoteMemIntrinsicPass.hpp
+@@ -25,7 +25,17 @@ using namespace llvm;
+ 
+ class PromoteMemIntrinsicPass : public PassInfoMixin<PromoteMemIntrinsicPass> {
+ public:
++	/* The pass runs twice. The first instance promotes the intrinsics whose operands name a
++	 * type and leaves the rest in place; the second, after SROA and mem2reg have folded
++	 * closure fields and pointer slots into the allocas they held, promotes what became
++	 * typed and lowers whatever is still opaque to a loop at the intrinsic's alignment. A
++	 * copy lowered at alignment width before that folding is read back at its fields'
++	 * widths, and a read inside a wider write is one the checker cannot resolve. */
++	explicit PromoteMemIntrinsicPass(bool lowerOpaque = true) : lowerOpaque_(lowerOpaque) {}
+ 	auto run(Function &F, FunctionAnalysisManager &FAM) -> PreservedAnalyses;
++
++private:
++	bool lowerOpaque_;
+ };
+ 
+ #endif /* GENMC_PROMOTE_MEMINTRINSIC_PASS_HPP */
 diff --git a/passes/passes/Transforms/SpinAssumePass.cpp b/passes/passes/Transforms/SpinAssumePass.cpp
 index cfc466b..ae80e02 100644
 --- a/passes/passes/Transforms/SpinAssumePass.cpp
