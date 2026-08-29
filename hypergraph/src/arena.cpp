@@ -246,14 +246,25 @@ void* ConcurrentHeterogeneousArena::allocate_local(LocalCursor& c, size_t size,
     // Current block can't fit this request; take a fresh one (shared, but rare).
     // Ramp this cursor's block size geometrically from INITIAL_BLOCK_SIZE up to
     // block_size_, so a lightly-used worker reserves only a small block.
-    size_t grow = c.next_size ? c.next_size
-                : (INITIAL_BLOCK_SIZE < block_size_ ? INITIAL_BLOCK_SIZE : block_size_);
-    size_t cap = grow;
     size_t need = size + alignment;  // worst-case alignment slack
-    if (need > cap) cap = need;      // oversized single request (does not perturb the ramp)
-    Block* nb = grab_block(cap);
-    c.next_size = grow < block_size_ ? (grow * 2 < block_size_ ? grow * 2 : block_size_)
-                                     : block_size_;
+    Block* nb;
+    if (c.spare && c.spare->capacity >= need) {
+        // The block a give-back emptied earlier; reusing it reserves nothing and leaves the
+        // ramp where it is.
+        nb = c.spare;
+        c.spare = nullptr;
+    } else {
+        size_t grow = c.next_size ? c.next_size
+                    : (INITIAL_BLOCK_SIZE < block_size_ ? INITIAL_BLOCK_SIZE : block_size_);
+        size_t cap = grow;
+        if (need > cap) cap = need;      // oversized single request (does not perturb the ramp)
+        nb = grab_block(cap);
+        c.next_size = grow < block_size_ ? (grow * 2 < block_size_ ? grow * 2 : block_size_)
+                                         : block_size_;
+    }
+    c.prev_block    = c.block;
+    c.prev_offset   = c.offset;
+    c.prev_capacity = c.capacity;
     c.block = nb;
     c.capacity = nb->capacity;
     // Fresh block: data is max_align_t-aligned, so an offset-relative alignment

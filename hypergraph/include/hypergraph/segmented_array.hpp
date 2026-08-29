@@ -263,6 +263,12 @@ public:
         // When segment is created, all elements are default-constructed by arena
         T* segment = get_or_create_segment(seg_idx, arena);
 
+        // The same look-ahead as emplace_at, for the same reason: callers index these arrays
+        // by slots handed out in sequence, so the boundary is crossed by many threads at once.
+        if (offset == (segment_capacity(seg_idx) * 3) / 4 && seg_idx + 1 < MAX_SEGMENTS) {
+            get_or_create_segment(seg_idx + 1, arena);
+        }
+
         // Update count_ to at least idx+1 for iteration purposes
         // This is safe because we only increase, never decrease
         uint32_t expected = count_.load(std::memory_order_relaxed);
@@ -295,9 +301,16 @@ public:
         // Ensure segment exists (thread-safe)
         T* segment = get_or_create_segment(seg_idx, arena);
 
-        // Pre-create next segment when nearing end of current. Skipped at the last
-        // segment: this is a look-ahead, and the element being placed here still fits.
-        if (offset >= segment_capacity(seg_idx) - 1 && seg_idx + 1 < MAX_SEGMENTS) {
+        // Look ahead: the thread placing the element three quarters of the way through a
+        // segment creates the next one. Indices are handed out by a shared counter, so the
+        // threads that cross a segment boundary do so within microseconds of each other; a
+        // look-ahead at the boundary itself is too late for them and every one of them
+        // allocated the segment and all but one lost the CAS (measured on wpp depth 7 at 16
+        // threads: 68 allocations of the State segments, 80 of the Edge segments, for the
+        // seven of each the run installs). A quarter of a segment ahead the creator publishes
+        // long before the boundary is reached. Skipped at the last segment: this is a
+        // look-ahead, and the element being placed here still fits.
+        if (offset == (segment_capacity(seg_idx) * 3) / 4 && seg_idx + 1 < MAX_SEGMENTS) {
             get_or_create_segment(seg_idx + 1, arena);
         }
 
@@ -326,6 +339,15 @@ public:
             }
         }
     }
+
+    // The segment geometry, for a caller that reasons about bytes per segment (the test that
+    // pins the give-back of losing segment allocations).
+    size_t segment_first_index(size_t seg_idx) const {
+        if (seg_idx <= GROWTH_STEPS)
+            return ((size_t(1) << seg_idx) - 1) << seg_shift_;
+        return geom_end_ + ((seg_idx - (GROWTH_STEPS + 1)) << cap_shift_);
+    }
+    size_t segment_bytes(size_t seg_idx) const { return sizeof(T) * segment_capacity(seg_idx); }
 
 private:
     // Segment and offset for an index. Two regimes, and the branch is predictable because a run
@@ -405,8 +427,15 @@ private:
             return new_segment;
         }
 
-        // Another thread beat us - use theirs
-        // Our allocation is wasted but will be cleaned up with arena
+        // Another thread published its segment first. The allocation above is this worker's
+        // most recent, so the cursor gives it back and the next request reuses the bytes.
+        // Trivially destructible elements only: allocate_array registers no destructor for
+        // them, so nothing refers to the bytes once they are given back. Measured before this
+        // give-back (bench_cpu_evolve wpp depth 7, same output): the arena's used bytes grew
+        // from 191 MB at one thread to 394 MB at eight, all of it at this line.
+        if constexpr (std::is_trivially_destructible_v<T>) {
+            arena.release_last(new_segment, sizeof(T) * segment_capacity(seg_idx));
+        }
         return expected;
     }
 

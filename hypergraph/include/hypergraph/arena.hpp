@@ -496,6 +496,36 @@ public:
         return allocate_raw_slow(size, alignment);
     }
     void* allocate_raw_slow(size_t size, size_t alignment);
+    // Give the worker's most recent allocation back. True only when [p, p + size) is the top
+    // of this worker's cursor -- the allocate-then-lose-the-CAS sequence in SegmentedArray --
+    // so the next request reuses the bytes instead of leaving a dead segment behind. False,
+    // with nothing changed, for any other pointer, for the shared path (no worker index) and
+    // for a recycling arena. Lock-free: the cursor is private to the worker.
+    bool release_last(void* p, size_t size) {
+        if (recycle_) return false;
+        const int wi = arena_worker_index();
+        if (wi < 0) return false;
+        LocalCursor& c = cursors_[wi];
+        if (!c.block) return false;
+        char* const top = c.block->data + c.offset;
+        if (static_cast<char*>(p) + size != top) return false;
+        const size_t new_offset = static_cast<size_t>(static_cast<char*>(p) - c.block->data);
+        HG_ARENA_POISON(p, size);
+        c.offset = new_offset;
+        c.block->offset.store(new_offset, std::memory_order_relaxed);
+        if (new_offset == 0 && c.prev_block) {
+            // The block held nothing but the returned request: go back to the block the
+            // request displaced, and keep this one as the spare. One spare per cursor, the
+            // larger of the two when a second block is emptied, since requests that empty a
+            // block grow through a run; the smaller stays reserved in the chain.
+            if (!c.spare || c.spare->capacity < c.capacity) c.spare = c.block;
+            c.block      = c.prev_block;
+            c.offset     = c.prev_offset;
+            c.capacity   = c.prev_capacity;
+            c.prev_block = nullptr;
+        }
+        return true;
+    }
 
     // Allocate array of T (default constructed, destructors tracked if needed)
     template<typename T>
@@ -572,6 +602,18 @@ private:
         size_t offset = 0;        // bump position within block->data
         size_t capacity = 0;      // cached block->capacity
         size_t next_size = 0;     // size of this cursor's next block (0 = use initial); doubles up to block_size_
+        // The block this cursor left when a request did not fit, with the position it left it
+        // at. A give-back that empties the block taken for that request returns the cursor
+        // here, so the tail it left is filled rather than abandoned; the emptied block becomes
+        // the spare, which the next request that does not fit takes before reserving. Blocks
+        // at or above kHugePageBytes are huge-page backed, so a touched block is resident
+        // whole: without this, every losing segment allocation that did not fit left one
+        // resident tail behind (measured: peak RSS 305 MB at one thread, 657 MB at sixteen,
+        // for the same output).
+        Block* prev_block = nullptr;
+        size_t prev_offset = 0;
+        size_t prev_capacity = 0;
+        Block* spare = nullptr;
     };
 
     // Bump this worker's private cursor. On overflow, grab a fresh block sized for
