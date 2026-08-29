@@ -53,12 +53,16 @@ namespace engine {
 // discovered and never mutated afterwards, so a match forwarded to descendant
 // states shares one MatchCore by pointer instead of deep-copying the payload
 // into every descendant. Immutability makes that sharing race-free.
+// Copied whole into the arena on every match (create<MatchCore>), so the layout has no
+// padding: the counts are 16 bits and follow the arrays.
 struct MatchCore {
-    uint16_t rule_index{0};
-    uint8_t num_edges{0};
     EdgeId matched_edges[MAX_PATTERN_EDGES]{};
     VariableBinding binding{};
+    uint16_t rule_index{0};
+    uint16_t num_edges{0};
 };
+static_assert(sizeof(MatchCore) == sizeof(EdgeId) * MAX_PATTERN_EDGES + sizeof(VariableBinding) + 2 + 2,
+              "MatchCore has padding");
 
 // =============================================================================
 // Match Record
@@ -83,7 +87,8 @@ struct MatchRecord {
     //
     // Deliberately NOT part of hash(): that is the match-dedup key, and the same match must
     // dedup against itself however it arrived.
-    bool is_forwarded{false};
+    // 32 bits wide so the record has no padding: it is copied whole when forwarded.
+    uint32_t is_forwarded{0};
 
     uint16_t rule_index() const;
     uint8_t num_edges() const;
@@ -111,6 +116,8 @@ struct MatchRecord {
 
     bool operator==(const MatchRecord& other) const;
 };
+static_assert(sizeof(MatchRecord) == sizeof(const MatchCore*) + sizeof(StateId) + sizeof(uint32_t),
+              "MatchRecord has padding");
 
 // =============================================================================
 // Evolution Statistics
