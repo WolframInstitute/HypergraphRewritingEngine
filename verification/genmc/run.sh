@@ -365,7 +365,12 @@ run_one() {
         echo "    memory cap: $((mem_cap_kb / 1024)) MB (address space)"
     fi
     # shellcheck disable=SC2086
-    ( [ -n "$mem_cap_kb" ] && ulimit -v "$mem_cap_kb"; exec "$GENMC" $extra "$@" "$WORK/$name.ll" )
+    # The checker's generated consistency visitors (RC11Checker::visitCalc*) recurse once per
+    # event along the relation they compute; an execution of the composed engine is 10^5 events
+    # (engine_rule at --unroll=16384: 136,431), and the default 8 MB stack overflows in them
+    # (SIGSEGV, 30 identical frames on the box's gdb). The stack limit is raised to 2 GB, which
+    # is address space reserved on demand, not memory.
+    ( [ -n "$mem_cap_kb" ] && ulimit -v "$mem_cap_kb"; ulimit -s 2097152; exec "$GENMC" $extra "$@" "$WORK/$name.ll" )
     local rc=$?
     if [ "$expect" = "violation" ]; then
         if [ $rc -eq 42 ]; then
