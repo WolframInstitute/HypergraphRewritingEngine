@@ -384,7 +384,14 @@ private:
     // that keep the exact count add to it here; the release build does not, and that removed
     // count is the one line every worker on every L3 domain wrote per win (measured on the box,
     // wpp depth 7, 16 threads: this insert was 21-23% of the fills served from another domain).
-    static constexpr size_t kProbeLimit = 32;
+    // Overridable for the load/probe trade sweep: a lower limit grows earlier, so tables run
+    // at a lower load factor and the probe runs shorten; the capacity roughly doubles per
+    // halving. Tables pay no fill on arena bytes, so extra capacity costs address space and
+    // the touched pages only.
+#ifndef HG_KEY_SET_PROBE_LIMIT
+#define HG_KEY_SET_PROBE_LIMIT 32
+#endif
+    static constexpr size_t kProbeLimit = HG_KEY_SET_PROBE_LIMIT;
     void note_win(size_t probe) {
         if (probe >= kProbeLimit && !want_grow_.load(std::memory_order_relaxed))
             want_grow_.store(true, std::memory_order_relaxed);
