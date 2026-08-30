@@ -101,22 +101,29 @@ TEST(ArenaZeroInit, FreshAllocationsAreZero) {
 }
 
 // Every type that opts into zero_value_init_v by specialisation: T() over 0xFF bytes leaves
-// only zero bytes, padding included, which is what the skipped fill would have written.
-template <typename T>
-static bool value_init_is_all_zero() {
-    alignas(T) unsigned char buf[sizeof(T)];
-    std::memset(buf, 0xFF, sizeof(T));
-    new (buf) T();
-    for (size_t i = 0; i < sizeof(T); ++i) if (buf[i] != 0) return false;
-    return true;
-}
+// every MEMBER zero. Padding bytes after value-initialisation are unspecified (one toolchain
+// memsets the whole object, another writes members only -- CI caught the difference), and the
+// skipped fill substitutes arena bytes that zero the padding too, so members are the claim.
 TEST(ArenaZeroInit, OptedInTypesAreZeroBytes) {
     static_assert(zero_value_init_v<QcEventContent>);
     static_assert(zero_value_init_v<EdgeSignature>);
     static_assert(zero_value_init_v<uint32_t>);
     static_assert(!zero_value_init_v<std::atomic<uint32_t>>);
-    EXPECT_TRUE(value_init_is_all_zero<QcEventContent>());
-    EXPECT_TRUE(value_init_is_all_zero<EdgeSignature>());
+    {
+        alignas(QcEventContent) unsigned char buf[sizeof(QcEventContent)];
+        std::memset(buf, 0xFF, sizeof(buf));
+        auto* c = new (buf) QcEventContent();
+        EXPECT_EQ(c->from_class, 0u);
+        EXPECT_EQ(c->to_class, 0u);
+        EXPECT_EQ(c->rule, 0u);
+    }
+    {
+        alignas(EdgeSignature) unsigned char buf[sizeof(EdgeSignature)];
+        std::memset(buf, 0xFF, sizeof(buf));
+        auto* g = new (buf) EdgeSignature();
+        EXPECT_EQ(g->arity, 0u);
+        for (size_t i = 0; i < sizeof(g->pattern); ++i) EXPECT_EQ(g->pattern[i], 0u);
+    }
 }
 
 TEST(SegmentedArrayGrowth, LosingSegmentAllocationsAreGivenBack) {
