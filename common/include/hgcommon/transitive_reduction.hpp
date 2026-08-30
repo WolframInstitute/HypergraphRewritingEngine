@@ -34,25 +34,47 @@ namespace common {
 // largest value rather than to the number of nodes.
 template <class Enumerate, class Emit>
 void tr_reduce(Enumerate&& enumerate, Emit&& emit, bool ids_topological = false) {
-    std::vector<std::pair<uint32_t, uint32_t>> all;
-    enumerate([&](uint32_t p, uint32_t c) { all.emplace_back(p, c); });
-    std::sort(all.begin(), all.end());
-    all.erase(std::unique(all.begin(), all.end()), all.end());
+    std::vector<std::pair<uint32_t, uint32_t>> in;
+    enumerate([&](uint32_t p, uint32_t c) { in.emplace_back(p, c); });
+    if (in.empty()) return;
 
-    if (all.empty()) return;
-
-    // `all` is sorted by (source, target), so every source's targets are already contiguous and
-    // the adjacency is an index into it rather than a container: succ_begin[p] is where p's
-    // targets start and succ_begin[p+1] is where they end. The walk below then reaches a node's
-    // successors with two loads and no lookup.
+    // Sorted-by-(source, target) layout in linear time: ids are dense, so a counting scatter
+    // by source places every source's targets contiguously, and only each source's own bucket
+    // is then sorted -- the buckets are out-degrees, so the log factor applies to them and not
+    // to the whole pair set (a global sort of the pair set was 1.5% of all instructions on wpp
+    // depth 7). succ_begin[p] is where p's targets start; the walk below reaches a node's
+    // successors with two loads and no lookup. `emit` still receives surviving pairs sorted.
     uint32_t max_id = 0;
-    for (const auto& e : all) {
+    for (const auto& e : in) {
         max_id = std::max(max_id, e.first);
         max_id = std::max(max_id, e.second);
     }
     std::vector<uint32_t> succ_begin(static_cast<size_t>(max_id) + 2, 0);
-    for (const auto& e : all) ++succ_begin[e.first + 1];
+    for (const auto& e : in) ++succ_begin[e.first + 1];
     for (size_t k = 1; k < succ_begin.size(); ++k) succ_begin[k] += succ_begin[k - 1];
+    std::vector<uint32_t> cursor(succ_begin.begin(), succ_begin.end() - 1);
+    std::vector<std::pair<uint32_t, uint32_t>> all(in.size());
+    for (const auto& e : in) all[cursor[e.first]++] = e;
+    in.clear();
+    in.shrink_to_fit();
+    // Per-bucket sort and in-place dedup, rebuilding succ_begin over the compacted layout.
+    {
+        size_t w = 0;
+        size_t r = 0;
+        for (uint32_t p = 0; p <= max_id; ++p) {
+            const size_t b = r;
+            const size_t e = succ_begin[p + 1];
+            std::sort(all.begin() + b, all.begin() + e);
+            size_t out = w;
+            for (size_t k = b; k < e; ++k)
+                if (out == w || all[k].second != all[out - 1].second) all[out++] = all[k];
+            r = e;
+            succ_begin[p] = static_cast<uint32_t>(w);
+            w = out;
+        }
+        succ_begin[max_id + 1] = static_cast<uint32_t>(w);
+        all.resize(w);
+    }
 
     // Membership by generation stamp rather than by a set that is emptied per source. Clearing a
     // hash set rewrites its whole bucket array, so the cost is (sources x buckets) however few
