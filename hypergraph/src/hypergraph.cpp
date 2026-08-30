@@ -1111,8 +1111,13 @@ void Hypergraph::quotient_causal_seed(StateId initial_state, int max_steps) {
 
 
 void Hypergraph::qc_record_causal(uint32_t producer, uint32_t consumer, bool distinct_pair) {
-    // Per-consumed-edge relationships (the T1 multiset) count every occurrence.
-    HG_STAT(++qc_slot(qc_ctr_).causal_edges);
+    // Per-consumed-edge relationships (the T1 multiset) count every occurrence. The count is
+    // a SEMANTIC observable (num_reconstructed_causal_edges, the full-capture twin of
+    // causal_graph().num_causal_edges()), not a cost diagnostic, so it is maintained in every
+    // build: the occurrences are deliberately not stored -- adjacent repeats are skipped, not
+    // recorded -- so no enumeration can recover this number after the fact. A plain increment
+    // on this worker's own 64-byte slot, no shared line, no RMW.
+    ++qc_slot(qc_ctr_).causal_edges;
 
     // NO DEDUP STRUCTURE, and none is needed. `consumer` is the event this application just
     // minted, so the pair cannot repeat across applications; within this one the caller has
@@ -2043,8 +2048,10 @@ void Hypergraph::QrCtx::record_branchial_pair(uint32_t lo, uint32_t hi) {
 }
 
 Hypergraph::QrCtx::~QrCtx() {
+    // Same contract as the causal-edge count above: num_reconstructed_branchial is a semantic
+    // observable (read by the bench and four probes), so the flush runs in every build.
     if (branchial_seen)
-        HG_STAT(qc_slot(hg.qc_ctr_).branchial += branchial_seen);
+        qc_slot(hg.qc_ctr_).branchial += branchial_seen;
 }
 
 // The child instance: survivors carry their producer across, produced slots take THIS event.

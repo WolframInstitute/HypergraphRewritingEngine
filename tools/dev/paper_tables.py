@@ -596,6 +596,14 @@ def t6(build, maxd):
             rows.append(m.groups())
     if not rows:
         raise SystemExit("quotient probe produced no parseable rows:\n%s" % out[-2000:])
+    # The Exact column is a GATE, not a datum: reconstruction not reproducing full capture is
+    # a defect to chase, never a row to typeset. A DIFFERS was published once -- the counters
+    # behind num_reconstructed_* were stats-gated and a stats=0 release build reported 0.
+    bad = [r for r in rows if r[-1] != "exact"]
+    if bad:
+        raise SystemExit("quotient reconstruction DIFFERS from full capture at depth(s) %s -- "
+                         "refusing to write t6_quotient.tex; chase the defect"
+                         % ", ".join(r[0] for r in bad))
     b = [provenance("tools/quotient_reconstruction_cost_probe.cpp"),
          r"\begin{tabular}{rrrrrrrrl}", r"\toprule",
          r"Depth & Events (full) & Causal (full) & ms (full) & Events (quot.) & ms (quot.) & "
