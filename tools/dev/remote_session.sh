@@ -204,6 +204,15 @@ build_gpu_targets() {
   [ "$GPU_J" -lt 1 ] && GPU_J=1
   ARCH="$("$NVSMI" --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')"
   [ -n "$ARCH" ] || ARCH=89          # 4090 = sm_89; the query is the authority when it answers
+  # A build directory whose cache pins a DIFFERENT nvcc than the PATH's poisons the build
+  # with mixed toolchains (measured 30/08: prep's PATH put cuda-13 first over a dir cached on
+  # /usr/bin/nvcc; the mix died in glibc's _Float128 declarations and an nvlink load error).
+  for gd in build_gpu build_gpu_release; do
+    if [ -f "$gd/CMakeCache.txt" ]; then
+      cached=$(grep -oP "CMAKE_CUDA_COMPILER:\w+=\K.*" "$gd/CMakeCache.txt" | head -1)
+      [ -n "$cached" ] && [ "$cached" != "$(command -v nvcc)" ] && rm -rf "$gd"
+    fi
+  done
   say "build gpu (sm_$ARCH, -j$GPU_J from ${MEM_GB}G RAM and ${NPROC} threads)"
   # HG_GPU_ARCHS IS THE KNOB, not CMAKE_CUDA_ARCHITECTURES. gpu/CMakeLists.txt caches
   # "75;80;86;89;90" and sets each target's CUDA_ARCHITECTURES property from it, so passing
@@ -212,6 +221,7 @@ build_gpu_targets() {
   # 86, 89 and 90 simultaneously -- five times the work, for one card whose arch is known.
   # A rented box builds for the device it has.
   cmake -S . -B build_gpu "${COMMON_FLAGS[@]}" -DBUILD_GPU=ON \
+    -DCMAKE_CUDA_COMPILER="$(command -v nvcc)" \
     -DHG_GPU_ARCHS="$ARCH" >> "$LOG" 2>&1 || fail "gpu configure"
   # CMake DISABLES GPU SUPPORT AND EXITS 0 when it cannot find a CUDA compiler, so a successful
   # configure proves nothing. Reproduced deliberately: without /usr/local/cuda/bin on PATH the
@@ -233,6 +243,7 @@ build_gpu_targets() {
   say "build gpu release bench (sm_$ARCH, -j$GPU_J)"
   cmake -S . -B build_gpu_release "${COMMON_FLAGS[@]}" -DBUILD_GPU=ON -DHG_ENGINE_STATS=OFF \
     -DBUILD_TESTS=OFF -DBUILD_BENCHMARKS=OFF -DBUILD_EXAMPLES=OFF \
+    -DCMAKE_CUDA_COMPILER="$(command -v nvcc)" \
     -DHG_GPU_ARCHS="$ARCH" >> "$LOG" 2>&1 || fail "gpu release configure"
   cmake --build build_gpu_release -j"$GPU_J" --target bench_gpu_evolve >> "$LOG" 2>&1 || fail "gpu release build"
   release_only ./build_gpu_release/bench_gpu_evolve
