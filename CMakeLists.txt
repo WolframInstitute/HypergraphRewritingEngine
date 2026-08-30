@@ -101,10 +101,24 @@ if(GIT_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
                     OUTPUT_VARIABLE HG_GIT_COMMIT
                     OUTPUT_STRIP_TRAILING_WHITESPACE
                     ERROR_QUIET)
-    if(EXISTS "${CMAKE_SOURCE_DIR}/.git/HEAD")
-        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-                     "${CMAKE_SOURCE_DIR}/.git/HEAD")
-    endif()
+    # RECONFIGURE WHEN HEAD MOVES. A commit rewrites the branch ref and appends to the reflog;
+    # HEAD itself changes only on a checkout. Depending on HEAD alone left a warm build stamped
+    # with the commit of an earlier configure (measured: a build_release bench reading
+    # 9e8f39aa two commits later). The paths come from git so a worktree, whose .git is a
+    # file pointing elsewhere, resolves them too.
+    foreach(rel HEAD logs/HEAD)
+        execute_process(COMMAND "${GIT_EXECUTABLE}" rev-parse --git-path "${rel}"
+                        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+                        OUTPUT_VARIABLE HG_GIT_DEP
+                        OUTPUT_STRIP_TRAILING_WHITESPACE
+                        ERROR_QUIET)
+        if(HG_GIT_DEP AND NOT IS_ABSOLUTE "${HG_GIT_DEP}")
+            set(HG_GIT_DEP "${CMAKE_SOURCE_DIR}/${HG_GIT_DEP}")
+        endif()
+        if(HG_GIT_DEP AND EXISTS "${HG_GIT_DEP}")
+            set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${HG_GIT_DEP}")
+        endif()
+    endforeach()
 endif()
 if(NOT HG_GIT_COMMIT STREQUAL "")
     set(HG_BUILD_COMMIT "${HG_GIT_COMMIT}")
