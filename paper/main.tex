@@ -1665,8 +1665,9 @@ advantage is the elimination of a fixed per-call cost, which is visible directly
 \texttt{evolve()} column: it is $49$--$55$\,ms at depths four, five and six, almost independent of
 a state count that grows from $53$ to $3867$ over that range. Once the evolution itself is large
 enough to dominate that constant---by depth eight, at $262{,}144$ states---keeping the kernel
-resident buys nothing. Reporting the speedup without the depth it is measured at would therefore
-be a statement about small problems.
+resident buys nothing further, and the two designs are indistinguishable; at no depth does the
+resident kernel cost anything. Reporting the speedup without the depth it is measured at would
+therefore be a statement about small problems.
 
 
 \begin{table}[htbp]
