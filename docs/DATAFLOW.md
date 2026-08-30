@@ -148,7 +148,7 @@ makes the persistent default defensible.
 | I1 | no match is ever missed | forwarding + delta partition | gated by `test_match_completeness.cpp` (rate, with attribution). Batched 0/51 clean; eager has a residual race at <2% of runs (#76) |
 | I2 | no two distinct matches are conflated (CPU; the GPU cannot find one twice, see #78) | `seen_match_hashes_`, decided by `MatchRecord::operator==` | yes — `claim_match()` compares content on equal hash and probes on collision; gated by `test_match_dedup_exactness.cpp` |
 | I3 | isomorphic states share identity | canonical hash (IR exact / WL fast) | yes — oracle corpus + 204-row matrix |
-| I4 | WL is never a dedup key | IR on the exact path | yes on CPU; GPU degrades to WL above slot bounds and COUNTS it |
+| I4 | WL is never a dedup key | IR on the exact path | yes on both: the GPU sizes its slot from the state's own counts and reports capacity as partial work with a warning; no path substitutes a coarser key (`gpu/include/hg_gpu/overflow.hpp`) |
 | I5 | output independent of worker count | canonical identity | partially — determinism gate fails ~1/30 (#65) |
 | I6 | CPU and GPU agree | differential corpus, both schedulers | yes for 8 of 9 identity cells; Automatic diverges (#66) |
 | I7 | causal/branchial exact under quotient | reconstruction from the skeleton | yes, verified edge-for-edge across 204 configs |

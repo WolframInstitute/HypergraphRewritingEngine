@@ -21,7 +21,8 @@ stated absence rather than an unexamined one.
 
 ## What is covered
 
-GenMC, 27 harnesses: the concurrent map (agreement, resize, double growth at two and three
+GenMC, 39 harness sources under `verification/genmc/` (the count grows with the protocols;
+`ls verification/genmc/*.cpp | wc -l` is the authority): the concurrent map (agreement, resize, double growth at two and three
 threads, repeated offer, lookup during growth), the key set (exactly-once at two and three
 threads, enumeration, contains and distinct keys across growth), both deques (no double
 extraction, no double take, tag defeats ABA), the lock-free list (completeness, pairs and triples

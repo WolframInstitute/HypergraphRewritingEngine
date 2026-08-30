@@ -93,10 +93,16 @@ Boundary + tooling:
   ground truth) + golden corpus + paclet verification scripts. See
   [reference/CANONICALIZATION.md](../reference/CANONICALIZATION.md).
 - **`tools/`** — standalone research/validation probes (canonicalization vs WL,
-  quotient reconstruction, determinism, profiling harnesses). Built ad hoc.
+  quotient reconstruction, determinism, profiling harnesses). `make host_tools`
+  builds every non-GPU one.
 - **`testing/`** — the aggregate C++ test target (`all_tests`).
 - **`benchmarks/` / `benchmarking/`** — per-area benchmarks and the framework lib.
-- **`visualisation/`** — the interactive 3D viewer (Vulkan) and physics analysis.
+- **`visualisation/`** — the viz-event interface; the renderer lives in its own
+  repository.
+- **`verification/`** — GenMC/GPUMC harnesses and TLA+ specifications; coverage
+  and bounds are stated in [VERIFICATION_STATUS.md](VERIFICATION_STATUS.md), and
+  every optimisation's closed-or-refuted record is
+  [OPTIMISATION_DISPOSITIONS.md](OPTIMISATION_DISPOSITIONS.md).
 
 ## Key ideas a developer should know
 

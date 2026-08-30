@@ -11,7 +11,7 @@ The paclet bundles its own engine binary for each platform, so installation is
 self-contained — nothing else to build or configure.
 
 ```wolfram
-PacletInstall["https://github.com/WolframInstitute/HypergraphRewritingEngine/releases/download/v0.0.1-alpha.6/WolframInstitute__HypergraphRewriteEngine-0.0.1.paclet"]
+PacletInstall["WolframInstitute/HypergraphRewriteEngine"]
 Needs["HypergraphRewriting`"]
 ```
 
