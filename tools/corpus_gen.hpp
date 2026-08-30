@@ -262,6 +262,61 @@ inline std::vector<std::vector<uint32_t>> make_init(Shape s, uint32_t nl, uint32
     return tmp.lhs;
 }
 
+// THE NAMED WORKLOADS, one table for both benches, exactly as the generated family already is:
+// a CPU row and a GPU row name the same workload by construction, and a row added here appears
+// in both engines' corpora at once. The single-rule rows are the hand-picked shapes the
+// differential and exactness gates grew up on; the combination rows interleave rules drawn from
+// them, because rule INTERACTION is a workload property none of the single rows exercises: two
+// rules compete for the same edges, a rule can mint the structure another consumes, and the
+// event/branchial structure couples across rules.
+inline std::vector<Workload> named_workloads() {
+    const Rule wpp_r      {{{0,1},{0,2}},       {{0,1},{0,3},{1,3},{2,3}}};
+    const Rule binary_r   {{{0,1}},             {{0,2},{2,1}}};
+    const Rule wolfram_r  {{{0,1},{1,2}},       {{0,1},{1,3},{3,2},{2,0}}};
+    const Rule triangle_r {{{0,1},{1,2},{2,0}}, {{0,1},{1,2},{2,3},{3,0}}};
+    const Rule arity3_r   {{{0,1,2}},           {{0,1,2},{2,3}}};
+    const Rule grow_r     {{{0,1},{1,2}},       {{0,1},{1,3},{3,2}}};
+    const Rule contract_r {{{0,1},{1,2}},       {{0,2}}};
+    return {
+        // The deep/narrow default: two-edge left side, growing right side, two-edge initial.
+        {"wpp",       {wpp_r},      {{0,1},{0,2}}},
+        // Single-edge left side: every edge in the state is a candidate, so the matcher floods.
+        {"binary",    {binary_r},   {{0,1}}},
+        // Wolfram 2->4, the shape most of the published models use.
+        {"wolfram24", {wolfram_r},  {{0,1},{1,2}}},
+        // Cyclic left side: three edges, no acyclic join order, worst case for the matcher.
+        {"triangle",  {triangle_r}, {{0,1},{1,2},{2,0}}},
+        // Mixed arity on both sides.
+        {"arity3",    {arity3_r},   {{0,1,2}}},
+        // Two rules over the same state: queue traffic per state doubles and the two compete.
+        {"multirule", {grow_r, binary_r}, {{0,1},{1,2}}},
+        // Automorphic initial state: the canonicalizer cannot stop at depth one.
+        {"cycle4",    {grow_r},     {{0,1},{1,2},{2,3},{3,0}}},
+        // Several roots, so the frontier starts wide instead of narrow.
+        {"multiroot", {grow_r},     {{0,1},{1,2},{3,4},{4,5},{6,7},{7,8}}},
+        // TWO COMPONENTS OF TWO EDGES EACH, which the generated corpus does not build: its
+        // Disconnected shape numbers every edge's variables apart, so disc-lNa2 is N components
+        // of ONE edge and each component's match set is "every edge of this arity". A component
+        // of one edge costs one scan to enumerate, so the product is the output and the join is
+        // already output-optimal on it. A component of TWO edges has a join of its own, and the
+        // schedule re-runs that join once per partial match of the components before it.
+        {"disc2x2",   {Rule{{{0,1},{1,2},{3,4},{4,5}},
+                            {{0,1},{1,2},{3,4},{4,5},{2,6}}}},
+                      {{0,1},{1,2},{3,4},{4,5}}},
+        // Growth against reduction against flooding: the grower deepens, the contraction erases
+        // what it grew, and the single-edge splitter matches everything either produces.
+        {"growshrink3", {wpp_r, contract_r, binary_r}, {{0,1},{0,2}}},
+        // The 2->4 rule mints 3-cycles; the triangle rule consumes exactly those. The second
+        // rule's match set exists only through the first rule's output.
+        {"wolftri",   {wolfram_r, triangle_r}, {{0,1},{1,2}}},
+        // Mixed arity across rules rather than within one: the arity-3 rewriter and the
+        // arity-2 splitter each see only their own edges of a state holding both.
+        {"arimix",    {arity3_r, binary_r}, {{0,1,2},{0,1}}},
+        // Four rules of four characters over a state holding every arity they need.
+        {"allfour",   {wpp_r, wolfram_r, binary_r, arity3_r}, {{0,1},{0,2},{3,4,5}}},
+    };
+}
+
 // The corpus. Crossed over shape x lhs size x arity x growth x rule count, which is coverage that
 // can be stated: every combination below is present exactly once.
 inline std::vector<Workload> corpus() {

@@ -55,32 +55,26 @@ struct Workload {
     std::vector<std::vector<uint32_t>> init;
 };
 
-// Shapes drawn from the corpus tools/cost_matrix.cpp proves exactness on, so a timing here and
-// an exactness row there name the same thing.
+// The named table lives in corpus_gen.hpp beside the generated family, one definition for
+// both benches; this only rebinds it to the device's rule type.
 static std::vector<Workload> workloads() {
-    return {
-        // The deep/narrow default: two-edge left side, growing right side, two-edge initial.
-        {"wpp",        {make_rule({{0,1},{0,2}}, {{0,1},{0,3},{1,3},{2,3}})}, {{0,1},{0,2}}},
-        // Single-edge left side: every edge in the state is a candidate, so the matcher floods.
-        {"binary",     {make_rule({{0,1}}, {{0,2},{2,1}})},                    {{0,1}}},
-        // Wolfram 2->4, the shape most of the published models use.
-        {"wolfram24",  {make_rule({{0,1},{1,2}}, {{0,1},{1,3},{3,2},{2,0}})},  {{0,1},{1,2}}},
-        // Cyclic left side: three edges, no acyclic join order, worst case for the matcher.
-        {"triangle",   {make_rule({{0,1},{1,2},{2,0}}, {{0,1},{1,2},{2,3},{3,0}})},
-                       {{0,1},{1,2},{2,0}}},
-        // Mixed arity on both sides.
-        {"arity3",     {make_rule({{0,1,2}}, {{0,1,2},{2,3}})},                {{0,1,2}}},
-        // Two rules over the same state: queue traffic per state doubles and the two compete.
-        {"multirule",  {make_rule({{0,1},{1,2}}, {{0,1},{1,3},{3,2}}),
-                        make_rule({{0,1}}, {{0,2},{2,1}})},                    {{0,1},{1,2}}},
-        // Automorphic initial state: the canonicalizer cannot stop at depth one, which is where
-        // the device spends 91% of its time even on the easy shapes.
-        {"cycle4",     {make_rule({{0,1},{1,2}}, {{0,1},{1,3},{3,2}})},
-                       {{0,1},{1,2},{2,3},{3,0}}},
-        // Several roots, so the frontier starts wide instead of narrow.
-        {"multiroot",  {make_rule({{0,1},{1,2}}, {{0,1},{1,3},{3,2}})},
-                       {{0,1},{1,2},{3,4},{4,5},{6,7},{7,8}}},
-    };
+    static std::vector<std::string> names;
+    std::vector<Workload> out;
+    for (const auto& g : corpus::named_workloads()) {
+        names.push_back(g.name);
+        Workload w;
+        w.name = nullptr;
+        for (const auto& r : g.rules) {
+            std::vector<std::vector<uint8_t>> lhs, rhs;
+            for (const auto& e : r.lhs) lhs.push_back(std::vector<uint8_t>(e.begin(), e.end()));
+            for (const auto& e : r.rhs) rhs.push_back(std::vector<uint8_t>(e.begin(), e.end()));
+            w.rules.push_back(make_rule(std::move(lhs), std::move(rhs)));
+        }
+        for (const auto& e : g.init) w.init.push_back(std::vector<uint32_t>(e.begin(), e.end()));
+        out.push_back(std::move(w));
+    }
+    for (size_t i = 0; i < out.size(); ++i) out[i].name = names[names.size() - out.size() + i].c_str();
+    return out;
 }
 
 int main(int argc, char** argv) {

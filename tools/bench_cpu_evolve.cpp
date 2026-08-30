@@ -86,38 +86,25 @@ struct Workload {
 };
 
 static std::vector<Workload> workloads() {
-    return {
-        {"wpp",       {make_rule(0).lhs({0,1}).lhs({0,2})
-                          .rhs({0,1}).rhs({0,3}).rhs({1,3}).rhs({2,3}).build()},
-                      {{0,1},{0,2}}},
-        {"binary",    {make_rule(0).lhs({0,1}).rhs({0,2}).rhs({2,1}).build()},
-                      {{0,1}}},
-        {"wolfram24", {make_rule(0).lhs({0,1}).lhs({1,2})
-                          .rhs({0,1}).rhs({1,3}).rhs({3,2}).rhs({2,0}).build()},
-                      {{0,1},{1,2}}},
-        {"triangle",  {make_rule(0).lhs({0,1}).lhs({1,2}).lhs({2,0})
-                          .rhs({0,1}).rhs({1,2}).rhs({2,3}).rhs({3,0}).build()},
-                      {{0,1},{1,2},{2,0}}},
-        {"arity3",    {make_rule(0).lhs({0,1,2}).rhs({0,1,2}).rhs({2,3}).build()},
-                      {{0,1,2}}},
-        {"multirule", {make_rule(0).lhs({0,1}).lhs({1,2}).rhs({0,1}).rhs({1,3}).rhs({3,2}).build(),
-                       make_rule(1).lhs({0,1}).rhs({0,2}).rhs({2,1}).build()},
-                      {{0,1},{1,2}}},
-        {"cycle4",    {make_rule(0).lhs({0,1}).lhs({1,2}).rhs({0,1}).rhs({1,3}).rhs({3,2}).build()},
-                      {{0,1},{1,2},{2,3},{3,0}}},
-        {"multiroot", {make_rule(0).lhs({0,1}).lhs({1,2}).rhs({0,1}).rhs({1,3}).rhs({3,2}).build()},
-                      {{0,1},{1,2},{3,4},{4,5},{6,7},{7,8}}},
-        // TWO COMPONENTS OF TWO EDGES EACH, which the generated corpus does not build: its
-        // Disconnected shape numbers every edge's variables apart, so disc-lNa2 is N components
-        // of ONE edge and each component's match set is "every edge of this arity". A component
-        // of one edge costs one scan to enumerate, so the product is the output and the join is
-        // already output-optimal on it. A component of TWO edges has a join of its own, and the
-        // schedule re-runs that join once per partial match of the components before it. This is
-        // the shape the disconnected-LHS warning is about, and nothing measured it.
-        {"disc2x2",   {make_rule(0).lhs({0,1}).lhs({1,2}).lhs({3,4}).lhs({4,5})
-                          .rhs({0,1}).rhs({1,2}).rhs({3,4}).rhs({4,5}).rhs({2,6}).build()},
-                      {{0,1},{1,2},{3,4},{4,5}}},
-    };
+    // The named table lives in corpus_gen.hpp beside the generated family, one definition for
+    // both benches; this only rebinds it to the engine's rule type.
+    static std::vector<std::string> names;
+    std::vector<Workload> out;
+    for (const auto& g : corpus::named_workloads()) {
+        names.push_back(g.name);
+        Workload w;
+        w.name = nullptr;
+        for (const auto& r : g.rules) {
+            auto b = make_rule(static_cast<uint16_t>(w.rules.size()));
+            for (const auto& e : r.lhs) b.lhs(std::vector<VertexId>(e.begin(), e.end()));
+            for (const auto& e : r.rhs) b.rhs(std::vector<VertexId>(e.begin(), e.end()));
+            w.rules.push_back(b.build());
+        }
+        for (const auto& e : g.init) w.init.push_back(std::vector<VertexId>(e.begin(), e.end()));
+        out.push_back(std::move(w));
+    }
+    for (size_t i = 0; i < out.size(); ++i) out[i].name = names[names.size() - out.size() + i].c_str();
+    return out;
 }
 
 int main(int argc, char** argv) {
