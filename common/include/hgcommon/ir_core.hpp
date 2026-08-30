@@ -108,7 +108,7 @@ HG_HD inline uint64_t ir_scratch_words(uint32_t n_verts, uint32_t n_edges,
       + e + e + e                           // inc_edges, edge_epoch, form_order
       + n + n + 2 * n                       // touched, on_touched, torder (2n: split staging)
       + n + n + (n + 1) + 2 * occ           // sig_off, sig_cnt, gstart, sig_buf as uint64
-      + n + n + n + n + n                   // path, labeling, first_labeling, inv, best_lab
+      + n + n + n + n + n + n               // path, first_path, labeling, first_labeling, inv, best_lab
       + 3 * (occ + e) + e                   // cur_form, best_form, first_form, best_order
       + d * ir_depth_words(n_verts)         // per-depth partition + cell + covered
       + uint64_t(ir_generator_cap(max_depth, max_generators)) * (n + 1)  // generators, row-major, and each one's fixed-prefix length
@@ -224,25 +224,137 @@ HG_HD inline void ir_build_occurrences(
 }
 
 // -----------------------------------------------------------------------------------------
+// SORTED-UNIQUE dense renumbering of ev[0..occ) in place. `verts` is caller scratch of at
+// least occ words; on return its first (returned) words are the distinct raw ids ascending,
+// and every ev[i] is that array's index of its raw id. One rule for both engines: the host's
+// canonicalizer entry sorted a vector and the device's flattening deduplicated by linear scan
+// and insertion-sorted -- the scan and the sort were both quadratic in a state's occurrence
+// count, and two bodies of one convention drift. The convention itself (sorted, not
+// encounter order) is load-bearing: the within-cell tie-break reads the numbering, so it
+// selects which coset representative the canonical labelling is, and the RANKS the two
+// engines exchange must come from the same numbering.
+HG_HD inline uint32_t ir_renumber_sorted(uint32_t* ev, uint32_t occ, uint32_t* verts) {
+    struct U32Cmp {
+        HG_HD int operator()(uint32_t a, uint32_t b) const {
+            return a < b ? -1 : (a > b ? 1 : 0);
+        }
+    };
+    for (uint32_t i = 0; i < occ; ++i) verts[i] = ev[i];
+    ir_heapsort_idx(verts, occ, U32Cmp{});
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < occ; ++i)
+        if (n == 0 || verts[i] != verts[n - 1]) verts[n++] = verts[i];
+    for (uint32_t o = 0; o < occ; ++o) {
+        uint32_t lo = 0, hi = n;
+        while (lo < hi) {
+            const uint32_t mid = (lo + hi) >> 1;
+            if (verts[mid] < ev[o]) lo = mid + 1; else hi = mid;
+        }
+        ev[o] = lo;
+    }
+    return n;
+}
+
+// -----------------------------------------------------------------------------------------
+// THE ORDER-SAFE LOOPS, as dispatchable bodies. On the host (and on every device caller that
+// runs one thread per state) IrSerial runs them in place, byte-for-byte the loops they
+// replace. Under the persistent kernel a warp policy (hg_gpu/ir_canon.hpp) fans iterations
+// across the block's 32 lanes: these are the only loops handed over, because each either
+// writes per-iteration-disjoint regions (a vertex's own signature run) or feeds a sort that
+// normalises its write order (the splitter signature fill), so the lane schedule cannot reach
+// any output. Everything order-carrying -- the incident-edge gather, the touched list, the
+// cell splits, the search -- stays in the caller's serial code, because the within-cell
+// tie-break reads those orders and the ranks read the tie-break.
+struct IrParArgs {
+    const uint8_t*  ea = nullptr;
+    const uint32_t* eoff = nullptr;
+    const uint32_t* ev = nullptr;
+    const uint32_t* occ_off = nullptr;
+    const uint32_t* occ_edge = nullptr;
+    const uint32_t* occ_pos = nullptr;
+    uint64_t* sig_buf = nullptr;
+    const uint32_t* sig_off = nullptr;
+    uint32_t* sig_cnt = nullptr;
+    const uint32_t* touched = nullptr;
+    const uint32_t* inc_edges = nullptr;
+    const uint32_t* cell_of = nullptr;
+    uint32_t* order = nullptr;
+    uint32_t  S = 0;
+};
+enum IrParKind : uint32_t {
+    IR_PAR_EXIT = 0,     // the warp policy's shutdown sentinel; never dispatched as work
+    IR_PAR_INIT_SIGS,    // per vertex: fill + sort its degree-signature run, seed order
+    IR_PAR_TOUCH_SORTS,  // per touched vertex: sort its splitter-signature run
+    IR_PAR_SIG_FILL,     // per incident edge: append a key to every vertex on it
+};
+// How a body reserves a slot in a shared per-vertex counter: plain serially, atomic when the
+// warp policy fans one kind's iterations across lanes.
+template <bool kAtomic>
+HG_HD inline uint32_t ir_par_reserve(uint32_t* p) {
+#if defined(__CUDA_ARCH__)
+    if constexpr (kAtomic) return atomicAdd(p, 1u);
+#endif
+    return (*p)++;
+}
+template <bool kAtomic>
+HG_HD inline void ir_par_body(uint32_t kind, uint32_t i, const IrParArgs& a) {
+    switch (kind) {
+        case IR_PAR_INIT_SIGS: {
+            const uint32_t s = a.occ_off[i], len = a.occ_off[i + 1] - s;
+            for (uint32_t k = 0; k < len; ++k)
+                a.sig_buf[s + k] =
+                    (uint64_t(a.ea[a.occ_edge[s + k]]) << 32) | uint64_t(a.occ_pos[s + k]);
+            isort_u64(a.sig_buf + s, len);
+            a.order[i] = i;
+            break;
+        }
+        case IR_PAR_TOUCH_SORTS: {
+            const uint32_t u = a.touched[i];
+            isort_u64(a.sig_buf + a.sig_off[u], a.sig_cnt[u]);
+            break;
+        }
+        case IR_PAR_SIG_FILL: {
+            const uint32_t e = a.inc_edges[i];
+            const uint32_t arity = a.ea[e];
+            uint64_t spos = 0;
+            for (uint32_t p = 0; p < arity && p < IR_SPOS_BITS; ++p)
+                if (a.cell_of[a.ev[a.eoff[e] + p]] == a.S) spos |= (uint64_t(1) << p);
+            for (uint32_t p = 0; p < arity; ++p) {
+                const uint32_t u = a.ev[a.eoff[e] + p];
+                const uint32_t w = ir_par_reserve<kAtomic>(a.sig_cnt + u);
+                a.sig_buf[a.sig_off[u] + w] =
+                    (uint64_t(arity & 0xFF) << 56) | (uint64_t(p & 0xFF) << 48) | spos;
+            }
+            break;
+        }
+        default: break;
+    }
+}
+struct IrSerial {
+    HG_HD void run(uint32_t kind, uint32_t n, const IrParArgs& a) const {
+        for (uint32_t i = 0; i < n; ++i) ir_par_body<false>(kind, i, a);
+    }
+};
+
+// -----------------------------------------------------------------------------------------
 // Initial partition: group vertices by degree signature -- the sorted multiset of
 // (arity, position) over their occurrences -- ordering groups by signature and, within a
 // signature, by vertex index. Both keys are structural, so the partition is equivariant.
 // -----------------------------------------------------------------------------------------
+template <class Par = IrSerial>
 HG_HD inline void ir_initial_partition(
     const uint8_t* ea, const uint32_t* occ_off, const uint32_t* occ_edge, const uint32_t* occ_pos,
     uint32_t n_verts, IrPartition& pi,
-    uint64_t* sig_buf, uint32_t* order)
+    uint64_t* sig_buf, uint32_t* order, Par par = Par{})
 {
     // sig_buf holds every vertex's signature contiguously at occ_off[v]; (arity, position)
-    // packs into one uint64 so the multiset sorts with a scalar comparison.
-    for (uint32_t v = 0; v < n_verts; ++v) {
-        const uint32_t s = occ_off[v], len = occ_off[v + 1] - s;
-        for (uint32_t k = 0; k < len; ++k) {
-            const uint32_t e = occ_edge[s + k];
-            sig_buf[s + k] = (uint64_t(ea[e]) << 32) | uint64_t(occ_pos[s + k]);
-        }
-        isort_u64(sig_buf + s, len);
-        order[v] = v;
+    // packs into one uint64 so the multiset sorts with a scalar comparison. Each vertex's run
+    // is its own, so the iterations fan out (IR_PAR_INIT_SIGS).
+    {
+        IrParArgs a;
+        a.ea = ea; a.occ_off = occ_off; a.occ_edge = occ_edge; a.occ_pos = occ_pos;
+        a.sig_buf = sig_buf; a.order = order;
+        par.run(IR_PAR_INIT_SIGS, n_verts, a);
     }
 
     // Order by (signature, vertex). The signature is structural and label-independent; the
@@ -286,6 +398,7 @@ HG_HD inline void ir_initial_partition(
 // only vertices sharing an edge with it, so a split costs O(boundary); keeping the largest
 // piece at the split cell's id bounds the total to ~O(E log n).
 // -----------------------------------------------------------------------------------------
+template <class Par = IrSerial>
 HG_HD inline void ir_refine(
     const uint8_t* ea, const uint32_t* eoff, const uint32_t* ev, uint32_t n_edges,
     const uint32_t* occ_off, const uint32_t* occ_edge,
@@ -293,7 +406,7 @@ HG_HD inline void ir_refine(
     uint64_t* worklist, uint32_t* inc_edges, uint32_t* edge_epoch,
     uint32_t* touched, uint32_t* on_touched, uint32_t* torder,   // torder holds 2n: order, then split staging
     uint32_t* sig_off, uint32_t* sig_cnt, uint32_t* gstart, uint64_t* sig_buf,
-    uint32_t seed0 = 0xFFFFFFFFu, uint32_t seed1 = 0xFFFFFFFFu)
+    uint32_t seed0 = 0xFFFFFFFFu, uint32_t seed1 = 0xFFFFFFFFu, Par par = Par{})
 {
     const uint32_t n = pi.n;
     const uint32_t wl_words = ir_bitset_words(n);
@@ -360,20 +473,15 @@ HG_HD inline void ir_refine(
             const uint32_t u = touched[i];
             sig_off[u] = total; total += sig_cnt[u]; sig_cnt[u] = 0;
         }
-        for (uint32_t i = 0; i < n_inc; ++i) {
-            const uint32_t e = inc_edges[i];
-            const uint32_t arity = ea[e];
-            uint64_t spos = 0;
-            for (uint32_t p = 0; p < arity && p < IR_SPOS_BITS; ++p)
-                if (pi.cell_of[ev[eoff[e] + p]] == S) spos |= (uint64_t(1) << p);
-            for (uint32_t p = 0; p < arity; ++p) {
-                const uint32_t u = ev[eoff[e] + p];
-                sig_buf[sig_off[u] + sig_cnt[u]++] =
-                    (uint64_t(arity & 0xFF) << 56) | (uint64_t(p & 0xFF) << 48) | spos;
-            }
+        {
+            IrParArgs a;
+            a.ea = ea; a.eoff = eoff; a.ev = ev;
+            a.sig_buf = sig_buf; a.sig_off = sig_off; a.sig_cnt = sig_cnt;
+            a.inc_edges = inc_edges; a.cell_of = pi.cell_of; a.S = S;
+            par.run(IR_PAR_SIG_FILL, n_inc, a);
+            a.touched = touched;
+            par.run(IR_PAR_TOUCH_SORTS, n_touched, a);
         }
-        for (uint32_t i = 0; i < n_touched; ++i)
-            isort_u64(sig_buf + sig_off[touched[i]], sig_cnt[touched[i]]);
 
         // Order touched vertices by (cell id, signature); both keys are structural. Ties are
         // vertices of one cell with equal signatures, which land in the same group -- their
@@ -607,6 +715,7 @@ struct IrWork {
 // orbits, which is why they too come from this pass. Requires every edge to have arity >= 1
 // (both engines' flatteners guarantee it): the orbit scratch overlays cur_form/first_form,
 // whose size covers 2 * n_edges words only then.
+template <class Par = IrSerial>
 HG_HD inline IrResult ir_canonical_hash(
     const uint8_t* ea, const uint32_t* eoff, const uint32_t* ev,
     uint32_t n_edges, uint32_t n_verts, uint32_t total_occ,
@@ -614,7 +723,7 @@ HG_HD inline IrResult ir_canonical_hash(
     uint32_t max_generators = IR_HOST_GENERATORS,
     uint32_t* out_edge_orbit = nullptr, uint32_t* out_edge_class = nullptr,
     uint32_t* out_canonical_form = nullptr, uint32_t* out_vertex_label = nullptr,
-    IrWork* out_work = nullptr)
+    IrWork* out_work = nullptr, Par par = Par{})
 {
     IrResult out{0, IR_EMPTY, 0};
     if (out_work) { out_work->leaves = 0; out_work->nodes = 0;
@@ -639,6 +748,7 @@ HG_HD inline IrResult ir_canonical_hash(
     uint32_t* sig_cnt   = sc.u32(n);
     uint32_t* gstart    = sc.u32(n + 1);
     uint32_t* path      = sc.u32(n);
+    uint32_t* first_path = sc.u32(n);
     uint32_t* labeling  = sc.u32(n);
     uint32_t* first_lab = sc.u32(n);
     // The WINNING leaf's labelling. first_lab is the FIRST leaf's, which the generator
@@ -690,10 +800,10 @@ HG_HD inline IrResult ir_canonical_hash(
     ir_build_occurrences(ea, eoff, ev, n_edges, n, occ_off, occ_edge, occ_pos, cursor);
 
     IrPartition pi = fresh(0);
-    ir_initial_partition(ea, occ_off, occ_edge, occ_pos, n, pi, sig_buf, torder);
+    ir_initial_partition(ea, occ_off, occ_edge, occ_pos, n, pi, sig_buf, torder, par);
     ir_refine(ea, eoff, ev, n_edges, occ_off, occ_edge, pi,
               worklist, inc_edges, edge_epoch, touched, on_touched, torder,
-              sig_off, sig_cnt, gstart, sig_buf);
+              sig_off, sig_cnt, gstart, sig_buf, 0xFFFFFFFFu, 0xFFFFFFFFu, par);
     store_ncells(0, pi.ncells);
 
     uint32_t n_gens = 0;
@@ -701,6 +811,18 @@ HG_HD inline IrResult ir_canonical_hash(
     // orbits were asked for; see IR_NEED_GENERATORS.
     bool gens_truncated = false;
     bool has_best = false, has_first = false;
+    uint32_t first_depth = 0;
+    // AUTOMORPHISM BACKJUMP (the pruning rule every individualization-refinement
+    // implementation carries): a leaf whose form equals the FIRST leaf's exhibits a group
+    // element mapping this branch into the first branch. Every node still pending BELOW the
+    // level where the current path diverged from the first path is an image of an explored
+    // node under the group, and an image's leaf form is EQUAL -- it can affect neither the
+    // minimum form nor the hash -- so the search unwinds straight to the divergence level
+    // instead of sibling by sibling. Measured before this on a 32-leaf star (bigstar): 15,409
+    // leaves and 165,181 nodes for a group needing 31 generators, the node count growing as
+    // ~n^4 in the leaf count. Sound whether or not the generator table had room: the element
+    // exists either way. 0xFFFFFFFFu = none pending.
+    uint32_t backjump_to = 0xFFFFFFFFu;
 
     // A discrete partition names every vertex: the label of a vertex is the id of its
     // singleton cell, and refinement leaves ids contiguous from zero.
@@ -719,8 +841,14 @@ HG_HD inline IrResult ir_canonical_hash(
         if (!has_first) {
             for (uint32_t i = 0; i < form_words; ++i) first_form[i] = cur_form[i];
             for (uint32_t v = 0; v < n; ++v) first_lab[v] = labeling[v];
+            for (uint32_t k = 0; k < depth; ++k) first_path[k] = path[k];
+            first_depth = depth;
             has_first = true;
         } else if (ir_cmp_form(cur_form, first_form, form_words) == 0) {
+            uint32_t fb = 0;
+            const uint32_t common = depth < first_depth ? depth : first_depth;
+            while (fb < common && path[fb] == first_path[fb]) ++fb;
+            if (fb < backjump_to) backjump_to = fb;
             // sigma maps this leaf's naming back to the first's: an automorphism. Recording it
             // needs a free row; without one the automorphism is REAL but unrecorded, which is
             // what gens_truncated exists to report.
@@ -899,7 +1027,9 @@ HG_HD inline IrResult ir_canonical_hash(
             if (t >= p.ncells) {
                 if (p.is_discrete()) leaf(p, d);
                 if (d == 0) break;
-                --d; returning = true; continue;
+                if (backjump_to < d) d = backjump_to; else --d;
+                backjump_to = 0xFFFFFFFFu;
+                returning = true; continue;
             }
             target_of(d) = t;
             uint32_t* cell = cell_buf(d);
@@ -974,7 +1104,7 @@ HG_HD inline IrResult ir_canonical_hash(
         ir_refine(ea, eoff, ev, n_edges, occ_off, occ_edge, child,
                   worklist, inc_edges, edge_epoch, touched, on_touched, torder,
                   sig_off, sig_cnt, gstart, sig_buf,
-                  target_of(d), cell_n_of(d) > 1 ? target_of(d) + 1 : 0xFFFFFFFFu);
+                  target_of(d), cell_n_of(d) > 1 ? target_of(d) + 1 : 0xFFFFFFFFu, par);
         store_ncells(d + 1, child.ncells);
         ++d;
         if (out_work) {
