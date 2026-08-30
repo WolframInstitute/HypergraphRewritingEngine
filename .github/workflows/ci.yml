@@ -349,7 +349,11 @@ jobs:
   paper:
     runs-on: ubuntu-latest
     steps:
+      # Full history: the integrity check diffs each fragment's provenance commit against
+      # HEAD, and a shallow clone would fail every lookup rather than judge staleness.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # The set the document actually names, checked against its preamble: pgfplots, tikz and
       # placeins from latex-extra; algorithm/algpseudocode, microtype and listings from the same;
@@ -391,3 +395,10 @@ jobs:
             exit 1
           fi
           echo "$(wc -l < /tmp/have) fragments, all inputted, all present"
+
+      # The measured content percolates: every fragment carries provenance, no verdict token
+      # is typeset as data, and no fragment describes an engine that has since changed. A
+      # committed paper carried a DIFFERS column and a device table measured on a kernel
+      # three rewrites old; both classes are red here now, not findings for a reader.
+      - name: The paper's measurements describe the engine at HEAD
+        run: python3 tools/dev/paper_integrity_check.py
