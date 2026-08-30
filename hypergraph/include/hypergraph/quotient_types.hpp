@@ -18,6 +18,7 @@
 #include "hgcommon/core.hpp"                   // EMPTY_STATE_CANONICAL_HASH, the id widths
 #include "hgcommon/quotient_replay_core.hpp"   // qr_content_hash -- the event content identity
 #include "hgcommon/event_core.hpp"
+#include "zero_value_init.hpp"
 
 namespace HG_NAMESPACE {
 namespace engine {
@@ -45,6 +46,8 @@ struct QcEventContent {
     // open-codings of the same arithmetic agree only until one is edited.
     uint64_t triple_hash() const;
 };
+// Every default member initialiser above is zero; see zero_value_init_v.
+template <> inline constexpr bool zero_value_init_v<QcEventContent> = true;
 
 // The quotient-aware identity of a HYPEREDGE, used as the rendezvous key that meets an
 // edge's producer events with its consumer events. Strongly typed and distinct from:

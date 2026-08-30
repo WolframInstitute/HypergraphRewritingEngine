@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "types.hpp"
+#include "zero_value_init.hpp"
 #include "hgcommon/signature_core.hpp"
 
 namespace HG_NAMESPACE {
@@ -33,6 +34,7 @@ struct EdgeSignature {
     // Value-initialised, as the device port's is (hg_gpu/edge_signature.hpp): a signature is
     // copied whole, and the bytes past `arity` are then a defined value rather than
     // indeterminate ones every copy reads.
+    // Both initialisers are zero, and zero_value_init_v says so below.
     uint8_t arity = 0;
     uint8_t pattern[MAX_ARITY] = {};  // Vertex repetition pattern
 
@@ -54,6 +56,7 @@ struct EdgeSignature {
     // Number of distinct vertices (max label + 1)
     uint8_t num_distinct() const;
 };
+template <> inline constexpr bool zero_value_init_v<EdgeSignature> = true;
 
 // =============================================================================
 // Signature Compatibility

@@ -2149,9 +2149,13 @@ Hypergraph::Hypergraph(uint32_t capacity_scale)
 
 {
     causal_graph_.set_arena(&arena_);
-    // The replay's hot sets are sharded; they are seated exactly as any other arena-backed
-    // member. See ShardedKeySet for why these two and not the rest.
+    // The dedup sets are seated in the arena like every other member: a table on fresh arena
+    // bytes needs no sentinel fill, and every table is reclaimed with the arena.
+    seen_transitions_.set_arena(&arena_);
+    qc_dsup_seen_.set_arena(&arena_);
+    qc_reached_.set_arena(&arena_);
     qc_applied_.set_arena(&arena_);
+    qc_canon_event_seen_.set_arena(&arena_);
 }
 
 // An ordered pair of event ids as one map key. Both ids are offset by one before packing, which

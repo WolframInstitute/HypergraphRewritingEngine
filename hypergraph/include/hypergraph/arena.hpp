@@ -1,5 +1,6 @@
 #pragma once
 #include "hgcommon/namespace.hpp"
+#include "hypergraph/zero_value_init.hpp"
 
 #include <atomic>
 #include <cstdio>
@@ -473,7 +474,10 @@ public:
     // Everything else -- a full block, a recycling arena, a thread with no cursor -- is the
     // out-of-line path. Stats builds take the out-of-line path for every allocation, which
     // is where the per-site profile is booked.
-    void* allocate_raw(size_t size, size_t alignment = alignof(std::max_align_t)) {
+    // `zero`, when given, receives whether the bytes handed out are known to be zero already
+    // (see Block::dirty_end); a caller that would value-initialise them then skips the fill.
+    void* allocate_raw(size_t size, size_t alignment = alignof(std::max_align_t),
+                       bool* zero = nullptr) {
 #if !HG_ENGINE_STATS
         if (!recycle_) {
             const int wi = arena_worker_index();
@@ -485,6 +489,7 @@ public:
                     if (new_offset <= c.capacity) {
                         c.offset = new_offset;
                         c.block->offset.store(new_offset, std::memory_order_relaxed);
+                        if (zero) *zero = aligned >= c.block->dirty_end;
                         void* p = c.block->data + aligned;
                         HG_ARENA_UNPOISON(p, size);
                         return p;
@@ -493,14 +498,20 @@ public:
             }
         }
 #endif
-        return allocate_raw_slow(size, alignment);
+        return allocate_raw_slow(size, alignment, zero);
     }
-    void* allocate_raw_slow(size_t size, size_t alignment);
+    void* allocate_raw_slow(size_t size, size_t alignment, bool* zero);
     // Give the worker's most recent allocation back. True only when [p, p + size) is the top
     // of this worker's cursor -- the allocate-then-lose-the-CAS sequence in SegmentedArray --
     // so the next request reuses the bytes instead of leaving a dead segment behind. False,
     // with nothing changed, for any other pointer, for the shared path (no worker index) and
     // for a recycling arena. Lock-free: the cursor is private to the worker.
+    //
+    // The bytes taken back are marked dirty (Block::dirty_end), because the next request
+    // receives exactly these bytes and the caller may have constructed into them: a
+    // SegmentedArray whose elements have a non-trivial constructor builds its segment before
+    // the install CAS it then loses, and a table that later landed on those bytes would read
+    // the constructed values as keys.
     bool release_last(void* p, size_t size) {
         if (recycle_) return false;
         const int wi = arena_worker_index();
@@ -510,6 +521,7 @@ public:
         char* const top = c.block->data + c.offset;
         if (static_cast<char*>(p) + size != top) return false;
         const size_t new_offset = static_cast<size_t>(static_cast<char*>(p) - c.block->data);
+        if (c.block->dirty_end < c.offset) c.block->dirty_end = c.offset;
         HG_ARENA_POISON(p, size);
         c.offset = new_offset;
         c.block->offset.store(new_offset, std::memory_order_relaxed);
@@ -527,11 +539,25 @@ public:
         return true;
     }
 
-    // Allocate array of T (default constructed, destructors tracked if needed)
+    // Allocate array of T (value-initialised, destructors tracked if needed).
     template<typename T>
     T* allocate_array(size_t n) {
-        void* mem = allocate_raw(sizeof(T) * n, alignof(T));
+        bool  zero = false;
+        void* mem  = allocate_raw(sizeof(T) * n, alignof(T), &zero);
         T* arr = static_cast<T*>(mem);
+
+        // Value-initialising a zero_value_init_v type writes zero bytes, and bytes from a
+        // fresh mapping are zero already (Block::dirty_end): the fill would write each byte
+        // to zero once and the caller to its value once. Measured (callgrind, bench_cpu_evolve
+        // wpp depth 7, one thread, every page fresh): the fills were 107.8 M instructions and
+        // 90.2 M stores, 3.0% of all instructions and 18.9% of all stores, with 2.04 M
+        // last-level write misses, 41.7% of the run's total. Bytes a previous life dirtied,
+        // a recycling arena and a verification build fill as value-initialisation requires.
+        if constexpr (zero_value_init_v<T>) {
+            static_assert(std::is_trivially_destructible_v<T>);
+            if (!zero) std::memset(static_cast<void*>(arr), 0, sizeof(T) * n);
+            return arr;
+        }
 
         for (size_t i = 0; i < n; ++i) {
             new (&arr[i]) T();
@@ -568,8 +594,9 @@ public:
     // Reset for reuse WITHOUT freeing blocks — recycles a scratch arena between
     // tasks. Single-threaded: only the owning thread may call this, and only while
     // no other thread allocates from this arena (e.g. a per-worker scratch arena
-    // between tasks). Runs+clears registered destructors, zeroes every block, and
-    // restarts allocation from the first block.
+    // between tasks). Runs+clears registered destructors, rewinds every block's
+    // offset, and restarts allocation from the first block. The bytes keep their
+    // contents, so a recycling arena never hands out bytes known to be zero.
     void reset();
 
 private:
@@ -578,13 +605,25 @@ private:
         Block* next;   // newer block; lets reset() walk forward to recycle blocks
         size_t capacity;
         std::atomic<size_t> offset;
-        // WHICH ALLOCATOR PRODUCED THIS BLOCK, recorded rather than inferred. A huge-page block
-        // comes from posix_memalign and must go back through free(); an ordinary one comes from
-        // operator new. Deducing it from the size would be wrong the moment the threshold moves.
-        bool huge;
+        // The mapping this block sits in, recorded for the release: a block starts at the first
+        // huge-page boundary inside its mapping, so the mapping's own base and length are the
+        // only way to give it back. Null under HG_VERIFICATION, where a block is operator new.
+        void*  map_base;
+        size_t map_len;
+        // BYTES OF data[] THAT MAY BE NON-ZERO, from the front. A fresh mapping is zero
+        // throughout (dirty_end == 0); a block back from the pool carries the high-water of
+        // its previous life; a give-back (release_last) raises it over the bytes returned. An
+        // allocation at or past dirty_end is known to be zero, which allocate_array and the
+        // hash tables use to skip their fills; one below it fills as value-initialisation
+        // requires. Capacity under HG_VERIFICATION, where a block is operator new.
+        size_t dirty_end;
         alignas(std::max_align_t) char data[];
 
+        // A block from the process-wide pool of released blocks when one of the size class
+        // is there, else a fresh mapping. release() returns it to the pool.
         static Block* create(size_t data_capacity);
+        static void   release(Block* block);
+        static void   pool_push(std::atomic<uint64_t>& head, Block* block);
     };
 
     struct DestructorNode {
@@ -619,7 +658,7 @@ private:
     // Bump this worker's private cursor. On overflow, grab a fresh block sized for
     // the request and bump from there. block->offset is mirrored (relaxed, to this
     // worker's own block) so bytes_allocated() sees the live high-water mark.
-    void* allocate_local(LocalCursor& c, size_t size, size_t alignment);
+    void* allocate_local(LocalCursor& c, size_t size, size_t alignment, bool* zero);
 
     // Single-threaded bump path for a recycling arena, riding the same
     // current_block_/offset pair that mark()/release()/reset() do.
@@ -627,7 +666,7 @@ private:
 
     // Shared bump path: an atomic claim on current_block_'s offset. Backs the
     // over-ceiling fallback for the concurrent arena.
-    void* allocate_shared(size_t size, size_t alignment);
+    void* allocate_shared(size_t size, size_t alignment, bool* zero);
 
     // Allocate a block of the given capacity and splice it onto the head of the
     // chain (lock-free). Shared by the per-worker cursor path and allocate_new_block.

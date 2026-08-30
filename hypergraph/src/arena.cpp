@@ -4,7 +4,10 @@
 #include <algorithm>
 #include <vector>
 #include <cstdio>
-#if defined(__linux__)
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#elif !defined(HG_VERIFICATION)
 #include <sys/mman.h>
 #endif
 #include <cstdlib>
@@ -89,8 +92,12 @@ ConcurrentHeterogeneousArena::~ConcurrentHeterogeneousArena() {
         HG_ARENA_UNPOISON(block->data, block->capacity);
         g_arena_block_bytes.fetch_sub(sizeof(Block) + block->capacity, std::memory_order_relaxed);
         if (recycle_) g_scratch_block_bytes.fetch_sub(sizeof(Block) + block->capacity, std::memory_order_relaxed);
-        // Freed by whichever allocator produced it; see Block::create.
-        if (block->huge) std::free(block); else ::operator delete(block);
+        // What the block's next life may not assume zero: everything ever bumped past, or
+        // the whole block for a recycling arena, whose reset() rewound the offset over it.
+        const size_t used = block->offset.load(std::memory_order_relaxed);
+        if (recycle_) block->dirty_end = block->capacity;
+        else if (block->dirty_end < used) block->dirty_end = used;
+        Block::release(block);
         block = prev;
     }
 
@@ -134,17 +141,19 @@ void arena_alloc_profile_dump(FILE* out, size_t top) {
 }
 #endif
 
-void* ConcurrentHeterogeneousArena::allocate_raw_slow(size_t size, size_t alignment) {
+void* ConcurrentHeterogeneousArena::allocate_raw_slow(size_t size, size_t alignment, bool* zero) {
     // One choke point for every request, which is where the unpoison belongs: the three paths
     // below differ in which block they take from, not in what they hand back.
     HG_STAT(note_alloc_site(HG_RETURN_ADDRESS(), size));
     void* p;
     if (recycle_) {
+        // reset() rewinds offsets over live contents: nothing here is known to be zero.
+        if (zero) *zero = false;
         p = allocate_single(size, alignment);
     } else {
         const int wi = arena_worker_index();
-        p = (wi >= 0) ? allocate_local(cursors_[wi], size, alignment)
-                      : allocate_shared(size, alignment);
+        p = (wi >= 0) ? allocate_local(cursors_[wi], size, alignment, zero)
+                      : allocate_shared(size, alignment, zero);
     }
     HG_ARENA_UNPOISON(p, size);
     return p;
@@ -187,59 +196,158 @@ void ConcurrentHeterogeneousArena::reset() {
     current_block_.store(first, std::memory_order_relaxed);
 }
 
+// A BLOCK IS AN ANONYMOUS MAPPING, for two properties the heap allocator gives neither of.
+//
+// ZERO BYTES. The kernel zero-fills an anonymous page on first touch, and the arena never
+// hands a byte out twice (see Block::dirty_end), so every allocation receives zeros without the arena
+// writing them: allocate_array and the hash tables skip their fills on that, which were 3.0% of
+// all instructions and 18.9% of all stores on wpp depth 7 (callgrind, one thread).
+//
 // HUGE PAGES, ASKED FOR EXPLICITLY. Measured on the EPYC at 32 workers, wpp depth 7: 1,060,520
 // minor page faults, and 9.3% of all cycles inside the kernel -- clear_page_erms zeroing fresh
 // 4 KB pages, down_read_trylock on mmap_sem, and native_queued_spin_lock_slowpath where 32
-// threads meet on it. That is the fault path, not the engine.
+// threads meet on it. That is the fault path, not the engine. Two things are needed together
+// and neither works alone: the block must be 2 MB ALIGNED and at least 2 MB, or there is no
+// huge page for the kernel to use, and it must be ASKED FOR, because transparent huge pages
+// run in `madvise` mode on this box and on most distributions, where an unrequested mapping
+// gets 4 KB pages however large it is. A block of a huge page or more is placed on the first
+// huge-page boundary inside a mapping one huge page longer than it needs; the slack at either
+// end stays untouched, so it costs address space and no memory, and goes back with the block.
+// A smaller block is a plain page-aligned mapping.
 //
-// Two things are needed together and neither works alone. The mapping must be 2 MB ALIGNED and at
-// least 2 MB, or there is no huge page for the kernel to use; and it must be ASKED FOR, because
-// transparent huge pages run in `madvise` mode on this box and on most distributions, where an
-// unrequested mapping gets 4 KB pages however large it is.
+// Under HG_VERIFICATION a block is operator new: the checker's interpreter models the heap and
+// not mmap, and a 2 MB block is a 2 MB memset it has to promote one store at a time (the engine
+// harnesses define HG_ARENA_BLOCK_SIZE). Windows has VirtualAlloc, which zero-fills likewise.
 //
-// The pairing matters: a posix_memalign block is freed with free(), never operator delete, so the
-// flag records which allocator this block came from rather than inferring it from the size.
+// THE POOL. A released block goes back to a process-wide pool and the next arena that needs
+// its size class takes it from there rather than mapping afresh, which is what the C heap
+// did for the arena before and what keeps a run of evolutions from faulting its working set
+// in again each time (measured on the EPYC, wpp depth 7, five reps, 16 workers: mapping
+// afresh per arena was 118k page faults against 83k and 5% of the wall, all of it the
+// sub-huge-page ramp blocks re-faulted under the mm lock). One Treiber stack per power-of-two
+// class of mapping length, heads tagged against ABA (16-bit tag above a 48-bit pointer,
+// which is every user-space pointer on the platforms built); a pooled block is never
+// unmapped, so reading its link after the head is loaded is always a read of mapped memory.
+// A block's dirty_end travels with it, so what the pool hands back is zero exactly where
+// its previous life never wrote. Absent under HG_VERIFICATION, where a block is operator new.
+namespace {
+#if !defined(HG_VERIFICATION)
+constexpr int kPoolClasses = 48;
+std::atomic<uint64_t> g_block_pool[kPoolClasses];
+constexpr uint64_t kPtrMask = (uint64_t(1) << 48) - 1;
+inline int pool_class_of(size_t map_len) {              // ceil(log2(map_len))
+    int c = 0;
+    while ((size_t(1) << c) < map_len) ++c;
+    return c;
+}
+inline uint64_t pool_pack(void* p, uint64_t tag) {
+    return (reinterpret_cast<uint64_t>(p) & kPtrMask) | (tag << 48);
+}
+#endif
+}  // namespace
+
 ConcurrentHeterogeneousArena::Block*
 ConcurrentHeterogeneousArena::Block::create(size_t data_capacity) {
-    const size_t total = sizeof(Block) + data_capacity;
-    void* mem = nullptr;
-    bool  aligned = false;
-#if defined(__linux__)
-    if (total >= kHugePageBytes) {
-        const size_t rounded = (total + kHugePageBytes - 1) & ~(kHugePageBytes - 1);
-        if (posix_memalign(&mem, kHugePageBytes, rounded) == 0 && mem) {
-            // Advisory: a kernel that cannot back it says so and the mapping still works.
-            ::madvise(mem, rounded, MADV_HUGEPAGE);
-            aligned = true;
-            data_capacity = rounded - sizeof(Block);   // the slack is usable, not wasted
-        } else {
-            mem = nullptr;
+    size_t total = sizeof(Block) + data_capacity;
+    void*  mem      = nullptr;
+    void*  map_base = nullptr;
+    size_t map_len  = 0;
+#if defined(HG_VERIFICATION)
+    mem = ::operator new(total);
+#else
+    const bool huge = total >= kHugePageBytes;
+    if (huge) total = (total + kHugePageBytes - 1) & ~(kHugePageBytes - 1);
+    map_len = huge ? total + kHugePageBytes : total;
+    // A pooled block of the same class (the ramp asks for the same few sizes over and over,
+    // so the class is the size). One whose capacity falls short of this request -- the class
+    // spans a factor of two -- goes back and the request maps afresh.
+    {
+        std::atomic<uint64_t>& head = g_block_pool[pool_class_of(map_len)];
+        uint64_t old = head.load(std::memory_order_acquire);
+        while (Block* b = reinterpret_cast<Block*>(old & kPtrMask)) {
+            const uint64_t next = pool_pack(b->prev, (old >> 48) + 1);
+            if (head.compare_exchange_weak(old, next, std::memory_order_acq_rel,
+                                           std::memory_order_acquire)) {
+                if (b->capacity < data_capacity) { pool_push(head, b); break; }
+                b->prev = nullptr;
+                b->next = nullptr;
+                b->offset.store(0, std::memory_order_relaxed);
+                HG_ARENA_POISON(b->data, b->capacity);
+                note_block_grab(g_arena_block_bytes, g_arena_block_bytes_high_water, sizeof(Block) + b->capacity);
+                return b;
+            }
         }
     }
+#if defined(_WIN32)
+    map_base = VirtualAlloc(nullptr, map_len, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (!map_base) throw std::bad_alloc();
+#else
+    map_base = ::mmap(nullptr, map_len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (map_base == MAP_FAILED) throw std::bad_alloc();
 #endif
-    if (!mem) mem = ::operator new(total);
+    mem = map_base;
+    if (huge) {
+        const uintptr_t base  = reinterpret_cast<uintptr_t>(map_base);
+        const uintptr_t start = (base + kHugePageBytes - 1) & ~uintptr_t(kHugePageBytes - 1);
+        mem = reinterpret_cast<void*>(start);
+#if !defined(_WIN32)
+        // Advisory: a kernel that cannot back it says so and the mapping still works.
+        ::madvise(mem, total, MADV_HUGEPAGE);
+#endif
+    }
+    data_capacity = total - sizeof(Block);   // the rounding slack is usable, not wasted
+#endif
     Block* block = static_cast<Block*>(mem);
     block->prev = nullptr;
     block->next = nullptr;
     block->capacity = data_capacity;
-    block->huge = aligned;
+    block->map_base = map_base;
+    block->map_len  = map_len;
+#if defined(HG_VERIFICATION)
+    block->dirty_end = data_capacity;
+#else
+    block->dirty_end = 0;
+#endif
     block->offset.store(0, std::memory_order_relaxed);
     HG_ARENA_POISON(block->data, data_capacity);
     note_block_grab(g_arena_block_bytes, g_arena_block_bytes_high_water, sizeof(Block) + data_capacity);
     return block;
 }
 
+void ConcurrentHeterogeneousArena::Block::release(Block* block) {
+#if defined(HG_VERIFICATION)
+    ::operator delete(block);
+#else
+    pool_push(g_block_pool[pool_class_of(block->map_len)], block);
+#endif
+}
+
+void ConcurrentHeterogeneousArena::Block::pool_push(std::atomic<uint64_t>& head, Block* block) {
+#if defined(HG_VERIFICATION)
+    (void)head; (void)block;
+#else
+    uint64_t old = head.load(std::memory_order_acquire);
+    uint64_t next;
+    do {
+        block->prev = reinterpret_cast<Block*>(old & kPtrMask);
+        next = pool_pack(block, (old >> 48) + 1);
+    } while (!head.compare_exchange_weak(old, next, std::memory_order_acq_rel,
+                                         std::memory_order_acquire));
+#endif
+}
+
 // Bump this worker's private cursor. On overflow, grab a fresh block sized for the request and
 // bump from there. block->offset is mirrored (relaxed, to this worker's own block) so
 // bytes_allocated() sees the live high-water mark.
 void* ConcurrentHeterogeneousArena::allocate_local(LocalCursor& c, size_t size,
-                                                   size_t alignment) {
+                                                   size_t alignment, bool* zero) {
     if (c.block) {
         size_t aligned = (c.offset + alignment - 1) & ~(alignment - 1);
         size_t new_offset = aligned + size;
         if (new_offset <= c.capacity) {
             c.offset = new_offset;
             c.block->offset.store(new_offset, std::memory_order_relaxed);
+            if (zero) *zero = aligned >= c.block->dirty_end;
             return c.block->data + aligned;
         }
     }
@@ -273,6 +381,7 @@ void* ConcurrentHeterogeneousArena::allocate_local(LocalCursor& c, size_t size,
     size_t new_offset = aligned + size;
     c.offset = new_offset;
     nb->offset.store(new_offset, std::memory_order_relaxed);
+    if (zero) *zero = aligned >= nb->dirty_end;
     return nb->data + aligned;
 }
 
@@ -301,7 +410,7 @@ void* ConcurrentHeterogeneousArena::allocate_single(size_t size, size_t alignmen
 
 // Shared bump path: an atomic claim on current_block_'s offset. Backs the over-ceiling fallback
 // for the concurrent arena.
-void* ConcurrentHeterogeneousArena::allocate_shared(size_t size, size_t alignment) {
+void* ConcurrentHeterogeneousArena::allocate_shared(size_t size, size_t alignment, bool* zero) {
     while (true) {
         Block* block = current_block_.load(std::memory_order_acquire);
         size_t offset = block->offset.load(std::memory_order_acquire);
@@ -315,8 +424,8 @@ void* ConcurrentHeterogeneousArena::allocate_shared(size_t size, size_t alignmen
                     offset, new_offset,
                     std::memory_order_acq_rel,  // Use acq_rel for stronger ordering
                     std::memory_order_acquire)) {
-                void* result = block->data + aligned_offset;
-                return result;
+                if (zero) *zero = aligned_offset >= block->dirty_end;
+                return block->data + aligned_offset;
             }
             continue;
         }

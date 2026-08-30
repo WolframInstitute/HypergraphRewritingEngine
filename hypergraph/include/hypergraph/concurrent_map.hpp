@@ -173,7 +173,8 @@ public:
                              ConcurrentHeterogeneousArena* arena) {
             const size_t actual_cap = round_capacity(cap);
             const size_t bytes = bytes_for(cap);
-            void* mem = arena ? arena->allocate_raw(bytes, kLine)
+            bool  zero = false;
+            void* mem = arena ? arena->allocate_raw(bytes, kLine, &zero)
                               : ::operator new(bytes);
             Table* table = static_cast<Table*>(mem);
             auto raw = reinterpret_cast<uintptr_t>(static_cast<char*>(mem) + sizeof(Table));
@@ -185,9 +186,12 @@ public:
             // The first table has nothing older, so a walk from it never needs the chain.
             new (&table->chain_clear) std::atomic<bool>(prev_table == nullptr);
 
-            // Initialize entries
-            for (size_t i = 0; i < actual_cap; ++i) {
-                new (&table->entries[i]) Entry();
+            // Bytes the arena knows to be zero already hold an empty Entry in every slot when
+            // both sentinels are zero bytes (see ConcurrentHeterogeneousArena::Block::dirty_end).
+            if (!(zero && EMPTY_KEY == K{} && ABSENT_VALUE == V{})) {
+                for (size_t i = 0; i < actual_cap; ++i) {
+                    new (&table->entries[i]) Entry();
+                }
             }
 
             return table;

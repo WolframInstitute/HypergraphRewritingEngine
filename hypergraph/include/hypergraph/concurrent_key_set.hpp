@@ -129,14 +129,20 @@ public:
             size_t actual = 1;
             while (actual < cap) actual <<= 1;
             const size_t bytes = sizeof(Table) + sizeof(std::atomic<K>) * actual;
-            void* mem = arena ? arena->allocate_raw(bytes, alignof(Table))
+            bool  zero = false;
+            void* mem = arena ? arena->allocate_raw(bytes, alignof(Table), &zero)
                               : ::operator new(bytes);
             // The first table has nothing below it, so its chain is clear by construction.
             Table* t = new (mem) Table{actual, actual - 1, prev, nullptr, {false},
                                        {prev == nullptr}};
             t->keys = reinterpret_cast<std::atomic<K>*>(
                 reinterpret_cast<char*>(mem) + sizeof(Table));
-            for (size_t i = 0; i < actual; ++i) new (&t->keys[i]) std::atomic<K>(EMPTY_KEY);
+            // Bytes the arena knows to be zero already hold the empty sentinel in every slot
+            // when the sentinel is zero bytes; the fill was half of all zeroing on wpp depth 7
+            // (callgrind: 55.0 M instructions in 1,273 table creations).
+            if (!(zero && EMPTY_KEY == K{})) {
+                for (size_t i = 0; i < actual; ++i) new (&t->keys[i]) std::atomic<K>(EMPTY_KEY);
+            }
             return t;
         }
     };

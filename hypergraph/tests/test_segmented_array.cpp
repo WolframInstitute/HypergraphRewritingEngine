@@ -1,9 +1,12 @@
 #include <gtest/gtest.h>
 
 #include "hypergraph/arena.hpp"
+#include "hypergraph/quotient_types.hpp"
 #include "hypergraph/segmented_array.hpp"
+#include "hypergraph/signature.hpp"
 
 #include <atomic>
+#include <cstring>
 #include <thread>
 #include <vector>
 
@@ -15,6 +18,9 @@
 
 using hg::engine::ConcurrentHeterogeneousArena;
 using hg::engine::SegmentedArray;
+using hg::engine::QcEventContent;
+using hg::engine::EdgeSignature;
+using hg::engine::zero_value_init_v;
 
 namespace {
 
@@ -50,6 +56,69 @@ TEST(SegmentedArrayGrowth, AddressesPastTheUniformCeiling) {
 // thread count for the same array -- the footprint term the release standard requires to be
 // zero (measured on bench_cpu_evolve wpp depth 7: 191 MB -> 394 MB of used arena from one
 // thread to eight, all of it losing segment allocations).
+// allocate_array hands out zero elements: across the first small block, a block boundary, a
+// huge-page block, a give-back of written bytes, a block back from the pool with a previous
+// life's contents, and -- for a recycling arena -- after a reset over written bytes.
+TEST(ArenaZeroInit, FreshAllocationsAreZero) {
+    ConcurrentHeterogeneousArena arena;
+    for (size_t n : {size_t(100), size_t(20000), size_t(600000)}) {
+        uint32_t* a = arena.allocate_array<uint32_t>(n);
+        size_t nonzero = 0;
+        for (size_t i = 0; i < n; ++i) nonzero += a[i] != 0;
+        EXPECT_EQ(nonzero, 0u) << "n=" << n;
+    }
+    // A give-back of bytes the caller constructed into (a lost segment race builds its
+    // elements first): the next request lands on the same bytes and they are zero again.
+    uint32_t* g = arena.allocate_array<uint32_t>(1000);
+    std::memset(g, 0xFF, 1000 * sizeof(uint32_t));
+    ASSERT_TRUE(arena.release_last(g, 1000 * sizeof(uint32_t)));
+    uint32_t* h = arena.allocate_array<uint32_t>(1000);
+    EXPECT_EQ(h, g);
+    for (size_t i = 0; i < 1000; ++i) ASSERT_EQ(h[i], 0u);
+
+    // A block returns to the process-wide pool with its arena and the next arena of the
+    // class takes it back (LIFO: the same block, the same bytes) with the old contents.
+    uint32_t* first = nullptr;
+    {
+        ConcurrentHeterogeneousArena a;
+        first = a.allocate_array<uint32_t>(1000);
+        std::memset(first, 0xFF, 1000 * sizeof(uint32_t));
+    }
+    {
+        ConcurrentHeterogeneousArena b;
+        uint32_t* again = b.allocate_array<uint32_t>(1000);
+        EXPECT_EQ(again, first);
+        for (size_t i = 0; i < 1000; ++i) ASSERT_EQ(again[i], 0u);
+    }
+
+    ConcurrentHeterogeneousArena scratch(64 * 1024, /*recycle_blocks=*/true);
+    uint32_t* s = scratch.allocate_array<uint32_t>(100);
+    std::memset(s, 0xFF, 100 * sizeof(uint32_t));
+    scratch.reset();
+    uint32_t* t = scratch.allocate_array<uint32_t>(100);
+    ASSERT_EQ(t, s);
+    for (size_t i = 0; i < 100; ++i) ASSERT_EQ(t[i], 0u);
+}
+
+// Every type that opts into zero_value_init_v by specialisation: T() over 0xFF bytes leaves
+// only zero bytes, padding included, which is what the skipped fill would have written.
+template <typename T>
+static bool value_init_is_all_zero() {
+    alignas(T) unsigned char buf[sizeof(T)];
+    std::memset(buf, 0xFF, sizeof(T));
+    new (buf) T();
+    for (size_t i = 0; i < sizeof(T); ++i) if (buf[i] != 0) return false;
+    return true;
+}
+TEST(ArenaZeroInit, OptedInTypesAreZeroBytes) {
+    static_assert(zero_value_init_v<QcEventContent>);
+    static_assert(zero_value_init_v<EdgeSignature>);
+    static_assert(zero_value_init_v<uint32_t>);
+    static_assert(!zero_value_init_v<std::atomic<uint32_t>>);
+    EXPECT_TRUE(value_init_is_all_zero<QcEventContent>());
+    EXPECT_TRUE(value_init_is_all_zero<EdgeSignature>());
+}
+
 TEST(SegmentedArrayGrowth, LosingSegmentAllocationsAreGivenBack) {
     ConcurrentHeterogeneousArena arena;
     SegmentedArray<uint32_t> a;
