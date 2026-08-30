@@ -36,6 +36,13 @@ from pathlib import Path
 # holds, and the paper says so legitimately -- so entries that collide with this project's own
 # vocabulary carry a narrower pattern rather than being dropped.
 TELLS = [
+    # A relative clause whose verb restates the main clause's own act is grammar without
+    # content: "generated from the tool that produces it" tells the reader nothing the head
+    # noun did not. The clause earns its place only when its verb differs from the act
+    # already asserted ("the thread that called it" names which thread).
+    (r"\b(generat\w+|produc\w+|writ\w+|emit\w+|comput\w+|check\w+|measur\w+)\b[^.;]{0,60}"
+     r"\bthat (generates|produces|writes|emits|computes|checks|measures) (it|them)\b",
+     "circular relative clause: the clause's verb restates the main clause"),
     # Elevated diction where a plain word exists.
     (r"\bdelve[sd]?\b", "elevated diction: delve"),
     (r"\bleverag(e|es|ed|ing)\b", "elevated diction: leverage -- say 'use'"),
