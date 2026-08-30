@@ -367,7 +367,12 @@ def main():
                     help="logical CPUs to pin workers to; the table says so in its stamp")
     ap.add_argument("--thread-sweep", default="",
                     help="thread counts; must not exceed --cpus")
-    ap.add_argument("--shape-depths", default="growth:1:9,pair:4:7",
+    # Depths sized so each shape's single-thread run is seconds to tens of seconds: a scaling
+    # measurement over a one-second evolution is a measurement of the fixed per-run cost. The
+    # corpus's growth rules copy their left side (the pendant-growth fix), which multiplied the
+    # per-depth growth of these two shapes, so the depths that gave 3 s and 34 s before that
+    # change gave 1.6 s and 1.0 s after it; one more depth on each restores the scale.
+    ap.add_argument("--shape-depths", default="growth:1:10,pair:4:8",
                     help="rule:edges:steps triples for the rule-shape sweep")
     ap.add_argument("--sections", default="cpu",
                     help="comma-separated subset of: cpu, shapes, memory, gpu")
