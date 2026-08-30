@@ -127,7 +127,7 @@ class Hypergraph {
     // transition signatures. Built online as events fire in quotient mode; the depth-indexed
     // producer-set reconstruction propagates over it.
     ConcurrentMap<uint64_t, LockFreeList<CanonicalTransition>*> transitions_from_;
-    WorkerFilteredSet<ShardedKeySet<uint64_t>> seen_transitions_;
+    ShardedKeySet<uint64_t> seen_transitions_;
 
     // Depth-indexed producer-set reconstruction (the online form of the validated DP).
     // qc_dsup_ maps key(state_hash, depth, orbit) -> set of producer canonical-event ids
@@ -135,8 +135,8 @@ class Hypergraph {
     // depth). Producers cascade forward monotonically as transitions and reachability are
     // discovered, emitting causal edges into causal_graph_. Bounded by qc_max_steps_.
     ConcurrentMap<uint64_t, LockFreeList<EventId>*> qc_dsup_;
-    WorkerFilteredSet<ShardedKeySet<uint64_t>> qc_dsup_seen_;
-    WorkerFilteredSet<ConcurrentKeySet<uint64_t>> qc_reached_;
+    ShardedKeySet<uint64_t> qc_dsup_seen_;
+    ConcurrentKeySet<uint64_t> qc_reached_;
     // The same points qc_reached_ marks, enumerable. The map's key mixes the hash and the
     // depth irreversibly, and raising the depth budget has to revisit the points that stood
     // at the old terminal depth: each was marked reached, but every transition out of it was
@@ -196,7 +196,7 @@ class Hypergraph {
     // Claims a (instance, match) application. Both the instance side and the match side drive
     // the rendezvous, and unlike the producer-set DP an application is NOT idempotent -- each
     // one emits a raw event -- so the pair must be claimed exactly once. O(raw) entries.
-    WorkerFilteredSet<ShardedKeySet<uint64_t>> qc_applied_;
+    ShardedKeySet<uint64_t> qc_applied_;
     // Claims an unordered branchial pair {instance, match a, match b}. Both members of a pair
     // can see each other, so the pair is claimed directly rather than a reporter being elected.
 
@@ -241,7 +241,7 @@ class Hypergraph {
 #ifndef HG_QC_CANON_EVENT_SEEN_CAPACITY
 #define HG_QC_CANON_EVENT_SEEN_CAPACITY 4096
 #endif
-    WorkerFilteredSet<ConcurrentKeySet<uint64_t>> qc_canon_event_seen_{HG_QC_CANON_EVENT_SEEN_CAPACITY};
+    ConcurrentKeySet<uint64_t> qc_canon_event_seen_{HG_QC_CANON_EVENT_SEEN_CAPACITY};
     std::atomic<size_t> qc_num_canon_events_{0};
     std::atomic<bool> quotient_reconstruction_{false};
 
