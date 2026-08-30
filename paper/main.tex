@@ -985,11 +985,45 @@ the answer a function of the stored set alone.
 The reduction applies only to the causal graph. States, events and the branchial relation are never
 reduced: branchial edges connect states at the same step and carry no transitivity to remove.
 
+\subsection{Pruning and Sparse Exploration}
+\label{sec:pruning}
+
+Exhaustive evolution is not always the object of interest, and the state count grows too quickly
+for it to be available at large depth. The engine bounds an exploration by four independent
+mechanisms, which compose:
+
+\begin{itemize}
+\item \textbf{Hard caps.} The total state count, the total event count, the states admitted
+      per step (\textsc{MaxStatesPerStep}) and the successors kept per parent
+      (\textsc{MaxSuccessorStatesPerParent}) each bound the exploration through an atomic
+      counter, so the \emph{count} retained is exact at every worker count. Which states fill a
+      cap follows arrival order, which is the one deliberate exception to the determinism
+      contract of Section~\ref{sec:determinism}, made for the reason given there: an exact
+      cap that was also schedule-independent would require the depth barrier the design
+      declines. A run that reaches a cap returns the bounded evolution with a warning naming
+      the cap, the same contract as a configured container limit
+      (Section~\ref{sec:capacity}).
+\item \textbf{Probabilistic thinning.} A retention probability
+      (\textsc{ExplorationProbability}) and per-rule transition rates keep a random subset of
+      transitions, keyed on canonical identity so the sample is reproducible under a seed. This
+      is the sparse exploration mode; its design is the subject of the next subsection.
+\item \textbf{Structural pruning.} Quotient exploration (Section~\ref{sec:quotient}) expands
+      one representative per isomorphism class and reconstructs the raw relations exactly, so
+      the pruned population is not an approximation of the full one but a compression of it.
+\item \textbf{Steering.} A session (Section~\ref{sec:sessions}) exposes the frontier after
+      each budgeted step, and a continuation may narrow the frontier to the states of interest;
+      steering narrows what runs next and never discards what has been computed.
+\end{itemize}
+
+The mechanisms differ in what they preserve. Caps and steering keep exact computation over a
+subset chosen by count or by the caller; thinning keeps a statistically faithful sample;
+quotienting keeps everything, expanding less. The depth budget bounds all four, and the
+reported frontier (Section~\ref{sec:sessions}) records where any of them stopped.
+
 \subsection{Sampled Exploration}
 \label{sec:sampling}
 
-Exhaustive evolution is not always the object of interest, and the state count grows too quickly
-for it to be available at large depth. The engine therefore admits sampling, applied at the
+The sparse mode applies sampling at the
 transition rather than at the state: each candidate transition is retained with a fixed
 probability, so the number of children a state contributes remains a random variable rather than
 being truncated to a fixed count. Truncating to a fixed count per state would collapse the
