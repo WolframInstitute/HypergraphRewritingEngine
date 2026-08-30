@@ -534,7 +534,7 @@ private:
     // It carries the SAME reserved pair as the maps beside it, so exactly the same keys are
     // legal here as there -- StateId is 32-bit and a raw state of 0 is an ordinary one, which a
     // set defaulting to 0 for EMPTY would drop without saying so.
-    ConcurrentKeySet<uint64_t, STATE_MAP_EMPTY, STATE_MAP_LOCKED> matched_raw_states_;
+    WorkerFilteredSet<ConcurrentKeySet<uint64_t, STATE_MAP_EMPTY, STATE_MAP_LOCKED>> matched_raw_states_;
     // See execute_rewrite_task: a fresh raw id reported as already present, which drops a subtree.
     std::atomic<size_t> dropped_fresh_child_{0};
     // See forward_from_ancestor_chain: the overlap filter ran against a partial consumed set.

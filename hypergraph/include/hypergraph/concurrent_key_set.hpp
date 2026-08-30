@@ -640,5 +640,74 @@ private:
     Shard shard_[SHARDS];
 };
 
+// A per-worker filter in front of a shared set. Measured on the box (stats build, 16 threads):
+// 40.8% of the inserts into the engine's sets on wpp depth 7 are of a key the set already holds
+// (37.5% on wolfram24, 17.5% on disc-l3a2g2r2), and 92-97% of those repeats are by the SAME
+// worker that inserted the key. Every such insert probed the shared table -- reading slot lines
+// other CCXs wrote, which is what ConcurrentKeySet::insert's 36% share of the cross-CCX fills
+// was made of. A worker that remembers the keys it inserted answers those repeats itself.
+//
+// Exact, not probabilistic: a direct-mapped table of keys per (set, worker), a hit only on an
+// equal key. A hit means this worker inserted that key earlier, so the shared set holds it and
+// insert() would have returned false; nothing the filter answers changes the set's contents or
+// any other worker's view of it, and a miss costs one private line before the shared probe. The
+// per-worker tables are allocated on a worker's first insert into this set and freed with it;
+// the sets are never cleared during a run, and set_arena() -- construction only -- drops them.
+// Thread-private state, so it is outside every protocol the key-set harnesses check.
+template <typename Inner, uint32_t kFilterEntries = 1024>
+class WorkerFilteredSet {
+    static_assert((kFilterEntries & (kFilterEntries - 1)) == 0, "a power of two");
+public:
+    using K = uint64_t;
+    template <typename... Args>
+    explicit WorkerFilteredSet(Args&&... args) : inner_(static_cast<Args&&>(args)...) {
+        for (auto& p : filter_) p.store(nullptr, std::memory_order_relaxed);
+    }
+    ~WorkerFilteredSet() {
+        for (auto& p : filter_) delete[] p.load(std::memory_order_relaxed);
+    }
+    WorkerFilteredSet(const WorkerFilteredSet&) = delete;
+    WorkerFilteredSet& operator=(const WorkerFilteredSet&) = delete;
+
+    void set_arena(ConcurrentHeterogeneousArena* arena) {
+        inner_.set_arena(arena);
+        for (auto& p : filter_) { delete[] p.load(std::memory_order_relaxed); p.store(nullptr, std::memory_order_relaxed); }
+    }
+    bool insert(K key) {
+        K* f = filter_for_this_worker();
+        if (f) {
+            K& slot = f[static_cast<size_t>(hgcommon::mix64(key)) & (kFilterEntries - 1)];
+            if (slot == key) return false;
+            const bool won = inner_.insert(key);
+            slot = key;
+            return won;
+        }
+        return inner_.insert(key);
+    }
+    bool contains(K key) const { return inner_.contains(key); }
+    template <typename F>
+    void for_each(F&& f) const { inner_.for_each(static_cast<F&&>(f)); }
+    size_t size() const { return inner_.size(); }
+    size_t count_enumerated() const { return inner_.count_enumerated(); }
+    Inner& inner() { return inner_; }
+    const Inner& inner() const { return inner_; }
+
+private:
+    // The worker's table, made on its first insert here. A worker without an index (the shared
+    // arena path) goes straight to the set.
+    K* filter_for_this_worker() {
+        const int wi = arena_worker_index();
+        if (wi < 0) return nullptr;
+        K* f = filter_[wi].load(std::memory_order_relaxed);
+        if (!f) {
+            f = new K[kFilterEntries]();
+            filter_[wi].store(f, std::memory_order_relaxed);
+        }
+        return f;
+    }
+    Inner inner_;
+    std::atomic<K*> filter_[MAX_ARENA_WORKERS];
+};
+
 }  // namespace engine
 }  // namespace HG_NAMESPACE
