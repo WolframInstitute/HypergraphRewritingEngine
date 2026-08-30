@@ -89,11 +89,13 @@ enum IrStatus : uint32_t {
     IR_OK = 0, IR_EMPTY = 1, IR_NEED_DEPTH = 2, IR_NEED_GENERATORS = 3
 };
 
-// Per-depth partition snapshot: lab, pos, cell_of, cstart, clen, plus the sorted target cell,
-// its covered flags, and the queue the orbit marking walks on a return to this depth.
-// A search node writes the next depth from the current one and refines it in place, so
-// backtracking is a return -- no undo trail, and nothing is ever allocated.
-HG_HD inline uint64_t ir_depth_words(uint32_t n_verts) { return 8ull * n_verts + 8ull; }
+// Per-depth partition snapshot: lab, pos, cell_of, cstart, clen, plus the sorted target cell
+// and its covered flags. A search node writes the next depth from the current one and refines
+// it in place, so backtracking is a return -- no undo trail, and nothing is ever allocated.
+// Sized to the word: the device takes this per state from its arena, and a search at the
+// default depth of 64 multiplies every extra word here by 64 (measured: an eighth array per
+// depth cost the device 12% on wolfram24 depth 7).
+HG_HD inline uint64_t ir_depth_words(uint32_t n_verts) { return 7ull * n_verts + 8ull; }
 
 // Total uint32 words of scratch for a given problem size.
 HG_HD inline uint64_t ir_scratch_words(uint32_t n_verts, uint32_t n_edges,
@@ -674,17 +676,16 @@ HG_HD inline IrResult ir_canonical_hash(
     };
     auto view = [&](uint32_t d) -> IrPartition {
         IrPartition p = fresh(d);
-        p.ncells = block(d)[8 * n + 0];
+        p.ncells = block(d)[7 * n + 0];
         return p;
     };
-    auto store_ncells = [&](uint32_t d, uint32_t v) { block(d)[8 * n + 0] = v; };
+    auto store_ncells = [&](uint32_t d, uint32_t v) { block(d)[7 * n + 0] = v; };
     auto cell_buf  = [&](uint32_t d) -> uint32_t* { return block(d) + 5 * n; };
     auto covered   = [&](uint32_t d) -> uint32_t* { return block(d) + 6 * n; };
-    auto orbit_queue = [&](uint32_t d) -> uint32_t* { return block(d) + 7 * n; };
-    auto target_of = [&](uint32_t d) -> uint32_t& { return block(d)[8 * n + 1]; };
-    auto next_of   = [&](uint32_t d) -> uint32_t& { return block(d)[8 * n + 2]; };
-    auto cell_n_of = [&](uint32_t d) -> uint32_t& { return block(d)[8 * n + 3]; };
-    auto chosen_of = [&](uint32_t d) -> uint32_t& { return block(d)[8 * n + 4]; };
+    auto target_of = [&](uint32_t d) -> uint32_t& { return block(d)[7 * n + 1]; };
+    auto next_of   = [&](uint32_t d) -> uint32_t& { return block(d)[7 * n + 2]; };
+    auto cell_n_of = [&](uint32_t d) -> uint32_t& { return block(d)[7 * n + 3]; };
+    auto chosen_of = [&](uint32_t d) -> uint32_t& { return block(d)[7 * n + 4]; };
 
     ir_build_occurrences(ea, eoff, ev, n_edges, n, occ_off, occ_edge, occ_pos, cursor);
 
@@ -931,8 +932,11 @@ HG_HD inline IrResult ir_canonical_hash(
             // and so its target cell, to itself, so every vertex reached lies in the cell
             // whose flags were cleared. The closure under the generators is the orbit under
             // the group they generate, every generator having finite order.
+            // The queue borrows the refinement's touched-vertex scratch (n words): no
+            // refinement runs during a return, and a per-depth queue would grow every depth
+            // block the device takes per state.
             uint32_t* cov = covered(d);
-            uint32_t* q   = orbit_queue(d);
+            uint32_t* q   = touched;
             uint32_t  qn  = 0;
             if (!cov[v]) { cov[v] = 1; q[qn++] = v; }
             for (uint32_t qi = 0; qi < qn; ++qi) {
