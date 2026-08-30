@@ -9,6 +9,10 @@
 #include <stdexcept>
 #include <string>
 #include <new>
+#if HG_ENGINE_STATS
+#include <unordered_map>
+#include <unordered_set>
+#endif
 
 #include "arena.hpp"
 
@@ -61,6 +65,19 @@ inline std::atomic<uint64_t>& key_set_insert_wins() {
     static std::atomic<uint64_t> n{0};
     return n;
 }
+// Stats builds only: how many repeats were of a key THIS thread had inserted into THIS set
+// before. A thread-local filter in front of a set can remove only those; a repeat first made by
+// another worker is found by the shared probe and nothing local knows it.
+inline std::atomic<uint64_t>& key_set_insert_same_worker_repeats() {
+    static std::atomic<uint64_t> n{0};
+    return n;
+}
+#if HG_ENGINE_STATS
+inline bool key_set_note_local(const void* set, uint64_t key) {
+    static thread_local std::unordered_map<const void*, std::unordered_set<uint64_t>> seen;
+    return !seen[set].insert(key).second;   // true when this thread inserted it before
+}
+#endif
 
 template<typename K = uint64_t,
          K EMPTY_KEY    = K{0},
@@ -182,6 +199,8 @@ public:
     bool insert(K key) {
         reject_sentinel_key(key, "insert");
         HG_STAT(key_set_insert_calls().fetch_add(1, std::memory_order_relaxed));
+        HG_STAT(if (key_set_note_local(this, static_cast<uint64_t>(key)))
+                    key_set_insert_same_worker_repeats().fetch_add(1, std::memory_order_relaxed));
         for (;;) {
             Table* head = table_.load(std::memory_order_acquire);
             // WHEN TO GROW. A probe run that walked past kProbeLimit slots raised want_grow_

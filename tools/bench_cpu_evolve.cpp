@@ -307,8 +307,10 @@ int main(int argc, char** argv) {
                 // in front of the set would remove from the cross-CCX traffic.
                 const unsigned long long calls = hg::engine::key_set_insert_calls().load();
                 const unsigned long long wins  = hg::engine::key_set_insert_wins().load();
-                std::printf("  keyset: inserts=%llu wins=%llu repeat=%.1f%%\n", calls, wins,
-                            calls ? 100.0 * double(calls - wins) / double(calls) : 0.0);
+                const unsigned long long same = hg::engine::key_set_insert_same_worker_repeats().load();
+                std::printf("  keyset: inserts=%llu wins=%llu repeat=%.1f%% same_worker=%.1f%%\n", calls, wins,
+                            calls ? 100.0 * double(calls - wins) / double(calls) : 0.0,
+                            calls > wins ? 100.0 * double(same) / double(calls - wins) : 0.0);
             }
 #endif
             std::printf("  recon: causal_pairs=%zu reduced_pairs=%zu branchial=%zu\n",
