@@ -4,30 +4,33 @@ A high-performance implementation of multiway hypergraph rewriting with Mathemat
 
 ## Status
 
-This project is functional but under active development. No stable release has been made yet and APIs may change between versions.
+Release candidate: the tree is feature-complete and every gate is green; v1.0.0-rc1 is the
+first tagged release. APIs are stable from rc1 onward.
 
 ## Features
 
-- **Multiway Evolution**: Parallel state evolution with causal and branchial graph construction, single synchronisation point (no intra-evolution phase barriers).
-- **Parallel Pattern Matching**: SCAN → EXPAND → SINK dataflow pipeline with work-stealing scheduling.
-- **Edge Signature Indexing**: Fast candidate generation via multi-level signature partitioning.
-- **Incremental Match Forwarding**: Re-use parent-state matches in child states; only find new matches that involve newly produced edges.
-- **Canonicalization**: a fast Weisfeiler-Leman (WL) heuristic or exact McKay-style individualisation-refinement (IR) for isomorphism-correct deduplication.
-- **Lock-free Data Structures**: concurrent hash map, lock-free list, lock-free deque, thread-safe arena.
+- **Multiway Evolution**: Parallel state evolution with causal and branchial graph construction, single synchronisation point (no intra-evolution phase barriers, online transitive reduction).
+- **Exact Canonicalization**: McKay-style individualisation--refinement (IR) computes an exact canonical hash for every state; deduplication is isomorphism-correct, never heuristic. A content-ordered hash (`Automatic`) and no-dedup (`None`) modes exist for workloads that want them.
+- **Determinism Contract**: the state set, event set and causal/branchial relations are a function of the inputs alone — independent of thread count and scheduling.
+- **Quotient Exploration**: expand one representative per isomorphism class and reconstruct the raw events, causal edges and branchial pairs exactly.
+- **GPU Backend**: CUDA port mirroring the CPU algorithms, with a resident evolution kernel (states re-enter as match tasks without returning to the host) and warp-collective canonicalization sharing the same IR implementation as the CPU.
+- **Parallel Pattern Matching**: match-by-hyperedge join with signature-partitioned candidates and work-stealing scheduling.
+- **Incremental Match Forwarding**: re-use parent-state matches in child states; only find new matches that involve newly produced edges (selected per rule set by static analysis).
+- **Lock-free Data Structures**: concurrent hash map, key set, lock-free list, lock-free deque, thread-safe arena — model-checked under RC11/scoped-RC11 (GenMC, GPUMC) and TLA+, sanitizer-gated in CI.
 - **Mathematica Paclet**: LibraryLink bindings with evolution, canonical/causal/branchial graph extraction, dimension / curvature / geodesic / branchial analyses, and topology / initial-condition generators.
 
 ## Installation
 
 ### Mathematica Paclet
 
-Install the paclet directly from the latest release:
+Install from the Wolfram Paclet Repository:
 
 ```mathematica
-PacletInstall["https://github.com/WolframInstitute/HypergraphRewritingEngine/releases/download/v0.0.1-alpha.6/WolframInstitute__HypergraphRewriteEngine-0.0.1.paclet"]
+PacletInstall["WolframInstitute/HypergraphRewriteEngine"]
 Needs["HypergraphRewriting`"]
 ```
 
-(Or pass a local path to a downloaded `.paclet` file instead of the URL.)
+(Or install a `.paclet` file from the [latest GitHub release](https://github.com/WolframInstitute/HypergraphRewritingEngine/releases) by passing its URL or a local path to `PacletInstall`.)
 
 The paclet name is `WolframInstitute/HypergraphRewriteEngine`; its exported context is ``HypergraphRewriting` ``.
 
@@ -152,16 +155,18 @@ hypergraph/     Core CPU engine: evolution, matching, WL/IR canonicalization, st
 gpu/            CUDA port (optional, BUILD_GPU=ON), mirrors the CPU algorithms
 job_system/     Work-stealing task scheduler the engine runs on
 lockfree_deque/ Lock-free concurrent deque backing the scheduler
-common/         Shared primitives (portable intrinsics, shared WL hash core)
+common/         Shared CPU/GPU rules: the IR canonicalization core, join, quotient DP,
+                ring/termination/pool protocols, portable intrinsics
 wxf/            Wolfram Exchange Format serialization (the WL boundary)
 
 paclet/         Wolfram Language paclet (kernel code, bundled binaries, doc notebooks)
 paclet_source/  FFI: run_rewriting_core, the standalone hg_evolve binary, GPU marshaling
 reference/      Validation oracle (brute-force ground truth) + golden corpus
+verification/   GenMC and GPUMC model-checking harnesses, TLA+ specifications
 tools/          Standalone research/validation probes and profiling harnesses
 testing/        Aggregate C++ test target (all_tests)
 benchmarks/     Per-area benchmarks;  benchmarking/  is the framework library
-visualisation/  Interactive 3D viewer (Vulkan) and physics analysis
+visualisation/  Viz-event interface (the renderer lives in its own repository)
 ```
 
 New here? Users: **[docs/QUICKSTART.md](docs/QUICKSTART.md)**. Developers:
