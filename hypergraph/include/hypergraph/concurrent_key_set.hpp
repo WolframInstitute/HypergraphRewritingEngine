@@ -172,28 +172,20 @@ public:
         reject_sentinel_key(key, "insert");
         for (;;) {
             Table* head = table_.load(std::memory_order_acquire);
-            if (count_.load(std::memory_order_relaxed) > head->capacity * LOAD_FACTOR_THRESHOLD) {
-                // ONE GROWER PER CROSSING, AND NOBODY WAITS -- the same election ConcurrentMap
-                // makes, for the same reason and with the same premise. grow() builds its
-                // replacement BEFORE the exchange that installs it, so every thread that observes
-                // a count past the threshold used to build one and all but one abandoned it in an
-                // arena that cannot free it.
-                //
-                // The premise is that the table has room, which a load factor of 0.75 gives; at
-                // or past CAPACITY it does not, and then everyone grows as before. A thread that
-                // does not take the ticket falls through to the probe below rather than waiting,
-                // and an exhausted probe run re-drives at the head, which is what makes progress
-                // independent of who holds the ticket.
-                const size_t c = count_.load(std::memory_order_relaxed);
-                if (c >= head->capacity) {
-                    grow(head);
-                } else if (!growing_.exchange(true, std::memory_order_acquire)) {
-                    struct ReleaseTicket {
-                        std::atomic<bool>& flag;
-                        ~ReleaseTicket() { flag.store(false, std::memory_order_release); }
-                    } release{growing_};
-                    grow(head);
-                }
+            // WHEN TO GROW. A probe run that walked past kProbeLimit slots raised want_grow_
+            // (claim()); that is the only trigger the release build has, and the only shared
+            // word it reads per insert is that flag, written once per growth rather than once
+            // per win. Builds that keep the exact count (stats and verification) also grow at
+            // the load factor, so the harnesses drive growth the way they always did.
+            //
+            // ONE GROWER PER TRIGGER, AND NOBODY WAITS -- the same election ConcurrentMap makes.
+            // grow() builds its replacement BEFORE the exchange that installs it, so every thread
+            // that took the trigger would otherwise build one and all but one abandon it in an
+            // arena that cannot free it. A thread that does not take the ticket re-drives at the
+            // head rather than waiting; a probe exhausted on a table being sealed re-drives too
+            // (claim()), which is what makes progress independent of who holds the ticket.
+            if (want_grow_.load(std::memory_order_relaxed) || count_past_threshold(head)) {
+                grow_guarded(head, /*forced=*/false);
                 continue;
             }
             // A key already settled in a superseded table must not be claimed again at the head.
@@ -252,7 +244,15 @@ public:
     // two quantities diverged once already -- migrate_into dropped a key while count_ still
     // counted its claim (f694c062) -- so anything reporting a SET SIZE to a caller uses
     // count_enumerated() below, which walks what for_each would emit.
-    size_t size() const { return count_.load(std::memory_order_relaxed); }
+    // The exact win count where a build keeps one (stats, verification); the release build
+    // keeps none and walks the tables, which no engine path calls.
+    size_t size() const {
+#if HG_ENGINE_STATS || defined(HG_VERIFICATION)
+        return count_.load(std::memory_order_relaxed);
+#else
+        return count_enumerated();
+#endif
+    }
 
     // The number of keys `for_each` will emit. O(capacity) over the chain, so it is for
     // per-run observables rather than hot paths -- and it cannot disagree with enumeration,
@@ -314,6 +314,12 @@ private:
     // was published, claims the same key, and both are told they inserted it.
     Claim claim(Table* t, K key) {
         const size_t idx = hash(key) & t->mask;
+        // The run length that signals load counts occupied slots only. A sealed (MIGRATED)
+        // slot is not load: a growth in progress seals the old table slot by slot, and a claim
+        // that skipped a run of sealed slots to reach a still-empty one would otherwise report
+        // a long run on a table about to be retired, and the freshly installed successor would
+        // grow at once -- measured as a growth per seal, doubling to a 512M-entry table.
+        size_t occupied = 0;
         for (size_t p = 0; p < t->capacity; ++p) {
             std::atomic<K>& slot = t->keys[(idx + p) & t->mask];
             K cur = slot.load(std::memory_order_acquire);
@@ -322,14 +328,63 @@ private:
             if (cur == EMPTY_KEY) {
                 if (slot.compare_exchange_strong(cur, key, std::memory_order_acq_rel,
                                                  std::memory_order_acquire)) {
-                    count_.fetch_add(1, std::memory_order_relaxed);
+                    note_win(occupied);
                     return Claim::kWon;
                 }
                 if (cur == key) return Claim::kLost;
             }
+            ++occupied;
         }
-        grow(t);
+        grow_guarded(t, /*forced=*/true);
         return Claim::kStale;
+    }
+
+    // A win after a probe run of `probe` slots. The run length is the load signal: linear
+    // probing's expected unsuccessful run is (1 + 1/(1-a)^2)/2 at load a, so kProbeLimit slots
+    // is reached around a = 0.8 and the next insert grows the table. The flag is written only
+    // when it is not already set, so a growth costs one shared write, not one per win. Builds
+    // that keep the exact count add to it here; the release build does not, and that removed
+    // count is the one line every worker on every L3 domain wrote per win (measured on the box,
+    // wpp depth 7, 16 threads: this insert was 21-23% of the fills served from another domain).
+    static constexpr size_t kProbeLimit = 32;
+    void note_win(size_t probe) {
+        if (probe >= kProbeLimit && !want_grow_.load(std::memory_order_relaxed))
+            want_grow_.store(true, std::memory_order_relaxed);
+#if HG_ENGINE_STATS || defined(HG_VERIFICATION)
+        count_.fetch_add(1, std::memory_order_relaxed);
+#endif
+    }
+    bool count_past_threshold(const Table* head) const {
+#if HG_ENGINE_STATS || defined(HG_VERIFICATION)
+        return count_.load(std::memory_order_relaxed) > head->capacity * LOAD_FACTOR_THRESHOLD;
+#else
+        (void)head;
+        return false;
+#endif
+    }
+
+    // Every table allocation goes through one ticket. grow() seals the old table's empty
+    // slots before it installs the new one, so a claim that reaches the old table during the
+    // seal walks it to exhaustion; letting that claim allocate its own successor left a
+    // full-size table in the arena for every such thread whose install lost (measured with a
+    // lagging count on CausalDeterminism.NonQuotientFullyDeterministic: 418 lost installs,
+    // 31 of them 16M-entry tables, 10 GB). Without the ticket the caller re-drives at the
+    // head, which is the same loop the trigger branch spins in.
+    // `forced` is a probe exhausted on t itself (nothing left to claim); otherwise the
+    // trigger is re-read under the ticket, against t, because a thread that read the flag
+    // before the growth it asked for completed would otherwise take the freed ticket with the
+    // successor as its head and grow that too (measured: one growth per growth, doubling to a
+    // 268M-entry table at 13,716 keys).
+    void grow_guarded(Table* t, bool forced) {
+        if (growing_.exchange(true, std::memory_order_acquire)) return;
+        struct ReleaseTicket {
+            std::atomic<bool>& flag;
+            ~ReleaseTicket() { flag.store(false, std::memory_order_release); }
+        } release{growing_};
+        if (table_.load(std::memory_order_acquire) != t) return;
+        if (!forced && !want_grow_.load(std::memory_order_relaxed) && !count_past_threshold(t)) return;
+        grow(t);
+        want_grow_.store(false, std::memory_order_relaxed);
     }
 
     // SEAL EACH SLOT AS IT IS CARRIED, BEFORE INSTALLING.
@@ -471,6 +526,8 @@ private:
     // The growth ticket; see insert. Not a lock -- a thread that fails to take it proceeds to its
     // probe without waiting, and the re-drive on an exhausted run is not ticketed at all.
     std::atomic<bool> growing_{false};
+    // Raised by a win whose probe run reached kProbeLimit; cleared by the growth it triggers.
+    std::atomic<bool> want_grow_{false};
 };
 
 // INDEPENDENT TABLES CHOSEN BY THE KEY, for a set whose insert rate is the workload.
