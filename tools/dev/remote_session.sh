@@ -164,6 +164,30 @@ build_host() {
     mode_matrix_probe quotient_reconstruction_cost_probe sampling_cost_smoke \
     >> "$LOG" 2>&1 || fail "host build"
 
+  # THE MEASURING BINARIES ARE A RELEASE BUILD. build_linux keeps the diagnostic counters the
+  # gate suites read (HG_ENGINE_STATS defaults ON); with them the arena's per-worker fast path
+  # is compiled out and every allocation goes through shared per-site counters, which on this
+  # box was 18-39% of the cross-CCX fills by itself. Every number a table or a sweep records
+  # comes from build_release, and each binary's own stamp says so (release_only below).
+  say "build release measuring binaries (-j$(nproc))"
+  cmake -S . -B build_release "${COMMON_FLAGS[@]}" -DBUILD_GPU=OFF -DHG_ENGINE_STATS=OFF \
+    -DBUILD_TESTS=OFF -DBUILD_BENCHMARKS=OFF -DBUILD_EXAMPLES=OFF >> "$LOG" 2>&1 || fail "release configure"
+  cmake --build build_release -j"$(nproc)" --target bench_cpu_evolve \
+    mode_matrix_probe quotient_reconstruction_cost_probe sampling_cost_smoke \
+    >> "$LOG" 2>&1 || fail "release build"
+  release_only ./build_release/bench_cpu_evolve
+  release_only ./build_release/sampling_cost_smoke
+}
+
+# The binary says what it was built with (hgcommon/build_stamp.hpp); a measuring phase runs
+# nothing whose stamp is not the release configuration.
+release_only() {
+  local stamp
+  stamp="$("$1" --build-info 2>/dev/null | grep '^HGBUILDSTAMP/2;' || true)"
+  case "$stamp" in
+    *";stats=0;phase_timing=0;ndebug=1;asan=0;tsan=0;ubsan=0;"*) say "release build: $1" ;;
+    *) fail "$1 is not a release build: ${stamp:-no stamp}" ;;
+  esac
 }
 
 build_gpu_targets() {
@@ -204,6 +228,14 @@ build_gpu_targets() {
   esac
   cmake --build build_gpu -j"$GPU_J" --target hg_gpu_tests gpu_differential_tests bench_gpu_evolve \
     >> "$LOG" 2>&1 || fail "gpu build"
+  # The device bench that tables and the floor phase time is a release build too; build_gpu
+  # keeps the counters for its two gate suites.
+  say "build gpu release bench (sm_$ARCH, -j$GPU_J)"
+  cmake -S . -B build_gpu_release "${COMMON_FLAGS[@]}" -DBUILD_GPU=ON -DHG_ENGINE_STATS=OFF \
+    -DBUILD_TESTS=OFF -DBUILD_BENCHMARKS=OFF -DBUILD_EXAMPLES=OFF \
+    -DHG_GPU_ARCHS="$ARCH" >> "$LOG" 2>&1 || fail "gpu release configure"
+  cmake --build build_gpu_release -j"$GPU_J" --target bench_gpu_evolve >> "$LOG" 2>&1 || fail "gpu release build"
+  release_only ./build_gpu_release/bench_gpu_evolve
 }
 
 # DISCARD THE BOX'S LOCAL MODIFICATIONS, AFTER WRITING THEM DOWN.
@@ -373,7 +405,7 @@ if want tables; then
   say "paper tables (pinned, no --wolfram: authority macros carry forward)"
   python3 -u tools/dev/paper_tables.py --gpu --authority-depth 7 --steps 7 \
     --cpus "$CPUSET" --thread-sweep "$SWEEP" \
-    --build-dir build_linux --gpu-build-dir build_gpu 2>&1 | tee "$ROOT/paper_tables.log"
+    --build-dir build_release --gpu-build-dir build_gpu_release 2>&1 | tee "$ROOT/paper_tables.log"
   [ "${PIPESTATUS[0]}" = 0 ] || fail "paper_tables failed"
 fi
 
@@ -393,7 +425,7 @@ if want sweep; then
   # differs by 21% depending on whether they share one.
   python3 -u tools/dev/scaling_sweep.py --sections cpu,shapes,memory,gpu \
     --cpus "$CPUSET" --thread-sweep "$SWEEP" \
-    --build-dir build_linux --gpu-build-dir build_gpu 2>&1 | tee "$ROOT/scaling_sweep.log"
+    --build-dir build_release --gpu-build-dir build_gpu_release 2>&1 | tee "$ROOT/scaling_sweep.log"
   [ "${PIPESTATUS[0]}" = 0 ] || fail "scaling_sweep failed"
 fi
 
@@ -401,11 +433,11 @@ fi
 if want floor; then
   wait_quiet
   say "device floor (P4.11 adjudication)"
-  ./build_gpu/bench_gpu_evolve 4 20 2 triangle > "$ROOT/floor_triangle.log" 2>&1 || true
-  ./build_gpu/bench_gpu_evolve 7 5 2 wpp      > "$ROOT/floor_wpp.log"      2>&1 || true
+  ./build_gpu_release/bench_gpu_evolve 4 20 2 triangle > "$ROOT/floor_triangle.log" 2>&1 || true
+  ./build_gpu_release/bench_gpu_evolve 7 5 2 wpp      > "$ROOT/floor_wpp.log"      2>&1 || true
   if command -v ncu >/dev/null && ncu --query-metrics >/dev/null 2>&1; then
     say "ncu captures"
-    ncu --set full -o "$ROOT/ncu_wpp" ./build_gpu/bench_gpu_evolve 6 1 2 wpp >> "$LOG" 2>&1 || true
+    ncu --set full -o "$ROOT/ncu_wpp" ./build_gpu_release/bench_gpu_evolve 6 1 2 wpp >> "$LOG" 2>&1 || true
   fi
 fi
 

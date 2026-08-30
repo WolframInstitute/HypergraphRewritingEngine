@@ -10,6 +10,7 @@
 // Usage: bench_cpu_evolve [steps] [iters]   (default 6 20)
 
 #include "corpus_gen.hpp"
+#include "hgcommon/build_stamp.hpp"
 #include "hgcommon/phase_timing.hpp"
 #include "hypergraph/parallel_evolution.hpp"
 #include "hypergraph/bitset.hpp"
@@ -120,6 +121,13 @@ static std::vector<Workload> workloads() {
 }
 
 int main(int argc, char** argv) {
+    // The configuration this binary was built with, first, so every log that carries a number
+    // carries the record a reader needs to know what the number is evidence for; and alone on
+    // `--build-info`, which is how a measuring script gates before it times anything
+    // (hgcommon/build_stamp.hpp).
+    static const char kBuildStamp[] = HG_BUILD_STAMP_LITERAL;
+    if (argc > 1 && std::strcmp(argv[1], "--build-info") == 0) { std::printf("%s\n", kBuildStamp); return 0; }
+    std::printf("%s\n", kBuildStamp);
     const int steps = argc > 1 ? std::atoi(argv[1]) : 6;
     const int iters = argc > 2 ? std::atoi(argv[2]) : 20;
     const std::vector<int> sweep = thread_sweep(argc > 3 ? argv[3] : nullptr);

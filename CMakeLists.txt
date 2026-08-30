@@ -109,6 +109,17 @@ if(HG_BUILD_COMMIT STREQUAL "unknown" AND GIT_FOUND AND EXISTS "${CMAKE_SOURCE_D
 endif()
 message(STATUS "Build stamp commit: ${HG_BUILD_COMMIT}")
 
+# The build stamp (common/include/hgcommon/build_stamp.hpp) carries the configuration of every
+# artifact and bench: the commit, the build type and the flags come from here; the option
+# macros the stamp reads (HG_ENGINE_STATS, HG_PHASE_TIMING, NDEBUG, the sanitizers) are the
+# ones the options themselves set, so the record cannot disagree with the code it sits in.
+string(TOUPPER "${CMAKE_BUILD_TYPE}" HG_BUILD_TYPE_UPPER)
+set(HG_BUILD_FLAGS "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${HG_BUILD_TYPE_UPPER}}")
+string(STRIP "${HG_BUILD_FLAGS}" HG_BUILD_FLAGS)
+add_compile_definitions(HG_BUILD_COMMIT="${HG_BUILD_COMMIT}"
+                        HG_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
+                        HG_BUILD_FLAGS="${HG_BUILD_FLAGS}")
+
 # Export compile commands for clangd and other tooling
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -172,18 +183,21 @@ endif()
 if(ENABLE_ASAN)
     message(STATUS "AddressSanitizer enabled")
     add_compile_options(-fsanitize=address -fno-omit-frame-pointer -g -O1)
+    add_compile_definitions(HG_BUILD_ASAN=1)
     add_link_options(-fsanitize=address)
 endif()
 
 if(ENABLE_TSAN)
     message(STATUS "ThreadSanitizer enabled")
     add_compile_options(-fsanitize=thread -fno-omit-frame-pointer -g -O1)
+    add_compile_definitions(HG_BUILD_TSAN=1)
     add_link_options(-fsanitize=thread)
 endif()
 
 if(ENABLE_UBSAN)
     message(STATUS "UndefinedBehaviorSanitizer enabled")
     add_compile_options(-fsanitize=undefined -fno-omit-frame-pointer -g)
+    add_compile_definitions(HG_BUILD_UBSAN=1)
     add_link_options(-fsanitize=undefined)
 endif()
 
@@ -794,3 +808,11 @@ set_tests_properties(mingw_tls_teardown PROPERTIES
                      TIMEOUT 600
                      SKIP_RETURN_CODE 2)
 endif()
+
+# Each bench names itself in its build stamp, as the shipped artifacts do, so a measuring script
+# can read the configuration it is about to time from the binary itself.
+foreach(_hg_bench bench_cpu_evolve bench_gpu_evolve sampling_cost_smoke cost_matrix)
+    if(TARGET ${_hg_bench})
+        target_compile_definitions(${_hg_bench} PRIVATE HG_BUILD_VARIANT="${_hg_bench}")
+    endif()
+endforeach()

@@ -18,11 +18,11 @@ set(SOURCES hypergraph_ffi.cpp paclet_support.cpp)
 # Create the library
 add_library(HypergraphRewriting SHARED ${SOURCES})
 
-# The build stamp (paclet_source/build_stamp.hpp). All three shipped artifacts compile
+# The build stamp (common/include/hgcommon/build_stamp.hpp). All three shipped artifacts compile
 # hypergraph_ffi.cpp, which defines it; each names itself so one scan over a platform directory
 # can tell the library from the two executables.
 target_compile_definitions(HypergraphRewriting PRIVATE
-    HG_BUILD_COMMIT="${HG_BUILD_COMMIT}" HG_BUILD_VARIANT="paclet-library")
+    HG_BUILD_VARIANT="paclet-library")
 
 # =============================================================================
 # Standalone process-isolation binary (WXF over stdin/stdout).
@@ -36,7 +36,7 @@ add_executable(hg_evolve
     paclet_support.cpp
 )
 target_compile_definitions(hg_evolve PRIVATE HG_STANDALONE_BINARY
-    HG_BUILD_COMMIT="${HG_BUILD_COMMIT}" HG_BUILD_VARIANT="hg_evolve")
+    HG_BUILD_VARIANT="hg_evolve")
 target_include_directories(hg_evolve PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/hypergraph/include
@@ -88,7 +88,7 @@ if(TARGET hg_gpu)
         paclet_support.cpp
     )
     target_compile_definitions(hg_evolve_gpu PRIVATE HG_STANDALONE_BINARY HG_GPU_BACKEND
-        HG_BUILD_COMMIT="${HG_BUILD_COMMIT}" HG_BUILD_VARIANT="hg_evolve_gpu")
+        HG_BUILD_VARIANT="hg_evolve_gpu")
     target_include_directories(hg_evolve_gpu PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_SOURCE_DIR}/hypergraph/include
@@ -396,7 +396,7 @@ if(TARGET hg_gpu AND BUILD_TESTS)
         paclet_support.cpp
     )
     target_compile_definitions(gpu_ffi_tests PRIVATE HG_STANDALONE_BINARY HG_GPU_BACKEND
-        HG_BUILD_COMMIT="${HG_BUILD_COMMIT}" HG_BUILD_VARIANT="gpu_ffi_tests"
+        HG_BUILD_VARIANT="gpu_ffi_tests"
         HG_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
     target_include_directories(gpu_ffi_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}

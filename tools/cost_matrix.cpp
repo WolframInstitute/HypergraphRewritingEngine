@@ -8,6 +8,8 @@
 //   memory column proves the win. This is the harness the paper's ablation uses.
 
 #include "../reference/oracle_corpus.hpp"
+#include "hgcommon/build_stamp.hpp"
+#include <cstring>
 
 #include <cstdio>
 #include <cstdint>
@@ -156,6 +158,11 @@ Measured measure(const oracle::Case& c, int steps, RecordSet rec = RecordSet{}) 
 }  // namespace
 
 int main(int argc, char** argv) {
+    // The configuration this binary was built with (hgcommon/build_stamp.hpp), first. This is
+    // a gate, so its stamp reads stats=1; a script that mistakes it for a bench sees why.
+    static const char kBuildStamp[] = HG_BUILD_STAMP_LITERAL;
+    if (argc > 1 && std::strcmp(argv[1], "--build-info") == 0) { std::printf("%s\n", kBuildStamp); return 0; }
+    std::printf("%s\n", kBuildStamp);
     int steps_override = -1;
     std::string only;            // --case NAME: run this workload alone
     const char* record = "";     // --record all|none: run it under one record set alone

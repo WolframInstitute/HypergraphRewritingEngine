@@ -14,6 +14,8 @@
 // the arm pair that locates it: `off` against `rate` at the same canon mode.
 
 #include "hypergraph/parallel_evolution.hpp"
+#include "hgcommon/build_stamp.hpp"
+#include <cstring>
 
 #include <chrono>
 #include <cstdio>
@@ -66,6 +68,11 @@ static void cap_address_space() {
 
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
+    // The configuration this binary was built with (hgcommon/build_stamp.hpp): first line of
+    // every run, alone on `--build-info`, which rich_sweep.sh gates on before it measures.
+    static const char kBuildStamp[] = HG_BUILD_STAMP_LITERAL;
+    if (argc > 1 && std::strcmp(argv[1], "--build-info") == 0) { std::printf("%s\n", kBuildStamp); return 0; }
+    std::printf("%s\n", kBuildStamp);
     cap_address_space();
 
     const std::string arm  = (argc > 1) ? argv[1] : "cap";
@@ -359,6 +366,16 @@ int main(int argc, char** argv) {
     // built. The num_reconstructed_* accessors report the quotient reconstruction and read zero
     // outside quotient mode, so they are the wrong instrument for this sweep.
     const auto& cg = hg.causal_graph();
+    // The forwarding counters exist in stats builds only (HG_STAT); a release build, which is
+    // what rich_sweep.sh measures with, prints zeros for them and every other column as before.
+    size_t discovered = 0, forwarded = 0, invalidated = 0, rewalks = 0;
+#if HG_ENGINE_STATS
+    {
+        const auto& tot = e.stats().total();
+        discovered = tot.new_matches_discovered; forwarded = tot.matches_forwarded;
+        invalidated = tot.matches_invalidated;   rewalks = tot.forwarding_rewalks;
+    }
+#endif
     std::printf("RICH rule=%s shape=%s arity=%zu lhs_edges=%zu init_edges=%zu steps=%zu"
                 " threads=%zu canon_mode=%s"
                 " ms=%.3f states=%zu canonical=%zu events=%zu matches=%zu"
@@ -385,8 +402,7 @@ int main(int argc, char** argv) {
                 cg.num_branchial_edges(), cg.num_branchial_pairs_claimed(),
                 max_width, depth_reached, truncated ? 1 : 0,
                 hg.arena().bytes_allocated(), arena_block_bytes_live(),
-                e.stats().total().new_matches_discovered, e.stats().total().matches_forwarded,
-                e.stats().total().matches_invalidated, e.stats().total().forwarding_rewalks,
+                discovered, forwarded, invalidated, rewalks,
                 discarded_table_bytes(), discarded_table_count(),
                 installed_table_bytes(), installed_table_count());
     return 0;

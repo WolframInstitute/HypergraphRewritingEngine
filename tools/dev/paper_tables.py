@@ -98,12 +98,50 @@ def binary(build, name):
     global _MEASURED_ON
     plain = os.path.join(build, name)
     if os.path.exists(plain):
-        return plain
+        return _release_only(plain)
     win = plain + ".exe"
     if os.path.exists(win):
         _MEASURED_ON = _windows_host()
-        return win
+        return _release_only(win)
     raise SystemExit("no %s (or %s.exe) in %s -- build it there first" % (name, name, build))
+
+
+# What a binary must say about itself before a number taken from it goes into a table. The
+# diagnostic counters (stats=1) compile the arena's per-worker fast path out and put every
+# allocation through shared per-site counters; the per-phase timers add a cycle-counter read to
+# every task; a sanitizer changes everything. The record is the binary's own build stamp
+# (hgcommon/build_stamp.hpp), read through `--build-info`.
+RELEASE_FIELDS = {"stats": "0", "phase_timing": "0", "ndebug": "1", "asan": "0", "tsan": "0", "ubsan": "0"}
+_STAMP_CHECKED = set()
+
+
+def build_stamp(binary_path):
+    """The ';'-separated key=value fields of the binary's build stamp, as a dict."""
+    p = subprocess.run([binary_path, "--build-info"], capture_output=True, text=True, timeout=60)
+    line = next((l for l in p.stdout.splitlines() if l.startswith("HGBUILDSTAMP/2;")), "")
+    if not line:
+        raise SystemExit("%s printed no build stamp on --build-info: a binary from before the "
+                         "stamp, which cannot say what it was built with" % binary_path)
+    fields = {}
+    for part in line.split(";"):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            fields[k] = v
+    return fields
+
+
+def _release_only(binary_path):
+    if binary_path in _STAMP_CHECKED:
+        return binary_path
+    fields = build_stamp(binary_path)
+    bad = ["%s=%s (want %s)" % (k, fields.get(k, "?"), v) for k, v in RELEASE_FIELDS.items()
+           if fields.get(k) != v]
+    if bad:
+        raise SystemExit("%s is not a release build: %s -- configure the measuring build with "
+                         "-DHG_ENGINE_STATS=OFF (and no HG_PHASE_TIMING or sanitizer)"
+                         % (binary_path, ", ".join(bad)))
+    _STAMP_CHECKED.add(binary_path)
+    return binary_path
 
 
 def _windows_host():

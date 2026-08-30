@@ -27,6 +27,7 @@
 // setenv'd inside one process would report the value it just set while every iteration ran at
 // the first grid, and that flat curve reads exactly like a real result.
 #include "hg_gpu/evolve.hpp"
+#include "hgcommon/build_stamp.hpp"
 #include "corpus_gen.hpp"
 #include <string>
 #include <algorithm>
@@ -83,6 +84,11 @@ static std::vector<Workload> workloads() {
 }
 
 int main(int argc, char** argv) {
+    // The configuration this binary was built with, first, and alone on `--build-info`: the
+    // record a measuring script gates on before it times anything (hgcommon/build_stamp.hpp).
+    static const char kBuildStamp[] = HG_BUILD_STAMP_LITERAL;
+    if (argc > 1 && std::strcmp(argv[1], "--build-info") == 0) { std::printf("%s\n", kBuildStamp); return 0; }
+    std::printf("%s\n", kBuildStamp);
     int steps = argc > 1 ? std::atoi(argv[1]) : 6;
     int iters = argc > 2 ? std::atoi(argv[2]) : 20;
     int mode  = argc > 3 ? std::atoi(argv[3]) : 0;

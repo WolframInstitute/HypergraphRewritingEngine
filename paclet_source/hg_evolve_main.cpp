@@ -10,14 +10,17 @@
 //     for the GPU backend, the CUDA context is created once and reused across
 //     jobs instead of ~700 ms per invocation.
 //
-// `--version` prints the build stamp (see build_stamp.hpp) and exits, ahead of any transport
+// `--version` prints the build stamp (hgcommon/build_stamp.hpp) and exits, ahead of any transport
 // setup, so it answers on a machine with no GPU and no peer.
 //
 // Abort is a process kill by the parent (no cooperative abort). Compiled with
 // -DHG_STANDALONE_BINARY, so it links no Wolfram SDK.
 
 #include "hg_core.hpp"
-#include "build_stamp.hpp"
+#include "hgcommon/build_stamp.hpp"
+
+namespace HG_NAMESPACE { namespace ffi { extern const char kBuildStamp[]; } }  // hypergraph_ffi.cpp
+namespace hgffi = HG_NAMESPACE::ffi;
 
 #include <cstdint>
 #include <cstdio>

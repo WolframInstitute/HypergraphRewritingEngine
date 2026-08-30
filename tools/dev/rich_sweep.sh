@@ -32,6 +32,13 @@ BUILD="${1:?build dir}"
 OUT="${2:?out dir}"
 WHICH="${3:-all}"
 BIN="$BUILD/sampling_cost_smoke"
+# The binary says what it was built with (hgcommon/build_stamp.hpp); a stats build measures
+# its own counters, not the engine, so it is refused here rather than corrected for later.
+stamp="$("$BIN" --build-info 2>/dev/null | grep '^HGBUILDSTAMP/2;' || true)"
+case "$stamp" in
+  *";stats=0;phase_timing=0;ndebug=1;asan=0;tsan=0;ubsan=0;"*) ;;
+  *) echo "rich_sweep: $BIN is not a release build: ${stamp:-no stamp}" >&2; exit 2 ;;
+esac
 
 [ -x "$BIN" ] || { echo "no $BIN" >&2; exit 1; }
 mkdir -p "$OUT"

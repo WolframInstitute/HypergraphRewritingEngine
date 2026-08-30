@@ -32,7 +32,7 @@
 #include "graph_marshal.hpp"
 #include "ffi_job.hpp"           // ParsedJob -- the envelope, parsed once
 #include "cpu_engine_holder.hpp"   // owns the Hypergraph and its engine as one lifetime
-#include "build_stamp.hpp"         // the commit this artifact was built from
+#include "hgcommon/build_stamp.hpp"  // the configuration this artifact was built with
 
 using namespace hypergraph;
 
@@ -41,8 +41,11 @@ using namespace hypergraph;
 // one of them, and a fourth artifact could not be added without also compiling this file.
 namespace HG_NAMESPACE {
 namespace ffi {
-const char kBuildStamp[] =
-    "HGBUILDSTAMP/1 commit=" HG_BUILD_COMMIT " variant=" HG_BUILD_VARIANT " :HGBUILDSTAMP";
+// External linkage, and referenced from each artifact's entry point (WolframLibrary_initialize
+// for the library, main for the executables). An unreferenced object with internal linkage is
+// exactly what a linker is entitled to drop, and a stamp that can be dropped proves nothing.
+extern const char kBuildStamp[];
+const char kBuildStamp[] = HG_BUILD_STAMP_LITERAL;
 }  // namespace ffi
 }  // namespace HG_NAMESPACE
 

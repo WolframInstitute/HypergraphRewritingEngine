@@ -43,9 +43,27 @@ import sys
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LIBRESOURCES = os.path.join(REPO, "paclet", "LibraryResources")
 
-STAMP_RE = re.compile(
-    rb"HGBUILDSTAMP/1 commit=([0-9a-f]{40}|unknown) variant=([A-Za-z0-9_.-]+) :HGBUILDSTAMP"
-)
+STAMP_RE = re.compile(rb"HGBUILDSTAMP/2;(.*?);:HGBUILDSTAMP")
+
+# A shipped artifact carries no diagnostic counters, no per-phase timers and no sanitizer, and
+# is an optimised build with assertions compiled out. The stamp says which; this is the record
+# the sign-off reads from every artifact (hgcommon/build_stamp.hpp documents the format).
+RELEASE_FIELDS = {"stats": "0", "phase_timing": "0", "ndebug": "1", "asan": "0", "tsan": "0", "ubsan": "0"}
+
+
+def parse_stamp(blob):
+    """The ';'-separated key=value fields of one stamp match, as a dict of str."""
+    fields = {}
+    for part in blob.decode("ascii", "replace").split(";"):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            fields[k] = v
+    return fields
+
+
+def release_violations(fields):
+    return ["%s=%s (want %s)" % (k, fields.get(k, "?"), v) for k, v in RELEASE_FIELDS.items()
+            if fields.get(k) != v]
 
 # filename -> the variant its build must have stamped. A file not listed here is not a shipped
 # artifact and is not scanned; every file that IS shipped must appear, so adding a fourth
@@ -97,7 +115,7 @@ def find_stamps(path):
     together, which is a defect worth naming rather than resolving by picking the first."""
     with open(path, "rb") as f:
         data = f.read()
-    return [(m.group(1).decode(), m.group(2).decode()) for m in STAMP_RE.finditer(data)]
+    return [m.group(1).decode("ascii", "replace") for m in STAMP_RE.finditer(data)]
 
 
 def main():
@@ -155,13 +173,19 @@ def main():
             if len(set(stamps)) > 1:
                 findings.append(f"{rel}: {len(set(stamps))} different stamps linked together: {sorted(set(stamps))}")
                 continue
-            commit, variant = stamps[0]
+            fields = parse_stamp(stamps[0].encode())
+            commit = fields.get("commit", "unknown")
+            variant = fields.get("variant", "unknown")
             if commit != head:
                 findings.append(f"{rel}: built from {commit[:12]}, HEAD is {head[:12]}")
             if variant != expected:
                 findings.append(f"{rel}: stamped variant '{variant}', this file must be '{expected}'")
+            bad = release_violations(fields)
+            if bad:
+                findings.append(f"{rel}: not a release configuration: {', '.join(bad)}")
             if not findings or not findings[-1].startswith(rel):
-                print(f"  ok  {rel}  {commit[:12]}  {variant}")
+                print(f"  ok  {rel}  {commit[:12]}  {variant}  {fields.get('type', '?')} "
+                      f"stats={fields.get('stats', '?')} {fields.get('compiler', '?')[:40]}")
 
     if scanned == 0:
         print("FAIL: no shipped artifacts found to check "
