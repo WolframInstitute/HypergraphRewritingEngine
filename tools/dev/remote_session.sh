@@ -277,6 +277,12 @@ resolve_ref() {
 # patch beside the log first, because a box that is ephemeral is exactly where a lost edit cannot
 # be recovered from.
 clean_tree() {
+  # UNTRACKED files block a checkout too: a phase generates a file (a paper table fragment),
+  # a later commit tracks that path, and checkout refuses to overwrite it -- git clean removes
+  # them. -d for directories, no -x so IGNORED trees (every build dir) are untouched. Nothing
+  # here is load-bearing: every phase's outputs are pulled the moment it returns, and the
+  # tracked-file diff is saved below before it is discarded.
+  git -C "$SRC" clean -fdq >> "$LOG" 2>&1 || true
   git -C "$SRC" diff --quiet && git -C "$SRC" diff --cached --quiet && return 0
   local keep="$ROOT/dirty-$(date -u +%Y%m%dT%H%M%SZ).patch"
   git -C "$SRC" diff HEAD > "$keep" 2>/dev/null || true
