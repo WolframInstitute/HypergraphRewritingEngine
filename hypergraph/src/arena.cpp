@@ -290,8 +290,9 @@ ConcurrentHeterogeneousArena::Block::create(size_t data_capacity) {
         const uintptr_t base  = reinterpret_cast<uintptr_t>(map_base);
         const uintptr_t start = (base + kHugePageBytes - 1) & ~uintptr_t(kHugePageBytes - 1);
         mem = reinterpret_cast<void*>(start);
-#if !defined(_WIN32)
-        // Advisory: a kernel that cannot back it says so and the mapping still works.
+#if defined(MADV_HUGEPAGE)
+        // Advisory: a kernel that cannot back it says so and the mapping still works. Linux
+        // names the advice; macOS has no equivalent and its mapping is what mmap returned.
         ::madvise(mem, total, MADV_HUGEPAGE);
 #endif
     }
