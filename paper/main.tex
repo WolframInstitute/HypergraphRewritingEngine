@@ -1790,8 +1790,10 @@ at depths five, six and seven on the same rule, workers pinned one per physical 
 \caption{User and system time against worker count, for the runs of
 Table~\ref{tab:t13-memory}. Across a $\ThreadSweepFactor\times$ increase in workers user time rises
 by $\UserTimeGrowth\times$ while system time rises by $\SysTimeGrowth\times$. System
-time is the faster-growing term and it tracks the resident set, so what the efficiency decline of
-Figure~\ref{fig:lhs-scaling} is spent on is memory acquisition rather than lock contention.}
+time is the faster-growing term and it tracks the resident set: the kernel-side share of the
+efficiency decline of Figure~\ref{fig:lhs-scaling} is memory acquisition rather than lock
+contention. The user-side share is cross-domain data flow (Table~\ref{tab:t13-memory}'s
+section).}
 \label{fig:scaling}
 \end{figure}
 
@@ -2030,6 +2032,21 @@ scales with the resident set, identifying memory acquisition rather than content
 Wall time is minimized at sixteen threads and rises again at 32, beyond which this kernel cost
 exceeds the parallel gain. The result is specific to the host measured: different memory
 bandwidth, or huge pages enabled, would place the minimum elsewhere.
+
+A second term sits in user time, and hardware counters separate it from both candidates above.
+On the Wolfram rule at depth seven the instruction count is flat across the sweep ($14.5$G at
+one thread, $15.8$G at 32) while cycles double, so instructions per cycle falls from $1.44$ to
+$0.69$; the growing counter is demand fills served from \emph{another} L3 domain's cache
+(AMD \texttt{ls\_dmnd\_fills\_from\_sys.near\_cache}), $47$k at one thread to $10.6$M at 32,
+while fills from DRAM and from the local hierarchy stay flat. Two experiments exclude the
+concurrent structures as the source: capping the shared table's probe length from $32$ to $4$
+leaves the fill count unchanged while wall time grows, and an exact thread-private filter that
+removes $80\%$ of the repeated shared-set insertions moves the set's share of the fills from
+$36\%$ to $12\%$ without moving the total or the wall time---the traffic re-attributes to the
+neighbouring sites. The term is therefore the data flow of the evolution itself, about twelve
+cross-domain fills per object created: a state produced on one core complex is consumed on
+others, and on a part with eight separate L3 domains those reads are served across domains.
+Instrument: \texttt{tools/dev/perf\_fill\_sweep.sh}.
 
 \begin{table*}[htbp]
 \centering
@@ -2294,7 +2311,7 @@ realized, and Proposition~\ref{prop:wlceiling} shows that a cheaper pre-filter c
 \section{Conclusion and Future Work}
 \label{sec:conclusion}
 
-We have presented an implementation of multiway hypergraph evolution built on exact canonicalization and lock-free concurrency. Compared with the \texttt{Wolfram/\allowbreak Multicomputation} paclet's \texttt{MultiwaySystem} on the same rule and initial condition, and producing identical state and causal-edge counts at every depth, the engine is faster by a factor of $\SpeedupAtLowDepth$ at depth \SpeedupLowDepth{}, rising to $\SpeedupAtHighDepth$ at depth \SpeedupHighDepth{} (Table~\ref{tab:t2-speedup}). The ratio rises monotonically across those four depths. At the shallow end of the range the engine's own time is $0.2$ to $0.5$\,ms, close enough to the timer's resolution that those ratios are better read as lower bounds on the gap than as exact factors; at depth seven it is $23.2$\,ms against $710$\,s, so that row is a direct measurement on both sides. The same table compares the engine against \texttt{MultiwayReference}, this project's own brute-force evolver, which computes the same object from the same definition and returns data rather than graph objects, so that ratio is not attributable to graph construction on the slower side; all three agree on state and causal-edge counts at every depth. On the host, evolution attains a speedup of $\MaxHostSpeedup\times$ at \MaxHostSpeedupThreads{} worker threads, with parallel efficiency higher on the larger problem at every thread count beyond the first (Table~\ref{tab:t8-scaling}). Efficiency remains at or above $\EffAtEight$ up to eight workers and at or above $\EffAtSixteen$ up to sixteen, depending on the rule's shape, and declines beyond that (Table~\ref{tab:t12-shapes}). The measured cause is memory acquisition rather than contention: across a $\ThreadSweepFactor\times$ increase in worker count, user time increases by a factor of $\UserTimeGrowth$ while system time increases by a factor of $\SysTimeGrowth$ and tracks the per-worker resident set and minor-fault count (Table~\ref{tab:t13-memory}). On the device, wall time ceases to improve beyond \SaturationBlocks{} blocks per streaming multiprocessor (Table~\ref{tab:t11-saturation}), and the GPU is $\GpuSpeedupAtDeepest\times$ faster than eight CPU threads at depth \GpuDeepestDepth{} (Table~\ref{tab:t7-gpu}). The contributions are:
+We have presented an implementation of multiway hypergraph evolution built on exact canonicalization and lock-free concurrency. Compared with the \texttt{Wolfram/\allowbreak Multicomputation} paclet's \texttt{MultiwaySystem} on the same rule and initial condition, and producing identical state and causal-edge counts at every depth, the engine is faster by a factor of $\SpeedupAtLowDepth$ at depth \SpeedupLowDepth{}, rising to $\SpeedupAtHighDepth$ at depth \SpeedupHighDepth{} (Table~\ref{tab:t2-speedup}). The ratio rises monotonically across those four depths. At the shallow end of the range the engine's own time is $0.2$ to $0.5$\,ms, close enough to the timer's resolution that those ratios are better read as lower bounds on the gap than as exact factors; at depth seven it is $23.2$\,ms against $710$\,s, so that row is a direct measurement on both sides. The same table compares the engine against \texttt{MultiwayReference}, this project's own brute-force evolver, which computes the same object from the same definition and returns data rather than graph objects, so that ratio is not attributable to graph construction on the slower side; all three agree on state and causal-edge counts at every depth. On the host, evolution attains a speedup of $\MaxHostSpeedup\times$ at \MaxHostSpeedupThreads{} worker threads, with parallel efficiency higher on the larger problem at every thread count beyond the first (Table~\ref{tab:t8-scaling}). Efficiency remains at or above $\EffAtEight$ up to eight workers and at or above $\EffAtSixteen$ up to sixteen, depending on the rule's shape, and declines beyond that (Table~\ref{tab:t12-shapes}). The measured causes are memory acquisition and cross-domain data flow, not contention: across a $\ThreadSweepFactor\times$ increase in worker count, system time increases by a factor of $\SysTimeGrowth$ and tracks the per-worker resident set and minor-fault count, while on the user side the instruction count stays flat, instructions per cycle falls from $1.44$ to $0.69$, and the growing hardware counter is fills served from another L3 domain's cache---the evolution's own producer-to-consumer traffic, with the concurrent structures excluded by direct experiment (Table~\ref{tab:t13-memory}). On the device, wall time ceases to improve beyond \SaturationBlocks{} blocks per streaming multiprocessor (Table~\ref{tab:t11-saturation}), and the GPU is $\GpuSpeedupAtDeepest\times$ faster than eight CPU threads at depth \GpuDeepestDepth{} (Table~\ref{tab:t7-gpu}). The contributions are:
 
 \begin{enumerate}
     \item Exact canonicalization via individualization--refinement (IR) computed on every state, its hash serving directly as the deduplication key, validated against a brute-force isomorphism oracle
