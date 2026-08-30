@@ -27,7 +27,11 @@ OTHER = "b" * 40
 
 
 def stamp(commit, variant):
-    return f"HGBUILDSTAMP/1 commit={commit} variant={variant} :HGBUILDSTAMP".encode()
+    # The exact shape hgcommon/build_stamp.hpp emits and STAMP_RE in the checker matches:
+    # format 2, ';'-separated key=value, the release fields the sign-off gates on.
+    return (f"HGBUILDSTAMP/2;commit={commit};variant={variant};"
+            f"stats=0;phase_timing=0;ndebug=1;asan=0;tsan=0;ubsan=0;"
+            f"type=Release;compiler=selftest;flags=-O3;:HGBUILDSTAMP").encode()
 
 
 def run_checker(root, expect_commit=HEAD):
