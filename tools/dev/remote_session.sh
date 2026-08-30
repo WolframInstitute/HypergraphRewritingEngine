@@ -172,7 +172,7 @@ build_host() {
   say "build release measuring binaries (-j$(nproc))"
   cmake -S . -B build_release "${COMMON_FLAGS[@]}" -DBUILD_GPU=OFF -DHG_ENGINE_STATS=OFF \
     -DBUILD_TESTS=OFF -DBUILD_BENCHMARKS=OFF -DBUILD_EXAMPLES=OFF >> "$LOG" 2>&1 || fail "release configure"
-  cmake --build build_release -j"$(nproc)" --target bench_cpu_evolve \
+  cmake --build build_release -j"$(nproc)" --target bench_cpu_evolve cost_matrix \
     mode_matrix_probe quotient_reconstruction_cost_probe sampling_cost_smoke \
     >> "$LOG" 2>&1 || fail "release build"
   release_only ./build_release/bench_cpu_evolve
