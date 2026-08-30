@@ -12,6 +12,7 @@
 #endif
 #include <cstdlib>
 #include "hypergraph/scratch_alloc.hpp"
+#include "hgcommon/pool_core.hpp"
 
 
 
@@ -234,15 +235,29 @@ namespace {
 #if !defined(HG_VERIFICATION)
 constexpr int kPoolClasses = 48;
 std::atomic<uint64_t> g_block_pool[kPoolClasses];
-constexpr uint64_t kPtrMask = (uint64_t(1) << 48) - 1;
 inline int pool_class_of(size_t map_len) {              // ceil(log2(map_len))
     int c = 0;
     while ((size_t(1) << c) < map_len) ++c;
     return c;
 }
-inline uint64_t pool_pack(void* p, uint64_t tag) {
-    return (reinterpret_cast<uint64_t>(p) & kPtrMask) | (tag << 48);
-}
+// The storage half of hgcommon's tagged free-list rule, over the pool heads and Block::prev.
+// The link accessors are atomic_ref because a rival popper reads them speculatively; the
+// decision -- and the reason -- live in pool_core.hpp, which the GenMC harness
+// block_pool_exactly_once.cpp checks without this file's mmap machinery.
+struct BlockPoolOps {
+    std::atomic<uint64_t>& head;
+    uint64_t head_load() { return head.load(std::memory_order_acquire); }
+    bool head_cas(uint64_t& expected, uint64_t desired) {
+        return head.compare_exchange_weak(expected, desired, std::memory_order_acq_rel,
+                                          std::memory_order_acquire);
+    }
+    uint64_t link_load(uint64_t node) {
+        return ConcurrentHeterogeneousArena::pool_link_load(node);
+    }
+    void link_store(uint64_t node, uint64_t v) {
+        ConcurrentHeterogeneousArena::pool_link_store(node, v);
+    }
+};
 #endif
 }  // namespace
 
@@ -262,20 +277,16 @@ ConcurrentHeterogeneousArena::Block::create(size_t data_capacity) {
     // so the class is the size). One whose capacity falls short of this request -- the class
     // spans a factor of two -- goes back and the request maps afresh.
     {
-        std::atomic<uint64_t>& head = g_block_pool[pool_class_of(map_len)];
-        uint64_t old = head.load(std::memory_order_acquire);
-        while (Block* b = reinterpret_cast<Block*>(old & kPtrMask)) {
-            const uint64_t next = pool_pack(b->prev, (old >> 48) + 1);
-            if (head.compare_exchange_weak(old, next, std::memory_order_acq_rel,
-                                           std::memory_order_acquire)) {
-                if (b->capacity < data_capacity) { pool_push(head, b); break; }
-                b->prev = nullptr;
-                b->next = nullptr;
-                b->offset.store(0, std::memory_order_relaxed);
-                HG_ARENA_POISON(b->data, b->capacity);
-                note_block_grab(g_arena_block_bytes, g_arena_block_bytes_high_water, sizeof(Block) + b->capacity);
-                return b;
-            }
+        BlockPoolOps ops{g_block_pool[pool_class_of(map_len)]};
+        while (uint64_t node = hgcommon::pool_core_pop(ops)) {
+            Block* b = reinterpret_cast<Block*>(node);
+            if (b->capacity < data_capacity) { hgcommon::pool_core_push(ops, node); break; }
+            ops.link_store(node, 0);
+            b->next = nullptr;
+            b->offset.store(0, std::memory_order_relaxed);
+            HG_ARENA_POISON(b->data, b->capacity);
+            note_block_grab(g_arena_block_bytes, g_arena_block_bytes_high_water, sizeof(Block) + b->capacity);
+            return b;
         }
     }
 #if defined(_WIN32)
@@ -323,17 +334,23 @@ void ConcurrentHeterogeneousArena::Block::release(Block* block) {
 #endif
 }
 
+uint64_t ConcurrentHeterogeneousArena::pool_link_load(uint64_t node) {
+    Block* b = reinterpret_cast<Block*>(node);
+    return reinterpret_cast<uint64_t>(
+        std::atomic_ref<Block*>(b->prev).load(std::memory_order_relaxed));
+}
+void ConcurrentHeterogeneousArena::pool_link_store(uint64_t node, uint64_t v) {
+    Block* b = reinterpret_cast<Block*>(node);
+    std::atomic_ref<Block*>(b->prev).store(reinterpret_cast<Block*>(v),
+                                           std::memory_order_relaxed);
+}
+
 void ConcurrentHeterogeneousArena::Block::pool_push(std::atomic<uint64_t>& head, Block* block) {
 #if defined(HG_VERIFICATION)
     (void)head; (void)block;
 #else
-    uint64_t old = head.load(std::memory_order_acquire);
-    uint64_t next;
-    do {
-        block->prev = reinterpret_cast<Block*>(old & kPtrMask);
-        next = pool_pack(block, (old >> 48) + 1);
-    } while (!head.compare_exchange_weak(old, next, std::memory_order_acq_rel,
-                                         std::memory_order_acquire));
+    BlockPoolOps ops{head};
+    hgcommon::pool_core_push(ops, reinterpret_cast<uint64_t>(block));
 #endif
 }
 
@@ -451,7 +468,10 @@ ConcurrentHeterogeneousArena::grab_block(size_t cap) {
 
     Block* old_head = head_.load(std::memory_order_acquire);
     do {
-        new_block->prev = old_head;
+        // atomic_ref: a pool rival that lost this block an instant ago may still be reading
+        // its link speculatively (the pop's tagged CAS discards the value; TSan reports the
+        // mix of that atomic read with a plain write here).
+        std::atomic_ref<Block*>(new_block->prev).store(old_head, std::memory_order_relaxed);
     } while (!head_.compare_exchange_weak(
         old_head, new_block,
         std::memory_order_release,

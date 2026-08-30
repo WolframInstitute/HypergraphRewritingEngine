@@ -642,6 +642,15 @@ private:
         static void   pool_push(std::atomic<uint64_t>& head, Block* block);
     };
 
+public:
+    // The pool's link accessors over Block::prev, atomic because a rival popper reads the
+    // link speculatively (see hgcommon/pool_core.hpp). Arena-level statics so the pool's Ops
+    // struct in arena.cpp can use them without naming the private Block type.
+    static uint64_t pool_link_load(uint64_t node);
+    static void     pool_link_store(uint64_t node, uint64_t v);
+
+private:
+
     struct DestructorNode {
         void* object;
         void (*destroy)(void*);
