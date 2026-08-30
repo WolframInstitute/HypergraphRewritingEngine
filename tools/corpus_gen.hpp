@@ -317,6 +317,26 @@ inline std::vector<Workload> named_workloads() {
     };
 }
 
+// THE LARGE-STATE AXIS. Every row above starts from a handful of edges, so the
+// canonicalizer's cost on a LARGE state -- where refinement and the automorphism search
+// dominate -- is never on the bench. These start big, at three symmetry grades, and run
+// shallow: the initial state's canonicalization is the workload. A path's automorphism group
+// is one reversal, a cycle's is dihedral in its length, and a star's is the full symmetric
+// group on its leaves -- none, some, and maximal symmetry over the same edge count.
+inline std::vector<Workload> large_state_workloads(uint32_t n = 256) {
+    Workload path{"bigpath", {Rule{{{0,1},{1,2}}, {{0,1},{1,3},{3,2}}}}, {}};
+    for (uint32_t i = 0; i < n; ++i) path.init.push_back({i, i + 1});
+    Workload cycle{"bigcycle", {path.rules[0]}, {}};
+    for (uint32_t i = 0; i < n; ++i) cycle.init.push_back({i, (i + 1) % n});
+    // The star's group is the full symmetric group on its leaves; at 256 one canonicalization
+    // exceeded five minutes (the generator-budget escalation, not a hang), so the maximal-
+    // symmetry row runs at a size whose search terminates while still dwarfing every other
+    // row's group.
+    Workload star{"bigstar", {Rule{{{0,1}}, {{0,2},{2,1}}}}, {}};
+    for (uint32_t i = 0; i < n / 16; ++i) star.init.push_back({0, i + 1});
+    return {path, cycle, star};
+}
+
 // The corpus. Crossed over shape x lhs size x arity x growth x rule count, which is coverage that
 // can be stated: every combination below is present exactly once.
 inline std::vector<Workload> corpus() {

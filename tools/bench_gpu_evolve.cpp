@@ -60,7 +60,12 @@ struct Workload {
 static std::vector<Workload> workloads() {
     static std::vector<std::string> names;
     std::vector<Workload> out;
-    for (const auto& g : corpus::named_workloads()) {
+    auto named = corpus::named_workloads();
+    {
+        auto big = corpus::large_state_workloads();
+        named.insert(named.end(), big.begin(), big.end());
+    }
+    for (const auto& g : named) {
         names.push_back(g.name);
         Workload w;
         w.name = nullptr;
