@@ -89,13 +89,12 @@ enum IrStatus : uint32_t {
     IR_OK = 0, IR_EMPTY = 1, IR_NEED_DEPTH = 2, IR_NEED_GENERATORS = 3
 };
 
-// Per-depth partition snapshot: lab, pos, cell_of, cstart, clen, plus the sorted target cell
-// and its covered flags. A search node writes the next depth from the current one and refines
-// it in place, so backtracking is a return -- no undo trail, and nothing is ever allocated.
-// Sized to the word: the device takes this per state from its arena, and a search at the
-// default depth of 64 multiplies every extra word here by 64 (measured: an eighth array per
-// depth cost the device 12% on wolfram24 depth 7).
-HG_HD inline uint64_t ir_depth_words(uint32_t n_verts) { return 7ull * n_verts + 8ull; }
+// Per-depth working set: the node's sorted target cell, its covered flags, and the scalars.
+// The PARTITION is one in-place instance unwound by the trail (see IrPartition), so a depth
+// block holds only what the node itself owns. Sized to the word: the device takes this per
+// state from its arena, and a search at the default depth multiplies every extra word here
+// by that depth (measured: an eighth array per depth cost the device 12% on wolfram24 d7).
+HG_HD inline uint64_t ir_depth_words(uint32_t n_verts) { return 2ull * n_verts + 8ull; }
 
 // Total uint32 words of scratch for a given problem size.
 HG_HD inline uint64_t ir_scratch_words(uint32_t n_verts, uint32_t n_edges,
@@ -109,6 +108,7 @@ HG_HD inline uint64_t ir_scratch_words(uint32_t n_verts, uint32_t n_edges,
       + n + n + 2 * n                       // touched, on_touched, torder (2n: split staging)
       + n + n + (n + 1) + 2 * occ           // sig_off, sig_cnt, gstart, sig_buf as uint64
       + n + n + n + n + n + n               // path, first_path, labeling, first_labeling, inv, best_lab
+      + 4 * n + 3 * n                       // the in-place partition (lab, pos, cell_of, clen_at) + trail
       + 3 * (occ + e) + e                   // cur_form, best_form, first_form, best_order
       + d * ir_depth_words(n_verts)         // per-depth partition + cell + covered
       + uint64_t(ir_generator_cap(max_depth, max_generators)) * (n + 1)  // generators, row-major, and each one's fixed-prefix length
@@ -137,21 +137,55 @@ struct IrScratch {
 // Flat ordered partition. Cells are identified by an id, not by position: refinement keeps the
 // largest piece at the split cell's id and appends the rest, and both the splitter worklist and
 // the target-cell choice read ids in increasing order. Each id owns a contiguous run of `lab`.
+// THE PARTITION, ONE INSTANCE, REFINED IN PLACE. A cell is named by its START POSITION in
+// lab: no split changes the left piece's name and no split changes any other cell's name, so
+// names are stable and backtracking is an UNDO of a trail instead of a copy per depth. The
+// copy was 5n words per search node, and the search visits ~k^2/2 nodes on a state whose
+// symmetric class has k members, so the copy was the extra factor of k on top (measured on
+// the star: 48 us -> 155 ms per search from k=16 to 256, exponent 3.0; the trail removes the
+// k). Within-cell lab order is NOT restored by the undo -- cell contents, group order
+// (signature-sorted) and boundary positions are what refinement reads, and all three are
+// equivariant; within-cell order only tie-breaks which of several EQUAL minimal leaf forms
+// wins, which moves neither the hash nor any set-valued output.
 struct IrPartition {
     uint32_t* lab;       // vertices, grouped by cell
     uint32_t* pos;       // pos[v] = index of v in lab
-    uint32_t* cell_of;   // cell_of[v] = cell id
-    uint32_t* cstart;    // cstart[c] = start of cell c in lab
-    uint32_t* clen;      // clen[c] = length of cell c
+    uint32_t* cell_of;   // cell_of[v] = the START position of v's cell (its name)
+    uint32_t* clen_at;   // clen_at[s] = the cell's length, valid at live starts only
     uint32_t  ncells;
     uint32_t  n;
 
     HG_HD bool is_discrete() const { return ncells == n; }
     HG_HD uint32_t first_non_singleton() const {
-        for (uint32_t c = 0; c < ncells; ++c) if (clen[c] > 1) return c;
-        return ncells;
+        for (uint32_t s = 0; s < n; s += clen_at[s]) if (clen_at[s] > 1) return s;
+        return n;
     }
 };
+
+// One undoable split: [left_start, right_start) was cut from the run beginning at left_start.
+// Undo re-merges by renaming the right piece's members and rejoining the lengths; deeper
+// splits inside the right piece are popped first (the trail is a stack), so its length is
+// back to its at-split value when its own entry pops. `depth` tags the owner: undo-to-d pops
+// everything deeper. At most n - 1 splits are ever live, so the trail is n entries.
+struct IrTrailEntry { uint32_t left_start, right_start, depth; };
+struct IrTrail {
+    IrTrailEntry* e = nullptr;
+    uint32_t      count = 0;
+    HG_HD void push(uint32_t ls, uint32_t rs, uint32_t d) {
+        e[count].left_start = ls; e[count].right_start = rs; e[count].depth = d; ++count;
+    }
+};
+HG_HD inline void ir_undo_to(IrPartition& pi, IrTrail& tr, uint32_t depth) {
+    while (tr.count && tr.e[tr.count - 1].depth > depth) {
+        --tr.count;
+        const uint32_t ls = tr.e[tr.count].left_start;
+        const uint32_t rs = tr.e[tr.count].right_start;
+        const uint32_t rl = pi.clen_at[rs];
+        for (uint32_t i = 0; i < rl; ++i) pi.cell_of[pi.lab[rs + i]] = ls;
+        pi.clen_at[ls] = (rs - ls) + rl;
+        --pi.ncells;
+    }
+}
 
 // Below this length, insertion sort. States here are small -- a few tens of vertices and
 // edges -- and at that size heapsort's sift-down loses to a linear scan over data already
@@ -398,18 +432,18 @@ HG_HD inline void ir_initial_partition(
     pi.ncells = 0;
     uint32_t w = 0;
     for (uint32_t i = 0; i < n_verts;) {
-        const uint32_t c = pi.ncells++;
+        const uint32_t start = w;
+        ++pi.ncells;
         const uint32_t a = order[i];
-        pi.cstart[c] = w;
         uint32_t j = i;
         while (j < n_verts) {
             const uint32_t b = order[j];
             if (ir_cmp_run(sig_buf + occ_off[a], occ_off[a + 1] - occ_off[a],
                            sig_buf + occ_off[b], occ_off[b + 1] - occ_off[b]) != 0) break;
-            pi.lab[w] = b; pi.pos[b] = w; pi.cell_of[b] = c;
+            pi.lab[w] = b; pi.pos[b] = w; pi.cell_of[b] = start;
             ++w; ++j;
         }
-        pi.clen[c] = w - pi.cstart[c];
+        pi.clen_at[start] = w - start;
         i = j;
     }
 }
@@ -426,7 +460,7 @@ template <class Par = IrSerial>
 HG_HD inline void ir_refine(
     const uint8_t* ea, const uint32_t* eoff, const uint32_t* ev, uint32_t n_edges,
     const uint32_t* occ_off, const uint32_t* occ_edge,
-    IrPartition& pi,
+    IrPartition& pi, IrTrail& tr, uint32_t depth_tag,
     uint64_t* worklist, uint32_t* inc_edges, uint32_t* edge_epoch,
     uint32_t* touched, uint32_t* on_touched, uint32_t* torder,   // torder holds 2n: order, then split staging
     uint32_t* sig_off, uint32_t* sig_cnt, uint32_t* gstart, uint64_t* sig_buf,
@@ -436,7 +470,7 @@ HG_HD inline void ir_refine(
     const uint32_t wl_words = ir_bitset_words(n);
     for (uint32_t w = 0; w < wl_words; ++w) worklist[w] = 0;
     if (seed0 == 0xFFFFFFFFu) {
-        for (uint32_t c = 0; c < pi.ncells; ++c) worklist[c >> 6] |= (uint64_t(1) << (c & 63));
+        for (uint32_t c = 0; c < n; c += pi.clen_at[c]) worklist[c >> 6] |= (uint64_t(1) << (c & 63));
     } else {
         // The partition is an equitable one with one cell split in two (an individualisation):
         // every other cell is a splitter it was already stable against, so only the two new
@@ -467,13 +501,14 @@ HG_HD inline void ir_refine(
             }
         }
         if (S == 0xFFFFFFFFu) break;
-        if (S >= pi.ncells) continue;
+        if (S >= n) continue;
 
-        // Edges incident to S, deduplicated by an epoch stamp.
+        // Edges incident to S (a start position; the cell's run begins right there),
+        // deduplicated by an epoch stamp.
         ++epoch;
         uint32_t n_inc = 0;
-        for (uint32_t k = 0; k < pi.clen[S]; ++k) {
-            const uint32_t s = pi.lab[pi.cstart[S] + k];
+        for (uint32_t k = 0; k < pi.clen_at[S]; ++k) {
+            const uint32_t s = pi.lab[S + k];
             for (uint32_t o = occ_off[s]; o < occ_off[s + 1]; ++o) {
                 const uint32_t e = occ_edge[o];
                 if (edge_epoch[e] != epoch) { edge_epoch[e] = epoch; inc_edges[n_inc++] = e; }
@@ -535,7 +570,7 @@ HG_HD inline void ir_refine(
             while (j < n_touched && pi.cell_of[torder[j]] == C) ++j;
 
             const uint32_t adjacent = j - i;
-            const uint32_t leftover = pi.clen[C] - adjacent;
+            const uint32_t leftover = pi.clen_at[C] - adjacent;
 
             // Group boundaries, found once. Equal signatures are contiguous after the sort,
             // so one scan records where each group starts and everything below reads gstart
@@ -553,46 +588,50 @@ HG_HD inline void ir_refine(
             if (groups + (leftover > 0 ? 1u : 0u) > 1) {
                 // Rewrite C's run of lab as [leftover..., group0..., group1..., ...]. The
                 // leftover vertices are the ones not touched, recovered by scanning C's run.
-                const uint32_t cs = pi.cstart[C];
+                const uint32_t cs = C;
+                const uint32_t cl = pi.clen_at[C];
                 uint32_t w = cs;
-                for (uint32_t k = 0; k < pi.clen[C]; ++k) {
+                for (uint32_t k = 0; k < cl; ++k) {
                     const uint32_t u = pi.lab[cs + k];
                     if (!on_touched[u]) { torder[n_touched + (w - cs)] = u; ++w; }
                 }
                 for (uint32_t k = i; k < j; ++k) torder[n_touched + (w - cs)] = torder[k], ++w;
-                for (uint32_t k = 0; k < pi.clen[C]; ++k) {
+                for (uint32_t k = 0; k < cl; ++k) {
                     pi.lab[cs + k] = torder[n_touched + k];
                     pi.pos[pi.lab[cs + k]] = cs + k;
                 }
 
-                // Piece boundaries within C's run: the leftover block, then one per signature
-                // group. The largest keeps C's id so vertices referencing it need no revisit.
-                uint32_t best_len = leftover, best_off = 0;
+                // A queued cell that splits must leave EVERY piece queued (the bit at cs now
+                // means the leftover piece); an unqueued one queues all but its largest piece
+                // -- the classic rule, stated on start names.
+                const bool was_queued = (worklist[cs >> 6] >> (cs & 63)) & 1u;
+                uint32_t best_len = leftover, best_start = cs;
                 for (uint32_t g = 0, off = leftover; g < groups; ++g) {
                     const uint32_t len = gstart[g + 1] - gstart[g];
-                    if (len > best_len) { best_len = len; best_off = off; }
+                    if (len > best_len) { best_len = len; best_start = cs + off; }
                     off += len;
                 }
 
-                // Assign ids: the winning piece keeps C, every other piece appends.
-                auto assign = [&](uint32_t off, uint32_t len) {
+                // Place pieces left to right: the first keeps name cs; each later piece is one
+                // trail entry, merging back right-to-left as the trail pops.
+                uint32_t prev_start = cs;
+                uint32_t off = 0;
+                auto place = [&](uint32_t len) {
                     if (len == 0) return;
-                    uint32_t id;
-                    if (off == best_off && len == best_len) { id = C; }
-                    else {
-                        id = pi.ncells++;
-                        worklist[id >> 6] |= (uint64_t(1) << (id & 63));
+                    const uint32_t p2 = cs + off;
+                    if (p2 != cs) {
+                        tr.push(prev_start, p2, depth_tag);
+                        ++pi.ncells;
+                        prev_start = p2;
                     }
-                    pi.cstart[id] = cs + off;
-                    pi.clen[id] = len;
-                    for (uint32_t t = 0; t < len; ++t) pi.cell_of[pi.lab[cs + off + t]] = id;
-                };
-                assign(0, leftover);
-                for (uint32_t g = 0, off = leftover; g < groups; ++g) {
-                    const uint32_t len = gstart[g + 1] - gstart[g];
-                    assign(off, len);
+                    pi.clen_at[p2] = len;
+                    for (uint32_t t = 0; t < len; ++t) pi.cell_of[pi.lab[p2 + t]] = p2;
+                    const bool enq = was_queued ? (p2 != cs) : (p2 != best_start);
+                    if (enq) worklist[p2 >> 6] |= (uint64_t(1) << (p2 & 63));
                     off += len;
-                }
+                };
+                place(leftover);
+                for (uint32_t g = 0; g < groups; ++g) place(gstart[g + 1] - gstart[g]);
             }
 
             for (uint32_t k = i; k < j; ++k) on_touched[torder[k]] = 0;
@@ -661,37 +700,21 @@ HG_HD inline uint64_t ir_hash_form(const uint32_t* form, uint32_t n_edges, uint3
 // every cell so ids stay 0..ncells-1 in the source's id order. Written into a fresh depth's
 // buffers, which is what lets a backtrack be a return rather than an undo.
 // -----------------------------------------------------------------------------------------
-HG_HD inline void ir_individualize(const IrPartition& src, IrPartition& dst,
-                                   uint32_t target, uint32_t v) {
-    uint32_t w = 0, nc = 0;
-    for (uint32_t c = 0; c < src.ncells; ++c) {
-        const uint32_t cs = src.cstart[c], cl = src.clen[c];
-        if (c == target) {
-            const uint32_t id = nc++;
-            dst.cstart[id] = w; dst.clen[id] = 1;
-            dst.lab[w] = v; dst.pos[v] = w; dst.cell_of[v] = id; ++w;
-            if (cl > 1) {
-                const uint32_t rid = nc++;
-                dst.cstart[rid] = w;
-                for (uint32_t k = 0; k < cl; ++k) {
-                    const uint32_t u = src.lab[cs + k];
-                    if (u == v) continue;
-                    dst.lab[w] = u; dst.pos[u] = w; dst.cell_of[u] = rid; ++w;
-                }
-                dst.clen[rid] = w - dst.cstart[rid];
-            }
-        } else {
-            const uint32_t id = nc++;
-            dst.cstart[id] = w;
-            for (uint32_t k = 0; k < cl; ++k) {
-                const uint32_t u = src.lab[cs + k];
-                dst.lab[w] = u; dst.pos[u] = w; dst.cell_of[u] = id; ++w;
-            }
-            dst.clen[id] = w - dst.cstart[id];
-        }
-    }
-    dst.ncells = nc;
-    dst.n = src.n;
+// In place: swap v to the front of its cell, cut the singleton off. The singleton keeps the
+// cell's name (its start); the remainder is the one new cell, at start + 1. One trail entry.
+HG_HD inline void ir_individualize(IrPartition& pi, IrTrail& tr, uint32_t target, uint32_t v,
+                                   uint32_t depth_tag) {
+    const uint32_t s  = target;
+    const uint32_t cl = pi.clen_at[s];
+    const uint32_t pv = pi.pos[v];
+    const uint32_t u  = pi.lab[s];
+    pi.lab[s] = v; pi.pos[v] = s;
+    pi.lab[pv] = u; pi.pos[u] = pv;
+    tr.push(s, s + 1, depth_tag);
+    ++pi.ncells;
+    pi.clen_at[s] = 1;
+    pi.clen_at[s + 1] = cl - 1;
+    for (uint32_t k = 1; k < cl; ++k) pi.cell_of[pi.lab[s + k]] = s + 1;
 }
 
 struct IrResult {
@@ -779,6 +802,11 @@ HG_HD inline IrResult ir_canonical_hash(
     uint32_t* gstart    = sc.u32(n + 1);
     uint32_t* path      = sc.u32(n);
     uint32_t* first_path = sc.u32(n);
+    uint32_t* p_lab      = sc.u32(n);
+    uint32_t* p_pos      = sc.u32(n);
+    uint32_t* p_cell_of  = sc.u32(n);
+    uint32_t* p_clen_at  = sc.u32(n);
+    IrTrailEntry* p_trail = reinterpret_cast<IrTrailEntry*>(sc.u32(3 * n));
     uint32_t* labeling  = sc.u32(n);
     uint32_t* first_lab = sc.u32(n);
     // The WINNING leaf's labelling. first_lab is the FIRST leaf's, which the generator
@@ -802,39 +830,28 @@ HG_HD inline IrResult ir_canonical_hash(
 
     // Per-depth block: five partition arrays, the sorted target cell, its covered flags, and
     // the frame scalars.
+    // Per depth: only the node's own working set -- its target cell copy and covered flags,
+    // plus the scalars. The PARTITION is one in-place instance, unwound through the trail.
     auto block = [&](uint32_t d) -> uint32_t* { return depths + uint64_t(d) * ir_depth_words(n); };
-    // A depth's partition over its block. `fresh` is the view of a block nothing has written
-    // yet -- the one the initial partition or an individualisation is about to fill -- and it
-    // reads no cell of it; `view` is the view of a block whose ncells has been stored.
-    auto fresh = [&](uint32_t d) -> IrPartition {
-        uint32_t* b = block(d);
-        IrPartition p;
-        p.lab = b; p.pos = b + n; p.cell_of = b + 2 * n;
-        p.cstart = b + 3 * n; p.clen = b + 4 * n;
-        p.ncells = 0; p.n = n;
-        return p;
-    };
-    auto view = [&](uint32_t d) -> IrPartition {
-        IrPartition p = fresh(d);
-        p.ncells = block(d)[7 * n + 0];
-        return p;
-    };
-    auto store_ncells = [&](uint32_t d, uint32_t v) { block(d)[7 * n + 0] = v; };
-    auto cell_buf  = [&](uint32_t d) -> uint32_t* { return block(d) + 5 * n; };
-    auto covered   = [&](uint32_t d) -> uint32_t* { return block(d) + 6 * n; };
-    auto target_of = [&](uint32_t d) -> uint32_t& { return block(d)[7 * n + 1]; };
-    auto next_of   = [&](uint32_t d) -> uint32_t& { return block(d)[7 * n + 2]; };
-    auto cell_n_of = [&](uint32_t d) -> uint32_t& { return block(d)[7 * n + 3]; };
-    auto chosen_of = [&](uint32_t d) -> uint32_t& { return block(d)[7 * n + 4]; };
+    auto cell_buf  = [&](uint32_t d) -> uint32_t* { return block(d); };
+    auto covered   = [&](uint32_t d) -> uint32_t* { return block(d) + n; };
+    auto target_of = [&](uint32_t d) -> uint32_t& { return block(d)[2 * n + 0]; };
+    auto next_of   = [&](uint32_t d) -> uint32_t& { return block(d)[2 * n + 1]; };
+    auto cell_n_of = [&](uint32_t d) -> uint32_t& { return block(d)[2 * n + 2]; };
+    auto chosen_of = [&](uint32_t d) -> uint32_t& { return block(d)[2 * n + 3]; };
 
     ir_build_occurrences(ea, eoff, ev, n_edges, n, occ_off, occ_edge, occ_pos, cursor);
 
-    IrPartition pi = fresh(0);
+    IrPartition pi;
+    pi.lab = p_lab; pi.pos = p_pos; pi.cell_of = p_cell_of; pi.clen_at = p_clen_at;
+    pi.ncells = 0; pi.n = n;
+    IrTrail tr;
+    tr.e = p_trail; tr.count = 0;
     ir_initial_partition(ea, occ_off, occ_edge, occ_pos, n, pi, sig_buf, torder, par);
-    ir_refine(ea, eoff, ev, n_edges, occ_off, occ_edge, pi,
+    // Root splits carry tag 0: no undo reaches below the root.
+    ir_refine(ea, eoff, ev, n_edges, occ_off, occ_edge, pi, tr, 0u,
               worklist, inc_edges, edge_epoch, touched, on_touched, torder,
               sig_off, sig_cnt, gstart, sig_buf, 0xFFFFFFFFu, 0xFFFFFFFFu, par);
-    store_ncells(0, pi.ncells);
 
     uint32_t n_gens = 0;
     // Set when an automorphism was found and the table was already full. Only consulted when
@@ -1052,10 +1069,9 @@ HG_HD inline IrResult ir_canonical_hash(
     bool returning = false;
     for (;;) {
         if (!returning) {
-            IrPartition p = view(d);
-            const uint32_t t = p.is_discrete() ? p.ncells : p.first_non_singleton();
-            if (t >= p.ncells) {
-                if (p.is_discrete()) leaf(p, d);
+            const uint32_t t = pi.first_non_singleton();
+            if (t >= n) {
+                if (pi.is_discrete()) leaf(pi, d);
                 if (d == 0) break;
                 if (backjump_to < d) d = backjump_to; else --d;
                 backjump_to = 0xFFFFFFFFu;
@@ -1063,8 +1079,8 @@ HG_HD inline IrResult ir_canonical_hash(
             }
             target_of(d) = t;
             uint32_t* cell = cell_buf(d);
-            const uint32_t cl = p.clen[t];
-            for (uint32_t k = 0; k < cl; ++k) cell[k] = p.lab[p.cstart[t] + k];
+            const uint32_t cl = pi.clen_at[t];
+            for (uint32_t k = 0; k < cl; ++k) cell[k] = pi.lab[t + k];
             struct AscCmp {
                 HG_HD int operator()(uint32_t a, uint32_t b) const {
                     return a < b ? -1 : (a > b ? 1 : 0);
@@ -1081,6 +1097,10 @@ HG_HD inline IrResult ir_canonical_hash(
             for (uint32_t k = 0; k < cl; ++k) cov[cell[k]] = 0;
         } else {
             returning = false;
+            // Unwind the partition to this depth first: everything the abandoned branch (or
+            // branches, on a backjump) split below is re-merged, in time proportional to what
+            // the splits cost.
+            ir_undo_to(pi, tr, d);
             // The branch just explored is done; mark every target-cell vertex automorphic to
             // its representative, under the generators that fix the path above this node.
             const uint32_t v = chosen_of(d);
@@ -1127,15 +1147,13 @@ HG_HD inline IrResult ir_canonical_hash(
             if (gen_fix[gi] >= d) gen_fix[gi] = d + (gens[uint64_t(gi) * n + v] == v ? 1u : 0u);
         if (d + 1 >= max_depth) { out.status = IR_NEED_DEPTH; return out; }
 
-        IrPartition child = fresh(d + 1);
-        ir_individualize(view(d), child, target_of(d), v);
-        // The singleton takes the target's id and the remainder the next one (cells are
-        // renumbered in source order), so those two seed the refinement.
-        ir_refine(ea, eoff, ev, n_edges, occ_off, occ_edge, child,
+        ir_individualize(pi, tr, target_of(d), v, d + 1);
+        // The singleton keeps the target's start and the remainder begins one past it, so
+        // those two names seed the refinement; its splits carry the child's tag.
+        ir_refine(ea, eoff, ev, n_edges, occ_off, occ_edge, pi, tr, d + 1,
                   worklist, inc_edges, edge_epoch, touched, on_touched, torder,
                   sig_off, sig_cnt, gstart, sig_buf,
                   target_of(d), cell_n_of(d) > 1 ? target_of(d) + 1 : 0xFFFFFFFFu, par);
-        store_ncells(d + 1, child.ncells);
         ++d;
         if (out_work) {
             ++out_work->nodes;
