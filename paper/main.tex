@@ -1,4 +1,4 @@
-\documentclass[11pt,a4paper]{article}
+\documentclass[10pt,twocolumn,a4paper]{article}
 
 % ============================================================================
 % PACKAGES
@@ -8,8 +8,9 @@
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
 \usepackage{lmodern}
-\usepackage[margin=1in]{geometry}
+\usepackage[margin=0.75in,columnsep=0.28in]{geometry}
 \usepackage{microtype}
+\usepackage{xurl}
 
 % Mathematics
 \usepackage{amsmath,amssymb,amsthm}
@@ -186,7 +187,7 @@ Given initial state $\state_0$ and rule set $\{\rewriterule_i\}$, the evolution 
 \end{itemize}
 \end{definition}
 
-\begin{figure}[htbp]
+\begin{figure*}[htbp]
 \centering
 \begin{tikzpicture}[
     st/.style={rectangle, draw, rounded corners, inner sep=3pt, font=\scriptsize},
@@ -219,7 +220,7 @@ reason worth stating: $e_1$ and $e_2$ share an input state, which resembles a si
 branchial edges connect co-consumers of a \emph{common} edge and these consume different ones.
 Every element is output of \texttt{canonical\_causal\_oracle -{}-dump 2}.}
 \label{fig:worked-example}
-\end{figure}
+\end{figure*}
 
 The \emph{causal graph} captures dependencies between events based on shared hyperedges. The \emph{branchial graph} connects states reachable at the same evolution step, encoding branching structure analogous to quantum superposition~\cite{wolfram2020project}.
 
@@ -324,7 +325,7 @@ Source: \texttt{tools/cost\_matrix.cpp}.}
 \end{table}
 
 \input{tables/f_crratio_syms}
-\begin{figure}[htbp]
+\begin{figure*}[htbp]
 \centering
 \begin{tikzpicture}
 \begin{axis}[
@@ -348,7 +349,7 @@ produced the same class-to-raw ratio, which happens where the rule reaches a fix
 higher depth---\texttt{self-loop} does so after one event, and its ratio is $100\%$ at both. Values
 as in Table~\ref{tab:crratio}.}
 \label{fig:crratio}
-\end{figure}
+\end{figure*}
 
 \noindent For every rule that continues to rewrite, $C/R$ decreases with depth. Reaching the same state along several distinct histories is characteristic of multiway evolution, and each such arrival produces a repeated WL hash that IR must resolve. The cases that retain a high ratio are those reaching a fixed point after one or two steps: \texttt{self-loop} has $C/R = 100\%$ over two raw states and one event. The fraction a filter could elide is therefore largest on the workloads with the least work to elide.
 
@@ -418,7 +419,7 @@ $B_d$~\cite{rota1964number}; Table~\ref{tab:bell} gives the first few. The host 
 edge's signature against the pattern's directly; the device precomputes the compatible set per
 pattern edge (Section~\ref{sec:gpu}).
 
-\begin{table}[htbp]
+\begin{table*}[htbp]
 \centering
 \caption{Bell numbers for signature compatibility}
 \label{tab:bell}
@@ -429,7 +430,7 @@ $d$ & 1 & 2 & 3 & 4 & 5 & 6 & 7 & 8 \\
 $B_d$ & 1 & 2 & 5 & 15 & 52 & 203 & 877 & 4140 \\
 \bottomrule
 \end{tabular}
-\end{table}
+\end{table*}
 
 \subsection{Candidate Edges by Ancestry}
 \label{sec:vertex-index}
@@ -883,10 +884,10 @@ quotient exploration expands fewer states.
 The reconstruction is a forward tally. Under an exact identity the canonical states graph is
 cyclic, since a canonical state recurs at several path lengths; its unrolling by depth is acyclic,
 and the multiplicity of each (canonical state, depth) pair satisfies
-\[
-  \mathrm{mult}[s_0, 0] = 1, \qquad
-  \mathrm{mult}[c, k{+}1] \mathrel{+}= \mathrm{mult}[s, k]\cdot w(s \to c),
-\]
+\begin{align*}
+  \mathrm{mult}[s_0, 0] &= 1,\\
+  \mathrm{mult}[c, k{+}1] &\mathrel{+}= \mathrm{mult}[s, k]\cdot w(s \to c),
+\end{align*}
 summed over the transitions into $c$, with the raw event count recovered as
 $\sum \mathrm{mult}$. Every quantity propagates forward over the unrolled DAG, so a \emph{count}
 is recovered by summation rather than by re-exploring, and that part is polynomial in the number
@@ -1161,7 +1162,7 @@ $\PersistentSpeedupFour\times$ a per-step \texttt{evolve()} at depth four and in
 from it by depth \PersistentTieDepthWord, once the evolution itself dominates the constant being
 amortized.
 
-\begin{figure}[htbp]
+\begin{figure*}[htbp]
 \centering
 \begin{tikzpicture}[
     node distance=0pt,
@@ -1193,7 +1194,7 @@ amortized.
 \caption{Queue structure of the resident device kernel. Work circulates between the
 three queues without returning to the host; an epoch counter separates evolution steps.}
 \label{fig:megakernel}
-\end{figure}
+\end{figure*}
 
 \subsection{The Constraint the Design Follows From}
 \label{sec:gpu-constraint}
@@ -1545,21 +1546,21 @@ which is the claim the arena exists to support: allocation count is set-up perfo
 does not grow with the work.
 
 
-\begin{table}[htbp]
+\begin{table*}[htbp]
 \centering
 \caption{\textbf{T1 --- Exactness and deterministic memory.} One row per corpus workload: canonical states, events, causal edges, branchial edges, arena bytes, heap bytes and heap allocations, all in \textsc{Full} (exact) mode, single-threaded. Each workload is evolved to its own depth, the \texttt{oracle\_steps} recorded with it in \texttt{reference/oracle\_corpus.hpp}, chosen so the brute-force cross-check stays tractable; counts are therefore comparable down a column and not across rows. The \emph{Exactness} column must read \textsc{Exact} for every row, checked against the brute-force isomorphism oracle. Deterministic memory is measured as arena \texttt{bytes\_allocated()}, not RSS, for reproducibility. Source tool: \texttt{tools/cost\_matrix.cpp}.}
 \label{tab:t1-exactness}
 \input{tables/t1_exactness}
-\end{table}
+\end{table*}
 
-\begin{table}[htbp]
+\begin{table*}[htbp]
 \centering
 \caption{\textbf{T3 --- Global allocator use during evolution.} One row per corpus workload, ordered by work performed. \texttt{cost\_matrix} counts every call to global \texttt{operator new} during the measured evolution. Allocations per event fall from $56$ on the smallest runs to $0.0025$ on runs four orders of magnitude larger: the count is fixed set-up performed once per run, so it is divided by an event count that grows while it does not, and per-event allocation is served from the arena rather than the allocator. No before/after comparison is given for the contributions that produced this figure. Each replaced path was deleted in the commit that replaced it, the work spans dozens of commits, and the instrument that measures arena bytes did not exist at the start of that sequence; two numbers from two different instruments would not constitute a comparison. Source: \texttt{tools/cost\_matrix.cpp}.}
 \label{tab:t3-deheap}
 \input{tables/t3_heap}
-\end{table}
+\end{table*}
 
-\begin{figure}[htbp]
+\begin{figure*}[htbp]
 \centering
 \begin{tikzpicture}
 \begin{axis}[
@@ -1580,7 +1581,7 @@ at depth \SpeedupLowDepth{}, rising to $\SpeedupAtHighDepth\times$ at depth \Spe
 depth-2 point includes one-time initialization
 on the Wolfram side, and this engine's times at depths 3--5 are near the timer's resolution.}
 \label{fig:speedup}
-\end{figure}
+\end{figure*}
 
 \subsection{Wall-Time Speedup (Table T2)}
 The comparison is against the \texttt{Wolfram/Multicomputation} \texttt{MultiwaySystem}, the
@@ -1596,12 +1597,12 @@ are lower bounds on the gap rather than precise factors. At depth seven neither 
 the engine takes $23.2$\,ms against $710$\,s, so that row is a direct measurement on both sides.
 
 
-\begin{table}[htbp]
+\begin{table*}[htbp]
 \centering
 \caption{\textbf{T2 --- Comparison against \texttt{MultiwaySystem} and against this project's own reference implementation.} The workload is the corpus's \texttt{wolfram-2to4}: $\{\{1,2\},\{2,3\}\} \to \{\{1,2\},\{2,4\},\{4,3\}\}$ from the initial state $\{\{1,2\},\{2,3\}\}$. All three compute the same evolution and are timed at their respective interfaces: the native engine at its C++ API, the \texttt{Wolfram/\allowbreak Multicomputation} paclet's \texttt{MultiwaySystem} through its exposed properties, and the reference implementation (\texttt{reference/MultiwayReference.wl}) at its function call. \texttt{MultiwayReference} is the brute-force Wolfram-language evolver this project validates its engine against; it is included because \texttt{MultiwaySystem} gives the running time of the implementation a user would otherwise run, while \texttt{MultiwayReference} gives the running time of a direct, unoptimised implementation of the same definition. Unlike \texttt{MultiwaySystem} it returns data rather than \texttt{Graph} objects, so its time is not charged for graph construction and the ratio against the engine's C++ core is not an artifact of it. The \emph{Counts agree} column requires all three to have produced the same state and causal-edge counts at that depth; a timing comparison between different state spaces is not a comparison. Every property that implementation exposes is graph-valued (\texttt{StatesGraph}, \texttt{CausalGraph}, \texttt{EvolutionGraph}; enumerated by \texttt{reference/authority\_properties.wls}), so its measured time necessarily includes construction of Wolfram \texttt{Graph} objects, and no interface returning the state set alone is available. State and causal-edge counts agree exactly at every depth. The \emph{Engine ms (paclet)} column reports this project's own Wolfram-layer cost and is excluded from every speedup quoted here; at depth five it is $166\times$ the engine's own evolution time ($66.3$\,ms against $0.4$\,ms), and it is the reason no speed claim in this paper is taken through that layer. The speed this paper reports is the engine's native speed with serialization excluded, which is the only figure comparable across the three implementations: \texttt{MultiwaySystem} cannot separate its graph construction from its evolution, and \texttt{MultiwayReference} does not build graphs at all. The depth-2 row includes one-time kernel and paclet initialization on the Wolfram side, and the native times at depths 3--5 are near the timer's resolution. Source: \texttt{tools/quotient\_reconstruction\_cost\_probe} and \texttt{reference/bench\_authority.wls}.}
 \label{tab:t2-speedup}
 \input{tables/t2_speedup}
-\end{table}
+\end{table*}
 
 \subsection{Quotient Exploration (Table T6)}
 Quotient exploration collapses states related by an automorphism of the rule set into one
@@ -1611,12 +1612,12 @@ classes, and the reconstruction recovers the raw events, causal edges and branch
 those classes exactly. The saving is in what is expanded, not in what is reported.
 
 
-\begin{table}[htbp]
+\begin{table*}[htbp]
 \centering
 \caption{\textbf{T6 --- Quotient against full expansion.} Events produced and wall time for quotient exploration---expanding each canonical state once, at its shortest reachable depth---against full expansion, at increasing depth on the Wolfram rule and with the same canonical closure. Both modes produce the same canonical state set; the columns report the difference in events produced and in wall time. The quotient arm expands 28 events at depth seven where full expansion reaches 5{,}913, and reconstruction recovers all 5{,}913 exactly from those 28. Reconstruction's own cost is \emph{below the resolution of this measurement}: the \texttt{quot.+recon} column lands at or a little under the \texttt{quot.} column at most depths ($4.8$ against $5.5$\,ms at depth seven), which is run-to-run variation on sub-ten-millisecond timings and not a negative cost. What the table establishes is that reconstruction is exact and that it is cheap enough not to register beside the evolution it reconstructs from; a workload large enough to separate the two would be needed to price it. Source: \texttt{tools/quotient\_reconstruction\_cost\_probe}.}
 \label{tab:t6-quotient}
 \input{tables/t6_quotient}
-\end{table}
+\end{table*}
 
 \begin{figure}[htbp]
 \centering
@@ -1673,14 +1674,14 @@ resident kernel cost anything. Reporting the speedup without the depth it is mea
 therefore be a statement about small problems.
 
 
-\begin{table}[htbp]
+\begin{table*}[htbp]
 \centering
 \caption{\textbf{T7 --- GPU against CPU.} End-to-end evolution time for the GPU and for the CPU at one and at eight threads, at increasing depth on the Wolfram rule; branchial edges are constructed through a per-(state, edge) index. Both sides use the same rule, initial condition, canonicalization mode and exploration strategy, and report medians from a single session on the machine recorded in the table's provenance line. At depth five the GPU is slower than eight CPU threads, where the work per launch does not amortize the launch cost; from depth six it is ahead of both columns, and the margin widens with depth. Source: \texttt{tools/bench\_gpu\_evolve} and \texttt{tools/bench\_cpu\_evolve}.}
 \label{tab:t7-gpu}
 \input{tables/t7_gpu}
-\end{table}
+\end{table*}
 
-\begin{table}[t]
+\begin{table*}[t]
 \centering
 \caption{\textbf{T7b --- GPU against CPU across the named corpus.} The same head-to-head as
 Table~\ref{tab:t7-gpu}, one row per named workload at its standard depth: the single rules,
@@ -1690,7 +1691,7 @@ and one iteration count. Source: \texttt{tools/bench\_gpu\_evolve} and
 \texttt{tools/bench\_cpu\_evolve} over \texttt{corpus\_gen.hpp}'s named table.}
 \label{tab:t7b-gpu-corpus}
 \input{tables/t7b_gpu_corpus}
-\end{table}
+\end{table*}
 
 \begin{table}[htbp]
 \centering
@@ -1718,7 +1719,7 @@ five---and the depth-seven curve is superlinear at two threads. The shortfall at
 counts is the subject of the next two subsections.
 
 
-\begin{table}[htbp]
+\begin{table*}[htbp]
 \centering
 \caption{\textbf{T8 --- Strong scaling at three problem sizes.} Median wall time and parallel
 efficiency (speedup divided by thread count) at each thread count, for depths five, six and seven
@@ -1734,7 +1735,7 @@ the (input, output, rule) transition multiset are identical at every thread coun
 Source: \texttt{tools/dev/scaling\_sweep.py} over \texttt{tools/bench\_cpu\_evolve}.}
 \label{tab:t8-scaling}
 \input{tables/t8_scaling}
-\end{table}
+\end{table*}
 
 \begin{figure}[htbp]
 \centering
@@ -1969,7 +1970,7 @@ Source: \texttt{tools/dev/rich\_sweep.sh} over \texttt{tools/sampling\_cost\_smo
 \label{fig:shape-space}
 \end{figure}
 
-\begin{table}[htbp]
+\begin{table*}[htbp]
 \centering
 \caption{\textbf{T14 --- The deepest point reached by each left-hand side shape.} One row per
 shape, at the greatest depth that both fitted the collection budget and did not reach a
@@ -1983,7 +1984,7 @@ match's orientation, so \texttt{chain2a3} and \texttt{chain2a4} describe the sam
 report the same counts. Source: \texttt{tools/dev/rich\_sweep.sh} over \texttt{tools/sampling\_cost\_smoke}.}
 \label{tab:t14-shape-space}
 \input{tables/t14_shape_space}
-\end{table}
+\end{table*}
 
 \subsection{What the Lost Efficiency Is Spent On (Table T13)}
 A falling efficiency curve does not say which resource is being consumed, and the two candidates
@@ -1993,12 +1994,12 @@ structures, while the cost of memory the run acquires would not. Both are read f
 resident set and the fault count, which identifies memory acquisition as the cost.
 
 
-\begin{table}[htbp]
+\begin{table*}[htbp]
 \centering
 \caption{\textbf{T13 --- User and system time, resident set and page faults against thread count.} A declining efficiency curve does not by itself identify the resource being consumed, and the two candidate explanations---contention on shared structures, and the cost of memory the run acquires---imply different remedies. Both are read from \texttt{getrusage} on the same runs. Across a $\ThreadSweepFactor\times$ increase in worker count, user time increases by a factor of $\UserTimeGrowth$---far less than the thread count, so the added workers are not simply spinning against each other---while system time increases by a factor of $\SysTimeGrowth$ and tracks the peak resident set and minor-fault count the table gives per row. Each worker draws its own arena blocks, so the run acquires memory in proportion to its width and faults each page in. System time is the faster-growing of the two and the one that scales with the resident set, identifying memory acquisition rather than contention as the cost. Wall time is minimized at sixteen threads and rises again at 32, beyond which this kernel cost exceeds the parallel gain. This result is specific to the host measured; a host with different memory bandwidth or huge pages enabled would place the minimum elsewhere. Source: \texttt{tools/dev/scaling\_sweep.py} over \texttt{tools/sampling\_cost\_smoke} under \texttt{/usr/bin/time -v}.}
 \label{tab:t13-memory}
 \input{tables/t13_thread_memory}
-\end{table}
+\end{table*}
 
 \subsection{Device Saturation (Table T11)}
 The megakernel is launched at a fixed number of blocks per streaming multiprocessor, so that
@@ -2085,6 +2086,7 @@ other table in this section this one is transcribed from a profiler session rath
 \texttt{tools/dev/paper\_tables.py}: Nsight Compute reports are not text, and the session is
 recorded as \texttt{ncu\_wpp.ncu-rep} alongside the other artefacts of the run.}
 \label{tab:device-occupancy}
+\resizebox{\ifdim\width>\linewidth\linewidth\else\width\fi}{!}{%
 \begin{tabular}{lrrrr}
 \toprule
 workload & kernel (ms) & warps active & SM thr. & DRAM thr. \\
@@ -2098,7 +2100,7 @@ workload & kernel (ms) & warps active & SM thr. & DRAM thr. \\
 \texttt{triangle}  & 209.38 & 16.58\% &  2.04\% & 0.21\% \\
 \texttt{binary}    & 857.47 & 16.65\% &  1.80\% & 0.06\% \\
 \bottomrule
-\end{tabular}
+\end{tabular}}
 \end{table}
 
 A grid-determined limit produces exactly this: an occupancy constant across a corpus this varied, and confirms from a third direction that it is not determined by register allocation.
@@ -2127,12 +2129,12 @@ Proposition~\ref{prop:wlceiling} predicts from the other direction: a cheaper fi
 IR cannot remove the IR invocations, so it can only add to them.
 
 
-\begin{table}[htbp]
+\begin{table*}[htbp]
 \centering
 \caption{\textbf{T9 --- Per-contribution ablation over the run-time switches present in the shipped binary.} No compiled-out ablation builds exist: when a replacement lands in this engine the replaced path is deleted in the same commit, so an ``off'' arm exists only where the choice remains a run-time switch. Those are match forwarding, whose applicability depends on the rule set (Section~\ref{sec:pattern-matching}), and the state-canonicalization mode; quotient exploration is reported separately in Table~\ref{tab:t6-quotient}. Each arm is a best-of-$N$ wall time. The forwarding rows use a one-edge left-hand side at depth eight and a two-edge left-hand side at depth six; the canonicalization row uses the two-edge side at depth six. State and event counts are compared across arms, so a switch that alters the computed result is identified as such rather than reported as a change in speed---but that column is a statement about \emph{these} workloads. The state-canonicalization mode does change the computed answer on other inputs: Section~\ref{sec:event-canon} gives a corpus case where the exact and approximate modes report eight events and six. The row below reports agreement because the two-edge left-hand side at depth six is not such a case, which is exactly why the workload is named here rather than left implicit. Source: \texttt{tools/sampling\_cost\_smoke}.}
 \label{tab:t9-ablation}
 \input{tables/t9_ablation}
-\end{table}
+\end{table*}
 
 \subsection{Where the Instructions Go (Table T15)}
 \label{sec:instruction-profile}
@@ -2167,12 +2169,12 @@ $8$ and $9$. A paper reporting an event count must therefore say which conventio
 this one uses the canonical convention throughout.
 
 
-\begin{table}[htbp]
+\begin{table*}[htbp]
 \centering
 \caption{\textbf{Event identity is three distinct conventions, not one under three names.} Canonical event count per convention on each corpus workload, under \textsc{Full} state canonicalization, single-threaded. The conventions refine one another --- two rewrites are the same event when they run between the same states, when they additionally move the same edges, or never --- so the counts must be non-decreasing left to right, and where they are strictly increasing the convention is doing work no coarser one does. There is no timing column: what separates the conventions is what they IDENTIFY, and the cost of the identity is the added canonicalization pass that Table~\ref{tab:t9-ablation} measures. Source: \texttt{tools/mode\_matrix\_probe.cpp}.}
 \label{tab:event-canon}
 \input{tables/t10_event_canon}
-\end{table}
+\end{table*}
 
 \subsection{Limitations}
 \label{sec:limitations}
@@ -2266,8 +2268,9 @@ The engine is used directly as a library and as the evolution backend for downst
 to draw the evolution, causal and branchial graphs. The implementation is available as:
 \begin{itemize}
     \item Source code: \url{https://github.com/WolframInstitute/HypergraphRewritingEngine}
-    \item Wolfram Language paclet: \texttt{WolframInstitute/HypergraphRewriteEngine}, installable with
-          \texttt{PacletInstall["WolframInstitute/HypergraphRewriteEngine"]}
+    \item Wolfram Language paclet: \texttt{WolframInstitute/}\allowbreak\texttt{HypergraphRewriteEngine},
+          installable with
+          \texttt{PacletInstall[}\allowbreak\texttt{"WolframInstitute/}\allowbreak\texttt{HypergraphRewriteEngine"]}
 \end{itemize}
 
 % ----------------------------------------------------------------------------
@@ -2330,6 +2333,7 @@ For pattern with $|L|$ edges and state with $|S|$ edges:
 \centering
 \caption{\textbf{Per-operation costs of the concurrent data structures.} Amortized where the structure grows; $n$ is the number of elements held.}
 \label{tab:lockfree-costs}
+\resizebox{\ifdim\width>\linewidth\linewidth\else\width\fi}{!}{%
 \begin{tabular}{lcccc}
 \toprule
 Structure & Insert & Lookup & Delete & Memory \\
@@ -2339,7 +2343,7 @@ SegmentedArray & $\BigO(1)$ & $\BigO(1)$ & N/A & $\BigO(n)$ \\
 LockFreeList & $\BigO(1)$ & $\BigO(n)$ & N/A & $\BigO(n)$ \\
 SparseBitset & $\BigO(\log n)$ & $\BigO(\log n)$ & $\BigO(\log n)$ & $\BigO(n/64)$ \\
 \bottomrule
-\end{tabular}
+\end{tabular}}
 \end{table}
 
 \end{document}
