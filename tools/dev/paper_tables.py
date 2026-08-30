@@ -362,17 +362,19 @@ def t1(build):
     if not rows:
         raise SystemExit("cost_matrix produced no parseable rows")
 
+    # The correctness table carries the four counts and the verdict; the memory columns live in
+    # T3, which is the allocator table, so neither table repeats the other and this one stays
+    # legible at column width.
     b = [provenance("tools/cost_matrix.cpp"),
-         r"\begin{tabular}{llrrrrrrrl}", r"\toprule",
-         r"Workload & Class & Canon.\ states & Events & Causal & Branchial & "
-         r"Arena B & Heap B & Heap allocs & Exactness \\", r"\midrule"]
+         r"\begin{tabular}{llrrrrl}", r"\toprule",
+         r"Workload & Class & Canon.\ states & Events & Causal & Branchial & Exactness \\",
+         r"\midrule"]
     # cost_matrix's first numeric column is `raw` -- the raw state count, ahead of `canon`. Every
     # column here is named against that header, so the unpacking names it and drops it rather
     # than letting the values slide one place to the left.
-    for (case, cls, exact, _raw, canon, ev, ca, br, arena, heapb, heapa) in rows:
-        b.append("%s & %s & %s & %s & %s & %s & %s & %s & %s & %s \\\\" % (
-            tex_escape(case), tex_escape(cls), canon, ev, ca, br, arena, heapb, heapa,
-            exact.lower()))
+    for (case, cls, exact, _raw, canon, ev, ca, br, _arena, _heapb, _heapa) in rows:
+        b.append("%s & %s & %s & %s & %s & %s & %s \\\\" % (
+            tex_escape(case), tex_escape(cls), canon, ev, ca, br, exact.lower()))
     b += [r"\bottomrule", r"\end{tabular}", "", "%% " + total]
     write("t1_exactness.tex", "\n".join(b) + "\n")
     return len(rows)
@@ -812,19 +814,20 @@ def t3(build):
             # g[7] branch, g[8] arenaB, g[9] heapB, g[10] heapAllocs. This table wants the
             # ALLOCATION count beside the size of the run, so it takes g[10] and not the byte
             # totals either side of it.
-            rows.append((g[0], int(g[4]), int(g[5]), int(g[8]), int(g[10])))
+            rows.append((g[0], int(g[4]), int(g[5]), int(g[8]), int(g[9]), int(g[10])))
     if not rows:
         raise SystemExit("cost_matrix produced no parseable rows")
     rows.sort(key=lambda r: r[2])   # by events: the work, which is what allocation must not track
 
     b = [provenance("tools/cost_matrix.cpp"),
-         r"\begin{tabular}{lrrrrr}", r"\toprule",
-         r"Workload & Canon.\ states & Events & Arena B & Heap allocs & Allocs per event \\",
+         r"\begin{tabular}{lrrrrrr}", r"\toprule",
+         r"Workload & Canon.\ states & Events & Arena B & Heap B & Heap allocs & "
+         r"Allocs per event \\",
          r"\midrule"]
-    for (name, canon, ev, arena, allocs) in rows:
+    for (name, canon, ev, arena, heapb, allocs) in rows:
         per = ("%.4f" % (float(allocs) / ev)) if ev else "--"
-        b.append("%s & %d & %d & %d & %d & %s \\\\" % (
-            tex_escape(name), canon, ev, arena, allocs, per))
+        b.append("%s & %d & %d & %d & %d & %d & %s \\\\" % (
+            tex_escape(name), canon, ev, arena, heapb, allocs, per))
     b += [r"\bottomrule", r"\end{tabular}"]
     write("t3_heap.tex", "\n".join(b) + "\n")
     return len(rows)
