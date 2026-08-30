@@ -50,6 +50,17 @@ inline std::atomic<uint64_t>& migrate_deferrals() {
     static std::atomic<uint64_t> n{0};
     return n;
 }
+// Stats builds only: every insert call and every win, process-wide over every set. The ratio
+// is what decides whether a thread-local filter in front of a set is worth its cost -- a set
+// whose inserts are mostly repeats spends its cross-CCX traffic on keys it already holds.
+inline std::atomic<uint64_t>& key_set_insert_calls() {
+    static std::atomic<uint64_t> n{0};
+    return n;
+}
+inline std::atomic<uint64_t>& key_set_insert_wins() {
+    static std::atomic<uint64_t> n{0};
+    return n;
+}
 
 template<typename K = uint64_t,
          K EMPTY_KEY    = K{0},
@@ -170,6 +181,7 @@ public:
 
     bool insert(K key) {
         reject_sentinel_key(key, "insert");
+        HG_STAT(key_set_insert_calls().fetch_add(1, std::memory_order_relaxed));
         for (;;) {
             Table* head = table_.load(std::memory_order_acquire);
             // WHEN TO GROW. A probe run that walked past kProbeLimit slots raised want_grow_
@@ -329,6 +341,7 @@ private:
                 if (slot.compare_exchange_strong(cur, key, std::memory_order_acq_rel,
                                                  std::memory_order_acquire)) {
                     note_win(occupied);
+                    HG_STAT(key_set_insert_wins().fetch_add(1, std::memory_order_relaxed));
                     return Claim::kWon;
                 }
                 if (cur == key) return Claim::kLost;

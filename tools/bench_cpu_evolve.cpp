@@ -300,6 +300,17 @@ int main(int argc, char** argv) {
                 std::printf("  fanout: scans=%zu visits=%zu mean_m=%.2f\n",
                             sc, vi, sc ? double(vi) / double(sc) : 0.0);
             }
+#if HG_ENGINE_STATS
+            {
+                // Shared-set traffic: how many inserts, over every ConcurrentKeySet, were of a
+                // key the set already held. A high repeat share is what a thread-local filter
+                // in front of the set would remove from the cross-CCX traffic.
+                const unsigned long long calls = hg::engine::key_set_insert_calls().load();
+                const unsigned long long wins  = hg::engine::key_set_insert_wins().load();
+                std::printf("  keyset: inserts=%llu wins=%llu repeat=%.1f%%\n", calls, wins,
+                            calls ? 100.0 * double(calls - wins) / double(calls) : 0.0);
+            }
+#endif
             std::printf("  recon: causal_pairs=%zu reduced_pairs=%zu branchial=%zu\n",
                         g.num_reconstructed_causal_pairs(false),
                         g.num_reconstructed_causal_pairs(true),
