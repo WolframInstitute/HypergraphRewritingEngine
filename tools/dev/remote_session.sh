@@ -95,6 +95,12 @@ fi
 export PATH="/usr/local/cuda/bin:$PATH"
 NVSMI="$(command -v nvidia-smi || echo /usr/lib/wsl/lib/nvidia-smi)"
 
+# The machine string a generated fragment's provenance line carries: a figure must not claim
+# it was measured where it was drawn.
+MEASURED_ON="$(lscpu | sed -n 's/^Model name:[[:space:]]*//p' | head -1)"
+GPU_NAME="$("$NVSMI" --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)"
+[ -n "$GPU_NAME" ] && MEASURED_ON="$MEASURED_ON, $GPU_NAME"
+
 # The pinned set and the sweep, recomputed every phase because they are cheap and because a
 # phase must not depend on a file a previous phase left behind.
 mapfile -t FIRST_THREADS < <(lscpu -p=CPU,CORE | grep -v '^#' | awk -F, '!seen[$2]++ {print $1}')
@@ -404,8 +410,13 @@ if want attrib; then
   cmake --build build_instr -j"$(nproc)" --target bench_cpu_evolve >> "$LOG" 2>&1 || fail "instr build"
   wait_quiet
   say "phase attribution (wpp d7 and the quotient workload)"
-  ./build_instr/bench_cpu_evolve 7 3 "$SWEEP" wpp "$CPUSET" > "$ROOT/attrib_wpp.log" 2>&1 || true
-  ./build_instr/bench_cpu_evolve 3 3 "$SWEEP" disc-l3a2g2r2 "$CPUSET" \
+  # Line-buffered: a sweep point lands in the log the moment it is measured, so a run that is
+  # cut -- by a tenancy wall or by hand -- keeps every point it completed. Block-buffered into
+  # a file, three 78-minute measurements sat in a stdio buffer and survived only because the
+  # buffer was flushed by hand through gdb before the kill.
+  stdbuf -oL -eL ./build_instr/bench_cpu_evolve 7 3 "$SWEEP" wpp "$CPUSET" \
+    > "$ROOT/attrib_wpp.log" 2>&1 || true
+  stdbuf -oL -eL ./build_instr/bench_cpu_evolve 3 3 "$SWEEP" disc-l3a2g2r2 "$CPUSET" \
     > "$ROOT/attrib_disc.log" 2>&1 || true
   if command -v valgrind >/dev/null; then
     say "callgrind (single thread, file:line attribution)"
@@ -413,6 +424,12 @@ if want attrib; then
       ./build_instr/bench_cpu_evolve 6 1 1 wpp >> "$LOG" 2>&1 || true
     command -v callgrind_annotate >/dev/null \
       && callgrind_annotate "$ROOT/cg_wpp.out" > "$ROOT/cg_wpp.txt" 2>/dev/null || true
+    # T15 rides the annotate output it already documents as its input, so the fragment has an
+    # owning phase rather than one historical by-hand run.
+    if [ -s "$ROOT/cg_wpp.txt" ]; then
+      python3 tools/dev/instruction_profile.py "$ROOT/cg_wpp.txt" \
+        --measured-on "$MEASURED_ON" || fail "instruction_profile failed"
+    fi
   fi
 fi
 
@@ -456,6 +473,27 @@ if want floor; then
     say "ncu captures"
     ncu --set full -o "$ROOT/ncu_wpp" ./build_gpu_release/bench_gpu_evolve 6 1 2 wpp >> "$LOG" 2>&1 || true
   fi
+  # T16 (persistent vs per-step, wpp by depth) is generated HERE so the fragment always has
+  # an owning phase: it sat in the paper measured on a kernel three rewrites old because its
+  # generator belonged to no phase and was run by hand exactly once.
+  say "persistent depth sweep (T16)"
+  : > "$ROOT/persistent_depth.log"
+  for d in 4 5 6 7 8 9; do
+    ./build_gpu_release/bench_gpu_evolve "$d" 9 0 wpp >> "$ROOT/persistent_depth.log" 2>&1 \
+      || fail "persistent depth sweep failed at depth $d"
+  done
+  python3 tools/dev/persistent_depth_table.py "$ROOT/persistent_depth.log" \
+    --measured-on "$MEASURED_ON" || fail "persistent_depth_table failed"
+fi
+
+# --------------------------------------------------------------------------- rich
+# The LHS-shape data set and its five figures plus T14. Own phase: the scaling half is
+# serial by construction and is the longest single collection in the session.
+if want rich; then
+  wait_quiet
+  say "rich sweep (shape space: depth then serial scaling)"
+  bash tools/dev/rich_sweep.sh build_release "$ROOT/rich" all || fail "rich_sweep failed"
+  python3 tools/dev/rich_plots.py "$ROOT/rich" || fail "rich_plots failed"
 fi
 
 say "phase '$PHASE' complete — the driver pulls its artifacts now; nothing here is a last copy"

@@ -110,9 +110,8 @@ def main():
     pt.write("t15_instruction_profile.tex", "\n".join(b) + "\n")
     # The coverage figure the caption cites, from the same parse, so the sentence cannot
     # drift from the table it describes.
-    pt.write("values_instr.tex",
-             pt.provenance("callgrind_annotate over the attrib phase") + "\n"
-             + r"\newcommand{\InstrFlatCoverage}{%.1f}" % (100.0 * covered / total) + "\n")
+    pt.value("InstrFlatCoverage", "%.1f" % (100.0 * covered / total))
+    pt.write_values("values_instr.tex")
     print("total %s Ir, flat profile covers %.1f%%" % ("{:,}".format(total), 100.0 * covered / total))
     for name, n in buckets.most_common():
         print("  %-32s %5.2f%%" % (name, 100.0 * n / total))

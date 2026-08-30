@@ -71,21 +71,17 @@ def main():
         return "%.2f" % r if r < 2 else "%.1f" % r
     def commas(n):
         return "{:,}".format(n).replace(",", "{,}")
-    v = []
     for d, states, _e, call, persist in rows:
-        v.append(r"\newcommand{\PersistentSpeedup%s}{%s}"
-                 % (words[d].capitalize(), sx(call, persist)))
+        pt.value("PersistentSpeedup" + words[d].capitalize(), sx(call, persist))
     const = [r for r in rows[:3]]
-    v.append(r"\newcommand{\PersistentEvolveConstLo}{%.0f}" % min(r[3] for r in const))
-    v.append(r"\newcommand{\PersistentEvolveConstHi}{%.0f}" % max(r[3] for r in const))
-    v.append(r"\newcommand{\PersistentStatesLo}{%s}" % commas(const[0][1]))
-    v.append(r"\newcommand{\PersistentStatesHi}{%s}" % commas(const[-1][1]))
+    pt.value("PersistentEvolveConstLo", "%.0f" % min(r[3] for r in const))
+    pt.value("PersistentEvolveConstHi", "%.0f" % max(r[3] for r in const))
+    pt.value("PersistentStatesLo", commas(const[0][1]))
+    pt.value("PersistentStatesHi", commas(const[-1][1]))
     tie = next((r for r in rows if r[3] / r[4] < 1.1), rows[-1])
-    v.append(r"\newcommand{\PersistentTieDepthWord}{%s}" % words[tie[0]])
-    v.append(r"\newcommand{\PersistentStatesTie}{%s}" % commas(tie[1]))
-    pt.write("values_persistent.tex",
-             pt.provenance("tools/bench_gpu_evolve.cpp (mode 0)") + "\n"
-             + "\n".join(v) + "\n")
+    pt.value("PersistentTieDepthWord", words[tie[0]])
+    pt.value("PersistentStatesTie", commas(tie[1]))
+    pt.write_values("values_persistent.tex")
 
     for d, states, _e, call, persist in rows:
         print("  depth %d  %9s states  %8.1f -> %8.1f ms  %5.2fx"
