@@ -66,7 +66,7 @@ public:
                     block->objects[i - 1].~T();
                 }
             }
-            Block* prev = block->prev;
+            Block* prev = block->prev.load(std::memory_order_relaxed);
             ::operator delete(block);
             block = prev;
         }
@@ -112,7 +112,7 @@ public:
         Block* block = head_;
         while (block) {
             total += block->count;
-            block = block->prev;
+            block = block->prev.load(std::memory_order_relaxed);
         }
         return total;
     }
@@ -122,7 +122,7 @@ public:
         Block* block = head_;
         while (block) {
             total += block->capacity;
-            block = block->prev;
+            block = block->prev.load(std::memory_order_relaxed);
         }
         return total;
     }
@@ -189,7 +189,7 @@ public:
                     block->objects[i - 1].~T();
                 }
             }
-            Block* prev = block->prev;
+            Block* prev = block->prev.load(std::memory_order_relaxed);
             ::operator delete(block);
             block = prev;
         }
@@ -226,7 +226,7 @@ public:
         while (block) {
             size_t c = block->count.load(std::memory_order_relaxed);
             total += (c <= block->capacity) ? c : block->capacity;
-            block = block->prev;
+            block = block->prev.load(std::memory_order_relaxed);
         }
         return total;
     }
@@ -617,7 +617,13 @@ public:
 
 private:
     struct Block {
-        Block* prev;   // older block (allocation order, newest->oldest via head_)
+        // Older block (allocation order, newest->oldest via head_) -- and, while the block
+        // sits in the process-wide pool, the free-list link. ATOMIC because a rival popper
+        // reads the link speculatively while a winner (or the winner's grab_block splice)
+        // rewrites it; relaxed everywhere, since every publication that matters rides a
+        // head CAS (std::atomic_ref would say the same thing per access, and the macOS
+        // 10.15 libc++ does not have it).
+        std::atomic<Block*> prev;
         Block* next;   // newer block; lets reset() walk forward to recycle blocks
         size_t capacity;
         std::atomic<size_t> offset;

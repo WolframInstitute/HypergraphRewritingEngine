@@ -88,7 +88,7 @@ ConcurrentHeterogeneousArena::~ConcurrentHeterogeneousArena() {
     // Free all blocks
     Block* block = head_.load(std::memory_order_acquire);
     while (block) {
-        Block* prev = block->prev;
+        Block* prev = block->prev.load(std::memory_order_relaxed);
         // operator delete must not be handed a region this file poisoned.
         HG_ARENA_UNPOISON(block->data, block->capacity);
         g_arena_block_bytes.fetch_sub(sizeof(Block) + block->capacity, std::memory_order_relaxed);
@@ -165,7 +165,7 @@ size_t ConcurrentHeterogeneousArena::bytes_allocated() const {
     Block* block = head_.load(std::memory_order_acquire);
     while (block) {
         total += block->offset.load(std::memory_order_relaxed);
-        block = block->prev;
+        block = block->prev.load(std::memory_order_relaxed);
     }
     return total;
 }
@@ -192,7 +192,7 @@ void ConcurrentHeterogeneousArena::reset() {
         // Its bytes are unallocated again, and the next request will unpoison what it takes.
         HG_ARENA_POISON(b->data, b->capacity);
         first = b;
-        b = b->prev;
+        b = b->prev.load(std::memory_order_relaxed);
     }
     current_block_.store(first, std::memory_order_relaxed);
 }
@@ -241,7 +241,7 @@ inline int pool_class_of(size_t map_len) {              // ceil(log2(map_len))
     return c;
 }
 // The storage half of hgcommon's tagged free-list rule, over the pool heads and Block::prev.
-// The link accessors are atomic_ref because a rival popper reads them speculatively; the
+// The link accessors ride the atomic prev field because a rival popper reads it speculatively; the
 // decision -- and the reason -- live in pool_core.hpp, which the GenMC harness
 // block_pool_exactly_once.cpp checks without this file's mmap machinery.
 struct BlockPoolOps {
@@ -310,7 +310,7 @@ ConcurrentHeterogeneousArena::Block::create(size_t data_capacity) {
     data_capacity = total - sizeof(Block);   // the rounding slack is usable, not wasted
 #endif
     Block* block = static_cast<Block*>(mem);
-    block->prev = nullptr;
+    block->prev.store(nullptr, std::memory_order_relaxed);
     block->next = nullptr;
     block->capacity = data_capacity;
     block->map_base = map_base;
@@ -336,13 +336,11 @@ void ConcurrentHeterogeneousArena::Block::release(Block* block) {
 
 uint64_t ConcurrentHeterogeneousArena::pool_link_load(uint64_t node) {
     Block* b = reinterpret_cast<Block*>(node);
-    return reinterpret_cast<uint64_t>(
-        std::atomic_ref<Block*>(b->prev).load(std::memory_order_relaxed));
+    return reinterpret_cast<uint64_t>(b->prev.load(std::memory_order_relaxed));
 }
 void ConcurrentHeterogeneousArena::pool_link_store(uint64_t node, uint64_t v) {
     Block* b = reinterpret_cast<Block*>(node);
-    std::atomic_ref<Block*>(b->prev).store(reinterpret_cast<Block*>(v),
-                                           std::memory_order_relaxed);
+    b->prev.store(reinterpret_cast<Block*>(v), std::memory_order_relaxed);
 }
 
 void ConcurrentHeterogeneousArena::Block::pool_push(std::atomic<uint64_t>& head, Block* block) {
@@ -468,10 +466,10 @@ ConcurrentHeterogeneousArena::grab_block(size_t cap) {
 
     Block* old_head = head_.load(std::memory_order_acquire);
     do {
-        // atomic_ref: a pool rival that lost this block an instant ago may still be reading
-        // its link speculatively (the pop's tagged CAS discards the value; TSan reports the
-        // mix of that atomic read with a plain write here).
-        std::atomic_ref<Block*>(new_block->prev).store(old_head, std::memory_order_relaxed);
+        // Relaxed: a pool rival that lost this block an instant ago may still be reading
+        // the link speculatively; the field is atomic for exactly that overlap, and the
+        // publication that matters is the head CAS below.
+        new_block->prev.store(old_head, std::memory_order_relaxed);
     } while (!head_.compare_exchange_weak(
         old_head, new_block,
         std::memory_order_release,
