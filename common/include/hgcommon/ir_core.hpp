@@ -290,104 +290,30 @@ HG_HD inline uint32_t ir_renumber_sorted(uint32_t* ev, uint32_t occ, uint32_t* v
 }
 
 // -----------------------------------------------------------------------------------------
-// THE ORDER-SAFE LOOPS, as dispatchable bodies. On the host (and on every device caller that
-// runs one thread per state) IrSerial runs them in place, byte-for-byte the loops they
-// replace. Under the persistent kernel a warp policy (hg_gpu/ir_canon.hpp) fans iterations
-// across the block's 32 lanes: these are the only loops handed over, because each either
-// writes per-iteration-disjoint regions (a vertex's own signature run) or feeds a sort that
-// normalises its write order (the splitter signature fill), so the lane schedule cannot reach
-// any output. Everything order-carrying -- the incident-edge gather, the touched list, the
-// cell splits, the search -- stays in the caller's serial code, because the within-cell
-// tie-break reads those orders and the ranks read the tie-break.
-struct IrParArgs {
-    const uint8_t*  ea = nullptr;
-    const uint32_t* eoff = nullptr;
-    const uint32_t* ev = nullptr;
-    const uint32_t* occ_off = nullptr;
-    const uint32_t* occ_edge = nullptr;
-    const uint32_t* occ_pos = nullptr;
-    uint64_t* sig_buf = nullptr;
-    const uint32_t* sig_off = nullptr;
-    uint32_t* sig_cnt = nullptr;
-    const uint32_t* touched = nullptr;
-    const uint32_t* inc_edges = nullptr;
-    const uint32_t* cell_of = nullptr;
-    uint32_t* order = nullptr;
-    uint32_t  S = 0;
-};
-enum IrParKind : uint32_t {
-    IR_PAR_EXIT = 0,     // the warp policy's shutdown sentinel; never dispatched as work
-    IR_PAR_INIT_SIGS,    // per vertex: fill + sort its degree-signature run, seed order
-    IR_PAR_TOUCH_SORTS,  // per touched vertex: sort its splitter-signature run
-    IR_PAR_SIG_FILL,     // per incident edge: append a key to every vertex on it
-};
-// How a body reserves a slot in a shared per-vertex counter: plain serially, atomic when the
-// warp policy fans one kind's iterations across lanes.
-template <bool kAtomic>
-HG_HD inline uint32_t ir_par_reserve(uint32_t* p) {
-#if defined(__CUDA_ARCH__)
-    if constexpr (kAtomic) return atomicAdd(p, 1u);
-#endif
-    return (*p)++;
-}
-// The bodies take raw parameters: the serial path calls them from plain loops, whose codegen
-// is the original loops' (packing the args struct per refine call was measured on the device
-// as +18% on wolftri, whose states are small enough that the packing rivals the loop). Only a
-// fanning policy packs IrParArgs, once per dispatch, and the dispatcher unpacks to the same
-// bodies -- one rule, two call shapes.
-HG_HD inline void ir_body_init_sigs(uint32_t v, const uint8_t* ea, const uint32_t* occ_off,
-                                    const uint32_t* occ_edge, const uint32_t* occ_pos,
-                                    uint64_t* sig_buf, uint32_t* order) {
-    const uint32_t s = occ_off[v], len = occ_off[v + 1] - s;
-    for (uint32_t k = 0; k < len; ++k)
-        sig_buf[s + k] = (uint64_t(ea[occ_edge[s + k]]) << 32) | uint64_t(occ_pos[s + k]);
-    isort_u64(sig_buf + s, len);
-    order[v] = v;
-}
-HG_HD inline void ir_body_touch_sort(uint32_t i, const uint32_t* touched, uint64_t* sig_buf,
-                                     const uint32_t* sig_off, const uint32_t* sig_cnt) {
-    const uint32_t u = touched[i];
-    isort_u64(sig_buf + sig_off[u], sig_cnt[u]);
-}
-template <bool kAtomic>
-HG_HD inline void ir_body_sig_fill(uint32_t i, const uint8_t* ea, const uint32_t* eoff,
-                                   const uint32_t* ev, const uint32_t* inc_edges,
-                                   const uint32_t* cell_of, uint32_t S,
-                                   uint64_t* sig_buf, const uint32_t* sig_off,
-                                   uint32_t* sig_cnt) {
-    const uint32_t e = inc_edges[i];
-    const uint32_t arity = ea[e];
-    uint64_t spos = 0;
-    for (uint32_t p = 0; p < arity && p < IR_SPOS_BITS; ++p)
-        if (cell_of[ev[eoff[e] + p]] == S) spos |= (uint64_t(1) << p);
-    for (uint32_t p = 0; p < arity; ++p) {
-        const uint32_t u = ev[eoff[e] + p];
-        const uint32_t w = ir_par_reserve<kAtomic>(sig_cnt + u);
-        sig_buf[sig_off[u] + w] =
-            (uint64_t(arity & 0xFF) << 56) | (uint64_t(p & 0xFF) << 48) | spos;
-    }
-}
-template <bool kAtomic>
-HG_HD inline void ir_par_body(uint32_t kind, uint32_t i, const IrParArgs& a) {
-    switch (kind) {
-        case IR_PAR_INIT_SIGS:
-            ir_body_init_sigs(i, a.ea, a.occ_off, a.occ_edge, a.occ_pos, a.sig_buf, a.order);
-            break;
-        case IR_PAR_TOUCH_SORTS:
-            ir_body_touch_sort(i, a.touched, a.sig_buf, a.sig_off, a.sig_cnt);
-            break;
-        case IR_PAR_SIG_FILL:
-            ir_body_sig_fill<kAtomic>(i, a.ea, a.eoff, a.ev, a.inc_edges, a.cell_of, a.S,
-                                      a.sig_buf, a.sig_off, a.sig_cnt);
-            break;
-        default: break;
-    }
-}
+// THE EXECUTION POLICY: one body, two shapes. The search runs either on one thread (the
+// host's workers, and every device path that owns a whole state per thread) or on all 32
+// lanes of one warp TOGETHER (the persistent kernel). Under the warp policy every lane
+// executes the same control flow -- each branch reads state every lane sees identically, so
+// control stays uniform and convergence is by construction -- while:
+//   par.fan(n, f)    runs f(i) for i in [0, n) lane-strided, synced on both sides; the
+//                    iterations write disjoint regions or feed a sort, so order cannot
+//                    reach an output. Serially it is the plain loop.
+//   par.leader()     guards every side-effecting scalar section (partition writes, trail,
+//                    generators, the leaf records); redundant PURE computation runs on all
+//                    lanes instead of being broadcast.
+//   par.sync()       orders leader writes against the lanes' reads.
+//   par.bcast(v)     hands a leader-computed scalar to every lane (shuffle; identity
+//                    serially).
+// The atomicity a fanned body needs for a shared counter comes with the policy too.
 struct IrSerial {
     static constexpr bool kFans = false;
-    HG_HD void run(uint32_t kind, uint32_t n, const IrParArgs& a) const {
-        for (uint32_t i = 0; i < n; ++i) ir_par_body<false>(kind, i, a);
-    }
+    HG_HD bool leader() const { return true; }
+    HG_HD void sync() const {}
+    template <class F>
+    HG_HD void fan(uint32_t n, F&& f) const { for (uint32_t i = 0; i < n; ++i) f(i); }
+    HG_HD uint32_t bcast(uint32_t v) const { return v; }
+    HG_HD uint64_t bcast64(uint64_t v) const { return v; }
+    HG_HD uint32_t fetch_add(uint32_t* p, uint32_t v) const { uint32_t o = *p; *p += v; return o; }
 };
 
 // -----------------------------------------------------------------------------------------
@@ -403,20 +329,20 @@ HG_HD inline void ir_initial_partition(
 {
     // sig_buf holds every vertex's signature contiguously at occ_off[v]; (arity, position)
     // packs into one uint64 so the multiset sorts with a scalar comparison. Each vertex's run
-    // is its own, so the iterations fan out (IR_PAR_INIT_SIGS) under a fanning policy; the
-    // serial one runs the bodies in place, with no argument packing.
-    if constexpr (Par::kFans) {
-        IrParArgs a;
-        a.ea = ea; a.occ_off = occ_off; a.occ_edge = occ_edge; a.occ_pos = occ_pos;
-        a.sig_buf = sig_buf; a.order = order;
-        par.run(IR_PAR_INIT_SIGS, n_verts, a);
-    } else {
-        for (uint32_t v = 0; v < n_verts; ++v)
-            ir_body_init_sigs(v, ea, occ_off, occ_edge, occ_pos, sig_buf, order);
-    }
+    // is its own, so the iterations fan across the policy's lanes.
+    par.fan(n_verts, [&](uint32_t v) {
+        const uint32_t s = occ_off[v], len = occ_off[v + 1] - s;
+        for (uint32_t k = 0; k < len; ++k)
+            sig_buf[s + k] = (uint64_t(ea[occ_edge[s + k]]) << 32) | uint64_t(occ_pos[s + k]);
+        isort_u64(sig_buf + s, len);
+        order[v] = v;
+    });
 
     // Order by (signature, vertex). The signature is structural and label-independent; the
     // vertex tie-break makes it a total order, so the resulting cells are equivariant.
+    // Ordering and grouping mutate shared scratch, so they are the leader's; the lanes hold
+    // at the sync and read the finished partition afterwards.
+    if (par.leader()) {
     struct SigCmp {
         const uint64_t* sig; const uint32_t* off;
         HG_HD int operator()(uint32_t a, uint32_t b) const {
@@ -446,6 +372,12 @@ HG_HD inline void ir_initial_partition(
         pi.clen_at[start] = w - start;
         i = j;
     }
+    }  // leader
+    par.sync();
+    // pi is each lane's private struct over the shared arrays: the counters the leader
+    // computed cross to every lane here, so control that reads them stays uniform.
+    pi.n = n_verts;
+    pi.ncells = par.bcast(pi.ncells);
 }
 
 // -----------------------------------------------------------------------------------------
@@ -468,6 +400,7 @@ HG_HD inline void ir_refine(
 {
     const uint32_t n = pi.n;
     const uint32_t wl_words = ir_bitset_words(n);
+    if (par.leader()) {
     for (uint32_t w = 0; w < wl_words; ++w) worklist[w] = 0;
     if (seed0 == 0xFFFFFFFFu) {
         for (uint32_t c = 0; c < n; c += pi.clen_at[c]) worklist[c >> 6] |= (uint64_t(1) << (c & 63));
@@ -480,8 +413,9 @@ HG_HD inline void ir_refine(
         worklist[seed0 >> 6] |= (uint64_t(1) << (seed0 & 63));
         if (seed1 != 0xFFFFFFFFu) worklist[seed1 >> 6] |= (uint64_t(1) << (seed1 & 63));
     }
-    for (uint32_t e = 0; e < n_edges; ++e) edge_epoch[e] = 0;
-    for (uint32_t v = 0; v < n; ++v) on_touched[v] = 0;
+    }  // leader
+    par.fan(n_edges, [&](uint32_t e) { edge_epoch[e] = 0; });
+    par.fan(n, [&](uint32_t v) { on_touched[v] = 0; });
     uint32_t epoch = 0;
 
     for (;;) {
@@ -490,67 +424,83 @@ HG_HD inline void ir_refine(
         // divides. Refinement of a discrete partition is the identity.
         if (pi.ncells == n) break;
 
-        // Pop the lowest set cell id.
+        // Pop the lowest set cell id: the leader consumes the bit, every lane learns S.
         uint32_t S = 0xFFFFFFFFu;
-        for (uint32_t w = 0; w < wl_words; ++w) {
-            if (worklist[w]) {
-                const uint32_t b = ir_ctz64(worklist[w]);
-                worklist[w] &= worklist[w] - 1;
-                S = w * 64u + b;
-                break;
+        if (par.leader()) {
+            for (uint32_t w = 0; w < wl_words; ++w) {
+                if (worklist[w]) {
+                    const uint32_t b = ir_ctz64(worklist[w]);
+                    worklist[w] &= worklist[w] - 1;
+                    S = w * 64u + b;
+                    break;
+                }
             }
         }
+        S = par.bcast(S);
         if (S == 0xFFFFFFFFu) break;
         if (S >= n) continue;
 
         // Edges incident to S (a start position; the cell's run begins right there),
-        // deduplicated by an epoch stamp.
+        // deduplicated by an epoch stamp. The gather's order feeds the fill whose per-vertex
+        // runs are sorted after, but the stamp and list writes are shared, so: leader.
         ++epoch;
         uint32_t n_inc = 0;
-        for (uint32_t k = 0; k < pi.clen_at[S]; ++k) {
-            const uint32_t s = pi.lab[S + k];
-            for (uint32_t o = occ_off[s]; o < occ_off[s + 1]; ++o) {
-                const uint32_t e = occ_edge[o];
-                if (edge_epoch[e] != epoch) { edge_epoch[e] = epoch; inc_edges[n_inc++] = e; }
+        if (par.leader()) {
+            for (uint32_t k = 0; k < pi.clen_at[S]; ++k) {
+                const uint32_t s = pi.lab[S + k];
+                for (uint32_t o = occ_off[s]; o < occ_off[s + 1]; ++o) {
+                    const uint32_t e = occ_edge[o];
+                    if (edge_epoch[e] != epoch) { edge_epoch[e] = epoch; inc_edges[n_inc++] = e; }
+                }
             }
         }
+        n_inc = par.bcast(n_inc);
         if (n_inc == 0) continue;
 
         // Per touched vertex, the multiset of keys over the S-incident edges it lies on.
-        // Counted first so each vertex's run is contiguous, then filled.
+        // Counted first so each vertex's run is contiguous (leader), then filled and sorted
+        // by the lanes: a fill's order inside a vertex's run is normalised by its sort, and
+        // the run reservation is the policy's fetch_add.
         uint32_t n_touched = 0;
-        for (uint32_t i = 0; i < n_inc; ++i) {
-            const uint32_t e = inc_edges[i];
-            for (uint8_t p = 0; p < ea[e]; ++p) {
-                const uint32_t u = ev[eoff[e] + p];
-                if (!on_touched[u]) { on_touched[u] = 1; touched[n_touched++] = u; sig_cnt[u] = 0; }
-                sig_cnt[u]++;
+        if (par.leader()) {
+            for (uint32_t i = 0; i < n_inc; ++i) {
+                const uint32_t e = inc_edges[i];
+                for (uint8_t p = 0; p < ea[e]; ++p) {
+                    const uint32_t u = ev[eoff[e] + p];
+                    if (!on_touched[u]) { on_touched[u] = 1; touched[n_touched++] = u; sig_cnt[u] = 0; }
+                    sig_cnt[u]++;
+                }
+            }
+            uint32_t total = 0;
+            for (uint32_t i = 0; i < n_touched; ++i) {
+                const uint32_t u = touched[i];
+                sig_off[u] = total; total += sig_cnt[u]; sig_cnt[u] = 0;
             }
         }
-        uint32_t total = 0;
-        for (uint32_t i = 0; i < n_touched; ++i) {
+        n_touched = par.bcast(n_touched);
+        par.sync();
+        par.fan(n_inc, [&](uint32_t i) {
+            const uint32_t e = inc_edges[i];
+            const uint32_t arity = ea[e];
+            uint64_t spos = 0;
+            for (uint32_t q = 0; q < arity && q < IR_SPOS_BITS; ++q)
+                if (pi.cell_of[ev[eoff[e] + q]] == S) spos |= (uint64_t(1) << q);
+            for (uint32_t q = 0; q < arity; ++q) {
+                const uint32_t u = ev[eoff[e] + q];
+                const uint32_t w2 = par.fetch_add(sig_cnt + u, 1u);
+                sig_buf[sig_off[u] + w2] =
+                    (uint64_t(arity & 0xFF) << 56) | (uint64_t(q & 0xFF) << 48) | spos;
+            }
+        });
+        par.fan(n_touched, [&](uint32_t i) {
             const uint32_t u = touched[i];
-            sig_off[u] = total; total += sig_cnt[u]; sig_cnt[u] = 0;
-        }
-        if constexpr (Par::kFans) {
-            IrParArgs a;
-            a.ea = ea; a.eoff = eoff; a.ev = ev;
-            a.sig_buf = sig_buf; a.sig_off = sig_off; a.sig_cnt = sig_cnt;
-            a.inc_edges = inc_edges; a.cell_of = pi.cell_of; a.S = S;
-            par.run(IR_PAR_SIG_FILL, n_inc, a);
-            a.touched = touched;
-            par.run(IR_PAR_TOUCH_SORTS, n_touched, a);
-        } else {
-            for (uint32_t i = 0; i < n_inc; ++i)
-                ir_body_sig_fill<false>(i, ea, eoff, ev, inc_edges, pi.cell_of, S,
-                                        sig_buf, sig_off, sig_cnt);
-            for (uint32_t i = 0; i < n_touched; ++i)
-                ir_body_touch_sort(i, touched, sig_buf, sig_off, sig_cnt);
-        }
+            isort_u64(sig_buf + sig_off[u], sig_cnt[u]);
+        });
 
         // Order touched vertices by (cell id, signature); both keys are structural. Ties are
         // vertices of one cell with equal signatures, which land in the same group -- their
-        // relative order is not read.
+        // relative order is not read. Ordering and the splits mutate the partition: leader.
+        if (par.leader()) {
         for (uint32_t i = 0; i < n_touched; ++i) torder[i] = touched[i];
         struct TouchedCmp {
             const uint32_t* cell_of; const uint64_t* sig;
@@ -637,7 +587,12 @@ HG_HD inline void ir_refine(
             for (uint32_t k = i; k < j; ++k) on_touched[torder[k]] = 0;
             i = j;
         }
+        }  // leader
+        par.sync();
+        pi.ncells = par.bcast(pi.ncells);
     }
+    par.sync();
+    pi.ncells = par.bcast(pi.ncells);
 }
 
 // -----------------------------------------------------------------------------------------
@@ -840,7 +795,9 @@ HG_HD inline IrResult ir_canonical_hash(
     auto cell_n_of = [&](uint32_t d) -> uint32_t& { return block(d)[2 * n + 2]; };
     auto chosen_of = [&](uint32_t d) -> uint32_t& { return block(d)[2 * n + 3]; };
 
-    ir_build_occurrences(ea, eoff, ev, n_edges, n, occ_off, occ_edge, occ_pos, cursor);
+    if (par.leader())
+        ir_build_occurrences(ea, eoff, ev, n_edges, n, occ_off, occ_edge, occ_pos, cursor);
+    par.sync();
 
     IrPartition pi;
     pi.lab = p_lab; pi.pos = p_pos; pi.cell_of = p_cell_of; pi.clen_at = p_clen_at;
@@ -1052,31 +1009,39 @@ HG_HD inline IrResult ir_canonical_hash(
     };
 
     if (pi.is_discrete()) {
-        leaf(pi, 0);
-        emit_ranks();
-        emit_orbits();
-        emit_form();
-        out.hash = ir_hash_form(best_form, n_edges, n);
-        out.status = (out_edge_orbit && gens_truncated) ? IR_NEED_GENERATORS : IR_OK;
+        if (par.leader()) {
+            leaf(pi, 0);
+            emit_ranks();
+            emit_orbits();
+            emit_form();
+        }
+        par.sync();
+        out.hash = ir_hash_form(best_form, n_edges, n);   // shared reads: uniform per lane
+        out.status = IR_OK;                                // no search, so no truncation
         out.n_verts = n;
         return out;
     }
 
     // Past the discrete fast path above, so this state pays for a search.
-    if (out_work) out_work->searched = 1;
+    if (out_work && par.leader()) out_work->searched = 1;
 
     uint32_t d = 0;
     bool returning = false;
     for (;;) {
         if (!returning) {
-            const uint32_t t = pi.first_non_singleton();
+            const uint32_t t = pi.first_non_singleton();   // shared reads: uniform on every lane
             if (t >= n) {
-                if (pi.is_discrete()) leaf(pi, d);
+                if (pi.is_discrete()) {
+                    if (par.leader()) leaf(pi, d);
+                    par.sync();
+                    backjump_to = par.bcast(backjump_to);  // the leaf may have set the jump
+                }
                 if (d == 0) break;
                 if (backjump_to < d) d = backjump_to; else --d;
                 backjump_to = 0xFFFFFFFFu;
                 returning = true; continue;
             }
+            if (par.leader()) {
             target_of(d) = t;
             uint32_t* cell = cell_buf(d);
             const uint32_t cl = pi.clen_at[t];
@@ -1095,8 +1060,11 @@ HG_HD inline IrResult ir_canonical_hash(
             // is what refinement has already narrowed the choice down to.
             uint32_t* cov = covered(d);
             for (uint32_t k = 0; k < cl; ++k) cov[cell[k]] = 0;
+            }  // leader
+            par.sync();
         } else {
             returning = false;
+            if (par.leader()) {
             // Unwind the partition to this depth first: everything the abandoned branch (or
             // branches, on a backjump) split below is re-merged, in time proportional to what
             // the splits cost.
@@ -1128,26 +1096,35 @@ HG_HD inline IrResult ir_canonical_hash(
                 }
             }
             ++next_of(d);
+            }  // leader (undo, closure, sibling advance)
+            par.sync();
+            pi.ncells = par.bcast(pi.ncells);
         }
 
         const uint32_t* cell = cell_buf(d);
         const uint32_t* cov = covered(d);
-        while (next_of(d) < cell_n_of(d) && cov[cell[next_of(d)]]) ++next_of(d);
+        if (par.leader())
+            while (next_of(d) < cell_n_of(d) && cov[cell[next_of(d)]]) ++next_of(d);
+        par.sync();
         if (next_of(d) >= cell_n_of(d)) {
             if (d == 0) break;
             --d; returning = true; continue;
         }
 
         const uint32_t v = cell[next_of(d)];
+        if (par.leader()) {
         chosen_of(d) = v;
         path[d] = v;
         // The path changed at depth d: every generator fixing at least the positions above
         // now fixes exactly d of them, or d + 1 if it fixes v too.
         for (uint32_t gi = 0; gi < n_gens; ++gi)
             if (gen_fix[gi] >= d) gen_fix[gi] = d + (gens[uint64_t(gi) * n + v] == v ? 1u : 0u);
+        }
         if (d + 1 >= max_depth) { out.status = IR_NEED_DEPTH; return out; }
 
-        ir_individualize(pi, tr, target_of(d), v, d + 1);
+        if (par.leader()) ir_individualize(pi, tr, target_of(d), v, d + 1);
+        par.sync();
+        pi.ncells = par.bcast(pi.ncells);
         // The singleton keeps the target's start and the remainder begins one past it, so
         // those two names seed the refinement; its splits carry the child's tag.
         ir_refine(ea, eoff, ev, n_edges, occ_off, occ_edge, pi, tr, d + 1,
@@ -1155,18 +1132,25 @@ HG_HD inline IrResult ir_canonical_hash(
                   sig_off, sig_cnt, gstart, sig_buf,
                   target_of(d), cell_n_of(d) > 1 ? target_of(d) + 1 : 0xFFFFFFFFu, par);
         ++d;
-        if (out_work) {
+        if (out_work && par.leader()) {
             ++out_work->nodes;
             if (d > out_work->max_depth) out_work->max_depth = d;
         }
     }
 
-    if (!has_best) { out.status = IR_EMPTY; out.hash = fnv_hash(FNV_OFFSET, 0); return out; }
-    emit_ranks();
-    emit_orbits();
-    emit_form();
+    // The leader alone explored the leaves' records; its verdict crosses to every lane so
+    // the return is uniform.
+    const uint32_t leader_state =
+        par.bcast((has_best ? 1u : 0u) | (gens_truncated ? 2u : 0u));
+    if (!(leader_state & 1u)) { out.status = IR_EMPTY; out.hash = fnv_hash(FNV_OFFSET, 0); return out; }
+    if (par.leader()) {
+        emit_ranks();
+        emit_orbits();
+        emit_form();
+    }
+    par.sync();
     out.hash = ir_hash_form(best_form, n_edges, n);
-    out.status = (out_edge_orbit && gens_truncated) ? IR_NEED_GENERATORS : IR_OK;
+    out.status = (out_edge_orbit && (leader_state & 2u)) ? IR_NEED_GENERATORS : IR_OK;
     out.n_verts = n;
     return out;
 }

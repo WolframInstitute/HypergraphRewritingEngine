@@ -584,15 +584,10 @@ __global__ void k_persistent_evolve(
     }
 
     // Per-block IR scratch, carried across items: claimed on first use and re-claimed only
-    // when a larger state arrives. Thread 0 does the hashing, so the slot is its own.
+    // when a larger state arrives. Block-shared because the whole warp runs the
+    // canonicalization together: the leader claims, every lane addresses the same slot.
     __shared__ uint32_t* ir_slot;
     __shared__ uint64_t  ir_slot_words;
-    __shared__ IrWarpMailbox ir_mb;
-    // Whether this record's canonicalization is worth the warp fan: decided from the child
-    // state's size once the rewrite has produced it, because on a small state every fanned
-    // loop is below the dispatch width and the slave apparatus is pure per-record cost
-    // (measured: +23% on wolftri, whose states are small, against -7.5% on bigcycle).
-    __shared__ bool     ir_fan;
     __shared__ MatchWorkItem mitem;
     __shared__ bool     have;
     __shared__ uint32_t claimed;
@@ -669,14 +664,49 @@ __global__ void k_persistent_evolve(
                 child_step   = step + 1u;
                 expand_child = false;
                 acc_rewrite += clock64() - t0b;
-                ir_fan = child_sid != INVALID_ID &&
-                         ds.state_edge_slices[child_sid].count >= 24u;
             }
             __syncthreads();
-            if (threadIdx.x == 0) {
+            // Region 2 of the record. The two canonicalizations run on the WHOLE warp: every
+            // lane enters the shared core together under the all-lanes policy, and the block
+            // is one warp (kMatchBlockThreads), so the collectives' full mask holds. The
+            // branches here read only shared or uniform values, so the lanes stay converged.
+            // Everything downstream of the hashes -- publishing, signatures, the quotient DPs,
+            // dedup -- stays thread 0's.
+            {
                 const unsigned long long t1 = clock64();
-                // Region 2 of the record: re-derived from the shared claim, because the fan
-                // decision needed a block-wide point between the rewrite and the canon.
+                // SPLIT THE canon BUCKET INTO ITS PARTS.
+                //
+                // acc_canon spans this whole region, so it has been reporting
+                // "canonicalization" for a span that also stamps event signatures, drives
+                // the quotient causal DP, captures the class-frame expansion and consults
+                // dedup. A 99% reading was taken to mean individualization-refinement and does
+                // not: an isolated measurement puts device IR at 62.9x the host on one state,
+                // not the thousands the whole-block figure implied. Slots 11-15 name the
+                // parts so the next question is asked of the right one.
+                uint64_t h = 0;
+                ExactHashStatus key_st = ExactHashStatus::kOk;
+                if (child_sid != INVALID_ID) {
+                    key_st = state_key_device(ds, child_sid, state_mode, arena, ir_slot,
+                                              ir_slot_words, h, need_ranks, qc.enabled != 0,
+                                              IrWarpAll{});
+                }
+                if (threadIdx.x == 0) acc_irkey += clock64() - t1;
+
+                // The exact isomorphism hash is a different question from the mode's key and
+                // coincides with it only in Full. Computed only when an event identity will
+                // read it -- otherwise this is an individualization-refinement pass per state
+                // bought for nobody.
+                uint64_t exact = h;
+                ExactHashStatus ex_st = ExactHashStatus::kOk;
+                if (child_sid != INVALID_ID && key_st == ExactHashStatus::kOk &&
+                    event_keys != EVENT_SIG_NONE &&
+                    state_mode != CanonicalizationMode::Full) {
+                    ex_st = state_exact_hash_device(ds, child_sid, arena, ir_slot,
+                                                    ir_slot_words, exact, need_ranks,
+                                                    false, IrWarpAll{});
+                }
+
+                if (threadIdx.x == 0) {
                 const MatchRecord& rec = found.at(claimed);
                 const uint32_t step = rec.step;
 
@@ -685,22 +715,6 @@ __global__ void k_persistent_evolve(
                 // dedup KEY, so a state whose hash could not be computed is not enqueued
                 // under a coarser one -- 1-WL merges non-isomorphic states.
                 if (child_sid != INVALID_ID) {
-                    // SPLIT THE canon BUCKET INTO ITS PARTS.
-                    //
-                    // acc_canon spans this whole block, so it has been reporting
-                    // "canonicalization" for a region that also stamps event signatures, drives
-                    // the quotient causal DP, captures the class-frame expansion and consults
-                    // dedup. A 99% reading was taken to mean individualization-refinement and does
-                    // not: an isolated measurement puts device IR at 62.9x the host on one state,
-                    // not the thousands the whole-block figure implied. Slots 11-15 name the
-                    // parts so the next question is asked of the right one.
-                    uint64_t sub0 = clock64();
-                    uint64_t h = 0;
-                    const ExactHashStatus key_st =
-                        state_key_device(ds, child_sid, state_mode, arena, ir_slot,
-                                         ir_slot_words, h, need_ranks, qc.enabled != 0,
-                                         IrWarp{ir_fan ? &ir_mb : nullptr});
-                    acc_irkey += clock64() - sub0;
                     if (key_st != ExactHashStatus::kOk) {
                         ds.errors.record(error_kind_for(key_st));
                     } else {
@@ -708,21 +722,10 @@ __global__ void k_persistent_evolve(
                         // needs it as an input hash, and that read happens on another block.
                         ds.state_canonical_hash[child_sid] = h;
 
-                        // The exact isomorphism hash is a different question from the mode's
-                        // key and coincides with it only in Full. Computed only when an event
-                        // identity will read it -- otherwise this is an
-                        // individualization-refinement pass per state bought for nobody.
-                        uint64_t exact = h;
                         if (event_keys != EVENT_SIG_NONE) {
-                            if (state_mode != CanonicalizationMode::Full) {
-                                const ExactHashStatus ex_st =
-                                    state_exact_hash_device(ds, child_sid, arena, ir_slot,
-                                                            ir_slot_words, exact, need_ranks,
-                                                            false, IrWarp{ir_fan ? &ir_mb : nullptr});
-                                if (ex_st != ExactHashStatus::kOk) {
-                                    ds.errors.record(error_kind_for(ex_st));
-                                    exact = 0;
-                                }
+                            if (ex_st != ExactHashStatus::kOk) {
+                                ds.errors.record(error_kind_for(ex_st));
+                                exact = 0;
                             }
                             ds.state_exact_hash[child_sid] = exact;
                         }
@@ -805,13 +808,7 @@ __global__ void k_persistent_evolve(
                     }
                 }
                 acc_canon += clock64() - t1;
-                if (ir_fan) ir_warp_shutdown(&ir_mb);
-            } else if (ir_fan && threadIdx.x < 32u) {
-                // Lanes 1-31: serve the canonicalization's fanned-out loops until lane 0's
-                // record is done. The block is one warp (kMatchBlockThreads), so this is the
-                // whole rest of it; the guard keeps a wider block's other warps out of a
-                // barrier that is not theirs.
-                ir_warp_slave_loop(&ir_mb);
+                } // threadIdx.x == 0
             }
             __syncthreads();
 

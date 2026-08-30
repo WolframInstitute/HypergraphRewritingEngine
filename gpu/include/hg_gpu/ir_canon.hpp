@@ -70,52 +70,28 @@ __device__ ExactHashStatus state_exact_hash_device(DeviceState ds, StateId sid,
                                                    uint64_t& out_hash, bool want_ranks = false,
                                                    bool want_orbits = false, Par par = Par{});
 
-// THE WARP RUNS THE ORDER-SAFE LOOPS TOGETHER. The persistent kernel's whole rewrite path is
-// lane 0's; during it, lanes 1-31 sit in ir_warp_slave_loop, released per dispatch through
-// this mailbox and re-parked after. __syncwarp pairs by MASK, not by call site, so the lanes
-// synchronise from different points: the slaves' round is two barriers (accept, join) and
-// lane 0 issues exactly two per dispatch -- and two at shutdown, whose sentinel ends the loop.
-// Dispatches below a warp's width run inline on lane 0: for the seeded refinements of the
-// search the fan-out costs more than the loop.
-struct IrWarpMailbox {
-    volatile uint32_t kind;
-    volatile uint32_t n;
-    hgcommon::IrParArgs args;
-};
-struct IrWarp {
+// THE WARP RUNS THE SEARCH TOGETHER. All 32 lanes of the persistent kernel's one warp enter
+// the canonicalization with identical arguments and execute identical control flow -- every
+// branch reads state each lane sees the same, so convergence is by construction. Shared
+// writes are the leader's (lane 0), behind __syncwarp; the order-safe loops fan lane-strided;
+// a leader-computed scalar that control depends on crosses by shuffle. The serial policy in
+// ir_core.hpp compiles the same source to the plain single-thread search.
+struct IrWarpAll {
     static constexpr bool kFans = true;
-    IrWarpMailbox* mb;
-    __device__ void run(uint32_t kind, uint32_t n, const hgcommon::IrParArgs& a) const {
-        if (mb == nullptr || n < 32u) {
-            for (uint32_t i = 0; i < n; ++i) hgcommon::ir_par_body<false>(kind, i, a);
-            return;
-        }
-        mb->args = a;
-        mb->n = n;
-        __threadfence_block();
-        mb->kind = kind;
+    __device__ bool leader() const { return (threadIdx.x & 31u) == 0u; }
+    __device__ void sync() const { __syncwarp(); }
+    template <class F>
+    __device__ void fan(uint32_t n, F&& f) const {
         __syncwarp();
-        for (uint32_t i = (threadIdx.x & 31u); i < n; i += 32u)
-            hgcommon::ir_par_body<true>(kind, i, mb->args);
+        for (uint32_t i = (threadIdx.x & 31u); i < n; i += 32u) f(i);
         __syncwarp();
     }
+    __device__ uint32_t bcast(uint32_t v) const { return __shfl_sync(0xffffffffu, v, 0); }
+    __device__ uint64_t bcast64(uint64_t v) const {
+        return __shfl_sync(0xffffffffu, static_cast<unsigned long long>(v), 0);
+    }
+    __device__ uint32_t fetch_add(uint32_t* p, uint32_t v) const { return atomicAdd(p, v); }
 };
-__device__ inline void ir_warp_shutdown(IrWarpMailbox* mb) {
-    mb->kind = hgcommon::IR_PAR_EXIT;
-    __syncwarp();
-    __syncwarp();
-}
-__device__ inline void ir_warp_slave_loop(IrWarpMailbox* mb) {
-    for (;;) {
-        __syncwarp();
-        const uint32_t kind = mb->kind;
-        const uint32_t n = mb->n;
-        if (kind == hgcommon::IR_PAR_EXIT) { __syncwarp(); return; }
-        for (uint32_t i = (threadIdx.x & 31u); i < n; i += 32u)
-            hgcommon::ir_par_body<true>(kind, i, mb->args);
-        __syncwarp();
-    }
-}
 
 // The ErrorKind a failed exact hash should be recorded as. One place, so a new call site cannot
 // pick a different mapping and re-conflate what this separation exists to keep apart.
