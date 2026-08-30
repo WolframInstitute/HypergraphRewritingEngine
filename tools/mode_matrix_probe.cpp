@@ -10,6 +10,9 @@
 // itself. FeatureMatrix.IdentityLatticesAreOrdered asserts the ordering; this shows the values.
 
 #include <cstdio>
+#include <cstring>
+
+#include "hgcommon/build_stamp.hpp"
 #include <string>
 #include <vector>
 
@@ -55,7 +58,12 @@ Cell run(const std::vector<RewriteRule>& rules,
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    // The configuration record, first and alone on --build-info: paper_tables.py gates on it
+    // before trusting any number this prints (hgcommon/build_stamp.hpp).
+    static const char kBuildStamp[] = HG_BUILD_STAMP_LITERAL;
+    if (argc > 1 && std::strcmp(argv[1], "--build-info") == 0) { std::printf("%s\n", kBuildStamp); return 0; }
+    std::printf("%s\n", kBuildStamp);
     std::printf("3x3 identity surface: state x event, one thread, counts = "
                 "(canonical states, canonical events, causal edges, branchial edges), "
                 "and raw= when an event signature fell back to a raw edge id\n");

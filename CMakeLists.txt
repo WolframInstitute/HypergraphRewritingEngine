@@ -831,7 +831,8 @@ endif()
 
 # Each bench names itself in its build stamp, as the shipped artifacts do, so a measuring script
 # can read the configuration it is about to time from the binary itself.
-foreach(_hg_bench bench_cpu_evolve bench_gpu_evolve sampling_cost_smoke cost_matrix)
+foreach(_hg_bench bench_cpu_evolve bench_gpu_evolve sampling_cost_smoke cost_matrix
+        mode_matrix_probe quotient_reconstruction_cost_probe)
     if(TARGET ${_hg_bench})
         target_compile_definitions(${_hg_bench} PRIVATE HG_BUILD_VARIANT="${_hg_bench}")
     endif()

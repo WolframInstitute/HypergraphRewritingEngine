@@ -15,6 +15,9 @@
 // cost grows with the provenance count, and a single shallow number would understate it.
 #include <chrono>
 #include <cstdio>
+#include <cstring>
+
+#include "hgcommon/build_stamp.hpp"
 #include <vector>
 #include "hypergraph/hypergraph.hpp"
 #include "hypergraph/parallel_evolution.hpp"
@@ -41,6 +44,11 @@ static R run(const RewriteRule& rule, std::vector<std::vector<VertexId>> init,
 }
 
 int main(int argc, char** argv) {
+    // The configuration record, first and alone on --build-info: paper_tables.py gates on it
+    // before trusting any number this prints (hgcommon/build_stamp.hpp).
+    static const char kBuildStamp[] = HG_BUILD_STAMP_LITERAL;
+    if (argc > 1 && std::strcmp(argv[1], "--build-info") == 0) { std::printf("%s\n", kBuildStamp); return 0; }
+    std::printf("%s\n", kBuildStamp);
     const int maxd = argc > 1 ? std::atoi(argv[1]) : 5;
     const RewriteRule rule =
         make_rule(0).lhs({0,1}).lhs({1,2}).rhs({0,1}).rhs({1,3}).rhs({3,2}).build();
