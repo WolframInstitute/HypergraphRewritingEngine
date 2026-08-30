@@ -29,10 +29,15 @@
 // from its entry point, because an unreferenced object with internal linkage is exactly what a
 // linker is entitled to drop, and a stamp that can be dropped proves nothing.
 //
-// The commit, the build type and the flags come from CMake (-D on every target: HG_BUILD_COMMIT,
-// HG_BUILD_TYPE, HG_BUILD_FLAGS); the variant from the target (HG_BUILD_VARIANT); the rest from
-// the compile-time definitions the options themselves set, so the record cannot disagree with
-// the code it sits in.
+// The commit, the build type and the flags come from CMake through the generated header
+// hgcommon/build_commit.hpp (configured into the build directory, so a new commit recompiles
+// the stamp-defining translation units and nothing else); the variant from the target
+// (HG_BUILD_VARIANT); the rest from the compile-time definitions the options themselves set, so
+// the record cannot disagree with the code it sits in.
+
+#if __has_include("hgcommon/build_commit.hpp")
+#include "hgcommon/build_commit.hpp"
+#endif
 
 #ifndef HG_BUILD_COMMIT
 #define HG_BUILD_COMMIT "unknown"

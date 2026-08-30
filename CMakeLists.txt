@@ -90,22 +90,26 @@ endif()
 # shadows that cache entry -- which is what left the one artifact the stamp exists for reading
 # `commit=unknown` after the -D was already being passed.
 find_package(Git QUIET)
-if(NOT HG_BUILD_COMMIT)
-    set(HG_BUILD_COMMIT "unknown")
-endif()
-if(HG_BUILD_COMMIT STREQUAL "unknown" AND GIT_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
+# GIT WINS WHEN IT CAN ANSWER. A -D HG_BUILD_COMMIT (or a value a previous configure left in
+# this build directory's cache) is used only where git cannot resolve HEAD -- the Windows
+# configure against a \\wsl.localhost path is that case. A cached value taken over a live git
+# answer stamped a whole build directory with the commit of an earlier release configure.
+set(HG_GIT_COMMIT "")
+if(GIT_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
     execute_process(COMMAND "${GIT_EXECUTABLE}" rev-parse HEAD
                     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-                    OUTPUT_VARIABLE HG_BUILD_COMMIT
+                    OUTPUT_VARIABLE HG_GIT_COMMIT
                     OUTPUT_STRIP_TRAILING_WHITESPACE
                     ERROR_QUIET)
-    if(HG_BUILD_COMMIT STREQUAL "")
-        set(HG_BUILD_COMMIT "unknown")
-    endif()
     if(EXISTS "${CMAKE_SOURCE_DIR}/.git/HEAD")
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
                      "${CMAKE_SOURCE_DIR}/.git/HEAD")
     endif()
+endif()
+if(NOT HG_GIT_COMMIT STREQUAL "")
+    set(HG_BUILD_COMMIT "${HG_GIT_COMMIT}")
+elseif(NOT HG_BUILD_COMMIT)
+    set(HG_BUILD_COMMIT "unknown")
 endif()
 message(STATUS "Build stamp commit: ${HG_BUILD_COMMIT}")
 
@@ -116,9 +120,11 @@ message(STATUS "Build stamp commit: ${HG_BUILD_COMMIT}")
 string(TOUPPER "${CMAKE_BUILD_TYPE}" HG_BUILD_TYPE_UPPER)
 set(HG_BUILD_FLAGS "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${HG_BUILD_TYPE_UPPER}}")
 string(STRIP "${HG_BUILD_FLAGS}" HG_BUILD_FLAGS)
-add_compile_definitions(HG_BUILD_COMMIT="${HG_BUILD_COMMIT}"
-                        HG_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
-                        HG_BUILD_FLAGS="${HG_BUILD_FLAGS}")
+# A generated header, not a definition on every target: only the translation units that
+# define a stamp recompile when the commit changes.
+configure_file("${CMAKE_SOURCE_DIR}/common/include/hgcommon/build_commit.hpp.in"
+               "${CMAKE_BINARY_DIR}/generated/hgcommon/build_commit.hpp" @ONLY)
+include_directories("${CMAKE_BINARY_DIR}/generated")
 
 # Export compile commands for clangd and other tooling
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
