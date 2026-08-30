@@ -59,14 +59,11 @@ uint64_t ir_core_call(const SVec<SVec<VertexId>>& edges,
     // disagreeing about which edge holds which RANK. Measured: encounter order differs from
     // this on 103 of the equivalence probe's 4063 states, all of them the symmetric ones.
     // This class's callers expect the sorted convention, which is what build_adjacency used.
-    sorted.assign(ev.begin(), ev.end());
-    std::sort(sorted.begin(), sorted.end());
-    sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
-    const uint32_t n_verts = static_cast<uint32_t>(sorted.size());
-    for (uint32_t& x : ev)
-        x = static_cast<uint32_t>(
-            std::lower_bound(sorted.begin(), sorted.end(), x) - sorted.begin());
     const uint32_t total_occ = static_cast<uint32_t>(ev.size());
+    sorted.assign(ev.begin(), ev.end());
+    const uint32_t n_verts =
+        total_occ ? hgcommon::ir_renumber_sorted(ev.data(), total_occ, sorted.data()) : 0;
+    sorted.resize(n_verts);
 
     uint32_t* out_form = nullptr;
     uint32_t* out_label = nullptr;
@@ -95,7 +92,12 @@ uint64_t ir_core_call(const SVec<SVec<VertexId>>& edges,
     // writes every word it later reads. That is the stronger claim; this is the one that needs
     // no claim.
     HG_THREAD_LOCAL(std::vector<uint32_t>, scratch);
-    for (uint32_t depth : {1u, 8u, hgcommon::IR_MAX_DEPTH_DEFAULT}) {
+    // The static rungs, then the true bound (one individualisation per level); see the
+    // sibling ladder in hypergraph.cpp's ir_hash_and_orbits.
+    const uint32_t rung_cap = n_verts + 1;
+    for (uint32_t depth : {1u, 8u, hgcommon::IR_MAX_DEPTH_DEFAULT,
+                           rung_cap > hgcommon::IR_MAX_DEPTH_DEFAULT ? rung_cap : 0u}) {
+        if (depth == 0u) continue;
         for (uint32_t gens = hgcommon::IR_HOST_GENERATORS; gens <= gen_hi; gens *= 4u) {
             const uint64_t words =
                 hgcommon::ir_scratch_words(n_verts, n_edges, total_occ, depth, gens);

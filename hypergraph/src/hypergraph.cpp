@@ -893,7 +893,15 @@ uint64_t ir_hash_and_orbits(const SegmentedArray<Edge>& edge_table,
         }
     }
 
-    for (uint32_t depth : kIrDepthRungs) {
+    // The static rungs, then the true bound: a search individualises at most one vertex per
+    // level, so n_verts + 1 admits every state -- a maximal-symmetry star needs a level per
+    // leaf and fell through every static rung into the reference fallback (over 300 s at 256
+    // leaves against milliseconds in the search).
+    const uint32_t rung_cap = n_verts + 1;
+    const uint32_t rungs[] = {kIrDepthRungs[0], kIrDepthRungs[1], kIrDepthRungs[2],
+                              rung_cap > hgcommon::IR_MAX_DEPTH_DEFAULT ? rung_cap : 0u};
+    for (uint32_t depth : rungs) {
+        if (depth == 0u) continue;
         if (ir_rung_below_hint(depth)) continue;
         for (uint32_t gens = hgcommon::IR_HOST_GENERATORS; gens <= (1u << 16); gens *= 4u) {
             const uint64_t words = hgcommon::ir_scratch_words(n_verts, n, total_occ, depth, gens);
