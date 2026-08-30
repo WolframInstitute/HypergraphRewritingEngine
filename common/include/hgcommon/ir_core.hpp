@@ -296,41 +296,61 @@ HG_HD inline uint32_t ir_par_reserve(uint32_t* p) {
 #endif
     return (*p)++;
 }
+// The bodies take raw parameters: the serial path calls them from plain loops, whose codegen
+// is the original loops' (packing the args struct per refine call was measured on the device
+// as +18% on wolftri, whose states are small enough that the packing rivals the loop). Only a
+// fanning policy packs IrParArgs, once per dispatch, and the dispatcher unpacks to the same
+// bodies -- one rule, two call shapes.
+HG_HD inline void ir_body_init_sigs(uint32_t v, const uint8_t* ea, const uint32_t* occ_off,
+                                    const uint32_t* occ_edge, const uint32_t* occ_pos,
+                                    uint64_t* sig_buf, uint32_t* order) {
+    const uint32_t s = occ_off[v], len = occ_off[v + 1] - s;
+    for (uint32_t k = 0; k < len; ++k)
+        sig_buf[s + k] = (uint64_t(ea[occ_edge[s + k]]) << 32) | uint64_t(occ_pos[s + k]);
+    isort_u64(sig_buf + s, len);
+    order[v] = v;
+}
+HG_HD inline void ir_body_touch_sort(uint32_t i, const uint32_t* touched, uint64_t* sig_buf,
+                                     const uint32_t* sig_off, const uint32_t* sig_cnt) {
+    const uint32_t u = touched[i];
+    isort_u64(sig_buf + sig_off[u], sig_cnt[u]);
+}
+template <bool kAtomic>
+HG_HD inline void ir_body_sig_fill(uint32_t i, const uint8_t* ea, const uint32_t* eoff,
+                                   const uint32_t* ev, const uint32_t* inc_edges,
+                                   const uint32_t* cell_of, uint32_t S,
+                                   uint64_t* sig_buf, const uint32_t* sig_off,
+                                   uint32_t* sig_cnt) {
+    const uint32_t e = inc_edges[i];
+    const uint32_t arity = ea[e];
+    uint64_t spos = 0;
+    for (uint32_t p = 0; p < arity && p < IR_SPOS_BITS; ++p)
+        if (cell_of[ev[eoff[e] + p]] == S) spos |= (uint64_t(1) << p);
+    for (uint32_t p = 0; p < arity; ++p) {
+        const uint32_t u = ev[eoff[e] + p];
+        const uint32_t w = ir_par_reserve<kAtomic>(sig_cnt + u);
+        sig_buf[sig_off[u] + w] =
+            (uint64_t(arity & 0xFF) << 56) | (uint64_t(p & 0xFF) << 48) | spos;
+    }
+}
 template <bool kAtomic>
 HG_HD inline void ir_par_body(uint32_t kind, uint32_t i, const IrParArgs& a) {
     switch (kind) {
-        case IR_PAR_INIT_SIGS: {
-            const uint32_t s = a.occ_off[i], len = a.occ_off[i + 1] - s;
-            for (uint32_t k = 0; k < len; ++k)
-                a.sig_buf[s + k] =
-                    (uint64_t(a.ea[a.occ_edge[s + k]]) << 32) | uint64_t(a.occ_pos[s + k]);
-            isort_u64(a.sig_buf + s, len);
-            a.order[i] = i;
+        case IR_PAR_INIT_SIGS:
+            ir_body_init_sigs(i, a.ea, a.occ_off, a.occ_edge, a.occ_pos, a.sig_buf, a.order);
             break;
-        }
-        case IR_PAR_TOUCH_SORTS: {
-            const uint32_t u = a.touched[i];
-            isort_u64(a.sig_buf + a.sig_off[u], a.sig_cnt[u]);
+        case IR_PAR_TOUCH_SORTS:
+            ir_body_touch_sort(i, a.touched, a.sig_buf, a.sig_off, a.sig_cnt);
             break;
-        }
-        case IR_PAR_SIG_FILL: {
-            const uint32_t e = a.inc_edges[i];
-            const uint32_t arity = a.ea[e];
-            uint64_t spos = 0;
-            for (uint32_t p = 0; p < arity && p < IR_SPOS_BITS; ++p)
-                if (a.cell_of[a.ev[a.eoff[e] + p]] == a.S) spos |= (uint64_t(1) << p);
-            for (uint32_t p = 0; p < arity; ++p) {
-                const uint32_t u = a.ev[a.eoff[e] + p];
-                const uint32_t w = ir_par_reserve<kAtomic>(a.sig_cnt + u);
-                a.sig_buf[a.sig_off[u] + w] =
-                    (uint64_t(arity & 0xFF) << 56) | (uint64_t(p & 0xFF) << 48) | spos;
-            }
+        case IR_PAR_SIG_FILL:
+            ir_body_sig_fill<kAtomic>(i, a.ea, a.eoff, a.ev, a.inc_edges, a.cell_of, a.S,
+                                      a.sig_buf, a.sig_off, a.sig_cnt);
             break;
-        }
         default: break;
     }
 }
 struct IrSerial {
+    static constexpr bool kFans = false;
     HG_HD void run(uint32_t kind, uint32_t n, const IrParArgs& a) const {
         for (uint32_t i = 0; i < n; ++i) ir_par_body<false>(kind, i, a);
     }
@@ -349,12 +369,16 @@ HG_HD inline void ir_initial_partition(
 {
     // sig_buf holds every vertex's signature contiguously at occ_off[v]; (arity, position)
     // packs into one uint64 so the multiset sorts with a scalar comparison. Each vertex's run
-    // is its own, so the iterations fan out (IR_PAR_INIT_SIGS).
-    {
+    // is its own, so the iterations fan out (IR_PAR_INIT_SIGS) under a fanning policy; the
+    // serial one runs the bodies in place, with no argument packing.
+    if constexpr (Par::kFans) {
         IrParArgs a;
         a.ea = ea; a.occ_off = occ_off; a.occ_edge = occ_edge; a.occ_pos = occ_pos;
         a.sig_buf = sig_buf; a.order = order;
         par.run(IR_PAR_INIT_SIGS, n_verts, a);
+    } else {
+        for (uint32_t v = 0; v < n_verts; ++v)
+            ir_body_init_sigs(v, ea, occ_off, occ_edge, occ_pos, sig_buf, order);
     }
 
     // Order by (signature, vertex). The signature is structural and label-independent; the
@@ -473,7 +497,7 @@ HG_HD inline void ir_refine(
             const uint32_t u = touched[i];
             sig_off[u] = total; total += sig_cnt[u]; sig_cnt[u] = 0;
         }
-        {
+        if constexpr (Par::kFans) {
             IrParArgs a;
             a.ea = ea; a.eoff = eoff; a.ev = ev;
             a.sig_buf = sig_buf; a.sig_off = sig_off; a.sig_cnt = sig_cnt;
@@ -481,6 +505,12 @@ HG_HD inline void ir_refine(
             par.run(IR_PAR_SIG_FILL, n_inc, a);
             a.touched = touched;
             par.run(IR_PAR_TOUCH_SORTS, n_touched, a);
+        } else {
+            for (uint32_t i = 0; i < n_inc; ++i)
+                ir_body_sig_fill<false>(i, ea, eoff, ev, inc_edges, pi.cell_of, S,
+                                        sig_buf, sig_off, sig_cnt);
+            for (uint32_t i = 0; i < n_touched; ++i)
+                ir_body_touch_sort(i, touched, sig_buf, sig_off, sig_cnt);
         }
 
         // Order touched vertices by (cell id, signature); both keys are structural. Ties are

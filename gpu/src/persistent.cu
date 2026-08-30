@@ -106,12 +106,13 @@ __global__ void k_seed_frontier(typename RingBuffer<MatchWorkItem>::DeviceView q
 // Only the Full arm touches the arena, so a run in the other two modes never claims IR scratch.
 // `want_ranks` is passed through to the Full arm so that when the run also needs per-edge ranks
 // the single pass produces both, rather than the key here and the ranks in a repeat pass.
+template <class Par = hgcommon::IrSerial>
 __device__ ExactHashStatus state_key_device(DeviceState ds, StateId sid,
                                             CanonicalizationMode mode,
                                             DeviceArena::View arena,
                                             uint32_t*& slot, uint64_t& slot_words,
                                             uint64_t& out_key, bool want_ranks,
-                                            bool want_orbits = false) {
+                                            bool want_orbits = false, Par par = Par{}) {
     switch (mode) {
         case CanonicalizationMode::None:
             // Mirrors k_fill_unique_keys: distinct per state, and offset so it can never be the
@@ -124,7 +125,7 @@ __device__ ExactHashStatus state_key_device(DeviceState ds, StateId sid,
         case CanonicalizationMode::Full:
         default:
             return state_exact_hash_device(ds, sid, arena, slot, slot_words, out_key,
-                                           want_ranks, want_orbits);
+                                           want_ranks, want_orbits, par);
     }
 }
 
@@ -586,6 +587,12 @@ __global__ void k_persistent_evolve(
     // when a larger state arrives. Thread 0 does the hashing, so the slot is its own.
     __shared__ uint32_t* ir_slot;
     __shared__ uint64_t  ir_slot_words;
+    __shared__ IrWarpMailbox ir_mb;
+    // Whether this record's canonicalization is worth the warp fan: decided from the child
+    // state's size once the rewrite has produced it, because on a small state every fanned
+    // loop is below the dispatch width and the slave apparatus is pure per-record cost
+    // (measured: +23% on wolftri, whose states are small, against -7.5% on bigcycle).
+    __shared__ bool     ir_fan;
     __shared__ MatchWorkItem mitem;
     __shared__ bool     have;
     __shared__ uint32_t claimed;
@@ -662,7 +669,16 @@ __global__ void k_persistent_evolve(
                 child_step   = step + 1u;
                 expand_child = false;
                 acc_rewrite += clock64() - t0b;
+                ir_fan = child_sid != INVALID_ID &&
+                         ds.state_edge_slices[child_sid].count >= 24u;
+            }
+            __syncthreads();
+            if (threadIdx.x == 0) {
                 const unsigned long long t1 = clock64();
+                // Region 2 of the record: re-derived from the shared claim, because the fan
+                // decision needed a block-wide point between the rewrite and the canon.
+                const MatchRecord& rec = found.at(claimed);
+                const uint32_t step = rec.step;
 
                 // Expand the child only if it exists, the step budget allows it, its exact
                 // hash is computable, and the exploration rule keeps it. The hash is the
@@ -682,7 +698,8 @@ __global__ void k_persistent_evolve(
                     uint64_t h = 0;
                     const ExactHashStatus key_st =
                         state_key_device(ds, child_sid, state_mode, arena, ir_slot,
-                                         ir_slot_words, h, need_ranks, qc.enabled != 0);
+                                         ir_slot_words, h, need_ranks, qc.enabled != 0,
+                                         IrWarp{ir_fan ? &ir_mb : nullptr});
                     acc_irkey += clock64() - sub0;
                     if (key_st != ExactHashStatus::kOk) {
                         ds.errors.record(error_kind_for(key_st));
@@ -700,7 +717,8 @@ __global__ void k_persistent_evolve(
                             if (state_mode != CanonicalizationMode::Full) {
                                 const ExactHashStatus ex_st =
                                     state_exact_hash_device(ds, child_sid, arena, ir_slot,
-                                                            ir_slot_words, exact, need_ranks);
+                                                            ir_slot_words, exact, need_ranks,
+                                                            false, IrWarp{ir_fan ? &ir_mb : nullptr});
                                 if (ex_st != ExactHashStatus::kOk) {
                                     ds.errors.record(error_kind_for(ex_st));
                                     exact = 0;
@@ -787,6 +805,13 @@ __global__ void k_persistent_evolve(
                     }
                 }
                 acc_canon += clock64() - t1;
+                if (ir_fan) ir_warp_shutdown(&ir_mb);
+            } else if (ir_fan && threadIdx.x < 32u) {
+                // Lanes 1-31: serve the canonicalization's fanned-out loops until lane 0's
+                // record is done. The block is one warp (kMatchBlockThreads), so this is the
+                // whole rest of it; the guard keeps a wider block's other warps out of a
+                // barrier that is not theirs.
+                ir_warp_slave_loop(&ir_mb);
             }
             __syncthreads();
 

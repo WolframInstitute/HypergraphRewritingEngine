@@ -2,6 +2,7 @@
 #include "hgcommon/namespace.hpp"
 #include <cstdint>
 
+#include "hgcommon/ir_core.hpp"
 #include "hg_gpu/device_arena.hpp"
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/types.hpp"
@@ -62,11 +63,59 @@ enum class ExactHashStatus : uint8_t {
 // ds.state_edge_orbit (parallel to the CSR slice, UINT32_MAX where the flattening skipped a
 // slot) and writes the state's orbit count into ds.state_num_orbits -- the quotient-causal
 // DP's keys. Rides the same IR pass as the hash and ranks.
+template <class Par = hgcommon::IrSerial>
 __device__ ExactHashStatus state_exact_hash_device(DeviceState ds, StateId sid,
                                                    DeviceArena::View arena,
                                                    uint32_t*& slot, uint64_t& slot_words,
                                                    uint64_t& out_hash, bool want_ranks = false,
-                                                   bool want_orbits = false);
+                                                   bool want_orbits = false, Par par = Par{});
+
+// THE WARP RUNS THE ORDER-SAFE LOOPS TOGETHER. The persistent kernel's whole rewrite path is
+// lane 0's; during it, lanes 1-31 sit in ir_warp_slave_loop, released per dispatch through
+// this mailbox and re-parked after. __syncwarp pairs by MASK, not by call site, so the lanes
+// synchronise from different points: the slaves' round is two barriers (accept, join) and
+// lane 0 issues exactly two per dispatch -- and two at shutdown, whose sentinel ends the loop.
+// Dispatches below a warp's width run inline on lane 0: for the seeded refinements of the
+// search the fan-out costs more than the loop.
+struct IrWarpMailbox {
+    volatile uint32_t kind;
+    volatile uint32_t n;
+    hgcommon::IrParArgs args;
+};
+struct IrWarp {
+    static constexpr bool kFans = true;
+    IrWarpMailbox* mb;
+    __device__ void run(uint32_t kind, uint32_t n, const hgcommon::IrParArgs& a) const {
+        if (mb == nullptr || n < 32u) {
+            for (uint32_t i = 0; i < n; ++i) hgcommon::ir_par_body<false>(kind, i, a);
+            return;
+        }
+        mb->args = a;
+        mb->n = n;
+        __threadfence_block();
+        mb->kind = kind;
+        __syncwarp();
+        for (uint32_t i = (threadIdx.x & 31u); i < n; i += 32u)
+            hgcommon::ir_par_body<true>(kind, i, mb->args);
+        __syncwarp();
+    }
+};
+__device__ inline void ir_warp_shutdown(IrWarpMailbox* mb) {
+    mb->kind = hgcommon::IR_PAR_EXIT;
+    __syncwarp();
+    __syncwarp();
+}
+__device__ inline void ir_warp_slave_loop(IrWarpMailbox* mb) {
+    for (;;) {
+        __syncwarp();
+        const uint32_t kind = mb->kind;
+        const uint32_t n = mb->n;
+        if (kind == hgcommon::IR_PAR_EXIT) { __syncwarp(); return; }
+        for (uint32_t i = (threadIdx.x & 31u); i < n; i += 32u)
+            hgcommon::ir_par_body<true>(kind, i, mb->args);
+        __syncwarp();
+    }
+}
 
 // The ErrorKind a failed exact hash should be recorded as. One place, so a new call site cannot
 // pick a different mapping and re-conflate what this separation exists to keep apart.
