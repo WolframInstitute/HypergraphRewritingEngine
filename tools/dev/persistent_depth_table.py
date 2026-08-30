@@ -61,6 +61,32 @@ def main():
                  % (d, "{:,}".format(states), call, persist, call / persist))
     b += [r"\bottomrule", r"\end{tabular}"]
     pt.write("t16_persistent_depth.tex", "\n".join(b) + "\n")
+
+    # The macros the prose cites, from the same rows, so a sentence about this table can never
+    # drift from it: the drift already happened once ("5.6x at six" against a cell of 5.43).
+    words = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven",
+             8: "eight", 9: "nine", 10: "ten"}
+    def sx(call, persist):
+        r = call / persist
+        return "%.2f" % r if r < 2 else "%.1f" % r
+    def commas(n):
+        return "{:,}".format(n).replace(",", "{,}")
+    v = []
+    for d, states, _e, call, persist in rows:
+        v.append(r"\newcommand{\PersistentSpeedup%s}{%s}"
+                 % (words[d].capitalize(), sx(call, persist)))
+    const = [r for r in rows[:3]]
+    v.append(r"\newcommand{\PersistentEvolveConstLo}{%.0f}" % min(r[3] for r in const))
+    v.append(r"\newcommand{\PersistentEvolveConstHi}{%.0f}" % max(r[3] for r in const))
+    v.append(r"\newcommand{\PersistentStatesLo}{%s}" % commas(const[0][1]))
+    v.append(r"\newcommand{\PersistentStatesHi}{%s}" % commas(const[-1][1]))
+    tie = next((r for r in rows if r[3] / r[4] < 1.1), rows[-1])
+    v.append(r"\newcommand{\PersistentTieDepthWord}{%s}" % words[tie[0]])
+    v.append(r"\newcommand{\PersistentStatesTie}{%s}" % commas(tie[1]))
+    pt.write("values_persistent.tex",
+             pt.provenance("tools/bench_gpu_evolve.cpp (mode 0)") + "\n"
+             + "\n".join(v) + "\n")
+
     for d, states, _e, call, persist in rows:
         print("  depth %d  %9s states  %8.1f -> %8.1f ms  %5.2fx"
               % (d, "{:,}".format(states), call, persist, call / persist))

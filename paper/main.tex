@@ -77,6 +77,8 @@
 % ============================================================================
 \input{tables/values_tables}  % generated: macros the prose cites, so a regenerated table moves them
 \input{tables/values_sweep}
+\input{tables/values_persistent}
+\input{tables/values_instr}
 
 \begin{document}
 
@@ -1155,8 +1157,9 @@ device between steps, so a step costs a device-side barrier rather than a launch
 Figure~\ref{fig:megakernel} shows the arrangement: the queues and the shell that services them,
 with expanded states re-entering as match tasks without returning to the host. What the design
 buys and where it stops paying are measured in Section~\ref{sec:benchmarks}---it is
-$16.5\times$ a per-step \texttt{evolve()} at depth four and indistinguishable from it by depth
-eight, once the evolution itself dominates the constant being amortized.
+$\PersistentSpeedupFour\times$ a per-step \texttt{evolve()} at depth four and indistinguishable
+from it by depth \PersistentTieDepthWord, once the evolution itself dominates the constant being
+amortized.
 
 \begin{figure}[htbp]
 \centering
@@ -1658,13 +1661,13 @@ from depth six the device is ahead, reaching $\GpuSpeedupAtDeepest\times$ eight 
 depth $\GpuDeepestDepth$ and more than four times that against a single one.
 
 The resident-kernel design has its own boundary, on the same workload and measured by the same
-tool (Table~\ref{tab:t16-persistent}). Against a conventional per-step \texttt{evolve()} the persistent evolver is $16.5\times$
-faster at depth four, $13.2\times$ at five, $5.6\times$ at six and $4.2\times$ at seven---and
-$0.97\times$ at depth eight and $0.98\times$ at nine, where the two are indistinguishable. The
+tool (Table~\ref{tab:t16-persistent}). Against a conventional per-step \texttt{evolve()} the persistent evolver is $\PersistentSpeedupFour\times$
+faster at depth four, $\PersistentSpeedupFive\times$ at five, $\PersistentSpeedupSix\times$ at six and $\PersistentSpeedupSeven\times$ at seven---and
+$\PersistentSpeedupEight\times$ at depth eight and $\PersistentSpeedupNine\times$ at nine, where the two are indistinguishable. The
 advantage is the elimination of a fixed per-call cost, which is visible directly in the
-\texttt{evolve()} column: it is $49$--$55$\,ms at depths four, five and six, almost independent of
-a state count that grows from $53$ to $3867$ over that range. Once the evolution itself is large
-enough to dominate that constant---by depth eight, at $262{,}144$ states---keeping the kernel
+\texttt{evolve()} column: it is $\PersistentEvolveConstLo$--$\PersistentEvolveConstHi$\,ms at depths four, five and six, almost independent of
+a state count that grows from $\PersistentStatesLo$ to $\PersistentStatesHi$ over that range. Once the evolution itself is large
+enough to dominate that constant---by depth \PersistentTieDepthWord, at $\PersistentStatesTie$ states---keeping the kernel
 resident buys nothing further, and the two designs are indistinguishable; at no depth does the
 resident kernel cost anything. Reporting the speedup without the depth it is measured at would
 therefore be a statement about small problems.
@@ -1694,9 +1697,12 @@ and one iteration count. Source: \texttt{tools/bench\_gpu\_evolve} and
 \caption{\textbf{T16 --- The resident kernel against a per-step \texttt{evolve()}, by depth.}
 Both arms are on the device, on the same rule and initial condition, so no CPU arm is involved and
 the sweep reaches depth nine in minutes. The persistent evolver's advantage is the elimination of
-a fixed per-call cost, which the \texttt{evolve()} column shows directly: about $50$\,ms at depths
-four, five and six while the state count grows from $53$ to $3{,}867$. Once the evolution itself
-dominates that constant---by depth eight, at $262{,}144$ states---the two are indistinguishable.
+a fixed per-call cost, which the \texttt{evolve()} column shows directly:
+$\PersistentEvolveConstLo$--$\PersistentEvolveConstHi$\,ms at depths
+four, five and six while the state count grows from $\PersistentStatesLo$ to
+$\PersistentStatesHi$. Once the evolution itself
+dominates that constant---by depth \PersistentTieDepthWord, at $\PersistentStatesTie$
+states---the two are indistinguishable.
 A speedup for this design quoted without the depth it was measured at is therefore a statement
 about small problems. Source: \texttt{tools/dev/persistent\_depth\_table.py} over
 \texttt{tools/bench\_gpu\_evolve}.}
@@ -2144,7 +2150,7 @@ rather than distributed over the named buckets.
 \caption{\textbf{T15 --- Executed instructions by component.} A single-threaded depth-six
 evolution of the Wolfram rule under \texttt{callgrind}, grouped by the file each function is
 defined in. Instruction counts are exact and reproducible, so attribution uses them
-rather than wall time. The flat per-function profile covers $99.0\%$ of the program total; the
+rather than wall time. The flat per-function profile covers $\InstrFlatCoverage\%$ of the program total; the
 remainder is below \texttt{callgrind\_annotate}'s reporting threshold. Source:
 \texttt{tools/dev/instruction\_profile.py} over the \texttt{attrib} phase of
 \texttt{tools/dev/remote\_session.sh}.}
