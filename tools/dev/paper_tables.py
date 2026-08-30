@@ -532,6 +532,53 @@ def t7(build, gpu_build, steps_list, iters):
     return len(rows)
 
 
+def t7b(build, gpu_build, iters):
+    """GPU against CPU across the NAMED CORPUS, one row per workload at its standard depth.
+
+    T7 shows the depth scaling on one rule; this shows the same head-to-head across every
+    named workload, rule combinations and the large-state symmetry rows included, because a
+    single rule cannot say which engine a workload class favours. Same session, same iteration
+    count, same modes on both sides.
+    """
+    depth = {"wpp": 7, "growshrink3": 5, "allfour": 5, "bigpath": 2, "bigcycle": 2, "bigstar": 2}
+    names = [l.strip() for l in run([binary(build, "bench_cpu_evolve"), "1", "1", "1", "list"],
+                                    timeout=600).splitlines()
+             if l.strip() and not l.startswith("HGBUILDSTAMP")]
+    rows = []
+    for wl in names:
+        st = depth.get(wl, 6)
+        gout = run([binary(gpu_build, "bench_gpu_evolve"), str(st), str(iters), "1", wl],
+                   timeout=3600)
+        gm = re.search(r"PersistentEvolver_median_ms=([\d.]+)", gout)
+        if not gm:
+            raise SystemExit("bench_gpu_evolve gave no median for %s:\n%s" % (wl, gout[-1500:]))
+        cpu = {}
+        raw = None
+        for th in (1, 16):
+            cout = run([binary(build, "bench_cpu_evolve"), str(st), str(iters), str(th), wl],
+                       timeout=3600)
+            c = re.search(r"threads=%d\s+steps=\d+\s+canonical=\d+\s+raw=(\d+)\s+"
+                          r"median_ms=([\d.]+)" % th, cout)
+            if not c:
+                raise SystemExit("bench_cpu_evolve gave no %d-thread row for %s:\n%s"
+                                 % (th, wl, cout[-1500:]))
+            raw = c.group(1)
+            cpu[th] = float(c.group(2))
+        gpu = float(gm.group(1))
+        rows.append((wl, st, raw, cpu[1], cpu[16], gpu))
+    b = [provenance("tools/bench_cpu_evolve.cpp + tools/bench_gpu_evolve.cpp"),
+         r"\begin{tabular}{lrrrrrrr}", r"\toprule",
+         r"Workload & Depth & Raw states & CPU 1t ms & CPU 16t ms & GPU ms & "
+         r"vs.\ CPU 1t & vs.\ CPU 16t \\",
+         r"\midrule"]
+    for (wl, st, raw, c1, c16, gpu) in rows:
+        b.append("%s & %d & %s & %.1f & %.1f & %.1f & %.2f & %.2f \\\\" % (
+            wl.replace("_", r"\_"), st, raw, c1, c16, gpu, c1 / gpu, c16 / gpu))
+    b += [r"\bottomrule", r"\end{tabular}"]
+    write("t7b_gpu_corpus.tex", "\n".join(b) + "\n")
+    return len(rows)
+
+
 def t6(build, maxd):
     """Quotient exploration against full capture, and what exactness costs on top.
 
@@ -892,6 +939,8 @@ def main():
         # extension is a GPU-only comparison and is reported by t_persistent_depth instead,
         # which needs no CPU arm and therefore reaches depth 9 in minutes.
         n = t7(a.build_dir, a.gpu_build_dir, [5, 6, 7], a.iters)
+        nb = t7b(a.build_dir, a.gpu_build_dir, a.iters)
+        print("T7b: %d workloads" % nb)
         print("T7: %d depths" % n)
     write_values()
     return 0

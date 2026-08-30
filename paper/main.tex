@@ -1516,7 +1516,7 @@ implementation computing the same object, and how does that ratio behave with de
 depend on the rule, and what resource sets it? (Tables~\ref{tab:t8-scaling},
 \ref{tab:t12-shapes}, \ref{tab:t13-memory}; Figure~\ref{fig:scaling})
 \item[Q4 (device).] Where is the GPU faster than the CPU, and at what grid size does the device
-saturate? (Tables~\ref{tab:t7-gpu}, \ref{tab:t11-saturation})
+saturate? (Tables~\ref{tab:t7-gpu}, \ref{tab:t7b-gpu-corpus}, \ref{tab:t11-saturation})
 \item[Q5 (attribution).] Which contributions account for the performance, and does any of them
 change the computed answer rather than its speed? (Tables~\ref{tab:t9-ablation},
 \ref{tab:t6-quotient}, \ref{tab:event-canon})
@@ -1674,6 +1674,18 @@ be a statement about small problems.
 \caption{\textbf{T7 --- GPU against CPU.} End-to-end evolution time for the GPU and for the CPU at one and at eight threads, at increasing depth on the Wolfram rule; branchial edges are constructed through a per-(state, edge) index. Both sides use the same rule, initial condition, canonicalization mode and exploration strategy, and report medians from a single session on the machine recorded in the table's provenance line. At depth five the GPU is slower than eight CPU threads, where the work per launch does not amortize the launch cost; from depth six it is ahead of both columns, and the margin widens with depth. Source: \texttt{tools/bench\_gpu\_evolve} and \texttt{tools/bench\_cpu\_evolve}.}
 \label{tab:t7-gpu}
 \input{tables/t7_gpu}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{\textbf{T7b --- GPU against CPU across the named corpus.} The same head-to-head as
+Table~\ref{tab:t7-gpu}, one row per named workload at its standard depth: the single rules,
+the rule combinations, and the large-state symmetry rows. Both engines run the same rules,
+initial conditions, canonicalization mode and exploration strategy; medians share one session
+and one iteration count. Source: \texttt{tools/bench\_gpu\_evolve} and
+\texttt{tools/bench\_cpu\_evolve} over \texttt{corpus\_gen.hpp}'s named table.}
+\label{tab:t7b-gpu-corpus}
+\input{tables/t7b_gpu_corpus}
 \end{table}
 
 \begin{table}[htbp]
