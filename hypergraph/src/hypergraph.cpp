@@ -6,7 +6,6 @@
 
 #include "hypergraph/hypergraph.hpp"
 
-#include <unordered_map>
 #include "hypergraph/ir_canonicalization.hpp"
 #include "hgcommon/ir_core.hpp"
 #include "hgcommon/slot_core.hpp"
@@ -856,36 +855,43 @@ namespace {
 // failure, so the inner loop stops on IR_NEED_DEPTH.
 //
 // `orbit` and `klass` are resized to the edge count and filled. Returns the canonical hash.
-uint64_t ir_hash_and_orbits(const SVec<SVec<VertexId>>& edge_vecs,
+//
+// The edges come as ids into the edge table and are read into the core's flat form directly:
+// the run per edge is [arity | vertices...], so nothing is copied twice and nothing is
+// allocated per edge (an intermediate vector of vectors was one scratch allocation per edge
+// per state, ~33 per state on wpp depth 7).
+uint64_t ir_hash_and_orbits(const SegmentedArray<Edge>& edge_table,
+                            const EdgeId* ids, uint32_t n,
                             std::vector<uint32_t>& orbit,
                             std::vector<uint32_t>& klass,
                             std::vector<uint32_t>& rank,
                             Hypergraph::IrBooking& booking) {
-    const uint32_t n = static_cast<uint32_t>(edge_vecs.size());
     orbit.assign(n, 0);
     klass.assign(n, 0);
     if (n == 0) return EMPTY_STATE_CANONICAL_HASH;
 
-    SVec<uint8_t> ea;
-    SVec<uint32_t> eoff, ev;
-    ea.reserve(n); eoff.reserve(n); ev.reserve(size_t(n) * 2);
-    for (uint32_t i = 0; i < n; ++i) {
-        eoff.push_back(static_cast<uint32_t>(ev.size()));
-        ea.push_back(static_cast<uint8_t>(edge_vecs[i].size()));
-        for (VertexId v : edge_vecs[i]) ev.push_back(static_cast<uint32_t>(v));
-    }
+    uint32_t total_occ = 0;
+    for (uint32_t i = 0; i < n; ++i) total_occ += edge_table[ids[i]].arity;
+    auto* ea   = static_cast<uint8_t*>(worker_scratch().allocate_raw(n, alignof(uint8_t)));
+    auto* eoff = static_cast<uint32_t*>(worker_scratch().allocate_raw(sizeof(uint32_t) * n, alignof(uint32_t)));
+    auto* ev   = static_cast<uint32_t*>(worker_scratch().allocate_raw(sizeof(uint32_t) * total_occ, alignof(uint32_t)));
     // Local vertex indices in encounter order. The core's result does not depend on the order
     // they are assigned in: the only place an index is read as a value is the initial
     // partition's tie-break, which orders vertices WITHIN a cell, and no output reads
     // within-cell order.
-    std::unordered_map<uint32_t, uint32_t> local;
+    ScratchIdMap local(total_occ * 2);
     uint32_t n_verts = 0;
-    for (uint32_t& x : ev) {
-        auto it = local.find(x);
-        if (it == local.end()) { local.emplace(x, n_verts); x = n_verts++; }
-        else x = it->second;
+    uint32_t occ = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+        const Edge& e = edge_table[ids[i]];
+        eoff[i] = occ;
+        ea[i] = e.arity;
+        for (uint8_t j = 0; j < e.arity; ++j) {
+            uint32_t idx;
+            if (local.find_or_insert(static_cast<uint32_t>(e.vertices[j]), n_verts, idx)) ++n_verts;
+            ev[occ++] = idx;
+        }
     }
-    const uint32_t total_occ = static_cast<uint32_t>(ev.size());
 
     for (uint32_t depth : kIrDepthRungs) {
         if (ir_rung_below_hint(depth)) continue;
@@ -895,7 +901,7 @@ uint64_t ir_hash_and_orbits(const SVec<SVec<VertexId>>& edge_vecs,
                 (words + 2) * sizeof(uint32_t), alignof(uint64_t)));
             hgcommon::IrWork work{};
             auto r = hgcommon::ir_canonical_hash(
-                ea.data(), eoff.data(), ev.data(), n, n_verts, total_occ, scratch, depth,
+                ea, eoff, ev, n, n_verts, total_occ, scratch, depth,
                 rank.data(), gens, orbit.data(), klass.data(), nullptr, nullptr, &work);
             booking.calls += 1;
             booking.searched += work.searched;
@@ -911,7 +917,14 @@ uint64_t ir_hash_and_orbits(const SVec<SVec<VertexId>>& edge_vecs,
     }
     booking.fallback = true;
     // Past every depth AND generator budget above: the unbounded implementation rather than
-    // orbits the automorphism group does not license.
+    // orbits the automorphism group does not license. It takes the edges as vectors, built
+    // here and only here.
+    SVec<SVec<VertexId>> edge_vecs;
+    edge_vecs.reserve(n);
+    for (uint32_t i = 0; i < n; ++i) {
+        const Edge& e = edge_table[ids[i]];
+        edge_vecs.emplace_back(e.vertices, e.vertices + e.arity);
+    }
     IRCanonicalizer ir;
     return ir.compute_canonical_hash_with_edge_orbits(edge_vecs, orbit, &klass, rank.data());
 }
@@ -930,14 +943,9 @@ uint64_t Hypergraph::compute_and_cache_state_orbits(StateId s, const SparseBitse
     // the persistent arena and publish it under the state id. Called once per state on its
     // creating thread, so no same-state race; insert_if_absent is a belt-and-braces guard.
     auto mk = worker_scratch().mark();
-    SVec<SVec<VertexId>> edge_vecs;
     SVec<EdgeId> ids;
     std::atomic_thread_fence(std::memory_order_acquire);
-    edges.for_each([&](EdgeId eid) {
-        const Edge& e = edges_[eid];
-        edge_vecs.emplace_back(e.vertices, e.vertices + e.arity);
-        ids.push_back(eid);
-    });
+    edges.for_each([&](EdgeId eid) { ids.push_back(eid); });
 
     const uint32_t n = static_cast<uint32_t>(ids.size());
     EdgeId* arr_edges = arena_.allocate_array<EdgeId>(n ? n : 1);
@@ -963,7 +971,7 @@ uint64_t Hypergraph::compute_and_cache_state_orbits(StateId s, const SparseBitse
         klass.assign(n, 0);
         rank.assign(n, 0);
         IrBooking booking{};
-        hash = ir_hash_and_orbits(edge_vecs, orbit, klass, rank, booking);
+        hash = ir_hash_and_orbits(edges_, ids.data(), n, orbit, klass, rank, booking);
         book_ir(booking);
         // ids are already ascending (SparseBitset iterates in id order), orbit is parallel.
         for (uint32_t i = 0; i < n; ++i) {
@@ -1464,15 +1472,10 @@ void Hypergraph::causal_edge_keys(StateId state, const EdgeId* edges, uint32_t n
     // No cached table for this state (a cold cache under HG_CALIBRATE_ORBIT_CACHE_COLD): the
     // same search, run here.
     auto mk = worker_scratch().mark();
-    SVec<SVec<VertexId>> edge_vecs;
     SVec<EdgeId> ids;
     std::atomic_thread_fence(std::memory_order_acquire);
-    get_state_edges(state).for_each([&](EdgeId eid) {
-        const Edge& e = edges_[eid];
-        edge_vecs.emplace_back(e.vertices, e.vertices + e.arity);
-        ids.push_back(eid);
-    });
-    if (edge_vecs.empty()) {
+    get_state_edges(state).for_each([&](EdgeId eid) { ids.push_back(eid); });
+    if (ids.empty()) {
         worker_scratch().release(mk);
         for (uint32_t i = 0; i < n; ++i) out[i] = raw_key(edges[i]);
         return;
@@ -1480,9 +1483,10 @@ void Hypergraph::causal_edge_keys(StateId state, const EdgeId* edges, uint32_t n
     HG_THREAD_LOCAL(std::vector<uint32_t>, orbit);
     HG_THREAD_LOCAL(std::vector<uint32_t>, klass);
     HG_THREAD_LOCAL(std::vector<uint32_t>, rank);
-    rank.assign(edge_vecs.size(), 0);
+    rank.assign(ids.size(), 0);
     IrBooking booking{};
-    const uint64_t chash = ir_hash_and_orbits(edge_vecs, orbit, klass, rank, booking);
+    const uint64_t chash = ir_hash_and_orbits(edges_, ids.data(), static_cast<uint32_t>(ids.size()),
+                                              orbit, klass, rank, booking);
     book_ir(booking);
     for (uint32_t i = 0; i < n; ++i) {
         uint32_t orb = 0;

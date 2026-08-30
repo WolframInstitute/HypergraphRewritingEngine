@@ -9,6 +9,7 @@
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -82,26 +83,91 @@ struct PersistAlloc {
 // here: INVALID_ID is the sentinel producer the reconstruction seeds a root's edges with, and it
 // reaches these walks. A set that treated it as an empty slot would report it absent every time,
 // so it is tracked in a flag of its own rather than in the table.
-class ScratchIdSet {
+//
+// With a value type it is the same table carrying one V per key (ScratchIdMap): the vertex
+// relabelling in front of the canonical search was a std::unordered_map, one heap node per
+// vertex per state -- callgrind on wpp depth 7 put its hashtable at 0.93% of all instructions
+// and the malloc/free it drove at 2.7% more. One probing rule for both, so the set and the map
+// cannot drift.
+template <class V = void>
+class ScratchIdTable {
 public:
     static constexpr uint32_t kEmpty = 0xFFFFFFFFu;
+    static constexpr bool kHasValue = !std::is_void_v<V>;
+    using Value = std::conditional_t<kHasValue, V, uint32_t>;
 
-    explicit ScratchIdSet(uint32_t hint = 64);
+    explicit ScratchIdTable(uint32_t hint = 64) { rehash(round_up_pow2(hint < 8 ? 8 : hint)); }
 
     // True iff the key was not already present.
-    bool insert(uint32_t key);
+    bool insert(uint32_t key) {
+        Value v{};
+        return find_or_insert(key, v, v);
+    }
+
+    // Map use: `out` receives the value stored for key -- `fresh` when this call added it.
+    // True iff the key was not already present.
+    bool find_or_insert(uint32_t key, Value fresh, Value& out) {
+        if (key == kEmpty) {
+            const bool added = !has_empty_;
+            if (added) { has_empty_ = true; empty_value_ = fresh; }
+            out = empty_value_;
+            return added;
+        }
+        if (count_ * 4 >= cap_ * 3) rehash(cap_ * 2);   // keep the load factor under 3/4
+        return insert_into(slots_, vals_, cap_, key, fresh, out);
+    }
 
 private:
-    static uint32_t round_up_pow2(uint32_t v);
-    static uint32_t mix(uint32_t x);
-    bool insert_into(uint32_t* slots, uint32_t cap, uint32_t key);
-    void rehash(uint32_t cap);
+    static uint32_t round_up_pow2(uint32_t v) {
+        uint32_t p = 8; while (p < v) p <<= 1; return p;
+    }
+    static uint32_t mix(uint32_t x) {
+        x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
+        return x;
+    }
+    bool insert_into(uint32_t* slots, Value* vals, uint32_t cap, uint32_t key,
+                     Value fresh, Value& out) {
+        uint32_t i = mix(key) & (cap - 1);
+        for (;;) {
+            const uint32_t cur = slots[i];
+            if (cur == key) { if constexpr (kHasValue) out = vals[i]; return false; }
+            if (cur == kEmpty) {
+                slots[i] = key;
+                if constexpr (kHasValue) { vals[i] = fresh; out = fresh; }
+                ++count_;
+                return true;
+            }
+            i = (i + 1) & (cap - 1);
+        }
+    }
+    void rehash(uint32_t cap) {
+        uint32_t* fresh = static_cast<uint32_t*>(
+            worker_scratch().allocate_raw(sizeof(uint32_t) * cap, alignof(uint32_t)));
+        for (uint32_t i = 0; i < cap; ++i) fresh[i] = kEmpty;
+        Value* fresh_vals = nullptr;
+        if constexpr (kHasValue)
+            fresh_vals = static_cast<Value*>(
+                worker_scratch().allocate_raw(sizeof(Value) * cap, alignof(Value)));
+        const uint32_t old_cap = cap_;
+        uint32_t* old = slots_;
+        Value* old_vals = vals_;
+        slots_ = fresh; vals_ = fresh_vals; cap_ = cap; count_ = 0;
+        for (uint32_t i = 0; i < old_cap; ++i)
+            if (old[i] != kEmpty) {
+                Value v{};
+                insert_into(slots_, vals_, cap_, old[i], kHasValue ? old_vals[i] : v, v);
+            }
+    }
 
     uint32_t* slots_ = nullptr;
+    Value*    vals_ = nullptr;
     uint32_t  cap_ = 0;
     uint32_t  count_ = 0;
     bool      has_empty_ = false;
+    Value     empty_value_{};
 };
+using ScratchIdSet = ScratchIdTable<void>;
+using ScratchIdMap = ScratchIdTable<uint32_t>;
 
 template<class T> using SVec = std::vector<T, ScratchAlloc<T>>;
 template<class T> using PVec = std::vector<T, PersistAlloc<T>>;

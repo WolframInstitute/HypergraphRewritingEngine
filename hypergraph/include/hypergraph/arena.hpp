@@ -479,7 +479,23 @@ public:
     void* allocate_raw(size_t size, size_t alignment = alignof(std::max_align_t),
                        bool* zero = nullptr) {
 #if !HG_ENGINE_STATS
-        if (!recycle_) {
+        if (recycle_) {
+            // The scratch arena is single-threaded and bumps current_block_ directly. Inline
+            // for the same reason as the cursor path below: the canonical search's scratch is
+            // ~33 allocations per state, and out of line they were 2.3% of all instructions
+            // on wpp depth 7 (callgrind, one thread), most of it call and return.
+            Block* b = current_block_.load(std::memory_order_relaxed);
+            const size_t offset  = b->offset.load(std::memory_order_relaxed);
+            const size_t aligned = (offset + alignment - 1) & ~(alignment - 1);
+            const size_t new_offset = aligned + size;
+            if (new_offset <= b->capacity) {
+                b->offset.store(new_offset, std::memory_order_relaxed);
+                if (zero) *zero = false;
+                void* p = b->data + aligned;
+                HG_ARENA_UNPOISON(p, size);
+                return p;
+            }
+        } else {
             const int wi = arena_worker_index();
             if (wi >= 0) {
                 LocalCursor& c = cursors_[wi];
