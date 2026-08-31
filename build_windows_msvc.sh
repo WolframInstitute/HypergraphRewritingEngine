@@ -134,7 +134,10 @@ configure_and_build() {
     fi
     mkdir -p "$build_wsl"
     echo "==> $mode: configuring (native MSVC)"
+    # HG_ENGINE_STATS defaults ON in CMakeLists.txt for test and development builds; the shipped
+    # binaries carry no diagnostic counters, the same as every leg of build_all_platforms.sh.
     run_wincmake -S "$SRC" -B "$build_win" -G "$GEN" -A x64 "$@" \
+        -DHG_ENGINE_STATS=OFF \
         -DHG_BUILD_COMMIT="$HG_BUILD_COMMIT" \
         -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded \
         -DBUILD_VISUALIZATION=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=OFF
