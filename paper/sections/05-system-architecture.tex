@@ -53,9 +53,9 @@ state that differs from its parent by a few edges stores that difference and not
 \node[box] (s3) at (2.5,-1.5) {State $s_3$};
 
 % Arrows
-\draw[->] (s1) -- node[left, label] {bitset} (pool.south west);
-\draw[->] (s2) -- node[left, label] {bitset} (pool.south);
-\draw[->] (s3) -- node[right, label] {bitset} (pool.south east);
+\draw[->] (s1.north) -- node[left, label] {bitset} (s1.north |- pool.south);
+\draw[->] (s2.north) -- node[left, label] {bitset} (s2.north |- pool.south);
+\draw[->] (s3.north) -- node[right, label] {bitset} (s3.north |- pool.south);
 
 % Legend
 \node[label, below=0.3cm of s2] {States are views (SparseBitset) over shared edges};
