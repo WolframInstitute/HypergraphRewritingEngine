@@ -68,9 +68,13 @@ elseif(CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
     #     does above.
     #  2. A target_link_libraries name for winsock becomes a malformed `-lws2_32.lib`; pass the
     #     import lib straight to the linker instead.
+    # job_system.lib is under the same GNU-ar constraint: without /WHOLEARCHIVE its members are
+    # never pulled and every symbol it owns (park_if_equal, JobSlotPool, CapacityExhausted)
+    # reports undefined while the archive sits on the very same link line.
     target_link_options(hg_evolve PRIVATE
         "LINKER:/WHOLEARCHIVE:${CMAKE_BINARY_DIR}/hypergraph.lib"
         "LINKER:/WHOLEARCHIVE:${CMAKE_BINARY_DIR}/wxf.lib"
+        "LINKER:/WHOLEARCHIVE:${CMAKE_BINARY_DIR}/job_system.lib"
         "LINKER:ws2_32.lib")  # winsock for --serve-socket
 else()
     target_link_libraries(hg_evolve ws2_32)  # winsock for --serve-socket (mingw)
