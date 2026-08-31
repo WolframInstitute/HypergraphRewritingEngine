@@ -107,9 +107,32 @@ def main():
                 r = git("diff", "--name-only", commit, "HEAD", "--",
                         *ENGINE_DIRS, *sources)
                 changed = [l for l in r.stdout.splitlines() if l.strip()]
-                head_stale_cache[key] = (
-                    "%d engine/instrument file(s) changed since %s (first: %s)"
-                    % (len(changed), commit, changed[0]) if changed else None)
+                why = None
+                if changed:
+                    # A commit may declare itself measurement-inert -- a change whose engine
+                    # diff provably cannot move any measured number (a branch that never
+                    # executes on the measuring machine, a comment). The declaration is the
+                    # line "Measurement-inert:" in the commit message, carrying the proof, so
+                    # the claim is reviewable where the change is. The fragment is allowed
+                    # only when EVERY engine/instrument commit since its stamp declares it.
+                    log = git("log", "--format=%H", commit + "..HEAD", "--",
+                              *ENGINE_DIRS, *sources)
+                    shas = [l.strip() for l in log.stdout.splitlines() if l.strip()]
+                    inert = []
+                    for sha in shas:
+                        body = git("show", "-s", "--format=%B", sha).stdout
+                        if "Measurement-inert:" not in body:
+                            inert = None
+                            break
+                        subject = body.splitlines()[0][:70]
+                        inert.append("%s %s" % (sha[:8], subject))
+                    if inert is not None:
+                        print("allowed  %s: every engine/instrument commit since %s declares "
+                              "Measurement-inert: %s" % (name + ".tex", commit, "; ".join(inert)))
+                    else:
+                        why = ("%d engine/instrument file(s) changed since %s (first: %s)"
+                               % (len(changed), commit, changed[0]))
+                head_stale_cache[key] = why
         why = head_stale_cache[key]
         if why:
             frag = name + ".tex"

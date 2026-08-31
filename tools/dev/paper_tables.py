@@ -718,12 +718,16 @@ def t2(build, maxd, reps):
         if m:
             core[int(m.group(1))] = float(m.group(3))
 
+    # The reference is the CORRECTNESS oracle here, not a timed competitor: its counts enter the
+    # agreement column and its wall time is not published. The two timed comparisons the table
+    # carries are the engine's core against the authority (the speedup the paper claims) and the
+    # engine through the paclet against the engine's core (what the Wolfram layer -- WXF over
+    # the wire, Wolfram structures on return -- costs on top of the same computation).
     b = [provenance("reference/bench_authority.wls + tools/quotient_reconstruction_cost_probe.cpp")
          + pac_note,
-         r"\begin{tabular}{rrrrrrrrl}", r"\toprule",
-         r"Depth & States & Authority ms & Reference ms & Engine ms (paclet) & "
-         r"Engine ms (C++ core) & Speedup vs authority & Speedup vs reference & "
-         r"Counts agree \\", r"\midrule"]
+         r"\begin{tabular}{rrrrrrl}", r"\toprule",
+         r"Depth & States & Authority ms & Engine ms (paclet) & "
+         r"Engine ms (C++ core) & Speedup (core vs.\ authority) & Counts agree \\", r"\midrule"]
     for d in sorted(auth):
         if d not in hgev:
             continue
@@ -737,19 +741,14 @@ def t2(build, maxd, reps):
             same = same and (r_states, r_causal) == (a_states, a_causal)
         agree = "yes" if same else "NO"
         c = core.get(d)
-        # The engine's C++ core against the reference: both compute DATA, so neither is charged
-        # for building Wolfram Graph objects and the ratio is not a graph-construction artefact.
-        vs_ref = ("%.0f$\\times$" % (r_ms / c)) if (r_ms is not None and c) else "--"
-        # The engine's C++ core against the authority. Both sides are stated in the row beside
-        # it -- the authority's time includes building Wolfram Graph objects, because its
-        # MultiwaySystem exposes no property returning the state set as data, while the core
-        # builds none. That asymmetry is the reason the paclet column sits here too: it is the
-        # same-basis comparison, and this column is the engine's own speed with nothing
-        # marshalled.
+        # The engine's C++ core against the authority. The authority's time includes building
+        # Wolfram Graph objects, because its MultiwaySystem exposes no property returning the
+        # state set as data, while the core builds none; the paclet column sits beside it as
+        # the same-basis comparison, and the gap between the paclet and core columns is the
+        # Wolfram layer alone.
         vs_auth = ("%.0f$\\times$" % (a_ms / c)) if c else "--"
-        b.append("%d & %d & %.1f & %s & %.1f & %s & %s & %s & %s \\\\" % (
-            d, a_states, a_ms, ("%.1f" % r_ms) if r_ms is not None else "--", h_ms,
-            ("%.1f" % c) if c else "--", vs_auth, vs_ref, agree))
+        b.append("%d & %d & %.1f & %.1f & %s & %s & %s \\\\" % (
+            d, a_states, a_ms, h_ms, ("%.1f" % c) if c else "--", vs_auth, agree))
     b += [r"\bottomrule", r"\end{tabular}"]
     write("t2_speedup.tex", "\n".join(b) + "\n")
 
@@ -767,20 +766,31 @@ def t2(build, maxd, reps):
         value("SpeedupAtLowDepth", "{:,}".format(int(round(quoted[0][1]))).replace(",", "{,}"))
         value("SpeedupHighDepth", "%d" % quoted[-1][0])
         value("SpeedupAtHighDepth", "{:,}".format(int(round(quoted[-1][1]))).replace(",", "{,}"))
-        # The deep row's two absolute times, which the conclusion quotes beside the ratio.
+        # The deep row's two absolute times, which the conclusion quotes beside the ratio; and
+        # the two ratios the Wolfram-layer paragraph quotes: what the layer multiplies the
+        # core's time by, and what remains of the engine's advantage when both sides pay for it.
         deep = quoted[-1][0]
         value("AuthorityDeepSeconds", "%.0f" % (auth[deep][2] / 1000.0))
         value("CoreDeepMs", "%.1f" % core[deep])
+        value("PacletDeepSeconds", "%.2f" % (hgev[deep][2] / 1000.0))
+        value("PacletOverheadDeep", "{:,}".format(int(round(hgev[deep][2] / core[deep]))))
+        value("PacletVsAuthorityDeep", "%.0f" % (auth[deep][2] / hgev[deep][2]))
 
+    # Three series: the authority, the engine reached through the paclet (the same computation
+    # under the Wolfram layer), and the engine's core. The vertical gap between the lower two is
+    # the layer alone; between the outer two, the claimed speedup.
     depths = [d for d in sorted(auth) if d in hgev and core.get(d)]
     auth_pts = "".join("(%d,%.1f)" % (d, auth[d][2]) for d in depths)
+    hgev_pts = "".join("(%d,%.1f)" % (d, hgev[d][2]) for d in depths)
     core_pts = "".join("(%d,%.1f)" % (d, core[d]) for d in depths)
     f = [provenance("reference/bench_authority.wls + tools/quotient_reconstruction_cost_probe.cpp")
          + pac_note,
          r"\addplot[mark=square*, black, dashed] coordinates {%s};" % auth_pts,
          r"\addlegendentry{\texttt{Wolfram/\allowbreak Multicomputation}}",
+         r"\addplot[mark=triangle*, black!50] coordinates {%s};" % hgev_pts,
+         r"\addlegendentry{this engine, through the paclet}",
          r"\addplot[mark=*, black] coordinates {%s};" % core_pts,
-         r"\addlegendentry{this engine}"]
+         r"\addlegendentry{this engine, C++ core}"]
     write_raw("f_speedup.tex", "\n".join(f) + "\n")
     return len(auth)
 

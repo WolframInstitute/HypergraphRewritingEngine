@@ -378,6 +378,12 @@ private:
         // homogeneous one -- measured: it returns zero CPUs on an EPYC 9174F, where every core is
         // the same and the question it answers does not arise. Empty therefore means "no core is
         // preferable", not "no core is usable", so the fallback is every core.
+        // STACKING THE FAST CORES BEATS SPILLING ONTO THE SLOW ONES, measured, so a worker
+        // count beyond the performance set shares those cores through the modulo below rather
+        // than taking efficiency cores. A/B on a 14900K (8 P-cores), fork-join microbenchmark,
+        // one binary, quiet: stacked 46 ms at 24 workers against 66 ms spilled across all 24
+        // cores; 69 against 69 at 16; ~65 either way at 32. The slow cores add contention on
+        // the shared queues faster than they add work.
         std::vector<unsigned> cpus = hgcommon::performance_cpus();
         if (cpus.empty()) {
             const unsigned hw = std::thread::hardware_concurrency();
