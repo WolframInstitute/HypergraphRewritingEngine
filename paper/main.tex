@@ -1569,10 +1569,10 @@ Every table below is written by \texttt{tools/dev/paper\_tables.py} from the ins
 \subsection{Experimental Setup}
 
 \begin{description}
-\item[Hardware:] AMD EPYC 9174F (16 cores, 32 threads, one socket), 503\,GB RAM, NVIDIA RTX 4090 (24\,GB, compute capability 8.9), on bare metal. The cores are homogeneous, so a speedup column divides by a comparable quantity: worker threads are pinned to one hardware thread per physical core, and each table's provenance line names the CPU set it was pinned to, the machine, and the load at the moment the measurement started. A table moved to another machine carries that machine with it. The Wolfram comparison of Table~\ref{tab:t2-speedup} is the only measurement not on this host: it needs a licensed kernel, and its provenance line names the machine it was taken on. The remaining tables and figures were not all produced by one invocation and their provenance lines name several commits, but that spread is bookkeeping rather than a difference in what was measured: no file under the engine's own source directories differs between any of those commits and the one this document was built from. Table~\ref{tab:t2-speedup} and Figure~\ref{fig:speedup} are the exception in this sense too---they were taken at an earlier commit, across which 114 engine files have since changed---so they are the one measurement here that describes an older engine than the rest.
+\item[Hardware:] AMD EPYC 9174F (16 cores, 32 threads, one socket), 503\,GB RAM, NVIDIA RTX 4090 (24\,GB, compute capability 8.9), on bare metal. The cores are homogeneous, so a speedup column divides by a comparable quantity. Workers are placed by the engine's own topology-derived order---each last-level-cache domain's cores and their SMT siblings filled before the next domain is opened, read from the cache topology at start-up on either operating system---which is the placement every user of the engine gets; each table's provenance line names the machine and the load at the moment the measurement started. A table moved to another machine carries that machine with it. The Wolfram comparison of Table~\ref{tab:t2-speedup} is the only measurement not on this host: it needs a licensed kernel, and its provenance line names the machine it was taken on. The remaining tables and figures were not all produced by one invocation and their provenance lines name several commits, but that spread is bookkeeping rather than a difference in what was measured: no file under the engine's own source directories differs between any of those commits and the one this document was built from. Table~\ref{tab:t2-speedup} and Figure~\ref{fig:speedup} are the exception in this sense too---they were taken at an earlier commit, across which 114 engine files have since changed---so they are the one measurement here that describes an older engine than the rest.
 \item[Software:] Ubuntu 24.04, Linux 6.8, GCC with C++20, CUDA 12.0, Wolfram Language 14.3.
 \item[Workloads:] The rule-type corpus of 17 workloads from \texttt{reference/oracle\_corpus.hpp} (single/multi rule; productive, idempotent, reductive, and mixed-arity rules; several initial-state shapes), plus larger depths of the canonical Wolfram rule $\{\{x,y,z\}\} \to \{\{x,y,w\},\{y,z,w\}\}$ for the scaling and GPU curves.
-\item[Methodology:] Wall-clock figures are medians over repeated runs on an otherwise idle machine, with the workers pinned to a named homogeneous core set; a run taken while the machine was loaded is marked in the table's provenance line rather than published as though it were quiet. Counts, instruction-level measurements and \texttt{getrusage} figures are deterministic and are reported from a single run. One exception is stated where it applies: the left-hand-side sweep of Figure~\ref{fig:lhs-scaling} reports the \emph{minimum} of its repeats rather than the median, because contention can only make a run slower, so the minimum is the estimate interference cannot inflate---and that sweep admits a timed run only after checking the machine is quiet.
+\item[Methodology:] Wall-clock figures are medians over repeated runs on an otherwise idle machine, with the workers placed by the engine's topology order over the host's homogeneous cores; a run taken while the machine was loaded is marked in the table's provenance line rather than published as though it were quiet. Counts, instruction-level measurements and \texttt{getrusage} figures are deterministic and are reported from a single run. One exception is stated where it applies: the left-hand-side sweep of Figure~\ref{fig:lhs-scaling} reports the \emph{minimum} of its repeats rather than the median, because contention can only make a run slower, so the minimum is the estimate interference cannot inflate---and that sweep admits a timed run only after checking the machine is quiet.
 \end{description}
 
 \subsection{Correctness and Memory (Tables T1 and T3)}
@@ -1793,19 +1793,18 @@ device, by depth on the same rule and initial condition. Source:
 \subsection{Thread Scaling (Table T8)}
 Strong scaling is reported at three problem sizes rather than one, because a single curve
 conflates the engine's parallel behavior with the amount of work available to parallelize.
-Workers are pinned one per physical core, so the sweep ends at sixteen: this host has sixteen
-cores and thirty-two hardware threads, and a speedup column that divided by sibling threads
-would not be dividing by compute. The table reports parallel efficiency (speedup divided by
-thread count) rather than speedup alone, because efficiency identifies where added threads
-cease to contribute; it is higher at every thread count on the larger problem, because the
-fixed serial cost is amortized over more work. Table~\ref{tab:t13-memory} identifies what the
+Workers take the engine's own placement, domain-packed from the cache topology, and the
+sweep runs to the host's sixteen physical cores. The table reports parallel efficiency
+(speedup divided by worker count) rather than speedup alone, because efficiency identifies
+where added workers cease to contribute; it is higher at every count on the larger problem,
+because the fixed serial cost is amortized over more work. Table~\ref{tab:t13-memory} identifies what the
 shortfall at high thread counts is spent on. The expanded state set and the (input, output,
 rule) transition multiset are identical at every thread count and seed.
 
 \begin{table*}[htbp]
 \centering
 \caption{\textbf{T8.} Strong scaling: median wall time and parallel efficiency by thread count
-at depths five, six and seven on the same rule, workers pinned one per physical core. Source:
+at depths five, six and seven on the same rule, workers placed by the engine's topology order. Source:
 \texttt{tools/dev/scaling\_sweep.py} over \texttt{tools/bench\_cpu\_evolve}.}
 \label{tab:t8-scaling}
 \input{tables/t8_scaling}
@@ -2103,10 +2102,18 @@ domain opens: the cost belongs to opening a domain, not to a count. Packing each
 cores and two SMT siblings before opening the next is faster at every count measured,
 including sixteen---\texttt{wpp} $197$ to $182$\,ms, \texttt{wolfram24} $36.3$ to
 $33.3$\,ms, \texttt{multirule} $34.7$ to $25.7$\,ms---so on this topology halving the number
-of L3 domains a run touches is worth more than doubling its physical cores. The tables in
-this section pin one worker per physical core, as their captions state, because that is the
-placement under which a speedup divides by compute; the packed placement is the faster one
-for wall time, and its curve is monotone. Instrument: \texttt{tools/dev/mono\_check.py} over
+of L3 domains a run touches is worth more than doubling its physical cores. The packed
+placement is the engine's own default, derived at start-up from the cache topology the
+operating system reports, and it is the placement the tables in this section were measured
+under; the one-per-physical-core order is the counter-example, measured here by naming the
+CPUs explicitly. Under the engine's placement the step moves to where the first extra domain
+opens: on this part a domain holds four hardware threads, so the fifth worker is the first on a
+second domain and \texttt{wpp} runs $216$\,ms at four workers, $247$ at five, $234$ at six and
+$205$ at eight, after which every further domain opens with the term already amortised (the
+largest later rise across one to thirty-two workers is $2.3\%$). No placement of a fifth
+worker on two-core domains avoids that step, so the supported worker counts on such a part
+are the powers of two, at which the curve is monotone, and the every-count sweep is the gate
+that states it. Instrument: \texttt{tools/dev/mono\_check.py} over
 \texttt{tools/bench\_cpu\_evolve} at every count, with the placement given as the CPU list.
 
 \begin{table*}[htbp]
