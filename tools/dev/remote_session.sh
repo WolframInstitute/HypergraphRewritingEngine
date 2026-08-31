@@ -470,8 +470,18 @@ if want floor; then
   ./build_gpu_release/bench_gpu_evolve 4 20 2 triangle > "$ROOT/floor_triangle.log" 2>&1 || true
   ./build_gpu_release/bench_gpu_evolve 7 5 2 wpp      > "$ROOT/floor_wpp.log"      2>&1 || true
   if command -v ncu >/dev/null && ncu --query-metrics >/dev/null 2>&1; then
-    say "ncu captures"
-    ncu --set full -o "$ROOT/ncu_wpp" ./build_gpu_release/bench_gpu_evolve 6 1 2 wpp >> "$LOG" 2>&1 || true
+    # Every corpus workload under the profiler, so the occupancy table is generated from
+    # reports with provenance rather than transcribed from a session by hand.
+    say "ncu captures across the corpus"
+    mkdir -p "$ROOT/ncu"
+    for w in wpp binary wolfram24 triangle arity3 multirule cycle4 multiroot disc2x2 growshrink3 wolftri arimix allfour; do
+      timeout 600 ncu --set full -o "$ROOT/ncu/ncu_d6_$w" ./build_gpu_release/bench_gpu_evolve 6 1 2 "$w" >> "$LOG" 2>&1 || true
+    done
+    for w in bigpath bigcycle bigstar; do
+      timeout 600 ncu --set full -o "$ROOT/ncu/ncu_d2_$w" ./build_gpu_release/bench_gpu_evolve 2 1 2 "$w" >> "$LOG" 2>&1 || true
+    done
+    python3 tools/dev/ncu_occupancy_table.py "$ROOT/ncu" --measured-on "$MEASURED_ON" \
+      || fail "ncu_occupancy_table failed"
   fi
   # T16 (persistent vs per-step, wpp by depth) is generated HERE so the fragment always has
   # an owning phase: it sat in the paper measured on a kernel three rewrites old because its
