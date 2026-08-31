@@ -655,6 +655,10 @@ def t2(build, maxd, reps):
     if not ws:
         print("T2 skipped: no wolframscript on this machine")
         return 0
+    # The cheapest check first: the core column's binary is resolved (and refused as a stats
+    # build) BEFORE the authority ladder, which costs twenty minutes of kernel time and whose
+    # output would be discarded by a guard that fires after it.
+    probe = binary(build, "quotient_reconstruction_cost_probe")
     script = os.path.join(ROOT, "reference", "bench_authority.wls")
     if windows:
         script = subprocess.run(["wslpath", "-w", script], capture_output=True, text=True).stdout.strip()
@@ -678,8 +682,7 @@ def t2(build, maxd, reps):
     pacs = re.findall(r"PACLET (\S+) (\S+)", out)
     pac_note = ("% paclet versions: " + ", ".join("%s %s" % p for p in pacs) + "\n") if pacs else ""
 
-    eng = run([binary(build, "quotient_reconstruction_cost_probe"), str(max(auth))],
-              timeout=3600)
+    eng = run([probe, str(max(auth))], timeout=3600)
     core = {}
     for line in eng.splitlines():
         m = re.match(r"\s*(\d+) \|\s*(\d+)\s+\d+\s+\d+\s+([\d.]+) \|", line)
