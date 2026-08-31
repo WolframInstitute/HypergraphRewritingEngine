@@ -345,8 +345,19 @@ rented box that does.
   benchmark, the type read from the sibling `detailed.csv`. A metric present in one file only is
   reported, never failed. `--self-test` plants a 20% slowdown in synthetic summaries and must
   name it.
+- **`object_figure.wls`** -- the worked-example figure (`paper/tables/f_object_binary.tex`):
+  the `binary` rule from one edge to depth two, asked of the engine through the paclet under
+  `"CanonicalizeStates" -> Full`. Rebuilds the raw states from the events (input minus consumed
+  plus produced, over `"GlobalEdges"`) and emits the TikZ of raw states, the canonical merge,
+  events and causal edges, with the counts in its provenance line. Run through a copy under
+  `/mnt/c/Temp` with the repository path as its argument (the header says why).
 - **`instruction_profile.py`** -- T15, from `callgrind_annotate` output. Sums the flat
   per-function block only; the per-file annotations that follow it cover the same functions again.
+  Buckets match by function name before file name (a body inlined into a container header still
+  belongs to its algorithm). `--counts` takes a stats build's bench stdout for the same workload
+  and writes the per-unit costs (`\InstrIrPerCanonCall` and siblings) the bounds paragraph
+  transcludes; `--raw` takes the callgrind.out and attributes libc's calls to their engine
+  callers through the PLT stubs.
 - **`remote_session.sh`** / **`remote_drive.sh`** -- the phase runner on a rented box and the
   driver that pulls each phase's artifacts as soon as it returns. A bare branch name resolves to
   `origin/<name>`: `git fetch` does not advance a local branch, so a reused clone would otherwise
