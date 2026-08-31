@@ -244,7 +244,7 @@ same object we do: the \texttt{Wolfram/\allowbreak Multicomputation} paclet's
 \texttt{MultiwaySystem}~\citep{wolframmulticomputation}\footnote{Distributed through the
 Wolfram Paclet Repository,
 \url{https://resources.wolframcloud.com/PacletRepository/resources/Wolfram/Multicomputation/};
-the paclet version each comparison ran against is recorded in that table's provenance line.},
+the paclet version each comparison ran against is recorded in that table's provenance line, and the version measured, 0.1.8, is the latest the repository publishes (23 November 2024; checked 31 August 2026).},
 and this
 project's own reference implementation (\texttt{reference/MultiwayReference.wl}), a direct
 transcription of the definition used as the correctness oracle throughout this work. The two
@@ -1607,51 +1607,59 @@ evolution, per corpus workload, ordered by work performed. Source:
 \input{tables/f_speedup}
 \end{axis}
 \end{tikzpicture}
-\caption{Evolution time against depth for the two implementations, logarithmic in time, on the same
-rule and initial condition and producing identical state and causal-edge counts at every depth. The
-vertical separation is the speedup reported in Table~\ref{tab:t2-speedup}: $\SpeedupAtLowDepth\times$
-at depth \SpeedupLowDepth{}, rising to $\SpeedupAtHighDepth\times$ at depth \SpeedupHighDepth{}. The
-depth-2 point includes one-time initialization
-on the Wolfram side, and this engine's times at depths 3--5 are near the timer's resolution.}
+\caption{Evolution time against depth, logarithmic in time, on the same rule and initial
+condition and producing identical state and causal-edge counts at every depth: the authority,
+this engine reached through the paclet (the same computation under WXF serialization and
+Wolfram structure construction), and this engine's C++ core. The gap between the outer two
+series is the speedup reported in Table~\ref{tab:t2-speedup}, $\SpeedupAtLowDepth\times$ at
+depth \SpeedupLowDepth{} rising to $\SpeedupAtHighDepth\times$ at depth \SpeedupHighDepth{};
+the gap between the lower two is the Wolfram layer alone. The depth-2 point includes one-time
+initialization on the Wolfram side, and the core's times at depths 3--5 are near the timer's
+resolution.}
 \label{fig:speedup}
 \end{figure*}
 
 \subsection{Wall-Time Speedup (Table T2)}
-The comparison is against the \texttt{Wolfram/Multicomputation} \texttt{MultiwaySystem}, the
-published implementation this engine reproduces, and against \texttt{MultiwayReference}, the
-brute-force Wolfram-language evolver in \texttt{reference/}. All three compute the same state and
-event counts at every depth, without which the ratio would not be a comparison. Over depths four
-to seven the engine is between $\SpeedupAtLowDepth\times$ and $\SpeedupAtHighDepth\times$ faster
+The timed comparison is against the \texttt{Wolfram/Multicomputation} \texttt{MultiwaySystem},
+the published implementation this engine reproduces. \texttt{MultiwayReference}, the
+brute-force Wolfram-language evolver in \texttt{reference/}, enters as the correctness oracle:
+its state and causal-edge counts must equal both sides' at every depth for the row to stand,
+and they do; its wall time is not reported. Over depths four
+to seven the engine's core is between $\SpeedupAtLowDepth\times$ and $\SpeedupAtHighDepth\times$ faster
 than \texttt{MultiwaySystem}, and the ratio rises monotonically across those four depths. The
 range starts at depth four because the two shallower rows are not measurements of the same thing:
 depth two carries the Wolfram side's one-time initialization, and at depths three to five the
-engine's own time is $0.2$ to $0.5$\,ms, close enough to the timer's resolution that those ratios
+engine's own time is a fraction of a millisecond, close enough to the timer's resolution that those ratios
 are lower bounds on the gap rather than precise factors. At depth seven neither caveat applies:
 the engine takes $\CoreDeepMs$\,ms against $\AuthorityDeepSeconds$\,s, so that row is a direct measurement on both sides.
 
-The three are timed at their respective interfaces: the native engine at its C++ API, the
-\texttt{Wolfram/\allowbreak Multicomputation} paclet's \texttt{MultiwaySystem} through its
-exposed properties, and \texttt{MultiwayReference} (\texttt{reference/MultiwayReference.wl}) at
-its function call. \texttt{MultiwaySystem} is the implementation a user would otherwise run;
-\texttt{MultiwayReference} is a direct, unoptimised evolver of the same definition, and because
-it returns data rather than \texttt{Graph} objects its time carries no graph construction.
-\texttt{MultiwaySystem}'s time necessarily does: every property it exposes is graph-valued
-(\texttt{StatesGraph}, \texttt{CausalGraph}, \texttt{EvolutionGraph}; enumerated by
-\texttt{reference/authority\_properties.wls}), and no interface returning the state set alone is
-available. The table's \emph{Counts agree} column requires all three to have produced the same
-state and causal-edge counts at that depth, since a timing comparison between different state
-spaces is not a comparison; they agree exactly at every depth. The \emph{Engine ms (paclet)}
-column reports this project's own Wolfram-layer cost and is excluded from every speedup quoted
-here: at depth five it is $166\times$ the engine's own evolution time ($66.3$\,ms against
-$0.4$\,ms), and it is the reason no speed claim in this paper is taken through that layer. The
-speed reported is the engine's native speed with serialization excluded, the only figure
-comparable across the three implementations.
+Each side is timed at its interface. \texttt{MultiwaySystem} is the implementation a user
+would otherwise run, timed through its exposed properties; every property it exposes is
+graph-valued (\texttt{StatesGraph}, \texttt{CausalGraph}, \texttt{EvolutionGraph}; enumerated
+by \texttt{reference/authority\_properties.wls}), so no interface returning the state set alone
+is available and its time necessarily includes building Wolfram \texttt{Graph} objects. The
+engine appears twice: at its native C++ API, and reached through the paclet the way a Wolfram
+user reaches it---WXF serialization to the worker process, evolution, and the same kind of
+Wolfram structures built on return. The gap between those two columns is the Wolfram layer
+measured on this project's own engine, with the computation held fixed: at depth
+\SpeedupHighDepth{} the layer turns $\CoreDeepMs$\,ms into $\PacletDeepSeconds$\,s, a factor of
+$\PacletOverheadDeep\times$, so no speed claim in this paper is taken through it; the
+native interface is where the computation's own cost is visible, and even under the layer the
+engine remains $\PacletVsAuthorityDeep\times$ ahead of the authority on the like-for-like
+basis. \texttt{MultiwayReference} (\texttt{reference/MultiwayReference.wl}), the direct
+unoptimised evolver of the same definition, is the correctness oracle: the \emph{Counts agree}
+column requires the authority, the engine and the reference to have produced the same state and
+causal-edge counts at that depth, since a timing comparison between different state spaces is
+not a comparison, and they agree exactly at every depth.
 
 \begin{table*}[htbp]
 \centering
-\caption{\textbf{T2.} Wall time by depth against \texttt{MultiwaySystem} and
-\texttt{MultiwayReference} on \texttt{wolfram-2to4}: $\{\{1,2\},\{2,3\}\} \to
-\{\{1,2\},\{2,4\},\{4,3\}\}$ from $\{\{1,2\},\{2,3\}\}$. Source:
+\caption{\textbf{T2.} Wall time by depth against \texttt{MultiwaySystem} on
+\texttt{wolfram-2to4}: $\{\{1,2\},\{2,3\}\} \to
+\{\{1,2\},\{2,4\},\{4,3\}\}$ from $\{\{1,2\},\{2,3\}\}$. The engine appears at its native C++
+API and through the paclet (WXF and Wolfram structure construction included); the speedup
+column divides the authority by the core. \texttt{MultiwayReference} is the correctness oracle
+behind the \emph{Counts agree} column and is not timed. Source:
 \texttt{tools/quotient\_reconstruction\_cost\_probe} and
 \texttt{reference/bench\_authority.wls}.}
 \label{tab:t2-speedup}
@@ -2377,7 +2385,7 @@ realized, and Proposition~\ref{prop:wlceiling} shows that a cheaper pre-filter c
 \section{Conclusion and Future Work}
 \label{sec:conclusion}
 
-We have presented an implementation of multiway hypergraph evolution built on exact canonicalization and lock-free concurrency. Compared with the \texttt{Wolfram/\allowbreak Multicomputation} paclet's \texttt{MultiwaySystem} on the same rule and initial condition, and producing identical state and causal-edge counts at every depth, the engine is faster by a factor of $\SpeedupAtLowDepth$ at depth \SpeedupLowDepth{}, rising to $\SpeedupAtHighDepth$ at depth \SpeedupHighDepth{} (Table~\ref{tab:t2-speedup}). The ratio rises monotonically across those four depths. At the shallow end of the range the engine's own time is a fraction of a millisecond, close enough to the timer's resolution that those ratios are better read as lower bounds on the gap than as exact factors; at depth \SpeedupHighDepth{} it is $\CoreDeepMs$\,ms against $\AuthorityDeepSeconds$\,s, so that row is a direct measurement on both sides. The same table compares the engine against \texttt{MultiwayReference}, this project's own brute-force evolver, which computes the same object from the same definition and returns data rather than graph objects, so that ratio is not attributable to graph construction on the slower side; all three agree on state and causal-edge counts at every depth. On the host, evolution attains a speedup of $\MaxHostSpeedup\times$ at \MaxHostSpeedupThreads{} worker threads, with wall time falling at every step of the sweep (Table~\ref{tab:t8-scaling}). Efficiency remains at or above $\EffAtEight$ up to eight workers and at or above $\EffAtSixteen$ up to sixteen, depending on the rule's shape, and declines beyond that (Table~\ref{tab:t12-shapes}). The measured cause is cross-domain data flow, not contention and not memory acquisition: across a $\ThreadSweepFactor\times$ increase in worker count the instruction count stays flat while instructions per cycle falls from $1.44$ to $0.69$, the growing hardware counter is fills served from another L3 domain's cache---the evolution's own producer-to-consumer traffic, with the concurrent structures excluded by direct experiment---and user time grows by $\UserTimeGrowth\times$ against a kernel-side term (system time by $\SysTimeGrowth\times$, tracking the fault count) that stays below three per cent of the total (Table~\ref{tab:t13-memory}). On the device, wall time ceases to improve beyond \SaturationBlocks{} blocks per streaming multiprocessor (Table~\ref{tab:t11-saturation}), and the GPU is $\GpuSpeedupAtDeepest\times$ faster than eight CPU threads at depth \GpuDeepestDepth{} (Table~\ref{tab:t7-gpu}). The contributions are:
+We have presented an implementation of multiway hypergraph evolution built on exact canonicalization and lock-free concurrency. Compared with the \texttt{Wolfram/\allowbreak Multicomputation} paclet's \texttt{MultiwaySystem} on the same rule and initial condition, and producing identical state and causal-edge counts at every depth, the engine is faster by a factor of $\SpeedupAtLowDepth$ at depth \SpeedupLowDepth{}, rising to $\SpeedupAtHighDepth$ at depth \SpeedupHighDepth{} (Table~\ref{tab:t2-speedup}). The ratio rises monotonically across those four depths. At the shallow end of the range the engine's own time is a fraction of a millisecond, close enough to the timer's resolution that those ratios are better read as lower bounds on the gap than as exact factors; at depth \SpeedupHighDepth{} it is $\CoreDeepMs$\,ms against $\AuthorityDeepSeconds$\,s, so that row is a direct measurement on both sides. The same table carries \texttt{MultiwayReference}, this project's own brute-force evolver of the same definition, as the correctness oracle: all three agree on state and causal-edge counts at every depth. It also isolates what the Wolfram layer itself costs: the engine reached through the paclet---WXF serialization over the wire and Wolfram structures built on return---delivers the identical answer at depth \SpeedupHighDepth{} in $\PacletDeepSeconds$\,s against the core's $\CoreDeepMs$\,ms, a factor of $\PacletOverheadDeep\times$ spent entirely in the layer, and still $\PacletVsAuthorityDeep\times$ ahead of the authority, which pays for the same layer. On the host, evolution attains a speedup of $\MaxHostSpeedup\times$ at \MaxHostSpeedupThreads{} worker threads, with wall time falling at every step of the sweep (Table~\ref{tab:t8-scaling}). Efficiency remains at or above $\EffAtEight$ up to eight workers and at or above $\EffAtSixteen$ up to sixteen, depending on the rule's shape, and declines beyond that (Table~\ref{tab:t12-shapes}). The measured cause is cross-domain data flow, not contention and not memory acquisition: across a $\ThreadSweepFactor\times$ increase in worker count the instruction count stays flat while instructions per cycle falls from $1.44$ to $0.69$, the growing hardware counter is fills served from another L3 domain's cache---the evolution's own producer-to-consumer traffic, with the concurrent structures excluded by direct experiment---and user time grows by $\UserTimeGrowth\times$ against a kernel-side term (system time by $\SysTimeGrowth\times$, tracking the fault count) that stays below three per cent of the total (Table~\ref{tab:t13-memory}). On the device, wall time ceases to improve beyond \SaturationBlocks{} blocks per streaming multiprocessor (Table~\ref{tab:t11-saturation}), and the GPU is $\GpuSpeedupAtDeepest\times$ faster than eight CPU threads at depth \GpuDeepestDepth{} (Table~\ref{tab:t7-gpu}). The contributions are:
 
 \begin{enumerate}
     \item Exact canonicalization via individualization--refinement (IR) computed on every state, its hash serving directly as the deduplication key, validated against a brute-force isomorphism oracle
