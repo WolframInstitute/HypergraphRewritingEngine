@@ -105,7 +105,16 @@ GPU_NAME="$("$NVSMI" --query-gpu=name --format=csv,noheader 2>/dev/null | head -
 # phase must not depend on a file a previous phase left behind.
 mapfile -t FIRST_THREADS < <(lscpu -p=CPU,CORE | grep -v '^#' | awk -F, '!seen[$2]++ {print $1}')
 NPHYS=${#FIRST_THREADS[@]}
-CPUSET=$(IFS=,; echo "${FIRST_THREADS[*]}")
+# PLACEMENT IS THE ENGINE'S. An explicit CPU list overrides the engine's own placement
+# (job_system.hpp: "an explicit set always wins"), and the engine's default is domain-packed
+# from the cache topology it reads itself -- cores and their SMT siblings of one last-level
+# cache before the next. Measured on this box at wpp depth 7: one worker per physical core in
+# numeric order gives 347 ms at three workers against 309 at two (the third worker opens a
+# second L3 domain alone); the engine's placement gives 259, 220 at four, 188 at sixteen against
+# 197 -- monotone, and what every user of the engine gets. So the measuring phases hand the
+# engine no list, and the tables describe the placement the engine ships. HG_CPUSET remains
+# the override for a deliberate experiment.
+CPUSET=""
 SWEEP="1"; n=2; while [ "$n" -lt "$NPHYS" ]; do SWEEP="$SWEEP,$n"; n=$((n*2)); done; SWEEP="$SWEEP,$NPHYS"
 # A caller that wants every count, or a different CPU set (the SMT siblings for counts past
 # the physical cores), names them: HG_SWEEP is the comma list of thread counts, HG_CPUSET the
@@ -461,6 +470,18 @@ if want sweep; then
     --cpus "$CPUSET" --thread-sweep "$SWEEP" \
     --build-dir build_release --gpu-build-dir build_gpu_release 2>&1 | tee "$ROOT/scaling_sweep.log"
   [ "${PIPESTATUS[0]}" = 0 ] || fail "scaling_sweep failed"
+  # MORE THREADS MUST MEAN FASTER, at EVERY count, not only the powers of two the tables show:
+  # the every-count sweep is the gate, and a rise between consecutive counts beyond the noise
+  # band fails the phase. Two headline rows, at the engine's own placement.
+  say "every-count monotonicity gate (1..$(nproc))"
+  ALLCOUNTS=$(seq -s, 1 "$(nproc)")
+  for spec in wpp:7 wolfram24:6; do
+    w=${spec%%:*}; d=${spec#*:}
+    stdbuf -oL ./build_release/bench_cpu_evolve "$d" 3 "$ALLCOUNTS" "$w" "$CPUSET" \
+      > "$ROOT/mono_${w}_d${d}.log" 2>&1 || fail "every-count sweep failed on $w"
+  done
+  python3 tools/dev/mono_check.py "$ROOT"/mono_*.log --tolerance 0.05 | tee "$ROOT/mono_check.log"
+  [ "${PIPESTATUS[0]}" = 0 ] || fail "monotonicity gate: a row got slower with more threads (see mono_check.log)"
 fi
 
 # --------------------------------------------------------------------------- floor
