@@ -65,6 +65,11 @@ PacletDirectoryUnload[FileNameJoin[{repo, "paclet"}]];
 PacletDirectoryLoad[FileNameJoin[{repo, "paclet"}]];
 Needs["HypergraphRewriting`"];
 
+(* The versions of both paclets in the comparison, printed for the table's provenance line: a
+   ratio against the authority is a statement about one release of it. *)
+Print["PACLET Wolfram/Multicomputation ", PacletObject["Wolfram/Multicomputation"]["Version"]];
+Print["PACLET HypergraphRewriting ", PacletObject["HypergraphRewriting"]["Version"]];
+
 (* OUR reference implementation, loaded from source. Its rules are {lhs, rhs} pairs rather than
    Rule objects, and it returns per-step tuples rather than graphs. *)
 Get[FileNameJoin[{repo, "reference", "MultiwayReference.wl"}]];

@@ -673,6 +673,10 @@ def t2(build, maxd, reps):
             ref[int(m.group(1))] = (int(m.group(2)), int(m.group(3)), float(m.group(4)))
     if not auth or not hgev:
         raise SystemExit("bench_authority.wls printed no comparable rows:\n%s" % out[-2000:])
+    # A ratio against the authority is a statement about one release of it, so the versions of
+    # both paclets ride in the fragment beside the commit and machine.
+    pacs = re.findall(r"PACLET (\S+) (\S+)", out)
+    pac_note = ("% paclet versions: " + ", ".join("%s %s" % p for p in pacs) + "\n") if pacs else ""
 
     eng = run([binary(build, "quotient_reconstruction_cost_probe"), str(max(auth))],
               timeout=3600)
@@ -682,7 +686,8 @@ def t2(build, maxd, reps):
         if m:
             core[int(m.group(1))] = float(m.group(3))
 
-    b = [provenance("reference/bench_authority.wls + tools/quotient_reconstruction_cost_probe.cpp"),
+    b = [provenance("reference/bench_authority.wls + tools/quotient_reconstruction_cost_probe.cpp")
+         + pac_note,
          r"\begin{tabular}{rrrrrrrrl}", r"\toprule",
          r"Depth & States & Authority ms & Reference ms & Engine ms (paclet) & "
          r"Engine ms (C++ core) & Speedup vs authority & Speedup vs reference & "
@@ -734,7 +739,8 @@ def t2(build, maxd, reps):
     depths = [d for d in sorted(auth) if d in hgev and core.get(d)]
     auth_pts = "".join("(%d,%.1f)" % (d, auth[d][2]) for d in depths)
     core_pts = "".join("(%d,%.1f)" % (d, core[d]) for d in depths)
-    f = [provenance("reference/bench_authority.wls + tools/quotient_reconstruction_cost_probe.cpp"),
+    f = [provenance("reference/bench_authority.wls + tools/quotient_reconstruction_cost_probe.cpp")
+         + pac_note,
          r"\addplot[mark=square*, black, dashed] coordinates {%s};" % auth_pts,
          r"\addlegendentry{\texttt{Wolfram/\allowbreak Multicomputation}}",
          r"\addplot[mark=*, black] coordinates {%s};" % core_pts,
