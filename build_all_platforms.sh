@@ -116,6 +116,11 @@ fi
 # running platform -- and it is required on a release for the same reason: SKIPPING does not
 # remove a previous binary from the platform directory, so on a release the difference between
 # skipping and failing is the difference between shipping a stale binary and knowing you cannot.
+# The CUDA Toolkit installs under /usr/local/cuda without putting nvcc on PATH; a release
+# refusing the GPU leg over PATH alone would fail on a box that has the toolchain.
+if ! have nvcc && [[ -x /usr/local/cuda/bin/nvcc ]]; then
+    export PATH="/usr/local/cuda/bin:$PATH"
+fi
 if selected "Linux-x86-64"; then
     if [[ "$HOST_OS" == "Linux" ]] && have nvcc; then
         echo -e "\n${GREEN}=== Linux-x86-64/hg_evolve_gpu ===${NC}"
