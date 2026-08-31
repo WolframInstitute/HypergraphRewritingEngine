@@ -200,8 +200,14 @@ release_only() {
   local stamp
   stamp="$("$1" --build-info 2>/dev/null | grep '^HGBUILDSTAMP/2;' || true)"
   case "$stamp" in
-    *";stats=0;phase_timing=0;ndebug=1;asan=0;tsan=0;ubsan=0;"*) say "release build: $1" ;;
+    *";stats=0;phase_timing=0;ndebug=1;asan=0;tsan=0;ubsan=0;"*) ;;
     *) fail "$1 is not a release build: ${stamp:-no stamp}" ;;
+  esac
+  # The commit is checked, not just carried: a binary left over from an earlier checkout would
+  # otherwise pass the configuration check and measure a different engine than the sync names.
+  case "$stamp" in
+    *";commit=$(git rev-parse HEAD);"*) say "release build: $1 (commit verified)" ;;
+    *) fail "$1 is stamped with a different commit than the synced checkout: $stamp" ;;
   esac
 }
 

@@ -140,6 +140,27 @@ def _release_only(binary_path):
         raise SystemExit("%s is not a release build: %s -- configure the measuring build with "
                          "-DHG_ENGINE_STATS=OFF (and no HG_PHASE_TIMING or sanitizer)"
                          % (binary_path, ", ".join(bad)))
+    # THE COMMIT IS CHECKED, NOT JUST CARRIED. The stamp's commit must name an engine identical
+    # to the one HEAD describes: a binary built before the last engine commit measures a
+    # different engine than the fragment will claim. Equality is over the engine directories
+    # (paper_integrity_check.ENGINE_DIRS, the one list), not the whole tree, because the
+    # split-machine flow legitimately builds a measuring binary a few tools-only commits back.
+    stamp_commit = fields.get("commit", "unknown")
+    if not re.fullmatch(r"[0-9a-f]{7,40}", stamp_commit):
+        raise SystemExit("%s carries commit=%s in its stamp; rebuild it from a git checkout"
+                         % (binary_path, stamp_commit))
+    import paper_integrity_check as _pic
+    d = subprocess.run(["git", "diff", "--name-only", stamp_commit, "HEAD", "--",
+                        *_pic.ENGINE_DIRS], capture_output=True, text=True, cwd=ROOT)
+    changed = [l for l in d.stdout.splitlines() if l.strip()]
+    if d.returncode != 0:
+        raise SystemExit("%s: stamp commit %s is not in this repository" % (binary_path, stamp_commit))
+    if changed:
+        raise SystemExit("%s was built at %s, and %d engine file(s) changed since (first: %s) "
+                         "-- rebuild it at HEAD" % (binary_path, stamp_commit[:8], len(changed),
+                                                    changed[0]))
+    print("stamp verified: %s commit=%s engine-identical to HEAD, release configuration"
+          % (binary_path, stamp_commit[:8]))
     _STAMP_CHECKED.add(binary_path)
     return binary_path
 
