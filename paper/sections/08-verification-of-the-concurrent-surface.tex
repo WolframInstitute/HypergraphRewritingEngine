@@ -24,6 +24,11 @@ clean sample is evidence rather than proof, and the same property is proved by e
 smaller shape by a separate harness. The remaining harnesses are exhaustive over RC11 within their
 stated bound.
 
+The device's resident-kernel protocols are checked the same way by six sibling harnesses under
+the scoped extension of the memory model: the ring buffer's exactly-once hand-off, termination
+detection admitting no early exit, the hash table electing one inserter, the replay rendezvous
+meeting every pair, and the causal dynamic program's producer--transition rendezvous.
+
 Each harness is a small program that includes the engine's own header and calls its own functions,
 rather than a hand-written model of the algorithm. The constraint is deliberate: a model drifts
 from the code as soon as the code changes, and a re-implementation establishes a property of the
