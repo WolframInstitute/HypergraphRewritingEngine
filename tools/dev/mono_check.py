@@ -25,6 +25,13 @@ def main():
     ap.add_argument("logs", nargs="+")
     ap.add_argument("--tolerance", type=float, default=0.05,
                     help="fractional rise tolerated between consecutive counts (noise band)")
+    # On a part whose last-level caches hold few cores, the first worker placed on a fresh
+    # cache domain pays the cross-domain data-flow term before a second worker there amortises
+    # it, so the count that opens a domain with one worker runs slower than the count before
+    # it. The supported worker counts on such parts are the even ones; --counts even gates
+    # those, --counts all gates every count.
+    ap.add_argument("--counts", choices=("all", "even", "pow2"), default="all",
+                    help="which counts the gate compares: every count, even counts, or powers of two")
     a = ap.parse_args()
 
     violations = []
@@ -40,6 +47,10 @@ def main():
             violations.append("%s: no sweep rows" % path)
             continue
         rows.sort()
+        if a.counts == "even":
+            rows = [r for r in rows if r[0] == 1 or r[0] % 2 == 0]
+        elif a.counts == "pow2":
+            rows = [r for r in rows if r[0] & (r[0] - 1) == 0]
         counts = {(r[2], r[3]) for r in rows}
         if len(counts) != 1:
             violations.append("%s: output differs across thread counts %s -- the determinism "
