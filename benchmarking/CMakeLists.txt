@@ -18,4 +18,8 @@ string(REPLACE "\\" "\\\\" ESCAPED_COMPILER_INFO "${COMPILER_INFO}")
 target_compile_definitions(benchmark_framework PUBLIC
     BENCHMARK_SOURCE_DIR="${ESCAPED_SOURCE_DIR}"
     BENCHMARK_COMPILER_INFO="${ESCAPED_COMPILER_INFO}"
+    # The suite names itself in its build stamp, as every measuring binary does, so
+    # tools/dev/perf_gate.sh can read the commit and configuration it is about to time out of
+    # the binary itself and refuse a stale or diagnostic build.
+    HG_BUILD_VARIANT="benchmark_suite"
 )

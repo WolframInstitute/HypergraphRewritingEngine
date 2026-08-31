@@ -1,5 +1,7 @@
 #include "benchmark_framework.hpp"
+#include "hgcommon/build_stamp.hpp"
 #include <cstdio>
+#include <cstring>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -10,6 +12,14 @@ int main(int argc, char** argv) {
     // Set console to UTF-8 mode on Windows
     SetConsoleOutputCP(CP_UTF8);
 #endif
+
+    // The configuration this binary was built with, first, so every log that carries a number
+    // carries the record a reader needs to know what the number is evidence for; and alone on
+    // `--build-info`, which is how tools/dev/perf_gate.sh gates before it times anything
+    // (hgcommon/build_stamp.hpp).
+    static const char kBuildStamp[] = HG_BUILD_STAMP_LITERAL;
+    if (argc > 1 && std::strcmp(argv[1], "--build-info") == 0) { printf("%s\n", kBuildStamp); return 0; }
+    printf("%s\n", kBuildStamp);
 
     printf("Comprehensive Hypergraph Benchmark Suite\n");
     printf("==========================================\n\n");

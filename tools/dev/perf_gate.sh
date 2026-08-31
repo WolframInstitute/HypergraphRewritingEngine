@@ -77,9 +77,27 @@ status=$(QUIET_EXTRA="${QUIET_EXTRA:-} benchmark_suite" "$QUIET" check) || {
 echo "perf_gate: $status"
 
 if [ ! -x "$SUITE" ]; then
-    echo "perf_gate: $SUITE is missing; build it with: cmake --build build_linux --target benchmark_suite -j4" >&2
+    echo "perf_gate: $SUITE is missing; build it with: cmake --build build_release --target benchmark_suite -j4" >&2
     exit 4
 fi
+
+# THE BINARY PROVES WHAT IT IS BEFORE IT IS TIMED. The stamp (hgcommon/build_stamp.hpp) carries
+# the commit and every configuration flag; a suite built before HEAD, or with the diagnostic
+# counters in, measures a different engine than the one the baseline is pinned for.
+STAMP=$("$SUITE" --build-info 2>/dev/null | grep -o 'HGBUILDSTAMP/2;[^:]*' || true)
+if [ -z "$STAMP" ]; then
+    echo "perf_gate: $SUITE carries no build stamp; rebuild it at HEAD" >&2
+    exit 4
+fi
+HEAD_COMMIT=$(git rev-parse HEAD)
+for want in "commit=$HEAD_COMMIT" "stats=0" "phase_timing=0" "ndebug=1" "asan=0" "tsan=0" "ubsan=0"; do
+    case "$STAMP" in
+        *";${want};"*) ;;
+        *) echo "perf_gate: $SUITE stamp lacks '$want' (stamp: ${STAMP:0:120}...); rebuild it at HEAD in the release configuration" >&2
+           exit 4 ;;
+    esac
+done
+echo "perf_gate: suite stamp verified (commit ${HEAD_COMMIT:0:8}, release configuration)"
 
 # Baseline: the newest commit-*/summary.csv by modification time, unless one was named.
 if [ -z "$BASELINE" ]; then
