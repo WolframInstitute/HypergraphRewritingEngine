@@ -711,12 +711,23 @@ def t2(build, maxd, reps):
     pac_note = ("% paclet versions: " + ", ".join("%s %s" % kv for kv in sorted(pacs.items()))
                 + "\n") if pacs else ""
 
-    eng = run([probe, str(max(auth))], timeout=3600)
+    # The core column is a median over the same rep count as the Wolfram-side columns: a
+    # single-shot millisecond figure swings by a factor of two run to run, and the headline
+    # ratio would swing with it.
+    core_runs = []
+    for _ in range(max(1, reps)):
+        eng = run([probe, str(max(auth))], timeout=3600)
+        one = {}
+        for line in eng.splitlines():
+            m = re.match(r"\s*(\d+) \|\s*(\d+)\s+\d+\s+\d+\s+([\d.]+) \|", line)
+            if m:
+                one[int(m.group(1))] = float(m.group(3))
+        core_runs.append(one)
     core = {}
-    for line in eng.splitlines():
-        m = re.match(r"\s*(\d+) \|\s*(\d+)\s+\d+\s+\d+\s+([\d.]+) \|", line)
-        if m:
-            core[int(m.group(1))] = float(m.group(3))
+    for d in set().union(*core_runs):
+        vals = sorted(r[d] for r in core_runs if d in r)
+        if vals:
+            core[d] = vals[len(vals) // 2]
 
     # The reference is the CORRECTNESS oracle here, not a timed competitor: its counts enter the
     # agreement column and its wall time is not published. The two timed comparisons the table
