@@ -118,11 +118,13 @@
 
 \begin{abstract}
 The Wolfram Physics Project models fundamental physics by hypergraph rewriting, and its central
-computation, exhaustive multiway evolution, grows exponentially with depth. We present an engine
+computation, exhaustive multiway evolution, grows super-exponentially with depth on rules that
+grow their states: each step multiplies the history count by a branching factor that itself
+grows with the states. We present an engine
 for it. States are identified exactly: a McKay-style individualization--refinement canonical hash
 is computed for every state, by one implementation shared between the CPU and, executed
-warp-collectively, the GPU's resident evolution kernel; a proved ceiling bounds what any cheaper
-filter placed in front of it could save. The engine is lock-free and non-phasic throughout, the
+warp-collectively, the GPU's resident evolution kernel; a proved ceiling bounds the saving
+available to any cheaper filter placed in front of it. The engine is lock-free and non-phasic throughout, the
 causal and branchial relations and their transitive reduction maintained online, and its output
 is a function of the inputs alone, independent of thread count and scheduling. Quotient
 exploration expands one representative per isomorphism class and reconstructs the raw events,

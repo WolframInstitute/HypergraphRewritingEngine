@@ -155,7 +155,7 @@ and then scans the child list. Sequentially consistent fences on both sides excl
 stranding outcome---the scan missing the child while the read misses the lowered depth---so a
 child always learns its parent's current minimum. A state past the budget is retained as a
 frontier state with its expansion claim left untaken, so a shorter path found later can still
-relax it into budget; a claimed state never could be.
+relax it into budget; a claimed state admits no such relaxation.
 
 Budget consumption is claimed by compare-and-swap rather than increment-then-rollback: a
 rollback publishes a count above the limit for as long as it takes to undo, and readers pruning
