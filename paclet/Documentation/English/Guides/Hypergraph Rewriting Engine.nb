@@ -36,12 +36,12 @@ Cell[TextData[{
    "PackageLink",
    BaseStyle->"InlineFormula"]], "InlineGuideFunction",
   TaggingRules->{"PageType" -> "Function"},ExpressionUUID->
-  "8a4a86b8-23db-7748-b913-e4c2dd0d8c93"],
+  "b9c90bf8-89b2-914b-a63a-56a9fe53bfdf"],
  ", ",
  " \[LongDash] ",
  "multiway hypergraph rewriting; returns states, events, and the \
 causal/branchial graphs"
-}], "GuideText",ExpressionUUID->"3308f85a-a12d-8f45-bdce-a2e7841429a8"]
+}], "GuideText",ExpressionUUID->"7ff67e38-91eb-f042-a0b1-3822cbc1a3fa"]
 }, Open  ]],
 
 Cell["Tech Notes", "GuideTutorialsSection",
@@ -93,7 +93,7 @@ Cell["HypergraphRewriting`", "Categorization",
 Cell["\<\
 WolframInstitute/HypergraphRewriteEngine/guide/HypergraphRewriting\
 \>", "Categorization",
- CellLabel->"URI",ExpressionUUID->"d9fd12b4-3ae7-a74a-a6c4-1a96ec2afdde"]
+ CellLabel->"URI",ExpressionUUID->"5e826105-f4b3-894f-aeec-d318542406e2"]
 }, Closed]],
 
 Cell[CellGroupData[{
@@ -148,7 +148,7 @@ Cell[554, 20, 124, 1, 70, "GuideTitle",ExpressionUUID->"a3a3c038-ca24-47b7-9945-
 Cell[CellGroupData[{
 Cell[703, 25, 109, 1, 70, "GuideFunctionsSection",ExpressionUUID->"a0ea3657-4c83-4862-93c8-ecf80cebc774",
  CellID->1866139230],
-Cell[815, 28, 584, 15, 70, "GuideText",ExpressionUUID->"3308f85a-a12d-8f45-bdce-a2e7841429a8"]
+Cell[815, 28, 584, 15, 70, "GuideText",ExpressionUUID->"7ff67e38-91eb-f042-a0b1-3822cbc1a3fa"]
 }, Open  ]],
 Cell[1414, 46, 118, 1, 70, "GuideTutorialsSection",ExpressionUUID->"90fbef20-ae74-4ea3-a50b-de22929861f8",
  CellID->415694126],
@@ -170,7 +170,7 @@ Cell[2752, 84, 168, 2, 70, "Categorization",ExpressionUUID->"ea3b4732-cbcc-4f28-
  CellID->605800465],
 Cell[2923, 88, 144, 2, 70, "Categorization",ExpressionUUID->"52afa833-5422-4969-8c91-b9af19a42a2e",
  CellID->468444828],
-Cell[3070, 92, 174, 3, 70, "Categorization",ExpressionUUID->"d9fd12b4-3ae7-a74a-a6c4-1a96ec2afdde"]
+Cell[3070, 92, 174, 3, 70, "Categorization",ExpressionUUID->"5e826105-f4b3-894f-aeec-d318542406e2"]
 }, Closed]],
 Cell[CellGroupData[{
 Cell[3281, 100, 111, 1, 70, "KeywordsSection",ExpressionUUID->"99169e92-9e69-4982-8b71-ac9518fe5ead",

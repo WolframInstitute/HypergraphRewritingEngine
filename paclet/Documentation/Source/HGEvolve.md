@@ -317,7 +317,7 @@ Limits the successor states generated from each parent state (0 = unlimited), bo
 
 ```wl
 rules = {{{1, 2}, {2, 3}} -> {{1, 3}, {3, 4}, {1, 4}, {2, 4}}};
-HGEvolve[rules, {{1, 1}, {1, 1}}, 3, "StatesGraphStructure", "MaxSuccessorStatesPerParent" -> 1]
+HGEvolve[rules, {{1, 1}, {1, 1}}, 3, "StatesGraphStructure", "MaxSuccessorStatesPerParent" -> 1, "RandomSeed" -> 7]
 ```
 
 The bound holds at any thread count. *Which* successors meet it does not: a parent's successors
@@ -337,7 +337,7 @@ the thread count or the scheduling order. Use `"MatchesPerStateRule"` for a repr
 
 ```wl
 rules = {{{1, 2}, {2, 3}} -> {{1, 3}, {3, 4}, {1, 4}, {2, 4}}};
-HGEvolve[rules, {{1, 1}, {1, 1}}, 3, "StatesGraphStructure", "MaxStatesPerStep" -> 2]
+HGEvolve[rules, {{1, 1}, {1, 1}}, 3, "StatesGraphStructure", "MaxStatesPerStep" -> 2, "RandomSeed" -> 7]
 ```
 
 ### "ExplorationProbability"
@@ -346,7 +346,7 @@ Below 1, each branch is explored with the given probability, pruning the multiwa
 
 ```wl
 rules = {{{1, 2}, {2, 3}} -> {{1, 3}, {3, 4}, {1, 4}, {2, 4}}};
-HGEvolve[rules, {{1, 1}, {1, 1}}, 3, "StatesGraphStructure", "ExplorationProbability" -> 0.5]
+HGEvolve[rules, {{1, 1}, {1, 1}}, 3, "StatesGraphStructure", "ExplorationProbability" -> 0.5, "RandomSeed" -> 7]
 ```
 
 ### "TransitionRate"
@@ -383,7 +383,7 @@ With `"MatchesPerStep"`, this stops keeping new states once that many exist for 
 
 ```wl
 rules = {{{1, 2}, {2, 3}} -> {{1, 3}, {3, 4}, {1, 4}, {2, 4}}};
-HGEvolve[rules, {{1, 1}, {1, 1}}, 3, "StatesGraphStructure", "UniformRandom" -> True, "MatchesPerStep" -> 1]
+HGEvolve[rules, {{1, 1}, {1, 1}}, 3, "StatesGraphStructure", "UniformRandom" -> True, "MatchesPerStep" -> 1, "RandomSeed" -> 7]
 ```
 
 It is a cap by ARRIVAL ORDER, not a uniform draw, and which states arrive first depends on the schedule. Two runs of the same input can therefore keep different states, and the states kept are not a uniform sample of the ones available: capping clips the offspring distribution to a point mass.
