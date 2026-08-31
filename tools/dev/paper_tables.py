@@ -679,8 +679,16 @@ def t2(build, maxd, reps):
         raise SystemExit("bench_authority.wls printed no comparable rows:\n%s" % out[-2000:])
     # A ratio against the authority is a statement about one release of it, so the versions of
     # both paclets ride in the fragment beside the commit and machine.
-    pacs = re.findall(r"PACLET (\S+) (\S+)", out)
-    pac_note = ("% paclet versions: " + ", ".join("%s %s" % p for p in pacs) + "\n") if pacs else ""
+    pacs = dict(re.findall(r"PACLET (\S+) (\S+)", out))
+    # Our own paclet's version has a static source of truth beside the kernel's answer: the
+    # PacletInfo.wl the comparison loaded. The kernel's answer wins only when it is a version.
+    if not re.match(r"^[\d.]+$", pacs.get("HypergraphRewriting", "")):
+        m = re.search(r'Version\s*->\s*"([\d.]+)"',
+                      open(os.path.join(ROOT, "paclet", "PacletInfo.wl")).read())
+        if m:
+            pacs["HypergraphRewriting"] = m.group(1)
+    pac_note = ("% paclet versions: " + ", ".join("%s %s" % kv for kv in sorted(pacs.items()))
+                + "\n") if pacs else ""
 
     eng = run([probe, str(max(auth))], timeout=3600)
     core = {}
@@ -738,6 +746,10 @@ def t2(build, maxd, reps):
         value("SpeedupAtLowDepth", "{:,}".format(int(round(quoted[0][1]))).replace(",", "{,}"))
         value("SpeedupHighDepth", "%d" % quoted[-1][0])
         value("SpeedupAtHighDepth", "{:,}".format(int(round(quoted[-1][1]))).replace(",", "{,}"))
+        # The deep row's two absolute times, which the conclusion quotes beside the ratio.
+        deep = quoted[-1][0]
+        value("AuthorityDeepSeconds", "%.0f" % (auth[deep][2] / 1000.0))
+        value("CoreDeepMs", "%.1f" % core[deep])
 
     depths = [d for d in sorted(auth) if d in hgev and core.get(d)]
     auth_pts = "".join("(%d,%.1f)" % (d, auth[d][2]) for d in depths)

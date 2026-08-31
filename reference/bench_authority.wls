@@ -66,9 +66,13 @@ PacletDirectoryLoad[FileNameJoin[{repo, "paclet"}]];
 Needs["HypergraphRewriting`"];
 
 (* The versions of both paclets in the comparison, printed for the table's provenance line: a
-   ratio against the authority is a statement about one release of it. *)
-Print["PACLET Wolfram/Multicomputation ", PacletObject["Wolfram/Multicomputation"]["Version"]];
-Print["PACLET HypergraphRewriting ", PacletObject["HypergraphRewriting"]["Version"]];
+   ratio against the authority is a statement about one release of it. PacletFind resolves the
+   loaded paclet (PacletDirectoryLoad'ed ones included); PacletObject on a bare name can answer
+   Missing for a directory-loaded paclet. *)
+pacletVersion[name_] := Module[{found = PacletFind[name]},
+  If[found === {}, "unknown", First[found]["Version"]]];
+Print["PACLET Wolfram/Multicomputation ", pacletVersion["Wolfram/Multicomputation"]];
+Print["PACLET HypergraphRewriting ", pacletVersion["HypergraphRewriting"]];
 
 (* OUR reference implementation, loaded from source. Its rules are {lhs, rhs} pairs rather than
    Rule objects, and it returns per-step tuples rather than graphs. *)
