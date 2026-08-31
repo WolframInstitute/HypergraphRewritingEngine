@@ -183,8 +183,14 @@ if [[ "$DO_CPU" == "1" ]]; then
 fi
 
 if [[ "$DO_GPU" == "1" ]]; then
+    # nvcc's front end parses the host branches of every HG_HD function too, and it does not know
+    # MSVC's compiler intrinsics unless their declarations are in scope: the `_MSC_VER` branch of
+    # hgcommon::ir_ctz64 names _BitScanForward64, which <intrin.h> declares and which cl.exe
+    # accepts undeclared. Pre-including <intrin.h> into every CUDA translation unit gives the
+    # front end the declaration; the device branch (__CUDA_ARCH__) is unaffected.
     configure_and_build gpu "$BUILD_WIN_GPU" "$BUILD_WSL_GPU" \
-        -T "cuda=$CUDA_DIR_WIN" -DBUILD_GPU=ON "${GPU_ARCH_ARGS[@]+"${GPU_ARCH_ARGS[@]}"}"
+        -T "cuda=$CUDA_DIR_WIN" -DBUILD_GPU=ON "${GPU_ARCH_ARGS[@]+"${GPU_ARCH_ARGS[@]}"}" \
+        -DCMAKE_CUDA_FLAGS="-include intrin.h"
     # The generator only emits the CUDA targets if CMake found the compiler. Without this the
     # build below dies with a confusing MSB1009.
     [[ -f "$BUILD_WSL_GPU/paclet_source/hg_evolve_gpu.vcxproj" ]] || {
