@@ -36,7 +36,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
-SUITE=build_linux/benchmark_suite
+# The measured binary is the release configuration: the diagnostic counters (stats=1) compile
+# the arena's per-worker fast path out, so a stats build's numbers gate nothing about the
+# shipped engine. PERF_SUITE overrides the default for a differently named build directory.
+SUITE=${PERF_SUITE:-build_release/benchmark_suite}
 COMPARE=tools/dev/perf_compare.py
 QUIET=tools/dev/quiet_gate.sh
 PLOT=benchmarking/plot_benchmarks.py

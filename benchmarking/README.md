@@ -94,6 +94,11 @@ tools/dev/perf_compare.py --self-test
 - **Quiet precondition.** The gate refuses to run (exit 3) unless `tools/dev/quiet_gate.sh check`
   passes: none of the watched processes (compilers, model checkers, profilers, this project's
   measurement binaries) is running and the 1-minute load average is below `QUIET_LOAD` (1.5).
+- **Release binary.** The measured suite is `build_release/benchmark_suite`, a
+  `-DHG_ENGINE_STATS=OFF` configuration: the diagnostic counters compile the arena's per-worker
+  fast path out, so a stats build's numbers gate nothing about the shipped engine. `PERF_SUITE`
+  points the gate at a differently named build directory. Rebuild the suite there before a run;
+  the binary carries no build stamp the gate could verify against HEAD.
 - **Placement.** The suite is launched with no CPU list and no affinity mask. Worker placement is
   the engine's default, `ensure_default_cpu_order` in
   `job_system/include/job_system/job_system.hpp`, which seats workers on the performance cores,
