@@ -314,6 +314,7 @@ int main(int argc, char** argv) {
             // capture and instance disagree on the class width runs against the pair after it.
             // claims/events is therefore the share of claims spent on pairs that mint nothing,
             // and it is the only number that says whether the order of those two tests matters.
+#if HG_ENGINE_STATS
             std::printf("  replay: claims=%zu events=%zu captured=%zu instances=%zu orbit_rebuilds=%zu\n",
                         g.applied_claims(), g.num_reconstructed_events(),
                         g.captured_matches(), g.reconstruction_instances(),
@@ -330,6 +331,7 @@ int main(int argc, char** argv) {
                             ir.searched ? double(ir.depth_sum) / double(ir.searched) : 0.0,
                             (unsigned long long)ir.retries, (unsigned long long)ir.fallbacks);
             }
+#endif
             states = g.num_canonical_states();
             raw = g.num_states();
             // Discriminates a dedup defect from a COUNTING defect. num_canonical_states is

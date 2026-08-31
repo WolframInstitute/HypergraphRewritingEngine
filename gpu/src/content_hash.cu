@@ -1,7 +1,7 @@
 #include "hgcommon/namespace.hpp"
 #include "hg_gpu/content_hash.hpp"
 
-#include "hgcommon/wl_core.hpp"
+#include "hgcommon/content_core.hpp"
 
 #include <cuda_runtime.h>
 

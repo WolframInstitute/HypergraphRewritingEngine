@@ -199,13 +199,15 @@ inline Counts engine_counts(const std::vector<RewriteRule>& rules,
     c.causal_event_pairs  = hg.causal_graph().num_causal_event_pairs();
     c.branchial_edges     = hg.causal_graph().num_branchial_edges();
     c.diag = "late_submits=" + std::to_string(engine.late_submits()) +
-             " dropped_children=" + std::to_string(engine.dropped_fresh_children()) +
-             " invalid_matches=" + std::to_string(hg.invalid_matches()) +
-             " fwd_truncated=" + std::to_string(engine.forwarding_consumed_truncated()) +
-             " hash_collisions=" + std::to_string(engine.hash_collisions()) +
-             " probe_exhaustions=" + std::to_string(engine.dedup_probe_exhaustions()) +
-             " matches=" + std::to_string(engine.total_matches()) +
              " warnings=" + std::to_string(engine.warnings().size());
+#if HG_ENGINE_STATS
+    c.diag += " dropped_children=" + std::to_string(engine.dropped_fresh_children()) +
+              " invalid_matches=" + std::to_string(hg.invalid_matches()) +
+              " fwd_truncated=" + std::to_string(engine.forwarding_consumed_truncated()) +
+              " hash_collisions=" + std::to_string(engine.hash_collisions()) +
+              " probe_exhaustions=" + std::to_string(engine.dedup_probe_exhaustions()) +
+              " matches=" + std::to_string(engine.total_matches());
+#endif
     return c;
 }
 

@@ -181,9 +181,11 @@ class CausalGraph {
     // asserts it.
     mutable std::atomic<size_t> producer_side_emissions_{0};
 public:
+#if HG_ENGINE_STATS
     size_t producer_side_emissions() const {
         return producer_side_emissions_.load(std::memory_order_relaxed);
     }
+#endif
 private:
 
     // Arena for allocations (supports concurrent access)
@@ -260,11 +262,13 @@ public:
     // the online reduction is exact under. keys and raw_edges are parallel, n of each.
     void consume_edges(const CanonicalEdgeKey* keys, const EdgeId* raw_edges, uint8_t n,
                        EventId consumer);
+#if HG_ENGINE_STATS
     // Consumed edges whose producer set exceeded MAX_IN_EDGE_PRODUCERS; the surplus producers'
     // causal edges are not recorded.
     uint64_t in_edge_producers_truncated() const {
         return in_edge_producers_truncated_.load(std::memory_order_relaxed);
     }
+#endif
 
 
 
@@ -362,8 +366,10 @@ public:
 
     size_t num_branchial_edges() const;
 
+#if HG_ENGINE_STATS
     // Number of redundant causal edges skipped by online TR
     size_t num_redundant_edges_skipped() const;
+#endif
 
     // =========================================================================
     // Utility

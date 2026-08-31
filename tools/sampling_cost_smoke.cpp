@@ -322,12 +322,15 @@ int main(int argc, char** argv) {
         }
     }
 
-    std::printf("done %.2f ms  states=%zu canon=%zu events=%zu matches=%zu drained=%zu\n",
+    std::printf("done %.2f ms  states=%zu canon=%zu events=%zu",
                 std::chrono::duration<double, std::milli>(t1 - t0).count(),
                 static_cast<size_t>(hg.num_states()),
                 static_cast<size_t>(hg.num_canonical_states()),
-                static_cast<size_t>(hg.num_events()),
-                e.total_matches(), e.states_drained());
+                static_cast<size_t>(hg.num_events()));
+#if HG_ENGINE_STATS
+    std::printf("  matches=%zu drained=%zu", e.total_matches(), e.states_drained());
+#endif
+    std::printf("\n");
 
     // ONE MACHINE-READABLE LINE CARRYING EVERY COUNT THIS RUN ALREADY COMPUTED. The `done` line
     // above reports the size of the state space; these are the sizes of the RELATIONS over it,
@@ -376,6 +379,10 @@ int main(int argc, char** argv) {
         invalidated = tot.matches_invalidated;   rewalks = tot.forwarding_rewalks;
     }
 #endif
+    size_t rich_matches = 0;
+#if HG_ENGINE_STATS
+    rich_matches = e.total_matches();
+#endif
     std::printf("RICH rule=%s shape=%s arity=%zu lhs_edges=%zu init_edges=%zu steps=%zu"
                 " threads=%zu canon_mode=%s"
                 " ms=%.3f states=%zu canonical=%zu events=%zu matches=%zu"
@@ -397,7 +404,7 @@ int main(int argc, char** argv) {
                 std::chrono::duration<double, std::milli>(t1 - t0).count(),
                 static_cast<size_t>(hg.num_states()),
                 static_cast<size_t>(hg.num_canonical_states()),
-                static_cast<size_t>(hg.num_events()), e.total_matches(),
+                static_cast<size_t>(hg.num_events()), rich_matches,
                 cg.num_causal_edges(), cg.num_causal_event_pairs(),
                 cg.num_branchial_edges(), cg.num_branchial_pairs_claimed(),
                 max_width, depth_reached, truncated ? 1 : 0,

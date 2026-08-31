@@ -122,7 +122,7 @@ Nine shared cores in `common/include/hgcommon/` are the single definition of eve
 not scheduling:
 
 `core` · `event_core` · `ir_core` · `match_core` · `park` · `portable_intrinsics` ·
-`rewrite_core` · `signature_core` · `wl_core`
+`rewrite_core` · `signature_core` · `content_core`
 
 The eight `gpu/src/*.cu` files are scheduling and device-specific layout only. Both devices run
 the same exact canonicalizer, the same WL hash, the same match binding, the same edge

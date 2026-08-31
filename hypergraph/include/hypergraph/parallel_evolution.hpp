@@ -512,12 +512,14 @@ public:
         return hgcommon::dedup_claim(ops);
     }
 
+#if HG_ENGINE_STATS
     // Distinct matches that landed on an equal key, and claims that ran out of probes. Both are
     // expected to be 0; they are counted so "collisions do not happen here" is a measurement.
     size_t hash_collisions() const;
     size_t dedup_probe_exhaustions() const;
     size_t dedup_allocs() const;
     size_t dedup_allocs_wasted() const;
+#endif
 private:
 
     // Track which raw states have been matched (lock-free)
@@ -1027,6 +1029,7 @@ public:
     // the drain gate reads the same words. Zeros for a state that never had a match task.
     struct MatchTaskCounts { size_t pushed = 0, completed = 0, matches = 0; uint32_t trace = 0; };
     MatchTaskCounts match_task_counts(StateId state);
+#if HG_ENGINE_STATS
     // Rewrites whose freshly-created raw state was reported as already matched. Must be zero:
     // the id is new, so the dedup set cannot have seen it. A non-zero value is a subtree that
     // was never explored. See execute_rewrite_task.
@@ -1035,6 +1038,7 @@ public:
     // being complete. See forward_from_ancestor_chain.
     size_t forwarding_consumed_truncated() const;
     size_t states_drained() const;
+#endif
 
     // Matches this state has accepted so far. Read inside the drain callback it is that state's
     // final count, which is what makes "the drain fired after the last match" checkable.
@@ -1068,14 +1072,13 @@ public:
     void set_matches_per_state_rule(size_t k);
     size_t matches_per_state_rule() const;
 
+#if HG_ENGINE_STATS
     size_t validation_mismatches() const;
     // Up to three matches a drain-point validation recorded missing that are STILL missing at
     // the end of the run, as text: state, rule, binding, what the state's edge set and the
     // inverted index answered for the match's edges and vertices at the drain, and again now.
     // Empty when nothing is still missing.
-#if HG_ENGINE_STATS
     std::string validation_witness() const;
-#endif
     size_t validations_performed() const;
     size_t missing_owed_by_forwarding() const;
     size_t missing_owed_by_delta() const;
@@ -1099,6 +1102,7 @@ public:
                   rec->num_edges());
         });
     }
+#endif
 
     size_t num_threads() const;
     // Serial runs execute every job on the calling thread and spawn nothing.
@@ -1108,9 +1112,9 @@ public:
     size_t num_events() const;
     size_t num_causal_edges() const;
     size_t num_branchial_edges() const;
-    size_t num_redundant_edges_skipped() const;
 
 #if HG_ENGINE_STATS
+    size_t num_redundant_edges_skipped() const;
     const EvolutionStats& stats() const;
 #endif
     const std::vector<std::string>& warnings() const;
@@ -1214,7 +1218,9 @@ public:
     // Statistics
     // =========================================================================
 
+#if HG_ENGINE_STATS
     size_t total_matches() const;
+#endif
     size_t total_rewrites() const;
 
     // Job system diagnostics

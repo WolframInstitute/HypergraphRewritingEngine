@@ -2564,9 +2564,11 @@ bool ParentInfo::match_overlaps_consumed(const EdgeId* matched_edges, uint8_t nu
 // =============================================================================
 // ParallelEvolutionEngine configuration and counters
 // =============================================================================
+#if HG_ENGINE_STATS
 size_t ParallelEvolutionEngine::hash_collisions() const { return hash_collisions_.load(std::memory_order_relaxed); }
 
 size_t ParallelEvolutionEngine::dedup_allocs() const { return dedup_allocs_.load(std::memory_order_relaxed); }
+#endif
 
 void ParallelEvolutionEngine::set_max_steps(size_t max) { max_steps_ = max; }
 
@@ -2602,7 +2604,9 @@ bool ParallelEvolutionEngine::records_own_matches() const { return enable_match_
 
 bool ParallelEvolutionEngine::depth_signal_available() const { return !explore_from_canonical_states_only_; }
 
+#if HG_ENGINE_STATS
 size_t ParallelEvolutionEngine::states_drained() const { return states_drained_.load(std::memory_order_relaxed); }
+#endif
 
 void ParallelEvolutionEngine::set_quotient_initial_states(bool enable) { quotient_initial_states_ = enable; }
 
@@ -2618,6 +2622,7 @@ void ParallelEvolutionEngine::set_matches_per_state_rule(size_t k) { matches_per
 
 size_t ParallelEvolutionEngine::matches_per_state_rule() const { return matches_per_state_rule_; }
 
+#if HG_ENGINE_STATS
 size_t ParallelEvolutionEngine::validation_mismatches() const { return validation_mismatches_.load(); }
 
 size_t ParallelEvolutionEngine::validations_performed() const { return validations_performed_.load(); }
@@ -2633,6 +2638,7 @@ size_t ParallelEvolutionEngine::draws_survived() const { return draws_survived_.
 size_t ParallelEvolutionEngine::draws_at_site(int i) const { return draws_by_site_[i].load(); }
 
 size_t ParallelEvolutionEngine::late_arrivals() const { return late_arrivals_.load(); }
+#endif
 
 size_t ParallelEvolutionEngine::num_threads() const { return num_threads_; }
 
@@ -2658,7 +2664,9 @@ void ParallelEvolutionEngine::set_continuable(bool on) { continuable_ = on; }
 
 bool ParallelEvolutionEngine::continuable() const { return continuable_; }
 
+#if HG_ENGINE_STATS
 size_t ParallelEvolutionEngine::total_matches() const { return total_matches_found_.load(std::memory_order_relaxed); }
+#endif
 
 size_t ParallelEvolutionEngine::total_rewrites() const { return total_rewrites_.load(std::memory_order_relaxed); }
 
@@ -2701,6 +2709,7 @@ bool ParallelEvolutionEngine::contains_match(uint64_t h, const MatchRecord& rec)
     return false;
 }
 
+#if HG_ENGINE_STATS
 size_t ParallelEvolutionEngine::dedup_probe_exhaustions() const {
     return dedup_probe_exhaustions_.load(std::memory_order_relaxed);
 }
@@ -2708,6 +2717,7 @@ size_t ParallelEvolutionEngine::dedup_probe_exhaustions() const {
 size_t ParallelEvolutionEngine::dedup_allocs_wasted() const {
     return dedup_allocs_wasted_.load(std::memory_order_relaxed);
 }
+#endif
 
 ParallelEvolutionEngine::DepthTaskGuard::DepthTaskGuard(ParallelEvolutionEngine& engine,
                                                         uint32_t depth)
@@ -2784,6 +2794,7 @@ size_t ParallelEvolutionEngine::depth_late_arrivals() const {
     return depth_join_.late_arrivals();
 }
 
+#if HG_ENGINE_STATS
 size_t ParallelEvolutionEngine::forwarding_consumed_truncated() const {
     return forwarding_consumed_truncated_.load(std::memory_order_relaxed);
 }
@@ -2791,6 +2802,7 @@ size_t ParallelEvolutionEngine::forwarding_consumed_truncated() const {
 size_t ParallelEvolutionEngine::dropped_fresh_children() const {
     return dropped_fresh_child_.load(std::memory_order_relaxed);
 }
+#endif
 
 ParallelEvolutionEngine::MatchTaskCounts ParallelEvolutionEngine::match_task_counts(StateId state) {
     MatchTaskCounts c;
@@ -2949,6 +2961,7 @@ bool ParallelEvolutionEngine::explore_from_canonical_states_only() const {
     return explore_from_canonical_states_only_;
 }
 
+#if HG_ENGINE_STATS
 // Tested with contains_match, the validator's own membership test: it probes the whole dedup
 // chain and compares the RECORD. Testing probe slot 0 for the key alone reports a colliding
 // different match as an arrival and silently under-counts.
@@ -2963,6 +2976,7 @@ size_t ParallelEvolutionEngine::still_missing() const {
 size_t ParallelEvolutionEngine::num_redundant_edges_skipped() const {
     return hg_ ? hg_->causal_graph().num_redundant_edges_skipped() : 0;
 }
+#endif
 
 // Relaxed on both sides: workers poll this between tasks, so an acquire/release pair would
 // order nothing while adding a fence to every check. Coherence guarantees the store becomes

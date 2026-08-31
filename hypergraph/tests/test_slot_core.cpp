@@ -4,7 +4,7 @@
 #include <gtest/gtest.h>
 #include "hgcommon/slot_core.hpp"
 #include "hgcommon/quotient_causal_core.hpp"
-#include "hgcommon/wl_core.hpp"
+#include "hgcommon/content_core.hpp"
 #include "hypergraph/atomic_compat.hpp"
 #include "hypergraph/types.hpp"
 #include <random>

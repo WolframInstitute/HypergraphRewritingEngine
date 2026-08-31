@@ -3,7 +3,7 @@
 // Shared CPU/GPU individualization-refinement canonical-hash core.
 //
 // ONE implementation, so the host engine and the CUDA port agree bit for bit on the exact
-// canonical hash -- the same guarantee wl_core.hpp gives for the approximate one.
+// canonical hash.
 //
 // Everything is flat and caller-provided: the partition is four uint32 arrays rather than a
 // vector of per-cell vectors, the canonical form at a leaf is one contiguous buffer rather
@@ -13,7 +13,7 @@
 // node per individualization and one leaf per discrete partition, so a per-cell and per-edge
 // allocation at each of those dominates on exactly the symmetric states that need the search.
 //
-// The caller flattens a state to LOCAL vertex indices [0, n_verts) in the wl_core convention:
+// The caller flattens a state to LOCAL vertex indices [0, n_verts):
 //   ea[e]           = arity of edge e                          (e in [0, n_edges))
 //   ev[eoff[e] + p] = local vertex index of edge e at position p (p in [0, ea[e]))
 // ir_scratch_words() reports the buffer size needed for a given (n_verts, n_edges, total_occ,

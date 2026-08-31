@@ -78,12 +78,11 @@ Which states are the same node.
 | `Automatic` | their edge multisets are identical under a content ordering (**not** isomorphism-invariant) | content-ordered hash |
 | `Full` | they are isomorphic as ordered hypergraphs (vertex relabeling; within-edge order and multiplicity preserved) | the exact canonical hash |
 
-The exact canonical form is McKay-style individualization–refinement (IR); the Weisfeiler–Leman
-hash is a fast *approximation* used where exactness is not required, and is never the reference.
-The **reported** per-state canonical hash (`IncludeCanonicalHashes`) is the exact IR invariant in
-every state mode whenever event canonicalization is on — one IR pass serves both the hash and the
-per-edge ranks of §4.2 — and the mode's own hash otherwise.
-*(`hypergraph.cpp`, `compute_reported_canonical_hash`; gate: `mode_matrix_probe` reads identical
+The canonical form is McKay-style individualization–refinement (IR). The **reported** per-state
+canonical hash (`IncludeCanonicalHashes`) is this invariant in every state mode — stored at creation
+when event canonicalization is on (one IR pass serves both the hash and the per-edge ranks of
+§4.2), computed on first query otherwise.
+*(`hypergraph.cpp`, `compute_canonical_hash`; gate: `mode_matrix_probe` reads identical
 event counts down every state-mode column.)*
 
 ### 4.2 Event identity — `CanonicalizeEvents`

@@ -33,8 +33,7 @@ visualisation/   Viz-event interface only (renderer and analyses live in ../hype
 
 The natural reading path for a new developer: `common/core.hpp` ->
 `hypergraph/include/hypergraph/{types,hypergraph,parallel_evolution}.hpp` -> the
-matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
-`ir_canonicalization.hpp`) -> then either the GPU mirror
+matcher (`pattern_matcher.hpp`) and canonicalization (`ir_canonicalization.hpp`) -> then either the GPU mirror
 (`gpu/include/hg_gpu/evolve.hpp`) or the WL boundary (`paclet_source/hg_core.hpp`
 -> `paclet/Kernel/HypergraphRewriting.wl`).
 
@@ -50,8 +49,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
   - id aliases `VertexId`/`EdgeId`/`StateId`/`EventId`/`MatchId`, `INVALID_ID`; limits `MAX_ARITY`/`MAX_PATTERN_EDGES`/`MAX_VARS`
   - `HG_INLINE` -- force-inline, for functions whose inlining must not track unrelated code size
   - `mix64()` (Murmur3 finalizer), `fnv_hash()` (FNV-1a combine), `splitmix64()` (commutative-sum finalizer), `isort_u64()` (small-run insertion sort -- both canonicalizers sort per-vertex signature multisets and the device has no `std::sort`)
-- **`wl_core.hpp`** -- the single shared Weisfeiler-Leman canonical-hash impl, bit-identical CPU/GPU.
-  - `WL_MAX_REFINE_ITERS`; `wl_canonical_hash()` (occurrence-CSR build -> initial colouring -> refinement to fixpoint -> commutative fold)
+- **`content_core.hpp`** -- `ContentHasher`, the single shared content-ordered state key (what `Automatic` deduplicates by), bit-identical CPU/GPU.
 - **`ir_core.hpp`** -- the single shared EXACT canonicalizer (individualization-refinement), one implementation for host and device.
   - `IR_HOST_GENERATORS`/`IR_DEVICE_GENERATORS` (search-budget split), `ir_scratch_words()` (caller-sized span, no allocation), `IrScratch`, `IrPartition`, `ir_heapsort_idx`
   - `ir_canonical_hash()` -- refine, search by individualizing the lowest non-singleton cell, smallest form ACROSS THE TREE'S LEAVES wins (a complete isomorphism invariant, not the minimum over all n! relabellings); optional outputs per input edge: canonical RANK (`out_edge_rank`), automorphism ORBIT and content CLASS (`out_edge_orbit`/`out_edge_class`, computed in input space from the discovered generators -- the quotient-causal DP's keys), and the winning form and labelling (`out_canonical_form`/`out_vertex_label`)
@@ -121,8 +119,6 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 - **`pattern_matcher.hpp`** -- the host's half of the join: candidate enumeration and emit, over `hgcommon/join_core.hpp` (templated on accessors).
   - `PatternMatchingContext<>`, `HostJoinContext<>` (the join's Ctx: `Candidate` carries the edge the enumerator already fetched)
   - free templates `validate_candidate`, `generate_candidates`, `emit_match`, `scan_pattern[_from_edge]`, `find_matches`, `find_delta_matches`
-- **`wl_hash.hpp`** -- Weisfeiler-Leman approximate hashing + O(E) edge correspondence; owns `VertexHashCache`, the per-state vertex-hash cache, because it is its only consumer.
-  - `WLHash` (`compute_state_hash_with_cache`, `compute_event_signature`)
 - **`canonical_types.hpp`** -- shared canonicalization result types.
   - `CanonicalForm`, `VertexMapping`, `CanonicalizationResult` (`are_isomorphic`)
 - **`ir_canonicalization.hpp`** -- host face of the McKay individualization-refinement exact canonicalizer; the algorithm is `hgcommon/ir_core.hpp`, shared with the device.
@@ -131,7 +127,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
   - `CausalGraph` (`set_edge_producer`/`add_edge_consumer` -- both keyed by `CanonicalEdgeKey`, not raw `EdgeId`, so orbit-shared edges meet at one key under quotient; `add_causal_edge`/`add_branchial_edge`; `record_state_event` + `record_branchial_overlaps` (the per-state event list and the branchial pairs it induces, each pair claimed once); the reduction as `record_reduced_edge`/`is_reachable`/`reduces_on_read`/`ids_are_topological`, which is a TAG on one base relation rather than a second graph; `for_each_causal_edge`/`for_each_branchial_edge`)
   - `causal_pair_key(producer, consumer)` offsets both ids so a self-loop on event 0 is not the map's EMPTY sentinel
 - **`hypergraph.hpp`** -- central store: edges/states/events, indices, canonicalization, causal graph.
-  - `Hypergraph` (`create_edge`/`create_state`/`create_event`, `create_or_get_canonical_state`/`get_canonical_state`, `compute_canonical_hash`/`compute_wl_hash`/`compute_content_ordered_hash`, `try_lower_explore_depth`/`try_claim_expanded` for quotient mode, genesis support), result structs `CanonicalStateResult`/`CreateEventResult`
+  - `Hypergraph` (`create_edge`/`create_state`/`create_event`, `create_or_get_canonical_state`/`get_canonical_state`, `compute_canonical_hash`/`compute_content_ordered_hash`, `try_lower_explore_depth`/`try_claim_expanded` for quotient mode, genesis support), result structs `CanonicalStateResult`/`CreateEventResult`
   - `canonical_hash`/`canonical_id` are published and read through `hg::atomic_ref` (release store / acquire load); a bare fence pair would order nothing
   - **quotient raw causal reconstruction** (`set_quotient_reconstruction`, default OFF): `compute_and_cache_state_orbits` (orbits+slots, piggybacked on the dedup IR pass), `qc_capture_expansion`/`qc_frame_slots` (the representative's full match list in slots, aligned into one pinned reference frame per canonical class), `qc_add_instance`/`qc_apply` (per-instance replay minting raw event ids), `qc_record_causal`/`qc_reachable` (causal base + in-reduction tag), `for_each_reconstructed_causal`, `num_reconstructed_*`, `observable_num_*`
   - the older aggregate producer-set DP (`qc_dsup_`, `qc_reach`, `qc_emit`) is still the DEFAULT quotient causal path; the per-instance reconstruction above is verified against full capture but not yet wired as the default (backlog: S4)
@@ -157,7 +153,6 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`wl_hash.hpp`,
 - **`arena.cpp`** -- `ConcurrentHeterogeneousArena`'s bodies (construction, `allocate_raw` and the four bump/grow paths, `register_destructor`, `mark`/`release`/`reset`), `worker_scratch()`, and `scratch_alloc.hpp`'s siblings `worker_persistent_target()`/`worker_persistent()`/`PersistTarget`/`ScratchIdSet` -- the scratch and persistent per-worker arenas are one mechanism at two lifetimes. `ArenaWorkerRegistry::acquire`/`release` are NOT here: `verification/genmc/arena_worker_index_exclusive.cpp` compiles that header alone and links no library, so those two stay inline.
 - **`types.cpp`** -- the engine's value types: `VariableBinding`, `Edge`, `Event`, `State`, `GlobalCounters`, `CausalEdge`, `BranchialEdge`, `EventSignature`, and `quotient_types.hpp`'s identity records (`QcEventContent::triple_hash`, `EdgeOrbitTable`, `CanonicalTransition`, `SlotMatch`).
 - **`bitset.cpp`** -- `SparseBitset::Chunk` and the bitset's construction, move, `count`, `find_entry_index` and `invalidate_count`. `contains` and `find_chunk` are NOT here: they are `HG_INLINE` in the header with the measurement that pins them (outlining the engine's hottest predicate cost +3.7%).
-- **`wl_hash.cpp`** -- `VertexHashCache` and `WLHash`'s `fnv_combine`/`mix64`/`compute_edge_signature`. The refinement is templated on the caller's accessors and stays in `wl_hash.hpp`.
 - **`debug_log.cpp`** -- `set_debug_callback`, `clear_debug_callback` and the formatter `debug_output`, and with them `<cstdarg>`/`<sstream>`/`<thread>`: `debug_log.hpp` reaches nearly every engine translation unit through `parallel_evolution.hpp`, `rewriter.hpp` and `concurrent_map.hpp`, and this is the only unit that names libstdc++'s iostream and threading machinery for it.
 - **`rewriter.cpp`** -- `RewriteResult`'s constructor, `Rewriter`'s constructor, the free `apply_rewrite`, and `Rewriter::apply`: validate match, derive child edge set, allocate fresh vertices, create RHS edges/state/event, register causal/branchial (consumed edges in descending-producer order for correct online TR).
 
@@ -278,7 +273,7 @@ implementation is written `MultiwayReference` and the directory `reference/`.
 ## `tools/` -- standalone probes (each a `main()`)
 
 Validation: `arena_reset_test`, `segmented_array_stress`, `determinism_forwarding_repro`, `causal_tr_determinism_probe`, `causal_tr_exactness_probe`, `canonical_causal_oracle`, `quotient_reconstruction_probe`, `multiplicity_propagation_probe`, `multi_init_rule_2x2_probe`, `quotient_causal_probe_gpu` (quotient causal is schedule-independent at every grid and equal across devices).
-Canonicalization research: `ir_vs_wl`, `ir_edge_map_probe`, `ir_edge_orbit_probe`, `ir_incremental_probe`, `ir_malloc_bench`, `incremental_probe`, `incremental_wl_probe`, `wl_engine_incremental`, `wl_sparse_prototype`, `wl_core_bitid_check`.
+Canonicalization research: `ir_edge_map_probe`, `ir_edge_orbit_probe`, `ir_incremental_probe`, `ir_malloc_bench`, `incremental_probe`.
 Physics hunches: `branchial_flux_probe`, `budget_collapse_probe`, `higgs_shadow_probe`.
 Profiling: `profile_evolve` (single-threaded, for callgrind/cachegrind), `bench_gpu_evolve` (GPU evolve() vs PersistentEvolver timing; `HG_GPU_DBG_TIME=1` prints the persistent scheduler's phase-cycle attribution), `bench_cpu_evolve` (the CPU twin of the same workload).
 Build/docs: `build_paclet.wls` (CreatePacletArchive), `build_docs.wls` (markdown -> paclet notebooks).

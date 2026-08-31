@@ -22,7 +22,6 @@
 #include "hgcommon/ir_core.hpp"
 #include "lock_free_list.hpp"
 #include "causal_graph.hpp"
-#include "wl_hash.hpp"
 #include "concurrent_map.hpp"
 #include "concurrent_key_set.hpp"
 
@@ -83,7 +82,7 @@ class Hypergraph {
     // correspondence when state_canonicalization_mode_ is None or Automatic.
     //
     // The key is the EXACT IR invariant in every state mode whenever event canonicalization is
-    // on (compute_reported_canonical_hash), so the event identity resolved through this map is
+    // on (the create path stores it), so the event identity resolved through this map is
     // the same identity whatever the state mode -- mode_matrix_probe measures identical event
     // counts down every state-mode column. SPEC.md sec 4 states the axes independent, and for
     // EVENTS that holds. The CAUSAL relation under Automatic event identity is the
@@ -505,15 +504,6 @@ class Hypergraph {
     void qc_reach(uint64_t state_hash, uint32_t depth);
     void qc_emit(EventId producer, EventId consumer);
 
-    // Weisfeiler-Leman hash implementation (fast approximate state hash)
-    std::unique_ptr<WLHash> wl_hash_;
-
-    // Selects the algorithm for compute_canonical_hash:
-    //   true  -> WL approximate hash (fast hot path)
-    //   false -> IR exact canonicalization (isomorphism-invariant)
-    bool use_wl_hash_{true};
-
-
     // Event canonicalization: maps event signature to first EventId
     // Signature computed from keys specified by event_signature_keys_ bitflag
     ConcurrentMap<uint64_t, EventId, uint64_t{0}, ~uint64_t{0}, INVALID_ID> canonical_event_map_;
@@ -531,11 +521,8 @@ class Hypergraph {
     // one. Both are needed: the ratio is the question, and a raw call count says nothing
     // without the denominator.
     //
-    // Incremented at the LEAVES ONLY -- compute_exact_canonical_hash, compute_wl_hash,
-    // compute_and_cache_state_orbits. NOT at compute_canonical_hash, which is a dispatcher
-    // that tail-calls one of them: counting it too counted one canonicalization twice and
-    // reported a uniform 2.00 per state on all 17 cost_matrix cases. The uniformity was the
-    // tell -- real duplication varies with the workload, an off-by-a-factor does not.
+    // Incremented at the LEAVES ONLY -- compute_canonical_hash and
+    // compute_and_cache_state_orbits.
     //
     // Why it exists: a 2026-07-25 profile recorded "IR canonicalization up to 3x per state"
     // and named it the biggest measurable win. get_or_compute_canonical_hash
@@ -631,9 +618,8 @@ public:
     uint32_t num_published_edges() const;
 
     // =========================================================================
-    // Edge Accessors for the WL hash
+    // Edge Accessors
     // =========================================================================
-    // These provide the interface needed by WLHash::compute_state_hash*()
 
     // Get vertex array for an edge (returns pointer to vertices)
     const VertexId* edge_vertices(EdgeId eid) const;
@@ -643,26 +629,6 @@ public:
 
     // Get cached signature for an edge (computed once at creation)
     const EdgeSignature& edge_signature(EdgeId eid) const;
-
-    // Lightweight accessor for the WL hash that provides pointer indexing
-    // Returns pointer to edge's inline vertex array - no copying or allocation
-    class EdgeVertexAccessorRaw {
-        const Hypergraph* hg_;
-    public:
-        explicit EdgeVertexAccessorRaw(const Hypergraph* hg);
-        const VertexId* operator[](EdgeId eid) const;
-    };
-
-    // Direct arity accessor - reads from struct field, O(1)
-    class EdgeArityAccessorRaw {
-        const Hypergraph* hg_;
-    public:
-        explicit EdgeArityAccessorRaw(const Hypergraph* hg);
-        uint8_t operator[](EdgeId eid) const;
-    };
-
-    EdgeVertexAccessorRaw edge_vertex_accessor_raw() const;
-    EdgeArityAccessorRaw edge_arity_accessor_raw() const;
 
     // =========================================================================
     // State Management
@@ -820,18 +786,24 @@ public:
     // It should be zero. A match is either produced by matching the state it is applied to, or
     // FORWARDED to a child from its parent, and the forwarding is supposed to carry only matches
     // that survive the parent's rewrite.
+#if HG_ENGINE_STATS
     uint64_t invalid_matches() const;
+#endif
     void note_invalid_match();
 
+#if HG_ENGINE_STATS
     // How many times a reported canonical hash was computed. Divide by the state count for the
     // per-state figure; anything above 1.0 is duplication, and under contention a small excess
     // is expected rather than a defect (racing writers compute the same value and the last
     // store wins).
     uint64_t canonical_hash_computations() const;
+#endif
     struct IrWorkTotals {
         uint64_t calls, searched, leaves, nodes, depth_sum, retries, fallbacks;
     };
+#if HG_ENGINE_STATS
     IrWorkTotals ir_work() const;
+#endif
     // One canonicalisation's search work as its calls accumulate it, booked into the totals
     // by book_ir once the escalation over depths and generator budgets has settled.
     struct IrBooking {
@@ -872,15 +844,6 @@ public:
 
     // Uses acquire semantics to see updates from main thread on ARM64
     StateCanonicalizationMode state_canonicalization_mode() const;
-
-    // Select the WL approximate hash for compute_canonical_hash (fast hot path)
-    void enable_wl_hash();
-
-    // Select IR exact canonicalization for compute_canonical_hash
-    void disable_wl_hash();
-
-    // Whether compute_canonical_hash uses the WL approximate hash
-    bool wl_hash_enabled() const;
 
     // Full canonicalization mode: IR-based exact dedup, edge correspondence, and canonical output
     bool is_full_canonicalization() const;
@@ -1111,11 +1074,17 @@ public:
     // Matches the capture never recorded. The first cannot happen for a state with an edge set
     // -- the table is rebuilt on a miss -- and the second is the one-representative-per-class
     // rule doing its job.
+#if HG_ENGINE_STATS
     size_t capture_dropped_no_orbits() const;
+#endif
     // Endpoint tables that were not cached and were rebuilt. A cache-miss rate: the rebuilt
     // table is the same function of the same immutable edge set, so nothing downstream moves.
+#if HG_ENGINE_STATS
     size_t capture_orbit_rebuilds() const;
+#endif
+#if HG_ENGINE_STATS
     size_t capture_skipped_not_representative() const;
+#endif
     // The first cache miss's evidence: the state it was on, INVALID_ID when there was none, and
     // why -- 1 the map held no entry, 2 it held one with no slot array.
     StateId capture_no_orbits_state() const;
@@ -1144,9 +1113,11 @@ public:
     // giving 20,558 pairs enumerated against 30,063 claimed. Reporting the enumeration removes
     // the class of divergence rather than re-synchronising one more site.
     size_t num_reconstructed_branchial() const;
+#if HG_ENGINE_STATS
     size_t num_frame_alignment_disagreements() const;
     size_t num_alignment_failures() const;
     size_t num_bad_correspondences() const;
+#endif
 
     // Visit the DISTINCT event identities the reconstruction produced, under the run's
     // EventCanonicalizationMode. The counterpart of for_each_reconstructed_causal for events:
@@ -1396,32 +1367,14 @@ public:
     // Utility
     // =========================================================================
 
-    // Compute simple hash for a state's edge set (fast but not isomorphism-invariant)
-    static uint64_t compute_state_hash(const SparseBitset& edges);
-
     // Compute content-ordered hash for Automatic state canonicalization mode
     // Hashes edge contents in order by edge ID: (arity, v1, v2, ...) for each edge
     // Fast but not isomorphism-invariant.
     uint64_t compute_content_ordered_hash(const SparseBitset& edges) const;
 
-    // Compute canonical hash (isomorphism-invariant).
-    // With the WL hash enabled (use_wl_hash_), uses the fast approximate hash;
-    // otherwise falls back to IR exact canonicalization.
+    // The canonical hash (isomorphism-invariant). The event path resolves representatives
+    // through it, and it is the hash a state reports.
     uint64_t compute_canonical_hash(const SparseBitset& edges) const;
-
-    // Isomorphism-invariant and EXACT, whatever the state mode selects. The event path uses
-    // this, because event identity is defined over isomorphism classes.
-    uint64_t compute_exact_canonical_hash(const SparseBitset& edges) const;
-
-    // What a state reports and what the event path resolves representatives through: exact
-    // when event canonicalization is on, mode-aware otherwise.
-    uint64_t compute_reported_canonical_hash(const SparseBitset& edges) const;
-
-    // Compute the Weisfeiler-Leman approximate canonical hash for a set of
-    // edges. This is the fast hot-path hash backing compute_canonical_hash (in
-    // WL mode), the per-state canonical_hash recorded during evolution, and the
-    // isomorphism-invariant key for event canonicalization.
-    uint64_t compute_wl_hash(const SparseBitset& edges) const;
 
 
     // Count edges in a state

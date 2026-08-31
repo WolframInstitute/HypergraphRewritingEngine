@@ -87,7 +87,7 @@ uint64_t ir_core_call(const SVec<SVec<VertexId>>& edges,
     // with 98.9% of it reached through this function, over 103,474 calls. Hoisting it changes
     // no semantics -- the buffer is still zeroed whenever it grows -- and removes the repeat.
     //
-    // The sibling caller of this same core (Hypergraph::compute_exact_canonical_hash) takes the
+    // The sibling caller of this same core (Hypergraph::compute_canonical_hash) takes the
     // per-worker arena instead and does not zero at all, on the stated grounds that the core
     // writes every word it later reads. That is the stronger claim; this is the one that needs
     // no claim.

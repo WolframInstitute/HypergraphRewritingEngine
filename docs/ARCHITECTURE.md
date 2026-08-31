@@ -55,13 +55,10 @@ Core engine:
   owns canonical-state dedup. Matching is a worst-case-optimal join
   (`pattern_matcher.hpp`, `ancestry.hpp`, `signature.hpp`). Canonicalization under the exact
   mode is McKay individualization-refinement (`ir_canonicalization.*`) on every
-  state, its hash serving as the dedup key directly; `compute_canonical_hash`
-  reaches the Weisfeiler-Leman hash (`wl_hash.hpp`, fast, may collide) only when
-  the mode is not `Full`, so WL never stands in front of IR. Bucketing by WL and
-  confirming with IR was implemented and measured 28% slower, and the reason is a
-  bound rather than an accident: distinct WL hashes are at most the canonical
-  classes, so a WL filter can skip at most `canonical/raw` of the IR calls while
-  paying a WL pass on every state -- measured per case by `tools/cost_matrix`
+  state, its hash serving as the dedup key directly; the coarse modes deduplicate by a
+  content-ordered key (`content_core.hpp`) and no filter stands in front of IR. The bound: a
+  sound filter's distinct keys are at most the canonical classes, so it can skip at most
+  `canonical/raw` of the IR calls while paying its own pass on every state -- measured per case by `tools/cost_matrix`
   across the whole rule-type corpus. Within every rule that keeps rewriting the
   ceiling FALLS with depth (`binary-growth` 29.4% -> 4.1%, `star4-automorphic`
   3.1% -> 0.3%, `cycle4-automorphic` 0.5% -> 0.0% at 68,184 events), because

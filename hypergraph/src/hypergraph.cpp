@@ -8,6 +8,7 @@
 
 #include "hypergraph/ir_canonicalization.hpp"
 #include "hgcommon/ir_core.hpp"
+#include "hgcommon/content_core.hpp"
 #include "hgcommon/slot_core.hpp"
 #include "hypergraph/atomic_compat.hpp"
 #include <thread>
@@ -222,19 +223,15 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
                                    incr_parent, incr_produced, incr_num_produced);
     const SparseBitset& edges = get_state(new_sid).edges;
 
-    // Reported hash for None/Automatic modes: the exact invariant when event
-    // canonicalization is on (see compute_reported_canonical_hash), the fast WL hash
-    // otherwise. Separate from map_key, which is what actually decides state identity.
-    // One individualization-refinement pass serves both when event canonicalization is on:
-    // the exact hash the event path resolves representatives through, and the per-edge ranks
-    // it identifies consumed/produced edges by.
+    // Reported hash for None/Automatic modes: stored at creation only when event
+    // canonicalization is on -- from the same individualization-refinement pass that
+    // computes the per-edge ranks the event path identifies consumed/produced edges by.
+    // With event canonicalization off it stays 0 and get_or_compute_canonical_hash
+    // computes it on first query, so no per-state hash is computed that nothing reads.
+    // Separate from map_key, which is what actually decides state identity.
     const bool need_ranks = (event_signature_keys_ != EVENT_SIG_NONE);
     uint64_t ranked_hash = 0;
     if (need_ranks) ranked_hash = cache_state_edge_ranks(new_sid, edges);
-
-    auto reported_child = [&]() -> uint64_t {
-        return need_ranks ? ranked_hash : compute_canonical_hash(edges);
-    };
 
     // Canonical identity + dedup key. In Full mode the exact IR hash is BOTH the
     // canonical identity and the dedup key, computed once (no redundant WL pass);
@@ -248,11 +245,11 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
             // count_unique() cannot store or count, silently undercounting None by one. The offset
             // keeps ids unique (None never dedups) while lifting id 0 off the sentinel.
             map_key = static_cast<uint64_t>(new_sid) + 1;
-            canonical_hash = reported_child();
+            canonical_hash = need_ranks ? ranked_hash : 0;
             break;
         case StateCanonicalizationMode::Automatic:
             map_key = compute_content_ordered_hash(edges);
-            canonical_hash = reported_child();
+            canonical_hash = need_ranks ? ranked_hash : 0;
             break;
         case StateCanonicalizationMode::Full:
         default:
@@ -272,7 +269,7 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
             else if (need_ranks)
                 canonical_hash = ranked_hash;   // exact IR, already computed with the ranks
             else
-                canonical_hash = compute_canonical_hash(edges);   // exact IR
+                canonical_hash = compute_canonical_hash(edges);
             map_key = canonical_hash;
             break;
     }
@@ -489,7 +486,7 @@ uint64_t Hypergraph::get_or_compute_canonical_hash(StateId state_id) {
 
     // On-demand, and it must agree with what create_or_get_canonical_state published --
     // the event path reads both.
-    uint64_t hash = compute_reported_canonical_hash(state.edges);
+    uint64_t hash = compute_canonical_hash(state.edges);
 
     // Publish with release; racing writers may all compute the same value and
     // the final stored value is deterministic across threads.
@@ -536,7 +533,10 @@ Hypergraph::CreateEventResult Hypergraph::create_event(
             for (uint8_t i = 0; i < num_consumed; ++i) {
                 uint32_t r = edge_rank_in_state(input_state, consumed[i]);
                 if (r == UINT32_MAX) {
-                    HG_STAT(event_sig_raw_fallbacks_.fetch_add(1, std::memory_order_relaxed));
+                    // Counted in every build: the FFI surfaces this as the EventSigRawFallback
+                    // warning, a correctness signal (the affected event identities are not
+                    // isomorphism-invariant), so it cannot live behind the stats macro.
+                    event_sig_raw_fallbacks_.fetch_add(1, std::memory_order_relaxed);
                     r = consumed[i];
                 }
                 consumed_ranks[i] = r;
@@ -546,7 +546,10 @@ Hypergraph::CreateEventResult Hypergraph::create_event(
             for (uint8_t i = 0; i < num_produced; ++i) {
                 uint32_t r = edge_rank_in_state(output_state, produced[i]);
                 if (r == UINT32_MAX) {
-                    HG_STAT(event_sig_raw_fallbacks_.fetch_add(1, std::memory_order_relaxed));
+                    // Counted in every build: the FFI surfaces this as the EventSigRawFallback
+                    // warning, a correctness signal (the affected event identities are not
+                    // isomorphism-invariant), so it cannot live behind the stats macro.
+                    event_sig_raw_fallbacks_.fetch_add(1, std::memory_order_relaxed);
                     r = produced[i];
                 }
                 produced_ranks[i] = r;
@@ -688,34 +691,6 @@ uint64_t Hypergraph::compute_content_ordered_hash(const SparseBitset& edges) con
 }
 
 uint64_t Hypergraph::compute_canonical_hash(const SparseBitset& edges) const {
-    // Full mode uses the exact IR hash as the canonical identity (it is also the
-    // dedup key), so there is no separate WL pass. Other modes use the fast WL hash.
-    bool full = state_canonicalization_mode_.load(std::memory_order_acquire)
-                == StateCanonicalizationMode::Full;
-    if (!full && use_wl_hash_ && wl_hash_) {
-        return compute_wl_hash(edges);
-    }
-    return compute_exact_canonical_hash(edges);
-}
-
-// The hash a state REPORTS, and the one the event path resolves representatives through.
-//
-// Event identity is defined over ISOMORPHISM classes and SPEC.md sec 4 makes it independent
-// of the state-identity choice. Resolving it through the mode-aware hash breaks that: the WL
-// hash is isomorphism-invariant but COARSER than IR, so outside Full mode more states share a
-// representative, the edge correspondence resolves to a coarser one, and the event identity
-// derived from it coarsens with it -- measured on the binary-growth corpus case as 8 events
-// under Full against 6 under Automatic, so the count moved with the state mode.
-//
-// So when event canonicalization is on, the reported hash is the exact invariant in every
-// state mode. It is only paid for when it is asked for; with event canonicalization off this
-// is the mode-aware hash and nothing changes.
-uint64_t Hypergraph::compute_reported_canonical_hash(const SparseBitset& edges) const {
-    if (event_signature_keys_ != EVENT_SIG_NONE) return compute_exact_canonical_hash(edges);
-    return compute_canonical_hash(edges);
-}
-
-uint64_t Hypergraph::compute_exact_canonical_hash(const SparseBitset& edges) const {
     hgcommon::PhaseTimer _pt(hgcommon::Phase::Canon);
     HG_STAT(canonical_hash_computations_.fetch_add(1, std::memory_order_relaxed));
     // Exact canonical hash via individualization-refinement.
@@ -814,24 +789,6 @@ uint64_t Hypergraph::compute_exact_canonical_hash(const SparseBitset& edges) con
     worker_scratch().release(mk);
     return h;
 }
-
-uint64_t Hypergraph::compute_wl_hash(const SparseBitset& edges) const {
-    hgcommon::PhaseTimer _pt(hgcommon::Phase::Canon);
-    HG_STAT(canonical_hash_computations_.fetch_add(1, std::memory_order_relaxed));
-    if (edges.empty()) {
-        return EMPTY_STATE_CANONICAL_HASH;
-    }
-
-    std::atomic_thread_fence(std::memory_order_acquire);
-
-    if (!wl_hash_) {
-        return 0;
-    }
-    EdgeVertexAccessorRaw vert_acc(this);
-    EdgeArityAccessorRaw arity_acc(this);
-    return wl_hash_->compute_state_hash(edges, vert_acc, arity_acc);
-}
-
 
 // =============================================================================
 // Edge Correspondence Dispatch
@@ -1589,10 +1546,13 @@ uint64_t Hypergraph::applied_shape_fingerprint() const {
     return h;
 }
 
+#if HG_ENGINE_STATS
 size_t Hypergraph::capture_dropped_no_orbits() const {
     return qc_capture_no_orbits_.load(std::memory_order_relaxed);
 }
+#endif
 
+#if HG_ENGINE_STATS
 size_t Hypergraph::capture_skipped_not_representative() const {
     return qc_capture_not_rep_.load(std::memory_order_relaxed);
 }
@@ -1600,6 +1560,7 @@ size_t Hypergraph::capture_skipped_not_representative() const {
 size_t Hypergraph::capture_orbit_rebuilds() const {
     return qc_capture_orbit_rebuilds_.load(std::memory_order_relaxed);
 }
+#endif
 
 StateId Hypergraph::capture_no_orbits_state() const {
     const uint64_t w = qc_no_orbits_witness_.load(std::memory_order_acquire);
@@ -1628,17 +1589,8 @@ size_t Hypergraph::applied_unique() const {
 }
 
 // Simple hash of a state's edge SET -- fast, and not isomorphism-invariant. Its neighbours
-// (compute_content_ordered_hash, compute_canonical_hash, compute_exact_canonical_hash) were
+// (compute_content_ordered_hash, compute_canonical_hash, compute_canonical_hash) were
 // already defined here; this was the outlier left in the header.
-uint64_t Hypergraph::compute_state_hash(const SparseBitset& edges) {
-    uint64_t h = 14695981039346656037ULL;
-    edges.for_each([&](EdgeId eid) {
-        h ^= eid;
-        h *= 1099511628211ULL;
-    });
-    return h;
-}
-
 // The schedule-stable content triple of ONE reconstructed event: hash(input class, output class,
 // rule). 0 when the event has no recorded triple.
 uint64_t Hypergraph::reconstructed_raw_triple(uint32_t e) const {
@@ -1646,7 +1598,7 @@ uint64_t Hypergraph::reconstructed_raw_triple(uint32_t e) const {
     return c ? c->triple_hash() : 0;
 }
 
-// THE HOTTEST ACCESSORS IN THE ENGINE: the matcher and the WL hash read edges through these on
+// THE HOTTEST ACCESSORS IN THE ENGINE: the matcher reads edges through these on
 // every candidate. They are here rather than in the class to test the premise of this work --
 // with link-time optimisation the linker still inlines them, so where a body lives stops being a
 // performance decision. The instruction count beside this commit is that test.
@@ -1678,14 +1630,6 @@ uint32_t Hypergraph::num_edges() const {
 uint32_t Hypergraph::num_published_edges() const { return edges_.size(); }
 
 const EdgeSignature& Hypergraph::edge_signature(EdgeId eid) const { return edge_signatures_[eid]; }
-
-Hypergraph::EdgeVertexAccessorRaw Hypergraph::edge_vertex_accessor_raw() const {
-    return EdgeVertexAccessorRaw(this);
-}
-
-Hypergraph::EdgeArityAccessorRaw Hypergraph::edge_arity_accessor_raw() const {
-    return EdgeArityAccessorRaw(this);
-}
 
 // The acquire fence pairs with the release fence in create_state: it is what makes every field
 // the creating thread wrote visible to this reader.
@@ -1757,17 +1701,21 @@ uint64_t Hypergraph::event_signature_raw_fallbacks() const {
     return event_sig_raw_fallbacks_.load(std::memory_order_relaxed);
 }
 
+#if HG_ENGINE_STATS
 uint64_t Hypergraph::invalid_matches() const {
     return invalid_matches_.load(std::memory_order_relaxed);
 }
+#endif
 
 void Hypergraph::note_invalid_match() {
     HG_STAT(invalid_matches_.fetch_add(1, std::memory_order_relaxed));
 }
 
+#if HG_ENGINE_STATS
 uint64_t Hypergraph::canonical_hash_computations() const {
     return canonical_hash_computations_.load(std::memory_order_relaxed);
 }
+#endif
 
 void Hypergraph::book_ir_call(const hgcommon::IrWork& work, bool retried) const {
     HG_STAT(ir_calls_.fetch_add(1, std::memory_order_relaxed));
@@ -1794,6 +1742,7 @@ void Hypergraph::book_ir(const IrBooking& b) const {
 #endif
 }
 
+#if HG_ENGINE_STATS
 Hypergraph::IrWorkTotals Hypergraph::ir_work() const {
     return IrWorkTotals{ir_calls_.load(std::memory_order_relaxed),
                         ir_searched_.load(std::memory_order_relaxed),
@@ -1803,6 +1752,7 @@ Hypergraph::IrWorkTotals Hypergraph::ir_work() const {
                         ir_retries_.load(std::memory_order_relaxed),
                         ir_fallbacks_.load(std::memory_order_relaxed)};
 }
+#endif
 
 // =============================================================================
 // Event accessors, identity settings and index access
@@ -2084,10 +2034,6 @@ StateCanonicalizationMode Hypergraph::state_canonicalization_mode() const {
     return state_canonicalization_mode_.load(std::memory_order_acquire);
 }
 
-void Hypergraph::enable_wl_hash()  { use_wl_hash_ = true; }
-void Hypergraph::disable_wl_hash() { use_wl_hash_ = false; }
-bool Hypergraph::wl_hash_enabled() const { return use_wl_hash_; }
-
 bool Hypergraph::is_full_canonicalization() const {
     return state_canonicalization_mode_.load(std::memory_order_acquire) ==
            StateCanonicalizationMode::Full;
@@ -2097,6 +2043,7 @@ size_t Hypergraph::num_reconstructed_branchial() const {
     return qc_ctr_total(&QcCounterSlot::branchial);
 }
 
+#if HG_ENGINE_STATS
 size_t Hypergraph::num_frame_alignment_disagreements() const {
     return qc_frame_disagree_.load(std::memory_order_relaxed);
 }
@@ -2108,6 +2055,7 @@ size_t Hypergraph::num_alignment_failures() const {
 size_t Hypergraph::num_bad_correspondences() const {
     return qc_align_badcorr_.load(std::memory_order_relaxed);
 }
+#endif
 
 // The state whose labelling defines a canonical class -- the class FRAME. INVALID_ID when the
 // class has no frame, which happens for a class no captured transition touched.
@@ -2163,7 +2111,6 @@ Hypergraph::Hypergraph(uint32_t capacity_scale)
     , qc_inst_applied_(seg_shift_for(capacity_scale))
     , qc_event_sig_(seg_shift_for(capacity_scale))
     , qc_event_runsig_(seg_shift_for(capacity_scale))
-    , wl_hash_(std::make_unique<WLHash>(&arena_))
     , canonical_event_map_(decltype(canonical_event_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
 
 {
@@ -2188,18 +2135,6 @@ uint64_t Hypergraph::qc_key(uint64_t state_hash, uint32_t depth, uint32_t orbit)
 
 uint64_t Hypergraph::qc_rkey(uint64_t state_hash, uint32_t depth) {
     return hgcommon::qc_rkey(state_hash, depth);
-}
-
-Hypergraph::EdgeVertexAccessorRaw::EdgeVertexAccessorRaw(const Hypergraph* hg) : hg_(hg) {}
-
-const VertexId* Hypergraph::EdgeVertexAccessorRaw::operator[](EdgeId eid) const {
-    return hg_->edges_[eid].vertices;
-}
-
-Hypergraph::EdgeArityAccessorRaw::EdgeArityAccessorRaw(const Hypergraph* hg) : hg_(hg) {}
-
-uint8_t Hypergraph::EdgeArityAccessorRaw::operator[](EdgeId eid) const {
-    return hg_->edges_[eid].arity;
 }
 
 uint32_t Hypergraph::QcAppliedMatch::consumed(uint32_t j) const {

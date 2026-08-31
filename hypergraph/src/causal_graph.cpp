@@ -385,9 +385,11 @@ size_t CausalGraph::num_branchial_edges() const {
     return num_branchial_edges_.load(std::memory_order_relaxed);
 }
 
+#if HG_ENGINE_STATS
 size_t CausalGraph::num_redundant_edges_skipped() const {
     return num_redundant_edges_skipped_.load(std::memory_order_relaxed);
 }
+#endif
 
 }  // namespace engine
 }  // namespace HG_NAMESPACE

@@ -366,25 +366,16 @@ add_executable(ir_core_phase_probe tools/ir_core_phase_probe.cpp)
 target_include_directories(ir_core_phase_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(ir_core_phase_probe PRIVATE hypergraph)
 
-# S2's second instrument: IR against WL, per CALL. Its own header states the scope that makes
-# the ratio safe to read -- a per-call ratio does not license an engine-level route choice, and
-# the engine-level number runs the other way (Full/IR 59,028,301 instructions against
-# non-Full/WL's 68,004,245, because the engine pays the allocation discipline around WL).
-add_executable(ir_vs_wl tools/ir_vs_wl.cpp)
-target_include_directories(ir_vs_wl PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(ir_vs_wl PRIVATE hypergraph)
-
-
 # ---------------------------------------------------------------------------------------------
 # EVERY REMAINING tools/ PROGRAM, REGISTERED.
 #
 # 55 of 66 files here were built by nothing. That is not a tidiness point: a probe nothing
-# compiles rots invisibly and, worse, its FINDINGS go missing. Registering two of them on
-# 2026-08-18 (ir_core_phase_probe, ir_vs_wl) is what closed the "IR 1100x high-symmetry
+# compiles rots invisibly and, worse, its FINDINGS go missing. Registering probes on
+# 2026-08-18 (ir_core_phase_probe among them) is what closed the "IR 1100x high-symmetry
 # pathology" as unreproducible AND found a per-call memset worth 1.09% of engine instructions --
 # a real cost that survived precisely because its instrument was unregistered.
 #
-# All 53 below compile against the current tree. The one that does not, ir_incremental_probe.cpp,
+# All 48 below compile against the current tree. The one that does not, ir_incremental_probe.cpp,
 # is deleted in this commit; the project's own CLAUDE.md already named it as broken.
 #
 # Registered with EXCLUDE_FROM_ALL: they build under `cmake --build . --target <name>` and on
@@ -449,10 +440,6 @@ add_executable(incremental_probe EXCLUDE_FROM_ALL tools/incremental_probe.cpp)
 target_include_directories(incremental_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(incremental_probe PRIVATE hypergraph)
 add_dependencies(probes incremental_probe)
-add_executable(incremental_wl_probe EXCLUDE_FROM_ALL tools/incremental_wl_probe.cpp)
-target_include_directories(incremental_wl_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(incremental_wl_probe PRIVATE hypergraph)
-add_dependencies(probes incremental_wl_probe)
 add_executable(ir_core_bench EXCLUDE_FROM_ALL tools/ir_core_bench.cpp)
 target_include_directories(ir_core_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(ir_core_bench PRIVATE hypergraph)
@@ -589,22 +576,6 @@ add_executable(unfolding_ratio_probe EXCLUDE_FROM_ALL tools/unfolding_ratio_prob
 target_include_directories(unfolding_ratio_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(unfolding_ratio_probe PRIVATE hypergraph)
 add_dependencies(probes unfolding_ratio_probe)
-add_executable(wl_core_bitid_check EXCLUDE_FROM_ALL tools/wl_core_bitid_check.cpp)
-target_include_directories(wl_core_bitid_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(wl_core_bitid_check PRIVATE hypergraph)
-add_dependencies(probes wl_core_bitid_check)
-add_executable(wl_engine_incremental EXCLUDE_FROM_ALL tools/wl_engine_incremental.cpp)
-target_include_directories(wl_engine_incremental PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(wl_engine_incremental PRIVATE hypergraph)
-add_dependencies(probes wl_engine_incremental)
-add_executable(wl_iso_invariance_probe EXCLUDE_FROM_ALL tools/wl_iso_invariance_probe.cpp)
-target_include_directories(wl_iso_invariance_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(wl_iso_invariance_probe PRIVATE hypergraph)
-add_dependencies(probes wl_iso_invariance_probe)
-add_executable(wl_sparse_prototype EXCLUDE_FROM_ALL tools/wl_sparse_prototype.cpp)
-target_include_directories(wl_sparse_prototype PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(wl_sparse_prototype PRIVATE hypergraph)
-add_dependencies(probes wl_sparse_prototype)
 
 add_executable(cost_matrix tools/cost_matrix.cpp)
 target_include_directories(cost_matrix PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

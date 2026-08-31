@@ -151,7 +151,9 @@ Measured measure(const oracle::Case& c, int steps, RecordSet rec = RecordSet{}) 
     m.arena_bytes      = hg.arena().bytes_allocated();
     m.heap_allocs      = g_alloc_count.load(std::memory_order_relaxed) - a0;
     m.heap_bytes       = g_alloc_bytes.load(std::memory_order_relaxed) - b0;
+#if HG_ENGINE_STATS
     m.canon_computations = hg.canonical_hash_computations();
+#endif
     return m;
 }
 
