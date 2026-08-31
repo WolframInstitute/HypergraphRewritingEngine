@@ -37,11 +37,7 @@ ENGINE_DIRS = ["common", "hypergraph", "gpu", "job_system", "lockfree_deque"]
 
 # Fragments whose re-measurement needs a resource this tree cannot reach. Each entry names
 # the reason and what replaces it; anything else stale is a finding, not a candidate here.
-STALE_WHITELIST = {
-    "t2_speedup.tex": "needs a licensed Wolfram kernel (local Windows machine, scheduled "
-                      "before release); the caption discloses the older commit",
-    "f_speedup.tex": "same measurement as t2_speedup.tex, same pending local re-run",
-}
+STALE_WHITELIST = {}
 
 VERDICT_RE = re.compile(r"\b(DIFFERS|FAILED|FAIL|NaN|nan|[-+]?inf)\b")
 PROV_RE = re.compile(r"%\s*commit ([0-9a-f]{7,40})")

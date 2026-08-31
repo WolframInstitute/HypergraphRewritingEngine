@@ -683,7 +683,7 @@ def t2(build, maxd, reps):
     # Our own paclet's version has a static source of truth beside the kernel's answer: the
     # PacletInfo.wl the comparison loaded. The kernel's answer wins only when it is a version.
     if not re.match(r"^[\d.]+$", pacs.get("HypergraphRewriting", "")):
-        m = re.search(r'Version\s*->\s*"([\d.]+)"',
+        m = re.search(r'Version"?\s*->\s*"([\d.]+)"',
                       open(os.path.join(ROOT, "paclet", "PacletInfo.wl")).read())
         if m:
             pacs["HypergraphRewriting"] = m.group(1)

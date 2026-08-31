@@ -1627,7 +1627,7 @@ range starts at depth four because the two shallower rows are not measurements o
 depth two carries the Wolfram side's one-time initialization, and at depths three to five the
 engine's own time is $0.2$ to $0.5$\,ms, close enough to the timer's resolution that those ratios
 are lower bounds on the gap rather than precise factors. At depth seven neither caveat applies:
-the engine takes $23.2$\,ms against $710$\,s, so that row is a direct measurement on both sides.
+the engine takes $\CoreDeepMs$\,ms against $\AuthorityDeepSeconds$\,s, so that row is a direct measurement on both sides.
 
 The three are timed at their respective interfaces: the native engine at its C++ API, the
 \texttt{Wolfram/\allowbreak Multicomputation} paclet's \texttt{MultiwaySystem} through its
