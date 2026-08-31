@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.0.0 (unreleased)
+## v1.0.0-rc1 (unreleased)
 
 User-visible semantic changes since v0.0.1-alpha.6, carried here so the release notes state them:
 

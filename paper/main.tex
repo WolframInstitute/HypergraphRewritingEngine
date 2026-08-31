@@ -289,9 +289,9 @@ Like nauty, IR is exponential in the worst case and terminates in time polynomia
 
 The automorphism generators and edge orbits produced by IR are reused elsewhere in the engine: they define the canonical edge-orbit equivalence used for principled event canonicalization and for exact reconstruction of causal and branchial multiplicities.
 
-\paragraph{Two bounds, and only one of them is evident when it is exceeded.} The search is bounded twice: by the individualization depth it may descend to, and by the number of automorphism generators it may record. Exceeding either is reported to the caller, which raises the bound and re-runs, so neither is a silent truncation. The two are not symmetric in what a truncation would cost. A depth bound reached before a discrete coloring means no canonical form was produced at all, and the failure is evident. A generator table filled to capacity, by contrast, yields a canonical form that is correct: the hash is exact regardless of how many generators were recorded. What degrades is the orbit partition, which is obtained by fusing edges over the generators found---fewer generators fuse fewer edges, so the orbits come out too \emph{fine}. Since the orbits are how the quotient reconstruction identifies instances (Section~\ref{sec:quotient}), a short generator table produces a wrong identification rather than a slow run, and it produces one that looks like an ordinary answer. This is why the generator bound escalates on the same footing as the depth bound rather than being treated as a performance parameter. More generators cannot repair a depth failure, so escalation stops at the first depth report.
+\paragraph{Search bounds.} The search is bounded twice: by the individualization depth it may descend to, and by the number of automorphism generators it may record. Exceeding either is reported to the caller, which raises the bound and re-runs, so neither is a silent truncation. The two are not symmetric in what a truncation would cost. A depth bound reached before a discrete coloring means no canonical form was produced at all, and the failure is evident. A generator table filled to capacity, by contrast, yields a canonical form that is correct: the hash is exact regardless of how many generators were recorded. What degrades is the orbit partition, which is obtained by fusing edges over the generators found---fewer generators fuse fewer edges, so the orbits come out too \emph{fine}. Since the orbits are how the quotient reconstruction identifies instances (Section~\ref{sec:quotient}), a short generator table produces a wrong identification rather than a slow run, and it produces one that looks like an ordinary answer. This is why the generator bound escalates on the same footing as the depth bound rather than being treated as a performance parameter. More generators cannot repair a depth failure, so escalation stops at the first depth report.
 
-\paragraph{The canonical labeling of a symmetric state is a coset.} When the automorphism group is nontrivial, IR does not determine a single labeling but a coset of them, and the algorithm's within-cell tie-break selects one representative. That tie-break reads the vertex numbering it was handed. Two conventions for numbering a state's vertices therefore select two different representatives, each internally consistent and both agreeing on the canonical \emph{hash}, while disagreeing about which edge receives which rank. Ranks are what identify consumed and produced edges across a rewrite, so the convention has to be fixed once and shared by every caller rather than chosen locally: measured on the equivalence probe's 4063-state corpus, encounter-order numbering and sorted-unique numbering disagree on 103 states, all of them states with nontrivial automorphisms.
+\paragraph{Symmetric states.} When the automorphism group is nontrivial, IR does not determine a single labeling but a coset of them, and the algorithm's within-cell tie-break selects one representative. That tie-break reads the vertex numbering it was handed. Two conventions for numbering a state's vertices therefore select two different representatives, each internally consistent and both agreeing on the canonical \emph{hash}, while disagreeing about which edge receives which rank. Ranks are what identify consumed and produced edges across a rewrite, so the convention has to be fixed once and shared by every caller rather than chosen locally: measured on the equivalence probe's 4063-state corpus, encounter-order numbering and sorted-unique numbering disagree on 103 states, all of them states with nontrivial automorphisms.
 
 \subsection{The Weisfeiler--Leman Signature}
 \label{sec:wl}
@@ -476,7 +476,7 @@ and unwind, and the rule choosing which pattern position is bound next are one s
 is also the body the device runs; the two paths differ in who executes the resulting steps and
 when.
 
-\subsection{Position Against the Worst-Case-Optimal Bound}
+\subsection{Relation to Worst-Case-Optimal Joins}
 \label{sec:agm}
 
 Treating a left-hand side as a conjunctive query, the AGM bound~\cite{atserias2013size} gives the
@@ -563,7 +563,7 @@ states live in, the lock-free structures, the allocator that keeps them off the 
 heap, the memory model that makes their orderings checkable, and the static analysis
 that decides how a rule will be matched before any matching happens.
 
-\subsection{One Implementation per Rule, Compiled for Both Targets}
+\subsection{Shared Host and Device Implementation}
 \label{sec:shared-core}
 
 The CPU engine and the CUDA port are separate schedulers over the same semantics, and any rule
@@ -617,102 +617,7 @@ state that differs from its parent by a few edges stores that difference and not
 
 This design eliminates edge duplication across states, since each state is a bitset view over the shared pool rather than an independent copy of its edges. The bitset is chunked and the chunks are shared: a child state initially references its parent's chunks, and a chunk is copied only when the child first mutates it. A rewrite that touches a few edges therefore allocates a few chunks rather than a copy of the parent's membership, and chunks are immutable once shared, so concurrent readers of a parent are unaffected by a child's mutation. Table~\ref{tab:t3-deheap} reports the arena bytes each corpus workload consumes.
 
-\subsection{Lock-Free Data Structures}
-
-Concurrent evolution requires thread-safe data structures without lock contention. The constructions below follow standard non-blocking techniques~\cite{herlihy2012art}, in particular compare-and-swap insertion into an open-addressed table~\cite{michael2002high} and lock-free list linkage~\cite{harris2001pragmatic}:
-
-\begin{description}
-\item[ConcurrentMap$\langle$K, V$\rangle$:] Hash table using atomic compare-and-swap for insertion. Wait-free lookup with lock-free insertion.
-
-\item[ConcurrentKeySet$\langle$K$\rangle$:] A set, for membership rather than mapping. Presence and
-ownership are decided by one compare-exchange from the empty sentinel to the key, so none of the
-map's value-publication protocol exists: no locked slot, no settling of a claim met mid-flight.
-An insert scans the superseded-table chain for a settled copy of its key before claiming at the
-head, and a claim that lands in a table which is no longer the head is reported stale and
-re-driven rather than counted---the two halves of keeping one key from ever being claimed twice.
-Growth carries
-each key into the new table and then seals the slot it came from with a second reserved key, so a
-key reachable through two tables is enumerated once, and a table whose slots are all sealed is
-skipped rather than probed---without which a retired table is scanned in full on every operation,
-because sealing removes the empty slot linear probing stops at. Membership queries walk the chain
-oldest table first, and Section~\ref{sec:verification}'s reader-visibility harness
-checks that order. The quotient reconstruction's
-membership marks use it (Section~\ref{sec:quotient}).
-
-\item[SegmentedArray$\langle$T$\rangle$:] Dynamically growing array stored in fixed-size segments. Append-only with atomic size tracking.
-
-\item[LockFreeList$\langle$T$\rangle$:] Append-only linked list for index entries. Supports concurrent iteration via snapshot semantics.
-
-\item[Work-stealing deque:] A bounded Chase--Lev deque~\cite{chase2005dynamic}. Each worker owns
-one, pushing and popping at its own end without a contended atomic in the common case, and stealing
-from the opposite end of another worker's deque when idle. Its memory orderings follow
-L\^e et al.~\cite{le2013workstealing}. Following HGMatch~\cite{yang2023hgmatch},
-evolution is expressed as a dataflow over such a scheduler: a scan task seeds a join, expansion
-tasks extend it, and completed matches are handed to rewriting, with work stealing providing load
-balance across a frontier whose width is not known in advance.
-
-\item[Job pool:] Tasks are drawn from a per-thread slab rather than allocated, so submitting a task
-performs no call to the global allocator, so the allocation figures of
-Section~\ref{sec:allocation} hold for a workload that submits one task per candidate expansion.
-Allocation and same-thread release touch only the owning thread's private free list, with no
-atomic and no contention. Work stealing means a task allocated on one thread is often released on
-another, so a foreign release is pushed onto the owner's separate foreign list by
-compare-and-swap, and the owner reclaims the whole accumulated batch with one exchange when its
-private list empties. That shape is free of the ABA problem by construction rather than by a tag:
-producers only ever prepend, and the single consumer takes the entire list at once, so there is no
-node for a compare-and-swap to observe unchanged after reuse. Each slot carries a header naming
-its owning pool, so a release on any thread reaches the pool the slot came from; an
-object too large for a slot falls back to the general allocator, so correctness does not depend on the slot size being
-estimated correctly. Pools are never destroyed and are recycled through a fixed array of claimable
-slots when a thread exits---an array rather than a stack of free pools, because a pool that is
-claimed, used and released again is exactly the reuse a stack's head compare-and-swap cannot
-distinguish, while an array slot has no pointer to compare.
-\end{description}
-
-\paragraph{The shared injector, and what bounds its ABA defence.}
-Work submitted from outside a worker, and work that overflows a worker's own deque, goes to one
-shared double-ended queue. Its state is a single 64-bit word packed as a 32-bit tag and two 16-bit
-indices, so one compare-exchange commits both ends at once and a pop at each end racing for the
-last item resolves by one of the two exchanges failing. The three fields share a word because a
-128-bit compare-exchange is not lock-free on the supported targets; the indices need 16 bits each
-for a capacity of 32{,}768 entries, which leaves 32 bits for the tag. Because both ends move in
-both directions, the index pair recurs, and the tag lets a compare-exchange commit only
-if nothing changed since the load.
-
-A 32-bit tag wraps, so the defence is conditional, and the condition is stated here rather than
-assumed. For a stale item to be claimed twice, the tag must complete a full cycle \emph{and} both
-indices must return to the values one popper read, all within that popper's own load-to-exchange
-window---a handful of instructions, so it requires the thread to be descheduled inside them. The
-throughput measurement that bounds this is direct: at eight threads the shared queue sustains
-$8.16 \times 10^6$ operations per second, so $2^{32}$ of them take on the order of 500 seconds of
-continuous stall while every other thread runs flat out. The same measurement gives the cost of
-sharing one word: $1.33 \times 10^8$ operations per second at one thread against $8.16 \times
-10^6$ at eight. Per-worker deques are near-exclusive to their owners and do not incur that
-reduction; the injector is shared and does, so it holds only overflow and external
-submissions.
-
-Neither queue offers a blocking push or pop. For a worker this is not a preference but a
-requirement: a worker parked inside a push cannot pop, so if every worker parked there the queues
-would never drain again---and since expansion is combinatorial and submits from inside running
-jobs, saturating a local deque and the injector together is reachable rather than hypothetical. A
-full queue is answered by running the job on the calling thread, which always makes progress.
-
-A worker with no available work does not spin indefinitely. It waits on a 32-bit address through
-the platform's own primitive---\texttt{futex} on Linux, \texttt{WaitOnAddress} on Windows,
-\texttt{os\_sync\_wait\_on\_address} on macOS---so a blocked worker consumes no cycles and is woken
-by the thread that supplies the work. No mutex or condition variable is used on any of these
-platforms: the engine's object files reference none, and the only such construction in the tree is
-a fallback compiled solely for a platform providing none of the three primitives.
-
-\paragraph{One code path for a machine with no threads.}
-The scheduler also runs with no worker threads at all. In that mode none are spawned: submission
-routes every job to the injector and the wait call drains it inline, in first-in-first-out order,
-on the thread that called it. Jobs submitted by a running job land behind it and execute in
-submission order, so a run in this mode is deterministic by construction rather than by the
-argument of Section~\ref{sec:determinism}. This is the single-threaded execution mode, and it is
-also the WebAssembly target, where spawning threads is not available. Nothing above the scheduler
-distinguishes the two: the engine is compiled once and the work the workers would have done
-happens on the thread that waits.
+The lock-free structures beneath the engine, their per-operation costs and their memory model are specified in Appendix~\ref{app:data-structures}; the engine's behavior at configured capacity limits is specified there as well.
 
 \subsection{Allocation}
 \label{sec:allocation}
@@ -723,16 +628,6 @@ pointer increment with no synchronization, and memory is reclaimed in bulk by re
 rather than by freeing individual objects. Calls to the global allocator are consequently confined
 to acquiring those blocks: Table~\ref{tab:t3-deheap} reports $455$ to $475$ such calls for an
 entire run, which on the largest workloads measured is $0.007$ calls per event.
-
-\subsection{Memory Model}
-
-A new state is published to readers by a release store paired with an acquire load, so a reader
-that observes the state also observes the edge set written before it. A producer appends the
-new edges, inserts their ids into the state's edge set, issues a release fence, and only then
-appends the state; a consumer that finds the state through the canonical map's acquire load
-issues an acquire fence before reading the edge set. The release--acquire pair orders every
-edge write before the state's publication, so no reader of a published state can observe an
-edge set still being filled.
 
 \subsection{Static Rule Analysis}
 \label{sec:static-analysis}
@@ -762,17 +657,6 @@ it receives; only the work of discovering it is removed. Nothing here concerns t
 reachable set, or global confluence, all of which are undecidable for a rewriting system of this
 power.
 
-\subsection{Behavior at Configured Limits}
-\label{sec:capacity}
-
-The engine's containers are sized from configuration, and a workload may exceed them. Reaching a
-configured ceiling is treated as a distinct outcome from a programmer error: the run returns the
-portion of the evolution that fits, together with a warning naming the limit that was reached,
-rather than raising an exception and discarding the work. Both backends behave identically in this
-respect. Options that a build does not implement are reported the same way, so a caller who
-requests one receives the result computed without it and a statement to that effect, rather than
-silently receiving a different computation from the one requested.
-
 \subsection{Determinism Contract}
 \label{sec:determinism}
 
@@ -798,7 +682,7 @@ not. What a capped run guarantees is therefore the bound, at every worker count,
 states meet it. The per-parent cap has a locally-completing population and could be made
 schedule-independent on the same terms as the transition spine; it is not today.
 
-\subsection{Depth as a Shortest Path, and Termination}
+\subsection{Depth Semantics and Termination}
 \label{sec:depth}
 
 A run is bounded by a number of steps, and the bound is applied to the \emph{shortest} path length
@@ -910,7 +794,7 @@ an event's producers are complete before the event exists. We therefore make no 
 for the procedure below, and no claim of optimality; it is the specialisation the easier setting
 permits, and a fully dynamic reduction would be required if deletions were admitted.
 
-\paragraph{Why the reduction is maintained rather than computed.}
+\paragraph{Online maintenance.}
 Computing the reduction as a pass over the finished graph would require the graph to be finished,
 which conflicts with two properties the engine offers. A session (Section~\ref{sec:sessions}) may
 be queried between steps, so there is no point at which the causal graph is known to be complete;
@@ -936,7 +820,7 @@ it, and a farther producer is usually eliminated by a query that terminates earl
 are numbered in creation order and an event's producers necessarily precede it, the order is
 available without sorting.
 
-\paragraph{What the arrival order establishes.}
+\paragraph{Arrival-order invariant.}
 Two properties of this setting make the problem strictly easier than the fully dynamic one. Causal
 edges are only inserted, never deleted, so no retained edge can become non-implied later, and an
 edge dropped as implied never has to be reconsidered. And edges arrive in an order consistent with
@@ -1022,7 +906,7 @@ growing; the useful range between extinction and no thinning is narrow and depen
 branching. The rate is therefore permitted to vary with depth, so that a sample can be thinned
 without the frontier dying before it reaches the depth of interest.
 
-\paragraph{Coverage is limited by reachability, not by survival.}
+\paragraph{Coverage.}
 A per-transition coin does not recover the exhaustive system as seeds are accumulated, and the
 reason is structural rather than a matter of the rate. A transition can only be sampled if its
 source state was created, and its source state was created only if some earlier coin fired, so
@@ -1127,7 +1011,7 @@ Events can be canonicalized at multiple granularities:
 
 The three refine one another in that order, so the canonical event count is non-decreasing across them; Table~\ref{tab:event-canon} reports it per workload. \textsc{ByConsumedProducedEdges} requires the edge correspondence between isomorphic states, which is the per-edge canonical rank produced by the same individualization--refinement pass as the state's hash.
 
-\paragraph{Event identity does not inherit the state-identity mode.} Event identity is defined over isomorphism classes of states, and the specification makes it independent of which state-identity mode a run selects. Resolving it through whichever hash the state mode happens to use would break that independence. The Weisfeiler--Leman hash is isomorphism-invariant but strictly coarser than the exact form, so outside the exact state mode more states share a representative, the edge correspondence between an event's endpoints resolves to a coarser one, and the event identity derived from it coarsens with it. The consequence is measurable rather than theoretical: resolving event identity through the approximate hash reports fewer distinct events on the binary-growth corpus case than the exact resolution does, a difference produced entirely by the state mode leaking into a quantity that is not supposed to depend on it.
+\paragraph{Independence from the state mode.} Event identity is defined over isomorphism classes of states, and the specification makes it independent of which state-identity mode a run selects. Resolving it through whichever hash the state mode happens to use would break that independence. The Weisfeiler--Leman hash is isomorphism-invariant but strictly coarser than the exact form, so outside the exact state mode more states share a representative, the edge correspondence between an event's endpoints resolves to a coarser one, and the event identity derived from it coarsens with it. The consequence is measurable rather than theoretical: resolving event identity through the approximate hash reports fewer distinct events on the binary-growth corpus case than the exact resolution does, a difference produced entirely by the state mode leaking into a quantity that is not supposed to depend on it.
 
 The engine therefore resolves event representatives through the exact invariant in \emph{every} state mode whenever event canonicalization is enabled, independently of the hash the state mode uses for state identity. The two are separate values: one decides state identity, the other resolves event representatives. The exact hash is computed only when event canonicalization requires it, so a run with event canonicalization disabled does not compute it and behaves as its state mode specifies. When it is enabled, the same individualization--refinement pass yields both the exact hash the event path resolves through and the per-edge ranks that identify consumed and produced edges, so the guarantee costs one pass per state rather than two per event.
 
@@ -1135,7 +1019,7 @@ The engine therefore resolves event representatives through the exact invariant 
 % GPU
 % ----------------------------------------------------------------------------
 
-\paragraph{Configuration dependencies are reported, not absorbed.}
+\paragraph{Configuration dependencies.}
 The canonical-class event identity and quotient exploration are both defined over canonical states
 and their edge orbits, and those orbit tables are produced only by the exact state-canonicalization
 mode. A run that asks for the first while selecting a weaker state mode is therefore asking for
@@ -1210,7 +1094,7 @@ three queues without returning to the host; an epoch counter separates evolution
 \label{fig:megakernel}
 \end{figure*}
 
-\subsection{The Constraint the Design Follows From}
+\subsection{Design Constraints}
 \label{sec:gpu-constraint}
 
 The resident kernel exists to remove a host round trip per evolution step. That aim is only met if
@@ -1239,287 +1123,7 @@ from which each state claims a slot sized from its own vertex, edge and occurren
 consequently no approximate fallback in the device's exact path: exhausting the arena is a capacity
 overflow, recorded and reported like any other, and never a quietly coarser identity.
 
-\subsection{GPU Canonicalization}
-
-The device does not reimplement canonicalization. The individualization--refinement body is a
-single source compiled for both host and device, so host and device compute the same canonical
-hash for a given state by construction rather than by two implementations being kept in step. What
-is device-specific is the orchestration only: how a state is flattened out of the adjacency
-representation, and where the core's scratch comes from.
-
-The parallelism is across states, not within one. A worker canonicalizes one state per call,
-running the shared body serially, which suits a workload whose states arrive continuously and
-number in the thousands rather than one whose individual instances are large. The scratch for that
-call is sized from the state's own edge and occurrence counts and claimed from the device arena of
-Section~\ref{sec:gpu-constraint}, so there is no per-state ceiling and no batch to measure.
-
-There is consequently no approximate fallback anywhere on this path. A state the exact path cannot
-key---because the arena is exhausted, or because the search wants more individualization depth than
-the device attempts---is reported as a capacity overflow and the run is retried with a larger
-reservation. It is never keyed by something coarser. This is not a tuning preference, because
-isomorphism-invariance fails in only one direction: a 1-dimensional Weisfeiler--Leman hash never
-separates two isomorphic states, but it does merge non-isomorphic ones, which the engine
-demonstrates constructively on the prism graph against $K_{3,3}$ at six vertices and on the
-rook's $4 \times 4$ graph against the Shrikhande graph. Nothing bounds how often an evolution
-reaches such a state, so no collision rate measured over some other corpus would license treating
-the merge as rare. The only additional device-side hash is the content-ordered key that the
-\textsc{Automatic} identity requires, which applies the same rule as the host.
-
-Where a device-side event signature must stand in a raw edge identifier because an edge's canonical
-rank was unavailable at the moment the event was stamped, the substitution is counted. Such a
-signature is not an isomorphism invariant, and the count is what lets a caller comparing event
-totals across devices see that it occurred rather than infer a disagreement in the evolution.
-
-\subsection{GPU Pattern Matching}
-
-The unit of matching work on the device is a (state, rule) pair, handled by one block whose threads
-stripe the candidates for the first pattern edge. Parallelism across states and rules is therefore
-the outer axis, with the inner axis inside a single join.
-
-The device keeps two indices over the edge pool, a signature index and a vertex inverted index,
-each filtered by the state's edge set at query time, and divides the work between them: the
-signature index seeds the first pattern edge; every subsequent edge is driven by the vertex
-inverted index through a \emph{pivot variable}---a left-hand-side variable that is guaranteed to
-be bound by the time that edge runs, which the connectivity ordering of the pattern edges
-establishes. Looking the pivot's binding up in the inverted index yields a candidate list bounded
-by that vertex's degree, typically a few entries, in place of a signature bucket that holds
-thousands on a dense state. This is the division adapted from HGMatch~\cite{yang2023hgmatch}:
-signature index for the seed, inverted index for the extensions. The host answers the same two
-questions from the state's ancestry (Section~\ref{sec:vertex-index}).
-
-One detail of the semantics is computed on the host so that the device does not recompute it per
-match. Because distinct pattern variables may bind to the same vertex, a single pattern signature is
-compatible not with one data signature but with every coarsening of its partition. The list of
-compatible signature hashes for each pattern edge is therefore computed once on the host when the
-rule is added, and the kernel seeds from the index directly rather than enumerating coarsenings
-while matching.
-
-\subsection{Device Work Queues and Termination}
-\label{sec:gpu-queues}
-
-The queues of Figure~\ref{fig:megakernel} are bounded lock-free multi-producer, multi-consumer ring
-buffers in device memory. Workers are producers and consumers of the same queues---a rewrite
-produces states, which become match tasks---so a single-producer structure would not serve, and a
-bounded one is required because device memory is reserved in advance.
-
-Each slot carries a sequence number, and that number alone determines whose turn the slot is: it
-equals the position a producer is reserving when the slot is free, one more than that position
-when the slot holds an item for the consumer reserving it, and less than the position when the
-queue is full for a producer or empty for a consumer. Slot $i$ starts at $i$, a producer publishes
-with the position plus one, and a consumer releases with the position plus the capacity, so a slot
-advances by exactly one capacity per lap and the three tests remain exact across wraps. The
-ordering is carried by that handshake---a release store by the producer synchronizing with the
-consumer's acquire load---so the head and tail cursors, which only allocate positions, are relaxed.
-
-Reservation is a compare-and-swap on the cursor rather than an unconditional increment. The
-difference matters precisely because the same workers both produce and consume: an unconditional
-bump has nothing to undo with, and a rollback or a give-the-slot-back store can land on a slot
-another thread has already taken, which either loses an item or hands one out twice. In a queue
-whose producers are its consumers, a lost item is not a dropped unit of work but a run that never
-finishes, because the termination detector waits for a completion that can no longer occur.
-
-A resident kernel whose workers pull from queues cannot end when a launch ends, so termination is
-detected rather than assumed. Each queue role maintains two monotonic counters, one for work
-pushed and one for work drained, incremented with release ordering so that any payload the work
-touched is visible to whoever observes the counter. A detector reads them with acquire ordering and
-looks for every pair to be equal. Equality alone is not sufficient: it occurs mid-evolution
-whenever every in-flight task happens to have just finished without yet emitting its follow-ups.
-Exit is therefore signalled only when equality holds across two consecutive observations separated
-by a backoff interval, so that nothing was pushed during the window between them. Workers test the
-exit flag at the top of their outer loop, and read it with acquire ordering so a worker that sees
-it also sees everything the detector saw before setting it.
-
-Detecting termination incorrectly truncates the evolution without an error, so the device
-result is compared against the host's on every corpus workload rather than only checked for the
-absence of reported errors.
-
-\subsection{Memory Management}
-
-Device memory is reserved before the kernel launches, since a resident kernel cannot call the host
-allocator. Edge and state pools are pre-allocated with atomic counters, and scratch whose size is
-known only once a state's dimensions are seen---the canonicalizer's working arrays, principally---is
-carved from a device-owned bump arena.
-
-The arena's size is determined by the grid rather than by the workload. A persistent kernel's
-blocks do not retire and get replaced---they live for the whole evolution---so the grid is the
-worker count, and each resident worker holds its own arena slot at a time. Arena demand therefore
-scales with the grid, and sizing it from the state budget alone starves it as soon as the grid
-grows. The arena is one shared bump pool rather than a partition per worker, because a worker keeps
-one slot and grows it to the largest state it personally canonicalizes: what has to be provided is
-the average share across workers, not a per-worker maximum. The default grid is eight blocks per
-streaming multiprocessor. There is no free operation: a worker finishes with its scratch before
-taking its next item, so a slot is reused and re-claimed only when a larger one is needed, which
-with doubling wastes at most one slot per block, bounded by that block's peak. The whole arena is
-reset at the end of the run.
-
-Where a pre-sized region proves too small for a
-state, the overflow is reported through a device-side error channel and the work is retried with a
-larger reservation, which is the mechanism behind the capacity behavior of
-Section~\ref{sec:capacity}.
-
-% ----------------------------------------------------------------------------
-% BENCHMARKS
-% ----------------------------------------------------------------------------
-
-\section{Verification of the Concurrent Surface}
-\label{sec:verification}
-
-The engine holds no lock, so every property that a lock would have enforced is instead a
-consequence of an ordering argument. Arguments of that kind are checked poorly by testing. A stress test samples
-interleavings, so a clean run bounds nothing: on this engine a determinism gate of 150 runs --
-90 recorded, then 40 and 20 more under load---explores a vanishing fraction of the schedules
-its own thread count admits, and the schedules that matter are not the likely ones. Two verification layers are
-therefore maintained alongside the test suite, and they are bounded in different directions.
-
-\paragraph{Bounded programs, all executions.}
-The first layer uses GenMC~\cite{kokologiannakis2021genmc}, which enumerates the executions of a
-bounded concurrent program under the RC11 memory model~\cite{lahav2017repairing}. For the program
-it is given---that thread count, that operation count, those inputs---it explores every
-interleaving and every reads-from choice the model permits, so a clean run is a statement about all
-executions within the bound rather than about the ones that happened to be scheduled.
-
-Three harnesses carry a weaker guarantee than that, and each says so in place. Two of them bound
-the number of context switches, which the checker permits only under sequential consistency, so
-those two establish their property for the sequentially consistent executions of their program
-rather than for every RC11 execution of it. A third samples executions instead of enumerating
-them, because its shape cannot be exhausted at the size that exhibits the behaviour it is about; a
-clean sample is evidence rather than proof, and the same property is proved by enumeration at a
-smaller shape by a separate harness. The remaining harnesses are exhaustive over RC11 within their
-stated bound.
-
-Each harness is a small program that includes the engine's own header and calls its own functions,
-rather than a hand-written model of the algorithm. The constraint is deliberate: a model drifts
-from the code as soon as the code changes, and a re-implementation establishes a property of the
-re-implementation. A harness that includes the header stops compiling when the header changes
-shape, which couples it to the code it is about. Two harnesses cannot meet the constraint, because
-the protocols they check live inside functions the interpreter cannot take, and both say so in
-place: their transcriptions are copied verbatim and run over the real underlying structure.
-
-The properties checked are the ones whose failure would be silent. For the concurrent map: that
-get-or-create admits exactly one winner and returns that winner to every caller, so a
-\emph{was\_inserted} result means what its callers assume. That this survives a table resize
-running concurrently with the inserts that triggered it, and survives two successive growths. And
-that the flag comes from the publishing exchange rather than from a value comparison, so repeated
-offers of the same value for one key do not each report success. For the deque: that
-the owner popping the back and a thief popping the front never extract the same item, checked at
-the single configuration where the two ends address the same slot. For the match rendezvous: that
-a match is claimed exactly once and never dropped on a collision, and, for the rendezvous between
-an instance and the matches captured for its class, that every pair meets. For the per-instance
-application list: that of any two applications linked into one list exactly one observes the
-other, permitting the branchial pair they induce to be emitted once with nothing to
-deduplicate it against (Section~\ref{sec:quotient}), and that a walk from a node enumerates every
-node linked before it. For the per-worker scratch arena: that no two workers are handed the same
-index. For the key set: that two
-threads inserting one key while a third insertion forces a growth beneath them produce exactly one
-reported insertion, and that enumeration emits each key once across that growth---two properties
-checked by separate harnesses, because they are independent and a single harness that bundled them
-would not say which one a violation belonged to. A third property class covers \emph{readers}
-racing a growth: a membership query for a key that settled before the query began must answer
-present in every execution, even mid-carry, when the key's slot in the retiring table is already
-sealed and its copy has just landed in the successor. The chain walk is oldest-first for that
-reason: a newest-first walk visits each table on the wrong side of the carry hand-off and can
-report absent for a key that is present, and the twenty-execution counterexample distinguishing
-the two orders is in the harness. The same read-order condition governs the map's drained-table
-skip, where the calibrated break is reading a table's skip flag only when the walk arrives at it. For the
-scheduler: that a worker
-which parks is always woken, which is a liveness property and is checked as one---removing either
-of the two sequentially consistent fences in the submit/park protocol makes the checker report a
-non-terminating spin loop.
-
-\paragraph{The checker itself.}
-Running an engine of this size through GenMC required changes to the checker, all of which are
-shipped with the engine as a patch against release 0.17.0. Four are correctness fixes:
-\texttt{operator new[]} is intercepted as an allocation, as \texttt{operator new} already was;
-a \texttt{memcpy} is promoted over the element type its destination names, with byte stores for
-a tail shorter than the last element and alignment-width stores for an opaque \texttt{memset};
-the read half of a failed compare-exchange carries the failure ordering rather than the success
-ordering; and no liveness violation is reported while a thread is blocked by an assume, a helped
-compare-exchange or a confirmation (upstream pull request 58). One is a limitation in the
-lowering of copies whose operands the promotion pass cannot type---a call result, or a load from
-a lambda's closure field---which were lowered as loops at the intrinsic's alignment, so that a
-program's two-byte field read fell inside a four-byte store, an access the checker's value
-resolution does not answer and reported as uninitialised memory; the promotion now runs once
-before and once after scalar replacement and register promotion, when such operands have become
-the allocas they held, and the report names a read that lies inside a wider write. The rest are
-instruments: a progress heartbeat over the transformation passes and the exploration, and, in
-estimation mode, an attribution of the state-space estimate to the reads and writes that
-produce it---every access with more than one alternative is booked against its source line
-with weight $\log_2$ of the alternative count, and the booked total equals $\log_2$ of the
-estimator's sample per execution. That attribution is what identified the two changes that
-made the composed harnesses tractable: an idle worker's empty pop of its deque wrote its
-\texttt{bottom} word twice per look, giving every thief's read of that word one reads-from
-alternative per store, and the workers were spawned with distinct arguments, which kept the
-checker's symmetry reduction from applying.
-
-\paragraph{Unbounded worker count, a transcribed model.}
-The second layer uses TLA+ and its model checker~\cite{lamport2002specifying} on the match
-forwarding protocol, which is the property whose silent failure is most costly: a lost match
-removes the entire subtree below it while leaving the run internally consistent. Every in-flight
-protocol step is held in a bag from which any enabled step may fire, so the interleavings subsume
-every worker count rather than a bound on it; what is bounded instead is the state count. The
-trade is stated where the specification is: this layer is a transcription, so a change to the code
-does not change the model, and each specification header names the code it transcribes.
-
-The specification is checked in four configurations, differing in whether the claim winner owns
-both the store and the propagation and whether submission is batched
-(Table~\ref{tab:tla}). The shipped configuration is forwarding-complete at the model bound. The
-configuration without the ownership invariant and without batching violates the property. Its
-counterexample is the shape the invariant exists to exclude. On a chain
-$s_0 \to s_1 \to s_2$, a match is discovered at the root after $s_2$'s pull has run; $s_1$'s pull
-wins the claim and stores without propagating; the root's push then finds the claim taken and skips
-its recursion. That leaves $s_2$ quiescent with a match that is valid for it and not
-stored. That the model reaches the failure it exists to exclude is the calibration of the model.
-The remaining configuration shows that batching alone masks the broken pull at this bound, which is
-why the ownership invariant is not treated as redundant with it.
-
-\begin{table}[htbp]
-\centering
-\caption{\textbf{Forwarding completeness under TLA+.} The shipped protocol and three
-calibration arms of the same specification, exhaustive at the model bound of four states, three
-matches and three edges, with a mid-chain discovery enabling a grandchild. \emph{Ownership} is
-the claim winner owning both the store and the propagation; \emph{batched} is per-state
-submission after matching completes. The arm without ownership or batching is the checker's
-calibration: the specification detects the violation its removal introduces.}
-\label{tab:tla}
-\resizebox{\ifdim\width>\linewidth\linewidth\else\width\fi}{!}{%
-\begin{tabular}{lllcr}
-\toprule
-Arm & Ownership & Batched & Verdict & Distinct states \\
-\midrule
-\textbf{shipped} & yes & yes & complete       & 117{,}005 \\
-calibration & no  & yes & complete       & 85{,}777 \\
-calibration & yes & no  & complete       & 479{,}005 \\
-calibration & no  & no  & violated (as required) & trace depth 13 \\
-\bottomrule
-\end{tabular}}
-\end{table}
-
-\paragraph{A second structure in the same layer.} The segmented array carries the states, the
-events, the edges and the per-instance application lists, and its ordering invariant is that if a
-segment exists then so does every segment below it---a reader that finds segment $k$ may index any
-position beneath it without further checking. That invariant is specified rather than tested,
-because the structure allocates segments on demand from concurrent appenders and the failure it
-guards against is a read of an unallocated segment rather than a wrong value. The shipped
-protocol checks clean at $2{,}284$ distinct states and a complete-graph depth of $21$; the
-configuration that creates only the segment asked for violates \emph{DenseBelowCount}. The
-calibration also fixes the bound: at two appenders the broken protocol is \emph{also} clean, since
-one claim each means the index that would expose the gap cannot be reached until a holder of the
-lower segment has published, so three are required. It is specified here rather than checked with
-the tools of the previous layer because that checker does not survive constructing this
-structure---a limitation of the tool, recorded where it applies rather than presented as a choice.
-
-\paragraph{What a sampled execution reports.} The two layers above bound the schedule; the test
-suite does not, and no sanitizer changes that. A sanitizer changes what a given execution
-is able to report, which is the second half of the objection to testing: a stress run samples few
-schedules, and the schedules it does sample can still pass while holding a race, an
-out-of-bounds access, or a read of memory nothing wrote. The suite is therefore run under
-ThreadSanitizer, AddressSanitizer and UndefinedBehaviorSanitizer, and the device suites under the
-CUDA memory and initialization checkers; all five report nothing on the shipped tree, and all five
-fail the build on a finding. The initialization checker detects a case the others do not: a host
-readback of device memory that no kernel wrote returns whatever the allocator last left at that
-address, so an assertion over it succeeds or fails according to allocation history rather than
-according to the code, and neither a test nor a model checker over the concurrent structures
-observes it.
+The device implementations of canonicalization and matching, the work queues, termination and device memory management are specified in Appendix~\ref{app:gpu-impl}.
 
 \section{Experimental Evaluation}
 \label{sec:benchmarks}
@@ -1554,7 +1158,7 @@ Every table below is written by \texttt{tools/dev/paper\_tables.py} from the ins
 \item[Methodology:] Wall-clock figures are medians over repeated runs on an otherwise idle machine, with the workers placed by the engine's topology order over the host's homogeneous cores; a run taken while the machine was loaded is marked in the table's provenance line rather than published as though it were quiet. Counts, instruction-level measurements and \texttt{getrusage} figures are deterministic and are reported from a single run. One exception is stated where it applies: the left-hand-side sweep of Figure~\ref{fig:lhs-scaling} reports the \emph{minimum} of its repeats rather than the median, because contention can only make a run slower, so the minimum is the estimate interference cannot inflate---and that sweep admits a timed run only after checking the machine is quiet.
 \end{description}
 
-\subsection{Correctness and Memory (Tables T1 and T3)}
+\subsection{Correctness and Memory Footprint (Tables T1 and T3)}
 Correctness comes first because a performance number for a wrong answer is not a result. Every
 workload in the corpus is evolved in \textsc{Full} (exact) mode, single-threaded, to its own
 depth---the \texttt{oracle\_steps} recorded with it in \texttt{reference/oracle\_corpus.hpp},
@@ -1822,7 +1426,7 @@ decline of Figure~\ref{fig:lhs-scaling} is spent in user time, on cross-domain d
 \label{fig:scaling}
 \end{figure}
 
-\subsection{Rule Shape and Where Efficiency Falls (Table T12)}
+\subsection{Parallel Efficiency by Rule Shape (Table T12)}
 The rule set decides how much parallel work exists, so a scaling curve characterizes the rule as
 much as the engine. Two shapes are measured at every thread count: a one-edge left-hand side,
 which re-matches by scanning an index and expands each state narrowly, and a two-edge left-hand
@@ -1847,7 +1451,7 @@ two-edge left-hand side. Source: \texttt{tools/dev/scaling\_sweep.py} over
 \input{tables/t12_rule_shapes}
 \end{table}
 
-\subsection{The Three Properties of a Left-Hand Side}
+\subsection{Left-Hand-Side Properties}
 \label{sec:lhs-space}
 
 Table~\ref{tab:t12-shapes} varies one property of the rule---how many edges its left-hand
@@ -1969,7 +1573,7 @@ three at a fixed three-edge left-hand side, and one alternating the two. Source:
 \label{fig:lhs-scaling}
 \end{figure}
 
-\subsection{How Far Each Shape Evolves, and How Large Its Relations Become}
+\subsection{Evolution Depth and Relation Sizes}
 \label{sec:shape-space}
 
 Each shape is evolved one depth at a time until a single run exceeds the collection budget, so
@@ -2047,7 +1651,7 @@ the remaining columns are the sizes of the three objects the run built. Source:
 \input{tables/t14_shape_space}
 \end{table*}
 
-\subsection{What the Lost Efficiency Is Spent On (Table T13)}
+\subsection{Memory Behavior under Thread Scaling (Table T13)}
 A falling efficiency curve does not say which resource is being consumed, and the two candidates
 imply opposite remedies: contention on shared structures would be fixed by changing those
 structures, while the cost of memory the run acquires would not. Both are read from
@@ -2135,7 +1739,7 @@ Source: \texttt{tools/dev/scaling\_sweep.py} over \texttt{tools/bench\_gpu\_evol
 \input{tables/t11_gpu_saturation}
 \end{table}
 
-\subsection{Occupancy, Lane Efficiency, and the Bounds They Set}
+\subsection{Occupancy and Lane Efficiency}
 \label{sec:device-bounds}
 
 Table~\ref{tab:t11-saturation} establishes saturation behaviorally and states that its final column is not an occupancy figure. This section supplies the occupancy figure and the second bound that sits beside it, both read from the shipped binary rather than inferred from timings, so that the device results above are reported against the ceilings they were measured under.
@@ -2159,11 +1763,11 @@ Per-phase attribution, taken from \texttt{clock64} deltas accumulated per block 
 A third bound sits outside the kernel, in the per-call bracket rather than in the evolution itself. Tracing a device run and placing every allocation and copy relative to the resident kernel's own execution: no copy, allocation or memset occurs while the kernel is in flight---the count is zero across every evolution measured---so the evolution proper is free of host traffic, as the design requires. The bracket around it is not: each evolution's kernel is preceded and followed by runtime allocation, copy and fill calls, in equal numbers on the two sides of the launch. The design goal of a single readback at the end is therefore not met, though the stronger property of no traffic during evolution is. This bounds interactive and session use, where a caller pays that bracket on every call, rather than throughput on a single deep run, where it is amortized over the kernel's duration.
 
 
-\paragraph{Every device figure above is measured with the record set off, and that configuration hides a second regime.} The reconstruction of the raw causal and branchial relations is selectable independently of the evolution, and the measurements reported so far switch all of it off. Re-measured with causal recording on, the device and host agree \emph{exactly} on the reconstructed relation for the eight corpus workloads the device backend supports, at depth six---identical distinct-pair counts and identical counts surviving transitive reduction. The two implementations share no code below the shared replay core, so the agreement is between two separate schedulers, memory layouts and queueing disciplines. On the densest workload available, a three-edge disconnected left side at depth three, the two engines agree on $1{,}661{,}760$ causal pairs and $970{,}560$ surviving reduction.
+\paragraph{Causal recording.} The reconstruction of the raw causal and branchial relations is selectable independently of the evolution, and the measurements reported so far switch all of it off. Re-measured with causal recording on, the device and host agree \emph{exactly} on the reconstructed relation for the eight corpus workloads the device backend supports, at depth six---identical distinct-pair counts and identical counts surviving transitive reduction. The two implementations share no code below the shared replay core, so the agreement is between two separate schedulers, memory layouts and queueing disciplines. On the densest workload available, a three-edge disconnected left side at depth three, the two engines agree on $1{,}661{,}760$ causal pairs and $970{,}560$ surviving reduction.
 
 Reaching that agreement is a property of how the reduction is defined rather than of how it is computed. A finite directed acyclic graph has exactly one transitive reduction, so membership is a function of the finished relation; both engines therefore store the relation and reduce it on demand, rather than deciding each pair as it arrives against the pairs seen so far. The two engines share that body. Deciding on arrival makes the answer depend on the schedule: a pair reaching the relation before the longer path that bypasses it is kept, the same pair reaching it afterwards is dropped, and an append-only adjacency never retracts the difference. The reduction is computed once per source rather than once per pair---every edge leaving a given event shares the set reachable from it in two or more steps---and where event identifiers increase along every causal edge the search is bounded by the largest target of that source. The branchial relation is handled the same way: a branchial pair is two applications of one instance sharing a consumed slot, so neither engine stores the pairs, and both derive them from the applications on demand.
 
-\paragraph{The idle fraction of the low-work shapes is not, in general, the absence of work.} The attribution above reads the idleness of the corpus shapes producing few states as work not existing. With causal recording on this reading no longer holds for two of them: at depth six \texttt{cycle4} and \texttt{multirule} reconstruct causal relations orders of magnitude larger than their state counts, and both remain almost entirely idle. Hardware counters place them far from every ceiling---SM throughput $2.2\%$ of peak and DRAM $0.01\%$ on \texttt{cycle4} (Table~\ref{tab:device-occupancy})---and their lane efficiency is among the corpus's best, $9.8$ and $10.4$ of $32$, against $2.7$ on \texttt{wolfram24}, which the device completes faster than sixteen host threads (Table~\ref{tab:t7b-gpu-corpus}). The decisive comparison is that the kernel takes four times longer on \texttt{multirule}'s $49$ states than on \texttt{wolfram24}'s $9{,}820$.
+\paragraph{Idle fraction under causal recording.} The attribution above reads the idleness of the corpus shapes producing few states as work not existing. With causal recording on this reading no longer holds for two of them: at depth six \texttt{cycle4} and \texttt{multirule} reconstruct causal relations orders of magnitude larger than their state counts, and both remain almost entirely idle. Hardware counters place them far from every ceiling---SM throughput $2.2\%$ of peak and DRAM $0.01\%$ on \texttt{cycle4} (Table~\ref{tab:device-occupancy})---and their lane efficiency is among the corpus's best, $9.8$ and $10.4$ of $32$, against $2.7$ on \texttt{wolfram24}, which the device completes faster than sixteen host threads (Table~\ref{tab:t7b-gpu-corpus}). The decisive comparison is that the kernel takes four times longer on \texttt{multirule}'s $49$ states than on \texttt{wolfram24}'s $9{,}820$.
 
 What separates the two regimes is the parallel width, and the corpus supplies a controlled comparison for it. At depth six \texttt{cycle4} replays $68{,}185$ instances over $40$ classes and loses to the host; \texttt{wolfram24} replays $86{,}086$ over $9{,}820$ classes and beats it (Table~\ref{tab:t7b-gpu-corpus}). The instance counts are within $30\%$ of each other and the outcomes are opposite, so neither the amount of replay work nor the depth of the recursion is the discriminator. The state count is: a class is the unit over which the replay's instances are independent, and a run that collapses to forty classes has forty-fold width available however much work those classes carry. \texttt{cycle4} begins from a deliberately automorphic initial state, which is exactly the condition that collapses classes. The device's disadvantage on these shapes is therefore a shortage of independent work rather than an inability to execute the work it has, and raising occupancy against it would raise the idle count rather than the throughput.
 
@@ -2184,7 +1788,7 @@ them.
 
 The residual on these two workloads is accordingly attributed to a named and evidenced cause: the replay's depth-first descent runs inline on the discovering thread, so a class's instances are walked by one driver, and a run that collapses to forty classes has forty drivers' worth of width however many instances those classes carry. That is a bound of the replay's work decomposition, stated as measured, and it is not claimed as a lower bound on the problem.
 
-\paragraph{Bounds these results were measured against.} Nothing in this corpus is near a hardware ceiling: across the profiled corpus the highest SM-throughput figure is $12.6\%$ of peak (\texttt{wolfram24}) and the highest DRAM figure $16.1\%$ (\texttt{growshrink3}) (Table~\ref{tab:device-occupancy}). Occupancy is structural for the reason given above. The lane average separates the two regimes: about three lanes per warp on the large-state workloads, where the canonicalization trunk binds, and nine to twelve on the shapes of at most forty-nine states, where the shortage of independent work binds; \texttt{disc2x2}, \texttt{arimix} and \texttt{multiroot} sit between, at six to nine. The allocation invariant holds with the reconstruction running as well---profiling twenty-four consecutive evolutions records zero allocations, copies or memsets between a resident kernel's start and its end, with every such call falling in set-up or read-back. What is not established is whether the serial chain is irreducible; it is attributed and bounded, not proven minimal.
+\paragraph{Measurement bounds.} Nothing in this corpus is near a hardware ceiling: across the profiled corpus the highest SM-throughput figure is $12.6\%$ of peak (\texttt{wolfram24}) and the highest DRAM figure $16.1\%$ (\texttt{growshrink3}) (Table~\ref{tab:device-occupancy}). Occupancy is structural for the reason given above. The lane average separates the two regimes: about three lanes per warp on the large-state workloads, where the canonicalization trunk binds, and nine to twelve on the shapes of at most forty-nine states, where the shortage of independent work binds; \texttt{disc2x2}, \texttt{arimix} and \texttt{multiroot} sit between, at six to nine. The allocation invariant holds with the reconstruction running as well---profiling twenty-four consecutive evolutions records zero allocations, copies or memsets between a resident kernel's start and its end, with every such call falling in set-up or read-back. What is not established is whether the serial chain is irreducible; it is attributed and bounded, not proven minimal.
 
 The quotient decoupling of Section~\ref{sec:quotient} applies to the device on the same terms as the host. Capture of each class's frame is separated from replay of that capture against instances. The first signs event identity at the cost of the canonical answer, the second recovers the raw event set at the cost of the raw one. Together they leave the canonical answer bit-identical while removing the exponential from runs that do not request raw events. Two corpus shapes, \texttt{multirule} and \texttt{cycle4}, do not complete depth seven under unconditional replay at all; with capture and replay separated both complete, with state and event counts identical in the two arms, and the step from depth six to seven costs almost nothing further where the unconditional arm does not terminate.
 
@@ -2249,7 +1853,7 @@ computed the same result. Source: \texttt{tools/sampling\_cost\_smoke}.}
 \input{tables/t9_ablation}
 \end{table*}
 
-\subsection{Where the Instructions Go (Table T15)}
+\subsection{Instruction Profile (Table T15)}
 \label{sec:instruction-profile}
 
 Wall time says how long a run took; it does not say which part of the engine spent it, and on a
@@ -2280,7 +1884,7 @@ set-up the bench performs before the evolution. Source:
 \input{tables/t15_instruction_profile}
 \end{table}
 
-\paragraph{Against bounds.} Each host phase is divided by the unit it produces once per item,
+\paragraph{Per-phase lower bounds.} Each host phase is divided by the unit it produces once per item,
 read from the same run's counters: $\InstrIrCalls$ canonicalization calls over $\InstrRaw$ raw
 states, $\InstrEvents$ reconstructed events, $\InstrSetInserts$ claim-set inserts and
 $\InstrCaptured$ applied matches. Canonicalization costs $\InstrIrPerCanonCall$ instructions per
@@ -2382,6 +1986,166 @@ realized, and Proposition~\ref{prop:wlceiling} shows that a cheaper pre-filter c
 % CONCLUSION
 % ----------------------------------------------------------------------------
 
+\section{Verification of the Concurrent Surface}
+\label{sec:verification}
+
+The engine holds no lock, so every property that a lock would have enforced is instead a
+consequence of an ordering argument. Arguments of that kind are checked poorly by testing. A stress test samples
+interleavings, so a clean run bounds nothing: on this engine a determinism gate of 150 runs --
+90 recorded, then 40 and 20 more under load---explores a vanishing fraction of the schedules
+its own thread count admits, and the schedules that matter are not the likely ones. Two verification layers are
+therefore maintained alongside the test suite, and they are bounded in different directions.
+
+\paragraph{Model checking under weak memory.}
+The first layer uses GenMC~\cite{kokologiannakis2021genmc}, which enumerates the executions of a
+bounded concurrent program under the RC11 memory model~\cite{lahav2017repairing}. For the program
+it is given---that thread count, that operation count, those inputs---it explores every
+interleaving and every reads-from choice the model permits, so a clean run is a statement about all
+executions within the bound rather than about the ones that happened to be scheduled.
+
+Three harnesses carry a weaker guarantee than that, and each says so in place. Two of them bound
+the number of context switches, which the checker permits only under sequential consistency, so
+those two establish their property for the sequentially consistent executions of their program
+rather than for every RC11 execution of it. A third samples executions instead of enumerating
+them, because its shape cannot be exhausted at the size that exhibits the behaviour it is about; a
+clean sample is evidence rather than proof, and the same property is proved by enumeration at a
+smaller shape by a separate harness. The remaining harnesses are exhaustive over RC11 within their
+stated bound.
+
+Each harness is a small program that includes the engine's own header and calls its own functions,
+rather than a hand-written model of the algorithm. The constraint is deliberate: a model drifts
+from the code as soon as the code changes, and a re-implementation establishes a property of the
+re-implementation. A harness that includes the header stops compiling when the header changes
+shape, which couples it to the code it is about. Two harnesses cannot meet the constraint, because
+the protocols they check live inside functions the interpreter cannot take, and both say so in
+place: their transcriptions are copied verbatim and run over the real underlying structure.
+
+The properties checked are the ones whose failure would be silent. For the concurrent map: that
+get-or-create admits exactly one winner and returns that winner to every caller, so a
+\emph{was\_inserted} result means what its callers assume. That this survives a table resize
+running concurrently with the inserts that triggered it, and survives two successive growths. And
+that the flag comes from the publishing exchange rather than from a value comparison, so repeated
+offers of the same value for one key do not each report success. For the deque: that
+the owner popping the back and a thief popping the front never extract the same item, checked at
+the single configuration where the two ends address the same slot. For the match rendezvous: that
+a match is claimed exactly once and never dropped on a collision, and, for the rendezvous between
+an instance and the matches captured for its class, that every pair meets. For the per-instance
+application list: that of any two applications linked into one list exactly one observes the
+other, permitting the branchial pair they induce to be emitted once with nothing to
+deduplicate it against (Section~\ref{sec:quotient}), and that a walk from a node enumerates every
+node linked before it. For the per-worker scratch arena: that no two workers are handed the same
+index. For the key set: that two
+threads inserting one key while a third insertion forces a growth beneath them produce exactly one
+reported insertion, and that enumeration emits each key once across that growth---two properties
+checked by separate harnesses, because they are independent and a single harness that bundled them
+would not say which one a violation belonged to. A third property class covers \emph{readers}
+racing a growth: a membership query for a key that settled before the query began must answer
+present in every execution, even mid-carry, when the key's slot in the retiring table is already
+sealed and its copy has just landed in the successor. The chain walk is oldest-first for that
+reason: a newest-first walk visits each table on the wrong side of the carry hand-off and can
+report absent for a key that is present, and the twenty-execution counterexample distinguishing
+the two orders is in the harness. The same read-order condition governs the map's drained-table
+skip, where the calibrated break is reading a table's skip flag only when the walk arrives at it. For the
+scheduler: that a worker
+which parks is always woken, which is a liveness property and is checked as one---removing either
+of the two sequentially consistent fences in the submit/park protocol makes the checker report a
+non-terminating spin loop.
+
+\paragraph{Checker modifications.}
+Running an engine of this size through GenMC required changes to the checker, all of which are
+shipped with the engine as a patch against release 0.17.0. Four are correctness fixes:
+\texttt{operator new[]} is intercepted as an allocation, as \texttt{operator new} already was;
+a \texttt{memcpy} is promoted over the element type its destination names, with byte stores for
+a tail shorter than the last element and alignment-width stores for an opaque \texttt{memset};
+the read half of a failed compare-exchange carries the failure ordering rather than the success
+ordering; and no liveness violation is reported while a thread is blocked by an assume, a helped
+compare-exchange or a confirmation (upstream pull request 58). One is a limitation in the
+lowering of copies whose operands the promotion pass cannot type---a call result, or a load from
+a lambda's closure field---which were lowered as loops at the intrinsic's alignment, so that a
+program's two-byte field read fell inside a four-byte store, an access the checker's value
+resolution does not answer and reported as uninitialised memory; the promotion now runs once
+before and once after scalar replacement and register promotion, when such operands have become
+the allocas they held, and the report names a read that lies inside a wider write. The rest are
+instruments: a progress heartbeat over the transformation passes and the exploration, and, in
+estimation mode, an attribution of the state-space estimate to the reads and writes that
+produce it---every access with more than one alternative is booked against its source line
+with weight $\log_2$ of the alternative count, and the booked total equals $\log_2$ of the
+estimator's sample per execution. That attribution is what identified the two changes that
+made the composed harnesses tractable: an idle worker's empty pop of its deque wrote its
+\texttt{bottom} word twice per look, giving every thief's read of that word one reads-from
+alternative per store, and the workers were spawned with distinct arguments, which kept the
+checker's symmetry reduction from applying.
+
+\paragraph{TLA\textsuperscript{+} models.}
+The second layer uses TLA+ and its model checker~\cite{lamport2002specifying} on the match
+forwarding protocol, which is the property whose silent failure is most costly: a lost match
+removes the entire subtree below it while leaving the run internally consistent. Every in-flight
+protocol step is held in a bag from which any enabled step may fire, so the interleavings subsume
+every worker count rather than a bound on it; what is bounded instead is the state count. The
+trade is stated where the specification is: this layer is a transcription, so a change to the code
+does not change the model, and each specification header names the code it transcribes.
+
+The specification is checked in four configurations, differing in whether the claim winner owns
+both the store and the propagation and whether submission is batched
+(Table~\ref{tab:tla}). The shipped configuration is forwarding-complete at the model bound. The
+configuration without the ownership invariant and without batching violates the property. Its
+counterexample is the shape the invariant exists to exclude. On a chain
+$s_0 \to s_1 \to s_2$, a match is discovered at the root after $s_2$'s pull has run; $s_1$'s pull
+wins the claim and stores without propagating; the root's push then finds the claim taken and skips
+its recursion. That leaves $s_2$ quiescent with a match that is valid for it and not
+stored. That the model reaches the failure it exists to exclude is the calibration of the model.
+The remaining configuration shows that batching alone masks the broken pull at this bound, which is
+why the ownership invariant is not treated as redundant with it.
+
+\begin{table}[htbp]
+\centering
+\caption{\textbf{Forwarding completeness under TLA+.} The shipped protocol and three
+calibration arms of the same specification, exhaustive at the model bound of four states, three
+matches and three edges, with a mid-chain discovery enabling a grandchild. \emph{Ownership} is
+the claim winner owning both the store and the propagation; \emph{batched} is per-state
+submission after matching completes. The arm without ownership or batching is the checker's
+calibration: the specification detects the violation its removal introduces.}
+\label{tab:tla}
+\resizebox{\ifdim\width>\linewidth\linewidth\else\width\fi}{!}{%
+\begin{tabular}{lllcr}
+\toprule
+Arm & Ownership & Batched & Verdict & Distinct states \\
+\midrule
+\textbf{shipped} & yes & yes & complete       & 117{,}005 \\
+calibration & no  & yes & complete       & 85{,}777 \\
+calibration & yes & no  & complete       & 479{,}005 \\
+calibration & no  & no  & violated (as required) & trace depth 13 \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\paragraph{Segmented array.} The segmented array carries the states, the
+events, the edges and the per-instance application lists, and its ordering invariant is that if a
+segment exists then so does every segment below it---a reader that finds segment $k$ may index any
+position beneath it without further checking. That invariant is specified rather than tested,
+because the structure allocates segments on demand from concurrent appenders and the failure it
+guards against is a read of an unallocated segment rather than a wrong value. The shipped
+protocol checks clean at $2{,}284$ distinct states and a complete-graph depth of $21$; the
+configuration that creates only the segment asked for violates \emph{DenseBelowCount}. The
+calibration also fixes the bound: at two appenders the broken protocol is \emph{also} clean, since
+one claim each means the index that would expose the gap cannot be reached until a holder of the
+lower segment has published, so three are required. It is specified here rather than checked with
+the tools of the previous layer because that checker does not survive constructing this
+structure---a limitation of the tool, recorded where it applies rather than presented as a choice.
+
+\paragraph{Stress testing.} The two layers above bound the schedule; the test
+suite does not, and no sanitizer changes that. A sanitizer changes what a given execution
+is able to report, which is the second half of the objection to testing: a stress run samples few
+schedules, and the schedules it does sample can still pass while holding a race, an
+out-of-bounds access, or a read of memory nothing wrote. The suite is therefore run under
+ThreadSanitizer, AddressSanitizer and UndefinedBehaviorSanitizer, and the device suites under the
+CUDA memory and initialization checkers; all five report nothing on the shipped tree, and all five
+fail the build on a finding. The initialization checker detects a case the others do not: a host
+readback of device memory that no kernel wrote returns whatever the allocator last left at that
+address, so an assertion over it succeeds or fails according to allocation history rather than
+according to the code, and neither a test nor a model checker over the concurrent structures
+observes it.
+
 \section{Conclusion and Future Work}
 \label{sec:conclusion}
 
@@ -2476,8 +2240,251 @@ For pattern with $|L|$ edges and state with $|S|$ edges:
     \item Total: $\BigO(|L| \cdot |S| / B_d \cdot |L|) = \BigO(|L|^2 \cdot |S| / B_d)$
 \end{itemize}
 
+\section{GPU Implementation Details}
+\label{app:gpu-impl}
+
+\subsection{GPU Canonicalization}
+
+The device does not reimplement canonicalization. The individualization--refinement body is a
+single source compiled for both host and device, so host and device compute the same canonical
+hash for a given state by construction rather than by two implementations being kept in step. What
+is device-specific is the orchestration only: how a state is flattened out of the adjacency
+representation, and where the core's scratch comes from.
+
+The parallelism is across states, not within one. A worker canonicalizes one state per call,
+running the shared body serially, which suits a workload whose states arrive continuously and
+number in the thousands rather than one whose individual instances are large. The scratch for that
+call is sized from the state's own edge and occurrence counts and claimed from the device arena of
+Section~\ref{sec:gpu-constraint}, so there is no per-state ceiling and no batch to measure.
+
+There is consequently no approximate fallback anywhere on this path. A state the exact path cannot
+key---because the arena is exhausted, or because the search wants more individualization depth than
+the device attempts---is reported as a capacity overflow and the run is retried with a larger
+reservation. It is never keyed by something coarser. This is not a tuning preference, because
+isomorphism-invariance fails in only one direction: a 1-dimensional Weisfeiler--Leman hash never
+separates two isomorphic states, but it does merge non-isomorphic ones, which the engine
+demonstrates constructively on the prism graph against $K_{3,3}$ at six vertices and on the
+rook's $4 \times 4$ graph against the Shrikhande graph. Nothing bounds how often an evolution
+reaches such a state, so no collision rate measured over some other corpus would license treating
+the merge as rare. The only additional device-side hash is the content-ordered key that the
+\textsc{Automatic} identity requires, which applies the same rule as the host.
+
+Where a device-side event signature must stand in a raw edge identifier because an edge's canonical
+rank was unavailable at the moment the event was stamped, the substitution is counted. Such a
+signature is not an isomorphism invariant, and the count is what lets a caller comparing event
+totals across devices see that it occurred rather than infer a disagreement in the evolution.
+
+\subsection{GPU Pattern Matching}
+
+The unit of matching work on the device is a (state, rule) pair, handled by one block whose threads
+stripe the candidates for the first pattern edge. Parallelism across states and rules is therefore
+the outer axis, with the inner axis inside a single join.
+
+The device keeps two indices over the edge pool, a signature index and a vertex inverted index,
+each filtered by the state's edge set at query time, and divides the work between them: the
+signature index seeds the first pattern edge; every subsequent edge is driven by the vertex
+inverted index through a \emph{pivot variable}---a left-hand-side variable that is guaranteed to
+be bound by the time that edge runs, which the connectivity ordering of the pattern edges
+establishes. Looking the pivot's binding up in the inverted index yields a candidate list bounded
+by that vertex's degree, typically a few entries, in place of a signature bucket that holds
+thousands on a dense state. This is the division adapted from HGMatch~\cite{yang2023hgmatch}:
+signature index for the seed, inverted index for the extensions. The host answers the same two
+questions from the state's ancestry (Section~\ref{sec:vertex-index}).
+
+One detail of the semantics is computed on the host so that the device does not recompute it per
+match. Because distinct pattern variables may bind to the same vertex, a single pattern signature is
+compatible not with one data signature but with every coarsening of its partition. The list of
+compatible signature hashes for each pattern edge is therefore computed once on the host when the
+rule is added, and the kernel seeds from the index directly rather than enumerating coarsenings
+while matching.
+
+\subsection{Device Work Queues and Termination}
+\label{sec:gpu-queues}
+
+The queues of Figure~\ref{fig:megakernel} are bounded lock-free multi-producer, multi-consumer ring
+buffers in device memory. Workers are producers and consumers of the same queues---a rewrite
+produces states, which become match tasks---so a single-producer structure would not serve, and a
+bounded one is required because device memory is reserved in advance.
+
+Each slot carries a sequence number, and that number alone determines whose turn the slot is: it
+equals the position a producer is reserving when the slot is free, one more than that position
+when the slot holds an item for the consumer reserving it, and less than the position when the
+queue is full for a producer or empty for a consumer. Slot $i$ starts at $i$, a producer publishes
+with the position plus one, and a consumer releases with the position plus the capacity, so a slot
+advances by exactly one capacity per lap and the three tests remain exact across wraps. The
+ordering is carried by that handshake---a release store by the producer synchronizing with the
+consumer's acquire load---so the head and tail cursors, which only allocate positions, are relaxed.
+
+Reservation is a compare-and-swap on the cursor rather than an unconditional increment. The
+difference matters precisely because the same workers both produce and consume: an unconditional
+bump has nothing to undo with, and a rollback or a give-the-slot-back store can land on a slot
+another thread has already taken, which either loses an item or hands one out twice. In a queue
+whose producers are its consumers, a lost item is not a dropped unit of work but a run that never
+finishes, because the termination detector waits for a completion that can no longer occur.
+
+A resident kernel whose workers pull from queues cannot end when a launch ends, so termination is
+detected rather than assumed. Each queue role maintains two monotonic counters, one for work
+pushed and one for work drained, incremented with release ordering so that any payload the work
+touched is visible to whoever observes the counter. A detector reads them with acquire ordering and
+looks for every pair to be equal. Equality alone is not sufficient: it occurs mid-evolution
+whenever every in-flight task happens to have just finished without yet emitting its follow-ups.
+Exit is therefore signalled only when equality holds across two consecutive observations separated
+by a backoff interval, so that nothing was pushed during the window between them. Workers test the
+exit flag at the top of their outer loop, and read it with acquire ordering so a worker that sees
+it also sees everything the detector saw before setting it.
+
+Detecting termination incorrectly truncates the evolution without an error, so the device
+result is compared against the host's on every corpus workload rather than only checked for the
+absence of reported errors.
+
+\subsection{Memory Management}
+
+Device memory is reserved before the kernel launches, since a resident kernel cannot call the host
+allocator. Edge and state pools are pre-allocated with atomic counters, and scratch whose size is
+known only once a state's dimensions are seen---the canonicalizer's working arrays, principally---is
+carved from a device-owned bump arena.
+
+The arena's size is determined by the grid rather than by the workload. A persistent kernel's
+blocks do not retire and get replaced---they live for the whole evolution---so the grid is the
+worker count, and each resident worker holds its own arena slot at a time. Arena demand therefore
+scales with the grid, and sizing it from the state budget alone starves it as soon as the grid
+grows. The arena is one shared bump pool rather than a partition per worker, because a worker keeps
+one slot and grows it to the largest state it personally canonicalizes: what has to be provided is
+the average share across workers, not a per-worker maximum. The default grid is eight blocks per
+streaming multiprocessor. There is no free operation: a worker finishes with its scratch before
+taking its next item, so a slot is reused and re-claimed only when a larger one is needed, which
+with doubling wastes at most one slot per block, bounded by that block's peak. The whole arena is
+reset at the end of the run.
+
+Where a pre-sized region proves too small for a
+state, the overflow is reported through a device-side error channel and the work is retried with a
+larger reservation, which is the mechanism behind the capacity behavior of
+Section~\ref{sec:capacity}.
+
+% ----------------------------------------------------------------------------
+% BENCHMARKS
+% ----------------------------------------------------------------------------
+
 \section{Data Structure Specifications}
 \label{app:data-structures}
+
+\subsection{Lock-Free Data Structures}
+
+Concurrent evolution requires thread-safe data structures without lock contention. The constructions below follow standard non-blocking techniques~\cite{herlihy2012art}, in particular compare-and-swap insertion into an open-addressed table~\cite{michael2002high} and lock-free list linkage~\cite{harris2001pragmatic}:
+
+\begin{description}
+\item[ConcurrentMap$\langle$K, V$\rangle$:] Hash table using atomic compare-and-swap for insertion. Wait-free lookup with lock-free insertion.
+
+\item[ConcurrentKeySet$\langle$K$\rangle$:] A set, for membership rather than mapping. Presence and
+ownership are decided by one compare-exchange from the empty sentinel to the key, so none of the
+map's value-publication protocol exists: no locked slot, no settling of a claim met mid-flight.
+An insert scans the superseded-table chain for a settled copy of its key before claiming at the
+head, and a claim that lands in a table which is no longer the head is reported stale and
+re-driven rather than counted---the two halves of keeping one key from ever being claimed twice.
+Growth carries
+each key into the new table and then seals the slot it came from with a second reserved key, so a
+key reachable through two tables is enumerated once, and a table whose slots are all sealed is
+skipped rather than probed---without which a retired table is scanned in full on every operation,
+because sealing removes the empty slot linear probing stops at. Membership queries walk the chain
+oldest table first, and Section~\ref{sec:verification}'s reader-visibility harness
+checks that order. The quotient reconstruction's
+membership marks use it (Section~\ref{sec:quotient}).
+
+\item[SegmentedArray$\langle$T$\rangle$:] Dynamically growing array stored in fixed-size segments. Append-only with atomic size tracking.
+
+\item[LockFreeList$\langle$T$\rangle$:] Append-only linked list for index entries. Supports concurrent iteration via snapshot semantics.
+
+\item[Work-stealing deque:] A bounded Chase--Lev deque~\cite{chase2005dynamic}. Each worker owns
+one, pushing and popping at its own end without a contended atomic in the common case, and stealing
+from the opposite end of another worker's deque when idle. Its memory orderings follow
+L\^e et al.~\cite{le2013workstealing}. Following HGMatch~\cite{yang2023hgmatch},
+evolution is expressed as a dataflow over such a scheduler: a scan task seeds a join, expansion
+tasks extend it, and completed matches are handed to rewriting, with work stealing providing load
+balance across a frontier whose width is not known in advance.
+
+\item[Job pool:] Tasks are drawn from a per-thread slab rather than allocated, so submitting a task
+performs no call to the global allocator, so the allocation figures of
+Section~\ref{sec:allocation} hold for a workload that submits one task per candidate expansion.
+Allocation and same-thread release touch only the owning thread's private free list, with no
+atomic and no contention. Work stealing means a task allocated on one thread is often released on
+another, so a foreign release is pushed onto the owner's separate foreign list by
+compare-and-swap, and the owner reclaims the whole accumulated batch with one exchange when its
+private list empties. That shape is free of the ABA problem by construction rather than by a tag:
+producers only ever prepend, and the single consumer takes the entire list at once, so there is no
+node for a compare-and-swap to observe unchanged after reuse. Each slot carries a header naming
+its owning pool, so a release on any thread reaches the pool the slot came from; an
+object too large for a slot falls back to the general allocator, so correctness does not depend on the slot size being
+estimated correctly. Pools are never destroyed and are recycled through a fixed array of claimable
+slots when a thread exits---an array rather than a stack of free pools, because a pool that is
+claimed, used and released again is exactly the reuse a stack's head compare-and-swap cannot
+distinguish, while an array slot has no pointer to compare.
+\end{description}
+
+\paragraph{Injector ABA bounds.}
+Work submitted from outside a worker, and work that overflows a worker's own deque, goes to one
+shared double-ended queue. Its state is a single 64-bit word packed as a 32-bit tag and two 16-bit
+indices, so one compare-exchange commits both ends at once and a pop at each end racing for the
+last item resolves by one of the two exchanges failing. The three fields share a word because a
+128-bit compare-exchange is not lock-free on the supported targets; the indices need 16 bits each
+for a capacity of 32{,}768 entries, which leaves 32 bits for the tag. Because both ends move in
+both directions, the index pair recurs, and the tag lets a compare-exchange commit only
+if nothing changed since the load.
+
+A 32-bit tag wraps, so the defence is conditional, and the condition is stated here rather than
+assumed. For a stale item to be claimed twice, the tag must complete a full cycle \emph{and} both
+indices must return to the values one popper read, all within that popper's own load-to-exchange
+window---a handful of instructions, so it requires the thread to be descheduled inside them. The
+throughput measurement that bounds this is direct: at eight threads the shared queue sustains
+$8.16 \times 10^6$ operations per second, so $2^{32}$ of them take on the order of 500 seconds of
+continuous stall while every other thread runs flat out. The same measurement gives the cost of
+sharing one word: $1.33 \times 10^8$ operations per second at one thread against $8.16 \times
+10^6$ at eight. Per-worker deques are near-exclusive to their owners and do not incur that
+reduction; the injector is shared and does, so it holds only overflow and external
+submissions.
+
+Neither queue offers a blocking push or pop. For a worker this is not a preference but a
+requirement: a worker parked inside a push cannot pop, so if every worker parked there the queues
+would never drain again---and since expansion is combinatorial and submits from inside running
+jobs, saturating a local deque and the injector together is reachable rather than hypothetical. A
+full queue is answered by running the job on the calling thread, which always makes progress.
+
+A worker with no available work does not spin indefinitely. It waits on a 32-bit address through
+the platform's own primitive---\texttt{futex} on Linux, \texttt{WaitOnAddress} on Windows,
+\texttt{os\_sync\_wait\_on\_address} on macOS---so a blocked worker consumes no cycles and is woken
+by the thread that supplies the work. No mutex or condition variable is used on any of these
+platforms: the engine's object files reference none, and the only such construction in the tree is
+a fallback compiled solely for a platform providing none of the three primitives.
+
+\paragraph{Serial mode.}
+The scheduler also runs with no worker threads at all. In that mode none are spawned: submission
+routes every job to the injector and the wait call drains it inline, in first-in-first-out order,
+on the thread that called it. Jobs submitted by a running job land behind it and execute in
+submission order, so a run in this mode is deterministic by construction rather than by the
+argument of Section~\ref{sec:determinism}. This is the single-threaded execution mode, and it is
+also the WebAssembly target, where spawning threads is not available. Nothing above the scheduler
+distinguishes the two: the engine is compiled once and the work the workers would have done
+happens on the thread that waits.
+
+\subsection{Memory Model}
+
+A new state is published to readers by a release store paired with an acquire load, so a reader
+that observes the state also observes the edge set written before it. A producer appends the
+new edges, inserts their ids into the state's edge set, issues a release fence, and only then
+appends the state; a consumer that finds the state through the canonical map's acquire load
+issues an acquire fence before reading the edge set. The release--acquire pair orders every
+edge write before the state's publication, so no reader of a published state can observe an
+edge set still being filled.
+
+\subsection{Behavior at Configured Limits}
+\label{sec:capacity}
+
+The engine's containers are sized from configuration, and a workload may exceed them. Reaching a
+configured ceiling is treated as a distinct outcome from a programmer error: the run returns the
+portion of the evolution that fits, together with a warning naming the limit that was reached,
+rather than raising an exception and discarding the work. Both backends behave identically in this
+respect. Options that a build does not implement are reported the same way, so a caller who
+requests one receives the result computed without it and a statement to that effect, rather than
+silently receiving a different computation from the one requested.
 
 \begin{table}[htbp]
 \centering
