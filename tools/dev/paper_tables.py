@@ -483,12 +483,18 @@ def scaling(build, tool, name, steps, iters, caption_tool, cpus="", threads=""):
     if not rows:
         raise SystemExit("%s produced no parseable rows:\n%s" % (tool, out[-2000:]))
     base = float(rows[0][4])
+    # The depth and the state counts are identical on every row of a strong-scaling sweep (the
+    # determinism contract makes them so, and the parse asserts it); repeating them per row says
+    # nothing, so they live in the prose beside the table and the columns carry what varies.
+    if len({(r[1], r[2], r[3]) for r in rows}) != 1:
+        raise SystemExit("%s: the sweep's counts differ across thread counts -- the determinism "
+                         "contract, not the table layout, is what failed" % name)
     b = [provenance(caption_tool, pinned=bool(cpus)),
-         r"\begin{tabular}{rrrrrr}", r"\toprule",
-         r"Threads & Steps & Canonical states & Raw states & Median ms & Speedup vs.\ 1 thread \\",
+         r"\begin{tabular}{rrr}", r"\toprule",
+         r"Workers & Median ms & Speedup vs.\ 1 worker \\",
          r"\midrule"]
-    for (th, st, canon, raw, med, _mn) in rows:
-        b.append("%s & %s & %s & %s & %s & %.2f \\\\" % (th, st, canon, raw, med, base / float(med)))
+    for (th, _st, _canon, _raw, med, _mn) in rows:
+        b.append("%s & %s & %.2f \\\\" % (th, med, base / float(med)))
     b += [r"\bottomrule", r"\end{tabular}"]
     write(name, "\n".join(b) + "\n")
 
