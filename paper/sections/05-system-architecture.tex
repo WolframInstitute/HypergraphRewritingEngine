@@ -149,49 +149,38 @@ decreases on each accepted relaxation and is bounded below by zero. Matching is 
 it: the claim that admits a canonical state to expansion is a separate value from its depth, so a
 state whose depth falls is matched at most once regardless of how many times it is relaxed.
 
-Relaxation and child registration race, and the race is settled by ordering rather than by
-exclusion. Registering a child publishes it into its parent's child list and then reads the
-parent's depth; relaxing a parent lowers the parent's depth and then scans the parent's child
-list. Sequentially consistent fences on both sides exclude the one outcome that would strand a
-child at a stale depth---the scan missing the child \emph{and} the read missing the lowered
-depth---so a child always learns its parent's true current minimum, whichever side of the race it
-is on. A state that lies past the budget is retained as a frontier state for a continuation to
-resume from rather than discarded, and its expansion claim is deliberately left untaken, because a
-shorter path found later in the same run must still be able to relax it into budget, and a state
-that has already been claimed never would.
+Relaxation races child registration and is settled by ordering rather than exclusion:
+registration publishes the child and then reads the parent's depth; relaxation lowers the depth
+and then scans the child list. Sequentially consistent fences on both sides exclude the one
+stranding outcome---the scan missing the child while the read misses the lowered depth---so a
+child always learns its parent's current minimum. A state past the budget is retained as a
+frontier state with its expansion claim left untaken, so a shorter path found later can still
+relax it into budget; a claimed state never could be.
 
-Budget consumption is claimed by compare-and-swap rather than by an unconditional increment
-followed by a rollback on overshoot. The two differ in what other threads observe: a rollback
-publishes a count above the limit for as long as it takes to undo, and the readers that prune
-work against the budget read exactly that count, so $N$ concurrent claimants would make each
-other's in-budget work appear out of budget and which work was pruned would depend on the
-interleaving. A compare-and-swap claim never publishes a count above the limit, so the budget
+Budget consumption is claimed by compare-and-swap rather than increment-then-rollback: a
+rollback publishes a count above the limit for as long as it takes to undo, and readers pruning
+against the budget read exactly that count, so which work was pruned would depend on the
+interleaving. A compare-and-swap claim never publishes an over-limit count, and the budget
 prunes the same work under every schedule.
 
-Termination is detected without a barrier. A depth is settled when it holds no live work and the
-depth below it has already settled; settling one depth cascades to the depth above, which may have
-been waiting only on it. The argument that these two conditions suffice is that a task at depth
-$d$ submits work only at depths greater than $d$, so once $d-1$ is settled nothing can place work
-at $d$ again. No thread waits on any other, and the check is a test of two values rather than a
-rendezvous.
+Termination is detected without a barrier: a depth settles when it holds no live work and the
+depth below has settled, and settling cascades upward. The two conditions suffice because a task
+at depth $d$ submits work only above $d$, so once $d-1$ settles nothing can reach $d$ again; the
+check is a test of two values rather than a rendezvous, and no thread waits on any other.
 
 \subsection{Quotient Exploration}
 \label{sec:quotient}
 
-Under full expansion, every raw state that is produced is itself expanded, so a state reachable
-along $k$ distinct histories is matched against $k$ times. Because the canonical hash already
-identifies these as one state, that work is redundant for the purpose of discovering new states.
-
-Quotient exploration retains the events but not the repeated expansion: a state found equivalent
-to one already seen is still created, and its incoming event is still recorded, so the event set
-and the causal and branchial relations are unchanged; what is suppressed is the spawning of match
-tasks from that state. Exploration therefore proceeds from one representative of each isomorphism
-class, at the shallowest depth at which the class was reached. Table~\ref{tab:t6-quotient} reports
-events produced, causal edges and wall time for the two modes at increasing depth.
-
-The two modes agree on the canonical state set by construction. That they also agree on the causal
-and branchial relations is less immediate, because those relations are defined over raw events and
-quotient exploration expands fewer states.
+Under full expansion every raw state is expanded, so a state reachable along $k$ distinct
+histories is matched $k$ times---work the canonical hash has already identified as redundant for
+discovering new states. Quotient exploration suppresses the repeated expansion and nothing else:
+an equivalent state is still created and its incoming event recorded, so the event set and both
+relations are unchanged, while match tasks spawn only from one representative per isomorphism
+class, at the shallowest depth the class was reached. Table~\ref{tab:t6-quotient} reports events
+produced, causal edges and wall time for the two modes at increasing depth. The two modes agree
+on the canonical state set by construction; agreement on the causal and branchial relations is
+less immediate, because those are defined over raw events and quotient exploration expands fewer
+states.
 
 The reconstruction is a forward tally. Under an exact identity the canonical states graph is
 cyclic, since a canonical state recurs at several path lengths; its unrolling by depth is acyclic,
@@ -244,30 +233,26 @@ for the procedure below, and no claim of optimality; it is the specialisation th
 permits, and a fully dynamic reduction would be required if deletions were admitted.
 
 \paragraph{Online maintenance.}
-Computing the reduction as a pass over the finished graph would require the graph to be finished,
-which conflicts with two properties the engine offers. A session (Section~\ref{sec:sessions}) may
-be queried between steps, so there is no point at which the causal graph is known to be complete;
-and the reduction is what most consumers of the causal graph actually want, so materialising the
-full relation first and reducing afterwards would allocate the transitive closure that the
-reduction exists to avoid. The reduction is therefore maintained as an invariant: after every
-insertion, the retained edge set is the transitive reduction of the causal DAG seen so far.
+A pass over the finished graph would require a finished graph, and there is none: a session
+(Section~\ref{sec:sessions}) may be queried between steps. Materialising the full relation first
+would also allocate the transitive closure the reduction exists to avoid. The reduction is
+therefore maintained as an invariant: after every insertion, the retained edge set is the
+transitive reduction of the causal DAG seen so far.
 
 \paragraph{Procedure.}
 Let $e = (p, c)$ be a new causal edge, meaning event $p$ produced an edge that event $c$ consumed.
-Insertion asks whether $c$ is already reachable from $p$ through the retained edges; if it is, $e$
-is implied and is not retained, and if it is not, $e$ is retained. There is no removal step;
-the arrival discipline makes one unnecessary. A consumer's incoming edges are registered by
-that consumer's own worker in descending producer-event order, and an ancestor's id is strictly
-smaller than its descendant's. A retained $(p', c)$ could become implied only through a path
-$p' \rightarrow \cdots \rightarrow x \rightarrow c$; if $(x, c)$ was registered before $(p', c)$
-then the path was already visible to the arrival query, which drops $(p', c)$ on the spot, and if
-after, then $x < p'$ in the descending order while reachability from $p'$ requires $p' < x$---a
-contradiction. An edge accepted at arrival therefore stays non-implied forever, and deciding each
-edge once maintains the exact reduction. The descending order also makes the queries cheap: the
-closure reachable from nearer producers is established before farther producers are tested against
-it, and a farther producer is usually eliminated by a query that terminates early. Because events
-are numbered in creation order and an event's producers necessarily precede it, the order is
-available without sorting.
+Insertion asks whether $c$ is already reachable from $p$ through the retained edges: if so, $e$
+is implied and dropped; if not, retained. There is no removal step, because the arrival
+discipline makes one unnecessary: a consumer's incoming edges are registered by its own worker in
+descending producer order, and an ancestor's id is strictly smaller than its descendant's. A
+retained $(p', c)$ could become implied only through a path
+$p' \rightarrow \cdots \rightarrow x \rightarrow c$; if $(x, c)$ arrived first the arrival query
+saw the path and dropped $(p', c)$, and if after, then $x < p'$ in the descending order while
+reachability from $p'$ requires $p' < x$---a contradiction. An edge accepted at arrival therefore
+stays non-implied, and deciding each edge once maintains the exact reduction. The descending
+order also makes queries cheap---the closure reachable from nearer producers is established
+before farther ones are tested against it---and it is available without sorting, because events
+are numbered in creation order and producers precede their event.
 
 \paragraph{Arrival-order invariant.}
 Two properties of this setting make the problem strictly easier than the fully dynamic one. Causal
@@ -387,29 +372,21 @@ events that create them, so one coin per new state and one coin per transition a
 under quotient exploration a canonical state has many incoming transitions and the two separate.
 
 \paragraph{Sampling and synchronization.}
-Sampling constrains parallelism through the order in which decisions become final. A sample cannot
-be acted on before its population is complete: a rewrite cannot be undone, so a match that has been applied
-cannot later be evicted by a match that arrives afterwards. Any reservoir must therefore be
-finalised before its members are rewritten, and finalising requires knowing that the stream of
-candidates has ended. A scheme that samples from all matches produced in an evolution step
-consequently needs every worker to finish that step before any rewriting begins---a global barrier,
-in an engine that otherwise has none.
+Sampling constrains parallelism through when decisions become final. An applied match cannot be
+evicted, so a reservoir must be finalised before its members are rewritten, and finalising
+requires knowing its candidate stream has ended. A population drawn from a whole evolution step
+ends only when every worker finishes the step---a global barrier, in an engine that otherwise
+has none. The engine therefore requires a sampling population to \emph{complete locally}: its
+completion may not depend on work outside the object it is keyed on. A (state, rule) pair
+qualifies---the engine can tell when that pair has no matches outstanding without consulting any
+other state; an evolution step does not.
 
-The question is therefore not whether to have a barrier but how local the completion condition can
-be made. The engine requires a sampling population to be one that \emph{completes locally}: its
-completion must not depend on knowing anything about work outside the object it is keyed on. A
-population keyed on a single (state, rule) pair satisfies this, because the engine can tell when
-that pair has no matches outstanding without consulting any other state; a population keyed on an
-evolution step does not.
-
-Restricting to locally-completing populations removes less than it appears to, because the global
-population was not delivering a uniform sample either. Under the step-wide scheme each match job
-received a reservoir of the same capacity regardless of how many matches it saw, so a pair
-producing a thousand matches contributed no more samples than one producing twenty; the pooled
-sample was already weighted toward sparse strata before any shuffle, and shuffling a skewed pool
-does not remove the skew. Uniformity over the union of all matches was not a property that scheme
-had. Uniformity within a (state, rule) stratum was, and is the property its test checks. Keying the
-population on the state therefore preserves what was true and removes the barrier.
+The restriction removes less than it appears to, because the step-wide population never
+delivered a uniform sample: each match job received a reservoir of fixed capacity regardless of
+how many matches it saw, so a pair producing a thousand matches contributed no more samples than
+one producing twenty, and shuffling that skewed pool does not remove the skew. Uniformity within
+a (state, rule) stratum is the property the scheme had, is preserved, and is what its test
+checks; keying the population on the state keeps what was true and removes the barrier.
 
 \subsection{Sessions}
 \label{sec:sessions}
@@ -420,19 +397,16 @@ derived structures, and closed. The unexplored frontier is retained between step
 session continues the existing exploration instead of recomputing it from the initial state, and a
 caller may inspect intermediate results before deciding how much further to evolve.
 
-The frontier is a separate structure from the identity map, and it has to be: one bit cannot answer
-both questions a continuation asks. The deduplication map records that a state has been seen, and a
-worker reads that same answer as meaning the state has been expanded. Carrying only the map across
-calls therefore fails in one of two directions depending on who owns it, and both were measured on
-the same workload---a two-edge to three-edge rule advanced to depth two and then to depth three,
-against seven states and six events for a single run to depth three. Rebuilding the maps per call
-gave ten states and nine events: nothing was recognised, so the second call re-derived as new every
-state it already had. Giving the caller ownership of the maps gave five states and four events:
-everything was recognised, so nothing was re-expanded and the new depth was never reached. A
-session therefore carries both the maps and a frontier---the states whose expansion was refused by
-the step budget rather than by deduplication---which is the distinction the two failures are
-between. The device implements the same separation as the host, since a continuation that behaved
-differently on the two targets would not be the same session.
+The frontier is a separate structure from the identity map because one bit cannot answer both
+questions a continuation asks: the deduplication map records that a state has been seen, and a
+worker reads that same answer as expanded. Both single-structure designs fail, measured on the
+same workload (a two-edge to three-edge rule advanced to depth two and then three, against seven
+states and six events for a single run to depth three): rebuilding the maps per call recognises
+nothing and re-derives every known state (ten states, nine events); carrying only the maps
+recognises everything and never reaches the new depth (five states, four events). A session
+therefore carries the maps \emph{and} a frontier---the states refused by the step budget rather
+than by deduplication---and the device implements the same separation, since a continuation that
+behaved differently on the two targets would not be the same session.
 
 Every session reply reports the frontier, because a caller cannot steer a continuation toward
 states it cannot name, and a step may name a subset of it: the named states are expanded and every
