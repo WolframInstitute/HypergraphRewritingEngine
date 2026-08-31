@@ -27,8 +27,13 @@ WHAT IT CHECKS
 The stamp format is fixed by paclet_source/build_stamp.hpp; the regex below is the other half of
 that contract.
 
+  5. With --source-identical, an artifact stamped with an earlier commit passes when
+     `git diff <stamp> HEAD -- <ARTIFACT_INPUTS>` is empty: every source the binaries are
+     compiled from is unchanged, so commits touching only the paper, docs or dev tooling do not
+     stale the shipped set. The finding, when it fires, names the differing inputs.
+
 Usage:
-    python3 tools/dev/artifact_stamp_check.py [--require-clean] [--platform PAT]
+    python3 tools/dev/artifact_stamp_check.py [--require-clean] [--source-identical] [--platform PAT]
 
 Exit 0 when every artifact found is stamped with HEAD; 1 otherwise. Finding NO artifacts is also
 a failure -- an empty tree passing a check would be the same false green as the SKIPPED path.
@@ -40,8 +45,30 @@ import re
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from paper_integrity_check import ENGINE_DIRS  # noqa: E402  -- one definition of the engine
+
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LIBRESOURCES = os.path.join(REPO, "paclet", "LibraryResources")
+
+# Everything a shipped binary is compiled from: the engine directories the paper's integrity
+# check already names, the paclet's own sources, and the build system that configures them.
+ARTIFACT_INPUTS = ENGINE_DIRS + [
+    "paclet_source", "CMakeLists.txt", "cmake",
+    "build_all_platforms.sh", "build_windows_msvc.sh", "build_paclet.sh",
+]
+
+
+def source_delta(commit, head):
+    """Paths under ARTIFACT_INPUTS that differ between the stamp's commit and HEAD, or None when
+    the stamp's commit is not in this repository."""
+    r = subprocess.run(
+        ["git", "-C", REPO, "diff", "--name-only", commit, head, "--"] + ARTIFACT_INPUTS,
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        return None
+    return [p for p in r.stdout.splitlines() if p]
 
 STAMP_RE = re.compile(rb"HGBUILDSTAMP/2;(.*?);:HGBUILDSTAMP")
 
@@ -130,6 +157,9 @@ def main():
                     help="the commit artifacts must carry (default: git rev-parse HEAD). This is "
                          "how the checker is ground-truthed: pointed at a fixture with a known "
                          "stamp, it must report exactly the mismatch that fixture contains.")
+    ap.add_argument("--source-identical", action="store_true",
+                    help="accept a stamp from an earlier commit when no artifact input differs "
+                         "from HEAD (git diff over the engine, paclet_source and build files)")
     args = ap.parse_args()
 
     root = os.path.abspath(args.root)
@@ -177,7 +207,17 @@ def main():
             commit = fields.get("commit", "unknown")
             variant = fields.get("variant", "unknown")
             if commit != head:
-                findings.append(f"{rel}: built from {commit[:12]}, HEAD is {head[:12]}")
+                delta = source_delta(commit, head) if args.source_identical else None
+                if args.source_identical and delta == []:
+                    print(f"  ok  {rel}  built from {commit[:12]}, source-identical to HEAD "
+                          f"{head[:12]} over {len(ARTIFACT_INPUTS)} inputs")
+                elif args.source_identical and delta:
+                    findings.append(
+                        f"{rel}: built from {commit[:12]}; artifact inputs differ from HEAD "
+                        f"{head[:12]}: {', '.join(delta[:6])}"
+                        + (f" (+{len(delta) - 6} more)" if len(delta) > 6 else ""))
+                else:
+                    findings.append(f"{rel}: built from {commit[:12]}, HEAD is {head[:12]}")
             if variant != expected:
                 findings.append(f"{rel}: stamped variant '{variant}', this file must be '{expected}'")
             bad = release_violations(fields)
