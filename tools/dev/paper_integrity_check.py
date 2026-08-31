@@ -39,6 +39,16 @@ ENGINE_DIRS = ["common", "hypergraph", "gpu", "job_system", "lockfree_deque"]
 # the reason and what replaces it; anything else stale is a finding, not a candidate here.
 STALE_WHITELIST = {}
 
+# Commits that are measurement-inert but do not carry the "Measurement-inert:" line in their
+# message (a pushed message cannot be amended). Hash-pinned, each with the proof; the walk
+# treats them as declared.
+COMMIT_ALLOWANCES = {
+    "530a2c9503bfc157c9e6ac02eb95a94a63f9d281":
+        "its job_system.hpp diff is six comment lines at ensure_default_cpu_order (git show "
+        "confirms zero code lines); the comment records the stacked-vs-spill A/B and rode in "
+        "through stale staging",
+}
+
 VERDICT_RE = re.compile(r"\b(DIFFERS|FAILED|FAIL|NaN|nan|[-+]?inf)\b")
 PROV_RE = re.compile(r"%\s*commit ([0-9a-f]{7,40})")
 SOURCE_RE = re.compile(r"source:\s*([\w/.+~-]+(?:\s*\+\s*[\w/.+~-]+)*)")
@@ -121,7 +131,7 @@ def main():
                     inert = []
                     for sha in shas:
                         body = git("show", "-s", "--format=%B", sha).stdout
-                        if "Measurement-inert:" not in body:
+                        if "Measurement-inert:" not in body and sha not in COMMIT_ALLOWANCES:
                             inert = None
                             break
                         subject = body.splitlines()[0][:70]
