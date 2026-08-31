@@ -335,6 +335,16 @@ rented box that does.
   comparison. Watch-list process names are compared TRUNCATED TO 15 CHARACTERS, which is all
   `comm` holds and all `pgrep -x` can match; a longer pattern matches nothing and turns the gate
   into a rubber stamp.
+- **`perf_gate.sh`** -- the performance-regression gate. Refuses unless `quiet_gate.sh` reports
+  quiet, runs `build_linux/benchmark_suite` with no CPU list so placement is the engine's
+  `ensure_default_cpu_order`, writes a fresh `benchmark_results/gate/<stamp>-<hash>/`, and exits
+  non-zero when `perf_compare.py` finds a regression against the newest `commit-*` run (or the
+  directory PERF_BASELINE names).
+- **`perf_compare.py`** -- compares two `summary.csv` files metric by metric. A fractional
+  worsening above the tolerance (default 0.10) fails: a rise for a time, a fall for a `RATIO`
+  benchmark, the type read from the sibling `detailed.csv`. A metric present in one file only is
+  reported, never failed. `--self-test` plants a 20% slowdown in synthetic summaries and must
+  name it.
 - **`instruction_profile.py`** -- T15, from `callgrind_annotate` output. Sums the flat
   per-function block only; the per-file annotations that follow it cover the same functions again.
 - **`remote_session.sh`** / **`remote_drive.sh`** -- the phase runner on a rented box and the

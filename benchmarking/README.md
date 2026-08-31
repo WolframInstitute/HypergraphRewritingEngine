@@ -76,6 +76,39 @@ Each benchmark run creates a directory: `benchmark_results/tree-<commit_hash>/`
 5. **benchmark_config.txt** - Configuration snapshot
    - Contains: min/max samples, variance threshold, commit info
 
+## Regression gate
+
+`tools/dev/perf_gate.sh` runs the suite for the current tree and compares its `summary.csv`
+against a baseline run with `tools/dev/perf_compare.py`, exiting non-zero on a regression.
+
+```bash
+# Baseline: the newest benchmark_results/commit-*/ (override with PERF_BASELINE=DIR or --baseline DIR)
+tools/dev/perf_gate.sh
+tools/dev/perf_gate.sh --filter 'evolution*' --tolerance 0.10 --plots
+
+# The comparer on its own, and its self-test
+tools/dev/perf_compare.py benchmark_results/commit-<a>/summary.csv benchmark_results/commit-<b>/summary.csv
+tools/dev/perf_compare.py --self-test
+```
+
+- **Quiet precondition.** The gate refuses to run (exit 3) unless `tools/dev/quiet_gate.sh check`
+  passes: none of the watched processes (compilers, model checkers, profilers, this project's
+  measurement binaries) is running and the 1-minute load average is below `QUIET_LOAD` (1.5).
+- **Placement.** The suite is launched with no CPU list and no affinity mask. Worker placement is
+  the engine's default, `ensure_default_cpu_order` in
+  `job_system/include/job_system/job_system.hpp`, which seats workers on the performance cores,
+  cache-domain-major. The gate never overrides it.
+- **Tolerance.** A metric is one `<benchmark>_<params>` group of `summary.csv`, gated on its
+  `avg_us` column (`--stat` selects `min_us` or `max_us`). A fractional worsening above
+  `--tolerance` (default 0.10) fails it: a rise for a `TIME` benchmark, a fall for a `RATIO` one
+  (`result_type` is read from the `detailed.csv` beside each summary). A metric present in only
+  one file is reported as `new` or `missing` and does not fail the gate, so a `--filter` run
+  gates the subset it measured.
+- **Results.** Each run writes `benchmark_results/gate/<utc-stamp>-<short-hash>/commit-<hash>/`
+  with `benchmark_suite.log` and `perf_compare.txt` beside it; the report lists every metric with
+  before, after and delta, worst first. Exit codes: 0 pass, 1 regression, 2 usage, 3 machine not
+  quiet, 4 missing binary or baseline, 5 suite failure.
+
 ## Visualization
 
 The `plot_benchmarks.py` script generates:
