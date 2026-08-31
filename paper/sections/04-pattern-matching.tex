@@ -123,9 +123,20 @@ Let $\match$ be a match in state $s$, and let $s'$ be derived from $s$ by applyi
 
 Forwarding therefore avoids re-running the join for every match a child inherits unchanged from its parent.
 
-Delivering it under concurrency requires two mechanisms rather than one. A match discovered in a state is \emph{pushed} to the children that state already has, which covers every child registered at the time of discovery. A state created later cannot receive a push that has already happened, so on creation it \emph{pulls}, walking the chain of ancestors and collecting each one's matches that its own rewrite did not invalidate. Neither half suffices alone: without the push, every state would repeat its ancestors' work on creation; without the pull, a match discovered before a child existed would never reach it.
+Delivering it under concurrency takes two mechanisms. A match discovered in a state is
+\emph{pushed} to the children the state already has; a state created later \emph{pulls} on
+creation, walking its ancestor chain and collecting each ancestor's matches its own rewrite did
+not invalidate. Neither suffices alone: without the push every state repeats its ancestors' work
+on creation, and without the pull a match discovered before a child existed never reaches it.
 
-The two halves interact through an ordering requirement. The pull's ancestor walk treats a missing parent link as having reached a root and stops there. A child must therefore publish its parent link \emph{before} it becomes visible in its parent's child list: once it is visible it may receive a forwarded match, that match may create a grandchild on another worker, and that grandchild's pull walks upward through this child. Were the link published after visibility, such a walk could find it absent, stop early, and miss every match held only in higher ancestors---without any indication, because pulled matches are not re-stored in the descendant and pushes happen once at discovery, so nothing later repairs the omission. Publishing the link first makes an absent link mean \emph{root} for every walk that can reach the state.
+The halves interact through one ordering requirement. The pull's walk treats a missing parent
+link as a root and stops, so a child must publish its parent link \emph{before} becoming visible
+in its parent's child list: a visible child may receive a forwarded match, that match may create
+a grandchild on another worker, and the grandchild's pull walks upward through this child. A
+link published after visibility could be found absent by that walk, which would stop early and
+silently miss every match held only in higher ancestors---pulled matches are not re-stored in
+the descendant and pushes happen once, so nothing later repairs the omission. Publishing the
+link first makes an absent link mean \emph{root} for every walk that can reach the state.
 
 Forwarded matches are accumulated per parent and delivered to the child together rather than one at a time, and whether forwarding is applied at all is decided per rule set by the static analysis of Section~\ref{sec:rule-analysis}; Section~\ref{sec:benchmarks} reports the ablation.
 
@@ -152,10 +163,9 @@ exceptional, so the deduplicating lookup precedes the allocation of a match reco
 rather than following it.
 
 Because the partition is an argument rather than a measurement, the engine carries a validation
-mode. With the mode enabled, every state's matches are additionally computed by an
-unrestricted scan and compared against the union of what forwarding and the delta scan supplied,
-and a missing match is attributed to the obligation that owed it: to forwarding if it uses only
-surviving edges, to the delta scan if it touches a produced edge. The two have different causes
-and different repairs, so the attribution is recorded separately rather than as a single mismatch
-count. The validator also counts its own executions, since a mismatch count of zero is evidence
-only when the number of comparisons performed is not.
+mode: every state's matches are additionally computed by an unrestricted scan and compared
+against the union forwarding and the delta scan supplied, with a missing match attributed to the
+obligation that owed it---forwarding if it uses only surviving edges, the delta scan if it
+touches a produced edge---since the two have different causes and repairs. The validator also
+counts its own executions, because a mismatch count of zero is evidence only when the number of
+comparisons is not.

@@ -12,6 +12,18 @@
 \usepackage{microtype}
 \usepackage{xurl}
 
+% Compact heading spacing: the class defaults open a gap at every section boundary that reads
+% as a break. Sections run on, separated by the heading itself.
+\usepackage{titlesec}
+\titlespacing*{\section}{0pt}{1.4ex plus 0.4ex minus 0.2ex}{0.8ex plus 0.2ex}
+\titlespacing*{\subsection}{0pt}{1.1ex plus 0.3ex minus 0.2ex}{0.6ex plus 0.2ex}
+% Floats fill pages instead of pushing text to the next column and leaving the gap behind.
+\renewcommand{\topfraction}{0.92}
+\renewcommand{\dbltopfraction}{0.92}
+\renewcommand{\textfraction}{0.06}
+\renewcommand{\floatpagefraction}{0.85}
+\renewcommand{\dblfloatpagefraction}{0.85}
+
 % Mathematics
 \usepackage{amsmath,amssymb,amsthm}
 \usepackage{algorithm}
