@@ -12,8 +12,9 @@ all: $(MAIN).pdf
 # and running `make` reports "Nothing to be done": main.tex has not changed, and the pdf that
 # ships still carries the previous run's numbers. The fragments are the numbers.
 TABLES := $(wildcard tables/*.tex)
+SECTIONS := $(wildcard sections/*.tex)
 
-$(MAIN).pdf: $(MAIN).tex references.bib $(TABLES)
+$(MAIN).pdf: $(MAIN).tex references.bib $(TABLES) $(SECTIONS)
 	$(LATEX) $(MAIN)
 	$(BIBTEX) $(MAIN)
 	$(LATEX) $(MAIN)
@@ -47,6 +48,8 @@ arxiv: $(MAIN).pdf
 	# build below fails loudly rather than shipping a tarball that cannot be built.
 	mkdir -p arxiv-submission/tables
 	cp tables/*.tex arxiv-submission/tables/
+	mkdir -p arxiv-submission/sections
+	cp sections/*.tex arxiv-submission/sections/
 	cd arxiv-submission && $(LATEX) -interaction=nonstopmode $(MAIN) >/dev/null 2>&1 \
 		|| { echo "error: the submission tree does not compile on its own"; exit 1; }
 	rm -f arxiv-submission/*.aux arxiv-submission/*.log arxiv-submission/*.out

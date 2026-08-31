@@ -1,0 +1,161 @@
+\section{Pattern Matching}
+\label{sec:pattern-matching}
+
+Pattern matching---finding all instances of a rule's left-hand side in a hypergraph---is the first phase of every expansion. On the Wolfram rule, whose states carry at most fourteen edges at depth six, the instruction profile of Table~\ref{tab:t15-instructions} attributes $\InstrShareMatch\%$ of executed instructions to matching, its join and the rewrite together; canonicalization ($\InstrShareCanon\%$) and the quotient reconstruction ($\InstrShareRecon\%$) are the largest components there. Multi-level indexing restricts candidate enumeration.
+
+\subsection{Edge Signatures}
+
+\begin{definition}[Edge Signature]
+\label{def:signature}
+The \emph{signature} of hyperedge $e = (v_1, \ldots, v_k)$ is the pattern $\sigma(e) = (s_1, \ldots, s_k)$ where $s_i = s_j$ iff $v_i = v_j$.
+\end{definition}
+
+For example, edge $(3, 3, 7)$ has signature $(0, 0, 1)$, capturing the repetition pattern without specific vertex labels.
+Pattern edges can match data edges only with compatible signatures. For pattern signature
+$\sigma_p$ with $d$ distinct variables, the number of compatible data signatures is the Bell number
+$B_d$~\cite{rota1964number}; Table~\ref{tab:bell} gives the first few. The host tests each candidate
+edge's signature against the pattern's directly; the device precomputes the compatible set per
+pattern edge (Section~\ref{sec:gpu}).
+
+\begin{table*}[htbp]
+\centering
+\caption{Bell numbers for signature compatibility}
+\label{tab:bell}
+\begin{tabular}{ccccccccc}
+\toprule
+$d$ & 1 & 2 & 3 & 4 & 5 & 6 & 7 & 8 \\
+\midrule
+$B_d$ & 1 & 2 & 5 & 15 & 52 & 203 & 877 & 4140 \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\subsection{Candidate Edges by Ancestry}
+\label{sec:vertex-index}
+
+A state is a view into the shared edge pool (Section~\ref{sec:storage}), and its matching asks two
+questions of that view: which of its edges contain a given vertex, once a pattern variable is bound,
+and which of its edges carry a compatible signature, for the seed. Both are answered from the
+state's ancestry. Every edge of a state was brought by exactly one state on its chain of parent
+states: the root brought all of its edges, and each derived state brought the edges its event
+produced. Each state indexes its own contribution by vertex once, when it is created, so the edges
+of $S$ that contain $v$ are
+\begin{equation}
+    \bigcup_{A \in \text{chain}(S)} \{e \in \text{Contrib}(A)[v] : e \in S\},
+\end{equation}
+where $\text{Contrib}(A)[v]$ is $A$'s sorted incidence list for $v$ and membership $e \in S$
+excludes an edge that a later event on the chain consumed. A query costs the chain's length times
+one search of a small sorted array, nearly every edge it tests is in the state, the index of a
+derived state is the size of its event's right-hand side, and nothing is maintained per edge when
+an edge is created. A global index over the whole evolution's edges, filtered per state, answers
+the same question at a cost proportional to every edge ever created at $v$ in any state, of which
+a state at depth seven holds under two percent.
+
+\subsection{Matching Algorithm}
+\label{sec:matching-algorithm}
+
+Pattern matching proceeds through the task-based system of Algorithm~\ref{alg:matching}:
+
+\begin{algorithm}[htbp]
+\caption{Task-Based Pattern Matching}
+\label{alg:matching}
+\begin{algorithmic}[1]
+\Procedure{FindMatches}{$L$, $\hypergraph$}
+    \State $e_1, \ldots, e_k \gets \textsc{MatchOrder}(L)$ \Comment{connected: no step is a product}
+    \State Enqueue $\textsc{ScanTask}(e_1, \emptyset)$
+    \While{task queue non-empty}
+        \State $\tau \gets \textsc{Dequeue}()$
+        \If{$\tau$ is $\textsc{ScanTask}(e_i, \phi)$}
+            \State \textbf{for} each $e \in S$ with $\sigma(e)$ compatible with $\sigma(e_i)$ \textbf{do}
+            \State \quad \textbf{if} $\textsc{Compatible}(e, e_i, \phi)$ \textbf{then}
+            \State \quad\quad Enqueue $\textsc{ExpandTask}(e_{i+1}, \phi')$
+        \ElsIf{$\tau$ is $\textsc{ExpandTask}(e_i, \phi)$ with $i > k$}
+            \State \textbf{yield} complete match $\phi$
+        \EndIf
+    \EndWhile
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+The order $e_1, \ldots, e_k$ is fixed per rule when the rule is added, and it is required to be
+connected---every edge after the first shares a variable with one already bound---so no step of the
+join is a cartesian product. Two host paths execute that order: a synchronous depth-first join,
+which runs an entire search inside one task and spawns a job only for a completed match, and the
+task-spawning form above, which spawns a task per candidate and is what exposes the search itself
+to work stealing. They are not two joins. The recursion, the edge-injectivity check, the binding
+and unwind, and the rule choosing which pattern position is bound next are one shared body, which
+is also the body the device runs; the two paths differ in who executes the resulting steps and
+when.
+
+\subsection{Relation to Worst-Case-Optimal Joins}
+\label{sec:agm}
+
+Treating a left-hand side as a conjunctive query, the AGM bound~\cite{atserias2013size} gives the
+maximum number of results a query can have on a database of a given size, and a join is
+worst-case optimal if its running time matches that bound up to logarithmic
+factors~\cite{ngo2018worst}. Our join is edge-at-a-time: it binds one pattern hyperedge per
+expansion, in the connectivity order of Section~\ref{sec:matching-algorithm}.
+
+For left-hand sides of one or two hyperedges, an edge-at-a-time join meets the bound, and every
+rule in the ORACLE corpus of Section~\ref{sec:benchmarks} is of that form; the left-hand-side
+sweep of Section~\ref{sec:lhs-space} deliberately goes past it, to three and four edges. It does not meet the bound in
+general. On a cyclic left-hand side of three hyperedges the AGM bound is $N^{1.5}$ for a state of
+$N$ edges, while an edge-at-a-time join performs $\Omega(N^2)$ work: two of the three edges can be
+bound before the third constrains anything, and the intermediate result is already quadratic. No
+choice of join order removes this, since the difficulty is the granularity of binding rather than
+its sequence. Closing it requires enumerating variable-at-a-time in the manner of a worst-case
+optimal join, which in turn requires indices supporting ordered seek on a bound variable rather
+than the incidence lists described above.
+
+We therefore state the position rather than claim the property: the join is worst-case optimal on
+the rule shapes measured here, and is not worst-case optimal in general. The static analysis of
+Section~\ref{sec:rule-analysis} computes, per rule, whether its left-hand side is acyclic and what
+its integral edge cover is, so a rule set for which this gap matters is identifiable before it is
+run.
+
+\subsection{Match Forwarding}
+
+When state $s'$ is derived from $s$, a match valid in $s$ remains valid in $s'$ unless it used an edge the rewrite removed. The engine forwards such matches from parent to child rather than rediscovering them:
+
+\begin{proposition}[Match Forwarding]
+Let $\match$ be a match in state $s$, and let $s'$ be derived from $s$ by applying rule $r$ at match $\match'$. Then $\match$ remains valid in $s'$ iff $\text{edges}(\match) \cap \text{edges}(\match') = \emptyset$.
+\end{proposition}
+
+Forwarding therefore avoids re-running the join for every match a child inherits unchanged from its parent.
+
+Delivering it under concurrency requires two mechanisms rather than one. A match discovered in a state is \emph{pushed} to the children that state already has, which covers every child registered at the time of discovery. A state created later cannot receive a push that has already happened, so on creation it \emph{pulls}, walking the chain of ancestors and collecting each one's matches that its own rewrite did not invalidate. Neither half suffices alone: without the push, every state would repeat its ancestors' work on creation; without the pull, a match discovered before a child existed would never reach it.
+
+The two halves interact through an ordering requirement. The pull's ancestor walk treats a missing parent link as having reached a root and stops there. A child must therefore publish its parent link \emph{before} it becomes visible in its parent's child list: once it is visible it may receive a forwarded match, that match may create a grandchild on another worker, and that grandchild's pull walks upward through this child. Were the link published after visibility, such a walk could find it absent, stop early, and miss every match held only in higher ancestors---without any indication, because pulled matches are not re-stored in the descendant and pushes happen once at discovery, so nothing later repairs the omission. Publishing the link first makes an absent link mean \emph{root} for every walk that can reach the state.
+
+Forwarded matches are accumulated per parent and delivered to the child together rather than one at a time, and whether forwarding is applied at all is decided per rule set by the static analysis of Section~\ref{sec:rule-analysis}; Section~\ref{sec:benchmarks} reports the ablation.
+
+% ----------------------------------------------------------------------------
+% ARCHITECTURE
+% ----------------------------------------------------------------------------
+
+\subsection{Delta Matching}
+\label{sec:delta}
+
+Forwarding supplies a child with the matches it inherits unchanged from its parent. Its complement
+is forced: a match present in the child but not in the parent must use at least one produced edge,
+because a match built entirely from edges that survived the rewrite was already a match in the
+parent. The child's own scan is therefore restricted to matches anchored on a produced edge, which
+is a small set---one rewrite produces the right-hand side's edges, independently of how large the
+state is.
+
+The two mechanisms partition the child's matches rather than overlapping: every match either
+touches a produced edge or does not, forwarding covers the second class and the delta scan the
+first. What does overlap is the delta scan with itself. A match touching $k$ produced edges is
+discovered $k$ times, once with each of them as the anchor, so the results are deduplicated on
+content rather than on the anchor that found them; duplicates here are routine rather than
+exceptional, so the deduplicating lookup precedes the allocation of a match record
+rather than following it.
+
+Because the partition is an argument rather than a measurement, the engine carries a validation
+mode. With the mode enabled, every state's matches are additionally computed by an
+unrestricted scan and compared against the union of what forwarding and the delta scan supplied,
+and a missing match is attributed to the obligation that owed it: to forwarding if it uses only
+surviving edges, to the delta scan if it touches a produced edge. The two have different causes
+and different repairs, so the attribution is recorded separately rather than as a single mismatch
+count. The validator also counts its own executions, since a mismatch count of zero is evidence
+only when the number of comparisons performed is not.

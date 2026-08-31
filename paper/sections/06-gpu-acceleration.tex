@@ -1,0 +1,93 @@
+\section{GPU Acceleration}
+\label{sec:gpu}
+
+Multiway evolution is a poor fit for the shape of work a GPU is usually given. The
+frontier is irregular and data-dependent, its width is not known before the step that
+produces it, and each state must be canonicalized---a refinement loop with data-dependent
+control flow---before it can be compared with any other. A per-phase kernel launch would
+put a host round trip between every one of those stages. The design here is therefore a
+single resident megakernel that keeps the frontier on the device across steps, and the
+subsections describe what that costs: how canonicalization and matching are expressed
+without host control flow, how work is queued and termination detected among resident
+blocks, and how memory is managed when no allocator is available.
+
+\subsection{Megakernel Architecture}
+
+Traditional GPU algorithms launch separate kernels for each operation, incurring a host round
+trip between every stage. That cost is fixed per launch and does not shrink with the problem, so
+it dominates exactly where multiway evolution spends most of its steps: the early frontiers, which
+are small and numerous. Our \emph{megakernel} approach instead runs a single persistent kernel for
+the whole evolution, keeping the frontier, the match queues and the epoch counter resident on the
+device between steps, so a step costs a device-side barrier rather than a launch.
+Figure~\ref{fig:megakernel} shows the arrangement: the queues and the shell that services them,
+with expanded states re-entering as match tasks without returning to the host. What the design
+removes, and the depth beyond which that removal no longer registers, are measured in
+Section~\ref{sec:benchmarks}---it is
+$\PersistentSpeedupFour\times$ a per-step \texttt{evolve()} at depth four and indistinguishable
+from it by depth \PersistentTieDepthWord, once the evolution itself dominates the constant being
+amortized.
+
+\begin{figure*}[htbp]
+\centering
+\begin{tikzpicture}[
+    node distance=0pt,
+    stage/.style={rectangle, draw, minimum width=2.4cm, minimum height=0.8cm,
+                  align=center, font=\small},
+    % Tall enough that the feedback edge AND its label sit inside the frame. At 3.3cm the label
+    % baseline fell on the bottom rule and the rule struck the text out.
+    shell/.style={rectangle, draw, thick, minimum width=10.2cm, minimum height=4.0cm},
+    flow/.style={->, >=latex}
+]
+\node[shell] (mega) at (0,0) {};
+\node[font=\small\bfseries, anchor=north] at ([yshift=-0.18cm]mega.north) {Resident kernel};
+
+% Boxes narrower and further apart: at 2.4cm wide on a 3.4cm pitch the edge labels were wider
+% than the 1.0cm gap between them and ran into the boxes on either side.
+\node[stage, minimum width=2.1cm] (match)   at (-3.6,-0.10) {Match\\queue};
+\node[stage, minimum width=2.1cm] (rewrite) at ( 0.0,-0.10) {Rewrite\\queue};
+\node[stage, minimum width=2.1cm] (state)   at ( 3.6,-0.10) {State\\queue};
+
+\draw[flow] (match)   -- node[above, font=\scriptsize] {matches}  (rewrite);
+\draw[flow] (rewrite) -- node[above, font=\scriptsize] {children} (state);
+
+% Feedback edge below the row, with its label inside the frame rather than on its bottom rule.
+\draw[flow] (state.south) -- ++(0,-0.75) -- node[below, font=\scriptsize, pos=0.5]
+      {expanded states re-enter as match tasks} ++(-7.2,0) -- (match.south);
+
+\node[font=\scriptsize, anchor=north] at ([yshift=-0.62cm]mega.north) {epoch counter (no host round trip)};
+\end{tikzpicture}
+\caption{Queue structure of the resident device kernel. Work circulates between the
+three queues without returning to the host; an epoch counter separates evolution steps.}
+\label{fig:megakernel}
+\end{figure*}
+
+\subsection{Design Constraints}
+\label{sec:gpu-constraint}
+
+The resident kernel exists to remove a host round trip per evolution step. That aim is only met if
+nothing crosses the host--device boundary during evolution at all: rules and the initial state are
+uploaded and the queues seeded before the launch, results are read after it, and in between the
+device decides what work exists, which worker takes it, and when the evolution has finished. A
+round trip introduced for any other purpose has the same cost as the per-step round trip the
+design removes, so the constraint admits no exceptions.
+
+Two properties of the device path follow from it rather than being chosen independently.
+
+\emph{Capacity overflow cannot be resolved by retrying with a larger allocation.} Enlarging a pool
+means allocating on the host, which is a round trip. A device-resident loop must therefore record
+the overflow and return the work completed so far, which is the behavior described in
+Section~\ref{sec:capacity}. On the device that behavior is not one option among several; it is
+the only one available, and it is why capacities are sized from configuration before the launch.
+
+\emph{The canonicalizer's scratch cannot be sized by measuring the workload.} Sizing a scratch slot
+to the largest state in a batch requires knowing the batch, and a resident loop has no batch:
+states arrive continuously and the largest is not known until the run ends. One resolution is a
+slot pre-sized from a configured maximum with a coarser hash used above it, which would reintroduce
+the possibility of two states receiving the same key because one was too large to canonicalize
+exactly---a silent loss of the exactness property of Section~\ref{sec:canonicalization}, bounded by
+a configuration value rather than eliminated. The resolution taken instead is a device-side arena
+from which each state claims a slot sized from its own vertex, edge and occurrence counts. There is
+consequently no approximate fallback in the device's exact path: exhausting the arena is a capacity
+overflow, recorded and reported like any other, and never a quietly coarser identity.
+
+The device implementations of canonicalization and matching, the work queues, termination and device memory management are specified in Appendix~\ref{app:gpu-impl}.

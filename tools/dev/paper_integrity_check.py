@@ -27,6 +27,7 @@ Run from the repository root: python3 tools/dev/paper_integrity_check.py
 """
 
 import argparse
+import glob
 import os
 import re
 import subprocess
@@ -69,6 +70,10 @@ def main():
 
     with open(a.main, encoding="utf-8") as f:
         tex = f.read()
+    # Sections are \input from their own files; a fragment referenced there is referenced.
+    for sec in sorted(glob.glob(os.path.join(os.path.dirname(a.main), "sections", "*.tex"))):
+        with open(sec, encoding="utf-8") as f:
+            tex += f.read()
     referenced = set(re.findall(r"\\input\{tables/([\w.]+?)(?:\.tex)?\}", tex))
     on_disk = {n[:-4] for n in os.listdir(a.tables_dir) if n.endswith(".tex")}
 

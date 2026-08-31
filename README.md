@@ -4,9 +4,8 @@ A high-performance implementation of multiway hypergraph rewriting with Mathemat
 
 ## Status
 
-Release candidate: the tree is feature-complete and gated by CI, model checking and a
-brute-force oracle. The next tag is v1.0.0-rc1, the first stable release line; APIs are
-stable from that tag onward.
+v1.0.0-rc1: feature-complete, gated by CI, model checking and a brute-force oracle. APIs
+are stable from this release line onward.
 
 ## Features
 

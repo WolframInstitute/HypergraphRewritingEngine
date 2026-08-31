@@ -1,0 +1,159 @@
+\section{Verification of the Concurrent Surface}
+\label{sec:verification}
+
+The engine holds no lock, so every property that a lock would have enforced is instead a
+consequence of an ordering argument. Arguments of that kind are checked poorly by testing. A stress test samples
+interleavings, so a clean run bounds nothing: on this engine a determinism gate of 150 runs --
+90 recorded, then 40 and 20 more under load---explores a vanishing fraction of the schedules
+its own thread count admits, and the schedules that matter are not the likely ones. Two verification layers are
+therefore maintained alongside the test suite, and they are bounded in different directions.
+
+\paragraph{Model checking under weak memory.}
+The first layer uses GenMC~\cite{kokologiannakis2021genmc}, which enumerates the executions of a
+bounded concurrent program under the RC11 memory model~\cite{lahav2017repairing}. For the program
+it is given---that thread count, that operation count, those inputs---it explores every
+interleaving and every reads-from choice the model permits, so a clean run is a statement about all
+executions within the bound rather than about the ones that happened to be scheduled.
+
+Three harnesses carry a weaker guarantee than that, and each says so in place. Two of them bound
+the number of context switches, which the checker permits only under sequential consistency, so
+those two establish their property for the sequentially consistent executions of their program
+rather than for every RC11 execution of it. A third samples executions instead of enumerating
+them, because its shape cannot be exhausted at the size that exhibits the behaviour it is about; a
+clean sample is evidence rather than proof, and the same property is proved by enumeration at a
+smaller shape by a separate harness. The remaining harnesses are exhaustive over RC11 within their
+stated bound.
+
+Each harness is a small program that includes the engine's own header and calls its own functions,
+rather than a hand-written model of the algorithm. The constraint is deliberate: a model drifts
+from the code as soon as the code changes, and a re-implementation establishes a property of the
+re-implementation. A harness that includes the header stops compiling when the header changes
+shape, which couples it to the code it is about. Two harnesses cannot meet the constraint, because
+the protocols they check live inside functions the interpreter cannot take, and both say so in
+place: their transcriptions are copied verbatim and run over the real underlying structure.
+
+The properties checked are the ones whose failure would be silent. For the concurrent map: that
+get-or-create admits exactly one winner and returns that winner to every caller, so a
+\emph{was\_inserted} result means what its callers assume. That this survives a table resize
+running concurrently with the inserts that triggered it, and survives two successive growths. And
+that the flag comes from the publishing exchange rather than from a value comparison, so repeated
+offers of the same value for one key do not each report success. For the deque: that
+the owner popping the back and a thief popping the front never extract the same item, checked at
+the single configuration where the two ends address the same slot. For the match rendezvous: that
+a match is claimed exactly once and never dropped on a collision, and, for the rendezvous between
+an instance and the matches captured for its class, that every pair meets. For the per-instance
+application list: that of any two applications linked into one list exactly one observes the
+other, permitting the branchial pair they induce to be emitted once with nothing to
+deduplicate it against (Section~\ref{sec:quotient}), and that a walk from a node enumerates every
+node linked before it. For the per-worker scratch arena: that no two workers are handed the same
+index. For the key set: that two
+threads inserting one key while a third insertion forces a growth beneath them produce exactly one
+reported insertion, and that enumeration emits each key once across that growth---two properties
+checked by separate harnesses, because they are independent and a single harness that bundled them
+would not say which one a violation belonged to. A third property class covers \emph{readers}
+racing a growth: a membership query for a key that settled before the query began must answer
+present in every execution, even mid-carry, when the key's slot in the retiring table is already
+sealed and its copy has just landed in the successor. The chain walk is oldest-first for that
+reason: a newest-first walk visits each table on the wrong side of the carry hand-off and can
+report absent for a key that is present, and the twenty-execution counterexample distinguishing
+the two orders is in the harness. The same read-order condition governs the map's drained-table
+skip, where the calibrated break is reading a table's skip flag only when the walk arrives at it. For the
+scheduler: that a worker
+which parks is always woken, which is a liveness property and is checked as one---removing either
+of the two sequentially consistent fences in the submit/park protocol makes the checker report a
+non-terminating spin loop.
+
+\paragraph{Checker modifications.}
+Running an engine of this size through GenMC required changes to the checker, all of which are
+shipped with the engine as a patch against release 0.17.0. Four are correctness fixes:
+\texttt{operator new[]} is intercepted as an allocation, as \texttt{operator new} already was;
+a \texttt{memcpy} is promoted over the element type its destination names, with byte stores for
+a tail shorter than the last element and alignment-width stores for an opaque \texttt{memset};
+the read half of a failed compare-exchange carries the failure ordering rather than the success
+ordering; and no liveness violation is reported while a thread is blocked by an assume, a helped
+compare-exchange or a confirmation (upstream pull request 58). One is a limitation in the
+lowering of copies whose operands the promotion pass cannot type---a call result, or a load from
+a lambda's closure field---which were lowered as loops at the intrinsic's alignment, so that a
+program's two-byte field read fell inside a four-byte store, an access the checker's value
+resolution does not answer and reported as uninitialised memory; the promotion now runs once
+before and once after scalar replacement and register promotion, when such operands have become
+the allocas they held, and the report names a read that lies inside a wider write. The rest are
+instruments: a progress heartbeat over the transformation passes and the exploration, and, in
+estimation mode, an attribution of the state-space estimate to the reads and writes that
+produce it---every access with more than one alternative is booked against its source line
+with weight $\log_2$ of the alternative count, and the booked total equals $\log_2$ of the
+estimator's sample per execution. That attribution is what identified the two changes that
+made the composed harnesses tractable: an idle worker's empty pop of its deque wrote its
+\texttt{bottom} word twice per look, giving every thief's read of that word one reads-from
+alternative per store, and the workers were spawned with distinct arguments, which kept the
+checker's symmetry reduction from applying.
+
+\paragraph{TLA\textsuperscript{+} models.}
+The second layer uses TLA+ and its model checker~\cite{lamport2002specifying} on the match
+forwarding protocol, which is the property whose silent failure is most costly: a lost match
+removes the entire subtree below it while leaving the run internally consistent. Every in-flight
+protocol step is held in a bag from which any enabled step may fire, so the interleavings subsume
+every worker count rather than a bound on it; what is bounded instead is the state count. The
+trade is stated where the specification is: this layer is a transcription, so a change to the code
+does not change the model, and each specification header names the code it transcribes.
+
+The specification is checked in four configurations, differing in whether the claim winner owns
+both the store and the propagation and whether submission is batched
+(Table~\ref{tab:tla}). The shipped configuration is forwarding-complete at the model bound. The
+configuration without the ownership invariant and without batching violates the property. Its
+counterexample is the shape the invariant exists to exclude. On a chain
+$s_0 \to s_1 \to s_2$, a match is discovered at the root after $s_2$'s pull has run; $s_1$'s pull
+wins the claim and stores without propagating; the root's push then finds the claim taken and skips
+its recursion. That leaves $s_2$ quiescent with a match that is valid for it and not
+stored. That the model reaches the failure it exists to exclude is the calibration of the model.
+The remaining configuration shows that batching alone masks the broken pull at this bound, which is
+why the ownership invariant is not treated as redundant with it.
+
+\begin{table}[htbp]
+\centering
+\caption{\textbf{Forwarding completeness under TLA+.} The shipped protocol and three
+calibration arms of the same specification, exhaustive at the model bound of four states, three
+matches and three edges, with a mid-chain discovery enabling a grandchild. \emph{Ownership} is
+the claim winner owning both the store and the propagation; \emph{batched} is per-state
+submission after matching completes. The arm without ownership or batching is the checker's
+calibration: the specification detects the violation its removal introduces.}
+\label{tab:tla}
+\resizebox{\ifdim\width>\linewidth\linewidth\else\width\fi}{!}{%
+\begin{tabular}{lllcr}
+\toprule
+Arm & Ownership & Batched & Verdict & Distinct states \\
+\midrule
+\textbf{shipped} & yes & yes & complete       & 117{,}005 \\
+calibration & no  & yes & complete       & 85{,}777 \\
+calibration & yes & no  & complete       & 479{,}005 \\
+calibration & no  & no  & violated (as required) & trace depth 13 \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\paragraph{Segmented array.} The segmented array carries the states, the
+events, the edges and the per-instance application lists, and its ordering invariant is that if a
+segment exists then so does every segment below it---a reader that finds segment $k$ may index any
+position beneath it without further checking. That invariant is specified rather than tested,
+because the structure allocates segments on demand from concurrent appenders and the failure it
+guards against is a read of an unallocated segment rather than a wrong value. The shipped
+protocol checks clean at $2{,}284$ distinct states and a complete-graph depth of $21$; the
+configuration that creates only the segment asked for violates \emph{DenseBelowCount}. The
+calibration also fixes the bound: at two appenders the broken protocol is \emph{also} clean, since
+one claim each means the index that would expose the gap cannot be reached until a holder of the
+lower segment has published, so three are required. It is specified here rather than checked with
+the tools of the previous layer because that checker does not survive constructing this
+structure---a limitation of the tool, recorded where it applies rather than presented as a choice.
+
+\paragraph{Stress testing.} The two layers above bound the schedule; the test
+suite does not, and no sanitizer changes that. A sanitizer changes what a given execution
+is able to report, which is the second half of the objection to testing: a stress run samples few
+schedules, and the schedules it does sample can still pass while holding a race, an
+out-of-bounds access, or a read of memory nothing wrote. The suite is therefore run under
+ThreadSanitizer, AddressSanitizer and UndefinedBehaviorSanitizer, and the device suites under the
+CUDA memory and initialization checkers; all five report nothing on the shipped tree, and all five
+fail the build on a finding. The initialization checker detects a case the others do not: a host
+readback of device memory that no kernel wrote returns whatever the allocator last left at that
+address, so an assertion over it succeeds or fails according to allocation history rather than
+according to the code, and neither a test nor a model checker over the concurrent structures
+observes it.

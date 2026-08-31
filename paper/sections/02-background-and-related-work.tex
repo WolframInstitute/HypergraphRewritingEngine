@@ -1,0 +1,104 @@
+\section{Background and Related Work}
+\label{sec:background}
+
+This section fixes the objects the rest of the paper measures and states which of
+their properties are the expensive ones. Hypergraph rewriting supplies the rule and
+the match; multiway evolution supplies the branching structure that makes a state
+space rather than a trajectory, together with the causal and branchial relations
+derived from it. The cost of the whole construction concentrates in one place: to
+know whether two states are the same state, the system must decide hypergraph
+isomorphism, and it must decide it once per produced state rather than once per
+query. We close with the systems and libraries this work is measured against.
+
+\subsection{Hypergraph Rewriting Systems}
+
+A \emph{hypergraph} $\hypergraph = (V, E)$ consists of a vertex set $V$ and a set of hyperedges $E$, where each hyperedge $e \in E$ is an ordered tuple of vertices $(v_1, v_2, \ldots, v_k)$ with $v_i \in V$. Unlike standard graphs where edges connect exactly two vertices, hyperedges may connect any number of vertices with arbitrary arity.
+
+\begin{definition}[Rewriting Rule]
+A rewriting rule $\rewriterule = (L, R)$ consists of a left-hand side pattern $L$ and right-hand side replacement $R$, both hypergraphs. A \emph{match} of $L$ in $\hypergraph$ is an injective mapping $\phi: V_L \to V_\hypergraph$ such that the image of each hyperedge in $L$ appears in $\hypergraph$.
+\end{definition}
+
+This is the single-pushout form of rewriting: the rule is applied by deleting the matched image and gluing in the replacement, without the additional gluing conditions that the double-pushout construction imposes~\cite{ehrig2006fundamentals,rozenberg1997handbook,plump2009graph}. Applying rule $\rewriterule$ at match $\phi$ produces a new hypergraph $\hypergraph'$ by:
+\begin{enumerate}
+    \item Removing all hyperedges in $\phi(L)$ from $\hypergraph$
+    \item Adding hyperedges from $R$, extending $\phi$ to map new vertices in $R$ to fresh vertices
+\end{enumerate}
+
+\subsection{Multiway Evolution}
+
+\emph{Multiway evolution} explores all possible rule applications simultaneously, generating a directed acyclic graph of states connected by events. Figure~\ref{fig:worked-example} shows two steps of a small rule in full---the raw states, the canonical states they collapse to, the events between them and the causal edges---and is the smallest complete instance of everything the rest of the paper computes.
+
+\begin{definition}[Evolution Graph]
+Given initial state $\state_0$ and rule set $\{\rewriterule_i\}$, the evolution graph $G = (\state, \event)$ contains:
+\begin{itemize}
+    \item States $\state$: all hypergraphs reachable from $\state_0$
+    \item Events $\event$: transitions $(s, s', r, \phi)$ where state $s$ rewrites to $s'$ via rule $r$ at match $\phi$
+\end{itemize}
+\end{definition}
+
+\begin{figure*}[htbp]
+\centering
+\input{tables/f_object_binary}
+\caption{Two steps of $\{x,y\} \rightarrow \{x,z\},\{z,y\}$ from a single edge, as the engine
+reports it. Four raw states become three canonical ones: the two depth-2 results are isomorphic
+and are identified. Both causal edges descend from $e_0$, because each depth-2 event consumes
+one of the two edges $e_0$ produced. The branchial relation is empty: $e_1$ and $e_2$ share an
+input state, which resembles a sibling pair, but branchial edges connect co-consumers of a
+\emph{common} edge and these consume different ones. Every element is drawn from the engine's
+own output by \texttt{tools/dev/object\_figure.wls} through the paclet; its provenance line
+records the counts.}
+\label{fig:worked-example}
+\end{figure*}
+
+The \emph{causal graph} captures dependencies between events based on shared hyperedges. The \emph{branchial graph} connects states reachable at the same evolution step, encoding branching structure analogous to quantum superposition~\cite{wolfram2020project}.
+
+\subsection{The Graph Isomorphism Problem}
+
+State deduplication requires detecting when two hypergraphs are isomorphic---structurally identical up to vertex relabeling. Graph isomorphism is in NP and is neither known to be NP-complete nor known to be in P~\cite{kobler2012graph}; the best known bound is quasipolynomial~\cite{babai2016quasipolynomial}.
+
+For practical systems, we employ \emph{graph hashing}: computing a canonical signature $h(\hypergraph)$ such that isomorphic graphs have identical hashes. While perfect hashing (injective for non-isomorphic graphs) requires solving isomorphism exactly, approximate hashes suffice when combined with explicit isomorphism testing for collisions.
+
+\subsection{Related Work}
+
+\textbf{Graph canonicalization:} The nauty/Traces line of work~\cite{mckay2014practical} establishes individualization--refinement (IR) as the practical standard for exact graph canonicalization; it is exponential in the worst case but fast on typical instances, and it is the exact canonicalizer we adopt as our reference. Weisfeiler--Leman color refinement~\cite{weisfeiler1968reduction,shervashidze2011weisfeiler} runs in polynomial time but provably fails to distinguish certain non-isomorphic graphs, so it cannot serve as an identity where exactness is required; we use it only for the modes that ask for a deliberately coarser identity, never in front of IR.
+
+\textbf{Hypergraph rewriting implementations:} SetReplace~\cite{setreplace} is the implementation
+most closely associated with the Wolfram Physics Project, and is the closest system to this work.
+Throughout this paper, \emph{reference implementation} denotes this project's own brute-force
+evolver, named below, and never SetReplace.
+The two target different objects. SetReplace's multiway construction is a token--event graph over a
+single growing token pool: it records which rewrites occurred and what each consumed and produced,
+and does not canonicalize or deduplicate states during evolution, so two structurally identical
+states reached along different histories remain distinct vertices. The object this engine
+enumerates is the states graph under an exact isomorphism identity, which requires canonicalizing
+every state as it is produced (Section~\ref{sec:canonicalization}); canonicalization therefore
+dominates the cost, rather than matching. The two objects are complementary rather than
+competing: a token--event graph is cheaper and suits an analysis of history, while a
+deduplicated states graph suits an analysis of the reachable state space.
+We compare against two implementations in Section~\ref{sec:benchmarks}, both of which compute the
+same object we do: the \texttt{Wolfram/\allowbreak Multicomputation} paclet's
+\texttt{MultiwaySystem}~\citep{wolframmulticomputation}\footnote{Distributed through the
+Wolfram Paclet Repository,
+\url{https://resources.wolframcloud.com/PacletRepository/resources/Wolfram/Multicomputation/};
+the paclet version each comparison ran against is recorded in that table's provenance line, and the version measured, 0.1.8, is the latest the repository publishes (23 November 2024; checked 31 August 2026).},
+and this
+project's own reference implementation (\texttt{reference/MultiwayReference.wl}), a direct
+transcription of the definition used as the correctness oracle throughout this work. The two
+answer different questions. \texttt{MultiwaySystem} is the implementation a user would otherwise
+run, but every property it exposes is graph-valued, so its time necessarily includes building
+Wolfram \texttt{Graph} objects and no subtraction can remove that from the outside. The
+reference returns data, so its time is the closest Wolfram-side analogue of the engine's own
+native measurement. SetReplace computes a different object, so a wall-time comparison against it
+would compare two different computations.
+
+\textbf{Subgraph matching on hypergraphs:} HGMatch~\cite{yang2023hgmatch} matches by hyperedge rather than vertex by vertex, seeding a join from one pattern hyperedge and extending it one hyperedge at a time, and partitions candidate hyperedges by a label-derived signature to restrict enumeration. HGMatch also organizes execution as a dataflow with a task scheduler performing fine-grained dynamic work stealing. Our matcher adopts all three. The join is organized as a seeding scan followed by expansions that each bind one further pattern edge (Section~\ref{sec:matching-algorithm}), and because hyperedges here carry no labels, the signature that partitions candidates is instead the vertex-repetition pattern of an edge (Definition~\ref{def:signature}), which plays the same filtering role for unlabelled data. Where an expansion has a variable already bound, candidates come from the vertex index rather than the signature bucket; on the device this replaced a global signature walk and reduced match-kernel time on one workload from 944\,ms to 4\,ms.
+
+\textbf{GPU graph algorithms:} Recent work has explored GPU acceleration for subgraph matching~\cite{tran2015fast}, graph mining~\cite{chen2021pangolin}, and general graph algorithms~\cite{wang2016gunrock}. The warp-centric organization of our match kernel---one block per (state, rule) pair, threads striding over seed candidates and each running its own depth-first subtree---follows G2Miner~\cite{chen2022g2miner}. Our kernel differs from these systems in remaining resident across evolution steps rather than being relaunched per step, because the workload is iterative: each step's states are the next step's inputs.
+
+\textbf{Dynamic graph algorithms:} The causal graph's transitive reduction is maintained as edges arrive rather than recomputed, which places it in the dynamic graph-algorithms setting; Goranci et al.~\cite{goranci2025dynamic} give fully dynamic algorithms for transitive reduction under insertions and deletions, in $\BigO(m + n\log n)$ amortized time. Our setting admits insertions only, arriving in topological order, so it is a restriction of that problem rather than an instance of it, and we claim no result against it (Section~\ref{sec:tr}).
+
+\textbf{Term rewriting:} The theory of term rewriting~\cite{baader1998term} treats confluence and termination for tree-structured terms, and high-performance implementations~\cite{van2019fastest} optimise similar pattern-matching operations. Hypergraph rewriting differs in that the objects are graph-structured, so matching is subgraph matching rather than tree matching, and states must be compared up to isomorphism rather than syntactic equality.
+
+% ----------------------------------------------------------------------------
+% CANONICALIZATION
+% ----------------------------------------------------------------------------

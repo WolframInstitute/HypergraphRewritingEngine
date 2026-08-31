@@ -16,7 +16,7 @@ python3 tools/dev/codemap_check.py || fail=1
 # Every fragment the paper inputs is in the INDEX (about to be committed), and every indexed
 # fragment is input. The staged tree is what CI will see: a generated-but-untracked fragment
 # passes every local paper build and fails every clean clone.
-inputs=$(grep -oE '\\input\{tables/[a-z0-9_]+\}' paper/main.tex | sed 's/.*tables\///; s/}//' | sort -u)
+inputs=$(grep -ohE '\\input\{tables/[a-z0-9_]+\}' paper/main.tex paper/sections/*.tex 2>/dev/null | sed 's/.*tables\///; s/}//' | sort -u)
 staged=$(git ls-files --cached paper/tables/ | xargs -n1 basename 2>/dev/null | sed -n 's/\.tex$//p' | sort -u)
 if [ "$inputs" != "$staged" ]; then
   echo "pre-commit: the fragments main.tex inputs and the fragments git tracks differ:" >&2

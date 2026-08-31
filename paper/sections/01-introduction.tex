@@ -1,0 +1,28 @@
+\section{Introduction}
+\label{sec:introduction}
+
+The Wolfram Physics Project~\cite{wolfram2020project} proposes that the fundamental structure of the universe emerges from the repeated application of simple rewriting rules to hypergraphs. This approach generates three derived structures: causal graphs, recording dependencies between rewriting events; branchial graphs, connecting states reachable at the same evolution step; and multiway evolution graphs, representing the set of all reachable histories.
+
+Exhaustive multiway evolution is computationally demanding. The number of reachable states grows exponentially with the number of evolution steps, and each step requires pattern matching against the current hypergraphs, canonicalization to identify isomorphic duplicates, and event recording to construct the causal and branchial structures. The existing Wolfram Language implementation is mathematically complete, but slow enough that its running time rather than the definition sets what can be explored. Section~\ref{sec:benchmarks} measures it at $3.7$\,s to reach the six canonical states of depth five on the corpus's \texttt{wolfram-2to4} rule, against $0.3$\,ms for the engine on the same evolution, and the gap widens with depth.
+
+This paper presents a high-performance implementation addressing these challenges through:
+
+\begin{enumerate}
+    \item \textbf{Exact canonicalization:} We use McKay-style individualization--refinement (IR)~\cite{mckay2014practical} as the canonicalizer, and under the exact mode it runs on every state: its hash is the deduplication key, so two states are identified if and only if they are isomorphic. A Weisfeiler--Leman signature~\cite{weisfeiler1968reduction} serves the approximate modes, which exist for callers that ask for a coarser identity. Proposition~\ref{prop:wlceiling} shows why it is not placed in front of IR: the saving available to such a filter is bounded above by the ratio of canonical classes to raw states, which falls toward zero as an evolution deepens.
+
+    \item \textbf{Lock-free concurrency:} The engine holds no lock. Its concurrent hash maps, segmented arrays, lock-free lists and work-stealing deques are non-blocking, and a worker with no work waits on an address rather than spinning.
+
+    \item \textbf{GPU acceleration:} A CUDA backend runs matching, rewriting and canonicalization in one kernel that stays resident across evolution steps, so no step returns to the host. It is faster than the host where the rule set yields enough independent work to fill the device, which Section~\ref{sec:benchmarks} quantifies.
+
+    \item \textbf{Configurable equivalencing:} State and event equivalencing are independent axes. State canonicalization is selected as \textsc{None}, \textsc{Automatic} (fast content hash), or \textsc{Full} (exact IR); event canonicalization is composed from a small set of signature keys. There is no user-facing choice between competing canonicalization algorithms---the exact path is always IR, computed on every state.
+
+    \item \textbf{Exploration strategies:} Quotient exploration (Section~\ref{sec:quotient}) expands one representative per isomorphism class while retaining the full event set; transition-level sampling with per-rule weights (Section~\ref{sec:sampling}) admits runs at depths where exhaustive expansion is not available; and the causal graph's transitive reduction (Section~\ref{sec:tr}) is maintained online rather than as a pass over the finished graph.
+
+    \item \textbf{A determinism contract:} The state set, event set and causal and branchial relations are a function of the inputs alone, independent of thread count and scheduling order (Section~\ref{sec:determinism}).
+\end{enumerate}
+
+The remainder of this paper is organized as follows. Section~\ref{sec:background} reviews hypergraph rewriting and the Wolfram Physics framework. Section~\ref{sec:canonicalization} presents our canonicalization algorithms. Section~\ref{sec:pattern-matching} describes the pattern matching system. Section~\ref{sec:architecture} details the system architecture. Section~\ref{sec:gpu} covers GPU acceleration. Section~\ref{sec:benchmarks} presents experimental results. Section~\ref{sec:conclusion} concludes with future directions.
+
+% ----------------------------------------------------------------------------
+% BACKGROUND
+% ----------------------------------------------------------------------------

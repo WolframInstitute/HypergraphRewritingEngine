@@ -191,7 +191,10 @@ def em_dash_density(path: Path):
 
 
 def main(argv):
-    paths = [Path(p) for p in argv[1:]] or [Path(__file__).resolve().parents[2] / "paper" / "main.tex"]
+    paper = Path(__file__).resolve().parents[2] / "paper"
+    # The prose lives in main.tex and one file per section; the default covers them all so the
+    # hook cannot pass on text it never read.
+    paths = [Path(p) for p in argv[1:]] or [paper / "main.tex"] + sorted((paper / "sections").glob("*.tex"))
     total = 0
     for path in paths:
         if not path.exists():

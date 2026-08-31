@@ -1,0 +1,481 @@
+\section{System Architecture}
+\label{sec:architecture}
+
+The architecture follows from two commitments that constrain every structure below.
+The first is that a rule---an ordering, an identity, a hash, a predicate---has exactly
+one implementation, compiled for both the host and the device, so the two targets
+cannot diverge on what a state \emph{is}. The second is that no thread ever blocks
+another: every shared structure is lock-free, and where a protocol needs agreement it
+reaches it by a single compare-exchange whose loser adopts the winner's answer rather
+than waiting. The subsections take these in turn---the shared core, the storage the
+states live in, the lock-free structures, the allocator that keeps them off the global
+heap, the memory model that makes their orderings checkable, and the static analysis
+that decides how a rule will be matched before any matching happens.
+
+\subsection{Shared Host and Device Implementation}
+\label{sec:shared-core}
+
+The CPU engine and the CUDA port are separate schedulers over the same semantics, and any rule
+implemented twice will eventually be implemented differently. Every decision procedure the two
+share therefore exists once, as an annotated function compiled for host and device from a single
+source: the join that enumerates matches, the edge-signature rule, the rewrite semantics
+determining which vertices a produced edge carries, the event identity, the Weisfeiler--Leman
+hash, the individualization--refinement canonical hash, and the quotient-causal dynamic program
+and its per-instance replay. Eleven such cores are shared in total; the three not named here are
+the matcher's task core, the sampling draw and the slot rule.
+
+The consequence is that host and device agree by compilation rather than by testing, and a
+differential test between them can be reserved for the parts that genuinely differ---scheduling,
+memory placement and queueing---rather than re-checking a rule that exists once. What the arrangement rules out is a
+rule written twice: two implementations of one decision agree until one of them is edited, so the
+duplication is the defect and not the disagreement it eventually produces.
+
+\subsection{Unified Hypergraph Storage}
+\label{sec:storage}
+
+Our core data structure stores all hypergraph data in a unified edge pool, shown in
+Figure~\ref{fig:storage}: every state is a bitset view over one shared pool of edges, so a child
+state that differs from its parent by a few edges stores that difference and not a copy.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    box/.style={rectangle, draw, minimum width=2cm, minimum height=0.6cm},
+    label/.style={font=\small}
+]
+% Edge Pool
+\node[box, minimum width=6cm] (pool) at (0,0) {Edge Pool (SegmentedArray)};
+\node[label, above=0.1cm of pool] {$e_0, e_1, e_2, \ldots, e_n$};
+
+% States
+\node[box] (s1) at (-2.5,-1.5) {State $s_1$};
+\node[box] (s2) at (0,-1.5) {State $s_2$};
+\node[box] (s3) at (2.5,-1.5) {State $s_3$};
+
+% Arrows
+\draw[->] (s1) -- node[left, label] {bitset} (pool.south west);
+\draw[->] (s2) -- node[left, label] {bitset} (pool.south);
+\draw[->] (s3) -- node[right, label] {bitset} (pool.south east);
+
+% Legend
+\node[label, below=0.3cm of s2] {States are views (SparseBitset) over shared edges};
+\end{tikzpicture}
+\caption{Unified edge storage with state views}
+\label{fig:storage}
+\end{figure}
+
+This design eliminates edge duplication across states, since each state is a bitset view over the shared pool rather than an independent copy of its edges. The bitset is chunked and the chunks are shared: a child state initially references its parent's chunks, and a chunk is copied only when the child first mutates it. A rewrite that touches a few edges therefore allocates a few chunks rather than a copy of the parent's membership, and chunks are immutable once shared, so concurrent readers of a parent are unaffected by a child's mutation. Table~\ref{tab:t3-deheap} reports the arena bytes each corpus workload consumes.
+
+The lock-free structures beneath the engine, their per-operation costs and their memory model are specified in Appendix~\ref{app:data-structures}; the engine's behavior at configured capacity limits is specified there as well.
+
+\subsection{Allocation}
+\label{sec:allocation}
+
+Evolution allocates from per-worker arenas rather than from the global allocator. Each worker
+holds a bump cursor into blocks it owns, so allocation on the matching and rewriting paths is a
+pointer increment with no synchronization, and memory is reclaimed in bulk by resetting the arena
+rather than by freeing individual objects. Calls to the global allocator are consequently confined
+to acquiring those blocks: Table~\ref{tab:t3-deheap} reports $455$ to $475$ such calls for an
+entire run, which on the largest workloads measured is $0.007$ calls per event.
+
+\subsection{Static Rule Analysis}
+\label{sec:static-analysis}
+\label{sec:rule-analysis}
+
+Some properties of a rule set are decidable from the patterns alone, before any evolution runs,
+at the cost of a bounded scan over two finite patterns. The engine computes them when a rule is
+added and uses them to select strategy.
+
+Per rule it records the edge-count difference between the two sides, which predicts whether states
+grow and therefore how canonicalization cost will develop; the number of variables the right-hand
+side introduces, since a rule creating none operates within a bounded vertex set; and the
+left-hand side's arities. Treating the left-hand side as a conjunctive query, it computes whether
+that query is acyclic---which determines whether a join order exists that avoids intermediate
+blow-up---and an integral edge cover, which bounds the number of matches a state of $N$ edges can
+yield by $N^{\rho}$. That bound is tight exactly when the query is acyclic; where it is not, the
+recorded value is an upper bound and is used only as one.
+
+Every predicate is sound in one direction only, and each is stated with its direction. The
+branching test over-approximates: a negative result means branching is structurally impossible,
+while a positive result means only that it has not been ruled out. An adaptation may act on the
+negative and must not act on the positive. The engine does exactly that with the
+branchial relation: if no two matches can share a consumed edge then no state has a branchial pair
+under any initial condition, so the relation is provably empty and is not built. The request is not
+overridden by this---what the caller asked for is the empty relation and the empty relation is what
+it receives; only the work of discovering it is removed. Nothing here concerns termination, finiteness of the
+reachable set, or global confluence, all of which are undecidable for a rewriting system of this
+power.
+
+\subsection{Determinism Contract}
+\label{sec:determinism}
+
+The engine's observable output---the state set, the event set, and the causal and branchial
+relations---is a deterministic function of the rules, the initial state, the step count and the
+options. It does not depend on the number of worker threads, on the order in which the scheduler
+happens to execute tasks, or on whether quotient exploration is enabled. Identifiers assigned to
+states and events are allocated in arrival order and therefore do vary between runs; every
+observable defined above is stated over canonical identities and is invariant. This property is
+checked by a determinism gate that fingerprints the expanded state set, the (input, output, rule)
+transition multiset, and the causal and branchial relations across thread counts and seeds, and on
+a divergence reports which component moved and under which configuration. Reporting the components
+separately makes the gate sensitive: the causal relation can move on its own, by a single
+edge, while the state set, the transition multiset and the branchial relation stay identical, so a
+gate that compared one aggregate fingerprint would not distinguish that from agreement.
+
+The capping options are outside it, for the reason that shapes the sampling design: \textsc{MaxStatesPerStep} admits states until a per-step counter reaches its bound, so
+which states are admitted follows the order they arrive in and varies with the worker count. An
+exact cap that was also schedule-independent would have to hold every candidate at that depth
+until the depth settled, which is the barrier Section~\ref{sec:sampling} declines: only a
+population that completes locally can be finalised without one, and a per-step population does
+not. What a capped run guarantees is therefore the bound, at every worker count, and not which
+states meet it. The per-parent cap has a locally-completing population and could be made
+schedule-independent on the same terms as the transition spine; it is not today.
+
+\subsection{Depth Semantics and Termination}
+\label{sec:depth}
+
+A run is bounded by a number of steps, and the bound is applied to the \emph{shortest} path length
+from an initial state to a canonical state rather than to the length of the path along which the
+state first happened to be reached. The distinction has no content sequentially, where the search
+reaches states in order of increasing depth. It has content under concurrency: a state can be
+reached first along a long path and only later along a short one, so a budget applied to arrival
+depth would admit or exclude states according to which path won a race, and the set of states
+expanded would vary with the thread count.
+
+The engine therefore \emph{relaxes}. When a state is reached along a path shorter than its
+recorded depth, the recorded depth is lowered and the reduction is propagated into the state's
+children, which may in turn be lowered, and so on. The cascade terminates because depth strictly
+decreases on each accepted relaxation and is bounded below by zero. Matching is not repeated by
+it: the claim that admits a canonical state to expansion is a separate value from its depth, so a
+state whose depth falls is matched at most once regardless of how many times it is relaxed.
+
+Relaxation and child registration race, and the race is settled by ordering rather than by
+exclusion. Registering a child publishes it into its parent's child list and then reads the
+parent's depth; relaxing a parent lowers the parent's depth and then scans the parent's child
+list. Sequentially consistent fences on both sides exclude the one outcome that would strand a
+child at a stale depth---the scan missing the child \emph{and} the read missing the lowered
+depth---so a child always learns its parent's true current minimum, whichever side of the race it
+is on. A state that lies past the budget is retained as a frontier state for a continuation to
+resume from rather than discarded, and its expansion claim is deliberately left untaken, because a
+shorter path found later in the same run must still be able to relax it into budget, and a state
+that has already been claimed never would.
+
+Budget consumption is claimed by compare-and-swap rather than by an unconditional increment
+followed by a rollback on overshoot. The two differ in what other threads observe: a rollback
+publishes a count above the limit for as long as it takes to undo, and the readers that prune
+work against the budget read exactly that count, so $N$ concurrent claimants would make each
+other's in-budget work appear out of budget and which work was pruned would depend on the
+interleaving. A compare-and-swap claim never publishes a count above the limit, so the budget
+prunes the same work under every schedule.
+
+Termination is detected without a barrier. A depth is settled when it holds no live work and the
+depth below it has already settled; settling one depth cascades to the depth above, which may have
+been waiting only on it. The argument that these two conditions suffice is that a task at depth
+$d$ submits work only at depths greater than $d$, so once $d-1$ is settled nothing can place work
+at $d$ again. No thread waits on any other, and the check is a test of two values rather than a
+rendezvous.
+
+\subsection{Quotient Exploration}
+\label{sec:quotient}
+
+Under full expansion, every raw state that is produced is itself expanded, so a state reachable
+along $k$ distinct histories is matched against $k$ times. Because the canonical hash already
+identifies these as one state, that work is redundant for the purpose of discovering new states.
+
+Quotient exploration retains the events but not the repeated expansion: a state found equivalent
+to one already seen is still created, and its incoming event is still recorded, so the event set
+and the causal and branchial relations are unchanged; what is suppressed is the spawning of match
+tasks from that state. Exploration therefore proceeds from one representative of each isomorphism
+class, at the shallowest depth at which the class was reached. Table~\ref{tab:t6-quotient} reports
+events produced, causal edges and wall time for the two modes at increasing depth.
+
+The two modes agree on the canonical state set by construction. That they also agree on the causal
+and branchial relations is less immediate, because those relations are defined over raw events and
+quotient exploration expands fewer states.
+
+The reconstruction is a forward tally. Under an exact identity the canonical states graph is
+cyclic, since a canonical state recurs at several path lengths; its unrolling by depth is acyclic,
+and the multiplicity of each (canonical state, depth) pair satisfies
+\begin{align*}
+  \mathrm{mult}[s_0, 0] &= 1,\\
+  \mathrm{mult}[c, k{+}1] &\mathrel{+}= \mathrm{mult}[s, k]\cdot w(s \to c),
+\end{align*}
+summed over the transitions into $c$, with the raw event count recovered as
+$\sum \mathrm{mult}$. Every quantity propagates forward over the unrolled DAG, so a \emph{count}
+is recovered by summation rather than by re-exploring, and that part is polynomial in the number
+of (canonical state, depth) pairs.
+
+Recovering the raw \emph{observables} is a different matter, and the distinction is the one that
+decides what quotient exploration costs. Mapping a multiplicity back to individual instances
+requires distinguishing the edge roles within a class, which the edge orbits from the same IR pass
+provide (Section~\ref{sec:ir}); no additional canonicalization is performed. But the instances
+are then materialised one by one, and there are as many of them as the full system holds. On a
+two-rule set whose canonical state count grows linearly with depth---three, four, five, six, seven,
+eight states at depths two through seven---the raw system reached 146,599 states by depth six,
+and the reconstruction's cost tracked that rather than the canonical count. Quotient exploration
+visited 49 raw states there against full capture's 146,599 and still ran only 65 times faster: a
+large constant factor, not the asymptotic saving the state counts suggest.
+
+Quotient exploration and raw reconstruction are separate requests, and the implementation keeps
+them separate. The reconstruction runs only when the causal relation, the branchial relation or
+the raw event set is among the requested outputs, so a run that asks for canonical states alone
+performs neither the materialisation nor the growth that accompanies it. The reconstruction is
+also not a single-threaded pass---every worker drives it, and its
+total cycle count grows with the thread count, which Section~\ref{sec:limitations} records among
+the measured limits.
+
+\subsection{Transitive Reduction of the Causal Graph}
+\label{sec:tr}
+
+The causal graph accumulates an edge for each dependency between events, including those implied
+by longer paths. The transitive reduction removes an edge $p \to c$ whenever a directed path
+$p \rightsquigarrow c$ of length greater than one already exists; on an acyclic graph this
+reduction is unique.
+
+Maintaining a transitive reduction under edge insertion is an instance of the dynamic
+transitive-reduction problem. Goranci et al.~\cite{goranci2025dynamic} give the first fully dynamic algorithms for maintaining
+a transitive reduction of a general directed graph under both insertions and deletions, achieving
+$\BigO(m + n\log n)$ amortized update time, and $\BigO(m + n^{1.585})$ worst case using fast matrix
+multiplication. The
+setting here is strictly easier in two respects: causal edges are only ever inserted, never
+deleted, and they arrive in an order consistent with a topological order of the causal DAG, since
+an event's producers are complete before the event exists. We therefore make no claim of novelty
+for the procedure below, and no claim of optimality; it is the specialisation the easier setting
+permits, and a fully dynamic reduction would be required if deletions were admitted.
+
+\paragraph{Online maintenance.}
+Computing the reduction as a pass over the finished graph would require the graph to be finished,
+which conflicts with two properties the engine offers. A session (Section~\ref{sec:sessions}) may
+be queried between steps, so there is no point at which the causal graph is known to be complete;
+and the reduction is what most consumers of the causal graph actually want, so materialising the
+full relation first and reducing afterwards would allocate the transitive closure that the
+reduction exists to avoid. The reduction is therefore maintained as an invariant: after every
+insertion, the retained edge set is the transitive reduction of the causal DAG seen so far.
+
+\paragraph{Procedure.}
+Let $e = (p, c)$ be a new causal edge, meaning event $p$ produced an edge that event $c$ consumed.
+Insertion asks whether $c$ is already reachable from $p$ through the retained edges; if it is, $e$
+is implied and is not retained, and if it is not, $e$ is retained. There is no removal step;
+the arrival discipline makes one unnecessary. A consumer's incoming edges are registered by
+that consumer's own worker in descending producer-event order, and an ancestor's id is strictly
+smaller than its descendant's. A retained $(p', c)$ could become implied only through a path
+$p' \rightarrow \cdots \rightarrow x \rightarrow c$; if $(x, c)$ was registered before $(p', c)$
+then the path was already visible to the arrival query, which drops $(p', c)$ on the spot, and if
+after, then $x < p'$ in the descending order while reachability from $p'$ requires $p' < x$---a
+contradiction. An edge accepted at arrival therefore stays non-implied forever, and deciding each
+edge once maintains the exact reduction. The descending order also makes the queries cheap: the
+closure reachable from nearer producers is established before farther producers are tested against
+it, and a farther producer is usually eliminated by a query that terminates early. Because events
+are numbered in creation order and an event's producers necessarily precede it, the order is
+available without sorting.
+
+\paragraph{Arrival-order invariant.}
+Two properties of this setting make the problem strictly easier than the fully dynamic one. Causal
+edges are only inserted, never deleted, so no retained edge can become non-implied later, and an
+edge dropped as implied never has to be reconsidered. And edges arrive in an order consistent with
+a topological order of the causal DAG: an event exists only once its producers do, so when $(p,c)$
+arrives, every edge into $p$ has already been processed and the closure below $p$ is final. A fully
+dynamic algorithm must maintain reachability under deletions, and that requirement forces the
+$\BigO(m + n\log n)$ amortized bound of Goranci et al.; neither of the two properties above is
+available to it.
+
+\paragraph{Order independence.}
+The retained edge set is required to be a function of the causal DAG alone and not of the order in
+which edges were inserted. This is not automatic: a concurrent evolution inserts causal edges from
+several workers, and a reduction that depended on interleaving would produce different graphs on
+different runs of the same input. The requirement is the same schedule-independence property as
+Section~\ref{sec:determinism} and is checked by the same gate, which compares the reduced edge set
+across thread counts and seeds. It is secured differently on the two paths that serve the
+relation. Full capture holds the arrival discipline of the procedure above---each incoming edge
+registered by its consumer's own worker, in descending producer order, against ancestors whose own
+registration is complete---and under it the drop-at-arrival decision is exact whatever the
+interleaving of consumers. The quotient reconstruction emits between canonical event ids, which
+are not monotonic under recurrence, so no arrival discipline exists there; it stores the relation
+unreduced and reduces on read, where the uniqueness of a finite DAG's transitive reduction makes
+the answer a function of the stored set alone.
+
+The reduction applies only to the causal graph. States, events and the branchial relation are never
+reduced: branchial edges connect states at the same step and carry no transitivity to remove.
+
+\subsection{Pruning and Sparse Exploration}
+\label{sec:pruning}
+
+Exhaustive evolution is not always the object of interest, and the state count grows too quickly
+for it to be available at large depth. The engine bounds an exploration by four independent
+mechanisms, which compose:
+
+\begin{itemize}
+\item \textbf{Hard caps.} The total state count, the total event count, the states admitted
+      per step (\textsc{MaxStatesPerStep}) and the successors kept per parent
+      (\textsc{MaxSuccessorStatesPerParent}) each bound the exploration through an atomic
+      counter, so the \emph{count} retained is exact at every worker count. Which states fill a
+      cap follows arrival order, which is the one deliberate exception to the determinism
+      contract of Section~\ref{sec:determinism}, made for the reason given there: an exact
+      cap that was also schedule-independent would require the depth barrier the design
+      declines. A run that reaches a cap returns the bounded evolution with a warning naming
+      the cap, the same contract as a configured container limit
+      (Section~\ref{sec:capacity}).
+\item \textbf{Probabilistic thinning.} A retention probability
+      (\textsc{ExplorationProbability}) and per-rule transition rates keep a random subset of
+      transitions, keyed on canonical identity so the sample is reproducible under a seed. This
+      is the sparse exploration mode; its design is the subject of the next subsection.
+\item \textbf{Structural pruning.} Quotient exploration (Section~\ref{sec:quotient}) expands
+      one representative per isomorphism class and reconstructs the raw relations exactly, so
+      the pruned population is not an approximation of the full one but a compression of it.
+\item \textbf{Steering.} A session (Section~\ref{sec:sessions}) exposes the frontier after
+      each budgeted step, and a continuation may narrow the frontier to the states of interest;
+      steering narrows what runs next and never discards what has been computed.
+\end{itemize}
+
+The mechanisms differ in what they preserve. Caps and steering keep exact computation over a
+subset chosen by count or by the caller; thinning keeps a statistically faithful sample;
+quotienting keeps everything, expanding less. The depth budget bounds all four, and the
+reported frontier (Section~\ref{sec:sessions}) records where any of them stopped.
+
+\subsection{Sampled Exploration}
+\label{sec:sampling}
+
+The sparse mode applies sampling at the
+transition rather than at the state: each candidate transition is retained with a fixed
+probability, so the number of children a state contributes remains a random variable rather than
+being truncated to a fixed count. Truncating to a fixed count per state would collapse the
+offspring distribution to a point mass and remove the property the sample exists to estimate.
+
+Per-rule weights multiply that retention probability, so a rule may be explored fully while
+another is suppressed entirely, and the two controls compose rather than one overriding the other.
+A seed makes a sampled run reproducible; sampling decisions are keyed on canonical identity, so the
+same seed yields the same sample at any thread count, consistent with
+Section~\ref{sec:determinism}.
+
+\paragraph{Choosing the rate.}
+A fixed retention probability applied at every depth is not a neutral choice, because the expected
+number of surviving children per state compounds with depth. On the workloads measured, retention
+of $1/8$ and $1/4$ extinguish the frontier within the first step, while $1/2$ leaves the population
+growing; the useful range between extinction and no thinning is narrow and depends on the rule's
+branching. The rate is therefore permitted to vary with depth, so that a sample can be thinned
+without the frontier dying before it reaches the depth of interest.
+
+\paragraph{Coverage.}
+A per-transition coin does not recover the exhaustive system as seeds are accumulated, and the
+reason is structural rather than a matter of the rate. A transition can only be sampled if its
+source state was created, and its source state was created only if some earlier coin fired, so
+what a run misses is not a scattering of individual transitions but every subtree below a
+transition that was dropped. Two attempts to improve coverage by adding independent randomness---an
+extra coin per arrival depth, and an extra coin per arriving ancestor class---left the
+union-over-seeds recovery curve unchanged when measured, which is the signature of a limit on
+reachability rather than on per-transition survival.
+
+The control that does move that curve keeps a connected skeleton. A cap of $k$ transitions per
+(state, rule) pair retains at most $k$ of a state's own transitions for each rule, selecting them
+by a deterministic pseudorandom rank of the canonical transition key mixed with the run's seed.
+Every state that is reached therefore keeps at least one outgoing transition, so the sample is a
+spanning substructure rather than a thinned scattering, and a different seed keeps a different
+skeleton---so the union over seeds grows in reachability, which is the quantity that was limiting.
+
+The selection is made when the state's matching completes rather than as matches arrive, because
+choosing $k$ of $M$ requires all $M$, and $M$ is known only at that point. Selecting by arrival
+order would instead make the retained set depend on the schedule. On the same ground the cap
+ranges over a state's own matches only and not over matches forwarded to it from an ancestor: a
+forwarded match races the completion, so a cap that counted them would retain a different set at a
+different worker count. Forwarded matches are instead thinned individually, on the same terms as
+discovered ones, at the point they arrive---without which the sampled subgraph would depend on
+whether forwarding was enabled.
+
+Finally, the per-state and per-transition retention controls are one knob under full capture and
+two only under quotient exploration. Under full capture raw states stand in bijection with the
+events that create them, so one coin per new state and one coin per transition are the same coin;
+under quotient exploration a canonical state has many incoming transitions and the two separate.
+
+\paragraph{Sampling and synchronization.}
+Sampling constrains parallelism through the order in which decisions become final. A sample cannot
+be acted on before its population is complete: a rewrite cannot be undone, so a match that has been applied
+cannot later be evicted by a match that arrives afterwards. Any reservoir must therefore be
+finalised before its members are rewritten, and finalising requires knowing that the stream of
+candidates has ended. A scheme that samples from all matches produced in an evolution step
+consequently needs every worker to finish that step before any rewriting begins---a global barrier,
+in an engine that otherwise has none.
+
+The question is therefore not whether to have a barrier but how local the completion condition can
+be made. The engine requires a sampling population to be one that \emph{completes locally}: its
+completion must not depend on knowing anything about work outside the object it is keyed on. A
+population keyed on a single (state, rule) pair satisfies this, because the engine can tell when
+that pair has no matches outstanding without consulting any other state; a population keyed on an
+evolution step does not.
+
+Restricting to locally-completing populations removes less than it appears to, because the global
+population was not delivering a uniform sample either. Under the step-wide scheme each match job
+received a reservoir of the same capacity regardless of how many matches it saw, so a pair
+producing a thousand matches contributed no more samples than one producing twenty; the pooled
+sample was already weighted toward sparse strata before any shuffle, and shuffling a skewed pool
+does not remove the skew. Uniformity over the union of all matches was not a property that scheme
+had. Uniformity within a (state, rule) stratum was, and is the property its test checks. Keying the
+population on the state therefore preserves what was true and removes the barrier.
+
+\subsection{Sessions}
+\label{sec:sessions}
+
+Evolution is also exposed as a session rather than only as a single call. A session is opened on a
+rule set and initial condition, advanced by a requested number of steps, queried for any of the
+derived structures, and closed. The unexplored frontier is retained between steps, so advancing a
+session continues the existing exploration instead of recomputing it from the initial state, and a
+caller may inspect intermediate results before deciding how much further to evolve.
+
+The frontier is a separate structure from the identity map, and it has to be: one bit cannot answer
+both questions a continuation asks. The deduplication map records that a state has been seen, and a
+worker reads that same answer as meaning the state has been expanded. Carrying only the map across
+calls therefore fails in one of two directions depending on who owns it, and both were measured on
+the same workload---a two-edge to three-edge rule advanced to depth two and then to depth three,
+against seven states and six events for a single run to depth three. Rebuilding the maps per call
+gave ten states and nine events: nothing was recognised, so the second call re-derived as new every
+state it already had. Giving the caller ownership of the maps gave five states and four events:
+everything was recognised, so nothing was re-expanded and the new depth was never reached. A
+session therefore carries both the maps and a frontier---the states whose expansion was refused by
+the step budget rather than by deduplication---which is the distinction the two failures are
+between. The device implements the same separation as the host, since a continuation that behaved
+differently on the two targets would not be the same session.
+
+Every session reply reports the frontier, because a caller cannot steer a continuation toward
+states it cannot name, and a step may name a subset of it: the named states are expanded and every
+other frontier entry is put back, so steering narrows what runs next, never what remains
+reachable. Naming a state that is not on the frontier is an error rather than an empty step---a
+caller steering toward a state the exploration has already passed would otherwise get a silent
+no-op indistinguishable from a branch with no successors. Retention is also why each frontier
+entry carries its own depth: after a steered step, entries stranded by different budgets sit on
+the frontier together, and an entry resumed at a uniform depth would have its subtree truncated by
+steps it never took. Both devices serve this contract, resolving the selection against the
+frontier as it was last reported.
+
+\subsection{Event Canonicalization}
+\label{sec:event-canon}
+
+Events can be canonicalized at multiple granularities:
+
+\begin{description}
+\item[ByEndpointStates:] Two applications are the same event when they run between the same pair of canonical states. $\BigO(1)$ signature computation.
+
+\item[ByConsumedProducedEdges:] The signature additionally carries the canonical ranks of the edges the application consumed and produced. $\BigO(E)$ signature computation.
+
+\item[DistinctApplications:] No signature is computed and every application is its own event. This is the identity the raw causal graph is defined over.
+\end{description}
+
+The three refine one another in that order, so the canonical event count is non-decreasing across them; Table~\ref{tab:event-canon} reports it per workload. \textsc{ByConsumedProducedEdges} requires the edge correspondence between isomorphic states, which is the per-edge canonical rank produced by the same individualization--refinement pass as the state's hash.
+
+\paragraph{Independence from the state mode.} Event identity is defined over isomorphism classes of states, and the specification makes it independent of which state-identity mode a run selects. Resolving it through whichever hash the state mode happens to use would break that independence. The Weisfeiler--Leman hash is isomorphism-invariant but strictly coarser than the exact form, so outside the exact state mode more states share a representative, the edge correspondence between an event's endpoints resolves to a coarser one, and the event identity derived from it coarsens with it. The consequence is measurable rather than theoretical: resolving event identity through the approximate hash reports fewer distinct events on the binary-growth corpus case than the exact resolution does, a difference produced entirely by the state mode leaking into a quantity that is not supposed to depend on it.
+
+The engine therefore resolves event representatives through the exact invariant in \emph{every} state mode whenever event canonicalization is enabled, independently of the hash the state mode uses for state identity. The two are separate values: one decides state identity, the other resolves event representatives. The exact hash is computed only when event canonicalization requires it, so a run with event canonicalization disabled does not compute it and behaves as its state mode specifies. When it is enabled, the same individualization--refinement pass yields both the exact hash the event path resolves through and the per-edge ranks that identify consumed and produced edges, so the guarantee costs one pass per state rather than two per event.
+
+% ----------------------------------------------------------------------------
+% GPU
+% ----------------------------------------------------------------------------
+
+\paragraph{Configuration dependencies.}
+The canonical-class event identity and quotient exploration are both defined over canonical states
+and their edge orbits, and those orbit tables are produced only by the exact state-canonicalization
+mode. A run that asks for the first while selecting a weaker state mode is therefore asking for
+something the configuration does not supply. The engine neither raises the state mode behind the
+caller's back nor proceeds as though the request had been met: it builds the causal graph by the
+raw-edge rendezvous, which is well defined without orbits, and returns a warning naming the
+dependency and the setting that satisfies it. The general form of the rule is that a request the
+configuration cannot support produces a stated substitution rather than a silent one, on the
+grounds that a result quietly computed under a different definition than the one requested is
+indistinguishable from the requested one at the call site.
