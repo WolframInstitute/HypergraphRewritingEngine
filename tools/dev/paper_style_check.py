@@ -195,6 +195,9 @@ def main(argv):
     # The prose lives in main.tex and one file per section; the default covers them all so the
     # hook cannot pass on text it never read.
     paths = [Path(p) for p in argv[1:]] or [paper / "main.tex"] + sorted((paper / "sections").glob("*.tex"))
+    # Em-dash density is gated, not just reported: the academic norm is one to two per thousand
+    # words, and a multiple of that is a recognised generated-text signature.
+    EMDASH_PER_1000_MAX = 2.5
     total = 0
     for path in paths:
         if not path.exists():
@@ -208,6 +211,10 @@ def main(argv):
         per_1k = (1000.0 * d / w) if w else 0.0
         print(f"{path}: {len(findings)} finding(s); {d} em dashes over {w} words "
               f"({per_1k:.1f} per 1000 words)")
+        if per_1k > EMDASH_PER_1000_MAX and w > 200:
+            total += 1
+            print(f"{path}: FAIL em-dash density {per_1k:.1f}/1000 exceeds "
+                  f"{EMDASH_PER_1000_MAX}/1000")
     # Status, not count: a count that lands on 256 exits 0.
     return 1 if total else 0
 

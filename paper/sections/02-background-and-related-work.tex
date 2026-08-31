@@ -1,8 +1,8 @@
 \section{Background and Related Work}
 \label{sec:background}
 
-This section defines the objects the paper measures---rules and matches, the multiway
-evolution graph, and the causal and branchial relations---and locates the dominant cost:
+This section defines the objects the paper measures (rules and matches, the multiway
+evolution graph, and the causal and branchial relations) and locates the dominant cost:
 deciding hypergraph isomorphism once per produced state. It closes with the systems this
 work is measured against.
 
@@ -49,7 +49,7 @@ The \emph{causal graph} captures dependencies between events based on shared hyp
 
 \subsection{The Graph Isomorphism Problem}
 
-State deduplication requires detecting when two hypergraphs are isomorphic---structurally identical up to vertex relabeling. Graph isomorphism is in NP and is neither known to be NP-complete nor known to be in P~\cite{kobler2012graph}; the best known bound is quasipolynomial~\cite{babai2016quasipolynomial}.
+State deduplication requires detecting when two hypergraphs are isomorphic, structurally identical up to vertex relabeling. Graph isomorphism is in NP and is neither known to be NP-complete nor known to be in P~\cite{kobler2012graph}; the best known bound is quasipolynomial~\cite{babai2016quasipolynomial}.
 
 For practical systems, we employ \emph{graph hashing}: computing a canonical signature $h(\hypergraph)$ such that isomorphic graphs have identical hashes. While perfect hashing (injective for non-isomorphic graphs) requires solving isomorphism exactly, approximate hashes suffice when combined with explicit isomorphism testing for collisions.
 
@@ -65,8 +65,8 @@ produced, without canonicalizing or deduplicating states, so two structurally id
 reached along different histories remain distinct vertices. This engine enumerates the states
 graph under an exact isomorphism identity, which requires canonicalizing every state as it is
 produced (Section~\ref{sec:canonicalization}), so canonicalization rather than matching
-dominates the cost. The two objects are complementary---a token--event graph suits an analysis
-of history, a deduplicated states graph an analysis of the reachable state space---and a
+dominates the cost. The two objects are complementary (a token--event graph suits an analysis
+of history, a deduplicated states graph an analysis of the reachable state space) and a
 wall-time comparison between them would compare two different computations.
 Section~\ref{sec:benchmarks} therefore compares against two implementations that compute the
 same object: the \texttt{Wolfram/\allowbreak Multicomputation} paclet's
@@ -79,11 +79,28 @@ whose every exposed property is graph-valued, so its time necessarily includes b
 \texttt{Graph} objects; and this project's \emph{reference implementation}, a direct
 transcription of the definition that serves as the correctness oracle throughout this work and
 returns data rather than graphs. The term \emph{reference implementation} always denotes the
-latter, never SetReplace.
+latter, never SetReplace. Table~\ref{tab:systems} summarizes the four systems.
+
+\begin{table*}[htbp]
+\centering
+\caption{The systems discussed and what each computes. Wall-time comparisons are meaningful
+only between systems computing the same object.}
+\label{tab:systems}
+\begin{tabular}{llllll}
+\toprule
+System & Object computed & State identity & Causal/branchial & Execution & Role here \\
+\midrule
+SetReplace & token--event graph & none during evolution & causal & serial & not compared (different object) \\
+\texttt{MultiwaySystem} & deduplicated states graph & isomorphism & both, graph-valued & serial & timed comparison \\
+Reference implementation & deduplicated states graph & isomorphism & both, data-valued & serial & correctness oracle \\
+This engine & deduplicated states graph & exact IR isomorphism & both, online TR & lock-free parallel + GPU & \\
+\bottomrule
+\end{tabular}
+\end{table*}
 
 \textbf{Subgraph matching on hypergraphs:} HGMatch~\cite{yang2023hgmatch} matches by hyperedge rather than vertex by vertex, seeding a join from one pattern hyperedge and extending it one hyperedge at a time, and partitions candidate hyperedges by a label-derived signature to restrict enumeration. HGMatch also organizes execution as a dataflow with a task scheduler performing fine-grained dynamic work stealing. Our matcher adopts all three. The join is organized as a seeding scan followed by expansions that each bind one further pattern edge (Section~\ref{sec:matching-algorithm}), and because hyperedges here carry no labels, the signature that partitions candidates is instead the vertex-repetition pattern of an edge (Definition~\ref{def:signature}), which plays the same filtering role for unlabelled data. Where an expansion has a variable already bound, candidates come from the vertex index rather than the signature bucket; on the device this replaced a global signature walk and reduced match-kernel time on one workload from 944\,ms to 4\,ms.
 
-\textbf{GPU graph algorithms:} Recent work has explored GPU acceleration for subgraph matching~\cite{tran2015fast}, graph mining~\cite{chen2021pangolin}, and general graph algorithms~\cite{wang2016gunrock}. The warp-centric organization of our match kernel---one block per (state, rule) pair, threads striding over seed candidates and each running its own depth-first subtree---follows G2Miner~\cite{chen2022g2miner}. Our kernel differs from these systems in remaining resident across evolution steps rather than being relaunched per step, because the workload is iterative: each step's states are the next step's inputs.
+\textbf{GPU graph algorithms:} Recent work has explored GPU acceleration for subgraph matching~\cite{tran2015fast}, graph mining~\cite{chen2021pangolin}, and general graph algorithms~\cite{wang2016gunrock}. The warp-centric organization of our match kernel (one block per (state, rule) pair, threads striding over seed candidates and each running its own depth-first subtree) follows G2Miner~\cite{chen2022g2miner}. Our kernel differs from these systems in remaining resident across evolution steps rather than being relaunched per step, because the workload is iterative: each step's states are the next step's inputs.
 
 \textbf{Dynamic graph algorithms:} The causal graph's transitive reduction is maintained as edges arrive rather than recomputed; Goranci et al.~\cite{goranci2025dynamic} give fully dynamic algorithms for transitive reduction under insertions and deletions in $\BigO(m + n\log n)$ amortized time. The setting here is the insert-only, topological-arrival restriction of that problem, and the maintenance additionally runs under concurrent insertion from every worker, with a retained edge set independent of the schedule (Section~\ref{sec:tr}).
 

@@ -3,8 +3,8 @@
 
 Multiway evolution is a poor fit for the shape of work a GPU is usually given. The
 frontier is irregular and data-dependent, its width is not known before the step that
-produces it, and each state must be canonicalized---a refinement loop with data-dependent
-control flow---before it can be compared with any other. A per-phase kernel launch would
+produces it, and each state must be canonicalized (a refinement loop with data-dependent
+control flow) before it can be compared with any other. A per-phase kernel launch would
 put a host round trip between every one of those stages. The design here is therefore a
 single resident megakernel that keeps the frontier on the device across steps, and the
 subsections describe what that costs: how canonicalization and matching are expressed
@@ -22,7 +22,7 @@ device between steps, so a step costs a device-side barrier rather than a launch
 Figure~\ref{fig:megakernel} shows the arrangement: the queues and the shell that services them,
 with expanded states re-entering as match tasks without returning to the host. What the design
 removes, and the depth beyond which that removal no longer registers, are measured in
-Section~\ref{sec:benchmarks}---it is
+Section~\ref{sec:benchmarks}: it is
 $\PersistentSpeedupFour\times$ a per-step \texttt{evolve()} at depth four and indistinguishable
 from it by depth \PersistentTieDepthWord, once the evolution itself dominates the constant being
 amortized.
@@ -84,7 +84,7 @@ to the largest state in a batch requires knowing the batch, and a resident loop 
 states arrive continuously and the largest is not known until the run ends. One resolution is a
 slot pre-sized from a configured maximum with a coarser hash used above it, which would reintroduce
 the possibility of two states receiving the same key because one was too large to canonicalize
-exactly---a silent loss of the exactness property of Section~\ref{sec:canonicalization}, bounded by
+exactly: a silent loss of the exactness property of Section~\ref{sec:canonicalization}, bounded by
 a configuration value rather than eliminated. The resolution taken instead is a device-side arena
 from which each state claims a slot sized from its own vertex, edge and occurrence counts. There is
 consequently no approximate fallback in the device's exact path: exhausting the arena is a capacity

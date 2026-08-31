@@ -1,7 +1,7 @@
 \section{Pattern Matching}
 \label{sec:pattern-matching}
 
-Pattern matching---finding all instances of a rule's left-hand side in a hypergraph---is the first phase of every expansion. On the Wolfram rule, whose states carry at most fourteen edges at depth six, the instruction profile of Table~\ref{tab:t15-instructions} attributes $\InstrShareMatch\%$ of executed instructions to matching, its join and the rewrite together; canonicalization ($\InstrShareCanon\%$) and the quotient reconstruction ($\InstrShareRecon\%$) are the largest components there. Multi-level indexing restricts candidate enumeration.
+Pattern matching, the discovery of every instance of a rule's left-hand side in a hypergraph, is the first phase of every expansion. On the Wolfram rule, whose states carry at most fourteen edges at depth six, the instruction profile of Table~\ref{tab:t15-instructions} attributes $\InstrShareMatch\%$ of executed instructions to matching, its join and the rewrite together; canonicalization ($\InstrShareCanon\%$) and the quotient reconstruction ($\InstrShareRecon\%$) are the largest components there. Multi-level indexing restricts candidate enumeration.
 
 \subsection{Edge Signatures}
 
@@ -78,7 +78,7 @@ Pattern matching proceeds through the task-based system of Algorithm~\ref{alg:ma
 \end{algorithm}
 
 The order $e_1, \ldots, e_k$ is fixed per rule when the rule is added, and it is required to be
-connected---every edge after the first shares a variable with one already bound---so no step of the
+connected (every edge after the first shares a variable with one already bound), so no step of the
 join is a cartesian product. Two host paths execute that order: a synchronous depth-first join,
 which runs an entire search inside one task and spawns a job only for a completed match, and the
 task-spawning form above, which spawns a task per candidate and is what exposes the search itself
@@ -134,7 +134,7 @@ link as a root and stops, so a child must publish its parent link \emph{before} 
 in its parent's child list: a visible child may receive a forwarded match, that match may create
 a grandchild on another worker, and the grandchild's pull walks upward through this child. A
 link published after visibility could be found absent by that walk, which would stop early and
-silently miss every match held only in higher ancestors---pulled matches are not re-stored in
+silently miss every match held only in higher ancestors: pulled matches are not re-stored in
 the descendant and pushes happen once, so nothing later repairs the omission. Publishing the
 link first makes an absent link mean \emph{root} for every walk that can reach the state.
 
@@ -151,7 +151,7 @@ Forwarding supplies a child with the matches it inherits unchanged from its pare
 is forced: a match present in the child but not in the parent must use at least one produced edge,
 because a match built entirely from edges that survived the rewrite was already a match in the
 parent. The child's own scan is therefore restricted to matches anchored on a produced edge, which
-is a small set---one rewrite produces the right-hand side's edges, independently of how large the
+is a small set: one rewrite produces the right-hand side's edges, independently of how large the
 state is.
 
 The two mechanisms partition the child's matches rather than overlapping: every match either
@@ -165,7 +165,7 @@ rather than following it.
 Because the partition is an argument rather than a measurement, the engine carries a validation
 mode: every state's matches are additionally computed by an unrestricted scan and compared
 against the union forwarding and the delta scan supplied, with a missing match attributed to the
-obligation that owed it---forwarding if it uses only surviving edges, the delta scan if it
-touches a produced edge---since the two have different causes and repairs. The validator also
+obligation that owed it (forwarding if it uses only surviving edges, the delta scan if it
+touches a produced edge), since the two have different causes and repairs. The validator also
 counts its own executions, because a mismatch count of zero is evidence only when the number of
 comparisons is not.

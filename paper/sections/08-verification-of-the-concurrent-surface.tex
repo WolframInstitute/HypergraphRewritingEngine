@@ -3,15 +3,15 @@
 
 The engine holds no lock, so every property that a lock would have enforced is instead a
 consequence of an ordering argument. Arguments of that kind are checked poorly by testing. A stress test samples
-interleavings, so a clean run bounds nothing: on this engine a determinism gate of 150 runs --
-90 recorded, then 40 and 20 more under load---explores a vanishing fraction of the schedules
+interleavings, so a clean run bounds nothing: on this engine a determinism gate of 150 runs (90
+recorded, then 40 and 20 more under load) explores a vanishing fraction of the schedules
 its own thread count admits, and the schedules that matter are not the likely ones. Two verification layers are
 therefore maintained alongside the test suite, and they are bounded in different directions.
 
 \paragraph{Model checking under weak memory.}
 The first layer uses GenMC~\cite{kokologiannakis2021genmc}, which enumerates the executions of a
 bounded concurrent program under the RC11 memory model~\cite{lahav2017repairing}. For the program
-it is given---that thread count, that operation count, those inputs---it explores every
+it is given (that thread count, that operation count, those inputs) it explores every
 interleaving and every reads-from choice the model permits, so a clean run is a statement about all
 executions within the bound rather than about the ones that happened to be scheduled.
 
@@ -28,6 +28,13 @@ The device's resident-kernel protocols are checked the same way by six sibling h
 the scoped extension of the memory model: the ring buffer's exactly-once hand-off, termination
 detection admitting no early exit, the hash table electing one inserter, the replay rendezvous
 meeting every pair, and the causal dynamic program's producer--transition rendezvous.
+
+The engine is also driven through the checker whole, not only structure by structure: three
+harnesses construct the engine, add rules, and run a bounded \texttt{evolve()} end to end, so
+the composition of the protocols is enumerated as well as each protocol alone, and the
+enumeration is clean at the stated bounds. No defect is known in the shipped tree: within those
+bounds the guarantees are exhaustive over all executions, and beyond them the sanitizers, the
+differential suites and the determinism gate report nothing.
 
 Each harness is a small program that includes the engine's own header and calls its own functions,
 rather than a hand-written model of the algorithm. The constraint is deliberate: a model drifts
@@ -53,7 +60,7 @@ deduplicate it against (Section~\ref{sec:quotient}), and that a walk from a node
 node linked before it. For the per-worker scratch arena: that no two workers are handed the same
 index. For the key set: that two
 threads inserting one key while a third insertion forces a growth beneath them produce exactly one
-reported insertion, and that enumeration emits each key once across that growth---two properties
+reported insertion, and that enumeration emits each key once across that growth: two properties
 checked by separate harnesses, because they are independent and a single harness that bundled them
 would not say which one a violation belonged to. A third property class covers \emph{readers}
 racing a growth: a membership query for a key that settled before the query began must answer
@@ -64,7 +71,7 @@ report absent for a key that is present, and the twenty-execution counterexample
 the two orders is in the harness. The same read-order condition governs the map's drained-table
 skip, where the calibrated break is reading a table's skip flag only when the walk arrives at it. For the
 scheduler: that a worker
-which parks is always woken, which is a liveness property and is checked as one---removing either
+which parks is always woken, which is a liveness property and is checked as one: removing either
 of the two sequentially consistent fences in the submit/park protocol makes the checker report a
 non-terminating spin loop.
 
@@ -77,15 +84,15 @@ a tail shorter than the last element and alignment-width stores for an opaque \t
 the read half of a failed compare-exchange carries the failure ordering rather than the success
 ordering; and no liveness violation is reported while a thread is blocked by an assume, a helped
 compare-exchange or a confirmation (upstream pull request 58). One is a limitation in the
-lowering of copies whose operands the promotion pass cannot type---a call result, or a load from
-a lambda's closure field---which were lowered as loops at the intrinsic's alignment, so that a
+lowering of copies whose operands the promotion pass cannot type (a call result, or a load from
+a lambda's closure field), which were lowered as loops at the intrinsic's alignment, so that a
 program's two-byte field read fell inside a four-byte store, an access the checker's value
 resolution does not answer and reported as uninitialised memory; the promotion now runs once
 before and once after scalar replacement and register promotion, when such operands have become
 the allocas they held, and the report names a read that lies inside a wider write. The rest are
 instruments: a progress heartbeat over the transformation passes and the exploration, and, in
 estimation mode, an attribution of the state-space estimate to the reads and writes that
-produce it---every access with more than one alternative is booked against its source line
+produce it: every access with more than one alternative is booked against its source line
 with weight $\log_2$ of the alternative count, and the booked total equals $\log_2$ of the
 estimator's sample per execution. That attribution is what identified the two changes that
 made the composed harnesses tractable: an idle worker's empty pop of its deque wrote its
@@ -138,7 +145,7 @@ calibration & no  & no  & violated (as required) & trace depth 13 \\
 
 \paragraph{Segmented array.} The segmented array carries the states, the
 events, the edges and the per-instance application lists, and its ordering invariant is that if a
-segment exists then so does every segment below it---a reader that finds segment $k$ may index any
+segment exists then so does every segment below it, so a reader that finds segment $k$ may index any
 position beneath it without further checking. That invariant is specified rather than tested,
 because the structure allocates segments on demand from concurrent appenders and the failure it
 guards against is a read of an unallocated segment rather than a wrong value. The shipped
@@ -148,7 +155,7 @@ calibration also fixes the bound: at two appenders the broken protocol is \emph{
 one claim each means the index that would expose the gap cannot be reached until a holder of the
 lower segment has published, so three are required. It is specified here rather than checked with
 the tools of the previous layer because that checker does not survive constructing this
-structure---a limitation of the tool, recorded where it applies rather than presented as a choice.
+structure: a limitation of the tool, recorded where it applies rather than presented as a choice.
 
 \paragraph{Stress testing.} The two layers above bound the schedule; the test
 suite does not, and no sanitizer changes that. A sanitizer changes what a given execution

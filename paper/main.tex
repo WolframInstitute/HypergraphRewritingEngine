@@ -180,8 +180,8 @@ multiway systems, GPU computing, Wolfram Physics Project}
 This appendix gives the bounds quoted in the body, for the two operations that dominate
 a run: deciding whether a produced state has been seen before, and finding the matches of
 a rule in a state. Both have a worst case far above their observed cost, and in both the
-gap is a property of the \emph{input} rather than of the implementation---symmetry in the
-first case, left-hand side connectivity in the second---so each bound is stated together
+gap is a property of the \emph{input} rather than of the implementation (symmetry in the
+first case, left-hand side connectivity in the second), so each bound is stated together
 with what makes it attainable. Appendix~\ref{app:data-structures} gives the per-operation costs
 of the concurrent structures these bounds are realized on (Table~\ref{tab:lockfree-costs}).
 
@@ -191,7 +191,7 @@ For a hypergraph with $|V|$ vertices and $|E|$ hyperedges of maximum arity $k$, 
 
 \textbf{Weisfeiler--Leman signature.} One refinement round aggregates, for each vertex, the multiset of neighbor colors: $\BigO(k \cdot |E|)$ work per round, with at most $|V|$ rounds before the coloring stabilizes, giving $\BigO(|V| \cdot k \cdot |E|)$ in the worst case and far less in practice (the partition typically stabilizes in a few rounds). WL is a sound but incomplete invariant: identical hashes are necessary but not sufficient for isomorphism.
 
-\textbf{Individualization--refinement (exact).} IR interleaves color refinement with individualization of vertices in non-singleton cells, exploring a search tree pruned by discovered automorphisms. It is polynomial on instances that refinement alone resolves, but---like nauty and Traces---exponential in the worst case, with the blow-up concentrated on highly symmetric (high-automorphism) states. We claim no polynomial-time bound. Under the exact mode IR is applied to every state, and profiling attributes $\InstrShareCanon\%$ of the engine's executed instructions to it and the orbit computation beside it (Table~\ref{tab:t15-instructions}). Bucketing by a cheaper hash and invoking IR only on collisions does not reduce this cost, by Proposition~\ref{prop:wlceiling}: a repeated bucket is consistent with a genuine duplicate, which IR must still confirm, so such a filter elides at most a fraction $C/R$ of the invocations it precedes.
+\textbf{Individualization--refinement (exact).} IR interleaves color refinement with individualization of vertices in non-singleton cells, exploring a search tree pruned by discovered automorphisms. It is polynomial on instances that refinement alone resolves, but, like nauty and Traces, exponential in the worst case, with the blow-up concentrated on highly symmetric (high-automorphism) states. We claim no polynomial-time bound. Under the exact mode IR is applied to every state, and profiling attributes $\InstrShareCanon\%$ of the engine's executed instructions to it and the orbit computation beside it (Table~\ref{tab:t15-instructions}). Bucketing by a cheaper hash and invoking IR only on collisions does not reduce this cost, by Proposition~\ref{prop:wlceiling}: a repeated bucket is consistent with a genuine duplicate, which IR must still confirm, so such a filter elides at most a fraction $C/R$ of the invocations it precedes.
 
 \subsection{Pattern Matching Complexity}
 
@@ -222,8 +222,8 @@ call is sized from the state's own edge and occurrence counts and claimed from t
 Section~\ref{sec:gpu-constraint}, so there is no per-state ceiling and no batch to measure.
 
 There is consequently no approximate fallback anywhere on this path. A state the exact path cannot
-key---because the arena is exhausted, or because the search wants more individualization depth than
-the device attempts---is reported as a capacity overflow and the run is retried with a larger
+key (because the arena is exhausted, or because the search wants more individualization depth than
+the device attempts) is reported as a capacity overflow and the run is retried with a larger
 reservation. It is never keyed by something coarser. This is not a tuning preference, because
 isomorphism-invariance fails in only one direction: a 1-dimensional Weisfeiler--Leman hash never
 separates two isomorphic states, but it does merge non-isomorphic ones, which the engine
@@ -247,7 +247,7 @@ the outer axis, with the inner axis inside a single join.
 The device keeps two indices over the edge pool, a signature index and a vertex inverted index,
 each filtered by the state's edge set at query time, and divides the work between them: the
 signature index seeds the first pattern edge; every subsequent edge is driven by the vertex
-inverted index through a \emph{pivot variable}---a left-hand-side variable that is guaranteed to
+inverted index through a \emph{pivot variable}: a left-hand-side variable that is guaranteed to
 be bound by the time that edge runs, which the connectivity ordering of the pattern edges
 establishes. Looking the pivot's binding up in the inverted index yields a candidate list bounded
 by that vertex's degree, typically a few entries, in place of a signature bucket that holds
@@ -266,8 +266,8 @@ while matching.
 \label{sec:gpu-queues}
 
 The queues of Figure~\ref{fig:megakernel} are bounded lock-free multi-producer, multi-consumer ring
-buffers in device memory. Workers are producers and consumers of the same queues---a rewrite
-produces states, which become match tasks---so a single-producer structure would not serve, and a
+buffers in device memory. Workers are producers and consumers of the same queues (a rewrite
+produces states, which become match tasks), so a single-producer structure would not serve, and a
 bounded one is required because device memory is reserved in advance.
 
 Each slot carries a sequence number, and that number alone determines whose turn the slot is: it
@@ -276,8 +276,8 @@ when the slot holds an item for the consumer reserving it, and less than the pos
 queue is full for a producer or empty for a consumer. Slot $i$ starts at $i$, a producer publishes
 with the position plus one, and a consumer releases with the position plus the capacity, so a slot
 advances by exactly one capacity per lap and the three tests remain exact across wraps. The
-ordering is carried by that handshake---a release store by the producer synchronizing with the
-consumer's acquire load---so the head and tail cursors, which only allocate positions, are relaxed.
+ordering is carried by that handshake (a release store by the producer synchronizing with the
+consumer's acquire load), so the head and tail cursors, which only allocate positions, are relaxed.
 
 Reservation is a compare-and-swap on the cursor rather than an unconditional increment. The
 difference matters precisely because the same workers both produce and consume: an unconditional
@@ -305,11 +305,11 @@ absence of reported errors.
 
 Device memory is reserved before the kernel launches, since a resident kernel cannot call the host
 allocator. Edge and state pools are pre-allocated with atomic counters, and scratch whose size is
-known only once a state's dimensions are seen---the canonicalizer's working arrays, principally---is
+known only once a state's dimensions are seen (the canonicalizer's working arrays, principally) is
 carved from a device-owned bump arena.
 
 The arena's size is determined by the grid rather than by the workload. A persistent kernel's
-blocks do not retire and get replaced---they live for the whole evolution---so the grid is the
+blocks do not retire and get replaced (they live for the whole evolution), so the grid is the
 worker count, and each resident worker holds its own arena slot at a time. Arena demand therefore
 scales with the grid, and sizing it from the state budget alone starves it as soon as the grid
 grows. The arena is one shared bump pool rather than a partition per worker, because a worker keeps
@@ -344,7 +344,7 @@ ownership are decided by one compare-exchange from the empty sentinel to the key
 map's value-publication protocol exists: no locked slot, no settling of a claim met mid-flight.
 An insert scans the superseded-table chain for a settled copy of its key before claiming at the
 head, and a claim that lands in a table which is no longer the head is reported stale and
-re-driven rather than counted---the two halves of keeping one key from ever being claimed twice.
+re-driven rather than counted: the two halves of keeping one key from ever being claimed twice.
 Growth carries
 each key into the new table and then seals the slot it came from with a second reserved key, so a
 key reachable through two tables is enumerated once, and a table whose slots are all sealed is
@@ -379,7 +379,7 @@ node for a compare-and-swap to observe unchanged after reuse. Each slot carries 
 its owning pool, so a release on any thread reaches the pool the slot came from; an
 object too large for a slot falls back to the general allocator, so correctness does not depend on the slot size being
 estimated correctly. Pools are never destroyed and are recycled through a fixed array of claimable
-slots when a thread exits---an array rather than a stack of free pools, because a pool that is
+slots when a thread exits: an array rather than a stack of free pools, because a pool that is
 claimed, used and released again is exactly the reuse a stack's head compare-and-swap cannot
 distinguish, while an array slot has no pointer to compare.
 \end{description}
@@ -397,7 +397,7 @@ if nothing changed since the load.
 A 32-bit tag wraps, so the defence is conditional, and the condition is stated here rather than
 assumed. For a stale item to be claimed twice, the tag must complete a full cycle \emph{and} both
 indices must return to the values one popper read, all within that popper's own load-to-exchange
-window---a handful of instructions, so it requires the thread to be descheduled inside them. The
+window, a handful of instructions, so it requires the thread to be descheduled inside them. The
 throughput measurement that bounds this is direct: at eight threads the shared queue sustains
 $8.16 \times 10^6$ operations per second, so $2^{32}$ of them take on the order of 500 seconds of
 continuous stall while every other thread runs flat out. The same measurement gives the cost of
@@ -408,13 +408,13 @@ submissions.
 
 Neither queue offers a blocking push or pop. For a worker this is not a preference but a
 requirement: a worker parked inside a push cannot pop, so if every worker parked there the queues
-would never drain again---and since expansion is combinatorial and submits from inside running
+would never drain again; and since expansion is combinatorial and submits from inside running
 jobs, saturating a local deque and the injector together is reachable rather than hypothetical. A
 full queue is answered by running the job on the calling thread, which always makes progress.
 
 A worker with no available work does not spin indefinitely. It waits on a 32-bit address through
-the platform's own primitive---\texttt{futex} on Linux, \texttt{WaitOnAddress} on Windows,
-\texttt{os\_sync\_wait\_on\_address} on macOS---so a blocked worker consumes no cycles and is woken
+the platform's own primitive (\texttt{futex} on Linux, \texttt{WaitOnAddress} on Windows,
+\texttt{os\_sync\_wait\_on\_address} on macOS), so a blocked worker consumes no cycles and is woken
 by the thread that supplies the work. No mutex or condition variable is used on any of these
 platforms: the engine's object files reference none, and the only such construction in the tree is
 a fallback compiled solely for a platform providing none of the three primitives.
