@@ -97,7 +97,7 @@ if [[ "$DO_GPU" == "1" ]]; then
         echo "       Re-run the CUDA installer and include 'Visual Studio Integration' (the props ship with it)."
         exit 1
     }
-    echo "==> toolchain: $GEN, CUDA $CUDA_VER (toolset via Toolkit path), archs [$ARCHS]"
+    echo "==> toolchain: $GEN, CUDA $CUDA_VER (toolset via Toolkit path), archs [${HG_GPU_ARCHS:-gpu/CMakeLists.txt default}]"
 else
     echo "==> toolchain: $GEN (CPU only, no CUDA needed)"
 fi
