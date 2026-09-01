@@ -1,6 +1,6 @@
 # Hypergraph Rewriting Engine
 
-A high-performance implementation of multiway hypergraph rewriting with Mathematica integration.
+A high-performance multiway hypergraph rewriting engine for the Wolfram Physics Project.
 
 ## Status
 
