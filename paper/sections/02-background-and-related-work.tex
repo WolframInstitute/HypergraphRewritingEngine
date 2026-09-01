@@ -8,7 +8,7 @@ work is measured against.
 
 \subsection{Hypergraph Rewriting Systems}
 
-A \emph{hypergraph} $\hypergraph = (V, E)$ consists of a vertex set $V$ and a set of hyperedges $E$, where each hyperedge $e \in E$ is an ordered tuple of vertices $(v_1, v_2, \ldots, v_k)$ with $v_i \in V$. In the Wolfram Physics Project's usage nothing is claimed for hypergraphs beyond representation: the physics is carried by the causal structure of the rewrites, and hypergraphs serve because path-length distance gives rewriting an intrinsic locality, and their unstructured space lets different rewrite orders correspond to different spacelike hypersurfaces, where rigid representations fix space in advance.
+A \emph{hypergraph} $\hypergraph = (V, E)$ consists of a vertex set $V$ and a set of hyperedges $E$, where each hyperedge $e \in E$ is an ordered tuple of vertices $(v_1, v_2, \ldots, v_k)$ with $v_i \in V$. In the Wolfram Physics Project's usage nothing is claimed for hypergraphs beyond representation: the physics is given by the causal structure of the rewrites, and hypergraphs serve because path-length distance gives rewriting an intrinsic locality, and their unstructured space lets different rewrite orders correspond to different spacelike hypersurfaces, where rigid representations fix space in advance.
 
 \begin{definition}[Rewriting Rule]
 A rewriting rule $\rewriterule = (L, R)$ consists of a left-hand side pattern $L$ and right-hand side replacement $R$, both hypergraphs. A \emph{match} of $L$ in $\hypergraph$ is an injective mapping $\phi: V_L \to V_\hypergraph$ such that the image of each hyperedge in $L$ appears in $\hypergraph$.
@@ -60,9 +60,11 @@ For practical systems, we employ \emph{graph hashing}: computing a canonical sig
 \textbf{Hypergraph rewriting implementations:} SetReplace~\cite{setreplace}, the implementation
 most closely associated with the Wolfram Physics Project, is the closest system to this work,
 but the two target different objects. SetReplace's multiway construction is a token--event graph
-over a single growing token pool: it records which rewrites occurred and what each consumed and
-produced, without canonicalizing or deduplicating states, so two structurally identical states
-reached along different histories remain distinct vertices. This engine enumerates the states
+over a single growing token pool: its vertices are tokens and events rather than states, a token
+consumed by one event remains available to others, and no state identity is computed during
+evolution. The only isomorphism computation in its evolution is an opt-in deduplication of
+events with the same input tokens and isomorphic outputs; the isomorphism predicate the package
+exports is an analysis function, not part of the construction. This engine enumerates the states
 graph under an exact isomorphism identity, which requires canonicalizing every state as it is
 produced (Section~\ref{sec:canonicalization}), so canonicalization rather than matching
 dominates the cost. The two objects are complementary (a token--event graph suits an analysis
@@ -82,7 +84,7 @@ returns data rather than graphs. The term \emph{reference implementation} always
 latter, never SetReplace. Wall-time comparisons are meaningful only between systems computing the same object.
 
 
-\textbf{Subgraph matching on hypergraphs:} HGMatch~\cite{yang2023hgmatch} matches by hyperedge rather than vertex by vertex, seeding a join from one pattern hyperedge and extending it one hyperedge at a time, and partitions candidate hyperedges by a label-derived signature to restrict enumeration. HGMatch also organizes execution as a dataflow with a task scheduler performing fine-grained dynamic work stealing. Our matcher adopts all three: the join is organized as a seeding scan followed by expansions that each bind one further pattern edge (Section~\ref{sec:matching-algorithm}), and because hyperedges here carry no labels, the signature that partitions candidates is instead the vertex-repetition pattern of an edge (Definition~\ref{def:signature}), which plays the same filtering role for unlabelled data. Where an expansion has a variable already bound, candidates come from the vertex index rather than the signature bucket; on the device this replaced a global signature walk and reduced match-kernel time on one workload from 944\,ms to 4\,ms.
+\textbf{Subgraph matching on hypergraphs:} HGMatch~\cite{yang2023hgmatch} matches by hyperedge rather than vertex by vertex, seeding a join from one pattern hyperedge and extending it one hyperedge at a time, and partitions candidate hyperedges by a label-derived signature to restrict enumeration. HGMatch also organizes execution as a dataflow with a task scheduler performing fine-grained dynamic work stealing. Our matcher adopts all three: the join is organized as a seeding scan followed by expansions that each bind one further pattern edge (Section~\ref{sec:matching-algorithm}), and because hyperedges here are unlabelled, the signature that partitions candidates is instead the vertex-repetition pattern of an edge (Definition~\ref{def:signature}), which plays the same filtering role for unlabelled data. Where an expansion has a variable already bound, candidates come from the vertex index rather than the signature bucket; on the device this replaced a global signature walk and reduced match-kernel time on one workload from 944\,ms to 4\,ms.
 
 \textbf{GPU graph algorithms:} Recent work has explored GPU acceleration for subgraph matching~\cite{tran2015fast}, graph mining~\cite{chen2021pangolin}, and general graph algorithms~\cite{wang2016gunrock}. The warp-centric organization of our match kernel (one block per (state, rule) pair, threads striding over seed candidates and each running its own depth-first subtree) follows G2Miner~\cite{chen2022g2miner}. Our kernel differs from these systems in remaining resident across evolution steps rather than being relaunched per step, because the workload is iterative: each step's states are the next step's inputs.
 

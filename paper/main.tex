@@ -272,13 +272,13 @@ buffers in device memory. Workers are producers and consumers of the same queues
 produces states, which become match tasks), so a single-producer structure would not serve, and a
 bounded one is required because device memory is reserved in advance.
 
-Each slot carries a sequence number, and that number alone determines whose turn the slot is: it
+Each slot holds a sequence number, and that number alone determines whose turn the slot is: it
 equals the position a producer is reserving when the slot is free, one more than that position
 when the slot holds an item for the consumer reserving it, and less than the position when the
 queue is full for a producer or empty for a consumer. Slot $i$ starts at $i$, a producer publishes
 with the position plus one, and a consumer releases with the position plus the capacity, so a slot
 advances by exactly one capacity per lap and the three tests remain exact across wraps. The
-ordering is carried by that handshake (a release store by the producer synchronizing with the
+ordering is established by that handshake (a release store by the producer synchronizing with the
 consumer's acquire load), so the head and tail cursors, which only allocate positions, are relaxed.
 
 Reservation is a compare-and-swap on the cursor rather than an unconditional increment. The
@@ -377,7 +377,7 @@ another, so a foreign release is pushed onto the owner's separate foreign list b
 compare-and-swap, and the owner reclaims the whole accumulated batch with one exchange when its
 private list empties. That shape is free of the ABA problem by construction rather than by a tag:
 producers only ever prepend, and the single consumer takes the entire list at once, so there is no
-node for a compare-and-swap to observe unchanged after reuse. Each slot carries a header naming
+node for a compare-and-swap to observe unchanged after reuse. Each slot holds a header naming
 its owning pool, so a release on any thread reaches the pool the slot came from; an
 object too large for a slot falls back to the general allocator, so correctness does not depend on the slot size being
 estimated correctly. Pools are never destroyed and are recycled through a fixed array of claimable

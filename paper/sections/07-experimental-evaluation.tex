@@ -96,7 +96,7 @@ and they do; its wall time is not reported. Over depths four
 to seven the engine's core is between $\SpeedupAtLowDepth\times$ and $\SpeedupAtHighDepth\times$ faster
 than \texttt{MultiwaySystem}, and the ratio rises monotonically across those four depths. The
 range starts at depth four because the two shallower rows are not measurements of the same thing:
-depth two carries the Wolfram side's one-time initialization, and at depths two to five the
+depth two includes the Wolfram side's one-time initialization, and at depths two to five the
 engine's own time is a fraction of a millisecond, at the timer's resolution, so those rows'
 values are quantized and their ratios are lower bounds on the gap rather than precise factors. At depth seven neither caveat applies:
 the engine takes $\CoreDeepMs$\,ms against $\AuthorityDeepSeconds$\,s, so that row is a direct measurement on both sides.
@@ -293,7 +293,7 @@ side, which joins and produces a wider frontier. With both shapes sized to secon
 single-threaded work, their efficiency curves lie within a few points of each other at every
 thread count (the floor across the two is $\EffAtEight$ at eight threads and $\EffAtSixteen$ at
 sixteen), and both keep improving in wall time through thirty-two threads. The difference in how
-they match, an index scan against a join, does not separate their scaling once each carries
+they match, an index scan against a join, does not separate their scaling once each performs
 comparable work; what governs both is the cross-domain term of
 Section~\ref{sec:benchmarks}'s memory analysis, which the every-thread-count sweep locates at
 the first step that opens a second L3 domain. The decline is not thread setup: both serial
@@ -536,13 +536,13 @@ the cost of the memory the run acquires. Both are read from
 \texttt{getrusage} on the same runs (Table~\ref{tab:t13-memory}). Across a $\ThreadSweepFactor\times$ increase in worker
 count, user time increases by a factor of $\UserTimeGrowth$ while system time increases by
 $\SysTimeGrowth$ and stays below three seconds of a hundred and twenty-eight: the cost sits in
-user time. It is not spinning, because the instruction count is flat across the sweep (the
-paragraph that follows), and it is not memory acquisition, because the peak resident set grows
-by a quarter across the sweep while the minor-fault count grows eleven-fold: the kernel term
-tracks the faults, which come from each worker drawing its own arena blocks, and it stays
-small. Wall time keeps falling through thirty-two threads on this workload while user time
-grows seven-fold, so the added workers are busy, and what they are busy with is the
-cross-domain traffic the next paragraph measures. The result is specific to the host: a part
+user time. Spinning is excluded by the instruction count, which is flat across the sweep (the
+paragraph that follows). Memory acquisition is excluded by the fault accounting: the peak
+resident set grows by a quarter across the sweep while the minor-fault count grows eleven-fold,
+and the kernel term, which tracks those faults (each worker drawing its own arena blocks),
+stays small. Wall time keeps falling through thirty-two threads on this workload while user
+time grows seven-fold, so the added workers are busy; the next paragraph identifies the work as
+cross-domain traffic. The result is specific to the host: a part
 with larger L3 domains would place the two terms differently.
 
 A second term sits in user time, and hardware counters separate it from both candidates above.
@@ -637,7 +637,7 @@ Reaching that agreement is a property of how the reduction is defined rather tha
 
 \paragraph{Idle fraction under causal recording.} The attribution above reads the idleness of the corpus shapes producing few states as work not existing. With causal recording on this reading no longer holds for two of them: at depth six \texttt{cycle4} and \texttt{multirule} reconstruct causal relations orders of magnitude larger than their state counts, and both remain almost entirely idle. Hardware counters place them far from every ceiling (SM throughput $2.2\%$ of peak and DRAM $0.01\%$ on \texttt{cycle4}, Table~\ref{tab:device-occupancy}), and their lane efficiency is among the corpus's best, $9.8$ and $10.4$ of $32$, against $2.7$ on \texttt{wolfram24}, which the device completes faster than sixteen host threads (Table~\ref{tab:t7b-gpu-corpus}). The decisive comparison is that the kernel takes four times longer on \texttt{multirule}'s $49$ states than on \texttt{wolfram24}'s $9{,}820$.
 
-What separates the two regimes is the parallel width, and the corpus supplies a controlled comparison of that width. At depth six \texttt{cycle4} replays $68{,}185$ instances over $40$ classes and loses to the host; \texttt{wolfram24} replays $86{,}086$ over $9{,}820$ classes and beats it (Table~\ref{tab:t7b-gpu-corpus}). The instance counts are within $30\%$ of each other and the outcomes are opposite, so neither the amount of replay work nor the depth of the recursion is the discriminator. The state count is: a class is the unit over which the replay's instances are independent, and a run that collapses to forty classes has forty-fold width available however much work those classes carry. \texttt{cycle4} begins from a deliberately automorphic initial state, which is exactly the condition that collapses classes. The device's disadvantage on these shapes is therefore a shortage of independent work rather than an inability to execute the work it has, and raising occupancy against it would raise the idle count rather than the throughput.
+What separates the two regimes is the parallel width, and the corpus supplies a controlled comparison of that width. At depth six \texttt{cycle4} replays $68{,}185$ instances over $40$ classes and loses to the host; \texttt{wolfram24} replays $86{,}086$ over $9{,}820$ classes and beats it (Table~\ref{tab:t7b-gpu-corpus}). The instance counts are within $30\%$ of each other and the outcomes are opposite, so neither the amount of replay work nor the depth of the recursion is the discriminator. The state count is: a class is the unit over which the replay's instances are independent, and a run that collapses to forty classes has forty-fold width available however much work those classes hold. \texttt{cycle4} begins from a deliberately automorphic initial state, which is exactly the condition that collapses classes. The device's disadvantage on these shapes is therefore a shortage of independent work rather than an inability to execute the work it has, and raising occupancy against it would raise the idle count rather than the throughput.
 
 The instances \emph{within} a class can be replayed concurrently, but they are serialized by the worklist:
 each driver takes its instances from a
@@ -654,13 +654,13 @@ width the implementation exploits differs. The shapes that lose are those whose 
 collapses classes, and that collapse is the same condition that concentrates instances into few of
 them.
 
-The residual on these two workloads is attributed to the replay's work decomposition: the depth-first descent runs inline on the discovering thread, so a class's instances are walked by one driver, and a run that collapses to forty classes has forty drivers' worth of width however many instances those classes carry; the bound is stated as measured and not claimed as a lower bound on the problem.
+The residual on these two workloads is attributed to the replay's work decomposition: the depth-first descent runs inline on the discovering thread, so a class's instances are walked by one driver, and a run that collapses to forty classes has forty drivers' worth of width however many instances those classes hold; the bound is stated as measured and not claimed as a lower bound on the problem.
 
 \paragraph{Measurement bounds.} Nothing in this corpus is near a hardware ceiling: across the profiled corpus the highest SM-throughput figure is $12.6\%$ of peak (\texttt{wolfram24}) and the highest DRAM figure $16.1\%$ (\texttt{growshrink3}) (Table~\ref{tab:device-occupancy}). Occupancy is structural for the reason given above. The lane average separates the two regimes: about three lanes per warp on the large-state workloads, where the canonicalization trunk binds, and nine to twelve on the shapes of at most forty-nine states, where the shortage of independent work binds; \texttt{disc2x2}, \texttt{arimix} and \texttt{multiroot} sit between, at six to nine. The allocation invariant holds with the reconstruction running as well: profiling twenty-four consecutive evolutions records zero allocations, copies or memsets between a resident kernel's start and its end, with every such call falling in set-up or read-back. What is not established is whether the serial chain is irreducible; it is attributed and bounded, not proven minimal.
 
 The quotient decoupling of Section~\ref{sec:quotient} applies to the device on the same terms as the host. Capture of each class's frame is separated from replay of that capture against instances. The first signs event identity at the cost of the canonical answer, the second recovers the raw event set at the cost of the raw one. Together they leave the canonical answer bit-identical while removing the exponential from runs that do not request raw events. Two corpus shapes, \texttt{multirule} and \texttt{cycle4}, do not complete depth seven under unconditional replay at all; with capture and replay separated both complete, with state and event counts identical in the two arms, and the step from depth six to seven costs almost nothing further where the unconditional arm does not terminate.
 
-Two routes around the canonicalization bound were measured and rejected; both are reported because they bound the same quantity from two sides, and because the two fail for opposite reasons. Tiered canonicalization (bucket by the Weisfeiler--Leman signature, run individualization--refinement only on a collision) was implemented and measured at $28\%$ slower, because a bucket hit still requires refinement to confirm isomorphism, so a duplicate state is processed by both stages. A content-equality short-circuit reuses a canonical form when two raw states hold literally the same edge tuples. It needs no confirmation, being a proof of isomorphism on its own, and it never applies. Measured over \texttt{wpp}, the number of distinct state contents equals the number of raw states exactly at depths six and seven ($3{,}867$ of $3{,}867$; $45{,}317$ of $45{,}317$), because every rewrite assigns fresh vertex identifiers, so no two states reaching one canonical form carry the same labels. The measurement is order-independent and therefore an upper bound on the catch available to any content key. The two routes fail oppositely: the first applies often but confirms redundantly, the second would need no confirmation but never applies. The $1.59\times$ gap between refinement passes performed and distinct canonical states is real; reaching it requires recognising isomorphic states without canonicalizing them, which is the problem canonicalization solves.
+Two routes around the canonicalization bound were measured and rejected; both are reported because they bound the same quantity from two sides, and because the two fail for opposite reasons. Tiered canonicalization (bucket by the Weisfeiler--Leman signature, run individualization--refinement only on a collision) was implemented and measured at $28\%$ slower, because a bucket hit still requires refinement to confirm isomorphism, so a duplicate state is processed by both stages. A content-equality short-circuit reuses a canonical form when two raw states hold literally the same edge tuples. It needs no confirmation, being a proof of isomorphism on its own, and it never applies. Measured over \texttt{wpp}, the number of distinct state contents equals the number of raw states exactly at depths six and seven ($3{,}867$ of $3{,}867$; $45{,}317$ of $45{,}317$), because every rewrite assigns fresh vertex identifiers, so no two states reaching one canonical form have the same labels. The measurement is order-independent and therefore an upper bound on the catch available to any content key. The two routes fail oppositely: the first applies often but confirms redundantly, the second would need no confirmation but never applies. The $1.59\times$ gap between refinement passes performed and distinct canonical states is real; reaching it requires recognising isomorphic states without canonicalizing them, which is the problem canonicalization solves.
 
 These figures hold across the corpus rather than on one shape. Profiling the resident kernel on every corpus workload (with the profiler rather than by wall clock, so that occupancy, throughput and the lane average are read from hardware counters rather than inferred from elapsed time) gives occupancy between $14.1\%$ and $17.3\%$ on every one, over workloads whose profiled kernel durations differ by a factor of seven hundred (Table~\ref{tab:device-occupancy}); a grid-determined limit produces exactly this constancy, confirming from a third direction that the occupancy is not set by register allocation:
 
@@ -706,16 +706,17 @@ six. Best-of-$N$ wall times; on both cases the two arms compute identical state 
 \subsection{Instruction Profile}
 \label{sec:instruction-profile}
 
-Wall time says how long a run took, not which part of the engine spent that time, and on a
-machine whose clock drifts between sessions it is the wrong instrument for attribution. Executed
-instruction counts are deterministic, so Table~\ref{tab:t15-instructions} is taken once under \texttt{callgrind}, on a
-single-threaded depth-six evolution of the Wolfram rule under quotient exploration with the raw
-relations reconstructed (the CPU bench's default configuration), and
-needs neither repeats nor a quiet machine. The quotient reconstruction ($\InstrShareRecon\%$) and
+Wall time measures the duration of a run, not the division of that time among the engine's
+components, and repeated timings of one configuration on this machine differ from run to run;
+attribution therefore uses executed instruction counts, which are deterministic for a
+single-threaded evolution and unaffected by other load on the machine. Table~\ref{tab:t15-instructions} is taken from a
+single run under \texttt{callgrind}, on a single-threaded depth-six evolution of the Wolfram
+rule under quotient exploration with the raw relations reconstructed (the CPU bench's default
+configuration). The quotient reconstruction ($\InstrShareRecon\%$) and
 canonicalization ($\InstrShareCanon\%$) are the two largest components and are close; the
 concurrent sets and maps ($\InstrShareSets\%$) and libc's copies, fills and heap traffic
 ($\InstrShareLibc\%$) follow; matching, its join and the rewrite together are
-$\InstrShareMatch\%$ on a rule whose states carry at most fourteen edges. The unattributed share
+$\InstrShareMatch\%$ on a rule whose states have at most fourteen edges. The unattributed share
 ($\InstrUnattributedPct\%$) is functions below the reporting threshold and code no bucket names,
 and it is reported rather than distributed over the named buckets.
 
@@ -765,8 +766,9 @@ applications. The conventions refine one another (two rewrites are the same even
 between the same states, when they additionally move the same edges, or never), so the counts
 are non-decreasing left to right, and where they strictly increase the finer convention
 separates rewrites the coarser one merges. On \texttt{binary-growth} the three conventions give $5$, $8$
-and $9$ distinct events. The table carries no timing column: what separates the conventions is what they
-identify. All event counts in this report use the canonical convention.
+and $9$ distinct events. The table reports counts alone, since the comparison between the
+conventions is a comparison of what each identifies. All event counts in this report use the
+canonical convention.
 
 \begin{table}[htbp]
 \centering

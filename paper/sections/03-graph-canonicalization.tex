@@ -45,7 +45,7 @@ The bound is only useful with $C/R$ in hand, and that ratio is a property of the
 \caption{\textbf{Canonical-class to raw-state ratio, per corpus workload.} $C/R$ is the fraction
 of raw states that are distinct up to isomorphism, reported beside the event count because the
 two must be read together: a small ratio on a small run says less than the same ratio on a large
-one. This is the quantity Proposition~\ref{prop:wlceiling} bounds the achievable saving by.}
+one. Proposition~\ref{prop:wlceiling} bounds the achievable saving by this ratio.}
 \label{tab:crratio}
 \input{tables/t_crratio}
 \end{table}
@@ -83,7 +83,7 @@ Two options require automorphism data: quotient exploration, and the event canon
 \subsection{State Canonicalization Modes}
 
 Rather than exposing a choice between competing hashing algorithms, the engine exposes a single \emph{state canonicalization mode}, \textsc{None}, \textsc{Automatic} or \textsc{Full}, that controls how aggressively isomorphic states are merged.
-\textsc{None} performs no deduplication and keeps every raw state distinct. \textsc{Automatic} deduplicates by a content-ordered hash of the edge tuples as given. This hash is not an isomorphism invariant: it identifies two states when their edge tuples are literally equal, and separates isomorphic states whose vertices carry different identifiers. \textsc{Full} is the exact mode used for all correctness-critical results: the IR canonical hash is computed for every state and is itself the deduplication key, so two states are identified if and only if they are isomorphic.
+\textsc{None} performs no deduplication and keeps every raw state distinct. \textsc{Automatic} deduplicates by a content-ordered hash of the edge tuples as given. This hash is not an isomorphism invariant: it identifies two states when their edge tuples are literally equal, and separates isomorphic states whose vertices have different identifiers. \textsc{Full} is the exact mode used for all correctness-critical results: the IR canonical hash is computed for every state and is itself the deduplication key, so two states are identified if and only if they are isomorphic.
 
 \begin{remark}[Incremental hashing]
 Child states differ from their parents by only the consumed and produced edges, and the engine passes that per-event delta to the canonicalizer. The hash is nonetheless computed from the state's complete edge set in every mode. No incremental-hashing result is reported here, and none of the measurements in Section~\ref{sec:benchmarks} depends on one.

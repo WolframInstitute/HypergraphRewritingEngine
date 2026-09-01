@@ -1,7 +1,7 @@
 \section{Pattern Matching}
 \label{sec:pattern-matching}
 
-Pattern matching, the discovery of every instance of a rule's left-hand side in a hypergraph, is the first phase of every expansion. On the Wolfram rule, whose states carry at most fourteen edges at depth six, the instruction profile of Table~\ref{tab:t15-instructions} attributes $\InstrShareMatch\%$ of executed instructions to matching, its join and the rewrite together; canonicalization ($\InstrShareCanon\%$) and the quotient reconstruction ($\InstrShareRecon\%$) are the largest components there. Multi-level indexing restricts candidate enumeration.
+Pattern matching, the discovery of every instance of a rule's left-hand side in a hypergraph, is the first phase of every expansion. On the Wolfram rule, whose states have at most fourteen edges at depth six, the instruction profile of Table~\ref{tab:t15-instructions} attributes $\InstrShareMatch\%$ of executed instructions to matching, its join and the rewrite together; canonicalization ($\InstrShareCanon\%$) and the quotient reconstruction ($\InstrShareRecon\%$) are the largest components there. Multi-level indexing restricts candidate enumeration.
 
 \subsection{Edge Signatures}
 
@@ -35,7 +35,7 @@ $B_d$ & 1 & 2 & 5 & 15 & 52 & 203 & 877 & 4140 \\
 
 A state is a view into the shared edge pool (Section~\ref{sec:storage}), and its matching asks two
 questions of that view: which of its edges contain a given vertex, once a pattern variable is bound,
-and which of its edges carry a compatible signature, for the seed. Both are answered from the
+and which of its edges have a compatible signature, for the seed. Both are answered from the
 state's ancestry, since every edge of a state was brought by exactly one state on its chain of parent
 states: the root brought all of its edges, and each derived state brought the edges its event
 produced. Each state indexes its own contribution by vertex once, when it is created, so the edges
@@ -155,7 +155,7 @@ content rather than on the anchor that found them; duplicates here are routine r
 exceptional, so the deduplicating lookup precedes the allocation of a match record
 rather than following it.
 
-Because the partition is an argument rather than a measurement, the engine carries a validation
+Because the partition is an argument rather than a measurement, the engine includes a validation
 mode: every state's matches are additionally computed by an unrestricted scan and compared
 against the union forwarding and the delta scan supplied, with a missing match attributed to the
 obligation that owed it (forwarding if it uses only surviving edges, the delta scan if it

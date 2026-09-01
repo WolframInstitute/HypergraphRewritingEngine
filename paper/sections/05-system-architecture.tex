@@ -58,7 +58,7 @@ The CPU engine and the CUDA port are separate schedulers over the same semantics
 implemented twice will eventually be implemented differently. Every decision procedure the two
 share therefore exists once, as an annotated function compiled for host and device from a single
 source: the join that enumerates matches, the edge-signature rule, the rewrite semantics
-determining which vertices a produced edge carries, the event identity, the content-ordered
+determining the vertices of a produced edge, the event identity, the content-ordered
 state key, the individualization--refinement canonical hash, and the quotient-causal dynamic
 program and its per-instance replay. Eleven such cores are shared in total; the three not named
 here are the matcher's task core, the sampling draw and the slot rule.
@@ -139,9 +139,9 @@ branching test over-approximates: a negative result means branching is structura
 while a positive result means only that it has not been ruled out. An adaptation may act on the
 negative and must not act on the positive. The engine does exactly that with the
 branchial relation: if no two matches can share a consumed edge then no state has a branchial pair
-under any initial condition, so the relation is provably empty and is not built. The request is not
-overridden by this: what the caller asked for is the empty relation and the empty relation is what
-it receives; only the work of discovering it is removed. Nothing here concerns termination, finiteness of the
+under any initial condition, so the relation is provably empty and is not built. This does not override the request: the
+caller asked for the empty relation and receives the empty relation; only the work of
+discovering it is removed. Nothing here concerns termination, finiteness of the
 reachable set, or global confluence, all of which are undecidable for a rewriting system of this
 power.
 
@@ -167,8 +167,8 @@ exact cap that was also schedule-independent would have to hold every candidate 
 until the depth settled, which is the barrier Section~\ref{sec:sampling} declines: only a
 population that completes locally can be finalised without one, and a per-step population does
 not. What a capped run guarantees is therefore the bound, at every worker count, and not which
-states meet it. The per-parent cap has a locally-completing population and could be made
-schedule-independent on the same terms as the transition spine; it is not today.
+states meet it; the per-parent cap admits successors in the same arrival order, against a
+per-parent counter.
 
 \subsection{Depth Semantics and Termination}
 \label{sec:depth}
@@ -248,14 +248,14 @@ by the canonical edge ranks of its own IR search, an isomorphism defined up to a
 which permutes the frame coherently and so maps matches to matches. An \emph{instance} of a class
 at depth $k$ is a vector holding one producer event per frame slot. Applying a recorded match to
 an instance creates one raw event; emits a causal edge from the producer of every consumed slot
-that carries one, in descending producer order so that the online reduction of
+that has one, in descending producer order so that the online reduction of
 Section~\ref{sec:tr} stays exact; claims a branchial pair with every earlier application at the
 same instance whose consumed slots overlap; and descends to a child instance at depth $k+1$, in
 which surviving slots keep their producer and produced slots take the new event. Instances and
 recorded matches arrive concurrently, so the two sides rendezvous: an instance replays every
 match already recorded for its class, a newly recorded match replays against every instance
 already standing at the class, and each (instance, match) pair is claimed exactly once. A
-replayed event carries two identities, the content triple (source class, target class, rule),
+replayed event has two identities, the content triple (source class, target class, rule),
 an isomorphism invariant on which cross-run and cross-engine comparisons are made, and the
 run's own event-identity convention. The instances
 are materialised one by one, and there are as many of them as the full system holds. On a
@@ -349,7 +349,7 @@ unreduced and reduces on read, where the uniqueness of a finite DAG's transitive
 the answer a function of the stored set alone.
 
 The reduction applies only to the causal graph; states, events and the branchial relation are never
-reduced, because branchial edges connect states at the same step and carry no transitivity to remove.
+reduced, because branchial edges connect states at the same step and have no transitivity to remove.
 
 \subsection{Pruning and Sparse Exploration}
 \label{sec:pruning}
@@ -467,8 +467,8 @@ The frontier is a separate structure from the identity map, because the map's on
 \emph{seen} to deduplication and as \emph{expanded} to a worker. Measured on a two-edge to
 three-edge rule advanced to depth two and then three, against seven states and six events for a
 single run to depth three, rebuilding the maps per call re-derives every known state (ten
-states, nine events) and carrying only the maps never reaches the new depth (five states, four
-events). A session therefore carries the maps and a frontier, the states refused by the step
+states, nine events) and keeping only the maps never reaches the new depth (five states, four
+events). A session therefore retains the maps and a frontier, the states refused by the step
 budget rather than by deduplication, and the device implements the same separation.
 
 Every session reply reports the frontier, because a caller cannot steer a continuation toward
@@ -477,7 +477,7 @@ other frontier entry is put back, so steering narrows what runs next, never what
 reachable. Naming a state that is not on the frontier is an error rather than an empty step: a
 caller steering toward a state the exploration has already passed would otherwise get a silent
 no-op indistinguishable from a branch with no successors. Retention is also why each frontier
-entry carries its own depth: after a steered step, entries stranded by different budgets sit on
+entry records its own depth: after a steered step, entries stranded by different budgets sit on
 the frontier together, and an entry resumed at a uniform depth would have its subtree truncated by
 steps it never took. Both devices serve this contract, resolving the selection against the
 frontier as it was last reported.
@@ -490,7 +490,7 @@ Events can be canonicalized at multiple granularities:
 \begin{description}
 \item[ByEndpointStates:] Two applications are the same event when they run between the same pair of canonical states. $\BigO(1)$ signature computation.
 
-\item[ByConsumedProducedEdges:] The signature additionally carries the canonical ranks of the edges the application consumed and produced. $\BigO(E)$ signature computation.
+\item[ByConsumedProducedEdges:] The signature additionally includes the canonical ranks of the edges the application consumed and produced. $\BigO(E)$ signature computation.
 
 \item[DistinctApplications:] No signature is computed and every application is its own event. This is the identity the raw causal graph is defined over.
 \end{description}
