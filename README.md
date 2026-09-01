@@ -7,6 +7,28 @@ A high-performance implementation of multiway hypergraph rewriting with Mathemat
 v1.0.0-rc1: feature-complete, gated by CI, model checking and a brute-force oracle. APIs
 are stable from this release line onward.
 
+## Paper
+
+The system, its algorithms, the full evaluation and the verification are described in the
+technical report [*Rewriting the Universe: High-Performance Hypergraph Rewriting for the
+Wolfram Physics Project*](paper/main.pdf). To cite it:
+
+```bibtex
+@techreport{assar2026rewriting,
+    author      = {Assar, Richard},
+    title       = {Rewriting the Universe: High-Performance Hypergraph Rewriting
+                   for the Wolfram Physics Project},
+    institution = {Wolfram Institute},
+    year        = {2026},
+    url         = {https://github.com/WolframInstitute/HypergraphRewritingEngine/blob/master/paper/main.pdf}
+}
+```
+
+## Background
+
+- Stephen Wolfram, [*Finally We May Have a Path to the Fundamental Theory of Physics — and It's Beautiful*](https://writings.stephenwolfram.com/2020/04/finally-we-may-have-a-path-to-the-fundamental-theory-of-physics-and-its-beautiful/) (2020)
+- [The Wolfram Physics Project](https://www.wolframphysics.org/), and its [technical introduction](https://www.wolframphysics.org/technical-introduction/introduction/)
+
 ## Features
 
 - **Multiway Evolution**: Parallel state evolution with causal and branchial graph construction, single synchronisation point (no intra-evolution phase barriers, online transitive reduction).

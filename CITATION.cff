@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+title: "HypergraphRewritingEngine"
+authors:
+  - family-names: Assar
+    given-names: Richard
+    affiliation: Wolfram Institute
+repository-code: "https://github.com/WolframInstitute/HypergraphRewritingEngine"
+license: MIT
+preferred-citation:
+  type: report
+  title: "Rewriting the Universe: High-Performance Hypergraph Rewriting for the Wolfram Physics Project"
+  authors:
+    - family-names: Assar
+      given-names: Richard
+      affiliation: Wolfram Institute
+  institution:
+    name: Wolfram Institute
+  year: 2026
+  url: "https://github.com/WolframInstitute/HypergraphRewritingEngine/blob/master/paper/main.pdf"
