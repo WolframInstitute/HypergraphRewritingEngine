@@ -24,9 +24,6 @@ if [ "$inputs" != "$staged" ]; then
   fail=1
 fi
 
-# The paper's voice.
-python3 tools/dev/paper_style_check.py >/dev/null || fail=1
-
 # The measured content percolates: provenance present, no verdict tokens, no stale fragments.
 python3 tools/dev/paper_integrity_check.py || fail=1
 

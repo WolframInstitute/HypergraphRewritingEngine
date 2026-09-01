@@ -302,12 +302,6 @@ rented box that does.
   canonical state counts. One worker is the ground truth: with a single worker there is no
   interleaving to depend on. Truncated runs are skipped rather than compared, since past the
   ceiling which states got in is the arrival race.
-- **`paper_style_check.py`** -- refuses three things in `paper/main.tex`: LLM writing tells, which
-  a reader recognises and discounts the content for; war stories, because the paper describes the
-  system AS IT IS rather than the history of arriving at it; and any sentence naming remaining
-  performance work, which under the v1.0.0 standard is a work item and not a claim to publish.
-  Reference list: claudisms.ai. Exit status, never the finding count -- a count landing on 256
-  exits 0, which is what was fixed in three other checkers here. A CI gate.
 - **`docs_fresh_check.py`** -- the notebooks under `paclet/Documentation/English` are GENERATED
   from `paclet/Documentation/Source/*.md` and committed, so a commit that edits the markdown
   without rerunning `build_docs.sh` ships a page describing behaviour the engine no longer has.

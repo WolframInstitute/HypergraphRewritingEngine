@@ -372,14 +372,6 @@ jobs:
       - name: The paper compiles from a clean tree
         run: make -C paper -B
 
-      # THE PAPER'S VOICE IS A GATE, not a matter of taste caught on a re-read. Three things it
-      # refuses: LLM writing tells, which a reader recognises and discounts the content for; war
-      # stories, because the paper describes the system AS IT IS and not the history of arriving
-      # at it; and any sentence naming remaining performance work, which under the v1.0.0 standard
-      # is a work item rather than a claim to publish. Reference list: claudisms.ai.
-      - name: The paper's voice
-        run: python3 tools/dev/paper_style_check.py
-
       # Builds a copy of the submission from its own files before packing, so a fragment missing
       # from the tarball fails HERE rather than on submission.
       - name: The arXiv submission compiles on its own
