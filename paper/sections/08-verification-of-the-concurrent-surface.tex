@@ -15,10 +15,10 @@ it is given (that thread count, that operation count, those inputs) it explores 
 interleaving and every reads-from choice the model permits, so a clean run is a statement about all
 executions within the bound rather than about the ones that happened to be scheduled.
 
-Three harnesses carry a weaker guarantee than that, and each says so in place. Two of them bound
+Three harnesses carry a weaker guarantee than that, and each states its bound where its result is reported. Two of them bound
 the number of context switches, which the checker permits only under sequential consistency, so
 those two establish their property for the sequentially consistent executions of their program
-rather than for every RC11 execution of it. A third samples executions instead of enumerating
+rather than for every RC11 execution of that program. A third samples executions instead of enumerating
 them, because its shape cannot be exhausted at the size that exhibits the behaviour it is about; a
 clean sample is evidence rather than proof, and the same property is proved by enumeration at a
 smaller shape by a separate harness. The remaining harnesses are exhaustive over RC11 within their
@@ -47,7 +47,7 @@ place: their transcriptions are copied verbatim and run over the real underlying
 The properties checked are the ones whose failure would be silent. For the concurrent map: that
 get-or-create admits exactly one winner and returns that winner to every caller, so a
 \emph{was\_inserted} result means what its callers assume. That this survives a table resize
-running concurrently with the inserts that triggered it, and survives two successive growths. And
+running concurrently with the inserts that triggered it, and survives two successive growths, and
 that the flag comes from the publishing exchange rather than from a value comparison, so repeated
 offers of the same value for one key do not each report success. For the deque: that
 the owner popping the back and a thief popping the front never extract the same item, checked at
@@ -56,11 +56,11 @@ a match is claimed exactly once and never dropped on a collision, and, for the r
 an instance and the matches captured for its class, that every pair meets. For the per-instance
 application list: that of any two applications linked into one list exactly one observes the
 other, permitting the branchial pair they induce to be emitted once with nothing to
-deduplicate it against (Section~\ref{sec:quotient}), and that a walk from a node enumerates every
-node linked before it. For the per-worker scratch arena: that no two workers are handed the same
+deduplicate it against (Section~\ref{sec:quotient}), and that a walk from a node enumerates all
+earlier-linked nodes. For the per-worker scratch arena: that no two workers are handed the same
 index. For the key set: that two
 threads inserting one key while a third insertion forces a growth beneath them produce exactly one
-reported insertion, and that enumeration emits each key once across that growth: two properties
+reported insertion, and that an enumeration emits each key once across the growth: two properties
 checked by separate harnesses, because they are independent and a single harness that bundled them
 would not say which one a violation belonged to. A third property class covers \emph{readers}
 racing a growth: a membership query for a key that settled before the query began must answer
@@ -104,7 +104,7 @@ checker's symmetry reduction from applying.
 The second layer uses TLA+ and its model checker~\cite{lamport2002specifying} on the match
 forwarding protocol, which is the property whose silent failure is most costly: a lost match
 removes the entire subtree below it while leaving the run internally consistent. Every in-flight
-protocol step is held in a bag from which any enabled step may fire, so the interleavings subsume
+protocol step is held in a bag from which any enabled step may be taken, so the interleavings subsume
 every worker count rather than a bound on it; what is bounded instead is the state count. The
 trade is stated where the specification is: this layer is a transcription, so a change to the code
 does not change the model, and each specification header names the code it transcribes.
@@ -119,7 +119,7 @@ wins the claim and stores without propagating; the root's push then finds the cl
 its recursion. That leaves $s_2$ quiescent with a match that is valid for it and not
 stored. That the model reaches the failure it exists to exclude is the calibration of the model.
 The remaining configuration shows that batching alone masks the broken pull at this bound, which is
-why the ownership invariant is not treated as redundant with it.
+why the ownership invariant is not treated as redundant with batching.
 
 \begin{table}[htbp]
 \centering
@@ -166,6 +166,6 @@ ThreadSanitizer, AddressSanitizer and UndefinedBehaviorSanitizer, and the device
 CUDA memory and initialization checkers; all five report nothing on the shipped tree, and all five
 fail the build on a finding. The initialization checker detects a case the others do not: a host
 readback of device memory that no kernel wrote returns whatever the allocator last left at that
-address, so an assertion over it succeeds or fails according to allocation history rather than
-according to the code, and neither a test nor a model checker over the concurrent structures
-observes it.
+address, so an assertion over that value succeeds or fails according to allocation history rather
+than according to the code, and neither a test nor a model checker over the concurrent structures
+observes that class of defect.

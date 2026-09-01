@@ -2,15 +2,15 @@
 % commit ca4a52b | measured on AMD EPYC 9174F 16-Core Processor, 503 GB RAM, Linux 6.8.0-138-generic | load at start 2.62/3.47 (1m/15m) | source: tools/bench_gpu_evolve.cpp (mode 2) + driver utilisation sampling
 {\footnotesize\setlength{\tabcolsep}{4pt}%
 \resizebox{\ifdim\width>\linewidth\linewidth\else\width\fi}{!}{%
-\begin{tabular}{rrrrl}
+\begin{tabular}{rrrr}
 \toprule
-Blocks per SM & Blocks & Median ms & vs.\ 1 per SM & Peak SM-busy \\
+Blocks per SM & Blocks & Median ms & vs.\ 1 per SM \\
 \midrule
-1 & 128 & 184.40 & 1.00$\times$ & 100\% \\
-2 & 256 & 133.23 & 1.38$\times$ & 100\% \\
-4 & 512 & 104.43 & 1.77$\times$ & 100\% \\
-8 & 1024 & 89.82 & 2.05$\times$ & 100\% \\
-16 & 2048 & 90.36 & 2.04$\times$ & 100\% \\
+1 & 128 & 184.40 & 1.00$\times$ \\
+2 & 256 & 133.23 & 1.38$\times$ \\
+4 & 512 & 104.43 & 1.77$\times$ \\
+8 & 1024 & 89.82 & 2.05$\times$ \\
+16 & 2048 & 90.36 & 2.04$\times$ \\
 \bottomrule
 \end{tabular}
 }}

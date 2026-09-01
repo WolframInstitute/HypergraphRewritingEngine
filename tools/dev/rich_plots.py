@@ -330,8 +330,6 @@ def main():
               % (len(sat), ", ".join("%s@%d" % t for t in sorted(sat))))
     n = 0
     n += scaling_figure(scale, SIZE_RULES, SIZE_LABELS, "f_eff_size.tex", tool, a.out, sat=sat)
-    n += scaling_figure(scale, SIZE_RULES, SIZE_LABELS, "f_speedup_size.tex", tool, a.out,
-                        metric="speedup", sat=sat)
     n += scaling_figure(scale, SHAPE_RULES, SHAPE_LABELS, "f_eff_shape.tex", tool, a.out, sat=sat)
     n += scaling_figure(scale, ARITY_RULES, ARITY_LABELS, "f_eff_arity.tex", tool, a.out, sat=sat)
     n += depth_figure(depth, DEPTH_RULES, DEPTH_LABELS,

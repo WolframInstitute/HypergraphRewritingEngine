@@ -181,15 +181,16 @@ def gpu_saturation(gpu_build, steps, iters, sm_count):
 
     base = rows[0][2]
     b = [pt.provenance("tools/bench_gpu_evolve.cpp (mode 2) + driver utilisation sampling"),
-         r"\begin{tabular}{rrrrl}", r"\toprule",
-         r"Blocks per SM & Blocks & Median ms & vs.\ 1 per SM & Peak SM-busy \\",
+         r"\begin{tabular}{rrrr}", r"\toprule",
+         r"Blocks per SM & Blocks & Median ms & vs.\ 1 per SM \\",
          r"\midrule"]
     for (mult, blocks, ms, util) in rows:
-        # PEAK ONLY. The mean over a run window falls as the run gets FASTER -- the same busy
-        # kernel occupies a smaller share of the window -- so it tracks duration, not residency,
-        # and reporting it would invite the reading it cannot support.
-        u = "--" if not util else "%d\\%%" % util[0]
-        b.append("%d & %d & %.2f & %.2f$\\times$ & %s \\\\" % (mult, blocks, ms, base / ms, u))
+        # The driver's PEAK SM-busy reading is checked, not printed: it reads 100% at every
+        # grid size (the caption states so), and a row that breaks that is a finding.
+        if util and util[0] != 100:
+            raise SystemExit("t11: peak SM-busy %d%% at %d blocks/SM; caption asserts 100%%"
+                             % (util[0], mult))
+        b.append("%d & %d & %.2f & %.2f$\\times$ \\\\" % (mult, blocks, ms, base / ms))
     b += [r"\bottomrule", r"\end{tabular}"]
     pt.write("t11_gpu_saturation.tex", "\n".join(b) + "\n")
     # The conclusion states the grid size beyond which time stops improving; it is the smallest

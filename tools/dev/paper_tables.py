@@ -387,15 +387,17 @@ def t1(build):
     # T3, which is the allocator table, so neither table repeats the other and this one stays
     # legible at column width.
     b = [provenance("tools/cost_matrix.cpp"),
-         r"\begin{tabular}{llrrrrl}", r"\toprule",
-         r"Workload & Class & Canon.\ states & Events & Causal & Branchial & Exactness \\",
+         r"\begin{tabular}{llrrrr}", r"\toprule",
+         r"Workload & Class & Canon.\ states & Events & Causal & Branchial \\",
          r"\midrule"]
     # cost_matrix's first numeric column is `raw` -- the raw state count, ahead of `canon`. Every
     # column here is named against that header, so the unpacking names it and drops it rather
     # than letting the values slide one place to the left.
     for (case, cls, exact, _raw, canon, ev, ca, br, _arena, _heapb, _heapa) in rows:
-        b.append("%s & %s & %s & %s & %s & %s & %s \\\\" % (
-            tex_escape(case), tex_escape(cls), canon, ev, ca, br, exact.lower()))
+        if exact.lower() != "exact":
+            raise SystemExit("T1: %s is not exact; the caption asserts every workload is" % case)
+        b.append("%s & %s & %s & %s & %s & %s \\\\" % (
+            tex_escape(case), tex_escape(cls), canon, ev, ca, br))
     b += [r"\bottomrule", r"\end{tabular}", "", "%% " + total]
     write("t1_exactness.tex", "\n".join(b) + "\n")
     return len(rows)
@@ -634,12 +636,13 @@ def t6(build, maxd):
                          "refusing to write t6_quotient.tex; chase the defect"
                          % ", ".join(r[0] for r in bad))
     b = [provenance("tools/quotient_reconstruction_cost_probe.cpp"),
-         r"\begin{tabular}{rrrrrrrrl}", r"\toprule",
-         r"Depth & Events (full) & Causal (full) & ms (full) & Events (quot.) & ms (quot.) & "
-         r"Events (quot.+recon) & ms (quot.+recon) & Exact \\", r"\midrule"]
-    for (d, _fst, fev, fca, fms, _qst, qev, _qca, qms, _rst, rev, _rca, rms, exact) in rows:
-        b.append("%s & %s & %s & %s & %s & %s & %s & %s & %s \\\\" % (
-            d, fev, fca, fms, qev, qms, rev, rms, exact))
+         r"\begin{tabular}{rrrrrrrr}", r"\toprule",
+         r" & \multicolumn{3}{c}{Full capture} & \multicolumn{2}{c}{Quotient} & "
+         r"\multicolumn{2}{c}{Quotient + reconstruction} \\",
+         r"Depth & Events & Causal & ms & Events & ms & Events & ms \\", r"\midrule"]
+    for (d, _fst, fev, fca, fms, _qst, qev, _qca, qms, _rst, rev, _rca, rms, _exact) in rows:
+        b.append("%s & %s & %s & %s & %s & %s & %s & %s \\\\" % (
+            d, fev, fca, fms, qev, qms, rev, rms))
     b += [r"\bottomrule", r"\end{tabular}"]
     write("t6_quotient.tex", "\n".join(b) + "\n")
     return len(rows)
@@ -735,16 +738,16 @@ def t2(build, maxd, reps):
         if vals:
             core[d] = vals[len(vals) // 2]
 
-    # The reference is the CORRECTNESS oracle here, not a timed competitor: its counts enter the
-    # agreement column and its wall time is not published. The two timed comparisons the table
+    # The reference is the CORRECTNESS oracle here, not a timed competitor: its counts must
+    # agree with the row's and its wall time is not published. The two timed comparisons the table
     # carries are the engine's core against the authority (the speedup the paper claims) and the
     # engine through the paclet against the engine's core (what the Wolfram layer -- WXF over
     # the wire, Wolfram structures on return -- costs on top of the same computation).
     b = [provenance("reference/bench_authority.wls + tools/quotient_reconstruction_cost_probe.cpp")
          + pac_note,
-         r"\begin{tabular}{rrrrrrl}", r"\toprule",
+         r"\begin{tabular}{rrrrrr}", r"\toprule",
          r"Depth & States & Authority ms & Engine ms (paclet) & "
-         r"Engine ms (C++ core) & Speedup (core vs.\ authority) & Counts agree \\", r"\midrule"]
+         r"Engine ms (C++ core) & Speedup (core vs.\ authority) \\", r"\midrule"]
     for d in sorted(auth):
         if d not in hgev:
             continue
@@ -756,7 +759,8 @@ def t2(build, maxd, reps):
         same = (a_states, a_causal) == (h_states, h_causal)
         if r_ms is not None:
             same = same and (r_states, r_causal) == (a_states, a_causal)
-        agree = "yes" if same else "NO"
+        if not same:
+            raise SystemExit("T2: depth %d rows disagree on state/causal counts" % d)
         c = core.get(d)
         # The engine's C++ core against the authority. The authority's time includes building
         # Wolfram Graph objects, because its MultiwaySystem exposes no property returning the
@@ -764,8 +768,8 @@ def t2(build, maxd, reps):
         # the same-basis comparison, and the gap between the paclet and core columns is the
         # Wolfram layer alone.
         vs_auth = ("%.0f$\\times$" % (a_ms / c)) if c else "--"
-        b.append("%d & %d & %.1f & %.1f & %s & %s & %s \\\\" % (
-            d, a_states, a_ms, h_ms, ("%.1f" % c) if c else "--", vs_auth, agree))
+        b.append("%d & %d & %.1f & %.1f & %s & %s \\\\" % (
+            d, a_states, a_ms, h_ms, ("%.1f" % c) if c else "--", vs_auth))
     b += [r"\bottomrule", r"\end{tabular}"]
     write("t2_speedup.tex", "\n".join(b) + "\n")
 
@@ -817,8 +821,10 @@ def t9(build, iters):
 
     There are no compiled-out ablation builds to run: when a replacement lands here the
     replaced path is deleted in the same commit, so an "off" arm exists only where the choice
-    is still a live switch. Those are match forwarding (which the rule set decides) and the
-    state-canonicalization mode. Each row is a median over the same iteration count, and the
+    is still a live switch: match forwarding, which the rule set decides, measured on its two
+    decided cases. The state-canonicalization and event-identity modes select which identity is
+    computed, so their arms are not two routes to one answer and a wall-time ratio between them
+    compares different computations. Each row is a median over the same iteration count, and the
     state and event counts are printed so a row that changed the ANSWER is visible rather than
     read as a speedup.
     """
@@ -842,17 +848,15 @@ def t9(build, iters):
     a = smoke("off", "pair", 4, 6, "full")         # forwarding decided: on for a two-edge LHS
     b = smoke("fwdoff", "pair", 4, 6, "full")      # forced off
     rows.append(("Match forwarding, two-edge LHS", "off", b, "decided on", a))
-    a = smoke("off", "pair", 4, 6, "automatic")
-    b = smoke("off", "pair", 4, 6, "full")
-    rows.append(("State canonicalization", "Full (exact)", b, "Automatic (hash)", a))
 
     b_ = [provenance("tools/sampling_cost_smoke.cpp"),
-          r"\begin{tabular}{lllrlrl}", r"\toprule",
-          r"Contribution & Arm A & A ms & Arm B & B ms & Ratio & Same answer \\", r"\midrule"]
+          r"\begin{tabular}{lllrlr}", r"\toprule",
+          r"Contribution & Arm A & A ms & Arm B & B ms & Ratio \\", r"\midrule"]
     for (name, an, av, bn, bv) in rows:
-        same = "yes" if (av[1], av[2]) == (bv[1], bv[2]) else "NO"
-        b_.append("%s & %s & %.1f & %s & %.1f & %.2f & %s \\\\" % (
-            name, an, av[0], bn, bv[0], av[0] / bv[0], same))
+        if (av[1], av[2]) != (bv[1], bv[2]):
+            raise SystemExit("T9: the two arms of %r disagree on state/event counts" % name)
+        b_.append("%s & %s & %.1f & %s & %.1f & %.2f \\\\" % (
+            name, an, av[0], bn, bv[0], av[0] / bv[0]))
     b_ += [r"\bottomrule", r"\end{tabular}"]
     write("t9_ablation.tex", "\n".join(b_) + "\n")
     return len(rows)
@@ -934,7 +938,7 @@ def t10(build):
 
     b = [provenance("tools/mode_matrix_probe.cpp"),
          r"\begin{tabular}{lrrrrr}", r"\toprule",
-         r"Workload & Steps & Canon.\ states & By endpoint states & By consumed/produced edges & "
+         r"Workload & Steps & Canon.\ states & Endpoint states & Consumed/produced edges & "
          r"Distinct applications \\", r"\midrule"]
     for (name, steps, canon, e1, e2, e3) in rows:
         b.append("%s & %s & %d & %d & %d & %d \\\\" % (tex_escape(name), steps, canon, e1, e2, e3))

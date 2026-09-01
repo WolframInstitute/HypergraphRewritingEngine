@@ -388,7 +388,7 @@ jobs:
       - name: Every fragment the paper inputs is present, and every fragment is inputted
         run: |
           cd paper
-          grep -oE '\\input\{tables/[a-z0-9_]+\}' main.tex | sed 's/.*tables\///; s/}//' | sort -u > /tmp/inputs
+          grep -hoE '\\input\{tables/[a-z0-9_]+\}' main.tex sections/*.tex | sed 's/.*tables\///; s/}//' | sort -u > /tmp/inputs
           ls tables/*.tex | xargs -n1 basename | sed 's/\.tex$//' | sort -u > /tmp/have
           if ! diff -u /tmp/inputs /tmp/have; then
             echo "the set of \\input'd fragments and the set of shipped fragments differ"

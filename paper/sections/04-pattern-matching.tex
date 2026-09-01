@@ -17,7 +17,7 @@ $B_d$~\cite{rota1964number}; Table~\ref{tab:bell} gives the first few. The host 
 edge's signature against the pattern's directly; the device precomputes the compatible set per
 pattern edge (Section~\ref{sec:gpu}).
 
-\begin{table*}[htbp]
+\begin{table}[htbp]
 \centering
 \caption{Bell numbers for signature compatibility}
 \label{tab:bell}
@@ -28,7 +28,7 @@ $d$ & 1 & 2 & 3 & 4 & 5 & 6 & 7 & 8 \\
 $B_d$ & 1 & 2 & 5 & 15 & 52 & 203 & 877 & 4140 \\
 \bottomrule
 \end{tabular}
-\end{table*}
+\end{table}
 
 \subsection{Candidate Edges by Ancestry}
 \label{sec:vertex-index}
@@ -36,7 +36,7 @@ $B_d$ & 1 & 2 & 5 & 15 & 52 & 203 & 877 & 4140 \\
 A state is a view into the shared edge pool (Section~\ref{sec:storage}), and its matching asks two
 questions of that view: which of its edges contain a given vertex, once a pattern variable is bound,
 and which of its edges carry a compatible signature, for the seed. Both are answered from the
-state's ancestry. Every edge of a state was brought by exactly one state on its chain of parent
+state's ancestry, since every edge of a state was brought by exactly one state on its chain of parent
 states: the root brought all of its edges, and each derived state brought the edges its event
 produced. Each state indexes its own contribution by vertex once, when it is created, so the edges
 of $S$ that contain $v$ are
@@ -82,7 +82,7 @@ connected (every edge after the first shares a variable with one already bound),
 join is a cartesian product. Two host paths execute that order: a synchronous depth-first join,
 which runs an entire search inside one task and spawns a job only for a completed match, and the
 task-spawning form above, which spawns a task per candidate and is what exposes the search itself
-to work stealing. They are not two joins. The recursion, the edge-injectivity check, the binding
+to work stealing. The two forms are not two joins: the recursion, the edge-injectivity check, the binding
 and unwind, and the rule choosing which pattern position is bound next are one shared body, which
 is also the body the device runs; the two paths differ in who executes the resulting steps and
 when.
@@ -93,27 +93,20 @@ when.
 Treating a left-hand side as a conjunctive query, the AGM bound~\cite{atserias2013size} gives the
 maximum number of results a query can have on a database of a given size, and a join is
 worst-case optimal if its running time matches that bound up to logarithmic
-factors~\cite{ngo2018worst}. Our join is edge-at-a-time: it binds one pattern hyperedge per
-expansion, in the connectivity order of Section~\ref{sec:matching-algorithm}.
-
-For left-hand sides of one or two hyperedges, an edge-at-a-time join meets the bound, and every
-rule in the ORACLE corpus of Section~\ref{sec:benchmarks} is of that form; the left-hand-side
-sweep of Section~\ref{sec:lhs-space} deliberately goes past it, to three and four edges. It does not meet the bound in
-general. On a cyclic left-hand side of three hyperedges the AGM bound is $N^{1.5}$ for a state of
-$N$ edges, while an edge-at-a-time join performs $\Omega(N^2)$ work: two of the three edges can be
-bound before the third constrains anything, and the intermediate result is already quadratic. No
-choice of join order removes this, since the difficulty is the granularity of binding rather than
-its sequence. Closing it requires enumerating variable-at-a-time in the manner of a worst-case
-optimal join, which in turn requires indices supporting ordered seek on a bound variable rather
-than the incidence lists described above.
-
-We therefore state the position rather than claim the property: the join is worst-case optimal on
-the rule shapes measured here, and is not worst-case optimal in general. The static analysis of
-Section~\ref{sec:rule-analysis} computes, per rule, whether its left-hand side is acyclic and what
-its integral edge cover is, so a rule set for which this gap matters is identifiable before it is
-run.
+factors~\cite{ngo2018worst}. Our edge-at-a-time join meets the bound on left-hand sides of one
+or two hyperedges, the form of every rule in the oracle corpus of Section~\ref{sec:benchmarks}
+(the sweep of Section~\ref{sec:lhs-space} goes past that form, to three and four edges), and
+not in general: on a cyclic left-hand side of three hyperedges the AGM bound is $N^{1.5}$ for a
+state of $N$ edges while an edge-at-a-time join performs $\Omega(N^2)$ work, since two of the
+three edges can be bound before the third constrains anything, and no join order removes the
+gap, the difficulty being the granularity of binding rather than its sequence. Closing the gap
+would require variable-at-a-time enumeration over indices supporting ordered seek on a bound
+variable. The static analysis of Section~\ref{sec:rule-analysis} computes, per rule, whether
+its left-hand side is acyclic and its integral edge cover, so a rule set for which the gap
+matters is identifiable before it is run.
 
 \subsection{Match Forwarding}
+\label{sec:forwarding}
 
 When state $s'$ is derived from $s$, a match valid in $s$ remains valid in $s'$ unless it used an edge the rewrite removed. The engine forwards such matches from parent to child rather than rediscovering them:
 
@@ -123,13 +116,13 @@ Let $\match$ be a match in state $s$, and let $s'$ be derived from $s$ by applyi
 
 Forwarding therefore avoids re-running the join for every match a child inherits unchanged from its parent.
 
-Delivering it under concurrency takes two mechanisms. A match discovered in a state is
+Under concurrency, delivery takes two mechanisms: a match discovered in a state is
 \emph{pushed} to the children the state already has; a state created later \emph{pulls} on
 creation, walking its ancestor chain and collecting each ancestor's matches its own rewrite did
 not invalidate. Neither suffices alone: without the push every state repeats its ancestors' work
-on creation, and without the pull a match discovered before a child existed never reaches it.
+on creation, and without the pull a match discovered before a child existed never reaches the child.
 
-The halves interact through one ordering requirement. The pull's walk treats a missing parent
+The two halves interact through one ordering requirement: the pull's walk treats a missing parent
 link as a root and stops, so a child must publish its parent link \emph{before} becoming visible
 in its parent's child list: a visible child may receive a forwarded match, that match may create
 a grandchild on another worker, and the grandchild's pull walks upward through this child. A

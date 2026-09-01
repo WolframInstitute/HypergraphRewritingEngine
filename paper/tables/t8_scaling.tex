@@ -2,17 +2,17 @@
 % commit ca4a52b | measured on AMD EPYC 9174F 16-Core Processor, 503 GB RAM, Linux 6.8.0-138-generic | load at start 2.77/5.43 (1m/15m) | source: tools/bench_cpu_evolve.cpp
 {\footnotesize\setlength{\tabcolsep}{4pt}%
 \resizebox{\ifdim\width>\linewidth\linewidth\else\width\fi}{!}{%
-\begin{tabular}{rrrrrr}
+\begin{tabular}{rrr}
 \toprule
-Threads & Steps & Canonical states & Raw states & Median ms & Speedup vs.\ 1 thread \\
+Threads & Median ms & Speedup vs.\ 1 thread \\
 \midrule
-1 & 7 & 28542 & 45317 & 550.333 & 1.00 \\
-2 & 7 & 28542 & 45317 & 300.490 & 1.83 \\
-4 & 7 & 28542 & 45317 & 214.849 & 2.56 \\
-8 & 7 & 28542 & 45317 & 203.908 & 2.70 \\
-16 & 7 & 28542 & 45317 & 178.822 & 3.08 \\
-24 & 7 & 28542 & 45317 & 162.602 & 3.38 \\
-32 & 7 & 28542 & 45317 & 154.592 & 3.56 \\
+1 & 550.333 & 1.00 \\
+2 & 300.490 & 1.83 \\
+4 & 214.849 & 2.56 \\
+8 & 203.908 & 2.70 \\
+16 & 178.822 & 3.08 \\
+24 & 162.602 & 3.38 \\
+32 & 154.592 & 3.56 \\
 \bottomrule
 \end{tabular}
 }}

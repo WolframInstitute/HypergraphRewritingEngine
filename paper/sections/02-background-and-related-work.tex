@@ -8,7 +8,7 @@ work is measured against.
 
 \subsection{Hypergraph Rewriting Systems}
 
-A \emph{hypergraph} $\hypergraph = (V, E)$ consists of a vertex set $V$ and a set of hyperedges $E$, where each hyperedge $e \in E$ is an ordered tuple of vertices $(v_1, v_2, \ldots, v_k)$ with $v_i \in V$. Unlike standard graphs where edges connect exactly two vertices, hyperedges may connect any number of vertices with arbitrary arity.
+A \emph{hypergraph} $\hypergraph = (V, E)$ consists of a vertex set $V$ and a set of hyperedges $E$, where each hyperedge $e \in E$ is an ordered tuple of vertices $(v_1, v_2, \ldots, v_k)$ with $v_i \in V$. In the Wolfram Physics Project's usage nothing is claimed for hypergraphs beyond representation: the physics is carried by the causal structure of the rewrites, and hypergraphs serve because path-length distance gives rewriting an intrinsic locality, and their unstructured space lets different rewrite orders correspond to different spacelike hypersurfaces, where rigid representations fix space in advance.
 
 \begin{definition}[Rewriting Rule]
 A rewriting rule $\rewriterule = (L, R)$ consists of a left-hand side pattern $L$ and right-hand side replacement $R$, both hypergraphs. A \emph{match} of $L$ in $\hypergraph$ is an injective mapping $\phi: V_L \to V_\hypergraph$ such that the image of each hyperedge in $L$ appears in $\hypergraph$.
@@ -36,12 +36,12 @@ Given initial state $\state_0$ and rule set $\{\rewriterule_i\}$, the evolution 
 \centering
 \input{tables/f_object_binary}
 \caption{Two steps of $\{x,y\} \rightarrow \{x,z\},\{z,y\}$ from a single edge, as the engine
-reports it. Four raw states become three canonical ones: the two depth-2 results are isomorphic
+reports them. Four raw states become three canonical ones: the two depth-2 results are isomorphic
 and are identified. Both causal edges descend from $e_0$, because each depth-2 event consumes
 one of the two edges $e_0$ produced. The branchial relation is empty: $e_1$ and $e_2$ share an
 input state, which resembles a sibling pair, but branchial edges connect co-consumers of a
 \emph{common} edge and these consume different ones. Every element is drawn from the engine's
-own output; the counts are recorded in the figure source's provenance line.}
+own output.}
 \label{fig:worked-example}
 \end{figure*}
 
@@ -55,7 +55,7 @@ For practical systems, we employ \emph{graph hashing}: computing a canonical sig
 
 \subsection{Related Work}
 
-\textbf{Graph canonicalization:} The nauty/Traces line of work~\cite{mckay2014practical} establishes individualization--refinement (IR) as the practical standard for exact graph canonicalization; it is exponential in the worst case but fast on typical instances, and it is the exact canonicalizer we adopt as our reference. Weisfeiler--Leman color refinement~\cite{weisfeiler1968reduction,shervashidze2011weisfeiler} runs in polynomial time but provably fails to distinguish certain non-isomorphic graphs, so it cannot serve as an identity where exactness is required; we use it only for the modes that ask for a deliberately coarser identity, never in front of IR.
+\textbf{Graph canonicalization:} The nauty/Traces line of work~\cite{mckay2014practical} establishes individualization--refinement (IR) as the practical standard for exact graph canonicalization; it is exponential in the worst case but fast on typical instances, and it is the exact canonicalizer we adopt as our reference. Weisfeiler--Leman color refinement~\cite{weisfeiler1968reduction,shervashidze2011weisfeiler} runs in polynomial time but provably fails to distinguish certain non-isomorphic graphs, so it cannot serve as an identity where exactness is required.
 
 \textbf{Hypergraph rewriting implementations:} SetReplace~\cite{setreplace}, the implementation
 most closely associated with the Wolfram Physics Project, is the closest system to this work,
@@ -74,31 +74,15 @@ same object: the \texttt{Wolfram/\allowbreak Multicomputation} paclet's
 Wolfram Paclet Repository,
 \url{https://resources.wolframcloud.com/PacletRepository/resources/Wolfram/Multicomputation/}.
 Every comparison uses version 0.1.8, the latest published release (23 November 2024; checked 31
-August 2026); the provenance line of Table~\ref{tab:t2-speedup} records it.},
+August 2026); used for every comparison in this report.},
 whose every exposed property is graph-valued, so its time necessarily includes building Wolfram
 \texttt{Graph} objects; and this project's \emph{reference implementation}, a direct
 transcription of the definition that serves as the correctness oracle throughout this work and
 returns data rather than graphs. The term \emph{reference implementation} always denotes the
-latter, never SetReplace. Table~\ref{tab:systems} summarizes the four systems.
+latter, never SetReplace. Wall-time comparisons are meaningful only between systems computing the same object.
 
-\begin{table*}[htbp]
-\centering
-\caption{The systems discussed and what each computes. Wall-time comparisons are meaningful
-only between systems computing the same object.}
-\label{tab:systems}
-\begin{tabular}{llllll}
-\toprule
-System & Object computed & State identity & Causal/branchial & Execution & Role here \\
-\midrule
-SetReplace & token--event graph & none during evolution & causal & serial & not compared (different object) \\
-\texttt{MultiwaySystem} & deduplicated states graph & isomorphism & both, graph-valued & serial & timed comparison \\
-Reference implementation & deduplicated states graph & isomorphism & both, data-valued & serial & correctness oracle \\
-This engine & deduplicated states graph & exact IR isomorphism & both, online TR & lock-free parallel + GPU & \\
-\bottomrule
-\end{tabular}
-\end{table*}
 
-\textbf{Subgraph matching on hypergraphs:} HGMatch~\cite{yang2023hgmatch} matches by hyperedge rather than vertex by vertex, seeding a join from one pattern hyperedge and extending it one hyperedge at a time, and partitions candidate hyperedges by a label-derived signature to restrict enumeration. HGMatch also organizes execution as a dataflow with a task scheduler performing fine-grained dynamic work stealing. Our matcher adopts all three. The join is organized as a seeding scan followed by expansions that each bind one further pattern edge (Section~\ref{sec:matching-algorithm}), and because hyperedges here carry no labels, the signature that partitions candidates is instead the vertex-repetition pattern of an edge (Definition~\ref{def:signature}), which plays the same filtering role for unlabelled data. Where an expansion has a variable already bound, candidates come from the vertex index rather than the signature bucket; on the device this replaced a global signature walk and reduced match-kernel time on one workload from 944\,ms to 4\,ms.
+\textbf{Subgraph matching on hypergraphs:} HGMatch~\cite{yang2023hgmatch} matches by hyperedge rather than vertex by vertex, seeding a join from one pattern hyperedge and extending it one hyperedge at a time, and partitions candidate hyperedges by a label-derived signature to restrict enumeration. HGMatch also organizes execution as a dataflow with a task scheduler performing fine-grained dynamic work stealing. Our matcher adopts all three: the join is organized as a seeding scan followed by expansions that each bind one further pattern edge (Section~\ref{sec:matching-algorithm}), and because hyperedges here carry no labels, the signature that partitions candidates is instead the vertex-repetition pattern of an edge (Definition~\ref{def:signature}), which plays the same filtering role for unlabelled data. Where an expansion has a variable already bound, candidates come from the vertex index rather than the signature bucket; on the device this replaced a global signature walk and reduced match-kernel time on one workload from 944\,ms to 4\,ms.
 
 \textbf{GPU graph algorithms:} Recent work has explored GPU acceleration for subgraph matching~\cite{tran2015fast}, graph mining~\cite{chen2021pangolin}, and general graph algorithms~\cite{wang2016gunrock}. The warp-centric organization of our match kernel (one block per (state, rule) pair, threads striding over seed candidates and each running its own depth-first subtree) follows G2Miner~\cite{chen2022g2miner}. Our kernel differs from these systems in remaining resident across evolution steps rather than being relaunched per step, because the workload is iterative: each step's states are the next step's inputs.
 

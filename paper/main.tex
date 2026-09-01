@@ -1,4 +1,4 @@
-\documentclass[10pt,twocolumn,a4paper]{article}
+\documentclass[9pt,twocolumn,a4paper]{extarticle}
 
 % ============================================================================
 % PACKAGES
@@ -15,6 +15,9 @@
 % Compact heading spacing: the class defaults open a gap at every section boundary that reads
 % as a break. Sections run on, separated by the heading itself.
 \usepackage{titlesec}
+\usepackage{dblfloatfix}
+\usepackage{cuted}
+\usepackage{subcaption}
 \titlespacing*{\section}{0pt}{1.4ex plus 0.4ex minus 0.2ex}{0.8ex plus 0.2ex}
 \titlespacing*{\subsection}{0pt}{1.1ex plus 0.3ex minus 0.2ex}{0.6ex plus 0.2ex}
 % Floats fill pages instead of pushing text to the next column and leaving the gap behind.
@@ -117,27 +120,27 @@
 % ----------------------------------------------------------------------------
 
 \begin{abstract}
-The Wolfram Physics Project models fundamental physics by hypergraph rewriting, in which a rule
-rewrites subhypergraphs and multiway evolution applies every applicable rewrite to every
+The Wolfram Physics Project models fundamental physics by hypergraph rewriting, in which rules
+rewrite subhypergraphs and multiway evolution applies every applicable rewrite to every
 reachable state, producing the graph of states under isomorphism together with the causal and
-branchial relations over its events. Exhaustive evolution grows super-exponentially with depth
-on rules that grow their states, since each step multiplies the number of reachable raw states
-by a branching factor that itself grows. We present a high-performance multiway hypergraph
-rewriting engine for CPU and GPU. States are identified exactly by a McKay-style
-individualization--refinement canonical hash computed for every state, by one implementation
-shared between the CPU and the GPU's resident evolution kernel, where it executes
-warp-collectively. The engine is lock-free and non-phasic throughout, maintains the causal and
-branchial relations and their transitive reduction online, and its output is a function of the
-inputs alone, independent of thread count and scheduling. Quotient exploration expands one
-representative per isomorphism class and reconstructs the raw events, causal edges and
-branchial pairs exactly; caps, transition sampling and session steering bound an exploration
-without a barrier. The shared concurrent protocols are model-checked under RC11 and its scoped
-extension, and the forwarding rendezvous under TLA+, at stated bounds. Against the
+branchial relations over its events. For productive rules, exhaustive evolution is super-exponential in
+depth. We present a
+high-performance multiway hypergraph rewriting engine for CPU and GPU. States are identified
+exactly by a McKay-style individualization--refinement canonical hash computed for every state,
+on the CPU or on the GPU's resident evolution kernel, by one shared implementation. The
+engine is lock-free and non-phasic (no separate phases or passes), maintains the causal and
+branchial relations online together with the causal graph's transitive reduction, and its
+output is a function of the inputs alone. Quotient
+exploration expands one representative per isomorphism class and reconstructs the raw events
+and relations exactly. The shared concurrent protocols, and the engine driven whole through a bounded evolution, are
+model-checked under RC11 and its scoped extension, and the forwarding rendezvous under TLA+.
+Against the
 \texttt{Wolfram/\allowbreak Multicomputation} paclet's \texttt{MultiwaySystem}, computing
 identical state and causal-edge counts at every depth, the engine's core is faster by
 $\SpeedupAtLowDepth\times$ at depth \SpeedupLowDepth{} and $\SpeedupAtHighDepth\times$ at
-depth \SpeedupHighDepth{}. The system is available as a C++/CUDA library
-and as a Wolfram Language paclet.
+depth \SpeedupHighDepth{}, on one machine (an Intel i9-14900K; Section~\ref{sec:benchmarks}
+states the setup every measurement uses). The system is available as a C++/CUDA library and as
+a Wolfram Language paclet.
 
 \vspace{1em}
 \noindent\parbox{\linewidth}{\textbf{Keywords:} hypergraph rewriting, graph canonicalization,
@@ -188,11 +191,9 @@ of the concurrent structures these bounds are realized on (Table~\ref{tab:lockfr
 
 \subsection{Canonicalization Complexity}
 
-For a hypergraph with $|V|$ vertices and $|E|$ hyperedges of maximum arity $k$, the two canonicalization roles have different cost profiles.
+For a hypergraph with $|V|$ vertices and $|E|$ hyperedges of maximum arity $k$:
 
-\textbf{Weisfeiler--Leman signature.} One refinement round aggregates, for each vertex, the multiset of neighbor colors: $\BigO(k \cdot |E|)$ work per round, with at most $|V|$ rounds before the coloring stabilizes, giving $\BigO(|V| \cdot k \cdot |E|)$ in the worst case and far less in practice (the partition typically stabilizes in a few rounds). WL is a sound but incomplete invariant: identical hashes are necessary but not sufficient for isomorphism.
-
-\textbf{Individualization--refinement (exact).} IR interleaves color refinement with individualization of vertices in non-singleton cells, exploring a search tree pruned by discovered automorphisms. It is polynomial on instances that refinement alone resolves, but, like nauty and Traces, exponential in the worst case, with the blow-up concentrated on highly symmetric (high-automorphism) states. We claim no polynomial-time bound. Under the exact mode IR is applied to every state, and profiling attributes $\InstrShareCanon\%$ of the engine's executed instructions to it and the orbit computation beside it (Table~\ref{tab:t15-instructions}). Bucketing by a cheaper hash and invoking IR only on collisions does not reduce this cost, by Proposition~\ref{prop:wlceiling}: a repeated bucket is consistent with a genuine duplicate, which IR must still confirm, so such a filter elides at most a fraction $C/R$ of the invocations it precedes.
+\textbf{Individualization--refinement (exact).} IR interleaves color refinement with individualization of vertices in non-singleton cells, exploring a search tree pruned by discovered automorphisms. It is polynomial on instances that refinement alone resolves, but, like nauty and Traces, exponential in the worst case, with the blow-up concentrated on highly symmetric (high-automorphism) states, and we claim no polynomial-time bound. Under the exact mode IR is applied to every state, and profiling attributes $\InstrShareCanon\%$ of the engine's executed instructions to it and the orbit computation beside it (Table~\ref{tab:t15-instructions}). Bucketing by a cheaper hash and invoking IR only on collisions does not reduce this cost, by Proposition~\ref{prop:wlceiling}: a repeated bucket is consistent with a genuine duplicate, which IR must still confirm, so such a filter elides at most a fraction $C/R$ of the invocations it precedes.
 
 \subsection{Pattern Matching Complexity}
 
@@ -225,7 +226,7 @@ Section~\ref{sec:gpu-constraint}, so there is no per-state ceiling and no batch 
 There is consequently no approximate fallback anywhere on this path. A state the exact path cannot
 key (because the arena is exhausted, or because the search wants more individualization depth than
 the device attempts) is reported as a capacity overflow and the run is retried with a larger
-reservation. It is never keyed by something coarser. This is not a tuning preference, because
+reservation, and it is never keyed by a coarser invariant. This is not a tuning preference, because
 isomorphism-invariance fails in only one direction: a 1-dimensional Weisfeiler--Leman hash never
 separates two isomorphic states, but it does merge non-isomorphic ones, which the engine
 demonstrates constructively on the prism graph against $K_{3,3}$ at six vertices and on the
@@ -296,7 +297,7 @@ whenever every in-flight task happens to have just finished without yet emitting
 Exit is therefore signalled only when equality holds across two consecutive observations separated
 by a backoff interval, so that nothing was pushed during the window between them. Workers test the
 exit flag at the top of their outer loop, and read it with acquire ordering so a worker that sees
-it also sees everything the detector saw before setting it.
+the flag also sees everything the detector saw before setting it.
 
 Detecting termination incorrectly truncates the evolution without an error, so the device
 result is compared against the host's on every corpus workload rather than only checked for the
@@ -342,10 +343,10 @@ Concurrent evolution requires thread-safe data structures without lock contentio
 
 \item[ConcurrentKeySet$\langle$K$\rangle$:] A set, for membership rather than mapping. Presence and
 ownership are decided by one compare-exchange from the empty sentinel to the key, so none of the
-map's value-publication protocol exists: no locked slot, no settling of a claim met mid-flight.
-An insert scans the superseded-table chain for a settled copy of its key before claiming at the
-head, and a claim that lands in a table which is no longer the head is reported stale and
-re-driven rather than counted: the two halves of keeping one key from ever being claimed twice.
+map's value-publication protocol exists. An insert scans the superseded-table chain for a settled
+copy of its key before claiming at the head, and a claim that lands in a table which is no longer
+the head is reported stale and re-driven rather than counted; the two together keep one key from
+ever being claimed twice.
 Growth carries
 each key into the new table and then seals the slot it came from with a second reserved key, so a
 key reachable through two tables is enumerated once, and a table whose slots are all sealed is
@@ -368,8 +369,8 @@ tasks extend it, and completed matches are handed to rewriting, with work steali
 balance across a frontier whose width is not known in advance.
 
 \item[Job pool:] Tasks are drawn from a per-thread slab rather than allocated, so submitting a task
-performs no call to the global allocator, so the allocation figures of
-Section~\ref{sec:allocation} hold for a workload that submits one task per candidate expansion.
+performs no call to the global allocator, and the allocation figures of
+Section~\ref{sec:allocation} hold for a workload submitting one task per candidate expansion.
 Allocation and same-thread release touch only the owning thread's private free list, with no
 atomic and no contention. Work stealing means a task allocated on one thread is often released on
 another, so a foreign release is pushed onto the owner's separate foreign list by
@@ -447,7 +448,7 @@ The engine's containers are sized from configuration, and a workload may exceed 
 configured ceiling is treated as a distinct outcome from a programmer error: the run returns the
 portion of the evolution that fits, together with a warning naming the limit that was reached,
 rather than raising an exception and discarding the work. Both backends behave identically in this
-respect. Options that a build does not implement are reported the same way, so a caller who
+respect, and options that a build does not implement are reported the same way, so a caller who
 requests one receives the result computed without it and a statement to that effect, rather than
 silently receiving a different computation from the one requested.
 

@@ -1,7 +1,7 @@
 \section{Graph Canonicalization}
 \label{sec:canonicalization}
 
-State deduplication determines how large the explored set becomes: without isomorphism detection, every path to a state contributes a separate vertex, and the number of paths grows super-exponentially on rules that grow their states. Deduplication must be \emph{exact}: two states are the same node if and only if their hypergraphs are isomorphic (vertex relabeling, within-edge order and multiplicity preserved). The exact mode satisfies this requirement using individualization--refinement (IR) alone: it is computed for every state, and its hash serves directly as the deduplication key. Weisfeiler--Leman (WL) is a separate, coarser signature, used by the modes that request a coarser notion of state identity.
+State deduplication determines how large the explored set becomes: without isomorphism detection, every path to a state contributes a separate vertex, and the number of paths grows super-exponentially where rewrites add edges. Deduplication must be \emph{exact}: two states are the same node if and only if their hypergraphs are isomorphic (vertex relabeling, within-edge order and multiplicity preserved). The exact mode satisfies this requirement using individualization--refinement (IR): it is computed for every state, and its hash serves directly as the deduplication key. The modes that request a coarser notion of state identity deduplicate by a content hash.
 
 \subsection{Individualization--Refinement}
 \label{sec:ir}
@@ -15,7 +15,7 @@ A canonicalization $\canon$ maps each hypergraph to a labeled representative suc
 IR proceeds by iterated color refinement to a stable coloring; when refinement leaves a non-singleton cell, it \emph{individualizes} one vertex (assigns it a distinguishing color) and recurses, exploring a search tree of refinements. Automorphisms discovered along the way prune the tree so that symmetric branches are not re-explored, and the lexicographically extremal leaf defines the canonical labeling.
 
 \begin{remark}[Complexity]
-Like nauty, IR is exponential in the worst case and terminates in time polynomial in the state size on instances without large automorphism groups. It gives no polynomial-time guarantee, and we claim none. The worst case is realized on highly symmetric states, which is where the exact mode's cost is concentrated. No cheaper exact alternative is available to substitute for it: Proposition~\ref{prop:wlceiling} bounds what a Weisfeiler--Leman pre-filter can remove, and Section~\ref{sec:benchmarks} reports the two implemented alternatives, one measured slower and one that never fires.
+Like nauty, IR is exponential in the worst case and terminates in time polynomial in the state size on instances without large automorphism groups. It gives no polynomial-time guarantee, and we claim none. The worst case is realized on highly symmetric states, which is where the exact mode's cost is concentrated. No cheaper exact alternative is available to substitute for it: Proposition~\ref{prop:wlceiling} bounds what any sound pre-filter can remove, and Section~\ref{sec:benchmarks} reports the two implemented alternatives, one measured slower and one that never applies.
 \end{remark}
 
 The automorphism generators and edge orbits produced by IR are reused elsewhere in the engine: they define the canonical edge-orbit equivalence used for principled event canonicalization and for exact reconstruction of causal and branchial multiplicities.
@@ -24,21 +24,21 @@ The automorphism generators and edge orbits produced by IR are reused elsewhere 
 
 \paragraph{Symmetric states.} When the automorphism group is nontrivial, IR does not determine a single labeling but a coset of them, and the algorithm's within-cell tie-break selects one representative. That tie-break reads the vertex numbering it was handed. Two conventions for numbering a state's vertices therefore select two different representatives, each internally consistent and both agreeing on the canonical \emph{hash}, while disagreeing about which edge receives which rank. Ranks are what identify consumed and produced edges across a rewrite, so the convention has to be fixed once and shared by every caller rather than chosen locally: measured on the equivalence probe's 4063-state corpus, encounter-order numbering and sorted-unique numbering disagree on 103 states, all of them states with nontrivial automorphisms.
 
-\subsection{The Weisfeiler--Leman Signature}
+\subsection{A Ceiling on Pre-Filters}
 \label{sec:wl}
 
-The engine also computes a 1-dimensional Weisfeiler--Leman (1-WL) color-refinement hash~\cite{weisfeiler1968reduction,shervashidze2011weisfeiler}. WL is a sound but incomplete invariant: isomorphic states always receive the same WL hash, while certain non-isomorphic states (regular graphs with identical local structure, for instance) collide. It is the identity used by the modes that request a coarser notion of state equality. It is not used by the exact mode, for the reason established in Proposition~\ref{prop:wlceiling}.
+A sound isomorphism invariant cheaper than IR (Weisfeiler--Leman color refinement~\cite{weisfeiler1968reduction,shervashidze2011weisfeiler} is the standard example: polynomial, but provably unable to distinguish certain non-isomorphic graphs) suggests a filter in front of the canonicalizer: hash every state cheaply, and canonicalize only on a repeated hash. Proposition~\ref{prop:wlceiling} bounds what any such filter can save, and the bound is why the exact mode runs IR on every state with no filter in front.
 
-\begin{proposition}[Ceiling on a WL pre-filter]
+\begin{proposition}[Ceiling on a pre-filter]
 \label{prop:wlceiling}
-Let a run produce $R$ raw states falling into $C$ isomorphism classes. Consider deduplication that computes the WL hash of each raw state, and invokes IR only when that hash has been seen before. Then the number of IR invocations is at least $R - C$, so the fraction of IR calls avoided is at most $C/R$, and one WL pass is paid on all $R$ states.
+Let a run produce $R$ raw states falling into $C$ isomorphism classes, and let $f$ be a sound isomorphism invariant: isomorphic states receive equal $f$-values. Consider deduplication that computes $f$ on each raw state, and invokes IR only when the value has been seen before. Then the number of IR invocations is at least $R - C$, so the fraction of IR calls avoided is at most $C/R$, and one $f$-pass is paid on all $R$ states.
 \end{proposition}
 
 \begin{proof}
-WL is isomorphism-invariant, so states in the same class share a WL hash and the number of distinct WL hashes is at most $C$. A state whose WL hash is already present cannot be resolved by WL: equal hashes are consistent both with isomorphism and with a WL collision, so IR is invoked. At most one state per distinct WL hash finds its hash absent, hence at most $C$ states skip IR and at least $R - C$ invoke it.
+Soundness means states in one class share an $f$-value, so the number of distinct values is at most $C$. A state whose value is already present cannot be resolved by $f$: equal values are consistent both with isomorphism and with an $f$-collision, so IR is invoked. At most one state per distinct value finds its value absent, hence at most $C$ states skip IR and at least $R - C$ invoke IR.
 \end{proof}
 
-The bound is only useful with $C/R$ in hand, and that ratio is a property of the rule and the depth. Measured across the rule-type corpus, reported per case beside the event count, since the two must be read together (Table~\ref{tab:crratio}, plotted in Figure~\ref{fig:crratio}):
+The bound is only useful with $C/R$ in hand, and that ratio is a property of the rule and the depth; Table~\ref{tab:crratio} reports it for each corpus case at two depths, and Figure~\ref{fig:crratio} plots the same values.
 
 \begin{table}[htbp]
 \centering
@@ -51,12 +51,13 @@ one. This is the quantity Proposition~\ref{prop:wlceiling} bounds the achievable
 \end{table}
 
 \input{tables/f_crratio_syms}
-\begin{figure*}[htbp]
+\begin{figure}[tb]
 \centering
+\resizebox{\linewidth}{!}{%
 \begin{tikzpicture}
 \begin{axis}[
-    width=0.92\textwidth, height=5.4cm,
-    ybar, bar width=6pt,
+    width=\linewidth, height=4.8cm,
+    ybar, bar width=2.2pt,
     ylabel={$C/R$ (\%)}, ymin=0, ymax=105,
     crsymbolic,
     xtick=data, x tick label style={font=\scriptsize, rotate=20, anchor=east},
@@ -66,43 +67,18 @@ one. This is the quantity Proposition~\ref{prop:wlceiling} bounds the achievable
 ]
 \input{tables/f_crratio}
 \end{axis}
-\end{tikzpicture}
+\end{tikzpicture}}
 \caption{$C/R$, the ceiling of Proposition~\ref{prop:wlceiling} on the fraction of IR invocations a
-Weisfeiler--Leman pre-filter could elide, for each corpus case at two depths. The bar pairs are two
-depth samples per rule and not a continuum, so the figure shows direction rather than a rate. Every
-case that continues to rewrite decreases. A case that does not decrease is one whose two samples
-produced the same class-to-raw ratio, which happens where the rule reaches a fixed point before the
-higher depth: \texttt{self-loop} does so after one event, and its ratio is $100\%$ at both. Values
-as in Table~\ref{tab:crratio}.}
+pre-filter could elide, for each corpus case at two depths. Every case that continues to rewrite
+decreases; a case that does not is one that reaches a fixed point before the higher depth, as
+\texttt{self-loop} does after one event, with a ratio of $100\%$ at both depths. Values as in
+Table~\ref{tab:crratio}.}
 \label{fig:crratio}
-\end{figure*}
+\end{figure}
 
-\noindent For every rule that continues to rewrite, $C/R$ decreases with depth. Reaching the same state along several distinct histories is characteristic of multiway evolution, and each such arrival produces a repeated WL hash that IR must resolve. The cases that retain a high ratio are those reaching a fixed point after one or two steps: \texttt{self-loop} has $C/R = 100\%$ over two raw states and one event. The fraction a filter could elide is therefore largest on the workloads with the least work to elide.
+\noindent For every rule that continues to rewrite, $C/R$ decreases with depth. Reaching the same state along several distinct histories is characteristic of multiway evolution, and each such arrival produces a repeated filter value that IR must resolve. The cases that retain a high ratio are those reaching a fixed point after one or two steps: \texttt{self-loop} has $C/R = 100\%$ over two raw states and one event. The fraction a filter could elide is therefore largest on the workloads with the least work to elide.
 
 Two options require automorphism data: quotient exploration, and the event canonicalization conventions of Section~\ref{sec:event-canon}. Both obtain the edge orbits from the same IR pass, so no second canonicalization is performed.
-
-\begin{algorithm}[htbp]
-\caption{Weisfeiler--Leman Hash}
-\label{alg:wl}
-\begin{algorithmic}[1]
-\Procedure{WLHash}{$\hypergraph$}
-    \State Initialize $c_v^{(0)} \gets \deg(v)$ for all $v$
-    \State $i \gets 0$
-    \Repeat
-        \State $i \gets i + 1$
-        \State \textbf{for} each $v \in V$ \textbf{do}
-        \State \quad $c_v^{(i)} \gets \hash(c_v^{(i-1)}, \text{multiset}\{c_u^{(i-1)} : u \in N(v)\})$
-    \Until{$\{c_v^{(i)}\} = \{c_v^{(i-1)}\}$} \Comment{partition stable}
-    \State \Return $\hash(\text{sorted}(\{c_v^{(i)} : v \in V\}))$
-\EndProcedure
-\end{algorithmic}
-\end{algorithm}
-
-\begin{proposition}[WL Complexity]
-Algorithm~\ref{alg:wl} gives the refinement. 1-WL requires $\BigO(k \cdot |E|)$ time per refinement round for colours of size $k$, with at most $|V|$ rounds, so $\BigO(|V| \cdot k \cdot |E|)$ overall (Appendix~\ref{app:complexity}).
-\end{proposition}
-
-This polynomial bound is why WL remains available for the coarser modes. It is not an alternative canonicalizer: where exactness is required, IR (Section~\ref{sec:ir}) is the only identity used.
 
 \subsection{State Canonicalization Modes}
 

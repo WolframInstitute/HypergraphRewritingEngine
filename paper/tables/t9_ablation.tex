@@ -2,13 +2,12 @@
 % commit ca4a52b | measured on AMD EPYC 9174F 16-Core Processor, 503 GB RAM, Linux 6.8.0-138-generic | load at start 2.77/5.43 (1m/15m) | source: tools/sampling_cost_smoke.cpp
 {\footnotesize\setlength{\tabcolsep}{4pt}%
 \resizebox{\ifdim\width>\linewidth\linewidth\else\width\fi}{!}{%
-\begin{tabular}{lllrlrl}
+\begin{tabular}{lllrlr}
 \toprule
-Contribution & Arm A & A ms & Arm B & B ms & Ratio & Same answer \\
+Contribution & Arm A & A ms & Arm B & B ms & Ratio \\
 \midrule
-Match forwarding, one-edge LHS & on & 70.7 & decided off & 61.0 & 1.16 & yes \\
-Match forwarding, two-edge LHS & off & 35.6 & decided on & 39.1 & 0.91 & yes \\
-State canonicalization & Full (exact) & 39.6 & Automatic (hash) & 52.8 & 0.75 & yes \\
+Match forwarding, one-edge LHS & on & 70.7 & decided off & 61.0 & 1.16 \\
+Match forwarding, two-edge LHS & off & 35.6 & decided on & 39.1 & 0.91 \\
 \bottomrule
 \end{tabular}
 }}
