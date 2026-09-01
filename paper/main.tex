@@ -267,7 +267,7 @@ while matching.
 \subsection{Device Work Queues and Termination}
 \label{sec:gpu-queues}
 
-The queues of Figure~\ref{fig:megakernel} are bounded lock-free multi-producer, multi-consumer ring
+The device work queues are bounded lock-free multi-producer, multi-consumer ring
 buffers in device memory. Workers are producers and consumers of the same queues (a rewrite
 produces states, which become match tasks), so a single-producer structure would not serve, and a
 bounded one is required because device memory is reserved in advance.
