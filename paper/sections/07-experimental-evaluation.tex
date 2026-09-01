@@ -297,9 +297,8 @@ they match, an index scan against a join, does not separate their scaling once e
 comparable work; what governs both is the cross-domain term of
 Section~\ref{sec:benchmarks}'s memory analysis, which the every-thread-count sweep locates at
 the first step that opens a second L3 domain. The decline is not thread setup: both serial
-points are seconds, not milliseconds. The table gives the wall times behind the size axis of
-Figure~\ref{fig:lhs-scaling}; Section~\ref{sec:lhs-space} sweeps the same axis at four sizes
-and two further properties of the left-hand side.
+points are seconds, not milliseconds. Section~\ref{sec:lhs-space} sweeps the same size axis at
+four sizes and greater depths, together with two further properties of the left-hand side.
 
 \begin{table}[htbp]
 \centering
@@ -328,36 +327,59 @@ independent properties, and each changes the matching problem in a different way
       state size for two components, and worse for more.
 \end{itemize}
 
-Figure~\ref{fig:lhs-scaling} sweeps each axis separately, and the result on the first axis runs
-opposite to the intuition that a larger pattern is harder to parallelize. Parallel efficiency at
-32 threads \emph{rises} monotonically with left-hand side size: $0.15$, $0.49$, $0.67$, $0.73$
-for one, two, three and four edges. The one-edge rule is the worst-scaling shape measured, and it
-is not scaling badly for want of work: its serial time, $17.9$\,s, is the largest of the four
-chain sizes, against $5.7$, $10.3$ and $12.7$\,s for two, three and four edges.
-(Table~\ref{tab:t12-shapes} sweeps two different rules at different depths, so its serial
-column is not comparable with these.) A one-edge pattern binds one edge per match, so the work
-between two synchronizations is small and the fixed cost of publishing a state dominates; each
-further edge adds join work per match without adding a synchronization.
+Figure~\ref{fig:time-corpus} gives the measured wall times for the ten timed workloads of the
+sweep at every thread count, each workload at the deepest depth whose single-thread run fits the
+sweep's per-point budget; Figure~\ref{fig:lhs-scaling} normalizes the same measurements into
+parallel efficiency along each axis. Every curve in Figure~\ref{fig:time-corpus} decreases
+monotonically through 32 threads, and the gains concentrate below sixteen: the step from one
+thread to eight cuts wall time by a factor between $2.3$ (the star) and $4.5$ (the mixed-arity
+chain), and the step from sixteen threads to 32 shortens it by a further $4.6$ to $23.7$
+percent.
 
-Connectivity shifts the scaling curve further than size does, in both directions: at 32 threads
-the ring reaches $1.06$ and the branching tree $0.96$ (superlinear, because a wider frontier
-lets workers deduplicate states that a serial order would expand), while the path and the hub sit
-at $0.67$ and $0.62$. The disconnected shape reaches $0.06$, seventeen times worse than the ring
-on the same machine and thread count; that is the widest spread in the sweep, so connectivity
-rather than size is the property to state when predicting a rule set's scaling, and the
-disconnected case is this axis taken to its limit. Its cost is also not only the cartesian product:
-on a processor whose cores do not share one last-level cache it is dominated by coherence traffic.
-Measured on the evaluation machine at a fixed two threads, so scheduling and work distribution are
-held constant, the same disconnected workload takes $976$\,ms when both threads share an L3
-instance and $1494$\,ms when they do not, against $1322$\,ms on one thread: two threads that share
-a cache speed it up, two that do not are slower than serial.
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    width=\linewidth, height=6.4cm,
+    xlabel={Worker threads}, ylabel={Wall time (s)},
+    xmode=log, log basis x=2, xtick={1,2,4,8,16,32}, xticklabels={1,2,4,8,16,32},
+    ymode=log, grid=major, grid style={gray!25},
+    legend style={font=\tiny, at={(0.5,-0.24)}, anchor=north, legend columns=2,
+                  draw=none, fill=none, column sep=2pt, inner xsep=1pt},
+    label style={font=\small}, tick label style={font=\scriptsize},
+]
+\input{tables/f_time_corpus}
+\end{axis}
+\end{tikzpicture}
+\caption{Measured wall time against worker count for the ten timed workloads of the sweep, each
+at the depth its legend entry states. Both axes are logarithmic; the legend lists the curves in
+descending order of single-thread time.}
+\label{fig:time-corpus}
+\end{figure}
 
-Edge arity has an asymmetric effect: at a fixed three-edge
-left-hand side, efficiency at 32 threads is $0.67$ at arity two, $1.015$ at arity three and
-$0.777$ for a left-hand side alternating arities two and three. Raising the arity of a path raises
-the overlap between consecutive edges from one vertex to two, which pins a match's orientation
-and removes the second way of binding it; the resulting frontier is narrower per state and
-deduplicates more, which is where the superlinear value comes from.
+The four chain sizes run at a matched depth of seven, so the size axis is a controlled
+comparison. Serial wall time falls with left-hand-side size, $93.9$, $70.5$, $38.5$ and
+$20.0$\,s for one to four edges, tracking the state count at that depth ($18{,}636{,}561$ down
+to $1{,}831{,}446$; Table~\ref{tab:t14-shape-space}): each added edge prunes the search
+further. Parallel efficiency at 32 threads falls in the same order: $0.161$, $0.134$, $0.118$,
+$0.106$. (Table~\ref{tab:t12-shapes} sweeps two different rules at different depths, so its
+columns are not comparable with these.)
+
+At 32 threads the connectivity axis spans $0.087$ to $0.133$: the ring reaches $0.133$, the
+path $0.118$, the branching tree $0.105$, the disconnected shape $0.091$ and the hub $0.087$.
+The disconnected shape's cost is not only the cartesian product its matching enumerates: on a
+processor whose cores do not share one last-level cache it is dominated by coherence traffic.
+Measured on the evaluation machine at a fixed two threads, so scheduling and work distribution
+are held constant, the same disconnected workload takes $976$\,ms when both threads share an L3
+instance and $1494$\,ms when they do not, against $1322$\,ms on one thread: two threads that
+share a cache speed it up, two that do not are slower than serial.
+
+Edge arity gives the widest spread of the three axes: at a three-edge left-hand side,
+efficiency at 32 threads is $0.118$ at arity two, $0.177$ at arity three and $0.276$, the
+highest in the sweep, with arities alternating between two and three (at depths seven, eight
+and thirteen respectively). Raising the arity of a path raises the overlap between consecutive
+edges from one vertex to two, which pins a match's orientation and removes the second way of
+binding it; the resulting frontier is narrower per state and deduplicates more.
 
 \begin{figure}[htbp]
 \centering

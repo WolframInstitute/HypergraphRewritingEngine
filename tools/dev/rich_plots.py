@@ -58,9 +58,11 @@ def num(d, k, default=0.0):
 
 
 # Distinguishable without colour, because the paper is read printed as often as on screen.
+# Eight marks against seven dash patterns: the lengths are coprime, so the (mark, dash) pair
+# is unique for the first 56 curves and a ten-curve figure repeats neither.
 MARKS = ["*", "square*", "triangle*", "diamond*", "pentagon*", "o", "square", "triangle"]
 DASHES = ["solid", "dashed", "dotted", "densely dashed", "loosely dashed",
-          "densely dotted", "dashdotted", "solid"]
+          "densely dotted", "dashdotted"]
 
 
 def curve(i, coords, label):
@@ -112,10 +114,14 @@ def saturated_depths(rows):
 
 
 def scaling_figure(rows, rules, labels, fname, tool, out, metric="eff", sat=frozenset()):
-    """Efficiency or speedup against thread count, one curve per rule.
+    """Efficiency, speedup or raw wall time against thread count, one curve per rule.
 
     The baseline is the SAME rule at one thread, so each curve is normalised by its own serial
-    point and the curves are comparable to each other rather than to a shared constant.
+    point and the curves are comparable to each other rather than to a shared constant. The
+    "time" metric plots the measured wall time itself, in seconds, against a logarithmic time
+    axis: it is the one view in which the whole timed corpus fits on a single pair of axes with
+    every number the sweep measured visible, and each legend entry carries the depth its
+    workload ran at because the timed phase runs each rule at its own deepest in-budget depth.
 
     SATURATED RUNS ARE DROPPED HERE TOO, and the reason is sharper than for the depth plots. A run
     at the container ceiling does a FIXED amount of work whatever depth it was asked for, so its
@@ -126,9 +132,10 @@ def scaling_figure(rows, rules, labels, fname, tool, out, metric="eff", sat=froz
     MAX_SEGMENTS x segment_size. Plotted unfiltered, that reads as an engine that stops scaling.
     """
     body = [pt.provenance(tool)]
-    drawn = 0
+    series = []
     for rule in rules:
         pts = {}
+        depths = set()
         for r in rows:
             if (rule, int(num(r, "steps"))) in sat:
                 continue
@@ -142,23 +149,38 @@ def scaling_figure(rows, rules, labels, fname, tool, out, metric="eff", sat=froz
             # estimate interference cannot inflate.
             if th not in pts or ms < pts[th]:
                 pts[th] = ms
+            depths.add(int(num(r, "steps")))
         if 1 not in pts or len(pts) < 3:
             continue
+        series.append((rule, pts, depths))
+    if metric == "time":
+        # Legend order matches visual order: the slowest serial workload draws first and its
+        # curve sits highest on the time axis.
+        series.sort(key=lambda s: -s[1][1])
+    drawn = 0
+    for rule, pts, depths in series:
         base = pts[1]
         coords = []
         for th in sorted(pts):
-            sp = base / pts[th]
-            coords.append("(%d,%.3f)" % (th, sp if metric == "speedup" else sp / th))
-        body.append(curve(drawn, "".join(coords), labels.get(rule, rule)))
+            if metric == "time":
+                coords.append("(%d,%.3f)" % (th, pts[th] / 1000.0))
+            else:
+                sp = base / pts[th]
+                coords.append("(%d,%.3f)" % (th, sp if metric == "speedup" else sp / th))
+        label = labels.get(rule, rule)
+        if metric == "time" and len(depths) == 1:
+            label += ", depth %d" % depths.pop()
+        body.append(curve(drawn, "".join(coords), label))
         drawn += 1
     if not drawn:
         return 0
-    # The reference the curves are read against, drawn rather than described.
+    # The reference the curves are read against, drawn rather than described. Wall time needs
+    # none: the measurement is its own denominator.
     if metric == "speedup":
         mx = max(int(num(r, "threads", 1)) for r in rows) or 32
         body.append(r"\addplot[gray, thick, no marks, forget plot] coordinates {(1,1)(%d,%d)};"
                     % (mx, mx))
-    else:
+    elif metric == "eff":
         body.append(r"\addplot[gray, thick, no marks, forget plot] coordinates {(1,1)(32,1)};")
     pt.write_raw(fname, "\n".join(body) + "\n")
     return drawn
@@ -279,6 +301,20 @@ ARITY_RULES = ["chain3a2", "chain3a3", "mixed3"]
 ARITY_LABELS = {"chain3a2": "arity 2", "chain3a3": "arity 3",
                 "mixed3": "mixed arity 2/3"}
 
+# THE TIME FIGURE CARRIES THE WHOLE TIMED CORPUS ON ONE AXIS. The per-axis efficiency figures
+# normalise the wall times away; this list exists so the measured times themselves are printed:
+# every timed workload, every thread count, one pair of axes. One naming scheme throughout --
+# connectivity, then size, then arity where it is not two -- and the depth is appended per
+# curve by the "time" metric, because each rule runs at its own deepest in-budget depth.
+ALL_RULES = ["chain1a2", "chain2a2", "chain3a2", "chain4a2", "chain3a3", "mixed3",
+             "star3a2", "tree4a2", "cycle4a2", "disc2a2"]
+ALL_LABELS = {"chain1a2": "chain, 1 edge", "chain2a2": "chain, 2 edges",
+              "chain3a2": "chain, 3 edges", "chain4a2": "chain, 4 edges",
+              "chain3a3": "arity 3, 3 edges",
+              "mixed3": "mixed arity, 3 edges",
+              "star3a2": "star, 3 edges", "tree4a2": "tree, 4 edges",
+              "cycle4a2": "ring, 4 edges", "disc2a2": "disconnected"}
+
 # THE DEPTH PANELS GET THEIR OWN LIST, NOT THE UNION OF THE SCALING LISTS. Concatenating those
 # lists put chain3a2 in twice -- it is the 3-edge point of the size axis AND the path point of
 # the connectivity axis -- so the figure drew it twice under two different names, and it mixed
@@ -332,6 +368,8 @@ def main():
     n += scaling_figure(scale, SIZE_RULES, SIZE_LABELS, "f_eff_size.tex", tool, a.out, sat=sat)
     n += scaling_figure(scale, SHAPE_RULES, SHAPE_LABELS, "f_eff_shape.tex", tool, a.out, sat=sat)
     n += scaling_figure(scale, ARITY_RULES, ARITY_LABELS, "f_eff_arity.tex", tool, a.out, sat=sat)
+    n += scaling_figure(scale, ALL_RULES, ALL_LABELS, "f_time_corpus.tex", tool, a.out,
+                        metric="time", sat=sat)
     n += depth_figure(depth, DEPTH_RULES, DEPTH_LABELS,
                       "f_states_depth.tex", tool, a.out, "states", sat)
     # No branchial-against-depth fragment: f_relations already plots the branchial relation, and
