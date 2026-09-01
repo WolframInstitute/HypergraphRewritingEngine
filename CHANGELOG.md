@@ -1,12 +1,9 @@
 # Changelog
 
-## v1.0.0-rc1 (unreleased)
+## v1.0.0-rc1 (2026-09-01)
 
 User-visible semantic changes since v0.0.1-alpha.6, carried here so the release notes state them:
 
-- `ExplorationProbability` samples **per canonical state**, not per transition.
-- `QuotientInitialStates` defaults to keeping every root, matching the reference `MultiwaySystem`.
-- Quotient exploration expands each canonical state once, **at its shortest depth**.
 - A steered session `Step` (`"From" -> {ids}`) works under `TargetDevice -> "GPU"`; the device
   previously refused it. Both devices report `"Frontier"` in every session reply, resolve the
   selection against it, and put unselected entries back at the depths they were stranded at.
