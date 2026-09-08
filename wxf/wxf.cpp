@@ -31,13 +31,15 @@ size_t Parser::read_varint() {
     size_t shift = 0;
     uint8_t byte;
 
+    // The shift must stay below the width of size_t for the `<<` below to be defined, and that
+    // width is 32 on wasm32 and 64 elsewhere. Seven bits arrive per byte, so a 64-bit size_t
+    // accepts a last byte at shift 63 and a 32-bit one at shift 28; a continuation byte past
+    // that declares a length the platform cannot represent, and is refused.
+    constexpr size_t kMaxShift = sizeof(size_t) * 8 - 1;
+
     do {
         byte = read_byte();
-        // shift must stay < 64 for the `<<` below to be well-defined on size_t.
-        // 10 bytes × 7 bits = 70 bits, so bytes 1..9 cover shifts 0..56 and byte 10
-        // covers shift=63 (producing bit 63). An 11th byte would imply shift=70
-        // which is UB; throw before that happens.
-        if (shift > 63) {
+        if (shift > kMaxShift) {
             throw ParseError("Varint too large", read_position_ - 1);
         }
         value |= (size_t(byte & 0x7F) << shift);
