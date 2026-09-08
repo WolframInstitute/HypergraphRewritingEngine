@@ -320,6 +320,25 @@ static_assert(sizeof(ExpandTaskData) == sizeof(StateId) + sizeof(uint32_t) + siz
 // =============================================================================
 // Tracks child states and their consumed edges so parent can push matches.
 
+// Does a match touch an edge some transition consumed?
+//
+// ONE BODY, asked in three places: ChildInfo and ParentInfo ask it of their own consumed array,
+// and the forwarding walk asks it of the set accumulated along an ancestor chain. The push
+// filter and the forwarding filter have to agree on what "overlaps" means -- a match that
+// passes one and fails the other is either an event that never happens or a match refused at
+// apply -- and they can only be relied on to agree while they are the same function.
+//
+// A linear scan over bounded arrays with no allocation: a match holds at most MAX_PATTERN_EDGES
+// edges and the accumulated set at most MAX_PATTERN_EDGES * 8.
+inline bool edges_intersect(const EdgeId* a, size_t na, const EdgeId* b, size_t nb) {
+    for (size_t i = 0; i < na; ++i) {
+        for (size_t j = 0; j < nb; ++j) {
+            if (a[i] == b[j]) return true;
+        }
+    }
+    return false;
+}
+
 struct ChildInfo {
     StateId child_state{INVALID_ID};
     uint32_t creation_step{0};  // Step at which child was created

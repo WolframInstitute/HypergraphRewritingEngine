@@ -715,18 +715,11 @@ void ParallelEvolutionEngine::forward_matches_from_single_ancestor(
 
     LockFreeList<MatchRecord>* ancestor_matches = *result;
     ancestor_matches->for_each([&](const MatchRecord& ancestor_match) {
-        // Does this match use an edge the path consumed? A linear scan over a bounded array
-        // rather than a set: total_consumed is at most MAX_PATTERN_EDGES * 8 and a match holds
-        // at most MAX_PATTERN_EDGES edges, so the scan is bounded work with no allocation.
-        bool overlaps = false;
-        for (uint8_t i = 0; i < ancestor_match.num_edges() && !overlaps; ++i) {
-            for (uint8_t j = 0; j < total_consumed; ++j) {
-                if (ancestor_match.matched_edges()[i] == accumulated_consumed[j]) {
-                    overlaps = true;
-                    break;
-                }
-            }
-        }
+        // Does this match use an edge the path consumed? The same question the push filter asks
+        // of a single transition's consumed set, so it is the same function.
+        const bool overlaps = edges_intersect(ancestor_match.matched_edges(),
+                                              ancestor_match.num_edges(),
+                                              accumulated_consumed, total_consumed);
 
         if (overlaps) {
             HG_STAT(stats_.mine().matches_invalidated.bump(1));
@@ -2538,12 +2531,7 @@ void ExpandTaskData::to_pattern_order(EdgeId* out) const {
 }
 
 bool ChildInfo::match_overlaps_consumed(const EdgeId* matched_edges, uint8_t num_edges) const {
-    for (uint8_t i = 0; i < num_edges; ++i) {
-        for (uint8_t j = 0; j < num_consumed; ++j) {
-            if (matched_edges[i] == consumed_edges[j]) return true;
-        }
-    }
-    return false;
+    return edges_intersect(matched_edges, num_edges, consumed_edges, num_consumed);
 }
 
 ParentInfo::ParentInfo() : parent_state(INVALID_ID), num_consumed(0) {}
@@ -2551,12 +2539,7 @@ ParentInfo::ParentInfo() : parent_state(INVALID_ID), num_consumed(0) {}
 bool ParentInfo::has_parent() const { return parent_state != INVALID_ID; }
 
 bool ParentInfo::match_overlaps_consumed(const EdgeId* matched_edges, uint8_t num_edges) const {
-    for (uint8_t i = 0; i < num_edges; ++i) {
-        for (uint8_t j = 0; j < num_consumed; ++j) {
-            if (matched_edges[i] == consumed_edges[j]) return true;
-        }
-    }
-    return false;
+    return edges_intersect(matched_edges, num_edges, consumed_edges, num_consumed);
 }
 
 // =============================================================================
