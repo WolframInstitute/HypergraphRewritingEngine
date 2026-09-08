@@ -348,14 +348,31 @@ __device__ AppliedMatch apply_one_match(DeviceState       ds,
     // parent.count - n_consumed + n_produced. Failure to reserve means
     // the per-step state-edge budget is exceeded — report and abort.
     StateEdgeSlice parent_slice = ds.state_edge_slices[m.state_id];
-    uint32_t new_slice_count =
-        parent_slice.count + rule.num_rhs_edges
-        - rule.num_lhs_edges;  // assume all matched edges are in parent (match invariant)
-    uint32_t new_slice_offset =
+    // Widen before subtracting. The match invariant is that every consumed edge is in the
+    // parent slice, which keeps this non-negative; computed in 32 bits, a state that broke it
+    // would wrap to about four billion and reserve that.
+    const uint64_t kept_and_produced =
+        static_cast<uint64_t>(parent_slice.count) + static_cast<uint64_t>(rule.num_rhs_edges);
+    const uint64_t consumed = static_cast<uint64_t>(rule.num_lhs_edges);
+    if (kept_and_produced < consumed) {
+        ds.errors.record(ErrorKind::kStatePoolFull);
+        return AppliedMatch{};
+    }
+    const uint32_t new_slice_count = static_cast<uint32_t>(kept_and_produced - consumed);
+    const uint32_t new_slice_offset =
         (new_slice_count == 0) ? 0u
         : atomicAdd(ds.state_edge_ids_counter, new_slice_count);
     if (new_slice_count > 0 &&
-        new_slice_offset + new_slice_count > ds.state_edge_ids_capacity) {
+        static_cast<uint64_t>(new_slice_offset) + new_slice_count
+            > ds.state_edge_ids_capacity) {
+        // CLAMP THE COUNTER, because the add above happens before this check and is never
+        // rolled back: every failing reservation still advances it. Left alone it climbs
+        // through the whole run and eventually past 2^32, where it wraps and hands a later
+        // reservation a small offset that passes this bound and writes outside the allocation.
+        // Pulling it back to the ceiling on the failing path bounds the excess to what is in
+        // flight, so it cannot reach the wrap. AtomicPool::claim_n widens the same comparison
+        // for the same reason.
+        atomicMin(ds.state_edge_ids_counter, ds.state_edge_ids_capacity);
         ds.errors.record(ErrorKind::kStatePoolFull);
         return AppliedMatch{};
     }
