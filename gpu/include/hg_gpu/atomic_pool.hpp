@@ -21,9 +21,9 @@ namespace gpu {
 // EngineConfig before launch, so this fires when the workload outgrew that estimate;
 // the device records the overflow and the host retries at a larger size.
 //
-// The counter is bumped BEFORE exhaustion is reported, so under overflow it keeps rising past
-// capacity and is NOT a count of valid entries. Ask size() for that; reading the counter raw is
-// how a caller ends up iterating past the allocation.
+// The counter is bumped BEFORE exhaustion is reported, so under overflow it stands above the
+// number of valid entries by whatever was in flight, and is NOT a count of them. Ask size() for
+// that; reading the counter raw is how a caller ends up iterating past the allocation.
 template <typename T>
 class Pool {
 public:
@@ -34,14 +34,24 @@ public:
         uint32_t* counter;
         uint32_t  capacity;
 
+        // THE COUNTER IS CLAMPED WHEN A CLAIM FAILS, and that is what keeps the bound sound
+        // rather than merely tidy. The add lands before exhaustion is reported and is never
+        // rolled back, so an overflowing run drives the counter upward for as long as it lasts;
+        // left to climb it reaches 2^32, wraps, and returns a small index that passes the test
+        // below, handing a caller a slot outside the allocation. Pulling it back to capacity on
+        // the failing path bounds the excess to what is in flight, so the wrap is unreachable.
         __device__ uint32_t claim() {
             uint32_t idx = atomicAdd(counter, 1u);
-            return (idx < capacity) ? idx : kInvalid;
+            if (idx < capacity) return idx;
+            atomicMin(counter, capacity);
+            return kInvalid;
         }
 
         __device__ uint32_t claim_n(uint32_t n) {
             uint32_t idx = atomicAdd(counter, n);
-            return ((uint64_t)idx + n <= capacity) ? idx : kInvalid;
+            if ((uint64_t)idx + n <= capacity) return idx;
+            atomicMin(counter, capacity);
+            return kInvalid;
         }
 
         // How many entries are VALID. Not *counter: claim() bumps the counter unconditionally
