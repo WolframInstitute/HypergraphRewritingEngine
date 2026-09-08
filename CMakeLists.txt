@@ -376,7 +376,7 @@ target_link_libraries(ir_core_phase_probe PRIVATE hypergraph)
 # a real cost that survived precisely because its instrument was unregistered.
 #
 # All 48 below compile against the current tree. The one that does not, ir_incremental_probe.cpp,
-# is deleted in this commit; the project's own CLAUDE.md already named it as broken.
+# is deleted in this commit; the project's own developer notes already named it as broken.
 #
 # Registered with EXCLUDE_FROM_ALL: they build under `cmake --build . --target <name>` and on
 # `--target probes`, but are not on the default build, so the ordinary path pays nothing while

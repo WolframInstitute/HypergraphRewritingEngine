@@ -11,7 +11,7 @@ cd "$(dirname "$0")/.."
 ROOT=$PWD
 LABEL=${1:-run}
 REPS=${2:-5}
-OUT=${PERF_AB_OUT:-/tmp/claude-1000/-home-fly-my-projects-efficient-rewriting-final/a60043bf-6f3b-4908-8552-e3b0f6cc7105/scratchpad}
+OUT=${PERF_AB_OUT:-$ROOT/build/perf_ab}
 mkdir -p "$OUT"
 
 cmake --build build --target hypergraph -j32 >/dev/null

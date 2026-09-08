@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build with a hard ceiling on what the build may consume.
 #
-# This machine is shared with the user's tmux session, their work, and other Claude sessions.
+# This machine is shared with the user's tmux session, their work, and other agent sessions.
 # A runaway build does not merely take a long time -- if it exhausts memory and swap, the whole
 # environment goes down with it. That has already nearly happened once, at -j24.
 #
