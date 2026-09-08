@@ -84,8 +84,10 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
         ++rule_index;
     }
 
-    // Initial-state vertices are LABELS, not variables: any int64 (negative included) is
-    // remapped to a dense id, exactly as the CPU FFI's per-state canonical numbering does.
+    // Initial-state vertices are LABELS, not variables, and are remapped to dense ids exactly as
+    // the CPU FFI's per-state canonical numbering does. Every one of them is non-negative:
+    // run_rewriting_core refuses a negative vertex before it chooses a device, so the two paths
+    // cannot answer one request differently.
     for (const auto& state : job.initial_states) {
         std::unordered_map<int64_t, hg_gpu::VertexId> vmap;
         hg_gpu::VertexId next = 0;

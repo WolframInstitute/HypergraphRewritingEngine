@@ -612,11 +612,9 @@ static void configure_and_evolve(hgffi::ParsedJob& req, hypergraph::Hypergraph& 
         for (const auto& edge : state_raw) {
             std::vector<hypergraph::VertexId> edge_vertices;
             for (int64_t v : edge) {
-                // An initial-state vertex is a LABEL, not a pattern variable: every int64 the
-                // caller writes, negative included, names a vertex and is remapped to a dense
-                // id. The sign carries meaning only on the rule side, where a negative is a
-                // variable and is refused. The device applies this same rule
-                // (hg_gpu_backend.cpp), so both paths key one initial state the same way.
+                // Every vertex here is non-negative: run_rewriting_core refuses a negative one
+                // before either device is chosen, so this renumbering sees only labels it can
+                // map.
                 auto it = vertex_map.find(v);
                 if (it == vertex_map.end()) {
                     vertex_map[v] = next_vertex;
@@ -704,6 +702,26 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
     try {
         hgffi::ParsedJob req;
         parse_job(wxf_bytes, host, req);
+
+        // A NEGATIVE VERTEX IS REFUSED WHEREVER IT APPEARS, and this is the one place that
+        // decides it for both devices: the CPU path renumbers req.initial_states_raw itself and
+        // the GPU job holds a reference to the same vectors, so a check in either alone lets the
+        // other answer differently for one request. The rule parser refuses a negative on its
+        // own side, and an initial state is held to the same convention rather than a second
+        // one. Silently dropping such a vertex evolves a hypergraph the caller did not write.
+        for (size_t si = 0; si < req.initial_states_raw.size(); ++si) {
+            const auto& state = req.initial_states_raw[si];
+            for (size_t ei = 0; ei < state.size(); ++ei) {
+                for (int64_t v : state[ei]) {
+                    if (v < 0) {
+                        throw std::runtime_error(
+                            std::string("initial state ") + std::to_string(si) + " edge " +
+                            std::to_string(ei) + " has a negative vertex " + std::to_string(v) +
+                            "; vertices name themselves and a negative names nothing");
+                    }
+                }
+            }
+        }
 
 
         // Close needs nothing else from the job: it names a handle and releases what that handle

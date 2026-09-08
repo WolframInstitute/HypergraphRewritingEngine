@@ -436,25 +436,30 @@ TEST(WxfSerializationPin, SessionEnvelopeIsOptionalAndNonVerbsAreRefused) {
 // dropped them evolved a different hypergraph from the one the caller wrote -- {{1,-2},{3,4}}
 // became a one-edge plus a two-edge state -- and answered without complaint, while the same
 // job on the device answered for the state as written.
-TEST(WxfSerializationPin, InitialStateLabelsAreOpaqueToTheirSign) {
+TEST(WxfSerializationPin, ANegativeInitialStateVertexIsRefused) {
     HostBridge host;
-    const StateList negative_seed = {{{-1, -2}, {-2, -3}}};
+    const std::vector<std::string> props = {"NumStates", "NumEvents", "NumCausalEdges"};
 
-    const auto positive = run_rewriting_core(
-        build_input_requesting(3, "Evolve", {"NumStates", "NumEvents", "NumCausalEdges"},
-                               0, true, false, kSeed), host);
-    const auto negative = run_rewriting_core(
-        build_input_requesting(3, "Evolve", {"NumStates", "NumEvents", "NumCausalEdges"},
-                               0, true, false, negative_seed), host);
-    ASSERT_FALSE(positive.empty());
-    ASSERT_FALSE(negative.empty());
+    // Refused wherever it sits: alone in an edge, beside a non-negative vertex, and in a state
+    // whose other edges are well formed. Dropping such a vertex instead evolves a hypergraph the
+    // caller did not write -- {{1,-2},{3,4}} becomes a one-edge plus a two-edge state -- and an
+    // all-negative state leaves nothing to evolve and returns an empty answer with no error.
+    const StateList all_negative = {{{-1, -2}, {-2, -3}}};
+    const StateList one_negative = {{{1, -2}, {3, 4}}};
+    const StateList negative_late = {{{1, 2}, {2, 3}, {3, -1}}};
 
-    for (const char* key : {"NumStates", "NumEvents", "NumCausalEdges"}) {
-        EXPECT_EQ(read_int_key(negative, key), read_int_key(positive, key))
-            << key << " differs between one initial state and its relabelling by negation, so "
-            << "the sign of a vertex label changed which hypergraph was evolved";
+    for (const StateList& seed : {all_negative, one_negative, negative_late}) {
+        EXPECT_THROW(run_rewriting_core(
+                         build_input_requesting(3, "Evolve", props, 0, true, false, seed), host),
+                     std::runtime_error);
     }
-    EXPECT_GT(read_int_key(positive, "NumStates"), 1);
+
+    // The same shape with every vertex non-negative still evolves, so what is refused is the
+    // sign and not the shape.
+    const auto ok = run_rewriting_core(
+        build_input_requesting(3, "Evolve", props, 0, true, false, kSeed), host);
+    ASSERT_FALSE(ok.empty());
+    EXPECT_GT(read_int_key(ok, "NumStates"), 1);
 }
 
 TEST(WxfSerializationPin, AskingForLessDoesNotAnswerLess) {
