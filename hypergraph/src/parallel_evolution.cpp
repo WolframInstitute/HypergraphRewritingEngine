@@ -463,7 +463,7 @@ void ParallelEvolutionEngine::register_child_with_parent(
 
 void ParallelEvolutionEngine::note_late_arrival(uint64_t match_hash) {
     if (validate_match_forwarding_) {
-        auto missing = missing_match_hashes_.lookup(match_hash);
+        auto missing = missing_match_hashes_.lookup(missing_match_key(match_hash));
         if (missing.has_value()) {
             HG_STAT(late_arrivals_.fetch_add(1, std::memory_order_relaxed));
         }
@@ -2074,7 +2074,7 @@ void ParallelEvolutionEngine::execute_match_task(
                     MatchRecord* stable = hg_->arena().template create<MatchRecord>();
                     stable->core = core_copy;
                     stable->source_state = state;
-                    missing_match_hashes_.insert_if_absent(h, stable);
+                    missing_match_hashes_.insert_if_absent(missing_match_key(h), stable);
                 }
             };
             for (uint16_t r = 0; r < rules_.size(); ++r) {
@@ -2859,7 +2859,7 @@ void ParallelEvolutionEngine::validate_state_at_drain(StateId state) {
         MatchRecord* stable = hg_->arena().template create<MatchRecord>();
         stable->core = core_copy;
         stable->source_state = state;
-        if (!missing_match_hashes_.insert_if_absent(h, stable).second) return;
+        if (!missing_match_hashes_.insert_if_absent(missing_match_key(h), stable).second) return;
 #if HG_ENGINE_STATS
         const size_t slot = drain_probe_count_.fetch_add(1, std::memory_order_acq_rel);
         if (slot < kDrainProbes) {

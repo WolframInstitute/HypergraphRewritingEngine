@@ -83,7 +83,7 @@ HG_HD inline uint64_t qc_rkey(uint64_t state_hash, uint32_t depth) {
 HG_HD inline uint64_t qc_seen_key(uint64_t key, uint32_t producer) {
     uint64_t k = key ^ (static_cast<uint64_t>(producer) + 0x9e3779b97f4a7c15ULL);
     k *= FNV_PRIME;
-    return (k == 0 || k == ~uint64_t(0)) ? 1 : k;
+    return avoid_reserved_keys(k);
 }
 
 // One canonical transition's dedup signature, over (from, to, rule, consumed orbits, survivor
@@ -117,7 +117,7 @@ HG_HD inline uint64_t qc_transition_sig(uint64_t from, uint64_t to, uint32_t rul
         sig = fnv_hash(sig, survivors[i] >> 32);
         sig = fnv_hash(sig, survivors[i] & 0xFFFFFFFFu);
     }
-    return (sig == 0 || sig == ~uint64_t(0)) ? 1 : sig;
+    return avoid_reserved_keys(sig);
 }
 
 // The edges an event carries across unchanged -- every edge of its output state it did not

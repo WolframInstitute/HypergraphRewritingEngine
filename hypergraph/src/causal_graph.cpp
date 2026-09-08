@@ -211,14 +211,12 @@ void CausalGraph::add_causal_edge(EventId producer, EventId consumer, EdgeId edg
         }
     }
 
-    uint64_t triple_key = 14695981039346656037ULL;
-    triple_key ^= producer;
-    triple_key *= 1099511628211ULL;
-    triple_key ^= consumer;
-    triple_key *= 1099511628211ULL;
-    triple_key ^= edge;
-    triple_key *= 1099511628211ULL;
-    if (triple_key == 0) triple_key = 1;   // never the set's EMPTY sentinel
+    uint64_t triple_key = hgcommon::FNV_OFFSET;
+    triple_key = hgcommon::fnv_hash(triple_key, producer);
+    triple_key = hgcommon::fnv_hash(triple_key, consumer);
+    triple_key = hgcommon::fnv_hash(triple_key, edge);
+    // The set reserves 0 and ~0 and refuses either from a worker thread.
+    triple_key = hgcommon::avoid_reserved_keys(triple_key);
 
     if (seen_causal_triples_.insert(triple_key)) {
         causal_edges_.push(CausalEdge(producer, consumer, edge), *arena_);

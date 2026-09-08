@@ -81,7 +81,7 @@ HG_HD inline uint64_t qr_apply_key(uint32_t instance, uint32_t match) {
     uint64_t k = FNV_OFFSET;
     k ^= instance; k *= FNV_PRIME;
     k ^= match;    k *= FNV_PRIME;
-    return (k == 0 || k == ~uint64_t(0)) ? 1 : k;
+    return avoid_reserved_keys(k);
 }
 
 // The event's CONTENT triple. Isomorphism-invariant and schedule-independent, so it is the
@@ -146,7 +146,7 @@ HG_HD uint32_t qr_apply(Ctx& c, const typename Ctx::Instance& inst,
         uint64_t csig = event_signature(c.keys(), state_hash, m.to_hash, out_step, m.rule,
                                         m.consumed_ptr(), static_cast<uint8_t>(m.num_consumed),
                                         m.produced_ptr(), static_cast<uint8_t>(m.num_produced));
-        if (csig == 0 || csig == ~uint64_t(0)) csig = 1;
+        csig = avoid_reserved_keys(csig);
         c.record_runsig(ev, csig);
     }
 

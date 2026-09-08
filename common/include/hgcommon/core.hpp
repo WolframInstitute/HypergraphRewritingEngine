@@ -128,6 +128,16 @@ HG_HD inline uint64_t fnv_hash(uint64_t h, uint64_t value) {
     return h;
 }
 
+// The last step of building a key for ConcurrentMap or ConcurrentKeySet.
+//
+// Both reserve 0 and ~0 -- one for an empty slot, the other for a claim in flight or a slot
+// already carried forward -- and both refuse a key equal to either, from a worker thread, where
+// the refusal stops the run. A hash lands on one of the two once in 2^63, so the guard belongs
+// wherever a key is minted rather than at the sites that happen to have been considered.
+HG_HD inline uint64_t avoid_reserved_keys(uint64_t k) {
+    return (k == 0 || k == ~uint64_t(0)) ? 1 : k;
+}
+
 // splitmix64 finalizer — strong avalanche, so a commutative SUM of these over a
 // multiset is an order-independent, collision-resistant hash (used by WL folds).
 HG_HD inline uint64_t splitmix64(uint64_t z) {

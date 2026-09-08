@@ -655,6 +655,13 @@ private:
     // Lazily sized: the validator (validate_match_forwarding_) is the only writer, so a run
     // without it allocates nothing here, and one with it grows the table as it fills.
     ConcurrentMap<uint64_t, const MatchRecord*> missing_match_hashes_;
+
+    // Keyed on a match hash rather than on a dense id, so it cannot take a reserved band the
+    // way the maps above do: a hash reaches 1<<63 as readily as it reaches 0. The key is nudged
+    // instead, and every site that inserts or looks up goes through this so the three agree.
+    static uint64_t missing_match_key(uint64_t match_hash) {
+        return hgcommon::avoid_reserved_keys(match_hash);
+    }
     std::atomic<size_t> late_arrivals_{0};  // Matches that arrived after validation
 
     // Job system

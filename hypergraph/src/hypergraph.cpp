@@ -280,7 +280,7 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
     }
     // Any mode whose key hashes to 0 would hit the same EMPTY=0 sentinel; nudge it off (mirrors the
     // GPU's h==0?1:h guard). None is already offset above, so this only ever affects a 0-valued hash.
-    if (map_key == 0) map_key = 1;
+    map_key = hgcommon::avoid_reserved_keys(map_key);
     // create_state has already published new_sid, so another thread can be reading this
     // state's canonical_hash (get_or_compute_canonical_hash, get_canonical_state_for_event)
     // while this store runs. Both sides go through atomic_ref: the store carries the
@@ -1186,7 +1186,7 @@ bool Hypergraph::qc_frame_slots(uint64_t state_hash, StateId s, const EdgeOrbitT
 void Hypergraph::qc_check_frame_stable(StateId s, const uint32_t* slots, uint32_t n) {
     uint64_t h = hgcommon::FNV_OFFSET;
     for (uint32_t i = 0; i < n; ++i) h = hgcommon::fnv_hash(h, slots[i]);
-    h = h ? h : 1;
+    h = hgcommon::avoid_reserved_keys(h);
     auto r = qc_frame_sig_.insert_if_absent(static_cast<uint64_t>(s) + 1, h);
     if (!r.second && r.first != h) HG_STAT(qc_frame_disagree_.fetch_add(1, std::memory_order_relaxed));
 }
