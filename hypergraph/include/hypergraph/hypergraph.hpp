@@ -588,7 +588,7 @@ public:
     // Create a new edge
     EdgeId create_edge(
         const VertexId* vertices,
-        uint8_t arity,
+        size_t requested_arity,
         EventId creator_event = INVALID_ID,
         uint32_t step = 0
     );
@@ -1333,7 +1333,12 @@ public:
     // This synthetic event connects the empty genesis state to the initial state.
     // It "produces" all edges in the initial state, enabling causal tracking from gen 0.
     // Returns the genesis event ID.
-    EventId create_genesis_event(StateId initial_state, const EdgeId* edges, uint8_t num_edges);
+    // The largest initial state a genesis event can describe: it produces every initial edge
+    // and Event::num_produced is one byte wide.
+    static constexpr size_t MAX_GENESIS_EDGES = 255;
+
+    EventId create_genesis_event(StateId initial_state, const EdgeId* edges,
+                                 size_t requested_num_edges);
 
     // Register event for branchial tracking
     // When event canonicalization is enabled, uses edge equivalence for overlap detection

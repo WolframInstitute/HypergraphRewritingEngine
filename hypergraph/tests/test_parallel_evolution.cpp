@@ -242,6 +242,35 @@ TEST(EvolutionBounds, CreateEdge_AtMaxArity_Succeeds) {
     EXPECT_NO_THROW(hg.create_edge(at_max, MAX_ARITY));
 }
 
+// The arity the guard reads must be the arity the caller counted. A count that is a multiple
+// of 256 is the case a byte-wide parameter cannot represent: 256 presents as 0 and 260 as 4,
+// both of which are at or under MAX_ARITY and would be accepted.
+TEST(EvolutionBounds, CreateEdge_ArityMultipleOf256_Throws) {
+    Hypergraph hg;
+    std::vector<VertexId> v(260, 0);
+    EXPECT_THROW(hg.create_edge(v.data(), v.size()), std::length_error);
+    std::vector<VertexId> exactly_256(256, 0);
+    EXPECT_THROW(hg.create_edge(exactly_256.data(), exactly_256.size()), std::length_error);
+}
+
+// A genesis event produces every initial edge and Event::num_produced is one byte, so a state
+// past that bound is refused. Truncating the count instead registers a producer for none of
+// the edges and reports no error, which reads downstream as a run with fewer causal edges.
+TEST(EvolutionBounds, CreateGenesisEvent_PastEventWidth_Throws) {
+    Hypergraph hg;
+    std::vector<EdgeId> edges;
+    for (size_t i = 0; i < Hypergraph::MAX_GENESIS_EDGES + 1; ++i) {
+        VertexId pair[2] = {static_cast<VertexId>(2 * i), static_cast<VertexId>(2 * i + 1)};
+        edges.push_back(hg.create_edge(pair, 2));
+    }
+    SparseBitset all;
+    for (EdgeId e : edges) all.set(e, hg.arena());
+    auto [canonical, raw, was_new] =
+        hg.create_or_get_canonical_state(std::move(all), 0, INVALID_ID);
+    EXPECT_THROW(hg.create_genesis_event(raw, edges.data(), edges.size()), std::length_error);
+    EXPECT_NO_THROW(hg.create_genesis_event(raw, edges.data(), Hypergraph::MAX_GENESIS_EDGES));
+}
+
 TEST(EvolutionBounds, PatternEdge_InitList_OverMaxArity_Throws) {
     EXPECT_THROW(
         (PatternEdge{0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16}),

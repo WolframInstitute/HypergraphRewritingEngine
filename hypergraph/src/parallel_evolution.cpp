@@ -92,7 +92,7 @@ void ParallelEvolutionEngine::evolve(
     // Create initial state
     std::vector<EdgeId> edge_ids;
     for (const auto& edge : initial_edges) {
-        EdgeId eid = hg_->create_edge(edge.data(), static_cast<uint8_t>(edge.size()));
+        EdgeId eid = hg_->create_edge(edge.data(), edge.size());
         edge_ids.push_back(eid);
 
         // Track max vertex ID to ensure fresh vertices don't collide
@@ -143,7 +143,7 @@ void ParallelEvolutionEngine::evolve(
         [[maybe_unused]] EventId genesis_event = hg_->create_genesis_event(
             raw_state,
             edge_ids.data(),
-            static_cast<uint8_t>(edge_ids.size())
+            edge_ids.size()
         );
 
         // Emit visualization event for the genesis event
@@ -156,7 +156,7 @@ void ParallelEvolutionEngine::evolve(
             genesis_event,  // event_id (raw)
             genesis_event,  // canonical_event_id (same as raw for genesis)
             0,              // destroyed edges (none)
-            static_cast<uint8_t>(edge_ids.size())  // created edges
+            edge_ids.size()  // created edges
         );
 #endif
     }
@@ -278,7 +278,7 @@ StateId ParallelEvolutionEngine::create_initial_state_only(
     // Create edges
     std::vector<EdgeId> edge_ids;
     for (const auto& edge : edges) {
-        EdgeId eid = hg_->create_edge(edge.data(), static_cast<uint8_t>(edge.size()));
+        EdgeId eid = hg_->create_edge(edge.data(), edge.size());
         edge_ids.push_back(eid);
         for (VertexId v : edge) {
             hg_->reserve_vertices(v);
@@ -296,7 +296,7 @@ StateId ParallelEvolutionEngine::create_initial_state_only(
 
     // Create genesis event if enabled
     if (enable_genesis_events_) {
-        hg_->create_genesis_event(raw_state, edge_ids.data(), static_cast<uint8_t>(edge_ids.size()));
+        hg_->create_genesis_event(raw_state, edge_ids.data(), edge_ids.size());
     }
 
     // Mark as seen but do NOT submit match task
@@ -311,7 +311,7 @@ StateId ParallelEvolutionEngine::create_and_register_initial_state(
     // Create edges
     std::vector<EdgeId> edge_ids;
     for (const auto& edge : edges) {
-        EdgeId eid = hg_->create_edge(edge.data(), static_cast<uint8_t>(edge.size()));
+        EdgeId eid = hg_->create_edge(edge.data(), edge.size());
         edge_ids.push_back(eid);
         for (VertexId v : edge) {
             hg_->reserve_vertices(v);
@@ -329,7 +329,7 @@ StateId ParallelEvolutionEngine::create_and_register_initial_state(
 
     // Create genesis event if enabled
     if (enable_genesis_events_) {
-        hg_->create_genesis_event(raw_state, edge_ids.data(), static_cast<uint8_t>(edge_ids.size()));
+        hg_->create_genesis_event(raw_state, edge_ids.data(), edge_ids.size());
     }
 
     // Seed the quotient causal reconstruction at this root (depth 0). The reconstruction runs

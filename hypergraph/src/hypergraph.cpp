@@ -24,15 +24,20 @@ namespace engine {
 
 EdgeId Hypergraph::create_edge(
     const VertexId* vertices,
-    uint8_t arity,
+    size_t requested_arity,
     EventId creator_event,
     uint32_t step
 ) {
     // Downstream code (pattern matcher, EdgeSignature) uses fixed-size MAX_ARITY
     // buffers on the stack. Reject over-arity edges rather than silently corrupt.
-    if (arity > MAX_ARITY) {
+    //
+    // The parameter is wide enough to hold whatever the caller counted: a caller that
+    // narrowed to the storage width first would present 260 vertices as 4 and pass a check
+    // MAX_ARITY makes on the true count.
+    if (requested_arity > MAX_ARITY) {
         throw std::length_error("Hypergraph::create_edge: arity exceeds MAX_ARITY");
     }
+    const uint8_t arity = static_cast<uint8_t>(requested_arity);
 
     EdgeId eid = counters_.alloc_edge();
 
@@ -594,7 +599,21 @@ Hypergraph::CreateEventResult Hypergraph::create_event(
     return {eid, canonical_eid, is_canonical};
 }
 
-EventId Hypergraph::create_genesis_event(StateId initial_state, const EdgeId* edges, uint8_t num_edges) {
+EventId Hypergraph::create_genesis_event(StateId initial_state, const EdgeId* edges,
+                                         size_t requested_num_edges) {
+    // A genesis event produces every initial edge, and Event::num_produced is one byte, so
+    // 255 is the largest initial state this event can describe. The count arrives at full
+    // width and is checked here: narrowing it at the call site would present a 256-edge state
+    // as zero, and the event would then register a producer for none of its edges while the
+    // run reported no error.
+    if (requested_num_edges > MAX_GENESIS_EDGES) {
+        throw std::length_error(
+            "Hypergraph::create_genesis_event: an initial state of more than "
+            "255 edges cannot be described by a genesis event; evolve with "
+            "genesis events disabled");
+    }
+    const uint8_t num_edges = static_cast<uint8_t>(requested_num_edges);
+
     // Ensure genesis state exists
     StateId genesis = get_or_create_genesis_state();
 
@@ -661,8 +680,8 @@ EventId Hypergraph::create_genesis_event(StateId initial_state, const EdgeId* ed
 
     // Register this event as the producer of all initial edges, keyed by the initial
     // state's canonical edge identities (the same keys consumers of those edges will mint).
-    // num_edges is a uint8_t, so a 256-slot buffer holds every initial edge without a cap.
-    CanonicalEdgeKey init_keys[256];
+    // num_edges is bounded by MAX_GENESIS_EDGES above, so the buffer holds every initial edge.
+    CanonicalEdgeKey init_keys[MAX_GENESIS_EDGES + 1];
     causal_edge_keys(initial_state, edges, num_edges, init_keys);
     for (uint8_t i = 0; i < num_edges; ++i) {
         set_edge_producer(init_keys[i], eid, edges[i]);
