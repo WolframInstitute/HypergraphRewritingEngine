@@ -246,7 +246,8 @@ const char* const kIdentityModes[] = {"None", "Automatic", "Full"};
 std::vector<uint8_t> build_input_requesting(int64_t steps, const std::string& op,
                                             const std::vector<std::string>& requested,
                                             int64_t session = 0, bool with_rules = true,
-                                            bool quotient = false) {
+                                            bool quotient = false,
+                                            const StateList& seed = kSeed) {
     wxf::Writer w;
     w.write_header();
 
@@ -255,7 +256,7 @@ std::vector<uint8_t> build_input_requesting(int64_t steps, const std::string& op
 
     w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
     w.write(std::string("InitialStates"));
-    w.write(kSeed);
+    w.write(seed);
 
     if (with_rules) {
         w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
@@ -428,6 +429,34 @@ TEST(WxfSerializationPin, SessionEnvelopeIsOptionalAndNonVerbsAreRefused) {
 // engine cycles by RecordSet's own measurement. A derivation that turns it off for a request
 // that needed it would return a smaller answer, not a slower one, and the counts are where that
 // shows. Asked narrowly or asked broadly, the same question has the same answer.
+// AN INITIAL-STATE VERTEX IS A LABEL, AND A LABEL'S SIGN CARRIES NO MEANING.
+//
+// Negative integers are refused on the rule side, where they would be pattern variables, and
+// the device remaps them on the initial-state side (hg_gpu_backend.cpp). A host that instead
+// dropped them evolved a different hypergraph from the one the caller wrote -- {{1,-2},{3,4}}
+// became a one-edge plus a two-edge state -- and answered without complaint, while the same
+// job on the device answered for the state as written.
+TEST(WxfSerializationPin, InitialStateLabelsAreOpaqueToTheirSign) {
+    HostBridge host;
+    const StateList negative_seed = {{{-1, -2}, {-2, -3}}};
+
+    const auto positive = run_rewriting_core(
+        build_input_requesting(3, "Evolve", {"NumStates", "NumEvents", "NumCausalEdges"},
+                               0, true, false, kSeed), host);
+    const auto negative = run_rewriting_core(
+        build_input_requesting(3, "Evolve", {"NumStates", "NumEvents", "NumCausalEdges"},
+                               0, true, false, negative_seed), host);
+    ASSERT_FALSE(positive.empty());
+    ASSERT_FALSE(negative.empty());
+
+    for (const char* key : {"NumStates", "NumEvents", "NumCausalEdges"}) {
+        EXPECT_EQ(read_int_key(negative, key), read_int_key(positive, key))
+            << key << " differs between one initial state and its relabelling by negation, so "
+            << "the sign of a vertex label changed which hypergraph was evolved";
+    }
+    EXPECT_GT(read_int_key(positive, "NumStates"), 1);
+}
+
 TEST(WxfSerializationPin, AskingForLessDoesNotAnswerLess) {
     HostBridge host;
 

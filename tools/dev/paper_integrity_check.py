@@ -48,6 +48,15 @@ COMMIT_ALLOWANCES = {
         "its job_system.hpp diff is six comment lines at ensure_default_cpu_order (git show "
         "confirms zero code lines); the comment records the stacked-vs-spill A/B and rode in "
         "through stale staging",
+    "ac96277d712dcc9f97a536fa979c2bb9f60428a0":
+        "widens two parameters (Hypergraph::create_edge's arity, create_genesis_event's edge "
+        "count) from uint8_t to size_t and drops the call-site casts, which were "
+        "value-preserving for every count at or below 255. Both guards existed already and "
+        "neither gains a comparison, so the executed work is unchanged; the added bound "
+        "refuses a genesis edge count above 255, and every measured workload seeds far fewer "
+        "edges than that and builds edges of arity at most MAX_ARITY (16). No guard outcome "
+        "and no constructed object differs on any measured input, so no state, event, causal "
+        "or branchial count can move",
 }
 
 VERDICT_RE = re.compile(r"\b(DIFFERS|FAILED|FAIL|NaN|nan|[-+]?inf)\b")

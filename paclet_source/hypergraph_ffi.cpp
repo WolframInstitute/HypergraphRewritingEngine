@@ -612,16 +612,18 @@ static void configure_and_evolve(hgffi::ParsedJob& req, hypergraph::Hypergraph& 
         for (const auto& edge : state_raw) {
             std::vector<hypergraph::VertexId> edge_vertices;
             for (int64_t v : edge) {
-                if (v >= 0) {
-                    // Map this input vertex to a canonical vertex ID
-                    auto it = vertex_map.find(v);
-                    if (it == vertex_map.end()) {
-                        vertex_map[v] = next_vertex;
-                        edge_vertices.push_back(next_vertex);
-                        next_vertex++;
-                    } else {
-                        edge_vertices.push_back(it->second);
-                    }
+                // An initial-state vertex is a LABEL, not a pattern variable: every int64 the
+                // caller writes, negative included, names a vertex and is remapped to a dense
+                // id. The sign carries meaning only on the rule side, where a negative is a
+                // variable and is refused. The device applies this same rule
+                // (hg_gpu_backend.cpp), so both paths key one initial state the same way.
+                auto it = vertex_map.find(v);
+                if (it == vertex_map.end()) {
+                    vertex_map[v] = next_vertex;
+                    edge_vertices.push_back(next_vertex);
+                    next_vertex++;
+                } else {
+                    edge_vertices.push_back(it->second);
                 }
             }
             if (!edge_vertices.empty()) {
