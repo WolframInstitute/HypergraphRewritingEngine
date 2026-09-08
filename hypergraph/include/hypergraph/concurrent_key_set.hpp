@@ -593,9 +593,16 @@ private:
 // removes the penalty (measured: four workers inside one L3 instance show none at all) but
 // needs the topology, differs per part, and caps the run at one domain's cores.
 //
-// The shard index takes the HIGH bits: keys here are already avalanched (qr_apply_key is an FNV
-// mix, qc_pair_key packs two dense ids), and the low bits are what the tables' own probe uses,
-// so taking the same bits for both would correlate the shard with the slot.
+// THE INDEX IS TAKEN FROM AN AVALANCHED KEY, and it has to be: not every key reaching this set
+// is a hash. causal_pair_key and the branchial pair key are id_key(a, b), which PACKS two dense
+// ids as ((a+1) << 32) | (b+1) without mixing them, so bits taken straight from the word are a
+// function of one id alone -- the high half varies only with the first id, and for two ids
+// under 255 it does not vary at all. Every pair of a small run would then choose one shard and
+// every worker would probe one table, which is the state the sharding exists to leave.
+// hgcommon::mix64 avalanches first, so each shard sees an equal share whatever the key's shape,
+// and the index still depends only on the key, which is what keeps a race for one key inside
+// one table and so keeps dedup exact. The low bits of the UNMIXED key remain the tables' own
+// probe position, so shard and slot stay uncorrelated.
 // The shard count of the sharded key sets, and so the size of every object that holds one
 // (Hypergraph, CausalGraph). The engine harnesses define it small (verification/genmc/engine_*.cpp)
 // so the checker zero-fills a few shards per replay instead of 64; the shipped value is below.
@@ -626,10 +633,17 @@ public:
     ShardedKeySet(const ShardedKeySet&) = delete;
     ShardedKeySet& operator=(const ShardedKeySet&) = delete;
 
-    bool insert(K key) { return shard_[index(key)].insert(key); }
+    // The key-to-shard mapping, public because it is the property the exactness argument rests
+    // on and the one a distribution test has to read.
+    static size_t shard_of(K key) {
+        return static_cast<size_t>(hgcommon::mix64(static_cast<uint64_t>(key)) >> 40)
+               & (SHARDS - 1);
+    }
+
+    bool insert(K key) { return shard_[shard_of(key)].insert(key); }
 
     // A key lives in exactly one shard, so this asks exactly one of them.
-    bool contains(K key) const { return shard_[index(key)].contains(key); }
+    bool contains(K key) const { return shard_[shard_of(key)].contains(key); }
 
     template <typename F>
     void for_each(F&& f) const { for (const Shard& s : shard_) s.for_each(f); }
@@ -647,9 +661,6 @@ public:
     }
 
 private:
-    static size_t index(K key) {
-        return static_cast<size_t>((static_cast<uint64_t>(key) >> 40)) & (SHARDS - 1);
-    }
     Shard shard_[SHARDS];
 };
 
