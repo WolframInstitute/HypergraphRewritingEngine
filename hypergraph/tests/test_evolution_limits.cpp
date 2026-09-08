@@ -264,3 +264,37 @@ TEST(EvolutionLimits, MatchesPerStateRuleBoundsAndReproduces) {
     const auto capped2 = run(2, 4);
     EXPECT_GE(capped2.first, capped1.first) << "k=2 kept less than k=1";
 }
+
+// EVERY RULE IS CONSIDERED AT THE DRAIN, WHATEVER ITS INDEX.
+//
+// Under MatchesPerStateRule the drain is the only path that submits a state's own matches, so a
+// rule the drain does not consider contributes nothing at all and the run reports a smaller
+// multiway system with no warning -- which reads exactly like the sampling the option performs.
+// RuleIndex is 16 bits, so the rules that must be considered are not bounded by a machine word.
+// The productive rule sits at index 70 here, past a 64-rule horizon.
+TEST(EvolutionLimits, MatchesPerStateRuleConsidersRulesPastAMachineWord) {
+    auto events_with_productive_rule_at = [](size_t slot) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        ParallelEvolutionEngine engine(&hg, 4);
+        // Filler rules that cannot match the initial state: their left-hand side is a 3-ary
+        // edge and the state holds only binary ones.
+        for (size_t i = 0; i < slot; ++i) {
+            engine.add_rule(make_rule(static_cast<RuleIndex>(i))
+                                .lhs({0, 1, 2}).rhs({0, 1, 2}).build());
+        }
+        engine.add_rule(make_rule(static_cast<RuleIndex>(slot))
+                            .lhs({0, 1}).rhs({0, 2}).rhs({1, 2}).build());
+        engine.set_random_seed(12345);
+        engine.set_matches_per_state_rule(1);
+        engine.evolve({{0, 1}}, 3);
+        return hg.num_events();
+    };
+
+    const size_t at_zero = events_with_productive_rule_at(0);
+    EXPECT_GT(at_zero, 0u) << "the productive rule produced nothing even at index 0";
+    EXPECT_EQ(events_with_productive_rule_at(70), at_zero)
+        << "the productive rule produced a different number of events at index 70 than at "
+           "index 0, so which rules the drain considers depends on a fixed-width horizon "
+           "rather than on the rule set";
+}

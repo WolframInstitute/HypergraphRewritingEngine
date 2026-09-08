@@ -1165,18 +1165,16 @@ void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
     auto stored = state_matches_.lookup(id_key(state));
     if (!stored.has_value()) return;
 
-    // Which rules this state actually has matches for. MAX_RULES is small and fixed, so a bitset
-    // beats collecting the set.
-    uint64_t rules_seen = 0;
-    (*stored)->for_each([&](const MatchRecord& m) {
-        if (m.is_forwarded) return;
-        if (m.rule_index() < 64) rules_seen |= (1ULL << m.rule_index());
-    });
-
+    // The cap is per rule, so the selection runs once for each rule the engine holds. A rule
+    // with no own-found match at this state finds nothing on its first pass and costs one walk
+    // of the state's match list; a rule set is bounded by RuleIndex, which is 16 bits wide, and
+    // nothing narrower may decide which rules are considered -- a rule left out here has every
+    // one of its matches dropped, because under this option cap_at_drain is the only path that
+    // submits them.
     size_t submitted = 0;
-    while (rules_seen) {
-        const uint16_t rule = static_cast<uint16_t>(hgcommon::ctz64(rules_seen));
-        rules_seen &= rules_seen - 1;
+    const size_t num_rules = rules_.size();
+    for (size_t rule_slot = 0; rule_slot < num_rules; ++rule_slot) {
+        const uint16_t rule = static_cast<uint16_t>(rule_slot);
 
         uint64_t floor_rank = 0;
         bool have_floor = false;
