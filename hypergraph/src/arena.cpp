@@ -492,16 +492,26 @@ ConcurrentHeterogeneousArena::grab_block(size_t cap) {
 void ConcurrentHeterogeneousArena::allocate_new_block(size_t min_cap) {
     size_t grow = shared_grow_.load(std::memory_order_relaxed);
     size_t cap = grow > min_cap ? grow : min_cap;
-    grab_block(cap);
+    Block* nb = grab_block(cap);
     size_t next = grow < block_size_ ? (grow * 2 < block_size_ ? grow * 2 : block_size_)
                                      : block_size_;
     shared_grow_.store(next, std::memory_order_relaxed);
 
-    // Track the most-recent head: a plain store(new_block) lets a racing
-    // thread's older block win current_block_ while its newer block sits
-    // unreachable mid-chain, stranding that block's capacity.
-    current_block_.store(head_.load(std::memory_order_acquire),
-                         std::memory_order_release);
+    // THE SHARED PATH PUBLISHES THE BLOCK IT CREATED, AND MAY PUBLISH ONLY THAT.
+    //
+    // A worker holding an arena index bumps a PRIVATE cursor and mirrors the result into
+    // block->offset with a plain relaxed store, while allocate_shared reserves a region on
+    // current_block_ with a compare-exchange on that same field. The two are only ever safe
+    // because they are never the same block -- and a cursor's block reaches head_, since
+    // allocate_local grows through grab_block. Publishing head_ here can therefore hand the
+    // shared path a block a worker is privately bumping, and then the cursor's next store
+    // overwrites the reservation the compare-exchange just made and both callers are given
+    // the same bytes.
+    //
+    // The block created here is reachable from no cursor. Two shared-path threads racing may
+    // leave the loser's block unbumped mid-chain, costing its capacity; that is waste on the
+    // rare fallback path rather than two callers holding one address.
+    current_block_.store(nb, std::memory_order_release);
 }
 
 // Advance to the next block when the current one is full: recycle an already-allocated successor

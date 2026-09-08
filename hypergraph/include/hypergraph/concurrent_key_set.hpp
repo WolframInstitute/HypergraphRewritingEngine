@@ -344,11 +344,17 @@ private:
         return false;
     }
 
-    // THE VERDICT IS ANCHORED TO THE TABLE IT WAS DECIDED IN. A claim that lands in a table which
-    // is no longer the head is reported kStale rather than kWon, and the caller re-drives against
-    // the current head. Reporting kWon there is the double-claim: a thread working from the old
-    // head claims the key while a thread at the new head, whose chain scan ran before this claim
-    // was published, claims the same key, and both are told they inserted it.
+    // THE VERDICT IS ANCHORED BY THE SEAL PASS IN grow(), NOT BY RE-READING THE HEAD. A winning
+    // compare-exchange below is reported kWon without consulting table_, and that is sound
+    // because grow() stamps MIGRATED into every EMPTY slot of a table BEFORE installing its
+    // successor: once that pass has run this loop finds no EMPTY slot to claim here, so a win
+    // provably landed while this table was still the head, before any rival could load a
+    // successor. A claimant arriving after the pass exhausts its probe run and gets kStale.
+    //
+    // That is why the seal pass is load-bearing beyond the growth it triggers. Without it kWon
+    // becomes the double-claim: a thread working from a superseded head claims the key while a
+    // thread at the new head, whose chain scan ran before this claim was published, claims the
+    // same key, and both are told they inserted it. grow() carries the measurement of that.
     Claim claim(Table* t, K key) {
         const size_t idx = hash(key) & t->mask;
         // The run length that signals load counts occupied slots only. A sealed (MIGRATED)

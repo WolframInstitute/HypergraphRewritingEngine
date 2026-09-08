@@ -284,8 +284,11 @@ private:
 // allocators without CAS contention. Indices are released at thread exit and
 // reused, so the ceiling bounds PEAK concurrent threads, not total threads spawned
 // over the process lifetime. A thread past the ceiling gets index -1 and falls back
-// to the shared bump path (still correct, just contended); the ceiling sits well
-// above any realistic worker count.
+// to the shared bump path, which reserves on current_block_ with a compare-exchange
+// and is contended rather than private; the ceiling sits well above any realistic
+// worker count. The shared path bumps only blocks allocate_new_block created, never
+// one a cursor owns -- see the note there, which is what keeps the two disciplines
+// from writing the same offset field.
 
 // Overridable so a harness can bound it. The registry's acquire() scans every slot and each is
 // an atomic location, so a model checker asked to enumerate 256 of them is enumerating the scan
