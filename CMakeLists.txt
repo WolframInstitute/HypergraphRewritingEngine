@@ -396,6 +396,10 @@ add_executable(arena_reset_test EXCLUDE_FROM_ALL tools/arena_reset_test.cpp)
 target_include_directories(arena_reset_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(arena_reset_test PRIVATE hypergraph)
 add_dependencies(probes arena_reset_test)
+add_executable(bench_cpu_evolve EXCLUDE_FROM_ALL tools/bench_cpu_evolve.cpp)
+target_include_directories(bench_cpu_evolve PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(bench_cpu_evolve PRIVATE hypergraph)
+add_dependencies(probes bench_cpu_evolve)
 add_executable(branchial_flux_probe EXCLUDE_FROM_ALL tools/branchial_flux_probe.cpp)
 target_include_directories(branchial_flux_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(branchial_flux_probe PRIVATE hypergraph)
@@ -802,9 +806,20 @@ endif()
 
 # Each bench names itself in its build stamp, as the shipped artifacts do, so a measuring script
 # can read the configuration it is about to time from the binary itself.
-foreach(_hg_bench bench_cpu_evolve bench_gpu_evolve sampling_cost_smoke cost_matrix
+foreach(_hg_bench bench_cpu_evolve sampling_cost_smoke cost_matrix
         mode_matrix_probe quotient_reconstruction_cost_probe)
-    if(TARGET ${_hg_bench})
-        target_compile_definitions(${_hg_bench} PRIVATE HG_BUILD_VARIANT="${_hg_bench}")
+    if(NOT TARGET ${_hg_bench})
+        # A bench named here and defined nowhere is how bench_cpu_evolve went unbuilt: the guard
+        # that skipped it also hid it, and the quiet gate went on looking for a binary no target
+        # produces. Naming a bench is the claim that it builds.
+        message(FATAL_ERROR "bench '${_hg_bench}' is named for a build stamp but no target "
+                            "defines it; register it or take it off this list")
     endif()
+    target_compile_definitions(${_hg_bench} PRIVATE HG_BUILD_VARIANT="${_hg_bench}")
 endforeach()
+
+# bench_gpu_evolve is defined in gpu/CMakeLists.txt and only when the CUDA toolchain is present,
+# so its absence is a configuration, not an omission.
+if(TARGET bench_gpu_evolve)
+    target_compile_definitions(bench_gpu_evolve PRIVATE HG_BUILD_VARIANT="bench_gpu_evolve")
+endif()
