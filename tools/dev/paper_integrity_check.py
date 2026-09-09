@@ -48,6 +48,14 @@ COMMIT_ALLOWANCES = {
         "its job_system.hpp diff is six comment lines at ensure_default_cpu_order (git show "
         "confirms zero code lines); the comment records the stacked-vs-spill A/B and rode in "
         "through stale staging",
+    "079654eb10d7c1aa44fa31796e27c251fa3f53f0":
+        "emits VIZ_EMIT_MATCH_FOUND from store_match_for_state. The whole addition is inside "
+        "#ifdef HYPERGRAPH_ENABLE_VISUALIZATION, and every fragment in paper/tables is "
+        "measured from a build that does not define it -- the visualisation event sink is a "
+        "renderer's seam, not part of any measured configuration. On those builds the "
+        "preprocessor removes the block entirely, so store_match_for_state emits the same "
+        "instructions it did before and no state, event, causal or branchial count, and no "
+        "timing, can move",
     "ac96277d712dcc9f97a536fa979c2bb9f60428a0":
         "widens two parameters (Hypergraph::create_edge's arity, create_genesis_event's edge "
         "count) from uint8_t to size_t and drops the call-site casts, which were "

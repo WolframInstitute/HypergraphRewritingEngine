@@ -21,6 +21,11 @@
 
 #include <cstdint>
 #include "hgcommon/core.hpp"
+// _BitScanForward64 below is an MSVC intrinsic, and the header that owns the
+// declarations for those is this one. Naming an intrinsic without it compiles
+// only where something else happened to include it first, which is not a
+// property of this header.
+#include "hgcommon/portable_intrinsics.hpp"
 
 namespace HG_NAMESPACE {
 namespace common {
