@@ -390,6 +390,36 @@ void ParallelEvolutionEngine::store_match_for_state(
     LockFreeList<MatchRecord>* list = get_or_create_state_matches(state);
     list->push(match, hg_->arena());
 
+    // A match becomes findable on a state exactly here, whichever delivery
+    // brought it, so this is the one place a renderer can be told about every
+    // match without being told about any of them twice. It carries the edges
+    // the rule matched, which is what lets a visualiser point at those edges
+    // rather than only at the state they are in.
+    //
+    // The indices sent are POSITIONS IN THE STATE'S OWN EDGE LIST, not edge
+    // ids. HyperedgeData streams a state's edges numbered from zero in that
+    // list's order, so a renderer holds them by position; sending ids here
+    // would name edges in a numbering nothing else in the stream carries.
+#ifdef HYPERGRAPH_ENABLE_VISUALIZATION
+    {
+        const auto& state_data = hg_->get_state(state);
+        uint32_t positions[viz::MAX_EVENT_EDGES];
+        uint32_t written = 0;
+        const uint8_t wanted = match.num_edges();
+        const EdgeId* ids = match.matched_edges();
+        uint32_t at = 0;
+        state_data.edges.for_each([&](EdgeId eid) {
+            for (uint8_t i = 0; i < wanted; ++i) {
+                if (ids[i] != eid) continue;
+                if (written < viz::MAX_EVENT_EDGES) positions[written++] = at;
+                break;
+            }
+            ++at;
+        });
+        VIZ_EMIT_MATCH_FOUND(state, match.rule_index(), positions, written);
+    }
+#endif
+
     // Eager pushes immediately after this call returns, so the store must be visible to the
     // scan; batched fences once after the whole batch instead of once per match.
     if (with_fence) {
