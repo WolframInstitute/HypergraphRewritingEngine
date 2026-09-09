@@ -722,6 +722,28 @@ private:
     // Evolution control
     std::atomic<bool> should_stop_{false};
     size_t max_steps_{0};
+    // A CEILING FOR ONE STEERED CONTINUATION, at or below max_steps_.
+    //
+    // evolve_more RAISES the budget for the whole run, so a steered call that
+    // expands a state sitting well below the standing budget advances that
+    // state AND everything it creates until they reach the budget: a caller
+    // that asked for one step gets as many as the deepest branch has already
+    // taken. Measured on the 2-to-4 rule, expanding a state at depth 2 with
+    // the budget standing at 4 turned 15 states into 71.
+    //
+    // The ceiling bounds a steered continuation to the steps it asked for,
+    // whatever depth the run has reached elsewhere. Work above it is DEFERRED
+    // rather than dropped, exactly as work above max_steps_ is, so what it
+    // stops at stays on the frontier and a later call resumes it.
+    //
+    // Zero means no ceiling, which is what an unsteered evolve() leaves it
+    // at, so this changes nothing for a caller that does not steer.
+    size_t continuation_ceiling_{0};
+    [[nodiscard]] size_t step_budget() const {
+        return continuation_ceiling_ != 0 && continuation_ceiling_ < max_steps_
+                   ? continuation_ceiling_
+                   : max_steps_;
+    }
     size_t max_states_{0};
     size_t max_events_{0};
 

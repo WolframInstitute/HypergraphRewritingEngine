@@ -892,7 +892,7 @@ void ParallelEvolutionEngine::submit_match_task(StateId state, uint32_t step) {
     // Past the budget: this is the frontier, not a dead end. Kept so a continuation resumes
     // exactly here. The caps below are different -- a cap is a decision, and resuming past one
     // would undo it.
-    if (step > max_steps_) { defer_match_task(state, step); return; }
+    if (step > step_budget()) { defer_match_task(state, step); return; }
     if (!can_create_states_at_step(step + 1)) return;
     if (!can_have_more_children(state)) return;
 
@@ -916,7 +916,7 @@ void ParallelEvolutionEngine::submit_match_task_with_context(
     const MatchContext& ctx
 ) {
     if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (step > max_steps_) { defer_match_task(state, step); return; }
+    if (step > step_budget()) { defer_match_task(state, step); return; }
     if (!can_create_states_at_step(step + 1)) return;
     if (!can_have_more_children(state)) return;
 
@@ -939,7 +939,7 @@ void ParallelEvolutionEngine::submit_rewrite_task(const MatchRecord& match, uint
     if (should_stop_.load(std::memory_order_relaxed)) return;
     // Past the budget: the match is already stored on its state, so dropping the rewrite would
     // strand it -- the state's own matching will not re-offer a match it already holds.
-    if (step > max_steps_) { defer_rewrite_task(match, step); return; }
+    if (step > step_budget()) { defer_rewrite_task(match, step); return; }
     // Early check (non-reserving) - execute_rewrite_task does the actual atomic reservation
     if (!can_create_states_at_step(step + 1)) return;
     if (!can_have_more_children(match.source_state)) return;
@@ -985,7 +985,7 @@ void ParallelEvolutionEngine::dispatch_expansion(StateId state, uint32_t step,
                                                  const MatchRecord* matches, size_t count) {
     if (count == 0) return;
     if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (step > max_steps_) return;
+    if (step > step_budget()) return;
     // Whole-state gates, checked once here rather than once per match. execute_rewrite_task
     // still does the reserving check per child, so this is a filter, not the decision.
     if (!can_create_states_at_step(step + 1)) return;
@@ -1307,6 +1307,13 @@ std::vector<std::pair<StateId, uint32_t>> ParallelEvolutionEngine::frontier() co
     return out;
 }
 
+// Clears the ceiling however this call leaves, so a later unsteered run is
+// not silently bounded by a steered one.
+struct ContinuationCeilingScope {
+    size_t* ceiling;
+    ~ContinuationCeilingScope() { *ceiling = 0; }
+};
+
 void ParallelEvolutionEngine::evolve_more(size_t additional_steps,
                                           const std::unordered_set<StateId>* only_from) {
     if (!hg_ || rules_.empty() || additional_steps == 0) return;
@@ -1322,6 +1329,30 @@ void ParallelEvolutionEngine::evolve_more(size_t additional_steps,
     // reconstruction still has to replay every depth up to the budget. The frontier and the
     // replay bound are different quantities, and only the first can be empty here.
     max_steps_ += additional_steps;
+    // THE CEILING FOR THIS CALL. A frontier entry carries the step its state
+    // is waiting to be matched at, so letting the selected entries run at
+    // their own step and no further is exactly the steps the caller asked
+    // for. An unsteered call keeps no ceiling and behaves as it always has.
+    continuation_ceiling_ = 0;
+    ContinuationCeilingScope ceiling_scope{&continuation_ceiling_};
+    if (only_from != nullptr && additional_steps > 0) {
+        uint32_t deepest = 0;
+        bool any = false;
+        deferred_frontier_.for_each([&](const DeferredMatch& d) {
+            if (only_from->count(d.state) == 0) return;
+            if (!any || d.step > deepest) deepest = d.step;
+            any = true;
+        });
+        deferred_rewrites_.for_each([&](const DeferredRewrite& d) {
+            if (only_from->count(d.match.source_state) == 0) return;
+            if (!any || d.step > deepest) deepest = d.step;
+            any = true;
+        });
+        if (any) {
+            continuation_ceiling_ =
+                static_cast<size_t>(deepest) + additional_steps - 1u;
+        }
+    }
     // The reconstruction carries its own depth bound and expands nothing at or past it, so
     // raising the engine's alone leaves the replay standing at the depth the first call
     // stopped on while the exploration goes on past it, and the two then answer about
@@ -1707,7 +1738,7 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
     if (should_stop_.load(std::memory_order_relaxed)) return;
 
     // Check step limit - don't spawn REWRITEs past max_steps
-    if (step > max_steps_) return;
+    if (step > step_budget()) return;
 
     // Check limits before applying
     if (max_states_ > 0 && hg_->num_states() >= max_states_) {
@@ -1925,7 +1956,7 @@ void ParallelEvolutionEngine::execute_match_task(
     MatchTaskGuard join_guard(*this, state, step);
 
     if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (step > max_steps_) return;
+    if (step > step_budget()) return;
 
     // Early exit if rewrites are impossible due to limits
     if (!can_create_states_at_step(step + 1)) return;
