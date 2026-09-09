@@ -402,6 +402,13 @@ void ParallelEvolutionEngine::store_match_for_state(
     // would name edges in a numbering nothing else in the stream carries.
 #ifdef HYPERGRAPH_ENABLE_VISUALIZATION
     {
+        // THE STATE A RENDERER KNOWS, which is the canonical one. Matching
+        // runs on raw states and StateCreated reports canonical ones, so a
+        // match emitted against its raw state names a state no consumer of
+        // this stream holds -- and under canonicalisation that is most of
+        // them. get_canonical_state answers the raw state itself when the
+        // mode is None, so this is the same event as before in that case.
+        const StateId reported = hg_->get_canonical_state(state);
         const auto& state_data = hg_->get_state(state);
         uint32_t positions[viz::MAX_EVENT_EDGES];
         uint32_t written = 0;
@@ -416,7 +423,7 @@ void ParallelEvolutionEngine::store_match_for_state(
             }
             ++at;
         });
-        VIZ_EMIT_MATCH_FOUND(state, match.rule_index(), positions, written);
+        VIZ_EMIT_MATCH_FOUND(reported, match.rule_index(), positions, written);
     }
 #endif
 
@@ -1759,12 +1766,17 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
     if (rr.was_new_state) {
         // Emit StateCreated only for new canonical states
         const auto& state_data = hg_->get_state(rr.new_state);
+        // THE PARENT A RENDERER KNOWS. This event reports the new state
+        // canonically and its parent raw, and a consumer holds only canonical
+        // states -- so under canonicalisation the parent named here is a
+        // state nothing in the stream ever announced. get_canonical_state
+        // answers the raw state itself when the mode is None.
         VIZ_EMIT_STATE_CREATED(
-            rr.new_state,             // state id (canonical)
-            match.source_state,       // parent state id
-            step + 1,                 // generation
-            state_data.edges.count(), // edge count
-            0                         // vertex count (not tracked)
+            rr.new_state,                                  // state id (canonical)
+            hg_->get_canonical_state(match.source_state),  // parent, canonical
+            step + 1,                                      // generation
+            state_data.edges.count(),                      // edge count
+            0                                              // vertex count (not tracked)
         );
         // Emit hyperedge data for each edge in the new state
         uint32_t edge_idx = 0;
@@ -1774,8 +1786,12 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
         });
     }
     // Emit RewriteApplied for ALL events
+    // Both ends canonical, for the same reason: an edge of the multiway graph
+    // whose source is a raw state joins a state no consumer holds, so the
+    // graph a renderer draws loses exactly the edges canonicalisation made
+    // interesting -- the ones that rejoin.
     VIZ_EMIT_REWRITE_APPLIED(
-        match.source_state,       // source state
+        hg_->get_canonical_state(match.source_state),  // source state, canonical
         rr.new_state,             // target state (canonical)
         match.rule_index(),       // rule index
         rr.event,                 // raw event id (for tracking)
