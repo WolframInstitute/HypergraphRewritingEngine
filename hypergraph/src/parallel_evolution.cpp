@@ -410,20 +410,26 @@ void ParallelEvolutionEngine::store_match_for_state(
         // mode is None, so this is the same event as before in that case.
         const StateId reported = hg_->get_canonical_state(state);
         const auto& state_data = hg_->get_state(state);
+        // IN THE MATCH'S OWN ORDER: position i is where the edge the rule's i-th left-hand edge
+        // matched sits. Two matches can consume the same edges with the left-hand edges
+        // assigned the other way round, and only the order tells them apart. A match names
+        // edges of its own state, so every one of them is found.
         uint32_t positions[viz::MAX_EVENT_EDGES];
-        uint32_t written = 0;
         const uint8_t wanted = match.num_edges();
+        const uint32_t written =
+            wanted < viz::MAX_EVENT_EDGES ? wanted : static_cast<uint32_t>(viz::MAX_EVENT_EDGES);
         const EdgeId* ids = match.matched_edges();
+        uint32_t found = 0;
         uint32_t at = 0;
         state_data.edges.for_each([&](EdgeId eid) {
-            for (uint8_t i = 0; i < wanted; ++i) {
+            for (uint32_t i = 0; i < written; ++i) {
                 if (ids[i] != eid) continue;
-                if (written < viz::MAX_EVENT_EDGES) positions[written++] = at;
-                break;
+                positions[i] = at;
+                ++found;
             }
             ++at;
         });
-        VIZ_EMIT_MATCH_FOUND(reported, match.rule_index(), positions, written);
+        if (found == written) VIZ_EMIT_MATCH_FOUND(reported, match.rule_index(), positions, written);
     }
 #endif
 
