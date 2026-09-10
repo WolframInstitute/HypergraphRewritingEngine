@@ -44,6 +44,15 @@ STALE_WHITELIST = {}
 # message (a pushed message cannot be amended). Hash-pinned, each with the proof; the walk
 # treats them as declared.
 COMMIT_ALLOWANCES = {
+    "7a52bb6fab7a3f28c7bbc74986f337cde6e4c943":
+        "bounds a steered continuation to the steps it asked for. continuation_ceiling_ is "
+        "written only inside evolve_more, and set non-zero only when only_from is non-null; "
+        "step_budget() answers max_steps_ while it is zero, and every gate it replaced read "
+        "max_steps_. Every fragment in paper/tables is measured from evolve() runs -- no tool, "
+        "benchmark or experiment in this tree calls evolve_more -- so on every measured path "
+        "the ceiling is zero and each gate reads the value it read before. Its message states "
+        "the proof as 'Measurement-inert for every caller that does not steer:', which the "
+        "walk does not read as the declaration",
     "530a2c9503bfc157c9e6ac02eb95a94a63f9d281":
         "its job_system.hpp diff is six comment lines at ensure_default_cpu_order (git show "
         "confirms zero code lines); the comment records the stacked-vs-spill A/B and rode in "
