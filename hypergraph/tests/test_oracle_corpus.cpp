@@ -440,6 +440,70 @@ TEST(OracleCorpus, ContinuingARunThatWasNotMadeContinuableIsAnError) {
         << "it already had and nothing says the continuation did not happen";
 }
 
+// A continuation steered to ONE match performs that rewrite and no other.
+//
+// A reader choosing a match chooses a branch: the state it sits on gains one transition, and its
+// other matches keep waiting -- the state stays on the frontier -- so choosing again performs
+// them. Steering by the state alone performs every match on it, which is a different choice.
+TEST(OracleCorpus, SteeringOneMatchPerformsThatRewriteAlone) {
+    Hypergraph hg;
+    hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+    ParallelEvolutionEngine e(&hg, 4);
+    // {{x,y},{x,z}} -> {{x,y},{x,w},{y,w},{z,w}}, which matches {{1,2},{1,3}} twice.
+    e.add_rule(hypergraph::make_rule(0)
+                   .lhs({0, 1}).lhs({0, 2})
+                   .rhs({0, 1}).rhs({0, 3}).rhs({1, 3}).rhs({2, 3})
+                   .build());
+    e.set_continuable(true);
+    e.set_match_frontier(true);
+    const std::vector<std::vector<VertexId>> init = {{1, 2}, {1, 3}};
+    e.evolve(init, 0);
+
+    const std::vector<MatchRecord> waiting = e.deferred_rewrites();
+    ASSERT_GE(waiting.size(), 2u) << "the start's matches were not found and deferred";
+    const MatchRecord chosen = waiting.front();
+    auto edges_of = [](const MatchRecord& r) {
+        return std::vector<EdgeId>(r.matched_edges(), r.matched_edges() + r.num_edges());
+    };
+    auto is_chosen = [&](const MatchRecord& r) {
+        return r.source_state == chosen.source_state && r.rule_index() == chosen.rule_index() &&
+               edges_of(r) == edges_of(chosen);
+    };
+    auto on_start = [&](const std::vector<MatchRecord>& records) {
+        size_t n = 0;
+        for (const MatchRecord& r : records) n += r.source_state == chosen.source_state ? 1u : 0u;
+        return n;
+    };
+    const size_t start_matches = on_start(waiting);
+    const size_t events_before = hg.num_events();
+
+    const std::function<bool(const MatchRecord&)> only = is_chosen;
+    e.evolve_more(1, nullptr, &only);
+
+    EXPECT_EQ(hg.num_events(), events_before + 1)
+        << "one match was chosen and a different number of rewrites was performed";
+    const std::vector<MatchRecord> after = e.deferred_rewrites();
+    EXPECT_EQ(on_start(after), start_matches - 1)
+        << "the start's other matches stopped waiting, or the chosen one kept waiting";
+    bool chosen_waits = false;
+    for (const MatchRecord& r : after) chosen_waits = chosen_waits || is_chosen(r);
+    EXPECT_FALSE(chosen_waits) << "the chosen match is still waiting after it was performed";
+    bool start_on_frontier = false;
+    for (const auto& f : e.frontier()) {
+        start_on_frontier = start_on_frontier || f.first == chosen.source_state;
+    }
+    EXPECT_TRUE(start_on_frontier)
+        << "the start left the frontier while matches on it were still unperformed";
+
+    // Choosing the rest by the state performs them, and only them: the chosen match's child was
+    // matched and waits, and a steer to the start leaves it waiting.
+    const std::unordered_set<StateId> start{chosen.source_state};
+    e.evolve_more(1, &start);
+    EXPECT_EQ(hg.num_events(), events_before + start_matches)
+        << "steering to the start did not perform exactly its remaining matches";
+    EXPECT_EQ(on_start(e.deferred_rewrites()), 0u) << "the start still has matches waiting";
+}
+
 // STATIC ANALYSIS: what the rules alone decide, checked against what the engine builds.
 //
 // can_branch is sound in ONE direction. False means two matches can never share a consumed edge,

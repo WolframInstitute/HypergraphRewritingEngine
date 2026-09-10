@@ -1245,8 +1245,20 @@ public:
     // exhaustive one would find states missing with nothing to say why. A deferred rewrite is
     // selected by the state its match sits on, since submitting it while retaining that state
     // would half-expand a branch the caller asked to leave alone.
+    //
+    // `only_match` STEERS BY ONE MATCH: when non-null, a deferred rewrite is performed only if it
+    // accepts that rewrite's match too, and no deferred MATCH task is resumed. That half-expands
+    // a state on purpose -- one transition out of it, its other rewrites still deferred, so it
+    // stays on the frontier and a later call performs them. The ceiling bounds the call as it
+    // does for `only_from`, over the rewrites accepted. It is asked about a record more than
+    // once, so it answers from the record alone.
     void evolve_more(size_t additional_steps,
-                     const std::unordered_set<StateId>* only_from = nullptr);
+                     const std::unordered_set<StateId>* only_from = nullptr,
+                     const std::function<bool(const MatchRecord&)>* only_match = nullptr);
+
+    // The matches whose rewrites a continuation would perform: each one the budget refused.
+    // Read between runs, like frontier().
+    std::vector<MatchRecord> deferred_rewrites() const;
 
     // Whether a state the budget stops at is still MATCHED, with only its
     // rewrites deferred. Off by default, which leaves every run as it was.

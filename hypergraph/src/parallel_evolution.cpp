@@ -1324,6 +1324,12 @@ std::vector<std::pair<StateId, uint32_t>> ParallelEvolutionEngine::frontier() co
     return out;
 }
 
+std::vector<MatchRecord> ParallelEvolutionEngine::deferred_rewrites() const {
+    std::vector<MatchRecord> out;
+    deferred_rewrites_.for_each([&](const DeferredRewrite& d) { out.push_back(d.match); });
+    return out;
+}
+
 // Clears the ceiling however this call leaves, so a later unsteered run is
 // not silently bounded by a steered one.
 struct ContinuationCeilingScope {
@@ -1332,7 +1338,8 @@ struct ContinuationCeilingScope {
 };
 
 void ParallelEvolutionEngine::evolve_more(size_t additional_steps,
-                                          const std::unordered_set<StateId>* only_from) {
+                                          const std::unordered_set<StateId>* only_from,
+                                          const std::function<bool(const MatchRecord&)>* only_match) {
     if (!hg_ || rules_.empty() || additional_steps == 0) return;
     if (!continuable_) {
         throw std::runtime_error(
@@ -1352,16 +1359,20 @@ void ParallelEvolutionEngine::evolve_more(size_t additional_steps,
     // for. An unsteered call keeps no ceiling and behaves as it always has.
     continuation_ceiling_ = 0;
     ContinuationCeilingScope ceiling_scope{&continuation_ceiling_};
-    if (only_from != nullptr && additional_steps > 0) {
+    if ((only_from != nullptr || only_match != nullptr) && additional_steps > 0) {
         uint32_t deepest = 0;
         bool any = false;
-        deferred_frontier_.for_each([&](const DeferredMatch& d) {
-            if (only_from->count(d.state) == 0) return;
-            if (!any || d.step > deepest) deepest = d.step;
-            any = true;
-        });
+        // A single-match steer resumes no match task, so only the rewrites it accepts bound it.
+        if (only_match == nullptr) {
+            deferred_frontier_.for_each([&](const DeferredMatch& d) {
+                if (only_from->count(d.state) == 0) return;
+                if (!any || d.step > deepest) deepest = d.step;
+                any = true;
+            });
+        }
         deferred_rewrites_.for_each([&](const DeferredRewrite& d) {
-            if (only_from->count(d.match.source_state) == 0) return;
+            if (only_from != nullptr && only_from->count(d.match.source_state) == 0) return;
+            if (only_match != nullptr && !(*only_match)(d.match)) return;
             if (!any || d.step > deepest) deepest = d.step;
             any = true;
         });
@@ -1426,7 +1437,9 @@ void ParallelEvolutionEngine::evolve_more(size_t additional_steps,
     //
     // A deferred REWRITE is selected by the state its match sits on, not independently. The
     // rewrite is a transition out of that state, so submitting it while retaining the state
-    // would half-expand a branch the caller asked to leave alone.
+    // would half-expand a branch the caller asked to leave alone. A single-match steer asks for
+    // exactly that and says so by passing `only_match`: the rewrites it rejects are put back and
+    // no match task resumes, so the state stays on the frontier with its other rewrites waiting.
     auto selected = [&](StateId s) {
         return only_from == nullptr || only_from->find(s) != only_from->end();
     };
@@ -1434,11 +1447,18 @@ void ParallelEvolutionEngine::evolve_more(size_t additional_steps,
     // Rewrites first: they mint the transitions the budget stranded, and doing them before the
     // frontier's matching means the states they create are matched in the same pass.
     for (const DeferredRewrite& d : resume_rw) {
-        if (!selected(d.match.source_state)) { defer_rewrite_task(d.match, d.step); continue; }
+        if (!selected(d.match.source_state) ||
+            (only_match != nullptr && !(*only_match)(d.match))) {
+            defer_rewrite_task(d.match, d.step);
+            continue;
+        }
         submit_rewrite_task(d.match, d.step);
     }
     for (const DeferredMatch& d : resume) {
-        if (!selected(d.state)) { defer_match_task(d.state, d.step); continue; }
+        if (!selected(d.state) || only_match != nullptr) {
+            defer_match_task(d.state, d.step);
+            continue;
+        }
         // Quotient exploration matches a canonical state once, under a claim, so its frontier
         // resumes through the same decision the relaxation walk makes rather than a second
         // copy of it.
