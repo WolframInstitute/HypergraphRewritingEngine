@@ -744,6 +744,19 @@ private:
                    ? continuation_ceiling_
                    : max_steps_;
     }
+    // MATCHING THE FRONTIER, off unless asked for.
+    //
+    // The budget stops a state's MATCHING, so a state the budget stopped at
+    // has no matches found and nothing about it says what a continuation
+    // would do there. A caller that shows a reader the frontier -- which
+    // matches wait, on which edges -- needs them found without performing
+    // them. With this on, matching runs one step past the budget and only the
+    // rewrites are deferred; the matches are stored and reported as any
+    // match is, and a continuation performs the deferred rewrites.
+    bool match_frontier_{false};
+    [[nodiscard]] size_t match_budget() const {
+        return step_budget() + (match_frontier_ ? 1u : 0u);
+    }
     size_t max_states_{0};
     size_t max_events_{0};
 
@@ -1234,6 +1247,11 @@ public:
     // would half-expand a branch the caller asked to leave alone.
     void evolve_more(size_t additional_steps,
                      const std::unordered_set<StateId>* only_from = nullptr);
+
+    // Whether a state the budget stops at is still MATCHED, with only its
+    // rewrites deferred. Off by default, which leaves every run as it was.
+    void set_match_frontier(bool on) { match_frontier_ = on; }
+    [[nodiscard]] bool match_frontier() const { return match_frontier_; }
 
     // The states a continuation would resume from, with the step each is waiting at. Read
     // between runs (no worker is running), which is also the only time it is meaningful: during

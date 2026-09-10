@@ -892,7 +892,7 @@ void ParallelEvolutionEngine::submit_match_task(StateId state, uint32_t step) {
     // Past the budget: this is the frontier, not a dead end. Kept so a continuation resumes
     // exactly here. The caps below are different -- a cap is a decision, and resuming past one
     // would undo it.
-    if (step > step_budget()) { defer_match_task(state, step); return; }
+    if (step > match_budget()) { defer_match_task(state, step); return; }
     if (!can_create_states_at_step(step + 1)) return;
     if (!can_have_more_children(state)) return;
 
@@ -916,7 +916,7 @@ void ParallelEvolutionEngine::submit_match_task_with_context(
     const MatchContext& ctx
 ) {
     if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (step > step_budget()) { defer_match_task(state, step); return; }
+    if (step > match_budget()) { defer_match_task(state, step); return; }
     if (!can_create_states_at_step(step + 1)) return;
     if (!can_have_more_children(state)) return;
 
@@ -985,7 +985,14 @@ void ParallelEvolutionEngine::dispatch_expansion(StateId state, uint32_t step,
                                                  const MatchRecord* matches, size_t count) {
     if (count == 0) return;
     if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (step > step_budget()) return;
+    // PAST THE BUDGET THE REWRITES WAIT. The matches are already stored on
+    // the state, so returning would strand them: the state's own matching
+    // will not offer them again. This is reached only when the frontier is
+    // matched -- otherwise a state past the budget was never matched.
+    if (step > step_budget()) {
+        for (size_t i = 0; i < count; ++i) defer_rewrite_task(matches[i], step);
+        return;
+    }
     // Whole-state gates, checked once here rather than once per match. execute_rewrite_task
     // still does the reserving check per child, so this is a filter, not the decision.
     if (!can_create_states_at_step(step + 1)) return;
@@ -1016,7 +1023,7 @@ void ParallelEvolutionEngine::dispatch_expansion(StateId state, uint32_t step,
 
 void ParallelEvolutionEngine::submit_scan_task(const ScanTaskData& data) {
     if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (data.step > max_steps_) return;
+    if (data.step > match_budget()) return;
     if (!can_create_states_at_step(data.step + 1)) return;
     if (!can_have_more_children(data.state)) return;
 
@@ -1038,7 +1045,7 @@ void ParallelEvolutionEngine::submit_scan_task(const ScanTaskData& data) {
 
 void ParallelEvolutionEngine::submit_expand_task(const ExpandTaskData& data) {
     if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (data.step > max_steps_) return;
+    if (data.step > match_budget()) return;
     if (!can_create_states_at_step(data.step + 1)) return;
     if (!can_have_more_children(data.state)) return;
 
@@ -1304,6 +1311,16 @@ void ParallelEvolutionEngine::defer_rewrite_task(const MatchRecord& match, uint3
 std::vector<std::pair<StateId, uint32_t>> ParallelEvolutionEngine::frontier() const {
     std::vector<std::pair<StateId, uint32_t>> out;
     deferred_frontier_.for_each([&](const DeferredMatch& d) { out.emplace_back(d.state, d.step); });
+    // A state whose REWRITES wait is on the frontier as surely as one whose
+    // matching does: a continuation resumes from it. Each state once, though
+    // it may have many rewrites waiting.
+    std::unordered_set<StateId> seen;
+    for (const auto& entry : out) seen.insert(entry.first);
+    deferred_rewrites_.for_each([&](const DeferredRewrite& d) {
+        if (seen.insert(d.match.source_state).second) {
+            out.emplace_back(d.match.source_state, d.step);
+        }
+    });
     return out;
 }
 
@@ -1956,7 +1973,7 @@ void ParallelEvolutionEngine::execute_match_task(
     MatchTaskGuard join_guard(*this, state, step);
 
     if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (step > step_budget()) return;
+    if (step > match_budget()) return;
 
     // Early exit if rewrites are impossible due to limits
     if (!can_create_states_at_step(step + 1)) return;
@@ -2211,7 +2228,7 @@ void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
 
     HG_STAT(match_join_for(data.state)->trace.fetch_or(1u, std::memory_order_relaxed));
     if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (data.step > max_steps_) return;
+    if (data.step > match_budget()) return;
 
     // Early exit if rewrites are impossible due to limits
     if (!can_create_states_at_step(data.step + 1)) return;
@@ -2346,7 +2363,7 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
     hgcommon::PhaseTimer _pt(hgcommon::Phase::Match);
 
     if (should_stop_.load(std::memory_order_relaxed)) return;
-    if (data.step > max_steps_) return;
+    if (data.step > match_budget()) return;
 
     // Early exit if rewrites are impossible due to limits
     if (!can_create_states_at_step(data.step + 1)) return;
@@ -2449,7 +2466,7 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
 
 bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRecord& out) {
     if (should_stop_.load(std::memory_order_relaxed)) return false;
-    if (data.step > max_steps_) return false;
+    if (data.step > match_budget()) return false;
 
     // Early exit if rewrites are impossible due to limits
     if (!can_create_states_at_step(data.step + 1)) return false;
