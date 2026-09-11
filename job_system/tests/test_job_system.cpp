@@ -632,6 +632,20 @@ TEST(JobSystemOverflow, AJobRunOnASubmittingThreadDoesNotRecycleItsScratch) {
     js.set_on_job_complete([&] {
         if (std::this_thread::get_id() == here) recycled_here.fetch_add(1);
     });
+    // The calls made around each job run here, in order: +1 before it, -1 after it.
+    std::vector<int> inline_calls;
+    int inline_depth = 0;
+    js.set_on_inline_job(
+        [&] {
+            if (std::this_thread::get_id() != here) return;
+            inline_calls.push_back(+1);
+            ++inline_depth;
+        },
+        [&] {
+            if (std::this_thread::get_id() != here) return;
+            inline_calls.push_back(-1);
+            --inline_depth;
+        });
     js.start();
 
     // The one worker is held inside a job, so nothing drains the injector while it fills.
@@ -669,6 +683,11 @@ TEST(JobSystemOverflow, AJobRunOnASubmittingThreadDoesNotRecycleItsScratch) {
         << "a job run nested on the submitting thread recycled the scratch the job outside it holds";
     EXPECT_EQ(recycled_here.load(), 0)
         << "a job run on the submitting thread recycled the scratch the submitter holds";
+    // Each job run here was bracketed, the nested one inside the one that submitted it, so
+    // each can give back exactly the scratch it took.
+    EXPECT_EQ(inline_calls, (std::vector<int>{+1, -1, +1, +1, -1, -1}))
+        << "the jobs run on the submitting thread were not each bracketed by the inline calls";
+    EXPECT_EQ(inline_depth, 0);
 
     release.store(true);
     js.wait_for_completion();

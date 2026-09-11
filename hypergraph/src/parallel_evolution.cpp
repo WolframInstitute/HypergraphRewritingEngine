@@ -21,6 +21,18 @@
 namespace HG_NAMESPACE {
 namespace engine {
 
+namespace {
+
+// The scratch marks of the jobs running on this thread because every queue was full,
+// innermost last (see JobSystem::run_inline_).
+using ScratchMarks = std::vector<ConcurrentHeterogeneousArena::Marker>;
+ScratchMarks& inline_scratch_marks() {
+    HG_THREAD_LOCAL(ScratchMarks, marks, ScratchMarks{});
+    return marks;
+}
+
+}  // namespace
+
 // =============================================================================
 // Constructor / Destructor
 // =============================================================================
@@ -57,6 +69,17 @@ ParallelEvolutionEngine::ParallelEvolutionEngine(Hypergraph* hg, size_t num_thre
     // Recycle each worker's scratch arena after every job — temporaries allocated
     // during a task are reclaimed in bulk, keeping malloc off the hot path.
     job_system_->set_on_job_complete([] { worker_scratch().reset(); });
+    // A job run on the thread that submitted it, because every queue was full, gives back
+    // exactly the scratch it took: the arena is marked before it runs and released to that
+    // mark after, so what the submitter holds below the mark stays. The marks nest as the
+    // jobs do.
+    job_system_->set_on_inline_job(
+        [] { inline_scratch_marks().push_back(worker_scratch().mark()); },
+        [] {
+            ScratchMarks& marks = inline_scratch_marks();
+            worker_scratch().release(marks.back());
+            marks.pop_back();
+        });
     // Before start(): the workers read this as they enter their loop, and none exists yet.
     job_system_->set_worker_cpus(std::move(worker_cpus));
     job_system_->start();

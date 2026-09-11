@@ -282,6 +282,9 @@ private:
     // Optional hook run on the worker thread after EACH job's execute() — used to
     // recycle the per-worker scratch arena between tasks (allocation architecture).
     std::function<void()> on_job_complete_;
+    // Called before and after a job run on the thread that submitted it (run_inline_).
+    std::function<void()> on_inline_begin_;
+    std::function<void()> on_inline_end_;
 
     // Identify the worker (if any) running on the current thread for THIS system, so a
     // nested submit can go straight to that worker's own deque.
@@ -554,7 +557,8 @@ private:
     // every queue was full (see enqueue): on_job_complete_ resets that thread's scratch arena,
     // and the submitter -- a job further out on the stack, or code seeding work from a thread
     // that is not a worker -- still holds live allocations in it. The job's own scratch sits
-    // above the submitter's high-water mark and stays until the arena is next reset.
+    // above the submitter's high-water mark, and run_inline_ gives it back when the job
+    // returns.
     // `data` is null when a non-worker submitter runs an overflowed job on its own thread;
     // the per-worker counters simply do not apply to it.
     void run_job(WorkerData* data, JobRaw job, bool recycle_scratch = true) {
@@ -688,6 +692,19 @@ private:
         while (auto opt = injector_.try_pop_front()) delete *opt;
     }
 
+    // A job run on the thread that submitted it, because there was no room to queue it (see
+    // enqueue). It must not recycle that thread's scratch arena: whatever submitted it still
+    // holds live allocations there -- on a worker the job further out on this stack, on any
+    // other thread the code seeding work (evolve_more builds its resume lists there) -- and
+    // the jobs this one submits may run here too, nested inside it. So it gives back exactly
+    // the scratch it took: on_inline_begin_ marks the arena before it runs, and on_inline_end_
+    // releases back to that mark after.
+    void run_inline_(WorkerData* data, JobRaw raw) {
+        if (on_inline_begin_) on_inline_begin_();
+        run_job(data, raw, /*recycle_scratch=*/false);
+        if (on_inline_end_) on_inline_end_();
+    }
+
     // Route a job to the current worker's own deque (nested submit) or the injector.
     //
     // NOTHING BLOCKS HERE. A full queue is answered by doing the work on the calling thread,
@@ -699,12 +716,11 @@ private:
     void enqueue(JobRaw raw) {
         // Serial: everything goes through the injector FIFO; the draining thread is the
         // only executor, so there is nobody to wake. A full injector runs the job right
-        // here -- possibly inside the submitting job, so the scratch arena is not
-        // recycled (the job further out on this stack may hold live allocations in it);
-        // the next drain-loop job recycles as usual.
+        // here, possibly inside the submitting job (run_inline_); the next drain-loop job
+        // recycles as usual.
         if (serial_) {
             if (injector_.try_push_back(raw)) return;
-            run_job(nullptr, raw, /*recycle_scratch=*/false);
+            run_inline_(nullptr, raw);
             return;
         }
         const bool on_worker = (t_sys_ == this && t_worker_ != nullptr);
@@ -736,11 +752,8 @@ private:
             wake_one_worker();
             return;
         }
-        // Both full. Run it here, and leave this thread's scratch arena alone: whatever
-        // submitted the job still holds live allocations in it -- on a worker, the job further
-        // out on this stack; on any other thread, the code seeding work (evolve_more builds its
-        // resume lists there) and every job this call runs before it returns.
-        run_job(on_worker ? t_worker_ : nullptr, raw, /*recycle_scratch=*/false);
+        // Both full. Run it here (run_inline_).
+        run_inline_(on_worker ? t_worker_ : nullptr, raw);
     }
 
 public:
@@ -773,6 +786,14 @@ public:
     // Register a callback run on the worker thread after EACH job completes (after
     // execute(), even on error). Used to reset per-worker scratch between tasks.
     void set_on_job_complete(std::function<void()> cb) { on_job_complete_ = std::move(cb); }
+    // Register the calls made around a job run on the thread that submitted it because every
+    // queue was full (run_inline_): `begin` before it runs and `end` after, on that thread,
+    // nested when one such job submits another. Used to give back exactly the scratch the job
+    // took, where on_job_complete_ would recycle what its submitter still holds.
+    void set_on_inline_job(std::function<void()> begin, std::function<void()> end) {
+        on_inline_begin_ = std::move(begin);
+        on_inline_end_ = std::move(end);
+    }
 
     // Bind each worker to a logical CPU, before start(). Worker i takes cpus[i % cpus.size()].
     //
