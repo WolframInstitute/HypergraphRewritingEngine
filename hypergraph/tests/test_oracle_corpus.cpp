@@ -571,6 +571,50 @@ TEST(OracleCorpus, SteeredContinuationsUnderQuotientExplorationLoseNoState) {
     }
 }
 
+// Matching the frontier changes no state or event count, at a bounded budget and at closure.
+//
+// With the frontier matched, matching runs one step past the budget and only the rewrites wait.
+// A run to closure passes SIZE_MAX, and SIZE_MAX + 1 wrapped to zero, which deferred every match
+// task: the run stopped at its initial state with nothing to say why.
+TEST(OracleCorpus, MatchingTheFrontierChangesNoStateOrEventCount) {
+    struct Run {
+        size_t states, events, waiting;
+    };
+    auto run = [](const RewriteRule& rule, const std::vector<std::vector<VertexId>>& init,
+                  size_t steps, bool match_frontier) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        ParallelEvolutionEngine e(&hg, 4);
+        e.set_continuable(true);
+        e.set_match_frontier(match_frontier);
+        e.add_rule(rule);
+        e.evolve(init, steps);
+        return Run{hg.num_states(), hg.num_events(), e.deferred_rewrites().size()};
+    };
+    // {{x,y},{x,z}} -> {{x,z},{x,w},{y,w},{z,w}} grows without end, so a bounded run has a
+    // frontier.
+    const RewriteRule growth = hypergraph::make_rule(0).lhs({0, 1}).lhs({0, 2})
+                                   .rhs({0, 2}).rhs({0, 3}).rhs({1, 3}).rhs({2, 3}).build();
+    const std::vector<std::vector<VertexId>> growth_init = {{1, 2}, {1, 3}};
+    const Run bounded_off = run(growth, growth_init, 3, false);
+    const Run bounded_on = run(growth, growth_init, 3, true);
+    EXPECT_EQ(bounded_on.states, bounded_off.states);
+    EXPECT_EQ(bounded_on.events, bounded_off.events);
+    EXPECT_GT(bounded_on.waiting, 0u) << "the frontier's matches were not found and held";
+
+    // {{x,y},{y,z}} -> {{x,z}} shortens a path by one edge per rewrite, so it terminates.
+    const RewriteRule shrink =
+        hypergraph::make_rule(0).lhs({0, 1}).lhs({1, 2}).rhs({0, 2}).build();
+    const std::vector<std::vector<VertexId>> path = {{0, 1}, {1, 2}, {2, 3}, {3, 4}};
+    const Run closure_off = run(shrink, path, SIZE_MAX, false);
+    const Run closure_on = run(shrink, path, SIZE_MAX, true);
+    EXPECT_GT(closure_off.events, 0u) << "the rule performed no rewrite, so this tests nothing";
+    EXPECT_EQ(closure_on.states, closure_off.states)
+        << "matching the frontier changed a run to closure's state count";
+    EXPECT_EQ(closure_on.events, closure_off.events)
+        << "matching the frontier changed a run to closure's event count";
+}
+
 // STATIC ANALYSIS: what the rules alone decide, checked against what the engine builds.
 //
 // can_branch is sound in ONE direction. False means two matches can never share a consumed edge,

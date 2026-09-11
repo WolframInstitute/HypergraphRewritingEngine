@@ -752,10 +752,13 @@ private:
     // matches wait, on which edges -- needs them found without performing
     // them. With this on, matching runs one step past the budget and only the
     // rewrites are deferred; the matches are stored and reported as any
-    // match is, and a continuation performs the deferred rewrites.
+    // match is, and a continuation performs the deferred rewrites. A run to
+    // closure has SIZE_MAX as its budget and no step past it, so the bound
+    // stays SIZE_MAX rather than wrapping to zero.
     bool match_frontier_{false};
     [[nodiscard]] size_t match_budget() const {
-        return step_budget() + (match_frontier_ ? 1u : 0u);
+        const size_t steps = step_budget();
+        return match_frontier_ && steps != SIZE_MAX ? steps + 1u : steps;
     }
     size_t max_states_{0};
     size_t max_events_{0};
