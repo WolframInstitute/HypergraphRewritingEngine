@@ -615,6 +615,51 @@ TEST(OracleCorpus, MatchingTheFrontierChangesNoStateOrEventCount) {
         << "matching the frontier changed a run to closure's event count";
 }
 
+// A steered step advances every named frontier entry one step from the step it waits at.
+//
+// A reader pressing Evolve names every frontier state. After a steered step those states wait at
+// different steps, and one ceiling for the whole call -- the deepest named entry's step plus the
+// steps asked for, less one -- let the shallower entries run on to that depth. With one event per
+// rewrite and the frontier matched, a step naming every frontier state performs exactly the
+// rewrites that waited and none of the rewrites they produce.
+TEST(OracleCorpus, ASteeredStepAdvancesEveryNamedEntryOneStepFromWhereItWaits) {
+    Hypergraph hg;
+    hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+    hg.set_event_signature_keys(hgcommon::EVENT_SIG_NONE);
+    ParallelEvolutionEngine e(&hg, 4);
+    e.add_rule(hypergraph::make_rule(0).lhs({0, 1}).lhs({0, 2})
+                   .rhs({0, 2}).rhs({0, 3}).rhs({1, 3}).rhs({2, 3}).build());
+    e.set_continuable(true);
+    e.set_match_frontier(true);
+    e.evolve({{1, 2}, {1, 3}}, 1);
+
+    const auto first = e.frontier();
+    ASSERT_GE(first.size(), 2u) << "one frontier state, so a steer leaves nothing behind";
+    const std::unordered_set<StateId> one{first.front().first};
+    e.evolve_more(1, &one);
+
+    std::set<uint32_t> waits_at;
+    std::unordered_set<StateId> every;
+    for (const auto& f : e.frontier()) {
+        waits_at.insert(f.second);
+        every.insert(f.first);
+    }
+    ASSERT_GE(waits_at.size(), 2u) << "the frontier waits at one step, so this tests nothing";
+    const uint32_t deepest = *waits_at.rbegin();
+    const size_t waiting = e.deferred_rewrites().size();
+    const size_t events_before = hg.num_events();
+
+    e.evolve_more(1, &every);
+
+    EXPECT_EQ(hg.num_events(), events_before + waiting)
+        << "a step naming every frontier state performed a different number of rewrites than "
+           "waited, so a shallower entry ran on past one step";
+    for (const auto& f : e.frontier()) {
+        EXPECT_LE(f.second, deepest + 1)
+            << "an entry waits more than one step past the deepest step the frontier waited at";
+    }
+}
+
 // STATIC ANALYSIS: what the rules alone decide, checked against what the engine builds.
 //
 // can_branch is sound in ONE direction. False means two matches can never share a consumed edge,

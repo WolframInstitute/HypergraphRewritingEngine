@@ -1390,34 +1390,10 @@ void ParallelEvolutionEngine::evolve_more(size_t additional_steps,
     // reconstruction still has to replay every depth up to the budget. The frontier and the
     // replay bound are different quantities, and only the first can be empty here.
     max_steps_ += additional_steps;
-    // THE CEILING FOR THIS CALL. A frontier entry carries the step its state
-    // is waiting to be matched at, so letting the selected entries run at
-    // their own step and no further is exactly the steps the caller asked
-    // for. An unsteered call keeps no ceiling and behaves as it always has.
+    // Each pass of a steered call sets its own ceiling below; an unsteered call keeps none.
     continuation_ceiling_ = 0;
     ContinuationCeilingScope ceiling_scope{&continuation_ceiling_};
-    if ((only_from != nullptr || only_match != nullptr) && additional_steps > 0) {
-        uint32_t deepest = 0;
-        bool any = false;
-        // A single-match steer resumes no match task, so only the rewrites it accepts bound it.
-        if (only_match == nullptr) {
-            deferred_frontier_.for_each([&](const DeferredMatch& d) {
-                if (only_from->count(d.state) == 0) return;
-                if (!any || d.step > deepest) deepest = d.step;
-                any = true;
-            });
-        }
-        deferred_rewrites_.for_each([&](const DeferredRewrite& d) {
-            if (only_from != nullptr && only_from->count(d.match.source_state) == 0) return;
-            if (only_match != nullptr && !(*only_match)(d.match)) return;
-            if (!any || d.step > deepest) deepest = d.step;
-            any = true;
-        });
-        if (any) {
-            continuation_ceiling_ =
-                static_cast<size_t>(deepest) + additional_steps - 1u;
-        }
-    }
+    const bool steered = only_from != nullptr || only_match != nullptr;
     // The reconstruction carries its own depth bound and expands nothing at or past it, so
     // raising the engine's alone leaves the replay standing at the depth the first call
     // stopped on while the exploration goes on past it, and the two then answer about
@@ -1481,32 +1457,87 @@ void ParallelEvolutionEngine::evolve_more(size_t additional_steps,
         return only_from == nullptr || only_from->find(s) != only_from->end();
     };
 
-    // Rewrites first: they mint the transitions the budget stranded, and doing them before the
-    // frontier's matching means the states they create are matched in the same pass.
+    // The entries this call resumes; every other entry goes back on the frontier now. Held on
+    // the heap: they outlive the waits between passes, and in serial mode the calling thread
+    // drains the jobs itself and resets its scratch arena after each one.
+    std::vector<DeferredRewrite> go_rw;
     for (const DeferredRewrite& d : resume_rw) {
         if (!selected(d.match.source_state) ||
             (only_match != nullptr && !(*only_match)(d.match))) {
             defer_rewrite_task(d.match, d.step);
             continue;
         }
-        submit_rewrite_task(d.match, d.step);
+        go_rw.push_back(d);
     }
+    std::vector<DeferredMatch> go_m;
     for (const DeferredMatch& d : resume) {
         if (!selected(d.state) || only_match != nullptr) {
             defer_match_task(d.state, d.step);
             continue;
         }
-        // Quotient exploration matches a canonical state once, under a claim, so its frontier
-        // resumes through the same decision the relaxation walk makes rather than a second
-        // copy of it.
-        if (!explore_from_canonical_states_only_) submit_match_task(d.state, d.step);
-        else if (claim_canonical_for_expansion(d.state)) submit_match_task(d.state, d.step);
+        go_m.push_back(d);
     }
-    // The frontier is in: depth 0 may settle, exactly as after the roots are seeded.
-    depth_join_.mark_roots_seeded();
-    try_complete_depth(0);
 
-    job_system_->wait_for_completion();
+    // One pass resumes the named entries waiting at `step`, or every named entry when `all`.
+    auto run_pass = [&](bool all, uint32_t step) {
+        // Rewrites first: they mint the transitions the budget stranded, and doing them before
+        // the frontier's matching means the states they create are matched in the same pass.
+        for (const DeferredRewrite& d : go_rw) {
+            if (all || d.step == step) submit_rewrite_task(d.match, d.step);
+        }
+        for (const DeferredMatch& d : go_m) {
+            if (!all && d.step != step) continue;
+            // Quotient exploration matches a canonical state once, under a claim, so its
+            // frontier resumes through the same decision the relaxation walk makes rather than
+            // a second copy of it.
+            if (!explore_from_canonical_states_only_) submit_match_task(d.state, d.step);
+            else if (claim_canonical_for_expansion(d.state)) submit_match_task(d.state, d.step);
+        }
+        // The frontier is in: depth 0 may settle, exactly as after the roots are seeded.
+        depth_join_.mark_roots_seeded();
+        try_complete_depth(0);
+        job_system_->wait_for_completion();
+    };
+
+    if (!steered) {
+        run_pass(true, 0);
+    } else {
+        // ONE PASS PER STEP A NAMED ENTRY WAITS AT, SHALLOWEST FIRST. A steered call advances
+        // each named entry `additional_steps` from the step it waits at, and after any steered
+        // call the frontier waits at more than one step. One ceiling for the whole call lets the
+        // shallower entries run on to the deepest entry's ceiling, so each pass sets the ceiling
+        // for its own step: step + additional_steps - 1. A pass resumes only its own entries,
+        // so what an earlier pass defers stays on the frontier.
+        std::vector<uint32_t> steps;
+        steps.reserve(go_rw.size() + go_m.size());
+        for (const DeferredRewrite& d : go_rw) steps.push_back(d.step);
+        for (const DeferredMatch& d : go_m) steps.push_back(d.step);
+        std::sort(steps.begin(), steps.end());
+        steps.erase(std::unique(steps.begin(), steps.end()), steps.end());
+        for (size_t g = 0; g < steps.size(); ++g) {
+            const size_t step = steps[g];
+            continuation_ceiling_ = additional_steps - 1u > SIZE_MAX - step
+                                        ? SIZE_MAX
+                                        : step + additional_steps - 1u;
+            // Each pass settles its own depths.
+            if (g > 0) reset_depth_join();
+            run_pass(false, steps[g]);
+            // A pass that stopped (request_stop, a limit, a worker error) leaves the later
+            // passes' entries on the frontier, where a later call resumes them.
+            if (should_stop_.load(std::memory_order_relaxed) ||
+                last_error() != job_system::ErrorType::None) {
+                for (size_t h = g + 1; h < steps.size(); ++h) {
+                    for (const DeferredRewrite& d : go_rw) {
+                        if (d.step == steps[h]) defer_rewrite_task(d.match, d.step);
+                    }
+                    for (const DeferredMatch& d : go_m) {
+                        if (d.step == steps[h]) defer_match_task(d.state, d.step);
+                    }
+                }
+                break;
+            }
+        }
+    }
     raise_worker_error();
     finalize_evolution();
 }

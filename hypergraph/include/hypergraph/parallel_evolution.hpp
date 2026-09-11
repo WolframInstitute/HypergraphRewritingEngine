@@ -722,22 +722,22 @@ private:
     // Evolution control
     std::atomic<bool> should_stop_{false};
     size_t max_steps_{0};
-    // A CEILING FOR ONE STEERED CONTINUATION, at or below max_steps_.
+    // THE CEILING FOR ONE PASS OF A STEERED CONTINUATION, at or below max_steps_.
     //
     // evolve_more RAISES the budget for the whole run, so a steered call that
-    // expands a state sitting well below the standing budget advances that
-    // state AND everything it creates until they reach the budget: a caller
-    // that asked for one step gets as many as the deepest branch has already
-    // taken. Measured on the 2-to-4 rule, expanding a state at depth 2 with
-    // the budget standing at 4 turned 15 states into 71.
+    // expands a state sitting well below the standing budget would advance that
+    // state AND everything it creates until they reach the budget. Measured on
+    // the 2-to-4 rule, expanding a state at depth 2 with the budget standing at
+    // 4 turned 15 states into 71.
     //
-    // The ceiling bounds a steered continuation to the steps it asked for,
-    // whatever depth the run has reached elsewhere. Work above it is DEFERRED
-    // rather than dropped, exactly as work above max_steps_ is, so what it
-    // stops at stays on the frontier and a later call resumes it.
+    // A steered call runs one pass per step its named entries wait at, and each
+    // pass's ceiling is that step + additional_steps - 1, so every named entry
+    // advances the steps asked for from where it waits. Work above the ceiling
+    // is DEFERRED rather than dropped, exactly as work above max_steps_ is, so
+    // what it stops at stays on the frontier and a later call resumes it.
     //
-    // Zero means no ceiling, which is what an unsteered evolve() leaves it
-    // at, so this changes nothing for a caller that does not steer.
+    // Zero means no ceiling, which is what evolve() and an unsteered
+    // evolve_more leave it at.
     size_t continuation_ceiling_{0};
     [[nodiscard]] size_t step_budget() const {
         return continuation_ceiling_ != 0 && continuation_ceiling_ < max_steps_
@@ -1234,9 +1234,9 @@ public:
     void set_continuable(bool on);
     bool continuable() const;
 
-    // Carry the SAME run `additional_steps` further, from the frontier where the budget stopped
-    // it. Equivalent to having asked for the total in the first place; the states, events and
-    // relations already built are kept rather than recomputed.
+    // Unsteered, carry the SAME run `additional_steps` further, from the frontier where the
+    // budget stopped it. Equivalent to having asked for the total in the first place; the
+    // states, events and relations already built are kept rather than recomputed.
     //
     // Throws unless the run was made continuable before evolve(): without the frontier there is
     // nothing to resume from, and returning the unchanged graph would be a wrong answer that
@@ -1247,14 +1247,17 @@ public:
     // mean "abandon the others", and a caller comparing a steered exploration against an
     // exhaustive one would find states missing with nothing to say why. A deferred rewrite is
     // selected by the state its match sits on, since submitting it while retaining that state
-    // would half-expand a branch the caller asked to leave alone.
+    // would half-expand a branch the caller asked to leave alone. Each named entry advances
+    // `additional_steps` from the step it waits at: entries waiting at different steps run in
+    // separate passes, shallowest first, so a shallow entry does not run on to a deeper one's
+    // depth.
     //
     // `only_match` STEERS BY ONE MATCH: when non-null, a deferred rewrite is performed only if it
     // accepts that rewrite's match too, and no deferred MATCH task is resumed. That half-expands
     // a state on purpose -- one transition out of it, its other rewrites still deferred, so it
-    // stays on the frontier and a later call performs them. The ceiling bounds the call as it
-    // does for `only_from`, over the rewrites accepted. It is asked about a record more than
-    // once, so it answers from the record alone.
+    // stays on the frontier and a later call performs them. Each accepted rewrite advances from
+    // the step it waits at, as for `only_from`. It is asked about a record more than once, so
+    // it answers from the record alone.
     void evolve_more(size_t additional_steps,
                      const std::unordered_set<StateId>* only_from = nullptr,
                      const std::function<bool(const MatchRecord&)>* only_match = nullptr);
