@@ -217,7 +217,7 @@ hash for a given state by construction rather than by two implementations being 
 is device-specific is the orchestration only: how a state is flattened out of the adjacency
 representation, and where the core's scratch comes from.
 
-The parallelism is across states, not within one. A worker canonicalizes one state per call,
+Parallelism runs across states rather than within one. A worker canonicalizes one state per call,
 running the shared body serially, which suits a workload whose states arrive continuously and
 number in the thousands rather than one whose individual instances are large. The scratch for that
 call is sized from the state's own edge and occurrence counts and claimed from the device arena of
@@ -226,8 +226,8 @@ Section~\ref{sec:gpu-constraint}, so there is no per-state ceiling and no batch 
 There is consequently no approximate fallback anywhere on this path. A state the exact path cannot
 key (because the arena is exhausted, or because the search wants more individualization depth than
 the device attempts) is reported as a capacity overflow and the run is retried with a larger
-reservation, and it is never keyed by a coarser invariant. This is not a tuning preference, because
-isomorphism-invariance fails in only one direction: a 1-dimensional Weisfeiler--Leman hash never
+reservation, and it is never keyed by a coarser invariant. Isomorphism-invariance fails in only
+one direction: a 1-dimensional Weisfeiler--Leman hash never
 separates two isomorphic states, but it does merge non-isomorphic ones, which the engine
 demonstrates constructively on the prism graph against $K_{3,3}$ at six vertices and on the
 rook's $4 \times 4$ graph against the Shrikhande graph. Nothing bounds how often an evolution
@@ -237,8 +237,8 @@ the merge as rare. The only additional device-side hash is the content-ordered k
 
 Where a device-side event signature must stand in a raw edge identifier because an edge's canonical
 rank was unavailable at the moment the event was stamped, the substitution is counted. Such a
-signature is not an isomorphism invariant, and the count is what lets a caller comparing event
-totals across devices see that it occurred rather than infer a disagreement in the evolution.
+signature is not an isomorphism invariant, and the count lets a caller comparing event totals
+across devices attribute the difference to the substitution rather than to the evolution.
 
 \subsection{GPU Pattern Matching}
 
@@ -281,11 +281,11 @@ advances by exactly one capacity per lap and the three tests remain exact across
 ordering is established by that handshake (a release store by the producer synchronizing with the
 consumer's acquire load), so the head and tail cursors, which only allocate positions, are relaxed.
 
-Reservation is a compare-and-swap on the cursor rather than an unconditional increment. The
-difference matters precisely because the same workers both produce and consume: an unconditional
+Reservation is a compare-and-swap on the cursor. The same workers both produce and consume, and
+an unconditional
 bump has nothing to undo with, and a rollback or a give-the-slot-back store can land on a slot
 another thread has already taken, which either loses an item or hands one out twice. In a queue
-whose producers are its consumers, a lost item is not a dropped unit of work but a run that never
+whose producers are its consumers, a lost item costs more than the work it held: the run never
 finishes, because the termination detector waits for a completion that can no longer occur.
 
 A resident kernel whose workers pull from queues cannot end when a launch ends, so termination is
@@ -408,13 +408,13 @@ sharing one word: $1.33 \times 10^8$ operations per second at one thread against
 reduction; the injector is shared and does, so it holds only overflow and external
 submissions.
 
-Neither queue offers a blocking push or pop. For a worker this is not a preference but a
-requirement: a worker parked inside a push cannot pop, so if every worker parked there the queues
+Neither queue offers a blocking push or pop, which a worker requires: a worker parked inside a
+push cannot pop, so if every worker parked there the queues
 would never drain again; and since expansion is combinatorial and submits from inside running
 jobs, saturating a local deque and the injector together is reachable rather than hypothetical. A
 full queue is answered by running the job on the calling thread, which always makes progress.
 
-A worker with no available work does not spin indefinitely. It waits on a 32-bit address through
+A worker with no available work waits on a 32-bit address through
 the platform's own primitive (\texttt{futex} on Linux, \texttt{WaitOnAddress} on Windows,
 \texttt{os\_sync\_wait\_on\_address} on macOS), so a blocked worker consumes no cycles and is woken
 by the thread that supplies the work. No mutex or condition variable is used on any of these

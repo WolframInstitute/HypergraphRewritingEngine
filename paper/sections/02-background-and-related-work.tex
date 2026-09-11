@@ -81,7 +81,8 @@ whose every exposed property is graph-valued, so its time necessarily includes b
 \texttt{Graph} objects; and this project's \emph{reference implementation}, a direct
 transcription of the definition that serves as the correctness oracle throughout this work and
 returns data rather than graphs. The term \emph{reference implementation} always denotes the
-latter, never SetReplace. Wall-time comparisons are meaningful only between systems computing the same object.
+latter, never SetReplace. A wall-time comparison between two systems is reported here only where
+both compute the same object.
 
 
 \textbf{Subgraph matching on hypergraphs:} HGMatch~\cite{yang2023hgmatch} matches by hyperedge rather than vertex by vertex, seeding a join from one pattern hyperedge and extending it one hyperedge at a time, and partitions candidate hyperedges by a label-derived signature to restrict enumeration. HGMatch also organizes execution as a dataflow with a task scheduler performing fine-grained dynamic work stealing. Our matcher adopts all three: the join is organized as a seeding scan followed by expansions that each bind one further pattern edge (Section~\ref{sec:matching-algorithm}), and because hyperedges here are unlabelled, the signature that partitions candidates is instead the vertex-repetition pattern of an edge (Definition~\ref{def:signature}), which plays the same filtering role for unlabelled data. Where an expansion has a variable already bound, candidates come from the vertex index rather than the signature bucket; on the device this replaced a global signature walk and reduced match-kernel time on one workload from 944\,ms to 4\,ms.

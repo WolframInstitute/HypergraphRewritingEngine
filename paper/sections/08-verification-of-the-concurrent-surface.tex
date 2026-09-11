@@ -2,7 +2,7 @@
 \label{sec:verification}
 
 The engine holds no lock, so every property that a lock would have enforced is instead a
-consequence of an ordering argument. Arguments of that kind are checked poorly by testing. A stress test samples
+consequence of an ordering argument, and testing bounds such an argument weakly. A stress test samples
 interleavings, so a clean run bounds nothing: on this engine a determinism gate of 150 runs (90
 recorded, then 40 and 20 more under load) explores a vanishing fraction of the schedules
 its own thread count admits, and the schedules that matter are not the likely ones. Two verification layers are
@@ -44,7 +44,7 @@ shape, which couples it to the code it is about. Two harnesses cannot meet the c
 the protocols they check live inside functions the interpreter cannot take, and both say so in
 place: their transcriptions are copied verbatim and run over the real underlying structure.
 
-The properties checked are the ones whose failure would be silent. For the concurrent map: that
+Each property checked here is one whose failure would be silent. For the concurrent map: that
 get-or-create admits exactly one winner and returns that winner to every caller, so a
 \emph{was\_inserted} result means what its callers assume. That this survives a table resize
 running concurrently with the inserts that triggered it, and survives two successive growths, and
@@ -94,7 +94,7 @@ instruments: a progress heartbeat over the transformation passes and the explora
 estimation mode, an attribution of the state-space estimate to the reads and writes that
 produce it: every access with more than one alternative is booked against its source line
 with weight $\log_2$ of the alternative count, and the booked total equals $\log_2$ of the
-estimator's sample per execution. That attribution is what identified the two changes that
+estimator's sample per execution. That attribution identified the two changes that
 made the composed harnesses tractable: an idle worker's empty pop of its deque wrote its
 \texttt{bottom} word twice per look, giving every thief's read of that word one reads-from
 alternative per store, and the workers were spawned with distinct arguments, which kept the

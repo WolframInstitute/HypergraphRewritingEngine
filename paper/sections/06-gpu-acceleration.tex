@@ -51,8 +51,8 @@ Two properties of the device path follow from this constraint rather than being 
 \emph{Capacity overflow cannot be resolved by retrying with a larger allocation.} Enlarging a pool
 means allocating on the host, which is a round trip. A device-resident loop must therefore record
 the overflow and return the work completed so far, which is the behavior described in
-Section~\ref{sec:capacity}. On the device that behavior is not one option among several; it is
-the only one available, and it is why capacities are sized from configuration before the launch.
+Section~\ref{sec:capacity}. The device has no alternative to that behavior, so capacities are
+sized from configuration before the launch.
 
 \emph{The canonicalizer's scratch cannot be sized by measuring the workload.} Sizing a scratch slot
 to the largest state in a batch requires knowing the batch, and a resident loop has no batch:

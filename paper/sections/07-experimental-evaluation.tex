@@ -286,8 +286,8 @@ $\SysTimeGrowth\times$.}
 \end{figure}
 
 \subsection{Parallel Efficiency by Rule Shape}
-The rule set decides how much parallel work exists, so a scaling curve characterizes the rule as
-much as the engine. Two shapes are measured at every thread count: a one-edge left-hand side,
+How much parallel work a run contains follows from the rule set, so a scaling curve characterizes
+the rule as much as the engine. Two shapes are measured at every thread count: a one-edge left-hand side,
 which re-matches by scanning an index and expands each state narrowly, and a two-edge left-hand
 side, which joins and produces a wider frontier. With both shapes sized to seconds of
 single-threaded work, their efficiency curves lie within a few points of each other at every
@@ -469,14 +469,14 @@ size is governed by how many matches overlap rather than by how many states exis
 Figure~\ref{fig:shape-space} plots both, and Table~\ref{tab:t14-shape-space} gives the deepest
 point reached by each shape: the greatest depth that both fitted the collection budget and did
 not reach a container ceiling, so the depths differ between rows by construction and are
-reported rather than held equal. Rows of that table that agree exactly are not duplicates.
-Raising a path's arity past three changes nothing the matcher sees, because consecutive edges
-already overlap in enough vertices to pin a match's orientation, so \texttt{chain2a3} and
-\texttt{chain2a4} describe the same search and report the same counts.
+reported rather than held equal. Two rows of that table carry identical counts without being
+duplicated entries: raising a path's arity past three leaves the search unchanged, because
+consecutive edges already overlap in enough vertices to pin a match's orientation, so
+\texttt{chain2a3} and \texttt{chain2a4} describe the same search.
 
 The one-edge left-hand side is the boundary case: it produces \emph{no} branchial edges at any
 depth, because a single-edge pattern cannot have two overlapping matches at one state to be
-branchially related. Every shape with two or more edges does.
+branchially related. Every shape with two or more edges produces them.
 
 \begin{figure}[htbp]
 \centering
@@ -637,7 +637,7 @@ Reaching that agreement is a property of how the reduction is defined rather tha
 
 \paragraph{Idle fraction under causal recording.} The attribution above reads the idleness of the corpus shapes producing few states as work not existing. With causal recording on this reading no longer holds for two of them: at depth six \texttt{cycle4} and \texttt{multirule} reconstruct causal relations orders of magnitude larger than their state counts, and both remain almost entirely idle. Hardware counters place them far from every ceiling (SM throughput $2.2\%$ of peak and DRAM $0.01\%$ on \texttt{cycle4}, Table~\ref{tab:device-occupancy}), and their lane efficiency is among the corpus's best, $9.8$ and $10.4$ of $32$, against $2.7$ on \texttt{wolfram24}, which the device completes faster than sixteen host threads (Table~\ref{tab:t7b-gpu-corpus}). The decisive comparison is that the kernel takes four times longer on \texttt{multirule}'s $49$ states than on \texttt{wolfram24}'s $9{,}820$.
 
-What separates the two regimes is the parallel width, and the corpus supplies a controlled comparison of that width. At depth six \texttt{cycle4} replays $68{,}185$ instances over $40$ classes and loses to the host; \texttt{wolfram24} replays $86{,}086$ over $9{,}820$ classes and beats it (Table~\ref{tab:t7b-gpu-corpus}). The instance counts are within $30\%$ of each other and the outcomes are opposite, so neither the amount of replay work nor the depth of the recursion is the discriminator. The state count is: a class is the unit over which the replay's instances are independent, and a run that collapses to forty classes has forty-fold width available however much work those classes hold. \texttt{cycle4} begins from a deliberately automorphic initial state, which is exactly the condition that collapses classes. The device's disadvantage on these shapes is therefore a shortage of independent work rather than an inability to execute the work it has, and raising occupancy against it would raise the idle count rather than the throughput.
+The two regimes differ in parallel width, and the corpus supplies a controlled comparison of that width. At depth six \texttt{cycle4} replays $68{,}185$ instances over $40$ classes and loses to the host; \texttt{wolfram24} replays $86{,}086$ over $9{,}820$ classes and beats it (Table~\ref{tab:t7b-gpu-corpus}). The instance counts are within $30\%$ of each other and the outcomes are opposite, so neither the amount of replay work nor the depth of the recursion is the discriminator. The state count accounts for it: a class is the unit over which the replay's instances are independent, and a run that collapses to forty classes has forty-fold width available however much work those classes hold. \texttt{cycle4} begins from a deliberately automorphic initial state, which is exactly the condition that collapses classes. The device's disadvantage on these shapes is therefore a shortage of independent work rather than an inability to execute the work it has, and raising occupancy against it would raise the idle count rather than the throughput.
 
 The instances \emph{within} a class can be replayed concurrently, but they are serialized by the worklist:
 each driver takes its instances from a
@@ -650,9 +650,8 @@ $1{,}705\times$ and $2{,}992\times$), while \texttt{wolfram24} materialises $86{
 $9{,}820$ and \texttt{wpp} $15{,}967$ over $3{,}867$, ratios of $8.8\times$ and $4.1\times$. The
 instance counts are comparable across all four, between $16$ and $147$ thousand, while the class
 counts vary by a factor of $250$: the independent work available is similar everywhere and only the
-width the implementation exploits differs. The shapes that lose are those whose initial state
-collapses classes, and that collapse is the same condition that concentrates instances into few of
-them.
+width the implementation exploits differs. The shapes that lose are those whose initial state collapses classes, and the same collapse
+concentrates instances into few of them.
 
 The residual on these two workloads is attributed to the replay's work decomposition: the depth-first descent runs inline on the discovering thread, so a class's instances are walked by one driver, and a run that collapses to forty classes has forty drivers' worth of width however many instances those classes hold; the bound is stated as measured and not claimed as a lower bound on the problem.
 
@@ -681,8 +680,8 @@ The duration column is the profiler's and is read as such: the profiler serializ
 Match forwarding is the run-time performance switch that remains to ablate; every other
 replacement deleted its predecessor in the same commit, so no ``off'' arm exists to measure.
 The state-canonicalization and event-identity modes select which identity is computed, so
-their arms are not two routes to one answer and a wall-time ratio between them compares
-different computations; what separates them is reported in Section~\ref{sec:event-canon}, and
+their arms compute different answers and a wall-time ratio between them compares
+different computations; the difference between them is reported in Section~\ref{sec:event-canon}, and
 quotient exploration is reported separately in Table~\ref{tab:t6-quotient}. Each arm is a
 best-of-$N$ wall time (Table~\ref{tab:t9-ablation}), and forwarding is decided per rule set by
 the static analysis of Section~\ref{sec:static-analysis} rather than being switched on
@@ -814,7 +813,7 @@ second is written by the same author as the engine, from the same definition, wh
 independent implementation of the definition but not an independent party's implementation.
 
 \textbf{Workload scope.} Two corpora are used and they are different sizes. The oracle corpus
-is 17 rule-type workloads and is what Tables~\ref{tab:t1-exactness},
+is 17 rule-type workloads, reported by Tables~\ref{tab:t1-exactness},
 \ref{tab:t3-deheap} and~\ref{tab:event-canon} report; the left-hand-side sweep of
 Section~\ref{sec:lhs-space} generates 24 shapes of its own, reported by
 Table~\ref{tab:t14-shape-space}. Both were constructed to cover rule

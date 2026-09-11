@@ -235,8 +235,8 @@ $\sum \mathrm{mult}$. Every quantity propagates forward over the unrolled DAG, s
 is recovered by summation rather than by re-exploring, and recovering the counts takes time
 polynomial in the number of (canonical state, depth) pairs.
 
-Recovering the raw \emph{observables} is a different matter, and the distinction is the one that
-decides what quotient exploration costs. Mapping a multiplicity back to individual instances
+Recovering the raw \emph{observables} is a different matter, and the cost of quotient
+exploration follows from that distinction. Mapping a multiplicity back to individual instances
 requires distinguishing the edge roles within a class, which the edge orbits from the same IR pass
 provide (Section~\ref{sec:ir}); no additional canonicalization is performed.
 
@@ -419,9 +419,9 @@ reachability rather than on per-transition survival.
 The control that shifts the recovery curve keeps a connected skeleton: a cap of $k$ transitions per
 (state, rule) pair retains at most $k$ of a state's own transitions for each rule, selecting them
 by a deterministic pseudorandom rank of the canonical transition key mixed with the run's seed.
-Every state that is reached therefore keeps at least one outgoing transition, so the sample is a
-spanning substructure rather than a thinned scattering, and a different seed keeps a different
-skeleton, so the union over seeds grows in reachability, which is the quantity that was limiting.
+Every state that is reached therefore keeps at least one outgoing transition, so the sample spans
+the states it reaches. A different seed keeps a different skeleton, so the union over seeds grows
+in reachability.
 
 The selection is made when the state's matching completes rather than as matches arrive, because
 choosing $k$ of $M$ requires all $M$, and $M$ is known only at that point. Selecting by arrival
@@ -451,8 +451,8 @@ The restriction removes less than it appears to, because the step-wide populatio
 delivered a uniform sample: each match job received a reservoir of fixed capacity regardless of
 how many matches it saw, so a pair producing a thousand matches contributed no more samples than
 one producing twenty, and shuffling that skewed pool does not remove the skew. Uniformity within
-a (state, rule) stratum is the property the scheme had, is preserved, and is what its test
-checks; keying the population on the state keeps what was true and removes the barrier.
+a (state, rule) stratum was a property of the earlier scheme, is preserved here, and is the
+property its test asserts; keying the population on the state preserves it without a barrier.
 
 \subsection{Sessions}
 \label{sec:sessions}
@@ -463,8 +463,8 @@ derived structures, and closed. The unexplored frontier is retained between step
 session continues the existing exploration instead of recomputing it from the initial state, and a
 caller may inspect intermediate results before deciding how much further to evolve.
 
-The frontier is a separate structure from the identity map, because the map's one bit reads as
-\emph{seen} to deduplication and as \emph{expanded} to a worker. Measured on a two-edge to
+The frontier is a separate structure from the identity map, because the map holds one bit per
+state, and deduplication requires \emph{seen} while a worker requires \emph{expanded}. Measured on a two-edge to
 three-edge rule advanced to depth two and then three, against seven states and six events for a
 single run to depth three, rebuilding the maps per call re-derives every known state (ten
 states, nine events) and keeping only the maps never reaches the new depth (five states, four

@@ -149,7 +149,7 @@ state is.
 
 The two mechanisms partition the child's matches rather than overlapping: every match either
 touches a produced edge or does not, forwarding covers the second class and the delta scan the
-first. What does overlap is the delta scan with itself. A match touching $k$ produced edges is
+first. The delta scan does overlap with itself: a match touching $k$ produced edges is
 discovered $k$ times, once with each of them as the anchor, so the results are deduplicated on
 content rather than on the anchor that found them; duplicates here are routine rather than
 exceptional, so the deduplicating lookup precedes the allocation of a match record
