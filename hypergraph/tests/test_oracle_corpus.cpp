@@ -504,6 +504,73 @@ TEST(OracleCorpus, SteeringOneMatchPerformsThatRewriteAlone) {
     EXPECT_EQ(on_start(e.deferred_rewrites()), 0u) << "the start still has matches waiting";
 }
 
+// Steered continuations under quotient exploration lose no state.
+//
+// Quotient exploration claims a class before it submits the class's match task, and the resume
+// of a deferred class takes the same claim. A steered pass is bounded below the run's budget, so
+// a claim taken against the run's budget whose match task the pass then deferred left the class
+// claimed and never matched. Steering the shallowest frontier entry twice and then continuing
+// unsteered must reach every class and event a one-shot run to the same depth reaches.
+TEST(OracleCorpus, SteeredContinuationsUnderQuotientExplorationLoseNoState) {
+    struct Case {
+        const char* name;
+        RewriteRule rule;
+        std::vector<std::vector<VertexId>> init;
+    };
+    const std::vector<Case> cases = {
+        {"2-to-4",
+         hypergraph::make_rule(0).lhs({0, 1}).lhs({0, 2})
+             .rhs({0, 2}).rhs({0, 3}).rhs({1, 3}).rhs({2, 3}).build(),
+         {{1, 2}, {1, 3}}},
+        {"2-to-4 keeping {x,y}",
+         hypergraph::make_rule(0).lhs({0, 1}).lhs({0, 2})
+             .rhs({0, 1}).rhs({0, 3}).rhs({1, 3}).rhs({2, 3}).build(),
+         {{1, 2}, {1, 3}}},
+        {"path growth",
+         hypergraph::make_rule(0).lhs({0, 1}).lhs({1, 2})
+             .rhs({0, 1}).rhs({1, 2}).rhs({2, 3}).build(),
+         {{0, 1}, {1, 2}}},
+    };
+    auto shallowest = [](const ParallelEvolutionEngine& e) {
+        const auto f = e.frontier();
+        auto it = std::min_element(f.begin(), f.end(), [](const auto& a, const auto& b) {
+            return a.second != b.second ? a.second < b.second : a.first < b.first;
+        });
+        return it == f.end() ? INVALID_ID : it->first;
+    };
+    const size_t first = 2;
+    for (size_t threads : {size_t{1}, size_t{4}}) {
+        for (const Case& c : cases) {
+            Hypergraph steered;
+            steered.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+            ParallelEvolutionEngine e(&steered, threads);
+            e.set_explore_from_canonical_states_only(true);
+            e.add_rule(c.rule);
+            e.set_continuable(true);
+            e.evolve(c.init, first);
+            for (int s = 0; s < 2; ++s) {
+                const StateId pick = shallowest(e);
+                ASSERT_NE(pick, INVALID_ID) << c.name << ": the frontier emptied";
+                const std::unordered_set<StateId> only{pick};
+                e.evolve_more(1, &only);
+            }
+            e.evolve_more(1);
+
+            Hypergraph whole;
+            whole.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+            ParallelEvolutionEngine w(&whole, threads);
+            w.set_explore_from_canonical_states_only(true);
+            w.add_rule(c.rule);
+            w.evolve(c.init, first + 3);
+
+            EXPECT_EQ(steered.num_canonical_states(), whole.num_canonical_states())
+                << c.name << " at " << threads << " thread(s): the steered run lost classes";
+            EXPECT_EQ(steered.num_events(), whole.num_events())
+                << c.name << " at " << threads << " thread(s): the steered run lost events";
+        }
+    }
+}
+
 // STATIC ANALYSIS: what the rules alone decide, checked against what the engine builds.
 //
 // can_branch is sound in ONE direction. False means two matches can never share a consumed edge,

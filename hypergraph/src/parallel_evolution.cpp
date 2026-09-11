@@ -31,6 +31,15 @@ ScratchMarks& inline_scratch_marks() {
     return marks;
 }
 
+// The depth at and past which quotient exploration defers a state instead of claiming it. A
+// state at depth d is matched at step d + 1, which submit_match_task defers when
+// d + 1 > match_budget. The relaxation walk and the child path compare a depth against this
+// bound before they take the claim, so a claimed state is never deferred at the gate: a claimed
+// state that is deferred is never matched, because the resume takes the claim.
+uint32_t match_depth_bound(size_t match_budget) {
+    return static_cast<uint32_t>(std::min<size_t>(match_budget, INVALID_ID));
+}
+
 }  // namespace
 
 // =============================================================================
@@ -882,8 +891,7 @@ void ParallelEvolutionEngine::propagate_explore_depth(StateId canonical_state, u
     const LockFreeList<StateId>* kids = canon_children_.get(canonical_state);
     if (!kids) return;
 
-    const uint32_t budget =
-        static_cast<uint32_t>(std::min<size_t>(max_steps_, INVALID_ID));
+    const uint32_t budget = match_depth_bound(match_budget());
 
     // The worklist draws from the per-worker scratch arena and is reclaimed in bulk. It is
     // walked as a queue with a cursor, which is the breadth-first order relaxation wants.
@@ -1956,8 +1964,7 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
 
             if (!hg_->try_lower_explore_depth(rr.new_state, child_depth)) return;
 
-            const uint32_t budget =
-        static_cast<uint32_t>(std::min<size_t>(max_steps_, INVALID_ID));
+            const uint32_t budget = match_depth_bound(match_budget());
             // Past the budget this child is the frontier, not a dead end, so it is kept for a
             // continuation to resume from. The claim is NOT taken over budget: a shorter path
             // found later in this same run must still be able to relax this state below the
