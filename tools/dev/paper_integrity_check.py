@@ -74,6 +74,18 @@ COMMIT_ALLOWANCES = {
         "edges than that and builds edges of arity at most MAX_ARITY (16). No guard outcome "
         "and no constructed object differs on any measured input, so no state, event, causal "
         "or branchial count can move",
+    "118a0b8a856c7455dd40313c8c7fae6e82c0caed":
+        "passes recycle_scratch=false on the enqueue branch that runs a job on the submitting "
+        "thread when every queue is full; on a worker that branch already passed false, so the "
+        "change applies only to a thread that is not a worker. The branch runs only when a "
+        "submit finds the injector's 32,768 slots full. In a measured run the calling thread "
+        "submits only the root seeds, one per initial state, into an empty injector, then parks "
+        "in wait_for_completion, which pops no job; every later submit is made inside a job on "
+        "a worker; serial mode takes its own branch at the top of enqueue, which this commit "
+        "leaves unchanged; and no instrument named as a fragment source calls evolve_more, the "
+        "one path that seeds from the calling thread during a run. The changed call therefore "
+        "never executes on a measured path, so no state, event, causal or branchial count, and "
+        "no timing, can move",
 }
 
 VERDICT_RE = re.compile(r"\b(DIFFERS|FAILED|FAIL|NaN|nan|[-+]?inf)\b")
