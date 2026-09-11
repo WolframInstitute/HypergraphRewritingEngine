@@ -620,6 +620,61 @@ TEST(JobSystemSingleWorker, RunsEveryJobIncludingNestedSubmissions) {
     js.shutdown();
 }
 
+// A SUBMIT THAT FINDS EVERY QUEUE FULL RUNS THE JOB ON THE SUBMITTING THREAD, and that thread
+// need not be one of the workers: evolve_more seeds a continuation from its caller's thread, out
+// of resume lists it built in that thread's scratch arena. A job run there must leave the arena
+// alone, because the submitter -- and any job further out on the same stack -- still holds live
+// allocations in it. So on_job_complete_ is not called for a job run that way.
+TEST(JobSystemOverflow, AJobRunOnASubmittingThreadDoesNotRecycleItsScratch) {
+    job_system::JobSystem<TestJobType> js(1);
+    const std::thread::id here = std::this_thread::get_id();
+    std::atomic<int> recycled_here{0};
+    js.set_on_job_complete([&] {
+        if (std::this_thread::get_id() == here) recycled_here.fetch_add(1);
+    });
+    js.start();
+
+    // The one worker is held inside a job, so nothing drains the injector while it fills.
+    std::atomic<bool> holding{false};
+    std::atomic<bool> release{false};
+    js.submit(job_system::make_job([&] {
+        holding.store(true);
+        while (!release.load()) std::this_thread::yield();
+    }, TestJobType::GRAPHICS));
+    while (!holding.load()) std::this_thread::yield();
+
+    // Fill it. The first submit that finds it full runs its job here.
+    std::atomic<bool> overflowed{false};
+    const size_t most = 2 * static_cast<size_t>(HG_JOB_INJECTOR_CAPACITY);
+    for (size_t i = 0; i < most && !overflowed.load(); ++i) {
+        js.submit(job_system::make_job([&] {
+            if (std::this_thread::get_id() == here) overflowed.store(true);
+        }, TestJobType::GRAPHICS));
+    }
+    ASSERT_TRUE(overflowed.load()) << "the injector never filled, so no job ran on this thread";
+
+    // Still full: this job runs here, and so does the job it submits.
+    bool child_ran_here = false;
+    int recycled_while_running = -1;
+    js.submit(job_system::make_job([&] {
+        const int before = recycled_here.load();
+        js.submit(job_system::make_job([&] {
+            child_ran_here = std::this_thread::get_id() == here;
+        }, TestJobType::PHYSICS));
+        recycled_while_running = recycled_here.load() - before;
+    }, TestJobType::GRAPHICS));
+
+    EXPECT_TRUE(child_ran_here) << "the nested job did not run on the submitting thread";
+    EXPECT_EQ(recycled_while_running, 0)
+        << "a job run nested on the submitting thread recycled the scratch the job outside it holds";
+    EXPECT_EQ(recycled_here.load(), 0)
+        << "a job run on the submitting thread recycled the scratch the submitter holds";
+
+    release.store(true);
+    js.wait_for_completion();
+    js.shutdown();
+}
+
 TEST(JobSystemSerial, DrainsInlineInSubmissionOrder) {
     job_system::JobSystem<TestJobType> js(0, 4096, /*serial=*/true);
     EXPECT_EQ(js.get_num_workers(), 0u);

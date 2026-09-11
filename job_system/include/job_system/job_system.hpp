@@ -550,11 +550,11 @@ private:
         return nullptr;
     }
 
-    // recycle_scratch is false when this runs nested inside another job on the same
-    // thread (see enqueue): on_job_complete_ resets the per-worker scratch arena, and
-    // the job further out on the stack still holds live allocations in it. The nested
-    // job's own scratch sits above the outer job's high-water mark and is reclaimed
-    // when the outer job completes.
+    // recycle_scratch is false when this runs on the thread that submitted the job because
+    // every queue was full (see enqueue): on_job_complete_ resets that thread's scratch arena,
+    // and the submitter -- a job further out on the stack, or code seeding work from a thread
+    // that is not a worker -- still holds live allocations in it. The job's own scratch sits
+    // above the submitter's high-water mark and stays until the arena is next reset.
     // `data` is null when a non-worker submitter runs an overflowed job on its own thread;
     // the per-worker counters simply do not apply to it.
     void run_job(WorkerData* data, JobRaw job, bool recycle_scratch = true) {
@@ -736,9 +736,11 @@ private:
             wake_one_worker();
             return;
         }
-        // Both full. Run it here. On a worker, recycle_scratch is false because the job
-        // further out on this stack still holds live allocations in the per-worker arena.
-        run_job(on_worker ? t_worker_ : nullptr, raw, /*recycle_scratch=*/on_worker ? false : true);
+        // Both full. Run it here, and leave this thread's scratch arena alone: whatever
+        // submitted the job still holds live allocations in it -- on a worker, the job further
+        // out on this stack; on any other thread, the code seeding work (evolve_more builds its
+        // resume lists there) and every job this call runs before it returns.
+        run_job(on_worker ? t_worker_ : nullptr, raw, /*recycle_scratch=*/false);
     }
 
 public:
