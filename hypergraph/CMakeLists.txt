@@ -66,4 +66,4 @@ endif()
 # Note: Examples, benchmarks, and tests are now built separately in their own directories:
 # - examples/     - API usage examples (make examples)  
 # - benchmarks/   - Performance tests (make benchmarks)
-# - tests/        - Unit tests (make unified_tests)
+# - tests/        - Unit tests (built into all_tests)
