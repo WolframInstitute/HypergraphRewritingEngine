@@ -86,6 +86,19 @@ COMMIT_ALLOWANCES = {
         "one path that seeds from the calling thread during a run. The changed call therefore "
         "never executes on a measured path, so no state, event, causal or branchial count, and "
         "no timing, can move",
+    "545ff7381b9a67855e289c14b1fdb6d42988483d":
+        "sends the job-system branch that runs a job on the submitting thread, when there is "
+        "no room to queue it, through run_inline_, which calls two hooks around the job; the "
+        "engine registers them in its constructor to mark the calling thread's scratch arena "
+        "before such a job and release to that mark after. Construction gains two "
+        "std::function assignments per engine. The hooks run only on that overflow branch: "
+        "the injector's 32,768 slots full in serial mode, or a worker's deque and the injector "
+        "both full in threaded mode. Scratch holds only a job's temporaries -- the ordinary "
+        "path resets it after every job -- so releasing a job's own scratch when it returns "
+        "frees nothing another job reads, and no state, event, causal or branchial count can "
+        "move. Callgrind on {{x,y},{y,z}}->{{x,y},{y,z},{z,w}} to depth 8 (46,234 states), "
+        "threaded and serial, counts the same arena mark() and release() instructions at "
+        "5b8a2efe and at this commit, so the overflow branch is not reached there",
 }
 
 VERDICT_RE = re.compile(r"\b(DIFFERS|FAILED|FAIL|NaN|nan|[-+]?inf)\b")
