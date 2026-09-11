@@ -24,6 +24,10 @@ rewritten. This checker is that gate. It fails when:
 Run from the repository root: python3 tools/dev/paper_integrity_check.py
   --tables-dir <dir>   check a different fragment directory (ground-truthing, box pulls)
   --no-git             skip the staleness check (no repository available)
+  --commit-msg <file>  check the message of the commit being made instead: a commit that
+                       stages engine sources must declare Measurement-inert. This is the
+                       commit-msg hook (tools/dev/commit_msg_gate.sh); pre-commit runs before the
+                       message exists and cannot check it.
 """
 
 import argparse
@@ -110,12 +114,37 @@ def git(*args):
     return subprocess.run(["git"] + list(args), capture_output=True, text=True)
 
 
+def declares_inert(message):
+    """Whether a commit message carries the declaration the staleness walk accepts."""
+    return "Measurement-inert:" in message
+
+
+def check_commit_msg(path):
+    staged = [l for l in git("diff", "--cached", "--name-only", "--", *ENGINE_DIRS)
+              .stdout.splitlines() if l.strip()]
+    if not staged:
+        return 0
+    # Lines starting with '#' are git's template, removed from the message it records.
+    with open(path, encoding="utf-8") as f:
+        message = "".join(l for l in f if not l.startswith("#"))
+    if declares_inert(message):
+        return 0
+    print("commit-msg: this commit changes %d engine file(s) (first: %s) and its message has no "
+          "'Measurement-inert:' line. Every paper fragment goes stale and CI's paper job fails "
+          "after the push. State the proof that no measured number moves on a line starting "
+          "'Measurement-inert:', or re-measure the fragments." % (len(staged), staged[0]))
+    return 1
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tables-dir", default="paper/tables")
     ap.add_argument("--main", default="paper/main.tex")
     ap.add_argument("--no-git", action="store_true")
+    ap.add_argument("--commit-msg")
     a = ap.parse_args()
+    if a.commit_msg:
+        return check_commit_msg(a.commit_msg)
 
     findings = []
 
@@ -187,7 +216,7 @@ def main():
                     inert = []
                     for sha in shas:
                         body = git("show", "-s", "--format=%B", sha).stdout
-                        if "Measurement-inert:" not in body and sha not in COMMIT_ALLOWANCES:
+                        if not declares_inert(body) and sha not in COMMIT_ALLOWANCES:
                             inert = None
                             break
                         subject = body.splitlines()[0][:70]
