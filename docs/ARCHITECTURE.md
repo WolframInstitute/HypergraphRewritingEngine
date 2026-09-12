@@ -189,7 +189,9 @@ well-defined; `docs/SPEC.md` §5 states which options are samplers and which are
   per match, independently, with no population and no completeness requirement, so it applies
   identically to a discovered and a forwarded match and needs no join. `TransitionRate` is that
   sampler; thinning a branching process by a rate yields a branching process with the thinned
-  offspring distribution, so branching shape survives.
+  offspring distribution, so branching shape survives. The one per-state count,
+  `MatchesPerStateRule`, makes its population local instead: a run under it turns forwarding off,
+  so each state's own matching finds all of its matches and the drain chooses from the whole set.
 - **Keyed draws.** Every draw is a function of the transition's isomorphism-invariant identity
   and the seed — never a worker's RNG — so the sampled subgraph is the same at every worker
   count and on either device, and reproducible for a fixed seed.

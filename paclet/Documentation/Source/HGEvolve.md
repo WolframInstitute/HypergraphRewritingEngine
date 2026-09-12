@@ -476,7 +476,7 @@ Ask for a full delivery at any time to resynchronise; doing so resets what the s
 
 ### Keeping a bounded number of transitions per rule
 
-`"MatchesPerStateRule" -> k` keeps at most `k` of each state's own transitions **per rule**, and the choice is made when that state's matching is complete rather than as matches arrive:
+`"MatchesPerStateRule" -> k` keeps at most `k` of each state's transitions **per rule**, and the choice is made when that state's matching is complete rather than as matches arrive:
 
 ```wl
 rules = {{{1, 2}} -> {{1, 3}, {3, 2}}};
@@ -485,4 +485,4 @@ HGEvolve[rules, {{1, 2}}, 4, "NumStates", "MatchesPerStateRule" -> 1]
 
 The distinction from the other caps is what it is for. `"MaxSuccessorStatesPerParent"` bounds children per parent regardless of which rule produced them. `"MatchesPerStep"` bounds by **arrival order**, which depends on the schedule, so two runs of the same evolution can keep different states. `"MatchesPerStateRule"` ranks a state's transitions by their own isomorphism-invariant identity and the `"RandomSeed"`, so the kept set is the same at any thread count — choosing `k` of `M` needs all `M`, and all `M` exist only once that state's matching has finished.
 
-Applies to a state's **own** matches. A match forwarded into a state from an ancestor arrives asynchronously and is not counted against the cap, for the same reason: its arrival races the point where the count would be taken. Applies on both devices.
+It counts every match of the state. A match handed to a state from its parent would arrive after that state's matching completes, where it could not be counted, so under this option the engine matches each state in full instead. Applies on both devices.

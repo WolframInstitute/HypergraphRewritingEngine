@@ -136,8 +136,9 @@ exact configuration. Sampling and capping options refine this as follows:
   `RandomSeed`. A spine keeps the minimum-keyed own-found transition of a state alive when none
   of its draws passed, so a fixed rate below the branching factor thins rather than extinguishes.
 - **`ExplorationProbability`** samples **per canonical state**, keyed the same way.
-- **`MatchesPerStateRule`** caps a state's own transitions per rule, chosen at the state's drain
-  by the same invariant key — schedule-independent.
+- **`MatchesPerStateRule`** caps each state's transitions per rule, chosen at the state's drain
+  by the same invariant key — schedule-independent. A run under it matches every state in full
+  (match forwarding off), so the drain chooses from all of the state's matches.
 - **`MaxStatesPerStep`** and **`MaxSuccessorStatesPerParent`** are **arrival-order caps**: above
   the cap, *which* states got in is decided by the schedule. They bound work, not identity.
   `UniformRandom -> True` with `MatchesPerStep` selects arrival-order capping and is

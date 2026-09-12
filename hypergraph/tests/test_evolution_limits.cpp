@@ -4,6 +4,7 @@
 #include <map>
 #include <set>
 #include <numeric>
+#include <unordered_set>
 
 using namespace hypergraph;
 
@@ -263,6 +264,72 @@ TEST(EvolutionLimits, MatchesPerStateRuleBoundsAndReproduces) {
 
     const auto capped2 = run(2, 4);
     EXPECT_GE(capped2.first, capped1.first) << "k=2 kept less than k=1";
+}
+
+// MatchesPerStateRule bounds every state's rewrites per rule, including the ones it would inherit.
+//
+// Match forwarding hands a child its parent's still-valid matches after the child's own matching
+// has drained, where the cap cannot count them, so a run under the cap matches every state in
+// full. This rule's left-hand side is a join, so the engine forwards on its own decision; with
+// forwarding left on, k = 1 from {{0,0},{0,0}} reached 300 states by depth 5 with one state
+// performing 13 rewrites for one rule. Checked in a one-shot run and in steered steps over the
+// whole frontier, which is how an interactive caller advances, at one and four workers.
+TEST(EvolutionLimits, MatchesPerStateRuleBoundsEveryStatesRewritesPerRule) {
+    struct Result {
+        size_t states, events, most;
+    };
+    auto run = [](size_t k, size_t threads, bool stepped) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        hg.set_event_signature_keys(hgcommon::EVENT_SIG_NONE);   // one event per rewrite
+        ParallelEvolutionEngine e(&hg, threads);
+        // {{x,y},{x,z}} -> {{x,z},{x,w},{y,w},{z,w}}
+        e.add_rule(make_rule(0).lhs({0, 1}).lhs({0, 2})
+                       .rhs({0, 2}).rhs({0, 3}).rhs({1, 3}).rhs({2, 3}).build());
+        e.set_matches_per_state_rule(k);
+        e.set_match_frontier(true);
+        const std::vector<std::vector<VertexId>> init = {{0, 0}, {0, 0}};
+        const size_t depth = 5;
+        if (stepped) {
+            e.set_continuable(true);
+            e.evolve(init, 0);
+            for (size_t d = 0; d < depth; ++d) {
+                std::unordered_set<StateId> every;
+                for (const auto& f : e.frontier()) every.insert(f.first);
+                e.evolve_more(1, &every);
+            }
+        } else {
+            e.evolve(init, depth);
+        }
+        std::map<std::pair<StateId, RuleIndex>, size_t> per;
+        for (uint32_t ev = 0; ev < hg.num_published_events(); ++ev) {
+            if (hg.is_genesis_event(ev)) continue;
+            ++per[{hg.get_event(ev).input_state, hg.get_event(ev).rule_index}];
+        }
+        size_t most = 0;
+        for (const auto& p : per) most = std::max(most, p.second);
+        return Result{hg.num_states(), hg.num_events(), most};
+    };
+
+    for (size_t k : {size_t{1}, size_t{2}}) {
+        const Result base = run(k, 1, false);
+        EXPECT_GT(base.events, 0u) << "k=" << k << ": nothing was rewritten";
+        for (size_t threads : {size_t{1}, size_t{4}}) {
+            for (bool stepped : {false, true}) {
+                const Result r = run(k, threads, stepped);
+                const char* how = stepped ? "stepped" : "one-shot";
+                EXPECT_LE(r.most, k) << "k=" << k << ", " << threads << " worker(s), " << how
+                                     << ": a state performed " << r.most
+                                     << " rewrites for one rule";
+                EXPECT_EQ(r.states, base.states)
+                    << "k=" << k << ", " << threads << " worker(s), " << how
+                    << ": a different number of states than one worker in one shot";
+                EXPECT_EQ(r.events, base.events)
+                    << "k=" << k << ", " << threads << " worker(s), " << how
+                    << ": a different number of events than one worker in one shot";
+            }
+        }
+    }
 }
 
 // EVERY RULE IS CONSIDERED AT THE DRAIN, WHATEVER ITS INDEX.

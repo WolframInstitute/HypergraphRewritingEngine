@@ -1224,11 +1224,12 @@ bool ParallelEvolutionEngine::transition_survives_spined(StateId source, uint64_
     return false;
 }
 
-// k of a state's own matches per RULE, chosen by spine_rank once its matching is complete.
+// k of a state's matches per RULE, chosen by spine_rank once its matching is complete.
 //
-// OWN-FOUND ONLY, the same scope the spine takes and for the same reason: a forwarded match
-// races the drain, so a cap that counted them would keep a different set at a different worker
-// count. Those are submitted at their arrival sites as before.
+// Under the cap the run turns match forwarding off (configure), so a state's own matching finds
+// all of its matches and this list is the whole population. A forwarded record is still skipped:
+// it would have arrived after the drain, and counting it would keep a different set at a
+// different worker count.
 //
 // The selection is a full pass per rule rather than a sort: a state's match count is small, the
 // arena has no room for a scratch vector here, and k is typically 1-2 -- so k passes each taking
@@ -1704,8 +1705,26 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
     // set decides (rule_analysis.hpp, forwarding_pays). A caller that set it explicitly keeps it:
     // the probes that measure forwarding on against forwarding off need both arms on the same
     // rules, and a fixed answer here would make one arm unreachable.
-    if (!match_forwarding_explicit_) {
-        enable_match_forwarding_ = facts.forwarding_pays;
+    enable_match_forwarding_ =
+        match_forwarding_explicit_ ? match_forwarding_requested_ : facts.forwarding_pays;
+
+    // EXCEPT UNDER THE PER-STATE CAP. matches_per_state_rule keeps k of a state's matches per
+    // rule, chosen at the state's drain, and the drain joins only the state's own matching. A
+    // match forwarded from an ancestor arrives after that point, so it was never counted:
+    // measured on {{x,y},{x,z}} -> {{x,z},{x,w},{y,w},{z,w}} from {{0,0},{0,0}}, k = 1 reached
+    // 300 states by depth 5, one state performing 13 rewrites for one rule, where the cap allows
+    // 6 states. With forwarding off, a state's own matching finds every match, the drain chooses k
+    // of all of them, and the choice is the same at any worker count -- the population the device
+    // engine caps over as well, since it matches each (state, rule) pair in full.
+    if (matches_per_state_rule_ != 0 && enable_match_forwarding_) {
+        if (match_forwarding_explicit_) {
+            warnings_.push_back(
+                "match forwarding was requested together with MatchesPerStateRule. The cap "
+                "chooses k of each state's matches when the state's own matching completes, and a "
+                "forwarded match arrives after that, so the run turns forwarding off: every state "
+                "is matched in full and the cap counts every match.");
+        }
+        enable_match_forwarding_ = false;
     }
 
     // TWO RULE SHAPES WHOSE COST IS THE RULE'S, NOT THE ENGINE'S. Both run correctly and neither
@@ -2903,6 +2922,7 @@ void ParallelEvolutionEngine::add_rule(const RewriteRule& rule) {
 // from that point, which is what match_forwarding_explicit_ records.
 void ParallelEvolutionEngine::set_match_forwarding(bool enable) {
     enable_match_forwarding_ = enable;
+    match_forwarding_requested_ = enable;
     match_forwarding_explicit_ = true;
 }
 

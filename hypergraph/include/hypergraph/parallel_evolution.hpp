@@ -585,8 +585,11 @@ private:
 
     // Match forwarding enabled flag
     bool enable_match_forwarding_{true};
-    // Set by set_match_forwarding: the caller has decided, so a run does not re-decide.
+    // Set by set_match_forwarding: the caller has decided, so a run does not re-decide, and
+    // match_forwarding_requested_ holds what it asked for. The run's own decision is written to
+    // enable_match_forwarding_, which the per-state cap can turn off for that run.
     bool match_forwarding_explicit_{false};
+    bool match_forwarding_requested_{true};
 
     // Batched matching: the parent finishes matching, THEN its children are created. Eager
     // creates each child as its match is found, so the parent is still matching when the child
@@ -997,15 +1000,6 @@ public:
     // uniform-random evolve path). 0 (default) draws a fresh random_device seed each
     // run; nonzero makes the sample reproducible run-to-run on a single thread.
     void set_random_seed(uint64_t seed);
-    // Keep k of each state's matches, chosen uniformly at random from ALL of that state's
-    // matches, and rewrite only those. 0 disables sampling entirely.
-    //
-    // The population is one state's matches, and saying so is the point: it is a population
-    // that completes locally, so the sample can be finalised the moment that state's match tree
-    // drains, with no step barrier and no other state waiting. Selection is Algorithm R keyed
-    // on the stream position, so the retained set is the same whatever the schedule and
-    // whichever worker sees which match.
-    //
     // Keep each transition with probability q, drawn independently per transition. 1.0 keeps
     // everything. This is the general sampler.
     //
@@ -1132,7 +1126,10 @@ public:
     double exploration_probability() const;
     size_t max_successor_states_per_parent() const;
     size_t max_states_per_step() const;
-    // k of the state's own matches per rule, chosen by rank at the drain. 0 keeps all.
+    // At most k of each state's matches per rule, chosen by seeded rank when the state's matching
+    // completes (its drain), so the kept set is the same at any worker count. 0 keeps all. A run
+    // with k > 0 turns match forwarding off: a forwarded match arrives after the drain and could
+    // not be counted, so every state is matched in full instead.
     void set_matches_per_state_rule(size_t k);
     size_t matches_per_state_rule() const;
 

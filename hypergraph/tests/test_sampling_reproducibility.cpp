@@ -298,17 +298,14 @@ TEST(SamplingReproducibility, TransitionRateIsReproducibleForAGivenSeed) {
     EXPECT_GT(first.first, 1u) << "the run produced nothing, so equality is vacuous";
 }
 
-// THE DRAIN CAP READS A LIST THAT IS NOT ITS POPULATION, and this asks whether that shows.
+// THE DRAIN CAP KEEPS THE SAME STATES AT EVERY WORKER COUNT, with forwarding requested.
 //
 // cap_at_drain chooses k of a state's matches per rule by seeded rank, at the state's drain --
-// the point its OWN matching completes. But the list it reads, state_matches_[s], also holds
-// matches FORWARDED to s from its ancestors, and those arrive asynchronously: a forwarded match
-// takes its own draw at arrival, deliberately upstream of the drain. So the set the cap chooses
-// from can differ between runs, which would make the chosen k differ with it.
-//
+// the point its own matching completes. A match forwarded from an ancestor arrives after that
+// point, so a run under the cap turns forwarding off and says so to a caller that asked for it.
 // Unlike MaxStatesPerStep, this cap IS documented as reproducible, so if it varies with the
-// worker count that is a defect and not a design choice. Forwarding is stated rather than
-// assumed, and the rule's one-edge left-hand side would otherwise leave it off.
+// worker count that is a defect and not a design choice. Forwarding is requested rather than
+// left to the engine, which would leave it off for the rule's one-edge left-hand side.
 TEST(SamplingReproducibility, TheDrainCapKeepsTheSameStatesAtEveryWorkerCount) {
     auto run = [](size_t threads) {
         Hypergraph hg;
@@ -334,6 +331,19 @@ TEST(SamplingReproducibility, TheDrainCapKeepsTheSameStatesAtEveryWorkerCount) {
         EXPECT_EQ(run(t), one)
             << "the drain cap kept a different set of states at " << t << " workers than at one";
     }
+
+    Hypergraph hg;
+    hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+    ParallelEvolutionEngine e(&hg, 2);
+    e.set_match_forwarding(true);
+    e.set_matches_per_state_rule(2);
+    e.add_rule(make_growth_rule());
+    e.evolve({{0, 1}}, 2);
+    bool told = false;
+    for (const std::string& w : e.warnings())
+        told = told || w.find("turns forwarding off") != std::string::npos;
+    EXPECT_TRUE(told) << "forwarding was requested with the cap, and the run did not say it turned "
+                         "forwarding off";
 }
 
 // The per-state match join: a state's drain must fire exactly once, and strictly after that
