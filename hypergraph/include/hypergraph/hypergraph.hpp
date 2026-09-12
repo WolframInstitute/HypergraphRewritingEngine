@@ -821,6 +821,10 @@ public:
     // matches-per-instance it records are well defined.
     bool try_lower_explore_depth(StateId canonical_id, uint32_t depth);
     bool try_claim_expanded(StateId canonical_id);
+    // Gives back the claim of a canonical state whose matching a stop cut short on a continuable
+    // run, so the resume can claim and match it again. The matches it already stored are not
+    // stored twice, so each is still recorded once.
+    void release_expanded_claim(StateId canonical_id);
 
     // Current shortest known depth of a canonical state (INVALID_ID until first relaxed).
     // A child's arrival depth is derived from its parent's live minimum here, so that a

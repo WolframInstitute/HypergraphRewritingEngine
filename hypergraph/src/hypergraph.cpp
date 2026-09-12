@@ -345,6 +345,12 @@ bool Hypergraph::try_claim_expanded(StateId canonical_id) {
                                         std::memory_order_acquire);
 }
 
+void Hypergraph::release_expanded_claim(StateId canonical_id) {
+    if (canonical_id == INVALID_ID) return;
+    hgcommon::atomic_ref<uint32_t> flag(states_[canonical_id].expanded);
+    flag.store(0, std::memory_order_release);
+}
+
 uint32_t Hypergraph::explore_depth_of(StateId canonical_id) const {
     if (canonical_id == INVALID_ID) return INVALID_ID;
     hgcommon::atomic_ref<uint32_t> known(const_cast<uint32_t&>(states_[canonical_id].explore_depth));

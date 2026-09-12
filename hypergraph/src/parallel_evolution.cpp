@@ -925,7 +925,7 @@ void ParallelEvolutionEngine::propagate_explore_depth(StateId canonical_state, u
 }
 
 void ParallelEvolutionEngine::submit_match_task(StateId state, uint32_t step) {
-    if (should_stop_.load(std::memory_order_relaxed)) return;
+    if (should_stop_.load(std::memory_order_relaxed)) { defer_cut_match_task(state, step); return; }
     // Past the budget: this is the frontier, not a dead end. Kept so a continuation resumes
     // exactly here. The caps below are different -- a cap is a decision, and resuming past one
     // would undo it.
@@ -952,7 +952,7 @@ void ParallelEvolutionEngine::submit_match_task_with_context(
     uint32_t step,
     const MatchContext& ctx
 ) {
-    if (should_stop_.load(std::memory_order_relaxed)) return;
+    if (should_stop_.load(std::memory_order_relaxed)) { defer_cut_match_task(state, step); return; }
     if (step > match_budget()) { defer_match_task(state, step); return; }
     if (!can_create_states_at_step(step + 1)) return;
     if (!can_have_more_children(state)) return;
@@ -973,7 +973,7 @@ void ParallelEvolutionEngine::submit_match_task_with_context(
 }
 
 void ParallelEvolutionEngine::submit_rewrite_task(const MatchRecord& match, uint32_t step) {
-    if (should_stop_.load(std::memory_order_relaxed)) return;
+    if (should_stop_.load(std::memory_order_relaxed)) { defer_rewrite_task(match, step); return; }
     // Past the budget: the match is already stored on its state, so dropping the rewrite would
     // strand it -- the state's own matching will not re-offer a match it already holds.
     if (step > step_budget()) { defer_rewrite_task(match, step); return; }
@@ -997,9 +997,12 @@ void ParallelEvolutionEngine::submit_rewrite_task(const MatchRecord& match, uint
 }
 
 void ParallelEvolutionEngine::execute_expand_chunk(const ExpandChunk& chunk) {
-    if (should_stop_.load(std::memory_order_relaxed)) return;
     for (uint32_t i = chunk.begin; i < chunk.end; ++i) {
-        if (should_stop_.load(std::memory_order_relaxed)) return;
+        if (should_stop_.load(std::memory_order_relaxed)) {
+            // The chunk's remaining rewrites wait for a continuation (kept only on a continuable run).
+            for (uint32_t j = i; j < chunk.end; ++j) defer_rewrite_task(chunk.matches[j], chunk.step);
+            return;
+        }
         execute_rewrite_task(chunk.matches[i], chunk.step);
     }
 }
@@ -1021,12 +1024,12 @@ void ParallelEvolutionEngine::submit_expand_chunk(const ExpandChunk& chunk) {
 void ParallelEvolutionEngine::dispatch_expansion(StateId state, uint32_t step,
                                                  const MatchRecord* matches, size_t count) {
     if (count == 0) return;
-    if (should_stop_.load(std::memory_order_relaxed)) return;
-    // PAST THE BUDGET THE REWRITES WAIT. The matches are already stored on
-    // the state, so returning would strand them: the state's own matching
-    // will not offer them again. This is reached only when the frontier is
-    // matched -- otherwise a state past the budget was never matched.
-    if (step > step_budget()) {
+    // PAST THE BUDGET, OR AFTER A STOP, THE REWRITES WAIT. The matches are already stored on
+    // the state, so returning would strand them: the state's own matching will not offer them
+    // again. Past the budget this is reached only when the frontier is matched -- otherwise a
+    // state past the budget was never matched. After a stop defer_rewrite_task keeps them only
+    // on a continuable run.
+    if (should_stop_.load(std::memory_order_relaxed) || step > step_budget()) {
         for (size_t i = 0; i < count; ++i) defer_rewrite_task(matches[i], step);
         return;
     }
@@ -1346,6 +1349,14 @@ void ParallelEvolutionEngine::defer_rewrite_task(const MatchRecord& match, uint3
     deferred_count_.fetch_add(1, std::memory_order_relaxed);
 }
 
+void ParallelEvolutionEngine::defer_cut_match_task(StateId state, uint32_t step) {
+    if (!continuable_) return;
+    // Quotient exploration claims a class before matching it, and the resume takes the claim
+    // again, so a class whose matching the stop cut short gives its claim back.
+    if (explore_from_canonical_states_only_) hg_->release_expanded_claim(state);
+    defer_match_task(state, step);
+}
+
 std::vector<std::pair<StateId, uint32_t>> ParallelEvolutionEngine::frontier() const {
     std::vector<std::pair<StateId, uint32_t>> out;
     deferred_frontier_.for_each([&](const DeferredMatch& d) { out.emplace_back(d.state, d.step); });
@@ -1401,6 +1412,9 @@ void ParallelEvolutionEngine::evolve_more(size_t additional_steps,
     // different depths.
     const int quotient_old_bound = hg_->raise_quotient_max_steps(static_cast<int>(
         std::min<size_t>(max_steps_, static_cast<size_t>((std::numeric_limits<int>::max)()))));
+    // Whether the run being continued was stopped (a limit or request_stop). Only a stop defers
+    // one state's matching more than once, so only then is the resumed frontier de-duplicated.
+    const bool after_stop = should_stop_.load(std::memory_order_relaxed);
     should_stop_.store(false, std::memory_order_relaxed);
     reset_depth_join();
 
@@ -1471,7 +1485,12 @@ void ParallelEvolutionEngine::evolve_more(size_t additional_steps,
         go_rw.push_back(d);
     }
     std::vector<DeferredMatch> go_m;
+    // A stop can defer one state's matching more than once (every task of it that ended after the
+    // stop defers it), so after one each (state, step) is taken once.
+    std::unordered_set<uint64_t> seen_m;
     for (const DeferredMatch& d : resume) {
+        if (after_stop && !seen_m.insert((static_cast<uint64_t>(d.state) << 32) | d.step).second)
+            continue;
         if (!selected(d.state) || only_match != nullptr) {
             defer_match_task(d.state, d.step);
             continue;
@@ -1575,12 +1594,20 @@ void ParallelEvolutionEngine::try_complete_depth(uint32_t depth) {
 
 void ParallelEvolutionEngine::note_match_task_done(StateId state, uint32_t step) {
     MatchJoin* join = match_join_for(state);
+    // A MATCH-SIDE TASK THAT ENDS AFTER A STOP on a continuable run may have been cut short, and a
+    // state's matching is a tree of such tasks, so the state's matching is deferred whole: the
+    // resume re-matches it in full, and the matches it already stored are not offered twice.
+    const bool cut = continuable_ && should_stop_.load(std::memory_order_relaxed);
+    if (cut) defer_cut_match_task(state, step);
     const size_t done = join->completed.fetch_add(1, std::memory_order_acq_rel) + 1;
 
     // Read `pushed` AFTER booking the completion. A task that will still spawn more has not
     // reached its own guard, so anything it pushes is already counted here; and if `pushed`
     // has moved on since, this task is simply not the last one and whichever is will fire.
     if (done != join->pushed.load(std::memory_order_acquire)) return;
+    // The drain of a state whose matching was deferred above runs when the resumed matching
+    // completes, so nothing here chooses from a set the stop left partial.
+    if (cut) return;
 
     HG_STAT(states_drained_.fetch_add(1, std::memory_order_relaxed));
     if (validate_match_forwarding_ && task_based_matching_) validate_state_at_drain(state);
@@ -1859,7 +1886,9 @@ SVec<uint16_t> ParallelEvolutionEngine::get_shuffled_rule_indices() const {
 void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uint32_t step) {
     hgcommon::PhaseTimer _pt(hgcommon::Phase::Rewrite);
 
-    if (should_stop_.load(std::memory_order_relaxed)) return;
+    // A stop keeps this rewrite for a continuation (kept only on a continuable run), as the
+    // limits below do when they are what stops the run.
+    if (should_stop_.load(std::memory_order_relaxed)) { defer_rewrite_task(match, step); return; }
 
     // Check step limit - don't spawn REWRITEs past max_steps
     if (step > step_budget()) return;
@@ -1867,10 +1896,12 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
     // Check limits before applying
     if (max_states_ > 0 && hg_->num_states() >= max_states_) {
         should_stop_.store(true, std::memory_order_relaxed);
+        defer_rewrite_task(match, step);
         return;
     }
     if (max_events_ > 0 && hg_->num_events() >= max_events_) {
         should_stop_.store(true, std::memory_order_relaxed);
+        defer_rewrite_task(match, step);
         return;
     }
 

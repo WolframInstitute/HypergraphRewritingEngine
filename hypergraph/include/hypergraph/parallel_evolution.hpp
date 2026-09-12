@@ -721,6 +721,12 @@ private:
 
     void defer_match_task(StateId state, uint32_t step);
     void defer_rewrite_task(const MatchRecord& match, uint32_t step);
+    // A STOP (a limit or request_stop) ON A CONTINUABLE RUN keeps the work it cut short on the
+    // frontier, the way the step budget keeps work past the budget. This defers a state's
+    // matching for a full re-match on resume, giving back the quotient claim the resume takes
+    // again; the rewrite sites defer their rewrites with defer_rewrite_task. Both keep nothing
+    // on a run that is not continuable.
+    void defer_cut_match_task(StateId state, uint32_t step);
 
     // Evolution control
     std::atomic<bool> should_stop_{false};
@@ -944,6 +950,10 @@ public:
     // increment it just asked for: a step index counted from the end ("the final step") is
     // defined against this total.
     size_t max_steps() const;
+    // Whole-run limits on the number of states and events; 0 is no limit. Reaching one stops the
+    // run the way request_stop does. On a continuable run the work the stop cut short stays on
+    // the frontier: raise the limit and call evolve_more to continue from it. A run that is not
+    // continuable keeps nothing.
     void set_max_states(size_t max);
     void set_max_events(size_t max);
     // FORWARDING PAYS ONLY WHEN RE-MATCHING IS A JOIN. A child re-matched from scratch runs the

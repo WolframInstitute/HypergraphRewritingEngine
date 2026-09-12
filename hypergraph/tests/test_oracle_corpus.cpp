@@ -6,7 +6,9 @@
 // oracle" guarantee that every optimization must keep passing.
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <cstdlib>
+#include <set>
 #include <string>
 
 #include "hypergraph/rule_analysis.hpp"
@@ -613,6 +615,99 @@ TEST(OracleCorpus, MatchingTheFrontierChangesNoStateOrEventCount) {
         << "matching the frontier changed a run to closure's state count";
     EXPECT_EQ(closure_on.events, closure_off.events)
         << "matching the frontier changed a run to closure's event count";
+}
+
+// A continuable run stopped by a limit keeps the work the stop cut short.
+//
+// max_states and max_events stop a run by setting the flag request_stop sets, and every task that
+// sees it returns. On a run that is not continuable that work is dropped, which is what a limit
+// asks for. On a continuable run the stop keeps it on the frontier, the way the step budget keeps
+// work past the budget, so lifting the limit and continuing by one step must give the run that
+// never stopped, to the same depth. Quotient exploration is covered because a class is claimed
+// before it is matched and the resume takes the claim again; the per-state cap because its choice
+// is made when a state's matching completes, and a stop leaves that matching partial.
+TEST(OracleCorpus, ContinuingAfterAStopMatchesRunningItInOneCall) {
+    struct Case {
+        const char* name;
+        RewriteRule rule;
+        std::vector<std::vector<VertexId>> init;
+        size_t depth;
+    };
+    const std::vector<Case> cases = {
+        {"2-to-4",
+         hypergraph::make_rule(0).lhs({0, 1}).lhs({0, 2})
+             .rhs({0, 2}).rhs({0, 3}).rhs({1, 3}).rhs({2, 3}).build(),
+         {{1, 2}, {1, 3}}, 3},
+        {"path growth",
+         hypergraph::make_rule(0).lhs({0, 1}).lhs({1, 2})
+             .rhs({0, 1}).rhs({1, 2}).rhs({2, 3}).build(),
+         {{0, 1}, {1, 2}}, 4},
+        {"binary growth",
+         hypergraph::make_rule(0).lhs({0, 1}).rhs({0, 2}).rhs({1, 2}).build(),
+         {{0, 1}}, 4},
+    };
+    struct Fp {
+        size_t classes, events;
+        std::multiset<uint64_t> hashes;
+    };
+    auto fingerprint = [](Hypergraph& hg) {
+        Fp f{hg.num_canonical_states(), hg.num_events(), {}};
+        for (uint32_t s = 0; s < hg.num_published_states(); ++s)
+            if (hg.get_state(s).id != INVALID_ID)
+                f.hashes.insert(hg.get_or_compute_canonical_hash(s));
+        return f;
+    };
+    enum Stop { STATES, EVENTS, REQUEST };
+    size_t stopped = 0;
+    for (bool quotient : {false, true}) {
+        for (size_t k : {size_t{0}, size_t{1}}) {
+            for (size_t threads : {size_t{1}, size_t{4}}) {
+                for (const Case& c : cases) {
+                    for (Stop how : {STATES, EVENTS, REQUEST}) {
+                        auto setup = [&](Hypergraph& hg, ParallelEvolutionEngine& e) {
+                            hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+                            e.set_explore_from_canonical_states_only(quotient);
+                            e.set_matches_per_state_rule(k);
+                            e.add_rule(c.rule);
+                        };
+                        Hypergraph whole;
+                        ParallelEvolutionEngine w(&whole, threads);
+                        setup(whole, w);
+                        w.evolve(c.init, c.depth + 1);
+
+                        Hypergraph split;
+                        ParallelEvolutionEngine e(&split, threads);
+                        setup(split, e);
+                        e.set_continuable(true);
+                        std::atomic<int> drained{0};
+                        if (how == STATES) e.set_max_states(4);
+                        if (how == EVENTS) e.set_max_events(3);
+                        if (how == REQUEST) {
+                            e.set_on_state_matches_complete([&](StateId, uint32_t) {
+                                if (drained.fetch_add(1) + 1 == 3) e.request_stop();
+                            });
+                        }
+                        e.evolve(c.init, c.depth);
+                        if (e.stop_requested()) ++stopped;
+                        e.set_max_states(0);
+                        e.set_max_events(0);
+                        e.evolve_more(1);
+
+                        const Fp a = fingerprint(whole), b = fingerprint(split);
+                        const std::string where = std::string(c.name) +
+                                                  (quotient ? " quotient" : " full") + " k=" +
+                                                  std::to_string(k) + " threads=" +
+                                                  std::to_string(threads) + " stop=" +
+                                                  std::to_string(static_cast<int>(how));
+                        EXPECT_EQ(b.classes, a.classes) << where << ": classes differ";
+                        EXPECT_EQ(b.events, a.events) << where << ": events differ";
+                        EXPECT_EQ(b.hashes, a.hashes) << where << ": explored states differ";
+                    }
+                }
+            }
+        }
+    }
+    EXPECT_GT(stopped, 0u) << "no run was stopped, so nothing was cut short";
 }
 
 // A steered step advances every named frontier entry one step from the step it waits at.
