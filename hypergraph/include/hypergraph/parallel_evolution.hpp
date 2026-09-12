@@ -983,22 +983,19 @@ public:
     //    number of states kept DETERMINISTICALLY (atomic counters). WHICH states are
     //    kept when a cap binds is scheduling-order dependent, so the retained subset
     //    can differ run-to-run even though the count is capped.
-    //  - exploration_probability and the uniform-random evolve path are Monte-Carlo
-    //    sampling of the multiway system. Both draw from RNGs seeded from
-    //    random_seed_: 0 (default) draws a fresh random_device seed each run (every
-    //    run differs); set_random_seed(nonzero) fixes the seed so BOTH the
-    //    ExplorationProbability draw and the uniform-random path are reproducible
-    //    run-to-run with a single thread. With multiple threads each thread's stream
-    //    is still deterministic, but job scheduling perturbs which successor gets
-    //    which draw, so multi-thread runs are not bit-reproducible.
+    //  - exploration_probability keeps each new state with probability p. The coin is a
+    //    hash of an isomorphism-invariant key and the seed (should_explore), not a
+    //    worker's RNG, so the explored set is the same at any worker count and
+    //    reproducible for a given seed.
     //  - Rule application order is shuffled per task for fairness, but that is
     //    order-only and does NOT change the canonical result.
     void set_exploration_probability(double p);
     void set_max_successor_states_per_parent(size_t max);
     void set_max_states_per_step(size_t max);
-    // Seed for the sampling RNGs (both the ExplorationProbability draw and the
-    // uniform-random evolve path). 0 (default) draws a fresh random_device seed each
-    // run; nonzero makes the sample reproducible run-to-run on a single thread.
+    // Seed for the keyed draws (exploration_probability, transition_rate, the spine and the
+    // matches_per_state_rule ranking) and for the rule-order shuffle. 0 is an ordinary seed for
+    // the keyed draws, so their sample repeats run to run; only the rule-order shuffle draws
+    // from std::random_device when the seed is 0.
     void set_random_seed(uint64_t seed);
     // Keep each transition with probability q, drawn independently per transition. 1.0 keeps
     // everything. This is the general sampler.
@@ -1010,11 +1007,10 @@ public:
     // one forwarded to it from an ancestor -- the two failures that a per-state count could not
     // survive (docs/ARCHITECTURE.md, Sampling: the population is not local under forwarding).
     //
-    // The draw is keyed on the transition's identity rather than on a worker's RNG, so it does
-    // not depend on WHICH thread drew or on the order matches arrived. It does still depend on
-    // the raw source-state id, which work-stealing assigns nondeterministically, so the sample
-    // is reproducible run to run at one worker and not yet across thread counts. Keying on the
-    // canonical transition identity is what closes that.
+    // The draw is keyed on the transition's canonical identity -- the source state's canonical
+    // hash, the matched edges' ranks in it and the rule (canonical_transition_key) -- and the
+    // seed, not on a worker's RNG, so the sample is the same at any worker count and whatever
+    // order the matches arrive in.
     //
     // Each path of length L survives with probability q^L, so deep structure thins faster than
     // shallow. That is inherent to online thinning -- a deep path cannot be kept without its
@@ -1107,10 +1103,10 @@ public:
     // over the canonical transitions), so a run costs the canonical closure
     // rather than the provenance count. Deterministic: the expanded set and the
     // (input, output, rule) transition multiset depend only on the graph, not on
-    // scheduling or rule order. Causal/branchial edges are recorded only for the
-    // expanded representatives; the full expansion's exact multisets are
-    // reconstructed offline from this skeleton together with per-state
-    // multiplicities (tools/quotient_reconstruction_probe.cpp). Requires
+    // scheduling or rule order. The full expansion's events, causal relation and
+    // branchial relation are reconstructed during the run from this skeleton and
+    // per-state multiplicities (configure turns the reconstruction on with Full
+    // state canonicalization). Requires
     // StateCanonicalizationMode::Full. Default false: expand every provenance,
     // the reference/MultiwayReference.wl semantics with exact online causal and
     // branchial tracking.

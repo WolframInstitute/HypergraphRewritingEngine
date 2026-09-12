@@ -1465,31 +1465,44 @@ TEST(Sampling, DeviceHonoursTheHardBounds) {
 // It is also the one option that needs a completion point: choosing k of M requires all M. On the
 // host that is a state's drain; on the device it is a block, which matches one (state, rule) pair
 // and finds every match for it. Capping as matches arrived would decide by schedule instead.
+//
+// Two workloads. One-edge left-hand sides, where the host would not forward matches anyway, and a
+// two-edge join, where it would: the host then matches every state in full under the cap, which is
+// what the device does for every rule. With forwarding left on under the cap, the host counted
+// only the matches a state found itself and the two engines kept different states on the join.
 TEST(Sampling, DrainCapKeepsTheSameMatchesAcrossEngines) {
-    for (uint32_t k : {1u, 2u}) {
-        Workload w;
-        w.name = "draincap";
-        w.rules = {rule({{0, 1}}, {{0, 2}, {2, 1}}),
-                   rule({{0, 1}}, {{1, 0}})};
-        w.initial_states = {{{0u, 1u}}};
-        w.num_steps = 4;
+    Workload one_edge;
+    one_edge.name = "draincap";
+    one_edge.rules = {rule({{0, 1}}, {{0, 2}, {2, 1}}),
+                      rule({{0, 1}}, {{1, 0}})};
+    one_edge.initial_states = {{{0u, 1u}}};
+    one_edge.num_steps = 4;
+    Workload join;
+    join.name = "draincap-join";
+    join.rules = {rule({{0, 1}, {0, 2}}, {{0, 2}, {0, 3}, {1, 3}, {2, 3}})};
+    join.initial_states = {{{0u, 0u}, {0u, 0u}}};
+    join.num_steps = 3;
+
+    for (Workload w : {one_edge, join}) {
         w.canon_mode = hg_gpu::CanonicalizationMode::Full;
-        w.matches_per_state_rule = k;
         w.random_seed = 0x5EED;
+        for (uint32_t k : {1u, 2u}) {
+            w.matches_per_state_rule = k;
 
-        NormalizedResult cpu = run_cpu(w);
-        NormalizedResult gpu = run_gpu(w);
+            NormalizedResult cpu = run_cpu(w);
+            NormalizedResult gpu = run_gpu(w);
 
-        EXPECT_EQ(cpu.canonical_state_hashes, gpu.canonical_state_hashes)
-            << "k=" << k << ": the two engines kept different states";
-        EXPECT_EQ(cpu.event_keys, gpu.event_keys)
-            << "k=" << k << ": the two engines kept different transitions";
+            EXPECT_EQ(cpu.canonical_state_hashes, gpu.canonical_state_hashes)
+                << w.name << " k=" << k << ": the two engines kept different states";
+            EXPECT_EQ(cpu.event_keys, gpu.event_keys)
+                << w.name << " k=" << k << ": the two engines kept different transitions";
 
-        Workload uncapped = w;
-        uncapped.matches_per_state_rule = 0;
-        EXPECT_LT(gpu.canonical_state_hashes.size(),
-                  run_gpu(uncapped).canonical_state_hashes.size())
-            << "k=" << k << ": the cap removed nothing on the device";
+            Workload uncapped = w;
+            uncapped.matches_per_state_rule = 0;
+            EXPECT_LT(gpu.canonical_state_hashes.size(),
+                      run_gpu(uncapped).canonical_state_hashes.size())
+                << w.name << " k=" << k << ": the cap removed nothing on the device";
+        }
     }
 }
 
