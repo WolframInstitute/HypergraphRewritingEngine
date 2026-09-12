@@ -9,12 +9,19 @@
 // is a cache: a reader that misses rebuilds it from the state's own edges
 // (qc_orbits_or_build), so a capture never depends on which thread filled the cache first.
 //
-// THE PROPERTY, stated on the counters the gate reads: no capture is dropped for want of an
-// orbit table, both matches are captured, and the two events exist. The rebuild counter is NOT
-// asserted -- a miss is a schedule fact and rebuilding is the correct response to it.
+// THE PROPERTY: both matches are captured and the two events exist. A capture dropped for want
+// of an orbit table returns before the match is recorded, so it shows as captured_matches()
+// below the number of rewrites; the drop counter itself exists only under HG_ENGINE_STATS,
+// which verification builds leave off. The rebuild counter is NOT asserted -- a miss is a
+// schedule fact and rebuilding is the correct response to it.
 //
 // WHAT IS BOUNDED. Two rewrites on one parent at depth 1; every loop unrolled twice, which ends
 // a thread that exceeds it as blocked, never as an error.
+//
+// THE END IS NOT REACHED. The HG_HARNESS_CALIBRATE_END assertion is not reported at any bound
+// tried, --unroll=2 through --unroll=1024 (1 or 2 complete executions each), so main does not
+// reach the assertions after the joins and the verdict covers a prefix of main. The same
+// calibration is reported for engine_construct at --unroll=1024.
 #include "hypergraph/hypergraph.hpp"
 #include "hypergraph/rewriter.hpp"
 #include "hypergraph/pattern.hpp"
@@ -84,7 +91,6 @@ int main() {
     pthread_join(b, nullptr);
 #endif
 
-    assert(hg.capture_dropped_no_orbits() == 0 && "a capture was dropped for want of an orbit table");
 #if defined(HG_QCC_THREE_REWRITES)
     assert(hg.captured_matches() == 3 && "a match of the expanded representative was not captured");
     assert(hg.num_events() == 3);
