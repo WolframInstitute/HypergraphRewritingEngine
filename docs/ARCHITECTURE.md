@@ -169,9 +169,9 @@ cites them:
 - **D16 — a held verb takes its identity options from the session,** not from its own envelope:
   a `Query` answered under different identity choices than the session's `Open` would describe a
   different multiway system with the same handle.
-- **D17 — an artifact the session was not asked to record is a WARNING on a held verb,** not an
-  error: the caller can re-`Open` to widen, and refusing the whole query would discard what it
-  did record.
+- **D17 — a session records every artifact.** An `Open` sets the whole record set (causal,
+  branchial, state events, raw events), so a held verb answers any property, whatever the `Open`
+  named.
 
 `paclet_source/session.hpp` carries D7/D11/D14 as assertions; `test_session.cpp` and
 `verify_sessions.wls` gate the verbs end to end.

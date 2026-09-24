@@ -78,13 +78,13 @@ HGSessionObject::usage =
 
 HGSessionOpen::usage =
   "HGSessionOpen[rules, initialEdges, property] opens a continuable evolution and returns an " <>
-  "HGSessionObject. The rules, the identity convention and the set of artifacts the run records " <>
-  "are fixed here; HGSessionStep carries the SAME exploration further rather than re-running it.";
+  "HGSessionObject. The rules and the identity convention are fixed here, and the session " <>
+  "records every artifact, so a later step or query can ask for any property. HGSessionStep " <>
+  "carries the same exploration further rather than re-running it.";
 HGSessionStep::usage =
   "HGSessionStep[session, n] carries the session's exploration n steps further from the frontier " <>
   "it stopped at, and returns the property the session was opened for. HGSessionStep[session, n, " <>
-  "property] returns a different property of the same accumulated graph, provided the session " <>
-  "was opened recording what that property needs.";
+  "property] returns a different property of the same accumulated graph.";
 HGSessionQuery::usage =
   "HGSessionQuery[session] re-reads the session's accumulated graph without exploring further. " <>
   "HGSessionQuery[session, property] reads a different property of it.";
@@ -104,12 +104,9 @@ HGSessionOpen::noworker =
 HGSessionOpen::nohandle =
   "The engine answered the Open but returned no session handle, so there is nothing to continue.";
 HGSessionOpen::refused =
-  "The engine refused this session job. The usual cause is that a session is already live on " <>
-  "this worker -- one is served at a time, so close it before opening another -- or that a " <>
-  "held verb named a session this worker does not hold.";
-HGSessionOpen::live =
-  "A session is already live on this worker; close it before opening another. This build serves " <>
-  "one session at a time so that opening a second cannot silently discard the first.";
+  "The engine refused this session job. The usual causes: a session is already open on this " <>
+  "worker (one is served at a time, so close it before opening another), or the verb named a " <>
+  "session this worker does not hold.";
 HGSessionStep::badsession =
   "`1` is not an HGSessionObject.";
 HGSessionStep::negsteps =
