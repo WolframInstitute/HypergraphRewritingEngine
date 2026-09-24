@@ -1772,3 +1772,77 @@ TEST(WxfSerializationPin, EventEndpointClassesAreStatesKeys) {
         }
     }
 }
+
+// A session's frontier names states by the ids "States" uses. Under Full both are the class's
+// canonical representative; "States" once emitted the first raw state of each class, which on
+// parallel workers need not be the representative, so the run is repeated.
+TEST(WxfSerializationPin, SessionFrontierIdsAreStatesKeys) {
+    auto job = [](int64_t steps, const std::string& op, int64_t session) {
+        wxf::Writer w;
+        w.write_header();
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        w.write_varint(5 + (session ? 1 : 0) + (op == "Open" ? 1 : 0));
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("InitialStates"));
+        w.write(kBranchSeed);
+        if (op == "Open") {
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("Rules"));
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+            w.write_varint(1);
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("r0"));
+            w.write_function("Rule", 2);
+            w.write(kBranchLhs);
+            w.write(kBranchRhs);
+        }
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Steps"));
+        w.write(steps);
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Options"));
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        w.write_varint(2);
+        put_str_list_option(w, "RequestedData", {"States"});
+        put_str_option(w, "CanonicalizeStates", "Full");
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Op"));
+        w.write(op);
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Delivery"));
+        w.write(std::string("Full"));
+        if (session) {
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("Session"));
+            w.write(session);
+        }
+        return w.release_data();
+    };
+    auto states_keys = [](const std::vector<uint8_t>& out) {
+        std::set<int64_t> keys;
+        wxf::Parser parser(out);
+        parser.skip_header();
+        parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+            if (k != "States") { vp.skip_value(); return; }
+            vp.read_association_generic([&](wxf::Parser& kp, wxf::Parser& rp) {
+                keys.insert(kp.read<int64_t>());
+                rp.skip_value();
+            });
+        });
+        return keys;
+    };
+    for (int rep = 0; rep < 20; ++rep) {
+        HostBridge host;
+        const auto opened = run_rewriting_core(job(0, "Open", 0), host);
+        const int64_t handle = read_int_key(opened, "Session");
+        ASSERT_NE(handle, 0);
+        const auto stepped = run_rewriting_core(job(4, "Step", handle), host);
+        const auto keys = states_keys(stepped);
+        const auto frontier = read_int_list_key(stepped, "Frontier");
+        ASSERT_FALSE(frontier.empty());
+        for (int64_t f : frontier)
+            EXPECT_TRUE(keys.count(f)) << "run " << rep << ": frontier id " << f
+                                       << " is not a States key";
+        run_rewriting_core(job(0, "Close", handle), host);
+    }
+}
