@@ -746,8 +746,8 @@ def t2(build, maxd, reps):
     b = [provenance("reference/bench_authority.wls + tools/quotient_reconstruction_cost_probe.cpp")
          + pac_note,
          r"\begin{tabular}{rrrrrr}", r"\toprule",
-         r"Depth & States & Authority ms & Engine ms (paclet) & "
-         r"Engine ms (C++ core) & Speedup (core vs.\ authority) \\", r"\midrule"]
+         r"Depth & States & \texttt{MultiwaySystem} ms & Engine ms (paclet) & "
+         r"Engine ms (C++ core) & Speedup (core vs.\ \texttt{MultiwaySystem}) \\", r"\midrule"]
     for d in sorted(auth):
         if d not in hgev:
             continue
@@ -898,7 +898,7 @@ def t3(build):
          r"Allocs per event \\",
          r"\midrule"]
     for (name, canon, ev, arena, heapb, allocs) in rows:
-        per = ("%.4f" % (float(allocs) / ev)) if ev else "--"
+        per = ("%.3g" % (float(allocs) / ev)) if ev else "--"
         b.append("%s & %d & %d & %d & %d & %d & %s \\\\" % (
             tex_escape(name), canon, ev, arena, heapb, allocs, per))
     b += [r"\bottomrule", r"\end{tabular}"]

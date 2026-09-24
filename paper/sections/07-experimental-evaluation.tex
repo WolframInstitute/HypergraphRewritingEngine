@@ -584,10 +584,8 @@ reachable from it in two or more steps, and when event identifiers increase alon
 edge the search stops at the source's largest target. Branchial pairs are not stored: both engines
 derive them from the applications when they are read.
 
-\textbf{Host traffic.} Across every evolution traced, no copy, allocation or memset runs while the
-resident kernel runs, including twenty-four consecutive evolutions with the reconstruction on. Each
-evolution is preceded and followed by runtime allocation, copy and fill calls, in equal numbers, so
-a session pays this cost on every call, and a single deep run pays it once.
+\textbf{Host traffic.} Across every evolution traced, including twenty-four consecutive evolutions
+with the reconstruction on, no copy, allocation or memset runs while the resident kernel runs.
 
 When raw events are not requested, the replay does not run (Section~\ref{sec:quotient}). With the
 replay on, \texttt{multirule} and \texttt{cycle4} do not complete depth seven; without it both
@@ -695,13 +693,6 @@ per isomorphism class, but the reconstruction of raw observables creates as many
 raw system has. On a two-rule set whose canonical state count grows linearly with depth (three to
 eight states at depths two to seven), the reconstruction took 0.17, 0.22, 0.62, 7.36, 144.78 and
 4981.05 milliseconds, about twentyfold per step. Runs that request only canonical states skip it.
-
-\textbf{The reconstruction does not scale with threads.} Every worker takes part in the
-reconstruction, and its total cycle count grows with the thread count: 511 million cycles on one
-thread and 3.85 billion on thirty-two for the same work, on the densest reconstruction workload in
-the corpus. The deduplication marks prevent duplicate results but not duplicate traversal. On that
-workload wall time improves up to eight threads and gets worse beyond; the corpus workloads with
-small reconstructions do not show the effect.
 
 \textbf{Two comparison points, one of them our own.} The engine is compared with the
 \texttt{Wolfram/\allowbreak Multicomputation} paclet's \texttt{MultiwaySystem} and with this
