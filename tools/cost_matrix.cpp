@@ -112,6 +112,11 @@ struct Measured {
 // a target without them -- and running the corpus there is what says the engine WORKS there,
 // as against merely compiling.
 ParallelEvolutionEngine::ExecutionMode g_mode = ParallelEvolutionEngine::ExecutionMode::Parallel;
+// --forwarding on|off overrides the engine's per-rule-set decision; -1 leaves it to the engine.
+// --quotient runs quotient exploration. Both exist to compare the arms case by case under a
+// deterministic instrument (callgrind on --case NAME --record all).
+int g_forwarding = -1;
+bool g_quotient = false;
 
 Measured measure(const oracle::Case& c, int steps, RecordSet rec = RecordSet{}) {
     uint64_t a0 = g_alloc_count.load(std::memory_order_relaxed);
@@ -122,6 +127,8 @@ Measured measure(const oracle::Case& c, int steps, RecordSet rec = RecordSet{}) 
     hg.set_record_set(rec);
     ParallelEvolutionEngine engine(&hg, 1, g_mode);
     engine.set_transitive_reduction(true);  // exercise the Desc/Anc closure (the O(N^2) term)
+    if (g_forwarding >= 0) engine.set_match_forwarding(g_forwarding == 1);
+    if (g_quotient) engine.set_explore_from_canonical_states_only(true);
     for (const auto& r : c.rules) engine.add_rule(r);
     engine.evolve(c.init, steps);
 
@@ -174,6 +181,8 @@ int main(int argc, char** argv) {
         if (a == "--case" && i + 1 < argc) only = argv[++i];
         else if (a == "--record" && i + 1 < argc) record = argv[++i];
         else if (a == "--serial") g_mode = ParallelEvolutionEngine::ExecutionMode::Serial;
+        else if (a == "--forwarding" && i + 1 < argc) g_forwarding = std::string(argv[++i]) == "on" ? 1 : 0;
+        else if (a == "--quotient") g_quotient = true;
         else steps_override = std::atoi(argv[i]);
     }
 
