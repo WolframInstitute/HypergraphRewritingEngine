@@ -100,6 +100,19 @@ If[Head[s4] === HGSessionObject,
           Quiet[HGSessionStep[s4, 1, Automatic, "From" -> {999999}]] === $Failed]];
   HGSessionClose[s4]];
 
+(* Quotient exploration: a session stepped k times equals one evolve of depth k. The Open
+   evolves 0 steps, so the root's expansion is deferred to the first Step. *)
+Module[{qopts = {"CanonicalizeStates" -> Full, "ExploreFromCanonicalStatesOnly" -> True}, qOne, sq},
+  qOne = Table[HGEvolve[rules, init, k, prop, Sequence @@ qopts], {k, 0, maxDepth}];
+  sq = HGSessionOpen[rules, init, prop, Sequence @@ qopts];
+  If[Head[sq] === HGSessionObject,
+    Do[Module[{r = HGSessionStep[sq, 1]},
+         check["quotient step " <> ToString[k] <> " == one evolve of " <> ToString[k] <>
+               "  " <> ToString[r], r === qOne[[k + 1]]]],
+       {k, 1, maxDepth}];
+    HGSessionClose[sq],
+    check["HGSessionOpen returns a quotient-exploration session", False]]];
+
 (* A sampled session split at step 25 keeps the same states as one evolve of 30. Rate 1e-12
    fails every draw, so each state keeps only its spine transition. *)
 Module[{wpp = {{{1, 2}, {1, 3}} -> {{1, 2}, {1, 4}, {2, 4}, {3, 4}}}, sopts, one, ss, split,

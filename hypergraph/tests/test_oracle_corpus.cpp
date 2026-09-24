@@ -359,8 +359,9 @@ TEST(OracleCorpus, ContinuingARunMatchesRunningItInOneCall) {
         const bool reconstruct = leg != FULL;
         const bool quotient_explore = leg == QUOTIENT_EXPLORE;
         for (const auto& c : oracle::corpus()) {
-            if (c.measure_steps < 2) continue;
-            const size_t first = c.measure_steps - 1;
+          if (c.measure_steps < 2) continue;
+          // A session Open evolves 0 steps, so 0 is a split point as well as measure_steps - 1.
+          for (const size_t first : {size_t(0), size_t(c.measure_steps - 1)}) {
 
             Hypergraph whole;
             whole.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
@@ -390,27 +391,28 @@ TEST(OracleCorpus, ContinuingARunMatchesRunningItInOneCall) {
 
             const char* route = quotient_explore ? "qexpl" : (reconstruct ? "recon" : "full ");
             const Fp a = fingerprint(whole), b = fingerprint(split);
-            std::printf("[cont %s %-18s] whole s=%zu e=%zu app=%zu cAll=%zu c=%zu b=%zu"
+            std::printf("[cont %s %-18s first=%zu] whole s=%zu e=%zu app=%zu cAll=%zu c=%zu b=%zu"
                         " | split s=%zu e=%zu app=%zu cAll=%zu c=%zu b=%zu\n",
-                        route, c.name,
+                        route, c.name, first,
                         a.states, a.events, a.applications, a.causal_all, a.causal, a.branchial,
                         b.states, b.events, b.applications, b.causal_all, b.causal, b.branchial);
             EXPECT_EQ(b.states, a.states)
-                << route << c.name << ": continuing found a different state count";
+                << route << c.name << " first=" << first << ": continuing found a different state count";
             EXPECT_EQ(b.events, a.events)
-                << route << c.name << ": continuing found a different event count";
+                << route << c.name << " first=" << first << ": continuing found a different event count";
             EXPECT_EQ(b.applications, a.applications)
-                << route << c.name << ": continuing replayed a different number of applications";
+                << route << c.name << " first=" << first << ": continuing replayed a different number of applications";
             EXPECT_EQ(b.causal_all, a.causal_all)
-                << route << c.name << ": continuing built a different UNREDUCED causal base";
+                << route << c.name << " first=" << first << ": continuing built a different UNREDUCED causal base";
             EXPECT_EQ(b.causal, a.causal)
-                << route << c.name << ": continuing built a different causal size";
+                << route << c.name << " first=" << first << ": continuing built a different causal size";
             EXPECT_EQ(b.branchial, a.branchial)
-                << route << c.name << ": continuing built a different branchial size";
+                << route << c.name << " first=" << first << ": continuing built a different branchial size";
             EXPECT_EQ(b.state_hashes, a.state_hashes)
-                << route << c.name << ": continuing explored different states";
+                << route << c.name << " first=" << first << ": continuing explored different states";
             EXPECT_EQ(b.causal_pairs, a.causal_pairs)
-                << route << c.name << ": continuing built a different causal relation";
+                << route << c.name << " first=" << first << ": continuing built a different causal relation";
+          }
         }
     }
 

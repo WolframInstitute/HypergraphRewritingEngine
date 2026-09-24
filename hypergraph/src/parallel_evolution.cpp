@@ -1509,9 +1509,17 @@ void ParallelEvolutionEngine::evolve_more(size_t additional_steps,
             if (!all && d.step != step) continue;
             // Quotient exploration matches a canonical state once, under a claim, so its
             // frontier resumes through the same decision the relaxation walk makes rather than
-            // a second copy of it.
-            if (!explore_from_canonical_states_only_) submit_match_task(d.state, d.step);
-            else if (claim_canonical_for_expansion(d.state)) submit_match_task(d.state, d.step);
+            // a second copy of it. An initial state resumes as evolve() seeds it: its class is
+            // claimed (seeding already did, unless a stop released it) and it is submitted
+            // whatever the claim returns, without the ExplorationProbability test.
+            if (!explore_from_canonical_states_only_) {
+                submit_match_task(d.state, d.step);
+            } else if (hg_->get_state(d.state).step == 0) {
+                hg_->try_claim_expanded(hg_->get_canonical_state(d.state));
+                submit_match_task(d.state, d.step);
+            } else if (claim_canonical_for_expansion(d.state)) {
+                submit_match_task(d.state, d.step);
+            }
         }
         // The frontier is in: depth 0 may settle, exactly as after the roots are seeded.
         depth_join_.mark_roots_seeded();
