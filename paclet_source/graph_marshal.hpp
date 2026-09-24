@@ -195,6 +195,9 @@ void push_branchial_state_edges(wxf::WXFValueAssociation& result,
 struct GraphPropertyNeeds {
     bool causal = false;
     bool branchial = false;
+    // The events themselves: a states graph has one edge per event, and an evolution graph has
+    // a vertex per event. Under quotient exploration they are the reconstruction's.
+    bool events = false;
 };
 
 GraphPropertyNeeds graph_property_needs(const std::string& graph_property);

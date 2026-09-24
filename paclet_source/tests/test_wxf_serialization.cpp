@@ -1694,3 +1694,32 @@ TEST(RelationCoherence, PrintSurface) {
                                 routing.c_str());
                 }
 }
+
+// The states graph has one edge per event NumEvents reports, under quotient exploration as under
+// full capture. The kernel asks for a states graph with an empty RequestedData, which left the
+// reconstruction off, so under quotient exploration the graph was built over the explored
+// representatives' events: 52 edges against 126 events on the WPP rule at depth 4.
+TEST(WxfSerializationPin, StatesGraphEdgesAreTheEventsTheCountReports) {
+    for (bool quotient : {false, true}) {
+        auto request = [&](bool graph) {
+            return build_input(kBranchSeed, kBranchLhs, kBranchRhs, 4, [&](wxf::Writer& w) {
+                if (graph) {
+                    put_str_list_option(w, "RequestedData", {});
+                    put_str_list_option(w, "GraphProperties", {"StatesGraph"});
+                } else {
+                    put_str_list_option(w, "RequestedData", {"NumEvents"});
+                }
+                put_str_option(w, "CanonicalizeStates", "Full");
+                if (quotient) put_str_option(w, "ExploreFromCanonicalStatesOnly", "True");
+            }, (graph ? 3 : 2) + (quotient ? 1 : 0));
+        };
+        HostBridge host;
+        const auto graph_out = run_rewriting_core(request(true), host);
+        const auto count_out = run_rewriting_core(request(false), host);
+        const int64_t num_events = read_int_key(count_out, "NumEvents");
+        ASSERT_GT(num_events, 0);
+        EXPECT_EQ(graph_edge_count(graph_out), num_events)
+            << "quotient=" << quotient
+            << ": the states graph and NumEvents describe different event sets";
+    }
+}

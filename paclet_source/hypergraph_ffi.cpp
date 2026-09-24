@@ -840,13 +840,13 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // 14.6x per depth step while the canonical answer grows 1.17x. It defaults ON in
         // RecordSet so a caller that states nothing keeps the counts it always had; here the
         // caller HAS stated something, so it is derived like the other three rather than left at
-        // the default. On for a request the raw set answers: the event records themselves, or a
-        // count taken over them.
+        // the default. On for a request the raw set answers: the event records themselves, a
+        // count taken over them, or a graph built over events (gneeds.events).
         //
         // The causal and branchial relations do not need it named: under quotient they are
         // reconstructed too, and record.causal / record.branchial already drive the replay.
         record.raw_events = req.include_events || req.include_events_minimal ||
-                            req.include_num_events || req.show_progress;
+                            req.include_num_events || gneeds.events || req.show_progress;
 
         // A SESSION RECORDS EVERYTHING, because it exists to be continued and queried in ways
         // its Open cannot know. Deriving its record set from the properties named on the Open

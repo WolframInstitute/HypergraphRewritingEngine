@@ -141,7 +141,7 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
         // pairs every two events leaving one input state whether or not they overlap.
         in.record.raw_events = job.include_events || job.include_num_events ||
                                job.include_branchial_state_edges ||
-                               job.include_branchial_state_edges_all_siblings;
+                               job.include_branchial_state_edges_all_siblings || gneeds.events;
 
         // A SESSION RECORDS EVERYTHING, the same rule the host follows and for the same reason:
         // a session exists to be continued and queried in ways its Open cannot know, so deriving

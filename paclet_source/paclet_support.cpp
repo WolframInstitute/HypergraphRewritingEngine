@@ -182,9 +182,11 @@ GraphPropertyNeeds graph_property_needs(const std::string& graph_property) {
     const bool is_causal    = graph_property.rfind("Causal", 0) == 0;
     const bool is_branchial = graph_property.rfind("Branchial", 0) == 0;
     const bool is_evolution = graph_property.find("Evolution") != std::string::npos;
+    const bool is_states    = graph_property.rfind("States", 0) == 0;
     return GraphPropertyNeeds{
         is_causal    || (is_evolution && graph_property.find("Causal") != std::string::npos),
-        is_branchial || (is_evolution && graph_property.find("Branchial") != std::string::npos)};
+        is_branchial || (is_evolution && graph_property.find("Branchial") != std::string::npos),
+        is_states    || is_evolution};
 }
 
 GraphPropertyNeeds graph_property_needs(const std::vector<std::string>& properties) {
@@ -193,6 +195,7 @@ GraphPropertyNeeds graph_property_needs(const std::vector<std::string>& properti
         const GraphPropertyNeeds one = graph_property_needs(p);
         n.causal    = n.causal    || one.causal;
         n.branchial = n.branchial || one.branchial;
+        n.events    = n.events    || one.events;
     }
     return n;
 }
