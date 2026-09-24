@@ -282,11 +282,18 @@ hgWorkerTry[device_, wxfBytes_ByteArray] := Module[{payload},
     True, payload]
 ];
 
-(* Route a serialized job to the engine: the persistent socket worker (GPU binary
-   for TargetDevice -> "GPU", else CPU binary) when available, otherwise a
-   one-shot RunProcess of the same binary, otherwise the in-process LibraryLink. *)
-hgCallEngine[wxfBytes_, targetDevice_:"CPU"] := Module[{dev, r},
-  dev = If[targetDevice === "GPU" && hgGpuBinaryAvailableQ[], "GPU", "CPU"];
+(* The device a call runs on, from the TargetDevice it asked for: "GPU" when the GPU binary is
+   present, else "CPU" with HGEvolve::gpudev; anything but "CPU" or "GPU" runs on the CPU with
+   HGEvolve::baddev. HGEvolve and HGSessionOpen resolve once and pass the result on. *)
+hgResolveDevice[requested_] := Switch[requested,
+  "CPU", "CPU",
+  "GPU", If[hgGpuBinaryAvailableQ[], "GPU", Message[HGEvolve::gpudev, $SystemID]; "CPU"],
+  _, Message[HGEvolve::baddev, requested]; "CPU"];
+
+(* Route a serialized job to the engine: the persistent socket worker for `dev` (a resolved
+   device) when available, otherwise a one-shot RunProcess of the same binary, otherwise the
+   in-process LibraryLink. *)
+hgCallEngine[wxfBytes_, dev_:"CPU"] := Module[{r},
   r = hgWorkerTry[dev, wxfBytes];
   If[ByteArrayQ[r], Return[r]];
   Which[
@@ -1008,7 +1015,7 @@ hgSendJob[inputData_Association, device_, sessionQ_] := Module[{wxfBytes, result
   t0 = AbsoluteTime[];
   wxfBytes = BinarySerialize[inputData];
   resultBytes = If[TrueQ[sessionQ],
-    Module[{dev = If[device === "GPU" && hgGpuBinaryAvailableQ[], "GPU", "CPU"], r},
+    Module[{dev = device, r},
       r = hgWorkerTry[dev, wxfBytes];
       (* $hgWorkerBroken is LATCHED, and it is latched for the FALLBACK path's benefit: there a
          dead worker only means "stop paying to retry", because a one-shot RunProcess answers
@@ -1147,7 +1154,7 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
   {inputData, wxfBytes, resultBytes, wxfData, requiredData, options,
    states, events, causalEdges, branchialEdges, aspectRatio, props,
    canonicalizeStates, canonicalizeEvents, graphProperties, colorByRule,
-   normalizedRules, rulesAssoc, initialStatesData},
+   normalizedRules, rulesAssoc, initialStatesData, device},
 
   If[!hgEngineAvailableQ[],
     Message[HGEvolve::noengine, $SystemID];
@@ -1179,14 +1186,7 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
     Print["  Graph properties: ", graphProperties];
   ];
 
-  (* Build options *)
-  (* TargetDevice: "CPU" runs the CPU binary; "GPU" runs the GPU binary when it is
-     present (built with the CUDA backend), else falls back to CPU with a message. *)
-  Switch[OptionValue["TargetDevice"],
-    "CPU", Null,
-    "GPU", If[!hgGpuBinaryAvailableQ[], Message[HGEvolve::gpudev, $SystemID]],
-    _, Message[HGEvolve::baddev, OptionValue["TargetDevice"]]
-  ];
+  device = hgResolveDevice[OptionValue["TargetDevice"]];
   aspectRatio = OptionValue["AspectRatio"];
   options = hgJobOptions[OptionValue[#] &, requiredData, graphProperties];
 
@@ -1208,7 +1208,7 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
   |>;
 
   (* Run and interpret. Everything from here is shared with the session verbs (hgRunJob). *)
-  hgRunJob[inputData, OptionValue["TargetDevice"], props, propertyWasList, <|
+  hgRunJob[inputData, device, props, propertyWasList, <|
     "RequestedData"        -> requiredData,
     "AspectRatio"          -> aspectRatio,
     "CanonicalizeStates"   -> canonicalizeStates,
@@ -1265,7 +1265,7 @@ HGSessionOpen[rules_List, initialEdges_List,
   requiredData = computeRequiredData[props];
   If[requiredData === $Failed, Return[$Failed]];
   graphProperties = Select[props, StringMatchQ[#, "*Graph*"] &];
-  device = OptionValue["TargetDevice"];
+  device = hgResolveDevice[OptionValue["TargetDevice"]];
 
   (* The session's own record of how to interpret every later reply. A Step is not an HGEvolve
      call and has no OptionsPattern to read, so these are resolved once, here, and carried by the

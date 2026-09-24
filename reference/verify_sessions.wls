@@ -115,6 +115,19 @@ If[Head[s5] === HGSessionObject,
           !MemberQ[b, HoldForm[HGSessionStep::badsession]]]];
   HGSessionClose[s5]];
 
+(* A GPU session where no GPU binary is present opens on the CPU, says so with
+   HGEvolve::gpudev, and records the device it runs on. The binary is hidden for the check. *)
+Module[{saved = HypergraphRewriting`Private`$HypergraphEngineBinaryGPU, sg, msgs},
+  HypergraphRewriting`Private`$HypergraphEngineBinaryGPU = $Failed;
+  msgs = Block[{$MessageList = {}},
+    sg = HGSessionOpen[rules, init, prop, "TargetDevice" -> "GPU"];
+    $MessageList];
+  HypergraphRewriting`Private`$HypergraphEngineBinaryGPU = saved;
+  check["a GPU session without a GPU binary warns and records device CPU",
+        Head[sg] === HGSessionObject && MemberQ[msgs, HoldForm[HGEvolve::gpudev]] &&
+        sg[[1]]["Device"] === "CPU"];
+  If[Head[sg] === HGSessionObject, HGSessionClose[sg]]];
+
 (* Quotient exploration: a session stepped k times equals one evolve of depth k. The Open
    evolves 0 steps, so the root's expansion is deferred to the first Step. *)
 Module[{qopts = {"CanonicalizeStates" -> Full, "ExploreFromCanonicalStatesOnly" -> True}, qOne, sq},
