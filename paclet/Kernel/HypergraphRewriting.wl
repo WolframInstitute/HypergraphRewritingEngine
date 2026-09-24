@@ -36,9 +36,7 @@ Options[HGEvolve] = {
   "ShowGenesisEvents" -> False,
   "AspectRatio" -> None,
   "DebugFFI" -> False,
-  "IncludeStateContents" -> False,
   "IncludeCanonicalHashes" -> False,  (* True: include per-state IR canonical hash ("CanonicalHash"); stable across runs, for fusing pruned runs by isomorphism class *)
-  "IncludeEventContents" -> False,
   "BranchialStep" -> Automatic,  (* Automatic: BranchialGraph->-1 (final), Evolution*Branchial*->All; or explicit: -1, All, 1-based step *)
   "EdgeDeduplication" -> True,  (* True: one edge per event pair; False: N edges for N shared hypergraph edges *)
   "UniformRandom" -> False,  (* True: with "MatchesPerStep", stop keeping new states once that many exist for the step. A cap by ARRIVAL ORDER, which depends on the schedule, not a uniform draw. "TransitionRate" is the uniform, reproducible sampler. *)
@@ -49,12 +47,6 @@ Options[HGEvolve] = {
      properties, whose edge payloads carry RuleIndex; Structure variants ship
      topology only and are unaffected. *)
   "ColorByRule" -> False,
-  (* Initial Condition Options - alternative to InitialEdges *)
-  "InitialCondition" -> "Edges",  (* "Edges", "Grid", "Sprinkling", "BrillLindquist", "Poisson", "Uniform" *)
-  (* Topology options *)
-  "Topology" -> "Flat",  (* "Flat", "Cylinder", "Torus", "Sphere", "Klein", "Mobius" *)
-  "MajorRadius" -> 10.0,  (* Major radius for curved topologies *)
-  "MinorRadius" -> 3.0,  (* Minor radius for torus *)
   (* Grid options *)
   "GridWidth" -> 10,  (* Grid width for "Grid" initial condition *)
   "GridHeight" -> 10,  (* Grid height for "Grid" initial condition *)
@@ -340,7 +332,7 @@ propertyRequirementsBase = <|
 
 (* Compute union of required data for a list of properties *)
 (* Graph properties have empty requirements - FFI handles them via GraphProperty option *)
-computeRequiredData[props_List, includeStateContents_, includeEventContents_, canonicalizeStates_:None] := Module[
+computeRequiredData[props_List] := Module[
   {unknown, requirements},
 
   unknown = Complement[props, Keys[propertyRequirementsBase]];
@@ -353,8 +345,7 @@ computeRequiredData[props_List, includeStateContents_, includeEventContents_, ca
   DeleteDuplicates[Flatten[requirements]]
 ]
 
-computeRequiredData[prop_String, includeStateContents_, includeEventContents_, canonicalizeStates_:None] :=
-  computeRequiredData[{prop}, includeStateContents, includeEventContents, canonicalizeStates]
+computeRequiredData[prop_String] := computeRequiredData[{prop}]
 
 HGEvolve::unknownic = "Unknown initial condition type `1`.";
 HGEvolve::unknownprop = "Unknown property(s): `1`. Valid properties are: States, Events, CausalEdges, BranchialEdges, StatesGraph, CausalGraph, BranchialGraph, EvolutionGraph, their Structure variants, GlobalEdges, StateBitvectors, All.";
@@ -866,7 +857,7 @@ HGEvolve[rules_List, initialSpec_Association, steps_Integer,
    sprinklingDensity, sprinklingTime, sprinklingSpatial, spatialDim,
    lightcone, alexandrov, transitivity, maxEdgesPerVertex,
    mass1, mass2, separation, boxX, boxY, edgeThreshold,
-   majorRadius, minorRadius, poissonMinDistance, seed},
+   poissonMinDistance, seed},
 
   icType = Lookup[initialSpec, "Type", "Grid"];
 
@@ -894,35 +885,29 @@ HGEvolve[rules_List, initialSpec_Association, steps_Integer,
     "Cylinder",
     resolution = Lookup[initialSpec, "Resolution", OptionValue[HGEvolve, {opts}, "GridWidth"]];
     gridHeight = Lookup[initialSpec, "Height", OptionValue[HGEvolve, {opts}, "GridHeight"]];
-    majorRadius = Lookup[initialSpec, "Radius", OptionValue[HGEvolve, {opts}, "MajorRadius"]];
-    icResult = HGCylinder[resolution, gridHeight, "Radius" -> majorRadius, "RandomSeed" -> seed];
+    icResult = HGCylinder[resolution, gridHeight, "RandomSeed" -> seed];
     edges = icResult["Edges"],
 
     "Torus",
     resolution = Lookup[initialSpec, "Resolution", OptionValue[HGEvolve, {opts}, "GridWidth"]];
-    majorRadius = Lookup[initialSpec, "MajorRadius", OptionValue[HGEvolve, {opts}, "MajorRadius"]];
-    minorRadius = Lookup[initialSpec, "MinorRadius", OptionValue[HGEvolve, {opts}, "MinorRadius"]];
-    icResult = HGTorus[resolution, "MajorRadius" -> majorRadius, "MinorRadius" -> minorRadius, "RandomSeed" -> seed];
+    icResult = HGTorus[resolution, "RandomSeed" -> seed];
     edges = icResult["Edges"],
 
     "Sphere",
     resolution = Lookup[initialSpec, "Resolution", OptionValue[HGEvolve, {opts}, "GridWidth"]];
-    majorRadius = Lookup[initialSpec, "Radius", OptionValue[HGEvolve, {opts}, "MajorRadius"]];
-    icResult = HGSphere[resolution, "Radius" -> majorRadius, "RandomSeed" -> seed];
+    icResult = HGSphere[resolution, "RandomSeed" -> seed];
     edges = icResult["Edges"],
 
     "Klein" | "KleinBottle",
     resolution = Lookup[initialSpec, "Resolution", OptionValue[HGEvolve, {opts}, "GridWidth"]];
     gridHeight = Lookup[initialSpec, "Height", OptionValue[HGEvolve, {opts}, "GridHeight"]];
-    majorRadius = Lookup[initialSpec, "Radius", OptionValue[HGEvolve, {opts}, "MajorRadius"]];
-    icResult = HGKleinBottle[resolution, gridHeight, "Radius" -> majorRadius, "RandomSeed" -> seed];
+    icResult = HGKleinBottle[resolution, gridHeight, "RandomSeed" -> seed];
     edges = icResult["Edges"],
 
     "Mobius" | "MobiusStrip",
     resolution = Lookup[initialSpec, "Resolution", OptionValue[HGEvolve, {opts}, "GridWidth"]];
     gridWidth = Lookup[initialSpec, "Width", 5];
-    majorRadius = Lookup[initialSpec, "Radius", OptionValue[HGEvolve, {opts}, "MajorRadius"]];
-    icResult = HGMobiusStrip[resolution, gridWidth, "Radius" -> majorRadius, "RandomSeed" -> seed];
+    icResult = HGMobiusStrip[resolution, gridWidth, "RandomSeed" -> seed];
     edges = icResult["Edges"],
 
     (* ===== SPACETIME GEOMETRIES ===== *)
@@ -1164,22 +1149,19 @@ hgSendJob[inputData_Association, device_, sessionQ_] := Module[{wxfBytes, result
    the same defect the engine spent this project removing from its canonicalizer and matcher.
 
    `view` carries the interpretation settings the caller already resolved: RequestedData,
-   AspectRatio, IncludeStateContents, IncludeEventContents, CanonicalizeStates,
+   AspectRatio, CanonicalizeStates,
    CanonicalizeEvents, ColorByRule, DebugFFI. They are values here rather than OptionValue[]
    reads because a session's Step is not an HGEvolve call and has no OptionsPattern to read. *)
 hgRunJob[inputData_Association, device_, props_List, propertyWasList_, view_Association,
          sessionHandle_ : None] :=
   Module[
   {wxfBytes, resultBytes, wxfData, requiredData, states, events, causalEdges, branchialEdges,
-   branchialStateEdges, branchialStateVertices, aspectRatio, includeStateContents,
-   includeEventContents, canonicalizeStates, canonicalizeEvents, colorByRule,
+   branchialStateEdges, branchialStateVertices, aspectRatio, canonicalizeStates, canonicalizeEvents, colorByRule,
    dimensionData, geodesicData, topologicalData, curvatureData, alignmentData, entropyData,
    hilbertData, branchialData, multispaceData, dimPalette, dimColorBy, dimRange},
 
   requiredData            = view["RequestedData"];
   aspectRatio             = view["AspectRatio"];
-  includeStateContents    = view["IncludeStateContents"];
-  includeEventContents    = view["IncludeEventContents"];
   canonicalizeStates      = view["CanonicalizeStates"];
   canonicalizeEvents      = view["CanonicalizeEvents"];
 
@@ -1245,9 +1227,9 @@ hgRunJob[inputData_Association, device_, props_List, propertyWasList_, view_Asso
   (* String input returns data directly; list input always returns association *)
   If[Length[props] == 1 && !propertyWasList,
     (* Single string property: return directly *)
-    getProperty[First[props], states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, dimensionData, dimPalette, dimColorBy, dimRange, geodesicData, topologicalData, curvatureData, entropyData, hilbertData, branchialData, multispaceData, colorByRule],
+    getProperty[First[props], states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, canonicalizeStates, canonicalizeEvents, dimensionData, dimPalette, dimColorBy, dimRange, geodesicData, topologicalData, curvatureData, entropyData, hilbertData, branchialData, multispaceData, colorByRule],
     (* List input: return association keyed by property names *)
-    Association[# -> getProperty[#, states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, dimensionData, dimPalette, dimColorBy, dimRange, geodesicData, topologicalData, curvatureData, entropyData, hilbertData, branchialData, multispaceData, colorByRule] & /@ props]
+    Association[# -> getProperty[#, states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, canonicalizeStates, canonicalizeEvents, dimensionData, dimPalette, dimColorBy, dimRange, geodesicData, topologicalData, curvatureData, entropyData, hilbertData, branchialData, multispaceData, colorByRule] & /@ props]
   ]
 ]
 
@@ -1257,7 +1239,7 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
          OptionsPattern[]] := Module[
   {inputData, wxfBytes, resultBytes, wxfData, requiredData, options,
    states, events, causalEdges, branchialEdges, aspectRatio, props,
-   includeStateContents, includeEventContents, canonicalizeStates, canonicalizeEvents, graphProperties, colorByRule,
+   canonicalizeStates, canonicalizeEvents, graphProperties, colorByRule,
    normalizedRules, rulesAssoc, initialStatesData},
 
   If[!hgEngineAvailableQ[],
@@ -1271,17 +1253,12 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
   (* Normalize property to list and deduplicate *)
   props = DeleteDuplicates[Flatten[{property}]];
 
-  (* Get content options *)
-  includeStateContents = OptionValue["IncludeStateContents"];
-  includeEventContents = OptionValue["IncludeEventContents"];
-
   (* Get canonicalization options - used for per-graph-type ID selection *)
   canonicalizeStates = OptionValue["CanonicalizeStates"];
   canonicalizeEvents = OptionValue["CanonicalizeEvents"];
 
   (* Compute required data components - fail explicitly on unknown properties *)
-  (* Pass canonicalizeStates to conditionally add States when state canonicalization is needed *)
-  requiredData = computeRequiredData[props, includeStateContents, includeEventContents, canonicalizeStates];
+  requiredData = computeRequiredData[props];
   If[requiredData === $Failed, Return[$Failed]];
 
   (* Collect all graph properties for FFI *)
@@ -1327,8 +1304,6 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
   hgRunJob[inputData, OptionValue["TargetDevice"], props, propertyWasList, <|
     "RequestedData"        -> requiredData,
     "AspectRatio"          -> aspectRatio,
-    "IncludeStateContents" -> includeStateContents,
-    "IncludeEventContents" -> includeEventContents,
     "CanonicalizeStates"   -> canonicalizeStates,
     "CanonicalizeEvents"   -> canonicalizeEvents,
     "ColorByRule"          -> OptionValue["ColorByRule"],
@@ -1380,9 +1355,7 @@ HGSessionOpen[rules_List, initialEdges_List,
 
   propertyWasListLocal = ListQ[property];
   props = DeleteDuplicates[Flatten[{property}]];
-  requiredData = computeRequiredData[props, OptionValue["IncludeStateContents"],
-                                     OptionValue["IncludeEventContents"],
-                                     OptionValue["CanonicalizeStates"]];
+  requiredData = computeRequiredData[props];
   If[requiredData === $Failed, Return[$Failed]];
   graphProperties = Select[props, StringMatchQ[#, "*Graph*"] &];
   device = OptionValue["TargetDevice"];
@@ -1394,8 +1367,6 @@ HGSessionOpen[rules_List, initialEdges_List,
   view = <|
     "RequestedData"        -> requiredData,
     "AspectRatio"          -> OptionValue["AspectRatio"],
-    "IncludeStateContents" -> OptionValue["IncludeStateContents"],
-    "IncludeEventContents" -> OptionValue["IncludeEventContents"],
     "CanonicalizeStates"   -> OptionValue["CanonicalizeStates"],
     "CanonicalizeEvents"   -> OptionValue["CanonicalizeEvents"],
     "ColorByRule"          -> OptionValue["ColorByRule"],
@@ -1431,9 +1402,7 @@ hgSessionVerb[HGSessionObject[d_Association], op_String, steps_Integer, property
 
   props = If[property === Automatic, d["Properties"], DeleteDuplicates[Flatten[{property}]]];
   wasList = If[property === Automatic, d["PropertyWasList"], ListQ[property]];
-  requiredData = computeRequiredData[props, d["View"]["IncludeStateContents"],
-                                     d["View"]["IncludeEventContents"],
-                                     d["View"]["CanonicalizeStates"]];
+  requiredData = computeRequiredData[props];
   If[requiredData === $Failed, Return[$Failed]];
   graphProperties = Select[props, StringMatchQ[#, "*Graph*"] &];
 
@@ -1515,7 +1484,7 @@ HGSessionObject /: MakeBoxes[obj : HGSessionObject[d_Association], fmt_] :=
 
 (* Property getter *)
 (* Graph properties are handled via FFI GraphData - keyed by property name *)
-getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialStateEdges_, branchialStateVertices_, wxfData_, aspectRatio_, includeStateContents_, includeEventContents_, canonicalizeStates_, canonicalizeEvents_, dimensionData_:<||>, dimPalette_:"TemperatureMap", dimColorBy_:"Mean", dimRange_:{0, 3}, geodesicData_:<||>, topologicalData_:<||>, curvatureData_:<||>, entropyData_:<||>, hilbertData_:<||>, branchialData_:<||>, multispaceData_:<||>, colorByRule_:False] := Module[
+getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialStateEdges_, branchialStateVertices_, wxfData_, aspectRatio_, canonicalizeStates_, canonicalizeEvents_, dimensionData_:<||>, dimPalette_:"TemperatureMap", dimColorBy_:"Mean", dimRange_:{0, 3}, geodesicData_:<||>, topologicalData_:<||>, curvatureData_:<||>, entropyData_:<||>, hilbertData_:<||>, branchialData_:<||>, multispaceData_:<||>, colorByRule_:False] := Module[
   {isGraphProperty, isStyled, graphData},
 
   (* Graph properties: use FFI-provided GraphData keyed by property name *)

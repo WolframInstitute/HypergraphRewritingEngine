@@ -95,7 +95,7 @@ For example:
 
 ```wolfram
 HGEvolve[rules, "Grid", steps, "GridWidth" -> 8, "GridHeight" -> 8]
-HGEvolve[rules, "Sprinkling", steps, "Topology" -> "Torus"]
+HGEvolve[rules, "Torus", steps, "RandomSeed" -> 1]
 ```
 
 ## Building from source

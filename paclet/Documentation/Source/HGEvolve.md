@@ -72,8 +72,6 @@ are the edges its id list names, and two states sharing an edge name the same id
 | `"BranchialStep"` | `Automatic` | step at which branchial edges are computed: `Automatic`, `All`, `-1` (final), or a 1-based step |
 | `"EdgeDeduplication"` | `True` | one causal/branchial edge per event pair, rather than one per shared hyperedge |
 | `"TargetDevice"` | `"CPU"` | `"CPU"` or `"GPU"`, where a GPU build is bundled (falls back to CPU with a message otherwise) |
-| `"IncludeStateContents"` | `False` | attach each state's hyperedge list to the result |
-| `"IncludeEventContents"` | `False` | attach each event's matched/produced edges to the result |
 | `"IncludeCanonicalHashes"` | `False` | attach a run-stable isomorphism hash to each state, for fusing results across runs |
 | `"ShowProgress"` | `False` | print progress during evolution |
 | `"ShowGenesisEvents"` | `False` | include the synthetic genesis events that create the initial states |
@@ -94,10 +92,6 @@ options for them; use `Options[HGEvolve]` for the list it does accept.
 
 | Option | Default | |
 |---|---|---|
-| `"InitialCondition"` | `"Edges"` | `"Edges"`, `"Grid"`, `"Sprinkling"`, `"BrillLindquist"`, `"Poisson"`, `"Uniform"` |
-| `"Topology"` | `"Flat"` | `"Flat"`, `"Cylinder"`, `"Torus"`, `"Sphere"`, `"Klein"`, `"Mobius"` |
-| `"MajorRadius"` | `10.` | major radius for curved topologies |
-| `"MinorRadius"` | `3.` | minor radius for the torus |
 | `"GridWidth"`, `"GridHeight"` | `10`, `10` | grid dimensions for the `"Grid"` condition |
 | `"GridHoles"` | `{}` | list of `{x, y, radius}` holes in the grid |
 | `"SprinklingDensity"` | `500` | number of spacetime points sprinkled |

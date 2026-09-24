@@ -80,9 +80,8 @@ HGEvolve[{{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}, "Grid", 2, "NumStates",
          "GridWidth" -> 4, "GridHeight" -> 4]
 ```
 
-`"InitialCondition"` selects the family (`"Grid"`, `"Sprinkling"`,
-`"BrillLindquist"`, `"Poisson"`, `"Uniform"`) and `"Topology"` the surface
-(`"Flat"`, `"Cylinder"`, `"Torus"`, `"Sphere"`, `"Klein"`, `"Mobius"`).
+The name is one of `"Grid"`, `"Cylinder"`, `"Torus"`, `"Sphere"`, `"Klein"`, `"Mobius"`,
+`"Sprinkling"` (or `"Minkowski"`), `"BrillLindquist"`, `"Poisson"` and `"Uniform"`.
 
 ## Running on the GPU
 
