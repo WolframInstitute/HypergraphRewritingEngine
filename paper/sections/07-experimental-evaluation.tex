@@ -324,23 +324,14 @@ without changing the total or the wall time; the fills move to neighboring code.
 from the evolution itself: about twelve cross-domain fills per object created, because a state
 created on one core complex is read by workers on others, and this part has eight L3 domains.
 
-The effect is visible in wall time when a run first uses a second L3 domain. Sweeping every worker
-count from one to thirty-two, with workers pinned one per physical core in order, on a part whose
-L3 domains hold two cores each: wall time falls from one worker to two, rises from two to three
-on every large workload (\texttt{wpp} by $12.7\%$, \texttt{wolfram24} by $20.4\%$,
-\texttt{wolftri} by $12.8\%$, \texttt{multirule} by $36.1\%$), and falls again from four onward.
-The third worker is the first in a second domain. Placing that worker on an SMT sibling in the
-first domain removes the rise (\texttt{wpp} $347$ to $258$\,ms at three workers, below the
-two-worker time), and the rise moves to the fourth worker, which opens the second domain. Filling
-each domain's two cores and their two SMT siblings before using the next domain is faster at every
-count measured, including sixteen workers (\texttt{wpp} $197$ to $182$\,ms, \texttt{wolfram24}
-$36.3$ to $33.3$\,ms, \texttt{multirule} $34.7$ to $25.7$\,ms), although it uses half as many
-physical cores at sixteen. This packed placement is the engine's default and was used for every
-table in this section. Under it the rise moves to the fifth worker, the first in a second domain:
-\texttt{wpp} takes $216$\,ms at four workers, $247$ at five, $234$ at six and $205$ at eight, and
-later domains add at most $2.3\%$ at any count from one to thirty-two. At powers of two the curve
-falls monotonically. These measurements depend on the host: on a part with larger L3 domains the
-second domain opens at a higher worker count.
+The cost appears in wall time at the worker that first uses a second L3 domain. On this part an L3
+domain holds two cores. With one worker per physical core, wall time rises from two workers to
+three on every large workload (\texttt{wpp} by $12.7\%$, \texttt{multirule} by $36.1\%$), and
+placing the third worker on an SMT sibling in the first domain removes the rise. The engine
+therefore fills each domain's two cores and their SMT siblings before using the next domain. This
+placement is faster at every worker count measured, including sixteen (\texttt{wpp} $197$ to
+$182$\,ms, \texttt{multirule} $34.7$ to $25.7$\,ms), although at sixteen it uses half as many
+physical cores, and it was used for every table in this section.
 
 \begin{table}[htbp]
 \centering
@@ -628,8 +619,7 @@ and Table~\ref{tab:t6-quotient} reports quotient exploration. The static analysi
 Section~\ref{sec:static-analysis} turns forwarding on or off per rule set. Table~\ref{tab:t9-ablation}
 gives best-of-$N$ wall times for both settings. On the one-edge left-hand side (depth eight) the
 analysis turns forwarding off, and forwarding on is $1.16\times$ slower. On the two-edge left-hand
-side (depth six) it turns forwarding on, and forwarding on is $1.10\times$ slower than off, a
-difference within the run-to-run variation of runs that short on this machine. Both settings give
+side (depth six) it turns forwarding on, and forwarding on is $1.10\times$ slower than off. Both settings give
 the same state and event counts on both workloads.
 
 \begin{table}[htbp]
