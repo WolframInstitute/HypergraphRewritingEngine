@@ -1727,3 +1727,48 @@ TEST(WxfSerializationPin, StatesGraphEdgesAreTheEventsTheCountReports) {
     }
   }
 }
+
+// Under Full state canonicalization "States" holds one record per class, keyed by the class's
+// canonical representative, and every event names its endpoints' classes by those keys in
+// CanonicalInputState / CanonicalOutputState. The representative is the state that won the
+// class's dedup claim, which on parallel workers need not be the lowest raw id, so the run is
+// repeated.
+TEST(WxfSerializationPin, EventEndpointClassesAreStatesKeys) {
+    auto field_values = [](const std::vector<uint8_t>& out, const std::string& section,
+                           const std::string& field) {
+        std::vector<int64_t> values;
+        wxf::Parser parser(out);
+        parser.skip_header();
+        parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+            if (k != section) { vp.skip_value(); return; }
+            vp.read_association_generic([&](wxf::Parser& kp, wxf::Parser& rp) {
+                kp.skip_value();
+                rp.read_association([&](const std::string& f, wxf::Parser& fp) {
+                    if (f == field) values.push_back(fp.read<int64_t>());
+                    else fp.skip_value();
+                });
+            });
+        });
+        return values;
+    };
+    for (bool quotient : {false, true}) {
+        for (int rep = 0; rep < 10; ++rep) {
+            HostBridge host;
+            auto in = build_input(kBranchSeed, kBranchLhs, kBranchRhs, 4, [&](wxf::Writer& w) {
+                put_str_list_option(w, "RequestedData", {"States", "Events"});
+                put_str_option(w, "CanonicalizeStates", "Full");
+                if (quotient) put_str_option(w, "ExploreFromCanonicalStatesOnly", "True");
+            }, quotient ? 3 : 2);
+            const auto out = run_rewriting_core(in, host);
+            const auto ids = field_values(out, "States", "Id");
+            const auto cids = field_values(out, "States", "CanonicalId");
+            ASSERT_FALSE(ids.empty());
+            EXPECT_EQ(ids, cids) << "quotient=" << quotient << ": a States record is not its class's representative";
+            const std::set<int64_t> keys(ids.begin(), ids.end());
+            for (const char* f : {"CanonicalInputState", "CanonicalOutputState"})
+                for (int64_t s : field_values(out, "Events", f))
+                    EXPECT_TRUE(keys.count(s)) << "quotient=" << quotient << ": event " << f << " "
+                                               << s << " is not a States key";
+        }
+    }
+}

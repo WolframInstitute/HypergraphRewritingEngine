@@ -42,7 +42,7 @@ RelatedGuides: [Hypergraph Rewriting Engine]
 
 - `prop` may also be a list of property strings, in which case an association keyed by those strings is returned.
 - Any `*Graph` property may take the suffix `Structure` to return the same graph without vertex styling (a lighter-weight rendering), e.g. `"StatesGraphStructure"`.
-- A raw `"States"` result is a list of associations, one per state, with keys `"Id"`, `"CanonicalId"`, `"Step"`, `"IsInitial"`, `"Edges"` (the state's hyperedges), and — when `"IncludeCanonicalHashes" -> True` — `"CanonicalHash"`. A raw `"Events"` result is a list of associations with keys `"Id"`, `"CanonicalId"`, `"RuleIndex"`, `"Step"`, `"InputState"`/`"OutputState"` (state ids), `"ConsumedEdges"`/`"ProducedEdges"` (edge ids), and `"InputStateEdges"`/`"OutputStateEdges"` (the full edge lists).
+- A raw `"States"` result is a list of associations, one per state, with keys `"Id"`, `"CanonicalId"`, `"Step"`, `"IsInitial"`, `"Edges"` (the state's hyperedges), and — when `"IncludeCanonicalHashes" -> True` — `"CanonicalHash"`. A raw `"Events"` result is a list of associations with keys `"Id"`, `"CanonicalId"`, `"RuleIndex"`, `"Step"`, `"InputState"`/`"OutputState"` (raw state ids), `"CanonicalInputState"`/`"CanonicalOutputState"` (the endpoints' canonical state ids), `"ConsumedEdges"`/`"ProducedEdges"` (edge ids), and `"InputStateEdges"`/`"OutputStateEdges"` (the full edge lists). Under `"CanonicalizeStates" -> Full`, `"States"` holds one record per isomorphism class, keyed by its canonical state id, and an event's `"CanonicalInputState"`/`"CanonicalOutputState"` are keys of `"States"`.
 
 ### Edge identity
 

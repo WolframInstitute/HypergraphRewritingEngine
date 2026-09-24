@@ -1044,18 +1044,16 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             const auto& state_content_hashes = ci.hash_of;
 
             // First pass fixes the emitted state set so the association length is
-            // known before streaming. When CanonicalizeStates is Full, emit one state
-            // per canonical ID (isomorphism-based deduplication).
+            // known before streaming. When CanonicalizeStates is Full, emit each class's
+            // canonical representative, so the States keys are the ids events carry as
+            // CanonicalInputState / CanonicalOutputState. The representative is the state
+            // that won the class's dedup claim, which need not have the lowest raw id.
             std::vector<uint32_t> emit_sids;
             emit_sids.reserve(num_states);
-            std::unordered_set<hypergraph::StateId> emitted_canonical_ids;
             for (uint32_t sid = 0; sid < num_states; ++sid) {
                 const hypergraph::State& state = hg.get_state(sid);
                 if (state.id == hypergraph::INVALID_ID) continue;
-                if (full_canonicalization) {
-                    hypergraph::StateId cid = hg.get_canonical_state(sid);
-                    if (!emitted_canonical_ids.insert(cid).second) continue;
-                }
+                if (full_canonicalization && hg.get_canonical_state(sid) != sid) continue;
                 emit_sids.push_back(sid);
             }
 
