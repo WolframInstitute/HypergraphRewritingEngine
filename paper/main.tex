@@ -124,8 +124,8 @@ The Wolfram Physics Project models fundamental physics by hypergraph rewriting. 
 evolution applies every applicable rewrite to every reachable state and records the states up to
 isomorphism, the events between them, and the causal and branchial relations over the events.
 For rules that add edges, the number of states grows super-exponentially with depth. We present a
-multiway hypergraph rewriting engine for CPU and GPU. Every state is identified exactly by a
-McKay-style individualization--refinement canonical hash, computed by one implementation shared
+multiway hypergraph rewriting engine for CPU and GPU. Every state is identified by the hash of an exact
+McKay-style individualization--refinement canonical form, computed by one implementation shared
 by the CPU and the GPU's resident evolution kernel. The engine is lock-free, runs without phases
 or passes, maintains the causal and branchial relations and the causal graph's transitive
 reduction as events are created, and returns the same output at every thread count. Quotient

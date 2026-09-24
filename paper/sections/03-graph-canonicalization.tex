@@ -1,7 +1,7 @@
 \section{State and Event Identity}
 \label{sec:canonicalization}
 
-Deduplication decides how large the explored set is: without it, every path to a state adds a separate vertex, and the number of paths grows super-exponentially when rewrites add edges. Deduplication is exact: two states are the same node if and only if their hypergraphs are isomorphic, with vertex relabeling allowed and within-edge order and edge multiplicity preserved. The exact mode computes an individualization--refinement (IR) canonical hash for every state and uses it as the deduplication key.
+Deduplication decides how large the explored set is: without it, every path to a state adds a separate vertex, and the number of paths grows super-exponentially when rewrites add edges. Two states are the same node when their hypergraphs are isomorphic, with vertex relabeling allowed and within-edge order and edge multiplicity preserved. The exact mode computes an individualization--refinement (IR) canonical form for every state and deduplicates by a 64-bit hash of that form, which two isomorphic states always share; two non-isomorphic states share it only through a hash collision, which the engine does not check for.
 
 \subsection{Individualization--Refinement}
 \label{sec:ir}

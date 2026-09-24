@@ -45,7 +45,7 @@ The \emph{causal graph} has an edge from event $p$ to event $c$ when $c$ consume
 
 \subsection{The Graph Isomorphism Problem}
 
-Deduplicating states requires deciding whether two hypergraphs are isomorphic, that is, equal up to a relabeling of vertices. Graph isomorphism is in NP and is not known to be NP-complete or to be in P~\cite{kobler2012graph}; the best known algorithm is quasipolynomial~\cite{babai2016quasipolynomial}. This engine computes an exact canonical form for every state, so its canonical hash is equal for two states if and only if they are isomorphic (Section~\ref{sec:canonicalization}).
+Deduplicating states requires deciding whether two hypergraphs are isomorphic, that is, equal up to a relabeling of vertices. Graph isomorphism is in NP and is not known to be NP-complete or to be in P~\cite{kobler2012graph}; the best known algorithm is quasipolynomial~\cite{babai2016quasipolynomial}. This engine computes an exact canonical form for every state, which is equal for two states if and only if they are isomorphic, and deduplicates states by a 64-bit hash of that form (Section~\ref{sec:canonicalization}).
 
 \subsection{Related Work}
 
