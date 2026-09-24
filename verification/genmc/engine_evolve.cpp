@@ -34,6 +34,13 @@
 //                               a third worker can interleave every rendezvous the other two
 //                               are in. 3 events, 4 raw states, 3 canonical.
 //
+//   -DHG_EVOLVE_SERIAL=1        the TWO_STEP_CANON run in ExecutionMode::Serial: no worker
+//                               threads, every job run in order by the thread that waits. One
+//                               execution, so it checks no interleaving; it runs every step of
+//                               two evolve() steps (match, rewrite, canonicalise, register)
+//                               under the checker's memory model with the shipped externals,
+//                               and finds the unroll bound that path needs.
+//
 //   -DHG_HARNESS_CALIBRATE_END=1 either arm, with an assertion that FAILS after the contract
 //                               asserts. The checker must report it: a bound under which it
 //                               does not is a bound that never reaches the end of evolve(),
@@ -94,6 +101,17 @@ int main() {
     hg::engine::RewriteRule rule = hg::engine::make_rule(0)
         .lhs({0, 1}).lhs({1, 2}).rhs({0, 1}).rhs({1, 3}).rhs({3, 2}).build();
     hg::engine::ParallelEvolutionEngine e(&g, 2);
+    e.add_rule(rule);
+    std::vector<std::vector<hg::engine::VertexId>> init = {{0, 1}, {1, 2}};
+    e.evolve(init, 2);
+    assert(e.num_events() == 3);
+    assert(g.num_states() == 4);
+#elif defined(HG_EVOLVE_SERIAL)
+    g.set_state_canonicalization_mode(hg::engine::StateCanonicalizationMode::Full);
+    hg::engine::RewriteRule rule = hg::engine::make_rule(0)
+        .lhs({0, 1}).lhs({1, 2}).rhs({0, 1}).rhs({1, 3}).rhs({3, 2}).build();
+    hg::engine::ParallelEvolutionEngine e(&g, 1,
+                                          hg::engine::ParallelEvolutionEngine::ExecutionMode::Serial);
     e.add_rule(rule);
     std::vector<std::vector<hg::engine::VertexId>> init = {{0, 1}, {1, 2}};
     e.evolve(init, 2);

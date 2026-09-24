@@ -97,6 +97,9 @@ private:
     void spawn_workers() {
         const size_t n = workers_.size();
         if (n > kMaxVerifiedWorkers) std::abort();
+        // Serial mode has no workers: nothing to spawn, and a spawned thread would index an
+        // empty worker vector.
+        if (n == 0) return;
         spawn_claim_.store(0, std::memory_order_relaxed);
         const pthread_t t0 = __VERIFIER_thread_create(nullptr, &run_worker, this);
         const pthread_t t1 = n > 1 ? __VERIFIER_thread_create_symmetric(nullptr, &run_worker, this, t0) : t0;
