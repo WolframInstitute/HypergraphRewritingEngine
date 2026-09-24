@@ -61,7 +61,7 @@ using FrameMap = ConcurrentMap<uint64_t, uint64_t>;
 // Defined here rather than in a .cu so every translation unit that asks the question links to
 // THIS body -- a device function defined in one .cu is not reachable from another target's
 // device link, and the answer to "does a second copy appear" must not depend on that.
-// THE TRANSITION'S IDENTITY, as the host computes it: the input state's canonical hash, the
+// THE TRANSITION'S IDENTITY, as the host computes it: the input state's exact isomorphism hash, the
 // rule, and the consumed edges' canonical ranks WITHIN that state, in pattern order. Two engines
 // reaching the same transition must produce the same value or nothing keyed on it agrees.
 //
@@ -81,7 +81,7 @@ __device__ inline __noinline__ uint64_t transition_key_device(const DeviceState&
         ranks[n++] = (pos == UINT32_MAX) ? UINT32_MAX : ds.state_edge_rank[pos];
     }
     return hgcommon::event_signature(hgcommon::EVENT_SIG_TRANSITION,
-                                     ds.state_canonical_hash[state_id],
+                                     ds.state_exact_hash[state_id],
                                      /*output_state_hash=*/0, /*step=*/0, rule_id,
                                      ranks, n, /*produced_ranks=*/nullptr, 0);
 }

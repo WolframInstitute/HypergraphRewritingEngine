@@ -1414,6 +1414,8 @@ TEST(Sampling, ThinnedRunsAgreeAcrossEngines) {
          {{{0u, 1u}, {0u, 2u}}}, 5},
     };
     for (const Case& c : cases) {
+      for (auto mode : {hg_gpu::CanonicalizationMode::Full, hg_gpu::CanonicalizationMode::None}) {
+        const char* mode_name = mode == hg_gpu::CanonicalizationMode::Full ? "Full" : "None";
         for (double rate : {0.75, 0.5, 0.25, 1e-12}) {
             for (uint64_t seed : {uint64_t(1), uint64_t(7), uint64_t(0xABCDEF)}) {
                 Workload w;
@@ -1421,7 +1423,7 @@ TEST(Sampling, ThinnedRunsAgreeAcrossEngines) {
                 w.rules = c.rules;
                 w.initial_states = c.init;
                 w.num_steps = c.steps;
-                w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+                w.canon_mode = mode;
                 w.transition_rate = rate;
                 w.random_seed = seed;
 
@@ -1429,13 +1431,17 @@ TEST(Sampling, ThinnedRunsAgreeAcrossEngines) {
                 NormalizedResult gpu = run_gpu(w);
 
                 EXPECT_EQ(cpu.canonical_state_hashes, gpu.canonical_state_hashes)
-                    << c.name << " rate=" << rate << " seed=" << seed
+                    << c.name << " " << mode_name << " rate=" << rate << " seed=" << seed
                     << ": the two engines kept different states from the same draw";
                 EXPECT_EQ(cpu.event_keys, gpu.event_keys)
-                    << c.name << " rate=" << rate << " seed=" << seed
+                    << c.name << " " << mode_name << " rate=" << rate << " seed=" << seed
                     << ": the two engines kept different transitions from the same draw";
+                EXPECT_EQ(cpu.raw_states, gpu.raw_states)
+                    << c.name << " " << mode_name << " rate=" << rate << " seed=" << seed
+                    << ": the two engines kept a different number of states";
             }
         }
+      }
     }
 }
 

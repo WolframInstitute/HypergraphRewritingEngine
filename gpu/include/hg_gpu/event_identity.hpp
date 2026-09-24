@@ -49,6 +49,16 @@ HG_HD inline bool run_needs_edge_ranks(EventSignatureKeys event_keys, bool expan
            transition_rate < 1.0 || num_rule_weights != 0u || matches_per_state_rule != 0u;
 }
 
+// Whether this run reads each state's exact isomorphism hash (state_exact_hash): the event
+// identity does, and so does the transition key of the draw, the spine and the per-state cap
+// (transition_key_device). In Full mode it is the state's key; in None and Automatic it is a
+// separate individualization-refinement pass.
+HG_HD inline bool run_needs_exact_hash(EventSignatureKeys event_keys, double transition_rate,
+                                       uint32_t num_rule_weights, uint32_t matches_per_state_rule) {
+    return event_keys != hgcommon::EVENT_SIG_NONE || transition_rate < 1.0 ||
+           num_rule_weights != 0u || matches_per_state_rule != 0u;
+}
+
 // Rank of `edge` inside `sid`, from the array the canonicalization pass filled. A linear scan
 // over the state's own slice: slices are the size of a state's edge set and a rule consumes at
 // most kMaxPatternEdges of them, so this is bounded by the rule rather than by the run.

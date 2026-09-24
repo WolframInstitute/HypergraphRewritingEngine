@@ -168,7 +168,7 @@ __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_
     ds.state_canonical_hash[sid] = key;
 
     // The exact hash is a SECOND quantity, and only in Full mode is it the same one. Computed
-    // here only if an event identity will read it; under event mode None nobody does.
+    // here only if an event identity or a transition key will read it (run_needs_exact_hash).
     if (need_exact) {
         uint64_t exact = key;
         if (state_mode != CanonicalizationMode::Full) {
@@ -461,6 +461,8 @@ __global__ void k_persistent_evolve(
     const bool need_ranks = run_needs_edge_ranks(event_keys, qe.enabled != 0,
                                                  ds.transition_rate, ds.num_rule_weights,
                                                  ds.matches_per_state_rule);
+    const bool need_exact = run_needs_exact_hash(event_keys, ds.transition_rate,
+                                                 ds.num_rule_weights, ds.matches_per_state_rule);
 
     if (blockIdx.x == 0) {
         if (threadIdx.x != 0) return;
@@ -693,13 +695,11 @@ __global__ void k_persistent_evolve(
                 if (threadIdx.x == 0) acc_irkey += clock64() - t1;
 
                 // The exact isomorphism hash is a different question from the mode's key and
-                // coincides with it only in Full. Computed only when an event identity will
-                // read it -- otherwise this is an individualization-refinement pass per state
-                // bought for nobody.
+                // coincides with it only in Full. Computed only when an event identity or a
+                // transition key will read it (run_needs_exact_hash).
                 uint64_t exact = h;
                 ExactHashStatus ex_st = ExactHashStatus::kOk;
-                if (child_sid != INVALID_ID && key_st == ExactHashStatus::kOk &&
-                    event_keys != EVENT_SIG_NONE &&
+                if (child_sid != INVALID_ID && key_st == ExactHashStatus::kOk && need_exact &&
                     state_mode != CanonicalizationMode::Full) {
                     ex_st = state_exact_hash_device(ds, child_sid, arena, ir_slot,
                                                     ir_slot_words, exact, need_ranks,
@@ -722,7 +722,7 @@ __global__ void k_persistent_evolve(
                         // needs it as an input hash, and that read happens on another block.
                         ds.state_canonical_hash[child_sid] = h;
 
-                        if (event_keys != EVENT_SIG_NONE) {
+                        if (need_exact) {
                             if (ex_st != ExactHashStatus::kOk) {
                                 ds.errors.record(error_kind_for(ex_st));
                                 exact = 0;
@@ -1218,7 +1218,8 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         k_seed_root_hashes<<<(n + block - 1) / block, block>>>(
             dsv, d_states, n,
             session ? sess_v.states : canonical_owner.view(), state_mode,
-            event_keys != EVENT_SIG_NONE,
+            run_needs_exact_hash(event_keys, dsv.transition_rate, dsv.num_rule_weights,
+                                 dsv.matches_per_state_rule),
             run_needs_edge_ranks(event_keys, qe.enabled != 0, dsv.transition_rate,
                                  dsv.num_rule_weights, dsv.matches_per_state_rule),
             arena.view(), quotient_roots, qc, qe, d_kept, d_kept_count, n);
