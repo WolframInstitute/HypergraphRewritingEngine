@@ -1299,6 +1299,57 @@ TEST(WxfSerializationPin, RandomSeedMakesASampledEvolutionReproducible) {
 //
 // SKIPPED, NOT FAILED, when the binary is absent: a machine without CUDA cannot build it, and
 // a skip that says why is honest where a failure would be noise.
+namespace {
+
+// A job on the WPP rule (kBranch*) with the given options, for any verb. Rules are sent with
+// Evolve and Open only; a held verb carries none.
+std::vector<uint8_t> branch_job(int64_t steps, const std::string& op, int64_t session,
+                                const std::function<void(wxf::Writer&)>& write_options,
+                                std::size_t option_count) {
+    const bool with_rules = (op == "Evolve" || op == "Open");
+    wxf::Writer w;
+    w.write_header();
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+    w.write_varint(4 + (session ? 1 : 0) + (with_rules ? 1 : 0));
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("InitialStates"));
+    w.write(kBranchSeed);
+    if (with_rules) {
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Rules"));
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        w.write_varint(1);
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("r0"));
+        w.write_function("Rule", 2);
+        w.write(kBranchLhs);
+        w.write(kBranchRhs);
+    }
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("Steps"));
+    w.write(steps);
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("Options"));
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+    w.write_varint(option_count);
+    write_options(w);
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("Op"));
+    w.write(op);
+    if (session) {
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Session"));
+        w.write(session);
+    }
+    return w.release_data();
+}
+
+bool reply_mentions(const std::vector<uint8_t>& out, const std::string& text) {
+    return std::search(out.begin(), out.end(), text.begin(), text.end()) != out.end();
+}
+
+}  // namespace
+
 #ifndef _WIN32
 namespace {
 
@@ -1396,53 +1447,6 @@ std::vector<uint8_t> worker_call(WorkerPipes& w, const std::vector<uint8_t>& job
     std::vector<uint8_t> reply;
     if (!read_exact_fd(w.out_fd, reply_len, reply)) return {};
     return reply;
-}
-
-// A job on the WPP rule (kBranch*) with the given options, for any verb. Rules are sent with
-// Evolve and Open only; a held verb carries none.
-std::vector<uint8_t> branch_job(int64_t steps, const std::string& op, int64_t session,
-                                const std::function<void(wxf::Writer&)>& write_options,
-                                std::size_t option_count) {
-    const bool with_rules = (op == "Evolve" || op == "Open");
-    wxf::Writer w;
-    w.write_header();
-    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-    w.write_varint(4 + (session ? 1 : 0) + (with_rules ? 1 : 0));
-    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-    w.write(std::string("InitialStates"));
-    w.write(kBranchSeed);
-    if (with_rules) {
-        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-        w.write(std::string("Rules"));
-        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-        w.write_varint(1);
-        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-        w.write(std::string("r0"));
-        w.write_function("Rule", 2);
-        w.write(kBranchLhs);
-        w.write(kBranchRhs);
-    }
-    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-    w.write(std::string("Steps"));
-    w.write(steps);
-    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-    w.write(std::string("Options"));
-    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-    w.write_varint(option_count);
-    write_options(w);
-    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-    w.write(std::string("Op"));
-    w.write(op);
-    if (session) {
-        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-        w.write(std::string("Session"));
-        w.write(session);
-    }
-    return w.release_data();
-}
-
-bool reply_mentions(const std::vector<uint8_t>& out, const std::string& text) {
-    return std::search(out.begin(), out.end(), text.begin(), text.end()) != out.end();
 }
 
 }  // namespace
@@ -1859,6 +1863,7 @@ TEST(WxfSerializationPin, SessionFrontierIdsAreStatesKeys) {
     }
 }
 
+#ifndef _WIN32
 // Positional event identity has no device mode, so the GPU binary runs such a job on its CPU
 // engine and says so; the counts are the CPU engine's. A session opened that way is served by the
 // CPU engine for every later verb.
@@ -1902,3 +1907,4 @@ TEST(GpuBinaryGate, PositionalRunsOnTheCpuEngine) {
     EXPECT_FALSE(worker_call(w, branch_job(0, "Close", handle, options(false), 3)).empty());
     worker_stop(w);
 }
+#endif  // _WIN32
