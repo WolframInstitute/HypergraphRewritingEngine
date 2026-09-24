@@ -7,8 +7,8 @@
 # A reproducer whose first line is `// Expect: <text>` must print <text>; every other one must
 # report "No errors were detected". A checker without the patch aborts on the allocation and
 # promotion reproducers with an internal check or reports a non-allocated access, does not finish
-# dependence_dag_paths within the ten minutes this script gives it, and reports no race on the
-# cas_fail_* reproducers.
+# dependence_dag_paths within the ten minutes this script gives it, reports no race on the
+# cas_fail_* reproducers and fails memmove_overlap_tail's assertion.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 GENMC="${GENMC:-$HOME/genmc/build/bin/genmc}"
