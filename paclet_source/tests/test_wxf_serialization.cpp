@@ -1398,6 +1398,53 @@ std::vector<uint8_t> worker_call(WorkerPipes& w, const std::vector<uint8_t>& job
     return reply;
 }
 
+// A job on the WPP rule (kBranch*) with the given options, for any verb. Rules are sent with
+// Evolve and Open only; a held verb carries none.
+std::vector<uint8_t> branch_job(int64_t steps, const std::string& op, int64_t session,
+                                const std::function<void(wxf::Writer&)>& write_options,
+                                std::size_t option_count) {
+    const bool with_rules = (op == "Evolve" || op == "Open");
+    wxf::Writer w;
+    w.write_header();
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+    w.write_varint(4 + (session ? 1 : 0) + (with_rules ? 1 : 0));
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("InitialStates"));
+    w.write(kBranchSeed);
+    if (with_rules) {
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Rules"));
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        w.write_varint(1);
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("r0"));
+        w.write_function("Rule", 2);
+        w.write(kBranchLhs);
+        w.write(kBranchRhs);
+    }
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("Steps"));
+    w.write(steps);
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("Options"));
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+    w.write_varint(option_count);
+    write_options(w);
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("Op"));
+    w.write(op);
+    if (session) {
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Session"));
+        w.write(session);
+    }
+    return w.release_data();
+}
+
+bool reply_mentions(const std::vector<uint8_t>& out, const std::string& text) {
+    return std::search(out.begin(), out.end(), text.begin(), text.end()) != out.end();
+}
+
 }  // namespace
 
 TEST(GpuBinaryGate, SessionVerbsThroughTheWorkerMatchOneEvolveOfTheSameDepth) {
@@ -1778,45 +1825,10 @@ TEST(WxfSerializationPin, EventEndpointClassesAreStatesKeys) {
 // parallel workers need not be the representative, so the run is repeated.
 TEST(WxfSerializationPin, SessionFrontierIdsAreStatesKeys) {
     auto job = [](int64_t steps, const std::string& op, int64_t session) {
-        wxf::Writer w;
-        w.write_header();
-        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-        w.write_varint(5 + (session ? 1 : 0) + (op == "Open" ? 1 : 0));
-        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-        w.write(std::string("InitialStates"));
-        w.write(kBranchSeed);
-        if (op == "Open") {
-            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-            w.write(std::string("Rules"));
-            w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-            w.write_varint(1);
-            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-            w.write(std::string("r0"));
-            w.write_function("Rule", 2);
-            w.write(kBranchLhs);
-            w.write(kBranchRhs);
-        }
-        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-        w.write(std::string("Steps"));
-        w.write(steps);
-        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-        w.write(std::string("Options"));
-        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-        w.write_varint(2);
-        put_str_list_option(w, "RequestedData", {"States"});
-        put_str_option(w, "CanonicalizeStates", "Full");
-        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-        w.write(std::string("Op"));
-        w.write(op);
-        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-        w.write(std::string("Delivery"));
-        w.write(std::string("Full"));
-        if (session) {
-            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-            w.write(std::string("Session"));
-            w.write(session);
-        }
-        return w.release_data();
+        return branch_job(steps, op, session, [](wxf::Writer& w) {
+            put_str_list_option(w, "RequestedData", {"States"});
+            put_str_option(w, "CanonicalizeStates", "Full");
+        }, 2);
     };
     auto states_keys = [](const std::vector<uint8_t>& out) {
         std::set<int64_t> keys;
@@ -1845,4 +1857,48 @@ TEST(WxfSerializationPin, SessionFrontierIdsAreStatesKeys) {
                                        << " is not a States key";
         run_rewriting_core(job(0, "Close", handle), host);
     }
+}
+
+// Positional event identity has no device mode, so the GPU binary runs such a job on its CPU
+// engine and says so; the counts are the CPU engine's. A session opened that way is served by the
+// CPU engine for every later verb.
+TEST(GpuBinaryGate, PositionalRunsOnTheCpuEngine) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    auto options = [](bool quotient) {
+        return [quotient](wxf::Writer& w) {
+            put_str_list_option(w, "RequestedData", {"NumStates", "NumEvents"});
+            put_str_option(w, "CanonicalizeStates", "Full");
+            put_str_option(w, "CanonicalizeEvents", "Positional");
+            if (quotient) put_str_option(w, "ExploreFromCanonicalStatesOnly", "True");
+        };
+    };
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    const std::string note = "Positional event identity runs on the CPU engine";
+    for (bool quotient : {false, true}) {
+        const std::size_t n = quotient ? 4 : 3;
+        HostBridge host;
+        const auto cpu = run_rewriting_core(branch_job(3, "Evolve", 0, options(quotient), n), host);
+        const auto gpu = worker_call(w, branch_job(3, "Evolve", 0, options(quotient), n));
+        ASSERT_FALSE(gpu.empty()) << "quotient=" << quotient;
+        EXPECT_EQ(read_int_key(gpu, "NumEvents"), read_int_key(cpu, "NumEvents")) << "quotient=" << quotient;
+        EXPECT_EQ(read_int_key(gpu, "NumStates"), read_int_key(cpu, "NumStates")) << "quotient=" << quotient;
+        EXPECT_TRUE(reply_mentions(gpu, note)) << "quotient=" << quotient << ": no warning";
+    }
+    const auto opened = worker_call(w, branch_job(0, "Open", 0, options(false), 3));
+    const int64_t handle = read_int_key(opened, "Session");
+    ASSERT_NE(handle, 0);
+    const auto stepped = worker_call(w, branch_job(3, "Step", handle, options(false), 3));
+    HostBridge host;
+    const auto one = run_rewriting_core(branch_job(3, "Evolve", 0, options(false), 3), host);
+    EXPECT_EQ(read_int_key(stepped, "NumEvents"), read_int_key(one, "NumEvents"))
+        << "a Positional session stepped 3 does not hold one evolve of 3";
+    EXPECT_FALSE(worker_call(w, branch_job(0, "Close", handle, options(false), 3)).empty());
+    worker_stop(w);
 }

@@ -727,15 +727,31 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // Close needs nothing else from the job: it names a handle and releases what that handle
         // holds. Answered before the rules are checked, because a Close carries no rules and
         // demanding them would make releasing a session harder than opening one.
+#ifdef HG_GPU_BACKEND
+        // POSITIONAL EVENT IDENTITY RUNS ON THE CPU ENGINE, in the GPU binary too: the device
+        // computes edge ranks in the class frame only, so it has no Positional mode. Such a job,
+        // and every later verb on a session this binary opened on the CPU engine, takes the CPU
+        // path below, which this binary links.
+        const bool cpu_session = req.session_handle != 0 && worker_session().is_live() &&
+                                 worker_session().handle() == req.session_handle;
+        const bool on_cpu = req.positional_event_identity || cpu_session;
+        if (req.positional_event_identity && !cpu_session)
+            req.ffi_warnings.push_back({"Engine", 1,
+                "Positional event identity runs on the CPU engine: the device has no Positional "
+                "mode"});
+#endif
         if (req.session_op == "Close") {
             // ANSWERED BEFORE THE RULES ARE CHECKED, on either device: a Close carries no
             // rules, and demanding them would make releasing a session harder than opening
             // one. Which SESSION it releases is the only difference -- in the GPU binary the
-            // handle names a device session, and closing a CPU slot this binary never
-            // populated would leave the device holding its engine forever. The
-            // process-boundary gate caught exactly that: Close was the one verb that errored.
+            // handle names a device session unless the CPU engine opened it, and closing a CPU
+            // slot this binary never populated would leave the device holding its engine
+            // forever. The process-boundary gate caught exactly that: Close was the one verb
+            // that errored.
 #ifdef HG_GPU_BACKEND
-            return run_gpu_job(req, host);
+            if (!on_cpu) return run_gpu_job(req, host);
+            worker_session().close(req.session_handle);
+            return hgmarshal::session_ack(hgffi::SessionSlot::kNoSession);
 #else
             worker_session().close(req.session_handle);
             return hgmarshal::session_ack(hgffi::SessionSlot::kNoSession);
@@ -769,8 +785,8 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         }
 
 #ifdef HG_GPU_BACKEND
-        // The GPU binary answers the whole job on the device; nothing below runs.
-        return run_gpu_job(req, host);
+        // The GPU binary answers the job on the device unless it runs on the CPU engine (above).
+        if (!on_cpu) return run_gpu_job(req, host);
 #endif
 
         // The graph and its engine, owned together by a holder rather than as two locals.
