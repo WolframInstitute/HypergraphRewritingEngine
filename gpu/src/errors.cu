@@ -45,6 +45,7 @@ const char* error_kind_name(ErrorKind k) {
         case ErrorKind::kQcWorkOverflow:      return "quotient-causal work stack";
         case ErrorKind::kTrScratchOverflow:   return "transitive-reduction scratch";
         case ErrorKind::kQeSurvivorsOverflow: return "replay capture survivors";
+        case ErrorKind::kQcSurvivorsOverflow: return "quotient-causal transition survivors";
         case ErrorKind::kQeWorkOverflow:      return "replay work stack";
         case ErrorKind::kIRArenaExhausted:    return "device IR arena (retryable: grow config)";
         case ErrorKind::kIRDepthExceeded:     return "IR search depth (retryable: grow config)";

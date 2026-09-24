@@ -34,7 +34,7 @@
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/cuda_check.hpp"
 #include "hg_gpu/exploration.hpp"   // DedupMap
-#include "hgcommon/core.hpp"        // isort_u64
+#include "hgcommon/core.hpp"        // sort_u64
 #include "hgcommon/slot_core.hpp"  // slot_rank -- the frame-slot rule, shared with the host
 #include "hgcommon/quotient_replay_core.hpp"  // qr_apply -- the replay, and the identity it mints
 #include "hgcommon/quotient_causal_core.hpp"  // qc_key -- the (class, depth, orbit) key rule
@@ -416,11 +416,6 @@ __device__ inline uint32_t qe_frame_slot_of(DeviceState ds, QeView qe, uint64_t 
     return UINT32_MAX;
 }
 
-// Survivor pairs one capture can hold in local scratch. A class with more surviving edges than
-// this records kQeSurvivorsOverflow and drops the capture: the events reachable only through it are
-// then missing, which the warning reports rather than silently mis-attributing. Matches the
-// DP's kQcMaxSurvivors so the two halves fail at the same size.
-constexpr uint32_t kQeMaxSurvivors = 256;
 
 // Capture one raw event as its class's expansion match, in frame slots.
 //
@@ -474,7 +469,10 @@ __device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
     // packed (parent slot, child slot) pair so a single sort orders them, through
     // hgcommon::id_key like every other pair in this engine -- its +1 offset is applied to both
     // halves, so it preserves the ordering the sort relies on.
-    uint64_t surv[kQeMaxSurvivors];
+    // At most one survivor per child edge, so the child's size bounds the list (survivor_buffer).
+    uint64_t surv_local[kLocalSurvivors];
+    uint64_t* surv = survivor_buffer(ds, surv_local, ds.state_edge_slices[child].count, work_slice);
+    if (surv == nullptr) { ds.errors.record(ErrorKind::kQeSurvivorsOverflow); return; }
     uint32_t ns = 0;
     {
         const StateEdgeSlice csl = ds.state_edge_slices[child];
@@ -487,10 +485,9 @@ __device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
             const uint32_t ps = qe_frame_slot_of(ds, qe, from, parent, oe, align);
             const uint32_t cs = qe_frame_slot_of(ds, qe, to, child, oe, align);
             if (ps == UINT32_MAX || cs == UINT32_MAX) continue;
-            if (ns >= kQeMaxSurvivors) { ds.errors.record(ErrorKind::kQeSurvivorsOverflow); return; }
             surv[ns++] = hgcommon::id_key(ps, cs);
         }
-        hgcommon::isort_u64(surv, ns);
+        hgcommon::sort_u64(surv, ns);
     }
 
     // Copy the slot arrays into the expansion arena, then publish the record.

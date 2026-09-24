@@ -672,6 +672,10 @@ bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
             dbl(cfg.ir_depth);
             return true;
         case ErrorKind::kTrScratchOverflow:   dbl(cfg.tr_scratch_scale);     return true;
+        case ErrorKind::kQeSurvivorsOverflow:
+        case ErrorKind::kQcSurvivorsOverflow:
+            cfg.survivor_scratch = cfg.survivor_scratch ? cfg.survivor_scratch * 2u : 1024u;
+            return true;
         case ErrorKind::kScratchOverflow:
             // A fixed bound no config field sets. It cannot be retried; the caller accepts the
             // truncation.
@@ -714,6 +718,7 @@ static void log_winning_config(const EngineConfig& initial,
     LOG_FIELD(qe_capacity_scale);
     LOG_FIELD(descent_work_scale);
     LOG_FIELD(tr_scratch_scale);
+    LOG_FIELD(survivor_scratch);
 #undef LOG_FIELD
 }
 
@@ -776,6 +781,7 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
          (sizeof(QeWorkItem) + sizeof(QcWorkItem));
     b += u64(default_persistent_grid()) * 4u * u64(cfg.tr_scratch_scale) *
          (EngineState::kTrScratchStack + EngineState::kTrScratchVisited);   // reachability scratch
+    b += u64(default_persistent_grid()) * u64(cfg.survivor_scratch) * 8u;    // survivor scratch
     b += u64(cfg.canonical_map_slots) * 12;         // canonical dedup map
     b += u64(cfg.match_dedup_slots)   * 12 + u64(cfg.event_canon_slots) * 12;
     b += u64(cfg.max_states)          * 8 * 76;     // matches pool (max_states*8 records ~76B)

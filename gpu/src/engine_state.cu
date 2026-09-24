@@ -212,6 +212,10 @@ EngineState::EngineState(EngineConfig cfg): cfg_(cfg)
                                                    (kTrScratchStack + kTrScratchVisited) *
                                                    cfg_.tr_scratch_scale),
                       "EngineState tr_scratch alloc");
+        if (cfg_.survivor_scratch)
+            HG_CUDA_CHECK(cudaMalloc(&survivor_scratch_, sizeof(uint64_t) * tr_scratch_slots_ *
+                                                            cfg_.survivor_scratch),
+                          "EngineState survivor_scratch alloc");
         clear();
     }
 
@@ -233,6 +237,7 @@ EngineState::~EngineState() {
         if (state_exact_hash_)       cudaFree(state_exact_hash_);
         if (state_edge_rank_)        cudaFree(state_edge_rank_);
         if (tr_scratch_)             cudaFree(tr_scratch_);
+        if (survivor_scratch_)       cudaFree(survivor_scratch_);
         if (state_edge_orbit_)       cudaFree(state_edge_orbit_);
         if (state_num_orbits_)       cudaFree(state_num_orbits_);
         if (edge_producer_)          cudaFree(edge_producer_);
@@ -389,6 +394,9 @@ DeviceState EngineState::device() const {
         d.tr_scratch_stack        = kTrScratchStack * cfg_.tr_scratch_scale;
         d.tr_scratch_visited      = kTrScratchVisited * cfg_.tr_scratch_scale;
         d.tr_scratch_slots        = tr_scratch_slots_;
+        d.survivor_scratch        = survivor_scratch_;
+        d.survivor_scratch_cap    = cfg_.survivor_scratch;
+        d.survivor_scratch_slots  = survivor_scratch_ ? tr_scratch_slots_ : 0u;
         d.quotient_causal         = quotient_causal_;
         d.slice_scan_max_edges    = slice_scan_max_edges_;
         d.maintain_indices        = maintain_indices_ ? 1u : 0u;

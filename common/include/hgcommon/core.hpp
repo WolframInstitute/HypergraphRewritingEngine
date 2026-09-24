@@ -111,6 +111,28 @@ HG_HD inline void isort_u64(uint64_t* a, uint32_t n) {
     }
 }
 
+// Sort of a uint64 run of any length: isort_u64 up to 32 entries, heapsort above, so a list the
+// size of a large state stays O(n log n). The device has no std::sort.
+HG_HD inline void sort_u64(uint64_t* a, uint32_t n) {
+    if (n <= 32u) { isort_u64(a, n); return; }
+    auto sift = [&](uint32_t i, uint32_t end) {
+        for (;;) {
+            uint32_t big = i;
+            const uint32_t l = 2u * i + 1u, r = l + 1u;
+            if (l < end && a[l] > a[big]) big = l;
+            if (r < end && a[r] > a[big]) big = r;
+            if (big == i) return;
+            const uint64_t t = a[i]; a[i] = a[big]; a[big] = t;
+            i = big;
+        }
+    };
+    for (uint32_t i = n / 2u; i-- > 0;) sift(i, n);
+    for (uint32_t end = n - 1u; end > 0; --end) {
+        const uint64_t t = a[0]; a[0] = a[end]; a[end] = t;
+        sift(0u, end);
+    }
+}
+
 // MurmurHash3 finalizer — avalanche a small raw integer (e.g. a vertex id).
 HG_HD inline uint64_t mix64(uint64_t x) {
     x ^= x >> 33;

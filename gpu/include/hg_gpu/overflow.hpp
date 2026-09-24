@@ -47,7 +47,8 @@ enum class ErrorKind : uint32_t {
     kFrontierCapFull     = 18,
     kScratchOverflow     = 19,   // bounded local scratch (IR, a quotient-causal driver without a work slice)
     kQcWorkOverflow      = 10,   // the quotient-causal DP's work stack was full: a reach or producer step was dropped
-    kQeSurvivorsOverflow = 13,   // a class frame had more surviving edges than one capture holds: the capture was dropped
+    kQcSurvivorsOverflow = 15,   // a transition's survivor list was longer than the survivor scratch: the transition was skipped
+    kQeSurvivorsOverflow = 13,   // a capture's survivor list was longer than the survivor scratch: the capture was dropped
     kQeWorkOverflow      = 14,   // the replay's descent stack was full: an instance's descent was dropped
     kTrScratchOverflow   = 11,   // the transitive reduction's reachability scratch was full: a redundant edge may be kept
     kDeviceOutOfMemory   = 21,   // host-side: an engine of the grown size no longer fits in VRAM

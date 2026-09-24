@@ -41,7 +41,7 @@
 #include "hg_gpu/cuda_check.hpp"
 #include "hg_gpu/exploration.hpp"   // DedupMap, which QcView and QcState are declared in terms of
 #include "hg_gpu/rewrite.hpp"       // try_add_causal_edge
-#include "hgcommon/core.hpp"        // isort_u64
+#include "hgcommon/core.hpp"        // sort_u64
 #include "hgcommon/quotient_causal_core.hpp"   // the DP itself
 
 #include <cuda/atomic>
@@ -394,10 +394,6 @@ __device__ inline void qc_process_transition(DeviceState ds, QcView qc,
     qc_run(c, work);
 }
 
-// Survivor pairs a registration can hold in local scratch. A state with more surviving edges
-// than this records kScratchOverflow and skips the transition: causal edges reachable only
-// through it are then missing, which the warning reports rather than silently mis-attributes.
-constexpr uint32_t kQcMaxSurvivors = 256;
 
 // Orbit-map one raw event into a canonical transition, publish it once (deduplicated by the
 // orbit signature), and drive it at every depth its source state is already reached at.
@@ -432,23 +428,23 @@ __device__ inline void qc_register_transition(DeviceState ds, QcView qc,
     // Survivors: child edges that are not freshly produced passed through from the parent
     // (the child's CSR is parent-minus-consumed plus produced by construction). Recorded as
     // (orbit in parent << 32 | orbit in child), sorted as one word.
-    uint64_t surv[kQcMaxSurvivors];
+    // At most one survivor per child edge, so the child's size bounds the list (survivor_buffer).
+    uint64_t surv_local[kLocalSurvivors];
+    uint64_t* surv = survivor_buffer(ds, surv_local, ds.state_edge_slices[child].count, work_slice);
+    if (surv == nullptr) { ds.errors.record(ErrorKind::kQcSurvivorsOverflow); return; }
     uint32_t ns = 0;
     {
         // The parent's and the child's slices both list edges in ascending id; the shared merge
         // walk pairs the survivors, and the orbits are read through the indices it yields.
         const StateEdgeSlice psl = ds.state_edge_slices[parent];
         const StateEdgeSlice csl = ds.state_edge_slices[child];
-        bool overflow = false;
         hgcommon::qc_for_each_survivor(
             ds.state_edge_ids + psl.offset, psl.count, ds.state_edge_ids + csl.offset, csl.count,
             ev.produced_edges, np, [&](uint32_t pi, uint32_t ci) {
-                if (ns >= kQcMaxSurvivors) { overflow = true; return; }
                 surv[ns++] = (static_cast<uint64_t>(ds.state_edge_orbit[psl.offset + pi]) << 32) |
                              ds.state_edge_orbit[csl.offset + ci];
             });
-        if (overflow) { ds.errors.record(ErrorKind::kScratchOverflow); return; }
-        hgcommon::isort_u64(surv, ns);
+        hgcommon::sort_u64(surv, ns);
     }
 
     // Dedup signature over (from, to, rule, consumed orbits, survivor orbit pairs). One body,

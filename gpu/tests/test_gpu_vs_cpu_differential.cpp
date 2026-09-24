@@ -1863,3 +1863,28 @@ TEST(QuotientReconstruction, PastTheOldStackDepthItReachesTheDepthInstead) {
     // not breadth, which is exactly why this workload reaches depth 80 at all: the cascade walks
     // (class, depth) points for every depth, while the exploration has almost nothing to hold.
 }
+
+// Quotient exploration of states larger than a survivor list's local storage (256 entries):
+// a 300-edge cycle, split for two steps, so every capture and every causal-DP transition carries
+// about 300 survivors and takes the block's global survivor scratch, which grow-and-retry sizes.
+TEST(QuotientReconstruction, StatesLargerThanTheLocalSurvivorListAgreeWithTheHost) {
+    Workload w;
+    w.name = "large-cycle-split";
+    w.rules = {rule({{0, 1}}, {{0, 2}, {2, 1}})};
+    std::vector<std::vector<hg_gpu::VertexId>> cycle;
+    for (uint32_t i = 0; i < 300; ++i) cycle.push_back({i, (i + 1) % 300});
+    w.initial_state = cycle;
+    w.num_steps = 2;
+    w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+    w.explore_from_canonical_states_only = true;
+
+    NormalizedResult cpu = run_cpu(w);
+    NormalizedResult gpu = run_gpu(w);
+    ASSERT_GT(cpu.num_events, 0u);
+    EXPECT_EQ(gpu.canonical_state_hashes, cpu.canonical_state_hashes);
+    EXPECT_EQ(gpu.num_events, cpu.num_events) << "the device dropped captures of a large state";
+    EXPECT_EQ(gpu.recon_causal, cpu.recon_causal);
+    EXPECT_EQ(gpu.recon_branchial, cpu.recon_branchial);
+    EXPECT_EQ(gpu.observable_causal, cpu.observable_causal);
+    EXPECT_EQ(gpu.observable_branchial, cpu.observable_branchial);
+}

@@ -179,6 +179,11 @@ struct DeviceState {
     uint32_t  tr_scratch_stack;
     uint32_t  tr_scratch_visited;
     uint32_t  tr_scratch_slots;
+    // Each block's slice of survivor_scratch_cap entries for survivor lists longer than
+    // kLocalSurvivors (survivor_buffer below); null when EngineConfig::survivor_scratch is 0.
+    uint64_t* survivor_scratch;
+    uint32_t  survivor_scratch_cap;
+    uint32_t  survivor_scratch_slots;
 
     // Flags
     bool tr_enabled;
@@ -221,6 +226,20 @@ __device__ __forceinline__ uint32_t state_edge_index(const DeviceState& ds, Stat
     }
     if (lo >= sl.count || ds.state_edge_ids[sl.offset + lo] != edge) return UINT32_MAX;
     return sl.offset + lo;
+}
+
+// A survivor list's storage, for a list of at most `need` entries: `local` (kLocalSurvivors
+// entries) when it fits, else the calling block's slice of ds.survivor_scratch. Null when neither
+// holds it; the caller then records its survivors-overflow kind, which grow-and-retry grows.
+// Called from each persistent block's thread 0, whose block index is `slice`.
+constexpr uint32_t kLocalSurvivors = 256;
+__device__ __forceinline__ uint64_t* survivor_buffer(const DeviceState& ds, uint64_t* local,
+                                                     uint32_t need, uint32_t slice) {
+    if (need <= kLocalSurvivors) return local;
+    if (ds.survivor_scratch == nullptr || slice >= ds.survivor_scratch_slots ||
+        need > ds.survivor_scratch_cap)
+        return nullptr;
+    return ds.survivor_scratch + static_cast<size_t>(slice) * ds.survivor_scratch_cap;
 }
 
 class EngineState {
@@ -482,6 +501,7 @@ private:
     uint32_t*                          state_edge_rank_        = nullptr;
     uint32_t*                          tr_scratch_             = nullptr;
     uint32_t                           tr_scratch_slots_       = 0;
+    uint64_t*                          survivor_scratch_       = nullptr;
     // Sampling and capping. The weights and the two counters are the only device memory these
     // options need; everything else the draw reads was already here.
     double                             transition_rate_        = 1.0;
