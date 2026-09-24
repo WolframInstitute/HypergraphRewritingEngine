@@ -1774,6 +1774,15 @@ TEST(QuotientReconstruction, ADepthThatSaturatesThePoolsStillAgreesWithTheHost) 
     const auto gpu = hg_gpu::evolve(in);
     ASSERT_TRUE(gpu.reconstruction_ran) << "the device did not reconstruct, so there is nothing "
                                            "to compare and the gate asserts nothing";
+    // The run grows its pools and retries. The result carries the warnings of the attempt that
+    // produced it, so none is of a kind the ladder grows: those overflows ended earlier attempts.
+    for (const auto& wn : gpu.warnings) {
+        hg_gpu::EngineConfig probe{};
+        EXPECT_FALSE(hg_gpu::grow_config_for(probe, wn.kind))
+            << "a " << hg_gpu::error_kind_name(wn.kind) << " warning x" << wn.count
+            << " came back with the result; the ladder grows that pool, so it belongs to a "
+               "discarded attempt";
+    }
 
     // The host side is run DIRECTLY rather than through run_cpu, and only its counters are
     // read. run_cpu normalises every relation into a multiset to compare them element by

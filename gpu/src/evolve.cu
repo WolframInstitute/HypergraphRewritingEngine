@@ -677,25 +677,6 @@ bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
     }
 }
 
-// One-shot wrapper. Builds an Engine sized for `in`, runs it. If the
-// kernel reports any retryable overflow warnings, doubles the relevant
-// EngineConfig field(s) and re-runs from scratch — up to kMaxRetries
-// times (256× capacity growth ceiling). Each retry destructs and
-// reconstructs the Engine (the pools have to be re-allocated at the new
-// sizes; preserving in-flight state across reallocs is more engineering
-// for negligible benefit on the cold-start path).
-//
-// The returned result accumulates warnings across all attempts — the
-// caller sees the cumulative trail, not just the last attempt's warnings.
-// If the final attempt still produces warnings (because we hit the retry
-// ceiling, or because some warnings are non-retryable like
-// kScratchOverflow), the partial result is still returned with all
-// warnings attached. The caller decides whether the partial result is
-// good enough.
-//
-// For repeated runs of the same workload prefer `Engine(cfg).run(in)`
-// directly with a config you've already validated, so the retry loop
-// only fires on the first call.
 // Log the EngineConfig that worked (after grow-and-retry) so the user can
 // pre-size on subsequent calls. Only the fields that were grown beyond
 // their initial value are printed — keeps the message focused. Format is
@@ -810,21 +791,28 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     return b + b / 6;   // ~17% headroom
 }
 
-EvolveResult evolve(const EvolveInput& in) {
-    // Eight, not six. The ladder doubles ONE knob per retry and qe_capacity_scale sizes pools
-    // that are filled per APPLICATION while their base counts EVENTS -- measured on
-    // disc-l3a2g2r2 depth 3, 970,584 applications against 4,512 events, 215 to 1. At a 64x
-    // ceiling qe_events reaches 288,768 and the applied pool 577,536, and the run reported
-    // needing at least 354,113 / 402,555 / 390,638 more slots across its attempts: short by one
-    // doubling, three times over. A ceiling that stops one step before the answer returns a
-    // partial relation for a workload that fits.
-    constexpr int kMaxRetries = 8;  // up to 256× capacity growth
-    EngineConfig initial_cfg = config_from_input(in);
-    EngineConfig cfg = initial_cfg;
-    std::vector<OverflowWarning> trail;
+// THE GROW-AND-RETRY LADDER, for evolve() and PersistentEvolver::run.
+//
+// `attempt(cfg)` runs the input on an engine of that config and returns the result, or throws
+// when the engine cannot be built or the device run fails. A result with retryable overflow
+// warnings doubles the config fields those warnings name and runs again, up to kMaxRetries
+// times. The result returned carries its own warnings only: the attempts before it were
+// discarded, and each is logged to stderr with the overflow that ended it. A clean attempt
+// therefore returns no warnings. When the ladder stops with an overflow still present (no
+// retryable warning, the retry ceiling, the memory cap, or a throw), the caller gets that
+// attempt's partial result and its warnings, plus one saying why the ladder stopped.
+//
+// Eight retries, not six. The ladder doubles ONE knob per retry and qe_capacity_scale sizes
+// pools that are filled per APPLICATION while their base counts EVENTS -- measured on
+// disc-l3a2g2r2 depth 3, 970,584 applications against 4,512 events, 215 to 1. At a 64x ceiling
+// qe_events reaches 288,768 and the applied pool 577,536, and the run reported needing at least
+// 354,113 / 402,555 / 390,638 more slots across its attempts: short by one doubling, three times
+// over.
+template <class Attempt>
+static EvolveResult run_with_growth(EngineConfig cfg, uint64_t mem_cap, Attempt&& attempt) {
+    constexpr int kMaxRetries = 8;  // up to 256x capacity growth
 
-    // Resolve the device-memory ceiling: explicit request, else 90% of total VRAM.
-    uint64_t mem_cap = in.max_device_memory_bytes;
+    // The device-memory ceiling: explicit request, else 90% of total VRAM.
     if (mem_cap == 0) {
         size_t freeB = 0, totalB = 0;
         if (cudaMemGetInfo(&freeB, &totalB) == cudaSuccess) {
@@ -832,60 +820,44 @@ EvolveResult evolve(const EvolveInput& in) {
         }
         cudaGetLastError();  // clear any sticky status from the query
     }
-    // Shrink the initial config to the ceiling if config_from_input over-provisioned
-    // past it; the loop below then never grows back over the cap.
+    // Shrink the initial config to the ceiling if it was sized past it; the ladder then never
+    // grows back over the cap.
     if (mem_cap != 0 && estimated_device_bytes(cfg) > mem_cap) {
         fit_config_to_cap(cfg, mem_cap);
-        initial_cfg = cfg;
         std::fprintf(stderr,
             "hg_gpu::evolve: initial config exceeded the memory cap (%llu MB) — "
             "scaled pools down to ~%llu MB; result may be partial.\n",
             (unsigned long long)(mem_cap >> 20),
             (unsigned long long)(estimated_device_bytes(cfg) >> 20));
     }
+    const EngineConfig initial_cfg = cfg;
 
-    // Best partial result seen so far: an attempt that overflowed still returns
-    // whatever it computed, and if the next, larger engine no longer fits in
-    // device memory that partial is what the caller gets, never an exception.
+    // Best partial result seen so far: an attempt that overflowed still returns whatever it
+    // computed, and if the next, larger engine cannot be built that partial is what the caller
+    // gets, never an exception.
     EvolveResult best;
 
-    for (int attempt = 0; attempt <= kMaxRetries; ++attempt) {
+    for (int attempt_no = 0; attempt_no <= kMaxRetries; ++attempt_no) {
         EvolveResult result;
         try {
-            Engine engine(cfg);
-            result = engine.run(in);
+            result = attempt(cfg);
         } catch (const std::exception& e) {
-            trail.push_back(OverflowWarning{
+            best.warnings.push_back(OverflowWarning{
                 ErrorKind::kDeviceOutOfMemory, 1u,
-                std::string("attempt ") + std::to_string(attempt + 1) + ": " + e.what()});
+                std::string("attempt ") + std::to_string(attempt_no + 1) + ": " + e.what()});
             std::fprintf(stderr,
-                "hg_gpu::evolve: engine at the grown size no longer fits in device "
-                "memory (%s) — returning the last completed attempt's partial result.\n",
-                e.what());
-            best.warnings = std::move(trail);
+                "hg_gpu::evolve: the engine at this size failed (%s) — returning the last "
+                "completed attempt's partial result.\n", e.what());
             return best;
         }
 
-        // No overflow this attempt: success — return with the cumulative
-        // trail (which is empty on the first-attempt-clean path).
-        if (result.warnings.empty() && trail.empty()) {
-            return result;
-        }
         if (result.warnings.empty()) {
-            // Clean run after one or more grow-and-retry rounds. Surface
-            // the winning config to the operator and return with the
-            // accumulated trail attached.
-            log_winning_config(initial_cfg, cfg);
-            result.warnings = std::move(trail);
+            if (attempt_no > 0) log_winning_config(initial_cfg, cfg);
             return result;
         }
 
-        // Grow the config for any retryable warnings observed THIS
-        // attempt. grow_config_for is idempotent under repeats and
-        // doubling spuriously is conservative, so we just sweep every
-        // warning's kind. If no warning is retryable (only
-        // kScratchOverflow, say), we can't make progress — return the
-        // partial result with the cumulative trail.
+        // Grow the config for every retryable warning of THIS attempt. grow_config_for is
+        // idempotent under repeats, so every warning's kind is swept.
         bool any_retryable = false;
         ErrorKind first_grew = ErrorKind::kCount;
         for (const auto& w : result.warnings) {
@@ -894,20 +866,12 @@ EvolveResult evolve(const EvolveInput& in) {
                 any_retryable = true;
             }
         }
+        if (!any_retryable || attempt_no == kMaxRetries) return result;
 
-        // Cumulative trail across attempts; user can see what was hit
-        // and how many times across the retries.
-        for (auto& w : result.warnings) trail.push_back(std::move(w));
-
-        if (!any_retryable || attempt == kMaxRetries) {
-            result.warnings = std::move(trail);
-            return result;
-        }
-
-        // Would the grown config exceed the memory ceiling? If so, stop here and
-        // return the best partial rather than pushing toward a real device OOM.
+        // Would the grown config exceed the memory ceiling? Then stop here and return the
+        // partial rather than pushing toward a real device OOM.
         if (mem_cap != 0 && estimated_device_bytes(cfg) > mem_cap) {
-            trail.push_back(OverflowWarning{
+            result.warnings.push_back(OverflowWarning{
                 ErrorKind::kDeviceOutOfMemory,
                 static_cast<uint32_t>(estimated_device_bytes(cfg) >> 20),
                 "grown config (~" + std::to_string(estimated_device_bytes(cfg) >> 20) +
@@ -918,19 +882,25 @@ EvolveResult evolve(const EvolveInput& in) {
                 "(%llu MB) — returning the partial result.\n",
                 (unsigned long long)(estimated_device_bytes(cfg) >> 20),
                 (unsigned long long)(mem_cap >> 20));
-            result.warnings = std::move(trail);
             return result;
         }
 
         best = std::move(result);
-
         std::fprintf(stderr,
             "hg_gpu::evolve: overflow on %s — growing relevant config and "
             "retrying (attempt %d/%d).\n",
-            error_kind_name(first_grew), attempt + 2, kMaxRetries + 1);
+            error_kind_name(first_grew), attempt_no + 2, kMaxRetries + 1);
     }
-    // Unreachable: loop returns on every path.
-    return EvolveResult{};
+    return EvolveResult{};  // unreachable: every iteration returns or continues
+}
+
+EvolveResult evolve(const EvolveInput& in) {
+    // A fresh engine per attempt: the pools are re-allocated at the new sizes.
+    return run_with_growth(config_from_input(in), in.max_device_memory_bytes,
+                           [&](const EngineConfig& cfg) {
+                               Engine engine(cfg);
+                               return engine.run(in);
+                           });
 }
 
 // ---------------------------------------------------------------------------
@@ -1017,94 +987,32 @@ PersistentEvolver::SessionRun PersistentEvolver::run_session(const EvolveInput& 
 }
 
 EvolveResult PersistentEvolver::run(const EvolveInput& in) {
-    constexpr int kMaxRetries = 8;   // see the note at the other ladder
-    // Never shrink: start from the live engine's config if we have one, else size
-    // to this input. The loop only rebuilds when the config actually changes, so a
-    // run whose input fits the current engine reuses it and pays no allocation.
-    EngineConfig cfg = has_engine_ ? cfg_ : config_from_input(in);
-    std::vector<OverflowWarning> trail;
-
-    uint64_t mem_cap = in.max_device_memory_bytes;
-    if (mem_cap == 0) {
-        size_t freeB = 0, totalB = 0;
-        if (cudaMemGetInfo(&freeB, &totalB) == cudaSuccess)
-            mem_cap = static_cast<uint64_t>(static_cast<double>(totalB) * 0.90);
-        cudaGetLastError();
-    }
-    if (mem_cap != 0 && estimated_device_bytes(cfg) > mem_cap)
-        fit_config_to_cap(cfg, mem_cap);
-
-    EvolveResult best;
-    for (int attempt = 0; attempt <= kMaxRetries; ++attempt) {
-        // (Re)build only when the config differs from the live engine's. On a grow
-        // the old engine is freed before the larger one is built, so peak VRAM is
+    // Never shrink: start from the live engine's config if there is one, else size to this
+    // input. The engine is rebuilt only when the config changes, so a run whose input fits the
+    // current engine reuses it and pays no allocation.
+    return run_with_growth(has_engine_ ? cfg_ : config_from_input(in), in.max_device_memory_bytes,
+                           [&](const EngineConfig& cfg) {
+        // On a grow the old engine is freed before the larger one is built, so peak VRAM is
         // bounded by the larger config, not their sum.
         if (!has_engine_ || std::memcmp(&cfg, &cfg_, sizeof(EngineConfig)) != 0) {
-            try {
-                engine_.reset();
-                engine_ = std::make_unique<Engine>(cfg);
-            } catch (const std::exception& e) {
-                has_engine_ = false;
-                trail.push_back(OverflowWarning{
-                    ErrorKind::kDeviceOutOfMemory, 1u,
-                    std::string("attempt ") + std::to_string(attempt + 1) + ": " + e.what()});
-                best.warnings = std::move(trail);
-                return best;
-            }
+            engine_.reset();
+            has_engine_ = false;
+            engine_ = std::make_unique<Engine>(cfg);
             cfg_        = cfg;
             has_engine_ = true;
         }
-
-        EvolveResult result;
         try {
-            result = engine_->run(in);
-        } catch (const std::exception& e) {
-            // Engine::run throws on a hard overflow (and on a genuine device fault). Unlike
-            // the free evolve() -- which builds a throwaway Engine per attempt -- this evolver
-            // REUSES engine_ across calls, so a throw that leaves the device state inconsistent
-            // would poison every later call in this worker (the reported "works, then fails and
-            // never recovers until a kernel reset"). Discard the engine so the next attempt/call
-            // rebuilds a clean one, clear any non-sticky device error, and return the best
-            // partial so far with an overflow warning instead of propagating -- mirroring the
-            // graceful partial-result contract of the free evolve().
+            return engine_->run(in);
+        } catch (...) {
+            // This evolver REUSES engine_ across calls, so an engine a throw left inconsistent
+            // would poison every later call in this worker. It is discarded, and the next
+            // attempt or call builds a clean one.
             engine_.reset();
             has_engine_ = false;
             cudaGetLastError();
-            trail.push_back(OverflowWarning{
-                ErrorKind::kDeviceOutOfMemory, 1u,
-                std::string("attempt ") + std::to_string(attempt + 1) + ": " + e.what()});
-            best.warnings = std::move(trail);
-            return best;
+            throw;
         }
-
-        if (result.warnings.empty() && trail.empty()) return result;
-        if (result.warnings.empty()) {
-            result.warnings = std::move(trail);
-            return result;
-        }
-
-        bool any_retryable = false;
-        for (const auto& w : result.warnings)
-            if (grow_config_for(cfg, w.kind)) any_retryable = true;
-        for (auto& w : result.warnings) trail.push_back(std::move(w));
-
-        if (!any_retryable || attempt == kMaxRetries) {
-            result.warnings = std::move(trail);
-            return result;
-        }
-        if (mem_cap != 0 && estimated_device_bytes(cfg) > mem_cap) {
-            trail.push_back(OverflowWarning{
-                ErrorKind::kDeviceOutOfMemory,
-                static_cast<uint32_t>(estimated_device_bytes(cfg) >> 20),
-                "grown config (~" + std::to_string(estimated_device_bytes(cfg) >> 20) +
-                    " MB) would exceed the device memory cap (" +
-                    std::to_string(mem_cap >> 20) + " MB); returning partial result"});
-            result.warnings = std::move(trail);
-            return result;
-        }
-        best = std::move(result);
-    }
-    return EvolveResult{};
+    });
 }
 
 

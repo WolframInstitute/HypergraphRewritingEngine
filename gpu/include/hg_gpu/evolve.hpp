@@ -366,12 +366,11 @@ struct EngineConfig {
 // evaluations of similar workloads use Engine + run() directly to amortise
 // the setup.
 //
-// Capacity-overflow handling: if the kernels report any overflow
-// warnings, this wrapper doubles the relevant EngineConfig field(s) and
-// retries (up to 6× / 64× total growth). Each retry destructs the old
-// Engine and constructs a new one at the bigger size. The returned
-// result's `warnings` list is the cumulative trail across retries — so
-// the caller can see what was bumped without code-archaeology.
+// Capacity-overflow handling (run_with_growth, evolve.cu): if the kernels report overflow
+// warnings, this wrapper doubles the relevant EngineConfig field(s) and retries (up to 8 times,
+// 256x growth), with a new Engine at the bigger size each time. The result carries its own
+// warnings only, so a clean attempt returns none; the discarded attempts and the sizes that
+// worked are logged to stderr. A result that still has an overflow warning is partial.
 EvolveResult evolve(const EvolveInput& input);
 
 // Engine: persistent device-state container that can run() multiple
@@ -414,6 +413,10 @@ EngineConfig config_from_input(const EvolveInput& input);
 // allocate, in bytes. Used to enforce EvolveInput::max_device_memory_bytes
 // before construction. Monotonic in every capacity field.
 uint64_t estimated_device_bytes(const EngineConfig& cfg);
+
+// Double the EngineConfig fields that bound `kind`. False for a kind no config field bounds
+// (kScratchOverflow is a fixed per-thread limit): the grow-and-retry ladder cannot fix it.
+bool grow_config_for(EngineConfig& cfg, ErrorKind kind);
 
 // A device session, as HOST code can hold one.
 //
