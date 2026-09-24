@@ -200,7 +200,7 @@ if selected "Windows-x86-64"; then
         echo    "  correct and complete; the process exit code is not. Install Visual Studio 2022"
         echo    "  with the C++ workload to build the shipping artifact instead."
         build_target "Windows-x86-64" build_windows "$LR/Windows-x86-64/HypergraphRewriting.dll" \
-            -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/windows-cross.cmake
+            -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/windows-cross.cmake -DHG_MINGW_INTO_PACLET=ON
     else
         skip "Windows-x86-64" "no Visual Studio and no mingw"
     fi

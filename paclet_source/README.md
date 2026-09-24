@@ -76,6 +76,11 @@ make -j$(nproc) paclet
 ```
 
 **Windows Cross-Compilation (from Linux/WSL):**
+The shipping Windows binaries are built with MSVC (`build_windows_msvc.sh`): mingw-w64
+binaries corrupt the heap at worker-thread exit (`verification/mingw/`). A MinGW build
+therefore writes to `<build dir>/LibraryResources/Windows-x86-64`, and installs into
+`paclet/LibraryResources` only with `-DHG_MINGW_INTO_PACLET=ON`.
+
 ```bash
 # Install MinGW
 sudo apt install gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64

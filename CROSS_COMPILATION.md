@@ -125,6 +125,11 @@ docker run --rm -v $(pwd):/src -w /src ubuntu:22.04 bash -c "
 
 ### Windows Builds
 
+The shipping Windows binaries are built with MSVC (`build_windows_msvc.sh`): mingw-w64
+binaries corrupt the heap at worker-thread exit (`verification/mingw/`). A MinGW build
+therefore writes to `<build dir>/LibraryResources/Windows-x86-64`, and installs into
+`paclet/LibraryResources` only with `-DHG_MINGW_INTO_PACLET=ON`.
+
 **From Linux/WSL using MinGW:**
 ```bash
 # Install MinGW

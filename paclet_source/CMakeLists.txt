@@ -296,24 +296,35 @@ if(NOT DEFINED PLATFORM_DIR)
     endif()
 endif()
 
-# Set output directory to paclet LibraryResources platform directory
+# The binaries go into the paclet's LibraryResources platform directory. A MinGW build goes
+# there only with HG_MINGW_INTO_PACLET=ON: mingw-w64 binaries corrupt the heap at worker-thread
+# exit (verification/mingw/), and the shipping Windows binaries are built with MSVC
+# (build_windows_msvc.sh). build_all_platforms.sh sets the option when a host has no Visual
+# Studio. Without it the MinGW binaries stay in the build tree.
+option(HG_MINGW_INTO_PACLET "Install MinGW-built binaries into paclet/LibraryResources" OFF)
+set(HG_PACLET_OUTPUT_DIR "${CMAKE_SOURCE_DIR}/paclet/LibraryResources/${PLATFORM_DIR}")
+if(MINGW AND NOT HG_MINGW_INTO_PACLET)
+    set(HG_PACLET_OUTPUT_DIR "${CMAKE_BINARY_DIR}/LibraryResources/${PLATFORM_DIR}")
+    message(STATUS "MinGW build: binaries go to ${HG_PACLET_OUTPUT_DIR}, not the paclet "
+                   "(set HG_MINGW_INTO_PACLET=ON to install them there)")
+endif()
+
 set_target_properties(HypergraphRewriting PROPERTIES
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/paclet/LibraryResources/${PLATFORM_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/paclet/LibraryResources/${PLATFORM_DIR}"
+    LIBRARY_OUTPUT_DIRECTORY "${HG_PACLET_OUTPUT_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY "${HG_PACLET_OUTPUT_DIR}"
 )
 
 # The standalone binary ships alongside the DLL in the same platform directory.
 set_target_properties(hg_evolve PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/paclet/LibraryResources/${PLATFORM_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY "${HG_PACLET_OUTPUT_DIR}"
 )
 if(TARGET hg_evolve_gpu)
     set_target_properties(hg_evolve_gpu PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/paclet/LibraryResources/${PLATFORM_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY "${HG_PACLET_OUTPUT_DIR}"
     )
 endif()
 
-# Create platform directory if it doesn't exist
-file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/paclet/LibraryResources/${PLATFORM_DIR}")
+file(MAKE_DIRECTORY "${HG_PACLET_OUTPUT_DIR}")
 
 # Custom target to create paclet archive
 # Requires wolframscript to be available (found by FindWolframLanguage.cmake)
@@ -377,7 +388,7 @@ message(STATUS "  create_paclet_archive - Build documentation and create paclet 
 # Print paclet-specific configuration
 message(STATUS "Paclet Build Configuration:")
 message(STATUS "  Platform: ${PLATFORM_DIR}")
-message(STATUS "  Output: ${CMAKE_SOURCE_DIR}/paclet/LibraryResources/${PLATFORM_DIR}")
+message(STATUS "  Output: ${HG_PACLET_OUTPUT_DIR}")
 
 # =============================================================================
 # gpu_ffi_tests - the SAME serialization gates, answered by the DEVICE
