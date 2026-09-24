@@ -47,6 +47,10 @@ Options[HGEvolve] = {
      properties, whose edge payloads carry RuleIndex; Structure variants ship
      topology only and are unaffected. *)
   "ColorByRule" -> False,
+  (* Automatic: one edge per event (or per causal or branchial pair). "Merged": edges with the
+     same endpoints and type are drawn as one, whose tooltip lists the events it stands for;
+     with "ColorByRule" -> True, edges of different rules stay separate. Display only. *)
+  "MultiedgeStyle" -> Automatic,
   (* Grid options *)
   "GridWidth" -> 10,  (* Grid width for "Grid" initial condition *)
   "GridHeight" -> 10,  (* Grid height for "Grid" initial condition *)
@@ -356,6 +360,7 @@ HGEvolve::unknownprop = "Unknown property(s): `1`. Valid properties are: States,
 HGEvolve::missingdata = "FFI did not return requested data: `1`. This indicates a bug in the FFI layer.";
 HGEvolve::gpudev = "TargetDevice -> \"GPU\" requested but no GPU engine binary (hg_evolve_gpu) is present for `1`; evaluating on the CPU. Build the paclet with BUILD_GPU to include it.";
 HGEvolve::noengine = "This paclet carries no engine for `1`: LibraryResources/`1` holds neither an hg_evolve binary nor a HypergraphRewriting library. Build the paclet for this platform, or install one that was.";
+HGEvolve::badmultiedge = "\"MultiedgeStyle\" -> `1` is not valid; use Automatic or \"Merged\". Using Automatic.";
 HGEvolve::baddev = "TargetDevice -> `1` is not valid; use \"CPU\" or \"GPU\". Using CPU.";
 HGEvolve::enginemsg = "Engine binary reported: `1`";
 HGEvolve::enginefail = "Engine binary exited with code `1` and produced no result.";
@@ -502,11 +507,38 @@ makeStyledEventVertexShapeFn[vertexData_] := Function[{pos, v, size},
   ]
 ];
 
+(* One edge per (From, To, Type), and per rule when rules are coloured. The merged edge's Data
+   holds the ids of the events it stands for (an edge's "Id", or "EventId" in the Structure
+   variants, or its own position when it has neither) and the rule when the group has one. *)
+mergeParallelEdges[graphData_Association, byRule_] := Module[{groups},
+  groups = GatherBy[graphData["Edges"],
+    {#["From"], #["To"], Lookup[#, "Type", "Directed"],
+     If[byRule, Lookup[Lookup[#, "Data", <||>], "RuleIndex", None], None]} &];
+  Append[graphData, "Edges" -> Map[
+    Function[grp,
+      If[Length[grp] == 1, First[grp],
+        With[{data = Lookup[#, "Data", <||>] & /@ grp},
+          Append[First[grp], "Data" -> Join[
+            <|"EventIds" -> MapIndexed[
+                Function[{d, i}, If[AssociationQ[d], Lookup[d, "Id", Lookup[d, "EventId", i[[1]]]], i[[1]]]],
+                data]|>,
+            If[byRule && AssociationQ[First[data]] && KeyExistsQ[First[data], "RuleIndex"],
+              <|"RuleIndex" -> First[data]["RuleIndex"]|>, <||>]]]]]],
+    groups]]
+];
+
+formatMergedEdgeTooltip[tag_Association] :=
+  Row[{Length[tag["EventIds"]], " events: ", Short[tag["EventIds"], 2]}];
+
 (* Create graph from FFI GraphData - main entry point *)
 (* graphData: <|"Vertices" -> {...}, "Edges" -> {...}, "VertexData" -> <|...|>|> *)
 (* styled: True for full hypergraph rendering, False for structure only *)
-createGraphFromData[graphData_Association, aspectRatio_, styled_:False, colorByRule_:False] := Module[
-  {vertices, edgeList, vertexData, vertexLabels, vertexStyles, vertexShapes, edgeStyles, edgeStyleTable, edgeLabels, g, addLegend},
+createGraphFromData[graphData0_Association, aspectRatio_, styled_:False, colorByRule_:False,
+                    multiedgeStyle_:Automatic] := Module[
+  {graphData, vertices, edgeList, vertexData, vertexLabels, vertexStyles, vertexShapes, edgeStyles, edgeStyleTable, edgeLabels, g, addLegend},
+
+  graphData = If[multiedgeStyle === "Merged",
+    mergeParallelEdges[graphData0, TrueQ[colorByRule]], graphData0];
 
   vertices = graphData["Vertices"];
   vertexData = graphData["VertexData"];
@@ -624,6 +656,7 @@ createGraphFromData[graphData_Association, aspectRatio_, styled_:False, colorByR
   edgeLabels = {
     DirectedEdge[_, _, tag_?AssociationQ] :> Placed[
       Which[
+        KeyExistsQ[tag, "EventIds"], formatMergedEdgeTooltip[tag],
         KeyExistsQ[tag, "RuleIndex"], formatEventTooltip[tag],
         KeyExistsQ[tag, "ProducerEvent"], formatCausalEdgeTooltip[tag],
         KeyExistsQ[tag, "EventId"], Row[{"Event ", tag["EventId"]}],
@@ -631,6 +664,7 @@ createGraphFromData[graphData_Association, aspectRatio_, styled_:False, colorByR
       ], Tooltip],
     UndirectedEdge[_, _, tag_?AssociationQ] :> Placed[
       Which[
+        KeyExistsQ[tag, "EventIds"], formatMergedEdgeTooltip[tag],
         KeyExistsQ[tag, "State1"] || KeyExistsQ[tag, "Event1"], formatBranchialEdgeTooltip[tag],
         KeyExistsQ[tag, "EventId"], Row[{"Event ", tag["EventId"]}],
         True, ""
@@ -1058,7 +1092,8 @@ hgRunJob[inputData_Association, device_, props_List, propertyWasList_, view_Asso
          sessionHandle_ : None] :=
   Module[
   {wxfBytes, resultBytes, wxfData, requiredData, states, events, causalEdges, branchialEdges,
-   branchialStateEdges, branchialStateVertices, aspectRatio, canonicalizeStates, canonicalizeEvents, colorByRule},
+   branchialStateEdges, branchialStateVertices, aspectRatio, canonicalizeStates, canonicalizeEvents, colorByRule,
+   multiedgeStyle},
 
   requiredData            = view["RequestedData"];
   aspectRatio             = view["AspectRatio"];
@@ -1116,14 +1151,16 @@ hgRunJob[inputData_Association, device_, props_List, propertyWasList_, view_Asso
   ];
 
   colorByRule = TrueQ[view["ColorByRule"]];
+  multiedgeStyle = Replace[Lookup[view, "MultiedgeStyle", Automatic],
+    Except[Automatic | "Merged", bad_] :> (Message[HGEvolve::badmultiedge, bad]; Automatic)];
 
   (* Return requested properties *)
   (* String input returns data directly; list input always returns association *)
   If[Length[props] == 1 && !propertyWasList,
     (* Single string property: return directly *)
-    getProperty[First[props], states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, canonicalizeStates, canonicalizeEvents, colorByRule],
+    getProperty[First[props], states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, canonicalizeStates, canonicalizeEvents, colorByRule, multiedgeStyle],
     (* List input: return association keyed by property names *)
-    Association[# -> getProperty[#, states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, canonicalizeStates, canonicalizeEvents, colorByRule] & /@ props]
+    Association[# -> getProperty[#, states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, canonicalizeStates, canonicalizeEvents, colorByRule, multiedgeStyle] & /@ props]
   ]
 ]
 
@@ -1195,6 +1232,7 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
     "CanonicalizeStates"   -> canonicalizeStates,
     "CanonicalizeEvents"   -> canonicalizeEvents,
     "ColorByRule"          -> OptionValue["ColorByRule"],
+    "MultiedgeStyle"       -> OptionValue["MultiedgeStyle"],
     "DebugFFI"             -> OptionValue["DebugFFI"]|>]
 ]
 
@@ -1258,6 +1296,7 @@ HGSessionOpen[rules_List, initialEdges_List,
     "CanonicalizeStates"   -> OptionValue["CanonicalizeStates"],
     "CanonicalizeEvents"   -> OptionValue["CanonicalizeEvents"],
     "ColorByRule"          -> OptionValue["ColorByRule"],
+    "MultiedgeStyle"       -> OptionValue["MultiedgeStyle"],
     "DebugFFI"             -> OptionValue["DebugFFI"],
     "SessionQ"             -> True|>;
 
@@ -1373,7 +1412,7 @@ HGSessionObject /: MakeBoxes[obj : HGSessionObject[d_Association], fmt_] :=
 
 (* Property getter *)
 (* Graph properties are handled via FFI GraphData - keyed by property name *)
-getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialStateEdges_, branchialStateVertices_, wxfData_, aspectRatio_, canonicalizeStates_, canonicalizeEvents_, colorByRule_:False] := Module[
+getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialStateEdges_, branchialStateVertices_, wxfData_, aspectRatio_, canonicalizeStates_, canonicalizeEvents_, colorByRule_:False, multiedgeStyle_:Automatic] := Module[
   {isGraphProperty, isStyled, graphData},
 
   (* Graph properties: use FFI-provided GraphData keyed by property name *)
@@ -1382,7 +1421,7 @@ getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialSta
     If[KeyExistsQ[wxfData, "GraphData"] && KeyExistsQ[wxfData["GraphData"], prop],
       graphData = wxfData["GraphData"][prop];
       isStyled = !StringMatchQ[prop, "*Structure"];
-      Return[createGraphFromData[graphData, aspectRatio, isStyled, colorByRule]],
+      Return[createGraphFromData[graphData, aspectRatio, isStyled, colorByRule, multiedgeStyle]],
       (* GraphData for this property not available *)
       Return[$Failed]
     ]

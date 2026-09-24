@@ -127,6 +127,24 @@ Module[{rule = {{x, y}} -> {{x, z}, {z, y}}, g = Graph[{1 -> 2, 2 -> 3}], forms,
         forms[[All, 2 ;; 3]]];
   If[!ok, AppendTo[failed, "session input forms"]]];
 
+(* "MultiedgeStyle" -> "Merged" draws one edge per (from, to) pair; with ColorByRule (which wraps
+   the graph in Legended), one per
+   (from, to, rule). The chain rule at depth 5 under Full has 153 events among 6 states. *)
+Module[{chain = {{{1, 2}} -> {{1, 3}, {3, 2}}}, two = {{{1, 2}} -> {{1, 3}, {3, 2}}, {{1, 2}} -> {{2, 1}}},
+        plain, merged, pairs, mergedRules, rulePairs, ok},
+  plain = HGEvolve[chain, {{1, 2}}, 5, "StatesGraph", "CanonicalizeStates" -> Full];
+  merged = HGEvolve[chain, {{1, 2}}, 5, "StatesGraph", "CanonicalizeStates" -> Full, "MultiedgeStyle" -> "Merged"];
+  pairs = Length[DeleteDuplicates[{#[[1]], #[[2]]} & /@ EdgeList[plain]]];
+  mergedRules = First @ HGEvolve[two, {{1, 2}}, 3, "StatesGraph", "CanonicalizeStates" -> Full,
+    "MultiedgeStyle" -> "Merged", "ColorByRule" -> True];
+  rulePairs = Length[DeleteDuplicates[{#[[1]], #[[2]], #[[3]]["RuleIndex"]} & /@
+    EdgeList[HGEvolve[two, {{1, 2}}, 3, "StatesGraph", "CanonicalizeStates" -> Full]]]];
+  ok = EdgeCount[plain] > pairs && EdgeCount[merged] == pairs &&
+       GraphQ[mergedRules] && EdgeCount[mergedRules] == rulePairs;
+  Print[If[ok, "PASS", "FAIL"], "  MultiedgeStyle -> \"Merged\" draws one edge per pair -> ",
+        {EdgeCount[plain], EdgeCount[merged], pairs, EdgeCount[mergedRules], rulePairs}];
+  If[!ok, AppendTo[failed, "MultiedgeStyle"]]];
+
 If[useArchive,
   PacletUninstall["WolframInstitute/HypergraphRewriteEngine"];
   Print["\nuninstalled: the user's paclet directory is as it was found"]];

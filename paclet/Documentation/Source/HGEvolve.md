@@ -78,6 +78,7 @@ are the edges its id list names, and two states sharing an edge name the same id
 | `"AspectRatio"` | `None` | aspect ratio for the returned graph |
 | `"DebugFFI"` | `False` | print low-level foreign-function-interface diagnostics |
 | `"ColorByRule"` | `False` | colour each transition edge by the rule that produced it; applies to the styled graph properties, whose edge payloads carry the rule index (the `Structure` variants carry topology only and are unaffected) |
+| `"MultiedgeStyle"` | `Automatic` | `Automatic` draws one edge per event (or per causal or branchial pair); `"Merged"` draws edges with the same endpoints and type as one edge, whose tooltip lists the events it stands for. With `"ColorByRule" -> True`, edges of different rules stay separate |
 
 ### Analysis options
 
