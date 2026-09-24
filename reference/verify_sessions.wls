@@ -100,6 +100,22 @@ If[Head[s4] === HGSessionObject,
           Quiet[HGSessionStep[s4, 1, Automatic, "From" -> {999999}]] === $Failed]];
   HGSessionClose[s4]];
 
+(* A sampled session split at step 25 keeps the same states as one evolve of 30. Rate 1e-12
+   fails every draw, so each state keeps only its spine transition. *)
+Module[{wpp = {{{1, 2}, {1, 3}} -> {{1, 2}, {1, 4}, {2, 4}, {3, 4}}}, sopts, one, ss, split,
+        hashes},
+  sopts = {"TransitionRate" -> 1.*^-12, "RandomSeed" -> 3, "IncludeCanonicalHashes" -> True};
+  hashes[r_] := Sort[Lookup[If[AssociationQ[r], Values[r], r], "CanonicalHash"]];
+  one = HGEvolve[wpp, {{1, 2}, {1, 3}}, 30, "States", Sequence @@ sopts];
+  ss = HGSessionOpen[wpp, {{1, 2}, {1, 3}}, "States", Sequence @@ sopts];
+  If[Head[ss] === HGSessionObject,
+    HGSessionStep[ss, 25];
+    split = HGSessionStep[ss, 5];
+    check["a sampled session stepped 25 then 5 keeps the states of one evolve of 30",
+          hashes[split] === hashes[one] && Length[hashes[one]] == 31];
+    HGSessionClose[ss],
+    check["HGSessionOpen returns a sampled session", False]]];
+
 (* DELTA DELIVERY. The wire is incremental; the ANSWER is not. So the check is not "is the reply
    smaller" -- it is that stepping with Delta and stepping with Full produce the SAME graph at
    every depth. A merge that dropped a delta silently converges to whatever the last reply

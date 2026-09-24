@@ -46,6 +46,14 @@ std::vector<Workload> workloads() {
     w.push_back({"WPP",
         {make_rule(0).lhs({0,1}).lhs({0,2}).rhs({0,1}).rhs({0,3}).rhs({1,3}).rhs({2,3}).build()},
         {{0,1},{0,2}}, 4});
+    // One left edge per rule: the rule set leaves match forwarding off by default.
+    w.push_back({"grow-1lhs",
+        {make_rule(0).lhs({0,1}).rhs({0,1}).rhs({1,2}).build()},
+        {{0,1}}, 5});
+    w.push_back({"two-rule-1lhs",
+        {make_rule(0).lhs({0,1}).rhs({0,1}).rhs({1,2}).build(),
+         make_rule(1).lhs({0,1}).rhs({1,0}).rhs({0,2}).build()},
+        {{0,1}}, 4});
     return w;
 }
 

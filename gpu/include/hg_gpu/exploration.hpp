@@ -65,8 +65,7 @@ using FrameMap = ConcurrentMap<uint64_t, uint64_t>;
 // rule, and the consumed edges' canonical ranks WITHIN that state, in pattern order. Two engines
 // reaching the same transition must produce the same value or nothing keyed on it agrees.
 //
-// ONE body, because two device call sites need it -- the rate draw in apply_one_match and the
-// per-(state, rule) cap in match_state_rule -- and a key spelled twice is a key that will drift.
+// One body for the device's draw, spine and per-(state, rule) cap (match.cu, emit_admit).
 // __noinline__ ON PURPOSE. This is called from inside the join's innermost completion
 // callback, which is instantiated through a template per rule shape; inlined there it
 // carried event_signature's whole body into the DFS and ptxas ran out of memory

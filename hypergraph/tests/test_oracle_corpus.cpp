@@ -420,6 +420,65 @@ TEST(OracleCorpus, ContinuingARunMatchesRunningItInOneCall) {
         << "no workload grew when continued, so the continuation was never exercised";
 }
 
+// A sampled run continued in two calls keeps the same transitions as one call. The draw and the
+// spine are functions of the transition and the seed; a state resumed at the split is matched
+// in full, so the spine must choose from all of a state's matches in the one-call run as well.
+// Rate 1e-12 fails every draw, so every state keeps only its spine transition.
+TEST(OracleCorpus, ContinuingASampledRunMatchesRunningItInOneCall) {
+    struct Run {
+        std::string name;
+        std::vector<RewriteRule> rules;
+        std::vector<std::vector<VertexId>> init;
+        double rate;
+        size_t steps, first;
+    };
+    std::vector<Run> runs;
+    for (double rate : {0.25, 1e-12})
+        for (const auto& c : oracle::corpus())
+            if (c.measure_steps >= 2)
+                runs.push_back({c.name, c.rules, c.init, rate, size_t(c.measure_steps),
+                                size_t(c.measure_steps) / 2});
+    // The case the paclet session reproduced: a spine walk split at step 25.
+    runs.push_back({"wpp-spine-walk",
+                    {make_rule(0).lhs({0,1}).lhs({0,2}).rhs({0,1}).rhs({0,3}).rhs({1,3})
+                         .rhs({2,3}).build()},
+                    {{0,1},{0,2}}, 1e-12, 30, 25});
+
+    auto hashes = [](Hypergraph& hg) {
+        std::multiset<uint64_t> h;
+        for (uint32_t s = 0; s < hg.num_published_states(); ++s)
+            if (hg.get_state(s).id != INVALID_ID) h.insert(hg.get_or_compute_canonical_hash(s));
+        return h;
+    };
+    for (const Run& r : runs) {
+        auto configure = [&](ParallelEvolutionEngine& e) {
+            e.set_transition_rate(r.rate);
+            e.set_random_seed(3);
+            for (const auto& rule : r.rules) e.add_rule(rule);
+        };
+        Hypergraph whole;
+        whole.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        {
+            ParallelEvolutionEngine e(&whole, 4);
+            configure(e);
+            e.evolve(r.init, r.steps);
+        }
+        Hypergraph split;
+        split.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        {
+            ParallelEvolutionEngine e(&split, 4);
+            configure(e);
+            e.set_continuable(true);
+            e.evolve(r.init, r.first);
+            e.evolve_more(r.steps - r.first);
+        }
+        EXPECT_EQ(hashes(split), hashes(whole))
+            << r.name << " rate=" << r.rate << ": the split run kept different states";
+        EXPECT_EQ(split.num_events(), whole.num_events())
+            << r.name << " rate=" << r.rate << ": the split run kept a different event count";
+    }
+}
+
 // A run that was not made continuable says so, rather than returning the graph it already had.
 //
 // The frontier costs arena on every run, so it is off by default; the failure mode that

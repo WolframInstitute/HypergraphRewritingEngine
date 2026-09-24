@@ -1042,10 +1042,9 @@ public:
     // needs all M and M is complete only there.
     bool defers_to_drain() const;
 
-    // A state's own matches are RECORDED for two consumers, and only one of them is forwarding.
-    // The drain cap chooses k of them by rank after the state's matching completes, so it reads
-    // the same list; without this the cap silently keeps nothing whenever forwarding is off, and
-    // a cap that keeps nothing is an off switch wearing a limit's name.
+    // A state's own matches are recorded for forwarding and for the two drain decisions: the
+    // per-state cap chooses k of them by rank, and the sampling spine forces the lowest-ranked
+    // one when no draw passed. Both drain decisions look the record up in state_matches_.
     bool records_own_matches() const;
     // The spine's per-seed ordering of a state's own transitions: splitmix of (key, seed).
     // Measured dead ends recorded in the probe: extra coins per arrival depth and per arriving

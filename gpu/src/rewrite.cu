@@ -4,7 +4,6 @@
 #include "hgcommon/rewrite_core.hpp"  // shared with the host rewriter
 #include "hg_gpu/rewrite.hpp"
 
-#include "hgcommon/sampling_core.hpp"
 #include "hg_gpu/exploration.hpp"
 #include "hg_gpu/cuda_check.hpp"
 
@@ -260,24 +259,6 @@ __device__ AppliedMatch apply_one_match(DeviceState       ds,
                                         unsigned long long* sub) {
     const DeviceRule&  rule = rules[m.rule_id];
     const unsigned long long t_start = clock64();
-
-    // THE TRANSITION DRAW, before anything is minted. A transition that loses must leave no
-    // trace -- no child state, no event, no causal or branchial pair -- which is exactly what an
-    // empty AppliedMatch gives, since every caller guards on state != INVALID_ID.
-    //
-    // Keyed on the transition's own identity, the same way the host keys it: the input state's
-    // canonical hash, the rule, and the consumed edges' canonical ranks WITHIN that state. Two
-    // engines that reach the same transition therefore draw the same number, which is what makes
-    // comparing a SAMPLED run across devices meaningful rather than a coincidence.
-    //
-    // The guard is the fast path: a run that samples nothing pays one compare per application.
-    if (ds.transition_rate < 1.0 || ds.num_rule_weights != 0u) {
-        const double rate = hgcommon::sampling_rate_for_rule(
-            ds.transition_rate, ds.rule_weights, ds.num_rule_weights, m.rule_id);
-        const uint64_t key = transition_key_device(ds, m.state_id, m.rule_id,
-                                                   m.matched_edges, m.num_edges);
-        if (!hgcommon::transition_survives(key, ds.sampling_seed, rate)) return AppliedMatch{};
-    }
 
     // 1. Re-derive var bindings from matched_edges. volatile to defeat an
     //    observed miscompile on nvcc with this kernel's register pressure

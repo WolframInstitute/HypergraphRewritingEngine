@@ -51,11 +51,10 @@ struct DeviceState {
     // State allocator (atomic-bumped)
     uint32_t* state_count;            // device atomic; current num_states
 
-    // SAMPLING AND CAPPING. The decisions live in hgcommon/sampling_core.hpp and are called
-    // from apply_one_match (the draw) and state_survives_dedup (the two bounds), so the device
-    // answers these options rather than reporting them unimplemented.
-    //
-    // A rate of 1.0 with no weights is the fast path and costs one compare per application.
+    // SAMPLING AND CAPPING. The decisions live in hgcommon/sampling_core.hpp. match_state_rule
+    // calls the draw, the spine and the per-(state, rule) cap when it emits a match;
+    // state_survives_dedup calls the two bounds. A rate of 1.0 with no weights and no cap takes
+    // the unsampled path.
     double        transition_rate;      // 1.0 = every transition is taken
     const double* rule_weights;         // null = every rule weighted 1
     uint32_t      num_rule_weights;
@@ -69,6 +68,9 @@ struct DeviceState {
     // Kept per (state, rule), chosen by rank at the point one block has found every match for
     // that pair -- the device's drain. 0 is unlimited.
     uint32_t  matches_per_state_rule;
+    // Rules in the run. Under sampling one block matches every rule of a state, because the
+    // spine chooses among all of the state's transitions.
+    uint32_t  num_rules;
 
     // Exact canonical hash per state, 0 until computed. [max_states]
     //
@@ -316,7 +318,7 @@ public:
     void set_sampling(double transition_rate, const double* weights, uint32_t num_weights,
                       uint64_t seed, uint32_t max_states_per_step,
                       uint32_t max_successor_states_per_parent, uint32_t matches_per_state_rule,
-                      uint32_t num_steps);
+                      uint32_t num_steps, uint32_t num_rules);
 
     DeviceState device() const;
 
@@ -478,6 +480,7 @@ private:
     uint32_t                           max_succ_per_parent_    = 0;
     uint32_t*                          successors_per_parent_  = nullptr;
     uint32_t                           matches_per_state_rule_ = 0;
+    uint32_t                           num_rules_              = 0;
     uint32_t*                          state_edge_orbit_       = nullptr;
     uint32_t*                          state_num_orbits_       = nullptr;
     uint32_t*                          event_sig_fallbacks_    = nullptr;

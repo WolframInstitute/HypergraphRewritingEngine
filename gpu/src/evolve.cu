@@ -346,7 +346,8 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
                         in.max_states_per_step,
                         in.max_successor_states_per_parent,
                         in.matches_per_state_rule,
-                        in.num_steps);
+                        in.num_steps,
+                        static_cast<uint32_t>(in.rules.size()));
 
     uint64_t resolved_seed = in.exploration_seed;
     if (resolved_seed == 0 && clamped_p < 1.0f) {

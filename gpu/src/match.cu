@@ -226,49 +226,71 @@ struct MatchJoinCtx {
 // the other scheduler in THIS file -- was measured and rejected: match.cu already costs about
 // 5 GB to compile on its own, and adding one more kernel took a single nvcc to 8 GB.
 // See gpu/ARCHITECTURE.md sec 2.
-// THE PER-(state, rule) CAP'S DECISION FOR ONE COMPLETED MATCH, deliberately NOT inlined.
-//
-// It is called from the join's innermost completion callback, which is instantiated per rule
-// shape through a template. Inlined there it carried the transition key and the selection
-// arithmetic into the DFS and ptxas ran out of memory assembling this file. One call per
-// completed match is not a cost worth that.
-//
-// `counting` is pass one: record the rank, emit nothing. Otherwise pass two: admit iff the rank
-// is within the threshold AND the block has not already taken k. The counter settles ties, which
-// a 64-bit rank makes vanishingly rare but which must still never admit k+1.
-__device__ __noinline__ bool drain_cap_admit(const DeviceState& ds, StateId state_id, RuleId rid,
-                                             const uint8_t* pattern, const EdgeId* matched,
-                                             uint8_t depth, bool counting, uint32_t cap_k,
-                                             uint32_t* s_seen, uint32_t* s_overflow,
-                                             uint32_t* s_emitted, uint64_t s_threshold,
-                                             uint64_t* s_ranks) {
+// Which completed matches a pass emits.
+//   kCapCount   record each match's rank, emit nothing     } the per-(state, rule) cap: the k
+//   kCapEmit    emit ranks up to the k-th smallest          } smallest ranks of the pair
+//   kDraw       emit the matches that survive their draw; record the state's minimum rank
+//               and whether any match survived
+//   kSpineEmit  emit the one match whose rank is that minimum
+// The rank is hgcommon::transition_rank and the draw hgcommon::transition_survives, both keyed
+// on transition_key_device: the host's cap_at_drain, transition_survives and spine_at_drain
+// call the same functions on the same key.
+enum class EmitMode : uint8_t { kCapCount, kCapEmit, kDraw, kSpineEmit };
+
+struct EmitCtl {
+    EmitMode            mode;
+    uint32_t            cap_k;
+    uint64_t            threshold;    // kCapEmit: the k-th smallest rank; kSpineEmit: the minimum
+    uint32_t*           s_seen;
+    uint32_t*           s_overflow;
+    uint32_t*           s_emitted;
+    uint64_t*           s_ranks;
+    unsigned long long* s_min_rank;
+    uint32_t*           s_survived;
+};
+
+// Not inlined: it is called from the join's innermost completion callback, which is
+// instantiated per rule shape, and inlined there ptxas ran out of memory assembling this file.
+// The emitted-count check settles rank ties, so a pass never admits more than it allows.
+__device__ __noinline__ bool emit_admit(const DeviceState& ds, StateId state_id, RuleId rid,
+                                        const uint8_t* pattern, const EdgeId* matched,
+                                        uint8_t depth, const EmitCtl& c) {
     EdgeId edges[kMaxPatternEdges];
     for (uint8_t i = 0; i < kMaxPatternEdges; ++i) edges[i] = INVALID_ID;
     for (uint8_t d = 0; d < depth; ++d) edges[pattern[d]] = matched[d];
-    const uint64_t r = hgcommon::transition_rank(
-        transition_key_device(ds, state_id, rid, edges, depth), ds.sampling_seed);
+    const uint64_t key = transition_key_device(ds, state_id, rid, edges, depth);
+    const uint64_t r = hgcommon::transition_rank(key, ds.sampling_seed);
 
-    if (counting) {
-        const uint32_t at = atomicAdd(s_seen, 1u);
-        if (at < kDrainCapBuffer) s_ranks[at] = r;
-        else atomicExch(s_overflow, 1u);
+    switch (c.mode) {
+    case EmitMode::kCapCount: {
+        const uint32_t at = atomicAdd(c.s_seen, 1u);
+        if (at < kDrainCapBuffer) c.s_ranks[at] = r;
+        else atomicExch(c.s_overflow, 1u);
         return false;
     }
-    if (r > s_threshold) return false;
-    return atomicAdd(s_emitted, 1u) < cap_k;
+    case EmitMode::kCapEmit:
+        if (r > c.threshold) return false;
+        return atomicAdd(c.s_emitted, 1u) < c.cap_k;
+    case EmitMode::kDraw: {
+        atomicMin(c.s_min_rank, static_cast<unsigned long long>(r));
+        const double rate = hgcommon::sampling_rate_for_rule(
+            ds.transition_rate, ds.rule_weights, ds.num_rule_weights, rid);
+        if (!hgcommon::transition_survives(key, ds.sampling_seed, rate)) return false;
+        atomicExch(c.s_survived, 1u);
+        return true;
+    }
+    case EmitMode::kSpineEmit:
+        return r == c.threshold && atomicAdd(c.s_emitted, 1u) == 0u;
+    }
+    return false;
 }
 
-// ONE PASS OF THE JOIN, compiled ONCE and called up to twice.
-//
-// __noinline__ is load-bearing, not a hint: the per-(state, rule) cap needs the join run twice --
-// once to learn every match's rank, once to emit the chosen k -- and a lambda called twice
-// instantiated this whole DFS twice, at which point ptxas ran out of memory assembling the file.
-// A non-inlined function called twice is one body.
+// ONE PASS OF THE JOIN, compiled ONCE and called up to twice per rule. Not inlined for the
+// same reason as emit_admit: a lambda called twice instantiated the whole DFS twice and ptxas
+// ran out of memory. `ctl` null emits every match.
 __device__ __noinline__ void match_state_rule_pass(
         DeviceState ds, const DeviceRule* rules, StateId state_id, uint32_t rid, uint32_t step,
-        typename Pool<MatchRecord>::DeviceView out,
-        bool capping, bool counting, uint32_t cap_k, uint32_t* s_seen, uint32_t* s_overflow,
-        uint32_t* s_emitted, uint64_t s_threshold, uint64_t* s_ranks) {
+        typename Pool<MatchRecord>::DeviceView out, const EmitCtl* ctl) {
     const DeviceRule& rule = rules[rid];
 
     if (rule.num_lhs_edges == 0) return;
@@ -277,9 +299,7 @@ __device__ __noinline__ void match_state_rule_pass(
 
     // A completed match. matched_edges is indexed by PATTERN position, not by depth.
     auto emit = [&] (const MatchJoinState& st) {
-        if (capping && !drain_cap_admit(ds, state_id, rid, st.pattern, st.matched, st.depth,
-                                        counting, cap_k, s_seen, s_overflow, s_emitted,
-                                        s_threshold, s_ranks)) {
+        if (ctl && !emit_admit(ds, state_id, rid, st.pattern, st.matched, st.depth, *ctl)) {
             return;
         }
         const uint32_t idx = out.claim();
@@ -335,11 +355,18 @@ __device__ __noinline__ void match_state_rule_pass(
     drive_join();
 }
 
-// The entry point: one block, one (state, rule) pair. Without the cap this is a single pass and
-// nothing about matching changes. With it, TWO -- because choosing k of M requires all M, and
-// this block is where all M become known, which is the same completion point the host calls a
-// state's drain. Capping as matches arrive would decide the kept set by schedule, and then the
-// same seed would keep a different k on a different device, or on the same device twice.
+// The entry point: one block, one (state, rule) pair. Unsampled and uncapped, a single pass that
+// emits every match.
+//
+// Under the per-(state, rule) cap, two passes: the first ranks every match of the pair, the
+// second emits the k smallest. The block has found all of the pair's matches after the first,
+// which is the completion point the host calls the state's drain. No draw is applied to the
+// kept k, as on the host.
+//
+// Under sampling without the cap, the block of rule 0 matches EVERY rule of the state and the
+// blocks of the other rules do nothing. The spine chooses among all of a state's transitions:
+// when none survives its draw, the one with the smallest rank is emitted. That needs the whole
+// state in one block.
 __device__ void match_state_rule(DeviceState       ds,
                                  const DeviceRule* rules,
                                  StateId           state_id,
@@ -347,22 +374,43 @@ __device__ void match_state_rule(DeviceState       ds,
                                  uint32_t          step,
                                  typename Pool<MatchRecord>::DeviceView out) {
     const uint32_t cap_k = ds.matches_per_state_rule;
-    if (cap_k == 0u) {
-        match_state_rule_pass(ds, rules, state_id, rid, step, out,
-                              false, false, 0u, nullptr, nullptr, nullptr, ~0ULL, nullptr);
+    const bool sampling = ds.transition_rate < 1.0 || ds.num_rule_weights != 0u;
+    if (cap_k == 0u && !sampling) {
+        match_state_rule_pass(ds, rules, state_id, rid, step, out, nullptr);
         return;
     }
 
     __shared__ uint32_t s_seen;
     __shared__ uint32_t s_overflow;
     __shared__ uint32_t s_emitted;
+    __shared__ uint32_t s_survived;
     __shared__ uint64_t s_threshold;
+    __shared__ unsigned long long s_min_rank;
     __shared__ uint64_t s_ranks[kDrainCapBuffer];
+
+    if (cap_k == 0u) {
+        if (rid != 0u) return;
+        if (threadIdx.x == 0) { s_emitted = 0; s_survived = 0; s_min_rank = ~0ULL; }
+        __syncthreads();
+        const EmitCtl draw{EmitMode::kDraw, 0u, 0u, nullptr, nullptr, nullptr, nullptr,
+                           &s_min_rank, &s_survived};
+        for (uint32_t r = 0; r < ds.num_rules; ++r)
+            match_state_rule_pass(ds, rules, state_id, r, step, out, &draw);
+        __syncthreads();
+        if (s_survived != 0u || s_min_rank == ~0ULL) return;
+        const EmitCtl spine{EmitMode::kSpineEmit, 0u, s_min_rank, nullptr, nullptr, &s_emitted,
+                            nullptr, nullptr, nullptr};
+        for (uint32_t r = 0; r < ds.num_rules; ++r)
+            match_state_rule_pass(ds, rules, state_id, r, step, out, &spine);
+        return;
+    }
+
     if (threadIdx.x == 0) { s_seen = 0; s_overflow = 0; s_emitted = 0; s_threshold = ~0ULL; }
     __syncthreads();
 
-    match_state_rule_pass(ds, rules, state_id, rid, step, out, true, /*counting=*/true, cap_k,
-                          &s_seen, &s_overflow, &s_emitted, ~0ULL, s_ranks);
+    const EmitCtl count{EmitMode::kCapCount, cap_k, ~0ULL, &s_seen, &s_overflow, &s_emitted,
+                        s_ranks, nullptr, nullptr};
+    match_state_rule_pass(ds, rules, state_id, rid, step, out, &count);
     __syncthreads();
 
     if (threadIdx.x == 0) {
@@ -393,8 +441,9 @@ __device__ void match_state_rule(DeviceState       ds,
     }
     __syncthreads();
 
-    match_state_rule_pass(ds, rules, state_id, rid, step, out, true, /*counting=*/false, cap_k,
-                          &s_seen, &s_overflow, &s_emitted, s_threshold, s_ranks);
+    const EmitCtl keep{EmitMode::kCapEmit, cap_k, s_threshold, &s_seen, &s_overflow, &s_emitted,
+                       s_ranks, nullptr, nullptr};
+    match_state_rule_pass(ds, rules, state_id, rid, step, out, &keep);
 }
 
 namespace {

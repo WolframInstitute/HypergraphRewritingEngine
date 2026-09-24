@@ -189,15 +189,16 @@ well-defined; `docs/SPEC.md` §5 states which options are samplers and which are
   per match, independently, with no population and no completeness requirement, so it applies
   identically to a discovered and a forwarded match and needs no join. `TransitionRate` is that
   sampler; thinning a branching process by a rate yields a branching process with the thinned
-  offspring distribution, so branching shape survives. The one per-state count,
-  `MatchesPerStateRule`, makes its population local instead: a run under it turns forwarding off,
-  so each state's own matching finds all of its matches and the drain chooses from the whole set.
+  offspring distribution, so branching shape survives. A run under `TransitionRate`,
+  `RuleWeights` or `MatchesPerStateRule` turns forwarding off, so each state's own matching finds
+  all of its matches and the drain chooses from the whole set.
 - **Keyed draws.** Every draw is a function of the transition's isomorphism-invariant identity
   and the seed — never a worker's RNG — so the sampled subgraph is the same at every worker
   count and on either device, and reproducible for a fixed seed.
-- **The spine.** A fixed rate is a knife-edge (below the branching factor the sampled evolution
-  goes extinct), so the minimum-keyed own-found transition of a state survives when none of its
-  own draws passed — every term key-deterministic.
+- **The spine.** Below the branching factor a fixed rate makes the sampled evolution go
+  extinct, so a state whose draws all failed keeps its transition with the smallest seeded rank
+  (`hgcommon::transition_rank`). The host decides it at the state's drain (`spine_at_drain`), the
+  device in the block that matches all of the state's rules (`match_state_rule`).
 - **The per-state match-task join.** Matching one state is a tree of tasks, so no single task
   sees all its matches; anything acting on them AS A SET needs to know when the tree drained.
   Two monotone per-state counters — `pushed` incremented before a spawned task is visible,

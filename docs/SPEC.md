@@ -133,8 +133,10 @@ exact configuration. Sampling and capping options refine this as follows:
 - **`TransitionRate`** (with `RuleWeights`) keeps each transition with the given probability,
   drawn from the transition's isomorphism-invariant identity and the seed — so the sampled
   subgraph is the same at every worker count and on either device, and reproducible for a fixed
-  `RandomSeed`. A spine keeps the minimum-keyed own-found transition of a state alive when none
-  of its draws passed, so a fixed rate below the branching factor thins rather than extinguishes.
+  `RandomSeed`. A spine keeps the state's transition with the smallest seeded rank when none of
+  its draws passed, so a fixed rate below the branching factor thins rather than extinguishes. A
+  run under it matches every state in full (match forwarding off), so the draw and the spine see
+  all of the state's transitions.
 - **`ExplorationProbability`** samples **per canonical state**, keyed the same way.
 - **`MatchesPerStateRule`** caps each state's transitions per rule, chosen at the state's drain
   by the same invariant key — schedule-independent. A run under it matches every state in full

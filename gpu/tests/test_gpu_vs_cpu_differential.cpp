@@ -1378,26 +1378,43 @@ TEST(EdgeIdentity, AbsentUnlessAskedFor) {
 // Compared as SETS of canonical state hashes and event keys, not as counts: two runs can thin to
 // the same number of states and keep different ones, which is the failure this must catch.
 TEST(Sampling, ThinnedRunsAgreeAcrossEngines) {
-    for (double rate : {0.75, 0.5, 0.25}) {
-        for (uint64_t seed : {uint64_t(1), uint64_t(0xABCDEF)}) {
-            Workload w;
-            w.name = "thinned";
-            w.rules = {rule({{0, 1}}, {{0, 2}, {2, 1}})};
-            w.initial_states = {{{0u, 1u}}};
-            w.num_steps = 5;
-            w.canon_mode = hg_gpu::CanonicalizationMode::Full;
-            w.transition_rate = rate;
-            w.random_seed = seed;
+    struct Case {
+        const char* name;
+        std::vector<hg_gpu::RewriteRule> rules;
+        std::vector<std::vector<std::vector<hg_gpu::VertexId>>> init;
+        uint32_t steps;
+    };
+    // One left edge; two left edges from a self-loop pair; WPP. Rate 1e-12 fails every draw,
+    // so each state keeps only its spine transition.
+    const std::vector<Case> cases = {
+        {"grow-1lhs", {rule({{0, 1}}, {{0, 2}, {2, 1}})}, {{{0u, 1u}}}, 5},
+        {"path-self-loop", {rule({{0, 1}, {1, 2}}, {{0, 2}, {2, 3}, {0, 3}, {1, 3}})},
+         {{{0u, 0u}, {0u, 0u}}}, 5},
+        {"wpp", {rule({{0, 1}, {0, 2}}, {{0, 1}, {0, 3}, {1, 3}, {2, 3}})},
+         {{{0u, 1u}, {0u, 2u}}}, 5},
+    };
+    for (const Case& c : cases) {
+        for (double rate : {0.75, 0.5, 0.25, 1e-12}) {
+            for (uint64_t seed : {uint64_t(1), uint64_t(7), uint64_t(0xABCDEF)}) {
+                Workload w;
+                w.name = c.name;
+                w.rules = c.rules;
+                w.initial_states = c.init;
+                w.num_steps = c.steps;
+                w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+                w.transition_rate = rate;
+                w.random_seed = seed;
 
-            NormalizedResult cpu = run_cpu(w);
-            NormalizedResult gpu = run_gpu(w);
+                NormalizedResult cpu = run_cpu(w);
+                NormalizedResult gpu = run_gpu(w);
 
-            EXPECT_EQ(cpu.canonical_state_hashes, gpu.canonical_state_hashes)
-                << "rate=" << rate << " seed=" << seed
-                << ": the two engines kept different states from the same draw";
-            EXPECT_EQ(cpu.event_keys, gpu.event_keys)
-                << "rate=" << rate << " seed=" << seed
-                << ": the two engines kept different transitions from the same draw";
+                EXPECT_EQ(cpu.canonical_state_hashes, gpu.canonical_state_hashes)
+                    << c.name << " rate=" << rate << " seed=" << seed
+                    << ": the two engines kept different states from the same draw";
+                EXPECT_EQ(cpu.event_keys, gpu.event_keys)
+                    << c.name << " rate=" << rate << " seed=" << seed
+                    << ": the two engines kept different transitions from the same draw";
+            }
         }
     }
 }

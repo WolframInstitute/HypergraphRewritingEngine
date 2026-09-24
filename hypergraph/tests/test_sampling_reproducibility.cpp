@@ -148,68 +148,44 @@ TEST(SamplingReproducibility, DepthsOverlapBecauseNothingWaitsForAStep) {
         << "with none, a deeper state finishes before a shallower one";
 }
 
-// TransitionRate thins the multiway graph and must keep doing so AT DEPTH, with match
-// forwarding on. That last clause is the whole test: a match reaches a state either by
-// discovery in its own SCAN/EXPAND tree or by forwarding from an ancestor, forwarding
-// dominates in a deep run, and a sampler that only sees discoveries bounds nothing. The
-// per-state reservoir failed exactly here -- 2,038,505 states instead of 1,365 on this shape --
-// while passing a one-step uniformity test, so depth with forwarding on is the discriminating
-// case and not an extra one.
-TEST(SamplingReproducibility, TransitionRateThinsAtDepthWithForwardingOn) {
+// TransitionRate thins the multiway graph at depth, and every event is either a surviving draw
+// or a spine-forced transition. A per-state reservoir sampler passed a one-step uniformity test
+// and kept 2,038,505 states instead of 1,365 on this shape, so the run goes to depth 4.
+TEST(SamplingReproducibility, TransitionRateThinsAtDepth) {
     RewriteRule rule = make_growth_rule();
     std::vector<std::vector<VertexId>> init;
     for (int i = 0; i < 24; ++i)
         init.push_back({static_cast<VertexId>(i), static_cast<VertexId>(i + 1)});
 
-    // Measure the KEPT FRACTION rather than a size. A size can collapse to the root by chance
-    // when the root has few matches, which says nothing about whether the rate is reaching
-    // every acceptance point; events/matches is the rate itself. If forwarding bypassed the
-    // sampler the ratio would sit far above q, since forwarded matches dominate at depth.
-    struct Kept { size_t matches; size_t events; size_t draws; size_t survived; };
+    struct Kept { size_t matches; size_t events; size_t draws; size_t survived; size_t forced; };
     auto run = [&](double q, uint64_t seed) {
         Hypergraph hg;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
         ParallelEvolutionEngine e(&hg, 4);
         e.set_random_seed(seed);
-        e.set_match_forwarding(true);      // the condition under test, stated not assumed
         e.set_transition_rate(q);
         e.add_rule(rule);
         e.evolve(init, 4);
-        return Kept{e.total_matches(), hg.num_events(), e.draws_taken(), e.draws_survived()};
+        return Kept{e.total_matches(), hg.num_events(), e.draws_taken(), e.draws_survived(),
+                    e.stats().total().spine_forced};
     };
 
     const Kept full = run(1.0, 1);
     ASSERT_GT(full.matches, 1000u) << "the unthinned run is too small to measure a rate against";
     ASSERT_GT(full.events, 0u);
-    // q = 1 must be a no-op, stated as what that MEANS rather than as a ratio: no thinning
-    // decision is taken at all, because transition_survives returns on the >= 1.0 fast path
-    // before it ever counts a draw. A ratio here would be reading total_matches(), which counts
-    // push-path bookkeeping and is not comparable across submission modes.
+    // At q = 1 transition_survives returns before counting a draw.
     EXPECT_EQ(full.draws, 0u)
         << "q=1 took " << full.draws << " thinning draws, so the identity rate is not a no-op";
 
-    // Two assertions, because "the sampler works" is two claims and only one of them is a rate.
-    //
-    // MEASURE THE SAMPLER, NOT A PROXY. events/total_matches was the original metric and it is
-    // NOT comparable across submission modes: total_matches() counts push-path work, and
-    // push_match_to_children draws 112 times under eager against 89,523 under batched on this
-    // very workload while producing byte-identical events. The ratio therefore reads ~q under
-    // eager and ~q/2 under batched for a sampler that is exactly correct in both.
-    // draws_survived/draws_taken is the rate itself and lands on q in either mode.
-    //
-    // NO DISPATCH MAY BYPASS THE SAMPLER. That is what the original metric was really guarding,
-    // and it is the point of this test: a match reaches a state either by discovery or by
-    // forwarding from an ancestor, forwarding dominates at depth, and a sampler that only saw
-    // discoveries would bound nothing. Every event must be preceded by a SURVIVING draw, so
-    // survivors can exceed events (one transition drawn at two sites agrees with itself and
-    // rewrites once) but can never fall short. A bypassed dispatch shows up immediately as
-    // events outrunning survivors.
+    // draws_survived / draws_taken is the rate. A transition drawn at two sites rewrites once,
+    // so survivors plus forced transitions may exceed events but never fall short of them.
     for (double q : {0.25, 0.5}) {
-        size_t draws = 0, survived = 0, events = 0;
+        size_t draws = 0, survived = 0, forced = 0, events = 0;
         for (uint64_t seed = 1; seed <= 12; ++seed) {
             const Kept k = run(q, seed);
             draws += k.draws;
             survived += k.survived;
+            forced += k.forced;
             events += k.events;
         }
         ASSERT_GT(draws, 0u) << "no draw was taken at all, so the sampler never ran";
@@ -218,11 +194,10 @@ TEST(SamplingReproducibility, TransitionRateThinsAtDepthWithForwardingOn) {
         EXPECT_NEAR(rate, q, 0.02)
             << "at q=" << q << " the sampler kept " << rate << " of the transitions it drew on";
 
-        EXPECT_GE(survived, events)
+        EXPECT_GE(survived + forced, events)
             << "at q=" << q << " there were " << events << " events but only " << survived
-            << " surviving draws, so some dispatch produced a rewrite without consulting the "
-            << "sampler -- forwarding dominates at depth and a sampler that only sees "
-            << "discoveries bounds nothing";
+            << " surviving draws and " << forced << " spine-forced transitions, so a rewrite "
+            << "was dispatched without a draw";
     }
 }
 
