@@ -100,6 +100,21 @@ If[Head[s4] === HGSessionObject,
           Quiet[HGSessionStep[s4, 1, Automatic, "From" -> {999999}]] === $Failed]];
   HGSessionClose[s4]];
 
+(* "From" without an explicit property: the rule goes to the options, not the property slot. *)
+s5 = HGSessionOpen[rules, init, prop];
+If[Head[s5] === HGSessionObject,
+  Module[{f, a, b},
+    HGSessionStep[s5, 2];
+    f = HGSessionFrontier[s5];
+    a = HGSessionStep[s5, 1, "From" -> {First[f]}];
+    check["HGSessionStep[s, n, \"From\" -> ...] steers without naming a property  " <>
+          ToString[a], AssociationQ[a] && a["NumStates"] < oneShot[[4]]["NumStates"]];
+    b = Block[{$MessageList = {}}, HGSessionStep[s5, 1.5]; $MessageList];
+    check["a non-integer step count is reported as such, not as a bad session",
+          MemberQ[b, HoldForm[HGSessionStep::negsteps]] &&
+          !MemberQ[b, HoldForm[HGSessionStep::badsession]]]];
+  HGSessionClose[s5]];
+
 (* Quotient exploration: a session stepped k times equals one evolve of depth k. The Open
    evolves 0 steps, so the root's expansion is deferred to the first Step. *)
 Module[{qopts = {"CanonicalizeStates" -> Full, "ExploreFromCanonicalStatesOnly" -> True}, qOne, sq},

@@ -121,8 +121,8 @@ HGSessionOpen::live =
 HGSessionStep::badsession =
   "`1` is not an HGSessionObject.";
 HGSessionStep::negsteps =
-  "HGSessionStep needs a non-negative number of steps, not `1`. Use HGSessionQuery to re-read " <>
-  "the session without exploring.";
+  "HGSessionStep needs a non-negative integer number of steps, not `1`. Use HGSessionQuery to " <>
+  "re-read the session without exploring.";
 
 Options[HGSessionOpen] = Options[HGEvolve];
 
@@ -1460,18 +1460,23 @@ hgSessionVerb[HGSessionObject[d_Association], op_String, steps_Integer, property
   hgRunJob[inputData, d["Device"], props, wasList, view, d["Handle"]]
 ];
 
+(* The property slot excludes rules, so HGSessionStep[s, n, "From" -> {...}] passes the rule to
+   the options. *)
+hgSessionProperty = Except[_Rule | _RuleDelayed | {(_Rule | _RuleDelayed) ..}];
+
 Options[HGSessionStep] = {"From" -> All, "Delivery" -> "Full"};
-HGSessionStep[s_HGSessionObject, steps_Integer, property_ : Automatic,
-              opts : OptionsPattern[]] :=
-  If[steps < 0,
-    Message[HGSessionStep::negsteps, steps]; $Failed,
-    hgSessionVerb[s, "Step", steps, property,
-                  OptionValue[HGSessionStep, {opts}, "From"],
-                  OptionValue[HGSessionStep, {opts}, "Delivery"]]];
+HGSessionStep[s : HGSessionObject[_Association], steps_Integer?NonNegative,
+              property : hgSessionProperty : Automatic, opts : OptionsPattern[]] :=
+  hgSessionVerb[s, "Step", steps, property,
+                OptionValue[HGSessionStep, {opts}, "From"],
+                OptionValue[HGSessionStep, {opts}, "Delivery"]];
+HGSessionStep[HGSessionObject[_Association], steps_, ___] /; !MatchQ[steps, _Integer?NonNegative] :=
+  (Message[HGSessionStep::negsteps, steps]; $Failed);
 HGSessionStep[other_, ___] := (Message[HGSessionStep::badsession, other]; $Failed);
 
 Options[HGSessionQuery] = {"Delivery" -> "Full"};
-HGSessionQuery[s_HGSessionObject, property_ : Automatic, opts : OptionsPattern[]] :=
+HGSessionQuery[s : HGSessionObject[_Association], property : hgSessionProperty : Automatic,
+               opts : OptionsPattern[]] :=
   hgSessionVerb[s, "Query", 0, property, All,
                 OptionValue[HGSessionQuery, {opts}, "Delivery"]];
 
