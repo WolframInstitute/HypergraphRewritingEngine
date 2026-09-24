@@ -18,7 +18,12 @@ jobs:
   codemap-drift:
     runs-on: ubuntu-latest
     steps:
+      # Full history: docs_fresh_check compares the last commit touching each markdown source
+      # with the last commit touching its notebook, and in a depth-1 clone both are the same
+      # commit, so a stale notebook passes.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: docs/CODEMAP.md names what exists, and names everything that exists
         run: python3 tools/dev/codemap_check.py
 
