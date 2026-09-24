@@ -154,6 +154,14 @@ exact configuration. Sampling and capping options refine this as follows:
 The state set under §4.1, the event set under §4.2. Counts and lists agree with the structures
 built from them by construction (§5.2's one-relation rule).
 
+Raw ids are not part of the observable output. States, events and edges are numbered in the order
+the workers create them, so two identical runs can give the same states under different raw ids
+and return lists in a different order. The observable output is the counts, each state's
+contents, the canonical hashes (`IncludeCanonicalHashes`), and the graphs up to a renaming of
+their vertices. Within one reply the ids are consistent: under `CanonicalizeStates -> Full`,
+`"States"` is keyed by each class's canonical state id, and an event's `"CanonicalInputState"` and
+`"CanonicalOutputState"` are keys of `"States"`.
+
 ### 5.2 Causal relation
 
 An edge instance carries the identity of the event that produced it (its **producer**); an
