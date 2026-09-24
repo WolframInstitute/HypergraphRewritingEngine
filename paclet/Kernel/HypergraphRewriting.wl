@@ -720,57 +720,32 @@ ruleIsNumeric[rule_Rule] := AllTrue[
 (* Main Function: HGEvolve *)
 (* ============================================================================ *)
 
-(* Wrapper: single rule -> list of rules *)
-HGEvolve[rule_Rule, initial_, steps_Integer, rest___] :=
-  HGEvolve[{rule}, initial, steps, rest]
+(* THE INPUT FORMS, for HGEvolve and HGSessionOpen alike: a bare rule is a one-rule list, and an
+   initial condition that is not an edge list -- a Graph, a named condition such as "Torus", a
+   generator's result, or a spec association with "Type" -- becomes one through hgInitialEdges.
+   Options are read with OptionValue[HGEvolve, ...]; Options[HGSessionOpen] is the same list. *)
+HGEvolve[rule_Rule, rest___] := HGEvolve[{rule}, rest]
+HGSessionOpen[rule_Rule, rest___] := HGSessionOpen[{rule}, rest]
 
-(* Wrapper: Graph input -> extract edge list *)
-HGEvolve[rules_, g_Graph, steps_Integer, rest___] :=
-  HGEvolve[rules, List @@@ EdgeList[g], steps, rest]
-
-(* Wrapper: string initial condition -> association *)
-HGEvolve[rules_, "Grid", steps_Integer, rest___] :=
-  HGEvolve[rules, <|"Type" -> "Grid"|>, steps, rest]
-
-HGEvolve[rules_, "Sprinkling", steps_Integer, rest___] :=
-  HGEvolve[rules, <|"Type" -> "Sprinkling"|>, steps, rest]
-
-HGEvolve[rules_, "Minkowski", steps_Integer, rest___] :=
-  HGEvolve[rules, <|"Type" -> "Sprinkling"|>, steps, rest]
-
-HGEvolve[rules_, "BrillLindquist", steps_Integer, rest___] :=
-  HGEvolve[rules, <|"Type" -> "BrillLindquist"|>, steps, rest]
-
-HGEvolve[rules_, "Cylinder", steps_Integer, rest___] :=
-  HGEvolve[rules, <|"Type" -> "Cylinder"|>, steps, rest]
-
-HGEvolve[rules_, "Torus", steps_Integer, rest___] :=
-  HGEvolve[rules, <|"Type" -> "Torus"|>, steps, rest]
-
-HGEvolve[rules_, "Sphere", steps_Integer, rest___] :=
-  HGEvolve[rules, <|"Type" -> "Sphere"|>, steps, rest]
-
-HGEvolve[rules_, "Klein", steps_Integer, rest___] :=
-  HGEvolve[rules, <|"Type" -> "Klein"|>, steps, rest]
-
-HGEvolve[rules_, "Mobius", steps_Integer, rest___] :=
-  HGEvolve[rules, <|"Type" -> "Mobius"|>, steps, rest]
-
-HGEvolve[rules_, "Poisson", steps_Integer, rest___] :=
-  HGEvolve[rules, <|"Type" -> "Poisson"|>, steps, rest]
-
-HGEvolve[rules_, "Uniform", steps_Integer, rest___] :=
-  HGEvolve[rules, <|"Type" -> "Uniform"|>, steps, rest]
-
-(* Wrapper: IC generator result -> extract edges and pass to main *)
-HGEvolve[rules_, icResult_Association, steps_Integer, rest___] /;
-  KeyExistsQ[icResult, "Edges"] && !KeyExistsQ[icResult, "Type"] :=
-  HGEvolve[rules, icResult["Edges"], steps, rest]
-
-(* Wrapper: association initial condition -> generate edges in WL or pass to C++ *)
-HGEvolve[rules_List, initialSpec_Association, steps_Integer,
+HGEvolve[rules_List, initial : Except[_List], steps_Integer,
          property : (_String | {__String}) : "EvolutionCausalBranchialGraph",
-         opts:OptionsPattern[]] := Module[
+         opts : OptionsPattern[]] :=
+  With[{edges = hgInitialEdges[initial, {opts}]},
+    If[edges === $Failed, $Failed, HGEvolve[rules, edges, steps, property, opts]]]
+HGSessionOpen[rules_List, initial : Except[_List],
+              property : (_String | {__String}) : "EvolutionCausalBranchialGraph",
+              opts : OptionsPattern[]] :=
+  With[{edges = hgInitialEdges[initial, {opts}]},
+    If[edges === $Failed, $Failed, HGSessionOpen[rules, edges, property, opts]]]
+
+hgInitialEdges[g_Graph, _List] := List @@@ EdgeList[g]
+hgInitialEdges[name_String, opts_List] := hgInitialEdges[<|"Type" -> Replace[name, "Minkowski" -> "Sprinkling"]|>, opts]
+hgInitialEdges[icResult_Association, _List] /;
+  KeyExistsQ[icResult, "Edges"] && !KeyExistsQ[icResult, "Type"] := icResult["Edges"]
+hgInitialEdges[other_, _List] /; !AssociationQ[other] := (Message[HGEvolve::unknownic, other]; $Failed)
+
+(* A spec association with "Type": the initial condition is generated here, in WL. *)
+hgInitialEdges[initialSpec_Association, opts_List] := Module[
   {icType, icResult, edges, newOpts,
    gridWidth, gridHeight, gridHoles, resolution,
    sprinklingDensity, sprinklingTime, sprinklingSpatial, spatialDim,
@@ -781,8 +756,8 @@ HGEvolve[rules_List, initialSpec_Association, steps_Integer,
   icType = Lookup[initialSpec, "Type", "Grid"];
 
   (* Extract common options *)
-  seed = Lookup[initialSpec, "Seed", OptionValue[HGEvolve, {opts}, "RandomSeed"]];
-  edgeThreshold = Lookup[initialSpec, "EdgeThreshold", OptionValue[HGEvolve, {opts}, "EdgeThreshold"]];
+  seed = Lookup[initialSpec, "Seed", OptionValue[HGEvolve, opts, "RandomSeed"]];
+  edgeThreshold = Lookup[initialSpec, "EdgeThreshold", OptionValue[HGEvolve, opts, "EdgeThreshold"]];
 
   (* Generate initial condition based on type *)
   Switch[icType,
@@ -790,9 +765,9 @@ HGEvolve[rules_List, initialSpec_Association, steps_Integer,
     (* ===== FLAT TOPOLOGIES ===== *)
 
     "Grid",
-    gridWidth = Lookup[initialSpec, "Width", OptionValue[HGEvolve, {opts}, "GridWidth"]];
-    gridHeight = Lookup[initialSpec, "Height", OptionValue[HGEvolve, {opts}, "GridHeight"]];
-    gridHoles = Lookup[initialSpec, "Holes", OptionValue[HGEvolve, {opts}, "GridHoles"]];
+    gridWidth = Lookup[initialSpec, "Width", OptionValue[HGEvolve, opts, "GridWidth"]];
+    gridHeight = Lookup[initialSpec, "Height", OptionValue[HGEvolve, opts, "GridHeight"]];
+    gridHoles = Lookup[initialSpec, "Holes", OptionValue[HGEvolve, opts, "GridHoles"]];
     If[gridHoles === {} || gridHoles === None,
       icResult = HGGrid[gridWidth, gridHeight, "RandomSeed" -> seed],
       icResult = HGGridWithHoles[gridWidth, gridHeight, gridHoles, "RandomSeed" -> seed]
@@ -802,29 +777,29 @@ HGEvolve[rules_List, initialSpec_Association, steps_Integer,
     (* ===== CURVED TOPOLOGIES ===== *)
 
     "Cylinder",
-    resolution = Lookup[initialSpec, "Resolution", OptionValue[HGEvolve, {opts}, "GridWidth"]];
-    gridHeight = Lookup[initialSpec, "Height", OptionValue[HGEvolve, {opts}, "GridHeight"]];
+    resolution = Lookup[initialSpec, "Resolution", OptionValue[HGEvolve, opts, "GridWidth"]];
+    gridHeight = Lookup[initialSpec, "Height", OptionValue[HGEvolve, opts, "GridHeight"]];
     icResult = HGCylinder[resolution, gridHeight, "RandomSeed" -> seed];
     edges = icResult["Edges"],
 
     "Torus",
-    resolution = Lookup[initialSpec, "Resolution", OptionValue[HGEvolve, {opts}, "GridWidth"]];
+    resolution = Lookup[initialSpec, "Resolution", OptionValue[HGEvolve, opts, "GridWidth"]];
     icResult = HGTorus[resolution, "RandomSeed" -> seed];
     edges = icResult["Edges"],
 
     "Sphere",
-    resolution = Lookup[initialSpec, "Resolution", OptionValue[HGEvolve, {opts}, "GridWidth"]];
+    resolution = Lookup[initialSpec, "Resolution", OptionValue[HGEvolve, opts, "GridWidth"]];
     icResult = HGSphere[resolution, "RandomSeed" -> seed];
     edges = icResult["Edges"],
 
     "Klein" | "KleinBottle",
-    resolution = Lookup[initialSpec, "Resolution", OptionValue[HGEvolve, {opts}, "GridWidth"]];
-    gridHeight = Lookup[initialSpec, "Height", OptionValue[HGEvolve, {opts}, "GridHeight"]];
+    resolution = Lookup[initialSpec, "Resolution", OptionValue[HGEvolve, opts, "GridWidth"]];
+    gridHeight = Lookup[initialSpec, "Height", OptionValue[HGEvolve, opts, "GridHeight"]];
     icResult = HGKleinBottle[resolution, gridHeight, "RandomSeed" -> seed];
     edges = icResult["Edges"],
 
     "Mobius" | "MobiusStrip",
-    resolution = Lookup[initialSpec, "Resolution", OptionValue[HGEvolve, {opts}, "GridWidth"]];
+    resolution = Lookup[initialSpec, "Resolution", OptionValue[HGEvolve, opts, "GridWidth"]];
     gridWidth = Lookup[initialSpec, "Width", 5];
     icResult = HGMobiusStrip[resolution, gridWidth, "RandomSeed" -> seed];
     edges = icResult["Edges"],
@@ -832,14 +807,14 @@ HGEvolve[rules_List, initialSpec_Association, steps_Integer,
     (* ===== SPACETIME GEOMETRIES ===== *)
 
     "Sprinkling" | "Minkowski",
-    sprinklingDensity = Lookup[initialSpec, "Density", OptionValue[HGEvolve, {opts}, "SprinklingDensity"]];
-    sprinklingTime = Lookup[initialSpec, "TimeExtent", OptionValue[HGEvolve, {opts}, "SprinklingTimeExtent"]];
-    sprinklingSpatial = Lookup[initialSpec, "SpatialExtent", OptionValue[HGEvolve, {opts}, "SprinklingSpatialExtent"]];
-    spatialDim = Lookup[initialSpec, "SpatialDim", OptionValue[HGEvolve, {opts}, "SprinklingSpatialDim"]];
-    lightcone = Lookup[initialSpec, "LightconeAngle", OptionValue[HGEvolve, {opts}, "SprinklingLightconeAngle"]];
-    alexandrov = Lookup[initialSpec, "AlexandrovCutoff", OptionValue[HGEvolve, {opts}, "SprinklingAlexandrovCutoff"]];
-    transitivity = Lookup[initialSpec, "TransitivityReduction", OptionValue[HGEvolve, {opts}, "SprinklingTransitivityReduction"]];
-    maxEdgesPerVertex = Lookup[initialSpec, "MaxEdgesPerVertex", OptionValue[HGEvolve, {opts}, "SprinklingMaxEdgesPerVertex"]];
+    sprinklingDensity = Lookup[initialSpec, "Density", OptionValue[HGEvolve, opts, "SprinklingDensity"]];
+    sprinklingTime = Lookup[initialSpec, "TimeExtent", OptionValue[HGEvolve, opts, "SprinklingTimeExtent"]];
+    sprinklingSpatial = Lookup[initialSpec, "SpatialExtent", OptionValue[HGEvolve, opts, "SprinklingSpatialExtent"]];
+    spatialDim = Lookup[initialSpec, "SpatialDim", OptionValue[HGEvolve, opts, "SprinklingSpatialDim"]];
+    lightcone = Lookup[initialSpec, "LightconeAngle", OptionValue[HGEvolve, opts, "SprinklingLightconeAngle"]];
+    alexandrov = Lookup[initialSpec, "AlexandrovCutoff", OptionValue[HGEvolve, opts, "SprinklingAlexandrovCutoff"]];
+    transitivity = Lookup[initialSpec, "TransitivityReduction", OptionValue[HGEvolve, opts, "SprinklingTransitivityReduction"]];
+    maxEdgesPerVertex = Lookup[initialSpec, "MaxEdgesPerVertex", OptionValue[HGEvolve, opts, "SprinklingMaxEdgesPerVertex"]];
     icResult = HGMinkowskiSprinkling[sprinklingDensity,
       "SpatialDim" -> spatialDim,
       "TimeExtent" -> sprinklingTime,
@@ -853,13 +828,13 @@ HGEvolve[rules_List, initialSpec_Association, steps_Integer,
     edges = icResult["Edges"],
 
     "BrillLindquist",
-    sprinklingDensity = Lookup[initialSpec, "Density", OptionValue[HGEvolve, {opts}, "SprinklingDensity"]];
-    mass1 = Lookup[initialSpec, "Mass1", OptionValue[HGEvolve, {opts}, "BrillLindquistMass1"]];
-    mass2 = Lookup[initialSpec, "Mass2", OptionValue[HGEvolve, {opts}, "BrillLindquistMass2"]];
-    separation = Lookup[initialSpec, "Separation", OptionValue[HGEvolve, {opts}, "BrillLindquistSeparation"]];
-    boxX = Lookup[initialSpec, "BoxX", OptionValue[HGEvolve, {opts}, "BrillLindquistBoxX"]];
-    boxY = Lookup[initialSpec, "BoxY", OptionValue[HGEvolve, {opts}, "BrillLindquistBoxY"]];
-    edgeThreshold = Lookup[initialSpec, "EdgeThreshold", OptionValue[HGEvolve, {opts}, "EdgeThreshold"]];
+    sprinklingDensity = Lookup[initialSpec, "Density", OptionValue[HGEvolve, opts, "SprinklingDensity"]];
+    mass1 = Lookup[initialSpec, "Mass1", OptionValue[HGEvolve, opts, "BrillLindquistMass1"]];
+    mass2 = Lookup[initialSpec, "Mass2", OptionValue[HGEvolve, opts, "BrillLindquistMass2"]];
+    separation = Lookup[initialSpec, "Separation", OptionValue[HGEvolve, opts, "BrillLindquistSeparation"]];
+    boxX = Lookup[initialSpec, "BoxX", OptionValue[HGEvolve, opts, "BrillLindquistBoxX"]];
+    boxY = Lookup[initialSpec, "BoxY", OptionValue[HGEvolve, opts, "BrillLindquistBoxY"]];
+    edgeThreshold = Lookup[initialSpec, "EdgeThreshold", OptionValue[HGEvolve, opts, "EdgeThreshold"]];
     If[edgeThreshold === Automatic, edgeThreshold = 2.0];
     icResult = HGBrillLindquist[sprinklingDensity, {mass1, mass2}, separation,
       "BoxX" -> boxX,
@@ -872,8 +847,8 @@ HGEvolve[rules_List, initialSpec_Association, steps_Integer,
     (* ===== SAMPLING METHODS ===== *)
 
     "Poisson" | "PoissonDisk",
-    sprinklingDensity = Lookup[initialSpec, "Density", OptionValue[HGEvolve, {opts}, "SprinklingDensity"]];
-    poissonMinDistance = Lookup[initialSpec, "MinDistance", OptionValue[HGEvolve, {opts}, "PoissonMinDistance"]];
+    sprinklingDensity = Lookup[initialSpec, "Density", OptionValue[HGEvolve, opts, "SprinklingDensity"]];
+    poissonMinDistance = Lookup[initialSpec, "MinDistance", OptionValue[HGEvolve, opts, "PoissonMinDistance"]];
     boxX = Lookup[initialSpec, "BoxX", {0, 10}];
     boxY = Lookup[initialSpec, "BoxY", {0, 10}];
     icResult = HGPoissonDisk[sprinklingDensity, poissonMinDistance,
@@ -885,7 +860,7 @@ HGEvolve[rules_List, initialSpec_Association, steps_Integer,
     edges = icResult["Edges"],
 
     "Uniform" | "UniformRandom",
-    sprinklingDensity = Lookup[initialSpec, "Density", OptionValue[HGEvolve, {opts}, "SprinklingDensity"]];
+    sprinklingDensity = Lookup[initialSpec, "Density", OptionValue[HGEvolve, opts, "SprinklingDensity"]];
     boxX = Lookup[initialSpec, "BoxX", {0, 10}];
     boxY = Lookup[initialSpec, "BoxY", {0, 10}];
     icResult = HGUniformRandom[sprinklingDensity,
@@ -903,8 +878,7 @@ HGEvolve[rules_List, initialSpec_Association, steps_Integer,
     Return[$Failed]
   ];
 
-  (* Call main HGEvolve with generated edges *)
-  HGEvolve[rules, edges, steps, property, opts]
+  edges
 ]
 
 (* The job's Options envelope: every option the engine parses, and how each is spelled on the

@@ -104,6 +104,19 @@ If[HypergraphRewriting`Private`hgCpuBinaryAvailableQ[],
     If[!(IntegerQ[rNoLib] && rNoLib > 0), AppendTo[failed, "binary-only route"]]],
   Print["SKIP  no engine binary for ", $SystemID, "; the library is the only route here"]];
 
+(* HGSessionOpen takes the input forms HGEvolve takes: a named initial condition and a Graph. *)
+Module[{rule = {{x, y}} -> {{x, z}, {z, y}}, g = Graph[{1 -> 2, 2 -> 3}], forms, ok},
+  forms = Table[
+    Module[{one = HGEvolve[rule, init, 2, "NumStates", "RandomSeed" -> 4],
+            s = HGSessionOpen[rule, init, "NumStates", "RandomSeed" -> 4], viaSession},
+      viaSession = If[Head[s] === HGSessionObject, With[{r = HGSessionStep[s, 2]}, HGSessionClose[s]; r], s];
+      {init, one, viaSession}],
+    {init, {"Grid", "Torus", g}}];
+  ok = AllTrue[forms, IntegerQ[#[[2]]] && #[[2]] === #[[3]] &];
+  Print[If[ok, "PASS", "FAIL"], "  HGSessionOpen takes a named initial condition and a Graph -> ",
+        forms[[All, 2 ;; 3]]];
+  If[!ok, AppendTo[failed, "session input forms"]]];
+
 If[useArchive,
   PacletUninstall["WolframInstitute/HypergraphRewriteEngine"];
   Print["\nuninstalled: the user's paclet directory is as it was found"]];
