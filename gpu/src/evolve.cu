@@ -1127,9 +1127,10 @@ size_t EvolveResult::observable_num_causal_pairs(bool reduced) const {
         return seen.size();
     }
 
+// The reconstruction's count is the device counter: the pair relation is built only when
+// in.materialize_relations is set, and a counts-only request leaves it empty.
 size_t EvolveResult::observable_num_branchial() const {
-        return reconstruction_ran ? reconstructed_branchial_relation.size()
-                                  : branchial_edges.size();
+        return reconstruction_ran ? reconstructed_branchial : branchial_edges.size();
     }
 
 size_t EvolveResult::observable_num_events() const {

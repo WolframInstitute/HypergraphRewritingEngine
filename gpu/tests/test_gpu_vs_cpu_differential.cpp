@@ -107,6 +107,10 @@ struct NormalizedResult {
     // The COUNTS HGEvolve returns for the two relations, from each engine's observable_*
     // accessor -- the same one its FFI reads, so the gated number is the shipped number.
     size_t observable_causal = 0, observable_branchial = 0;
+    // The same counts from a run that asked for counts only (materialize_relations off), which is
+    // what a "NumBranchialEdges" or "Debug" request sends. Set on the device side only.
+    size_t counts_only_causal = 0, counts_only_branchial = 0;
+    bool counts_only_ran = false;
 
     bool operator==(const NormalizedResult& o) const {
         return canonical_state_hashes == o.canonical_state_hashes
@@ -426,6 +430,14 @@ NormalizedResult run_gpu(const Workload& w) {
     }
     out.observable_causal = result.observable_num_causal_pairs(w.transitive_reduction);
     out.observable_branchial = result.observable_num_branchial();
+    if (result.reconstruction_ran) {
+        hg_gpu::EvolveInput counts_in = make_input(w);
+        counts_in.materialize_relations = false;
+        const auto counts = hg_gpu::evolve(counts_in);
+        out.counts_only_causal = counts.observable_num_causal_pairs(w.transitive_reduction);
+        out.counts_only_branchial = counts.observable_num_branchial();
+        out.counts_only_ran = true;
+    }
 
     for (const auto& p : result.reconstructed_causal_relation_reduced)
         out.recon_causal_reduced.insert(causal_key(p.first, p.second));
@@ -599,6 +611,14 @@ TEST_P(DifferentialEvolution, BitIdenticalCanonicalForm) {
     EXPECT_EQ(gpu.observable_branchial, cpu.observable_branchial)
         << "Workload: " << w.name << " NumBranchialEdges differs; cpu="
         << cpu.observable_branchial << " gpu=" << gpu.observable_branchial;
+    if (gpu.counts_only_ran) {
+        EXPECT_EQ(gpu.counts_only_branchial, cpu.observable_branchial)
+            << "Workload: " << w.name << " counts-only NumBranchialEdges differs; cpu="
+            << cpu.observable_branchial << " gpu=" << gpu.counts_only_branchial;
+        EXPECT_EQ(gpu.counts_only_causal, cpu.observable_causal)
+            << "Workload: " << w.name << " counts-only NumCausalEdges differs; cpu="
+            << cpu.observable_causal << " gpu=" << gpu.counts_only_causal;
+    }
 
     EXPECT_EQ(cpu.recon_causal_reduced, gpu.recon_causal_reduced)
         << "Workload: " << w.name << " reconstructed REDUCED causal relations differ; cpu="
