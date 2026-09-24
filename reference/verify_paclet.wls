@@ -104,6 +104,16 @@ If[HypergraphRewriting`Private`hgCpuBinaryAvailableQ[],
     If[!(IntegerQ[rNoLib] && rNoLib > 0), AppendTo[failed, "binary-only route"]]],
   Print["SKIP  no engine binary for ", $SystemID, "; the library is the only route here"]];
 
+(* A symbolic initial state evolves as its integer renaming does, through HGEvolve and a session. *)
+Module[{rule = {{x, y}, {y, z}} -> {{x, y}, {y, w}, {w, z}, {z, x}}, sym, num, sess, s},
+  sym = HGEvolve[rule, {{a, b}, {b, c}}, 3, {"NumStates", "NumEvents"}];
+  num = HGEvolve[rule, {{0, 1}, {1, 2}}, 3, {"NumStates", "NumEvents"}];
+  s = HGSessionOpen[rule, {{a, b}, {b, c}}, {"NumStates", "NumEvents"}];
+  sess = If[Head[s] === HGSessionObject, With[{r = HGSessionStep[s, 3]}, HGSessionClose[s]; r], s];
+  Print[If[AssociationQ[sym] && sym === num && sess === num, "PASS", "FAIL"],
+        "  a symbolic initial state evolves as its integer renaming -> ", {sym, num, sess}];
+  If[!(AssociationQ[sym] && sym === num && sess === num), AppendTo[failed, "symbolic initial state"]]];
+
 (* HGSessionOpen takes the input forms HGEvolve takes: a named initial condition and a Graph. *)
 Module[{rule = {{x, y}} -> {{x, z}, {z, y}}, g = Graph[{1 -> 2, 2 -> 3}], forms, ok},
   forms = Table[

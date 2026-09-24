@@ -710,6 +710,15 @@ normalizeRule[rule_Rule] := Module[
 (* Normalize a list of rules *)
 normalizeRules[rules_List] := normalizeRule /@ rules;
 
+(* Initial states whose vertices are not all integers get consecutive integers from 0, in order
+   of first appearance across all the states; the engine reads integer vertices only. States of
+   integers are sent as they are. *)
+normalizeInitialStates[states_List] := Module[{vertexMap},
+  If[AllTrue[Flatten[states], IntegerQ], Return[states]];
+  vertexMap = Association[MapIndexed[#1 -> #2[[1]] - 1 &, DeleteDuplicates[Flatten[states]]]];
+  Map[vertexMap, states, {3}]
+];
+
 (* Check if a rule already uses numeric vertices *)
 ruleIsNumeric[rule_Rule] := AllTrue[
   Flatten[{rule[[1]], rule[[2]]}],
@@ -1168,7 +1177,8 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
   rulesAssoc = Association[Table["Rule" <> ToString[i] -> normalizedRules[[i]], {i, Length[normalizedRules]}]];
 
   (* Handle single vs multiple initial states *)
-  initialStatesData = If[Depth[initialEdges] == 3, {initialEdges}, initialEdges];
+  initialStatesData = normalizeInitialStates[
+    If[Depth[initialEdges] == 3, {initialEdges}, initialEdges]];
 
   (* Build input *)
   inputData = <|
@@ -1257,7 +1267,8 @@ HGSessionOpen[rules_List, initialEdges_List,
   normalizedRules = normalizeRules[rules];
   rulesAssoc = Association[
     Table["Rule" <> ToString[i] -> normalizedRules[[i]], {i, Length[normalizedRules]}]];
-  initialStatesData = If[Depth[initialEdges] == 3, {initialEdges}, initialEdges];
+  initialStatesData = normalizeInitialStates[
+    If[Depth[initialEdges] == 3, {initialEdges}, initialEdges]];
 
   inputData = <|"InitialStates" -> initialStatesData, "Rules" -> rulesAssoc,
                 "Steps" -> 0, "Options" -> options, "Op" -> "Open"|>;
