@@ -166,7 +166,7 @@ public:
 
     // Size the cascade stacks for this run: one slice per driver, deep enough for a
     // depth-first walk of `max_steps` levels. Grows and never shrinks, as the IR arena does.
-    void ensure_work(uint32_t slices, uint32_t max_steps);
+    void ensure_work(uint32_t slices, uint32_t max_steps, uint32_t scale);
 
     QcView view(uint32_t max_steps);
 
@@ -294,7 +294,7 @@ struct DeviceQcCtx {
             return;
         }
         if (!work || !work->push(hash, depth, 0u, 0u, 0u))
-            ds.errors.record(ErrorKind::kScratchOverflow);
+            ds.errors.record(ErrorKind::kQcWorkOverflow);
     }
     __device__ void defer_producer(uint64_t hash, uint32_t depth, uint32_t orbit,
                                    uint32_t producer) {
@@ -305,7 +305,7 @@ struct DeviceQcCtx {
             return;
         }
         if (!work || !work->push(hash, depth, orbit, producer, 1u))
-            ds.errors.record(ErrorKind::kScratchOverflow);
+            ds.errors.record(ErrorKind::kQcWorkOverflow);
     }
     __device__ bool mark_reached(uint64_t rkey, uint64_t, uint32_t) {
         return qc.reached.insert_if_absent(rkey, 1u).inserted;

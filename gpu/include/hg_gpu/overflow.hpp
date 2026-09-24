@@ -45,7 +45,11 @@ enum class ErrorKind : uint32_t {
     kSigIndexNodes       = 16,
     kInvIndexNodes       = 17,
     kFrontierCapFull     = 18,
-    kScratchOverflow     = 19,   // bounded local scratch (TR closure, WL)
+    kScratchOverflow     = 19,   // bounded local scratch (IR, a quotient-causal driver without a work slice)
+    kQcWorkOverflow      = 10,   // the quotient-causal DP's work stack was full: a reach or producer step was dropped
+    kQeSurvivorsOverflow = 13,   // a class frame had more surviving edges than one capture holds: the capture was dropped
+    kQeWorkOverflow      = 14,   // the replay's descent stack was full: an instance's descent was dropped
+    kTrScratchOverflow   = 11,   // the transitive reduction's reachability scratch was full: a redundant edge may be kept
     kDeviceOutOfMemory   = 21,   // host-side: an engine of the grown size no longer fits in VRAM
     // A device-resident scheduler ran past its spin budget. It means a defect -- the
     // termination detector should have fired -- and it exists so that defect costs a partial

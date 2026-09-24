@@ -58,7 +58,7 @@ __device__ uint64_t branchial_pair_key(EventId a, EventId b) {
 // release/acquire handshake orders that before c's rewrite.
 //
 // Scratch is a bounded local stack + open-addressed visited table. Overflow records
-// kScratchOverflow and answers "not reachable", which KEEPS the candidate edge: the causal
+// kTrScratchOverflow and answers "not reachable", which KEEPS the candidate edge: the causal
 // relation stays complete, only the reduction may retain a redundant edge.
 constexpr uint32_t kReachStack   = 256;
 constexpr uint32_t kReachVisited = 512;   // power of two; entries store id + 1, 0 = empty
@@ -100,7 +100,7 @@ __device__ bool is_reachable_preds(DeviceState ds, EventId p, EventId c) {
         });
         if (found) return true;
     }
-    if (overflow) ds.errors.record(ErrorKind::kScratchOverflow);
+    if (overflow) ds.errors.record(ErrorKind::kTrScratchOverflow);
     return false;
 }
 

@@ -41,7 +41,11 @@ const char* error_kind_name(ErrorKind k) {
         case ErrorKind::kSigIndexNodes:       return "signature_index (node pool)";
         case ErrorKind::kInvIndexNodes:       return "vertex_inverted_index (node pool)";
         case ErrorKind::kFrontierCapFull:     return "frontier buffer";
-        case ErrorKind::kScratchOverflow:     return "per-thread scratch (TR/WL)";
+        case ErrorKind::kScratchOverflow:     return "per-thread scratch";
+        case ErrorKind::kQcWorkOverflow:      return "quotient-causal work stack";
+        case ErrorKind::kTrScratchOverflow:   return "transitive-reduction scratch";
+        case ErrorKind::kQeSurvivorsOverflow: return "replay capture survivors";
+        case ErrorKind::kQeWorkOverflow:      return "replay work stack";
         case ErrorKind::kIRArenaExhausted:    return "device IR arena (retryable: grow config)";
         case ErrorKind::kIRDepthExceeded:     return "IR search depth (retryable: grow config)";
         case ErrorKind::kIRGeneratorsExceeded: return "IR automorphism generators (retryable: grow config)";

@@ -1774,15 +1774,15 @@ TEST(QuotientReconstruction, ADepthThatSaturatesThePoolsStillAgreesWithTheHost) 
     const auto gpu = hg_gpu::evolve(in);
     ASSERT_TRUE(gpu.reconstruction_ran) << "the device did not reconstruct, so there is nothing "
                                            "to compare and the gate asserts nothing";
-    // The run grows its pools and retries. The result carries the warnings of the attempt that
-    // produced it, so none is of a kind the ladder grows: those overflows ended earlier attempts.
-    for (const auto& wn : gpu.warnings) {
-        hg_gpu::EngineConfig probe{};
-        EXPECT_FALSE(hg_gpu::grow_config_for(probe, wn.kind))
-            << "a " << hg_gpu::error_kind_name(wn.kind) << " warning x" << wn.count
-            << " came back with the result; the ladder grows that pool, so it belongs to a "
-               "discarded attempt";
-    }
+    // The run grows its pools and its descent stacks and retries; the attempt that fits returns
+    // no warning. Each one names a dropped descent, a dropped capture or a truncated pool.
+    EXPECT_TRUE(gpu.warnings.empty()) << [&] {
+        std::string m = std::to_string(gpu.warnings.size()) + " warning(s) with the result:";
+        for (const auto& wn : gpu.warnings)
+            m += std::string(" [") + hg_gpu::error_kind_name(wn.kind) + " x" +
+                 std::to_string(wn.count) + "]";
+        return m;
+    }();
 
     // The host side is run DIRECTLY rather than through run_cpu, and only its counters are
     // read. run_cpu normalises every relation into a multiset to compare them element by
@@ -1816,6 +1816,9 @@ TEST(QuotientReconstruction, ADepthThatSaturatesThePoolsStillAgreesWithTheHost) 
            "figure that is exactly a power of two is a container ceiling, not an answer";
     EXPECT_EQ(gpu.reconstructed_causal_pairs, host_causal)
         << "the device returned a different number of causal pairs than the host";
+    // The transitive reduction too: the device's reduction runs in bounded per-thread scratch.
+    EXPECT_EQ(gpu.reconstructed_causal_pairs_reduced, hg.num_reconstructed_causal_pairs(true))
+        << "the device returned a different number of reduced causal pairs than the host";
 }
 
 TEST(QuotientReconstruction, PastTheOldStackDepthItReachesTheDepthInstead) {

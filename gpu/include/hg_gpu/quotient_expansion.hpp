@@ -417,7 +417,7 @@ __device__ inline uint32_t qe_frame_slot_of(DeviceState ds, QeView qe, uint64_t 
 }
 
 // Survivor pairs one capture can hold in local scratch. A class with more surviving edges than
-// this records kScratchOverflow and drops the capture: the events reachable only through it are
+// this records kQeSurvivorsOverflow and drops the capture: the events reachable only through it are
 // then missing, which the warning reports rather than silently mis-attributing. Matches the
 // DP's kQcMaxSurvivors so the two halves fail at the same size.
 constexpr uint32_t kQeMaxSurvivors = 256;
@@ -487,7 +487,7 @@ __device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
             const uint32_t ps = qe_frame_slot_of(ds, qe, from, parent, oe, align);
             const uint32_t cs = qe_frame_slot_of(ds, qe, to, child, oe, align);
             if (ps == UINT32_MAX || cs == UINT32_MAX) continue;
-            if (ns >= kQeMaxSurvivors) { ds.errors.record(ErrorKind::kScratchOverflow); return; }
+            if (ns >= kQeMaxSurvivors) { ds.errors.record(ErrorKind::kQeSurvivorsOverflow); return; }
             surv[ns++] = hgcommon::id_key(ps, cs);
         }
         hgcommon::isort_u64(surv, ns);
@@ -601,7 +601,7 @@ __device__ inline void qe_seed_root_instance(DeviceState ds, QeView qe, StateId 
     const uint32_t rec = qe_add_instance(ds, qe, h, 0u, off, nslots);
     if (rec == UINT32_MAX) return;
     QeWork work = qe_work_for(ds, qe, work_slice);
-    if (!work.push(h, rec, 0u)) { ds.errors.record(ErrorKind::kScratchOverflow); return; }
+    if (!work.push(h, rec, 0u)) { ds.errors.record(ErrorKind::kQeWorkOverflow); return; }
     qe_run(ds, qe, work);
 }
 
@@ -829,7 +829,7 @@ struct DeviceQrCtx {
         if (rec == UINT32_MAX) return;
         // PUSHED, NOT CALLED. This was the recursive edge; the driver loop takes it from here.
         if (!work.push(m.to_hash, rec, depth + 1u))
-            ds.errors.record(ErrorKind::kScratchOverflow);
+            ds.errors.record(ErrorKind::kQeWorkOverflow);
     }
 };
 
@@ -922,7 +922,7 @@ public:
     // GROWS, NEVER SHRINKS, for the reason the IR arena does: an interactive caller reuses one
     // engine across many runs and a buffer whose contents never outlive a run should not be
     // reallocated on each of them.
-    void ensure_work(uint32_t slices, uint32_t max_steps);
+    void ensure_work(uint32_t slices, uint32_t max_steps, uint32_t scale);
 
     QeView view(uint32_t max_steps, EventSignatureKeys keys,
                 bool replay);

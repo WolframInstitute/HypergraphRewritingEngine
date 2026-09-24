@@ -335,6 +335,12 @@ struct EngineConfig {
     // result rather than a smaller one.
     uint32_t qe_capacity_scale = 1u;
 
+    // Multiplies the per-driver descent stacks of the replay and of the quotient-causal DP
+    // (64 items per level, at least 256). The stack holds the siblings of each level not yet
+    // descended into, so a wide workload fills it; grow-and-retry doubles this on
+    // kQeWorkOverflow and kQcWorkOverflow, which would otherwise drop a descent.
+    uint32_t descent_work_scale = 1u;
+
     // Average IR-arena words per concurrent slot holder (the arena is one shared bump pool, so
     // the average share is what matters, not a per-worker partition). The default is ~6x the
     // measured average demand on multiway state sizes; a big-state workload that outgrows the

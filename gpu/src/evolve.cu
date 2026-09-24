@@ -299,7 +299,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
             default_persistent_grid() > static_cast<uint32_t>(roots.size())
                 ? default_persistent_grid()
                 : static_cast<uint32_t>(roots.size());
-        qc_state_->ensure_work(drivers, in.num_steps);
+        qc_state_->ensure_work(drivers, in.num_steps, cfg.descent_work_scale);
     }
     QcView qc_view = qc_state_->view(in.num_steps);
 
@@ -328,7 +328,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
             default_persistent_grid() > static_cast<uint32_t>(roots.size())
                 ? default_persistent_grid()
                 : static_cast<uint32_t>(roots.size());
-        qe_state_->ensure_work(drivers, in.num_steps);
+        qe_state_->ensure_work(drivers, in.num_steps, cfg.descent_work_scale);
     }
     QeView qe_view = qe_state_->view(in.num_steps, event_keys_for(in.event_canonicalization),
                                      qe_replay);
@@ -643,6 +643,8 @@ bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
         // a full pair map does not lose speed, it loses CAUSAL EDGES, and the run reports a
         // relation smaller than the one the host computes.
         case ErrorKind::kQcNodes:             dbl(cfg.qe_capacity_scale);    return true;
+        case ErrorKind::kQeWorkOverflow:      dbl(cfg.descent_work_scale);   return true;
+        case ErrorKind::kQcWorkOverflow:      dbl(cfg.descent_work_scale);   return true;
         case ErrorKind::kSigIndexNodes:       dbl(cfg.sig_index_pool);       return true;
         case ErrorKind::kInvIndexNodes:       dbl(cfg.inverted_pool);        return true;
         case ErrorKind::kFrontierCapFull:     dbl(cfg.max_states);           return true;
@@ -709,6 +711,7 @@ static void log_winning_config(const EngineConfig& initial,
     LOG_FIELD(branchial_index_nodes);
     LOG_FIELD(tr_preds_nodes);
     LOG_FIELD(qe_capacity_scale);
+    LOG_FIELD(descent_work_scale);
 #undef LOG_FIELD
 }
 
@@ -765,6 +768,10 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     // (16 words per event), the pair maps and instance/match pools. Omitting it let the
     // grow-and-retry memory cap approve a config the device could not hold.
     b += u64(cfg.max_events) * u64(cfg.qe_capacity_scale) * 128;
+    // The two descent stacks at their minimum per-driver size (256 items), which
+    // descent_work_scale multiplies; a deep run's stacks are larger still.
+    b += u64(default_persistent_grid()) * 256u * u64(cfg.descent_work_scale) *
+         (sizeof(QeWorkItem) + sizeof(QcWorkItem));
     b += u64(cfg.canonical_map_slots) * 12;         // canonical dedup map
     b += u64(cfg.match_dedup_slots)   * 12 + u64(cfg.event_canon_slots) * 12;
     b += u64(cfg.max_states)          * 8 * 76;     // matches pool (max_states*8 records ~76B)

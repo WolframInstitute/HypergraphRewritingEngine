@@ -53,9 +53,9 @@ void QcState::clear() {
 
 // The DP descends through this rather than through the call stack, so its size is what bounds
 // cascade depth. Same shape and same reasoning as QeState::ensure_work.
-void QcState::ensure_work(uint32_t slices, uint32_t max_steps) {
+void QcState::ensure_work(uint32_t slices, uint32_t max_steps, uint32_t scale) {
     if (!on_) return;
-    const uint32_t cap = max_steps * 64u < 256u ? 256u : max_steps * 64u;
+    const uint32_t cap = (max_steps * 64u < 256u ? 256u : max_steps * 64u) * scale;
     if (work_items_ && work_slices_ >= slices && work_cap_ >= cap) return;
     if (work_items_) { cudaFree(work_items_); work_items_ = nullptr; }
     work_slices_ = slices > work_slices_ ? slices : work_slices_;
@@ -321,11 +321,11 @@ uint32_t QeState::num_instances_host() { return instances_.size_host(); }
 //
 // 64 items per level is a bound on FAN-OUT, not on depth -- the stack holds the matches of each
 // level that have not been descended into yet. A workload wider than that reports a capacity
-// overflow and returns partial work, which is the same contract every other pool here has, and
-// unlike the per-thread stack it can be raised without costing every resident thread.
-void QeState::ensure_work(uint32_t slices, uint32_t max_steps) {
+// overflow (kQeWorkOverflow); grow-and-retry doubles `scale` (EngineConfig::descent_work_scale)
+// and runs again.
+void QeState::ensure_work(uint32_t slices, uint32_t max_steps, uint32_t scale) {
     if (!on_) return;
-    const uint32_t cap = max_steps * 64u < 256u ? 256u : max_steps * 64u;
+    const uint32_t cap = (max_steps * 64u < 256u ? 256u : max_steps * 64u) * scale;
     if (work_items_ && work_slices_ >= slices && work_cap_ >= cap) return;
     if (work_items_) { cudaFree(work_items_); work_items_ = nullptr; }
     work_slices_ = slices > work_slices_ ? slices : work_slices_;
