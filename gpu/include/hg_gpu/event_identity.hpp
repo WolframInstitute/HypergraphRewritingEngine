@@ -2,21 +2,15 @@
 #include "hgcommon/namespace.hpp"
 // Event identity on the device.
 //
-// One statement of the signature rule, read by the persistent kernel and by the host-driven
-// identity phase alike. A second copy would not crash; it would silently identify a different
-// set of events, which is the defect class the shared-core work exists to close.
+// The signature rule the persistent kernel stamps events with.
 //
 // The identity is defined over ISOMORPHISM CLASSES independently of how states are being
 // identified (SPEC.md sec 4), so every component here reads DeviceState::state_exact_hash and
-// DeviceState::state_edge_rank rather than the state mode's dedup key. Both are filled by
-// fill_event_identity_inputs below, which runs the individualization pass once per state and
-// takes the ranks off the same pass.
+// DeviceState::state_edge_rank rather than the state mode's dedup key. The persistent kernel
+// fills both when run_needs_exact_hash and run_needs_edge_ranks say the run reads them.
 
-#include "hg_gpu/device_arena.hpp"
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/exploration.hpp"   // DedupMap
-#include "hg_gpu/ir_canon.hpp"
-#include "hg_gpu/persistent.hpp"    // default_persistent_grid — the arena's slot-holder bound
 #include "hg_gpu/types.hpp"
 
 #include "hgcommon/event_core.hpp"
@@ -127,24 +121,6 @@ __device__ inline void stamp_event_signature(DeviceState ds, EventId eid,
         ev.canonical_id = r.value;
     }
 }
-
-// Fill state_exact_hash (and state_edge_rank when the keys read it) for states [lo, hi).
-//
-// A phase of its own, because the rewrite kernel writes an event before the output state has
-// been canonicalized and the signature cannot be filled inline there. Running it between
-// hashing and dedup gives the stamping kernel both endpoint hashes.
-//
-// In Full state mode the exact hash is the mode's key and is already in state_canonical_hash;
-// `key_is_exact` says so, and the pass then only has to produce ranks. `want_orbits`
-// additionally scatters per-edge automorphism orbits (the quotient-causal DP's keys), and
-// makes the pass run even under EventSignatureKeys None.
-void fill_event_identity_inputs(EngineState& engine, uint32_t lo, uint32_t hi,
-                                EventSignatureKeys keys, bool key_is_exact,
-                                DeviceArena& arena, bool want_orbits = false);
-
-// Stamp and deduplicate events [lo, hi). Reads the exact hashes and ranks the call above filled.
-void stamp_event_identity_range(EngineState& engine, uint32_t lo, uint32_t hi,
-                                EventSignatureKeys keys, DedupMap& event_map);
 
 }  // namespace gpu
 }  // namespace HG_NAMESPACE
