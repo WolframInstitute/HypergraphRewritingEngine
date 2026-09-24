@@ -29,3 +29,13 @@ ok = IntegerQ[nFullClean] && IntegerQ[nFullAfterBad] &&
   nFullAfterBad === nFullClean &&    (* the option AFTER the bad one applied *)
   warned;                            (* and the skip is on the trail *)
 Print[If[ok, "DESYNC GATE PASS", "DESYNC GATE FAIL"]];
+
+(* An integer "TransitionRate" or "ExplorationProbability" is sent as a real: 1 is the unsampled
+   run, with no OptionSkipped warning. *)
+Module[{plain, asInt, msgs},
+  plain = HGEvolve[rule, init, 3, "NumStates"];
+  {asInt, msgs} = Block[{$MessageList = {}},
+    {HGEvolve[rule, init, 3, "NumStates", "TransitionRate" -> 1,
+       "ExplorationProbability" -> 1], $MessageList}];
+  Print["plain=", plain, " integer options=", asInt, " messages=", msgs];
+  Print[If[asInt === plain && msgs === {}, "INTEGER RATE PASS", "INTEGER RATE FAIL"]]];

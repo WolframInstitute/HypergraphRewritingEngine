@@ -1026,8 +1026,8 @@ hgJobOptions[ov_, requiredData_, graphProperties_] := Module[{branchialStepValue
     "CausalTransitiveReduction" -> ov["CausalTransitiveReduction"],
     "MaxSuccessorStatesPerParent" -> ov["MaxSuccessorStatesPerParent"],
     "MaxStatesPerStep" -> ov["MaxStatesPerStep"],
-    "ExplorationProbability" -> ov["ExplorationProbability"],
-    "TransitionRate" -> ov["TransitionRate"],
+    "ExplorationProbability" -> N[ov["ExplorationProbability"]],
+    "TransitionRate" -> N[ov["TransitionRate"]],
     "RuleWeights" -> N[ov["RuleWeights"]],
     (* The seed the sampling draws use. Automatic means "a fresh one each run", which the
        engine spells as 0; anything else fixes the sample. Without this the option reached the
