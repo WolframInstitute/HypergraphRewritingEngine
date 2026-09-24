@@ -1,139 +1,96 @@
-\section{Verification of the Concurrent Surface}
+\section{Verification of the Concurrent Code}
 \label{sec:verification}
 
-The engine holds no lock, so every property that a lock would have enforced is instead a
-consequence of an ordering argument, and testing bounds such an argument weakly. A stress test samples
-interleavings, so a clean run bounds nothing: on this engine a determinism gate of 150 runs (90
-recorded, then 40 and 20 more under load) explores a vanishing fraction of the schedules
-its own thread count admits, and the schedules that matter are not the likely ones. Two verification layers are
-therefore maintained alongside the test suite, and they are bounded in different directions.
+The engine holds no lock, so its correctness under concurrency rests on memory-ordering arguments.
+A stress test samples only a small fraction of the possible interleavings: a determinism gate of
+150 runs explores almost none of the schedules its thread count admits. The concurrent code is
+therefore checked by two model checkers in addition to the test suite.
 
 \paragraph{Model checking under weak memory.}
-The first layer uses GenMC~\cite{kokologiannakis2021genmc}, which enumerates the executions of a
-bounded concurrent program under the RC11 memory model~\cite{lahav2017repairing}. For the program
-it is given (that thread count, that operation count, those inputs) it explores every
-interleaving and every reads-from choice the model permits, so a clean run is a statement about all
-executions within the bound rather than about the ones that happened to be scheduled.
+GenMC~\cite{kokologiannakis2021genmc} enumerates every execution of a bounded concurrent program
+under the RC11 memory model~\cite{lahav2017repairing}: for the given thread count, operation count
+and inputs, it explores every interleaving and every choice of which write each read observes. A
+clean result therefore covers all executions within the bound. Three harnesses are weaker. Two
+bound the number of context switches, which the checker supports only under sequential
+consistency, so they cover the sequentially consistent executions. The third samples executions
+because its shape is too large to enumerate, and the same property is checked exhaustively at a
+smaller shape by another harness.
 
-Three harnesses give a weaker guarantee than that, and each states its bound where its result is reported. Two of them bound
-the number of context switches, which the checker permits only under sequential consistency, so
-those two establish their property for the sequentially consistent executions of their program
-rather than for every RC11 execution of that program. A third samples executions instead of enumerating
-them, because its shape cannot be exhausted at the size that exhibits the behaviour it is about; a
-clean sample is evidence rather than proof, and the same property is proved by enumeration at a
-smaller shape by a separate harness. The remaining harnesses are exhaustive over RC11 within their
-stated bound.
+Each harness is a small program that includes the engine's headers and calls its functions, so it
+checks the engine's code rather than a separate model, and it stops compiling when the code it
+checks changes shape. Two harnesses check protocols inside functions the checker cannot load, and
+contain verbatim copies of that code running over the engine's structures.
 
-The device's resident-kernel protocols are checked the same way by six sibling harnesses under
-the scoped extension of the memory model: the ring buffer's exactly-once hand-off, termination
-detection admitting no early exit, the hash table electing one inserter, the replay rendezvous
-meeting every pair, and the causal dynamic program's producer--transition rendezvous.
-
-The engine is also driven through the checker whole, not only structure by structure: three
-harnesses construct the engine, add rules, and run a bounded \texttt{evolve()} end to end, so
-the composition of the protocols is enumerated as well as each protocol alone, and the
-enumeration is clean at the stated bounds. No defect is known in the shipped tree: within those
-bounds the guarantees are exhaustive over all executions, and beyond them the sanitizers, the
-differential suites and the determinism gate report nothing.
-
-Each harness is a small program that includes the engine's own header and calls its own functions,
-rather than a hand-written model of the algorithm. The constraint is deliberate: a model drifts
-from the code as soon as the code changes, and a re-implementation establishes a property of the
-re-implementation. A harness that includes the header stops compiling when the header changes
-shape, which couples it to the code it is about. Two harnesses cannot meet the constraint, because
-the protocols they check live inside functions the interpreter cannot take, and both say so in
-place: their transcriptions are copied verbatim and run over the real underlying structure.
-
-Each property checked here is one whose failure would be silent. For the concurrent map: that
-get-or-create admits exactly one winner and returns that winner to every caller, so a
-\emph{was\_inserted} result means what its callers assume. That this survives a table resize
-running concurrently with the inserts that triggered it, and survives two successive growths, and
-that the flag comes from the publishing exchange rather than from a value comparison, so repeated
-offers of the same value for one key do not each report success. For the deque: that
-the owner popping the back and a thief popping the front never extract the same item, checked at
-the single configuration where the two ends address the same slot. For the match rendezvous: that
-a match is claimed exactly once and never dropped on a collision, and, for the rendezvous between
-an instance and the matches captured for its class, that every pair meets. For the per-instance
-application list: that of any two applications linked into one list exactly one observes the
-other, permitting the branchial pair they induce to be emitted once with nothing to
-deduplicate it against (Section~\ref{sec:quotient}), and that a walk from a node enumerates all
-earlier-linked nodes. For the per-worker scratch arena: that no two workers are handed the same
-index. For the key set: that two
-threads inserting one key while a third insertion forces a growth beneath them produce exactly one
-reported insertion, and that an enumeration emits each key once across the growth: two properties
-checked by separate harnesses, because they are independent and a single harness that bundled them
-would not say which one a violation belonged to. A third property class covers \emph{readers}
-racing a growth: a membership query for a key that settled before the query began must answer
-present in every execution, even mid-carry, when the key's slot in the retiring table is already
-sealed and its copy has just landed in the successor. The chain walk is oldest-first for that
-reason: a newest-first walk visits each table on the wrong side of the carry hand-off and can
-report absent for a key that is present, and the twenty-execution counterexample distinguishing
-the two orders is in the harness. The same read-order condition governs the map's drained-table
-skip, where the calibrated break is reading a table's skip flag only when the walk arrives at it. For the
-scheduler: that a worker
-which parks is always woken, which is a liveness property and is checked as one: removing either
-of the two sequentially consistent fences in the submit/park protocol makes the checker report a
+The harnesses check the following properties, each of which would fail without an error:
+\begin{itemize}
+\item \emph{Concurrent map:} get-or-create has exactly one winner and returns the winner's value to
+every caller, including when a resize runs concurrently with the inserts that caused it and across
+two successive resizes; the ``inserted'' flag comes from the publishing exchange, so repeated
+offers of one value are not each reported as insertions.
+\item \emph{Key set:} two threads inserting one key while a third forces a resize produce exactly
+one reported insertion; an enumeration during a resize reports each key once; and a membership
+query for a key inserted before the query began answers present, including while the key is
+being copied to the new table. This last property requires walking the chain of tables from the
+oldest; the harness contains a twenty-execution counterexample for newest-first order.
+\item \emph{Work-stealing deque:} the owner and a thief never take the same item, checked where the
+two ends address the same slot.
+\item \emph{Match rendezvous:} a match is claimed exactly once and never dropped on a collision,
+and every pair of an instance and a match recorded for its class is replayed.
+\item \emph{Per-instance application list:} of two applications linked into one list, exactly one
+sees the other, so each branchial pair is emitted once (Section~\ref{sec:quotient}).
+\item \emph{Arena:} no two workers receive the same arena index, and the shared allocation path
+never hands out memory a worker's private cursor owns.
+\item \emph{Scheduler:} a worker that waits is always woken. Removing either of the two
+sequentially consistent fences in the submit and wait protocol makes the checker report a
 non-terminating spin loop.
+\end{itemize}
 
-\paragraph{Checker modifications.}
-Running an engine of this size through GenMC required changes to the checker, all of which are
-shipped with the engine as a patch against release 0.17.0. Four are correctness fixes:
-\texttt{operator new[]} is intercepted as an allocation, as \texttt{operator new} already was;
-a \texttt{memcpy} is promoted over the element type its destination names, with byte stores for
-a tail shorter than the last element and alignment-width stores for an opaque \texttt{memset};
-the read half of a failed compare-exchange takes the failure ordering rather than the success
-ordering; and no liveness violation is reported while a thread is blocked by an assume, a helped
-compare-exchange or a confirmation (upstream pull request 58). One is a limitation in the
-lowering of copies whose operands the promotion pass cannot type (a call result, or a load from
-a lambda's closure field), which were lowered as loops at the intrinsic's alignment, so that a
-program's two-byte field read fell inside a four-byte store, an access the checker's value
-resolution does not answer and reported as uninitialised memory; the promotion now runs once
-before and once after scalar replacement and register promotion, when such operands have become
-the allocas they held, and the report names a read that lies inside a wider write. The rest are
-instruments: a progress heartbeat over the transformation passes and the exploration, and, in
-estimation mode, an attribution of the state-space estimate to the reads and writes that
-produce it: every access with more than one alternative is booked against its source line
-with weight $\log_2$ of the alternative count, and the booked total equals $\log_2$ of the
-estimator's sample per execution. That attribution identified the two changes that
-made the composed harnesses tractable: an idle worker's empty pop of its deque wrote its
-\texttt{bottom} word twice per look, giving every thief's read of that word one reads-from
-alternative per store, and the workers were spawned with distinct arguments, which kept the
-checker's symmetry reduction from applying.
+Six harnesses check the GPU kernel's protocols under the scoped extension of the memory model: the
+ring buffer's exactly-once hand-off, termination detection without early exit, the ring and the
+termination detector together, the hash table electing one inserter, the replay rendezvous meeting
+every pair, and the causal dynamic program's producer--transition rendezvous.
+
+Harnesses that link the whole engine construct an engine and add a rule; at the stated bound the
+checker reaches the end of each (442 complete executions), so the composed construction is covered
+exhaustively.
+
+To run the engine through GenMC, the checker was modified; the patch against release 0.17.0 is
+shipped with the engine. It has four correctness fixes (\texttt{operator new[]} treated as an
+allocation; typed promotion of \texttt{memcpy} and \texttt{memset}; the failure ordering for a
+failed compare-exchange's read; and no liveness report while a thread is blocked by an assume,
+upstream pull request 58), a second pass of memory-intrinsic promotion after scalar replacement,
+and instrumentation: a progress report, and an attribution of the state-space estimate to the
+source lines whose reads and writes produce it.
 
 \paragraph{TLA\textsuperscript{+} models.}
-The second layer uses TLA+ and its model checker~\cite{lamport2002specifying} on the match
-forwarding protocol, which is the property whose silent failure is most costly: a lost match
-removes the entire subtree below it while leaving the run internally consistent. Every in-flight
-protocol step is held in a bag from which any enabled step may be taken, so the interleavings subsume
-every worker count rather than a bound on it; what is bounded instead is the state count. The
-trade is stated where the specification is: this layer is a transcription, so a change to the code
-does not change the model, and each specification header names the code it transcribes.
+Four protocols are also specified in TLA+ and checked with its model checker~\cite{lamport2002specifying}.
+Every protocol step in progress is held in a set from which any enabled step may fire, so the
+checked interleavings cover every worker count; the bound is on the number of states instead. Each
+specification is a transcription of the code and names the code it transcribes. Each has a broken
+configuration that the checker must reject, which shows that the specification can detect the
+failure it is about.
 
-The specification is checked in four configurations, differing in whether the claim winner owns
-both the store and the propagation and whether submission is batched
-(Table~\ref{tab:tla}). The shipped configuration is forwarding-complete at the model bound. The
-configuration without the ownership invariant and without batching violates the property. Its
-counterexample is the shape the invariant exists to exclude. On a chain
-$s_0 \to s_1 \to s_2$, a match is discovered at the root after $s_2$'s pull has run; $s_1$'s pull
-wins the claim and stores without propagating; the root's push then finds the claim taken and skips
-its recursion. That leaves $s_2$ quiescent with a match that is valid for it and not
-stored. That the model reaches the failure it exists to exclude is the calibration of the model.
-The remaining configuration shows that batching alone masks the broken pull at this bound, which is
-why the ownership invariant is not treated as redundant with batching.
+\emph{Match forwarding} is the property whose failure costs the most: a lost match removes the
+whole subtree below it and leaves the run internally consistent. The specification is checked in
+four configurations (Table~\ref{tab:tla}), which differ in whether the process that wins a match's
+claim both stores and propagates it, and in whether submission is batched. The shipped
+configuration is complete at the bound. Without ownership and without batching the property fails
+on a chain $s_0 \to s_1 \to s_2$: a match is found at the root after $s_2$'s pull has run; $s_1$'s
+pull wins the claim and stores the match without propagating it; the root's push finds the claim
+taken and does not recurse, so $s_2$ never receives the match. Batching alone hides this failure at
+the bound, so ownership is required independently of batching.
 
 \begin{table}[htbp]
 \centering
-\caption{\textbf{Forwarding completeness under TLA+.} The shipped protocol and three
-calibration arms of the same specification, exhaustive at the model bound of four states, three
-matches and three edges, with a mid-chain discovery enabling a grandchild. \emph{Ownership} is
-the claim winner owning both the store and the propagation; \emph{batched} is per-state
-submission after matching completes. The arm without ownership or batching is the checker's
-calibration: the specification detects the violation its removal introduces.}
+\caption{\textbf{Forwarding completeness under TLA+}, exhaustive at the bound of four states, three
+matches and three edges, with a discovery mid-chain that enables a grandchild. \emph{Ownership}:
+the claim winner both stores and propagates the match; \emph{batched}: a state's matches are
+submitted together after its matching completes.}
 \label{tab:tla}
 \resizebox{\ifdim\width>\linewidth\linewidth\else\width\fi}{!}{%
 \begin{tabular}{lllcr}
 \toprule
-Arm & Ownership & Batched & Verdict & Distinct states \\
+Configuration & Ownership & Batched & Verdict & Distinct states \\
 \midrule
 \textbf{shipped} & yes & yes & complete       & 117{,}005 \\
 calibration & no  & yes & complete       & 85{,}777 \\
@@ -143,29 +100,26 @@ calibration & no  & no  & violated (as required) & trace depth 13 \\
 \end{tabular}}
 \end{table}
 
-\paragraph{Segmented array.} The segmented array stores the states, the
-events, the edges and the per-instance application lists, and its ordering invariant is that if a
-segment exists then so does every segment below it, so a reader that finds segment $k$ may index any
-position beneath it without further checking. That invariant is specified rather than tested,
-because the structure allocates segments on demand from concurrent appenders and the failure it
-guards against is a read of an unallocated segment rather than a wrong value. The shipped
-protocol checks clean at $2{,}284$ distinct states and a complete-graph depth of $21$; the
-configuration that creates only the segment asked for violates \emph{DenseBelowCount}. The
-calibration also fixes the bound: at two appenders the broken protocol is \emph{also} clean, since
-one claim each means the index that would expose the gap cannot be reached until a holder of the
-lower segment has published, so three are required. It is specified here rather than checked with
-the tools of the previous layer because that checker does not survive constructing this
-structure: a limitation of the tool, recorded where it applies rather than presented as a choice.
+\emph{Depth relaxation} (Section~\ref{sec:depth}): at quiescence the set of expanded states is
+exactly the set whose shortest-path depth is below the budget, including when a steered step lowers
+the budget for one pass. The broken configurations derive a child's depth from its parent's depth
+at claim time, and claim states against a bound different from the one the match task is admitted
+under; both violate the property.
 
-\paragraph{Stress testing.} The two layers above bound the schedule; the test
-suite does not, and no sanitizer changes that. A sanitizer changes what a given execution
-is able to report, which is the second half of the objection to testing: a stress run samples few
-schedules, and the schedules it does sample can still pass while holding a race, an
-out-of-bounds access, or a read of memory nothing wrote. The suite is therefore run under
-ThreadSanitizer, AddressSanitizer and UndefinedBehaviorSanitizer, and the device suites under the
-CUDA memory and initialization checkers; all five report nothing on the shipped tree, and all five
-fail the build on a finding. The initialization checker detects a case the others do not: a host
-readback of device memory that no kernel wrote returns whatever the allocator last left at that
-address, so an assertion over that value succeeds or fails according to allocation history rather
-than according to the code, and neither a test nor a model checker over the concurrent structures
-observes that class of defect.
+\emph{Termination} (Section~\ref{sec:depth}): the job system never reports completion while work
+remains, provided a job submits all of its work before it is counted as complete. The broken
+configuration, in which a job submits work after it has been counted, violates the property.
+
+\emph{Segmented array:} the array that stores states, events, edges and application lists grows by
+segments, and if a segment exists then every segment below it exists. The shipped protocol is
+clean at $2{,}284$ distinct states; allocating only the requested segment violates the property.
+Three appenders are needed to expose the failure: with two, each claims once, and the index that
+would reveal the gap cannot be reached before the lower segment is published. GenMC cannot
+construct this structure, so it is checked in TLA+.
+
+\paragraph{Sanitizers.}
+The test suite runs under ThreadSanitizer, AddressSanitizer and UndefinedBehaviorSanitizer, and the
+device suites under the CUDA memory and initialization checkers; all five report nothing and fail
+the build on a finding. The initialization checker catches host reads of device memory that no
+kernel wrote, which return whatever the allocator last left there, so a test on such a value passes
+or fails depending on allocation history.

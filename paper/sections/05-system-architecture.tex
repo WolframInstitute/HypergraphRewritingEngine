@@ -1,26 +1,19 @@
 \section{System Architecture}
 \label{sec:architecture}
 
-The architecture follows from two commitments that constrain every structure below.
-The first is that a rule (an ordering, an identity, a hash, a predicate) has exactly
-one implementation, compiled for both the host and the device, so the two targets
-cannot diverge on what a state \emph{is}. The second is that no thread ever blocks
-another: every shared structure is lock-free, and where a protocol needs agreement it
-reaches it by a single compare-exchange whose loser adopts the winner's answer rather
-than waiting. The subsections take these in turn: the shared core, the storage that
-holds the states, the lock-free structures, the allocator that keeps them off the global
-heap, the memory model that makes their orderings checkable, and the static analysis
-that decides how a rule will be matched before any matching happens.
+Two rules constrain the design. First, every decision procedure (an ordering, an identity, a hash,
+a predicate) has one implementation, compiled for both the host and the device. Second, no thread
+waits for another: every shared structure is lock-free, and where threads must agree, one
+compare-exchange decides and the losers adopt the winner's result.
 
-The evolution cycle these structures serve is the task system of
-Algorithm~\ref{alg:evolution}: a match task per published state runs the join of
-Algorithm~\ref{alg:matching} and converts each accepted match into a rewrite task, and a
-rewrite task applies its match, claims the child's canonical identity, records the event and
-its causal and branchial relations, forwards the surviving matches
-(Section~\ref{sec:forwarding}), and publishes a match task for a child whose identity it was
-the first to claim. Under caps or sampling the choice among a state's matches is deferred to a
-per-state drain (Section~\ref{sec:sampling}), and quotient exploration spawns match tasks only
-from class representatives (Section~\ref{sec:quotient}); neither changes the cycle below.
+Algorithm~\ref{alg:evolution} gives the evolution loop. A match task for each new state runs the
+join of Algorithm~\ref{alg:matching} and creates a rewrite task for each accepted match. A rewrite
+task applies its match, claims the child's canonical identity, records the event and its causal
+and branchial relations, forwards the surviving matches (Section~\ref{sec:forwarding}), and
+creates a match task for the child if it was first to claim the child's identity. Under a per-state
+cap or sampling, the choice among a state's matches waits until the state's matching is complete
+(Section~\ref{sec:sampling}), and under quotient exploration only one state per class gets a match
+task (Section~\ref{sec:quotient}).
 
 \begin{algorithm}[htbp]
 \caption{Task-Based Multiway Evolution}
@@ -54,27 +47,21 @@ from class representatives (Section~\ref{sec:quotient}); neither changes the cyc
 \subsection{Shared Host and Device Implementation}
 \label{sec:shared-core}
 
-The CPU engine and the CUDA port are separate schedulers over the same semantics, and any rule
-implemented twice will eventually be implemented differently. Every decision procedure the two
-share therefore exists once, as an annotated function compiled for host and device from a single
-source: the join that enumerates matches, the edge-signature rule, the rewrite semantics
-determining the vertices of a produced edge, the event identity, the content-ordered
-state key, the individualization--refinement canonical hash, and the quotient-causal dynamic
-program and its per-instance replay. Eleven such cores are shared in total; the three not named
-here are the matcher's task core, the sampling draw and the slot rule.
-
-The consequence is that host and device agree by compilation rather than by testing, and a
-differential test between them can be reserved for the parts that genuinely differ (scheduling,
-memory placement and queueing) rather than re-checking a rule that exists once. What the arrangement rules out is a
-rule written twice: two implementations of one decision agree until one of them is edited, so the
-duplication is the defect and not the disagreement it eventually produces.
+The CPU engine and the CUDA port have separate schedulers and share their semantics. Each decision
+procedure they share is one function compiled for host and device from a single source: the join
+that enumerates matches, the edge-signature rule, the rewrite rule that determines a produced
+edge's vertices, the event identity, the content-ordered state key, the individualization--refinement
+canonical hash, and the quotient-causal dynamic program and its per-instance replay. There are
+eleven such shared functions; the other three are the matcher's task core, the sampling draw and
+the slot rule. The differential tests between host and device therefore cover what differs between
+them: scheduling, memory placement and queueing.
 
 \subsection{Unified Hypergraph Storage}
 \label{sec:storage}
 
-Our core data structure stores all hypergraph data in a unified edge pool, shown in
-Figure~\ref{fig:storage}: every state is a bitset view over one shared pool of edges, so a child
-state that differs from its parent by a few edges stores that difference and not a copy.
+All edges are stored in one shared pool, and each state is a bitset over that pool
+(Figure~\ref{fig:storage}), so a child that differs from its parent by a few edges stores only the
+difference.
 
 \begin{figure}[htbp]
 \centering
@@ -103,219 +90,174 @@ state that differs from its parent by a few edges stores that difference and not
 \label{fig:storage}
 \end{figure}
 
-The bitset is chunked and the chunks are shared: a child state initially references its parent's chunks, and a chunk is copied only when the child first mutates it. A rewrite that touches a few edges therefore allocates a few chunks rather than a copy of the parent's membership, and chunks are immutable once shared, so concurrent readers of a parent are unaffected by a child's mutation. Table~\ref{tab:t3-deheap} reports the arena bytes each corpus workload consumes.
-
-The lock-free structures beneath the engine, their per-operation costs and their memory model are specified in Appendix~\ref{app:data-structures}; the engine's behavior at configured capacity limits is specified there as well.
+The bitset is divided into chunks, and a child shares its parent's chunks until it changes one, at
+which point that chunk is copied. A rewrite that changes a few edges allocates a few chunks, and
+shared chunks are never modified, so readers of the parent are unaffected by the child.
+Table~\ref{tab:t3-deheap} gives the arena bytes of each corpus workload. Appendix~\ref{app:data-structures}
+specifies the lock-free structures, their per-operation costs, the memory model, and the behavior
+at configured limits.
 
 \subsection{Allocation}
 \label{sec:allocation}
 
-Evolution allocates from per-worker arenas rather than from the global allocator. Each worker
-holds a bump cursor into blocks it owns, so allocation on the matching and rewriting paths is a
-pointer increment with no synchronization, and memory is reclaimed in bulk by resetting the arena
-rather than by freeing individual objects. Calls to the global allocator are consequently confined
-to acquiring those blocks: Table~\ref{tab:t3-deheap} reports $455$ to $475$ such calls for an
-entire run, which on the largest workloads measured is $0.007$ calls per event.
+Evolution allocates from per-worker arenas. Each worker bumps a pointer into blocks it owns, so
+allocation during matching and rewriting needs no synchronization, and memory is freed in bulk by
+resetting the arena. The global allocator is called only to obtain those blocks:
+Table~\ref{tab:t3-deheap} reports $455$ to $475$ calls for an entire run, which on the largest
+workloads is $0.007$ calls per event.
 
 \subsection{Static Rule Analysis}
 \label{sec:static-analysis}
 \label{sec:rule-analysis}
 
-Some properties of a rule set are decidable from the patterns alone, before any evolution runs,
-at the cost of a bounded scan over two finite patterns. The engine computes them when a rule is
-added and uses them to select strategy.
+When a rule is added, the engine computes properties that follow from its patterns alone and uses
+them to choose a strategy. For each rule it records the difference in edge count between the two
+sides, which says whether states grow; the number of new vertices the right-hand side introduces;
+and the left-hand side's arities. Treating the left-hand side as a conjunctive query, it computes
+whether the query is acyclic and an integral edge cover $\rho$, which bounds the matches in a state
+of $N$ edges by $N^{\rho}$. The bound is tight when the query is acyclic, and is used only as an
+upper bound otherwise.
 
-Per rule it records the edge-count difference between the two sides, which predicts whether states
-grow and therefore how canonicalization cost will develop; the number of variables the right-hand
-side introduces, since a rule creating none operates within a bounded vertex set; and the
-left-hand side's arities. Treating the left-hand side as a conjunctive query, it computes whether
-that query is acyclic (which determines whether a join order exists that avoids intermediate
-blow-up) and an integral edge cover, which bounds the number of matches a state of $N$ edges can
-yield by $N^{\rho}$. That bound is tight exactly when the query is acyclic; where it is not, the
-recorded value is an upper bound and is used only as one.
-
-Every predicate is sound in one direction only, and each is stated with its direction. The
-branching test over-approximates: a negative result means branching is structurally impossible,
-while a positive result means only that it has not been ruled out. An adaptation may act on the
-negative and must not act on the positive. The engine does exactly that with the
-branchial relation: if no two matches can share a consumed edge then no state has a branchial pair
-under any initial condition, so the relation is provably empty and is not built. This does not override the request: the
-caller asked for the empty relation and receives the empty relation; only the work of
-discovering it is removed. Nothing here concerns termination, finiteness of the
-reachable set, or global confluence, all of which are undecidable for a rewriting system of this
-power.
+Each predicate is sound in one direction. The branching test is an over-approximation: a negative
+answer means no two matches can ever share a consumed edge, and a positive answer means only that
+this has not been ruled out. The engine acts only on the negative answer: the branchial relation
+is then empty for every initial state, and the engine returns it empty without computing it. No
+analysis here decides termination, finiteness of the reachable set, or confluence, which are
+undecidable for rewriting systems of this kind.
 
 \subsection{Determinism Contract}
 \label{sec:determinism}
 
-The engine's observable output (the state set, the event set, and the causal and branchial
-relations) is a deterministic function of the rules, the initial state, the step count and the
-options. It does not depend on the number of worker threads, on the order in which the scheduler
-happens to execute tasks, or on whether quotient exploration is enabled. Identifiers assigned to
-states and events are allocated in arrival order and therefore do vary between runs; every
-observable defined above is stated over canonical identities and is invariant. This property is
-checked by a determinism gate that fingerprints the expanded state set, the (input, output, rule)
-transition multiset, and the causal and branchial relations across thread counts and seeds, and on
-a divergence reports which component moved and under which configuration. Reporting the components
-separately makes the gate sensitive: the causal relation can move on its own, by a single
-edge, while the state set, the transition multiset and the branchial relation stay identical, so a
-gate that compared one aggregate fingerprint would not distinguish that from agreement.
+The state set, the event set and the causal and branchial relations are a deterministic function of
+the rules, the initial state, the step count and the options. They do not depend on the number of
+worker threads, the order in which tasks run, or whether quotient exploration is enabled. State and
+event identifiers are allocated in arrival order and vary between runs; the observables are defined
+over canonical identities. A determinism gate checks this across thread counts and seeds: it
+fingerprints the expanded state set, the multiset of (input, output, rule) transitions, and the
+causal and branchial relations separately, and reports which component differs and under which
+configuration. The components are compared separately because the causal relation can differ by a
+single edge while the others agree.
 
-The capping options are outside the contract, for the reason that shapes the sampling design: \textsc{MaxStatesPerStep} admits states until a per-step counter reaches its bound, so
-which states are admitted follows the order they arrive in and varies with the worker count. An
-exact cap that was also schedule-independent would have to hold every candidate at that depth
-until the depth settled, which is the barrier Section~\ref{sec:sampling} declines: only a
-population that completes locally can be finalised without one, and a per-step population does
-not. What a capped run guarantees is therefore the bound, at every worker count, and not which
-states meet it; the per-parent cap admits successors in the same arrival order, against a
-per-parent counter.
+The count caps \textsc{MaxStatesPerStep} and \textsc{MaxSuccessorStatesPerParent} are outside the
+contract. They admit states until a counter reaches the cap, so which states are admitted depends
+on arrival order and varies with the worker count. Making them schedule-independent would require
+holding every candidate at a depth until the depth is complete, which is a barrier. A capped run
+guarantees the count at every worker count, not which states make it up.
 
 \subsection{Depth Semantics and Termination}
 \label{sec:depth}
 
-A run is bounded by a number of steps, and the bound is applied to the \emph{shortest} path length
-from an initial state to a canonical state rather than to the length of the path along which the
-state first happened to be reached. The distinction has no content sequentially, where the search
-reaches states in order of increasing depth. It has content under concurrency: a state can be
-reached first along a long path and only later along a short one, so a budget applied to arrival
-depth would admit or exclude states according to which path won a race, and the set of states
-expanded would vary with the thread count.
+The step budget applies to the \emph{shortest} path from an initial state to a canonical state, not
+to the path along which the state was first reached. Under concurrency a state can be reached first
+along a long path and later along a short one, so a budget on arrival depth would include or exclude
+states according to which path won the race, and the explored set would vary with the thread count.
 
-The engine therefore \emph{relaxes} recorded depths: when a state is reached along a path shorter than its
-recorded depth, the recorded depth is lowered and the reduction is propagated into the state's
-children, which may in turn be lowered, and so on. The cascade terminates because depth strictly
-decreases on each accepted relaxation and is bounded below by zero. Matching is not repeated by
-it: the claim that admits a canonical state to expansion is a separate value from its depth, so a
-state whose depth falls is matched at most once regardless of how many times it is relaxed.
+The engine therefore \emph{relaxes} depths: when a state is reached along a path shorter than its
+recorded depth, the recorded depth is lowered and the change is propagated to its children, and
+from them onward. This terminates because each accepted change lowers a depth, which is bounded
+below by zero. A state is matched at most once however often its depth is lowered, because the
+claim that admits a state to expansion is separate from its depth.
 
-Relaxation races child registration and is settled by ordering rather than exclusion:
-registration publishes the child and then reads the parent's depth; relaxation lowers the depth
-and then scans the child list. Sequentially consistent fences on both sides exclude the one
-stranding outcome, the scan missing the child while the read misses the lowered depth, so a
-child always learns its parent's current minimum. A state past the budget is retained as a
-frontier state with its expansion claim left untaken, so a shorter path found later can still
-relax it into budget; a claimed state admits no such relaxation.
+Relaxation races the registration of a new child. Registration publishes the child and then reads
+the parent's depth; relaxation lowers the depth and then scans the child list. Sequentially
+consistent fences on both sides rule out the case where the scan misses the child and the read
+misses the lowered depth, so a child always sees its parent's current minimum depth. A state past
+the budget stays on the frontier without being claimed, so a shorter path found later can still
+bring it within the budget. A state is claimed against the same bound its match task is admitted
+under, so a claimed state is never left unmatched.
 
-Budget consumption is claimed by compare-and-swap rather than increment-then-rollback: a
-rollback publishes a count above the limit for as long as it takes to undo, and readers pruning
-against the budget read exactly that count, so which work was pruned would depend on the
-interleaving. A compare-and-swap claim never publishes an over-limit count, and the budget
-prunes the same work under every schedule.
+Work budgets are taken by compare-and-swap. An increment followed by a rollback would briefly
+publish a count above the limit, and a thread reading the count at that moment would prune work
+that another schedule keeps.
 
-Termination is detected without a barrier: a depth settles when it holds no live work and the
-depth below has settled, and settling cascades upward. The two conditions suffice because a task
-at depth $d$ submits work only above $d$, so once $d-1$ settles nothing can reach $d$ again; the
-check is a test of two values rather than a rendezvous, and no thread waits on any other.
+Termination is detected without a barrier: a depth is complete when it has no live work and the
+depth below it is complete. This suffices because a task at depth $d$ only creates work at depths
+above $d$, so once depth $d-1$ is complete nothing new can arrive at $d$.
 
 \subsection{Quotient Exploration}
 \label{sec:quotient}
 
-Under full expansion every raw state is expanded, so a state reachable along $k$ distinct
-histories is matched $k$ times, work the canonical hash has already identified as redundant for
-discovering new states. Quotient exploration suppresses the repeated expansion and nothing else:
-an equivalent state is still created and its incoming event recorded, so the event set and both
-relations are unchanged, while match tasks spawn only from one representative per isomorphism
-class, at the shallowest depth the class was reached. Table~\ref{tab:t6-quotient} reports events
-produced, causal edges and wall time for the two modes at increasing depth. The two modes agree
-on the canonical state set by construction; agreement on the causal and branchial relations is
-less immediate, because those are defined over raw events and quotient exploration expands fewer
-states.
+In full expansion every raw state is expanded, so a state reached along $k$ histories is matched $k$
+times, although canonicalization has already shown the repeats find no new states. Quotient
+exploration expands only one state per isomorphism class, at the shallowest depth the class was
+reached. Every equivalent state is still created and its incoming event recorded.
+Table~\ref{tab:t6-quotient} gives events produced, causal edges and wall time for both modes by
+depth. Both modes give the same canonical state set. The causal and branchial relations are
+defined over raw events, which quotient exploration does not all produce, so they are
+reconstructed.
 
-The multiplicities are recovered by a forward summation: under an exact identity the canonical
-states graph is cyclic, since a canonical state recurs at several path lengths; its unrolling by
-depth is acyclic,
-and the multiplicity of each (canonical state, depth) pair satisfies
+The number of raw events is recovered by a forward summation. Under exact identity the canonical
+states graph has cycles, because a canonical state recurs at several depths, but its unrolling by
+depth is acyclic, and the multiplicity of each (canonical state, depth) pair satisfies
 \begin{align}
   \mathrm{mult}[s_0, 0] &= 1, \nonumber\\
   \mathrm{mult}[c, k{+}1] &\mathrel{+}= \mathrm{mult}[s, k]\cdot w(s \to c),
   \label{eq:mult}
 \end{align}
-summed over the transitions into $c$, with the raw event count recovered as
-$\sum \mathrm{mult}$. Every quantity propagates forward over the unrolled DAG, so a \emph{count}
-is recovered by summation rather than by re-exploring, and recovering the counts takes time
+summed over the transitions into $c$; the raw event count is $\sum \mathrm{mult}$. This takes time
 polynomial in the number of (canonical state, depth) pairs.
 
-Recovering the raw \emph{observables} is a different matter, and the cost of quotient
-exploration follows from that distinction. Mapping a multiplicity back to individual instances
-requires distinguishing the edge roles within a class, which the edge orbits from the same IR pass
-provide (Section~\ref{sec:ir}); no additional canonicalization is performed.
+The raw events and relations themselves are recovered by replaying each class's expansion against
+every instance of the class. The expansion is recorded once, in the \emph{frame} of the first raw
+state that reached the class: each match found on that state is stored as indices into the frame's
+edges. Another raw state of the class is aligned onto the frame by the canonical edge ranks from
+its own IR run; this alignment is an isomorphism, defined up to an automorphism, so it maps matches
+to matches. The edge orbits from the same IR pass distinguish edge roles within a class
+(Section~\ref{sec:ir}), so no further canonicalization is needed. An \emph{instance} of a class at
+depth $k$ is a vector holding one producer event per frame slot. Applying a recorded match to an
+instance creates one raw event; adds a causal edge from the producer of each consumed slot, in
+descending producer order so that the online reduction of Section~\ref{sec:tr} stays exact; adds a
+branchial pair with each earlier application at the same instance whose consumed slots overlap;
+and creates a child instance at depth $k+1$, in which surviving slots keep their producer and
+produced slots take the new event. Instances and recorded matches arrive concurrently, so each new
+instance replays every match already recorded for its class, each new match is replayed against
+every instance already present, and each (instance, match) pair is claimed exactly once. A replayed
+event has two identities: the triple (source class, target class, rule), which is an isomorphism
+invariant used for comparisons across runs and engines, and the run's event identity.
 
-The raw events and relations are recovered by replaying each class's recorded expansion against
-every instance of the class. Each class's expansion is recorded once, in the \emph{frame} of the
-first raw state that reached it: every match found on that representative is stored as slot
-indices over the frame's edges, and any other raw state of the class is aligned onto the frame
-by the canonical edge ranks of its own IR search, an isomorphism defined up to an automorphism,
-which permutes the frame coherently and so maps matches to matches. An \emph{instance} of a class
-at depth $k$ is a vector holding one producer event per frame slot. Applying a recorded match to
-an instance creates one raw event; emits a causal edge from the producer of every consumed slot
-that has one, in descending producer order so that the online reduction of
-Section~\ref{sec:tr} stays exact; claims a branchial pair with every earlier application at the
-same instance whose consumed slots overlap; and descends to a child instance at depth $k+1$, in
-which surviving slots keep their producer and produced slots take the new event. Instances and
-recorded matches arrive concurrently, so the two sides rendezvous: an instance replays every
-match already recorded for its class, a newly recorded match replays against every instance
-already standing at the class, and each (instance, match) pair is claimed exactly once. A
-replayed event has two identities, the content triple (source class, target class, rule),
-an isomorphism invariant on which cross-run and cross-engine comparisons are made, and the
-run's own event-identity convention. The instances
-are materialised one by one, and there are as many of them as the full system holds. On a
-two-rule set whose canonical state count grows linearly with depth (three, four, five, six, seven,
-eight states at depths two through seven), the raw system reached 146,599 states by depth six,
-and the reconstruction's cost tracked that rather than the canonical count. Quotient exploration
-visited 49 raw states there against full capture's 146,599 and still ran only 65 times faster: a
-large constant factor, not the asymptotic saving the state counts suggest.
+The reconstruction creates as many instances as the full system has raw states. On a two-rule set
+whose canonical state count grows linearly with depth (three to eight states at depths two to
+seven), the raw system has 146,599 states at depth six, and the reconstruction's cost follows that
+count. There, quotient exploration visited 49 raw states against full capture's 146,599 and ran 65
+times faster.
 
-Quotient exploration and raw reconstruction are separate requests, and the implementation keeps
-them separate. The reconstruction runs only when the causal relation, the branchial relation or
-the raw event set is among the requested outputs, so a run that asks for canonical states alone
-performs neither the materialisation nor the growth that accompanies it. The reconstruction is
-also not a single-threaded pass: every worker drives it, and its
-total cycle count grows with the thread count, recorded among the measured limits in
-Section~\ref{sec:limitations}.
+The reconstruction runs only when the causal relation, the branchial relation or the raw event set
+is requested; a run that asks for canonical states alone skips it. Every worker takes part in it,
+and its total cycle count grows with the thread count (Section~\ref{sec:limitations}).
 
 \subsection{Transitive Reduction of the Causal Graph}
 \label{sec:tr}
 
-The causal graph accumulates an edge for each dependency between events, including those implied
-by longer paths. The transitive reduction removes an edge $p \to c$ whenever a directed path
-$p \rightsquigarrow c$ of length greater than one already exists; on an acyclic graph this
-reduction is unique.
+The causal graph has an edge for every dependency between events, including those implied by
+longer paths. Its transitive reduction removes an edge $p \to c$ whenever a path
+$p \rightsquigarrow c$ of length greater than one exists; on an acyclic graph the reduction is
+unique.
 
-Maintaining a transitive reduction under edge insertion is an instance of the dynamic
-transitive-reduction problem. Goranci et al.~\cite{goranci2025dynamic} give the first fully dynamic algorithms for maintaining
-a transitive reduction of a general directed graph under both insertions and deletions, achieving
-$\BigO(m + n\log n)$ amortized update time, and $\BigO(m + n^{1.585})$ worst case using fast matrix
-multiplication. The
-setting here is strictly easier in two respects, neither available to a fully dynamic
-algorithm: causal edges are only ever inserted, never deleted, so no retained edge can become
-non-implied later and an edge dropped as implied is never reconsidered; and they arrive in an
-order consistent with a topological order of the causal DAG, since an event's producers are
-complete before the event exists, so when an edge $(p,c)$ arrives the closure below $p$ is
-final. We therefore make no claim of novelty
-for the procedure below, and no claim of optimality; it is the specialisation the easier setting
-permits, and a fully dynamic reduction would be required if deletions were admitted.
+Goranci et al.~\cite{goranci2025dynamic} give the first fully dynamic algorithms for the transitive
+reduction of a general directed graph under insertions and deletions, in $\BigO(m + n\log n)$
+amortized update time, and $\BigO(m + n^{1.585})$ worst case with fast matrix multiplication. This
+engine's case is simpler in two ways. Causal edges are only inserted, so an edge dropped as implied
+never needs to be reconsidered. And they arrive in topological order, because an event's producers
+exist before the event, so when an edge $(p,c)$ arrives the closure below $p$ is final. The
+procedure below is the specialization of the problem to this case.
 
 \paragraph{Online maintenance.}
-A pass over the finished graph would require a finished graph, and there is none: a session
-(Section~\ref{sec:sessions}) may be queried between steps. Materialising the full relation first
-would also allocate the transitive closure the reduction exists to avoid. The reduction is
-therefore maintained as an invariant: after every insertion, the retained edge set is the
-transitive reduction of the causal DAG seen so far.
+The reduction is kept up to date after every insertion, because a session
+(Section~\ref{sec:sessions}) can be queried between steps, and because building the full relation
+first would allocate the transitive closure that the reduction avoids.
 
 \paragraph{Procedure (Algorithm~\ref{alg:tr}).}
-Let $e = (p, c)$ be a new causal edge, meaning event $p$ produced an edge that event $c$ consumed.
-Insertion asks whether $c$ is already reachable from $p$ through the retained edges: if so, $e$
-is implied and dropped; if not, retained. There is no removal step, because the arrival
-discipline makes one unnecessary: a consumer's incoming edges are registered by its own worker in
-descending producer order, and an ancestor's id is strictly smaller than its descendant's. A
-retained $(p', c)$ could become implied only through a path
-$p' \rightarrow \cdots \rightarrow x \rightarrow c$; if $(x, c)$ arrived first the arrival query
-saw the path and dropped $(p', c)$, and if after, then $x < p'$ in the descending order while
-reachability from $p'$ requires $p' < x$, a contradiction. An edge accepted at arrival therefore
-stays non-implied, and deciding each edge once maintains the exact reduction. The descending
-order also makes queries cheap (the closure reachable from nearer producers is established
-before farther ones are tested against it) and it is available without sorting, because events
-are numbered in creation order and producers precede their event.
+Let $e = (p, c)$ be a new causal edge: event $p$ produced an edge that event $c$ consumed. If $c$ is
+already reachable from $p$ through retained edges, $e$ is implied and dropped; otherwise it is
+retained. A retained edge never needs to be removed later. A consumer's incoming edges are added by
+its own worker in descending producer order, and an ancestor's id is always smaller than its
+descendant's. A retained $(p', c)$ could become implied only through a path
+$p' \rightarrow \cdots \rightarrow x \rightarrow c$. If $(x, c)$ arrived first, the query for
+$(p', c)$ saw the path and dropped the edge; if $(x, c)$ arrived later, then $x < p'$ by the
+descending order, while reachability from $p'$ requires $p' < x$, a contradiction. So deciding each
+edge once on arrival gives the exact reduction. The descending order also makes queries cheap,
+because the closure from nearer producers is built before farther ones are tested, and it needs no
+sorting, because events are numbered in creation order.
 
 \begin{algorithm}[htbp]
 \caption{Online Transitive Reduction (insertion-only)}
@@ -334,158 +276,107 @@ are numbered in creation order and producers precede their event.
 \end{algorithm}
 
 \paragraph{Order independence.}
-The retained edge set is required to be a function of the causal DAG alone and not of the order in
-which edges were inserted. This is not automatic: a concurrent evolution inserts causal edges from
-several workers, and a reduction that depended on interleaving would produce different graphs on
-different runs of the same input. The requirement is the same schedule-independence property as
-Section~\ref{sec:determinism} and is checked by the same gate, which compares the reduced edge set
-across thread counts and seeds. It is secured differently on the two paths that serve the
-relation. Full capture holds the arrival discipline of the procedure above (each incoming edge
-registered by its consumer's own worker, in descending producer order, against ancestors whose own
-registration is complete), and under it the drop-at-arrival decision is exact whatever the
-interleaving of consumers. The quotient reconstruction emits between canonical event ids, which
-are not monotonic under recurrence, so no arrival discipline exists there; it stores the relation
-unreduced and reduces on read, where the uniqueness of a finite DAG's transitive reduction makes
-the answer a function of the stored set alone.
+The retained edge set must depend only on the causal DAG, not on the order in which concurrent
+workers insert edges; the determinism gate checks this across thread counts and seeds. Full capture
+meets it through the arrival order above: each consumer's edges are added by its own worker, in
+descending producer order, after its producers' edges are complete, and under that order the
+decision on arrival is exact however consumers interleave. The quotient reconstruction adds edges
+between canonical event ids, which are not ordered this way, so it stores the relation unreduced
+and reduces it when it is read; a finite DAG has one transitive reduction, so the result depends
+only on the stored edges.
 
-The reduction applies only to the causal graph; states, events and the branchial relation are never
-reduced, because branchial edges connect states at the same step and have no transitivity to remove.
+Only the causal graph is reduced. States, events and the branchial relation are not.
 
 \subsection{Pruning and Sparse Exploration}
 \label{sec:pruning}
 
-Exhaustive evolution is not always the object of interest, and the state count grows too quickly
-for it to be available at large depth. The engine bounds an exploration by four independent
-mechanisms, which compose:
+At large depth exhaustive evolution is too large to compute, and a caller may want only part of
+it. The engine has four independent ways to limit an exploration, and they can be combined:
 
 \begin{itemize}
-\item \textbf{Hard caps.} The total state count, the total event count, the states admitted
-      per step (\textsc{MaxStatesPerStep}) and the successors kept per parent
-      (\textsc{MaxSuccessorStatesPerParent}) each bound the exploration through an atomic
-      counter, so the \emph{count} retained is exact at every worker count. Which states fill a
-      cap follows arrival order, which is the one deliberate exception to the determinism
-      contract of Section~\ref{sec:determinism}, made for the reason given there: an exact
-      cap that was also schedule-independent would require the depth barrier the design
-      declines. A run that reaches a cap returns the bounded evolution with a warning naming
-      the cap, the same contract as a configured container limit
-      (Section~\ref{sec:capacity}).
-\item \textbf{Probabilistic thinning.} A retention probability
-      (\textsc{ExplorationProbability}) and per-rule transition rates keep a random subset of
-      transitions, keyed on canonical identity so the sample is reproducible under a seed. This
-      is the sparse exploration mode; its design is the subject of the next subsection.
-\item \textbf{Structural pruning.} Quotient exploration (Section~\ref{sec:quotient}) expands
-      one representative per isomorphism class and reconstructs the raw relations exactly, so
-      the pruned population is a compression of the full one rather than an approximation.
-\item \textbf{Steering.} A session (Section~\ref{sec:sessions}) exposes the frontier after
-      each budgeted step, and a continuation may narrow the frontier to the states of interest;
-      steering narrows what runs next and never discards what has been computed.
+\item \textbf{Caps.} A total state count, a total event count, a count of states admitted per step
+      (\textsc{MaxStatesPerStep}) and a count of successors per parent
+      (\textsc{MaxSuccessorStatesPerParent}). Each is an atomic counter, so the count retained is
+      exact at every worker count; which states fill a cap depends on arrival order
+      (Section~\ref{sec:determinism}). A run that reaches a cap returns what it computed with a
+      warning (Section~\ref{sec:capacity}).
+\item \textbf{Sampling.} Per-rule transition rates and a per-state match cap keep a subset of
+      transitions chosen by keyed pseudorandom draws, so the sample is reproducible for a seed at
+      every worker count (Section~\ref{sec:sampling}).
+\item \textbf{Quotient exploration} (Section~\ref{sec:quotient}) expands one state per isomorphism
+      class and reconstructs the raw relations exactly.
+\item \textbf{Steering.} A session (Section~\ref{sec:sessions}) reports the frontier after each
+      step, and the next step can be restricted to part of it; the rest stays on the frontier.
 \end{itemize}
 
-The mechanisms differ in what they preserve: caps and steering keep exact computation over a
-subset chosen by count or by the caller; thinning keeps a statistically faithful sample;
-quotienting keeps everything, expanding less. The depth budget bounds all four, and the
-reported frontier (Section~\ref{sec:sessions}) records where any of them stopped.
+Caps and steering compute a subset exactly; sampling computes a random subset; quotient exploration
+computes the full result and expands less. The step budget bounds all four, and the reported
+frontier records where each stopped.
 
 \subsection{Sampled Exploration}
 \label{sec:sampling}
 
-The sparse mode applies sampling at the
-transition rather than at the state: each candidate transition is retained with a fixed
-probability, so the number of children a state contributes remains a random variable rather than
-being truncated to a fixed count. Truncating to a fixed count per state would collapse the
-offspring distribution to a point mass and remove the property the sample exists to estimate.
-
-Per-rule weights multiply that retention probability, so a rule may be explored fully while
-another is suppressed entirely, and the two controls compose rather than one overriding the other.
-A seed makes a sampled run reproducible; sampling decisions are keyed on canonical identity, so the
-same seed yields the same sample at any thread count, consistent with
-Section~\ref{sec:determinism}.
+The engine has two samplers. The \emph{transition rate} keeps each candidate transition
+independently with a fixed probability, multiplied by a per-rule weight; the number of children a
+state keeps is then a random variable with the thinned distribution of the full one. The
+\emph{per-state match cap} keeps at most $k$ of each state's matches for each rule. Both choose by a
+pseudorandom value computed from the transition's canonical identity and the seed, so the same seed
+gives the same sample at any thread count (Section~\ref{sec:determinism}).
 
 \paragraph{Choosing the rate.}
-A fixed retention probability compounds with depth: on the workloads measured, retention of
-$1/8$ and $1/4$ extinguishes the frontier within the first step while $1/2$ leaves the
-population growing, so the useful range is narrow and depends on the rule's branching. The rate
-may therefore vary with depth, so that a sample can be thinned without the frontier dying
-before the depth of interest.
+A fixed rate compounds with depth: a path of length $L$ survives with probability $q^L$. On the
+workloads measured, rates of $1/8$ and $1/4$ end the evolution within the first step and $1/2$
+leaves it growing, so the usable range is narrow and depends on the rule's branching factor. While
+a rate or weight below one is in effect, a state whose own draws all fail keeps its
+lowest-ranked own transition, so the evolution does not die out; a state with no matches of its
+own has no such fallback.
 
-\paragraph{Coverage.}
-A per-transition coin does not recover the exhaustive system as seeds accumulate, for a
-structural reason: a transition can be sampled only if its source state was created, which
-itself required an earlier coin to succeed, so a dropped transition loses its whole subtree.
-Adding independent randomness (an extra coin per arrival depth, or per arriving ancestor class)
-left the union-over-seeds recovery curve unchanged when measured, the signature of a limit on
-reachability rather than on per-transition survival.
+\paragraph{The per-state cap.}
+Samples from different seeds do not add up to the exhaustive system, because a transition can be
+drawn only if its source state was created, which required an earlier draw to succeed. The
+per-state cap keeps at least one transition at every state it reaches, so each seed covers a
+connected skeleton, and different seeds keep different skeletons. The cap chooses $k$ of a state's
+$M$ matches by rank once the state's matching is complete, because choosing $k$ of $M$ needs all
+$M$; choosing by arrival order would make the result depend on the schedule. A match forwarded
+from an ancestor can arrive after the state's matching is complete, so a run under the cap turns
+match forwarding off and each state finds all of its matches itself.
 
-The control that shifts the recovery curve keeps a connected skeleton: a cap of $k$ transitions per
-(state, rule) pair retains at most $k$ of a state's own transitions for each rule, selecting them
-by a deterministic pseudorandom rank of the canonical transition key mixed with the run's seed.
-Every state that is reached therefore keeps at least one outgoing transition, so the sample spans
-the states it reaches. A different seed keeps a different skeleton, so the union over seeds grows
-in reachability.
+\paragraph{Per-state and per-transition draws.}
+Under full capture each raw state is created by exactly one event, so a draw per new state and a
+draw per transition are the same draw. Under quotient exploration a canonical state has many
+incoming transitions, and the two differ.
 
-The selection is made when the state's matching completes rather than as matches arrive, because
-choosing $k$ of $M$ requires all $M$, and $M$ is known only at that point. Selecting by arrival
-order would instead make the retained set depend on the schedule. On the same ground the cap
-ranges over a state's own matches only and not over matches forwarded to it from an ancestor: a
-forwarded match races the completion, so a cap that counted them would retain a different set at a
-different worker count. Forwarded matches are instead thinned individually, on the same terms as
-discovered ones, at the point they arrive; without that, the sampled subgraph would depend on
-whether forwarding was enabled.
-
-Finally, the per-state and per-transition retention controls are one knob under full capture and
-two only under quotient exploration. Under full capture raw states stand in bijection with the
-events that create them, so one coin per new state and one coin per transition are the same coin;
-under quotient exploration a canonical state has many incoming transitions and the two separate.
-
-\paragraph{Sampling and synchronization.}
-Sampling constrains parallelism through when decisions become final. An applied match cannot be
-evicted, so a reservoir must be finalised before its members are rewritten, and finalising
-requires knowing its candidate stream has ended. A population drawn from a whole evolution step
-ends only when every worker finishes the step: a global barrier, in an engine that otherwise
-has none. The engine therefore requires a sampling population to \emph{complete locally}: its
-completion may not depend on work outside the object it is keyed on. A (state, rule) pair
-qualifies, because the engine can tell when that pair has no matches outstanding without consulting any
-other state; an evolution step does not.
-
-The restriction removes less than it appears to, because the step-wide population never
-delivered a uniform sample: each match job received a reservoir of fixed capacity regardless of
-how many matches it saw, so a pair producing a thousand matches contributed no more samples than
-one producing twenty, and shuffling that skewed pool does not remove the skew. Uniformity within
-a (state, rule) stratum was a property of the earlier scheme, is preserved here, and is the
-property its test asserts; keying the population on the state preserves it without a barrier.
+\paragraph{No barrier.}
+A decision to keep a match is final once the match is rewritten, so a sample must be complete
+before its members are rewritten. A sample drawn from a whole evolution step would be complete only
+when every worker finished the step, which is a global barrier. The engine therefore samples only
+over populations that complete locally: a state's matches for one rule are complete when that
+state's matching tasks have all finished, which the engine detects without looking at any other
+state.
 
 \subsection{Sessions}
 \label{sec:sessions}
 
-Evolution is also exposed as a session rather than only as a single call. A session is opened on a
-rule set and initial condition, advanced by a requested number of steps, queried for any of the
-derived structures, and closed. The unexplored frontier is retained between steps, so advancing a
-session continues the existing exploration instead of recomputing it from the initial state, and a
-caller may inspect intermediate results before deciding how much further to evolve.
+Evolution is also available as a session: it is opened on a rule set and an initial state, advanced
+by a number of steps, queried for any derived structure, and closed. The frontier is kept between
+steps, so each step continues the existing evolution instead of starting again.
 
-The frontier is a separate structure from the identity map, because the map holds one bit per
-state, and deduplication requires \emph{seen} while a worker requires \emph{expanded}. Measured on a two-edge to
-three-edge rule advanced to depth two and then three, against seven states and six events for a
-single run to depth three, rebuilding the maps per call re-derives every known state (ten
-states, nine events) and keeping only the maps never reaches the new depth (five states, four
-events). A session therefore retains the maps and a frontier, the states refused by the step
-budget rather than by deduplication, and the device implements the same separation.
+The frontier is stored separately from the canonical identity map. The map records which states
+have been seen; the frontier records the states and pending rewrites that the step budget stopped,
+together with the depth each waits at.
 
-Every session reply reports the frontier, because a caller cannot steer a continuation toward
-states it cannot name, and a step may name a subset of it: the named states are expanded and every
-other frontier entry is put back, so steering narrows what runs next, never what remains
-reachable. Naming a state that is not on the frontier is an error rather than an empty step: a
-caller steering toward a state the exploration has already passed would otherwise get a silent
-no-op indistinguishable from a branch with no successors. Retention is also why each frontier
-entry records its own depth: after a steered step, entries stranded by different budgets sit on
-the frontier together, and an entry resumed at a uniform depth would have its subtree truncated by
-steps it never took. Both devices serve this contract, resolving the selection against the
-frontier as it was last reported.
+Every session reply reports the frontier, and a step may name part of it. The named entries are
+advanced and the others stay on the frontier. A step that names no entries advances the whole
+evolution to the new total depth, and gives the same result as a single run to that depth. A step
+that names entries advances each of them by the requested number of steps from the depth it waits
+at, so entries at different depths each advance by the same amount. Naming a state that is not on
+the frontier is an error. A continuable run stopped by a state or event limit keeps the work the
+limit cut short on the frontier (Section~\ref{sec:capacity}). Both devices implement this interface.
 
 \subsection{Event Canonicalization}
 \label{sec:event-canon}
 
-Events can be canonicalized at multiple granularities:
+Events can be identified at three granularities:
 
 \begin{description}
 \item[ByEndpointStates:] Two applications are the same event when they run between the same pair of canonical states. $\BigO(1)$ signature computation.
@@ -495,34 +386,21 @@ Events can be canonicalized at multiple granularities:
 \item[DistinctApplications:] No signature is computed and every application is its own event. This is the identity the raw causal graph is defined over.
 \end{description}
 
-The three refine one another in that order, so the canonical event count is non-decreasing across them; Table~\ref{tab:event-canon} reports it per workload. \textsc{ByConsumedProducedEdges} requires the edge correspondence between isomorphic states, which is the per-edge canonical rank produced by the same individualization--refinement pass as the state's hash.
+Each refines the one before, so the event count is non-decreasing in that order;
+Table~\ref{tab:event-canon} gives it per workload. \textsc{ByConsumedProducedEdges} needs the
+correspondence between the edges of isomorphic states, which is the per-edge canonical rank from
+the same IR pass as the state's hash.
 
-\paragraph{Independence from the state mode.} Event identity is defined over isomorphism classes
-of states, and the specification makes it independent of which state-identity mode a run selects.
-Resolving it through the state mode's own deduplication key would break that independence, since
-outside the exact mode that key is a content hash and not an isomorphism invariant: isomorphic
-states with different labels would resolve to different representatives, and the event identity
-would inherit the state mode. The engine therefore resolves event representatives through the
-canonical hash in \emph{every} state mode whenever event canonicalization is enabled;
-\texttt{mode\_matrix\_probe}'s gate reads identical event counts down every state-mode column.
-The canonical hash is computed only when event canonicalization is on, so a run with event
-canonicalization disabled computes none and behaves as its state mode specifies. When it is
-enabled, the same individualization--refinement pass yields both the hash the event path
-resolves through and the per-edge ranks that identify consumed and produced edges, so the
-guarantee costs one pass per state rather than two per event.
-
-% ----------------------------------------------------------------------------
-% GPU
-% ----------------------------------------------------------------------------
+\paragraph{Independence from the state mode.} Event identity is defined over isomorphism classes of
+states in every state mode. Outside the exact mode the state key is a content hash, which gives
+isomorphic states with different labels different keys, so event representatives are always
+resolved through the IR canonical hash when event canonicalization is on. The
+\texttt{mode\_matrix\_probe} gate checks that the event count is the same in every state mode. The
+canonical hash is computed only when event canonicalization is on, and the same IR pass gives both
+the hash and the edge ranks, so this costs one pass per state.
 
 \paragraph{Configuration dependencies.}
-The canonical-class event identity and quotient exploration are both defined over canonical states
-and their edge orbits, and those orbit tables are produced only by the exact state-canonicalization
-mode. A run that asks for the first while selecting a weaker state mode is therefore asking for
-something the configuration does not supply. The engine neither raises the state mode behind the
-caller's back nor proceeds as though the request had been met: it builds the causal graph by the
-raw-edge rendezvous, which is well defined without orbits, and returns a warning naming the
-dependency and the setting that satisfies it. The general form of the rule is that a request the
-configuration cannot support produces a stated substitution rather than a silent one, on the
-grounds that a result quietly computed under a different definition than the one requested is
-indistinguishable from the requested one at the call site.
+The canonical-class event identity and quotient exploration both need edge orbits, which only the
+exact state mode computes. A run that requests either with another state mode builds the causal
+graph from raw edge identities instead and returns a warning naming the setting that is needed;
+the engine does not change the state mode itself.

@@ -1,33 +1,33 @@
 \section{Graph Canonicalization}
 \label{sec:canonicalization}
 
-State deduplication determines how large the explored set becomes: without isomorphism detection, every path to a state contributes a separate vertex, and the number of paths grows super-exponentially where rewrites add edges. Deduplication must be \emph{exact}: two states are the same node if and only if their hypergraphs are isomorphic (vertex relabeling, within-edge order and multiplicity preserved). The exact mode satisfies this requirement using individualization--refinement (IR): it is computed for every state, and its hash serves directly as the deduplication key. The modes that request a coarser notion of state identity deduplicate by a content hash.
+Deduplication decides how large the explored set is: without it, every path to a state adds a separate vertex, and the number of paths grows super-exponentially when rewrites add edges. Deduplication is exact: two states are the same node if and only if their hypergraphs are isomorphic, with vertex relabeling allowed and within-edge order and edge multiplicity preserved. The exact mode computes an individualization--refinement (IR) canonical hash for every state and uses it as the deduplication key.
 
 \subsection{Individualization--Refinement}
 \label{sec:ir}
 
-The exact canonical form is computed by McKay-style individualization--refinement~\cite{mckay2014practical}, the same family of algorithms underlying nauty and Traces. IR produces a canonical labeling (and, as a byproduct, a set of automorphism generators and vertex/edge orbits) such that two hypergraphs receive identical canonical forms if and only if they are isomorphic.
+The canonical form is computed by McKay-style individualization--refinement~\cite{mckay2014practical}, the family of algorithms behind nauty and Traces. IR produces a canonical labeling, together with automorphism generators and vertex and edge orbits, such that two hypergraphs receive the same canonical form if and only if they are isomorphic.
 
 \begin{definition}[Canonical Form]
 A canonicalization $\canon$ maps each hypergraph to a labeled representative such that $\canon(\hypergraph_1) = \canon(\hypergraph_2)$ iff $\hypergraph_1 \cong \hypergraph_2$.
 \end{definition}
 
-IR proceeds by iterated color refinement to a stable coloring; when refinement leaves a non-singleton cell, it \emph{individualizes} one vertex (assigns it a distinguishing color) and recurses, exploring a search tree of refinements. Automorphisms discovered along the way prune the tree so that symmetric branches are not re-explored, and the lexicographically extremal leaf defines the canonical labeling.
+IR refines a vertex coloring until it is stable. If a cell with more than one vertex remains, it \emph{individualizes} one of its vertices (gives it a unique color) and recurses, which produces a search tree of refinements. Automorphisms found during the search prune symmetric branches, and the lexicographically extremal leaf defines the canonical labeling.
 
 \begin{remark}[Complexity]
-Like nauty, IR is exponential in the worst case and terminates in time polynomial in the state size on instances without large automorphism groups. It gives no polynomial-time guarantee, and we claim none. The worst case is realized on highly symmetric states, which is where the exact mode's cost is concentrated. No cheaper exact alternative is available to substitute for it: Proposition~\ref{prop:wlceiling} bounds what any sound pre-filter can remove, and Section~\ref{sec:benchmarks} reports the two implemented alternatives, one measured slower and one that never applies.
+Like nauty, IR is exponential in the worst case and polynomial in the state size on states without large automorphism groups. The worst case occurs on highly symmetric states, where the exact mode's cost is concentrated. Proposition~\ref{prop:wlceiling} bounds what a cheaper filter in front of IR can save.
 \end{remark}
 
-The automorphism generators and edge orbits produced by IR are reused elsewhere in the engine: they define the canonical edge-orbit equivalence used for principled event canonicalization and for exact reconstruction of causal and branchial multiplicities.
+The automorphism generators and edge orbits from IR are used again for event canonicalization and for the exact reconstruction of causal and branchial multiplicities.
 
-\paragraph{Search bounds.} The search is bounded twice: by the individualization depth it may descend to, and by the number of automorphism generators it may record. Exceeding either is reported to the caller, which raises the bound and re-runs, so neither is a silent truncation. The two are not symmetric in the cost of a truncation. A depth bound reached before a discrete coloring means no canonical form was produced at all, and the failure is evident. A generator table filled to capacity, by contrast, yields a canonical form that is correct: the hash is exact regardless of how many generators were recorded. What degrades is the orbit partition, which is obtained by fusing edges over the generators found: fewer generators fuse fewer edges, so the orbits come out too \emph{fine}. Since the orbits are how the quotient reconstruction identifies instances (Section~\ref{sec:quotient}), a short generator table produces a wrong identification rather than a slow run, and it produces one that looks like an ordinary answer. This is why the generator bound escalates on the same footing as the depth bound rather than being treated as a performance parameter. More generators cannot repair a depth failure, so escalation stops at the first depth report.
+\paragraph{Search bounds.} The search has two bounds: the individualization depth and the number of automorphism generators recorded. Exceeding either is reported, and the engine raises the bound and runs the search again. The two fail differently. Reaching the depth bound before the coloring is discrete produces no canonical form, so the failure is visible. A full generator table still produces a correct canonical hash, but the orbits, which are built by fusing edges over the recorded generators, come out too fine. The quotient reconstruction identifies instances by these orbits (Section~\ref{sec:quotient}), so a truncated generator table would give a wrong result with no error. The generator bound is therefore raised on overflow in the same way as the depth bound. Raising the generator bound cannot fix a depth failure, so escalation stops at the first depth failure.
 
-\paragraph{Symmetric states.} When the automorphism group is nontrivial, IR does not determine a single labeling but a coset of them, and the algorithm's within-cell tie-break selects one representative. That tie-break reads the vertex numbering it was handed. Two conventions for numbering a state's vertices therefore select two different representatives, each internally consistent and both agreeing on the canonical \emph{hash}, while disagreeing about which edge receives which rank. Ranks are what identify consumed and produced edges across a rewrite, so the convention has to be fixed once and shared by every caller rather than chosen locally: measured on the equivalence probe's 4063-state corpus, encounter-order numbering and sorted-unique numbering disagree on 103 states, all of them states with nontrivial automorphisms.
+\paragraph{Symmetric states.} When a state has nontrivial automorphisms, IR selects one of several equivalent labelings by a tie-break within cells, and the tie-break depends on the order in which the state's vertices are numbered. Two numbering conventions give the same canonical hash but can assign different ranks to the same edge. Edge ranks identify consumed and produced edges across a rewrite, so one numbering convention is shared by every caller. On the equivalence probe's 4063-state corpus, encounter-order numbering and sorted-unique numbering assign different ranks on 103 states, all with nontrivial automorphisms.
 
 \subsection{A Ceiling on Pre-Filters}
 \label{sec:wl}
 
-A sound isomorphism invariant cheaper than IR (Weisfeiler--Leman color refinement~\cite{weisfeiler1968reduction,shervashidze2011weisfeiler} is the standard example: polynomial, but provably unable to distinguish certain non-isomorphic graphs) suggests a filter in front of the canonicalizer: hash every state cheaply, and canonicalize only on a repeated hash. Proposition~\ref{prop:wlceiling} bounds what any such filter can save, and the bound is why the exact mode runs IR on every state with no filter in front.
+A sound invariant cheaper than IR, such as Weisfeiler--Leman color refinement~\cite{weisfeiler1968reduction,shervashidze2011weisfeiler}, could filter states before canonicalization: hash every state cheaply and run IR only when the cheap hash repeats. Proposition~\ref{prop:wlceiling} bounds the saving.
 
 \begin{proposition}[Ceiling on a pre-filter]
 \label{prop:wlceiling}
@@ -38,14 +38,14 @@ Let a run produce $R$ raw states falling into $C$ isomorphism classes, and let $
 Soundness means states in one class share an $f$-value, so the number of distinct values is at most $C$. A state whose value is already present cannot be resolved by $f$: equal values are consistent both with isomorphism and with an $f$-collision, so IR is invoked. At most one state per distinct value finds its value absent, hence at most $C$ states skip IR and at least $R - C$ invoke IR.
 \end{proof}
 
-The bound is only useful with $C/R$ in hand, and that ratio is a property of the rule and the depth; Table~\ref{tab:crratio} reports it for each corpus case at two depths, and Figure~\ref{fig:crratio} plots the same values.
+$C/R$ depends on the rule and the depth. Table~\ref{tab:crratio} and Figure~\ref{fig:crratio} give it for each corpus workload at two depths.
 
 \begin{table}[htbp]
 \centering
-\caption{\textbf{Canonical-class to raw-state ratio, per corpus workload.} $C/R$ is the fraction
-of raw states that are distinct up to isomorphism, reported beside the event count because the
-two must be read together: a small ratio on a small run says less than the same ratio on a large
-one. Proposition~\ref{prop:wlceiling} bounds the achievable saving by this ratio.}
+\caption{\textbf{Canonical classes as a fraction of raw states, per corpus workload.} $C/R$ is
+the upper bound of Proposition~\ref{prop:wlceiling} on the fraction of IR calls a pre-filter can
+skip. The event count is given beside it because a ratio from a small run is weaker evidence than
+the same ratio from a large one.}
 \label{tab:crratio}
 \input{tables/t_crratio}
 \end{table}
@@ -68,26 +68,22 @@ one. Proposition~\ref{prop:wlceiling} bounds the achievable saving by this ratio
 \input{tables/f_crratio}
 \end{axis}
 \end{tikzpicture}}
-\caption{$C/R$, the ceiling of Proposition~\ref{prop:wlceiling} on the fraction of IR invocations a
-pre-filter could elide, for each corpus case at two depths. Every case that continues to rewrite
-decreases; a case that does not is one that reaches a fixed point before the higher depth, as
-\texttt{self-loop} does after one event, with a ratio of $100\%$ at both depths. Values as in
-Table~\ref{tab:crratio}.}
+\caption{$C/R$ for each corpus workload at two depths: the upper bound of
+Proposition~\ref{prop:wlceiling} on the fraction of IR calls a pre-filter can skip. It falls with
+depth on every workload that keeps rewriting. \texttt{self-loop} reaches a fixed point after one
+event and stays at $100\%$. Values as in Table~\ref{tab:crratio}.}
 \label{fig:crratio}
 \end{figure}
 
-\noindent For every rule that continues to rewrite, $C/R$ decreases with depth. Reaching the same state along several distinct histories is characteristic of multiway evolution, and each such arrival produces a repeated filter value that IR must resolve. The cases that retain a high ratio are those reaching a fixed point after one or two steps: \texttt{self-loop} has $C/R = 100\%$ over two raw states and one event. The fraction a filter could elide is therefore largest on the workloads with the least work to elide.
+\noindent On every rule that keeps rewriting, $C/R$ falls with depth, because multiway evolution reaches the same state along many histories and each repeat is a repeated filter value that IR must still resolve. The ratio stays high only on workloads that reach a fixed point within one or two steps, such as \texttt{self-loop} ($C/R = 100\%$ over two raw states and one event), and those have little canonicalization work to save.
 
-Two options require automorphism data: quotient exploration, and the event canonicalization conventions of Section~\ref{sec:event-canon}. Both obtain the edge orbits from the same IR pass, so no second canonicalization is performed.
+The one exact shortcut, reusing a canonical form when two raw states have identical edge tuples, never applies: every rewrite assigns fresh vertex identifiers, so on \texttt{wpp} the number of distinct state contents equals the number of raw states at depths six and seven ($3{,}867$ and $45{,}317$).
+
+Quotient exploration and the event identities of Section~\ref{sec:event-canon} need automorphism data, and both take the edge orbits from the same IR pass.
 
 \subsection{State Canonicalization Modes}
 
-Rather than exposing a choice between competing hashing algorithms, the engine exposes a single \emph{state canonicalization mode}, \textsc{None}, \textsc{Automatic} or \textsc{Full}, that controls how aggressively isomorphic states are merged.
-\textsc{None} performs no deduplication and keeps every raw state distinct. \textsc{Automatic} deduplicates by a content-ordered hash of the edge tuples as given. This hash is not an isomorphism invariant: it identifies two states when their edge tuples are literally equal, and separates isomorphic states whose vertices have different identifiers. \textsc{Full} is the exact mode used for all correctness-critical results: the IR canonical hash is computed for every state and is itself the deduplication key, so two states are identified if and only if they are isomorphic.
-
-\begin{remark}[Incremental hashing]
-Child states differ from their parents by only the consumed and produced edges, and the engine passes that per-event delta to the canonicalizer. The hash is nonetheless computed from the state's complete edge set in every mode. No incremental-hashing result is reported here, and none of the measurements in Section~\ref{sec:benchmarks} depends on one.
-\end{remark}
+The engine's \emph{state canonicalization mode} sets how states are identified. \textsc{None} keeps every raw state distinct. \textsc{Automatic} deduplicates by a hash of the edge tuples as given, which is not an isomorphism invariant: it identifies two states only when their edge tuples are equal, so isomorphic states with different vertex labels stay distinct. \textsc{Full} is the exact mode: the IR canonical hash of every state is the deduplication key.
 
 % ----------------------------------------------------------------------------
 % PATTERN MATCHING

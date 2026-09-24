@@ -1,67 +1,48 @@
 \section{GPU Acceleration}
 \label{sec:gpu}
 
-Multiway evolution has none of the regularity a GPU is usually given. The
-frontier is irregular and data-dependent, its width is not known before the step that
-produces it, and each state must be canonicalized before it can be compared with any other,
-by the same individualization--refinement core the host runs, a refinement loop with
-data-dependent control flow that the kernel distributes across the warp's lanes to the extent
-its loops admit. A per-phase kernel launch would
-put a host round trip between every one of those stages. The design here is therefore a
-single resident megakernel that keeps the frontier on the device across steps. This section
-describes the design and its constraints; the device implementations of canonicalization,
-matching, the work queues, termination and memory management are specified in
-Appendix~\ref{app:gpu-impl}.
+Multiway evolution is an irregular workload for a GPU. The frontier's width depends on the data
+and is not known until the step that produces it, and every new state must be canonicalized before
+it can be compared with others, by the same IR code the host runs, whose control flow depends on
+the data. The kernel spreads IR's loops across the lanes of a warp where the loops allow it. A
+kernel launch per step would put a host round trip between every stage, so the engine runs one
+resident kernel that keeps the frontier on the device for the whole evolution.
+Appendix~\ref{app:gpu-impl} specifies the device canonicalization, matching, work queues,
+termination and memory management.
 
-\subsection{Megakernel Architecture}
+\subsection{Resident Kernel}
 
-The launch cost is fixed and does not shrink with the problem, so it dominates exactly where
-multiway evolution spends most of its steps: the early frontiers, which are small and numerous. Our \emph{megakernel} approach instead runs a single persistent kernel for
-the whole evolution, keeping the frontier, the match queues and the epoch counter resident on the
-device between steps, so a step costs a device-side barrier rather than a launch.
-The match, rewrite and state queues sit resident beside the shell that services them, and
-expanded states re-enter as match tasks without returning to the host. What the design
-removes, and the depth beyond which that removal no longer registers, are measured in
-Section~\ref{sec:benchmarks}: the resident kernel is $\PersistentSpeedupFour\times$ faster
-than a per-step \texttt{evolve()} at depth four and indistinguishable from the per-step design
-by depth \PersistentTieDepthWord, once the evolution itself dominates the constant being
-amortized.
+A kernel launch has a fixed cost, which dominates the early steps of an evolution, where the
+frontier is small. The engine runs a single persistent kernel for the whole evolution, with the
+frontier, the match queues and the epoch counter kept in device memory, so a step costs a
+device-side barrier rather than a launch. The match, rewrite and state queues are resident, and a
+new state becomes a match task without returning to the host. The resident kernel is
+$\PersistentSpeedupFour\times$ faster than a per-step \texttt{evolve()} at depth four, and the two
+take the same time from depth \PersistentTieDepthWord{} on, where the evolution itself outweighs
+the launch cost (Section~\ref{sec:benchmarks}).
 
-Matching runs one (state, rule) pair per block, the block's threads striping the candidates for
-the first pattern edge. Two device-side indices divide the join's work: a signature index seeds
-the first pattern edge, and every subsequent edge is driven through the vertex inverted index by
-a \emph{pivot variable} the connectivity ordering guarantees bound, so a candidate list is
-bounded by a vertex's degree rather than by a signature bucket that holds thousands on a dense
-state. The division follows HGMatch~\cite{yang2023hgmatch}; the host answers the same two
-questions from the state's ancestry (Section~\ref{sec:vertex-index}).
-
+One block matches one (state, rule) pair, and its threads divide the candidates for the first
+pattern edge. Later pattern edges take their candidates from a vertex index through a variable
+that is already bound, as described in Appendix~\ref{app:gpu-impl}.
 
 \subsection{Design Constraints}
 \label{sec:gpu-constraint}
 
-The resident kernel exists to remove a host round trip per evolution step. That aim is only met if
-nothing crosses the host--device boundary during evolution at all: rules and the initial state are
-uploaded and the queues seeded before the launch, results are read after it, and in between the
-device decides what work exists, which worker takes it, and when the evolution has finished. A
-round trip introduced for any other purpose has the same cost as the per-step round trip the
-design removes, so the constraint admits no exceptions.
+Nothing crosses the host--device boundary while the kernel runs. Rules and the initial state are
+uploaded and the queues seeded before the launch, and results are read after it; in between, the
+device decides what work exists, which worker takes it, and when the evolution has finished. Any
+round trip during the run would cost as much as the per-step round trip the design removes.
 
-Two properties of the device path follow from this constraint rather than being chosen independently.
+This has two consequences.
 
-\emph{Capacity overflow cannot be resolved by retrying with a larger allocation.} Enlarging a pool
-means allocating on the host, which is a round trip. A device-resident loop must therefore record
-the overflow and return the work completed so far, which is the behavior described in
-Section~\ref{sec:capacity}. The device has no alternative to that behavior, so capacities are
-sized from configuration before the launch.
+\emph{The kernel cannot grow a pool.} Growing a pool needs a host allocation. When a pool
+overflows, the kernel records the overflow and returns the work completed so far; the host then
+re-runs the evolution with doubled capacities, up to eight times, and returns the last partial
+result with a warning if it still overflows (Section~\ref{sec:capacity}).
 
-\emph{The canonicalizer's scratch cannot be sized by measuring the workload.} Sizing a scratch slot
-to the largest state in a batch requires knowing the batch, and a resident loop has no batch:
-states arrive continuously and the largest is not known until the run ends. One resolution is a
-slot pre-sized from a configured maximum with a coarser hash used above that maximum, which would reintroduce
-the possibility of two states receiving the same key because one was too large to canonicalize
-exactly: a silent loss of the exactness property of Section~\ref{sec:canonicalization}, bounded by
-a configuration value rather than eliminated. The resolution taken instead is a device-side arena
-from which each state claims a slot sized from its own vertex, edge and occurrence counts. There is
-consequently no approximate fallback in the device's exact path: exhausting the arena is a capacity
-overflow, recorded and reported like any other, and never a quietly coarser identity.
-
+\emph{Canonicalizer scratch cannot be sized from a batch.} The resident kernel has no batch: states
+arrive continuously and the largest is not known until the run ends. Scratch pre-sized from a
+configured maximum, with a coarser hash above it, would let two non-isomorphic states share a key
+whenever one was too large to canonicalize exactly. Instead each state takes scratch from a
+device-side arena, sized from its own vertex, edge and occurrence counts. Exhausting the arena is a
+capacity overflow, handled as above; the exact path never falls back to a coarser identity.
