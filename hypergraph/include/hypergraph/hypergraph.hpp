@@ -1163,7 +1163,7 @@ public:
             const QcEventContent* c = qc_event_sig_.get(qc_ev_slot(e));
             if (!c) continue;
             if (by_identity) {
-                const uint64_t* sig = qc_event_runsig_.get(e);
+                const uint64_t* sig = qc_event_runsig_.get(qc_ev_slot(e));
                 if (!sig || !seen.insert(*sig).second) continue;
             }
             f(dense++, e, *c);

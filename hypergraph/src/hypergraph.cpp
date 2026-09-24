@@ -1999,7 +1999,7 @@ uint32_t Hypergraph::QrCtx::frame_step(uint64_t class_hash, uint32_t fallback) c
 }
 
 void Hypergraph::QrCtx::record_runsig(uint32_t ev, uint64_t csig) {
-    hg.qc_event_runsig_.emplace_at(ev, hg.arena_, csig);
+    hg.qc_event_runsig_.emplace_at(Hypergraph::qc_ev_slot(ev), hg.arena_, csig);
     if (hg.qc_canon_event_seen_.insert(csig))
         hg.qc_num_canon_events_.fetch_add(1, std::memory_order_relaxed);
 }
@@ -2101,7 +2101,7 @@ StateId Hypergraph::class_frame_state(uint64_t class_hash) const {
 // internal one at least distinguishes events.
 uint64_t Hypergraph::event_pair_signature(uint32_t e) const {
     if (event_signature_keys() != hgcommon::EVENT_SIG_NONE) {
-        const uint64_t* r = qc_event_runsig_.get(e);
+        const uint64_t* r = qc_event_runsig_.get(qc_ev_slot(e));
         if (r) return *r;
     }
     return reconstructed_raw_triple(e);
