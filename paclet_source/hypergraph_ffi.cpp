@@ -398,17 +398,10 @@ static size_t effective_max_states_per_step(const hgffi::ParsedJob& req) {
 // OptionSkipped warning for each, so the job it was handed carries what it did not apply.
 
 static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge& host) {
-        // Sessions are served on the device too. What used to make that impossible -- the
-        // evolver rebuilding its graph from `initial_states` every call -- no longer holds:
-        // SessionState carries the identity maps and the budget's frontier across calls, and
-        // run_session refuses to rebuild the engine rather than silently continuing against a
-        // fresh one. The verb rides on the job and the backend answers it.
-
-        // The device thins states through `exploration_probability` and has no per-transition
-        // draw, so it has no spine either. Silently running unthinned would return a FULL
-        // evolution where the caller asked for a sample, which reads as a system with that
-        // many states rather than as an option that did not apply.
-                
+        // Sessions are served on the device: SessionState carries the identity maps and the
+        // budget's frontier across calls, and run_session refuses to rebuild the engine. The
+        // verb rides on the job and the backend answers it. The device applies the transition
+        // draw, the spine and the per-state cap at match emission (match.cu, emit_admit).
         GpuJob job{
             req.parsed_rules_raw,
             req.initial_states_raw,
