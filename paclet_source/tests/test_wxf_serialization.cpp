@@ -1696,10 +1696,12 @@ TEST(RelationCoherence, PrintSurface) {
 }
 
 // The states graph has one edge per event NumEvents reports, under quotient exploration as under
-// full capture. The kernel asks for a states graph with an empty RequestedData, which left the
+// full capture, in every event identity mode. Under an identity mode the one-shot graph repeated
+// an edge for every raw event sharing an identity: 74 edges against 16 events. The kernel asks for a states graph with an empty RequestedData, which left the
 // reconstruction off, so under quotient exploration the graph was built over the explored
 // representatives' events: 52 edges against 126 events on the WPP rule at depth 4.
 TEST(WxfSerializationPin, StatesGraphEdgesAreTheEventsTheCountReports) {
+  for (const char* events_mode : {"None", "Full", "Automatic"}) {
     for (bool quotient : {false, true}) {
         auto request = [&](bool graph) {
             return build_input(kBranchSeed, kBranchLhs, kBranchRhs, 4, [&](wxf::Writer& w) {
@@ -1710,8 +1712,9 @@ TEST(WxfSerializationPin, StatesGraphEdgesAreTheEventsTheCountReports) {
                     put_str_list_option(w, "RequestedData", {"NumEvents"});
                 }
                 put_str_option(w, "CanonicalizeStates", "Full");
+                put_str_option(w, "CanonicalizeEvents", events_mode);
                 if (quotient) put_str_option(w, "ExploreFromCanonicalStatesOnly", "True");
-            }, (graph ? 3 : 2) + (quotient ? 1 : 0));
+            }, (graph ? 4 : 3) + (quotient ? 1 : 0));
         };
         HostBridge host;
         const auto graph_out = run_rewriting_core(request(true), host);
@@ -1719,7 +1722,8 @@ TEST(WxfSerializationPin, StatesGraphEdgesAreTheEventsTheCountReports) {
         const int64_t num_events = read_int_key(count_out, "NumEvents");
         ASSERT_GT(num_events, 0);
         EXPECT_EQ(graph_edge_count(graph_out), num_events)
-            << "quotient=" << quotient
+            << "events=" << events_mode << " quotient=" << quotient
             << ": the states graph and NumEvents describe different event sets";
     }
+  }
 }

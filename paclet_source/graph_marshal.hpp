@@ -61,6 +61,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -285,8 +286,13 @@ wxf::WXFValue build_graph_data(const Source& src,
             k = hgcommon::fnv_hash(k, index);
             return k;
         };
-        auto send_edge = [&](uint64_t key) {
-            return cursor == nullptr || cursor->take_edge(graph_property, key);
+        // One edge per (from, to, type, index), in a one-shot build as through a session's
+        // cursor: raw events that share an event identity share one edge.
+        std::set<std::tuple<int64_t, int64_t, uint32_t, uint32_t>> sent_edges;
+        auto send_edge = [&](int64_t from, int64_t to, uint32_t type_tag, uint32_t index) {
+            if (cursor != nullptr)
+                return cursor->take_edge(graph_property, edge_key(from, to, type_tag, index));
+            return sent_edges.emplace(from, to, type_tag, index).second;
         };
 
         auto add_graph_edge = [&](wxf::WXFValue from, wxf::WXFValue to, const std::string& type,
@@ -314,8 +320,8 @@ wxf::WXFValue build_graph_data(const Source& src,
                 wxf::WXFValueList to_tag   = {wxf::WXFValue("E"), wxf::WXFValue(pair.second)};
                 size_t num_edges = opts.edge_deduplication ? 1 : count;
                 for (size_t k = 0; k < num_edges; ++k) {
-                    if (!send_edge(edge_key(pair.first, pair.second, kEdgeCausal,
-                                            static_cast<uint32_t>(k)))) continue;
+                    if (!send_edge(pair.first, pair.second, kEdgeCausal,
+                                   static_cast<uint32_t>(k))) continue;
                     wxf::WXFValueAssociation causal_data;
                     causal_data.push_back({wxf::WXFValue("ProducerEvent"), wxf::WXFValue(pair.first)});
                     causal_data.push_back({wxf::WXFValue("ConsumerEvent"), wxf::WXFValue(pair.second)});
@@ -345,8 +351,8 @@ wxf::WXFValue build_graph_data(const Source& src,
                 // Keyed by the EVENT as well as the endpoints: two distinct events can join the
                 // same pair of states, and a states-graph edge carries the event id its tooltip
                 // names, so collapsing them would drop an edge a full delivery emits.
-                if (!send_edge(edge_key(in, out, kEdgeDirected,
-                                        static_cast<uint32_t>(src.effective_event_id(eid)))))
+                if (!send_edge(in, out, kEdgeDirected,
+                               static_cast<uint32_t>(src.effective_event_id(eid))))
                     continue;
                 add_graph_edge(wxf::WXFValue(in), wxf::WXFValue(out),
                                "Directed", states_edge_payload(eid));
@@ -389,7 +395,7 @@ wxf::WXFValue build_graph_data(const Source& src,
                 if (filter_by_step && src.state_step(src.event_output_state(e1)) != target_step) continue;
                 int64_t s1 = src.effective_state_id(src.event_output_state(e1));
                 int64_t s2 = src.effective_state_id(src.event_output_state(e2));
-                if (!send_edge(edge_key(s1, s2, kEdgeBranchialState, 0))) continue;
+                if (!send_edge(s1, s2, kEdgeBranchialState, 0)) continue;
                 wxf::WXFValueAssociation branchial_data;
                 branchial_data.push_back({wxf::WXFValue("State1"), wxf::WXFValue(s1)});
                 branchial_data.push_back({wxf::WXFValue("State2"), wxf::WXFValue(s2)});
@@ -435,9 +441,9 @@ wxf::WXFValue build_graph_data(const Source& src,
                 edge_data.push_back({wxf::WXFValue("EventId"), wxf::WXFValue(eff_eid)});
                 const int64_t in_id  = src.effective_state_id(src.event_input_state(eid));
                 const int64_t out_id = src.effective_state_id(src.event_output_state(eid));
-                if (send_edge(edge_key(in_id, eff_eid, kEdgeStateEvent, 0)))
+                if (send_edge(in_id, eff_eid, kEdgeStateEvent, 0))
                     add_graph_edge(wxf::WXFValue(s_in), wxf::WXFValue(e_tag), "StateEvent", edge_data);
-                if (send_edge(edge_key(eff_eid, out_id, kEdgeEventState, 0)))
+                if (send_edge(eff_eid, out_id, kEdgeEventState, 0))
                     add_graph_edge(wxf::WXFValue(e_tag), wxf::WXFValue(s_out), "EventState", edge_data);
             }
             if (has_causal) add_causal_edges();
@@ -448,7 +454,7 @@ wxf::WXFValue build_graph_data(const Source& src,
                     if (filter_by_step && src.state_step(src.event_output_state(e1)) != target_step) continue;
                     int64_t from = src.effective_event_id(e1);
                     int64_t to   = src.effective_event_id(e2);
-                    if (!send_edge(edge_key(from, to, kEdgeBranchialEvent, 0))) continue;
+                    if (!send_edge(from, to, kEdgeBranchialEvent, 0)) continue;
                     wxf::WXFValueList from_tag = {wxf::WXFValue("E"), wxf::WXFValue(from)};
                     wxf::WXFValueList to_tag   = {wxf::WXFValue("E"), wxf::WXFValue(to)};
                     wxf::WXFValueAssociation branchial_data;
