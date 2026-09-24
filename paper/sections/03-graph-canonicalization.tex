@@ -1,4 +1,4 @@
-\section{Graph Canonicalization}
+\section{State and Event Identity}
 \label{sec:canonicalization}
 
 Deduplication decides how large the explored set is: without it, every path to a state adds a separate vertex, and the number of paths grows super-exponentially when rewrites add edges. Deduplication is exact: two states are the same node if and only if their hypergraphs are isomorphic, with vertex relabeling allowed and within-edge order and edge multiplicity preserved. The exact mode computes an individualization--refinement (IR) canonical hash for every state and uses it as the deduplication key.
@@ -84,6 +84,38 @@ Quotient exploration and the event identities of Section~\ref{sec:event-canon} n
 \subsection{State Canonicalization Modes}
 
 The engine's \emph{state canonicalization mode} sets how states are identified. \textsc{None} keeps every raw state distinct. \textsc{Automatic} deduplicates by a hash of the edge tuples as given, which is not an isomorphism invariant: it identifies two states only when their edge tuples are equal, so isomorphic states with different vertex labels stay distinct. \textsc{Full} is the exact mode: the IR canonical hash of every state is the deduplication key.
+
+\subsection{Event Identity}
+\label{sec:event-canon}
+
+Events can be identified at three granularities:
+
+\begin{description}
+\item[ByEndpointStates:] Two applications are the same event when they run between the same pair of canonical states. $\BigO(1)$ signature computation.
+
+\item[ByConsumedProducedEdges:] The signature additionally includes the canonical ranks of the edges the application consumed and produced. $\BigO(E)$ signature computation.
+
+\item[DistinctApplications:] No signature is computed and every application is its own event. This is the identity the raw causal graph is defined over.
+\end{description}
+
+Each refines the one before, so the event count is non-decreasing in that order;
+Table~\ref{tab:event-canon} gives it per workload. \textsc{ByConsumedProducedEdges} needs the
+correspondence between the edges of isomorphic states, which is the per-edge canonical rank from
+the same IR pass as the state's hash.
+
+\paragraph{Independence from the state mode.} Event identity is defined over isomorphism classes of
+states in every state mode. Outside the exact mode the state key is a content hash, which gives
+isomorphic states with different labels different keys, so event representatives are always
+resolved through the IR canonical hash when event canonicalization is on. The
+\texttt{mode\_matrix\_probe} gate checks that the event count is the same in every state mode. The
+canonical hash is computed only when event canonicalization is on, and the same IR pass gives both
+the hash and the edge ranks, so this costs one pass per state.
+
+\paragraph{Configuration dependencies.}
+The canonical-class event identity and quotient exploration both need edge orbits, which only the
+exact state mode computes. A run that requests either with another state mode builds the causal
+graph from raw edge identities instead and returns a warning naming the setting that is needed;
+the engine does not change the state mode itself.
 
 % ----------------------------------------------------------------------------
 % PATTERN MATCHING

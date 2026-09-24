@@ -158,6 +158,8 @@ multiway systems, GPU computing, Wolfram Physics Project}
 
 \input{sections/05-system-architecture}
 
+\input{sections/05b-exploration-strategies}
+
 \input{sections/06-gpu-acceleration}
 
 \input{sections/07-experimental-evaluation}
@@ -369,7 +371,7 @@ threads. The engine above the scheduler is the same code in both modes.
 
 A producer appends the new edges, inserts their ids into the state's edge set, issues a release
 fence, and then appends the state. A consumer that finds the state through the canonical map's
-acquire load issues an acquire fence before reading the edge set. So a reader of a published state
+acquire load issues an acquire fence before reading the edge set. A reader of a published state therefore
 sees its complete edge set.
 
 \subsection{Behavior at Configured Limits}

@@ -14,19 +14,6 @@ by cache traffic between L3 domains rather than by contention on the shared stru
 $\GpuSpeedupAtDeepest\times$ faster than eight CPU threads at depth \GpuDeepestDepth{}
 (Table~\ref{tab:t7-gpu}), and is limited by the serial steps of the canonicalization search.
 
-The contributions are:
-\begin{enumerate}
-    \item exact canonicalization of every state by individualization--refinement, with a bound
-          (Proposition~\ref{prop:wlceiling}) on what a cheaper pre-filter could save;
-    \item lock-free concurrent data structures and protocols, model-checked under RC11 and TLA+
-          (Section~\ref{sec:verification});
-    \item a resident CUDA kernel that matches, rewrites and canonicalizes without returning to the
-          host between steps, sharing its decision procedures with the CPU engine;
-    \item independent state and event identities at several granularities;
-    \item quotient exploration with exact reconstruction of raw events and relations, keyed
-          sampling, and an online transitive reduction of the causal graph;
-    \item output that is the same at every thread count (Section~\ref{sec:determinism}).
-\end{enumerate}
 
 \subsection{Future Directions}
 

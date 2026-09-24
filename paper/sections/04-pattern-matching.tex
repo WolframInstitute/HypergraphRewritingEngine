@@ -47,15 +47,24 @@ Algorithm~\ref{alg:matching} gives the task-based matcher.
 \begin{algorithmic}[1]
 \Procedure{FindMatches}{$L$, $\hypergraph$}
     \State $e_1, \ldots, e_k \gets \textsc{MatchOrder}(L)$ \Comment{connected: no step is a product}
-    \State Enqueue $\textsc{ScanTask}(e_1, \emptyset)$
+    \State Enqueue $\textsc{ScanTask}(e_1)$
     \While{task queue non-empty}
         \State $\tau \gets \textsc{Dequeue}()$
-        \If{$\tau$ is $\textsc{ScanTask}(e_i, \phi)$}
-            \State \textbf{for} each $e \in S$ with $\sigma(e)$ compatible with $\sigma(e_i)$ \textbf{do}
-            \State \quad \textbf{if} $\textsc{Compatible}(e, e_i, \phi)$ \textbf{then}
-            \State \quad\quad Enqueue $\textsc{ExpandTask}(e_{i+1}, \phi')$
-        \ElsIf{$\tau$ is $\textsc{ExpandTask}(e_i, \phi)$ with $i > k$}
-            \State \textbf{yield} complete match $\phi$
+        \If{$\tau$ is $\textsc{ScanTask}(e_1)$}
+            \ForAll{$e \in \hypergraph$ with $\sigma(e)$ compatible with $\sigma(e_1)$}
+                \State $\phi \gets$ binding of $e_1$ to $e$
+                \State Enqueue $\textsc{ExpandTask}(2, \phi)$
+            \EndFor
+        \ElsIf{$\tau$ is $\textsc{ExpandTask}(i, \phi)$}
+            \If{$i > k$}
+                \State \textbf{yield} complete match $\phi$
+            \Else
+                \ForAll{$e \in \textsc{Candidates}(e_i, \phi)$ not in $\phi$}
+                    \If{$e$ is consistent with $\phi$ on $e_i$}
+                        \State Enqueue $\textsc{ExpandTask}(i{+}1, \phi \cup \{e_i \mapsto e\})$
+                    \EndIf
+                \EndFor
+            \EndIf
         \EndIf
     \EndWhile
 \EndProcedure
@@ -64,7 +73,8 @@ Algorithm~\ref{alg:matching} gives the task-based matcher.
 
 The match order $e_1, \ldots, e_k$ is fixed when the rule is added, and it is connected: every edge
 after the first shares a variable with an earlier one, so no step of the join is a cartesian
-product. The host runs it in two forms: a depth-first join that runs a whole search inside one task
+product, and $\textsc{Candidates}(e_i, \phi)$ is the incidence list of a vertex of $e_i$ already
+bound in $\phi$ (Section~\ref{sec:vertex-index}). The host runs the join in two forms: a depth-first join that runs a whole search inside one task
 and submits a job only for each completed match, and the task form above, which submits a task per
 candidate so that work stealing can divide the search. Both forms, and the device, share one
 implementation of the recursion, the edge-injectivity check, binding and unbinding, and the choice

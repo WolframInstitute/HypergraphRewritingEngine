@@ -1,0 +1,138 @@
+\section{Exploration Strategies}
+\label{sec:exploration}
+
+Exhaustive evolution becomes infeasible at moderate depth, and a caller may need only part of
+it. The engine has four independent ways to limit an exploration, and they can be combined:
+
+\begin{itemize}
+\item \textbf{Caps.} A total state count, a total event count, a count of states admitted per step
+      (\textsc{MaxStatesPerStep}) and a count of successors per parent
+      (\textsc{MaxSuccessorStatesPerParent}). Each is an atomic counter, so the count retained is
+      exact at every worker count; which states fill a cap depends on arrival order
+      (Section~\ref{sec:determinism}). A run that reaches a cap returns what it computed with a
+      warning (Section~\ref{sec:capacity}).
+\item \textbf{Sampling.} Per-rule transition rates and a per-state match cap keep a subset of
+      transitions chosen by keyed pseudorandom draws, so the sample is reproducible for a seed at
+      every worker count (Section~\ref{sec:sampling}).
+\item \textbf{Quotient exploration} (Section~\ref{sec:quotient}) expands one state per isomorphism
+      class and reconstructs the raw relations exactly.
+\item \textbf{Steering.} A session (Section~\ref{sec:sessions}) reports the frontier after each
+      step, and the next step can be restricted to part of it; the rest stays on the frontier.
+\end{itemize}
+
+Caps and steering compute a subset exactly; sampling computes a random subset; quotient exploration
+computes the full result and expands less. The step budget bounds all four, and the reported
+frontier records where each stopped.
+\label{sec:pruning}
+
+\subsection{Quotient Exploration}
+\label{sec:quotient}
+
+In full expansion every raw state is expanded, so a state reached along $k$ histories is matched $k$
+times, although canonicalization has already shown the repeats find no new states. Quotient
+exploration expands only one state per isomorphism class, at the shallowest depth the class was
+reached. Every equivalent state is still created and its incoming event recorded.
+Table~\ref{tab:t6-quotient} gives events produced, causal edges and wall time for both modes by
+depth. Both modes give the same canonical state set. The causal and branchial relations are
+defined over raw events, which quotient exploration does not all produce, so they are
+reconstructed.
+
+The number of raw events is recovered by a forward summation. Under exact identity the canonical
+states graph has cycles, because a canonical state recurs at several depths, but its unrolling by
+depth is acyclic, and the multiplicity of each (canonical state, depth) pair satisfies
+\begin{align}
+  \mathrm{mult}[s_0, 0] &= 1, \nonumber\\
+  \mathrm{mult}[c, k{+}1] &\mathrel{+}= \mathrm{mult}[s, k]\cdot w(s \to c),
+  \label{eq:mult}
+\end{align}
+summed over the transitions into $c$; the raw event count is $\sum \mathrm{mult}$. This takes time
+polynomial in the number of (canonical state, depth) pairs.
+
+The raw events and relations themselves are recovered by replaying each class's expansion against
+every instance of the class. The expansion is recorded once, in the \emph{frame} of the first raw
+state that reached the class: each match found on that state is stored as indices into the frame's
+edges. Another raw state of the class is aligned onto the frame by the canonical edge ranks from
+its own IR run; this alignment is an isomorphism, defined up to an automorphism, so it maps matches
+to matches. The edge orbits from the same IR pass distinguish edge roles within a class
+(Section~\ref{sec:ir}), so no further canonicalization is needed. An \emph{instance} of a class at
+depth $k$ is a vector holding one producer event per frame slot. Applying a recorded match to an
+instance creates one raw event; adds a causal edge from the producer of each consumed slot, in
+descending producer order so that the online reduction of Section~\ref{sec:tr} stays exact; adds a
+branchial pair with each earlier application at the same instance whose consumed slots overlap;
+and creates a child instance at depth $k+1$, in which surviving slots keep their producer and
+produced slots take the new event. Instances and recorded matches arrive concurrently, so each new
+instance replays every match already recorded for its class, each new match is replayed against
+every instance already present, and each (instance, match) pair is claimed exactly once. A replayed
+event has two identities: the triple (source class, target class, rule), which is an isomorphism
+invariant used for comparisons across runs and engines, and the run's event identity.
+
+The reconstruction creates as many instances as the full system has raw states. On a two-rule set
+whose canonical state count grows linearly with depth (three to eight states at depths two to
+seven), the raw system has 146,599 states at depth six, and the reconstruction's cost follows that
+count. There, quotient exploration visited 49 raw states against full capture's 146,599 and ran 65
+times faster.
+
+The reconstruction runs only when the causal relation, the branchial relation or the raw event set
+is requested; a run that asks for canonical states alone skips it. Every worker takes part in it,
+and its total cycle count grows with the thread count (Section~\ref{sec:limitations}).
+
+\subsection{Sampled Exploration}
+\label{sec:sampling}
+
+The engine has two samplers. The \emph{transition rate} keeps each candidate transition
+independently with a fixed probability, multiplied by a per-rule weight; the number of children a
+state keeps is then a random variable with the thinned distribution of the full one. The
+\emph{per-state match cap} keeps at most $k$ of each state's matches for each rule. Both choose by a
+pseudorandom value computed from the transition's canonical identity and the seed, so the same seed
+gives the same sample at any thread count (Section~\ref{sec:determinism}).
+
+\paragraph{Choosing the rate.}
+A fixed rate compounds with depth: a path of length $L$ survives with probability $q^L$. On the
+workloads measured, rates of $1/8$ and $1/4$ end the evolution within the first step and $1/2$
+leaves it growing, so the usable range is narrow and depends on the rule's branching factor. While
+a rate or weight below one is in effect, a state whose own draws all fail keeps its
+lowest-ranked own transition, so the evolution does not die out; a state with no matches of its
+own has no such fallback.
+
+\paragraph{The per-state cap.}
+Samples from different seeds do not add up to the exhaustive system, because a transition can be
+drawn only if its source state was created, which required an earlier draw to succeed. The
+per-state cap keeps at least one transition at every state it reaches, so each seed covers a
+connected skeleton, and different seeds keep different skeletons. The cap chooses $k$ of a state's
+$M$ matches by rank once the state's matching is complete, because choosing $k$ of $M$ needs all
+$M$; choosing by arrival order would make the result depend on the schedule. A match forwarded
+from an ancestor can arrive after the state's matching is complete, so a run under the cap turns
+match forwarding off and each state finds all of its matches itself.
+
+\paragraph{Per-state and per-transition draws.}
+Under full capture each raw state is created by exactly one event, so a draw per new state and a
+draw per transition are the same draw. Under quotient exploration a canonical state has many
+incoming transitions, and the two differ.
+
+\paragraph{No barrier.}
+A decision to keep a match is final once the match is rewritten, so a sample must be complete
+before its members are rewritten. A sample drawn from a whole evolution step would be complete only
+when every worker finished the step, which is a global barrier. The engine therefore samples only
+over populations that complete locally: a state's matches for one rule are complete when that
+state's matching tasks have all finished, which the engine detects without looking at any other
+state.
+
+\subsection{Sessions}
+\label{sec:sessions}
+
+Evolution is also available as a session: it is opened on a rule set and an initial state, advanced
+by a number of steps, queried for any derived structure, and closed. The frontier is kept between
+steps, so each step continues the existing evolution instead of starting again.
+
+The frontier is stored separately from the canonical identity map. The map records which states
+have been seen; the frontier records the states and pending rewrites that the step budget stopped,
+together with the depth each waits at.
+
+Every session reply reports the frontier, and a step may name part of it. The named entries are
+advanced and the others stay on the frontier. A step that names no entries advances the whole
+evolution to the new total depth, and gives the same result as a single run to that depth. A step
+that names entries advances each of them by the requested number of steps from the depth it waits
+at, so entries at different depths each advance by the same amount. Naming a state that is not on
+the frontier is an error. A continuable run stopped by a state or event limit keeps the work the
+limit cut short on the frontier (Section~\ref{sec:capacity}). Both devices implement this interface.
+

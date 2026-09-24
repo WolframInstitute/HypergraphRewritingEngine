@@ -1,27 +1,71 @@
 \section{Introduction}
 \label{sec:introduction}
 
-The Wolfram Physics Project~\cite{wolfram2020project} models the universe as an abstract rewrite system, in which physics is given by the causal structure of the rewrites rather than by the data being rewritten. The states are hypergraphs, which have no built-in notion of space: distance is path length through the edges. Rewriting produces three structures: the multiway evolution graph of all reachable states and the events between them; the causal graph, of dependencies between events; and the branchial graph, of pairs of events that consume a common edge of the same state.
+The Wolfram Physics Project~\cite{wolfram2020project} models the universe as an abstract rewrite
+system. Its states are hypergraphs, in which distance is path length through the edges, and its
+physics is given by the causal structure of the rewrites rather than by the data being rewritten.
+Multiway evolution applies every applicable rule at every match of every reachable state. It
+produces three structures: the multiway evolution graph of states and the events between them; the
+causal graph, which links an event to the events whose output edges it consumes; and the branchial
+graph, which links events that consume a common edge of the same state.
 
-Exhaustive multiway evolution is expensive. Each step multiplies the number of histories by the frontier's match count, and a rule that adds edges gives each state more matches than its parent, so the count grows super-exponentially: on the canonical Wolfram rule the ratio between consecutive depths rises from $1.7$ at depth two to $11.7$ at depth seven. Every step matches the rule against each new state, canonicalizes each new state to detect isomorphic duplicates, and records events and their causal and branchial relations. The existing Wolfram Language implementation takes $\AuthorityDeepSeconds$\,s to reach depth \SpeedupHighDepth{} of the corpus's \texttt{wolfram-2to4} rule; this engine takes $\CoreDeepMs$\,ms for the same evolution (Section~\ref{sec:benchmarks}).
+Exhaustive multiway evolution is expensive. Each step multiplies the number of histories by the
+frontier's match count, and a rule that adds edges gives each state more matches than its parent,
+so the count grows super-exponentially: on the canonical Wolfram rule the ratio between consecutive
+depths rises from $1.7$ at depth two to $11.7$ at depth seven. The existing Wolfram Language
+implementation takes $\AuthorityDeepSeconds$\,s to reach depth \SpeedupHighDepth{} of the corpus's
+\texttt{wolfram-2to4} rule.
 
-The engine provides:
-
+\paragraph{Challenges.} An efficient multiway engine must address four problems.
 \begin{enumerate}
-    \item \textbf{Exact canonicalization:} Every state is canonicalized by McKay-style individualization--refinement (IR)~\cite{mckay2014practical}, and the canonical hash is the deduplication key, so two states are identified if and only if they are isomorphic. Proposition~\ref{prop:wlceiling} bounds the saving from any cheaper filter in front of IR by the ratio of canonical classes to raw states, which falls toward zero with depth.
-
-    \item \textbf{Lock-free concurrency:} The engine holds no lock. Its hash maps, segmented arrays, lists and work-stealing deques are non-blocking, and an idle worker waits on an atomic counter through \texttt{futex}~\cite{franke2002fuss} on Linux, \texttt{WaitOnAddress} on Windows or \texttt{os\_sync\_wait\_on\_address} on macOS, using no cycles until new work arrives.
-
-    \item \textbf{GPU acceleration:} A CUDA kernel that stays resident for the whole evolution runs matching, rewriting and canonicalization, so no step returns to the host. It is faster than the CPU when the rule set gives it enough independent work (Section~\ref{sec:benchmarks}).
-
-    \item \textbf{Configurable equivalence:} State and event identity are chosen independently. State identity is \textsc{None}, \textsc{Automatic} (a content hash) or \textsc{Full} (exact IR); event identity is built from a small set of signature keys.
-
-    \item \textbf{Exploration strategies:} Quotient exploration (Section~\ref{sec:quotient}) expands one state per isomorphism class and still reconstructs every raw event; sampling with per-rule rates and a per-state match cap (Section~\ref{sec:sampling}) reaches depths where exhaustive evolution cannot; and the causal graph's transitive reduction (Section~\ref{sec:tr}) is maintained as edges are added.
-
-    \item \textbf{Determinism:} The state set, event set and causal and branchial relations depend only on the inputs, not on the thread count or the scheduling order (Section~\ref{sec:determinism}).
+    \item \emph{Exact state identity.} Two states are the same node of the evolution graph if and
+    only if their hypergraphs are isomorphic, so every new state must be tested against all
+    previous ones up to isomorphism. No polynomial-time algorithm is known for this, and cheaper
+    invariants merge non-isomorphic states.
+    \item \emph{Irregular parallelism.} The frontier's width depends on the data and is not known
+    in advance, work is created inside running tasks, and every state, event and relation is
+    shared between workers.
+    \item \emph{Determinism.} Under concurrency a state can be reached along a long path before a
+    short one, and causal edges arrive in any order. The output must nonetheless be the same at
+    every thread count.
+    \item \emph{Scale.} The raw system grows super-exponentially, so deep evolution needs ways to
+    compute less than the full system: expanding one state per isomorphism class, sampling, and
+    continuing a partial run.
 \end{enumerate}
 
-Section~\ref{sec:background} reviews hypergraph rewriting and related work; Section~\ref{sec:canonicalization} describes canonicalization; Section~\ref{sec:pattern-matching} the pattern matcher; Section~\ref{sec:architecture} the system architecture; Section~\ref{sec:gpu} the GPU implementation; Section~\ref{sec:benchmarks} the evaluation; and Section~\ref{sec:verification} the verification of the concurrent code. Section~\ref{sec:conclusion} concludes.
+\paragraph{Contributions.} We present a multiway hypergraph rewriting engine for CPU and GPU.
+\begin{enumerate}
+    \item \textbf{Exact canonicalization.} Every state is canonicalized by McKay-style
+    individualization--refinement (IR)~\cite{mckay2014practical}, and the canonical hash is the
+    deduplication key. We show that the saving from any cheaper filter in front of IR is bounded
+    by the ratio of canonical classes to raw states, which falls toward zero with depth
+    (Section~\ref{sec:canonicalization}).
+    \item \textbf{A lock-free, deterministic engine.} Matching follows HGMatch's match-by-hyperedge
+    join~\cite{yang2023hgmatch}, with matches forwarded from parent to child. All shared structures
+    are lock-free, and idle workers wait on an address without using cycles. Depths are defined
+    by shortest path and relaxed concurrently, and the causal graph's transitive reduction is
+    maintained online, so the output does not depend on the schedule
+    (Sections~\ref{sec:pattern-matching} and~\ref{sec:architecture}).
+    \item \textbf{A resident GPU kernel.} A CUDA kernel runs matching, rewriting and
+    canonicalization for the whole evolution without returning to the host, and shares its
+    decision procedures with the CPU engine as single-source code (Section~\ref{sec:gpu}).
+    \item \textbf{Exploration strategies.} Quotient exploration expands one state per isomorphism
+    class and reconstructs every raw event and relation exactly; keyed sampling is reproducible at
+    any thread count; and sessions continue a run from its frontier
+    (Section~\ref{sec:exploration}).
+    \item \textbf{Verification and evaluation.} The concurrent data structures and protocols are
+    model-checked under the RC11 memory model and in TLA+ (Section~\ref{sec:verification}). The
+    engine agrees exactly with a brute-force oracle on every corpus workload, and is
+    $\SpeedupAtHighDepth\times$ faster than \texttt{MultiwaySystem} at depth
+    \SpeedupHighDepth{} (Section~\ref{sec:benchmarks}).
+\end{enumerate}
+
+Section~\ref{sec:background} defines the objects and reviews related work.
+Section~\ref{sec:canonicalization} describes state and event identity,
+Section~\ref{sec:pattern-matching} the matcher, Section~\ref{sec:architecture} the engine's
+architecture, Section~\ref{sec:exploration} its exploration strategies, and Section~\ref{sec:gpu}
+the GPU kernel. Section~\ref{sec:benchmarks} evaluates the engine, Section~\ref{sec:verification}
+describes the verification of its concurrent code, and Section~\ref{sec:conclusion} concludes.
 
 % ----------------------------------------------------------------------------
 % BACKGROUND
