@@ -498,57 +498,17 @@ makeStyledEventVertexShapeFn[vertexData_] := Function[{pos, v, size},
   ]
 ];
 
-(* Compute dimension-based color for a state vertex *)
-getDimensionColor[stateId_, dimensionData_, palette_, colorBy_, dimRange_] := Module[
-  {perState, dimStats, value, t, color},
-
-  (* No dimension data -> use default *)
-  If[!AssociationQ[dimensionData] || !KeyExistsQ[dimensionData, "PerState"],
-    Return[Missing[]]];
-
-  perState = dimensionData["PerState"];
-  dimStats = Lookup[perState, stateId, Missing[]];
-  If[MissingQ[dimStats], Return[Missing[]]];
-
-  (* Get value based on colorBy mode *)
-  value = Switch[colorBy,
-    "Mean", Lookup[dimStats, "Mean", Missing[]],
-    "Variance", Lookup[dimStats, "Variance", Missing[]],
-    "Min", Lookup[dimStats, "Min", Missing[]],
-    "Max", Lookup[dimStats, "Max", Missing[]],
-    _, Lookup[dimStats, "Mean", Missing[]]
-  ];
-  If[MissingQ[value] || !NumericQ[value], Return[Missing[]]];
-
-  (* Normalize to [0, 1] *)
-  t = Clip[(value - dimRange[[1]]) / Max[dimRange[[2]] - dimRange[[1]], 0.001], {0, 1}];
-
-  (* Get color from palette *)
-  color = ColorData[palette][t];
-  color
-];
-
 (* Create graph from FFI GraphData - main entry point *)
 (* graphData: <|"Vertices" -> {...}, "Edges" -> {...}, "VertexData" -> <|...|>|> *)
 (* styled: True for full hypergraph rendering, False for structure only *)
-(* dimensionData: optional dimension data for coloring states *)
-createGraphFromData[graphData_Association, aspectRatio_, styled_:False, dimensionData_:<||>, dimPalette_:"TemperatureMap", dimColorBy_:"Mean", dimRange_:{0, 3}, colorByRule_:False] := Module[
-  {vertices, edgeList, vertexData, vertexLabels, vertexStyles, vertexShapes, edgeStyles, edgeStyleTable, edgeLabels, hasDimData, epilogLegend, g, addLegend},
+createGraphFromData[graphData_Association, aspectRatio_, styled_:False, colorByRule_:False] := Module[
+  {vertices, edgeList, vertexData, vertexLabels, vertexStyles, vertexShapes, edgeStyles, edgeStyleTable, edgeLabels, g, addLegend},
 
   vertices = graphData["Vertices"];
   vertexData = graphData["VertexData"];
-  hasDimData = AssociationQ[dimensionData] && KeyExistsQ[dimensionData, "PerState"] && Length[dimensionData["PerState"]] > 0;
 
-  (* Helper to wrap graph with legend if dimension data exists *)
-  addLegend = If[hasDimData && dimColorBy =!= None,
-    Function[graph, Legended[graph,
-      BarLegend[{dimPalette, dimRange},
-        LegendLabel -> "Hausdorff Dimension",
-        LegendMarkerSize -> {15, 150}
-      ]
-    ]],
-    Identity
-  ];
+  (* ColorByRule wraps the graph in a rule legend below. *)
+  addLegend = Identity;
 
   (* Build edges with appropriate constructors based on Type.
 
@@ -574,21 +534,13 @@ createGraphFromData[graphData_Association, aspectRatio_, styled_:False, dimensio
     graphData["Edges"]
   ];
 
-  (* Vertex labels (tooltips) - include dimension info if available *)
+  (* Vertex labels (tooltips) *)
   vertexLabels = Map[
     Function[v,
       With[{data = vertexData[v]},
         v -> Placed[
           If[AssociationQ[data],
-            If[isStateVertexData[data],
-              (* Add dimension info to state tooltip if available *)
-              If[hasDimData && KeyExistsQ[dimensionData["PerState"], data["Id"]],
-                Column[{formatStateTooltip[data],
-                  Row[{Style["Dimension: ", Bold], dimensionData["PerState"][data["Id"]]}]}],
-                formatStateTooltip[data]
-              ],
-              formatEventTooltip[data]
-            ],
+            If[isStateVertexData[data], formatStateTooltip[data], formatEventTooltip[data]],
             ToString[v]  (* Fallback for missing data *)
           ], Tooltip]
       ]
@@ -681,12 +633,8 @@ createGraphFromData[graphData_Association, aspectRatio_, styled_:False, dimensio
       ], Tooltip]
   };
 
-  (* No legend in the graph itself - dimension is shown via vertex colors *)
-  epilogLegend = {};
-
   If[styled,
     (* Styled mode: use shape functions for hypergraph rendering *)
-    (* When dimension data available, color state backgrounds *)
     (* ONE shape function for every vertex, not one per vertex.
        Each of these functions closes over the whole vertexData, so binding one PER VERTEX
        stored the entire vertex set once for each vertex -- quadratic in the vertex count,
@@ -697,9 +645,7 @@ createGraphFromData[graphData_Association, aspectRatio_, styled_:False, dimensio
        function that picks between them is behaviour-preserving and captures vertexData a
        fixed number of times. *)
     vertexShapes = With[{
-        stateFn = If[hasDimData,
-          makeStyledStateVertexWithDimensionFn[vertexData, dimensionData, dimPalette, dimColorBy, dimRange],
-          makeStyledStateVertexShapeFn[vertexData]],
+        stateFn = makeStyledStateVertexShapeFn[vertexData],
         eventFn = makeStyledEventVertexShapeFn[vertexData]},
       (* Slots, not named parameters: stateFn and eventFn are themselves
          Function[{pos, v, size}, ...], and a named dispatcher binds the same three names,
@@ -710,24 +656,13 @@ createGraphFromData[graphData_Association, aspectRatio_, styled_:False, dimensio
     addLegend[Graph[vertices, edgeList,
       VertexSize -> 1/2, VertexLabels -> vertexLabels, VertexShapeFunction -> vertexShapes,
       EdgeLabels -> edgeLabels, EdgeStyle -> edgeStyles,
-      GraphLayout -> "LayeredDigraphEmbedding", AspectRatio -> aspectRatio,
-      Epilog -> epilogLegend]]
+      GraphLayout -> "LayeredDigraphEmbedding", AspectRatio -> aspectRatio]]
     ,
-    (* Structure mode: simple styles, with dimension coloring if available *)
+    (* Structure mode: simple styles *)
     vertexStyles = Map[
       Function[v,
         With[{data = vertexData[v]},
-          If[AssociationQ[data] && isStateVertexData[data],
-            (* State vertex: use dimension color if available *)
-            With[{dimColor = getDimensionColor[data["Id"], dimensionData, dimPalette, dimColorBy, dimRange]},
-              v -> If[MissingQ[dimColor],
-                stateVertexStyle,
-                Directive[dimColor, EdgeForm[Darker[dimColor]]]
-              ]
-            ],
-            (* Event vertex: use default style *)
-            v -> eventVertexStyle
-          ]
+          v -> If[AssociationQ[data] && isStateVertexData[data], stateVertexStyle, eventVertexStyle]
         ]
       ],
       vertices
@@ -735,27 +670,7 @@ createGraphFromData[graphData_Association, aspectRatio_, styled_:False, dimensio
     addLegend[Graph[vertices, edgeList,
       VertexLabels -> vertexLabels, VertexStyle -> vertexStyles,
       EdgeLabels -> edgeLabels, EdgeStyle -> edgeStyles,
-      GraphLayout -> "LayeredDigraphEmbedding", AspectRatio -> aspectRatio,
-      Epilog -> epilogLegend]]
-  ]
-];
-
-(* State vertex shape function with dimension coloring *)
-makeStyledStateVertexWithDimensionFn[vertexData_, dimensionData_, palette_, colorBy_, dimRange_] := Function[{pos, v, size},
-  With[{data = vertexData[v]},
-    If[AssociationQ[data] && KeyExistsQ[data, "Edges"],
-      With[{dimColor = getDimensionColor[data["Id"], dimensionData, palette, colorBy, dimRange]},
-        With[{bgColor = If[MissingQ[dimColor], LightBlue, Lighter[dimColor, 0.3]]},
-          Inset[Framed[
-            ResourceFunction["WolframModelPlot"][stateDisplayEdges[data], ImageSize -> {32, 32}],
-            Background -> bgColor, RoundingRadius -> 3,
-            FrameStyle -> If[MissingQ[dimColor], Automatic, Darker[dimColor]]
-          ], pos, {0, 0}]
-        ]
-      ],
-      (* Fallback for missing data *)
-      Inset[Framed[v, Background -> LightBlue], pos, {0, 0}]
-    ]
+      GraphLayout -> "LayeredDigraphEmbedding", AspectRatio -> aspectRatio]]
   ]
 ];
 
@@ -1156,9 +1071,7 @@ hgRunJob[inputData_Association, device_, props_List, propertyWasList_, view_Asso
          sessionHandle_ : None] :=
   Module[
   {wxfBytes, resultBytes, wxfData, requiredData, states, events, causalEdges, branchialEdges,
-   branchialStateEdges, branchialStateVertices, aspectRatio, canonicalizeStates, canonicalizeEvents, colorByRule,
-   dimensionData, geodesicData, topologicalData, curvatureData, alignmentData, entropyData,
-   hilbertData, branchialData, multispaceData, dimPalette, dimColorBy, dimRange},
+   branchialStateEdges, branchialStateVertices, aspectRatio, canonicalizeStates, canonicalizeEvents, colorByRule},
 
   requiredData            = view["RequestedData"];
   aspectRatio             = view["AspectRatio"];
@@ -1215,21 +1128,15 @@ hgRunJob[inputData_Association, device_, props_List, propertyWasList_, view_Asso
     Print["  BranchialEdges count: ", Length[branchialEdges]];
   ];
 
-  (* The physics analyses live in the hypergraph_viz repo; these locals feed
-     getProperty's plain-rendering path as empty. *)
-  {dimensionData, geodesicData, topologicalData, curvatureData, alignmentData,
-   entropyData, hilbertData, branchialData, multispaceData} = Table[<||>, 9];
-
   colorByRule = TrueQ[view["ColorByRule"]];
-  {dimPalette, dimColorBy, dimRange} = {"TemperatureMap", "Mean", {0, 3}};
 
   (* Return requested properties *)
   (* String input returns data directly; list input always returns association *)
   If[Length[props] == 1 && !propertyWasList,
     (* Single string property: return directly *)
-    getProperty[First[props], states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, canonicalizeStates, canonicalizeEvents, dimensionData, dimPalette, dimColorBy, dimRange, geodesicData, topologicalData, curvatureData, entropyData, hilbertData, branchialData, multispaceData, colorByRule],
+    getProperty[First[props], states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, canonicalizeStates, canonicalizeEvents, colorByRule],
     (* List input: return association keyed by property names *)
-    Association[# -> getProperty[#, states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, canonicalizeStates, canonicalizeEvents, dimensionData, dimPalette, dimColorBy, dimRange, geodesicData, topologicalData, curvatureData, entropyData, hilbertData, branchialData, multispaceData, colorByRule] & /@ props]
+    Association[# -> getProperty[#, states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, canonicalizeStates, canonicalizeEvents, colorByRule] & /@ props]
   ]
 ]
 
@@ -1484,7 +1391,7 @@ HGSessionObject /: MakeBoxes[obj : HGSessionObject[d_Association], fmt_] :=
 
 (* Property getter *)
 (* Graph properties are handled via FFI GraphData - keyed by property name *)
-getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialStateEdges_, branchialStateVertices_, wxfData_, aspectRatio_, canonicalizeStates_, canonicalizeEvents_, dimensionData_:<||>, dimPalette_:"TemperatureMap", dimColorBy_:"Mean", dimRange_:{0, 3}, geodesicData_:<||>, topologicalData_:<||>, curvatureData_:<||>, entropyData_:<||>, hilbertData_:<||>, branchialData_:<||>, multispaceData_:<||>, colorByRule_:False] := Module[
+getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialStateEdges_, branchialStateVertices_, wxfData_, aspectRatio_, canonicalizeStates_, canonicalizeEvents_, colorByRule_:False] := Module[
   {isGraphProperty, isStyled, graphData},
 
   (* Graph properties: use FFI-provided GraphData keyed by property name *)
@@ -1493,7 +1400,7 @@ getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialSta
     If[KeyExistsQ[wxfData, "GraphData"] && KeyExistsQ[wxfData["GraphData"], prop],
       graphData = wxfData["GraphData"][prop];
       isStyled = !StringMatchQ[prop, "*Structure"];
-      Return[createGraphFromData[graphData, aspectRatio, isStyled, dimensionData, dimPalette, dimColorBy, dimRange, colorByRule]],
+      Return[createGraphFromData[graphData, aspectRatio, isStyled, colorByRule]],
       (* GraphData for this property not available *)
       Return[$Failed]
     ]
