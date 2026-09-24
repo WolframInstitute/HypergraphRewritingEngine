@@ -172,6 +172,13 @@ struct DeviceState {
     // c's kept causal edges, one node per unique kept (producer, consumer) pair. Reachability
     // queries walk it backward; no closure is stored. Device twin of CausalGraph::preds_.
     typename LockFreeList<EventId>::DeviceView    preds_list;
+    // The reduction's reachability search runs in local arrays and, when they fill, again in the
+    // calling block's slice of this buffer: tr_scratch_slots slices of tr_scratch_stack stack
+    // words followed by tr_scratch_visited visited-table words (a power of two).
+    uint32_t* tr_scratch;
+    uint32_t  tr_scratch_stack;
+    uint32_t  tr_scratch_visited;
+    uint32_t  tr_scratch_slots;
 
     // Flags
     bool tr_enabled;
@@ -264,6 +271,11 @@ public:
     static constexpr size_t kDeviceStackBytes =
         kDeviceStackFloorBytes + kDpNestLevels * kDpBytesPerNestLevel;
 
+
+    // Per-block global scratch of the reachability search at tr_scratch_scale 1: 8 times the
+    // search's local arrays (rewrite.cu, kReachStack and kReachVisited).
+    static constexpr uint32_t kTrScratchStack   = 2048;
+    static constexpr uint32_t kTrScratchVisited = 4096;   // a power of two
 
     explicit EngineState(EngineConfig cfg);
 
@@ -468,6 +480,8 @@ private:
     uint64_t*                          state_exact_hash_       = nullptr;
     hgcommon::RecordSet                record_{};
     uint32_t*                          state_edge_rank_        = nullptr;
+    uint32_t*                          tr_scratch_             = nullptr;
+    uint32_t                           tr_scratch_slots_       = 0;
     // Sampling and capping. The weights and the two counters are the only device memory these
     // options need; everything else the draw reads was already here.
     double                             transition_rate_        = 1.0;

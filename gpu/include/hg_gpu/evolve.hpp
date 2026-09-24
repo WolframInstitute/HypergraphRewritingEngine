@@ -341,6 +341,11 @@ struct EngineConfig {
     // kQeWorkOverflow and kQcWorkOverflow, which would otherwise drop a descent.
     uint32_t descent_work_scale = 1u;
 
+    // Multiplies each block's global scratch for the transitive reduction's reachability search
+    // (kTrScratchStack stack words and kTrScratchVisited visited words, engine_state.hpp). A search
+    // that fills it records kTrScratchOverflow, and grow-and-retry doubles this.
+    uint32_t tr_scratch_scale = 1u;
+
     // Average IR-arena words per concurrent slot holder (the arena is one shared bump pool, so
     // the average share is what matters, not a per-worker partition). The default is ~6x the
     // measured average demand on multiway state sizes; a big-state workload that outgrows the

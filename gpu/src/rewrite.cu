@@ -57,33 +57,33 @@ __device__ uint64_t branchial_pair_key(EventId a, EventId b) {
 // registration before any state carrying its produced edges was enqueued, and the queue's
 // release/acquire handshake orders that before c's rewrite.
 //
-// Scratch is a bounded local stack + open-addressed visited table. Overflow records
-// kTrScratchOverflow and answers "not reachable", which KEEPS the candidate edge: the causal
-// relation stays complete, only the reduction may retain a redundant edge.
+// The search runs in a local stack and open-addressed visited table. When either fills, the
+// calling block's thread 0 runs it again in the block's slice of ds.tr_scratch, which is 8 times
+// larger at tr_scratch_scale 1. Only when that fills too does the search record
+// kTrScratchOverflow and answer "not reachable", which KEEPS the candidate edge: the causal
+// relation stays complete and only the reduction may retain a redundant edge, until
+// grow-and-retry doubles tr_scratch_scale and runs again.
 constexpr uint32_t kReachStack   = 256;
 constexpr uint32_t kReachVisited = 512;   // power of two; entries store id + 1, 0 = empty
 
-__device__ bool is_reachable_preds(DeviceState ds, EventId p, EventId c) {
-    if (p == c) return true;
-    if (p >= c) return false;
-
-    EventId  stack[kReachStack];
-    uint32_t visited[kReachVisited];
-    for (uint32_t i = 0; i < kReachVisited; ++i) visited[i] = 0;
-    bool overflow = false;
-
+// One backward search from c for p through preds_list, in the given stack and visited table.
+// Returns whether p was found; sets `overflow` when either filled before the search finished.
+__device__ bool reach_search(DeviceState ds, EventId p, EventId c, EventId* stack,
+                             uint32_t stack_cap, uint32_t* visited, uint32_t visited_cap,
+                             bool& overflow) {
+    for (uint32_t i = 0; i < visited_cap; ++i) visited[i] = 0;
+    overflow = false;
     auto visit = [&](EventId x) -> bool {   // true iff newly inserted
-        uint32_t slot = (x * 2654435761u) & (kReachVisited - 1u);
-        for (uint32_t probe = 0; probe < kReachVisited; ++probe) {
+        uint32_t slot = (x * 2654435761u) & (visited_cap - 1u);
+        for (uint32_t probe = 0; probe < visited_cap; ++probe) {
             const uint32_t held = visited[slot];
             if (held == x + 1u) return false;
             if (held == 0u) { visited[slot] = x + 1u; return true; }
-            slot = (slot + 1u) & (kReachVisited - 1u);
+            slot = (slot + 1u) & (visited_cap - 1u);
         }
         overflow = true;   // table full: treat as seen, which can only under-explore
         return false;
     };
-
     uint32_t sp = 0;
     stack[sp++] = c;
     visit(c);
@@ -94,13 +94,34 @@ __device__ bool is_reachable_preds(DeviceState ds, EventId p, EventId c) {
             if (found) return;
             if (q == p) { found = true; return; }
             if (q > p && visit(q)) {
-                if (sp < kReachStack) stack[sp++] = q;
+                if (sp < stack_cap) stack[sp++] = q;
                 else overflow = true;
             }
         });
         if (found) return true;
     }
-    if (overflow) ds.errors.record(ErrorKind::kTrScratchOverflow);
+    return false;
+}
+
+__device__ bool is_reachable_preds(DeviceState ds, EventId p, EventId c) {
+    if (p == c) return true;
+    if (p >= c) return false;
+
+    EventId  stack[kReachStack];
+    uint32_t visited[kReachVisited];
+    bool overflow = false;
+    if (reach_search(ds, p, c, stack, kReachStack, visited, kReachVisited, overflow)) return true;
+    if (!overflow) return false;
+
+    if (ds.tr_scratch != nullptr && threadIdx.x == 0 && blockIdx.x < ds.tr_scratch_slots) {
+        uint32_t* slice = ds.tr_scratch + static_cast<size_t>(blockIdx.x) *
+                                              (ds.tr_scratch_stack + ds.tr_scratch_visited);
+        if (reach_search(ds, p, c, slice, ds.tr_scratch_stack, slice + ds.tr_scratch_stack,
+                         ds.tr_scratch_visited, overflow))
+            return true;
+        if (!overflow) return false;
+    }
+    ds.errors.record(ErrorKind::kTrScratchOverflow);
     return false;
 }
 
@@ -602,6 +623,19 @@ __global__ void k_rewrite(DeviceState              ds,
 }
 
 }  // namespace
+
+namespace {
+__global__ void k_redundant_edge_over_chain(DeviceState ds, uint32_t n) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    for (uint32_t k = 1; k <= n + 1; ++k) ds.preds_list.push(k + 1, k);
+    try_add_causal_edge(ds, 1u, n + 2u, 0u);
+}
+}  // namespace
+
+void add_redundant_edge_over_chain(EngineState& engine, uint32_t n) {
+    k_redundant_edge_over_chain<<<1, kMatchBlockThreads>>>(engine.device(), n);
+    HG_CUDA_CHECK(cudaDeviceSynchronize(), "add_redundant_edge_over_chain sync");
+}
 
 uint32_t run_rewrite_kernel(EngineState&                   engine,
                             const std::vector<DeviceRule>& rules,

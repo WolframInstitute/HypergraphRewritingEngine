@@ -671,9 +671,10 @@ bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
             // -- and a coarser key MERGES non-isomorphic states.
             dbl(cfg.ir_depth);
             return true;
+        case ErrorKind::kTrScratchOverflow:   dbl(cfg.tr_scratch_scale);     return true;
         case ErrorKind::kScratchOverflow:
-            // A fixed per-thread bound (the TR closure's ancestor/descendant scratch). Not
-            // config-controlled, so it cannot be retried; the caller accepts the truncation.
+            // A fixed bound no config field sets. It cannot be retried; the caller accepts the
+            // truncation.
             return false;
         default: return false;
     }
@@ -712,6 +713,7 @@ static void log_winning_config(const EngineConfig& initial,
     LOG_FIELD(tr_preds_nodes);
     LOG_FIELD(qe_capacity_scale);
     LOG_FIELD(descent_work_scale);
+    LOG_FIELD(tr_scratch_scale);
 #undef LOG_FIELD
 }
 
@@ -772,6 +774,8 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     // descent_work_scale multiplies; a deep run's stacks are larger still.
     b += u64(default_persistent_grid()) * 256u * u64(cfg.descent_work_scale) *
          (sizeof(QeWorkItem) + sizeof(QcWorkItem));
+    b += u64(default_persistent_grid()) * 4u * u64(cfg.tr_scratch_scale) *
+         (EngineState::kTrScratchStack + EngineState::kTrScratchVisited);   // reachability scratch
     b += u64(cfg.canonical_map_slots) * 12;         // canonical dedup map
     b += u64(cfg.match_dedup_slots)   * 12 + u64(cfg.event_canon_slots) * 12;
     b += u64(cfg.max_states)          * 8 * 76;     // matches pool (max_states*8 records ~76B)

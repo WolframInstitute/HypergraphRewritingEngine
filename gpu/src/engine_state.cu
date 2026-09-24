@@ -1,4 +1,5 @@
 #include "hg_gpu/engine_state.hpp"
+#include "hg_gpu/persistent.hpp"   // default_persistent_grid
 #include "hg_gpu/device_arena.hpp"
 #include "hg_gpu/match.hpp"
 #include "hg_gpu/signature_index.hpp"
@@ -204,6 +205,13 @@ EngineState::EngineState(EngineConfig cfg): cfg_(cfg)
         vertex_high_water_      = counter_block_ + 3;
         HG_CUDA_CHECK(cudaMalloc(&edge_producer_,     sizeof(EventId) * cfg_.max_edges),
               "EngineState edge_producer alloc");
+        // One reachability slice per persistent block; the kernels call the search from each
+        // block's thread 0.
+        tr_scratch_slots_ = default_persistent_grid();
+        HG_CUDA_CHECK(cudaMalloc(&tr_scratch_, sizeof(uint32_t) * tr_scratch_slots_ *
+                                                   (kTrScratchStack + kTrScratchVisited) *
+                                                   cfg_.tr_scratch_scale),
+                      "EngineState tr_scratch alloc");
         clear();
     }
 
@@ -224,6 +232,7 @@ EngineState::~EngineState() {
         if (state_canonical_hash_)   cudaFree(state_canonical_hash_);
         if (state_exact_hash_)       cudaFree(state_exact_hash_);
         if (state_edge_rank_)        cudaFree(state_edge_rank_);
+        if (tr_scratch_)             cudaFree(tr_scratch_);
         if (state_edge_orbit_)       cudaFree(state_edge_orbit_);
         if (state_num_orbits_)       cudaFree(state_num_orbits_);
         if (edge_producer_)          cudaFree(edge_producer_);
@@ -376,6 +385,10 @@ DeviceState EngineState::device() const {
         d.branchial_pair_dedup    = branchial_pair_dedup_.view();
         d.preds_list              = preds_list_.view();
         d.tr_enabled              = tr_enabled_;
+        d.tr_scratch              = tr_scratch_;
+        d.tr_scratch_stack        = kTrScratchStack * cfg_.tr_scratch_scale;
+        d.tr_scratch_visited      = kTrScratchVisited * cfg_.tr_scratch_scale;
+        d.tr_scratch_slots        = tr_scratch_slots_;
         d.quotient_causal         = quotient_causal_;
         d.slice_scan_max_edges    = slice_scan_max_edges_;
         d.maintain_indices        = maintain_indices_ ? 1u : 0u;
