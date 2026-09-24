@@ -337,6 +337,7 @@ class Hypergraph {
         size_t branchial = 0;
         size_t applied_scans = 0;
         size_t applied_visits = 0;
+        size_t applications = 0;   // reconstruction applications this worker performed
     };
     mutable QcCounterSlot qc_ctr_[MAX_ARENA_WORKERS];
 
@@ -1080,6 +1081,9 @@ public:
     // rule doing its job.
 #if HG_ENGINE_STATS
     size_t capture_dropped_no_orbits() const;
+    // Reconstruction applications performed by each arena worker index, MAX_ARENA_WORKERS entries.
+    // The total is a function of the run; the split shows how the replay was divided.
+    std::vector<size_t> reconstruction_applications_by_worker() const;
 #endif
     // Endpoint tables that were not cached and were rebuilt. A cache-miss rate: the rebuilt
     // table is the same function of the same immutable edge set, so nothing downstream moves.

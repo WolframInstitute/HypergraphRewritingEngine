@@ -1575,6 +1575,12 @@ uint64_t Hypergraph::applied_shape_fingerprint() const {
 size_t Hypergraph::capture_dropped_no_orbits() const {
     return qc_capture_no_orbits_.load(std::memory_order_relaxed);
 }
+
+std::vector<size_t> Hypergraph::reconstruction_applications_by_worker() const {
+    std::vector<size_t> out;
+    for (const QcCounterSlot& s : qc_ctr_) out.push_back(s.applications);
+    return out;
+}
 #endif
 
 #if HG_ENGINE_STATS
@@ -1972,6 +1978,7 @@ Hypergraph::QcCtx Hypergraph::qc_ctx() {
 bool Hypergraph::QrCtx::claim(uint64_t apply_key) { return hg.qc_applied_.insert(apply_key); }
 
 uint32_t Hypergraph::QrCtx::mint_event() {
+    HG_STAT(++qc_slot(hg.qc_ctr_).applications);
     return hg.qc_next_raw_event_.fetch_add(1, std::memory_order_relaxed);
 }
 
