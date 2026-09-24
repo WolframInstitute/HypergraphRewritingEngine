@@ -39,3 +39,12 @@ Module[{plain, asInt, msgs},
        "ExplorationProbability" -> 1], $MessageList}];
   Print["plain=", plain, " integer options=", asInt, " messages=", msgs];
   Print[If[asInt === plain && msgs === {}, "INTEGER RATE PASS", "INTEGER RATE FAIL"]]];
+
+(* "RandomSeed" reaches the surface initial conditions: the same seed gives the same initial
+   state, and a different seed a different one. *)
+Module[{chain = {{{1, 2}} -> {{1, 3}, {3, 2}}}, init, rows},
+  init[type_, s_] := Lookup[Values[HGEvolve[chain, type, 0, "States", "RandomSeed" -> s]], "Edges"];
+  rows = Table[{type, init[type, 5] === init[type, 5], init[type, 5] =!= init[type, 6]},
+    {type, {"Cylinder", "Torus", "Sphere", "KleinBottle", "MobiusStrip"}}];
+  Print["surface seed rows {type, same seed equal, other seed differs}: ", rows];
+  Print[If[AllTrue[rows, #[[2]] && #[[3]] &], "SURFACE SEED PASS", "SURFACE SEED FAIL"]]];

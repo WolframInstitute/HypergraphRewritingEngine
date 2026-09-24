@@ -895,34 +895,34 @@ HGEvolve[rules_List, initialSpec_Association, steps_Integer,
     resolution = Lookup[initialSpec, "Resolution", OptionValue[HGEvolve, {opts}, "GridWidth"]];
     gridHeight = Lookup[initialSpec, "Height", OptionValue[HGEvolve, {opts}, "GridHeight"]];
     majorRadius = Lookup[initialSpec, "Radius", OptionValue[HGEvolve, {opts}, "MajorRadius"]];
-    icResult = HGCylinder[resolution, gridHeight, "Radius" -> majorRadius];
+    icResult = HGCylinder[resolution, gridHeight, "Radius" -> majorRadius, "RandomSeed" -> seed];
     edges = icResult["Edges"],
 
     "Torus",
     resolution = Lookup[initialSpec, "Resolution", OptionValue[HGEvolve, {opts}, "GridWidth"]];
     majorRadius = Lookup[initialSpec, "MajorRadius", OptionValue[HGEvolve, {opts}, "MajorRadius"]];
     minorRadius = Lookup[initialSpec, "MinorRadius", OptionValue[HGEvolve, {opts}, "MinorRadius"]];
-    icResult = HGTorus[resolution, "MajorRadius" -> majorRadius, "MinorRadius" -> minorRadius];
+    icResult = HGTorus[resolution, "MajorRadius" -> majorRadius, "MinorRadius" -> minorRadius, "RandomSeed" -> seed];
     edges = icResult["Edges"],
 
     "Sphere",
     resolution = Lookup[initialSpec, "Resolution", OptionValue[HGEvolve, {opts}, "GridWidth"]];
     majorRadius = Lookup[initialSpec, "Radius", OptionValue[HGEvolve, {opts}, "MajorRadius"]];
-    icResult = HGSphere[resolution, "Radius" -> majorRadius];
+    icResult = HGSphere[resolution, "Radius" -> majorRadius, "RandomSeed" -> seed];
     edges = icResult["Edges"],
 
     "Klein" | "KleinBottle",
     resolution = Lookup[initialSpec, "Resolution", OptionValue[HGEvolve, {opts}, "GridWidth"]];
     gridHeight = Lookup[initialSpec, "Height", OptionValue[HGEvolve, {opts}, "GridHeight"]];
     majorRadius = Lookup[initialSpec, "Radius", OptionValue[HGEvolve, {opts}, "MajorRadius"]];
-    icResult = HGKleinBottle[resolution, gridHeight, "Radius" -> majorRadius];
+    icResult = HGKleinBottle[resolution, gridHeight, "Radius" -> majorRadius, "RandomSeed" -> seed];
     edges = icResult["Edges"],
 
     "Mobius" | "MobiusStrip",
     resolution = Lookup[initialSpec, "Resolution", OptionValue[HGEvolve, {opts}, "GridWidth"]];
     gridWidth = Lookup[initialSpec, "Width", 5];
     majorRadius = Lookup[initialSpec, "Radius", OptionValue[HGEvolve, {opts}, "MajorRadius"]];
-    icResult = HGMobiusStrip[resolution, gridWidth, "Radius" -> majorRadius];
+    icResult = HGMobiusStrip[resolution, gridWidth, "Radius" -> majorRadius, "RandomSeed" -> seed];
     edges = icResult["Edges"],
 
     (* ===== SPACETIME GEOMETRIES ===== *)
