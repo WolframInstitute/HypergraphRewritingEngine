@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased
+
+User-visible changes since v1.0.0-rc1:
+
+- `"StepStatistics"`: for each step, the number of states, the isomorphism classes, the entropy
+  of the states over the classes and summaries of per-state invariants, on both devices.
+- Every option of `Graph` is an option of `HGEvolve` and `HGSessionOpen` and goes to the graph a
+  graph property returns.
+- `"MultiedgeStyle" -> "Merged"` draws the events between two states as one edge.
+- Under quotient exploration, `"NumEvents"` and `"NumBranchialEdges"` asked for alone are
+  computed from class multiplicities, so much deeper runs are possible. Counts above 2^63 - 1
+  are reported as 2^63 - 1 with the warning `CountSaturated`.
+- Malformed input issues one message and gives `$Failed`: `HGEvolve::badrule`,
+  `HGEvolve::badinit` and `HGEvolve::steps`. A negative vertex in an initial state is refused.
+- An unrecognised `"CanonicalizeEvents"` or `"CanonicalizeStates"` value is reported through
+  `HGEvolve::warn` and the default is used. `Positional` must be written as the string
+  `"Positional"`.
+- The GPU reports the same warnings as the CPU. Only warnings that mean a partial result are
+  reported as `HGEvolve::overflow`; the others are `HGEvolve::warn`.
+- Six options that changed nothing are removed: `"InitialCondition"`, `"Topology"`,
+  `"MajorRadius"`, `"MinorRadius"`, `"IncludeStateContents"` and `"IncludeEventContents"`.
+- The surface initial conditions (`"Torus"`, `"Sphere"`, `"Cylinder"`, `"Klein"`, `"Mobius"`)
+  take `"RandomSeed"`.
+- Under `"CanonicalizeStates" -> Full`, `"States"` is keyed by each class's canonical state id.
+  `"ContentStateId"` is the lowest id of the states with the same edge list.
+- A symbolic initial state is renumbered the way rule variables are. An integer
+  `"TransitionRate"` or `"ExplorationProbability"` is accepted.
+- Sessions: `HGSessionOpen` takes the input forms and `"TargetDevice"` handling of `HGEvolve`;
+  `HGSessionStep` takes `"From"` without a property; a step with `"From"` advances by the steps
+  it asks for; `"BranchialStep" -> Automatic` is resolved for each verb's properties.
+- `"ShowProgress"` messages reach the kernel through the persistent worker.
+- Fixed: the match drain considered only the first 64 rules; the GPU reported
+  `NumBranchialEdges` 0 under quotient exploration; the sampling spine chose among a subset of a
+  state's transitions, so seeded samples differ from rc1's; the GPU transitive reduction was
+  inexact past its local arrays; GPU quotient exploration did not capture states above a size
+  limit.
+
+---
+
 ## v1.0.0-rc1 (2026-09-01)
 
 User-visible semantic changes since v0.0.1-alpha.6, carried here so the release notes state them:
