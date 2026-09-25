@@ -7,8 +7,8 @@ Outside fenced ``` blocks it checks that
     unclosed span silently takes the text after it into code; a Wolfram context such as
     `HypergraphRewriting`` ends in a backtick and closes a single-backtick span early, and has to
     be written in a double-backtick span;
-  - every paragraph has an even number of $ outside code spans, since each $...$ formula the
-    converter typesets must close.
+  - every paragraph (and every list item) has an even number of $ outside code spans and
+    <code>...</code> spans, since each $...$ formula the converter typesets must close.
 
 Files: the tracked docs/en/**/*.md, docs/research/**/*.md, docs/registry/**/*.md and *.md at the
 repository root.
@@ -25,6 +25,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 TREES = ["docs/en", "docs/research", "docs/registry"]
 FENCE = re.compile(r"^\s*(```|~~~)")
+HTML_CODE = re.compile(r"<code>.*?</code>")
+LIST_ITEM = re.compile(r"^\s*([-*+]|\d+\.)\s")
 
 
 def files():
@@ -92,7 +94,10 @@ def lint_text(text, name):
                 end_paragraph()
                 para = []
             continue
-        plain, unclosed = strip_spans(line)
+        if LIST_ITEM.match(line) and para:
+            end_paragraph()
+            para = []
+        plain, unclosed = strip_spans(HTML_CODE.sub("", line))
         if unclosed is not None:
             findings.append(f"{name}:{n}: a code span opened at column {unclosed + 1} does not "
                             f"close on this line")
@@ -106,8 +111,8 @@ def lint_text(text, name):
 
 def selftest():
     bad = lint_text("A span `open and\nnever closed.\n\nA $x formula.\n", "fixture")
-    good = lint_text("`HGEvolve` and ``HypergraphRewriting` `` and $x$.\n\n```wl\n`a\n```\n",
-                     "fixture")
+    good = lint_text("`HGEvolve` and ``HypergraphRewriting` `` and $x$.\n\n```wl\n`a\n```\n"
+                     "\n- gives <code>[$Failed]()</code>.\n- a $y$ item.\n", "fixture")
     ok = len(bad) == 2 and good == []
     print("self-test:", "PASS" if ok else f"FAIL (bad {bad}, good {good})")
     return 0 if ok else 1
