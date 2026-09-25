@@ -19,6 +19,10 @@
    source. Here the block's result, in InputForm with runs of whitespace collapsed, must equal
    the hint, or the part of the hint before a "; " that starts a note.
 
+   A MESSAGE THE PAGE STATES IS ALLOWED. A hint of the form "... the message Sym::tag is issued"
+   documents that the example raises that message (a page's Possible Issues section shows
+   them); the block then passes if it raises exactly the messages its hint names.
+
    A GPU EXAMPLE THAT RAN ON THE CPU FAILS: HGEvolve::gpudev says the device was not available,
    so the page would show a result the device did not produce. HG_ALLOW_GPU_FALLBACK=1 reports
    it and continues, for a machine without the GPU worker.
@@ -94,26 +98,32 @@ Do[
     Do[
       Module[{code = blocks[[i, 1]], hint = blocks[[i, 2]], msgs = {}, firstMsg = None, res, bad, hintBad},
         total++;
-        (* The handler fires for EVERY message, including ones that are switched off --
-           those arrive wrapped in $Off[...] and are by definition not shown to a user, so
-           they are not what this is looking for. Nothing is wrapped in Quiet here for the
-           same reason: quieting would make every message look switched-off and the check
-           would pass on anything. *)
+        (* The handler fires for EVERY message, as Hold[Message[name, args], on], including ones
+           that are switched off (on is False), which a user is not shown and this ignores.
+           Nothing is wrapped in Quiet here for the same reason: quieting would make every
+           message look switched off and the check would pass on anything. The name is taken
+           held: extracted, Sym::tag evaluates to the message's text. *)
         res = Block[{$Context = ctx, $ContextPath = {ctx, "HypergraphRewriting`", "System`"}},
           Internal`HandlerBlock[{"Message",
-              With[{nm = ToString[#[[1, 1]]]},
-                If[!StringStartsQ[nm, "$Off"],
+              With[{nm = ToString[Extract[#, {1, 1}, HoldForm]]},
+                If[#[[2]] =!= False,
                   AppendTo[msgs, nm];
                   If[firstMsg === None, firstMsg = ToString[Short[#, 3], InputForm]]]] &},
             Check[ToExpression[code], $Failed]]];
         (* An unevaluated HGEvolve head means the arguments did not match any definition. *)
-        bad = FailureQ[res] || (res === $Failed && hint === None) ||
+        (* A block with a hint is judged by its hint, which may document $Failed. *)
+        bad = (hint === None && (FailureQ[res] || res === $Failed)) ||
               (Head[res] === HypergraphRewriting`HGEvolve) ||
               !FreeQ[res, _HypergraphRewriting`HGEvolve];
         If[gpuFallbackOK && MemberQ[msgs, "HGEvolve::gpudev"],
           Print["WARN  block ", i, "  ran on the CPU (HGEvolve::gpudev)"];
           msgs = DeleteCases[msgs, "HGEvolve::gpudev"]];
         hintBad = StringQ[hint] && ! hintMatchQ[res, hint];
+        (* The messages the hint says the block issues. *)
+        With[{stated = If[StringQ[hint],
+            StringCases[hint, "the message " ~~ m : (WordCharacter .. ~~ "::" ~~ WordCharacter ..) ~~ " is issued" :> m],
+            {}]},
+          If[stated =!= {} && Union[msgs] === Union[stated], msgs = {}]];
         If[bad || msgs =!= {} || hintBad,
           AppendTo[failed, {FileNameTake[src], i}];
           Print["FAIL  block ", i, "  ", StringTake[StringReplace[code, "\n" -> " "],

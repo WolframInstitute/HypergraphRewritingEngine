@@ -7,8 +7,9 @@ style "Message", which the reader then sees under the example. This reads the no
 themselves, so it judges what the built page shows, under the converter's own rules for which
 sections share definitions. It needs no Wolfram kernel.
 
-An example that is meant to show a message (a page documenting an error) quiets it with Quiet
-and says so in the text; a message cell in a built notebook is always a finding.
+A page may show a message on purpose (its Possible Issues section documents one): the example's
+hint in the markdown then says "the message Sym::tag is issued". A message cell is allowed when
+the notebook's source page states that message in this form, and is a finding otherwise.
 
 Usage:  tools/dev/doc_messages_check.py [--selftest]
 Exit:   0 clean, 1 a notebook shows a message (or the self-test failed)
@@ -20,6 +21,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 NB_DIR = ROOT / "paclet" / "Documentation" / "English"
+SRC_DIR = ROOT / "docs" / "en"
+STATED = re.compile(r"the message ([A-Za-z0-9$]+::[A-Za-z0-9$]+) is issued")
+
+
+def stated_messages(nb: Path):
+    """The messages the notebook's source page says its examples issue."""
+    src = [p for p in SRC_DIR.rglob(nb.stem + ".md") if ".generated" not in p.parts]
+    return set(STATED.findall(src[0].read_text(encoding="utf-8", errors="replace"))) if src else set()
 
 # A message cell ends with its style pair: ..., "Message", "MSG", ...
 MESSAGE_CELL = re.compile(r'"Message",\s*\\?\s*"MSG"')
@@ -54,8 +63,11 @@ def main():
     findings = []
     books = sorted(NB_DIR.rglob("*.nb"))
     for nb in books:
+        allowed = stated_messages(nb)
         for name in messages_in(nb.read_text(encoding="utf-8", errors="replace")):
-            findings.append(f"{nb.relative_to(ROOT)}: shows the message {name}")
+            if name not in allowed:
+                findings.append(f"{nb.relative_to(ROOT)}: shows the message {name}, which its "
+                                f"page does not state")
     for f in findings:
         print(f)
     print(f"{len(findings)} message(s) over {len(books)} notebook(s)")
