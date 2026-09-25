@@ -3,7 +3,16 @@ name: CI
 on:
   push:
     branches: [master]
+    # The documentation checks are docs.yml's; a push that changes only these builds nothing.
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'paclet/Documentation/**'
   pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'paclet/Documentation/**'
   workflow_dispatch:
   # The sanitizer jobs run nightly (and on pull requests and by hand), not on pushes.
   schedule:
@@ -23,101 +32,6 @@ concurrency:
 # (reference/verify_paclet.wls) needs a Wolfram Engine + a macOS/Windows leg -- both
 # tracked as follow-ups.
 jobs:
-  # The code map describes a tree that changes under it. Prose cannot be generated, but the
-  # inventory can be checked, and unchecked is how it drifted: it listed a type nothing used
-  # and three CausalGraph methods that no longer exist. Needs no build -- it reads the sources.
-  codemap-drift:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      # Full history: docs_fresh_check compares the last commit touching each markdown source
-      # with the last commit touching its notebook, and in a depth-1 clone both are the same
-      # commit, so a stale notebook passes.
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: docs/CODEMAP.md names what exists, and names everything that exists
-        run: python3 tools/dev/codemap_check.py
-
-      # The Windows DLL export list is only consumed by a Windows paclet link, and no leg
-      # here performs one -- a hosted runner has no LibraryLink headers. So this file went
-      # stale when the visualisation split deleted three exported functions, and stayed
-      # stale through every green build, because an ELF .so links with undefined symbols
-      # and says nothing. Checking the list against the sources needs no linker.
-      - name: The Windows export list names only functions that exist
-        run: python3 tools/dev/def_exports_check.py
-
-      # The shipped documentation is a set of BUILT notebooks, tracked in git and generated
-      # from three markdown sources, so a page outlives the symbol it documents and nothing
-      # regenerates or removes it. 21 reference pages and 42 guide links described functions
-      # the visualisation split had deleted, and all of them were inside the archive.
-      - name: The documentation names only symbols the paclet exports
-        run: python3 tools/dev/doc_symbols_check.py
-
-      # THE SHIPPED NOTEBOOKS ARE GENERATED, AND A COMMIT CAN EDIT THE MARKDOWN WITHOUT RERUNNING
-      # THE GENERATOR. Both files stay present and valid, so nothing notices, and the paclet ships
-      # a page describing behaviour the engine no longer has. That happened twice before this
-      # check existed.
-      - name: The documentation notebooks match their markdown
-        run: python3 tools/dev/docs_fresh_check.py
-
-      # A DOCUMENT MAY NOT POINT AT A FILE THAT IS NOT THERE. This project folds documents into
-      # V1_PLAN.md and deletes them, which is the right way to keep one live source -- but the
-      # pointers to them are left behind, and a reader following one gets nothing. Found by
-      # looking: the shipped comparison document sent readers to docs/PAPER_RESULTS.md,
-      # docs/OBJECTIVE.md and docs/MEMORY_ARCHITECTURE_DESIGN.md, none of which had existed for
-      # some time, and V1_PLAN.md still told a reader that docs/RELEASE_CHECKLIST.md was the
-      # acceptance gate "neither file should be read alone" -- of a file folded into it and
-      # deleted. Nothing rebuilds a markdown link, so nothing else was ever going to catch this.
-      - name: Every docs/ path a tracked document names actually exists
-        run: |
-          fail=0
-          for d in $(git ls-files '*.md'); do
-            for f in $(grep -ohE 'docs/[A-Za-z0-9_]+\.md' "$d" | sort -u); do
-              if [ ! -f "$f" ]; then echo "$d points at $f, which does not exist"; fail=1; fi
-            done
-          done
-          [ "$fail" = 0 ] && echo "every docs/ reference in every tracked markdown resolves"
-          exit "$fail"
-
-      # artifact_stamp_check.py runs at release sign-off, over binaries a hosted runner does
-      # not have. What CI can check is that the checker still catches what it claims to: its
-      # self-test builds one fixture per defect class (stale commit, absent stamp, wrong
-      # variant, two stamps in one file, an empty tree) and requires the exact finding. A
-      # checker whose regex silently stopped matching would otherwise report 0 findings over
-      # a stale release and read as green.
-      - name: The build-stamp checker still detects what it claims to
-        run: python3 tools/dev/artifact_stamp_check_selftest.py
-
-      # Option names are strings on both sides of the paclet boundary, so a rename leaves the
-      # old name in the prose and the prose still reads as correct. The sampling design was
-      # written against a "MatchRate" that ships as "TransitionRate", and against two options
-      # that do not exist at all. Checking the documented names against the WL Options[...]
-      # declarations and the FFI keys needs no build.
-      - name: The documentation names only options the paclet accepts
-        run: python3 tools/dev/option_names_check.py
-
-      # The other direction: option_names_check.py verifies that every name the docs USE is
-      # real and built; this one verifies that everything real is DESCRIBED. Neither implies
-      # the other -- "GlobalEdges", "StateBitvectors" and "All" were accepted properties named
-      # in no shipped page, and every name the pages did use was correct.
-      - name: The documentation describes everything the paclet accepts
-        run: python3 tools/dev/doc_surface_audit.py
-
-      # The GPU implements a subset of the options, and where it does not the FFI must say so
-      # rather than return a different answer per device. "MatchesPerStateRule" was parsed,
-      # applied to the CPU engine, and then neither carried to the device nor warned about, so a
-      # GPU run with it set returned an uncapped result in silence. Reads the parser and
-      # run_gpu_job; no build, and no device.
-      - name: An option the GPU does not implement warns
-        run: python3 tools/dev/gpu_option_coverage.py
-
-      # The CUDA build-cost table must not name a translation unit that is gone: include_cost.py
-      # would quote a cost for a file that does not exist, and a wrong number is worse than the
-      # UNMEASURED an absent row already reports. Needs no build -- it reads the sources.
-      - name: The CUDA cost table names only translation units that exist
-        run: python3 tools/dev/include_cost.py --check
-
   linux-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 30
