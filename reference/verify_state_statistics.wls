@@ -133,7 +133,12 @@ cases = {
   {"SplitTies", {{{1, 2}} -> {{1, 3}, {4, 2}}}, {{1, 2}, {2, 3}, {3, 4}}, 3},
   (* Two components of four nodes each, diameters 2 and 3, in either vertex order. *)
   {"TieStarFirst", {{{1, 1}} -> {{1, 1}}}, {{1, 2, 3}, {4, 5}, {5, 5}}, 2},
-  {"TiePathFirst", {{{1, 1}} -> {{1, 1}}}, {{1, 2}, {2, 2}, {3, 4, 5}}, 2}
+  {"TiePathFirst", {{{1, 1}} -> {{1, 1}}}, {{1, 2}, {2, 2}, {3, 4, 5}}, 2},
+  (* The rules of the multiway-statistics research corpus not covered above. *)
+  {"CorpusTriangle", {{{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}}, {{1, 2}, {1, 3}}, 4},
+  {"CorpusLoops", {{{1, 2}, {2, 3}} -> {{1, 3}, {3, 4}, {1, 4}, {2, 4}}}, {{1, 1}, {1, 1}}, 4},
+  {"CorpusTernary", {{{1, 2, 3}} -> {{1, 2, 4}, {2, 4, 3}}}, {{1, 1, 1}}, 4},
+  {"CorpusTwoRule", {{{1, 2}} -> {{1, 2}, {2, 3}}, {{1, 2}} -> {{1, 2}, {2, 3}, {3, 4}}}, {{1, 1}, {1, 1}}, 3}
 };
 
 failures = 0;
