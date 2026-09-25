@@ -277,6 +277,18 @@ void write_state_record(Sink& s, const StateRecordIds& r, bool full,
     if (r.with_hash) s.i64("CanonicalHash", r.hash);
 }
 
+// A reconstructed application's data in a graph: its identity, rule and endpoint states. It has
+// no edge lists, since the reconstruction materialises none.
+inline wxf::WXFValueAssociation reconstructed_event_data(int64_t id, int64_t rule, int64_t input,
+                                                         int64_t output) {
+    wxf::WXFValueAssociation d;
+    d.push_back({wxf::WXFValue("Id"), wxf::WXFValue(id)});
+    d.push_back({wxf::WXFValue("RuleIndex"), wxf::WXFValue(rule)});
+    d.push_back({wxf::WXFValue("InputState"), wxf::WXFValue(input)});
+    d.push_back({wxf::WXFValue("OutputState"), wxf::WXFValue(output)});
+    return d;
+}
+
 struct EventRecordIds {
     int64_t id, canonical_id, rule, input, output, canonical_input, canonical_output;
 };

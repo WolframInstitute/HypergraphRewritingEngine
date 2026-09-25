@@ -1126,50 +1126,134 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             ++streamed_top_sections;
         }
 
+        // The reconstruction's applications, which "Events" and the graphs report under quotient
+        // exploration: dense id per distinct identity, and the content that describes it.
+        // The identity a reconstructed application is REPORTED under. With an event
+        // signature in force it is the run signature, so equal events share one vertex;
+        // under EVENT_SIG_NONE every application is its own event, and the fallback triple
+        // (input class, output class, rule) would collapse distinct applications into one
+        // vertex -- measured as a 24-pair raw relation drawn over 21 vertices. The
+        // application id itself is the identity there.
+        auto recon_event_key = [&](uint32_t e) -> uint64_t {
+            if (hg.event_signature_keys() == hypergraph::EVENT_SIG_NONE)
+                return 0x8000000000000000ULL | static_cast<uint64_t>(e);
+            return hg.event_pair_signature(e);
+        };
+        struct ReconEvents {
+            bool active = false;
+            std::unordered_map<uint64_t, int64_t> dense_of_sig;   // identity -> vertex id
+            std::unordered_map<int64_t, hypergraph::QcEventContent> content;
+            uint32_t raw_count = 0;
+        };
+        ReconEvents recon;
+        if (hg.quotient_reconstruction()) {
+            recon.active = true;
+            recon.raw_count = static_cast<uint32_t>(hg.num_reconstructed_raw_events());
+            hg.for_each_reconstructed_event(
+                [&](uint32_t dense, uint32_t raw, const hypergraph::QcEventContent& c) {
+                    const int64_t id = static_cast<int64_t>(dense);
+                    recon.dense_of_sig[recon_event_key(raw)] = id;
+                    recon.content[id] = c;
+                });
+        }
+
         // Events -> Association[event_id -> event record]: every event, not only canonical ones,
         // so the caller can merge by CanonicalId and keep each event's own endpoints.
         // EventsMinimal sends the records without their two edge lists.
         if (req.include_events || req.include_events_minimal) {
             const bool minimal = !req.include_events;
             const uint32_t num_raw_events = hg.num_published_events();
-
-            // First pass fixes the emitted event set so the association length is known before
-            // streaming.
-            std::vector<uint32_t> emit_eids;
-            emit_eids.reserve(num_raw_events);
-            for (uint32_t eid = 0; eid < num_raw_events; ++eid) {
-                const hypergraph::Event& event = hg.get_event(eid);
-                if (event.id == hypergraph::INVALID_ID) continue;
-                if (!req.show_genesis_events && hg.is_genesis_event(eid)) continue;
-                emit_eids.push_back(eid);
-            }
-
-            sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-            sections.write(std::string("Events"));
-            sections.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-            sections.write_varint(emit_eids.size());
-
-            hgmarshal::StreamRecordSink sink(sections);
-            std::vector<int64_t> consumed, produced;
-            for (uint32_t eid : emit_eids) {
-                const hypergraph::Event& event = hg.get_event(eid);
-                consumed.assign(event.consumed_edges, event.consumed_edges + event.num_consumed);
-                produced.assign(event.produced_edges, event.produced_edges + event.num_produced);
+            // Under quotient exploration the materialised events are the explored skeleton's;
+            // the rule applications are the reconstruction's. A reconstructed application has
+            // no edge lists: the replay materialises none.
+            const bool from_reconstruction = recon.active && engine.explore_from_canonical_states_only();
+            if (from_reconstruction) {
+                std::vector<uint32_t> apps;
+                for (uint32_t e = 0; e < recon.raw_count; ++e)
+                    if (hg.reconstructed_event_content(e)) apps.push_back(e);
+                std::vector<uint32_t> genesis;
+                if (req.show_genesis_events)
+                    for (uint32_t eid = 0; eid < num_raw_events; ++eid)
+                        if (hg.get_event(eid).id != hypergraph::INVALID_ID && hg.is_genesis_event(eid))
+                            genesis.push_back(eid);
                 sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-                sections.write(static_cast<int64_t>(eid));
-                hgmarshal::write_event_record(sink,
-                    hgmarshal::EventRecordIds{
-                        static_cast<int64_t>(eid),
-                        event.is_canonical() ? static_cast<int64_t>(eid)
-                                             : static_cast<int64_t>(event.canonical_event_id),
-                        static_cast<int64_t>(event.rule_index),
-                        static_cast<int64_t>(event.input_state),
-                        static_cast<int64_t>(event.output_state),
-                        static_cast<int64_t>(hg.get_canonical_state(event.input_state)),
-                        static_cast<int64_t>(hg.get_canonical_state(event.output_state))},
-                    minimal, consumed, produced);
+                sections.write(std::string("Events"));
+                sections.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+                sections.write_varint(apps.size() + genesis.size());
+                hgmarshal::StreamRecordSink sink(sections);
+                const std::vector<int64_t> none;
+                for (uint32_t e : apps) {
+                    const hypergraph::QcEventContent& c = *hg.reconstructed_event_content(e);
+                    const auto dense = recon.dense_of_sig.find(recon_event_key(e));
+                    const int64_t in = get_effective_state_id(hg.class_frame_state(c.from_class));
+                    const int64_t out = get_effective_state_id(hg.class_frame_state(c.to_class));
+                    sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                    sections.write(static_cast<int64_t>(e));
+                    hgmarshal::write_event_record(sink,
+                        hgmarshal::EventRecordIds{
+                            static_cast<int64_t>(e),
+                            dense == recon.dense_of_sig.end() ? static_cast<int64_t>(e) : dense->second,
+                            static_cast<int64_t>(c.rule), in, out, in, out},
+                        minimal, none, none);
+                }
+                std::vector<int64_t> produced;
+                for (uint32_t eid : genesis) {
+                    const hypergraph::Event& event = hg.get_event(eid);
+                    produced.assign(event.produced_edges, event.produced_edges + event.num_produced);
+                    sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                    sections.write(static_cast<int64_t>(recon.raw_count + eid));
+                    hgmarshal::write_event_record(sink,
+                        hgmarshal::EventRecordIds{
+                            static_cast<int64_t>(recon.raw_count + eid),
+                            static_cast<int64_t>(recon.raw_count + eid),
+                            static_cast<int64_t>(event.rule_index),
+                            static_cast<int64_t>(event.input_state),
+                            static_cast<int64_t>(event.output_state),
+                            static_cast<int64_t>(hg.get_canonical_state(event.input_state)),
+                            static_cast<int64_t>(hg.get_canonical_state(event.output_state))},
+                        minimal, none, produced);
+                }
+                ++streamed_top_sections;
+            } else {
+
+                // First pass fixes the emitted event set so the association length is known before
+                // streaming.
+                std::vector<uint32_t> emit_eids;
+                emit_eids.reserve(num_raw_events);
+                for (uint32_t eid = 0; eid < num_raw_events; ++eid) {
+                    const hypergraph::Event& event = hg.get_event(eid);
+                    if (event.id == hypergraph::INVALID_ID) continue;
+                    if (!req.show_genesis_events && hg.is_genesis_event(eid)) continue;
+                    emit_eids.push_back(eid);
+                }
+
+                sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                sections.write(std::string("Events"));
+                sections.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+                sections.write_varint(emit_eids.size());
+
+                hgmarshal::StreamRecordSink sink(sections);
+                std::vector<int64_t> consumed, produced;
+                for (uint32_t eid : emit_eids) {
+                    const hypergraph::Event& event = hg.get_event(eid);
+                    consumed.assign(event.consumed_edges, event.consumed_edges + event.num_consumed);
+                    produced.assign(event.produced_edges, event.produced_edges + event.num_produced);
+                    sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                    sections.write(static_cast<int64_t>(eid));
+                    hgmarshal::write_event_record(sink,
+                        hgmarshal::EventRecordIds{
+                            static_cast<int64_t>(eid),
+                            event.is_canonical() ? static_cast<int64_t>(eid)
+                                                 : static_cast<int64_t>(event.canonical_event_id),
+                            static_cast<int64_t>(event.rule_index),
+                            static_cast<int64_t>(event.input_state),
+                            static_cast<int64_t>(event.output_state),
+                            static_cast<int64_t>(hg.get_canonical_state(event.input_state)),
+                            static_cast<int64_t>(hg.get_canonical_state(event.output_state))},
+                        minimal, consumed, produced);
+                }
+                ++streamed_top_sections;
             }
-            ++streamed_top_sections;
         }
 
         // CausalEdges -> List of {From -> canonical_event_id, To -> canonical_event_id}
@@ -1473,38 +1557,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             // and the GPU backend build byte-identical GraphData. The wrappers reuse the
             // effective-id and serialization lambdas above -- one graph-building code path.
             // Under the reconstruction the events a caller is TOLD about are the replay's, not
-            // the materialised ones, and NumEvents already reports those. Built once here so the
-            // graph's vertices are the same set: dense id per distinct identity, and the content
-            // that describes it.
-            // The identity a reconstructed application is REPORTED under. With an event
-            // signature in force it is the run signature, so equal events share one vertex;
-            // under EVENT_SIG_NONE every application is its own event, and the fallback triple
-            // (input class, output class, rule) would collapse distinct applications into one
-            // vertex -- measured as a 24-pair raw relation drawn over 21 vertices. The
-            // application id itself is the identity there.
-            auto recon_event_key = [&](uint32_t e) -> uint64_t {
-                if (hg.event_signature_keys() == hypergraph::EVENT_SIG_NONE)
-                    return 0x8000000000000000ULL | static_cast<uint64_t>(e);
-                return hg.event_pair_signature(e);
-            };
-            struct ReconEvents {
-                bool active = false;
-                std::unordered_map<uint64_t, int64_t> dense_of_sig;   // identity -> vertex id
-                std::unordered_map<int64_t, hypergraph::QcEventContent> content;
-                uint32_t raw_count = 0;
-            };
-            ReconEvents recon;
-            if (hg.quotient_reconstruction()) {
-                recon.active = true;
-                recon.raw_count = static_cast<uint32_t>(hg.num_reconstructed_raw_events());
-                hg.for_each_reconstructed_event(
-                    [&](uint32_t dense, uint32_t raw, const hypergraph::QcEventContent& c) {
-                        const int64_t id = static_cast<int64_t>(dense);
-                        recon.dense_of_sig[recon_event_key(raw)] = id;
-                        recon.content[id] = c;
-                    });
-            }
-
+            // the materialised ones (recon, built before "Events").
             struct CpuGraphSource {
                 const hypergraph::Hypergraph& hg;
                 const ReconEvents& recon;
@@ -1572,16 +1625,11 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                     // endpoint classes as their frame states. A reconstructed event has no
                     // consumed/produced edge lists -- the replay mints an id and materialises
                     // nothing -- so claiming any would be inventing them.
-                    wxf::WXFValueAssociation d;
-                    d.push_back({wxf::WXFValue("Id"), wxf::WXFValue(effective_event_id(eid))});
                     const auto* c = hg.reconstructed_event_content(eid);
-                    d.push_back({wxf::WXFValue("RuleIndex"),
-                                 wxf::WXFValue(static_cast<int64_t>(c ? c->rule : 0))});
-                    d.push_back({wxf::WXFValue("InputState"),
-                                 wxf::WXFValue(effective_state_id(event_input_state(eid)))});
-                    d.push_back({wxf::WXFValue("OutputState"),
-                                 wxf::WXFValue(effective_state_id(event_output_state(eid)))});
-                    return d;
+                    return hgmarshal::reconstructed_event_data(
+                        effective_event_id(eid), static_cast<int64_t>(c ? c->rule : 0),
+                        effective_state_id(event_input_state(eid)),
+                        effective_state_id(event_output_state(eid)));
                 }
                 std::vector<std::pair<uint32_t, uint32_t>> causal_event_pairs() const {
                     // A property the request derivation did not anticipate would be handed an

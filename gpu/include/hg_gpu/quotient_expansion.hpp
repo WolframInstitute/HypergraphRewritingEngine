@@ -236,6 +236,11 @@ struct QeView {
     // a graph could not be built over them at all.
     uint64_t* event_runsig;
     uint32_t  event_sig_capacity;
+    // Per raw event, its input class, output class and rule, when a caller reads the
+    // applications as events or graphs; null otherwise, and then nothing is written.
+    uint64_t* event_from_class;
+    uint64_t* event_to_class;
+    uint32_t* event_rule;
 
     typename LockFreeList<QeAppliedMatch>::DeviceView inst_applied;
     uint32_t* num_branchial;
@@ -923,8 +928,14 @@ struct DeviceQrCtx {
     // call is what makes that unrepeatable rather than merely fixed.
     __device__ void record_content(uint32_t ev, uint64_t from_class, uint64_t to_class,
                                    uint32_t rule) {
-        if (ev < qe.event_sig_capacity)
+        if (ev < qe.event_sig_capacity) {
             qe.event_sig[ev] = hgcommon::qr_content_hash(from_class, to_class, rule);
+            if (qe.event_from_class) {
+                qe.event_from_class[ev] = from_class;
+                qe.event_to_class[ev] = to_class;
+                qe.event_rule[ev] = rule;
+            }
+        }
     }
     __device__ hgcommon::EventSignatureKeys keys() const { return qe.keys; }
     // The canonical OUTPUT class's step, which is one value per class rather than the depth this
@@ -1119,8 +1130,16 @@ public:
     // reallocated on each of them.
     void ensure_work(uint32_t slices, uint32_t max_steps, uint32_t scale);
 
+    // The per-event input class, output class and rule arrays, allocated on first use and kept
+    // across runs like the descent stacks.
+    void ensure_event_content();
+    // The first raw-event-count entries of those arrays.
+    void reconstructed_event_content_host(std::vector<uint64_t>& from_class,
+                                          std::vector<uint64_t>& to_class,
+                                          std::vector<uint32_t>& rule);
+
     QeView view(uint32_t max_steps, EventSignatureKeys keys,
-                bool replay, bool multiplicity);
+                bool replay, bool multiplicity, bool event_content);
 
 private:
 
@@ -1155,6 +1174,9 @@ private:
     uint64_t*                 event_sig_        = nullptr;
     uint64_t*                 event_runsig_     = nullptr;
     uint32_t                  event_sig_capacity_ = 0;
+    uint64_t*                 event_from_class_ = nullptr;
+    uint64_t*                 event_to_class_   = nullptr;
+    uint32_t*                 event_rule_       = nullptr;
     FrameMap                  frame_;
     uint32_t*                 arr_ = nullptr;
     // The scalars above and below live in ONE allocation; these pointers index into it,

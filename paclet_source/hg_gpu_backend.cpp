@@ -129,6 +129,9 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
         if (job.session_op == "Open")
             in.materialize_relations = job.include_causal_edges || job.include_branchial_edges ||
                                        gneeds.causal || gneeds.branchial;
+        // The reconstructed applications as events and graph vertices: read by "Events" and by
+        // every graph over events; a session may be asked for either later.
+        in.materialize_events = job.include_events || gneeds.events || job.session_op == "Open";
     }
     in.transitive_reduction = job.transitive_reduction;
     in.explore_from_canonical_states_only = job.explore_from_canonical_states_only;
@@ -429,11 +432,70 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
         full_result.push_back({wxf::WXFValue("States"), wxf::WXFValue(states_assoc)});
     }
 
+    // The identity a reconstructed application is REPORTED under, shared by the edge lists and
+    // the graph below: the run signature when an event signature is in force, the application id
+    // itself under EVENT_SIG_NONE -- where every application is its own event, and the signature
+    // array would collapse them.
+    const bool recon_ran = result.reconstruction_ran &&
+                           !result.reconstructed_event_signature.empty();
+    auto recon_dense = [&]() {
+        std::unordered_map<uint64_t, int64_t> dense;
+        if (recon_ran && job.event_canon_mode != 0) {
+            for (uint64_t sig : result.reconstructed_event_signature) {
+                if (sig == 0ull) continue;
+                dense.emplace(sig, static_cast<int64_t>(dense.size()));
+            }
+        }
+        return dense;
+    }();
+    auto sig_of_run = [&](uint32_t eid) -> uint64_t {
+        return eid < result.reconstructed_event_signature.size()
+                   ? result.reconstructed_event_signature[eid] : 0ull;
+    };
+    auto recon_id = [&](uint32_t eid) -> int64_t {
+        if (job.event_canon_mode == 0) return static_cast<int64_t>(eid);
+        const uint64_t sig = eid < result.reconstructed_event_signature.size()
+                                 ? result.reconstructed_event_signature[eid] : 0ull;
+        auto it = recon_dense.find(sig);
+        return it == recon_dense.end() ? -1 : it->second;
+    };
+    // The state that stands for each class the reconstruction names: a replayed application's
+    // input and output classes are canonical hashes, and these states are "States" keys.
+    std::unordered_map<uint64_t, int64_t> state_of_class;
+    for (const auto& st : result.states) state_of_class.emplace(st.canonical_hash, rep_of(st.id));
+    auto class_state = [&](uint64_t h) -> int64_t {
+        auto it = state_of_class.find(h);
+        return it == state_of_class.end() ? -1 : it->second;
+    };
+    // The reconstruction's applications with their classes and rules, when read back. The graphs
+    // are drawn over them whenever present, as on the host. "Events" lists them under quotient
+    // exploration, where the materialised events are only the explored skeleton's.
+    const bool recon_content = recon_ran && !result.reconstructed_event_from_class.empty();
+    const bool recon_events = recon_content && job.explore_from_canonical_states_only;
+    // Every application the replay minted has content; under an event identity it must also
+    // carry the identity the count groups by.
+    auto recon_app_valid = [&](uint32_t e) -> bool {
+        if (e >= result.reconstructed_event_from_class.size()) return false;
+        return job.event_canon_mode == 0 || sig_of_run(e) != 0ull;
+    };
     if (job.include_events) {
         wxf::WXFValueAssociation events_assoc;
         hgmarshal::ValueRecordSink sink;
         std::vector<int64_t> consumed, produced;
+        if (recon_events) {
+            for (uint32_t e = 0; e < result.reconstructed_event_from_class.size(); ++e) {
+                if (!recon_app_valid(e)) continue;
+                const int64_t from = class_state(result.reconstructed_event_from_class[e]);
+                const int64_t to = class_state(result.reconstructed_event_to_class[e]);
+                hgmarshal::write_event_record(sink,
+                    hgmarshal::EventRecordIds{static_cast<int64_t>(e), recon_id(e),
+                        static_cast<int64_t>(result.reconstructed_event_rule[e]), from, to, from, to},
+                    job.include_events_minimal, consumed, produced);
+                events_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(e)), wxf::WXFValue(sink.take())});
+            }
+        }
         for (const auto& e : result.events) {
+            if (recon_events) break;
             consumed.clear();
             produced.clear();
             for (auto c : e.consumed_edges)
@@ -474,29 +536,6 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
     // NumCausalEdges and must be computed even when the edge list itself is not requested
     // (e.g. the counts-only "Debug" property), so the count matches the CPU in every case.
     int64_t num_causal = 0;
-    // The identity a reconstructed application is REPORTED under, shared by the edge lists and
-    // the graph below: the run signature when an event signature is in force, the application id
-    // itself under EVENT_SIG_NONE -- where every application is its own event, and the signature
-    // array would collapse them.
-    const bool recon_ran = result.reconstruction_ran &&
-                           !result.reconstructed_event_signature.empty();
-    auto recon_dense = [&]() {
-        std::unordered_map<uint64_t, int64_t> dense;
-        if (recon_ran && job.event_canon_mode != 0) {
-            for (uint64_t sig : result.reconstructed_event_signature) {
-                if (sig == 0ull) continue;
-                dense.emplace(sig, static_cast<int64_t>(dense.size()));
-            }
-        }
-        return dense;
-    }();
-    auto recon_id = [&](uint32_t eid) -> int64_t {
-        if (job.event_canon_mode == 0) return static_cast<int64_t>(eid);
-        const uint64_t sig = eid < result.reconstructed_event_signature.size()
-                                 ? result.reconstructed_event_signature[eid] : 0ull;
-        auto it = recon_dense.find(sig);
-        return it == recon_dense.end() ? -1 : it->second;
-    };
     if (recon_ran) {
         const auto& raw = job.transitive_reduction ? result.reconstructed_causal_raw_reduced
                                                    : result.reconstructed_causal_raw;
@@ -847,7 +886,8 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
 
         GpuGraphSource gsrc;
         gsrc.n_states = max_state + 1;
-        gsrc.n_events = max_event + 1;
+        gsrc.n_events = recon_content ? static_cast<uint32_t>(result.reconstructed_event_from_class.size())
+                                      : max_event + 1;
         gsrc.state_valid_ = [&](uint32_t sid) { return state_edges.find(sid) != state_edges.end(); };
         gsrc.eff_state_ = [&](uint32_t sid) { return rep_of(sid); };
         gsrc.step_ = step_of;
@@ -863,6 +903,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
         gsrc.event_valid_ = [&](uint32_t eid) {
             // An application whose identity the replay never registered stands for no vertex,
             // which is what keeps the vertex set equal to the set the count describes.
+            if (recon_content) return recon_app_valid(eid);
             if (recon_identity) {
                 if (job.event_canon_mode == 0)
                     return eid < result.reconstructed_event_signature.size() &&
@@ -872,11 +913,19 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
             return event_by_id.find(eid) != event_by_id.end();
         };
         gsrc.eff_event_ = eff_event;
+        // A reconstructed application's endpoints are the states standing for its classes.
         gsrc.in_state_ = [&](uint32_t eid) -> uint32_t {
+            if (recon_content) return static_cast<uint32_t>(class_state(result.reconstructed_event_from_class[eid]));
             auto it = event_by_id.find(eid); return it == event_by_id.end() ? 0u : it->second->input_state; };
         gsrc.out_state_ = [&](uint32_t eid) -> uint32_t {
+            if (recon_content) return static_cast<uint32_t>(class_state(result.reconstructed_event_to_class[eid]));
             auto it = event_by_id.find(eid); return it == event_by_id.end() ? 0u : it->second->output_state; };
         gsrc.event_data_ = [&](uint32_t eid) -> wxf::WXFValueAssociation {
+            if (recon_content)
+                return hgmarshal::reconstructed_event_data(
+                    eff_event(eid), static_cast<int64_t>(result.reconstructed_event_rule[eid]),
+                    class_state(result.reconstructed_event_from_class[eid]),
+                    class_state(result.reconstructed_event_to_class[eid]));
             auto eit = event_by_id.find(eid);
             wxf::WXFValueAssociation d;
             if (eit == event_by_id.end()) return d;

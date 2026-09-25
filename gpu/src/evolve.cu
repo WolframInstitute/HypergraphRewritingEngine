@@ -340,8 +340,10 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
                 : static_cast<uint32_t>(roots.size());
         qe_state_->ensure_work(drivers, in.num_steps, cfg.descent_work_scale);
     }
+    const bool qe_event_content = qc_route && qe_replay && in.materialize_events;
+    if (qe_event_content) qe_state_->ensure_event_content();
     QeView qe_view = qe_state_->view(in.num_steps, event_keys_for(in.event_canonicalization),
-                                     qe_replay, qe_multiplicity);
+                                     qe_replay, qe_multiplicity, qe_event_content);
 
     double t_qcsetup = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_qcsetup_start).count();
@@ -472,6 +474,10 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
                                                 &out.reconstructed_causal_raw_reduced,
                                                 in.materialize_relations
                                                     ? &out.reconstructed_branchial_raw : nullptr);
+        if (qe_event_content)
+            qe_state_->reconstructed_event_content_host(out.reconstructed_event_from_class,
+                                                        out.reconstructed_event_to_class,
+                                                        out.reconstructed_event_rule);
         // DERIVED from the relation the caller receives, not counted beside it: the reduction
         // is computed during that readback, so a separate tally could only ever disagree.
         out.reconstructed_causal_pairs_reduced =

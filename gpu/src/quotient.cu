@@ -148,6 +148,9 @@ QeState::~QeState() {
         if (counters_) cudaFree(counters_);
         if (event_sig_) cudaFree(event_sig_);
         if (event_runsig_) cudaFree(event_runsig_);
+        if (event_from_class_) cudaFree(event_from_class_);
+        if (event_to_class_) cudaFree(event_to_class_);
+        if (event_rule_) cudaFree(event_rule_);
         if (qm_words_) cudaFree(qm_words_);
         if (qm_queued_) cudaFree(qm_queued_);
         if (qm_point_class_) cudaFree(qm_point_class_);
@@ -397,8 +400,38 @@ void QeState::ensure_work(uint32_t slices, uint32_t max_steps, uint32_t scale) {
     HG_CUDA_CHECK(cudaMalloc(&work_items_, bytes), "QeState descent stacks alloc");
 }
 
+void QeState::ensure_event_content() {
+        if (event_from_class_ || !on_) return;
+        HG_CUDA_CHECK(cudaMalloc(&event_from_class_, sizeof(uint64_t) * event_sig_capacity_),
+                      "QeState event from-class alloc");
+        HG_CUDA_CHECK(cudaMalloc(&event_to_class_, sizeof(uint64_t) * event_sig_capacity_),
+                      "QeState event to-class alloc");
+        HG_CUDA_CHECK(cudaMalloc(&event_rule_, sizeof(uint32_t) * event_sig_capacity_),
+                      "QeState event rule alloc");
+}
+
+void QeState::reconstructed_event_content_host(std::vector<uint64_t>& from_class,
+                                               std::vector<uint64_t>& to_class,
+                                               std::vector<uint32_t>& rule) {
+        from_class.clear();
+        to_class.clear();
+        rule.clear();
+        if (!event_from_class_) return;
+        const uint32_t n = std::min(num_raw_events_host(), event_sig_capacity_);
+        from_class.resize(n);
+        to_class.resize(n);
+        rule.resize(n);
+        if (n == 0) return;
+        HG_CUDA_CHECK(cudaMemcpy(from_class.data(), event_from_class_, sizeof(uint64_t) * n,
+                                 cudaMemcpyDeviceToHost), "QeState event from-class read");
+        HG_CUDA_CHECK(cudaMemcpy(to_class.data(), event_to_class_, sizeof(uint64_t) * n,
+                                 cudaMemcpyDeviceToHost), "QeState event to-class read");
+        HG_CUDA_CHECK(cudaMemcpy(rule.data(), event_rule_, sizeof(uint32_t) * n,
+                                 cudaMemcpyDeviceToHost), "QeState event rule read");
+}
+
 QeView QeState::view(uint32_t max_steps, EventSignatureKeys keys,
-                bool replay, bool multiplicity) {
+                bool replay, bool multiplicity, bool event_content) {
         QeView q{};
         q.matches      = matches_.view();
         q.by_from      = by_from_.view();
@@ -413,6 +446,9 @@ QeView QeState::view(uint32_t max_steps, EventSignatureKeys keys,
         q.event_sig        = event_sig_;
         q.event_runsig     = event_runsig_;
         q.event_sig_capacity = event_sig_capacity_;
+        q.event_from_class = event_content ? event_from_class_ : nullptr;
+        q.event_to_class   = event_content ? event_to_class_ : nullptr;
+        q.event_rule       = event_content ? event_rule_ : nullptr;
         q.inst_applied     = inst_applied_.view();
         q.num_branchial    = num_branchial_;
         q.causal_pairs   = causal_pairs_.view();

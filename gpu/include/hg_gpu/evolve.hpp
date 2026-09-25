@@ -64,6 +64,9 @@ struct EvolveInput {
     // counts must not pay for the expansion; the host draws the same line, between a counter and
     // an enumeration the caller drives.
     bool materialize_relations = false;
+    // The reconstructed applications' input class, output class and rule, for a caller that
+    // reads them as events or graphs (EvolveResult::reconstructed_event_from_class ...).
+    bool materialize_events = false;
 
     // Quotient exploration: expand each canonical state exactly once, at its
     // shortest depth, so the run costs the canonical closure rather than the
@@ -258,6 +261,11 @@ struct EvolveResult {
     // describes a different set: measured 25 vertices against a count of 24 on the device, the
     // same discrepancy the host removed by routing identity through the reconstruction instead.
     std::vector<uint64_t> reconstructed_event_signature;
+    // With materialize_events on the reconstruction route: per raw event, its input class, output
+    // class and rule. Empty otherwise.
+    std::vector<uint64_t> reconstructed_event_from_class;
+    std::vector<uint64_t> reconstructed_event_to_class;
+    std::vector<uint32_t> reconstructed_event_rule;
 
     // With record.multiplicities under quotient exploration: the (class, depth) multiplicities
     // and each class's matches per rule (QeState::class_multiplicities_host).

@@ -1835,24 +1835,29 @@ TEST(WxfSerializationPin, StatesGraphEdgesAreTheEventsTheCountReports) {
 // CanonicalInputState / CanonicalOutputState. The representative is the state that won the
 // class's dedup claim, which on parallel workers need not be the lowest raw id, so the run is
 // repeated.
-TEST(WxfSerializationPin, EventEndpointClassesAreStatesKeys) {
-    auto field_values = [](const std::vector<uint8_t>& out, const std::string& section,
-                           const std::string& field) {
-        std::vector<int64_t> values;
-        wxf::Parser parser(out);
-        parser.skip_header();
-        parser.read_association([&](const std::string& k, wxf::Parser& vp) {
-            if (k != section) { vp.skip_value(); return; }
-            vp.read_association_generic([&](wxf::Parser& kp, wxf::Parser& rp) {
-                kp.skip_value();
-                rp.read_association([&](const std::string& f, wxf::Parser& fp) {
-                    if (f == field) values.push_back(fp.read<int64_t>());
-                    else fp.skip_value();
-                });
+namespace {
+// The integer `field` of every record of the association `section` ("States" or "Events").
+std::vector<int64_t> record_field_values(const std::vector<uint8_t>& out, const std::string& section,
+                                         const std::string& field) {
+    std::vector<int64_t> values;
+    wxf::Parser parser(out);
+    parser.skip_header();
+    parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+        if (k != section) { vp.skip_value(); return; }
+        vp.read_association_generic([&](wxf::Parser& kp, wxf::Parser& rp) {
+            kp.skip_value();
+            rp.read_association([&](const std::string& f, wxf::Parser& fp) {
+                if (f == field) values.push_back(fp.read<int64_t>());
+                else fp.skip_value();
             });
         });
-        return values;
-    };
+    });
+    return values;
+}
+}  // namespace
+
+TEST(WxfSerializationPin, EventEndpointClassesAreStatesKeys) {
+    auto field_values = record_field_values;
     for (bool quotient : {false, true}) {
         for (int rep = 0; rep < 10; ++rep) {
             HostBridge host;
@@ -1872,6 +1877,38 @@ TEST(WxfSerializationPin, EventEndpointClassesAreStatesKeys) {
                     EXPECT_TRUE(keys.count(s)) << "quotient=" << quotient << ": event " << f << " "
                                                << s << " is not a States key";
         }
+    }
+}
+
+// Under quotient exploration "Events" lists every rule application, as under full exploration:
+// as many records as full exploration gives, grouped by "CanonicalId" into the NumEvents events,
+// with endpoints that are States keys.
+TEST(WxfSerializationPin, QuotientEventsAreTheApplicationsTheCountReports) {
+    for (const char* events_mode : {"None", "Full", "Automatic"}) {
+        auto run = [&](bool quotient) {
+            HostBridge host;
+            return run_rewriting_core(build_input(kBranchSeed, kBranchLhs, kBranchRhs, 4, [&](wxf::Writer& w) {
+                put_str_list_option(w, "RequestedData", {"States", "Events", "NumEvents"});
+                put_str_option(w, "CanonicalizeStates", "Full");
+                put_str_option(w, "CanonicalizeEvents", events_mode);
+                if (quotient) put_str_option(w, "ExploreFromCanonicalStatesOnly", "True");
+            }, quotient ? 4 : 3), host);
+        };
+        const auto full = run(false), quot = run(true);
+        const auto full_ids = record_field_values(full, "Events", "Id");
+        const auto ids = record_field_values(quot, "Events", "Id");
+        ASSERT_FALSE(full_ids.empty()) << events_mode;
+        EXPECT_EQ(ids.size(), full_ids.size())
+            << events_mode << ": quotient exploration lists " << ids.size()
+            << " applications, full exploration " << full_ids.size();
+        const auto cids = record_field_values(quot, "Events", "CanonicalId");
+        EXPECT_EQ(static_cast<int64_t>(std::set<int64_t>(cids.begin(), cids.end()).size()),
+                  read_int_key(quot, "NumEvents")) << events_mode;
+        const auto keys_v = record_field_values(quot, "States", "Id");
+        const std::set<int64_t> keys(keys_v.begin(), keys_v.end());
+        for (const char* f : {"CanonicalInputState", "CanonicalOutputState"})
+            for (int64_t st : record_field_values(quot, "Events", f))
+                EXPECT_TRUE(keys.count(st)) << events_mode << ": " << f << " " << st << " is not a States key";
     }
 }
 
