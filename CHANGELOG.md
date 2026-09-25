@@ -9,6 +9,10 @@ User-visible changes since v1.0.0-rc1:
 - Every option of `Graph` is an option of `HGEvolve` and `HGSessionOpen` and goes to the graph a
   graph property returns.
 - `"MultiedgeStyle" -> "Merged"` draws the events between two states as one edge.
+- `"EventClasses"`: for each event under `"CanonicalizeEvents"`, the ids of the rule applications
+  it stands for.
+- Styled graphs draw their state pictures in the kernel; they no longer call the
+  `WolframModelPlot` and `WolframPhysicsProjectStyleData` resource functions.
 - Under quotient exploration, `"NumEvents"` and `"NumBranchialEdges"` asked for alone are
   computed from class multiplicities, so much deeper runs are possible. Counts above 2^63 - 1
   are reported as 2^63 - 1 with the warning `CountSaturated`.

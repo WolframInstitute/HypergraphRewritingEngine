@@ -52,6 +52,7 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 | `"StatesGraphStructure"`, `"CausalGraphStructure"`, `"BranchialGraphStructure"`, `"EvolutionGraphStructure"`, `"EvolutionCausalGraphStructure"`, `"EvolutionBranchialGraphStructure"`, `"EvolutionCausalBranchialGraphStructure"` | the same seven graphs with plain vertices and no styling |
 | `"States"` | the state records, an association keyed by state id |
 | `"Events"` | the event records, an association keyed by event id |
+| `"EventClasses"` | for each event under `"CanonicalizeEvents"`, the ids of the rule applications it stands for |
 | `"CausalEdges"` | the causal relation, a list of records with the producer and consumer event of each pair |
 | `"BranchialEdges"` | the branchial relation, a list of records with the two events of each pair |
 | `"NumStates"`, `"NumEvents"` | the number of states and of events |
@@ -783,6 +784,22 @@ Under `Full`, the two applications at step 2 have the same `"CanonicalId"` and `
 chain = {{1, 2}} -> {{1, 3}, {3, 2}};
 Dataset[HGEvolve[chain, {{1, 2}}, 2, "Events", "CanonicalizeStates" -> Full, "CanonicalizeEvents" -> Full]]
 ```
+
+---
+
+`"EventClasses"` gives, for each event, the rule applications it stands for, keyed by the event's `"CanonicalId"`. Under `Full` the nine applications of three steps are three events, standing for one, two and six applications:
+
+```wl
+chain = {{1, 2}} -> {{1, 3}, {3, 2}};
+HGEvolve[chain, {{1, 2}}, 3, "EventClasses", "CanonicalizeStates" -> Full, "CanonicalizeEvents" -> Full]
+```
+
+```wl
+chain = {{1, 2}} -> {{1, 3}, {3, 2}};
+Sort[Length /@ Values[HGEvolve[chain, {{1, 2}}, 3, "EventClasses", "CanonicalizeStates" -> Full, "CanonicalizeEvents" -> Full]]]
+```
+
+<!-- => {1, 2, 6} -->
 
 ---
 

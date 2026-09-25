@@ -325,6 +325,8 @@ propertyRequirementsBase = <|
   (* Raw data - minimal *)
   "States" -> {"States"},
   "Events" -> {"Events"},
+  (* For each event under CanonicalizeEvents, the ids of the applications it stands for *)
+  "EventClasses" -> {"Events"},
   "CausalEdges" -> {"CausalEdges"},
   "BranchialEdges" -> {"BranchialEdges"},
   (* All graph properties - FFI handles via GraphProperty option, no WL-side data needed *)
@@ -1501,6 +1503,8 @@ getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialSta
   Switch[prop,
     "States", states,
     "Events", events,
+    "EventClasses", KeySort @ GroupBy[If[AssociationQ[events], Values[events], events],
+      #["CanonicalId"] &, Sort[Lookup[#, "Id"]] &],
     "CausalEdges", causalEdges,
     "BranchialEdges", branchialEdges,
     "BranchialStateEdges", branchialStateEdges,

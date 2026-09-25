@@ -158,3 +158,17 @@ Module[{chain = {{{1, 2}} -> {{1, 3}, {3, 2}}}, tri = {{1, 2}, {1, 3}} -> {{1, 2
   Print["resource function calls while typesetting styled graphs: ", Length[calls], " ",
     Take[DeleteDuplicates[calls[[All, 1]]], UpTo[3]]];
   Print[If[calls === {}, "NO RESOURCE FUNCTIONS PASS", "NO RESOURCE FUNCTIONS FAIL"]]];
+
+(* "EventClasses" gives, for each event under "CanonicalizeEvents", the ids of the rule
+   applications it stands for: as many classes as NumEvents, as many applications as NumEvents
+   under None, and the same class sizes on both devices. *)
+Module[{chain = {{{1, 2}} -> {{1, 3}, {3, 2}}}, run, rows},
+  run[dev_, ev_] := HGEvolve[chain, {{1, 2}}, 3, {"EventClasses", "NumEvents"},
+    "CanonicalizeStates" -> Full, "CanonicalizeEvents" -> ev, "TargetDevice" -> dev];
+  rows = Table[With[{r = run[dev, ev], raw = HGEvolve[chain, {{1, 2}}, 3, "NumEvents"]},
+      {dev, ev, AssociationQ[r["EventClasses"]] && Length[r["EventClasses"]] === r["NumEvents"],
+       Total[Length /@ r["EventClasses"]] === raw, Sort[Length /@ Values[r["EventClasses"]]]}],
+    {dev, {"CPU", "GPU"}}, {ev, {None, Full, Automatic}}];
+  Print["event classes {device, identity, one per event, every application once, class sizes}: ", rows];
+  Print[If[AllTrue[Flatten[rows, 1], #[[3]] && #[[4]] &] &&
+      rows[[1, All, 5]] === rows[[2, All, 5]], "EVENT CLASSES PASS", "EVENT CLASSES FAIL"]]];
