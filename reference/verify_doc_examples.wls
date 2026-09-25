@@ -39,6 +39,9 @@ Needs["HypergraphRewriting`"];
 (* The gate's own symbols live in a context of their own, so no name used here can collide with
    a name an example defines. *)
 Begin["VerifyDocExamples`"];
+(* The whole run is one evaluation, so after three messages of one name General::stop would
+   suppress the rest; a notebook evaluates each cell on its own and never reaches it. *)
+Off[General::stop];
 
 (* WARM THE KERNEL BEFORE ANY BLOCK IS JUDGED.
    The FIRST call into the package in a fresh kernel drags in the paclet manager, the stream
