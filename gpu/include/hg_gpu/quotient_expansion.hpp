@@ -37,6 +37,7 @@
 #include "hgcommon/core.hpp"        // sort_u64
 #include "hgcommon/slot_core.hpp"  // slot_rank -- the frame-slot rule, shared with the host
 #include "hgcommon/quotient_replay_core.hpp"  // qr_apply -- the replay, and the identity it mints
+#include "hgcommon/quotient_multiplicity_core.hpp"  // qm_pass -- raw counts from class multiplicities
 #include "hgcommon/quotient_causal_core.hpp"  // qc_key -- the (class, depth, orbit) key rule
 
 #include <cuda/atomic>
@@ -279,6 +280,23 @@ struct QeView {
     // where qc_capture_expansion runs unconditionally and only the instance seeding and the
     // match-side scan are gated (hypergraph.cpp:987, :1206).
     uint32_t  replay    = 0;
+
+    // RAW COUNTS FROM CLASS MULTIPLICITIES (hgcommon/quotient_multiplicity_core.hpp), run in
+    // place of the replay when the raw events and branchial pairs are read only as counts. The
+    // host's quotient_multiplicity_. Set only together with `replay`.
+    uint32_t  multiplicity = 0;
+    // (class, depth) point key -> index + 1 into qm_mass / qm_queued.
+    DedupMap::DeviceView qm_points;
+    // (match id, depth) key -> index + 1 into qm_consumed_cells.
+    DedupMap::DeviceView qm_consumed;
+    // match id + 1 -> b_j + 1. Present once the match is ready.
+    DedupMap::DeviceView qm_overlaps;
+    unsigned long long* qm_mass           = nullptr;
+    uint32_t*           qm_queued         = nullptr;
+    unsigned long long* qm_consumed_cells = nullptr;
+    uint32_t*           qm_cursor         = nullptr;   // [0] next point, [1] next consumed cell
+    uint32_t            qm_capacity       = 0;         // entries in each array above
+    unsigned long long* qm_counts         = nullptr;   // [0] raw events, [1] branchial, [2] saturated
 };
 
 // The rendezvous is mutually recursive: publishing an instance drives the matches, publishing a
@@ -417,6 +435,176 @@ __device__ inline uint32_t qe_frame_slot_of(DeviceState ds, QeView qe, uint64_t 
 }
 
 
+// Walk the captured matches of one class. The bucket is shared, so the exact hash on each node
+// is what selects this class's records out of it.
+template <typename F>
+__device__ inline void qe_for_each_match_from(QeView qe, uint64_t from_hash, F&& f) {
+    qe.by_from.for_each(qe_bucket(from_hash, qe.by_from.num_keys), [&](const QeMatchRef& r) {
+        if (r.from_hash != from_hash) return;
+        f(qe.matches.at(r.record));
+    });
+}
+
+// The step of the class's frame state, which an event signature records as the output step;
+// `fallback` when the class holds no frame.
+__device__ inline uint32_t qe_frame_step(const QeView& qe, uint64_t class_hash, uint32_t fallback) {
+    const auto fs = qe.frame.lookup(class_hash);
+    if (!fs.found || fs.value == 0) return fallback;
+    return hgcommon::id_pair_from_key(fs.value).a;
+}
+
+// Count a run identity once.
+__device__ inline void qe_note_signature(QeView& qe, uint64_t csig) {
+    if (qe.canon_seen.insert_if_absent(csig, 1u).inserted) atomicAdd(qe.num_canon, 1u);
+}
+
+// The saturating add of hgcommon::qm_sat_add on a device counter; true when it clamped.
+__device__ inline bool qe_qm_add(unsigned long long* counter, uint64_t delta) {
+    unsigned long long old = *reinterpret_cast<volatile unsigned long long*>(counter);
+    for (;;) {
+        const unsigned long long next = hgcommon::qm_sat_add(old, delta);
+        const unsigned long long seen = atomicCAS(counter, old, next);
+        if (seen == old) return next == hgcommon::QM_SATURATED && old + delta != next;
+        old = seen;
+    }
+}
+
+// The storage face hgcommon/quotient_multiplicity_core.hpp drives; the host's
+// Hypergraph::QmCtx. The cascade queue is this driver's descent slice, kept as a heap on depth.
+struct DeviceQmCtx {
+    using Match = QeMatchView;
+    DeviceState& ds;
+    QeView& qe;
+    QeWork& work;
+
+    // The index behind `key` in `map`, claiming and zeroing a fresh one when absent.
+    // UINT32_MAX when the array or the map is full, which is reported as kQcNodes.
+    __device__ uint32_t index(DedupMap::DeviceView& map, uint64_t key, uint32_t cursor,
+                              bool is_point) {
+        const auto r = map.lookup(key);
+        if (r.found && r.value) return r.value - 1u;
+        const uint32_t idx = atomicAdd(&qe.qm_cursor[cursor], 1u);
+        if (idx >= qe.qm_capacity) { ds.errors.record(ErrorKind::kQcNodes); return UINT32_MAX; }
+        if (is_point) { qe.qm_mass[idx] = 0ull; qe.qm_queued[idx] = 0u; }
+        else          { qe.qm_consumed_cells[idx] = 0ull; }
+        __threadfence();
+        const auto ins = map.insert_if_absent(key, idx + 1u);
+        if (ins.overflowed) { ds.errors.record(ErrorKind::kQcNodes); return UINT32_MAX; }
+        return ins.value - 1u;
+    }
+    __device__ uint32_t point(uint64_t class_hash, uint32_t depth) {
+        return index(qe.qm_points, hgcommon::avoid_reserved_keys(hgcommon::qc_key(class_hash, depth, 0u)),
+                     0u, true);
+    }
+    __device__ uint32_t cell(uint32_t match_id, uint32_t depth) {
+        return index(qe.qm_consumed, hgcommon::qr_apply_key(match_id, depth), 1u, false);
+    }
+
+    __device__ uint32_t max_steps() const { return qe.max_steps; }
+    __device__ bool ready(const QeMatchView& m, uint64_t& b) const {
+        const auto r = qe.qm_overlaps.lookup(static_cast<uint64_t>(m.id) + 1u);
+        if (!r.found || r.value == 0) return false;
+        b = r.value - 1u;
+        return true;
+    }
+    __device__ uint64_t mass(uint64_t class_hash, uint32_t depth) const {
+        const auto r = qe.qm_points.lookup(
+            hgcommon::avoid_reserved_keys(hgcommon::qc_key(class_hash, depth, 0u)));
+        if (!r.found || r.value == 0) return 0;
+        return *reinterpret_cast<volatile unsigned long long*>(&qe.qm_mass[r.value - 1u]);
+    }
+    __device__ void add_mass(uint64_t class_hash, uint32_t depth, uint64_t delta) {
+        const uint32_t p = point(class_hash, depth);
+        if (p == UINT32_MAX) return;
+        if (qe_qm_add(&qe.qm_mass[p], delta)) qe.qm_counts[2] = 1ull;
+    }
+    __device__ uint64_t consumed(const QeMatchView& m, uint32_t depth) {
+        const auto r = qe.qm_consumed.lookup(hgcommon::qr_apply_key(m.id, depth));
+        if (!r.found || r.value == 0) return 0;
+        return *reinterpret_cast<volatile unsigned long long*>(&qe.qm_consumed_cells[r.value - 1u]);
+    }
+    __device__ bool advance(const QeMatchView& m, uint32_t depth, uint64_t& expected,
+                            uint64_t desired) {
+        const uint32_t c = cell(m.id, depth);
+        if (c == UINT32_MAX) return true;   // reported; the pass is dropped
+        const unsigned long long seen = atomicCAS(&qe.qm_consumed_cells[c], expected, desired);
+        if (seen == expected) return true;
+        expected = seen;
+        return false;
+    }
+    __device__ void count(uint64_t events, uint64_t branchial) {
+        bool sat = qe_qm_add(&qe.qm_counts[0], events);
+        if (branchial) sat = qe_qm_add(&qe.qm_counts[1], branchial) || sat;
+        if (sat) qe.qm_counts[2] = 1ull;
+    }
+    __device__ hgcommon::EventSignatureKeys keys() const { return qe.keys; }
+    __device__ uint32_t frame_step(uint64_t class_hash, uint32_t fallback) const {
+        return qe_frame_step(qe, class_hash, fallback);
+    }
+    __device__ void note_signature(uint64_t csig) { qe_note_signature(qe, csig); }
+    __device__ bool claim_queued(uint64_t class_hash, uint32_t depth) {
+        const uint32_t p = point(class_hash, depth);
+        return p != UINT32_MAX && atomicExch(&qe.qm_queued[p], 1u) == 0u;
+    }
+    __device__ void push(uint64_t class_hash, uint32_t depth) {
+        if (work.n >= work.cap) { ds.errors.record(ErrorKind::kQeWorkOverflow); return; }
+        work.items[work.n] = QeWorkItem{class_hash, 0u, depth};
+        ++work.n;
+        hgcommon::qm_heap_push(work.items, work.n);
+    }
+    __device__ bool pop(uint64_t& class_hash, uint32_t& depth) {
+        if (work.n == 0) return false;
+        const QeWorkItem t = hgcommon::qm_heap_pop(work.items, work.n);
+        --work.n;
+        class_hash = t.hash;
+        depth = t.depth;
+        const uint32_t p = point(class_hash, depth);
+        if (p != UINT32_MAX) atomicExch(&qe.qm_queued[p], 0u);
+        return true;
+    }
+    template <class F>
+    __device__ void for_each_match(uint64_t class_hash, F&& f) {
+        qe_for_each_match_from(qe, class_hash, [&](const DeviceSlotMatch& m) {
+            f(QeMatchView(m, qe.arr_words));
+        });
+    }
+    __device__ void fence() { __threadfence(); }
+};
+
+// The root's unit of mass; the multiplicity twin of the root instance. __noinline__, with
+// qe_capture_multiplicity: inlined into the persistent kernel, ptxas exceeded 4 GB on
+// persistent.cu.
+__device__ inline __noinline__ void qe_seed_multiplicity(DeviceState ds, QeView qe, uint64_t root_hash,
+                                            QeWork& work) {
+    DeviceQmCtx c{ds, qe, work};
+    hgcommon::qm_credit(c, root_hash, 0u, 1ull);
+    hgcommon::qm_drain(c);
+}
+
+// The capture side of the multiplicity count: b_j over the matches linked into the class's
+// bucket before this one, then ready, then the mass already standing at the class at every
+// depth. The host's branch in Hypergraph::qc_capture_expansion.
+__device__ inline __noinline__ void qe_capture_multiplicity(DeviceState ds, QeView qe, const DeviceSlotMatch& m,
+                                               uint64_t from, uint32_t at,
+                                               const uint32_t* consumed, uint32_t nc,
+                                               QeWork& work) {
+    uint32_t b = 0;
+    qe.by_from.for_each_before(at, [&](const QeMatchRef& r) {
+        if (r.from_hash != from) return;
+        if (hgcommon::qr_consumed_overlap(consumed, nc, QeMatchView(qe.matches.at(r.record), qe.arr_words)))
+            ++b;
+    });
+    if (qe.qm_overlaps.insert_if_absent(static_cast<uint64_t>(m.id) + 1u, b + 1u).overflowed) {
+        ds.errors.record(ErrorKind::kQcNodes);
+        return;
+    }
+    DeviceQmCtx c{ds, qe, work};
+    c.fence();
+    const QeMatchView v(m, qe.arr_words);
+    for (uint32_t d = 0; d < qe.max_steps; ++d) hgcommon::qm_pass(c, v, from, d);
+    hgcommon::qm_drain(c);
+}
+
 // Capture one raw event as its class's expansion match, in frame slots.
 //
 // Only the class's claimed state contributes: the first parent to claim the class defines both
@@ -518,22 +706,17 @@ __device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
     m.num_consumed = nc; m.num_produced = np; m.num_survivors = ns;
     m.arr_offset = off;
 
-    if (qe.by_from.push(qe_bucket(from, qe.by_from.num_keys), QeMatchRef{from, rec}) == INVALID_ID)
-        ds.errors.record(ErrorKind::kQcNodes);
+    const uint32_t at = qe.by_from.push(qe_bucket(from, qe.by_from.num_keys), QeMatchRef{from, rec});
+    if (at == INVALID_ID) { ds.errors.record(ErrorKind::kQcNodes); return; }
 
+    if (!qe.replay) return;
     QeWork work = qe_work_for(ds, qe, work_slice);
+    if (qe.multiplicity) {
+        qe_capture_multiplicity(ds, qe, m, from, at, consumed, nc, work);
+        return;
+    }
     qe_drive_match(ds, qe, m, from, work);
     qe_run(ds, qe, work);
-}
-
-// Walk the captured matches of one class. The bucket is shared, so the exact hash on each node
-// is what selects this class's records out of it.
-template <typename F>
-__device__ inline void qe_for_each_match_from(QeView qe, uint64_t from_hash, F&& f) {
-    qe.by_from.for_each(qe_bucket(from_hash, qe.by_from.num_keys), [&](const QeMatchRef& r) {
-        if (r.from_hash != from_hash) return;
-        f(qe.matches.at(r.record));
-    });
 }
 
 // Reserve `n` words of the expansion arena. Returns UINT32_MAX when the arena is exhausted,
@@ -591,6 +774,11 @@ __device__ inline void qe_seed_root_instance(DeviceState ds, QeView qe, StateId 
     // instance below is the root of the replay, and without it no descendant instance exists,
     // so this one guard removes the whole cascade.
     if (!qe.replay) return;
+    if (qe.multiplicity) {
+        QeWork work = qe_work_for(ds, qe, work_slice);
+        qe_seed_multiplicity(ds, qe, h, work);
+        return;
+    }
 
     const uint32_t off = qe_alloc_words(ds, qe, nslots);
     if (off == UINT32_MAX) return;
@@ -738,13 +926,11 @@ struct DeviceQrCtx {
     // The canonical OUTPUT class's step, which is one value per class rather than the depth this
     // instance happens to sit at; the caller's depth stands in when the class holds no frame.
     __device__ uint32_t frame_step(uint64_t class_hash, uint32_t fallback) const {
-        const auto fs = qe.frame.lookup(class_hash);
-        if (!fs.found || fs.value == 0) return fallback;
-        return hgcommon::id_pair_from_key(fs.value).a;
+        return qe_frame_step(qe, class_hash, fallback);
     }
     __device__ void record_runsig(uint32_t ev, uint64_t csig) {
         if (ev < qe.event_sig_capacity) qe.event_runsig[ev] = csig;
-        if (qe.canon_seen.insert_if_absent(csig, 1u).inserted) atomicAdd(qe.num_canon, 1u);
+        qe_note_signature(qe, csig);
     }
     __device__ bool want_causal() const    { return ds.record_causal != 0; }
     __device__ bool want_branchial() const { return ds.record_branchial != 0; }
@@ -867,6 +1053,9 @@ public:
     struct Counters {
         uint32_t cursor, next_id, instances, raw_events, aligned, align_failures,
                  canon_events, causal_pairs, causal_edges, branchial;
+        // The multiplicity counts (QeView::qm_counts), read in a second transfer.
+        uint64_t qm_raw_events, qm_branchial;
+        bool qm_saturated;
     };
     Counters counters_host() const;
 
@@ -922,7 +1111,7 @@ public:
     void ensure_work(uint32_t slices, uint32_t max_steps, uint32_t scale);
 
     QeView view(uint32_t max_steps, EventSignatureKeys keys,
-                bool replay);
+                bool replay, bool multiplicity);
 
 private:
 
@@ -936,6 +1125,13 @@ private:
     DedupMap                  applied_;
     DedupMap                  canon_seen_;
     DedupMap                  causal_pairs_;
+    DedupMap                  qm_points_;
+    DedupMap                  qm_consumed_;
+    DedupMap                  qm_overlaps_;
+    // qm_capacity_ masses, then qm_capacity_ consumed cells, then the three qm_counts.
+    unsigned long long*       qm_words_  = nullptr;
+    uint32_t*                 qm_queued_ = nullptr;
+    uint32_t                  qm_capacity_ = 0;
     LockFreeList<QeAppliedMatch> inst_applied_;
     uint32_t*                 inst_next_id_ = nullptr;
     uint32_t*                 next_raw_event_ = nullptr;
@@ -950,9 +1146,9 @@ private:
     uint32_t                  event_sig_capacity_ = 0;
     FrameMap                  frame_;
     uint32_t*                 arr_ = nullptr;
-    // The eleven scalars above and below live in ONE allocation; these pointers index into it,
+    // The scalars above and below live in ONE allocation; these pointers index into it,
     // so counters_host() reads them all in a single transfer.
-    static constexpr uint32_t kNumCounters = 10;
+    static constexpr uint32_t kNumCounters = 12;
     uint32_t*                 counters_ = nullptr;
     uint32_t*                 cursor_ = nullptr;
     uint32_t*                 next_id_ = nullptr;

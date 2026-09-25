@@ -96,12 +96,16 @@ QeState::QeState(bool on, uint32_t max_events): matches_(on ? max_events : 1u),
           applied_(on ? max_events * 4u : 8u),
           canon_seen_(on ? max_events * 2u : 8u),
           causal_pairs_(on ? max_events * 4u : 8u),
+          qm_points_(on ? max_events * 2u : 8u),
+          qm_consumed_(on ? max_events * 2u : 8u),
+          qm_overlaps_(on ? max_events * 2u : 8u),
+          qm_capacity_(on ? max_events : 1u),
           inst_applied_(on ? (1u << 16) : 1u, on ? max_events * 2u : 1u),
           frame_(on ? max_events * 2u : 8u),
           arr_cap_(on ? max_events * 16u : 1u),
           on_(on) {
         HG_CUDA_CHECK(cudaMalloc(&arr_, sizeof(uint32_t) * arr_cap_), "QeState arr alloc");
-        // ELEVEN SCALARS IN ONE BLOCK, so the host reads them in ONE transfer.
+        // THE SCALARS IN ONE BLOCK, so the host reads them in ONE transfer.
         //
         // Each of these was its own cudaMalloc and each accessor its own synchronous cudaMemcpy
         // of four bytes. A synchronous copy of a scalar costs about 24 microseconds on this host
@@ -120,6 +124,11 @@ QeState::QeState(bool on, uint32_t max_events): matches_(on ? max_events : 1u),
         num_causal_pairs_  = counters_ + 7;
         num_causal_edges_  = counters_ + 8;
         num_branchial_     = counters_ + 9;
+        // counters_ + 10 and + 11: the multiplicity point and consumed-cell cursors.
+        HG_CUDA_CHECK(cudaMalloc(&qm_words_, sizeof(unsigned long long) * (2ull * qm_capacity_ + 3u)),
+                      "QeState multiplicity alloc");
+        HG_CUDA_CHECK(cudaMalloc(&qm_queued_, sizeof(uint32_t) * qm_capacity_),
+                      "QeState multiplicity queue flags alloc");
         event_sig_capacity_ = on ? max_events : 1u;
         HG_CUDA_CHECK(cudaMalloc(&event_sig_, sizeof(uint64_t) * event_sig_capacity_),
                       "QeState event sig alloc");
@@ -134,6 +143,8 @@ QeState::~QeState() {
         if (counters_) cudaFree(counters_);
         if (event_sig_) cudaFree(event_sig_);
         if (event_runsig_) cudaFree(event_runsig_);
+        if (qm_words_) cudaFree(qm_words_);
+        if (qm_queued_) cudaFree(qm_queued_);
     }
 
 bool QeState::enabled() const { return on_; }
@@ -148,6 +159,15 @@ void QeState::clear() {
         applied_.clear();
         canon_seen_.clear();
         causal_pairs_.clear();
+        qm_points_.clear();
+        qm_consumed_.clear();
+        qm_overlaps_.clear();
+        // The masses, cells and flags are zeroed by whoever claims them; only the counts and the
+        // cursors restart.
+        HG_CUDA_CHECK(cudaMemset(qm_words_ + 2ull * qm_capacity_, 0, sizeof(unsigned long long) * 3u),
+                      "QeState multiplicity counts clear");
+        HG_CUDA_CHECK(cudaMemset(counters_ + 10, 0, sizeof(uint32_t) * 2u),
+                      "QeState multiplicity cursors clear");
         inst_applied_.clear();
         HG_CUDA_CHECK(cudaMemset(inst_next_id_, 0, sizeof(uint32_t)), "QeState inst id clear");
         HG_CUDA_CHECK(cudaMemset(next_raw_event_, 0, sizeof(uint32_t)), "QeState raw ev clear");
@@ -169,7 +189,11 @@ QeState::Counters QeState::counters_host() const {
         uint32_t v[kNumCounters] = {};
         HG_CUDA_CHECK(cudaMemcpy(v, counters_, sizeof(v), cudaMemcpyDeviceToHost),
               "QeState counters read");
-        return Counters{v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9]};
+        unsigned long long q[3] = {};
+        HG_CUDA_CHECK(cudaMemcpy(q, qm_words_ + 2ull * qm_capacity_, sizeof(q),
+                                 cudaMemcpyDeviceToHost), "QeState multiplicity counts read");
+        return Counters{v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9],
+                        q[0], q[1], q[2] != 0};
 
     }
 
@@ -335,7 +359,7 @@ void QeState::ensure_work(uint32_t slices, uint32_t max_steps, uint32_t scale) {
 }
 
 QeView QeState::view(uint32_t max_steps, EventSignatureKeys keys,
-                bool replay) {
+                bool replay, bool multiplicity) {
         QeView q{};
         q.matches      = matches_.view();
         q.by_from      = by_from_.view();
@@ -369,6 +393,16 @@ QeView QeState::view(uint32_t max_steps, EventSignatureKeys keys,
         q.work_slices  = work_slices_;
         q.enabled      = on_ ? 1u : 0u;
         q.replay       = (on_ && replay) ? 1u : 0u;
+        q.multiplicity = (on_ && replay && multiplicity) ? 1u : 0u;
+        q.qm_points         = qm_points_.view();
+        q.qm_consumed       = qm_consumed_.view();
+        q.qm_overlaps       = qm_overlaps_.view();
+        q.qm_mass           = qm_words_;
+        q.qm_consumed_cells = qm_words_ + qm_capacity_;
+        q.qm_counts         = qm_words_ + 2ull * qm_capacity_;
+        q.qm_queued         = qm_queued_;
+        q.qm_cursor         = counters_ + 10;
+        q.qm_capacity       = qm_capacity_;
         return q;
     }
 

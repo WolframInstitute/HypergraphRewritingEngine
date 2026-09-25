@@ -330,8 +330,11 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
                 : static_cast<uint32_t>(roots.size());
         qe_state_->ensure_work(drivers, in.num_steps, cfg.descent_work_scale);
     }
+    // Counts only: the raw counts come from class multiplicities and no instance is built. The
+    // host's rule in ParallelEvolutionEngine (set_quotient_multiplicity).
+    const bool qe_multiplicity = qe_replay && in.record.raw_counts_only && !in.record.causal;
     QeView qe_view = qe_state_->view(in.num_steps, event_keys_for(in.event_canonicalization),
-                                     qe_replay);
+                                     qe_replay, qe_multiplicity);
 
     double t_qcsetup = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_qcsetup_start).count();
@@ -426,7 +429,8 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
                                         : hg_gpu::QeState::Counters{};
         out.expansion_matches   = qc_route ? qe_state_->num_matches_host()   : 0u;
         out.expansion_instances = qc_counts.instances;
-        out.reconstructed_raw_events = qc_counts.raw_events;
+        out.reconstructed_raw_events =
+            qe_multiplicity ? qc_counts.qm_raw_events : qc_counts.raw_events;
         // The REPLAY is what produces a reconstructed answer, so this reports the replay and
         // not merely the route. A run that captured the class frames but never replayed them
         // has no reconstructed raw events, and a caller that read this as "reconstruction ran"
@@ -437,11 +441,15 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         out.reconstructed_events =
             !qc_route ? 0u
             : (event_keys_for(in.event_canonicalization) == EVENT_SIG_NONE
-                   ? qc_counts.raw_events
+                   ? out.reconstructed_raw_events
                    : qc_counts.canon_events);
         out.reconstructed_causal_pairs = qc_counts.causal_pairs;
         out.reconstructed_causal_edges = qc_counts.causal_edges;
-        out.reconstructed_branchial = qc_counts.branchial;
+        out.reconstructed_branchial =
+            qe_multiplicity ? qc_counts.qm_branchial : qc_counts.branchial;
+        if (qe_multiplicity && qc_counts.qm_saturated)
+            out.warnings.push_back(OverflowWarning{ErrorKind::kCountSaturated, 1u,
+                                                   hgcommon::QM_SATURATED_MESSAGE});
         // Causal and its reduction are built whenever the route ran, because the reduced COUNT
         // is the size of that relation and deriving it is the only way to know it. Branchial is
         // the expansion, so it is built only for a caller that will read the pairs.

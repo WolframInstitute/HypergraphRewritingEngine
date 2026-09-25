@@ -53,6 +53,8 @@ const char* error_kind_name(ErrorKind k) {
         case ErrorKind::kDeviceOutOfMemory:   return "device memory (engine allocation)";
         case ErrorKind::kPersistentStall:     return "persistent scheduler spin budget (defect)";
         case ErrorKind::kCanonicalMapFull:    return "canonical dedup map (retryable: grow config)";
+        // The kernel reads this name as an advisory, the same kind the CPU reports.
+        case ErrorKind::kCountSaturated:      return "CountSaturated";
         case ErrorKind::kEventSigRawFallback:
             return "event signatures built from a raw edge id (not an isomorphism invariant)";
         default:                              return "unknown";

@@ -196,7 +196,7 @@ struct EvolveResult {
 
     // Raw events the per-instance replay minted: one per (instance, match) application. The
     // host's num_raw_events under the reconstruction. 0 when the route is off.
-    uint32_t reconstructed_raw_events = 0;
+    uint64_t reconstructed_raw_events = 0;
 
     // Frame alignment: slots the class frame MOVED off the recording state's own labelling, and
     // slots for which no frame image existed (the capture is dropped, so events reachable only
@@ -208,7 +208,7 @@ struct EvolveResult {
 
     // The reconstruction's event count: distinct identities under the run's mode, or the raw
     // application count under EVENT_SIG_NONE, where every application is its own event.
-    uint32_t reconstructed_events = 0;
+    uint64_t reconstructed_events = 0;
 
     // The reconstruction's causal relation: distinct (producer, consumer) pairs, and the
     // consumed-edge occurrences behind them. 0 when the route is off.
@@ -218,7 +218,7 @@ struct EvolveResult {
     // overlap. 0 when the route is off.
     // Pairs tagged in-reduction: the TR view of the same relation.
     uint32_t reconstructed_causal_pairs_reduced = 0;
-    uint32_t reconstructed_branchial = 0;
+    uint64_t reconstructed_branchial = 0;
 
     // The reconstructed relations as pairs of content triples hash(input class, output class,
     // rule) -- the identity a cross-engine comparison is made on, since raw event ids are

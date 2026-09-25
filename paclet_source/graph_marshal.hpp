@@ -314,6 +314,16 @@ GraphPropertyNeeds graph_property_needs(const std::string& graph_property);
 // The union over a list of properties.
 GraphPropertyNeeds graph_property_needs(const std::vector<std::string>& properties);
 
+// Whether a request reads the raw events and branchial pairs only through NumEvents and
+// NumBranchialEdges. Under quotient exploration those then come from class multiplicities
+// (RecordSet::raw_counts_only). Both engines' jobs carry these fields under these names.
+template <typename Job>
+bool reads_raw_counts_only(const Job& job, const GraphPropertyNeeds& g) {
+    return !(job.include_events || job.include_events_minimal || job.include_branchial_edges ||
+             job.include_branchial_state_edges || job.include_branchial_state_edges_all_siblings ||
+             g.causal || g.branchial || g.events);
+}
+
 // Build the "GraphData" association: property name -> <|Vertices, Edges, VertexData|>.
 template <typename Source>
 wxf::WXFValue build_graph_data(const Source& src,

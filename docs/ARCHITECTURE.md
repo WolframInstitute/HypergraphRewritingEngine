@@ -121,6 +121,11 @@ Boundary + tooling:
   invariant across the labelings by which distinct parents reach one canonical state.
   Verified against full capture across the reconstruction matrix; still default-OFF
   (`set_quotient_reconstruction`) while the older aggregate producer-set DP ships.
+  A request that reads the raw events and branchial pairs only as counts takes them
+  from class multiplicities instead: `m(class, depth)`, the number of raw states a
+  class stands for at a depth, times the class's match and overlapping-pair counts
+  (`hgcommon/quotient_multiplicity_core.hpp`). Its cost is per (class, depth, match),
+  not per raw state.
 - **Everything on the hot path is lock-free and arena-allocated.** No mutexes, no
   `std::` heap containers on the hot path. Fixes stay lock-free.
 - **Concurrent-structure invariants that are easy to break.** `ConcurrentMap` is open

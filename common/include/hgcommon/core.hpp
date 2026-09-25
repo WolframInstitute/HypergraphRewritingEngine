@@ -235,6 +235,10 @@ struct RecordSet {
     //
     // Defaults on, so a caller that states nothing gets the raw counts it always got.
     bool raw_events = true;
+    // The raw events and branchial pairs are read only as counts. Under quotient exploration
+    // with the causal relation off, the counts then come from class multiplicities
+    // (quotient_multiplicity_core.hpp), and no raw state is materialised.
+    bool raw_counts_only = false;
 };
 
 

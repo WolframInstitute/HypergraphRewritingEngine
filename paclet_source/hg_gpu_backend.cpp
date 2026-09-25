@@ -142,6 +142,7 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
         in.record.raw_events = job.include_events || job.include_num_events ||
                                job.include_branchial_state_edges ||
                                job.include_branchial_state_edges_all_siblings || gneeds.events;
+        in.record.raw_counts_only = hgmarshal::reads_raw_counts_only(job, gneeds);
 
         // A SESSION RECORDS EVERYTHING, the same rule the host follows and for the same reason:
         // a session exists to be continued and queried in ways its Open cannot know, so deriving

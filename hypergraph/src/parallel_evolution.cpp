@@ -1804,6 +1804,8 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
     // their transitions -- what it stops doing is materialising one instance per raw state.
     const RecordSet rec = hg_->record_set();
     hg_->set_quotient_reconstruction(qc && (rec.causal || rec.branchial || rec.raw_events));
+    hg_->set_quotient_multiplicity(hg_->quotient_reconstruction() && rec.raw_counts_only &&
+                                   !rec.causal);
     // The reconstruction emits causal edges between CANONICAL event ids, which are assigned
     // first-writer-wins and are not monotonic along causal edges. The online reduction's
     // pruning is only sound when they are, so it is told which regime it is in.

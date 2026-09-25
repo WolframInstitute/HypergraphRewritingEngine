@@ -102,12 +102,15 @@ enum class ErrorKind : uint32_t {
     // "MatchesPerStateRule" was not applied to it. Not a wrong answer: an UNCAPPED one, said out
     // loud, which is the engine's partial-result contract rather than a silent substitution.
     kDrainCapBufferFull = 31,
+    // A raw event or branchial count from class multiplicities exceeded 2^63 - 1 and reports
+    // that value. Not retryable: no capacity bounds it.
+    kCountSaturated     = 32,
     // The counter array is sized kCount and DeviceErrors::record drops any kind whose value is
     // not below it, so kCount must exceed every value above. The values are assigned by hand and
     // are not dense, so an implicit kCount tracks only the LAST entry -- which is how
     // kTrPredsNodes (25) and kQcNodes (26) came to sit above an implicit kCount of 25 and could
     // never be reported at all. Stated explicitly, with the static_assert below as the guard.
-    kCount               = 32
+    kCount               = 33
 };
 
 // DISTINCT VALUES, NOT MERELY IN-RANGE ONES. record() indexes the counter array by the enum
@@ -136,6 +139,8 @@ static_assert(static_cast<uint32_t>(ErrorKind::kPersistentStall) <
               static_cast<uint32_t>(ErrorKind::kCount), "kPersistentStall is unrecordable");
 static_assert(static_cast<uint32_t>(ErrorKind::kDrainCapBufferFull) <
               static_cast<uint32_t>(ErrorKind::kCount), "kDrainCapBufferFull is unrecordable");
+static_assert(static_cast<uint32_t>(ErrorKind::kCountSaturated) <
+              static_cast<uint32_t>(ErrorKind::kCount), "kCountSaturated is unrecordable");
 
 const char* error_kind_name(ErrorKind k);
 

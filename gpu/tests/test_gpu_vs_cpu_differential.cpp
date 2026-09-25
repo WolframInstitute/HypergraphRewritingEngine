@@ -12,6 +12,7 @@
 
 #include "hg_gpu/evolve.hpp"
 
+#include "hgcommon/quotient_multiplicity_core.hpp"
 #include "hgcommon/quotient_replay_core.hpp"
 #include "hypergraph/hypergraph.hpp"
 #include "hypergraph/ir_canonicalization.hpp"
@@ -1656,6 +1657,110 @@ TEST(RecordSet, NotRecordingRawEventsLeavesTheCanonicalAnswerUnchanged) {
     EXPECT_TRUE(with_raw.reconstruction_ran);
     EXPECT_FALSE(no_raw.reconstruction_ran)
         << "raw_events=false still ran the reconstruction: the gate is not wired";
+}
+
+// Raw counts from class multiplicities equal the device replay's and the host's on every corpus
+// workload, run under quotient exploration. The host is compared where it runs the same request,
+// which is every workload without sampling or caps.
+TEST(RecordSet, MultiplicityCountsMatchTheReplayAndTheHost) {
+    size_t compared = 0;
+    for (Workload w : build_corpus()) {
+        if (w.num_steps == 0) continue;
+        w.explore_from_canonical_states_only = true;
+        w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+        auto run = [&](bool counts_only) {
+            hg_gpu::EvolveInput in = make_input(w);
+            in.materialize_relations = false;
+            in.record.causal = false;
+            in.record.branchial = true;
+            in.record.raw_events = true;
+            in.record.raw_counts_only = counts_only;
+            return hg_gpu::evolve(in);
+        };
+        const hg_gpu::EvolveResult replay = run(false);
+        const hg_gpu::EvolveResult mult = run(true);
+        EXPECT_EQ(mult.expansion_instances, 0u)
+            << w.name << ": the multiplicity path materialised replay instances";
+        EXPECT_EQ(mult.states.size(), replay.states.size()) << w.name;
+        EXPECT_EQ(mult.observable_num_events(), replay.observable_num_events()) << w.name;
+        EXPECT_EQ(mult.observable_num_branchial(), replay.observable_num_branchial()) << w.name;
+
+        const bool host_runs_it =
+            w.transition_rate == 1.0 && w.rule_weights.empty() && w.max_states_per_step == 0 &&
+            w.max_successor_states_per_parent == 0 && w.matches_per_state_rule == 0;
+        if (!host_runs_it) continue;
+        hypergraph::Hypergraph hg;
+        hg.set_state_canonicalization_mode(hypergraph::StateCanonicalizationMode::Full);
+        hg.set_event_signature_keys(to_cpu_event_keys(w.event_canon_mode));
+        hypergraph::RecordSet rs{false, true, false};
+        rs.raw_events = true;
+        rs.raw_counts_only = true;
+        hg.set_record_set(rs);
+        hypergraph::ParallelEvolutionEngine pe(&hg, 1);
+        pe.set_explore_from_canonical_states_only(true);
+        for (size_t i = 0; i < w.rules.size(); ++i)
+            pe.add_rule(convert_rule(w.rules[i], static_cast<uint16_t>(i)));
+        if (!w.initial_states.empty()) {
+            std::vector<std::vector<std::vector<hypergraph::VertexId>>> roots;
+            for (const auto& r : w.initial_states) {
+                std::vector<std::vector<hypergraph::VertexId>> st;
+                for (const auto& e : r) st.emplace_back(e.begin(), e.end());
+                roots.push_back(std::move(st));
+            }
+            pe.set_quotient_initial_states(w.quotient_initial_states);
+            pe.evolve(roots, w.num_steps);
+        } else {
+            pe.evolve(w.initial_state, w.num_steps);
+        }
+        EXPECT_EQ(mult.observable_num_events(), hg.observable_num_events()) << w.name << " (host)";
+        EXPECT_EQ(mult.observable_num_branchial(), hg.observable_num_branchial())
+            << w.name << " (host)";
+        if (hg.observable_num_events()) ++compared;
+    }
+    EXPECT_GT(compared, 0u);
+}
+
+// {{1,1},{1,1}} -> {{1,1},{1,1},{1,1}} from {{1,1},{1,1}}: one class per step. The expected
+// counts are the closed form the host test states (test_oracle_corpus.cpp,
+// MultiplicityCountsWithoutRawStates); at depth 12 the branchial count exceeds 2^63 - 1.
+TEST(RecordSet, MultiplicityCountsWithoutRawStates) {
+    auto run = [](uint32_t depth) {
+        Workload w;
+        w.name = "multiplicity/self-loops";
+        w.rules = {rule({{0, 0}, {0, 0}}, {{0, 0}, {0, 0}, {0, 0}})};
+        w.initial_state = {{0u, 0u}, {0u, 0u}};
+        w.num_steps = depth;
+        w.explore_from_canonical_states_only = true;
+        hg_gpu::EvolveInput in = make_input(w);
+        in.materialize_relations = false;
+        in.record.causal = false;
+        in.record.branchial = true;
+        in.record.raw_events = true;
+        in.record.raw_counts_only = true;
+        return hg_gpu::evolve(in);
+    };
+    auto saturated = [](const hg_gpu::EvolveResult& r) {
+        return std::any_of(r.warnings.begin(), r.warnings.end(), [](const auto& w) {
+            return w.kind == hg_gpu::ErrorKind::kCountSaturated;
+        });
+    };
+    // "states" holds every materialised raw state, so the classes are counted by content.
+    auto classes = [](const hg_gpu::EvolveResult& r) {
+        hypergraph::IRCanonicalizer ir;
+        std::set<uint64_t> h;
+        for (const auto& st : r.states) h.insert(ir.compute_canonical_hash(st.edges));
+        return h.size();
+    };
+    const hg_gpu::EvolveResult d10 = run(10);
+    EXPECT_EQ(classes(d10), 11u);
+    EXPECT_EQ(d10.observable_num_events(), 146181741036638ull);
+    EXPECT_EQ(d10.observable_num_branchial(), 2701668796795399ull);
+    EXPECT_FALSE(saturated(d10));
+
+    const hg_gpu::EvolveResult d12 = run(12);
+    EXPECT_EQ(d12.observable_num_events(), 3002019319241196638ull);
+    EXPECT_EQ(d12.observable_num_branchial(), hgcommon::QM_SATURATED);
+    EXPECT_TRUE(saturated(d12));
 }
 
 TEST(RecordSet, DeviceSkipsOnlyWhatItWasNotAskedFor) {

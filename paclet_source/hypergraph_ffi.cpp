@@ -33,6 +33,7 @@
 #include "ffi_job.hpp"           // ParsedJob -- the envelope, parsed once
 #include "cpu_engine_holder.hpp"   // owns the Hypergraph and its engine as one lifetime
 #include "hgcommon/build_stamp.hpp"  // the configuration this artifact was built with
+#include "hgcommon/quotient_multiplicity_core.hpp"  // QM_SATURATED_MESSAGE
 
 using namespace hypergraph;
 
@@ -853,6 +854,10 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // reconstructed too, and record.causal / record.branchial already drive the replay.
         record.raw_events = req.include_events || req.include_events_minimal ||
                             req.include_num_events || gneeds.events || req.show_progress;
+        // Nothing but NumEvents and NumBranchialEdges reads the raw unfolding, so under quotient
+        // exploration they come from class multiplicities: 206,931,038 raw events on
+        // {{1,1},{1,1}} -> {{1,1},{1,1},{1,1}} at depth 7 without one raw state.
+        record.raw_counts_only = hgmarshal::reads_raw_counts_only(req, gneeds);
 
         // A SESSION RECORDS EVERYTHING, because it exists to be continued and queried in ways
         // its Open cannot know. Deriving its record set from the properties named on the Open
@@ -969,6 +974,10 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
 
         for (const auto& w : engine.warnings())
             req.ffi_warnings.push_back({"Engine", 1, w});
+
+        if (hg.quotient_counts_saturated()) {
+            req.ffi_warnings.push_back({"CountSaturated", 1, hgcommon::QM_SATURATED_MESSAGE});
+        }
 
         // A rank that was unavailable was substituted with a raw edge id and counted (SPEC.md
         // sec 4.2); such an event signature is not an isomorphism invariant, and a caller

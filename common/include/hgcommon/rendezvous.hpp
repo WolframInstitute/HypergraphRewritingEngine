@@ -67,6 +67,7 @@ namespace rv {
 // site rather than by its own. Each comment below names where the partner is.
 struct EdgeProducerConsumer {};   // causal_graph: producer publishes / consumer publishes
 struct QuotientInstanceMatch {};  // hypergraph: qc_add_instance / qc_capture_expansion
+struct QuotientMassMatch {};      // hypergraph: qm_credit / qc_capture_expansion
 struct MatchStoreScan {};         // parallel_evolution: store_match_for_state / the scan
 struct CanonChildDepth {};        // parallel_evolution: child registration / propagate_explore_depth
 struct DepthSettleCascade {};     // depth_join: settle d / finish at d+1

@@ -8,9 +8,11 @@
 
 #include <atomic>
 #include <cstdlib>
+#include <memory>
 #include <set>
 #include <string>
 
+#include "hgcommon/quotient_multiplicity_core.hpp"
 #include "hypergraph/rule_analysis.hpp"
 #include "reference/oracle_corpus.hpp"
 
@@ -479,6 +481,100 @@ TEST(OracleCorpus, ContinuingASampledRunMatchesRunningItInOneCall) {
         EXPECT_EQ(split.num_events(), whole.num_events())
             << r.name << " rate=" << r.rate << ": the split run kept a different event count";
     }
+}
+
+// Raw counts from class multiplicities equal the replay's, on every route that reconstructs.
+//
+// The replay materialises one instance per raw state and counts its applications; the
+// multiplicity path counts the same applications as m(class, depth) * matches without building an
+// instance. Compared per corpus case under quotient exploration (identity None and Automatic),
+// under the Automatic-identity reconstruction without quotient exploration, at 1 and 8 threads,
+// continued in two calls, and sampled.
+TEST(OracleCorpus, MultiplicityCountsMatchTheReplay) {
+    struct Leg { const char* name; bool qexpl; hgcommon::EventSignatureKeys keys; double rate;
+                 unsigned threads; bool split; };
+    const std::vector<Leg> legs = {
+        {"qexpl/None/1",       true,  hgcommon::EVENT_SIG_NONE,      0.0,  1, false},
+        {"qexpl/None/8",       true,  hgcommon::EVENT_SIG_NONE,      0.0,  8, false},
+        {"qexpl/Automatic/8",  true,  hgcommon::EVENT_SIG_AUTOMATIC, 0.0,  8, false},
+        {"recon/Automatic/8",  false, hgcommon::EVENT_SIG_AUTOMATIC, 0.0,  8, false},
+        {"qexpl/None/split",   true,  hgcommon::EVENT_SIG_NONE,      0.0,  4, true},
+        {"qexpl/None/sampled", true,  hgcommon::EVENT_SIG_NONE,      0.25, 4, false},
+    };
+    struct Counts { uint64_t states, events, branchial; size_t instances; bool multiplicity; };
+    auto run = [](const oracle::Case& c, const Leg& leg, bool counts_only) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        hg.set_event_signature_keys(leg.keys);
+        RecordSet rs{false, true, false};
+        rs.raw_events = true;
+        rs.raw_counts_only = counts_only;
+        hg.set_record_set(rs);
+        ParallelEvolutionEngine e(&hg, leg.threads);
+        e.set_explore_from_canonical_states_only(leg.qexpl);
+        if (leg.rate > 0) { e.set_transition_rate(leg.rate); e.set_random_seed(3); }
+        for (const auto& r : c.rules) e.add_rule(r);
+        if (leg.split) {
+            e.set_continuable(true);
+            e.evolve(c.init, c.measure_steps - 1);
+            e.evolve_more(1);
+        } else {
+            e.evolve(c.init, c.measure_steps);
+        }
+        return Counts{hg.num_canonical_states(), hg.observable_num_events(),
+                      hg.observable_num_branchial(), hg.num_reconstructed_instances(),
+                      hg.quotient_multiplicity()};
+    };
+    size_t compared = 0;
+    for (const Leg& leg : legs) {
+        for (const auto& c : oracle::corpus()) {
+            if (leg.split && c.measure_steps < 2) continue;
+            const Counts replay = run(c, leg, false);
+            const Counts mult = run(c, leg, true);
+            ASSERT_FALSE(replay.multiplicity) << leg.name << " " << c.name;
+            ASSERT_TRUE(mult.multiplicity) << leg.name << " " << c.name
+                << ": a counts-only record set did not select the multiplicity path";
+            EXPECT_EQ(mult.instances, 0u) << leg.name << " " << c.name
+                << ": the multiplicity path materialised replay instances";
+            EXPECT_EQ(mult.states, replay.states) << leg.name << " " << c.name;
+            EXPECT_EQ(mult.events, replay.events) << leg.name << " " << c.name;
+            EXPECT_EQ(mult.branchial, replay.branchial) << leg.name << " " << c.name;
+            if (replay.events) ++compared;
+        }
+    }
+    EXPECT_GT(compared, 0u);
+}
+
+// {{1,1},{1,1}} -> {{1,1},{1,1},{1,1}} from {{1,1},{1,1}}: one class per step, n = d + 2
+// self-loops at depth d, M(n) = n(n-1) matches of which B(n) = C(M, 2) - n(n-1)(n-2)(n-3)/2
+// pairs overlap, and m(d+1) = m(d) M(d+2). The expected counts are that closed form: events to
+// depth D = sum over d < D of m(d) M(d+2), branchial pairs the same sum with B.
+// The replay needs 25.5 s at depth 7; at depth 12 the branchial count exceeds 2^63 - 1.
+TEST(OracleCorpus, MultiplicityCountsWithoutRawStates) {
+    auto run = [](int depth) {
+        auto hg = std::make_unique<Hypergraph>();
+        hg->set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        RecordSet rs{false, true, false};
+        rs.raw_events = true;
+        rs.raw_counts_only = true;
+        hg->set_record_set(rs);
+        ParallelEvolutionEngine e(hg.get(), 4);
+        e.set_explore_from_canonical_states_only(true);
+        e.add_rule(make_rule(0).lhs({0,0}).lhs({0,0}).rhs({0,0}).rhs({0,0}).rhs({0,0}).build());
+        e.evolve({{0,0},{0,0}}, depth);
+        return hg;
+    };
+    auto d10 = run(10);
+    ASSERT_TRUE(d10->quotient_multiplicity());
+    EXPECT_EQ(d10->num_canonical_states(), 11u);
+    EXPECT_EQ(d10->observable_num_events(), 146181741036638ull);
+    EXPECT_EQ(d10->observable_num_branchial(), 2701668796795399ull);
+    EXPECT_FALSE(d10->quotient_counts_saturated());
+
+    auto d12 = run(12);
+    EXPECT_EQ(d12->observable_num_events(), 3002019319241196638ull);
+    EXPECT_EQ(d12->observable_num_branchial(), hgcommon::QM_SATURATED);
+    EXPECT_TRUE(d12->quotient_counts_saturated());
 }
 
 // A run that was not made continuable says so, rather than returning the graph it already had.

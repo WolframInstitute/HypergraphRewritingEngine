@@ -1080,7 +1080,7 @@ hgSendJob[inputData_Association, device_, sessionQ_] := Module[{wxfBytes, result
     Module[{warns = wxfData["Warnings"], advisoryKinds, advisories, overflows},
       (* Advisory kinds are minted by the CPU FFI (engine option conflicts, analysis
          refusals); every other kind is a GPU capacity flag on a PARTIAL result. *)
-      advisoryKinds = {"Engine", "OptionSkipped"};
+      advisoryKinds = {"Engine", "OptionSkipped", "CountSaturated"};
       advisories = Select[warns, MemberQ[advisoryKinds, Lookup[#, "Kind", ""]] &];
       overflows = Complement[warns, advisories];
       If[Length[overflows] > 0,

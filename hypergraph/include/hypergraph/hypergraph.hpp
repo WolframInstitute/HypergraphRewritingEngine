@@ -108,6 +108,7 @@ class Hypergraph {
     std::atomic<bool> record_branchial_{true};
     std::atomic<bool> record_state_events_{true};
     std::atomic<bool> record_raw_events_{true};
+    std::atomic<bool> record_raw_counts_only_{false};
 
     // Per-state canonical edge-orbit tables, computed once at state canonicalization in
     // quotient mode (piggybacked on the dedup IR canonicalization, so no extra canon pass)
@@ -243,6 +244,25 @@ class Hypergraph {
     ConcurrentKeySet<uint64_t> qc_canon_event_seen_{HG_QC_CANON_EVENT_SEEN_CAPACITY};
     std::atomic<size_t> qc_num_canon_events_{0};
     std::atomic<bool> quotient_reconstruction_{false};
+
+    // RAW COUNTS FROM CLASS MULTIPLICITIES (hgcommon/quotient_multiplicity_core.hpp), run in
+    // place of the replay when the raw events and branchial pairs are read only as counts. The
+    // work is per (class, depth, match); the replay's is per raw state.
+    std::atomic<bool> quotient_multiplicity_{false};
+    // A (class, depth) point: m(class, depth), the raw states the class stands for at that
+    // depth, and whether a run of the point is queued.
+    struct QmPoint {
+        std::atomic<uint64_t> mass{0};
+        std::atomic<uint32_t> queued{0};
+    };
+    ConcurrentMap<uint64_t, QmPoint*> qm_points_;
+    // consumed_j(depth): the mass match j has passed on from its class at that depth.
+    ConcurrentMap<uint64_t, std::atomic<uint64_t>*> qm_consumed_;
+    // b_j + 1, keyed by match id + 1. Present once the match is ready.
+    ConcurrentMap<uint64_t, uint64_t> qm_overlaps_;
+    std::atomic<uint64_t> qm_events_{0};
+    std::atomic<uint64_t> qm_branchial_{0};
+    std::atomic<bool> qm_saturated_{false};
 
     // Reconstructed causal relation over raw event ids: THE base, and the only thing stored.
     // Both views come from it -- TR-off enumerates it, TR-on reduces it under hgcommon::tr_reduce
@@ -496,6 +516,44 @@ class Hypergraph {
         void record_branchial_pair(uint32_t lo, uint32_t hi);
         void descend(const SlotMatch& m, uint32_t depth, uint32_t ev, const QcInstance& parent);
     };
+
+    // The storage face hgcommon/quotient_multiplicity_core.hpp drives. The queue is the
+    // cascade's own, in this worker's scratch arena (QmQueue, defined in hypergraph.cpp).
+    struct QmQueue;
+    struct QmCtx {
+        using Match = SlotMatch;
+        Hypergraph& hg;
+        QmQueue& queue;
+
+        uint32_t max_steps() const;
+        bool ready(const SlotMatch& m, uint64_t& b) const;
+        uint64_t mass(uint64_t class_hash, uint32_t depth) const;
+        void add_mass(uint64_t class_hash, uint32_t depth, uint64_t delta);
+        uint64_t consumed(const SlotMatch& m, uint32_t depth);
+        bool advance(const SlotMatch& m, uint32_t depth, uint64_t& expected, uint64_t desired);
+        void count(uint64_t events, uint64_t branchial);
+        hgcommon::EventSignatureKeys keys() const;
+        uint32_t frame_step(uint64_t class_hash, uint32_t fallback) const;
+        void note_signature(uint64_t csig);
+        bool claim_queued(uint64_t class_hash, uint32_t depth);
+        void push(uint64_t class_hash, uint32_t depth);
+        bool pop(uint64_t& class_hash, uint32_t& depth);
+        template <class F>
+        void for_each_match(uint64_t class_hash, F&& f) {
+            hg.for_each_expansion_match(class_hash, f);
+        }
+        void fence();
+    };
+    static uint64_t qm_point_key(uint64_t class_hash, uint32_t depth);
+    static uint64_t qm_consumed_key(uint32_t match_id, uint32_t depth);
+    uint32_t qc_frame_step(uint64_t class_hash, uint32_t fallback) const;
+    QmPoint* qm_point(uint64_t class_hash, uint32_t depth);
+    std::atomic<uint64_t>* qm_consumed_cell(uint32_t match_id, uint32_t depth);
+    // Add `delta` to a counter, stopping at QM_SATURATED and recording that it did.
+    void qm_add(std::atomic<uint64_t>& counter, uint64_t delta);
+    // One cascade: `start` passes or queues the first mass, then the queue drains.
+    template <class F>
+    void qm_cascade(F&& start);
     void qc_capture_expansion(EventId e);
     const EdgeOrbitTable* qc_orbits_or_build(StateId s);
     void qc_add_instance(uint64_t state_hash, uint32_t depth, const uint32_t* prod, uint32_t nslots);
@@ -1037,9 +1095,16 @@ public:
     // default while it is proven out against full-capture.
     void set_quotient_reconstruction(bool on);
     bool quotient_reconstruction() const;
+    // Under the reconstruction, compute the raw event and branchial counts from class
+    // multiplicities and materialise no instance. No raw event, causal pair or branchial pair
+    // is then enumerable; the counts are.
+    void set_quotient_multiplicity(bool on);
+    bool quotient_multiplicity() const;
+    // A multiplicity count reached QM_SATURATED (2^63 - 1) and is a lower bound.
+    bool quotient_counts_saturated() const;
     // Raw observables recovered by the reconstruction (the full-capture counts).
-    size_t num_reconstructed_events() const;
-    size_t num_reconstructed_raw_events() const;
+    uint64_t num_reconstructed_events() const;
+    uint64_t num_reconstructed_raw_events() const;
     // Instances the replay recorded: one per raw occurrence of a class at a depth. The
     // population every captured match is replayed against, so the relations it produces are a
     // function of it -- which makes it the first thing to compare when two runs disagree.
@@ -1120,7 +1185,7 @@ public:
     // once -- migrate_into dropped keys the caller had already been told it won (f694c062),
     // giving 20,558 pairs enumerated against 30,063 claimed. Reporting the enumeration removes
     // the class of divergence rather than re-synchronising one more site.
-    size_t num_reconstructed_branchial() const;
+    uint64_t num_reconstructed_branchial() const;
 #if HG_ENGINE_STATS
     size_t num_frame_alignment_disagreements() const;
     size_t num_alignment_failures() const;
@@ -1319,10 +1384,10 @@ public:
     // which report what is MATERIALISED -- internal code iterates records by id against those,
     // and would break if they started reporting counts with no records behind them.
 
-    size_t observable_num_events() const;
+    uint64_t observable_num_events() const;
     size_t observable_num_causal_edges() const;
     size_t observable_num_causal_pairs(bool transitively_reduced) const;
-    size_t observable_num_branchial() const;
+    uint64_t observable_num_branchial() const;
 
 
 

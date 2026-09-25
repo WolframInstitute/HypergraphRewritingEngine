@@ -1,5 +1,6 @@
 #include "hgcommon/core.hpp"
 #include "hgcommon/rendezvous.hpp"
+#include "hgcommon/quotient_multiplicity_core.hpp"
 #include "hgcommon/phase_timing.hpp"
 #include "hgcommon/namespace.hpp"
 // hypergraph.cpp - Implementation of Hypergraph class non-template methods
@@ -1055,6 +1056,12 @@ void Hypergraph::quotient_redrive_point(uint64_t state_hash, uint32_t depth) {
         qc_process_transition(t, state_hash, depth);
     });
     if (!quotient_reconstruction_.load(std::memory_order_relaxed)) return;
+    if (quotient_multiplicity()) {
+        qm_cascade([&](QmCtx& c) {
+            if (c.claim_queued(state_hash, depth)) c.push(state_hash, depth);
+        });
+        return;
+    }
     auto ri = qc_instances_.lookup(qc_key(state_hash, depth, 0));
     if (!ri.has_value()) return;
     (*ri)->for_each([&](const QcInstance& inst) {
@@ -1077,7 +1084,9 @@ void Hypergraph::quotient_causal_seed(StateId initial_state, int max_steps) {
 
     // Seed the per-instance reconstruction with the one instance of the initial state; its
     // edges have no producer.
-    if (orb && quotient_reconstruction_.load(std::memory_order_relaxed)) {
+    if (orb && quotient_multiplicity()) {
+        qm_cascade([&](QmCtx& c) { hgcommon::qm_credit(c, h, 0, 1); });
+    } else if (orb && quotient_reconstruction_.load(std::memory_order_relaxed)) {
         // Claim the initial state as its class's frame before any instance exists, so the root
         // producer vector and the expansion captured from it agree by construction.
         auto mk = worker_scratch().mark();
@@ -1327,13 +1336,28 @@ void Hypergraph::qc_capture_expansion(EventId e) {
         auto ins = qc_expansion_.insert_if_absent(from, nl);
         lst = ins.second ? nl : ins.first;
     }
-    lst->push(m, arena_);
+    const auto* node = lst->push(m, arena_);
+
+    if (!quotient_reconstruction_.load(std::memory_order_relaxed)) return;
+    if (quotient_multiplicity()) {
+        // b_j over the matches linked before this one, then ready, then the mass already
+        // standing at this class at every depth. Partner: the run in qm_drain.
+        uint64_t b = 0;
+        lst->for_each_before(node, [&](const SlotMatch& other) {
+            if (hgcommon::qr_consumed_overlap(cs, m.num_consumed, other)) ++b;
+        });
+        qm_overlaps_.insert_if_absent(static_cast<uint64_t>(m.id) + 1, b + 1);
+        qm_cascade([&](QmCtx& c) {
+            c.fence();
+            for (uint32_t d = 0; d < c.max_steps(); ++d) hgcommon::qm_pass(c, m, from, d);
+        });
+        return;
+    }
 
     // Match side of the rendezvous: replay this newly-captured match against every instance
     // already standing at this state, at every depth. Publish (the push above) before the
     // scan, so a concurrent instance and match cannot both miss each other. The per-pair claim
     // in qc_apply makes the overlap harmless.
-    if (!quotient_reconstruction_.load(std::memory_order_relaxed)) return;
     hgcommon::rendezvous_barrier<hgcommon::rv::QuotientInstanceMatch>();
     const int maxs = qc_max_steps_.load(std::memory_order_relaxed);
     for (int d = 0; d < maxs; ++d) {
@@ -1509,16 +1533,28 @@ bool Hypergraph::quotient_reconstruction() const {
     return quotient_reconstruction_.load(std::memory_order_relaxed);
 }
 
-size_t Hypergraph::num_reconstructed_events() const {
+void Hypergraph::set_quotient_multiplicity(bool on) {
+    quotient_multiplicity_.store(on, std::memory_order_relaxed);
+}
+
+bool Hypergraph::quotient_multiplicity() const {
+    return quotient_multiplicity_.load(std::memory_order_relaxed);
+}
+
+bool Hypergraph::quotient_counts_saturated() const {
+    return qm_saturated_.load(std::memory_order_relaxed);
+}
+
+uint64_t Hypergraph::num_reconstructed_events() const {
     // Under an event-identity mode the observable is the count of distinct identities; with no
     // identity selected every application is its own event and the raw count IS the answer.
     // Mirrors num_events() on the full-capture side.
-    if (event_signature_keys() == hgcommon::EVENT_SIG_NONE)
-        return qc_next_raw_event_.load(std::memory_order_relaxed);
+    if (event_signature_keys() == hgcommon::EVENT_SIG_NONE) return num_reconstructed_raw_events();
     return qc_num_canon_events_.load(std::memory_order_relaxed);
 }
 
-size_t Hypergraph::num_reconstructed_raw_events() const {
+uint64_t Hypergraph::num_reconstructed_raw_events() const {
+    if (quotient_multiplicity()) return qm_events_.load(std::memory_order_relaxed);
     return qc_next_raw_event_.load(std::memory_order_relaxed);
 }
 
@@ -1858,7 +1894,7 @@ const EdgeOrbitTable* Hypergraph::state_orbits(StateId s) const {
 // -- internal code iterates records by id against those and would break if they reported counts
 // with no records behind them.
 
-size_t Hypergraph::observable_num_events() const {
+uint64_t Hypergraph::observable_num_events() const {
     return quotient_reconstruction() ? num_reconstructed_events() : num_events();
 }
 
@@ -1872,7 +1908,7 @@ size_t Hypergraph::observable_num_causal_pairs(bool transitively_reduced) const 
                                      : causal_graph_.num_causal_event_pairs();
 }
 
-size_t Hypergraph::observable_num_branchial() const {
+uint64_t Hypergraph::observable_num_branchial() const {
     return quotient_reconstruction() ? num_reconstructed_branchial()
                                      : causal_graph_.num_branchial_edges();
 }
@@ -1895,13 +1931,15 @@ void Hypergraph::set_record_set(RecordSet r) {
     record_branchial_.store(r.branchial, std::memory_order_relaxed);
     record_state_events_.store(r.state_events, std::memory_order_relaxed);
     record_raw_events_.store(r.raw_events, std::memory_order_relaxed);
+    record_raw_counts_only_.store(r.raw_counts_only, std::memory_order_relaxed);
 }
 
 RecordSet Hypergraph::record_set() const {
     return RecordSet{record_causal_.load(std::memory_order_relaxed),
                      record_branchial_.load(std::memory_order_relaxed),
                      record_state_events_.load(std::memory_order_relaxed),
-                     record_raw_events_.load(std::memory_order_relaxed)};
+                     record_raw_events_.load(std::memory_order_relaxed),
+                     record_raw_counts_only_.load(std::memory_order_relaxed)};
 }
 
 // The per-state event list and the branchial pair relation are recorded independently: they feed
@@ -1993,8 +2031,14 @@ hgcommon::EventSignatureKeys Hypergraph::QrCtx::keys() const {
 }
 
 uint32_t Hypergraph::QrCtx::frame_step(uint64_t class_hash, uint32_t fallback) const {
-    if (auto fo = hg.qc_frame_.lookup(class_hash))
-        return hg.get_state(static_cast<StateId>(*fo - 1)).step;
+    return hg.qc_frame_step(class_hash, fallback);
+}
+
+// The step of the class's frame state, which is what an event signature records as the output
+// step; `fallback` when the class has no frame yet.
+uint32_t Hypergraph::qc_frame_step(uint64_t class_hash, uint32_t fallback) const {
+    if (auto fo = qc_frame_.lookup(class_hash))
+        return get_state(static_cast<StateId>(*fo - 1)).step;
     return fallback;
 }
 
@@ -2071,9 +2115,134 @@ bool Hypergraph::is_full_canonicalization() const {
            StateCanonicalizationMode::Full;
 }
 
-size_t Hypergraph::num_reconstructed_branchial() const {
+uint64_t Hypergraph::num_reconstructed_branchial() const {
+    if (quotient_multiplicity()) return qm_branchial_.load(std::memory_order_relaxed);
     return qc_ctr_total(&QcCounterSlot::branchial);
 }
+
+// =============================================================================
+// Raw counts from class multiplicities: the storage behind quotient_multiplicity_core.hpp.
+
+uint64_t Hypergraph::qm_point_key(uint64_t class_hash, uint32_t depth) {
+    return hgcommon::avoid_reserved_keys(hgcommon::qc_key(class_hash, depth, 0));
+}
+
+uint64_t Hypergraph::qm_consumed_key(uint32_t match_id, uint32_t depth) {
+    return hgcommon::qr_apply_key(match_id, depth);
+}
+
+Hypergraph::QmPoint* Hypergraph::qm_point(uint64_t class_hash, uint32_t depth) {
+    const uint64_t key = qm_point_key(class_hash, depth);
+    if (auto r = qm_points_.lookup(key)) return *r;
+    return qm_points_.insert_if_absent(key, arena_.template create<QmPoint>()).first;
+}
+
+std::atomic<uint64_t>* Hypergraph::qm_consumed_cell(uint32_t match_id, uint32_t depth) {
+    const uint64_t key = qm_consumed_key(match_id, depth);
+    if (auto r = qm_consumed_.lookup(key)) return *r;
+    auto* cell = arena_.template create<std::atomic<uint64_t>>(0);
+    return qm_consumed_.insert_if_absent(key, cell).first;
+}
+
+void Hypergraph::qm_add(std::atomic<uint64_t>& counter, uint64_t delta) {
+    uint64_t old = counter.load(std::memory_order_relaxed);
+    uint64_t next;
+    do {
+        next = hgcommon::qm_sat_add(old, delta);
+    } while (!counter.compare_exchange_weak(old, next, std::memory_order_acq_rel,
+                                            std::memory_order_relaxed));
+    if (next == hgcommon::QM_SATURATED && old + delta != next)
+        qm_saturated_.store(true, std::memory_order_relaxed);
+}
+
+// The cascade's queued points, a min-heap on depth (hgcommon::qm_heap_push / qm_heap_pop).
+struct Hypergraph::QmQueue {
+    struct Task { uint64_t class_hash; uint32_t depth; };
+    SVec<Task> heap;
+};
+
+template <class F>
+void Hypergraph::qm_cascade(F&& start) {
+    auto mk = worker_scratch().mark();
+    {
+        QmQueue q;
+        QmCtx c{*this, q};
+        start(c);
+        hgcommon::qm_drain(c);
+    }
+    worker_scratch().release(mk);
+}
+
+uint32_t Hypergraph::QmCtx::max_steps() const {
+    return static_cast<uint32_t>(hg.qc_max_steps_.load(std::memory_order_relaxed));
+}
+
+bool Hypergraph::QmCtx::ready(const SlotMatch& m, uint64_t& b) const {
+    auto r = hg.qm_overlaps_.lookup(static_cast<uint64_t>(m.id) + 1);
+    if (!r.has_value()) return false;
+    b = *r - 1;
+    return true;
+}
+
+uint64_t Hypergraph::QmCtx::mass(uint64_t class_hash, uint32_t depth) const {
+    auto r = hg.qm_points_.lookup(qm_point_key(class_hash, depth));
+    return r.has_value() ? (*r)->mass.load(std::memory_order_acquire) : 0;
+}
+
+void Hypergraph::QmCtx::add_mass(uint64_t class_hash, uint32_t depth, uint64_t delta) {
+    hg.qm_add(hg.qm_point(class_hash, depth)->mass, delta);
+}
+
+uint64_t Hypergraph::QmCtx::consumed(const SlotMatch& m, uint32_t depth) {
+    auto r = hg.qm_consumed_.lookup(qm_consumed_key(m.id, depth));
+    return r.has_value() ? (*r)->load(std::memory_order_acquire) : 0;
+}
+
+bool Hypergraph::QmCtx::advance(const SlotMatch& m, uint32_t depth, uint64_t& expected,
+                                uint64_t desired) {
+    return hg.qm_consumed_cell(m.id, depth)->compare_exchange_strong(
+        expected, desired, std::memory_order_acq_rel, std::memory_order_acquire);
+}
+
+void Hypergraph::QmCtx::count(uint64_t events, uint64_t branchial) {
+    hg.qm_add(hg.qm_events_, events);
+    if (branchial) hg.qm_add(hg.qm_branchial_, branchial);
+}
+
+hgcommon::EventSignatureKeys Hypergraph::QmCtx::keys() const { return hg.event_signature_keys(); }
+
+uint32_t Hypergraph::QmCtx::frame_step(uint64_t class_hash, uint32_t fallback) const {
+    return hg.qc_frame_step(class_hash, fallback);
+}
+
+void Hypergraph::QmCtx::note_signature(uint64_t csig) {
+    if (hg.qc_canon_event_seen_.insert(csig))
+        hg.qc_num_canon_events_.fetch_add(1, std::memory_order_relaxed);
+}
+
+bool Hypergraph::QmCtx::claim_queued(uint64_t class_hash, uint32_t depth) {
+    return hg.qm_point(class_hash, depth)->queued.exchange(1, std::memory_order_acq_rel) == 0;
+}
+
+void Hypergraph::QmCtx::push(uint64_t class_hash, uint32_t depth) {
+    queue.heap.push_back({class_hash, depth});
+    hgcommon::qm_heap_push(queue.heap.data(), static_cast<uint32_t>(queue.heap.size()));
+}
+
+bool Hypergraph::QmCtx::pop(uint64_t& class_hash, uint32_t& depth) {
+    if (queue.heap.empty()) return false;
+    const QmQueue::Task t =
+        hgcommon::qm_heap_pop(queue.heap.data(), static_cast<uint32_t>(queue.heap.size()));
+    queue.heap.pop_back();
+    class_hash = t.class_hash;
+    depth = t.depth;
+    hg.qm_point(class_hash, depth)->queued.store(0, std::memory_order_release);
+    return true;
+}
+
+// Partners: qm_credit's add-then-claim against qm_drain's clear-then-read, and the
+// ready-then-read in qc_capture_expansion against both.
+void Hypergraph::QmCtx::fence() { hgcommon::rendezvous_barrier<hgcommon::rv::QuotientMassMatch>(); }
 
 #if HG_ENGINE_STATS
 size_t Hypergraph::num_frame_alignment_disagreements() const {
