@@ -246,10 +246,10 @@ Cell[BoxData[
  GraphicsBox[
   NamespaceBox["NetworkGraphics",
    DynamicModuleBox[{Typeset`graph = HoldComplete[
-     Graph[{0, 1, 3, 4, 5, 6, 8, 9, 11, 
-      12}, {{{1, 2}, {1, 2}, {2, 3}, {3, 4}, {3, 6}, {2, 5}, {3, 7}, {3, 8}, {
-       2, 3}, {2, 5}, {5, 10}, {5, 9}, {3, 8}, {5, 9}, {5, 9}, {3, 7}, {3, 
-       6}, {5, 10}, {5, 9}, {5, 10}, {3, 4}, {5, 10}}, 
+     Graph[{0, 1, 3, 4, 6, 7, 8, 9, 15, 
+      17}, {{{1, 2}, {1, 2}, {2, 3}, {3, 4}, {3, 5}, {2, 3}, {3, 6}, {3, 8}, {
+       3, 4}, {3, 5}, {3, 6}, {2, 7}, {3, 8}, {7, 9}, {7, 9}, {2, 7}, {7, 
+       10}, {7, 10}, {7, 10}, {7, 10}, {7, 9}, {7, 9}}, 
        Null, {<|"EventId" -> 0|>, <|"EventId" -> 1|>, <|"EventId" -> 2|>, <|
         "EventId" -> 3|>, <|"EventId" -> 4|>, <|"EventId" -> 5|>, <|
         "EventId" -> 6|>, <|"EventId" -> 7|>, <|"EventId" -> 8|>, <|
@@ -259,54 +259,51 @@ Cell[BoxData[
         "EventId" -> 18|>, <|"EventId" -> 19|>, <|"EventId" -> 20|>, <|
         "EventId" -> 21|>}}, {
       AspectRatio -> Rational[1, 2], 
-       EdgeLabels -> {DirectedEdge[5, 12, <|"EventId" -> 17|>] -> Placed[
-           Row[{"Event ", 17}], Tooltip], 
-         DirectedEdge[3, 8, <|"EventId" -> 15|>] -> Placed[
-           Row[{"Event ", 15}], Tooltip], 
-         DirectedEdge[3, 6, <|"EventId" -> 4|>] -> Placed[
+       EdgeLabels -> {DirectedEdge[3, 6, <|"EventId" -> 4|>] -> Placed[
            Row[{"Event ", 4}], Tooltip], 
-         DirectedEdge[3, 4, <|"EventId" -> 20|>] -> Placed[
-           Row[{"Event ", 20}], Tooltip], 
-         DirectedEdge[5, 11, <|"EventId" -> 18|>] -> Placed[
-           Row[{"Event ", 18}], Tooltip], 
-         DirectedEdge[3, 6, <|"EventId" -> 16|>] -> Placed[
+         DirectedEdge[3, 7, <|"EventId" -> 6|>] -> Placed[
+           Row[{"Event ", 6}], Tooltip], 
+         DirectedEdge[8, 17, <|"EventId" -> 16|>] -> Placed[
            Row[{"Event ", 16}], Tooltip], 
-         DirectedEdge[5, 11, <|"EventId" -> 14|>] -> Placed[
-           Row[{"Event ", 14}], Tooltip], 
-         DirectedEdge[5, 12, <|"EventId" -> 19|>] -> Placed[
+         DirectedEdge[8, 17, <|"EventId" -> 19|>] -> Placed[
            Row[{"Event ", 19}], Tooltip], 
-         DirectedEdge[5, 12, <|"EventId" -> 21|>] -> Placed[
-           Row[{"Event ", 21}], Tooltip], 
-         DirectedEdge[1, 3, <|"EventId" -> 8|>] -> Placed[
-           Row[{"Event ", 8}], Tooltip], 
+         DirectedEdge[8, 15, <|"EventId" -> 13|>] -> Placed[
+           Row[{"Event ", 13}], Tooltip], 
          DirectedEdge[3, 9, <|"EventId" -> 12|>] -> Placed[
            Row[{"Event ", 12}], Tooltip], 
-         DirectedEdge[1, 5, <|"EventId" -> 5|>] -> Placed[
+         DirectedEdge[8, 17, <|"EventId" -> 18|>] -> Placed[
+           Row[{"Event ", 18}], Tooltip], 
+         DirectedEdge[1, 3, <|"EventId" -> 5|>] -> Placed[
            Row[{"Event ", 5}], Tooltip], 
+         DirectedEdge[8, 15, <|"EventId" -> 21|>] -> Placed[
+           Row[{"Event ", 21}], Tooltip], 
+         DirectedEdge[1, 8, <|"EventId" -> 11|>] -> Placed[
+           Row[{"Event ", 11}], Tooltip], 
          DirectedEdge[0, 1, <|"EventId" -> 0|>] -> Placed[
            Row[{"Event ", 0}], Tooltip], 
-         DirectedEdge[3, 8, <|"EventId" -> 6|>] -> Placed[
-           Row[{"Event ", 6}], Tooltip], 
+         DirectedEdge[3, 7, <|"EventId" -> 10|>] -> Placed[
+           Row[{"Event ", 10}], Tooltip], 
+         DirectedEdge[3, 4, <|"EventId" -> 8|>] -> Placed[
+           Row[{"Event ", 8}], Tooltip], 
          DirectedEdge[1, 3, <|"EventId" -> 2|>] -> Placed[
            Row[{"Event ", 2}], Tooltip], 
-         DirectedEdge[1, 5, <|"EventId" -> 9|>] -> Placed[
-           Row[{"Event ", 9}], Tooltip], 
+         DirectedEdge[1, 8, <|"EventId" -> 15|>] -> Placed[
+           Row[{"Event ", 15}], Tooltip], 
          DirectedEdge[3, 4, <|"EventId" -> 3|>] -> Placed[
            Row[{"Event ", 3}], Tooltip], 
-         DirectedEdge[5, 12, <|"EventId" -> 10|>] -> Placed[
-           Row[{"Event ", 10}], Tooltip], 
-         DirectedEdge[5, 11, <|"EventId" -> 11|>] -> Placed[
-           Row[{"Event ", 11}], Tooltip], 
+         DirectedEdge[3, 6, <|"EventId" -> 9|>] -> Placed[
+           Row[{"Event ", 9}], Tooltip], 
          DirectedEdge[0, 1, <|"EventId" -> 1|>] -> Placed[
            Row[{"Event ", 1}], Tooltip], 
+         DirectedEdge[8, 17, <|"EventId" -> 17|>] -> Placed[
+           Row[{"Event ", 17}], Tooltip], 
+         DirectedEdge[8, 15, <|"EventId" -> 14|>] -> Placed[
+           Row[{"Event ", 14}], Tooltip], 
          DirectedEdge[3, 9, <|"EventId" -> 7|>] -> Placed[
            Row[{"Event ", 7}], Tooltip], 
-         DirectedEdge[5, 11, <|"EventId" -> 13|>] -> Placed[
-           Row[{"Event ", 13}], Tooltip]}, 
-       EdgeStyle -> {DirectedEdge[5, 11, <|"EventId" -> 11|>] -> Directive[
-           GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[3, 8, <|"EventId" -> 15|>] -> 
-         Directive[
+         DirectedEdge[8, 15, <|"EventId" -> 20|>] -> Placed[
+           Row[{"Event ", 20}], Tooltip]}, 
+       EdgeStyle -> {DirectedEdge[8, 17, <|"EventId" -> 17|>] -> Directive[
            GrayLevel[0.5], 
            Arrowheads[0.02]], DirectedEdge[3, 9, <|"EventId" -> 7|>] -> 
          Directive[
@@ -314,58 +311,61 @@ Cell[BoxData[
            Arrowheads[0.02]], DirectedEdge[3, 9, <|"EventId" -> 12|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[1, 5, <|"EventId" -> 5|>] -> 
+           Arrowheads[0.02]], DirectedEdge[3, 7, <|"EventId" -> 6|>] -> 
+         Directive[
+           GrayLevel[0.5], 
+           Arrowheads[0.02]], DirectedEdge[8, 15, <|"EventId" -> 13|>] -> 
+         Directive[
+           GrayLevel[0.5], 
+           Arrowheads[0.02]], DirectedEdge[3, 6, <|"EventId" -> 9|>] -> 
          Directive[
            GrayLevel[0.5], 
            Arrowheads[0.02]], DirectedEdge[0, 1, <|"EventId" -> 0|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[5, 12, <|"EventId" -> 19|>] -> 
+           Arrowheads[0.02]], DirectedEdge[8, 15, <|"EventId" -> 20|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[5, 12, <|"EventId" -> 17|>] -> 
-         Directive[
-           GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[5, 12, <|"EventId" -> 21|>] -> 
+           Arrowheads[0.02]], DirectedEdge[8, 15, <|"EventId" -> 21|>] -> 
          Directive[
            GrayLevel[0.5], 
            Arrowheads[0.02]], DirectedEdge[3, 4, <|"EventId" -> 3|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[1, 5, <|"EventId" -> 9|>] -> 
+           Arrowheads[0.02]], DirectedEdge[8, 17, <|"EventId" -> 19|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[5, 11, <|"EventId" -> 18|>] -> 
+           Arrowheads[0.02]], DirectedEdge[1, 8, <|"EventId" -> 15|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[3, 8, <|"EventId" -> 6|>] -> 
-         Directive[
-           GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[3, 6, <|"EventId" -> 16|>] -> 
+           Arrowheads[0.02]], DirectedEdge[1, 3, <|"EventId" -> 5|>] -> 
          Directive[
            GrayLevel[0.5], 
            Arrowheads[0.02]], DirectedEdge[3, 6, <|"EventId" -> 4|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[5, 12, <|"EventId" -> 10|>] -> 
+           Arrowheads[0.02]], DirectedEdge[1, 8, <|"EventId" -> 11|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[3, 4, <|"EventId" -> 20|>] -> 
-         Directive[
-           GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[1, 3, <|"EventId" -> 8|>] -> 
+           Arrowheads[0.02]], DirectedEdge[8, 15, <|"EventId" -> 14|>] -> 
          Directive[
            GrayLevel[0.5], 
            Arrowheads[0.02]], DirectedEdge[1, 3, <|"EventId" -> 2|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[5, 11, <|"EventId" -> 14|>] -> 
-         Directive[
-           GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[5, 11, <|"EventId" -> 13|>] -> 
-         Directive[
-           GrayLevel[0.5], 
            Arrowheads[0.02]], DirectedEdge[0, 1, <|"EventId" -> 1|>] -> 
+         Directive[
+           GrayLevel[0.5], 
+           Arrowheads[0.02]], DirectedEdge[3, 7, <|"EventId" -> 10|>] -> 
+         Directive[
+           GrayLevel[0.5], 
+           Arrowheads[0.02]], DirectedEdge[8, 17, <|"EventId" -> 18|>] -> 
+         Directive[
+           GrayLevel[0.5], 
+           Arrowheads[0.02]], DirectedEdge[3, 4, <|"EventId" -> 8|>] -> 
+         Directive[
+           GrayLevel[0.5], 
+           Arrowheads[0.02]], DirectedEdge[8, 17, <|"EventId" -> 16|>] -> 
          Directive[
            GrayLevel[0.5], 
            Arrowheads[0.02]]}, GraphLayout -> "LayeredDigraphEmbedding", 
@@ -382,6 +382,13 @@ Cell[BoxData[
                Style["State", Bold]}], 
              
              Grid[{{"Id:", 4}, {"Step:", 3}}, Alignment -> Left, 
+              Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip], 7 -> 
+         Placed[
+           Column[{
+             Row[{
+               Style["State", Bold]}], 
+             
+             Grid[{{"Id:", 7}, {"Step:", 3}}, Alignment -> Left, 
               Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip], 0 -> 
          Placed[
            Column[{
@@ -389,19 +396,13 @@ Cell[BoxData[
                Style["State", Bold]}], 
              
              Grid[{{"Id:", 0}, {"Step:", 0}}, Alignment -> Left, 
-              Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip], 12 -> Placed[
-           Column[{
-             Row[{
-               Style["State", Bold]}], 
-             
-             Grid[{{"Id:", 12}, {"Step:", 3}}, Alignment -> Left, 
               Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip], 8 -> 
          Placed[
            Column[{
              Row[{
                Style["State", Bold]}], 
              
-             Grid[{{"Id:", 8}, {"Step:", 3}}, Alignment -> Left, 
+             Grid[{{"Id:", 8}, {"Step:", 2}}, Alignment -> Left, 
               Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip], 3 -> 
          Placed[
            Column[{
@@ -416,19 +417,6 @@ Cell[BoxData[
                Style["State", Bold]}], 
              
              Grid[{{"Id:", 1}, {"Step:", 1}}, Alignment -> Left, 
-              Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip], 5 -> 
-         Placed[
-           Column[{
-             Row[{
-               Style["State", Bold]}], 
-             
-             Grid[{{"Id:", 5}, {"Step:", 2}}, Alignment -> Left, 
-              Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip], 11 -> Placed[
-           Column[{
-             Row[{
-               Style["State", Bold]}], 
-             
-             Grid[{{"Id:", 11}, {"Step:", 3}}, Alignment -> Left, 
               Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip], 6 -> 
          Placed[
            Column[{
@@ -436,6 +424,18 @@ Cell[BoxData[
                Style["State", Bold]}], 
              
              Grid[{{"Id:", 6}, {"Step:", 3}}, Alignment -> Left, 
+              Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip], 15 -> Placed[
+           Column[{
+             Row[{
+               Style["State", Bold]}], 
+             
+             Grid[{{"Id:", 15}, {"Step:", 3}}, Alignment -> Left, 
+              Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip], 17 -> Placed[
+           Column[{
+             Row[{
+               Style["State", Bold]}], 
+             
+             Grid[{{"Id:", 17}, {"Step:", 3}}, Alignment -> Left, 
               Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip]}, 
        VertexStyle -> {1 -> Directive[
            RGBColor[0.368417, 0.506779, 0.709798], 
@@ -446,22 +446,22 @@ Cell[BoxData[
             RGBColor[0.2, 0.3, 0.5]]], 9 -> Directive[
            RGBColor[0.368417, 0.506779, 0.709798], 
            EdgeForm[
-            RGBColor[0.2, 0.3, 0.5]]], 4 -> Directive[
+            RGBColor[0.2, 0.3, 0.5]]], 15 -> Directive[
            RGBColor[0.368417, 0.506779, 0.709798], 
            EdgeForm[
-            RGBColor[0.2, 0.3, 0.5]]], 12 -> Directive[
+            RGBColor[0.2, 0.3, 0.5]]], 4 -> Directive[
            RGBColor[0.368417, 0.506779, 0.709798], 
            EdgeForm[
             RGBColor[0.2, 0.3, 0.5]]], 8 -> Directive[
            RGBColor[0.368417, 0.506779, 0.709798], 
            EdgeForm[
-            RGBColor[0.2, 0.3, 0.5]]], 5 -> Directive[
+            RGBColor[0.2, 0.3, 0.5]]], 7 -> Directive[
            RGBColor[0.368417, 0.506779, 0.709798], 
            EdgeForm[
             RGBColor[0.2, 0.3, 0.5]]], 0 -> Directive[
            RGBColor[0.368417, 0.506779, 0.709798], 
            EdgeForm[
-            RGBColor[0.2, 0.3, 0.5]]], 11 -> Directive[
+            RGBColor[0.2, 0.3, 0.5]]], 17 -> Directive[
            RGBColor[0.368417, 0.506779, 0.709798], 
            EdgeForm[
             RGBColor[0.2, 0.3, 0.5]]], 6 -> Directive[
@@ -508,16 +508,6 @@ Cell[BoxData[
             BezierCurveBox[{{0., 1.6666666666666667`}, {-1.1370339559859273`, 
              1.5788814943662344`}, {-2., 0.8333333333333334}}], 
             0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "8"}, "RowDefault"]],
-         Annotation[#, 
-          Row[{"Event ", 8}], "Tooltip"]& ], 
-        TagBox[
-         TooltipBox[
-          {GrayLevel[0.5], Arrowheads[0.02], 
-           ArrowBox[
-            BezierCurveBox[{{0., 1.6666666666666667`}, {0.1370339559859302, 
-             1.250000000000001}, {0., 0.8333333333333334}}], 
-            0.043048128342245986`]},
           TemplateBox[{"\"Event \"", "5"}, "RowDefault"]],
          Annotation[#, 
           Row[{"Event ", 5}], "Tooltip"]& ], 
@@ -525,12 +515,22 @@ Cell[BoxData[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[0.02], 
            ArrowBox[
+            BezierCurveBox[{{0., 1.6666666666666667`}, {0.1370339559859302, 
+             1.250000000000001}, {0., 0.8333333333333334}}], 
+            0.043048128342245986`]},
+          TemplateBox[{"\"Event \"", "11"}, "RowDefault"]],
+         Annotation[#, 
+          Row[{"Event ", 11}], "Tooltip"]& ], 
+        TagBox[
+         TooltipBox[
+          {GrayLevel[0.5], Arrowheads[0.02], 
+           ArrowBox[
             BezierCurveBox[{{0., 1.6666666666666667`}, {-0.1370339559859302, 
              1.250000000000001}, {0., 0.8333333333333334}}], 
             0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "9"}, "RowDefault"]],
+          TemplateBox[{"\"Event \"", "15"}, "RowDefault"]],
          Annotation[#, 
-          Row[{"Event ", 9}], "Tooltip"]& ], 
+          Row[{"Event ", 15}], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[0.02], 
@@ -546,9 +546,9 @@ Cell[BoxData[
            ArrowBox[
             BezierCurveBox[{{-2., 0.8333333333333334}, {-3.1370339559859297`, 
              0.7455481610328994}, {-4., 0.}}], 0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "20"}, "RowDefault"]],
+          TemplateBox[{"\"Event \"", "8"}, "RowDefault"]],
          Annotation[#, 
-          Row[{"Event ", 20}], "Tooltip"]& ], 
+          Row[{"Event ", 8}], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[0.02], 
@@ -564,9 +564,9 @@ Cell[BoxData[
            ArrowBox[
             BezierCurveBox[{{-2., 0.8333333333333334}, {-2.637033955985933, 
              0.5811074138497844}, {-3., 0.}}], 0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "16"}, "RowDefault"]],
+          TemplateBox[{"\"Event \"", "9"}, "RowDefault"]],
          Annotation[#, 
-          Row[{"Event ", 16}], "Tooltip"]& ], 
+          Row[{"Event ", 9}], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[0.02], 
@@ -582,9 +582,9 @@ Cell[BoxData[
            ArrowBox[
             BezierCurveBox[{{-2., 0.8333333333333334}, {-2.137033955985929, 
              0.41666666666667046`}, {-2., 0.}}], 0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "15"}, "RowDefault"]],
+          TemplateBox[{"\"Event \"", "10"}, "RowDefault"]],
          Annotation[#, 
-          Row[{"Event ", 15}], "Tooltip"]& ], 
+          Row[{"Event ", 10}], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[0.02], 
@@ -609,15 +609,6 @@ Cell[BoxData[
            ArrowBox[
             BezierCurveBox[{{0., 0.8333333333333334}, {0.13703395598593043`, 
              0.41666666666666696`}, {0., 0.}}], 0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "11"}, "RowDefault"]],
-         Annotation[#, 
-          Row[{"Event ", 11}], "Tooltip"]& ], 
-        TagBox[
-         TooltipBox[
-          {GrayLevel[0.5], Arrowheads[0.02], 
-           ArrowBox[
-            BezierCurveBox[{{0., 0.8333333333333334}, {0.045815558039429355`, 
-             0.4166666666666527}, {0., 0.}}], 0.043048128342245986`]},
           TemplateBox[{"\"Event \"", "13"}, "RowDefault"]],
          Annotation[#, 
           Row[{"Event ", 13}], "Tooltip"]& ], 
@@ -625,8 +616,8 @@ Cell[BoxData[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[0.02], 
            ArrowBox[
-            BezierCurveBox[{{0., 0.8333333333333334}, {-0.045815558039429355`,
-              0.4166666666666527}, {0., 0.}}], 0.043048128342245986`]},
+            BezierCurveBox[{{0., 0.8333333333333334}, {0.045815558039429355`, 
+             0.4166666666666527}, {0., 0.}}], 0.043048128342245986`]},
           TemplateBox[{"\"Event \"", "14"}, "RowDefault"]],
          Annotation[#, 
           Row[{"Event ", 14}], "Tooltip"]& ], 
@@ -634,20 +625,29 @@ Cell[BoxData[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[0.02], 
            ArrowBox[
+            BezierCurveBox[{{0., 0.8333333333333334}, {-0.045815558039429355`,
+              0.4166666666666527}, {0., 0.}}], 0.043048128342245986`]},
+          TemplateBox[{"\"Event \"", "20"}, "RowDefault"]],
+         Annotation[#, 
+          Row[{"Event ", 20}], "Tooltip"]& ], 
+        TagBox[
+         TooltipBox[
+          {GrayLevel[0.5], Arrowheads[0.02], 
+           ArrowBox[
             BezierCurveBox[{{0., 0.8333333333333334}, {-0.13703395598593043`, 
              0.41666666666666696`}, {0., 0.}}], 0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "18"}, "RowDefault"]],
+          TemplateBox[{"\"Event \"", "21"}, "RowDefault"]],
          Annotation[#, 
-          Row[{"Event ", 18}], "Tooltip"]& ], 
+          Row[{"Event ", 21}], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[0.02], 
            ArrowBox[
             BezierCurveBox[{{0., 0.8333333333333334}, {0.6370339559859294, 
              0.581107413849784}, {1., 0.}}], 0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "10"}, "RowDefault"]],
+          TemplateBox[{"\"Event \"", "16"}, "RowDefault"]],
          Annotation[#, 
-          Row[{"Event ", 10}], "Tooltip"]& ], 
+          Row[{"Event ", 16}], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[0.02], 
@@ -663,18 +663,18 @@ Cell[BoxData[
            ArrowBox[
             BezierCurveBox[{{0., 0.8333333333333334}, {0.45418444196058044`, 
              0.3616879970193483}, {1., 0.}}], 0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "19"}, "RowDefault"]],
+          TemplateBox[{"\"Event \"", "18"}, "RowDefault"]],
          Annotation[#, 
-          Row[{"Event ", 19}], "Tooltip"]& ], 
+          Row[{"Event ", 18}], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[0.02], 
            ArrowBox[
             BezierCurveBox[{{0., 0.8333333333333334}, {0.3629660440140697, 
              0.25222591948354983`}, {1., 0.}}], 0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "21"}, "RowDefault"]],
+          TemplateBox[{"\"Event \"", "19"}, "RowDefault"]],
          Annotation[#, 
-          Row[{"Event ", 21}], "Tooltip"]& ]}, 
+          Row[{"Event ", 19}], "Tooltip"]& ]}, 
        {Hue[0.6, 0.5, 1.], EdgeForm[{GrayLevel[0], Opacity[0.7]}], 
         TagBox[
          TooltipBox[
@@ -798,36 +798,6 @@ Cell[BoxData[
         TagBox[
          TooltipBox[
           {RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[
-           0.2, 0.3, 0.5]], 
-           DiskBox[{0., 0.8333333333333334}, 0.043048128342245986]},
-          TagBox[
-           GridBox[{{
-              TemplateBox[{
-                StyleBox["\"State\"", Bold, StripOnInput -> False]}, 
-               "RowDefault"]}, {
-              TagBox[
-               
-               GridBox[{{"\"Id:\"", "5"}, {"\"Step:\"", "2"}}, 
-                GridBoxAlignment -> {"Columns" -> {{Left}}}, AutoDelete -> 
-                False, GridBoxItemSize -> {
-                 "Columns" -> {{Automatic}}, "Rows" -> {{Automatic}}}, 
-                GridBoxSpacings -> {"Columns" -> {{1}}, "Rows" -> {{0.5}}}], 
-               "Grid"]}}, GridBoxAlignment -> {"Columns" -> {{Left}}}, 
-            DefaultBaseStyle -> "Column", 
-            GridBoxItemSize -> {
-             "Columns" -> {{Automatic}}, "Rows" -> {{Automatic}}}, 
-            GridBoxSpacings -> {
-             "Columns" -> {{Automatic}}, "Rows" -> {{0.5}}}], "Column"]],
-         Annotation[#, 
-          Column[{
-            Row[{
-              Style["State", Bold]}], 
-            
-            Grid[{{"Id:", 5}, {"Step:", 2}}, Alignment -> Left, 
-             Spacings -> {1, 0.5}]}, Spacings -> 0.5], "Tooltip"]& ], 
-        TagBox[
-         TooltipBox[
-          {RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[
            0.2, 0.3, 0.5]], DiskBox[{-3., 0.}, 0.043048128342245986]},
           TagBox[
            GridBox[{{
@@ -865,7 +835,7 @@ Cell[BoxData[
                "RowDefault"]}, {
               TagBox[
                
-               GridBox[{{"\"Id:\"", "8"}, {"\"Step:\"", "3"}}, 
+               GridBox[{{"\"Id:\"", "7"}, {"\"Step:\"", "3"}}, 
                 GridBoxAlignment -> {"Columns" -> {{Left}}}, AutoDelete -> 
                 False, GridBoxItemSize -> {
                  "Columns" -> {{Automatic}}, "Rows" -> {{Automatic}}}, 
@@ -881,7 +851,37 @@ Cell[BoxData[
             Row[{
               Style["State", Bold]}], 
             
-            Grid[{{"Id:", 8}, {"Step:", 3}}, Alignment -> Left, 
+            Grid[{{"Id:", 7}, {"Step:", 3}}, Alignment -> Left, 
+             Spacings -> {1, 0.5}]}, Spacings -> 0.5], "Tooltip"]& ], 
+        TagBox[
+         TooltipBox[
+          {RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[
+           0.2, 0.3, 0.5]], 
+           DiskBox[{0., 0.8333333333333334}, 0.043048128342245986]},
+          TagBox[
+           GridBox[{{
+              TemplateBox[{
+                StyleBox["\"State\"", Bold, StripOnInput -> False]}, 
+               "RowDefault"]}, {
+              TagBox[
+               
+               GridBox[{{"\"Id:\"", "8"}, {"\"Step:\"", "2"}}, 
+                GridBoxAlignment -> {"Columns" -> {{Left}}}, AutoDelete -> 
+                False, GridBoxItemSize -> {
+                 "Columns" -> {{Automatic}}, "Rows" -> {{Automatic}}}, 
+                GridBoxSpacings -> {"Columns" -> {{1}}, "Rows" -> {{0.5}}}], 
+               "Grid"]}}, GridBoxAlignment -> {"Columns" -> {{Left}}}, 
+            DefaultBaseStyle -> "Column", 
+            GridBoxItemSize -> {
+             "Columns" -> {{Automatic}}, "Rows" -> {{Automatic}}}, 
+            GridBoxSpacings -> {
+             "Columns" -> {{Automatic}}, "Rows" -> {{0.5}}}], "Column"]],
+         Annotation[#, 
+          Column[{
+            Row[{
+              Style["State", Bold]}], 
+            
+            Grid[{{"Id:", 8}, {"Step:", 2}}, Alignment -> Left, 
              Spacings -> {1, 0.5}]}, Spacings -> 0.5], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
@@ -923,7 +923,7 @@ Cell[BoxData[
                "RowDefault"]}, {
               TagBox[
                
-               GridBox[{{"\"Id:\"", "11"}, {"\"Step:\"", "3"}}, 
+               GridBox[{{"\"Id:\"", "15"}, {"\"Step:\"", "3"}}, 
                 GridBoxAlignment -> {"Columns" -> {{Left}}}, AutoDelete -> 
                 False, GridBoxItemSize -> {
                  "Columns" -> {{Automatic}}, "Rows" -> {{Automatic}}}, 
@@ -939,7 +939,7 @@ Cell[BoxData[
             Row[{
               Style["State", Bold]}], 
             
-            Grid[{{"Id:", 11}, {"Step:", 3}}, Alignment -> Left, 
+            Grid[{{"Id:", 15}, {"Step:", 3}}, Alignment -> Left, 
              Spacings -> {1, 0.5}]}, Spacings -> 0.5], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
@@ -952,7 +952,7 @@ Cell[BoxData[
                "RowDefault"]}, {
               TagBox[
                
-               GridBox[{{"\"Id:\"", "12"}, {"\"Step:\"", "3"}}, 
+               GridBox[{{"\"Id:\"", "17"}, {"\"Step:\"", "3"}}, 
                 GridBoxAlignment -> {"Columns" -> {{Left}}}, AutoDelete -> 
                 False, GridBoxItemSize -> {
                  "Columns" -> {{Automatic}}, "Rows" -> {{Automatic}}}, 
@@ -968,7 +968,7 @@ Cell[BoxData[
             Row[{
               Style["State", Bold]}], 
             
-            Grid[{{"Id:", 12}, {"Step:", 3}}, Alignment -> Left, 
+            Grid[{{"Id:", 17}, {"Step:", 3}}, Alignment -> Left, 
              Spacings -> {1, 0.5}]}, Spacings -> 0.5], "Tooltip"]& ]}}],
      MouseAppearanceTag["NetworkGraphics"]],
     AllowKernelInitialization->False]],
@@ -1007,9 +1007,9 @@ Cell[BoxData[
  GraphicsBox[
   NamespaceBox["NetworkGraphics",
    DynamicModuleBox[{Typeset`graph = HoldComplete[
-     Graph[{0, 1, 3, 4, 7, 9, 10, 13, 15, 
-      19}, {{{1, 2}, {1, 2}, {2, 3}, {2, 4}, {2, 4}, {2, 3}, {4, 5}, {4, 5}, {
-       4, 6}, {4, 7}, {4, 6}, {4, 7}, {4, 8}, {4, 8}, {3, 9}, {3, 9}, {3, 
+     Graph[{0, 1, 3, 5, 7, 9, 11, 13, 15, 
+      19}, {{{1, 2}, {1, 2}, {2, 3}, {2, 3}, {2, 4}, {2, 4}, {4, 5}, {4, 6}, {
+       4, 5}, {4, 6}, {4, 7}, {4, 7}, {4, 8}, {4, 8}, {3, 9}, {3, 9}, {3, 
        9}, {3, 9}, {3, 10}, {3, 10}, {3, 10}, {3, 10}}, 
        Null, {<|"EventId" -> 0|>, <|"EventId" -> 1|>, <|"EventId" -> 2|>, <|
         "EventId" -> 3|>, <|"EventId" -> 4|>, <|"EventId" -> 5|>, <|
@@ -1020,62 +1020,62 @@ Cell[BoxData[
         "EventId" -> 18|>, <|"EventId" -> 19|>, <|"EventId" -> 20|>, <|
         "EventId" -> 21|>}}, {
       AspectRatio -> Rational[1, 2], 
-       EdgeLabels -> {DirectedEdge[3, 15, <|"EventId" -> 15|>] -> Placed[
+       EdgeLabels -> {DirectedEdge[5, 11, <|"EventId" -> 10|>] -> Placed[
+           Row[{"Event ", 10}], Tooltip], 
+         DirectedEdge[1, 5, <|"EventId" -> 4|>] -> Placed[
+           Row[{"Event ", 4}], Tooltip], 
+         DirectedEdge[5, 7, <|"EventId" -> 8|>] -> Placed[
+           Row[{"Event ", 8}], Tooltip], 
+         DirectedEdge[5, 9, <|"EventId" -> 9|>] -> Placed[
+           Row[{"Event ", 9}], Tooltip], 
+         DirectedEdge[3, 15, <|"EventId" -> 15|>] -> Placed[
            Row[{"Event ", 15}], Tooltip], 
-         DirectedEdge[4, 7, <|"EventId" -> 6|>] -> Placed[
-           Row[{"Event ", 6}], Tooltip], 
-         DirectedEdge[1, 4, <|"EventId" -> 3|>] -> Placed[
-           Row[{"Event ", 3}], Tooltip], 
+         DirectedEdge[5, 13, <|"EventId" -> 12|>] -> Placed[
+           Row[{"Event ", 12}], Tooltip], 
+         DirectedEdge[5, 13, <|"EventId" -> 13|>] -> Placed[
+           Row[{"Event ", 13}], Tooltip], 
          DirectedEdge[3, 19, <|"EventId" -> 21|>] -> Placed[
            Row[{"Event ", 21}], Tooltip], 
-         DirectedEdge[4, 13, <|"EventId" -> 13|>] -> Placed[
-           Row[{"Event ", 13}], Tooltip], 
-         DirectedEdge[1, 3, <|"EventId" -> 5|>] -> Placed[
+         DirectedEdge[1, 5, <|"EventId" -> 5|>] -> Placed[
            Row[{"Event ", 5}], Tooltip], 
          DirectedEdge[0, 1, <|"EventId" -> 0|>] -> Placed[
            Row[{"Event ", 0}], Tooltip], 
-         DirectedEdge[4, 13, <|"EventId" -> 12|>] -> Placed[
-           Row[{"Event ", 12}], Tooltip], 
          DirectedEdge[3, 19, <|"EventId" -> 20|>] -> Placed[
            Row[{"Event ", 20}], Tooltip], 
+         DirectedEdge[5, 7, <|"EventId" -> 6|>] -> Placed[
+           Row[{"Event ", 6}], Tooltip], 
          DirectedEdge[3, 15, <|"EventId" -> 17|>] -> Placed[
            Row[{"Event ", 17}], Tooltip], 
          DirectedEdge[1, 3, <|"EventId" -> 2|>] -> Placed[
            Row[{"Event ", 2}], Tooltip], 
-         DirectedEdge[4, 10, <|"EventId" -> 11|>] -> Placed[
-           Row[{"Event ", 11}], Tooltip], 
-         DirectedEdge[4, 9, <|"EventId" -> 8|>] -> Placed[
-           Row[{"Event ", 8}], Tooltip], 
+         DirectedEdge[5, 9, <|"EventId" -> 7|>] -> Placed[
+           Row[{"Event ", 7}], Tooltip], 
          DirectedEdge[3, 19, <|"EventId" -> 19|>] -> Placed[
            Row[{"Event ", 19}], Tooltip], 
          DirectedEdge[3, 19, <|"EventId" -> 18|>] -> Placed[
            Row[{"Event ", 18}], Tooltip], 
-         DirectedEdge[4, 10, <|"EventId" -> 9|>] -> Placed[
-           Row[{"Event ", 9}], Tooltip], 
+         DirectedEdge[5, 11, <|"EventId" -> 11|>] -> Placed[
+           Row[{"Event ", 11}], Tooltip], 
          DirectedEdge[0, 1, <|"EventId" -> 1|>] -> Placed[
            Row[{"Event ", 1}], Tooltip], 
+         DirectedEdge[1, 3, <|"EventId" -> 3|>] -> Placed[
+           Row[{"Event ", 3}], Tooltip], 
          DirectedEdge[3, 15, <|"EventId" -> 16|>] -> Placed[
            Row[{"Event ", 16}], Tooltip], 
-         DirectedEdge[4, 9, <|"EventId" -> 10|>] -> Placed[
-           Row[{"Event ", 10}], Tooltip], 
          DirectedEdge[3, 15, <|"EventId" -> 14|>] -> Placed[
-           Row[{"Event ", 14}], Tooltip], 
-         DirectedEdge[4, 7, <|"EventId" -> 7|>] -> Placed[
-           Row[{"Event ", 7}], Tooltip], 
-         DirectedEdge[1, 4, <|"EventId" -> 4|>] -> Placed[
-           Row[{"Event ", 4}], Tooltip]}, 
-       EdgeStyle -> {DirectedEdge[3, 15, <|"EventId" -> 17|>] -> Directive[
+           Row[{"Event ", 14}], Tooltip]}, 
+       EdgeStyle -> {DirectedEdge[5, 11, <|"EventId" -> 11|>] -> Directive[
+           GrayLevel[0.5], 
+           Arrowheads[0.02]], DirectedEdge[3, 15, <|"EventId" -> 17|>] -> 
+         Directive[
            GrayLevel[0.5], 
            Arrowheads[0.02]], DirectedEdge[3, 19, <|"EventId" -> 20|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[4, 13, <|"EventId" -> 12|>] -> 
+           Arrowheads[0.02]], DirectedEdge[1, 5, <|"EventId" -> 4|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[4, 9, <|"EventId" -> 8|>] -> 
-         Directive[
-           GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[4, 13, <|"EventId" -> 13|>] -> 
+           Arrowheads[0.02]], DirectedEdge[1, 5, <|"EventId" -> 5|>] -> 
          Directive[
            GrayLevel[0.5], 
            Arrowheads[0.02]], DirectedEdge[0, 1, <|"EventId" -> 0|>] -> 
@@ -1090,25 +1090,28 @@ Cell[BoxData[
            Arrowheads[0.02]], DirectedEdge[3, 15, <|"EventId" -> 16|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[4, 9, <|"EventId" -> 10|>] -> 
-         Directive[
-           GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[4, 10, <|"EventId" -> 9|>] -> 
+           Arrowheads[0.02]], DirectedEdge[5, 11, <|"EventId" -> 10|>] -> 
          Directive[
            GrayLevel[0.5], 
            Arrowheads[0.02]], DirectedEdge[3, 19, <|"EventId" -> 18|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[4, 7, <|"EventId" -> 7|>] -> 
+           Arrowheads[0.02]], DirectedEdge[5, 13, <|"EventId" -> 13|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[1, 4, <|"EventId" -> 3|>] -> 
+           Arrowheads[0.02]], DirectedEdge[5, 13, <|"EventId" -> 12|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[1, 3, <|"EventId" -> 5|>] -> 
+           Arrowheads[0.02]], DirectedEdge[1, 3, <|"EventId" -> 3|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[4, 10, <|"EventId" -> 11|>] -> 
+           Arrowheads[0.02]], DirectedEdge[5, 9, <|"EventId" -> 9|>] -> 
+         Directive[
+           GrayLevel[0.5], 
+           Arrowheads[0.02]], DirectedEdge[5, 7, <|"EventId" -> 6|>] -> 
+         Directive[
+           GrayLevel[0.5], 
+           Arrowheads[0.02]], DirectedEdge[5, 9, <|"EventId" -> 7|>] -> 
          Directive[
            GrayLevel[0.5], 
            Arrowheads[0.02]], DirectedEdge[3, 19, <|"EventId" -> 19|>] -> 
@@ -1120,13 +1123,10 @@ Cell[BoxData[
            Arrowheads[0.02]], DirectedEdge[1, 3, <|"EventId" -> 2|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[4, 7, <|"EventId" -> 6|>] -> 
-         Directive[
-           GrayLevel[0.5], 
            Arrowheads[0.02]], DirectedEdge[0, 1, <|"EventId" -> 1|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[1, 4, <|"EventId" -> 4|>] -> 
+           Arrowheads[0.02]], DirectedEdge[5, 7, <|"EventId" -> 8|>] -> 
          Directive[
            GrayLevel[0.5], 
            Arrowheads[0.02]]}, GraphLayout -> "LayeredDigraphEmbedding", 
@@ -1136,19 +1136,6 @@ Cell[BoxData[
                Style["State", Bold]}], 
              
              Grid[{{"Id:", 9}, {"Step:", 3}}, Alignment -> Left, 
-              Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip], 10 -> Placed[
-           Column[{
-             Row[{
-               Style["State", Bold]}], 
-             
-             Grid[{{"Id:", 10}, {"Step:", 3}}, Alignment -> Left, 
-              Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip], 4 -> 
-         Placed[
-           Column[{
-             Row[{
-               Style["State", Bold]}], 
-             
-             Grid[{{"Id:", 4}, {"Step:", 2}}, Alignment -> Left, 
               Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip], 7 -> 
          Placed[
            Column[{
@@ -1189,6 +1176,19 @@ Cell[BoxData[
                Style["State", Bold]}], 
              
              Grid[{{"Id:", 19}, {"Step:", 3}}, Alignment -> Left, 
+              Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip], 5 -> 
+         Placed[
+           Column[{
+             Row[{
+               Style["State", Bold]}], 
+             
+             Grid[{{"Id:", 5}, {"Step:", 2}}, Alignment -> Left, 
+              Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip], 11 -> Placed[
+           Column[{
+             Row[{
+               Style["State", Bold]}], 
+             
+             Grid[{{"Id:", 11}, {"Step:", 3}}, Alignment -> Left, 
               Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip], 15 -> Placed[
            Column[{
              Row[{
@@ -1208,22 +1208,22 @@ Cell[BoxData[
             RGBColor[0.2, 0.3, 0.5]]], 15 -> Directive[
            RGBColor[0.368417, 0.506779, 0.709798], 
            EdgeForm[
-            RGBColor[0.2, 0.3, 0.5]]], 10 -> Directive[
-           RGBColor[0.368417, 0.506779, 0.709798], 
-           EdgeForm[
-            RGBColor[0.2, 0.3, 0.5]]], 4 -> Directive[
-           RGBColor[0.368417, 0.506779, 0.709798], 
-           EdgeForm[
             RGBColor[0.2, 0.3, 0.5]]], 7 -> Directive[
            RGBColor[0.368417, 0.506779, 0.709798], 
            EdgeForm[
             RGBColor[0.2, 0.3, 0.5]]], 19 -> Directive[
            RGBColor[0.368417, 0.506779, 0.709798], 
            EdgeForm[
+            RGBColor[0.2, 0.3, 0.5]]], 5 -> Directive[
+           RGBColor[0.368417, 0.506779, 0.709798], 
+           EdgeForm[
             RGBColor[0.2, 0.3, 0.5]]], 0 -> Directive[
            RGBColor[0.368417, 0.506779, 0.709798], 
            EdgeForm[
             RGBColor[0.2, 0.3, 0.5]]], 13 -> Directive[
+           RGBColor[0.368417, 0.506779, 0.709798], 
+           EdgeForm[
+            RGBColor[0.2, 0.3, 0.5]]], 11 -> Directive[
            RGBColor[0.368417, 0.506779, 0.709798], 
            EdgeForm[
             RGBColor[0.2, 0.3, 0.5]]]}}]]}, 
@@ -1267,16 +1267,6 @@ Cell[BoxData[
             BezierCurveBox[{{0., 1.6666666666666667`}, {-0.1370339559859302, 
              1.250000000000001}, {0., 0.8333333333333334}}], 
             0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "5"}, "RowDefault"]],
-         Annotation[#, 
-          Row[{"Event ", 5}], "Tooltip"]& ], 
-        TagBox[
-         TooltipBox[
-          {GrayLevel[0.5], Arrowheads[0.02], 
-           ArrowBox[
-            BezierCurveBox[{{0., 1.6666666666666667`}, {-0.862966044014069, 
-             0.9211185056337646}, {-2., 0.8333333333333334}}], 
-            0.043048128342245986`]},
           TemplateBox[{"\"Event \"", "3"}, "RowDefault"]],
          Annotation[#, 
           Row[{"Event ", 3}], "Tooltip"]& ], 
@@ -1284,12 +1274,22 @@ Cell[BoxData[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[0.02], 
            ArrowBox[
-            BezierCurveBox[{{0., 1.6666666666666667`}, {-1.1370339559859273`, 
-             1.5788814943662344`}, {-2., 0.8333333333333334}}], 
+            BezierCurveBox[{{0., 1.6666666666666667`}, {-0.862966044014069, 
+             0.9211185056337646}, {-2., 0.8333333333333334}}], 
             0.043048128342245986`]},
           TemplateBox[{"\"Event \"", "4"}, "RowDefault"]],
          Annotation[#, 
           Row[{"Event ", 4}], "Tooltip"]& ], 
+        TagBox[
+         TooltipBox[
+          {GrayLevel[0.5], Arrowheads[0.02], 
+           ArrowBox[
+            BezierCurveBox[{{0., 1.6666666666666667`}, {-1.1370339559859273`, 
+             1.5788814943662344`}, {-2., 0.8333333333333334}}], 
+            0.043048128342245986`]},
+          TemplateBox[{"\"Event \"", "5"}, "RowDefault"]],
+         Annotation[#, 
+          Row[{"Event ", 5}], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[0.02], 
@@ -1377,15 +1377,6 @@ Cell[BoxData[
            ArrowBox[
             BezierCurveBox[{{-2., 0.8333333333333334}, {-3.1370339559859297`, 
              0.7455481610328994}, {-4., 0.}}], 0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "7"}, "RowDefault"]],
-         Annotation[#, 
-          Row[{"Event ", 7}], "Tooltip"]& ], 
-        TagBox[
-         TooltipBox[
-          {GrayLevel[0.5], Arrowheads[0.02], 
-           ArrowBox[
-            BezierCurveBox[{{-2., 0.8333333333333334}, {-2.3629660440140654`, 
-             0.2522259194835521}, {-3., 0.}}], 0.043048128342245986`]},
           TemplateBox[{"\"Event \"", "8"}, "RowDefault"]],
          Annotation[#, 
           Row[{"Event ", 8}], "Tooltip"]& ], 
@@ -1393,20 +1384,29 @@ Cell[BoxData[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[0.02], 
            ArrowBox[
+            BezierCurveBox[{{-2., 0.8333333333333334}, {-2.3629660440140654`, 
+             0.2522259194835521}, {-3., 0.}}], 0.043048128342245986`]},
+          TemplateBox[{"\"Event \"", "7"}, "RowDefault"]],
+         Annotation[#, 
+          Row[{"Event ", 7}], "Tooltip"]& ], 
+        TagBox[
+         TooltipBox[
+          {GrayLevel[0.5], Arrowheads[0.02], 
+           ArrowBox[
             BezierCurveBox[{{-2., 0.8333333333333334}, {-2.637033955985933, 
              0.5811074138497844}, {-3., 0.}}], 0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "10"}, "RowDefault"]],
+          TemplateBox[{"\"Event \"", "9"}, "RowDefault"]],
          Annotation[#, 
-          Row[{"Event ", 10}], "Tooltip"]& ], 
+          Row[{"Event ", 9}], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[0.02], 
            ArrowBox[
             BezierCurveBox[{{-2., 0.8333333333333334}, {-1.8629660440140665`, 
              0.41666666666666774`}, {-2., 0.}}], 0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "9"}, "RowDefault"]],
+          TemplateBox[{"\"Event \"", "10"}, "RowDefault"]],
          Annotation[#, 
-          Row[{"Event ", 9}], "Tooltip"]& ], 
+          Row[{"Event ", 10}], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[0.02], 
@@ -1537,7 +1537,7 @@ Cell[BoxData[
                "RowDefault"]}, {
               TagBox[
                
-               GridBox[{{"\"Id:\"", "4"}, {"\"Step:\"", "2"}}, 
+               GridBox[{{"\"Id:\"", "5"}, {"\"Step:\"", "2"}}, 
                 GridBoxAlignment -> {"Columns" -> {{Left}}}, AutoDelete -> 
                 False, GridBoxItemSize -> {
                  "Columns" -> {{Automatic}}, "Rows" -> {{Automatic}}}, 
@@ -1553,7 +1553,7 @@ Cell[BoxData[
             Row[{
               Style["State", Bold]}], 
             
-            Grid[{{"Id:", 4}, {"Step:", 2}}, Alignment -> Left, 
+            Grid[{{"Id:", 5}, {"Step:", 2}}, Alignment -> Left, 
              Spacings -> {1, 0.5}]}, Spacings -> 0.5], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
@@ -1624,7 +1624,7 @@ Cell[BoxData[
                "RowDefault"]}, {
               TagBox[
                
-               GridBox[{{"\"Id:\"", "10"}, {"\"Step:\"", "3"}}, 
+               GridBox[{{"\"Id:\"", "11"}, {"\"Step:\"", "3"}}, 
                 GridBoxAlignment -> {"Columns" -> {{Left}}}, AutoDelete -> 
                 False, GridBoxItemSize -> {
                  "Columns" -> {{Automatic}}, "Rows" -> {{Automatic}}}, 
@@ -1640,7 +1640,7 @@ Cell[BoxData[
             Row[{
               Style["State", Bold]}], 
             
-            Grid[{{"Id:", 10}, {"Step:", 3}}, Alignment -> Left, 
+            Grid[{{"Id:", 11}, {"Step:", 3}}, Alignment -> Left, 
              Spacings -> {1, 0.5}]}, Spacings -> 0.5], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
@@ -2007,7 +2007,7 @@ Cell[BoxData[
    DynamicModuleBox[{Typeset`graph = HoldComplete[
      Graph[{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 
       10}, {{{1, 2}, {2, 3}, {3, 4}, {4, 5}, {4, 6}, {4, 7}, {5, 8}, {5, 9}, {
-       6, 10}, {7, 11}}, 
+       7, 10}, {6, 11}}, 
        Null, {<|"EventId" -> 0|>, <|"EventId" -> 1|>, <|"EventId" -> 2|>, <|
         "EventId" -> 3|>, <|"EventId" -> 4|>, <|"EventId" -> 5|>, <|
         "EventId" -> 6|>, <|"EventId" -> 7|>, <|"EventId" -> 8|>, <|
@@ -2015,6 +2015,8 @@ Cell[BoxData[
       AspectRatio -> Rational[1, 2], 
        EdgeLabels -> {DirectedEdge[0, 1, <|"EventId" -> 0|>] -> Placed[
            Row[{"Event ", 0}], Tooltip], 
+         DirectedEdge[5, 10, <|"EventId" -> 9|>] -> Placed[
+           Row[{"Event ", 9}], Tooltip], 
          DirectedEdge[2, 3, <|"EventId" -> 2|>] -> Placed[
            Row[{"Event ", 2}], Tooltip], 
          DirectedEdge[1, 2, <|"EventId" -> 1|>] -> Placed[
@@ -2025,9 +2027,7 @@ Cell[BoxData[
            Row[{"Event ", 5}], Tooltip], 
          DirectedEdge[4, 7, <|"EventId" -> 6|>] -> Placed[
            Row[{"Event ", 6}], Tooltip], 
-         DirectedEdge[6, 10, <|"EventId" -> 9|>] -> Placed[
-           Row[{"Event ", 9}], Tooltip], 
-         DirectedEdge[5, 9, <|"EventId" -> 8|>] -> Placed[
+         DirectedEdge[6, 9, <|"EventId" -> 8|>] -> Placed[
            Row[{"Event ", 8}], Tooltip], 
          DirectedEdge[4, 8, <|"EventId" -> 7|>] -> Placed[
            Row[{"Event ", 7}], Tooltip], 
@@ -2038,7 +2038,7 @@ Cell[BoxData[
            Arrowheads[0.02]], DirectedEdge[0, 1, <|"EventId" -> 0|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[6, 10, <|"EventId" -> 9|>] -> 
+           Arrowheads[0.02]], DirectedEdge[6, 9, <|"EventId" -> 8|>] -> 
          Directive[
            GrayLevel[0.5], 
            Arrowheads[0.02]], DirectedEdge[2, 3, <|"EventId" -> 2|>] -> 
@@ -2050,10 +2050,10 @@ Cell[BoxData[
            Arrowheads[0.02]], DirectedEdge[3, 4, <|"EventId" -> 3|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[5, 9, <|"EventId" -> 8|>] -> 
+           Arrowheads[0.02]], DirectedEdge[4, 7, <|"EventId" -> 6|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[4, 7, <|"EventId" -> 6|>] -> 
+           Arrowheads[0.02]], DirectedEdge[5, 10, <|"EventId" -> 9|>] -> 
          Directive[
            GrayLevel[0.5], 
            Arrowheads[0.02]], DirectedEdge[4, 8, <|"EventId" -> 7|>] -> 
@@ -2210,14 +2210,14 @@ Cell[BoxData[
         TagBox[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[0.02], 
-           ArrowBox[{{0., 0.6}, {0., 0.3}}, 0.030239520958083826`]},
+           ArrowBox[{{0., 0.6}, {1., 0.3}}, 0.030239520958083826`]},
           TemplateBox[{"\"Event \"", "4"}, "RowDefault"]],
          Annotation[#, 
           Row[{"Event ", 4}], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[0.02], 
-           ArrowBox[{{0., 0.6}, {1., 0.3}}, 0.030239520958083826`]},
+           ArrowBox[{{0., 0.6}, {0., 0.3}}, 0.030239520958083826`]},
           TemplateBox[{"\"Event \"", "5"}, "RowDefault"]],
          Annotation[#, 
           Row[{"Event ", 5}], "Tooltip"]& ], 
@@ -2238,17 +2238,17 @@ Cell[BoxData[
         TagBox[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[0.02], 
-           ArrowBox[{{0., 0.3}, {0., 0.}}, 0.030239520958083826`]},
-          TemplateBox[{"\"Event \"", "8"}, "RowDefault"]],
-         Annotation[#, 
-          Row[{"Event ", 8}], "Tooltip"]& ], 
-        TagBox[
-         TooltipBox[
-          {GrayLevel[0.5], Arrowheads[0.02], 
            ArrowBox[{{1., 0.3}, {1., 0.}}, 0.030239520958083826`]},
           TemplateBox[{"\"Event \"", "9"}, "RowDefault"]],
          Annotation[#, 
-          Row[{"Event ", 9}], "Tooltip"]& ]}, 
+          Row[{"Event ", 9}], "Tooltip"]& ], 
+        TagBox[
+         TooltipBox[
+          {GrayLevel[0.5], Arrowheads[0.02], 
+           ArrowBox[{{0., 0.3}, {0., 0.}}, 0.030239520958083826`]},
+          TemplateBox[{"\"Event \"", "8"}, "RowDefault"]],
+         Annotation[#, 
+          Row[{"Event ", 8}], "Tooltip"]& ]}, 
        {Hue[0.6, 0.5, 1.], EdgeForm[{GrayLevel[0], Opacity[0.7]}], 
         TagBox[
          TooltipBox[
@@ -2399,7 +2399,7 @@ Cell[BoxData[
         TagBox[
          TooltipBox[
           {RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[
-           0.2, 0.3, 0.5]], DiskBox[{0., 0.3}, 0.030239520958083826]},
+           0.2, 0.3, 0.5]], DiskBox[{1., 0.3}, 0.030239520958083826]},
           TagBox[
            GridBox[{{
               TemplateBox[{
@@ -2428,7 +2428,7 @@ Cell[BoxData[
         TagBox[
          TooltipBox[
           {RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[
-           0.2, 0.3, 0.5]], DiskBox[{1., 0.3}, 0.030239520958083826]},
+           0.2, 0.3, 0.5]], DiskBox[{0., 0.3}, 0.030239520958083826]},
           TagBox[
            GridBox[{{
               TemplateBox[{
