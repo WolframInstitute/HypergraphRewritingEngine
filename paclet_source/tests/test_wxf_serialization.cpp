@@ -2072,6 +2072,47 @@ TEST(GpuBinaryGate, StepStatisticsAgreeAcrossDevices) {
     }
     worker_stop(w);
 }
+
+// Both devices report the same warnings: quotient exploration or Automatic event identity
+// without Full state canonicalization, and an option value the parser skips.
+TEST(GpuBinaryGate, WarningsAgreeAcrossDevices) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    const std::vector<std::pair<std::string, std::function<void(wxf::Writer&)>>> cases = {
+        {"ExploreFromCanonicalStatesOnly", [](wxf::Writer& ww) {
+             put_str_option(ww, "ExploreFromCanonicalStatesOnly", "True"); }},
+        {"CanonicalizeEvents Automatic", [](wxf::Writer& ww) {
+             put_str_option(ww, "CanonicalizeEvents", "Automatic"); }},
+        {"CanonicalizeEvents {InputState, 42}", [](wxf::Writer& ww) {
+             ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+             ww.write(std::string("CanonicalizeEvents"));
+             ww.write_function("List", 2);
+             ww.write(std::string("InputState"));
+             ww.write(static_cast<int64_t>(42)); }},
+    };
+    for (const auto& [name, option] : cases) {
+        auto opts = [&option](wxf::Writer& ww) {
+            put_str_list_option(ww, "RequestedData", {"NumStates", "NumEvents"});
+            option(ww);
+        };
+        HostBridge host;
+        const auto cpu = run_rewriting_core(branch_job(3, "Evolve", 0, opts, 2), host);
+        const auto gpu = worker_call(w, branch_job(3, "Evolve", 0, opts, 2));
+        ASSERT_FALSE(gpu.empty()) << name;
+        const auto c = value_bytes(cpu, "Warnings"), g = value_bytes(gpu, "Warnings");
+        EXPECT_FALSE(c.empty()) << name << ": the CPU reports no warning";
+        EXPECT_EQ(c, g) << name;
+        EXPECT_EQ(read_int_key(gpu, "NumStates"), read_int_key(cpu, "NumStates")) << name;
+    }
+    worker_stop(w);
+}
 #endif  // _WIN32
 
 // The per-state invariants on states whose values are worked by hand.

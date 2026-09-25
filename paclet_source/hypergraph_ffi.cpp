@@ -34,6 +34,7 @@
 #include "cpu_engine_holder.hpp"   // owns the Hypergraph and its engine as one lifetime
 #include "hgcommon/build_stamp.hpp"  // the configuration this artifact was built with
 #include "hgcommon/quotient_multiplicity_core.hpp"  // QM_SATURATED_MESSAGE, qm_sat_add
+#include "hgcommon/quotient_route.hpp"
 #include "state_statistics.hpp"
 
 using namespace hypergraph;
@@ -394,8 +395,6 @@ static size_t effective_max_states_per_step(const hgffi::ParsedJob& req) {
 // A phase like the parse: it reads the job and produces the reply, and touches no engine
 // this file owns. Extracted for that reason -- run_rewriting_core's remaining length is the
 // CPU path, and this block was never part of it.
-// `req` is not const: the device has no implementation for the per-step caps and appends an
-// OptionSkipped warning for each, so the job it was handed carries what it did not apply.
 
 static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge& host) {
         // Sessions are served on the device: SessionState carries the identity maps and the
@@ -451,6 +450,7 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
             req.session_op,
             req.session_handle,
             req.session_from,
+            req.ffi_warnings,
         };
         if (req.show_progress) {
             core_progress(host, "HGEvolve: Starting GPU evolution...");
@@ -776,6 +776,16 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 "Op '" + req.session_op + "' carries rules, but a session's rule set was fixed when "
                 "it opened; applying these would answer about a system the session is not "
                 "exploring");
+        }
+
+        if (!held_session && req.state_canon_mode != hypergraph::StateCanonicalizationMode::Full &&
+            hgcommon::quotient_route_requested(req.explore_from_canonical_states_only,
+                                               req.positional_event_identity,
+                                               req.event_signature_keys)) {
+            req.ffi_warnings.push_back({"QuotientNeedsFull", 1,
+                "\"ExploreFromCanonicalStatesOnly\" -> True and \"CanonicalizeEvents\" -> "
+                "Automatic need \"CanonicalizeStates\" -> Full. Without it every state is "
+                "expanded and the causal relation is computed from the individual edges."});
         }
 
 #ifdef HG_GPU_BACKEND

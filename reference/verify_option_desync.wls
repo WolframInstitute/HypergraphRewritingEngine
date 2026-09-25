@@ -125,3 +125,21 @@ Module[{chain = {{{1, 2}} -> {{1, 3}, {3, 2}}}, run, rows, valid},
     {run[HGEvolve[{{{1, 2}, {2, 3}} -> {}}, {{1, 2}, {2, 3}}, 1, "NumStates"]], {2, {}}}};
   Print["input rows {got, expected}: ", Join[rows, valid]];
   Print[If[AllTrue[Join[rows, valid], #[[1]] === #[[2]] &], "INPUT CHECKS PASS", "INPUT CHECKS FAIL"]]];
+
+(* Quotient exploration or Automatic event identity without "CanonicalizeStates" -> Full, and an
+   option value the parser skips, each give a warning whose text names only options HGEvolve has.
+   GpuBinaryGate.WarningsAgreeAcrossDevices checks that the GPU engine gives the same warnings. *)
+Module[{tri = {{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}, cases, rows, names, badNames},
+  cases = {{"ExploreFromCanonicalStatesOnly" -> True},
+           {"CanonicalizeEvents" -> Automatic},
+           {"CanonicalizeEvents" -> {"InputState", 42}}};
+  rows = Table[{opts, Lookup[Quiet[HGEvolve[tri, {{1, 2}, {1, 3}}, 3, "All", Sequence @@ opts]],
+      "Warnings", {}]}, {opts, cases}];
+  names = Union @ Flatten @ StringCases[
+    Flatten[Lookup[#[[2]], "Context", {}] & /@ rows],
+    (StartOfString | Except[WordCharacter]) ~~ n : (LetterCharacter ~~ WordCharacter ..) ~~ "\""... ~~ " ->" :> n];
+  badNames = Complement[names, Keys[Options[HGEvolve]]];
+  Scan[Print["warnings ", #[[1]], ": ", Lookup[#[[2]], "Kind", {}]] &, rows];
+  Print["option names in warning texts: ", names, " not options of HGEvolve: ", badNames];
+  Print[If[AllTrue[rows, #[[2]] =!= {} &] && badNames === {},
+    "WARNING TEXTS PASS", "WARNING TEXTS FAIL"]]];

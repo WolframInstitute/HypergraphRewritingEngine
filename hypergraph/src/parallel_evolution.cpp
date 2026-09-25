@@ -6,6 +6,7 @@
 #include "hypergraph/parallel_evolution.hpp"
 #include "hypergraph/ancestry.hpp"
 
+#include "hgcommon/quotient_route.hpp"
 #include "hgcommon/sampling_core.hpp"
 #include "hypergraph/rule_analysis.hpp"
 
@@ -1710,18 +1711,10 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
     // causal, where None with a non-Automatic key set gives 4 events and 32 causal edges.
     const bool full_states =
         hg_->state_canonicalization_mode() == StateCanonicalizationMode::Full;
-    const bool wants_qc = explore_from_canonical_states_only_ ||
-                          (!hg_->positional_event_identity() &&
-                           hg_->event_signature_keys() == hgcommon::EVENT_SIG_AUTOMATIC);
-    const bool qc = wants_qc && full_states;
-    if (wants_qc && !full_states) {
-        warnings_.push_back(
-            "Automatic event identity and quotient exploration are defined over canonical "
-            "states and their edge orbits, which only StateCanonicalization -> Full computes. "
-            "The requested state canonicalization does not, so the causal graph is built by "
-            "the raw-edge rendezvous instead. Set StateCanonicalization -> Full for the "
-            "canonical-class event identity.");
-    }
+    const bool qc = full_states &&
+                    hgcommon::quotient_route_requested(explore_from_canonical_states_only_,
+                                                       hg_->positional_event_identity(),
+                                                       hg_->event_signature_keys());
     // What the RULES already decide. If no two matches can share a consumed edge then no state
     // has a branchial pair, for any initial condition, and building the relation is work whose
     // answer is provably empty. Acting on the FALSE only: can_branch's true means "not ruled

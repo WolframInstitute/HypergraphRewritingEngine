@@ -2,6 +2,7 @@
 
 #ifdef HG_GPU_BACKEND
 
+#include "ffi_job.hpp"
 #include "hg_core.hpp"
 
 #include <cstdint>
@@ -108,6 +109,10 @@ struct GpuJob {
     // selection cannot be resolved there, and running it anyway would explore the branches the
     // caller asked to leave alone and answer a different question in the right shape.
     std::vector<int64_t> session_from;
+
+    // Warnings recorded before the device runs, such as option values the parser skipped.
+    // The reply lists them ahead of the device's own.
+    std::vector<HG_NAMESPACE::ffi::FfiWarning> job_warnings;
 };
 
 // Run the job on the GPU (hg_gpu::evolve) and marshal the result into the same
