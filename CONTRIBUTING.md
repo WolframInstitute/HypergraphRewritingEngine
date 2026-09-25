@@ -73,6 +73,7 @@ canonicalization work.
 
 ## Documentation
 
-User docs are authored in markdown under `paclet/Documentation/Source/` and converted
-to paclet notebooks with `tools/build_docs.wls` (see the script header). The user-facing
+User docs are authored in markdown under `docs/en/` (`ReferencePages/Symbols/`, `Guides/`,
+`Tutorials/`, a page's Name equal to its file name) and converted to the paclet notebooks in
+`paclet/Documentation/English/` with `./build_docs.sh` (see `tools/build_docs.wls`). The user-facing
 quickstart is [docs/QUICKSTART.md](docs/QUICKSTART.md).

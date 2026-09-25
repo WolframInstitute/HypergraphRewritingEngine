@@ -1,0 +1,193 @@
+(* Content-type: application/vnd.wolfram.mathematica *)
+
+(*** Wolfram Notebook File ***)
+(* http://www.wolfram.com/nb *)
+
+(* CreatedBy='Wolfram 14.3' *)
+
+(*CacheID: 234*)
+(* Internal cache information:
+NotebookFileLineBreakTest
+NotebookFileLineBreakTest
+NotebookDataPosition[       154,          7]
+NotebookDataLength[      6981,        184]
+NotebookOptionsPosition[      3893,        118]
+NotebookOutlinePosition[      4796,        143]
+CellTagsIndexPosition[      4753,        140]
+WindowFrame->Normal*)
+
+(* Beginning of Notebook Content *)
+Notebook[{
+Cell["Hypergraph Rewriting Engine", "GuideTitle",
+ CellID->942062912,ExpressionUUID->"22a1a762-10e3-861e-525e-3f4ca097ed64"],
+
+Cell[CellGroupData[{
+
+Cell["", "GuideFunctionsSection",
+ CellID->1866139230,ExpressionUUID->"4da796ef-9f57-a4bf-7b5c-0fc91ae30e85"],
+
+Cell[TextData[{
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGEvolve"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGEvolve", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineGuideFunction",
+  TaggingRules->{"PageType" -> "Function"},ExpressionUUID->
+  "1b39f900-6440-cee7-4ac6-f16a0dfa94cd"],
+ " \[LongDash] ",
+ "multiway hypergraph rewriting; returns states, events, and the \
+causal/branchial graphs"
+}], "GuideText",
+ CellID->1048964699,ExpressionUUID->"75d93363-5da6-51a4-23e6-ab4d5453238e"]
+}, Open  ]],
+
+Cell["Tech Notes", "GuideTutorialsSection",
+ CellID->415694126,ExpressionUUID->"25a568a6-87a2-527f-535a-810032572145"],
+
+Cell["Related Guides", "GuideMoreAboutSection",
+ CellChangeTimes->{{3.8430423939366693`*^9, 3.843042395176153*^9}},
+ CellID->23220180,ExpressionUUID->"00d7f70d-8d0e-ae34-30ec-ef5724b8f51e"],
+
+Cell["Related Links", "GuideRelatedLinksSection",
+ CellID->415694148,ExpressionUUID->"2f3e8453-9762-68ea-56c5-1e1d22173a30"],
+
+Cell[CellGroupData[{
+
+Cell["Metadata", "MetadataSection",
+ CellID->311882160,ExpressionUUID->"5902d484-617f-9570-0f31-cdee100bfc5a"],
+
+Cell[TextData[{
+ "New in: ",
+ Cell["XX", "HistoryData",
+  CellTags->"New",ExpressionUUID->"56e0e12c-de7d-6135-7e9f-f889db08301f"],
+ " | Modified in: ",
+ Cell[" ", "HistoryData",
+  CellTags->"Modified",ExpressionUUID->"5708d032-2150-04f2-7d37-ca7c50e56ed8"],
+ " | Obsolete in: ",
+ Cell[" ", "HistoryData",
+  CellTags->"Obsolete",ExpressionUUID->
+  "3b7807e8-9504-b25a-6907-9eb21cb600a0"]
+}], "History",
+ CellID->341476719,ExpressionUUID->"166f8969-5e31-e8e5-3e14-21335bc5bacf"],
+
+Cell[CellGroupData[{
+
+Cell["Categorization", "CategorizationSection",
+ CellID->1122911449,ExpressionUUID->"234f1fb7-07c6-bba9-5174-96f1b27009f3"],
+
+Cell["Guide", "Categorization",
+ CellLabel->"Entity Type",
+ CellID->686433507,ExpressionUUID->"6ee45b93-a0df-d1f6-169c-52dcd16ba3dc"],
+
+Cell["WolframInstitute/HypergraphRewriteEngine", "Categorization",
+ CellLabel->"Paclet Name",
+ CellID->605800465,ExpressionUUID->"0a3edd72-e0d3-62fb-3bc5-d53f916630c1"],
+
+Cell["HypergraphRewriting`", "Categorization",
+ CellLabel->"Context",
+ CellID->468444828,ExpressionUUID->"6ec9a758-58be-624c-16f6-3f02594b3096"],
+
+Cell["\<\
+WolframInstitute/HypergraphRewriteEngine/guide/HypergraphRewriting\
+\>", "Categorization",
+ CellLabel->"URI",
+ CellID->1807407181,ExpressionUUID->"23253b8d-1c99-a6bf-52da-b2d7952d0c85"]
+}, Closed]],
+
+Cell[CellGroupData[{
+
+Cell["Keywords", "KeywordsSection",
+ CellID->1427428552,ExpressionUUID->"6e84829b-9667-6594-16bb-1bc523124ffe"],
+
+Cell["hypergraph", "Keywords",
+ CellID->1251852827,ExpressionUUID->"569e173f-6b36-b240-7ea5-8f790ec000aa"],
+
+Cell["multiway", "Keywords",
+ CellID->1251852827,ExpressionUUID->"15a3e88e-0b57-fa6e-4350-01e8aee3c8b4"],
+
+Cell["rewriting", "Keywords",
+ CellID->1251852827,ExpressionUUID->"779c57de-bb93-d239-1da4-4e983e27a103"],
+
+Cell["Wolfram physics", "Keywords",
+ CellID->1251852827,ExpressionUUID->"2867ea9b-6e8d-517b-581c-03c50b382041"]
+}, Closed]]
+}, Open  ]]
+},
+WindowSize->{700, 770},
+WindowMargins->{{4, Automatic}, {Automatic, 0}},
+TaggingRules->{
+ "Metadata" -> {
+   "title" -> "HypergraphRewriting", "context" -> "HypergraphRewriting`", 
+    "keywords" -> {"hypergraph", "multiway", "rewriting", "Wolfram physics"}, 
+    "summary" -> "", "paclet" -> "WolframInstitute/HypergraphRewriteEngine", 
+    "uri" -> "WolframInstitute/HypergraphRewriteEngine/guide/\
+HypergraphRewriting", "type" -> "Guide", "index" -> True, "language" -> "en"}},
+CellContext->CellGroup,
+FrontEndVersion->"14.3 for Microsoft Windows (64-bit) (July 8, 2025)",
+StyleDefinitions->FrontEnd`FileName[{"Wolfram"}, "GuidePageStylesExt.nb", 
+  CharacterEncoding -> "UTF-8"],
+ExpressionUUID->"76dfbc62-92ac-7b6e-1ee4-364c275949b4"
+]
+(* End of Notebook Content *)
+
+(* Internal cache information *)
+(*CellTagsOutline
+CellTagsIndex->{}
+*)
+(*CellTagsIndex
+CellTagsIndex->{}
+*)
+(*NotebookFileOutline
+Notebook[{
+Cell[554, 20, 124, 1, 70, "GuideTitle",ExpressionUUID->"0df4b6a5-173c-e15a-3b8b-2f0fa2ceb3a0",
+ CellID->942062912],
+Cell[CellGroupData[{
+Cell[703, 25, 109, 1, 70, "GuideFunctionsSection",ExpressionUUID->"4d620fc7-5cf2-d9d8-7b11-a6a15484ab22",
+ CellID->1866139230],
+Cell[815, 28, 598, 15, 70, "GuideText",ExpressionUUID->"741b091d-feb2-1a39-1c38-a146fb476903",
+ CellID->1048964699]
+}, Open  ]],
+Cell[1428, 46, 118, 1, 70, "GuideTutorialsSection",ExpressionUUID->"3bf5a20e-c541-e06e-698a-446becf5b2b4",
+ CellID->415694126],
+Cell[1549, 49, 189, 2, 70, "GuideMoreAboutSection",ExpressionUUID->"07964fa7-8d1e-ff14-2dae-660124a8c27e",
+ CellID->23220180],
+Cell[1741, 53, 124, 1, 70, "GuideRelatedLinksSection",ExpressionUUID->"3e367b18-9aa8-58f9-67ce-73421f5d2ac3",
+ CellID->415694148],
+Cell[CellGroupData[{
+Cell[1890, 58, 110, 1, 70, "MetadataSection",ExpressionUUID->"1dbaaaf7-1388-e538-4b59-43b1a622cc02",
+ CellID->311882160],
+Cell[2003, 61, 476, 12, 70, "History",ExpressionUUID->"77d99fdb-a351-2d53-1de6-1684d6e477b9",
+ CellID->341476719],
+Cell[CellGroupData[{
+Cell[2504, 77, 123, 1, 70, "CategorizationSection",ExpressionUUID->"04646437-faee-7dfc-2c1c-7e70fe9b47c6",
+ CellID->1122911449],
+Cell[2630, 80, 133, 2, 70, "Categorization",ExpressionUUID->"1cbde497-e826-5557-4442-fdd089d33fbd",
+ CellID->686433507],
+Cell[2766, 84, 168, 2, 70, "Categorization",ExpressionUUID->"6ecb37d0-fbcc-3e82-16c8-ae9dfe7e84e8",
+ CellID->605800465],
+Cell[2937, 88, 144, 2, 70, "Categorization",ExpressionUUID->"4c358d3e-86d3-ec5f-75ca-25783367b6a5",
+ CellID->468444828],
+Cell[3084, 92, 195, 4, 70, "Categorization",ExpressionUUID->"1f908cf3-3c70-d55a-45af-25bdb50abfa0",
+ CellID->1807407181]
+}, Closed]],
+Cell[CellGroupData[{
+Cell[3316, 101, 111, 1, 70, "KeywordsSection",ExpressionUUID->"5dac66ba-272d-3627-0b54-7fe452d99d0d",
+ CellID->1427428552],
+Cell[3430, 104, 106, 1, 70, "Keywords",ExpressionUUID->"110914de-bbdd-83a1-4736-8d983e69d18b",
+ CellID->1251852827],
+Cell[3539, 107, 104, 1, 70, "Keywords",ExpressionUUID->"76d004f9-29e5-6665-1eef-9da34f904d4f",
+ CellID->1251852827],
+Cell[3646, 110, 105, 1, 70, "Keywords",ExpressionUUID->"2c76c797-c249-79ca-540d-ded0f7fc4b10",
+ CellID->1251852827],
+Cell[3754, 113, 111, 1, 70, "Keywords",ExpressionUUID->"35077f55-9291-6519-633d-771f27244c63",
+ CellID->1251852827]
+}, Closed]]
+}, Open  ]]
+}
+]
+*)
+
+(* End of internal cache information *)

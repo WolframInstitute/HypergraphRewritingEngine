@@ -2,7 +2,7 @@
 (* Evaluate every example in the documentation SOURCE against the local engine.
 
    WHAT THIS ANSWERS. The release checklist asks that the HGEvolve example pages evaluate
-   cleanly. The pages are generated from Documentation/Source/*.md, so the markdown fences
+   cleanly. The pages are generated from docs/en/**/*.md, so the markdown fences
    are where an example is authored and where a wrong one is written down. Each fenced
    block is evaluated in order inside one shared context, because the blocks are written
    as a running session -- a later block reuses `rules` bound by an earlier one.
@@ -53,7 +53,8 @@ blocksOf[path_] := Module[{lines, out = {}, cur = {}, inside = False},
     {l, lines}];
   Select[out, StringTrim[#] =!= "" &]];
 
-sources = FileNames["*.md", FileNameJoin[{repo, "paclet", "Documentation", "Source"}]];
+sources = Select[FileNames["*.md", FileNameJoin[{repo, "docs", "en"}], Infinity],
+  ! StringContainsQ[#, ".generated"] &];
 total = 0; failed = {};
 
 Do[

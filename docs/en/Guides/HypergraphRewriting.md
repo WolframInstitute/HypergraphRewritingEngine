@@ -1,6 +1,7 @@
 ---
 Template: Guide
-Name: Hypergraph Rewriting Engine
+Name: HypergraphRewriting
+Title: Hypergraph Rewriting Engine
 Context: HypergraphRewriting`
 Paclet: WolframInstitute/HypergraphRewriteEngine
 URI: WolframInstitute/HypergraphRewriteEngine/guide/HypergraphRewriting

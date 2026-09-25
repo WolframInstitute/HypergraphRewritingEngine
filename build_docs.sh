@@ -1,20 +1,26 @@
 #!/bin/bash
-# Build the paclet documentation notebooks from the markdown sources in
-# paclet/Documentation/Source/ into paclet/Documentation/English/.
+# Build the paclet documentation notebooks from the markdown sources in docs/en/ into
+# paclet/Documentation/English/ (tools/build_docs.wls describes the mapping).
 #
 # Turnkey: vendors MarkdownToNotebook (git submodule), finds wolframscript (native, or the
 # Windows install from WSL), and runs the converter. No manual checkout, no paths to pass.
 #
-#   ./build_docs.sh              generate + evaluate examples (renders the engine's output)
-#   ./build_docs.sh structure    input-only cells; evaluate later in the front end
-#                                (use this if this machine can't reach the Wolfram resource
-#                                 system to evaluate inline)
+#   ./build_docs.sh                 generate and evaluate examples (renders the engine's output)
+#   ./build_docs.sh structure       input-only cells, into docs/en/.generated/
+#   ./build_docs.sh only=<regex>    only the sources whose file name matches <regex>
+#
+# After placing the notebooks it deletes every notebook under the destination that no source
+# maps to, so a renamed or removed page leaves no notebook behind.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
-MODE="${1:-}"                       # "structure" or empty
+ARGS=("$@")                          # any of: structure, only=<regex>
+MODE="full evaluation"
 ENGLISH="paclet/Documentation/English"
+for a in "${ARGS[@]}"; do
+    if [[ "$a" == structure ]]; then MODE=structure; ENGLISH="docs/en/.generated"; fi
+done
 SCRIPT="$ROOT/tools/build_docs.wls"
 
 # 1. Ensure the MarkdownToNotebook submodule is present.
@@ -47,7 +53,7 @@ if [[ "$WS_KIND" == windows ]]; then
     STAGE_WIN='C:\Temp\hg_docs_stage'
     rm -rf "$STAGE_WSL"
     mkdir -p "$STAGE_WSL"
-    echo "==> building documentation notebooks (${MODE:-full evaluation}) [staged via $STAGE_WIN]"
+    echo "==> building documentation notebooks ($MODE) [staged via $STAGE_WIN]"
     # wolframscript can exit non-zero on the benign exit-time license-release message ("The product
     # exited because of a license error") even after a clean DONE. Do not let that abort placement:
     # gate on build_docs.wls's .build_ok sentinel, which is written only after every notebook wrote
@@ -55,7 +61,8 @@ if [[ "$WS_KIND" == windows ]]; then
     # dest= lets the converter read the incremental-build manifest and the already-placed
     # notebooks from the real English/ (as a Windows path), so unchanged docs are skipped.
     set +e
-    "$WS_EXE" -file "$(wslpath -w "$SCRIPT")" ${MODE:+"$MODE"} \
+    mkdir -p "$ENGLISH"
+    "$WS_EXE" -file "$(wslpath -w "$SCRIPT")" ${ARGS[@]+"${ARGS[@]}"} \
         "out=$STAGE_WIN" "dest=$(wslpath -w "$ROOT/$ENGLISH")"
     ws_rc=$?
     set -e
@@ -98,10 +105,10 @@ if [[ "$WS_KIND" == windows ]]; then
         exit 1
     fi
 else
-    echo "==> building documentation notebooks (${MODE:-full evaluation})"
+    echo "==> building documentation notebooks ($MODE)"
     # Same license-exit guard as the staged path (native writes straight into English/).
     set +e
-    "$WS_EXE" -file "$SCRIPT" ${MODE:+"$MODE"}
+    "$WS_EXE" -file "$SCRIPT" ${ARGS[@]+"${ARGS[@]}"}
     ws_rc=$?
     set -e
     if [[ ! -f "$ENGLISH/.build_ok" ]]; then
@@ -109,5 +116,17 @@ else
         exit 1
     fi
     rm -f "$ENGLISH/.build_ok"
+fi
+
+# 4. Delete the notebooks no source maps to (.doc_pages lists the ones that do).
+if [[ -f "$ENGLISH/.doc_pages" ]]; then
+    while IFS= read -r -d '' nb; do
+        rel="${nb#"$ENGLISH"/}"
+        if ! tr '\\' '/' < "$ENGLISH/.doc_pages" | tr -d '\r' | grep -qxF "$rel"; then
+            rm -f "$nb"
+            echo "==> removed $nb (no source maps to it)"
+        fi
+    done < <(find "$ENGLISH/Guides" "$ENGLISH/Tutorials" "$ENGLISH/ReferencePages/Symbols" \
+                  -name '*.nb' -print0 2>/dev/null)
 fi
 echo "==> done — notebooks in $ENGLISH/"

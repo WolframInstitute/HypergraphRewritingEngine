@@ -6,7 +6,7 @@ Paclet: WolframInstitute/HypergraphRewriteEngine
 URI: WolframInstitute/HypergraphRewriteEngine/ref/HGEvolve
 Keywords: [hypergraph, multiway, rewriting, Wolfram physics, causal graph, branchial graph, evolution]
 SeeAlso: []
-RelatedGuides: [Hypergraph Rewriting Engine]
+RelatedGuides: [HypergraphRewriting]
 ---
 
 ## Usage

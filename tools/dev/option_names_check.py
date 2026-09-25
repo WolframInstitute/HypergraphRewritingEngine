@@ -34,7 +34,7 @@ DOCS = [
     "docs/QUICKSTART.md",
     "docs/SPEC.md",
 ]
-DOC_GLOBS = ["paclet/Documentation/Source/*.md"]
+DOC_GLOBS = ["docs/en/**/*.md"]
 
 # `"Name" -> value` is the option syntax. A rule is `{{...}} -> {{...}}` and a property is a
 # positional argument, so neither matches.
@@ -94,10 +94,10 @@ def main():
     # Every option the MARKDOWN documents must appear in a BUILT notebook. The notebooks are
     # generated from exactly these sources, so a name in one and not the other means the built
     # pages predate the feature -- rebuild with ./build_docs.sh.
-    src_dir = ROOT / "paclet/Documentation/Source"
+    src_dir = ROOT / "docs/en"
     nb_dir = ROOT / "paclet/Documentation/English"
     documented = set()
-    for f in sorted(src_dir.glob("*.md")):
+    for f in sorted(p for p in src_dir.rglob("*.md") if ".generated" not in p.parts):
         documented |= set(USE_RE.findall(f.read_text()))
     notebooks = sorted(nb_dir.rglob("*.nb"))
     if not notebooks:

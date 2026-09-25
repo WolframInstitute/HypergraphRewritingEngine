@@ -85,9 +85,9 @@ TEST(OptionSurface, EveryOptionTheWrapperSendsIsParsedByTheFfi) {
 
 TEST(OptionSurface, EveryDocumentedOptionIsAnOptionHGEvolveAccepts) {
     const std::string wl  = read_repo_file("paclet/Kernel/HypergraphRewriting.wl");
-    const std::string doc = read_repo_file("paclet/Documentation/Source/HGEvolve.md");
+    const std::string doc = read_repo_file("docs/en/ReferencePages/Symbols/HGEvolve.md");
     ASSERT_FALSE(wl.empty()) << "paclet/Kernel/HypergraphRewriting.wl not found";
-    ASSERT_FALSE(doc.empty()) << "paclet/Documentation/Source/HGEvolve.md not found";
+    ASSERT_FALSE(doc.empty()) << "docs/en/ReferencePages/Symbols/HGEvolve.md not found";
 
     const std::set<std::string> declared =
         names_in_region(wl, "Options[HGEvolve] = {", "\n};", std::regex("\"([A-Za-z]+)\"\\s*->"));

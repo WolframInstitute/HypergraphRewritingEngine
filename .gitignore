@@ -5,13 +5,13 @@
 *.paclet
 /paclet_archive/
 
-# Documentation notebooks (Documentation/English/**/*.nb) ARE tracked — rendered from the markdown
-# (Documentation/Source) on a cloud-connected machine and committed. Ignored here are the doc
-# build's own generated/transient outputs:
-/paclet/Documentation/Source/generated/
+# Documentation notebooks (Documentation/English/**/*.nb) are tracked: built from docs/en/ by
+# build_docs.sh and committed. Ignored here are the doc build's own intermediate outputs:
+/docs/en/.generated/
 /paclet/Documentation/.english_stage/
 /paclet/Documentation/English/.build_ok
 /paclet/Documentation/English/.doc_manifest.wl
+/paclet/Documentation/English/.doc_pages
 __pycache__/
 *.pyc
 

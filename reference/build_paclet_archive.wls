@@ -3,9 +3,8 @@
 
    IT STAGES FIRST, AND THAT IS THE POINT. CreatePacletArchive zips the directory it is
    given, so pointing it at `paclet/` ships whatever happens to be sitting there --
-   including `Documentation/Source/generated/`, which is a doc-build INTERMEDIATE and is
-   gitignored for that reason. Measured: archiving `paclet/` directly produced a 96 MB
-   file from a 599 MB tree, 512 MB of which was that intermediate, against 6.4 MB of
+   doc-build intermediates included. Measured: archiving `paclet/` directly once produced a
+   96 MB file from a 599 MB tree, 512 MB of which was such an intermediate, against 6.4 MB of
    built documentation. So this copies out the four things PacletInfo.wl actually
    declares -- Kernel, LibraryResources, Documentation/English and PacletInfo.wl itself
    -- and archives that.
@@ -67,7 +66,9 @@ Do[Print["  ", p, ": ", Count[names, _?(StringContainsQ[#, p] &)], " file(s)"], 
 missing = Select[platforms, Function[p, !AnyTrue[names, StringContainsQ[#, p] &]]];
 If[missing =!= {}, Print["FAIL: archive carries no library for: ", missing]; Exit[1]];
 
-leaked = Select[names, StringContainsQ[#, "Documentation/Source"] &];
+(* The doc build's own files beside the notebooks in English/ (the manifest, the page list, the
+   success sentinel) are not documentation. *)
+leaked = Select[names, StringContainsQ[#, {".doc_manifest", ".doc_pages", ".build_ok", ".generated"}] &];
 If[leaked =!= {},
   Print["FAIL: ", Length[leaked], " doc-build intermediate(s) leaked into the archive"];
   Exit[1]];

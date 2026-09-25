@@ -1,6 +1,7 @@
 ---
 Template: TechNote
-Name: Getting Started with Hypergraph Rewriting
+Name: GettingStarted
+Title: Getting Started with Hypergraph Rewriting
 Context: HypergraphRewriting`
 Paclet: WolframInstitute/HypergraphRewriteEngine
 URI: WolframInstitute/HypergraphRewriteEngine/tutorial/GettingStarted

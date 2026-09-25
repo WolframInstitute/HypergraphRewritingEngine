@@ -2,7 +2,7 @@
 """Fail if a documentation notebook is older than the markdown it is generated from.
 
 WHY THIS EXISTS. The notebooks under paclet/Documentation/English are GENERATED from
-paclet/Documentation/Source/*.md by tools/build_docs.wls, and they are committed, because that is
+docs/en/**/*.md by tools/build_docs.wls, and they are committed, because that is
 what the paclet ships. A commit that edits the markdown and does not rerun the generator leaves
 the shipped documentation saying something the project no longer does -- and nothing notices,
 because both files are present and both are valid.
@@ -17,12 +17,10 @@ just touched a file. The question is about COMMITS: was the source last changed 
 than the one that last changed its notebook? git answers that identically everywhere.
 
 MAPPING SOURCE TO NOTEBOOK. The generator picks a target directory from each source's Template
-frontmatter -- Symbol, Guide or TechNote -- and the notebook's basename is the document title
-rather than the file's, so the mapping is not a path substitution. This reads the frontmatter for
-the kind and then matches within that kind's directory: when a kind holds exactly one notebook,
-that is the one; otherwise the source's own stem must appear in the notebook name. A source whose
-notebook cannot be identified is REPORTED rather than skipped, because a silent skip is how a
-check stops checking.
+frontmatter -- Symbol, Guide or TechNote -- and names the notebook after the page's Name, which
+must equal the source's file name. A source whose Name differs, or whose notebook is missing, is
+REPORTED rather than skipped, because a silent skip is how a check stops checking; so is a
+notebook no source maps to.
 
 Usage:  tools/dev/docs_fresh_check.py
 Exit:   0 clean, 1 stale or unmappable, 2 could not run git
@@ -34,7 +32,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-SRC_DIR = ROOT / "paclet" / "Documentation" / "Source"
+SRC_DIR = ROOT / "docs" / "en"
 OUT_DIR = ROOT / "paclet" / "Documentation" / "English"
 
 # Template frontmatter value -> directory the generator writes into.
@@ -56,25 +54,15 @@ def last_commit_epoch(path: Path):
     return int(s) if s else None
 
 
-def template_of(md: Path):
-    """The Template: value from the frontmatter, or None."""
+def frontmatter(md: Path, key: str):
+    """The value of `key:` in the frontmatter, or None."""
     text = md.read_text(encoding="utf-8", errors="replace")
-    m = re.search(r"^Template:\s*(\S+)\s*$", text, re.MULTILINE)
+    m = re.search(r"^" + key + r":\s*(.+?)\s*$", text, re.MULTILINE)
     return m.group(1) if m else None
 
 
-def notebook_for(md: Path, kind: str):
-    d = KIND_DIR.get(kind)
-    if d is None or not d.is_dir():
-        return None
-    books = sorted(d.glob("*.nb"))
-    if len(books) == 1:
-        return books[0]
-    stem = md.stem.lower()
-    for b in books:
-        if stem in b.stem.lower().replace(" ", ""):
-            return b
-    return None
+def sources():
+    return sorted(p for p in SRC_DIR.rglob("*.md") if ".generated" not in p.parts)
 
 
 def main():
@@ -84,16 +72,22 @@ def main():
 
     findings = []
     checked = 0
-    for md in sorted(SRC_DIR.glob("*.md")):
-        kind = template_of(md)
-        if kind is None:
-            findings.append(f"{md.relative_to(ROOT)}: no Template frontmatter, so no notebook "
-                            f"can be identified for it")
+    mapped = set()
+    for md in sources():
+        kind = frontmatter(md, "Template")
+        name = frontmatter(md, "Name") or md.stem
+        if kind not in KIND_DIR:
+            findings.append(f"{md.relative_to(ROOT)}: Template {kind}, so no notebook can be "
+                            f"identified for it")
             continue
-        nb = notebook_for(md, kind)
-        if nb is None:
-            findings.append(f"{md.relative_to(ROOT)}: Template {kind}, but no notebook in "
-                            f"{KIND_DIR.get(kind)} matches it")
+        if name != md.stem:
+            findings.append(f"{md.relative_to(ROOT)}: Name {name!r} differs from the file name")
+            continue
+        nb = KIND_DIR[kind] / f"{name}.nb"
+        mapped.add(nb)
+        if not nb.is_file():
+            findings.append(f"{md.relative_to(ROOT)}: no notebook at {nb.relative_to(ROOT)}. "
+                            f"Run ./build_docs.sh and commit the result.")
             continue
 
         src_t = last_commit_epoch(md)
@@ -108,6 +102,11 @@ def main():
             findings.append(
                 f"{nb.relative_to(ROOT)}: STALE -- {md.relative_to(ROOT)} was last changed in a "
                 f"newer commit. Run ./build_docs.sh and commit the result.")
+
+    for d in KIND_DIR.values():
+        for nb in sorted(d.glob("*.nb")) if d.is_dir() else []:
+            if nb not in mapped:
+                findings.append(f"{nb.relative_to(ROOT)}: no source maps to it")
 
     for f in findings:
         print(f)

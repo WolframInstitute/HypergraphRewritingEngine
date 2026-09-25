@@ -241,7 +241,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`ir_canonicalization.hpp`)
 
 - **`PacletInfo.wl`** -- manifest for `WolframInstitute/HypergraphRewriteEngine` v0.0.1 (Kernel context, LibraryLink resources, Documentation, 6 SystemIDs)
 - **`Kernel/HypergraphRewriting.wl`** -- the WL layer. Public surface: `HGEvolve`, plus the session verbs `HGSessionOpen`/`HGSessionStep`/`HGSessionQuery`/`HGSessionClose`/`HGSessionFrontier` over an opaque `HGSessionObject`, which continue ONE exploration instead of re-running it. `hgJobOptions` builds the job's Options envelope for both entry points, `hgSendJob` runs a job and surfaces the warning trail, and `hgRunJob` turns a reply into the requested properties -- so `Evolve` and a session's `Step` differ only in the envelope they build. A session verb takes the persistent worker or refuses: the one-shot fallback would mint a handle in a process that exits with the reply. The initial-condition generators (`HGGrid`, topologies, sprinkling, Brill-Lindquist, Poisson, uniform) remain as internal helpers behind HGEvolve's string initial conditions; the physics analyses live in ../hypergraph_viz
-- **`Documentation/Source/*.md`** -- markdown doc sources (Symbol/Guide/TechNote) -> notebooks via `tools/build_docs.wls`
+- **`Documentation/English/`** -- the documentation notebooks, built from `docs/en/` by `build_docs.sh` and tracked, because the paclet ships them
 
 ## `reference/` -- validation oracle
 
@@ -306,11 +306,12 @@ rented box that does.
   interleaving to depend on. Truncated runs are skipped rather than compared, since past the
   ceiling which states got in is the arrival race.
 - **`docs_fresh_check.py`** -- the notebooks under `paclet/Documentation/English` are GENERATED
-  from `paclet/Documentation/Source/*.md` and committed, so a commit that edits the markdown
+  from `docs/en/**/*.md` and committed, so a commit that edits the markdown
   without rerunning `build_docs.sh` ships a page describing behaviour the engine no longer has.
   Compares the last COMMIT touching each, not mtimes, because a fresh clone gives every file the
-  same timestamp. Maps source to notebook through the Template frontmatter, since the generator
-  names notebooks after the document title. A CI gate; it has caught this twice.
+  same timestamp. Maps source to notebook through the Template frontmatter and the page's Name,
+  which must equal the file name, and reports a notebook no source maps to. A CI gate; it has
+  caught this twice.
 - **`worker_memory_slope.sh`** -- resident set against worker count on a thread list that fits a
   19 GB box, each measurement alone and under `ulimit -v`. The sweep in `scaling_sweep.py` reaches
   7.5 GB at 32 workers and cannot run there; this asks the same question at 1/2/4.

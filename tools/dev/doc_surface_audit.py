@@ -22,7 +22,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 WL = ROOT / "paclet/Kernel/HypergraphRewriting.wl"
-SRC = ROOT / "paclet/Documentation/Source"
+SRC = ROOT / "docs/en"
 
 # Stated once in the prose and true of every *Graph property, so the variants are not each
 # expected to have their own entry. The convention itself must be present for that to hold.
@@ -68,7 +68,7 @@ def brace_block(text: str, start: int) -> str:
 
 def main():
     wl = WL.read_text()
-    prose = "\n".join(f.read_text() for f in sorted(SRC.glob("*.md")))
+    prose = "\n".join(f.read_text() for f in sorted(SRC.rglob("*.md")) if ".generated" not in f.parts)
     described = lambda n: f'"{n}"' in prose
 
     findings = []
