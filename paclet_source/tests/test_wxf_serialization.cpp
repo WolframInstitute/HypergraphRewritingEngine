@@ -1353,6 +1353,29 @@ bool reply_mentions(const std::vector<uint8_t>& out, const std::string& text) {
 
 }  // namespace
 
+// A value of an identity option the engine does not recognise is reported as OptionSkipped,
+// naming the value, and the run uses the default. A WL symbol Positional arrives with its
+// context, as Global`Positional, and is one such value.
+TEST(WxfSerializationPin, AnUnrecognisedIdentityValueIsReported) {
+    const std::vector<std::pair<std::string, std::function<void(wxf::Writer&)>>> cases = {
+        {"Global`Positional", [](wxf::Writer& w) {
+             put_str_option(w, "CanonicalizeEvents", "Global`Positional"); }},
+        {"Foo", [](wxf::Writer& w) {
+             put_str_list_option(w, "CanonicalizeEvents", {"InputState", "Foo"}); }},
+        {"Exact", [](wxf::Writer& w) { put_str_option(w, "CanonicalizeStates", "Exact"); }},
+    };
+    for (const auto& [value, option] : cases) {
+        auto opts = [&option](wxf::Writer& w) {
+            put_str_list_option(w, "RequestedData", {"NumEvents"});
+            option(w);
+        };
+        HostBridge host;
+        const auto out = run_rewriting_core(branch_job(2, "Evolve", 0, opts, 2), host);
+        EXPECT_TRUE(reply_mentions(out, "OptionSkipped")) << value;
+        EXPECT_TRUE(reply_mentions(out, "'" + value + "'")) << value;
+    }
+}
+
 #ifndef _WIN32
 namespace {
 

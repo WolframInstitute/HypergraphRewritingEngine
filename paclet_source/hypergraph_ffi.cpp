@@ -236,25 +236,36 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                                 else if (comp == "StateBitvectors") req.include_state_bitvectors = true;
                             }
                         } else if (option_key == "CanonicalizeEvents") {
-                            // Can be: None, Full, Automatic (symbols), or {"InputState", "OutputState", ...} (list)
+                            // None, Full, Automatic, "Positional", or a list of components. An
+                            // unrecognised value throws, and the catch below skips it with an
+                            // OptionSkipped warning, so the run uses the default.
+                            std::vector<std::string> keys;
+                            bool is_list = true;
                             try {
-                                // Try to read as list first. A failure mid-list (the header
-                                // parses, an element does not) leaves the cursor inside the
-                                // list, so the symbol fallback re-aligns to the value start.
-                                auto keys = option_parser.read<std::vector<std::string>>();
-                                req.event_signature_keys = hypergraph::EVENT_SIG_NONE;
-                                for (const auto& sig_key : keys) {
-                                    if (sig_key == "InputState") req.event_signature_keys |= hypergraph::EventKey_InputState;
-                                    else if (sig_key == "OutputState") req.event_signature_keys |= hypergraph::EventKey_OutputState;
-                                    else if (sig_key == "Step") req.event_signature_keys |= hypergraph::EventKey_Step;
-                                    else if (sig_key == "Rule") req.event_signature_keys |= hypergraph::EventKey_Rule;
-                                    else if (sig_key == "ConsumedEdges") req.event_signature_keys |= hypergraph::EventKey_ConsumedEdges;
-                                    else if (sig_key == "ProducedEdges") req.event_signature_keys |= hypergraph::EventKey_ProducedEdges;
-                                }
+                                keys = option_parser.read<std::vector<std::string>>();
                             } catch (...) {
-                                // Read as symbol, from the START of the value.
+                                // A failure mid-list (the header parses, an element does not)
+                                // leaves the cursor inside the list; re-align to the value start.
+                                is_list = false;
                                 option_parser.seek(option_value_start);
-                                std::string symbol = option_parser.read<std::string>();
+                            }
+                            if (is_list) {
+                                hypergraph::EventSignatureKeys sig = hypergraph::EVENT_SIG_NONE;
+                                for (const auto& sig_key : keys) {
+                                    if (sig_key == "InputState") sig |= hypergraph::EventKey_InputState;
+                                    else if (sig_key == "OutputState") sig |= hypergraph::EventKey_OutputState;
+                                    else if (sig_key == "Step") sig |= hypergraph::EventKey_Step;
+                                    else if (sig_key == "Rule") sig |= hypergraph::EventKey_Rule;
+                                    else if (sig_key == "ConsumedEdges") sig |= hypergraph::EventKey_ConsumedEdges;
+                                    else if (sig_key == "ProducedEdges") sig |= hypergraph::EventKey_ProducedEdges;
+                                    else throw std::runtime_error(
+                                        "'" + sig_key + "' is not an event identity component; the "
+                                        "components are InputState, OutputState, Step, Rule, "
+                                        "ConsumedEdges and ProducedEdges");
+                                }
+                                req.event_signature_keys = sig;
+                            } else {
+                                const std::string symbol = option_parser.read<std::string>();
                                 if (symbol == "None") {
                                     req.event_signature_keys = hypergraph::EVENT_SIG_NONE;
                                 } else if (symbol == "Full") {
@@ -266,16 +277,17 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                                     // state's own labelling rather than the class frame.
                                     req.event_signature_keys = hypergraph::EVENT_SIG_AUTOMATIC;
                                     req.positional_event_identity = true;
+                                } else {
+                                    throw std::runtime_error(
+                                        "'" + symbol + "' is not None, Full, Automatic, "
+                                        "\"Positional\" or a list of components");
                                 }
-                                // else keep default (None)
                             }
                         } else if (option_key == "CanonicalizeStates") {
                             // None, Automatic or Full (legacy False/True). Each names the identity
                             // the EVOLUTION deduplicates states by, so each is answered by the
                             // engine as it runs: None gives every state its own id, Automatic
-                            // deduplicates by content, Full by the exact canonical form. A mode
-                            // that only regrouped the finished output would make the identity a
-                            // property of how results are read rather than of the run.
+                            // deduplicates by content, Full by the exact canonical form.
                             std::string symbol = option_parser.read<std::string>();
                             if (symbol == "None" || symbol == "False") {
                                 req.state_canon_mode = hypergraph::StateCanonicalizationMode::None;
@@ -287,6 +299,9 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                             } else if (symbol == "Full" || symbol == "True") {
                                 req.state_canon_mode = hypergraph::StateCanonicalizationMode::Full;
                                 req.canonicalize_states_mode = "Full";
+                            } else {
+                                throw std::runtime_error(
+                                    "'" + symbol + "' is not None, Automatic or Full");
                             }
                         } else if (option_key == "GraphProperties") {
                             // Graph properties for graph-ready data output (list)
