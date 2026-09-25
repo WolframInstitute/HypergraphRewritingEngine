@@ -49,7 +49,7 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 | `"EvolutionCausalGraph"` | evolution graph with the causal edges |
 | `"EvolutionBranchialGraph"` | evolution graph with the branchial edges |
 | `"EvolutionCausalBranchialGraph"` | evolution graph with the causal and the branchial edges (the default) |
-| `"StatesGraphStructure"`, … | the same seven graphs with plain vertices and no styling |
+| `"StatesGraphStructure"`, `"CausalGraphStructure"`, `"BranchialGraphStructure"`, `"EvolutionGraphStructure"`, `"EvolutionCausalGraphStructure"`, `"EvolutionBranchialGraphStructure"`, `"EvolutionCausalBranchialGraphStructure"` | the same seven graphs with plain vertices and no styling |
 | `"States"` | the state records, an association keyed by state id |
 | `"Events"` | the event records, an association keyed by event id |
 | `"CausalEdges"` | the causal relation, a list of records with the producer and consumer event of each pair |
