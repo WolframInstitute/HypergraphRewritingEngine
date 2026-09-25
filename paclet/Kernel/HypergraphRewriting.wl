@@ -947,14 +947,18 @@ hgInitialEdges[initialSpec_Association, opts_List] := Module[
 
    `ov` is a function from option name to value: HGEvolve reads through its own OptionsPattern
    and HGSessionOpen through its, and the envelope does not care which. *)
+(* The step whose branchial edges a request reads, as the engine takes it: 0 for all steps, a
+   positive 1-based step, or a negative step counted from the end. Automatic is all steps for an
+   Evolution...Branchial graph (the first graph property decides) and the final step otherwise.
+   A session resolves it for each verb's own properties, so a property asked for later reads the
+   branchial edges HGEvolve would give for it. *)
+hgBranchialStepValue[setting_, graphProperties_List] := Replace[setting, {
+  Automatic :> If[Length[graphProperties] > 0 &&
+                  StringMatchQ[First[graphProperties], "*Evolution*Branchial*"], 0, -1],
+  All -> 0}];
+
 hgJobOptions[ov_, requiredData_, graphProperties_] := Module[{branchialStepValue},
-  (* Convert BranchialStep: All -> 0, positive for 1-based step, negative for from-end *)
-  (* EvolutionCausalBranchialGraph defaults to All, BranchialGraph defaults to -1 (final step) *)
-  (* Use first graph property for branchial step default, or empty string if none *)
-  branchialStepValue = Replace[ov["BranchialStep"], {
-    Automatic :> If[Length[graphProperties] > 0 && StringMatchQ[First[graphProperties], "*Evolution*Branchial*"], 0, -1],
-    All -> 0
-  }];
+  branchialStepValue = hgBranchialStepValue[ov["BranchialStep"], graphProperties];
 
   <|
     "CanonicalizeStates" -> ov["CanonicalizeStates"],
@@ -1335,7 +1339,8 @@ HGSessionOpen[rules_List, initialEdges_List,
 
   HGSessionObject[<|"Handle" -> handle, "Device" -> device, "View" -> view,
                     "Properties" -> props, "PropertyWasList" -> propertyWasListLocal,
-                    "GraphProperties" -> graphProperties, "Options" -> options|>]
+                    "GraphProperties" -> graphProperties, "Options" -> options,
+                    "BranchialStepSetting" -> OptionValue["BranchialStep"]|>]
 ];
 
 (* Step and Query differ in ONE field. Writing them as two bodies would be two chances to
@@ -1359,6 +1364,8 @@ hgSessionVerb[HGSessionObject[d_Association], op_String, steps_Integer, property
      three documentation examples report $Failed while returning correct numbers. *)
   options["RequestedData"] = requiredData;
   options["GraphProperties"] = graphProperties;
+  options["BranchialStep"] = hgBranchialStepValue[
+    Lookup[d, "BranchialStepSetting", Automatic], graphProperties];
 
   view = d["View"];
   view["RequestedData"] = requiredData;

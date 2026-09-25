@@ -245,6 +245,29 @@ Module[{sOrder, viaSession, viaOneShot, heavy = {"NumCausalEdges", "NumBranchial
     HGSessionClose[sOrder],
     check["a session opened for one property answers a later Query for another", False]]];
 
+(* A branchial graph asked of a session after it opened reads the branchial edges HGEvolve gives
+   for that property: the session resolves "BranchialStep" for each verb's properties, not once
+   at HGSessionOpen for the properties named there. The triangle rule has branchial edges at
+   more than one step, so the two resolutions differ. *)
+Module[{tri = {{{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}}, init3 = {{1, 2}, {1, 3}}, sb, got, want,
+        sLast, gotLast},
+  sb = HGSessionOpen[tri, init3, "NumStates"];
+  If[Head[sb] =!= HGSessionObject,
+    check["a session's later branchial graph equals HGEvolve's", False],
+    HGSessionStep[sb, 3];
+    got  = EdgeCount /@ HGSessionQuery[sb, {"EvolutionBranchialGraphStructure", "BranchialGraphStructure"}];
+    HGSessionClose[sb];
+    want = EdgeCount /@ HGEvolve[tri, init3, 3, {"EvolutionBranchialGraphStructure", "BranchialGraphStructure"}];
+    check["a session's later branchial graphs equal HGEvolve's " <> ToString[{got, want}],
+          Values[got] === Values[want]];
+    sLast = HGSessionOpen[tri, init3, "NumStates", "BranchialStep" -> -1];
+    HGSessionStep[sLast, 3];
+    gotLast = EdgeCount[HGSessionQuery[sLast, "EvolutionBranchialGraphStructure"]];
+    HGSessionClose[sLast];
+    check["and an explicit \"BranchialStep\" given at open is kept " <> ToString[gotLast],
+          gotLast === EdgeCount[HGEvolve[tri, init3, 3, "EvolutionBranchialGraphStructure",
+                                         "BranchialStep" -> -1]]]]];
+
 Print["\nfailures: ", failures];
 Print[If[failures == 0, "SESSIONS_VERIFIED", "SESSIONS_FAILED"]];
 Exit[If[failures == 0, 0, 1]]
