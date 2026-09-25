@@ -462,6 +462,7 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
             req.edge_deduplication,
             req.branchial_step,
             req.show_genesis_events,
+            req.show_progress,
             req.session_op,
             req.session_handle,
             req.session_from,
@@ -864,43 +865,12 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // marshaller builds them with, so the two cannot disagree about a name. The serialization
         // reads `gneeds` too, so it is derived once for every op rather than per path.
         const hgmarshal::GraphPropertyNeeds gneeds = hgmarshal::graph_property_needs(req.graph_properties);
-        hypergraph::RecordSet record;
-        record.causal = req.include_causal_edges || req.include_num_causal_edges || gneeds.causal ||
-                        req.show_progress;
-        record.branchial = req.include_branchial_edges || req.include_num_branchial_edges ||
-                           req.include_branchial_state_edges || gneeds.branchial || req.show_progress;
-        record.state_events = req.include_branchial_state_edges_all_siblings;
-        // THE RAW UNFOLDING, which under quotient exploration is the reconstruction and the
-        // engine's largest single cost -- 99.57% of all cycles on multirule at depth 6, growing
-        // 14.6x per depth step while the canonical answer grows 1.17x. It defaults ON in
-        // RecordSet so a caller that states nothing keeps the counts it always had; here the
-        // caller HAS stated something, so it is derived like the other three rather than left at
-        // the default. On for a request the raw set answers: the event records themselves, a
-        // count taken over them, or a graph built over events (gneeds.events).
-        //
-        // The causal and branchial relations do not need it named: under quotient they are
-        // reconstructed too, and record.causal / record.branchial already drive the replay.
-        record.raw_events = req.include_events || req.include_events_minimal ||
-                            req.include_num_events || gneeds.events || req.show_progress;
-        // Nothing but NumEvents and NumBranchialEdges reads the raw unfolding, so under quotient
-        // exploration they come from class multiplicities: 206,931,038 raw events on
-        // {{1,1},{1,1}} -> {{1,1},{1,1},{1,1}} at depth 7 without one raw state.
-        record.raw_counts_only = hgmarshal::reads_raw_counts_only(req, gneeds);
-        record.multiplicities = req.include_step_statistics;
-
-        // A SESSION RECORDS EVERYTHING, because it exists to be continued and queried in ways
-        // its Open cannot know. Deriving its record set from the properties named on the Open
-        // call makes the answer to a later Query depend on what the FIRST call happened to ask
-        // for: open for "States", ask for the causal graph three steps later, and the relation
-        // comes back empty because the evolution that would have built it has already run. A
-        // continuation must not depend on the order the caller asked things in.
-        //
-        // One-shot calls keep the derived set above, which is where the saving is -- the raw
-        // unfolding alone is 25x on multirule at depth 6 -- and they have no later query to
-        // serve.
-        if (opening_session) {
-            record.causal = record.branchial = record.state_events = record.raw_events = true;
-        }
+        // Under quotient exploration, NumEvents and NumBranchialEdges asked for alone come from
+        // class multiplicities without the raw unfolding: 206,931,038 raw events on
+        // {{1,1},{1,1}} -> {{1,1},{1,1},{1,1}} at depth 7 without one raw state. The raw
+        // unfolding otherwise dominates a quotient run: 99.57% of all cycles on multirule at
+        // depth 6, growing 14.6x per depth step while the canonical answer grows 1.17x.
+        const hypergraph::RecordSet record = hgmarshal::record_set_for(req, gneeds);
 
         if (!held_session) configure_and_evolve(req, hg, engine, record, host);
 

@@ -55,6 +55,7 @@
 // 1.9 s at depth 7, against a Query that explores nothing and costs the same).
 
 #include "delivery_cursor.hpp"
+#include "hgcommon/core.hpp"
 #include "wxf.hpp"
 
 #include <cstdint>
@@ -338,6 +339,28 @@ bool reads_raw_counts_only(const Job& job, const GraphPropertyNeeds& g) {
     return !(job.include_events || job.include_events_minimal || job.include_branchial_edges ||
              job.include_branchial_state_edges || job.include_branchial_state_edges_all_siblings ||
              g.causal || g.branchial || g.events);
+}
+
+// What a run records, from what the request reads, for both engines. The raw events are on for
+// the event records and counts, the branchial state views (which read each event's endpoints)
+// and graphs over events; progress reports read the relations. A session records everything,
+// since a later query may read what its Open did not name.
+template <typename Job>
+hgcommon::RecordSet record_set_for(const Job& job, const GraphPropertyNeeds& g) {
+    hgcommon::RecordSet r;
+    r.causal = job.include_causal_edges || job.include_num_causal_edges || g.causal ||
+               job.show_progress;
+    r.branchial = job.include_branchial_edges || job.include_num_branchial_edges ||
+                  job.include_branchial_state_edges || g.branchial || job.show_progress;
+    r.state_events = job.include_branchial_state_edges_all_siblings;
+    r.raw_events = job.include_events || job.include_events_minimal || job.include_num_events ||
+                   job.include_branchial_state_edges ||
+                   job.include_branchial_state_edges_all_siblings || g.events || job.show_progress;
+    r.raw_counts_only = reads_raw_counts_only(job, g);
+    r.multiplicities = job.include_step_statistics;
+    if (job.session_op == "Open")
+        r.causal = r.branchial = r.state_events = r.raw_events = r.multiplicities = true;
+    return r;
 }
 
 // Build the "GraphData" association: property name -> <|Vertices, Edges, VertexData|>.

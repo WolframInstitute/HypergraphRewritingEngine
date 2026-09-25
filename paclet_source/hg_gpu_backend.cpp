@@ -123,41 +123,12 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
     {
         const hgmarshal::GraphPropertyNeeds gneeds =
             hgmarshal::graph_property_needs(job.graph_properties);
-        // THE SAME DERIVATION AS THE CPU FFI, term for term. It was not: the COUNT flags were
-        // missing from both lines, so a job asking for NumCausalEdges alone recorded no causal
-        // relation and the device answered 0 where the host answers the count. GpuJob could not
-        // express it either -- it carried no include_num_* at all.
-        in.record.causal    = job.include_causal_edges || job.include_num_causal_edges ||
-                              gneeds.causal;
-        in.record.branchial = job.include_branchial_edges || job.include_num_branchial_edges ||
-                              job.include_branchial_state_edges ||
-                              gneeds.branchial;
-        // The RAW unfolding, which under quotient exploration is the reconstruction and the
-        // engine's largest single cost. It defaults ON in RecordSet, and the device never
-        // derived it, so every device job paid for it whatever it asked for -- the same defect
-        // the host had until the request began deciding it.
-        // The two state-endpoint components read each event's input and output state, so they
-        // need the raw unfolding even when the caller named no event output. The pair form
-        // additionally needs the branchial relation above; the sibling form does not, since it
-        // pairs every two events leaving one input state whether or not they overlap.
-        in.record.raw_events = job.include_events || job.include_num_events ||
-                               job.include_branchial_state_edges ||
-                               job.include_branchial_state_edges_all_siblings || gneeds.events;
-        in.record.raw_counts_only = hgmarshal::reads_raw_counts_only(job, gneeds);
-        in.record.multiplicities = job.include_step_statistics;
-
-        // A SESSION RECORDS EVERYTHING, the same rule the host follows and for the same reason:
-        // a session exists to be continued and queried in ways its Open cannot know, so deriving
-        // its record set from the properties that Open happened to name makes the answer to a
-        // later Query depend on the order the caller asked things in.
-        if (job.session_op == "Open") {
-            in.record.causal = in.record.branchial = in.record.raw_events = true;
-        // The reply serves the reconstructed relations as DATA (the edge lists) and as GRAPHS;
-        // both need the pair vectors, not only the counts. A counts-only request keeps this
-        // off, which is the whole point of the flag.
-        in.materialize_relations = job.include_causal_edges || job.include_branchial_edges ||
-                                   gneeds.causal || gneeds.branchial;
-        }
+        in.record = hgmarshal::record_set_for(job, gneeds);
+        // An Open materialises the reconstructed relations as pair vectors when it reads them as
+        // data or graphs; a counts-only request keeps this off.
+        if (job.session_op == "Open")
+            in.materialize_relations = job.include_causal_edges || job.include_branchial_edges ||
+                                       gneeds.causal || gneeds.branchial;
     }
     in.transitive_reduction = job.transitive_reduction;
     in.explore_from_canonical_states_only = job.explore_from_canonical_states_only;
@@ -319,6 +290,9 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
     } else {
         result = evolver.run(in);
     }
+    // The depth of the evolution the reply describes: a held session's whole depth, not this
+    // job's own step count, which is 0 for a Query. The host does the same (engine.max_steps()).
+    const int run_steps = (is_step || is_query) ? static_cast<int>(held.steps_done) : job.steps;
 
     hypergraph::IRCanonicalizer ir;
 
@@ -630,7 +604,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
         };
         hgmarshal::GraphOptions bse_opts;
         bse_opts.branchial_step = job.branchial_step;
-        bse_opts.steps = static_cast<int>(job.steps);
+        bse_opts.steps = run_steps;
 
         if (job.include_branchial_state_edges) {
             std::vector<std::pair<uint32_t, uint32_t>> pairs;
@@ -743,7 +717,8 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
             std::unordered_map<uint64_t, std::map<int64_t, uint64_t>> matches_by_rule;
             for (const auto& c : result.class_rule_matches)
                 matches_by_rule[c.class_hash][static_cast<int64_t>(c.rule)] += c.count;
-            hg::stats::events_from_multiplicities(points, matches_by_rule, in.num_steps, events,
+            hg::stats::events_from_multiplicities(points, matches_by_rule,
+                                                  static_cast<uint32_t>(run_steps), events,
                                                   rule_counts);
         } else {
             for (const auto& st : result.states) {
@@ -938,7 +913,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
         hgmarshal::GraphOptions gopts;
         gopts.edge_deduplication = job.edge_deduplication;
         gopts.branchial_step = job.branchial_step;
-        gopts.steps = job.steps;
+        gopts.steps = run_steps;
         full_result.push_back({wxf::WXFValue("GraphData"),
                                hgmarshal::build_graph_data(gsrc, job.graph_properties, gopts)});
     }

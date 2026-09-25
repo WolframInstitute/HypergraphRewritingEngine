@@ -91,6 +91,7 @@ struct GpuJob {
     bool edge_deduplication = true;
     int  branchial_step = 0;      // 0=all, >0 1-based step, <0 from end (-1=final)
     bool show_genesis_events = false;
+    bool show_progress = false;
 
     // THE SESSION ENVELOPE, carried through so the device can answer the same four verbs the
     // host does. Empty `op` means Evolve, which is a one-shot run and the whole of the older

@@ -1353,6 +1353,31 @@ bool reply_mentions(const std::vector<uint8_t>& out, const std::string& text) {
 
 }  // namespace
 
+// "StepStatistics" asked of a session that was opened for another property is what one call
+// asking for it from the start gives, under quotient exploration and under full capture.
+TEST(WxfSerializationPin, ASessionServesStepStatisticsItsOpenDidNotName) {
+    for (bool quotient : {true, false}) {
+        auto opts = [quotient](const std::string& prop) {
+            return [quotient, prop](wxf::Writer& w) {
+                put_str_list_option(w, "RequestedData", {prop});
+                put_str_option(w, "CanonicalizeStates", quotient ? "Full" : "None");
+                put_str_option(w, "ExploreFromCanonicalStatesOnly", quotient ? "True" : "False");
+            };
+        };
+        HostBridge host;
+        const auto direct = run_rewriting_core(branch_job(3, "Evolve", 0, opts("StepStatistics"), 3), host);
+        const auto opened = run_rewriting_core(branch_job(0, "Open", 0, opts("NumStates"), 3), host);
+        const int64_t handle = read_int_key(opened, "Session");
+        ASSERT_NE(handle, 0) << "quotient=" << quotient;
+        run_rewriting_core(branch_job(3, "Step", handle, opts("NumStates"), 3), host);
+        const auto queried = run_rewriting_core(branch_job(0, "Query", handle, opts("StepStatistics"), 3), host);
+        run_rewriting_core(branch_job(0, "Close", handle, opts("NumStates"), 3), host);
+        const auto want = value_bytes(direct, "StepStatistics");
+        ASSERT_FALSE(want.empty()) << "quotient=" << quotient;
+        EXPECT_EQ(value_bytes(queried, "StepStatistics"), want) << "quotient=" << quotient;
+    }
+}
+
 // A value of an identity option the engine does not recognise is reported as OptionSkipped,
 // naming the value, and the run uses the default. A WL symbol Positional arrives with its
 // context, as Global`Positional, and is one such value.
@@ -2134,6 +2159,39 @@ TEST(GpuBinaryGate, WarningsAgreeAcrossDevices) {
         EXPECT_EQ(c, g) << name;
         EXPECT_EQ(read_int_key(gpu, "NumStates"), read_int_key(cpu, "NumStates")) << name;
     }
+    worker_stop(w);
+}
+
+// On the GPU, "StepStatistics" asked of a session opened for "NumStates" under quotient
+// exploration is what one evolution asking for it gives on the CPU.
+TEST(GpuBinaryGate, SessionStepStatisticsAgreeWithOneEvolve) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    auto opts = [](const std::string& prop) {
+        return [prop](wxf::Writer& ww) {
+            put_str_list_option(ww, "RequestedData", {prop});
+            put_str_option(ww, "CanonicalizeStates", "Full");
+            put_str_option(ww, "ExploreFromCanonicalStatesOnly", "True");
+        };
+    };
+    HostBridge host;
+    const auto direct = run_rewriting_core(branch_job(3, "Evolve", 0, opts("StepStatistics"), 3), host);
+    const auto opened = worker_call(w, branch_job(0, "Open", 0, opts("NumStates"), 3));
+    const int64_t handle = read_int_key(opened, "Session");
+    ASSERT_NE(handle, 0);
+    worker_call(w, branch_job(3, "Step", handle, opts("NumStates"), 3));
+    const auto queried = worker_call(w, branch_job(0, "Query", handle, opts("StepStatistics"), 3));
+    worker_call(w, branch_job(0, "Close", handle, opts("NumStates"), 3));
+    const auto want = value_bytes(direct, "StepStatistics");
+    ASSERT_FALSE(want.empty());
+    EXPECT_EQ(value_bytes(queried, "StepStatistics"), want);
     worker_stop(w);
 }
 #endif  // _WIN32
