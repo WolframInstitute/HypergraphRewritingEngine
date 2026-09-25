@@ -53,6 +53,16 @@ dest = If[destArg =!= None, stripPrefix["dest", destArg], docRoot];
 PacletDirectoryUnload[FileNameJoin[{repo, "paclet"}]];
 PacletDirectoryLoad[FileNameJoin[{repo, "paclet"}]];
 
+(* The first styled graph in a fresh kernel issues start-up messages (AllowKernelInitialization::shdw,
+   style$::shdw, First::nofirst) while the paclet and the graph typesetting load; the second issues
+   none. One quiet evaluation and typesetting here keeps them out of the first page's first graph.
+   The GPU call starts the device worker the same way. *)
+If[! structureMode,
+  Quiet[Needs["HypergraphRewriting`"];
+    ToBoxes[HypergraphRewriting`HGEvolve[{{1, 2}} -> {{1, 3}, {3, 2}}, {{1, 2}}, 1]];
+    HypergraphRewriting`HGEvolve[{{1, 2}} -> {{1, 3}, {3, 2}}, {{1, 2}}, 1, "NumStates",
+      "TargetDevice" -> "GPU"]]];
+
 (* Everything a notebook's content depends on besides its markdown: the engine binaries and the
    kernel files the examples run through, the converter, and this script. *)
 hashFiles[fs_List] := FileHash[#, "SHA256"] & /@ Sort[fs];
