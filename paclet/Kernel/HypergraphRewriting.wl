@@ -242,22 +242,38 @@ hgWorkerStart[device_] := Module[{exe, portfile, proc, port, sock},
   True
 ];
 
-(* Read one length-prefixed response frame ([8-byte little-endian length][payload])
-   and return the payload ByteArray straight for BinaryDeserialize -- no encoding
-   or per-byte transform. Reassembly is O(n): the arbitrary-sized SocketReadMessage
-   chunks are appended to an O(1)-append DynamicArray and Join'd once. Strict
-   request/response (one full response read before the next request is sent) means
-   no bytes spill past the frame, so no leftover buffer is needed. Returns $Failed
-   on a dead socket, or an empty ByteArray if the engine flagged the job as errored
-   (a zero-length reply). *)
-hgReadFrame[sock_] := Module[{ds = CreateDataStructure["DynamicArray"], got = 0, len = -1, chunk},
-  While[len < 0 || got < 8 + len,
-    chunk = SocketReadMessage[sock];
-    If[!ByteArrayQ[chunk], Return[$Failed]];
-    ds["Append", chunk]; got += Length[chunk];
-    If[len < 0 && got >= 8,
-      len = FromDigits[Reverse[Normal[Take[Join @@ Normal[ds], 8]]], 256]]];
-  If[len == 0, ByteArray[{}], Take[Join @@ Normal[ds], {9, 8 + len}]]
+(* Read a job's reply from the worker: frames of [8-byte little-endian length][payload]. A length
+   with bit 63 set is a PROGRESS frame (hg_evolve_main.cpp, kProgressFrameBit): its payload is one
+   progress message, printed when the call asked for progress ($hgShowProgress) and skipped
+   otherwise, and the reply frame follows. The reply's chunks are appended to a DynamicArray and
+   joined once, so reassembly is O(n). Returns the reply payload for BinaryDeserialize, $Failed on
+   a dead socket, or an empty ByteArray if the engine flagged the job as errored (a zero-length
+   reply). *)
+$hgShowProgress = False;
+hgReadFrame[sock_] := Module[{pending = ByteArray[{}], chunk, len, ds, got},
+  While[True,
+    While[Length[pending] < 8,
+      chunk = SocketReadMessage[sock];
+      If[!ByteArrayQ[chunk], Return[$Failed]];
+      pending = Join[pending, chunk]];
+    len = FromDigits[Reverse[Normal[pending[[1 ;; 8]]]], 256];
+    If[len >= 2^63,
+      len -= 2^63;
+      While[Length[pending] < 8 + len,
+        chunk = SocketReadMessage[sock];
+        If[!ByteArrayQ[chunk], Return[$Failed]];
+        pending = Join[pending, chunk]];
+      If[TrueQ[$hgShowProgress] && len > 0, Print[ByteArrayToString[pending[[9 ;; 8 + len]]]]];
+      pending = If[Length[pending] > 8 + len, pending[[9 + len ;;]], ByteArray[{}]];
+      Continue[]];
+    ds = CreateDataStructure["DynamicArray"];
+    ds["Append", pending];
+    got = Length[pending];
+    While[got < 8 + len,
+      chunk = SocketReadMessage[sock];
+      If[!ByteArrayQ[chunk], Return[$Failed]];
+      ds["Append", chunk]; got += Length[chunk]];
+    Return[If[len == 0, ByteArray[{}], Take[Join @@ Normal[ds], {9, 8 + len}]]]]
 ];
 
 $hgEngineRefused = "EngineRefusedJob";   (* distinct from $Failed: see hgWorkerTry *)
@@ -1028,7 +1044,8 @@ $hgLastReplyBytes = 0;
 hgSendJob[inputData_Association, device_, sessionQ_] := Module[{wxfBytes, resultBytes, wxfData, t0},
   t0 = AbsoluteTime[];
   wxfBytes = BinarySerialize[inputData];
-  resultBytes = If[TrueQ[sessionQ],
+  resultBytes = Block[{$hgShowProgress = TrueQ[Lookup[Lookup[inputData, "Options", <||>], "ShowProgress", False]]},
+   If[TrueQ[sessionQ],
     Module[{dev = device, r},
       r = hgWorkerTry[dev, wxfBytes];
       (* $hgWorkerBroken is LATCHED, and it is latched for the FALLBACK path's benefit: there a
@@ -1047,7 +1064,7 @@ hgSendJob[inputData_Association, device_, sessionQ_] := Module[{wxfBytes, result
       If[r === $hgEngineRefused, Message[HGSessionOpen::refused]; Return[$Failed]];
       If[!ByteArrayQ[r], Message[HGSessionOpen::noworker, device]; Return[$Failed]];
       r],
-    hgCallEngine[wxfBytes, device]];
+    hgCallEngine[wxfBytes, device]]];
 
   If[!ByteArrayQ[resultBytes] || Length[resultBytes] == 0, Return[$Failed]];
   wxfData = BinaryDeserialize[resultBytes];

@@ -335,15 +335,12 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                         // option, which breaks WL callers that pass forward-compatible
                         // option sets the C++ side doesn't yet know about. The failed read
                         // may have consumed part of the value, so re-align to its start
-                        // before skipping, and put the skip on the warning trail (the
-                        // progress callback is a no-op under performRewriting).
+                        // before skipping, and put the skip on the warning trail.
                         option_parser.seek(option_value_start);
                         option_parser.skip_value();
                         req.ffi_warnings.push_back(
                             {"OptionSkipped", 1,
                              "option '" + option_key + "' ignored: " + e.what()});
-                        core_progress(host,
-                            "FFI: skipping malformed option '" + option_key + "': " + e.what());
                     }
                 });
 

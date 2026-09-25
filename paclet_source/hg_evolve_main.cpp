@@ -55,6 +55,16 @@ namespace {
 // length that cannot be allocated.
 constexpr uint64_t kMaxJobBytes = 1ull << 30;
 
+// A reply frame's 8-byte length with this bit set is a PROGRESS frame: its payload is one
+// progress message as UTF-8 text, and the job's reply frame still follows. The kernel's
+// hgReadFrame prints or skips progress frames and returns the reply.
+constexpr uint64_t kProgressFrameBit = 1ull << 63;
+
+// The 8-byte little-endian header of a frame of `len` bytes.
+void frame_header(uint64_t len, uint8_t hdr[8]) {
+    for (int i = 0; i < 8; ++i) hdr[i] = static_cast<uint8_t>(len >> (8 * i));
+}
+
 // Read exactly n bytes from stdin into out. Returns false on EOF before any
 // byte of a new frame (clean end), on a short read mid-frame (caller decides),
 // or if n exceeds the frame cap.
@@ -71,11 +81,18 @@ bool read_exact(size_t n, std::vector<uint8_t>& out) {
 }
 
 void write_frame(const std::vector<uint8_t>& payload) {
-    uint64_t len = static_cast<uint64_t>(payload.size());
     uint8_t hdr[8];
-    for (int i = 0; i < 8; ++i) hdr[i] = static_cast<uint8_t>(len >> (8 * i));
+    frame_header(static_cast<uint64_t>(payload.size()), hdr);
     std::fwrite(hdr, 1, 8, stdout);
-    if (len) std::fwrite(payload.data(), 1, len, stdout);
+    if (!payload.empty()) std::fwrite(payload.data(), 1, payload.size(), stdout);
+    std::fflush(stdout);
+}
+
+void write_progress_frame(const std::string& message) {
+    uint8_t hdr[8];
+    frame_header(kProgressFrameBit | static_cast<uint64_t>(message.size()), hdr);
+    std::fwrite(hdr, 1, 8, stdout);
+    std::fwrite(message.data(), 1, message.size(), stdout);
     std::fflush(stdout);
 }
 
@@ -99,7 +116,9 @@ int run_one_shot(const HostBridge& host) {
     }
 }
 
-int run_serve(const HostBridge& host) {
+int run_serve(const HostBridge& host_in) {
+    HostBridge host = host_in;
+    host.progress = [](const std::string& m) { write_progress_frame(m); };
     std::vector<uint8_t> lenbuf, job;
     for (;;) {
         if (!read_exact(8, lenbuf)) break;  // clean EOF between frames
@@ -151,7 +170,7 @@ bool sock_send_all(socket_t s, const void* buf, size_t n) {
 // NUL-safe). The port file is the race-free channel for Wolfram: it polls the
 // file for the OS-assigned port, then connects. CUDA context and warm caches
 // persist across jobs, as with --serve.
-int run_serve_socket(const HostBridge& host, const char* portfile) {
+int run_serve_socket(const HostBridge& host_in, const char* portfile) {
 #if defined(_WIN32)
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
@@ -190,6 +209,13 @@ int run_serve_socket(const HostBridge& host, const char* portfile) {
     socket_t conn = accept(listener, nullptr, nullptr);
     if (conn == INVALID_SOCKET) { std::fprintf(stderr, "HGEvolve: accept() failed\n"); HG_CLOSESOCK(listener); return 1; }
 
+    // Progress messages go to the client as progress frames ahead of the job's reply.
+    HostBridge host = host_in;
+    host.progress = [conn](const std::string& m) {
+        uint8_t hdr[8];
+        frame_header(kProgressFrameBit | static_cast<uint64_t>(m.size()), hdr);
+        if (sock_send_all(conn, hdr, 8)) sock_send_all(conn, m.data(), m.size());
+    };
     uint8_t lenbuf[8];
     std::vector<uint8_t> job;
     for (;;) {
@@ -218,8 +244,8 @@ int run_serve_socket(const HostBridge& host, const char* portfile) {
             out.clear();  // zero-length reply frame = this job errored
         }
         uint8_t hdr[8];
-        uint64_t olen = out.size();
-        for (int i = 0; i < 8; ++i) hdr[i] = static_cast<uint8_t>(olen >> (8 * i));
+        const uint64_t olen = out.size();
+        frame_header(olen, hdr);
         if (!sock_send_all(conn, hdr, 8)) break;
         if (olen && !sock_send_all(conn, out.data(), out.size())) break;
     }
