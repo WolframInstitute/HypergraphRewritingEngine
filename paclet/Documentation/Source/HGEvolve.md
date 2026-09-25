@@ -75,7 +75,6 @@ are the edges its id list names, and two states sharing an edge name the same id
 | `"IncludeCanonicalHashes"` | `False` | attach a run-stable isomorphism hash to each state, for fusing results across runs |
 | `"ShowProgress"` | `False` | print progress during evolution |
 | `"ShowGenesisEvents"` | `False` | include the synthetic genesis events that create the initial states |
-| `"AspectRatio"` | `None` | aspect ratio for the returned graph |
 | `"DebugFFI"` | `False` | print low-level foreign-function-interface diagnostics |
 | `"ColorByRule"` | `False` | colour each transition edge by the rule that produced it; applies to the styled graph properties, whose edge payloads carry the rule index (the `Structure` variants carry topology only and are unaffected) |
 | `"MultiedgeStyle"` | `Automatic` | `Automatic` draws one edge per event (or per causal or branchial pair); `"Merged"` draws edges with the same endpoints and type as one edge, whose tooltip lists the events it stands for. With `"ColorByRule" -> True`, edges of different rules stay separate |
@@ -385,14 +384,16 @@ It is a cap by ARRIVAL ORDER, not a uniform draw, and which states arrive first 
 
 Use `"TransitionRate"` for sampling that is uniform and reproducible. A rate is defined per transition and needs no notion of a step, so it needs no barrier, it is drawn from the transition's own identity and the seed rather than from arrival order, and it preserves the branching structure a sample exists to represent.
 
-### "AspectRatio"
+### Graph options
 
-Sets the aspect ratio of the returned graph:
+Every option of `Graph` is also an option of `HGEvolve` and `HGSessionOpen`, and goes to the graph a graph property returns. A value given in the call replaces the default, such as the layered layout:
 
 ```wl
 rules = {{{1, 2}} -> {{1, 3}, {3, 2}}};
-HGEvolve[rules, {{1, 2}}, 3, "StatesGraphStructure", "AspectRatio" -> 1/2]
+HGEvolve[rules, {{1, 2}}, 3, "StatesGraphStructure", AspectRatio -> 1/2, ImageSize -> 300]
 ```
+
+A session's graphs use the options it was opened with.
 
 ### "TargetDevice"
 

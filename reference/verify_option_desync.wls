@@ -73,3 +73,25 @@ Module[{names},
     Print["partial: ", partial, " fallback: ", fallback, " saturated: ", saturated];
     Print[If[partial === {"HGEvolve::overflow"} && fallback === {"HGEvolve::warn"} &&
              saturated === {"HGEvolve::warn"}, "WARNING KINDS PASS", "WARNING KINDS FAIL"]]]];
+
+(* Every Graph option given to HGEvolve or HGSessionOpen reaches the returned graph, and replaces
+   the kernel's default: ImageSize, AspectRatio (as a symbol or a string), and GraphLayout over
+   the default layered layout. A session's Query uses the options it was opened with. *)
+Module[{chain = {{{1, 2}} -> {{1, 3}, {3, 2}}}, g, h, t, s, q, ok, msgs},
+  {ok, msgs} = Block[{$MessageList = {}},
+    g = HGEvolve[chain, {{1, 2}}, 2, "StatesGraphStructure", ImageSize -> 123,
+      AspectRatio -> 1/2, GraphLayout -> "SpringEmbedding"];
+    h = HGEvolve[chain, {{1, 2}}, 2, "StatesGraph", "AspectRatio" -> 1/3];
+    t = HGEvolve[chain, "Grid", 1, "StatesGraphStructure", ImageSize -> 55];
+    s = HGSessionOpen[chain, {{1, 2}}, "StatesGraphStructure", ImageSize -> 77];
+    HGSessionStep[s, 2];
+    q = HGSessionQuery[s, "StatesGraphStructure"];
+    HGSessionClose[s];
+    {{OptionValue[Options[g], ImageSize], OptionValue[Options[g], AspectRatio],
+      OptionValue[Options[g], GraphLayout], OptionValue[Options[h], AspectRatio],
+      OptionValue[Options[t], ImageSize], OptionValue[Options[q], ImageSize]},
+     ToString /@ $MessageList}];
+  Print["graph options {ImageSize, AspectRatio, GraphLayout, string AspectRatio, grid ImageSize, session ImageSize}: ",
+    ok, " messages: ", msgs];
+  Print[If[ok === {123, 1/2, "SpringEmbedding", 1/3, 55, 77} && msgs === {},
+    "GRAPH OPTIONS PASS", "GRAPH OPTIONS FAIL"]]];

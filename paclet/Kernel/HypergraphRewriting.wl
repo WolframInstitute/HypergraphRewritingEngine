@@ -34,7 +34,6 @@ Options[HGEvolve] = {
   "TargetDevice" -> "CPU",  (* "CPU" | "GPU" (like NetTrain[]). "GPU" runs the bundled hg_evolve_gpu binary when present, else falls back to CPU with a message. The GPU engine honors CanonicalizeStates (None | Automatic | Full) and its state counts match the CPU's in every mode. *)
   "ShowProgress" -> False,
   "ShowGenesisEvents" -> False,
-  "AspectRatio" -> None,
   "DebugFFI" -> False,
   "IncludeCanonicalHashes" -> False,  (* True: include per-state IR canonical hash ("CanonicalHash"); stable across runs, for fusing pruned runs by isomorphism class *)
   "BranchialStep" -> Automatic,  (* Automatic: BranchialGraph->-1 (final), Evolution*Branchial*->All; or explicit: -1, All, 1-based step *)
@@ -549,7 +548,7 @@ formatMergedEdgeTooltip[tag_Association] :=
 (* Create graph from FFI GraphData - main entry point *)
 (* graphData: <|"Vertices" -> {...}, "Edges" -> {...}, "VertexData" -> <|...|>|> *)
 (* styled: True for full hypergraph rendering, False for structure only *)
-createGraphFromData[graphData0_Association, aspectRatio_, styled_:False, colorByRule_:False,
+createGraphFromData[graphData0_Association, graphOptions_List, styled_:False, colorByRule_:False,
                     multiedgeStyle_:Automatic] := Module[
   {graphData, vertices, edgeList, vertexData, vertexLabels, vertexStyles, vertexShapes, edgeStyles, edgeStyleTable, edgeLabels, g, addLegend},
 
@@ -707,10 +706,12 @@ createGraphFromData[graphData0_Association, aspectRatio_, styled_:False, colorBy
          #3 the size; ## forwards all three unchanged. *)
       Function[If[AssociationQ[vertexData[#2]] && isStateVertexData[vertexData[#2]],
         stateFn[##], eventFn[##]]]];
-    addLegend[Graph[vertices, edgeList,
+    (* The caller's Graph options come first: Graph takes the first setting of a repeated
+       option, so a layout, labels, a size or a ratio given by the caller replaces the defaults. *)
+    addLegend[Graph[vertices, edgeList, Sequence @@ graphOptions,
       VertexSize -> 1/2, VertexLabels -> vertexLabels, VertexShapeFunction -> vertexShapes,
       EdgeLabels -> edgeLabels, EdgeStyle -> edgeStyles,
-      GraphLayout -> "LayeredDigraphEmbedding", AspectRatio -> aspectRatio]]
+      GraphLayout -> "LayeredDigraphEmbedding", AspectRatio -> None]]
     ,
     (* Structure mode: simple styles *)
     vertexStyles = Map[
@@ -721,10 +722,10 @@ createGraphFromData[graphData0_Association, aspectRatio_, styled_:False, colorBy
       ],
       vertices
     ];
-    addLegend[Graph[vertices, edgeList,
+    addLegend[Graph[vertices, edgeList, Sequence @@ graphOptions,
       VertexLabels -> vertexLabels, VertexStyle -> vertexStyles,
       EdgeLabels -> edgeLabels, EdgeStyle -> edgeStyles,
-      GraphLayout -> "LayeredDigraphEmbedding", AspectRatio -> aspectRatio]]
+      GraphLayout -> "LayeredDigraphEmbedding", AspectRatio -> None]]
   ]
 ];
 
@@ -782,18 +783,19 @@ ruleIsNumeric[rule_Rule] := AllTrue[
 (* THE INPUT FORMS, for HGEvolve and HGSessionOpen alike: a bare rule is a one-rule list, and an
    initial condition that is not an edge list -- a Graph, a named condition such as "Torus", a
    generator's result, or a spec association with "Type" -- becomes one through hgInitialEdges.
-   Options are read with OptionValue[HGEvolve, ...]; Options[HGSessionOpen] is the same list. *)
+   Options are read with OptionValue[{HGEvolve, Graph}, ...], because the Graph options are
+   options of both entry points; Options[HGSessionOpen] is the same list as Options[HGEvolve]. *)
 HGEvolve[rule_Rule, rest___] := HGEvolve[{rule}, rest]
 HGSessionOpen[rule_Rule, rest___] := HGSessionOpen[{rule}, rest]
 
 HGEvolve[rules_List, initial : Except[_List], steps_Integer,
          property : (_String | {__String}) : "EvolutionCausalBranchialGraph",
-         opts : OptionsPattern[]] :=
+         opts : OptionsPattern[{HGEvolve, Graph}]] :=
   With[{edges = hgInitialEdges[initial, {opts}]},
     If[edges === $Failed, $Failed, HGEvolve[rules, edges, steps, property, opts]]]
 HGSessionOpen[rules_List, initial : Except[_List],
               property : (_String | {__String}) : "EvolutionCausalBranchialGraph",
-              opts : OptionsPattern[]] :=
+              opts : OptionsPattern[{HGSessionOpen, Graph}]] :=
   With[{edges = hgInitialEdges[initial, {opts}]},
     If[edges === $Failed, $Failed, HGSessionOpen[rules, edges, property, opts]]]
 
@@ -815,8 +817,8 @@ hgInitialEdges[initialSpec_Association, opts_List] := Module[
   icType = Lookup[initialSpec, "Type", "Grid"];
 
   (* Extract common options *)
-  seed = Lookup[initialSpec, "Seed", OptionValue[HGEvolve, opts, "RandomSeed"]];
-  edgeThreshold = Lookup[initialSpec, "EdgeThreshold", OptionValue[HGEvolve, opts, "EdgeThreshold"]];
+  seed = Lookup[initialSpec, "Seed", OptionValue[{HGEvolve, Graph}, opts, "RandomSeed"]];
+  edgeThreshold = Lookup[initialSpec, "EdgeThreshold", OptionValue[{HGEvolve, Graph}, opts, "EdgeThreshold"]];
 
   (* Generate initial condition based on type *)
   Switch[icType,
@@ -824,9 +826,9 @@ hgInitialEdges[initialSpec_Association, opts_List] := Module[
     (* ===== FLAT TOPOLOGIES ===== *)
 
     "Grid",
-    gridWidth = Lookup[initialSpec, "Width", OptionValue[HGEvolve, opts, "GridWidth"]];
-    gridHeight = Lookup[initialSpec, "Height", OptionValue[HGEvolve, opts, "GridHeight"]];
-    gridHoles = Lookup[initialSpec, "Holes", OptionValue[HGEvolve, opts, "GridHoles"]];
+    gridWidth = Lookup[initialSpec, "Width", OptionValue[{HGEvolve, Graph}, opts, "GridWidth"]];
+    gridHeight = Lookup[initialSpec, "Height", OptionValue[{HGEvolve, Graph}, opts, "GridHeight"]];
+    gridHoles = Lookup[initialSpec, "Holes", OptionValue[{HGEvolve, Graph}, opts, "GridHoles"]];
     If[gridHoles === {} || gridHoles === None,
       icResult = HGGrid[gridWidth, gridHeight, "RandomSeed" -> seed],
       icResult = HGGridWithHoles[gridWidth, gridHeight, gridHoles, "RandomSeed" -> seed]
@@ -836,29 +838,29 @@ hgInitialEdges[initialSpec_Association, opts_List] := Module[
     (* ===== CURVED TOPOLOGIES ===== *)
 
     "Cylinder",
-    resolution = Lookup[initialSpec, "Resolution", OptionValue[HGEvolve, opts, "GridWidth"]];
-    gridHeight = Lookup[initialSpec, "Height", OptionValue[HGEvolve, opts, "GridHeight"]];
+    resolution = Lookup[initialSpec, "Resolution", OptionValue[{HGEvolve, Graph}, opts, "GridWidth"]];
+    gridHeight = Lookup[initialSpec, "Height", OptionValue[{HGEvolve, Graph}, opts, "GridHeight"]];
     icResult = HGCylinder[resolution, gridHeight, "RandomSeed" -> seed];
     edges = icResult["Edges"],
 
     "Torus",
-    resolution = Lookup[initialSpec, "Resolution", OptionValue[HGEvolve, opts, "GridWidth"]];
+    resolution = Lookup[initialSpec, "Resolution", OptionValue[{HGEvolve, Graph}, opts, "GridWidth"]];
     icResult = HGTorus[resolution, "RandomSeed" -> seed];
     edges = icResult["Edges"],
 
     "Sphere",
-    resolution = Lookup[initialSpec, "Resolution", OptionValue[HGEvolve, opts, "GridWidth"]];
+    resolution = Lookup[initialSpec, "Resolution", OptionValue[{HGEvolve, Graph}, opts, "GridWidth"]];
     icResult = HGSphere[resolution, "RandomSeed" -> seed];
     edges = icResult["Edges"],
 
     "Klein" | "KleinBottle",
-    resolution = Lookup[initialSpec, "Resolution", OptionValue[HGEvolve, opts, "GridWidth"]];
-    gridHeight = Lookup[initialSpec, "Height", OptionValue[HGEvolve, opts, "GridHeight"]];
+    resolution = Lookup[initialSpec, "Resolution", OptionValue[{HGEvolve, Graph}, opts, "GridWidth"]];
+    gridHeight = Lookup[initialSpec, "Height", OptionValue[{HGEvolve, Graph}, opts, "GridHeight"]];
     icResult = HGKleinBottle[resolution, gridHeight, "RandomSeed" -> seed];
     edges = icResult["Edges"],
 
     "Mobius" | "MobiusStrip",
-    resolution = Lookup[initialSpec, "Resolution", OptionValue[HGEvolve, opts, "GridWidth"]];
+    resolution = Lookup[initialSpec, "Resolution", OptionValue[{HGEvolve, Graph}, opts, "GridWidth"]];
     gridWidth = Lookup[initialSpec, "Width", 5];
     icResult = HGMobiusStrip[resolution, gridWidth, "RandomSeed" -> seed];
     edges = icResult["Edges"],
@@ -866,14 +868,14 @@ hgInitialEdges[initialSpec_Association, opts_List] := Module[
     (* ===== SPACETIME GEOMETRIES ===== *)
 
     "Sprinkling" | "Minkowski",
-    sprinklingDensity = Lookup[initialSpec, "Density", OptionValue[HGEvolve, opts, "SprinklingDensity"]];
-    sprinklingTime = Lookup[initialSpec, "TimeExtent", OptionValue[HGEvolve, opts, "SprinklingTimeExtent"]];
-    sprinklingSpatial = Lookup[initialSpec, "SpatialExtent", OptionValue[HGEvolve, opts, "SprinklingSpatialExtent"]];
-    spatialDim = Lookup[initialSpec, "SpatialDim", OptionValue[HGEvolve, opts, "SprinklingSpatialDim"]];
-    lightcone = Lookup[initialSpec, "LightconeAngle", OptionValue[HGEvolve, opts, "SprinklingLightconeAngle"]];
-    alexandrov = Lookup[initialSpec, "AlexandrovCutoff", OptionValue[HGEvolve, opts, "SprinklingAlexandrovCutoff"]];
-    transitivity = Lookup[initialSpec, "TransitivityReduction", OptionValue[HGEvolve, opts, "SprinklingTransitivityReduction"]];
-    maxEdgesPerVertex = Lookup[initialSpec, "MaxEdgesPerVertex", OptionValue[HGEvolve, opts, "SprinklingMaxEdgesPerVertex"]];
+    sprinklingDensity = Lookup[initialSpec, "Density", OptionValue[{HGEvolve, Graph}, opts, "SprinklingDensity"]];
+    sprinklingTime = Lookup[initialSpec, "TimeExtent", OptionValue[{HGEvolve, Graph}, opts, "SprinklingTimeExtent"]];
+    sprinklingSpatial = Lookup[initialSpec, "SpatialExtent", OptionValue[{HGEvolve, Graph}, opts, "SprinklingSpatialExtent"]];
+    spatialDim = Lookup[initialSpec, "SpatialDim", OptionValue[{HGEvolve, Graph}, opts, "SprinklingSpatialDim"]];
+    lightcone = Lookup[initialSpec, "LightconeAngle", OptionValue[{HGEvolve, Graph}, opts, "SprinklingLightconeAngle"]];
+    alexandrov = Lookup[initialSpec, "AlexandrovCutoff", OptionValue[{HGEvolve, Graph}, opts, "SprinklingAlexandrovCutoff"]];
+    transitivity = Lookup[initialSpec, "TransitivityReduction", OptionValue[{HGEvolve, Graph}, opts, "SprinklingTransitivityReduction"]];
+    maxEdgesPerVertex = Lookup[initialSpec, "MaxEdgesPerVertex", OptionValue[{HGEvolve, Graph}, opts, "SprinklingMaxEdgesPerVertex"]];
     icResult = HGMinkowskiSprinkling[sprinklingDensity,
       "SpatialDim" -> spatialDim,
       "TimeExtent" -> sprinklingTime,
@@ -887,13 +889,13 @@ hgInitialEdges[initialSpec_Association, opts_List] := Module[
     edges = icResult["Edges"],
 
     "BrillLindquist",
-    sprinklingDensity = Lookup[initialSpec, "Density", OptionValue[HGEvolve, opts, "SprinklingDensity"]];
-    mass1 = Lookup[initialSpec, "Mass1", OptionValue[HGEvolve, opts, "BrillLindquistMass1"]];
-    mass2 = Lookup[initialSpec, "Mass2", OptionValue[HGEvolve, opts, "BrillLindquistMass2"]];
-    separation = Lookup[initialSpec, "Separation", OptionValue[HGEvolve, opts, "BrillLindquistSeparation"]];
-    boxX = Lookup[initialSpec, "BoxX", OptionValue[HGEvolve, opts, "BrillLindquistBoxX"]];
-    boxY = Lookup[initialSpec, "BoxY", OptionValue[HGEvolve, opts, "BrillLindquistBoxY"]];
-    edgeThreshold = Lookup[initialSpec, "EdgeThreshold", OptionValue[HGEvolve, opts, "EdgeThreshold"]];
+    sprinklingDensity = Lookup[initialSpec, "Density", OptionValue[{HGEvolve, Graph}, opts, "SprinklingDensity"]];
+    mass1 = Lookup[initialSpec, "Mass1", OptionValue[{HGEvolve, Graph}, opts, "BrillLindquistMass1"]];
+    mass2 = Lookup[initialSpec, "Mass2", OptionValue[{HGEvolve, Graph}, opts, "BrillLindquistMass2"]];
+    separation = Lookup[initialSpec, "Separation", OptionValue[{HGEvolve, Graph}, opts, "BrillLindquistSeparation"]];
+    boxX = Lookup[initialSpec, "BoxX", OptionValue[{HGEvolve, Graph}, opts, "BrillLindquistBoxX"]];
+    boxY = Lookup[initialSpec, "BoxY", OptionValue[{HGEvolve, Graph}, opts, "BrillLindquistBoxY"]];
+    edgeThreshold = Lookup[initialSpec, "EdgeThreshold", OptionValue[{HGEvolve, Graph}, opts, "EdgeThreshold"]];
     If[edgeThreshold === Automatic, edgeThreshold = 2.0];
     icResult = HGBrillLindquist[sprinklingDensity, {mass1, mass2}, separation,
       "BoxX" -> boxX,
@@ -906,8 +908,8 @@ hgInitialEdges[initialSpec_Association, opts_List] := Module[
     (* ===== SAMPLING METHODS ===== *)
 
     "Poisson" | "PoissonDisk",
-    sprinklingDensity = Lookup[initialSpec, "Density", OptionValue[HGEvolve, opts, "SprinklingDensity"]];
-    poissonMinDistance = Lookup[initialSpec, "MinDistance", OptionValue[HGEvolve, opts, "PoissonMinDistance"]];
+    sprinklingDensity = Lookup[initialSpec, "Density", OptionValue[{HGEvolve, Graph}, opts, "SprinklingDensity"]];
+    poissonMinDistance = Lookup[initialSpec, "MinDistance", OptionValue[{HGEvolve, Graph}, opts, "PoissonMinDistance"]];
     boxX = Lookup[initialSpec, "BoxX", {0, 10}];
     boxY = Lookup[initialSpec, "BoxY", {0, 10}];
     icResult = HGPoissonDisk[sprinklingDensity, poissonMinDistance,
@@ -919,7 +921,7 @@ hgInitialEdges[initialSpec_Association, opts_List] := Module[
     edges = icResult["Edges"],
 
     "Uniform" | "UniformRandom",
-    sprinklingDensity = Lookup[initialSpec, "Density", OptionValue[HGEvolve, opts, "SprinklingDensity"]];
+    sprinklingDensity = Lookup[initialSpec, "Density", OptionValue[{HGEvolve, Graph}, opts, "SprinklingDensity"]];
     boxX = Lookup[initialSpec, "BoxX", {0, 10}];
     boxY = Lookup[initialSpec, "BoxY", {0, 10}];
     icResult = HGUniformRandom[sprinklingDensity,
@@ -1100,18 +1102,18 @@ hgReportWarnings[warns_List] := Module[{advisories, overflows},
    the same defect the engine spent this project removing from its canonicalizer and matcher.
 
    `view` carries the interpretation settings the caller already resolved: RequestedData,
-   AspectRatio, CanonicalizeStates,
+   GraphOptions, CanonicalizeStates,
    CanonicalizeEvents, ColorByRule, DebugFFI. They are values here rather than OptionValue[]
    reads because a session's Step is not an HGEvolve call and has no OptionsPattern to read. *)
 hgRunJob[inputData_Association, device_, props_List, propertyWasList_, view_Association,
          sessionHandle_ : None] :=
   Module[
   {wxfBytes, resultBytes, wxfData, requiredData, states, events, causalEdges, branchialEdges,
-   branchialStateEdges, branchialStateVertices, aspectRatio, canonicalizeStates, canonicalizeEvents, colorByRule,
+   branchialStateEdges, branchialStateVertices, graphOptions, canonicalizeStates, canonicalizeEvents, colorByRule,
    multiedgeStyle},
 
   requiredData            = view["RequestedData"];
-  aspectRatio             = view["AspectRatio"];
+  graphOptions            = view["GraphOptions"];
   canonicalizeStates      = view["CanonicalizeStates"];
   canonicalizeEvents      = view["CanonicalizeEvents"];
 
@@ -1173,18 +1175,18 @@ hgRunJob[inputData_Association, device_, props_List, propertyWasList_, view_Asso
   (* String input returns data directly; list input always returns association *)
   If[Length[props] == 1 && !propertyWasList,
     (* Single string property: return directly *)
-    getProperty[First[props], states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, canonicalizeStates, canonicalizeEvents, colorByRule, multiedgeStyle],
+    getProperty[First[props], states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, graphOptions, canonicalizeStates, canonicalizeEvents, colorByRule, multiedgeStyle],
     (* List input: return association keyed by property names *)
-    Association[# -> getProperty[#, states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, aspectRatio, canonicalizeStates, canonicalizeEvents, colorByRule, multiedgeStyle] & /@ props]
+    Association[# -> getProperty[#, states, events, causalEdges, branchialEdges, branchialStateEdges, branchialStateVertices, wxfData, graphOptions, canonicalizeStates, canonicalizeEvents, colorByRule, multiedgeStyle] & /@ props]
   ]
 ]
 
 (* Main implementation *)
 HGEvolve[rules_List, initialEdges_List, steps_Integer,
          property : (_String | {__String}) : "EvolutionCausalBranchialGraph",
-         OptionsPattern[]] := Module[
+         opts : OptionsPattern[{HGEvolve, Graph}]] := Module[
   {inputData, wxfBytes, resultBytes, wxfData, requiredData, options,
-   states, events, causalEdges, branchialEdges, aspectRatio, props,
+   states, events, causalEdges, branchialEdges, graphOptions, props,
    canonicalizeStates, canonicalizeEvents, graphProperties, colorByRule,
    normalizedRules, rulesAssoc, initialStatesData, device},
 
@@ -1219,7 +1221,9 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
   ];
 
   device = hgResolveDevice[OptionValue["TargetDevice"]];
-  aspectRatio = OptionValue["AspectRatio"];
+  (* Every option of Graph given to the call goes to the graph a graph property returns
+     (ImageSize, AspectRatio, VertexLabels, GraphLayout, ...); the engine never reads them. *)
+  graphOptions = FilterRules[Flatten[{opts}], Options[Graph]];
   options = hgJobOptions[OptionValue[#] &, requiredData, graphProperties];
 
   (* Normalize rules: convert symbolic vertices to integers if needed *)
@@ -1243,7 +1247,7 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
   (* Run and interpret. Everything from here is shared with the session verbs (hgRunJob). *)
   hgRunJob[inputData, device, props, propertyWasList, <|
     "RequestedData"        -> requiredData,
-    "AspectRatio"          -> aspectRatio,
+    "GraphOptions"         -> graphOptions,
     "CanonicalizeStates"   -> canonicalizeStates,
     "CanonicalizeEvents"   -> canonicalizeEvents,
     "ColorByRule"          -> OptionValue["ColorByRule"],
@@ -1290,7 +1294,7 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
 
 HGSessionOpen[rules_List, initialEdges_List,
               property : (_String | {__String}) : "EvolutionCausalBranchialGraph",
-              opts : OptionsPattern[]] := Module[
+              opts : OptionsPattern[{HGSessionOpen, Graph}]] := Module[
   {props, propertyWasListLocal, requiredData, graphProperties, view, options, device,
    normalizedRules, rulesAssoc, initialStatesData, inputData, reply, handle},
 
@@ -1307,7 +1311,7 @@ HGSessionOpen[rules_List, initialEdges_List,
      under rather than whatever the Step's own call happened to say. *)
   view = <|
     "RequestedData"        -> requiredData,
-    "AspectRatio"          -> OptionValue["AspectRatio"],
+    "GraphOptions"         -> FilterRules[Flatten[{opts}], Options[Graph]],
     "CanonicalizeStates"   -> OptionValue["CanonicalizeStates"],
     "CanonicalizeEvents"   -> OptionValue["CanonicalizeEvents"],
     "ColorByRule"          -> OptionValue["ColorByRule"],
@@ -1315,7 +1319,7 @@ HGSessionOpen[rules_List, initialEdges_List,
     "DebugFFI"             -> OptionValue["DebugFFI"],
     "SessionQ"             -> True|>;
 
-  options = hgJobOptions[OptionValue[HGSessionOpen, {opts}, #] &, requiredData,
+  options = hgJobOptions[OptionValue[{HGSessionOpen, Graph}, {opts}, #] &, requiredData,
                          graphProperties];
 
   normalizedRules = normalizeRules[rules];
@@ -1427,7 +1431,7 @@ HGSessionObject /: MakeBoxes[obj : HGSessionObject[d_Association], fmt_] :=
 
 (* Property getter *)
 (* Graph properties are handled via FFI GraphData - keyed by property name *)
-getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialStateEdges_, branchialStateVertices_, wxfData_, aspectRatio_, canonicalizeStates_, canonicalizeEvents_, colorByRule_:False, multiedgeStyle_:Automatic] := Module[
+getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialStateEdges_, branchialStateVertices_, wxfData_, graphOptions_, canonicalizeStates_, canonicalizeEvents_, colorByRule_:False, multiedgeStyle_:Automatic] := Module[
   {isGraphProperty, isStyled, graphData},
 
   (* Graph properties: use FFI-provided GraphData keyed by property name *)
@@ -1436,7 +1440,7 @@ getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialSta
     If[KeyExistsQ[wxfData, "GraphData"] && KeyExistsQ[wxfData["GraphData"], prop],
       graphData = wxfData["GraphData"][prop];
       isStyled = !StringMatchQ[prop, "*Structure"];
-      Return[createGraphFromData[graphData, aspectRatio, isStyled, colorByRule, multiedgeStyle]],
+      Return[createGraphFromData[graphData, graphOptions, isStyled, colorByRule, multiedgeStyle]],
       (* GraphData for this property not available *)
       Return[$Failed]
     ]
@@ -2443,7 +2447,7 @@ HGUniformRandom[n_Integer, opts:OptionsPattern[]] := Module[
 
 SyntaxInformation[HGEvolve] = {
   "ArgumentsPattern" -> {_, _, _, _., OptionsPattern[]},
-  "OptionNames" -> Keys[Options[HGEvolve]]};
+  "OptionNames" -> Join[Keys[Options[HGEvolve]], SymbolName /@ Keys[Options[Graph]]]};
 SyntaxInformation[HGGrid] = {
   "ArgumentsPattern" -> {_, _, OptionsPattern[]}, "OptionNames" -> Keys[Options[HGGrid]]};
 SyntaxInformation[HGGridWithHoles] = {
