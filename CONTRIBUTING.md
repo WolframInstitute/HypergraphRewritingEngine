@@ -73,7 +73,67 @@ canonicalization work.
 
 ## Documentation
 
-User docs are authored in markdown under `docs/en/` (`ReferencePages/Symbols/`, `Guides/`,
-`Tutorials/`, a page's Name equal to its file name) and converted to the paclet notebooks in
-`paclet/Documentation/English/` with `./build_docs.sh` (see `tools/build_docs.wls`). The user-facing
-quickstart is [docs/QUICKSTART.md](docs/QUICKSTART.md).
+The user documentation is written in markdown under `docs/en/` and converted into the paclet's
+notebooks under `paclet/Documentation/English/` by `./build_docs.sh`, which runs
+`tools/build_docs.wls` with the converter in the `tools/MarkdownToNotebook` submodule. The
+notebooks are tracked, because the paclet ships them; edit the markdown, never a notebook. The
+quickstart for users is [docs/QUICKSTART.md](docs/QUICKSTART.md).
+
+### Layout
+
+```
+docs/en/ReferencePages/Symbols/<Name>.md   Template: Symbol    -> English/ReferencePages/Symbols/<Name>.nb
+docs/en/Guides/<Name>.md                   Template: Guide     -> English/Guides/<Name>.nb
+docs/en/Tutorials/<Name>.md                Template: TechNote  -> English/Tutorials/<Name>.nb
+```
+
+A page's frontmatter has `Name`, equal to its file name; `Title` on guides and tutorials;
+`` Context: HypergraphRewriting` ``; `Paclet: WolframInstitute/HypergraphRewriteEngine`; and
+`URI: WolframInstitute/HypergraphRewriteEngine/{ref|guide|tutorial}/<Name>`. The build stops when
+a `Name` differs from its file name. Only the seven public symbols (`HGEvolve` and the
+`HGSession*` functions) have reference pages; `tools/dev/doc_symbols_check.py` checks this.
+
+### Examples
+
+Every example is evaluated during the build against the paclet in `paclet/`. A reference page or
+the guide resets its definitions at every heading and every `---`, so each group of examples
+defines the rules it uses. A tutorial evaluates as one document.
+
+A comment after an example records its result, and the example gate compares it:
+
+```
+<!-- => {1, 2, 4, 10} -->
+<!-- => 7; the message HGEvolve::warn is issued -->
+<!-- => $Failed; the message HGEvolve::badrule is issued -->
+```
+
+Text after `; ` is a note. A block may issue only the messages its comment names.
+
+### Building
+
+```
+./build_docs.sh                 # evaluate and convert every changed page
+./build_docs.sh only=<regex>    # only the pages whose file name matches
+./build_docs.sh structure       # input cells only, into docs/en/.generated/ (not tracked)
+```
+
+The build needs `wolframscript` (native, or the Windows install used from WSL) and the engine
+built for the platform the kernel runs on. From WSL the kernel is the Windows one, which loads
+`paclet/LibraryResources/Windows-x86-64/`; build those binaries with
+`./build_windows_msvc.sh cpu`, since MinGW builds corrupt the heap at worker-thread exit. A page
+is rebuilt when its markdown, the engine binaries, the kernel files, the converter or the build
+script change; a notebook that no page maps to is deleted.
+
+### Checks
+
+Run these before committing a page; `.github/workflows/docs.yml` runs the ones that need no
+Wolfram kernel on every push that changes documentation.
+
+| Check | What it checks |
+|---|---|
+| `reference/verify_doc_examples.wls` | every example evaluates without an unstated message and matches its recorded result |
+| `tools/dev/doc_messages_check.py` | no built notebook shows a message its page does not state |
+| `tools/dev/lint_docs.py` | markdown lint of the pages and the other tracked markdown |
+| `tools/dev/docs_fresh_check.py` | no notebook was last changed in an older commit than its markdown |
+| `tools/dev/doc_symbols_check.py` | reference pages exist for the public symbols and only for them |
+| `tools/dev/doc_surface_audit.py`, `tools/dev/option_names_check.py` | the documented options and properties are the ones `HGEvolve` has |
