@@ -7,7 +7,7 @@ URI: WolframInstitute/HypergraphRewriteEngine/ref/HGSessionStep
 Keywords: [session, step, continuation, steering, frontier, multiway, hypergraph rewriting]
 SeeAlso: [HGSessionObject, HGSessionOpen, HGSessionQuery, HGSessionFrontier, HGSessionClose, HGEvolve]
 RelatedGuides: [HypergraphRewriting]
-RelatedTutorials: [GettingStarted]
+RelatedTutorials: [Sessions, GettingStarted]
 ---
 
 ## Usage

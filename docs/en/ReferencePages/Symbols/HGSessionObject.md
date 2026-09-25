@@ -7,7 +7,7 @@ URI: WolframInstitute/HypergraphRewriteEngine/ref/HGSessionObject
 Keywords: [session, continuation, multiway, hypergraph rewriting, engine worker]
 SeeAlso: [HGSessionOpen, HGSessionStep, HGSessionQuery, HGSessionFrontier, HGSessionClose, HGEvolve]
 RelatedGuides: [HypergraphRewriting]
-RelatedTutorials: [GettingStarted]
+RelatedTutorials: [Sessions, GettingStarted]
 ---
 
 ## Usage

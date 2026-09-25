@@ -7,7 +7,7 @@ URI: WolframInstitute/HypergraphRewriteEngine/ref/HGSessionQuery
 Keywords: [session, query, read, multiway, hypergraph rewriting, delta delivery]
 SeeAlso: [HGSessionObject, HGSessionOpen, HGSessionStep, HGSessionFrontier, HGSessionClose, HGEvolve]
 RelatedGuides: [HypergraphRewriting]
-RelatedTutorials: [GettingStarted]
+RelatedTutorials: [Sessions, GettingStarted]
 ---
 
 ## Usage

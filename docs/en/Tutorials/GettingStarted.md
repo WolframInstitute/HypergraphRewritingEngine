@@ -7,7 +7,7 @@ Paclet: WolframInstitute/HypergraphRewriteEngine
 URI: WolframInstitute/HypergraphRewriteEngine/tutorial/GettingStarted
 Keywords: [hypergraph, multiway, rewriting, tutorial, states graph, causal graph, branchial graph, canonicalization, Wolfram physics]
 RelatedGuides: [HypergraphRewriting]
-RelatedTutorials: [Sessions]
+RelatedTutorials: [AdvancedMultiwayEvolution, SamplingAndPruning, InitialConditions, Sessions, GPUEvolution]
 ---
 
 A hypergraph is a list of hyperedges. A rewrite rule replaces the hyperedges that match its left side by those of its right side. [HGEvolve]() applies a rule to a hypergraph in every possible way for a number of steps, and gives the states reached, the events between them, and the causal and branchial relations between the events.
@@ -199,7 +199,7 @@ Table[HGEvolve[chain, oneEdge, k, "NumStates", "CanonicalizeStates" -> Full], {k
 
 <!-- => {1, 2, 3, 4, 5, 6} -->
 
-Every event is still an edge of the states graph, so under `Full` several edges can join the same two states.
+Every event is still an edge of the states graph, so under `Full` several edges can join the same two states. [Advanced Multiway Evolution](paclet:WolframInstitute/HypergraphRewriteEngine/tutorial/AdvancedMultiwayEvolution) compares the settings of `"CanonicalizeStates"` and `"CanonicalizeEvents"`, and [Sampling and Pruning the Multiway System](paclet:WolframInstitute/HypergraphRewriteEngine/tutorial/SamplingAndPruning) describes the options that evolve part of a large system.
 
 ---
 
@@ -341,11 +341,11 @@ A string names a generated initial condition, shaped by options of [HGEvolve]().
 HGEvolve[triangle, "Grid", 1, "NumStates", "GridWidth" -> 4, "GridHeight" -> 4, "RandomSeed" -> 1]
 ```
 
-The families are `"Grid"`, `"Cylinder"`, `"Torus"`, `"Sphere"`, `"Klein"`, `"Mobius"`, `"Sprinkling"` (also `"Minkowski"`), `"BrillLindquist"`, `"Poisson"` and `"Uniform"`; the [HGEvolve]() reference page lists their options.
+The families are `"Grid"`, `"Cylinder"`, `"Torus"`, `"Sphere"`, `"Klein"`, `"Mobius"`, `"Sprinkling"` (also `"Minkowski"`), `"BrillLindquist"`, `"Poisson"` and `"Uniform"`; [Generated Initial Conditions](paclet:WolframInstitute/HypergraphRewriteEngine/tutorial/InitialConditions) describes them.
 
 ---
 
-`"TargetDevice" -> "GPU"` runs the evolution on the GPU engine, which gives the same result as the CPU:
+`"TargetDevice" -> "GPU"` runs the evolution on the GPU engine, which gives the same result as the CPU; see [Evolving on the GPU](paclet:WolframInstitute/HypergraphRewriteEngine/tutorial/GPUEvolution):
 
 ```wl
 HGEvolve[triangle, twoEdges, 5, "NumStates", "TargetDevice" -> "GPU"] === HGEvolve[triangle, twoEdges, 5, "NumStates"]

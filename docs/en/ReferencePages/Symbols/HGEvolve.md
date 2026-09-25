@@ -7,7 +7,7 @@ URI: WolframInstitute/HypergraphRewriteEngine/ref/HGEvolve
 Keywords: [hypergraph, multiway, rewriting, Wolfram physics, causal graph, branchial graph, evolution, canonicalization, isomorphism, sampling, initial condition]
 SeeAlso: [HGSessionOpen, HGSessionStep, HGSessionQuery]
 RelatedGuides: [HypergraphRewriting]
-RelatedTutorials: [GettingStarted, Sessions]
+RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning, InitialConditions, Sessions, GPUEvolution]
 ---
 
 ## Usage

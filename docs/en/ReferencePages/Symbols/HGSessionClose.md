@@ -7,7 +7,7 @@ URI: WolframInstitute/HypergraphRewriteEngine/ref/HGSessionClose
 Keywords: [session, close, release, multiway, hypergraph rewriting]
 SeeAlso: [HGSessionObject, HGSessionOpen, HGSessionStep, HGSessionQuery, HGSessionFrontier, HGEvolve]
 RelatedGuides: [HypergraphRewriting]
-RelatedTutorials: [GettingStarted]
+RelatedTutorials: [Sessions, GettingStarted]
 ---
 
 ## Usage
