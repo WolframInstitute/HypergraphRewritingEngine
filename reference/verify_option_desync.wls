@@ -143,3 +143,18 @@ Module[{tri = {{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}, cases, rows, names, 
   Print["option names in warning texts: ", names, " not options of HGEvolve: ", badNames];
   Print[If[AllTrue[rows, #[[2]] =!= {} &] && badNames === {},
     "WARNING TEXTS PASS", "WARNING TEXTS FAIL"]]];
+
+(* Drawing a styled graph calls no resource function, so it needs no network and no resource
+   cache. Every styled graph property is typeset with ResourceFunction replaced by a function that
+   records its call. *)
+Module[{chain = {{{1, 2}} -> {{1, 3}, {3, 2}}}, tri = {{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}},
+        props, calls = {}},
+  props = {"StatesGraph", "CausalGraph", "BranchialGraph", "EvolutionGraph", "EvolutionCausalGraph",
+           "EvolutionBranchialGraph", "EvolutionCausalBranchialGraph"};
+  Block[{ResourceFunction = Function[Null, AppendTo[calls, {##}]; Graphics[{}]]},
+    Scan[ToBoxes[HGEvolve[tri, {{1, 2}, {1, 3}}, 2, #]] &, props];
+    ToBoxes[HGEvolve[{{1, 2, 3}} -> {{1, 2, 4}, {2, 4, 3}}, {{1, 1, 1}}, 2, "EvolutionGraph"]];
+    ToBoxes[HGEvolve[chain, {{1, 2}}, 2, "StatesGraph", "ColorByRule" -> True]]];
+  Print["resource function calls while typesetting styled graphs: ", Length[calls], " ",
+    Take[DeleteDuplicates[calls[[All, 1]]], UpTo[3]]];
+  Print[If[calls === {}, "NO RESOURCE FUNCTIONS PASS", "NO RESOURCE FUNCTIONS FAIL"]]];

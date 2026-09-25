@@ -456,27 +456,12 @@ formatBranchialEdgeTooltip[data_Association] := Column[{
 (* Graph Creation Functions *)
 (* ============================================================================ *)
 
-(* Edge styles by type for GraphData-based graphs.
-
-   MEMOIZED ON FIRST USE, NOT EVALUATED AT LOAD. The branchial style comes from a
-   ResourceFunction, and an immediate assignment here put a resource-system lookup on the
-   package-load path: every Needs["HypergraphRewriting`"] reached for it, including in
-   kernels that never draw a graph, and on a machine without that resource cached it
-   reaches for the network. The lookup belongs where the style is used, which is the
-   styled-graph path inside HGEvolve.
-
-   The memoization is the whole point of SetDelayed plus the self-assignment: the resource
-   is fetched at most once per kernel, on the first styled graph, and never again. If it
-   cannot be resolved the branchial edges fall back to a plain directive rather than
-   leaving an unevaluated ResourceFunction in the graph. *)
-branchialEdgeStyle[] := branchialEdgeStyle[] = Module[{s},
-  s = Quiet@Check[ResourceFunction["WolframPhysicsProjectStyleData"]["BranchialGraph"]["EdgeStyle"], $Failed];
-  If[Head[s] === Directive || Head[s] === RGBColor, s, Directive[Pink, Arrowheads[0.02]]]];
-
+(* Edge styles by type for GraphData-based graphs. The branchial colour is the one the Wolfram
+   Physics Project style data gives branchial graphs. *)
 graphDataEdgeStyles[] := <|
   "Directed" -> Directive[Gray, Arrowheads[0.02]],
   "Causal" -> Directive[Orange, Arrowheads[0.02]],
-  "Branchial" -> branchialEdgeStyle[],
+  "Branchial" -> Directive[Hue[0.89, 0.97, 0.71], Arrowheads[0.02]],
   "StateEvent" -> Directive[Gray],  (* Same gray as EventState for consistency *)
   "EventState" -> Directive[Gray, Arrowheads[0.02]]
 |>;
@@ -487,12 +472,56 @@ graphDataEdgeStyles[] := <|
    Id and Step. *)
 isStateVertexData[data_Association] := !KeyExistsQ[data, "InputState"];
 
+(* A state drawn as a small picture of its hypergraph, in the colours of WolframModelPlot: a binary
+   edge is an arrow (parallel ones curved apart), a hyperedge of three or more vertices is a shaded
+   polygon with arrows along it, a unary edge is a ring around its vertex, and an edge from a vertex
+   to itself is a loop. The edges in `highlight` are drawn in `highlightStyle`. The layout is the
+   spring-electrical embedding of the graph joining every two vertices of each edge. *)
+hgStatePlot[edges_List, highlight_List, highlightStyle_, imageSize_] := Module[
+  {vs, index, pairs, coords, at, d, r, edgeStyle, loop, arrow, seen = <||>, parallel, prims},
+  vs = DeleteDuplicates[Flatten[edges]];
+  If[vs === {}, Return[Graphics[{}, ImageSize -> imageSize]]];
+  index = AssociationThread[vs -> Range[Length[vs]]];
+  pairs = DeleteDuplicates[Sort /@ Catenate[Subsets[DeleteDuplicates[#], {2}] & /@ edges]];
+  coords = If[Length[vs] == 1, {{0., 0.}},
+    GraphEmbedding[Graph[vs, UndirectedEdge @@@ pairs], "SpringElectricalEmbedding"]];
+  at[v_] := coords[[index[v]]];
+  d = If[pairs === {}, 1., Mean[EuclideanDistance[at[#[[1]]], at[#[[2]]]] & /@ pairs]];
+  r = 0.08 d;
+  edgeStyle[e_] := If[MemberQ[highlight, e], highlightStyle,
+    Directive[Hue[0.63, 0.7, 0.5], Opacity[0.7]]];
+  loop[v_] := Circle[at[v] + {0, 0.3 d}, 0.3 d];
+  (* The k-th of n parallel copies of a binary edge bends by (k - (n + 1)/2) quarter lengths. *)
+  parallel = Counts[edges];
+  arrow[{a_, b_}] := If[a === b, loop[a],
+    With[{n = parallel[{a, b}] + Lookup[parallel, Key[{b, a}], 0],
+          k = (seen[Sort[{a, b}]] = Lookup[seen, Key[Sort[{a, b}]], 0] + 1)},
+      If[n == 1, Arrow[{at[a], at[b]}, {r, r}],
+        With[{p = at[a], q = at[b]},
+          Arrow[BSplineCurve[{p, (p + q)/2 + (k - (n + 1)/2) 0.5 d Normalize[Cross[q - p]], q}], {r, r}]]]]];
+  prims = Map[
+    Function[e,
+      {edgeStyle[e], Arrowheads[0.07],
+       Switch[Length[e],
+         0, Nothing,
+         1, Circle[at[First[e]], 1.8 r],
+         2, arrow[e],
+         _, {{Directive[Hue[0.63, 0.66, 0.81], Opacity[0.1], EdgeForm[None]], Polygon[at /@ e]},
+             Map[If[#[[1]] === #[[2]], loop[#[[1]]], Arrow[{at[#[[1]]], at[#[[2]]]}, {r, r}]] &,
+               Partition[e, 2, 1]]}]}],
+    edges];
+  Graphics[{prims,
+    {Directive[Hue[0.63, 0.26, 0.89], EdgeForm[Directive[Hue[0.63, 0.7, 0.33], Opacity[0.95]]]],
+     Disk[#, r] & /@ coords}},
+    ImageSize -> imageSize, PlotRangePadding -> Scaled[0.08]]
+];
+
 (* State vertex shape function for styled mode using GraphData *)
 makeStyledStateVertexShapeFn[vertexData_] := Function[{pos, v, size},
   With[{data = vertexData[v]},
     If[AssociationQ[data] && KeyExistsQ[data, "Edges"],
       Inset[Framed[
-        ResourceFunction["WolframModelPlot"][stateDisplayEdges[data], ImageSize -> {32, 32}],
+        hgStatePlot[stateDisplayEdges[data], {}, Red, {32, 32}],
         Background -> LightBlue, RoundingRadius -> 3
       ], pos, {0, 0}],
       (* Fallback for missing data *)
@@ -506,15 +535,13 @@ makeStyledEventVertexShapeFn[vertexData_] := Function[{pos, v, size},
   With[{data = vertexData[v]},
     If[AssociationQ[data] && KeyExistsQ[data, "InputStateEdges"],
       Inset[Framed[Row[{
-        ResourceFunction["WolframModelPlot"][
-          Rest /@ data["InputStateEdges"],
-          GraphHighlight -> Rest /@ Select[data["InputStateEdges"], MemberQ[data["ConsumedEdges"], First[#]] &],
-          GraphHighlightStyle -> Dashed, ImageSize -> 32],
+        hgStatePlot[Rest /@ data["InputStateEdges"],
+          Rest /@ Select[data["InputStateEdges"], MemberQ[data["ConsumedEdges"], First[#]] &],
+          Directive[Black, Dashed], 32],
         Graphics[{LightGray, Polygon[{{-0.5, 0.3}, {0.5, 0}, {-0.5, -0.3}}]}, ImageSize -> 8],
-        ResourceFunction["WolframModelPlot"][
-          Rest /@ data["OutputStateEdges"],
-          GraphHighlight -> Rest /@ Select[data["OutputStateEdges"], MemberQ[data["ProducedEdges"], First[#]] &],
-          ImageSize -> 32]
+        hgStatePlot[Rest /@ data["OutputStateEdges"],
+          Rest /@ Select[data["OutputStateEdges"], MemberQ[data["ProducedEdges"], First[#]] &],
+          Red, 32]
       }], Background -> LightYellow, RoundingRadius -> 3], pos, {0, 0}],
       (* Fallback for missing data *)
       Inset[Framed[v, Background -> LightYellow], pos, {0, 0}]
