@@ -307,6 +307,7 @@ rented box that does.
   interleaving to depend on. Truncated runs are skipped rather than compared, since past the
   ceiling which states got in is the arrival race.
 - **`doc_messages_check.py`** -- fails when a built documentation notebook shows a message cell, which is what a reader sees under an example that raised one. Reads the notebooks, so it judges the built page under the converter's own evaluation rules; needs no Wolfram kernel. `--selftest` checks the parser on a fixture.
+- **`lint_docs.py`** -- markdown lint for docs/en, docs/research, docs/registry and the root documents: a code span must close on its line with a run of the same length (a Wolfram context ends in a backtick and closes a single-backtick span early), and a paragraph's $ must pair up. Needs no Wolfram kernel; `--selftest`
 - **`docs_fresh_check.py`** -- the notebooks under `paclet/Documentation/English` are GENERATED
   from `docs/en/**/*.md` and committed, so a commit that edits the markdown
   without rerunning `build_docs.sh` ships a page describing behaviour the engine no longer has.
