@@ -43,7 +43,15 @@
      AUTH d=<depth> states=<n> causal=<n> ms=<median of reps>
      HGEV d=<depth> states=<n> causal=<n> ms=<median of reps>
 
-   Usage: wolframscript -file bench_authority.wls [maxDepth] [reps] [minDepth]
+     SR    SetReplace's WolframModel with "EventSelectionFunction" -> "MultiwaySpacelike" to the
+           same number of generations. Its multiway is a token-event graph: states are not
+           enumerated or identified, so its event count is its own and is printed beside its time
+           rather than compared with the others.
+
+   Usage: wolframscript -file bench_authority.wls [maxDepth] [reps] [minDepth] [rule]
+   rule is one of the names in `corpus` below, or All (the default is Chain3, the rule this
+   probe was written for). A run that exceeds `limit` seconds is printed as a timeout and the
+   deeper depths of that row are skipped.
 
    minDepth EXISTS BECAUSE THE DEEP POINTS ARE THE EXPENSIVE ONES AND THE SHALLOW ONES ARE NOT
    FREE TO REPEAT. The authority's cost grows about sevenfold per depth, so reaching depth 7
@@ -53,9 +61,13 @@
    long one that must survive the whole ladder.
 *)
 
+Needs["SetReplace`"];
 maxDepth = If[Length[$ScriptCommandLine] >= 2, ToExpression[ToString[$ScriptCommandLine[[2]]]], 5];
 reps     = If[Length[$ScriptCommandLine] >= 3, ToExpression[ToString[$ScriptCommandLine[[3]]]], 3];
 minDepth = If[Length[$ScriptCommandLine] >= 4, ToExpression[ToString[$ScriptCommandLine[[4]]]], 2];
+
+ruleArg  = If[Length[$ScriptCommandLine] >= 5, ToString[$ScriptCommandLine[[5]]], "Chain3"];
+limit    = 120;
 
 mwSystem = PacletSymbol["Wolfram/Multicomputation", "Wolfram`Multicomputation`MultiwaySystem"];
 
@@ -72,21 +84,25 @@ Needs["HypergraphRewriting`"];
 pacletVersion[name_] := Module[{found = PacletFind[name]},
   If[found === {}, "unknown", First[found]["Version"]]];
 Print["PACLET Wolfram/Multicomputation ", pacletVersion["Wolfram/Multicomputation"]];
-Print["PACLET HypergraphRewriting ", pacletVersion["HypergraphRewriting"]];
+Print["PACLET HypergraphRewriting ", pacletVersion["WolframInstitute/HypergraphRewriteEngine"]];
+Print["PACLET SetReplace ", pacletVersion["SetReplace"]];
+Print["KERNEL ", $Version, " processors ", $ProcessorCount];
 
 (* OUR reference implementation, loaded from source. Its rules are {lhs, rhs} pairs rather than
    Rule objects, and it returns per-step tuples rather than graphs. *)
 Get[FileNameJoin[{repo, "reference", "MultiwayReference.wl"}]];
-refRules = {{{{1, 2}, {2, 3}}, {{1, 2}, {2, 4}, {4, 3}}}};
-
-hgRules = {{{1, 2}, {2, 3}} -> {{1, 2}, {2, 4}, {4, 3}}};
-
-rules = {{{1, 2}, {2, 3}} -> {{1, 2}, {2, 4}, {4, 3}}};
-init  = {{1, 2}, {2, 3}};
+corpus = <|
+  "Chain3" -> {{{{1, 2}, {2, 3}} -> {{1, 2}, {2, 4}, {4, 3}}}, {{1, 2}, {2, 3}}},
+  "BinarySplit" -> {{{{1, 2}} -> {{1, 3}, {3, 2}}}, {{1, 2}}},
+  "TriangleClose" -> {{{{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}}, {{1, 2}, {1, 3}}},
+  "WPP" -> {{{{1, 2}, {1, 3}} -> {{1, 2}, {1, 4}, {2, 4}, {3, 4}}}, {{1, 2}, {1, 3}}},
+  "PathSelfLoop" -> {{{{1, 2}, {2, 3}} -> {{1, 3}, {3, 4}, {1, 4}, {2, 4}}}, {{1, 1}, {1, 1}}},
+  "Ternary" -> {{{{1, 2, 3}} -> {{1, 2, 4}, {2, 4, 3}}}, {{1, 1, 1}}},
+  "TwoRule" -> {{{{1, 2}} -> {{1, 2}, {2, 3}}, {{1, 2}} -> {{1, 2}, {2, 3}, {3, 4}}}, {{1, 2}}}|>;
 
 (* One measurement: build the states graph and the causal graph at this depth, from a fresh
    MultiwaySystem object, so nothing is cached across depths or repetitions. *)
-once[d_] := Module[{multi, sg, cg, t},
+once[rules_, init_, d_] := Module[{multi, sg, cg, t},
   t = First @ AbsoluteTiming[
     multi = mwSystem[rules, {init}];
     sg = multi["StatesGraph", d, "CanonicalStateFunction" -> "CanonicalHypergraph"];
@@ -97,9 +113,9 @@ once[d_] := Module[{multi, sg, cg, t},
 
 (* The same workload through the paclet: states graph and causal edges, so the two rows ask for
    the same artifacts and neither is charged for something the other skipped. *)
-hgOnce[d_] := Module[{t, r},
+hgOnce[rules_, init_, d_] := Module[{t, r},
   {t, r} = AbsoluteTiming[
-    HGEvolve[hgRules, init, d, {"StatesGraph", "CausalEdges"},
+    HGEvolve[rules, init, d, {"StatesGraph", "CausalEdges"},
       "CanonicalizeStates" -> "Full", "CanonicalizeEvents" -> "Full"]];
   {t * 1000., If[GraphQ[r["StatesGraph"]], VertexCount[r["StatesGraph"]], 0],
    If[ListQ[r["CausalEdges"]], Length[r["CausalEdges"]], 0]}
@@ -108,9 +124,9 @@ hgOnce[d_] := Module[{t, r},
 (* The reference, asked for the same two quantities. It computes DATA -- no Graph objects -- so
    this row is the Wolfram-side measurement that is not charged for graph construction, and the
    one the engine's native number is most nearly commensurable with. *)
-refOnce[d_] := Module[{t, r, st, cz},
+refOnce[rules_, init_, d_] := Module[{t, r, st, cz},
   {t, r} = AbsoluteTiming[
-    MultiwayReference`MultiwayEvolve[refRules, init, d,
+    MultiwayReference`MultiwayEvolve[List @@@ rules, init, d,
       "StateCanonicalization" -> "Canonical", "EventCanonicalization" -> "States"]];
   (* PerStep's last row is the cumulative answer at this depth: "states" is the canonical state
      count and "causal" the causal-edge count, which are the two the other rows report. *)
@@ -119,23 +135,43 @@ refOnce[d_] := Module[{t, r, st, cz},
   {t * 1000., st, cz}
 ];
 
+(* SetReplace's token-event multiway to d generations, and its event count. *)
+srOnce[rules_, init_, d_] := Module[{t, obj},
+  {t, obj} = AbsoluteTiming[SetReplace`WolframModel[rules, init, <|"MaxGenerations" -> d|>,
+    "EventSelectionFunction" -> "MultiwaySpacelike"]];
+  {t * 1000., obj["EventsCount"]}
+];
+
+(* reps runs of f, each under the time limit: {median ms, min ms, max ms, counts of the first
+   run}, or Missing when a run timed out. *)
+timed[f_, args__] := Module[{runs = {}, r},
+  Do[r = TimeConstrained[f[args], limit, $TimedOut];
+    If[r === $TimedOut, Return[Missing["TimedOut"], Module]]; AppendTo[runs, r], reps];
+  Join[{Median[#], Min[#], Max[#]} &[runs[[All, 1]]], Rest[First[runs]]]];
+row[tag_, d_, r_, fields_] := Print[tag, " d=", d, " ",
+  If[MissingQ[r], "timeout>" <> ToString[limit] <> "s",
+    StringRiffle[MapThread[#1 <> "=" <> ToString[#2] &, {fields, Drop[r, 3]}], " "] <>
+      " ms=" <> ToString[Round[r[[1]], 0.1]] <> " range=" <> ToString[Round[r[[2]], 0.1]] <> "-" <>
+      ToString[Round[r[[3]], 0.1]]]];
+
+(* One untimed run of each engine, so no row is charged for loading a paclet or starting the
+   engine worker. *)
+Module[{w = corpus["BinarySplit"]},
+  once[w[[1]], w[[2]], 2]; refOnce[w[[1]], w[[2]], 2]; hgOnce[w[[1]], w[[2]], 2];
+  srOnce[w[[1]], w[[2]], 2]];
+
 Do[
-  Module[{runs, ms, states, causal, hgRuns, hgMs, refRuns, refMs},
-    runs = Table[once[d], reps];
-    ms = Median[runs[[All, 1]]];
-    states = runs[[1, 2]];
-    causal = runs[[1, 3]];
-    Print["AUTH d=", d, " states=", states, " causal=", causal, " ms=", ToString[Round[ms, 0.1]]];
-    refRuns = Table[refOnce[d], reps];
-    refMs = Median[refRuns[[All, 1]]];
-    Print["REF  d=", d, " states=", refRuns[[1, 2]], " causal=", refRuns[[1, 3]],
-          " ms=", ToString[Round[refMs, 0.1]]];
-    hgRuns = Table[hgOnce[d], reps];
-    hgMs = Median[hgRuns[[All, 1]]];
-    Print["HGEV d=", d, " states=", hgRuns[[1, 2]], " causal=", hgRuns[[1, 3]],
-          " ms=", ToString[Round[hgMs, 0.1]]];
-  ],
-  {d, minDepth, maxDepth}
+  Module[{rules = corpus[name][[1]], init = corpus[name][[2]], alive = <|"AUTH" -> True, "REF" -> True,
+      "HGEV" -> True, "SR" -> True|>, r},
+    Print["RULE ", name, " ", rules, " init ", init];
+    Do[
+      Do[If[alive[tag],
+          r = timed[Switch[tag, "AUTH", once, "REF", refOnce, "HGEV", hgOnce, "SR", srOnce], rules, init, d];
+          If[MissingQ[r], alive[tag] = False];
+          row[StringPadRight[tag, 4], d, r, If[tag === "SR", {"events"}, {"states", "causal"}]]],
+        {tag, {"AUTH", "REF", "HGEV", "SR"}}],
+      {d, minDepth, maxDepth}]],
+  {name, If[ruleArg === "All", Keys[corpus], {ruleArg}]}
 ];
 
 Print["AUTH_DONE"];
