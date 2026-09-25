@@ -23,8 +23,11 @@ User-visible changes since v1.0.0-rc1:
   `"Positional"`.
 - The GPU reports the same warnings as the CPU. Only warnings that mean a partial result are
   reported as `HGEvolve::overflow`; the others are `HGEvolve::warn`.
-- Six options that changed nothing are removed: `"InitialCondition"`, `"Topology"`,
-  `"MajorRadius"`, `"MinorRadius"`, `"IncludeStateContents"` and `"IncludeEventContents"`.
+- Seven options that changed nothing are removed: `"InitialCondition"`, `"Topology"`,
+  `"MajorRadius"`, `"MinorRadius"`, `"IncludeStateContents"`, `"IncludeEventContents"` and
+  `"QuotientInitialStates"`.
+- Under quotient exploration, `"Events"` lists every rule application, as under full
+  exploration, and the GPU draws its graphs over them.
 - The surface initial conditions (`"Torus"`, `"Sphere"`, `"Cylinder"`, `"Klein"`, `"Mobius"`)
   take `"RandomSeed"`.
 - Under `"CanonicalizeStates" -> Full`, `"States"` is keyed by each class's canonical state id.
