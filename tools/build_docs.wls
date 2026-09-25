@@ -69,11 +69,15 @@ PacletDirectoryLoad[FileNameJoin[{repo, "paclet"}]];
    markdown did not — otherwise the cache would serve output from a previous engine build. Hash the
    current platform's LibraryResources (the FFI library + standalone binaries that actually run the
    examples). In structure mode nothing is evaluated, so the engine is irrelevant to the output. *)
+(* The Wolfram Language kernel is hashed with it: the examples run through
+   paclet/Kernel/*.wl, which shapes their output (options, messages, graphs) as much as the
+   library does. *)
 engineStamp = If[structureMode, "no-eval",
-  Module[{dir = FileNameJoin[{repo, "paclet", "LibraryResources", $SystemID}], fs},
+  Module[{dir = FileNameJoin[{repo, "paclet", "LibraryResources", $SystemID}], fs, wl},
+    wl = Sort[FileNames["*.wl", FileNameJoin[{repo, "paclet", "Kernel"}]]];
     If[! DirectoryQ[dir], "no-engine",
       fs = Sort[FileNames["*", dir]];
-      Hash[{$SystemID, FileHash[#, "SHA256"] & /@ fs}]]]];
+      Hash[{$SystemID, FileHash[#, "SHA256"] & /@ fs, FileHash[#, "SHA256"] & /@ wl}]]]];
 
 (* `structure` as the second argument generates INPUT-ONLY notebooks (MarkdownToNotebook's
    nested-convert mode): the cells are laid out but examples are NOT evaluated during
