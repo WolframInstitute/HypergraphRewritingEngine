@@ -314,6 +314,12 @@ GraphPropertyNeeds graph_property_needs(const std::string& graph_property);
 // The union over a list of properties.
 GraphPropertyNeeds graph_property_needs(const std::vector<std::string>& properties);
 
+// One entry of the reply's "Warnings" list, for both engines. "Partial" is 1 for a result the
+// engine cut short, which the kernel reports as HGEvolve::overflow, and 0 for every other kind,
+// reported as HGEvolve::warn.
+wxf::WXFValue warning_record(const std::string& kind, int64_t count, const std::string& context,
+                             bool partial);
+
 // Whether a request reads the raw events and branchial pairs only through NumEvents and
 // NumBranchialEdges. Under quotient exploration those then come from class multiplicities
 // (RecordSet::raw_counts_only). Both engines' jobs carry these fields under these names.

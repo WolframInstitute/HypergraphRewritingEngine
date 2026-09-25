@@ -205,6 +205,16 @@ GraphPropertyNeeds graph_property_needs(const std::string& graph_property) {
         is_states    || is_evolution};
 }
 
+wxf::WXFValue warning_record(const std::string& kind, int64_t count, const std::string& context,
+                             bool partial) {
+    wxf::WXFValueAssociation wa;
+    wa.push_back({wxf::WXFValue("Kind"), wxf::WXFValue(kind)});
+    wa.push_back({wxf::WXFValue("Count"), wxf::WXFValue(count)});
+    wa.push_back({wxf::WXFValue("Context"), wxf::WXFValue(context)});
+    wa.push_back({wxf::WXFValue("Partial"), wxf::WXFValue(static_cast<int64_t>(partial ? 1 : 0))});
+    return wxf::WXFValue(wa);
+}
+
 GraphPropertyNeeds graph_property_needs(const std::vector<std::string>& properties) {
     GraphPropertyNeeds n;
     for (const std::string& p : properties) {

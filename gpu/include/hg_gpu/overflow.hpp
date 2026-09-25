@@ -144,6 +144,10 @@ static_assert(static_cast<uint32_t>(ErrorKind::kCountSaturated) <
 
 const char* error_kind_name(ErrorKind k);
 
+// Whether a warning of this kind means the run was cut short and its result is partial. False for
+// kEventSigRawFallback, kDrainCapBufferFull and kCountSaturated, which describe a complete run.
+bool error_kind_is_partial(ErrorKind k);
+
 // One occurrence of a capacity overflow during evolve(). A count is the
 // per-kernel-launch tally observed on the device, not a cumulative
 // total across the whole evolve — that means the same ErrorKind may

@@ -1771,16 +1771,12 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             full_result.push_back(std::make_pair(wxf::WXFValue("StateBitvectors"), wxf::WXFValue(state_bitvectors)));
         }
 
-        // Warning trail (engine warnings + analysis refusals), same schema as the GPU backend.
+        // Warning trail (engine warnings + analysis refusals). The CPU engine has no capacity
+        // limit, so none of its warnings marks a partial result.
         if (!req.ffi_warnings.empty()) {
             wxf::WXFValueList warn;
-            for (const auto& w : req.ffi_warnings) {
-                wxf::WXFValueAssociation wa;
-                wa.push_back({wxf::WXFValue("Kind"), wxf::WXFValue(w.kind)});
-                wa.push_back({wxf::WXFValue("Count"), wxf::WXFValue(w.count)});
-                wa.push_back({wxf::WXFValue("Context"), wxf::WXFValue(w.context)});
-                warn.push_back(wxf::WXFValue(wa));
-            }
+            for (const auto& w : req.ffi_warnings)
+                warn.push_back(hgmarshal::warning_record(w.kind, w.count, w.context, false));
             full_result.push_back({wxf::WXFValue("Warnings"), wxf::WXFValue(warn)});
         }
 

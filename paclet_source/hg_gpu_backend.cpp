@@ -890,17 +890,18 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
                                hgmarshal::build_graph_data(gsrc, job.graph_properties, gopts)});
     }
 
-    // Surface capacity overflows as a partial-result warning trail.
+    // The warning trail: capacity overflows mark a partial result, the other kinds do not.
     if (!result.warnings.empty()) {
         wxf::WXFValueList warn;
+        bool partial = false;
         for (const auto& w : result.warnings) {
-            wxf::WXFValueAssociation wa;
-            wa.push_back({wxf::WXFValue("Kind"), wxf::WXFValue(std::string(hg_gpu::error_kind_name(w.kind)))});
-            wa.push_back({wxf::WXFValue("Count"), wxf::WXFValue(static_cast<int64_t>(w.count))});
-            wa.push_back({wxf::WXFValue("Context"), wxf::WXFValue(w.context)});
-            warn.push_back(wxf::WXFValue(wa));
+            const bool p = hg_gpu::error_kind_is_partial(w.kind);
+            partial = partial || p;
+            warn.push_back(hgmarshal::warning_record(hg_gpu::error_kind_name(w.kind),
+                                                     static_cast<int64_t>(w.count), w.context, p));
         }
-        if (host.progress) host.progress("HGEvolve (GPU): capacity overflow -- returning partial result");
+        if (partial && host.progress)
+            host.progress("HGEvolve (GPU): capacity overflow -- returning partial result");
         full_result.push_back({wxf::WXFValue("Warnings"), wxf::WXFValue(warn)});
     }
 

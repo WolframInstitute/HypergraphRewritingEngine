@@ -1073,26 +1073,24 @@ hgSendJob[inputData_Association, device_, sessionQ_] := Module[{wxfBytes, result
   If[!AssociationQ[wxfData], Return[$Failed]];
 
   (* Surface the engine's warning trail. Both backends serve it under "Warnings"
-     (Kind/Count/Context): GPU capacity overflows flag a PARTIAL result; engine
-     option conflicts and analysis refusals report why an output is absent or
-     reduced. Overflow kinds keep their dedicated message. *)
-  If[KeyExistsQ[wxfData, "Warnings"] && Length[wxfData["Warnings"]] > 0,
-    Module[{warns = wxfData["Warnings"], advisoryKinds, advisories, overflows},
-      (* Advisory kinds are minted by the CPU FFI (engine option conflicts, analysis
-         refusals); every other kind is a GPU capacity flag on a PARTIAL result. *)
-      advisoryKinds = {"Engine", "OptionSkipped", "CountSaturated"};
-      advisories = Select[warns, MemberQ[advisoryKinds, Lookup[#, "Kind", ""]] &];
-      overflows = Complement[warns, advisories];
-      If[Length[overflows] > 0,
-        Message[HGEvolve::overflow,
-          DeleteDuplicates[Lookup[overflows, "Kind", "?"]],
-          Total[Lookup[overflows, "Count", 0]]]];
-      If[Length[advisories] > 0,
-        Message[HGEvolve::warn,
-          DeleteDuplicates[Lookup[advisories, "Kind", "?"]],
-          StringRiffle[DeleteDuplicates[Lookup[advisories, "Context", ""]], " | "]]];
-    ]];
+     (Kind/Count/Context/Partial). "Partial" -> 1 marks a result the engine cut short
+     (a GPU capacity overflow), reported as HGEvolve::overflow; every other warning is
+     reported as HGEvolve::warn. *)
+  hgReportWarnings[Lookup[wxfData, "Warnings", {}]];
   wxfData
+];
+
+hgReportWarnings[warns_List] := Module[{advisories, overflows},
+  overflows = Select[warns, Lookup[#, "Partial", 0] === 1 &];
+  advisories = Select[warns, Lookup[#, "Partial", 0] =!= 1 &];
+  If[Length[overflows] > 0,
+    Message[HGEvolve::overflow,
+      DeleteDuplicates[Lookup[overflows, "Kind", "?"]],
+      Total[Lookup[overflows, "Count", 0]]]];
+  If[Length[advisories] > 0,
+    Message[HGEvolve::warn,
+      DeleteDuplicates[Lookup[advisories, "Kind", "?"]],
+      StringRiffle[DeleteDuplicates[Lookup[advisories, "Context", ""]], " | "]]];
 ];
 
 (* ONE job, run and interpreted -- HGEvolve and every session verb share this.

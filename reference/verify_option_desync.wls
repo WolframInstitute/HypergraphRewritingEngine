@@ -60,3 +60,16 @@ Module[{printed, run},
   With[{on = run[True], off = run[False]},
     Print["progress lines with ShowProgress: ", Length[on], " ", Take[on, UpTo[2]], "; without: ", Length[off]];
     Print[If[Length[on] >= 2 && off === {}, "SHOW PROGRESS PASS", "SHOW PROGRESS FAIL"]]]];
+
+(* A warning is reported as HGEvolve::overflow only when the engine marks it "Partial" -> 1. A
+   GPU capacity overflow is partial; EventSigRawFallback and CountSaturated describe a complete
+   run and are reported as HGEvolve::warn. *)
+Module[{names},
+  names[w_] := Block[{$MessageList = {}},
+    HypergraphRewriting`Private`hgReportWarnings[w]; ToString /@ $MessageList];
+  With[{partial = names[{<|"Kind" -> "replay work stack", "Count" -> 1, "Context" -> "c", "Partial" -> 1|>}],
+        fallback = names[{<|"Kind" -> "EventSigRawFallback", "Count" -> 2, "Context" -> "c", "Partial" -> 0|>}],
+        saturated = names[{<|"Kind" -> "CountSaturated", "Count" -> 1, "Context" -> "c", "Partial" -> 0|>}]},
+    Print["partial: ", partial, " fallback: ", fallback, " saturated: ", saturated];
+    Print[If[partial === {"HGEvolve::overflow"} && fallback === {"HGEvolve::warn"} &&
+             saturated === {"HGEvolve::warn"}, "WARNING KINDS PASS", "WARNING KINDS FAIL"]]]];

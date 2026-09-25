@@ -55,9 +55,21 @@ const char* error_kind_name(ErrorKind k) {
         case ErrorKind::kCanonicalMapFull:    return "canonical dedup map (retryable: grow config)";
         // The kernel reads this name as an advisory, the same kind the CPU reports.
         case ErrorKind::kCountSaturated:      return "CountSaturated";
-        case ErrorKind::kEventSigRawFallback:
-            return "event signatures built from a raw edge id (not an isomorphism invariant)";
+        // The same kind names the CPU reports.
+        case ErrorKind::kEventSigRawFallback: return "EventSigRawFallback";
+        case ErrorKind::kDrainCapBufferFull:  return "DrainCapBufferFull";
         default:                              return "unknown";
+    }
+}
+
+bool error_kind_is_partial(ErrorKind k) {
+    switch (k) {
+        case ErrorKind::kEventSigRawFallback:
+        case ErrorKind::kDrainCapBufferFull:
+        case ErrorKind::kCountSaturated:
+            return false;
+        default:
+            return true;
     }
 }
 
