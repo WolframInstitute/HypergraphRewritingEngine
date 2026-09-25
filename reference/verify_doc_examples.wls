@@ -112,7 +112,7 @@ Do[
                 If[#[[2]] =!= False,
                   AppendTo[msgs, nm];
                   If[firstMsg === None, firstMsg = ToString[Short[#, 3], InputForm]]]] &},
-            Check[ToExpression[code], $Failed]]];
+            ToExpression[code]]];
         (* An unevaluated HGEvolve head means the arguments did not match any definition. *)
         (* A block with a hint is judged by its hint, which may document $Failed. *)
         bad = (hint === None && (FailureQ[res] || res === $Failed)) ||
