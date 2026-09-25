@@ -5,6 +5,9 @@ on:
     branches: [master]
   pull_request:
   workflow_dispatch:
+  # The sanitizer jobs run nightly (and on pull requests and by hand), not on pushes.
+  schedule:
+    - cron: '0 3 * * *'
 
 # One run per workflow and branch: a push cancels the run of the push before it, so a burst of
 # commits costs one run. The organisation's plan runs 20 jobs at a time across all its
@@ -191,9 +194,10 @@ jobs:
   # engine whose contract is that its output is a function of its inputs. Measured clean before
   # this leg existed: 291 tests, no report, 2026-08-28.
   tsan:
-    # After the plain suite: no sanitizer build when it already fails, and three jobs of this
-    # workflow hold a runner at a time rather than six.
+    # After the plain suite: no sanitizer build when it already fails. Nightly, on pull requests
+    # and by hand; a push does not run it.
     needs: linux-tests
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 75
     steps:
@@ -225,9 +229,10 @@ jobs:
           fi
 
   sanitizers:
-    # After the plain suite: no sanitizer build when it already fails, and three jobs of this
-    # workflow hold a runner at a time rather than six.
+    # After the plain suite: no sanitizer build when it already fails. Nightly, on pull requests
+    # and by hand; a push does not run it.
     needs: linux-tests
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:

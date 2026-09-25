@@ -4,14 +4,10 @@ name: Windows
 # hgcommon/portable_intrinsics.hpp with MSVC twins; this leg is what keeps that
 # true. Same OFF flags as the other legs. The MinGW cross-build used for the
 # bundled paclet exe is a different toolchain -- this one is native cl.exe.
+# Nightly, on pull requests and by hand; a push does not run it.
 on:
-  push:
-    branches: [master]
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
-      - 'paper/**'
-      - 'paclet/Documentation/**'
+  schedule:
+    - cron: '0 3 * * *'
   pull_request:
     paths-ignore:
       - '**/*.md'
