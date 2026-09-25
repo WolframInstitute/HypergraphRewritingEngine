@@ -2,16 +2,11 @@
 
 BeginPackage["HypergraphRewriting`"]
 
-PackageExport["HGEvolve"]
-
-(* Sessions: an evolution a caller can CONTINUE. The engine has served these four verbs
-   since #121; these are what makes them reachable. See the Sessions section below. *)
-PackageExport["HGSessionObject"]
-PackageExport["HGSessionOpen"]
-PackageExport["HGSessionStep"]
-PackageExport["HGSessionQuery"]
-PackageExport["HGSessionClose"]
-PackageExport["HGSessionFrontier"]
+(* The public symbols: HGEvolve, and the session verbs, which continue one evolution (see the
+   Sessions section below). Naming them here, in the package context, is what makes them public;
+   everything after Begin["`Private`"] is not. *)
+{HGEvolve, HGSessionObject, HGSessionOpen, HGSessionStep, HGSessionQuery, HGSessionClose,
+ HGSessionFrontier};
 
 
 (* Public symbols *)

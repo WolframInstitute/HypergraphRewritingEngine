@@ -95,3 +95,10 @@ Module[{chain = {{{1, 2}} -> {{1, 3}, {3, 2}}}, g, h, t, s, q, ok, msgs},
     ok, " messages: ", msgs];
   Print[If[ok === {123, 1/2, "SpringEmbedding", 1/3, 55, 77} && msgs === {},
     "GRAPH OPTIONS PASS", "GRAPH OPTIONS FAIL"]]];
+
+(* The package context holds the public symbols and nothing else. *)
+Module[{names = Sort[Names["HypergraphRewriting`*"]]},
+  Print["public names: ", names];
+  Print[If[names === Sort[{"HGEvolve", "HGSessionObject", "HGSessionOpen", "HGSessionStep",
+      "HGSessionQuery", "HGSessionClose", "HGSessionFrontier"}],
+    "PUBLIC NAMES PASS", "PUBLIC NAMES FAIL"]]];

@@ -2,7 +2,7 @@
 """Check the shipped documentation against the symbols the paclet exports.
 
 WHY THIS EXISTS. `paclet/Kernel/HypergraphRewriting.wl` declares its public surface with
-PackageExport. The documentation under `paclet/Documentation/English/` is a set of BUILT
+the declaration list at the top of the kernel. The documentation under `paclet/Documentation/English/` is a set of BUILT
 notebooks, tracked in git, and generated from three markdown sources -- so a page can
 outlive the symbol it documents and nothing regenerates or removes it. That is what
 happened: the visualisation split deleted 21 functions and their reference pages stayed,
@@ -30,7 +30,10 @@ KERNEL = os.path.join(ROOT, "paclet", "Kernel", "HypergraphRewriting.wl")
 DOCS = os.path.join(ROOT, "paclet", "Documentation", "English")
 PAGES = os.path.join(DOCS, "ReferencePages", "Symbols")
 
-EXPORT_RE = re.compile(r'PackageExport\[\s*"([A-Za-z$][A-Za-z0-9$]*)"\s*\]')
+# The public symbols are the ones the kernel names in a list right after BeginPackage:
+#   {HGEvolve, HGSessionObject, ...};
+EXPORT_LIST_RE = re.compile(r'BeginPackage\[[^\]]*\].*?^\{([A-Za-z0-9$,\s]+)\};', re.DOTALL | re.MULTILINE)
+NAME_RE = re.compile(r'[A-Za-z$][A-Za-z0-9$]*')
 # A documentation link is "paclet:<publisher>/<paclet>/ref/<Symbol>".
 REF_RE = re.compile(r'/ref/([A-Za-z$][A-Za-z0-9$]*)')
 # A notebook wraps long strings with a backslash-newline, and it does so mid-name: a link
@@ -49,9 +52,10 @@ def main():
         sys.exit(f"{KERNEL} does not exist; run this inside the repository")
 
     with open(KERNEL, errors="replace") as f:
-        exported = set(EXPORT_RE.findall(f.read()))
+        m = EXPORT_LIST_RE.search(f.read())
+        exported = set(NAME_RE.findall(m.group(1))) if m else set()
     if not exported:
-        sys.exit("found no PackageExport in the Kernel source; refusing to report every "
+        sys.exit("found no public-symbol list in the Kernel source; refusing to report every "
                  "page as an orphan on what is more likely a parse failure here")
 
     findings = []
