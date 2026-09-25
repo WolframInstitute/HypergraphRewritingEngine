@@ -39,6 +39,7 @@ RelatedGuides: [Hypergraph Rewriting Engine]
 | `"All"` | an association of the states, the events, both edge lists and all four counts |
 | `"GlobalEdges"` | every edge the evolution created, as `{id, v1, v2, ...}` |
 | `"StateBitvectors"` | an association from state id to the ids of the edges that state holds |
+| `"StepStatistics"` | per step, statistics of the raw states at that step (described below) |
 
 - `prop` may also be a list of property strings, in which case an association keyed by those strings is returned.
 - Any `*Graph` property may take the suffix `Structure` to return the same graph without vertex styling (a lighter-weight rendering), e.g. `"StatesGraphStructure"`.
@@ -211,6 +212,17 @@ rules = {{{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}};
 {Length[HGEvolve[rules, {{1, 2}, {1, 3}}, 3, "Events"]],
  Length[HGEvolve[rules, {{1, 2}, {1, 3}}, 3, "CausalEdges"]],
  HGEvolve[rules, {{1, 2}, {1, 3}}, 3, "Debug"]}
+```
+
+### Statistics of each step
+
+`"StepStatistics"` returns one association per step describing the raw states at that step: `"RawStates"`, `"Classes"` (isomorphism classes), `"Redundancy"` (raw states per class), `"MaxMultiplicity"`, `"MultiplicityHistogram"`, `"ClassEntropyBits"` and `"ClassEntropyNormalized"` (the entropy of the raw states over the classes), `"Events"` and `"RuleCounts"` (the raw events whose output state is at the step), `"Invariants"` (for each of eleven per-state invariants, such as `"VertexCount"`, `"Components"` and `"IncidenceDiameter"`, its `"N"`, `"Mean"`, `"StandardDeviation"`, `"Min"`, `"Max"`, `"Median"` and `"Histogram"`), and the arity and degree histograms. With `"ExploreFromCanonicalStatesOnly" -> True` they are computed from one state per class and the number of raw states in the class, so no raw state is built:
+
+```wl
+rules = {{{1, 2}, {1, 3}} -> {{1, 2}, {1, 4}, {2, 4}, {3, 4}}};
+stats = HGEvolve[rules, {{1, 2}, {1, 3}}, 5, "StepStatistics",
+  "CanonicalizeStates" -> Full, "ExploreFromCanonicalStatesOnly" -> True];
+Lookup[stats, {"Step", "RawStates", "Classes", "ClassEntropyBits"}]
 ```
 
 ### Edge identity

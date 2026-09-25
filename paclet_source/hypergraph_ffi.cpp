@@ -33,7 +33,8 @@
 #include "ffi_job.hpp"           // ParsedJob -- the envelope, parsed once
 #include "cpu_engine_holder.hpp"   // owns the Hypergraph and its engine as one lifetime
 #include "hgcommon/build_stamp.hpp"  // the configuration this artifact was built with
-#include "hgcommon/quotient_multiplicity_core.hpp"  // QM_SATURATED_MESSAGE
+#include "hgcommon/quotient_multiplicity_core.hpp"  // QM_SATURATED_MESSAGE, qm_sat_add
+#include "state_statistics.hpp"
 
 using namespace hypergraph;
 
@@ -229,6 +230,7 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                                 else if (comp == "NumEvents") req.include_num_events = true;
                                 else if (comp == "NumCausalEdges") req.include_num_causal_edges = true;
                                 else if (comp == "NumBranchialEdges") req.include_num_branchial_edges = true;
+                                else if (comp == "StepStatistics") req.include_step_statistics = true;
                                 else if (comp == "GlobalEdges") req.include_global_edges = true;
                                 else if (comp == "StateBitvectors") req.include_state_bitvectors = true;
                             }
@@ -441,6 +443,7 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
             req.include_branchial_state_edges_all_siblings,
             req.include_global_edges,
             req.include_state_bitvectors,
+            req.include_step_statistics,
             req.graph_properties,
             req.edge_deduplication,
             req.branchial_step,
@@ -858,6 +861,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // exploration they come from class multiplicities: 206,931,038 raw events on
         // {{1,1},{1,1}} -> {{1,1},{1,1},{1,1}} at depth 7 without one raw state.
         record.raw_counts_only = hgmarshal::reads_raw_counts_only(req, gneeds);
+        record.multiplicities = req.include_step_statistics;
 
         // A SESSION RECORDS EVERYTHING, because it exists to be continued and queried in ways
         // its Open cannot know. Deriving its record set from the properties named on the Open
@@ -1736,6 +1740,64 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 ? static_cast<int64_t>(hg.observable_num_branchial())
                 : static_cast<int64_t>(hg.num_branchial_edges());
             full_result.push_back({wxf::WXFValue("NumBranchialEdges"), wxf::WXFValue(n_branchial)});
+        }
+
+        // StepStatistics -> per step, the population of raw states summarised from one state per
+        // class and the class's multiplicity (state_statistics.hpp). Under quotient exploration
+        // the multiplicities come from the engine's count; under full capture every raw state is
+        // present and counts once.
+        if (req.include_step_statistics) {
+            auto contents = [&](hypergraph::StateId sid) {
+                std::vector<std::vector<uint32_t>> out;
+                hg.get_state(sid).edges.for_each([&](hypergraph::EdgeId eid) {
+                    const auto& e = hg.get_edge(eid);
+                    out.emplace_back(e.vertices, e.vertices + e.arity);
+                });
+                return out;
+            };
+            std::vector<hg::stats::StepPoint> points;
+            std::unordered_map<uint64_t, std::vector<std::vector<uint32_t>>> class_edges;
+            std::map<uint32_t, uint64_t> events;
+            std::map<uint32_t, std::map<int64_t, uint64_t>> rule_counts;
+            const uint32_t n_pub = hg.num_published_states();
+            if (hg.quotient_multiplicity()) {
+                for (uint32_t sid = 0; sid < n_pub; ++sid) {
+                    const hypergraph::State& st = hg.get_state(sid);
+                    if (st.id == hypergraph::INVALID_ID) continue;
+                    if (!class_edges.count(st.canonical_hash)) class_edges[st.canonical_hash] = contents(sid);
+                }
+                std::unordered_map<uint64_t, std::map<int64_t, uint64_t>> matches_by_rule;
+                hg.for_each_class_multiplicity([&](uint64_t h, uint32_t d, uint64_t m) {
+                    points.push_back({d, h, m});
+                    if (matches_by_rule.count(h)) return;
+                    auto& by_rule = matches_by_rule[h];
+                    hg.for_each_expansion_match(h, [&](const hypergraph::SlotMatch& sm) {
+                        ++by_rule[static_cast<int64_t>(sm.rule)];
+                    });
+                });
+                hg::stats::events_from_multiplicities(points, matches_by_rule,
+                                                      static_cast<uint32_t>(req.steps), events,
+                                                      rule_counts);
+            } else {
+                for (uint32_t sid = 0; sid < n_pub; ++sid) {
+                    const hypergraph::State& st = hg.get_state(sid);
+                    if (st.id == hypergraph::INVALID_ID) continue;
+                    const uint64_t h = hg.get_or_compute_canonical_hash(sid);
+                    points.push_back({st.step, h, 1});
+                    if (!class_edges.count(h)) class_edges[h] = contents(sid);
+                }
+                const uint32_t n_ev = hg.num_published_events();
+                for (uint32_t eid = 0; eid < n_ev; ++eid) {
+                    const hypergraph::Event& ev = hg.get_event(eid);
+                    if (ev.id == hypergraph::INVALID_ID || hg.is_genesis_event(eid)) continue;
+                    if (ev.output_state == hypergraph::INVALID_ID) continue;
+                    const uint32_t step = hg.get_state(ev.output_state).step;
+                    ++events[step];
+                    ++rule_counts[step][static_cast<int64_t>(ev.rule_index)];
+                }
+            }
+            full_result.push_back({wxf::WXFValue("StepStatistics"),
+                                   hg::stats::step_statistics(points, class_edges, events, rule_counts)});
         }
 
         // GlobalEdges -> List of all edges created during evolution

@@ -6,6 +6,7 @@
 #include "hypergraph/ir_canonicalization.hpp"
 #include "wxf.hpp"
 #include "graph_marshal.hpp"
+#include "state_statistics.hpp"
 #include "session.hpp"
 
 #include <algorithm>
@@ -143,6 +144,7 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
                                job.include_branchial_state_edges ||
                                job.include_branchial_state_edges_all_siblings || gneeds.events;
         in.record.raw_counts_only = hgmarshal::reads_raw_counts_only(job, gneeds);
+        in.record.multiplicities = job.include_step_statistics;
 
         // A SESSION RECORDS EVERYTHING, the same rule the host follows and for the same reason:
         // a session exists to be continued and queried in ways its Open cannot know, so deriving
@@ -719,6 +721,44 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
         full_result.push_back({wxf::WXFValue("NumBranchialEdges"),
                                wxf::WXFValue(static_cast<int64_t>(
                                    result.observable_num_branchial()))});
+    }
+
+    // StepStatistics: as on the host (hypergraph_ffi.cpp), from the multiplicities under
+    // quotient exploration and from every raw state under full capture.
+    if (job.include_step_statistics) {
+        std::vector<hg::stats::StepPoint> points;
+        std::unordered_map<uint64_t, std::vector<std::vector<uint32_t>>> class_edges;
+        std::map<uint32_t, uint64_t> events;
+        std::map<uint32_t, std::map<int64_t, uint64_t>> rule_counts;
+        auto contents = [&](hg_gpu::StateId s) {
+            std::vector<std::vector<uint32_t>> out;
+            for (const auto& e : *state_edges[s]) out.emplace_back(e.begin(), e.end());
+            return out;
+        };
+        if (!result.class_multiplicities.empty()) {
+            for (const auto& st : result.states)
+                if (!class_edges.count(state_hash[st.id])) class_edges[state_hash[st.id]] = contents(st.id);
+            for (const auto& p : result.class_multiplicities)
+                points.push_back({p.depth, p.class_hash, p.multiplicity});
+            std::unordered_map<uint64_t, std::map<int64_t, uint64_t>> matches_by_rule;
+            for (const auto& c : result.class_rule_matches)
+                matches_by_rule[c.class_hash][static_cast<int64_t>(c.rule)] += c.count;
+            hg::stats::events_from_multiplicities(points, matches_by_rule, in.num_steps, events,
+                                                  rule_counts);
+        } else {
+            for (const auto& st : result.states) {
+                const auto it = state_step.find(st.id);
+                const uint32_t step = it == state_step.end() ? 0u : it->second;
+                points.push_back({step, state_hash[st.id], 1});
+                if (!class_edges.count(state_hash[st.id])) class_edges[state_hash[st.id]] = contents(st.id);
+            }
+            for (const auto& e : result.events) {
+                ++events[e.step];
+                ++rule_counts[e.step][static_cast<int64_t>(e.rule)];
+            }
+        }
+        full_result.push_back({wxf::WXFValue("StepStatistics"),
+                               hg::stats::step_statistics(points, class_edges, events, rule_counts)});
     }
 
     // GraphData for the requested *Graph properties, built through the SAME shared

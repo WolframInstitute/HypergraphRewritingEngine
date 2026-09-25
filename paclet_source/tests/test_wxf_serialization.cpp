@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
+#include <map>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -23,6 +25,7 @@
 
 #include "wxf.hpp"
 #include "paclet_source/hg_core.hpp"
+#include "paclet_source/state_statistics.hpp"
 
 // Pin test for the FFI WXF serialization (run_rewriting_core), the LibraryLink /
 // standalone-binary output contract. This path has no wolframscript-free coverage
@@ -2042,4 +2045,100 @@ TEST(GpuBinaryGate, ContentStateIdIsTheLowestListedStateOfEqualContent) {
     }
     worker_stop(w);
 }
+// "StepStatistics" is the same reply on both devices: under quotient exploration from each
+// engine's class multiplicities, under full capture from its raw states.
+TEST(GpuBinaryGate, StepStatisticsAgreeAcrossDevices) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    for (bool quotient : {true, false}) {
+        auto opts = [quotient](wxf::Writer& ww) {
+            put_str_list_option(ww, "RequestedData", {"StepStatistics"});
+            put_str_option(ww, "CanonicalizeStates", quotient ? "Full" : "None");
+            put_str_option(ww, "ExploreFromCanonicalStatesOnly", quotient ? "True" : "False");
+        };
+        HostBridge host;
+        const auto cpu = run_rewriting_core(branch_job(3, "Evolve", 0, opts, 3), host);
+        const auto gpu = worker_call(w, branch_job(3, "Evolve", 0, opts, 3));
+        const auto c = value_bytes(cpu, "StepStatistics"), g = value_bytes(gpu, "StepStatistics");
+        ASSERT_FALSE(c.empty()) << "quotient=" << quotient;
+        EXPECT_EQ(c, g) << "quotient=" << quotient;
+    }
+    worker_stop(w);
+}
 #endif  // _WIN32
+
+// The per-state invariants on states whose values are worked by hand.
+TEST(StateStatistics, InvariantsOfSmallStates) {
+    using hg::stats::state_invariants;
+    // A triangle: its incidence graph is a 6-cycle.
+    const auto tri = state_invariants({{1, 2}, {2, 3}, {3, 1}});
+    EXPECT_EQ(tri.vertex_count, 3);
+    EXPECT_EQ(tri.edge_count, 3);
+    EXPECT_EQ(tri.arities, (std::vector<int64_t>{2, 2, 2}));
+    EXPECT_EQ(tri.degree_sequence, (std::vector<int64_t>{2, 2, 2}));
+    EXPECT_EQ(tri.max_degree, 2);
+    EXPECT_DOUBLE_EQ(tri.mean_degree, 2.0);
+    EXPECT_EQ(tri.two_section_edge_count, 3);
+    EXPECT_EQ(tri.components, 1);
+    EXPECT_EQ(tri.cycle_rank, 1);
+    EXPECT_EQ(tri.incidence_cycle_rank, 1);
+    EXPECT_EQ(tri.incidence_diameter, 3);
+    EXPECT_DOUBLE_EQ(tri.incidence_mean_distance, 1.8);
+    EXPECT_DOUBLE_EQ(tri.largest_component_fraction, 1.0);
+
+    // A self-loop: one vertex, two slots, one incidence.
+    const auto loop = state_invariants({{1, 1}});
+    EXPECT_EQ(loop.degree_sequence, (std::vector<int64_t>{2}));
+    EXPECT_EQ(loop.two_section_edge_count, 0);
+    EXPECT_EQ(loop.cycle_rank, 0);
+    EXPECT_EQ(loop.incidence_cycle_rank, 0);
+    EXPECT_EQ(loop.incidence_diameter, 1);
+    EXPECT_DOUBLE_EQ(loop.incidence_mean_distance, 1.0);
+
+    // A two-edge path and a separate edge: the path's component is a 5-node path.
+    const auto two = state_invariants({{1, 2}, {2, 3}, {4, 5}});
+    EXPECT_EQ(two.components, 2);
+    EXPECT_EQ(two.incidence_diameter, 4);
+    EXPECT_DOUBLE_EQ(two.incidence_mean_distance, 2.0);
+    EXPECT_DOUBLE_EQ(two.largest_component_fraction, 0.6);
+
+    // Two components of four nodes: a ternary edge (diameter 2) and an edge with a self-loop
+    // (a 4-node path, diameter 3). The path is the largest by the tie rule, in either order.
+    for (const auto& st : {std::vector<std::vector<uint32_t>>{{1, 2, 3}, {4, 5}, {5, 5}},
+                           std::vector<std::vector<uint32_t>>{{1, 2}, {2, 2}, {3, 4, 5}}}) {
+        const auto tie = state_invariants(st);
+        EXPECT_EQ(tie.components, 2);
+        EXPECT_EQ(tie.incidence_diameter, 3);
+        EXPECT_NEAR(tie.incidence_mean_distance, 10.0 / 6.0, 1e-12);
+        EXPECT_DOUBLE_EQ(tie.largest_component_fraction, 0.4);
+    }
+
+    // No edges: every invariant is 0.
+    const auto none = state_invariants({});
+    EXPECT_EQ(none.vertex_count, 0);
+    EXPECT_EQ(none.components, 0);
+}
+
+// A weighted summary is the summary of the population it stands for.
+TEST(StateStatistics, WeightedSummary) {
+    const auto odd = hg::stats::summarise({{1.0, 2}, {3.0, 1}}, 1.0);   // 1, 1, 3
+    EXPECT_EQ(odd.n, 3u);
+    EXPECT_DOUBLE_EQ(odd.mean, 5.0 / 3.0);
+    EXPECT_NEAR(odd.standard_deviation, std::sqrt(4.0 / 3.0), 1e-12);
+    EXPECT_DOUBLE_EQ(odd.median, 1.0);
+    EXPECT_DOUBLE_EQ(odd.min, 1.0);
+    EXPECT_DOUBLE_EQ(odd.max, 3.0);
+    EXPECT_EQ(odd.histogram, (std::map<double, uint64_t>{{1.0, 2}, {3.0, 1}}));
+    const auto even = hg::stats::summarise({{3.0, 1}, {1.0, 1}}, 1.0);  // 1, 3
+    EXPECT_DOUBLE_EQ(even.median, 2.0);
+    const auto rounded = hg::stats::summarise({{1.234, 1}, {1.231, 1}}, 0.01);
+    ASSERT_EQ(rounded.histogram.size(), 1u);
+    EXPECT_NEAR(rounded.histogram.begin()->first, 1.23, 1e-12);
+}

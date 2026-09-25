@@ -224,6 +224,17 @@ pairs of matches with overlapping consumed edges. Counts above 2^63 - 1 report 2
 warning `CountSaturated`. *(Gates: `OracleCorpus.MultiplicityCountsMatchTheReplay`,
 `OracleCorpus.ClassMultiplicitiesCountTheRawStates`, `RecordSet.ClassMultiplicitiesMatchTheHost`.)*
 
+**`StepStatistics`.** Per step, the population of raw states at that step: `RawStates`, `Classes`,
+`Redundancy`, `MaxMultiplicity`, `MultiplicityHistogram`, `ClassEntropyBits`,
+`ClassEntropyNormalized`, `Events` and `RuleCounts` (raw events whose output state is at the
+step), `Invariants` (summaries of per-state invariants: `N`, `Mean`, `StandardDeviation`, `Min`,
+`Max`, `Median`, `Histogram`) and the pooled arity and degree histograms. Every invariant is an
+isomorphism invariant, so each step is summarised from one state per class weighted by m(c, d);
+under full capture every raw state counts once. The largest incidence component is the one with
+the most nodes, then the greatest diameter, then the greatest mean distance, then the most
+vertices. *(Gate: `reference/verify_state_statistics.wls`, against the definitions computed in
+Wolfram Language from a raw run.)*
+
 ### 5.5 Proof obligations, and the gates that discharge them
 
 1. **quotient ≡ full capture** on every observable, incl. cyclic rules — `cost_matrix` (oracle

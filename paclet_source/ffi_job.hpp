@@ -88,6 +88,7 @@ struct ParsedJob {
     bool include_num_events = true;
     bool include_num_causal_edges = true;
     bool include_num_branchial_edges = true;
+    bool include_step_statistics = false;   // "StepStatistics" (state_statistics.hpp)
     bool include_global_edges = false;      // All edges created during evolution
     bool include_state_bitvectors = false;  // State edge sets as lists of edge IDs
 

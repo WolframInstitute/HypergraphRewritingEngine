@@ -81,6 +81,7 @@ struct GpuJob {
     bool include_branchial_state_edges_all_siblings = false;
     bool include_global_edges = false;
     bool include_state_bitvectors = false;
+    bool include_step_statistics = false;   // "StepStatistics" (state_statistics.hpp)
 
     // Graph properties (StatesGraph / CausalGraph / BranchialGraph / Evolution* and
     // their Structure variants) and the options that shape them. Marshalled through

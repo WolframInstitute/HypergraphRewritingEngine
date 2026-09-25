@@ -11,8 +11,13 @@
 #include "graph_marshal.hpp"
 #include "hypergraph/ir_canonicalization.hpp"
 #include "hgcommon/content_core.hpp"
+#include "state_statistics.hpp"
+#include "hgcommon/quotient_multiplicity_core.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <functional>
+#include <type_traits>
 
 namespace HG_NAMESPACE {
 namespace ffi {
@@ -253,5 +258,340 @@ GraphPropertyNeeds graph_property_needs(const std::vector<std::string>& properti
 }
 
 }  // namespace marshal
+
+namespace stats {
+
+// =============================================================================
+// state_invariants / summarise
+// =============================================================================
+
+StateInvariants state_invariants(const std::vector<std::vector<uint32_t>>& edges) {
+    StateInvariants r;
+    // Vertices in ascending value: the order the probes' vertex list takes (Union), which fixes
+    // which of two equally large components is "the largest".
+    std::vector<uint32_t> vs;
+    for (const auto& e : edges) vs.insert(vs.end(), e.begin(), e.end());
+    std::sort(vs.begin(), vs.end());
+    vs.erase(std::unique(vs.begin(), vs.end()), vs.end());
+    const size_t n = vs.size(), m = edges.size();
+    auto index_of = [&](uint32_t v) {
+        return static_cast<size_t>(std::lower_bound(vs.begin(), vs.end(), v) - vs.begin());
+    };
+    r.vertex_count = static_cast<int64_t>(n);
+    r.edge_count = static_cast<int64_t>(m);
+
+    std::vector<int64_t> degree(n, 0);
+    int64_t slots = 0;
+    std::vector<std::vector<size_t>> distinct(m);   // per edge, its distinct vertex indices
+    std::vector<uint64_t> pairs;
+    for (size_t i = 0; i < m; ++i) {
+        r.arities.push_back(static_cast<int64_t>(edges[i].size()));
+        for (uint32_t v : edges[i]) { ++degree[index_of(v)]; ++slots; }
+        auto& d = distinct[i];
+        for (uint32_t v : edges[i]) d.push_back(index_of(v));
+        std::sort(d.begin(), d.end());
+        d.erase(std::unique(d.begin(), d.end()), d.end());
+        for (size_t a = 0; a < d.size(); ++a)
+            for (size_t b = a + 1; b < d.size(); ++b)
+                pairs.push_back((static_cast<uint64_t>(d[a]) << 32) | d[b]);
+    }
+    std::sort(r.arities.begin(), r.arities.end());
+    r.degree_sequence = degree;
+    std::sort(r.degree_sequence.begin(), r.degree_sequence.end(), std::greater<int64_t>());
+    r.max_degree = n ? r.degree_sequence.front() : 0;
+    r.mean_degree = n ? static_cast<double>(slots) / static_cast<double>(n) : 0.0;
+    std::sort(pairs.begin(), pairs.end());
+    r.two_section_edge_count =
+        static_cast<int64_t>(std::unique(pairs.begin(), pairs.end()) - pairs.begin());
+
+    // The incidence graph: nodes 0..n-1 are vertices, n..n+m-1 edges.
+    const size_t nodes = n + m;
+    std::vector<std::vector<size_t>> adj(nodes);
+    int64_t incidences = 0;
+    for (size_t i = 0; i < m; ++i)
+        for (size_t v : distinct[i]) {
+            adj[n + i].push_back(v);
+            adj[v].push_back(n + i);
+            ++incidences;
+        }
+    std::vector<int64_t> comp(nodes, -1);
+    std::vector<std::vector<size_t>> members;
+    for (size_t s = 0; s < nodes; ++s) {
+        if (comp[s] >= 0) continue;
+        const int64_t c = static_cast<int64_t>(members.size());
+        members.emplace_back();
+        std::vector<size_t> stack{s};
+        comp[s] = c;
+        while (!stack.empty()) {
+            const size_t u = stack.back();
+            stack.pop_back();
+            members[c].push_back(u);
+            for (size_t w : adj[u])
+                if (comp[w] < 0) { comp[w] = c; stack.push_back(w); }
+        }
+    }
+    r.components = static_cast<int64_t>(members.size());
+    r.cycle_rank = r.two_section_edge_count - r.vertex_count + r.components;
+    r.incidence_cycle_rank = incidences - static_cast<int64_t>(nodes) + r.components;
+    if (members.empty()) return r;
+
+    // THE LARGEST COMPONENT: most nodes, then the greatest diameter, then the greatest mean
+    // distance, then the most vertices. A choice among equal node counts by position would
+    // depend on the labelling, and these values are computed once per isomorphism class.
+    std::vector<int64_t> dist(nodes, -1);
+    std::vector<size_t> queue;
+    auto distances = [&](const std::vector<size_t>& in, int64_t& diameter, double& mean) {
+        diameter = 0;
+        mean = 0.0;
+        const size_t k = in.size();
+        if (k <= 1) return;
+        double total = 0.0;
+        for (size_t s : in) {
+            for (size_t u : in) dist[u] = -1;
+            queue.clear();
+            queue.push_back(s);
+            dist[s] = 0;
+            for (size_t qi = 0; qi < queue.size(); ++qi) {
+                const size_t u = queue[qi];
+                for (size_t w : adj[u])
+                    if (dist[w] < 0) { dist[w] = dist[u] + 1; queue.push_back(w); }
+            }
+            for (size_t u : in) {
+                total += static_cast<double>(dist[u]);
+                if (dist[u] > diameter) diameter = dist[u];
+            }
+        }
+        mean = total / (static_cast<double>(k) * static_cast<double>(k - 1));
+    };
+    size_t most = 0;
+    for (const auto& c : members) most = std::max(most, c.size());
+    bool chosen = false;
+    for (const auto& c : members) {
+        if (c.size() != most) continue;
+        int64_t d = 0;
+        double mean = 0.0;
+        distances(c, d, mean);
+        size_t vertices_in = 0;
+        for (size_t u : c) if (u < n) ++vertices_in;
+        const double fraction =
+            n ? static_cast<double>(vertices_in) / static_cast<double>(n) : 0.0;
+        if (!chosen || d > r.incidence_diameter ||
+            (d == r.incidence_diameter && (mean > r.incidence_mean_distance ||
+             (mean == r.incidence_mean_distance && fraction > r.largest_component_fraction)))) {
+            r.incidence_diameter = d;
+            r.incidence_mean_distance = mean;
+            r.largest_component_fraction = fraction;
+            chosen = true;
+        }
+    }
+    return r;
+}
+
+Summary summarise(const std::vector<std::pair<double, uint64_t>>& value_weight, double round) {
+    Summary s;
+    std::vector<std::pair<double, uint64_t>> vw;
+    for (const auto& p : value_weight)
+        if (p.second > 0) vw.push_back(p);
+    if (vw.empty()) return s;
+    std::sort(vw.begin(), vw.end());
+    long double n = 0, sum = 0;
+    for (const auto& [v, w] : vw) {
+        s.n = hgcommon::qm_sat_add(s.n, w);
+        n += static_cast<long double>(w);
+        sum += static_cast<long double>(v) * static_cast<long double>(w);
+    }
+    const long double mean = sum / n;
+    long double sq = 0;
+    for (const auto& [v, w] : vw)
+        sq += static_cast<long double>(w) * (v - mean) * (v - mean);
+    s.mean = static_cast<double>(mean);
+    s.standard_deviation = n > 1 ? static_cast<double>(std::sqrt(sq / (n - 1))) : 0.0;
+    s.min = vw.front().first;
+    s.max = vw.back().first;
+    // The values at 0-based positions floor((N-1)/2) and floor(N/2) of the sorted population.
+    const long double lo_at = std::floor((n - 1) / 2), hi_at = std::floor(n / 2);
+    long double seen = 0;
+    double lo = vw.front().first, hi = vw.front().first;
+    bool lo_set = false;
+    for (const auto& [v, w] : vw) {
+        if (!lo_set && seen + w > lo_at) { lo = v; lo_set = true; }
+        if (seen + w > hi_at) { hi = v; break; }
+        seen += w;
+    }
+    s.median = (lo + hi) / 2;
+    for (const auto& [v, w] : vw) {
+        const double key = round == 1.0 ? v : std::round(v / round) * round;
+        s.histogram[key] = hgcommon::qm_sat_add(s.histogram[key], w);
+    }
+    return s;
+}
+
+namespace {
+
+wxf::WXFValue summary_value(const Summary& s, bool integral) {
+    auto num = [&](double v) {
+        return integral ? wxf::WXFValue(static_cast<int64_t>(std::llround(v))) : wxf::WXFValue(v);
+    };
+    wxf::WXFValueAssociation a;
+    a.push_back({wxf::WXFValue("N"), wxf::WXFValue(static_cast<int64_t>(s.n))});
+    if (s.n == 0) return wxf::WXFValue(a);
+    a.push_back({wxf::WXFValue("Mean"), wxf::WXFValue(s.mean)});
+    a.push_back({wxf::WXFValue("StandardDeviation"), wxf::WXFValue(s.standard_deviation)});
+    a.push_back({wxf::WXFValue("Min"), num(s.min)});
+    a.push_back({wxf::WXFValue("Max"), num(s.max)});
+    a.push_back({wxf::WXFValue("Median"), wxf::WXFValue(s.median)});
+    wxf::WXFValueAssociation h;
+    for (const auto& [v, w] : s.histogram) h.push_back({num(v), wxf::WXFValue(static_cast<int64_t>(w))});
+    a.push_back({wxf::WXFValue("Histogram"), wxf::WXFValue(h)});
+    return wxf::WXFValue(a);
+}
+
+template <class Key>
+wxf::WXFValue count_association(const std::map<Key, uint64_t>& m) {
+    wxf::WXFValueAssociation a;
+    for (const auto& [k, w] : m) {
+        if constexpr (std::is_same_v<Key, std::vector<int64_t>>) {
+            wxf::WXFValueList l;
+            for (int64_t x : k) l.push_back(wxf::WXFValue(x));
+            a.push_back({wxf::WXFValue(l), wxf::WXFValue(static_cast<int64_t>(w))});
+        } else {
+            a.push_back({wxf::WXFValue(static_cast<int64_t>(k)), wxf::WXFValue(static_cast<int64_t>(w))});
+        }
+    }
+    return wxf::WXFValue(a);
+}
+
+}  // namespace
+
+void events_from_multiplicities(
+    const std::vector<StepPoint>& points,
+    const std::unordered_map<uint64_t, std::map<int64_t, uint64_t>>& matches_by_rule,
+    uint32_t steps, std::map<uint32_t, uint64_t>& events,
+    std::map<uint32_t, std::map<int64_t, uint64_t>>& rule_counts) {
+    for (const auto& p : points) {
+        if (p.step >= steps) continue;
+        auto it = matches_by_rule.find(p.class_hash);
+        if (it == matches_by_rule.end()) continue;
+        for (const auto& [rule, k] : it->second) {
+            const uint64_t w = hgcommon::qm_sat_mul(p.weight, k);
+            auto& r = rule_counts[p.step + 1][rule];
+            r = hgcommon::qm_sat_add(r, w);
+            auto& e = events[p.step + 1];
+            e = hgcommon::qm_sat_add(e, w);
+        }
+    }
+}
+
+wxf::WXFValue step_statistics(
+    const std::vector<StepPoint>& points,
+    const std::unordered_map<uint64_t, std::vector<std::vector<uint32_t>>>& class_edges,
+    const std::map<uint32_t, uint64_t>& events,
+    const std::map<uint32_t, std::map<int64_t, uint64_t>>& rule_counts) {
+    std::map<uint32_t, std::map<uint64_t, uint64_t>> by_step;
+    for (const auto& p : points)
+        if (p.weight) {
+            auto& w = by_step[p.step][p.class_hash];
+            w = hgcommon::qm_sat_add(w, p.weight);
+        }
+    std::unordered_map<uint64_t, StateInvariants> inv;
+    auto invariants = [&](uint64_t h) -> const StateInvariants& {
+        auto it = inv.find(h);
+        if (it != inv.end()) return it->second;
+        auto e = class_edges.find(h);
+        static const std::vector<std::vector<uint32_t>> kNone;
+        return inv.emplace(h, state_invariants(e != class_edges.end() ? e->second : kNone))
+            .first->second;
+    };
+
+    wxf::WXFValueList steps;
+    for (const auto& [step, classes] : by_step) {
+        uint64_t raw = 0, max_mult = 0;
+        long double raw_ld = 0;
+        std::map<int64_t, uint64_t> mult_hist;
+        for (const auto& [h, w] : classes) {
+            raw = hgcommon::qm_sat_add(raw, w);
+            raw_ld += static_cast<long double>(w);
+            max_mult = std::max(max_mult, w);
+            ++mult_hist[static_cast<int64_t>(w)];
+        }
+        long double entropy = 0;
+        for (const auto& [h, w] : classes) {
+            const long double p = static_cast<long double>(w) / raw_ld;
+            entropy -= p * std::log2(p);
+        }
+        const size_t nclasses = classes.size();
+
+        std::vector<std::pair<double, uint64_t>> vertex_count, edge_count, max_degree, mean_degree,
+            two_section, components, cycle_rank, inc_cycle_rank, inc_diameter, inc_mean_distance,
+            largest_fraction;
+        std::map<int64_t, uint64_t> arity_hist, degree_hist;
+        std::map<std::vector<int64_t>, uint64_t> arity_sig_hist, degree_seq_hist;
+        for (const auto& [h, w] : classes) {
+            const StateInvariants& s = invariants(h);
+            vertex_count.push_back({double(s.vertex_count), w});
+            edge_count.push_back({double(s.edge_count), w});
+            max_degree.push_back({double(s.max_degree), w});
+            mean_degree.push_back({s.mean_degree, w});
+            two_section.push_back({double(s.two_section_edge_count), w});
+            components.push_back({double(s.components), w});
+            cycle_rank.push_back({double(s.cycle_rank), w});
+            inc_cycle_rank.push_back({double(s.incidence_cycle_rank), w});
+            inc_diameter.push_back({double(s.incidence_diameter), w});
+            inc_mean_distance.push_back({s.incidence_mean_distance, w});
+            largest_fraction.push_back({s.largest_component_fraction, w});
+            for (int64_t a : s.arities) arity_hist[a] = hgcommon::qm_sat_add(arity_hist[a], w);
+            for (int64_t d : s.degree_sequence) degree_hist[d] = hgcommon::qm_sat_add(degree_hist[d], w);
+            arity_sig_hist[s.arities] = hgcommon::qm_sat_add(arity_sig_hist[s.arities], w);
+            degree_seq_hist[s.degree_sequence] =
+                hgcommon::qm_sat_add(degree_seq_hist[s.degree_sequence], w);
+        }
+
+        wxf::WXFValueAssociation invs;
+        auto put = [&](const char* k, const std::vector<std::pair<double, uint64_t>>& v,
+                       double round, bool integral) {
+            invs.push_back({wxf::WXFValue(k), summary_value(summarise(v, round), integral)});
+        };
+        put("VertexCount", vertex_count, 1.0, true);
+        put("EdgeCount", edge_count, 1.0, true);
+        put("MaxDegree", max_degree, 1.0, true);
+        put("MeanDegree", mean_degree, 0.01, false);
+        put("TwoSectionEdgeCount", two_section, 1.0, true);
+        put("Components", components, 1.0, true);
+        put("CycleRank", cycle_rank, 1.0, true);
+        put("IncidenceCycleRank", inc_cycle_rank, 1.0, true);
+        put("IncidenceDiameter", inc_diameter, 1.0, true);
+        put("IncidenceMeanDistance", inc_mean_distance, 0.01, false);
+        put("LargestComponentFraction", largest_fraction, 0.01, false);
+
+        wxf::WXFValueAssociation rec;
+        auto i64 = [](uint64_t v) { return wxf::WXFValue(static_cast<int64_t>(v)); };
+        rec.push_back({wxf::WXFValue("Step"), wxf::WXFValue(static_cast<int64_t>(step))});
+        rec.push_back({wxf::WXFValue("RawStates"), i64(raw)});
+        rec.push_back({wxf::WXFValue("Classes"), i64(nclasses)});
+        rec.push_back({wxf::WXFValue("Redundancy"),
+                       wxf::WXFValue(static_cast<double>(raw_ld / nclasses))});
+        rec.push_back({wxf::WXFValue("MaxMultiplicity"), i64(max_mult)});
+        rec.push_back({wxf::WXFValue("MultiplicityHistogram"), count_association(mult_hist)});
+        rec.push_back({wxf::WXFValue("ClassEntropyBits"), wxf::WXFValue(static_cast<double>(entropy))});
+        rec.push_back({wxf::WXFValue("ClassEntropyNormalized"),
+                       wxf::WXFValue(nclasses == 1 ? 1.0
+                                     : static_cast<double>(entropy / std::log2(static_cast<long double>(nclasses))))});
+        auto ev = events.find(step);
+        rec.push_back({wxf::WXFValue("Events"), i64(ev == events.end() ? 0 : ev->second)});
+        auto rc = rule_counts.find(step);
+        rec.push_back({wxf::WXFValue("RuleCounts"),
+                       count_association(rc == rule_counts.end() ? std::map<int64_t, uint64_t>{}
+                                                                 : rc->second)});
+        rec.push_back({wxf::WXFValue("Invariants"), wxf::WXFValue(invs)});
+        rec.push_back({wxf::WXFValue("ArityHistogram"), count_association(arity_hist)});
+        rec.push_back({wxf::WXFValue("AritySignatureHistogram"), count_association(arity_sig_hist)});
+        rec.push_back({wxf::WXFValue("DegreeHistogram"), count_association(degree_hist)});
+        rec.push_back({wxf::WXFValue("DegreeSequenceHistogram"), count_association(degree_seq_hist)});
+        steps.push_back(wxf::WXFValue(rec));
+    }
+    return wxf::WXFValue(steps);
+}
+
+}  // namespace stats
 
 }  // namespace HG_NAMESPACE

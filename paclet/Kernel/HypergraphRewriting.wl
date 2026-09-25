@@ -345,6 +345,8 @@ propertyRequirementsBase = <|
   "NumEvents" -> {"NumEvents"},
   "NumCausalEdges" -> {"NumCausalEdges"},
   "NumBranchialEdges" -> {"NumBranchialEdges"},
+  (* Per-step statistics of the raw-state population *)
+  "StepStatistics" -> {"StepStatistics"},
   (* Global edge list and state bitvectors *)
   "GlobalEdges" -> {"GlobalEdges"},
   "StateBitvectors" -> {"StateBitvectors"},
@@ -1457,6 +1459,7 @@ getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialSta
     "NumEvents", wxfData["NumEvents"],
     "NumCausalEdges", wxfData["NumCausalEdges"],
     "NumBranchialEdges", wxfData["NumBranchialEdges"],
+    "StepStatistics", wxfData["StepStatistics"],
     "GlobalEdges", wxfData["GlobalEdges"],
     "StateBitvectors", wxfData["StateBitvectors"],
     "Debug", <|
