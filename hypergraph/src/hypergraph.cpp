@@ -2048,8 +2048,13 @@ void Hypergraph::QrCtx::record_runsig(uint32_t ev, uint64_t csig) {
         hg.qc_num_canon_events_.fetch_add(1, std::memory_order_relaxed);
 }
 
-bool Hypergraph::QrCtx::want_causal() const    { return hg.record_set().causal; }
-bool Hypergraph::QrCtx::want_branchial() const { return hg.record_set().branchial; }
+// One flag each, read per application: record_set() loads all five.
+bool Hypergraph::QrCtx::want_causal() const {
+    return hg.record_causal_.load(std::memory_order_relaxed);
+}
+bool Hypergraph::QrCtx::want_branchial() const {
+    return hg.record_branchial_.load(std::memory_order_relaxed);
+}
 
 uint32_t Hypergraph::QrCtx::producer_at(const QcInstance& inst, uint32_t slot) const {
     return inst.prod[slot];
