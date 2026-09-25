@@ -416,22 +416,35 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
     if (job.include_states) {
         wxf::WXFValueAssociation states_assoc;
         hgmarshal::ValueRecordSink sink;
-        for (hg_gpu::StateId rep : class_reps) {
-            // (edge id, vertices), the ids from state_edge_ids (set by edge_identity, which a
-            // States request turns on), parallel to the state's edge contents.
-            const auto& contents = *state_edges[rep];
+        // (edge id, vertices), the ids from state_edge_ids (set by edge_identity, which a States
+        // request turns on), parallel to the state's edge contents.
+        auto record_edges = [&](hg_gpu::StateId s) {
+            const auto& contents = *state_edges[s];
             const std::vector<hg_gpu::EdgeId>* ids =
-                rep < result.state_edge_ids.size() ? &result.state_edge_ids[rep] : nullptr;
+                s < result.state_edge_ids.size() ? &result.state_edge_ids[s] : nullptr;
             std::vector<std::pair<int64_t, std::vector<uint32_t>>> edges;
             edges.reserve(contents.size());
             for (size_t k = 0; k < contents.size(); ++k)
                 edges.emplace_back(ids && k < ids->size() ? static_cast<int64_t>((*ids)[k])
                                                           : static_cast<int64_t>(k),
                                    std::vector<uint32_t>(contents[k].begin(), contents[k].end()));
+            return edges;
+        };
+        std::vector<int64_t> listed;
+        std::vector<uint64_t> listed_hash;
+        for (hg_gpu::StateId rep : class_reps) {
+            listed.push_back(static_cast<int64_t>(rep));
+            listed_hash.push_back(hgmarshal::content_hash_of(record_edges(rep)));
+        }
+        const auto content_id = hgmarshal::lowest_id_by_content(listed, listed_hash);
+        for (size_t i = 0; i < class_reps.size(); ++i) {
+            const hg_gpu::StateId rep = class_reps[i];
+            auto edges = record_edges(rep);
             const bool is_init = is_output.find(rep) == is_output.end();
             hgmarshal::write_state_record(sink,
                 hgmarshal::StateRecordIds{
-                    static_cast<int64_t>(rep), static_cast<int64_t>(rep), static_cast<int64_t>(rep),
+                    static_cast<int64_t>(rep), static_cast<int64_t>(rep),
+                    content_id.at(listed_hash[i]),
                     is_init ? 0 : static_cast<int64_t>(state_step[rep]),
                     job.include_canonical_hashes, static_cast<int64_t>(state_hash[rep])},
                 canon_mode == hg_gpu::CanonicalizationMode::Full, std::move(edges));

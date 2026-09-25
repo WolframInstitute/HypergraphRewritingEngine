@@ -884,7 +884,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // grouping the run actually used, not a second opinion about it.
         struct ContentIndex {
             std::vector<uint64_t> hash_of;                                  // by raw state id
-            std::unordered_map<uint64_t, hypergraph::StateId> first_with;
+            std::unordered_map<uint64_t, int64_t> first_with;
         };
         ContentIndex content_index_storage;
         bool content_index_built = false;
@@ -893,16 +893,25 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 // Sized by the CLAIM count because any live state id indexes this table, but
                 // ITERATED to the published count: an id can be claimed and never emplaced, and
                 // get_state on such an index throws rather than returning an invalid state.
+                //
+                // The grouping is over the states "States" lists: under Full one per class, so a
+                // ContentStateId is always a "States" key (hgmarshal::lowest_id_by_content).
                 const uint32_t n = hg.num_states();
                 const uint32_t n_pub = hg.num_published_states();
                 content_index_storage.hash_of.assign(n, 0);
-                content_index_storage.first_with.reserve(n_pub);
+                std::vector<int64_t> listed;
+                std::vector<uint64_t> listed_hash;
+                listed.reserve(n_pub);
+                listed_hash.reserve(n_pub);
                 for (uint32_t sid = 0; sid < n_pub; ++sid) {
                     if (hg.get_state(sid).id == hypergraph::INVALID_ID) continue;
                     const uint64_t h = hg.get_state_content_hash(sid);
                     content_index_storage.hash_of[sid] = h;
-                    content_index_storage.first_with.emplace(h, sid);
+                    if (full_canonicalization && hg.get_canonical_state(sid) != sid) continue;
+                    listed.push_back(sid);
+                    listed_hash.push_back(h);
                 }
+                content_index_storage.first_with = hgmarshal::lowest_id_by_content(listed, listed_hash);
                 content_index_built = true;
             }
             return content_index_storage;
@@ -918,7 +927,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 return static_cast<int64_t>(hg.get_canonical_state(sid));
             if (req.canonicalize_states_mode == "Automatic") {
                 const ContentIndex& ci = content_index();
-                return static_cast<int64_t>(ci.first_with.at(ci.hash_of[sid]));
+                return ci.first_with.at(ci.hash_of[sid]);
             }
             return static_cast<int64_t>(sid);
         };

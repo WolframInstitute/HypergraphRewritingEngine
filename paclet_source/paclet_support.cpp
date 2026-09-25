@@ -10,6 +10,9 @@
 #include "delivery_cursor.hpp"
 #include "graph_marshal.hpp"
 #include "hypergraph/ir_canonicalization.hpp"
+#include "hgcommon/content_core.hpp"
+
+#include <algorithm>
 
 namespace HG_NAMESPACE {
 namespace ffi {
@@ -203,6 +206,29 @@ GraphPropertyNeeds graph_property_needs(const std::string& graph_property) {
         is_causal    || (is_evolution && graph_property.find("Causal") != std::string::npos),
         is_branchial || (is_evolution && graph_property.find("Branchial") != std::string::npos),
         is_states    || is_evolution};
+}
+
+std::unordered_map<uint64_t, int64_t> lowest_id_by_content(const std::vector<int64_t>& ids,
+                                                           const std::vector<uint64_t>& hashes) {
+    std::unordered_map<uint64_t, int64_t> out;
+    out.reserve(ids.size());
+    for (size_t i = 0; i < ids.size() && i < hashes.size(); ++i) {
+        auto [it, fresh] = out.emplace(hashes[i], ids[i]);
+        if (!fresh && ids[i] < it->second) it->second = ids[i];
+    }
+    return out;
+}
+
+uint64_t content_hash_of(std::vector<std::pair<int64_t, std::vector<uint32_t>>> edges) {
+    std::sort(edges.begin(), edges.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+    hgcommon::ContentHasher ch(static_cast<uint32_t>(edges.size()));
+    for (const auto& e : edges) {
+        ch.edge_begin(static_cast<uint32_t>(e.second.size()));
+        for (uint32_t v : e.second) ch.vertex(static_cast<uint64_t>(v));
+        ch.edge_end();
+    }
+    return ch.value();
 }
 
 wxf::WXFValue warning_record(const std::string& kind, int64_t count, const std::string& context,

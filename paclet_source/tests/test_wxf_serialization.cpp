@@ -1964,4 +1964,82 @@ TEST(GpuBinaryGate, StateEdgeIdsAreTheIdsEventsName) {
     check(worker_call(w, branch_job(2, "Evolve", 0, opts, 1)), "GPU");
     worker_stop(w);
 }
+// "ContentStateId" is the lowest id among the listed states with the same edge list, on both
+// devices and in every "CanonicalizeStates" mode, so it is always a "States" key. The GPU once
+// gave each state its own id, and the CPU under Full could name a state "States" does not list.
+TEST(GpuBinaryGate, ContentStateIdIsTheLowestListedStateOfEqualContent) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    // key -> (ContentStateId, vertex lists in edge-id order)
+    using Content = std::vector<std::vector<int64_t>>;
+    auto read = [](const std::vector<uint8_t>& out) {
+        std::map<int64_t, std::pair<int64_t, Content>> states;
+        wxf::Parser parser(out);
+        parser.skip_header();
+        parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+            if (k != "States") { vp.skip_value(); return; }
+            vp.read_association_generic([&](wxf::Parser& kp, wxf::Parser& rp) {
+                const int64_t key = kp.read<int64_t>();
+                int64_t cid = -1;
+                std::map<int64_t, std::vector<int64_t>> by_edge;
+                rp.read_association([&](const std::string& f, wxf::Parser& fp) {
+                    if (f == "ContentStateId") {
+                        cid = fp.read<int64_t>();
+                    } else if (f == "Edges") {
+                        fp.read_function([&](const std::string&, size_t n, wxf::Parser& ep) {
+                            for (size_t i = 0; i < n; ++i)
+                                ep.read_function([&](const std::string&, size_t m, wxf::Parser& xp) {
+                                    const int64_t id = xp.read<int64_t>();
+                                    for (size_t j = 1; j < m; ++j)
+                                        by_edge[id].push_back(xp.read<int64_t>());
+                                });
+                        });
+                    } else {
+                        fp.skip_value();
+                    }
+                });
+                Content c;
+                for (auto& [id, vs] : by_edge) c.push_back(vs);
+                states[key] = {cid, c};
+            });
+        });
+        return states;
+    };
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    for (const char* mode : {"None", "Automatic", "Full"}) {
+        auto opts = [mode](wxf::Writer& ww) {
+            put_str_list_option(ww, "RequestedData", {"States"});
+            put_str_option(ww, "CanonicalizeStates", mode);
+        };
+        HostBridge host;
+        const auto cpu = read(run_rewriting_core(branch_job(3, "Evolve", 0, opts, 2), host));
+        const auto gpu = read(worker_call(w, branch_job(3, "Evolve", 0, opts, 2)));
+        for (const auto* side : {&cpu, &gpu}) {
+            const char* device = side == &cpu ? "CPU" : "GPU";
+            ASSERT_FALSE(side->empty()) << device << " " << mode;
+            std::map<Content, int64_t> lowest;
+            for (const auto& [key, rec] : *side) {
+                auto [it, fresh] = lowest.emplace(rec.second, key);
+                if (!fresh && key < it->second) it->second = key;
+            }
+            size_t shared = 0;
+            for (const auto& [key, rec] : *side) {
+                EXPECT_TRUE(side->count(rec.first))
+                    << device << " " << mode << ": ContentStateId " << rec.first
+                    << " of state " << key << " is not a States key";
+                EXPECT_EQ(rec.first, lowest.at(rec.second)) << device << " " << mode << " state " << key;
+                if (rec.first != key) ++shared;
+            }
+            if (std::string(mode) == "None")
+                EXPECT_GT(shared, 0u) << device << ": no two states share an edge list, so the check is vacuous";
+        }
+    }
+    worker_stop(w);
+}
 #endif  // _WIN32

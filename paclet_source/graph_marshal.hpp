@@ -64,6 +64,7 @@
 #include <tuple>
 #include <utility>
 #include <vector>
+#include <unordered_map>
 
 namespace HG_NAMESPACE {
 namespace marshal {
@@ -313,6 +314,15 @@ GraphPropertyNeeds graph_property_needs(const std::string& graph_property);
 
 // The union over a list of properties.
 GraphPropertyNeeds graph_property_needs(const std::vector<std::string>& properties);
+
+// THE "ContentStateId" RULE, for both engines: among the states a reply lists, the lowest id of
+// those with the same content hash. `ids` and `hashes` are parallel.
+std::unordered_map<uint64_t, int64_t> lowest_id_by_content(const std::vector<int64_t>& ids,
+                                                           const std::vector<uint64_t>& hashes);
+
+// hgcommon::ContentHasher over a state's edges taken in edge-id order: the content hash the host
+// computes from its stored state (Hypergraph::get_state_content_hash).
+uint64_t content_hash_of(std::vector<std::pair<int64_t, std::vector<uint32_t>>> edges);
 
 // One entry of the reply's "Warnings" list, for both engines. "Partial" is 1 for a result the
 // engine cut short, which the kernel reports as HGEvolve::overflow, and 0 for every other kind,
