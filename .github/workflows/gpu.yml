@@ -11,11 +11,30 @@ name: GPU
 on:
   workflow_dispatch:
   pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'paper/**'
+      - 'paclet/Documentation/**'
   push:                     # the build-only leg is free and catches CUDA build-rot on master
+    branches: [master]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'paper/**'
+      - 'paclet/Documentation/**'
+
+# One run per workflow and branch: a push cancels the run of the push before it, so a burst of
+# commits costs one run. The organisation's plan runs 20 jobs at a time across all its
+# repositories, 5 of them on macOS.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   gpu-compile:                        # free: build-only, no GPU
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Install CUDA toolkit

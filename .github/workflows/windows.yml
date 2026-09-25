@@ -7,12 +7,30 @@ name: Windows
 on:
   push:
     branches: [master]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'paper/**'
+      - 'paclet/Documentation/**'
   pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'paper/**'
+      - 'paclet/Documentation/**'
   workflow_dispatch:
+
+# One run per workflow and branch: a push cancels the run of the push before it, so a burst of
+# commits costs one run. The organisation's plan runs 20 jobs at a time across all its
+# repositories, 5 of them on macOS.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   windows-tests:
     runs-on: windows-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 

@@ -4,6 +4,14 @@ on:
   push:
     branches: [master]
   pull_request:
+  workflow_dispatch:
+
+# One run per workflow and branch: a push cancels the run of the push before it, so a burst of
+# commits costs one run. The organisation's plan runs 20 jobs at a time across all its
+# repositories, 5 of them on macOS.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 # Linux correctness gate. The Wolfram paclet, the GPU engine, and the visualiser are
 # off (a bare runner has no LibraryLink headers, no CUDA, no Vulkan); all_tests is the
@@ -17,6 +25,7 @@ jobs:
   # and three CausalGraph methods that no longer exist. Needs no build -- it reads the sources.
   codemap-drift:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       # Full history: docs_fresh_check compares the last commit touching each markdown source
       # with the last commit touching its notebook, and in a depth-1 clone both are the same
@@ -108,6 +117,7 @@ jobs:
 
   linux-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -171,20 +181,21 @@ jobs:
           cmake --build build_viz --target all_tests
           ./build_viz/all_tests --gtest_filter=-PacletTest.*
 
-  # UBSan over the whole suite and TSan over the concurrent structures. The build options have
-  # existed since before v1.0.0 and no workflow set any of them, so neither was a gate. Both
-  # stand at zero on this tree, which is what makes any output here a regression.
-  #
-  # TSan is scoped rather than run over everything: the three suites below take about 8.5 minutes
-  # under it while the rest of the suite adds hours, and they are where the engine's lock-free
-  # structures are actually exercised concurrently.
+  # UBSan, ASan and LSan over the whole suite (the sanitizers job) and TSan over the whole suite
+  # (the tsan job). The build options have existed since before v1.0.0 and no workflow set any of
+  # them, so none was a gate. All stand at zero on this tree, which is what makes any output here
+  # a regression.
   # ThreadSanitizer, as its own job because it is the slowest leg: every atomic in a lock-free
   # engine is instrumented and the suite runs under it in tens of minutes. It reports a data race
   # -- a non-atomic access unordered against another thread's -- and every one is a defect in an
   # engine whose contract is that its output is a function of its inputs. Measured clean before
   # this leg existed: 291 tests, no report, 2026-08-28.
   tsan:
+    # After the plain suite: no sanitizer build when it already fails, and three jobs of this
+    # workflow hold a runner at a time rather than six.
+    needs: linux-tests
     runs-on: ubuntu-latest
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
 
@@ -214,7 +225,11 @@ jobs:
           fi
 
   sanitizers:
+    # After the plain suite: no sanitizer build when it already fails, and three jobs of this
+    # workflow hold a runner at a time rather than six.
+    needs: linux-tests
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -292,35 +307,17 @@ jobs:
           fi
           echo "no leaks reported"
 
-      - name: Configure + build TSan
-        run: >
-          cmake -S . -B build_tsan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
-          -DENABLE_TSAN=ON -DBUILD_GPU=OFF -DBUILD_WOLFRAM_LANGUAGE_PACLET=OFF
-          -DBUILD_VISUALIZATION=OFF &&
-          cmake --build build_tsan --target all_tests
-
-      - name: TSan — no data race in the concurrent structures
-        run: |
-          TSAN_OPTIONS=halt_on_error=0 ./build_tsan/all_tests \
-            --gtest_filter='ConcurrentMapTest.*:ConcurrentMapFuzz.*:CausalDeterminism.*:ParallelEvolution.*:QuotientCompletenessTest.*' \
-            2>&1 | tee tsan.log
-          # PIPESTATUS[0], not $?, which is tee's and is always 0. The sanitizer's own finding
-          # does not move the exit status, so the grep has to gate -- but the SUITE's status
-          # does move, and discarding it passed a job whose tests failed or crashed outright.
-          suite_status=${PIPESTATUS[0]}
-          if grep -q "WARNING: ThreadSanitizer" tsan.log; then
-            echo "ThreadSanitizer reported a race"; exit 1
-          fi
-          if [ "$suite_status" -ne 0 ]; then
-            echo "the suite itself exited $suite_status under this sanitizer"; exit "$suite_status"
-          fi
 
   # The engine on wasm32, where no thread exists. The compile leg alone does not say the
   # engine WORKS there: it compiled for months while the first evolution trapped in
   # JobSystem::start() with "thread constructor failed". So this leg RUNS the oracle corpus
   # under node and requires it exact, which is the same check the native suite makes.
   wasm-oracle-corpus:
+    # After the plain suite: no sanitizer build when it already fails, and three jobs of this
+    # workflow hold a runner at a time rather than six.
+    needs: linux-tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -353,6 +350,7 @@ jobs:
   # build catches immediately and a human catches at the worst moment.
   paper:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       # Full history: the integrity check diffs each fragment's provenance commit against
       # HEAD, and a shallow clone would fail every lookup rather than judge staleness.
