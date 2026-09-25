@@ -188,6 +188,114 @@ inline BranchialStateEdgeSet branchial_state_edges_all_siblings(
 void push_branchial_state_edges(wxf::WXFValueAssociation& result,
                                 const BranchialStateEdgeSet& set);
 
+// THE "States" AND "Events" RECORDS, one schema for both engines. The host streams its reply
+// into a wxf::Writer (StreamRecordSink); the GPU backend builds a value tree (ValueRecordSink).
+// A sink writes one association: begin(n), then n fields.
+class StreamRecordSink {
+public:
+    explicit StreamRecordSink(wxf::Writer& w) : w_(w) {}
+    void begin(std::size_t fields) {
+        w_.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        w_.write_varint(fields);
+    }
+    void i64(const char* key, int64_t v) { key_(key); w_.write(v); }
+    void i64_list(const char* key, const std::vector<int64_t>& v) {
+        key_(key);
+        w_.write_function("List", v.size());
+        for (int64_t x : v) w_.write(x);
+    }
+    void edges(const char* key,
+               const std::vector<std::pair<int64_t, std::vector<uint32_t>>>& e) {
+        key_(key);
+        w_.write_function("List", e.size());
+        for (const auto& [id, verts] : e) {
+            w_.write_function("List", verts.size() + 1);
+            w_.write(id);
+            for (uint32_t v : verts) w_.write(static_cast<int64_t>(v));
+        }
+    }
+private:
+    void key_(const char* k) {
+        w_.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w_.write(std::string(k));
+    }
+    wxf::Writer& w_;
+};
+
+class ValueRecordSink {
+public:
+    void begin(std::size_t fields) { a_.clear(); a_.reserve(fields); }
+    void i64(const char* key, int64_t v) { a_.push_back({wxf::WXFValue(key), wxf::WXFValue(v)}); }
+    void i64_list(const char* key, const std::vector<int64_t>& v) {
+        wxf::WXFValueList l;
+        l.reserve(v.size());
+        for (int64_t x : v) l.push_back(wxf::WXFValue(x));
+        a_.push_back({wxf::WXFValue(key), wxf::WXFValue(l)});
+    }
+    void edges(const char* key,
+               const std::vector<std::pair<int64_t, std::vector<uint32_t>>>& e) {
+        wxf::WXFValueList l;
+        l.reserve(e.size());
+        for (const auto& [id, verts] : e) {
+            wxf::WXFValueList ed;
+            ed.push_back(wxf::WXFValue(id));
+            for (uint32_t v : verts) ed.push_back(wxf::WXFValue(static_cast<int64_t>(v)));
+            l.push_back(wxf::WXFValue(ed));
+        }
+        a_.push_back({wxf::WXFValue(key), wxf::WXFValue(l)});
+    }
+    wxf::WXFValueAssociation take() { return std::move(a_); }
+private:
+    wxf::WXFValueAssociation a_;
+};
+
+struct StateRecordIds {
+    int64_t id, canonical_id, content_id, step;
+    bool    with_hash;
+    int64_t hash;
+};
+
+// A "States" record. `edges` is the state's edges as (edge id, vertices). Under Full the record
+// carries the state's IR canonical form, its edges numbered from 0 in canonical order; otherwise
+// the edges as stored, under the edge ids an event's ConsumedEdges and ProducedEdges name.
+// IsInitial is the 0/1 integer a WXFValue(bool) stores.
+void state_record_edges(bool full,
+                        std::vector<std::pair<int64_t, std::vector<uint32_t>>>& edges);
+template <class Sink>
+void write_state_record(Sink& s, const StateRecordIds& r, bool full,
+                        std::vector<std::pair<int64_t, std::vector<uint32_t>>> edges) {
+    state_record_edges(full, edges);
+    s.begin(r.with_hash ? 7u : 6u);
+    s.i64("Id", r.id);
+    s.i64("CanonicalId", r.canonical_id);
+    s.i64("ContentStateId", r.content_id);
+    s.i64("Step", r.step);
+    s.edges("Edges", edges);
+    s.i64("IsInitial", r.step == 0 ? 1 : 0);
+    if (r.with_hash) s.i64("CanonicalHash", r.hash);
+}
+
+struct EventRecordIds {
+    int64_t id, canonical_id, rule, input, output, canonical_input, canonical_output;
+};
+
+// An "Events" record: seven fields, and the two edge lists unless `minimal` (EventsMinimal).
+template <class Sink>
+void write_event_record(Sink& s, const EventRecordIds& r, bool minimal,
+                        const std::vector<int64_t>& consumed, const std::vector<int64_t>& produced) {
+    s.begin(minimal ? 7u : 9u);
+    s.i64("Id", r.id);
+    s.i64("CanonicalId", r.canonical_id);
+    s.i64("RuleIndex", r.rule);
+    s.i64("InputState", r.input);
+    s.i64("OutputState", r.output);
+    s.i64("CanonicalInputState", r.canonical_input);
+    s.i64("CanonicalOutputState", r.canonical_output);
+    if (minimal) return;
+    s.i64_list("ConsumedEdges", consumed);
+    s.i64_list("ProducedEdges", produced);
+}
+
 // Which relations a graph property is built FROM, decided by its name.
 //
 // Shared with whoever must decide what the run records: a property whose relation was never

@@ -1907,4 +1907,61 @@ TEST(GpuBinaryGate, PositionalRunsOnTheCpuEngine) {
     EXPECT_FALSE(worker_call(w, branch_job(0, "Close", handle, options(false), 3)).empty());
     worker_stop(w);
 }
+// A state record's edges carry the ids the event records name, on both devices: every event's
+// ProducedEdges are edge ids of its output state (CanonicalizeStates None). The GPU once numbered
+// a state's edges 0, 1, 2, ... and the ids agreed only for the initial state.
+TEST(GpuBinaryGate, StateEdgeIdsAreTheIdsEventsName) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    auto opts = [](wxf::Writer& w) { put_str_list_option(w, "RequestedData", {"States", "Events"}); };
+    // state id -> edge ids, and (output state, produced edges) per event.
+    auto check = [](const std::vector<uint8_t>& out, const char* device) {
+        std::map<int64_t, std::set<int64_t>> state_edges;
+        std::vector<std::pair<int64_t, std::vector<int64_t>>> produced;
+        wxf::Parser parser(out);
+        parser.skip_header();
+        parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+            if (k != "States" && k != "Events") { vp.skip_value(); return; }
+            vp.read_association_generic([&](wxf::Parser& kp, wxf::Parser& rp) {
+                const int64_t key = kp.read<int64_t>();
+                int64_t out_state = -1;
+                std::vector<int64_t> prod;
+                rp.read_association([&](const std::string& f, wxf::Parser& fp) {
+                    if (k == "States" && f == "Edges") {
+                        fp.read_function([&](const std::string&, size_t n, wxf::Parser& ep) {
+                            for (size_t i = 0; i < n; ++i)
+                                ep.read_function([&](const std::string&, size_t m, wxf::Parser& xp) {
+                                    state_edges[key].insert(xp.read<int64_t>());
+                                    for (size_t j = 1; j < m; ++j) xp.skip_value();
+                                });
+                        });
+                    } else if (k == "Events" && f == "OutputState") {
+                        out_state = fp.read<int64_t>();
+                    } else if (k == "Events" && f == "ProducedEdges") {
+                        prod = fp.read<std::vector<int64_t>>();
+                    } else {
+                        fp.skip_value();
+                    }
+                });
+                if (k == "Events") produced.emplace_back(out_state, prod);
+            });
+        });
+        ASSERT_FALSE(produced.empty()) << device;
+        for (const auto& [st, prod] : produced)
+            for (int64_t e : prod)
+                EXPECT_TRUE(state_edges[st].count(e))
+                    << device << ": produced edge " << e << " is not an edge id of state " << st;
+    };
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    HostBridge host;
+    check(run_rewriting_core(branch_job(2, "Evolve", 0, opts, 1), host), "CPU");
+    check(worker_call(w, branch_job(2, "Evolve", 0, opts, 1)), "GPU");
+    worker_stop(w);
+}
 #endif  // _WIN32

@@ -167,12 +167,12 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
     in.max_successor_states_per_parent =
         static_cast<uint32_t>(job.max_successor_states_per_parent);
     in.matches_per_state_rule = static_cast<uint32_t>(job.matches_per_state_rule);
-    // Only these two components need the edge id -> contents table and the per-state id lists.
-    // Genesis synthesis needs the per-state edge ids too: an INITIAL edge is one that
+    // These components need the edge id -> contents table or the per-state id lists: "States"
+    // records carry each edge's id. Genesis synthesis needs the per-state edge ids too: an INITIAL edge is one that
     // appears in a root state's list, and that is the only way to tell one from an edge a
     // rewrite produced.
     in.edge_identity = job.include_global_edges || job.include_state_bitvectors ||
-                       job.show_genesis_events;
+                       job.show_genesis_events || job.include_states;
     in.max_device_memory_bytes = job.max_device_memory_bytes;
     return in;
 }
@@ -414,96 +414,68 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
 
     if (job.include_states) {
         wxf::WXFValueAssociation states_assoc;
+        hgmarshal::ValueRecordSink sink;
         for (hg_gpu::StateId rep : class_reps) {
-            wxf::WXFValueList edge_list;
-            int64_t idx = 0;
-            // Full relabels to the IR canonical form; None/Automatic keep the state's own labels
-            // (there is no canonical relabelling when states are not identified by isomorphism).
-            if (canon_mode == hg_gpu::CanonicalizationMode::Full) {
-                auto canon = ir.canonicalize_edges(*state_edges[rep]);
-                for (const auto& ce : canon.canonical_form.edges) {
-                    wxf::WXFValueList ed;
-                    ed.push_back(wxf::WXFValue(idx++));
-                    for (auto v : ce) ed.push_back(wxf::WXFValue(static_cast<int64_t>(v)));
-                    edge_list.push_back(wxf::WXFValue(ed));
-                }
-            } else {
-                for (const auto& ce : *state_edges[rep]) {
-                    wxf::WXFValueList ed;
-                    ed.push_back(wxf::WXFValue(idx++));
-                    for (auto v : ce) ed.push_back(wxf::WXFValue(static_cast<int64_t>(v)));
-                    edge_list.push_back(wxf::WXFValue(ed));
-                }
-            }
-            bool is_init = is_output.find(rep) == is_output.end();
-            int64_t step = is_init ? 0 : static_cast<int64_t>(state_step[rep]);
-            wxf::WXFValueAssociation sa;
-            sa.push_back({wxf::WXFValue("Id"), wxf::WXFValue(static_cast<int64_t>(rep))});
-            sa.push_back({wxf::WXFValue("CanonicalId"), wxf::WXFValue(static_cast<int64_t>(rep))});
-            sa.push_back({wxf::WXFValue("ContentStateId"), wxf::WXFValue(static_cast<int64_t>(rep))});
-            sa.push_back({wxf::WXFValue("Step"), wxf::WXFValue(step)});
-            sa.push_back({wxf::WXFValue("Edges"), wxf::WXFValue(edge_list)});
-            sa.push_back({wxf::WXFValue("IsInitial"), wxf::WXFValue(is_init)});
-            if (job.include_canonical_hashes) {
-                sa.push_back({wxf::WXFValue("CanonicalHash"),
-                              wxf::WXFValue(static_cast<int64_t>(state_hash[rep]))});
-            }
-            states_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(rep)), wxf::WXFValue(sa)});
+            // (edge id, vertices), the ids from state_edge_ids (set by edge_identity, which a
+            // States request turns on), parallel to the state's edge contents.
+            const auto& contents = *state_edges[rep];
+            const std::vector<hg_gpu::EdgeId>* ids =
+                rep < result.state_edge_ids.size() ? &result.state_edge_ids[rep] : nullptr;
+            std::vector<std::pair<int64_t, std::vector<uint32_t>>> edges;
+            edges.reserve(contents.size());
+            for (size_t k = 0; k < contents.size(); ++k)
+                edges.emplace_back(ids && k < ids->size() ? static_cast<int64_t>((*ids)[k])
+                                                          : static_cast<int64_t>(k),
+                                   std::vector<uint32_t>(contents[k].begin(), contents[k].end()));
+            const bool is_init = is_output.find(rep) == is_output.end();
+            hgmarshal::write_state_record(sink,
+                hgmarshal::StateRecordIds{
+                    static_cast<int64_t>(rep), static_cast<int64_t>(rep), static_cast<int64_t>(rep),
+                    is_init ? 0 : static_cast<int64_t>(state_step[rep]),
+                    job.include_canonical_hashes, static_cast<int64_t>(state_hash[rep])},
+                canon_mode == hg_gpu::CanonicalizationMode::Full, std::move(edges));
+            states_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(rep)), wxf::WXFValue(sink.take())});
         }
         full_result.push_back({wxf::WXFValue("States"), wxf::WXFValue(states_assoc)});
     }
 
     if (job.include_events) {
         wxf::WXFValueAssociation events_assoc;
+        hgmarshal::ValueRecordSink sink;
+        std::vector<int64_t> consumed, produced;
         for (const auto& e : result.events) {
-            int64_t canon_event = (e.canonical_id == hg_gpu::INVALID_ID)
-                ? static_cast<int64_t>(e.id) : static_cast<int64_t>(e.canonical_id);
-            wxf::WXFValueList consumed, produced;
+            consumed.clear();
+            produced.clear();
             for (auto c : e.consumed_edges)
-                if (c != hg_gpu::INVALID_ID) consumed.push_back(wxf::WXFValue(static_cast<int64_t>(c)));
-            for (auto p : e.produced_edges)
-                if (p != hg_gpu::INVALID_ID) produced.push_back(wxf::WXFValue(static_cast<int64_t>(p)));
-            wxf::WXFValueAssociation ea;
-            ea.push_back({wxf::WXFValue("Id"), wxf::WXFValue(static_cast<int64_t>(e.id))});
-            ea.push_back({wxf::WXFValue("CanonicalId"), wxf::WXFValue(canon_event)});
-            ea.push_back({wxf::WXFValue("RuleIndex"), wxf::WXFValue(static_cast<int64_t>(e.rule))});
-            ea.push_back({wxf::WXFValue("InputState"), wxf::WXFValue(static_cast<int64_t>(e.input_state))});
-            ea.push_back({wxf::WXFValue("OutputState"), wxf::WXFValue(static_cast<int64_t>(e.output_state))});
-            ea.push_back({wxf::WXFValue("CanonicalInputState"), wxf::WXFValue(rep_of(e.input_state))});
-            ea.push_back({wxf::WXFValue("CanonicalOutputState"), wxf::WXFValue(rep_of(e.output_state))});
-            // The minimal form stops here: seven fields, not nine. The two edge lists are what
-            // a caller asking for EventsMinimal is declining, and they are the largest part of
-            // an event record.
-            if (!job.include_events_minimal) {
-                ea.push_back({wxf::WXFValue("ConsumedEdges"), wxf::WXFValue(consumed)});
-                ea.push_back({wxf::WXFValue("ProducedEdges"), wxf::WXFValue(produced)});
-            }
-            events_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(e.id)), wxf::WXFValue(ea)});
+                if (c != hg_gpu::INVALID_ID) consumed.push_back(static_cast<int64_t>(c));
+            for (auto pe : e.produced_edges)
+                if (pe != hg_gpu::INVALID_ID) produced.push_back(static_cast<int64_t>(pe));
+            hgmarshal::write_event_record(sink,
+                hgmarshal::EventRecordIds{
+                    static_cast<int64_t>(e.id),
+                    e.canonical_id == hg_gpu::INVALID_ID ? static_cast<int64_t>(e.id)
+                                                         : static_cast<int64_t>(e.canonical_id),
+                    static_cast<int64_t>(e.rule),
+                    static_cast<int64_t>(e.input_state), static_cast<int64_t>(e.output_state),
+                    rep_of(e.input_state), rep_of(e.output_state)},
+                job.include_events_minimal, consumed, produced);
+            events_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(e.id)), wxf::WXFValue(sink.take())});
         }
         // One genesis event per initial state, in the same shape a real one has. Rule index -1
         // is the host's sentinel for "no rule applied", which is what produced these edges.
         for (size_t i = 0; i < genesis_roots.size(); ++i) {
             const hg_gpu::StateId root = genesis_roots[i];
             const int64_t gid = static_cast<int64_t>(first_genesis_event + i);
-            wxf::WXFValueList consumed, produced;
+            consumed.clear();
+            produced.clear();
             if (root < result.state_edge_ids.size())
-                for (auto pe : result.state_edge_ids[root])
-                    produced.push_back(wxf::WXFValue(static_cast<int64_t>(pe)));
-            wxf::WXFValueAssociation ea;
-            ea.push_back({wxf::WXFValue("Id"), wxf::WXFValue(gid)});
-            ea.push_back({wxf::WXFValue("CanonicalId"), wxf::WXFValue(gid)});
-            ea.push_back({wxf::WXFValue("RuleIndex"), wxf::WXFValue(static_cast<int64_t>(-1))});
-            ea.push_back({wxf::WXFValue("InputState"),
-                          wxf::WXFValue(static_cast<int64_t>(genesis_state_id))});
-            ea.push_back({wxf::WXFValue("OutputState"), wxf::WXFValue(static_cast<int64_t>(root))});
-            ea.push_back({wxf::WXFValue("CanonicalInputState"),
-                          wxf::WXFValue(static_cast<int64_t>(genesis_state_id))});
-            ea.push_back({wxf::WXFValue("CanonicalOutputState"), wxf::WXFValue(rep_of(root))});
-            if (!job.include_events_minimal) {
-                ea.push_back({wxf::WXFValue("ConsumedEdges"), wxf::WXFValue(consumed)});
-                ea.push_back({wxf::WXFValue("ProducedEdges"), wxf::WXFValue(produced)});
-            }
-            events_assoc.push_back({wxf::WXFValue(gid), wxf::WXFValue(ea)});
+                for (auto pe : result.state_edge_ids[root]) produced.push_back(static_cast<int64_t>(pe));
+            hgmarshal::write_event_record(sink,
+                hgmarshal::EventRecordIds{gid, gid, -1, static_cast<int64_t>(genesis_state_id),
+                                          static_cast<int64_t>(root),
+                                          static_cast<int64_t>(genesis_state_id), rep_of(root)},
+                job.include_events_minimal, consumed, produced);
+            events_assoc.push_back({wxf::WXFValue(gid), wxf::WXFValue(sink.take())});
         }
         full_result.push_back({wxf::WXFValue("Events"), wxf::WXFValue(events_assoc)});
     }

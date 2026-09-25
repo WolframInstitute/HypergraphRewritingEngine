@@ -9,6 +9,7 @@
 #include "cpu_engine_holder.hpp"
 #include "delivery_cursor.hpp"
 #include "graph_marshal.hpp"
+#include "hypergraph/ir_canonicalization.hpp"
 
 namespace HG_NAMESPACE {
 namespace ffi {
@@ -177,6 +178,20 @@ void push_branchial_state_edges(wxf::WXFValueAssociation& result,
     wxf::WXFValueList verts;
     for (int64_t v : set.vertices) verts.push_back(wxf::WXFValue(v));
     result.push_back({wxf::WXFValue("BranchialStateVertices"), wxf::WXFValue(verts)});
+}
+
+void state_record_edges(bool full,
+                        std::vector<std::pair<int64_t, std::vector<uint32_t>>>& edges) {
+    if (!full || edges.empty()) return;
+    std::vector<std::vector<hypergraph::VertexId>> contents;
+    contents.reserve(edges.size());
+    for (const auto& e : edges) contents.emplace_back(e.second.begin(), e.second.end());
+    hypergraph::IRCanonicalizer ir;
+    const auto canon = ir.canonicalize_edges(contents);
+    edges.clear();
+    int64_t idx = 0;
+    for (const auto& ce : canon.canonical_form.edges)
+        edges.emplace_back(idx++, std::vector<uint32_t>(ce.begin(), ce.end()));
 }
 
 GraphPropertyNeeds graph_property_needs(const std::string& graph_property) {

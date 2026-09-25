@@ -1040,12 +1040,9 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         wxf::Writer sections;
         std::size_t streamed_top_sections = 0;
 
-        // States -> Association[state_id -> state_data]
-        // Send ALL states (not just canonical) - WL uses CanonicalId/ContentStateId for vertex merging
-        // Each state includes: Id, CanonicalId, ContentStateId, Step, Edges, IsInitial
-        // - CanonicalId: isomorphism-based (for Full mode) - isomorphic states share ID
-        // - ContentStateId: content-based (for Automatic mode) - same-content states share ID
-        // This matches reference behavior where canonicalization is applied at display time
+        // States -> Association[state id -> state record] (hgmarshal::write_state_record): every
+        // state, or under Full one per class. CanonicalId is shared by isomorphic states and
+        // ContentStateId by states of equal content.
         if (req.include_states) {
             const uint32_t num_states = hg.num_published_states();
             const ContentIndex& ci = content_index();
@@ -1072,110 +1069,58 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             sections.write_byte(static_cast<uint8_t>(wxf::Token::Association));
             sections.write_varint(emit_sids.size());
 
+            hgmarshal::StreamRecordSink sink(sections);
             for (uint32_t sid : emit_sids) {
                 const hypergraph::State& state = hg.get_state(sid);
-                // Canonical state ID (isomorphism-based) and content state ID (from cached hash).
-                hypergraph::StateId canonical_id = hg.get_canonical_state(sid);
-                hypergraph::StateId content_id = content_hash_to_id.at(state_content_hashes[sid]);
-
-                // Association key: raw state id.
-                sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-                sections.write(static_cast<int64_t>(sid));
-
-                // state_data association: Id, CanonicalId, ContentStateId, Step, Edges,
-                // IsInitial, and (optionally) CanonicalHash.
-                sections.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-                sections.write_varint(req.include_canonical_hashes ? 7u : 6u);
-
-                auto put_i64 = [&](const char* k, int64_t v) {
-                    sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-                    sections.write(std::string(k));
-                    sections.write(v);
-                };
-                put_i64("Id", static_cast<int64_t>(sid));
-                put_i64("CanonicalId", static_cast<int64_t>(canonical_id));
-                put_i64("ContentStateId", static_cast<int64_t>(content_id));
-                put_i64("Step", static_cast<int64_t>(state.step));
-
-                // Edges -> List of {edge_id, v1, v2, ...}. When CanonicalizeStates is
-                // Full, edges are IR-canonicalized (vertices 0..n-1, sorted) with
-                // sequential edge IDs.
-                sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-                sections.write(std::string("Edges"));
-                if (full_canonicalization) {
-                    std::vector<std::vector<hypergraph::VertexId>> edge_vecs;
-                    state.edges.for_each([&](hypergraph::EdgeId eid) {
-                        const hypergraph::Edge& e = hg.get_edge(eid);
-                        edge_vecs.emplace_back(e.vertices, e.vertices + e.arity);
-                    });
-
-                    if (!edge_vecs.empty()) {
-                        hypergraph::IRCanonicalizer ir;
-                        auto canon_result = ir.canonicalize_edges(edge_vecs);
-                        const auto& cedges = canon_result.canonical_form.edges;
-                        sections.write_function("List", cedges.size());
-                        int64_t edge_idx = 0;
-                        for (const auto& canon_edge : cedges) {
-                            sections.write_function("List", canon_edge.size() + 1);
-                            sections.write(edge_idx++);
-                            for (auto v : canon_edge) sections.write(static_cast<int64_t>(v));
-                        }
-                    } else {
-                        sections.write_function("List", 0);
-                    }
-                } else {
-                    sections.write_function("List", state.edges.count());
-                    state.edges.for_each([&](hypergraph::EdgeId eid) {
-                        const hypergraph::Edge& edge = hg.get_edge(eid);
-                        sections.write_function("List", static_cast<std::size_t>(edge.arity) + 1);
-                        sections.write(static_cast<int64_t>(eid));
-                        for (uint8_t i = 0; i < edge.arity; ++i)
-                            sections.write(static_cast<int64_t>(edge.vertices[i]));
-                    });
-                }
-
-                // IsInitial -> boolean, serialized as the 0/1 integer the value tree
-                // produces (WXFValue(bool) stores int64).
-                sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-                sections.write(std::string("IsInitial"));
-                sections.write(static_cast<int64_t>(state.step == 0));
-
+                std::vector<std::pair<int64_t, std::vector<uint32_t>>> edges;
+                edges.reserve(state.edges.count());
+                state.edges.for_each([&](hypergraph::EdgeId eid) {
+                    const hypergraph::Edge& e = hg.get_edge(eid);
+                    edges.emplace_back(static_cast<int64_t>(eid),
+                                       std::vector<uint32_t>(e.vertices, e.vertices + e.arity));
+                });
+                uint64_t exact_hash = 0;
                 if (req.include_canonical_hashes) {
                     // The option's contract is the IR canonical hash: identical for isomorphic
                     // states within and across runs, so it can key cross-run fusion.
-                    // state.canonical_hash holds exactly that whenever it is stored (Full mode,
-                    // and every mode under event canonicalization); a zero means the coarse
-                    // modes deferred it, so it is computed here, per serialized state, priced
-                    // only under the option. The empty state keeps its dedicated engine hash.
-                    uint64_t exact_hash = state.canonical_hash;
-                    if (exact_hash == 0 && state.edges.count() > 0) {
-                        std::vector<std::vector<hypergraph::VertexId>> hash_edges;
-                        state.edges.for_each([&](hypergraph::EdgeId eid) {
-                            const hypergraph::Edge& edge = hg.get_edge(eid);
-                            hash_edges.emplace_back(edge.vertices, edge.vertices + edge.arity);
-                        });
+                    // state.canonical_hash holds it whenever it is stored (Full mode, and every
+                    // mode under event canonicalization); a zero means the coarse modes deferred
+                    // it, so it is computed here, per serialized state, only under the option.
+                    // The empty state keeps its dedicated engine hash.
+                    exact_hash = state.canonical_hash;
+                    if (exact_hash == 0 && !edges.empty()) {
+                        std::vector<std::vector<hypergraph::VertexId>> contents;
+                        for (const auto& e : edges) contents.emplace_back(e.second.begin(), e.second.end());
                         hypergraph::IRCanonicalizer ir;
-                        exact_hash = ir.compute_canonical_hash(hash_edges);
+                        exact_hash = ir.compute_canonical_hash(contents);
                     }
-                    // Reinterpreted to int64 (bijective, so equality and grouping are
-                    // preserved); a hash with the top bit set surfaces as a negative integer.
-                    put_i64("CanonicalHash", static_cast<int64_t>(exact_hash));
                 }
+                // Association key: raw state id.
+                sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                sections.write(static_cast<int64_t>(sid));
+                // A hash with the top bit set surfaces as a negative integer (the cast is
+                // bijective, so equality and grouping are preserved).
+                hgmarshal::write_state_record(sink,
+                    hgmarshal::StateRecordIds{
+                        static_cast<int64_t>(sid),
+                        static_cast<int64_t>(hg.get_canonical_state(sid)),
+                        static_cast<int64_t>(content_hash_to_id.at(state_content_hashes[sid])),
+                        static_cast<int64_t>(state.step),
+                        req.include_canonical_hashes, static_cast<int64_t>(exact_hash)},
+                    full_canonicalization, std::move(edges));
             }
             ++streamed_top_sections;
         }
 
-        // Events -> Association[event_id -> event_data]
-        // Only canonical events are sent (for graph vertices)
-        // State IDs are mapped through get_canonical_state() so edges connect canonical states
-        if (req.include_events) {
-            // Send ALL events (not just canonical) - WL uses CanonicalId for vertex merging
-            // This preserves event multiplicity: multiple events with same canonical ID
-            // map to one vertex, but their edges to different output states are preserved.
-            uint32_t num_raw_events = hg.num_published_events();
+        // Events -> Association[event_id -> event record]: every event, not only canonical ones,
+        // so the caller can merge by CanonicalId and keep each event's own endpoints.
+        // EventsMinimal sends the records without their two edge lists.
+        if (req.include_events || req.include_events_minimal) {
+            const bool minimal = !req.include_events;
+            const uint32_t num_raw_events = hg.num_published_events();
 
-            // First pass fixes the emitted event set so the association length is
-            // known before streaming.
+            // First pass fixes the emitted event set so the association length is known before
+            // streaming.
             std::vector<uint32_t> emit_eids;
             emit_eids.reserve(num_raw_events);
             for (uint32_t eid = 0; eid < num_raw_events; ++eid) {
@@ -1190,110 +1135,25 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             sections.write_byte(static_cast<uint8_t>(wxf::Token::Association));
             sections.write_varint(emit_eids.size());
 
+            hgmarshal::StreamRecordSink sink(sections);
+            std::vector<int64_t> consumed, produced;
             for (uint32_t eid : emit_eids) {
                 const hypergraph::Event& event = hg.get_event(eid);
-
-                // Send BOTH raw and canonical state IDs - WL chooses which to use per graph type
-                // Raw IDs are for edge connectivity to actual states
-                // Canonical IDs are for when state canonicalization is enabled (merging isomorphic states)
-                int64_t raw_input_state_id = static_cast<int64_t>(event.input_state);
-                int64_t raw_output_state_id = static_cast<int64_t>(event.output_state);
-                int64_t canonical_input_state_id = static_cast<int64_t>(hg.get_canonical_state(event.input_state));
-                int64_t canonical_output_state_id = static_cast<int64_t>(hg.get_canonical_state(event.output_state));
-
-                // Canonical event ID: for canonical events use own ID, for duplicates use the canonical's ID
-                int64_t canonical_event_id = event.is_canonical()
-                    ? static_cast<int64_t>(eid)
-                    : static_cast<int64_t>(event.canonical_event_id);
-
-                // Association key: raw event id.
+                consumed.assign(event.consumed_edges, event.consumed_edges + event.num_consumed);
+                produced.assign(event.produced_edges, event.produced_edges + event.num_produced);
                 sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
                 sections.write(static_cast<int64_t>(eid));
-
-                sections.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-                sections.write_varint(9u);
-
-                auto put_i64 = [&](const char* k, int64_t v) {
-                    sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-                    sections.write(std::string(k));
-                    sections.write(v);
-                };
-                put_i64("Id", static_cast<int64_t>(eid));
-                put_i64("CanonicalId", canonical_event_id);
-                put_i64("RuleIndex", static_cast<int64_t>(event.rule_index));
-                put_i64("InputState", raw_input_state_id);
-                put_i64("OutputState", raw_output_state_id);
-                put_i64("CanonicalInputState", canonical_input_state_id);
-                put_i64("CanonicalOutputState", canonical_output_state_id);
-
-                // Consumed/produced edges as integer lists.
-                sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-                sections.write(std::string("ConsumedEdges"));
-                sections.write_function("List", event.num_consumed);
-                for (uint8_t i = 0; i < event.num_consumed; ++i)
-                    sections.write(static_cast<int64_t>(event.consumed_edges[i]));
-
-                sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-                sections.write(std::string("ProducedEdges"));
-                sections.write_function("List", event.num_produced);
-                for (uint8_t i = 0; i < event.num_produced; ++i)
-                    sections.write(static_cast<int64_t>(event.produced_edges[i]));
-            }
-            ++streamed_top_sections;
-        }
-
-        // EventsMinimal -> Association[event_id -> {Id, CanonicalId, RuleIndex, InputState, OutputState, CanonicalInputState, CanonicalOutputState}]
-        // Reduced event data for graph structure variants that don't need full event details
-        // Send ALL events - WL uses CanonicalId for vertex merging, RuleIndex for Event=Automatic grouping
-        if (req.include_events_minimal && !req.include_events) {
-            uint32_t num_raw_events = hg.num_published_events();
-
-            std::vector<uint32_t> emit_eids;
-            emit_eids.reserve(num_raw_events);
-            for (uint32_t eid = 0; eid < num_raw_events; ++eid) {
-                const hypergraph::Event& event = hg.get_event(eid);
-                if (event.id == hypergraph::INVALID_ID) continue;
-                if (!req.show_genesis_events && hg.is_genesis_event(eid)) continue;
-                emit_eids.push_back(eid);
-            }
-
-            sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-            sections.write(std::string("Events"));
-            sections.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-            sections.write_varint(emit_eids.size());
-
-            for (uint32_t eid : emit_eids) {
-                const hypergraph::Event& event = hg.get_event(eid);
-
-                // Send BOTH raw and canonical state IDs - WL chooses which to use per graph type
-                int64_t raw_input_state_id = static_cast<int64_t>(event.input_state);
-                int64_t raw_output_state_id = static_cast<int64_t>(event.output_state);
-                int64_t canonical_input_state_id = static_cast<int64_t>(hg.get_canonical_state(event.input_state));
-                int64_t canonical_output_state_id = static_cast<int64_t>(hg.get_canonical_state(event.output_state));
-
-                // Canonical event ID: for canonical events use own ID, for duplicates use the canonical's ID
-                int64_t canonical_event_id = event.is_canonical()
-                    ? static_cast<int64_t>(eid)
-                    : static_cast<int64_t>(event.canonical_event_id);
-
-                sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-                sections.write(static_cast<int64_t>(eid));
-
-                sections.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-                sections.write_varint(7u);
-
-                auto put_i64 = [&](const char* k, int64_t v) {
-                    sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-                    sections.write(std::string(k));
-                    sections.write(v);
-                };
-                put_i64("Id", static_cast<int64_t>(eid));
-                put_i64("CanonicalId", canonical_event_id);
-                put_i64("RuleIndex", static_cast<int64_t>(event.rule_index));
-                put_i64("InputState", raw_input_state_id);
-                put_i64("OutputState", raw_output_state_id);
-                put_i64("CanonicalInputState", canonical_input_state_id);
-                put_i64("CanonicalOutputState", canonical_output_state_id);
+                hgmarshal::write_event_record(sink,
+                    hgmarshal::EventRecordIds{
+                        static_cast<int64_t>(eid),
+                        event.is_canonical() ? static_cast<int64_t>(eid)
+                                             : static_cast<int64_t>(event.canonical_event_id),
+                        static_cast<int64_t>(event.rule_index),
+                        static_cast<int64_t>(event.input_state),
+                        static_cast<int64_t>(event.output_state),
+                        static_cast<int64_t>(hg.get_canonical_state(event.input_state)),
+                        static_cast<int64_t>(hg.get_canonical_state(event.output_state))},
+                    minimal, consumed, produced);
             }
             ++streamed_top_sections;
         }
