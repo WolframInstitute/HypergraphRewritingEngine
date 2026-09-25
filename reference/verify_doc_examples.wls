@@ -13,12 +13,28 @@
    unevaluated expression rather than an error, so a check that only watched for messages
    would call it clean.
 
+   A HINT IS CHECKED. A block may be followed by a comment <!-- => ... --> recording what it
+   returns, for the author. The converter drops these comments, so nothing else compares them
+   with the output, and a hint that went stale when the engine changed would stay on the page's
+   source. Here the block's result, in InputForm with runs of whitespace collapsed, must equal
+   the hint, or the part of the hint before a "; " that starts a note.
+
+   A GPU EXAMPLE THAT RAN ON THE CPU FAILS: HGEvolve::gpudev says the device was not available,
+   so the page would show a result the device did not produce. HG_ALLOW_GPU_FALLBACK=1 reports
+   it and continues, for a machine without the GPU worker.
+
+   Each page's blocks share one context of their own, so a definition on one page is not
+   visible on the next.
+
    Exit code is the number of failing blocks. *)
 
 repo = ParentDirectory[DirectoryName[$InputFileName]];
 PacletDirectoryUnload[FileNameJoin[{repo, "paclet"}]];
 PacletDirectoryLoad[FileNameJoin[{repo, "paclet"}]];
 Needs["HypergraphRewriting`"];
+(* The gate's own symbols live in a context of their own, so no name used here can collide with
+   a name an example defines. *)
+Begin["VerifyDocExamples`"];
 
 (* WARM THE KERNEL BEFORE ANY BLOCK IS JUDGED.
    The FIRST call into the package in a fresh kernel drags in the paclet manager, the stream
@@ -41,51 +57,73 @@ Quiet@Check[HGEvolve[{{1, 2}} -> {{1, 2}, {2, 3}}, {{1, 2}}, 1], Null];
 Quiet@Check[HGEvolve[{{1, 2}} -> {{1, 2}, {2, 3}}, {{1, 2}}, 1, "NumStates",
                      "TargetDevice" -> "GPU"], Null];
 
-(* Fenced blocks, in file order. A fence line opens or closes; text between an odd and an
-   even fence is code. Blocks tagged with a non-Wolfram language are skipped. *)
-blocksOf[path_] := Module[{lines, out = {}, cur = {}, inside = False},
+(* Fenced blocks, in file order, each with the hint that follows it (None when there is none).
+   A fence line opens or closes; text between an odd and an even fence is code. *)
+blocksOf[path_] := Module[{lines, out = {}, cur = {}, inside = False, n, j, hint},
   lines = StringSplit[Import[path, "Text"], "\n"];
+  n = Length[lines];
   Do[
-    If[StringStartsQ[StringTrim[l], "```"],
-      If[inside, AppendTo[out, StringRiffle[cur, "\n"]]; cur = {}; inside = False,
-                 inside = True],
-      If[inside, AppendTo[cur, l]]],
-    {l, lines}];
-  Select[out, StringTrim[#] =!= "" &]];
+    With[{l = lines[[k]]},
+      If[StringStartsQ[StringTrim[l], "```"],
+        If[inside,
+          j = k + 1;
+          While[j <= n && StringTrim[lines[[j]]] === "", j++];
+          hint = If[j <= n,
+            StringCases[StringTrim[lines[[j]]], StartOfString ~~ "<!-- =>" ~~ h__ ~~ "-->" ~~ EndOfString :> StringTrim[h]],
+            {}];
+          AppendTo[out, {StringRiffle[cur, "\n"], If[hint === {}, None, First[hint]]}];
+          cur = {}; inside = False,
+          inside = True],
+        If[inside, AppendTo[cur, l]]]],
+    {k, n}];
+  Select[out, StringTrim[First[#]] =!= "" &]];
+
+collapse[text_String] := StringReplace[StringTrim[text], Whitespace -> " "];
+hintMatchQ[res_, hint_String] := With[{got = collapse[ToString[res, InputForm, PageWidth -> Infinity]]},
+  got === collapse[hint] ||
+  (StringContainsQ[hint, "; "] && got === collapse[First[StringSplit[hint, "; ", 2]]])];
+gpuFallbackOK = Environment["HG_ALLOW_GPU_FALLBACK"] === "1";
 
 sources = Select[FileNames["*.md", FileNameJoin[{repo, "docs", "en"}], Infinity],
   ! StringContainsQ[#, ".generated"] &];
 total = 0; failed = {};
 
 Do[
-  Module[{blocks = blocksOf[src]},
+  Module[{blocks = blocksOf[src], ctx = "DocExample`" <> FileBaseName[src] <> "`"},
     Print["\n=== ", FileNameTake[src], ": ", Length[blocks], " block(s) ==="];
     Do[
-      Module[{code = blocks[[i]], msgs = {}, res, bad},
+      Module[{code = blocks[[i, 1]], hint = blocks[[i, 2]], msgs = {}, firstMsg = None, res, bad, hintBad},
         total++;
         (* The handler fires for EVERY message, including ones that are switched off --
            those arrive wrapped in $Off[...] and are by definition not shown to a user, so
            they are not what this is looking for. Nothing is wrapped in Quiet here for the
            same reason: quieting would make every message look switched-off and the check
            would pass on anything. *)
-        res = Block[{$Context = "DocExample`", $ContextPath = {"DocExample`",
-                     "HypergraphRewriting`", "System`"}},
+        res = Block[{$Context = ctx, $ContextPath = {ctx, "HypergraphRewriting`", "System`"}},
           Internal`HandlerBlock[{"Message",
               With[{nm = ToString[#[[1, 1]]]},
-                If[!StringStartsQ[nm, "$Off"], AppendTo[msgs, nm]]] &},
+                If[!StringStartsQ[nm, "$Off"],
+                  AppendTo[msgs, nm];
+                  If[firstMsg === None, firstMsg = ToString[Short[#, 3], InputForm]]]] &},
             Check[ToExpression[code], $Failed]]];
         (* An unevaluated HGEvolve head means the arguments did not match any definition. *)
-        bad = FailureQ[res] || res === $Failed ||
+        bad = FailureQ[res] || (res === $Failed && hint === None) ||
               (Head[res] === HypergraphRewriting`HGEvolve) ||
               !FreeQ[res, _HypergraphRewriting`HGEvolve];
-        If[bad || msgs =!= {},
+        If[gpuFallbackOK && MemberQ[msgs, "HGEvolve::gpudev"],
+          Print["WARN  block ", i, "  ran on the CPU (HGEvolve::gpudev)"];
+          msgs = DeleteCases[msgs, "HGEvolve::gpudev"]];
+        hintBad = StringQ[hint] && ! hintMatchQ[res, hint];
+        If[bad || msgs =!= {} || hintBad,
           AppendTo[failed, {FileNameTake[src], i}];
           Print["FAIL  block ", i, "  ", StringTake[StringReplace[code, "\n" -> " "],
                                                     UpTo[70]]];
           If[msgs =!= {},
             Print["      ", Length[msgs], " message(s), distinct: ",
-                  Take[Tally[msgs], UpTo[6]]]];
-          If[bad, Print["      returned: ", ToString[Short[res, 2]]]],
+                  Take[Tally[msgs], UpTo[6]], "\n      first: ", firstMsg]];
+          If[bad, Print["      returned: ", ToString[Short[res, 2]]]];
+          If[hintBad, Print["      hint:     ", hint, "\n      returned: ",
+                            collapse[ToString[res, InputForm, PageWidth -> Infinity]]]],
           Print["PASS  block ", i]]],
       {i, Length[blocks]}]],
   {src, sources}];

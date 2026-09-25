@@ -270,6 +270,7 @@ implementation is written `MultiwayReference` and the directory `reference/`.
 - **`verify_paclet.wls` / `verify_paclet_gpu.wls`** -- load the local paclet, check `HGEvolve` against the golden corpus (CPU; GPU via `TargetDevice->"GPU"`)
 - **`verify_sessions.wls`** -- the session verbs' LIFETIME (open, refuse a second open, step, close, reopen), with every prefix depth compared against an independent one-shot `HGEvolve`
 - **`verify_state_statistics.wls`** -- "StepStatistics" against the multiway-statistics probes' definitions computed in Wolfram Language from a raw run, under quotient exploration and full capture, every key of every step
+- **`verify_doc_examples.wls`** -- evaluates every example in `docs/en`, each page in a context of its own, and fails on a message, a `Failure`, an unevaluated `HGEvolve`, a `<!-- => ... -->` hint the result does not equal, or a GPU example that ran on the CPU (`HG_ALLOW_GPU_FALLBACK=1` reports that instead)
 - **`validate.wls` / `compare_multiwaysystem.wls`** -- validate the reference vs a determinism corpus / cross-check vs the authoritative `MultiwaySystem` paclet
 - **`CANONICALIZATION.md`** -- the canonicalization naming cross-map across the four layers
 
@@ -305,6 +306,7 @@ rented box that does.
   canonical state counts. One worker is the ground truth: with a single worker there is no
   interleaving to depend on. Truncated runs are skipped rather than compared, since past the
   ceiling which states got in is the arrival race.
+- **`doc_messages_check.py`** -- fails when a built documentation notebook shows a message cell, which is what a reader sees under an example that raised one. Reads the notebooks, so it judges the built page under the converter's own evaluation rules; needs no Wolfram kernel. `--selftest` checks the parser on a fixture.
 - **`docs_fresh_check.py`** -- the notebooks under `paclet/Documentation/English` are GENERATED
   from `docs/en/**/*.md` and committed, so a commit that edits the markdown
   without rerunning `build_docs.sh` ships a page describing behaviour the engine no longer has.
