@@ -368,6 +368,9 @@ computeRequiredData[props_List] := Module[
 computeRequiredData[prop_String] := computeRequiredData[{prop}]
 
 HGEvolve::unknownic = "Unknown initial condition type `1`.";
+HGEvolve::badrule = "`1` is not a rule lhs -> rhs with a non-empty list of hyperedges on the left and a list of hyperedges on the right, each hyperedge a list of vertices.";
+HGEvolve::badinit = "`1` is not a hypergraph or a list of hypergraphs. A hypergraph is a non-empty list of hyperedges, each a list of vertices.";
+HGEvolve::steps = "The number of steps `1` is not a non-negative integer.";
 HGEvolve::unknownprop = "Unknown property(s): `1`. Valid properties are: States, Events, CausalEdges, BranchialEdges, StatesGraph, CausalGraph, BranchialGraph, EvolutionGraph, their Structure variants, GlobalEdges, StateBitvectors, All.";
 HGEvolve::missingdata = "FFI did not return requested data: `1`. This indicates a bug in the FFI layer.";
 HGEvolve::gpudev = "TargetDevice -> \"GPU\" requested but no GPU engine binary (hg_evolve_gpu) is present for `1`; evaluating on the CPU. Build the paclet with BUILD_GPU to include it.";
@@ -767,11 +770,24 @@ normalizeInitialStates[states_List] := Module[{vertexMap},
   Map[vertexMap, states, {3}]
 ];
 
-(* Check if a rule already uses numeric vertices *)
-ruleIsNumeric[rule_Rule] := AllTrue[
-  Flatten[{rule[[1]], rule[[2]]}],
-  IntegerQ
-];
+(* A hyperedge is a list of vertices, and a vertex is anything but a list. *)
+hgHypergraphQ[h_List] := AllTrue[h, VectorQ[#, Not @* ListQ] &]
+hgHypergraphQ[_] := False
+
+hgRuleQ[lhs_List -> rhs_List] := lhs =!= {} && hgHypergraphQ[lhs] && hgHypergraphQ[rhs]
+hgRuleQ[_] := False
+
+(* The input check of HGEvolve and HGSessionOpen: one message for the first malformed argument.
+   Gives the initial states as a list of hypergraphs, or $Failed. An initial argument that is
+   itself a hypergraph is one state; otherwise each of its elements is a state. *)
+hgCheckInput[rules_List, initial_List] := Module[{bad, states},
+  bad = SelectFirst[rules, ! hgRuleQ[#] &, None];
+  If[bad =!= None, Message[HGEvolve::badrule, bad]; Return[$Failed]];
+  states = If[initial =!= {} && hgHypergraphQ[initial], {initial}, initial];
+  If[states === {} || ! AllTrue[states, # =!= {} && hgHypergraphQ[#] &],
+    Message[HGEvolve::badinit, Short[initial]]; Return[$Failed]];
+  states
+]
 
 (* ============================================================================ *)
 (* Main Function: HGEvolve *)
@@ -785,6 +801,7 @@ ruleIsNumeric[rule_Rule] := AllTrue[
 HGEvolve[rule_Rule, rest___] := HGEvolve[{rule}, rest]
 HGSessionOpen[rule_Rule, rest___] := HGSessionOpen[{rule}, rest]
 
+HGEvolve[_List, _, steps : Except[_Integer], ___] := (Message[HGEvolve::steps, steps]; $Failed)
 HGEvolve[rules_List, initial : Except[_List], steps_Integer,
          property : (_String | {__String}) : "EvolutionCausalBranchialGraph",
          opts : OptionsPattern[{HGEvolve, Graph}]] :=
@@ -1191,6 +1208,10 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
    canonicalizeStates, canonicalizeEvents, graphProperties, colorByRule,
    normalizedRules, rulesAssoc, initialStatesData, device},
 
+  If[steps < 0, Message[HGEvolve::steps, steps]; Return[$Failed]];
+  initialStatesData = hgCheckInput[rules, initialEdges];
+  If[initialStatesData === $Failed, Return[$Failed]];
+
   If[!hgEngineAvailableQ[],
     Message[HGEvolve::noengine, $SystemID];
     Return[$Failed]
@@ -1233,9 +1254,7 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
   (* Convert rules to Association *)
   rulesAssoc = Association[Table["Rule" <> ToString[i] -> normalizedRules[[i]], {i, Length[normalizedRules]}]];
 
-  (* Handle single vs multiple initial states *)
-  initialStatesData = normalizeInitialStates[
-    If[Depth[initialEdges] == 3, {initialEdges}, initialEdges]];
+  initialStatesData = normalizeInitialStates[initialStatesData];
 
   (* Build input *)
   inputData = <|
@@ -1299,6 +1318,8 @@ HGSessionOpen[rules_List, initialEdges_List,
   {props, propertyWasListLocal, requiredData, graphProperties, view, options, device,
    normalizedRules, rulesAssoc, initialStatesData, inputData, reply, handle},
 
+  initialStatesData = hgCheckInput[rules, initialEdges];
+  If[initialStatesData === $Failed, Return[$Failed]];
   propertyWasListLocal = ListQ[property];
   props = DeleteDuplicates[Flatten[{property}]];
   requiredData = computeRequiredData[props];
@@ -1326,8 +1347,7 @@ HGSessionOpen[rules_List, initialEdges_List,
   normalizedRules = normalizeRules[rules];
   rulesAssoc = Association[
     Table["Rule" <> ToString[i] -> normalizedRules[[i]], {i, Length[normalizedRules]}]];
-  initialStatesData = normalizeInitialStates[
-    If[Depth[initialEdges] == 3, {initialEdges}, initialEdges]];
+  initialStatesData = normalizeInitialStates[initialStatesData];
 
   inputData = <|"InitialStates" -> initialStatesData, "Rules" -> rulesAssoc,
                 "Steps" -> 0, "Options" -> options, "Op" -> "Open"|>;

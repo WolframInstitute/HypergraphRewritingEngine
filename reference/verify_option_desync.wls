@@ -102,3 +102,26 @@ Module[{names = Sort[Names["HypergraphRewriting`*"]]},
   Print[If[names === Sort[{"HGEvolve", "HGSessionObject", "HGSessionOpen", "HGSessionStep",
       "HGSessionQuery", "HGSessionClose", "HGSessionFrontier"}],
     "PUBLIC NAMES PASS", "PUBLIC NAMES FAIL"]]];
+
+(* Malformed input to HGEvolve and HGSessionOpen issues one message naming the argument and gives
+   $Failed, before anything reaches the engine. Symbolic vertices in an initial state and a rule
+   that deletes its edges are accepted. *)
+Module[{chain = {{{1, 2}} -> {{1, 3}, {3, 2}}}, run, rows, valid},
+  run[expr_] := Block[{$MessageList = {}}, {expr, ToString /@ $MessageList}];
+  SetAttributes[run, HoldFirst];
+  rows = {
+    {run[HGEvolve[{{{1, 2}} -> 3}, {{1, 2}}, 1, "NumStates"]], {$Failed, {"HGEvolve::badrule"}}},
+    {run[HGEvolve[{{1, 2} -> {{1, 3}}}, {{1, 2}}, 1, "NumStates"]], {$Failed, {"HGEvolve::badrule"}}},
+    {run[HGEvolve[Append[chain, "x"], {{1, 2}}, 1, "NumStates"]], {$Failed, {"HGEvolve::badrule"}}},
+    {run[HGEvolve[chain, {1, 2}, 1, "NumStates"]], {$Failed, {"HGEvolve::badinit"}}},
+    {run[HGEvolve[chain, {}, 1, "NumStates"]], {$Failed, {"HGEvolve::badinit"}}},
+    {run[HGEvolve[chain, {{1, 2}}, -1, "NumStates"]], {$Failed, {"HGEvolve::steps"}}},
+    {run[HGEvolve[chain, {{1, 2}}, 2.5, "NumStates"]], {$Failed, {"HGEvolve::steps"}}},
+    {run[HGEvolve[chain, "Grid", -1, "NumStates"]], {$Failed, {"HGEvolve::steps"}}},
+    {run[HGSessionOpen[{{{1, 2}} -> 3}, {{1, 2}}, "NumStates"]], {$Failed, {"HGEvolve::badrule"}}},
+    {run[HGSessionOpen[chain, {1, 2}, "NumStates"]], {$Failed, {"HGEvolve::badinit"}}}};
+  valid = {
+    {run[HGEvolve[{{x, y}} -> {{x, z}, {z, y}}, {{a, b}}, 2, "NumStates"]], {4, {}}},
+    {run[HGEvolve[{{{1, 2}, {2, 3}} -> {}}, {{1, 2}, {2, 3}}, 1, "NumStates"]], {2, {}}}};
+  Print["input rows {got, expected}: ", Join[rows, valid]];
+  Print[If[AllTrue[Join[rows, valid], #[[1]] === #[[2]] &], "INPUT CHECKS PASS", "INPUT CHECKS FAIL"]]];
