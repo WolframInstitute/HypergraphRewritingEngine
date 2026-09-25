@@ -316,8 +316,6 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                                 req.show_progress = value;
                             } else if (option_key == "CausalTransitiveReduction") {
                                 req.causal_transitive_reduction = value;
-                            } else if (option_key == "QuotientInitialStates") {
-                                req.quotient_initial_states = value;
                             } else if (option_key == "ExploreFromCanonicalStatesOnly") {
                                 // Exploration deduplication: only explore from canonical states
                                 // Requires CanonicalizeStates -> Full to have any effect
@@ -434,7 +432,6 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
                                                                                    : GpuJob::StateCanonCode::kNone,
             req.causal_transitive_reduction,
             req.explore_from_canonical_states_only,
-            req.quotient_initial_states,
             req.exploration_probability,
             req.random_seed,
             0,  // max_device_memory_bytes: default (90% VRAM) resolved by the GPU engine
@@ -518,7 +515,6 @@ static void configure_and_evolve(hgffi::ParsedJob& req, hypergraph::Hypergraph& 
     engine.set_matches_per_state_rule(req.matches_per_state_rule);
     engine.set_genesis_events(req.show_genesis_events);
     engine.set_explore_from_canonical_states_only(req.explore_from_canonical_states_only);
-    engine.set_quotient_initial_states(req.quotient_initial_states);
 
     // Convert rules to unified format
     uint16_t rule_index = 0;

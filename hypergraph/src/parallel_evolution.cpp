@@ -375,20 +375,14 @@ StateId ParallelEvolutionEngine::create_and_register_initial_state(
     // Mark initial state as matched and submit for pattern matching
     matched_raw_states_.insert(raw_state);
 
-    // Under quotient exploration every initial state sits at depth zero. The claim
-    // succeeds for the first root of each canonical class; when quotienting the
-    // initial states, isomorphic later roots are not expanded (they collapse into
-    // the first). Default keeps every provided root as a distinct entry point.
-    bool expand_root = true;
+    // Under quotient exploration every initial state sits at depth zero, and its class is
+    // claimed so that a later state of the class is not expanded again. Every initial state is
+    // matched, isomorphic ones included: each is its own initial state.
     if (explore_from_canonical_states_only_) {
         hg_->try_lower_explore_depth(canonical_state, 0);
-        bool first = hg_->try_claim_expanded(canonical_state);
-        if (quotient_initial_states_) expand_root = first;
+        hg_->try_claim_expanded(canonical_state);
     }
-
-    if (expand_root) {
-        submit_match_task(raw_state, 1);
-    }
+    submit_match_task(raw_state, 1);
 
     return raw_state;
 }
@@ -2825,9 +2819,7 @@ bool ParallelEvolutionEngine::depth_signal_available() const { return !explore_f
 size_t ParallelEvolutionEngine::states_drained() const { return states_drained_.load(std::memory_order_relaxed); }
 #endif
 
-void ParallelEvolutionEngine::set_quotient_initial_states(bool enable) { quotient_initial_states_ = enable; }
 
-bool ParallelEvolutionEngine::quotient_initial_states() const { return quotient_initial_states_; }
 
 double ParallelEvolutionEngine::exploration_probability() const { return exploration_probability_; }
 

@@ -238,14 +238,6 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                             // individualization pass as the exact hash.
                                             EventSignatureKeys event_keys = EVENT_SIG_NONE,
                                             uint32_t blocks = 0,
-                                            // Collapse isomorphic ROOTS to one entry point.
-                                            // Default false is the reference semantics: provided
-                                            // roots are distinct entry points even when
-                                            // isomorphic. This must agree with what
-                                            // k_seed_roots does for the host-seeded roots, or
-                                            // the option changes the state set depending on
-                                            // which path seeded them.
-                                            bool quotient_roots = false,
                                             // The quotient-causal DP's device structures
                                             // (quotient_causal.hpp), constructed by the
                                             // caller, so the host seeding and the device loop

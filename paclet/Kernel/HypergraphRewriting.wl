@@ -25,7 +25,6 @@ Options[HGEvolve] = {
   "TransitionRate" -> 1.0,  (* Keep each transition with this probability, drawn independently from the transition's own isomorphism-invariant identity and RandomSeed. Reproducible at any thread count and on either device, and it carries the spine guarantee: a state whose every draw failed still keeps its minimum-key transition, so a sparse sample reaches full depth instead of going extinct. ExplorationProbability thins STATES and has no spine. Applies on both devices: the host engine and the device matcher call the same draw and spine. *)
   "RuleWeights" -> {},  (* Per-rule multipliers on "TransitionRate", in rule order. {} weights every rule equally. A short list is a partial override: rules past its end take 1. Composes with the rate rather than replacing it, so "TransitionRate" -> 1 with weights {1, 0} still samples \[LongDash] rule 2 is dropped and rule 1 is untouched. Applies on both devices; the weights are uploaded with the run. *)
   "ExploreFromCanonicalStatesOnly" -> False,  (* Only explore from canonical state representatives *)
-  "QuotientInitialStates" -> False,  (* True: isomorphic initial states collapse to one canonical root (needs ExploreFromCanonicalStatesOnly). False (default): each provided initial state is a distinct entry point, matching MultiwaySystem. *)
   "TargetDevice" -> "CPU",  (* "CPU" | "GPU" (like NetTrain[]). "GPU" runs the bundled hg_evolve_gpu binary when present, else falls back to CPU with a message. The GPU engine honors CanonicalizeStates (None | Automatic | Full) and its state counts match the CPU's in every mode. *)
   "ShowProgress" -> False,
   "ShowGenesisEvents" -> False,
@@ -1021,7 +1020,6 @@ hgJobOptions[ov_, requiredData_, graphProperties_] := Module[{branchialStepValue
        was set. *)
     "RandomSeed" -> Replace[ov["RandomSeed"], Automatic -> 0],
     "ExploreFromCanonicalStatesOnly" -> ov["ExploreFromCanonicalStatesOnly"],
-    "QuotientInitialStates" -> ov["QuotientInitialStates"],
     "ShowProgress" -> ov["ShowProgress"],
     "ShowGenesisEvents" -> ov["ShowGenesisEvents"],
     "BranchialStep" -> branchialStepValue,  (* 0=All, positive=1-based step, negative=from end *)

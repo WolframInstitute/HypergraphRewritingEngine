@@ -898,7 +898,7 @@ TEST(Rewrite, ADeviceSessionExtendsToExactlyWhatOneRunOfTheSameBudgetProduces) {
         hg_gpu::run_persistent_evolve(
             eng, rules, /*roots=*/{0u}, /*max_steps=*/2u, matches, arena, /*dedup=*/true,
             0xFFFFFFFFu, 0, hg_gpu::CanonicalizationMode::Full, hgcommon::EVENT_SIG_AUTOMATIC,
-            /*blocks=*/0, /*quotient_roots=*/false, nullptr, nullptr, &v, /*start_step=*/0u);
+            /*blocks=*/0, nullptr, nullptr, &v, /*start_step=*/0u);
 
         // The budget stopped somewhere, so it must have recorded where.
         frontier_after_first = sess.frontier_size();
@@ -906,7 +906,7 @@ TEST(Rewrite, ADeviceSessionExtendsToExactlyWhatOneRunOfTheSameBudgetProduces) {
         hg_gpu::run_persistent_evolve(
             eng, rules, /*roots=*/{0u}, /*max_steps=*/3u, matches, arena, /*dedup=*/true,
             0xFFFFFFFFu, 0, hg_gpu::CanonicalizationMode::Full, hgcommon::EVENT_SIG_AUTOMATIC,
-            /*blocks=*/0, /*quotient_roots=*/false, nullptr, nullptr, &v, /*start_step=*/2u);
+            /*blocks=*/0, nullptr, nullptr, &v, /*start_step=*/2u);
 
         // A THIRD CALL, because two cannot tell consume from accumulate. If the frontier were
         // not consumed when it is seeded, this call would re-seed the depth-2 boundary as well
@@ -914,7 +914,7 @@ TEST(Rewrite, ADeviceSessionExtendsToExactlyWhatOneRunOfTheSameBudgetProduces) {
         const auto st3 = hg_gpu::run_persistent_evolve(
             eng, rules, /*roots=*/{0u}, /*max_steps=*/4u, matches, arena, /*dedup=*/true,
             0xFFFFFFFFu, 0, hg_gpu::CanonicalizationMode::Full, hgcommon::EVENT_SIG_AUTOMATIC,
-            /*blocks=*/0, /*quotient_roots=*/false, nullptr, nullptr, &v, /*start_step=*/3u);
+            /*blocks=*/0, nullptr, nullptr, &v, /*start_step=*/3u);
         ext_states = st3.states_after;
         ext_events = st3.canonical_events;
     }

@@ -59,7 +59,6 @@ struct ParsedJob {
     // at the same rate; a short list is a partial override and the rest take 1.
     std::vector<double> rule_weights;
     bool explore_from_canonical_states_only = false;  // Exploration deduplication
-    bool quotient_initial_states = false;             // Collapse isomorphic initial states
     // ir_verification and return_canonical_states are derived from state_canon_mode == Full
     uint64_t random_seed = 0;     // 0: a fresh seed per run; nonzero fixes the sample
     // With matches_per_step, a cap by ARRIVAL ORDER on the states kept per step. Not a uniform

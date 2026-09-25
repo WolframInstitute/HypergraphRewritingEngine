@@ -134,20 +134,12 @@ __device__ ExactHashStatus state_key_device(DeviceState ds, StateId sid,
 // which the no-host-in-the-loop constraint permits: the constraint is on evolution, not on
 // seeding, alongside k_seed_roots.
 //
-// Surviving roots are compacted into out_ids/out_count, and the queue is seeded from those rather
-// than from the caller's list, because `quotient_roots` is decided here:
-//
-//   false  every root is kept whether or not it won its map slot. That is the reference
-//          semantics -- provided roots are distinct entry points even when isomorphic.
-//   true   a root whose key another root already claimed is still hashed and mapped, but is not
-//          appended, so it never enters the queue.
-//
-// k_seed_roots decides the same thing for the host-seeded roots. Deciding it in only one of
-// them made the option change the state set on one scheduler and not the other.
+// Every root is compacted into out_ids/out_count, isomorphic ones included, and the queue is
+// seeded from those.
 __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_t num_roots,
                                    DedupMap::DeviceView map, CanonicalizationMode state_mode,
                                    bool need_exact, bool need_ranks, DeviceArena::View arena,
-                                   bool quotient_roots, QcView qc, QeView qe,
+                                   QcView qc, QeView qe,
                                    StateId* out_ids, uint32_t* out_count, uint32_t out_cap) {
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= num_roots) return;
@@ -199,12 +191,9 @@ __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_
     // index is the slice.
     qe_seed_root_instance(ds, qe, sid, tid);
 
-    bool merged = false;
+    // Every root is kept, isomorphic ones included: each is its own initial state.
     if (key == 0) ds.errors.record(ErrorKind::kUncomputedStateHash);   // keep it; see the kind
-    else          merged = !map.insert_if_absent(key, sid).inserted;
-    // Reference semantics without the option: provided roots are distinct entry points even when
-    // isomorphic, so every root is kept regardless of whether it won the map slot.
-    if (quotient_roots && merged) return;
+    else          map.insert_if_absent(key, sid);
     const uint32_t pos = atomicAdd(out_count, 1u);
     // Past capacity the state is not written, and a state missing from the frontier is a
     // subtree that never gets explored -- silently a smaller answer, not a slower one. Recorded
@@ -1089,7 +1078,6 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                             CanonicalizationMode state_mode,
                                             EventSignatureKeys event_keys,
                                             uint32_t blocks,
-                                            bool quotient_roots,
                                             const QcView* qc_in,
                                             const QeView* qe_in,
                                             SessionView* session,
@@ -1222,7 +1210,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                  dsv.matches_per_state_rule),
             run_needs_edge_ranks(event_keys, qe.enabled != 0, dsv.transition_rate,
                                  dsv.num_rule_weights, dsv.matches_per_state_rule),
-            arena.view(), quotient_roots, qc, qe, d_kept, d_kept_count, n);
+            arena.view(), qc, qe, d_kept, d_kept_count, n);
     }
     if (!(start_step > 0 && session)) {
         const uint32_t block = 128;

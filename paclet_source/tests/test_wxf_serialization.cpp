@@ -1912,6 +1912,25 @@ TEST(WxfSerializationPin, QuotientEventsAreTheApplicationsTheCountReports) {
     }
 }
 
+// Isomorphic initial states are separate initial states, and quotient exploration gives the
+// counts and statistics full exploration gives for them.
+TEST(WxfSerializationPin, IsomorphicInitialStatesUnderQuotientCountLikeFullExploration) {
+    const StateList roots = {{{1, 2}, {1, 3}}, {{4, 5}, {4, 6}}, {{7, 8}, {7, 9}}};
+    auto run = [&](bool quotient) {
+        HostBridge host;
+        return run_rewriting_core(build_input(roots, kBranchLhs, kBranchRhs, 3, [&](wxf::Writer& w) {
+            put_str_list_option(w, "RequestedData",
+                {"NumStates", "NumEvents", "NumCausalEdges", "NumBranchialEdges", "StepStatistics"});
+            put_str_option(w, "CanonicalizeStates", "Full");
+            if (quotient) put_str_option(w, "ExploreFromCanonicalStatesOnly", "True");
+        }, quotient ? 3 : 2), host);
+    };
+    const auto full = run(false), quot = run(true);
+    for (const char* k : {"NumStates", "NumEvents", "NumCausalEdges", "NumBranchialEdges"})
+        EXPECT_EQ(read_int_key(quot, k), read_int_key(full, k)) << k;
+    EXPECT_EQ(value_bytes(quot, "StepStatistics"), value_bytes(full, "StepStatistics"));
+}
+
 // A session's frontier names states by the ids "States" uses. Under Full both are the class's
 // canonical representative; "States" once emitted the first raw state of each class, which on
 // parallel workers need not be the representative, so the run is repeated.

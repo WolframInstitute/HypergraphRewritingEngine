@@ -422,7 +422,6 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
             /*dedup=*/in.explore_from_canonical_states_only,
             explore_threshold_u32, resolved_seed,
             in.canonicalization, ekeys, /*blocks=*/0,
-            /*quotient_roots=*/in.quotient_initial_states,
             qc_route ? &qc_view : nullptr,
             qc_route ? &qe_view : nullptr,
             session, start_step);

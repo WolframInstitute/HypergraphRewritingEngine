@@ -96,7 +96,6 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 | `"TransitionRate"` | `1.` | the probability of keeping each transition |
 | `"RuleWeights"` | `{}` | per-rule multipliers on `"TransitionRate"`, in rule order |
 | `"ExploreFromCanonicalStatesOnly"` | `False` | whether to expand each isomorphism class once, at its shortest depth |
-| `"QuotientInitialStates"` | `False` | whether isomorphic initial states become one root under `"ExploreFromCanonicalStatesOnly"` |
 | `"MatchesPerStateRule"` | `0` | the most transitions kept per state and rule, chosen by the transitions' identities (`0` for no cap) |
 | `"UniformRandom"` | `False` | whether `"MatchesPerStep"` caps the states kept per step |
 | `"MatchesPerStep"` | `0` | the per-step cap used with `"UniformRandom"` (`0` for no cap) |
@@ -1026,33 +1025,6 @@ When the events and branchial pairs are asked for only as `"NumEvents"` and `"Nu
 chain = {{1, 2}} -> {{1, 3}, {3, 2}};
 HGEvolve[chain, {{1, 2}}, 20, {"NumStates", "NumEvents"}, "CanonicalizeStates" -> Full, "ExploreFromCanonicalStatesOnly" -> True]
 ```
-
-### "QuotientInitialStates"
-
-With `True`, isomorphic initial states become one root under `"ExploreFromCanonicalStatesOnly"`. Two isomorphic paths as initial states:
-
-```wl
-chain = {{1, 2}} -> {{1, 3}, {3, 2}};
-HGEvolve[chain, {{{1, 2}, {2, 3}}, {{1, 2}, {3, 1}}}, 2, "Debug", "CanonicalizeStates" -> Full, "ExploreFromCanonicalStatesOnly" -> True, "QuotientInitialStates" -> True]
-```
-
-<!-- => <|"NumStates" -> 3, "NumEvents" -> 16, "NumCausalEdges" -> 8, "NumBranchialEdges" -> 0|> -->
-
-`Full` already identifies the two roots, so the counts are the same without the option:
-
-```wl
-HGEvolve[chain, {{{1, 2}, {2, 3}}, {{1, 2}, {3, 1}}}, 2, "Debug", "CanonicalizeStates" -> Full, "ExploreFromCanonicalStatesOnly" -> True]
-```
-
-<!-- => <|"NumStates" -> 3, "NumEvents" -> 16, "NumCausalEdges" -> 8, "NumBranchialEdges" -> 0|> -->
-
-Under `None` the two roots and their successors are separate:
-
-```wl
-HGEvolve[chain, {{{1, 2}, {2, 3}}, {{1, 2}, {3, 1}}}, 2, "NumStates"]
-```
-
-<!-- => 18 -->
 
 ### "MatchesPerStateRule"
 

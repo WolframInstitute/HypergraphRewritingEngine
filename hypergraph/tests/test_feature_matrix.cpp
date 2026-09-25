@@ -324,7 +324,7 @@ TEST(FeatureMatrix, FullModeOracleExactAllThreads) {
 //
 // Under quotient, causal and branchial edges are recorded only for the expanded
 // representatives, forming a scheduling-dependent SKELETON that the design reconstructs
-// offline (see set_quotient_initial_states doc + tools/quotient_reconstruction_probe).
+// (see tools/quotient_reconstruction_probe).
 // causal_edges/causal_event_pairs therefore legitimately vary with thread count here and
 // are NOT asserted; canonical_states and events are the online quotient invariants.
 // -----------------------------------------------------------------------------

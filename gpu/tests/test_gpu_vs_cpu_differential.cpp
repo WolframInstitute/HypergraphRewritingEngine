@@ -61,7 +61,6 @@ struct Workload {
     uint32_t max_successor_states_per_parent = 0;
     uint32_t matches_per_state_rule = 0;
     // Collapse isomorphic initial states under quotient exploration (default off).
-    bool quotient_initial_states = false;
 };
 
 // Result normalized for cross-engine comparison. States compare by
@@ -223,7 +222,6 @@ NormalizedResult run_cpu(const Workload& w) {
             for (const auto& e : r) st.emplace_back(e.begin(), e.end());
             roots.push_back(std::move(st));
         }
-        engine.set_quotient_initial_states(w.quotient_initial_states);
         engine.evolve(roots, w.num_steps);
     } else {
         engine.evolve(w.initial_state, w.num_steps);
@@ -359,7 +357,6 @@ hg_gpu::EvolveInput make_input(const Workload& w) {
     in.rules                  = w.rules;
     in.initial_state          = w.initial_state;
     in.initial_states         = w.initial_states;
-    in.quotient_initial_states = w.quotient_initial_states;
     in.num_steps              = w.num_steps;
     in.canonicalization       = w.canon_mode;
     in.event_canonicalization = w.event_canon_mode;
@@ -807,9 +804,6 @@ std::vector<Workload> build_corpus() {
         .initial_states = { V{{0u,1u}}, V{{2u,3u},{3u,4u}} },
         .num_steps = 3,
     });
-    // Two isomorphic roots under quotient, DEFAULT (quotient_initial_states=false):
-    // both engines keep every provided root as a distinct entry point (reference
-    // MultiwaySystem semantics), so results agree.
     // A DEEP CONE, which is where the two reachability walks can differ.
     //
     // The reduction asks "is this pair already bypassed" by walking backward over the KEPT
@@ -838,6 +832,8 @@ std::vector<Workload> build_corpus() {
         .explore_from_canonical_states_only = true,
     });
 
+    // Two isomorphic roots under quotient: both engines keep every provided root as a
+    // separate initial state, so results agree.
     ws.push_back({
         .name = "multi_initial_iso_roots_kept",
         .rules = {rule({{0,1},{0,2}}, {{0,1},{0,3},{1,3},{2,3}})},
@@ -846,18 +842,6 @@ std::vector<Workload> build_corpus() {
         .num_steps = 3,
         .explore_from_canonical_states_only = true,
     });
-    // Same, but quotient_initial_states=true: isomorphic roots collapse to one on
-    // both engines.
-    ws.push_back({
-        .name = "multi_initial_iso_roots_quotiented",
-        .rules = {rule({{0,1},{0,2}}, {{0,1},{0,3},{1,3},{2,3}})},
-        .initial_state = {},
-        .initial_states = { V{{0u,1u},{0u,2u}}, V{{5u,6u},{5u,7u}} },
-        .num_steps = 3,
-        .explore_from_canonical_states_only = true,
-        .quotient_initial_states = true,
-    });
-
     // Multi-initial x multi-rule under full multiway: the combined corner of the
     // single/multi initial x single/multi rule space, validated against the
     // reference oracle (2init x 2rule: states=28, eventsNone=144 at depth 3).
@@ -1708,7 +1692,6 @@ TEST(RecordSet, MultiplicityCountsMatchTheReplayAndTheHost) {
                 for (const auto& e : r) st.emplace_back(e.begin(), e.end());
                 roots.push_back(std::move(st));
             }
-            pe.set_quotient_initial_states(w.quotient_initial_states);
             pe.evolve(roots, w.num_steps);
         } else {
             pe.evolve(w.initial_state, w.num_steps);
@@ -1794,7 +1777,6 @@ TEST(RecordSet, ClassMultiplicitiesMatchTheHost) {
                 for (const auto& e : r) st.emplace_back(e.begin(), e.end());
                 roots.push_back(std::move(st));
             }
-            pe.set_quotient_initial_states(w.quotient_initial_states);
             pe.evolve(roots, w.num_steps);
         } else {
             pe.evolve(w.initial_state, w.num_steps);

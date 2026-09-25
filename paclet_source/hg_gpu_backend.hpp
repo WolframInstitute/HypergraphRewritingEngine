@@ -35,7 +35,6 @@ struct GpuJob {
     int state_canon_mode = StateCanonCode::kFull;
     bool transitive_reduction = true;
     bool explore_from_canonical_states_only = false;
-    bool quotient_initial_states = false;
     double exploration_probability = 1.0;
     // The sampling seed. The device path did not carry it: EvolveInput::exploration_seed was
     // left at 0, which the engine resolves to a FRESH random seed, so a caller giving
