@@ -16,13 +16,10 @@ on:
       - 'docs/**'
       - 'paper/**'
       - 'paclet/Documentation/**'
-  push:                     # the build-only leg is free and catches CUDA build-rot on master
-    branches: [master]
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
-      - 'paper/**'
-      - 'paclet/Documentation/**'
+  # Nightly, on pull requests and by hand; a push does not run it. CUDA changes are built and
+  # tested locally before they are committed, so on a push this compile repeats that work.
+  schedule:
+    - cron: '0 3 * * *'
 
 # One run per workflow and branch: a push cancels the run of the push before it, so a burst of
 # commits costs one run. The organisation's plan runs 20 jobs at a time across all its
