@@ -8,6 +8,7 @@
 #include "hg_gpu/persistent.hpp"
 #include "hg_gpu/rewrite.hpp"
 #include "hg_gpu/cuda_check.hpp"
+#include "hgcommon/quotient_route.hpp"
 
 #include <cuda_runtime.h>
 
@@ -190,8 +191,9 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     // canonical states and their edge orbits, and no other mode computes orbit tables.
     const bool qc_route = in.canonicalization == CanonicalizationMode::Full &&
                           in.num_steps > 0 &&
-                          (in.explore_from_canonical_states_only ||
-                           event_keys_for(in.event_canonicalization) == EVENT_SIG_AUTOMATIC);
+                          hgcommon::quotient_route_requested(
+                              in.explore_from_canonical_states_only, /*positional=*/false,
+                              event_keys_for(in.event_canonicalization));
     engine.set_quotient_causal(qc_route);
     engine.set_record_set(in.record);
     engine.set_tr_enabled(in.transitive_reduction && !qc_route);
