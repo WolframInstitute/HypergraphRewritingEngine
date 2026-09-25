@@ -87,7 +87,7 @@ RelatedTutorials: [GettingStarted, Sessions]
 |   |   |   |
 |---|---|---|
 | `"CanonicalizeStates"` | `None` | when two states are one state: `None` (never), `Automatic` (identical edge lists) or `Full` (isomorphic) |
-| `"CanonicalizeEvents"` | `None` | when two applications are one event: `None`, `Full`, `Automatic`, `Positional` or a list of identity components |
+| `"CanonicalizeEvents"` | `None` | when two applications are one event: `None`, `Full`, `Automatic`, `"Positional"` or a list of identity components |
 | `"CausalTransitiveReduction"` | `True` | whether to drop a causal pair implied by a longer causal path |
 | `"MaxSuccessorStatesPerParent"` | `0` | the most successors kept per state, in arrival order (`0` for no cap) |
 | `"MaxStatesPerStep"` | `0` | the most states kept per step, in arrival order (`0` for no cap) |
@@ -111,7 +111,7 @@ RelatedTutorials: [GettingStarted, Sessions]
 | `"DebugFFI"` | `False` | whether to print what is requested from the engine and what it returns |
 
 - `"CanonicalizeStates"` is applied while the evolution runs, so it also determines which states are expanded. `Automatic` identifies states whose edge lists are identical. This is finer than isomorphism: two isomorphic states with different vertex names stay separate. The vertices of each initial state are numbered from 0 separately, so two initial states that differ only in vertex names are one state under `Automatic`.
-- `"CanonicalizeEvents"` builds an event's identity from isomorphism-invariant components. `Full` uses the canonical input and output states. `Automatic` also uses the step and the canonical positions of the consumed and produced edges within the state's isomorphism class; it needs `"CanonicalizeStates" -> Full`. `Positional` uses the same components with positions read from each state's own vertex labels, as the Wolfram Multicomputation paclet does. A list of any of `"InputState"`, `"OutputState"`, `"Step"`, `"Rule"`, `"ConsumedEdges"` and `"ProducedEdges"` selects the components.
+- `"CanonicalizeEvents"` builds an event's identity from isomorphism-invariant components. `Full` uses the canonical input and output states. `Automatic` also uses the step and the canonical positions of the consumed and produced edges within the state's isomorphism class; it needs `"CanonicalizeStates" -> Full`. `"Positional"` uses the same components with positions read from each state's own vertex labels, as the Wolfram Multicomputation paclet does. A list of any of `"InputState"`, `"OutputState"`, `"Step"`, `"Rule"`, `"ConsumedEdges"` and `"ProducedEdges"` selects the components.
 - With `"ExploreFromCanonicalStatesOnly" -> True`, every property is the same as under full exploration; only the cost of the evolution changes. It needs `"CanonicalizeStates" -> Full`.
 - `"MaxSuccessorStatesPerParent"`, `"MaxStatesPerStep"` and `"UniformRandom"` with `"MatchesPerStep"` cap by arrival order. The bound holds at any thread count, and which states are kept depends on the thread schedule. `"TransitionRate"`, `"ExplorationProbability"` and `"MatchesPerStateRule"` draw from the identity of each transition or state together with `"RandomSeed"`, so the same seed keeps the same states at any thread count and on either device.
 - `"TransitionRate"` keeps a state's lowest-keyed transition when every draw at that state failed, so a sparse sample reaches the requested depth. `"ExplorationProbability"` does not.
@@ -759,13 +759,13 @@ HGEvolve[chain, {{1, 2}}, 3, "NumEvents", "CanonicalizeStates" -> Full, "Canonic
 
 <!-- => 6 -->
 
-`Positional` reads the edge positions from each state's own vertex labels, as the Wolfram Multicomputation paclet does. The result changes when the states are relabeled:
+`"Positional"` reads the edge positions from each state's own vertex labels, as the Wolfram Multicomputation paclet does. The result changes when the states are relabeled:
 
 ```wl
-HGEvolve[chain, {{1, 2}}, 3, "NumEvents", "CanonicalizeStates" -> Full, "CanonicalizeEvents" -> Positional]
+HGEvolve[chain, {{1, 2}}, 3, "NumEvents", "CanonicalizeStates" -> Full, "CanonicalizeEvents" -> "Positional"]
 ```
 
-<!-- => 9 -->
+<!-- => 6 -->
 
 A list of components selects the identity; here the input state, the output state and the rule:
 
@@ -1561,11 +1561,11 @@ HGEvolve[loops, {{1, 1}, {1, 1}}, 4, "Debug", "TransitionRate" -> 0.25, "RandomS
 
 ---
 
-`Positional` and `Automatic` event identities agree on two steps of the chain rule:
+`"Positional"` and `Automatic` event identities agree on two steps of the chain rule:
 
 ```wl
 chain = {{1, 2}} -> {{1, 3}, {3, 2}};
-Table[HGEvolve[chain, {{1, 2}}, 2, "NumEvents", "CanonicalizeStates" -> Full, "CanonicalizeEvents" -> id], {id, {Positional, Automatic}}]
+Table[HGEvolve[chain, {{1, 2}}, 2, "NumEvents", "CanonicalizeStates" -> Full, "CanonicalizeEvents" -> id], {id, {"Positional", Automatic}}]
 ```
 
 <!-- => {3, 3} -->
@@ -1574,10 +1574,10 @@ They differ on three steps of the triangle rule, where the positions of the edge
 
 ```wl
 triangle = {{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}};
-Table[HGEvolve[triangle, {{1, 2}, {1, 3}}, 3, "NumEvents", "CanonicalizeStates" -> Full, "CanonicalizeEvents" -> id], {id, {Positional, Automatic}}]
+Table[HGEvolve[triangle, {{1, 2}, {1, 3}}, 3, "NumEvents", "CanonicalizeStates" -> Full, "CanonicalizeEvents" -> id], {id, {"Positional", Automatic}}]
 ```
 
-<!-- => {18, 10} -->
+<!-- => {11, 10} -->
 
 ---
 
