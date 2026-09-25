@@ -228,8 +228,8 @@ wget https://github.com/joseluisq/macosx-sdks/releases/download/12.3/MacOSX12.3.
 
 **Option B: Extract from Xcode (if you have access to a Mac)**
 ```bash
-# On macOS with Xcode installed:
-./tools/gen_sdk_package_pbzx.sh  # Creates SDK tarball
+# On macOS with Xcode installed, in an OSXCross checkout (the script is OSXCross's):
+"$OSXCROSS_ROOT"/tools/gen_sdk_package_pbzx.sh  # Creates SDK tarball
 
 # Copy the resulting .tar.* file to Linux machine at:
 # osxcross/tarballs/MacOSXxx.x.sdk.tar.xz
