@@ -92,8 +92,9 @@ bool DeliveryCursor::take_vertex(const std::string& property, int64_t id, uint32
     return true;
 }
 
-bool DeliveryCursor::take_edge(const std::string& property, uint64_t key) {
-    return by_property_[property].edges.insert(key).second;
+bool DeliveryCursor::take_edge(const std::string& property, int64_t from, int64_t to,
+                               uint32_t type, uint32_t index) {
+    return by_property_[property].edges.emplace(from, to, type, index).second;
 }
 
 bool DeliveryCursor::delivered_before(const std::string& property) const {

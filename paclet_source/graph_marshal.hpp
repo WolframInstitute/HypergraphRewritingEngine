@@ -275,23 +275,13 @@ wxf::WXFValue build_graph_data(const Source& src,
         auto send_vertex = [&](int64_t id, uint32_t revision) {
             return cursor == nullptr || cursor->take_vertex(graph_property, id, revision);
         };
-        // An edge's key must distinguish every edge the walk can emit and nothing else: its two
-        // endpoints, its type, and -- for the un-deduplicated causal case, where N edges share a
-        // pair -- its index among them.
-        auto edge_key = [](int64_t from, int64_t to, uint32_t type_tag, uint32_t index) {
-            uint64_t k = hgcommon::FNV_OFFSET;
-            k = hgcommon::fnv_hash(k, static_cast<uint64_t>(from));
-            k = hgcommon::fnv_hash(k, static_cast<uint64_t>(to));
-            k = hgcommon::fnv_hash(k, type_tag);
-            k = hgcommon::fnv_hash(k, index);
-            return k;
-        };
-        // One edge per (from, to, type, index), in a one-shot build as through a session's
-        // cursor: raw events that share an event identity share one edge.
+        // One edge per (from, to, type, index): its two endpoints, its type, and -- for the
+        // un-deduplicated causal case, where N edges share a pair -- its index among them. A
+        // one-shot build and a session's cursor both record the exact tuple, so raw events that
+        // share an event identity share one edge on either path.
         std::set<std::tuple<int64_t, int64_t, uint32_t, uint32_t>> sent_edges;
         auto send_edge = [&](int64_t from, int64_t to, uint32_t type_tag, uint32_t index) {
-            if (cursor != nullptr)
-                return cursor->take_edge(graph_property, edge_key(from, to, type_tag, index));
+            if (cursor != nullptr) return cursor->take_edge(graph_property, from, to, type_tag, index);
             return sent_edges.emplace(from, to, type_tag, index).second;
         };
 

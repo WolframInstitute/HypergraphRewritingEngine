@@ -27,8 +27,9 @@
 
 #include <cstdint>
 #include <string>
+#include <set>
+#include <tuple>
 #include <unordered_map>
-#include <unordered_set>
 
 namespace HG_NAMESPACE {
 namespace ffi {
@@ -39,9 +40,11 @@ public:
     // revision. Records it either way, so a caller loops over vertices once.
     bool take_vertex(const std::string& property, int64_t id, uint32_t revision);
 
-    // True when this edge has not been sent for this property. Edges have no revision: an edge
-    // is a pair of endpoints and a type, and none of the three changes after it is minted.
-    bool take_edge(const std::string& property, uint64_t key);
+    // True when this edge has not been sent for this property. An edge is its endpoints, its type
+    // and its index among the edges sharing those (the un-deduplicated causal case), recorded
+    // exactly; none of the four changes after it is minted, so edges have no revision.
+    bool take_edge(const std::string& property, int64_t from, int64_t to, uint32_t type,
+                   uint32_t index);
 
     // Has this property ever been delivered? A caller needs this to decide whether a reply is a
     // delta to merge or a graph to replace -- the FIRST delivery of a property is a whole graph
@@ -55,7 +58,7 @@ public:
 private:
     struct PropertyRecord {
         std::unordered_map<int64_t, uint32_t> vertex_revision;
-        std::unordered_set<uint64_t> edges;
+        std::set<std::tuple<int64_t, int64_t, uint32_t, uint32_t>> edges;
     };
     std::unordered_map<std::string, PropertyRecord> by_property_;
 };
