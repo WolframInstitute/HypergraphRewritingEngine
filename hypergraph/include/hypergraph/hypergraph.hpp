@@ -109,6 +109,7 @@ class Hypergraph {
     std::atomic<bool> record_state_events_{true};
     std::atomic<bool> record_raw_events_{true};
     std::atomic<bool> record_raw_counts_only_{false};
+    std::atomic<bool> record_multiplicities_{false};
 
     // Per-state canonical edge-orbit tables, computed once at state canonicalization in
     // quotient mode (piggybacked on the dedup IR canonicalization, so no extra canon pass)
@@ -249,11 +250,16 @@ class Hypergraph {
     // place of the replay when the raw events and branchial pairs are read only as counts. The
     // work is per (class, depth, match); the replay's is per raw state.
     std::atomic<bool> quotient_multiplicity_{false};
+    // Whether the reconstruction materialises instances. Off when the raw events and branchial
+    // pairs are read only as counts, which the multiplicities then answer.
+    std::atomic<bool> quotient_replay_{true};
     // A (class, depth) point: m(class, depth), the raw states the class stands for at that
     // depth, and whether a run of the point is queued.
     struct QmPoint {
         std::atomic<uint64_t> mass{0};
         std::atomic<uint32_t> queued{0};
+        uint32_t depth = 0;
+        uint64_t class_hash = 0;
     };
     ConcurrentMap<uint64_t, QmPoint*> qm_points_;
     // consumed_j(depth): the mass match j has passed on from its class at that depth.
@@ -1095,11 +1101,25 @@ public:
     // default while it is proven out against full-capture.
     void set_quotient_reconstruction(bool on);
     bool quotient_reconstruction() const;
-    // Under the reconstruction, compute the raw event and branchial counts from class
-    // multiplicities and materialise no instance. No raw event, causal pair or branchial pair
-    // is then enumerable; the counts are.
+    // Under the reconstruction, count the raw states each class stands for at each depth
+    // (hgcommon/quotient_multiplicity_core.hpp).
     void set_quotient_multiplicity(bool on);
     bool quotient_multiplicity() const;
+    // Under the reconstruction, replay the captured matches against one instance per raw state.
+    // With it off the raw event and branchial counts come from the multiplicities, and no raw
+    // event, causal pair or branchial pair is enumerable.
+    void set_quotient_replay(bool on);
+    bool quotient_replay() const;
+    // Every (class, depth) point the multiplicity count reached, after the run: f(class_hash,
+    // depth, m), with m the raw states the class stands for at that depth (saturating at
+    // QM_SATURATED).
+    template <class F>
+    void for_each_class_multiplicity(F&& f) const {
+        qm_points_.for_each([&](uint64_t, QmPoint* p) {
+            const uint64_t m = p->mass.load(std::memory_order_acquire);
+            if (m) f(p->class_hash, p->depth, m);
+        });
+    }
     // A multiplicity count reached QM_SATURATED (2^63 - 1) and is a lower bound.
     bool quotient_counts_saturated() const;
     // Raw observables recovered by the reconstruction (the full-capture counts).

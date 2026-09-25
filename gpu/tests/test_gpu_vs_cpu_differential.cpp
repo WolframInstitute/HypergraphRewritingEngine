@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <iterator>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -1761,6 +1762,74 @@ TEST(RecordSet, MultiplicityCountsWithoutRawStates) {
     EXPECT_EQ(d12.observable_num_events(), 3002019319241196638ull);
     EXPECT_EQ(d12.observable_num_branchial(), hgcommon::QM_SATURATED);
     EXPECT_TRUE(saturated(d12));
+}
+
+// The device's (class, depth) multiplicities equal the host's on every corpus workload without
+// sampling or caps, with the replay on and with it off, and the device's matches per rule equal
+// the host's captured matches.
+TEST(RecordSet, ClassMultiplicitiesMatchTheHost) {
+    size_t compared = 0;
+    for (Workload w : build_corpus()) {
+        if (w.num_steps == 0) continue;
+        if (w.transition_rate != 1.0 || !w.rule_weights.empty() || w.max_states_per_step != 0 ||
+            w.max_successor_states_per_parent != 0 || w.matches_per_state_rule != 0) continue;
+        w.explore_from_canonical_states_only = true;
+        w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+
+        hypergraph::Hypergraph hg;
+        hg.set_state_canonicalization_mode(hypergraph::StateCanonicalizationMode::Full);
+        hg.set_event_signature_keys(to_cpu_event_keys(w.event_canon_mode));
+        hypergraph::RecordSet rs{false, false, false};
+        rs.raw_events = false;
+        rs.multiplicities = true;
+        hg.set_record_set(rs);
+        hypergraph::ParallelEvolutionEngine pe(&hg, 1);
+        pe.set_explore_from_canonical_states_only(true);
+        for (size_t i = 0; i < w.rules.size(); ++i)
+            pe.add_rule(convert_rule(w.rules[i], static_cast<uint16_t>(i)));
+        if (!w.initial_states.empty()) {
+            std::vector<std::vector<std::vector<hypergraph::VertexId>>> roots;
+            for (const auto& r : w.initial_states) {
+                std::vector<std::vector<hypergraph::VertexId>> st;
+                for (const auto& e : r) st.emplace_back(e.begin(), e.end());
+                roots.push_back(std::move(st));
+            }
+            pe.set_quotient_initial_states(w.quotient_initial_states);
+            pe.evolve(roots, w.num_steps);
+        } else {
+            pe.evolve(w.initial_state, w.num_steps);
+        }
+        std::map<std::pair<uint32_t, uint64_t>, uint64_t> host;
+        hg.for_each_class_multiplicity([&](uint64_t h, uint32_t d, uint64_t m) { host[{d, h}] += m; });
+        std::map<std::pair<uint64_t, uint32_t>, uint64_t> host_rules;
+        std::set<uint64_t> classes;
+        for (const auto& [k, m] : host) classes.insert(k.second);
+        for (uint64_t h : classes)
+            hg.for_each_expansion_match(h, [&](const hypergraph::SlotMatch& sm) {
+                ++host_rules[{h, static_cast<uint32_t>(sm.rule)}];
+            });
+
+        for (bool replay : {false, true}) {
+            hg_gpu::EvolveInput in = make_input(w);
+            in.materialize_relations = false;
+            in.record.causal = replay;
+            in.record.branchial = replay;
+            in.record.raw_events = replay;
+            in.record.multiplicities = true;
+            const hg_gpu::EvolveResult r = hg_gpu::evolve(in);
+            std::map<std::pair<uint32_t, uint64_t>, uint64_t> dev;
+            for (const auto& p : r.class_multiplicities) dev[{p.depth, p.class_hash}] += p.multiplicity;
+            EXPECT_EQ(dev, host) << w.name << " replay=" << replay;
+            std::map<std::pair<uint64_t, uint32_t>, uint64_t> dev_rules;
+            for (const auto& c : r.class_rule_matches) dev_rules[{c.class_hash, c.rule}] += c.count;
+            // The device lists every captured class; the host's list above holds the classes
+            // with a multiplicity, which are the ones a statistic reads.
+            for (const auto& [k, n] : host_rules)
+                EXPECT_EQ(dev_rules[k], n) << w.name << " replay=" << replay;
+        }
+        if (!host.empty()) ++compared;
+    }
+    EXPECT_GT(compared, 0u);
 }
 
 TEST(RecordSet, DeviceSkipsOnlyWhatItWasNotAskedFor) {

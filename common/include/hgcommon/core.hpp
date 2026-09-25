@@ -239,6 +239,9 @@ struct RecordSet {
     // with the causal relation off, the counts then come from class multiplicities
     // (quotient_multiplicity_core.hpp), and no raw state is materialised.
     bool raw_counts_only = false;
+    // The raw-state multiplicity of each class at each depth (Hypergraph::
+    // for_each_class_multiplicity), counted alongside whatever else the run records.
+    bool multiplicities = false;
 };
 
 

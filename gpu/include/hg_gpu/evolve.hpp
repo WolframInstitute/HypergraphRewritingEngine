@@ -126,6 +126,20 @@ struct EvolveInput {
     uint64_t max_device_memory_bytes = 0;
 };
 
+// One (class, depth) point of the multiplicity count: m raw states of the class at the depth.
+struct ClassMultiplicity {
+    uint64_t class_hash;
+    uint32_t depth;
+    uint64_t multiplicity;
+};
+
+// How many of a class's captured matches apply a rule.
+struct ClassRuleMatches {
+    uint64_t class_hash;
+    uint32_t rule;
+    uint64_t count;
+};
+
 struct CanonicalState {
     StateId id = INVALID_ID;
     uint64_t canonical_hash = 0;
@@ -244,6 +258,11 @@ struct EvolveResult {
     // describes a different set: measured 25 vertices against a count of 24 on the device, the
     // same discrepancy the host removed by routing identity through the reconstruction instead.
     std::vector<uint64_t> reconstructed_event_signature;
+
+    // With record.multiplicities under quotient exploration: the (class, depth) multiplicities
+    // and each class's matches per rule (QeState::class_multiplicities_host).
+    std::vector<ClassMultiplicity> class_multiplicities;
+    std::vector<ClassRuleMatches> class_rule_matches;
 
     uint32_t frame_alignments = 0;
     uint32_t frame_align_failures = 0;

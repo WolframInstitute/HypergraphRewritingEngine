@@ -214,6 +214,16 @@ claim. The replay is off the scheduler's critical path.
 depth that saturates the device pools; the brute-force oracle is `reference/MultiwayReference.wl`,
 cross-checked against the authoritative `MultiwaySystem`.)*
 
+**Class multiplicities.** A class c at depth d stands for m(c, d) raw states: m(root, 0) = 1 and
+m(c', d + 1) is the sum of m(c, d) over the matches of c whose output is c'. It equals the
+number of raw states of class c at step d of the unfolding. When a request reads the raw events
+and branchial pairs only as `NumEvents` and `NumBranchialEdges`, they are computed from the
+multiplicities and no raw instance is replayed: the raw events are the sum of m(c, d) M(c) over
+d < steps, M(c) the class's matches, and the branchial pairs the sum of m(c, d) B(c), B(c) its
+pairs of matches with overlapping consumed edges. Counts above 2^63 - 1 report 2^63 - 1 with the
+warning `CountSaturated`. *(Gates: `OracleCorpus.MultiplicityCountsMatchTheReplay`,
+`OracleCorpus.ClassMultiplicitiesCountTheRawStates`, `RecordSet.ClassMultiplicitiesMatchTheHost`.)*
+
 ### 5.5 Proof obligations, and the gates that discharge them
 
 1. **quotient ≡ full capture** on every observable, incl. cyclic rules — `cost_matrix` (oracle

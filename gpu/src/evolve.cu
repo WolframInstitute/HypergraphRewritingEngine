@@ -320,19 +320,24 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     // The replay is the device twin of the host's instance cascade, and it is the term measured
     // exponential in depth against an answer that is linear (b98a943c). Capture is untouched, so
     // Automatic event identity -- signed from the class frame -- is unchanged either way.
-    const bool qe_replay = in.record.causal || in.record.branchial || in.record.raw_events;
-    // The descent stacks the replay walks instead of the call stack. One driver per persistent
-    // block and one per root, so the arena covers whichever launch starts more of them.
-    if (qe_replay) {
+    //
+    // Counts only: the raw counts come from class multiplicities and no instance is built. The
+    // multiplicities are also counted when the caller asks for them. The host's rule in
+    // ParallelEvolutionEngine (set_quotient_multiplicity, set_quotient_replay).
+    const bool qe_counts_only = in.record.raw_counts_only && !in.record.causal;
+    const bool qe_raw = in.record.causal || in.record.branchial || in.record.raw_events;
+    const bool qe_replay = qe_raw && !qe_counts_only;
+    const bool qe_multiplicity = (qe_raw && qe_counts_only) || in.record.multiplicities;
+    // The descent stacks the replay walks instead of the call stack, and the multiplicity
+    // cascade's queue. One driver per persistent block and one per root, so the arena covers
+    // whichever launch starts more of them.
+    if (qe_replay || qe_multiplicity) {
         const uint32_t drivers =
             default_persistent_grid() > static_cast<uint32_t>(roots.size())
                 ? default_persistent_grid()
                 : static_cast<uint32_t>(roots.size());
         qe_state_->ensure_work(drivers, in.num_steps, cfg.descent_work_scale);
     }
-    // Counts only: the raw counts come from class multiplicities and no instance is built. The
-    // host's rule in ParallelEvolutionEngine (set_quotient_multiplicity).
-    const bool qe_multiplicity = qe_replay && in.record.raw_counts_only && !in.record.causal;
     QeView qe_view = qe_state_->view(in.num_steps, event_keys_for(in.event_canonicalization),
                                      qe_replay, qe_multiplicity);
 
@@ -430,12 +435,12 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         out.expansion_matches   = qc_route ? qe_state_->num_matches_host()   : 0u;
         out.expansion_instances = qc_counts.instances;
         out.reconstructed_raw_events =
-            qe_multiplicity ? qc_counts.qm_raw_events : qc_counts.raw_events;
+            qe_replay ? qc_counts.raw_events : qc_counts.qm_raw_events;
         // The REPLAY is what produces a reconstructed answer, so this reports the replay and
         // not merely the route. A run that captured the class frames but never replayed them
         // has no reconstructed raw events, and a caller that read this as "reconstruction ran"
         // would treat empty relations as a result rather than as an artifact not requested.
-        out.reconstruction_ran = qc_route && qe_replay;
+        out.reconstruction_ran = qc_route && (qe_replay || qe_multiplicity);
         // Under EVENT_SIG_NONE no identity is computed and every application is its own event,
         // so the raw count IS the answer -- the same rule as the host's num_reconstructed_events.
         out.reconstructed_events =
@@ -446,7 +451,9 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         out.reconstructed_causal_pairs = qc_counts.causal_pairs;
         out.reconstructed_causal_edges = qc_counts.causal_edges;
         out.reconstructed_branchial =
-            qe_multiplicity ? qc_counts.qm_branchial : qc_counts.branchial;
+            qe_replay ? qc_counts.branchial : qc_counts.qm_branchial;
+        if (qc_route && in.record.multiplicities)
+            qe_state_->class_multiplicities_host(out.class_multiplicities, out.class_rule_matches);
         if (qe_multiplicity && qc_counts.qm_saturated)
             out.warnings.push_back(OverflowWarning{ErrorKind::kCountSaturated, 1u,
                                                    hgcommon::QM_SATURATED_MESSAGE});

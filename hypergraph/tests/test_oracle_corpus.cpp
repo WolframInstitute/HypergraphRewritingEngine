@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <cstdlib>
+#include <map>
 #include <memory>
 #include <set>
 #include <string>
@@ -540,6 +541,48 @@ TEST(OracleCorpus, MultiplicityCountsMatchTheReplay) {
             EXPECT_EQ(mult.events, replay.events) << leg.name << " " << c.name;
             EXPECT_EQ(mult.branchial, replay.branchial) << leg.name << " " << c.name;
             if (replay.events) ++compared;
+        }
+    }
+    EXPECT_GT(compared, 0u);
+}
+
+// The multiplicity of a class at a depth is the number of raw states of that class at that step
+// of the unfolding. The reference is a full-capture run with no state identification, whose
+// states are the raw states; each is grouped by (step, canonical hash). The quotient run counts
+// the same from class multiplicities, with the replay on and with it off.
+TEST(OracleCorpus, ClassMultiplicitiesCountTheRawStates) {
+    size_t compared = 0;
+    for (const auto& c : oracle::corpus()) {
+        std::map<std::pair<uint32_t, uint64_t>, uint64_t> raw;
+        {
+            Hypergraph hg;
+            hg.set_state_canonicalization_mode(StateCanonicalizationMode::None);
+            ParallelEvolutionEngine e(&hg, 4);
+            for (const auto& r : c.rules) e.add_rule(r);
+            e.evolve(c.init, c.measure_steps);
+            for (uint32_t s = 0; s < hg.num_published_states(); ++s)
+                if (hg.get_state(s).id != INVALID_ID)
+                    ++raw[{hg.get_state(s).step, hg.get_or_compute_canonical_hash(s)}];
+        }
+        for (bool replay : {false, true}) {
+            Hypergraph hg;
+            hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+            RecordSet rs{replay, replay, false};
+            rs.raw_events = replay;
+            rs.multiplicities = true;
+            hg.set_record_set(rs);
+            ParallelEvolutionEngine e(&hg, 4);
+            e.set_explore_from_canonical_states_only(true);
+            for (const auto& r : c.rules) e.add_rule(r);
+            e.evolve(c.init, c.measure_steps);
+            ASSERT_TRUE(hg.quotient_multiplicity()) << c.name;
+            EXPECT_EQ(hg.quotient_replay(), replay) << c.name;
+            std::map<std::pair<uint32_t, uint64_t>, uint64_t> mult;
+            hg.for_each_class_multiplicity([&](uint64_t h, uint32_t d, uint64_t m) {
+                mult[{d, h}] += m;
+            });
+            EXPECT_EQ(mult, raw) << c.name << " replay=" << replay;
+            ++compared;
         }
     }
     EXPECT_GT(compared, 0u);

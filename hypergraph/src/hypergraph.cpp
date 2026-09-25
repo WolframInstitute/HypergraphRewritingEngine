@@ -1060,8 +1060,8 @@ void Hypergraph::quotient_redrive_point(uint64_t state_hash, uint32_t depth) {
         qm_cascade([&](QmCtx& c) {
             if (c.claim_queued(state_hash, depth)) c.push(state_hash, depth);
         });
-        return;
     }
+    if (!quotient_replay()) return;
     auto ri = qc_instances_.lookup(qc_key(state_hash, depth, 0));
     if (!ri.has_value()) return;
     (*ri)->for_each([&](const QcInstance& inst) {
@@ -1084,9 +1084,9 @@ void Hypergraph::quotient_causal_seed(StateId initial_state, int max_steps) {
 
     // Seed the per-instance reconstruction with the one instance of the initial state; its
     // edges have no producer.
-    if (orb && quotient_multiplicity()) {
+    if (orb && quotient_multiplicity())
         qm_cascade([&](QmCtx& c) { hgcommon::qm_credit(c, h, 0, 1); });
-    } else if (orb && quotient_reconstruction_.load(std::memory_order_relaxed)) {
+    if (orb && quotient_replay()) {
         // Claim the initial state as its class's frame before any instance exists, so the root
         // producer vector and the expansion captured from it agree by construction.
         auto mk = worker_scratch().mark();
@@ -1351,8 +1351,8 @@ void Hypergraph::qc_capture_expansion(EventId e) {
             c.fence();
             for (uint32_t d = 0; d < c.max_steps(); ++d) hgcommon::qm_pass(c, m, from, d);
         });
-        return;
     }
+    if (!quotient_replay()) return;
 
     // Match side of the rendezvous: replay this newly-captured match against every instance
     // already standing at this state, at every depth. Publish (the push above) before the
@@ -1541,6 +1541,14 @@ bool Hypergraph::quotient_multiplicity() const {
     return quotient_multiplicity_.load(std::memory_order_relaxed);
 }
 
+void Hypergraph::set_quotient_replay(bool on) {
+    quotient_replay_.store(on, std::memory_order_relaxed);
+}
+
+bool Hypergraph::quotient_replay() const {
+    return quotient_replay_.load(std::memory_order_relaxed);
+}
+
 bool Hypergraph::quotient_counts_saturated() const {
     return qm_saturated_.load(std::memory_order_relaxed);
 }
@@ -1554,7 +1562,7 @@ uint64_t Hypergraph::num_reconstructed_events() const {
 }
 
 uint64_t Hypergraph::num_reconstructed_raw_events() const {
-    if (quotient_multiplicity()) return qm_events_.load(std::memory_order_relaxed);
+    if (!quotient_replay()) return qm_events_.load(std::memory_order_relaxed);
     return qc_next_raw_event_.load(std::memory_order_relaxed);
 }
 
@@ -1932,6 +1940,7 @@ void Hypergraph::set_record_set(RecordSet r) {
     record_state_events_.store(r.state_events, std::memory_order_relaxed);
     record_raw_events_.store(r.raw_events, std::memory_order_relaxed);
     record_raw_counts_only_.store(r.raw_counts_only, std::memory_order_relaxed);
+    record_multiplicities_.store(r.multiplicities, std::memory_order_relaxed);
 }
 
 RecordSet Hypergraph::record_set() const {
@@ -1939,7 +1948,8 @@ RecordSet Hypergraph::record_set() const {
                      record_branchial_.load(std::memory_order_relaxed),
                      record_state_events_.load(std::memory_order_relaxed),
                      record_raw_events_.load(std::memory_order_relaxed),
-                     record_raw_counts_only_.load(std::memory_order_relaxed)};
+                     record_raw_counts_only_.load(std::memory_order_relaxed),
+                     record_multiplicities_.load(std::memory_order_relaxed)};
 }
 
 // The per-state event list and the branchial pair relation are recorded independently: they feed
@@ -2121,7 +2131,7 @@ bool Hypergraph::is_full_canonicalization() const {
 }
 
 uint64_t Hypergraph::num_reconstructed_branchial() const {
-    if (quotient_multiplicity()) return qm_branchial_.load(std::memory_order_relaxed);
+    if (!quotient_replay()) return qm_branchial_.load(std::memory_order_relaxed);
     return qc_ctr_total(&QcCounterSlot::branchial);
 }
 
@@ -2139,7 +2149,10 @@ uint64_t Hypergraph::qm_consumed_key(uint32_t match_id, uint32_t depth) {
 Hypergraph::QmPoint* Hypergraph::qm_point(uint64_t class_hash, uint32_t depth) {
     const uint64_t key = qm_point_key(class_hash, depth);
     if (auto r = qm_points_.lookup(key)) return *r;
-    return qm_points_.insert_if_absent(key, arena_.template create<QmPoint>()).first;
+    QmPoint* p = arena_.template create<QmPoint>();
+    p->depth = depth;
+    p->class_hash = class_hash;
+    return qm_points_.insert_if_absent(key, p).first;
 }
 
 std::atomic<uint64_t>* Hypergraph::qm_consumed_cell(uint32_t match_id, uint32_t depth) {

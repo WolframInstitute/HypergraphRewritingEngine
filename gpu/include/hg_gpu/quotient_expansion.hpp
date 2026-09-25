@@ -292,6 +292,8 @@ struct QeView {
     // match id + 1 -> b_j + 1. Present once the match is ready.
     DedupMap::DeviceView qm_overlaps;
     unsigned long long* qm_mass           = nullptr;
+    unsigned long long* qm_point_class    = nullptr;   // per point: its class hash
+    uint32_t*           qm_point_depth    = nullptr;   // per point: its depth
     uint32_t*           qm_queued         = nullptr;
     unsigned long long* qm_consumed_cells = nullptr;
     uint32_t*           qm_cursor         = nullptr;   // [0] next point, [1] next consumed cell
@@ -480,12 +482,17 @@ struct DeviceQmCtx {
     // The index behind `key` in `map`, claiming and zeroing a fresh one when absent.
     // UINT32_MAX when the array or the map is full, which is reported as kQcNodes.
     __device__ uint32_t index(DedupMap::DeviceView& map, uint64_t key, uint32_t cursor,
-                              bool is_point) {
+                              bool is_point, uint64_t class_hash = 0, uint32_t depth = 0) {
         const auto r = map.lookup(key);
         if (r.found && r.value) return r.value - 1u;
         const uint32_t idx = atomicAdd(&qe.qm_cursor[cursor], 1u);
         if (idx >= qe.qm_capacity) { ds.errors.record(ErrorKind::kQcNodes); return UINT32_MAX; }
-        if (is_point) { qe.qm_mass[idx] = 0ull; qe.qm_queued[idx] = 0u; }
+        if (is_point) {
+            qe.qm_mass[idx] = 0ull;
+            qe.qm_queued[idx] = 0u;
+            qe.qm_point_class[idx] = class_hash;
+            qe.qm_point_depth[idx] = depth;
+        }
         else          { qe.qm_consumed_cells[idx] = 0ull; }
         __threadfence();
         const auto ins = map.insert_if_absent(key, idx + 1u);
@@ -494,7 +501,7 @@ struct DeviceQmCtx {
     }
     __device__ uint32_t point(uint64_t class_hash, uint32_t depth) {
         return index(qe.qm_points, hgcommon::avoid_reserved_keys(hgcommon::qc_key(class_hash, depth, 0u)),
-                     0u, true);
+                     0u, true, class_hash, depth);
     }
     __device__ uint32_t cell(uint32_t match_id, uint32_t depth) {
         return index(qe.qm_consumed, hgcommon::qr_apply_key(match_id, depth), 1u, false);
@@ -709,12 +716,10 @@ __device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
     const uint32_t at = qe.by_from.push(qe_bucket(from, qe.by_from.num_keys), QeMatchRef{from, rec});
     if (at == INVALID_ID) { ds.errors.record(ErrorKind::kQcNodes); return; }
 
-    if (!qe.replay) return;
+    if (!qe.replay && !qe.multiplicity) return;
     QeWork work = qe_work_for(ds, qe, work_slice);
-    if (qe.multiplicity) {
-        qe_capture_multiplicity(ds, qe, m, from, at, consumed, nc, work);
-        return;
-    }
+    if (qe.multiplicity) qe_capture_multiplicity(ds, qe, m, from, at, consumed, nc, work);
+    if (!qe.replay) return;
     qe_drive_match(ds, qe, m, from, work);
     qe_run(ds, qe, work);
 }
@@ -773,12 +778,11 @@ __device__ inline void qe_seed_root_instance(DeviceState ds, QeView qe, StateId 
     // The frame above is registered whatever the caller records: event identity reads it. The
     // instance below is the root of the replay, and without it no descendant instance exists,
     // so this one guard removes the whole cascade.
-    if (!qe.replay) return;
     if (qe.multiplicity) {
         QeWork work = qe_work_for(ds, qe, work_slice);
         qe_seed_multiplicity(ds, qe, h, work);
-        return;
     }
+    if (!qe.replay) return;
 
     const uint32_t off = qe_alloc_words(ds, qe, nslots);
     if (off == UINT32_MAX) return;
@@ -868,7 +872,7 @@ __device__ inline void qe_run(DeviceState ds, QeView qe, QeWork& work) {
 __device__ inline QeWork qe_work_for(DeviceState ds, QeView qe, uint32_t slice) {
     QeWork w;
     if (qe.work_items == nullptr || slice >= qe.work_slices) {
-        if (qe.replay) ds.errors.record(ErrorKind::kScratchOverflow);
+        if (qe.replay || qe.multiplicity) ds.errors.record(ErrorKind::kScratchOverflow);
         return w;
     }
     w.items = qe.work_items + static_cast<size_t>(slice) * qe.work_cap;
@@ -1061,6 +1065,11 @@ public:
 
     uint32_t num_matches_host();
 
+    // The multiplicity count's (class, depth, m) points with m > 0, and each class's captured
+    // matches per rule as (class, rule, count). Read after the run.
+    void class_multiplicities_host(std::vector<ClassMultiplicity>& points,
+                                   std::vector<ClassRuleMatches>& matches);
+
     // Raw events the replay minted: one per (instance, match) application. The host's
     // qc_next_raw_event_, and the number a quotient run reports as its raw event count.
     uint32_t num_raw_events_host();
@@ -1131,6 +1140,8 @@ private:
     // qm_capacity_ masses, then qm_capacity_ consumed cells, then the three qm_counts.
     unsigned long long*       qm_words_  = nullptr;
     uint32_t*                 qm_queued_ = nullptr;
+    unsigned long long*       qm_point_class_ = nullptr;
+    uint32_t*                 qm_point_depth_ = nullptr;
     uint32_t                  qm_capacity_ = 0;
     LockFreeList<QeAppliedMatch> inst_applied_;
     uint32_t*                 inst_next_id_ = nullptr;

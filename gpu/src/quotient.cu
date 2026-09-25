@@ -6,6 +6,7 @@
 // themselves are __device__ and stay in their headers, as does everything the shared
 // hgcommon cores reach.
 
+#include <map>
 #include <utility>
 #include <vector>
 
@@ -129,6 +130,10 @@ QeState::QeState(bool on, uint32_t max_events): matches_(on ? max_events : 1u),
                       "QeState multiplicity alloc");
         HG_CUDA_CHECK(cudaMalloc(&qm_queued_, sizeof(uint32_t) * qm_capacity_),
                       "QeState multiplicity queue flags alloc");
+        HG_CUDA_CHECK(cudaMalloc(&qm_point_class_, sizeof(unsigned long long) * qm_capacity_),
+                      "QeState multiplicity point class alloc");
+        HG_CUDA_CHECK(cudaMalloc(&qm_point_depth_, sizeof(uint32_t) * qm_capacity_),
+                      "QeState multiplicity point depth alloc");
         event_sig_capacity_ = on ? max_events : 1u;
         HG_CUDA_CHECK(cudaMalloc(&event_sig_, sizeof(uint64_t) * event_sig_capacity_),
                       "QeState event sig alloc");
@@ -145,6 +150,8 @@ QeState::~QeState() {
         if (event_runsig_) cudaFree(event_runsig_);
         if (qm_words_) cudaFree(qm_words_);
         if (qm_queued_) cudaFree(qm_queued_);
+        if (qm_point_class_) cudaFree(qm_point_class_);
+        if (qm_point_depth_) cudaFree(qm_point_depth_);
     }
 
 bool QeState::enabled() const { return on_; }
@@ -198,6 +205,38 @@ QeState::Counters QeState::counters_host() const {
     }
 
 uint32_t QeState::num_matches_host() { return matches_.size_host(); }
+
+void QeState::class_multiplicities_host(std::vector<ClassMultiplicity>& points,
+                                        std::vector<ClassRuleMatches>& matches) {
+    points.clear();
+    matches.clear();
+    uint32_t cursor = 0;
+    HG_CUDA_CHECK(cudaMemcpy(&cursor, counters_ + 10, sizeof(uint32_t), cudaMemcpyDeviceToHost),
+                  "QeState multiplicity cursor read");
+    const uint32_t n = cursor < qm_capacity_ ? cursor : qm_capacity_;
+    std::vector<unsigned long long> mass(n), cls(n);
+    std::vector<uint32_t> depth(n);
+    if (n) {
+        HG_CUDA_CHECK(cudaMemcpy(mass.data(), qm_words_, sizeof(unsigned long long) * n,
+                                 cudaMemcpyDeviceToHost), "QeState multiplicity mass read");
+        HG_CUDA_CHECK(cudaMemcpy(cls.data(), qm_point_class_, sizeof(unsigned long long) * n,
+                                 cudaMemcpyDeviceToHost), "QeState multiplicity class read");
+        HG_CUDA_CHECK(cudaMemcpy(depth.data(), qm_point_depth_, sizeof(uint32_t) * n,
+                                 cudaMemcpyDeviceToHost), "QeState multiplicity depth read");
+    }
+    // An index claimed by a thread that lost the map insert was never credited, so it holds 0.
+    for (uint32_t i = 0; i < n; ++i)
+        if (mass[i]) points.push_back({cls[i], depth[i], mass[i]});
+
+    std::vector<LockFreeList<QeMatchRef>::Node> refs;
+    by_from_.copy_nodes_to_host(refs);
+    std::vector<DeviceSlotMatch> recs;
+    matches_.copy_to_host(recs);
+    std::map<std::pair<uint64_t, uint32_t>, uint64_t> count;
+    for (const auto& r : refs)
+        if (r.value.record < recs.size()) ++count[{r.value.from_hash, recs[r.value.record].rule}];
+    for (const auto& [k, c] : count) matches.push_back({k.first, k.second, c});
+}
 
 uint32_t QeState::num_raw_events_host() { return read_counter(next_raw_event_, "QeState raw event read"); }
 
@@ -393,7 +432,9 @@ QeView QeState::view(uint32_t max_steps, EventSignatureKeys keys,
         q.work_slices  = work_slices_;
         q.enabled      = on_ ? 1u : 0u;
         q.replay       = (on_ && replay) ? 1u : 0u;
-        q.multiplicity = (on_ && replay && multiplicity) ? 1u : 0u;
+        q.multiplicity = (on_ && multiplicity) ? 1u : 0u;
+        q.qm_point_class    = qm_point_class_;
+        q.qm_point_depth    = qm_point_depth_;
         q.qm_points         = qm_points_.view();
         q.qm_consumed       = qm_consumed_.view();
         q.qm_overlaps       = qm_overlaps_.view();
