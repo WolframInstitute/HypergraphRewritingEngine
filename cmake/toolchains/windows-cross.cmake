@@ -241,6 +241,22 @@ set(CMAKE_POSITION_INDEPENDENT_CODE OFF)
 if(COMPILER_TYPE STREQUAL "mingw")
     set(CMAKE_EXE_LINKER_FLAGS_INIT "-static-libgcc -static-libstdc++ -static")
     set(CMAKE_SHARED_LINKER_FLAGS_INIT "-static-libgcc -static-libstdc++ -static")
+    # The lowest Windows the engine runs on, Windows 8 (0x0602): job_system/src/park.cpp calls
+    # WaitOnAddress, which Windows 8 introduced, and affinity.cpp calls
+    # GetLogicalProcessorInformationEx (Windows 7). Older mingw-w64 releases default below
+    # Windows 7 and fail to compile affinity.cpp.
+    add_compile_definitions(_WIN32_WINNT=0x0602 WINVER=0x0602)
+    # mingw-w64 has two thread models; the win32 one has no std::thread or std::mutex, and it is
+    # the default on Debian and Ubuntu. Select the posix one with
+    #   sudo update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix
+    #   sudo update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-posix
+    execute_process(COMMAND ${CMAKE_CXX_COMPILER} -v ERROR_VARIABLE MINGW_VERBOSE OUTPUT_QUIET)
+    if(MINGW_VERBOSE MATCHES "Thread model: win32")
+        message(FATAL_ERROR
+            "${CMAKE_CXX_COMPILER} uses the win32 thread model, which has no std::thread. Select "
+            "the posix one: sudo update-alternatives --set ${CMAKE_SYSTEM_PROCESSOR}-w64-mingw32-g++ "
+            "/usr/bin/${CMAKE_SYSTEM_PROCESSOR}-w64-mingw32-g++-posix, and the same for -gcc.")
+    endif()
 elseif(COMPILER_TYPE STREQUAL "clang")
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64")
         # The MSVC-ABI runtime library is selected by CMAKE_MSVC_RUNTIME_LIBRARY (CMP0091 NEW):
