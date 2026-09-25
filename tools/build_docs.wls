@@ -77,8 +77,12 @@ If[files === {}, Print["no source docs in ", srcDir]; Exit[0]];
 (* Every source: its template, its notebook's path relative to English/, and whether it is built
    in this run. A Name that differs from the file name stops the build: the notebook and the
    page's URI are named after the Name, and a reader finds the source by the file name. *)
+(* "Evaluate" -> False: the "Association" form builds the whole notebook, and with evaluation on it
+   would run every page's examples just to read its frontmatter, under the default section
+   resets, which leaves engine sessions open that a later page then cannot open. *)
 pages = Map[
-  Function[f, Module[{meta = MarkdownToNotebook[f, "Association"]["Metadata"], tmpl, name},
+  Function[f, Module[{meta = MarkdownToNotebook[f, "Association", "Evaluate" -> False]["Metadata"],
+                      tmpl, name},
     tmpl = Lookup[meta, "Template", "Symbol"];
     name = Lookup[meta, "Name", FileBaseName[f]];
     <|"File" -> f, "Template" -> tmpl, "Name" -> name,
@@ -112,8 +116,12 @@ Do[
         If[! DirectoryQ[DirectoryName[target]],
           CreateDirectory[DirectoryName[target], CreateIntermediateDirectories -> True]];
         If[FileExistsQ[target], DeleteFile[target]];
+        (* "UseCache" -> False: the converter's own output cache is keyed by the example code
+           alone, so after an engine or kernel change it would serve the old outputs. Whether a
+           page is rebuilt at all is decided above, by a key that covers both. *)
         MarkdownToNotebook[f, target,
-          "EvaluateSeparator" -> If[page["Template"] === "TechNote", None, Automatic]];
+          "EvaluateSeparator" -> If[page["Template"] === "TechNote", None, Automatic],
+          "UseCache" -> False];
         (* Export can fail without aborting; a notebook that was not written is a failure. *)
         If[TrueQ[FileExistsQ[target]] && FileByteCount[target] > 0,
           Print["built ", page["Template"], " -> ", rel]; newManifest[rel] = key,
