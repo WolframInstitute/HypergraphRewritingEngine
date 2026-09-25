@@ -39,6 +39,14 @@ DOC_GLOBS = ["docs/en/**/*.md"]
 # `"Name" -> value` is the option syntax. A rule is `{{...}} -> {{...}}` and a property is a
 # positional argument, so neither matches.
 USE_RE = re.compile(r'"([A-Za-z][A-Za-z0-9]*)"\s*->')
+# An association literal `<|...|>` holds keys, not options: a state or event record in an
+# example's result, or the keys of a generated initial condition. Its rules are skipped; the
+# newlines inside it are kept, so line numbers stay right.
+ASSOC_RE = re.compile(r'<\|.*?\|>', re.DOTALL)
+
+
+def without_associations(text):
+    return ASSOC_RE.sub(lambda m: "\n" * m.group(0).count("\n"), text)
 
 
 def accepted_names():
@@ -85,7 +93,7 @@ def main():
     for f in files:
         if not f.exists():
             continue
-        for lineno, line in enumerate(f.read_text().splitlines(), 1):
+        for lineno, line in enumerate(without_associations(f.read_text()).splitlines(), 1):
             for m in USE_RE.finditer(line):
                 name = m.group(1)
                 if name not in accepted:
@@ -98,7 +106,7 @@ def main():
     nb_dir = ROOT / "paclet/Documentation/English"
     documented = set()
     for f in sorted(p for p in src_dir.rglob("*.md") if ".generated" not in p.parts):
-        documented |= set(USE_RE.findall(f.read_text()))
+        documented |= set(USE_RE.findall(without_associations(f.read_text())))
     notebooks = sorted(nb_dir.rglob("*.nb"))
     if not notebooks:
         print(f"FAIL: no built notebooks under {nb_dir.relative_to(ROOT)}")
