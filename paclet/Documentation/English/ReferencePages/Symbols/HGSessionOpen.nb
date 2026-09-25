@@ -1,0 +1,1618 @@
+(* Content-type: application/vnd.wolfram.mathematica *)
+
+(*** Wolfram Notebook File ***)
+(* http://www.wolfram.com/nb *)
+
+(* CreatedBy='Wolfram 14.3' *)
+
+(*CacheID: 234*)
+(* Internal cache information:
+NotebookFileLineBreakTest
+NotebookFileLineBreakTest
+NotebookDataPosition[       154,          7]
+NotebookDataLength[     56785,       1609]
+NotebookOptionsPosition[     44474,       1349]
+NotebookOutlinePosition[     45645,       1383]
+CellTagsIndexPosition[     45565,       1378]
+WindowFrame->Normal*)
+
+(* Beginning of Notebook Content *)
+Notebook[{
+
+Cell[CellGroupData[{
+Cell["HGSessionOpen", "ObjectName",
+ CellID->1224892054,ExpressionUUID->"22a1a762-10e3-861e-525e-3f4ca097ed64"],
+
+Cell[TextData[{
+ Cell["   ", "ModInfo",ExpressionUUID->"4da796ef-9f57-a4bf-7b5c-0fc91ae30e85"],
+ Cell[BoxData[
+  RowBox[{
+   TemplateBox[{
+     Cell[
+      TextData["HGSessionOpen"]], 
+     "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGSessionOpen", 
+     "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+    "PackageLink",
+    BaseStyle->"InlineFormula"], "[", 
+   RowBox[{
+    StyleBox["rules", "TI"], ",", " ", 
+    StyleBox["init", "TI"], ",", " ", 
+    StyleBox["prop", "TI"]}], "]"}]], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "1b39f900-6440-cee7-4ac6-f16a0dfa94cd"],
+ "\[LineSeparator]",
+ "opens a multiway evolution of ",
+ StyleBox["init", "TI"],
+ " under ",
+ StyleBox["rules", "TI"],
+ " that can be continued, and gives an ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGSessionObject"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGSessionObject", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "75d93363-5da6-51a4-23e6-ab4d5453238e"],
+ " whose steps report the property ",
+ StyleBox["prop", "TI"],
+ ".",
+ "\n",
+ Cell["   ", "ModInfo",ExpressionUUID->"25a568a6-87a2-527f-535a-810032572145"],
+ Cell[BoxData[
+  RowBox[{
+   TemplateBox[{
+     Cell[
+      TextData["HGSessionOpen"]], 
+     "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGSessionOpen", 
+     "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+    "PackageLink",
+    BaseStyle->"InlineFormula"], "[", 
+   RowBox[{
+    StyleBox["rules", "TI"], ",", " ", 
+    StyleBox["init", "TI"]}], "]"}]], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "00d7f70d-8d0e-ae34-30ec-ef5724b8f51e"],
+ "\[LineSeparator]",
+ "opens a session whose steps report ",
+ Cell[BoxData["\"\<EvolutionCausalBranchialGraph\>\""], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "2f3e8453-9762-68ea-56c5-1e1d22173a30"],
+ "."
+}], "Usage",
+ CellID->329621944,ExpressionUUID->"5902d484-617f-9570-0f31-cdee100bfc5a"],
+
+Cell[TextData[{
+ "A session is an evolution that is continued rather than run again. ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGSessionStep"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGSessionStep", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "56e0e12c-de7d-6135-7e9f-f889db08301f"],
+ " evolves it further from where the last step stopped, ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGSessionQuery"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGSessionQuery", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "5708d032-2150-04f2-7d37-ca7c50e56ed8"],
+ " reads it, ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGSessionFrontier"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGSessionFrontier", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "3b7807e8-9504-b25a-6907-9eb21cb600a0"],
+ " lists the states the next step expands, and ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGSessionClose"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGSessionClose", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "166f8969-5e31-e8e5-3e14-21335bc5bacf"],
+ " releases it."
+}], "Notes",
+ CellID->515379898,ExpressionUUID->"234f1fb7-07c6-bba9-5174-96f1b27009f3"],
+
+Cell[TextData[{
+ StyleBox["rules", "TI"],
+ " and ",
+ StyleBox["init", "TI"],
+ " take the forms ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGEvolve"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGEvolve", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "6ee45b93-a0df-d1f6-169c-52dcd16ba3dc"],
+ " takes: a rule or a list of rules; a hypergraph, a list of hypergraphs (one \
+initial state each), a ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["Graph"]], "paclet:ref/Graph"},
+   "RefLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "0a3edd72-e0d3-62fb-3bc5-d53f916630c1"],
+ ", or a named initial condition such as ",
+ Cell[BoxData["\"\<Grid\>\""], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "6ec9a758-58be-624c-16f6-3f02594b3096"],
+ "."
+}], "Notes",
+ CellID->604760901,ExpressionUUID->"23253b8d-1c99-a6bf-52da-b2d7952d0c85"],
+
+Cell[TextData[{
+ StyleBox["prop", "TI"],
+ " is a property ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGEvolve"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGEvolve", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "6e84829b-9667-6594-16bb-1bc523124ffe"],
+ " accepts, or a list of properties. It sets what a step reports by default; ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGSessionStep"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGSessionStep", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "569e173f-6b36-b240-7ea5-8f790ec000aa"],
+ " and ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGSessionQuery"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGSessionQuery", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "15a3e88e-0b57-fa6e-4350-01e8aee3c8b4"],
+ " can ask for any other property of the same evolution."
+}], "Notes",
+ CellID->1476799103,ExpressionUUID->"779c57de-bb93-d239-1da4-4e983e27a103"],
+
+Cell[TextData[{
+ "The session starts at step 0: ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGSessionOpen"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGSessionOpen", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "2867ea9b-6e8d-517b-581c-03c50b382041"],
+ " applies no rule. After steps totalling ",
+ StyleBox["k", "TI"],
+ ", the session reports what ",
+ Cell[BoxData[
+  RowBox[{
+   TemplateBox[{
+     Cell[
+      TextData["HGEvolve"]], 
+     "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGEvolve", 
+     "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+    "PackageLink",
+    BaseStyle->"InlineFormula"], "[", 
+   RowBox[{
+    StyleBox["rules", "TI"], ",", " ", 
+    StyleBox["init", "TI"], ",", " ", 
+    StyleBox["k", "TI"], ",", " ", 
+    StyleBox["prop", "TI"]}], "]"}]], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "76dfbc62-92ac-7b6e-1ee4-364c275949b4"],
+ " gives."
+}], "Notes",
+ CellID->448336599,ExpressionUUID->"0df4b6a5-173c-e15a-3b8b-2f0fa2ceb3a0"],
+
+Cell[TextData[{
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGSessionOpen"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGSessionOpen", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "4d620fc7-5cf2-d9d8-7b11-a6a15484ab22"],
+ " takes the options of ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGEvolve"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGEvolve", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "741b091d-feb2-1a39-1c38-a146fb476903"],
+ ", with the same defaults, and every option of ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["Graph"]], "paclet:ref/Graph"},
+   "RefLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "3bf5a20e-c541-e06e-698a-446becf5b2b4"],
+ ". They hold for the whole session: a step or a query cannot change the \
+rules, how states and events are identified, the device, or the options of \
+the graphs it gives."
+}], "Notes",
+ CellID->970785311,ExpressionUUID->"07964fa7-8d1e-ff14-2dae-660124a8c27e"],
+
+Cell[TextData[{
+ Cell[BoxData["\"\<BranchialStep\>\""], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "3e367b18-9aa8-58f9-67ce-73421f5d2ac3"],
+ " set to ",
+ Cell[BoxData["Automatic"], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "1dbaaaf7-1388-e538-4b59-43b1a622cc02"],
+ " is resolved for each step's or query's own properties, so a graph asked \
+for later has the branchial edges ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGEvolve"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGEvolve", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "77d99fdb-a351-2d53-1de6-1684d6e477b9"],
+ " gives it."
+}], "Notes",
+ CellID->1377816002,ExpressionUUID->"04646437-faee-7dfc-2c1c-7e70fe9b47c6"],
+
+Cell[TextData[{
+ Cell[BoxData[
+  RowBox[{"\"\<TargetDevice\>\"", " ", "->", " ", "\"\<GPU\>\""}]], 
+  "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "1cbde497-e826-5557-4442-fdd089d33fbd"],
+ " opens the session on the GPU engine. Where no GPU engine is available, it \
+issues the message ",
+ Cell[BoxData[
+  RowBox[{"HGEvolve", "::", "gpudev"}]], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "6ecb37d0-fbcc-3e82-16c8-ae9dfe7e84e8"],
+ " and opens on the CPU engine."
+}], "Notes",
+ CellID->1439899046,ExpressionUUID->"4c358d3e-86d3-ec5f-75ca-25783367b6a5"],
+
+Cell[TextData[{
+ "One session is open at a time for each device. While one is open, ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGSessionOpen"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGSessionOpen", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "1f908cf3-3c70-d55a-45af-25bdb50abfa0"],
+ " issues the message ",
+ Cell[BoxData[
+  RowBox[{"HGSessionOpen", "::", "refused"}]], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "5dac66ba-272d-3627-0b54-7fe452d99d0d"],
+ " and gives ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["$Failed"]], "paclet:ref/$Failed"},
+   "RefLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "110914de-bbdd-83a1-4736-8d983e69d18b"],
+ "; the open session is unaffected."
+}], "Notes",
+ CellID->1641200340,ExpressionUUID->"76d004f9-29e5-6665-1eef-9da34f904d4f"],
+
+Cell[TextData[{
+ "The session is held by a persistent engine worker process. Where none can \
+be started, ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGSessionOpen"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGSessionOpen", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "2c76c797-c249-79ca-540d-ded0f7fc4b10"],
+ " issues the message ",
+ Cell[BoxData[
+  RowBox[{"HGSessionOpen", "::", "noworker"}]], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "35077f55-9291-6519-633d-771f27244c63"],
+ " and gives ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["$Failed"]], "paclet:ref/$Failed"},
+   "RefLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "4ebf3687-f906-130d-7644-afe0f8b37e57"],
+ "; ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGEvolve"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGEvolve", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "65de4a87-3471-cd9f-13e6-63e1bd0597e5"],
+ " still works."
+}], "Notes",
+ CellID->1424533854,ExpressionUUID->"7bedd9bd-1d84-ddaa-2992-d0e79436a7f0"],
+
+Cell[TextData[{
+ "A property ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGEvolve"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGEvolve", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "4c37f35a-e1a6-07fe-75cc-eb0790536dc4"],
+ " does not accept issues the message ",
+ Cell[BoxData[
+  RowBox[{"HGEvolve", "::", "unknownprop"}]], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "02f88238-86c8-66df-3287-2462337d4c25"],
+ " and gives ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["$Failed"]], "paclet:ref/$Failed"},
+   "RefLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "034d641c-5834-e412-3173-7e4659c6cf78"],
+ "."
+}], "Notes",
+ CellID->535457321,ExpressionUUID->"52ce4f6a-032d-a48b-02f6-6734b6d90ed1"]
+}, Open  ]],
+
+Cell[CellGroupData[{
+
+Cell[TextData[{
+ "See Also",
+ Cell[BoxData[
+  TemplateBox[{"SeeAlso", 
+    Cell[
+     BoxData[
+      FrameBox[
+       Cell[
+       "Insert links to any related reference (function) pages.", 
+        "MoreInfoText"], BaseStyle -> "IFrameBox"]], "MoreInfoTextOuter"]},
+   "MoreInfoOpenerButtonTemplate"]],ExpressionUUID->
+  "5bfe104a-50de-a555-0985-8a1461680fbf"]
+}], "SeeAlsoSection",
+ CellID->1559318232,ExpressionUUID->"134534fb-1061-d656-417a-ada5a115bcbc"],
+
+Cell[TextData[{
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGSessionObject"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGSessionObject", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "2cd98fd2-34e7-e188-54e6-269cbc93b3d2"],
+ " \[FilledVerySmallSquare] ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGSessionStep"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGSessionStep", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "6e1c99a5-dcef-9c28-1623-100ed49be772"],
+ " \[FilledVerySmallSquare] ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGSessionQuery"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGSessionQuery", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "608e87cc-8fce-afdf-10b5-1e962a78f525"],
+ " \[FilledVerySmallSquare] ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGSessionFrontier"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGSessionFrontier", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "2aa912c6-4938-1bb7-5a56-8ba068cd699d"],
+ " \[FilledVerySmallSquare] ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGSessionClose"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGSessionClose", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "66b4bee0-d247-b105-0e4b-37cde7f3006f"],
+ " \[FilledVerySmallSquare] ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGEvolve"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGEvolve", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "337c2d89-644e-5b5e-6103-c4d30dfb29a4"]
+}], "SeeAlso",
+ CellID->1048964699,ExpressionUUID->"5f7c2741-1c81-ec9b-0503-bf2b9535b6e1"]
+}, Open  ]],
+
+Cell[CellGroupData[{
+
+Cell[TextData[{
+ "Tech Notes",
+ Cell[BoxData[
+  TemplateBox[{"TechNotes", 
+    Cell[
+     BoxData[
+      FrameBox[
+       Cell["Insert links to related tech notes.", "MoreInfoText"], BaseStyle -> 
+       "IFrameBox"]], "MoreInfoTextOuter"]},
+   "MoreInfoOpenerButtonTemplate"]],ExpressionUUID->
+  "644cc522-c7c4-9b18-0c73-dc8ff276e662"]
+}], "TechNotesSection",
+ CellID->792424486,ExpressionUUID->"2de8c8f9-eaf3-8e90-5b97-e1a28e87d4fa"],
+
+Cell[TextData[ButtonBox["GettingStarted",
+ BaseStyle->"Link",
+ ButtonData->
+  "paclet:WolframInstitute/HypergraphRewriteEngine/tutorial/GettingStarted"]],\
+ "Tutorials",
+ CellID->341631938,ExpressionUUID->"6801f052-da94-0b6f-183e-ea1fdf2159b5"]
+}, Open  ]],
+
+Cell[CellGroupData[{
+
+Cell["Related Guides", "MoreAboutSection",
+ CellID->38303248,ExpressionUUID->"0daf8e98-7628-e40b-3b54-27c203c2cf51"],
+
+Cell[TextData[Cell[BoxData[
+ ButtonBox["HypergraphRewriting",
+  BaseStyle->"Link",
+  ButtonData->
+   "paclet:WolframInstitute/HypergraphRewriteEngine/guide/\
+HypergraphRewriting"]], \
+"InlineFormula",ExpressionUUID->"7b6211f5-475c-1194-2911-88bf72e963fe"]], \
+"MoreAbout",
+ CellID->754467827,ExpressionUUID->"7c8f7bdf-2493-8d8a-24b5-72994d27d7d0"]
+}, Open  ]],
+
+Cell[TextData[{
+ "Related Links",
+ Cell[BoxData[
+  TemplateBox[{"RelatedLinks", 
+    Cell[
+     BoxData[
+      FrameBox[
+       Cell[
+       "Insert links to any related page, including web pages.", 
+        "MoreInfoText"], BaseStyle -> "IFrameBox"]], "MoreInfoTextOuter"]},
+   "MoreInfoOpenerButtonTemplate"]],ExpressionUUID->
+  "14e8dcaf-74c9-37ba-3c97-d5097d7d9d80"]
+}], "RelatedLinksSection",
+ CellID->47113304,ExpressionUUID->"5d5cbd3a-e88d-ee42-0b63-35678939b4a8"],
+
+Cell[CellGroupData[{
+
+Cell[TextData[{
+ "Examples Initialization",
+ Cell[BoxData[
+  TemplateBox[{"ExamplesInitialization", 
+    Cell[
+     BoxData[
+      FrameBox[
+       Cell[
+       "Input that is to be evaluated before any examples are run, e.g. \
+Needs[\[Ellipsis]].", "MoreInfoText"], BaseStyle -> "IFrameBox"]], 
+     "MoreInfoTextOuter"]},
+   "MoreInfoOpenerButtonTemplate"]],ExpressionUUID->
+  "3b7fe4cc-5889-7f4e-6904-fd96593c4594"]
+}], "ExamplesInitializationSection",
+ CellID->1718580883,ExpressionUUID->"6cb5c01f-62f5-68e0-144a-da5916803aca"],
+
+Cell[BoxData[
+ RowBox[{"Needs", "[", "\"\<HypergraphRewriting`\>\"", 
+  "]"}]], "ExampleInitialization",
+ CellID->1969679695,ExpressionUUID->"55f417ec-7166-d78d-038b-8eb60010bdd7"]
+}, Open  ]],
+
+Cell[CellGroupData[{
+
+Cell[BoxData[
+ InterpretationBox[GridBox[{
+    {
+     StyleBox[
+      RowBox[{"Basic", " ", "Examples"}], "PrimaryExamplesSection"], 
+     ButtonBox[
+      RowBox[{
+       RowBox[{"More", " ", "Examples"}], " ", "\[RightTriangle]"}],
+      BaseStyle->"ExtendedExamplesLink",
+      ButtonData:>"ExtendedExamples"]}
+   }],
+  $Line = 0; Null]], "PrimaryExamplesSection",
+ CellID->880084151,ExpressionUUID->"4b6e5dad-9702-0c1f-7916-54f722b75765"],
+
+Cell["\<\
+Open a session on a rule that splits an edge into two, and evolve it:\
+\>", "ExampleText",
+ CellID->542889645,ExpressionUUID->"1d359769-845f-cd94-44ca-0f332deb97fe"],
+
+Cell[CellGroupData[{
+
+Cell[BoxData[{
+ RowBox[{
+  RowBox[{"s", " ", "=", " ", 
+   RowBox[{"HGSessionOpen", "[", 
+    RowBox[{
+     RowBox[{"{", 
+      RowBox[{
+       RowBox[{"{", 
+        RowBox[{"{", 
+         RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], " ", "->", " ", 
+       RowBox[{"{", 
+        RowBox[{
+         RowBox[{"{", 
+          RowBox[{"1", ",", " ", "3"}], "}"}], ",", " ", 
+         RowBox[{"{", 
+          RowBox[{"3", ",", " ", "2"}], "}"}]}], "}"}]}], "}"}], ",", " ", 
+     RowBox[{"{", 
+      RowBox[{"{", 
+       RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], ",", 
+     " ", "\"\<NumStates\>\""}], "]"}]}], ";"}], "\n", 
+ RowBox[{"HGSessionQuery", "[", "s", "]"}]}], "Input",
+ CellLabel->"In[1]:= ",
+ CellID->2054848121,ExpressionUUID->"2055bfee-d4b5-7aa2-506a-36cbdd404888"],
+
+Cell[BoxData["1"], "Output",
+ CellLabel->"Out[1]= ",
+ CellID->207869695,ExpressionUUID->"64c30c0d-1857-1b13-0cf0-a65799e26679"]
+}, Open  ]],
+
+Cell[CellGroupData[{
+
+Cell[BoxData[
+ RowBox[{"HGSessionStep", "[", 
+  RowBox[{"s", ",", " ", "3"}], "]"}]], "Input",
+ CellLabel->"In[2]:= ",
+ CellID->984535207,ExpressionUUID->"46632a09-cc5f-b0ef-6e10-cc52e5eb0235"],
+
+Cell[BoxData["10"], "Output",
+ CellLabel->"Out[2]= ",
+ CellID->2091929370,ExpressionUUID->"6ea251ed-865f-e03c-1652-48b733ebb306"]
+}, Open  ]],
+
+Cell[BoxData[
+ RowBox[{"HGSessionClose", "[", "s", "]"}]], "Input",
+ CellLabel->"In[3]:= ",
+ CellID->1835953498,ExpressionUUID->"25a0bfbe-b1d4-2428-535f-36fbc0668f72"]
+}, Open  ]],
+
+Cell[CellGroupData[{
+
+Cell[TextData[{
+ "More Examples",
+ Cell[BoxData[
+  TemplateBox[{"MoreExamples", 
+    Cell[
+     BoxData[
+      FrameBox[
+       Cell["Extended examples in standardized sections.", "MoreInfoText"], 
+       BaseStyle -> "IFrameBox"]], "MoreInfoTextOuter"]},
+   "MoreInfoOpenerButtonTemplate"]],ExpressionUUID->
+  "04786d0e-016a-d127-2c07-8568b01ca00d"]
+}], "ExtendedExamplesSection",
+ CellTags->"ExtendedExamples",
+ CellID->533848431,ExpressionUUID->"2d15b43a-cd49-5244-5b2a-2e67e4fc20ae"],
+
+Cell[CellGroupData[{
+
+Cell[BoxData[
+ InterpretationBox[Cell[
+  "Scope", "ExampleSection",ExpressionUUID->
+   "2d1ff276-b82a-c3ca-5b24-f43039dc9110"],
+  $Line = 0; Null]], "ExampleSection",
+ CellID->1293636265,ExpressionUUID->"14fd1512-f616-8834-3c82-8d5f83a0db1e"],
+
+Cell["A list of properties; each step reports an association:", "ExampleText",
+ CellID->1245349523,ExpressionUUID->"66c67103-72a1-9427-0efe-696d0755ff0d"],
+
+Cell[CellGroupData[{
+
+Cell[BoxData[{
+ RowBox[{
+  RowBox[{"s", " ", "=", " ", 
+   RowBox[{"HGSessionOpen", "[", 
+    RowBox[{
+     RowBox[{"{", 
+      RowBox[{
+       RowBox[{"{", 
+        RowBox[{"{", 
+         RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], " ", "->", " ", 
+       RowBox[{"{", 
+        RowBox[{
+         RowBox[{"{", 
+          RowBox[{"1", ",", " ", "3"}], "}"}], ",", " ", 
+         RowBox[{"{", 
+          RowBox[{"3", ",", " ", "2"}], "}"}]}], "}"}]}], "}"}], ",", " ", 
+     RowBox[{"{", 
+      RowBox[{"{", 
+       RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], ",", " ", 
+     RowBox[{"{", 
+      RowBox[{"\"\<NumStates\>\"", ",", " ", "\"\<NumEvents\>\""}], "}"}]}], 
+    "]"}]}], ";"}], "\n", 
+ RowBox[{"HGSessionStep", "[", 
+  RowBox[{"s", ",", " ", "2"}], "]"}]}], "Input",
+ CellLabel->"In[1]:= ",
+ CellID->535795172,ExpressionUUID->"48c794f4-84f6-2bfc-78fc-0dbe2c8379c6"],
+
+Cell[BoxData[
+ RowBox[{"\[LeftAssociation]", 
+  RowBox[{
+   RowBox[{"\<\"NumStates\"\>", "\[Rule]", "4"}], ",", 
+   RowBox[{"\<\"NumEvents\"\>", "\[Rule]", "3"}]}], 
+  "\[RightAssociation]"}]], "Output",
+ CellLabel->"Out[1]= ",
+ CellID->940399158,ExpressionUUID->"58ee7ecb-1370-1005-0896-7795a605636f"]
+}, Open  ]],
+
+Cell[BoxData[
+ RowBox[{"HGSessionClose", "[", "s", "]"}]], "Input",
+ CellLabel->"In[2]:= ",
+ CellID->1233998414,ExpressionUUID->"11d04a92-cbef-a8a5-47e0-63dfed9bfa8f"],
+
+Cell[CellGroupData[{
+
+Cell[BoxData[
+ InterpretationBox[Cell[
+  "\t", "ExampleDelimiter",ExpressionUUID->
+   "7d9821c9-0e61-bc6d-2ba7-b893ab1506b7"],
+  $Line = 0; Null]], "ExampleDelimiter",
+ CellID->1764265925,ExpressionUUID->"3181a460-bc62-f1ee-67be-3e4a3514c334"],
+
+Cell["\<\
+A single rule, several initial states, and a named initial condition:\
+\>", "ExampleText",
+ CellID->1258921795,ExpressionUUID->"3937e1d4-04c3-e55a-68cc-f89ead77cfa0"],
+
+Cell[CellGroupData[{
+
+Cell[BoxData[{
+ RowBox[{
+  RowBox[{"s", " ", "=", " ", 
+   RowBox[{"HGSessionOpen", "[", 
+    RowBox[{
+     RowBox[{
+      RowBox[{"{", 
+       RowBox[{"{", 
+        RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], " ", "->", " ", 
+      RowBox[{"{", 
+       RowBox[{
+        RowBox[{"{", 
+         RowBox[{"1", ",", " ", "3"}], "}"}], ",", " ", 
+        RowBox[{"{", 
+         RowBox[{"3", ",", " ", "2"}], "}"}]}], "}"}]}], ",", " ", 
+     RowBox[{"{", 
+      RowBox[{
+       RowBox[{"{", 
+        RowBox[{"{", 
+         RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], ",", " ", 
+       RowBox[{"{", 
+        RowBox[{
+         RowBox[{"{", 
+          RowBox[{"1", ",", " ", "2"}], "}"}], ",", " ", 
+         RowBox[{"{", 
+          RowBox[{"2", ",", " ", "3"}], "}"}]}], "}"}]}], "}"}], ",", 
+     " ", "\"\<NumStates\>\""}], "]"}]}], ";"}], "\n", 
+ RowBox[{"HGSessionQuery", "[", "s", "]"}]}], "Input",
+ CellLabel->"In[1]:= ",
+ CellID->456697606,ExpressionUUID->"6b45e796-37a7-eecc-197a-fed04253b416"],
+
+Cell[BoxData["2"], "Output",
+ CellLabel->"Out[1]= ",
+ CellID->864433130,ExpressionUUID->"5e187950-8ca2-2ab2-0638-711a25577898"]
+}, Open  ]],
+
+Cell[CellGroupData[{
+
+Cell[BoxData[{
+ RowBox[{
+  RowBox[{"HGSessionClose", "[", "s", "]"}], ";"}], "\n", 
+ RowBox[{
+  RowBox[{"s", " ", "=", " ", 
+   RowBox[{"HGSessionOpen", "[", 
+    RowBox[{
+     RowBox[{
+      RowBox[{"{", 
+       RowBox[{"{", 
+        RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], " ", "->", " ", 
+      RowBox[{"{", 
+       RowBox[{
+        RowBox[{"{", 
+         RowBox[{"1", ",", " ", "3"}], "}"}], ",", " ", 
+        RowBox[{"{", 
+         RowBox[{"3", ",", " ", "2"}], "}"}]}], "}"}]}], ",", 
+     " ", "\"\<Grid\>\"", ",", " ", "\"\<NumStates\>\"", ",", " ", 
+     RowBox[{"\"\<GridWidth\>\"", " ", "->", " ", "2"}], ",", " ", 
+     RowBox[{"\"\<GridHeight\>\"", " ", "->", " ", "2"}]}], "]"}]}], ";"}], "\n", 
+ RowBox[{"HGSessionQuery", "[", "s", "]"}]}], "Input",
+ CellLabel->"In[2]:= ",
+ CellID->2042528713,ExpressionUUID->"250a2d7c-9b81-05b0-5309-c5261e346f9a"],
+
+Cell[BoxData["1"], "Output",
+ CellLabel->"Out[2]= ",
+ CellID->1067050233,ExpressionUUID->"15a9104d-5625-6af3-4356-8a1763d038d9"]
+}, Open  ]],
+
+Cell[BoxData[
+ RowBox[{"HGSessionClose", "[", "s", "]"}]], "Input",
+ CellLabel->"In[3]:= ",
+ CellID->1694524259,ExpressionUUID->"58c17d8b-1b7e-6f79-08ff-74d59e0b3243"]
+}, Open  ]]
+}, Open  ]],
+
+Cell[BoxData[
+ InterpretationBox[Cell[
+  "Generalizations & Extensions", "ExampleSection",ExpressionUUID->
+   "43821c38-6720-b4f9-71b1-966212da1ec3"],
+  $Line = 0; Null]], "ExampleSection",
+ CellID->1020263627,ExpressionUUID->"341c54d9-3079-6bba-5c24-4d83410c3980"],
+
+Cell[CellGroupData[{
+
+Cell[BoxData[
+ InterpretationBox[Cell[
+  "Options", "ExampleSection",ExpressionUUID->
+   "1dbf9c2b-d84a-d79b-4b44-1674d9fcbde1"],
+  $Line = 0; Null]], "ExampleSection",
+ CellID->2061341341,ExpressionUUID->"0f449897-1a0e-51e7-357b-11d19fbb23cd"],
+
+Cell[CellGroupData[{
+
+Cell["\"CanonicalizeStates\"", "ExampleSubsection",
+ CellID->774517536,ExpressionUUID->"6d5a63ab-93b9-14f3-1b7a-7af5264c7ed9"],
+
+Cell[TextData[{
+ "With ",
+ Cell[BoxData["Full"], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "5077c06e-c394-b43c-000c-da4bf6261f06"],
+ ", isomorphic states are one state:"
+}], "ExampleText",
+ CellID->1184240770,ExpressionUUID->"07359582-e823-44a1-2eca-0cef89d62e8b"],
+
+Cell[CellGroupData[{
+
+Cell[BoxData[{
+ RowBox[{
+  RowBox[{"s", " ", "=", " ", 
+   RowBox[{"HGSessionOpen", "[", 
+    RowBox[{
+     RowBox[{"{", 
+      RowBox[{
+       RowBox[{"{", 
+        RowBox[{"{", 
+         RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], " ", "->", " ", 
+       RowBox[{"{", 
+        RowBox[{
+         RowBox[{"{", 
+          RowBox[{"1", ",", " ", "3"}], "}"}], ",", " ", 
+         RowBox[{"{", 
+          RowBox[{"3", ",", " ", "2"}], "}"}]}], "}"}]}], "}"}], ",", " ", 
+     RowBox[{"{", 
+      RowBox[{"{", 
+       RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], ",", 
+     " ", "\"\<NumStates\>\"", ",", " ", 
+     RowBox[{"\"\<CanonicalizeStates\>\"", " ", "->", " ", "Full"}]}], 
+    "]"}]}], ";"}], "\n", 
+ RowBox[{"HGSessionStep", "[", 
+  RowBox[{"s", ",", " ", "3"}], "]"}]}], "Input",
+ CellLabel->"In[1]:= ",
+ CellID->670500628,ExpressionUUID->"7c239bd0-3ff5-3b18-25d0-129ab9818662"],
+
+Cell[BoxData["4"], "Output",
+ CellLabel->"Out[1]= ",
+ CellID->435854199,ExpressionUUID->"68c76573-72ce-0c1a-18fd-7d3d077b5760"]
+}, Open  ]],
+
+Cell[BoxData[
+ RowBox[{"HGSessionClose", "[", "s", "]"}]], "Input",
+ CellLabel->"In[2]:= ",
+ CellID->1436252222,ExpressionUUID->"6184d2f2-049e-728e-17bb-cbbcad2b40d4"]
+}, Open  ]],
+
+Cell[CellGroupData[{
+
+Cell["\"TransitionRate\"", "ExampleSubsection",
+ CellID->706921134,ExpressionUUID->"4fd967ef-5008-0b29-75e7-7ec961bd5673"],
+
+Cell[TextData[{
+ "A rate below 1 keeps each transition with that probability, drawn from ",
+ Cell[BoxData["\"\<RandomSeed\>\""], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "19bb1c5e-57ab-6e36-4f58-9618625e351c"],
+ ", so a seeded session gives the same sample as a seeded ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGEvolve"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGEvolve", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "5c8dcc56-7aa9-964a-04b2-e6107f5dfc90"],
+ ":"
+}], "ExampleText",
+ CellID->542210380,ExpressionUUID->"30baa1c8-66ad-75e0-6059-389213585fca"],
+
+Cell[CellGroupData[{
+
+Cell[BoxData[{
+ RowBox[{
+  RowBox[{"s", " ", "=", " ", 
+   RowBox[{"HGSessionOpen", "[", 
+    RowBox[{
+     RowBox[{"{", 
+      RowBox[{
+       RowBox[{"{", 
+        RowBox[{"{", 
+         RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], " ", "->", " ", 
+       RowBox[{"{", 
+        RowBox[{
+         RowBox[{"{", 
+          RowBox[{"1", ",", " ", "3"}], "}"}], ",", " ", 
+         RowBox[{"{", 
+          RowBox[{"3", ",", " ", "2"}], "}"}]}], "}"}]}], "}"}], ",", " ", 
+     RowBox[{"{", 
+      RowBox[{"{", 
+       RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], ",", 
+     " ", "\"\<NumStates\>\"", ",", " ", 
+     RowBox[{"\"\<TransitionRate\>\"", " ", "->", " ", "0.5"}], ",", " ", 
+     RowBox[{"\"\<RandomSeed\>\"", " ", "->", " ", "7"}]}], "]"}]}], ";"}], "\n", 
+ RowBox[{
+  RowBox[{"HGSessionStep", "[", 
+   RowBox[{"s", ",", " ", "4"}], "]"}], " ", "===", "\n", " ", 
+  RowBox[{"HGEvolve", "[", 
+   RowBox[{
+    RowBox[{"{", 
+     RowBox[{
+      RowBox[{"{", 
+       RowBox[{"{", 
+        RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], " ", "->", " ", 
+      RowBox[{"{", 
+       RowBox[{
+        RowBox[{"{", 
+         RowBox[{"1", ",", " ", "3"}], "}"}], ",", " ", 
+        RowBox[{"{", 
+         RowBox[{"3", ",", " ", "2"}], "}"}]}], "}"}]}], "}"}], ",", " ", 
+    RowBox[{"{", 
+     RowBox[{"{", 
+      RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], ",", " ", "4", ",", 
+    " ", "\"\<NumStates\>\"", ",", " ", 
+    RowBox[{"\"\<TransitionRate\>\"", " ", "->", " ", "0.5"}], ",", " ", 
+    RowBox[{"\"\<RandomSeed\>\"", " ", "->", " ", "7"}]}], "]"}]}]}], "Input",\
+
+ CellLabel->"In[1]:= ",
+ CellID->1813030933,ExpressionUUID->"52535901-cb26-8b9c-0261-516aeed0d9e6"],
+
+Cell[BoxData["True"], "Output",
+ CellLabel->"Out[1]= ",
+ CellID->1442122904,ExpressionUUID->"323a4b1c-b138-a791-63da-6359c0b20dfb"]
+}, Open  ]],
+
+Cell[BoxData[
+ RowBox[{"HGSessionClose", "[", "s", "]"}]], "Input",
+ CellLabel->"In[2]:= ",
+ CellID->1110573896,ExpressionUUID->"7421cf44-a1ac-4319-1dde-e721d0592e63"]
+}, Open  ]]
+}, Open  ]],
+
+Cell[BoxData[
+ InterpretationBox[Cell[
+  "Applications", "ExampleSection",ExpressionUUID->
+   "511b3347-8d7d-ab60-0738-ab212409f64a"],
+  $Line = 0; Null]], "ExampleSection",
+ CellID->258228157,ExpressionUUID->"36c19c85-764d-0b01-5efe-15ef03f8566b"],
+
+Cell[CellGroupData[{
+
+Cell[BoxData[
+ InterpretationBox[Cell[
+  "Properties & Relations", "ExampleSection",ExpressionUUID->
+   "6815cd54-0cd7-196f-182a-e51ea5626bb5"],
+  $Line = 0; Null]], "ExampleSection",
+ CellID->2123667759,ExpressionUUID->"519775d4-d545-25f2-07ad-6c91dcf18fd8"],
+
+Cell[TextData[{
+ "A session stepped to ",
+ StyleBox["k", "TI"],
+ " reports what ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGEvolve"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGEvolve", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "5900aac7-5263-773e-0f3f-43a167165a04"],
+ " gives for ",
+ StyleBox["k", "TI"],
+ " steps:"
+}], "ExampleText",
+ CellID->1555662820,ExpressionUUID->"06ecfdb3-2197-c9b0-2e93-f4fd50239b9a"],
+
+Cell[CellGroupData[{
+
+Cell[BoxData[{
+ RowBox[{
+  RowBox[{"s", " ", "=", " ", 
+   RowBox[{"HGSessionOpen", "[", 
+    RowBox[{
+     RowBox[{"{", 
+      RowBox[{
+       RowBox[{"{", 
+        RowBox[{
+         RowBox[{"{", 
+          RowBox[{"1", ",", " ", "2"}], "}"}], ",", " ", 
+         RowBox[{"{", 
+          RowBox[{"1", ",", " ", "3"}], "}"}]}], "}"}], " ", "->", " ", 
+       RowBox[{"{", 
+        RowBox[{
+         RowBox[{"{", 
+          RowBox[{"1", ",", " ", "2"}], "}"}], ",", " ", 
+         RowBox[{"{", 
+          RowBox[{"1", ",", " ", "3"}], "}"}], ",", " ", 
+         RowBox[{"{", 
+          RowBox[{"2", ",", " ", "3"}], "}"}]}], "}"}]}], "}"}], ",", " ", 
+     RowBox[{"{", 
+      RowBox[{
+       RowBox[{"{", 
+        RowBox[{"1", ",", " ", "2"}], "}"}], ",", " ", 
+       RowBox[{"{", 
+        RowBox[{"1", ",", " ", "3"}], "}"}]}], "}"}], ",", 
+     " ", "\"\<NumStates\>\""}], "]"}]}], ";"}], "\n", 
+ RowBox[{
+  RowBox[{"HGSessionStep", "[", 
+   RowBox[{"s", ",", " ", "3"}], "]"}], ";"}], "\n", 
+ RowBox[{
+  RowBox[{"HGSessionQuery", "[", 
+   RowBox[{"s", ",", " ", 
+    RowBox[{"{", 
+     RowBox[{"\"\<NumStates\>\"", ",", " ", "\"\<NumEvents\>\"", ",", 
+      " ", "\"\<NumCausalEdges\>\"", ",", " ", "\"\<NumBranchialEdges\>\""}], 
+     "}"}]}], "]"}], " ", "===", "\n", " ", 
+  RowBox[{"HGEvolve", "[", 
+   RowBox[{
+    RowBox[{"{", 
+     RowBox[{
+      RowBox[{"{", 
+       RowBox[{
+        RowBox[{"{", 
+         RowBox[{"1", ",", " ", "2"}], "}"}], ",", " ", 
+        RowBox[{"{", 
+         RowBox[{"1", ",", " ", "3"}], "}"}]}], "}"}], " ", "->", " ", 
+      RowBox[{"{", 
+       RowBox[{
+        RowBox[{"{", 
+         RowBox[{"1", ",", " ", "2"}], "}"}], ",", " ", 
+        RowBox[{"{", 
+         RowBox[{"1", ",", " ", "3"}], "}"}], ",", " ", 
+        RowBox[{"{", 
+         RowBox[{"2", ",", " ", "3"}], "}"}]}], "}"}]}], "}"}], ",", " ", 
+    RowBox[{"{", 
+     RowBox[{
+      RowBox[{"{", 
+       RowBox[{"1", ",", " ", "2"}], "}"}], ",", " ", 
+      RowBox[{"{", 
+       RowBox[{"1", ",", " ", "3"}], "}"}]}], "}"}], ",", " ", "3", ",", "\n",
+     "  ", 
+    RowBox[{"{", 
+     RowBox[{"\"\<NumStates\>\"", ",", " ", "\"\<NumEvents\>\"", ",", 
+      " ", "\"\<NumCausalEdges\>\"", ",", " ", "\"\<NumBranchialEdges\>\""}], 
+     "}"}]}], "]"}]}]}], "Input",
+ CellLabel->"In[1]:= ",
+ CellID->1852680185,ExpressionUUID->"12d95fcb-3316-2212-42e7-569546a37178"],
+
+Cell[BoxData["True"], "Output",
+ CellLabel->"Out[1]= ",
+ CellID->494381976,ExpressionUUID->"733995c2-f5bf-78ee-22c6-0caffc4a4a34"]
+}, Open  ]],
+
+Cell[BoxData[
+ RowBox[{"HGSessionClose", "[", "s", "]"}]], "Input",
+ CellLabel->"In[2]:= ",
+ CellID->1932788388,ExpressionUUID->"4f8ab258-7e7f-0723-7589-34027b0a6a09"]
+}, Open  ]],
+
+Cell[CellGroupData[{
+
+Cell[BoxData[
+ InterpretationBox[Cell[
+  "Possible Issues", "ExampleSection",ExpressionUUID->
+   "6b12ee74-9953-131d-1921-003e18e67e67"],
+  $Line = 0; Null]], "ExampleSection",
+ CellID->1305812373,ExpressionUUID->"65262d3c-fccc-1dc6-0cdd-c579f579672c"],
+
+Cell["\<\
+A second session for the same device is refused while one is open:\
+\>", "ExampleText",
+ CellID->1635850333,ExpressionUUID->"5e157ee2-48da-d240-062b-77cc696ca0aa"],
+
+Cell[CellGroupData[{
+
+Cell[BoxData[{
+ RowBox[{
+  RowBox[{"s", " ", "=", " ", 
+   RowBox[{"HGSessionOpen", "[", 
+    RowBox[{
+     RowBox[{"{", 
+      RowBox[{
+       RowBox[{"{", 
+        RowBox[{"{", 
+         RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], " ", "->", " ", 
+       RowBox[{"{", 
+        RowBox[{
+         RowBox[{"{", 
+          RowBox[{"1", ",", " ", "3"}], "}"}], ",", " ", 
+         RowBox[{"{", 
+          RowBox[{"3", ",", " ", "2"}], "}"}]}], "}"}]}], "}"}], ",", " ", 
+     RowBox[{"{", 
+      RowBox[{"{", 
+       RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], ",", 
+     " ", "\"\<NumStates\>\""}], "]"}]}], ";"}], "\n", 
+ RowBox[{"HGSessionOpen", "[", 
+  RowBox[{
+   RowBox[{"{", 
+    RowBox[{
+     RowBox[{"{", 
+      RowBox[{"{", 
+       RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], " ", "->", " ", 
+     RowBox[{"{", 
+      RowBox[{
+       RowBox[{"{", 
+        RowBox[{"1", ",", " ", "3"}], "}"}], ",", " ", 
+       RowBox[{"{", 
+        RowBox[{"3", ",", " ", "2"}], "}"}]}], "}"}]}], "}"}], ",", " ", 
+   RowBox[{"{", 
+    RowBox[{"{", 
+     RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], ",", 
+   " ", "\"\<NumStates\>\""}], "]"}]}], "Input",
+ CellLabel->"In[1]:= ",
+ CellID->185668621,ExpressionUUID->"78287f93-0f12-7c52-2828-76ddaaa746b8"],
+
+Cell[BoxData[
+ RowBox[{
+  StyleBox[
+   RowBox[{"HGSessionOpen", "::", "refused"}], "MessageName"], 
+  RowBox[{":", " "}], 
+  RowBox[{
+   RowBox[{
+   "The", " ", "engine", " ", "refused", " ", "this", " ", "session", " ", 
+    RowBox[{"job", ".", " ", "The"}], " ", "usual", " ", 
+    RowBox[{"causes", ":", " ", 
+     RowBox[{
+     "a", " ", "session", " ", "is", " ", "already", " ", "open", " ", "on", " ",
+       "this", " ", "worker", " ", 
+      RowBox[{"(", 
+       RowBox[{
+        RowBox[{
+        "one", " ", "is", " ", "served", " ", "at", " ", "a", " ", "time"}], ",",
+         " ", 
+        RowBox[{
+        "so", " ", "close", " ", "it", " ", "before", " ", "opening", " ", 
+         "another"}]}], ")"}]}]}]}], ",", " ", 
+   RowBox[{
+   "or", " ", "the", " ", "verb", " ", "named", " ", "a", " ", "session", " ",
+     "this", " ", "worker", " ", "does", " ", "not", " ", 
+    RowBox[{"hold", "."}]}]}]}]], "Message", "MSG",
+ CellID->2064602208,ExpressionUUID->"08285353-0e0e-39f8-3828-4b1dabb88bc2"],
+
+Cell[BoxData["$Failed"], "Output",
+ CellLabel->"Out[1]= ",
+ CellID->489176174,ExpressionUUID->"1daed7d3-93e8-7698-4b55-ce9d259d5ce2"]
+}, Open  ]],
+
+Cell[BoxData[
+ RowBox[{"HGSessionClose", "[", "s", "]"}]], "Input",
+ CellLabel->"In[2]:= ",
+ CellID->1202300457,ExpressionUUID->"187adc3d-3961-76c2-4819-d667b8145c28"],
+
+Cell[CellGroupData[{
+
+Cell[BoxData[
+ InterpretationBox[Cell[
+  "\t", "ExampleDelimiter",ExpressionUUID->
+   "641c78eb-7f03-7846-0c24-71b57ab64aac"],
+  $Line = 0; Null]], "ExampleDelimiter",
+ CellID->497123094,ExpressionUUID->"5bfcc75d-c21d-6fb0-0983-df06f7a8359a"],
+
+Cell[TextData[{
+ "A property ",
+ Cell[BoxData[
+  TemplateBox[{
+    Cell[
+     TextData["HGEvolve"]], 
+    "paclet:WolframInstitute/HypergraphRewriteEngine/ref/HGEvolve", 
+    "WolframInstitute/HypergraphRewriteEngine Package Symbol"},
+   "PackageLink",
+   BaseStyle->"InlineFormula"]], "InlineFormula",ExpressionUUID->
+  "112ae6ec-4b5c-6ad2-4729-ffb66ee93838"],
+ " does not accept:"
+}], "ExampleText",
+ CellID->1847341574,ExpressionUUID->"6121b9de-dddd-aca8-10de-309bd469f6f2"],
+
+Cell[CellGroupData[{
+
+Cell[BoxData[
+ RowBox[{"HGSessionOpen", "[", 
+  RowBox[{
+   RowBox[{"{", 
+    RowBox[{
+     RowBox[{"{", 
+      RowBox[{"{", 
+       RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], " ", "->", " ", 
+     RowBox[{"{", 
+      RowBox[{
+       RowBox[{"{", 
+        RowBox[{"1", ",", " ", "3"}], "}"}], ",", " ", 
+       RowBox[{"{", 
+        RowBox[{"3", ",", " ", "2"}], "}"}]}], "}"}]}], "}"}], ",", " ", 
+   RowBox[{"{", 
+    RowBox[{"{", 
+     RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], ",", 
+   " ", "\"\<NumState\>\""}], "]"}]], "Input",
+ CellLabel->"In[1]:= ",
+ CellID->767564296,ExpressionUUID->"30209679-023a-ee91-61df-0823b7ccb4fb"],
+
+Cell[BoxData[
+ RowBox[{
+  StyleBox[
+   RowBox[{"HGEvolve", "::", "unknownprop"}], "MessageName"], 
+  RowBox[{":", " "}], 
+  RowBox[{
+   RowBox[{"Unknown", " ", "property", 
+    RowBox[{"(", "s", ")"}]}], ":", " "}], 
+  RowBox[{"{", "\<\"NumState\"\>", "}"}], 
+  RowBox[{
+   RowBox[{
+    RowBox[{".", " ", "Valid"}], " ", "properties", " ", 
+    RowBox[{"are", ":", " ", "States"}]}], ",", " ", "Events", ",", " ", 
+   "CausalEdges", ",", " ", "BranchialEdges", ",", " ", "StatesGraph", ",", 
+   " ", "CausalGraph", ",", " ", "BranchialGraph", ",", " ", "EvolutionGraph",
+    ",", " ", 
+   RowBox[{"their", " ", "Structure", " ", "variants"}], ",", " ", 
+   "GlobalEdges", ",", " ", "StateBitvectors", ",", " ", 
+   RowBox[{"All", "."}]}]}]], "Message", "MSG",
+ CellID->635080963,ExpressionUUID->"29bc1606-c22d-409d-5f43-8863f7d812e7"],
+
+Cell[BoxData[
+ RowBox[{
+  StyleBox[
+   RowBox[{"General", "::", "stop"}], "MessageName"], 
+  RowBox[{":", " "}], 
+  RowBox[{"Further", " ", "output", " ", "of", " "}], 
+  TagBox[
+   StyleBox[
+    RowBox[{"HGEvolve", "::", "unknownprop"}], "MessageName"],
+   HoldForm], 
+  RowBox[{" ", 
+   RowBox[{"will", " ", "be", " ", "suppressed", " ", "during", " ", "this", " ", 
+    RowBox[{"calculation", "."}]}]}]}]], "Message", "MSG",
+ CellID->993759236,ExpressionUUID->"7bf1e1bf-5b3e-c64b-298e-f8f95ec8ac91"],
+
+Cell[BoxData["$Failed"], "Output",
+ CellLabel->"Out[1]= ",
+ CellID->373884399,ExpressionUUID->"3119d855-3ffd-7401-6726-d21fb9885f6b"]
+}, Open  ]]
+}, Open  ]]
+}, Open  ]],
+
+Cell[BoxData[
+ InterpretationBox[Cell[
+  "Interactive Examples", "ExampleSection",ExpressionUUID->
+   "62a6d1b5-4e36-fa69-125d-c8ff6bc0c8b3"],
+  $Line = 0; Null]], "ExampleSection",
+ CellID->1653164318,ExpressionUUID->"7c41cdc9-5ab3-1ef5-247e-e4935f4664df"],
+
+Cell[BoxData[
+ InterpretationBox[Cell[
+  "Neat Examples", "ExampleSection",ExpressionUUID->
+   "51fce014-dca1-0630-0783-fa51d5546d1a"],
+  $Line = 0; Null]], "ExampleSection",
+ CellID->589267740,ExpressionUUID->"657c1c65-980e-511d-1303-964f19bb2067"]
+}, Open  ]],
+
+Cell[CellGroupData[{
+
+Cell["Metadata", "MetadataSection",
+ CellID->311882160,ExpressionUUID->"0f15dbd5-5f35-596c-352a-d29f5ac02bb6"],
+
+Cell[TextData[{
+ "New in: ",
+ Cell["XX", "HistoryData",
+  CellTags->"New",ExpressionUUID->"7e9b7e66-629a-1114-26b9-7040172f607e"],
+ " | Modified in: ",
+ Cell[" ", "HistoryData",
+  CellTags->"Modified",ExpressionUUID->"585a51e6-774f-2dd2-087a-48c002fa7738"],
+ " | Obsolete in: ",
+ Cell[" ", "HistoryData",
+  CellTags->"Obsolete",ExpressionUUID->
+  "1d7c0b5b-c40c-ea6a-4b03-a304edbeb8b0"]
+}], "History",
+ CellID->341476719,ExpressionUUID->"370294fd-9e49-2d35-5d31-0da71bfc741f"],
+
+Cell[CellGroupData[{
+
+Cell[TextData[{
+ "Categorization",
+ Cell[BoxData[
+  TemplateBox[{"Metadata", 
+    Cell[
+     BoxData[
+      FrameBox[
+       Cell[
+       "Metadata such as page URI, context, and type of documentation page.", 
+        "MoreInfoText"], BaseStyle -> "IFrameBox"]], "MoreInfoTextOuter"]},
+   "MoreInfoOpenerButtonTemplate"]],ExpressionUUID->
+  "2845529c-454d-b13b-587b-4bc66cf90001"]
+}], "CategorizationSection",
+ CellID->1755438392,ExpressionUUID->"7519012f-e657-215b-2326-988893e273a1"],
+
+Cell["Symbol", "Categorization",
+ CellLabel->"Entity Type",
+ CellID->686433507,ExpressionUUID->"594776df-9e75-d16a-0f7d-6f991b01a3b0"],
+
+Cell["WolframInstitute/HypergraphRewriteEngine", "Categorization",
+ CellLabel->"Paclet Name",
+ CellID->605800465,ExpressionUUID->"6405505f-4b92-3bd6-0c3b-4a196e24893c"],
+
+Cell["HypergraphRewriting`", "Categorization",
+ CellLabel->"Context",
+ CellID->468444828,ExpressionUUID->"6878c7f8-419e-9db5-1807-dea27028e79f"],
+
+Cell["WolframInstitute/HypergraphRewriteEngine/ref/HGSessionOpen", \
+"Categorization",
+ CellLabel->"URI",
+ CellID->1030425846,ExpressionUUID->"48a3d607-c312-9dd3-7850-c860f6a4e739"]
+}, Closed]],
+
+Cell["Keywords", "KeywordsSection",
+ CellID->477174294,ExpressionUUID->"539491e8-328f-8d7b-01ab-08b2473bd441"],
+
+Cell[CellGroupData[{
+
+Cell["Syntax Templates", "TemplatesSection",
+ CellID->1872225408,ExpressionUUID->"7fcf59b5-a5ca-2155-25f5-50fecc7f73bf"],
+
+Cell[BoxData[""], "Template",
+ CellLabel->"Additional Function Template",
+ CellID->1562036412,ExpressionUUID->"023f49e2-a747-9723-33c5-60cfd2f3fa09"],
+
+Cell[BoxData[""], "Template",
+ CellLabel->"Arguments Pattern",
+ CellID->158391909,ExpressionUUID->"21aa1c49-e16c-f406-57a9-9612901edf6c"],
+
+Cell[BoxData[""], "Template",
+ CellLabel->"Local Variables",
+ CellID->1360575930,ExpressionUUID->"289b85cd-827f-9a9c-58b8-1c97370be8e6"],
+
+Cell[BoxData[""], "Template",
+ CellLabel->"Color Equal Signs",
+ CellID->793782254,ExpressionUUID->"12f3dbee-abc4-6375-4280-d2cbce714e5f"]
+}, Closed]]
+}, Open  ]]
+},
+WindowSize->{700, 770},
+WindowMargins->{{5, Automatic}, {Automatic, 0}},
+TaggingRules->{
+ "Metadata" -> {
+   "title" -> "HGSessionOpen", "context" -> "HypergraphRewriting`", 
+    "keywords" -> {
+     "session", "continuation", "multiway", "hypergraph rewriting", 
+      "evolution", "frontier"}, "summary" -> "", "paclet" -> 
+    "WolframInstitute/HypergraphRewriteEngine", "uri" -> 
+    "WolframInstitute/HypergraphRewriteEngine/ref/HGSessionOpen", "type" -> 
+    "Symbol", "index" -> True, "language" -> "en"}},
+CellContext->CellGroup,
+FrontEndVersion->"14.3 for Microsoft Windows (64-bit) (July 8, 2025)",
+StyleDefinitions->FrontEnd`FileName[{"Wolfram"}, "FunctionPageStylesExt.nb", 
+  CharacterEncoding -> "UTF-8"],
+ExpressionUUID->"7ed5da6f-a344-b859-26ea-dc48d6f60aa3"
+]
+(* End of Notebook Content *)
+
+(* Internal cache information *)
+(*CellTagsOutline
+CellTagsIndex->{
+ "ExtendedExamples"->{
+  Cell[21276, 636, 487, 13, 70, "ExtendedExamplesSection",ExpressionUUID->"2cfa2c34-ef50-7d46-5499-c6718ae547ac",
+   CellTags->"ExtendedExamples",
+   CellID->533848431]}
+ }
+*)
+(*CellTagsIndex
+CellTagsIndex->{
+ {"ExtendedExamples", 45371, 1371}
+ }
+*)
+(*NotebookFileOutline
+Notebook[{
+Cell[CellGroupData[{
+Cell[576, 22, 111, 1, 70, "ObjectName",ExpressionUUID->"362a4e41-4988-041f-5e2a-602b683d6f65",
+ CellID->1224892054],
+Cell[690, 25, 2068, 58, 70, "Usage",ExpressionUUID->"01ed6b92-5a5f-fa78-3792-82dc5febc942",
+ CellID->329621944],
+Cell[2761, 85, 1689, 43, 70, "Notes",ExpressionUUID->"107fa29c-d013-1000-4004-3bd9e1a6636a",
+ CellID->515379898],
+Cell[4453, 130, 1014, 29, 70, "Notes",ExpressionUUID->"6798df62-4cc7-e4e1-0da7-d74c6573cecb",
+ CellID->604760901],
+Cell[5470, 161, 1309, 34, 70, "Notes",ExpressionUUID->"49f5450b-e8d1-97dd-7f8b-5d548965fd27",
+ CellID->1476799103],
+Cell[6782, 197, 1133, 32, 70, "Notes",ExpressionUUID->"2570a8a5-7a6f-59e7-530f-410f7f1a2bcd",
+ CellID->448336599],
+Cell[7918, 231, 1235, 32, 70, "Notes",ExpressionUUID->"0b990c23-b656-01a6-39a6-a58cc3e3538c",
+ CellID->970785311],
+Cell[9156, 265, 849, 21, 70, "Notes",ExpressionUUID->"52243646-2fbd-210e-03db-a8204a487054",
+ CellID->1377816002],
+Cell[10008, 288, 586, 14, 70, "Notes",ExpressionUUID->"1acd7f4d-3da3-7753-4af3-7717b4565db9",
+ CellID->1439899046],
+Cell[10597, 304, 999, 27, 70, "Notes",ExpressionUUID->"062d91f0-6326-41c0-2fd2-08ba16d3132a",
+ CellID->1641200340],
+Cell[11599, 333, 1339, 38, 70, "Notes",ExpressionUUID->"1ac7f74a-ce09-be58-4afc-ef17ebbd04a2",
+ CellID->1424533854],
+Cell[12941, 373, 916, 27, 70, "Notes",ExpressionUUID->"6f6ad260-8ee1-565a-1569-d44a2a943ca0",
+ CellID->535457321]
+}, Open  ]],
+Cell[CellGroupData[{
+Cell[13894, 405, 459, 13, 70, "SeeAlsoSection",ExpressionUUID->"612fd791-c81e-86f2-10d4-cedae9a8ecd8",
+ CellID->1559318232],
+Cell[14356, 420, 2306, 61, 70, "SeeAlso",ExpressionUUID->"26dca2d1-2715-746d-4ee3-3b9b52a05eb7",
+ CellID->1048964699]
+}, Open  ]],
+Cell[CellGroupData[{
+Cell[16699, 486, 435, 12, 70, "TechNotesSection",ExpressionUUID->"296a77cd-8fa3-dd44-5f6a-6e972a57a7ae",
+ CellID->792424486],
+Cell[17137, 500, 244, 5, 70, "Tutorials",ExpressionUUID->"6b853673-18d0-d9fa-19ba-a83d996aabc0",
+ CellID->341631938]
+}, Open  ]],
+Cell[CellGroupData[{
+Cell[17418, 510, 116, 1, 70, "MoreAboutSection",ExpressionUUID->"25b5b884-ef74-61b3-534a-31e18a013399",
+ CellID->38303248],
+Cell[17537, 513, 347, 8, 70, "MoreAbout",ExpressionUUID->"574a2197-51ef-7938-7d49-b8d1679a4802",
+ CellID->754467827]
+}, Open  ]],
+Cell[17899, 524, 471, 13, 70, "RelatedLinksSection",ExpressionUUID->"6e85e9ed-427b-8528-16ba-00b7770fec72",
+ CellID->47113304],
+Cell[CellGroupData[{
+Cell[18395, 541, 531, 14, 70, "ExamplesInitializationSection",ExpressionUUID->"73b76025-96bb-3fff-214d-798f234f85c5",
+ CellID->1718580883],
+Cell[18929, 557, 180, 3, 70, "ExampleInitialization",ExpressionUUID->"31f4c073-8ff6-126f-678b-da3d298360b5",
+ CellID->1969679695]
+}, Open  ]],
+Cell[CellGroupData[{
+Cell[19146, 565, 442, 12, 70, "PrimaryExamplesSection",ExpressionUUID->"72ff7667-e560-b2c0-2285-68408c1a002a",
+ CellID->880084151],
+Cell[19591, 579, 175, 3, 70, "ExampleText",ExpressionUUID->"7c9be80e-0554-61c1-24b8-0268ace1332b",
+ CellID->542889645],
+Cell[CellGroupData[{
+Cell[19791, 586, 774, 22, 70, "Input",ExpressionUUID->"106b7ad8-6378-599b-4069-7382160d2be1",
+ CellID->2054848121],
+Cell[20568, 610, 127, 2, 70, "Output",ExpressionUUID->"7e6f7c7a-fa8f-2da1-2615-7627ff3a778b",
+ CellID->207869695]
+}, Open  ]],
+Cell[CellGroupData[{
+Cell[20732, 617, 193, 4, 70, "Input",ExpressionUUID->"304452a4-201b-d64c-607c-4b0e51afbc96",
+ CellID->984535207],
+Cell[20928, 623, 129, 2, 70, "Output",ExpressionUUID->"6beff1f8-c64a-83a6-1994-e8a5f3fcd18c",
+ CellID->2091929370]
+}, Open  ]],
+Cell[21072, 628, 167, 3, 70, "Input",ExpressionUUID->"4b5b9263-9199-4e16-7978-144d202c157c",
+ CellID->1835953498]
+}, Open  ]],
+Cell[CellGroupData[{
+Cell[21276, 636, 487, 13, 70, "ExtendedExamplesSection",ExpressionUUID->"475d7054-346c-a3cc-6d63-6a1ebd1ef116",
+ CellTags->"ExtendedExamples",
+ CellID->533848431],
+Cell[CellGroupData[{
+Cell[21788, 653, 242, 5, 70, "ExampleSection",ExpressionUUID->"2ef71510-aa09-eca9-568c-8d5dcfbdb6f3",
+ CellID->1293636265],
+Cell[22033, 660, 154, 1, 70, "ExampleText",ExpressionUUID->"3343f580-98d5-e31c-6170-ecea1961ce66",
+ CellID->1245349523],
+Cell[CellGroupData[{
+Cell[22212, 665, 873, 25, 70, "Input",ExpressionUUID->"20a7420b-376a-b23f-505d-6455421c0105",
+ CellID->535795172],
+Cell[23088, 692, 302, 7, 70, "Output",ExpressionUUID->"6af863a9-1098-c609-1a98-7af3a112ad53",
+ CellID->940399158]
+}, Open  ]],
+Cell[23405, 702, 167, 3, 70, "Input",ExpressionUUID->"055bc2ad-6b92-a3be-3378-dbf70e24f184",
+ CellID->1233998414],
+Cell[CellGroupData[{
+Cell[23597, 709, 243, 5, 70, "ExampleDelimiter",ExpressionUUID->"2b0fb60e-2211-365f-5934-286857a59ca5",
+ CellID->1764265925],
+Cell[23843, 716, 176, 3, 70, "ExampleText",ExpressionUUID->"201a2509-bdd9-2fa1-5039-bd53346c758b",
+ CellID->1258921795],
+Cell[CellGroupData[{
+Cell[24044, 723, 995, 29, 70, "Input",ExpressionUUID->"7085d256-6adc-aa08-20ba-d4100f6ef952",
+ CellID->456697606],
+Cell[25042, 754, 127, 2, 70, "Output",ExpressionUUID->"5f932952-49a5-d34f-05a0-c11c6851a195",
+ CellID->864433130]
+}, Open  ]],
+Cell[CellGroupData[{
+Cell[25206, 761, 869, 22, 70, "Input",ExpressionUUID->"160f17c4-d31a-fe19-3e34-8ea1e6acc563",
+ CellID->2042528713],
+Cell[26078, 785, 128, 2, 70, "Output",ExpressionUUID->"10beb8bd-bdb6-ee93-4045-31e73440b4f9",
+ CellID->1067050233]
+}, Open  ]],
+Cell[26221, 790, 167, 3, 70, "Input",ExpressionUUID->"3fdc991b-fead-14b0-65e3-1144fb587e9a",
+ CellID->1694524259]
+}, Open  ]]
+}, Open  ]],
+Cell[26415, 797, 265, 5, 70, "ExampleSection",ExpressionUUID->"3657d2c5-05c0-ac85-5e6c-cbafac7af6ef",
+ CellID->1020263627],
+Cell[CellGroupData[{
+Cell[26705, 806, 244, 5, 70, "ExampleSection",ExpressionUUID->"0642d375-09f3-9942-2e71-cb3faf87eba8",
+ CellID->2061341341],
+Cell[CellGroupData[{
+Cell[26974, 815, 126, 1, 70, "ExampleSubsection",ExpressionUUID->"0651775d-2bad-791b-2e6f-6f074e584861",
+ CellID->774517536],
+Cell[27103, 818, 284, 7, 70, "ExampleText",ExpressionUUID->"63b9e3d6-2298-231e-1146-fa9057128e64",
+ CellID->1184240770],
+Cell[CellGroupData[{
+Cell[27412, 829, 885, 25, 70, "Input",ExpressionUUID->"67c13665-f813-2f11-0dfe-a84ef9a6727b",
+ CellID->670500628],
+Cell[28300, 856, 127, 2, 70, "Output",ExpressionUUID->"4c440104-ea8a-4285-747b-99618f3f10ef",
+ CellID->435854199]
+}, Open  ]],
+Cell[28442, 861, 167, 3, 70, "Input",ExpressionUUID->"66c9a615-af45-c085-0ef6-385ecaf192ef",
+ CellID->1436252222]
+}, Open  ]],
+Cell[CellGroupData[{
+Cell[28646, 869, 122, 1, 70, "ExampleSubsection",ExpressionUUID->"0513e607-0f4c-1e20-3320-f861aaf9650a",
+ CellID->706921134],
+Cell[28771, 872, 721, 17, 70, "ExampleText",ExpressionUUID->"0371ff35-cd30-cda2-310e-f77ee4ca9788",
+ CellID->542210380],
+Cell[CellGroupData[{
+Cell[29517, 893, 1668, 46, 70, "Input",ExpressionUUID->"6833ae6a-6ac5-a2c8-19c0-40340f71f012",
+ CellID->1813030933],
+Cell[31188, 941, 131, 2, 70, "Output",ExpressionUUID->"5f7f2999-1aee-25a5-0504-c0c39e988f8f",
+ CellID->1442122904]
+}, Open  ]],
+Cell[31334, 946, 167, 3, 70, "Input",ExpressionUUID->"128c7526-c883-085d-42b4-6c83e9365aa7",
+ CellID->1110573896]
+}, Open  ]]
+}, Open  ]],
+Cell[31528, 953, 248, 5, 70, "ExampleSection",ExpressionUUID->"3279c00f-c9e2-8758-6206-da68ef94eda2",
+ CellID->258228157],
+Cell[CellGroupData[{
+Cell[31801, 962, 259, 5, 70, "ExampleSection",ExpressionUUID->"50b12ff8-e606-85f7-004e-c6a593b0efdd",
+ CellID->2123667759],
+Cell[32063, 969, 556, 17, 70, "ExampleText",ExpressionUUID->"640f47a5-4648-c62d-0c35-5e0f73e2ad77",
+ CellID->1555662820],
+Cell[CellGroupData[{
+Cell[32644, 990, 2371, 68, 70, "Input",ExpressionUUID->"63a48922-0fac-666c-115b-208caa594cb6",
+ CellID->1852680185],
+Cell[35018, 1060, 130, 2, 70, "Output",ExpressionUUID->"387a9e0d-0234-0e73-6819-1057b7c15559",
+ CellID->494381976]
+}, Open  ]],
+Cell[35163, 1065, 167, 3, 70, "Input",ExpressionUUID->"3f64ca0d-9927-5f44-651b-ec5718d225ae",
+ CellID->1932788388]
+}, Open  ]],
+Cell[CellGroupData[{
+Cell[35367, 1073, 252, 5, 70, "ExampleSection",ExpressionUUID->"399d1ff3-4632-be92-6fa2-96bd73c404f8",
+ CellID->1305812373],
+Cell[35622, 1080, 173, 3, 70, "ExampleText",ExpressionUUID->"1170384d-2f38-2c50-470f-b2174acd76ba",
+ CellID->1635850333],
+Cell[CellGroupData[{
+Cell[35820, 1087, 1243, 38, 70, "Input",ExpressionUUID->"6ce33075-6d34-44a7-1490-aa3f04c12e8d",
+ CellID->185668621],
+Cell[37066, 1127, 1013, 25, 70, "Message",ExpressionUUID->"54e2b6d5-0ba4-5b19-7c91-2f9fae512663",
+ CellID->2064602208],
+Cell[38082, 1154, 133, 2, 70, "Output",ExpressionUUID->"6334ac9c-43f1-85c0-12cb-45c67585ef2a",
+ CellID->489176174]
+}, Open  ]],
+Cell[38230, 1159, 167, 3, 70, "Input",ExpressionUUID->"74397683-04f4-1d4d-1dc7-6fedac816797",
+ CellID->1202300457],
+Cell[CellGroupData[{
+Cell[38422, 1166, 242, 5, 70, "ExampleDelimiter",ExpressionUUID->"735e49d5-32a1-4a48-2166-609f47541892",
+ CellID->497123094],
+Cell[38667, 1173, 477, 13, 70, "ExampleText",ExpressionUUID->"335d55a2-cf9b-493d-6163-4c0fea2e1807",
+ CellID->1847341574],
+Cell[CellGroupData[{
+Cell[39169, 1190, 635, 19, 70, "Input",ExpressionUUID->"3bfbbd45-edb8-1b0b-6998-352e844d6651",
+ CellID->767564296],
+Cell[39807, 1211, 834, 19, 70, "Message",ExpressionUUID->"045023ab-c37d-b770-2c6f-baf4f6091a5a",
+ CellID->635080963],
+Cell[40644, 1232, 502, 13, 70, "Message",ExpressionUUID->"73e8aeff-5b91-f8f4-2197-47b95e25cade",
+ CellID->993759236],
+Cell[41149, 1247, 133, 2, 70, "Output",ExpressionUUID->"33e490f1-5bc8-e939-619b-09bb5e62b803",
+ CellID->373884399]
+}, Open  ]]
+}, Open  ]]
+}, Open  ]],
+Cell[41321, 1254, 257, 5, 70, "ExampleSection",ExpressionUUID->"794a4309-908b-2549-2f4a-5b53213f8f93",
+ CellID->1653164318],
+Cell[41581, 1261, 249, 5, 70, "ExampleSection",ExpressionUUID->"167ebcf0-2b32-2a61-3e05-35ba4ec7794b",
+ CellID->589267740]
+}, Open  ]],
+Cell[CellGroupData[{
+Cell[41867, 1271, 110, 1, 70, "MetadataSection",ExpressionUUID->"15eb24b6-b946-3a65-43e8-bdf038f0894f",
+ CellID->311882160],
+Cell[41980, 1274, 476, 12, 70, "History",ExpressionUUID->"27d2a24c-1e84-19ee-4de1-44169b316b34",
+ CellID->341476719],
+Cell[CellGroupData[{
+Cell[42481, 1290, 485, 13, 70, "CategorizationSection",ExpressionUUID->"285985c7-a1c8-13eb-5866-1ca0d07d6131",
+ CellID->1755438392],
+Cell[42969, 1305, 134, 2, 70, "Categorization",ExpressionUUID->"57868ed1-450c-c474-7dbd-279b6cbeaf5e",
+ CellID->686433507],
+Cell[43106, 1309, 168, 2, 70, "Categorization",ExpressionUUID->"0c5e608e-35dc-f74f-3466-79e8bc6edd95",
+ CellID->605800465],
+Cell[43277, 1313, 144, 2, 70, "Categorization",ExpressionUUID->"1a1e4090-3303-05ed-4a26-59da46b66f37",
+ CellID->468444828],
+Cell[43424, 1317, 181, 3, 70, "Categorization",ExpressionUUID->"10256af3-3972-af7a-41da-83bdb804f240",
+ CellID->1030425846]
+}, Closed]],
+Cell[43620, 1323, 110, 1, 70, "KeywordsSection",ExpressionUUID->"457602f1-d86e-ac86-730d-9bbad918f6ec",
+ CellID->477174294],
+Cell[CellGroupData[{
+Cell[43755, 1328, 120, 1, 70, "TemplatesSection",ExpressionUUID->"499f95c1-a958-6c18-7fa4-0caac8ed3762",
+ CellID->1872225408],
+Cell[43878, 1331, 149, 2, 70, "Template",ExpressionUUID->"0f1e874b-6d22-b8ab-3525-1f1504d40af1",
+ CellID->1562036412],
+Cell[44030, 1335, 137, 2, 70, "Template",ExpressionUUID->"0c02104f-9807-e6c4-3431-8a2919b3cc2e",
+ CellID->158391909],
+Cell[44170, 1339, 136, 2, 70, "Template",ExpressionUUID->"6f909018-5ea1-6a32-15af-0a425b543918",
+ CellID->1360575930],
+Cell[44309, 1343, 137, 2, 70, "Template",ExpressionUUID->"2f4595f3-090a-1216-557a-0cbda8bf617c",
+ CellID->793782254]
+}, Closed]]
+}, Open  ]]
+}
+]
+*)
+
+(* End of internal cache information *)
