@@ -298,6 +298,17 @@ int main(int argc, char** argv) {
                             sc, vi, sc ? double(vi) / double(sc) : 0.0);
             }
 #if HG_ENGINE_STATS
+            // Every engine counter (HG_EVOLUTION_COUNTERS), summed over workers.
+            {
+                const auto t = e.stats().total();
+                std::printf("  engine:");
+#define HG_BENCH_PRINT_COUNTER(name) std::printf(" %s=%zu", #name, static_cast<size_t>(t.name));
+                HG_EVOLUTION_COUNTERS(HG_BENCH_PRINT_COUNTER)
+#undef HG_BENCH_PRINT_COUNTER
+                std::printf("\n");
+            }
+#endif
+#if HG_ENGINE_STATS
             {
                 // Shared-set traffic: how many inserts, over every ConcurrentKeySet, were of a
                 // key the set already held. A high repeat share is what a thread-local filter
