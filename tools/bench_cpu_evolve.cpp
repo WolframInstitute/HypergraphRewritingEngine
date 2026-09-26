@@ -92,7 +92,10 @@ static std::vector<Workload> workloads() {
     std::vector<Workload> out;
     auto named = corpus::named_workloads();
     {
-        auto big = corpus::large_state_workloads();
+        // HG_BENCH_LARGE_N sets the edge count of bigpath, bigcycle and bigstar (default 256).
+        const char* ln = std::getenv("HG_BENCH_LARGE_N");
+        const int n = ln ? std::atoi(ln) : 256;
+        auto big = corpus::large_state_workloads(n > 0 ? static_cast<uint32_t>(n) : 256u);
         named.insert(named.end(), big.begin(), big.end());
     }
     for (const auto& g : named) {
@@ -256,6 +259,8 @@ int main(int argc, char** argv) {
                 const char* co = std::getenv("HG_BENCH_CANON_ONLY");
                 e.set_explore_from_canonical_states_only(!(co && co[0] == '0'));
             }
+            // HG_BENCH_FORWARDING=0|1 fixes match forwarding; unset leaves the engine's rule.
+            if (const char* v = std::getenv("HG_BENCH_FORWARDING")) e.set_match_forwarding(v[0] != '0');
             for (const auto& r : sel->rules) e.add_rule(r);
             const auto t0 = std::chrono::steady_clock::now();
             e.evolve(sel->init, steps);
