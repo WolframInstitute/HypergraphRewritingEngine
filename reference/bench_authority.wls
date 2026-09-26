@@ -48,10 +48,10 @@
            enumerated or identified, so its event count is its own and is printed beside its time
            rather than compared with the others.
 
-   Usage: wolframscript -file bench_authority.wls [maxDepth] [reps] [minDepth] [rule]
+   Usage: wolframscript -file bench_authority.wls [maxDepth] [reps] [minDepth] [rule] [limit]
    rule is one of the names in `corpus` below, or All (the default is Chain3, the rule this
-   probe was written for). A run that exceeds `limit` seconds is printed as a timeout and the
-   deeper depths of that row are skipped.
+   probe was written for). With a limit in seconds, a run past it is printed as a timeout and
+   the deeper depths of that row are skipped; the default is no limit.
 
    minDepth EXISTS BECAUSE THE DEEP POINTS ARE THE EXPENSIVE ONES AND THE SHALLOW ONES ARE NOT
    FREE TO REPEAT. The authority's cost grows about sevenfold per depth, so reaching depth 7
@@ -67,7 +67,7 @@ reps     = If[Length[$ScriptCommandLine] >= 3, ToExpression[ToString[$ScriptComm
 minDepth = If[Length[$ScriptCommandLine] >= 4, ToExpression[ToString[$ScriptCommandLine[[4]]]], 2];
 
 ruleArg  = If[Length[$ScriptCommandLine] >= 5, ToString[$ScriptCommandLine[[5]]], "Chain3"];
-limit    = 120;
+limit    = If[Length[$ScriptCommandLine] >= 6, ToExpression[ToString[$ScriptCommandLine[[6]]]], Infinity];
 
 mwSystem = PacletSymbol["Wolfram/Multicomputation", "Wolfram`Multicomputation`MultiwaySystem"];
 

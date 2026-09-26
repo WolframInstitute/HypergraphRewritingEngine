@@ -45,6 +45,9 @@ _BASELINE_LOAD = None
 
 # The CPU set the workers were bound to, empty when placement was left to the operating system.
 _PINNED_CPUS = ""
+# Hexadecimal affinity mask for the Windows Wolfram kernel (--wl-affinity), or "" to leave its
+# placement to Windows.
+_WL_AFFINITY = ""
 
 
 def _pinned_note(pinned=False):
@@ -692,7 +695,14 @@ def t2(build, maxd, reps):
     script = os.path.join(ROOT, "reference", "bench_authority.wls")
     if windows:
         script = subprocess.run(["wslpath", "-w", script], capture_output=True, text=True).stdout.strip()
-    out = run(ws + ["-file", script, str(maxd), str(reps)], timeout=7200)
+    if windows and _WL_AFFINITY:
+        ps1 = subprocess.run(["wslpath", "-w", os.path.join(ROOT, "tools", "dev", "pinned_wolframscript.ps1")],
+                             capture_output=True, text=True).stdout.strip()
+        out = run(["/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe", "-NoProfile",
+                   "-ExecutionPolicy", "Bypass", "-File", ps1, "-Mask", _WL_AFFINITY,
+                   "-Script", script, str(maxd), str(reps)], timeout=7200)
+    else:
+        out = run(ws + ["-file", script, str(maxd), str(reps)], timeout=7200)
     auth, hgev, ref = {}, {}, {}
     for line in out.splitlines():
         m = re.search(r"AUTH d=(\d+) states=(\d+) causal=(\d+) ms=([\d.]+)", line)
@@ -743,7 +753,8 @@ def t2(build, maxd, reps):
     # carries are the engine's core against the authority (the speedup the paper claims) and the
     # engine through the paclet against the engine's core (what the Wolfram layer -- WXF over
     # the wire, Wolfram structures on return -- costs on top of the same computation).
-    b = [provenance("reference/bench_authority.wls + tools/quotient_reconstruction_cost_probe.cpp")
+    b = [provenance("reference/bench_authority.wls + tools/quotient_reconstruction_cost_probe.cpp"
+                   + (" (Wolfram kernel on cpu mask %s)" % _WL_AFFINITY if _WL_AFFINITY else ""))
          + pac_note,
          r"\begin{tabular}{rrrrrr}", r"\toprule",
          r"Depth & States & \texttt{MultiwaySystem} ms & Engine ms (paclet) & "
@@ -804,7 +815,8 @@ def t2(build, maxd, reps):
     auth_pts = "".join("(%d,%.1f)" % (d, auth[d][2]) for d in depths)
     hgev_pts = "".join("(%d,%.1f)" % (d, hgev[d][2]) for d in depths)
     core_pts = "".join("(%d,%.1f)" % (d, core[d]) for d in depths)
-    f = [provenance("reference/bench_authority.wls + tools/quotient_reconstruction_cost_probe.cpp")
+    f = [provenance("reference/bench_authority.wls + tools/quotient_reconstruction_cost_probe.cpp"
+                   + (" (Wolfram kernel on cpu mask %s)" % _WL_AFFINITY if _WL_AFFINITY else ""))
          + pac_note,
          r"\addplot[mark=square*, black, dashed] coordinates {%s};" % auth_pts,
          r"\addlegendentry{\texttt{Wolfram/\allowbreak Multicomputation}}",
@@ -961,6 +973,10 @@ def main():
                     help="step override for the lower C/R depth sample")
     ap.add_argument("--wolfram", action="store_true",
                     help="add T2, which needs a Wolfram kernel")
+    ap.add_argument("--wl-affinity", default="",
+                    help="hexadecimal CPU mask for the Windows Wolfram kernel of the authority "
+                         "table, e.g. FFFF for the performance cores of an i9-14900K; recorded "
+                         "in the table's provenance")
     ap.add_argument("--cpus", default="",
                     help="logical CPUs to pin workers to, e.g. 0,2,4,6,8,10,12,14. A speedup "
                          "column across cores of different speeds divides by a quantity that is "
@@ -974,8 +990,9 @@ def main():
                          "homogeneous box, and those are different machines.")
     a = ap.parse_args()
 
-    global _BASELINE_LOAD, _PINNED_CPUS
+    global _BASELINE_LOAD, _PINNED_CPUS, _WL_AFFINITY
     _PINNED_CPUS = a.cpus
+    _WL_AFFINITY = a.wl_affinity
     try:
         _BASELINE_LOAD = os.getloadavg()
     except (OSError, AttributeError):
