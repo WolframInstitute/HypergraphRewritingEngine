@@ -46,7 +46,7 @@ bool CausalGraph::is_reachable(EventId producer, EventId consumer) const {
     // and there the walk runs unpruned or it misses paths that exist.
     const bool topo = ids_are_topological_.load(std::memory_order_relaxed);
     auto ctx = make_scratch_reach_ctx([this](uint32_t x, auto&& f) {
-        if (const LockFreeList<EventId>* pl = preds_.get(x)) pl->for_each(f);
+        if (const LockFreeList<EventId>* pl = preds_.find(x)) pl->for_each(f);
     });
     return hgcommon::reach_backward(ctx, producer, consumer, topo);
 }
@@ -60,7 +60,7 @@ std::vector<std::pair<EventId, EventId>> CausalGraph::reduced_pairs() const {
     std::vector<std::pair<EventId, EventId>> kept;
     hgcommon::tr_reduce(
         [&](auto&& add) {
-            causal_edges_.for_each([&](const CausalEdge& e) { add(e.producer, e.consumer); });
+            causal_edges_for_each([&](const CausalEdge& e) { add(e.producer, e.consumer); });
         },
         [&](uint32_t p, uint32_t c) { kept.emplace_back(p, c); });
     return kept;
@@ -201,7 +201,7 @@ void CausalGraph::add_causal_edge(EventId producer, EventId consumer, EdgeId edg
     triple_key = hgcommon::avoid_reserved_keys(triple_key);
 
     if (seen_causal_triples_.insert(triple_key)) {
-        causal_edges_.push(CausalEdge(producer, consumer, edge), *arena_);
+        causal_edges_[list_worker()].list.push(CausalEdge(producer, consumer, edge), *arena_);
         ++my_counts().causal_edges;
 
 #ifdef HYPERGRAPH_ENABLE_VISUALIZATION
@@ -224,11 +224,11 @@ void CausalGraph::add_causal_edge(EventId producer, EventId consumer, EdgeId edg
 void CausalGraph::record_reduced_edge(EventId producer, EventId consumer) {
     // preds_[consumer] is written only by consumer's own thread (invariant 1) and
     // this runs once per unique event pair, so it holds no duplicate producers.
-    preds_.get_or_default(consumer, *arena_).push(producer, *arena_);
+    preds_.slot(consumer, *arena_).push(producer, *arena_);
 }
 
 void CausalGraph::add_branchial_edge(EventId e1, EventId e2, EdgeId shared) {
-    branchial_edges_.push(BranchialEdge(e1, e2, shared), *arena_);
+    branchial_edges_[list_worker()].list.push(BranchialEdge(e1, e2, shared), *arena_);
     ++my_counts().branchial_edges;
 
 #ifdef HYPERGRAPH_ENABLE_VISUALIZATION
@@ -265,9 +265,11 @@ uint64_t CausalGraph::causal_pair_key(EventId producer, EventId consumer) {
     return id_key(producer, consumer);
 }
 
-CausalGraph::CausalGraph() : arena_(nullptr) {}
+CausalGraph::CausalGraph() : arena_(nullptr) { preds_.set_uncounted(); }
 
-CausalGraph::CausalGraph(ConcurrentHeterogeneousArena* arena) : arena_(arena) {}
+CausalGraph::CausalGraph(ConcurrentHeterogeneousArena* arena) : arena_(arena) {
+    preds_.set_uncounted();
+}
 
 void CausalGraph::set_transitive_reduction(bool enabled) {
     transitive_reduction_enabled_.store(enabled, std::memory_order_relaxed);

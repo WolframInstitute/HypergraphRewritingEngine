@@ -304,6 +304,14 @@ public:
         return segment[L.off];
     }
 
+    // The element at idx if its segment exists, without consulting count_: the reader of an
+    // array written through slot(). An element never written reads as its default.
+    const T* find(uint32_t idx) const {
+        const Loc L = locate(idx);
+        T* segment = segments_[L.seg].load(std::memory_order_acquire);
+        return segment ? &segment[L.off] : nullptr;
+    }
+
     // Construct element directly at a specific index
     // Used when the index is managed by an external counter (e.g., edge IDs)
     // This avoids the race condition in ensure_size/emplace where another thread

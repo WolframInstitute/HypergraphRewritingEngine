@@ -2,6 +2,7 @@
 #include "hgcommon/namespace.hpp"
 
 #include <atomic>
+#include <memory>
 #include <algorithm>
 #include <set>
 #include <utility>
@@ -106,11 +107,21 @@ class CausalGraph {
     static constexpr uint64_t STATE_EDGE_MAP_LOCKED = (1ULL << 62) + 9;
     ConcurrentMap<uint64_t, LockFreeList<EventId>*, STATE_EDGE_MAP_EMPTY, STATE_EDGE_MAP_LOCKED> state_edge_events_;
 
-    // Causal edges (producer -> consumer)
-    LockFreeList<CausalEdge> causal_edges_;
-
-    // Branchial edges (event <-> event with shared input)
-    LockFreeList<BranchialEdge> branchial_edges_;
+    // Causal edges (producer -> consumer) and branchial edges (event <-> event with a shared
+    // input), one list per worker on its own cache line: a single list put every recorded edge
+    // of every worker on one compare-and-swap. Read after the run, over all the lists.
+    struct alignas(64) CausalEdgeList { LockFreeList<CausalEdge> list; };
+    struct alignas(64) BranchialEdgeList { LockFreeList<BranchialEdge> list; };
+    CausalEdgeList causal_edges_[MAX_ARENA_WORKERS];
+    BranchialEdgeList branchial_edges_[MAX_ARENA_WORKERS];
+    static int list_worker() {
+        const int w = arena_worker_index();
+        return w >= 0 ? w : 0;
+    }
+    template <typename F>
+    void causal_edges_for_each(F&& f) const {
+        for (const CausalEdgeList& l : causal_edges_) l.list.for_each(f);
+    }
 
     // Deduplication map for causal edges: hash(producer, consumer, edge) -> true
     // The rendezvous pattern can cause both producer and consumer to add the same edge
@@ -339,21 +350,20 @@ public:
     void for_each_causal_edge(Visitor&& visit) const {
         if (reduces_on_read()) {
             const auto keep = reduced_pairs();
-            causal_edges_.for_each([&](const CausalEdge& edge) {
+            causal_edges_for_each([&](const CausalEdge& edge) {
                 if (std::binary_search(keep.begin(), keep.end(),
                                        std::make_pair(edge.producer, edge.consumer))) visit(edge);
             });
             return;
         }
-        causal_edges_.for_each([&](const CausalEdge& edge) { visit(edge); });
+        causal_edges_for_each([&](const CausalEdge& edge) { visit(edge); });
     }
 
     // Iterate over branchial edges
     template<typename Visitor>
     void for_each_branchial_edge(Visitor&& visit) const {
-        branchial_edges_.for_each([&](const BranchialEdge& edge) {
-            visit(edge);
-        });
+        for (const BranchialEdgeList& l : branchial_edges_)
+            l.list.for_each([&](const BranchialEdge& edge) { visit(edge); });
     }
 
     // Statistics
