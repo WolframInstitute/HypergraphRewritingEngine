@@ -209,11 +209,19 @@ State& State::operator=(State&& other) noexcept {
 // =============================================================================
 
 VertexId GlobalCounters::alloc_vertex() {
-    return next_vertex.fetch_add(1, std::memory_order_relaxed);
+    return vertex_field(next_edge_vertex.fetch_add(kVertexOne, std::memory_order_relaxed));
 }
 
 EdgeId GlobalCounters::alloc_edge() {
-    return next_edge.fetch_add(1, std::memory_order_relaxed);
+    return edge_field(next_edge_vertex.fetch_add(1, std::memory_order_relaxed));
+}
+
+void GlobalCounters::alloc_edges_and_vertices(uint32_t num_edges, uint32_t num_vertices,
+                                              EdgeId& first_edge, VertexId& first_vertex) {
+    const uint64_t w = next_edge_vertex.fetch_add(
+        uint64_t(num_edges) + uint64_t(num_vertices) * kVertexOne, std::memory_order_relaxed);
+    first_edge = edge_field(w);
+    first_vertex = vertex_field(w);
 }
 
 StateId GlobalCounters::alloc_state() {
@@ -225,8 +233,7 @@ EventId GlobalCounters::alloc_event() {
 }
 
 void GlobalCounters::reset() {
-    next_vertex.store(0, std::memory_order_relaxed);
-    next_edge.store(0, std::memory_order_relaxed);
+    next_edge_vertex.store(0, std::memory_order_relaxed);
     next_state.store(0, std::memory_order_relaxed);
     next_event.store(0, std::memory_order_relaxed);
 }

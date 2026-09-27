@@ -64,15 +64,18 @@ RewriteResult Rewriter::apply(
     // One block, so the fresh ids are consecutive and this takes ONE atomic rather than one
     // per new variable -- and it gives the host the same shape the device's high-water bump
     // already had, so both scatter them through the same shared rule.
-    const VertexId fresh_base = num_fresh ? hg_->alloc_vertices(num_fresh) : 0;
+    // The rewrite's fresh vertices and its new edges, in one increment of the shared counter.
+    EdgeId first_edge = 0;
+    VertexId fresh_base = 0;
+    if (num_fresh || rule.num_rhs_edges)
+        hg_->alloc_edges_and_vertices(rule.num_rhs_edges, num_fresh, first_edge, fresh_base);
 
     VertexId fresh_by_var[MAX_VARS];
     std::memset(fresh_by_var, 0xFF, sizeof(fresh_by_var));
     hgcommon::assign_fresh_consecutive(new_var_mask, fresh_base, fresh_by_var);
 
-    // Create new edges from RHS pattern, under ids taken in one increment.
+    // Create new edges from RHS pattern, under the ids taken above.
     result.num_produced = 0;
-    const EdgeId first_edge = rule.num_rhs_edges ? hg_->alloc_edge_ids(rule.num_rhs_edges) : 0;
     for (uint8_t i = 0; i < rule.num_rhs_edges; ++i) {
         const PatternEdge& rhs_edge = rule.rhs[i];
 

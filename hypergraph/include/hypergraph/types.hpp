@@ -231,13 +231,27 @@ struct State {
 // each counter gets a line of its own. The struct is a singleton, so the padding costs
 // nothing that matters.
 struct GlobalCounters {
-    alignas(64) std::atomic<VertexId> next_vertex{0};
-    alignas(64) std::atomic<EdgeId> next_edge{0};
+    // The edge counter in the low 32 bits and the vertex counter in the high 32, so a rewrite
+    // takes its fresh vertices and its edges in ONE increment (alloc_edges_and_vertices). Each
+    // field only grows, and the edge field cannot carry into the vertex field because an edge id
+    // is 32 bits.
+    alignas(64) std::atomic<uint64_t> next_edge_vertex{0};
     alignas(64) std::atomic<StateId> next_state{0};
     alignas(64) std::atomic<EventId> next_event{0};
 
+    static constexpr uint64_t kVertexOne = uint64_t(1) << 32;
+    static EdgeId edge_field(uint64_t w) { return static_cast<EdgeId>(w & 0xFFFFFFFFu); }
+    static VertexId vertex_field(uint64_t w) { return static_cast<VertexId>(w >> 32); }
+    EdgeId next_edge_id() const { return edge_field(next_edge_vertex.load(std::memory_order_relaxed)); }
+    VertexId next_vertex_id() const {
+        return vertex_field(next_edge_vertex.load(std::memory_order_relaxed));
+    }
+
     VertexId alloc_vertex();
     EdgeId alloc_edge();
+    // `num_edges` consecutive edge ids and `num_vertices` consecutive vertex ids, in one increment.
+    void alloc_edges_and_vertices(uint32_t num_edges, uint32_t num_vertices, EdgeId& first_edge,
+                                  VertexId& first_vertex);
     StateId alloc_state();
 
     // Release pairs with the acquire load in num_events(), so a reader that sees the

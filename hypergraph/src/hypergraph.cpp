@@ -34,8 +34,9 @@ EdgeId Hypergraph::create_edge(
     return create_edge_at(counters_.alloc_edge(), vertices, requested_arity, creator_event, step);
 }
 
-EdgeId Hypergraph::alloc_edge_ids(uint32_t n) {
-    return counters_.next_edge.fetch_add(n, std::memory_order_relaxed);
+void Hypergraph::alloc_edges_and_vertices(uint32_t num_edges, uint32_t num_vertices,
+                                          EdgeId& first_edge, VertexId& first_vertex) {
+    counters_.alloc_edges_and_vertices(num_edges, num_vertices, first_edge, first_vertex);
 }
 
 EdgeId Hypergraph::create_edge_at(
@@ -484,10 +485,12 @@ uint32_t Hypergraph::edge_rank_in_state(StateId state_id, EdgeId edge) const {
     }
 
 void Hypergraph::reserve_vertices(VertexId max_id) {
-        VertexId current = counters_.next_vertex.load(std::memory_order_relaxed);
-        while (current <= max_id) {
-            if (counters_.next_vertex.compare_exchange_weak(
-                    current, max_id + 1, std::memory_order_relaxed)) {
+        uint64_t w = counters_.next_edge_vertex.load(std::memory_order_relaxed);
+        while (GlobalCounters::vertex_field(w) <= max_id) {
+            const uint64_t raised = (uint64_t(max_id) + 1) * GlobalCounters::kVertexOne +
+                                    GlobalCounters::edge_field(w);
+            if (counters_.next_edge_vertex.compare_exchange_weak(w, raised,
+                                                                 std::memory_order_relaxed)) {
                 break;
             }
         }
@@ -1699,20 +1702,18 @@ uint8_t Hypergraph::edge_arity(EdgeId eid) const { return edges_[eid].arity; }
 VertexId Hypergraph::alloc_vertex() { return counters_.alloc_vertex(); }
 
 VertexId Hypergraph::alloc_vertices(uint32_t count) {
-    return counters_.next_vertex.fetch_add(count, std::memory_order_relaxed);
+    return GlobalCounters::vertex_field(counters_.next_edge_vertex.fetch_add(
+        uint64_t(count) * GlobalCounters::kVertexOne, std::memory_order_relaxed));
 }
 
-uint32_t Hypergraph::num_vertices() const {
-    return counters_.next_vertex.load(std::memory_order_relaxed);
-}
+uint32_t Hypergraph::num_vertices() const { return counters_.next_vertex_id(); }
 
-uint32_t Hypergraph::num_edges() const {
-    return counters_.next_edge.load(std::memory_order_relaxed);
-}
+uint32_t Hypergraph::num_edges() const { return counters_.next_edge_id(); }
 
 // PUBLISHED edges, the bound for enumeration. See num_published_states for why the claim counter
 // is not that bound.
 uint32_t Hypergraph::num_published_edges() const { return edges_.size(); }
+
 
 const EdgeSignature& Hypergraph::edge_signature(EdgeId eid) const { return edge_signatures_[eid]; }
 

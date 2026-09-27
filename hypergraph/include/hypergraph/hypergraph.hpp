@@ -668,11 +668,11 @@ public:
         uint32_t step = 0
     );
 
-    // `n` consecutive edge ids in one increment of the shared counter, for a caller that creates
-    // several edges at once (a rewrite's right-hand side), and create_edge at an id so taken.
-    // Edge ids increase along every state's ancestry either way, which Automatic dedup and the
-    // canonical ranks' tie-break read.
-    EdgeId alloc_edge_ids(uint32_t n);
+    // A rewrite's edge ids and fresh vertex ids, consecutive, in one increment of the shared
+    // counter, and create_edge at an id so taken. Edge ids increase along every state's ancestry
+    // either way, which Automatic dedup and the canonical ranks' tie-break read.
+    void alloc_edges_and_vertices(uint32_t num_edges, uint32_t num_vertices, EdgeId& first_edge,
+                                  VertexId& first_vertex);
     EdgeId create_edge_at(EdgeId eid, const VertexId* vertices, size_t requested_arity,
                           EventId creator_event, uint32_t step);
 
@@ -699,6 +699,7 @@ public:
     // PUBLISHED edges, the bound for enumeration. See num_published_states for why the claim
     // counter above is not that bound.
     uint32_t num_published_edges() const;
+
 
     // =========================================================================
     // Edge Accessors
