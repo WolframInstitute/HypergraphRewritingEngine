@@ -22,7 +22,7 @@ namespace engine {
 
 LockFreeList<EventId>* CausalGraph::get_or_create_edge_producers(CanonicalEdgeKey edge_key) {
     if (key_is_edge_id(edge_key))
-        return &edge_producers_by_id_.slot(static_cast<uint32_t>(edge_key.value), *arena_);
+        return &edge_producers_by_id_->slot(static_cast<uint32_t>(edge_key.value), *arena_);
     auto result = edge_producers_.lookup(edge_key.value);
     if (result.has_value()) return *result;
     auto* new_list = arena_->template create<LockFreeList<EventId>>();
@@ -32,7 +32,7 @@ LockFreeList<EventId>* CausalGraph::get_or_create_edge_producers(CanonicalEdgeKe
 
 LockFreeList<EventId>* CausalGraph::get_or_create_edge_consumers(CanonicalEdgeKey edge_key) {
     if (key_is_edge_id(edge_key))
-        return &edge_consumers_by_id_.slot(static_cast<uint32_t>(edge_key.value), *arena_);
+        return &edge_consumers_by_id_->slot(static_cast<uint32_t>(edge_key.value), *arena_);
     auto result = edge_consumers_.lookup(edge_key.value);
     if (result.has_value()) return *result;
     auto* new_list = arena_->template create<LockFreeList<EventId>>();

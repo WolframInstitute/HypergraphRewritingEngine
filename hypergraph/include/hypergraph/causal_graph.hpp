@@ -85,8 +85,12 @@ class CausalGraph {
     // quotient exploration of Full states, whose orbit keys have bit 62 set): arrays indexed by
     // the id, one load where the maps take a hash probe. The two maps were 19% of the
     // instructions of a run with states not canonicalized.
-    SegmentedArray<LockFreeList<EventId>> edge_producers_by_id_;
-    SegmentedArray<LockFreeList<EventId>> edge_consumers_by_id_;
+    // Held by pointer, as are the per-worker tables below: a SegmentedArray is 32 KB and a
+    // per-worker table 16 KB, and a Hypergraph is constructed on the stack by tests and probes.
+    std::unique_ptr<SegmentedArray<LockFreeList<EventId>>> edge_producers_by_id_ =
+        std::make_unique<SegmentedArray<LockFreeList<EventId>>>();
+    std::unique_ptr<SegmentedArray<LockFreeList<EventId>>> edge_consumers_by_id_ =
+        std::make_unique<SegmentedArray<LockFreeList<EventId>>>();
     static bool key_is_edge_id(CanonicalEdgeKey k) { return k.value < (1ULL << 32); }
 
     // Per-state event lists for branchial tracking
@@ -112,15 +116,17 @@ class CausalGraph {
     // of every worker on one compare-and-swap. Read after the run, over all the lists.
     struct alignas(64) CausalEdgeList { LockFreeList<CausalEdge> list; };
     struct alignas(64) BranchialEdgeList { LockFreeList<BranchialEdge> list; };
-    CausalEdgeList causal_edges_[MAX_ARENA_WORKERS];
-    BranchialEdgeList branchial_edges_[MAX_ARENA_WORKERS];
+    std::unique_ptr<CausalEdgeList[]> causal_edges_ =
+        std::make_unique<CausalEdgeList[]>(MAX_ARENA_WORKERS);
+    std::unique_ptr<BranchialEdgeList[]> branchial_edges_ =
+        std::make_unique<BranchialEdgeList[]>(MAX_ARENA_WORKERS);
     static int list_worker() {
         const int w = arena_worker_index();
         return w >= 0 ? w : 0;
     }
     template <typename F>
     void causal_edges_for_each(F&& f) const {
-        for (const CausalEdgeList& l : causal_edges_) l.list.for_each(f);
+        for (int i = 0; i < MAX_ARENA_WORKERS; ++i) causal_edges_[i].list.for_each(f);
     }
 
     // Deduplication map for causal edges: hash(producer, consumer, edge) -> true
@@ -218,7 +224,7 @@ private:
         size_t causal_event_pairs = 0;   // unique event pairs with a causal relationship
         size_t branchial_edges = 0;
     };
-    CountSlot counts_[MAX_ARENA_WORKERS];
+    std::unique_ptr<CountSlot[]> counts_ = std::make_unique<CountSlot[]>(MAX_ARENA_WORKERS);
     CountSlot& my_counts() {
         const int w = arena_worker_index();
         return counts_[w >= 0 ? w : 0];
@@ -226,7 +232,7 @@ private:
     template <typename M>
     size_t count_total(M member) const {
         size_t n = 0;
-        for (const CountSlot& s : counts_) n += s.*member;
+        for (int i = 0; i < MAX_ARENA_WORKERS; ++i) n += counts_[i].*member;
         return n;
     }
 
@@ -362,8 +368,8 @@ public:
     // Iterate over branchial edges
     template<typename Visitor>
     void for_each_branchial_edge(Visitor&& visit) const {
-        for (const BranchialEdgeList& l : branchial_edges_)
-            l.list.for_each([&](const BranchialEdge& edge) { visit(edge); });
+        for (int i = 0; i < MAX_ARENA_WORKERS; ++i)
+            branchial_edges_[i].list.for_each([&](const BranchialEdge& edge) { visit(edge); });
     }
 
     // Statistics

@@ -59,7 +59,8 @@ class Hypergraph {
         uint32_t states = 0;
         uint32_t events = 0;
     };
-    PublishedMark published_[MAX_ARENA_WORKERS];
+    // By pointer: 16 KB, and a Hypergraph is constructed on the stack by tests and probes.
+    std::unique_ptr<PublishedMark[]> published_ = std::make_unique<PublishedMark[]>(MAX_ARENA_WORKERS);
     std::atomic<uint32_t> published_states_outside_{0};
     std::atomic<uint32_t> published_events_outside_{0};
     void note_published_state(StateId sid);
@@ -329,7 +330,7 @@ class Hypergraph {
         const uint32_t* more;   // producers 3.. when n > 3
         uint32_t at(uint32_t i) const { return i < 3 ? inl[i] : more[i - 3]; }
     };
-    SegmentedArray<QcKept> qc_kept_;
+    std::unique_ptr<SegmentedArray<QcKept>> qc_kept_;   // by pointer: a SegmentedArray is 32 KB
 
     // WHERE EVENT `e`'S CONTENT LIVES, which is deliberately NOT slot e.
     //
@@ -1336,7 +1337,7 @@ public:
             // quotient_replay_core.hpp), so reading it is a walk over what was kept.
             const uint32_t n = qc_next_raw_event_.load(std::memory_order_relaxed);
             for (uint32_t c = 0; c < n; ++c) {
-                const QcKept* k = qc_kept_.get(qc_ev_slot(c));
+                const QcKept* k = qc_kept_->get(qc_ev_slot(c));
                 if (!k) continue;
                 for (uint32_t i = 0; i < k->n; ++i) f(id(k->at(i)), id(c));
             }

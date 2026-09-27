@@ -1747,7 +1747,7 @@ uint32_t Hypergraph::num_states() const {
 // ahead of what exists.
 uint32_t Hypergraph::num_published_states() const {
     uint32_t n = published_states_outside_.load(std::memory_order_acquire);
-    for (const PublishedMark& m : published_) n = std::max(n, m.states);
+    for (int i = 0; i < MAX_ARENA_WORKERS; ++i) n = std::max(n, published_[i].states);
     return n;
 }
 
@@ -1887,7 +1887,7 @@ uint32_t Hypergraph::num_raw_events() const {
 // counter is not that bound.
 uint32_t Hypergraph::num_published_events() const {
     uint32_t n = published_events_outside_.load(std::memory_order_acquire);
-    for (const PublishedMark& m : published_) n = std::max(n, m.events);
+    for (int i = 0; i < MAX_ARENA_WORKERS; ++i) n = std::max(n, published_[i].events);
     return n;
 }
 
@@ -2116,7 +2116,7 @@ uint32_t Hypergraph::QrCtx::redundant(const uint32_t* producers, uint32_t n) con
     if (n < 2) return 0;
     const Hypergraph& g = hg;
     auto ctx = make_scratch_reach_ctx([&](uint32_t x, auto&& f) {
-        if (const QcKept* k = g.qc_kept_.get(qc_ev_slot(x)))
+        if (const QcKept* k = g.qc_kept_->get(qc_ev_slot(x)))
             for (uint32_t i = 0; i < k->n; ++i) f(k->at(i));
     });
     // A producer's application minted its id before the descent that led here, so ids increase
@@ -2133,7 +2133,7 @@ void Hypergraph::QrCtx::record_kept(uint32_t ev, const uint32_t* kept, uint32_t 
         for (uint32_t i = 3; i < nkept; ++i) rest[i - 3] = kept[i];
         k.more = rest;
     }
-    hg.qc_kept_.emplace_at(qc_ev_slot(ev), hg.arena_, k);
+    hg.qc_kept_->emplace_at(qc_ev_slot(ev), hg.arena_, k);
     qc_slot(hg.qc_ctr_).reduced_pairs += nkept;
 }
 
@@ -2392,7 +2392,7 @@ Hypergraph::Hypergraph(uint32_t capacity_scale)
           decltype(event_canonical_state_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
     , qc_inst_applied_(seg_shift_for(capacity_scale))
     , qc_event_sig_(seg_shift_for(capacity_scale))
-    , qc_kept_(seg_shift_for(capacity_scale))
+    , qc_kept_(std::make_unique<SegmentedArray<QcKept>>(seg_shift_for(capacity_scale)))
     , qc_event_runsig_(seg_shift_for(capacity_scale))
     , canonical_event_map_(decltype(canonical_event_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
 
