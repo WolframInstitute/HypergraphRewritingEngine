@@ -1,7 +1,6 @@
 #include "hgcommon/core.hpp"
 #include "hgcommon/rendezvous.hpp"
 #include "hgcommon/reach_core.hpp"
-#include "hgcommon/transitive_reduction.hpp"
 #include "hgcommon/namespace.hpp"
 // causal_graph.cpp - Implementation of CausalGraph class
 
@@ -41,29 +40,12 @@ LockFreeList<EventId>* CausalGraph::get_or_create_edge_consumers(CanonicalEdgeKe
 }
 
 bool CausalGraph::is_reachable(EventId producer, EventId consumer) const {
-    // The pruning to ids above the producer holds only while ids increase along every causal
-    // edge. The quotient reconstruction emits between canonical ids, which are not monotonic,
-    // and there the walk runs unpruned or it misses paths that exist.
-    const bool topo = ids_are_topological_.load(std::memory_order_relaxed);
+    // Full capture mints an event after the events that produced its inputs, so ids increase
+    // along every causal edge and the search is pruned to ids above the producer.
     auto ctx = make_scratch_reach_ctx([this](uint32_t x, auto&& f) {
         if (const LockFreeList<EventId>* pl = preds_.find(x)) pl->for_each(f);
     });
-    return hgcommon::reach_backward(ctx, producer, consumer, topo);
-}
-
-// The reduction of the STORED relation. A pair (p,c) is redundant iff c is reachable from p by
-// a path of length >= 2 in that relation. The relation is a set and a DAG's transitive
-// reduction is unique, so this answer does not depend on the schedule that produced it -- which
-// is the whole reason it exists: the incremental rule needs an arrival discipline the quotient
-// reconstruction cannot provide.
-std::vector<std::pair<EventId, EventId>> CausalGraph::reduced_pairs() const {
-    std::vector<std::pair<EventId, EventId>> kept;
-    hgcommon::tr_reduce(
-        [&](auto&& add) {
-            causal_edges_for_each([&](const CausalEdge& e) { add(e.producer, e.consumer); });
-        },
-        [&](uint32_t p, uint32_t c) { kept.emplace_back(p, c); });
-    return kept;
+    return hgcommon::reach_backward(ctx, producer, consumer, true);
 }
 
 LockFreeList<EventId>* CausalGraph::get_or_create_state_events(StateId state) {
@@ -171,11 +153,7 @@ void CausalGraph::consume_edges(const CanonicalEdgeKey* keys, const EdgeId* raw_
 // =============================================================================
 
 void CausalGraph::add_causal_edge(EventId producer, EventId consumer, EdgeId edge) {
-    // Incremental reduction only where its preconditions hold. Where they do not, every pair is
-    // stored and the reduction is computed on read, which is exact and schedule-independent
-    // because the stored relation is a set and a DAG's transitive reduction is unique.
-    if (transitive_reduction_enabled_.load(std::memory_order_relaxed) &&
-        ids_are_topological_.load(std::memory_order_relaxed)) {
+    if (transitive_reduction_enabled_.load(std::memory_order_relaxed)) {
         const uint64_t pair_key = causal_pair_key(producer, consumer);
         if (!seen_causal_event_pairs_.contains(pair_key)) {
             // HG_CALIBRATE_TR_NEVER_SKIP answers the redundancy question "no" every time, so
@@ -213,10 +191,8 @@ void CausalGraph::add_causal_edge(EventId producer, EventId consumer, EdgeId edg
             ++my_counts().causal_event_pairs;
             // Record the kept edge in the reduced adjacency once per unique event
             // pair, so preds_ holds no duplicate producers for a consumer.
-            if (transitive_reduction_enabled_.load(std::memory_order_relaxed) &&
-                ids_are_topological_.load(std::memory_order_relaxed)) {
+            if (transitive_reduction_enabled_.load(std::memory_order_relaxed))
                 record_reduced_edge(producer, consumer);
-            }
         }
     }
 }
@@ -290,19 +266,6 @@ void CausalGraph::set_arena(ConcurrentHeterogeneousArena* arena) {
     edge_consumers_.set_arena(arena);
 }
 
-bool CausalGraph::reduces_on_read() const {
-    return transitive_reduction_enabled_.load(std::memory_order_relaxed) &&
-           !ids_are_topological_.load(std::memory_order_relaxed);
-}
-
-void CausalGraph::set_ids_are_topological(bool on) {
-    ids_are_topological_.store(on, std::memory_order_relaxed);
-}
-
-bool CausalGraph::ids_are_topological() const {
-    return ids_are_topological_.load(std::memory_order_relaxed);
-}
-
 // =============================================================================
 // Branchial recording
 // =============================================================================
@@ -344,18 +307,10 @@ void CausalGraph::record_branchial_overlaps(
 // =============================================================================
 
 size_t CausalGraph::num_causal_edges() const {
-    // Reducing on read means the stored relation is the FULL one, so the live edge count is
-    // what the filtered iteration yields, not the admitted-triple counter.
-    if (reduces_on_read()) {
-        size_t n = 0;
-        for_each_causal_edge([&](const CausalEdge&) { ++n; });
-        return n;
-    }
     return count_total(&CountSlot::causal_edges);
 }
 
 size_t CausalGraph::num_causal_event_pairs() const {
-    if (reduces_on_read()) return reduced_pairs().size();
     return count_total(&CountSlot::causal_event_pairs);
 }
 

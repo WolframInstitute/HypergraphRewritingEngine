@@ -144,8 +144,6 @@ class CausalGraph {
     // 2^32-1, so the +1 cannot carry into the neighbouring field.
     static uint64_t causal_pair_key(EventId producer, EventId consumer);
 
-    std::atomic<bool> ids_are_topological_{true};
-
     // Deduplication map for branchial edges: (e1 << 32 | e2) -> true
     ShardedKeySet<uint64_t> seen_branchial_pairs_;
 
@@ -265,27 +263,6 @@ public:
     // Backward search over preds_ (the reduced adjacency); exact and lock-free.
     bool is_reachable(EventId producer, EventId consumer) const;
 
-    // Is the reduction computed on read rather than maintained incrementally? True exactly
-    // when the reduction is on and the id assignment does not support the incremental rule.
-    bool reduces_on_read() const;
-
-    // The reduced pair set, computed from the stored relation. Unique for a given relation, so
-    // the answer does not depend on the schedule that produced it. SORTED, which is what
-    // tr_reduce emits: membership is then a binary search over contiguous memory rather than a
-    // tree walk with one node allocation per pair.
-    std::vector<std::pair<EventId, EventId>> reduced_pairs() const;
-
-    // WHETHER EVENT IDS INCREASE ALONG EVERY CAUSAL EDGE. True for full capture, which mints
-    // an event only after the events that produced its inputs; is_reachable uses it to skip
-    // the walk for producer >= consumer and to prune it to ids >= producer.
-    //
-    // FALSE for the quotient reconstruction: it emits between CANONICAL event ids, assigned
-    // first-writer-wins, which are not monotonic under recurrence -- measured on chain6,
-    // producer 9 -> consumer 8 among others. With the assumption false the pruned walk misses
-    // paths that exist and the reduction over-keeps, so it runs unpruned instead.
-    void set_ids_are_topological(bool on);
-    bool ids_are_topological() const;
-
     // Get or create the event list for a state (thread-safe)
     LockFreeList<EventId>* get_or_create_state_events(StateId state);
 
@@ -354,14 +331,6 @@ public:
     // Iterate over causal edges
     template<typename Visitor>
     void for_each_causal_edge(Visitor&& visit) const {
-        if (reduces_on_read()) {
-            const auto keep = reduced_pairs();
-            causal_edges_for_each([&](const CausalEdge& edge) {
-                if (std::binary_search(keep.begin(), keep.end(),
-                                       std::make_pair(edge.producer, edge.consumer))) visit(edge);
-            });
-            return;
-        }
         causal_edges_for_each([&](const CausalEdge& edge) { visit(edge); });
     }
 

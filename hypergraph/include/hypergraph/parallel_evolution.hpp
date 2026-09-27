@@ -1418,8 +1418,6 @@ private:
     // produces depends on which worker drew, so it cannot be reproduced across worker counts.
     bool should_explore();
 
-    // Disables causal transitive reduction under quotient exploration; see the definition.
-    void guard_quotient_transitive_reduction();
 
     // Applies the identity-mode rules at the top of every evolve():
     //   Positional + quotient -> quotient exploration disabled (the identity needs raw

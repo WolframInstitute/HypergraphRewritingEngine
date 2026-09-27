@@ -929,49 +929,6 @@ TEST(CausalGraphTracking, OnlineTransitiveReduction_SkipsRedundant) {
     EXPECT_EQ(cg.num_redundant_edges_skipped(), 1u);  // 1 skipped
 }
 
-// OUT-OF-ORDER ARRIVAL: the reduction is still minimal, because the caller declares that its
-// ids do not order the edges.
-//
-// 0 -> 2 arrives first and nothing else reaches 2 yet; then 0 -> 1 -> 2 appears and implies it.
-// The transitive reduction of {0->2, 0->1, 1->2} is {0->1, 1->2}, so the answer is 2. Deciding
-// once on arrival gives 3, which is what the incremental rule does -- and that rule is exact
-// only when a consumer's ancestry is already complete when its edges are offered.
-//
-// set_ids_are_topological(false) is how a caller says it cannot promise that. CausalGraph then
-// stores the whole relation and reduces on read, which is minimal for ANY arrival order because
-// the relation is a set and a DAG's reduction is unique. The engine's full-capture path keeps
-// the promise and keeps the incremental rule; the quotient reconstruction cannot and takes this
-// path.
-TEST(CausalGraphTracking, OnlineTransitiveReduction_OutOfOrderArrivalStillMinimal) {
-    ConcurrentHeterogeneousArena arena;
-    CausalGraph cg(&arena);
-
-    cg.set_transitive_reduction(true);
-    cg.set_ids_are_topological(false);   // edges may arrive before the paths that imply them
-
-    cg.add_causal_edge(0, 2, 0);
-    EXPECT_EQ(cg.num_causal_edges(), 1u);
-
-    // Now the path that implies it.
-    cg.add_causal_edge(0, 1, 1);
-    cg.add_causal_edge(1, 2, 2);
-
-    // The minimal reduction, not the arrival-order one.
-    EXPECT_EQ(cg.num_causal_edges(), 2u);
-
-    const auto edges = cg.get_causal_edges();
-    ASSERT_EQ(edges.size(), 2u);
-    bool has01 = false, has12 = false, has02 = false;
-    for (const auto& e : edges) {
-        if (e.producer == 0 && e.consumer == 1) has01 = true;
-        if (e.producer == 1 && e.consumer == 2) has12 = true;
-        if (e.producer == 0 && e.consumer == 2) has02 = true;
-    }
-    EXPECT_TRUE(has01);
-    EXPECT_TRUE(has12);
-    EXPECT_FALSE(has02) << "0->2 is implied by 0->1->2 and must not remain in the reduction";
-}
-
 TEST(CausalGraphTracking, OnlineTransitiveReduction_LongerPath) {
     ConcurrentHeterogeneousArena arena;
     CausalGraph cg(&arena);

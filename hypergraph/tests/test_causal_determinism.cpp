@@ -686,17 +686,7 @@ TEST(CausalDeterminism, QuotientStatesEventsBranchialDeterministic) {
     }
 }
 
-// Quotient causal attribution must be order-independent. The run() harness requests TR on,
-// but guard_quotient_transitive_reduction() downgrades it to TR-off, so what this verifies
-// under quotient is TR-OFF causal determinism; TR-on causal determinism is covered by
-// NonQuotientFullyDeterministic.
-//
-// The guard is a stopgap, not a statement about what is reconstructable. It is there because
-// quotient emits causal edges between CANONICAL event ids, whose assignment is
-// schedule-dependent, so the reduction tag computed against them is not stable. The
-// per-instance reconstruction does retain the raw wiring -- it reproduces raw events, causal
-// pairs and branchial edges exactly against full capture across the matrix probe -- so the
-// reduced view is reachable from it; nothing here proves otherwise.
+// Quotient causal attribution must be order-independent.
 TEST(CausalDeterminism, QuotientCausalAttribution) {
     for (const auto& w : workloads()) {
         Spread s = spread(w, /*quotient=*/true);

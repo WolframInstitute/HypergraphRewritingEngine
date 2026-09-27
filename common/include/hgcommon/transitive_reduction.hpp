@@ -9,7 +9,8 @@
 namespace HG_NAMESPACE {
 namespace common {
 
-// THE TRANSITIVE REDUCTION OF A STORED RELATION, one body for every caller.
+// THE TRANSITIVE REDUCTION OF A STORED RELATION, computed from the finished set. The engine
+// reduces online (reach_core.hpp); the tests compare that result against this one.
 //
 // A finite DAG has exactly one transitive reduction, so the answer is a function of the relation
 // alone. That uniqueness is the entire reason this is computed from the stored pair set rather

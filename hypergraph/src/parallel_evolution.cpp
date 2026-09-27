@@ -1504,29 +1504,6 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
     hg_->set_quotient_multiplicity(hg_->quotient_reconstruction() &&
                                    (counts_only || rec.multiplicities));
     hg_->set_quotient_replay(hg_->quotient_reconstruction() && replay && !counts_only);
-    // The reconstruction emits causal edges between CANONICAL event ids, which are assigned
-    // first-writer-wins and are not monotonic along causal edges. The online reduction's
-    // pruning is only sound when they are, so it is told which regime it is in.
-    hg_->causal_graph().set_ids_are_topological(!qc);
-    guard_quotient_transitive_reduction();
-}
-
-void ParallelEvolutionEngine::guard_quotient_transitive_reduction() {
-    // Nothing to guard. The reduction is exact under BOTH mechanisms.
-    //
-    // Full capture mints an event after the events that produced its inputs, so its ids
-    // increase along every causal edge and a consumer's ancestry is complete when its edges are
-    // offered. Those are exactly the preconditions the incremental rule needs, and it measures
-    // ALL EXACT at 1, 2, 4, 8 and 16 threads.
-    //
-    // The quotient reconstruction satisfies neither: it emits between canonical ids, which are
-    // assigned first-writer-wins and are not monotonic, and its DP propagates producers forward
-    // over time. CausalGraph reduces on READ there instead -- the stored relation is a set and a
-    // DAG's transitive reduction is unique, so the answer is minimal and identical at every
-    // thread count (tools/causal_tr_exactness_probe, Automatic arm, th 1/2/4/8).
-    //
-    // The previous guard disabled the reduction under quotient and served the un-reduced graph,
-    // because the reduction it would have served was wrong.
 }
 
 bool ParallelEvolutionEngine::should_explore(uint64_t invariant_key) const {
