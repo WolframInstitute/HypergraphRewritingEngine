@@ -42,7 +42,8 @@
 //
 //   using Instance = ...;  using Match = ...;
 //   bool     claim(uint64_t apply_key);        exactly-once on the (instance, match) pair
-//   uint32_t mint_event();
+//   uint32_t mint_event(uint32_t above);   a fresh id, greater than `above` when above is not
+//                                          QR_NO_PRODUCER
 //   void     record_content(uint32_t ev, uint64_t from_class, uint64_t to_class, uint32_t rule);
 //   EventSignatureKeys keys() const;           EVENT_SIG_NONE to skip the run signature
 //   uint32_t frame_step(uint64_t class_hash, uint32_t fallback) const;
@@ -186,7 +187,12 @@ HG_HD uint32_t qr_apply(Ctx& c, const typename Ctx::Instance& inst,
     // The raw event this instance's copy of the match stands for. An id suffices: counts and
     // causal edges are expressed over ids, so no Event record -- and hence no raw state and no
     // raw edge -- has to be materialised here.
-    const uint32_t ev = c.mint_event();
+    // Collected before the mint: the event's id is minted above its largest producer, so ids
+    // increase along every causal edge, which the reduction's search requires.
+    const bool causal = c.want_causal();
+    uint32_t producers[MAX_PATTERN_EDGES];
+    const uint32_t np = causal ? qr_collect_producers(c, inst, m, producers) : 0;
+    const uint32_t ev = c.mint_event(np ? producers[0] : QR_NO_PRODUCER);
     c.record_content(ev, state_hash, m.to_hash, m.rule);
 
     // The RUN's event identity, which is a different question from the invariant above.
@@ -194,9 +200,7 @@ HG_HD uint32_t qr_apply(Ctx& c, const typename Ctx::Instance& inst,
     // match/RHS order as it requires.
     if (c.keys() != EVENT_SIG_NONE) c.record_runsig(ev, qr_run_signature(c, m, state_hash, depth));
 
-    if (c.want_causal()) {
-        uint32_t producers[MAX_PATTERN_EDGES];
-        const uint32_t np = qr_collect_producers(c, inst, m, producers);
+    if (causal) {
         // THE PAIR CANNOT REPEAT ACROSS APPLICATIONS, because `ev` was minted for this one.
         // It can repeat WITHIN this one, when two consumed slots carry the same producer, and
         // that is the entire duplicate population: measured on cycle4, recording every call as

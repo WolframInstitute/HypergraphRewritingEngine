@@ -933,7 +933,9 @@ struct DeviceQrCtx {
     __device__ bool claim(uint64_t apply_key) {
         return qe.applied.insert_if_absent(apply_key, 1u).inserted;
     }
-    __device__ uint32_t mint_event() {
+    // One shared counter: every producer's id was taken before this one, so the id is above
+    // them all.
+    __device__ uint32_t mint_event(uint32_t /*above*/) {
         cuda::atomic_ref<uint32_t, cuda::thread_scope_device> nre(*qe.next_raw_event);
         return nre.fetch_add(1u, cuda::memory_order_relaxed);
     }

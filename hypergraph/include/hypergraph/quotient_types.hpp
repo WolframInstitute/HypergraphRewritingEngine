@@ -40,6 +40,7 @@ struct QcEventContent {
     uint64_t from_class = 0;
     uint64_t to_class = 0;
     uint32_t rule = 0;
+    uint32_t written = 0;   // 1 once recorded; an id left unused in a worker's block stays 0
 
     // From hgcommon, because the DEVICE stores this hash where the host stores the triple and
     // hashes on demand. Two engines writing the same identity is exactly one rule, and two

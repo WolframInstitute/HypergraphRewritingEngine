@@ -1139,12 +1139,12 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             bool active = false;
             std::unordered_map<uint64_t, int64_t> dense_of_sig;   // identity -> vertex id
             std::unordered_map<int64_t, hypergraph::QcEventContent> content;
-            uint32_t raw_count = 0;
+            uint32_t id_bound = 0;   // every application id is below it; ids can have gaps
         };
         ReconEvents recon;
         if (hg.quotient_reconstruction()) {
             recon.active = true;
-            recon.raw_count = static_cast<uint32_t>(hg.num_reconstructed_raw_events());
+            recon.id_bound = hg.reconstructed_event_id_bound();
             hg.for_each_reconstructed_event(
                 [&](uint32_t dense, uint32_t raw, const hypergraph::QcEventContent& c) {
                     const int64_t id = static_cast<int64_t>(dense);
@@ -1165,7 +1165,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             const bool from_reconstruction = recon.active && engine.explore_from_canonical_states_only();
             if (from_reconstruction) {
                 std::vector<uint32_t> apps;
-                for (uint32_t e = 0; e < recon.raw_count; ++e)
+                for (uint32_t e = 0; e < recon.id_bound; ++e)
                     if (hg.reconstructed_event_content(e)) apps.push_back(e);
                 std::vector<uint32_t> genesis;
                 if (req.show_genesis_events)
@@ -1197,11 +1197,11 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                     const hypergraph::Event& event = hg.get_event(eid);
                     produced.assign(event.produced_edges, event.produced_edges + event.num_produced);
                     sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-                    sections.write(static_cast<int64_t>(recon.raw_count + eid));
+                    sections.write(static_cast<int64_t>(recon.id_bound + eid));
                     hgmarshal::write_event_record(sink,
                         hgmarshal::EventRecordIds{
-                            static_cast<int64_t>(recon.raw_count + eid),
-                            static_cast<int64_t>(recon.raw_count + eid),
+                            static_cast<int64_t>(recon.id_bound + eid),
+                            static_cast<int64_t>(recon.id_bound + eid),
                             static_cast<int64_t>(event.rule_index),
                             static_cast<int64_t>(event.input_state),
                             static_cast<int64_t>(event.output_state),
@@ -1590,7 +1590,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 uint32_t num_raw_events() const {
                     // Published, not claimed, for the same reason as num_states above. The
                     // reconstruction's own count is a materialised total and is already exact.
-                    return recon.active ? recon.raw_count : hg.num_published_events();
+                    return recon.active ? recon.id_bound : hg.num_published_events();
                 }
                 bool is_valid_event(uint32_t eid) const {
                     if (!recon.active) return valid_event(eid);

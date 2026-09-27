@@ -1095,10 +1095,10 @@ uint32_t Hypergraph::alloc_instance_id() {
         qc_instances_made_outside_.fetch_add(1, std::memory_order_relaxed);
         return qc_next_instance_.fetch_add(1, std::memory_order_relaxed);
     }
-    InstIdBlock& b = qc_inst_blocks_[w];
+    IdBlock& b = qc_inst_blocks_[w];
     if (b.next == b.end) {
-        b.next = qc_next_instance_.fetch_add(kInstIdBlock, std::memory_order_relaxed);
-        b.end = b.next + kInstIdBlock;
+        b.next = qc_next_instance_.fetch_add(kIdBlock, std::memory_order_relaxed);
+        b.end = b.next + kIdBlock;
     }
     ++b.made;
     return b.next++;
@@ -1596,7 +1596,9 @@ uint64_t Hypergraph::num_reconstructed_events() const {
 
 uint64_t Hypergraph::num_reconstructed_raw_events() const {
     if (!quotient_replay()) return qm_events_.load(std::memory_order_relaxed);
-    return qc_next_raw_event_.load(std::memory_order_relaxed);
+    uint64_t n = qc_events_made_outside_.load(std::memory_order_relaxed);
+    for (int i = 0; i < MAX_ARENA_WORKERS; ++i) n += qc_event_blocks_[i].made;
+    return n;
 }
 
 size_t Hypergraph::num_reconstructed_instances() const {
@@ -1622,10 +1624,9 @@ size_t Hypergraph::applied_claims() const { return qc_applied_.size(); }
 
 std::vector<uint32_t> Hypergraph::applied_shape() const {
     std::vector<uint32_t> lens;
-    const uint32_t n = qc_inst_applied_.size();
-    lens.reserve(n);
+    const uint32_t n = qc_applied_slot_bound();
     for (uint32_t i = 0; i < n; ++i) {
-        const LockFreeList<QcAppliedMatch>* lst = qc_inst_applied_.get(i);
+        const LockFreeList<QcAppliedMatch>* lst = qc_inst_applied_.find(i);
         if (!lst) continue;
         uint32_t c = 0;
         lst->for_each([&](const QcAppliedMatch&) { ++c; });
@@ -1696,7 +1697,7 @@ size_t Hypergraph::applied_unique() const {
 // The schedule-stable content triple of ONE reconstructed event: hash(input class, output class,
 // rule). 0 when the event has no recorded triple.
 uint64_t Hypergraph::reconstructed_raw_triple(uint32_t e) const {
-    const QcEventContent* c = qc_event_sig_.get(qc_ev_slot(e));
+    const QcEventContent* c = reconstructed_event_content(e);
     return c ? c->triple_hash() : 0;
 }
 
@@ -2074,15 +2075,30 @@ Hypergraph::QcCtx Hypergraph::qc_ctx() {
 
 bool Hypergraph::QrCtx::claim(uint64_t apply_key) { return hg.qc_applied_.insert(apply_key); }
 
-uint32_t Hypergraph::QrCtx::mint_event() {
+uint32_t Hypergraph::QrCtx::mint_event(uint32_t above) {
     HG_STAT(++qc_slot(hg.qc_ctr_).applications);
-    return hg.qc_next_raw_event_.fetch_add(1, std::memory_order_relaxed);
+    return hg.alloc_event_id(above);
+}
+
+uint32_t Hypergraph::alloc_event_id(uint32_t above) {
+    const int w = arena_worker_index();
+    if (w < 0) {
+        qc_events_made_outside_.fetch_add(1, std::memory_order_relaxed);
+        return qc_next_raw_event_.fetch_add(1, std::memory_order_relaxed);
+    }
+    IdBlock& b = qc_event_blocks_[w];
+    if (b.next == b.end || (above != hgcommon::QR_NO_PRODUCER && b.next <= above)) {
+        b.next = qc_next_raw_event_.fetch_add(kEventIdBlock, std::memory_order_relaxed);
+        b.end = b.next + kEventIdBlock;
+    }
+    ++b.made;
+    return b.next++;
 }
 
 void Hypergraph::QrCtx::record_content(uint32_t ev, uint64_t from_class, uint64_t to_class,
                                        uint32_t rule) {
     hg.qc_event_sig_.emplace_at(Hypergraph::qc_ev_slot(ev), hg.arena_,
-                                QcEventContent{from_class, to_class, rule});
+                                QcEventContent{from_class, to_class, rule, 1u});
 }
 
 hgcommon::EventSignatureKeys Hypergraph::QrCtx::keys() const {
@@ -2127,7 +2143,7 @@ uint32_t Hypergraph::QrCtx::redundant(const uint32_t* producers, uint32_t n) con
     if (n < 2) return 0;
     const Hypergraph& g = hg;
     auto ctx = make_scratch_reach_ctx([&](uint32_t x, auto&& f) {
-        if (const QcKept* k = g.qc_kept_->get(qc_ev_slot(x)))
+        if (const QcKept* k = g.qc_kept_->find(qc_ev_slot(x)))
             for (uint32_t i = 0; i < k->n; ++i) f(k->at(i));
     });
     // A producer's application minted its id before the descent that led here, so ids increase
@@ -2153,7 +2169,7 @@ bool Hypergraph::QrCtx::applied_ref_valid(AppliedRef r) { return r != nullptr; }
 Hypergraph::QrCtx::AppliedRef Hypergraph::QrCtx::publish_applied(const QcInstance& inst,
                                                                  const SlotMatch& m,
                                                                  uint32_t ev) {
-    auto& applied = hg.qc_inst_applied_.get_or_default(qc_ev_slot(inst.id), hg.arena_);
+    auto& applied = hg.qc_inst_applied_.slot(qc_ev_slot(inst.id), hg.arena_);
     return applied.push(QcAppliedMatch{m.id, ev, m.num_consumed, m.consumed_slots}, hg.arena_);
 }
 
@@ -2362,15 +2378,17 @@ StateId Hypergraph::class_frame_state(uint64_t class_hash) const {
 // internal one at least distinguishes events.
 uint64_t Hypergraph::event_pair_signature(uint32_t e) const {
     if (event_signature_keys() != hgcommon::EVENT_SIG_NONE) {
-        const uint64_t* r = qc_event_runsig_.get(qc_ev_slot(e));
-        if (r) return *r;
+        if (e < qc_next_raw_event_.load(std::memory_order_relaxed))
+            if (const uint64_t* r = qc_event_runsig_.find(qc_ev_slot(e))) return *r;
     }
     return reconstructed_raw_triple(e);
 }
 
 // The event's content itself, for a caller that must DESCRIBE the event rather than identify it.
 const QcEventContent* Hypergraph::reconstructed_event_content(uint32_t e) const {
-    return qc_event_sig_.get(qc_ev_slot(e));
+    if (e >= qc_next_raw_event_.load(std::memory_order_relaxed)) return nullptr;
+    const QcEventContent* c = qc_event_sig_.find(qc_ev_slot(e));
+    return c && c->written ? c : nullptr;
 }
 
 uint32_t Hypergraph::count_state_edges(StateId sid) const {
@@ -2410,6 +2428,10 @@ Hypergraph::Hypergraph(uint32_t capacity_scale)
 {
     // Edges and their signatures are read by id only; nothing enumerates them or asks their extent.
     edges_.set_uncounted();
+    qc_inst_applied_.set_uncounted();
+    qc_event_sig_.set_uncounted();
+    qc_kept_->set_uncounted();
+    qc_event_runsig_.set_uncounted();
     edge_signatures_.set_uncounted();
     // Their extent is num_published_states/events, from the per-worker marks.
     states_.set_uncounted();

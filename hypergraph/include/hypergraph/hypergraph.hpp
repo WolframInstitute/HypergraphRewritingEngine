@@ -249,19 +249,19 @@ class Hypergraph {
         uint32_t consumed(uint32_t j) const;
     };
     SegmentedArray<LockFreeList<QcAppliedMatch>> qc_inst_applied_;
-    // Instance ids: taken by a worker in blocks of kInstIdBlock from qc_next_instance_ (one
+    // Instance ids: taken by a worker in blocks of kIdBlock from qc_next_instance_ (one
     // shared increment per block), by any other thread one at a time. An instance id only has to
     // be unique -- it keys the application claim and the applied list -- so gaps are harmless;
     // the instance count is the per-worker counts summed.
     std::atomic<uint32_t> qc_next_instance_{0};
     std::atomic<uint64_t> qc_instances_made_outside_{0};
-    static constexpr uint32_t kInstIdBlock = 64;
-    struct alignas(64) InstIdBlock {
+    static constexpr uint32_t kIdBlock = 64;
+    struct alignas(64) IdBlock {
         uint32_t next = 0;
         uint32_t end = 0;
         uint64_t made = 0;
     };
-    std::unique_ptr<InstIdBlock[]> qc_inst_blocks_ = std::make_unique<InstIdBlock[]>(MAX_ARENA_WORKERS);
+    std::unique_ptr<IdBlock[]> qc_inst_blocks_ = std::make_unique<IdBlock[]>(MAX_ARENA_WORKERS);
     uint32_t alloc_instance_id();
     template <typename F>
     void for_each_instance_at(uint64_t state_hash, uint32_t depth, F&& f) {
@@ -269,7 +269,17 @@ class Hypergraph {
         if (!ri.has_value()) return;
         for (const LockFreeList<QcInstance>& l : (*ri)->list) l.for_each(f);
     }
+    // Raw event ids: a worker takes them in blocks of kEventIdBlock from qc_next_raw_event_,
+    // and uses its block only for an event whose producers are all below the block's next id.
+    // Otherwise it takes a new block, which lies above every id taken so far. Ids therefore
+    // increase along every causal edge. Ids left in an abandoned block are never written;
+    // QcEventContent::written tells a reader so, and the event count is the per-worker counts
+    // summed.
     std::atomic<uint32_t> qc_next_raw_event_{0};
+    std::atomic<uint64_t> qc_events_made_outside_{0};
+    static constexpr uint32_t kEventIdBlock = 64;
+    std::unique_ptr<IdBlock[]> qc_event_blocks_ = std::make_unique<IdBlock[]>(MAX_ARENA_WORKERS);
+    uint32_t alloc_event_id(uint32_t above);
 
     // Reconstructed events under the RUN'S event identity, as opposed to the raw count above.
     // qc_event_sig_ carries a fixed (input, output, rule) triple, which is its own identity and
@@ -380,6 +390,14 @@ class Hypergraph {
     static uint32_t qc_ev_slot(uint32_t e) {
         return (e / QC_EV_BLOCK) * QC_EV_BLOCK
              + ((e % QC_EV_BLOCK) * QC_EV_STRIDE) % QC_EV_BLOCK;
+    }
+    // These four arrays are written through emplace_at on an uncounted array or slot(), and read
+    // through find(): no shared high-water counter is written per event or read per lookup. A
+    // reader bounds its walk by the id counter. Ids below it that were never written (instance
+    // ids skipped at the end of a worker's block) read as empty lists.
+    uint32_t qc_applied_slot_bound() const {
+        const uint32_t n = qc_next_instance_.load(std::memory_order_relaxed);
+        return (n + QC_EV_BLOCK - 1) / QC_EV_BLOCK * QC_EV_BLOCK;
     }
     // The same events under the RUN'S event identity, indexed the same way. The pair accessors
     // need this and not qc_event_sig_: a caller comparing the reconstructed causal or branchial
@@ -532,7 +550,7 @@ class Hypergraph {
         ~QrCtx();
 
         bool claim(uint64_t apply_key);
-        uint32_t mint_event();
+        uint32_t mint_event(uint32_t above);
         void record_content(uint32_t ev, uint64_t from_class, uint64_t to_class, uint32_t rule);
         hgcommon::EventSignatureKeys keys() const;
         uint32_t frame_step(uint64_t class_hash, uint32_t fallback) const;
@@ -564,7 +582,7 @@ class Hypergraph {
             // more than the scan it measures. Per scan the published total is identical.
             HG_STAT(++qc_slot(hg.qc_ctr_).applied_scans);
             size_t visits = 0;
-            hg.qc_inst_applied_.get_or_default(qc_ev_slot(inst.id), hg.arena_).for_each_before(
+            hg.qc_inst_applied_.slot(qc_ev_slot(inst.id), hg.arena_).for_each_before(
                 mine, [&](const QcAppliedMatch& a) {
                     ++visits;
                     f(a);
@@ -1182,6 +1200,11 @@ public:
     // Raw observables recovered by the reconstruction (the full-capture counts).
     uint64_t num_reconstructed_events() const;
     uint64_t num_reconstructed_raw_events() const;
+    // Every reconstructed event id is below this. Ids a worker's block left unused are gaps:
+    // reconstructed_event_content() is null for them.
+    uint32_t reconstructed_event_id_bound() const {
+        return qc_next_raw_event_.load(std::memory_order_relaxed);
+    }
     // Instances the replay recorded: one per raw occurrence of a class at a depth. The
     // population every captured match is replayed against, so the relations it produces are a
     // function of it -- which makes it the first thing to compare when two runs disagree.
@@ -1302,10 +1325,10 @@ public:
         std::set<uint64_t> seen;
         uint32_t dense = 0;
         for (uint32_t e = 0; e < n; ++e) {
-            const QcEventContent* c = qc_event_sig_.get(qc_ev_slot(e));
-            if (!c) continue;
+            const QcEventContent* c = qc_event_sig_.find(qc_ev_slot(e));
+            if (!c || !c->written) continue;
             if (by_identity) {
-                const uint64_t* sig = qc_event_runsig_.get(qc_ev_slot(e));
+                const uint64_t* sig = qc_event_runsig_.find(qc_ev_slot(e));
                 if (!sig || !seen.insert(*sig).second) continue;
             }
             f(dense++, e, *c);
@@ -1322,8 +1345,8 @@ public:
     void for_each_reconstructed_raw_triple(F&& f) const {
         const uint32_t n = qc_next_raw_event_.load(std::memory_order_relaxed);
         for (uint32_t i = 0; i < n; ++i) {
-            const QcEventContent* c = qc_event_sig_.get(qc_ev_slot(i));
-            if (c) f(c->triple_hash());
+            const QcEventContent* c = qc_event_sig_.find(qc_ev_slot(i));
+            if (c && c->written) f(c->triple_hash());
         }
     }
 
@@ -1364,7 +1387,7 @@ public:
             // quotient_replay_core.hpp), so reading it is a walk over what was kept.
             const uint32_t n = qc_next_raw_event_.load(std::memory_order_relaxed);
             for (uint32_t c = 0; c < n; ++c) {
-                const QcKept* k = qc_kept_->get(qc_ev_slot(c));
+                const QcKept* k = qc_kept_->find(qc_ev_slot(c));
                 if (!k) continue;
                 for (uint32_t i = 0; i < k->n; ++i) f(id(k->at(i)), id(c));
             }
@@ -1420,10 +1443,10 @@ public:
         // 970,584 flatten loads on disc-l3a2g2r2 depth 3. Order is preserved exactly --
         // for_each_node is newest-first and for_each_before(mine) is everything older, which
         // flat[i] against flat[j], j > i, reproduces pair for pair.
-        const uint32_t n = qc_inst_applied_.size();
+        const uint32_t n = qc_applied_slot_bound();
         std::vector<QcAppliedMatch> flat;
         for (uint32_t i = 0; i < n; ++i) {
-            const LockFreeList<QcAppliedMatch>* lst = qc_inst_applied_.get(i);
+            const LockFreeList<QcAppliedMatch>* lst = qc_inst_applied_.find(i);
             if (!lst) continue;
             flat.clear();
             lst->for_each([&](const QcAppliedMatch& m) { flat.push_back(m); });
