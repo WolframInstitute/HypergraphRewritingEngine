@@ -154,12 +154,21 @@ public:
     // for it also hid where the id came from -- the engine's num_states()/num_edges()/
     // num_raw_events() report CLAIM counters, which run ahead of what is published, so a loop
     // bounded by one of those would stall here rather than report the mismatch.
+    // The index is not checked against count_ outside stats builds. Every emplace writes
+    // count_, so reading it here put a line every creating thread writes on the path of every
+    // edge and state read; at 16 workers that miss was most of the rewrite's cost. A caller
+    // holds an index only after the element's creator published it to that caller (a job, a
+    // state's edge set), which is what orders the construction before this read.
     const T& at_published(uint32_t idx) const {
-        if (idx >= count_.load(std::memory_order_acquire)) {
+#if HG_ENGINE_STATS
+        // Relaxed, so a stats build synchronizes exactly as a release build does and cannot
+        // mask a missing publication.
+        if (idx >= count_.load(std::memory_order_relaxed)) {
             throw std::logic_error(
                 "SegmentedArray: index is not published yet. Access an index only after its "
                 "own emplace() has returned, or iterate only while emplaces are quiescent.");
         }
+#endif
         const Loc L = locate(idx);
         T* segment = segments_[L.seg].load(std::memory_order_acquire);
         if (!segment) {
@@ -283,6 +292,18 @@ public:
         return segment[offset];
     }
 
+    // get_or_default without advancing count_, for an array read only through slot(): count_ is
+    // one shared line every new index would otherwise compare-and-swap, and get() and for_each,
+    // which read it, are not used on such an array.
+    template<typename Arena>
+    T& slot(uint32_t idx, Arena& arena) {
+        const Loc L = locate(idx);
+        T* segment = get_or_create_segment(L.seg, arena);
+        if (L.off == (segment_capacity(L.seg) * 3) / 4 && L.seg + 1 < MAX_SEGMENTS)
+            get_or_create_segment(L.seg + 1, arena);
+        return segment[L.off];
+    }
+
     // Construct element directly at a specific index
     // Used when the index is managed by an external counter (e.g., edge IDs)
     // This avoids the race condition in ensure_size/emplace where another thread
@@ -317,16 +338,9 @@ public:
         // Construct the element directly with provided arguments
         new (&segment[offset]) T(std::forward<Args>(args)...);
 
-        // CRITICAL: Release fence ensures element construction is complete and visible
-        // before the segment pointer store. Without this, readers may see the segment
-        // pointer but not the element data due to store reordering.
-        std::atomic_thread_fence(std::memory_order_release);
-
-        // Store segment pointer with release (pairs with acquire in operator[])
-        // Note: segments_[seg_idx] was already stored in get_or_create_segment,
-        // but that was BEFORE construction. This store creates the synchronization
-        // point AFTER construction.
-        segments_[seg_idx].store(segment, std::memory_order_release);
+        // Published to iterators by the release on count_ below. The segment pointer was stored
+        // when the segment was created and is not stored again: a store here wrote the shared
+        // segment table once per element from every creating thread.
 
         // Update count_ to at least idx+1 for iteration purposes
         // This is safe because we only increase, never decrease
