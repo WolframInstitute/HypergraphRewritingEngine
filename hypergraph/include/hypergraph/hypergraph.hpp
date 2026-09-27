@@ -696,10 +696,6 @@ public:
     // Number of edges
     uint32_t num_edges() const;
 
-    // PUBLISHED edges, the bound for enumeration. See num_published_states for why the claim
-    // counter above is not that bound.
-    uint32_t num_published_edges() const;
-
 
     // =========================================================================
     // Edge Accessors

@@ -163,7 +163,7 @@ public:
 #if HG_ENGINE_STATS
         // Relaxed, so a stats build synchronizes exactly as a release build does and cannot
         // mask a missing publication.
-        if (idx >= count_.load(std::memory_order_relaxed)) {
+        if (counted_ && idx >= count_.load(std::memory_order_relaxed)) {
             throw std::logic_error(
                 "SegmentedArray: index is not published yet. Access an index only after its "
                 "own emplace() has returned, or iterate only while emplaces are quiescent.");
@@ -344,6 +344,7 @@ public:
 
         // Update count_ to at least idx+1 for iteration purposes
         // This is safe because we only increase, never decrease
+        if (!counted_) return;
         uint32_t expected = count_.load(std::memory_order_relaxed);
         while (expected <= idx) {
             if (count_.compare_exchange_weak(expected, idx + 1,
@@ -466,7 +467,15 @@ private:
     // per-element construction ordering under concurrency).
     std::atomic<uint32_t> claim_;
     std::atomic<uint32_t> count_;
+    // False for an array whose extent nothing reads (set_uncounted): emplace_at then does not
+    // advance count_, which is one shared compare-and-swap per element saved.
+    bool counted_ = true;
     std::atomic<T*> segments_[MAX_SEGMENTS];
+
+public:
+    // For an array read only through at_published: size(), get() and for_each are not used on
+    // it. Called before the first emplace.
+    void set_uncounted() { counted_ = false; }
 };
 
 }  // namespace engine

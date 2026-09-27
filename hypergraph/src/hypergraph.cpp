@@ -1710,10 +1710,6 @@ uint32_t Hypergraph::num_vertices() const { return counters_.next_vertex_id(); }
 
 uint32_t Hypergraph::num_edges() const { return counters_.next_edge_id(); }
 
-// PUBLISHED edges, the bound for enumeration. See num_published_states for why the claim counter
-// is not that bound.
-uint32_t Hypergraph::num_published_edges() const { return edges_.size(); }
-
 
 const EdgeSignature& Hypergraph::edge_signature(EdgeId eid) const { return edge_signatures_[eid]; }
 
@@ -2370,6 +2366,9 @@ Hypergraph::Hypergraph(uint32_t capacity_scale)
     , canonical_event_map_(decltype(canonical_event_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
 
 {
+    // Edges and their signatures are read by id only; nothing enumerates them or asks their extent.
+    edges_.set_uncounted();
+    edge_signatures_.set_uncounted();
     causal_graph_.set_arena(&arena_);
     // The dedup sets are seated in the arena like every other member: a table on fresh arena
     // bytes needs no sentinel fill, and every table is reclaimed with the arena.
