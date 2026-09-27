@@ -541,19 +541,30 @@ HG_HD inline void ir_refine(
             gstart[groups] = j;
 
             if (groups + (leftover > 0 ? 1u : 0u) > 1) {
-                // Rewrite C's run of lab as [leftover..., group0..., group1..., ...]. The
-                // leftover vertices are the ones not touched, recovered by scanning C's run.
+                // Rearrange C's run of lab as [leftover..., group0..., group1..., ...] in
+                // O(adjacent), not O(|C|): a touched vertex in the head [cs, cs + leftover)
+                // swaps with an untouched one in the tail, and the tail is then written in
+                // group order. The leftover's order inside the head is not read: the search
+                // sorts a target cell before choosing, and a leaf labels by cell start. On a
+                // path of n edges the interior cell holds ~n vertices and loses ~2 per round
+                // for ~n/2 rounds, so a scan of the whole cell made refinement O(n^2).
                 const uint32_t cs = C;
-                const uint32_t cl = pi.clen_at[C];
-                uint32_t w = cs;
-                for (uint32_t k = 0; k < cl; ++k) {
-                    const uint32_t u = pi.lab[cs + k];
-                    if (!on_touched[u]) { torder[n_touched + (w - cs)] = u; ++w; }
+                const uint32_t tail = cs + leftover;
+                uint32_t r = tail;
+                for (uint32_t k = i; k < j; ++k) {
+                    const uint32_t u = torder[k];
+                    const uint32_t pu = pi.pos[u];
+                    if (pu >= tail) continue;
+                    while (on_touched[pi.lab[r]]) ++r;
+                    const uint32_t x = pi.lab[r];
+                    pi.lab[pu] = x; pi.pos[x] = pu;
+                    pi.lab[r] = u;  pi.pos[u] = r;
+                    ++r;
                 }
-                for (uint32_t k = i; k < j; ++k) torder[n_touched + (w - cs)] = torder[k], ++w;
-                for (uint32_t k = 0; k < cl; ++k) {
-                    pi.lab[cs + k] = torder[n_touched + k];
-                    pi.pos[pi.lab[cs + k]] = cs + k;
+                for (uint32_t k = i; k < j; ++k) {
+                    const uint32_t u = torder[k];
+                    pi.lab[tail + (k - i)] = u;
+                    pi.pos[u] = tail + (k - i);
                 }
 
                 // A queued cell that splits must leave EVERY piece queued (the bit at cs now
@@ -580,7 +591,9 @@ HG_HD inline void ir_refine(
                         prev_start = p2;
                     }
                     pi.clen_at[p2] = len;
-                    for (uint32_t t = 0; t < len; ++t) pi.cell_of[pi.lab[p2 + t]] = p2;
+                    // The piece at cs keeps C's name, which its members already carry.
+                    if (p2 != cs)
+                        for (uint32_t t = 0; t < len; ++t) pi.cell_of[pi.lab[p2 + t]] = p2;
                     const bool enq = was_queued ? (p2 != cs) : (p2 != best_start);
                     if (enq) worklist[p2 >> 6] |= (uint64_t(1) << (p2 & 63));
                     off += len;
