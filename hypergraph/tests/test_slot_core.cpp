@@ -49,24 +49,6 @@ TEST(SlotCore, OrbitDominatesAndTiesFollowIndex) {
 }
 
 // ---------------------------------------------------------------------------------------
-// The canonical transition's dedup key. Host and device call this one body to decide which raw
-// events are the same (source class, target class) transition.
-
-TEST(QcTransitionKey, NeverReturnsAMapSentinel) {
-    // seen_transitions_ reserves 0 and ~0; a key equal to either is rejected, not stored.
-    for (uint64_t from = 0; from < 512; ++from) {
-        const uint64_t k = hgcommon::qc_transition_key(from, from * 7 + 1);
-        EXPECT_NE(k, uint64_t{0});
-        EXPECT_NE(k, ~uint64_t{0});
-    }
-}
-
-TEST(QcTransitionKey, SourceAndTargetAreOrdered) {
-    EXPECT_NE(hgcommon::qc_transition_key(101, 202), hgcommon::qc_transition_key(202, 101));
-    EXPECT_NE(hgcommon::qc_transition_key(101, 202), hgcommon::qc_transition_key(101, 203));
-}
-
-// ---------------------------------------------------------------------------------------
 // Content-ordered identity: what Automatic deduplicates states by, and the LAST rule in this
 // codebase that was written twice. The host walks a SparseBitset, the device walks an edge
 // slice with a liveness filter, so the iteration cannot be shared -- but every constant and

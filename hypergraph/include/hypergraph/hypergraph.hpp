@@ -137,28 +137,16 @@ class Hypergraph {
     // edges. Edges ascend (SparseBitset iterates in id order), so a lookup binary-searches.
     ConcurrentMap<uint64_t, EdgeRankTable*> state_edge_rank_tables_;
 
-    // The captured quotient causal skeleton: the distinct canonical transitions out of each
-    // canonical state (keyed by the source state's canonical hash), plus a dedup set over
-    // transition signatures. Built online as events fire in quotient mode; the reach marks
-    // below propagate over it.
-    ConcurrentMap<uint64_t, LockFreeList<CanonicalTransition>*> transitions_from_;
-    ShardedKeySet<uint64_t> seen_transitions_;
-
-    // qc_reached_ marks the (state_hash, depth) points the canonical transitions reach,
-    // bounded by qc_max_steps_ (hgcommon/quotient_causal_core.hpp).
-    ConcurrentKeySet<uint64_t> qc_reached_;
-    // The same points qc_reached_ marks, enumerable. The map's key mixes the hash and the
-    // depth irreversibly, and raising the depth budget has to revisit the points that stood
-    // at the old terminal depth: each was marked reached, but every transition out of it was
-    // declined by the bound, so its instances are recorded and unexpanded.
-    struct QcReachPoint { uint64_t state_hash; uint32_t depth; };
-    LockFreeList<QcReachPoint> qc_reached_list_;
+    // The (class, depth) points at the depth bound that hold replay instances or multiplicity
+    // mass. Those are recorded and never expanded, so raising the bound has to revisit them.
+    // Pushed once per point per structure, by the thread that created the point's entry.
+    struct QcPoint { uint64_t state_hash; uint32_t depth; };
+    LockFreeList<QcPoint> qc_blocked_;
     std::atomic<int> qc_max_steps_{0};
 
     // The expanded representative's FULL match list per canonical state, in slots -- the
-    // input to the per-instance raw reconstruction. Deliberately not the deduplicated
-    // transitions_from_: slots are finer than orbits and SlotMatch carries no multiplicity,
-    // so two matches over one orbit must both survive (full-capture fires both).
+    // input to the per-instance raw reconstruction. Two matches over one orbit both survive
+    // (full capture fires both).
     // qc_expansion_rep_ pins the one raw state whose events define the expansion, so a second
     // raw state of the same class (a dedup race) cannot append a duplicate expansion.
     ConcurrentMap<uint64_t, LockFreeList<SlotMatch>*> qc_expansion_;
@@ -485,35 +473,8 @@ class Hypergraph {
     // the key cannot reach the LOCKED sentinel either.
     static uint64_t qc_pair_key(uint32_t a, uint32_t b);
 
-    // The DP's key spaces come from hgcommon so the device indexes the same ones.
+    // The (class, depth) key space comes from hgcommon so the device indexes the same one.
     static uint64_t qc_key(uint64_t state_hash, uint32_t depth, uint32_t orbit);
-    static uint64_t qc_rkey(uint64_t state_hash, uint32_t depth);
-
-    // The storage face hgcommon/quotient_causal_core.hpp drives. It supplies WHERE things are
-    // held and nothing else -- when a point is entered and which rendezvous scan follows which
-    // publish are in the core, which is the same body the device runs. Nested so it reaches
-    // this class's private state without a friend declaration.
-    struct QcCtx {
-        using Transition = CanonicalTransition;
-        Hypergraph& hg;
-        uint32_t steps;
-
-        uint32_t max_steps() const;
-        // The host recurses on the ordinary stack, which is heap-sized here, so no depth is out
-        // of reach and the cascade is bounded by max_steps alone.
-        bool enter(uint32_t) const;
-        // The DP's depth-advancing edges. The host descends by CALLING, on a thread stack with
-        // about a thousand levels of room at the tightest platform it ships on against a bound
-        // of `steps` -- so it has nothing to gain from a worklist and nothing to prove by one.
-        void defer_reach(uint64_t state_hash, uint32_t depth);
-        bool mark_reached(uint64_t rkey, uint64_t state_hash, uint32_t depth);
-        template <class F>
-        void for_each_transition_from(uint64_t hash, F&& f) {
-            hg.for_each_transition_from(hash, [&](const CanonicalTransition& t) { f(t); });
-        }
-        void fence();
-    };
-    QcCtx qc_ctx();
 
     // The storage face hgcommon/quotient_replay_core.hpp drives. Same division as QcCtx above:
     // WHERE a producer vector, an applied list or a claim set lives is here; what an
@@ -617,8 +578,6 @@ class Hypergraph {
     const EdgeOrbitTable* qc_orbits_or_build(StateId s);
     void qc_add_instance(uint64_t state_hash, uint32_t depth, const uint32_t* prod, uint32_t nslots);
     void qc_apply(const QcInstance& inst, const SlotMatch& m, uint64_t state_hash, uint32_t depth);
-    void qc_process_transition(const CanonicalTransition& t, uint32_t depth);
-    void qc_reach(uint64_t state_hash, uint32_t depth);
 
     // Event canonicalization: maps event signature to first EventId
     // Signature computed from keys specified by event_signature_keys_ bitflag
@@ -1121,7 +1080,7 @@ public:
     // complete.
     template <typename F>
     void for_each_quotient_blocked_point(int old_bound, int new_bound, F&& f) const {
-        qc_reached_list_.for_each([&](const QcReachPoint& p) {
+        qc_blocked_.for_each([&](const QcPoint& p) {
             // Below the old bound the point was already driven, and AT the new bound it must
             // not be: the final depth is produced into and never read, so expanding it would
             // replay a step the run was not asked for.
@@ -1133,16 +1092,9 @@ public:
 
     // Drive one blocked point: its declined transitions, then its instances against the
     // expansion's matches. Independent of every other point -- each step is claimed
-    // (qc_reached_, qc_applied_), so two threads driving the same point, or one
+    // (qm's queued flag, qc_applied_), so two threads driving the same point, or one
     // driving a point the cascade already reached, is a no-op rather than a race.
     void quotient_redrive_point(uint64_t state_hash, uint32_t depth);
-
-    // Visit the distinct canonical transitions out of the canonical state `from_hash`.
-    template <typename F>
-    void for_each_transition_from(uint64_t from_hash, F&& f) const {
-        auto r = transitions_from_.lookup(from_hash);
-        if (r.has_value()) (*r)->for_each([&](const CanonicalTransition& t) { f(t); });
-    }
 
     // Visit every match of the expanded representative of the canonical state `from_hash`,
     // in slots and undeduplicated -- the input to the per-instance raw reconstruction.

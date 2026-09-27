@@ -115,22 +115,11 @@ struct EdgeOrbitTable {
     uint32_t slot_of(EdgeId e) const;
 };
 
-// One distinct canonical transition out of a canonical state: every raw event from one class
-// to another is one of these, listed under its source class. `to_hash` is the target class.
-// The reach marks (hgcommon/quotient_causal_core.hpp) propagate over them.
-struct CanonicalTransition {
-    uint64_t to_hash = 0;
-};
-
 // One match of the expanded representative of a canonical state, named in SLOTS -- the unit
 // the per-instance raw reconstruction replays.
 //
-// Distinct from CanonicalTransition: that record is DEDUPLICATED by an orbit signature, which
-// is right for the aggregate producer-set propagation (it needs only the support) but wrong
-// here twice over. Slots are finer than orbits, so two matches consuming different edges of
-// one orbit collapse into a single transition; and the record carries no multiplicity, so the
-// collapse is not recoverable. Full-capture fires both matches, so the reconstruction must see
-// both. Hence the representative's matches are kept in full, undeduplicated.
+// The representative's matches are kept in full, undeduplicated: two matches consuming
+// different edges of one orbit are two matches, and full capture fires both.
 //
 // Consumed/produced stay in MATCH order (not sorted): a replay reads
 // producer[consumed_slots[i]] and writes the new raw event into producer[produced_slots[i]],

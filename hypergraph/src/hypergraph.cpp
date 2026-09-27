@@ -1021,18 +1021,8 @@ uint64_t Hypergraph::compute_and_cache_state_orbits(StateId s, const SparseBitse
 }
 
 // =============================================================================
-// Quotient causal reconstruction (online depth-indexed producer-set propagation)
+// Quotient reconstruction: the depth bound
 // =============================================================================
-
-void Hypergraph::qc_process_transition(const CanonicalTransition& t, uint32_t depth) {
-    auto c = qc_ctx();
-    hgcommon::qc_process_transition(c, t, depth);
-}
-
-void Hypergraph::qc_reach(uint64_t state_hash, uint32_t depth) {
-    auto c = qc_ctx();
-    hgcommon::qc_reach(c, state_hash, depth);
-}
 
 int Hypergraph::raise_quotient_max_steps(int max_steps) {
     int old = qc_max_steps_.load(std::memory_order_relaxed);
@@ -1044,13 +1034,9 @@ int Hypergraph::raise_quotient_max_steps(int max_steps) {
 }
 
 void Hypergraph::quotient_redrive_point(uint64_t state_hash, uint32_t depth) {
-    // The point was reached and then left unexpanded: qc_reach scanned its transitions and
-    // qc_process_transition declined every one, so its producers never propagated and its
-    // instances never met a match. With the bound already raised, driving it restarts the
-    // cascade, and the deeper points it reaches drive themselves inline from here.
-    for_each_transition_from(state_hash, [&](const CanonicalTransition& t) {
-        qc_process_transition(t, depth);
-    });
+    // The point stood at the old bound, so its mass was not passed on and its instances never
+    // met a match. With the bound already raised, driving it restarts the cascade, and the
+    // deeper points it reaches drive themselves inline from here.
     if (!quotient_reconstruction_.load(std::memory_order_relaxed)) return;
     if (quotient_multiplicity()) {
         qm_cascade([&](QmCtx& c) {
@@ -1086,7 +1072,6 @@ void Hypergraph::quotient_causal_seed(StateId initial_state, int max_steps) {
     // reconstruction hangs off nothing and every relation under it is absent.
     const EdgeOrbitTable* orb = qc_orbits_or_build(initial_state);
     const uint64_t h = get_state(initial_state).canonical_hash;
-    qc_reach(h, 0);
 
     // Seed the per-instance reconstruction with the one instance of the initial state; its
     // edges have no producer.
@@ -1151,6 +1136,8 @@ void Hypergraph::qc_add_instance(uint64_t state_hash, uint32_t depth,
         auto* ns = arena_.template create<QcInstanceShards>();
         auto ins = qc_instances_.insert_if_absent(key, ns);
         sh = ins.second ? ns : ins.first;
+        if (ins.second && static_cast<int>(depth) >= maxs)
+            qc_blocked_.push(QcPoint{state_hash, depth}, arena_);
     }
     const int w = arena_worker_index();
     sh->list[w < 0 ? 0u : static_cast<uint32_t>(w) % kInstShards].push(inst, arena_);
@@ -1376,33 +1363,6 @@ void Hypergraph::qc_capture_expansion(EventId e) {
 void Hypergraph::register_quotient_transition(EventId e) {
     hgcommon::PhaseTimer _pt(hgcommon::Phase::Quotient);
     qc_capture_expansion(e);
-    const Event& ev = get_event(e);
-    const uint64_t from = get_state(ev.input_state).canonical_hash;
-    const uint64_t to   = get_state(ev.output_state).canonical_hash;
-    if (!seen_transitions_.insert(hgcommon::qc_transition_key(from, to))) return;  // already captured
-
-    CanonicalTransition* t = arena_.template create<CanonicalTransition>();
-    t->to_hash = to;
-
-    LockFreeList<CanonicalTransition>* lst;
-    auto r = transitions_from_.lookup(from);
-    if (r.has_value()) lst = *r;
-    else {
-        auto* nl = arena_.template create<LockFreeList<CanonicalTransition>>();
-        auto ins = transitions_from_.insert_if_absent(from, nl);
-        lst = ins.second ? nl : ins.first;
-    }
-    lst->push(*t, arena_);
-
-    // Reach the target at every depth the source is already reached at. The partner is in
-    // qc_reach, so a concurrent
-    // "reach (from,d)" and "register t from `from`" cannot both miss each other -- whichever
-    // publishes second sees the other and processes the (t, d) pair.
-    hgcommon::rendezvous_barrier<hgcommon::rv::QuotientCoreHook>();
-    const int maxs = qc_max_steps_.load(std::memory_order_relaxed);
-    for (int d = 0; d <= maxs; ++d)
-        if (qc_reached_.contains(qc_rkey(from, static_cast<uint32_t>(d))))
-            qc_process_transition(*t, static_cast<uint32_t>(d));
 }
 
 void Hypergraph::causal_edge_keys(StateId state, const EdgeId* edges, uint32_t n,
@@ -1945,36 +1905,11 @@ GlobalCounters& Hypergraph::counters() { return counters_; }
 const GlobalCounters& Hypergraph::counters() const { return counters_; }
 
 // =============================================================================
-// QcCtx / QrCtx -- the storage face the shared quotient cores drive
+// QrCtx -- the storage face the shared replay core drives
 // =============================================================================
 // WHERE a producer vector, an applied list or a claim set lives is here; what an application
-// DOES is in hgcommon, which is the body the device runs too. Both cores are instantiated in
-// this translation unit and nowhere else, which is what lets these bodies live here.
-
-uint32_t Hypergraph::QcCtx::max_steps() const { return steps; }
-
-bool Hypergraph::QcCtx::enter(uint32_t) const { return true; }
-
-void Hypergraph::QcCtx::defer_reach(uint64_t state_hash, uint32_t depth) {
-    hgcommon::qc_reach(*this, state_hash, depth);
-}
-
-bool Hypergraph::QcCtx::mark_reached(uint64_t rkey, uint64_t state_hash, uint32_t depth) {
-    if (!hg.qc_reached_.insert(rkey)) return false;
-    // Recorded so raise_quotient_max_steps can re-drive the depths the old bound made terminal;
-    // nothing else reads the list.
-    hg.qc_reached_list_.push(QcReachPoint{state_hash, depth}, hg.arena_);
-    return true;
-}
-
-// The host side of the shared quotient core's rendezvous hook, called at qc_reach's
-// publish-then-scan point; the device supplies its own, which is why this is a hook and not a
-// direct barrier.
-void Hypergraph::QcCtx::fence() { hgcommon::rendezvous_barrier<hgcommon::rv::QuotientCoreHook>(); }
-
-Hypergraph::QcCtx Hypergraph::qc_ctx() {
-    return QcCtx{*this, static_cast<uint32_t>(qc_max_steps_.load(std::memory_order_relaxed))};
-}
+// DOES is in hgcommon, which is the body the device runs too. The core is instantiated in this
+// translation unit and nowhere else, which is what lets these bodies live here.
 
 bool Hypergraph::QrCtx::claim(uint64_t apply_key) { return hg.qc_applied_.insert(apply_key); }
 
@@ -2145,7 +2080,10 @@ Hypergraph::QmPoint* Hypergraph::qm_point(uint64_t class_hash, uint32_t depth) {
     QmPoint* p = arena_.template create<QmPoint>();
     p->depth = depth;
     p->class_hash = class_hash;
-    return qm_points_.insert_if_absent(key, p).first;
+    const auto ins = qm_points_.insert_if_absent(key, p);
+    if (ins.second && static_cast<int>(depth) >= qc_max_steps_.load(std::memory_order_relaxed))
+        qc_blocked_.push(QcPoint{class_hash, depth}, arena_);
+    return ins.first;
 }
 
 std::atomic<uint64_t>* Hypergraph::qm_consumed_cell(uint32_t match_id, uint32_t depth) {
@@ -2342,8 +2280,6 @@ Hypergraph::Hypergraph(uint32_t capacity_scale)
     causal_graph_.set_arena(&arena_);
     // The dedup sets are seated in the arena like every other member: a table on fresh arena
     // bytes needs no sentinel fill, and every table is reclaimed with the arena.
-    seen_transitions_.set_arena(&arena_);
-    qc_reached_.set_arena(&arena_);
     qc_applied_.set_arena(&arena_);
     qc_canon_event_seen_.set_arena(&arena_);
 }
@@ -2357,9 +2293,6 @@ uint64_t Hypergraph::qc_key(uint64_t state_hash, uint32_t depth, uint32_t orbit)
     return hgcommon::qc_key(state_hash, depth, orbit);
 }
 
-uint64_t Hypergraph::qc_rkey(uint64_t state_hash, uint32_t depth) {
-    return hgcommon::qc_rkey(state_hash, depth);
-}
 
 uint32_t Hypergraph::QcAppliedMatch::consumed(uint32_t j) const {
     return consumed_slots[j];
