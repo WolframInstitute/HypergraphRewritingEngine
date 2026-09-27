@@ -312,7 +312,9 @@ std::vector<uint8_t> build_input_requesting(int64_t steps, const std::string& op
 
 std::vector<uint8_t> build_input_with_op(int64_t steps, const std::string& op,
                                          int64_t session = 0, bool with_rules = true,
-                                         const std::vector<int64_t>& from = {}) {
+                                         const std::vector<int64_t>& from = {},
+                                         const std::function<void(wxf::Writer&)>& opts = {},
+                                         uint64_t n_opts = 0) {
     wxf::Writer w;
     w.write_header();
 
@@ -342,7 +344,8 @@ std::vector<uint8_t> build_input_with_op(int64_t steps, const std::string& op,
     w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
     w.write(std::string("Options"));
     w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-    w.write_varint(0);
+    w.write_varint(n_opts);
+    if (opts) opts(w);
 
     w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
     w.write(std::string("Op"));
@@ -538,6 +541,38 @@ TEST(WxfSerializationPin, ASessionAnswersAQueryItsOpenDidNotNameTheOptionFor) {
 }
 
 // retaining it does not change the answer, and that the one-at-a-time rule holds here too.
+// A session under quotient exploration, stepped 1 + 1 + 1, holds the raw events and relations
+// one Evolve to depth 3 reconstructs.
+void quotient_session_options(wxf::Writer& w) {
+    put_str_option(w, "CanonicalizeStates", "Full");
+    put_str_option(w, "ExploreFromCanonicalStatesOnly", "True");
+    put_str_list_option(w, "RequestedData", {"NumEvents", "NumCausalEdges", "NumBranchialEdges"});
+}
+// Counts only: the raw counts come from class multiplicities, not the replay.
+void quotient_counts_session_options(wxf::Writer& w) {
+    put_str_option(w, "CanonicalizeStates", "Full");
+    put_str_option(w, "ExploreFromCanonicalStatesOnly", "True");
+    put_str_list_option(w, "RequestedData", {"NumEvents", "NumBranchialEdges"});
+}
+
+TEST(WxfSerializationPin, AQuotientSessionSteppedHoldsWhatOneEvolveReconstructs) {
+    for (auto opts : {quotient_session_options, quotient_counts_session_options}) {
+        HostBridge host;
+        const auto one_shot = run_rewriting_core(
+            build_input_with_op(3, "Evolve", 0, true, {}, opts, 3), host);
+        const auto opened = run_rewriting_core(
+            build_input_with_op(1, "Open", 0, true, {}, opts, 3), host);
+        const int64_t handle = read_int_key(opened, "Session");
+        ASSERT_GT(handle, 0);
+        run_rewriting_core(build_input_with_op(1, "Step", handle, false, {}, opts, 3), host);
+        const auto s2 = run_rewriting_core(
+            build_input_with_op(1, "Step", handle, false, {}, opts, 3), host);
+        for (const char* k : {"NumEvents", "NumCausalEdges", "NumBranchialEdges"})
+            EXPECT_EQ(read_int_key(s2, k), read_int_key(one_shot, k)) << k;
+        run_rewriting_core(build_input_with_op(0, "Close", handle, false), host);
+    }
+}
+
 TEST(WxfSerializationPin, OpenRetainsASessionAndCloseReleasesIt) {
     HostBridge host;
 
@@ -1501,6 +1536,34 @@ std::vector<uint8_t> worker_call(WorkerPipes& w, const std::vector<uint8_t>& job
 }
 
 }  // namespace
+
+TEST(GpuBinaryGate, AQuotientSessionSteppedHoldsWhatOneEvolveReconstructs) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    for (auto opts : {quotient_session_options, quotient_counts_session_options}) {
+        const auto one_shot = worker_call(w, build_input_with_op(3, "Evolve", 0, true, {}, opts, 3));
+        if (one_shot.empty()) {
+            worker_stop(w);
+            GTEST_SKIP() << "the worker returned no result for a plain Evolve (no usable device?)";
+        }
+        const auto opened = worker_call(w, build_input_with_op(1, "Open", 0, true, {}, opts, 3));
+        const int64_t handle = read_int_key(opened, "Session");
+        ASSERT_GT(handle, 0);
+        worker_call(w, build_input_with_op(1, "Step", handle, false, {}, opts, 3));
+        const auto s2 = worker_call(w, build_input_with_op(1, "Step", handle, false, {}, opts, 3));
+        for (const char* k : {"NumEvents", "NumCausalEdges", "NumBranchialEdges"})
+            EXPECT_EQ(read_int_key(s2, k), read_int_key(one_shot, k)) << k;
+        worker_call(w, build_input_with_op(0, "Close", handle, false));
+    }
+    worker_stop(w);
+}
 
 TEST(GpuBinaryGate, SessionVerbsThroughTheWorkerMatchOneEvolveOfTheSameDepth) {
     {

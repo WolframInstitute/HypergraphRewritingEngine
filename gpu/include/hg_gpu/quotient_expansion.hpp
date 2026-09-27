@@ -189,6 +189,9 @@ struct QeView {
     typename LockFreeList<QeMatchRef>::DeviceView       by_from;   // bucket(from_hash)
 
     typename Pool<DeviceQcInstance>::DeviceView         instances;
+    // The instances recorded at the depth bound, which a raised bound has to drive: the device
+    // twin of the replay half of Hypergraph::qc_blocked_. QeWorkItem is (class, record, depth).
+    typename Pool<QeWorkItem>::DeviceView               blocked;
     typename LockFreeList<QeInstRef>::DeviceView        by_key;    // bucket(key(hash, depth))
     uint32_t* inst_next_id;    // device atomic; dense instance ids
 
@@ -624,6 +627,34 @@ __device__ inline __noinline__ void qe_capture_multiplicity(DeviceState ds, QeVi
     hgcommon::qm_drain(c);
 }
 
+// Drive the points a previous run's depth bound left standing, for one driver (`slice`) of
+// `stride`: the multiplicity points and the recorded instances whose depth is in
+// [old_bound, qe.max_steps). The device twin of Hypergraph::quotient_redrive_point, for a session
+// continued past the depth it last stopped at.
+__device__ inline __noinline__ void qe_redrive(DeviceState ds, QeView qe, uint32_t old_bound,
+                                               uint32_t slice, uint32_t stride) {
+    QeWork work = qe_work_for(ds, qe, slice);
+    if (qe.multiplicity) {
+        const uint32_t n = qe.qm_cursor[0] < qe.qm_capacity ? qe.qm_cursor[0] : qe.qm_capacity;
+        DeviceQmCtx c{ds, qe, work};
+        for (uint32_t p = slice; p < n; p += stride) {
+            const uint32_t d = qe.qm_point_depth[p];
+            if (d < old_bound || d >= qe.max_steps) continue;
+            if (c.claim_queued(qe.qm_point_class[p], d)) c.push(qe.qm_point_class[p], d);
+            hgcommon::qm_drain(c);
+        }
+    }
+    if (qe.replay) {
+        const uint32_t n = qe.blocked.size();
+        for (uint32_t i = slice; i < n; i += stride) {
+            const QeWorkItem it = qe.blocked.at(i);
+            if (it.depth < old_bound || it.depth >= qe.max_steps) continue;
+            qe_drive_instance(ds, qe, qe.instances.at(it.rec), it.hash, it.depth, work);
+            qe_run(ds, qe, work);
+        }
+    }
+}
+
 // Capture one raw event as its class's expansion match, in frame slots.
 //
 // Only the class's claimed state contributes: the first parent to claim the class defines both
@@ -765,6 +796,13 @@ __device__ inline uint32_t qe_add_instance(DeviceState ds, QeView qe, uint64_t s
     }
     inst.nslots      = nslots;
     inst.prod_offset = prod_offset;
+
+    // At the bound the instance is recorded and not expanded; a continuation drives it.
+    if (depth >= qe.max_steps) {
+        const uint32_t b = qe.blocked.claim();
+        if (b == Pool<QeWorkItem>::kInvalid) ds.errors.record(ErrorKind::kQcNodes);
+        else qe.blocked.at(b) = QeWorkItem{state_hash, rec, depth};
+    }
 
     // Published only after the record is complete: a walker that reaches the reference must not
     // find a half-written instance.
@@ -1208,6 +1246,7 @@ private:
     Pool<DeviceSlotMatch>     matches_;
     LockFreeList<QeMatchRef>  by_from_;
     Pool<DeviceQcInstance>    instances_;
+    Pool<QeWorkItem>          blocked_;
     LockFreeList<QeInstRef>   by_key_;
     DedupMap                  rep_;
     DedupMap                  applied_;

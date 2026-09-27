@@ -298,7 +298,9 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
             static_cast<uint64_t>(cfg.max_events) * cfg.qe_capacity_scale,
             static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) / 16u);
         qe_state_ = std::make_unique<QeState>(qc_route, static_cast<uint32_t>(qe_events));
-    } else {
+    } else if (start_step == 0) {
+        // A continuation keeps the reconstruction: its captures, instances, counts and the
+        // points the old bound left standing, which the run drives (k_qe_redrive).
         qe_state_->clear();
     }
     // Capture always; REPLAY only when the caller records something the raw unfolding answers.

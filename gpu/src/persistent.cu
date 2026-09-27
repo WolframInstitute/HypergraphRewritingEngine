@@ -136,6 +136,13 @@ __device__ ExactHashStatus state_key_device(DeviceState ds, StateId sid,
 //
 // Every root is compacted into out_ids/out_count, isomorphic ones included, and the queue is
 // seeded from those.
+// One thread per replay driver: the points the previous run's bound left standing.
+__global__ void k_qe_redrive(DeviceState ds, QeView qe, uint32_t old_bound) {
+    const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= qe.work_slices) return;
+    qe_redrive(ds, qe, old_bound, tid, qe.work_slices);
+}
+
 __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_t num_roots,
                                    DedupMap::DeviceView map, CanonicalizationMode state_mode,
                                    bool need_exact, bool need_ranks, DeviceArena::View arena,
@@ -1156,6 +1163,14 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     // root path would re-hash them and, worse, consult dedup -- which they already satisfy, so
     // nothing would expand.
     if (start_step > 0 && session) {
+        // A continuation raised the depth bound: drive what the old bound left standing. On the
+        // default stream, so it completes before the frontier below is expanded; the replay's
+        // rendezvous makes the order of the two irrelevant to the answer.
+        if (qe.enabled && (qe.replay || qe.multiplicity) && qe.work_slices) {
+            const uint32_t rblock = 64;
+            k_qe_redrive<<<(qe.work_slices + rblock - 1) / rblock, rblock>>>(
+                engine.device(), qe, start_step);
+        }
         const uint32_t block = 128;
         const uint32_t items = sess_v.frontier_cap * num_rules;
         const uint32_t seed_grid = (items + block - 1) / block;

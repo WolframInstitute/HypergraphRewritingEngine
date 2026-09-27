@@ -20,6 +20,7 @@ namespace gpu {
 QeState::QeState(bool on, uint32_t max_events): matches_(on ? max_events : 1u),
           by_from_(on ? (1u << 16) : 1u, on ? max_events : 1u),
           instances_(on ? max_events : 1u),
+          blocked_(on ? max_events : 1u),
           by_key_(on ? (1u << 16) : 1u, on ? max_events : 1u),
           rep_(on ? max_events : 8u),
           applied_(on ? max_events * 4u : 8u),
@@ -98,6 +99,7 @@ void QeState::clear() {
         matches_.reset();
         by_key_.clear();
         instances_.reset();
+        blocked_.reset();
         rep_.clear();
         applied_.clear();
         canon_seen_.clear();
@@ -381,6 +383,7 @@ QeView QeState::view(uint32_t max_steps, EventSignatureKeys keys,
         q.matches      = matches_.view();
         q.by_from      = by_from_.view();
         q.instances      = instances_.view();
+        q.blocked        = blocked_.view();
         q.by_key         = by_key_.view();
         q.inst_next_id   = inst_next_id_;
         q.rep            = rep_.view();
