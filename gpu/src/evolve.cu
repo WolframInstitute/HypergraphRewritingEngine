@@ -599,6 +599,24 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
 // Returns true if growth was applied; false for kinds that have no
 // retryable config (kScratchOverflow is a kernel-internal limit and can't
 // be grown by reconfiguring pools).
+// The pools a run fills in proportion to its size: states, events, edges and vertices, and the
+// match pool, which is sized from max_states. When one overflows the run was cut short, so the
+// others' needs were never reached and they overflow on the next attempts in turn (wpp depth 7:
+// state, event, state, edge -- five attempts). They grow together, once per attempt.
+bool is_size_pool(ErrorKind kind) {
+    return kind == ErrorKind::kStatePoolFull || kind == ErrorKind::kEventPoolFull ||
+           kind == ErrorKind::kEdgePoolFull || kind == ErrorKind::kVertexPoolFull ||
+           kind == ErrorKind::kMatchPoolFull;
+}
+
+bool grow_config_for(EngineConfig& cfg, ErrorKind kind);
+
+void grow_size_pools(EngineConfig& cfg) {
+    for (ErrorKind k : {ErrorKind::kStatePoolFull, ErrorKind::kEventPoolFull,
+                        ErrorKind::kEdgePoolFull, ErrorKind::kVertexPoolFull})
+        grow_config_for(cfg, k);
+}
+
 bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
     auto dbl = [](uint32_t& f) { f = (f >= (1u << 31)) ? f : (f * 2u); };
     switch (kind) {
@@ -882,7 +900,15 @@ static EvolveResult run_with_growth(EngineConfig cfg, uint64_t mem_cap, Attempt&
         // idempotent under repeats, so every warning's kind is swept.
         bool any_retryable = false;
         ErrorKind first_grew = ErrorKind::kCount;
+        bool size_grown = false;
         for (const auto& w : result.warnings) {
+            if (is_size_pool(w.kind)) {
+                if (!size_grown) grow_size_pools(cfg);
+                size_grown = true;
+                if (!any_retryable) first_grew = w.kind;
+                any_retryable = true;
+                continue;
+            }
             if (grow_config_for(cfg, w.kind)) {
                 if (!any_retryable) first_grew = w.kind;
                 any_retryable = true;
