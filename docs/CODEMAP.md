@@ -241,7 +241,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`ir_canonicalization.hpp`)
 
 ## `paclet/` -- the Wolfram Language paclet
 
-- **`PacletInfo.wl`** -- manifest for `WolframInstitute/HypergraphRewriteEngine` v0.0.1 (Kernel context, LibraryLink resources, Documentation, 6 SystemIDs)
+- **`PacletInfo.wl`** -- manifest for `WolframInstitute/HypergraphRewriteEngine` v1.0.0 (Kernel context, LibraryLink resources, Documentation, 6 SystemIDs)
 - **`Kernel/HypergraphRewriting.wl`** -- the WL layer. Public surface: `HGEvolve`, plus the session verbs `HGSessionOpen`/`HGSessionStep`/`HGSessionQuery`/`HGSessionClose`/`HGSessionFrontier` over an opaque `HGSessionObject`, which continue ONE exploration instead of re-running it. `hgJobOptions` builds the job's Options envelope for both entry points, `hgSendJob` runs a job and surfaces the warning trail, and `hgRunJob` turns a reply into the requested properties -- so `Evolve` and a session's `Step` differ only in the envelope they build. A session verb takes the persistent worker or refuses: the one-shot fallback would mint a handle in a process that exits with the reply. The initial-condition generators (`HGGrid`, topologies, sprinkling, Brill-Lindquist, Poisson, uniform) remain as internal helpers behind HGEvolve's string initial conditions; the physics analyses live in ../hypergraph_viz
 - **`Documentation/English/`** -- the documentation notebooks, built from `docs/en/` by `build_docs.sh` and tracked, because the paclet ships them
 

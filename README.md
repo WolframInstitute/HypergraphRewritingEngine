@@ -45,14 +45,14 @@ Wolfram Physics Project*](paper/main.pdf). To cite it:
 
 ### Mathematica Paclet
 
-Install from the Wolfram Paclet Repository:
+Install the paclet from the GitHub release:
 
 ```mathematica
-PacletInstall["WolframInstitute/HypergraphRewriteEngine"]
+PacletInstall["https://github.com/WolframInstitute/HypergraphRewritingEngine/releases/download/v1.0.0-rc1/WolframInstitute__HypergraphRewriteEngine-1.0.0.paclet"]
 Needs["HypergraphRewriting`"]
 ```
 
-(Or install a `.paclet` file from the [latest GitHub release](https://github.com/WolframInstitute/HypergraphRewritingEngine/releases) by passing its URL or a local path to `PacletInstall`.)
+The paclet is not in the Wolfram Paclet Repository, so `PacletInstall["WolframInstitute/HypergraphRewriteEngine"]` does not install it. `PacletFind["WolframInstitute/HypergraphRewriteEngine"]` lists the installed versions; `Needs` loads the highest.
 
 The paclet name is `WolframInstitute/HypergraphRewriteEngine`; its exported context is ``HypergraphRewriting` ``.
 
