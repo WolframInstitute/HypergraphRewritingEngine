@@ -132,6 +132,14 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
         // The reconstructed applications as events and graph vertices: read by "Events" and by
         // every graph over events; a session may be asked for either later.
         in.materialize_events = job.include_events || gneeds.events || job.session_op == "Open";
+        // State contents: read by the state records, event records (their input and output
+        // states), every graph (vertex data), step statistics, a host-computed CanonicalHash,
+        // genesis events and the branchial state views; a session may be asked for any later.
+        in.materialize_state_edges =
+            job.include_states || job.include_events || !job.graph_properties.empty() ||
+            job.include_step_statistics || job.include_canonical_hashes ||
+            job.show_genesis_events || job.include_branchial_state_edges ||
+            job.include_branchial_state_edges_all_siblings || job.session_op == "Open";
     }
     in.transitive_reduction = job.transitive_reduction;
     in.explore_from_canonical_states_only = job.explore_from_canonical_states_only;

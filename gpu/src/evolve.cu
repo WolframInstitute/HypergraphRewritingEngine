@@ -528,15 +528,17 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         std::chrono::steady_clock::now() - t_readback_start).count();
 
     auto t_readback_states_start = std::chrono::steady_clock::now();
-    auto all_edges = in.edge_identity
-        ? engine.all_state_edges_host(snap, &out.state_edge_ids, &out.global_edges)
-        : engine.all_state_edges_host(snap);
-    out.states.reserve(all_edges.size());
-    for (uint32_t s = 0; s < all_edges.size(); ++s) {
+    std::vector<std::vector<std::vector<VertexId>>> all_edges;
+    if (in.edge_identity)
+        all_edges = engine.all_state_edges_host(snap, &out.state_edge_ids, &out.global_edges);
+    else if (in.materialize_state_edges)
+        all_edges = engine.all_state_edges_host(snap);
+    out.states.reserve(total_states);
+    for (uint32_t s = 0; s < total_states; ++s) {
         CanonicalState cs;
         cs.id             = s;
         cs.canonical_hash = (s < h_hashes.size()) ? h_hashes[s] : 0;
-        cs.edges          = std::move(all_edges[s]);
+        if (s < all_edges.size()) cs.edges = std::move(all_edges[s]);
         out.states.push_back(std::move(cs));
     }
 

@@ -63,6 +63,9 @@ struct EvolveInput {
     // The reconstructed applications' input class, output class and rule, for a caller that
     // reads them as events or graphs (EvolveResult::reconstructed_event_from_class ...).
     bool materialize_events = false;
+    // Each state's edge contents in EvolveResult::states. Off, a state carries its id and hash
+    // and no edges: the readback builds one vector per edge per state, 90 ms at 290,087 states.
+    bool materialize_state_edges = true;
 
     // Quotient exploration: expand each canonical state exactly once, at its
     // shortest depth, so the run costs the canonical closure rather than the
