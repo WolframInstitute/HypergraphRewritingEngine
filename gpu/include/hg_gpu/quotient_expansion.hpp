@@ -41,7 +41,7 @@ namespace gpu {
 
 // One captured match of a canonical class, in that class's frame slots. The slot arrays live in
 // the expansion word arena at arr_offset: consumed | produced | surv_from | surv_to,
-// contiguously -- the same layout DeviceCanonicalTransition uses for its orbit arrays.
+// contiguously.
 struct DeviceSlotMatch {
     uint64_t to_hash = 0;
     uint32_t id = 0;              // dense; the replay's (instance, match) claim keys on it
