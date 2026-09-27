@@ -31,6 +31,20 @@ EdgeId Hypergraph::create_edge(
     EventId creator_event,
     uint32_t step
 ) {
+    return create_edge_at(counters_.alloc_edge(), vertices, requested_arity, creator_event, step);
+}
+
+EdgeId Hypergraph::alloc_edge_ids(uint32_t n) {
+    return counters_.next_edge.fetch_add(n, std::memory_order_relaxed);
+}
+
+EdgeId Hypergraph::create_edge_at(
+    EdgeId eid,
+    const VertexId* vertices,
+    size_t requested_arity,
+    EventId creator_event,
+    uint32_t step
+) {
     // Downstream code (pattern matcher, EdgeSignature) uses fixed-size MAX_ARITY
     // buffers on the stack. Reject over-arity edges rather than silently corrupt.
     //
@@ -41,8 +55,6 @@ EdgeId Hypergraph::create_edge(
         throw std::length_error("Hypergraph::create_edge: arity exceeds MAX_ARITY");
     }
     const uint8_t arity = static_cast<uint8_t>(requested_arity);
-
-    EdgeId eid = counters_.alloc_edge();
 
     // Small-arity edges store their vertices inline in the Edge; only higher-arity
     // edges spill to an arena array. The Edge constructor copies from `vertices` into

@@ -70,8 +70,9 @@ RewriteResult Rewriter::apply(
     std::memset(fresh_by_var, 0xFF, sizeof(fresh_by_var));
     hgcommon::assign_fresh_consecutive(new_var_mask, fresh_base, fresh_by_var);
 
-    // Create new edges from RHS pattern
+    // Create new edges from RHS pattern, under ids taken in one increment.
     result.num_produced = 0;
+    const EdgeId first_edge = rule.num_rhs_edges ? hg_->alloc_edge_ids(rule.num_rhs_edges) : 0;
     for (uint8_t i = 0; i < rule.num_rhs_edges; ++i) {
         const PatternEdge& rhs_edge = rule.rhs[i];
 
@@ -84,7 +85,8 @@ RewriteResult Rewriter::apply(
         }
 
         // Create the edge (producer will be set after event is created)
-        EdgeId eid = hg_->create_edge(vertices, rhs_edge.arity, INVALID_ID, output_step);
+        EdgeId eid = hg_->create_edge_at(first_edge + i, vertices, rhs_edge.arity, INVALID_ID,
+                                         output_step);
         result.produced_edges[result.num_produced++] = eid;
         new_edges.set(eid, hg_->arena());
     }

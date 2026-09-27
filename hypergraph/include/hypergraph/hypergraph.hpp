@@ -668,6 +668,14 @@ public:
         uint32_t step = 0
     );
 
+    // `n` consecutive edge ids in one increment of the shared counter, for a caller that creates
+    // several edges at once (a rewrite's right-hand side), and create_edge at an id so taken.
+    // Edge ids increase along every state's ancestry either way, which Automatic dedup and the
+    // canonical ranks' tie-break read.
+    EdgeId alloc_edge_ids(uint32_t n);
+    EdgeId create_edge_at(EdgeId eid, const VertexId* vertices, size_t requested_arity,
+                          EventId creator_event, uint32_t step);
+
     // Create edge from initializer list (convenience)
     EdgeId create_edge(std::initializer_list<VertexId> vertices,
                        EventId creator_event = INVALID_ID,
