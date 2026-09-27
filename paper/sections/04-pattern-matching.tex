@@ -106,18 +106,14 @@ again:
 Let $\match$ be a match in state $s$, and let $s'$ be derived from $s$ by applying rule $r$ at match $\match'$. Then $\match$ remains valid in $s'$ iff $\text{edges}(\match) \cap \text{edges}(\match') = \emptyset$.
 \end{proposition}
 
-Matches reach a child in two ways. A match found in a state is \emph{pushed} to the children the
-state already has, and a newly created state \emph{pulls} by walking its ancestor chain and
-collecting every ancestor match its own rewrite did not invalidate. Without the push, every state
-repeats its ancestors' matching when it is created; without the pull, a match found before a child
-existed never reaches it.
-
-A child publishes its parent link before it appears in its parent's child list. The pull treats a
-missing parent link as a root and stops. Once a child is visible it can receive a forwarded match,
-that match can create a grandchild on another worker, and the grandchild's pull walks up through
-the child. If the link were published after the child became visible, that walk could stop early
-and miss every match held only by higher ancestors, and nothing would repair it later, because
-pulled matches are not stored again in the descendant and each push happens once.
+A child receives its parent's matches once, after the parent's matching has finished. Each state
+counts its outstanding match tasks and \emph{drains} when the count reaches zero. At its drain a
+parent hands every registered child the stored matches that use none of the edges the child's
+rewrite consumed, and a child registered after the drain takes them at registration. The two sides
+meet through a sequentially consistent fence on each side, and a claim on the child makes the
+second delivery a no-op. The child counts its inheritance as one of its own tasks, so it drains
+only once its inherited matches are stored, and its own children then inherit a complete list from
+it. No state reads a list above its parent's.
 
 Forwarded matches are collected per parent and delivered to the child together. The static
 analysis of Section~\ref{sec:rule-analysis} turns forwarding on for rule sets whose left-hand side

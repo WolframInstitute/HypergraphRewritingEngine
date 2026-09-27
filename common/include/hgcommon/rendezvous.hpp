@@ -68,8 +68,8 @@ namespace rv {
 struct EdgeProducerConsumer {};   // causal_graph: producer publishes / consumer publishes
 struct QuotientInstanceMatch {};  // hypergraph: qc_add_instance / qc_capture_expansion
 struct QuotientMassMatch {};      // hypergraph: qm_credit / qc_capture_expansion
-struct MatchStoreScan {};         // parallel_evolution: store_match_for_state / the scan
 struct CanonChildDepth {};        // parallel_evolution: child registration / propagate_explore_depth
+struct ChildInheritance {};       // parallel_evolution: child registration / the parent's drain
 struct DepthSettleCascade {};     // depth_join: settle d / finish at d+1
 struct DepthReportBaton {};       // depth_join: drop the baton; partner is the post-CAS
                                   //   DepthSettleCascade barrier, which the settler already holds

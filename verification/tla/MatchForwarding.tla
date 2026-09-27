@@ -1,76 +1,71 @@
 ---------------------------- MODULE MatchForwarding ----------------------------
-(* Algorithm-level model of the engine's match-forwarding protocol (#80 target 1):
-   push_match_to_children + the registration-time ancestor pull + the claim_match
-   dedup, under BATCHED submission (the default: a state's own matching completes
-   before any of its rewrites can create children).
+(* Algorithm-level model of the engine's match inheritance, from
+   hypergraph/src/parallel_evolution.cpp: register_child_with_parent,
+   inherit_from_parent, the drain in note_match_task_done, and the claim_match dedup.
 
-   THE PROPERTY. Forwarding completeness: at quiescence, every state holds every
-   match that is VALID for it -- discovered at some ancestor (or at the state
-   itself) and overlapping none of the edges consumed on the path down. A lost
-   match deletes its whole subtree while the run stays self-consistent, which is
-   why this property is checked by a model rather than by output inspection
-   (#74 and #76 were both silent instances).
+   THE PROTOCOL. A state finds its own matches (Discover). It drains once every own match is
+   found and, unless it is the root, once it has inherited. At the drain it publishes `drained`
+   and then scans its children; a child is published in its parent's children list and then
+   reads `drained`. Whichever of the two sees the other hands the child the parent's stored
+   matches that overlap none of the edges the child's transition consumed, once (the child's
+   `inherited` claim). Children are created from any stored match of the parent, at any time,
+   so a parent is usually still matching when its first children exist.
 
-   THE CONCURRENCY MODEL. Every in-flight protocol step lives in a `pending` bag;
-   any enabled element may fire next. Interleavings of the bag subsume every
-   worker count, so the model is arbitrary-N by construction -- the bound TLC
-   pays is state count, not thread count. Actions are atomic at the granularity
-   of one scan (a push scans the children present AT FIRE TIME; a pull scans the
-   matches present at fire time): the real scans tolerate concurrent appends
-   inside the list walk (LockFreeList for_each), and what the coarse scan keeps
-   is exactly the documented miss window -- an element registered after the scan
-   is NOT seen by it and must be covered by the other mechanism. Memory is
-   sequentially consistent here; RC11-level questions live in verification/genmc.
+   THE PROPERTY. At quiescence every state holds every match VALID for it: discoverable at the
+   state itself, or discoverable at an ancestor and disjoint from every edge consumed on the
+   path down. And at every drain the draining state already holds its whole valid set, which is
+   what validate_state_at_drain checks in the engine.
 
-   THE OWNERSHIP SWITCH. OwnershipFix = TRUE models the shipped invariant
-   (CLAIM-WINNER OWNS THE MATCH AT THIS NODE: a pull that wins a claim stores the
-   match AND propagates to already-registered grandchildren). FALSE models the
-   pre-4df8c6d protocol, where the pull claimed without propagating; the racing
-   push sees the hash taken and skips, so a grandchild whose pull already
-   completed is covered by nobody. The broken variant MUST fail the invariant --
-   it is the calibration that the model can reach the loss class it exists for. *)
+   THE CONCURRENCY MODEL. Every in-flight step lives in a `pending` set; any enabled element
+   may fire next, so interleavings subsume every worker count. The two halves of the
+   rendezvous are separate steps: publishing the child and reading `drained` on one side,
+   setting `drained` and scanning the list on the other. Memory is sequentially consistent
+   here, which is what the seq_cst fences of rv::ChildInheritance provide; RC11-level
+   questions live in verification/genmc.
+
+   THE CALIBRATION. RendezvousFix = FALSE reads `drained` BEFORE publishing the child. A drain
+   that falls between the two steps sees no child and is not seen, the child never inherits,
+   and the invariant must fail. *)
 
 EXTENDS Naturals, FiniteSets, TLC
 
 CONSTANTS
-  StateIds,      \* the bounded universe of state identities
-  Root,          \* the initial state, exists from the start
-  Matches,       \* abstract match identities
-  MatchEdges,    \* [Matches -> SUBSET Edges]: the edges a match binds
-  OrigMatches,   \* [StateIds -> SUBSET Matches]: where a match is discoverable
+  StateIds,       \* the bounded universe of state identities
+  Root,           \* the initial state, exists from the start
+  Matches,        \* abstract match identities
+  MatchEdges,     \* [Matches -> SUBSET Edges]: the edges a match binds
+  OrigMatches,    \* [StateIds -> SUBSET Matches]: matches a state finds by its own matching
   Edges,
-  OwnershipFix,  \* BOOLEAN: pull claim-winner propagates (shipped) or not (broken)
-  BatchedGate    \* BOOLEAN: children only after the parent's matching completes
-                 \* (batched submission, the default) vs any time (eager)
+  RendezvousFix   \* BOOLEAN: publish then read (shipped) or read then publish (broken)
 
 ASSUME Root \in StateIds
 ASSUME MatchEdges \in [Matches -> SUBSET Edges]
 ASSUME OrigMatches \in [StateIds -> SUBSET Matches]
 
-(* State identities are strings in the model configs; "none" is reserved. *)
 None == "none"
 ASSUME None \notin StateIds
 
 VARIABLES
-  exists,        \* SUBSET StateIds: created states
-  parentOf,      \* [StateIds -> [par : StateIds \cup {None}, consumed : SUBSET Edges]]
-  childrenOf,    \* [StateIds -> SUBSET [c : StateIds, consumed : SUBSET Edges]]
-  stored,        \* [StateIds -> SUBSET Matches]: state_matches_
-  claimed,       \* SUBSET (Matches \X StateIds): claim_match's exactly-once set
-  discovered,    \* [StateIds -> SUBSET Matches]: original discoveries already fired
-  matchingDone,  \* SUBSET StateIds: batched phase gate
-  pending        \* SUBSET of ops (idempotent, so a set is enough)
+  exists,       \* SUBSET StateIds: created states
+  parentOf,     \* [StateIds -> [par : StateIds \cup {None}, consumed : SUBSET Edges]]
+  childrenOf,   \* [StateIds -> SUBSET [c : StateIds, consumed : SUBSET Edges]]: published
+  stored,       \* [StateIds -> SUBSET Matches]: state_matches_
+  claimed,      \* SUBSET (Matches \X StateIds): claim_match's exactly-once set
+  discovered,   \* [StateIds -> SUBSET Matches]: own discoveries already made
+  drained,      \* SUBSET StateIds: MatchJoin::drained
+  inherited,    \* SUBSET StateIds: MatchJoin::inherited
+  pending       \* SUBSET of ops
 
-vars == <<exists, parentOf, childrenOf, stored, claimed, discovered,
-          matchingDone, pending>>
+vars == <<exists, parentOf, childrenOf, stored, claimed, discovered, drained, inherited,
+          pending>>
 
-PushOp(s, m) == [type |-> "push", s |-> s, m |-> m]
-PullOp(c)    == [type |-> "pull", c |-> c]
+InheritOp(p, ch)   == [type |-> "inherit", p |-> p, ch |-> ch]
+DrainScanOp(s)     == [type |-> "scan", s |-> s]
+RegCheckOp(p, ch)  == [type |-> "regcheck", p |-> p, ch |-> ch]
+RegPublishOp(p, ch, saw) == [type |-> "regpublish", p |-> p, ch |-> ch, saw |-> saw]
 
 Overlaps(m, es) == MatchEdges[m] \cap es /= {}
 
-(* Ancestor chain of s (s excluded), with the consumed edges accumulated from s
-   upward -- the pull's accumulated_consumed. Recursion bounded by |StateIds|. *)
 RECURSIVE ChainRec(_, _, _)
 ChainRec(s, acc, depth) ==
   IF depth = 0 \/ parentOf[s].par = None
@@ -81,6 +76,10 @@ ChainRec(s, acc, depth) ==
 
 AncestorsWithConsumed(s) == ChainRec(s, {}, Cardinality(StateIds))
 
+Drainable(s) ==
+  /\ discovered[s] = OrigMatches[s]
+  /\ (s = Root \/ s \in inherited)
+
 Init ==
   /\ exists = {Root}
   /\ parentOf = [s \in StateIds |-> [par |-> None, consumed |-> {}]]
@@ -88,111 +87,106 @@ Init ==
   /\ stored = [s \in StateIds |-> {}]
   /\ claimed = {}
   /\ discovered = [s \in StateIds |-> {}]
-  /\ matchingDone = {}
+  /\ drained = {}
+  /\ inherited = {}
   /\ pending = {}
 
-(* SINK completes a match at s: claim, store, and push toward children
-   (PushSite::Discovery). Under batched submission s has no children yet, but the
-   push is modeled unconditionally, as in the code. *)
+(* complete_match: claim and store one of the state's own matches. *)
 Discover(s, m) ==
   /\ s \in exists
   /\ m \in OrigMatches[s] \ discovered[s]
   /\ discovered' = [discovered EXCEPT ![s] = @ \cup {m}]
   /\ claimed' = claimed \cup {<<m, s>>}
   /\ stored' = [stored EXCEPT ![s] = @ \cup {m}]
-  /\ pending' = pending \cup {PushOp(s, m)}
-  /\ UNCHANGED <<exists, parentOf, childrenOf, matchingDone>>
+  /\ UNCHANGED <<exists, parentOf, childrenOf, drained, inherited, pending>>
 
-(* Batched gate: a state's own matching completes only after every discoverable
-   match at it has fired. Children of s cannot be created before this. *)
-FinishMatching(s) ==
-  /\ s \in exists
-  /\ s \notin matchingDone
-  /\ discovered[s] = OrigMatches[s]
-  /\ matchingDone' = matchingDone \cup {s}
-  /\ UNCHANGED <<exists, parentOf, childrenOf, stored, claimed, discovered, pending>>
-
-(* A rewrite of a stored match creates a child: parent link FIRST, then the
-   children-list registration, then the registration-time pull
-   (register_child_with_parent + forward_existing_parent_matches). *)
+(* A rewrite of a stored match creates a child. Shipped order: publish in the parent's list,
+   then read `drained` (RegCheckOp). Broken order: read `drained` first (RegPublishOp carries
+   what was read), publish after. *)
 CreateChild(p, m, c) ==
-  /\ p \in exists /\ (BatchedGate => p \in matchingDone)
+  /\ p \in exists
   /\ m \in stored[p]
   /\ c \in StateIds \ exists
-  /\ exists' = exists \cup {c}
-  /\ parentOf' = [parentOf EXCEPT ![c] = [par |-> p, consumed |-> MatchEdges[m]]]
-  /\ childrenOf' = [childrenOf EXCEPT ![p] =
-       @ \cup {[c |-> c, consumed |-> MatchEdges[m]]}]
-  /\ pending' = pending \cup {PullOp(c)}
-  /\ UNCHANGED <<stored, claimed, discovered, matchingDone>>
+  /\ LET ch == [c |-> c, consumed |-> MatchEdges[m]]
+     IN /\ exists' = exists \cup {c}
+        /\ parentOf' = [parentOf EXCEPT ![c] = [par |-> p, consumed |-> MatchEdges[m]]]
+        /\ IF RendezvousFix
+           THEN /\ childrenOf' = [childrenOf EXCEPT ![p] = @ \cup {ch}]
+                /\ pending' = pending \cup {RegCheckOp(p, ch)}
+           ELSE /\ childrenOf' = childrenOf
+                /\ pending' = pending \cup {RegPublishOp(p, ch, p \in drained)}
+  /\ UNCHANGED <<stored, claimed, discovered, drained, inherited>>
 
-(* Fire a pending push: scan the children of s present NOW; for each non-overlapping
-   child, the claim decides one owner; the winner stores at the child and recurses.
-   A child registered after this fires is missed here and covered by its own pull. *)
-FirePush(op) ==
-  /\ op \in pending /\ op.type = "push"
-  /\ LET s == op.s
-         m == op.m
-         won == {ch \in childrenOf[s] :
-                   ~Overlaps(m, ch.consumed) /\ <<m, ch.c>> \notin claimed}
-     IN /\ claimed' = claimed \cup {<<m, ch.c>> : ch \in won}
-        /\ stored' = [t \in StateIds |->
-             IF \E ch \in won : ch.c = t THEN stored[t] \cup {m} ELSE stored[t]]
-        /\ pending' = (pending \ {op}) \cup {PushOp(ch.c, m) : ch \in won}
-  /\ UNCHANGED <<exists, parentOf, childrenOf, discovered, matchingDone>>
+FireRegCheck(op) ==
+  /\ op \in pending /\ op.type = "regcheck"
+  /\ pending' = (pending \ {op}) \cup
+       (IF op.p \in drained THEN {InheritOp(op.p, op.ch)} ELSE {})
+  /\ UNCHANGED <<exists, parentOf, childrenOf, stored, claimed, discovered, drained, inherited>>
 
-(* Fire a pending pull: walk c's ancestors with the accumulated consumed set; for
-   each valid ancestor match not yet claimed for c, the pull wins the claim, stores
-   -- and, under the shipped invariant, propagates to c's own children exactly as a
-   push would (CLAIM-WINNER OWNS THE MATCH AT THIS NODE). The broken variant stores
-   without propagating: the racing push sees the hash taken and skips, leaving
-   grandchildren whose pulls already ran covered by nobody. *)
-FirePull(op) ==
-  /\ op \in pending /\ op.type = "pull"
-  /\ LET c == op.c
-         candidates == UNION {{[m |-> m2, acc |-> aw.acc] : m2 \in stored[aw.a]} :
-                              aw \in AncestorsWithConsumed(c)}
-         wins == {av \in candidates :
-                    /\ ~Overlaps(av.m, av.acc)
-                    /\ <<av.m, c>> \notin claimed}
-         wonMatches == {av.m : av \in wins}
-     IN /\ claimed' = claimed \cup {<<m2, c>> : m2 \in wonMatches}
-        /\ stored' = [stored EXCEPT ![c] = @ \cup wonMatches]
-        /\ pending' = (pending \ {op}) \cup
-             (IF OwnershipFix THEN {PushOp(c, m2) : m2 \in wonMatches} ELSE {})
-  /\ UNCHANGED <<exists, parentOf, childrenOf, discovered, matchingDone>>
+FireRegPublish(op) ==
+  /\ op \in pending /\ op.type = "regpublish"
+  /\ childrenOf' = [childrenOf EXCEPT ![op.p] = @ \cup {op.ch}]
+  /\ pending' = (pending \ {op}) \cup
+       (IF op.saw THEN {InheritOp(op.p, op.ch)} ELSE {})
+  /\ UNCHANGED <<exists, parentOf, stored, claimed, discovered, drained, inherited>>
+
+(* The drain: publish `drained`, then scan the children list as a separate step. *)
+Drain(s) ==
+  /\ s \in exists
+  /\ s \notin drained
+  /\ Drainable(s)
+  /\ drained' = drained \cup {s}
+  /\ pending' = pending \cup {DrainScanOp(s)}
+  /\ UNCHANGED <<exists, parentOf, childrenOf, stored, claimed, discovered, inherited>>
+
+FireDrainScan(op) ==
+  /\ op \in pending /\ op.type = "scan"
+  /\ pending' = (pending \ {op}) \cup {InheritOp(op.s, ch) : ch \in childrenOf[op.s]}
+  /\ UNCHANGED <<exists, parentOf, childrenOf, stored, claimed, discovered, drained, inherited>>
+
+(* inherit_from_parent: the child's claim makes the second arrival a no-op. *)
+FireInherit(op) ==
+  /\ op \in pending /\ op.type = "inherit"
+  /\ LET c == op.ch.c
+         gets == {m \in stored[op.p] : ~Overlaps(m, op.ch.consumed) /\ <<m, c>> \notin claimed}
+     IN IF c \in inherited
+        THEN /\ pending' = pending \ {op}
+             /\ UNCHANGED <<stored, claimed, inherited>>
+        ELSE /\ inherited' = inherited \cup {c}
+             /\ claimed' = claimed \cup {<<m, c>> : m \in gets}
+             /\ stored' = [stored EXCEPT ![c] = @ \cup gets]
+             /\ pending' = pending \ {op}
+  /\ UNCHANGED <<exists, parentOf, childrenOf, discovered, drained>>
 
 Next ==
   \/ \E s \in StateIds, m \in Matches : Discover(s, m)
-  \/ \E s \in StateIds : FinishMatching(s)
   \/ \E p \in StateIds, m \in Matches, c \in StateIds : CreateChild(p, m, c)
-  \/ \E op \in pending : FirePush(op) \/ FirePull(op)
+  \/ \E s \in StateIds : Drain(s)
+  \/ \E op \in pending :
+       FireRegCheck(op) \/ FireRegPublish(op) \/ FireDrainScan(op) \/ FireInherit(op)
 
 Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
 
 --------------------------------------------------------------------------------
-(* A match is VALID for s when it is discoverable at s itself, or discoverable at
-   an ancestor and disjoint from every edge consumed on the path down. Validity
-   is judged against OrigMatches (the ground truth), not against what any list
-   holds -- that is what makes the property external to the mechanism. *)
 ValidFor(s) ==
   OrigMatches[s] \cup
   {m \in Matches :
      \E aw \in AncestorsWithConsumed(s) :
         m \in OrigMatches[aw.a] /\ ~Overlaps(m, aw.acc)}
 
-(* Quiescence: nothing in flight, every discovery fired, every state's matching
-   closed. The engine's wait_for_completion() returns exactly here. *)
+(* Nothing in flight, every own match found, every state that can drain has drained. A child
+   whose handoff was lost cannot drain, so it counts here as settled with what it holds. *)
 Quiescent ==
   /\ pending = {}
-  /\ \A s \in exists : discovered[s] = OrigMatches[s] /\ s \in matchingDone
+  /\ \A s \in exists : discovered[s] = OrigMatches[s] /\ (Drainable(s) => s \in drained)
 
-(* THE INVARIANT: at quiescence every existing state holds its whole valid set. *)
 ForwardingComplete ==
   Quiescent => \A s \in exists : ValidFor(s) \subseteq stored[s]
 
-(* Sanity bound: claims are unique by construction (claimed is a set of pairs),
-   and a stored match is always claimed for that state. *)
+(* validate_state_at_drain: a state drains holding its whole valid set. *)
+CompleteAtDrain ==
+  \A s \in drained : ValidFor(s) \subseteq stored[s]
+
 StoredAreClaimed ==
   \A s \in StateIds : \A m \in stored[s] : <<m, s>> \in claimed
 

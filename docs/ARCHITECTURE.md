@@ -186,17 +186,13 @@ cites them:
 The samplers thin the multiway graph while keeping the observables of the unpruned evolution
 well-defined; `docs/SPEC.md` §5 states which options are samplers and which are caps.
 
-- **A rate, not a count.** With match forwarding on, a state's match population is not local: a
-  parent keeps forwarding matches to a child long after the child's own discovery tree drained,
-  so the population closes only when the whole ancestor chain has — most of the run. A per-state
-  COUNT therefore cannot be sampled uniformly without a barrier (measured: a count knob bounded
-  only new discoveries — 2,038,505 states where the closed population is 1,365). A RATE decides
-  per match, independently, with no population and no completeness requirement, so it applies
-  identically to a discovered and a forwarded match and needs no join. `TransitionRate` is that
-  sampler; thinning a branching process by a rate yields a branching process with the thinned
-  offspring distribution, so branching shape survives. A run under `TransitionRate`,
-  `RuleWeights` or `MatchesPerStateRule` turns forwarding off, so each state's own matching finds
-  all of its matches and the drain chooses from the whole set.
+- **A rate, not a count.** A per-state COUNT needs the state's whole match population, which is
+  complete only at the state's drain, and `MatchesPerStateRule` chooses there. A RATE decides per
+  match, independently, with no population and no join. `TransitionRate` is that sampler;
+  thinning a branching process by a rate yields a branching process with the thinned offspring
+  distribution, so branching shape survives. A run under `TransitionRate`, `RuleWeights` or
+  `MatchesPerStateRule` turns forwarding off, so each state's own matching finds all of its
+  matches.
 - **Keyed draws.** Every draw is a function of the transition's isomorphism-invariant identity
   and the seed — never a worker's RNG — so the sampled subgraph is the same at every worker
   count and on either device, and reproducible for a fixed seed.

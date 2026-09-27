@@ -60,9 +60,8 @@ struct Fingerprint {
     long late_submits = 0;
     long dropped_children = 0;
     long invalid_matches = 0;
-    long fwd_truncated = 0;
     long double_executions = 0, abandoned_jobs = 0, abandoned_already_run = 0;
-    long chain_parent_misses = 0, chain_list_misses = 0, expand_retry_found = 0;
+    long expand_retry_found = 0;
     std::string silent_witness;
     std::string dump_path;   // HG_DET_DUMP: this run's state/event/causal listing, or empty
     // THE TWO WAYS ONE EXTRA CAUSAL EDGE CAN EXIST, separated. The reduction either kept a pair
@@ -264,11 +263,11 @@ Fingerprint run(const std::vector<hg::engine::RewriteRule>& rules,
     Fingerprint fp = fingerprint(g);
 #if HG_ENGINE_STATS
     if (std::getenv("HG_DET_VALIDATE") && e.still_missing() > 0)
-        std::fprintf(stderr, "HG_DET_VALIDATE: %zu match(es) still missing at the end (%zu recorded at drain, %zu arrived late); %s\n",
-                     e.still_missing(), e.validation_mismatches(), e.late_arrivals(), e.validation_witness().c_str());
-    if (std::getenv("HG_DET_VALIDATE") && (e.chain_parent_misses() || e.chain_list_misses() || e.expand_retry_found()))
-        std::fprintf(stderr, "HG_DET_SILENT: parent-misses=%zu list-misses=%zu expand-retry-found=%zu %s\n",
-                     e.chain_parent_misses(), e.chain_list_misses(), e.expand_retry_found(), e.silent_witness().c_str());
+        std::fprintf(stderr, "HG_DET_VALIDATE: %zu match(es) still missing at the end (%zu recorded at drain); %s\n",
+                     e.still_missing(), e.validation_mismatches(), e.validation_witness().c_str());
+    if (std::getenv("HG_DET_VALIDATE") && e.expand_retry_found())
+        std::fprintf(stderr, "HG_DET_SILENT: expand-retry-found=%zu %s\n",
+                     e.expand_retry_found(), e.silent_witness().c_str());
 #endif
     // READ BEFORE THE ENGINE GOES OUT OF SCOPE. This is the precondition the quiescence
     // predicate rests on, not a property of the hypergraph, so it comes from the engine.
@@ -278,13 +277,10 @@ Fingerprint run(const std::vector<hg::engine::RewriteRule>& rules,
     fp.producer_side = static_cast<long>(g.causal_graph().producer_side_emissions());
     fp.causal_pairs = static_cast<long>(g.causal_graph().num_causal_event_pairs());
     fp.invalid_matches  = static_cast<long>(g.invalid_matches());
-    fp.fwd_truncated    = static_cast<long>(e.forwarding_consumed_truncated());
     fp.double_executions = static_cast<long>(e.double_executions());
     fp.abandoned_jobs = static_cast<long>(e.abandoned_at_quiescence());
     fp.abandoned_already_run = static_cast<long>(e.abandoned_already_run());
 #if HG_ENGINE_STATS
-    fp.chain_parent_misses = static_cast<long>(e.chain_parent_misses());
-    fp.chain_list_misses = static_cast<long>(e.chain_list_misses());
     fp.expand_retry_found = static_cast<long>(e.expand_retry_found());
     fp.silent_witness = e.silent_witness();
 #endif
@@ -597,14 +593,6 @@ Spread spread(const Workload& w, bool quotient) {
                     << "a warning, so what it returned is a PARTIAL result and any shortfall "
                     << "against another configuration is that, not non-determinism -- "
                     << f.warnings;
-                // THE OVERLAP FILTER RAN AGAINST A PARTIAL SET. A match is forwarded down a
-                // chain only if it overlaps none of the edges consumed on the way; a chain longer
-                // than the accumulator drops some, so a match can pass a filter it should have
-                // failed and is then refused at apply.
-                EXPECT_EQ(f.fwd_truncated, 0)
-                    << w.name << " at threads=" << th << " rep=" << rep << ": "
-                    << f.fwd_truncated << " ancestor chain(s) exceeded the consumed-edge "
-                       "accumulator, so the forwarding overlap filter was incomplete.";
                 // AN EVENT THAT NEVER HAPPENED, and the only symptom is a shorter run. A match
                 // naming an edge its input state does not hold is refused by Rewriter::apply and
                 // returns an empty result, which the caller reads as "produced nothing". Every
@@ -623,10 +611,8 @@ Spread spread(const Workload& w, bool quotient) {
                     << f.dropped_children << " freshly-created state(s) were reported as already "
                        "matched, so their subtrees were never explored.";
 #if HG_ENGINE_STATS
-                EXPECT_EQ(f.chain_parent_misses + f.chain_list_misses + f.expand_retry_found, 0)
-                    << w.name << " at threads=" << th << " rep=" << rep << ": silent endings -- "
-                    << f.chain_parent_misses << " chain walk(s) found no parent link on a non-root "
-                       "ancestor, " << f.chain_list_misses << " expanded ancestor(s) had no match list, "
+                EXPECT_EQ(f.expand_retry_found, 0)
+                    << w.name << " at threads=" << th << " rep=" << rep << ": "
                     << f.expand_retry_found << " expand walk(s) found candidates only on retry. "
                     << f.silent_witness;
 #endif

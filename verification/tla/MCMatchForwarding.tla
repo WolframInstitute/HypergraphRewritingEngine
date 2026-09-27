@@ -1,17 +1,15 @@
 --------------------------- MODULE MCMatchForwarding ---------------------------
 (* TLC harness for MatchForwarding: the concrete bounded universe. Function-valued
    constants cannot live in a .cfg, so they are bound here by instantiation.
-   OwnershipFix comes from the .cfg: TRUE = shipped protocol (expect PASS),
-   FALSE = pre-4df8c6d pull (expect a ForwardingComplete violation). *)
+   RendezvousFix comes from the .cfg: TRUE = shipped order (expect PASS), FALSE = the child
+   reads `drained` before it is published (expect a violation). *)
 EXTENDS Naturals, FiniteSets, TLC
 
-CONSTANTS OwnershipFix, BatchedGate
+CONSTANTS RendezvousFix
 
-(* mA and mB originate at the root; mC originates at s1 -- the mid-chain match a
-   grandchild is built FROM, so a chain s0 -> s1 -> g can exist while mB is still
-   undiscovered. That is the D1 shape: g's pull runs before mB exists anywhere,
-   then the pull at s1 claims mB against the root's push; if that claim-winner
-   does not propagate, nothing ever reaches g. *)
+(* mA and mB are found at the root; mC at s1. mA and mB bind different edges, so a child built
+   from one inherits the other, and a grandchild built from mC inherits whichever of mA and mB
+   its path did not consume. *)
 MCStateIds    == {"s0", "s1", "s2", "s3"}
 MCRoot        == "s0"
 MCMatches     == {"mA", "mB", "mC"}
@@ -21,8 +19,8 @@ MCMatchEdges  == [m \in MCMatches |->
 MCOrigMatches == [s \in MCStateIds |->
                    CASE s = "s0" -> {"mA", "mB"} [] s = "s1" -> {"mC"} [] OTHER -> {}]
 
-VARIABLES exists, parentOf, childrenOf, stored, claimed, discovered,
-          matchingDone, pending
+VARIABLES exists, parentOf, childrenOf, stored, claimed, discovered, drained, inherited,
+          pending
 
 INSTANCE MatchForwarding WITH
   StateIds    <- MCStateIds,

@@ -130,26 +130,6 @@ static_assert(sizeof(MatchRecord) == sizeof(const MatchCore*) + sizeof(StateId) 
     X(states_created) X(events_created) X(matches_found) X(matches_forwarded)                 \
     X(matches_invalidated) X(new_matches_discovered) X(full_pattern_matches)                  \
     X(delta_pattern_matches)                                                                  \
-    /* Extra ancestor re-walks / child re-scans the forwarding rendezvous performs when its    \
-       epoch changes during a push or pull (a measure of cross-worker churn). */              \
-    X(forwarding_rewalks)                                                                     \
-    /* Whether push_match_to_children finds anything to push to, split by WHEN it is called.   \
-       The two sites answer different questions and the split is the measurement.              \
-                                                                                              \
-       DISCOVERY -- from SINK, as a match is first completed. Under batched submission a       \
-       state's matching finishes before any of its rewrites are submitted, so no child of that \
-       state should exist yet and every one of these calls should find an empty registry. If   \
-       that holds, the call is a no-op under batched and the work the child would have         \
-       received arrives instead through its pull at creation, when the parent's match set is   \
-       already complete.                                                                       \
-                                                                                              \
-       FORWARDING -- a match arriving from an ancestor, propagated onward. These CAN find      \
-       children, because the state was matched earlier and its children already exist.         \
-                                                                                              \
-       An empty-registry fraction below 1.0 at the discovery site falsifies the reasoning      \
-       above about when children become visible, and the cause is then elsewhere. */           \
-    X(push_discovery_calls) X(push_discovery_empty)                                           \
-    X(push_forwarding_calls) X(push_forwarding_empty)                                         \
     /* Transitions kept by the spine rather than by a passing draw (drain minimum-key spawns   \
        plus late spines). draws_survived_ does not include these, so                            \
        kept = survived + spine_forced. */                                                     \
@@ -316,20 +296,16 @@ static_assert(sizeof(ExpandTaskData) == sizeof(StateId) + sizeof(uint32_t) + siz
               "ExpandTaskData has padding; its job copy would read indeterminate bytes");
 
 // =============================================================================
-// ChildInfo for Match Forwarding (Push Model)
+// ChildInfo for Match Forwarding
 // =============================================================================
-// Tracks child states and their consumed edges so parent can push matches.
+// A child state and the edges its transition consumed: the parent hands it every stored match
+// that uses none of them, once the parent's matching has drained (inherit_from_parent).
 
 // Does a match touch an edge some transition consumed?
 //
-// ONE BODY, asked in three places: ChildInfo and ParentInfo ask it of their own consumed array,
-// and the forwarding walk asks it of the set accumulated along an ancestor chain. The push
-// filter and the forwarding filter have to agree on what "overlaps" means -- a match that
-// passes one and fails the other is either an event that never happens or a match refused at
-// apply -- and they can only be relied on to agree while they are the same function.
-//
-// A linear scan over bounded arrays with no allocation: a match holds at most MAX_PATTERN_EDGES
-// edges and the accumulated set at most MAX_PATTERN_EDGES * 8.
+// ONE BODY: ChildInfo asks it of the edges its transition consumed, when the child inherits its
+// parent's matches. A linear scan over bounded arrays with no allocation: a match and a
+// transition's consumed set each hold at most MAX_PATTERN_EDGES edges.
 inline bool edges_intersect(const EdgeId* a, size_t na, const EdgeId* b, size_t nb) {
     for (size_t i = 0; i < na; ++i) {
         for (size_t j = 0; j < nb; ++j) {
@@ -348,22 +324,6 @@ struct ChildInfo {
 };
 static_assert(sizeof(ChildInfo) == sizeof(StateId) + sizeof(uint32_t) + sizeof(EdgeId) * MAX_PATTERN_EDGES + sizeof(uint32_t),
               "ChildInfo has padding");
-
-// =============================================================================
-// ParentInfo for Match Forwarding (Pull Model from Ancestors)
-// =============================================================================
-// Tracks each state's parent and consumed edges so we can forward from ancestors.
-
-struct ParentInfo {
-    StateId parent_state{INVALID_ID};
-    EdgeId consumed_edges[MAX_PATTERN_EDGES]{};
-    uint32_t num_consumed{0};
-    ParentInfo();
-    bool has_parent() const;
-    bool match_overlaps_consumed(const EdgeId* matched_edges, uint8_t num_edges) const;
-};
-static_assert(sizeof(ParentInfo) == sizeof(StateId) + sizeof(EdgeId) * MAX_PATTERN_EDGES + sizeof(uint32_t),
-              "ParentInfo has padding");
 
 // =============================================================================
 // ParallelEvolutionEngine
@@ -558,8 +518,6 @@ private:
     ConcurrentKeySet<uint64_t, STATE_MAP_EMPTY, STATE_MAP_LOCKED> matched_raw_states_;
     // See execute_rewrite_task: a fresh raw id reported as already present, which drops a subtree.
     std::atomic<size_t> dropped_fresh_child_{0};
-    // See forward_from_ancestor_chain: the overlap filter ran against a partial consumed set.
-    std::atomic<size_t> forwarding_consumed_truncated_{0};
 
     // Per-state match storage for match forwarding
     // Maps state -> list of matches found in that state
@@ -569,18 +527,12 @@ private:
     static constexpr uint64_t MATCH_STATE_MAP_LOCKED = (1ULL << 62) + 101;
     ConcurrentMap<uint64_t, LockFreeList<MatchRecord>*, MATCH_STATE_MAP_EMPTY, MATCH_STATE_MAP_LOCKED> state_matches_;
 
-    // Per-state children tracking for push-based match forwarding
-    // Maps parent state -> list of children (with their consumed edges)
-    // When parent finds a match, it pushes to all children where match is valid
+    // Per-state children, with the edges each child's transition consumed. Read once, at the
+    // parent's drain, to hand each child the parent's surviving matches.
     static constexpr uint64_t CHILDREN_MAP_EMPTY = (1ULL << 62) + 200;
     static constexpr uint64_t CHILDREN_MAP_LOCKED = (1ULL << 62) + 201;
     ConcurrentMap<uint64_t, LockFreeList<ChildInfo>*, CHILDREN_MAP_EMPTY, CHILDREN_MAP_LOCKED> state_children_;
 
-    // Per-state parent tracking for pull-based match forwarding from ancestors
-    // Maps child state -> parent info pointer (with consumed edges for validation)
-    static constexpr uint64_t PARENT_MAP_EMPTY = (1ULL << 62) + 300;
-    static constexpr uint64_t PARENT_MAP_LOCKED = (1ULL << 62) + 301;
-    ConcurrentMap<uint64_t, ParentInfo*, PARENT_MAP_EMPTY, PARENT_MAP_LOCKED> state_parent_;
 
 
     // Match forwarding enabled flag
@@ -591,40 +543,18 @@ private:
     bool match_forwarding_explicit_{false};
     bool match_forwarding_requested_{true};
 
-    // Batched matching: the parent finishes matching, THEN its children are created. Eager
-    // creates each child as its match is found, so the parent is still matching when the child
-    // exists and a match found afterwards has to reach it by push.
-    //
-    // Default TRUE, and the reason is the SHAPE of the two, not a defect rate. Both are measured
-    // complete: MatchCompleteness.ForwardedPlusDeltaFindsEveryMatch runs the oracle corpus x
-    // workers {1,4,8} x reps under EAGER with validate_match_forwarding on and reports 0 LOST
-    // (matches counted absent by the validator and still absent when the run ended, tested with
-    // contains_match), against a positive control -- disabling push_match_to_children makes the
-    // same gate report 10 lost in 7 runs. Batched reports 0 of 51 with no residual at all.
-    //
-    // Batched CLOSES the window; eager COVERS it with the push rendezvous. Forwarding is
-    // INDUCTIVE, so a match lost at depth d removes the whole subtree below it while the run
-    // stays self-consistent and simply produces less -- nothing downstream can notice. A window
-    // that cannot open is worth more than a window a rendezvous is measured to cover, because the
-    // measurement is over the interleavings that happened to run.
-    //
-    // It costs: 13.52% more arena (cost_matrix, 17 cases; worst case star4-automorphic at
-    // 20.88%), because push_match_to_children walks a populated child registry here where under
-    // eager it finds an empty one. That overlap is skippable in principle and is tracked as #77.
+    // Batched matching (the synchronous path): a state's own matches are collected and
+    // dispatched once its matching completes; eager submits each as it is found. Children
+    // inherit through the parent's drain under either.
     bool batched_matching_{true};  // false: submit each match eagerly; true: batch per step
 
-    // Validation mode: cross-check forwarded+delta matches against a full scan
+    // Validation mode: at every state's drain, a full rematch checks that every match the state
+    // holds was claimed (validate_state_at_drain).
     bool validate_match_forwarding_{false};
     std::atomic<size_t> validation_mismatches_{0};
-    // How many times the validator actually EXECUTED. A mismatch count of zero means nothing
-    // unless this is nonzero, and the task-based path returns before reaching the check.
+    // How many times the validator EXECUTED. A mismatch count of zero means nothing unless this
+    // is nonzero.
     std::atomic<size_t> validations_performed_{0};
-    // Attribution of a missed match to the obligation that should have supplied it.
-    // A match using ONLY edges that survived from the parent was already a match in the
-    // parent, so FORWARDING owed it. A match touching a produced edge could not have existed
-    // in the parent, so DELTA owed it. The two have different causes and different fixes.
-    std::atomic<size_t> missing_owed_by_forwarding_{0};
-    std::atomic<size_t> missing_owed_by_delta_{0};
     // How many thinning draws were TAKEN and how many survived. A draw is deterministic in its
     // key, so two modes that disagree on the kept fraction must disagree on the SET of keys they
     // draw on -- and the count is what shows that without dumping every key.
@@ -684,7 +614,6 @@ private:
     static uint64_t missing_match_key(uint64_t match_hash) {
         return hgcommon::avoid_reserved_keys(match_hash);
     }
-    std::atomic<size_t> late_arrivals_{0};  // Matches that arrived after validation
 
     // Job system
     std::unique_ptr<job_system::JobSystem<EvolutionJobType>> job_system_;
@@ -830,6 +759,13 @@ private:
         // Matches this state has accepted, post-dedup. The drain gate needs it to show the
         // drain fired after the last one rather than merely once.
         std::atomic<size_t> matches{0};
+        // Set at this state's drain, before its children list is read (rv::ChildInheritance).
+        std::atomic<uint32_t> drained{0};
+        // Claimed by whichever side hands this state its parent's matches, so it happens once.
+        std::atomic<uint32_t> inherited{0};
+        // Set when a stop cuts this state's matching; cleared when the resume is submitted. The
+        // state does not drain while it is set.
+        std::atomic<uint32_t> resume_pending{0};
         // Stages the state's scan and expand tasks reached, ORed (stats builds): a lost
         // claim reads back as the highest stage its tasks got to. Bits: 1 scan entered,
         // 2 scan past its gates, 4 a produced edge was in the state's set, 8 a signature
@@ -1096,9 +1032,6 @@ public:
     // the id is new, so the dedup set cannot have seen it. A non-zero value is a subtree that
     // was never explored. See execute_rewrite_task.
     size_t dropped_fresh_children() const;
-    // Ancestor chains longer than the consumed-edge accumulator, where the overlap filter stops
-    // being complete. See forward_from_ancestor_chain.
-    size_t forwarding_consumed_truncated() const;
     size_t states_drained() const;
 #endif
 
@@ -1139,12 +1072,9 @@ public:
     // Empty when nothing is still missing.
     std::string validation_witness() const;
     size_t validations_performed() const;
-    size_t missing_owed_by_forwarding() const;
-    size_t missing_owed_by_delta() const;
     size_t draws_taken() const;
     size_t draws_survived() const;
     size_t draws_at_site(int i) const;
-    size_t late_arrivals() const;
     // Matches recorded absent by the validator and STILL absent when the run ended.
     //
     // Tested with contains_match, the validator's own membership test: it probes the whole dedup
@@ -1319,66 +1249,22 @@ private:
     LockFreeList<MatchRecord>* get_or_create_state_matches(StateId state);
 
     // Helper: Store a match for a state (for later forwarding)
-    void store_match_for_state(StateId state, MatchRecord& match, bool with_fence = false);
+    void store_match_for_state(StateId state, MatchRecord& match);
 
     // Helper: Get or create the children list for a state (thread-safe)
     LockFreeList<ChildInfo>* get_or_create_state_children(StateId state);
 
-    // Helper: Register a child with its parent (for push-based forwarding)
+    // Register a child with its parent, then take the parent's matches if it has drained. The
+    // caller has already submitted the child's own match task.
     void register_child_with_parent(StateId parent, StateId child,
                                     const EdgeId* consumed_edges, uint8_t num_consumed,
                                     uint32_t child_step = 0);
 
-    // Which moment a push is issued from. The two are counted separately because they answer
-    // different questions about whether the push has anything to do -- see EvolutionStats.
-    enum class PushSite { Discovery, Forwarding };
-
-    // Helper: Push a match to immediate children (single-level push)
-    void push_match_to_children(StateId parent, const MatchRecord& match, uint32_t step,
-                                PushSite site = PushSite::Forwarding);
-
-    void push_match_to_children_impl(StateId parent, const MatchRecord& match, uint32_t step,
-                                     PushSite site);
-
-    // Diagnostic: record when a forwarded match had been flagged as missing during
-    // validation (validate_match_forwarding_), meaning it arrived after the check.
-    void note_late_arrival(uint64_t match_hash);
-
-    // FORWARD A PARENT'S MATCHES TO A NEWLY CREATED CHILD.
-    //
-    // ONE RULE, ONE BODY, and `batch` is what the two submission modes differ by. A non-null
-    // batch means the caller collects the survivors and dispatches them itself (the default);
-    // null means each survivor is submitted as its own rewrite as it is found. Everything else
-    // -- the ancestor walk, the consumed-edge filter, the dedup claim, claim-winner ownership
-    // and the sampling draw -- is identical between the modes, and was written twice before,
-    // which is how the two ended up taking their sampling draws at different sites and filtering
-    // the consumed set two different ways.
-    //
-    // The draw SITE still differs, because a draw is keyed by where it is taken and the two
-    // modes must not collide; it is derived from `batch` rather than passed, so the two cannot
-    // drift apart again.
-    void forward_existing_parent_matches(
-        StateId parent, StateId child,
-        const EdgeId* consumed_edges, uint8_t num_consumed,
-        uint32_t step,
-        SVec<MatchRecord>* batch
-    );
-
-    // The ancestor chain, walked once: each level filtered against the edges consumed between it
-    // and this child, accumulated on the way up.
-    void forward_from_ancestor_chain(
-        StateId parent, StateId child,
-        const EdgeId* consumed_edges, uint8_t num_consumed,
-        uint32_t step,
-        SVec<MatchRecord>* batch
-    );
-
-    void forward_matches_from_single_ancestor(
-        StateId ancestor, StateId child,
-        const EdgeId* accumulated_consumed, uint8_t total_consumed,
-        uint32_t step,
-        SVec<MatchRecord>* batch
-    );
+    // Hand `child` the parent's stored matches that use none of the edges its transition consumed.
+    // Runs once per child, at whichever comes second of the parent's drain and the child's
+    // registration (rv::ChildInheritance); the child's MatchJoin counts it as one task, so the
+    // child drains only with its inherited matches in place.
+    void inherit_from_parent(StateId parent, const ChildInfo& child);
 
     // Task Submission
     void submit_match_task(StateId state, uint32_t step);
@@ -1417,9 +1303,6 @@ private:
     // Pruning helpers
     bool can_create_states_at_step(uint32_t step) const;
     bool can_have_more_children(StateId parent) const;
-    // Ancestor-chain-scoped epoch for the pull-side retry; see the definition.
-    static constexpr uint32_t kMaxAncestorHops = 1u << 20;   // guards a malformed parent cycle
-    uintptr_t ancestor_match_epoch(StateId parent) const;
 
     // Per-state match join. The two ordering rules below are what make the drain exact, and
     // both are invariants rather than observations:
@@ -1452,21 +1335,15 @@ private:
     std::vector<ClaimTrace> claim_ring_ = std::vector<ClaimTrace>(kClaimRingWorkers * kClaimRing);   // heap: 8 MB
     std::atomic<uint32_t> claim_ring_pos_[kClaimRingWorkers] = {};
     void note_claim(uint64_t h, StateId state, uint8_t answer);
-    // SILENT ENDINGS, counted (stats builds). A chain walk that finds no parent link on a
-    // NON-root ancestor stops early and every ancestor above it is never pulled; an expanded
-    // ancestor with no match list yields nothing; an expand task whose candidate walk visits
-    // nothing gets the same walk again at once. Each is retried immediately and the first
-    // few are kept as text, so a transient answer is told from a permanent one.
-    std::atomic<size_t> chain_parent_misses_{0};
-    std::atomic<size_t> chain_list_misses_{0};
+    // SILENT ENDINGS, counted (stats builds). An expand task whose candidate walk visits nothing
+    // gets the same walk again at once; the first few are kept as text, so a transient answer
+    // is told from a permanent one.
     std::atomic<size_t> expand_retry_found_{0};
     static constexpr size_t kSilentWitness = 8;
     std::atomic<size_t> silent_witness_count_{0};
     std::string silent_witness_[kSilentWitness];
     void note_silent(const std::string& text);
 public:
-    size_t chain_parent_misses() const { return chain_parent_misses_.load(std::memory_order_relaxed); }
-    size_t chain_list_misses() const { return chain_list_misses_.load(std::memory_order_relaxed); }
     size_t expand_retry_found() const { return expand_retry_found_.load(std::memory_order_relaxed); }
     std::string silent_witness() const;
 private:

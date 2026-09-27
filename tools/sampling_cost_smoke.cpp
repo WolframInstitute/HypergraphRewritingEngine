@@ -371,12 +371,12 @@ int main(int argc, char** argv) {
     const auto& cg = hg.causal_graph();
     // The forwarding counters exist in stats builds only (HG_STAT); a release build, which is
     // what rich_sweep.sh measures with, prints zeros for them and every other column as before.
-    size_t discovered = 0, forwarded = 0, invalidated = 0, rewalks = 0;
+    size_t discovered = 0, forwarded = 0, invalidated = 0;
 #if HG_ENGINE_STATS
     {
         const auto& tot = e.stats().total();
         discovered = tot.new_matches_discovered; forwarded = tot.matches_forwarded;
-        invalidated = tot.matches_invalidated;   rewalks = tot.forwarding_rewalks;
+        invalidated = tot.matches_invalidated;
     }
 #endif
     size_t rich_matches = 0;
@@ -389,7 +389,7 @@ int main(int argc, char** argv) {
                 " causal_edges=%zu causal_pairs=%zu branchial_edges=%zu branchial_claimed=%zu"
                 " max_width=%zu depth_reached=%zu truncated=%d"
                 " main_arena_b=%zu arena_blocks_b=%zu"
-                " discovered=%zu forwarded=%zu invalidated=%zu rewalks=%zu"
+                " discovered=%zu forwarded=%zu invalidated=%zu"
                 " discarded_tables_b=%zu discarded_tables=%zu"
                 " installed_tables_b=%zu installed_tables=%zu\n",
                 rule.c_str(),
@@ -409,7 +409,7 @@ int main(int argc, char** argv) {
                 cg.num_branchial_edges(), cg.num_branchial_pairs_claimed(),
                 max_width, depth_reached, truncated ? 1 : 0,
                 hg.arena().bytes_allocated(), arena_block_bytes_live(),
-                discovered, forwarded, invalidated, rewalks,
+                discovered, forwarded, invalidated,
                 discarded_table_bytes(), discarded_table_count(),
                 installed_table_bytes(), installed_table_count());
     return 0;

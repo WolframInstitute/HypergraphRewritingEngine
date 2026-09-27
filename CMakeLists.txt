@@ -432,10 +432,6 @@ add_executable(determinism_forwarding_repro EXCLUDE_FROM_ALL tools/determinism_f
 target_include_directories(determinism_forwarding_repro PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(determinism_forwarding_repro PRIVATE hypergraph)
 add_dependencies(probes determinism_forwarding_repro)
-add_executable(forwarding_validator_probe EXCLUDE_FROM_ALL tools/forwarding_validator_probe.cpp)
-target_include_directories(forwarding_validator_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(forwarding_validator_probe PRIVATE hypergraph)
-add_dependencies(probes forwarding_validator_probe)
 add_executable(higgs_shadow_probe EXCLUDE_FROM_ALL tools/higgs_shadow_probe.cpp)
 target_include_directories(higgs_shadow_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(higgs_shadow_probe PRIVATE hypergraph)
@@ -480,10 +476,6 @@ add_executable(profile_evolve EXCLUDE_FROM_ALL tools/profile_evolve.cpp)
 target_include_directories(profile_evolve PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(profile_evolve PRIVATE hypergraph)
 add_dependencies(probes profile_evolve)
-add_executable(push_site_probe EXCLUDE_FROM_ALL tools/push_site_probe.cpp)
-target_include_directories(push_site_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(push_site_probe PRIVATE hypergraph)
-add_dependencies(probes push_site_probe)
 add_executable(quotient_branchial_diff EXCLUDE_FROM_ALL tools/quotient_branchial_diff.cpp)
 target_include_directories(quotient_branchial_diff PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(quotient_branchial_diff PRIVATE hypergraph)
@@ -652,8 +644,7 @@ option(BUILD_VISUALIZATION "Emit visualization events for the external renderer"
 # Every host tool gets a build target, automatically.
 #
 # 51 of 57 files under tools/ had none. `make <tool>` answered "No rule to make target", so each
-# was compiled by hand once, produced its number, and then rotted -- including
-# forwarding_validator_probe, the sole caller of the match-completeness validator, and cost_matrix,
+# was compiled by hand once, produced its number, and then rotted -- including cost_matrix,
 # which describes itself as the harness the paper's ablation uses. A measurement whose instrument
 # cannot be rebuilt cannot be repeated, and a number that cannot be repeated is not evidence.
 #
@@ -772,13 +763,13 @@ set_tests_properties(genmc_harnesses PROPERTIES
 
 # THE TLC CELLS RUN TOO, and for the same reason the GenMC harnesses do. Each .cfg declares its
 # own verdict on line 1 -- `Expected: PASS` or `Expected: VIOLATION` -- and run.sh checks the
-# verdict TLC produces against it. Two of the seven cells are CALIBRATIONS that must VIOLATE:
-# MCSegmentedArrayBroken and MCMatchForwardingEagerBroken. A spec edit that quietly turns one of
-# those into a pass has disabled the calibration, and only a runner that knows the expected
-# verdict can see that; a table of results in a README cannot.
+# verdict TLC produces against it. Five of the twelve cells are CALIBRATIONS that must VIOLATE
+# (the cells whose line 1 says so). A spec edit that quietly turns one of those into a pass has
+# disabled the calibration, and only a runner that knows the expected verdict can see that; a
+# table of results in a README cannot.
 #
-# --quick drops the deep SegmentedArray cell, which is about a minute on its own against seconds
-# for the other six (measured here at -workers 6: 2s, 3s, 3s, 8s, 1s, 2s -- 19s combined). The
+# --quick drops the deep SegmentedArray cell, which is about a minute on its own against about a
+# second for each of the other eleven (measured 2026-09-26, 1s or less each). The
 # deep cell is run from the full `run.sh` when a minute is available, and its numbers live in
 # verification/tla/README.md.
 #

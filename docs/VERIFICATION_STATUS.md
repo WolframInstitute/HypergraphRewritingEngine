@@ -104,19 +104,19 @@ module are in that class, most of them inside libstdc++.
 That is why the protocols are checked as UNITS rather than in situ, and why an extraction like
 `hgcommon/depth_join.hpp` is what makes one checkable at all.
 
-TLA+, 7 configurations, all matching their declared verdict:
+TLA+, 12 configurations, all matching their declared verdict:
 
 | model | verdict | distinct states |
 |---|---|---|
 | `MCSegmentedArray` | PASS | 2,284 |
 | `MCSegmentedArrayDeep` | PASS | 27,828,731 |
 | `MCSegmentedArrayBroken` | VIOLATION as declared | 341 |
-| `MCMatchForwarding` | PASS | 117,005 |
-| `MCMatchForwardingEagerFix` | PASS | 479,005 |
-| `MCMatchForwardingEagerBroken` | VIOLATION as declared | 305,493 |
-| `MCMatchForwardingBatchedBroken` | PASS as declared | 85,777 |
+| `MCMatchForwarding` | PASS | 79,278 |
+| `MCMatchForwardingRegisterBroken` | VIOLATION as declared | 1,474 |
 | `MCDepthRelaxation` | PASS | 14 |
 | `MCDepthRelaxationBroken` | VIOLATION as declared | 12 |
+| `MCDepthRelaxationSteered` | PASS | 24 |
+| `MCDepthRelaxationSteeredBroken` | VIOLATION as declared | 26 |
 | `MCQuiescence` | PASS | 22 |
 | `MCQuiescenceBroken` | PASS as declared | 22 |
 | `MCQuiescenceLateSubmit` | VIOLATION as declared | 34 |
@@ -337,6 +337,4 @@ shape that makes relaxation matter -- a node reachable both directly and through
 with a descendant whose place under the budget depends on that lowering arriving -- rather than
 to breadth.
 
-`MCMatchForwardingBatchedBroken` is named for the code it models, not for its verdict: the
-ownership defect IS present there and the batched gate masks it, which is why the eager variant
-is the one that reports a violation.
+
