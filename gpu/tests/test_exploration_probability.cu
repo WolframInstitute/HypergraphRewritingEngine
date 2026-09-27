@@ -83,8 +83,8 @@ TEST(ExplorationProbability, SameSeedReproducesSameResult) {
     auto b = hg_gpu::evolve(in);
     EXPECT_EQ(a.states.size(), b.states.size());
     EXPECT_EQ(a.events.size(), b.events.size());
-    EXPECT_EQ(a.causal_edges.size(),    b.causal_edges.size());
-    EXPECT_EQ(a.branchial_edges.size(), b.branchial_edges.size());
+    EXPECT_EQ(a.observable_num_causal_pairs(false), b.observable_num_causal_pairs(false));
+    EXPECT_EQ(a.observable_num_branchial(),         b.observable_num_branchial());
 
     // State-hash sets should be identical for identical seeds.
     std::set<uint64_t> ha, hb;

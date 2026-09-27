@@ -169,14 +169,6 @@ endforeach()
     )
     target_link_libraries(bench_gpu_evolve PRIVATE hg_gpu hypergraph)
 
-    # Pins whether the persistent scheduler's causal-edge count is schedule-dependent, and
-    # whether the quotient expansion race is the mechanism (constant with pruning off, varying
-    # with it on). Companion to Rewrite.PersistentSchedulerThroughEngineRunMatchesTheStepLoop.
-    add_executable(quotient_causal_probe_gpu
-        ${CMAKE_CURRENT_SOURCE_DIR}/../tools/quotient_causal_probe_gpu.cpp
-    )
-    target_link_libraries(quotient_causal_probe_gpu PRIVATE hg_gpu hypergraph)
-
     # Separates a presentation-order cause from a rank-assignment one when the device's
     # canonical edge ranks move between block counts.
     add_executable(gpu_rank_order_probe
@@ -202,7 +194,7 @@ endif()
 # Applied here, at file scope, after every target exists, so a CUDA target added later cannot
 # miss it by being declared outside one particular if().
 foreach(hg_cuda_tgt hg_gpu hg_gpu_tests gpu_differential_tests bench_cpu_vs_gpu
-                    bench_gpu_evolve quotient_causal_probe_gpu gpu_rank_order_probe)
+                    bench_gpu_evolve gpu_rank_order_probe)
     if(TARGET ${hg_cuda_tgt})
         set_target_properties(${hg_cuda_tgt} PROPERTIES
             INTERPROCEDURAL_OPTIMIZATION FALSE

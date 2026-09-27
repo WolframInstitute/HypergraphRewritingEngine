@@ -163,17 +163,3 @@ TEST(QuotientExpansion, NoOrbitArrayMeansNoSlot) {
 
 }  // namespace
 
-// The recursion-budget test that stood here is GONE BECAUSE ITS PARAMETER IS.
-//
-// It ran one evolution at two values of QcState::view's max_recursion_depth and required one
-// answer, and it earned its keep: against the old policy it reported 2 causal edges at a short
-// budget and 106 at a long one, which is what established that the bound truncated the causal
-// relation rather than merely warning about it. There is no such argument now -- the cascade
-// carries depth in a worklist and nothing can be set to a depth it refuses past -- so the test
-// could only assert that a knob which does not exist has no effect.
-//
-// What it asserted OBSERVABLY is covered where CPU/GPU agreement belongs:
-// QuotientReconstruction.PastTheOldStackDepthItReachesTheDepthInstead runs 80 deep, which is ten
-// times the fixed nest budget and so exercises the deferral path, and requires that no
-// kScratchOverflow is recorded; and the 28-workload differential corpus compares the causal and
-// branchial relations against the host on every one.

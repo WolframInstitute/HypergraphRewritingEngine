@@ -34,9 +34,6 @@ EngineConfig config_from_input(const EvolveInput& in) {
     EngineConfig cfg;
     size_t n_init   = in.initial_state.size();
     uint32_t steps  = in.num_steps;
-    // The replay descends one stack frame per reconstruction depth, so the step count sizes the
-    // per-thread stack as well as the pools.
-    cfg.reconstruction_max_depth = steps;
 
     // Estimate growth per step. A typical Wolfram-style rule produces 2–4
     // new edges per match; matches grow ~linearly with edge count; states
@@ -285,29 +282,15 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         explore_threshold_u32 = static_cast<uint32_t>(
             static_cast<double>(clamped_p) * 4294967296.0);
     }
-    // The quotient-causal DP's device structures, one body of state whichever scheduler
-    // drives it; token-sized when the route is off, engine-lifetime and cleared per run.
+    // The quotient route flag: on the route every state also computes its edge orbits.
     auto t_qcsetup_start = std::chrono::steady_clock::now();
     if (!qc_state_ || qc_state_->enabled() != qc_route)
-        qc_state_ = std::make_unique<QcState>(qc_route, cfg.max_events);
-    else
-        qc_state_->clear();
-    // The DP produces the causal relation over canonical events, so it runs when that relation is
-    // recorded -- the same predicate the replay uses. `enabled` stays on the route so orbits are
-    // still computed and the state set is unchanged; see QcView::record_causal.
-    qc_state_->set_record_causal(in.record.causal || in.record.branchial || in.record.raw_events);
-    if (qc_route) {
-        const uint32_t drivers =
-            default_persistent_grid() > static_cast<uint32_t>(roots.size())
-                ? default_persistent_grid()
-                : static_cast<uint32_t>(roots.size());
-        qc_state_->ensure_work(drivers, in.num_steps, cfg.descent_work_scale);
-    }
-    QcView qc_view = qc_state_->view(in.num_steps);
+        qc_state_ = std::make_unique<QcState>(qc_route);
+    QcView qc_view = qc_state_->view();
 
-    // The class-frame expansion capture rides the same route decision as the causal DP: both
-    // ARE the quotient reconstruction, and a run that reconstructs causality is exactly a run
-    // whose event identity comes from the class frame rather than each raw state's labelling.
+    // The class-frame expansion capture rides the route decision: a run that reconstructs
+    // causality is exactly a run whose event identity comes from the class frame rather than
+    // each raw state's labelling.
     if (!qe_state_ || qe_state_->enabled() != qc_route) {
         // Saturating, because the scale doubles on retry and max_events is already large: a
         // wrapped product would silently SHRINK the pools on the attempt meant to grow them.
@@ -666,7 +649,6 @@ bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
         // relation smaller than the one the host computes.
         case ErrorKind::kQcNodes:             dbl(cfg.qe_capacity_scale);    return true;
         case ErrorKind::kQeWorkOverflow:      dbl(cfg.descent_work_scale);   return true;
-        case ErrorKind::kQcWorkOverflow:      dbl(cfg.descent_work_scale);   return true;
         case ErrorKind::kSigIndexNodes:       dbl(cfg.sig_index_pool);       return true;
         case ErrorKind::kInvIndexNodes:       dbl(cfg.inverted_pool);        return true;
         case ErrorKind::kFrontierCapFull:     dbl(cfg.max_states);           return true;
@@ -695,7 +677,6 @@ bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
             return true;
         case ErrorKind::kTrScratchOverflow:   dbl(cfg.tr_scratch_scale);     return true;
         case ErrorKind::kQeSurvivorsOverflow:
-        case ErrorKind::kQcSurvivorsOverflow:
             cfg.survivor_scratch = cfg.survivor_scratch ? cfg.survivor_scratch * 2u : 1024u;
             return true;
         case ErrorKind::kScratchOverflow:
@@ -800,7 +781,7 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     // The two descent stacks at their minimum per-driver size (256 items), which
     // descent_work_scale multiplies; a deep run's stacks are larger still.
     b += u64(default_persistent_grid()) * 256u * u64(cfg.descent_work_scale) *
-         (sizeof(QeWorkItem) + sizeof(QcWorkItem));
+         sizeof(QeWorkItem);
     b += u64(default_persistent_grid()) * 4u * u64(cfg.tr_scratch_scale) *
          (EngineState::kTrScratchStack + EngineState::kTrScratchVisited);   // reachability scratch
     b += u64(default_persistent_grid()) * u64(cfg.survivor_scratch) * 8u;    // survivor scratch

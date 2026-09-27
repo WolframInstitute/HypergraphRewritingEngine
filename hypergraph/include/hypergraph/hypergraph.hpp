@@ -139,23 +139,18 @@ class Hypergraph {
 
     // The captured quotient causal skeleton: the distinct canonical transitions out of each
     // canonical state (keyed by the source state's canonical hash), plus a dedup set over
-    // transition signatures. Built online as events fire in quotient mode; the depth-indexed
-    // producer-set reconstruction propagates over it.
+    // transition signatures. Built online as events fire in quotient mode; the reach marks
+    // below propagate over it.
     ConcurrentMap<uint64_t, LockFreeList<CanonicalTransition>*> transitions_from_;
     ShardedKeySet<uint64_t> seen_transitions_;
 
-    // Depth-indexed producer-set reconstruction (the online form of the validated DP).
-    // qc_dsup_ maps key(state_hash, depth, orbit) -> set of producer canonical-event ids
-    // (append-only); qc_dsup_seen_ dedups (key, producer); qc_reached_ marks (state_hash,
-    // depth). Producers cascade forward monotonically as transitions and reachability are
-    // discovered, emitting causal edges into causal_graph_. Bounded by qc_max_steps_.
-    ConcurrentMap<uint64_t, LockFreeList<EventId>*> qc_dsup_;
-    ShardedKeySet<uint64_t> qc_dsup_seen_;
+    // qc_reached_ marks the (state_hash, depth) points the canonical transitions reach,
+    // bounded by qc_max_steps_ (hgcommon/quotient_causal_core.hpp).
     ConcurrentKeySet<uint64_t> qc_reached_;
     // The same points qc_reached_ marks, enumerable. The map's key mixes the hash and the
     // depth irreversibly, and raising the depth budget has to revisit the points that stood
     // at the old terminal depth: each was marked reached, but every transition out of it was
-    // declined by the bound, so its producers and instances are recorded and unexpanded.
+    // declined by the bound, so its instances are recorded and unexpanded.
     struct QcReachPoint { uint64_t state_hash; uint32_t depth; };
     LockFreeList<QcReachPoint> qc_reached_list_;
     std::atomic<int> qc_max_steps_{0};
@@ -494,12 +489,10 @@ class Hypergraph {
     static uint64_t qc_key(uint64_t state_hash, uint32_t depth, uint32_t orbit);
     static uint64_t qc_rkey(uint64_t state_hash, uint32_t depth);
 
-    LockFreeList<EventId>* qc_dsup_list(uint64_t key);
-
     // The storage face hgcommon/quotient_causal_core.hpp drives. It supplies WHERE things are
-    // held and nothing else -- when a point is entered, what a producer landing does, and which
-    // rendezvous scan follows which publish are in the core, which is the same body the device
-    // runs. Nested so it reaches this class's private state without a friend declaration.
+    // held and nothing else -- when a point is entered and which rendezvous scan follows which
+    // publish are in the core, which is the same body the device runs. Nested so it reaches
+    // this class's private state without a friend declaration.
     struct QcCtx {
         using Transition = CanonicalTransition;
         Hypergraph& hg;
@@ -513,21 +506,11 @@ class Hypergraph {
         // about a thousand levels of room at the tightest platform it ships on against a bound
         // of `steps` -- so it has nothing to gain from a worklist and nothing to prove by one.
         void defer_reach(uint64_t state_hash, uint32_t depth);
-        void defer_producer(uint64_t state_hash, uint32_t depth, uint32_t orbit,
-                            uint32_t producer);
         bool mark_reached(uint64_t rkey, uint64_t state_hash, uint32_t depth);
-        bool mark_producer_seen(uint64_t seen_key);
-        void push_producer(uint64_t key, uint32_t producer);
-        template <class F>
-        void for_each_producer(uint64_t key, F&& f) {
-            auto r = hg.qc_dsup_.lookup(key);
-            if (r.has_value()) (*r)->for_each([&](EventId p) { f(p); });
-        }
         template <class F>
         void for_each_transition_from(uint64_t hash, F&& f) {
             hg.for_each_transition_from(hash, [&](const CanonicalTransition& t) { f(t); });
         }
-        void emit(uint32_t producer, uint32_t consumer);
         void fence();
     };
     QcCtx qc_ctx();
@@ -634,10 +617,8 @@ class Hypergraph {
     const EdgeOrbitTable* qc_orbits_or_build(StateId s);
     void qc_add_instance(uint64_t state_hash, uint32_t depth, const uint32_t* prod, uint32_t nslots);
     void qc_apply(const QcInstance& inst, const SlotMatch& m, uint64_t state_hash, uint32_t depth);
-    void qc_add_producer(uint64_t state_hash, uint32_t depth, uint32_t orbit, EventId producer);
-    void qc_process_transition(const CanonicalTransition& t, uint64_t from_hash, uint32_t depth);
+    void qc_process_transition(const CanonicalTransition& t, uint32_t depth);
     void qc_reach(uint64_t state_hash, uint32_t depth);
-    void qc_emit(EventId producer, EventId consumer);
 
     // Event canonicalization: maps event signature to first EventId
     // Signature computed from keys specified by event_signature_keys_ bitflag
@@ -1152,7 +1133,7 @@ public:
 
     // Drive one blocked point: its declined transitions, then its instances against the
     // expansion's matches. Independent of every other point -- each step is claimed
-    // (qc_reached_, qc_dsup_seen_, qc_applied_), so two threads driving the same point, or one
+    // (qc_reached_, qc_applied_), so two threads driving the same point, or one
     // driving a point the cascade already reached, is a no-op rather than a race.
     void quotient_redrive_point(uint64_t state_hash, uint32_t depth);
 

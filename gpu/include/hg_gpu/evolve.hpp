@@ -320,11 +320,6 @@ struct EngineConfig {
     uint32_t max_blocks_per_launch = 0;
     uint32_t event_canon_slots    = 1u << 16;
 
-    // How deep the quotient reconstruction's replay will be asked to go, which is the run's
-    // step count. It NO LONGER SIZES THE DEVICE STACK: the replay and the causal DP both carry
-    // depth in a worklist, so the stack is a constant (EngineState::kDeviceStackBytes) and this
-    // is a description of the run rather than a budget anything is derived from.
-    uint32_t reconstruction_max_depth = 0;
 
     // Event / causal / branchial sizing.
     uint32_t max_events           = 1u << 16;
@@ -358,10 +353,10 @@ struct EngineConfig {
     // result rather than a smaller one.
     uint32_t qe_capacity_scale = 1u;
 
-    // Multiplies the per-driver descent stacks of the replay and of the quotient-causal DP
-    // (64 items per level, at least 256). The stack holds the siblings of each level not yet
-    // descended into, so a wide workload fills it; grow-and-retry doubles this on
-    // kQeWorkOverflow and kQcWorkOverflow, which would otherwise drop a descent.
+    // Multiplies the per-driver descent stacks of the replay (64 items per level, at least 256).
+    // The stack holds the siblings of each level not yet descended into, so a wide workload
+    // fills it; grow-and-retry doubles this on kQeWorkOverflow, which would otherwise drop a
+    // descent.
     uint32_t descent_work_scale = 1u;
 
     // Multiplies each block's global scratch for the transitive reduction's reachability search
@@ -371,7 +366,7 @@ struct EngineConfig {
 
     // Survivor-list entries in each block's global survivor scratch, for states with more than
     // kLocalSurvivors (256) edges under quotient exploration. 0 allocates none; grow-and-retry sets
-    // it on kQeSurvivorsOverflow or kQcSurvivorsOverflow and doubles it after.
+    // it on kQeSurvivorsOverflow and doubles it after.
     uint32_t survivor_scratch = 0u;
 
     // Average IR-arena words per concurrent slot holder (the arena is one shared bump pool, so

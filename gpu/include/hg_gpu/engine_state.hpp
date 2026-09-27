@@ -187,9 +187,9 @@ struct DeviceState {
 
     // Flags
     bool tr_enabled;
-    // Quotient-causal route: when set, apply_one_match SKIPS the raw-edge producer/consumer
-    // rendezvous -- causal edges come from the orbit-keyed DP instead (quotient_causal.hpp),
-    // which is schedule-independent where the raw rendezvous under quotient is not. Branchial
+    // Quotient route: when set, apply_one_match SKIPS the raw-edge producer/consumer
+    // rendezvous; the replay reconstructs the relations (quotient_expansion.hpp), which is
+    // schedule-independent where the raw rendezvous under quotient is not. Branchial
     // registration stays on either way, as on the host.
     bool quotient_causal;
 
@@ -251,44 +251,9 @@ public:
     // bounded by kMaxPatternEdges.
     static constexpr size_t kDeviceStackFloorBytes = 32u * 1024u;
 
-    // THE RECONSTRUCTION'S DEPTH IS NOT ON THIS STACK, so this size does not scale with the
-    // caller's step count. Both cascades -- the replay and the causal DP -- carry depth in a
-    // worklist in device memory. What remains on the stack is a fixed nesting budget the DP
-    // recurses within because recursing is cheaper than deferring while it is shallow; past it
-    // the DP defers, so the budget is a constant and not a limit on what a run can reconstruct.
-    //
-    // ONE PLACE DECIDES THE BUDGET. DeviceQcCtx::kMaxNest reads it from here rather than
-    // declaring its own, because a nesting budget and the stack sized for it are one decision.
-    static constexpr uint32_t kDpNestLevels = 8;
-
-    // Bytes one nest level costs, MEASURED rather than assumed:
-    //
-    //   depots, read out of the built PTX by tools/dev/ptx_frame_sizes.py -- the deeper of the
-    //   two paths through the cycle is qc_reach -> for_each_transition_from -> the list walk ->
-    //   its lambda -> qc_process_transition, at 40 + 8 + 24 + 32 + 704 = 808 bytes over FIVE
-    //   frames (the producer path is 768 over five);
-    //
-    //   plus the ABI save area the depots exclude and the PTX does not name, at the 865 bytes a
-    //   frame the earlier fault bisection pins -- 5 * 865 = 4,325.
-    //
-    // 808 + 4,325 = 5,133, rounded up to the next multiple of 512 for a 9.7% margin. THE ABI
-    // TERM IS AN AVERAGE and varies with the registers each function saves, so re-run the depot
-    // tool if the cycle changes shape:
-    //
-    //     tools/dev/ptx_frame_sizes.py <build>/gpu/CMakeFiles/hg_gpu.dir/src/persistent.cu.o
-    static constexpr size_t kDpBytesPerNestLevel = 5632;
-
-    // The CEILING on what a launch asks the driver for. The driver reserves this per RESIDENT
-    // thread, so a request that grew with the step count charged a deep run's depth to every
-    // thread on the device -- including the 31 of every 32 that never reconstruct, since the
-    // whole path is inside `threadIdx.x == 0`. It used to reach the 256 KB cap at 27 steps;
-    // it now stops here however deep the run is.
-    //
-    // The constructor asks for the SHORTER of this and what the run can reach, since the DP
-    // cannot nest deeper than the evolution -- so the request is <= the old depth-scaled one at
-    // every depth, and a two-step run does not pay for a budget it cannot use.
-    static constexpr size_t kDeviceStackBytes =
-        kDeviceStackFloorBytes + kDpNestLevels * kDpBytesPerNestLevel;
+    // The replay carries reconstruction depth in a worklist in device memory, so the request is
+    // this constant however deep the run is.
+    static constexpr size_t kDeviceStackBytes = kDeviceStackFloorBytes;
 
 
     // Per-block global scratch of the reachability search at tr_scratch_scale 1: 8 times the

@@ -1,56 +1,34 @@
 #pragma once
 #include "hgcommon/namespace.hpp"
-// THE QUOTIENT-CAUSAL DP, one body for host and device.
+// THE QUOTIENT REACH, one body for host and device.
 //
-// The quotient route explores CANONICAL states and reconstructs the raw causal relation from
-// the class skeleton rather than from the expanded multiway graph. The reconstruction is a
-// fixpoint over three mutually recursive steps:
+// The quotient route explores CANONICAL states. The raw relations are reconstructed by the
+// replay (quotient_replay_core.hpp); this marks which (class, depth) points the canonical
+// transitions reach, which a continuation reads to find the points its old depth bound left
+// unexpanded. Two mutually recursive steps:
 //
 //   reach(state, depth)               mark a (state, depth) point live once, then drive every
 //                                     transition out of that state at that depth
-//   process(transition, from, depth)  reach the child, register the transition's produced
-//                                     orbits as produced BY it, then rendezvous with the
-//                                     producers already standing at the consumed and surviving
-//                                     orbits of the parent
-//   add_producer(state, depth, orbit, producer)
-//                                     record that `producer` produced the edge in `orbit` at
-//                                     (state, depth), then rendezvous with the transitions
-//                                     already registered out of that state
+//   process(transition, depth)        reach the transition's target at depth + 1
 //
-// Every step is a RENDEZVOUS: the DP is driven concurrently by whatever thread happens to
-// register a transition or land a producer, in whatever order, so each side publishes its own
-// write and then scans for the other's. Both scans must be sequenced, which is what the
-// `fence()` calls are -- without one on BOTH sides a thread reaching (state, depth) and a
-// thread registering a transition out of that state can each read the other as absent, and the
-// (transition, depth) pair is processed by neither.
-//
-// WHAT THE CTX SUPPLIES is storage and nothing else. The two engines differ in how a producer
-// set is held (a lock-free list per key against a bucketed node pool), how transitions are
-// enumerated, whether a recursion bound exists, and how a causal edge is recorded -- and in
-// none of the decisions above. A second body for the decisions is what this exists to prevent:
-// the identification a reconstructed event gets is not a performance property, and two copies
-// agreeing today agree until one is edited.
+// Reach and transition registration are a RENDEZVOUS: each side publishes its own write and
+// then scans for the other's, with a sequentially consistent `fence()` between. Without the
+// fence on both sides a thread reaching (state, depth) and a thread registering a transition
+// out of that state can each read the other as absent, and the pair is processed by neither.
 //
 // A Ctx must supply:
 //
 //   using Transition = ...;                     the engine's canonical-transition record
-//   uint32_t max_steps() const;                 the DP runs depths 0..max_steps-1, producing
-//                                               into max_steps but never reading it
-//   bool enter(uint32_t depth);                 false to stop the cascade at this depth; the
-//                                               Ctx records why. A host with a heap-sized
-//                                               stack always returns true.
+//   uint32_t max_steps() const;                 points are reached at depths 0..max_steps
+//   bool enter(uint32_t depth);                 false to stop the cascade at this depth
 //   bool mark_reached(uint64_t rkey, uint64_t state_hash, uint32_t depth);
 //                                               insert-if-absent on the reached set; true when
 //                                               THIS call was the one that inserted
-//   bool mark_producer_seen(uint64_t seen_key); same, on the (key, producer) seen set
-//   void push_producer(uint64_t key, uint32_t producer);
-//   template <class F> void for_each_producer(uint64_t key, F&& f);   f(producer)
+//   void defer_reach(uint64_t state_hash, uint32_t depth);   reach, now or from a worklist
 //   template <class F> void for_each_transition_from(uint64_t hash, F&& f);  f(const Transition&)
-//   void emit(uint32_t producer, uint32_t consumer);   record a causal edge
 //   void fence();                               sequentially consistent, engine-scoped
 //
-// A Transition must supply: to_hash, canon_event, num_consumed, num_produced, num_survivors,
-// and consumed(i) / produced(i) / surv_from(i) / surv_to(i). surv_from(i) is non-decreasing in i.
+// A Transition must supply to_hash.
 
 #include <cstdint>
 
@@ -59,9 +37,9 @@
 namespace HG_NAMESPACE {
 namespace common {
 
-// The DP's three key spaces. Shared because host and device index ONE conceptual set each:
-// a producer set keyed by (state, depth, orbit), a reached set keyed by (state, depth), and a
-// seen set keyed by (producer set key, producer). Two spellings of a key are two key spaces.
+// The (class, depth) keys. Shared because host and device index one set each: the replay's
+// instances and multiplicity points by qc_key(state, depth, 0), the reached set by qc_rkey.
+// Two spellings of a key are two key spaces.
 HG_HD inline uint64_t qc_key(uint64_t state_hash, uint32_t depth, uint32_t orbit) {
     uint64_t h = FNV_OFFSET;
     h ^= state_hash; h *= FNV_PRIME;
@@ -79,45 +57,11 @@ HG_HD inline uint64_t qc_rkey(uint64_t state_hash, uint32_t depth) {
     return h ? h : 1;
 }
 
-// The (producer-set key, producer) pair, on the same terms.
-HG_HD inline uint64_t qc_seen_key(uint64_t key, uint32_t producer) {
-    uint64_t k = key ^ (static_cast<uint64_t>(producer) + 0x9e3779b97f4a7c15ULL);
-    k *= FNV_PRIME;
-    return avoid_reserved_keys(k);
-}
-
-// One canonical transition's dedup signature, over (from, to, rule, consumed orbits, survivor
-// orbit pairs). Host and device index ONE set of canonical transitions, so this is one body:
-// the signature decides which raw events are the same transition, and two spellings of it
-// decide differently the moment either is edited.
-//
-// `consumed` is ascending. `survivors` are packed (orbit in `from` << 32 | orbit in `to`) and
-// ascending, which orders them by parent orbit then child orbit -- what sorting the pairs
-// lexicographically gives, so a caller holding pairs packs and sorts rather than sorting pairs.
-//
-// The tags 0x1111 and 0x2222 separate the two runs: without them a consumed orbit and a
-// survivor orbit of the same value are the same input, and two different transitions collide.
-//
-// Never 0 or all-ones, because the seen set's map reserves both as sentinels. A key equal to
-// one of them is REJECTED rather than stored, so a transition carrying it would either abort
-// the run or be captured twice depending on which side computed it.
-HG_HD inline uint64_t qc_transition_sig(uint64_t from, uint64_t to, uint32_t rule,
-                                        const uint32_t* consumed, uint32_t num_consumed,
-                                        const uint64_t* survivors, uint32_t num_survivors) {
-    uint64_t sig = FNV_OFFSET;
-    sig = fnv_hash(sig, from);
-    sig = fnv_hash(sig, to);
-    sig = fnv_hash(sig, static_cast<uint64_t>(rule));
-    for (uint32_t i = 0; i < num_consumed; ++i) {
-        sig = fnv_hash(sig, 0x1111);
-        sig = fnv_hash(sig, static_cast<uint64_t>(consumed[i]));
-    }
-    for (uint32_t i = 0; i < num_survivors; ++i) {
-        sig = fnv_hash(sig, 0x2222);
-        sig = fnv_hash(sig, survivors[i] >> 32);
-        sig = fnv_hash(sig, survivors[i] & 0xFFFFFFFFu);
-    }
-    return avoid_reserved_keys(sig);
+// A canonical transition's dedup key: the (source class, target class) pair, which is all the
+// reach marks read. One body, because host and device index one set of transitions. Never 0 or
+// all-ones, because the seen set's map reserves both as sentinels.
+HG_HD inline uint64_t qc_transition_key(uint64_t from, uint64_t to) {
+    return avoid_reserved_keys(fnv_hash(fnv_hash(FNV_OFFSET, from), to));
 }
 
 // The edges an event carries across unchanged -- every edge of its output state it did not
@@ -143,42 +87,15 @@ HG_HD inline void qc_for_each_survivor(const EdgeId* in_edges, uint32_t in_n,
 }
 
 template <class Ctx>
-HG_HD void qc_add_producer(Ctx& c, uint64_t state_hash, uint32_t depth, uint32_t orbit,
-                           uint32_t producer);
-template <class Ctx>
 HG_HD void qc_reach(Ctx& c, uint64_t state_hash, uint32_t depth);
 
 template <class Ctx>
-HG_HD void qc_process_transition(Ctx& c, const typename Ctx::Transition& t,
-                                 uint64_t from_hash, uint32_t depth) {
+HG_HD void qc_process_transition(Ctx& c, const typename Ctx::Transition& t, uint32_t depth) {
     if (depth + 1 > c.max_steps()) return;
-    // DEFERRED, NOT CALLED. Every edge in this DP that advances DEPTH goes through the Ctx,
-    // which is what lets a device carry the depth in a worklist instead of on a per-thread
-    // stack it must reserve across the whole machine. A host Ctx calls straight through, so
-    // its traversal is unchanged.
-    //
-    // Deferring is sound because the protocol is SYMMETRIC: this publishes at (to, depth+1)
-    // while the scan below reads (from, depth), so no scan here is looking for what is
-    // deferred -- and whichever party runs second does its own publish-fence-scan and finds
-    // the first. That is the same argument the rendezvous already rests on.
+    // DEFERRED, NOT CALLED: the edge that advances DEPTH goes through the Ctx, which lets a
+    // device carry the depth in a worklist instead of on a per-thread stack. A host Ctx calls
+    // straight through.
     c.defer_reach(t.to_hash, depth + 1);
-    // The produced edges are produced by THIS canonical event, at the child depth.
-    for (uint32_t i = 0; i < t.num_produced; ++i)
-        c.defer_producer(t.to_hash, depth + 1, t.produced(i), t.canon_event);
-    // Rendezvous with producers already standing at (from, depth): publish the reach and the
-    // produces above before scanning for them.
-    c.fence();
-    for (uint32_t i = 0; i < t.num_consumed; ++i) {
-        const uint64_t k = qc_key(from_hash, depth, t.consumed(i));
-        c.for_each_producer(k, [&](uint32_t p) { c.emit(p, t.canon_event); });
-    }
-    for (uint32_t i = 0; i < t.num_survivors; ++i) {
-        const uint64_t k = qc_key(from_hash, depth, t.surv_from(i));
-        const uint32_t to_orbit = t.surv_to(i);
-        c.for_each_producer(k, [&](uint32_t p) {
-            c.defer_producer(t.to_hash, depth + 1, to_orbit, p);
-        });
-    }
 }
 
 template <class Ctx>
@@ -189,47 +106,7 @@ HG_HD void qc_reach(Ctx& c, uint64_t state_hash, uint32_t depth) {
     // Publish the mark before scanning; pairs with the fence on the registration side.
     c.fence();
     c.for_each_transition_from(state_hash, [&](const typename Ctx::Transition& t) {
-        qc_process_transition(c, t, state_hash, depth);
-    });
-}
-
-template <class Ctx>
-HG_HD void qc_add_producer(Ctx& c, uint64_t state_hash, uint32_t depth, uint32_t orbit,
-                           uint32_t producer) {
-    if (depth > c.max_steps()) return;
-    if (!c.enter(depth)) return;
-    const uint64_t key = qc_key(state_hash, depth, orbit);
-    if (!c.mark_producer_seen(qc_seen_key(key, producer))) return;
-    c.push_producer(key, producer);
-
-    // A producer landing at (state, depth) witnesses that the point is reachable, so mark it
-    // and drive its transitions once. Without this a producer arriving via the survivor cascade
-    // leaves (state, depth) unreached and a transition registered later out of it is skipped.
-    // DIRECT, and it stays direct: it advances no depth, and it is what marks (state, depth)
-    // reached before the scan below. Synchronous nesting is therefore bounded at three frames
-    // -- add_producer -> reach -> process_transition -- whatever the reconstruction depth.
-    qc_reach(c, state_hash, depth);
-
-    // The DP reads depths 0..max_steps-1. A producer landing at the final depth is stored and
-    // dead, so the scan below would find nothing to do.
-    if (depth >= c.max_steps()) return;
-
-    // Rendezvous with transitions already registered out of this state: publish before scan.
-    c.fence();
-    c.for_each_transition_from(state_hash, [&](const typename Ctx::Transition& t) {
-        for (uint32_t i = 0; i < t.num_consumed; ++i)
-            if (t.consumed(i) == orbit) { c.emit(producer, t.canon_event); break; }
-        // Survivors ascend by parent orbit on both engines (the order qc_transition_sig is
-        // computed over), so this orbit's survivors are one run, found by binary search. A
-        // linear scan made each producer cost transitions x survivors: on a path of n edges
-        // that is n^2 per producer, 1.06 G of 2.2 G instructions at n = 256.
-        uint32_t lo = 0, hi = t.num_survivors;
-        while (lo < hi) {
-            const uint32_t mid = (lo + hi) >> 1;
-            if (t.surv_from(mid) < orbit) lo = mid + 1; else hi = mid;
-        }
-        for (uint32_t i = lo; i < t.num_survivors && t.surv_from(i) == orbit; ++i)
-            c.defer_producer(t.to_hash, depth + 1, t.surv_to(i), producer);
+        qc_process_transition(c, t, depth);
     });
 }
 

@@ -407,7 +407,7 @@ TEST(Rewrite, EventsAndCausalBranchialPopulated) {
     // The branching structure should cause both causal (events chain
     // through produced/consumed edges) and branchial (same-state sibling
     // events) relationships to appear.
-    EXPECT_GT(result.causal_edges.size(), 0u)
+    EXPECT_GT(result.observable_num_causal_pairs(false), 0u)
         << "expected at least one causal edge over " << result.events.size() << " events";
 }
 

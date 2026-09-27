@@ -307,10 +307,6 @@ uint32_t EdgeOrbitTable::slot_of(EdgeId e) const {
     return (i < n && slot) ? slot[i] : 0;
 }
 
-uint32_t CanonicalTransition::consumed(uint32_t i) const { return consumed_orbits[i]; }
-uint32_t CanonicalTransition::produced(uint32_t i) const { return produced_orbits[i]; }
-uint32_t CanonicalTransition::surv_from(uint32_t i) const { return surv_from_orbits[i]; }
-uint32_t CanonicalTransition::surv_to(uint32_t i) const { return surv_to_orbits[i]; }
 
 uint32_t SlotMatch::consumed(uint32_t i) const { return consumed_slots[i]; }
 uint32_t SlotMatch::produced(uint32_t i) const { return produced_slots[i]; }

@@ -38,16 +38,14 @@ enum class ErrorKind : uint32_t {
     // nodes. Sized from the config (one node per unique kept causal pair), so growing is a
     // real remedy.
     kTrPredsNodes        = 25,
-    // A quotient-causal structure (transition records, their orbit-array arena, producer or
-    // transition list nodes) ran out of capacity. Config-sized, so growing is a real remedy;
-    // the causal edges reachable only through the dropped work are missing from the result.
+    // A replay structure (QeState's pools, pair maps and multiplicity points) ran out of
+    // capacity. Config-sized, so growing is a real remedy; the relations reachable only through
+    // the dropped work are missing from the result.
     kQcNodes             = 26,
     kSigIndexNodes       = 16,
     kInvIndexNodes       = 17,
     kFrontierCapFull     = 18,
-    kScratchOverflow     = 19,   // bounded local scratch (IR, a quotient-causal driver without a work slice)
-    kQcWorkOverflow      = 10,   // the quotient-causal DP's work stack was full: a reach or producer step was dropped
-    kQcSurvivorsOverflow = 15,   // a transition's survivor list was longer than the survivor scratch: the transition was skipped
+    kScratchOverflow     = 19,   // bounded local scratch (IR, a replay driver without a work slice)
     kQeSurvivorsOverflow = 13,   // a capture's survivor list was longer than the survivor scratch: the capture was dropped
     kQeWorkOverflow      = 14,   // the replay's descent stack was full: an instance's descent was dropped
     kTrScratchOverflow   = 11,   // the transitive reduction's reachability scratch was full: a redundant edge may be kept

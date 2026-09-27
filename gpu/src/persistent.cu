@@ -174,16 +174,6 @@ __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_
         ds.state_exact_hash[sid] = exact;
     }
 
-    // Quotient-causal seed, the device twin of Hypergraph::quotient_causal_seed: every orbit
-    // of a root gains the INIT sentinel producer (initial edges have no producing event), and
-    // the root is marked reached at depth 0. Duplicate roots re-seed the same keys; the DP's
-    // per-(key, producer) dedup makes that idempotent.
-    if (qc.enabled) {
-        const uint32_t norb = ds.state_num_orbits[sid];
-        for (uint32_t j = 0; j < norb; ++j)
-            qc_add_producer(ds, qc, key, 0, j, INVALID_ID, tid);
-        qc_reach(ds, qc, key, 0, tid);
-    }
     // The class's root instance: every slot's edge came with the initial state, so no event
     // produced any of them. Idempotent across duplicate roots -- only the state that wins the
     // class frame records one.
@@ -549,23 +539,22 @@ __global__ void k_persistent_evolve(
                         id = phase_cycles[3]; wt = phase_cycles[4];
                     }
                     const unsigned long long tot = m + rw + cn + id + wt;
-                    // The canon bucket's five parts, as fractions of the bucket. Without this the
-                    // bucket reads as "canonicalization" while containing four other calls.
-                    unsigned long long ir = 0, sg = 0, qc_ = 0, qe_ = 0, dd = 0;
+                    // The canon bucket's four parts, as fractions of the bucket. Without this the
+                    // bucket reads as "canonicalization" while containing three other calls.
+                    unsigned long long ir = 0, sg = 0, qe_ = 0, dd = 0;
                     if (phase_cycles) {
-                        ir = phase_cycles[11]; sg = phase_cycles[12]; qc_ = phase_cycles[13];
+                        ir = phase_cycles[11]; sg = phase_cycles[12];
                         qe_ = phase_cycles[14]; dd = phase_cycles[15];
                     }
-                    const unsigned long long cb = ir + sg + qc_ + qe_ + dd;
+                    const unsigned long long cb = ir + sg + qe_ + dd;
                     printf("[hg_gpu PROGRESS] round=%u prod=%u done=%u | "
                            "match=%llu%% rewrite=%llu%% canonblk=%llu%% idle=%llu%% || "
-                           "ir=%llu%% sig=%llu%% qc=%llu%% qe=%llu%% dedup=%llu%%\n",
+                           "ir=%llu%% sig=%llu%% qe=%llu%% dedup=%llu%%\n",
                            round, prod1, done1,
                            tot ? 100ull * m  / tot : 0ull, tot ? 100ull * rw / tot : 0ull,
                            tot ? 100ull * cn / tot : 0ull, tot ? 100ull * id / tot : 0ull,
                            cb ? 100ull * ir  / cb : 0ull, cb ? 100ull * sg  / cb : 0ull,
-                           cb ? 100ull * qc_ / cb : 0ull, cb ? 100ull * qe_ / cb : 0ull,
-                           cb ? 100ull * dd  / cb : 0ull);
+                           cb ? 100ull * qe_ / cb : 0ull, cb ? 100ull * dd  / cb : 0ull);
                 }
             }
         } dctx{term, found, rewrites_done, ds, phase_cycles};
@@ -599,7 +588,7 @@ __global__ void k_persistent_evolve(
     // Written in place they were five more global atomicAdds per RECORD, and the sixteen
     // counters are one 128-byte allocation, so every block's every record queued on one L2
     // line. The published totals are identical -- the same sums, added once per flush.
-    unsigned long long acc_irkey = 0, acc_evkey = 0, acc_qc = 0, acc_qe = 0, acc_dedup = 0;
+    unsigned long long acc_irkey = 0, acc_evkey = 0, acc_qe = 0, acc_dedup = 0;
     auto flush_cycles = [&] {
         if (threadIdx.x == 0 && phase_cycles) {
             atomicAdd(&phase_cycles[0], acc_match);
@@ -609,11 +598,10 @@ __global__ void k_persistent_evolve(
             atomicAdd(&phase_cycles[4], acc_wait);
             atomicAdd(&phase_cycles[11], acc_irkey);
             atomicAdd(&phase_cycles[12], acc_evkey);
-            atomicAdd(&phase_cycles[13], acc_qc);
             atomicAdd(&phase_cycles[14], acc_qe);
             atomicAdd(&phase_cycles[15], acc_dedup);
             acc_match = acc_rewrite = acc_canon = acc_idle = acc_wait = 0;
-            acc_irkey = acc_evkey = acc_qc = acc_qe = acc_dedup = 0;
+            acc_irkey = acc_evkey = acc_qe = acc_dedup = 0;
         }
     };
 
@@ -744,19 +732,7 @@ __global__ void k_persistent_evolve(
                         // endpoint hashes and orbit tables exist at this point (the parent's
                         // from its own canon, the child's from the pass just above).
                         if (child_event != INVALID_ID) {
-                            // The DP runs only when its output is recorded. `enabled` still
-                            // follows the quotient route, so edge orbits are computed exactly as
-                            // before and the answer does not move; only the causal relation's own
-                            // work is skipped. Measured as the growing term of this block on
-                            // disc-l3a2g2r2: 43% then 66% then 81% while IR fell 53% to 17%.
-                            if (qc.enabled && qc.record_causal) {
-                                const uint64_t s2 = clock64();
-                                qc_register_transition(ds, qc, rec.state_id, child_sid,
-                                                       child_event, rec.rule_id, step,
-                                                       blockIdx.x);
-                                acc_qc += clock64() - s2;
-                            }
-                            // Same event, same endpoints: the class frame's match record.
+                            // The class frame's match record.
                             const uint64_t s3 = clock64();
                             // One driver per BLOCK: this whole path is inside
                             // `threadIdx.x == 0`, so blockIdx is the slice.

@@ -12,12 +12,6 @@
 // own frame rather than in any raw state's edge ids, then replays that record against every
 // instance of the class. This file is the record; the replay is the next step of the port.
 //
-// The device currently has the causal half of that machinery (quotient_causal.hpp: the
-// depth-indexed producer-set DP, keyed on orbits) but not this half, so under quotient it
-// cannot produce the counts the CPU serves through observable_num_events(). The measured gap is
-// pinned by gpu/tests CanonicalEventCount.ReconstructionGapIsStillOpen (CPU 21 / GPU 23 on the
-// rank frame, CPU 144 / GPU 15 under quotient + mode None).
-//
 // WHAT A SLOT IS. Defined once, in hgcommon/slot_core.hpp, and read from there by both engines
 // -- the host fills a whole state at once (slots_from_orbits), this file reads one edge at a
 // time (slot_rank), and the two forms are asserted equal. Nothing about the rule is restated
@@ -1106,8 +1100,8 @@ __device__ __forceinline__ void qe_apply(DeviceState ds, QeView qe, const Device
 
 // Host-side owner of the capture's device structures, so a run's records are one body of
 // state whether the host seeding or the device loop wrote them. Token-sized when the route is
-// off, and cleared between runs rather than rebuilt, for the same reason QcState is: the pools
-// total tens of MB of cudaMalloc that an interactive caller would otherwise pay every evolve.
+// off, and cleared between runs rather than rebuilt: the pools total tens of MB of cudaMalloc
+// that an interactive caller would otherwise pay every evolve.
 class QeState {
 public:
     QeState(bool on, uint32_t max_events);

@@ -73,9 +73,8 @@ struct ChildInheritance {};       // parallel_evolution: child registration / th
 struct DepthSettleCascade {};     // depth_join: settle d / finish at d+1
 struct DepthReportBaton {};       // depth_join: drop the baton; partner is the post-CAS
                                   //   DepthSettleCascade barrier, which the settler already holds
-struct QuotientCoreHook {};       // quotient_causal_core's Ctx::fence, host realisation: covers
-                                  //   qc_reach and qc_add_producer, and pairs with the transition
-                                  //   registration in register_canonical_transition
+struct QuotientCoreHook {};       // quotient_causal_core's Ctx::fence, host realisation: qc_reach
+                                  //   / the transition registration in register_quotient_transition
 struct WorkerParkWake {};         // job_system: wake_one_worker / a worker announcing itself idle
 struct DequeTakeSteal {};         // work_stealing_deque: the owner taking / a thief stealing
 }  // namespace rv

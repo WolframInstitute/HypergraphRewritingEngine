@@ -134,23 +134,7 @@ EngineState::EngineState(EngineConfig cfg): cfg_(cfg)
         // cudaDeviceSetLimit returns out-of-memory. Throwing there would turn a run that could
         // have proceeded into no run at all. Halving until it is accepted reaches the largest
         // stack the device will actually grant.
-        //
-        // THE REQUEST NO LONGER GROWS WITH THE RUN. It once did -- 32 KB plus 8,704 bytes per
-        // step, capped at 256 KB -- because the reconstruction recursed once per depth. An
-        // 80-step configuration then asked for the whole 256 KB cap and the memory budget
-        // exceeded what the pools could give back, since fit_config_to_cap scales pools and the
-        // stack is not a pool. Depth rides a worklist now, so this is a constant and a deep run
-        // costs the device exactly what a shallow one does.
-        // BOUNDED BY A CONSTANT, and no larger than the run can use. The DP recurses at most
-        // kDpNestLevels deep and at most as deep as the evolution, so a short run asks for the
-        // shorter of the two: this is <= what the old depth-scaled request asked at EVERY depth,
-        // which is what keeps a shallow run from paying for a budget it cannot reach. Measured
-        // at two steps, where the request would otherwise have grown: 4.736 ms median against
-        // 4.672 for the old sizing, so asking for the full budget there cost 1.4%.
-        const uint32_t nest = cfg.reconstruction_max_depth + 1u < kDpNestLevels
-                                  ? cfg.reconstruction_max_depth + 1u
-                                  : kDpNestLevels;
-        size_t want_stack = kDeviceStackFloorBytes + nest * kDpBytesPerNestLevel;
+        size_t want_stack = kDeviceStackBytes;
         cudaError_t st_rc = cudaDeviceSetLimit(cudaLimitStackSize, want_stack);
         while (st_rc != cudaSuccess && want_stack > kDeviceStackFloorBytes) {
             cudaGetLastError();                      // clear the sticky error before retrying

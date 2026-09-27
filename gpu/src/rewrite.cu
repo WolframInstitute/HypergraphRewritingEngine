@@ -29,8 +29,7 @@ __device__ uint64_t hash_causal_triple(EventId p, EventId c, EdgeId e) {
     h ^= c; h *= 1099511628211ULL;
     h ^= e; h *= 1099511628211ULL;
     // BOTH reserved keys, not just EMPTY. The map reserves 0 and ~0, and a hash is as able to
-    // land on one as the other -- qc_seen_key, qc_transition_sig and qe_apply_key each guard
-    // the pair, and this guarded only the first.
+    // land on one as the other; qc_transition_key and qe_apply_key guard the pair too.
     if (h == 0) h = 1;
     if (h == ~0ULL) h = ~0ULL - 1ULL;
     return h;
@@ -506,10 +505,10 @@ __device__ AppliedMatch apply_one_match(DeviceState       ds,
     __threadfence();  // make the event visible before any rendezvous reads it
     const unsigned long long t_event = clock64();
 
-    // Under the quotient-causal route the raw-edge rendezvous is replaced by the orbit-keyed
-    // DP (quotient_causal.hpp), driven from the scheduler once the child is canonicalized --
-    // which raw child wins the canonical slot must not decide the causal set. Mirrors the
-    // rewriter.cpp gate. Branchial registration below stays on either way, as on the host.
+    // Under the quotient route the raw-edge rendezvous is off: the replay reconstructs the
+    // relations (quotient_expansion.hpp), so which raw child wins the canonical slot does not
+    // decide them. Mirrors the rewriter.cpp gate. Branchial registration below stays on either
+    // way, as on the host.
     if (!ds.quotient_causal) {
     // 8. Causal rendezvous — producer side (our produced edges).
     for (uint8_t r = 0; r < rule.num_rhs_edges; ++r) {

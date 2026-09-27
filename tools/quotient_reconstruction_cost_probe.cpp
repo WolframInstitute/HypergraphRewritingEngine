@@ -8,7 +8,7 @@
 //
 // Reported per workload:
 //   states   quotient's saving, which the flag does NOT touch
-//   causal   what the caller gets: qc_emit's subset with the flag off, the exact multiset with it on
+//   causal   the causal edge count: none with the flag off, the exact multiset with it on
 //   time     the price of exactness
 //
 // Deliberately measured through the engine at several depths: the replay is per-instance, so its

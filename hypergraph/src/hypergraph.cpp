@@ -1024,33 +1024,9 @@ uint64_t Hypergraph::compute_and_cache_state_orbits(StateId s, const SparseBitse
 // Quotient causal reconstruction (online depth-indexed producer-set propagation)
 // =============================================================================
 
-LockFreeList<EventId>* Hypergraph::qc_dsup_list(uint64_t key) {
-    auto r = qc_dsup_.lookup(key);
-    if (r.has_value()) return *r;
-    auto* nl = arena_.template create<LockFreeList<EventId>>();
-    auto ins = qc_dsup_.insert_if_absent(key, nl);
-    return ins.second ? nl : ins.first;
-}
-
-void Hypergraph::qc_emit(EventId producer, EventId consumer) {
-    // The INIT sentinel (INVALID_ID) marks initial edges, which have no producer. A
-    // producer == consumer pair is NOT dropped: it is a canonical self-loop (two distinct
-    // raw events of the same canonical type, a producer and a consumer, that collapse to
-    // one representative here) and is present in the full-capture causal graph too.
-    if (producer == INVALID_ID || consumer == INVALID_ID) return;
-    causal_graph_.add_causal_edge(producer, consumer, 0);  // dedups by (producer,consumer)
-}
-
-void Hypergraph::qc_add_producer(uint64_t state_hash, uint32_t depth, uint32_t orbit,
-                                 EventId producer) {
+void Hypergraph::qc_process_transition(const CanonicalTransition& t, uint32_t depth) {
     auto c = qc_ctx();
-    hgcommon::qc_add_producer(c, state_hash, depth, orbit, producer);
-}
-
-void Hypergraph::qc_process_transition(const CanonicalTransition& t, uint64_t from_hash,
-                                       uint32_t depth) {
-    auto c = qc_ctx();
-    hgcommon::qc_process_transition(c, t, from_hash, depth);
+    hgcommon::qc_process_transition(c, t, depth);
 }
 
 void Hypergraph::qc_reach(uint64_t state_hash, uint32_t depth) {
@@ -1073,7 +1049,7 @@ void Hypergraph::quotient_redrive_point(uint64_t state_hash, uint32_t depth) {
     // instances never met a match. With the bound already raised, driving it restarts the
     // cascade, and the deeper points it reaches drive themselves inline from here.
     for_each_transition_from(state_hash, [&](const CanonicalTransition& t) {
-        qc_process_transition(t, state_hash, depth);
+        qc_process_transition(t, depth);
     });
     if (!quotient_reconstruction_.load(std::memory_order_relaxed)) return;
     if (quotient_multiplicity()) {
@@ -1106,13 +1082,10 @@ uint32_t Hypergraph::alloc_instance_id() {
 
 void Hypergraph::quotient_causal_seed(StateId initial_state, int max_steps) {
     qc_max_steps_.store(max_steps, std::memory_order_relaxed);
-    // Through the builder: a miss here leaves the root class with no INIT producers and no root
-    // instance, so the whole reconstruction hangs off nothing and every relation under it is
-    // absent. Nothing counted that, because the seed simply did less.
+    // Through the builder: a miss here leaves the root class with no root instance, so the whole
+    // reconstruction hangs off nothing and every relation under it is absent.
     const EdgeOrbitTable* orb = qc_orbits_or_build(initial_state);
     const uint64_t h = get_state(initial_state).canonical_hash;
-    if (orb) for (uint32_t j = 0; j < orb->num_orbits; ++j)
-        qc_add_producer(h, 0, j, INVALID_ID);   // INIT sentinel producer
     qc_reach(h, 0);
 
     // Seed the per-instance reconstruction with the one instance of the initial state; its
@@ -1404,64 +1377,12 @@ void Hypergraph::register_quotient_transition(EventId e) {
     hgcommon::PhaseTimer _pt(hgcommon::Phase::Quotient);
     qc_capture_expansion(e);
     const Event& ev = get_event(e);
-    // Through the builder for the same reason the capture is: a miss here drops the transition
-    // out of the causal skeleton the reconstruction propagates over. qc_capture_expansion has
-    // already built both, so these are cache hits.
-    const EdgeOrbitTable* in_orb = qc_orbits_or_build(ev.input_state);
-    const EdgeOrbitTable* out_orb = qc_orbits_or_build(ev.output_state);
-    if (!in_orb || !out_orb) return;
     const uint64_t from = get_state(ev.input_state).canonical_hash;
     const uint64_t to   = get_state(ev.output_state).canonical_hash;
-
-    auto mk = worker_scratch().mark();
-    SVec<uint32_t> consumed, produced;
-    for (uint8_t i = 0; i < ev.num_consumed; ++i) consumed.push_back(in_orb->orbit_of(ev.consumed_edges[i]));
-    std::sort(consumed.begin(), consumed.end());
-    for (uint8_t i = 0; i < ev.num_produced; ++i) produced.push_back(out_orb->orbit_of(ev.produced_edges[i]));
-    std::sort(produced.begin(), produced.end());
-
-    // Survivors: output edges that also live in the input state and were not freshly
-    // produced -- they passed through, carrying their producer forward. Packed as
-    // (orbit in `from` << 32 | orbit in `to`) and sorted, which is the order and the layout
-    // hgcommon::qc_transition_sig reads them in.
-    SVec<uint64_t> survivors;
-    for_each_survivor(*in_orb, *out_orb, ev.produced_edges, ev.num_produced, [&](uint32_t j, uint32_t i) {
-        survivors.push_back((static_cast<uint64_t>(in_orb->orbit[j]) << 32) | out_orb->orbit[i]);
-    });
-    std::sort(survivors.begin(), survivors.end());
-
-    const uint64_t sig = hgcommon::qc_transition_sig(
-        from, to, ev.rule_index,
-        consumed.data(), static_cast<uint32_t>(consumed.size()),
-        survivors.data(), static_cast<uint32_t>(survivors.size()));
-
-    if (!seen_transitions_.insert(sig)) { worker_scratch().release(mk); return; }  // already captured
-
-    // Copy the orbit arrays into the persistent arena, then publish the transition.
-    auto copy = [&](const SVec<uint32_t>& src) -> const uint32_t* {
-        if (src.empty()) return nullptr;
-        uint32_t* a = arena_.allocate_array<uint32_t>(src.size());
-        for (size_t i = 0; i < src.size(); ++i) a[i] = src[i];
-        return a;
-    };
-    const uint32_t nsurv = static_cast<uint32_t>(survivors.size());
-    uint32_t* sf = nsurv ? arena_.allocate_array<uint32_t>(nsurv) : nullptr;
-    uint32_t* st = nsurv ? arena_.allocate_array<uint32_t>(nsurv) : nullptr;
-    for (uint32_t i = 0; i < nsurv; ++i) {
-        sf[i] = static_cast<uint32_t>(survivors[i] >> 32);
-        st[i] = static_cast<uint32_t>(survivors[i] & 0xFFFFFFFFu);
-    }
-
+    if (!seen_transitions_.insert(hgcommon::qc_transition_key(from, to))) return;  // already captured
 
     CanonicalTransition* t = arena_.template create<CanonicalTransition>();
-    t->to_hash = to; t->sig = sig; t->canon_event = get_canonical_event(e); t->rule = ev.rule_index;
-    t->num_consumed = static_cast<uint32_t>(consumed.size());
-    t->num_produced = static_cast<uint32_t>(produced.size());
-    t->num_survivors = nsurv;
-    t->consumed_orbits = copy(consumed);
-    t->produced_orbits = copy(produced);
-    t->surv_from_orbits = sf; t->surv_to_orbits = st;
-    worker_scratch().release(mk);
+    t->to_hash = to;
 
     LockFreeList<CanonicalTransition>* lst;
     auto r = transitions_from_.lookup(from);
@@ -1473,15 +1394,15 @@ void Hypergraph::register_quotient_transition(EventId e) {
     }
     lst->push(*t, arena_);
 
-    // Drive the reconstruction: apply this newly-discovered transition at every depth its
-    // source state is already reachable at. The partner is in qc_reach, so a concurrent
+    // Reach the target at every depth the source is already reached at. The partner is in
+    // qc_reach, so a concurrent
     // "reach (from,d)" and "register t from `from`" cannot both miss each other -- whichever
     // publishes second sees the other and processes the (t, d) pair.
     hgcommon::rendezvous_barrier<hgcommon::rv::QuotientCoreHook>();
     const int maxs = qc_max_steps_.load(std::memory_order_relaxed);
     for (int d = 0; d <= maxs; ++d)
         if (qc_reached_.contains(qc_rkey(from, static_cast<uint32_t>(d))))
-            qc_process_transition(*t, from, static_cast<uint32_t>(d));
+            qc_process_transition(*t, static_cast<uint32_t>(d));
 }
 
 void Hypergraph::causal_edge_keys(StateId state, const EdgeId* edges, uint32_t n,
@@ -2038,11 +1959,6 @@ void Hypergraph::QcCtx::defer_reach(uint64_t state_hash, uint32_t depth) {
     hgcommon::qc_reach(*this, state_hash, depth);
 }
 
-void Hypergraph::QcCtx::defer_producer(uint64_t state_hash, uint32_t depth, uint32_t orbit,
-                                       uint32_t producer) {
-    hgcommon::qc_add_producer(*this, state_hash, depth, orbit, producer);
-}
-
 bool Hypergraph::QcCtx::mark_reached(uint64_t rkey, uint64_t state_hash, uint32_t depth) {
     if (!hg.qc_reached_.insert(rkey)) return false;
     // Recorded so raise_quotient_max_steps can re-drive the depths the old bound made terminal;
@@ -2051,22 +1967,9 @@ bool Hypergraph::QcCtx::mark_reached(uint64_t rkey, uint64_t state_hash, uint32_
     return true;
 }
 
-bool Hypergraph::QcCtx::mark_producer_seen(uint64_t seen_key) {
-    return hg.qc_dsup_seen_.insert(seen_key);
-}
-
-void Hypergraph::QcCtx::push_producer(uint64_t key, uint32_t producer) {
-    hg.qc_dsup_list(key)->push(producer, hg.arena_);
-}
-
-void Hypergraph::QcCtx::emit(uint32_t producer, uint32_t consumer) {
-    hg.qc_emit(producer, consumer);
-}
-
-// The host side of the shared quotient core's rendezvous hook. The core calls it at three
-// publish-then-scan points (quotient_causal_core.hpp: qc_process_transition, qc_reach,
-// qc_add_producer); the device supplies its own, which is why this is a hook and not a direct
-// barrier. One tag for the hook rather than three, because one body serves all three sites.
+// The host side of the shared quotient core's rendezvous hook, called at qc_reach's
+// publish-then-scan point; the device supplies its own, which is why this is a hook and not a
+// direct barrier.
 void Hypergraph::QcCtx::fence() { hgcommon::rendezvous_barrier<hgcommon::rv::QuotientCoreHook>(); }
 
 Hypergraph::QcCtx Hypergraph::qc_ctx() {
@@ -2440,7 +2343,6 @@ Hypergraph::Hypergraph(uint32_t capacity_scale)
     // The dedup sets are seated in the arena like every other member: a table on fresh arena
     // bytes needs no sentinel fill, and every table is reclaimed with the arena.
     seen_transitions_.set_arena(&arena_);
-    qc_dsup_seen_.set_arena(&arena_);
     qc_reached_.set_arena(&arena_);
     qc_applied_.set_arena(&arena_);
     qc_canon_event_seen_.set_arena(&arena_);

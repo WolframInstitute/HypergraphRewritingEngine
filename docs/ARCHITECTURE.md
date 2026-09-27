@@ -119,8 +119,8 @@ Boundary + tooling:
   because two raw states of one class have labelings differing by an automorphism.
   Causal edges key on `CanonicalEdgeKey` — the edge ORBIT, the only edge identity
   invariant across the labelings by which distinct parents reach one canonical state.
-  Verified against full capture across the reconstruction matrix; still default-OFF
-  (`set_quotient_reconstruction`) while the older aggregate producer-set DP ships.
+  Verified against full capture across the reconstruction matrix; it runs whenever a
+  request records causal, branchial or raw-event data.
   A request that reads the raw events and branchial pairs only as counts takes them
   from class multiplicities instead: `m(class, depth)`, the number of raw states a
   class stands for at a depth, times the class's match and overlapping-pair counts

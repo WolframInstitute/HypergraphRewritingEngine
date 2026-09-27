@@ -115,31 +115,11 @@ struct EdgeOrbitTable {
     uint32_t slot_of(EdgeId e) const;
 };
 
-// One distinct canonical transition out of a canonical state, in edge-orbit terms -- the
-// unit the quotient causal reconstruction propagates over. All raw events sharing the same
-// (from canonical state, to canonical state, rule, consumed orbits, surviving orbit map)
-// collapse to one of these; `canon_event` is a representative canonical event id used as
-// the producer/consumer identity when emitting causal edges. Orbit arrays are arena-
-// allocated and sorted. `to_hash` is the child canonical state. See the validated
-// reconstruction in tools/quotient_causal_support_probe.cpp.
+// One distinct canonical transition out of a canonical state: every raw event from one class
+// to another is one of these, listed under its source class. `to_hash` is the target class.
+// The reach marks (hgcommon/quotient_causal_core.hpp) propagate over them.
 struct CanonicalTransition {
     uint64_t to_hash = 0;
-    uint64_t sig = 0;              // dedup signature over the fields below
-    EventId canon_event = INVALID_ID;
-    RuleIndex rule = 0;
-    uint32_t num_consumed = 0, num_produced = 0, num_survivors = 0;
-    const uint32_t* consumed_orbits = nullptr;   // length num_consumed, sorted
-    const uint32_t* produced_orbits = nullptr;   // length num_produced, sorted
-    const uint32_t* surv_from_orbits = nullptr;  // length num_survivors (orbit in `from`)
-    const uint32_t* surv_to_orbits = nullptr;    // length num_survivors (orbit in `to`)
-
-    // Accessors, because hgcommon/quotient_causal_core.hpp reads the orbit arrays through them
-    // and the device packs its four into one contiguous word arena. The DP does not know or
-    // care which layout it is walking.
-    uint32_t consumed(uint32_t i) const;
-    uint32_t produced(uint32_t i) const;
-    uint32_t surv_from(uint32_t i) const;
-    uint32_t surv_to(uint32_t i) const;
 };
 
 // One match of the expanded representative of a canonical state, named in SLOTS -- the unit
