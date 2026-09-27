@@ -230,7 +230,14 @@ int main(int argc, char** argv) {
         size_t hg_arena_hw = 0, hg_arena_used = 0;  // the hypergraph arena's share, read per run
         for (int i = 0; i < iters; ++i) {
             Hypergraph g(capacity_scale_from_env());
-            g.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+            // HG_BENCH_CANON_MODE=none|automatic selects the paclet's other state modes; unset is Full.
+            {
+                const char* cm = std::getenv("HG_BENCH_CANON_MODE");
+                g.set_state_canonicalization_mode(
+                    cm && cm[0] == 'n' ? StateCanonicalizationMode::None
+                    : cm && cm[0] == 'a' ? StateCanonicalizationMode::Automatic
+                                         : StateCanonicalizationMode::Full);
+            }
             // Same knob as bench_gpu_evolve, so a CPU row and a GPU row record the same
             // artifacts. Without it the CPU would be reconstructing the raw unfolding while the
             // GPU was not, and the ratio between them would be measuring the record set rather
