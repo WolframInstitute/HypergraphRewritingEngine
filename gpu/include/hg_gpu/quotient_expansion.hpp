@@ -924,8 +924,8 @@ struct DeviceQrCtx {
         if (reduced_pairs_seen) atomicAdd(qe.num_reduced_pairs, reduced_pairs_seen);
     }
 
-    __device__ bool claim(uint64_t apply_key) {
-        return qe.applied.insert_if_absent(apply_key, 1u).inserted;
+    __device__ bool claim(const Instance& inst, const Match& m) {
+        return qe.applied.insert_if_absent(hgcommon::qr_apply_key(inst.id, m.id), 1u).inserted;
     }
     // One shared counter: every producer's id was taken before this one, so the id is above
     // them all.

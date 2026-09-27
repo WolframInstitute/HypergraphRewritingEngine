@@ -149,7 +149,11 @@ class Hypergraph {
     // (full capture fires both).
     // qc_expansion_rep_ pins the one raw state whose events define the expansion, so a second
     // raw state of the same class (a dedup race) cannot append a duplicate expansion.
-    ConcurrentMap<uint64_t, LockFreeList<SlotMatch>*> qc_expansion_;
+    struct QcExpansion {
+        LockFreeList<SlotMatch> list;
+        std::atomic<uint32_t> n{0};   // matches captured; SlotMatch::local is taken from it
+    };
+    ConcurrentMap<uint64_t, QcExpansion*> qc_expansion_;
     ConcurrentMap<uint64_t, uint64_t> qc_expansion_rep_;   // canonical hash -> StateId + 1
     std::atomic<uint32_t> qc_next_match_id_{0};
 
@@ -186,6 +190,12 @@ class Hypergraph {
         uint32_t id = 0;
         uint32_t nslots = 0;
         const uint32_t* prod = nullptr;   // length nslots; QC_NO_PRODUCER for initial edges
+        // One claim bit per class match with local index below claim_cap: the matches the class
+        // held when the instance was created. A pair past it claims in qc_applied_. Both sides of
+        // the instance/match rendezvous compare the same two fixed numbers, so a pair always
+        // claims in the same place.
+        uint32_t claim_cap = 0;
+        std::atomic<uint64_t>* claim_bits = nullptr;
     };
     // The slot-has-no-producer sentinel, from hgcommon: the replay core writes it into a
     // child's producer vector and this class reads it back, so one value or neither works.
@@ -415,6 +425,7 @@ class Hypergraph {
         size_t applied_visits = 0;
         size_t applications = 0;   // reconstruction applications this worker performed
         size_t reduced_pairs = 0;  // pairs the online reduction kept (qr_apply)
+        size_t bit_claims = 0;     // (instance, match) claims won in an instance's claim bits
     };
     mutable QcCounterSlot qc_ctr_[MAX_ARENA_WORKERS];
 
@@ -493,7 +504,7 @@ class Hypergraph {
         size_t branchial_seen = 0;
         ~QrCtx();
 
-        bool claim(uint64_t apply_key);
+        bool claim(const QcInstance& inst, const SlotMatch& m);
         uint32_t mint_event(uint32_t above);
         void record_content(uint32_t ev, uint64_t from_class, uint64_t to_class, uint32_t rule);
         hgcommon::EventSignatureKeys keys() const;
@@ -1101,7 +1112,7 @@ public:
     template <typename F>
     void for_each_expansion_match(uint64_t from_hash, F&& f) const {
         auto r = qc_expansion_.lookup(from_hash);
-        if (r.has_value()) (*r)->for_each([&](const SlotMatch& m) { f(m); });
+        if (r.has_value()) (*r)->list.for_each([&](const SlotMatch& m) { f(m); });
     }
 
     // Per-instance raw reconstruction: replays the captured expansion against every raw

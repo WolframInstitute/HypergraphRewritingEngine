@@ -41,7 +41,7 @@
 // A Ctx must supply:
 //
 //   using Instance = ...;  using Match = ...;
-//   bool     claim(uint64_t apply_key);        exactly-once on the (instance, match) pair
+//   bool     claim(const Instance&, const Match&);   exactly-once on the (instance, match) pair
 //   uint32_t mint_event(uint32_t above);   a fresh id, greater than `above` when above is not
 //                                          QR_NO_PRODUCER
 //   void     record_content(uint32_t ev, uint64_t from_class, uint64_t to_class, uint32_t rule);
@@ -178,7 +178,7 @@ HG_HD inline bool qr_consumed_overlap(const uint32_t* mine, uint32_t mine_n, con
 template <class Ctx>
 HG_HD uint32_t qr_apply(Ctx& c, const typename Ctx::Instance& inst,
                         const typename Ctx::Match& m, uint64_t state_hash, uint32_t depth) {
-    if (!c.claim(qr_apply_key(inst.id, m.id))) return INVALID_ID;
+    if (!c.claim(inst, m)) return INVALID_ID;
     // The capture and the instance disagree on how wide the class is: drop rather than
     // corrupt. A record built from a slot that means nothing replays as a wrong event, and a
     // wrong event is invisible.

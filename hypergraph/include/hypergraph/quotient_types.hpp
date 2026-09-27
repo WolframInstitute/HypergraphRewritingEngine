@@ -129,6 +129,7 @@ struct EdgeOrbitTable {
 struct SlotMatch {
     uint64_t to_hash = 0;
     uint32_t id = 0;               // dense id, unique per captured match (claims key on it)
+    uint32_t local = 0;            // dense within its class, in capture order
     RuleIndex rule = 0;
     uint32_t from_slots = 0, to_slots = 0;
     uint32_t num_consumed = 0, num_produced = 0, num_survivors = 0;

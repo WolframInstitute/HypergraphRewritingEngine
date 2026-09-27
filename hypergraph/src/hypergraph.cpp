@@ -1127,6 +1127,18 @@ void Hypergraph::qc_add_instance(uint64_t state_hash, uint32_t depth,
     inst.id = alloc_instance_id();
     inst.nslots = nslots;
     inst.prod = prod;
+    // Claim bits only for an instance that will be expanded; one at the bound claims nothing.
+    if (static_cast<int>(depth) < maxs) {
+        if (auto xr = qc_expansion_.lookup(state_hash)) {
+            inst.claim_cap = (*xr)->n.load(std::memory_order_acquire);
+            if (inst.claim_cap) {
+                const uint32_t words = (inst.claim_cap + 63u) / 64u;
+                inst.claim_bits = arena_.allocate_array<std::atomic<uint64_t>>(words);
+                for (uint32_t i = 0; i < words; ++i)
+                    inst.claim_bits[i].store(0, std::memory_order_relaxed);
+            }
+        }
+    }
 
     const uint64_t key = qc_key(state_hash, depth, 0);
     QcInstanceShards* sh;
@@ -1322,14 +1334,16 @@ void Hypergraph::qc_capture_expansion(EventId e) {
     m.consumed_slots = cs; m.produced_slots = ps;
     m.surv_from_slot = sfs; m.surv_to_slot = sts;
 
-    LockFreeList<SlotMatch>* lst;
+    QcExpansion* xp;
     auto r = qc_expansion_.lookup(from);
-    if (r.has_value()) lst = *r;
+    if (r.has_value()) xp = *r;
     else {
-        auto* nl = arena_.template create<LockFreeList<SlotMatch>>();
-        auto ins = qc_expansion_.insert_if_absent(from, nl);
-        lst = ins.second ? nl : ins.first;
+        auto* nx = arena_.template create<QcExpansion>();
+        auto ins = qc_expansion_.insert_if_absent(from, nx);
+        xp = ins.second ? nx : ins.first;
     }
+    m.local = xp->n.fetch_add(1, std::memory_order_acq_rel);
+    LockFreeList<SlotMatch>* lst = &xp->list;
     const auto* node = lst->push(m, arena_);
 
     if (!quotient_reconstruction_.load(std::memory_order_relaxed)) return;
@@ -1501,7 +1515,9 @@ size_t Hypergraph::applied_scans() const {
     return qc_ctr_total(&QcCounterSlot::applied_scans);
 }
 
-size_t Hypergraph::applied_claims() const { return qc_applied_.size(); }
+size_t Hypergraph::applied_claims() const {
+    return qc_applied_.size() + qc_ctr_total(&QcCounterSlot::bit_claims);
+}
 
 std::vector<uint32_t> Hypergraph::applied_shape() const {
     std::vector<uint32_t> lens;
@@ -1569,7 +1585,7 @@ size_t Hypergraph::captured_matches() const {
 size_t Hypergraph::reconstruction_instances() const { return num_reconstructed_instances(); }
 
 size_t Hypergraph::applied_unique() const {
-    return qc_applied_.count_enumerated();
+    return qc_applied_.count_enumerated() + qc_ctr_total(&QcCounterSlot::bit_claims);
 }
 
 // Simple hash of a state's edge SET -- fast, and not isomorphism-invariant. Its neighbours
@@ -1911,7 +1927,16 @@ const GlobalCounters& Hypergraph::counters() const { return counters_; }
 // DOES is in hgcommon, which is the body the device runs too. The core is instantiated in this
 // translation unit and nowhere else, which is what lets these bodies live here.
 
-bool Hypergraph::QrCtx::claim(uint64_t apply_key) { return hg.qc_applied_.insert(apply_key); }
+bool Hypergraph::QrCtx::claim(const QcInstance& inst, const SlotMatch& m) {
+    if (m.local < inst.claim_cap) {
+        const uint64_t bit = uint64_t{1} << (m.local & 63u);
+        if (inst.claim_bits[m.local >> 6].fetch_or(bit, std::memory_order_acq_rel) & bit)
+            return false;
+        ++qc_slot(hg.qc_ctr_).bit_claims;
+        return true;
+    }
+    return hg.qc_applied_.insert(hgcommon::qr_apply_key(inst.id, m.id));
+}
 
 uint32_t Hypergraph::QrCtx::mint_event(uint32_t above) {
     HG_STAT(++qc_slot(hg.qc_ctr_).applications);
