@@ -22,8 +22,15 @@ must equal the source's file name. A source whose Name differs, or whose noteboo
 REPORTED rather than skipped, because a silent skip is how a check stops checking; so is a
 notebook no source maps to.
 
+A SHALLOW CLONE is refused (exit 2): its one grafted commit touches every path, so every source
+and notebook compare equal and the check would pass without comparing anything.
+
+AN UNEVALUATED NOTEBOOK IS REPORTED. A notebook whose source has a ```wl fence must carry at
+least one Output, Print or Message cell. A notebook built without evaluation has the right path
+and a newer commit than its source, so the commit comparison alone passes it.
+
 Usage:  tools/dev/docs_fresh_check.py
-Exit:   0 clean, 1 stale or unmappable, 2 could not run git
+Exit:   0 clean, 1 stale, unmappable or unevaluated, 2 could not run git or shallow clone
 """
 
 import re
@@ -41,6 +48,19 @@ KIND_DIR = {
     "Guide": OUT_DIR / "Guides",
     "TechNote": OUT_DIR / "Tutorials",
 }
+
+
+# An evaluating fence in a source page.
+WL_FENCE_RE = re.compile(r"^```[ \t]*(?:wl|wolfram|mathematica)\b", re.MULTILINE | re.IGNORECASE)
+# Cell styles only an evaluation produces. Inside a notebook string a quote is escaped (\"), so an
+# unescaped "Output" is a cell style, not text.
+EVALUATED_CELL_RE = re.compile(r'(?<!\\)"(?:Output|Print|Message)"')
+
+
+def shallow_clone():
+    out = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--is-shallow-repository"],
+                         capture_output=True, text=True)
+    return out.returncode != 0 or out.stdout.strip() != "false"
 
 
 def last_commit_epoch(path: Path):
@@ -69,6 +89,10 @@ def main():
     if not SRC_DIR.is_dir():
         print(f"docs_fresh_check: no source directory at {SRC_DIR}", file=sys.stderr)
         return 2
+    if shallow_clone():
+        print("docs_fresh_check: shallow clone (or git failed); commit times cannot be compared. "
+              "Fetch the full history.", file=sys.stderr)
+        return 2
 
     findings = []
     checked = 0
@@ -89,6 +113,11 @@ def main():
             findings.append(f"{md.relative_to(ROOT)}: no notebook at {nb.relative_to(ROOT)}. "
                             f"Run ./build_docs.sh and commit the result.")
             continue
+
+        if WL_FENCE_RE.search(md.read_text(errors="replace")) and \
+                not EVALUATED_CELL_RE.search(nb.read_text(errors="replace")):
+            findings.append(f"{nb.relative_to(ROOT)}: UNEVALUATED -- its source has wl examples "
+                            f"and it has no Output, Print or Message cell. Build with evaluation.")
 
         src_t = last_commit_epoch(md)
         nb_t = last_commit_epoch(nb)
