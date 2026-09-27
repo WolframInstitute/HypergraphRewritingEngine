@@ -1472,9 +1472,11 @@ void Hypergraph::causal_edge_keys(StateId state, const EdgeId* edges, uint32_t n
         key ^= found ? static_cast<uint64_t>(orb)
                      : (0xFFFFFFFF00000000ULL | e);
         key *= 1099511628211ULL;
-        // Clear the top bit so the key lands in [0, 2^63), below the storage map's reserved
-        // sentinel band -- costs one hash bit, still ample for collision resistance.
+        // Bit 63 clear keeps the key below the storage map's reserved sentinel band, and bit 62
+        // set keeps it above every raw edge id, which is what tells the causal graph's storage
+        // the two kinds apart (CausalGraph::key_is_edge_id). Two hash bits, 62 remain.
         key &= ~(1ULL << 63);
+        key |= (1ULL << 62);
         return CanonicalEdgeKey{key};
     };
     // The orbits were computed and cached when the state was created

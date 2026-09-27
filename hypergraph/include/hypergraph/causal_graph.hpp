@@ -72,13 +72,21 @@ class CausalGraph {
     // the strongly-typed CanonicalEdgeKey is unwrapped to its .value only at this boundary.
     // Sentinels sit in a reserved high band so that a non-quotient key -- a raw EdgeId,
     // which is 32-bit and includes 0 -- is always a valid key; causal_edge_keys masks its
-    // orbit-hash keys into [0, 2^63) so they never collide with the band either.
+    // orbit-hash keys into [2^62, 2^63) so they never collide with the band either.
     static constexpr uint64_t CE_MAP_EMPTY = 1ULL << 63;
     static constexpr uint64_t CE_MAP_LOCKED = (1ULL << 63) + 1;
     ConcurrentMap<uint64_t, LockFreeList<EventId>*, CE_MAP_EMPTY, CE_MAP_LOCKED> edge_producers_;
 
     // Per-key consumer set (appended when the canonical edge is consumed).
     ConcurrentMap<uint64_t, LockFreeList<EventId>*, CE_MAP_EMPTY, CE_MAP_LOCKED> edge_consumers_;
+
+    // The same two sets when the key IS a raw edge id, which is below 2^32 (every run except
+    // quotient exploration of Full states, whose orbit keys have bit 62 set): arrays indexed by
+    // the id, one load where the maps take a hash probe. The two maps were 19% of the
+    // instructions of a run with states not canonicalized.
+    SegmentedArray<LockFreeList<EventId>> edge_producers_by_id_;
+    SegmentedArray<LockFreeList<EventId>> edge_consumers_by_id_;
+    static bool key_is_edge_id(CanonicalEdgeKey k) { return k.value < (1ULL << 32); }
 
     // Per-state event lists for branchial tracking
     // Maps StateId -> list of events that have this state as input
