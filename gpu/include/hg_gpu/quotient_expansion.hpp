@@ -187,8 +187,8 @@ struct QeWork {
 // Words per raw event in QeView::event_kept, and the local arrays the replay's redundancy search
 // runs in before its block-scratch fallback (the sizes the full capture's search uses).
 constexpr uint32_t kQeKeptStride = 5;
-constexpr uint32_t kQeReachStack = 256;
-constexpr uint32_t kQeReachTable = 512;   // power of two
+constexpr uint32_t kQeReachStack = 64;
+constexpr uint32_t kQeReachTable = 128;   // power of two
 
 struct QeView {
     typename Pool<DeviceSlotMatch>::DeviceView          matches;
