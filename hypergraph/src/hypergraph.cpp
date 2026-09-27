@@ -6,6 +6,8 @@
 // hypergraph.cpp - Implementation of Hypergraph class non-template methods
 
 #include "hypergraph/hypergraph.hpp"
+#include "hgcommon/reach_core.hpp"
+#include "hypergraph/scratch_alloc.hpp"
 
 #include "hypergraph/ir_canonicalization.hpp"
 #include "hgcommon/ir_core.hpp"
@@ -1575,13 +1577,7 @@ size_t Hypergraph::num_reconstructed_causal_edges() const {
 }
 
 size_t Hypergraph::num_reconstructed_causal_pairs(bool transitively_reduced) const {
-    if (transitively_reduced) {
-        size_t n = 0;
-        for_each_reconstructed_causal_as(
-            /*reduced=*/true, [](uint32_t e) { return e; },
-            [&](uint64_t, uint64_t) { ++n; });
-        return n;
-    }
+    if (transitively_reduced) return qc_ctr_total(&QcCounterSlot::reduced_pairs);
     return qc_causal_pairs_count();
 }
 
@@ -2074,6 +2070,31 @@ void Hypergraph::QrCtx::record_causal(uint32_t producer, uint32_t consumer, bool
     hg.qc_record_causal(producer, consumer, distinct_pair);
 }
 
+uint32_t Hypergraph::QrCtx::redundant(const uint32_t* producers, uint32_t n) const {
+    if (n < 2) return 0;
+    const Hypergraph& g = hg;
+    auto ctx = make_scratch_reach_ctx([&](uint32_t x, auto&& f) {
+        if (const QcKept* k = g.qc_kept_.get(qc_ev_slot(x)))
+            for (uint32_t i = 0; i < k->n; ++i) f(k->at(i));
+    });
+    // A producer's application minted its id before the descent that led here, so ids increase
+    // along every edge of this relation.
+    return hgcommon::redundant_producers(ctx, producers, n, /*topological=*/true);
+}
+
+void Hypergraph::QrCtx::record_kept(uint32_t ev, const uint32_t* kept, uint32_t nkept) {
+    if (nkept == 0) return;
+    QcKept k{nkept, {0, 0, 0}, nullptr};
+    for (uint32_t i = 0; i < nkept && i < 3; ++i) k.inl[i] = kept[i];
+    if (nkept > 3) {
+        uint32_t* rest = hg.arena_.allocate_array<uint32_t>(nkept - 3);
+        for (uint32_t i = 3; i < nkept; ++i) rest[i - 3] = kept[i];
+        k.more = rest;
+    }
+    hg.qc_kept_.emplace_at(qc_ev_slot(ev), hg.arena_, k);
+    qc_slot(hg.qc_ctr_).reduced_pairs += nkept;
+}
+
 bool Hypergraph::QrCtx::applied_ref_valid(AppliedRef r) { return r != nullptr; }
 
 Hypergraph::QrCtx::AppliedRef Hypergraph::QrCtx::publish_applied(const QcInstance& inst,
@@ -2329,6 +2350,7 @@ Hypergraph::Hypergraph(uint32_t capacity_scale)
           decltype(event_canonical_state_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
     , qc_inst_applied_(seg_shift_for(capacity_scale))
     , qc_event_sig_(seg_shift_for(capacity_scale))
+    , qc_kept_(seg_shift_for(capacity_scale))
     , qc_event_runsig_(seg_shift_for(capacity_scale))
     , canonical_event_map_(decltype(canonical_event_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
 

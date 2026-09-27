@@ -1,5 +1,6 @@
 #include "hgcommon/core.hpp"
 #include "hgcommon/rendezvous.hpp"
+#include "hgcommon/reach_core.hpp"
 #include "hgcommon/transitive_reduction.hpp"
 #include "hgcommon/namespace.hpp"
 // causal_graph.cpp - Implementation of CausalGraph class
@@ -36,37 +37,14 @@ LockFreeList<EventId>* CausalGraph::get_or_create_edge_consumers(CanonicalEdgeKe
 }
 
 bool CausalGraph::is_reachable(EventId producer, EventId consumer) const {
-    if (producer == consumer) return true;
-    // Both shortcuts below hold only while ids increase along every causal edge. When they do,
-    // an ancestor's id is strictly smaller than its descendant's, so a producer with id >= its
-    // consumer's cannot reach it and any node with id < producer's is out of the cone. The
-    // quotient reconstruction emits between canonical ids, which are not monotonic, and there
-    // the walk must run unpruned or it misses paths that exist.
+    // The pruning to ids above the producer holds only while ids increase along every causal
+    // edge. The quotient reconstruction emits between canonical ids, which are not monotonic,
+    // and there the walk runs unpruned or it misses paths that exist.
     const bool topo = ids_are_topological_.load(std::memory_order_relaxed);
-    if (topo && producer >= consumer) return false;
-
-    // Backward BFS from consumer over the reduced predecessor adjacency, searching
-    // for producer and pruning to ids >= producer. Scratch lives in the calling
-    // worker's arena (bulk-reclaimed per task).
-    SVec<EventId> stack;
-    ScratchIdSet visited;
-    stack.push_back(consumer);
-    visited.insert(consumer);
-    while (!stack.empty()) {
-        EventId x = stack.back();
-        stack.pop_back();
-        const LockFreeList<EventId>* pl = preds_.get(x);
-        if (!pl) continue;
-        bool found = false;
-        pl->for_each([&](EventId q) {
-            if (found) return;
-            if (q == producer) { found = true; return; }
-            // q < producer can neither be producer nor have it as an ancestor; skip.
-            if ((!topo || q > producer) && visited.insert(q)) stack.push_back(q);
-        });
-        if (found) return true;
-    }
-    return false;
+    auto ctx = make_scratch_reach_ctx([this](uint32_t x, auto&& f) {
+        if (const LockFreeList<EventId>* pl = preds_.get(x)) pl->for_each(f);
+    });
+    return hgcommon::reach_backward(ctx, producer, consumer, topo);
 }
 
 // The reduction of the STORED relation. A pair (p,c) is redundant iff c is reachable from p by

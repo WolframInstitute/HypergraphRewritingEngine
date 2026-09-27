@@ -1,6 +1,5 @@
 #pragma once
 #include "hgcommon/core.hpp"
-#include "hgcommon/transitive_reduction.hpp"
 #include "hgcommon/namespace.hpp"
 
 #include <cstdint>
@@ -270,14 +269,9 @@ class Hypergraph {
     std::atomic<uint64_t> qm_branchial_{0};
     std::atomic<bool> qm_saturated_{false};
 
-    // Reconstructed causal relation over raw event ids: THE base, and the only thing stored.
-    // Both views come from it -- TR-off enumerates it, TR-on reduces it under hgcommon::tr_reduce
-    // -- so neither view depends on the order the pairs arrived in.
+    // The reconstructed causal relation over raw event ids, every pair: the TR-off view. The
+    // reduction is kept separately, per consumer, in qc_kept_.
     //
-    // The set is what makes that true. A pair (p,c) is in the reduction exactly when no longer
-    // path bypasses it, which is a property of the finished relation; deciding it as each pair
-    // lands answers against the pairs seen so far and gets a different answer depending on
-    // whether the bypassing path arrived first.
     // (producer, consumer) PAIRS, ONE APPEND-ONLY LIST PER WORKER, and no dedup structure.
     //
     // This was a shared set because the pairs looked like they needed deduplicating. They do
@@ -309,6 +303,19 @@ class Hypergraph {
     // events is built from. Held as the three COMPONENTS rather than their hash: the hash
     // identifies an event and cannot describe one, and a vertex needs its endpoints.
     SegmentedArray<QcEventContent> qc_event_sig_;
+
+    // Per reconstructed event, the producers its transitive reduction kept: THE reduced relation,
+    // enumerated as it stands, and the predecessor adjacency the online search walks. Written
+    // once, by the event's own application before its descent; indexed through qc_ev_slot. A
+    // slot never written reads as zero producers.
+    // Up to three producers inline, which is every left-hand side of three edges or fewer.
+    struct QcKept {
+        uint32_t n;
+        uint32_t inl[3];
+        const uint32_t* more;   // producers 3.. when n > 3
+        uint32_t at(uint32_t i) const { return i < 3 ? inl[i] : more[i - 3]; }
+    };
+    SegmentedArray<QcKept> qc_kept_;
 
     // WHERE EVENT `e`'S CONTENT LIVES, which is deliberately NOT slot e.
     //
@@ -364,6 +371,7 @@ class Hypergraph {
         size_t applied_scans = 0;
         size_t applied_visits = 0;
         size_t applications = 0;   // reconstruction applications this worker performed
+        size_t reduced_pairs = 0;  // pairs the online reduction kept (qr_apply)
     };
     mutable QcCounterSlot qc_ctr_[MAX_ARENA_WORKERS];
 
@@ -494,6 +502,8 @@ class Hypergraph {
         bool want_branchial() const;
         uint32_t producer_at(const QcInstance& inst, uint32_t slot) const;
         void record_causal(uint32_t producer, uint32_t consumer, bool distinct_pair);
+        uint32_t redundant(const uint32_t* producers, uint32_t n) const;
+        void record_kept(uint32_t ev, const uint32_t* kept, uint32_t nkept);
         using AppliedRef = const LockFreeList<QcAppliedMatch>::Node*;
         static bool applied_ref_valid(AppliedRef r);
         AppliedRef publish_applied(const QcInstance& inst, const SlotMatch& m, uint32_t ev);
@@ -1279,8 +1289,8 @@ public:
 
     // Visit the reconstructed causal relation as pairs of isomorphism-invariant event
     // signatures. `reduced` selects the view: false walks every recorded pair (TR off), true
-    // walks only those tagged in-reduction (TR on). Both come from the same online base, so
-    // either view is available in any order at no extra cost.
+    // walks the pairs the online reduction kept (TR on). Both are maintained as the replay runs,
+    // so either is a walk over stored pairs.
     template <typename F>
     void for_each_reconstructed_causal(bool reduced, F&& f) const {
         for_each_reconstructed_causal_as(
@@ -1303,21 +1313,14 @@ public:
     template <typename Id, typename F>
     void for_each_reconstructed_causal_as(bool reduced, Id&& id, F&& f) const {
         if (reduced) {
-            // Reduced FROM THE STORED SET, under the one shared rule. The reduction of a DAG is
-            // unique, so this is a function of the relation and not of the schedule that built
-            // it -- which a tag decided as each pair arrived is not, because the pairs that
-            // bypass (p,c) may land after it and nothing retracts the tag.
-            hgcommon::tr_reduce(
-                [&](auto&& add) {
-                    qc_causal_pairs_for_each([&](uint64_t k) {
-                        const IdPair q = id_pair_from_key(k);
-                        add(q.a, q.b);
-                    });
-                },
-                [&](uint32_t p, uint32_t c) { f(id(p), id(c)); },
-                // qc_apply mints a producer's id before creating the child instance whose later
-                // application mints the consumer's, so ids increase along every edge here.
-                /*ids_topological=*/true);
+            // The kept sets ARE the reduction: qr_apply decides it online, exactly (see
+            // quotient_replay_core.hpp), so reading it is a walk over what was kept.
+            const uint32_t n = qc_next_raw_event_.load(std::memory_order_relaxed);
+            for (uint32_t c = 0; c < n; ++c) {
+                const QcKept* k = qc_kept_.get(qc_ev_slot(c));
+                if (!k) continue;
+                for (uint32_t i = 0; i < k->n; ++i) f(id(k->at(i)), id(c));
+            }
         } else {
             qc_causal_pairs_for_each([&](uint64_t k) {
                 const IdPair p = id_pair_from_key(k);

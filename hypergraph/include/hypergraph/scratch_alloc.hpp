@@ -11,6 +11,7 @@
 #include <unordered_set>
 #include <type_traits>
 #include <utility>
+#include <optional>
 #include <vector>
 
 namespace HG_NAMESPACE {
@@ -180,6 +181,62 @@ template<class K, class V, class H = std::hash<K>, class E = std::equal_to<K>>
     using SUMap = std::unordered_map<K, V, H, E, ScratchAlloc<std::pair<const K, V>>>;
 template<class K, class V, class H = std::hash<K>, class E = std::equal_to<K>>
     using PUMap = std::unordered_map<K, V, H, E, PersistAlloc<std::pair<const K, V>>>;
+
+// Host storage for the hgcommon/reach_core.hpp searches: a stack and a visited table in fixed
+// local arrays, which hold almost every search, spilling to the calling worker's scratch arena
+// when either fills. Built fresh for each search, so reset() has only the stack to empty.
+template <class ForEachPred>
+struct ScratchReachCtx {
+    static constexpr uint32_t kStack = 64;
+    static constexpr uint32_t kTable = 128;              // power of two; entries hold id + 1
+    ForEachPred preds;
+    uint32_t sp = 0;
+    uint32_t used = 0;
+    uint32_t stack[kStack];
+    uint32_t table[kTable] = {};
+    std::optional<SVec<uint32_t>> more_stack;
+    std::optional<ScratchIdSet> more_seen;
+
+    explicit ScratchReachCtx(ForEachPred p) : preds(p) {}
+    void reset() { sp = 0; if (more_stack) more_stack->clear(); }
+    bool visit(uint32_t x) {
+        if (more_seen) return more_seen->insert(x);
+        uint32_t i = (x * 2654435761u) & (kTable - 1);
+        while (table[i] != 0) {
+            if (table[i] == x + 1) return false;
+            i = (i + 1) & (kTable - 1);
+        }
+        if (4 * (used + 1) > 3 * kTable) {           // over 3/4: move to the scratch set
+            more_seen.emplace(2 * kTable);
+            for (uint32_t k = 0; k < kTable; ++k)
+                if (table[k] != 0) more_seen->insert(table[k] - 1);
+            return more_seen->insert(x);
+        }
+        table[i] = x + 1;
+        ++used;
+        return true;
+    }
+    void push(uint32_t x) {
+        if (sp < kStack) { stack[sp++] = x; return; }
+        if (!more_stack) more_stack.emplace();
+        more_stack->push_back(x);
+    }
+    bool pop(uint32_t& x) {
+        if (more_stack && !more_stack->empty()) {
+            x = more_stack->back();
+            more_stack->pop_back();
+            return true;
+        }
+        if (sp == 0) return false;
+        x = stack[--sp];
+        return true;
+    }
+    template <class F> void for_each_pred(uint32_t x, F&& f) { preds(x, f); }
+};
+template <class ForEachPred>
+ScratchReachCtx<ForEachPred> make_scratch_reach_ctx(ForEachPred preds) {
+    return ScratchReachCtx<ForEachPred>(preds);
+}
 
 }  // namespace engine
 }  // namespace HG_NAMESPACE

@@ -173,8 +173,9 @@ whether pairs involving genesis events are part of the observable relation.
 *only* (never states, events, or branchial), and removes a pair `p → c` when a longer directed
 path `p ⇝ c` exists. The reduction of a DAG is unique, so the reduced relation is a function of
 the relation and not of the insertion schedule. Under full capture a redundant pair is dropped at
-registration; under the reconstruction (§5.4) every pair is stored and the reduction is computed
-on read by the same shared rule. *(Gate: order-independence at 1–16 threads,
+registration; under the reconstruction (§5.4) the replay decides it as each event's producers
+are recorded, over all of them at once (`hgcommon::redundant_producers`); the relation between
+canonical event ids, served when the replay is off, is reduced on read (`hgcommon::tr_reduce`). *(Gate: order-independence at 1–16 threads,
 `causal_tr_exactness_probe`; both mechanisms measure ALL EXACT.)*
 
 **One relation.** The causal relation reaches a caller in three shapes, and they are the same
@@ -240,7 +241,9 @@ Wolfram Language from a raw run.)*
 1. **quotient ≡ full capture** on every observable, incl. cyclic rules — `cost_matrix` (oracle
    EXACT), `RelationCoherence`, the golden corpus (12/12, CPU == GPU).
 2. **TR = the transitive reduction** of the causal DAG, order-independent —
-   `causal_tr_exactness_probe`, the reduction rule shared as `hgcommon::tr_reduce`.
+   `causal_tr_exactness_probe`, `CausalTrExactnessTest.*` (the replay's kept set equals the
+   reduction of its own stored relation at 1-64 workers), the search shared as
+   `hgcommon/reach_core.hpp`.
 3. **Schedule-independence** of the whole observable output — `CausalDeterminism.*` (fingerprints
    at 1–32 threads, per-run claim/enumeration invariants), `SamplingReproducibility.*`.
 4. **The concurrent structures enumerate what they claim** — the GenMC suite (19 harnesses; the

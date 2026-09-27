@@ -1,4 +1,5 @@
 #include "hgcommon/namespace.hpp"
+#include "hgcommon/reach_core.hpp"
 #include "hg_gpu/edge_signature.hpp"
 #include "hgcommon/core.hpp"          // id_key -- the packed-pair rule, shared with the host
 #include "hgcommon/rewrite_core.hpp"  // shared with the host rewriter
@@ -66,60 +67,23 @@ __device__ uint64_t branchial_pair_key(EventId a, EventId b) {
 constexpr uint32_t kReachStack   = 256;
 constexpr uint32_t kReachVisited = 512;   // power of two; entries store id + 1, 0 = empty
 
-// One backward search from c for p through preds_list, in the given stack and visited table.
-// Returns whether p was found; sets `overflow` when either filled before the search finished.
-__device__ bool reach_search(DeviceState ds, EventId p, EventId c, EventId* stack,
-                             uint32_t stack_cap, uint32_t* visited, uint32_t visited_cap,
-                             bool& overflow) {
-    for (uint32_t i = 0; i < visited_cap; ++i) visited[i] = 0;
-    overflow = false;
-    auto visit = [&](EventId x) -> bool {   // true iff newly inserted
-        uint32_t slot = (x * 2654435761u) & (visited_cap - 1u);
-        for (uint32_t probe = 0; probe < visited_cap; ++probe) {
-            const uint32_t held = visited[slot];
-            if (held == x + 1u) return false;
-            if (held == 0u) { visited[slot] = x + 1u; return true; }
-            slot = (slot + 1u) & (visited_cap - 1u);
-        }
-        overflow = true;   // table full: treat as seen, which can only under-explore
-        return false;
-    };
-    uint32_t sp = 0;
-    stack[sp++] = c;
-    visit(c);
-    while (sp > 0) {
-        const EventId x = stack[--sp];
-        bool found = false;
-        ds.preds_list.for_each(x, [&](EventId q) {
-            if (found) return;
-            if (q == p) { found = true; return; }
-            if (q > p && visit(q)) {
-                if (sp < stack_cap) stack[sp++] = q;
-                else overflow = true;
-            }
-        });
-        if (found) return true;
-    }
-    return false;
-}
-
 __device__ bool is_reachable_preds(DeviceState ds, EventId p, EventId c) {
-    if (p == c) return true;
-    if (p >= c) return false;
-
+    auto preds = [&](uint32_t x, auto&& f) { ds.preds_list.for_each(x, f); };
     EventId  stack[kReachStack];
     uint32_t visited[kReachVisited];
-    bool overflow = false;
-    if (reach_search(ds, p, c, stack, kReachStack, visited, kReachVisited, overflow)) return true;
-    if (!overflow) return false;
+    hgcommon::BoundedReachCtx<decltype(preds)> local(preds, stack, kReachStack, visited,
+                                                     kReachVisited);
+    if (hgcommon::reach_backward(local, p, c, /*topological=*/true)) return true;
+    if (!local.overflow) return false;
 
     if (ds.tr_scratch != nullptr && threadIdx.x == 0 && blockIdx.x < ds.tr_scratch_slots) {
         uint32_t* slice = ds.tr_scratch + static_cast<size_t>(blockIdx.x) *
                                               (ds.tr_scratch_stack + ds.tr_scratch_visited);
-        if (reach_search(ds, p, c, slice, ds.tr_scratch_stack, slice + ds.tr_scratch_stack,
-                         ds.tr_scratch_visited, overflow))
-            return true;
-        if (!overflow) return false;
+        hgcommon::BoundedReachCtx<decltype(preds)> wide(preds, slice, ds.tr_scratch_stack,
+                                                        slice + ds.tr_scratch_stack,
+                                                        ds.tr_scratch_visited);
+        if (hgcommon::reach_backward(wide, p, c, /*topological=*/true)) return true;
+        if (!wide.overflow) return false;
     }
     ds.errors.record(ErrorKind::kTrScratchOverflow);
     return false;

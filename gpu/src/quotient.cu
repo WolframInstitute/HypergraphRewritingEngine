@@ -125,6 +125,7 @@ QeState::QeState(bool on, uint32_t max_events): matches_(on ? max_events : 1u),
         num_causal_pairs_  = counters_ + 7;
         num_causal_edges_  = counters_ + 8;
         num_branchial_     = counters_ + 9;
+        num_reduced_pairs_ = counters_ + 12;
         // counters_ + 10 and + 11: the multiplicity point and consumed-cell cursors.
         HG_CUDA_CHECK(cudaMalloc(&qm_words_, sizeof(unsigned long long) * (2ull * qm_capacity_ + 3u)),
                       "QeState multiplicity alloc");
@@ -139,6 +140,9 @@ QeState::QeState(bool on, uint32_t max_events): matches_(on ? max_events : 1u),
                       "QeState event sig alloc");
         HG_CUDA_CHECK(cudaMalloc(&event_runsig_, sizeof(uint64_t) * event_sig_capacity_),
                       "QeState event runsig alloc");
+        HG_CUDA_CHECK(cudaMalloc(&event_kept_,
+                                 sizeof(uint32_t) * kQeKeptStride * size_t(event_sig_capacity_)),
+                      "QeState event kept alloc");
         clear();
     }
 
@@ -148,6 +152,7 @@ QeState::~QeState() {
         if (counters_) cudaFree(counters_);
         if (event_sig_) cudaFree(event_sig_);
         if (event_runsig_) cudaFree(event_runsig_);
+        if (event_kept_) cudaFree(event_kept_);
         if (event_from_class_) cudaFree(event_from_class_);
         if (event_to_class_) cudaFree(event_to_class_);
         if (event_rule_) cudaFree(event_rule_);
@@ -187,6 +192,10 @@ void QeState::clear() {
         HG_CUDA_CHECK(cudaMemset(num_causal_pairs_, 0, sizeof(uint32_t)), "QeState c-pairs clear");
         HG_CUDA_CHECK(cudaMemset(num_causal_edges_, 0, sizeof(uint32_t)), "QeState c-edges clear");
         HG_CUDA_CHECK(cudaMemset(num_branchial_, 0, sizeof(uint32_t)), "QeState branchial clear");
+        HG_CUDA_CHECK(cudaMemset(num_reduced_pairs_, 0, sizeof(uint32_t)), "QeState reduced clear");
+        HG_CUDA_CHECK(cudaMemset(event_kept_, 0,
+                                 sizeof(uint32_t) * kQeKeptStride * size_t(event_sig_capacity_)),
+                      "QeState event kept clear");
         HG_CUDA_CHECK(cudaMemset(event_sig_, 0, sizeof(uint64_t) * event_sig_capacity_),
                       "QeState event sig clear");
         HG_CUDA_CHECK(cudaMemset(event_runsig_, 0, sizeof(uint64_t) * event_sig_capacity_),
@@ -244,6 +253,7 @@ void QeState::class_multiplicities_host(std::vector<ClassMultiplicity>& points,
 uint32_t QeState::num_raw_events_host() { return read_counter(next_raw_event_, "QeState raw event read"); }
 
 uint32_t QeState::num_causal_pairs_host() { return read_counter(num_causal_pairs_, "QeState c-pairs read"); }
+uint32_t QeState::num_reduced_pairs_host() { return read_counter(num_reduced_pairs_, "QeState reduced read"); }
 
 uint32_t QeState::num_causal_edges_host() { return read_counter(num_causal_edges_, "QeState c-edges read"); }
 
@@ -299,28 +309,35 @@ void QeState::reconstructed_pairs_host(std::vector<std::pair<uint64_t, uint64_t>
         };
         drain(causal_pairs_, causal);
 
-        // THE REDUCED VIEW, from the same stored relation and the same rule the host engine
-        // uses. It is computed here rather than on the device for two reasons: which pairs
-        // survive is a property of the FINISHED relation, and a device that tagged each pair as
-        // it landed would answer against whatever the warps had produced so far; and the
-        // reduction runs over event IDS, whose order carries the reachability prune, while
-        // these vectors carry signatures and two events may share one.
-        std::vector<uint64_t> ckeys;
-        causal_pairs_.copy_keys_to_host(ckeys);
-        hgcommon::tr_reduce(
-            [&](auto&& add) {
-                for (uint64_t k : ckeys) {
-                    const hgcommon::IdPair p = hgcommon::id_pair_from_key(k);
-                    add(static_cast<uint32_t>(p.a), static_cast<uint32_t>(p.b));
+        // THE REDUCED VIEW, as the replay kept it: each event's kept producers, decided online in
+        // qr_apply by the rule the host engine uses (hgcommon::redundant_producers).
+        {
+            const uint32_t m = std::min(n, event_sig_capacity_);
+            std::vector<uint32_t> kept(size_t(kQeKeptStride) * m);
+            if (m)
+                HG_CUDA_CHECK(cudaMemcpy(kept.data(), event_kept_, sizeof(uint32_t) * kept.size(),
+                                         cudaMemcpyDeviceToHost), "QeState event kept read");
+            std::vector<uint32_t> spill;
+            auto spill_word = [&](uint32_t off) -> uint32_t {
+                if (spill.empty()) {
+                    uint32_t used = 0;
+                    HG_CUDA_CHECK(cudaMemcpy(&used, cursor_, sizeof(uint32_t),
+                                             cudaMemcpyDeviceToHost), "QeState cursor read");
+                    spill.resize(std::max<uint32_t>(used, 1u));
+                    HG_CUDA_CHECK(cudaMemcpy(spill.data(), arr_, sizeof(uint32_t) * used,
+                                             cudaMemcpyDeviceToHost), "QeState arr read");
                 }
-            },
-            [&](uint32_t a, uint32_t b) {
-                causal_reduced.emplace_back(sig_of(a), sig_of(b));
-                if (causal_raw_reduced) causal_raw_reduced->emplace_back(a, b);
-            },
-            // A producer wrote the slot its consumer reads, so its application minted the
-            // lower id: ids increase along every causal edge of this relation.
-            /*ids_topological=*/true);
+                return off < spill.size() ? spill[off] : 0u;
+            };
+            for (uint32_t c = 0; c < m; ++c) {
+                const uint32_t* k = kept.data() + size_t(kQeKeptStride) * c;
+                for (uint32_t i = 0; i < k[0]; ++i) {
+                    const uint32_t a2 = i < 3u ? k[1 + i] : spill_word(k[4] + (i - 3u));
+                    causal_reduced.emplace_back(sig_of(a2), sig_of(c));
+                    if (causal_raw_reduced) causal_raw_reduced->emplace_back(a2, c);
+                }
+            }
+        }
 
         if (!want_branchial) return;
 
@@ -454,6 +471,8 @@ QeView QeState::view(uint32_t max_steps, EventSignatureKeys keys,
         q.causal_pairs   = causal_pairs_.view();
         q.num_causal_pairs = num_causal_pairs_;
         q.num_causal_edges = num_causal_edges_;
+        q.event_kept       = event_kept_;
+        q.num_reduced_pairs = num_reduced_pairs_;
         q.keys           = keys;
         q.align_fail     = align_fail_;
         q.next_raw_event = next_raw_event_;

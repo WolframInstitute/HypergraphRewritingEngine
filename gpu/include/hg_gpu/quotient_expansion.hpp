@@ -1,6 +1,5 @@
 #pragma once
 #include <unordered_map>
-#include "hgcommon/transitive_reduction.hpp"
 #include "hgcommon/namespace.hpp"
 //
 // Expansion capture, device side: the per-class list of matches in FRAME SLOTS -- the device
@@ -39,6 +38,7 @@
 #include "hgcommon/quotient_replay_core.hpp"  // qr_apply -- the replay, and the identity it mints
 #include "hgcommon/quotient_multiplicity_core.hpp"  // qm_pass -- raw counts from class multiplicities
 #include "hgcommon/quotient_causal_core.hpp"  // qc_key -- the (class, depth, orbit) key rule
+#include "hgcommon/reach_core.hpp"  // redundant_producers -- the online reduction
 
 #include <cuda/atomic>
 
@@ -184,6 +184,12 @@ struct QeWork {
     }
 };
 
+// Words per raw event in QeView::event_kept, and the local arrays the replay's redundancy search
+// runs in before its block-scratch fallback (the sizes the full capture's search uses).
+constexpr uint32_t kQeKeptStride = 5;
+constexpr uint32_t kQeReachStack = 256;
+constexpr uint32_t kQeReachTable = 512;   // power of two
+
 struct QeView {
     typename Pool<DeviceSlotMatch>::DeviceView          matches;
     typename LockFreeList<QeMatchRef>::DeviceView       by_from;   // bucket(from_hash)
@@ -216,6 +222,13 @@ struct QeView {
     DedupMap::DeviceView causal_pairs;
     uint32_t* num_causal_pairs;
     uint32_t* num_causal_edges;
+    // Per raw event, the producers the online transitive reduction kept (qr_apply, through
+    // hgcommon::redundant_producers), kQeKeptStride words each: the count, three producers inline,
+    // and the arr_words offset of the rest when the count exceeds three. Written by the event's
+    // own application before its descent and read by later events' searches through L2. The
+    // host's qc_kept_. Null when causal is not recorded.
+    uint32_t* event_kept;
+    uint32_t* num_reduced_pairs;
 
 
     // The reconstructed branchial relation lives in `inst_applied` and nowhere else. It is
@@ -908,11 +921,13 @@ struct DeviceQrCtx {
     uint32_t branchial_seen = 0;
     uint32_t causal_edges_seen = 0;
     uint32_t causal_pairs_seen = 0;
+    uint32_t reduced_pairs_seen = 0;
 
     __device__ ~DeviceQrCtx() {
         if (branchial_seen)    atomicAdd(qe.num_branchial, branchial_seen);
         if (causal_edges_seen) atomicAdd(qe.num_causal_edges, causal_edges_seen);
         if (causal_pairs_seen) atomicAdd(qe.num_causal_pairs, causal_pairs_seen);
+        if (reduced_pairs_seen) atomicAdd(qe.num_reduced_pairs, reduced_pairs_seen);
     }
 
     __device__ bool claim(uint64_t apply_key) {
@@ -961,11 +976,59 @@ struct DeviceQrCtx {
         const uint64_t pk = hgcommon::id_key(producer, consumer);
         if (!qe.causal_pairs.insert_if_absent(pk, 1u).inserted) return;
         ++causal_pairs_seen;
-        // THE BASE SET, and nothing else. Which pairs survive transitive reduction is a
-        // property of the finished relation, so it is decided by hgcommon::tr_reduce when the
-        // relation is handed back -- see reconstructed_pairs_host. Deciding it here would ask
-        // whether a bypassing path exists using only the pairs recorded so far, and on a device
-        // that order is whatever the warps produced.
+    }
+    // hgcommon::redundant_producers over the kept sets of earlier events. The search runs in local
+    // arrays; when they fill, the block's thread 0 runs it again in the block's slice of
+    // ds.tr_scratch, and past that the overflow is recorded, which keeps the pairs and lets
+    // grow-and-retry run again with a larger slice -- the device full capture's search does the same.
+    __device__ uint32_t redundant(const uint32_t* producers, uint32_t n) {
+        if (n < 2 || qe.event_kept == nullptr) return 0;
+        auto preds = [&](uint32_t x, auto&& f) {
+            if (x >= qe.event_sig_capacity) return;
+            const uint32_t* k = qe.event_kept + static_cast<size_t>(kQeKeptStride) * x;
+            const uint32_t cnt = __ldcg(k);
+            for (uint32_t i = 0; i < cnt && i < 3u; ++i) f(__ldcg(k + 1 + i));
+            if (cnt > 3u) {
+                const uint32_t off = __ldcg(k + 4);
+                for (uint32_t i = 3; i < cnt; ++i) f(__ldcg(qe.arr_words + off + (i - 3u)));
+            }
+        };
+        uint32_t stack[kQeReachStack];
+        uint32_t table[kQeReachTable];
+        hgcommon::BoundedReachCtx<decltype(preds)> local(preds, stack, kQeReachStack, table,
+                                                         kQeReachTable);
+        const uint32_t mask = hgcommon::redundant_producers(local, producers, n, true);
+        if (!local.overflow) return mask;
+        if (ds.tr_scratch != nullptr && threadIdx.x == 0 && blockIdx.x < ds.tr_scratch_slots) {
+            uint32_t* slice = ds.tr_scratch + static_cast<size_t>(blockIdx.x) *
+                                                  (ds.tr_scratch_stack + ds.tr_scratch_visited);
+            hgcommon::BoundedReachCtx<decltype(preds)> wide(preds, slice, ds.tr_scratch_stack,
+                                                            slice + ds.tr_scratch_stack,
+                                                            ds.tr_scratch_visited);
+            const uint32_t wmask = hgcommon::redundant_producers(wide, producers, n, true);
+            if (!wide.overflow) return wmask;
+        }
+        ds.errors.record(ErrorKind::kTrScratchOverflow);
+        return mask;
+    }
+    // The count is written last and the fence publishes the record before the descent, whose
+    // instance a later event's search reaches this one through.
+    __device__ void record_kept(uint32_t ev, const uint32_t* kept, uint32_t nkept) {
+        if (qe.event_kept == nullptr || ev >= qe.event_sig_capacity || nkept == 0) return;
+        uint32_t* k = qe.event_kept + static_cast<size_t>(kQeKeptStride) * ev;
+        for (uint32_t i = 0; i < nkept && i < 3u; ++i) k[1 + i] = kept[i];
+        uint32_t stored = nkept < 3u ? nkept : 3u;
+        if (nkept > 3u) {
+            const uint32_t off = qe_alloc_words(ds, qe, nkept - 3u);
+            if (off != UINT32_MAX) {
+                for (uint32_t i = 3; i < nkept; ++i) qe.arr_words[off + (i - 3u)] = kept[i];
+                k[4] = off;
+                stored = nkept;
+            }
+        }
+        k[0] = stored;
+        __threadfence();
+        reduced_pairs_seen += stored;
     }
     using AppliedRef = uint32_t;
     __device__ static bool applied_ref_valid(AppliedRef r) { return r != INVALID_ID; }
@@ -1091,8 +1154,9 @@ public:
     uint32_t num_causal_pairs_host();
     uint32_t num_causal_edges_host();
 
-    // Pairs tagged in-reduction: the TR view of the same relation. The host's
+    // Pairs the online reduction kept: the TR view of the same relation. The host's
     // num_reconstructed_causal_pairs(true).
+    uint32_t num_reduced_pairs_host();
 
     // Distinct branchial pairs: sibling applications of one instance whose consumed edges
     // overlap. The host's num_reconstructed_branchial.
@@ -1173,6 +1237,8 @@ private:
     uint32_t*                 num_branchial_    = nullptr;
     uint64_t*                 event_sig_        = nullptr;
     uint64_t*                 event_runsig_     = nullptr;
+    uint32_t*                 event_kept_       = nullptr;   // kQeKeptStride words per raw event
+    uint32_t*                 num_reduced_pairs_ = nullptr;
     uint32_t                  event_sig_capacity_ = 0;
     uint64_t*                 event_from_class_ = nullptr;
     uint64_t*                 event_to_class_   = nullptr;
@@ -1181,7 +1247,7 @@ private:
     uint32_t*                 arr_ = nullptr;
     // The scalars above and below live in ONE allocation; these pointers index into it,
     // so counters_host() reads them all in a single transfer.
-    static constexpr uint32_t kNumCounters = 12;
+    static constexpr uint32_t kNumCounters = 13;
     uint32_t*                 counters_ = nullptr;
     uint32_t*                 cursor_ = nullptr;
     uint32_t*                 next_id_ = nullptr;

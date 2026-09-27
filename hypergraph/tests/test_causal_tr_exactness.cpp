@@ -196,3 +196,45 @@ TEST(CausalTrExactnessTest, OnlineTrIsItsOwnReductionUnderConcurrency) {
         }
     }
 }
+
+// THE QUOTIENT REPLAY'S REDUCTION IS THE REDUCTION OF ITS RELATION. qr_apply decides the reduction
+// online, as each event's producers are recorded; the replay also stores every pair. Both come
+// from one run under raw event ids, so the kept set must equal offline_tr of the stored relation
+// on the same run, at any worker count.
+TEST(CausalTrExactnessTest, ReplayReductionIsTheReductionOfItsRelation) {
+    const std::vector<Case> cases = {
+        {"wolfram/s6", rWolfram, {{0u, 1u}, {0u, 2u}}, 6},
+        {"mixed/s5",   rMixed,   {{0u, 1u}, {1u, 2u}}, 5},
+        {"split/s6",   rSplit,   {{0u, 1u}}, 6},
+    };
+    const unsigned hw = std::max(4u, std::thread::hardware_concurrency());
+    size_t checked = 0;
+    for (const auto& c : cases) {
+        for (unsigned th : {1u, 4u, hw, hw * 2}) {
+            for (int rep = 0; rep < 3; ++rep) {
+                Hypergraph hg;
+                hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+                ParallelEvolutionEngine e(&hg, th);
+                e.set_transitive_reduction(true);
+                e.set_explore_from_canonical_states_only(true);
+                e.add_rule(c.rule());
+                e.evolve(c.init, c.steps);
+                ASSERT_TRUE(hg.quotient_reconstruction()) << c.name;
+                PairSet all, kept;
+                auto raw = [](uint32_t x) { return x; };
+                hg.for_each_reconstructed_causal_as(false, raw, [&](uint64_t p, uint64_t q) {
+                    all.insert({static_cast<uint32_t>(p), static_cast<uint32_t>(q)}); });
+                hg.for_each_reconstructed_causal_as(true, raw, [&](uint64_t p, uint64_t q) {
+                    kept.insert({static_cast<uint32_t>(p), static_cast<uint32_t>(q)}); });
+                const PairSet expected = offline_tr(all);
+                ASSERT_EQ(kept, expected)
+                    << c.name << " at threads=" << th << " rep=" << rep << ": kept " << kept.size()
+                    << " pairs, the reduction of the " << all.size() << " stored has "
+                    << expected.size();
+                EXPECT_EQ(hg.num_reconstructed_causal_pairs(true), kept.size()) << c.name;
+                checked += all.size();
+            }
+        }
+    }
+    EXPECT_GT(checked, 0u) << "no reconstructed pair was checked";
+}

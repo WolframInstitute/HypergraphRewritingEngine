@@ -18,10 +18,13 @@
 //   identify      the event twice over: the CONTENT triple (from class, to class, rule), which
 //                 is isomorphism-invariant and is what a cross-run or cross-engine comparison
 //                 is made on; and the RUN's signature under the caller's event-identity mode.
-//   causal        one relation per consumed slot that carries a producer, fed in DESCENDING
-//                 producer order so nearer producers enter the kept adjacency before farther
-//                 ones are tested -- what makes the reduction tag exact rather than
-//                 insertion-order dependent.
+//   causal        one relation per consumed slot that carries a producer, and its transitive
+//                 reduction decided here, online: a producer is dropped when it is a proper
+//                 ancestor of another producer of this event (hgcommon::redundant_producers).
+//                 Every producer's own kept set was recorded in its application, before the
+//                 descent that made the instance this application runs on, so every path into
+//                 the event exists when it is judged and no later event adds one: the kept set
+//                 is the unique reduction of the relation, whatever the schedule.
 //   branchial     siblings expanding the SAME instance whose consumed slots overlap. Publish
 //                 into the instance's applied list, THEN scan it: membership of that list is
 //                 the proof the other application happened, and an application that never
@@ -47,6 +50,10 @@
 //   bool     want_causal() const;  bool want_branchial() const;
 //   uint32_t producer_at(const Instance&, uint32_t slot) const;   NO_PRODUCER when none
 //   void     record_causal(uint32_t producer, uint32_t consumer, bool distinct_pair);
+//   uint32_t redundant(const uint32_t* producers, uint32_t n);
+//                              hgcommon::redundant_producers over the recorded kept sets
+//   void     record_kept(uint32_t ev, const uint32_t* kept, uint32_t nkept);
+//                              the event's kept producers, before descend
 //                              `distinct_pair` is false when this producer repeats the previous
 //                              one in the same application's list, which is the ONLY way a
 //                              (producer, consumer) pair can repeat -- see below. The edge
@@ -199,8 +206,19 @@ HG_HD uint32_t qr_apply(Ctx& c, const typename Ctx::Instance& inst,
         // Telling the Ctx which calls are distinct is what lets it store the pairs without a
         // shared dedup structure. The edge multiset still counts every call, so the two
         // observables keep their separate meanings.
-        for (uint32_t i = 0; i < np; ++i)
-            c.record_causal(producers[i], ev, i == 0 || producers[i] != producers[i - 1]);
+        uint32_t distinct[MAX_PATTERN_EDGES];
+        uint32_t nd = 0;
+        for (uint32_t i = 0; i < np; ++i) {
+            const bool first = i == 0 || producers[i] != producers[i - 1];
+            c.record_causal(producers[i], ev, first);
+            if (first) distinct[nd++] = producers[i];
+        }
+        const uint32_t dropped = c.redundant(distinct, nd);
+        uint32_t kept[MAX_PATTERN_EDGES];
+        uint32_t nkept = 0;
+        for (uint32_t i = 0; i < nd; ++i)
+            if (!(dropped & (1u << i))) kept[nkept++] = distinct[i];
+        c.record_kept(ev, kept, nkept);
     }
 
     // Branchial: siblings expanding the SAME instance whose consumed slots overlap. The order

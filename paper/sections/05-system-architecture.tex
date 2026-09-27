@@ -229,10 +229,13 @@ The retained edge set must depend only on the causal DAG, not on the order in wh
 workers insert edges; the determinism gate checks this across thread counts and seeds. Full capture
 meets it through the arrival order above: each consumer's edges are added by its own worker, in
 descending producer order, after its producers' edges are complete, and under that order the
-decision on arrival is exact however consumers interleave. The quotient reconstruction adds edges
-between canonical event ids, which are not ordered this way, so it stores the relation unreduced
-and reduces it when it is read; a finite DAG has one transitive reduction, so the result depends
-only on the stored edges.
+decision on arrival is exact however consumers interleave. The quotient replay meets it the same
+way: an event's incoming edges are added in its own application, after its producers' applications,
+and all at once, so a producer is dropped exactly when it is an ancestor of another producer of the
+same event, found by one backward search from all of them. Under quotient exploration without the
+replay, the relation is kept between canonical event ids, which are not ordered this way, so it is
+stored unreduced and reduced when it is read; a finite DAG has one transitive reduction, so the
+result depends only on the stored edges.
 
 Only the causal graph is reduced. States, events and the branchial relation are not.
 
