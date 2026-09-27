@@ -207,7 +207,15 @@ class Hypergraph {
     // The slot-has-no-producer sentinel, from hgcommon: the replay core writes it into a
     // child's producer vector and this class reads it back, so one value or neither works.
     static constexpr uint32_t QC_NO_PRODUCER = hgcommon::QR_NO_PRODUCER;
-    ConcurrentMap<uint64_t, LockFreeList<QcInstance>*> qc_instances_;   // key(hash,depth,0)
+    // The instances of one (class, depth), in kInstShards lists: a worker pushes to list
+    // (worker index % kInstShards) and a reader walks all of them. Every new instance of a class
+    // pushes to its entry, which on a rule with few classes is most of the replay; the eight
+    // heads split those pushes. They share one line, so a reader makes one map lookup.
+    static constexpr uint32_t kInstShards = 8;
+    struct alignas(64) QcInstanceShards {
+        LockFreeList<QcInstance> list[kInstShards];
+    };
+    ConcurrentMap<uint64_t, QcInstanceShards*> qc_instances_;   // key(hash,depth,0)
     // Claims a (instance, match) application. Both the instance side and the match side drive
     // the rendezvous, and unlike the producer-set DP an application is NOT idempotent -- each
     // one emits a raw event -- so the pair must be claimed exactly once. O(raw) entries.
@@ -241,7 +249,26 @@ class Hypergraph {
         uint32_t consumed(uint32_t j) const;
     };
     SegmentedArray<LockFreeList<QcAppliedMatch>> qc_inst_applied_;
+    // Instance ids: taken by a worker in blocks of kInstIdBlock from qc_next_instance_ (one
+    // shared increment per block), by any other thread one at a time. An instance id only has to
+    // be unique -- it keys the application claim and the applied list -- so gaps are harmless;
+    // the instance count is the per-worker counts summed.
     std::atomic<uint32_t> qc_next_instance_{0};
+    std::atomic<uint64_t> qc_instances_made_outside_{0};
+    static constexpr uint32_t kInstIdBlock = 64;
+    struct alignas(64) InstIdBlock {
+        uint32_t next = 0;
+        uint32_t end = 0;
+        uint64_t made = 0;
+    };
+    std::unique_ptr<InstIdBlock[]> qc_inst_blocks_ = std::make_unique<InstIdBlock[]>(MAX_ARENA_WORKERS);
+    uint32_t alloc_instance_id();
+    template <typename F>
+    void for_each_instance_at(uint64_t state_hash, uint32_t depth, F&& f) {
+        auto ri = qc_instances_.lookup(qc_key(state_hash, depth, 0));
+        if (!ri.has_value()) return;
+        for (const LockFreeList<QcInstance>& l : (*ri)->list) l.for_each(f);
+    }
     std::atomic<uint32_t> qc_next_raw_event_{0};
 
     // Reconstructed events under the RUN'S event identity, as opposed to the raw count above.

@@ -1082,13 +1082,26 @@ void Hypergraph::quotient_redrive_point(uint64_t state_hash, uint32_t depth) {
         });
     }
     if (!quotient_replay()) return;
-    auto ri = qc_instances_.lookup(qc_key(state_hash, depth, 0));
-    if (!ri.has_value()) return;
-    (*ri)->for_each([&](const QcInstance& inst) {
+    for_each_instance_at(state_hash, depth, [&](const QcInstance& inst) {
         for_each_expansion_match(state_hash, [&](const SlotMatch& m) {
             qc_apply(inst, m, state_hash, depth);
         });
     });
+}
+
+uint32_t Hypergraph::alloc_instance_id() {
+    const int w = arena_worker_index();
+    if (w < 0) {
+        qc_instances_made_outside_.fetch_add(1, std::memory_order_relaxed);
+        return qc_next_instance_.fetch_add(1, std::memory_order_relaxed);
+    }
+    InstIdBlock& b = qc_inst_blocks_[w];
+    if (b.next == b.end) {
+        b.next = qc_next_instance_.fetch_add(kInstIdBlock, std::memory_order_relaxed);
+        b.end = b.next + kInstIdBlock;
+    }
+    ++b.made;
+    return b.next++;
 }
 
 void Hypergraph::quotient_causal_seed(StateId initial_state, int max_steps) {
@@ -1153,20 +1166,21 @@ void Hypergraph::qc_add_instance(uint64_t state_hash, uint32_t depth,
     if (static_cast<int>(depth) > maxs) return;
 
     QcInstance inst;
-    inst.id = qc_next_instance_.fetch_add(1, std::memory_order_relaxed);
+    inst.id = alloc_instance_id();
     inst.nslots = nslots;
     inst.prod = prod;
 
     const uint64_t key = qc_key(state_hash, depth, 0);
-    LockFreeList<QcInstance>* lst;
+    QcInstanceShards* sh;
     auto r = qc_instances_.lookup(key);
-    if (r.has_value()) lst = *r;
+    if (r.has_value()) sh = *r;
     else {
-        auto* nl = arena_.template create<LockFreeList<QcInstance>>();
-        auto ins = qc_instances_.insert_if_absent(key, nl);
-        lst = ins.second ? nl : ins.first;
+        auto* ns = arena_.template create<QcInstanceShards>();
+        auto ins = qc_instances_.insert_if_absent(key, ns);
+        sh = ins.second ? ns : ins.first;
     }
-    lst->push(inst, arena_);
+    const int w = arena_worker_index();
+    sh->list[w < 0 ? 0u : static_cast<uint32_t>(w) % kInstShards].push(inst, arena_);
 
     // Instances at the final depth are recorded but never expanded: the DP runs its match
     // loop over depths 0..steps-1, producing into depth steps and never reading it.
@@ -1380,13 +1394,10 @@ void Hypergraph::qc_capture_expansion(EventId e) {
     // in qc_apply makes the overlap harmless.
     hgcommon::rendezvous_barrier<hgcommon::rv::QuotientInstanceMatch>();
     const int maxs = qc_max_steps_.load(std::memory_order_relaxed);
-    for (int d = 0; d < maxs; ++d) {
-        auto ri = qc_instances_.lookup(qc_key(from, static_cast<uint32_t>(d), 0));
-        if (!ri.has_value()) continue;
-        (*ri)->for_each([&](const QcInstance& inst) {
+    for (int d = 0; d < maxs; ++d)
+        for_each_instance_at(from, static_cast<uint32_t>(d), [&](const QcInstance& inst) {
             qc_apply(inst, m, from, static_cast<uint32_t>(d));
         });
-    }
 }
 
 void Hypergraph::register_quotient_transition(EventId e) {
@@ -1589,7 +1600,9 @@ uint64_t Hypergraph::num_reconstructed_raw_events() const {
 }
 
 size_t Hypergraph::num_reconstructed_instances() const {
-    return qc_next_instance_.load(std::memory_order_relaxed);
+    uint64_t n = qc_instances_made_outside_.load(std::memory_order_relaxed);
+    for (int i = 0; i < MAX_ARENA_WORKERS; ++i) n += qc_inst_blocks_[i].made;
+    return n;
 }
 
 size_t Hypergraph::num_reconstructed_causal_edges() const {
@@ -1671,9 +1684,7 @@ size_t Hypergraph::captured_matches() const {
     return qc_next_match_id_.load(std::memory_order_relaxed);
 }
 
-size_t Hypergraph::reconstruction_instances() const {
-    return qc_next_instance_.load(std::memory_order_relaxed);
-}
+size_t Hypergraph::reconstruction_instances() const { return num_reconstructed_instances(); }
 
 size_t Hypergraph::applied_unique() const {
     return qc_applied_.count_enumerated();
