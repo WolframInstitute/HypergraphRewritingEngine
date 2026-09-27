@@ -73,12 +73,35 @@ def tracked_files():
     return out.stdout.splitlines()
 
 
-def main():
-    if not os.path.exists(CODEMAP):
-        sys.exit(f"{CODEMAP} does not exist. If CODEMAP was deleted, delete this check "
-                 f"and its CI leg in the same commit.")
+def index_contents(paths):
+    """The staged content of each path: what a commit records, which is what CI checks out.
+    Read from the index, not the working tree, so a commit of some paths is checked against
+    the tree it creates while other paths are modified or deleted in the working tree."""
+    proc = subprocess.run(["git", "-C", ROOT, "cat-file", "--batch"],
+                          input="".join(":%s\n" % p for p in paths).encode(),
+                          capture_output=True)
+    if proc.returncode != 0:
+        sys.exit("git cat-file failed; run this inside the repository")
+    out, pos, texts = proc.stdout, 0, {}
+    for p in paths:
+        nl = out.index(b"\n", pos)
+        header = out[pos:nl].split()
+        pos = nl + 1
+        if header[-1] == b"missing":
+            continue
+        size = int(header[2])
+        texts[p] = out[pos:pos + size].decode(errors="replace")
+        pos += size + 1
+    return texts
 
+
+def main():
     tracked = tracked_files()
+    codemap_rel = os.path.relpath(CODEMAP, ROOT)
+    if codemap_rel not in tracked:
+        sys.exit(f"{CODEMAP} is not tracked. If CODEMAP was deleted, delete this check "
+                 f"and its CI leg in the same commit.")
+    texts = index_contents([p for p in tracked if p.endswith(CORPUS_EXT)] + [codemap_rel])
     sources = [p for p in tracked if p.endswith(SOURCE_EXT)]
     by_dir = {}
     for p in sources:
@@ -88,10 +111,9 @@ def main():
     # is in the hundreds and a subprocess each would dominate the runtime.
     corpus_words = set()
     for p in tracked:
-        if not p.endswith(CORPUS_EXT):
+        if not p.endswith(CORPUS_EXT) or p not in texts:
             continue
-        with open(os.path.join(ROOT, p), errors="replace") as f:
-            corpus_words.update(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", f.read()))
+        corpus_words.update(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", texts[p]))
     # A file's own name is a name CODEMAP may use -- a probe, a test binary, a benchmark
     # group -- and it need not appear as a token in any file's text.
     basenames = {os.path.splitext(os.path.basename(p))[0] for p in tracked}
@@ -103,34 +125,33 @@ def main():
     section = None
     findings = []
 
-    with open(CODEMAP) as f:
-        for lineno, line in enumerate(f, 1):
-            m = SECTION_RE.match(line)
-            if m:
-                section = m.group(1)
-                if not section.endswith("/"):
-                    section = None          # a section about a file, not a directory
-                else:
-                    documented.setdefault(section, set())
-                continue
-            fm = FILE_RE.match(line)
-            if fm and section:
-                # Names come from the bullet's HEAD -- every bold span before the description
-                # separator, since a header and its implementation are written as two spans --
-                # and never from the description, which cites files it does not document.
-                head = re.split(r" -- ", line, maxsplit=1)[0]
-                for part in re.findall(r"`([^`]+)`", head):
-                    # Not every backticked thing ending in an extension is a file name: a
-                    # bullet writes a paired implementation as a bare suffix
-                    # ("`hg_gpu_backend.hpp`/`.cpp`") and a directory as a glob ("`*.cu`").
-                    # Both need a real stem to be a name this can look up.
-                    base = os.path.basename(part)
-                    stem, ext = os.path.splitext(base)
-                    if ext in SOURCE_EXT and stem and "*" not in stem:
-                        named_files.add(base)
-            for tok in re.findall(r"`([^`]+)`", line):
-                if IDENT_RE.match(tok) and tok not in NOT_IDENTIFIERS:
-                    idents.setdefault(tok, lineno)
+    for lineno, line in enumerate(texts[codemap_rel].splitlines(keepends=True), 1):
+        m = SECTION_RE.match(line)
+        if m:
+            section = m.group(1)
+            if not section.endswith("/"):
+                section = None          # a section about a file, not a directory
+            else:
+                documented.setdefault(section, set())
+            continue
+        fm = FILE_RE.match(line)
+        if fm and section:
+            # Names come from the bullet's HEAD -- every bold span before the description
+            # separator, since a header and its implementation are written as two spans --
+            # and never from the description, which cites files it does not document.
+            head = re.split(r" -- ", line, maxsplit=1)[0]
+            for part in re.findall(r"`([^`]+)`", head):
+                # Not every backticked thing ending in an extension is a file name: a
+                # bullet writes a paired implementation as a bare suffix
+                # ("`hg_gpu_backend.hpp`/`.cpp`") and a directory as a glob ("`*.cu`").
+                # Both need a real stem to be a name this can look up.
+                base = os.path.basename(part)
+                stem, ext = os.path.splitext(base)
+                if ext in SOURCE_EXT and stem and "*" not in stem:
+                    named_files.add(base)
+        for tok in re.findall(r"`([^`]+)`", line):
+            if IDENT_RE.match(tok) and tok not in NOT_IDENTIFIERS:
+                idents.setdefault(tok, lineno)
 
     # Both checks are over the whole map rather than per section. A bullet legitimately
     # names a file from another directory -- a .cu section naming the header it implements
