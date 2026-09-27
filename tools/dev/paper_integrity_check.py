@@ -20,12 +20,23 @@ rewritten. This checker is that gate. It fails when:
               except where the measurement needs a resource this tree cannot reach (a
               licensed Wolfram kernel), and then the entry names the reason and the pending
               re-run so the exception is visible in review.
+  DEFERRED    (reported; a finding only under --release) every engine commit since the
+              fragment's stamp declares Measurement-inert or Measurement-deferred, and at least
+              one declares Measurement-deferred: the engine changed what the fragment measures
+              and the re-measurement is left to the benchmark phase. The fragment's numbers are
+              invalid until it is re-measured. A release requires none.
+
+An engine commit declares one of two lines in its message:
+  Measurement-inert: <proof that no measured number moves>
+  Measurement-deferred: <the change's own before/after measurement>
 
 Run from the repository root: python3 tools/dev/paper_integrity_check.py
   --tables-dir <dir>   check a different fragment directory (ground-truthing, box pulls)
   --no-git             skip the staleness check (no repository available)
+  --release            DEFERRED fragments are findings (release sign-off)
   --commit-msg <file>  check the message of the commit being made instead: a commit that
-                       stages engine sources must declare Measurement-inert. This is the
+                       stages engine sources must declare Measurement-inert or
+                       Measurement-deferred. This is the
                        commit-msg hook (tools/dev/commit_msg_gate.sh); pre-commit runs before the
                        message exists and cannot check it.
 """
@@ -48,6 +59,16 @@ STALE_WHITELIST = {}
 # message (a pushed message cannot be amended). Hash-pinned, each with the proof; the walk
 # treats them as declared.
 COMMIT_ALLOWANCES = {
+    "c1557977ccb380a10f820422568233f0613b8ead":
+        "adds two environment switches to bench_cpu_evolve. With HG_BENCH_LARGE_N unset the "
+        "large-state workloads are built with n = 256, the default argument of "
+        "corpus::large_state_workloads that the call used before; with HG_BENCH_FORWARDING unset "
+        "set_match_forwarding is not called. No fragment's recorded command sets either, so "
+        "every measured run executes the same calls",
+    "6f7fb64ddae84f828407f059b71da199c909159a":
+        "adds a counter printout to bench_cpu_evolve inside #if HG_ENGINE_STATS, after the timed "
+        "runs. Every fragment is measured from a build with stats off, where the preprocessor "
+        "removes the block",
     "7a52bb6fab7a3f28c7bbc74986f337cde6e4c943":
         "bounds a steered continuation to the steps it asked for. continuation_ceiling_ is "
         "written only inside evolve_more, and set non-zero only when only_from is non-null; "
@@ -115,8 +136,13 @@ def git(*args):
 
 
 def declares_inert(message):
-    """Whether a commit message carries the declaration the staleness walk accepts."""
+    """Whether a commit message declares that no measured number moves."""
     return "Measurement-inert:" in message
+
+
+def declares_deferred(message):
+    """Whether a commit message declares that its re-measurement is left to the benchmark phase."""
+    return "Measurement-deferred:" in message
 
 
 def check_commit_msg(path):
@@ -127,12 +153,13 @@ def check_commit_msg(path):
     # Lines starting with '#' are git's template, removed from the message it records.
     with open(path, encoding="utf-8") as f:
         message = "".join(l for l in f if not l.startswith("#"))
-    if declares_inert(message):
+    if declares_inert(message) or declares_deferred(message):
         return 0
-    print("commit-msg: this commit changes %d engine file(s) (first: %s) and its message has no "
-          "'Measurement-inert:' line. Every paper fragment goes stale and CI's paper job fails "
-          "after the push. State the proof that no measured number moves on a line starting "
-          "'Measurement-inert:', or re-measure the fragments." % (len(staged), staged[0]))
+    print("commit-msg: this commit changes %d engine file(s) (first: %s) and its message has "
+          "neither a 'Measurement-inert:' nor a 'Measurement-deferred:' line. Use "
+          "'Measurement-inert:' with the proof that no measured number moves, or "
+          "'Measurement-deferred:' with the change's own before/after measurement; the paper's "
+          "fragments are then reported DEFERRED until re-measured." % (len(staged), staged[0]))
     return 1
 
 
@@ -142,6 +169,7 @@ def main():
     ap.add_argument("--main", default="paper/main.tex")
     ap.add_argument("--no-git", action="store_true")
     ap.add_argument("--commit-msg")
+    ap.add_argument("--release", action="store_true")
     a = ap.parse_args()
     if a.commit_msg:
         return check_commit_msg(a.commit_msg)
@@ -165,6 +193,7 @@ def main():
                         % (a.tables_dir, name))
 
     head_stale_cache = {}
+    deferred = []
     for name in sorted(on_disk):
         path = os.path.join(a.tables_dir, name + ".tex")
         with open(path, encoding="utf-8") as f:
@@ -213,33 +242,47 @@ def main():
                     log = git("log", "--format=%H", commit + "..HEAD", "--",
                               *ENGINE_DIRS, *sources)
                     shas = [l.strip() for l in log.stdout.splitlines() if l.strip()]
-                    inert = []
+                    inert, later = [], []
                     for sha in shas:
                         body = git("show", "-s", "--format=%B", sha).stdout
-                        if not declares_inert(body) and sha not in COMMIT_ALLOWANCES:
+                        subject = "%s %s" % (sha[:8], body.splitlines()[0][:70])
+                        if declares_inert(body) or sha in COMMIT_ALLOWANCES:
+                            inert.append(subject)
+                        elif declares_deferred(body):
+                            later.append(subject)
+                        else:
                             inert = None
                             break
-                        subject = body.splitlines()[0][:70]
-                        inert.append("%s %s" % (sha[:8], subject))
-                    if inert is not None:
-                        print("allowed  %s: every engine/instrument commit since %s declares "
-                              "Measurement-inert: %s" % (name + ".tex", commit, "; ".join(inert)))
-                    else:
+                    if inert is None:
                         why = ("%d engine/instrument file(s) changed since %s (first: %s)"
                                % (len(changed), commit, changed[0]))
+                    elif later:
+                        why = ("DEFERRED", "%d commit(s) since %s declare Measurement-deferred "
+                               "(first: %s)" % (len(later), commit, later[-1]))
+                    else:
+                        print("allowed  %s: every engine/instrument commit since %s declares "
+                              "Measurement-inert: %s" % (name + ".tex", commit, "; ".join(inert)))
                 head_stale_cache[key] = why
         why = head_stale_cache[key]
-        if why:
+        if isinstance(why, tuple):
+            deferred.append("DEFERRED %s: %s" % (path, why[1]))
+        elif why:
             frag = name + ".tex"
             if frag in STALE_WHITELIST:
                 print("allowed  %s stale: %s -- %s" % (path, why, STALE_WHITELIST[frag]))
             else:
                 findings.append("STALE    %s: %s" % (path, why))
 
+    if a.release:
+        findings += deferred
+    else:
+        for d in deferred:
+            print(d)
     for f_ in findings:
         print(f_)
-    print("%d finding(s) over %d referenced fragments, %d on disk"
-          % (len(findings), len(referenced), len(on_disk)))
+    print("%d finding(s) over %d referenced fragments, %d on disk; %d deferred (invalid until "
+          "re-measured%s)" % (len(findings), len(referenced), len(on_disk), len(deferred),
+                              "" if a.release else "; --release fails on them"))
     return 1 if findings else 0
 
 
