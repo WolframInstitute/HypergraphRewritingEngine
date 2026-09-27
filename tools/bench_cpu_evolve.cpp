@@ -23,6 +23,8 @@
 #include <string>
 #include <thread>
 #include <cstdio>
+#include <set>
+#include <map>
 #include <cstdlib>
 #include <vector>
 #include <unordered_set>
@@ -328,6 +330,36 @@ int main(int argc, char** argv) {
                             calls > wins ? 100.0 * double(same) / double(calls - wins) : 0.0);
             }
 #endif
+            // HG_BENCH_SIBLING_ORBITS=1: per parent state, its events against the distinct
+            // (rule, orbits of the consumed edges in match order) and against the distinct
+            // output classes. Events sharing that key are candidates for one IR per group:
+            // for a one-edge rule the key is the match's automorphism orbit; for a longer rule
+            // it is an upper bound on it.
+            if (const char* so = std::getenv("HG_BENCH_SIBLING_ORBITS"); so && so[0] == '1') {
+                std::map<uint32_t, std::pair<std::set<std::vector<uint32_t>>, std::set<uint64_t>>> per;
+                size_t events = 0;
+                for (uint32_t eid = 0; eid < g.num_published_events(); ++eid) {
+                    const auto& ev = g.get_event(eid);
+                    if (ev.id == hg::engine::INVALID_ID || g.is_genesis_event(eid)) continue;
+                    const auto& in = g.get_state(ev.input_state);
+                    const auto* orb = g.state_orbits(ev.input_state);
+                    if (!orb) { g.compute_and_cache_state_orbits(ev.input_state, in.edges); orb = g.state_orbits(ev.input_state); }
+                    if (!orb) continue;
+                    std::vector<uint32_t> key{ev.rule_index};
+                    for (uint8_t ci = 0; ci < ev.num_consumed; ++ci) {
+                        const auto* it = std::lower_bound(orb->edges, orb->edges + orb->n, ev.consumed_edges[ci]);
+                        key.push_back(orb->orbit[it - orb->edges]);
+                    }
+                    auto& slot = per[ev.input_state];
+                    slot.first.insert(key);
+                    slot.second.insert(g.get_state(ev.output_state).canonical_hash);
+                    ++events;
+                }
+                size_t keys = 0, classes = 0;
+                for (auto& [s_, v] : per) { keys += v.first.size(); classes += v.second.size(); }
+                std::printf("  siblings: parents=%zu events=%zu match_orbit_keys=%zu child_classes=%zu\n",
+                            per.size(), events, keys, classes);
+            }
             std::printf("  recon: causal_pairs=%zu reduced_pairs=%zu branchial=%zu\n",
                         g.num_reconstructed_causal_pairs(false),
                         g.num_reconstructed_causal_pairs(true),
