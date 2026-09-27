@@ -51,6 +51,20 @@ class Hypergraph {
     // Global ID counters (thread-safe)
     GlobalCounters counters_;
 
+    // One past the largest state and event id each worker has published, one cache line per
+    // worker. num_published_states and num_published_events take the maximum when read, which
+    // is after the run; a shared high-water mark on the arrays was one compare-and-swap per state
+    // and per event on one line. A thread that is not a worker publishes through the atomics.
+    struct alignas(64) PublishedMark {
+        uint32_t states = 0;
+        uint32_t events = 0;
+    };
+    PublishedMark published_[MAX_ARENA_WORKERS];
+    std::atomic<uint32_t> published_states_outside_{0};
+    std::atomic<uint32_t> published_events_outside_{0};
+    void note_published_state(StateId sid);
+    void note_published_event(EventId eid);
+
     // Arena for all allocations (thread-safe for parallel evolution)
     ConcurrentHeterogeneousArena arena_;
 

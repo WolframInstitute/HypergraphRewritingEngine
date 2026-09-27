@@ -160,6 +160,7 @@ StateId Hypergraph::create_state(
     }
     // Directly construct state at slot sid using emplace_at
     states_.emplace_at(sid, arena_, sid, std::move(edge_set), step, canonical_hash, parent_event);
+    note_published_state(sid);
     State& st = states_[sid];
     st.vertex_index = vertex_index;
     st.vertex_index_size = vertex_index_size;
@@ -615,6 +616,7 @@ Hypergraph::CreateEventResult Hypergraph::create_event(
     EventId canonical_id_for_event = is_canonical ? INVALID_ID : canonical_eid;
     events_.emplace_at(eid, arena_, eid, input_state, output_state, rule_index,
                        cons, num_consumed, prod, num_produced, canonical_id_for_event);
+    note_published_event(eid);
     events_[eid].signature = event_signature_value;
 
     // CRITICAL: Release fence to ensure event data is visible
@@ -698,6 +700,7 @@ EventId Hypergraph::create_genesis_event(StateId initial_state, const EdgeId* ed
                        nullptr, 0,  // consumed_edges (none)
                        produced, num_edges,  // produced_edges
                        canonical_id_for_event);
+    note_published_event(eid);
 
     // CRITICAL: Release fence
     std::atomic_thread_fence(std::memory_order_release);
@@ -1742,7 +1745,31 @@ uint32_t Hypergraph::num_states() const {
 
 // The bound for ENUMERATING states, as against num_states(), which is the claim counter and runs
 // ahead of what exists.
-uint32_t Hypergraph::num_published_states() const { return states_.size(); }
+uint32_t Hypergraph::num_published_states() const {
+    uint32_t n = published_states_outside_.load(std::memory_order_acquire);
+    for (const PublishedMark& m : published_) n = std::max(n, m.states);
+    return n;
+}
+
+namespace {
+void raise_to(std::atomic<uint32_t>& a, uint32_t v) {
+    uint32_t cur = a.load(std::memory_order_relaxed);
+    while (cur < v && !a.compare_exchange_weak(cur, v, std::memory_order_release,
+                                               std::memory_order_relaxed)) {}
+}
+}  // namespace
+
+void Hypergraph::note_published_state(StateId sid) {
+    const int w = arena_worker_index();
+    if (w < 0) { raise_to(published_states_outside_, sid + 1); return; }
+    if (published_[w].states < sid + 1) published_[w].states = sid + 1;
+}
+
+void Hypergraph::note_published_event(EventId eid) {
+    const int w = arena_worker_index();
+    if (w < 0) { raise_to(published_events_outside_, eid + 1); return; }
+    if (published_[w].events < eid + 1) published_[w].events = eid + 1;
+}
 
 // INVALID_ID until a genesis state is published, and no state id equals INVALID_ID, so the
 // comparison alone answers both questions.
@@ -1753,7 +1780,7 @@ bool Hypergraph::is_genesis_state(StateId sid) const {
 bool Hypergraph::is_genesis_event(EventId eid) const {
     const StateId genesis = genesis_state_.load(std::memory_order_acquire);
     if (genesis == INVALID_ID) return false;
-    if (eid >= events_.size()) return false;
+    if (eid >= num_published_events()) return false;
     return events_[eid].input_state == genesis;
 }
 
@@ -1858,7 +1885,11 @@ uint32_t Hypergraph::num_raw_events() const {
 
 // PUBLISHED events, the bound for enumeration. See num_published_states for why the claim
 // counter is not that bound.
-uint32_t Hypergraph::num_published_events() const { return events_.size(); }
+uint32_t Hypergraph::num_published_events() const {
+    uint32_t n = published_events_outside_.load(std::memory_order_acquire);
+    for (const PublishedMark& m : published_) n = std::max(n, m.events);
+    return n;
+}
 
 bool Hypergraph::is_event_canonical(EventId eid) const {
     if (eid >= num_raw_events()) return false;
@@ -2369,6 +2400,9 @@ Hypergraph::Hypergraph(uint32_t capacity_scale)
     // Edges and their signatures are read by id only; nothing enumerates them or asks their extent.
     edges_.set_uncounted();
     edge_signatures_.set_uncounted();
+    // Their extent is num_published_states/events, from the per-worker marks.
+    states_.set_uncounted();
+    events_.set_uncounted();
     causal_graph_.set_arena(&arena_);
     // The dedup sets are seated in the arena like every other member: a table on fresh arena
     // bytes needs no sentinel fill, and every table is reclaimed with the arena.
