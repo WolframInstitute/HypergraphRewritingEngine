@@ -50,7 +50,7 @@
 //   void fence();                               sequentially consistent, engine-scoped
 //
 // A Transition must supply: to_hash, canon_event, num_consumed, num_produced, num_survivors,
-// and consumed(i) / produced(i) / surv_from(i) / surv_to(i).
+// and consumed(i) / produced(i) / surv_from(i) / surv_to(i). surv_from(i) is non-decreasing in i.
 
 #include <cstdint>
 
@@ -219,9 +219,17 @@ HG_HD void qc_add_producer(Ctx& c, uint64_t state_hash, uint32_t depth, uint32_t
     c.for_each_transition_from(state_hash, [&](const typename Ctx::Transition& t) {
         for (uint32_t i = 0; i < t.num_consumed; ++i)
             if (t.consumed(i) == orbit) { c.emit(producer, t.canon_event); break; }
-        for (uint32_t i = 0; i < t.num_survivors; ++i)
-            if (t.surv_from(i) == orbit)
-                c.defer_producer(t.to_hash, depth + 1, t.surv_to(i), producer);
+        // Survivors ascend by parent orbit on both engines (the order qc_transition_sig is
+        // computed over), so this orbit's survivors are one run, found by binary search. A
+        // linear scan made each producer cost transitions x survivors: on a path of n edges
+        // that is n^2 per producer, 1.06 G of 2.2 G instructions at n = 256.
+        uint32_t lo = 0, hi = t.num_survivors;
+        while (lo < hi) {
+            const uint32_t mid = (lo + hi) >> 1;
+            if (t.surv_from(mid) < orbit) lo = mid + 1; else hi = mid;
+        }
+        for (uint32_t i = lo; i < t.num_survivors && t.surv_from(i) == orbit; ++i)
+            c.defer_producer(t.to_hash, depth + 1, t.surv_to(i), producer);
     });
 }
 
