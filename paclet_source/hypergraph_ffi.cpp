@@ -666,9 +666,10 @@ static void configure_and_evolve(hgffi::ParsedJob& req, hypergraph::Hypergraph& 
         std::ostringstream oss;
         oss << "HGEvolve: Evolution complete in " << evolution_ms << "ms. "
             << "States: " << hg.num_canonical_states() << ", "
-            << "Events: " << hg.num_events() << ", "
-            << "Causal: " << hg.num_causal_event_pairs() << ", "
-            << "Branchial: " << hg.num_branchial_edges();
+            << "Events: " << hg.observable_num_events() << ", "
+            << "Causal: " << hg.observable_num_causal_pairs(
+                                 hg.causal_graph().transitive_reduction_enabled()) << ", "
+            << "Branchial: " << hg.observable_num_branchial();
         // The routing facts every relation-shaped output branches on. Serialization defects in
         // this file have twice come down to which of these held, so DebugFFI states them.
         oss << " | recon=" << (hg.quotient_reconstruction() ? 1 : 0)
