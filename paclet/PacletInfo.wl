@@ -1,6 +1,6 @@
 PacletObject[<|
     "Name" -> "WolframInstitute/HypergraphRewriteEngine",
-    "Description" -> "A high-performance hypergraph rewriting engine with parallel processing capabilities",
+    "Description" -> "Computes the multiway evolution of hypergraph rewriting rules, with its states, events, causal graph and branchial graph, on the CPU and on an NVIDIA GPU",
     "Creator" -> "Richard Assar",
     "License" -> "MIT",
     "PublisherID" -> "WolframInstitute",
