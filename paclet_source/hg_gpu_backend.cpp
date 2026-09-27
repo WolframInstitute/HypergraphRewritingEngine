@@ -310,8 +310,14 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
     std::unordered_map<hg_gpu::StateId, uint64_t> state_hash;
     std::unordered_map<hg_gpu::StateId, const std::vector<std::vector<hg_gpu::VertexId>>*> state_edges;
     std::vector<hg_gpu::StateId> class_reps;
+    // Under Full the device's key IS the exact isomorphism hash, from the same ir_core the host
+    // runs, so it is read rather than recomputed. Under None and Automatic the device key is not
+    // isomorphism-invariant, and the IR hash is computed here only for the outputs that read it.
+    const bool host_ir = canon_mode != hg_gpu::CanonicalizationMode::Full &&
+                         (job.include_canonical_hashes || job.include_step_statistics);
     for (const auto& s : result.states) {
-        state_hash[s.id] = ir.compute_canonical_hash(s.edges);
+        state_hash[s.id] = canon_mode == hg_gpu::CanonicalizationMode::Full ? s.canonical_hash
+                         : host_ir ? ir.compute_canonical_hash(s.edges) : 0;
         state_edges[s.id] = &s.edges;
         // Automatic groups by the key THE DEVICE DEDUPLICATED WITH. CanonicalState::canonical_hash
         // carries what state_key_device wrote for the requested mode, so under Automatic it is
