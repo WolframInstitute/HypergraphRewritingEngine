@@ -3,15 +3,19 @@
 
 WHY THIS EXISTS. `paclet/Kernel/HypergraphRewriting.wl` declares its public surface with
 the declaration list at the top of the kernel. The documentation under `paclet/Documentation/English/` is a set of BUILT
-notebooks, tracked in git, and generated from three markdown sources -- so a page can
+notebooks, tracked in git and generated from the markdown under `docs/en/`, so a page can
 outlive the symbol it documents and nothing regenerates or removes it. That is what
 happened: the visualisation split deleted 21 functions and their reference pages stayed,
 inside the shipped archive, describing calls a user cannot make.
 
-TWO CHECKS, both mechanical:
+TWO CHECKS, both mechanical, over the built notebooks (what ships) and over their markdown
+sources (so a defect is reported before anything is built):
 
-  ORPHAN PAGE   ReferencePages/Symbols/<Name>.nb where <Name> is not exported
-  DEAD LINK     a guide or tutorial links to `.../ref/<Name>` for a <Name> not exported
+  ORPHAN PAGE   ReferencePages/Symbols/<Name>.nb or .md where <Name> is not exported
+  DEAD LINK     a page links to .../ref/<Name> for a <Name> not exported or with no reference
+                page, or to paclet:<this paclet>/guide/<Name> or /tutorial/<Name> for a <Name>
+                with no such page. A source page's SeeAlso, RelatedGuides and RelatedTutorials
+                lists are links of kind ref, guide and tutorial.
 
 The second matters on its own: removing a page while leaving the guide entry turns a
 wrong page into a broken link, which is not an improvement.
@@ -27,8 +31,15 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 KERNEL = os.path.join(ROOT, "paclet", "Kernel", "HypergraphRewriting.wl")
+PACLET_INFO = os.path.join(ROOT, "paclet", "PacletInfo.wl")
 DOCS = os.path.join(ROOT, "paclet", "Documentation", "English")
-PAGES = os.path.join(DOCS, "ReferencePages", "Symbols")
+SRC = os.path.join(ROOT, "docs", "en")
+# The kind in a documentation URI -> the directory holding pages of that kind, the same under
+# DOCS (.nb) and SRC (.md).
+KIND_DIR = {"ref": os.path.join("ReferencePages", "Symbols"), "guide": "Guides",
+            "tutorial": "Tutorials"}
+FRONTMATTER_KIND = {"SeeAlso": "ref", "RelatedGuides": "guide", "RelatedTutorials": "tutorial"}
+FRONTMATTER_RE = re.compile(r'\ufeff?---\r?\n(.*?)\r?\n---', re.DOTALL)
 
 # The public symbols are the ones the kernel names in a list right after BeginPackage:
 #   {HGEvolve, HGSessionObject, ...};
@@ -42,9 +53,43 @@ REF_RE = re.compile(r'/ref/([A-Za-z$][A-Za-z0-9$]*)')
 CONTINUATION_RE = re.compile(r'\\\r?\n')
 
 
-def links_in(path):
+def paclet_name():
+    with open(PACLET_INFO, errors="replace") as f:
+        m = re.search(r'"Name"\s*->\s*"([^"]+)"', f.read())
+    if not m:
+        sys.exit(f'{PACLET_INFO} has no "Name" entry; the link scan needs the paclet name')
+    return m.group(1)
+
+
+def links_in(path, paclet):
+    """(kind, name) for every link in a page to this paclet's pages."""
     with open(path, errors="replace") as f:
-        return set(REF_RE.findall(CONTINUATION_RE.sub("", f.read())))
+        text = CONTINUATION_RE.sub("", f.read())
+    out = {("ref", n) for n in REF_RE.findall(text)}
+    # A notebook link runs to its closing quote, so a tail with spaces (a title, not a page
+    # name) is captured whole and reported; in markdown it ends at whitespace or a delimiter.
+    tail = r'([^"]*)' if path.endswith(".nb") else r'([^"\s)\]>]*)'
+    for kind, name in re.findall(r'paclet:' + re.escape(paclet) + r'/(guide|tutorial)/' + tail,
+                                 text):
+        out.add((kind, name))
+    if path.endswith(".md"):
+        fm = FRONTMATTER_RE.match(text)
+        if fm:
+            for key, kind in FRONTMATTER_KIND.items():
+                km = re.search(r'^' + key + r':\s*\[(.*?)\]\s*$', fm.group(1), re.M)
+                if km:
+                    out |= {(kind, n.strip()) for n in km.group(1).split(",") if n.strip()}
+    return out
+
+
+def pages_of(kind):
+    """Page names of one kind, built or source."""
+    names = set()
+    for root, ext in ((DOCS, ".nb"), (SRC, ".md")):
+        d = os.path.join(root, KIND_DIR[kind])
+        if os.path.isdir(d):
+            names |= {n[:-len(ext)] for n in os.listdir(d) if n.endswith(ext)}
+    return names
 
 
 def main():
@@ -59,29 +104,33 @@ def main():
                  "page as an orphan on what is more likely a parse failure here")
 
     findings = []
+    paclet = paclet_name()
+    pages = {kind: pages_of(kind) for kind in KIND_DIR}
 
-    if os.path.isdir(PAGES):
-        for name in sorted(os.listdir(PAGES)):
-            if not name.endswith(".nb"):
-                continue
-            symbol = name[:-3]
-            if symbol not in exported:
+    for root, ext in ((DOCS, ".nb"), (SRC, ".md")):
+        d = os.path.join(root, KIND_DIR["ref"])
+        if not os.path.isdir(d):
+            continue
+        for name in sorted(os.listdir(d)):
+            if name.endswith(ext) and name[:-len(ext)] not in exported:
                 findings.append(
-                    f"ORPHAN   ReferencePages/Symbols/{name} documents `{symbol}`, which "
-                    f"the Kernel does not export. It ships, so a user reads a page for a "
-                    f"call they cannot make.")
+                    f"ORPHAN   {os.path.relpath(os.path.join(d, name), ROOT)} documents "
+                    f"`{name[:-len(ext)]}`, which the Kernel does not export.")
 
-    for dirpath, _dirs, files in os.walk(DOCS):
-        for name in sorted(files):
-            if not name.endswith(".nb"):
-                continue
-            path = os.path.join(dirpath, name)
-            linked = links_in(path)
-            rel = os.path.relpath(path, ROOT)
-            for symbol in sorted(linked - exported):
-                findings.append(
-                    f"DEADLINK {rel} links to `{symbol}`, which the Kernel does not "
-                    f"export. The link resolves to no page.")
+    for root, ext in ((DOCS, ".nb"), (SRC, ".md")):
+        for dirpath, _dirs, files in os.walk(root):
+            for name in sorted(files):
+                if not name.endswith(ext):
+                    continue
+                path = os.path.join(dirpath, name)
+                rel = os.path.relpath(path, ROOT)
+                for kind, target in sorted(links_in(path, paclet)):
+                    if kind == "ref" and target not in exported:
+                        findings.append(f"DEADLINK {rel} links to ref `{target}`, which the "
+                                        f"Kernel does not export.")
+                    elif target not in pages[kind]:
+                        findings.append(f"DEADLINK {rel} links to {kind} `{target}`, which "
+                                        f"has no page.")
 
     for f_ in findings:
         print(f_)
