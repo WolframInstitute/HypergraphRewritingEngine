@@ -29,6 +29,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstdio>
 #include <vector>
 
@@ -211,4 +212,41 @@ TEST(MatchCompleteness, BatchedSubmissionIsAlsoComplete) {
     EXPECT_GT(runs_that_validated, 0u) << "the validator never executed";
     // Batched has no residual: it is asserted at zero, with no baseline.
     EXPECT_EQ(failing_runs, 0u);
+}
+
+// A run advanced one step at a time with forwarding on reaches what one run to the same depth
+// reaches. A state at the step budget is not registered for forwarding; a continuation resumes it
+// with a full match (defer_match_task), so it must find every match the forwarded copies carried.
+// Every corpus case, full and quotient exploration, one and four workers.
+TEST(MatchCompleteness, ForwardedRunContinuedStepwiseMatchesOneRun) {
+    auto run = [](const oracle::Case& c, unsigned threads, bool quotient, bool stepped) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        ParallelEvolutionEngine e(&hg, threads);
+        e.set_match_forwarding(true);
+        e.set_explore_from_canonical_states_only(quotient);
+        for (const auto& r : c.rules) e.add_rule(r);
+        const size_t depth = c.oracle_steps;
+        if (stepped) {
+            e.set_continuable(true);
+            e.evolve(c.init, 1);
+            for (size_t d = 1; d < depth; ++d) e.evolve_more(1);
+        } else {
+            e.evolve(c.init, depth);
+        }
+        return std::array<size_t, 3>{hg.num_states(), hg.num_canonical_states(), hg.num_events()};
+    };
+    for (const auto& c : oracle::corpus()) {
+        for (bool quotient : {false, true}) {
+            const auto base = run(c, 1, quotient, false);
+            for (unsigned threads : {1u, 4u}) {
+                const auto stepped = run(c, threads, quotient, true);
+                EXPECT_EQ(stepped, base) << c.name << (quotient ? " quotient" : " full") << ", "
+                                         << threads << " worker(s): stepwise states/classes/events "
+                                         << stepped[0] << "/" << stepped[1] << "/" << stepped[2]
+                                         << " against one run's " << base[0] << "/" << base[1]
+                                         << "/" << base[2];
+            }
+        }
+    }
 }

@@ -2082,8 +2082,11 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
             return;
         }
 
-        // Register child's parent pointer for ancestor chain walking
-        if (enable_match_forwarding_) {
+        // Register child's parent pointer for ancestor chain walking. A child past the match
+        // budget is not matched in this run (submit_match_task_with_context defers it, and a
+        // resumed state is matched in full), so it is not registered and receives no forwarded
+        // matches. At depth 6 on {{x,y},{x,z}} these were 67k of the 74k forwarded matches.
+        if (enable_match_forwarding_ && step + 1 <= match_budget()) {
             register_child_with_parent(
                 match.source_state, rr.raw_state,
                 match.matched_edges(), match.num_edges(),
