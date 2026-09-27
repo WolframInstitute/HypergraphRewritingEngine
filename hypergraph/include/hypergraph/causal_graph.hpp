@@ -199,10 +199,25 @@ private:
     // Arena for allocations (supports concurrent access)
     ConcurrentHeterogeneousArena* arena_;
 
-    // Statistics
-    std::atomic<size_t> num_causal_edges_{0};        // Per-edge causal relationships
-    std::atomic<size_t> num_causal_event_pairs_{0};  // Unique event pairs with a causal relationship
-    std::atomic<size_t> num_branchial_edges_{0};
+    // The three counts, one cache line per worker and summed when read: incremented once per
+    // causal edge, causal pair and branchial edge, as shared atomics they put every rewrite on
+    // one line. Hypergraph::QcCounterSlot does the same for the replay's counts.
+    struct alignas(64) CountSlot {
+        size_t causal_edges = 0;         // per-edge causal relationships
+        size_t causal_event_pairs = 0;   // unique event pairs with a causal relationship
+        size_t branchial_edges = 0;
+    };
+    CountSlot counts_[MAX_ARENA_WORKERS];
+    CountSlot& my_counts() {
+        const int w = arena_worker_index();
+        return counts_[w >= 0 ? w : 0];
+    }
+    template <typename M>
+    size_t count_total(M member) const {
+        size_t n = 0;
+        for (const CountSlot& s : counts_) n += s.*member;
+        return n;
+    }
 
 public:
     CausalGraph();

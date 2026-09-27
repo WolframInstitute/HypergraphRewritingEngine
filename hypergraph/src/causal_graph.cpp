@@ -202,7 +202,7 @@ void CausalGraph::add_causal_edge(EventId producer, EventId consumer, EdgeId edg
 
     if (seen_causal_triples_.insert(triple_key)) {
         causal_edges_.push(CausalEdge(producer, consumer, edge), *arena_);
-        num_causal_edges_.fetch_add(1, std::memory_order_relaxed);
+        ++my_counts().causal_edges;
 
 #ifdef HYPERGRAPH_ENABLE_VISUALIZATION
         VIZ_EMIT_CAUSAL_EDGE(producer, consumer, edge);
@@ -210,7 +210,7 @@ void CausalGraph::add_causal_edge(EventId producer, EventId consumer, EdgeId edg
 
         const uint64_t pair_key = causal_pair_key(producer, consumer);
         if (seen_causal_event_pairs_.insert(pair_key)) {
-            num_causal_event_pairs_.fetch_add(1, std::memory_order_relaxed);
+            ++my_counts().causal_event_pairs;
             // Record the kept edge in the reduced adjacency once per unique event
             // pair, so preds_ holds no duplicate producers for a consumer.
             if (transitive_reduction_enabled_.load(std::memory_order_relaxed) &&
@@ -229,7 +229,7 @@ void CausalGraph::record_reduced_edge(EventId producer, EventId consumer) {
 
 void CausalGraph::add_branchial_edge(EventId e1, EventId e2, EdgeId shared) {
     branchial_edges_.push(BranchialEdge(e1, e2, shared), *arena_);
-    num_branchial_edges_.fetch_add(1, std::memory_order_relaxed);
+    ++my_counts().branchial_edges;
 
 #ifdef HYPERGRAPH_ENABLE_VISUALIZATION
     VIZ_EMIT_BRANCHIAL_EDGE(e1, e2, 0);
@@ -349,12 +349,12 @@ size_t CausalGraph::num_causal_edges() const {
         for_each_causal_edge([&](const CausalEdge&) { ++n; });
         return n;
     }
-    return num_causal_edges_.load(std::memory_order_relaxed);
+    return count_total(&CountSlot::causal_edges);
 }
 
 size_t CausalGraph::num_causal_event_pairs() const {
     if (reduces_on_read()) return reduced_pairs().size();
-    return num_causal_event_pairs_.load(std::memory_order_relaxed);
+    return count_total(&CountSlot::causal_event_pairs);
 }
 
 size_t CausalGraph::num_branchial_pairs_claimed() const {
@@ -362,7 +362,7 @@ size_t CausalGraph::num_branchial_pairs_claimed() const {
 }
 
 size_t CausalGraph::num_branchial_edges() const {
-    return num_branchial_edges_.load(std::memory_order_relaxed);
+    return count_total(&CountSlot::branchial_edges);
 }
 
 #if HG_ENGINE_STATS
