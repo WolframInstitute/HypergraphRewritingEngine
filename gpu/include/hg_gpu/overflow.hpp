@@ -47,7 +47,7 @@ enum class ErrorKind : uint32_t {
     kFrontierCapFull     = 18,
     kScratchOverflow     = 19,   // bounded local scratch (IR, a replay driver without a work slice)
     kQeSurvivorsOverflow = 13,   // a capture's survivor list was longer than the survivor scratch: the capture was dropped
-    kQeWorkOverflow      = 14,   // the replay's descent stack was full: an instance's descent was dropped
+    kQeWorkOverflow      = 14,   // the multiplicity cascade's queue was full: a point's pass was dropped
     kTrScratchOverflow   = 11,   // the transitive reduction's reachability scratch was full: a redundant edge may be kept
     kDeviceOutOfMemory   = 21,   // host-side: an engine of the grown size no longer fits in VRAM
     // A device-resident scheduler ran past its spin budget. It means a defect -- the

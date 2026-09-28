@@ -294,16 +294,17 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     const bool qe_raw = in.record.causal || in.record.branchial || in.record.raw_events;
     const bool qe_replay = qe_raw && !qe_counts_only;
     const bool qe_multiplicity = (qe_raw && qe_counts_only) || in.record.multiplicities;
-    // The descent stacks the replay walks instead of the call stack, and the multiplicity
-    // cascade's queue. One driver per persistent block and one per root, so the arena covers
-    // whichever launch starts more of them.
-    if (qe_replay || qe_multiplicity) {
+    // The multiplicity cascade's queue, one slice per driver: one driver per persistent block and
+    // one per root, so the arena covers whichever launch starts more of them. The replay's lanes
+    // each take a reachability slice on first need, from a table with one entry per lane.
+    if (qe_multiplicity) {
         const uint32_t drivers =
             default_persistent_grid() > static_cast<uint32_t>(roots.size())
                 ? default_persistent_grid()
                 : static_cast<uint32_t>(roots.size());
         qe_state_->ensure_work(drivers, in.num_steps, cfg.descent_work_scale);
     }
+    if (qe_replay) qe_state_->ensure_lanes(default_persistent_grid() * kMatchBlockThreads);
     const bool qe_event_content = qc_route && qe_replay && in.materialize_events;
     if (qe_event_content) qe_state_->ensure_event_content();
     QeView qe_view = qe_state_->view(in.num_steps, event_keys_for(in.event_canonicalization),
@@ -800,8 +801,8 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     // (16 words per event), the pair maps and instance/match pools. Omitting it let the
     // grow-and-retry memory cap approve a config the device could not hold.
     b += u64(cfg.max_events) * u64(cfg.qe_capacity_scale) * 128;
-    // The two descent stacks at their minimum per-driver size (256 items), which
-    // descent_work_scale multiplies; a deep run's stacks are larger still.
+    // The multiplicity queues at their minimum per-driver size (256 items), which
+    // descent_work_scale multiplies; a deep run's queues are larger still.
     b += u64(default_persistent_grid()) * 256u * u64(cfg.descent_work_scale) *
          sizeof(QeWorkItem);
     b += u64(default_persistent_grid()) * 4u * u64(cfg.tr_scratch_scale) *

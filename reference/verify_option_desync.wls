@@ -67,7 +67,7 @@ Module[{printed, run},
 Module[{names},
   names[w_] := Block[{$MessageList = {}},
     HypergraphRewriting`Private`hgReportWarnings[w]; ToString /@ $MessageList];
-  With[{partial = names[{<|"Kind" -> "replay work stack", "Count" -> 1, "Context" -> "c", "Partial" -> 1|>}],
+  With[{partial = names[{<|"Kind" -> "multiplicity work queue", "Count" -> 1, "Context" -> "c", "Partial" -> 1|>}],
         fallback = names[{<|"Kind" -> "EventSigRawFallback", "Count" -> 2, "Context" -> "c", "Partial" -> 0|>}],
         saturated = names[{<|"Kind" -> "CountSaturated", "Count" -> 1, "Context" -> "c", "Partial" -> 0|>}]},
     Print["partial: ", partial, " fallback: ", fallback, " saturated: ", saturated];

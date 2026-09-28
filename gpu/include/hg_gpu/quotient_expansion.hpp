@@ -140,50 +140,32 @@ struct QeAppliedView {
 // child's producer vector and this file reads it back, so one value or neither works.
 inline constexpr uint32_t kQeNoProducer = hgcommon::QR_NO_PRODUCER;
 
-// ONE PENDING DESCENT. The replay used to descend by CALLING itself, and the cycle
-// qe_apply -> qr_apply -> descend -> qe_add_instance -> qe_drive_instance cost 8,704 bytes of
-// per-thread stack per level of reconstruction depth. What it actually carried across a level is
-// these three scalars. Sixteen bytes against 8,704 is why the depth a run can reconstruct was a
-// property of the launch rather than of the workload.
-constexpr uint32_t kQeNoMatch = 0xFFFFFFFFu;
+// A (class, instance record, depth) point: an instance the depth bound left standing
+// (QeView::blocked), and an entry of the multiplicity cascade's queue.
 struct QeWorkItem {
     uint64_t hash;    // the class the instance stands at
     uint32_t rec;     // its record in the instance pool
     uint32_t depth;
-    // kQeNoMatch: drive the instance against every captured match of its class. Otherwise one
-    // application, of the match record `match` to the instance, which a capture hands off
-    // (qe_drive_match) instead of applying it on the capturing block.
-    uint32_t match = kQeNoMatch;
 };
 
-// The termination detector's role for descent items on the shared ring (QeView::share).
-// Role 0 is the persistent kernel's match queue.
-constexpr uint32_t kQeShareRole = 1;
-constexpr uint32_t kQeShareRings = 16;
+// ONE REPLAY APPLICATION: apply match record `match` to instance record `rec` of class `hash` at
+// `depth`. The replay's unit of work on the device. Producers append tasks to QeView::tasks (a
+// capture, one per standing instance of its class; a new instance, one per captured match of its
+// class) and whole warps consume them, up to 32 at a time, one per lane. `published` is written
+// last, with release order, and a consumer that claimed the index waits for it.
+struct QeTask {
+    uint64_t hash;
+    uint32_t rec;
+    uint32_t depth;
+    uint32_t match;
+    uint32_t published;
+};
 
-// A driver's private descent stack. LIFO, so the order instances are driven in is the order the
-// recursion drove them -- which is what lets the existing corpus gate this change directly.
-//
-// PRIVATE TO ONE DRIVER, and that is a property of where the replay runs rather than an
-// assumption: in the persistent kernel the whole rewrite path is inside `threadIdx.x == 0`, so
-// there is one driver per BLOCK, and in the root seeder there is one per root.
+// The multiplicity cascade's queue: one slice of QeView::work_items per driver.
 struct QeWork {
     QeWorkItem* items = nullptr;
     uint32_t    cap   = 0;
     uint32_t    n     = 0;
-
-    __device__ bool push(uint64_t hash, uint32_t rec, uint32_t depth) {
-        if (n >= cap) return false;
-        items[n].hash = hash; items[n].rec = rec; items[n].depth = depth;
-        items[n].match = kQeNoMatch;
-        ++n;
-        return true;
-    }
-    __device__ bool pop(QeWorkItem& out) {
-        if (n == 0) return false;
-        out = items[--n];
-        return true;
-    }
 };
 
 // Words per raw event in QeView::event_kept, and the local arrays the replay's redundancy search
@@ -281,30 +263,32 @@ struct QeView {
 
     uint32_t* next_id;         // device atomic; dense match ids
 
-    // Backing store for the descent stacks, one contiguous slice of `work_cap` items per driver.
+    // Backing store for the multiplicity queues, one contiguous slice of `work_cap` items per
+    // driver.
     // Sized from the run's step budget the way the IR arena is sized from its state budget, and
     // exhausted the same way: a capacity overflow that reports and returns partial work.
     QeWorkItem* work_items  = nullptr;
     uint32_t    work_cap    = 0;   // items per driver
     uint32_t    work_slices = 0;   // drivers this run can serve
 
-    // THE SHARED DESCENT RING, set only for the persistent launch and the kernels that run
-    // ahead of it on its stream. A driver holding more than one pending descent hands its
-    // shallowest to this ring, and idle blocks of the persistent kernel take them, so one
-    // class's cascade spreads across the grid. The host keeps every descent on the thread that
-    // produced it, where hand-off was measured slower; on the device one thread runs the same
-    // code 62.9x slower than a host core (device IR on one state, persistent.cu), and the rest
-    // of the grid is idle while a few-class workload's cascade runs. The claim per
-    // (instance, match) makes the order in which items are driven irrelevant to the result.
-    // Items are counted under kQeShareRole before they are visible, as match items are.
-    uint32_t share_on = 0;
-    // kQeShareRings rings: a driver pushes to its block's ring and a taker tries its own and one
-    // other, so the grid does not contend on one ring's cursors.
-    typename RingBuffer<QeWorkItem>::DeviceView* shares = nullptr;
-    TerminationDetector::DeviceView share_term{};
-    // Blocks of the persistent kernel in their idle path. A driver hands off only while some
-    // block is idle, so a run whose blocks all have work pays no ring traffic.
-    uint32_t* idle_blocks = nullptr;
+    // THE REPLAY'S TASK LOG. Append-only within a run: a producer claims a slot, writes the
+    // task and publishes it; a warp of the persistent kernel claims up to 32 consecutive tasks
+    // at `task_cursor` and runs one per lane, then adds how many it ran to `tasks_done`. The
+    // detector counts claimed tasks as produced and `tasks_done` as consumed, beside the match
+    // records, and every producer is itself inside a counted unit (the record whose rewrite
+    // captured a match, or the task whose application made an instance), so the two cannot
+    // balance while a task is owed.
+    //
+    // The host runs a descent on the thread that produced it. On the device one lane runs the
+    // same code 62.9x slower than a host core (device IR on one state, persistent.cu), so the
+    // replay's parallelism has to come from running many applications at once, one per lane.
+    typename Pool<QeTask>::DeviceView tasks{};
+    uint32_t* task_cursor = nullptr;
+    uint32_t* tasks_done  = nullptr;
+    // Per lane of the grid, the arena offset + 1 of its reachability-search slice
+    // (DeviceQrCtx::redundant), claimed on its first overflow; 0 until then.
+    uint32_t* lane_reach = nullptr;
+    uint32_t  lane_reach_slots = 0;
 
     uint32_t  max_steps = 0;
     uint32_t  enabled   = 0;
@@ -342,18 +326,17 @@ struct QeView {
     unsigned long long* qm_counts         = nullptr;   // [0] raw events, [1] branchial, [2] saturated
 };
 
-// The rendezvous is mutually recursive: publishing an instance drives the matches, publishing a
-// match drives the instances, and an application publishes a child instance. Declared here so
-// each publisher can drive without the definitions having to be ordered around each other.
-struct DeviceQcInstance;
-
-__device__ inline void qe_drive_instance(DeviceState ds, QeView qe,
-                                         const DeviceQcInstance& inst,
-                                         uint64_t state_hash, uint32_t depth, QeWork& work);
-__device__ inline void qe_run(DeviceState ds, QeView qe, QeWork& work);
+// The rendezvous: publishing an instance appends a task per captured match of its class,
+// publishing a match appends a task per standing instance of its class, and an application
+// publishes a child instance. Declared here so each publisher can append without the
+// definitions having to be ordered around each other.
+__device__ inline void qe_task_append(DeviceState ds, QeView qe, uint64_t hash, uint32_t rec,
+                                      uint32_t depth, uint32_t match);
+__device__ inline void qe_drive_instance(DeviceState ds, QeView qe, uint32_t rec,
+                                         uint64_t state_hash, uint32_t depth);
+__device__ inline void qe_drive_match(DeviceState ds, QeView qe, uint32_t match_rec,
+                                      uint64_t from_hash);
 __device__ inline QeWork qe_work_for(DeviceState ds, QeView qe, uint32_t slice);
-__device__ inline void qe_drive_match(DeviceState ds, QeView qe, const DeviceSlotMatch& m,
-                                      uint32_t match_rec, uint64_t from_hash, QeWork& work);
 __device__ __forceinline__ uint32_t qe_alloc_words(DeviceState ds, QeView qe, uint32_t n);
 
 // Bucket a hash into a list's key space.
@@ -364,9 +347,10 @@ __device__ __forceinline__ uint32_t qe_bucket(uint64_t h, uint32_t num_keys) {
     return static_cast<uint32_t>(h % (num_keys ? num_keys : 1u));
 }
 
-// A (class, depth) key's instance list is split over kQeInstShards buckets; a pusher takes its
-// block's shard and a scanner walks all of them.
-constexpr uint32_t kQeInstShards = 4;
+// A (class, depth) key's instance list is split over kQeInstShards buckets; a pusher takes the
+// shard of its lane across the grid and a scanner walks all of them. Every lane of a warp
+// creates instances, so a shard per block would put a warp's lanes on one list head.
+constexpr uint32_t kQeInstShards = 16;
 __device__ __forceinline__ uint32_t qe_inst_bucket(const QeView& qe, uint64_t key, uint32_t shard) {
     return qe_bucket(key + 0x9E3779B97F4A7C15ull * shard, qe.by_key.num_keys);
 }
@@ -680,8 +664,7 @@ __device__ inline __noinline__ void qe_redrive(DeviceState ds, QeView qe, uint32
         for (uint32_t i = slice; i < n; i += stride) {
             const QeWorkItem it = qe.blocked.at(i);
             if (it.depth < old_bound || it.depth >= qe.max_steps) continue;
-            qe_drive_instance(ds, qe, qe.instances.at(it.rec), it.hash, it.depth, work);
-            qe_run(ds, qe, work);
+            qe_drive_instance(ds, qe, it.rec, it.hash, it.depth);
         }
     }
 }
@@ -789,12 +772,11 @@ __device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
     const uint32_t at = qe.by_from.push(qe_bucket(from, qe.by_from.num_keys), QeMatchRef{from, rec});
     if (at == INVALID_ID) { ds.errors.record(ErrorKind::kQcNodes); return; }
 
-    if (!qe.replay && !qe.multiplicity) return;
-    QeWork work = qe_work_for(ds, qe, work_slice);
-    if (qe.multiplicity) qe_capture_multiplicity(ds, qe, m, from, at, consumed, nc, work);
-    if (!qe.replay) return;
-    qe_drive_match(ds, qe, m, rec, from, work);
-    qe_run(ds, qe, work);
+    if (qe.multiplicity) {
+        QeWork work = qe_work_for(ds, qe, work_slice);
+        qe_capture_multiplicity(ds, qe, m, from, at, consumed, nc, work);
+    }
+    if (qe.replay) qe_drive_match(ds, qe, rec, from);
 }
 
 // Reserve `n` words of the expansion arena. Returns UINT32_MAX when the arena is exhausted,
@@ -847,7 +829,8 @@ __device__ inline uint32_t qe_add_instance(DeviceState ds, QeView qe, uint64_t s
     // find a half-written instance.
     __threadfence();
     const uint64_t key = qe_inst_key(state_hash, depth);
-    if (qe.by_key.push(qe_inst_bucket(qe, key, blockIdx.x & (kQeInstShards - 1u)),
+    if (qe.by_key.push(qe_inst_bucket(qe, key, (blockIdx.x * blockDim.x + threadIdx.x) &
+                                                   (kQeInstShards - 1u)),
                        QeInstRef{key, rec}) == INVALID_ID)
         ds.errors.record(ErrorKind::kQcNodes);
     return rec;
@@ -879,9 +862,7 @@ __device__ inline void qe_seed_root_instance(DeviceState ds, QeView qe, StateId 
     for (uint32_t i = 0; i < nslots; ++i) qe.arr_words[off + i] = kQeNoProducer;
     const uint32_t rec = qe_add_instance(ds, qe, h, 0u, off, nslots);
     if (rec == UINT32_MAX) return;
-    QeWork work = qe_work_for(ds, qe, work_slice);
-    if (!work.push(h, rec, 0u)) { ds.errors.record(ErrorKind::kQeWorkOverflow); return; }
-    qe_run(ds, qe, work);
+    qe_drive_instance(ds, qe, rec, h, 0u);
 }
 
 // Visit every instance recorded for `state_hash` at `depth`.
@@ -908,101 +889,46 @@ __device__ __forceinline__ uint64_t qe_apply_key(uint32_t instance, uint32_t mat
 // applied list or a claim set lives is here; what an application DOES -- what it claims, what
 // it identifies the event by, which causal and branchial relations follow -- is in the core,
 // which is the body the host runs too.
-// Defined below, over the shared replay core; the two drivers here are its callers, so the
-// mutual recursion needs the declaration first.
-//
-// __forceinline__ IS LOAD-BEARING, and the declaration has to carry it too so the two agree.
-// This sits inside the recursion cycle whose per-level cost EngineState::kDeviceStackBytesPerDepth
-// records, and the body is only "build the Ctx and forward", so a separate frame for it buys a
-// call's worth of ABI save area per level of reconstruction depth and nothing else. Measured with
-// tools/dev/ptx_frame_sizes.py: as its own frame it holds a 64-byte depot.
 __device__ __forceinline__ void qe_apply(DeviceState ds, QeView qe, const DeviceQcInstance& inst,
                                          const DeviceSlotMatch& m, uint64_t state_hash,
-                                         uint32_t depth, QeWork& work);
+                                         uint32_t depth);
 
-// Instance side of the rendezvous: replay every match already captured for this class.
-__device__ inline void qe_drive_instance(DeviceState ds, QeView qe,
-                                         const DeviceQcInstance& inst,
-                                         uint64_t state_hash, uint32_t depth, QeWork& work) {
-    if (depth >= qe.max_steps) return;   // final-depth instances are recorded, never expanded
-    // NO DEPTH GUARD. There was one, because this function used to re-enter itself and the
-    // per-thread stack it re-entered on is a fixed reservation the driver takes across every
-    // resident thread. The descent is a worklist now, so what bounds it is that list's capacity
-    // -- checked where the push happens, and reported as the capacity overflow it is.
-    //
+// Append one application to the task log and publish it. A full log is a capacity overflow,
+// reported and grown by the retry ladder, as every other replay pool's.
+__device__ inline void qe_task_append(DeviceState ds, QeView qe, uint64_t hash, uint32_t rec,
+                                      uint32_t depth, uint32_t match) {
+    const uint32_t i = qe.tasks.claim();
+    if (i == Pool<QeTask>::kInvalid) { ds.errors.record(ErrorKind::kQcNodes); return; }
+    QeTask& t = qe.tasks.at(i);
+    t.hash = hash; t.rec = rec; t.depth = depth; t.match = match;
+    cuda::atomic_ref<uint32_t, cuda::thread_scope_device> pub(t.published);
+    pub.store(1u, cuda::memory_order_release);
+}
+
+// Instance side of the rendezvous: a task per match already captured for this class.
+// Final-depth instances are recorded and never expanded.
+__device__ inline void qe_drive_instance(DeviceState ds, QeView qe, uint32_t rec,
+                                         uint64_t state_hash, uint32_t depth) {
+    if (depth >= qe.max_steps) return;
     // Published before scanning; pairs with the fence on the match side so a concurrent
     // instance and match cannot both miss each other.
     __threadfence();
-    qe_for_each_match_from(qe, state_hash, [&](const DeviceSlotMatch& m) {
-        qe_apply(ds, qe, inst, m, state_hash, depth, work);
+    qe.by_from.for_each(qe_bucket(state_hash, qe.by_from.num_keys), [&](const QeMatchRef& r) {
+        if (r.from_hash == state_hash) qe_task_append(ds, qe, state_hash, rec, depth, r.record);
     });
 }
 
-// Match side of the rendezvous: replay this match against every instance already standing at
-// this class, at every depth it could stand at.
-// A capture applies its first kQeCaptureInline instances itself. Past that, and for descents,
-// a driver hands off only while some block is idle and its own ring holds fewer than
-// kQeShareLow items.
-constexpr uint32_t kQeCaptureInline = 8;
-constexpr uint32_t kQeShareLow = 64;
-__device__ __forceinline__ bool qe_share_hungry(const QeView& qe) {
-    cuda::atomic_ref<uint32_t, cuda::thread_scope_device> idle(*qe.idle_blocks);
-    if (idle.load(cuda::memory_order_relaxed) == 0) return false;
-    typename RingBuffer<QeWorkItem>::DeviceView v = qe.shares[blockIdx.x % kQeShareRings];
-    return v.size_approx() < kQeShareLow;
-}
-
-// Push to this block's shared ring; false when it is full.
-__device__ __forceinline__ bool qe_share_push(const QeView& qe, const QeWorkItem& it) {
-    typename RingBuffer<QeWorkItem>::DeviceView v = qe.shares[blockIdx.x % kQeShareRings];
-    return v.try_push(it);
-}
-
-// Take from this block's ring, else from ring `other`.
-__device__ __forceinline__ bool qe_share_pop(const QeView& qe, uint32_t other, QeWorkItem& out) {
-    typename RingBuffer<QeWorkItem>::DeviceView own = qe.shares[blockIdx.x % kQeShareRings];
-    if (own.try_pop(out)) return true;
-    typename RingBuffer<QeWorkItem>::DeviceView v = qe.shares[other % kQeShareRings];
-    return v.try_pop(out);
-}
-
-__device__ inline void qe_drive_match(DeviceState ds, QeView qe, const DeviceSlotMatch& m,
-                                      uint32_t match_rec, uint64_t from_hash, QeWork& work) {
+// Match side of the rendezvous: a task per instance already standing at this class, at every
+// depth it could stand at.
+__device__ inline void qe_drive_match(DeviceState ds, QeView qe, uint32_t match_rec,
+                                      uint64_t from_hash) {
     __threadfence();
-    uint32_t seen = 0;
     for (uint32_t d = 0; d < qe.max_steps; ++d) {
         const uint64_t key = qe_inst_key(from_hash, d);
         for (uint32_t sh = 0; sh < kQeInstShards; ++sh)
-        qe.by_key.for_each(qe_inst_bucket(qe, key, sh), [&](const QeInstRef& r) {
-            if (r.key != key) return;
-            // With a shared ring, applications past the first kQeCaptureInline are items: a match
-            // captured after its class holds many instances would otherwise apply to all of them
-            // on this one block, and a class holding few pays no ring traffic.
-            if (qe.share_on && ++seen > kQeCaptureInline && qe_share_hungry(qe)) {
-                qe.share_term.mark_pushed(kQeShareRole);
-                QeWorkItem it{from_hash, r.record, d};
-                it.match = match_rec;
-                if (qe_share_push(qe, it)) return;
-                qe.share_term.mark_completed(kQeShareRole);
-            }
-            qe_apply(ds, qe, qe.instances.at(r.record), m, from_hash, d, work);
-        });
-    }
-}
-
-// Drain the descent stack. Every instance an application publishes lands here rather than on the
-// call stack, so this loop is the whole of the replay's depth.
-__device__ inline void qe_run(DeviceState ds, QeView qe, QeWork& work) {
-    QeWorkItem it;
-    while (work.pop(it)) {
-        // More than one pending: offer the shallowest (items[0], the largest subtree) to the
-        // shared ring. Counted before the push, uncounted if the ring is full and it stays here.
-        if (qe.share_on && work.n > 0 && qe_share_hungry(qe)) {
-            qe.share_term.mark_pushed(kQeShareRole);
-            if (qe_share_push(qe, work.items[0])) work.items[0] = work.items[--work.n];
-            else qe.share_term.mark_completed(kQeShareRole);
-        }
-        qe_drive_instance(ds, qe, qe.instances.at(it.rec), it.hash, it.depth, work);
+            qe.by_key.for_each(qe_inst_bucket(qe, key, sh), [&](const QeInstRef& r) {
+                if (r.key == key) qe_task_append(ds, qe, from_hash, r.record, d, match_rec);
+            });
     }
 }
 
@@ -1011,7 +937,7 @@ __device__ inline void qe_run(DeviceState ds, QeView qe, QeWork& work) {
 __device__ inline QeWork qe_work_for(DeviceState ds, QeView qe, uint32_t slice) {
     QeWork w;
     if (qe.work_items == nullptr || slice >= qe.work_slices) {
-        if (qe.replay || qe.multiplicity) ds.errors.record(ErrorKind::kScratchOverflow);
+        if (qe.multiplicity) ds.errors.record(ErrorKind::kScratchOverflow);
         return w;
     }
     w.items = qe.work_items + static_cast<size_t>(slice) * qe.work_cap;
@@ -1028,7 +954,6 @@ struct DeviceQrCtx {
     // The caller's copies outlive this object.
     DeviceState& ds;
     QeView& qe;
-    QeWork& work;
 
     // COUNTED INTO LOCALS AND PUBLISHED ONCE, when this context is destroyed at the end of the
     // application it was made for. Incremented in place each is one global atomicAdd per
@@ -1101,9 +1026,10 @@ struct DeviceQrCtx {
         ++causal_pairs_seen;
     }
     // hgcommon::redundant_producers over the kept sets of earlier events. The search runs in local
-    // arrays; when they fill, the block's thread 0 runs it again in the block's slice of
-    // ds.tr_scratch, and past that the overflow is recorded, which keeps the pairs and lets
-    // grow-and-retry run again with a larger slice -- the device full capture's search does the same.
+    // arrays; when they fill, it runs again in this lane's slice of the expansion arena
+    // (QeView::lane_reach, claimed on the lane's first overflow, the size of one block's
+    // ds.tr_scratch slice), and past that the overflow is recorded, which keeps the pairs and
+    // lets grow-and-retry run again with a larger arena.
     __device__ uint32_t redundant(const uint32_t* producers, uint32_t n) {
         if (n < 2 || qe.event_kept == nullptr) return 0;
         auto preds = [&](uint32_t x, auto&& f) {
@@ -1122,14 +1048,22 @@ struct DeviceQrCtx {
                                                          kQeReachTable);
         const uint32_t mask = hgcommon::redundant_producers(local, producers, n, true);
         if (!local.overflow) return mask;
-        if (ds.tr_scratch != nullptr && threadIdx.x == 0 && blockIdx.x < ds.tr_scratch_slots) {
-            uint32_t* slice = ds.tr_scratch + static_cast<size_t>(blockIdx.x) *
-                                                  (ds.tr_scratch_stack + ds.tr_scratch_visited);
-            hgcommon::BoundedReachCtx<decltype(preds)> wide(preds, slice, ds.tr_scratch_stack,
-                                                            slice + ds.tr_scratch_stack,
-                                                            ds.tr_scratch_visited);
-            const uint32_t wmask = hgcommon::redundant_producers(wide, producers, n, true);
-            if (!wide.overflow) return wmask;
+        const uint32_t lane = blockIdx.x * blockDim.x + threadIdx.x;
+        if (qe.lane_reach != nullptr && lane < qe.lane_reach_slots) {
+            const uint32_t words = ds.tr_scratch_stack + ds.tr_scratch_visited;
+            uint32_t off = qe.lane_reach[lane];
+            if (off == 0) {
+                const uint32_t got = qe_alloc_words(ds, qe, words);
+                if (got != UINT32_MAX) { off = got + 1u; qe.lane_reach[lane] = off; }
+            }
+            if (off != 0) {
+                uint32_t* slice = qe.arr_words + (off - 1u);
+                hgcommon::BoundedReachCtx<decltype(preds)> wide(preds, slice, ds.tr_scratch_stack,
+                                                                slice + ds.tr_scratch_stack,
+                                                                ds.tr_scratch_visited);
+                const uint32_t wmask = hgcommon::redundant_producers(wide, producers, n, true);
+                if (!wide.overflow) return wmask;
+            }
         }
         ds.errors.record(ErrorKind::kTrScratchOverflow);
         return mask;
@@ -1189,11 +1123,8 @@ struct DeviceQrCtx {
         (void)hi;
         ++branchial_seen;
     }
-    // __forceinline__ so its 1104-byte depot merges into qr_apply's frame rather than taking
-    // one of its own. That frame is now paid ONCE per drive rather than once per level of
-    // reconstruction depth -- this function ends the descent by pushing instead of calling --
-    // but a depot that need not exist still should not. Measured with
-    // tools/dev/ptx_frame_sizes.py.
+    // __forceinline__ so its depot merges into qr_apply's frame rather than taking one of its
+    // own (tools/dev/ptx_frame_sizes.py measured 1104 bytes as its own frame).
     __device__ __forceinline__ void descend(const QeMatchView& m, uint32_t depth, uint32_t ev,
                                             const DeviceQcInstance& parent) {
         const uint32_t off = qe_alloc_words(ds, qe, m.to_slots);
@@ -1211,17 +1142,16 @@ struct DeviceQrCtx {
         }
         const uint32_t rec = qe_add_instance(ds, qe, m.to_hash, depth + 1u, off, m.to_slots);
         if (rec == UINT32_MAX) return;
-        // PUSHED, NOT CALLED. This was the recursive edge; the driver loop takes it from here.
-        if (!work.push(m.to_hash, rec, depth + 1u))
-            ds.errors.record(ErrorKind::kQeWorkOverflow);
+        // The child's applications are tasks, which any warp's lanes run.
+        qe_drive_instance(ds, qe, rec, m.to_hash, depth + 1u);
     }
 };
 
 __device__ __forceinline__ void qe_apply(DeviceState ds, QeView qe, const DeviceQcInstance& inst,
                                          const DeviceSlotMatch& m, uint64_t state_hash,
-                                         uint32_t depth, QeWork& work) {
+                                         uint32_t depth) {
     if (!qe.enabled || depth >= qe.max_steps) return;
-    DeviceQrCtx c{ds, qe, work};
+    DeviceQrCtx c{ds, qe};
     hgcommon::qr_apply(c, inst, QeMatchView(m, qe.arr_words), state_hash, depth);
 }
 
@@ -1327,9 +1257,11 @@ public:
     // engine across many runs and a buffer whose contents never outlive a run should not be
     // reallocated on each of them.
     void ensure_work(uint32_t slices, uint32_t max_steps, uint32_t scale);
+    // The per-lane reachability-slice table (QeView::lane_reach), one entry per lane of the grid.
+    void ensure_lanes(uint32_t lanes);
 
     // The per-event input class, output class and rule arrays, allocated on first use and kept
-    // across runs like the descent stacks.
+    // across runs like the multiplicity queues.
     void ensure_event_content();
     // The first raw-event-count entries of those arrays.
     void reconstructed_event_content_host(std::vector<uint64_t>& from_class,
@@ -1347,6 +1279,7 @@ private:
     LockFreeList<QeMatchRef>  by_from_;
     Pool<DeviceQcInstance>    instances_;
     Pool<QeWorkItem>          blocked_;
+    Pool<QeTask>              tasks_;     // the replay's task log (QeView::tasks)
     LockFreeList<QeInstRef>   by_key_;
     DedupMap                  rep_;
     DedupMap                  applied_;
@@ -1382,15 +1315,18 @@ private:
     uint32_t*                 arr_ = nullptr;
     // The scalars above and below live in ONE allocation; these pointers index into it,
     // so counters_host() reads them all in a single transfer.
-    static constexpr uint32_t kNumCounters = 13;
+    // Slot 13 is the task log's consume cursor, slot 14 the tasks run.
+    static constexpr uint32_t kNumCounters = 15;
     uint32_t*                 counters_ = nullptr;
     uint32_t*                 cursor_ = nullptr;
     uint32_t*                 next_id_ = nullptr;
     uint32_t                  arr_cap_ = 0;
-    // The replay's descent stacks: work_slices_ contiguous slices of work_cap_ items.
+    // The multiplicity queues: work_slices_ contiguous slices of work_cap_ items.
     QeWorkItem*               work_items_  = nullptr;
     uint32_t                  work_cap_    = 0;
     uint32_t                  work_slices_ = 0;
+    uint32_t*                 lane_reach_       = nullptr;
+    uint32_t                  lane_reach_slots_ = 0;
     bool                      on_ = false;
 };
 

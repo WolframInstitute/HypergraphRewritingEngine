@@ -31,6 +31,8 @@ QeState::QeState(bool on, uint32_t max_events): matches_(on ? max_events : 1u),
           by_from_(on ? qe_list_buckets(max_events) : 1u, on ? max_events : 1u),
           instances_(on ? max_events : 1u),
           blocked_(on ? max_events : 1u),
+          // An application is attempted once from each side of the rendezvous at most.
+          tasks_(on ? max_events * 2u : 1u),
           by_key_(on ? qe_list_buckets(max_events) : 1u, on ? max_events : 1u),
           rep_(on ? max_events : 8u),
           applied_(on ? max_events * 4u : 8u),
@@ -87,6 +89,7 @@ QeState::QeState(bool on, uint32_t max_events): matches_(on ? max_events : 1u),
 
 QeState::~QeState() {
     if (work_items_) cudaFree(work_items_);
+    if (lane_reach_) cudaFree(lane_reach_);
         if (arr_)     cudaFree(arr_);
         if (counters_) cudaFree(counters_);
         if (event_sig_) cudaFree(event_sig_);
@@ -110,6 +113,14 @@ void QeState::clear() {
         by_key_.clear();
         instances_.reset();
         blocked_.reset();
+        // Published flags start clear; reset_and_clear zeroes the prefix the last run wrote.
+        tasks_.reset_and_clear();
+        HG_CUDA_CHECK(cudaMemset(counters_ + 13, 0, sizeof(uint32_t) * 2u),
+                      "QeState task cursor clear");
+        // The slices it names are in the arena, which restarts with this run.
+        if (lane_reach_)
+            HG_CUDA_CHECK(cudaMemset(lane_reach_, 0, sizeof(uint32_t) * lane_reach_slots_),
+                          "QeState lane reach clear");
         rep_.clear();
         applied_.clear();
         canon_seen_.clear();
@@ -352,12 +363,8 @@ uint32_t QeState::num_align_failures_host() { return read_counter(align_fail_, "
 
 uint32_t QeState::num_instances_host() { return instances_.size_host(); }
 
-// The replay descends through this rather than through the call stack, so its size is what
-// bounds reconstruction depth. Sized from the run: `slices` drivers, each holding enough items
-// for a depth-first walk of `max_steps` levels with room for the siblings a level fans out to.
-//
-// 64 items per level is a bound on FAN-OUT, not on depth -- the stack holds the matches of each
-// level that have not been descended into yet. A workload wider than that reports a capacity
+// The multiplicity cascade's queues. Sized from the run: `slices` drivers, each holding 64
+// items per level of `max_steps`, at least 256. A workload wider than that reports a capacity
 // overflow (kQeWorkOverflow); grow-and-retry doubles `scale` (EngineConfig::descent_work_scale)
 // and runs again.
 void QeState::ensure_work(uint32_t slices, uint32_t max_steps, uint32_t scale) {
@@ -368,7 +375,17 @@ void QeState::ensure_work(uint32_t slices, uint32_t max_steps, uint32_t scale) {
     work_slices_ = slices > work_slices_ ? slices : work_slices_;
     work_cap_    = cap > work_cap_ ? cap : work_cap_;
     const size_t bytes = sizeof(QeWorkItem) * work_slices_ * work_cap_;
-    HG_CUDA_CHECK(cudaMalloc(&work_items_, bytes), "QeState descent stacks alloc");
+    HG_CUDA_CHECK(cudaMalloc(&work_items_, bytes), "QeState multiplicity queues alloc");
+}
+
+void QeState::ensure_lanes(uint32_t lanes) {
+    if (!on_ || lanes <= lane_reach_slots_) return;
+    if (lane_reach_) cudaFree(lane_reach_);
+    lane_reach_ = nullptr;
+    lane_reach_slots_ = 0;
+    HG_CUDA_CHECK(cudaMalloc(&lane_reach_, sizeof(uint32_t) * lanes), "QeState lane reach alloc");
+    HG_CUDA_CHECK(cudaMemset(lane_reach_, 0, sizeof(uint32_t) * lanes), "QeState lane reach init");
+    lane_reach_slots_ = lanes;
 }
 
 void QeState::ensure_event_content() {
@@ -437,6 +454,11 @@ QeView QeState::view(uint32_t max_steps, EventSignatureKeys keys,
         q.arr_capacity = arr_cap_;
         q.next_id      = next_id_;
         q.max_steps    = max_steps;
+        q.tasks            = tasks_.view();
+        q.task_cursor      = counters_ + 13;
+        q.tasks_done       = counters_ + 14;
+        q.lane_reach       = lane_reach_;
+        q.lane_reach_slots = lane_reach_slots_;
         q.work_items   = work_items_;
         q.work_cap     = work_cap_;
         q.work_slices  = work_slices_;

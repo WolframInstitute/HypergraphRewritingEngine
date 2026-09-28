@@ -1930,8 +1930,8 @@ TEST(QuotientReconstruction, ADepthThatSaturatesThePoolsStillAgreesWithTheHost) 
     const auto gpu = hg_gpu::evolve(in);
     ASSERT_TRUE(gpu.reconstruction_ran) << "the device did not reconstruct, so there is nothing "
                                            "to compare and the gate asserts nothing";
-    // The run grows its pools and its descent stacks and retries; the attempt that fits returns
-    // no warning. Each one names a dropped descent, a dropped capture or a truncated pool.
+    // The run grows its pools and retries; the attempt that fits returns no warning. Each one
+    // names a dropped task, a dropped capture or a truncated pool.
     EXPECT_TRUE(gpu.warnings.empty()) << [&] {
         std::string m = std::to_string(gpu.warnings.size()) + " warning(s) with the result:";
         for (const auto& wn : gpu.warnings)

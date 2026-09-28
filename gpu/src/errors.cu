@@ -44,7 +44,7 @@ const char* error_kind_name(ErrorKind k) {
         case ErrorKind::kScratchOverflow:     return "per-thread scratch";
         case ErrorKind::kTrScratchOverflow:   return "transitive-reduction scratch";
         case ErrorKind::kQeSurvivorsOverflow: return "replay capture survivors";
-        case ErrorKind::kQeWorkOverflow:      return "replay work stack";
+        case ErrorKind::kQeWorkOverflow:      return "multiplicity work queue";
         case ErrorKind::kIRArenaExhausted:    return "device IR arena (retryable: grow config)";
         case ErrorKind::kIRDepthExceeded:     return "IR search depth (retryable: grow config)";
         case ErrorKind::kIRGeneratorsExceeded: return "IR automorphism generators (retryable: grow config)";

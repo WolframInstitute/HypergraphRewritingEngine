@@ -95,17 +95,19 @@ the pairs are an expansion of the applied lists and are built only when the repl
 
 The replay is the one place the device schedules differently from the host. The host drives a
 class's instance cascade on the thread that produced it. On the device one thread runs the same
-code about 60 times slower, and a workload with few classes leaves most of the grid idle while one
-block drives the cascade (multirule at 6 steps: 98% of block cycles idle). So a driver hands work
-to other blocks through 16 shared rings (`QeView::shares`): the shallowest pending descent, and
-each application of a newly captured match past its first eight instances. It does so only while
-some block is idle (`QeView::idle_blocks`), so a run whose blocks all have work pays no ring
-traffic. Handed-off items are counted by the termination detector under a second role
-(`kQeShareRole`), booked before they become visible, as match items are. The claim per
-(instance, match) makes the order in which items run irrelevant to the result. A class and
-depth's instance list is split over four buckets, one chosen by the pushing block, because
-concurrent pushes onto one list head serialized the replay; the keyed lists' bucket counts grow
-with the event budget, because a walk visits every node of its bucket.
+code about 60 times slower than a host thread, and a warp of 32 lanes is the unit of issue. So
+each (instance, match) application is a task in an append-only log (`QeView::tasks`): a block's
+lane 0 claims up to 32 consecutive tasks with one compare-exchange on the task cursor, each lane
+runs one, and the tasks an application produces are appended to the same log. An append claims
+its slot, writes the task and sets its published flag with release; a lane waits for the flag of
+the task it claimed. The termination detector counts the claimed slots as produced and
+`tasks_done` as consumed, and every append happens inside a unit that has not yet been booked
+consumed (the record being rewritten, or the task being run). The claim per (instance, match)
+makes the order in which tasks run irrelevant to the result. A class and depth's instance list is
+split over sixteen buckets, one chosen by the pushing lane, because concurrent pushes onto one
+list head serialized the replay; the keyed lists' bucket counts grow with the event budget,
+because a walk visits every node of its bucket. The redundancy search's overflow scratch is one
+slice per lane, claimed from the expansion arena on first need (`QeView::lane_reach`).
 
 ## 7. Reply assembly
 

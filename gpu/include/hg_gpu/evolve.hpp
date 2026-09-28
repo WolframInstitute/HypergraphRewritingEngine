@@ -356,10 +356,9 @@ struct EngineConfig {
     // result rather than a smaller one.
     uint32_t qe_capacity_scale = 1u;
 
-    // Multiplies the per-driver descent stacks of the replay (64 items per level, at least 256).
-    // The stack holds the siblings of each level not yet descended into, so a wide workload
-    // fills it; grow-and-retry doubles this on kQeWorkOverflow, which would otherwise drop a
-    // descent.
+    // Multiplies the per-driver queues of the multiplicity cascade (64 items per level, at least
+    // 256). Grow-and-retry doubles this on kQeWorkOverflow, which would otherwise drop a point's
+    // pass.
     uint32_t descent_work_scale = 1u;
 
     // Multiplies each block's global scratch for the transitive reduction's reachability search

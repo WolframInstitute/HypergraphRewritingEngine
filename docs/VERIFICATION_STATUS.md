@@ -14,7 +14,7 @@ stated absence rather than an unexamined one.
   from a container -- it is a fork of GenMC 0.9 supporting LLVM up to 15, and this tree builds
   against 18. `verification/gpumc/run.sh <name>`. Seven harnesses: the termination decision, the
   device work queue, the dedup map's election, the replay rendezvous, the multiplicity
-  mass/match rendezvous, the replay's hand-off to idle blocks, and the kernel's loop with the ring, the record pool and the detector composed.
+  mass/match rendezvous, the replay's task log, and the kernel's loop with the ring, the record pool and the detector composed.
 - **TLA+** models a protocol rather than a translation unit, which is what makes it the right tool
   where the property is about an ordering across many participants rather than about one
   structure's memory operations. `verification/tla/run.sh <config>`.
@@ -308,14 +308,16 @@ executions, clean) and GPUMC with the device's relaxed device-scope RMWs and `__
 (`verification/gpumc/mass_match_rendezvous.cpp`, 160 executions, clean). Without the fence both
 report mass never passed on; clearing the queued flag after the passes loses it too (GenMC).
 
-**The replay's hand-off to idle blocks**, covered by `verification/gpumc/replay_share_termination.cpp`.
-A driver hands pending descents to other blocks through shared rings, booked under a second
-detector role (`kQeShareRole`); the harness transcribes `qe_run`'s idle- and ring-gated hand-off,
-the full-ring unbook, and the persistent loop's take-drive-complete, and runs
-`hgcommon::term_detect_loop` over both roles. A quiescent exit with an item owed is the defect.
-244,818 executions, clean. Every pusher is inside a booked unit (the record it rewrites, or the
-item it took), and that cover is what the property rests on: `-DCALIBRATE_RECORD_BEFORE_REPLAY`
-removes it for the driver and `-DCALIBRATE_COMPLETE_BEFORE_DRIVE` for a taker, and both violate.
+**The replay's task log**, covered by `verification/gpumc/replay_task_termination.cpp`. Each
+(instance, match) application is a task in an append-only log; a block claims up to 32 with one
+compare-exchange on the cursor, waits for each task's published flag, runs it, and books the
+batch in `tasks_done`. The harness transcribes `qe_task_append`, the persistent loop's task
+branch and `RewriteDetectorCtx`'s produced/consumed sums, and runs `hgcommon::term_detect_loop`.
+A quiescent exit with a task owed, a claimed task unrun or the record unrewritten is the defect.
+One worker: 174,129 executions, clean. Every append is inside a unit not yet booked consumed (the
+record being rewritten, or the task being run): `-DCALIBRATE_DONE_BEFORE_RUN` books a batch before
+running it and `-DCALIBRATE_RECORD_BEFORE_CAPTURE` books the record before its appends, and both
+violate.
 
 **The DEVICE's dedup map election**, covered by `verification/gpumc/hash_insert_elects_one.cpp`.
 The insert rule is `hgcommon/hash_insert_core.hpp` and the harness runs THAT -- the same
