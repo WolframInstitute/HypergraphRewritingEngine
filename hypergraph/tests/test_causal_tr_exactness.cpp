@@ -226,6 +226,11 @@ TEST(CausalTrExactnessTest, ReplayReductionIsTheReductionOfItsRelation) {
                     all.insert({static_cast<uint32_t>(p), static_cast<uint32_t>(q)}); });
                 hg.for_each_reconstructed_causal_as(true, raw, [&](uint64_t p, uint64_t q) {
                     kept.insert({static_cast<uint32_t>(p), static_cast<uint32_t>(q)}); });
+                // redundant_producers prunes its search with topological=true, which needs every
+                // producer id below its consumer's (Hypergraph::alloc_event_id).
+                for (const auto& pc : all)
+                    ASSERT_LT(pc.first, pc.second)
+                        << c.name << " at threads=" << th << " rep=" << rep;
                 const PairSet expected = offline_tr(all);
                 ASSERT_EQ(kept, expected)
                     << c.name << " at threads=" << th << " rep=" << rep << ": kept " << kept.size()
