@@ -210,6 +210,7 @@ struct DetectorCtx {
     }
     uint32_t produced() const { return readable_records(); }
     uint32_t consumed() const { return load32_dev(&g_rewrites_done, __ATOMIC_ACQUIRE); }
+    uint64_t work_progress() const { return 0; }
     void backoff_long() const {}
     void backoff_short() const {}
     void on_round(uint32_t, uint32_t, uint32_t) const {}

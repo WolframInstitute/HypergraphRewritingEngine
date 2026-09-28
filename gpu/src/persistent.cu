@@ -336,6 +336,7 @@ __global__ void k_persistent_match_rewrite(
                 cuda::atomic_ref<uint32_t, cuda::thread_scope_device> r(*consume_cursor);
                 return r.load(cuda::memory_order_acquire);
             }
+            HG_DEV uint64_t work_progress() const { return 0; }
             HG_DEV void on_round(uint32_t, uint32_t, uint32_t) const {}
             HG_DEV void on_stall(uint32_t, const uint64_t*, const uint64_t*) const {
                 ds.errors.record(ErrorKind::kPersistentStall);
@@ -482,6 +483,7 @@ __global__ void k_persistent_evolve(
             uint32_t*                                 rewrites_done;
             DeviceState&                              ds;
             unsigned long long*                       phase_cycles;
+            const uint32_t*                           replay_events;   // null without a replay
 
             HG_DEV uint32_t num_roles() const { return term.num_roles; }
             HG_DEV uint32_t max_stagnant_rounds() const { return kMaxDetectorRounds; }
@@ -492,6 +494,12 @@ __global__ void k_persistent_evolve(
             HG_DEV uint32_t consumed() const {
                 cuda::atomic_ref<uint32_t, cuda::thread_scope_device> r(*rewrites_done);
                 return r.load(cuda::memory_order_acquire);
+            }
+            // The replay's raw events: the work a block does inline with no role booking it.
+            HG_DEV uint64_t work_progress() const {
+                if (!replay_events) return 0;
+                cuda::atomic_ref<const uint32_t, cuda::thread_scope_device> r(*replay_events);
+                return r.load(cuda::memory_order_relaxed);
             }
             HG_DEV void backoff_long() const { __nanosleep(4000); }
             HG_DEV void backoff_short() const { __nanosleep(2000); }
@@ -564,7 +572,8 @@ __global__ void k_persistent_evolve(
                            cb ? 100ull * qe_ / cb : 0ull, cb ? 100ull * dd  / cb : 0ull);
                 }
             }
-        } dctx{term, found, rewrites_done, ds, phase_cycles};
+        } dctx{term, found, rewrites_done, ds, phase_cycles,
+               qe.enabled ? qe.next_raw_event : nullptr};
 
         hgcommon::term_detect_loop(dctx, p1, c1, p2, c2);
         return;

@@ -99,6 +99,7 @@ struct HarnessCtx {
     }
     uint32_t produced() const { return load_dev32(&g_produced); }
     uint32_t consumed() const { return load_dev32(&g_consumed); }
+    uint64_t work_progress() const { return 0; }
 
     // No sleep: the checker explores every interleaving the backoff could have admitted and more,
     // so a wait would only remove behaviours.

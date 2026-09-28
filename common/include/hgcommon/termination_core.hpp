@@ -32,6 +32,12 @@
 //   which nothing moves count against it. A deadlock still trips it -- nothing moves, by
 //   definition -- while arbitrarily slow forward progress never does.
 //
+//   WORK NO ROLE BOOKS STILL COUNTS AS MOVEMENT. A block can work for a long time without
+//   touching any counter above: the quotient replay drives a class's instance cascade inline, and
+//   on bigpath at 3 steps one block did so while prod and done stood still for 13.9M rounds and
+//   the budget declared a stall. c.work_progress() is a monotone count of such work (the replay's
+//   raw events); a change in it resets the budget. It takes no part in the exit test.
+//
 // The Ctx supplies WHERE the counters live and WHAT to do at the edges (stall, diagnostics,
 // backoff, exit). It supplies no part of the decision.
 
@@ -52,6 +58,7 @@ HG_DEV void term_detect_loop(Ctx& c, uint64_t* p1, uint64_t* c1, uint64_t* p2, u
     uint32_t last_prod = 0xFFFFFFFFu;
     uint32_t last_done = 0xFFFFFFFFu;
     uint64_t last_pc   = 0xFFFFFFFFFFFFFFFFull;
+    uint64_t last_work = 0xFFFFFFFFFFFFFFFFull;
 
     for (uint32_t round = 0; ; ++round) {
         if (stagnant >= c.max_stagnant_rounds()) {
@@ -65,6 +72,7 @@ HG_DEV void term_detect_loop(Ctx& c, uint64_t* p1, uint64_t* c1, uint64_t* p2, u
         const bool     q1    = c.snapshot(p1, c1);
         const uint32_t prod1 = c.produced();
         const uint32_t done1 = c.consumed();
+        const uint64_t work1 = c.work_progress();
 
         c.on_round(round, prod1, done1);
 
@@ -73,10 +81,11 @@ HG_DEV void term_detect_loop(Ctx& c, uint64_t* p1, uint64_t* c1, uint64_t* p2, u
         // exit test needs is a stronger check made only when it matters.
         uint64_t pc = 0;
         for (uint32_t r = 0; r < roles; ++r) pc += p1[r] + c1[r];
-        if (prod1 != last_prod || done1 != last_done || pc != last_pc) {
+        if (prod1 != last_prod || done1 != last_done || pc != last_pc || work1 != last_work) {
             last_prod = prod1;
             last_done = done1;
             last_pc   = pc;
+            last_work = work1;
             stagnant  = 0;
         } else {
             ++stagnant;
