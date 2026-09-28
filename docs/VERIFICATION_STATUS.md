@@ -12,23 +12,23 @@ stated absence rather than an unexamined one.
   CTAs and every access carries a SCOPE, so whether two threads synchronise depends on how close
   they are. RC11 has no scopes, so GenMC would check a program the device does not run. It runs
   from a container -- it is a fork of GenMC 0.9 supporting LLVM up to 15, and this tree builds
-  against 18. `verification/gpumc/run.sh <name>`. Five harnesses: the termination decision, the
-  device work queue, the dedup map's election, the replay rendezvous, and the
-  kernel's loop with the ring, the record pool and the detector composed.
+  against 18. `verification/gpumc/run.sh <name>`. Six harnesses: the termination decision, the
+  device work queue, the dedup map's election, the replay rendezvous, the multiplicity
+  mass/match rendezvous, and the kernel's loop with the ring, the record pool and the detector composed.
 - **TLA+** models a protocol rather than a translation unit, which is what makes it the right tool
   where the property is about an ordering across many participants rather than about one
   structure's memory operations. `verification/tla/run.sh <config>`.
 
 ## What is covered
 
-GenMC, 40 harness sources under `verification/genmc/` (the count grows with the protocols;
+GenMC, 41 harness sources under `verification/genmc/` (the count grows with the protocols;
 `ls verification/genmc/*.cpp | wc -l` is the authority): the concurrent map (agreement, resize, double growth at two and three
 threads, repeated offer, lookup during growth), the key set (exactly-once at two and three
 threads, enumeration, contains and distinct keys across growth), both deques (no double
 extraction, no double take, tag defeats ABA), the lock-free list (completeness, pairs and triples
 meeting once), the job system's wake protocol (no lost wakeup, and the per-domain variant),
 the arena's exclusive worker index, frame publication atomicity, depth-relax child registration,
-the claim, quotient-instance and child-inheritance rendezvous, and the depth join's report ordering.
+the claim, quotient-instance, quotient-mass and child-inheritance rendezvous, and the depth join's report ordering.
 
 `causal_in_edge_order` is the COMPOSITION the transitive-reduction defect lived in: one thread
 registering an event's in-edges through `CausalGraph::consume_edges` while another forces the
@@ -159,7 +159,8 @@ on LLVM 15 and takes C++ with scope annotations; the kernel and every header it 
 device code on `cuda::atomic_ref`, `__threadfence`, `__syncthreads` and the thread indices, and
 a host shim for that surface is what a run of the body would need. What the kernel DECIDES is
 covered: the ring's claim (`ring_core`), the dedup map's election (`hash_insert_core`), the
-replay lists (`list_core`) and the termination decision (`termination_core`) are shared bodies the
+replay lists (`list_core`), the multiplicity counts (`quotient_multiplicity_core`) and the
+termination decision (`termination_core`) are shared bodies the
 device drives, each checked under scoped RC11 by `verification/gpumc/`, and the loop that
 composes the ring, the record pool and the detector -- the order it books pushed/completed
 around the pushes, pops, claims and publishes -- is run as one program by
@@ -298,6 +299,14 @@ is the host twin's (`quotient_instance_match_rendezvous`): an instance and a mat
 concurrently cannot both miss each other, or a raw event and every relation under it is dropped
 with the canonical counts untouched. 3 executions, clean; `-DCALIBRATE_NO_FENCE` removes both
 fences and the checker reports both walks missing.
+
+**Raw counts from class multiplicities**, on both engines. `hgcommon/quotient_multiplicity_core.hpp`
+passes a class's mass across each of its matches through rv::QuotientMassMatch: a match's
+capture, an arrival of mass, and a queued point's run each publish and then read. GenMC runs the
+core with the host's orders (`verification/genmc/quotient_mass_match_rendezvous.cpp`, 944
+executions, clean) and GPUMC with the device's relaxed device-scope RMWs and `__threadfence`
+(`verification/gpumc/mass_match_rendezvous.cpp`, 160 executions, clean). Without the fence both
+report mass never passed on; clearing the queued flag after the passes loses it too (GenMC).
 
 **The DEVICE's dedup map election**, covered by `verification/gpumc/hash_insert_elects_one.cpp`.
 The insert rule is `hgcommon/hash_insert_core.hpp` and the harness runs THAT -- the same
