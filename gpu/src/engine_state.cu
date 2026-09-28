@@ -15,6 +15,7 @@
 // What stays in engine_state.hpp is DeviceState and the DeviceView structs, which are what the
 // kernels actually use, plus the constexpr stack-size constants a launch reads.
 
+#include <cstring>
 #include <stdexcept>
 #include <string>
 
@@ -204,6 +205,7 @@ EngineState::EngineState(EngineConfig cfg): cfg_(cfg)
     }
 
 EngineState::~EngineState() {
+        if (pinned_)                 cudaFreeHost(pinned_);
         if (state_edge_slices_)      cudaFree(state_edge_slices_);
         if (state_edge_ids_)         cudaFree(state_edge_ids_);
         if (rule_weights_dev_)       cudaFree(rule_weights_dev_);
@@ -562,35 +564,35 @@ std::vector<std::vector<std::vector<VertexId>>> EngineState::all_state_edges_hos
             const CounterSnapshot& snap,
             std::vector<std::vector<EdgeId>>* out_edge_ids ,
             std::vector<std::vector<VertexId>>* out_global_edges) const {
-        const uint32_t n_states = snap.states;
+        ReadbackBatch batch(*this);
+        StateEdgeArrays a;
+        add_state_edges(batch, snap, a);
+        batch.finish();
+        return assemble_state_edges(a, snap.states, out_edge_ids, out_global_edges);
+    }
+
+void EngineState::add_state_edges(ReadbackBatch& batch, const CounterSnapshot& snap,
+                                  StateEdgeArrays& out) const {
+        if (snap.states == 0) return;
+        batch.add(out.edges, edge_pool_.view().data, snap.edges);
+        batch.add(out.verts, vertex_pool_.view().data, snap.vertex_slots);
+        batch.add(out.slices, static_cast<const StateEdgeSlice*>(state_edge_slices_),
+                  snap.states);
+        batch.add(out.ids, static_cast<const EdgeId*>(state_edge_ids_), snap.state_edge_ids);
+    }
+
+std::vector<std::vector<std::vector<VertexId>>> EngineState::assemble_state_edges(
+            const StateEdgeArrays& a, uint32_t n_states,
+            std::vector<std::vector<EdgeId>>* out_edge_ids,
+            std::vector<std::vector<VertexId>>* out_global_edges) {
         std::vector<std::vector<std::vector<VertexId>>> out(n_states);
         if (out_edge_ids) out_edge_ids->assign(n_states, {});
         if (out_global_edges) out_global_edges->clear();
         if (n_states == 0) return out;
-
-        const uint32_t n_edges      = snap.edges;
-        const uint32_t n_vert_slots = snap.vertex_slots;
-        const uint32_t n_id_slots   = snap.state_edge_ids;
-
-        std::vector<Edge>           edges(n_edges);
-        std::vector<VertexId>       verts(n_vert_slots);
-        std::vector<StateEdgeSlice> slices(n_states);
-        std::vector<EdgeId>         ids(n_id_slots);
-
-        if (n_edges > 0) {
-            cudaMemcpy(edges.data(), edge_pool_.view().data,
-                       sizeof(Edge) * n_edges, cudaMemcpyDeviceToHost);
-        }
-        if (n_vert_slots > 0) {
-            cudaMemcpy(verts.data(), vertex_pool_.view().data,
-                       sizeof(VertexId) * n_vert_slots, cudaMemcpyDeviceToHost);
-        }
-        cudaMemcpy(slices.data(), state_edge_slices_,
-                   sizeof(StateEdgeSlice) * n_states, cudaMemcpyDeviceToHost);
-        if (n_id_slots > 0) {
-            cudaMemcpy(ids.data(), state_edge_ids_,
-                       sizeof(EdgeId) * n_id_slots, cudaMemcpyDeviceToHost);
-        }
+        const auto& edges = a.edges;
+        const auto& verts = a.verts;
+        const auto& ids = a.ids;
+        const uint32_t n_edges = static_cast<uint32_t>(edges.size());
 
         if (out_global_edges) {
             out_global_edges->assign(n_edges, {});
@@ -603,14 +605,15 @@ std::vector<std::vector<std::vector<VertexId>>> EngineState::all_state_edges_hos
             }
         }
 
-        for (uint32_t s = 0; s < n_states; ++s) {
-            const StateEdgeSlice& sl = slices[s];
+        for (uint32_t s = 0; s < n_states && s < a.slices.size(); ++s) {
+            const StateEdgeSlice& sl = a.slices[s];
             if (static_cast<size_t>(sl.offset) + sl.count > ids.size()) continue;
             for (uint32_t k = 0; k < sl.count; ++k) {
                 EdgeId eid = ids[sl.offset + k];
                 if (eid >= n_edges) continue;
                 if (out_edge_ids) (*out_edge_ids)[s].push_back(eid);
                 const Edge& e = edges[eid];
+                if (static_cast<size_t>(e.vertex_offset) + e.arity > verts.size()) continue;
                 std::vector<VertexId> vs(e.arity);
                 for (uint8_t i = 0; i < e.arity; ++i) {
                     vs[i] = verts[e.vertex_offset + i];
@@ -619,6 +622,33 @@ std::vector<std::vector<std::vector<VertexId>>> EngineState::all_state_edges_hos
             }
         }
         return out;
+    }
+
+void EngineState::ReadbackBatch::finish() {
+        size_t total = 0;
+        for (const Region& r : regions_) total += (r.bytes + 15u) & ~size_t(15);
+        if (total == 0) { regions_.clear(); return; }
+        if (engine_.pinned_bytes_ < total) {
+            if (engine_.pinned_) cudaFreeHost(engine_.pinned_);
+            engine_.pinned_ = nullptr;
+            engine_.pinned_bytes_ = 0;
+            HG_CUDA_CHECK(cudaMallocHost(&engine_.pinned_, total), "readback staging alloc");
+            engine_.pinned_bytes_ = total;
+        }
+        char* base = static_cast<char*>(engine_.pinned_);
+        size_t off = 0;
+        for (const Region& r : regions_) {
+            HG_CUDA_CHECK(cudaMemcpyAsync(base + off, r.device, r.bytes, cudaMemcpyDeviceToHost, 0),
+                          "readback copy");
+            off += (r.bytes + 15u) & ~size_t(15);
+        }
+        HG_CUDA_CHECK(cudaStreamSynchronize(0), "readback sync");
+        off = 0;
+        for (const Region& r : regions_) {
+            std::memcpy(r.host, base + off, r.bytes);
+            off += (r.bytes + 15u) & ~size_t(15);
+        }
+        regions_.clear();
     }
 
 std::vector<EdgeId> EngineState::state_edges_host(StateId sid) const {
@@ -701,24 +731,43 @@ std::vector<DeviceBranchialEdge> EngineState::branchial_edges_host() const {
         return branchial_edges_host(num_branchial_edges_host());
     }
 
+void EngineState::add_events(ReadbackBatch& batch, uint32_t n,
+                             std::vector<DeviceEvent>& out) const {
+        batch.add(out, static_cast<const DeviceEvent*>(event_pool_.view().data), n);
+    }
+
+void EngineState::add_causal_edges(ReadbackBatch& batch, uint32_t n,
+                                   std::vector<DeviceCausalEdge>& out) const {
+        batch.add(out, static_cast<const DeviceCausalEdge*>(causal_edge_pool_.view().data), n);
+    }
+
+void EngineState::add_branchial_edges(ReadbackBatch& batch, uint32_t n,
+                                      std::vector<DeviceBranchialEdge>& out) const {
+        batch.add(out, static_cast<const DeviceBranchialEdge*>(branchial_edge_pool_.view().data),
+                  n);
+    }
+
 std::vector<DeviceEvent> EngineState::events_host(uint32_t n) const {
-        std::vector<DeviceEvent> out(n);
-        if (n > 0) cudaMemcpy(out.data(), event_pool_.view().data,
-                              sizeof(DeviceEvent) * n, cudaMemcpyDeviceToHost);
+        ReadbackBatch batch(*this);
+        std::vector<DeviceEvent> out;
+        add_events(batch, n, out);
+        batch.finish();
         return out;
     }
 
 std::vector<DeviceCausalEdge> EngineState::causal_edges_host(uint32_t n) const {
-        std::vector<DeviceCausalEdge> out(n);
-        if (n > 0) cudaMemcpy(out.data(), causal_edge_pool_.view().data,
-                              sizeof(DeviceCausalEdge) * n, cudaMemcpyDeviceToHost);
+        ReadbackBatch batch(*this);
+        std::vector<DeviceCausalEdge> out;
+        add_causal_edges(batch, n, out);
+        batch.finish();
         return out;
     }
 
 std::vector<DeviceBranchialEdge> EngineState::branchial_edges_host(uint32_t n) const {
-        std::vector<DeviceBranchialEdge> out(n);
-        if (n > 0) cudaMemcpy(out.data(), branchial_edge_pool_.view().data,
-                              sizeof(DeviceBranchialEdge) * n, cudaMemcpyDeviceToHost);
+        ReadbackBatch batch(*this);
+        std::vector<DeviceBranchialEdge> out;
+        add_branchial_edges(batch, n, out);
+        batch.finish();
         return out;
     }
 

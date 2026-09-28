@@ -494,22 +494,31 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     auto t_readback_start = std::chrono::steady_clock::now();
 
     // Readback. The kernel wrote the state hashes; `snap` sizes the states, the per-state edge
-    // readback and the three relation pools.
-    uint32_t total_states = snap.states;
-    std::vector<uint64_t> h_hashes(total_states);
-    if (total_states > 0) {
-        HG_CUDA_CHECK(cudaMemcpy(h_hashes.data(), d_state_hashes, sizeof(uint64_t) * total_states,
-                         cudaMemcpyDeviceToHost), "final hashes d2h");
-    }
+    // arrays and the three relation pools, and every region is read in one batch: one
+    // synchronization for all of them.
+    const uint32_t total_states = snap.states;
+    const bool want_state_edges = in.edge_identity || in.materialize_state_edges;
+    EngineState::ReadbackBatch batch(engine);
+    std::vector<uint64_t> h_hashes;
+    batch.add(h_hashes, static_cast<const uint64_t*>(d_state_hashes), total_states);
+    EngineState::StateEdgeArrays state_edges;
+    if (want_state_edges) engine.add_state_edges(batch, snap, state_edges);
+    std::vector<DeviceEvent> d_events;
+    engine.add_events(batch, snap.events, d_events);
+    std::vector<DeviceCausalEdge> d_causal;
+    engine.add_causal_edges(batch, snap.causal, d_causal);
+    std::vector<DeviceBranchialEdge> d_branch;
+    engine.add_branchial_edges(batch, snap.branchial, d_branch);
+    batch.finish();
     double t_readback_hashes = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_readback_start).count();
 
     auto t_readback_states_start = std::chrono::steady_clock::now();
     std::vector<std::vector<std::vector<VertexId>>> all_edges;
-    if (in.edge_identity)
-        all_edges = engine.all_state_edges_host(snap, &out.state_edge_ids, &out.global_edges);
-    else if (in.materialize_state_edges)
-        all_edges = engine.all_state_edges_host(snap);
+    if (want_state_edges)
+        all_edges = EngineState::assemble_state_edges(
+            state_edges, total_states, in.edge_identity ? &out.state_edge_ids : nullptr,
+            in.edge_identity ? &out.global_edges : nullptr);
     out.states.reserve(total_states);
     for (uint32_t s = 0; s < total_states; ++s) {
         CanonicalState cs;
@@ -523,7 +532,6 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         std::chrono::steady_clock::now() - t_readback_states_start).count();
 
     auto t_readback_evcb_start = std::chrono::steady_clock::now();
-    auto d_events = engine.events_host(snap.events);
     out.events.reserve(d_events.size());
     for (const auto& de : d_events) {
         Event e;
@@ -539,10 +547,8 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         out.events.push_back(std::move(e));
     }
 
-    auto d_causal = engine.causal_edges_host(snap.causal);
     out.causal_edges.reserve(d_causal.size());
     for (const auto& c : d_causal) out.causal_edges.push_back(CausalEdge{c.from, c.to});
-    auto d_branch = engine.branchial_edges_host(snap.branchial);
     out.branchial_edges.reserve(d_branch.size());
     for (const auto& b : d_branch) out.branchial_edges.push_back(BranchialEdge{b.a, b.b});
 

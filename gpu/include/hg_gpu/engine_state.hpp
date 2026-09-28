@@ -467,7 +467,50 @@ public:
             const CounterSnapshot& snap,
             std::vector<std::vector<EdgeId>>* out_edge_ids = nullptr,
             std::vector<std::vector<VertexId>>* out_global_edges = nullptr) const;
+
+    // DEVICE-TO-HOST READS ISSUED TOGETHER. add() sizes the vector and records the region;
+    // finish() issues every region as a cudaMemcpyAsync into the engine's pinned staging buffer,
+    // synchronizes once, and copies each region into its vector. A synchronous cudaMemcpy costs
+    // about 25 us per call here whatever its size, and the batch pays that once. The vectors
+    // must not be resized between add() and finish().
+    class ReadbackBatch {
+    public:
+        explicit ReadbackBatch(const EngineState& engine) : engine_(engine) {}
+        template <class T>
+        void add(std::vector<T>& dst, const T* src, size_t n) {
+            dst.resize(n);
+            if (n) regions_.push_back(Region{dst.data(), src, sizeof(T) * n});
+        }
+        void finish();
+    private:
+        struct Region { void* host; const void* device; size_t bytes; };
+        const EngineState& engine_;
+        std::vector<Region> regions_;
+    };
+
+    // The four arrays a state-edge readback reads, sized from a snapshot, and the per-state
+    // edge lists assembled from them.
+    struct StateEdgeArrays {
+        std::vector<Edge>           edges;
+        std::vector<VertexId>       verts;
+        std::vector<StateEdgeSlice> slices;
+        std::vector<EdgeId>         ids;
+    };
+    void add_state_edges(ReadbackBatch& batch, const CounterSnapshot& snap,
+                         StateEdgeArrays& out) const;
+    static std::vector<std::vector<std::vector<VertexId>>> assemble_state_edges(
+            const StateEdgeArrays& a, uint32_t n_states,
+            std::vector<std::vector<EdgeId>>* out_edge_ids,
+            std::vector<std::vector<VertexId>>* out_global_edges);
+    void add_events(ReadbackBatch& batch, uint32_t n, std::vector<DeviceEvent>& out) const;
+    void add_causal_edges(ReadbackBatch& batch, uint32_t n,
+                          std::vector<DeviceCausalEdge>& out) const;
+    void add_branchial_edges(ReadbackBatch& batch, uint32_t n,
+                             std::vector<DeviceBranchialEdge>& out) const;
 private:
+    // ReadbackBatch's staging buffer: pinned, grown to the largest batch, freed with the engine.
+    mutable void*  pinned_       = nullptr;
+    mutable size_t pinned_bytes_ = 0;
     uint32_t*                          state_edge_ids_counter_ = nullptr;
     uint32_t*                          state_count_            = nullptr;
     uint64_t*                          state_canonical_hash_   = nullptr;
