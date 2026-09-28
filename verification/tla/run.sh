@@ -59,6 +59,7 @@ module_for() {
         MCSegmentedArray*)  echo "SegmentedArray.tla" ;;
         MCDepthRelaxation*) echo "DepthRelaxation.tla" ;;
         MCQuiescence*)      echo "Quiescence.tla" ;;
+        MCQuotientContinuation*) echo "QuotientContinuation.tla" ;;
         *) return 1 ;;
     esac
 }

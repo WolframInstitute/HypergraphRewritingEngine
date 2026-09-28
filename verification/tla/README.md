@@ -30,10 +30,11 @@ Run (needs `~/tla/tla2tools.jar`, any Java ≥ 11):
 `run.sh` checks each cell against the verdict its own `.cfg` declares on line 1
 (`Expected: PASS` or `Expected: VIOLATION`) and exits non-zero on a mismatch. It
 is registered as the `tla_cells` ctest, `--quick`, and skips rather than fails
-where Java or `tla2tools.jar` is absent. **Six of the fourteen cells must
+where Java or `tla2tools.jar` is absent. **Seven of the sixteen cells must
 VIOLATE** — `MCSegmentedArrayBroken`, `MCMatchForwardingRegisterBroken`,
 `MCMatchForwardingResumeClaimBroken`, `MCDepthRelaxationBroken`,
-`MCDepthRelaxationSteeredBroken` and `MCQuiescenceLateSubmit` — and a spec edit that turns one of those into a pass
+`MCDepthRelaxationSteeredBroken`, `MCQuiescenceLateSubmit` and
+`MCQuotientContinuationNoBlocked` — and a spec edit that turns one of those into a pass
 has disabled a calibration, which is the case a results table cannot catch and
 the runner can.
 
@@ -83,6 +84,35 @@ resume_pending guard is gated by
 MatchCompleteness.AStoppedRunContinuedMatchesOneRunUnderRepetition).
 
 Second target (#80): quiescence liveness — not yet modeled.
+
+---
+
+## `QuotientContinuation` — a continued replay reaches what one run reaches
+
+`QuotientContinuation.tla`, cells `MCQuotientContinuation` (shipped) and
+`MCQuotientContinuationNoBlocked` (calibration).
+
+Models the quotient replay across continuations, from `hypergraph/src/hypergraph.cpp`
+(`qc_add_instance`, `qc_capture_expansion`, `quotient_redrive_point`) and
+`ParallelEvolutionEngine::evolve_more`. An instance meets every captured match of its class
+through publish-then-scan; a point created at or past the depth bound is pushed on
+`qc_blocked_`; between runs the bound is raised and every blocked point with
+`old <= depth < new` is submitted as a redrive job, which races the resumed run's new
+instances and captures. Captures may happen in any run.
+
+Properties, at the end of the last run: every instance below the final bound has been
+applied to every match of its class (`Complete`); the instances are the paths one run to the
+final bound creates (`Exact`); no application is at or past the bound in force (`NoneBeyond`).
+
+| cell | runs (bounds) | blocked push | verdict | distinct states |
+|---|---|---|---|---|
+| MCQuotientContinuation | 3 (1, 2, 3) | yes | PASS | 910,975 |
+| MCQuotientContinuationNoBlocked | 3 (1, 2, 3) | no | **VIOLATED** (`Complete`) | stops at the first counterexample |
+
+Two classes, four matches (A→B, A→A, B→A, B→B). Model scope: sequentially consistent memory;
+the publish-then-scan ordering under RC11 and the claim are
+`verification/genmc/quotient_instance_match_rendezvous.cpp`. The multiplicity path
+(`qm_point`, which also pushes on `qc_blocked_`) is not modelled.
 
 ---
 

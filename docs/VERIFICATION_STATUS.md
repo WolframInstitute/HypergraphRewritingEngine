@@ -199,6 +199,13 @@ this ordering by a timeout the waiter does not have now states the argument that
 The general lesson is recorded in `hgcommon/rendezvous.hpp`: the test is not whether both sides
 read, but whether missing the read LOSES THE EVENT with no other path to it.
 
+**The quotient replay's continuation**, covered by `verification/tla/QuotientContinuation.tla`.
+A continuation raises the depth bound and redrives the points the old bound left on
+`qc_blocked_`, concurrently with the resumed run. Over three runs (bounds 1, 2, 3) every
+instance below the final bound meets every match of its class and the instances equal one run's:
+910,975 distinct states, clean. `MCQuotientContinuationNoBlocked` never pushes a blocked point
+and violates `Complete`.
+
 ~~**Termination detection.**~~ COVERED for the HOST by `Quiescence.tla`. The checker reads its two
 halves in SEPARATE steps with workers running in between, because TLA+ evaluates a conjunction
 atomically and a single-step predicate cannot express the race at all.
