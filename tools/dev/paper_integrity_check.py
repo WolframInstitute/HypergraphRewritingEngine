@@ -59,6 +59,9 @@ STALE_WHITELIST = {}
 # message (a pushed message cannot be amended). Hash-pinned, each with the proof; the walk
 # treats them as declared.
 COMMIT_ALLOWANCES = {
+    "8680c72f4daab384b3f2a1d1ae9f23df9fdda673":
+        "adds three fields to bench_gpu_evolve's recon printf, which runs after the timed loop; "
+        "the evolve calls and their inputs are unchanged",
     "c1557977ccb380a10f820422568233f0613b8ead":
         "adds two environment switches to bench_cpu_evolve. With HG_BENCH_LARGE_N unset the "
         "large-state workloads are built with n = 256, the default argument of "
