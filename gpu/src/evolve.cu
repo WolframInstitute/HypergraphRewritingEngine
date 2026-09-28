@@ -854,13 +854,16 @@ template <class Attempt>
 static EvolveResult run_with_growth(EngineConfig cfg, uint64_t mem_cap, Attempt&& attempt) {
     constexpr int kMaxRetries = 8;  // up to 256x capacity growth
 
-    // The device-memory ceiling: explicit request, else 90% of total VRAM.
+    // The device-memory ceiling: explicit request, else 90% of total VRAM. The total does not
+    // change, so it is queried once per process.
     if (mem_cap == 0) {
-        size_t freeB = 0, totalB = 0;
-        if (cudaMemGetInfo(&freeB, &totalB) == cudaSuccess) {
-            mem_cap = static_cast<uint64_t>(static_cast<double>(totalB) * 0.90);
-        }
-        cudaGetLastError();  // clear any sticky status from the query
+        static const uint64_t total_vram = [] {
+            size_t freeB = 0, totalB = 0;
+            const bool ok = cudaMemGetInfo(&freeB, &totalB) == cudaSuccess;
+            cudaGetLastError();  // clear any sticky status from the query
+            return ok ? static_cast<uint64_t>(totalB) : uint64_t{0};
+        }();
+        mem_cap = static_cast<uint64_t>(static_cast<double>(total_vram) * 0.90);
     }
     // Shrink the initial config to the ceiling if it was sized past it; the ladder then never
     // grows back over the cap.
