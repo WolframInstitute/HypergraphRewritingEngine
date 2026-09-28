@@ -1509,6 +1509,20 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
     hg_->set_quotient_multiplicity(hg_->quotient_reconstruction() &&
                                    (counts_only || rec.multiplicities));
     hg_->set_quotient_replay(hg_->quotient_reconstruction() && replay && !counts_only);
+
+    // A capture's scan units beyond its first run as jobs (Hypergraph::set_qc_spawn). The
+    // capture runs inside a rewrite job and submits before it returns, so quiescence counts them.
+    if (hg_->quotient_replay() && job_system_ && !is_serial()) {
+        hg_->set_qc_spawn([](void* ctx, Hypergraph* hg, const SlotMatch* m, uint64_t from,
+                             uint32_t depth, uint32_t list) {
+            static_cast<ParallelEvolutionEngine*>(ctx)->job_system_->submit(
+                job_system::make_job<EvolutionJobType>(
+                    [hg, m, from, depth, list]() { hg->qc_apply_list(m, from, depth, list); },
+                    EvolutionJobType::QC_APPLY));
+        }, this);
+    } else {
+        hg_->set_qc_spawn(nullptr, nullptr);
+    }
 }
 
 bool ParallelEvolutionEngine::should_explore(uint64_t invariant_key) const {

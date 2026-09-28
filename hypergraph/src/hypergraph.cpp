@@ -1361,11 +1361,33 @@ void Hypergraph::qc_capture_expansion(EventId e) {
     // scan, so a concurrent instance and match cannot both miss each other. The per-pair claim
     // in qc_apply makes the overlap harmless.
     hgcommon::rendezvous_barrier<hgcommon::rv::QuotientInstanceMatch>();
+    // THE SCAN IS SPLIT BY (depth, list). A match captured after its class holds many instances
+    // is applied to all of them, and on a rule with few classes that is most of the replay; one
+    // thread applying them all is the serial part of the run. The first non-empty unit runs
+    // here and the rest go to qc_spawn_ as jobs, which scan after the publish above and so keep
+    // the rendezvous; the claim in qc_apply keeps each pair to one application.
+    const SlotMatch* stored = &node->value;
     const int maxs = qc_max_steps_.load(std::memory_order_relaxed);
-    for (int d = 0; d < maxs; ++d)
-        for_each_instance_at(from, static_cast<uint32_t>(d), [&](const QcInstance& inst) {
-            qc_apply(inst, m, from, static_cast<uint32_t>(d));
-        });
+    bool ran_one = false;
+    for (int d = 0; d < maxs; ++d) {
+        auto ri = qc_instances_.lookup(qc_key(from, static_cast<uint32_t>(d), 0));
+        if (!ri.has_value()) continue;
+        for (uint32_t l = 0; l < kInstShards; ++l) {
+            if ((*ri)->list[l].empty()) continue;
+            if (ran_one && qc_spawn_) {
+                qc_spawn_(qc_spawn_ctx_, this, stored, from, static_cast<uint32_t>(d), l);
+                continue;
+            }
+            ran_one = true;
+            qc_apply_list(stored, from, static_cast<uint32_t>(d), l);
+        }
+    }
+}
+
+void Hypergraph::qc_apply_list(const SlotMatch* m, uint64_t from, uint32_t depth, uint32_t list) {
+    auto ri = qc_instances_.lookup(qc_key(from, depth, 0));
+    if (!ri.has_value()) return;
+    (*ri)->list[list].for_each([&](const QcInstance& inst) { qc_apply(inst, *m, from, depth); });
 }
 
 void Hypergraph::register_quotient_transition(EventId e) {

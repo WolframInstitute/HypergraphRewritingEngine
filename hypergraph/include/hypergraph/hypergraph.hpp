@@ -209,6 +209,9 @@ class Hypergraph {
         LockFreeList<QcInstance> list[kInstShards];
     };
     ConcurrentMap<uint64_t, QcInstanceShards*> qc_instances_;   // key(hash,depth,0)
+    // set_qc_spawn's function and context.
+    void (*qc_spawn_)(void*, Hypergraph*, const SlotMatch*, uint64_t, uint32_t, uint32_t) = nullptr;
+    void* qc_spawn_ctx_ = nullptr;
     // Claims a (instance, match) application. Both the instance side and the match side drive
     // the rendezvous, and unlike the producer-set DP an application is NOT idempotent -- each
     // one emits a raw event -- so the pair must be claimed exactly once. O(raw) entries.
@@ -1102,6 +1105,16 @@ public:
     // (qm's queued flag, qc_applied_), so two threads driving the same point, or one
     // driving a point the cascade already reached, is a no-op rather than a race.
     void quotient_redrive_point(uint64_t state_hash, uint32_t depth);
+
+    // Where a match capture's scan units run. A capture applies its match to every instance of
+    // its class at every depth; it runs the first non-empty (depth, list) unit itself and hands
+    // each other one to this function, which the engine sets to submit a job calling
+    // qc_apply_list. Unset, the capture runs every unit itself.
+    using QcSpawn = void (*)(void* ctx, Hypergraph* hg, const SlotMatch* m, uint64_t from,
+                             uint32_t depth, uint32_t list);
+    void set_qc_spawn(QcSpawn fn, void* ctx) { qc_spawn_ = fn; qc_spawn_ctx_ = ctx; }
+    // Apply the stored match `m` to every instance in list `list` of (from, depth).
+    void qc_apply_list(const SlotMatch* m, uint64_t from, uint32_t depth, uint32_t list);
 
     // Visit every match of the expanded representative of the canonical state `from_hash`,
     // in slots and undeduplicated -- the input to the per-instance raw reconstruction.
