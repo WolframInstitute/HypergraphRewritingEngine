@@ -290,6 +290,10 @@ inline std::vector<Workload> named_workloads() {
         {"arity3",    {arity3_r},   {{0,1,2}}},
         // Two rules over the same state: queue traffic per state doubles and the two compete.
         {"multirule", {grow_r, binary_r}, {{0,1},{1,2}}},
+        // multirule's two rules one at a time from its initial state, so a combination's
+        // scaling can be told from its parts'.
+        {"multirule_grow",   {grow_r},   {{0,1},{1,2}}},
+        {"multirule_binary", {binary_r}, {{0,1},{1,2}}},
         // Automorphic initial state: the canonicalizer cannot stop at depth one.
         {"cycle4",    {grow_r},     {{0,1},{1,2},{2,3},{3,0}}},
         // Several roots, so the frontier starts wide instead of narrow.
