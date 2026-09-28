@@ -323,6 +323,7 @@ __device__ inline void qe_run(DeviceState ds, QeView qe, QeWork& work);
 __device__ inline QeWork qe_work_for(DeviceState ds, QeView qe, uint32_t slice);
 __device__ inline void qe_drive_match(DeviceState ds, QeView qe, const DeviceSlotMatch& m,
                                       uint64_t from_hash, QeWork& work);
+__device__ __forceinline__ uint32_t qe_alloc_words(DeviceState ds, QeView qe, uint32_t n);
 
 // Bucket a hash into a list's key space.
 //
@@ -724,9 +725,8 @@ __device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
     const uint32_t need = nc + np + 2u * ns;
     uint32_t off = 0;
     if (need) {
-        cuda::atomic_ref<uint32_t, cuda::thread_scope_device> cur(*qe.arr_cursor);
-        off = cur.fetch_add(need, cuda::memory_order_relaxed);
-        if (off + need > qe.arr_capacity) { ds.errors.record(ErrorKind::kQcNodes); return; }
+        off = qe_alloc_words(ds, qe, need);
+        if (off == UINT32_MAX) return;
         uint32_t* w = qe.arr_words + off;
         for (uint32_t i = 0; i < nc; ++i) *w++ = consumed[i];
         for (uint32_t i = 0; i < np; ++i) *w++ = produced[i];
@@ -761,11 +761,20 @@ __device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
 
 // Reserve `n` words of the expansion arena. Returns UINT32_MAX when the arena is exhausted,
 // which the caller reports as a capacity overflow rather than writing past the end.
+//
+// The test is in 64 bits and a refused reservation pulls the cursor back to the capacity, as
+// Pool::claim_n does. Refused reservations still advance the cursor first, and on a run that
+// overflows repeatedly (bigpath at 3 steps) the cursor passed 2^32: a 32-bit `off + n` then
+// wrapped below the capacity and the caller wrote 16 GB past the arena.
 __device__ __forceinline__ uint32_t qe_alloc_words(DeviceState ds, QeView qe, uint32_t n) {
     if (n == 0) return 0;
     cuda::atomic_ref<uint32_t, cuda::thread_scope_device> cur(*qe.arr_cursor);
     const uint32_t off = cur.fetch_add(n, cuda::memory_order_relaxed);
-    if (off + n > qe.arr_capacity) { ds.errors.record(ErrorKind::kQcNodes); return UINT32_MAX; }
+    if (static_cast<uint64_t>(off) + n > qe.arr_capacity) {
+        cur.fetch_min(qe.arr_capacity, cuda::memory_order_relaxed);
+        ds.errors.record(ErrorKind::kQcNodes);
+        return UINT32_MAX;
+    }
     return off;
 }
 

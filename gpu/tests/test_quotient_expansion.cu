@@ -10,6 +10,7 @@
 
 #include <gtest/gtest.h>
 
+#include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/quotient_expansion.hpp"
 
 #include <vector>
@@ -21,6 +22,10 @@ using hg_gpu::EdgeId;
 using hg_gpu::StateEdgeSlice;
 
 // One thread evaluates qe_slot_of for every edge of state 0 and writes the slots out.
+__global__ void k_alloc_words(DeviceState ds, hg_gpu::QeView qe, uint32_t n, uint32_t* out) {
+    *out = hg_gpu::qe_alloc_words(ds, qe, n);
+}
+
 __global__ void k_slots(DeviceState ds, const EdgeId* edges, uint32_t n, uint32_t* out) {
     for (uint32_t i = 0; i < n; ++i) out[i] = hg_gpu::qe_slot_of(ds, 0u, edges[i]);
 }
@@ -191,6 +196,41 @@ TEST(QuotientExpansion, ReducedReadbackAfterArenaOverflowReadsOnlyTheArena) {
                                                 nullptr));
     EXPECT_EQ(reduced.size(), 4u);
     EXPECT_EQ(cudaGetLastError(), cudaSuccess);
+}
+
+
+// Failed arena allocations advance the cursor, and a long overflowing run drives it past 2^32.
+// The capacity test must not wrap there: an offset near 2^32 plus the request lands back inside
+// the capacity, and the caller writes 16 GB past the arena (bigpath and bigcycle at 3 steps).
+TEST(QuotientExpansion, ArenaAllocationNearTheCursorWrapIsRefused) {
+    hg_gpu::EngineConfig cfg;          // the smallest engine test_engine_state.cu builds
+    cfg.max_edges            = 64;
+    cfg.max_state_edge_total = 256;
+    cfg.max_states           = 8;
+    cfg.max_vertex_slots     = 256;
+    cfg.max_vertices         = 64;
+    cfg.sig_index_buckets    = 16;
+    cfg.sig_index_pool       = 64;
+    cfg.inverted_pool        = 256;
+    hg_gpu::EngineState engine(cfg);   // for the error channel qe_alloc_words records into
+    hg_gpu::QeState qe(/*on=*/true, /*max_events=*/1);   // an arena of 16 words
+    const hg_gpu::QeView v = qe.view(/*max_steps=*/1, hgcommon::EVENT_SIG_NONE,
+                                     /*replay=*/true, /*multiplicity=*/false,
+                                     /*event_content=*/false);
+    ASSERT_EQ(v.arr_capacity, 16u);
+    const uint32_t near_wrap = 0xFFFFFFF0u;
+    ASSERT_EQ(cudaMemcpy(v.arr_cursor, &near_wrap, sizeof(near_wrap), cudaMemcpyHostToDevice),
+              cudaSuccess);
+    uint32_t* d_out = nullptr;
+    ASSERT_EQ(cudaMalloc(&d_out, sizeof(uint32_t)), cudaSuccess);
+    k_alloc_words<<<1, 1>>>(engine.device(), v, 32u, d_out);
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+    uint32_t got = 0, cursor = 0;
+    cudaMemcpy(&got, d_out, sizeof(got), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&cursor, v.arr_cursor, sizeof(cursor), cudaMemcpyDeviceToHost);
+    cudaFree(d_out);
+    EXPECT_EQ(got, UINT32_MAX) << "an allocation whose end wraps past 2^32 was granted at " << got;
+    EXPECT_LE(cursor, v.arr_capacity) << "a refused allocation left the cursor past the arena";
 }
 
 }  // namespace
