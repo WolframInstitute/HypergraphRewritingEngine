@@ -508,9 +508,16 @@ void EngineState::clear() {
         branchial_edge_pool_.reset();
         edge_consumers_.clear(dirty_edges_lf);
         branchial_index_.clear();
-        causal_triple_dedup_.clear();
-        causal_pair_dedup_.clear();
-        branchial_pair_dedup_.clear();
+        // The relation dedup maps are written only on the way to a claim on their pool
+        // (try_add_causal_edge inserts the triple, then claims; the pair after a claim;
+        // try_add_branchial_edge inserts, then claims), and a pool counter only grows, so a
+        // previous run whose counter reads zero left the map as its last clear did. Together
+        // they are 60 MB of memset at the default config.
+        if (prev.causal) {
+            causal_triple_dedup_.clear();
+            causal_pair_dedup_.clear();
+        }
+        if (prev.branchial) branchial_pair_dedup_.clear();
         preds_list_.clear(dirty_events);
         errors_.clear();
     }
