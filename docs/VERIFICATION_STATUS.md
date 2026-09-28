@@ -12,9 +12,9 @@ stated absence rather than an unexamined one.
   CTAs and every access carries a SCOPE, so whether two threads synchronise depends on how close
   they are. RC11 has no scopes, so GenMC would check a program the device does not run. It runs
   from a container -- it is a fork of GenMC 0.9 supporting LLVM up to 15, and this tree builds
-  against 18. `verification/gpumc/run.sh <name>`. Six harnesses: the termination decision, the
+  against 18. `verification/gpumc/run.sh <name>`. Seven harnesses: the termination decision, the
   device work queue, the dedup map's election, the replay rendezvous, the multiplicity
-  mass/match rendezvous, and the kernel's loop with the ring, the record pool and the detector composed.
+  mass/match rendezvous, the replay's hand-off to idle blocks, and the kernel's loop with the ring, the record pool and the detector composed.
 - **TLA+** models a protocol rather than a translation unit, which is what makes it the right tool
   where the property is about an ordering across many participants rather than about one
   structure's memory operations. `verification/tla/run.sh <config>`.
@@ -307,6 +307,15 @@ core with the host's orders (`verification/genmc/quotient_mass_match_rendezvous.
 executions, clean) and GPUMC with the device's relaxed device-scope RMWs and `__threadfence`
 (`verification/gpumc/mass_match_rendezvous.cpp`, 160 executions, clean). Without the fence both
 report mass never passed on; clearing the queued flag after the passes loses it too (GenMC).
+
+**The replay's hand-off to idle blocks**, covered by `verification/gpumc/replay_share_termination.cpp`.
+A driver hands pending descents to other blocks through shared rings, booked under a second
+detector role (`kQeShareRole`); the harness transcribes `qe_run`'s idle- and ring-gated hand-off,
+the full-ring unbook, and the persistent loop's take-drive-complete, and runs
+`hgcommon::term_detect_loop` over both roles. A quiescent exit with an item owed is the defect.
+244,818 executions, clean. Every pusher is inside a booked unit (the record it rewrites, or the
+item it took), and that cover is what the property rests on: `-DCALIBRATE_RECORD_BEFORE_REPLAY`
+removes it for the driver and `-DCALIBRATE_COMPLETE_BEFORE_DRIVE` for a taker, and both violate.
 
 **The DEVICE's dedup map election**, covered by `verification/gpumc/hash_insert_elects_one.cpp`.
 The insert rule is `hgcommon/hash_insert_core.hpp` and the harness runs THAT -- the same
