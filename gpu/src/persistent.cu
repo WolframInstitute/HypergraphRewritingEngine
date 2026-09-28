@@ -953,6 +953,49 @@ uint32_t default_persistent_grid() {
     return cached;
 }
 
+// A launch's ring, dedup maps and detector. Built on first use at the sizes the launch asks for
+// and rebuilt only when a later launch asks for a different size; each launch clears what it
+// takes. A PersistentEvolver's config never shrinks, so after its first run every launch reuses
+// them and makes no cudaMalloc or cudaFree call for them (13 per run before, 0.26 ms of the
+// 3.7 ms floor of wpp at 2 steps being the maps' and ring's frees alone).
+struct EngineState::PersistentScratch {
+    std::unique_ptr<RingBuffer<MatchWorkItem>> ring;
+    std::unique_ptr<DedupMap> canonical;
+    std::unique_ptr<DedupMap> event_ids;
+    std::unique_ptr<TerminationDetector> term;
+};
+
+void EngineState::PersistentScratchFree::operator()(PersistentScratch* p) const { delete p; }
+
+EngineState::PersistentScratch& EngineState::persistent_scratch() const {
+    if (!persistent_scratch_) persistent_scratch_.reset(new PersistentScratch);
+    return *persistent_scratch_;
+}
+
+namespace {
+
+RingBuffer<MatchWorkItem>& reuse_ring(const EngineState& engine, uint32_t capacity) {
+    auto& slot = engine.persistent_scratch().ring;
+    if (slot && slot->capacity() == capacity) slot->clear();
+    else { slot.reset(); slot = std::make_unique<RingBuffer<MatchWorkItem>>(capacity); }
+    return *slot;
+}
+
+DedupMap& reuse_map(std::unique_ptr<DedupMap>& slot, uint32_t capacity) {
+    if (slot && slot->capacity() == capacity) slot->clear();
+    else { slot.reset(); slot = std::make_unique<DedupMap>(capacity); }
+    return *slot;
+}
+
+TerminationDetector& reuse_term(const EngineState& engine) {
+    auto& slot = engine.persistent_scratch().term;
+    if (slot) slot->clear();
+    else slot = std::make_unique<TerminationDetector>(/*num_roles=*/1);
+    return *slot;
+}
+
+}  // namespace
+
 uint32_t run_persistent_match(const EngineState& engine,
                               const std::vector<DeviceRule>& rules,
                               const std::vector<StateId>& states,
@@ -967,14 +1010,14 @@ uint32_t run_persistent_match(const EngineState& engine,
     // the per-call floor.
     EngineState::LaunchScratch& sc =
         engine.launch_scratch(num_rules, static_cast<uint32_t>(states.size()));
-    HG_CUDA_CHECK(cudaMemcpy(sc.rules, rules.data(), sizeof(DeviceRule) * rules.size(),
-                     cudaMemcpyHostToDevice), "rules copy");
-    HG_CUDA_CHECK(cudaMemcpy(sc.states, states.data(), sizeof(StateId) * states.size(),
-                     cudaMemcpyHostToDevice), "states copy");
+    HG_CUDA_CHECK(cudaMemcpyAsync(sc.rules, rules.data(), sizeof(DeviceRule) * rules.size(),
+                     cudaMemcpyHostToDevice, 0), "rules copy");
+    HG_CUDA_CHECK(cudaMemcpyAsync(sc.states, states.data(), sizeof(StateId) * states.size(),
+                     cudaMemcpyHostToDevice, 0), "states copy");
 
     uint32_t cap = 2;
     while (cap < num_items) cap <<= 1;
-    RingBuffer<MatchWorkItem> queue(cap);
+    RingBuffer<MatchWorkItem>& queue = reuse_ring(engine, cap);
 
     {
         const uint32_t block = 128;
@@ -1014,14 +1057,14 @@ PersistentRunStats run_persistent_match_rewrite(EngineState& engine,
     // Engine-lifetime grow-only scratch; see run_persistent_match.
     EngineState::LaunchScratch& sc =
         engine.launch_scratch(num_rules, static_cast<uint32_t>(states.size()));
-    HG_CUDA_CHECK(cudaMemcpy(sc.rules, rules.data(), sizeof(DeviceRule) * rules.size(),
-                     cudaMemcpyHostToDevice), "rules copy");
-    HG_CUDA_CHECK(cudaMemcpy(sc.states, states.data(), sizeof(StateId) * states.size(),
-                     cudaMemcpyHostToDevice), "states copy");
+    HG_CUDA_CHECK(cudaMemcpyAsync(sc.rules, rules.data(), sizeof(DeviceRule) * rules.size(),
+                     cudaMemcpyHostToDevice, 0), "rules copy");
+    HG_CUDA_CHECK(cudaMemcpyAsync(sc.states, states.data(), sizeof(StateId) * states.size(),
+                     cudaMemcpyHostToDevice, 0), "states copy");
 
     uint32_t cap = 2;
     while (cap < num_items) cap <<= 1;
-    RingBuffer<MatchWorkItem> match_q(cap);
+    RingBuffer<MatchWorkItem>& match_q = reuse_ring(engine, cap);
     {
         const uint32_t block = 128;
         const uint32_t seed_grid = (num_items + block - 1) / block;
@@ -1033,8 +1076,7 @@ PersistentRunStats run_persistent_match_rewrite(EngineState& engine,
 
     HG_CUDA_CHECK(cudaMemset(sc.cursor, 0, sizeof(uint32_t)), "cursor clear");
 
-    TerminationDetector term(/*num_roles=*/1);
-    term.clear();
+    TerminationDetector& term = reuse_term(engine);
     term.mark_pushed_host(kRoleMatch, num_items);
 
     // Block 0 is the detector, so at least two blocks are needed for any work to happen.
@@ -1064,7 +1106,8 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                             const QcView* qc_in,
                                             const QeView* qe_in,
                                             SessionView* session,
-                                            uint32_t start_step) {
+                                            uint32_t start_step,
+                                            bool read_stats) {
     PersistentEvolveStats stats;
     if (rules.empty() || roots.empty() || max_steps == 0) return stats;
 
@@ -1084,12 +1127,14 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     EngineState::LaunchScratch& sc =
         engine.launch_scratch(num_rules, static_cast<uint32_t>(roots.size()));
     DeviceRule* d_rules = sc.rules;
-    HG_CUDA_CHECK(cudaMemcpy(d_rules, rules.data(), sizeof(DeviceRule) * rules.size(),
-                     cudaMemcpyHostToDevice), "rules copy");
+    // Async from pageable memory, as upload_initial_states: staged on return, ordered before
+    // the kernels by the stream.
+    HG_CUDA_CHECK(cudaMemcpyAsync(d_rules, rules.data(), sizeof(DeviceRule) * rules.size(),
+                     cudaMemcpyHostToDevice, 0), "rules copy");
 
     StateId* d_states = sc.states;
-    HG_CUDA_CHECK(cudaMemcpy(d_states, roots.data(), sizeof(StateId) * roots.size(),
-                     cudaMemcpyHostToDevice), "states copy");
+    HG_CUDA_CHECK(cudaMemcpyAsync(d_states, roots.data(), sizeof(StateId) * roots.size(),
+                     cudaMemcpyHostToDevice, 0), "states copy");
 
     // The ring holds work in flight, not the whole evolution: a run that outgrows it does not
     // fail, it runs the excess inline on the pushing block. Sized to the match pool so the
@@ -1097,7 +1142,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     uint32_t cap = 2;
     while (cap < num_seed) cap <<= 1;
     while (cap < scratch_matches.capacity() && cap < (1u << 20)) cap <<= 1;
-    RingBuffer<MatchWorkItem> match_q(cap);
+    RingBuffer<MatchWorkItem>& match_q = reuse_ring(engine, cap);
 
     // The canonical map is the dedup key store for the whole run. Sized to the state pool: one
     // entry per state is the worst case, and the map must not fill, because a full map would
@@ -1108,9 +1153,9 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     if (session) sess_v = *session;
     const bool dbgt = std::getenv("HG_GPU_DBG_TIME") != nullptr;
     auto t_maps0 = std::chrono::steady_clock::now();
-    DedupMap owned_canonical(session ? 1u : engine.config().max_states * 2u);
-    DedupMap& canonical_owner = owned_canonical;
-    if (!session) canonical_owner.clear();
+    EngineState::PersistentScratch& ps = engine.persistent_scratch();
+    DedupMap* canonical_owner =
+        session ? nullptr : &reuse_map(ps.canonical, engine.config().max_states * 2u);
 
     // Signature -> first event with it. Sized off the event budget rather than the state one:
     // an evolution has as many applications as it has matches, which is not bounded by its
@@ -1121,8 +1166,9 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     // a cost charged to every run for a mode most do not select. The stamp sites are all behind
     // `event_keys != EVENT_SIG_NONE`, so the small map is never touched.
     const bool want_event_ids = (event_keys != EVENT_SIG_NONE);
-    DedupMap owned_event_ids(session ? 1u : (want_event_ids ? engine.config().max_events * 2u : 8u));
-    if (!session) owned_event_ids.clear();
+    DedupMap* owned_event_ids =
+        session ? nullptr
+                : &reuse_map(ps.event_ids, want_event_ids ? engine.config().max_events * 2u : 8u);
     if (want_event_ids) engine.ensure_event_identity();
 
     const double t_maps = std::chrono::duration<double, std::milli>(
@@ -1145,8 +1191,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     unsigned long long* d_phase_cycles = sc.phase_cycles;
     HG_CUDA_CHECK(cudaMemset(d_phase_cycles, 0, sizeof(unsigned long long) * 16), "phase cycles clear");
 
-    TerminationDetector term(/*num_roles=*/1);
-    term.clear();
+    TerminationDetector& term = reuse_term(engine);
 
     // The whole evolution is a launch CHAIN on one stream: root hashing decides which roots
     // survive and compacts them into d_kept/d_kept_count; the counted seeder reads that count
@@ -1196,7 +1241,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         const DeviceState dsv = engine.device();
         k_seed_root_hashes<<<(n + block - 1) / block, block>>>(
             dsv, d_states, n,
-            session ? sess_v.states : canonical_owner.view(), state_mode,
+            session ? sess_v.states : canonical_owner->view(), state_mode,
             run_needs_exact_hash(event_keys, dsv.transition_rate, dsv.num_rule_weights,
                                  dsv.matches_per_state_rule),
             run_needs_edge_ranks(event_keys, qe.enabled != 0, dsv.transition_rate,
@@ -1224,11 +1269,12 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     k_persistent_evolve<<<grid, kMatchBlockThreads>>>(
         engine.device(), d_rules, num_rules, match_q.view(), scratch_matches.view(),
         d_cursor, d_rewrites_done,
-        session ? sess_v.states : canonical_owner.view(), dedup,
+        session ? sess_v.states : canonical_owner->view(), dedup,
         explore_threshold_u32, explore_seed, max_steps, state_mode, event_keys,
-        session ? sess_v.events : owned_event_ids.view(),
+        session ? sess_v.events : owned_event_ids->view(),
         arena.view(), term.view(), qc, qe, d_phase_cycles, sess_v);
     HG_CUDA_CHECK(cudaDeviceSynchronize(), "persistent evolve sync");
+    if (!read_stats) return stats;
 
     // states_after and canonical_events are both slots of the engine's counter block, so one
     // transfer fetches them instead of two. The pool and arena counters belong to other objects

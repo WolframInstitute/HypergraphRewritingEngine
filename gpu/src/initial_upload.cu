@@ -75,32 +75,36 @@ uint32_t upload_initial_states(EngineState& engine,
         throw std::runtime_error("upload_initial_states: initial edge count exceeds max_state_edge_total");
     if (M > cfg.max_states) throw std::runtime_error("upload_initial_states: max_states exceeded");
 
+    // ASYNC FROM PAGEABLE MEMORY: each call returns once the runtime has staged the source, so
+    // the host locals below may go out of scope, and stream order puts every copy before the
+    // run's kernels. A synchronous cudaMemcpy costs about 25 us per call here, the async one a
+    // few; nine of them ran per evolve.
     if (n_edges > 0) {
-        HG_CUDA_CHECK(cudaMemcpy(ds.vertex_pool.data, flat_vertices.data(),
-                         sizeof(VertexId) * flat_vertices.size(), cudaMemcpyHostToDevice),
+        HG_CUDA_CHECK(cudaMemcpyAsync(ds.vertex_pool.data, flat_vertices.data(),
+                         sizeof(VertexId) * flat_vertices.size(), cudaMemcpyHostToDevice, 0),
               "upload vertex_pool");
-        HG_CUDA_CHECK(cudaMemcpy(ds.edge_pool.data, edges.data(),
-                         sizeof(Edge) * edges.size(), cudaMemcpyHostToDevice),
+        HG_CUDA_CHECK(cudaMemcpyAsync(ds.edge_pool.data, edges.data(),
+                         sizeof(Edge) * edges.size(), cudaMemcpyHostToDevice, 0),
               "upload edge_pool");
         uint32_t vp_count = static_cast<uint32_t>(flat_vertices.size());
-        HG_CUDA_CHECK(cudaMemcpy(ds.vertex_pool.counter, &vp_count, sizeof(uint32_t), cudaMemcpyHostToDevice),
+        HG_CUDA_CHECK(cudaMemcpyAsync(ds.vertex_pool.counter, &vp_count, sizeof(uint32_t), cudaMemcpyHostToDevice, 0),
               "set vertex_pool counter");
-        HG_CUDA_CHECK(cudaMemcpy(ds.edge_pool.counter, &n_edges, sizeof(uint32_t), cudaMemcpyHostToDevice),
+        HG_CUDA_CHECK(cudaMemcpyAsync(ds.edge_pool.counter, &n_edges, sizeof(uint32_t), cudaMemcpyHostToDevice, 0),
               "set edge_pool counter");
         uint32_t hi = max_vertex + 1;
-        HG_CUDA_CHECK(cudaMemcpy(ds.vertex_high_water, &hi, sizeof(uint32_t), cudaMemcpyHostToDevice),
+        HG_CUDA_CHECK(cudaMemcpyAsync(ds.vertex_high_water, &hi, sizeof(uint32_t), cudaMemcpyHostToDevice, 0),
               "set vertex_high_water");
-        HG_CUDA_CHECK(cudaMemcpy(ds.state_edge_ids, all_ids.data(),
-                         sizeof(EdgeId) * all_ids.size(), cudaMemcpyHostToDevice),
+        HG_CUDA_CHECK(cudaMemcpyAsync(ds.state_edge_ids, all_ids.data(),
+                         sizeof(EdgeId) * all_ids.size(), cudaMemcpyHostToDevice, 0),
               "upload state_edge_ids");
         uint32_t ids_cnt = static_cast<uint32_t>(all_ids.size());
-        HG_CUDA_CHECK(cudaMemcpy(ds.state_edge_ids_counter, &ids_cnt, sizeof(uint32_t), cudaMemcpyHostToDevice),
+        HG_CUDA_CHECK(cudaMemcpyAsync(ds.state_edge_ids_counter, &ids_cnt, sizeof(uint32_t), cudaMemcpyHostToDevice, 0),
               "set state_edge_ids_counter");
     }
-    HG_CUDA_CHECK(cudaMemcpy(ds.state_edge_slices, slices.data(),
-                     sizeof(StateEdgeSlice) * slices.size(), cudaMemcpyHostToDevice),
+    HG_CUDA_CHECK(cudaMemcpyAsync(ds.state_edge_slices, slices.data(),
+                     sizeof(StateEdgeSlice) * slices.size(), cudaMemcpyHostToDevice, 0),
           "upload state slices");
-    HG_CUDA_CHECK(cudaMemcpy(ds.state_count, &M, sizeof(uint32_t), cudaMemcpyHostToDevice),
+    HG_CUDA_CHECK(cudaMemcpyAsync(ds.state_count, &M, sizeof(uint32_t), cudaMemcpyHostToDevice, 0),
           "set state_count");
 
     if (n_edges > 0 && engine.maintain_indices()) {

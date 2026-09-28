@@ -124,10 +124,6 @@ struct Engine::Impl {
         , matches_(cfg.max_states * 8u)
     {}
 
-    ~Impl() {
-        if (d_rules_) cudaFree(d_rules_);
-    }
-
     void reset() {
         state_.clear();
         matches_.reset();
@@ -143,8 +139,6 @@ struct Engine::Impl {
     // per evolve. Constructed on the first run that routes quotient causal.
     std::unique_ptr<QcState>           qc_state_;
     std::unique_ptr<QeState>           qe_state_;
-    DeviceRule*                        d_rules_          = nullptr;
-    uint32_t                           d_rules_capacity_ = 0;
 };
 
 Engine::Engine(EngineConfig cfg) : impl_(new Impl(cfg)) {}
@@ -236,27 +230,10 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
                                    ? upload_initial_states(engine, roots)
                                    : static_cast<uint32_t>(roots.size());
 
-    // Upload rules. Resize the device-side rules buffer if this run has more
-    // rules than any prior run. Re-upload every run so the caller can pass a
-    // different rule set per call without surprises.
+    // The launch uploads the rules into its own scratch (run_persistent_evolve).
     std::vector<DeviceRule> rules;
     rules.reserve(in.rules.size());
     for (const auto& r : in.rules) rules.push_back(make_device_rule(r));
-    const uint32_t num_rules = static_cast<uint32_t>(rules.size());
-
-    if (num_rules > d_rules_capacity_) {
-        if (d_rules_) cudaFree(d_rules_);
-        d_rules_ = nullptr;
-        d_rules_capacity_ = 0;
-        if (num_rules > 0) {
-            HG_CUDA_CHECK(cudaMalloc(&d_rules_, sizeof(DeviceRule) * num_rules), "d_rules alloc");
-            d_rules_capacity_ = num_rules;
-        }
-    }
-    if (num_rules > 0) {
-        HG_CUDA_CHECK(cudaMemcpy(d_rules_, rules.data(), sizeof(DeviceRule) * num_rules,
-                         cudaMemcpyHostToDevice), "d_rules copy");
-    }
 
     const EngineConfig& cfg = engine.config();
     Pool<MatchRecord>& matches = matches_;
@@ -360,10 +337,6 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     double t_persist_call = 0.0, t_recon = 0.0;
     double t_match = 0, t_rewrite = 0, t_hash = 0, t_dedup = 0;
 
-    // Cache the running state_count on host so we only D2H once per step
-    // (instead of twice via num_states_host around the rewrite call).
-    uint32_t state_count_host = engine.num_states_host();
-
 
     // The whole evolution in ONE launch: the device decides what work exists, who takes it, and
     // when it is finished. Everything below the loop is unchanged -- the readback is post-hoc
@@ -409,13 +382,12 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
             in.canonicalization, ekeys, /*blocks=*/0,
             qc_route ? &qc_view : nullptr,
             qc_route ? &qe_view : nullptr,
-            session, start_step);
+            session, start_step, /*read_stats=*/dbg);
 
         t_persist_call = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - t_kern_start).count();
 
         auto t_recon_start = std::chrono::steady_clock::now();
-        state_count_host = engine.num_states_host();
         // One transfer for every scalar below, instead of one per field. The counters share a
         // single device allocation precisely so this is possible.
         const auto qc_counts = qc_route ? qe_state_->counters_host()
@@ -571,10 +543,6 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
 
     double t_readback_evcb = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_readback_evcb_start).count();
-
-    // Note: Impl-owned device buffers (d_rules_, d_frontier_, etc) are NOT
-    // freed here — they live for the Engine's lifetime and are reused on
-    // subsequent run() calls. Impl's destructor handles cleanup.
 
     double t_total = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_total_start).count();

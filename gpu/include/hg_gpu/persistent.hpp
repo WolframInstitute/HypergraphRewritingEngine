@@ -255,7 +255,10 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                             // from the session's FRONTIER at that depth, which
                                             // is what continues an evolution rather than
                                             // restarting it.
-                                            uint32_t start_step = 0);
+                                            uint32_t start_step = 0,
+                                            // False leaves every PersistentEvolveStats field
+                                            // zero and skips its four readbacks.
+                                            bool read_stats = true);
 
 }  // namespace gpu
 }  // namespace HG_NAMESPACE

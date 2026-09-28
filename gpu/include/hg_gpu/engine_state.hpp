@@ -426,8 +426,15 @@ public:
         uint32_t*           cursor       = nullptr;  // 2 slots
         unsigned long long* phase_cycles = nullptr;  // 16 slots
     };
+    // The persistent launch's match ring, dedup maps and termination detector, kept with the
+    // engine and reused by every later launch of the same sizes (each is cleared per launch).
+    // Defined in persistent.cu, the only file that builds them.
+    struct PersistentScratch;
+    struct PersistentScratchFree { void operator()(PersistentScratch* p) const; };
+    PersistentScratch& persistent_scratch() const;
 private:
     mutable LaunchScratch              launch_scratch_;
+    mutable std::unique_ptr<PersistentScratch, PersistentScratchFree> persistent_scratch_;
 public:
     // Every host-read scalar counter, in ONE transfer.
     //

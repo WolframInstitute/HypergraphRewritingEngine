@@ -448,18 +448,14 @@ void EngineState::clear() {
         // The same argument for the head arrays of the lists whose key is a dense id. Each
         // counter still holds the previous run's value here, so it names the prefix that can be
         // dirty; heads above it were never written and still carry the fill from construction.
-        // Read them all before anything below resets them.
-        const uint32_t dirty_vertices = vertex_high_water_host();
-        const uint32_t dirty_edges_lf = edge_pool_.size_host();
-        const uint32_t dirty_events   = event_pool_.size_host();
-
-        uint32_t dirty_edge_slots = cfg_.max_state_edge_total;
-        if (state_edge_ids_counter_) {
-            uint32_t n = 0;
-            if (cudaMemcpy(&n, state_edge_ids_counter_, sizeof(uint32_t),
-                           cudaMemcpyDeviceToHost) == cudaSuccess && n <= cfg_.max_state_edge_total)
-                dirty_edge_slots = n;
-        }
+        // Read them all before anything below resets them, in the counter block's one transfer.
+        const CounterSnapshot prev = counters_snapshot_host();
+        const uint32_t dirty_vertices = prev.vertex_high;
+        const uint32_t dirty_edges_lf = prev.edges;
+        const uint32_t dirty_events   = prev.events;
+        const uint32_t dirty_edge_slots =
+            prev.state_edge_ids <= cfg_.max_state_edge_total ? prev.state_edge_ids
+                                                             : cfg_.max_state_edge_total;
 
         HG_CUDA_CHECK(cudaMemset(state_edge_slices_, 0,
               sizeof(StateEdgeSlice) * cfg_.max_states),

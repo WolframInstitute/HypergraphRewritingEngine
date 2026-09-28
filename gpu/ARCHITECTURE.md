@@ -102,9 +102,11 @@ identical reply shapes. The relation observables follow the one-relation rule of
 
 ## 8. Performance characteristics, measured (RTX 4090)
 
-- **The per-call floor is ~3.3 ms**, independent of workload — readback (≈23%) plus setup
-  (≈3.2%) of a small run — and it is what bounds interactive and small-workload use: a workload
-  under ~10 ms of CPU time is floor-dominated by construction. Within-run scaling is what the
+- **The per-call floor is ~1.6 ms** (`bench_gpu_evolve 2 30 1 wpp`, a 5-state run), of which
+  0.37 ms is kernel time and the rest CUDA API calls: 20 synchronous readbacks at ~25 us each
+  under WSL, the device synchronization, and the per-run clears. A persistent launch's ring,
+  dedup maps and termination detector live with the engine, and host-to-device uploads are
+  asynchronous. A workload under a few ms of CPU time is floor-dominated. Within-run scaling is what the
   device is for: wpp depth 7 runs 45,317 states in 47 ms against 216 ms on 8 host threads.
 - **The hardware-utilisation ceiling is the algorithm, not the implementation.** Every avenue
   was measured and excluded: DRAM 0.71% of peak, L1 3.28%, L2 5.01%, atomics with 20× headroom;

@@ -83,12 +83,14 @@ namespace gpu {
 namespace {
 template <typename K, K EMPTY, K LOCKED>
 __global__ void k_gather_keys(const K* __restrict__ keys, uint32_t capacity,
-                              K* __restrict__ out, uint32_t* __restrict__ count) {
+                              K* __restrict__ out, uint32_t out_cap,
+                              uint32_t* __restrict__ count) {
     const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= capacity) return;
     const K k = keys[i];
     if (k == EMPTY || k == LOCKED) return;
-    out[atomicAdd(count, 1u)] = k;
+    const uint32_t at = atomicAdd(count, 1u);
+    if (at < out_cap) out[at] = k;
 }
 }  // namespace
 
@@ -321,17 +323,22 @@ public:
     }
 
     ~ConcurrentMap() {
-        if (keys_)      cudaFree(keys_);
-        if (values_)    cudaFree(values_);
-        if (saturated_) cudaFree(saturated_);
+        if (keys_)         cudaFree(keys_);
+        if (values_)       cudaFree(values_);
+        if (saturated_)    cudaFree(saturated_);
+        if (gather_count_) cudaFree(gather_count_);
+        if (gather_dense_) cudaFree(gather_dense_);
     }
 
     ConcurrentMap(const ConcurrentMap&)            = delete;
     ConcurrentMap& operator=(const ConcurrentMap&) = delete;
 
     ConcurrentMap(ConcurrentMap&& o) noexcept
-        : keys_(o.keys_), values_(o.values_), capacity_(o.capacity_), saturated_(o.saturated_) {
+        : keys_(o.keys_), values_(o.values_), capacity_(o.capacity_), saturated_(o.saturated_),
+          gather_count_(o.gather_count_), gather_dense_(o.gather_dense_),
+          gather_cap_(o.gather_cap_) {
         o.keys_ = nullptr; o.values_ = nullptr; o.capacity_ = 0; o.saturated_ = nullptr;
+        o.gather_count_ = nullptr; o.gather_dense_ = nullptr; o.gather_cap_ = 0;
     }
 
     DeviceView view() const { return DeviceView{keys_, values_, capacity_, saturated_}; }
@@ -348,27 +355,35 @@ public:
     // depth 8 copied eight times the bytes and, worse, value-initialised a host vector of
     // capacity elements for each of the three maps drained per call. A gather kernel writes the
     // occupied slots into a dense buffer and the host reads that prefix.
+    //
+    // The dense buffer is kept and grows to the largest key count gathered, so a map drained
+    // once per run allocates on its first drain and on a drain larger than any before it. The
+    // kernel counts every key and writes those below the buffer's size; a count past it grows
+    // the buffer and gathers again.
     void copy_keys_to_host(std::vector<K>& out) const {
-        uint32_t* d_count = nullptr;
-        K* d_dense = nullptr;
-        HG_CUDA_CHECK(cudaMalloc(&d_count, sizeof(uint32_t)), "key gather count alloc");
-        HG_CUDA_CHECK(cudaMalloc(&d_dense, sizeof(K) * capacity_), "key gather dense alloc");
-        HG_CUDA_CHECK(cudaMemset(d_count, 0, sizeof(uint32_t)), "key gather count clear");
-
+        if (!gather_count_)
+            HG_CUDA_CHECK(cudaMalloc(&gather_count_, sizeof(uint32_t)), "key gather count alloc");
         const uint32_t block = 256;
         const uint32_t grid = (capacity_ + block - 1) / block;
-        k_gather_keys<K, EMPTY, LOCKED><<<grid, block>>>(keys_, capacity_, d_dense, d_count);
-        HG_CUDA_CHECK(cudaGetLastError(), "key gather launch");
-
         uint32_t n = 0;
-        HG_CUDA_CHECK(cudaMemcpy(&n, d_count, sizeof(uint32_t), cudaMemcpyDeviceToHost),
-                      "key gather count read");
+        for (;;) {
+            HG_CUDA_CHECK(cudaMemset(gather_count_, 0, sizeof(uint32_t)), "key gather count clear");
+            k_gather_keys<K, EMPTY, LOCKED><<<grid, block>>>(keys_, capacity_, gather_dense_,
+                                                             gather_cap_, gather_count_);
+            HG_CUDA_CHECK(cudaGetLastError(), "key gather launch");
+            HG_CUDA_CHECK(cudaMemcpy(&n, gather_count_, sizeof(uint32_t), cudaMemcpyDeviceToHost),
+                          "key gather count read");
+            if (n <= gather_cap_) break;
+            if (gather_dense_) cudaFree(gather_dense_);
+            gather_dense_ = nullptr;
+            gather_cap_ = 0;
+            HG_CUDA_CHECK(cudaMalloc(&gather_dense_, sizeof(K) * n), "key gather dense alloc");
+            gather_cap_ = n;
+        }
         out.resize(n);
         if (n)
-            HG_CUDA_CHECK(cudaMemcpy(out.data(), d_dense, sizeof(K) * n,
+            HG_CUDA_CHECK(cudaMemcpy(out.data(), gather_dense_, sizeof(K) * n,
                                      cudaMemcpyDeviceToHost), "ConcurrentMap key readback");
-        cudaFree(d_dense);
-        cudaFree(d_count);
     }
 
     void clear() {
@@ -405,6 +420,10 @@ private:
     // Latched when a probe run exhausts the table; cleared with the keys, since a cleared table
     // has room again and a stale flag would refuse every insert for the rest of the run.
     uint32_t* saturated_ = nullptr;
+    // copy_keys_to_host's count and dense buffer, allocated on the first gather.
+    mutable uint32_t* gather_count_ = nullptr;
+    mutable K*        gather_dense_ = nullptr;
+    mutable uint32_t  gather_cap_   = 0;
 };
 
 }  // namespace gpu
