@@ -21,14 +21,14 @@ stated absence rather than an unexamined one.
 
 ## What is covered
 
-GenMC, 39 harness sources under `verification/genmc/` (the count grows with the protocols;
+GenMC, 40 harness sources under `verification/genmc/` (the count grows with the protocols;
 `ls verification/genmc/*.cpp | wc -l` is the authority): the concurrent map (agreement, resize, double growth at two and three
 threads, repeated offer, lookup during growth), the key set (exactly-once at two and three
 threads, enumeration, contains and distinct keys across growth), both deques (no double
 extraction, no double take, tag defeats ABA), the lock-free list (completeness, pairs and triples
 meeting once), the job system's wake protocol (no lost wakeup, and the per-domain variant),
 the arena's exclusive worker index, frame publication atomicity, depth-relax child registration,
-the claim and quotient-instance rendezvous, and the depth join's report ordering.
+the claim, quotient-instance and child-inheritance rendezvous, and the depth join's report ordering.
 
 `causal_in_edge_order` is the COMPOSITION the transitive-reduction defect lived in: one thread
 registering an event's in-edges through `CausalGraph::consume_edges` while another forces the
