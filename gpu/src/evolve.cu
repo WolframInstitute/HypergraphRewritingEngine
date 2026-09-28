@@ -919,6 +919,20 @@ static EvolveResult run_with_growth(EngineConfig cfg, uint64_t mem_cap, Attempt&
                 any_retryable = true;
             }
         }
+        // THE REPLAY'S POOLS GROW 4x PER ATTEMPT when the grown config stays under the memory
+        // cap, 2x otherwise. They are sized from the state budget while the replay grows with
+        // raw applications, exponentially in depth, so doubling took multirule at 7 steps
+        // through five attempts (qe_capacity_scale 1 -> 32, descent_work_scale 1 -> 4), each a
+        // full run from the start.
+        {
+            EngineConfig quad = cfg;
+            bool replay_grew = false;
+            for (const auto& w : result.warnings)
+                if (w.kind == ErrorKind::kQcNodes || w.kind == ErrorKind::kQeWorkOverflow)
+                    replay_grew = grow_config_for(quad, w.kind) || replay_grew;
+            if (replay_grew && (mem_cap == 0 || estimated_device_bytes(quad) <= mem_cap))
+                cfg = quad;
+        }
         if (!any_retryable || attempt_no == kMaxRetries) return result;
 
         // Would the grown config exceed the memory ceiling? Then stop here and return the
