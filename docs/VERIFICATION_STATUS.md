@@ -104,7 +104,7 @@ module are in that class, most of them inside libstdc++.
 That is why the protocols are checked as UNITS rather than in situ, and why an extraction like
 `hgcommon/depth_join.hpp` is what makes one checkable at all.
 
-TLA+, 12 configurations, all matching their declared verdict:
+TLA+, 14 configurations, all matching their declared verdict:
 
 | model | verdict | distinct states |
 |---|---|---|
@@ -113,6 +113,8 @@ TLA+, 12 configurations, all matching their declared verdict:
 | `MCSegmentedArrayBroken` | VIOLATION as declared | 341 |
 | `MCMatchForwarding` | PASS | 79,278 |
 | `MCMatchForwardingRegisterBroken` | VIOLATION as declared | 1,474 |
+| `MCMatchForwardingResume` | PASS | 30,103 |
+| `MCMatchForwardingResumeClaimBroken` | VIOLATION as declared | 1,376 |
 | `MCDepthRelaxation` | PASS | 14 |
 | `MCDepthRelaxationBroken` | VIOLATION as declared | 12 |
 | `MCDepthRelaxationSteered` | PASS | 24 |

@@ -5,7 +5,7 @@
    reads `drained` before it is published (expect a violation). *)
 EXTENDS Naturals, FiniteSets, TLC
 
-CONSTANTS RendezvousFix
+CONSTANTS RendezvousFix, Stoppable, KeepClaimOnCut, SharedClass
 
 (* mA and mB are found at the root; mC at s1. mA and mB bind different edges, so a child built
    from one inherits the other, and a grandchild built from mC inherits whichever of mA and mB
@@ -19,8 +19,12 @@ MCMatchEdges  == [m \in MCMatches |->
 MCOrigMatches == [s \in MCStateIds |->
                    CASE s = "s0" -> {"mA", "mB"} [] s = "s1" -> {"mC"} [] OTHER -> {}]
 
+(* One class per state, or with SharedClass s3 in s0's class: a rewrite can then create a second
+   state of the root's class, which is what races a cut root's resume. *)
+MCClassOf == [s \in MCStateIds |-> IF SharedClass /\ s = "s3" THEN "s0" ELSE s]
+
 VARIABLES exists, parentOf, childrenOf, stored, claimed, discovered, drained, inherited,
-          pending
+          pending, claimOf, phase, cut, dropped
 
 INSTANCE MatchForwarding WITH
   StateIds    <- MCStateIds,
@@ -28,6 +32,7 @@ INSTANCE MatchForwarding WITH
   Matches     <- MCMatches,
   Edges       <- MCEdges,
   MatchEdges  <- MCMatchEdges,
-  OrigMatches <- MCOrigMatches
+  OrigMatches <- MCOrigMatches,
+  ClassOf     <- MCClassOf
 
 ================================================================================

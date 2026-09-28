@@ -30,10 +30,10 @@ Run (needs `~/tla/tla2tools.jar`, any Java ≥ 11):
 `run.sh` checks each cell against the verdict its own `.cfg` declares on line 1
 (`Expected: PASS` or `Expected: VIOLATION`) and exits non-zero on a mismatch. It
 is registered as the `tla_cells` ctest, `--quick`, and skips rather than fails
-where Java or `tla2tools.jar` is absent. **Five of the twelve cells must
+where Java or `tla2tools.jar` is absent. **Six of the fourteen cells must
 VIOLATE** — `MCSegmentedArrayBroken`, `MCMatchForwardingRegisterBroken`,
-`MCDepthRelaxationBroken`, `MCDepthRelaxationSteeredBroken` and
-`MCQuiescenceLateSubmit` — and a spec edit that turns one of those into a pass
+`MCMatchForwardingResumeClaimBroken`, `MCDepthRelaxationBroken`,
+`MCDepthRelaxationSteeredBroken` and `MCQuiescenceLateSubmit` — and a spec edit that turns one of those into a pass
 has disabled a calibration, which is the case a results table cannot catch and
 the runner can.
 
@@ -48,13 +48,23 @@ The single command underneath, for one cell by hand:
     java -cp ~/tla/tla2tools.jar tlc2.TLC -workers 8 -deadlock \
          -config <cell>.cfg MCMatchForwarding.tla
 
-The two cells (2026-09-26, exhaustive at the MC bound — 4 states, 3 matches,
-3 edges, a match found mid-chain):
+The four cells (exhaustive at the MC bound — 4 states, 3 matches, 3 edges, a
+match found mid-chain). The two resume cells put `s3` in the root's class and
+allow one Stop (which cuts every representative still matching) and a Resume:
 
-| cell | RendezvousFix | verdict | distinct states |
-|---|---|---|---|
-| MCMatchForwarding | TRUE | PASS | 79,278 |
-| MCMatchForwardingRegisterBroken | FALSE | **VIOLATED** | stops at the first counterexample |
+| cell | RendezvousFix | Stop | cut state's claim | verdict | distinct states |
+|---|---|---|---|---|---|
+| MCMatchForwarding | TRUE | no | — | PASS | 79,278 |
+| MCMatchForwardingRegisterBroken | FALSE | no | — | **VIOLATED** | stops at the first counterexample |
+| MCMatchForwardingResume | TRUE | yes | kept | PASS | 30,103 |
+| MCMatchForwardingResumeClaimBroken | TRUE | yes | given back | **VIOLATED** | stops at the first counterexample |
+
+- A cut state that gives its class claim back can lose it on resume to another
+  state of its class that a resumed rewrite creates first (the counterexample:
+  the root finds `mA`, is cut, and the rewrite of `mA` creates `s3` in its class);
+  it is then not resumed, never drains, and its child never inherits. The engine
+  keeps the claim (`defer_cut_match_task`) and resumes a cut state without
+  claiming again (`run_pass`).
 
 - The shipped order (publish the child, then read `drained`; set `drained`, then
   scan) is inheritance-complete at this bound for every interleaving, and every

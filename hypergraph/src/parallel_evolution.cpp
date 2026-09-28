@@ -1026,9 +1026,11 @@ void ParallelEvolutionEngine::defer_cut_match_task(StateId state, uint32_t step)
     // Every path that cuts a state's matching comes through here, including a match task
     // refused at submission and so never counted; the state must not drain before its resume.
     match_join_for(state)->resume_pending.store(1, std::memory_order_release);
-    // Quotient exploration claims a class before matching it, and the resume takes the claim
-    // again, so a class whose matching the stop cut short gives its claim back.
-    if (explore_from_canonical_states_only_) hg_->release_expanded_claim(state);
+    // Under quotient exploration the state keeps its class claim through the stop, and the
+    // resume submits it without claiming again (run_pass). Given back, the claim can be taken
+    // by another state of the class that a resumed rewrite creates first; the cut state is then
+    // not resumed, never drains, and the children it registered never inherit
+    // (verification/tla MCMatchForwardingResumeClaimBroken).
     defer_match_task(state, step);
 }
 
@@ -1188,6 +1190,9 @@ void ParallelEvolutionEngine::evolve_more(size_t additional_steps,
             // claimed (seeding already did, unless a stop released it) and it is submitted
             // whatever the claim returns, without the ExplorationProbability test.
             if (!explore_from_canonical_states_only_) {
+                submit_match_task(d.state, d.step);
+            } else if (match_join_for(d.state)->resume_pending.load(std::memory_order_acquire)) {
+                // Cut by the stop: it holds its class claim (defer_cut_match_task).
                 submit_match_task(d.state, d.step);
             } else if (hg_->get_state(d.state).step == 0) {
                 hg_->try_claim_expanded(hg_->get_canonical_state(d.state));

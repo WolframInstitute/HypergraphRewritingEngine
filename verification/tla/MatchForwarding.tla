@@ -25,7 +25,16 @@
 
    THE CALIBRATION. RendezvousFix = FALSE reads `drained` BEFORE publishing the child. A drain
    that falls between the two steps sees no child and is not seen, the child never inherits,
-   and the invariant must fail. *)
+   and the invariant must fail.
+
+   QUOTIENT CLAIMS, STOP AND RESUME. A state matches only while it holds its class's expansion
+   claim (try_claim_expanded); a child whose class is already claimed is neither matched nor
+   registered with its parent. With Stoppable, a Stop cuts every representative that has not
+   found all its matches (defer_cut_match_task) and a Resume continues the run (evolve_more's
+   run_pass): rewrites deferred by the stop run again, and each cut state resumes. With
+   KeepClaimOnCut = FALSE a cut state gives its claim back and re-takes it on resume, so a
+   deferred rewrite that creates another state of its class first leaves it unresumed; its
+   children then never inherit. *)
 
 EXTENDS Naturals, FiniteSets, TLC
 
@@ -36,7 +45,10 @@ CONSTANTS
   MatchEdges,     \* [Matches -> SUBSET Edges]: the edges a match binds
   OrigMatches,    \* [StateIds -> SUBSET Matches]: matches a state finds by its own matching
   Edges,
-  RendezvousFix   \* BOOLEAN: publish then read (shipped) or read then publish (broken)
+  RendezvousFix,  \* BOOLEAN: publish then read (shipped) or read then publish (broken)
+  ClassOf,        \* [StateIds -> Classes]: the canonical class of each state
+  Stoppable,      \* BOOLEAN: whether a Stop and a Resume may happen
+  KeepClaimOnCut  \* BOOLEAN: a cut state keeps its class claim through the stop
 
 ASSUME Root \in StateIds
 ASSUME MatchEdges \in [Matches -> SUBSET Edges]
@@ -44,6 +56,7 @@ ASSUME OrigMatches \in [StateIds -> SUBSET Matches]
 
 None == "none"
 ASSUME None \notin StateIds
+Classes == {ClassOf[x] : x \in StateIds}
 
 VARIABLES
   exists,       \* SUBSET StateIds: created states
@@ -54,10 +67,17 @@ VARIABLES
   discovered,   \* [StateIds -> SUBSET Matches]: own discoveries already made
   drained,      \* SUBSET StateIds: MatchJoin::drained
   inherited,    \* SUBSET StateIds: MatchJoin::inherited
-  pending       \* SUBSET of ops
+  pending,      \* SUBSET of ops
+  claimOf,      \* [Classes -> StateIds \cup {None}]: the class's expansion claim
+  phase,        \* "run", "stopped" or "resumed"
+  cut,          \* SUBSET StateIds: cut by the stop and not yet resumed
+  dropped       \* SUBSET StateIds: cut states the resume did not continue
 
 vars == <<exists, parentOf, childrenOf, stored, claimed, discovered, drained, inherited,
-          pending>>
+          pending, claimOf, phase, cut, dropped>>
+rest == <<claimOf, phase, cut, dropped>>
+
+Expands(s) == claimOf[ClassOf[s]] = s
 
 InheritOp(p, ch)   == [type |-> "inherit", p |-> p, ch |-> ch]
 DrainScanOp(s)     == [type |-> "scan", s |-> s]
@@ -90,38 +110,50 @@ Init ==
   /\ drained = {}
   /\ inherited = {}
   /\ pending = {}
+  /\ claimOf = [k \in Classes |-> IF k = ClassOf[Root] THEN Root ELSE None]
+  /\ phase = "run"
+  /\ cut = {}
+  /\ dropped = {}
 
 (* complete_match: claim and store one of the state's own matches. *)
 Discover(s, m) ==
   /\ s \in exists
+  /\ Expands(s) /\ phase /= "stopped" /\ s \notin cut
   /\ m \in OrigMatches[s] \ discovered[s]
   /\ discovered' = [discovered EXCEPT ![s] = @ \cup {m}]
   /\ claimed' = claimed \cup {<<m, s>>}
   /\ stored' = [stored EXCEPT ![s] = @ \cup {m}]
   /\ UNCHANGED <<exists, parentOf, childrenOf, drained, inherited, pending>>
+  /\ UNCHANGED rest
 
 (* A rewrite of a stored match creates a child. Shipped order: publish in the parent's list,
    then read `drained` (RegCheckOp). Broken order: read `drained` first (RegPublishOp carries
-   what was read), publish after. *)
+   what was read), publish after. A child whose class is already claimed is not expanded and
+   not registered. No rewrite runs while stopped. *)
 CreateChild(p, m, c) ==
   /\ p \in exists
   /\ m \in stored[p]
   /\ c \in StateIds \ exists
+  /\ phase /= "stopped"
   /\ LET ch == [c |-> c, consumed |-> MatchEdges[m]]
      IN /\ exists' = exists \cup {c}
         /\ parentOf' = [parentOf EXCEPT ![c] = [par |-> p, consumed |-> MatchEdges[m]]]
-        /\ IF RendezvousFix
-           THEN /\ childrenOf' = [childrenOf EXCEPT ![p] = @ \cup {ch}]
-                /\ pending' = pending \cup {RegCheckOp(p, ch)}
-           ELSE /\ childrenOf' = childrenOf
-                /\ pending' = pending \cup {RegPublishOp(p, ch, p \in drained)}
-  /\ UNCHANGED <<stored, claimed, discovered, drained, inherited>>
+        /\ IF claimOf[ClassOf[c]] = None
+           THEN /\ claimOf' = [claimOf EXCEPT ![ClassOf[c]] = c]
+                /\ IF RendezvousFix
+                   THEN /\ childrenOf' = [childrenOf EXCEPT ![p] = @ \cup {ch}]
+                        /\ pending' = pending \cup {RegCheckOp(p, ch)}
+                   ELSE /\ childrenOf' = childrenOf
+                        /\ pending' = pending \cup {RegPublishOp(p, ch, p \in drained)}
+           ELSE /\ UNCHANGED <<claimOf, childrenOf, pending>>
+  /\ UNCHANGED <<stored, claimed, discovered, drained, inherited, phase, cut, dropped>>
 
 FireRegCheck(op) ==
   /\ op \in pending /\ op.type = "regcheck"
   /\ pending' = (pending \ {op}) \cup
        (IF op.p \in drained THEN {InheritOp(op.p, op.ch)} ELSE {})
   /\ UNCHANGED <<exists, parentOf, childrenOf, stored, claimed, discovered, drained, inherited>>
+  /\ UNCHANGED rest
 
 FireRegPublish(op) ==
   /\ op \in pending /\ op.type = "regpublish"
@@ -129,6 +161,7 @@ FireRegPublish(op) ==
   /\ pending' = (pending \ {op}) \cup
        (IF op.saw THEN {InheritOp(op.p, op.ch)} ELSE {})
   /\ UNCHANGED <<exists, parentOf, stored, claimed, discovered, drained, inherited>>
+  /\ UNCHANGED rest
 
 (* The drain: publish `drained`, then scan the children list as a separate step. *)
 Drain(s) ==
@@ -138,11 +171,13 @@ Drain(s) ==
   /\ drained' = drained \cup {s}
   /\ pending' = pending \cup {DrainScanOp(s)}
   /\ UNCHANGED <<exists, parentOf, childrenOf, stored, claimed, discovered, inherited>>
+  /\ UNCHANGED rest
 
 FireDrainScan(op) ==
   /\ op \in pending /\ op.type = "scan"
   /\ pending' = (pending \ {op}) \cup {InheritOp(op.s, ch) : ch \in childrenOf[op.s]}
   /\ UNCHANGED <<exists, parentOf, childrenOf, stored, claimed, discovered, drained, inherited>>
+  /\ UNCHANGED rest
 
 (* inherit_from_parent: the child's claim makes the second arrival a no-op. *)
 FireInherit(op) ==
@@ -157,11 +192,46 @@ FireInherit(op) ==
              /\ stored' = [stored EXCEPT ![c] = @ \cup gets]
              /\ pending' = pending \ {op}
   /\ UNCHANGED <<exists, parentOf, childrenOf, discovered, drained>>
+  /\ UNCHANGED rest
+
+(* request_stop: every representative that has not found all its matches is cut. Shipped: it
+   gives its class claim back (defer_cut_match_task, release_expanded_claim). *)
+Stop ==
+  /\ Stoppable /\ phase = "run"
+  /\ LET c == {x \in exists : Expands(x) /\ discovered[x] /= OrigMatches[x]}
+     IN /\ cut' = c
+        /\ claimOf' = IF KeepClaimOnCut THEN claimOf
+                      ELSE [k \in Classes |-> IF claimOf[k] \in c THEN None ELSE claimOf[k]]
+  /\ phase' = "stopped"
+  /\ UNCHANGED <<exists, parentOf, childrenOf, stored, claimed, discovered, drained, inherited,
+                 pending, dropped>>
+
+Resume ==
+  /\ phase = "stopped"
+  /\ phase' = "resumed"
+  /\ UNCHANGED <<exists, parentOf, childrenOf, stored, claimed, discovered, drained, inherited,
+                 pending, claimOf, cut, dropped>>
+
+(* run_pass: a cut state resumes. Shipped: through claim_canonical_for_expansion, which fails
+   when another state of its class took the claim first; the state is then not resumed. *)
+ResumeCut(x) ==
+  /\ phase = "resumed" /\ x \in cut
+  /\ cut' = cut \ {x}
+  /\ IF KeepClaimOnCut \/ claimOf[ClassOf[x]] = x
+     THEN UNCHANGED <<claimOf, dropped>>
+     ELSE IF claimOf[ClassOf[x]] = None
+          THEN /\ claimOf' = [claimOf EXCEPT ![ClassOf[x]] = x]
+               /\ UNCHANGED dropped
+          ELSE /\ dropped' = dropped \cup {x}
+               /\ UNCHANGED claimOf
+  /\ UNCHANGED <<exists, parentOf, childrenOf, stored, claimed, discovered, drained, inherited,
+                 pending, phase>>
 
 Next ==
   \/ \E s \in StateIds, m \in Matches : Discover(s, m)
   \/ \E p \in StateIds, m \in Matches, c \in StateIds : CreateChild(p, m, c)
   \/ \E s \in StateIds : Drain(s)
+  \/ Stop \/ Resume \/ \E x \in StateIds : ResumeCut(x)
   \/ \E op \in pending :
        FireRegCheck(op) \/ FireRegPublish(op) \/ FireDrainScan(op) \/ FireInherit(op)
 
@@ -178,10 +248,13 @@ ValidFor(s) ==
    whose handoff was lost cannot drain, so it counts here as settled with what it holds. *)
 Quiescent ==
   /\ pending = {}
-  /\ \A s \in exists : discovered[s] = OrigMatches[s] /\ (Drainable(s) => s \in drained)
+  /\ phase /= "stopped" /\ cut = {}
+  /\ \A s \in exists : Expands(s) =>
+        (discovered[s] = OrigMatches[s] /\ (Drainable(s) => s \in drained))
 
+(* Over the states that expand: a state whose class another state expands is not matched. *)
 ForwardingComplete ==
-  Quiescent => \A s \in exists : ValidFor(s) \subseteq stored[s]
+  Quiescent => \A s \in exists : Expands(s) => ValidFor(s) \subseteq stored[s]
 
 (* validate_state_at_drain: a state drains holding its whole valid set. *)
 CompleteAtDrain ==
