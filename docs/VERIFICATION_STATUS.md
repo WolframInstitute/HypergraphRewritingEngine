@@ -12,8 +12,8 @@ stated absence rather than an unexamined one.
   CTAs and every access carries a SCOPE, so whether two threads synchronise depends on how close
   they are. RC11 has no scopes, so GenMC would check a program the device does not run. It runs
   from a container -- it is a fork of GenMC 0.9 supporting LLVM up to 15, and this tree builds
-  against 18. `verification/gpumc/run.sh <name>`. Six harnesses: the termination decision, the
-  device work queue, the dedup map's election, the replay rendezvous, the DP producer, and the
+  against 18. `verification/gpumc/run.sh <name>`. Five harnesses: the termination decision, the
+  device work queue, the dedup map's election, the replay rendezvous, and the
   kernel's loop with the ring, the record pool and the detector composed.
 - **TLA+** models a protocol rather than a translation unit, which is what makes it the right tool
   where the property is about an ordering across many participants rather than about one
@@ -159,8 +159,7 @@ on LLVM 15 and takes C++ with scope annotations; the kernel and every header it 
 device code on `cuda::atomic_ref`, `__threadfence`, `__syncthreads` and the thread indices, and
 a host shim for that surface is what a run of the body would need. What the kernel DECIDES is
 covered: the ring's claim (`ring_core`), the dedup map's election (`hash_insert_core`), the
-match claim (`dedup_claim_core`), the replay lists (`list_core`), the termination decision
-(`termination_core`) and the quotient-causal DP (`quotient_causal_core`) are shared bodies the
+replay lists (`list_core`) and the termination decision (`termination_core`) are shared bodies the
 device drives, each checked under scoped RC11 by `verification/gpumc/`, and the loop that
 composes the ring, the record pool and the detector -- the order it books pushed/completed
 around the pushes, pops, claims and publishes -- is run as one program by

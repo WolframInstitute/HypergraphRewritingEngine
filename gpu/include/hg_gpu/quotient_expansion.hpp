@@ -89,14 +89,9 @@ struct QeMatchRef {
     uint32_t record;
 };
 
-// (class, depth) as one key. Same mixing as the DP's qc_key with orbit 0, because the two
-// index the same (class, depth) space and a reader comparing them must not have to check that
-// two spellings agree.
+// (class, depth) as one key: hgcommon::qc_key with orbit 0, the key the host's instances and
+// multiplicity points use. An instance is keyed by its class and depth alone.
 __device__ __forceinline__ uint64_t qe_inst_key(uint64_t state_hash, uint32_t depth) {
-    // THE DP'S KEY RULE, not a second one that happens to agree. This open-coded FNV over
-    // (state_hash, depth << 32) computed exactly hgcommon::qc_key(state_hash, depth, 0) -- the
-    // orbit term is zero here because an instance is keyed by its class and depth alone -- and
-    // two spellings of one rule agree until one of them is edited.
     return hgcommon::qc_key(state_hash, depth, 0u);
 }
 // One raw occurrence of a canonical class, at one depth. `prod_offset` addresses `nslots` words
@@ -331,10 +326,7 @@ __device__ inline void qe_drive_match(DeviceState ds, QeView qe, const DeviceSlo
 
 // Bucket a hash into a list's key space.
 //
-// SAME MIXING AS qc_bucket, DIFFERENT REDUCTION, and the two are not interchangeable: this takes
-// the full 64-bit value modulo the key count, while the DP's masks the LOW 32 bits with
-// `num_keys - 1` and so requires a power-of-two count. Each list is read with the function it was
-// written with, which is what makes both correct; a claim that they distribute alike is not.
+// The full 64-bit value modulo the key count, so `num_keys` need not be a power of two.
 __device__ __forceinline__ uint32_t qe_bucket(uint64_t h, uint32_t num_keys) {
     h ^= h >> 33; h *= 0xff51afd7ed558ccdULL; h ^= h >> 33;
     return static_cast<uint32_t>(h % (num_keys ? num_keys : 1u));
