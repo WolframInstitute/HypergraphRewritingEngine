@@ -1,4 +1,5 @@
 #include "hgcommon/core.hpp"
+#include "hgcommon/explore_depth_core.hpp"
 #include "hgcommon/rendezvous.hpp"
 #include "hgcommon/quotient_multiplicity_core.hpp"
 #include "hgcommon/phase_timing.hpp"
@@ -339,18 +340,20 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
     return {new_sid, new_sid, true};
 }
 
+bool Hypergraph::explore_depth_cas(StateId canonical_id, uint32_t& expected, uint32_t desired) {
+    hgcommon::atomic_ref<uint32_t> known(states_[canonical_id].explore_depth);
+    return known.compare_exchange_weak(expected, desired, std::memory_order_acq_rel,
+                                       std::memory_order_acquire);
+}
+
 bool Hypergraph::try_lower_explore_depth(StateId canonical_id, uint32_t depth) {
     if (canonical_id == INVALID_ID) return false;
-    hgcommon::atomic_ref<uint32_t> known(states_[canonical_id].explore_depth);
-    uint32_t cur = known.load(std::memory_order_acquire);
-    while (depth < cur) {
-        if (known.compare_exchange_weak(cur, depth,
-                                        std::memory_order_acq_rel,
-                                        std::memory_order_acquire)) {
-            return true;
-        }
-    }
-    return false;
+    struct Ops {
+        Hypergraph* hg;
+        uint32_t depth_load(uint32_t s) const { return hg->explore_depth_of(s); }
+        bool depth_cas(uint32_t s, uint32_t& e, uint32_t d) { return hg->explore_depth_cas(s, e, d); }
+    } ops{this};
+    return hgcommon::explore_try_lower(ops, canonical_id, depth);
 }
 
 bool Hypergraph::try_claim_expanded(StateId canonical_id) {

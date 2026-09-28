@@ -1439,11 +1439,10 @@ private:
     // depend on depth.
     SegmentedArray<LockFreeList<StateId>> canon_children_;
 
-    // Push a depth improvement to the descendants of a canonical state. The state itself
-    // has already been relaxed by the caller, which owns the match context needed to
-    // expand it with forwarding; descendants are reached without one, and reaching them
-    // at all is rare.
-    void propagate_explore_depth(StateId canonical_state, uint32_t depth);
+    // This engine's face for hgcommon/explore_depth_core.hpp: depths in the Hypergraph, child
+    // lists in canon_children_, frames in the worker's scratch arena. A state the walk lowers is
+    // expanded without a match context; reaching one at all is rare.
+    struct ExploreCtx;
 
     // May this canonical state be expanded? The claim holds matching to once per canonical
     // state, and the exploration-probability draw is taken once, AT the claim, so a class

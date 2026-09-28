@@ -350,7 +350,7 @@ TEST(OracleCorpus, ContinuingARunMatchesRunningItInOneCall) {
     // Automatic event identity, the routing that selects it in a shipping run
     // (parallel_evolution.cpp, configure_identity_and_quotient), which leaves the exploration
     // itself alone. QUOTIENT_EXPLORE drives expansion by depth relaxation instead of by task
-    // submission, so its frontier is the states propagate_explore_depth settled at or past the
+    // submission, so its frontier is the states the depth relaxation settled at or past the
     // budget, an entirely different set from the deferred match and rewrite tasks.
     //
     // A gate on whichever one the default routing happens to select leaves the other two

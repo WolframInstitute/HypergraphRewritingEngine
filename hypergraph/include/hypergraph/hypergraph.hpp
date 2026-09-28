@@ -914,6 +914,9 @@ public:
     // succeeds exactly once per canonical state, so its matches are computed once and the
     // matches-per-instance it records are well defined.
     bool try_lower_explore_depth(StateId canonical_id, uint32_t depth);
+    // One compare-exchange on the depth, for hgcommon/explore_depth_core.hpp. On failure
+    // `expected` holds the current depth.
+    bool explore_depth_cas(StateId canonical_id, uint32_t& expected, uint32_t desired);
     bool try_claim_expanded(StateId canonical_id);
 
     // Current shortest known depth of a canonical state (INVALID_ID until first relaxed).

@@ -1,4 +1,5 @@
 #include "hgcommon/core.hpp"
+#include "hgcommon/explore_depth_core.hpp"
 #include "hgcommon/phase_timing.hpp"
 #include "hgcommon/namespace.hpp"
 // parallel_evolution.cpp - Implementation of ParallelEvolutionEngine class
@@ -548,51 +549,43 @@ void ParallelEvolutionEngine::inherit_from_parent(StateId parent, const ChildInf
 // Task Submission
 // =============================================================================
 
-void ParallelEvolutionEngine::propagate_explore_depth(StateId canonical_state, uint32_t depth) {
-    // Depth strictly decreases on every accepted relaxation and is bounded below by zero,
-    // so this terminates. Matching still runs at most once per canonical state, because
-    // the claim is separate from the depth.
-    // The caller has already lowered canonical_state's depth. Order that store before the
-    // scan of its child list so a child registered concurrently (which pushes itself, then
-    // reads this parent's depth, both across a seq_cst fence) is either seen here or sees
-    // the lowered depth itself -- never stranded at a stale depth. Same fence guards each
-    // deeper scan against its own just-completed relaxation store.
-    hgcommon::rendezvous_barrier<hgcommon::rv::CanonChildDepth>();
-    const LockFreeList<StateId>* kids = canon_children_.get(canonical_state);
-    if (!kids) return;
+struct ParallelEvolutionEngine::ExploreCtx {
+    using Node = const LockFreeList<StateId>::Node*;
+    ParallelEvolutionEngine& e;
+    ArenaVector<std::pair<Node, uint32_t>>& frames;
 
-    const uint32_t budget = match_depth_bound(match_budget());
-
-    // The worklist draws from the per-worker scratch arena and is reclaimed in bulk. It is
-    // walked as a queue with a cursor, which is the breadth-first order relaxation wants.
-    auto mark = worker_scratch().mark();
-    ArenaVector<std::pair<StateId, uint32_t>> pending(worker_scratch(), 16);
-    kids->for_each([&](StateId child) { pending.emplace_back(child, depth + 1); });
-    for (size_t i = 0; i < pending.size(); ++i) {
-        const StateId s = pending[i].first;
-        const uint32_t d = pending[i].second;
-        if (s == INVALID_ID) continue;
-        if (!hg_->try_lower_explore_depth(s, d)) continue;
-        // exploration_probability_ is tested BEFORE the key is built: the key costs an
-        // individualization-refinement pass on first use for a state, and at p == 1 the answer
-        // is yes regardless. An argument evaluated eagerly here would put that pass on the
-        // default, unsampled path.
-        // Over the budget this is the frontier, not a dead end, so it is kept for a
-        // continuation to resume from. The claim is NOT taken here: a shorter path found
-        // later in this same run must still be able to relax s below the budget and expand
-        // it, and a state already claimed never would. The resume takes the claim instead,
-        // which is also what makes resuming a state that was expanded in the meantime a
-        // no-op.
-        if (d >= budget) defer_match_task(s, d + 1);
-        else if (claim_canonical_for_expansion(s))
-            submit_match_task(s, d + 1);  // a canonical state is its own representative
-        hgcommon::rendezvous_barrier<hgcommon::rv::CanonChildDepth>();
-        if (const LockFreeList<StateId>* more = canon_children_.get(s)) {
-            more->for_each([&](StateId child) { pending.emplace_back(child, d + 1); });
-        }
+    uint32_t depth_load(uint32_t s) const { return e.hg_->explore_depth_of(s); }
+    bool depth_cas(uint32_t s, uint32_t& expected, uint32_t desired) {
+        return e.hg_->explore_depth_cas(s, expected, desired);
     }
-    worker_scratch().release(mark);
-}
+    void children_push(uint32_t parent, uint32_t child) {
+        e.canon_children_.get_or_default(parent, e.hg_->arena()).push(child, e.hg_->arena());
+    }
+    Node children_head(uint32_t s) const {
+        const LockFreeList<StateId>* l = e.canon_children_.get(s);
+        return l ? l->head_node() : nullptr;
+    }
+    static bool children_end(Node n) { return n == nullptr; }
+    static uint32_t children_value(Node n) { return n->value; }
+    static Node children_next(Node n) { return n->prev; }
+    void fence() const { hgcommon::rendezvous_barrier<hgcommon::rv::CanonChildDepth>(); }
+    // At or past the budget this is the frontier, kept for a continuation, and not claimed: a
+    // shorter path found later in this run must still be able to lower it under the budget and
+    // expand it. The resume takes the claim, which makes resuming a state expanded in the
+    // meantime a no-op. A canonical state is its own representative.
+    void admit(uint32_t s, uint32_t d) {
+        if (d >= match_depth_bound(e.match_budget())) e.defer_match_task(s, d + 1);
+        else if (e.claim_canonical_for_expansion(s)) e.submit_match_task(s, d + 1);
+    }
+    bool frame_push(Node at, uint32_t d) { frames.emplace_back(at, d); return true; }
+    bool frame_top(Node*& at, uint32_t& d) {
+        if (frames.size() == 0) return false;
+        at = &frames[frames.size() - 1].first;
+        d = frames[frames.size() - 1].second;
+        return true;
+    }
+    void frame_pop() { frames.resize(frames.size() - 1); }
+};
 
 void ParallelEvolutionEngine::submit_match_task(StateId state, uint32_t step) {
     if (should_stop_.load(std::memory_order_relaxed)) { defer_cut_match_task(state, step); return; }
@@ -1726,27 +1719,15 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
         // rewrite's match context, which is what lets forwarding skip a full rematch.
         if (explore_from_canonical_states_only_) {
             const StateId parent_canonical = hg_->get_canonical_state(match.source_state);
-            // Publish the canonical transition BEFORE reading the parent's depth. A racing
-            // relaxation of the parent lowers the parent's depth and then scans this child
-            // list; this side pushes the child and then reads the parent's depth. The
-            // seq_cst fences on both sides forbid the outcome where the scan misses this
-            // child AND this read misses the lowered depth, so the child always learns the
-            // parent's true minimum depth even across the publish/relax race.
-            canon_children_.get_or_default(parent_canonical, hg_->arena())
-                           .push(rr.new_state, hg_->arena());
-            hgcommon::rendezvous_barrier<hgcommon::rv::CanonChildDepth>();
-
             // The child's arrival depth is one past the parent's CURRENT minimum depth, not
-            // the depth the parent happened to be expanded at. A shorter path to the parent
-            // found after it was first expanded must pull the child (and its subtree) into
-            // budget; deriving the depth from the parent's live minimum, together with the
-            // relaxation cascade below, makes expansion depend only on the shortest-path
-            // depth, never on the order arrivals race.
-            const uint32_t parent_depth = hg_->explore_depth_of(parent_canonical);
+            // the depth the parent happened to be expanded at, and the walk below lowers the
+            // child's descendants in turn (hgcommon/explore_depth_core.hpp).
+            auto mark = worker_scratch().mark();
+            ArenaVector<std::pair<ExploreCtx::Node, uint32_t>> frames(worker_scratch(), 16);
+            ExploreCtx ec{*this, frames};
             const uint32_t child_depth =
-                (parent_depth == INVALID_ID) ? step : parent_depth + 1;
-
-            if (!hg_->try_lower_explore_depth(rr.new_state, child_depth)) return;
+                hgcommon::explore_register_child(ec, parent_canonical, rr.new_state, step);
+            if (child_depth == hgcommon::kExploreNoDepth) { worker_scratch().release(mark); return; }
 
             const uint32_t budget = match_depth_bound(match_budget());
             // Past the budget this child is the frontier, not a dead end, so it is kept for a
@@ -1771,7 +1752,8 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
                         child_depth);
                 }
             }
-            propagate_explore_depth(rr.new_state, child_depth);
+            hgcommon::explore_relax(ec, rr.new_state, child_depth);
+            worker_scratch().release(mark);
             return;
         }
 
