@@ -27,6 +27,8 @@
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/cuda_check.hpp"
 #include "hg_gpu/exploration.hpp"   // DedupMap
+#include "hg_gpu/ring_buffer.hpp"   // the shared descent ring
+#include "hg_gpu/termination.hpp"   // the role that counts shared descent items
 #include "hgcommon/core.hpp"        // sort_u64
 #include "hgcommon/slot_core.hpp"  // slot_rank -- the frame-slot rule, shared with the host
 #include "hgcommon/quotient_replay_core.hpp"  // qr_apply -- the replay, and the identity it mints
@@ -143,11 +145,21 @@ inline constexpr uint32_t kQeNoProducer = hgcommon::QR_NO_PRODUCER;
 // per-thread stack per level of reconstruction depth. What it actually carried across a level is
 // these three scalars. Sixteen bytes against 8,704 is why the depth a run can reconstruct was a
 // property of the launch rather than of the workload.
+constexpr uint32_t kQeNoMatch = 0xFFFFFFFFu;
 struct QeWorkItem {
     uint64_t hash;    // the class the instance stands at
     uint32_t rec;     // its record in the instance pool
     uint32_t depth;
+    // kQeNoMatch: drive the instance against every captured match of its class. Otherwise one
+    // application, of the match record `match` to the instance, which a capture hands off
+    // (qe_drive_match) instead of applying it on the capturing block.
+    uint32_t match = kQeNoMatch;
 };
+
+// The termination detector's role for descent items on the shared ring (QeView::share).
+// Role 0 is the persistent kernel's match queue.
+constexpr uint32_t kQeShareRole = 1;
+constexpr uint32_t kQeShareRings = 16;
 
 // A driver's private descent stack. LIFO, so the order instances are driven in is the order the
 // recursion drove them -- which is what lets the existing corpus gate this change directly.
@@ -163,6 +175,7 @@ struct QeWork {
     __device__ bool push(uint64_t hash, uint32_t rec, uint32_t depth) {
         if (n >= cap) return false;
         items[n].hash = hash; items[n].rec = rec; items[n].depth = depth;
+        items[n].match = kQeNoMatch;
         ++n;
         return true;
     }
@@ -275,6 +288,24 @@ struct QeView {
     uint32_t    work_cap    = 0;   // items per driver
     uint32_t    work_slices = 0;   // drivers this run can serve
 
+    // THE SHARED DESCENT RING, set only for the persistent launch and the kernels that run
+    // ahead of it on its stream. A driver holding more than one pending descent hands its
+    // shallowest to this ring, and idle blocks of the persistent kernel take them, so one
+    // class's cascade spreads across the grid. The host keeps every descent on the thread that
+    // produced it, where hand-off was measured slower; on the device one thread runs the same
+    // code 62.9x slower than a host core (device IR on one state, persistent.cu), and the rest
+    // of the grid is idle while a few-class workload's cascade runs. The claim per
+    // (instance, match) makes the order in which items are driven irrelevant to the result.
+    // Items are counted under kQeShareRole before they are visible, as match items are.
+    uint32_t share_on = 0;
+    // kQeShareRings rings: a driver pushes to its block's ring and a taker tries its own and one
+    // other, so the grid does not contend on one ring's cursors.
+    typename RingBuffer<QeWorkItem>::DeviceView* shares = nullptr;
+    TerminationDetector::DeviceView share_term{};
+    // Blocks of the persistent kernel in their idle path. A driver hands off only while some
+    // block is idle, so a run whose blocks all have work pays no ring traffic.
+    uint32_t* idle_blocks = nullptr;
+
     uint32_t  max_steps = 0;
     uint32_t  enabled   = 0;
     // Whether the captured expansion is REPLAYED against instances, as against merely captured.
@@ -322,7 +353,7 @@ __device__ inline void qe_drive_instance(DeviceState ds, QeView qe,
 __device__ inline void qe_run(DeviceState ds, QeView qe, QeWork& work);
 __device__ inline QeWork qe_work_for(DeviceState ds, QeView qe, uint32_t slice);
 __device__ inline void qe_drive_match(DeviceState ds, QeView qe, const DeviceSlotMatch& m,
-                                      uint64_t from_hash, QeWork& work);
+                                      uint32_t match_rec, uint64_t from_hash, QeWork& work);
 __device__ __forceinline__ uint32_t qe_alloc_words(DeviceState ds, QeView qe, uint32_t n);
 
 // Bucket a hash into a list's key space.
@@ -331,6 +362,13 @@ __device__ __forceinline__ uint32_t qe_alloc_words(DeviceState ds, QeView qe, ui
 __device__ __forceinline__ uint32_t qe_bucket(uint64_t h, uint32_t num_keys) {
     h ^= h >> 33; h *= 0xff51afd7ed558ccdULL; h ^= h >> 33;
     return static_cast<uint32_t>(h % (num_keys ? num_keys : 1u));
+}
+
+// A (class, depth) key's instance list is split over kQeInstShards buckets; a pusher takes its
+// block's shard and a scanner walks all of them.
+constexpr uint32_t kQeInstShards = 4;
+__device__ __forceinline__ uint32_t qe_inst_bucket(const QeView& qe, uint64_t key, uint32_t shard) {
+    return qe_bucket(key + 0x9E3779B97F4A7C15ull * shard, qe.by_key.num_keys);
 }
 
 // The frame slot of `edge` in `sid`: its rank under (orbit, EdgeId).
@@ -755,7 +793,7 @@ __device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
     QeWork work = qe_work_for(ds, qe, work_slice);
     if (qe.multiplicity) qe_capture_multiplicity(ds, qe, m, from, at, consumed, nc, work);
     if (!qe.replay) return;
-    qe_drive_match(ds, qe, m, from, work);
+    qe_drive_match(ds, qe, m, rec, from, work);
     qe_run(ds, qe, work);
 }
 
@@ -809,7 +847,8 @@ __device__ inline uint32_t qe_add_instance(DeviceState ds, QeView qe, uint64_t s
     // find a half-written instance.
     __threadfence();
     const uint64_t key = qe_inst_key(state_hash, depth);
-    if (qe.by_key.push(qe_bucket(key, qe.by_key.num_keys), QeInstRef{key, rec}) == INVALID_ID)
+    if (qe.by_key.push(qe_inst_bucket(qe, key, blockIdx.x & (kQeInstShards - 1u)),
+                       QeInstRef{key, rec}) == INVALID_ID)
         ds.errors.record(ErrorKind::kQcNodes);
     return rec;
 }
@@ -850,9 +889,10 @@ template <typename F>
 __device__ inline void qe_for_each_instance(QeView qe, uint64_t state_hash, uint32_t depth,
                                             F&& f) {
     const uint64_t key = qe_inst_key(state_hash, depth);
-    qe.by_key.for_each(qe_bucket(key, qe.by_key.num_keys), [&](const QeInstRef& r) {
-        if (r.key == key) f(qe.instances.at(r.record));
-    });
+    for (uint32_t s = 0; s < kQeInstShards; ++s)
+        qe.by_key.for_each(qe_inst_bucket(qe, key, s), [&](const QeInstRef& r) {
+            if (r.key == key) f(qe.instances.at(r.record));
+        });
 }
 
 // The (instance, match) claim key. Same mixing as the host's apply_key, and nudged off both
@@ -900,12 +940,52 @@ __device__ inline void qe_drive_instance(DeviceState ds, QeView qe,
 
 // Match side of the rendezvous: replay this match against every instance already standing at
 // this class, at every depth it could stand at.
+// A capture applies its first kQeCaptureInline instances itself. Past that, and for descents,
+// a driver hands off only while some block is idle and its own ring holds fewer than
+// kQeShareLow items.
+constexpr uint32_t kQeCaptureInline = 8;
+constexpr uint32_t kQeShareLow = 64;
+__device__ __forceinline__ bool qe_share_hungry(const QeView& qe) {
+    cuda::atomic_ref<uint32_t, cuda::thread_scope_device> idle(*qe.idle_blocks);
+    if (idle.load(cuda::memory_order_relaxed) == 0) return false;
+    typename RingBuffer<QeWorkItem>::DeviceView v = qe.shares[blockIdx.x % kQeShareRings];
+    return v.size_approx() < kQeShareLow;
+}
+
+// Push to this block's shared ring; false when it is full.
+__device__ __forceinline__ bool qe_share_push(const QeView& qe, const QeWorkItem& it) {
+    typename RingBuffer<QeWorkItem>::DeviceView v = qe.shares[blockIdx.x % kQeShareRings];
+    return v.try_push(it);
+}
+
+// Take from this block's ring, else from ring `other`.
+__device__ __forceinline__ bool qe_share_pop(const QeView& qe, uint32_t other, QeWorkItem& out) {
+    typename RingBuffer<QeWorkItem>::DeviceView own = qe.shares[blockIdx.x % kQeShareRings];
+    if (own.try_pop(out)) return true;
+    typename RingBuffer<QeWorkItem>::DeviceView v = qe.shares[other % kQeShareRings];
+    return v.try_pop(out);
+}
+
 __device__ inline void qe_drive_match(DeviceState ds, QeView qe, const DeviceSlotMatch& m,
-                                      uint64_t from_hash, QeWork& work) {
+                                      uint32_t match_rec, uint64_t from_hash, QeWork& work) {
     __threadfence();
+    uint32_t seen = 0;
     for (uint32_t d = 0; d < qe.max_steps; ++d) {
-        qe_for_each_instance(qe, from_hash, d, [&](const DeviceQcInstance& inst) {
-            qe_apply(ds, qe, inst, m, from_hash, d, work);
+        const uint64_t key = qe_inst_key(from_hash, d);
+        for (uint32_t sh = 0; sh < kQeInstShards; ++sh)
+        qe.by_key.for_each(qe_inst_bucket(qe, key, sh), [&](const QeInstRef& r) {
+            if (r.key != key) return;
+            // With a shared ring, applications past the first kQeCaptureInline are items: a match
+            // captured after its class holds many instances would otherwise apply to all of them
+            // on this one block, and a class holding few pays no ring traffic.
+            if (qe.share_on && ++seen > kQeCaptureInline && qe_share_hungry(qe)) {
+                qe.share_term.mark_pushed(kQeShareRole);
+                QeWorkItem it{from_hash, r.record, d};
+                it.match = match_rec;
+                if (qe_share_push(qe, it)) return;
+                qe.share_term.mark_completed(kQeShareRole);
+            }
+            qe_apply(ds, qe, qe.instances.at(r.record), m, from_hash, d, work);
         });
     }
 }
@@ -914,8 +994,16 @@ __device__ inline void qe_drive_match(DeviceState ds, QeView qe, const DeviceSlo
 // call stack, so this loop is the whole of the replay's depth.
 __device__ inline void qe_run(DeviceState ds, QeView qe, QeWork& work) {
     QeWorkItem it;
-    while (work.pop(it))
+    while (work.pop(it)) {
+        // More than one pending: offer the shallowest (items[0], the largest subtree) to the
+        // shared ring. Counted before the push, uncounted if the ring is full and it stays here.
+        if (qe.share_on && work.n > 0 && qe_share_hungry(qe)) {
+            qe.share_term.mark_pushed(kQeShareRole);
+            if (qe_share_push(qe, work.items[0])) work.items[0] = work.items[--work.n];
+            else qe.share_term.mark_completed(kQeShareRole);
+        }
         qe_drive_instance(ds, qe, qe.instances.at(it.rec), it.hash, it.depth, work);
+    }
 }
 
 // The slice of the descent arena belonging to one driver. Out of range yields an empty stack,

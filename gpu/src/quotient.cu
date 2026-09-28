@@ -17,11 +17,21 @@ namespace gpu {
 // QeState
 // =============================================================================
 
+// Buckets for the replay's keyed lists, grown with the event budget. A walk visits every node in
+// its bucket, other keys' included, so a fixed count makes each walk proportional to the pool:
+// at 2^16 buckets allfour's captures walked tens of foreign instances per depth. Capped at 2^20
+// because the heads are cleared every run.
+static uint32_t qe_list_buckets(uint32_t max_events) {
+    uint32_t n = 1u << 16;
+    while (n < max_events && n < (1u << 20)) n <<= 1;
+    return n;
+}
+
 QeState::QeState(bool on, uint32_t max_events): matches_(on ? max_events : 1u),
-          by_from_(on ? (1u << 16) : 1u, on ? max_events : 1u),
+          by_from_(on ? qe_list_buckets(max_events) : 1u, on ? max_events : 1u),
           instances_(on ? max_events : 1u),
           blocked_(on ? max_events : 1u),
-          by_key_(on ? (1u << 16) : 1u, on ? max_events : 1u),
+          by_key_(on ? qe_list_buckets(max_events) : 1u, on ? max_events : 1u),
           rep_(on ? max_events : 8u),
           applied_(on ? max_events * 4u : 8u),
           canon_seen_(on ? max_events * 2u : 8u),
@@ -30,7 +40,7 @@ QeState::QeState(bool on, uint32_t max_events): matches_(on ? max_events : 1u),
           qm_consumed_(on ? max_events * 2u : 8u),
           qm_overlaps_(on ? max_events * 2u : 8u),
           qm_capacity_(on ? max_events : 1u),
-          inst_applied_(on ? (1u << 16) : 1u, on ? max_events * 2u : 1u),
+          inst_applied_(on ? qe_list_buckets(max_events) : 1u, on ? max_events * 2u : 1u),
           frame_(on ? max_events * 2u : 8u),
           arr_cap_(on ? max_events * 16u : 1u),
           on_(on) {

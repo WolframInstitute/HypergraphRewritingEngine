@@ -77,6 +77,18 @@ __global__ void k_seq_ramp(uint64_t* seq, uint32_t n) {
     if (i < n) seq[i] = i;
 }
 
+// Every shared descent ring back to empty, and the idle count to zero, in one launch: the
+// per-ring clear is a ramp launch and two memsets each, sixteen times over.
+__global__ void k_qe_rings_clear(typename RingBuffer<QeWorkItem>::DeviceView* views,
+                                 uint32_t rings, uint32_t cap, uint32_t* idle_blocks) {
+    const uint32_t t = blockIdx.x * blockDim.x + threadIdx.x;
+    if (t >= rings * cap) return;
+    const uint32_t r = t / cap, i = t % cap;
+    views[r].seq[i] = i;
+    if (i == 0) { *views[r].head = 0; *views[r].tail = 0; }
+    if (t == 0) *idle_blocks = 0;
+}
+
 __global__ void k_seed_frontier(typename RingBuffer<MatchWorkItem>::DeviceView queue,
                                 const StateId* ids, const uint32_t* steps,
                                 const uint32_t* count, uint32_t cap,
@@ -585,6 +597,7 @@ __global__ void k_persistent_evolve(
     __shared__ uint32_t* ir_slot;
     __shared__ uint64_t  ir_slot_words;
     __shared__ MatchWorkItem mitem;
+    __shared__ QeWorkItem    qitem;
     __shared__ bool     have;
     __shared__ uint32_t claimed;
     __shared__ uint32_t child_sid;
@@ -595,6 +608,8 @@ __global__ void k_persistent_evolve(
     __shared__ bool     stalled;
     uint32_t idle_spins = 0;
     uint32_t idle_ns    = 64;   // thread 0's backoff state; reset whenever work is found
+    uint32_t steal_turn = 0;    // thread 0's rotation over the other shared descent rings
+    bool counted_idle = false;  // thread 0: this block is in QeView::idle_blocks
 
     // Phase attribution, accumulated in thread 0's registers and flushed once at exit so the
     // hot loop carries no extra atomics. See PersistentEvolveStats for what the four mean.
@@ -642,6 +657,7 @@ __global__ void k_persistent_evolve(
         if (claimed != INVALID_ID) {
             if (threadIdx.x == 0) {
                 idle_ns = 64;
+                if (counted_idle) { atomicSub(qe.idle_blocks, 1u); counted_idle = false; }
                 idle_spins = 0;            // consecutive, not cumulative -- see the guard below
                 const unsigned long long t0 = clock64();
                 const MatchRecord& rec = found.at(claimed);
@@ -851,11 +867,40 @@ __global__ void k_persistent_evolve(
             if (threadIdx.x == 0) {
                 term.mark_completed(kRoleMatch);
                 idle_ns = 64;
+                if (counted_idle) { atomicSub(qe.idle_blocks, 1u); counted_idle = false; }
                 idle_spins = 0;            // consecutive, not cumulative -- see the guard below
                 acc_match += clock64() - tA;
             }
             __syncthreads();
             continue;
+        }
+
+        // A descent or an application another driver handed off (QeView::share). Thread 0
+        // runs it and its whole subtree on this block's own stack, handing off in turn, then
+        // books it complete.
+        if (qe.share_on) {
+            if (threadIdx.x == 0) {
+                have = qe_share_pop(qe, blockIdx.x + 1u + (steal_turn++), qitem);
+                if (have) {
+                    const unsigned long long tQ = clock64();
+                    QeWork w = qe_work_for(ds, qe, blockIdx.x);
+                    if (qitem.match == kQeNoMatch)
+                        qe_drive_instance(ds, qe, qe.instances.at(qitem.rec), qitem.hash,
+                                          qitem.depth, w);
+                    else
+                        qe_apply(ds, qe, qe.instances.at(qitem.rec),
+                                 qe.matches.at(qitem.match), qitem.hash, qitem.depth, w);
+                    qe_run(ds, qe, w);
+                    term.mark_completed(kQeShareRole);
+                    idle_ns = 64;
+                    if (counted_idle) { atomicSub(qe.idle_blocks, 1u); counted_idle = false; }
+                    idle_spins = 0;
+                    acc_canon += clock64() - tQ;
+                    acc_qe    += clock64() - tQ;
+                }
+            }
+            __syncthreads();
+            if (have) continue;
         }
 
         if (term.exit_requested()) { flush_cycles(); return; }
@@ -876,6 +921,7 @@ __global__ void k_persistent_evolve(
         // 1024 11.3).
         if (threadIdx.x == 0) {
             const unsigned long long tA = clock64();
+            if (qe.share_on && !counted_idle) { atomicAdd(qe.idle_blocks, 1u); counted_idle = true; }
             // CONSECUTIVE IDLE ITERATIONS, NOT LIFETIME ONES.
             //
             // This counter exists to catch a worker that can neither find work nor be told to
@@ -969,6 +1015,13 @@ uint32_t default_persistent_grid() {
 // 3.7 ms floor of wpp at 2 steps being the maps' and ring's frees alone).
 struct EngineState::PersistentScratch {
     std::unique_ptr<RingBuffer<MatchWorkItem>> ring;
+    std::unique_ptr<RingBuffer<QeWorkItem>> qe_rings[kQeShareRings];
+    typename RingBuffer<QeWorkItem>::DeviceView* qe_ring_views = nullptr;   // device array
+    uint32_t* qe_idle = nullptr;                                             // device word
+    ~PersistentScratch() {
+        if (qe_ring_views) cudaFree(qe_ring_views);
+        if (qe_idle) cudaFree(qe_idle);
+    }
     std::unique_ptr<DedupMap> canonical;
     std::unique_ptr<DedupMap> event_ids;
     std::unique_ptr<TerminationDetector> term;
@@ -983,11 +1036,15 @@ EngineState::PersistentScratch& EngineState::persistent_scratch() const {
 
 namespace {
 
-RingBuffer<MatchWorkItem>& reuse_ring(const EngineState& engine, uint32_t capacity) {
-    auto& slot = engine.persistent_scratch().ring;
+template <class T>
+RingBuffer<T>& reuse_ring(std::unique_ptr<RingBuffer<T>>& slot, uint32_t capacity) {
     if (slot && slot->capacity() == capacity) slot->clear();
-    else { slot.reset(); slot = std::make_unique<RingBuffer<MatchWorkItem>>(capacity); }
+    else { slot.reset(); slot = std::make_unique<RingBuffer<T>>(capacity); }
     return *slot;
+}
+
+RingBuffer<MatchWorkItem>& reuse_ring(const EngineState& engine, uint32_t capacity) {
+    return reuse_ring(engine.persistent_scratch().ring, capacity);
 }
 
 DedupMap& reuse_map(std::unique_ptr<DedupMap>& slot, uint32_t capacity) {
@@ -996,11 +1053,34 @@ DedupMap& reuse_map(std::unique_ptr<DedupMap>& slot, uint32_t capacity) {
     return *slot;
 }
 
-TerminationDetector& reuse_term(const EngineState& engine) {
+TerminationDetector& reuse_term(const EngineState& engine, uint32_t num_roles = 1) {
     auto& slot = engine.persistent_scratch().term;
-    if (slot) slot->clear();
-    else slot = std::make_unique<TerminationDetector>(/*num_roles=*/1);
+    if (slot && slot->num_roles() == num_roles) slot->clear();
+    else { slot.reset(); slot = std::make_unique<TerminationDetector>(num_roles); }
     return *slot;
+}
+
+// Each shared descent ring's size. A full ring is not an error: the driver keeps the item.
+constexpr uint32_t kQeShareCapacity = 1u << 12;
+
+// The shared descent rings, cleared, and the device array of their views the kernels index.
+typename RingBuffer<QeWorkItem>::DeviceView* reuse_qe_rings(const EngineState& engine) {
+    EngineState::PersistentScratch& ps = engine.persistent_scratch();
+    if (!ps.qe_rings[0]) {
+        typename RingBuffer<QeWorkItem>::DeviceView views[kQeShareRings];
+        for (uint32_t i = 0; i < kQeShareRings; ++i) {
+            ps.qe_rings[i] = std::make_unique<RingBuffer<QeWorkItem>>(kQeShareCapacity);
+            views[i] = ps.qe_rings[i]->view();
+        }
+        HG_CUDA_CHECK(cudaMalloc(&ps.qe_ring_views, sizeof(views)), "qe ring views alloc");
+        HG_CUDA_CHECK(cudaMemcpy(ps.qe_ring_views, views, sizeof(views), cudaMemcpyHostToDevice),
+                      "qe ring views upload");
+        HG_CUDA_CHECK(cudaMalloc(&ps.qe_idle, sizeof(uint32_t)), "qe idle count alloc");
+    }
+    const uint32_t n = kQeShareRings * kQeShareCapacity, block = 256;
+    k_qe_rings_clear<<<(n + block - 1) / block, block>>>(ps.qe_ring_views, kQeShareRings,
+                                                         kQeShareCapacity, ps.qe_idle);
+    return ps.qe_ring_views;
 }
 
 }  // namespace
@@ -1200,7 +1280,16 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     unsigned long long* d_phase_cycles = sc.phase_cycles;
     HG_CUDA_CHECK(cudaMemset(d_phase_cycles, 0, sizeof(unsigned long long) * 16), "phase cycles clear");
 
-    TerminationDetector& term = reuse_term(engine);
+    // Two roles: the match queue, and the replay's shared descent ring (kQeShareRole).
+    static_assert(kQeShareRole == kRoleMatch + 1, "the evolve detector's roles are 0 and 1");
+    const bool share = qe.enabled && qe.replay && qe.work_slices;
+    TerminationDetector& term = reuse_term(engine, /*num_roles=*/share ? 2u : 1u);
+    if (share) {
+        qe.share_on   = 1;
+        qe.shares      = reuse_qe_rings(engine);
+        qe.share_term  = term.view();
+        qe.idle_blocks = engine.persistent_scratch().qe_idle;
+    }
 
     // The whole evolution is a launch CHAIN on one stream: root hashing decides which roots
     // survive and compacts them into d_kept/d_kept_count; the counted seeder reads that count

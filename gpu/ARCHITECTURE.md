@@ -93,6 +93,20 @@ per-event signatures so a caller can build the graph whose vertex set the count 
 `materialize_relations` gates the pair expansion: counts are device counters and cost nothing;
 the pairs are an expansion of the applied lists and are built only when the reply serves them.
 
+The replay is the one place the device schedules differently from the host. The host drives a
+class's instance cascade on the thread that produced it. On the device one thread runs the same
+code about 60 times slower, and a workload with few classes leaves most of the grid idle while one
+block drives the cascade (multirule at 6 steps: 98% of block cycles idle). So a driver hands work
+to other blocks through 16 shared rings (`QeView::shares`): the shallowest pending descent, and
+each application of a newly captured match past its first eight instances. It does so only while
+some block is idle (`QeView::idle_blocks`), so a run whose blocks all have work pays no ring
+traffic. Handed-off items are counted by the termination detector under a second role
+(`kQeShareRole`), booked before they become visible, as match items are. The claim per
+(instance, match) makes the order in which items run irrelevant to the result. A class and
+depth's instance list is split over four buckets, one chosen by the pushing block, because
+concurrent pushes onto one list head serialized the replay; the keyed lists' bucket counts grow
+with the event budget, because a walk visits every node of its bucket.
+
 ## 7. Reply assembly
 
 `hg_evolve_gpu` translates jobs and marshals results through the same WXF path and the same
