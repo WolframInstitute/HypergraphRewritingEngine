@@ -205,10 +205,12 @@ void QeState::reconstructed_pairs_host(std::vector<std::pair<uint64_t, uint64_t>
         if (branchial_raw) branchial_raw->clear();
         const uint32_t n = num_raw_events_host();
         if (n == 0) return;
-        std::vector<uint64_t> sigs(event_sig_capacity_);
-        HG_CUDA_CHECK(cudaMemcpy(sigs.data(), event_sig_,
-                                 sizeof(uint64_t) * event_sig_capacity_, cudaMemcpyDeviceToHost),
-                      "QeState event sig read");
+        // The events written, not the reservation: ids at or above n were never minted.
+        const uint32_t written = std::min(n, event_sig_capacity_);
+        std::vector<uint64_t> sigs(written);
+        if (written)
+            HG_CUDA_CHECK(cudaMemcpy(sigs.data(), event_sig_, sizeof(uint64_t) * written,
+                                     cudaMemcpyDeviceToHost), "QeState event sig read");
         auto sig_of = [&](uint32_t e) -> uint64_t {
             return e < sigs.size() ? sigs[e] : 0ull;
         };
@@ -217,13 +219,11 @@ void QeState::reconstructed_pairs_host(std::vector<std::pair<uint64_t, uint64_t>
         if (event_signature) {
             // The RUN identity, not the content triple: observable_num_events counts distinct
             // values of THIS, so a graph grouped by it has the vertex set the count describes.
-            std::vector<uint64_t> rsigs(event_sig_capacity_);
-            if (event_sig_capacity_)
-                HG_CUDA_CHECK(cudaMemcpy(rsigs.data(), event_runsig_,
-                                         sizeof(uint64_t) * event_sig_capacity_,
+            event_signature->resize(written);
+            if (written)
+                HG_CUDA_CHECK(cudaMemcpy(event_signature->data(), event_runsig_,
+                                         sizeof(uint64_t) * written,
                                          cudaMemcpyDeviceToHost), "QeState event runsig read");
-            event_signature->assign(rsigs.begin(),
-                                    rsigs.begin() + std::min<size_t>(rsigs.size(), n));
         }
         auto drain = [&](DedupMap& m, std::vector<std::pair<uint64_t, uint64_t>>& out) {
             std::vector<uint64_t> keys;
@@ -242,7 +242,7 @@ void QeState::reconstructed_pairs_host(std::vector<std::pair<uint64_t, uint64_t>
         // THE REDUCED VIEW, as the replay kept it: each event's kept producers, decided online in
         // qr_apply by the rule the host engine uses (hgcommon::redundant_producers).
         {
-            const uint32_t m = std::min(n, event_sig_capacity_);
+            const uint32_t m = written;
             std::vector<uint32_t> kept(size_t(kQeKeptStride) * m);
             if (m)
                 HG_CUDA_CHECK(cudaMemcpy(kept.data(), event_kept_, sizeof(uint32_t) * kept.size(),
@@ -288,9 +288,14 @@ void QeState::reconstructed_pairs_host(std::vector<std::pair<uint64_t, uint64_t>
         // number and disagreeing is a defect either can catch.
         std::vector<LockFreeList<QeAppliedMatch>::Node> nodes;
         inst_applied_.copy_nodes_to_host(nodes);
-        std::vector<uint32_t> slots(arr_cap_);
-        if (arr_cap_)
-            HG_CUDA_CHECK(cudaMemcpy(slots.data(), arr_, sizeof(uint32_t) * arr_cap_,
+        // The arena prefix the run filled, not its capacity.
+        uint32_t used = 0;
+        HG_CUDA_CHECK(cudaMemcpy(&used, cursor_, sizeof(uint32_t), cudaMemcpyDeviceToHost),
+                      "QeState cursor read");
+        used = std::min(used, arr_cap_);
+        std::vector<uint32_t> slots(used);
+        if (used)
+            HG_CUDA_CHECK(cudaMemcpy(slots.data(), arr_, sizeof(uint32_t) * used,
                                      cudaMemcpyDeviceToHost), "QeState arr read");
 
         std::unordered_map<uint32_t, std::vector<const QeAppliedMatch*>> by_instance;
