@@ -705,6 +705,10 @@ EngineState::CounterSnapshot EngineState::counters_snapshot_host() const {
         uint32_t raw[kCounterSlots] = {};
         HG_CUDA_CHECK(cudaMemcpy(raw, counter_block_, sizeof(raw), cudaMemcpyDeviceToHost),
               "EngineState counter block d2h");
+        return snapshot_from(raw);
+    }
+
+EngineState::CounterSnapshot EngineState::snapshot_from(const uint32_t* raw) {
         CounterSnapshot c;
         c.state_edge_ids = raw[0]; c.states        = raw[1]; c.needs_indices = raw[2];
         c.vertex_high    = raw[3]; c.sig_fallbacks = raw[4]; c.canonical_ev  = raw[5];

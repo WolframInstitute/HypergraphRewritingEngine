@@ -1163,6 +1163,14 @@ public:
         bool qm_saturated;
     };
     Counters counters_host(bool multiplicity) const;
+    // For a caller that reads these in a batch with others: the counter block (counter_words()
+    // words), the three multiplicity counts, the capture pool's counter, and the parse of host
+    // copies of the first two. counters_host is the reads followed by counters_from.
+    const uint32_t* counters_device() const { return counters_; }
+    static constexpr uint32_t counter_words() { return kNumCounters; }
+    const unsigned long long* qm_counts_device() const { return qm_words_ + 2ull * qm_capacity_; }
+    const uint32_t* num_matches_device() const { return matches_.view().counter; }
+    static Counters counters_from(const uint32_t* v, const unsigned long long* q);
 
     uint32_t num_matches_host();
 

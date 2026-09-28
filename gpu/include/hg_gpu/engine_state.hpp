@@ -460,6 +460,12 @@ public:
         uint32_t branchial      = 0;   // slot 10, staged from branchial_edge_pool_
     };
     CounterSnapshot counters_snapshot_host() const;
+    // The counter block on the device (kCounterSlots words) and the parse of a host copy of it:
+    // counters_snapshot_host is one read followed by snapshot_from.
+    const uint32_t* counter_block_device() const { return counter_block_; }
+    static CounterSnapshot snapshot_from(const uint32_t* raw);
+    static constexpr uint32_t counter_block_words() { return kCounterSlots; }
+    DeviceErrors& errors() { return errors_; }
     LaunchScratch& launch_scratch(uint32_t num_rules, uint32_t num_states) const;
     // all_state_edges_host with the four sizing counts taken from a snapshot instead of four
     // cudaMemcpy calls. Declared here because the snapshot type is.
@@ -480,6 +486,9 @@ public:
         void add(std::vector<T>& dst, const T* src, size_t n) {
             dst.resize(n);
             if (n) regions_.push_back(Region{dst.data(), src, sizeof(T) * n});
+        }
+        void add_raw(void* dst, const void* src, size_t bytes) {
+            if (bytes) regions_.push_back(Region{dst, src, bytes});
         }
         void finish();
     private:

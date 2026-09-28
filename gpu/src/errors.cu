@@ -107,6 +107,11 @@ void DeviceErrors::collect_warnings_into(std::vector<OverflowWarning>& out,
         throw std::runtime_error(std::string("DeviceErrors d2h: ") +
                                  cudaGetErrorString(err));
     }
+    warnings_from(host, out, context);
+}
+
+void DeviceErrors::warnings_from(const uint32_t* host, std::vector<OverflowWarning>& out,
+                                 const char* context) {
     bool any = false;
     for (uint32_t i = 0; i < kMaxKinds; ++i) {
         if (host[i] == 0) continue;

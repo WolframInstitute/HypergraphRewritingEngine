@@ -393,12 +393,33 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
             std::chrono::steady_clock::now() - t_kern_start).count();
 
         auto t_recon_start = std::chrono::steady_clock::now();
-        snap = engine.counters_snapshot_host();
-        // One transfer for every scalar below, instead of one per field. The counters share a
-        // single device allocation precisely so this is possible.
-        const auto qc_counts = qc_route ? qe_state_->counters_host(qe_multiplicity)
+        // Every scalar the result needs, in one batch: the engine's counter block, the error
+        // counters, and on the reconstruction route the QeState counters, its multiplicity
+        // counts and its capture count.
+        std::vector<uint32_t> eng_raw(EngineState::counter_block_words());
+        std::vector<uint32_t> err_raw(DeviceErrors::kMaxKinds);
+        std::vector<uint32_t> qe_raw(hg_gpu::QeState::counter_words());
+        unsigned long long qm_raw[3] = {};
+        uint32_t qe_matches = 0;
+        {
+            EngineState::ReadbackBatch counters(engine);
+            counters.add_raw(eng_raw.data(), engine.counter_block_device(),
+                             sizeof(uint32_t) * eng_raw.size());
+            counters.add_raw(err_raw.data(), engine.errors().counters_device(),
+                             sizeof(uint32_t) * err_raw.size());
+            if (qc_route) {
+                counters.add_raw(qe_raw.data(), qe_state_->counters_device(),
+                                 sizeof(uint32_t) * qe_raw.size());
+                if (qe_multiplicity)
+                    counters.add_raw(qm_raw, qe_state_->qm_counts_device(), sizeof(qm_raw));
+                counters.add_raw(&qe_matches, qe_state_->num_matches_device(), sizeof(uint32_t));
+            }
+            counters.finish();
+        }
+        snap = EngineState::snapshot_from(eng_raw.data());
+        const auto qc_counts = qc_route ? hg_gpu::QeState::counters_from(qe_raw.data(), qm_raw)
                                         : hg_gpu::QeState::Counters{};
-        out.expansion_matches   = qc_route ? qe_state_->num_matches_host()   : 0u;
+        out.expansion_matches   = qe_matches;
         out.expansion_instances = qc_counts.instances;
         out.reconstructed_raw_events =
             qe_replay ? qc_counts.raw_events : qc_counts.qm_raw_events;
@@ -447,7 +468,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
             static_cast<uint32_t>(out.reconstructed_causal_relation_reduced.size());
         out.frame_alignments = qc_counts.aligned;
         out.frame_align_failures = qc_counts.align_failures;
-        engine.collect_warnings_into(out.warnings, "persistent evolve");
+        engine.errors().warnings_from(err_raw.data(), out.warnings, "persistent evolve");
         EngineState::report_event_sig_fallbacks(out.warnings, "persistent evolve",
                                                 snap.sig_fallbacks);
         t_recon = std::chrono::duration<double, std::milli>(

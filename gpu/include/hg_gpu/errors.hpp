@@ -90,6 +90,13 @@ struct DeviceErrors {
     // multi-line message lists ALL overflowing kinds for diagnosis.
     void throw_if_any(const char* context) const;
 
+    // For a caller that reads the counters in a batch with others: the device array
+    // (kMaxKinds words), and the drain of a host copy of it. collect_warnings_into is the read
+    // followed by this.
+    const uint32_t* counters_device() const { return counters_; }
+    void warnings_from(const uint32_t* host, std::vector<OverflowWarning>& out,
+                       const char* context);
+
 private:
     uint32_t* counters_ = nullptr;
 };

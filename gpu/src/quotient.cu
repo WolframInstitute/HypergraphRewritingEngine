@@ -142,6 +142,10 @@ QeState::Counters QeState::counters_host(bool multiplicity) const {
         if (multiplicity)
             HG_CUDA_CHECK(cudaMemcpy(q, qm_words_ + 2ull * qm_capacity_, sizeof(q),
                                      cudaMemcpyDeviceToHost), "QeState multiplicity counts read");
+        return counters_from(v, q);
+    }
+
+QeState::Counters QeState::counters_from(const uint32_t* v, const unsigned long long* q) {
         return Counters{v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9],
                         q[0], q[1], q[2] != 0};
 
