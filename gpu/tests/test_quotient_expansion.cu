@@ -161,5 +161,36 @@ TEST(QuotientExpansion, NoOrbitArrayMeansNoSlot) {
     cudaFree(d_query); cudaFree(d_out); cudaFree(d_slices); cudaFree(d_ids);
 }
 
+
+// An allocation that overflows the expansion arena advances its cursor past the capacity and
+// writes nothing (qe_alloc_words). The readback of the reduced relation then reads the arena up
+// to the capacity, not up to the cursor: a copy past the allocation fails, and the failure ends
+// the grow-and-retry ladder instead of growing the arena.
+TEST(QuotientExpansion, ReducedReadbackAfterArenaOverflowReadsOnlyTheArena) {
+    hg_gpu::QeState qe(/*on=*/true, /*max_events=*/1);   // an arena of 16 words
+    const hg_gpu::QeView v = qe.view(/*max_steps=*/1, hgcommon::EVENT_SIG_NONE,
+                                     /*replay=*/true, /*multiplicity=*/false,
+                                     /*event_content=*/false);
+    ASSERT_EQ(v.arr_capacity, 16u);
+
+    // Raw event 0 kept four producers: three inline, the fourth spilled to arena word 0.
+    const uint32_t one = 1;
+    ASSERT_EQ(cudaMemcpy(v.next_raw_event, &one, sizeof(one), cudaMemcpyHostToDevice), cudaSuccess);
+    const uint32_t kept[hg_gpu::kQeKeptStride] = {4u, 0u, 0u, 0u, 0u};
+    ASSERT_EQ(cudaMemcpy(v.event_kept, kept, sizeof(kept), cudaMemcpyHostToDevice), cudaSuccess);
+    const uint32_t spilled = 0;
+    ASSERT_EQ(cudaMemcpy(v.arr_words, &spilled, sizeof(spilled), cudaMemcpyHostToDevice),
+              cudaSuccess);
+    // Later allocations overflowed and moved the cursor far past the 16 words.
+    const uint32_t past = 1u << 26;
+    ASSERT_EQ(cudaMemcpy(v.arr_cursor, &past, sizeof(past), cudaMemcpyHostToDevice), cudaSuccess);
+
+    std::vector<std::pair<uint64_t, uint64_t>> causal, reduced, branchial;
+    EXPECT_NO_THROW(qe.reconstructed_pairs_host(causal, reduced, branchial,
+                                                /*want_branchial=*/true, nullptr));
+    EXPECT_EQ(reduced.size(), 4u);
+    EXPECT_EQ(cudaGetLastError(), cudaSuccess);
+}
+
 }  // namespace
 

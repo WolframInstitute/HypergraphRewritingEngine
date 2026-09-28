@@ -253,6 +253,9 @@ void QeState::reconstructed_pairs_host(std::vector<std::pair<uint64_t, uint64_t>
                     uint32_t used = 0;
                     HG_CUDA_CHECK(cudaMemcpy(&used, cursor_, sizeof(uint32_t),
                                              cudaMemcpyDeviceToHost), "QeState cursor read");
+                    // An allocation that overflowed advanced the cursor past the arena and
+                    // wrote nothing; the words that exist end at the capacity.
+                    used = std::min(used, arr_cap_);
                     spill.resize(std::max<uint32_t>(used, 1u));
                     HG_CUDA_CHECK(cudaMemcpy(spill.data(), arr_, sizeof(uint32_t) * used,
                                              cudaMemcpyDeviceToHost), "QeState arr read");
