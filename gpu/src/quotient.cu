@@ -134,13 +134,14 @@ void QeState::clear() {
         HG_CUDA_CHECK(cudaMemset(next_id_, 0, sizeof(uint32_t)), "QeState next_id clear");
     }
 
-QeState::Counters QeState::counters_host() const {
+QeState::Counters QeState::counters_host(bool multiplicity) const {
         uint32_t v[kNumCounters] = {};
         HG_CUDA_CHECK(cudaMemcpy(v, counters_, sizeof(v), cudaMemcpyDeviceToHost),
               "QeState counters read");
         unsigned long long q[3] = {};
-        HG_CUDA_CHECK(cudaMemcpy(q, qm_words_ + 2ull * qm_capacity_, sizeof(q),
-                                 cudaMemcpyDeviceToHost), "QeState multiplicity counts read");
+        if (multiplicity)
+            HG_CUDA_CHECK(cudaMemcpy(q, qm_words_ + 2ull * qm_capacity_, sizeof(q),
+                                     cudaMemcpyDeviceToHost), "QeState multiplicity counts read");
         return Counters{v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9],
                         q[0], q[1], q[2] != 0};
 
@@ -193,6 +194,7 @@ void QeState::reconstructed_pairs_host(std::vector<std::pair<uint64_t, uint64_t>
                                   std::vector<std::pair<uint64_t, uint64_t>>& causal_reduced,
                                   std::vector<std::pair<uint64_t, uint64_t>>& branchial,
                                   bool want_branchial,
+                                  uint32_t raw_events,
                                   std::vector<uint64_t>* event_signature,
                                   std::vector<std::pair<uint32_t, uint32_t>>* causal_raw,
                                   std::vector<std::pair<uint32_t, uint32_t>>* causal_raw_reduced,
@@ -203,7 +205,7 @@ void QeState::reconstructed_pairs_host(std::vector<std::pair<uint64_t, uint64_t>
         if (causal_raw) causal_raw->clear();
         if (causal_raw_reduced) causal_raw_reduced->clear();
         if (branchial_raw) branchial_raw->clear();
-        const uint32_t n = num_raw_events_host();
+        const uint32_t n = raw_events;
         if (n == 0) return;
         // The events written, not the reservation: ids at or above n were never minted.
         const uint32_t written = std::min(n, event_sig_capacity_);

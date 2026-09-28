@@ -332,6 +332,9 @@ public:
     // A signature built that way is not an isomorphism invariant, so the event total it produces
     // is otherwise indistinguishable from a disagreement in the evolution.
     void report_event_sig_fallbacks(std::vector<OverflowWarning>& out, const char* context) const;
+    // The same, for a caller that already holds the count (CounterSnapshot::sig_fallbacks).
+    static void report_event_sig_fallbacks(std::vector<OverflowWarning>& out, const char* context,
+                                           uint32_t fallbacks);
 
     // Legacy fail-fast variant for unit tests. Production code should use
     // collect_warnings_into instead.

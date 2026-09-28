@@ -1157,11 +1157,12 @@ public:
     struct Counters {
         uint32_t cursor, next_id, instances, raw_events, aligned, align_failures,
                  canon_events, causal_pairs, causal_edges, branchial;
-        // The multiplicity counts (QeView::qm_counts), read in a second transfer.
+        // The multiplicity counts (QeView::qm_counts), read in a second transfer and only for a
+        // run that counted multiplicities; zero otherwise.
         uint64_t qm_raw_events, qm_branchial;
         bool qm_saturated;
     };
-    Counters counters_host() const;
+    Counters counters_host(bool multiplicity) const;
 
     uint32_t num_matches_host();
 
@@ -1189,11 +1190,13 @@ public:
     uint32_t num_branchial_host();
 
     // The reconstructed relations as pairs of CONTENT TRIPLES. A count says two engines
-    // disagree; a pair set says which pair is missing, which a count cannot.
+    // disagree; a pair set says which pair is missing, which a count cannot. `raw_events` is
+    // counters_host().raw_events, which the caller has already read.
     void reconstructed_pairs_host(std::vector<std::pair<uint64_t, uint64_t>>& causal,
                                   std::vector<std::pair<uint64_t, uint64_t>>& causal_reduced,
                                   std::vector<std::pair<uint64_t, uint64_t>>& branchial,
                                   bool want_branchial,
+                                  uint32_t raw_events,
                                   std::vector<uint64_t>* event_signature,
                                   std::vector<std::pair<uint32_t, uint32_t>>* causal_raw = nullptr,
                                   std::vector<std::pair<uint32_t, uint32_t>>* causal_raw_reduced = nullptr,

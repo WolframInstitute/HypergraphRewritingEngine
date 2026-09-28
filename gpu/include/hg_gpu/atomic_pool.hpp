@@ -110,11 +110,14 @@ public:
 
     Pool(Pool&& o) noexcept
         : data_(o.data_), counter_(o.counter_), capacity_(o.capacity_),
-          owns_counter_(o.owns_counter_) {
+          owns_counter_(o.owns_counter_), written_since_clear_(o.written_since_clear_) {
         o.data_ = nullptr; o.counter_ = nullptr; o.capacity_ = 0;
     }
 
+    // Handing out a view marks the payload written: reset_and_clear clears nothing for a pool
+    // no launch has held since its last clear.
     DeviceView view() const {
+        written_since_clear_ = true;
         return DeviceView{data_, counter_, capacity_};
     }
 
@@ -149,10 +152,22 @@ public:
     // Zero the payload as well as the counter. Needed by a consumer that reads records
     // concurrently with their producers and therefore relies on a per-record publication flag:
     // the flag has to start clear, and reset() alone leaves the previous run's bytes in place.
-    // O(capacity), so it belongs at run setup rather than between steps.
+    //
+    // ONLY THE PREFIX BELOW THE COUNTER CAN BE DIRTY: the storage is zeroed at construction and
+    // by every clear, and a device write goes to a slot the counter has passed. So this reads
+    // the counter (one transfer) and zeroes min(counter, capacity) records. A counter that
+    // reads zero on a pool that was written means reset() ran since the writes, and the extent
+    // is unknown, so the whole payload is zeroed. The match pool is 8 x max_states records
+    // (88 MB at the default config) and a small run writes a few.
     void reset_and_clear() {
+        if (!written_since_clear_) { reset(); return; }
+        uint32_t n = 0;
+        HG_CUDA_CHECK(cudaMemcpy(&n, counter_, sizeof(uint32_t), cudaMemcpyDeviceToHost),
+                      "Pool clear extent");
+        const uint32_t dirty = (n == 0 || n > capacity_) ? capacity_ : n;
         reset();
-        HG_CUDA_CHECK(cudaMemset(data_, 0, sizeof(T) * capacity_), "Pool clear data");
+        HG_CUDA_CHECK(cudaMemset(data_, 0, sizeof(T) * dirty), "Pool clear data");
+        written_since_clear_ = false;
     }
 
     T*        data_    = nullptr;
@@ -160,6 +175,7 @@ public:
     uint32_t  capacity_ = 0;
     // False when the counter is a slot of caller-owned memory (EngineState's counter block).
     bool      owns_counter_ = true;
+    mutable bool written_since_clear_ = false;
 };
 
 }  // namespace gpu

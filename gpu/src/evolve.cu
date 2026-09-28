@@ -126,7 +126,9 @@ struct Engine::Impl {
 
     void reset() {
         state_.clear();
-        matches_.reset();
+        // Cleared here, while the counter still bounds what the last run wrote; the launch's
+        // own reset_and_clear then finds the pool clean.
+        matches_.reset_and_clear();
     }
 
     EvolveResult run(const EvolveInput& in, SessionView* session = nullptr,
@@ -335,6 +337,9 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     // Without these the branch between init and readback -- kernel, quotient setup and the
     // reconstruction marshalling -- was a single untimed region holding about 30% of the call.
     double t_persist_call = 0.0, t_recon = 0.0;
+    // Every scalar counter of the engine, read once after the kernel; the warnings and the
+    // readback below both size from it.
+    EngineState::CounterSnapshot snap{};
     double t_match = 0, t_rewrite = 0, t_hash = 0, t_dedup = 0;
 
 
@@ -388,9 +393,10 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
             std::chrono::steady_clock::now() - t_kern_start).count();
 
         auto t_recon_start = std::chrono::steady_clock::now();
+        snap = engine.counters_snapshot_host();
         // One transfer for every scalar below, instead of one per field. The counters share a
         // single device allocation precisely so this is possible.
-        const auto qc_counts = qc_route ? qe_state_->counters_host()
+        const auto qc_counts = qc_route ? qe_state_->counters_host(qe_multiplicity)
                                         : hg_gpu::QeState::Counters{};
         out.expansion_matches   = qc_route ? qe_state_->num_matches_host()   : 0u;
         out.expansion_instances = qc_counts.instances;
@@ -425,6 +431,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
                                                 out.reconstructed_causal_relation_reduced,
                                                 out.reconstructed_branchial_relation,
                                                 in.materialize_relations,
+                                                qc_counts.raw_events,
                                                 &out.reconstructed_event_signature,
                                                 &out.reconstructed_causal_raw,
                                                 &out.reconstructed_causal_raw_reduced,
@@ -441,7 +448,8 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         out.frame_alignments = qc_counts.aligned;
         out.frame_align_failures = qc_counts.align_failures;
         engine.collect_warnings_into(out.warnings, "persistent evolve");
-        engine.report_event_sig_fallbacks(out.warnings, "persistent evolve");
+        EngineState::report_event_sig_fallbacks(out.warnings, "persistent evolve",
+                                                snap.sig_fallbacks);
         t_recon = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - t_recon_start).count();
         if (dbg) {
@@ -485,11 +493,8 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
 
     auto t_readback_start = std::chrono::steady_clock::now();
 
-    // Readback — hashes were persisted across steps, no re-hashing needed. ONE counter
-    // snapshot sizes everything below: the states, the per-state edge readback and the three
-    // relation pools, which read individually were eight ~23.5 us cudaMemcpy calls of the
-    // ~3.3 ms per-call floor.
-    const auto snap = engine.counters_snapshot_host();
+    // Readback. The kernel wrote the state hashes; `snap` sizes the states, the per-state edge
+    // readback and the three relation pools.
     uint32_t total_states = snap.states;
     std::vector<uint64_t> h_hashes(total_states);
     if (total_states > 0) {

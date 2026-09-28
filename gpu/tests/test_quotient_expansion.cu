@@ -187,7 +187,8 @@ TEST(QuotientExpansion, ReducedReadbackAfterArenaOverflowReadsOnlyTheArena) {
 
     std::vector<std::pair<uint64_t, uint64_t>> causal, reduced, branchial;
     EXPECT_NO_THROW(qe.reconstructed_pairs_host(causal, reduced, branchial,
-                                                /*want_branchial=*/true, nullptr));
+                                                /*want_branchial=*/true, /*raw_events=*/1u,
+                                                nullptr));
     EXPECT_EQ(reduced.size(), 4u);
     EXPECT_EQ(cudaGetLastError(), cudaSuccess);
 }

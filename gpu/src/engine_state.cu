@@ -397,9 +397,12 @@ void EngineState::collect_warnings_into(std::vector<OverflowWarning>& out,
     }
 
 void EngineState::report_event_sig_fallbacks(std::vector<OverflowWarning>& out, const char* context) const {
-        if (const uint32_t n = event_sig_raw_fallbacks()) {
-            out.push_back(OverflowWarning{ErrorKind::kEventSigRawFallback, n, context});
-        }
+        report_event_sig_fallbacks(out, context, event_sig_raw_fallbacks());
+    }
+
+void EngineState::report_event_sig_fallbacks(std::vector<OverflowWarning>& out, const char* context,
+                                             uint32_t fallbacks) {
+        if (fallbacks) out.push_back(OverflowWarning{ErrorKind::kEventSigRawFallback, fallbacks, context});
     }
 
 void EngineState::throw_on_errors(const char* context) const {
