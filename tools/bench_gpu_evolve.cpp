@@ -247,10 +247,11 @@ int main(int argc, char** argv) {
     // The descent runs inline in the discovering thread, so the work is spread over classes;
     // the instances are what it could be spread over. The ratio sizes that difference.
     std::printf("  recon: causal_edges=%u causal_pairs=%u reduced_pairs=%u branchial=%u "
-                "instances=%u states=%zu\n",
+                "instances=%u states=%zu matches=%u aligned=%u align_failures=%u\n",
                 rw.reconstructed_causal_edges, rw.reconstructed_causal_pairs,
                 rw.reconstructed_causal_pairs_reduced, rw.reconstructed_branchial,
-                rw.expansion_instances, rw.states.size());
+                rw.expansion_instances, rw.states.size(), rw.expansion_matches,
+                rw.frame_alignments, rw.frame_align_failures);
 
     if (mode == 0) {
         std::printf("steps=%d states=%zu events=%zu | evolve()_median_ms=%.3f | "
