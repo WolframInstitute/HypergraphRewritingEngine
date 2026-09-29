@@ -86,30 +86,39 @@ __device__ inline __noinline__ uint64_t transition_key_device(const DeviceState&
                                      ranks, n, /*produced_ranks=*/nullptr, 0);
 }
 
-__device__ inline bool state_survives_dedup(DeviceState ds, StateId sid, uint64_t hash,
-                                            DedupMap::DeviceView map, bool dedup,
-                                            uint32_t explore_threshold_u32,
-                                            uint64_t explore_seed, uint32_t step,
-                                            StateId parent_sid = INVALID_ID) {
-    if (dedup) {
-        if (hash == 0) {
-            // Not a hash: keep the state rather than merge every uncomputed one into one slot.
-            ds.errors.record(ErrorKind::kUncomputedStateHash);
-            return true;
-        }
-        auto r = map.insert_if_absent(hash, sid);
-        // A FULL MAP IS NOT A DUPLICATE. Exhaustion returns inserted=false like a genuine hit, so
-        // without this test an overfull dedup map drops every new state silently and the run
-        // reports a smaller state set as if it were the answer. Keeping the state instead errs
-        // toward a duplicate, which is visible and correctable, over a loss, which is neither --
-        // and the recorded error puts the run under the engine's partial-result contract.
-        if (r.overflowed) {
-            ds.errors.record(ErrorKind::kCanonicalMapFull);
-            return true;
-        }
-        if (!r.inserted) return false;
-    }
+// The canonical state `sid` merges into: `sid` itself when it is the first arrival of its key
+// (or dedup is off), the first arrival's id otherwise. `fresh` when `sid` is its own canonical.
+struct StateIdentity {
+    StateId canonical;
+    bool    fresh;
+};
 
+__device__ inline StateIdentity state_identity(DeviceState ds, StateId sid, uint64_t hash,
+                                               DedupMap::DeviceView map, bool dedup) {
+    if (!dedup) return {sid, true};
+    if (hash == 0) {
+        // Not a hash: keep the state rather than merge every uncomputed one into one slot.
+        ds.errors.record(ErrorKind::kUncomputedStateHash);
+        return {sid, true};
+    }
+    auto r = map.insert_if_absent(hash, sid);
+    // A FULL MAP IS NOT A DUPLICATE. Exhaustion returns inserted=false like a genuine hit, so
+    // without this test an overfull dedup map drops every new state silently and the run
+    // reports a smaller state set as if it were the answer. Keeping the state instead errs
+    // toward a duplicate, which is visible and correctable, over a loss, which is neither --
+    // and the recorded error puts the run under the engine's partial-result contract.
+    if (r.overflowed) {
+        ds.errors.record(ErrorKind::kCanonicalMapFull);
+        return {sid, true};
+    }
+    if (r.inserted) return {sid, true};
+    return {static_cast<StateId>(r.value), false};
+}
+
+// Whether a fresh state is kept for expansion: the exploration coin and the two hard bounds.
+__device__ inline bool state_retained(DeviceState ds, StateId sid, uint32_t step,
+                                      StateId parent_sid, uint32_t explore_threshold_u32,
+                                      uint64_t explore_seed) {
     // Stochastic-exploration coin flip. UINT32_MAX == "always explore"
     // (the threshold encoding for probability 1.0); skip the hash work
     // entirely on that fast path so the existing all-deterministic

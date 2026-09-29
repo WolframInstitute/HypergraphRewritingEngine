@@ -12,9 +12,10 @@ stated absence rather than an unexamined one.
   CTAs and every access carries a SCOPE, so whether two threads synchronise depends on how close
   they are. RC11 has no scopes, so GenMC would check a program the device does not run. It runs
   from a container -- it is a fork of GenMC 0.9 supporting LLVM up to 15, and this tree builds
-  against 18. `verification/gpumc/run.sh <name>`. Seven harnesses: the termination decision, the
+  against 18. `verification/gpumc/run.sh <name>`. Eight harnesses: the termination decision, the
   device work queue, the dedup map's election, the replay rendezvous, the multiplicity
-  mass/match rendezvous, the replay's task log, and the kernel's loop with the ring, the record pool and the detector composed.
+  mass/match rendezvous, the replay's task log, the exploration depth rendezvous, and the
+  kernel's loop with the ring, the record pool and the detector composed.
 - **TLA+** models a protocol rather than a translation unit, which is what makes it the right tool
   where the property is about an ordering across many participants rather than about one
   structure's memory operations. `verification/tla/run.sh <config>`.
@@ -46,6 +47,13 @@ body and the harness drives it; the storage half (which set, which probe-key der
 content comparison) stays the caller's, which is what makes the rule separable from a header the
 interpreter cannot take. Clean in 2,500 executions, and `HG_CALIBRATE_DEDUP_HASH_ONLY` -- deciding
 on hash equality without comparing contents, which is what dropped real matches -- fails in 4.
+
+`depth_relax_child_registration` runs `hgcommon/explore_depth_core.hpp` itself, the quotient
+exploration depth rules both engines call: a child registered while its parent is relaxed ends
+at one past the parent's lowered depth. 7 executions over the host LockFreeList, clean;
+`-DCALIBRATE_NO_FENCE` reports the child stranded. Its device twin under scoped RC11,
+`verification/gpumc/depth_relax_child_registration.cpp`, drives the same core over the device
+list's orders and `__threadfence`: 9 executions, clean, and the same calibration fails.
 
 `depth_report_order` runs `hgcommon/depth_join.hpp` itself. It is the reason that protocol was
 lifted out of `ParallelEvolutionEngine`: it touches nothing but its own atomics, so the checker
@@ -261,27 +269,32 @@ The reservation CAS is modelled WEAK, as the device writes it. Modelling it stro
 the spurious-failure retries, and removing behaviours from a checker is the unsound direction.
 
 **The DEVICE's loop as one program**, covered under scoped-RC11 by
-`verification/gpumc/evolve_ring_termination.cpp`. `k_persistent_evolve` runs the ring, the
-record pool and the detector in one loop per block, and the order that loop books
-`pushed[match]`/`completed[match]` around `try_push`, `try_pop`, the record claim and the
-publish is what the detector's decision rests on. The harness runs that loop's control flow
-with the shared cores themselves (`ring_core`, `termination_core`) and the pool protocol as
-`persistent.cu` and `match.hpp` define it (cursor CAS below the readable count, acquire spin on
-the published flag, release publish), so the decision is checked against the composition
-rather than against either part alone. Bound: a two-slot ring and three rules, so the seed's
-rewrite pushes two children and runs the third inline through the full-ring path; one seed,
-three child items, four records; `HG_WORKERS` sets the worker count. 133,202 executions, clean (19.6 s), with the detector limited to one stagnant round -- the bound that lets the run finish; at two rounds the same program exceeds 480 s.
+`verification/gpumc/evolve_ring_termination.cpp`. `k_persistent_evolve` runs the record pool, the
+expand log, the ring and the detector in one loop per block, and the order that loop books its
+counts around each hand-off is what the detector's decision rests on. The harness runs that
+loop's control flow with the shared cores themselves (`ring_core`, `termination_core`), the pool
+protocol as `persistent.cu` and `match.hpp` define it (cursor CAS below the readable count,
+acquire spin on the published flag, release publish) and the expand log as `work_log.hpp`
+defines it. A rewrite under the step budget appends an expand entry; a block takes an entry,
+pushes one ring item per rule (booking `pushed[match]` first, matching inline when the ring is
+full) and books the entry done; the detector counts entries with the records. Bound: a two-slot
+ring, `HG_RULES` rules and a step budget of `HG_MAX_STEPS`, with the root's entry in the log
+before any block starts. One rule, two steps (an entry appended by a rewrite): 672,126
+executions, clean (183 s). Three rules, one step (the root's entry pushes three items into two
+slots and matches one inline): 2,433,998 executions, clean (568 s). The detector is limited to
+one stagnant round, the bound that lets the run finish.
 
-Calibrated twice. `-DCALIBRATE_PUSH_THEN_BOOK` books the push after it lands, and a snapshot
-between the two sees `pushed == completed` with the item in the ring: the checker reports the
-early exit. `-DCALIBRATE_ONE_SLOT` shrinks the ring to one slot: the checker reports the same
-early exit after 6 executions, because at capacity one the value a consumer releases with
-(`pos + 1`) is the value the next producer position tests as "holds an item", so the second push
-overwrites a live item and the pop after it never matches. That arm is a finding, not only a
-calibration: `run_persistent_match` and `run_persistent_match_rewrite` sized their ring as the
-smallest power of two at or above the seed count, which is ONE for one state and one rule.
-The floor is two in both derivations and in the `RingBuffer` constructor
-(`gpu/tests/test_ring_buffer.cu`, `CapacityBelowTwoIsRejected`).
+Calibrated twice. `-DCALIBRATE_DONE_BEFORE_PUSH` books an entry done before its pushes, and the
+checker reports the quiescent exit with the entry's work owed. `-DCALIBRATE_ONE_SLOT` shrinks the
+ring to one slot: at two rules and one step no execution completes (0, against 30,246 with two
+slots), because at capacity one the value a consumer releases with (`pos + 1`) is the value the
+next producer position tests as "holds an item", so the second push overwrites a live item and
+the pop after it never matches. That arm is a finding, not only a calibration: `run_persistent_match`
+and `run_persistent_match_rewrite` sized their ring as the smallest power of two at or above the
+seed count, which is ONE for one state and one rule. The floor is two in both derivations and in
+the `RingBuffer` constructor (`gpu/tests/test_ring_buffer.cu`, `CapacityBelowTwoIsRejected`).
+Booking `pushed[match]` after the push verifies clean at these bounds: every push happens inside
+an expand entry not yet booked done.
 
 The default arm found a second defect before it was clean. The kernel's detector read the
 record count and the rewrites-done count as plain loads while its snapshot of

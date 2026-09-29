@@ -1977,6 +1977,43 @@ TEST(QuotientReconstruction, ADepthThatSaturatesThePoolsStillAgreesWithTheHost) 
         << "the device returned a different number of reduced causal pairs than the host";
 }
 
+// A class first reached along a longer path is expanded from its shortest depth. growshrink3
+// at 6 steps reaches classes along paths of different lengths, and on a full device grid a deep
+// path often arrives first: a device that kept the first arrival's depth returned 91,002 to
+// 95,537 states on 16 of 20 runs against the host's 95,556. Five runs, each compared.
+TEST(QuotientExploration, AClassIsExpandedFromItsShortestDepth) {
+    Workload w;
+    w.name = "growshrink3";
+    w.rules = {rule({{0, 1}, {0, 2}}, {{0, 1}, {0, 3}, {1, 3}, {2, 3}}),
+               rule({{0, 1}, {1, 2}}, {{0, 2}}),
+               rule({{0, 1}}, {{0, 2}, {2, 1}})};
+    w.initial_state = {{0u, 1u}, {0u, 2u}};
+    w.num_steps = 6;
+    w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+    w.explore_from_canonical_states_only = true;
+
+    hypergraph::Hypergraph hg;
+    hg.set_state_canonicalization_mode(to_cpu_canon(w.canon_mode));
+    {
+        hypergraph::ParallelEvolutionEngine engine(&hg, /*num_threads=*/0);
+        for (size_t i = 0; i < w.rules.size(); ++i)
+            engine.add_rule(convert_rule(w.rules[i], static_cast<uint16_t>(i)));
+        engine.set_explore_from_canonical_states_only(true);
+        std::vector<std::vector<hypergraph::VertexId>> init;
+        for (const auto& e : w.initial_state) init.emplace_back(e.begin(), e.end());
+        engine.evolve(init, static_cast<int>(w.num_steps));
+    }
+    const size_t host_states = hg.num_states();
+
+    hg_gpu::EvolveInput in = make_input(w);
+    in.record = hgcommon::RecordSet{false, false, false};
+    for (int run = 0; run < 5; ++run) {
+        const auto gpu = hg_gpu::evolve(in);
+        EXPECT_TRUE(gpu.warnings.empty()) << "run " << run;
+        EXPECT_EQ(gpu.states.size(), host_states) << "run " << run;
+    }
+}
+
 TEST(QuotientReconstruction, PastTheOldStackDepthItReachesTheDepthInstead) {
     const uint32_t deep = 80;   // past any per-thread stack a launch could have reserved
     hg_gpu::EvolveInput in;

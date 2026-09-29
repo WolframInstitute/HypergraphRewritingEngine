@@ -454,9 +454,9 @@ QeView QeState::view(uint32_t max_steps, EventSignatureKeys keys,
         q.arr_capacity = arr_cap_;
         q.next_id      = next_id_;
         q.max_steps    = max_steps;
-        q.tasks            = tasks_.view();
-        q.task_cursor      = counters_ + 13;
-        q.tasks_done       = counters_ + 14;
+        q.tasks.items      = tasks_.view();
+        q.tasks.cursor     = counters_ + 13;
+        q.tasks.done       = counters_ + 14;
         q.lane_reach       = lane_reach_;
         q.lane_reach_slots = lane_reach_slots_;
         q.work_items   = work_items_;

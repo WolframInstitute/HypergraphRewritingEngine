@@ -84,7 +84,19 @@ unavailable substitutes the raw edge id and is counted (`kEventSigRawFallback`).
 
 ## 6. Quotient exploration and reconstruction
 
-The device defaults to quotient exploration for bounded state growth. Its capture and replay are
+The device defaults to quotient exploration for bounded state growth. A canonical state is
+expanded once, at the shortest depth any path reaches it by, through the host's rules
+(`hgcommon/explore_depth_core.hpp`, `gpu/include/hg_gpu/explore_depth.hpp`): each arrival
+registers the canonical child under its parent and lowers the child's depth to one past the
+parent's current depth, and a lowered state is admitted and its descendants lowered in turn by a
+depth-first walk on the block's thread 0. The expansion claim is separate from the dedup identity
+and from the depth, so a class first reached past the budget is still expanded when a shorter
+path arrives. An admitted state is appended to an expand log (`gpu/include/hg_gpu/work_log.hpp`)
+that blocks consume at the top of the persistent loop, pushing one (state, rule) item per rule
+and matching an item on the block when the ring is full; roots and a session's resumed frontier
+enter the same log. The detector counts expand entries with the records.
+
+Its capture and replay are
 the host's, through the shared cores: each class retains its representative's expansion as
 slot-named matches, instances are replayed forward, and the reconstructed relations are read
 back as raw application-id pairs alongside the schedule-stable content-triple pairs a

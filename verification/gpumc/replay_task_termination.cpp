@@ -1,8 +1,8 @@
 // GPUMC harness: the persistent kernel's detector never takes the quiescent exit while a replay
 // task (QeView::tasks) is claimed, unrun, or still owed by a task or record that is running.
 //
-// THE PROTOCOL TRANSCRIBED (gpu/include/hg_gpu/quotient_expansion.hpp qe_task_append;
-// gpu/src/persistent.cu k_persistent_evolve's task branch and RewriteDetectorCtx):
+// THE PROTOCOL TRANSCRIBED (gpu/include/hg_gpu/work_log.hpp WorkLogView, which
+// qe_task_append and k_persistent_evolve's task branch drive; RewriteDetectorCtx):
 //   - An append claims a slot with the pool's relaxed fetch-add on the task counter, writes the
 //     task, and stores its published flag with release.
 //   - A block's lane 0 reads the counter with acquire, clamps it to the capacity, and claims up

@@ -48,8 +48,7 @@ __global__ void k_dedup_zero_hash(hg_gpu::DeviceState ds, Map::DeviceView m, uin
                                   uint32_t* survived) {
     const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
-    survived[i] = hg_gpu::state_survives_dedup(ds, i, /*hash=*/0ull, m, /*dedup=*/true,
-                                               UINT32_MAX, 0ull, 0u) ? 1u : 0u;
+    survived[i] = hg_gpu::state_identity(ds, i, /*hash=*/0ull, m, /*dedup=*/true).fresh ? 1u : 0u;
 }
 
 // The value a caller asks to store, so a test can offer one the map reserves. k_insert stores

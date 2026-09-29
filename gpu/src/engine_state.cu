@@ -215,8 +215,6 @@ EngineState::~EngineState() {
         // nothing here is freed individually.
         if (launch_scratch_.rules)        cudaFree(launch_scratch_.rules);
         if (launch_scratch_.states)       cudaFree(launch_scratch_.states);
-        if (launch_scratch_.kept)         cudaFree(launch_scratch_.kept);
-        if (launch_scratch_.kept_count)   cudaFree(launch_scratch_.kept_count);
         if (launch_scratch_.cursor)       cudaFree(launch_scratch_.cursor);
         if (launch_scratch_.phase_cycles) cudaFree(launch_scratch_.phase_cycles);
         if (state_canonical_hash_)   cudaFree(state_canonical_hash_);
@@ -681,16 +679,11 @@ EngineState::LaunchScratch& EngineState::launch_scratch(uint32_t num_rules,
         }
         if (s.states_cap < num_states) {
             if (s.states) cudaFree(s.states);
-            if (s.kept)   cudaFree(s.kept);
             HG_CUDA_CHECK(cudaMalloc(&s.states, sizeof(StateId) * num_states),
                   "launch scratch states");
-            HG_CUDA_CHECK(cudaMalloc(&s.kept, sizeof(StateId) * num_states),
-                  "launch scratch kept");
             s.states_cap = num_states;
-            s.kept_cap   = num_states;
         }
-        if (!s.kept_count) {
-            HG_CUDA_CHECK(cudaMalloc(&s.kept_count, sizeof(uint32_t)), "launch scratch kc");
+        if (!s.cursor) {
             HG_CUDA_CHECK(cudaMalloc(&s.cursor, sizeof(uint32_t) * 2), "launch scratch cursor");
             HG_CUDA_CHECK(cudaMalloc(&s.phase_cycles, sizeof(unsigned long long) * 16),
                   "launch scratch phases");

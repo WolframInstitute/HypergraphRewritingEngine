@@ -15,6 +15,7 @@
 //   run_persistent_evolve         the loop closes: output states are hashed, deduplicated and
 //                                 re-enqueued on device, so a whole evolution is one launch.
 
+#include "hg_gpu/explore_depth.hpp"
 #include "hg_gpu/device_arena.hpp"
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/exploration.hpp"
@@ -154,6 +155,9 @@ struct SessionView {
     uint32_t* frontier_count = nullptr;
     uint32_t  frontier_cap  = 0;
     uint32_t  enabled       = 0;
+    // Depths, claims and child lists persist across the session's calls; the expand log is
+    // consumed per call.
+    ExploreView explore{};
 };
 
 // Host owner of the above. Allocated once for the session, never shrunk, so a Step costs no
@@ -181,6 +185,7 @@ public:
 private:
     DedupMap  states_;
     DedupMap  events_;
+    ExploreState explore_;
     StateId*  frontier_ = nullptr;
     uint32_t* step_     = nullptr;
     uint32_t* count_    = nullptr;

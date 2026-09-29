@@ -27,8 +27,7 @@
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/cuda_check.hpp"
 #include "hg_gpu/exploration.hpp"   // DedupMap
-#include "hg_gpu/ring_buffer.hpp"   // the shared descent ring
-#include "hg_gpu/termination.hpp"   // the role that counts shared descent items
+#include "hg_gpu/work_log.hpp"      // the replay's task log
 #include "hgcommon/core.hpp"        // sort_u64
 #include "hgcommon/slot_core.hpp"  // slot_rank -- the frame-slot rule, shared with the host
 #include "hgcommon/quotient_replay_core.hpp"  // qr_apply -- the replay, and the identity it mints
@@ -271,20 +270,14 @@ struct QeView {
     uint32_t    work_cap    = 0;   // items per driver
     uint32_t    work_slices = 0;   // drivers this run can serve
 
-    // THE REPLAY'S TASK LOG. Append-only within a run: a producer claims a slot, writes the
-    // task and publishes it; a warp of the persistent kernel claims up to 32 consecutive tasks
-    // at `task_cursor` and runs one per lane, then adds how many it ran to `tasks_done`. The
-    // detector counts claimed tasks as produced and `tasks_done` as consumed, beside the match
-    // records, and every producer is itself inside a counted unit (the record whose rewrite
-    // captured a match, or the task whose application made an instance), so the two cannot
-    // balance while a task is owed.
+    // THE REPLAY'S TASK LOG (hg_gpu/work_log.hpp). A warp of the persistent kernel claims up to
+    // 32 consecutive tasks and runs one per lane. Every producer is inside a counted unit (the
+    // record whose rewrite captured a match, or the task whose application made an instance).
     //
     // The host runs a descent on the thread that produced it. On the device one lane runs the
     // same code 62.9x slower than a host core (device IR on one state, persistent.cu), so the
     // replay's parallelism has to come from running many applications at once, one per lane.
-    typename Pool<QeTask>::DeviceView tasks{};
-    uint32_t* task_cursor = nullptr;
-    uint32_t* tasks_done  = nullptr;
+    WorkLogView<QeTask> tasks{};
     // Per lane of the grid, the arena offset + 1 of its reachability-search slice
     // (DeviceQrCtx::redundant), claimed on its first overflow; 0 until then.
     uint32_t* lane_reach = nullptr;
@@ -393,8 +386,8 @@ __device__ __forceinline__ uint32_t qe_rank_of(DeviceState ds, StateId sid, Edge
 // saturates every later insert returns immediately, so from the first overflow onward no class
 // receives a frame step, every replayed event signs with its instance depth instead of the
 // class's, and the signature sets go disjoint. The engine's contract is a partial answer with a
-// warning, not a quiet substitution -- state_survives_dedup records kCanonicalMapFull for the
-// same condition on the dedup map.
+// warning, not a quiet substitution -- state_identity records kCanonicalMapFull for the same
+// condition on the dedup map.
 //
 // The owner and the step are ONE value in ONE map, so a class is either published complete or
 // not published at all. Two maps under one flag left a loser of the first insert reading the
@@ -897,12 +890,8 @@ __device__ __forceinline__ void qe_apply(DeviceState ds, QeView qe, const Device
 // reported and grown by the retry ladder, as every other replay pool's.
 __device__ inline void qe_task_append(DeviceState ds, QeView qe, uint64_t hash, uint32_t rec,
                                       uint32_t depth, uint32_t match) {
-    const uint32_t i = qe.tasks.claim();
-    if (i == Pool<QeTask>::kInvalid) { ds.errors.record(ErrorKind::kQcNodes); return; }
-    QeTask& t = qe.tasks.at(i);
-    t.hash = hash; t.rec = rec; t.depth = depth; t.match = match;
-    cuda::atomic_ref<uint32_t, cuda::thread_scope_device> pub(t.published);
-    pub.store(1u, cuda::memory_order_release);
+    if (!qe.tasks.append(QeTask{hash, rec, depth, match, 0u}))
+        ds.errors.record(ErrorKind::kQcNodes);
 }
 
 // Instance side of the rendezvous: a task per match already captured for this class.

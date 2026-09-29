@@ -9,7 +9,7 @@
 // freshly-deduped state is admitted to the next-step frontier with
 // probability `exploration_probability`; the state and its event are
 // still recorded regardless. The free `evolve()` wrapper applies the
-// coin flip in state_survives_dedup, which the persistent loop applies per child.
+// coin flip in state_retained, which the persistent loop applies per fresh child.
 
 namespace {
 

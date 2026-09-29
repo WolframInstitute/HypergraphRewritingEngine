@@ -11,6 +11,7 @@
 
 #include "hg_gpu/event_identity.hpp"
 #include "hg_gpu/persistent.hpp"
+#include "hg_gpu/explore_depth.hpp"
 #include <cstdio>
 #include "hg_gpu/quotient_causal.hpp"
 #include "hg_gpu/quotient_expansion.hpp"
@@ -46,27 +47,6 @@ __global__ void k_seed_match_queue(typename RingBuffer<MatchWorkItem>::DeviceVie
     queue.try_push(item);   // capacity >= item count, so this cannot fail here
 }
 
-// Seed variant for a launch chain with no host round trip: the kept-root count lives in device
-// memory (written by k_seed_root_hashes earlier in the same stream), so each thread reads it
-// and self-selects, and the detector's pushed counter is marked here, item by item, under the
-// same discipline the workers keep (mark_pushed BEFORE try_push). The grid covers the CAP --
-// every root kept -- and threads past the live count exit, which is what lets the host launch
-// this without ever reading the count back.
-__global__ void k_seed_match_queue_counted(
-        typename RingBuffer<MatchWorkItem>::DeviceView queue,
-        const StateId* kept_ids, const uint32_t* kept_count, uint32_t kept_cap,
-        uint32_t num_rules, uint32_t step,
-        typename TerminationDetector::DeviceView term) {
-    const uint32_t kept = min(*kept_count, kept_cap);
-    const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= kept * num_rules) return;
-    MatchWorkItem item;
-    item.state_id = kept_ids[tid / num_rules];
-    item.rule_id  = tid - (tid / num_rules) * num_rules;
-    item.step     = step;
-    term.mark_pushed(kRoleMatch);
-    queue.try_push(item);   // capacity >= kept_cap * num_rules, so this cannot fail here
-}
 
 // Seed from a SESSION FRONTIER: state ids recorded when the previous call's budget refused to
 // expand them. Unlike the root seeder there is no hashing and no dedup consultation -- these
@@ -77,22 +57,21 @@ __global__ void k_seq_ramp(uint64_t* seq, uint32_t n) {
     if (i < n) seq[i] = i;
 }
 
-__global__ void k_seed_frontier(typename RingBuffer<MatchWorkItem>::DeviceView queue,
-                                const StateId* ids, const uint32_t* steps,
-                                const uint32_t* count, uint32_t cap,
-                                uint32_t num_rules,
-                                typename TerminationDetector::DeviceView term) {
+__global__ void k_seed_frontier(DeviceState ds, ExploreView ev, const StateId* ids,
+                                const uint32_t* steps, const uint32_t* count, uint32_t cap) {
     const uint32_t live = min(*count, cap);
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= live * num_rules) return;
-    MatchWorkItem item;
+    if (tid >= live) return;
+    const StateId s = ids[tid];
+    // A state lowered under the old budget later in the run that recorded it was expanded
+    // then, and holds the claim.
+    if (!ev.claim(s)) return;
     // Depth is PER ENTRY: after a steered Step the frontier mixes entries stranded by
-    // different budgets, and each resumes at its own recorded depth.
-    item.state_id = ids[tid / num_rules];
-    item.rule_id  = tid - (tid / num_rules) * num_rules;
-    item.step     = steps[tid / num_rules];
-    term.mark_pushed(kRoleMatch);
-    queue.try_push(item);
+    // different budgets. The state's own depth is the smallest any path reached it by.
+    uint32_t d = steps[tid];
+    const uint32_t known = ev.depth[s];
+    if (known < d) d = known;
+    if (!ev.expand.append(ExpandEntry{s, d, 0u})) ds.errors.record(ErrorKind::kStatePoolFull);
 }
 
 // The key this run identifies states BY -- the device twin of compute_state_dedup_keys, and it
@@ -146,8 +125,7 @@ __global__ void k_qe_redrive(DeviceState ds, QeView qe, uint32_t old_bound) {
 __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_t num_roots,
                                    DedupMap::DeviceView map, CanonicalizationMode state_mode,
                                    bool need_exact, bool need_ranks, DeviceArena::View arena,
-                                   QcView qc, QeView qe,
-                                   StateId* out_ids, uint32_t* out_count, uint32_t out_cap) {
+                                   QcView qc, QeView qe, ExploreView ev) {
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= num_roots) return;
     const StateId sid = roots[tid];
@@ -188,17 +166,92 @@ __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_
     // index is the slice.
     qe_seed_root_instance(ds, qe, sid, tid);
 
-    // Every root is kept, isomorphic ones included: each is its own initial state.
-    if (key == 0) ds.errors.record(ErrorKind::kUncomputedStateHash);   // keep it; see the kind
-    else          map.insert_if_absent(key, sid);
-    const uint32_t pos = atomicAdd(out_count, 1u);
-    // Past capacity the state is not written, and a state missing from the frontier is a
-    // subtree that never gets explored -- silently a smaller answer, not a slower one. Recorded
-    // so the run reports partial work rather than looking complete; the host's grow-and-retry
-    // reads the same kind and doubles max_states.
-    if (pos < out_cap) out_ids[pos] = sid;
-    else               ds.errors.record(ErrorKind::kFrontierCapFull);
+    // Every root is expanded at depth 0, isomorphic ones included: each is its own initial
+    // state. Its class's canonical state is claimed too, so no later arrival expands the class
+    // again (the host's try_claim_expanded on the canonical root).
+    if (key == 0) {
+        ds.errors.record(ErrorKind::kUncomputedStateHash);   // keep it; see the kind
+    } else {
+        const auto r = map.insert_if_absent(key, sid);
+        if (!r.inserted && !r.overflowed) {
+            atomicMin(&ev.depth[r.value], 0u);
+            ev.claim(r.value);
+        }
+    }
+    atomicMin(&ev.depth[sid], 0u);
+    ev.claim(sid);
+    if (!ev.expand.append(ExpandEntry{sid, 0u, 0u})) ds.errors.record(ErrorKind::kStatePoolFull);
 }
+
+// Record `s` on a session's frontier at `step`: the budget refused it and a continuation resumes
+// from it. Past the capacity the entry is dropped and reported.
+__device__ inline void session_frontier_append(DeviceState& ds, const SessionView& sess,
+                                               StateId s, uint32_t step) {
+    if (!sess.enabled) return;
+    cuda::atomic_ref<uint32_t, cuda::thread_scope_device> fc(*sess.frontier_count);
+    const uint32_t at = fc.fetch_add(1u, cuda::memory_order_relaxed);
+    if (at < sess.frontier_cap) {
+        sess.frontier[at]      = s;
+        sess.frontier_step[at] = step;
+    } else {
+        ds.errors.record(ErrorKind::kFrontierCapFull);
+    }
+}
+
+// This engine's face for hgcommon/explore_depth_core.hpp, run by a block's thread 0 over the
+// block's frame slice. A state admitted under the budget is claimed and appended to the expand
+// log; at or past it, recorded on a session's frontier unclaimed.
+struct DeviceExploreCtx {
+    using Node = uint32_t;
+    DeviceState&       ds;
+    ExploreView&       ev;
+    const SessionView& sess;
+    uint32_t           max_steps;
+    uint32_t*          frame_node;
+    uint32_t*          frame_depth;
+    uint32_t           levels;
+    uint32_t           frames = 0;
+
+    __device__ uint32_t depth_load(uint32_t s) const {
+        cuda::atomic_ref<uint32_t, cuda::thread_scope_device> d(ev.depth[s]);
+        return d.load(cuda::memory_order_acquire);
+    }
+    __device__ bool depth_cas(uint32_t s, uint32_t& expected, uint32_t desired) {
+        cuda::atomic_ref<uint32_t, cuda::thread_scope_device> d(ev.depth[s]);
+        return d.compare_exchange_strong(expected, desired, cuda::memory_order_acq_rel,
+                                         cuda::memory_order_acquire);
+    }
+    __device__ void children_push(uint32_t parent, uint32_t child) {
+        if (ev.children.push(parent, child) == Pool<LockFreeList<StateId>::Node>::kInvalid)
+            ds.errors.record(ErrorKind::kEventPoolFull);
+    }
+    __device__ Node children_head(uint32_t s) const { return ev.children.head_index(s); }
+    __device__ static bool children_end(Node n) {
+        return n == Pool<LockFreeList<StateId>::Node>::kInvalid;
+    }
+    __device__ uint32_t children_value(Node n) const { return ev.children.node(n)->value; }
+    __device__ Node children_next(Node n) const { return ev.children.node(n)->next; }
+    __device__ void fence() const { __threadfence(); }
+    __device__ void admit(uint32_t s, uint32_t d) {
+        if (d >= max_steps) { session_frontier_append(ds, sess, s, d); return; }
+        if (!ev.claim(s)) return;
+        if (!ev.expand.append(ExpandEntry{s, d, 0u})) ds.errors.record(ErrorKind::kStatePoolFull);
+    }
+    __device__ bool frame_push(Node at, uint32_t d) {
+        if (frames == levels) return false;
+        frame_node[frames] = at;
+        frame_depth[frames] = d;
+        ++frames;
+        return true;
+    }
+    __device__ bool frame_top(Node*& at, uint32_t& d) {
+        if (frames == 0) return false;
+        at = &frame_node[frames - 1];
+        d = frame_depth[frames - 1];
+        return true;
+    }
+    __device__ void frame_pop() { --frames; }
+};
 
 // Records a claiming consumer may safely read. The pool's counter counts CLAIMS, and a claim
 // past the end returns kInvalid without writing, so the counter can exceed the capacity while
@@ -441,7 +494,8 @@ __global__ void k_persistent_evolve(
         QcView qc,
         QeView qe,
         unsigned long long* phase_cycles,
-        SessionView sess) {
+        SessionView sess,
+        ExploreView ev) {
 
     // Ranks are the reconstruction's frame alignment, Automatic's signature, AND the transition
     // draw's key. One predicate answers it for the roots and for every child; see its note.
@@ -484,35 +538,26 @@ __global__ void k_persistent_evolve(
             DeviceState&                              ds;
             unsigned long long*                       phase_cycles;
             const uint32_t*                           replay_events;   // null without a replay
-            // The replay's task log (QeView::tasks): claimed tasks and tasks run. Null counter
-            // without a replay.
-            const uint32_t*                           tasks_claimed;
-            uint32_t                                  tasks_capacity;
-            const uint32_t*                           tasks_done;
+            // The replay's task log (QeView::tasks); null without a replay.
+            const WorkLogView<QeTask>*                tasks;
+            const WorkLogView<ExpandEntry>*           expands;
 
             HG_DEV uint32_t num_roles() const { return term.num_roles; }
             HG_DEV uint32_t max_stagnant_rounds() const { return kMaxDetectorRounds; }
             HG_DEV bool snapshot(uint64_t* p, uint64_t* c) const {
                 return term.snapshot_quiescent(p, c);
             }
-            // Records and replay tasks together. Neither consumed count can pass its produced
-            // count, so the sums are equal exactly when both pairs are.
+            // Records, expand entries and replay tasks together. No consumed count can pass its
+            // produced count, so the sums are equal exactly when every pair is.
             HG_DEV uint32_t produced() const {
-                uint32_t n = readable_records(found);
-                if (tasks_claimed) {
-                    cuda::atomic_ref<const uint32_t, cuda::thread_scope_device> r(*tasks_claimed);
-                    const uint32_t t = r.load(cuda::memory_order_acquire);
-                    n += t < tasks_capacity ? t : tasks_capacity;
-                }
+                uint32_t n = readable_records(found) + expands->readable();
+                if (tasks) n += tasks->readable();
                 return n;
             }
             HG_DEV uint32_t consumed() const {
                 cuda::atomic_ref<uint32_t, cuda::thread_scope_device> r(*rewrites_done);
-                uint32_t n = r.load(cuda::memory_order_acquire);
-                if (tasks_done) {
-                    cuda::atomic_ref<const uint32_t, cuda::thread_scope_device> d(*tasks_done);
-                    n += d.load(cuda::memory_order_acquire);
-                }
+                uint32_t n = r.load(cuda::memory_order_acquire) + expands->done_count();
+                if (tasks) n += tasks->done_count();
                 return n;
             }
             // The replay's raw events: the work a block does inline with no role booking it.
@@ -594,8 +639,7 @@ __global__ void k_persistent_evolve(
             }
         } dctx{term, found, rewrites_done, ds, phase_cycles,
                qe.enabled ? qe.next_raw_event : nullptr,
-               (qe.enabled && qe.replay) ? qe.tasks.counter : nullptr, qe.tasks.capacity,
-               (qe.enabled && qe.replay) ? qe.tasks_done : nullptr};
+               (qe.enabled && qe.replay) ? &qe.tasks : nullptr, &ev.expand};
 
         hgcommon::term_detect_loop(dctx, p1, c1, p2, c2);
         return;
@@ -614,7 +658,8 @@ __global__ void k_persistent_evolve(
     __shared__ uint32_t child_sid;
     __shared__ uint32_t child_event;
     __shared__ uint32_t child_step;
-    __shared__ bool     expand_child;
+    __shared__ uint32_t expand_base;
+    __shared__ uint32_t expand_count;
     __shared__ bool     run_rule_inline;
     __shared__ bool     stalled;
     uint32_t idle_spins = 0;
@@ -681,7 +726,6 @@ __global__ void k_persistent_evolve(
                 child_sid    = applied.state;
                 child_event  = applied.event;
                 child_step   = step + 1u;
-                expand_child = false;
                 acc_rewrite += clock64() - t0b;
             }
             __syncthreads();
@@ -781,34 +825,32 @@ __global__ void k_persistent_evolve(
                             acc_qe += clock64() - s3;
                         }
 
-                        if (child_step < max_steps) {
+                        // IDENTITY, THEN DEPTH (explore_depth.hpp). The first arrival of a key
+                        // is its canonical state; a fresh state the exploration coin or a cap
+                        // refuses, under the budget or in a session, is claimed unexpanded, so
+                        // no later path expands it. Every arrival registers under its parent,
+                        // and one that lowers the canonical state's depth admits it and lowers
+                        // its descendants.
+                        {
                             const uint64_t s4 = clock64();
-                            expand_child = state_survives_dedup(ds, child_sid, h, dedup_map,
-                                                                dedup, explore_threshold_u32,
-                                                                explore_seed, child_step,
-                                                                rec.state_id);
-                            acc_dedup += clock64() - s4;
-                        } else if (sess.enabled) {
-                            // AT THE BUDGET, AND THE RUN IS CONTINUABLE. Consult dedup anyway --
-                            // a duplicate needs no frontier entry, someone else's copy carries
-                            // the expansion -- and record the survivor so the next call can
-                            // expand it. Without this the boundary is not merely unexpanded, it
-                            // is unrecoverable: nothing else records which states the budget
-                            // stopped at.
-                            if (state_survives_dedup(ds, child_sid, h, dedup_map, dedup,
-                                                     explore_threshold_u32, explore_seed,
-                                                     child_step, rec.state_id)) {
-                                cuda::atomic_ref<uint32_t, cuda::thread_scope_device>
-                                    fc(*sess.frontier_count);
-                                const uint32_t at = fc.fetch_add(1u, cuda::memory_order_relaxed);
-                                if (at < sess.frontier_cap) {
-                                    sess.frontier[at]      = child_sid;
-                                    sess.frontier_step[at] = child_step;
-                                } else ds.errors.record(ErrorKind::kFrontierCapFull);
+                            const StateIdentity id =
+                                state_identity(ds, child_sid, h, dedup_map, dedup);
+                            if (id.fresh && (child_step < max_steps || sess.enabled) &&
+                                !state_retained(ds, child_sid, child_step, rec.state_id,
+                                                explore_threshold_u32, explore_seed))
+                                ev.claim(id.canonical);
+                            DeviceExploreCtx xc{ds, ev, sess, max_steps,
+                                                ev.frame_node + size_t(blockIdx.x) * ev.frame_levels,
+                                                ev.frame_depth + size_t(blockIdx.x) * ev.frame_levels,
+                                                ev.frame_levels};
+                            const uint32_t d = hgcommon::explore_register_child(
+                                xc, rec.state_id, id.canonical, child_step);
+                            if (d != hgcommon::kExploreNoDepth) {
+                                xc.admit(id.canonical, d);
+                                if (!hgcommon::explore_relax(xc, id.canonical, d))
+                                    ds.errors.record(ErrorKind::kScratchOverflow);
                             }
-                            expand_child = false;
-                        } else {
-                            expand_child = false;
+                            acc_dedup += clock64() - s4;
                         }
                     }
                 }
@@ -817,7 +859,38 @@ __global__ void k_persistent_evolve(
             }
             __syncthreads();
 
-            for (uint32_t r = 0; expand_child && r < num_rules; ++r) {
+            if (threadIdx.x == 0) {
+                __threadfence();
+                atomicAdd(rewrites_done, 1u);
+                // 1024, which is what the detector's note beside the progress print already
+                // states this to be. A flush is ten atomics on one 128-byte line, shared by
+                // every block, so at eight it cost 1.25 per record -- and the reason the
+                // interval exists at all is that a run which never finishes is still
+                // attributable, which 1024 serves exactly as well as 8. A block leaving the
+                // loop flushes on the way out either way (exit_requested, stalled), so a run
+                // shorter than the interval loses nothing.
+                if (++records_since_flush >= 1024u) {
+                    flush_cycles();
+                    records_since_flush = 0;
+                }
+            }
+            __syncthreads();
+            continue;
+        }
+
+        // EXPAND ENTRIES (ExploreView::expand), one per block: push the state's match items,
+        // matching one on this block when the ring is full. Booked after every push.
+        if (threadIdx.x == 0) {
+            expand_count = ev.expand.claim(1u, expand_base);
+            if (expand_count) {
+                const ExpandEntry& e = ev.expand.await(expand_base);
+                child_sid  = e.state;
+                child_step = e.depth;
+            }
+        }
+        __syncthreads();
+        if (expand_count) {
+            for (uint32_t r = 0; r < num_rules; ++r) {
                 if (threadIdx.x == 0) {
                     MatchWorkItem it;
                     it.state_id = child_sid;
@@ -846,21 +919,11 @@ __global__ void k_persistent_evolve(
                 __syncthreads();
                 if (threadIdx.x == 0 && run_rule_inline) acc_match += clock64() - tA;
             }
-
             if (threadIdx.x == 0) {
                 __threadfence();
-                atomicAdd(rewrites_done, 1u);
-                // 1024, which is what the detector's note beside the progress print already
-                // states this to be. A flush is ten atomics on one 128-byte line, shared by
-                // every block, so at eight it cost 1.25 per record -- and the reason the
-                // interval exists at all is that a run which never finishes is still
-                // attributable, which 1024 serves exactly as well as 8. A block leaving the
-                // loop flushes on the way out either way (exit_requested, stalled), so a run
-                // shorter than the interval loses nothing.
-                if (++records_since_flush >= 1024u) {
-                    flush_cycles();
-                    records_since_flush = 0;
-                }
+                ev.expand.book(1u);
+                idle_ns = 64;
+                idle_spins = 0;
             }
             __syncthreads();
             continue;
@@ -886,33 +949,19 @@ __global__ void k_persistent_evolve(
         // tasks with one CAS on the cursor, each lane runs one, and lane 0 books how many ran
         // after every lane's work, its appends included, is fenced. The block is one warp.
         if (qe.enabled && qe.replay) {
-            if (threadIdx.x == 0) {
-                task_count = 0;
-                cuda::atomic_ref<uint32_t, cuda::thread_scope_device> cref(*qe.tasks.counter);
-                const uint32_t readable = min(cref.load(cuda::memory_order_acquire),
-                                              qe.tasks.capacity);
-                uint32_t cur = *qe.task_cursor;
-                while (cur < readable) {
-                    const uint32_t k = min(readable - cur, kMatchBlockThreads);
-                    const uint32_t prev = atomicCAS(qe.task_cursor, cur, cur + k);
-                    if (prev == cur) { task_base = cur; task_count = k; break; }
-                    cur = prev;
-                }
-            }
+            if (threadIdx.x == 0) task_count = qe.tasks.claim(kMatchBlockThreads, task_base);
             __syncthreads();
             if (task_count) {
                 const unsigned long long tQ = (threadIdx.x == 0) ? clock64() : 0;
                 if (threadIdx.x < task_count) {
-                    QeTask& t = qe.tasks.at(task_base + threadIdx.x);
-                    cuda::atomic_ref<uint32_t, cuda::thread_scope_device> pub(t.published);
-                    while (pub.load(cuda::memory_order_acquire) == 0u) __nanosleep(64);
+                    const QeTask& t = qe.tasks.await(task_base + threadIdx.x);
                     qe_apply(ds, qe, qe.instances.at(t.rec), qe.matches.at(t.match), t.hash,
                              t.depth);
                     __threadfence();
                 }
                 __syncthreads();
                 if (threadIdx.x == 0) {
-                    atomicAdd(qe.tasks_done, task_count);
+                    qe.tasks.book(task_count);
                     idle_ns = 64;
                     idle_spins = 0;
                     acc_canon += clock64() - tQ;
@@ -1037,6 +1086,10 @@ struct EngineState::PersistentScratch {
     std::unique_ptr<DedupMap> canonical;
     std::unique_ptr<DedupMap> event_ids;
     std::unique_ptr<TerminationDetector> term;
+    std::unique_ptr<ExploreState> explore;
+    uint32_t* explore_frames = nullptr;
+    size_t    explore_frame_words = 0;
+    ~PersistentScratch() { if (explore_frames) cudaFree(explore_frames); }
 };
 
 void EngineState::PersistentScratchFree::operator()(PersistentScratch* p) const { delete p; }
@@ -1232,6 +1285,39 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     const bool dbgt = std::getenv("HG_GPU_DBG_TIME") != nullptr;
     auto t_maps0 = std::chrono::steady_clock::now();
     EngineState::PersistentScratch& ps = engine.persistent_scratch();
+
+    // Exploration depth (explore_depth.hpp). A session keeps its depths, claims and child lists
+    // across calls and consumes its expand log per call; a one-shot run starts from nothing.
+    ExploreView ev;
+    if (session) {
+        ev = sess_v.explore;
+        explore_reset_async(ev, /*full=*/false);
+    } else {
+        const uint32_t ms = engine.config().max_states, me = engine.config().max_events;
+        if (ps.explore && ps.explore->max_states() == ms && ps.explore->max_events() == me)
+            ps.explore->clear();
+        else
+            ps.explore = std::make_unique<ExploreState>(ms, me);
+        ev = ps.explore->view();
+    }
+    // The walk's frames: one per level it can descend, per block. A frame is pushed only for a
+    // state the walk lowered, one level deeper than the last, and only states under the budget
+    // have children, so max_steps + 2 bounds a walk.
+    const uint32_t grid_req = blocks ? blocks : default_persistent_grid();
+    const uint32_t grid = grid_req < 2 ? 2 : grid_req;
+    {
+        const uint32_t levels = max_steps + 2u;
+        const size_t words = size_t(grid) * levels * 2u;
+        if (ps.explore_frame_words < words) {
+            if (ps.explore_frames) cudaFree(ps.explore_frames);
+            HG_CUDA_CHECK(cudaMalloc(&ps.explore_frames, sizeof(uint32_t) * words),
+                          "explore frames alloc");
+            ps.explore_frame_words = words;
+        }
+        ev.frame_node   = ps.explore_frames;
+        ev.frame_depth  = ps.explore_frames + size_t(grid) * levels;
+        ev.frame_levels = levels;
+    }
     DedupMap* canonical_owner =
         session ? nullptr : &reuse_map(ps.canonical, engine.config().max_states * 2u);
 
@@ -1257,10 +1343,6 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     // path calls cudaMalloc, which may synchronize the device, and the evolution's contract
     // is memory traffic at the start and end only, with ONE synchronization -- after the last
     // kernel.
-    StateId* d_kept = sc.kept;
-    uint32_t* d_kept_count = sc.kept_count;
-    HG_CUDA_CHECK(cudaMemset(d_kept_count, 0, sizeof(uint32_t)), "kept count clear");
-
     uint32_t* d_cursor = sc.cursor;
     HG_CUDA_CHECK(cudaMemset(d_cursor, 0, sizeof(uint32_t) * 2), "cursor clear");
     uint32_t* d_rewrites_done = d_cursor + 1;
@@ -1271,11 +1353,10 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
 
     TerminationDetector& term = reuse_term(engine);
 
-    // The whole evolution is a launch CHAIN on one stream: root hashing decides which roots
-    // survive and compacts them into d_kept/d_kept_count; the counted seeder reads that count
-    // on the device, enqueues (root, rule) items and books them with the detector; the evolve
-    // kernel consumes them. Stream order carries every dependency, so the host synchronizes
-    // exactly once, after the last kernel, and reads nothing back before that.
+    // The whole evolution is a launch CHAIN on one stream: root hashing appends each root to
+    // the expand log, which the detector counts, and the evolve kernel consumes it. Stream order
+    // carries every dependency, so the host synchronizes exactly once, after the last kernel,
+    // and reads nothing back before that.
     const double t_alloc = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_alloc0).count();
     auto t_seed0 = std::chrono::steady_clock::now();
@@ -1295,12 +1376,11 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                 engine.device(), qe, start_step);
         }
         const uint32_t block = 128;
-        const uint32_t items = sess_v.frontier_cap * num_rules;
-        const uint32_t seed_grid = (items + block - 1) / block;
+        const uint32_t seed_grid = (sess_v.frontier_cap + block - 1) / block;
         if (seed_grid) {
             k_seed_frontier<<<seed_grid, block>>>(
-                match_q.view(), sess_v.frontier, sess_v.frontier_step, sess_v.frontier_count,
-                sess_v.frontier_cap, num_rules, term.view());
+                engine.device(), ev, sess_v.frontier, sess_v.frontier_step,
+                sess_v.frontier_count, sess_v.frontier_cap);
         }
         // THE FRONTIER IS CONSUMED, NOT ACCUMULATED. The states it held are being expanded now,
         // and this run's own boundary takes their place -- so the counter is reset between the
@@ -1324,20 +1404,10 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                  dsv.matches_per_state_rule),
             run_needs_edge_ranks(event_keys, qe.enabled != 0, dsv.transition_rate,
                                  dsv.num_rule_weights, dsv.matches_per_state_rule),
-            arena.view(), qc, qe, d_kept, d_kept_count, n);
-    }
-    if (!(start_step > 0 && session)) {
-        const uint32_t block = 128;
-        const uint32_t items = static_cast<uint32_t>(roots.size()) * num_rules;
-        const uint32_t seed_grid = (items + block - 1) / block;
-        k_seed_match_queue_counted<<<seed_grid, block>>>(
-            match_q.view(), d_kept, d_kept_count, static_cast<uint32_t>(roots.size()),
-            num_rules, /*step=*/0u, term.view());
+            arena.view(), qc, qe, ev);
     }
 
     // Block 0 is the detector, so at least two blocks are needed for any work to happen.
-    const uint32_t grid_req = blocks ? blocks : default_persistent_grid();
-    const uint32_t grid = grid_req < 2 ? 2 : grid_req;
     const double t_seed = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_seed0).count();
     if (dbgt)
@@ -1350,7 +1420,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         session ? sess_v.states : canonical_owner->view(), dedup,
         explore_threshold_u32, explore_seed, max_steps, state_mode, event_keys,
         session ? sess_v.events : owned_event_ids->view(),
-        arena.view(), term.view(), qc, qe, d_phase_cycles, sess_v);
+        arena.view(), term.view(), qc, qe, d_phase_cycles, sess_v, ev);
     HG_CUDA_CHECK(cudaDeviceSynchronize(), "persistent evolve sync");
     if (!read_stats) return stats;
 
@@ -1391,7 +1461,60 @@ uint64_t persistent_arena_words(uint32_t share_words, uint32_t holders) {
     return static_cast<uint64_t>(holders) * static_cast<uint64_t>(share_words);
 }
 
-SessionState::SessionState(uint32_t max_states, uint32_t max_events): states_(max_states * 2u), events_(max_events * 2u), cap_(max_states) {
+// ---- ExploreState ------------------------------------------------------------------------
+
+// Zero the published flags of the entries the last launch appended; the counter is read on the
+// device, so the host never learns how many there were.
+__global__ void k_expand_log_clear(ExploreView v) {
+    const uint32_t n = min(*v.expand.items.counter, v.expand.items.capacity);
+    for (uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x)
+        v.expand.items.at(i).published = 0u;
+}
+
+void explore_reset_async(const ExploreView& v, bool full) {
+    k_expand_log_clear<<<64, 256>>>(v);
+    HG_CUDA_CHECK(cudaMemsetAsync(v.expand.items.counter, 0, sizeof(uint32_t)),
+                  "expand log counter clear");
+    HG_CUDA_CHECK(cudaMemsetAsync(v.expand.cursor, 0, sizeof(uint32_t) * 2u),
+                  "expand log cursor clear");
+    if (!full) return;
+    HG_CUDA_CHECK(cudaMemsetAsync(v.depth, 0xFF, sizeof(uint32_t) * v.max_states),
+                  "explore depth clear");
+    HG_CUDA_CHECK(cudaMemsetAsync(v.claimed, 0, sizeof(uint32_t) * v.max_states),
+                  "explore claim clear");
+    HG_CUDA_CHECK(cudaMemsetAsync(v.children.heads, 0xFF, sizeof(uint32_t) * v.children.num_keys),
+                  "explore child heads clear");
+    HG_CUDA_CHECK(cudaMemsetAsync(v.children.pool.counter, 0, sizeof(uint32_t)),
+                  "explore child pool clear");
+}
+
+ExploreState::ExploreState(uint32_t max_states, uint32_t max_events)
+    : max_states_(max_states), max_events_(max_events),
+      children_(max_states, max_events), expand_(max_states) {
+    HG_CUDA_CHECK(cudaMalloc(&words_, sizeof(uint32_t) * (2ull * max_states + 2u)),
+                  "explore words alloc");
+    HG_CUDA_CHECK(cudaMemset(expand_.view().data, 0, sizeof(ExpandEntry) * size_t(max_states)),
+                  "expand log init");
+    clear();
+}
+
+ExploreState::~ExploreState() { if (words_) cudaFree(words_); }
+
+void ExploreState::clear() { explore_reset_async(view(), /*full=*/true); }
+
+ExploreView ExploreState::view() const {
+    ExploreView v;
+    v.depth         = words_;
+    v.claimed       = words_ + max_states_;
+    v.children      = children_.view();
+    v.expand.items  = expand_.view();
+    v.expand.cursor = words_ + 2ull * max_states_;
+    v.expand.done   = words_ + 2ull * max_states_ + 1u;
+    v.max_states    = max_states_;
+    return v;
+}
+
+SessionState::SessionState(uint32_t max_states, uint32_t max_events): states_(max_states * 2u), events_(max_events * 2u), explore_(max_states, max_events), cap_(max_states) {
         states_.clear();
         events_.clear();
         HG_CUDA_CHECK(cudaMalloc(&frontier_, sizeof(StateId) * cap_), "session frontier alloc");
@@ -1451,6 +1574,7 @@ SessionView SessionState::view() {
         v.frontier_count = count_;
         v.frontier_cap   = cap_;
         v.enabled        = 1;
+        v.explore        = explore_.view();
         return v;
     }
 

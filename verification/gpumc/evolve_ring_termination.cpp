@@ -14,32 +14,44 @@
 // THE LOOP TRANSCRIBED (k_persistent_evolve; one worker thread here stands for a block's thread
 // 0, which is the only lane that touches the ring, the pool and the counters):
 //   1. claim the next record (cursor CAS below the pool's readable count); if one is claimed,
-//      await its published flag, "rewrite" it, and if the child is below the step budget book
-//      pushed[match] BEFORE try_push for each rule, running the item inline (completion booked
-//      first) when the ring is full; then fence and bump rewrites_done.
-//   2. otherwise try_pop a match item; if one came, "match" it (claim a record, write it,
+//      await its published flag, "rewrite" it, and if the child is below the step budget append
+//      it to the expand log (hg_gpu/work_log.hpp: claim a slot, write, publish with release);
+//      then fence and bump rewrites_done.
+//   2. otherwise claim one expand entry (cursor CAS below the log's readable count), await its
+//      published flag, book pushed[match] BEFORE try_push for each rule, running the item
+//      inline (completion booked first) when the ring is full; then fence and bump the log's
+//      done count.
+//   3. otherwise try_pop a match item; if one came, "match" it (claim a record, write it,
 //      publish) and book completed[match] AFTER the record is published.
-//   3. otherwise leave if the detector asked; idle rounds are bounded here as the kernel bounds
+//   4. otherwise leave if the detector asked; idle rounds are bounded here as the kernel bounds
 //      them with kMaxWorkerIdleSpins.
+// The detector's produced is the readable records plus the readable expand entries, and its
+// consumed is rewrites_done plus the log's done count (RewriteDetectorCtx).
 //
-// THE PROPERTY. If the detector signals exit through the QUIESCENT path, every match item was
-// completed, every record was rewritten and the ring is empty. Exiting through the stall path
+// THE PROPERTY. If the detector signals exit through the QUIESCENT path, every expand entry was
+// run, every match item was completed, every record was rewritten and the ring is empty. Exiting through the stall path
 // is not a defect of the decision and is not asserted against.
 //
-// THE BOUND. A two-slot ring and three rules, so the rewrite of the seed's record pushes two
-// children and runs the third inline through the full-ring path; a step budget of two, so the
-// children's records push nothing. One seed item, three child items, four records. HG_WORKERS
+// THE BOUND. A two-slot ring, HG_RULES rules and a step budget of HG_MAX_STEPS. The root's
+// entry is in the log before any block starts, as k_seed_root_hashes appends it. The default,
+// one rule and two steps, runs an entry appended by a rewrite: the root's item, its record, a
+// depth-1 entry, its item and record. -DHG_RULES=3 -DHG_MAX_STEPS=1 runs the full-ring path: the
+// root's entry pushes three items into two slots and matches the third inline. HG_WORKERS
 // (default 1) sets the worker count; the two-worker run adds the ring and pool races the unit
 // harnesses cover on their own. The ring is never one slot: the sequence scheme's push-complete
 // and pop-complete marks coincide at capacity one, and a second push overwrites a live item.
 //
-// CALIBRATION. -DCALIBRATE_PUSH_THEN_BOOK books pushed[match] AFTER the push. A snapshot taken
-// between the push and the booking sees pushed == completed with the item in the ring, and the
+// CALIBRATION. -DCALIBRATE_DONE_BEFORE_PUSH books an expand entry done before its pushes: a
+// snapshot between the booking and the pushes sees every count balanced with work owed, and the
 // quiescent assertion fires. -DCALIBRATE_ONE_SLOT shrinks the ring to one slot, where the
-// sequence scheme's push-complete and pop-complete marks coincide: the second push overwrites
-// a live item, the pop after it never matches, and the quiescent assertion fires (9 executions).
-// gpu/include/hg_gpu/ring_buffer.hpp rejects a capacity below two for this reason. The harness
-// is only evidence if both arms fail.
+// sequence scheme's push-complete and pop-complete marks coincide; at -DHG_RULES=2
+// -DHG_MAX_STEPS=1 the second push overwrites a live item and no execution completes (0,
+// against 30,246 with two slots). gpu/include/hg_gpu/ring_buffer.hpp rejects a capacity below
+// two for this reason.
+//
+// NOT A CALIBRATION HERE: -DCALIBRATE_PUSH_THEN_BOOK, booking pushed[match] after the push,
+// verifies clean, because every push happens inside an expand entry not yet booked done, and
+// the detector cannot see both counts balanced between the push and its booking.
 //
 // THE CURSOR IS 64-BIT because the checker cannot complete a 32-bit compare-exchange
 // (hash_insert_elects_one.cpp records the measurement); the kernel's cursor is a 32-bit word.
@@ -74,16 +86,26 @@ constexpr uint32_t kRingCap    = 2;
 #endif
 constexpr uint32_t kRingMask   = kRingCap - 1;
 #ifndef HG_RULES
-#define HG_RULES 2
+#define HG_RULES 1
+#endif
+#ifndef HG_MAX_STEPS
+#define HG_MAX_STEPS 2
 #endif
 constexpr uint32_t kRules      = HG_RULES;
-constexpr uint32_t kMaxSteps   = 2;
-constexpr uint32_t kMaxRecords = 4;
+constexpr uint32_t kMaxSteps   = HG_MAX_STEPS;
+// Entries at depth d number kRules^d; each pushes kRules items, one record each.
+constexpr uint32_t expands_below(uint32_t steps) {
+    uint32_t total = 0, level = 1;
+    for (uint32_t d = 0; d < steps; ++d) { total += level; level *= kRules; }
+    return total;
+}
+constexpr uint32_t kTotalExpands = expands_below(kMaxSteps);
+constexpr uint32_t kMaxExpands   = kTotalExpands;
+constexpr uint32_t kMaxRecords   = kRules * kTotalExpands;
 constexpr uint32_t kMaxIdle    = 1;
 constexpr uint32_t kInvalid    = 0xFFFFFFFFu;
-// The seed item, and one item per rule from the seed's record.
-constexpr uint64_t kTotalItems   = 1 + kRules;
-constexpr uint32_t kTotalRecords = 1 + kRules;
+constexpr uint64_t kTotalItems   = kRules * kTotalExpands;
+constexpr uint32_t kTotalRecords = kRules * kTotalExpands;
 
 // The ring.
 uint32_t g_slots[kRingCap];
@@ -104,6 +126,13 @@ uint32_t g_rec_published[kMaxRecords];
 uint32_t g_rec_step[kMaxRecords];
 uint64_t g_consume_cursor;
 uint32_t g_rewrites_done;
+
+// The expand log: an entry is its depth.
+uint32_t g_exp_counter;
+uint32_t g_exp_published[kMaxExpands];
+uint32_t g_exp_depth[kMaxExpands];
+uint64_t g_exp_cursor;
+uint32_t g_exp_done;
 
 uint64_t load64_dev(uint64_t* a, int order) {
     __VERIFIER_memory_scope_device();
@@ -200,6 +229,27 @@ void match(uint32_t step) {
     store32_dev(&g_rec_published[idx], 1u, __ATOMIC_RELEASE);
 }
 
+// WorkLogView::append / readable / claim(1) / await.
+void expand_append(uint32_t depth) {
+    const uint32_t idx = add32_dev(&g_exp_counter, 1u, __ATOMIC_RELAXED);
+    if (idx >= kMaxExpands) return;
+    g_exp_depth[idx] = depth;
+    store32_dev(&g_exp_published[idx], 1u, __ATOMIC_RELEASE);
+}
+uint32_t readable_expands() {
+    const uint32_t claimed = load32_dev(&g_exp_counter, __ATOMIC_ACQUIRE);
+    return claimed < kMaxExpands ? claimed : kMaxExpands;
+}
+uint32_t claim_expand() {
+    uint64_t cur = load64_dev(&g_exp_cursor, __ATOMIC_RELAXED);
+    while (cur < readable_expands()) {
+        uint64_t expected = cur;
+        if (cas64_dev(&g_exp_cursor, &expected, cur + 1u)) return static_cast<uint32_t>(cur);
+        cur = expected;
+    }
+    return kInvalid;
+}
+
 struct DetectorCtx {
     uint32_t num_roles() const { return 1; }
     uint32_t max_stagnant_rounds() const { return 1; }
@@ -208,8 +258,11 @@ struct DetectorCtx {
         c[0] = load64_dev(&g_completed[0], __ATOMIC_ACQUIRE);
         return p[0] == c[0];
     }
-    uint32_t produced() const { return readable_records(); }
-    uint32_t consumed() const { return load32_dev(&g_rewrites_done, __ATOMIC_ACQUIRE); }
+    uint32_t produced() const { return readable_records() + readable_expands(); }
+    uint32_t consumed() const {
+        return load32_dev(&g_rewrites_done, __ATOMIC_ACQUIRE) +
+               load32_dev(&g_exp_done, __ATOMIC_ACQUIRE);
+    }
     uint64_t work_progress() const { return 0; }
     void backoff_long() const {}
     void backoff_short() const {}
@@ -219,6 +272,8 @@ struct DetectorCtx {
     }
     void signal_exit() const {
         if (!load32_dev(&g_exited_by_stall, __ATOMIC_ACQUIRE)) {
+            assert(load32_dev(&g_exp_done, __ATOMIC_ACQUIRE) == kTotalExpands &&
+                   "quiescent exit with an expand entry still owed");
             assert(load64_dev(&g_completed[0], __ATOMIC_ACQUIRE) == kTotalItems &&
                    "quiescent exit with a match item still owed");
             assert(load32_dev(&g_rewrites_done, __ATOMIC_ACQUIRE) == kTotalRecords &&
@@ -255,23 +310,36 @@ void* worker(void* arg) {
             idle = 0;
             await_match(claimed);
             const uint32_t child_step = g_rec_step[claimed] + 1u;
-            if (child_step < kMaxSteps) {
-                for (uint32_t r = 0; r < kRules; ++r) {
+            if (child_step < kMaxSteps) expand_append(child_step);
+            fence_dev();
+            add32_dev(&g_rewrites_done, 1u, __ATOMIC_RELAXED);
+            continue;
+        }
+        const uint32_t e = claim_expand();
+        if (e != kInvalid) {
+            idle = 0;
+            while (load32_dev(&g_exp_published[e], __ATOMIC_ACQUIRE) == 0u) {}
+            const uint32_t depth = g_exp_depth[e];
+#if defined(CALIBRATE_DONE_BEFORE_PUSH)
+            add32_dev(&g_exp_done, 1u, __ATOMIC_RELAXED);
+#endif
+            for (uint32_t r = 0; r < kRules; ++r) {
 #if !defined(CALIBRATE_PUSH_THEN_BOOK)
-                    mark_pushed();
+                mark_pushed();
 #endif
-                    const bool run_inline = !try_push(child_step);
+                const bool run_inline = !try_push(depth);
 #if defined(CALIBRATE_PUSH_THEN_BOOK)
-                    mark_pushed();
+                mark_pushed();
 #endif
-                    if (run_inline) {
-                        mark_completed();
-                        match(child_step);
-                    }
+                if (run_inline) {
+                    mark_completed();
+                    match(depth);
                 }
             }
             fence_dev();
-            add32_dev(&g_rewrites_done, 1u, __ATOMIC_RELAXED);
+#if !defined(CALIBRATE_DONE_BEFORE_PUSH)
+            add32_dev(&g_exp_done, 1u, __ATOMIC_RELAXED);
+#endif
             continue;
         }
         uint32_t item = 0;
@@ -290,12 +358,10 @@ void* worker(void* arg) {
 
 int main() {
     for (uint32_t i = 0; i < kRingCap; ++i) g_seq[i] = i;
-    // k_seed_match_queue and mark_pushed_host: the seed item is in the ring and booked before
-    // any block starts.
-    g_slots[0]  = 0;
-    g_seq[0]    = 1;
-    g_tail      = 1;
-    g_pushed[0] = 1;
+    // k_seed_root_hashes: the root's entry is in the expand log before any block starts.
+    g_exp_depth[0]     = 0;
+    g_exp_published[0] = 1;
+    g_exp_counter      = 1;
 
     pthread_t td, tw[kWorkers];
     pthread_create(&td, nullptr, detector, nullptr);
@@ -308,6 +374,7 @@ int main() {
     if (!g_exited_by_stall) {
         assert(g_pushed[0] == g_completed[0]);
         assert(g_rewrites_done == kTotalRecords);
+        assert(g_exp_done == kTotalExpands);
         assert(g_head == g_tail);
     }
     return 0;

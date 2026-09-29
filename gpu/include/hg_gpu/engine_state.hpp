@@ -53,7 +53,7 @@ struct DeviceState {
 
     // SAMPLING AND CAPPING. The decisions live in hgcommon/sampling_core.hpp. match_state_rule
     // calls the draw, the spine and the per-(state, rule) cap when it emits a match;
-    // state_survives_dedup calls the two bounds. A rate of 1.0 with no weights and no cap takes
+    // state_retained calls the two bounds. A rate of 1.0 with no weights and no cap takes
     // the unsampled path.
     double        transition_rate;      // 1.0 = every transition is taken
     const double* rule_weights;         // null = every rule weighted 1
@@ -417,15 +417,13 @@ private:
     uint32_t*                          counter_block_          = nullptr;
 public:
     // GROW-ONLY DEVICE SCRATCH for the launch chain's per-run buffers (rules, seed states,
-    // kept-roots compaction, counters, phase cycles). Allocating these per run cost ~34
+    // counters, phase cycles). Allocating these per run cost ~34
     // cudaMalloc + 34 cudaFree API calls per call on the per-call floor; sized to the largest
     // run seen, they cost the first run what they always cost and later runs nothing. Mutable
     // through a const accessor because a scratch buffer is not logical engine state.
     struct LaunchScratch {
         DeviceRule*         rules        = nullptr;  uint32_t rules_cap  = 0;
         StateId*            states       = nullptr;  uint32_t states_cap = 0;
-        StateId*            kept         = nullptr;  uint32_t kept_cap   = 0;
-        uint32_t*           kept_count   = nullptr;  // 1 slot
         uint32_t*           cursor       = nullptr;  // 2 slots
         unsigned long long* phase_cycles = nullptr;  // 16 slots
     };
