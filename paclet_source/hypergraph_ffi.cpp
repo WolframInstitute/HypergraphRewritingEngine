@@ -977,8 +977,9 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         }
 
 
-        for (const auto& w : engine.warnings())
-            req.ffi_warnings.push_back({"Engine", 1, w});
+        for (size_t i = 0; i < engine.warnings().size(); ++i)
+            req.ffi_warnings.push_back(
+                {"Engine", 1, engine.warnings()[i], engine.warning_truncates(i)});
 
         if (hg.quotient_counts_saturated()) {
             req.ffi_warnings.push_back({"CountSaturated", 1, hgcommon::QM_SATURATED_MESSAGE});

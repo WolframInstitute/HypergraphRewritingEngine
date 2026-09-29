@@ -727,6 +727,8 @@ private:
     // capacity limit: the run is over, nothing else observes this, and the alternative is making
     // the whole error path non-const to append one string.
     mutable std::vector<std::string> warnings_;
+    // Indices into warnings_ of the notices that say the result is truncated (a capacity limit).
+    mutable std::vector<size_t> truncation_warnings_;
 
     // Per-parent successor count tracking (for max_successor_states_per_parent)
     static constexpr uint64_t SUCCESSOR_MAP_EMPTY = (1ULL << 62) + 500;
@@ -1108,6 +1110,8 @@ public:
     const EvolutionStats& stats() const;
 #endif
     const std::vector<std::string>& warnings() const;
+    // Whether warnings()[i] says the result is truncated.
+    bool warning_truncates(size_t i) const;
 
     // The order rules are submitted in. PUBLIC BECAUSE IT IS THE INVARIANT A DETERMINISM GATE HAS
     // TO ASSERT: a run that discards nothing must submit rules in identity order, because the only

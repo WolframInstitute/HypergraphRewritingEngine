@@ -271,6 +271,7 @@ void ParallelEvolutionEngine::raise_worker_error() const {
         // is the one outcome worse than the throw.
         case job_system::ErrorType::CapacityExhausted: {
             const char* what = job_system_->get_error_message();
+            truncation_warnings_.push_back(warnings_.size());
             warnings_.push_back(
                 std::string("capacity limit reached: ") + (*what ? what : "a configured container "
                 "ceiling was hit") + ". The evolution is TRUNCATED at that point -- the states, "
@@ -2480,6 +2481,12 @@ const EvolutionStats& ParallelEvolutionEngine::stats() const { return stats_; }
 #endif
 
 const std::vector<std::string>& ParallelEvolutionEngine::warnings() const { return warnings_; }
+
+bool ParallelEvolutionEngine::warning_truncates(size_t i) const {
+    for (size_t t : truncation_warnings_)
+        if (t == i) return true;
+    return false;
+}
 
 void ParallelEvolutionEngine::set_continuable(bool on) { continuable_ = on; }
 
