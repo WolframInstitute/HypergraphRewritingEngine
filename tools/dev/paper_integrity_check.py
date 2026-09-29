@@ -59,6 +59,9 @@ STALE_WHITELIST = {}
 # message (a pushed message cannot be amended). Hash-pinned, each with the proof; the walk
 # treats them as declared.
 COMMIT_ALLOWANCES = {
+    "dbf2df2784b37ef754c4a38d259e1beb037cedd6":
+        "adds two fields to bench_cpu_evolve's recon printf, which runs after the timed evolve "
+        "(the steady_clock pair at lines 274-276); the evolve call and its inputs are unchanged",
     "8680c72f4daab384b3f2a1d1ae9f23df9fdda673":
         "adds three fields to bench_gpu_evolve's recon printf, which runs after the timed loop; "
         "the evolve calls and their inputs are unchanged",
