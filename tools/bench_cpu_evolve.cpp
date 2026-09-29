@@ -360,10 +360,15 @@ int main(int argc, char** argv) {
                 std::printf("  siblings: parents=%zu events=%zu match_orbit_keys=%zu child_classes=%zu\n",
                             per.size(), events, keys, classes);
             }
-            std::printf("  recon: causal_pairs=%zu reduced_pairs=%zu branchial=%zu\n",
+            // id_bound over raw_events is the event-id blocks' fill: every block a worker
+            // abandons for a producer above it leaves ids unused.
+            std::printf("  recon: causal_pairs=%zu reduced_pairs=%zu branchial=%zu "
+                        "raw_events=%llu id_bound=%u\n",
                         g.num_reconstructed_causal_pairs(false),
                         g.num_reconstructed_causal_pairs(true),
-                        g.num_reconstructed_branchial());
+                        g.num_reconstructed_branchial(),
+                        (unsigned long long)g.num_reconstructed_raw_events(),
+                        g.reconstructed_event_id_bound());
             // WHAT THE REPLAY PAID FOR AGAINST WHAT IT KEPT. Every (instance, match) pair the
             // cross product offers takes a claim, and the width test that rejects a pair whose
             // capture and instance disagree on the class width runs against the pair after it.
