@@ -112,11 +112,15 @@ public:
         }
 
         // Every node in list[key], most-recent-first: exactly the nodes published before the
-        // head was loaded, so it is safe concurrent with pushes.
+        // head was loaded, so it is safe concurrent with pushes. An empty list is seen by a
+        // relaxed load, with nothing to read behind it; the acquire that orders a node's
+        // contents is taken only for a list that has one, since on this part it invalidates
+        // the SM's L1.
         template <typename Fn>
         __device__ void for_each(uint32_t key, Fn fn) const {
             if (key >= num_keys) return;
             Ops ops{const_cast<DeviceView*>(this), key};
+            if (ops.head_load_relaxed() == ops.invalid()) return;
             hgcommon::list_for_each(ops, [&](uint32_t idx) { fn(pool.at(idx).value); });
         }
     };

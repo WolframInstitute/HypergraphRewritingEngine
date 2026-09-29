@@ -83,6 +83,8 @@ void* instance_side(void*) {
     threadfence();
 #endif
     Ops theirs{&g_head_match};
+    // LockFreeList::DeviceView::for_each: an empty head by a relaxed load returns.
+    if (theirs.head_load_relaxed() != kInvalid)
     hgcommon::list_for_each(theirs, [&](uint32_t idx) { if (g_nodes[idx].value == 22) g_inst_saw_match = true; });
     return nullptr;
 }
@@ -97,6 +99,8 @@ void* match_side(void*) {
     threadfence();
 #endif
     Ops theirs{&g_head_inst};
+    // LockFreeList::DeviceView::for_each: an empty head by a relaxed load returns.
+    if (theirs.head_load_relaxed() != kInvalid)
     hgcommon::list_for_each(theirs, [&](uint32_t idx) { if (g_nodes[idx].value == 11) g_match_saw_inst = true; });
     return nullptr;
 }

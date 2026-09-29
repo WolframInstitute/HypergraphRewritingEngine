@@ -65,9 +65,11 @@ public:
             ref.fetch_add(n, cuda::memory_order_release);
         }
 
+        // Relaxed: a worker that sees the flag leaves and reads nothing it orders, and an idle
+        // worker polls it every round, where an acquire invalidates the SM's L1.
         __device__ bool exit_requested() const {
             cuda::atomic_ref<uint32_t, cuda::thread_scope_device> ref(*should_exit);
-            return ref.load(cuda::memory_order_acquire) != 0;
+            return ref.load(cuda::memory_order_relaxed) != 0;
         }
 
         // Detector-local: snapshot current counters into local buffers and

@@ -203,7 +203,7 @@ bool try_pop(uint32_t& out) {
 // TerminationDetector::DeviceView: release fetch_add on the counters, acquire loads.
 void mark_pushed()    { add64_dev(&g_pushed[0], 1, __ATOMIC_RELEASE); }
 void mark_completed() { add64_dev(&g_completed[0], 1, __ATOMIC_RELEASE); }
-bool exit_requested() { return load32_dev(&g_should_exit, __ATOMIC_ACQUIRE) != 0; }
+bool exit_requested() { return load32_dev(&g_should_exit, __ATOMIC_RELAXED) != 0; }
 
 // readable_records / claim_next_record / publish_match / await_match, as persistent.cu and
 // match.hpp define them.

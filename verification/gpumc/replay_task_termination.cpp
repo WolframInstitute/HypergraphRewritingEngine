@@ -103,7 +103,7 @@ void fence_dev() {
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
 }
 
-bool exit_requested() { return load32_dev(&g_should_exit, __ATOMIC_ACQUIRE) != 0; }
+bool exit_requested() { return load32_dev(&g_should_exit, __ATOMIC_RELAXED) != 0; }
 
 // qe_task_append. The pool never fills at this bound.
 void append(uint32_t depth) {
