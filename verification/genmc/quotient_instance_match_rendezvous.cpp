@@ -5,10 +5,16 @@
 // sides therefore publish and then scan for the other:
 //
 //   instance side (Hypergraph::qc_add_instance)      match side (Hypergraph::qc_capture_expansion)
-//     insert the instance list into qc_instances_      insert the match list into qc_expansion_
-//     push the instance                                push the match
+//     insert the shard entry into qc_instances_        insert the match list into qc_expansion_
+//     push the instance to its worker's shard          push the match
 //     seq_cst fence                                    seq_cst fence
-//     look up qc_expansion_ and scan it                look up qc_instances_ and scan it
+//     look up qc_expansion_ and scan it                look up qc_instances_; for each shard
+//                                                      that is not empty, scan the first here
+//                                                      and hand the rest to qc_spawn_ jobs
+//
+// A job scans after the capture's fence in happens-before order but on another thread. The
+// capture decides which shards to hand off from its own empty() reads after its fence, so a
+// shard it read as empty is one whose instance scans the match itself.
 //
 // If BOTH scans miss, the pair is never applied: one fewer raw event, and with it every causal
 // and branchial pair that event belonged to. The canonical state and event counts are untouched,
@@ -24,7 +30,9 @@
 // has not published, so the peer's own scan runs later and catches it -- chains a liveness claim
 // onto an ordering one. That is the argument this harness exists to check rather than believe.
 //
-// WHAT IS BOUNDED. Two threads, one class, one instance and one match, over the REAL
+// WHAT IS BOUNDED. One class, one match and two instances in two shards, so a capture that sees
+// both hands one to a job: three threads plus the job, which the capture starts with
+// pthread_create as its happens-before edge (the job system's push and pop). Over the REAL
 // ConcurrentMap and the REAL LockFreeList. A statement about every execution of THIS program
 // under RC11, not about unbounded thread counts.
 //
@@ -35,9 +43,9 @@
 // (Hypergraph::QrCtx::claim). The two sides choose the same place because they compare the same
 // two values, each written before its record is published; exactly one claim must win.
 //
-// CALIBRATION -- the harness must be able to fail. Removing either seq_cst fence must make it
-// report: the two publishes and the two scans then interleave so that each scan runs before the
-// other's publish is visible. -DCALIBRATE_SPLIT_CLAIM makes the match side always claim in the
+// CALIBRATION -- the harness must be able to fail. -DCALIBRATE_NO_MATCH_FENCE removes the match
+// side's seq_cst fence and -DCALIBRATE_NO_INSTANCE_FENCE the instance side's: the publishes and
+// the scans then interleave so that each scan runs before the other's publish is visible. -DCALIBRATE_SPLIT_CLAIM makes the match side always claim in the
 // key set, so the two sides claim in different places and both win. A harness that cannot fail
 // proves nothing.
 //
@@ -60,7 +68,9 @@
 namespace {
 
 using List = hypergraph::LockFreeList<uint64_t>;
-using Map  = hypergraph::ConcurrentMap<uint64_t, List*>;
+struct Shards { List list[2]; };                     // QcInstanceShards, two shards
+using InstMap  = hypergraph::ConcurrentMap<uint64_t, Shards*>;
+using MatchMap = hypergraph::ConcurrentMap<uint64_t, List*>;
 
 // Exclusive by construction, as in the other list harnesses: one slot per call, no reuse. The
 // arena's own disjointness is a separate property with its own harness.
@@ -76,72 +86,101 @@ struct StubArena {
     }
 };
 
-constexpr uint64_t kClass = 0x51ull;   // the one class both sides key on
-constexpr uint64_t kInst  = 11;
-constexpr uint64_t kMatch = 22;
+constexpr uint64_t kClass = 0x51ull;   // the one class every side keys on
+constexpr uint64_t kMatch = 22;        // instances are 0 and 1, pushed to shards 0 and 1
 
-Map*  g_instances;   // qc_instances_ : class -> list of instances
-Map*  g_matches;     // qc_expansion_ : class -> list of matches
-List* g_inst_list;
-List* g_match_list;
+InstMap*  g_instances;   // qc_instances_ : class -> shards of instances
+MatchMap* g_matches;     // qc_expansion_ : class -> list of matches
+Shards*   g_shards;
+List*     g_match_list;
 StubArena* g_arena;
 
-// The class's match count (QcExpansion::n), the instance's record and the match's record. Each
-// record is written before its id is pushed, and read after the id is seen in the list.
+// The class's match count (QcExpansion::n), each instance's record and the match's record.
+// Each record is written before its id is pushed, and read after the id is seen in the list.
 std::atomic<uint32_t> g_class_nmatch{0};
 struct InstRec { uint32_t claim_cap = 0; std::atomic<uint64_t> bits{0}; };
-InstRec g_inst_rec;
+InstRec g_inst_rec[2];
 uint32_t g_match_local = 0;
 hypergraph::ConcurrentKeySet<uint64_t>* g_applied;
-std::atomic<int> g_wins{0};
+std::atomic<int> g_wins[2];
 
-void claim(bool match_side) {
+void fence(bool on) {
+    if (on) std::atomic_thread_fence(std::memory_order_seq_cst);
+}
+
+// Hypergraph::QrCtx::claim for the pair (inst, kMatch).
+void claim(uint64_t inst, bool match_side) {
     bool won;
 #if defined(CALIBRATE_SPLIT_CLAIM)
-    const bool bits = !match_side && g_match_local < g_inst_rec.claim_cap;
+    const bool bits = !match_side && g_match_local < g_inst_rec[inst].claim_cap;
 #else
     (void)match_side;
-    const bool bits = g_match_local < g_inst_rec.claim_cap;
+    const bool bits = g_match_local < g_inst_rec[inst].claim_cap;
 #endif
     if (bits) {
         const uint64_t bit = uint64_t{1} << g_match_local;
-        won = (g_inst_rec.bits.fetch_or(bit, std::memory_order_acq_rel) & bit) == 0;
+        won = (g_inst_rec[inst].bits.fetch_or(bit, std::memory_order_acq_rel) & bit) == 0;
     } else {
-        won = g_applied->insert((kInst << 32) | kMatch);
+        won = g_applied->insert((inst << 32) | kMatch);
     }
-    if (won) g_wins.fetch_add(1, std::memory_order_relaxed);
+    if (won) g_wins[inst].fetch_add(1, std::memory_order_relaxed);
 }
 
-// Did each side see its peer? The pair is applied if EITHER did -- qc_apply's per-pair claim
-// makes a double sighting harmless, so the property is "at least one", not "exactly one".
-std::atomic<int> g_saw_match{0};
-std::atomic<int> g_saw_instance{0};
-
-// The instance side. Publish the list, publish the instance, fence, then scan for matches.
-void* instance_side(void*) {
-    g_inst_rec.claim_cap = g_class_nmatch.load(std::memory_order_acquire);
-    g_instances->insert_if_absent(kClass, g_inst_list);
-    g_inst_list->push(kInst, *g_arena);
-    std::atomic_thread_fence(std::memory_order_seq_cst);
+// The instance side. Publish the shard entry, push the instance to its shard, fence, then scan
+// for matches.
+void instance_side(uint64_t inst) {
+    g_inst_rec[inst].claim_cap = g_class_nmatch.load(std::memory_order_acquire);
+    g_instances->insert_if_absent(kClass, g_shards);
+    g_shards->list[inst].push(inst, *g_arena);
+#if defined(CALIBRATE_NO_INSTANCE_FENCE)
+    fence(false);
+#else
+    fence(true);
+#endif
     if (auto r = g_matches->lookup(kClass)) {
-        (*r)->for_each([&](uint64_t v) {
-            if (v == kMatch) { g_saw_match.store(1, std::memory_order_relaxed); claim(false); }
-        });
+        (*r)->for_each([&](uint64_t v) { if (v == kMatch) claim(inst, false); });
     }
+}
+void* instance0(void*) { instance_side(0); return nullptr; }
+void* instance1(void*) { instance_side(1); return nullptr; }
+
+// Hypergraph::qc_apply_list: look the shards up again and apply the match to one of them.
+void apply_list(uint32_t l) {
+    if (auto r = g_instances->lookup(kClass)) {
+        (*r)->list[l].for_each([&](uint64_t inst) { claim(inst, true); });
+    }
+}
+void* job(void* arg) {
+    apply_list(static_cast<uint32_t>(reinterpret_cast<long>(arg)));
     return nullptr;
 }
 
-// The match side. Same shape, opposite maps.
+// The match side: publish, fence, then the first non-empty shard here and the rest as jobs.
 void* match_side(void*) {
     g_match_local = g_class_nmatch.fetch_add(1, std::memory_order_acq_rel);
     g_matches->insert_if_absent(kClass, g_match_list);
     g_match_list->push(kMatch, *g_arena);
-    std::atomic_thread_fence(std::memory_order_seq_cst);
+#if defined(CALIBRATE_NO_MATCH_FENCE)
+    fence(false);
+#else
+    fence(true);
+#endif
+    pthread_t spawned;
+    bool spawned_one = false;
     if (auto r = g_instances->lookup(kClass)) {
-        (*r)->for_each([&](uint64_t v) {
-            if (v == kInst) { g_saw_instance.store(1, std::memory_order_relaxed); claim(true); }
-        });
+        bool ran_one = false;
+        for (uint32_t l = 0; l < 2; ++l) {
+            if ((*r)->list[l].empty()) continue;
+            if (ran_one) {
+                pthread_create(&spawned, nullptr, job, reinterpret_cast<void*>(static_cast<long>(l)));
+                spawned_one = true;
+                continue;
+            }
+            ran_one = true;
+            apply_list(l);
+        }
     }
+    if (spawned_one) pthread_join(spawned, nullptr);
     return nullptr;
 }
 
@@ -149,29 +188,30 @@ void* match_side(void*) {
 
 int main() {
     StubArena arena;
-    Map instances(8), matches(8);
-    List inst_list, match_list;
+    InstMap instances(8);
+    MatchMap matches(8);
+    Shards shards;
+    List match_list;
     hypergraph::ConcurrentKeySet<uint64_t> applied(8);
     g_applied = &applied;
-
     g_arena = &arena;
     g_instances = &instances;
     g_matches = &matches;
-    g_inst_list = &inst_list;
+    g_shards = &shards;
     g_match_list = &match_list;
 
-    pthread_t t0, t1;
-    pthread_create(&t0, nullptr, instance_side, nullptr);
-    pthread_create(&t1, nullptr, match_side, nullptr);
+    pthread_t t0, t1, t2;
+    pthread_create(&t0, nullptr, instance0, nullptr);
+    pthread_create(&t1, nullptr, instance1, nullptr);
+    pthread_create(&t2, nullptr, match_side, nullptr);
     pthread_join(t0, nullptr);
     pthread_join(t1, nullptr);
+    pthread_join(t2, nullptr);
 
-    // THE PAIR IS APPLIED. Both missing is one raw event that never happens, and with it every
-    // causal and branchial pair it belonged to -- while the state and canonical event counts a
-    // caller reads stay exactly as they were.
-    assert(g_saw_match.load(std::memory_order_relaxed) == 1 ||
-           g_saw_instance.load(std::memory_order_relaxed) == 1);
-    // AND ONCE: exactly one claim won, whichever side or sides saw the other.
-    assert(g_wins.load(std::memory_order_relaxed) == 1);
+    // EACH PAIR IS APPLIED EXACTLY ONCE. A missed pair is one raw event that never happens, and
+    // with it every causal and branchial pair it belonged to -- while the state and canonical
+    // event counts a caller reads stay exactly as they were.
+    assert(g_wins[0].load(std::memory_order_relaxed) == 1 && "instance 0 and the match: not once");
+    assert(g_wins[1].load(std::memory_order_relaxed) == 1 && "instance 1 and the match: not once");
     return 0;
 }
