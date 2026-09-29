@@ -660,6 +660,8 @@ __global__ void k_persistent_evolve(
     __shared__ uint32_t child_event;
     __shared__ uint32_t child_step;
     __shared__ KeptCopy child_kept;
+    __shared__ bool     capture_go;
+    __shared__ uint64_t surv_shared[kLocalSurvivors];
     __shared__ uint32_t expand_base;
     __shared__ uint32_t expand_count;
     __shared__ bool     run_rule_inline;
@@ -739,8 +741,8 @@ __global__ void k_persistent_evolve(
             // lane enters the shared core together under the all-lanes policy, and the block
             // is one warp (kMatchBlockThreads), so the collectives' full mask holds. The
             // branches here read only shared or uniform values, so the lanes stay converged.
-            // Everything downstream of the hashes -- publishing, signatures, the quotient DPs,
-            // dedup -- stays thread 0's.
+            // Downstream of the hashes, publishing and signatures are thread 0's, the expansion
+            // capture runs on every lane, and identity and depth are thread 0's.
             {
                 const unsigned long long t1 = clock64();
                 // SPLIT THE canon BUCKET INTO ITS PARTS.
@@ -776,6 +778,7 @@ __global__ void k_persistent_evolve(
                 if (threadIdx.x == 0) {
                 const MatchRecord& rec = found.at(claimed);
                 const uint32_t step = rec.step;
+                capture_go = false;
 
                 // Expand the child only if it exists, the step budget allows it, its exact
                 // hash is computable, and the exploration rule keeps it. The hash is the
@@ -816,21 +819,29 @@ __global__ void k_persistent_evolve(
                             acc_evkey += clock64() - s1;
                         }
 
-                        // Quotient causal: register this raw event's canonical transition and
-                        // drive the DP. EVERY raw event registers, whether or not the child
-                        // survives dedup below -- the host registers per raw event too. Both
-                        // endpoint hashes and orbit tables exist at this point (the parent's
-                        // from its own canon, the child's from the pass just above).
-                        if (child_event != INVALID_ID) {
-                            // The class frame's match record.
-                            const uint64_t s3 = clock64();
-                            // One driver per BLOCK: this whole path is inside
-                            // `threadIdx.x == 0`, so blockIdx is the slice.
-                            qe_capture_expansion(ds, qe, rec.state_id, child_sid,
-                                                 child_event, rec.rule_id, step, blockIdx.x);
-                            acc_qe += clock64() - s3;
-                        }
-
+                        // Quotient causal: EVERY raw event registers its canonical transition,
+                        // whether or not the child survives dedup below -- the host registers
+                        // per raw event too. Both endpoint hashes and orbit tables exist at this
+                        // point (the parent's from its own canon, the child's from the pass just
+                        // above). The capture runs on every lane, between this part and the next.
+                        capture_go = child_event != INVALID_ID;
+                    }
+                }
+                } // threadIdx.x == 0
+                __syncthreads();
+                // The class frame's match record (qe_capture_expansion), on every lane. The
+                // block's slice of the survivor scratch is indexed by blockIdx.
+                if (capture_go) {
+                    const MatchRecord& rec = found.at(claimed);
+                    const unsigned long long s3 = (threadIdx.x == 0) ? clock64() : 0;
+                    qe_capture_expansion(ds, qe, rec.state_id, child_sid, child_event,
+                                         rec.rule_id, rec.step, blockIdx.x, surv_shared);
+                    if (threadIdx.x == 0) acc_qe += clock64() - s3;
+                }
+                __syncthreads();
+                if (threadIdx.x == 0) {
+                const MatchRecord& rec = found.at(claimed);
+                if (child_sid != INVALID_ID && key_st == ExactHashStatus::kOk) {
                         // IDENTITY, THEN DEPTH (explore_depth.hpp). The first arrival of a key
                         // is its canonical state; a fresh state the exploration coin or a cap
                         // refuses, under the budget or in a session, is claimed unexpanded, so
@@ -858,7 +869,6 @@ __global__ void k_persistent_evolve(
                             }
                             acc_dedup += clock64() - s4;
                         }
-                    }
                 }
                 acc_canon += clock64() - t1;
                 } // threadIdx.x == 0

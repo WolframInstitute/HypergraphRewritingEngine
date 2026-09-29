@@ -681,26 +681,40 @@ __device__ inline __noinline__ void qe_redrive(DeviceState ds, QeView qe, uint32
 // happened to be expanded first by this schedule.
 //
 // `depth` is the parent's depth (the event's step - 1).
+//
+// ALL 32 LANES OF THE BLOCK'S WARP CALL IT. A frame slot costs a scan of the frame state's
+// slice, and a capture takes one per consumed and produced edge and two per surviving edge, so
+// the slots are computed one per lane: lane i takes consumed edge i or produced edge i - nc (at
+// most 2 * kMaxPatternEdges = 32), and the child's edges are taken 32 at a time with a ballot
+// compacting the survivors into `surv_shared` (kLocalSurvivors entries, block-shared) or the
+// block's survivor scratch. Lane 0 takes the claim, registers the frames, sorts the survivors
+// and publishes the record.
 __device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
                                             StateId parent, StateId child, EventId event,
-                                            uint32_t rule, uint32_t depth, uint32_t work_slice) {
+                                            uint32_t rule, uint32_t depth, uint32_t work_slice,
+                                            uint64_t* surv_shared) {
     if (!qe.enabled || depth > qe.max_steps) return;
+    const uint32_t lane = threadIdx.x & 31u;
 
     const uint64_t from = ds.state_canonical_hash[parent];
     const uint64_t to   = ds.state_canonical_hash[child];
 
     // One raw state's matches define the class's expansion; every later parent of the same class
     // drops out here, so the record is a property of the CLASS and not of the schedule.
-    const uint32_t claim = static_cast<uint32_t>(parent) + 1u;
-    if (qe.rep.insert_if_absent(from, claim).value != claim) return;
-
-    // Both endpoints are given a frame before any slot is taken, so every slot below resolves --
-    // which is why both are registered before the verdict is taken. A short-circuiting || would
-    // skip the second whenever the first overflowed, and the second is what the child side's
-    // slots resolve against.
-    const bool frame_from = qe_register_frame(qe, from, parent, depth);
-    const bool frame_to   = qe_register_frame(qe, to, child, depth + 1u);
-    if (frame_from || frame_to) ds.errors.record(ErrorKind::kCanonicalMapFull);
+    uint32_t go = 0;
+    if (lane == 0) {
+        const uint32_t claim = static_cast<uint32_t>(parent) + 1u;
+        if (qe.rep.insert_if_absent(from, claim).value == claim) {
+            go = 1;
+            // Both endpoints are given a frame before any slot is taken, so every slot below
+            // resolves. A short-circuiting || would skip the second whenever the first
+            // overflowed, and the second is what the child side's slots resolve against.
+            const bool frame_from = qe_register_frame(qe, from, parent, depth);
+            const bool frame_to   = qe_register_frame(qe, to, child, depth + 1u);
+            if (frame_from || frame_to) ds.errors.record(ErrorKind::kCanonicalMapFull);
+        }
+    }
+    if (!__shfl_sync(0xffffffffu, go, 0)) return;
 
     const DeviceEvent& ev = ds.event_pool.at(event);
     const uint32_t nc = ev.num_consumed, np = ev.num_produced;
@@ -709,16 +723,21 @@ __device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
     // below, which are the ones a failure is counted on.
     QeAlignTally align{qe.align_moved, qe.align_fail};
 
+    uint32_t my_slot = 0;
+    bool bad = false;
+    if (lane < nc) {
+        my_slot = qe_frame_slot_of(ds, qe, from, parent, ev.consumed_edges[lane], align);
+        bad = my_slot == UINT32_MAX;
+    } else if (lane < nc + np) {
+        my_slot = qe_frame_slot_of(ds, qe, to, child, ev.produced_edges[lane - nc], align);
+        bad = my_slot == UINT32_MAX;
+    }
+    // No frame slot: drop rather than corrupt.
+    if (__any_sync(0xffffffffu, bad)) return;
     uint32_t consumed[kMaxPatternEdges];
     uint32_t produced[kMaxPatternEdges];
-    for (uint32_t i = 0; i < nc; ++i) {
-        consumed[i] = qe_frame_slot_of(ds, qe, from, parent, ev.consumed_edges[i], align);
-        if (consumed[i] == UINT32_MAX) return;   // no frame slot: drop rather than corrupt
-    }
-    for (uint32_t i = 0; i < np; ++i) {
-        produced[i] = qe_frame_slot_of(ds, qe, to, child, ev.produced_edges[i], align);
-        if (produced[i] == UINT32_MAX) return;
-    }
+    for (uint32_t i = 0; i < nc; ++i) consumed[i] = __shfl_sync(0xffffffffu, my_slot, i);
+    for (uint32_t i = 0; i < np; ++i) produced[i] = __shfl_sync(0xffffffffu, my_slot, nc + i);
 
     // Survivors: child edges that were not freshly produced passed through from the parent (the
     // child's slice is parent-minus-consumed plus produced by construction). Recorded as one
@@ -726,25 +745,38 @@ __device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
     // hgcommon::id_key like every other pair in this engine -- its +1 offset is applied to both
     // halves, so it preserves the ordering the sort relies on.
     // At most one survivor per child edge, so the child's size bounds the list (survivor_buffer).
-    uint64_t surv_local[kLocalSurvivors];
-    uint64_t* surv = survivor_buffer(ds, surv_local, ds.state_edge_slices[child].count, work_slice);
-    if (surv == nullptr) { ds.errors.record(ErrorKind::kQeSurvivorsOverflow); return; }
+    const StateEdgeSlice csl = ds.state_edge_slices[child];
+    uint64_t* surv = survivor_buffer(ds, surv_shared, csl.count, work_slice);
+    if (surv == nullptr) {
+        if (lane == 0) ds.errors.record(ErrorKind::kQeSurvivorsOverflow);
+        return;
+    }
     uint32_t ns = 0;
-    {
-        const StateEdgeSlice csl = ds.state_edge_slices[child];
-        for (uint32_t k = 0; k < csl.count; ++k) {
+    for (uint32_t base = 0; base < csl.count; base += 32u) {
+        const uint32_t k = base + lane;
+        uint64_t key = 0;
+        bool keep = false;
+        if (k < csl.count) {
             const EdgeId oe = ds.state_edge_ids[csl.offset + k];
             bool produced_here = false;
             for (uint32_t j = 0; j < np; ++j)
                 if (ev.produced_edges[j] == oe) { produced_here = true; break; }
-            if (produced_here) continue;
-            const uint32_t ps = qe_frame_slot_of(ds, qe, from, parent, oe, align);
-            const uint32_t cs = qe_frame_slot_of(ds, qe, to, child, oe, align);
-            if (ps == UINT32_MAX || cs == UINT32_MAX) continue;
-            surv[ns++] = hgcommon::id_key(ps, cs);
+            if (!produced_here) {
+                const uint32_t ps = qe_frame_slot_of(ds, qe, from, parent, oe, align);
+                const uint32_t cs = qe_frame_slot_of(ds, qe, to, child, oe, align);
+                if (ps != UINT32_MAX && cs != UINT32_MAX) {
+                    key = hgcommon::id_key(ps, cs);
+                    keep = true;
+                }
+            }
         }
-        hgcommon::sort_u64(surv, ns);
+        const uint32_t mask = __ballot_sync(0xffffffffu, keep);
+        if (keep) surv[ns + __popc(mask & ((1u << lane) - 1u))] = key;
+        ns += __popc(mask);
     }
+    __syncwarp();
+    if (lane != 0) return;
+    hgcommon::sort_u64(surv, ns);
 
     // Copy the slot arrays into the expansion arena, then publish the record.
     const uint32_t need = nc + np + 2u * ns;

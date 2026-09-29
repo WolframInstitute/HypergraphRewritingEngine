@@ -231,7 +231,7 @@ __device__ __forceinline__ uint32_t state_edge_index(const DeviceState& ds, Stat
 // A survivor list's storage, for a list of at most `need` entries: `local` (kLocalSurvivors
 // entries) when it fits, else the calling block's slice of ds.survivor_scratch. Null when neither
 // holds it; the caller then records its survivors-overflow kind, which grow-and-retry grows.
-// Called from each persistent block's thread 0, whose block index is `slice`.
+// Called by a persistent block's warp, whose block index is `slice`; `local` is then block-shared.
 constexpr uint32_t kLocalSurvivors = 256;
 __device__ __forceinline__ uint64_t* survivor_buffer(const DeviceState& ds, uint64_t* local,
                                                      uint32_t need, uint32_t slice) {
