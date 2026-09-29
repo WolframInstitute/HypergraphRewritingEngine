@@ -62,7 +62,11 @@ static std::vector<Workload> workloads() {
     std::vector<Workload> out;
     auto named = corpus::named_workloads();
     {
-        auto big = corpus::large_state_workloads();
+        // HG_BENCH_LARGE_N sets the edge count of bigpath, bigcycle and bigstar (default 256),
+        // as in bench_cpu_evolve.
+        const char* ln = std::getenv("HG_BENCH_LARGE_N");
+        const int n = ln ? std::atoi(ln) : 256;
+        auto big = corpus::large_state_workloads(n > 0 ? static_cast<uint32_t>(n) : 256u);
         named.insert(named.end(), big.begin(), big.end());
     }
     for (const auto& g : named) {
