@@ -136,6 +136,17 @@ int main(int argc, char** argv) {
     // attribute any device cost to one or the other. HG_BENCH_QUOTIENT=0 explores raw.
     const char* q = std::getenv("HG_BENCH_QUOTIENT");
     in.explore_from_canonical_states_only = !(q && q[0] == '0');
+    // HG_BENCH_CANON_MODE=none|automatic and HG_BENCH_EVENT_MODE=full|automatic select the other
+    // state modes and an event identity, with the same spelling as bench_cpu_evolve; unset is
+    // Full states and no event identity.
+    if (const char* cm = std::getenv("HG_BENCH_CANON_MODE")) {
+        if (cm[0] == 'n') in.canonicalization = hg_gpu::CanonicalizationMode::None;
+        if (cm[0] == 'a') in.canonicalization = hg_gpu::CanonicalizationMode::Automatic;
+    }
+    if (const char* em = std::getenv("HG_BENCH_EVENT_MODE")) {
+        if (em[0] == 'f') in.event_canonicalization = hg_gpu::EventCanonicalizationMode::Full;
+        if (em[0] == 'a') in.event_canonicalization = hg_gpu::EventCanonicalizationMode::Automatic;
+    }
 
     // The raw unfolding is recovered by a replay whose cost is the RAW answer's, not the
     // canonical one's. HG_BENCH_RAW=0 records none of it, which is the configuration a caller
