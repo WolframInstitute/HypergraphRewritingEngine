@@ -55,7 +55,8 @@ Core engine:
   owns canonical-state dedup. Matching is a worst-case-optimal join
   (`pattern_matcher.hpp`, `ancestry.hpp`, `signature.hpp`). Canonicalization under the exact
   mode is McKay individualization-refinement (`ir_canonicalization.*`) on every
-  state, its hash serving as the dedup key directly; the coarse modes deduplicate by a
+  state; its hash selects the dedup key and its canonical form, stored once per canonical
+  state (`hgcommon/canonical_form_core.hpp`), decides a key hit; the coarse modes deduplicate by a
   content-ordered key (`content_core.hpp`) and no filter stands in front of IR. The bound: a
   sound filter's distinct keys are at most the canonical classes, so it can skip at most
   `canonical/raw` of the IR calls while paying its own pass on every state -- measured per case by `tools/cost_matrix`

@@ -19,6 +19,7 @@
 #include "hgcommon/quotient_causal_core.hpp"
 #include "hgcommon/quotient_replay_core.hpp"
 #include "hgcommon/ir_core.hpp"
+#include "hgcommon/canonical_form_core.hpp"
 #include "lock_free_list.hpp"
 #include "causal_graph.hpp"
 #include "concurrent_map.hpp"
@@ -86,9 +87,14 @@ class Hypergraph {
     // Causal and branchial graph
     CausalGraph causal_graph_;
 
-    // Canonical state deduplication map: canonical_hash -> StateId
-    // Used to find existing equivalent states before creating new ones
+    // Canonical state deduplication map for the None and Automatic modes: dedup key ->
+    // representative StateId.
     ConcurrentMap<uint64_t, StateId, uint64_t{0}, ~uint64_t{0}, INVALID_ID> canonical_state_map_;
+
+    // Full mode's deduplication map: probe key of the IR canonical hash -> the class's record,
+    // which holds the representative StateId and the IR canonical form. A state joins the class
+    // under a key only when its form equals the record's (claim_canonical_state).
+    ConcurrentMap<uint64_t, const hgcommon::CanonicalFormRecord*> canonical_form_map_;
 
     // Event canonicalization state map, keyed by canonical_hash rather than by the state
     // mode's dedup key, so event identity does not follow the state-merging choice.
@@ -110,7 +116,9 @@ class Hypergraph {
     //   None:      dedup key is the raw state id, so nothing merges
     //   Automatic: dedup key is compute_content_ordered_hash -- merges states with identical
     //              edge content, which is NOT isomorphism-invariant
-    //   Full:      dedup key is the exact IR hash -- merges isomorphic states
+    //   Full:      dedup key is the IR canonical hash (canonical_form_map_), and a state merges
+    //              with the key's class only when their IR canonical forms are equal -- merges
+    //              isomorphic states
     // NOTE: Must be atomic for ARM64 memory ordering - ensures visibility to worker threads
     std::atomic<StateCanonicalizationMode> state_canonicalization_mode_{StateCanonicalizationMode::None};
 
@@ -629,6 +637,12 @@ class Hypergraph {
     // unbounded implementation. Leaves per searched call is the search's size on a workload.
     mutable std::atomic<uint64_t> ir_calls_{0}, ir_searched_{0}, ir_leaves_{0}, ir_nodes_{0},
         ir_depth_sum_{0}, ir_retries_{0}, ir_fallbacks_{0};
+    // Full mode: keys of canonical_form_map_ found holding a state with a different canonical
+    // form (stats builds). Each one moved a state to its next probe key.
+    std::atomic<uint64_t> canonical_key_collisions_{0};
+    // ANDed into the canonical hash before it becomes the first probe key. All ones except in
+    // tests, which narrow it so that non-isomorphic states share keys.
+    uint64_t canonical_key_mask_{~uint64_t{0}};
     EventSignatureKeys event_signature_keys_{EVENT_SIG_NONE};
     std::atomic<bool> positional_event_identity_{false};
 
@@ -859,7 +873,9 @@ public:
     // Build the state's canonical rank table and return the exact canonical hash from the
     // SAME individualization-refinement pass -- the event path needs both, and running IR
     // twice for them is the difference between one pass per state and two per event.
-    uint64_t cache_state_edge_ranks(StateId state_id, const SparseBitset& edges);
+    // `out_form`, when given, receives the state's IR canonical form from the same pass.
+    uint64_t cache_state_edge_ranks(StateId state_id, const SparseBitset& edges,
+                                    std::vector<uint32_t>* out_form = nullptr);
 
     // cache_state_edge_ranks, skipped when the table is already there. cache_ runs a full IR
     // pass every call and only then discards the result on a losing insert, so a caller that
@@ -894,7 +910,11 @@ public:
     // is expected rather than a defect (racing writers compute the same value and the last
     // store wins).
     uint64_t canonical_hash_computations() const;
+    uint64_t canonical_key_collisions() const;
 #endif
+    // Test hook, set before evolution: the first probe key of a Full-mode state is its
+    // canonical hash ANDed with `mask`. A narrow mask makes non-isomorphic states share keys.
+    void set_canonical_key_mask(uint64_t mask) { canonical_key_mask_ = mask; }
     struct IrWorkTotals {
         uint64_t calls, searched, leaves, nodes, depth_sum, retries, fallbacks;
     };
@@ -1058,8 +1078,19 @@ public:
     // Compute the canonical edge-orbit table for `edges` and cache it under state id `s`,
     // returning the state's canonical hash (the same IR canonicalization serves both, so
     // this replaces the plain dedup hash in quotient mode at no extra canon cost).
+    // `out_form`, when given, receives the state's IR canonical form from the same pass.
     uint64_t compute_and_cache_state_orbits(StateId s, const SparseBitset& edges,
-                                            bool cache = true);
+                                            bool cache = true,
+                                            std::vector<uint32_t>* out_form = nullptr);
+
+    // Full mode: claims the canonical class of `sid`, whose canonical hash is `hash` and whose
+    // IR canonical form is `form`, in canonical_form_map_. The probe keys are
+    // hgcommon::dedup_probe_key(hash & canonical_key_mask_, n, 0, ~0); a key whose record has a
+    // different form is a collision and the claim moves to the next key. Returns the class's
+    // representative and its key, which is the class's identity from then on.
+    struct CanonicalClaim { StateId rep; uint64_t key; bool won; };
+    CanonicalClaim claim_canonical_state(StateId sid, uint64_t hash,
+                                         const std::vector<uint32_t>& form);
 
     // The cached edge-orbit table for a state (null if not computed -- e.g. full-capture
     // mode, or before canonicalization).
@@ -1504,7 +1535,9 @@ public:
 
     // The canonical hash (isomorphism-invariant). The event path resolves representatives
     // through it, and it is the hash a state reports.
-    uint64_t compute_canonical_hash(const SparseBitset& edges) const;
+    // `out_form`, when given, receives the state's IR canonical form from the same pass.
+    uint64_t compute_canonical_hash(const SparseBitset& edges,
+                                    std::vector<uint32_t>* out_form = nullptr) const;
 
 
     // Count edges in a state

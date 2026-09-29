@@ -2512,9 +2512,7 @@ bool ParallelEvolutionEngine::match_records_equal(const MatchRecord& a, const Ma
 
 // The key for probe attempt `n`, skipping the map's reserved sentinels.
 uint64_t ParallelEvolutionEngine::dedup_probe_key(uint64_t h, uint32_t n) {
-    uint64_t k = h + static_cast<uint64_t>(n) * 0x9E3779B97F4A7C15ull;
-    if (k == MATCH_MAP_EMPTY || k == MATCH_MAP_LOCKED) k += 0x9E3779B97F4A7C15ull;
-    return k;
+    return hgcommon::dedup_probe_key(h, n, MATCH_MAP_EMPTY, MATCH_MAP_LOCKED);
 }
 
 // The read-only twin of claim_match: it walks the SAME probe chain and decides by the SAME

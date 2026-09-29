@@ -72,9 +72,11 @@ inline size_t engine_full_count(
     const std::vector<RewriteRule>& rules,
     const std::vector<std::vector<VertexId>>& initial,
     int steps, unsigned threads = 4,
-    ParallelEvolutionEngine::ExecutionMode mode = ParallelEvolutionEngine::ExecutionMode::Parallel) {
+    ParallelEvolutionEngine::ExecutionMode mode = ParallelEvolutionEngine::ExecutionMode::Parallel,
+    uint64_t canonical_key_mask = ~uint64_t{0}) {
     Hypergraph hg;
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+    hg.set_canonical_key_mask(canonical_key_mask);
     ParallelEvolutionEngine engine(&hg, threads, mode);
     for (const auto& r : rules) engine.add_rule(r);
     engine.evolve(initial, steps);
@@ -166,6 +168,37 @@ inline size_t brute_force_iso_count(
 // Graph invariants of a full evolution — all independent of event/state id
 // assignment, so they must be IDENTICAL across thread counts (determinism) and are
 // the quantities every causal/closure optimization must preserve.
+// Quotient exploration with the raw relations reconstructed: canonical states, and the raw
+// events, causal pairs (reduced and not) and branchial pairs of the replay.
+struct QuotientCounts {
+    size_t canonical_states = 0;
+    uint64_t raw_events = 0, causal_pairs = 0, reduced_pairs = 0, branchial = 0;
+    bool operator==(const QuotientCounts& o) const {
+        return canonical_states == o.canonical_states && raw_events == o.raw_events &&
+               causal_pairs == o.causal_pairs && reduced_pairs == o.reduced_pairs &&
+               branchial == o.branchial;
+    }
+};
+inline QuotientCounts engine_quotient_counts(const std::vector<RewriteRule>& rules,
+                                             const std::vector<std::vector<VertexId>>& initial,
+                                             int steps, unsigned threads,
+                                             uint64_t canonical_key_mask = ~uint64_t{0}) {
+    Hypergraph hg;
+    hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+    hg.set_canonical_key_mask(canonical_key_mask);
+    ParallelEvolutionEngine engine(&hg, threads);
+    engine.set_explore_from_canonical_states_only(true);
+    for (const auto& r : rules) engine.add_rule(r);
+    engine.evolve(initial, steps);
+    QuotientCounts q;
+    q.canonical_states = hg.num_canonical_states();
+    q.raw_events       = hg.num_reconstructed_raw_events();
+    q.causal_pairs     = hg.num_reconstructed_causal_pairs(false);
+    q.reduced_pairs    = hg.num_reconstructed_causal_pairs(true);
+    q.branchial        = hg.num_reconstructed_branchial();
+    return q;
+}
+
 struct Counts {
     size_t canonical_states;
     size_t events;
@@ -185,9 +218,11 @@ inline Counts engine_counts(const std::vector<RewriteRule>& rules,
                             const std::vector<std::vector<VertexId>>& initial,
                             int steps, unsigned threads,
                             StateCanonicalizationMode mode = StateCanonicalizationMode::Full,
-                            bool transitive_reduction = true) {
+                            bool transitive_reduction = true,
+                            uint64_t canonical_key_mask = ~uint64_t{0}) {
     Hypergraph hg;
     hg.set_state_canonicalization_mode(mode);
+    hg.set_canonical_key_mask(canonical_key_mask);
     ParallelEvolutionEngine engine(&hg, threads);
     engine.set_transitive_reduction(transitive_reduction);
     for (const auto& r : rules) engine.add_rule(r);
@@ -204,6 +239,7 @@ inline Counts engine_counts(const std::vector<RewriteRule>& rules,
     c.diag += " dropped_children=" + std::to_string(engine.dropped_fresh_children()) +
               " invalid_matches=" + std::to_string(hg.invalid_matches()) +
               " hash_collisions=" + std::to_string(engine.hash_collisions()) +
+              " canonical_key_collisions=" + std::to_string(hg.canonical_key_collisions()) +
               " probe_exhaustions=" + std::to_string(engine.dedup_probe_exhaustions()) +
               " matches=" + std::to_string(engine.total_matches());
 #endif

@@ -76,14 +76,18 @@ Which states are the same node.
 |---|---|---|
 | `None` (default) | never — every raw state is its own node | the state's own id |
 | `Automatic` | their edge multisets are identical under a content ordering (**not** isomorphism-invariant) | content-ordered hash |
-| `Full` | they are isomorphic as ordered hypergraphs (vertex relabeling; within-edge order and multiplicity preserved) | the exact canonical hash |
+| `Full` | they are isomorphic as ordered hypergraphs (vertex relabeling; within-edge order and multiplicity preserved) | the canonical hash, with the canonical forms compared on a key hit |
 
 The canonical form is McKay-style individualization–refinement (IR). The **reported** per-state
 canonical hash (`IncludeCanonicalHashes`) is this invariant in every state mode — stored at creation
 when event canonicalization is on (one IR pass serves both the hash and the per-edge ranks of
-§4.2), computed on first query otherwise.
-*(`hypergraph.cpp`, `compute_canonical_hash`; gate: `mode_matrix_probe` reads identical
-event counts down every state-mode column.)*
+§4.2), computed on first query otherwise. Under `Full`, a class whose hash key is already held by a
+non-isomorphic class takes the next probe key (`hgcommon::dedup_probe_key`), and that key is the
+hash it reports; which of two colliding classes keeps the unmodified hash depends on arrival order,
+while the state set and every count do not.
+*(`hypergraph.cpp`, `compute_canonical_hash`, `claim_canonical_state`; gates:
+`OracleCorpus.CanonicalKeyCollisionsKeepStateIdentityExact` runs the corpus with the key narrowed
+to two bits, and `mode_matrix_probe` reads identical event counts down every state-mode column.)*
 
 ### 4.2 Event identity — `CanonicalizeEvents`
 

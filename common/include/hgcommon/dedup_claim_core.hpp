@@ -63,6 +63,16 @@ enum class ClaimState : uint8_t {
     Collision,   // another thread's offer landed and it is a DIFFERENT match
 };
 
+// The key for probe attempt `n` of hash `h`: h plus n steps of the 64-bit golden ratio, moved
+// one further step when it lands on the set's EMPTY or LOCKED sentinel. Attempt 0 is `h` itself
+// unless `h` is a sentinel.
+HG_HD inline uint64_t dedup_probe_key(uint64_t h, uint32_t n, uint64_t empty_key,
+                                      uint64_t locked_key) {
+    uint64_t k = h + static_cast<uint64_t>(n) * 0x9E3779B97F4A7C15ull;
+    if (k == empty_key || k == locked_key) k += 0x9E3779B97F4A7C15ull;
+    return k;
+}
+
 // Returns true when the caller must process the match, false when an equal one was already
 // claimed.
 template <class Ctx>

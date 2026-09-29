@@ -13,6 +13,8 @@
 #include "hypergraph/ir_canonicalization.hpp"
 #include "hgcommon/ir_core.hpp"
 #include "hgcommon/content_core.hpp"
+#include "hgcommon/canonical_form_core.hpp"
+#include "hgcommon/dedup_claim_core.hpp"
 #include "hgcommon/slot_core.hpp"
 #include "hypergraph/atomic_compat.hpp"
 #include <thread>
@@ -112,6 +114,20 @@ uint32_t& ir_depth_hint() {
 }
 inline bool ir_rung_below_hint(uint32_t rung) { return rung < ir_depth_hint(); }
 inline void ir_note_search(const hgcommon::IrWork& work) { ir_depth_hint() = work.max_depth + 1; }
+
+// The IR canonical form of a state whose search outran every bounded rung, in the core's flat
+// [arity, v0, v1, ...] layout, from IRCanonicalizer::canonicalize_edges. That runs the same core
+// to its unbounded depth, so the form equals the one a bounded call would have emitted.
+void fallback_canonical_form(const SVec<SVec<VertexId>>& edge_vectors,
+                             std::vector<uint32_t>& out) {
+    IRCanonicalizer ir;
+    const CanonicalizationResult cr = ir.canonicalize_edges(edge_vectors);
+    out.clear();
+    for (const auto& e : cr.canonical_form.edges) {
+        out.push_back(static_cast<uint32_t>(e.size()));
+        for (VertexId v : e) out.push_back(static_cast<uint32_t>(v));
+    }
+}
 }  // namespace
 
 StateId Hypergraph::create_state(
@@ -253,15 +269,24 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
     // computes it on first query, so no per-state hash is computed that nothing reads.
     // Separate from map_key, which is what actually decides state identity.
     const bool need_ranks = (event_signature_keys_ != EVENT_SIG_NONE);
-    uint64_t ranked_hash = 0;
-    if (need_ranks) ranked_hash = cache_state_edge_ranks(new_sid, edges);
-
-    // Canonical identity + dedup key. In Full mode the exact IR hash is BOTH the
-    // canonical identity and the dedup key, computed once (no redundant WL pass);
-    // other modes use the fast WL hash for identity + a mode-specific dedup key.
     // Use atomic load with acquire to ensure we see the mode set by the main thread.
-    uint64_t map_key, canonical_hash;
-    switch (state_canonicalization_mode_.load(std::memory_order_acquire)) {
+    const StateCanonicalizationMode mode =
+        state_canonicalization_mode_.load(std::memory_order_acquire);
+    const bool full = mode != StateCanonicalizationMode::None &&
+                      mode != StateCanonicalizationMode::Automatic;
+    const bool quotient = full && quotient_causal_.load(std::memory_order_relaxed);
+    // Full mode: the state's IR canonical form, filled by whichever call below computes its
+    // canonical hash, and compared by claim_canonical_state.
+    HG_THREAD_LOCAL(std::vector<uint32_t>, form);
+    uint64_t ranked_hash = 0;
+    if (need_ranks)
+        ranked_hash = cache_state_edge_ranks(new_sid, edges, full && !quotient ? &form : nullptr);
+
+    // Canonical identity + dedup key. In Full mode the IR canonical hash is BOTH the
+    // canonical identity and the first probe key, computed once (no redundant WL pass);
+    // other modes use the fast WL hash for identity + a mode-specific dedup key.
+    uint64_t map_key = 0, canonical_hash = 0;
+    switch (mode) {
         case StateCanonicalizationMode::None:
             // +1: the dedup key is the raw state id, and canonical_state_map_ reserves 0 as its
             // EMPTY-slot sentinel. Without the offset the first state (id 0) keys to 0, which
@@ -279,35 +304,47 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
             // In quotient mode compute the edge-orbit table and take the canonical hash
             // from the same IR canonicalization (the quotient causal reconstruction needs
             // the orbits; there is no extra canon pass). Otherwise just the dedup hash.
-            if (quotient_causal_.load(std::memory_order_relaxed))
+            if (quotient)
                 // WARM FILL. Suppressed by HG_CALIBRATE_ORBIT_CACHE_COLD so that every capture
                 // misses and rebuilds, which is how the rebuild path gets exercised at all --
                 // it is unreachable on a run whose cache is always warm, and an unexercised
                 // path is not one the reconstruction may depend on.
 #if defined(HG_CALIBRATE_ORBIT_CACHE_COLD)
-                canonical_hash = compute_and_cache_state_orbits(new_sid, edges, /*cache=*/false);
+                canonical_hash = compute_and_cache_state_orbits(new_sid, edges, /*cache=*/false,
+                                                                &form);
 #else
-                canonical_hash = compute_and_cache_state_orbits(new_sid, edges);
+                canonical_hash = compute_and_cache_state_orbits(new_sid, edges, /*cache=*/true,
+                                                                &form);
 #endif
             else if (need_ranks)
-                canonical_hash = ranked_hash;   // exact IR, already computed with the ranks
+                canonical_hash = ranked_hash;   // IR, computed with the ranks and the form
             else
-                canonical_hash = compute_canonical_hash(edges);
-            map_key = canonical_hash;
-            break;
+                canonical_hash = compute_canonical_hash(edges, &form);
+            break;   // no map_key: claim_canonical_state derives the probe keys
     }
     // Any mode whose key hashes to 0 would hit the same EMPTY=0 sentinel; nudge it off (mirrors the
     // GPU's h==0?1:h guard). None is already offset above, so this only ever affects a 0-valued hash.
     map_key = hgcommon::avoid_reserved_keys(map_key);
+    StateId existing_or_new;
+    bool was_inserted;
+    if (full) {
+        // The class's key is its identity. It differs from the hash only when the hash is a
+        // map sentinel, the key mask is narrowed, or another class held the hash's key.
+        const CanonicalClaim claim = claim_canonical_state(new_sid, canonical_hash, form);
+        existing_or_new = claim.rep;
+        was_inserted = claim.won;
+        canonical_hash = claim.key;
+    } else {
+        auto r = canonical_state_map_.insert_if_absent_waiting(map_key, new_sid);
+        existing_or_new = r.first;
+        was_inserted = r.second;
+    }
     // create_state has already published new_sid, so another thread can be reading this
     // state's canonical_hash (get_or_compute_canonical_hash, get_canonical_state_for_event)
-    // while this store runs. Both sides go through atomic_ref: the store carries the
-    // computed hash, and the acquire loads pick it up.
+    // while this store runs. Both sides go through atomic_ref: the store carries the hash, or
+    // in Full mode the class's key, stored once, and the acquire loads pick it up.
     hgcommon::atomic_ref<uint64_t>(states_[new_sid].canonical_hash)
         .store(canonical_hash, std::memory_order_release);
-
-    // Try to insert into canonical map (lock-free, waiting for LOCKED slots)
-    auto [existing_or_new, was_inserted] = canonical_state_map_.insert_if_absent_waiting(map_key, new_sid);
 
     // Insert into event_canonical_state_map_ only when event canonicalization is on:
     // its sole reader (get_canonical_state_for_event) runs only under
@@ -323,21 +360,87 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
         event_canonical_state_map_.insert_if_absent_waiting(canonical_hash, new_sid);
     }
 
-    // In Full mode, the map key is the IR canonical hash which is exact —
-    // hash collisions are genuine isomorphisms, no verification needed
-    bool verified_duplicate = !was_inserted;
-
     // Cache the canonical ID in the state for fast lookup. Released here and acquired by
     // get_canonical_state(); the store itself is what carries the edge, since a bare fence
     // pairs with another fence only through an intervening atomic on the same object.
     hgcommon::atomic_ref<StateId>(states_[new_sid].canonical_id)
         .store(existing_or_new, std::memory_order_release);
 
-    if (verified_duplicate) {
+    if (!was_inserted) {
         return {existing_or_new, new_sid, false};
     }
 
     return {new_sid, new_sid, true};
+}
+
+// The walk is hgcommon::dedup_claim, the rule the match set is claimed by: the hash selects
+// the key, and the IR canonical form decides the class at both points the walk can conclude.
+// A probe that finds a different form moves to the next key, so non-isomorphic states whose
+// hashes collide both become canonical states, each under its own key.
+//
+// The map's value is the class's record (representative id and form), written before the offer
+// that publishes it; the map's acquire load of the value makes its contents visible to the
+// reader. It is made only after a lookup missed; a record whose offer then lands on its own
+// class is given back when it is still the top of this worker's arena cursor.
+//
+// max_probes is unbounded: every key visited holds a distinct class, and a claim that stopped
+// early would have no key to be found under.
+Hypergraph::CanonicalClaim Hypergraph::claim_canonical_state(StateId sid, uint64_t hash,
+                                                             const std::vector<uint32_t>& form) {
+    struct Ops {
+        Hypergraph* hg;
+        StateId sid;
+        uint64_t h;
+        const uint32_t* form;
+        uint32_t words;
+        hgcommon::CanonicalFormRecord* rec = nullptr;
+        uint64_t rec_bytes = 0;
+        StateId rep = INVALID_ID;
+        uint64_t key = 0;
+
+        uint32_t max_probes() const { return UINT32_MAX; }
+        uint64_t probe_key(uint32_t n) const {
+            return hgcommon::dedup_probe_key(h, n, 0, ~uint64_t{0});
+        }
+
+        hgcommon::ProbeState probe(uint64_t k) {
+            const auto v = hg->canonical_form_map_.lookup(k);
+            if (!v) return hgcommon::ProbeState::Miss;
+            if (!hgcommon::canonical_form_equals(*v, form, words))
+                return hgcommon::ProbeState::Collision;
+            rep = (*v)->state; key = k;
+            return hgcommon::ProbeState::Duplicate;
+        }
+
+        void make_stable() {
+            const uint32_t width = hgcommon::canonical_form_width(form, words);
+            rec_bytes = hgcommon::canonical_form_record_bytes(words, width);
+            rec = static_cast<hgcommon::CanonicalFormRecord*>(
+                hg->arena_.allocate_raw(rec_bytes, alignof(hgcommon::CanonicalFormRecord)));
+            hgcommon::canonical_form_encode(sid, form, words, width, rec);
+        }
+
+        hgcommon::ClaimState offer(uint64_t k) {
+            const auto [existing, inserted] = hg->canonical_form_map_.insert_if_absent(k, rec);
+            if (inserted) { rep = sid; key = k; return hgcommon::ClaimState::Won; }
+            if (!hgcommon::canonical_form_equals(existing, form, words))
+                return hgcommon::ClaimState::Collision;
+            rep = existing->state; key = k;
+            return hgcommon::ClaimState::Duplicate;
+        }
+
+        void note_collision() {
+            HG_STAT(hg->canonical_key_collisions_.fetch_add(1, std::memory_order_relaxed));
+        }
+        void note_exhausted() {}
+    };
+
+    Ops ops{this, sid, hash & canonical_key_mask_, form.data(),
+            static_cast<uint32_t>(form.size())};
+    const bool won = hgcommon::dedup_claim(ops);
+    // A record that lost every offer is in the map under no key, so nothing reads it.
+    if (!won && ops.rec) arena_.release_last(ops.rec, ops.rec_bytes);
+    return {ops.rep, ops.key, won};
 }
 
 bool Hypergraph::explore_depth_cas(StateId canonical_id, uint32_t& expected, uint32_t desired) {
@@ -379,7 +482,9 @@ uint32_t Hypergraph::explore_depth_of(StateId canonical_id) const {
 // The state's edges are taken in EdgeId order, which is the "original index" the rank's
 // tie-break uses: deterministic, and a property of the state rather than of the schedule that
 // built it. Called once on the creating thread; insert_if_absent guards the rest.
-uint64_t Hypergraph::cache_state_edge_ranks(StateId state_id, const SparseBitset& edges) {
+uint64_t Hypergraph::cache_state_edge_ranks(StateId state_id, const SparseBitset& edges,
+                                            std::vector<uint32_t>* out_form) {
+    if (out_form) out_form->clear();
     auto mk = worker_scratch().mark();
     SVec<SVec<VertexId>> edge_vectors;
     SVec<EdgeId> ids;
@@ -416,6 +521,11 @@ uint64_t Hypergraph::cache_state_edge_ranks(StateId state_id, const SparseBitset
         const uint32_t total_occ = static_cast<uint32_t>(ev.size());
         SVec<uint32_t> ranks(n);
         bool ok = false;
+        uint32_t* form = nullptr;
+        if (out_form) {
+            out_form->resize(hgcommon::ir_canonical_form_words(n, total_occ));
+            form = out_form->data();
+        }
         for (uint32_t depth : kIrDepthRungs) {
             if (ir_rung_below_hint(depth)) continue;
             const uint64_t words = hgcommon::ir_scratch_words(n_verts, n, total_occ, depth);
@@ -425,7 +535,7 @@ uint64_t Hypergraph::cache_state_edge_ranks(StateId state_id, const SparseBitset
             auto r = hgcommon::ir_canonical_hash(ea.data(), eoff.data(), ev.data(),
                                                  n, n_verts, total_occ, scratch, depth,
                                                  ranks.data(), hgcommon::IR_HOST_GENERATORS,
-                                                 nullptr, nullptr, nullptr, nullptr, &work);
+                                                 nullptr, nullptr, form, nullptr, &work);
             book_ir_call(work, r.status == hgcommon::IR_NEED_DEPTH);
             if (r.status == hgcommon::IR_OK) { ir_note_search(work); hash = r.hash; ok = true; break; }
             if (r.status == hgcommon::IR_EMPTY) break;
@@ -436,6 +546,7 @@ uint64_t Hypergraph::cache_state_edge_ranks(StateId state_id, const SparseBitset
             HG_THREAD_LOCAL(std::vector<uint32_t>, fallback_ranks);
             hash = ir.compute_canonical_hash_with_edge_rank(edge_vectors, fallback_ranks);
             for (uint32_t i = 0; i < n; ++i) ranks[i] = fallback_ranks[i];
+            if (out_form) fallback_canonical_form(edge_vectors, *out_form);
         }
         for (uint32_t i = 0; i < n; ++i) { arr_edges[i] = ids[i]; arr_rank[i] = ranks[i]; }
     }
@@ -515,9 +626,13 @@ uint64_t Hypergraph::get_or_compute_canonical_hash(StateId state_id) {
     // the event path reads both.
     uint64_t hash = compute_canonical_hash(state.edges);
 
-    // Publish with release; racing writers may all compute the same value and
-    // the final stored value is deterministic across threads.
-    atomic_hash.store(hash, std::memory_order_release);
+    // Published only over 0: racing on-demand writers compute the same value, and a value the
+    // state's creator stored (in Full mode the class's key, which can differ from the hash) is
+    // never overwritten. A failed exchange returns the stored value.
+    uint64_t expected = 0;
+    if (!atomic_hash.compare_exchange_strong(expected, hash, std::memory_order_acq_rel,
+                                             std::memory_order_acquire))
+        return expected;
     return hash;
 }
 
@@ -733,7 +848,8 @@ uint64_t Hypergraph::compute_content_ordered_hash(const SparseBitset& edges) con
     return ch.value();
 }
 
-uint64_t Hypergraph::compute_canonical_hash(const SparseBitset& edges) const {
+uint64_t Hypergraph::compute_canonical_hash(const SparseBitset& edges,
+                                            std::vector<uint32_t>* out_form) const {
     hgcommon::PhaseTimer _pt(hgcommon::Phase::Canon);
     HG_STAT(canonical_hash_computations_.fetch_add(1, std::memory_order_relaxed));
     // Exact canonical hash via individualization-refinement.
@@ -760,6 +876,7 @@ uint64_t Hypergraph::compute_canonical_hash(const SparseBitset& edges) const {
 
     if (ea.empty()) {
         worker_scratch().release(mk);
+        if (out_form) out_form->clear();
         return EMPTY_STATE_CANONICAL_HASH;
     }
 
@@ -798,6 +915,11 @@ uint64_t Hypergraph::compute_canonical_hash(const SparseBitset& edges) const {
     // depth 1 the core sizes for exactly that: no per-level partition blocks, no generator
     // rows. Only a state that actually needs the individualization search pays for it, and
     // it pays on the retry -- where the search dominates the re-run anyway.
+    uint32_t* form = nullptr;
+    if (out_form) {
+        out_form->resize(hgcommon::ir_canonical_form_words(n_edges, total_occ));
+        form = out_form->data();
+    }
     for (uint32_t depth : kIrDepthRungs) {
         if (ir_rung_below_hint(depth)) continue;
         const uint64_t words =
@@ -809,7 +931,7 @@ uint64_t Hypergraph::compute_canonical_hash(const SparseBitset& edges) const {
         hgcommon::IrWork work{};
         auto r = hgcommon::ir_canonical_hash(
             ea.data(), eoff.data(), ev.data(), n_edges, n_verts, total_occ, scratch, depth,
-            nullptr, hgcommon::IR_HOST_GENERATORS, nullptr, nullptr, nullptr, nullptr, &work);
+            nullptr, hgcommon::IR_HOST_GENERATORS, nullptr, nullptr, form, nullptr, &work);
         book_ir_call(work, r.status == hgcommon::IR_NEED_DEPTH);
         if (r.status == hgcommon::IR_OK) {
             ir_note_search(work);
@@ -829,6 +951,7 @@ uint64_t Hypergraph::compute_canonical_hash(const SparseBitset& edges) const {
     });
     IRCanonicalizer ir;
     uint64_t h = ir.compute_canonical_hash(edge_vectors);
+    if (out_form) fallback_canonical_form(edge_vectors, *out_form);
     worker_scratch().release(mk);
     return h;
 }
@@ -865,9 +988,11 @@ uint64_t ir_hash_and_orbits(const SegmentedArray<Edge>& edge_table,
                             std::vector<uint32_t>& orbit,
                             std::vector<uint32_t>& klass,
                             std::vector<uint32_t>& rank,
-                            Hypergraph::IrBooking& booking) {
+                            Hypergraph::IrBooking& booking,
+                            std::vector<uint32_t>* out_form = nullptr) {
     orbit.assign(n, 0);
     klass.assign(n, 0);
+    if (out_form) out_form->clear();
     if (n == 0) return EMPTY_STATE_CANONICAL_HASH;
 
     uint32_t total_occ = 0;
@@ -900,6 +1025,11 @@ uint64_t ir_hash_and_orbits(const SegmentedArray<Edge>& edge_table,
     const uint32_t rung_cap = n_verts + 1;
     const uint32_t rungs[] = {kIrDepthRungs[0], kIrDepthRungs[1], kIrDepthRungs[2],
                               rung_cap > hgcommon::IR_MAX_DEPTH_DEFAULT ? rung_cap : 0u};
+    uint32_t* form = nullptr;
+    if (out_form) {
+        out_form->resize(hgcommon::ir_canonical_form_words(n, total_occ));
+        form = out_form->data();
+    }
     for (uint32_t depth : rungs) {
         if (depth == 0u) continue;
         if (ir_rung_below_hint(depth)) continue;
@@ -910,7 +1040,7 @@ uint64_t ir_hash_and_orbits(const SegmentedArray<Edge>& edge_table,
             hgcommon::IrWork work{};
             auto r = hgcommon::ir_canonical_hash(
                 ea, eoff, ev, n, n_verts, total_occ, scratch, depth,
-                rank.data(), gens, orbit.data(), klass.data(), nullptr, nullptr, &work);
+                rank.data(), gens, orbit.data(), klass.data(), form, nullptr, &work);
             booking.calls += 1;
             booking.searched += work.searched;
             booking.leaves += work.leaves;
@@ -919,7 +1049,11 @@ uint64_t ir_hash_and_orbits(const SegmentedArray<Edge>& edge_table,
             if (r.status == hgcommon::IR_NEED_DEPTH || r.status == hgcommon::IR_NEED_GENERATORS)
                 booking.retries += 1;
             if (r.status == hgcommon::IR_OK)    { ir_note_search(work); return r.hash; }
-            if (r.status == hgcommon::IR_EMPTY) return EMPTY_STATE_CANONICAL_HASH;
+            if (r.status == hgcommon::IR_EMPTY) {
+                // Every edge has arity 0: the form is one arity word per edge.
+                if (out_form) out_form->assign(n, 0u);
+                return EMPTY_STATE_CANONICAL_HASH;
+            }
             if (r.status == hgcommon::IR_NEED_DEPTH) break;
         }
     }
@@ -934,7 +1068,10 @@ uint64_t ir_hash_and_orbits(const SegmentedArray<Edge>& edge_table,
         edge_vecs.emplace_back(e.vertices, e.vertices + e.arity);
     }
     IRCanonicalizer ir;
-    return ir.compute_canonical_hash_with_edge_orbits(edge_vecs, orbit, &klass, rank.data());
+    const uint64_t h =
+        ir.compute_canonical_hash_with_edge_orbits(edge_vecs, orbit, &klass, rank.data());
+    if (out_form) fallback_canonical_form(edge_vecs, *out_form);
+    return h;
 }
 
 }  // namespace
@@ -943,8 +1080,9 @@ uint64_t ir_hash_and_orbits(const SegmentedArray<Edge>& edge_table,
 // that every capture has to take qc_orbits_or_build's rebuild path. The hash is returned either
 // way, so the state's identity does not depend on the arm.
 uint64_t Hypergraph::compute_and_cache_state_orbits(StateId s, const SparseBitset& edges,
-                                                    bool cache) {
+                                                    bool cache, std::vector<uint32_t>* out_form) {
     hgcommon::PhaseTimer _pt(hgcommon::Phase::Canon);
+    if (out_form) out_form->clear();
     HG_STAT(canonical_hash_computations_.fetch_add(1, std::memory_order_relaxed));
     // Materialize the state's edges (id-sorted via SparseBitset iteration) into scratch,
     // run the exact IR canonicalization with edge orbits, then copy a compact table into
@@ -979,7 +1117,7 @@ uint64_t Hypergraph::compute_and_cache_state_orbits(StateId s, const SparseBitse
         klass.assign(n, 0);
         rank.assign(n, 0);
         IrBooking booking{};
-        hash = ir_hash_and_orbits(edges_, ids.data(), n, orbit, klass, rank, booking);
+        hash = ir_hash_and_orbits(edges_, ids.data(), n, orbit, klass, rank, booking, out_form);
         book_ir(booking);
         // ids are already ascending (SparseBitset iterates in id order), orbit is parallel.
         for (uint32_t i = 0; i < n; ++i) {
@@ -1715,7 +1853,9 @@ StateId Hypergraph::genesis_state() const {
     return genesis_state_.load(std::memory_order_acquire);
 }
 
+// In Full mode `canonical_hash` is the state's reported canonical hash, which is its class's key.
 std::optional<StateId> Hypergraph::find_canonical_state(uint64_t canonical_hash) const {
+    if (auto rec = canonical_form_map_.lookup(canonical_hash)) return (*rec)->state;
     return canonical_state_map_.lookup_waiting(canonical_hash);
 }
 
@@ -1748,6 +1888,9 @@ void Hypergraph::note_invalid_match() {
 }
 
 #if HG_ENGINE_STATS
+uint64_t Hypergraph::canonical_key_collisions() const {
+    return canonical_key_collisions_.load(std::memory_order_relaxed);
+}
 uint64_t Hypergraph::canonical_hash_computations() const {
     return canonical_hash_computations_.load(std::memory_order_relaxed);
 }
@@ -2084,7 +2227,10 @@ void Hypergraph::QrCtx::descend(const SlotMatch& m, uint32_t depth, uint32_t ev,
 
 // count_unique rather than size: ConcurrentMap can hold duplicate keys when two threads insert
 // the same canonical hash, and the unique count is the answer once evolution is complete.
-size_t Hypergraph::num_canonical_states() const { return canonical_state_map_.count_unique(); }
+// One of the two maps is empty unless the mode was changed between runs on this Hypergraph.
+size_t Hypergraph::num_canonical_states() const {
+    return canonical_state_map_.count_unique() + canonical_form_map_.count_unique();
+}
 
 // Release/acquire: the mode is set on the main thread and read by workers, which matters on a
 // weak model like ARM64.
@@ -2301,6 +2447,7 @@ Hypergraph::Hypergraph(uint32_t capacity_scale)
     , states_(seg_shift_for(capacity_scale))
     , events_(seg_shift_for(capacity_scale))
     , canonical_state_map_(decltype(canonical_state_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
+    , canonical_form_map_(decltype(canonical_form_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
     , event_canonical_state_map_(
           decltype(event_canonical_state_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
     , qc_inst_applied_(seg_shift_for(capacity_scale))

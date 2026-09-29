@@ -67,6 +67,63 @@ TEST(OracleCorpus, EveryRuleTypeMatchesBruteForce) {
     }
 }
 
+// Full mode compares IR canonical forms on a key hit, so the state set does not depend on the
+// hash. With the key mask at 0x3 every state's first probe key is one of four values, so
+// non-isomorphic states share keys on every case with more than four canonical states. The
+// canonical count must still equal the brute-force oracle, every count at the measurement depth
+// must equal the unmasked run's, and under quotient exploration so must the reconstruction's
+// raw events, causal pairs and branchial pairs, at 1 and 4 threads.
+TEST(OracleCorpus, CanonicalKeyCollisionsKeepStateIdentityExact) {
+    constexpr uint64_t kMask = 0x3;
+    uint64_t collisions = 0;
+    for (const auto& c : oracle::corpus()) {
+        bool all_small = true;
+        const size_t brute = oracle::brute_force_iso_count(c.rules, c.init, c.oracle_steps,
+                                                           &all_small);
+        ASSERT_TRUE(all_small) << c.name;
+        for (unsigned t : {1u, 4u}) {
+            EXPECT_EQ(oracle::engine_full_count(c.rules, c.init, c.oracle_steps, t,
+                                                ParallelEvolutionEngine::ExecutionMode::Parallel,
+                                                kMask),
+                      brute)
+                << c.name << " @" << t << " threads: masked-key Full count != brute-force oracle";
+        }
+        const oracle::Counts ref = oracle::engine_counts(c.rules, c.init, c.measure_steps, 1);
+        const oracle::QuotientCounts qref =
+            oracle::engine_quotient_counts(c.rules, c.init, c.measure_steps, 1);
+        for (unsigned t : {1u, 4u}) {
+            const oracle::Counts got = oracle::engine_counts(
+                c.rules, c.init, c.measure_steps, t, StateCanonicalizationMode::Full, true, kMask);
+            EXPECT_EQ(got.canonical_states, ref.canonical_states) << c.name << " @" << t;
+            EXPECT_EQ(got.events, ref.events) << c.name << " @" << t;
+            EXPECT_EQ(got.causal_edges, ref.causal_edges) << c.name << " @" << t;
+            EXPECT_EQ(got.causal_event_pairs, ref.causal_event_pairs) << c.name << " @" << t;
+            EXPECT_EQ(got.branchial_edges, ref.branchial_edges) << c.name << " @" << t;
+            const oracle::QuotientCounts q =
+                oracle::engine_quotient_counts(c.rules, c.init, c.measure_steps, t, kMask);
+            EXPECT_EQ(q.canonical_states, qref.canonical_states) << c.name << " quotient @" << t;
+            EXPECT_EQ(q.raw_events, qref.raw_events) << c.name << " quotient @" << t;
+            EXPECT_EQ(q.causal_pairs, qref.causal_pairs) << c.name << " quotient @" << t;
+            EXPECT_EQ(q.reduced_pairs, qref.reduced_pairs) << c.name << " quotient @" << t;
+            EXPECT_EQ(q.branchial, qref.branchial) << c.name << " quotient @" << t;
+        }
+#if HG_ENGINE_STATS
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        hg.set_canonical_key_mask(kMask);
+        ParallelEvolutionEngine engine(&hg, 1);
+        for (const auto& r : c.rules) engine.add_rule(r);
+        engine.evolve(c.init, c.measure_steps);
+        collisions += hg.canonical_key_collisions();
+#endif
+    }
+#if HG_ENGINE_STATS
+    // The mask forced collisions; a count of 0 means the walk was never exercised.
+    EXPECT_GT(collisions, 0u);
+#endif
+    (void)collisions;
+}
+
 TEST(OracleCorpus, DeterministicAcrossThreadCounts) {
     for (const auto& c : oracle::corpus()) {
         size_t t1 = oracle::engine_full_count(c.rules, c.init, c.oracle_steps, 1);
