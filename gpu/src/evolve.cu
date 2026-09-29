@@ -979,6 +979,17 @@ EvolveResult evolve(const EvolveInput& in) {
     // A fresh engine per attempt: the pools are re-allocated at the new sizes.
     return run_with_growth(config_from_input(in), in.max_device_memory_bytes,
                            [&](const EngineConfig& cfg) {
+                               // The estimate is below the real allocation, so a config it
+                               // already places past the free memory cannot fit; stopping here
+                               // skips building it in paged memory (run_persistent_evolve
+                               // checks the real allocation).
+                               size_t free_b = 0, total_b = 0;
+                               if (cudaMemGetInfo(&free_b, &total_b) == cudaSuccess &&
+                                   estimated_device_bytes(cfg) + total_b / 64 > free_b)
+                                   throw std::runtime_error(
+                                       "the engine does not fit in device memory (" +
+                                       std::to_string(free_b >> 20) + " MiB free)");
+                               cudaGetLastError();
                                Engine engine(cfg);
                                return engine.run(in);
                            });

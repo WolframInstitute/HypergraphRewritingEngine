@@ -24,6 +24,8 @@
 
 #include "hg_gpu/evolve.hpp"
 
+#include <cuda_runtime.h>
+
 #include <vector>
 
 namespace {
@@ -152,4 +154,21 @@ TEST(CapacityOverflow, OnlyCapacityKindsMarkAPartialResult) {
     EXPECT_STREQ(hg_gpu::error_kind_name(hg_gpu::ErrorKind::kEventSigRawFallback),
                  "EventSigRawFallback");
     EXPECT_STREQ(hg_gpu::error_kind_name(hg_gpu::ErrorKind::kCountSaturated), "CountSaturated");
+}
+
+// An engine that does not fit in the free device memory stops before its first kernel and
+// returns with kDeviceOutOfMemory: under WDDM an oversubscribed allocation pages to system memory
+// and the run would otherwise continue about 100x slower.
+TEST(CapacityOverflow, AnEngineThatDoesNotFitStopsAndReports) {
+    size_t free_b = 0, total_b = 0;
+    ASSERT_EQ(cudaMemGetInfo(&free_b, &total_b), cudaSuccess);
+    const size_t leave = total_b / 128;
+    ASSERT_GT(free_b, leave);
+    void* hog = nullptr;
+    ASSERT_EQ(cudaMalloc(&hog, free_b - leave), cudaSuccess);
+    const hg_gpu::EvolveResult r = hg_gpu::evolve(growing_input(3));
+    cudaFree(hog);
+    bool oom = false;
+    for (const auto& w : r.warnings) oom = oom || w.kind == hg_gpu::ErrorKind::kDeviceOutOfMemory;
+    EXPECT_TRUE(oom);
 }

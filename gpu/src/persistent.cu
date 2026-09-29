@@ -1477,6 +1477,23 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     auto t_seed0 = std::chrono::steady_clock::now();
 
     arena.reset();
+
+    // THE ENGINE MUST FIT IN PHYSICAL VRAM. Under WDDM (Windows, WSL) cudaMalloc does not fail
+    // past the device's memory: the driver pages device memory to system memory and every
+    // kernel runs about 100x slower (measured: bigpath n=112 at 3 steps, 23,902 of 24,564 MiB
+    // used, over 300 s where n=96 took 2.5 s). Every allocation of this run is done here, so a
+    // free amount under 1/64 of the device means it did not fit; the run stops and the caller
+    // gets the last partial result (run_with_growth, kDeviceOutOfMemory).
+    {
+        size_t free_b = 0, total_b = 0;
+        if (cudaMemGetInfo(&free_b, &total_b) == cudaSuccess && total_b != 0 &&
+            free_b < total_b / 64) {
+            throw std::runtime_error(
+                "the engine does not fit in device memory (" + std::to_string(free_b >> 20) +
+                " of " + std::to_string(total_b >> 20) + " MiB free after allocation)");
+        }
+        cudaGetLastError();
+    }
     // CONTINUING rather than starting: the frontier already holds hashed, deduplicated states,
     // so it is seeded straight into the queue at each entry's own recorded depth. The
     // root path would re-hash them and, worse, consult dedup -- which they already satisfy, so
