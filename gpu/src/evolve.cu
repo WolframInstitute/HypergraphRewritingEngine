@@ -280,9 +280,11 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
             static_cast<uint64_t>(cfg.max_events) * cfg.qe_capacity_scale,
             static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) / 16u);
         qe_state_ = std::make_unique<QeState>(qc_route, static_cast<uint32_t>(qe_events));
-    } else if (start_step == 0) {
+    } else if (start_step == 0 && qc_route) {
         // A continuation keeps the reconstruction: its captures, instances, counts and the
-        // points the old bound left standing, which the run drives (k_qe_redrive).
+        // points the old bound left standing, which the run drives (k_qe_redrive). Off the
+        // route the state is never written (every device entry returns on !qe.enabled), so
+        // there is nothing to clear.
         qe_state_->clear();
     }
     // Capture always; REPLAY only when the caller records something the raw unfolding answers.
