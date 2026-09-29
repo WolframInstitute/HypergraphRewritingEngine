@@ -5,10 +5,14 @@
 // drives -- with the same shape the device replay has around it (quotient_expansion.hpp,
 // qe_add_instance / qe_capture_expansion and the two qe_drive_* scans):
 //
-//   instance side                       match side
-//     push the instance                   push the match
-//     __threadfence()                     __threadfence()
-//     walk the match list                 walk the instance list
+//   instance side                       match side (qe_capture_expansion, qe_drive_match)
+//     push the instance                   lane 0: push the match
+//     __threadfence()                     lane 0: __threadfence(); __syncwarp()
+//     walk the match list                 another lane: walk the instance list
+//
+// The match side's walk runs on a different lane of the capturing block after lane 0's push,
+// fence and the warp barrier; the barrier is transcribed as a release and an acquire of a flag
+// at work-group scope.
 //
 // If BOTH walks miss, the pair is never applied: one fewer raw event, and with it every causal
 // and branchial pair it belonged to, while the canonical counts are untouched. The host's twin,
@@ -29,6 +33,7 @@
 
 extern "C" {
 void __VERIFIER_memory_scope_device();
+void __VERIFIER_memory_scope_work_group();
 void __VERIFIER_thread_local_id(int);
 void __VERIFIER_thread_group_id(int);
 void __VERIFIER_thread_global_id(int);
@@ -89,6 +94,8 @@ void* instance_side(void*) {
     return nullptr;
 }
 
+uint32_t g_warp_flag = 0;   // __syncwarp between lane 0's fence and the other lanes' walks
+
 void* match_side(void*) {
     __VERIFIER_thread_global_id(1); __VERIFIER_thread_local_id(0);
     __VERIFIER_thread_group_id(1);  __VERIFIER_thread_kernel_id(0);
@@ -98,6 +105,18 @@ void* match_side(void*) {
 #if !defined(CALIBRATE_NO_FENCE)
     threadfence();
 #endif
+    __VERIFIER_memory_scope_work_group();
+    __atomic_store_n(&g_warp_flag, 1u, __ATOMIC_RELEASE);
+    return nullptr;
+}
+
+void* match_lane(void*) {
+    __VERIFIER_thread_global_id(2); __VERIFIER_thread_local_id(1);
+    __VERIFIER_thread_group_id(1);  __VERIFIER_thread_kernel_id(0);
+    for (;;) {
+        __VERIFIER_memory_scope_work_group();
+        if (__atomic_load_n(&g_warp_flag, __ATOMIC_ACQUIRE)) break;
+    }
     Ops theirs{&g_head_inst};
     // LockFreeList::DeviceView::for_each: an empty head by a relaxed load returns.
     if (theirs.head_load_relaxed() != kInvalid)
@@ -108,11 +127,13 @@ void* match_side(void*) {
 }  // namespace
 
 int main() {
-    pthread_t a, b;
+    pthread_t a, b, c;
     pthread_create(&a, nullptr, instance_side, nullptr);
     pthread_create(&b, nullptr, match_side, nullptr);
+    pthread_create(&c, nullptr, match_lane, nullptr);
     pthread_join(a, nullptr);
     pthread_join(b, nullptr);
+    pthread_join(c, nullptr);
     // AT LEAST ONE side sees the other; both missing is the dropped pair.
     assert((g_inst_saw_match || g_match_saw_inst) && "instance and match both missed each other");
     return 0;

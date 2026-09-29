@@ -308,7 +308,10 @@ Both reads are acquire loads now, in `readable_records` and the two detector vie
 **The DEVICE's replay rendezvous**, covered by `verification/gpumc/replay_rendezvous_meets.cpp`.
 The device list's prepend and walk are `hgcommon/list_core.hpp` -- the body
 `gpu/include/hg_gpu/lock_free_list.hpp` drives -- and the harness runs THAT with the shape the
-quotient replay puts around it: push, `__threadfence()`, walk the other side's list. The property
+quotient replay puts around it: push, `__threadfence()`, walk the other side's list. The match
+side's walk runs on another lane of the capturing block after lane 0's push, fence and
+`__syncwarp`, transcribed as a work-group-scope release and acquire; a walk reads an empty head
+relaxed and returns (`LockFreeList::DeviceView::for_each`). The property
 is the host twin's (`quotient_instance_match_rendezvous`): an instance and a match arriving
 concurrently cannot both miss each other, or a raw event and every relation under it is dropped
 with the canonical counts untouched. 3 executions, clean; `-DCALIBRATE_NO_FENCE` removes both

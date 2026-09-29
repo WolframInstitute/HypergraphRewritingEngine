@@ -775,50 +775,63 @@ __device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
         ns += __popc(mask);
     }
     __syncwarp();
-    if (lane != 0) return;
-    hgcommon::sort_u64(surv, ns);
+    // Lane 0 sorts the survivors and publishes the record; the index is broadcast, and the
+    // match side of the rendezvous then scans on every lane (qe_drive_match).
+    uint32_t published = UINT32_MAX;
+    if (lane == 0) published = [&]() -> uint32_t {
+        hgcommon::sort_u64(surv, ns);
 
-    // Copy the slot arrays into the expansion arena, then publish the record.
-    const uint32_t need = nc + np + 2u * ns;
-    uint32_t off = 0;
-    if (need) {
-        off = qe_alloc_words(ds, qe, need);
-        if (off == UINT32_MAX) return;
-        uint32_t* w = qe.arr_words + off;
-        for (uint32_t i = 0; i < nc; ++i) *w++ = consumed[i];
-        for (uint32_t i = 0; i < np; ++i) *w++ = produced[i];
-        for (uint32_t i = 0; i < ns; ++i) *w++ = hgcommon::id_pair_from_key(surv[i]).a;
-        for (uint32_t i = 0; i < ns; ++i) *w++ = hgcommon::id_pair_from_key(surv[i]).b;
-    }
+        // Copy the slot arrays into the expansion arena, then publish the record.
+        const uint32_t need = nc + np + 2u * ns;
+        uint32_t off = 0;
+        if (need) {
+            off = qe_alloc_words(ds, qe, need);
+            if (off == UINT32_MAX) return UINT32_MAX;
+            uint32_t* w = qe.arr_words + off;
+            for (uint32_t i = 0; i < nc; ++i) *w++ = consumed[i];
+            for (uint32_t i = 0; i < np; ++i) *w++ = produced[i];
+            for (uint32_t i = 0; i < ns; ++i) *w++ = hgcommon::id_pair_from_key(surv[i]).a;
+            for (uint32_t i = 0; i < ns; ++i) *w++ = hgcommon::id_pair_from_key(surv[i]).b;
+        }
 
-    const uint32_t rec = qe.matches.claim();
-    if (rec == Pool<DeviceSlotMatch>::kInvalid) { ds.errors.record(ErrorKind::kQcNodes); return; }
-    DeviceSlotMatch& m = qe.matches.at(rec);
-    m.to_hash = to;
-    {
-        cuda::atomic_ref<uint32_t, cuda::thread_scope_device> nid(*qe.next_id);
-        m.id = nid.fetch_add(1u, cuda::memory_order_relaxed);
-    }
-    // `parent` holds the class's rep claim (above), so it indexes the class.
-    m.local = UINT32_MAX;
-    if (static_cast<uint32_t>(parent) < qe.class_nmatch_cap) {
-        cuda::atomic_ref<uint32_t, cuda::thread_scope_device> n(qe.class_nmatch[parent]);
-        m.local = n.fetch_add(1u, cuda::memory_order_acq_rel);
-    }
-    m.rule = rule;
-    m.from_slots = ds.state_edge_slices[parent].count;
-    m.to_slots   = ds.state_edge_slices[child].count;
-    m.num_consumed = nc; m.num_produced = np; m.num_survivors = ns;
-    m.arr_offset = off;
+        const uint32_t rec = qe.matches.claim();
+        if (rec == Pool<DeviceSlotMatch>::kInvalid) {
+            ds.errors.record(ErrorKind::kQcNodes);
+            return UINT32_MAX;
+        }
+        DeviceSlotMatch& m = qe.matches.at(rec);
+        m.to_hash = to;
+        {
+            cuda::atomic_ref<uint32_t, cuda::thread_scope_device> nid(*qe.next_id);
+            m.id = nid.fetch_add(1u, cuda::memory_order_relaxed);
+        }
+        // `parent` holds the class's rep claim (above), so it indexes the class.
+        m.local = UINT32_MAX;
+        if (static_cast<uint32_t>(parent) < qe.class_nmatch_cap) {
+            cuda::atomic_ref<uint32_t, cuda::thread_scope_device> n(qe.class_nmatch[parent]);
+            m.local = n.fetch_add(1u, cuda::memory_order_acq_rel);
+        }
+        m.rule = rule;
+        m.from_slots = ds.state_edge_slices[parent].count;
+        m.to_slots   = ds.state_edge_slices[child].count;
+        m.num_consumed = nc; m.num_produced = np; m.num_survivors = ns;
+        m.arr_offset = off;
 
-    const uint32_t at = qe.by_from.push(qe_bucket(from, qe.by_from.num_keys), QeMatchRef{from, rec});
-    if (at == INVALID_ID) { ds.errors.record(ErrorKind::kQcNodes); return; }
+        const uint32_t at =
+            qe.by_from.push(qe_bucket(from, qe.by_from.num_keys), QeMatchRef{from, rec});
+        if (at == INVALID_ID) {
+            ds.errors.record(ErrorKind::kQcNodes);
+            return UINT32_MAX;
+        }
 
-    if (qe.multiplicity) {
-        QeWork work = qe_work_for(ds, qe, work_slice);
-        qe_capture_multiplicity(ds, qe, m, from, at, consumed, nc, work);
-    }
-    if (qe.replay) qe_drive_match(ds, qe, rec, from);
+        if (qe.multiplicity) {
+            QeWork work = qe_work_for(ds, qe, work_slice);
+            qe_capture_multiplicity(ds, qe, m, from, at, consumed, nc, work);
+        }
+        return rec;
+    }();
+    published = __shfl_sync(0xffffffffu, published, 0);
+    if (published != UINT32_MAX && qe.replay) qe_drive_match(ds, qe, published, from);
 }
 
 // Reserve `n` words of the expansion arena. Returns UINT32_MAX when the arena is exhausted,
@@ -976,15 +989,21 @@ __device__ inline void qe_drive_instance(DeviceState ds, QeView qe, uint32_t rec
 
 // Match side of the rendezvous: a task per instance already standing at this class, at every
 // depth it could stand at.
+// Called by every lane of the capturing warp after lane 0 pushed the match to by_from. Lane 0
+// fences after that push and the warp synchronizes before any lane scans, so each scan follows
+// the publish and the fence, as the instance side's does. Each lane walks every 32nd
+// (depth, shard) list.
 __device__ inline void qe_drive_match(DeviceState ds, QeView qe, uint32_t match_rec,
                                       uint64_t from_hash) {
-    __threadfence();
-    for (uint32_t d = 0; d < qe.max_steps; ++d) {
+    if ((threadIdx.x & 31u) == 0) __threadfence();
+    __syncwarp();
+    const uint32_t units = qe.max_steps * kQeInstShards;
+    for (uint32_t u = threadIdx.x & 31u; u < units; u += 32u) {
+        const uint32_t d = u / kQeInstShards;
         const uint64_t key = qe_inst_key(from_hash, d);
-        for (uint32_t sh = 0; sh < kQeInstShards; ++sh)
-            qe.by_key.for_each(qe_inst_bucket(qe, key, sh), [&](const QeInstRef& r) {
-                if (r.key == key) qe_task_append(ds, qe, from_hash, r.record, d, match_rec);
-            });
+        qe.by_key.for_each(qe_inst_bucket(qe, key, u % kQeInstShards), [&](const QeInstRef& r) {
+            if (r.key == key) qe_task_append(ds, qe, from_hash, r.record, d, match_rec);
+        });
     }
 }
 
