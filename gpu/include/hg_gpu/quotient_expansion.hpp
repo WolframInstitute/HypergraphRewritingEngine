@@ -46,6 +46,7 @@ namespace gpu {
 struct DeviceSlotMatch {
     uint64_t to_hash = 0;
     uint32_t id = 0;              // dense; the replay's (instance, match) claim keys on it
+    uint32_t local = 0;           // dense within its class, in capture order; UINT32_MAX if none
     uint32_t rule = 0;
     uint32_t from_slots = 0, to_slots = 0;
     uint32_t num_consumed = 0, num_produced = 0, num_survivors = 0;
@@ -63,11 +64,11 @@ struct DeviceSlotMatch {
 struct QeMatchView {
     const uint32_t* w;            // consumed | produced | surv_from | surv_to
     uint64_t to_hash;
-    uint32_t id, rule, from_slots, to_slots;
+    uint32_t id, local, rule, from_slots, to_slots;
     uint32_t num_consumed, num_produced, num_survivors;
 
     __device__ QeMatchView(const DeviceSlotMatch& m, const uint32_t* words)
-        : w(m.at(words)), to_hash(m.to_hash), id(m.id), rule(m.rule),
+        : w(m.at(words)), to_hash(m.to_hash), id(m.id), local(m.local), rule(m.rule),
           from_slots(m.from_slots), to_slots(m.to_slots), num_consumed(m.num_consumed),
           num_produced(m.num_produced), num_survivors(m.num_survivors) {}
 
@@ -106,6 +107,12 @@ struct DeviceQcInstance {
     uint32_t id = 0;           // dense; the replay's (instance, match) claim keys on it
     uint32_t nslots = 0;
     uint32_t prod_offset = 0;
+    // A pair whose match has class index below claim_cap claims its bit at bits_offset in the
+    // expansion arena, two 32-bit words per 64-bit claim word; any other pair claims in
+    // `applied`. claim_cap is hgcommon::qr_claim_bits of hgcommon::qr_claim_words of the
+    // matches the class held at creation, the host's rule; 0 for an instance at the bound.
+    uint32_t claim_cap = 0;
+    uint32_t bits_offset = 0;
 };
 
 // An instance reference bucketed by key(hash, depth); the node carries the exact key so a
@@ -187,6 +194,10 @@ struct QeView {
     // Claims an (instance, match) application. An application mints a raw event, so unlike the
     // producer-set DP it is not idempotent and the pair must be claimed exactly once.
     DedupMap::DeviceView applied;
+    // Matches captured per class, indexed by the class's representative raw state (rep); a
+    // representative at or past class_nmatch_cap gives its matches no class index.
+    uint32_t* class_nmatch;
+    uint32_t  class_nmatch_cap;
     uint32_t* next_raw_event;  // device atomic; dense raw-event ids
 
     // Slots the frame MOVED -- resolved through a state that did not hold the frame, and landing
@@ -756,6 +767,12 @@ __device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
         cuda::atomic_ref<uint32_t, cuda::thread_scope_device> nid(*qe.next_id);
         m.id = nid.fetch_add(1u, cuda::memory_order_relaxed);
     }
+    // `parent` holds the class's rep claim (above), so it indexes the class.
+    m.local = UINT32_MAX;
+    if (static_cast<uint32_t>(parent) < qe.class_nmatch_cap) {
+        cuda::atomic_ref<uint32_t, cuda::thread_scope_device> n(qe.class_nmatch[parent]);
+        m.local = n.fetch_add(1u, cuda::memory_order_acq_rel);
+    }
     m.rule = rule;
     m.from_slots = ds.state_edge_slices[parent].count;
     m.to_slots   = ds.state_edge_slices[child].count;
@@ -810,6 +827,24 @@ __device__ inline uint32_t qe_add_instance(DeviceState ds, QeView qe, uint64_t s
     }
     inst.nslots      = nslots;
     inst.prod_offset = prod_offset;
+    inst.claim_cap   = 0;
+    inst.bits_offset = 0;
+    // Claim words only for an instance that will be expanded; one at the bound claims nothing.
+    if (depth < qe.max_steps) {
+        uint32_t class_matches = 0;
+        const auto rep = qe.rep.lookup(state_hash);
+        if (rep.found && rep.value - 1u < qe.class_nmatch_cap) {
+            cuda::atomic_ref<uint32_t, cuda::thread_scope_device> n(qe.class_nmatch[rep.value - 1u]);
+            class_matches = n.load(cuda::memory_order_acquire);
+        }
+        const uint32_t words = hgcommon::qr_claim_words(class_matches);
+        const uint32_t off = qe_alloc_words(ds, qe, 2u * words);
+        if (off != UINT32_MAX) {
+            for (uint32_t i = 0; i < 2u * words; ++i) qe.arr_words[off + i] = 0u;
+            inst.claim_cap   = hgcommon::qr_claim_bits(words);
+            inst.bits_offset = off;
+        }
+    }
 
     // At the bound the instance is recorded and not expanded; a continuation drives it.
     if (depth >= qe.max_steps) {
@@ -966,6 +1001,12 @@ struct DeviceQrCtx {
     }
 
     __device__ bool claim(const Instance& inst, const Match& m) {
+        if (m.local < inst.claim_cap) {
+            cuda::atomic_ref<uint32_t, cuda::thread_scope_device> w(
+                qe.arr_words[inst.bits_offset + (m.local >> 5)]);
+            const uint32_t bit = 1u << (m.local & 31u);
+            return (w.fetch_or(bit, cuda::memory_order_acq_rel) & bit) == 0u;
+        }
         return qe.applied.insert_if_absent(hgcommon::qr_apply_key(inst.id, m.id), 1u).inserted;
     }
     // One shared counter: every producer's id was taken before this one, so the id is above
@@ -1296,6 +1337,8 @@ private:
     uint64_t*                 event_runsig_     = nullptr;
     uint32_t*                 event_kept_       = nullptr;   // kQeKeptStride words per raw event
     uint32_t*                 num_reduced_pairs_ = nullptr;
+    uint32_t*                 class_nmatch_ = nullptr;   // QeView::class_nmatch
+    uint32_t                  class_nmatch_cap_ = 0;
     uint32_t                  event_sig_capacity_ = 0;
     uint64_t*                 event_from_class_ = nullptr;
     uint64_t*                 event_to_class_   = nullptr;

@@ -74,6 +74,11 @@ QeState::QeState(bool on, uint32_t max_events): matches_(on ? max_events : 1u),
                       "QeState multiplicity queue flags alloc");
         HG_CUDA_CHECK(cudaMalloc(&qm_point_class_, sizeof(unsigned long long) * qm_capacity_),
                       "QeState multiplicity point class alloc");
+        class_nmatch_cap_ = on ? max_events : 1u;
+        HG_CUDA_CHECK(cudaMalloc(&class_nmatch_, sizeof(uint32_t) * class_nmatch_cap_),
+                      "QeState class match counts alloc");
+        HG_CUDA_CHECK(cudaMemset(class_nmatch_, 0, sizeof(uint32_t) * class_nmatch_cap_),
+                      "QeState class match counts init");
         HG_CUDA_CHECK(cudaMalloc(&qm_point_depth_, sizeof(uint32_t) * qm_capacity_),
                       "QeState multiplicity point depth alloc");
         event_sig_capacity_ = on ? max_events : 1u;
@@ -95,6 +100,7 @@ QeState::~QeState() {
         if (event_sig_) cudaFree(event_sig_);
         if (event_runsig_) cudaFree(event_runsig_);
         if (event_kept_) cudaFree(event_kept_);
+        if (class_nmatch_) cudaFree(class_nmatch_);
         if (event_from_class_) cudaFree(event_from_class_);
         if (event_to_class_) cudaFree(event_to_class_);
         if (event_rule_) cudaFree(event_rule_);
@@ -136,6 +142,8 @@ void QeState::clear() {
                       "QeState multiplicity cursors clear");
         inst_applied_.clear();
         HG_CUDA_CHECK(cudaMemset(inst_next_id_, 0, sizeof(uint32_t)), "QeState inst id clear");
+        HG_CUDA_CHECK(cudaMemset(class_nmatch_, 0, sizeof(uint32_t) * class_nmatch_cap_),
+                      "QeState class match counts clear");
         HG_CUDA_CHECK(cudaMemset(next_raw_event_, 0, sizeof(uint32_t)), "QeState raw ev clear");
         HG_CUDA_CHECK(cudaMemset(align_moved_, 0, sizeof(uint32_t)), "QeState align moved clear");
         HG_CUDA_CHECK(cudaMemset(align_fail_, 0, sizeof(uint32_t)), "QeState align fail clear");
@@ -429,6 +437,8 @@ QeView QeState::view(uint32_t max_steps, EventSignatureKeys keys,
         q.inst_next_id   = inst_next_id_;
         q.rep            = rep_.view();
         q.applied        = applied_.view();
+        q.class_nmatch     = class_nmatch_;
+        q.class_nmatch_cap = class_nmatch_cap_;
         q.align_moved    = align_moved_;
         q.canon_seen     = canon_seen_.view();
         q.num_canon      = num_canon_;

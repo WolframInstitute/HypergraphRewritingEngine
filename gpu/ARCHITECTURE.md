@@ -115,7 +115,9 @@ its slot, writes the task and sets its published flag with release; a lane waits
 the task it claimed. The termination detector counts the claimed slots as produced and
 `tasks_done` as consumed, and every append happens inside a unit that has not yet been booked
 consumed (the record being rewritten, or the task being run). The claim per (instance, match)
-makes the order in which tasks run irrelevant to the result. A class and depth's instance list is
+makes the order in which tasks run irrelevant to the result; it is the host's rule
+(`hgcommon::qr_claim_words`/`qr_claim_bits`): a bit in the instance's claim words for a match
+whose class index is below the words' capacity, the shared `applied` map otherwise. A class and depth's instance list is
 split over sixteen buckets, one chosen by the pushing lane, because concurrent pushes onto one
 list head serialized the replay; the keyed lists' bucket counts grow with the event budget,
 because a walk visits every node of its bucket. The redundancy search's overflow scratch is one
