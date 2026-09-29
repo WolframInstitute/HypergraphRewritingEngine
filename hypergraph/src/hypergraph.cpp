@@ -1149,7 +1149,7 @@ void Hypergraph::qc_add_instance(uint64_t state_hash, uint32_t depth,
             qc_blocked_.push(QcPoint{state_hash, depth}, arena_);
     }
     const int w = arena_worker_index();
-    sh->list[w < 0 ? 0u : static_cast<uint32_t>(w) % kInstShards].push(inst, arena_);
+    sh->shard[w < 0 ? 0u : static_cast<uint32_t>(w) % kInstShards].list.push(inst, arena_);
 
     // Instances at the final depth are recorded but never expanded: the DP runs its match
     // loop over depths 0..steps-1, producing into depth steps and never reading it.
@@ -1376,7 +1376,7 @@ void Hypergraph::qc_capture_expansion(EventId e) {
         auto ri = qc_instances_.lookup(qc_key(from, static_cast<uint32_t>(d), 0));
         if (!ri.has_value()) continue;
         for (uint32_t l = 0; l < kInstShards; ++l) {
-            if ((*ri)->list[l].empty()) continue;
+            if ((*ri)->shard[l].list.empty()) continue;
             if (ran_one && qc_spawn_) {
                 qc_spawn_(qc_spawn_ctx_, this, stored, from, static_cast<uint32_t>(d), l);
                 continue;
@@ -1390,7 +1390,7 @@ void Hypergraph::qc_capture_expansion(EventId e) {
 void Hypergraph::qc_apply_list(const SlotMatch* m, uint64_t from, uint32_t depth, uint32_t list) {
     auto ri = qc_instances_.lookup(qc_key(from, depth, 0));
     if (!ri.has_value()) return;
-    (*ri)->list[list].for_each([&](const QcInstance& inst) { qc_apply(inst, *m, from, depth); });
+    (*ri)->shard[list].list.for_each([&](const QcInstance& inst) { qc_apply(inst, *m, from, depth); });
 }
 
 void Hypergraph::register_quotient_transition(EventId e) {

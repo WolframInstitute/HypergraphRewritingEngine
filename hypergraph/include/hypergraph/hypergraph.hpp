@@ -203,10 +203,14 @@ class Hypergraph {
     // The instances of one (class, depth), in kInstShards lists: a worker pushes to list
     // (worker index % kInstShards) and a reader walks all of them. Every new instance of a class
     // pushes to its entry, which on a rule with few classes is most of the replay; the eight
-    // heads split those pushes. They share one line, so a reader makes one map lookup.
+    // heads split those pushes, each on its own cache line so a push moves only its own shard's
+    // line. A reader (a capture's scan) walks the eight lines after one map lookup.
     static constexpr uint32_t kInstShards = 8;
-    struct alignas(64) QcInstanceShards {
-        LockFreeList<QcInstance> list[kInstShards];
+    struct alignas(64) QcInstanceShard {
+        LockFreeList<QcInstance> list;
+    };
+    struct QcInstanceShards {
+        QcInstanceShard shard[kInstShards];
     };
     ConcurrentMap<uint64_t, QcInstanceShards*> qc_instances_;   // key(hash,depth,0)
     // set_qc_spawn's function and context.
@@ -263,7 +267,7 @@ class Hypergraph {
     void for_each_instance_at(uint64_t state_hash, uint32_t depth, F&& f) {
         auto ri = qc_instances_.lookup(qc_key(state_hash, depth, 0));
         if (!ri.has_value()) return;
-        for (const LockFreeList<QcInstance>& l : (*ri)->list) l.for_each(f);
+        for (const QcInstanceShard& s : (*ri)->shard) s.list.for_each(f);
     }
     // Raw event ids: a worker takes them in blocks of kEventIdBlock from qc_next_raw_event_,
     // and uses its block only for an event whose producers are all below the block's next id.
