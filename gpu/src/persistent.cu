@@ -423,7 +423,8 @@ __global__ void k_persistent_match_rewrite(
                 // (run_rewrite_kernel_with_nosync is called with step + 1) and what the CPU
                 // uses (the canonical OUTPUT state's step). Writing the parent's depth here
                 // made every event's reported step differ from the depth it was claimed at.
-                (void)apply_one_match(ds, rules, rec, rec.step + 1u);
+                const AppliedMatch a = apply_one_match(ds, rules, rec, rec.step + 1u);
+                if (a.state != INVALID_ID) copy_kept_edges(ds, a.kept, hgcommon::IrSerial{});
             }
             __syncthreads();
             continue;
@@ -658,6 +659,7 @@ __global__ void k_persistent_evolve(
     __shared__ uint32_t child_sid;
     __shared__ uint32_t child_event;
     __shared__ uint32_t child_step;
+    __shared__ KeptCopy child_kept;
     __shared__ uint32_t expand_base;
     __shared__ uint32_t expand_count;
     __shared__ bool     run_rule_inline;
@@ -726,8 +728,12 @@ __global__ void k_persistent_evolve(
                 child_sid    = applied.state;
                 child_event  = applied.event;
                 child_step   = step + 1u;
+                child_kept   = applied.kept;
                 acc_rewrite += clock64() - t0b;
             }
+            __syncthreads();
+            // The child's kept edges, on every lane, before region 2 reads the child's slice.
+            if (child_sid != INVALID_ID) copy_kept_edges(ds, child_kept, IrWarpAll{});
             __syncthreads();
             // Region 2 of the record. The two canonicalizations run on the WHOLE warp: every
             // lane enters the shared core together under the all-lanes policy, and the block

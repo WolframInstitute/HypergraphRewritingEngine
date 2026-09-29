@@ -26,20 +26,65 @@ namespace gpu {
 //
 // Returns the number of new states produced (== num_matches, one per match).
 // One match, applied by ONE THREAD: consumes the matched edges, produces the RHS edges, and
-// emits the event. Exposed so a scheduler in another translation unit drives this
+// emits the event. The child's kept edges are the caller's to copy (copy_kept_edges) before
+// anything reads the child's slice. Exposed so a scheduler in another translation unit drives this
 // implementation rather than growing a second copy of it.
 //
 // What one application produced. A scheduler that finishes the work itself needs both halves:
 // the STATE to hash and re-enqueue, and the EVENT to stamp an identity onto once that hash
 // exists.
-struct AppliedMatch {
-    StateId state = INVALID_ID;
-    EventId event = INVALID_ID;   // both are INVALID_ID when a capacity claim failed
+// The kept part of a child's edge list: the parent's edges other than the consumed ones, in
+// parent order, written at dst_offset. apply_one_match reserves the child's slice and writes
+// its produced edges after the kept ones; copy_kept_edges writes the kept ones.
+struct KeptCopy {
+    uint32_t src_offset = 0;
+    uint32_t src_count  = 0;
+    uint32_t dst_offset = 0;
+    uint32_t n_consumed = 0;
+    EdgeId   consumed[kMaxPatternEdges];
 };
+
+struct AppliedMatch {
+    StateId  state = INVALID_ID;
+    EventId  event = INVALID_ID;   // both are INVALID_ID when a capacity claim failed
+    KeptCopy kept{};
+};
+
+// Copy a child's kept edges. Par is a lane policy (hgcommon::IrSerial, or IrWarpAll for a
+// block that is one warp): with kFans each lane takes every 32nd parent edge and a ballot
+// places the kept ones in parent order. Every lane of the warp must call it together.
+template <class Par>
+__device__ inline void copy_kept_edges(DeviceState ds, const KeptCopy& k, Par) {
+    EdgeId* dst = ds.state_edge_ids + k.dst_offset;
+    const EdgeId* src = ds.state_edge_ids + k.src_offset;
+    auto kept = [&](EdgeId e) {
+        for (uint32_t i = 0; i < k.n_consumed; ++i)
+            if (k.consumed[i] == e) return false;
+        return true;
+    };
+    if constexpr (!Par::kFans) {
+        uint32_t cursor = 0;
+        for (uint32_t i = 0; i < k.src_count; ++i)
+            if (kept(src[i])) dst[cursor++] = src[i];
+    } else {
+        const uint32_t lane = threadIdx.x & 31u;
+        uint32_t cursor = 0;
+        for (uint32_t base = 0; base < k.src_count; base += 32u) {
+            const uint32_t i = base + lane;
+            const EdgeId e = i < k.src_count ? src[i] : INVALID_ID;
+            const bool keep = i < k.src_count && kept(e);
+            const uint32_t mask = __ballot_sync(0xffffffffu, keep);
+            if (keep) dst[cursor + __popc(mask & ((1u << lane) - 1u))] = e;
+            cursor += __popc(mask);
+        }
+        // Each lane publishes its own writes; the leader's later release covers only its own.
+        __threadfence();
+    }
+}
 
 // `sub`, when non-null, receives clock64()-cycle attribution for the six stretches of one
 // application, atomicAdd-ed per call: [0] bind+preflight reservations, [1] RHS edge emission
-// (+ index inserts), [2] CSR merge-copy of the child's edge list, [3] event record write,
+// (+ index inserts), [2] the child's slice header and produced ids, [3] event record write,
 // [4] causal rendezvous (producer + consumer sides), [5] branchial scan.
 __device__ AppliedMatch apply_one_match(DeviceState ds, const DeviceRule* rules,
                                         const MatchRecord& m, uint32_t step,

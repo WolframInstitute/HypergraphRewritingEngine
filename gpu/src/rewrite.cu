@@ -3,6 +3,7 @@
 #include "hg_gpu/edge_signature.hpp"
 #include "hgcommon/core.hpp"          // id_key -- the packed-pair rule, shared with the host
 #include "hgcommon/rewrite_core.hpp"  // shared with the host rewriter
+#include "hgcommon/ir_core.hpp"       // IrSerial, the one-thread lane policy
 #include "hg_gpu/rewrite.hpp"
 
 #include "hg_gpu/exploration.hpp"
@@ -435,52 +436,25 @@ __device__ AppliedMatch apply_one_match(DeviceState       ds,
     }
     const unsigned long long t_emitted = clock64();
 
-    // Build the new state's CSR edge-list slice by merge-filtering parent
-    // edges (dropping consumed ones) then appending produced edges.
-    // Correctness relies on:
-    //   (a) parent's slice is sorted ascending by EdgeId
-    //   (b) m.matched_edges[] holds consumed-edge IDs which we sort here
-    //   (c) produced EdgeIds are all > any parent edge (guaranteed by
-    //       edge_pool.claim_n having issued a fresh consecutive run
-    //       AFTER parent's edges were created in a prior step)
-    // — so the result of "parent_minus_consumed ++ produced" is sorted.
-    EdgeId consumed_asc[kMaxPatternEdges];
-    uint8_t n_consumed_asc = rule.num_lhs_edges;
-    for (uint8_t i = 0; i < n_consumed_asc; ++i) consumed_asc[i] = m.matched_edges[i];
-    // Ascending insertion sort (n ≤ 16).
-    for (uint8_t i = 1; i < n_consumed_asc; ++i) {
-        EdgeId key = consumed_asc[i];
-        int8_t j = static_cast<int8_t>(i) - 1;
-        while (j >= 0 && consumed_asc[j] > key) {
-            consumed_asc[j + 1] = consumed_asc[j];
-            --j;
-        }
-        consumed_asc[j + 1] = key;
-    }
-
-    EdgeId* new_ids     = ds.state_edge_ids + new_slice_offset;
-    const EdgeId* p_ids = ds.state_edge_ids + parent_slice.offset;
-    uint32_t cursor = 0;
-    uint8_t  ci     = 0;  // consumed cursor
-    for (uint32_t pi = 0; pi < parent_slice.count; ++pi) {
-        EdgeId e = p_ids[pi];
-        while (ci < n_consumed_asc && consumed_asc[ci] < e) ++ci;
-        if (ci < n_consumed_asc && consumed_asc[ci] == e) { ++ci; continue; }
-        new_ids[cursor++] = e;
-    }
-    for (uint8_t r = 0; r < rule.num_rhs_edges; ++r) {
-        new_ids[cursor++] = first_eid + r;
-    }
-    // Publish slice. Count may be < new_slice_count if some matched edges
-    // were not found in the parent — shouldn't happen under the match
-    // invariant, but clamp defensively.
-    StateEdgeSlice sl{new_slice_offset, cursor};
-    ds.state_edge_slices[new_sid] = sl;
-    // A state larger than the slice-scan threshold will be matched through the
-    // indices, so raise the rebuild flag if they are not being maintained yet.
-    if (!ds.maintain_indices && cursor > ds.slice_scan_max_edges) {
+    // The new state's CSR slice is the parent's edges minus the consumed ones, in parent order,
+    // then the produced ones. The parent's slice is ascending and produced ids are above every
+    // parent edge (edge_pool.claim_n issued them after the parent's edges existed), so the slice
+    // is ascending. The kept count is known here, so the produced ids go after it and
+    // copy_kept_edges fills the kept part.
+    const uint32_t n_kept = new_slice_count - rule.num_rhs_edges;
+    EdgeId* new_ids = ds.state_edge_ids + new_slice_offset;
+    for (uint8_t r = 0; r < rule.num_rhs_edges; ++r) new_ids[n_kept + r] = first_eid + r;
+    ds.state_edge_slices[new_sid] = StateEdgeSlice{new_slice_offset, new_slice_count};
+    if (!ds.maintain_indices && new_slice_count > ds.slice_scan_max_edges) {
         atomicExch(ds.needs_indices, 1u);
     }
+    KeptCopy kept{};
+    kept.src_offset = parent_slice.offset;
+    kept.src_count  = parent_slice.count;
+    kept.dst_offset = new_slice_offset;
+    kept.n_consumed = rule.num_lhs_edges;
+    for (uint8_t i = 0; i < rule.num_lhs_edges && i < kMaxPatternEdges; ++i)
+        kept.consumed[i] = m.matched_edges[i];
     const unsigned long long t_csr = clock64();
 
     // 7. Write the Event record.
@@ -568,7 +542,7 @@ __device__ AppliedMatch apply_one_match(DeviceState       ds,
         atomicAdd(&sub[5], clock64() - t_causal);
     }
 
-    return AppliedMatch{new_sid, my_event};
+    return AppliedMatch{new_sid, my_event, kept};
 }
 
 namespace {
@@ -582,7 +556,8 @@ __global__ void k_rewrite(DeviceState              ds,
                           uint32_t                 tid_offset) {
     uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x + tid_offset;
     if (tid >= num_matches) return;
-    apply_one_match(ds, rules, matches[tid], step);
+    const AppliedMatch a = apply_one_match(ds, rules, matches[tid], step);
+    if (a.state != INVALID_ID) copy_kept_edges(ds, a.kept, hgcommon::IrSerial{});
 }
 
 }  // namespace
