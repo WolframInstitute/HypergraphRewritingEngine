@@ -69,56 +69,81 @@ __device__ __forceinline__ uint32_t edge_rank_in_state_device(DeviceState ds, St
     return UINT32_MAX;
 }
 
-// Stamp one event with the identity the run's key set asks for, and APPLY that identity: two
-// applications whose signatures agree are the same event, so the second to arrive records the
-// first as its canonical id. Without the insert the signature would be computed and dropped,
-// and the mode would be accepted while changing nothing about the result.
-//
-// Ranks are resolved in the states they belong to -- consumed in the input, produced in the
-// output -- because a rank is a position in THAT state's canonical labeling and means nothing
-// in any other.
-__device__ inline void stamp_event_signature(DeviceState ds, EventId eid,
-                                             EventSignatureKeys keys,
-                                             uint64_t in_hash, uint64_t out_hash,
-                                             StateId in_state, StateId out_state,
-                                             uint32_t step, RuleId rule,
-                                             DedupMap::DeviceView event_map) {
-    DeviceEvent& ev = ds.event_pool.at(eid);
+// The signature values of stored event `eid` (hgcommon::event_signature_values under `keys`):
+// its states' exact hashes, its step, its rule, and the ranks of its consumed and produced edges,
+// each resolved in the state it belongs to -- consumed in the input, produced in the output --
+// because a rank is a position in THAT state's canonical labeling and means nothing in any
+// other. A missing rank stands in the raw edge id; `fallbacks` counts them.
+__device__ inline uint32_t event_values_device(const DeviceState& ds, EventId eid,
+                                               EventSignatureKeys keys, uint64_t* out,
+                                               uint32_t& fallbacks) {
+    const DeviceEvent& ev = ds.event_pool.at(eid);
     uint32_t consumed_ranks[kMaxPatternEdges];
     uint32_t produced_ranks[kMaxPatternEdges];
-    uint32_t fallbacks = 0;
-
+    const uint8_t nc = ev.num_consumed < kMaxPatternEdges ? ev.num_consumed
+                                                          : static_cast<uint8_t>(kMaxPatternEdges);
+    const uint8_t np = ev.num_produced < kMaxPatternEdges ? ev.num_produced
+                                                          : static_cast<uint8_t>(kMaxPatternEdges);
     if (keys & hgcommon::EventKey_ConsumedEdges) {
-        for (uint8_t i = 0; i < ev.num_consumed && i < kMaxPatternEdges; ++i) {
-            uint32_t r = edge_rank_in_state_device(ds, in_state, ev.consumed_edges[i]);
+        for (uint8_t i = 0; i < nc; ++i) {
+            uint32_t r = edge_rank_in_state_device(ds, ev.input_state, ev.consumed_edges[i]);
             if (r == UINT32_MAX) { ++fallbacks; r = ev.consumed_edges[i]; }
             consumed_ranks[i] = r;
         }
     }
     if (keys & hgcommon::EventKey_ProducedEdges) {
-        for (uint8_t i = 0; i < ev.num_produced && i < kMaxPatternEdges; ++i) {
-            uint32_t r = edge_rank_in_state_device(ds, out_state, ev.produced_edges[i]);
+        for (uint8_t i = 0; i < np; ++i) {
+            uint32_t r = edge_rank_in_state_device(ds, ev.output_state, ev.produced_edges[i]);
             if (r == UINT32_MAX) { ++fallbacks; r = ev.produced_edges[i]; }
             produced_ranks[i] = r;
         }
     }
+    return hgcommon::event_signature_values(
+        keys, ds.state_exact_hash[ev.input_state], ds.state_exact_hash[ev.output_state],
+        ev.step, ev.rule, consumed_ranks, nc, produced_ranks, np, out);
+}
+
+// Stamp one event with the identity the run's key set asks for, and APPLY that identity: two
+// applications whose signature values agree are the same event, so the second to arrive records
+// the first as its canonical id. The signature selects the key and a key hit compares the values
+// recomputed from the class's first event (the host's Hypergraph::claim_event); the class's key
+// is the signature stamped. Both endpoint states' exact hashes are published before this runs.
+__device__ inline void stamp_event_signature(DeviceState ds, EventId eid,
+                                             EventSignatureKeys keys,
+                                             DedupMap::DeviceView event_map) {
+    uint64_t values[hgcommon::EVENT_SIG_MAX_VALUES];
+    uint32_t fallbacks = 0;
+    const uint32_t n = event_values_device(ds, eid, keys, values, fallbacks);
     if (fallbacks && ds.event_sig_raw_fallbacks)
         atomicAdd(ds.event_sig_raw_fallbacks, fallbacks);
+    const uint64_t sig = hgcommon::event_signature_of_values(values, n);
 
-    const uint64_t sig = hgcommon::event_signature(
-        keys, in_hash, out_hash, step, rule,
-        consumed_ranks, ev.num_consumed, produced_ranks, ev.num_produced);
-    ev.signature = sig;
+    struct P {
+        const DeviceState& ds;
+        EventSignatureKeys keys;
+        EventId eid;
+        const uint64_t* values;
+        uint32_t n;
+        __device__ bool same(uint32_t rep) const {
+            uint64_t theirs[hgcommon::EVENT_SIG_MAX_VALUES];
+            uint32_t unused = 0;
+            if (event_values_device(ds, rep, keys, theirs, unused) != n) return false;
+            for (uint32_t i = 0; i < n; ++i)
+                if (theirs[i] != values[i]) return false;
+            return true;
+        }
+        __device__ bool make(uint32_t& v) const { v = eid; __threadfence(); return true; }
+        __device__ uint32_t rep_of(uint32_t v) const { return v; }
+    } p{ds, keys, eid, values, n};
+    const StateClaim c = keyed_claim_device(ds, eid, sig & ds.event_key_mask, event_map, p);
 
-    // event_signature never returns 0 or the bare FNV offset, which is what keeps a signature
-    // from colliding with the map's EMPTY and LOCKED sentinels -- a key equal to either is
-    // silently never stored.
-    auto r = event_map.insert_if_absent(sig, eid);
-    if (r.inserted) {
+    DeviceEvent& ev = ds.event_pool.at(eid);
+    ev.signature = c.key;
+    if (c.fresh) {
         ev.canonical_id = INVALID_ID;
         if (ds.canonical_event_count) atomicAdd(ds.canonical_event_count, 1u);
     } else {
-        ev.canonical_id = r.value;
+        ev.canonical_id = c.canonical;
     }
 }
 

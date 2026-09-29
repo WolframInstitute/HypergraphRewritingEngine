@@ -2034,6 +2034,79 @@ TEST(CanonicalIdentity, KeyCollisionsKeepStateIdentityExact) {
     }
 }
 
+// Event identities and the None/Automatic state identities compare values on a key hit
+// (stamp_event_signature, qe_claim_runsig, state_claim_content, the exact-hash claim). Masks of
+// 0x3 on the state and event keys force collisions in every one; every count must equal the
+// unmasked run's.
+TEST(CanonicalIdentity, EventKeyCollisionsKeepEventIdentityExact) {
+    std::vector<Workload> ws;
+    {
+        Workload w;
+        w.name = "wpp";
+        w.rules = {rule({{0, 1}, {0, 2}}, {{0, 1}, {0, 3}, {1, 3}, {2, 3}})};
+        w.initial_state = {{0u, 1u}, {0u, 2u}};
+        w.num_steps = 4;
+        ws.push_back(w);
+    }
+    {
+        Workload w;
+        w.name = "growshrink3";
+        w.rules = {rule({{0, 1}, {0, 2}}, {{0, 1}, {0, 3}, {1, 3}, {2, 3}}),
+                   rule({{0, 1}, {1, 2}}, {{0, 2}}),
+                   rule({{0, 1}}, {{0, 2}, {2, 1}})};
+        w.initial_state = {{0u, 1u}, {0u, 2u}};
+        w.num_steps = 3;
+        ws.push_back(w);
+    }
+    struct Mode { const char* name; hg_gpu::CanonicalizationMode mode; bool quotient; };
+    const Mode modes[] = {
+        {"None",          hg_gpu::CanonicalizationMode::None,      false},
+        {"Automatic",     hg_gpu::CanonicalizationMode::Automatic, false},
+        {"Full",          hg_gpu::CanonicalizationMode::Full,      false},
+        {"Full quotient", hg_gpu::CanonicalizationMode::Full,      true},
+    };
+    auto canonical_events = [](const hg_gpu::EvolveResult& r) {
+        size_t n = 0;
+        for (const auto& e : r.events) n += e.canonical_id == hg_gpu::INVALID_ID;
+        return n;
+    };
+    auto distinct_hashes = [](const hg_gpu::EvolveResult& r) {
+        std::set<uint64_t> h;
+        for (const auto& s : r.states) h.insert(s.canonical_hash);
+        return h.size();
+    };
+    for (Workload w : ws) {
+        for (const Mode& m : modes) {
+            for (auto em : {hg_gpu::EventCanonicalizationMode::Full,
+                            hg_gpu::EventCanonicalizationMode::Automatic}) {
+                w.canon_mode = m.mode;
+                w.event_canon_mode = em;
+                w.explore_from_canonical_states_only = m.quotient;
+                hg_gpu::EvolveInput in = make_input(w);
+                in.record = hgcommon::RecordSet{true, true, true};
+                const auto ref = hg_gpu::evolve(in);
+                in.canonical_key_mask = 0x3;
+                in.event_key_mask = 0x3;
+                const auto got = hg_gpu::evolve(in);
+                const std::string tag =
+                    w.name + " " + m.name +
+                    (em == hg_gpu::EventCanonicalizationMode::Full ? " events Full"
+                                                                   : " events Automatic");
+                EXPECT_TRUE(got.warnings.empty()) << tag;
+                EXPECT_EQ(got.states.size(), ref.states.size()) << tag;
+                EXPECT_EQ(distinct_hashes(got), distinct_hashes(ref)) << tag;
+                EXPECT_EQ(got.events.size(), ref.events.size()) << tag;
+                EXPECT_EQ(canonical_events(got), canonical_events(ref)) << tag;
+                EXPECT_EQ(got.causal_edges.size(), ref.causal_edges.size()) << tag;
+                EXPECT_EQ(got.branchial_edges.size(), ref.branchial_edges.size()) << tag;
+                EXPECT_EQ(got.reconstructed_events, ref.reconstructed_events) << tag;
+                EXPECT_EQ(got.reconstructed_causal_pairs, ref.reconstructed_causal_pairs) << tag;
+                EXPECT_EQ(got.reconstructed_branchial, ref.reconstructed_branchial) << tag;
+            }
+        }
+    }
+}
+
 TEST(QuotientExploration, AClassIsExpandedFromItsShortestDepth) {
     Workload w;
     w.name = "growshrink3";

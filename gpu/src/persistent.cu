@@ -131,7 +131,8 @@ __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_
                                    DedupMap::DeviceView map, CanonicalizationMode state_mode,
                                    bool need_exact, bool need_ranks, DeviceArena::View arena,
                                    QcView qc, QeView qe, ExploreView ev,
-                                   typename Pool<uint32_t>::DeviceView forms) {
+                                   typename Pool<uint32_t>::DeviceView forms,
+                                   DedupMap::DeviceView exact_map) {
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= num_roots) return;
     const StateId sid = roots[tid];
@@ -150,11 +151,17 @@ __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_
             return;
         }
     }
-    // Full mode: the class's key, claimed on the canonical form, is the state's identity.
+    // Full and Automatic: the class's claimed key is the state's identity -- claimed on the
+    // canonical form in Full, on the content in Automatic.
     const bool full = state_mode == CanonicalizationMode::Full;
+    const bool automatic = state_mode == CanonicalizationMode::Automatic;
     StateClaim claim{sid, key, true};
     if (full) {
-        claim = state_claim_full(ds, sid, key, form, form_words, map, forms);
+        claim = state_claim_form(ds, sid, key & ds.canonical_key_mask, form, form_words, map,
+                                 forms);
+        key = claim.key;
+    } else if (automatic) {
+        claim = state_claim_content(ds, sid, key, map);
         key = claim.key;
     }
     ds.state_canonical_hash[sid] = key;
@@ -164,12 +171,17 @@ __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_
     if (need_exact) {
         uint64_t exact = key;
         if (state_mode != CanonicalizationMode::Full) {
+            uint32_t* eform = nullptr;
+            uint32_t eform_words = 0;
             const ExactHashStatus st =
-                state_exact_hash_device(ds, sid, arena, slot, slot_words, exact, need_ranks);
+                state_exact_hash_device(ds, sid, arena, slot, slot_words, exact, need_ranks,
+                                        false, &eform, &eform_words);
             if (st != ExactHashStatus::kOk) {
                 ds.errors.record(error_kind_for(st));
                 return;
             }
+            exact = state_claim_form(ds, sid, exact & ds.event_key_mask, eform, eform_words,
+                                     exact_map, forms).key;
         }
         ds.state_exact_hash[sid] = exact;
     }
@@ -184,7 +196,7 @@ __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_
     // Every root is expanded at depth 0, isomorphic ones included: each is its own initial
     // state. Its class's canonical state is claimed too, so no later arrival expands the class
     // again (the host's try_claim_expanded on the canonical root).
-    if (full) {
+    if (full || automatic) {
         if (!claim.fresh) {
             atomicMin(&ev.depth[claim.canonical], 0u);
             ev.claim(claim.canonical);
@@ -515,6 +527,7 @@ __global__ void k_persistent_evolve(
         CanonicalizationMode state_mode,
         EventSignatureKeys event_keys,
         DedupMap::DeviceView event_map,
+        DedupMap::DeviceView exact_map,
         DeviceArena::View arena,
         typename TerminationDetector::DeviceView term,
         QcView qc,
@@ -798,11 +811,13 @@ __global__ void k_persistent_evolve(
                 // transition key will read it (run_needs_exact_hash).
                 uint64_t exact = h;
                 ExactHashStatus ex_st = ExactHashStatus::kOk;
+                uint32_t* eform = nullptr;
+                uint32_t eform_words = 0;
                 if (child_sid != INVALID_ID && key_st == ExactHashStatus::kOk && need_exact &&
                     state_mode != CanonicalizationMode::Full) {
                     ex_st = state_exact_hash_device(ds, child_sid, arena, ir_slot,
                                                     ir_slot_words, exact, need_ranks,
-                                                    false, nullptr, nullptr, IrWarpAll{});
+                                                    false, &eform, &eform_words, IrWarpAll{});
                 }
 
                 if (threadIdx.x == 0) {
@@ -823,10 +838,16 @@ __global__ void k_persistent_evolve(
                         // is claimed before the hash is published and everything keyed by the
                         // hash -- event identity, the quotient's classes -- reads the key.
                         if (state_mode == CanonicalizationMode::Full) {
-                            const StateClaim c = state_claim_full(ds, child_sid, h, form,
-                                                                  form_words, dedup_map, forms);
+                            const StateClaim c =
+                                state_claim_form(ds, child_sid, h & ds.canonical_key_mask, form,
+                                                 form_words, dedup_map, forms);
                             h = c.key;
                             exact = h;
+                            id_canonical = dedup ? c.canonical : child_sid;
+                            id_fresh = dedup ? c.fresh : true;
+                        } else if (state_mode == CanonicalizationMode::Automatic) {
+                            const StateClaim c = state_claim_content(ds, child_sid, h, dedup_map);
+                            h = c.key;
                             id_canonical = dedup ? c.canonical : child_sid;
                             id_fresh = dedup ? c.fresh : true;
                         } else {
@@ -843,6 +864,12 @@ __global__ void k_persistent_evolve(
                             if (ex_st != ExactHashStatus::kOk) {
                                 ds.errors.record(error_kind_for(ex_st));
                                 exact = 0;
+                            } else if (state_mode != CanonicalizationMode::Full) {
+                                // The exact hash event identity reads, claimed on the IR form
+                                // (the host's event_canonical_state_map_).
+                                exact = state_claim_form(ds, child_sid, exact & ds.event_key_mask,
+                                                         eform, eform_words, exact_map,
+                                                         forms).key;
                             }
                             ds.state_exact_hash[child_sid] = exact;
                         }
@@ -859,10 +886,7 @@ __global__ void k_persistent_evolve(
                         // the defect b82049f fixed on the host.
                         if (event_keys != EVENT_SIG_NONE && child_event != INVALID_ID) {
                             const uint64_t s1 = clock64();
-                            stamp_event_signature(ds, child_event, event_keys,
-                                                  ds.state_exact_hash[rec.state_id], exact,
-                                                  rec.state_id, child_sid, step + 1u,
-                                                  rec.rule_id, event_map);
+                            stamp_event_signature(ds, child_event, event_keys, event_map);
                             acc_evkey += clock64() - s1;
                         }
 
@@ -1149,7 +1173,8 @@ struct EngineState::PersistentScratch {
     std::unique_ptr<DedupMap> event_ids;
     std::unique_ptr<TerminationDetector> term;
     std::unique_ptr<ExploreState> explore;
-    std::unique_ptr<Pool<uint32_t>> forms;   // canonical-form records (state_claim_full)
+    std::unique_ptr<Pool<uint32_t>> forms;   // canonical-form records (state_claim_form)
+    std::unique_ptr<DedupMap> exact;         // exact hash -> record, under None and Automatic
     uint32_t* explore_frames = nullptr;
     size_t    explore_frame_words = 0;
     ~PersistentScratch() { if (explore_frames) cudaFree(explore_frames); }
@@ -1349,8 +1374,9 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     auto t_maps0 = std::chrono::steady_clock::now();
     EngineState::PersistentScratch& ps = engine.persistent_scratch();
 
-    // Canonical-form records for Full-mode identity (state_claim_full). A session keeps its own
-    // across calls, as it keeps its dedup map; a one-shot run starts empty.
+    // Canonical-form records for Full-mode identity and, under None and Automatic, for the exact
+    // hash event identity reads (state_claim_form). A session keeps its own across calls, as it
+    // keeps its dedup map; a one-shot run starts empty.
     typename Pool<uint32_t>::DeviceView forms_v;
     if (session) {
         forms_v = sess_v.forms;
@@ -1409,6 +1435,20 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         session ? nullptr
                 : &reuse_map(ps.event_ids, want_event_ids ? engine.config().max_events * 2u : 8u);
     if (want_event_ids) engine.ensure_event_identity();
+
+    // Exact hash -> record, claimed under None and Automatic when an event identity or a
+    // transition key reads the exact hash; eight slots otherwise, never touched.
+    DedupMap::DeviceView exact_v;
+    if (session) {
+        exact_v = sess_v.exact;
+    } else {
+        const DeviceState dsx = engine.device();
+        const bool want_exact =
+            state_mode != CanonicalizationMode::Full &&
+            run_needs_exact_hash(event_keys, dsx.transition_rate, dsx.num_rule_weights,
+                                 dsx.matches_per_state_rule);
+        exact_v = reuse_map(ps.exact, want_exact ? engine.config().max_states * 2u : 8u).view();
+    }
 
     const double t_maps = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_maps0).count();
@@ -1479,7 +1519,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                  dsv.matches_per_state_rule),
             run_needs_edge_ranks(event_keys, qe.enabled != 0, dsv.transition_rate,
                                  dsv.num_rule_weights, dsv.matches_per_state_rule),
-            arena.view(), qc, qe, ev, forms_v);
+            arena.view(), qc, qe, ev, forms_v, exact_v);
     }
 
     // Block 0 is the detector, so at least two blocks are needed for any work to happen.
@@ -1494,7 +1534,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         d_cursor, d_rewrites_done,
         session ? sess_v.states : canonical_owner->view(), dedup,
         explore_threshold_u32, explore_seed, max_steps, state_mode, event_keys,
-        session ? sess_v.events : owned_event_ids->view(),
+        session ? sess_v.events : owned_event_ids->view(), exact_v,
         arena.view(), term.view(), qc, qe, d_phase_cycles, sess_v, ev, forms_v);
     HG_CUDA_CHECK(cudaDeviceSynchronize(), "persistent evolve sync");
     if (!read_stats) return stats;
@@ -1589,9 +1629,10 @@ ExploreView ExploreState::view() const {
     return v;
 }
 
-SessionState::SessionState(uint32_t max_states, uint32_t max_events): states_(max_states * 2u), events_(max_events * 2u), explore_(max_states, max_events), forms_(max_states * 32u), cap_(max_states) {
+SessionState::SessionState(uint32_t max_states, uint32_t max_events): states_(max_states * 2u), events_(max_events * 2u), explore_(max_states, max_events), forms_(max_states * 32u), exact_(max_states * 2u), cap_(max_states) {
         states_.clear();
         events_.clear();
+        exact_.clear();
         HG_CUDA_CHECK(cudaMalloc(&frontier_, sizeof(StateId) * cap_), "session frontier alloc");
         HG_CUDA_CHECK(cudaMalloc(&step_, sizeof(uint32_t) * cap_), "session frontier step alloc");
         HG_CUDA_CHECK(cudaMalloc(&count_, sizeof(uint32_t)), "session frontier count alloc");
@@ -1651,6 +1692,7 @@ SessionView SessionState::view() {
         v.enabled        = 1;
         v.explore        = explore_.view();
         v.forms          = forms_.view();
+        v.exact          = exact_.view();
         return v;
     }
 

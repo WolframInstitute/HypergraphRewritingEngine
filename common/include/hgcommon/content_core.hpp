@@ -34,19 +34,25 @@ struct ContentHasher {
     HG_HD uint64_t value() const { return h; }
 };
 
-// The words ContentHasher digests, in its order: the edge count, then per edge the arity and
-// the vertices. Automatic identity is the equality of these words. Driven like ContentHasher;
-// each word goes to `emit`.
-template <class Emit>
-struct ContentWords {
-    Emit emit;
-
-    HG_HD ContentWords(uint32_t edge_count, Emit e) : emit(e) { emit(edge_count); }
-
-    HG_HD void edge_begin(uint32_t arity) { emit(arity); }
-    HG_HD void vertex(uint64_t v) { emit(static_cast<uint32_t>(v)); }
-    HG_HD void edge_end() {}
-};
+// Automatic identity: two states are one when the words ContentHasher digests are equal -- the
+// edge count, then edge by edge in the hasher's order the arity and the vertices. A cursor yields
+// a state's edges in that order:
+//   bool next(uint32_t& arity, const uint32_t*& vertices);   false past the last edge
+template <class CursorA, class CursorB>
+HG_HD bool content_equal(CursorA& a, CursorB& b) {
+    for (;;) {
+        uint32_t na = 0, nb = 0;
+        const uint32_t* va = nullptr;
+        const uint32_t* vb = nullptr;
+        const bool ha = a.next(na, va);
+        const bool hb = b.next(nb, vb);
+        if (ha != hb) return false;
+        if (!ha) return true;
+        if (na != nb) return false;
+        for (uint32_t k = 0; k < na; ++k)
+            if (va[k] != vb[k]) return false;
+    }
+}
 
 }  // namespace common
 }  // namespace HG_NAMESPACE

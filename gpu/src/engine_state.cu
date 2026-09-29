@@ -342,6 +342,7 @@ DeviceState EngineState::device() const {
         d.ir_generators           = cfg_.ir_generators;
         d.ir_depth                = cfg_.ir_depth;
         d.canonical_key_mask      = cfg_.canonical_key_mask;
+        d.event_key_mask          = cfg_.event_key_mask;
         d.state_count             = state_count_;
         d.state_canonical_hash    = state_canonical_hash_;
         d.state_exact_hash        = state_exact_hash_;

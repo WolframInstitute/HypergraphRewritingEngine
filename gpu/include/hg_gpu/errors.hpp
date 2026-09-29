@@ -45,7 +45,7 @@ struct DeviceErrors {
         // The load races the add, so a bounded handful of threads may add before any of them
         // observes a non-zero counter. That bound is the concurrency, not the iteration count,
         // which is the entire difference.
-        __device__ void record(ErrorKind k) {
+        __device__ void record(ErrorKind k) const {
             uint32_t idx = static_cast<uint32_t>(k);
             if (idx >= kMaxKinds) return;
             cuda::atomic_ref<uint32_t, cuda::thread_scope_device> c(counters[idx]);

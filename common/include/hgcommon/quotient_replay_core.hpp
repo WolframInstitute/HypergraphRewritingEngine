@@ -162,6 +162,30 @@ HG_HD void qr_signature_values(EventSignatureKeys keys, const Match& m, uint64_t
     out.sig = avoid_reserved_keys(event_signature_of_values(out.values, out.n));
 }
 
+// A match's cached run-signature key. The run signature of a match is a function of the match,
+// its from class and the output step, and a match has one from class, so its claimed key is kept
+// on the match for one output step. `A` supplies the match's two cells:
+//   uint32_t step_load() const;                      relaxed
+//   bool     step_cas(uint32_t expected, uint32_t desired);
+//   uint64_t key_load() const;                       acquire
+//   void     key_store(uint64_t key);                release
+// The step is set once, from QR_NO_STEP, by the thread that then stores the key, so a reader
+// that sees a key sees the step it was claimed for. A key claimed for another step is not cached.
+constexpr uint32_t QR_NO_STEP = ~0u;
+
+template <class A>
+HG_HD bool qr_cached_key(const A& a, uint32_t out_step, uint64_t& key) {
+    const uint64_t k = a.key_load();
+    if (k == 0 || a.step_load() != out_step) return false;
+    key = k;
+    return true;
+}
+
+template <class A>
+HG_HD void qr_cache_key(A& a, uint32_t out_step, uint64_t key) {
+    if (a.step_cas(QR_NO_STEP, out_step)) a.key_store(key);
+}
+
 // True when two signatures have the same values.
 HG_HD inline bool qr_same_values(const QrRunSignature& a, const QrRunSignature& b) {
     if (a.n != b.n) return false;

@@ -1120,7 +1120,7 @@ public:
     // stored the class.
     CanonicalClaim claim_replay_event(const SlotMatch& m, uint64_t from_class, uint32_t out_step);
     // Automatic identity: the claim of `sid` in canonical_state_map_ from the content hash
-    // `hash`; a key hit compares content words (hgcommon::ContentWords) with the class's first
+    // `hash`; a key hit compares the content (hgcommon::content_equal) with the class's first
     // state.
     CanonicalClaim claim_content_state(StateId sid, uint64_t hash, const SparseBitset& edges);
     CanonicalClaim claim_canonical_state(StateId sid, uint64_t hash,
@@ -1566,16 +1566,6 @@ public:
     // Hashes edge contents in order by edge ID: (arity, v1, v2, ...) for each edge
     // Fast but not isomorphism-invariant.
     uint64_t compute_content_ordered_hash(const SparseBitset& edges) const;
-    // Drives `sink` (hgcommon::ContentHasher or hgcommon::ContentWords) over `edges` in id order.
-    template <class Sink>
-    void drive_content(const SparseBitset& edges, Sink& sink) const {
-        edges.for_each([&](EdgeId eid) {
-            const Edge& e = edges_[eid];
-            sink.edge_begin(e.arity);
-            for (uint8_t i = 0; i < e.arity; ++i) sink.vertex(static_cast<uint64_t>(e.vertices[i]));
-            sink.edge_end();
-        });
-    }
 
     // The canonical hash (isomorphism-invariant). The event path resolves representatives
     // through it, and it is the hash a state reports.

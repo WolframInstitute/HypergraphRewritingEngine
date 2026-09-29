@@ -130,6 +130,8 @@ struct EvolveInput {
     // Test lever (EngineConfig::canonical_key_mask): narrows a Full-mode state's first dedup
     // probe key so that non-isomorphic states share keys.
     uint64_t canonical_key_mask = ~uint64_t{0};
+    // Test lever (EngineConfig::event_key_mask): the same for event identities.
+    uint64_t event_key_mask = ~uint64_t{0};
 };
 
 // One (class, depth) point of the multiplicity count: m raw states of the class at the depth.
@@ -319,6 +321,9 @@ struct EngineConfig {
     // Test lever: the first dedup probe key of a Full-mode state is its canonical hash ANDed
     // with this. All ones except in tests, which narrow it so non-isomorphic states share keys.
     uint64_t canonical_key_mask   = ~uint64_t{0};
+    // Test lever: the first probe key of an event signature, a replay class's run signature and
+    // the exact hash None/Automatic event identity reads is ANDed with this.
+    uint64_t event_key_mask       = ~uint64_t{0};
     uint32_t match_dedup_slots    = 1u << 16;
     // States at or below this edge count are matched by scanning their own CSR
     // slice; the global indices are only consulted (and therefore maintained)

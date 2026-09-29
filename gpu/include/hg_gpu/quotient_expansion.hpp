@@ -51,6 +51,11 @@ struct DeviceSlotMatch {
     uint32_t from_slots = 0, to_slots = 0;
     uint32_t num_consumed = 0, num_produced = 0, num_survivors = 0;
     uint32_t arr_offset = 0;
+    uint64_t from_hash = 0;
+    // The claimed run-signature key and the output step it was claimed for
+    // (hgcommon::qr_cached_key); accessed through atomic_ref.
+    mutable uint64_t runsig_key = 0;
+    mutable uint32_t runsig_step = hgcommon::QR_NO_STEP;
 
     // The four slot arrays live contiguously in the expansion word arena at arr_offset:
     // consumed | produced | surv_from | surv_to. `words` is that arena's base, which the
@@ -62,13 +67,14 @@ struct DeviceSlotMatch {
 
 // A DeviceSlotMatch bound to the arena its slots live in. What the shared replay sees.
 struct QeMatchView {
+    const DeviceSlotMatch* src;   // the record in the match pool
     const uint32_t* w;            // consumed | produced | surv_from | surv_to
     uint64_t to_hash;
     uint32_t id, local, rule, from_slots, to_slots;
     uint32_t num_consumed, num_produced, num_survivors;
 
     __device__ QeMatchView(const DeviceSlotMatch& m, const uint32_t* words)
-        : w(m.at(words)), to_hash(m.to_hash), id(m.id), local(m.local), rule(m.rule),
+        : src(&m), w(m.at(words)), to_hash(m.to_hash), id(m.id), local(m.local), rule(m.rule),
           from_slots(m.from_slots), to_slots(m.to_slots), num_consumed(m.num_consumed),
           num_produced(m.num_produced), num_survivors(m.num_survivors) {}
 
@@ -209,7 +215,9 @@ struct QeView {
 
     // Distinct run identities and their count. Empty under EVENT_SIG_NONE, where every
     // application is its own event and the raw count is already the answer.
-    DedupMap::DeviceView canon_seen;
+    // Probe key of a run signature -> (match record << 32 | output step) of the class's first
+    // application (qe_claim_runsig).
+    ConcurrentMap<uint64_t, uint64_t>::DeviceView canon_seen;
     uint32_t* num_canon;
     EventSignatureKeys keys;
 
@@ -489,9 +497,68 @@ __device__ inline uint32_t qe_frame_step(const QeView& qe, uint64_t class_hash, 
     return hgcommon::id_pair_from_key(fs.value).a;
 }
 
-// Count a run identity once.
-__device__ inline void qe_note_signature(QeView& qe, uint64_t csig) {
-    if (qe.canon_seen.insert_if_absent(csig, 1u).inserted) atomicAdd(qe.num_canon, 1u);
+// A replay application's event class, the host's Hypergraph::claim_replay_event: the run
+// signature of match `m` from class `from` with output step `out_step`, claimed in canon_seen on
+// its values. A key hit recomputes the class's values from its first application's (match,
+// output step). The match keeps its claimed key for one output step (hgcommon::qr_cached_key),
+// so later applications of the match skip the signature.
+struct QeRunsigClaim {
+    uint64_t key;
+    bool     won;
+};
+
+__device__ inline QeRunsigClaim qe_claim_runsig(const DeviceState& ds, const QeView& qe,
+                                                const QeMatchView& m, uint64_t from,
+                                                uint32_t out_step) {
+    struct Cells {
+        const DeviceSlotMatch& m;
+        __device__ uint32_t step_load() const {
+            return cuda::atomic_ref<uint32_t, cuda::thread_scope_device>(m.runsig_step)
+                .load(cuda::memory_order_relaxed);
+        }
+        __device__ bool step_cas(uint32_t expected, uint32_t desired) {
+            return cuda::atomic_ref<uint32_t, cuda::thread_scope_device>(m.runsig_step)
+                .compare_exchange_strong(expected, desired, cuda::memory_order_relaxed);
+        }
+        __device__ uint64_t key_load() const {
+            return cuda::atomic_ref<uint64_t, cuda::thread_scope_device>(m.runsig_key)
+                .load(cuda::memory_order_acquire);
+        }
+        __device__ void key_store(uint64_t key) {
+            cuda::atomic_ref<uint64_t, cuda::thread_scope_device>(m.runsig_key)
+                .store(key, cuda::memory_order_release);
+        }
+    } cells{*m.src};
+    uint64_t cached = 0;
+    if (hgcommon::qr_cached_key(cells, out_step, cached)) return {cached, false};
+
+    hgcommon::QrRunSignature sig;
+    hgcommon::qr_signature_values(qe.keys, m, from, out_step, sig);
+    const uint32_t record = static_cast<uint32_t>(m.src - qe.matches.data);
+    struct P {
+        const QeView& qe;
+        const hgcommon::QrRunSignature& sig;
+        uint32_t record;
+        uint32_t out_step;
+        __device__ bool same(uint64_t v) const {
+            const uint32_t r = static_cast<uint32_t>(v >> 32);
+            const uint32_t s = static_cast<uint32_t>(v);
+            if (r == record && s == out_step) return true;
+            const DeviceSlotMatch& first = qe.matches.at(r);
+            hgcommon::QrRunSignature theirs;
+            hgcommon::qr_signature_values(qe.keys, QeMatchView(first, qe.arr_words),
+                                          first.from_hash, s, theirs);
+            return hgcommon::qr_same_values(theirs, sig);
+        }
+        __device__ bool make(uint64_t& v) const {
+            v = (static_cast<uint64_t>(record) << 32) | out_step;
+            return true;
+        }
+        __device__ uint32_t rep_of(uint64_t) const { return 0; }
+    } p{qe, sig, record, out_step};
+    const StateClaim c = keyed_claim_device(ds, 0u, sig.sig & ds.event_key_mask, qe.canon_seen, p);
+    hgcommon::qr_cache_key(cells, out_step, c.key);
+    return {c.key, c.fresh};
 }
 
 // The saturating add of hgcommon::qm_sat_add on a device counter; true when it clamped.
@@ -583,9 +650,7 @@ struct DeviceQmCtx {
         return qe_frame_step(qe, class_hash, fallback);
     }
     __device__ void note_signature(const QeMatchView& m, uint64_t from_class, uint32_t out_step) {
-        hgcommon::QrRunSignature sig;
-        hgcommon::qr_signature_values(qe.keys, m, from_class, out_step, sig);
-        qe_note_signature(qe, sig.sig);
+        if (qe_claim_runsig(ds, qe, m, from_class, out_step).won) atomicAdd(qe.num_canon, 1u);
     }
     __device__ bool claim_queued(uint64_t class_hash, uint32_t depth) {
         const uint32_t p = point(class_hash, depth);
@@ -820,6 +885,9 @@ __device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
         m.to_slots   = ds.state_edge_slices[child].count;
         m.num_consumed = nc; m.num_produced = np; m.num_survivors = ns;
         m.arr_offset = off;
+        m.from_hash = from;
+        m.runsig_key = 0;
+        m.runsig_step = hgcommon::QR_NO_STEP;
 
         const uint32_t at =
             qe.by_from.push(qe_bucket(from, qe.by_from.num_keys), QeMatchRef{from, rec});
@@ -1093,10 +1161,9 @@ struct DeviceQrCtx {
     }
     __device__ void record_runsig(uint32_t ev, const QeMatchView& m, uint64_t from_class,
                                   uint32_t out_step) {
-        hgcommon::QrRunSignature sig;
-        hgcommon::qr_signature_values(qe.keys, m, from_class, out_step, sig);
-        if (ev < qe.event_sig_capacity) qe.event_runsig[ev] = sig.sig;
-        qe_note_signature(qe, sig.sig);
+        const QeRunsigClaim c = qe_claim_runsig(ds, qe, m, from_class, out_step);
+        if (ev < qe.event_sig_capacity) qe.event_runsig[ev] = c.key;
+        if (c.won) atomicAdd(qe.num_canon, 1u);
     }
     __device__ bool want_causal() const    { return ds.record_causal != 0; }
     __device__ bool want_branchial() const { return ds.record_branchial != 0; }
@@ -1371,7 +1438,7 @@ private:
     LockFreeList<QeInstRef>   by_key_;
     DedupMap                  rep_;
     DedupMap                  applied_;
-    DedupMap                  canon_seen_;
+    ConcurrentMap<uint64_t, uint64_t> canon_seen_;
     DedupMap                  causal_pairs_;
     DedupMap                  qm_points_;
     DedupMap                  qm_consumed_;

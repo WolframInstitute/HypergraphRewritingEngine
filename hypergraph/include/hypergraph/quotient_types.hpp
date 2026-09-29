@@ -126,12 +126,6 @@ struct EdgeOrbitTable {
 // so the i-th entry must remain the i-th matched / i-th RHS edge. `from_slots`/`to_slots` are
 // the slot counts of the source and child states -- the sizes of the producer vectors this
 // match reads and writes.
-// A match's claimed run-signature key for one output step (Hypergraph::claim_replay_event).
-struct RunsigKey {
-    uint64_t key;
-    uint32_t out_step;
-};
-
 struct SlotMatch {
     uint64_t to_hash = 0;
     uint32_t id = 0;               // dense id, unique per captured match (claims key on it)
@@ -143,9 +137,10 @@ struct SlotMatch {
     const uint32_t* produced_slots = nullptr;    // length num_produced (slot in `to`)
     const uint32_t* surv_from_slot = nullptr;    // length num_survivors (slot in `from`)
     const uint32_t* surv_to_slot = nullptr;      // length num_survivors (slot in `to`)
-    // Set by the first claim of this match's run signature and read by later applications;
-    // accessed through atomic_ref.
-    mutable const RunsigKey* runsig = nullptr;
+    // The claimed run-signature key and the output step it was claimed for
+    // (hgcommon::qr_cached_key); accessed through atomic_ref.
+    mutable uint64_t runsig_key = 0;
+    mutable uint32_t runsig_step = hgcommon::QR_NO_STEP;
 
     // Accessors, because hgcommon/quotient_replay_core.hpp reads the slot arrays through them
     // and the device packs its four into one contiguous word arena. The replay walks both

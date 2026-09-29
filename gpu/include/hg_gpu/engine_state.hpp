@@ -148,6 +148,9 @@ struct DeviceState {
     // EngineConfig::canonical_key_mask: ANDed into a Full-mode canonical hash before it is the
     // first dedup probe key. All ones except in tests.
     uint64_t canonical_key_mask;
+    // EngineConfig::event_key_mask: the same for an event signature, a replay class's run
+    // signature and the exact hash None/Automatic event identity reads.
+    uint64_t event_key_mask;
     uint32_t record_causal;
     uint32_t record_branchial;
 

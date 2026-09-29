@@ -158,8 +158,10 @@ struct SessionView {
     // Depths, claims and child lists persist across the session's calls; the expand log is
     // consumed per call.
     ExploreView explore{};
-    // Canonical-form records of the session's Full-mode classes (state_claim_full).
+    // Canonical-form records (state_claim_form): the session's Full-mode classes, or under None
+    // and Automatic the classes of the exact hash event identity reads, keyed in `exact`.
     typename Pool<uint32_t>::DeviceView forms{};
+    DedupMap::DeviceView exact{};
 };
 
 // Host owner of the above. Allocated once for the session, never shrunk, so a Step costs no
@@ -189,6 +191,7 @@ private:
     DedupMap  events_;
     ExploreState explore_;
     Pool<uint32_t> forms_;
+    DedupMap  exact_;
     StateId*  frontier_ = nullptr;
     uint32_t* step_     = nullptr;
     uint32_t* count_    = nullptr;

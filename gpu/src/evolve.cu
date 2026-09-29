@@ -86,6 +86,7 @@ EngineConfig config_from_input(const EvolveInput& in) {
     // One preds node per unique kept causal pair; kept pairs are a subset of causal pairs.
     cfg.tr_preds_nodes         = expected_events * 8u;
     cfg.canonical_key_mask     = in.canonical_key_mask;
+    cfg.event_key_mask         = in.event_key_mask;
     return cfg;
 }
 

@@ -471,29 +471,36 @@ Hypergraph::CanonicalClaim Hypergraph::claim_canonical_state(StateId sid, uint64
                           static_cast<uint32_t>(form.size()), sid);
 }
 
+// A state's edges in content order (hgcommon::content_equal), from its edge ids in id order.
+struct HostContentCursor {
+    const SegmentedArray<Edge>& edges;
+    const SVec<EdgeId>& ids;
+    uint32_t at = 0;
+    bool next(uint32_t& arity, const uint32_t*& vertices) {
+        if (at >= ids.size()) return false;
+        const Edge& e = edges[ids[at++]];
+        arity = e.arity;
+        vertices = e.vertices;
+        return true;
+    }
+};
+
 Hypergraph::CanonicalClaim Hypergraph::claim_content_state(StateId sid, uint64_t hash,
                                                            const SparseBitset& edges) {
-    // The claimant's words, built on the first key hit only: a claim that misses never
+    auto mk = worker_scratch().mark();
+    // The claimant's edge ids, listed on the first key hit only: a claim that misses never
     // compares.
-    HG_THREAD_LOCAL(std::vector<uint32_t>, mine);
-    bool built = false;
+    SVec<EdgeId> mine, theirs;
+    bool listed = false;
     auto same = [&](StateId rep) {
-        if (!built) {
-            mine.clear();
-            hgcommon::ContentWords w(static_cast<uint32_t>(edges.count()),
-                                     [&](uint32_t x) { mine.push_back(x); });
-            drive_content(edges, w);
-            built = true;
+        if (!listed) {
+            edges.for_each([&](EdgeId e) { mine.push_back(e); });
+            listed = true;
         }
-        size_t at = 0;
-        bool eq = true;
-        const SparseBitset& theirs = states_[rep].edges;
-        hgcommon::ContentWords w(static_cast<uint32_t>(theirs.count()), [&](uint32_t x) {
-            eq = eq && at < mine.size() && mine[at] == x;
-            ++at;
-        });
-        drive_content(theirs, w);
-        return eq && at == mine.size();
+        theirs.clear();
+        states_[rep].edges.for_each([&](EdgeId e) { theirs.push_back(e); });
+        HostContentCursor a{edges_, mine}, b{edges_, theirs};
+        return hgcommon::content_equal(a, b);
     };
     auto make = [&] { return sid; };
     auto rep_of = [](StateId r) { return r; };
@@ -502,6 +509,7 @@ Hypergraph::CanonicalClaim Hypergraph::claim_content_state(StateId sid, uint64_t
     };
     auto c = keyed_claim<StateId>(canonical_state_map_, hash & canonical_key_mask_, same, make,
                                   rep_of, on_collision);
+    worker_scratch().release(mk);
     return {c.rep, c.key, c.won};
 }
 
@@ -876,7 +884,12 @@ uint64_t Hypergraph::compute_content_ordered_hash(const SparseBitset& edges) con
     // slice with a liveness filter and cannot share this loop, but it must share every constant
     // and every mixing step, which is what the hasher holds.
     hgcommon::ContentHasher ch(static_cast<uint32_t>(edges.count()));
-    drive_content(edges, ch);
+    edges.for_each([&](EdgeId eid) {
+        const Edge& e = edges_[eid];
+        ch.edge_begin(e.arity);
+        for (uint8_t i = 0; i < e.arity; ++i) ch.vertex(static_cast<uint64_t>(e.vertices[i]));
+        ch.edge_end();
+    });
     return ch.value();
 }
 
@@ -2185,9 +2198,23 @@ void Hypergraph::QrCtx::record_runsig(uint32_t ev, const SlotMatch& m, uint64_t 
 // applications read it there.
 Hypergraph::CanonicalClaim Hypergraph::claim_replay_event(const SlotMatch& m, uint64_t from_class,
                                                           uint32_t out_step) {
-    hgcommon::atomic_ref<const RunsigKey*> cached(m.runsig);
-    if (const RunsigKey* k = cached.load(std::memory_order_acquire); k && k->out_step == out_step)
-        return {0, k->key, false};
+    struct Cells {
+        const SlotMatch& m;
+        uint32_t step_load() const {
+            return hgcommon::atomic_ref<uint32_t>(m.runsig_step).load(std::memory_order_relaxed);
+        }
+        bool step_cas(uint32_t expected, uint32_t desired) {
+            return hgcommon::atomic_ref<uint32_t>(m.runsig_step)
+                .compare_exchange_strong(expected, desired, std::memory_order_relaxed);
+        }
+        uint64_t key_load() const {
+            return hgcommon::atomic_ref<uint64_t>(m.runsig_key).load(std::memory_order_acquire);
+        }
+        void key_store(uint64_t key) {
+            hgcommon::atomic_ref<uint64_t>(m.runsig_key).store(key, std::memory_order_release);
+        }
+    } cells{m};
+    if (uint64_t key = 0; hgcommon::qr_cached_key(cells, out_step, key)) return {0, key, false};
     const EventSignatureKeys keys = event_signature_keys_;
     hgcommon::QrRunSignature sig;
     hgcommon::qr_signature_values(keys, m, from_class, out_step, sig);
@@ -2213,9 +2240,7 @@ Hypergraph::CanonicalClaim Hypergraph::claim_replay_event(const SlotMatch& m, ui
     auto c = keyed_claim<const QrEventRef*>(qc_canon_events_, sig.sig & event_key_mask_, same, make,
                                             rep_of, on_collision);
     if (!c.won && made) arena_.release_last(made, sizeof(QrEventRef));
-    auto* k = static_cast<RunsigKey*>(arena_.allocate_raw(sizeof(RunsigKey), alignof(RunsigKey)));
-    *k = RunsigKey{c.key, out_step};
-    cached.store(k, std::memory_order_release);
+    hgcommon::qr_cache_key(cells, out_step, c.key);
     return {c.rep, c.key, c.won};
 }
 
