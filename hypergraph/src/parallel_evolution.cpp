@@ -851,8 +851,9 @@ uint64_t ParallelEvolutionEngine::canonical_transition_key(StateId state,
 
     uint32_t ranks[MAX_PATTERN_EDGES];
     const uint8_t n = match.num_edges();
+    const EdgeRankTable* table = hg_->edge_rank_table(state);
     for (uint8_t i = 0; i < n && i < MAX_PATTERN_EDGES; ++i) {
-        ranks[i] = hg_->edge_rank_in_state(state, match.matched_edges()[i]);
+        ranks[i] = Hypergraph::edge_rank_in(table, match.matched_edges()[i]);
     }
 
     return hgcommon::event_signature(hgcommon::EVENT_SIG_TRANSITION,

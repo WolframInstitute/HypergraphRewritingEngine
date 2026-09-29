@@ -883,8 +883,11 @@ public:
     // per match -- must ask through this instead.
     void ensure_state_edge_ranks(StateId state_id, const SparseBitset& edges);
 
-    // Canonical rank of `edge` within `state`, or UINT32_MAX when the state has no table.
-    uint32_t edge_rank_in_state(StateId state_id, EdgeId edge) const;
+    // The canonical rank table of `state_id`, or nullptr when the state has none. One map
+    // lookup; look the table up once per state and each edge's rank in it.
+    const EdgeRankTable* edge_rank_table(StateId state_id) const;
+    // Canonical rank of `edge` in `t`, or UINT32_MAX when `t` is null or does not hold it.
+    static uint32_t edge_rank_in(const EdgeRankTable* t, EdgeId edge);
 
     // Event signatures that fell back to a raw edge id. Non-zero means the event identity is
     // approximate rather than canonical.

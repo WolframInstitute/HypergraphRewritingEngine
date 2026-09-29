@@ -581,17 +581,20 @@ StateId Hypergraph::get_canonical_state_for_event(StateId raw_state) const {
         return result.value_or(raw_state);
     }
 
-uint32_t Hypergraph::edge_rank_in_state(StateId state_id, EdgeId edge) const {
-        auto r = state_edge_rank_tables_.lookup(static_cast<uint64_t>(state_id) + 1);
-        if (!r.has_value()) return UINT32_MAX;
-        const EdgeRankTable* t = *r;
-        uint32_t lo = 0, hi = t->n;
-        while (lo < hi) {
-            const uint32_t mid = lo + (hi - lo) / 2;
-            if (t->edges[mid] < edge) lo = mid + 1; else hi = mid;
-        }
-        return (lo < t->n && t->edges[lo] == edge) ? t->rank[lo] : UINT32_MAX;
+const EdgeRankTable* Hypergraph::edge_rank_table(StateId state_id) const {
+    auto r = state_edge_rank_tables_.lookup(static_cast<uint64_t>(state_id) + 1);
+    return r.has_value() ? *r : nullptr;
+}
+
+uint32_t Hypergraph::edge_rank_in(const EdgeRankTable* t, EdgeId edge) {
+    if (!t) return UINT32_MAX;
+    uint32_t lo = 0, hi = t->n;
+    while (lo < hi) {
+        const uint32_t mid = lo + (hi - lo) / 2;
+        if (t->edges[mid] < edge) lo = mid + 1; else hi = mid;
     }
+    return (lo < t->n && t->edges[lo] == edge) ? t->rank[lo] : UINT32_MAX;
+}
 
 void Hypergraph::reserve_vertices(VertexId max_id) {
         uint64_t w = counters_.next_edge_vertex.load(std::memory_order_relaxed);
@@ -672,8 +675,9 @@ Hypergraph::CreateEventResult Hypergraph::create_event(
         uint32_t consumed_ranks[MAX_PATTERN_EDGES];
         uint32_t produced_ranks[MAX_PATTERN_EDGES];
         if (keys & EventKey_ConsumedEdges) {
+            const EdgeRankTable* in_ranks = edge_rank_table(input_state);
             for (uint8_t i = 0; i < num_consumed; ++i) {
-                uint32_t r = edge_rank_in_state(input_state, consumed[i]);
+                uint32_t r = edge_rank_in(in_ranks, consumed[i]);
                 if (r == UINT32_MAX) {
                     // Counted in every build: the FFI surfaces this as the EventSigRawFallback
                     // warning, a correctness signal (the affected event identities are not
@@ -685,8 +689,9 @@ Hypergraph::CreateEventResult Hypergraph::create_event(
             }
         }
         if (keys & EventKey_ProducedEdges) {
+            const EdgeRankTable* out_ranks = edge_rank_table(output_state);
             for (uint8_t i = 0; i < num_produced; ++i) {
-                uint32_t r = edge_rank_in_state(output_state, produced[i]);
+                uint32_t r = edge_rank_in(out_ranks, produced[i]);
                 if (r == UINT32_MAX) {
                     // Counted in every build: the FFI surfaces this as the EventSigRawFallback
                     // warning, a correctness signal (the affected event identities are not
