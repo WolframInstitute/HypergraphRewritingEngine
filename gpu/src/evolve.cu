@@ -85,6 +85,7 @@ EngineConfig config_from_input(const EvolveInput& in) {
     cfg.branchial_index_nodes   = expected_events * 4u;
     // One preds node per unique kept causal pair; kept pairs are a subset of causal pairs.
     cfg.tr_preds_nodes         = expected_events * 8u;
+    cfg.canonical_key_mask     = in.canonical_key_mask;
     return cfg;
 }
 
@@ -633,6 +634,7 @@ bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
             dbl(cfg.max_states);
             dbl(cfg.max_state_edge_total);
             dbl(cfg.canonical_map_slots);
+            dbl(cfg.canonical_form_words);
             return true;
         case ErrorKind::kEventPoolFull:
             dbl(cfg.max_events);
@@ -659,6 +661,7 @@ bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
         // seen, so the run keeps states it might have merged and reports an over-complete answer.
         // Growing the map is what turns that warning back into an exact result.
         case ErrorKind::kCanonicalMapFull:    dbl(cfg.canonical_map_slots);  return true;
+        case ErrorKind::kCanonicalFormsFull:  dbl(cfg.canonical_form_words); return true;
         case ErrorKind::kCausalTripleMapFull: dbl(cfg.causal_triple_slots);  return true;
         case ErrorKind::kCausalPairMapFull:   dbl(cfg.causal_pair_slots);    return true;
         case ErrorKind::kBranchialMapFull:    dbl(cfg.branchial_pair_slots); return true;
@@ -745,6 +748,7 @@ static void log_winning_config(const EngineConfig& initial,
     LOG_FIELD(descent_work_scale);
     LOG_FIELD(tr_scratch_scale);
     LOG_FIELD(survivor_scratch);
+    LOG_FIELD(canonical_form_words);
 #undef LOG_FIELD
 }
 
@@ -770,6 +774,7 @@ void fit_config_to_cap(EngineConfig& cfg, uint64_t cap) {
     sc(cfg.branchial_pair_slots, 1u<<12); sc(cfg.edge_consumer_nodes, 1u<<12);
     sc(cfg.branchial_index_nodes, 1u<<12);sc(cfg.tr_preds_nodes, 1u<<12);
     sc(cfg.canonical_map_slots, 1u<<12);
+    sc(cfg.canonical_form_words, 1u<<14);
 }
 
 uint64_t estimated_device_bytes(const EngineConfig& cfg) {
@@ -809,6 +814,7 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
          (EngineState::kTrScratchStack + EngineState::kTrScratchVisited);   // reachability scratch
     b += u64(default_persistent_grid()) * u64(cfg.survivor_scratch) * 8u;    // survivor scratch
     b += u64(cfg.canonical_map_slots) * 12;         // canonical dedup map
+    b += u64(cfg.canonical_form_words) * 4;         // canonical form records
     b += u64(cfg.match_dedup_slots)   * 12 + u64(cfg.event_canon_slots) * 12;
     b += u64(cfg.max_states)          * 8 * 76;     // matches pool (max_states*8 records ~76B)
     b += u64(cfg.max_states)          * 16;         // d_frontier + d_next_frontier + state_canonical_hash

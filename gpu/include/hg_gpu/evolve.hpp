@@ -126,6 +126,10 @@ struct EvolveInput {
     // 0 (default) resolves to 90% of total device memory at run start. Ignored by
     // the direct Engine(cfg) path, which allocates exactly what its cfg asks for.
     uint64_t max_device_memory_bytes = 0;
+
+    // Test lever (EngineConfig::canonical_key_mask): narrows a Full-mode state's first dedup
+    // probe key so that non-isomorphic states share keys.
+    uint64_t canonical_key_mask = ~uint64_t{0};
 };
 
 // One (class, depth) point of the multiplicity count: m raw states of the class at the depth.
@@ -308,6 +312,13 @@ struct EngineConfig {
     uint32_t inverted_pool        = 1u << 18;   // shared LockFreeList node capacity
     uint32_t sig_index_pool       = 1u << 16;   // shared LockFreeList node capacity
     uint32_t canonical_map_slots  = 1u << 14;   // capacity 4× expected dedup'd states
+    // Words of canonical-form records: one record per Full-mode canonical state, a 3-word
+    // header and its IR canonical form at 1, 2 or 4 bytes per word (hgcommon/
+    // canonical_form_core.hpp). Grown on kCanonicalFormsFull.
+    uint32_t canonical_form_words = 1u << 22;
+    // Test lever: the first dedup probe key of a Full-mode state is its canonical hash ANDed
+    // with this. All ones except in tests, which narrow it so non-isomorphic states share keys.
+    uint64_t canonical_key_mask   = ~uint64_t{0};
     uint32_t match_dedup_slots    = 1u << 16;
     // States at or below this edge count are matched by scanning their own CSR
     // slice; the global indices are only consulted (and therefore maintained)

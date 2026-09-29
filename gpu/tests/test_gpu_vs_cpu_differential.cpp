@@ -1981,6 +1981,59 @@ TEST(QuotientReconstruction, ADepthThatSaturatesThePoolsStillAgreesWithTheHost) 
 // at 6 steps reaches classes along paths of different lengths, and on a full device grid a deep
 // path often arrives first: a device that kept the first arrival's depth returned 91,002 to
 // 95,537 states on 16 of 20 runs against the host's 95,556. Five runs, each compared.
+// Full mode compares IR canonical forms on a key hit (state_claim_full), so the device's state
+// set does not depend on the hash. With the key mask at 0x3 every state's first probe key is one
+// of four values, so non-isomorphic states share keys. Every count must equal the unmasked
+// device run's, under full exploration (states, events, distinct canonical hashes) and under
+// quotient exploration (states, and the reconstruction's raw events, causal pairs and branchial
+// pairs).
+TEST(CanonicalIdentity, KeyCollisionsKeepStateIdentityExact) {
+    std::vector<Workload> ws;
+    {
+        Workload w;
+        w.name = "wpp";
+        w.rules = {rule({{0, 1}, {0, 2}}, {{0, 1}, {0, 3}, {1, 3}, {2, 3}})};
+        w.initial_state = {{0u, 1u}, {0u, 2u}};
+        w.num_steps = 5;
+        w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+        ws.push_back(w);
+    }
+    {
+        Workload w;
+        w.name = "growshrink3";
+        w.rules = {rule({{0, 1}, {0, 2}}, {{0, 1}, {0, 3}, {1, 3}, {2, 3}}),
+                   rule({{0, 1}, {1, 2}}, {{0, 2}}),
+                   rule({{0, 1}}, {{0, 2}, {2, 1}})};
+        w.initial_state = {{0u, 1u}, {0u, 2u}};
+        w.num_steps = 4;
+        w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+        ws.push_back(w);
+    }
+    auto distinct_hashes = [](const hg_gpu::EvolveResult& r) {
+        std::set<uint64_t> h;
+        for (const auto& s : r.states) h.insert(s.canonical_hash);
+        return h.size();
+    };
+    for (Workload w : ws) {
+        for (bool quotient : {false, true}) {
+            w.explore_from_canonical_states_only = quotient;
+            hg_gpu::EvolveInput in = make_input(w);
+            in.record = hgcommon::RecordSet{true, true, true};
+            const auto ref = hg_gpu::evolve(in);
+            in.canonical_key_mask = 0x3;
+            const auto got = hg_gpu::evolve(in);
+            const std::string tag = w.name + (quotient ? " quotient" : " full");
+            EXPECT_TRUE(got.warnings.empty()) << tag;
+            EXPECT_EQ(got.states.size(), ref.states.size()) << tag;
+            EXPECT_EQ(got.events.size(), ref.events.size()) << tag;
+            EXPECT_EQ(distinct_hashes(got), distinct_hashes(ref)) << tag;
+            EXPECT_EQ(got.reconstructed_raw_events, ref.reconstructed_raw_events) << tag;
+            EXPECT_EQ(got.reconstructed_causal_pairs, ref.reconstructed_causal_pairs) << tag;
+            EXPECT_EQ(got.reconstructed_branchial, ref.reconstructed_branchial) << tag;
+        }
+    }
+}
+
 TEST(QuotientExploration, AClassIsExpandedFromItsShortestDepth) {
     Workload w;
     w.name = "growshrink3";

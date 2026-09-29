@@ -91,7 +91,11 @@ __device__ ExactHashStatus state_key_device(DeviceState ds, StateId sid,
                                             DeviceArena::View arena,
                                             uint32_t*& slot, uint64_t& slot_words,
                                             uint64_t& out_key, bool want_ranks,
-                                            bool want_orbits = false, Par par = Par{}) {
+                                            bool want_orbits = false,
+                                            uint32_t** out_form = nullptr,
+                                            uint32_t* out_form_words = nullptr,
+                                            Par par = Par{}) {
+    if (out_form) { *out_form = nullptr; *out_form_words = 0; }
     switch (mode) {
         case CanonicalizationMode::None:
             // Mirrors k_fill_unique_keys: distinct per state, and offset so it can never be the
@@ -104,7 +108,8 @@ __device__ ExactHashStatus state_key_device(DeviceState ds, StateId sid,
         case CanonicalizationMode::Full:
         default:
             return state_exact_hash_device(ds, sid, arena, slot, slot_words, out_key,
-                                           want_ranks, want_orbits, par);
+                                           want_ranks, want_orbits, out_form, out_form_words,
+                                           par);
     }
 }
 
@@ -125,7 +130,8 @@ __global__ void k_qe_redrive(DeviceState ds, QeView qe, uint32_t old_bound) {
 __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_t num_roots,
                                    DedupMap::DeviceView map, CanonicalizationMode state_mode,
                                    bool need_exact, bool need_ranks, DeviceArena::View arena,
-                                   QcView qc, QeView qe, ExploreView ev) {
+                                   QcView qc, QeView qe, ExploreView ev,
+                                   typename Pool<uint32_t>::DeviceView forms) {
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= num_roots) return;
     const StateId sid = roots[tid];
@@ -133,14 +139,23 @@ __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_
     uint64_t  slot_words = 0;
 
     uint64_t key = 0;
+    uint32_t* form = nullptr;
+    uint32_t form_words = 0;
     {
         const ExactHashStatus st =
             state_key_device(ds, sid, state_mode, arena, slot, slot_words, key, need_ranks,
-                             qc.enabled != 0);
+                             qc.enabled != 0, &form, &form_words);
         if (st != ExactHashStatus::kOk) {
             ds.errors.record(error_kind_for(st));
             return;
         }
+    }
+    // Full mode: the class's key, claimed on the canonical form, is the state's identity.
+    const bool full = state_mode == CanonicalizationMode::Full;
+    StateClaim claim{sid, key, true};
+    if (full) {
+        claim = state_claim_full(ds, sid, key, form, form_words, map, forms);
+        key = claim.key;
     }
     ds.state_canonical_hash[sid] = key;
 
@@ -169,7 +184,12 @@ __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_
     // Every root is expanded at depth 0, isomorphic ones included: each is its own initial
     // state. Its class's canonical state is claimed too, so no later arrival expands the class
     // again (the host's try_claim_expanded on the canonical root).
-    if (key == 0) {
+    if (full) {
+        if (!claim.fresh) {
+            atomicMin(&ev.depth[claim.canonical], 0u);
+            ev.claim(claim.canonical);
+        }
+    } else if (key == 0) {
         ds.errors.record(ErrorKind::kUncomputedStateHash);   // keep it; see the kind
     } else {
         const auto r = map.insert_if_absent(key, sid);
@@ -501,7 +521,8 @@ __global__ void k_persistent_evolve(
         QeView qe,
         unsigned long long* phase_cycles,
         SessionView sess,
-        ExploreView ev) {
+        ExploreView ev,
+        typename Pool<uint32_t>::DeviceView forms) {
 
     // Ranks are the reconstruction's frame alignment, Automatic's signature, AND the transition
     // draw's key. One predicate answers it for the roots and for every child; see its note.
@@ -666,6 +687,8 @@ __global__ void k_persistent_evolve(
     __shared__ uint32_t child_step;
     __shared__ KeptCopy child_kept;
     __shared__ bool     capture_go;
+    __shared__ StateId  id_canonical;
+    __shared__ bool     id_fresh;
     __shared__ uint64_t surv_shared[kLocalSurvivors];
     __shared__ uint32_t expand_base;
     __shared__ uint32_t expand_count;
@@ -760,11 +783,13 @@ __global__ void k_persistent_evolve(
                 // not the thousands the whole-block figure implied. Slots 11-15 name the
                 // parts so the next question is asked of the right one.
                 uint64_t h = 0;
+                uint32_t* form = nullptr;
+                uint32_t form_words = 0;
                 ExactHashStatus key_st = ExactHashStatus::kOk;
                 if (child_sid != INVALID_ID) {
                     key_st = state_key_device(ds, child_sid, state_mode, arena, ir_slot,
                                               ir_slot_words, h, need_ranks, qc.enabled != 0,
-                                              IrWarpAll{});
+                                              &form, &form_words, IrWarpAll{});
                 }
                 if (threadIdx.x == 0) acc_irkey += clock64() - t1;
 
@@ -777,7 +802,7 @@ __global__ void k_persistent_evolve(
                     state_mode != CanonicalizationMode::Full) {
                     ex_st = state_exact_hash_device(ds, child_sid, arena, ir_slot,
                                                     ir_slot_words, exact, need_ranks,
-                                                    false, IrWarpAll{});
+                                                    false, nullptr, nullptr, IrWarpAll{});
                 }
 
                 if (threadIdx.x == 0) {
@@ -793,6 +818,23 @@ __global__ void k_persistent_evolve(
                     if (key_st != ExactHashStatus::kOk) {
                         ds.errors.record(error_kind_for(key_st));
                     } else {
+                        // IDENTITY FIRST. In Full mode the class's key, claimed on the
+                        // canonical form (state_claim_full), is the state's canonical hash, so it
+                        // is claimed before the hash is published and everything keyed by the
+                        // hash -- event identity, the quotient's classes -- reads the key.
+                        if (state_mode == CanonicalizationMode::Full) {
+                            const StateClaim c = state_claim_full(ds, child_sid, h, form,
+                                                                  form_words, dedup_map, forms);
+                            h = c.key;
+                            exact = h;
+                            id_canonical = dedup ? c.canonical : child_sid;
+                            id_fresh = dedup ? c.fresh : true;
+                        } else {
+                            const StateIdentity id =
+                                state_identity(ds, child_sid, h, dedup_map, dedup);
+                            id_canonical = id.canonical;
+                            id_fresh = id.fresh;
+                        }
                         // Publish before anything reads it: a transition OUT of this state
                         // needs it as an input hash, and that read happens on another block.
                         ds.state_canonical_hash[child_sid] = h;
@@ -855,8 +897,7 @@ __global__ void k_persistent_evolve(
                         // its descendants.
                         {
                             const uint64_t s4 = clock64();
-                            const StateIdentity id =
-                                state_identity(ds, child_sid, h, dedup_map, dedup);
+                            const StateIdentity id{id_canonical, id_fresh};
                             if (id.fresh && (child_step < max_steps || sess.enabled) &&
                                 !state_retained(ds, child_sid, child_step, rec.state_id,
                                                 explore_threshold_u32, explore_seed))
@@ -1108,6 +1149,7 @@ struct EngineState::PersistentScratch {
     std::unique_ptr<DedupMap> event_ids;
     std::unique_ptr<TerminationDetector> term;
     std::unique_ptr<ExploreState> explore;
+    std::unique_ptr<Pool<uint32_t>> forms;   // canonical-form records (state_claim_full)
     uint32_t* explore_frames = nullptr;
     size_t    explore_frame_words = 0;
     ~PersistentScratch() { if (explore_frames) cudaFree(explore_frames); }
@@ -1307,6 +1349,18 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     auto t_maps0 = std::chrono::steady_clock::now();
     EngineState::PersistentScratch& ps = engine.persistent_scratch();
 
+    // Canonical-form records for Full-mode identity (state_claim_full). A session keeps its own
+    // across calls, as it keeps its dedup map; a one-shot run starts empty.
+    typename Pool<uint32_t>::DeviceView forms_v;
+    if (session) {
+        forms_v = sess_v.forms;
+    } else {
+        const uint32_t fw = engine.config().canonical_form_words;
+        if (ps.forms && ps.forms->capacity() == fw) ps.forms->reset();
+        else ps.forms = std::make_unique<Pool<uint32_t>>(fw);
+        forms_v = ps.forms->view();
+    }
+
     // Exploration depth (explore_depth.hpp). A session keeps its depths, claims and child lists
     // across calls and consumes its expand log per call; a one-shot run starts from nothing.
     ExploreView ev;
@@ -1425,7 +1479,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                  dsv.matches_per_state_rule),
             run_needs_edge_ranks(event_keys, qe.enabled != 0, dsv.transition_rate,
                                  dsv.num_rule_weights, dsv.matches_per_state_rule),
-            arena.view(), qc, qe, ev);
+            arena.view(), qc, qe, ev, forms_v);
     }
 
     // Block 0 is the detector, so at least two blocks are needed for any work to happen.
@@ -1441,7 +1495,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         session ? sess_v.states : canonical_owner->view(), dedup,
         explore_threshold_u32, explore_seed, max_steps, state_mode, event_keys,
         session ? sess_v.events : owned_event_ids->view(),
-        arena.view(), term.view(), qc, qe, d_phase_cycles, sess_v, ev);
+        arena.view(), term.view(), qc, qe, d_phase_cycles, sess_v, ev, forms_v);
     HG_CUDA_CHECK(cudaDeviceSynchronize(), "persistent evolve sync");
     if (!read_stats) return stats;
 
@@ -1535,7 +1589,7 @@ ExploreView ExploreState::view() const {
     return v;
 }
 
-SessionState::SessionState(uint32_t max_states, uint32_t max_events): states_(max_states * 2u), events_(max_events * 2u), explore_(max_states, max_events), cap_(max_states) {
+SessionState::SessionState(uint32_t max_states, uint32_t max_events): states_(max_states * 2u), events_(max_events * 2u), explore_(max_states, max_events), forms_(max_states * 32u), cap_(max_states) {
         states_.clear();
         events_.clear();
         HG_CUDA_CHECK(cudaMalloc(&frontier_, sizeof(StateId) * cap_), "session frontier alloc");
@@ -1596,6 +1650,7 @@ SessionView SessionState::view() {
         v.frontier_cap   = cap_;
         v.enabled        = 1;
         v.explore        = explore_.view();
+        v.forms          = forms_.view();
         return v;
     }
 

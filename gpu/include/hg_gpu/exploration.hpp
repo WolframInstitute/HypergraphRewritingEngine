@@ -7,8 +7,11 @@
 // close.
 
 #include "hgcommon/core.hpp"
+#include "hgcommon/canonical_form_core.hpp"
+#include "hgcommon/dedup_claim_core.hpp"
 #include "hgcommon/event_core.hpp"
 #include "hgcommon/sampling_core.hpp"
+#include "hg_gpu/atomic_pool.hpp"
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/hash_table.hpp"
 #include "hg_gpu/types.hpp"
@@ -113,6 +116,101 @@ __device__ inline StateIdentity state_identity(DeviceState ds, StateId sid, uint
     }
     if (r.inserted) return {sid, true};
     return {static_cast<StateId>(r.value), false};
+}
+
+// FULL-MODE STATE IDENTITY, the host's rule (Hypergraph::claim_canonical_state): the canonical
+// hash selects the dedup key and the IR canonical form decides a key hit. hgcommon::dedup_claim
+// walks the probe keys hgcommon::dedup_probe_key(hash & ds.canonical_key_mask, n); the map holds
+// key -> offset of the class's record in `records` (hgcommon/canonical_form_core.hpp: the
+// representative state and its form), and a key whose record holds a different form is a
+// collision that moves the claim to the next key. The claimed key is the class's identity, and
+// the caller publishes it as the state's canonical hash.
+//
+// A record is written, then fenced, before the exchange that publishes its offset, and a
+// reader fences between reading an offset and reading the record. A full record pool
+// (kCanonicalFormsFull) or map (kCanonicalMapFull) keeps the state as its own class and
+// reports, so the answer can be over-complete but not short.
+struct StateClaim {
+    StateId  canonical;
+    uint64_t key;
+    bool     fresh;
+};
+
+__device__ inline StateClaim state_claim_full(DeviceState ds, StateId sid, uint64_t hash,
+                                              const uint32_t* form, uint32_t words,
+                                              DedupMap::DeviceView map,
+                                              typename Pool<uint32_t>::DeviceView records) {
+    struct Ops {
+        DeviceState& ds;
+        DedupMap::DeviceView& map;
+        typename Pool<uint32_t>::DeviceView& records;
+        StateId sid;
+        uint64_t h;
+        const uint32_t* form;
+        uint32_t words;
+        uint32_t rec_off = Pool<uint32_t>::kInvalid;
+        StateId rep = INVALID_ID;
+        uint64_t key = 0;
+
+        __device__ const hgcommon::CanonicalFormRecord* record(uint32_t off) const {
+            return reinterpret_cast<const hgcommon::CanonicalFormRecord*>(records.data + off);
+        }
+        // Every key visited holds a distinct class, so a walk ends within the number of
+        // classes; the map's capacity bounds that, as the host's walk is unbounded.
+        __device__ uint32_t max_probes() const { return map.capacity; }
+        __device__ uint64_t probe_key(uint32_t n) const {
+            return hgcommon::dedup_probe_key(h, n, 0, ~uint64_t{0});
+        }
+        __device__ hgcommon::ProbeState probe(uint64_t k) {
+            const auto r = map.lookup(k);
+            if (!r.found) return hgcommon::ProbeState::Miss;
+            __threadfence();
+            const auto* rec = record(r.value);
+            if (!hgcommon::canonical_form_equals(rec, form, words))
+                return hgcommon::ProbeState::Collision;
+            rep = rec->state; key = k;
+            return hgcommon::ProbeState::Duplicate;
+        }
+        __device__ void make_stable() {
+            const uint32_t width = hgcommon::canonical_form_width(form, words);
+            const uint32_t nw = static_cast<uint32_t>(
+                (hgcommon::canonical_form_record_bytes(words, width) + 3u) / 4u);
+            rec_off = records.claim_n(nw);
+            if (rec_off == Pool<uint32_t>::kInvalid) return;
+            hgcommon::canonical_form_encode(
+                sid, form, words, width,
+                reinterpret_cast<hgcommon::CanonicalFormRecord*>(records.data + rec_off));
+            __threadfence();
+        }
+        __device__ hgcommon::ClaimState offer(uint64_t k) {
+            if (rec_off == Pool<uint32_t>::kInvalid) {
+                ds.errors.record(ErrorKind::kCanonicalFormsFull);
+                rep = sid; key = k;
+                return hgcommon::ClaimState::Won;
+            }
+            const auto r = map.insert_if_absent(k, rec_off);
+            if (r.overflowed) {
+                ds.errors.record(ErrorKind::kCanonicalMapFull);
+                rep = sid; key = k;
+                return hgcommon::ClaimState::Won;
+            }
+            if (r.inserted) { rep = sid; key = k; return hgcommon::ClaimState::Won; }
+            __threadfence();
+            const auto* rec = record(r.value);
+            if (!hgcommon::canonical_form_equals(rec, form, words))
+                return hgcommon::ClaimState::Collision;
+            rep = rec->state; key = k;
+            return hgcommon::ClaimState::Duplicate;
+        }
+        __device__ void note_collision() {}
+        __device__ void note_exhausted() {
+            ds.errors.record(ErrorKind::kCanonicalMapFull);
+            rep = sid; key = h;
+        }
+    };
+    Ops ops{ds, map, records, sid, hash & ds.canonical_key_mask, form, words};
+    const bool won = hgcommon::dedup_claim(ops);
+    return StateClaim{ops.rep, ops.key, won};
 }
 
 // Whether a fresh state is kept for expansion: the exploration coin and the two hard bounds.

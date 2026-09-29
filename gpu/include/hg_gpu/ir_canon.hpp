@@ -63,12 +63,19 @@ enum class ExactHashStatus : uint8_t {
 // ds.state_edge_orbit (parallel to the CSR slice, UINT32_MAX where the flattening skipped a
 // slot) and writes the state's orbit count into ds.state_num_orbits -- the quotient-causal
 // DP's keys. Rides the same IR pass as the hash and ranks.
+//
+// `out_form`, when non-null, receives a pointer into the slot where the core wrote the state's IR
+// canonical form, and `out_form_words` its length (hgcommon::ir_canonical_form_words); both are
+// null and 0 for the empty state. The form stays valid until the slot is reused.
 template <class Par = hgcommon::IrSerial>
 __device__ ExactHashStatus state_exact_hash_device(DeviceState ds, StateId sid,
                                                    DeviceArena::View arena,
                                                    uint32_t*& slot, uint64_t& slot_words,
                                                    uint64_t& out_hash, bool want_ranks = false,
-                                                   bool want_orbits = false, Par par = Par{});
+                                                   bool want_orbits = false,
+                                                   uint32_t** out_form = nullptr,
+                                                   uint32_t* out_form_words = nullptr,
+                                                   Par par = Par{});
 
 // THE WARP RUNS THE SEARCH TOGETHER. All 32 lanes of the persistent kernel's one warp enter
 // the canonicalization with identical arguments and execute identical control flow -- every

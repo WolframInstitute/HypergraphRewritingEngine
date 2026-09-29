@@ -38,11 +38,15 @@ struct IrSlotShape {
     // j and slot k diverge and neither ranks nor orbits can be scattered back without it. All
     // three are dwarfed by ir_scratch_words.
     HG_HD uint32_t rank_words() const { return 3u * cap_edges; }
+    HG_HD uint64_t scratch_words() const {
+        return hgcommon::ir_scratch_words(cap_verts, cap_edges, cap_occs, depth, generators);
+    }
+    // The canonical form the core writes when asked (one arity word and the labelled vertices
+    // per edge), after the scratch: a Full-mode dedup compares it on a key hit.
+    HG_HD uint32_t form_words() const { return cap_edges + cap_occs; }
     HG_HD uint64_t words() const {
         return ea_words() + eoff_words() + cap_occs + cap_verts + rank_words()
-             + hgcommon::ir_scratch_words(cap_verts, cap_edges, cap_occs, depth,
-                                          generators)
-             + 8;
+             + scratch_words() + form_words() + 8;
     }
     // Even, so every slot base keeps the 8-byte alignment the pool starts with.
     HG_HD uint64_t stride() const { return (words() + 1ull) & ~1ull; }
@@ -144,7 +148,9 @@ __device__ ExactHashStatus state_exact_hash_device(DeviceState ds, StateId sid,
                                                    DeviceArena::View arena,
                                                    uint32_t*& slot, uint64_t& slot_words,
                                                    uint64_t& out_hash, bool want_ranks,
-                                                   bool want_orbits, Par par) {
+                                                   bool want_orbits, uint32_t** out_form,
+                                                   uint32_t* out_form_words, Par par) {
+    if (out_form) { *out_form = nullptr; *out_form_words = 0; }
     // Measure this state: exact counts, not a bound. Occurrences are summed rather than taken
     // as edges * kMaxArity, which is 8x loose on the arity-2 edges real rules produce.
     uint32_t n_edges = 0, total_occ = 0;
@@ -216,12 +222,14 @@ __device__ ExactHashStatus state_exact_hash_device(DeviceState ds, StateId sid,
     // is the common one, and reports IR_NEED_DEPTH for the rest. Only then is the full depth
     // worth the scratch.
     uint32_t* scratch = orbit_buf + shape.cap_edges;
+    uint32_t* form_buf = scratch + shape.scratch_words();
     auto run_at = [&](uint32_t depth) {
         return hgcommon::ir_canonical_hash(ea, eoff, ev, fn_edges, n_verts, fn_occ,
                                            scratch, depth, ranks ? rank_buf : nullptr,
                                            shape.generators,
                                            orbits ? orbit_buf : nullptr, nullptr,
-                                           nullptr, nullptr, nullptr, par);
+                                           out_form ? form_buf : nullptr, nullptr, nullptr,
+                                           par);
     };
     hgcommon::IrResult r = run_at(1);
     if (r.status == hgcommon::IR_NEED_DEPTH && shape.depth > 1) r = run_at(shape.depth);
@@ -263,6 +271,7 @@ __device__ ExactHashStatus state_exact_hash_device(DeviceState ds, StateId sid,
         flat_to_slot = rank_buf + shape.cap_edges;
         orbit_buf = flat_to_slot + shape.cap_edges;
         scratch = orbit_buf + shape.cap_edges;
+        form_buf = scratch + shape.scratch_words();
         if (!flatten_state(ds, sid, slot, shape, ea, eoff, ev, fn_edges, n_verts, fn_occ,
                            verts_local, (ranks || orbits) ? flat_to_slot : nullptr, par)) break;
         r = run_at(shape.depth);
@@ -272,6 +281,10 @@ __device__ ExactHashStatus state_exact_hash_device(DeviceState ds, StateId sid,
     // reconstruction slots on them. Report rather than publish them.
     if (r.status == hgcommon::IR_NEED_GENERATORS) return ExactHashStatus::kGeneratorsExceeded;
     out_hash = r.hash;
+    if (out_form) {
+        *out_form = form_buf;
+        *out_form_words = hgcommon::ir_canonical_form_words(fn_edges, fn_occ);
+    }
 
     // The scatters fan: each CSR slot is written by exactly one lane (flat_to_slot is
     // injective), and the policy's sync between the prefill and the scatter orders the two.
@@ -305,10 +318,10 @@ __device__ ExactHashStatus state_exact_hash_device(DeviceState ds, StateId sid,
 // warp one.
 template __device__ ExactHashStatus state_exact_hash_device<hgcommon::IrSerial>(
     DeviceState, StateId, DeviceArena::View, uint32_t*&, uint64_t&, uint64_t&, bool, bool,
-    hgcommon::IrSerial);
+    uint32_t**, uint32_t*, hgcommon::IrSerial);
 template __device__ ExactHashStatus state_exact_hash_device<IrWarpAll>(
     DeviceState, StateId, DeviceArena::View, uint32_t*&, uint64_t&, uint64_t&, bool, bool,
-    IrWarpAll);
+    uint32_t**, uint32_t*, IrWarpAll);
 
 namespace {
 
