@@ -983,6 +983,10 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         if (hg.quotient_counts_saturated()) {
             req.ffi_warnings.push_back({"CountSaturated", 1, hgcommon::QM_SATURATED_MESSAGE});
         }
+        if (const uint64_t n = hg.replay_ids_refused()) {
+            req.ffi_warnings.push_back({"ReplayIdsExhausted", static_cast<int64_t>(n),
+                                        hgcommon::QR_IDS_EXHAUSTED_MESSAGE, true});
+        }
 
         // A rank that was unavailable was substituted with a raw edge id and counted (SPEC.md
         // sec 4.2); such an event signature is not an isomorphism invariant, and a caller
@@ -1882,12 +1886,12 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             full_result.push_back(std::make_pair(wxf::WXFValue("StateBitvectors"), wxf::WXFValue(state_bitvectors)));
         }
 
-        // Warning trail (engine warnings + analysis refusals). The CPU engine has no capacity
-        // limit, so none of its warnings marks a partial result.
+        // Warning trail (engine warnings + analysis refusals). A warning marks a partial result
+        // when its FfiWarning says so (ReplayIdsExhausted).
         if (!req.ffi_warnings.empty()) {
             wxf::WXFValueList warn;
             for (const auto& w : req.ffi_warnings)
-                warn.push_back(hgmarshal::warning_record(w.kind, w.count, w.context, false));
+                warn.push_back(hgmarshal::warning_record(w.kind, w.count, w.context, w.partial));
             full_result.push_back({wxf::WXFValue("Warnings"), wxf::WXFValue(warn)});
         }
 

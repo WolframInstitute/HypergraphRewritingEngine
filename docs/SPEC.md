@@ -232,6 +232,11 @@ pairs of matches with overlapping consumed edges. Counts above 2^63 - 1 report 2
 warning `CountSaturated`. *(Gates: `OracleCorpus.MultiplicityCountsMatchTheReplay`,
 `OracleCorpus.ClassMultiplicitiesCountTheRawStates`, `RecordSet.ClassMultiplicitiesMatchTheHost`.)*
 
+**Replay ids.** The replay's raw event and instance ids are 32-bit and minted below
+`hgcommon::QR_ID_LIMIT` (2^32 - 2^20). An application past the limit is dropped and the run
+reports the partial warning `ReplayIdsExhausted`, with the number dropped on the host. *(Gates:
+`OracleCorpus.ReplayIdLimitTruncatesAndReports`, `QuotientReconstruction.ReplayIdLimitTruncatesAndReports`.)*
+
 **`StepStatistics`.** Per step, the population of raw states at that step: `RawStates`, `Classes`,
 `Redundancy`, `MaxMultiplicity`, `MultiplicityHistogram`, `ClassEntropyBits`,
 `ClassEntropyNormalized`, `Events` and `RuleCounts` (raw events whose output state is at the

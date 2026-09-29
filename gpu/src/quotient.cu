@@ -214,7 +214,10 @@ void QeState::class_multiplicities_host(std::vector<ClassMultiplicity>& points,
     for (const auto& [k, c] : count) matches.push_back({k.first, k.second, c});
 }
 
-uint32_t QeState::num_raw_events_host() { return read_counter(next_raw_event_, "QeState raw event read"); }
+uint32_t QeState::num_raw_events_host() {
+    const uint32_t n = read_counter(next_raw_event_, "QeState raw event read");
+    return n < id_limit_ ? n : id_limit_;
+}
 
 uint32_t QeState::num_causal_pairs_host() { return read_counter(num_causal_pairs_, "QeState c-pairs read"); }
 uint32_t QeState::num_reduced_pairs_host() { return read_counter(num_reduced_pairs_, "QeState reduced read"); }

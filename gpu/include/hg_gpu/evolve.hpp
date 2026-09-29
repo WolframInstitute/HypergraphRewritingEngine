@@ -8,6 +8,7 @@
 #include <memory>
 #include <string>
 #include "hgcommon/core.hpp"
+#include "hgcommon/quotient_replay_core.hpp"  // QR_ID_LIMIT
 
 #include <set>
 #include <utility>
@@ -132,6 +133,8 @@ struct EvolveInput {
     uint64_t canonical_key_mask = ~uint64_t{0};
     // Test lever (EngineConfig::event_key_mask): the same for event identities.
     uint64_t event_key_mask = ~uint64_t{0};
+    // Test lever (EngineConfig::replay_id_limit): the replay refuses raw event ids at or past it.
+    uint32_t replay_id_limit = hgcommon::QR_ID_LIMIT;
 };
 
 // One (class, depth) point of the multiplicity count: m raw states of the class at the depth.
@@ -324,6 +327,9 @@ struct EngineConfig {
     // Test lever: the first probe key of an event signature, a replay class's run signature and
     // the exact hash None/Automatic event identity reads is ANDed with this.
     uint64_t event_key_mask       = ~uint64_t{0};
+    // The replay refuses raw event ids at or past this (kReplayIdsExhausted).
+    // hgcommon::QR_ID_LIMIT except in tests.
+    uint32_t replay_id_limit      = hgcommon::QR_ID_LIMIT;
     uint32_t match_dedup_slots    = 1u << 16;
     // States at or below this edge count are matched by scanning their own CSR
     // slice; the global indices are only consulted (and therefore maintained)

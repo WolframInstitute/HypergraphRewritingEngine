@@ -263,8 +263,9 @@ class Hypergraph {
     // Instance ids: taken by a worker in blocks of kIdBlock from qc_next_instance_ (one
     // shared increment per block), by any other thread one at a time. An instance id only has to
     // be unique -- it keys the application claim and the applied list -- so gaps are harmless;
-    // the instance count is the per-worker counts summed.
-    std::atomic<uint32_t> qc_next_instance_{0};
+    // the instance count is the per-worker counts summed. 64-bit so that it cannot wrap; ids at or
+    // past qc_id_limit_ are refused (alloc_instance_id).
+    std::atomic<uint64_t> qc_next_instance_{0};
     std::atomic<uint64_t> qc_instances_made_outside_{0};
     static constexpr uint32_t kIdBlock = 64;
     struct alignas(64) IdBlock {
@@ -285,8 +286,17 @@ class Hypergraph {
     // Otherwise it takes a new block, which lies above every id taken so far. Ids therefore
     // increase along every causal edge. Ids left in an abandoned block are never written;
     // QcEventContent::written tells a reader so, and the event count is the per-worker counts
-    // summed.
-    std::atomic<uint32_t> qc_next_raw_event_{0};
+    // summed. 64-bit so that it cannot wrap; ids at or past qc_id_limit_ are refused
+    // (alloc_event_id).
+    std::atomic<uint64_t> qc_next_raw_event_{0};
+    // hgcommon::QR_ID_LIMIT except in tests (set_replay_id_limit); ids refused at it.
+    uint32_t qc_id_limit_ = hgcommon::QR_ID_LIMIT;
+    std::atomic<uint64_t> qc_ids_refused_{0};
+    // An id counter read as a bound on the ids it issued.
+    uint32_t qc_id_bound(const std::atomic<uint64_t>& counter) const {
+        const uint64_t v = counter.load(std::memory_order_relaxed);
+        return v < qc_id_limit_ ? static_cast<uint32_t>(v) : qc_id_limit_;
+    }
     std::atomic<uint64_t> qc_events_made_outside_{0};
     static constexpr uint32_t kEventIdBlock = 64;
     std::unique_ptr<IdBlock[]> qc_event_blocks_ = std::make_unique<IdBlock[]>(MAX_ARENA_WORKERS);
@@ -404,8 +414,8 @@ class Hypergraph {
     // reader bounds its walk by the id counter. Ids below it that were never written (instance
     // ids skipped at the end of a worker's block) read as empty lists.
     uint32_t qc_applied_slot_bound() const {
-        const uint32_t n = qc_next_instance_.load(std::memory_order_relaxed);
-        return (n + QC_EV_BLOCK - 1) / QC_EV_BLOCK * QC_EV_BLOCK;
+        const uint64_t n = qc_id_bound(qc_next_instance_);
+        return static_cast<uint32_t>((n + QC_EV_BLOCK - 1) / QC_EV_BLOCK * QC_EV_BLOCK);
     }
     // The same events under the RUN'S event identity, indexed the same way. The pair accessors
     // need this and not qc_event_sig_: a caller comparing the reconstructed causal or branchial
@@ -922,6 +932,12 @@ public:
     // Test hook, set before evolution: the first probe key of an event signature (and of the IR
     // key claimed under None and Automatic) is ANDed with `mask`.
     void set_event_key_mask(uint64_t mask) { event_key_mask_ = mask; }
+    // Test hook, set before evolution: the replay refuses raw event and instance ids at or past
+    // `limit` (hgcommon::QR_ID_LIMIT otherwise).
+    void set_replay_id_limit(uint32_t limit) { qc_id_limit_ = limit; }
+    // Applications and instances the replay dropped at the id limit; non-zero means the
+    // reconstructed raw events and relations are truncated ("ReplayIdsExhausted").
+    uint64_t replay_ids_refused() const { return qc_ids_refused_.load(std::memory_order_relaxed); }
     struct IrWorkTotals {
         uint64_t calls, searched, leaves, nodes, depth_sum, retries, fallbacks;
     };
@@ -1227,7 +1243,7 @@ public:
     // Every reconstructed event id is below this. Ids a worker's block left unused are gaps:
     // reconstructed_event_content() is null for them.
     uint32_t reconstructed_event_id_bound() const {
-        return qc_next_raw_event_.load(std::memory_order_relaxed);
+        return qc_id_bound(qc_next_raw_event_);
     }
     // Instances the replay recorded: one per raw occurrence of a class at a depth. The
     // population every captured match is replayed against, so the relations it produces are a
@@ -1344,7 +1360,7 @@ public:
     // content describes the class transition they all share.
     template <typename F>
     void for_each_reconstructed_event(F&& f) const {
-        const uint32_t n = qc_next_raw_event_.load(std::memory_order_relaxed);
+        const uint32_t n = qc_id_bound(qc_next_raw_event_);
         const bool by_identity = event_signature_keys() != hgcommon::EVENT_SIG_NONE;
         std::set<uint64_t> seen;
         uint32_t dense = 0;
@@ -1367,7 +1383,7 @@ public:
     // counts and identity-keyed relations.
     template <typename F>
     void for_each_reconstructed_raw_triple(F&& f) const {
-        const uint32_t n = qc_next_raw_event_.load(std::memory_order_relaxed);
+        const uint32_t n = qc_id_bound(qc_next_raw_event_);
         for (uint32_t i = 0; i < n; ++i) {
             const QcEventContent* c = qc_event_sig_.find(qc_ev_slot(i));
             if (c && c->written) f(c->triple_hash());
@@ -1409,7 +1425,7 @@ public:
         if (reduced) {
             // The kept sets ARE the reduction: qr_apply decides it online, exactly (see
             // quotient_replay_core.hpp), so reading it is a walk over what was kept.
-            const uint32_t n = qc_next_raw_event_.load(std::memory_order_relaxed);
+            const uint32_t n = qc_id_bound(qc_next_raw_event_);
             for (uint32_t c = 0; c < n; ++c) {
                 const QcKept* k = qc_kept_->find(qc_ev_slot(c));
                 if (!k) continue;

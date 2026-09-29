@@ -985,7 +985,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
         wxf::WXFValueList warn;
         bool partial = false;
         for (const auto& w : job.job_warnings)
-            warn.push_back(hgmarshal::warning_record(w.kind, w.count, w.context, false));
+            warn.push_back(hgmarshal::warning_record(w.kind, w.count, w.context, w.partial));
         for (const auto& w : result.warnings) {
             const bool p = hg_gpu::error_kind_is_partial(w.kind);
             partial = partial || p;

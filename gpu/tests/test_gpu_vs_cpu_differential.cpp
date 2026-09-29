@@ -2107,6 +2107,34 @@ TEST(CanonicalIdentity, EventKeyCollisionsKeepEventIdentityExact) {
     }
 }
 
+// The replay refuses raw event ids at the limit, reports kReplayIdsExhausted, and reports only the
+// ids it issued; the default limit refuses nothing.
+TEST(QuotientReconstruction, ReplayIdLimitTruncatesAndReports) {
+    Workload w;
+    w.name = "growshrink3";
+    w.rules = {rule({{0, 1}, {0, 2}}, {{0, 1}, {0, 3}, {1, 3}, {2, 3}}),
+               rule({{0, 1}, {1, 2}}, {{0, 2}}),
+               rule({{0, 1}}, {{0, 2}, {2, 1}})};
+    w.initial_state = {{0u, 1u}, {0u, 2u}};
+    w.num_steps = 4;
+    w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+    w.explore_from_canonical_states_only = true;
+    hg_gpu::EvolveInput in = make_input(w);
+    in.record = hgcommon::RecordSet{true, true, true};
+    auto exhausted = [](const hg_gpu::EvolveResult& r) {
+        for (const auto& x : r.warnings)
+            if (x.kind == hg_gpu::ErrorKind::kReplayIdsExhausted) return true;
+        return false;
+    };
+    const auto ref = hg_gpu::evolve(in);
+    EXPECT_FALSE(exhausted(ref));
+    ASSERT_GT(ref.reconstructed_raw_events, 200u);
+    in.replay_id_limit = 100;
+    const auto got = hg_gpu::evolve(in);
+    EXPECT_TRUE(exhausted(got));
+    EXPECT_LE(got.reconstructed_raw_events, 100u);
+}
+
 TEST(QuotientExploration, AClassIsExpandedFromItsShortestDepth) {
     Workload w;
     w.name = "growshrink3";

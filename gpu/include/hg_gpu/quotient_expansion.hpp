@@ -1134,9 +1134,17 @@ struct DeviceQrCtx {
     }
     // One shared counter: every producer's id was taken before this one, so the id is above
     // them all.
+    // Refused at ds.replay_id_limit (kReplayIdsExhausted). The pre-check keeps the counter from
+    // passing the limit by more than the lanes that pass it together, which the limit's distance
+    // below 2^32 covers (hgcommon::QR_ID_LIMIT).
     __device__ uint32_t mint_event(uint32_t /*above*/) {
         cuda::atomic_ref<uint32_t, cuda::thread_scope_device> nre(*qe.next_raw_event);
-        return nre.fetch_add(1u, cuda::memory_order_relaxed);
+        if (nre.load(cuda::memory_order_relaxed) < ds.replay_id_limit) {
+            const uint32_t id = nre.fetch_add(1u, cuda::memory_order_relaxed);
+            if (id < ds.replay_id_limit) return id;
+        }
+        ds.errors.record(ErrorKind::kReplayIdsExhausted);
+        return INVALID_ID;
     }
     // The event's content triple, from hgcommon rather than open-coded here. The open-coding
     // this replaces seeded FNV with the 64-bit basis missing its last digit, so every
@@ -1364,6 +1372,9 @@ public:
     // Raw events the replay minted: one per (instance, match) application. The host's
     // qc_next_raw_event_, and the number a quotient run reports as its raw event count.
     uint32_t num_raw_events_host();
+    // The run's raw event id limit (EngineConfig::replay_id_limit): the counter passes it by the
+    // refused attempts, and num_raw_events_host reports the ids issued.
+    void set_id_limit(uint32_t limit) { id_limit_ = limit; }
 
     // The reconstructed causal relation: distinct (producer, consumer) pairs, and the
     // consumed-edge occurrences behind them. The host's num_reconstructed_causal_pairs(false)
@@ -1452,6 +1463,7 @@ private:
     LockFreeList<QeAppliedMatch> inst_applied_;
     uint32_t*                 inst_next_id_ = nullptr;
     uint32_t*                 next_raw_event_ = nullptr;
+    uint32_t                  id_limit_       = hgcommon::QR_ID_LIMIT;
     uint32_t*                 align_moved_    = nullptr;
     uint32_t*                 align_fail_     = nullptr;
     uint32_t*                 num_canon_        = nullptr;

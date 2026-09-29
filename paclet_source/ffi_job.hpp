@@ -31,6 +31,8 @@ struct FfiWarning {
     std::string kind;
     int64_t count;
     std::string context;
+    // The result is cut short ("Partial" -> 1 in the reply).
+    bool partial = false;
 };
 
 struct ParsedJob {

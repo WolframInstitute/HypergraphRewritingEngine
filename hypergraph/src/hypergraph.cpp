@@ -1231,16 +1231,28 @@ void Hypergraph::quotient_redrive_point(uint64_t state_hash, uint32_t depth) {
     });
 }
 
+// Ids at or past qc_id_limit_ are refused: INVALID_ID, counted in qc_ids_refused_.
 uint32_t Hypergraph::alloc_instance_id() {
     const int w = arena_worker_index();
     if (w < 0) {
+        const uint64_t id = qc_next_instance_.fetch_add(1, std::memory_order_relaxed);
+        if (id >= qc_id_limit_) {
+            qc_ids_refused_.fetch_add(1, std::memory_order_relaxed);
+            return INVALID_ID;
+        }
         qc_instances_made_outside_.fetch_add(1, std::memory_order_relaxed);
-        return qc_next_instance_.fetch_add(1, std::memory_order_relaxed);
+        return static_cast<uint32_t>(id);
     }
     IdBlock& b = qc_inst_blocks_[w];
     if (b.next == b.end) {
-        b.next = qc_next_instance_.fetch_add(kIdBlock, std::memory_order_relaxed);
-        b.end = b.next + kIdBlock;
+        const uint64_t start = qc_next_instance_.fetch_add(kIdBlock, std::memory_order_relaxed);
+        if (start >= qc_id_limit_) {
+            b.next = b.end = 0;
+            qc_ids_refused_.fetch_add(1, std::memory_order_relaxed);
+            return INVALID_ID;
+        }
+        b.next = static_cast<uint32_t>(start);
+        b.end = static_cast<uint32_t>(std::min<uint64_t>(start + kIdBlock, qc_id_limit_));
     }
     ++b.made;
     return b.next++;
@@ -1305,6 +1317,7 @@ void Hypergraph::qc_add_instance(uint64_t state_hash, uint32_t depth,
 
     QcInstance inst;
     inst.id = alloc_instance_id();
+    if (inst.id == INVALID_ID) return;
     inst.nslots = nslots;
     inst.prod = prod;
     // Claim words only for an instance that will be expanded; one at the bound claims nothing.
@@ -2145,16 +2158,28 @@ uint32_t Hypergraph::QrCtx::mint_event(uint32_t above) {
     return hg.alloc_event_id(above);
 }
 
+// Ids at or past qc_id_limit_ are refused: INVALID_ID, counted in qc_ids_refused_.
 uint32_t Hypergraph::alloc_event_id(uint32_t above) {
     const int w = arena_worker_index();
     if (w < 0) {
+        const uint64_t id = qc_next_raw_event_.fetch_add(1, std::memory_order_relaxed);
+        if (id >= qc_id_limit_) {
+            qc_ids_refused_.fetch_add(1, std::memory_order_relaxed);
+            return INVALID_ID;
+        }
         qc_events_made_outside_.fetch_add(1, std::memory_order_relaxed);
-        return qc_next_raw_event_.fetch_add(1, std::memory_order_relaxed);
+        return static_cast<uint32_t>(id);
     }
     IdBlock& b = qc_event_blocks_[w];
     if (b.next == b.end || (above != hgcommon::QR_NO_PRODUCER && b.next <= above)) {
-        b.next = qc_next_raw_event_.fetch_add(kEventIdBlock, std::memory_order_relaxed);
-        b.end = b.next + kEventIdBlock;
+        const uint64_t start = qc_next_raw_event_.fetch_add(kEventIdBlock, std::memory_order_relaxed);
+        if (start >= qc_id_limit_) {
+            b.next = b.end = 0;
+            qc_ids_refused_.fetch_add(1, std::memory_order_relaxed);
+            return INVALID_ID;
+        }
+        b.next = static_cast<uint32_t>(start);
+        b.end = static_cast<uint32_t>(std::min<uint64_t>(start + kEventIdBlock, qc_id_limit_));
     }
     ++b.made;
     return b.next++;
@@ -2506,7 +2531,7 @@ StateId Hypergraph::class_frame_state(uint64_t class_hash) const {
 // internal one at least distinguishes events.
 uint64_t Hypergraph::event_pair_signature(uint32_t e) const {
     if (event_signature_keys() != hgcommon::EVENT_SIG_NONE) {
-        if (e < qc_next_raw_event_.load(std::memory_order_relaxed))
+        if (e < qc_id_bound(qc_next_raw_event_))
             if (const uint64_t* r = qc_event_runsig_.find(qc_ev_slot(e))) return *r;
     }
     return reconstructed_raw_triple(e);
@@ -2514,7 +2539,7 @@ uint64_t Hypergraph::event_pair_signature(uint32_t e) const {
 
 // The event's content itself, for a caller that must DESCRIBE the event rather than identify it.
 const QcEventContent* Hypergraph::reconstructed_event_content(uint32_t e) const {
-    if (e >= qc_next_raw_event_.load(std::memory_order_relaxed)) return nullptr;
+    if (e >= qc_id_bound(qc_next_raw_event_)) return nullptr;
     const QcEventContent* c = qc_event_sig_.find(qc_ev_slot(e));
     return c && c->written ? c : nullptr;
 }

@@ -182,6 +182,34 @@ TEST(OracleCorpus, EventKeyCollisionsKeepEventIdentityExact) {
     }
 }
 
+// The replay mints raw event and instance ids below a limit and refuses past it: the run counts
+// the refusals, the ids it issued stay below the limit, and the default limit refuses nothing.
+TEST(OracleCorpus, ReplayIdLimitTruncatesAndReports) {
+    constexpr uint32_t kLimit = 100;
+    size_t checked = 0;
+    for (const auto& c : oracle::corpus()) {
+        auto run = [&](uint32_t limit) {
+            auto hg = std::make_unique<Hypergraph>();
+            hg->set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+            if (limit) hg->set_replay_id_limit(limit);
+            ParallelEvolutionEngine engine(hg.get(), 4);
+            engine.set_explore_from_canonical_states_only(true);
+            for (const auto& r : c.rules) engine.add_rule(r);
+            engine.evolve(c.init, c.measure_steps);
+            return hg;
+        };
+        const auto ref = run(0);
+        EXPECT_EQ(ref->replay_ids_refused(), 0u) << c.name;
+        if (ref->num_reconstructed_raw_events() < 2 * kLimit) continue;
+        const auto hg = run(kLimit);
+        EXPECT_GT(hg->replay_ids_refused(), 0u) << c.name;
+        EXPECT_LE(hg->num_reconstructed_raw_events(), kLimit) << c.name;
+        EXPECT_LE(hg->reconstructed_event_id_bound(), kLimit) << c.name;
+        ++checked;
+    }
+    EXPECT_GT(checked, 0u);
+}
+
 TEST(OracleCorpus, DeterministicAcrossThreadCounts) {
     for (const auto& c : oracle::corpus()) {
         size_t t1 = oracle::engine_full_count(c.rules, c.init, c.oracle_steps, 1);

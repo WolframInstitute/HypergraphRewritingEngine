@@ -87,6 +87,7 @@ EngineConfig config_from_input(const EvolveInput& in) {
     cfg.tr_preds_nodes         = expected_events * 8u;
     cfg.canonical_key_mask     = in.canonical_key_mask;
     cfg.event_key_mask         = in.event_key_mask;
+    cfg.replay_id_limit        = in.replay_id_limit;
     return cfg;
 }
 
@@ -309,6 +310,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     if (qe_replay) qe_state_->ensure_lanes(default_persistent_grid() * kMatchBlockThreads);
     const bool qe_event_content = qc_route && qe_replay && in.materialize_events;
     if (qe_event_content) qe_state_->ensure_event_content();
+    qe_state_->set_id_limit(in.replay_id_limit);
     QeView qe_view = qe_state_->view(in.num_steps, event_keys_for(in.event_canonicalization),
                                      qe_replay, qe_multiplicity, qe_event_content);
 
@@ -420,8 +422,10 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
             counters.finish();
         }
         snap = EngineState::snapshot_from(eng_raw.data());
-        const auto qc_counts = qc_route ? hg_gpu::QeState::counters_from(qe_raw.data(), qm_raw)
-                                        : hg_gpu::QeState::Counters{};
+        auto qc_counts = qc_route ? hg_gpu::QeState::counters_from(qe_raw.data(), qm_raw)
+                                  : hg_gpu::QeState::Counters{};
+        // The id counter passes the limit by the refused attempts; the ids issued are below it.
+        if (qc_counts.raw_events > in.replay_id_limit) qc_counts.raw_events = in.replay_id_limit;
         out.expansion_matches   = qe_matches;
         out.expansion_instances = qc_counts.instances;
         out.reconstructed_raw_events =

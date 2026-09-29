@@ -43,7 +43,8 @@
 //   using Instance = ...;  using Match = ...;
 //   bool     claim(const Instance&, const Match&);   exactly-once on the (instance, match) pair
 //   uint32_t mint_event(uint32_t above);   a fresh id, greater than `above` when above is not
-//                                          QR_NO_PRODUCER
+//                                          QR_NO_PRODUCER; INVALID_ID when the id space is
+//                                          exhausted (QR_ID_LIMIT), which the Ctx reports
 //   void     record_content(uint32_t ev, uint64_t from_class, uint64_t to_class, uint32_t rule);
 //   EventSignatureKeys keys() const;           EVENT_SIG_NONE to skip the run signature
 //   uint32_t frame_step(uint64_t class_hash, uint32_t fallback) const;
@@ -85,6 +86,15 @@ namespace common {
 
 // A slot with no producer: the edge came with the initial state, so no event made it.
 constexpr uint32_t QR_NO_PRODUCER = 0xFFFFFFFFu;
+
+// Raw event and instance ids are 32-bit and index per-event arrays. Both engines mint them below
+// this limit and refuse past it: the application that asked is dropped and the run reports
+// "ReplayIdsExhausted". The 2^20 below 2^32 bounds the device counter's overshoot by the lanes
+// that pass the limit check together, so the counter cannot wrap.
+constexpr uint32_t QR_ID_LIMIT = 0xFFF00000u;
+constexpr const char* QR_IDS_EXHAUSTED_MESSAGE =
+    "the replay minted its limit of raw event or instance ids; the reconstructed raw events and "
+    "relations are TRUNCATED at that point";
 
 // The (instance, match) pair, mixed the same way on both engines because it is one claim set.
 HG_HD inline uint64_t qr_apply_key(uint32_t instance, uint32_t match) {
@@ -254,6 +264,7 @@ HG_HD uint32_t qr_apply(Ctx& c, const typename Ctx::Instance& inst,
     uint32_t producers[MAX_PATTERN_EDGES];
     const uint32_t np = causal ? qr_collect_producers(c, inst, m, producers) : 0;
     const uint32_t ev = c.mint_event(np ? producers[0] : QR_NO_PRODUCER);
+    if (ev == INVALID_ID) return INVALID_ID;
     c.record_content(ev, state_hash, m.to_hash, m.rule);
 
     // The RUN's event identity, which is a different question from the invariant above.

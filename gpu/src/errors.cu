@@ -57,6 +57,8 @@ const char* error_kind_name(ErrorKind k) {
         // The same kind names the CPU reports.
         case ErrorKind::kEventSigRawFallback: return "EventSigRawFallback";
         case ErrorKind::kDrainCapBufferFull:  return "DrainCapBufferFull";
+        // The kind name the CPU reports.
+        case ErrorKind::kReplayIdsExhausted:  return "ReplayIdsExhausted";
         default:                              return "unknown";
     }
 }

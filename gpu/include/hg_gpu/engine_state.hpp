@@ -151,6 +151,8 @@ struct DeviceState {
     // EngineConfig::event_key_mask: the same for an event signature, a replay class's run
     // signature and the exact hash None/Automatic event identity reads.
     uint64_t event_key_mask;
+    // EngineConfig::replay_id_limit: the replay refuses raw event ids at or past it.
+    uint32_t replay_id_limit;
     uint32_t record_causal;
     uint32_t record_branchial;
 
