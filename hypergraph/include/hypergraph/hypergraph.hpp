@@ -137,17 +137,23 @@ class Hypergraph {
     std::atomic<bool> record_raw_counts_only_{false};
     std::atomic<bool> record_multiplicities_{false};
 
-    // Per-state canonical edge-orbit tables, computed once at state canonicalization in
-    // quotient mode (piggybacked on the dedup IR canonicalization, so no extra canon pass)
-    // and cached by state id. The quotient causal reconstruction reads edge orbits from
-    // here rather than recomputing per event (which would re-run IR canonicalization on
-    // every event -- catastrophic on high-automorphism states). Key: StateId as uint64_t.
-    ConcurrentMap<uint64_t, EdgeOrbitTable*> state_orbit_tables_;
-
-    // Canonical RANK of each edge of a state, built once per state when event
-    // canonicalization is on and read by every event that consumes or produces one of those
-    // edges. Edges ascend (SparseBitset iterates in id order), so a lookup binary-searches.
-    ConcurrentMap<uint64_t, EdgeRankTable*> state_edge_rank_tables_;
+    // A state's edge-orbit table and canonical rank table are State::edge_orbits and
+    // State::edge_ranks. The orbits are computed once at state canonicalization in quotient mode
+    // (from the dedup IR canonicalization, so no extra pass) and read by the quotient causal
+    // reconstruction for every event. The ranks are built once per state when event
+    // canonicalization is on and read by every event that consumes or produces one of its
+    // edges; edges ascend (SparseBitset iterates in id order), so a lookup binary-searches.
+    // Published by compare-and-swap from null (publish_table): the first table built stays.
+    template <class T>
+    static void publish_table(T*& field, T* tbl) {
+        T* expected = nullptr;
+        hgcommon::atomic_ref<T*>(field).compare_exchange_strong(
+            expected, tbl, std::memory_order_release, std::memory_order_relaxed);
+    }
+    template <class T>
+    static T* read_table(T*& field) {
+        return hgcommon::atomic_ref<T*>(field).load(std::memory_order_acquire);
+    }
 
     // The (class, depth) points at the depth bound that hold replay instances or multiplicity
     // mass. Those are recorded and never expanded, so raising the bound has to revisit them.

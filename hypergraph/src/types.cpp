@@ -136,50 +136,56 @@ bool Event::is_canonical() const { return canonical_event_id == INVALID_ID; }
 State::State(StateId id_, SparseBitset&& edge_set, uint32_t step_,
              uint64_t hash, EventId parent, StateId canonical)
     : id(id_)
-    , edges(std::move(edge_set))
     , step(step_)
+    , edges(std::move(edge_set))
     , canonical_hash(hash)
     , parent_event(parent)
     , canonical_id(canonical == INVALID_ID ? id_ : canonical)
     , explore_depth(INVALID_ID)
     , expanded(0)
     , vertex_index(nullptr)
-    , vertex_index_size(0)
     , delta_edges(nullptr)
+    , vertex_index_size(0)
     , num_delta_edges(0)
     , parent_state(INVALID_ID)
+    , edge_ranks(nullptr)
+    , edge_orbits(nullptr)
 {}
 
 State::State()
     : id(INVALID_ID)
-    , edges()
     , step(0)
+    , edges()
     , canonical_hash(0)
     , parent_event(INVALID_ID)
     , canonical_id(INVALID_ID)
     , explore_depth(INVALID_ID)
     , expanded(0)
     , vertex_index(nullptr)
-    , vertex_index_size(0)
     , delta_edges(nullptr)
+    , vertex_index_size(0)
     , num_delta_edges(0)
     , parent_state(INVALID_ID)
+    , edge_ranks(nullptr)
+    , edge_orbits(nullptr)
 {}
 
 State::State(State&& other) noexcept
     : id(other.id)
-    , edges(std::move(other.edges))
     , step(other.step)
+    , edges(std::move(other.edges))
     , canonical_hash(other.canonical_hash)
     , parent_event(other.parent_event)
     , canonical_id(other.canonical_id)
     , explore_depth(other.explore_depth)
     , expanded(other.expanded)
     , vertex_index(other.vertex_index)
-    , vertex_index_size(other.vertex_index_size)
     , delta_edges(other.delta_edges)
+    , vertex_index_size(other.vertex_index_size)
     , num_delta_edges(other.num_delta_edges)
     , parent_state(other.parent_state)
+    , edge_ranks(other.edge_ranks)
+    , edge_orbits(other.edge_orbits)
 {
     other.id = INVALID_ID;
 }
@@ -199,6 +205,8 @@ State& State::operator=(State&& other) noexcept {
         delta_edges = other.delta_edges;
         num_delta_edges = other.num_delta_edges;
         parent_state = other.parent_state;
+        edge_ranks = other.edge_ranks;
+        edge_orbits = other.edge_orbits;
         other.id = INVALID_ID;
     }
     return *this;

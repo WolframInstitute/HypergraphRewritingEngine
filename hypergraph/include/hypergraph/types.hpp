@@ -181,10 +181,14 @@ struct RootVertexEntry {
     EdgeId edge;
 };
 
+struct EdgeRankTable;
+struct EdgeOrbitTable;
+
+// Fields are ordered so the 4-byte ones pair up and the struct has no padding.
 struct State {
     StateId id;
-    SparseBitset edges;       // Which edges are present in this state
     uint32_t step;
+    SparseBitset edges;       // Which edges are present in this state
     uint64_t canonical_hash;  // Isomorphism-invariant canonical hash
     EventId parent_event;     // Event that created this, INVALID_ID for initial
     StateId canonical_id;     // Canonical representative (cached, set on creation)
@@ -198,10 +202,15 @@ struct State {
     // all of them for a root, the produced edges for a derived state -- and, for a derived
     // state, those edge ids and the parent state the chain continues at (INVALID_ID on a root).
     const RootVertexEntry* vertex_index;
-    uint32_t vertex_index_size;
     const EdgeId* delta_edges;
+    uint32_t vertex_index_size;
     uint32_t num_delta_edges;
     StateId parent_state;
+    // The canonical rank of each edge (Hypergraph::cache_state_edge_ranks) and the edge-orbit
+    // table (compute_and_cache_state_orbits): null until built, set once by compare-and-swap
+    // from null with release, read with acquire (atomic_ref).
+    mutable EdgeRankTable* edge_ranks;
+    mutable EdgeOrbitTable* edge_orbits;
 
     State(StateId id_, SparseBitset&& edge_set, uint32_t step_,
           uint64_t hash, EventId parent, StateId canonical = INVALID_ID);

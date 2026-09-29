@@ -700,13 +700,12 @@ uint64_t Hypergraph::cache_state_edge_ranks(StateId state_id, const SparseBitset
 
     EdgeRankTable* tbl = arena_.template create<EdgeRankTable>();
     tbl->n = n; tbl->edges = arr_edges; tbl->rank = arr_rank;
-    // +1: the map reserves key 0 as its EMPTY-slot sentinel, so state 0 needs the offset.
-    state_edge_rank_tables_.insert_if_absent(static_cast<uint64_t>(state_id) + 1, tbl);
+    publish_table(states_[state_id].edge_ranks, tbl);
     return hash;
 }
 
 void Hypergraph::ensure_state_edge_ranks(StateId state_id, const SparseBitset& edges) {
-    if (state_edge_rank_tables_.lookup(static_cast<uint64_t>(state_id) + 1).has_value()) return;
+    if (read_table(states_[state_id].edge_ranks)) return;
     cache_state_edge_ranks(state_id, edges);
 }
 
@@ -732,8 +731,8 @@ StateId Hypergraph::get_canonical_state_for_event(StateId raw_state) const {
     }
 
 const EdgeRankTable* Hypergraph::edge_rank_table(StateId state_id) const {
-    auto r = state_edge_rank_tables_.lookup(static_cast<uint64_t>(state_id) + 1);
-    return r.has_value() ? *r : nullptr;
+    if (state_id == INVALID_ID) return nullptr;
+    return read_table(states_[state_id].edge_ranks);
 }
 
 uint32_t Hypergraph::edge_rank_in(const EdgeRankTable* t, EdgeId edge) {
@@ -1192,11 +1191,7 @@ uint64_t Hypergraph::compute_and_cache_state_orbits(StateId s, const SparseBitse
     tbl->n = n; tbl->num_orbits = num_orbits;
     tbl->edges = arr_edges; tbl->orbit = arr_orbit; tbl->orbit_size = arr_osize;
     tbl->slot = arr_slot; tbl->klass = arr_class; tbl->rank = arr_rank;
-    // +1: the map reserves 0 as its EMPTY-slot sentinel, so a raw key of StateId 0 can never
-    // be stored or found -- the initial state would silently have no orbit table, which
-    // skipped INIT seeding in the producer-set DP and dropped the root class's matches from
-    // the reconstruction. Same offset, same reason, as the None-mode dedup key.
-    if (cache) state_orbit_tables_.insert_if_absent(static_cast<uint64_t>(s) + 1, tbl);
+    if (cache) publish_table(states_[s].edge_orbits, tbl);
     return hash;
 }
 
@@ -1406,7 +1401,7 @@ void Hypergraph::qc_check_frame_stable(StateId s, const uint32_t* slots, uint32_
 
 // The edge-orbit table of a state, built here if it is not cached yet.
 //
-// state_orbit_tables_ is a CACHE, filled when a state is canonicalized so the reconstruction
+// State::edge_orbits is a CACHE, filled when a state is canonicalized so the reconstruction
 // does not re-run IR canonicalization for every event. A miss therefore has to be FILLED. Read
 // as "this state has no orbits" it silently removes the match from its class frame, and the
 // replay then produces neither the raw events that match would have made nor the causal and
@@ -2049,10 +2044,10 @@ void Hypergraph::set_edge_producer(CanonicalEdgeKey key, EventId producer, EdgeI
 }
 
 // The cached edge-orbit table for a state, or null when there is none -- full-capture mode, or
-// before canonicalization. The +1 keeps the key off the map's EMPTY sentinel.
+// before canonicalization.
 const EdgeOrbitTable* Hypergraph::state_orbits(StateId s) const {
-    auto r = state_orbit_tables_.lookup(static_cast<uint64_t>(s) + 1);
-    return r.has_value() ? *r : nullptr;
+    if (s == INVALID_ID) return nullptr;
+    return read_table(states_[s].edge_orbits);
 }
 
 // =============================================================================
