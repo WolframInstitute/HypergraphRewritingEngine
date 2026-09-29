@@ -1124,17 +1124,16 @@ void Hypergraph::qc_add_instance(uint64_t state_hash, uint32_t depth,
     inst.id = alloc_instance_id();
     inst.nslots = nslots;
     inst.prod = prod;
-    // Claim bits only for an instance that will be expanded; one at the bound claims nothing.
+    // Claim words only for an instance that will be expanded; one at the bound claims nothing.
     if (static_cast<int>(depth) < maxs) {
-        if (auto xr = qc_expansion_.lookup(state_hash)) {
-            inst.claim_cap = (*xr)->n.load(std::memory_order_acquire);
-            if (inst.claim_cap) {
-                const uint32_t words = (inst.claim_cap + 63u) / 64u;
-                inst.claim_bits = arena_.allocate_array<std::atomic<uint64_t>>(words);
-                for (uint32_t i = 0; i < words; ++i)
-                    inst.claim_bits[i].store(0, std::memory_order_relaxed);
-            }
-        }
+        uint32_t class_matches = 0;
+        if (auto xr = qc_expansion_.lookup(state_hash))
+            class_matches = (*xr)->n.load(std::memory_order_acquire);
+        const uint32_t words = hgcommon::qr_claim_words(class_matches);
+        inst.claim_cap = hgcommon::qr_claim_bits(words);
+        inst.claim_bits = arena_.allocate_array<std::atomic<uint64_t>>(words);
+        for (uint32_t i = 0; i < words; ++i)
+            inst.claim_bits[i].store(0, std::memory_order_relaxed);
     }
 
     const uint64_t key = qc_key(state_hash, depth, 0);

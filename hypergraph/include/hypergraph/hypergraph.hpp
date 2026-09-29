@@ -190,10 +190,9 @@ class Hypergraph {
         uint32_t id = 0;
         uint32_t nslots = 0;
         const uint32_t* prod = nullptr;   // length nslots; QC_NO_PRODUCER for initial edges
-        // One claim bit per class match with local index below claim_cap: the matches the class
-        // held when the instance was created. A pair past it claims in qc_applied_. Both sides of
-        // the instance/match rendezvous compare the same two fixed numbers, so a pair always
-        // claims in the same place.
+        // One claim bit per class match with local index below claim_cap, which is
+        // hgcommon::qr_claim_bits of the instance's words (hgcommon::qr_claim_words of the
+        // matches the class held when it was created). A pair past it claims in qc_applied_.
         uint32_t claim_cap = 0;
         std::atomic<uint64_t>* claim_bits = nullptr;
     };

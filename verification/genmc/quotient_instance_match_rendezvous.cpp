@@ -38,8 +38,9 @@
 //
 // AND THE PAIR IS APPLIED ONCE. Both sides may see each other, so each claims the pair, and the
 // claim decides which one applies it. An instance claims a match of its class in its own bits
-// when the match's per-class index is below the instance's claim_cap (the class's match count
-// read when the instance was created), and in the shared key set otherwise
+// when the match's per-class index is below the instance's claim_cap (qr_claim_bits of
+// qr_claim_words of the class's match count read when the instance was created), and in the
+// shared key set otherwise
 // (Hypergraph::QrCtx::claim). The two sides choose the same place because they compare the same
 // two values, each written before its record is published; exactly one claim must win.
 //
@@ -64,6 +65,7 @@
 #include "hypergraph/concurrent_map.hpp"
 #include "hypergraph/concurrent_key_set.hpp"
 #include "hypergraph/lock_free_list.hpp"
+#include "hgcommon/quotient_replay_core.hpp"
 
 namespace {
 
@@ -129,7 +131,8 @@ void claim(uint64_t inst, bool match_side) {
 // The instance side. Publish the shard entry, push the instance to its shard, fence, then scan
 // for matches.
 void instance_side(uint64_t inst) {
-    g_inst_rec[inst].claim_cap = g_class_nmatch.load(std::memory_order_acquire);
+    g_inst_rec[inst].claim_cap = hgcommon::qr_claim_bits(
+        hgcommon::qr_claim_words(g_class_nmatch.load(std::memory_order_acquire)));
     g_instances->insert_if_absent(kClass, g_shards);
     g_shards->list[inst].push(inst, *g_arena);
 #if defined(CALIBRATE_NO_INSTANCE_FENCE)

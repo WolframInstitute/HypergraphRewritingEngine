@@ -92,6 +92,17 @@ HG_HD inline uint64_t qr_apply_key(uint32_t instance, uint32_t match) {
     return avoid_reserved_keys(k);
 }
 
+// WHERE A PAIR IS CLAIMED. An instance carries claim words, fixed when it is created; a pair
+// whose match has per-class index below qr_claim_bits(words) claims its bit there, and any other
+// pair claims its qr_apply_key in a shared set. Both sides of the rendezvous compare the same two
+// fixed numbers, so a pair always claims in the same place. An instance gets one word for every
+// 64 matches its class held at creation and at least one, so the matches a class captures after
+// the instance also claim in bits up to the word's 64.
+HG_HD inline uint32_t qr_claim_words(uint32_t class_matches) {
+    return class_matches ? (class_matches + 63u) / 64u : 1u;
+}
+HG_HD inline uint32_t qr_claim_bits(uint32_t words) { return words * 64u; }
+
 // The event's CONTENT triple. Isomorphism-invariant and schedule-independent, so it is the
 // identity a cross-run or cross-engine comparison of the relations is made on -- which is
 // exactly why it cannot be spelled twice.
