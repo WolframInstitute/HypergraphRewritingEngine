@@ -84,7 +84,7 @@ struct Ctx {
                                                 std::memory_order_acquire);
     }
     void children_push(uint32_t p, uint32_t c) { g_children[p]->push(c, *g_arena); }
-    Node children_head(uint32_t s) const { return g_children[s]->head_node(); }
+    Node children_head(uint32_t s) const { return g_children[s]->head(); }
     static bool children_end(Node n) { return n == nullptr; }
     static uint32_t children_value(Node n) { return n->value; }
     static Node children_next(Node n) { return n->prev; }

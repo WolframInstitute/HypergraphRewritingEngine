@@ -81,10 +81,6 @@ public:
         return new_node;
     }
 
-    // The newest node, or nullptr. Acquire: a walker that follows prev from here sees every
-    // node's contents.
-    const Node* head_node() const { return head_.load(std::memory_order_acquire); }
-
     // Every NODE, newest first, so a caller that must position itself relative to the others
     // can pass what it visits back to for_each_before. Same traversal as for_each; it hands
     // over the node rather than the value.

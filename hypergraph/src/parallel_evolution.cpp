@@ -563,7 +563,7 @@ struct ParallelEvolutionEngine::ExploreCtx {
     }
     Node children_head(uint32_t s) const {
         const LockFreeList<StateId>* l = e.canon_children_.get(s);
-        return l ? l->head_node() : nullptr;
+        return l ? l->head() : nullptr;
     }
     static bool children_end(Node n) { return n == nullptr; }
     static uint32_t children_value(Node n) { return n->value; }
