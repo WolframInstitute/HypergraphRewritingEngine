@@ -331,7 +331,8 @@ compare-exchange on the cursor, waits for each task's published flag, runs it, a
 batch in `tasks_done`. The harness transcribes `qe_task_append`, the persistent loop's task
 branch and `RewriteDetectorCtx`'s produced/consumed sums, and runs `hgcommon::term_detect_loop`.
 A quiescent exit with a task owed, a claimed task unrun or the record unrewritten is the defect.
-One worker: 174,129 executions, clean. Every append is inside a unit not yet booked consumed (the
+One worker: 174,129 executions, clean. Two workers (the batch-claim race): 272,243,862
+executions, clean (4.0 h). Every append is inside a unit not yet booked consumed (the
 record being rewritten, or the task being run): `-DCALIBRATE_DONE_BEFORE_RUN` books a batch before
 running it and `-DCALIBRATE_RECORD_BEFORE_CAPTURE` books the record before its appends, and both
 violate.
