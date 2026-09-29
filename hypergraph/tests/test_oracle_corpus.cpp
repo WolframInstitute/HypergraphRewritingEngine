@@ -124,6 +124,64 @@ TEST(OracleCorpus, CanonicalKeyCollisionsKeepStateIdentityExact) {
     (void)collisions;
 }
 
+// Masks of 0x3 on the state key and the event key force hash collisions in every identity map:
+// Automatic content, the IR keys of None/Automatic states, event signatures, and the quotient
+// replay's event classes. Every count must equal the unmasked run's.
+TEST(OracleCorpus, EventKeyCollisionsKeepEventIdentityExact) {
+    constexpr uint64_t kMask = 0x3;
+    struct Counts {
+        size_t states; uint64_t events, causal, branchial;
+        bool operator==(const Counts& o) const {
+            return states == o.states && events == o.events && causal == o.causal &&
+                   branchial == o.branchial;
+        }
+    };
+    auto run = [](const oracle::Case& c, StateCanonicalizationMode mode,
+                  hgcommon::EventSignatureKeys keys, bool quotient, unsigned threads,
+                  uint64_t mask) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(mode);
+        hg.set_event_signature_keys(keys);
+        hg.set_canonical_key_mask(mask);
+        hg.set_event_key_mask(mask);
+        ParallelEvolutionEngine engine(&hg, threads);
+        engine.set_explore_from_canonical_states_only(quotient);
+        for (const auto& r : c.rules) engine.add_rule(r);
+        engine.evolve(c.init, c.oracle_steps + 1);
+        Counts k;
+        k.states    = hg.num_canonical_states();
+        k.events    = hg.observable_num_events();
+        k.causal    = hg.observable_num_causal_edges();
+        k.branchial = hg.observable_num_branchial();
+        return k;
+    };
+    struct Mode { const char* name; StateCanonicalizationMode mode; bool quotient; };
+    const Mode modes[] = {
+        {"None",           StateCanonicalizationMode::None,      false},
+        {"Automatic",      StateCanonicalizationMode::Automatic, false},
+        {"Full",           StateCanonicalizationMode::Full,      false},
+        {"Full quotient",  StateCanonicalizationMode::Full,      true},
+    };
+    struct Keys { const char* name; hgcommon::EventSignatureKeys keys; };
+    const Keys key_sets[] = {
+        {"Full",      hgcommon::EVENT_SIG_FULL},
+        {"Automatic", hgcommon::EVENT_SIG_AUTOMATIC},
+        {"InOutStepRule", EventKey_InputState | EventKey_OutputState | EventKey_Step |
+                          EventKey_Rule},
+    };
+    for (const auto& c : oracle::corpus()) {
+        for (const auto& m : modes) {
+            for (const auto& k : key_sets) {
+                const Counts ref = run(c, m.mode, k.keys, m.quotient, 1, ~uint64_t{0});
+                for (unsigned t : {1u, 4u}) {
+                    EXPECT_EQ(run(c, m.mode, k.keys, m.quotient, t, kMask), ref)
+                        << c.name << " state " << m.name << " events " << k.name << " @" << t;
+                }
+            }
+        }
+    }
+}
+
 TEST(OracleCorpus, DeterministicAcrossThreadCounts) {
     for (const auto& c : oracle::corpus()) {
         size_t t1 = oracle::engine_full_count(c.rules, c.init, c.oracle_steps, 1);

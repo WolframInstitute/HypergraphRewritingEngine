@@ -1,17 +1,18 @@
 #pragma once
 #include "hgcommon/namespace.hpp"
 //
-// A STORED IR CANONICAL FORM, the identity that exact state deduplication compares on a hash hit.
+// A STORED IDENTITY, what a table keyed by a 64-bit hash compares on a hit. The words are the
+// thing the hash digests, so two entries are the same exactly when their words are equal:
+//   a Full-mode state: its IR canonical form (ir_canonical_hash's out_canonical_form: per edge
+//     in canonical order, the arity and the canonically labelled vertices), equal if and only
+//     if the states are isomorphic;
+//   an Automatic-mode state: its content words (per edge in id order, the arity and vertices);
+//   an event: its signature's values (hgcommon::event_signature_values), two words each.
 //
-// The form is ir_canonical_hash's out_canonical_form: for each edge in canonical order, its arity
-// followed by its canonically labelled vertices, ir_canonical_form_words(n_edges, total_occ)
-// words. Two states have equal forms if and only if they are isomorphic; the 64-bit canonical
-// hash is a digest of the form and can collide.
-//
-// A record is a 12-byte header (the representative state id, word count, element width)
-// followed by the words, each stored in `width` bytes: 1 when every word is below 256, 2 when
-// below 65536, else 4. On the Wolfram rule at depth 6 a state has 14 edges of arity 2, so its
-// record is 12 + 42 bytes.
+// A record is a 12-byte header (the representative's id, word count, element width) followed by
+// the words, each stored in `width` bytes: 1 when every word is below 256, 2 when below 65536,
+// else 4. On the Wolfram rule at depth 6 a state has 14 edges of arity 2, so its record is
+// 12 + 42 bytes.
 
 #include <cstdint>
 
@@ -21,7 +22,7 @@ namespace HG_NAMESPACE {
 namespace common {
 
 struct CanonicalFormRecord {
-    uint32_t state;   // the class's representative state
+    uint32_t id;      // the representative: a state, or an event
     uint32_t words;
     uint32_t width;   // bytes per stored word: 1, 2 or 4
 };
@@ -38,9 +39,9 @@ HG_HD inline uint64_t canonical_form_record_bytes(uint32_t words, uint32_t width
 
 // Writes the record for `form` into `out`, which holds canonical_form_record_bytes(words, width)
 // bytes and is 4-byte aligned.
-HG_HD inline void canonical_form_encode(uint32_t state, const uint32_t* form, uint32_t words,
+HG_HD inline void canonical_form_encode(uint32_t id, const uint32_t* form, uint32_t words,
                                         uint32_t width, CanonicalFormRecord* out) {
-    out->state = state;
+    out->id = id;
     out->words = words;
     out->width = width;
     unsigned char* data = reinterpret_cast<unsigned char*>(out + 1);

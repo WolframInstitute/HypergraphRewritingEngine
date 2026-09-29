@@ -75,7 +75,7 @@ Which states are the same node.
 | value | two states are one node iff | dedup key |
 |---|---|---|
 | `None` (default) | never — every raw state is its own node | the state's own id |
-| `Automatic` | their edge multisets are identical under a content ordering (**not** isomorphism-invariant) | content-ordered hash |
+| `Automatic` | their edge multisets are identical under a content ordering (**not** isomorphism-invariant) | content-ordered hash, with the content words compared on a key hit |
 | `Full` | they are isomorphic as ordered hypergraphs (vertex relabeling; within-edge order and multiplicity preserved) | the canonical hash, with the canonical forms compared on a key hit |
 
 The canonical form is McKay-style individualization–refinement (IR). The **reported** per-state
@@ -96,7 +96,10 @@ components, each isomorphism-invariant and computable by both engines: the canon
 hash, the canonical output-state hash, the step, the rule index, and the canonical **ranks** of
 the consumed and produced edges (a rank is the position an edge takes in its own state's
 canonical labeling; consumed ranks are taken in match order, produced ranks in RHS order).
-*(`common/include/hgcommon/event_core.hpp`, one body for both engines.)*
+*(`common/include/hgcommon/event_core.hpp`, one body for both engines.)* Two applications are one
+event when their signature VALUES are equal: the 64-bit signature selects the key, a key hit
+compares the values, and a class whose key another class holds takes the next probe key, as for
+states (§4.1). The class's key is the signature reported.
 
 | value | signature components | meaning |
 |---|---|---|

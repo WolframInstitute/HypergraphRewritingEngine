@@ -48,7 +48,7 @@
 //
 // A Ctx must supply:
 //
-//   using Match = ...;       id, to_hash and the fields qr_run_signature reads
+//   using Match = ...;       id, to_hash and the fields qr_signature_values reads
 //   uint32_t max_steps() const;
 //   bool     ready(const Match&, uint64_t& b) const;      false until b_j is recorded
 //   uint64_t mass(uint64_t class_hash, uint32_t depth) const;       0 when none has arrived
@@ -59,7 +59,8 @@
 //                              holds the current value
 //   void     count(uint64_t events, uint64_t branchial);   saturating adds
 //   hgcommon::EventSignatureKeys keys() const;  uint32_t frame_step(uint64_t, uint32_t) const;
-//   void     note_signature(uint64_t csig);      the run's distinct-event set
+//   void     note_signature(const Match& m, uint64_t from_class, uint32_t out_step);   the
+//                                          run's distinct-event set (qr_signature_values)
 //   bool     claim_queued(uint64_t class_hash, uint32_t depth);   set the flag; true if it was clear
 //   void     push(uint64_t class_hash, uint32_t depth);
 //   bool     pop(uint64_t& class_hash, uint32_t& depth);   the shallowest queued point; clears
@@ -141,7 +142,9 @@ HG_HD void qm_pass(Ctx& c, const typename Ctx::Match& m, uint64_t state_hash, ui
     }
     const uint64_t delta = have - done;
     c.count(delta, qm_sat_mul(delta, b));
-    if (c.keys() != EVENT_SIG_NONE) c.note_signature(qr_run_signature(c, m, state_hash, depth));
+    if (c.keys() != EVENT_SIG_NONE) {
+        c.note_signature(m, state_hash, qr_out_step(c, m, depth));
+    }
     qm_credit(c, m.to_hash, depth + 1, delta);
 }
 

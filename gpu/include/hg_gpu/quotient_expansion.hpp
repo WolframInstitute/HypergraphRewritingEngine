@@ -582,7 +582,11 @@ struct DeviceQmCtx {
     __device__ uint32_t frame_step(uint64_t class_hash, uint32_t fallback) const {
         return qe_frame_step(qe, class_hash, fallback);
     }
-    __device__ void note_signature(uint64_t csig) { qe_note_signature(qe, csig); }
+    __device__ void note_signature(const QeMatchView& m, uint64_t from_class, uint32_t out_step) {
+        hgcommon::QrRunSignature sig;
+        hgcommon::qr_signature_values(qe.keys, m, from_class, out_step, sig);
+        qe_note_signature(qe, sig.sig);
+    }
     __device__ bool claim_queued(uint64_t class_hash, uint32_t depth) {
         const uint32_t p = point(class_hash, depth);
         return p != UINT32_MAX && atomicExch(&qe.qm_queued[p], 1u) == 0u;
@@ -1087,9 +1091,12 @@ struct DeviceQrCtx {
     __device__ uint32_t frame_step(uint64_t class_hash, uint32_t fallback) const {
         return qe_frame_step(qe, class_hash, fallback);
     }
-    __device__ void record_runsig(uint32_t ev, uint64_t csig) {
-        if (ev < qe.event_sig_capacity) qe.event_runsig[ev] = csig;
-        qe_note_signature(qe, csig);
+    __device__ void record_runsig(uint32_t ev, const QeMatchView& m, uint64_t from_class,
+                                  uint32_t out_step) {
+        hgcommon::QrRunSignature sig;
+        hgcommon::qr_signature_values(qe.keys, m, from_class, out_step, sig);
+        if (ev < qe.event_sig_capacity) qe.event_runsig[ev] = sig.sig;
+        qe_note_signature(qe, sig.sig);
     }
     __device__ bool want_causal() const    { return ds.record_causal != 0; }
     __device__ bool want_branchial() const { return ds.record_branchial != 0; }

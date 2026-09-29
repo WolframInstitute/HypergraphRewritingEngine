@@ -57,7 +57,9 @@ Core engine:
   mode is McKay individualization-refinement (`ir_canonicalization.*`) on every
   state; its hash selects the dedup key and its canonical form, stored once per canonical
   state (`hgcommon/canonical_form_core.hpp`), decides a key hit; the coarse modes deduplicate by a
-  content-ordered key (`content_core.hpp`) and no filter stands in front of IR. The bound: a
+  content-ordered key (`content_core.hpp`), and a key hit compares the content words with the
+  class's first state. Event identity claims the signature values the same way: a key hit
+  recomputes the class's first event's values and compares them. No filter stands in front of IR. The bound: a
   sound filter's distinct keys are at most the canonical classes, so it can skip at most
   `canonical/raw` of the IR calls while paying its own pass on every state -- measured per case by `tools/cost_matrix`
   across the whole rule-type corpus. Within every rule that keeps rewriting the

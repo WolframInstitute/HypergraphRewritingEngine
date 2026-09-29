@@ -47,7 +47,9 @@
 //   void     record_content(uint32_t ev, uint64_t from_class, uint64_t to_class, uint32_t rule);
 //   EventSignatureKeys keys() const;           EVENT_SIG_NONE to skip the run signature
 //   uint32_t frame_step(uint64_t class_hash, uint32_t fallback) const;
-//   void     record_runsig(uint32_t ev, uint64_t csig);
+//   void     record_runsig(uint32_t ev, const Match& m, uint64_t from_class, uint32_t out_step);
+//                                          the run signature of `m` applied: a function of the
+//                                          three (qr_signature_values)
 //   bool     want_causal() const;  bool want_branchial() const;
 //   uint32_t producer_at(const Instance&, uint32_t slot) const;   NO_PRODUCER when none
 //   void     record_causal(uint32_t producer, uint32_t consumer, bool distinct_pair);
@@ -137,19 +139,43 @@ HG_HD uint32_t qr_collect_producers(const Ctx& c, const typename Ctx::Instance& 
     return n;
 }
 
-// The event's signature under the RUN's identity mode. Instance-independent: every argument is
-// a property of the class and the match.
+// The event's signature under the RUN's identity mode, the values it digests, and the two
+// arguments besides the match that the values are a function of.
+struct QrRunSignature {
+    uint64_t sig;
+    uint64_t from_hash;
+    uint32_t out_step;
+    uint32_t n;
+    uint64_t values[EVENT_SIG_MAX_VALUES];
+};
+
+// The signature of match `m` applied from class `from_hash`, with `out_step` as the output step.
+template <class Match>
+HG_HD void qr_signature_values(EventSignatureKeys keys, const Match& m, uint64_t from_hash,
+                               uint32_t out_step, QrRunSignature& out) {
+    out.from_hash = from_hash;
+    out.out_step = out_step;
+    out.n = event_signature_values(keys, from_hash, m.to_hash, out_step, m.rule,
+                                   m.consumed_ptr(), static_cast<uint8_t>(m.num_consumed),
+                                   m.produced_ptr(), static_cast<uint8_t>(m.num_produced),
+                                   out.values);
+    out.sig = avoid_reserved_keys(event_signature_of_values(out.values, out.n));
+}
+
+// True when two signatures have the same values.
+HG_HD inline bool qr_same_values(const QrRunSignature& a, const QrRunSignature& b) {
+    if (a.n != b.n) return false;
+    for (uint32_t i = 0; i < a.n; ++i)
+        if (a.values[i] != b.values[i]) return false;
+    return true;
+}
+
+// The output step a run signature records: the canonical OUTPUT state's step, not this replay's
+// depth. Full capture signs with one value per class; the depth is where this instance happens
+// to sit, so signing with it makes the two signature sets disjoint for every event.
 template <class Ctx>
-HG_HD uint64_t qr_run_signature(const Ctx& c, const typename Ctx::Match& m, uint64_t state_hash,
-                                uint32_t depth) {
-    // The canonical OUTPUT state's step, not this replay's depth. Full capture signs with one
-    // value per class; the depth is where this instance happens to sit, so signing with it makes
-    // the two signature sets disjoint for every event.
-    const uint32_t out_step = c.frame_step(m.to_hash, depth);
-    const uint64_t csig = event_signature(c.keys(), state_hash, m.to_hash, out_step, m.rule,
-                                          m.consumed_ptr(), static_cast<uint8_t>(m.num_consumed),
-                                          m.produced_ptr(), static_cast<uint8_t>(m.num_produced));
-    return avoid_reserved_keys(csig);
+HG_HD uint32_t qr_out_step(const Ctx& c, const typename Ctx::Match& m, uint32_t depth) {
+    return c.frame_step(m.to_hash, depth);
 }
 
 // Whether two matches of one state consume a common slot: the branchial test. `mine` holds the
@@ -209,7 +235,9 @@ HG_HD uint32_t qr_apply(Ctx& c, const typename Ctx::Instance& inst,
     // The RUN's event identity, which is a different question from the invariant above.
     // Slots ARE the canonical ranks the signature wants, and consumed/produced stay in
     // match/RHS order as it requires.
-    if (c.keys() != EVENT_SIG_NONE) c.record_runsig(ev, qr_run_signature(c, m, state_hash, depth));
+    if (c.keys() != EVENT_SIG_NONE) {
+        c.record_runsig(ev, m, state_hash, qr_out_step(c, m, depth));
+    }
 
     if (causal) {
         // THE PAIR CANNOT REPEAT ACROSS APPLICATIONS, because `ev` was minted for this one.

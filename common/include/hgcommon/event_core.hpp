@@ -55,12 +55,44 @@ constexpr EventSignatureKeys EVENT_SIG_AUTOMATIC =
 constexpr EventSignatureKeys EVENT_SIG_TRANSITION =
     EventKey_InputState | EventKey_Rule | EventKey_ConsumedEdges;
 
-// Signature of one application. Ranks are consumed IN ORDER -- match order for the consumed
-// edges, RHS order for the produced -- because Positional identity distinguishes which role an
-// edge played, not merely which edges took part.
-//
-// The result is never 0 and never the bare FNV offset: both are reserved by the maps that key
-// on it, and a signature colliding with a sentinel would be dropped rather than stored.
+// The values an event's signature is taken over, in order: the selected keys' fields, one value
+// per rank. Ranks are consumed IN ORDER -- match order for the consumed edges, RHS order for the
+// produced -- because Positional identity distinguishes which role an edge played, not merely
+// which edges took part. Two events are the same under `keys` exactly when these values are
+// equal; the signature is a 64-bit digest of them, and a table keyed by it compares the values
+// on a hit (hgcommon/canonical_form_core.hpp, two words per value).
+constexpr uint32_t EVENT_SIG_MAX_VALUES = 4u + 2u * MAX_PATTERN_EDGES;
+
+HG_HD inline uint32_t event_signature_values(
+    EventSignatureKeys keys,
+    uint64_t input_state_hash, uint64_t output_state_hash,
+    uint32_t step, uint16_t rule_index,
+    const uint32_t* consumed_ranks, uint8_t num_consumed,
+    const uint32_t* produced_ranks, uint8_t num_produced,
+    uint64_t* out)
+{
+    uint32_t n = 0;
+    if (keys & EventKey_InputState)  out[n++] = input_state_hash;
+    if (keys & EventKey_OutputState) out[n++] = output_state_hash;
+    if (keys & EventKey_Step)        out[n++] = static_cast<uint64_t>(step);
+    if (keys & EventKey_Rule)        out[n++] = static_cast<uint64_t>(rule_index);
+    if (keys & EventKey_ConsumedEdges)
+        for (uint8_t i = 0; i < num_consumed; ++i) out[n++] = consumed_ranks[i];
+    if (keys & EventKey_ProducedEdges)
+        for (uint8_t i = 0; i < num_produced; ++i) out[n++] = produced_ranks[i];
+    return n;
+}
+
+// The signature of those values. Never 0 and never the bare FNV offset: both are reserved by the
+// maps that key on it, and a signature equal to a sentinel is never stored.
+HG_HD inline uint64_t event_signature_of_values(const uint64_t* values, uint32_t n) {
+    uint64_t sig = FNV_OFFSET;
+    for (uint32_t i = 0; i < n; ++i) sig = fnv_hash(sig, values[i]);
+    if (sig == 0 || sig == FNV_OFFSET) sig = 1;
+    return sig;
+}
+
+// Signature of one application: event_signature_of_values over event_signature_values.
 HG_HD inline uint64_t event_signature(
     EventSignatureKeys keys,
     uint64_t input_state_hash, uint64_t output_state_hash,
@@ -68,19 +100,20 @@ HG_HD inline uint64_t event_signature(
     const uint32_t* consumed_ranks, uint8_t num_consumed,
     const uint32_t* produced_ranks, uint8_t num_produced)
 {
-    uint64_t sig = FNV_OFFSET;
-    if (keys & EventKey_InputState)  sig = fnv_hash(sig, input_state_hash);
-    if (keys & EventKey_OutputState) sig = fnv_hash(sig, output_state_hash);
-    if (keys & EventKey_Step)        sig = fnv_hash(sig, static_cast<uint64_t>(step));
-    if (keys & EventKey_Rule)        sig = fnv_hash(sig, static_cast<uint64_t>(rule_index));
-    if (keys & EventKey_ConsumedEdges)
-        for (uint8_t i = 0; i < num_consumed; ++i)
-            sig = fnv_hash(sig, static_cast<uint64_t>(consumed_ranks[i]));
-    if (keys & EventKey_ProducedEdges)
-        for (uint8_t i = 0; i < num_produced; ++i)
-            sig = fnv_hash(sig, static_cast<uint64_t>(produced_ranks[i]));
-    if (sig == 0 || sig == FNV_OFFSET) sig = 1;
-    return sig;
+    uint64_t v[EVENT_SIG_MAX_VALUES];
+    const uint32_t n = event_signature_values(keys, input_state_hash, output_state_hash, step,
+                                              rule_index, consumed_ranks, num_consumed,
+                                              produced_ranks, num_produced, v);
+    return event_signature_of_values(v, n);
+}
+
+// The identity words of `n` signature values: low word, then high word, per value.
+HG_HD inline uint32_t event_identity_words(const uint64_t* values, uint32_t n, uint32_t* out) {
+    for (uint32_t i = 0; i < n; ++i) {
+        out[2 * i]     = static_cast<uint32_t>(values[i]);
+        out[2 * i + 1] = static_cast<uint32_t>(values[i] >> 32);
+    }
+    return 2u * n;
 }
 
 }  // namespace common

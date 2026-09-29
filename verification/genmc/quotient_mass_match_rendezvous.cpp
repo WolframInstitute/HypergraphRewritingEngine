@@ -98,7 +98,7 @@ struct Ctx {
     void count(uint64_t e, uint64_t) { sat_add(g_events, e); }
     hgcommon::EventSignatureKeys keys() const { return hgcommon::EVENT_SIG_NONE; }
     uint32_t frame_step(uint64_t, uint32_t f) const { return f; }
-    void note_signature(uint64_t) {}
+    void note_signature(const Match&, uint64_t, uint32_t) {}
     bool claim_queued(uint64_t, uint32_t) {
         return g_queued_c.exchange(1, std::memory_order_acq_rel) == 0;
     }

@@ -168,7 +168,7 @@ __device__ inline StateClaim state_claim_full(DeviceState ds, StateId sid, uint6
             const auto* rec = record(r.value);
             if (!hgcommon::canonical_form_equals(rec, form, words))
                 return hgcommon::ProbeState::Collision;
-            rep = rec->state; key = k;
+            rep = rec->id; key = k;
             return hgcommon::ProbeState::Duplicate;
         }
         __device__ void make_stable() {
@@ -199,7 +199,7 @@ __device__ inline StateClaim state_claim_full(DeviceState ds, StateId sid, uint6
             const auto* rec = record(r.value);
             if (!hgcommon::canonical_form_equals(rec, form, words))
                 return hgcommon::ClaimState::Collision;
-            rep = rec->state; key = k;
+            rep = rec->id; key = k;
             return hgcommon::ClaimState::Duplicate;
         }
         __device__ void note_collision() {}

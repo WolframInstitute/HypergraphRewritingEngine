@@ -108,7 +108,11 @@ class Hypergraph {
     // EVENTS that holds. The CAUSAL relation under Automatic event identity is the
     // canonical-class relation only when the orbit tables exist (the Full state mode computes
     // them); in the other state modes the engine warns and serves the raw-edge rendezvous.
-    ConcurrentMap<uint64_t, StateId, uint64_t{0}, ~uint64_t{0}, INVALID_ID> event_canonical_state_map_;
+    //
+    // Under None and Automatic the key is claimed on the state's IR canonical form (claim_identity),
+    // so two non-isomorphic states whose IR hashes collide get two keys; under Full the event
+    // path resolves through canonical_form_map_ and this map is empty.
+    ConcurrentMap<uint64_t, const hgcommon::CanonicalFormRecord*> event_canonical_state_map_;
 
     // State canonicalization mode: controls how states are deduplicated, via the map_key
     // create_or_get_canonical_state builds -- which is a DIFFERENT quantity from the
@@ -294,13 +298,10 @@ class Hypergraph {
     // EVENT_SIG_AUTOMATIC adds the step and the canonical ranks. Under an identity mode the
     // observable is the count of DISTINCT identities, so the mode's signature is computed here
     // and the distinct ones counted.
-    // Eager initial capacity: the set is built with its table, one placement-new per slot, so
-    // under the model checker the capacity is a loop bound; the engine harnesses define it
-    // small (verification/genmc/engine_*.cpp), the shipped value is 4096.
-#ifndef HG_QC_CANON_EVENT_SEEN_CAPACITY
-#define HG_QC_CANON_EVENT_SEEN_CAPACITY 4096
-#endif
-    ConcurrentKeySet<uint64_t> qc_canon_event_seen_{HG_QC_CANON_EVENT_SEEN_CAPACITY};
+    // Probe key of an event signature -> the first replay application of the event class, from
+    // which hgcommon::qr_signature_values recomputes the class's values on a key hit.
+    struct QrEventRef { const SlotMatch* m; uint64_t from_hash; uint32_t out_step; };
+    ConcurrentMap<uint64_t, const QrEventRef*> qc_canon_events_;
     std::atomic<size_t> qc_num_canon_events_{0};
     std::atomic<bool> quotient_reconstruction_{false};
 
@@ -526,7 +527,7 @@ class Hypergraph {
         // Kept per event as well as counted, so the causal and branchial accessors report the
         // relation under the identity the CALLER selected -- reporting the internal triple
         // instead makes every pair look like a disagreement with full capture.
-        void record_runsig(uint32_t ev, uint64_t csig);
+        void record_runsig(uint32_t ev, const SlotMatch& m, uint64_t from_class, uint32_t out_step);
         bool want_causal() const;
         bool want_branchial() const;
         uint32_t producer_at(const QcInstance& inst, uint32_t slot) const;
@@ -579,7 +580,7 @@ class Hypergraph {
         void count(uint64_t events, uint64_t branchial);
         hgcommon::EventSignatureKeys keys() const;
         uint32_t frame_step(uint64_t class_hash, uint32_t fallback) const;
-        void note_signature(uint64_t csig);
+        void note_signature(const SlotMatch& m, uint64_t from_class, uint32_t out_step);
         bool claim_queued(uint64_t class_hash, uint32_t depth);
         void push(uint64_t class_hash, uint32_t depth);
         bool pop(uint64_t& class_hash, uint32_t& depth);
@@ -604,8 +605,9 @@ class Hypergraph {
     void qc_add_instance(uint64_t state_hash, uint32_t depth, const uint32_t* prod, uint32_t nslots);
     void qc_apply(const QcInstance& inst, const SlotMatch& m, uint64_t state_hash, uint32_t depth);
 
-    // Event canonicalization: maps event signature to first EventId
-    // Signature computed from keys specified by event_signature_keys_ bitflag
+    // Event canonicalization: probe key of the event signature -> the class's first event, whose
+    // values event_values_of recomputes on a key hit (claim_event). The signature is computed
+    // from the keys event_signature_keys_ selects.
     ConcurrentMap<uint64_t, EventId, uint64_t{0}, ~uint64_t{0}, INVALID_ID> canonical_event_map_;
     std::atomic<uint32_t> canonical_event_count_{0};
 
@@ -643,6 +645,8 @@ class Hypergraph {
     // ANDed into the canonical hash before it becomes the first probe key. All ones except in
     // tests, which narrow it so that non-isomorphic states share keys.
     uint64_t canonical_key_mask_{~uint64_t{0}};
+    // The same for event signatures and for the IR key claimed under None and Automatic.
+    uint64_t event_key_mask_{~uint64_t{0}};
     EventSignatureKeys event_signature_keys_{EVENT_SIG_NONE};
     std::atomic<bool> positional_event_identity_{false};
 
@@ -849,9 +853,6 @@ public:
     );
 
 
-    // Lookup existing canonical state by hash (waits for concurrent inserts)
-    std::optional<StateId> find_canonical_state(uint64_t canonical_hash) const;
-
     // Get the canonical representative for a given state
     // Behavior depends on state_canonicalization_mode_:
     // - None: returns raw_state (no canonicalization)
@@ -918,6 +919,9 @@ public:
     // Test hook, set before evolution: the first probe key of a Full-mode state is its
     // canonical hash ANDed with `mask`. A narrow mask makes non-isomorphic states share keys.
     void set_canonical_key_mask(uint64_t mask) { canonical_key_mask_ = mask; }
+    // Test hook, set before evolution: the first probe key of an event signature (and of the IR
+    // key claimed under None and Automatic) is ANDed with `mask`.
+    void set_event_key_mask(uint64_t mask) { event_key_mask_ = mask; }
     struct IrWorkTotals {
         uint64_t calls, searched, leaves, nodes, depth_sum, retries, fallbacks;
     };
@@ -1092,6 +1096,33 @@ public:
     // different form is a collision and the claim moves to the next key. Returns the class's
     // representative and its key, which is the class's identity from then on.
     struct CanonicalClaim { StateId rep; uint64_t key; bool won; };
+    // A claim over a map of records: hgcommon::dedup_claim from the first probe key
+    // `first_key`, with a record holding `id` and `words`. A key whose record holds other words
+    // is a collision and the claim moves to the next key. `rep` is the id of the class's record,
+    // `key` its key, `won` whether this call's record was stored.
+    using IdentityMap = ConcurrentMap<uint64_t, const hgcommon::CanonicalFormRecord*>;
+    CanonicalClaim claim_identity(IdentityMap& map, uint64_t first_key, const uint32_t* words,
+                                  uint32_t n, uint32_t id);
+    // The signature values of event `e` (hgcommon::event_signature_values under the run's keys),
+    // read from the stored Event; returns their count. `count_fallbacks` counts each raw edge id
+    // that stands in for a missing rank.
+    uint32_t event_values_of(EventId e, uint64_t* out, bool count_fallbacks);
+    // Event `e`'s identity, claimed in canonical_event_map_ on its signature values. The Event is
+    // stored before the call; a key hit compares against the class's first event. The claim's
+    // key is the event's reported signature.
+    CanonicalClaim claim_event(EventId e, const uint64_t* values, uint32_t n, uint64_t sig);
+    // The identity of stored event `eid` under the run's keys: claimed, with its signature and
+    // canonical id written to the Event. `canonical` is the class's first event.
+    struct EventIdentity { EventId canonical; bool is_canonical; };
+    EventIdentity assign_event_identity(EventId eid);
+    // The event class of match `m` applied from class `from_class` with output step `out_step`,
+    // claimed in qc_canon_events_ on its run signature's values. `won` is set for the claim that
+    // stored the class.
+    CanonicalClaim claim_replay_event(const SlotMatch& m, uint64_t from_class, uint32_t out_step);
+    // Automatic identity: the claim of `sid` in canonical_state_map_ from the content hash
+    // `hash`; a key hit compares content words (hgcommon::ContentWords) with the class's first
+    // state.
+    CanonicalClaim claim_content_state(StateId sid, uint64_t hash, const SparseBitset& edges);
     CanonicalClaim claim_canonical_state(StateId sid, uint64_t hash,
                                          const std::vector<uint32_t>& form);
 
@@ -1291,7 +1322,7 @@ public:
     // two paths disagree about, where comparing counts only says that they do.
     template <typename F>
     void for_each_reconstructed_event_signature(F&& f) const {
-        qc_canon_event_seen_.for_each([&](uint64_t sig) { f(sig); });
+        qc_canon_events_.for_each([&](uint64_t sig, const QrEventRef*) { f(sig); });
     }
 
     // The state whose labelling defines a canonical class -- the class FRAME. The reconstruction
@@ -1535,6 +1566,16 @@ public:
     // Hashes edge contents in order by edge ID: (arity, v1, v2, ...) for each edge
     // Fast but not isomorphism-invariant.
     uint64_t compute_content_ordered_hash(const SparseBitset& edges) const;
+    // Drives `sink` (hgcommon::ContentHasher or hgcommon::ContentWords) over `edges` in id order.
+    template <class Sink>
+    void drive_content(const SparseBitset& edges, Sink& sink) const {
+        edges.for_each([&](EdgeId eid) {
+            const Edge& e = edges_[eid];
+            sink.edge_begin(e.arity);
+            for (uint8_t i = 0; i < e.arity; ++i) sink.vertex(static_cast<uint64_t>(e.vertices[i]));
+            sink.edge_end();
+        });
+    }
 
     // The canonical hash (isomorphism-invariant). The event path resolves representatives
     // through it, and it is the hash a state reports.

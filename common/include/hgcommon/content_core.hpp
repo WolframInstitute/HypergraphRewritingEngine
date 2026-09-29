@@ -34,5 +34,19 @@ struct ContentHasher {
     HG_HD uint64_t value() const { return h; }
 };
 
+// The words ContentHasher digests, in its order: the edge count, then per edge the arity and
+// the vertices. Automatic identity is the equality of these words. Driven like ContentHasher;
+// each word goes to `emit`.
+template <class Emit>
+struct ContentWords {
+    Emit emit;
+
+    HG_HD ContentWords(uint32_t edge_count, Emit e) : emit(e) { emit(edge_count); }
+
+    HG_HD void edge_begin(uint32_t arity) { emit(arity); }
+    HG_HD void vertex(uint64_t v) { emit(static_cast<uint32_t>(v)); }
+    HG_HD void edge_end() {}
+};
+
 }  // namespace common
 }  // namespace HG_NAMESPACE

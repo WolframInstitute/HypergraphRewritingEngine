@@ -275,12 +275,13 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
     const bool full = mode != StateCanonicalizationMode::None &&
                       mode != StateCanonicalizationMode::Automatic;
     const bool quotient = full && quotient_causal_.load(std::memory_order_relaxed);
-    // Full mode: the state's IR canonical form, filled by whichever call below computes its
-    // canonical hash, and compared by claim_canonical_state.
+    // The state's IR canonical form, filled by whichever call below computes its IR hash: in
+    // Full mode claim_canonical_state compares it, in None and Automatic with event identity on
+    // the claim of the IR key in event_canonical_state_map_ does.
     HG_THREAD_LOCAL(std::vector<uint32_t>, form);
     uint64_t ranked_hash = 0;
     if (need_ranks)
-        ranked_hash = cache_state_edge_ranks(new_sid, edges, full && !quotient ? &form : nullptr);
+        ranked_hash = cache_state_edge_ranks(new_sid, edges, quotient ? nullptr : &form);
 
     // Canonical identity + dedup key. In Full mode the IR canonical hash is BOTH the
     // canonical identity and the first probe key, computed once (no redundant WL pass);
@@ -296,6 +297,7 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
             canonical_hash = need_ranks ? ranked_hash : 0;
             break;
         case StateCanonicalizationMode::Automatic:
+            // The content hash selects the key and the content words decide it (below).
             map_key = compute_content_ordered_hash(edges);
             canonical_hash = need_ranks ? ranked_hash : 0;
             break;
@@ -334,10 +336,25 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
         existing_or_new = claim.rep;
         was_inserted = claim.won;
         canonical_hash = claim.key;
+    } else if (mode == StateCanonicalizationMode::Automatic) {
+        // Automatic identity is equal edge content, so two states whose content hashes collide
+        // stay two states.
+        const CanonicalClaim claim = claim_content_state(new_sid, map_key, edges);
+        existing_or_new = claim.rep;
+        was_inserted = claim.won;
     } else {
         auto r = canonical_state_map_.insert_if_absent_waiting(map_key, new_sid);
         existing_or_new = r.first;
         was_inserted = r.second;
+    }
+    // Under None and Automatic with event identity on, the reported IR key is claimed on the IR
+    // form in event_canonical_state_map_, whose record resolves the event path's representative;
+    // under Full the class's key above is that key already.
+    if (!full && need_ranks && ranked_hash != 0) {
+        const CanonicalClaim ir =
+            claim_identity(event_canonical_state_map_, ranked_hash & event_key_mask_,
+                           form.data(), static_cast<uint32_t>(form.size()), new_sid);
+        canonical_hash = ir.key;
     }
     // create_state has already published new_sid, so another thread can be reading this
     // state's canonical_hash (get_or_compute_canonical_hash, get_canonical_state_for_event)
@@ -345,20 +362,6 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
     // in Full mode the class's key, stored once, and the acquire loads pick it up.
     hgcommon::atomic_ref<uint64_t>(states_[new_sid].canonical_hash)
         .store(canonical_hash, std::memory_order_release);
-
-    // Insert into event_canonical_state_map_ only when event canonicalization is on:
-    // its sole reader (get_canonical_state_for_event) runs only under
-    // event_signature_keys_ != EVENT_SIG_NONE, and the keys are fixed at config time
-    // before any state is created, so gating here never drops a needed entry. When
-    // event canon is off this saves ~16 B/state + the map's resize chain + a per-state
-    // hash+probe insert.
-    // A 0 hash means the mode computed none (WL selected with no hasher configured);
-    // get_canonical_state_for_event reads that as "fall back to the raw state", so there
-    // is nothing to key an entry on. Every state with a hash has a non-zero one --
-    // the empty state included, via EMPTY_STATE_CANONICAL_HASH.
-    if (event_signature_keys_ != EVENT_SIG_NONE && canonical_hash != 0) {
-        event_canonical_state_map_.insert_if_absent_waiting(canonical_hash, new_sid);
-    }
 
     // Cache the canonical ID in the state for fast lookup. Released here and acquired by
     // get_canonical_state(); the store itself is what carries the edge, since a bare fence
@@ -373,74 +376,209 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
     return {new_sid, new_sid, true};
 }
 
+namespace {
+
 // The walk is hgcommon::dedup_claim, the rule the match set is claimed by: the hash selects
-// the key, and the IR canonical form decides the class at both points the walk can conclude.
-// A probe that finds a different form moves to the next key, so non-isomorphic states whose
-// hashes collide both become canonical states, each under its own key.
+// the key, and the class's identity decides it at both points the walk can conclude. A probe
+// that finds a different class moves to the next key, so two classes whose hashes collide both
+// get a key.
 //
-// The map's value is the class's record (representative id and form), written before the offer
-// that publishes it; the map's acquire load of the value makes its contents visible to the
-// reader. It is made only after a lookup missed; a record whose offer then lands on its own
-// class is given back when it is still the top of this worker's arena cursor.
+// `same(v)` is whether the claimant belongs to the class whose map value is `v`; `make()`
+// returns the value to publish, called only after a lookup missed and before the first offer;
+// `rep_of(v)` is the class's representative. A value is fully written before the offer that
+// publishes it, and the map's acquire load of it makes what it refers to visible to the reader.
 //
 // max_probes is unbounded: every key visited holds a distinct class, and a claim that stopped
 // early would have no key to be found under.
+template <class V, class Map, class Same, class Make, class RepOf, class OnCollision>
+struct KeyedClaim {
+    Map& map;
+    uint64_t h;
+    Same& same;
+    Make& make;
+    RepOf& rep_of;
+    OnCollision& on_collision;
+    V mine{};
+    bool made = false;
+    bool won = false;
+    uint32_t rep = INVALID_ID;
+    uint64_t key = 0;
+
+    uint32_t max_probes() const { return UINT32_MAX; }
+    uint64_t probe_key(uint32_t k) const { return hgcommon::dedup_probe_key(h, k, 0, ~uint64_t{0}); }
+
+    hgcommon::ProbeState probe(uint64_t k) {
+        const auto v = map.lookup(k);
+        if (!v) return hgcommon::ProbeState::Miss;
+        if (!same(*v)) return hgcommon::ProbeState::Collision;
+        rep = rep_of(*v); key = k;
+        return hgcommon::ProbeState::Duplicate;
+    }
+    void make_stable() { mine = make(); made = true; }
+    hgcommon::ClaimState offer(uint64_t k) {
+        const auto [existing, inserted] = map.insert_if_absent(k, mine);
+        if (inserted) { rep = rep_of(mine); key = k; return hgcommon::ClaimState::Won; }
+        if (!same(existing)) return hgcommon::ClaimState::Collision;
+        rep = rep_of(existing); key = k;
+        return hgcommon::ClaimState::Duplicate;
+    }
+    void note_collision() { on_collision(); }
+    void note_exhausted() {}
+};
+
+template <class V, class Map, class Same, class Make, class RepOf, class OnCollision>
+KeyedClaim<V, Map, Same, Make, RepOf, OnCollision>
+keyed_claim(Map& map, uint64_t first_key, Same& same, Make& make, RepOf& rep_of,
+            OnCollision& on_collision) {
+    KeyedClaim<V, Map, Same, Make, RepOf, OnCollision> c{map, first_key, same, make, rep_of,
+                                                         on_collision};
+    c.won = hgcommon::dedup_claim(c);
+    return c;
+}
+
+}  // namespace
+
+// A record map: the value is the class's record (representative id and words). A record that
+// lost every offer is in the map under no key; it is given back when it is still the top of
+// this worker's arena cursor.
+Hypergraph::CanonicalClaim Hypergraph::claim_identity(IdentityMap& map, uint64_t first_key,
+                                                      const uint32_t* words, uint32_t n,
+                                                      uint32_t id) {
+    using Rec = const hgcommon::CanonicalFormRecord*;
+    uint64_t rec_bytes = 0;
+    auto same = [&](Rec r) { return hgcommon::canonical_form_equals(r, words, n); };
+    auto make = [&]() -> Rec {
+        const uint32_t width = hgcommon::canonical_form_width(words, n);
+        rec_bytes = hgcommon::canonical_form_record_bytes(n, width);
+        auto* rec = static_cast<hgcommon::CanonicalFormRecord*>(
+            arena_.allocate_raw(rec_bytes, alignof(hgcommon::CanonicalFormRecord)));
+        hgcommon::canonical_form_encode(id, words, n, width, rec);
+        return rec;
+    };
+    auto rep_of = [](Rec r) { return r->id; };
+    auto on_collision = [&] {
+        HG_STAT(canonical_key_collisions_.fetch_add(1, std::memory_order_relaxed));
+    };
+    auto c = keyed_claim<Rec>(map, first_key, same, make, rep_of, on_collision);
+    if (!c.won && c.made)
+        arena_.release_last(const_cast<hgcommon::CanonicalFormRecord*>(c.mine), rec_bytes);
+    return {c.rep, c.key, c.won};
+}
+
 Hypergraph::CanonicalClaim Hypergraph::claim_canonical_state(StateId sid, uint64_t hash,
                                                              const std::vector<uint32_t>& form) {
-    struct Ops {
-        Hypergraph* hg;
-        StateId sid;
-        uint64_t h;
-        const uint32_t* form;
-        uint32_t words;
-        hgcommon::CanonicalFormRecord* rec = nullptr;
-        uint64_t rec_bytes = 0;
-        StateId rep = INVALID_ID;
-        uint64_t key = 0;
+    return claim_identity(canonical_form_map_, hash & canonical_key_mask_, form.data(),
+                          static_cast<uint32_t>(form.size()), sid);
+}
 
-        uint32_t max_probes() const { return UINT32_MAX; }
-        uint64_t probe_key(uint32_t n) const {
-            return hgcommon::dedup_probe_key(h, n, 0, ~uint64_t{0});
+Hypergraph::CanonicalClaim Hypergraph::claim_content_state(StateId sid, uint64_t hash,
+                                                           const SparseBitset& edges) {
+    // The claimant's words, built on the first key hit only: a claim that misses never
+    // compares.
+    HG_THREAD_LOCAL(std::vector<uint32_t>, mine);
+    bool built = false;
+    auto same = [&](StateId rep) {
+        if (!built) {
+            mine.clear();
+            hgcommon::ContentWords w(static_cast<uint32_t>(edges.count()),
+                                     [&](uint32_t x) { mine.push_back(x); });
+            drive_content(edges, w);
+            built = true;
         }
-
-        hgcommon::ProbeState probe(uint64_t k) {
-            const auto v = hg->canonical_form_map_.lookup(k);
-            if (!v) return hgcommon::ProbeState::Miss;
-            if (!hgcommon::canonical_form_equals(*v, form, words))
-                return hgcommon::ProbeState::Collision;
-            rep = (*v)->state; key = k;
-            return hgcommon::ProbeState::Duplicate;
-        }
-
-        void make_stable() {
-            const uint32_t width = hgcommon::canonical_form_width(form, words);
-            rec_bytes = hgcommon::canonical_form_record_bytes(words, width);
-            rec = static_cast<hgcommon::CanonicalFormRecord*>(
-                hg->arena_.allocate_raw(rec_bytes, alignof(hgcommon::CanonicalFormRecord)));
-            hgcommon::canonical_form_encode(sid, form, words, width, rec);
-        }
-
-        hgcommon::ClaimState offer(uint64_t k) {
-            const auto [existing, inserted] = hg->canonical_form_map_.insert_if_absent(k, rec);
-            if (inserted) { rep = sid; key = k; return hgcommon::ClaimState::Won; }
-            if (!hgcommon::canonical_form_equals(existing, form, words))
-                return hgcommon::ClaimState::Collision;
-            rep = existing->state; key = k;
-            return hgcommon::ClaimState::Duplicate;
-        }
-
-        void note_collision() {
-            HG_STAT(hg->canonical_key_collisions_.fetch_add(1, std::memory_order_relaxed));
-        }
-        void note_exhausted() {}
+        size_t at = 0;
+        bool eq = true;
+        const SparseBitset& theirs = states_[rep].edges;
+        hgcommon::ContentWords w(static_cast<uint32_t>(theirs.count()), [&](uint32_t x) {
+            eq = eq && at < mine.size() && mine[at] == x;
+            ++at;
+        });
+        drive_content(theirs, w);
+        return eq && at == mine.size();
     };
+    auto make = [&] { return sid; };
+    auto rep_of = [](StateId r) { return r; };
+    auto on_collision = [&] {
+        HG_STAT(canonical_key_collisions_.fetch_add(1, std::memory_order_relaxed));
+    };
+    auto c = keyed_claim<StateId>(canonical_state_map_, hash & canonical_key_mask_, same, make,
+                                  rep_of, on_collision);
+    return {c.rep, c.key, c.won};
+}
 
-    Ops ops{this, sid, hash & canonical_key_mask_, form.data(),
-            static_cast<uint32_t>(form.size())};
-    const bool won = hgcommon::dedup_claim(ops);
-    // A record that lost every offer is in the map under no key, so nothing reads it.
-    if (!won && ops.rec) arena_.release_last(ops.rec, ops.rec_bytes);
-    return {ops.rep, ops.key, won};
+uint32_t Hypergraph::event_values_of(EventId e, uint64_t* out, bool count_fallbacks) {
+    const Event& ev = events_[e];
+    const EventSignatureKeys keys = event_signature_keys_;
+    // Ranks of the consumed and produced edges, in match and RHS order. A missing rank means no
+    // rank table for that state; the raw edge id stands in and is COUNTED, because such a
+    // signature is not an isomorphism invariant and a caller comparing event counts across runs
+    // needs to know it happened. Counted in every build: the FFI surfaces the count as the
+    // EventSigRawFallback warning.
+    uint32_t consumed_ranks[MAX_PATTERN_EDGES];
+    uint32_t produced_ranks[MAX_PATTERN_EDGES];
+    const uint8_t nc = ev.num_consumed < MAX_PATTERN_EDGES
+                           ? ev.num_consumed : static_cast<uint8_t>(MAX_PATTERN_EDGES);
+    const uint8_t np = ev.num_produced < MAX_PATTERN_EDGES
+                           ? ev.num_produced : static_cast<uint8_t>(MAX_PATTERN_EDGES);
+    auto rank = [&](const EdgeRankTable* t, EdgeId edge) {
+        uint32_t r = edge_rank_in(t, edge);
+        if (r == UINT32_MAX) {
+            if (count_fallbacks) event_sig_raw_fallbacks_.fetch_add(1, std::memory_order_relaxed);
+            r = edge;
+        }
+        return r;
+    };
+    if (keys & EventKey_ConsumedEdges) {
+        const EdgeRankTable* t = edge_rank_table(ev.input_state);
+        for (uint8_t i = 0; i < nc; ++i) consumed_ranks[i] = rank(t, ev.consumed_edges[i]);
+    }
+    if (keys & EventKey_ProducedEdges) {
+        const EdgeRankTable* t = edge_rank_table(ev.output_state);
+        for (uint8_t i = 0; i < np; ++i) produced_ranks[i] = rank(t, ev.produced_edges[i]);
+    }
+    const State& canonical_out =
+        get_state(get_canonical_state_for_event(ev.output_state));
+    return hgcommon::event_signature_values(
+        keys,
+        (keys & EventKey_InputState)  ? get_or_compute_canonical_hash(ev.input_state)  : 0,
+        (keys & EventKey_OutputState) ? get_or_compute_canonical_hash(ev.output_state) : 0,
+        canonical_out.step, ev.rule_index, consumed_ranks, nc, produced_ranks, np, out);
+}
+
+// Under an event identity mode: the event's signature values, claimed; a duplicate records the
+// class's first event as its canonical id. Every event's reported signature is its class's key.
+Hypergraph::EventIdentity Hypergraph::assign_event_identity(EventId eid) {
+    if (event_signature_keys_ == EVENT_SIG_NONE) return {eid, true};
+    uint64_t values[hgcommon::EVENT_SIG_MAX_VALUES];
+    const uint32_t n = event_values_of(eid, values, true);
+    const CanonicalClaim claim =
+        claim_event(eid, values, n, hgcommon::event_signature_of_values(values, n));
+    Event& ev = events_[eid];
+    ev.signature = claim.key;
+    if (!claim.won) {
+        ev.canonical_event_id = claim.rep;
+        return {claim.rep, false};
+    }
+    canonical_event_count_.fetch_add(1, std::memory_order_relaxed);
+    return {eid, true};
+}
+
+Hypergraph::CanonicalClaim Hypergraph::claim_event(EventId e, const uint64_t* values, uint32_t n,
+                                                   uint64_t sig) {
+    auto same = [&](EventId rep) {
+        uint64_t theirs[hgcommon::EVENT_SIG_MAX_VALUES];
+        if (event_values_of(rep, theirs, false) != n) return false;
+        for (uint32_t i = 0; i < n; ++i)
+            if (theirs[i] != values[i]) return false;
+        return true;
+    };
+    auto make = [&] { return e; };
+    auto rep_of = [](EventId r) { return r; };
+    auto on_collision = [&] {
+        HG_STAT(canonical_key_collisions_.fetch_add(1, std::memory_order_relaxed));
+    };
+    auto c = keyed_claim<EventId>(canonical_event_map_, sig & event_key_mask_, same, make, rep_of,
+                                  on_collision);
+    return {c.rep, c.key, c.won};
 }
 
 bool Hypergraph::explore_depth_cas(StateId canonical_id, uint32_t& expected, uint32_t desired) {
@@ -564,6 +702,9 @@ void Hypergraph::ensure_state_edge_ranks(StateId state_id, const SparseBitset& e
     cache_state_edge_ranks(state_id, edges);
 }
 
+// The state whose class resolves the event path's representative: under Full the class's
+// record in canonical_form_map_, otherwise the IR key's record in event_canonical_state_map_,
+// both keyed by the state's stored canonical hash.
 StateId Hypergraph::get_canonical_state_for_event(StateId raw_state) const {
         if (raw_state == INVALID_ID) return INVALID_ID;
 
@@ -576,9 +717,10 @@ StateId Hypergraph::get_canonical_state_for_event(StateId raw_state) const {
         // If hash is 0, the state's hash wasn't computed - fall back to raw state
         if (hash == 0) return raw_state;
 
-        // Lookup in event_canonical_state_map_ which is always keyed by canonical_hash
-        auto result = event_canonical_state_map_.lookup_waiting(hash);
-        return result.value_or(raw_state);
+        const IdentityMap& map = is_full_canonicalization() ? canonical_form_map_
+                                                             : event_canonical_state_map_;
+        if (auto rec = map.lookup(hash)) return (*rec)->id;
+        return raw_state;
     }
 
 const EdgeRankTable* Hypergraph::edge_rank_table(StateId state_id) const {
@@ -655,73 +797,6 @@ Hypergraph::CreateEventResult Hypergraph::create_event(
     // Allocate event ID
     EventId eid = counters_.alloc_event();
 
-    bool is_canonical = true;
-    EventId canonical_eid = eid;
-    uint64_t event_signature_value = 0;
-
-    // Event canonicalization: check if this event signature already exists
-    if (event_signature_keys_ != EVENT_SIG_NONE) {
-        const EventSignatureKeys keys = event_signature_keys_;
-
-        // Get canonical state IDs for event canonicalization
-        StateId canonical_input = get_canonical_state_for_event(input_state);
-        StateId canonical_output = get_canonical_state_for_event(output_state);
-        const State& canonical_out_state = get_state(canonical_output);
-
-        // Ranks of the consumed and produced edges, in match and RHS order. A missing rank
-        // means no rank table for that state; the raw edge id stands in and is COUNTED,
-        // because such a signature is not an isomorphism invariant and a caller comparing
-        // event counts across runs needs to know it happened.
-        uint32_t consumed_ranks[MAX_PATTERN_EDGES];
-        uint32_t produced_ranks[MAX_PATTERN_EDGES];
-        if (keys & EventKey_ConsumedEdges) {
-            const EdgeRankTable* in_ranks = edge_rank_table(input_state);
-            for (uint8_t i = 0; i < num_consumed; ++i) {
-                uint32_t r = edge_rank_in(in_ranks, consumed[i]);
-                if (r == UINT32_MAX) {
-                    // Counted in every build: the FFI surfaces this as the EventSigRawFallback
-                    // warning, a correctness signal (the affected event identities are not
-                    // isomorphism-invariant), so it cannot live behind the stats macro.
-                    event_sig_raw_fallbacks_.fetch_add(1, std::memory_order_relaxed);
-                    r = consumed[i];
-                }
-                consumed_ranks[i] = r;
-            }
-        }
-        if (keys & EventKey_ProducedEdges) {
-            const EdgeRankTable* out_ranks = edge_rank_table(output_state);
-            for (uint8_t i = 0; i < num_produced; ++i) {
-                uint32_t r = edge_rank_in(out_ranks, produced[i]);
-                if (r == UINT32_MAX) {
-                    // Counted in every build: the FFI surfaces this as the EventSigRawFallback
-                    // warning, a correctness signal (the affected event identities are not
-                    // isomorphism-invariant), so it cannot live behind the stats macro.
-                    event_sig_raw_fallbacks_.fetch_add(1, std::memory_order_relaxed);
-                    r = produced[i];
-                }
-                produced_ranks[i] = r;
-            }
-        }
-
-        const uint64_t sig_key = hgcommon::event_signature(
-            keys,
-            (keys & EventKey_InputState)  ? get_or_compute_canonical_hash(input_state)  : 0,
-            (keys & EventKey_OutputState) ? get_or_compute_canonical_hash(output_state) : 0,
-            canonical_out_state.step, rule_index,
-            consumed_ranks, num_consumed, produced_ranks, num_produced);
-
-        // Try to insert this signature
-        auto [existing_or_new, was_inserted] = canonical_event_map_.insert_if_absent_waiting(sig_key, eid);
-
-        if (!was_inserted) {
-            is_canonical = false;
-            canonical_eid = existing_or_new;
-        } else {
-            canonical_event_count_.fetch_add(1, std::memory_order_relaxed);
-        }
-        event_signature_value = sig_key;
-    }
-
     // Allocate and copy edge arrays
     EdgeId* cons = arena_.allocate_array<EdgeId>(num_consumed);
     std::memcpy(cons, consumed, num_consumed * sizeof(EdgeId));
@@ -729,17 +804,17 @@ Hypergraph::CreateEventResult Hypergraph::create_event(
     EdgeId* prod = arena_.allocate_array<EdgeId>(num_produced);
     std::memcpy(prod, produced, num_produced * sizeof(EdgeId));
 
-    // Directly construct event at slot eid using emplace_at
-    EventId canonical_id_for_event = is_canonical ? INVALID_ID : canonical_eid;
+    // Stored before its identity is claimed: a claim that hits this event's key reads its
+    // signature values from the Event.
     events_.emplace_at(eid, arena_, eid, input_state, output_state, rule_index,
-                       cons, num_consumed, prod, num_produced, canonical_id_for_event);
+                       cons, num_consumed, prod, num_produced, INVALID_ID);
+    const EventIdentity id = assign_event_identity(eid);
     note_published_event(eid);
-    events_[eid].signature = event_signature_value;
 
     // CRITICAL: Release fence to ensure event data is visible
     std::atomic_thread_fence(std::memory_order_release);
 
-    return {eid, canonical_eid, is_canonical};
+    return {eid, id.canonical, id.is_canonical};
 }
 
 EventId Hypergraph::create_genesis_event(StateId initial_state, const EdgeId* edges,
@@ -763,60 +838,17 @@ EventId Hypergraph::create_genesis_event(StateId initial_state, const EdgeId* ed
     // Allocate event ID
     EventId eid = counters_.alloc_event();
 
-    // Event canonicalization for genesis events
-    bool is_canonical = true;
-    EventId canonical_eid = eid;
-
-    if (event_signature_keys_ != EVENT_SIG_NONE) {
-        const EventSignatureKeys keys = event_signature_keys_;
-
-        // Get canonical state IDs
-        StateId canonical_output = get_canonical_state(initial_state);
-        const State& canonical_out_state = get_state(canonical_output);
-
-        // Build signature from selected keys
-        uint64_t sig_key = FNV_OFFSET;
-
-        if (keys & EventKey_InputState) {
-            uint64_t input_hash = get_or_compute_canonical_hash(genesis);
-            sig_key = fnv_hash(sig_key, input_hash);
-        }
-        if (keys & EventKey_OutputState) {
-            uint64_t output_hash = get_or_compute_canonical_hash(initial_state);
-            sig_key = fnv_hash(sig_key, output_hash);
-        }
-        if (keys & EventKey_Step) {
-            sig_key = fnv_hash(sig_key, static_cast<uint64_t>(canonical_out_state.step));
-        }
-        if (keys & EventKey_ProducedEdges) {
-            for (uint8_t i = 0; i < num_edges; ++i) {
-                sig_key = fnv_hash(sig_key, static_cast<uint64_t>(edges[i]));
-            }
-        }
-
-        if (sig_key == 0 || sig_key == FNV_OFFSET) sig_key = 1;
-
-        auto [existing_or_new, was_inserted] = canonical_event_map_.insert_if_absent_waiting(sig_key, eid);
-
-        if (!was_inserted) {
-            is_canonical = false;
-            canonical_eid = existing_or_new;
-        } else {
-            canonical_event_count_.fetch_add(1, std::memory_order_relaxed);
-        }
-    }
-
-    // Allocate produced edges array
     EdgeId* produced = arena_.allocate_array<EdgeId>(num_edges);
     std::memcpy(produced, edges, num_edges * sizeof(EdgeId));
 
-    // Directly construct event at slot eid using emplace_at
-    EventId canonical_id_for_event = is_canonical ? INVALID_ID : canonical_eid;
+    // Directly construct event at slot eid using emplace_at; its identity is claimed like every
+    // other event's.
     events_.emplace_at(eid, arena_, eid, genesis, initial_state,
                        static_cast<RuleIndex>(-1),
                        nullptr, 0,  // consumed_edges (none)
                        produced, num_edges,  // produced_edges
-                       canonical_id_for_event);
+                       INVALID_ID);
+    assign_event_identity(eid);
     note_published_event(eid);
 
     // CRITICAL: Release fence
@@ -844,12 +876,7 @@ uint64_t Hypergraph::compute_content_ordered_hash(const SparseBitset& edges) con
     // slice with a liveness filter and cannot share this loop, but it must share every constant
     // and every mixing step, which is what the hasher holds.
     hgcommon::ContentHasher ch(static_cast<uint32_t>(edges.count()));
-    edges.for_each([&](EdgeId eid) {
-        const Edge& e = edges_[eid];
-        ch.edge_begin(e.arity);
-        for (uint8_t i = 0; i < e.arity; ++i) ch.vertex(static_cast<uint64_t>(e.vertices[i]));
-        ch.edge_end();
-    });
+    drive_content(edges, ch);
     return ch.value();
 }
 
@@ -1494,9 +1521,11 @@ void Hypergraph::qc_capture_expansion(EventId e) {
             if (hgcommon::qr_consumed_overlap(cs, m.num_consumed, other)) ++b;
         });
         qm_overlaps_.insert_if_absent(static_cast<uint64_t>(m.id) + 1, b + 1);
+        // The list's copy: the pass may keep a reference to the match (claim_replay_event).
         qm_cascade([&](QmCtx& c) {
             c.fence();
-            for (uint32_t d = 0; d < c.max_steps(); ++d) hgcommon::qm_pass(c, m, from, d);
+            for (uint32_t d = 0; d < c.max_steps(); ++d)
+                hgcommon::qm_pass(c, node->value, from, d);
         });
     }
     if (!quotient_replay()) return;
@@ -1858,12 +1887,6 @@ StateId Hypergraph::genesis_state() const {
     return genesis_state_.load(std::memory_order_acquire);
 }
 
-// In Full mode `canonical_hash` is the state's reported canonical hash, which is its class's key.
-std::optional<StateId> Hypergraph::find_canonical_state(uint64_t canonical_hash) const {
-    if (auto rec = canonical_form_map_.lookup(canonical_hash)) return (*rec)->state;
-    return canonical_state_map_.lookup_waiting(canonical_hash);
-}
-
 // None: the raw state IS the answer. Automatic/Full: the cached canonical_id, acquired -- the
 // load carries the edge released by create_or_get_canonical_state, which matters on ARM64.
 StateId Hypergraph::get_canonical_state(StateId raw_state) const {
@@ -2146,10 +2169,54 @@ uint32_t Hypergraph::qc_frame_step(uint64_t class_hash, uint32_t fallback) const
     return fallback;
 }
 
-void Hypergraph::QrCtx::record_runsig(uint32_t ev, uint64_t csig) {
-    hg.qc_event_runsig_.emplace_at(Hypergraph::qc_ev_slot(ev), hg.arena_, csig);
-    if (hg.qc_canon_event_seen_.insert(csig))
-        hg.qc_num_canon_events_.fetch_add(1, std::memory_order_relaxed);
+// The replay's event class, claimed on the signature's values like every event identity; the
+// class's key is the signature recorded for the event.
+void Hypergraph::QrCtx::record_runsig(uint32_t ev, const SlotMatch& m, uint64_t from_class,
+                                      uint32_t out_step) {
+    const CanonicalClaim claim = hg.claim_replay_event(m, from_class, out_step);
+    hg.qc_event_runsig_.emplace_at(Hypergraph::qc_ev_slot(ev), hg.arena_, claim.key);
+    if (claim.won) hg.qc_num_canon_events_.fetch_add(1, std::memory_order_relaxed);
+}
+
+// The replay's event class, claimed on the signature's values like every event identity; a key
+// hit recomputes the class's values from its first application. The class's key is the
+// signature recorded for the event. The signature is a function of (m, from_class, out_step)
+// and a match has one from class, so the key is kept on the match for its output step and later
+// applications read it there.
+Hypergraph::CanonicalClaim Hypergraph::claim_replay_event(const SlotMatch& m, uint64_t from_class,
+                                                          uint32_t out_step) {
+    hgcommon::atomic_ref<const RunsigKey*> cached(m.runsig);
+    if (const RunsigKey* k = cached.load(std::memory_order_acquire); k && k->out_step == out_step)
+        return {0, k->key, false};
+    const EventSignatureKeys keys = event_signature_keys_;
+    hgcommon::QrRunSignature sig;
+    hgcommon::qr_signature_values(keys, m, from_class, out_step, sig);
+    auto same = [&](const QrEventRef* r) {
+        // The values are a function of these three, and on a rule with few classes most hits are
+        // the class's first match applied to another instance.
+        if (r->m == &m && r->from_hash == sig.from_hash && r->out_step == sig.out_step)
+            return true;
+        hgcommon::QrRunSignature theirs;
+        hgcommon::qr_signature_values(keys, *r->m, r->from_hash, r->out_step, theirs);
+        return hgcommon::qr_same_values(theirs, sig);
+    };
+    QrEventRef* made = nullptr;
+    auto make = [&]() -> const QrEventRef* {
+        made = static_cast<QrEventRef*>(arena_.allocate_raw(sizeof(QrEventRef), alignof(QrEventRef)));
+        *made = QrEventRef{&m, sig.from_hash, sig.out_step};
+        return made;
+    };
+    auto rep_of = [](const QrEventRef*) { return uint32_t{0}; };
+    auto on_collision = [&] {
+        HG_STAT(canonical_key_collisions_.fetch_add(1, std::memory_order_relaxed));
+    };
+    auto c = keyed_claim<const QrEventRef*>(qc_canon_events_, sig.sig & event_key_mask_, same, make,
+                                            rep_of, on_collision);
+    if (!c.won && made) arena_.release_last(made, sizeof(QrEventRef));
+    auto* k = static_cast<RunsigKey*>(arena_.allocate_raw(sizeof(RunsigKey), alignof(RunsigKey)));
+    *k = RunsigKey{c.key, out_step};
+    cached.store(k, std::memory_order_release);
+    return {c.rep, c.key, c.won};
 }
 
 // One flag each, read per application: record_set() loads all five.
@@ -2358,8 +2425,9 @@ uint32_t Hypergraph::QmCtx::frame_step(uint64_t class_hash, uint32_t fallback) c
     return hg.qc_frame_step(class_hash, fallback);
 }
 
-void Hypergraph::QmCtx::note_signature(uint64_t csig) {
-    if (hg.qc_canon_event_seen_.insert(csig))
+void Hypergraph::QmCtx::note_signature(const SlotMatch& m, uint64_t from_class,
+                                        uint32_t out_step) {
+    if (hg.claim_replay_event(m, from_class, out_step).won)
         hg.qc_num_canon_events_.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -2456,6 +2524,7 @@ Hypergraph::Hypergraph(uint32_t capacity_scale)
     , event_canonical_state_map_(
           decltype(event_canonical_state_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
     , qc_inst_applied_(seg_shift_for(capacity_scale))
+    , qc_canon_events_(decltype(qc_canon_events_)::DEFAULT_INITIAL_CAPACITY, &arena_)
     , qc_event_sig_(seg_shift_for(capacity_scale))
     , qc_kept_(std::make_unique<SegmentedArray<QcKept>>(seg_shift_for(capacity_scale)))
     , qc_event_runsig_(seg_shift_for(capacity_scale))
@@ -2476,7 +2545,6 @@ Hypergraph::Hypergraph(uint32_t capacity_scale)
     // The dedup sets are seated in the arena like every other member: a table on fresh arena
     // bytes needs no sentinel fill, and every table is reclaimed with the arena.
     qc_applied_.set_arena(&arena_);
-    qc_canon_event_seen_.set_arena(&arena_);
 }
 
 // An ordered pair of event ids as one map key. Both ids are offset by one before packing, which
