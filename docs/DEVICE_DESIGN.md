@@ -137,25 +137,27 @@ lose an edge, and appends chunks for produced edges. Creation cost is O(chunks c
 chunk is read by one coalesced warp load. Readers (matching, IR flatten, content hash) iterate
 chunks in order; the iteration is one shared function, as `DeviceContentCursor` is now.
 
-### 4.2 Matching: shared match sets and delta joins
+### 4.2 Matching: drain-time inheritance and delta joins
 
-Today the device matches every state from scratch for every rule. The host forwards: at a
-parent's drain every child receives the parent's surviving matches, two words each
-(`parallel_evolution.hpp:70-95`), so a child costs O(parent's matches) whatever changed. The
-alternative proposed on 2026-09-24 (a state's matches as the union over its ancestors of the
-matches found there, filtered by containment) removes the copy but walks the ancestor chain; it
-was never built.
+Today the device matches every state from scratch for every rule. The host inherits (2bfb5198):
+a state's matching drains exactly once, and at the drain the parent hands each registered child
+the stored matches that use none of the child's consumed edges; a child registered after the
+drain takes them at registration (rv::ChildInheritance, MatchJoin::drained / inherited). The
+child then matches only what its produced edges anchor. No state reads above its parent.
 
-Target, for both engines: a state's match set is stored in the same shared chunks as its edges
-(4.1). A child keeps every chunk of its parent's match set that holds no match using a consumed
-edge, rewrites the chunks that do (an edge -> match index of the parent finds them), and appends
-chunks for the matches that use at least one produced edge. Creating a child's match set costs
-O(chunks changed + new matches); no match is copied and no ancestor is walked. The set is the
-same set as forwarding and re-matching produce, so the determinism contract holds.
+Target, for the device: the same inheritance, through the same rendezvous rule, with the parent's
+list filtered by the lanes of a warp (one match per lane) and appended per warp.
 
-The same structure replaces the host's ancestor walk in candidate lookup (`ancestry.hpp:30-41`,
-chain length x produced edges per query): a state's vertex -> edge index is a chunked map shared
-with its parent, so a lookup reads one level.
+Target, for both engines, judged by time and instruction counts against the current inheritance:
+the inherited list is stored in shared chunks (4.1). The child keeps references to the parent's
+chunks that hold no match using a consumed edge and rewrites only the chunks that do, found
+through an edge -> match index of the parent; the per-child cost is then O(chunks affected) in
+place of a filtered copy of the parent's list. The drain handoff is unchanged: the parent's list
+is complete when the child takes it.
+
+The host's remaining ancestor walk is candidate lookup (`ancestry.hpp:30-41`, chain length x
+produced edges per query). A state's vertex -> edge index in shared chunks reads one level; it is
+measured against the walk.
 
 For the anchored part and for roots:
 - Each state keeps, per chunk, its edges ordered by edge signature, so the candidates for a
@@ -273,10 +275,10 @@ host suite for shared cores, and the collision tests.
 4. **Replay.** Ancestry producers, class overlap lists and instance batches, in `hgcommon` for
    both engines.
 5. **Shared chunks.** The chunked copy-on-write structure in `hgcommon`; child states on the
-   device, match sets and vertex -> edge indices on both engines. Host forwarding and the
-   ancestor walk are deleted when it lands.
-6. **Matching.** Delta joins over the shared match sets; signature-ordered chunks and
-   level-wise warp joins on the device.
+   device, inherited match lists and vertex -> edge indices on both engines, each kept only if
+   it wins on time and instruction counts against what it replaces.
+6. **Matching.** Drain-time inheritance on the device; delta joins; signature-ordered chunks and
+   level-wise warp joins.
 7. **Canonicalisation.** State-per-lane batches for small states; data-parallel refinement for
    large ones.
 8. **Per-call cost.** One clear kernel over used ranges; nothing else remains to clear.
@@ -286,8 +288,8 @@ Steps 4 and 5 change the host too, and are measured on both engines.
 ## 7. Decisions
 
 - **Shared chunks (4.1, 4.2): agreed 2026-09-29.** One chunked copy-on-write structure in
-  `hgcommon` for a state's edges (device), its match set and its vertex -> edge index (both
-  engines).
+  `hgcommon` for a state's edges (device), its inherited match list and its vertex -> edge index
+  (both engines). The drain-time inheritance stays; the chunks change what it transfers.
 - **Replay producers (4.6.1): decided by time and instruction counts.** Two candidates, both
   measured on the corpus and the large-state axis: the ancestry walk (12 bytes per instance,
   O(depth) per consumed slot) and a producer map keyed by edge identity shared between instances
