@@ -240,6 +240,12 @@ int main(int argc, char** argv) {
                     : cm && cm[0] == 'a' ? StateCanonicalizationMode::Automatic
                                          : StateCanonicalizationMode::Full);
             }
+            // HG_BENCH_EVENT_MODE=full|automatic selects an event identity; unset is None.
+            {
+                const char* em = std::getenv("HG_BENCH_EVENT_MODE");
+                if (em && em[0] == 'f') g.set_event_signature_keys(hgcommon::EVENT_SIG_FULL);
+                if (em && em[0] == 'a') g.set_event_signature_keys(hgcommon::EVENT_SIG_AUTOMATIC);
+            }
             // Same knob as bench_gpu_evolve, so a CPU row and a GPU row record the same
             // artifacts. Without it the CPU would be reconstructing the raw unfolding while the
             // GPU was not, and the ratio between them would be measuring the record set rather
