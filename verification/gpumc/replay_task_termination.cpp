@@ -118,14 +118,15 @@ void run_task(uint32_t i) {
     if (g_task_depth[i] + 1 < kMaxDepth) append(g_task_depth[i] + 1);
 }
 
-uint32_t readable_tasks() {
-    const uint32_t c = load32_dev(&g_task_counter, __ATOMIC_ACQUIRE);
+// Acquire for the detector, relaxed for a claimer (the published flag's acquire orders the data).
+uint32_t readable_tasks(int order = __ATOMIC_ACQUIRE) {
+    const uint32_t c = load32_dev(&g_task_counter, order);
     return c < kCap ? c : kCap;
 }
 
 // The task branch: claim a batch, run it, book it. False when there was nothing to claim.
 bool task_batch() {
-    const uint64_t readable = readable_tasks();
+    const uint64_t readable = readable_tasks(__ATOMIC_RELAXED);
     uint64_t cur = load64_dev(&g_task_cursor, __ATOMIC_RELAXED);
     uint64_t base = 0;
     uint32_t count = 0;

@@ -257,14 +257,18 @@ struct DeviceExploreCtx {
 // past the end returns kInvalid without writing, so the counter can exceed the capacity while
 // only the first `capacity` slots hold anything. Reading up to the raw counter would read past
 // the allocation.
+//
+// Acquire for the detector: it pairs this with its acquire snapshot of pushed/completed, and a
+// producer publishes its claim after the item it took was booked. A plain load there can pair a
+// fresh value with a stale snapshot and pass both quiescence checks with work outstanding
+// (verification/gpumc/evolve_ring_termination.cpp reports that execution). Relaxed for a
+// claimer, which reads a record only after await_match's acquire on its published flag; an
+// acquire load here invalidates the SM's L1 (CCTL.IVALL) on every poll of an idle block.
 __device__ __forceinline__ uint32_t readable_records(
-        const typename Pool<MatchRecord>::DeviceView& found) {
-    // Acquire: the detector pairs this with its acquire snapshot of pushed/completed, and a
-    // producer publishes its claim after the item it took was booked. A plain load here can
-    // pair a fresh value with a stale snapshot and pass both quiescence checks with work
-    // outstanding (verification/gpumc/evolve_ring_termination.cpp reports that execution).
+        const typename Pool<MatchRecord>::DeviceView& found,
+        cuda::memory_order order = cuda::memory_order_acquire) {
     cuda::atomic_ref<uint32_t, cuda::thread_scope_device> cref(*found.counter);
-    const uint32_t claimed = cref.load(cuda::memory_order_acquire);
+    const uint32_t claimed = cref.load(order);
     return claimed < found.capacity ? claimed : found.capacity;
 }
 
@@ -292,9 +296,10 @@ constexpr uint32_t kMaxWorkerIdleSpins = 20u * 1000u * 1000u;
 // so `rewrites_done` never reaches the record count and the run does not terminate.
 __device__ __forceinline__ uint32_t claim_next_record(
         uint32_t* cursor, const typename Pool<MatchRecord>::DeviceView& found) {
-    uint32_t cur = *cursor;
+    uint32_t cur = cuda::atomic_ref<uint32_t, cuda::thread_scope_device>(*cursor)
+                       .load(cuda::memory_order_relaxed);
     for (;;) {
-        if (cur >= readable_records(found)) return INVALID_ID;
+        if (cur >= readable_records(found, cuda::memory_order_relaxed)) return INVALID_ID;
         const uint32_t prev = atomicCAS(cursor, cur, cur + 1u);
         if (prev == cur) return cur;
         cur = prev;

@@ -54,10 +54,15 @@ struct WorkLogView {
     }
 
     // Up to `max` consecutive entries from the cursor; returns how many, 0 when none are
-    // readable, with the first index in `base`.
+    // readable, with the first index in `base`. Relaxed loads: the caller reads an entry only
+    // after await's acquire on its published flag, and an acquire here would invalidate the
+    // SM's L1 on every poll of an idle block.
     __device__ uint32_t claim(uint32_t max, uint32_t& base) {
-        const uint32_t readable_now = readable();
-        uint32_t cur = *cursor;
+        cuda::atomic_ref<uint32_t, cuda::thread_scope_device> c(*items.counter);
+        const uint32_t n = c.load(cuda::memory_order_relaxed);
+        const uint32_t readable_now = n < items.capacity ? n : items.capacity;
+        uint32_t cur = cuda::atomic_ref<uint32_t, cuda::thread_scope_device>(*cursor)
+                           .load(cuda::memory_order_relaxed);
         while (cur < readable_now) {
             const uint32_t k = min(readable_now - cur, max);
             const uint32_t prev = atomicCAS(cursor, cur, cur + k);

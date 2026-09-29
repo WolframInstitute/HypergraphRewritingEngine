@@ -100,7 +100,10 @@ public:
             return hgcommon::ring_claim(ops, /*want=*/0, /*leave=*/1);
         }
 
+        // An empty ring by relaxed loads returns without the claim's acquire on the head
+        // slot's sequence, which invalidates the SM's L1 on every poll of an idle block.
         __device__ bool try_pop(T& out) {
+            if (size_approx() == 0) return false;
             Ops<false> ops{this, nullptr, &out};
             return hgcommon::ring_claim(ops, /*want=*/1, /*leave=*/mask + 1);
         }

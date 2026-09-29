@@ -192,7 +192,10 @@ bool try_push(uint32_t item) {
     RingOps<true> ops{&item, nullptr};
     return hgcommon::ring_claim(ops, /*want=*/0, /*leave=*/1);
 }
+// RingBuffer::try_pop: an empty ring by relaxed head and tail loads returns before the claim.
 bool try_pop(uint32_t& out) {
+    if (load64_dev(&g_tail, __ATOMIC_RELAXED) <= load64_dev(&g_head, __ATOMIC_RELAXED))
+        return false;
     RingOps<false> ops{nullptr, &out};
     return hgcommon::ring_claim(ops, /*want=*/1, /*leave=*/kRingMask + 1);
 }
@@ -204,14 +207,15 @@ bool exit_requested() { return load32_dev(&g_should_exit, __ATOMIC_ACQUIRE) != 0
 
 // readable_records / claim_next_record / publish_match / await_match, as persistent.cu and
 // match.hpp define them.
-uint32_t readable_records() {
-    const uint32_t claimed = load32_dev(&g_rec_counter, __ATOMIC_ACQUIRE);
+// Acquire for the detector, relaxed for a claimer (the published flag's acquire orders the data).
+uint32_t readable_records(int order = __ATOMIC_ACQUIRE) {
+    const uint32_t claimed = load32_dev(&g_rec_counter, order);
     return claimed < kMaxRecords ? claimed : kMaxRecords;
 }
 uint32_t claim_next_record() {
     uint64_t cur = load64_dev(&g_consume_cursor, __ATOMIC_RELAXED);
     for (;;) {
-        if (cur >= readable_records()) return kInvalid;
+        if (cur >= readable_records(__ATOMIC_RELAXED)) return kInvalid;
         uint64_t expected = cur;
         if (cas64_dev(&g_consume_cursor, &expected, cur + 1u)) return static_cast<uint32_t>(cur);
         cur = expected;
@@ -236,13 +240,13 @@ void expand_append(uint32_t depth) {
     g_exp_depth[idx] = depth;
     store32_dev(&g_exp_published[idx], 1u, __ATOMIC_RELEASE);
 }
-uint32_t readable_expands() {
-    const uint32_t claimed = load32_dev(&g_exp_counter, __ATOMIC_ACQUIRE);
+uint32_t readable_expands(int order = __ATOMIC_ACQUIRE) {
+    const uint32_t claimed = load32_dev(&g_exp_counter, order);
     return claimed < kMaxExpands ? claimed : kMaxExpands;
 }
 uint32_t claim_expand() {
     uint64_t cur = load64_dev(&g_exp_cursor, __ATOMIC_RELAXED);
-    while (cur < readable_expands()) {
+    while (cur < readable_expands(__ATOMIC_RELAXED)) {
         uint64_t expected = cur;
         if (cas64_dev(&g_exp_cursor, &expected, cur + 1u)) return static_cast<uint32_t>(cur);
         cur = expected;

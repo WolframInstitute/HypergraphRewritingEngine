@@ -273,9 +273,10 @@ the spurious-failure retries, and removing behaviours from a checker is the unso
 expand log, the ring and the detector in one loop per block, and the order that loop books its
 counts around each hand-off is what the detector's decision rests on. The harness runs that
 loop's control flow with the shared cores themselves (`ring_core`, `termination_core`), the pool
-protocol as `persistent.cu` and `match.hpp` define it (cursor CAS below the readable count,
-acquire spin on the published flag, release publish) and the expand log as `work_log.hpp`
-defines it. A rewrite under the step budget appends an expand entry; a block takes an entry,
+protocol as `persistent.cu` and `match.hpp` define it (cursor CAS below a readable count read
+relaxed, acquire spin on the published flag, release publish; the detector reads the counts
+with acquire), the ring pop's relaxed emptiness check before its claim, and the expand log as
+`work_log.hpp` defines it. A rewrite under the step budget appends an expand entry; a block takes an entry,
 pushes one ring item per rule (booking `pushed[match]` first, matching inline when the ring is
 full) and books the entry done; the detector counts entries with the records. Bound: a two-slot
 ring, `HG_RULES` rules and a step budget of `HG_MAX_STEPS`, with the root's entry in the log
