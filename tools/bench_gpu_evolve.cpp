@@ -167,6 +167,8 @@ int main(int argc, char** argv) {
     if (const char* v = std::getenv("HG_BENCH_CAUSAL"))     in.record.causal     = v[0] != '0';
     if (const char* v = std::getenv("HG_BENCH_BRANCHIAL"))  in.record.branchial  = v[0] != '0';
     if (const char* v = std::getenv("HG_BENCH_RAWEVENTS"))  in.record.raw_events = v[0] != '0';
+    // HG_BENCH_TR=0: causal edges without the online transitive reduction.
+    if (const char* v = std::getenv("HG_BENCH_TR"))         in.transitive_reduction = v[0] != '0';
 
     auto r0 = hg_gpu::evolve(in);   // warmup (CUDA context, allocations)
 
