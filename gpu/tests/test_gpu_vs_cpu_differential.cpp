@@ -1407,6 +1407,46 @@ TEST(Recycle, ASmallRunIntoALargeRunsStorageEqualsAFreshRun) {
     EXPECT_EQ(again.branchial_edges.size(), fresh.branchial_edges.size());
 }
 
+// A REUSED EVOLVER WIDENS ITS EVENT RECORDS FOR A LARGER LEFT-HAND SIDE. Event consumed ids are
+// stored at a stride of the rules' largest left-hand side (EngineConfig::max_lhs_edges); a
+// PersistentEvolver sized by a one-edge rule and then given a three-edge rule must rebuild at the
+// wider stride, or the second run's consumed ids overlap between events.
+TEST(EventRecords, AReusedEvolverWidensForALargerLeftHandSide) {
+    Workload narrow;
+    narrow.name = "event_stride_narrow";
+    narrow.rules = {rule({{0, 1}}, {{0, 2}, {2, 1}})};
+    narrow.initial_states = {{{0u, 1u}}};
+    narrow.num_steps = 3;
+    narrow.canon_mode = hg_gpu::CanonicalizationMode::Full;
+
+    Workload wide;
+    wide.name = "event_stride_wide";
+    wide.rules = {rule({{0, 1}, {1, 2}, {2, 3}}, {{0, 1}, {1, 2}, {2, 3}, {3, 4}})};
+    wide.initial_states = {{{0u, 1u}, {1u, 2u}, {2u, 3u}, {3u, 4u}, {4u, 5u}}};
+    wide.num_steps = 3;
+    wide.canon_mode = hg_gpu::CanonicalizationMode::Full;
+
+    const hg_gpu::EvolveResult fresh = hg_gpu::evolve(make_input(wide));
+
+    hg_gpu::PersistentEvolver ev;
+    (void)ev.run(make_input(narrow));
+    const hg_gpu::EvolveResult again = ev.run(make_input(wide));
+
+    ASSERT_EQ(again.events.size(), fresh.events.size());
+    ASSERT_FALSE(again.events.empty());
+    for (const auto& e : again.events) {
+        ASSERT_EQ(e.num_consumed, 3u);
+        // Each consumed id is an edge of the event's input state.
+        const hg_gpu::CanonicalState& in = again.states[e.input_state];
+        const hg_gpu::EdgeSpan ids = again.edge_ids(in);
+        for (hg_gpu::EdgeId c : again.consumed_of(e))
+            EXPECT_TRUE(std::find(ids.begin(), ids.end(), c) != ids.end())
+                << "event " << e.id << ": consumed edge " << c << " is not in its input state";
+        for (hg_gpu::EdgeId p : again.produced_of(e))
+            EXPECT_LT(static_cast<size_t>(p), again.edge_records.size());
+    }
+}
+
 // A THINNED RUN KEEPS THE SAME TRANSITIONS ON BOTH ENGINES.
 //
 // "TransitionRate" and "RuleWeights" were reported to the caller as unimplemented on the GPU.

@@ -50,7 +50,7 @@ __device__ inline uint64_t keyed_token_resolved(const DeviceState& ds, EdgeId e)
     const uint32_t rid = keyed_rid_of(ds, ev);
     if (rid == hgcommon::REWRITE_ID_UNSET || rid == hgcommon::REWRITE_ID_NONE) return 0;
     // A rewrite's produced edges have consecutive ids (apply_one_match).
-    return hgcommon::token_produced(rid, e - ds.event_pool.data[ev].produced_edges[0]);
+    return hgcommon::token_produced(rid, e - ds.event_pool.data[ev].first_produced);
 }
 
 // Interns event `ev`'s rewrite, given its consumed tokens in match order: the rewrite id, or
@@ -74,7 +74,7 @@ __device__ inline uint32_t keyed_intern_event(const DeviceState& ds, EventId ev,
             const DeviceEvent& y = ds.event_pool.data[holder];
             if (y.rule != x.rule || y.num_consumed != x.num_consumed) return false;
             for (uint8_t i = 0; i < y.num_consumed; ++i)
-                if (keyed_token_resolved(ds, y.consumed_edges[i]) != tokens[i]) return false;
+                if (keyed_token_resolved(ds, event_consumed_edge(ds, y, i)) != tokens[i]) return false;
             return true;
         }
         __device__ bool make(uint32_t& v) { v = ev; return true; }
@@ -103,7 +103,7 @@ __device__ inline uint32_t keyed_event_rid(const DeviceState& ds, EventId ev) {
         const DeviceEvent& x = ds.event_pool.data[cur];
         EventId missing = INVALID_ID;
         for (uint8_t i = 0; i < x.num_consumed && missing == INVALID_ID; ++i) {
-            const EventId c = ds.edge_pool.data[x.consumed_edges[i]].creator_event;
+            const EventId c = ds.edge_pool.data[event_consumed_edge(ds, x, i)].creator_event;
             if (c != INVALID_ID && keyed_rid_of(ds, c) == hgcommon::REWRITE_ID_UNSET) missing = c;
         }
         if (missing != INVALID_ID) {
@@ -113,7 +113,7 @@ __device__ inline uint32_t keyed_event_rid(const DeviceState& ds, EventId ev) {
         }
         uint64_t tokens[kMaxPatternEdges];
         for (uint8_t i = 0; i < x.num_consumed; ++i)
-            tokens[i] = keyed_token_resolved(ds, x.consumed_edges[i]);
+            tokens[i] = keyed_token_resolved(ds, event_consumed_edge(ds, x, i));
         bool repeated = false;
         const uint32_t r = keyed_intern_event(ds, cur, tokens, repeated);
         atomicExch(&ds.event_pool.data[cur].rewrite_id, r);
@@ -222,7 +222,7 @@ __device__ inline TwinResult keyed_take_twin(const DeviceState& ds, StateId chil
     const DeviceEvent& x = ds.event_pool.data[ev];
     uint64_t tokens[kMaxPatternEdges];
     for (uint8_t i = 0; i < x.num_consumed; ++i)
-        tokens[i] = keyed_edge_token(ds, x.consumed_edges[i]);
+        tokens[i] = keyed_edge_token(ds, event_consumed_edge(ds, x, i));
     const uint64_t sum = hgcommon::child_token_sum(keyed_state_sum(ds, parent), tokens,
                                                    x.num_consumed, rid, x.num_produced);
     *reinterpret_cast<volatile uint64_t*>(k.state_token_sum + child) = sum;

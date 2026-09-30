@@ -154,6 +154,10 @@ struct DeviceState {
 
     // Events and causal/branchial structures
     typename Pool<DeviceEvent>::DeviceView          event_pool;
+    // Every event's consumed edge ids, event e's at e * event_consumed_stride
+    // (DeviceEvent::consumed_at). The stride is EngineConfig::max_lhs_edges.
+    EdgeId*  event_consumed;
+    uint32_t event_consumed_stride;
     typename Pool<DeviceCausalEdge>::DeviceView     causal_edge_pool;
     typename Pool<DeviceBranchialEdge>::DeviceView  branchial_edge_pool;
 
@@ -244,6 +248,12 @@ struct DeviceState {
     // bailing on partial work. Host inspects after every kernel sync.
     DeviceErrors::DeviceView errors;
 };
+
+// Event `ev`'s consumed edge `i`, in match order.
+__device__ __forceinline__ EdgeId event_consumed_edge(const DeviceState& ds, const DeviceEvent& ev,
+                                                      uint32_t i) {
+    return ds.event_consumed[ev.consumed_at + i];
+}
 
 // Position of `edge` in state `sid`'s CSR slice, or UINT32_MAX if the edge is not in it. The
 // slice is sorted ascending, so this is a binary search.
@@ -536,7 +546,10 @@ public:
     // and vertex_pool.
     void add_state_edges(ReadbackBatch& batch, const CounterSnapshot& snap,
                          std::vector<StateEdgeSlice>& slices, EvolveResult& out) const;
-    void add_events(ReadbackBatch& batch, uint32_t n, std::vector<DeviceEvent>& out) const;
+    // The first `n` events and their consumed edge ids (DeviceEvent::consumed_at indexes
+    // `consumed`).
+    void add_events(ReadbackBatch& batch, uint32_t n, std::vector<DeviceEvent>& events,
+                    std::vector<EdgeId>& consumed) const;
     void add_causal_edges(ReadbackBatch& batch, uint32_t n,
                           std::vector<DeviceCausalEdge>& out) const;
     void add_branchial_edges(ReadbackBatch& batch, uint32_t n,
@@ -584,6 +597,7 @@ private:
     Pool<DeviceCausalEdge>             causal_edge_pool_;
     Pool<DeviceBranchialEdge>          branchial_edge_pool_;
     EventId*                           edge_producer_ = nullptr;
+    EdgeId*                            event_consumed_ = nullptr;
     LockFreeList<EventId>              edge_consumers_;
     LockFreeList<uint64_t>             branchial_index_;
     ConcurrentMap<uint64_t, uint32_t>  causal_triple_dedup_;
@@ -603,12 +617,10 @@ public:
     uint32_t num_causal_edges_host()    const;
     uint32_t num_branchial_edges_host() const;
 
-    std::vector<DeviceEvent> events_host() const;
     std::vector<DeviceCausalEdge> causal_edges_host() const;
     std::vector<DeviceBranchialEdge> branchial_edges_host() const;
     // The same readbacks with the count already in hand (from a counter snapshot); the
     // zero-argument forms above delegate here after one size read.
-    std::vector<DeviceEvent> events_host(uint32_t n) const;
     std::vector<DeviceCausalEdge> causal_edges_host(uint32_t n) const;
     std::vector<DeviceBranchialEdge> branchial_edges_host(uint32_t n) const;
 };

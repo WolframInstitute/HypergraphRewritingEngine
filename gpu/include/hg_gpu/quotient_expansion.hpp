@@ -795,10 +795,10 @@ __device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
     uint32_t my_slot = 0;
     bool bad = false;
     if (lane < nc) {
-        my_slot = qe_frame_slot_of(ds, qe, from, parent, ev.consumed_edges[lane], align);
+        my_slot = qe_frame_slot_of(ds, qe, from, parent, event_consumed_edge(ds, ev, lane), align);
         bad = my_slot == UINT32_MAX;
     } else if (lane < nc + np) {
-        my_slot = qe_frame_slot_of(ds, qe, to, child, ev.produced_edges[lane - nc], align);
+        my_slot = qe_frame_slot_of(ds, qe, to, child, ev.first_produced + (lane - nc), align);
         bad = my_slot == UINT32_MAX;
     }
     // No frame slot: drop rather than corrupt.
@@ -827,9 +827,7 @@ __device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
         bool keep = false;
         if (k < csl.count) {
             const EdgeId oe = ds.state_edge_ids[csl.offset + k];
-            bool produced_here = false;
-            for (uint32_t j = 0; j < np; ++j)
-                if (ev.produced_edges[j] == oe) { produced_here = true; break; }
+            const bool produced_here = oe - ev.first_produced < np;
             if (!produced_here) {
                 const uint32_t ps = qe_frame_slot_of(ds, qe, from, parent, oe, align);
                 const uint32_t cs = qe_frame_slot_of(ds, qe, to, child, oe, align);

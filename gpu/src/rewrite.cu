@@ -417,11 +417,7 @@ __device__ AppliedMatch apply_one_match(DeviceState       ds,
     // -------------------------------------------------------------------
     const unsigned long long t_reserved = clock64();
 
-    // For each RHS edge: claim edge record + indices. `produced[r]` is the
-    // EdgeId we assigned to RHS edge r (equals first_eid + r by claim_n).
-    EdgeId produced[kMaxPatternEdges];
-    for (uint8_t i = 0; i < kMaxPatternEdges; ++i) produced[i] = INVALID_ID;
-
+    // For each RHS edge: claim edge record + indices. RHS edge r is edge first_eid + r.
     uint32_t vert_cursor = first_vert_off;
     for (uint8_t r = 0; r < rule.num_rhs_edges; ++r) {
         const DeviceRhsEdge& re = rule.rhs[r];
@@ -470,8 +466,6 @@ __device__ AppliedMatch apply_one_match(DeviceState       ds,
                 }
             }
         }
-
-        if (r < kMaxPatternEdges) produced[r] = new_eid;
     }
     const unsigned long long t_emitted = clock64();
 
@@ -506,15 +500,11 @@ __device__ AppliedMatch apply_one_match(DeviceState       ds,
     ev.step           = step;
     ev.num_consumed   = rule.num_lhs_edges;
     ev.num_produced   = rule.num_rhs_edges;
-    for (uint8_t i = 0; i < rule.num_lhs_edges && i < kMaxPatternEdges; ++i)
-        ev.consumed_edges[i] = m.matched_edges[i];
-    for (uint8_t i = rule.num_lhs_edges; i < kMaxPatternEdges; ++i)
-        ev.consumed_edges[i] = INVALID_ID;
-    for (uint8_t i = 0; i < rule.num_rhs_edges && i < kMaxPatternEdges; ++i)
-        ev.produced_edges[i] = produced[i];
-    for (uint8_t i = rule.num_rhs_edges; i < kMaxPatternEdges; ++i)
-        ev.produced_edges[i] = INVALID_ID;
-    ev.rewrite_id = hgcommon::REWRITE_ID_UNSET;
+    ev.rewrite_id     = hgcommon::REWRITE_ID_UNSET;
+    ev.first_produced = first_eid;
+    ev.consumed_at    = my_event * ds.event_consumed_stride;
+    for (uint8_t i = 0; i < rule.num_lhs_edges && i < ds.event_consumed_stride; ++i)
+        ds.event_consumed[ev.consumed_at + i] = m.matched_edges[i];
 
     __threadfence();  // make the event visible before any rendezvous reads it
     const uint32_t keyed =
@@ -530,8 +520,7 @@ __device__ AppliedMatch apply_one_match(DeviceState       ds,
     if (!ds.quotient_causal) {
     // 8. Causal rendezvous — producer side (our produced edges).
     for (uint8_t r = 0; r < rule.num_rhs_edges; ++r) {
-        if (produced[r] != INVALID_ID && ds.record_causal)
-            register_as_producer(ds, my_event, produced[r]);
+        if (ds.record_causal) register_as_producer(ds, my_event, first_eid + r);
     }
 
     // 9. Causal rendezvous — consumer side (our consumed edges).
@@ -575,7 +564,7 @@ __device__ AppliedMatch apply_one_match(DeviceState       ds,
 
     // 10. Branchial scan: our sibling events in the same input state.
     if (ds.record_branchial)
-        register_branchial(ds, my_event, m.state_id, ev.consumed_edges, rule.num_lhs_edges);
+        register_branchial(ds, my_event, m.state_id, m.matched_edges, rule.num_lhs_edges);
 
     if (sub) {
         atomicAdd(&sub[0], t_reserved - t_start);

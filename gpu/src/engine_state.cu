@@ -190,6 +190,9 @@ EngineState::EngineState(EngineConfig cfg): cfg_(cfg)
         vertex_high_water_      = counter_block_ + 3;
         HG_CUDA_CHECK(cudaMalloc(&edge_producer_,     sizeof(EventId) * cfg_.max_edges),
               "EngineState edge_producer alloc");
+        HG_CUDA_CHECK(cudaMalloc(&event_consumed_,
+              sizeof(EdgeId) * uint64_t(cfg_.max_events) * event_consumed_stride(cfg_)),
+              "EngineState event_consumed alloc");
         // One reachability slice per persistent block; the kernels call the search from each
         // block's thread 0.
         tr_scratch_slots_ = default_persistent_grid();
@@ -229,6 +232,7 @@ EngineState::~EngineState() {
         if (keyed_follow_head_)      cudaFree(keyed_follow_head_);
         if (keyed_follow_next_)      cudaFree(keyed_follow_next_);
         if (edge_producer_)          cudaFree(edge_producer_);
+        if (event_consumed_)         cudaFree(event_consumed_);
     }
 
 void EngineState::ensure_edge_ranks() {
@@ -395,6 +399,8 @@ DeviceState EngineState::device() const {
         d.causal_edge_pool        = causal_edge_pool_.view();
         d.branchial_edge_pool     = branchial_edge_pool_.view();
         d.edge_producer           = edge_producer_;
+        d.event_consumed          = event_consumed_;
+        d.event_consumed_stride   = event_consumed_stride(cfg_);
         d.edge_consumers          = edge_consumers_.view();
         d.branchial_index         = branchial_index_.view();
         d.causal_triple_dedup     = causal_triple_dedup_.view();
@@ -685,10 +691,6 @@ uint32_t EngineState::num_causal_edges_host()    const { return causal_edge_pool
 
 uint32_t EngineState::num_branchial_edges_host() const { return branchial_edge_pool_.size_host(); }
 
-std::vector<DeviceEvent> EngineState::events_host() const {
-        return events_host(num_events_host());
-    }
-
 std::vector<DeviceCausalEdge> EngineState::causal_edges_host() const {
         return causal_edges_host(num_causal_edges_host());
     }
@@ -698,8 +700,11 @@ std::vector<DeviceBranchialEdge> EngineState::branchial_edges_host() const {
     }
 
 void EngineState::add_events(ReadbackBatch& batch, uint32_t n,
-                             std::vector<DeviceEvent>& out) const {
-        batch.add(out, static_cast<const DeviceEvent*>(event_pool_.view().data), n);
+                             std::vector<DeviceEvent>& events,
+                             std::vector<EdgeId>& consumed) const {
+        batch.add(events, static_cast<const DeviceEvent*>(event_pool_.view().data), n);
+        batch.add(consumed, static_cast<const EdgeId*>(event_consumed_),
+                  size_t(n) * event_consumed_stride(cfg_));
     }
 
 void EngineState::add_causal_edges(ReadbackBatch& batch, uint32_t n,
@@ -711,14 +716,6 @@ void EngineState::add_branchial_edges(ReadbackBatch& batch, uint32_t n,
                                       std::vector<DeviceBranchialEdge>& out) const {
         batch.add(out, static_cast<const DeviceBranchialEdge*>(branchial_edge_pool_.view().data),
                   n);
-    }
-
-std::vector<DeviceEvent> EngineState::events_host(uint32_t n) const {
-        ReadbackBatch batch(*this);
-        std::vector<DeviceEvent> out;
-        add_events(batch, n, out);
-        batch.finish();
-        return out;
     }
 
 std::vector<DeviceCausalEdge> EngineState::causal_edges_host(uint32_t n) const {

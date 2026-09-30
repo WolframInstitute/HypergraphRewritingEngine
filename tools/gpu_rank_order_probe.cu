@@ -205,9 +205,13 @@ int main(int argc, char** argv) {
                               hgcommon::EVENT_SIG_AUTOMATIC, blocks);
 
         const uint32_t ne = engine.num_events_host();
-        std::vector<DeviceEvent> events(ne);
-        cudaMemcpy(events.data(), engine.device().event_pool.data,
-                   sizeof(DeviceEvent) * ne, cudaMemcpyDeviceToHost);
+        std::vector<DeviceEvent> events;
+        std::vector<EdgeId> consumed;
+        {
+            EngineState::ReadbackBatch batch(engine);
+            engine.add_events(batch, ne, events, consumed);
+            batch.finish();
+        }
         const uint32_t ns = engine.num_states_host();
         std::vector<uint64_t> exact(ns);
         cudaMemcpy(exact.data(), engine.device().state_exact_hash,
@@ -236,10 +240,10 @@ int main(int argc, char** argv) {
                             + "->" + std::to_string(ev.output_state < ns ? exact[ev.output_state] : 0)
                             + " step" + std::to_string(ev.step) + " cons[";
             for (uint8_t i = 0; i < ev.num_consumed; ++i)
-                row += rank_of(ev.input_state, ev.consumed_edges[i]) + " ";
+                row += rank_of(ev.input_state, consumed[ev.consumed_at + i]) + " ";
             row += "] prod[";
             for (uint8_t i = 0; i < ev.num_produced; ++i)
-                row += rank_of(ev.output_state, ev.produced_edges[i]) + " ";
+                row += rank_of(ev.output_state, ev.first_produced + i) + " ";
             row += "]";
             rows.push_back(row);
         }

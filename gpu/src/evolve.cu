@@ -13,6 +13,7 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <type_traits>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -91,11 +92,14 @@ EngineConfig config_from_input(const EvolveInput& in) {
     cfg.keyed_rewrites         = in.keyed_rewrites;
     cfg.keyed_claim_limit      = in.keyed_claim_limit;
     cfg.keyed_sum_mask         = in.keyed_sum_mask;
-    for (const auto& e : in.initial_state)
-        cfg.max_edge_arity = std::max<uint32_t>(cfg.max_edge_arity, static_cast<uint32_t>(e.size()));
-    for (const auto& r : in.rules)
-        for (const auto& e : r.rhs)
-            cfg.max_edge_arity = std::max<uint32_t>(cfg.max_edge_arity, static_cast<uint32_t>(e.size()));
+    auto widen = [](uint16_t& f, size_t n) {
+        f = static_cast<uint16_t>(std::max<size_t>(f, std::min<size_t>(n, 0xFFFFu)));
+    };
+    for (const auto& e : in.initial_state) widen(cfg.max_edge_arity, e.size());
+    for (const auto& r : in.rules) {
+        for (const auto& e : r.rhs) widen(cfg.max_edge_arity, e.size());
+        widen(cfg.max_lhs_edges, r.lhs.size());
+    }
     return cfg;
 }
 
@@ -542,7 +546,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     batch.add(h_hashes, static_cast<const uint64_t*>(d_state_hashes), total_states);
     std::vector<StateEdgeSlice> slices;
     if (in.materialize_state_edges) engine.add_state_edges(batch, snap, slices, out);
-    engine.add_events(batch, snap.events, out.events);
+    engine.add_events(batch, snap.events, out.events, out.event_consumed);
     engine.add_causal_edges(batch, snap.causal, out.causal_edges);
     engine.add_branchial_edges(batch, snap.branchial, out.branchial_edges);
     batch.finish();
@@ -768,7 +772,7 @@ void fit_config_to_cap(EngineConfig& cfg, uint64_t cap) {
 
 uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     // Sum the pools EngineState allocates. Element sizes: Edge 24; DeviceEvent
-    // 168; DeviceCausal/Branchial edge 12; StateEdgeSlice 8; a LockFreeList node
+    // 48; DeviceCausal/Branchial edge 12; StateEdgeSlice 8; a LockFreeList node
     // is sizeof(value)+4 rounded up; a ConcurrentMap slot is 16 B at a power-of-two capacity.
     // A 4-byte id is the unit for most index/id pools. Approximate — a 15%
     // headroom covers the small frontier/hash scratch buffers and allocation
@@ -789,6 +793,7 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     b += u64(cfg.sig_index_buckets)   * 4 + u64(cfg.sig_index_pool) * 8;   // signature index
     b += u64(cfg.max_vertices)        * 4 + u64(cfg.inverted_pool)  * 8;   // vertex inverted index
     b += u64(cfg.max_events)          * sizeof(DeviceEvent);   // event_pool
+    b += u64(cfg.max_events)          * 4 * event_consumed_stride(cfg);   // event_consumed
     b += u64(cfg.max_causal_edges)    * 12;         // causal_edge_pool
     b += u64(cfg.max_branchial_edges) * 12;         // branchial_edge_pool
     b += u64(cfg.max_edges)           * 4 + u64(cfg.edge_consumer_nodes)   * 8;   // edge_consumers
@@ -1036,7 +1041,14 @@ PersistentEvolver::SessionRun PersistentEvolver::run_session(const EvolveInput& 
         return out;
     }
 
-    // Opening: size the engine from this input, exactly as a first run would.
+    // Opening: size the engine from this input, exactly as a first run would. A live engine
+    // whose event_consumed stride is narrower than this input's largest left-hand side is
+    // rebuilt too.
+    if (has_engine_ && start_step == 0 &&
+        config_from_input(in).max_lhs_edges > cfg_.max_lhs_edges) {
+        engine_.reset();
+        has_engine_ = false;
+    }
     if (!has_engine_) {
         if (start_step != 0) {
             out.error = "this session has no engine to continue; it was never opened, or a "
@@ -1082,10 +1094,20 @@ EvolveResult PersistentEvolver::run(const EvolveInput& in) {
     // Never shrink: start from the live engine's config if there is one, else size to this
     // input. The engine is rebuilt only when the config changes, so a run whose input fits the
     // current engine reuses it and pays no allocation.
-    return run_with_growth(has_engine_ ? cfg_ : config_from_input(in), in.max_device_memory_bytes,
+    EngineConfig start = config_from_input(in);
+    if (has_engine_) {
+        // The live config, widened when this input's largest left-hand side needs a wider
+        // event_consumed stride; a changed config rebuilds the engine below.
+        const uint16_t lhs = start.max_lhs_edges;
+        start = cfg_;
+        start.max_lhs_edges = std::max(start.max_lhs_edges, lhs);
+    }
+    return run_with_growth(start, in.max_device_memory_bytes,
                            [&](const EngineConfig& cfg) {
         // On a grow the old engine is freed before the larger one is built, so peak VRAM is
         // bounded by the larger config, not their sum.
+        static_assert(std::has_unique_object_representations_v<EngineConfig>,
+                      "memcmp of EngineConfig compares padding");
         if (!has_engine_ || std::memcmp(&cfg, &cfg_, sizeof(EngineConfig)) != 0) {
             engine_.reset();
             has_engine_ = false;

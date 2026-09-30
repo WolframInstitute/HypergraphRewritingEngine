@@ -55,8 +55,10 @@ constexpr uint32_t kMaxVars          = hgcommon::MAX_VARS;
 constexpr uint32_t kMaxConsumedBits  = 1024; // per-match consumed bitmap width
 constexpr uint32_t kMaxConsumedWords = kMaxConsumedBits / 32;
 
-// Event-related device structs. An Event is created per successful rewrite
-// and carries the full (input, output, consumed, produced) record.
+// Event-related device structs. An Event is created per successful rewrite. Its consumed edge
+// ids are DeviceState::event_consumed[consumed_at .. consumed_at + num_consumed); its produced
+// edges are the consecutive ids first_produced .. first_produced + num_produced - 1, which the
+// rewrite claims in one block.
 struct DeviceEvent {
     EventId id              = INVALID_ID;
     EventId canonical_id    = INVALID_ID;  // INVALID_ID when this event is itself canonical
@@ -71,14 +73,14 @@ struct DeviceEvent {
     uint32_t step           = 0;
     uint8_t num_consumed    = 0;
     uint8_t num_produced    = 0;
-    EdgeId consumed_edges[kMaxPatternEdges] = {INVALID_ID};
-    EdgeId produced_edges[kMaxPatternEdges] = {INVALID_ID};
     // Keyed rewrites (hgcommon/token_core.hpp): the rewrite id of (rule, consumed tokens), or
     // REWRITE_ID_UNSET until keyed_event_rid fills it, or REWRITE_ID_NONE. Read and written
-    // atomically once the event is published. It occupies the struct's tail padding.
+    // atomically once the event is published.
     uint32_t rewrite_id     = 0;
+    EdgeId   first_produced = INVALID_ID;
+    uint32_t consumed_at    = 0;
 };
-static_assert(sizeof(DeviceEvent) == 168, "DeviceEvent grew");
+static_assert(sizeof(DeviceEvent) == 48, "DeviceEvent grew");
 
 // Causal edge: producer event → consumer event via a shared data edge.
 // Multiplicity is preserved — the same (from, to) pair appears multiple

@@ -175,13 +175,28 @@ struct CanonicalState {
 };
 
 // Events and relations as the device records them (types.hpp), read back without conversion.
-// Event::signature is 0 under EventCanonicalizationMode::None. consumed_of and produced_of give
-// an event's edge ids.
+// Event::signature is 0 under EventCanonicalizationMode::None. EvolveResult::consumed_of and
+// produced_of give an event's edge ids.
 using Event = DeviceEvent;
 using CausalEdge = DeviceCausalEdge;
 using BranchialEdge = DeviceBranchialEdge;
-inline EdgeSpan consumed_of(const Event& e) { return {e.consumed_edges, e.num_consumed}; }
-inline EdgeSpan produced_of(const Event& e) { return {e.produced_edges, e.num_produced}; }
+
+// The consecutive edge ids first .. first + count - 1: an event's produced edges.
+struct EdgeRange {
+    EdgeId first = 0;
+    uint32_t count = 0;
+    struct iterator {
+        EdgeId id;
+        EdgeId operator*() const { return id; }
+        iterator& operator++() { ++id; return *this; }
+        bool operator!=(const iterator& o) const { return id != o.id; }
+    };
+    iterator begin() const { return {first}; }
+    iterator end() const { return {first + count}; }
+    uint32_t size() const { return count; }
+    bool empty() const { return count == 0; }
+    EdgeId operator[](uint32_t i) const { return first + i; }
+};
 
 struct EvolveResult {
     std::vector<CanonicalState> states;
@@ -219,10 +234,18 @@ struct EvolveResult {
         return out;
     }
     std::vector<Event> events;
+    // Every event's consumed edge ids; Event::consumed_at indexes it.
+    std::vector<EdgeId> event_consumed;
     std::vector<CausalEdge> causal_edges;
     std::vector<BranchialEdge> branchial_edges;
 
-    // Takes `from`'s seven large vectors, emptied with their capacity kept, so the readback
+    // Event `e`'s consumed edge ids, in match order, and its produced ones.
+    EdgeSpan consumed_of(const Event& e) const {
+        return {event_consumed.data() + e.consumed_at, e.num_consumed};
+    }
+    static EdgeRange produced_of(const Event& e) { return {e.first_produced, e.num_produced}; }
+
+    // Takes `from`'s eight large vectors, emptied with their capacity kept, so the readback
     // fills memory that is already paged in. `from` is left with empty vectors.
     void adopt_storage(EvolveResult& from) {
         auto take = [](auto& mine, auto& theirs) { mine.swap(theirs); mine.clear(); };
@@ -231,6 +254,7 @@ struct EvolveResult {
         take(edge_records, from.edge_records);
         take(vertex_pool, from.vertex_pool);
         take(events, from.events);
+        take(event_consumed, from.event_consumed);
         take(causal_edges, from.causal_edges);
         take(branchial_edges, from.branchial_edges);
     }
@@ -343,6 +367,16 @@ struct EvolveResult {
 // host's grow-and-retry when a run overflows. Defaults handle the differential corpus.
 // All POD so this header stays host-includable without CUDA dependencies.
 struct EngineConfig {
+    // No padding (PersistentEvolver compares configs with memcmp): the 64-bit fields first, then
+    // the 32-bit ones, then the two 16-bit ones.
+    // Test lever: the first dedup probe key of a Full-mode state is its canonical hash ANDed
+    // with this. All ones except in tests, which narrow it so non-isomorphic states share keys.
+    uint64_t canonical_key_mask   = ~uint64_t{0};
+    // Test lever: the first probe key of an event signature, a replay class's run signature and
+    // the exact hash None/Automatic event identity reads is ANDed with this.
+    uint64_t event_key_mask       = ~uint64_t{0};
+    // Test lever: the twin claim key is the token sum ANDed with this.
+    uint64_t keyed_sum_mask       = ~uint64_t{0};
     uint32_t max_edges            = 1u << 16;   // 65K edge slots
     uint32_t max_vertices         = 1u << 16;   // 65K vertex IDs (atomic counter ceiling)
     uint32_t max_vertex_slots     = 1u << 18;   // 256K flat vertex-tuple slots (avg arity ≤ 4)
@@ -359,21 +393,13 @@ struct EngineConfig {
     // header and its IR canonical form at 1, 2 or 4 bytes per word (hgcommon/
     // canonical_form_core.hpp). Grown on kCanonicalFormsFull.
     uint32_t canonical_form_words = 1u << 22;
-    // Test lever: the first dedup probe key of a Full-mode state is its canonical hash ANDed
-    // with this. All ones except in tests, which narrow it so non-isomorphic states share keys.
-    uint64_t canonical_key_mask   = ~uint64_t{0};
-    // Test lever: the first probe key of an event signature, a replay class's run signature and
-    // the exact hash None/Automatic event identity reads is ANDed with this.
-    uint64_t event_key_mask       = ~uint64_t{0};
     // The replay refuses raw event ids at or past this (kReplayIdsExhausted).
     // hgcommon::QR_ID_LIMIT except in tests.
     uint32_t replay_id_limit      = hgcommon::QR_ID_LIMIT;
     // Keyed rewrites in Full-mode persistent runs (keyed.hpp), and the claims without a twin after
     // which a run stops keying.
-    bool     keyed_rewrites       = true;
+    uint32_t keyed_rewrites       = 1;
     uint32_t keyed_claim_limit    = 1024;
-    // Test lever: the twin claim key is the token sum ANDed with this.
-    uint64_t keyed_sum_mask       = ~uint64_t{0};
     uint32_t match_dedup_slots    = 1u << 16;
     // States at or below this edge count are matched by scanning their own CSR
     // slice; the global indices are only consulted (and therefore maintained)
@@ -461,8 +487,16 @@ struct EngineConfig {
     uint32_t ir_depth = 8;
     // The largest edge arity the run can hold (initial edges and every rule's right-hand side);
     // 0 when unknown, read as kMaxArity. Bounds a state's vertex occurrences by edges x this.
-    uint32_t max_edge_arity = 0;
+    uint16_t max_edge_arity = 0;
+    // The largest left-hand side among the rules; 0 when unknown, read as kMaxPatternEdges.
+    uint16_t max_lhs_edges = 0;
 };
+
+// An event's consumed ids take this many words of DeviceState::event_consumed.
+inline uint32_t event_consumed_stride(const EngineConfig& cfg) {
+    return cfg.max_lhs_edges && cfg.max_lhs_edges < kMaxPatternEdges ? cfg.max_lhs_edges
+                                                                      : kMaxPatternEdges;
+}
 
 // One-shot evolve: constructs a fresh Engine for `input`, runs once,
 // destructs. Each call pays the per-Engine CUDA setup cost (allocating

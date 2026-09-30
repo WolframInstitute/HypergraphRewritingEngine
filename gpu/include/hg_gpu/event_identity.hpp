@@ -80,15 +80,17 @@ __device__ inline uint32_t event_values_device(const DeviceState& ds, EventId ei
                                                           : static_cast<uint8_t>(kMaxPatternEdges);
     if (keys & hgcommon::EventKey_ConsumedEdges) {
         for (uint8_t i = 0; i < nc; ++i) {
-            uint32_t r = edge_rank_in_state_device(ds, ev.input_state, ev.consumed_edges[i]);
-            if (r == UINT32_MAX) { ++fallbacks; r = ev.consumed_edges[i]; }
+            const EdgeId e = event_consumed_edge(ds, ev, i);
+            uint32_t r = edge_rank_in_state_device(ds, ev.input_state, e);
+            if (r == UINT32_MAX) { ++fallbacks; r = e; }
             consumed_ranks[i] = r;
         }
     }
     if (keys & hgcommon::EventKey_ProducedEdges) {
         for (uint8_t i = 0; i < np; ++i) {
-            uint32_t r = edge_rank_in_state_device(ds, ev.output_state, ev.produced_edges[i]);
-            if (r == UINT32_MAX) { ++fallbacks; r = ev.produced_edges[i]; }
+            const EdgeId e = ev.first_produced + i;
+            uint32_t r = edge_rank_in_state_device(ds, ev.output_state, e);
+            if (r == UINT32_MAX) { ++fallbacks; r = e; }
             produced_ranks[i] = r;
         }
     }
