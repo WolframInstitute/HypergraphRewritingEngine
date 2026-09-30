@@ -400,8 +400,8 @@ TEST(Rewrite, EventsAndCausalBranchialPopulated) {
 
     EXPECT_GT(result.events.size(), 0u);
     for (const auto& e : result.events) {
-        EXPECT_EQ(e.consumed_edges().size(), 1u);
-        EXPECT_EQ(e.produced_edges().size(), 2u);
+        EXPECT_EQ(hg_gpu::consumed_of(e).size(), 1u);
+        EXPECT_EQ(hg_gpu::produced_of(e).size(), 2u);
     }
 
     // The branching structure should cause both causal (events chain

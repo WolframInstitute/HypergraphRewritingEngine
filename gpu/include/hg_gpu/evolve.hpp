@@ -174,36 +174,14 @@ struct CanonicalState {
     uint32_t num_edges = 0;
 };
 
-struct Event {
-    EventId id = INVALID_ID;
-    EventId canonical_id = INVALID_ID;
-    // The identity this run computed, from hgcommon::event_signature. 0 under
-    // EventCanonicalizationMode::None, where no signature is computed at all. Carried out of the
-    // device rather than left there because whether two runs agree on event identity is a
-    // question about the VALUES: a permutation of signatures across events leaves every count
-    // intact. hypergraph::Event carries the same field for the same reason.
-    uint64_t signature = 0;
-    StateId input_state  = INVALID_ID;
-    StateId output_state = INVALID_ID;
-    RuleId  rule = 0;
-    uint32_t step = 0;
-    uint8_t num_consumed = 0;
-    uint8_t num_produced = 0;
-    EdgeId consumed[kMaxPatternEdges] = {};
-    EdgeId produced[kMaxPatternEdges] = {};
-    EdgeSpan consumed_edges() const { return {consumed, num_consumed}; }
-    EdgeSpan produced_edges() const { return {produced, num_produced}; }
-};
-
-struct CausalEdge {
-    EventId from;
-    EventId to;
-};
-
-struct BranchialEdge {
-    EventId a;
-    EventId b;
-};
+// Events and relations as the device records them (types.hpp), read back without conversion.
+// Event::signature is 0 under EventCanonicalizationMode::None. consumed_of and produced_of give
+// an event's edge ids.
+using Event = DeviceEvent;
+using CausalEdge = DeviceCausalEdge;
+using BranchialEdge = DeviceBranchialEdge;
+inline EdgeSpan consumed_of(const Event& e) { return {e.consumed_edges, e.num_consumed}; }
+inline EdgeSpan produced_of(const Event& e) { return {e.produced_edges, e.num_produced}; }
 
 struct EvolveResult {
     std::vector<CanonicalState> states;

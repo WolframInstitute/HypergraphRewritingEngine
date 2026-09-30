@@ -504,9 +504,9 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
             if (recon_events) break;
             consumed.clear();
             produced.clear();
-            for (auto c : e.consumed_edges())
+            for (auto c : hg_gpu::consumed_of(e))
                 if (c != hg_gpu::INVALID_ID) consumed.push_back(static_cast<int64_t>(c));
-            for (auto pe : e.produced_edges())
+            for (auto pe : hg_gpu::produced_of(e))
                 if (pe != hg_gpu::INVALID_ID) produced.push_back(static_cast<int64_t>(pe));
             hgmarshal::write_event_record(sink,
                 hgmarshal::EventRecordIds{
@@ -581,7 +581,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
         // rewrite.
         for (const auto& e : result.events) {
             if (e.id == hg_gpu::INVALID_ID) continue;
-            for (auto c : e.consumed_edges()) {
+            for (auto c : hg_gpu::consumed_of(e)) {
                 if (c == hg_gpu::INVALID_ID) continue;
                 auto it = initial_edge_root.find(c);
                 if (it == initial_edge_root.end()) continue;
@@ -940,8 +940,8 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
             if (eit == event_by_id.end()) return d;
             const hg_gpu::Event& e = *eit->second;
             wxf::WXFValueList consumed, produced;
-            for (auto c : e.consumed_edges()) if (c != hg_gpu::INVALID_ID) consumed.push_back(wxf::WXFValue(static_cast<int64_t>(c)));
-            for (auto p : e.produced_edges()) if (p != hg_gpu::INVALID_ID) produced.push_back(wxf::WXFValue(static_cast<int64_t>(p)));
+            for (auto c : hg_gpu::consumed_of(e)) if (c != hg_gpu::INVALID_ID) consumed.push_back(wxf::WXFValue(static_cast<int64_t>(c)));
+            for (auto p : hg_gpu::produced_of(e)) if (p != hg_gpu::INVALID_ID) produced.push_back(wxf::WXFValue(static_cast<int64_t>(p)));
             d.push_back({wxf::WXFValue("Id"), wxf::WXFValue(static_cast<int64_t>(eid))});
             d.push_back({wxf::WXFValue("CanonicalId"), wxf::WXFValue(eff_event(eid))});
             d.push_back({wxf::WXFValue("RuleIndex"), wxf::WXFValue(static_cast<int64_t>(e.rule))});

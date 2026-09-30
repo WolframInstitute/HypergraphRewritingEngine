@@ -541,14 +541,11 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     batch.add(h_hashes, static_cast<const uint64_t*>(d_state_hashes), total_states);
     std::vector<StateEdgeSlice> slices;
     if (in.materialize_state_edges) engine.add_state_edges(batch, snap, slices, out);
-    std::vector<DeviceEvent> d_events;
-    engine.add_events(batch, snap.events, d_events);
-    std::vector<DeviceCausalEdge> d_causal;
-    engine.add_causal_edges(batch, snap.causal, d_causal);
-    std::vector<DeviceBranchialEdge> d_branch;
-    engine.add_branchial_edges(batch, snap.branchial, d_branch);
+    engine.add_events(batch, snap.events, out.events);
+    engine.add_causal_edges(batch, snap.causal, out.causal_edges);
+    engine.add_branchial_edges(batch, snap.branchial, out.branchial_edges);
     batch.finish();
-    double t_readback_hashes = std::chrono::duration<double, std::milli>(
+    double t_readback_copy = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_readback_start).count();
 
     auto t_readback_states_start = std::chrono::steady_clock::now();
@@ -568,32 +565,6 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     double t_readback_states = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_readback_states_start).count();
 
-    auto t_readback_evcb_start = std::chrono::steady_clock::now();
-    out.events.resize(d_events.size());
-    for (size_t i = 0; i < d_events.size(); ++i) {
-        const DeviceEvent& de = d_events[i];
-        Event& e = out.events[i];
-        e.id            = de.id;
-        e.canonical_id  = de.canonical_id;
-        e.signature     = de.signature;
-        e.input_state   = de.input_state;
-        e.output_state  = de.output_state;
-        e.rule          = de.rule;
-        e.step          = de.step;
-        e.num_consumed  = de.num_consumed < kMaxPatternEdges ? de.num_consumed : kMaxPatternEdges;
-        e.num_produced  = de.num_produced < kMaxPatternEdges ? de.num_produced : kMaxPatternEdges;
-        for (uint8_t k = 0; k < e.num_consumed; ++k) e.consumed[k] = de.consumed_edges[k];
-        for (uint8_t k = 0; k < e.num_produced; ++k) e.produced[k] = de.produced_edges[k];
-    }
-
-    out.causal_edges.reserve(d_causal.size());
-    for (const auto& c : d_causal) out.causal_edges.push_back(CausalEdge{c.from, c.to});
-    out.branchial_edges.reserve(d_branch.size());
-    for (const auto& b : d_branch) out.branchial_edges.push_back(BranchialEdge{b.a, b.b});
-
-    double t_readback_evcb = std::chrono::duration<double, std::milli>(
-        std::chrono::steady_clock::now() - t_readback_evcb_start).count();
-
     double t_total = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_total_start).count();
 
@@ -601,13 +572,12 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         std::fprintf(stderr,
             "[evolve dbg] total=%.2f init=%.2f qcsetup=%.2f persist=%.2f recon=%.2f "
             "match=%.2f rewrite=%.2f hash=%.2f dedup=%.2f "
-            "readback{hashes=%.2f states=%.2f ev/c/b=%.2f} unattributed=%.2f (ms)\n",
+            "readback{copy=%.2f states=%.2f} unattributed=%.2f (ms)\n",
             t_total, t_init, t_qcsetup, t_persist_call, t_recon,
             t_match, t_rewrite, t_hash, t_dedup,
-            t_readback_hashes, t_readback_states, t_readback_evcb,
+            t_readback_copy, t_readback_states,
             t_total - t_init - t_qcsetup - t_persist_call - t_recon - t_match - t_rewrite
-                    - t_hash - t_dedup - t_readback_hashes - t_readback_states
-                    - t_readback_evcb);
+                    - t_hash - t_dedup - t_readback_copy - t_readback_states);
     }
 
     return out;

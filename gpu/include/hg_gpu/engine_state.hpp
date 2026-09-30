@@ -18,6 +18,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace HG_NAMESPACE {
@@ -495,25 +496,37 @@ public:
     DeviceErrors& errors() { return errors_; }
     LaunchScratch& launch_scratch(uint32_t num_rules, uint32_t num_states) const;
 
-    // DEVICE-TO-HOST READS ISSUED TOGETHER. add() sizes the vector and records the region;
-    // finish() issues every region as a cudaMemcpyAsync into the engine's pinned staging buffer,
-    // synchronizes once, and copies each region into its vector. A synchronous cudaMemcpy costs
-    // about 25 us per call here whatever its size, and the batch pays that once. The vectors
-    // must not be resized between add() and finish().
+    // DEVICE-TO-HOST READS ISSUED TOGETHER. add() and add_raw() record a region; finish() issues
+    // every region as a cudaMemcpyAsync into the engine's pinned staging buffer, synchronizes
+    // once, and fills each vector with one assign() from the staging copy (add_raw: one memcpy).
+    // A synchronous cudaMemcpy costs about 25 us per call here whatever its size, and the batch
+    // pays that once. The vectors and raw destinations must outlive finish().
     class ReadbackBatch {
     public:
         explicit ReadbackBatch(const EngineState& engine) : engine_(engine) {}
         template <class T>
         void add(std::vector<T>& dst, const T* src, size_t n) {
-            dst.resize(n);
-            if (n) regions_.push_back(Region{dst.data(), src, sizeof(T) * n});
+            static_assert(std::is_trivially_copyable_v<T>, "readback copies bytes");
+            if (!n) { dst.clear(); return; }
+            regions_.push_back(Region{&dst, src, sizeof(T) * n, &assign_into<T>});
         }
         void add_raw(void* dst, const void* src, size_t bytes) {
-            if (bytes) regions_.push_back(Region{dst, src, bytes});
+            if (bytes) regions_.push_back(Region{dst, src, bytes, nullptr});
         }
         void finish();
     private:
-        struct Region { void* host; const void* device; size_t bytes; };
+        template <class T>
+        static void assign_into(void* dst, const void* staged, size_t bytes) {
+            const T* p = static_cast<const T*>(staged);
+            static_cast<std::vector<T>*>(dst)->assign(p, p + bytes / sizeof(T));
+        }
+        // `fill` is null for an add_raw region, which is copied with memcpy.
+        struct Region {
+            void* host;
+            const void* device;
+            size_t bytes;
+            void (*fill)(void* dst, const void* staged, size_t bytes);
+        };
         const EngineState& engine_;
         std::vector<Region> regions_;
     };

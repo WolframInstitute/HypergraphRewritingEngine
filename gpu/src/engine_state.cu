@@ -611,7 +611,8 @@ void EngineState::ReadbackBatch::finish() {
         HG_CUDA_CHECK(cudaStreamSynchronize(0), "readback sync");
         off = 0;
         for (const Region& r : regions_) {
-            std::memcpy(r.host, base + off, r.bytes);
+            if (r.fill) r.fill(r.host, base + off, r.bytes);
+            else std::memcpy(r.host, base + off, r.bytes);
             off += (r.bytes + 15u) & ~size_t(15);
         }
         regions_.clear();
