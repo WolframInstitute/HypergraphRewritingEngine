@@ -67,7 +67,7 @@ std::map<uint64_t, std::vector<Shot>> run_once(const oracle::Case& c, bool quoti
                 shot.tuples += std::to_string(it->second);
             }
             shot.tuples += ")";
-            const uint32_t r = hg.edge_rank_in_state(sid, eid);
+            const uint32_t r = hg::engine::Hypergraph::edge_rank_in(hg.edge_rank_table(sid), eid);
             shot.ranks += (r == UINT32_MAX ? std::string("-") : std::to_string(r)) + " ";
         }
         out[hg.get_or_compute_canonical_hash(sid)].push_back(shot);
