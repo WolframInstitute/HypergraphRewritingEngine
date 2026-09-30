@@ -129,7 +129,8 @@ HG_HD inline IrSlotShape ir_slot_shape(uint32_t edges, uint32_t occs, uint32_t d
     return s;
 }
 
-// A TILE OF W LANES RUNS THE SEARCH TOGETHER (W a power of two, at most 32). The tile's lanes
+// A TILE OF w LANES RUNS THE SEARCH TOGETHER (w a power of two, at most 32, chosen at run time,
+// so one compiled body serves every width). The tile's lanes
 // enter the canonicalization with identical arguments and execute identical control flow --
 // every branch reads state each lane sees the same, so convergence is by construction. Shared
 // writes are the tile leader's (its lowest lane), behind a sync of the tile's lanes; the
@@ -137,33 +138,32 @@ HG_HD inline IrSlotShape ir_slot_shape(uint32_t edges, uint32_t occs, uint32_t d
 // depends on crosses by shuffle within the tile. Storage the leader writes and the other lanes
 // read (the IR scratch slot) is the tile's own. The serial policy in ir_core.hpp compiles the
 // same source to the plain single-thread search.
-template <uint32_t W>
 struct IrTile {
-    static_assert(W >= 1u && W <= 32u && (W & (W - 1u)) == 0u, "tile width is a power of two");
     static constexpr bool kFans = true;
-    static constexpr uint32_t kWidth = W;
-    __device__ static uint32_t rank() { return threadIdx.x & (W - 1u); }
-    __device__ static uint32_t mask() {
-        return W == 32u ? 0xffffffffu
-                        : ((1u << (W & 31u)) - 1u) << ((threadIdx.x & 31u) & ~(W - 1u));
+    uint32_t w = 32;
+    __device__ uint32_t width() const { return w; }
+    __device__ uint32_t rank() const { return threadIdx.x & (w - 1u); }
+    __device__ uint32_t mask() const {
+        return w == 32u ? 0xffffffffu
+                        : ((1u << (w & 31u)) - 1u) << ((threadIdx.x & 31u) & ~(w - 1u));
     }
     __device__ bool leader() const { return rank() == 0u; }
     __device__ void sync() const { __syncwarp(mask()); }
     template <class F>
     __device__ void fan(uint32_t n, F&& f) const {
         __syncwarp(mask());
-        for (uint32_t i = rank(); i < n; i += W) f(i);
+        for (uint32_t i = rank(); i < n; i += w) f(i);
         __syncwarp(mask());
     }
-    __device__ uint32_t bcast(uint32_t v) const { return __shfl_sync(mask(), v, 0, W); }
+    __device__ uint32_t bcast(uint32_t v) const { return __shfl_sync(mask(), v, 0, w); }
     __device__ uint64_t bcast64(uint64_t v) const {
-        return __shfl_sync(mask(), static_cast<unsigned long long>(v), 0, W);
+        return __shfl_sync(mask(), static_cast<unsigned long long>(v), 0, w);
     }
     __device__ uint32_t fetch_add(uint32_t* p, uint32_t v) const { return atomicAdd(p, v); }
 };
 
 // The whole warp: the persistent kernel's block is one warp.
-using IrWarpAll = IrTile<32>;
+using IrWarpAll = IrTile;
 
 // The ErrorKind a failed exact hash should be recorded as. One place, so a new call site cannot
 // pick a different mapping and re-conflate what this separation exists to keep apart.

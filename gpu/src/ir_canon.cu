@@ -270,17 +270,14 @@ __device__ ExactHashStatus state_exact_hash_device(const DeviceState& ds, StateI
 }
 
 // The callers' policies, instantiated here so the template body stays in this translation
-// unit: every one-thread-per-state caller uses the serial policy, the persistent kernel the
-// warp one, and a rewrite batch's tiles IrTile<kBatchTile> (persistent.cu).
+// unit: every one-thread-per-state caller uses the serial policy, and the persistent kernel
+// IrTile, the whole warp or a rewrite batch's tiles (persistent.cu).
 template __device__ ExactHashStatus state_exact_hash_device<hgcommon::IrSerial>(
     const DeviceState&, StateId, DeviceArena::View, uint32_t*&, uint64_t&, uint64_t&, bool, bool,
     uint32_t**, uint32_t*, hgcommon::IrSerial);
-template __device__ ExactHashStatus state_exact_hash_device<IrTile<4>>(
+template __device__ ExactHashStatus state_exact_hash_device<IrTile>(
     const DeviceState&, StateId, DeviceArena::View, uint32_t*&, uint64_t&, uint64_t&, bool, bool,
-    uint32_t**, uint32_t*, IrTile<4>);
-template __device__ ExactHashStatus state_exact_hash_device<IrWarpAll>(
-    const DeviceState&, StateId, DeviceArena::View, uint32_t*&, uint64_t&, uint64_t&, bool, bool,
-    uint32_t**, uint32_t*, IrWarpAll);
+    uint32_t**, uint32_t*, IrTile);
 
 namespace {
 

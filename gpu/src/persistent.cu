@@ -510,17 +510,17 @@ __global__ void k_persistent_match_rewrite(
     }
 }
 
-// The fewest lanes a batch occupies (records x kBatchTile) for its children to be canonicalised
-// by their tiles. A batch costs about one tile IR whatever its size, where the warp canonicalises
-// one child faster than a tile does, so a batch on fewer lanes is canonicalised by the warp,
-// child by child.
-constexpr uint32_t kLaneBatchMin = 4;
 // The readable records below which a block claims one at a time: a short backlog is spread over
 // the grid, where a batch would leave the other blocks idle.
 constexpr uint32_t kLaneBatchBacklog = 64;
-// The lanes that canonicalise one child of a batch together (IrTile): a batch holds
-// 32 / kBatchTile records.
-constexpr uint32_t kBatchTile = 4;
+// The records a batch claims: up to kBatchRecords, and up to 32 once the block has found work in
+// kDeepStreak consecutive iterations. A batch's children are canonicalised on tiles of
+// min(kMaxTile, the largest power of two at most 32 / records) lanes: 32 records run one per
+// lane, which pays when every block is busy; a block coming off idle keeps tiles, whose children
+// finish sooner.
+constexpr uint32_t kBatchRecords = 8;
+constexpr uint32_t kDeepStreak = 16;
+constexpr uint32_t kMaxTile = 4;
 // A child whose twin has not published waits on it (keyed_take_twin) when it has more than this
 // many edges; a smaller child runs its own IR, which costs less than the wait.
 constexpr uint32_t kFollowEdges = 32;
@@ -531,8 +531,7 @@ constexpr uint32_t kBatchBusyStreak = 2;
 
 // A rewritten child's canonical identity: its hash (IR, or a twin's through keyed rewrites), its
 // class claim, the published hash and exact hash, and its event's signature. One body for a child
-// canonicalised by a batch tile (IrTile<kBatchTile>) and by the whole warp (IrWarpAll, a
-// single record): par.leader() runs the claims, and what the caller branches on crosses to every
+// canonicalised by a batch tile (IrTile) and by the whole warp (IrWarpAll, a single record): par.leader() runs the claims, and what the caller branches on crosses to every
 // lane.
 struct ChildIdentity {
     StateId canonical = INVALID_ID;
@@ -999,8 +998,9 @@ __global__ void k_persistent_evolve(
         // unboundedly is what makes it overflow. A block claims one record; when the IR slots of
         // more children like it fit the block's region (ir_slot_shape at max_edge_arity),
         // kLaneBatchBacklog records are readable and the block found work in its last
-        // kBatchBusyStreak iterations, it claims up to 32 / kBatchTile - 1 more in one exchange. A
-        // short burst spreads over the grid. The record is read only after it is claimed.
+        // kBatchBusyStreak iterations, it claims up to kBatchRecords - 1 more in one exchange, or
+        // 31 after kDeepStreak. A short burst spreads over the grid. The record is read only after
+        // it is claimed.
         if (threadIdx.x == 0) {
             claimed = claim_next_record(consume_cursor, found);
             claimed_count = 0;
@@ -1016,11 +1016,12 @@ __global__ void k_persistent_evolve(
                     ir_slot_shape(child, child * ds.max_edge_arity, ds.ir_depth, ds.ir_generators)
                         .stride();
                 const uint64_t fit = need ? region_words / need : 32u;
-                const uint32_t batch = fit < 32u / kBatchTile ? static_cast<uint32_t>(fit)
-                                                              : 32u / kBatchTile;
-                if (batch > 1u && busy_streak >= kBatchBusyStreak) {
-                    const auto more = [batch](uint32_t, uint32_t available) {
-                        return available >= kLaneBatchBacklog ? batch - 1u : 0u;
+                if (fit > 1u && busy_streak >= kBatchBusyStreak) {
+                    const bool deep = busy_streak >= kDeepStreak;
+                    const auto more = [fit, deep](uint32_t, uint32_t available) {
+                        if (available < kLaneBatchBacklog) return 0u;
+                        const uint64_t cap = deep ? 32u : kBatchRecords;
+                        return static_cast<uint32_t>((fit < cap ? fit : cap) - 1u);
                     };
                     claimed_count += claim_next_records(consume_cursor, found, more, claimed_more);
                 }
@@ -1098,15 +1099,15 @@ __global__ void k_persistent_evolve(
                 if (lane == 0) waiting = id.deferred ? 1u : 0u;
                 __syncthreads();
             } else {
-                // A BATCH: a record per tile of kBatchTile lanes. The tile's leader applies it,
+                // A BATCH: a record per tile of T lanes (kMaxTile). The tile's leader applies it,
                 // and the tile copies and canonicalises the child (IrTile) in its share of the
-                // block's region. Every child of a batch on fewer than kLaneBatchMin lanes is
-                // copied and canonicalised by the whole warp instead, one at a time.
+                // block's region.
                 // The class-frame captures (every lane together) and the identity and depth
                 // registration (thread 0: the walk's frames are per block) then run child by
                 // child.
-                constexpr uint32_t T = kBatchTile;
-                using Tile = IrTile<T>;
+                const uint32_t fair = 1u << (31u - __clz(32u / claimed_count));
+                const uint32_t T = fair < kMaxTile ? fair : kMaxTile;
+                const IrTile Tile{T};
                 const uint32_t tile = lane / T;
                 const bool tlead = (lane & (T - 1u)) == 0u;
                 StateId sid = INVALID_ID, parent = INVALID_ID;
@@ -1149,32 +1150,16 @@ __global__ void k_persistent_evolve(
                 #pragma unroll
                 for (uint32_t i = 0; i < kMaxPatternEdges; ++i)
                     kept.consumed[i] = __shfl_sync(0xFFFFFFFFu, kept.consumed[i], 0, T);
-                const bool warp = sid != INVALID_ID && claimed_count * T < kLaneBatchMin;
-                if (sid != INVALID_ID && !warp) copy_kept_edges(ds, kept, Tile{});
+                if (sid != INVALID_ID) copy_kept_edges(ds, kept, Tile);
 
                 const unsigned long long t1 = clock64();
                 ChildIdentity id{};
-                if (sid != INVALID_ID && !warp)
+                if (sid != INVALID_ID)
                     id = canonicalise_child(ds, sid, evt, parent, keyed, state_mode, event_keys,
                                             need_ranks, need_exact, qc.enabled != 0, dedup, arena,
                                             tile_slot[tile], tile_slot_words[tile], dedup_map,
                                             exact_map, event_map, forms, ready, acc_irkey,
-                                            acc_evkey, Tile{});
-                for (uint32_t bigs = __ballot_sync(0xFFFFFFFFu, tlead && warp); bigs;
-                     bigs &= bigs - 1u) {
-                    const uint32_t b = __ffs(bigs) - 1u;
-                    if (lane == b) child_kept = kept;
-                    __syncwarp();
-                    copy_kept_edges(ds, child_kept, IrWarpAll{});
-                    __syncwarp();
-                    const ChildIdentity bid = canonicalise_child(
-                        ds, __shfl_sync(0xFFFFFFFFu, sid, b), __shfl_sync(0xFFFFFFFFu, evt, b),
-                        __shfl_sync(0xFFFFFFFFu, parent, b), __shfl_sync(0xFFFFFFFFu, keyed, b),
-                        state_mode, event_keys, need_ranks, need_exact, qc.enabled != 0, dedup,
-                        arena, ir_slot, ir_slot_words, dedup_map, exact_map, event_map, forms,
-                        ready, acc_irkey, acc_evkey, IrWarpAll{});
-                    if (lane == b) id = bid;
-                }
+                                            acc_evkey, Tile);
                 __syncwarp();
 
                 // The class frame's match record (qe_capture_expansion), every lane together,

@@ -52,12 +52,11 @@ struct AppliedMatch {
     uint32_t keyed = 0;
 };
 
-// Copy a child's kept edges. Par is a lane policy (hgcommon::IrSerial, or IrTile<W> for W
-// lanes together): with kFans each lane of the tile takes every W-th parent edge and a ballot
-// over the tile places the kept ones in parent order. Every lane of the tile must call it
-// together.
+// Copy a child's kept edges. Par is a lane policy (hgcommon::IrSerial, or IrTile for w lanes
+// together): with kFans each lane of the tile takes every w-th parent edge and a ballot over the
+// tile places the kept ones in parent order. Every lane of the tile must call it together.
 template <class Par>
-__device__ inline void copy_kept_edges(const DeviceState& ds, const KeptCopy& k, Par) {
+__device__ inline void copy_kept_edges(const DeviceState& ds, const KeptCopy& k, Par par) {
     EdgeId* dst = ds.state_edge_ids + k.dst_offset;
     const EdgeId* src = ds.state_edge_ids + k.src_offset;
     auto kept = [&](EdgeId e) {
@@ -70,9 +69,9 @@ __device__ inline void copy_kept_edges(const DeviceState& ds, const KeptCopy& k,
         for (uint32_t i = 0; i < k.src_count; ++i)
             if (kept(src[i])) dst[cursor++] = src[i];
     } else {
-        constexpr uint32_t W = Par::kWidth;
-        const uint32_t rank = Par::rank();
-        const uint32_t tile_mask = Par::mask();
+        const uint32_t W = par.width();
+        const uint32_t rank = par.rank();
+        const uint32_t tile_mask = par.mask();
         const uint32_t shift = (threadIdx.x & 31u) & ~(W - 1u);
         uint32_t cursor = 0;
         for (uint32_t base = 0; base < k.src_count; base += W) {
