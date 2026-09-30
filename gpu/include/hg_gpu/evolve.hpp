@@ -135,6 +135,14 @@ struct EvolveInput {
     uint64_t event_key_mask = ~uint64_t{0};
     // Test lever (EngineConfig::replay_id_limit): the replay refuses raw event ids at or past it.
     uint32_t replay_id_limit = hgcommon::QR_ID_LIMIT;
+    // Keyed rewrites (hgcommon/token_core.hpp, EngineConfig::keyed_rewrites): in Full mode a
+    // state whose token set an earlier state holds takes its canonical results without IR.
+    bool keyed_rewrites = true;
+    // Test lever (EngineConfig::keyed_claim_limit): twin claims without a twin before a run
+    // stops keying.
+    uint32_t keyed_claim_limit = 1024;
+    // Test lever (EngineConfig::keyed_sum_mask): narrows the twin claim key.
+    uint64_t keyed_sum_mask = ~uint64_t{0};
 };
 
 // One (class, depth) point of the multiplicity count: m raw states of the class at the depth.
@@ -330,6 +338,12 @@ struct EngineConfig {
     // The replay refuses raw event ids at or past this (kReplayIdsExhausted).
     // hgcommon::QR_ID_LIMIT except in tests.
     uint32_t replay_id_limit      = hgcommon::QR_ID_LIMIT;
+    // Keyed rewrites in one-shot Full-mode runs (keyed.hpp), and the claims without a twin after
+    // which a run stops keying.
+    bool     keyed_rewrites       = true;
+    uint32_t keyed_claim_limit    = 1024;
+    // Test lever: the twin claim key is the token sum ANDed with this.
+    uint64_t keyed_sum_mask       = ~uint64_t{0};
     uint32_t match_dedup_slots    = 1u << 16;
     // States at or below this edge count are matched by scanning their own CSR
     // slice; the global indices are only consulted (and therefore maintained)

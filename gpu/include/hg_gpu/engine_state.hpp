@@ -31,6 +31,26 @@ struct DeviceRule;
 // pulling in cuda_runtime.h. The full definition lives there; this header
 // transitively re-exports it via #include "hg_gpu/evolve.hpp".
 
+// Keyed rewrites on the device (keyed.hpp; the rule is hgcommon/token_core.hpp). A one-shot
+// Full-mode persistent run sets `enabled` and the two maps on the DeviceState it launches with;
+// every other launch has it clear.
+struct KeyedView {
+    uint64_t* state_token_sum      = nullptr;   // [max_states], 0 until computed
+    uint32_t* state_first_new_edge = nullptr;   // [max_states], INVALID_ID for a root
+    // Rewrite key -> the first event that applied the rewrite; its id + 1 is the rewrite id.
+    ConcurrentMap<uint64_t, uint32_t>::DeviceView rewrites{};
+    // Token sum -> the first state with that token set.
+    ConcurrentMap<uint64_t, uint32_t>::DeviceView twins{};
+    // [0] KEYED_ARMED / KEYED_INTERNING / KEYED_OFF, [1] claims made, [2] a twin was taken,
+    // [3] twins taken.
+    uint32_t* words       = nullptr;
+    uint32_t  claim_limit = 1024;
+    // Test lever (EngineConfig::keyed_sum_mask): the twin claim key is the token sum ANDed with
+    // this, so a narrow mask makes states with different token sets share keys.
+    uint64_t  sum_mask    = ~uint64_t{0};
+    uint32_t  enabled     = 0;
+};
+
 // Device-side POD passed to kernels. All pointers refer to memory owned by
 // EngineState (host side); EngineState's lifetime brackets every kernel run
 // that uses it.
@@ -211,6 +231,8 @@ struct DeviceState {
     uint32_t  maintain_indices;   // 0/1, host-set, read per launch
     uint32_t* needs_indices;      // device flag, raised by the rewrite kernel
 
+    KeyedView keyed;
+
     // Error channel: kernels record overflow reasons here instead of silently
     // bailing on partial work. Host inspects after every kernel sync.
     DeviceErrors::DeviceView errors;
@@ -285,6 +307,11 @@ public:
     // Take the per-slot edge orbit array and the per-state orbit counts, which only a
     // quotient-causal run reads (its DP keys on orbits). Idempotent; call before launching.
     void ensure_edge_orbits();
+
+    // Take the per-state keyed-rewrite arrays (KeyedView: token sum, first produced edge), which
+    // only a keyed run reads. They need no clearing: a state's entries are written when it is
+    // created. Idempotent; call before launching.
+    void ensure_keyed();
 
     // Take the canonical-event counter. Called once the event mode is known, alongside the
     // signature map the scheduler carries; under EventSignatureKeys None no signature is
@@ -550,6 +577,8 @@ private:
     uint32_t                           num_rules_              = 0;
     uint32_t*                          state_edge_orbit_       = nullptr;
     uint32_t*                          state_num_orbits_       = nullptr;
+    uint64_t*                          keyed_token_sum_        = nullptr;
+    uint32_t*                          keyed_first_new_edge_   = nullptr;
     uint32_t*                          event_sig_fallbacks_    = nullptr;
     uint32_t*                          canonical_event_count_  = nullptr;
     // Owned by the engine, not by a run. See ir_arena().

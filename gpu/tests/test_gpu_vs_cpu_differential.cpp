@@ -1587,6 +1587,52 @@ TEST(CanonicalStateCount, ModesVsCpu) {
 
 }  // namespace
 
+// Keyed rewrites on the device (keyed.hpp): a state with an earlier twin takes its canonical
+// results and runs no IR. Every count, and the canonical states by content, must equal the run
+// with keyed rewrites off, under full capture and quotient exploration, with the default claim
+// limit, with one of 3 that stops keying partway, and with claim keys narrowed to 4 bits.
+TEST(KeyedRewrites, DeviceChangesNoCount) {
+    struct Counts {
+        std::multiset<uint64_t> states;
+        size_t events, causal, branchial;
+        bool operator==(const Counts& o) const {
+            return states == o.states && events == o.events && causal == o.causal &&
+                   branchial == o.branchial;
+        }
+    };
+    hypergraph::IRCanonicalizer ir;
+    auto run = [&](Workload w, bool quotient, bool keyed, uint32_t limit,
+                   uint64_t mask = ~uint64_t{0}) {
+        w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+        w.explore_from_canonical_states_only = quotient;
+        hg_gpu::EvolveInput in = make_input(w);
+        in.keyed_rewrites = keyed;
+        in.keyed_claim_limit = limit;
+        in.keyed_sum_mask = mask;
+        const hg_gpu::EvolveResult r = hg_gpu::evolve(in);
+        Counts c{{}, r.events.size(), r.causal_edges.size(), r.branchial_edges.size()};
+        for (const auto& st : r.states) c.states.insert(ir.compute_canonical_hash(st.edges));
+        return c;
+    };
+    size_t checked = 0;
+    for (const Workload& w : build_corpus()) {
+        if (w.num_steps == 0 || w.rules.empty()) continue;
+        for (bool quotient : {false, true}) {
+            const Counts off = run(w, quotient, false, 1024);
+            EXPECT_TRUE(run(w, quotient, true, 1024) == off)
+                << w.name << (quotient ? " quotient" : " full capture");
+            EXPECT_TRUE(run(w, quotient, true, 3) == off)
+                << w.name << (quotient ? " quotient" : " full capture") << " claim limit 3";
+            // Token sums narrowed to 4 bits: states with different token sets share claim keys, and
+            // only the token-set comparison keeps them apart.
+            EXPECT_TRUE(run(w, quotient, true, 1u << 30, 0xF) == off)
+                << w.name << (quotient ? " quotient" : " full capture") << " sum mask 0xF";
+            ++checked;
+        }
+    }
+    EXPECT_GT(checked, 0u);
+}
+
 // The device records what it was asked for, and nothing else moves.
 //
 // EvolveInput::record mirrors the host's RecordSet. An artifact turned off must vanish from the

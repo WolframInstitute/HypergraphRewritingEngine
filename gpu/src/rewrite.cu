@@ -7,6 +7,7 @@
 #include "hg_gpu/rewrite.hpp"
 
 #include "hg_gpu/exploration.hpp"
+#include "hg_gpu/keyed.hpp"
 #include "hg_gpu/cuda_check.hpp"
 
 #include <cuda_runtime.h>
@@ -475,8 +476,13 @@ __device__ AppliedMatch apply_one_match(DeviceState       ds,
         ev.produced_edges[i] = produced[i];
     for (uint8_t i = rule.num_rhs_edges; i < kMaxPatternEdges; ++i)
         ev.produced_edges[i] = INVALID_ID;
+    ev.rewrite_id = hgcommon::REWRITE_ID_UNSET;
 
     __threadfence();  // make the event visible before any rendezvous reads it
+    const uint32_t keyed =
+        ds.keyed.enabled
+            ? keyed_after_rewrite(ds, m, my_event, new_sid, first_eid, rule.num_rhs_edges)
+            : 0u;
     const unsigned long long t_event = clock64();
 
     // Under the quotient route the raw-edge rendezvous is off: the replay reconstructs the
@@ -542,7 +548,7 @@ __device__ AppliedMatch apply_one_match(DeviceState       ds,
         atomicAdd(&sub[5], clock64() - t_causal);
     }
 
-    return AppliedMatch{new_sid, my_event, kept};
+    return AppliedMatch{new_sid, my_event, kept, keyed};
 }
 
 namespace {

@@ -717,7 +717,7 @@ StateId Hypergraph::claim_twin(StateId s, uint64_t sum, EdgeId* ids, uint32_t* a
     auto make = [&] { return s; };
     auto rep_of = [](StateId t) { return t; };
     auto on_collision = [] {};
-    auto c = keyed_claim<StateId>(twin_map_, sum, same, make, rep_of, on_collision,
+    auto c = keyed_claim<StateId>(twin_map_, sum & twin_key_mask_, same, make, rep_of, on_collision,
                                   /*offer_first=*/true);
     return c.rep;
 }

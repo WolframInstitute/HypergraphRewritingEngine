@@ -10,6 +10,7 @@
 // cannot be compiled within a safe ceiling is a defect whether or not it links.
 
 #include "hg_gpu/event_identity.hpp"
+#include "hg_gpu/keyed.hpp"
 #include "hg_gpu/persistent.hpp"
 #include "hg_gpu/explore_depth.hpp"
 #include <cstdio>
@@ -136,6 +137,10 @@ __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= num_roots) return;
     const StateId sid = roots[tid];
+    if (ds.keyed.enabled) {
+        ds.keyed.state_first_new_edge[sid] = INVALID_ID;
+        ds.keyed.state_token_sum[sid] = 0;
+    }
     uint32_t* slot = nullptr;
     uint64_t  slot_words = 0;
 
@@ -699,6 +704,11 @@ __global__ void k_persistent_evolve(
     __shared__ uint32_t child_event;
     __shared__ uint32_t child_step;
     __shared__ KeptCopy child_kept;
+    __shared__ uint32_t child_keyed;
+    __shared__ StateId  child_parent;
+    __shared__ bool     twin_taken;
+    __shared__ uint64_t twin_h;
+    __shared__ StateId  twin_rep;
     __shared__ bool     capture_go;
     __shared__ StateId  id_canonical;
     __shared__ bool     id_fresh;
@@ -772,11 +782,25 @@ __global__ void k_persistent_evolve(
                 child_event  = applied.event;
                 child_step   = step + 1u;
                 child_kept   = applied.kept;
+                child_keyed  = applied.keyed;
+                child_parent = rec.state_id;
                 acc_rewrite += clock64() - t0b;
             }
             __syncthreads();
             // The child's kept edges, on every lane, before region 2 reads the child's slice.
             if (child_sid != INVALID_ID) copy_kept_edges(ds, child_kept, IrWarpAll{});
+            __syncthreads();
+            // Keyed rewrites (keyed.hpp): a child whose token set an earlier state holds takes that
+            // state's canonical results, and the warp skips its IR. One thread checks; the flag is
+            // shared so every lane takes the same branch below.
+            if (threadIdx.x == 0) {
+                twin_taken = false;
+                if (child_sid != INVALID_ID && child_keyed != 0)
+                    twin_taken = keyed_take_twin(ds, child_sid, child_parent, child_event,
+                                                 child_keyed, arena, ir_slot, ir_slot_words,
+                                                 need_ranks, qc.enabled != 0, dedup_map, forms,
+                                                 twin_h, twin_rep);
+            }
             __syncthreads();
             // Region 2 of the record. The two canonicalizations run on the WHOLE warp: every
             // lane enters the shared core together under the all-lanes policy, and the block
@@ -799,7 +823,7 @@ __global__ void k_persistent_evolve(
                 uint32_t* form = nullptr;
                 uint32_t form_words = 0;
                 ExactHashStatus key_st = ExactHashStatus::kOk;
-                if (child_sid != INVALID_ID) {
+                if (child_sid != INVALID_ID && !twin_taken) {
                     key_st = state_key_device(ds, child_sid, state_mode, arena, ir_slot,
                                               ir_slot_words, h, need_ranks, qc.enabled != 0,
                                               &form, &form_words, IrWarpAll{});
@@ -837,7 +861,12 @@ __global__ void k_persistent_evolve(
                         // canonical form (state_claim_full), is the state's canonical hash, so it
                         // is claimed before the hash is published and everything keyed by the
                         // hash -- event identity, the quotient's classes -- reads the key.
-                        if (state_mode == CanonicalizationMode::Full) {
+                        if (twin_taken) {
+                            h = twin_h;
+                            exact = h;
+                            id_canonical = dedup ? twin_rep : child_sid;
+                            id_fresh = !dedup;
+                        } else if (state_mode == CanonicalizationMode::Full) {
                             const StateClaim c =
                                 state_claim_form(ds, child_sid, h & ds.canonical_key_mask, form,
                                                  form_words, dedup_map, forms);
@@ -1175,9 +1204,15 @@ struct EngineState::PersistentScratch {
     std::unique_ptr<ExploreState> explore;
     std::unique_ptr<Pool<uint32_t>> forms;   // canonical-form records (state_claim_form)
     std::unique_ptr<DedupMap> exact;         // exact hash -> record, under None and Automatic
+    std::unique_ptr<DedupMap> keyed_rewrites;   // KeyedView::rewrites
+    std::unique_ptr<DedupMap> keyed_twins;      // KeyedView::twins
+    uint32_t* keyed_words = nullptr;             // KeyedView::words
     uint32_t* explore_frames = nullptr;
     size_t    explore_frame_words = 0;
-    ~PersistentScratch() { if (explore_frames) cudaFree(explore_frames); }
+    ~PersistentScratch() {
+        if (explore_frames) cudaFree(explore_frames);
+        if (keyed_words) cudaFree(keyed_words);
+    }
 };
 
 void EngineState::PersistentScratchFree::operator()(PersistentScratch* p) const { delete p; }
@@ -1450,6 +1485,28 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         exact_v = reuse_map(ps.exact, want_exact ? engine.config().max_states * 2u : 8u).view();
     }
 
+    // Keyed rewrites (keyed.hpp) in a one-shot Full-mode run: the DeviceState the kernels are
+    // launched with carries the rewrite and twin maps, sized so neither fills (a rewrite per
+    // event, a twin claim per state), and the run's state words, ARMED.
+    DeviceState dsk = engine.device();
+    const bool keyed = !session && state_mode == CanonicalizationMode::Full &&
+                       engine.config().keyed_rewrites;
+    if (keyed) {
+        engine.ensure_keyed();
+        dsk = engine.device();
+        if (!ps.keyed_words)
+            HG_CUDA_CHECK(cudaMalloc(&ps.keyed_words, sizeof(uint32_t) * 4), "keyed words alloc");
+        const uint32_t init[4] = {KEYED_ARMED, 0, 0, 0};
+        HG_CUDA_CHECK(cudaMemcpyAsync(ps.keyed_words, init, sizeof(init), cudaMemcpyHostToDevice, 0),
+                      "keyed words init");
+        dsk.keyed.rewrites = reuse_map(ps.keyed_rewrites, engine.config().max_events * 2u).view();
+        dsk.keyed.twins = reuse_map(ps.keyed_twins, engine.config().max_states * 2u).view();
+        dsk.keyed.words = ps.keyed_words;
+        dsk.keyed.claim_limit = engine.config().keyed_claim_limit;
+        dsk.keyed.sum_mask = engine.config().keyed_sum_mask;
+        dsk.keyed.enabled = 1;
+    }
+
     const double t_maps = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_maps0).count();
     auto t_alloc0 = std::chrono::steady_clock::now();
@@ -1528,7 +1585,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         const uint32_t n = static_cast<uint32_t>(roots.size());
         // The device view is taken once: the rank predicate reads the run's sampling parameters
         // out of it, and it must be the SAME view the kernel is handed.
-        const DeviceState dsv = engine.device();
+        const DeviceState dsv = dsk;
         k_seed_root_hashes<<<(n + block - 1) / block, block>>>(
             dsv, d_states, n,
             session ? sess_v.states : canonical_owner->view(), state_mode,
@@ -1547,7 +1604,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                      t_maps, t_alloc, t_seed);
 
     k_persistent_evolve<<<grid, kMatchBlockThreads>>>(
-        engine.device(), d_rules, num_rules, match_q.view(), scratch_matches.view(),
+        dsk, d_rules, num_rules, match_q.view(), scratch_matches.view(),
         d_cursor, d_rewrites_done,
         session ? sess_v.states : canonical_owner->view(), dedup,
         explore_threshold_u32, explore_seed, max_steps, state_mode, event_keys,
@@ -1575,6 +1632,10 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     stats.cycles_wait    = phase[4];
     for (int i = 0; i < 6; ++i) stats.cycles_rw_sub[i] = phase[5 + i];
     for (int i = 0; i < 5; ++i) stats.cycles_canon_sub[i] = phase[11 + i];
+    if (keyed)
+        HG_CUDA_CHECK(cudaMemcpy(&stats.keyed_twins, ps.keyed_words + 3, sizeof(uint32_t),
+                                 cudaMemcpyDeviceToHost),
+                      "keyed twins read");
 
     // The buffers are the engine's grow-only launch scratch and outlive this run.
     return stats;

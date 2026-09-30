@@ -224,6 +224,8 @@ struct PersistentEvolveStats {
     // "canonicalization" while containing four other calls, and an
     // optimisation aimed at the bucket cannot tell which of the five it would be aiming at.
     uint64_t cycles_canon_sub[5] = {0, 0, 0, 0, 0};
+    // States that took a twin's canonical results (keyed.hpp); 0 when the run was not keyed.
+    uint32_t keyed_twins = 0;
 };
 
 PersistentEvolveStats run_persistent_evolve(EngineState& engine,

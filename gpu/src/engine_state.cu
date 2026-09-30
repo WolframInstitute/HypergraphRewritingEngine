@@ -224,6 +224,8 @@ EngineState::~EngineState() {
         if (survivor_scratch_)       cudaFree(survivor_scratch_);
         if (state_edge_orbit_)       cudaFree(state_edge_orbit_);
         if (state_num_orbits_)       cudaFree(state_num_orbits_);
+        if (keyed_token_sum_)        cudaFree(keyed_token_sum_);
+        if (keyed_first_new_edge_)   cudaFree(keyed_first_new_edge_);
         if (edge_producer_)          cudaFree(edge_producer_);
     }
 
@@ -250,6 +252,14 @@ void EngineState::ensure_edge_orbits() {
               "EngineState init state_edge_orbit");
         HG_CUDA_CHECK(cudaMemset(state_num_orbits_, 0, sizeof(uint32_t) * cfg_.max_states),
               "EngineState init state_num_orbits");
+    }
+
+void EngineState::ensure_keyed() {
+        if (keyed_token_sum_) return;
+        HG_CUDA_CHECK(cudaMalloc(&keyed_token_sum_, sizeof(uint64_t) * cfg_.max_states),
+              "EngineState keyed token sum alloc");
+        HG_CUDA_CHECK(cudaMalloc(&keyed_first_new_edge_, sizeof(uint32_t) * cfg_.max_states),
+              "EngineState keyed first new edge alloc");
     }
 
 void EngineState::ensure_event_identity() {
@@ -361,6 +371,9 @@ DeviceState EngineState::device() const {
         d.successors_per_parent            = successors_per_parent_;
         d.state_edge_orbit        = state_edge_orbit_;
         d.state_num_orbits        = state_num_orbits_;
+        d.keyed                   = KeyedView{};
+        d.keyed.state_token_sum   = keyed_token_sum_;
+        d.keyed.state_first_new_edge = keyed_first_new_edge_;
         d.event_sig_raw_fallbacks = event_sig_fallbacks_;
         d.canonical_event_count   = canonical_event_count_;
         d.vertex_high_water       = vertex_high_water_;

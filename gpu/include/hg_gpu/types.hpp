@@ -73,7 +73,12 @@ struct DeviceEvent {
     uint8_t num_produced    = 0;
     EdgeId consumed_edges[kMaxPatternEdges] = {INVALID_ID};
     EdgeId produced_edges[kMaxPatternEdges] = {INVALID_ID};
+    // Keyed rewrites (hgcommon/token_core.hpp): the rewrite id of (rule, consumed tokens), or
+    // REWRITE_ID_UNSET until keyed_event_rid fills it, or REWRITE_ID_NONE. Read and written
+    // atomically once the event is published. It occupies the struct's tail padding.
+    uint32_t rewrite_id     = 0;
 };
+static_assert(sizeof(DeviceEvent) == 168, "DeviceEvent grew");
 
 // Causal edge: producer event → consumer event via a shared data edge.
 // Multiplicity is preserved — the same (from, to) pair appears multiple

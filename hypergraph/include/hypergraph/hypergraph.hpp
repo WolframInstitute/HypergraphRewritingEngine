@@ -649,6 +649,8 @@ class Hypergraph {
     std::atomic<uint8_t> keyed_state_{0};
     // Twin claims made; after keyed_claim_limit_ claims without a twin the run goes OFF.
     uint32_t keyed_claim_limit_ = 1024;
+    // Test lever: the twin claim key is the token sum ANDed with this (set_twin_key_mask).
+    uint64_t twin_key_mask_ = ~uint64_t{0};
     std::atomic<uint32_t> keyed_claims_{0};
     std::atomic<bool> twin_seen_{false};
 #if HG_ENGINE_STATS
@@ -975,6 +977,9 @@ public:
     }
     // Test hook, set before evolution: twin claims made without a twin before the run stops.
     void set_keyed_claim_limit(uint32_t limit) { keyed_claim_limit_ = limit; }
+    // Test hook, set before evolution: the twin claim key is the token sum ANDed with `mask`. A
+    // narrow mask makes states with different token sets share keys.
+    void set_twin_key_mask(uint64_t mask) { twin_key_mask_ = mask; }
     // Values of keyed_state_.
     enum : uint8_t { KEYED_OFF = 0, KEYED_ARMED = 1, KEYED_INTERNING = 2 };
     uint8_t keyed_state() const { return keyed_state_.load(std::memory_order_acquire); }

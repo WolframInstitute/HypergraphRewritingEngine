@@ -88,6 +88,9 @@ EngineConfig config_from_input(const EvolveInput& in) {
     cfg.canonical_key_mask     = in.canonical_key_mask;
     cfg.event_key_mask         = in.event_key_mask;
     cfg.replay_id_limit        = in.replay_id_limit;
+    cfg.keyed_rewrites         = in.keyed_rewrites;
+    cfg.keyed_claim_limit      = in.keyed_claim_limit;
+    cfg.keyed_sum_mask         = in.keyed_sum_mask;
     return cfg;
 }
 
@@ -489,12 +492,13 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
             const double pct = tot > 0 ? 100.0 / tot : 0.0;
             std::fprintf(stderr,
                          "[persistent] states=%u matches=%u arena_words=%llu cycles: "
-                         "match=%.1f%% rewrite=%.1f%% canon=%.1f%% idle=%.1f%% wait=%.1f%%\n",
+                         "match=%.1f%% rewrite=%.1f%% canon=%.1f%% idle=%.1f%% wait=%.1f%% "
+                         "keyed_twins=%u\n",
                          st.states_after, st.matches_found,
                          (unsigned long long)st.arena_words_used,
                          st.cycles_match * pct, st.cycles_rewrite * pct,
                          st.cycles_canon * pct, st.cycles_idle * pct,
-                         st.cycles_wait * pct);
+                         st.cycles_wait * pct, st.keyed_twins);
             const double rw = double(st.cycles_rw_sub[0]) + double(st.cycles_rw_sub[1]) +
                               double(st.cycles_rw_sub[2]) + double(st.cycles_rw_sub[3]) +
                               double(st.cycles_rw_sub[4]) + double(st.cycles_rw_sub[5]);
@@ -786,7 +790,7 @@ void fit_config_to_cap(EngineConfig& cfg, uint64_t cap) {
 
 uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     // Sum the pools EngineState allocates. Element sizes: Edge 24; DeviceEvent
-    // ~160; DeviceCausal/Branchial edge 12; StateEdgeSlice 8; a LockFreeList node
+    // 168; DeviceCausal/Branchial edge 12; StateEdgeSlice 8; a LockFreeList node
     // is sizeof(value)+4 rounded up; a ConcurrentMap slot is sizeof(K)+sizeof(V).
     // A 4-byte id is the unit for most index/id pools. Approximate — a 15%
     // headroom covers the small frontier/hash scratch buffers and allocation
@@ -800,7 +804,7 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     b += u64(cfg.max_state_edge_total)* 4;          // state_edge_ids
     b += u64(cfg.sig_index_buckets)   * 4 + u64(cfg.sig_index_pool) * 8;   // signature index
     b += u64(cfg.max_vertices)        * 4 + u64(cfg.inverted_pool)  * 8;   // vertex inverted index
-    b += u64(cfg.max_events)          * 160;        // event_pool (DeviceEvent)
+    b += u64(cfg.max_events)          * sizeof(DeviceEvent);   // event_pool
     b += u64(cfg.max_causal_edges)    * 12;         // causal_edge_pool
     b += u64(cfg.max_branchial_edges) * 12;         // branchial_edge_pool
     b += u64(cfg.max_edges)           * 4 + u64(cfg.edge_consumer_nodes)   * 8;   // edge_consumers
@@ -822,6 +826,11 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     b += u64(default_persistent_grid()) * u64(cfg.survivor_scratch) * 8u;    // survivor scratch
     b += u64(cfg.canonical_map_slots) * 12;         // canonical dedup map
     b += u64(cfg.canonical_form_words) * 4;         // canonical form records
+    if (cfg.keyed_rewrites) {
+        // Keyed rewrites: per-state token sum and first produced edge, the rewrite map (two
+        // slots per event) and the twin map (two slots per state).
+        b += u64(cfg.max_states) * 12 + u64(cfg.max_events) * 2 * 12 + u64(cfg.max_states) * 2 * 12;
+    }
     b += u64(cfg.match_dedup_slots)   * 12 + u64(cfg.event_canon_slots) * 12;
     b += u64(cfg.max_states)          * 8 * 76;     // matches pool (max_states*8 records ~76B)
     b += u64(cfg.max_states)          * 16;         // d_frontier + d_next_frontier + state_canonical_hash

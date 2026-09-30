@@ -151,6 +151,8 @@ int main(int argc, char** argv) {
         if (em[0] == 'f') in.event_canonicalization = hg_gpu::EventCanonicalizationMode::Full;
         if (em[0] == 'a') in.event_canonicalization = hg_gpu::EventCanonicalizationMode::Automatic;
     }
+    // HG_BENCH_KEYED=0 turns keyed rewrites off, as in bench_cpu_evolve; unset is on.
+    if (const char* kr = std::getenv("HG_BENCH_KEYED"); kr && kr[0] == '0') in.keyed_rewrites = false;
 
     // The raw unfolding is recovered by a replay whose cost is the RAW answer's, not the
     // canonical one's. HG_BENCH_RAW=0 records none of it, which is the configuration a caller

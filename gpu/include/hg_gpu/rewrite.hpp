@@ -48,6 +48,8 @@ struct AppliedMatch {
     StateId  state = INVALID_ID;
     EventId  event = INVALID_ID;   // both are INVALID_ID when a capacity claim failed
     KeptCopy kept{};
+    // Keyed rewrites (keyed.hpp): the rewrite id with REWRITE_TWIN_CANDIDATE, or 0.
+    uint32_t keyed = 0;
 };
 
 // Copy a child's kept edges. Par is a lane policy (hgcommon::IrSerial, or IrWarpAll for a
