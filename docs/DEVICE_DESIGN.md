@@ -171,15 +171,18 @@ For the anchored part and for roots:
 
 ### 4.2a Keyed rewrites
 
-A produced edge's token is (rewrite id, RHS index), the rewrite id interned exactly from the rule
-and the consumed edges' tokens (`hgcommon/token_core.hpp`). The same rewrite applied in two
-states gives its edges the same tokens, so two raw states with the same token set are isomorphic
-through the tokens: the later one takes the earlier one's class, ranks and orbits and runs no IR.
-A state's token sum (parent's sum minus consumed terms plus produced terms) selects the
-candidate; the token sets decide it, in O(edges). Nothing is interned before a run's first
-inherited match, which is its first repeated rewrite; older tokens are computed on demand from
-the edge's creator event. A run that makes 1,024 twin claims without a twin stops. Built on the
-host first; the device takes the same rule, with one lane per state in the twin check.
+A produced edge's token is (rewrite id, RHS index), the rewrite id interned exactly from the
+rule and the consumed edges' tokens (`hgcommon/token_core.hpp`). The same rewrite applied
+in two states gives its edges the same tokens, so two raw states with the same token set are
+isomorphic through the tokens: the later one takes the earlier one's class, ranks and orbits
+and runs no IR. A twin's ranks are the earlier state's labelling, which differs from its own
+on a state with automorphisms, so a run that compares rank tuples (edge-keyed event identity,
+the transition draw) does not key (`keyed_rewrites_apply`). A state's token sum (parent's sum
+minus consumed terms plus produced terms) selects the candidate; the token sets decide it, in
+O(edges). Nothing is interned before a run's first inherited match, which is its first repeated
+rewrite; older tokens are computed on demand from the edge's creator event. A run that makes
+1,024 twin claims without a twin stops. Built on the host first; the device takes the same rule,
+with one lane per state in the twin check.
 
 ### 4.3 Rewrite
 

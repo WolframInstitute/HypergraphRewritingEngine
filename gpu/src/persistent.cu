@@ -1485,12 +1485,16 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         exact_v = reuse_map(ps.exact, want_exact ? engine.config().max_states * 2u : 8u).view();
     }
 
-    // Keyed rewrites (keyed.hpp) in a Full-mode run: the DeviceState the kernels are launched
-    // with carries the rewrite and twin maps, sized so neither fills (a rewrite per event, a twin
-    // claim per state), and the state words. A session keeps its own across calls; a one-shot
-    // run starts empty and ARMED.
+    // Keyed rewrites (keyed.hpp), when hgcommon::keyed_rewrites_apply admits the run: the
+    // DeviceState the kernels are launched with carries the rewrite and twin maps, sized so neither
+    // fills (a rewrite per event, a twin claim per state), and the state words. A session keeps its
+    // own across calls; a one-shot run starts empty and ARMED.
     DeviceState dsk = engine.device();
-    const bool keyed = state_mode == CanonicalizationMode::Full && engine.config().keyed_rewrites;
+    const bool keyed = hgcommon::keyed_rewrites_apply(
+        engine.config().keyed_rewrites, state_mode == CanonicalizationMode::Full,
+        /*positional_events=*/false,
+        hgcommon::run_reads_rank_tuples(event_keys, dsk.transition_rate, dsk.num_rule_weights,
+                                        dsk.matches_per_state_rule));
     if (keyed) {
         engine.ensure_keyed();
         dsk = engine.device();

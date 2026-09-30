@@ -116,5 +116,10 @@ HG_HD inline uint32_t event_identity_words(const uint64_t* values, uint32_t n, u
     return 2u * n;
 }
 
+// True when the key set reads per-edge canonical ranks.
+HG_HD inline bool event_keys_need_ranks(EventSignatureKeys keys) {
+    return (keys & (EventKey_ConsumedEdges | EventKey_ProducedEdges)) != 0;
+}
+
 }  // namespace common
 }  // namespace HG_NAMESPACE

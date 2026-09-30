@@ -272,6 +272,33 @@ TEST(OracleCorpus, KeyedRewritesChangeNoCount) {
     EXPECT_TRUE(seen);
 }
 
+// Twins are taken unless the run compares rank tuples (hgcommon::run_reads_rank_tuples): on
+// growshrink3, whose states have automorphisms, with EVENT_SIG_NONE and EVENT_SIG_FULL, in full
+// capture and under quotient exploration (ranks matched into class frames), but not with
+// EVENT_SIG_AUTOMATIC (consumed and produced rank tuples in the signature).
+TEST(OracleCorpus, RankTupleRunsTakeNoTwins) {
+    const std::vector<RewriteRule> rules = {
+        make_rule(0).lhs({0, 1}).lhs({0, 2}).rhs({0, 1}).rhs({0, 3}).rhs({1, 3}).rhs({2, 3}).build(),
+        make_rule(1).lhs({0, 1}).lhs({1, 2}).rhs({0, 2}).build(),
+        make_rule(2).lhs({0, 1}).rhs({0, 2}).rhs({2, 1}).build()};
+    const std::vector<std::vector<VertexId>> init = {{0, 1}, {0, 2}};
+    auto twins = [&](hgcommon::EventSignatureKeys keys, bool quotient) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        hg.set_event_signature_keys(keys);
+        ParallelEvolutionEngine engine(&hg, 4);
+        engine.set_explore_from_canonical_states_only(quotient);
+        for (const auto& r : rules) engine.add_rule(r);
+        engine.evolve(init, 4);
+        return hg.twin_seen();
+    };
+    EXPECT_TRUE(twins(hgcommon::EVENT_SIG_NONE, false));
+    EXPECT_TRUE(twins(hgcommon::EVENT_SIG_FULL, false));
+    EXPECT_TRUE(twins(hgcommon::EVENT_SIG_NONE, true));
+    EXPECT_TRUE(twins(hgcommon::EVENT_SIG_FULL, true));
+    EXPECT_FALSE(twins(hgcommon::EVENT_SIG_AUTOMATIC, false));
+}
+
 TEST(OracleCorpus, DeterministicAcrossThreadCounts) {
     for (const auto& c : oracle::corpus()) {
         size_t t1 = oracle::engine_full_count(c.rules, c.init, c.oracle_steps, 1);

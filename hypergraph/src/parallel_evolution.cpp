@@ -1485,6 +1485,10 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
     }
 
     hg_->set_quotient_causal(qc);
+    hg_->set_reads_rank_tuples(hgcommon::run_reads_rank_tuples(
+        hg_->event_signature_keys(), transition_rate_,
+        static_cast<uint32_t>(rule_weights_.size()),
+        static_cast<uint32_t>(matches_per_state_rule_)));
 
     // The exploration strategy and the raw reconstruction are separate decisions, and only the
     // second is expensive. Quotient causal exploration decides state identity and costs what the

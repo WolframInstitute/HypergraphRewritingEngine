@@ -20,13 +20,7 @@
 namespace HG_NAMESPACE {
 namespace gpu {
 
-// True when the run's key set reads per-edge canonical ranks, so the rank array is worth its
-// four bytes per edge slot. Derived from the keys rather than passed alongside them, so the
-// flag cannot disagree with the key set it describes.
-inline HG_HD bool event_keys_need_ranks(EventSignatureKeys keys) {
-    return (keys & (hgcommon::EventKey_ConsumedEdges |
-                    hgcommon::EventKey_ProducedEdges)) != 0;
-}
+using hgcommon::event_keys_need_ranks;
 
 // WHETHER THIS RUN MUST COMPUTE CANONICAL EDGE RANKS. Three things read them -- the event
 // identity, the class-frame expansion, and the transition draw -- and the question is asked in

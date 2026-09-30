@@ -640,6 +640,8 @@ class Hypergraph {
     std::atomic<uint32_t> next_rewrite_id_{1};
     ConcurrentMap<uint64_t, StateId, uint64_t{0}, ~uint64_t{0}, INVALID_ID> twin_map_;
     bool keyed_rewrites_{true};
+    // Set at the start of each run (set_reads_rank_tuples): hgcommon::run_reads_rank_tuples.
+    bool reads_rank_tuples_{false};
     // The run's keyed-rewrite state. OFF: no tokens (configuration, or stopped). ARMED: nothing is
     // interned yet. INTERNING: every rewrite is interned and every new state gets a token sum,
     // from the run's first application of an inherited match (one whose edges all predate its
@@ -984,15 +986,22 @@ public:
     enum : uint8_t { KEYED_OFF = 0, KEYED_ARMED = 1, KEYED_INTERNING = 2 };
     uint8_t keyed_state() const { return keyed_state_.load(std::memory_order_acquire); }
     bool keyed_active() const { return keyed_state() != KEYED_OFF; }
-    // keyed_state_ from the configuration: ARMED when keyed rewrites are on, the mode is Full (the
-    // only mode that takes twins) and event identity is not positional (which reads each raw
-    // state's own labelling); OFF otherwise.
+    // keyed_state_ from the configuration: ARMED when hgcommon::keyed_rewrites_apply admits the
+    // run, OFF otherwise.
     void update_keyed_state() {
-        const bool on = keyed_rewrites_ &&
-                        state_canonicalization_mode_.load(std::memory_order_relaxed) ==
-                            StateCanonicalizationMode::Full &&
-                        !positional_event_identity_.load(std::memory_order_relaxed);
+        const bool on = hgcommon::keyed_rewrites_apply(
+            keyed_rewrites_,
+            state_canonicalization_mode_.load(std::memory_order_relaxed) ==
+                StateCanonicalizationMode::Full,
+            positional_event_identity_.load(std::memory_order_relaxed), reads_rank_tuples_);
         keyed_state_.store(on ? KEYED_ARMED : KEYED_OFF, std::memory_order_relaxed);
+    }
+    // Called by the engine before a run; re-derives keyed_state_ only when the value changes, so a
+    // session's later calls keep the state the earlier ones left.
+    void set_reads_rank_tuples(bool reads) {
+        if (reads == reads_rank_tuples_) return;
+        reads_rank_tuples_ = reads;
+        update_keyed_state();
     }
     // ARMED to INTERNING, at the run's first application of an inherited match; builds the token
     // cache.

@@ -934,7 +934,8 @@ TEST(Rewrite, ADeviceSessionExtendsToExactlyWhatOneRunOfTheSameBudgetProduces) {
 // the keyed session takes twins. Two blocks are the detector and ONE worker, so children are made
 // in order and a twin's hash is published before a later state claims it: with more workers the
 // twin count depends on scheduling (a twin that is not published is not waited for) and can be 0
-// on a run this small.
+// on a run this small. Events are keyed by their endpoint states (EVENT_SIG_FULL): a run that
+// reads edge ranks takes no twins (hgcommon::keyed_rewrites_apply).
 TEST(Rewrite, AKeyedDeviceSessionReachesWhatOneRunDoes) {
     constexpr uint32_t kBlocks = 2;
     hg_gpu::RewriteRule r;
@@ -945,7 +946,8 @@ TEST(Rewrite, AKeyedDeviceSessionReachesWhatOneRunDoes) {
     const std::vector<std::vector<VertexId>> init = {{0u, 1u}, {1u, 2u}, {2u, 3u}};
 
     struct Out { uint32_t states, events, twins; };
-    auto run = [&](bool keyed, bool session) {
+    auto run = [&](bool keyed, bool session,
+                   hgcommon::EventSignatureKeys keys = hgcommon::EVENT_SIG_FULL) {
         hg_gpu::EvolveInput in;
         in.rules = {r};
         in.initial_state = init;
@@ -963,7 +965,7 @@ TEST(Rewrite, AKeyedDeviceSessionReachesWhatOneRunDoes) {
         if (!session) {
             const auto st = hg_gpu::run_persistent_evolve(
                 eng, rules, {0u}, 4u, matches, arena, /*dedup=*/false, 0xFFFFFFFFu, 0,
-                hg_gpu::CanonicalizationMode::Full, hgcommon::EVENT_SIG_AUTOMATIC, kBlocks);
+                hg_gpu::CanonicalizationMode::Full, keys, kBlocks);
             return Out{st.states_after, st.canonical_events, st.keyed_twins};
         }
         hg_gpu::SessionState sess(cfg.max_states, cfg.max_events);
@@ -972,7 +974,7 @@ TEST(Rewrite, AKeyedDeviceSessionReachesWhatOneRunDoes) {
         for (uint32_t steps : {2u, 3u, 4u}) {
             const auto st = hg_gpu::run_persistent_evolve(
                 eng, rules, {0u}, steps, matches, arena, /*dedup=*/false, 0xFFFFFFFFu, 0,
-                hg_gpu::CanonicalizationMode::Full, hgcommon::EVENT_SIG_AUTOMATIC,
+                hg_gpu::CanonicalizationMode::Full, keys,
                 kBlocks, nullptr, nullptr, &v, start);
             start = steps;
             out = Out{st.states_after, st.canonical_events, st.keyed_twins};
@@ -989,6 +991,8 @@ TEST(Rewrite, AKeyedDeviceSessionReachesWhatOneRunDoes) {
                 EXPECT_GT(o.twins, 0u) << "the keyed session took no twin";
         }
     }
+    EXPECT_EQ(run(true, true, hgcommon::EVENT_SIG_AUTOMATIC).twins, 0u)
+        << "a run that reads edge ranks took a twin";
 }
 
 // The reduction rejects a redundant edge whose proof visits more events than the search's local
