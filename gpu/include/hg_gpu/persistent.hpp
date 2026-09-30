@@ -162,6 +162,11 @@ struct SessionView {
     // and Automatic the classes of the exact hash event identity reads, keyed in `exact`.
     typename Pool<uint32_t>::DeviceView forms{};
     DedupMap::DeviceView exact{};
+    // Keyed rewrites (keyed.hpp): the session's rewrite and twin maps and state words, kept across
+    // its calls as its identity is.
+    DedupMap::DeviceView keyed_rewrites{};
+    DedupMap::DeviceView keyed_twins{};
+    uint32_t* keyed_words = nullptr;
 };
 
 // Host owner of the above. Allocated once for the session, never shrunk, so a Step costs no
@@ -192,6 +197,9 @@ private:
     ExploreState explore_;
     Pool<uint32_t> forms_;
     DedupMap  exact_;
+    DedupMap  keyed_rewrites_;
+    DedupMap  keyed_twins_;
+    uint32_t* keyed_words_ = nullptr;
     StateId*  frontier_ = nullptr;
     uint32_t* step_     = nullptr;
     uint32_t* count_    = nullptr;

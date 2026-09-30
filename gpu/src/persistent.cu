@@ -1485,23 +1485,31 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         exact_v = reuse_map(ps.exact, want_exact ? engine.config().max_states * 2u : 8u).view();
     }
 
-    // Keyed rewrites (keyed.hpp) in a one-shot Full-mode run: the DeviceState the kernels are
-    // launched with carries the rewrite and twin maps, sized so neither fills (a rewrite per
-    // event, a twin claim per state), and the run's state words, ARMED.
+    // Keyed rewrites (keyed.hpp) in a Full-mode run: the DeviceState the kernels are launched
+    // with carries the rewrite and twin maps, sized so neither fills (a rewrite per event, a twin
+    // claim per state), and the state words. A session keeps its own across calls; a one-shot
+    // run starts empty and ARMED.
     DeviceState dsk = engine.device();
-    const bool keyed = !session && state_mode == CanonicalizationMode::Full &&
-                       engine.config().keyed_rewrites;
+    const bool keyed = state_mode == CanonicalizationMode::Full && engine.config().keyed_rewrites;
     if (keyed) {
         engine.ensure_keyed();
         dsk = engine.device();
-        if (!ps.keyed_words)
-            HG_CUDA_CHECK(cudaMalloc(&ps.keyed_words, sizeof(uint32_t) * 4), "keyed words alloc");
-        const uint32_t init[4] = {KEYED_ARMED, 0, 0, 0};
-        HG_CUDA_CHECK(cudaMemcpyAsync(ps.keyed_words, init, sizeof(init), cudaMemcpyHostToDevice, 0),
-                      "keyed words init");
-        dsk.keyed.rewrites = reuse_map(ps.keyed_rewrites, engine.config().max_events * 2u).view();
-        dsk.keyed.twins = reuse_map(ps.keyed_twins, engine.config().max_states * 2u).view();
-        dsk.keyed.words = ps.keyed_words;
+        if (session) {
+            dsk.keyed.rewrites = sess_v.keyed_rewrites;
+            dsk.keyed.twins = sess_v.keyed_twins;
+            dsk.keyed.words = sess_v.keyed_words;
+        } else {
+            if (!ps.keyed_words)
+                HG_CUDA_CHECK(cudaMalloc(&ps.keyed_words, sizeof(uint32_t) * 4), "keyed words alloc");
+            const uint32_t init[4] = {KEYED_ARMED, 0, 0, 0};
+            HG_CUDA_CHECK(cudaMemcpyAsync(ps.keyed_words, init, sizeof(init),
+                                          cudaMemcpyHostToDevice, 0),
+                          "keyed words init");
+            dsk.keyed.rewrites =
+                reuse_map(ps.keyed_rewrites, engine.config().max_events * 2u).view();
+            dsk.keyed.twins = reuse_map(ps.keyed_twins, engine.config().max_states * 2u).view();
+            dsk.keyed.words = ps.keyed_words;
+        }
         dsk.keyed.claim_limit = engine.config().keyed_claim_limit;
         dsk.keyed.sum_mask = engine.config().keyed_sum_mask;
         dsk.keyed.enabled = 1;
@@ -1633,7 +1641,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     for (int i = 0; i < 6; ++i) stats.cycles_rw_sub[i] = phase[5 + i];
     for (int i = 0; i < 5; ++i) stats.cycles_canon_sub[i] = phase[11 + i];
     if (keyed)
-        HG_CUDA_CHECK(cudaMemcpy(&stats.keyed_twins, ps.keyed_words + 3, sizeof(uint32_t),
+        HG_CUDA_CHECK(cudaMemcpy(&stats.keyed_twins, dsk.keyed.words + 3, sizeof(uint32_t),
                                  cudaMemcpyDeviceToHost),
                       "keyed twins read");
 
@@ -1707,10 +1715,16 @@ ExploreView ExploreState::view() const {
     return v;
 }
 
-SessionState::SessionState(uint32_t max_states, uint32_t max_events): states_(max_states * 2u), events_(max_events * 2u), explore_(max_states, max_events), forms_(max_states * 32u), exact_(max_states * 2u), cap_(max_states) {
+SessionState::SessionState(uint32_t max_states, uint32_t max_events): states_(max_states * 2u), events_(max_events * 2u), explore_(max_states, max_events), forms_(max_states * 32u), exact_(max_states * 2u), keyed_rewrites_(max_events * 2u), keyed_twins_(max_states * 2u), cap_(max_states) {
         states_.clear();
         events_.clear();
         exact_.clear();
+        keyed_rewrites_.clear();
+        keyed_twins_.clear();
+        HG_CUDA_CHECK(cudaMalloc(&keyed_words_, sizeof(uint32_t) * 4), "session keyed words alloc");
+        const uint32_t keyed_init[4] = {KEYED_ARMED, 0, 0, 0};
+        HG_CUDA_CHECK(cudaMemcpy(keyed_words_, keyed_init, sizeof(keyed_init), cudaMemcpyHostToDevice),
+                      "session keyed words init");
         HG_CUDA_CHECK(cudaMalloc(&frontier_, sizeof(StateId) * cap_), "session frontier alloc");
         HG_CUDA_CHECK(cudaMalloc(&step_, sizeof(uint32_t) * cap_), "session frontier step alloc");
         HG_CUDA_CHECK(cudaMalloc(&count_, sizeof(uint32_t)), "session frontier count alloc");
@@ -1722,6 +1736,7 @@ SessionState::~SessionState() {
         if (frontier_) cudaFree(frontier_);
         if (step_)     cudaFree(step_);
         if (count_)    cudaFree(count_);
+        if (keyed_words_) cudaFree(keyed_words_);
     }
 
 uint32_t SessionState::frontier_size() const {
@@ -1771,6 +1786,9 @@ SessionView SessionState::view() {
         v.explore        = explore_.view();
         v.forms          = forms_.view();
         v.exact          = exact_.view();
+        v.keyed_rewrites = keyed_rewrites_.view();
+        v.keyed_twins    = keyed_twins_.view();
+        v.keyed_words    = keyed_words_;
         return v;
     }
 

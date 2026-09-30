@@ -928,6 +928,65 @@ TEST(Rewrite, ADeviceSessionExtendsToExactlyWhatOneRunOfTheSameBudgetProduces) {
         << "a session did not reach the same event set as one run of the same budget";
 }
 
+// Keyed rewrites in a device session (keyed.hpp): the session keeps its rewrite map, twin map and
+// keyed state across calls. Under full capture, where twins occur, a three-call session reaches
+// the states and events one run of the same budget reaches, with keyed rewrites on and off, and
+// the keyed session takes twins.
+TEST(Rewrite, AKeyedDeviceSessionReachesWhatOneRunDoes) {
+    hg_gpu::RewriteRule r;
+    r.lhs = {{0, 1}, {1, 2}};
+    r.rhs = {{0, 1}, {1, 3}, {3, 2}};
+    r.num_lhs_vars = 3;
+    r.num_rhs_vars = 4;
+    const std::vector<std::vector<VertexId>> init = {{0u, 1u}, {1u, 2u}, {2u, 3u}};
+
+    struct Out { uint32_t states, events, twins; };
+    auto run = [&](bool keyed, bool session) {
+        hg_gpu::EvolveInput in;
+        in.rules = {r};
+        in.initial_state = init;
+        in.num_steps = 4;
+        in.canonicalization = hg_gpu::CanonicalizationMode::Full;
+        in.keyed_rewrites = keyed;
+        hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
+        hg_gpu::EngineState eng(cfg);
+        hg_gpu::upload_initial_state(eng, init);
+        std::vector<hg_gpu::DeviceRule> rules = {hg_gpu::make_device_rule(r)};
+        hg_gpu::Pool<hg_gpu::MatchRecord> matches(cfg.max_states * 8u);
+        matches.reset();
+        hg_gpu::DeviceArena arena(32ull << 20);
+        Out out{0, 0, 0};
+        if (!session) {
+            const auto st = hg_gpu::run_persistent_evolve(
+                eng, rules, {0u}, 4u, matches, arena, /*dedup=*/false, 0xFFFFFFFFu, 0,
+                hg_gpu::CanonicalizationMode::Full, hgcommon::EVENT_SIG_AUTOMATIC);
+            return Out{st.states_after, st.canonical_events, st.keyed_twins};
+        }
+        hg_gpu::SessionState sess(cfg.max_states, cfg.max_events);
+        hg_gpu::SessionView v = sess.view();
+        uint32_t start = 0;
+        for (uint32_t steps : {2u, 3u, 4u}) {
+            const auto st = hg_gpu::run_persistent_evolve(
+                eng, rules, {0u}, steps, matches, arena, /*dedup=*/false, 0xFFFFFFFFu, 0,
+                hg_gpu::CanonicalizationMode::Full, hgcommon::EVENT_SIG_AUTOMATIC,
+                /*blocks=*/0, nullptr, nullptr, &v, start);
+            start = steps;
+            out = Out{st.states_after, st.canonical_events, st.keyed_twins};
+        }
+        return out;
+    };
+    const Out ref = run(false, false);
+    for (bool keyed : {false, true}) {
+        for (bool session : {false, true}) {
+            const Out o = run(keyed, session);
+            EXPECT_EQ(o.states, ref.states) << "keyed " << keyed << " session " << session;
+            EXPECT_EQ(o.events, ref.events) << "keyed " << keyed << " session " << session;
+            if (keyed && session)
+                EXPECT_GT(o.twins, 0u) << "the keyed session took no twin";
+        }
+    }
+}
+
 // The reduction rejects a redundant edge whose proof visits more events than the search's local
 // arrays hold: the calling block reruns the search in its global scratch slice. Past that slice
 // the edge is kept and kTrScratchOverflow is recorded, which grow-and-retry grows.
