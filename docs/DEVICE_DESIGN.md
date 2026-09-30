@@ -210,8 +210,6 @@ slots) is a warp prefix sum and one atomic. The per-record phase-timing atomics
   ballot. A single claim costs one or two memory round trips in place of one per slot.
 - Batched claims: a warp claims 32 states at once, one per lane, each probing independently.
 - Records (canonical forms) are allocated per warp and compared by the lanes of the warp.
-- Epoch tags: each slot holds the run's epoch, so a table is valid for a new run without
-  clearing; a slot from an old epoch reads as empty. This removes the per-call map clears.
 
 ### 4.6 Replay
 
@@ -250,9 +248,11 @@ search runs one event per lane, and its scratch comes from per-warp slices.
 ### 4.7 Per-call cost
 
 - Every buffer is allocated once per engine and grows only.
-- Tables are epoch-tagged (4.5). Pools and queues reset by writing their counters. The remaining
-  per-run clears are the used prefixes of per-state and per-edge arrays, done by one kernel over a
-  list of ranges.
+- Pools and queues reset by writing their counters. Hash tables are cleared per run, in one
+  kernel with the used prefixes of per-state and per-edge arrays. Epoch tags were built and checked
+  and are not used: the tables they could serve are the claim maps, at most 12.6 MB per call at the
+  default size, and they would shorten claim keys to 56 bits; the large per-call clears are maps
+  keyed by exact 64-bit values, which cannot carry an epoch.
 - The run's counters and results are read back in one batch, as now.
 
 ## 5. Expected effect, by the rules they come from
@@ -267,7 +267,7 @@ search runs one event per lane, and its scratch comes from per-warp slices.
 | Shared chunks | O(|S|) copy per child state |
 | Replay without producer arrays | O(nslots) memory per instance: 17 GB for bigpath 256 d3 |
 | Branchial from the class overlap list | O(K^2) tests per instance |
-| Epoch-tagged tables | about 75 MB of clears per call |
+| Interleaved power-of-two tables, warp-cooperative probes | two memory round trips per hit, a modulo per probe step, one slot per thread |
 
 Each change is judged by time and instruction counts: warp instructions and instructions per
 active lane (ncu, one launch, the GPU otherwise idle), host instructions (callgrind), device
