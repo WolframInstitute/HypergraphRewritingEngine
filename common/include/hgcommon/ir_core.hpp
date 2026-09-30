@@ -111,7 +111,7 @@ HG_HD inline uint64_t ir_scratch_words(uint32_t n_verts, uint32_t n_edges,
       + 2 * ir_bitset_words(n_verts)        // worklist, as uint64
       + e + e + e                           // inc_edges, edge_epoch, form_order
       + n + n + 2 * n                       // touched, on_touched, torder (2n: sort scratch)
-      + n + n + (n + 1) + 2 * occ           // sig_off, sig_cnt, gstart, sig_buf as uint64
+      + n + n + (n + 1) + 2 * (occ + e)     // sig_off, sig_cnt, gstart, sig_buf as uint64
       + n + n + n + n + n + n               // path, first_path, labeling, first_labeling, inv, best_lab
       + 4 * n + 3 * n                       // the in-place partition (lab, pos, cell_of, clen_at) + trail
       + 3 * (occ + e) + e                   // cur_form, best_form, first_form, best_order
@@ -655,32 +655,45 @@ HG_HD inline void ir_refine(
 // -----------------------------------------------------------------------------------------
 HG_HD inline void ir_build_form(
     const uint8_t* ea, const uint32_t* eoff, const uint32_t* ev,
-    uint32_t n_edges, const uint32_t* labeling, uint32_t* form, uint32_t* order, uint32_t* tmp)
+    uint32_t n_edges, const uint32_t* labeling, uint32_t* form, uint32_t* order, uint32_t* tmp,
+    uint64_t* keys)
 {
     // order[] sorts edge indices by the relabeled vertex tuple, prefix-shorter first, ties
     // broken by INPUT INDEX. Tied edges have identical canonical content and so contribute the
     // same bytes to the form either way -- the tie-break does not move the hash. It is there so
     // that order[] is a well-defined permutation, which is what makes a per-edge canonical RANK
     // meaningful: rank is the position an edge takes here.
-    for (uint32_t e = 0; e < n_edges; ++e) order[e] = e;
+    //
+    // `keys` (n_edges + total occurrences words of uint64 capacity, the refinement's sig_buf)
+    // holds each edge's first two labels as one key, (l0 + 1) << 32 | (l1 + 1), 0 for an absent
+    // l1, which orders as the tuple prefix does, and after them the relabeled tuples, so a
+    // comparison reads no labeling indirection and most are decided by the key alone.
+    uint32_t* rel = reinterpret_cast<uint32_t*>(keys + n_edges);
+    for (uint32_t e = 0; e < n_edges; ++e) {
+        order[e] = e;
+        const uint32_t la = ea[e];
+        for (uint32_t k = 0; k < la; ++k) rel[eoff[e] + k] = labeling[ev[eoff[e] + k]];
+        keys[e] = (uint64_t(rel[eoff[e]] + 1u) << 32) | (la > 1 ? rel[eoff[e] + 1] + 1u : 0u);
+    }
     struct EdgeCmp {
-        const uint8_t* ea; const uint32_t* eoff; const uint32_t* ev; const uint32_t* labeling;
+        const uint8_t* ea; const uint32_t* eoff; const uint32_t* rel; const uint64_t* keys;
         HG_HD int operator()(uint32_t a, uint32_t b) const {
+            if (keys[a] != keys[b]) return keys[a] < keys[b] ? -1 : 1;
             const uint32_t la = ea[a], lb = ea[b], m = la < lb ? la : lb;
-            for (uint32_t k = 0; k < m; ++k) {
-                const uint32_t x = labeling[ev[eoff[a] + k]], y = labeling[ev[eoff[b] + k]];
+            for (uint32_t k = 2; k < m; ++k) {
+                const uint32_t x = rel[eoff[a] + k], y = rel[eoff[b] + k];
                 if (x != y) return x < y ? -1 : 1;
             }
             if (la != lb) return la < lb ? -1 : 1;
             return a < b ? -1 : (a > b ? 1 : 0);
         }
     };
-    ir_sort_idx(order, n_edges, EdgeCmp{ea, eoff, ev, labeling}, tmp);
+    ir_sort_idx(order, n_edges, EdgeCmp{ea, eoff, rel, keys}, tmp);
     uint32_t w = 0;
     for (uint32_t i = 0; i < n_edges; ++i) {
         const uint32_t e = order[i];
         form[w++] = ea[e];
-        for (uint32_t k = 0; k < ea[e]; ++k) form[w++] = labeling[ev[eoff[e] + k]];
+        for (uint32_t k = 0; k < ea[e]; ++k) form[w++] = rel[eoff[e] + k];
     }
 }
 
@@ -835,7 +848,8 @@ HG_HD inline IrResult ir_canonical_hash(
     uint32_t* gen_fix   = sc.u32(gen_cap);
     uint32_t* depths    = sc.u32(uint64_t(max_depth) * ir_depth_words(n));
     uint64_t* worklist  = sc.u64(ir_bitset_words(n));
-    uint64_t* sig_buf   = sc.u64(total_occ);
+    // Refinement's signatures, and at a leaf ir_build_form's keys and relabeled tuples.
+    uint64_t* sig_buf   = sc.u64(total_occ + n_edges);
 
     // Per-depth block: five partition arrays, the sorted target cell, its covered flags, and
     // the frame scalars.
@@ -887,7 +901,7 @@ HG_HD inline IrResult ir_canonical_hash(
     auto leaf = [&](const IrPartition& p, uint32_t depth) {
         if (out_work) ++out_work->leaves;
         for (uint32_t v = 0; v < n; ++v) labeling[v] = p.cell_of[v];
-        ir_build_form(ea, eoff, ev, n_edges, labeling, cur_form, form_order, inc_edges);
+        ir_build_form(ea, eoff, ev, n_edges, labeling, cur_form, form_order, inc_edges, sig_buf);
         if (!has_best || ir_cmp_form(cur_form, best_form, form_words) < 0) {
             for (uint32_t i = 0; i < form_words; ++i) best_form[i] = cur_form[i];
             // The winning leaf's edge order IS the canonical rank assignment, and the winner
