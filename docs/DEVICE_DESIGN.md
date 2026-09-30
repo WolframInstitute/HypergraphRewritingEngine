@@ -200,14 +200,15 @@ atomics (`rewrite.cu:536-542`) are removed; stats go to per-warp counters flushe
 
 ### 4.4 Canonicalisation
 
-- States of every size: IR on a tile of four lanes (`IrTile<4>`), up to eight states per warp,
-  as many as fit the block's scratch region (a 130-edge cycle needs about 13.5K words of the
-  65,536, so four); a batch on fewer than four lanes runs on the whole warp. The refinement is
-  leader-serial on a cycle-like state, so a large state on the warp leaves most lanes idle, and
-  four in flight per warp cut bigpath n128 by 16%. One state per lane
-  (the serial policy) costs 3.2-7.4x the warp's per-state latency for 4-10x its throughput per
-  warp: saturated runs gain and latency-bound ones lose (wolftri +15%); four lanes keep most of
-  the gain (cycle4 -40% against -54%) at wolftri +4%.
+- States of every size: IR on tiles whose width is a run-time value (`IrTile`), as many states
+  per warp as fit the block's scratch region (a 130-edge cycle needs about 13.5K words of the
+  65,536, so four). A batch holds up to eight states on four-lane tiles; a block busy for 16
+  consecutive iterations claims up to 32, run one per lane. The refinement is leader-serial on a
+  cycle-like state, so a large state on the warp leaves most lanes idle, and four in flight per
+  warp cut bigpath n128 by 16%. One state per lane costs 3.2-7.4x the warp's per-state latency
+  for 4-10x its throughput per warp, so it runs only when every block is busy: cycle4 -12%,
+  multirule -15%, disc2x2 -42% against four-lane tiles throughout, the latency-bound runs
+  level.
 - Medium and large states: the refinement is made warp-parallel. A refinement round is a
   segmented sort of (cell, signature) keys and a scan for cell boundaries, both warp or block
   primitives; the leader-only splitter pop, gather and split (`ir_core.hpp:434-608`) become one
