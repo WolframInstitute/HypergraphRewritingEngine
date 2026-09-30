@@ -110,7 +110,7 @@ HG_HD inline uint64_t ir_scratch_words(uint32_t n_verts, uint32_t n_edges,
         (n + 1) + occ + occ + n             // occ_off, occ_edge, occ_pos, cursor
       + 2 * ir_bitset_words(n_verts)        // worklist, as uint64
       + e + e + e                           // inc_edges, edge_epoch, form_order
-      + n + n + 2 * n                       // touched, on_touched, torder (2n: split staging)
+      + n + n + 2 * n                       // touched, on_touched, torder (2n: sort scratch)
       + n + n + (n + 1) + 2 * occ           // sig_off, sig_cnt, gstart, sig_buf as uint64
       + n + n + n + n + n + n               // path, first_path, labeling, first_labeling, inv, best_lab
       + 4 * n + 3 * n                       // the in-place partition (lab, pos, cell_of, clen_at) + trail
@@ -228,6 +228,41 @@ HG_HD inline void ir_heapsort_idx(uint32_t* a, uint32_t n, Cmp cmp) {
         const uint32_t t = a[0]; a[0] = a[end]; a[end] = t;
         sift(0, end);
     }
+}
+
+// The same sort with `tmp` (n words) as merge scratch: runs of IR_MERGE_RUN insertion-sorted,
+// then bottom-up merges. About n log2(n / IR_MERGE_RUN) comparisons against heapsort's
+// 2 n log2 n, which matters because each comparison here reads a run or an edge tuple. Stable;
+// the comparators' ties are the same as ir_heapsort_idx's, so either sort yields the same
+// output.
+constexpr uint32_t IR_MERGE_RUN = IR_SMALL_SORT;
+template <class Cmp>
+HG_HD inline void ir_sort_idx(uint32_t* a, uint32_t n, Cmp cmp, uint32_t* tmp) {
+    if (n <= IR_SMALL_SORT) { ir_heapsort_idx(a, n, cmp); return; }
+    for (uint32_t lo = 0; lo < n; lo += IR_MERGE_RUN) {
+        const uint32_t hi = lo + IR_MERGE_RUN < n ? lo + IR_MERGE_RUN : n;
+        for (uint32_t i = lo + 1; i < hi; ++i) {
+            const uint32_t key = a[i];
+            uint32_t j = i;
+            while (j > lo && cmp(a[j - 1], key) > 0) { a[j] = a[j - 1]; --j; }
+            a[j] = key;
+        }
+    }
+    if (n <= IR_MERGE_RUN) return;
+    uint32_t* src = a;
+    uint32_t* dst = tmp;
+    for (uint32_t w = IR_MERGE_RUN; w < n; w *= 2) {
+        for (uint32_t lo = 0; lo < n; lo += 2 * w) {
+            const uint32_t mid = lo + w < n ? lo + w : n;
+            const uint32_t hi = lo + 2 * w < n ? lo + 2 * w : n;
+            uint32_t i = lo, j = mid, k = lo;
+            while (i < mid && j < hi) dst[k++] = cmp(src[j], src[i]) < 0 ? src[j++] : src[i++];
+            while (i < mid) dst[k++] = src[i++];
+            while (j < hi) dst[k++] = src[j++];
+        }
+        uint32_t* t = src; src = dst; dst = t;
+    }
+    if (src != a) for (uint32_t i = 0; i < n; ++i) a[i] = src[i];
 }
 
 // Lexicographic compare of two sorted uint64 runs, shorter-is-smaller on a prefix. This is the
@@ -357,7 +392,7 @@ HG_HD inline void ir_initial_partition(
             return a < b ? -1 : (a > b ? 1 : 0);
         }
     };
-    ir_heapsort_idx(order, n_verts, SigCmp{sig_buf, occ_off});
+    ir_sort_idx(order, n_verts, SigCmp{sig_buf, occ_off}, order + n_verts);
 
     pi.n = n_verts;
     pi.ncells = 0;
@@ -515,7 +550,8 @@ HG_HD inline void ir_refine(
                 return ir_cmp_run(sig + off[a], cnt[a], sig + off[b], cnt[b]);
             }
         };
-        ir_heapsort_idx(torder, n_touched, TouchedCmp{pi.cell_of, sig_buf, sig_off, sig_cnt});
+        ir_sort_idx(torder, n_touched, TouchedCmp{pi.cell_of, sig_buf, sig_off, sig_cnt},
+                    torder + n);
 
         // Each cell's touched vertices are now a contiguous run of torder; split that cell.
         uint32_t i = 0;
@@ -619,7 +655,7 @@ HG_HD inline void ir_refine(
 // -----------------------------------------------------------------------------------------
 HG_HD inline void ir_build_form(
     const uint8_t* ea, const uint32_t* eoff, const uint32_t* ev,
-    uint32_t n_edges, const uint32_t* labeling, uint32_t* form, uint32_t* order)
+    uint32_t n_edges, const uint32_t* labeling, uint32_t* form, uint32_t* order, uint32_t* tmp)
 {
     // order[] sorts edge indices by the relabeled vertex tuple, prefix-shorter first, ties
     // broken by INPUT INDEX. Tied edges have identical canonical content and so contribute the
@@ -639,7 +675,7 @@ HG_HD inline void ir_build_form(
             return a < b ? -1 : (a > b ? 1 : 0);
         }
     };
-    ir_heapsort_idx(order, n_edges, EdgeCmp{ea, eoff, ev, labeling});
+    ir_sort_idx(order, n_edges, EdgeCmp{ea, eoff, ev, labeling}, tmp);
     uint32_t w = 0;
     for (uint32_t i = 0; i < n_edges; ++i) {
         const uint32_t e = order[i];
@@ -851,7 +887,7 @@ HG_HD inline IrResult ir_canonical_hash(
     auto leaf = [&](const IrPartition& p, uint32_t depth) {
         if (out_work) ++out_work->leaves;
         for (uint32_t v = 0; v < n; ++v) labeling[v] = p.cell_of[v];
-        ir_build_form(ea, eoff, ev, n_edges, labeling, cur_form, form_order);
+        ir_build_form(ea, eoff, ev, n_edges, labeling, cur_form, form_order, inc_edges);
         if (!has_best || ir_cmp_form(cur_form, best_form, form_words) < 0) {
             for (uint32_t i = 0; i < form_words; ++i) best_form[i] = cur_form[i];
             // The winning leaf's edge order IS the canonical rank assignment, and the winner
@@ -977,7 +1013,7 @@ HG_HD inline IrResult ir_canonical_hash(
                     return 0;
                 }
             };
-            ir_heapsort_idx(tuple_order, n_edges, TupCmp{ea, eoff, ev});
+            ir_sort_idx(tuple_order, n_edges, TupCmp{ea, eoff, ev}, inc_edges);
 
             // Compare edge `cand`'s tuple with g applied to `src`'s tuple, lazily.
             auto cmp_img = [&](uint32_t cand, const uint32_t* g, uint32_t src) -> int {
@@ -1069,7 +1105,7 @@ HG_HD inline IrResult ir_canonical_hash(
                     return a < b ? -1 : (a > b ? 1 : 0);
                 }
             };
-            ir_heapsort_idx(cell, cl, AscCmp{});
+            ir_sort_idx(cell, cl, AscCmp{}, torder + n);
             cell_n_of(d) = cl;
             next_of(d) = 0;
             // Clear the flags this node can consult, which are exactly the target cell's

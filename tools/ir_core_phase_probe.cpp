@@ -300,7 +300,7 @@ int main(int argc, char** argv) {
             auto& f = flat[i]; auto& v = views[i];
             for (uint32_t x = 0; x < f.n_verts; ++x) v.labeling[x] = v.pi.cell_of[x];
             hgcommon::ir_build_form(f.ea.data(), f.eoff.data(), f.ev.data(), f.n_edges(),
-                                    v.labeling.data(), v.form, v.form_order);
+                                    v.labeling.data(), v.form, v.form_order, v.inc_edges);
             sink += hgcommon::ir_hash_form(v.form, f.n_edges(), f.n_verts);
         }
     });
