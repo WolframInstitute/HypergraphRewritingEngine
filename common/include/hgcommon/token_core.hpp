@@ -56,6 +56,20 @@ HG_HD inline bool keyed_rewrites_apply(bool requested, bool full_mode, bool posi
     return requested && full_mode && !positional_events && !reads_rank_tuples;
 }
 
+// What one twin claim does to a run's keying. A claim that finds another state with the same
+// token set marks twins seen, whether that state's results are taken or not yet published; a run
+// that has made `claim_limit` claims finding none, with no twin seen, stops keying.
+//   Ctx: bool seen() const; void set_seen(); uint32_t add_claim() (the count after this one);
+//        void switch_off().
+template <class Ctx>
+HG_HD inline void keyed_note_claim(Ctx& k, bool found_twin, uint32_t claim_limit) {
+    if (found_twin) {
+        if (!k.seen()) k.set_seen();
+        return;
+    }
+    if (!k.seen() && k.add_claim() >= claim_limit && !k.seen()) k.switch_off();
+}
+
 // rewrite_id >= 1, index < 256.
 HG_HD inline uint64_t token_produced(uint32_t rewrite_id, uint32_t index) {
     return TOKEN_PRODUCED | (static_cast<uint64_t>(rewrite_id) << 8) | (index & 0xFFu);

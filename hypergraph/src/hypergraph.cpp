@@ -300,23 +300,28 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
             const StateId twin = claim_twin(new_sid, token_sum, ids, at);
             uint64_t key = 0;
             StateId rep = INVALID_ID;
-            const bool taken = twin != INVALID_ID && twin != new_sid &&
-                take_twin(new_sid, twin, need_ranks, quotient, key, rep, ids, at);
+            const bool found_twin = twin != INVALID_ID && twin != new_sid;
+            const bool taken =
+                found_twin && take_twin(new_sid, twin, need_ranks, quotient, key, rep, ids, at);
             worker_scratch().release(mk);
+            struct Counters {
+                Hypergraph& hg;
+                bool seen() const { return hg.twin_seen_.load(std::memory_order_relaxed); }
+                void set_seen() { hg.twin_seen_.store(true, std::memory_order_relaxed); }
+                uint32_t add_claim() {
+                    return hg.keyed_claims_.fetch_add(1, std::memory_order_relaxed) + 1;
+                }
+                void switch_off() { hg.keyed_state_.store(KEYED_OFF, std::memory_order_relaxed); }
+            } counters{*this};
+            hgcommon::keyed_note_claim(counters, found_twin, keyed_claim_limit_);
             if (taken) {
                 HG_STAT(twin_reuses_.fetch_add(1, std::memory_order_relaxed));
-                if (!twin_seen_.load(std::memory_order_relaxed))
-                    twin_seen_.store(true, std::memory_order_relaxed);
                 hgcommon::atomic_ref<uint64_t>(states_[new_sid].canonical_hash)
                     .store(key, std::memory_order_release);
                 hgcommon::atomic_ref<StateId>(states_[new_sid].canonical_id)
                     .store(rep, std::memory_order_release);
                 return {rep, new_sid, false};
             }
-            if (!twin_seen_.load(std::memory_order_relaxed) &&
-                keyed_claims_.fetch_add(1, std::memory_order_relaxed) + 1 >= keyed_claim_limit_ &&
-                !twin_seen_.load(std::memory_order_relaxed))
-                keyed_state_.store(KEYED_OFF, std::memory_order_relaxed);
         }
     }
     // The state's IR canonical form, filled by whichever call below computes its IR hash: in

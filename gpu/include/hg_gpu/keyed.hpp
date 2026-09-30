@@ -264,14 +264,15 @@ __device__ inline bool keyed_take_twin(const DeviceState& ds, StateId child, Sta
             }
         }
     }
-    if (taken) {
-        if (keyed_load(k.words + 2) == 0) atomicExch(k.words + 2, 1u);
-        atomicAdd(k.words + 3, 1u);
-    } else if (keyed_load(k.words + 2) == 0 &&
-               atomicAdd(k.words + 1, 1u) + 1u >= k.claim_limit &&
-               keyed_load(k.words + 2) == 0) {
-        atomicExch(k.words, static_cast<uint32_t>(KEYED_OFF));
-    }
+    if (taken) atomicAdd(k.words + 3, 1u);
+    struct Words {
+        const KeyedView& k;
+        __device__ bool seen() const { return keyed_load(k.words + 2) != 0; }
+        __device__ void set_seen() { atomicExch(k.words + 2, 1u); }
+        __device__ uint32_t add_claim() { return atomicAdd(k.words + 1, 1u) + 1u; }
+        __device__ void switch_off() { atomicExch(k.words, static_cast<uint32_t>(KEYED_OFF)); }
+    } w{k};
+    hgcommon::keyed_note_claim(w, t != child && t != INVALID_ID, k.claim_limit);
     return taken;
 }
 
