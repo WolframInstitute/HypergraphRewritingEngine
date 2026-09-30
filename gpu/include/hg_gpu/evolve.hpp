@@ -338,7 +338,7 @@ struct EngineConfig {
     // The replay refuses raw event ids at or past this (kReplayIdsExhausted).
     // hgcommon::QR_ID_LIMIT except in tests.
     uint32_t replay_id_limit      = hgcommon::QR_ID_LIMIT;
-    // Keyed rewrites in one-shot Full-mode runs (keyed.hpp), and the claims without a twin after
+    // Keyed rewrites in Full-mode persistent runs (keyed.hpp), and the claims without a twin after
     // which a run stops keying.
     bool     keyed_rewrites       = true;
     uint32_t keyed_claim_limit    = 1024;

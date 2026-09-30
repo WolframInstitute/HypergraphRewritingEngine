@@ -31,9 +31,9 @@ struct DeviceRule;
 // pulling in cuda_runtime.h. The full definition lives there; this header
 // transitively re-exports it via #include "hg_gpu/evolve.hpp".
 
-// Keyed rewrites on the device (keyed.hpp; the rule is hgcommon/token_core.hpp). A one-shot
-// Full-mode persistent run sets `enabled` and the two maps on the DeviceState it launches with;
-// every other launch has it clear.
+// Keyed rewrites on the device (keyed.hpp; the rule is hgcommon/token_core.hpp). A Full-mode
+// persistent run sets `enabled` and the two maps (its own, or its session's) on the DeviceState it
+// launches with; every other launch has it clear.
 struct KeyedView {
     uint64_t* state_token_sum      = nullptr;   // [max_states], 0 until computed
     uint32_t* state_first_new_edge = nullptr;   // [max_states], INVALID_ID for a root
