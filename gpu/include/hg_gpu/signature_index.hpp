@@ -25,7 +25,7 @@ public:
         typename LockFreeList<EdgeId>::DeviceView list;
         uint32_t mask;  // = num_buckets - 1
 
-        __device__ uint32_t insert(EdgeId eid, uint64_t signature_hash) {
+        __device__ uint32_t insert(EdgeId eid, uint64_t signature_hash) const {
             return list.push(static_cast<uint32_t>(signature_hash) & mask, eid);
         }
 

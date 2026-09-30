@@ -134,7 +134,7 @@ using MatchJoinState = hgcommon::JoinState<kMaxPatternEdges, kMaxVars, EdgeId, V
 // edge-injectivity rule, the binding and its unwind, and which pattern position is bound
 // next; this supplies candidate enumeration and nothing else.
 struct MatchJoinCtx {
-    DeviceState       ds;
+    const DeviceState& ds;
     const DeviceRule& rule;
     StateId           state_id;
 
@@ -289,7 +289,7 @@ __device__ __noinline__ bool emit_admit(const DeviceState& ds, StateId state_id,
 // same reason as emit_admit: a lambda called twice instantiated the whole DFS twice and ptxas
 // ran out of memory. `ctl` null emits every match.
 __device__ __noinline__ void match_state_rule_pass(
-        DeviceState ds, const DeviceRule* rules, StateId state_id, uint32_t rid, uint32_t step,
+        const DeviceState& ds, const DeviceRule* rules, StateId state_id, uint32_t rid, uint32_t step,
         typename Pool<MatchRecord>::DeviceView out, const EmitCtl* ctl) {
     const DeviceRule& rule = rules[rid];
 
@@ -367,7 +367,7 @@ __device__ __noinline__ void match_state_rule_pass(
 // blocks of the other rules do nothing. The spine chooses among all of a state's transitions:
 // when none survives its draw, the one with the smallest rank is emitted. That needs the whole
 // state in one block.
-__device__ void match_state_rule(DeviceState       ds,
+__device__ void match_state_rule(const DeviceState& ds,
                                  const DeviceRule* rules,
                                  StateId           state_id,
                                  uint32_t          rid,
@@ -449,7 +449,7 @@ __device__ void match_state_rule(DeviceState       ds,
 namespace {
 
 // Batch driver: one block per (state, rule) pair of a state set.
-__global__ void k_match_batch(DeviceState      ds,
+__global__ void k_match_batch(const __grid_constant__ DeviceState ds,
                               const DeviceRule* rules,
                               uint32_t          num_rules,
                               const StateId*    state_ids,

@@ -8,7 +8,7 @@
 namespace HG_NAMESPACE {
 namespace gpu {
 
-__device__ uint64_t content_hash_state_device(DeviceState ds, StateId sid) {
+__device__ uint64_t content_hash_state_device(const DeviceState& ds, StateId sid) {
     if (sid >= ds.max_states) return 0;
     // The rule is hgcommon::ContentHasher; the iteration is DeviceContentCursor, which
     // state_claim_content compares through.

@@ -54,7 +54,7 @@ HG_HD inline bool run_needs_exact_hash(EventSignatureKeys event_keys, double tra
 // UINT32_MAX when the state has no ranks or the edge is not in it. The caller substitutes the
 // raw edge id and counts it, because a signature built from an id is not an isomorphism
 // invariant and a silent substitution would make that invisible.
-__device__ __forceinline__ uint32_t edge_rank_in_state_device(DeviceState ds, StateId sid,
+__device__ __forceinline__ uint32_t edge_rank_in_state_device(const DeviceState& ds, StateId sid,
                                                               EdgeId edge) {
     if (!ds.state_edge_rank || sid >= ds.max_states) return UINT32_MAX;
     StateEdgeSlice sl = ds.state_edge_slices[sid];
@@ -104,7 +104,7 @@ __device__ inline uint32_t event_values_device(const DeviceState& ds, EventId ei
 // the first as its canonical id. The signature selects the key and a key hit compares the values
 // recomputed from the class's first event (the host's Hypergraph::claim_event); the class's key
 // is the signature stamped. Both endpoint states' exact hashes are published before this runs.
-__device__ inline void stamp_event_signature(DeviceState ds, EventId eid,
+__device__ inline void stamp_event_signature(const DeviceState& ds, EventId eid,
                                              EventSignatureKeys keys,
                                              DedupMap::DeviceView event_map) {
     uint64_t values[hgcommon::EVENT_SIG_MAX_VALUES];

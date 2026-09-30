@@ -28,7 +28,7 @@ public:
         // (v, edge_id) occurrence — i.e. for an edge {a, b, c} the rewrite
         // kernel calls insert(a, eid), insert(b, eid), insert(c, eid).
         // For a self-loop {a, a} it calls insert twice (degree counts).
-        __device__ uint32_t insert(VertexId v, EdgeId eid) {
+        __device__ uint32_t insert(VertexId v, EdgeId eid) const {
             return list.push(v, eid);
         }
 

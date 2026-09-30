@@ -99,7 +99,7 @@ struct StateIdentity {
     bool    fresh;
 };
 
-__device__ inline StateIdentity state_identity(DeviceState ds, StateId sid, uint64_t hash,
+__device__ inline StateIdentity state_identity(const DeviceState& ds, StateId sid, uint64_t hash,
                                                DedupMap::DeviceView map, bool dedup) {
     if (!dedup) return {sid, true};
     if (hash == 0) {
@@ -259,7 +259,7 @@ __device__ inline StateClaim state_claim_content(const DeviceState& ds, StateId 
 }
 
 // Whether a fresh state is kept for expansion: the exploration coin and the two hard bounds.
-__device__ inline bool state_retained(DeviceState ds, StateId sid, uint32_t step,
+__device__ inline bool state_retained(const DeviceState& ds, StateId sid, uint32_t step,
                                       StateId parent_sid, uint32_t explore_threshold_u32,
                                       uint64_t explore_seed) {
     // Stochastic-exploration coin flip. UINT32_MAX == "always explore"

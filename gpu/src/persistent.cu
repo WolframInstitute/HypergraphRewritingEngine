@@ -58,7 +58,7 @@ __global__ void k_seq_ramp(uint64_t* seq, uint32_t n) {
     if (i < n) seq[i] = i;
 }
 
-__global__ void k_seed_frontier(DeviceState ds, ExploreView ev, const StateId* ids,
+__global__ void k_seed_frontier(const __grid_constant__ DeviceState ds, ExploreView ev, const StateId* ids,
                                 const uint32_t* steps, const uint32_t* count, uint32_t cap) {
     const uint32_t live = min(*count, cap);
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -87,7 +87,7 @@ __global__ void k_seed_frontier(DeviceState ds, ExploreView ev, const StateId* i
 // `want_ranks` is passed through to the Full arm so that when the run also needs per-edge ranks
 // the single pass produces both, rather than the key here and the ranks in a repeat pass.
 template <class Par = hgcommon::IrSerial>
-__device__ ExactHashStatus state_key_device(DeviceState ds, StateId sid,
+__device__ ExactHashStatus state_key_device(const DeviceState& ds, StateId sid,
                                             CanonicalizationMode mode,
                                             DeviceArena::View arena,
                                             uint32_t*& slot, uint64_t& slot_words,
@@ -122,13 +122,13 @@ __device__ ExactHashStatus state_key_device(DeviceState ds, StateId sid,
 // Every root is compacted into out_ids/out_count, isomorphic ones included, and the queue is
 // seeded from those.
 // One thread per replay driver: the points the previous run's bound left standing.
-__global__ void k_qe_redrive(DeviceState ds, QeView qe, uint32_t old_bound) {
+__global__ void k_qe_redrive(const __grid_constant__ DeviceState ds, QeView qe, uint32_t old_bound) {
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= qe.work_slices) return;
     qe_redrive(ds, qe, old_bound, tid, qe.work_slices);
 }
 
-__global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_t num_roots,
+__global__ void k_seed_root_hashes(const __grid_constant__ DeviceState ds, const StateId* roots, uint32_t num_roots,
                                    DedupMap::DeviceView map, CanonicalizationMode state_mode,
                                    bool need_exact, bool need_ranks, DeviceArena::View arena,
                                    QcView qc, QeView qe, ExploreView ev,
@@ -222,7 +222,7 @@ __global__ void k_seed_root_hashes(DeviceState ds, const StateId* roots, uint32_
 
 // Record `s` on a session's frontier at `step`: the budget refused it and a continuation resumes
 // from it. Past the capacity the entry is dropped and reported.
-__device__ inline void session_frontier_append(DeviceState& ds, const SessionView& sess,
+__device__ inline void session_frontier_append(const DeviceState& ds, const SessionView& sess,
                                                StateId s, uint32_t step) {
     if (!sess.enabled) return;
     cuda::atomic_ref<uint32_t, cuda::thread_scope_device> fc(*sess.frontier_count);
@@ -240,7 +240,7 @@ __device__ inline void session_frontier_append(DeviceState& ds, const SessionVie
 // log; at or past it, recorded on a session's frontier unclaimed.
 struct DeviceExploreCtx {
     using Node = uint32_t;
-    DeviceState&       ds;
+    const DeviceState&       ds;
     ExploreView&       ev;
     const SessionView& sess;
     uint32_t           max_steps;
@@ -365,7 +365,7 @@ __device__ __forceinline__ uint32_t claim_next_record(
 //
 // Exit when the queue is empty. That is exact for a queue seeded once and never grown: no work
 // can appear after a failed pop. It is NOT the rule stage 2 uses.
-__global__ void k_persistent_match(DeviceState ds,
+__global__ void k_persistent_match(const __grid_constant__ DeviceState ds,
                                    const DeviceRule* rules,
                                    typename RingBuffer<MatchWorkItem>::DeviceView queue,
                                    typename Pool<MatchRecord>::DeviceView out) {
@@ -394,7 +394,7 @@ __global__ void k_persistent_match(DeviceState ds,
 // before/after counter delta is not attributable to one block. The cursor sidesteps that
 // entirely -- consumers claim indices, not ranges.
 __global__ void k_persistent_match_rewrite(
-        DeviceState ds,
+        const __grid_constant__ DeviceState ds,
         const DeviceRule* rules,
         typename RingBuffer<MatchWorkItem>::DeviceView match_q,
         typename Pool<MatchRecord>::DeviceView found,
@@ -434,7 +434,7 @@ __global__ void k_persistent_match_rewrite(
             typename TerminationDetector::DeviceView& term;
             typename Pool<MatchRecord>::DeviceView&   found;
             uint32_t*                                 consume_cursor;
-            DeviceState&                              ds;
+            const DeviceState&                              ds;
 
             HG_DEV uint32_t num_roles() const { return term.num_roles; }
             HG_DEV uint32_t max_stagnant_rounds() const { return kMaxDetectorRounds; }
@@ -676,7 +676,7 @@ __device__ __forceinline__ ChildIdentity canonicalise_child(
 // arrival registers under its parent, and one that lowers the canonical state's depth admits it
 // and lowers its descendants.
 __device__ __forceinline__ void register_child(
-        DeviceState& ds, ExploreView& ev, const SessionView& sess, StateId sid,
+        const DeviceState& ds, ExploreView& ev, const SessionView& sess, StateId sid,
         StateId parent, StateId canonical, bool fresh, uint32_t step, uint32_t max_steps,
         uint32_t explore_threshold_u32, uint64_t explore_seed) {
     if (fresh && (step < max_steps || sess.enabled) &&
@@ -715,7 +715,7 @@ __device__ __forceinline__ void register_child(
 //   rewrites_done LAST                 a rewrite that will still push, or is still running an
 //                                      item inline, reads as unfinished
 __global__ void k_persistent_evolve(
-        DeviceState ds,
+        const __grid_constant__ DeviceState ds,
         const DeviceRule* rules,
         uint32_t num_rules,
         typename RingBuffer<MatchWorkItem>::DeviceView match_q,
@@ -781,7 +781,7 @@ __global__ void k_persistent_evolve(
             typename TerminationDetector::DeviceView& term;
             typename Pool<MatchRecord>::DeviceView&   found;
             uint32_t*                                 rewrites_done;
-            DeviceState&                              ds;
+            const DeviceState&                              ds;
             unsigned long long*                       phase_cycles;
             const uint32_t*                           replay_events;   // null without a replay
             // The replay's task log (QeView::tasks); null without a replay.

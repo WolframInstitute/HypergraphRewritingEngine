@@ -259,7 +259,7 @@ public:
         // which thread is told it inserted -- that is the value exchange, and the rule that it
         // is the value exchange lives in the shared body.
         struct InsertOps {
-            DeviceView* v;
+            const DeviceView* v;
             K           key;     // normalized by the caller
             V           value;   // what this thread offers
             V           stood;   // what actually stood, when another thread's offer won
@@ -303,7 +303,7 @@ public:
         //
         // Everything below the sentinel guard and the saturation latch is that shared body;
         // InsertOps supplies only how a word is exchanged and at what scope.
-        __device__ InsertResult insert_if_absent(K key, V value) {
+        __device__ InsertResult insert_if_absent(K key, V value) const {
             // A caller storing the reserved value would publish a slot that every reader takes
             // for unclaimed. Keys can be folded onto a neighbour; a value cannot, because
             // folding it IS the corruption, and device code cannot throw the way the host map
@@ -320,7 +320,7 @@ public:
                 if (sref.load(cuda::memory_order_relaxed)) return InsertResult{V{}, false, true};
             }
             key = normalize(key);
-            InsertOps ops{const_cast<DeviceView*>(this), key, value, V{}};
+            InsertOps ops{this, key, value, V{}};
             const hgcommon::InsertOutcome outcome = hgcommon::hash_insert_claim(ops);
             if (outcome == hgcommon::InsertOutcome::Inserted) return InsertResult{value, true};
             if (outcome == hgcommon::InsertOutcome::Present)  return InsertResult{ops.stood, false};

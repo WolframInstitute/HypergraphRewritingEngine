@@ -57,7 +57,7 @@ struct AppliedMatch {
 // over the tile places the kept ones in parent order. Every lane of the tile must call it
 // together.
 template <class Par>
-__device__ inline void copy_kept_edges(DeviceState ds, const KeptCopy& k, Par) {
+__device__ inline void copy_kept_edges(const DeviceState& ds, const KeptCopy& k, Par) {
     EdgeId* dst = ds.state_edge_ids + k.dst_offset;
     const EdgeId* src = ds.state_edge_ids + k.src_offset;
     auto kept = [&](EdgeId e) {
@@ -92,14 +92,14 @@ __device__ inline void copy_kept_edges(DeviceState ds, const KeptCopy& k, Par) {
 // application, atomicAdd-ed per call: [0] bind+preflight reservations, [1] RHS edge emission
 // (+ index inserts), [2] the child's slice header and produced ids, [3] event record write,
 // [4] causal rendezvous (producer + consumer sides), [5] branchial scan.
-__device__ AppliedMatch apply_one_match(DeviceState ds, const DeviceRule* rules,
+__device__ AppliedMatch apply_one_match(const DeviceState& ds, const DeviceRule* rules,
                                         const MatchRecord& m, uint32_t step,
                                         unsigned long long* sub = nullptr);
 
 // Insert a causal edge (producer -> consumer via shared edge e), first-writer-wins on the
 // (p, c, e) triple, with online TR when enabled. EXTERNAL because the quotient-causal DP
 // emits its canonical-event pairs through this same machinery (shared edge 0).
-__device__ void try_add_causal_edge(DeviceState ds, EventId p, EventId c, EdgeId e);
+__device__ void try_add_causal_edge(const DeviceState& ds, EventId p, EventId c, EdgeId e);
 
 // The transitive-reduction gate's setup: builds the causal chain 1 <- 2 <- ... <- n + 1 <- n + 2
 // in the reduced predecessor lists and offers the edge 1 -> n + 2, which the chain makes

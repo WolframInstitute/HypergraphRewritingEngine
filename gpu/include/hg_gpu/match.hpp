@@ -125,7 +125,7 @@ __device__ __forceinline__ void await_match(const MatchRecord& m) {
 // One (state, rule) pair, matched by ONE BLOCK of kMatchBlockThreads threads. Exposed so a
 // scheduler in another translation unit drives this implementation rather than growing a
 // second copy of it.
-__device__ void match_state_rule(DeviceState ds, const DeviceRule* rules,
+__device__ void match_state_rule(const DeviceState& ds, const DeviceRule* rules,
                                  StateId state_id, uint32_t rid, uint32_t step,
                                  typename Pool<MatchRecord>::DeviceView out);
 

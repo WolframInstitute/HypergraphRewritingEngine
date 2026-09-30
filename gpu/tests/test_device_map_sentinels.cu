@@ -44,7 +44,7 @@ __global__ void k_insert(Map::DeviceView m, const uint64_t* keys, uint32_t n,
 // Deduplication with a canonical hash of 0. 0 is not a hash -- it is what the per-state hash
 // array holds for "not computed yet" -- so the state must be KEPT and the run must report it,
 // rather than every such state sharing one dedup slot and all but the first vanishing.
-__global__ void k_dedup_zero_hash(hg_gpu::DeviceState ds, Map::DeviceView m, uint32_t n,
+__global__ void k_dedup_zero_hash(const __grid_constant__ hg_gpu::DeviceState ds, Map::DeviceView m, uint32_t n,
                                   uint32_t* survived) {
     const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;

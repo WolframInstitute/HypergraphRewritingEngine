@@ -15,7 +15,7 @@ namespace gpu {
 // (hgcommon/ir_core.hpp), which host and device both run; this is the cheap key the Automatic
 // mode asks for, and the rule it applies is hgcommon::ContentHasher, so the two devices agree on
 // that identity by construction rather than by comparison.
-__device__ uint64_t content_hash_state_device(DeviceState ds, StateId sid);
+__device__ uint64_t content_hash_state_device(const DeviceState& ds, StateId sid);
 
 // A state's edges in content order: its slice in order, skipping an id past the edge pool's
 // published size (hgcommon::content_equal's cursor). The content hash iterates through it too.

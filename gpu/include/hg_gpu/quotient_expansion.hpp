@@ -342,14 +342,14 @@ struct QeView {
 // publishing a match appends a task per standing instance of its class, and an application
 // publishes a child instance. Declared here so each publisher can append without the
 // definitions having to be ordered around each other.
-__device__ inline void qe_task_append(DeviceState ds, QeView qe, uint64_t hash, uint32_t rec,
+__device__ inline void qe_task_append(const DeviceState& ds, QeView qe, uint64_t hash, uint32_t rec,
                                       uint32_t depth, uint32_t match);
-__device__ inline void qe_drive_instance(DeviceState ds, QeView qe, uint32_t rec,
+__device__ inline void qe_drive_instance(const DeviceState& ds, QeView qe, uint32_t rec,
                                          uint64_t state_hash, uint32_t depth);
-__device__ inline void qe_drive_match(DeviceState ds, QeView qe, uint32_t match_rec,
+__device__ inline void qe_drive_match(const DeviceState& ds, QeView qe, uint32_t match_rec,
                                       uint64_t from_hash);
-__device__ inline QeWork qe_work_for(DeviceState ds, QeView qe, uint32_t slice);
-__device__ __forceinline__ uint32_t qe_alloc_words(DeviceState ds, QeView qe, uint32_t n);
+__device__ inline QeWork qe_work_for(const DeviceState& ds, QeView qe, uint32_t slice);
+__device__ __forceinline__ uint32_t qe_alloc_words(const DeviceState& ds, QeView qe, uint32_t n);
 
 // Bucket a hash into a list's key space.
 //
@@ -376,7 +376,7 @@ __device__ __forceinline__ uint32_t qe_inst_bucket(const QeView& qe, uint64_t ke
 // UINT32_MAX when the edge is not in the state or the state has no orbits -- the caller drops
 // the capture rather than recording a slot that means nothing, because a record built from a
 // wrong slot replays as a wrong event and would be invisible.
-__device__ __forceinline__ uint32_t qe_slot_of(DeviceState ds, StateId sid, EdgeId edge) {
+__device__ __forceinline__ uint32_t qe_slot_of(const DeviceState& ds, StateId sid, EdgeId edge) {
     if (!ds.state_edge_orbit) return UINT32_MAX;
     const uint32_t i = state_edge_index(ds, sid, edge);
     if (i == UINT32_MAX || ds.state_edge_orbit[i] == UINT32_MAX) return UINT32_MAX;
@@ -390,7 +390,7 @@ __device__ __forceinline__ uint32_t qe_slot_of(DeviceState ds, StateId sid, Edge
 // The canonical rank of `edge` within `sid` -- its position in the state's canonical order,
 // from the same individualization-refinement pass that produced the state's exact hash.
 // UINT32_MAX when the edge is absent or no rank was computed.
-__device__ __forceinline__ uint32_t qe_rank_of(DeviceState ds, StateId sid, EdgeId edge) {
+__device__ __forceinline__ uint32_t qe_rank_of(const DeviceState& ds, StateId sid, EdgeId edge) {
     if (!ds.state_edge_rank) return UINT32_MAX;
     const uint32_t i = state_edge_index(ds, sid, edge);
     return i == UINT32_MAX ? UINT32_MAX : ds.state_edge_rank[i];
@@ -453,7 +453,7 @@ struct QeAlignTally {
 //
 // UINT32_MAX when no image exists, which every caller turns into dropping the capture rather
 // than recording a slot that means nothing.
-__device__ inline uint32_t qe_frame_slot_of(DeviceState ds, QeView qe, uint64_t class_hash,
+__device__ inline uint32_t qe_frame_slot_of(const DeviceState& ds, QeView qe, uint64_t class_hash,
                                             StateId sid, EdgeId edge, QeAlignTally& tally) {
     const auto held = qe.frame.lookup(class_hash);
     if (!held.found || held.value == 0) { ++tally.failed; return UINT32_MAX; }
@@ -576,7 +576,7 @@ __device__ inline bool qe_qm_add(unsigned long long* counter, uint64_t delta) {
 // Hypergraph::QmCtx. The cascade queue is this driver's descent slice, kept as a heap on depth.
 struct DeviceQmCtx {
     using Match = QeMatchView;
-    DeviceState& ds;
+    const DeviceState& ds;
     QeView& qe;
     QeWork& work;
 
@@ -684,7 +684,7 @@ struct DeviceQmCtx {
 // The root's unit of mass; the multiplicity twin of the root instance. __noinline__, with
 // qe_capture_multiplicity: inlined into the persistent kernel, ptxas exceeded 4 GB on
 // persistent.cu.
-__device__ inline __noinline__ void qe_seed_multiplicity(DeviceState ds, QeView qe, uint64_t root_hash,
+__device__ inline __noinline__ void qe_seed_multiplicity(const DeviceState& ds, QeView qe, uint64_t root_hash,
                                             QeWork& work) {
     DeviceQmCtx c{ds, qe, work};
     hgcommon::qm_credit(c, root_hash, 0u, 1ull);
@@ -694,7 +694,7 @@ __device__ inline __noinline__ void qe_seed_multiplicity(DeviceState ds, QeView 
 // The capture side of the multiplicity count: b_j over the matches linked into the class's
 // bucket before this one, then ready, then the mass already standing at the class at every
 // depth. The host's branch in Hypergraph::qc_capture_expansion.
-__device__ inline __noinline__ void qe_capture_multiplicity(DeviceState ds, QeView qe, const DeviceSlotMatch& m,
+__device__ inline __noinline__ void qe_capture_multiplicity(const DeviceState& ds, QeView qe, const DeviceSlotMatch& m,
                                                uint64_t from, uint32_t at,
                                                const uint32_t* consumed, uint32_t nc,
                                                QeWork& work) {
@@ -719,7 +719,7 @@ __device__ inline __noinline__ void qe_capture_multiplicity(DeviceState ds, QeVi
 // `stride`: the multiplicity points and the recorded instances whose depth is in
 // [old_bound, qe.max_steps). The device twin of Hypergraph::quotient_redrive_point, for a session
 // continued past the depth it last stopped at.
-__device__ inline __noinline__ void qe_redrive(DeviceState ds, QeView qe, uint32_t old_bound,
+__device__ inline __noinline__ void qe_redrive(const DeviceState& ds, QeView qe, uint32_t old_bound,
                                                uint32_t slice, uint32_t stride) {
     QeWork work = qe_work_for(ds, qe, slice);
     if (qe.multiplicity) {
@@ -758,7 +758,7 @@ __device__ inline __noinline__ void qe_redrive(DeviceState ds, QeView qe, uint32
 // compacting the survivors into `surv_shared` (kLocalSurvivors entries, block-shared) or the
 // block's survivor scratch. Lane 0 takes the claim, registers the frames, sorts the survivors
 // and publishes the record.
-__device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
+__device__ inline void qe_capture_expansion(const DeviceState& ds, QeView qe,
                                             StateId parent, StateId child, EventId event,
                                             uint32_t rule, uint32_t depth, uint32_t work_slice,
                                             uint64_t* surv_shared) {
@@ -911,7 +911,7 @@ __device__ inline void qe_capture_expansion(DeviceState ds, QeView qe,
 // Pool::claim_n does. Refused reservations still advance the cursor first, and on a run that
 // overflows repeatedly (bigpath at 3 steps) the cursor passed 2^32: a 32-bit `off + n` then
 // wrapped below the capacity and the caller wrote 16 GB past the arena.
-__device__ __forceinline__ uint32_t qe_alloc_words(DeviceState ds, QeView qe, uint32_t n) {
+__device__ __forceinline__ uint32_t qe_alloc_words(const DeviceState& ds, QeView qe, uint32_t n) {
     if (n == 0) return 0;
     cuda::atomic_ref<uint32_t, cuda::thread_scope_device> cur(*qe.arr_cursor);
     const uint32_t off = cur.fetch_add(n, cuda::memory_order_relaxed);
@@ -925,7 +925,7 @@ __device__ __forceinline__ uint32_t qe_alloc_words(DeviceState ds, QeView qe, ui
 
 // Record one instance of `state_hash` at `depth`, whose per-slot producers are already written
 // at `prod_offset`. The device twin of Hypergraph::qc_add_instance.
-__device__ inline uint32_t qe_add_instance(DeviceState ds, QeView qe, uint64_t state_hash,
+__device__ inline uint32_t qe_add_instance(const DeviceState& ds, QeView qe, uint64_t state_hash,
                                            uint32_t depth, uint32_t prod_offset,
                                            uint32_t nslots) {
     if (!qe.enabled || depth > qe.max_steps) return UINT32_MAX;
@@ -983,7 +983,7 @@ __device__ inline uint32_t qe_add_instance(DeviceState ds, QeView qe, uint64_t s
 // produced any of them. Claims the class frame first, so the root's producer vector and the
 // expansion captured from it are in the SAME labelling by construction -- the host does the
 // same, and for the same reason.
-__device__ inline void qe_seed_root_instance(DeviceState ds, QeView qe, StateId root,
+__device__ inline void qe_seed_root_instance(const DeviceState& ds, QeView qe, StateId root,
                                              uint32_t work_slice) {
     if (!qe.enabled) return;
     const uint64_t h = ds.state_canonical_hash[root];
@@ -1032,13 +1032,13 @@ __device__ __forceinline__ uint64_t qe_apply_key(uint32_t instance, uint32_t mat
 // applied list or a claim set lives is here; what an application DOES -- what it claims, what
 // it identifies the event by, which causal and branchial relations follow -- is in the core,
 // which is the body the host runs too.
-__device__ __forceinline__ void qe_apply(DeviceState ds, QeView qe, const DeviceQcInstance& inst,
+__device__ __forceinline__ void qe_apply(const DeviceState& ds, QeView qe, const DeviceQcInstance& inst,
                                          const DeviceSlotMatch& m, uint64_t state_hash,
                                          uint32_t depth);
 
 // Append one application to the task log and publish it. A full log is a capacity overflow,
 // reported and grown by the retry ladder, as every other replay pool's.
-__device__ inline void qe_task_append(DeviceState ds, QeView qe, uint64_t hash, uint32_t rec,
+__device__ inline void qe_task_append(const DeviceState& ds, QeView qe, uint64_t hash, uint32_t rec,
                                       uint32_t depth, uint32_t match) {
     if (!qe.tasks.append(QeTask{hash, rec, depth, match, 0u}))
         ds.errors.record(ErrorKind::kQcNodes);
@@ -1046,7 +1046,7 @@ __device__ inline void qe_task_append(DeviceState ds, QeView qe, uint64_t hash, 
 
 // Instance side of the rendezvous: a task per match already captured for this class.
 // Final-depth instances are recorded and never expanded.
-__device__ inline void qe_drive_instance(DeviceState ds, QeView qe, uint32_t rec,
+__device__ inline void qe_drive_instance(const DeviceState& ds, QeView qe, uint32_t rec,
                                          uint64_t state_hash, uint32_t depth) {
     if (depth >= qe.max_steps) return;
     // Published before scanning; pairs with the fence on the match side so a concurrent
@@ -1063,7 +1063,7 @@ __device__ inline void qe_drive_instance(DeviceState ds, QeView qe, uint32_t rec
 // fences after that push and the warp synchronizes before any lane scans, so each scan follows
 // the publish and the fence, as the instance side's does. Each lane walks every 32nd
 // (depth, shard) list.
-__device__ inline void qe_drive_match(DeviceState ds, QeView qe, uint32_t match_rec,
+__device__ inline void qe_drive_match(const DeviceState& ds, QeView qe, uint32_t match_rec,
                                       uint64_t from_hash) {
     if ((threadIdx.x & 31u) == 0) __threadfence();
     __syncwarp();
@@ -1079,7 +1079,7 @@ __device__ inline void qe_drive_match(DeviceState ds, QeView qe, uint32_t match_
 
 // The slice of the descent arena belonging to one driver. Out of range yields an empty stack,
 // which pushes nothing and reports -- the same partial-work contract as any other capacity here.
-__device__ inline QeWork qe_work_for(DeviceState ds, QeView qe, uint32_t slice) {
+__device__ inline QeWork qe_work_for(const DeviceState& ds, QeView qe, uint32_t slice) {
     QeWork w;
     if (qe.work_items == nullptr || slice >= qe.work_slices) {
         if (qe.multiplicity) ds.errors.record(ErrorKind::kScratchOverflow);
@@ -1097,7 +1097,7 @@ struct DeviceQrCtx {
     // REFERENCES, not copies. DeviceState and QeView are large aggregates and this Ctx is
     // constructed once per application, so holding either by value would copy it that often.
     // The caller's copies outlive this object.
-    DeviceState& ds;
+    const DeviceState& ds;
     QeView& qe;
 
     // COUNTED INTO LOCALS AND PUBLISHED ONCE, when this context is destroyed at the end of the
@@ -1308,7 +1308,7 @@ struct DeviceQrCtx {
     }
 };
 
-__device__ __forceinline__ void qe_apply(DeviceState ds, QeView qe, const DeviceQcInstance& inst,
+__device__ __forceinline__ void qe_apply(const DeviceState& ds, QeView qe, const DeviceQcInstance& inst,
                                          const DeviceSlotMatch& m, uint64_t state_hash,
                                          uint32_t depth) {
     if (!qe.enabled || depth >= qe.max_steps) return;

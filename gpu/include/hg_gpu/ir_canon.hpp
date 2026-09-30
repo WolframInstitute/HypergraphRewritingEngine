@@ -68,7 +68,7 @@ enum class ExactHashStatus : uint8_t {
 // canonical form, and `out_form_words` its length (hgcommon::ir_canonical_form_words); both are
 // null and 0 for the empty state. The form stays valid until the slot is reused.
 template <class Par = hgcommon::IrSerial>
-__device__ ExactHashStatus state_exact_hash_device(DeviceState ds, StateId sid,
+__device__ ExactHashStatus state_exact_hash_device(const DeviceState& ds, StateId sid,
                                                    DeviceArena::View arena,
                                                    uint32_t*& slot, uint64_t& slot_words,
                                                    uint64_t& out_hash, bool want_ranks = false,

@@ -33,7 +33,7 @@ namespace {
 // scan has kept so far. The span pointers are pure layout arithmetic and land on every lane;
 // the counts cross by shuffle so the return and everything derived from it stay uniform.
 template <class Par>
-__device__ bool flatten_state(DeviceState ds, StateId sid, uint32_t* slot,
+__device__ bool flatten_state(const DeviceState& ds, StateId sid, uint32_t* slot,
                               const IrSlotShape& shape,
                               uint8_t*& ea, uint32_t*& eoff, uint32_t*& ev,
                               uint32_t& n_edges, uint32_t& n_verts, uint32_t& total_occ,
@@ -126,7 +126,7 @@ __device__ bool grow_ir_slot(DeviceArena::View arena, uint32_t*& slot, uint64_t&
 // costs no extra canonicalization -- only the scatter. Slots the flattening skipped keep
 // UINT32_MAX, which the signature site counts rather than silently substitutes.
 template <class Par>
-__device__ ExactHashStatus state_exact_hash_device(DeviceState ds, StateId sid,
+__device__ ExactHashStatus state_exact_hash_device(const DeviceState& ds, StateId sid,
                                                    DeviceArena::View arena,
                                                    uint32_t*& slot, uint64_t& slot_words,
                                                    uint64_t& out_hash, bool want_ranks,
@@ -273,13 +273,13 @@ __device__ ExactHashStatus state_exact_hash_device(DeviceState ds, StateId sid,
 // unit: every one-thread-per-state caller uses the serial policy, the persistent kernel the
 // warp one, and a rewrite batch's tiles IrTile<kBatchTile> (persistent.cu).
 template __device__ ExactHashStatus state_exact_hash_device<hgcommon::IrSerial>(
-    DeviceState, StateId, DeviceArena::View, uint32_t*&, uint64_t&, uint64_t&, bool, bool,
+    const DeviceState&, StateId, DeviceArena::View, uint32_t*&, uint64_t&, uint64_t&, bool, bool,
     uint32_t**, uint32_t*, hgcommon::IrSerial);
 template __device__ ExactHashStatus state_exact_hash_device<IrTile<4>>(
-    DeviceState, StateId, DeviceArena::View, uint32_t*&, uint64_t&, uint64_t&, bool, bool,
+    const DeviceState&, StateId, DeviceArena::View, uint32_t*&, uint64_t&, uint64_t&, bool, bool,
     uint32_t**, uint32_t*, IrTile<4>);
 template __device__ ExactHashStatus state_exact_hash_device<IrWarpAll>(
-    DeviceState, StateId, DeviceArena::View, uint32_t*&, uint64_t&, uint64_t&, bool, bool,
+    const DeviceState&, StateId, DeviceArena::View, uint32_t*&, uint64_t&, uint64_t&, bool, bool,
     uint32_t**, uint32_t*, IrWarpAll);
 
 namespace {
@@ -290,7 +290,7 @@ namespace {
 //
 // A state the exact path cannot key leaves its hash at 0 -- which the readers already treat as
 // "not computed", and which kUncomputedStateHash reports -- rather than taking a coarser key.
-__global__ void k_exact_hash_range(DeviceState ds, uint32_t lo, uint32_t hi, uint64_t* out,
+__global__ void k_exact_hash_range(const __grid_constant__ DeviceState ds, uint32_t lo, uint32_t hi, uint64_t* out,
                                    DeviceArena::View arena) {
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     const uint32_t stride = gridDim.x * blockDim.x;
@@ -308,7 +308,7 @@ __global__ void k_exact_hash_range(DeviceState ds, uint32_t lo, uint32_t hi, uin
 // Largest (edge count, occurrence count) over a state range, so the ARENA can be sized to the
 // batch. One cheap pass: the alternative is bounding occurrences by edges * kMaxArity, which is
 // 8x loose on the arity-2 edges real rules produce, and the depth blocks scale with it.
-__global__ void k_measure_states(DeviceState ds, uint32_t lo, uint32_t hi, uint32_t* out_max) {
+__global__ void k_measure_states(const __grid_constant__ DeviceState ds, uint32_t lo, uint32_t hi, uint32_t* out_max) {
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     const uint32_t stride = gridDim.x * blockDim.x;
     const uint32_t num_edges_live = ds.edge_pool.size();

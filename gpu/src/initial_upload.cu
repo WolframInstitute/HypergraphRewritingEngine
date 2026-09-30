@@ -14,7 +14,7 @@ namespace gpu {
 // Kernel that, for every edge in [0, num_edges), pushes (signature_hash →
 // edge_id) into the signature index and (each vertex → edge_id) into the
 // vertex inverted index.
-__global__ void k_init_indices(DeviceState ds, uint32_t num_edges) {
+__global__ void k_init_indices(const __grid_constant__ DeviceState ds, uint32_t num_edges) {
     uint32_t eid = blockIdx.x * blockDim.x + threadIdx.x;
     if (eid >= num_edges) return;
 

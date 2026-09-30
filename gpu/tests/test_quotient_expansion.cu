@@ -22,11 +22,11 @@ using hg_gpu::EdgeId;
 using hg_gpu::StateEdgeSlice;
 
 // One thread evaluates qe_slot_of for every edge of state 0 and writes the slots out.
-__global__ void k_alloc_words(DeviceState ds, hg_gpu::QeView qe, uint32_t n, uint32_t* out) {
+__global__ void k_alloc_words(const __grid_constant__ DeviceState ds, hg_gpu::QeView qe, uint32_t n, uint32_t* out) {
     *out = hg_gpu::qe_alloc_words(ds, qe, n);
 }
 
-__global__ void k_slots(DeviceState ds, const EdgeId* edges, uint32_t n, uint32_t* out) {
+__global__ void k_slots(const __grid_constant__ DeviceState ds, const EdgeId* edges, uint32_t n, uint32_t* out) {
     for (uint32_t i = 0; i < n; ++i) out[i] = hg_gpu::qe_slot_of(ds, 0u, edges[i]);
 }
 

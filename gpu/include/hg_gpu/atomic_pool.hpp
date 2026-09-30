@@ -40,14 +40,14 @@ public:
         // left to climb it reaches 2^32, wraps, and returns a small index that passes the test
         // below, handing a caller a slot outside the allocation. Pulling it back to capacity on
         // the failing path bounds the excess to what is in flight, so the wrap is unreachable.
-        __device__ uint32_t claim() { return settle(atomicAdd(counter, 1u), 1u); }
+        __device__ uint32_t claim() const { return settle(atomicAdd(counter, 1u), 1u); }
 
-        __device__ uint32_t claim_n(uint32_t n) { return settle(atomicAdd(counter, n), n); }
+        __device__ uint32_t claim_n(uint32_t n) const { return settle(atomicAdd(counter, n), n); }
 
         // The outcome of an add that returned `idx` for `n` slots: `idx`, or kInvalid with the
         // counter clamped. Callers that add to the counter some other way (one add for a group
         // of threads) settle each thread's share here.
-        __device__ uint32_t settle(uint32_t idx, uint32_t n) {
+        __device__ uint32_t settle(uint32_t idx, uint32_t n) const {
             if ((uint64_t)idx + n <= capacity) return idx;
             atomicMin(counter, capacity);
             return kInvalid;
@@ -64,9 +64,9 @@ public:
 
         // Unchecked, and deliberately so on the hot path -- callers index with a slot they
         // claimed or with an id they have already tested against size(). Nothing here can
-        // establish validity that the caller does not already know.
-        __device__ T&       at(uint32_t idx)       { return data[idx]; }
-        __device__ const T& at(uint32_t idx) const { return data[idx]; }
+        // establish validity that the caller does not already know. A view is a pointer, so a
+        // const view still reaches mutable entries.
+        __device__ T& at(uint32_t idx) const { return data[idx]; }
     };
 
     explicit Pool(uint32_t capacity) : capacity_(capacity) {

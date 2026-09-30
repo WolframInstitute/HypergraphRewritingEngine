@@ -58,7 +58,7 @@ public:
         // The storage face hgcommon::list_push / list_for_each drive: how the head word and a
         // node's next field are touched and at what scope. Nothing here decides anything.
         struct Ops {
-            DeviceView* v;   // the walks only read; they cast away const to share one face
+            const DeviceView* v;
             uint32_t key;
             __device__ uint32_t invalid() const { return Pool<Node>::kInvalid; }
             __device__ uint32_t head_load_relaxed() const {
@@ -81,7 +81,7 @@ public:
         // Push value onto list[key]. Returns the node index, or kInvalid on pool exhaustion or
         // out-of-range key. The exchange is ACQ_REL for the reason hgcommon/list_core.hpp gives:
         // release publishes the node, acquire covers the pusher's own walk below it.
-        __device__ uint32_t push(uint32_t key, const T& value) {
+        __device__ uint32_t push(uint32_t key, const T& value) const {
             if (key >= num_keys) return Pool<Node>::kInvalid;
             uint32_t idx = pool.claim();
             if (idx == Pool<Node>::kInvalid) return Pool<Node>::kInvalid;
@@ -107,7 +107,7 @@ public:
         // pushes and the scans interleave. `key` is only what the walk needs to name its pool.
         template <typename Fn>
         __device__ void for_each_before(uint32_t mine, Fn fn) const {
-            Ops ops{const_cast<DeviceView*>(this), 0u};
+            Ops ops{this, 0u};
             hgcommon::list_for_each_before(ops, mine, [&](uint32_t idx) { fn(pool.at(idx).value); });
         }
 
@@ -119,7 +119,7 @@ public:
         template <typename Fn>
         __device__ void for_each(uint32_t key, Fn fn) const {
             if (key >= num_keys) return;
-            Ops ops{const_cast<DeviceView*>(this), key};
+            Ops ops{this, key};
             if (ops.head_load_relaxed() == ops.invalid()) return;
             hgcommon::list_for_each(ops, [&](uint32_t idx) { fn(pool.at(idx).value); });
         }

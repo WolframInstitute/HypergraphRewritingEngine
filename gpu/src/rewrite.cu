@@ -112,7 +112,7 @@ __device__ uint64_t branchial_pair_key(EventId a, EventId b) {
 constexpr uint32_t kReachStack   = 256;
 constexpr uint32_t kReachVisited = 512;   // power of two; entries store id + 1, 0 = empty
 
-__device__ bool is_reachable_preds(DeviceState ds, EventId p, EventId c) {
+__device__ bool is_reachable_preds(const DeviceState& ds, EventId p, EventId c) {
     auto preds = [&](uint32_t x, auto&& f) { ds.preds_list.for_each(x, f); };
     EventId  stack[kReachStack];
     uint32_t visited[kReachVisited];
@@ -143,7 +143,7 @@ __device__ bool is_reachable_preds(DeviceState ds, EventId p, EventId c) {
 // backward-reachability oracle, and a KEPT edge's only bookkeeping is one
 // preds_list push per unique event pair. EXTERNAL linkage (declared in rewrite.hpp): the
 // quotient-causal DP emits its canonical-event pairs through this same machinery.
-__device__ void try_add_causal_edge(DeviceState ds, EventId p, EventId c, EdgeId e) {
+__device__ void try_add_causal_edge(const DeviceState& ds, EventId p, EventId c, EdgeId e) {
     if (p == INVALID_ID || c == INVALID_ID || p == c) return;
 
     // Mirror CPU causal_graph.cpp::add_causal_edge:
@@ -182,25 +182,37 @@ __device__ void try_add_causal_edge(DeviceState ds, EventId p, EventId c, EdgeId
 
 namespace {
 
-__device__ void try_add_branchial_edge(DeviceState ds, EventId a, EventId b, EdgeId shared) {
+// The views branchial registration uses, loaded once. Read through the DeviceState reference
+// inside the bucket walk, each is reloaded after every atomic, since the reference may alias
+// what the atomics write.
+struct BranchialViews {
+    decltype(DeviceState::branchial_index)       index;
+    decltype(DeviceState::event_pool)            events;
+    decltype(DeviceState::branchial_pair_dedup)  pairs;
+    decltype(DeviceState::branchial_edge_pool)   pool;
+    DeviceErrors::DeviceView                     errors;
+};
+
+__device__ __forceinline__ void try_add_branchial_edge(const BranchialViews& v, EventId a,
+                                                       EventId b, EdgeId shared) {
     if (a == INVALID_ID || b == INVALID_ID || a == b) return;
     uint64_t key = branchial_pair_key(a, b);
-    auto r = ds.branchial_pair_dedup.insert_if_absent(key, 1u);
+    auto r = v.pairs.insert_if_absent(key, 1u);
     if (!r.inserted) return;  // already added (dup)
-    uint32_t idx = ds.branchial_edge_pool.claim();
+    uint32_t idx = v.pool.claim();
     if (idx == Pool<DeviceBranchialEdge>::kInvalid) {
-        ds.errors.record(ErrorKind::kBranchialPoolFull);
+        v.errors.record(ErrorKind::kBranchialPoolFull);
         return;
     }
     EventId lo = a < b ? a : b;
     EventId hi = a < b ? b : a;
-    ds.branchial_edge_pool.at(idx) = DeviceBranchialEdge{lo, hi, shared};
+    v.pool.at(idx) = DeviceBranchialEdge{lo, hi, shared};
 }
 
 // Causal rendezvous: register this event as producer of `eid` (via atomic
 // CAS on edge_producer[]), then iterate existing consumers and create causal
 // edges for each.
-__device__ void register_as_producer(DeviceState ds, EventId my_event, EdgeId eid) {
+__device__ void register_as_producer(const DeviceState& ds, EventId my_event, EdgeId eid) {
     cuda::atomic_ref<EventId, cuda::thread_scope_device> pref(ds.edge_producer[eid]);
     EventId expected = INVALID_ID;
     bool won = pref.compare_exchange_strong(
@@ -218,7 +230,7 @@ __device__ void register_as_producer(DeviceState ds, EventId my_event, EdgeId ei
 // (producer or consumer) always detects the other because producer writes
 // the slot before iterating consumers and consumer appends to the list
 // before loading the slot.
-__device__ void register_as_consumer(DeviceState ds, EventId my_event, EdgeId eid) {
+__device__ void register_as_consumer(const DeviceState& ds, EventId my_event, EdgeId eid) {
     if (ds.edge_consumers.push(eid, my_event) == INVALID_ID) {
         ds.errors.record(ErrorKind::kEdgeConsumerNodes);
         // Don't return — we still want the producer-side detection so the
@@ -247,26 +259,28 @@ __device__ void register_as_consumer(DeviceState ds, EventId my_event, EdgeId ei
 // filters both, at one 4-byte read per candidate instead of scanning every
 // sibling's consumed array. Pair-level dedup in try_add_branchial_edge keeps a
 // pair sharing several edges single.
-__device__ void register_branchial(DeviceState ds, EventId my_event, StateId input_state,
+__device__ void register_branchial(const DeviceState& ds, EventId my_event, StateId input_state,
                                    const EdgeId* my_consumed, uint8_t my_num_consumed) {
+    const BranchialViews v{ds.branchial_index, ds.event_pool, ds.branchial_pair_dedup,
+                           ds.branchial_edge_pool, ds.errors};
     for (uint8_t i = 0; i < my_num_consumed; ++i) {
         EdgeId mine = my_consumed[i];
         if (mine == INVALID_ID) continue;
         uint64_t h = (static_cast<uint64_t>(input_state) << 32) | mine;
         h ^= h >> 33; h *= 0xff51afd7ed558ccdULL; h ^= h >> 33;
-        uint32_t bucket = static_cast<uint32_t>(h) & (ds.branchial_index.num_keys - 1u);
+        uint32_t bucket = static_cast<uint32_t>(h) & (v.index.num_keys - 1u);
         uint64_t entry  = (static_cast<uint64_t>(my_event) << 32) | mine;
-        if (ds.branchial_index.push(bucket, entry) == INVALID_ID) {
-            ds.errors.record(ErrorKind::kBranchialIndexNodes);
+        if (v.index.push(bucket, entry) == INVALID_ID) {
+            v.errors.record(ErrorKind::kBranchialIndexNodes);
             // Continue — co-consumers that pushed successfully still see us
             // when they walk (best-effort coverage, mirrors the old paths).
         }
-        ds.branchial_index.for_each(bucket, [&](uint64_t other_entry) {
+        v.index.for_each(bucket, [&](uint64_t other_entry) {
             if (static_cast<EdgeId>(other_entry) != mine) return;
             EventId other = static_cast<EventId>(other_entry >> 32);
             if (other == my_event) return;
-            if (ds.event_pool.at(other).input_state != input_state) return;
-            try_add_branchial_edge(ds, my_event, other, mine);
+            if (v.events.at(other).input_state != input_state) return;
+            try_add_branchial_edge(v, my_event, other, mine);
         });
     }
 }
@@ -282,7 +296,7 @@ __device__ void register_branchial(DeviceState ds, EventId my_event, StateId inp
 // when a capacity claim failed. A scheduler that finishes the work itself needs both: the state
 // to hash and re-enqueue, the event to stamp an identity onto once that hash exists.
 // See gpu/ARCHITECTURE.md sec 3.
-__device__ AppliedMatch apply_one_match(DeviceState       ds,
+__device__ AppliedMatch apply_one_match(const DeviceState& ds,
                                         const DeviceRule* rules,
                                         const MatchRecord& m,
                                         uint32_t          step,
@@ -581,7 +595,7 @@ __device__ AppliedMatch apply_one_match(DeviceState       ds,
 namespace {
 
 // Batch driver: one thread per match in the pool.
-__global__ void k_rewrite(DeviceState              ds,
+__global__ void k_rewrite(const __grid_constant__ DeviceState ds,
                           const DeviceRule*        rules,
                           const MatchRecord*       matches,
                           uint32_t                 num_matches,
@@ -596,7 +610,7 @@ __global__ void k_rewrite(DeviceState              ds,
 }  // namespace
 
 namespace {
-__global__ void k_redundant_edge_over_chain(DeviceState ds, uint32_t n) {
+__global__ void k_redundant_edge_over_chain(const __grid_constant__ DeviceState ds, uint32_t n) {
     if (threadIdx.x != 0 || blockIdx.x != 0) return;
     for (uint32_t k = 1; k <= n + 1; ++k) ds.preds_list.push(k + 1, k);
     try_add_causal_edge(ds, 1u, n + 2u, 0u);
