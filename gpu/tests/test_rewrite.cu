@@ -931,8 +931,12 @@ TEST(Rewrite, ADeviceSessionExtendsToExactlyWhatOneRunOfTheSameBudgetProduces) {
 // Keyed rewrites in a device session (keyed.hpp): the session keeps its rewrite map, twin map and
 // keyed state across calls. Under full capture, where twins occur, a three-call session reaches
 // the states and events one run of the same budget reaches, with keyed rewrites on and off, and
-// the keyed session takes twins.
+// the keyed session takes twins. Two blocks are the detector and ONE worker, so children are made
+// in order and a twin's hash is published before a later state claims it: with more workers the
+// twin count depends on scheduling (a twin that is not published is not waited for) and can be 0
+// on a run this small.
 TEST(Rewrite, AKeyedDeviceSessionReachesWhatOneRunDoes) {
+    constexpr uint32_t kBlocks = 2;
     hg_gpu::RewriteRule r;
     r.lhs = {{0, 1}, {1, 2}};
     r.rhs = {{0, 1}, {1, 3}, {3, 2}};
@@ -959,7 +963,7 @@ TEST(Rewrite, AKeyedDeviceSessionReachesWhatOneRunDoes) {
         if (!session) {
             const auto st = hg_gpu::run_persistent_evolve(
                 eng, rules, {0u}, 4u, matches, arena, /*dedup=*/false, 0xFFFFFFFFu, 0,
-                hg_gpu::CanonicalizationMode::Full, hgcommon::EVENT_SIG_AUTOMATIC);
+                hg_gpu::CanonicalizationMode::Full, hgcommon::EVENT_SIG_AUTOMATIC, kBlocks);
             return Out{st.states_after, st.canonical_events, st.keyed_twins};
         }
         hg_gpu::SessionState sess(cfg.max_states, cfg.max_events);
@@ -969,7 +973,7 @@ TEST(Rewrite, AKeyedDeviceSessionReachesWhatOneRunDoes) {
             const auto st = hg_gpu::run_persistent_evolve(
                 eng, rules, {0u}, steps, matches, arena, /*dedup=*/false, 0xFFFFFFFFu, 0,
                 hg_gpu::CanonicalizationMode::Full, hgcommon::EVENT_SIG_AUTOMATIC,
-                /*blocks=*/0, nullptr, nullptr, &v, start);
+                kBlocks, nullptr, nullptr, &v, start);
             start = steps;
             out = Out{st.states_after, st.canonical_events, st.keyed_twins};
         }
