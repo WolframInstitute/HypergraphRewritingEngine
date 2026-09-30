@@ -169,6 +169,18 @@ For the anchored part and for roots:
 - Membership tests read the state's edge bitmap, a word per 32 edges held beside the chunks,
   in place of a binary search.
 
+### 4.2a Keyed rewrites
+
+A produced edge's token is (rewrite id, RHS index), the rewrite id interned exactly from the rule
+and the consumed edges' tokens (`hgcommon/token_core.hpp`). The same rewrite applied in two
+states gives its edges the same tokens, so two raw states with the same token set are isomorphic
+through the tokens: the later one takes the earlier one's class, ranks and orbits and runs no IR.
+A state's token sum (parent's sum minus consumed terms plus produced terms) selects the
+candidate; the token sets decide it, in O(edges). Nothing is interned before a run's first
+inherited match, which is its first repeated rewrite; older tokens are computed on demand from
+the edge's creator event. A run that makes 1,024 twin claims without a twin stops. Built on the
+host first; the device takes the same rule, with one lane per state in the twin check.
+
 ### 4.3 Rewrite
 
 One match per lane, 32 per warp. Every allocation (state id, event id, edges, vertices, chunk
@@ -266,6 +278,7 @@ memory, and times taken in a quiet window. The differential tests hold the resul
 Each step lands with its gates: `hg_gpu_tests`, `gpu_differential_tests`, `gpu_ffi_tests`, the
 host suite for shared cores, and the collision tests.
 
+0. **Keyed rewrites** on the host, then the device (4.2a).
 1. **Containers and queues.** Slot-interleaved, power-of-two, epoch-tagged hash tables with
    warp-cooperative probes; per-SM sharded queues with warp-aggregated append and take;
    warp-aggregated pool allocation. Everything else is built on these.
