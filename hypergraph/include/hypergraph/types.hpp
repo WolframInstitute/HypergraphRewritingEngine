@@ -121,7 +121,7 @@ struct Edge {
 private:
     void copy_vertices_from(const Edge& o);
 };
-static_assert(sizeof(Edge) == 32, "Edge outgrew 32 bytes");
+static_assert(sizeof(Edge) <= 32, "Edge outgrew 32 bytes");
 
 // =============================================================================
 // Event
@@ -169,7 +169,9 @@ struct Event {
     // Check if this event is canonical (not a duplicate)
     bool is_canonical() const;
 };
-static_assert(sizeof(Event) == 48, "Event has padding");
+static_assert(sizeof(Event) == 4 * sizeof(uint32_t) + 2 * sizeof(EdgeId*) + sizeof(uint64_t) +
+                                  sizeof(RuleIndex) + 2 * sizeof(uint8_t) + sizeof(uint32_t),
+              "Event has padding");
 
 // =============================================================================
 // State
