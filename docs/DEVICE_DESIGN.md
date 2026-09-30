@@ -181,8 +181,12 @@ the transition draw) does not key (`keyed_rewrites_apply`). A state's token sum 
 minus consumed terms plus produced terms) selects the candidate; the token sets decide it, in
 O(edges). Nothing is interned before a run's first inherited match, which is its first repeated
 rewrite; older tokens are computed on demand from the edge's creator event. A run that makes
-1,024 twin claims without a twin stops. Built on the host first; the device takes the same rule,
-with one lane per state in the twin check.
+1,024 twin claims finding no twin, published or not, stops (`keyed_note_claim`). Built on the host
+first; the device takes the same rule, with one lane per state in the twin check. The device
+canonicalises about a thousand children at once, so a twin is often claimed and not yet
+published: a child of more than 32 edges waits on the twin's follower stack, and the twin, once
+published, hands its followers to a ready ring from which blocks complete them as single records
+(no IR); a smaller child runs its own IR, which costs less than the wait.
 
 ### 4.3 Rewrite
 

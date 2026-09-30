@@ -37,6 +37,11 @@ struct DeviceRule;
 struct KeyedView {
     uint64_t* state_token_sum      = nullptr;   // [max_states], 0 until computed
     uint32_t* state_first_new_edge = nullptr;   // [max_states], INVALID_ID for a root
+    // Children waiting on a twin whose results are not yet published (keyed_take_twin), a stack
+    // per twin: follow_head [max_states] is the top event, FOLLOW_EMPTY or FOLLOW_CLOSED;
+    // follow_next [max_events] the event below it.
+    uint32_t* follow_head = nullptr;
+    uint32_t* follow_next = nullptr;
     // Rewrite key -> the first event that applied the rewrite; its id + 1 is the rewrite id.
     ConcurrentMap<uint64_t, uint32_t>::DeviceView rewrites{};
     // Token sum -> the first state with that token set.
@@ -579,6 +584,8 @@ private:
     uint32_t*                          state_num_orbits_       = nullptr;
     uint64_t*                          keyed_token_sum_        = nullptr;
     uint32_t*                          keyed_first_new_edge_   = nullptr;
+    uint32_t*                          keyed_follow_head_      = nullptr;
+    uint32_t*                          keyed_follow_next_      = nullptr;
     uint32_t*                          event_sig_fallbacks_    = nullptr;
     uint32_t*                          canonical_event_count_  = nullptr;
     // Owned by the engine, not by a run. See ir_arena().

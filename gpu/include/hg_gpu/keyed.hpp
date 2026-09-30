@@ -22,6 +22,7 @@
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/exploration.hpp"
 #include "hg_gpu/match.hpp"
+#include "hg_gpu/ring_buffer.hpp"
 #include "hg_gpu/types.hpp"
 
 namespace HG_NAMESPACE {
@@ -175,18 +176,47 @@ __device__ inline uint32_t keyed_after_rewrite(const DeviceState& ds, const Matc
     return rid | ((inherited || repeated) ? hgcommon::REWRITE_TWIN_CANDIDATE : 0u);
 }
 
+// A twin's follower stack: FOLLOW_EMPTY until a child waits on it, FOLLOW_CLOSED once its
+// results are published and its followers handed on (keyed_close_followers).
+constexpr uint32_t FOLLOW_EMPTY  = 0xFFFFFFFFu;
+constexpr uint32_t FOLLOW_CLOSED = 0xFFFFFFFEu;
+
+enum class TwinResult : uint32_t {
+    kNone = 0,        // no twin, or a twin that will never publish: the child runs its IR
+    kTaken = 1,       // the twin's results are the child's
+    kFollowing = 2,   // the child waits on the twin's stack and is completed from `ready`
+};
+
+// Pushes event `ev` (whose child waits) onto twin `t`'s follower stack; false when the stack is
+// closed, and the twin's hash, if it has one, is then published.
+__device__ inline bool keyed_follow(const DeviceState& ds, StateId t, EventId ev) {
+    uint32_t head = *reinterpret_cast<const volatile uint32_t*>(ds.keyed.follow_head + t);
+    for (;;) {
+        if (head == FOLLOW_CLOSED) {
+            __threadfence();
+            return false;
+        }
+        ds.keyed.follow_next[ev] = head;
+        __threadfence();   // the link before the push that makes it reachable
+        const uint32_t prev = atomicCAS(ds.keyed.follow_head + t, head, ev);
+        if (prev == head) return true;
+        head = prev;
+    }
+}
+
 // The twin check for state `child`, made by event `ev` from `parent` with `keyed` from
 // keyed_after_rewrite, run by one thread before the state's IR. Stores the state's token sum.
 // When a candidate finds an earlier state with the same token set whose canonical hash is
-// published, the child takes its hash (`h`), its class (`rep`) and, where the run keeps them,
-// its ranks and orbits carried across by token, and the IR is skipped: true. Scratch for the
-// token index comes from `slot` (grown from `arena`).
-__device__ inline bool keyed_take_twin(const DeviceState& ds, StateId child, StateId parent,
+// published, the child takes its hash (`h`), its class (`rep`) and, where the run keeps
+// them, its ranks and orbits carried across by token, and the IR is skipped (kTaken). When
+// that state has not published yet and `may_follow`, the child waits on its follower stack
+// (kFollowing). Scratch for the token index comes from `slot` (grown from `arena`).
+__device__ inline TwinResult keyed_take_twin(const DeviceState& ds, StateId child, StateId parent,
                                        EventId ev, uint32_t keyed, DeviceArena::View arena,
                                        uint32_t*& slot, uint64_t& slot_words, bool want_ranks,
                                        bool want_orbits, DedupMap::DeviceView states,
                                        typename Pool<uint32_t>::DeviceView forms, uint64_t& h,
-                                       StateId& rep) {
+                                       StateId& rep, bool may_follow) {
     const KeyedView& k = ds.keyed;
     const uint32_t rid = keyed & ~hgcommon::REWRITE_TWIN_CANDIDATE;
     const DeviceEvent& x = ds.event_pool.data[ev];
@@ -196,7 +226,7 @@ __device__ inline bool keyed_take_twin(const DeviceState& ds, StateId child, Sta
     const uint64_t sum = hgcommon::child_token_sum(keyed_state_sum(ds, parent), tokens,
                                                    x.num_consumed, rid, x.num_produced);
     *reinterpret_cast<volatile uint64_t*>(k.state_token_sum + child) = sum;
-    if (sum == 0 || !(keyed & hgcommon::REWRITE_TWIN_CANDIDATE)) return false;
+    if (sum == 0 || !(keyed & hgcommon::REWRITE_TWIN_CANDIDATE)) return TwinResult::kNone;
 
     // The token index over a candidate twin's edges and, for the i-th edge of the child, the
     // position of the twin's edge with the same token (at[i]).
@@ -206,7 +236,7 @@ __device__ inline bool keyed_take_twin(const DeviceState& ds, StateId child, Sta
     const uint64_t need = uint64_t(cap) * 3u + n;
     if (slot_words < need) {
         uint32_t* p = arena.claim(need);
-        if (!p) return false;
+        if (!p) return TwinResult::kNone;
         slot = p;
         slot_words = need;
     }
@@ -241,9 +271,15 @@ __device__ inline bool keyed_take_twin(const DeviceState& ds, StateId child, Sta
     __threadfence();   // the child's slice and sum before it can be found as a twin
     const StateClaim c = keyed_claim_device(ds, child, sum & k.sum_mask, k.twins, p);
     const StateId t = c.canonical;
-    bool taken = false;
-    if (t != child) {
-        const uint64_t th = *reinterpret_cast<const volatile uint64_t*>(ds.state_canonical_hash + t);
+    TwinResult result = TwinResult::kNone;
+    if (t != child && t != INVALID_ID) {
+        uint64_t th = *reinterpret_cast<const volatile uint64_t*>(ds.state_canonical_hash + t);
+        // Not published yet: wait on the twin's stack, or, when the twin has closed it since,
+        // read the hash it published before closing.
+        if (th == 0) {
+            if (may_follow && keyed_follow(ds, t, ev)) result = TwinResult::kFollowing;
+            else th = *reinterpret_cast<const volatile uint64_t*>(ds.state_canonical_hash + t);
+        }
         if (th != 0) {
             __threadfence();   // the twin's tables were written before its hash was published
             const auto r = states.lookup(th);
@@ -260,11 +296,11 @@ __device__ inline bool keyed_take_twin(const DeviceState& ds, StateId child, Sta
                 __threadfence();
                 rep = reinterpret_cast<const hgcommon::CanonicalFormRecord*>(forms.data + r.value)->id;
                 h = th;
-                taken = true;
+                result = TwinResult::kTaken;
             }
         }
     }
-    if (taken) atomicAdd(k.words + 3, 1u);
+    if (result == TwinResult::kTaken) atomicAdd(k.words + 3, 1u);
     struct Words {
         const KeyedView& k;
         __device__ bool seen() const { return keyed_load(k.words + 2) != 0; }
@@ -273,7 +309,24 @@ __device__ inline bool keyed_take_twin(const DeviceState& ds, StateId child, Sta
         __device__ void switch_off() { atomicExch(k.words, static_cast<uint32_t>(KEYED_OFF)); }
     } w{k};
     hgcommon::keyed_note_claim(w, t != child && t != INVALID_ID, k.claim_limit);
-    return taken;
+    return result;
+}
+
+// Closes `sid`'s follower stack once its canonical results are published (or will never be:
+// its key failed) and hands every child waiting on it to `ready`, where a block completes it.
+// One thread; the caller has published the state's hash, and the fence orders that before the
+// close a follower reads.
+__device__ inline void keyed_close_followers(const DeviceState& ds, StateId sid,
+                                             typename RingBuffer<uint32_t>::DeviceView ready) {
+    __threadfence();
+    uint32_t e = atomicExch(ds.keyed.follow_head + sid, FOLLOW_CLOSED);
+    __threadfence();   // each follower linked its next before the exchange that pushed it
+    while (e != FOLLOW_EMPTY && e != FOLLOW_CLOSED) {
+        const uint32_t next = *reinterpret_cast<const volatile uint32_t*>(ds.keyed.follow_next + e);
+        // The ring holds max_states entries and a child waits on one twin, so it has room.
+        if (!ready.try_push(e)) ds.errors.record(ErrorKind::kScratchOverflow);
+        e = next;
+    }
 }
 
 }  // namespace gpu

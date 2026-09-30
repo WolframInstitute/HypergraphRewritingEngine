@@ -526,6 +526,9 @@ constexpr uint32_t kLaneBatchEdges = 32;
 // The lanes that canonicalise one child of a batch together (IrTile): a batch holds
 // 32 / kBatchTile records.
 constexpr uint32_t kBatchTile = 4;
+// A child whose twin has not published waits on it (keyed_take_twin) when it has more than this
+// many edges; a smaller child runs its own IR, which costs less than the wait.
+constexpr uint32_t kFollowEdges = 32;
 // Consecutive iterations that found work before a block claims a batch: a block coming off idle,
 // or off the matching that produced a burst, takes one record, so the burst spreads over the
 // grid.
@@ -540,6 +543,7 @@ struct ChildIdentity {
     bool fresh = false;
     bool capture = false;   // the event's class-frame capture runs (qe_capture_expansion)
     bool ok = false;        // the child has a hash; its identity and depth are registered
+    bool deferred = false;  // the child waits on a twin (kFollowing): its record is not done yet
 };
 
 template <class Par>
@@ -549,18 +553,30 @@ __device__ __forceinline__ ChildIdentity canonicalise_child(
         bool need_exact, bool want_orbits, bool dedup, DeviceArena::View arena, uint32_t*& slot,
         uint64_t& slot_words, DedupMap::DeviceView dedup_map, DedupMap::DeviceView exact_map,
         DedupMap::DeviceView event_map, typename Pool<uint32_t>::DeviceView forms,
-        unsigned long long& acc_irkey, unsigned long long& acc_evkey, Par par) {
+        typename RingBuffer<uint32_t>::DeviceView ready, unsigned long long& acc_irkey,
+        unsigned long long& acc_evkey, Par par) {
     const unsigned long long t1 = clock64();
     // Keyed rewrites (keyed.hpp): a child whose token set an earlier state holds takes that
-    // state's canonical results and skips its IR. One thread checks; the verdict crosses.
+    // state's canonical results and skips its IR, or, when they are not published yet and the child
+    // is large (kFollowEdges), waits on that state and is completed from `ready`. One thread
+    // checks; the verdict crosses.
     uint64_t twin_h = 0;
     StateId twin_rep = INVALID_ID;
-    uint32_t twin = 0;
-    if (keyed != 0 && par.leader())
-        twin = keyed_take_twin(ds, sid, parent, evt, keyed, arena, slot, slot_words, need_ranks,
-                               want_orbits, dedup_map, forms, twin_h, twin_rep) ? 1u : 0u;
+    uint32_t twin = static_cast<uint32_t>(TwinResult::kNone);
+    if (keyed != 0 && par.leader()) {
+        const bool may_follow = ds.state_edge_slices[sid].count > kFollowEdges;
+        twin = static_cast<uint32_t>(keyed_take_twin(ds, sid, parent, evt, keyed, arena, slot,
+                                                     slot_words, need_ranks, want_orbits,
+                                                     dedup_map, forms, twin_h, twin_rep,
+                                                     may_follow));
+    }
     par.sync();
     twin = par.bcast(twin);
+    if (twin == static_cast<uint32_t>(TwinResult::kFollowing)) {
+        ChildIdentity out;
+        out.deferred = true;
+        return out;
+    }
 
     uint64_t h = 0;
     uint32_t* form = nullptr;
@@ -644,6 +660,11 @@ __device__ __forceinline__ ChildIdentity canonicalise_child(
             // the child survives dedup -- the host registers per raw event too.
             capture = evt != INVALID_ID ? 1u : 0u;
         }
+        // The children waiting on this one go to `ready`: its results are published, or its key
+        // failed and they run their own. A twin has this state's edge count, so only a state
+        // above kFollowEdges can have followers.
+        if (keyed != 0 && ds.state_edge_slices[sid].count > kFollowEdges)
+            keyed_close_followers(ds, sid, ready);
     }
     ChildIdentity out;
     out.canonical = par.bcast(canonical);
@@ -721,7 +742,8 @@ __global__ void k_persistent_evolve(
         unsigned long long* phase_cycles,
         SessionView sess,
         ExploreView ev,
-        typename Pool<uint32_t>::DeviceView forms) {
+        typename Pool<uint32_t>::DeviceView forms,
+        typename RingBuffer<uint32_t>::DeviceView ready) {
 
     // Ranks are the reconstruction's frame alignment, Automatic's signature, AND the transition
     // draw's key. One predicate answers it for the roots and for every child; see its note.
@@ -880,6 +902,7 @@ __global__ void k_persistent_evolve(
     __shared__ uint32_t task_base;
     __shared__ uint32_t task_count;
     __shared__ bool     have;
+    __shared__ bool     have_ready;   // a child from `ready` this iteration
     __shared__ uint32_t claimed;         // the first record the block claimed
     __shared__ uint32_t claimed_count;   // how many, up to 32
     __shared__ uint32_t claimed_more;    // records 2..claimed_count, consecutive from here
@@ -943,6 +966,36 @@ __global__ void k_persistent_evolve(
     tile_slot_words[threadIdx.x] = 0;
     __syncthreads();
 
+    // The warp canonicalises the child in the child_* shared words (its kept edges copied) and
+    // registers it: the class-frame capture on every lane, identity and depth on thread 0.
+    auto finish_warp_child = [&]() {
+        const unsigned long long t1 = clock64();
+        ChildIdentity id{};
+        if (child_sid != INVALID_ID)
+            id = canonicalise_child(ds, child_sid, child_event, child_parent, child_keyed,
+                                    state_mode, event_keys, need_ranks, need_exact,
+                                    qc.enabled != 0, dedup, arena, ir_slot, ir_slot_words,
+                                    dedup_map, exact_map, event_map, forms, ready, acc_irkey,
+                                    acc_evkey, IrWarpAll{});
+        if (id.capture) {
+            const unsigned long long s3 = (threadIdx.x == 0) ? clock64() : 0;
+            qe_capture_expansion(ds, qe, child_parent, child_sid, child_event, child_rule,
+                                 child_pstep, blockIdx.x, surv_shared);
+            if (threadIdx.x == 0) acc_qe += clock64() - s3;
+        }
+        __syncthreads();
+        if (threadIdx.x == 0) {
+            if (id.ok) {
+                const uint64_t s4 = clock64();
+                register_child(ds, ev, sess, child_sid, child_parent, id.canonical, id.fresh,
+                               child_step, max_steps, explore_threshold_u32, explore_seed);
+                acc_dedup += clock64() - s4;
+            }
+            acc_canon += clock64() - t1;
+        }
+        return id;
+    };
+
     for (;;) {
         // Rewrite first: it drains what matching produced, and letting the pool run ahead
         // unboundedly is what makes it overflow. A block claims one record; when its child has
@@ -967,6 +1020,22 @@ __global__ void k_persistent_evolve(
                     claimed_count += claim_next_records(consume_cursor, found, more, claimed_more);
                 }
             }
+            // No record: a READY CHILD (keyed_close_followers), one whose rewrite is applied and
+            // that waited on its twin, runs as a single record from its canonicalisation on.
+            have_ready = false;
+            uint32_t e = INVALID_ID;
+            if (claimed_count == 0 && ds.keyed.enabled && ready.try_pop(e)) {
+                have_ready = true;
+                claimed_count = 1;
+                const DeviceEvent& x = ds.event_pool.at(e);
+                child_sid = x.output_state;
+                child_event = e;
+                child_step = x.step;
+                child_parent = x.input_state;
+                child_rule = x.rule;
+                child_pstep = x.step - 1u;
+                child_keyed = x.rewrite_id | hgcommon::REWRITE_TWIN_CANDIDATE;
+            }
         }
         __syncthreads();
 
@@ -978,10 +1047,13 @@ __global__ void k_persistent_evolve(
                 busy_streak += busy_streak < 255u ? 1u : 0u;
                 idle_spins = 0;            // consecutive, not cumulative -- see the guard below
             }
+            // Records whose child waits on a twin (TwinResult::kFollowing): done when completed
+            // from `ready`. Thread 0's.
+            uint32_t waiting = 0;
             if (claimed_count == 1) {
                 // ONE RECORD: thread 0 applies it, and the whole warp copies and canonicalises the
-                // child.
-                if (lane == 0) {
+                // child. A ready child is applied and copied already.
+                if (lane == 0 && !have_ready) {
                     const unsigned long long t0 = clock64();
                     const MatchRecord& rec = found.at(claimed);
                     await_match(rec);
@@ -1002,33 +1074,11 @@ __global__ void k_persistent_evolve(
                     acc_rewrite += clock64() - t0b;
                 }
                 __syncthreads();
-                if (child_sid != INVALID_ID) copy_kept_edges(ds, child_kept, IrWarpAll{});
+                if (!have_ready && child_sid != INVALID_ID)
+                    copy_kept_edges(ds, child_kept, IrWarpAll{});
                 __syncthreads();
-                const unsigned long long t1 = clock64();
-                ChildIdentity id{};
-                if (child_sid != INVALID_ID)
-                    id = canonicalise_child(ds, child_sid, child_event, child_parent, child_keyed,
-                                            state_mode, event_keys, need_ranks, need_exact,
-                                            qc.enabled != 0, dedup, arena, ir_slot, ir_slot_words,
-                                            dedup_map, exact_map, event_map, forms, acc_irkey,
-                                            acc_evkey, IrWarpAll{});
-                if (id.capture) {
-                    const unsigned long long s3 = (lane == 0) ? clock64() : 0;
-                    qe_capture_expansion(ds, qe, child_parent, child_sid, child_event, child_rule,
-                                         child_pstep, blockIdx.x, surv_shared);
-                    if (lane == 0) acc_qe += clock64() - s3;
-                }
-                __syncthreads();
-                if (lane == 0) {
-                    if (id.ok) {
-                        const uint64_t s4 = clock64();
-                        register_child(ds, ev, sess, child_sid, child_parent, id.canonical,
-                                       id.fresh, child_step, max_steps, explore_threshold_u32,
-                                       explore_seed);
-                        acc_dedup += clock64() - s4;
-                    }
-                    acc_canon += clock64() - t1;
-                }
+                const ChildIdentity id = finish_warp_child();
+                if (lane == 0) waiting = id.deferred ? 1u : 0u;
                 __syncthreads();
             } else {
                 // A BATCH: a record per tile of kBatchTile lanes. The tile's leader applies it,
@@ -1093,8 +1143,8 @@ __global__ void k_persistent_evolve(
                     id = canonicalise_child(ds, sid, evt, parent, keyed, state_mode, event_keys,
                                             need_ranks, need_exact, qc.enabled != 0, dedup, arena,
                                             tile_slot[tile], tile_slot_words[tile], dedup_map,
-                                            exact_map, event_map, forms, acc_irkey, acc_evkey,
-                                            Tile{});
+                                            exact_map, event_map, forms, ready, acc_irkey,
+                                            acc_evkey, Tile{});
                 for (uint32_t bigs = __ballot_sync(0xFFFFFFFFu, tlead && warp); bigs;
                      bigs &= bigs - 1u) {
                     const uint32_t b = __ffs(bigs) - 1u;
@@ -1107,7 +1157,7 @@ __global__ void k_persistent_evolve(
                         __shfl_sync(0xFFFFFFFFu, parent, b), __shfl_sync(0xFFFFFFFFu, keyed, b),
                         state_mode, event_keys, need_ranks, need_exact, qc.enabled != 0, dedup,
                         arena, ir_slot, ir_slot_words, dedup_map, exact_map, event_map, forms,
-                        acc_irkey, acc_evkey, IrWarpAll{});
+                        ready, acc_irkey, acc_evkey, IrWarpAll{});
                     if (lane == b) id = bid;
                 }
                 __syncwarp();
@@ -1146,12 +1196,14 @@ __global__ void k_persistent_evolve(
                     __syncwarp();
                 }
                 if (lane == 0) acc_canon += clock64() - t1;
+                const uint32_t w = __popc(__ballot_sync(0xFFFFFFFFu, tlead && id.deferred));
+                if (lane == 0) waiting = w;
                 __syncthreads();
             }
 
             if (threadIdx.x == 0) {
                 __threadfence();
-                atomicAdd(rewrites_done, claimed_count);
+                atomicAdd(rewrites_done, claimed_count - waiting);
                 // 1024, which is what the detector's note beside the progress print already
                 // states this to be. A flush is ten atomics on one 128-byte line, shared by
                 // every block, so at eight it cost 1.25 per record -- and the reason the
@@ -1159,7 +1211,7 @@ __global__ void k_persistent_evolve(
                 // attributable, which 1024 serves exactly as well as 8. A block leaving the
                 // loop flushes on the way out either way (exit_requested, stalled), so a run
                 // shorter than the interval loses nothing.
-                records_since_flush += claimed_count;
+                records_since_flush += claimed_count - waiting;
                 if (records_since_flush >= 1024u) {
                     flush_cycles();
                     records_since_flush = 0;
@@ -1386,6 +1438,7 @@ struct EngineState::PersistentScratch {
     std::unique_ptr<DedupMap> exact;         // exact hash -> record, under None and Automatic
     std::unique_ptr<DedupMap> keyed_rewrites;   // KeyedView::rewrites
     std::unique_ptr<DedupMap> keyed_twins;      // KeyedView::twins
+    std::unique_ptr<RingBuffer<uint32_t>> keyed_ready;   // children waiting on a twin, ready
     uint32_t* keyed_words = nullptr;             // KeyedView::words
     uint32_t* explore_frames = nullptr;
     size_t    explore_frame_words = 0;
@@ -1698,6 +1751,13 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         dsk.keyed.sum_mask = engine.config().keyed_sum_mask;
         dsk.keyed.enabled = 1;
     }
+    // Children waiting on a twin, handed on when it publishes (keyed_close_followers): at most
+    // one per state, so a ring of max_states (to a power of two) never fills. Two slots when the
+    // run does not key.
+    uint32_t ready_cap = 2;
+    if (keyed)
+        while (ready_cap < engine.config().max_states && ready_cap < (1u << 31)) ready_cap <<= 1;
+    const auto ready_v = reuse_ring(ps.keyed_ready, ready_cap).view();
 
     const double t_maps = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_maps0).count();
@@ -1801,7 +1861,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         session ? sess_v.states : canonical_owner->view(), dedup,
         explore_threshold_u32, explore_seed, max_steps, state_mode, event_keys,
         session ? sess_v.events : owned_event_ids->view(), exact_v,
-        arena.view(), term.view(), qc, qe, d_phase_cycles, sess_v, ev, forms_v);
+        arena.view(), term.view(), qc, qe, d_phase_cycles, sess_v, ev, forms_v, ready_v);
     HG_CUDA_CHECK(cudaDeviceSynchronize(), "persistent evolve sync");
     if (!read_stats) return stats;
 

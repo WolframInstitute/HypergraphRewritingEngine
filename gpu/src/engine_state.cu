@@ -226,6 +226,8 @@ EngineState::~EngineState() {
         if (state_num_orbits_)       cudaFree(state_num_orbits_);
         if (keyed_token_sum_)        cudaFree(keyed_token_sum_);
         if (keyed_first_new_edge_)   cudaFree(keyed_first_new_edge_);
+        if (keyed_follow_head_)      cudaFree(keyed_follow_head_);
+        if (keyed_follow_next_)      cudaFree(keyed_follow_next_);
         if (edge_producer_)          cudaFree(edge_producer_);
     }
 
@@ -258,6 +260,13 @@ void EngineState::ensure_keyed() {
         if (keyed_token_sum_) return;
         HG_CUDA_CHECK(cudaMalloc(&keyed_token_sum_, sizeof(uint64_t) * cfg_.max_states),
               "EngineState keyed token sum alloc");
+        HG_CUDA_CHECK(cudaMalloc(&keyed_follow_head_, sizeof(uint32_t) * cfg_.max_states),
+              "EngineState keyed follow head alloc");
+        // Every head starts FOLLOW_EMPTY (all ones).
+        HG_CUDA_CHECK(cudaMemset(keyed_follow_head_, 0xFF, sizeof(uint32_t) * cfg_.max_states),
+              "EngineState keyed follow head init");
+        HG_CUDA_CHECK(cudaMalloc(&keyed_follow_next_, sizeof(uint32_t) * cfg_.max_events),
+              "EngineState keyed follow next alloc");
         HG_CUDA_CHECK(cudaMalloc(&keyed_first_new_edge_, sizeof(uint32_t) * cfg_.max_states),
               "EngineState keyed first new edge alloc");
     }
@@ -374,6 +383,8 @@ DeviceState EngineState::device() const {
         d.keyed                   = KeyedView{};
         d.keyed.state_token_sum   = keyed_token_sum_;
         d.keyed.state_first_new_edge = keyed_first_new_edge_;
+        d.keyed.follow_head       = keyed_follow_head_;
+        d.keyed.follow_next       = keyed_follow_next_;
         d.event_sig_raw_fallbacks = event_sig_fallbacks_;
         d.canonical_event_count   = canonical_event_count_;
         d.vertex_high_water       = vertex_high_water_;
