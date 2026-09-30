@@ -644,7 +644,6 @@ bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
         case ErrorKind::kStatePoolFull:
             dbl(cfg.max_states);
             dbl(cfg.max_state_edge_total);
-            dbl(cfg.canonical_map_slots);
             dbl(cfg.canonical_form_words);
             return true;
         case ErrorKind::kEventPoolFull:
@@ -671,7 +670,12 @@ bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
         // Retryable, and it must be: a full dedup map cannot decide whether a state has been
         // seen, so the run keeps states it might have merged and reports an over-complete answer.
         // Growing the map is what turns that warning back into an exact result.
-        case ErrorKind::kCanonicalMapFull:    dbl(cfg.canonical_map_slots);  return true;
+        // Every claim map (states, event signatures, exact hashes, keyed rewrites and twins) is
+        // sized from max_states or max_events, so both grow.
+        case ErrorKind::kCanonicalMapFull:
+            dbl(cfg.max_states);
+            dbl(cfg.max_events);
+            return true;
         case ErrorKind::kCanonicalFormsFull:  dbl(cfg.canonical_form_words); return true;
         case ErrorKind::kCausalTripleMapFull: dbl(cfg.causal_triple_slots);  return true;
         case ErrorKind::kCausalPairMapFull:   dbl(cfg.causal_pair_slots);    return true;
@@ -744,7 +748,6 @@ static void log_winning_config(const EngineConfig& initial,
     LOG_FIELD(max_state_edge_total);
     LOG_FIELD(sig_index_pool);
     LOG_FIELD(inverted_pool);
-    LOG_FIELD(canonical_map_slots);
     LOG_FIELD(max_events);
     LOG_FIELD(max_causal_edges);
     LOG_FIELD(max_branchial_edges);
@@ -784,7 +787,6 @@ void fit_config_to_cap(EngineConfig& cfg, uint64_t cap) {
     sc(cfg.causal_triple_slots, 1u<<12);  sc(cfg.causal_pair_slots, 1u<<12);
     sc(cfg.branchial_pair_slots, 1u<<12); sc(cfg.edge_consumer_nodes, 1u<<12);
     sc(cfg.branchial_index_nodes, 1u<<12);sc(cfg.tr_preds_nodes, 1u<<12);
-    sc(cfg.canonical_map_slots, 1u<<12);
     sc(cfg.canonical_form_words, 1u<<14);
 }
 
@@ -824,7 +826,9 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     b += u64(default_persistent_grid()) * 4u * u64(cfg.tr_scratch_scale) *
          (EngineState::kTrScratchStack + EngineState::kTrScratchVisited);   // reachability scratch
     b += u64(default_persistent_grid()) * u64(cfg.survivor_scratch) * 8u;    // survivor scratch
-    b += u64(cfg.canonical_map_slots) * 12;         // canonical dedup map
+    // The claim maps: states and exact hashes at two slots per state, event signatures at two
+    // per event (persistent.cu reuse_map).
+    b += u64(cfg.max_states) * 2 * 12 * 2 + u64(cfg.max_events) * 2 * 12;
     b += u64(cfg.canonical_form_words) * 4;         // canonical form records
     if (cfg.keyed_rewrites) {
         // Keyed rewrites: per-state token sum and first produced edge, the rewrite map (two

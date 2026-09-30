@@ -172,3 +172,14 @@ TEST(CapacityOverflow, AnEngineThatDoesNotFitStopsAndReports) {
     for (const auto& w : r.warnings) oom = oom || w.kind == hg_gpu::ErrorKind::kDeviceOutOfMemory;
     EXPECT_TRUE(oom);
 }
+
+// A full claim map is retried with larger claim maps. Every claim map is sized from max_states or
+// max_events (persistent.cu reuse_map, SessionState), so the retry for kCanonicalMapFull must grow
+// both; a knob that sized nothing was doubled here instead, and the retry ran at the same size.
+TEST(CapacityOverflow, AFullClaimMapIsRetriedLarger) {
+    hg_gpu::EngineConfig cfg;
+    const uint32_t states = cfg.max_states, events = cfg.max_events;
+    ASSERT_TRUE(hg_gpu::grow_config_for(cfg, hg_gpu::ErrorKind::kCanonicalMapFull));
+    EXPECT_EQ(cfg.max_states, 2 * states);
+    EXPECT_EQ(cfg.max_events, 2 * events);
+}

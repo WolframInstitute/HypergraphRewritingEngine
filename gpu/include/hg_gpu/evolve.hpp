@@ -324,7 +324,6 @@ struct EngineConfig {
     uint32_t sig_index_buckets    = 1024;       // power of two; sig_hash & (n-1)
     uint32_t inverted_pool        = 1u << 18;   // shared LockFreeList node capacity
     uint32_t sig_index_pool       = 1u << 16;   // shared LockFreeList node capacity
-    uint32_t canonical_map_slots  = 1u << 14;   // capacity 4× expected dedup'd states
     // Words of canonical-form records: one record per Full-mode canonical state, a 3-word
     // header and its IR canonical form at 1, 2 or 4 bytes per word (hgcommon/
     // canonical_form_core.hpp). Grown on kCanonicalFormsFull.
