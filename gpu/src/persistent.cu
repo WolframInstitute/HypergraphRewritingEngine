@@ -324,23 +324,38 @@ __device__ __forceinline__ uint32_t readable_records(
 constexpr uint32_t kMaxDetectorRounds = 10u * 1000u * 1000u;
 constexpr uint32_t kMaxWorkerIdleSpins = 20u * 1000u * 1000u;
 
-// Reserve the next unconsumed record index, or INVALID_ID when there is none yet.
+// Reserve consecutive unconsumed records below the readable count, starting at the cursor:
+// returns how many, the first at `base`; 0 when there is none yet. `limit(at, available)` caps
+// the count for the run that would start at record `at` with `available` records readable.
 //
 // The reservation is a CAS rather than an unconditional bump, because the cursor is shared and
 // a bump has nothing to undo with: a block that bumped past the end and then subtracted can
 // have its subtraction cancel a DIFFERENT block's successful claim, which both hands the same
 // record to two blocks and strands the one in between. A stranded record is never rewritten,
 // so `rewrites_done` never reaches the record count and the run does not terminate.
-__device__ __forceinline__ uint32_t claim_next_record(
-        uint32_t* cursor, const typename Pool<MatchRecord>::DeviceView& found) {
+template <class Limit>
+__device__ __forceinline__ uint32_t claim_next_records(
+        uint32_t* cursor, const typename Pool<MatchRecord>::DeviceView& found, Limit limit,
+        uint32_t& base) {
     uint32_t cur = cuda::atomic_ref<uint32_t, cuda::thread_scope_device>(*cursor)
                        .load(cuda::memory_order_relaxed);
     for (;;) {
-        if (cur >= readable_records(found, cuda::memory_order_relaxed)) return INVALID_ID;
-        const uint32_t prev = atomicCAS(cursor, cur, cur + 1u);
-        if (prev == cur) return cur;
+        const uint32_t readable = readable_records(found, cuda::memory_order_relaxed);
+        if (cur >= readable) return 0;
+        const uint32_t take = min(limit(cur, readable - cur), readable - cur);
+        if (take == 0) return 0;
+        const uint32_t prev = atomicCAS(cursor, cur, cur + take);
+        if (prev == cur) { base = cur; return take; }
         cur = prev;
     }
+}
+
+// The next unconsumed record index, or INVALID_ID when there is none yet.
+__device__ __forceinline__ uint32_t claim_next_record(
+        uint32_t* cursor, const typename Pool<MatchRecord>::DeviceView& found) {
+    const auto one = [](uint32_t, uint32_t) { return 1u; };
+    uint32_t base = INVALID_ID;
+    return claim_next_records(cursor, found, one, base) ? base : INVALID_ID;
 }
 
 // ---- stage 1: the match role alone ------------------------------------------------------
@@ -492,6 +507,172 @@ __global__ void k_persistent_match_rewrite(
             if (idle_ns < 4096u) idle_ns <<= 1;
         }
         __syncthreads();
+    }
+}
+
+// The size class: a child of at most this many edges is canonicalised by its batch tile, a larger
+// one by the whole warp (DEVICE_DESIGN 3.2).
+constexpr uint32_t kLaneStateEdges = 32;
+// The fewest lanes a batch occupies (records x kBatchTile) for its children to be canonicalised
+// by their tiles. A batch costs about one tile IR whatever its size, where the warp canonicalises
+// one child faster than a tile does, so a batch on fewer lanes is canonicalised by the warp,
+// child by child.
+constexpr uint32_t kLaneBatchMin = 4;
+// The readable records below which a block claims one at a time: a short backlog is spread over
+// the grid, where a batch would leave the other blocks idle.
+constexpr uint32_t kLaneBatchBacklog = 64;
+// The most edges the first claimed record's child has for the block to claim a batch.
+constexpr uint32_t kLaneBatchEdges = 32;
+// The lanes that canonicalise one child of a batch together (IrTile): a batch holds
+// 32 / kBatchTile records.
+constexpr uint32_t kBatchTile = 4;
+// Consecutive iterations that found work before a block claims a batch: a block coming off idle,
+// or off the matching that produced a burst, takes one record, so the burst spreads over the
+// grid.
+constexpr uint32_t kBatchBusyStreak = 2;
+
+// A rewritten child's canonical identity: its hash (IR, or a twin's through keyed rewrites), its
+// class claim, the published hash and exact hash, and its event's signature. One body for a child
+// canonicalised by a batch tile (IrTile<kBatchTile>) and by the whole warp (IrWarpAll, a
+// large one): par.leader() runs the claims, and what the caller branches on crosses to every lane.
+struct ChildIdentity {
+    StateId canonical = INVALID_ID;
+    bool fresh = false;
+    bool capture = false;   // the event's class-frame capture runs (qe_capture_expansion)
+    bool ok = false;        // the child has a hash; its identity and depth are registered
+};
+
+template <class Par>
+__device__ __forceinline__ ChildIdentity canonicalise_child(
+        const DeviceState& ds, StateId sid, EventId evt, StateId parent, uint32_t keyed,
+        CanonicalizationMode state_mode, EventSignatureKeys event_keys, bool need_ranks,
+        bool need_exact, bool want_orbits, bool dedup, DeviceArena::View arena, uint32_t*& slot,
+        uint64_t& slot_words, DedupMap::DeviceView dedup_map, DedupMap::DeviceView exact_map,
+        DedupMap::DeviceView event_map, typename Pool<uint32_t>::DeviceView forms,
+        unsigned long long& acc_irkey, unsigned long long& acc_evkey, Par par) {
+    const unsigned long long t1 = clock64();
+    // Keyed rewrites (keyed.hpp): a child whose token set an earlier state holds takes that
+    // state's canonical results and skips its IR. One thread checks; the verdict crosses.
+    uint64_t twin_h = 0;
+    StateId twin_rep = INVALID_ID;
+    uint32_t twin = 0;
+    if (keyed != 0 && par.leader())
+        twin = keyed_take_twin(ds, sid, parent, evt, keyed, arena, slot, slot_words, need_ranks,
+                               want_orbits, dedup_map, forms, twin_h, twin_rep) ? 1u : 0u;
+    par.sync();
+    twin = par.bcast(twin);
+
+    uint64_t h = 0;
+    uint32_t* form = nullptr;
+    uint32_t form_words = 0;
+    ExactHashStatus key_st = ExactHashStatus::kOk;
+    if (!twin)
+        key_st = state_key_device(ds, sid, state_mode, arena, slot, slot_words, h, need_ranks,
+                                  want_orbits, &form, &form_words, par);
+    if (par.leader()) acc_irkey += clock64() - t1;
+
+    // The exact isomorphism hash is a different question from the mode's key and coincides with
+    // it only in Full. Computed only when an event identity or a transition key will read it.
+    uint64_t exact = h;
+    ExactHashStatus ex_st = ExactHashStatus::kOk;
+    uint32_t* eform = nullptr;
+    uint32_t eform_words = 0;
+    if (!twin && key_st == ExactHashStatus::kOk && need_exact &&
+        state_mode != CanonicalizationMode::Full)
+        ex_st = state_exact_hash_device(ds, sid, arena, slot, slot_words, exact, need_ranks,
+                                        false, &eform, &eform_words, par);
+
+    uint32_t canonical = INVALID_ID, fresh = 0, capture = 0, ok = 0;
+    if (par.leader()) {
+        if (key_st != ExactHashStatus::kOk) {
+            // The hash is the dedup KEY, so a state whose hash could not be computed is not
+            // enqueued under a coarser one.
+            ds.errors.record(error_kind_for(key_st));
+        } else {
+            ok = 1;
+            // IDENTITY FIRST. In Full mode the class's key, claimed on the canonical form, is the
+            // state's canonical hash, so it is claimed before the hash is published and everything
+            // keyed by the hash -- event identity, the quotient's classes -- reads the key.
+            if (twin) {
+                h = twin_h;
+                exact = h;
+                canonical = dedup ? twin_rep : sid;
+                fresh = dedup ? 0u : 1u;
+            } else if (state_mode == CanonicalizationMode::Full) {
+                const StateClaim c = state_claim_form(ds, sid, h & ds.canonical_key_mask, form,
+                                                      form_words, dedup_map, forms);
+                h = c.key;
+                exact = h;
+                canonical = dedup ? c.canonical : sid;
+                fresh = (dedup ? c.fresh : true) ? 1u : 0u;
+            } else if (state_mode == CanonicalizationMode::Automatic) {
+                const StateClaim c = state_claim_content(ds, sid, h, dedup_map);
+                h = c.key;
+                canonical = dedup ? c.canonical : sid;
+                fresh = (dedup ? c.fresh : true) ? 1u : 0u;
+            } else {
+                const StateIdentity id = state_identity(ds, sid, h, dedup_map, dedup);
+                canonical = id.canonical;
+                fresh = id.fresh ? 1u : 0u;
+            }
+            // Publish before anything reads it: a transition OUT of this state needs it as an
+            // input hash, and that read happens on another block.
+            ds.state_canonical_hash[sid] = h;
+
+            if (need_exact) {
+                if (ex_st != ExactHashStatus::kOk) {
+                    ds.errors.record(error_kind_for(ex_st));
+                    exact = 0;
+                } else if (state_mode != CanonicalizationMode::Full) {
+                    // The exact hash event identity reads, claimed on the IR form (the host's
+                    // event_canonical_state_map_).
+                    exact = state_claim_form(ds, sid, exact & ds.event_key_mask, eform,
+                                             eform_words, exact_map, forms).key;
+                }
+                ds.state_exact_hash[sid] = exact;
+            }
+
+            // The event identity, where both halves exist: the input hash, published when the
+            // parent was created, and the output hash just computed. Built from the EXACT hashes,
+            // never the mode's key (SPEC.md sec 4).
+            if (event_keys != EVENT_SIG_NONE && evt != INVALID_ID) {
+                const uint64_t s1 = clock64();
+                stamp_event_signature(ds, evt, event_keys, event_map);
+                acc_evkey += clock64() - s1;
+            }
+            // Quotient causal: EVERY raw event registers its canonical transition, whether or not
+            // the child survives dedup -- the host registers per raw event too.
+            capture = evt != INVALID_ID ? 1u : 0u;
+        }
+    }
+    ChildIdentity out;
+    out.canonical = par.bcast(canonical);
+    out.fresh = par.bcast(fresh) != 0;
+    out.capture = par.bcast(capture) != 0;
+    out.ok = par.bcast(ok) != 0;
+    return out;
+}
+
+// IDENTITY, THEN DEPTH (explore_depth.hpp) for one child with a hash, on thread 0. The first
+// arrival of a key is its canonical state; a fresh state the exploration coin or a cap refuses,
+// under the budget or in a session, is claimed unexpanded, so no later path expands it. Every
+// arrival registers under its parent, and one that lowers the canonical state's depth admits it
+// and lowers its descendants.
+__device__ __forceinline__ void register_child(
+        DeviceState& ds, ExploreView& ev, const SessionView& sess, StateId sid,
+        StateId parent, StateId canonical, bool fresh, uint32_t step, uint32_t max_steps,
+        uint32_t explore_threshold_u32, uint64_t explore_seed) {
+    if (fresh && (step < max_steps || sess.enabled) &&
+        !state_retained(ds, sid, step, parent, explore_threshold_u32, explore_seed))
+        ev.claim(canonical);
+    DeviceExploreCtx xc{ds, ev, sess, max_steps,
+                        ev.frame_node + size_t(blockIdx.x) * ev.frame_levels,
+                        ev.frame_depth + size_t(blockIdx.x) * ev.frame_levels, ev.frame_levels};
+    const uint32_t d = hgcommon::explore_register_child(xc, parent, canonical, step);
+    if (d != hgcommon::kExploreNoDepth) {
+        xc.admit(canonical, d);
+        if (!hgcommon::explore_relax(xc, canonical, d))
+            ds.errors.record(ErrorKind::kScratchOverflow);
     }
 }
 
@@ -699,19 +880,21 @@ __global__ void k_persistent_evolve(
     __shared__ uint32_t task_base;
     __shared__ uint32_t task_count;
     __shared__ bool     have;
-    __shared__ uint32_t claimed;
+    __shared__ uint32_t claimed;         // the first record the block claimed
+    __shared__ uint32_t claimed_count;   // how many, up to 32
+    __shared__ uint32_t claimed_more;    // records 2..claimed_count, consecutive from here
+    // Each tile's IR scratch for the children it canonicalises (a batch's tiles, IrTile), claimed
+    // from the arena on first use and grown by grow_ir_slot.
+    __shared__ uint32_t* tile_slot[32];
+    __shared__ uint64_t  tile_slot_words[32];
     __shared__ uint32_t child_sid;
-    __shared__ uint32_t child_event;
     __shared__ uint32_t child_step;
-    __shared__ KeptCopy child_kept;
+    __shared__ KeptCopy child_kept;   // the kept edges of the child the warp copies
+    __shared__ uint32_t child_event;
     __shared__ uint32_t child_keyed;
     __shared__ StateId  child_parent;
-    __shared__ bool     twin_taken;
-    __shared__ uint64_t twin_h;
-    __shared__ StateId  twin_rep;
-    __shared__ bool     capture_go;
-    __shared__ StateId  id_canonical;
-    __shared__ bool     id_fresh;
+    __shared__ uint32_t child_rule;
+    __shared__ uint32_t child_pstep;
     __shared__ uint64_t surv_shared[kLocalSurvivors];
     __shared__ uint32_t expand_base;
     __shared__ uint32_t expand_count;
@@ -719,6 +902,7 @@ __global__ void k_persistent_evolve(
     __shared__ bool     stalled;
     uint32_t idle_spins = 0;
     uint32_t idle_ns    = 64;   // thread 0's backoff state; reset whenever work is found
+    uint32_t busy_streak = 0;   // thread 0's consecutive iterations that found work, to 255
 
     // Phase attribution, accumulated in thread 0's registers and flushed once at exit so the
     // hot loop carries no extra atomics. See PersistentEvolveStats for what the four mean.
@@ -755,228 +939,219 @@ __global__ void k_persistent_evolve(
     uint32_t records_since_flush = 0;
 
     if (threadIdx.x == 0) { ir_slot = nullptr; ir_slot_words = 0; stalled = false; }
+    tile_slot[threadIdx.x] = nullptr;
+    tile_slot_words[threadIdx.x] = 0;
     __syncthreads();
 
     for (;;) {
         // Rewrite first: it drains what matching produced, and letting the pool run ahead
-        // unboundedly is what makes it overflow.
-        if (threadIdx.x == 0) claimed = claim_next_record(consume_cursor, found);
+        // unboundedly is what makes it overflow. A block claims one record; when its child has
+        // at most kLaneBatchEdges edges, kLaneBatchBacklog records are readable and the block found
+        // work in its last kBatchBusyStreak iterations, it claims up to 32 / kBatchTile - 1 more in
+        // one exchange. A short burst, or one of large children, spreads over the grid. The record
+        // is read only after it is claimed.
+        if (threadIdx.x == 0) {
+            claimed = claim_next_record(consume_cursor, found);
+            claimed_count = 0;
+            if (claimed != INVALID_ID) {
+                claimed_count = 1;
+                const MatchRecord& r = found.at(claimed);
+                await_match(r);
+                const DeviceRule& rule = rules[r.rule_id];
+                const uint32_t child = ds.state_edge_slices[r.state_id].count +
+                                       rule.num_rhs_edges - rule.num_lhs_edges;
+                if (child <= kLaneBatchEdges && busy_streak >= kBatchBusyStreak) {
+                    const auto more = [](uint32_t, uint32_t available) {
+                        return available >= kLaneBatchBacklog ? 32u / kBatchTile - 1u : 0u;
+                    };
+                    claimed_count += claim_next_records(consume_cursor, found, more, claimed_more);
+                }
+            }
+        }
         __syncthreads();
 
-        if (claimed != INVALID_ID) {
-            if (threadIdx.x == 0) {
+        // REWRITE the claimed records: a single one on the whole warp, a batch on its tiles.
+        if (claimed_count) {
+            const uint32_t lane = threadIdx.x;
+            if (lane == 0) {
                 idle_ns = 64;
+                busy_streak += busy_streak < 255u ? 1u : 0u;
                 idle_spins = 0;            // consecutive, not cumulative -- see the guard below
-                const unsigned long long t0 = clock64();
-                const MatchRecord& rec = found.at(claimed);
-                await_match(rec);
-                const unsigned long long t0b = clock64();
-                acc_wait += t0b - t0;
-                const uint32_t step = rec.step;
-                // The event carries the depth of the state it PRODUCES -- see the note in
-                // k_persistent_match_rewrite. The exploration depth below is the same value.
-                const AppliedMatch applied = apply_one_match(
-                    ds, rules, rec, step + 1u,
-                    phase_cycles ? phase_cycles + 5 : nullptr);
-                child_sid    = applied.state;
-                child_event  = applied.event;
-                child_step   = step + 1u;
-                child_kept   = applied.kept;
-                child_keyed  = applied.keyed;
-                child_parent = rec.state_id;
-                acc_rewrite += clock64() - t0b;
             }
-            __syncthreads();
-            // The child's kept edges, on every lane, before region 2 reads the child's slice.
-            if (child_sid != INVALID_ID) copy_kept_edges(ds, child_kept, IrWarpAll{});
-            __syncthreads();
-            // Keyed rewrites (keyed.hpp): a child whose token set an earlier state holds takes that
-            // state's canonical results, and the warp skips its IR. One thread checks; the flag is
-            // shared so every lane takes the same branch below.
-            if (threadIdx.x == 0) {
-                twin_taken = false;
-                if (child_sid != INVALID_ID && child_keyed != 0)
-                    twin_taken = keyed_take_twin(ds, child_sid, child_parent, child_event,
-                                                 child_keyed, arena, ir_slot, ir_slot_words,
-                                                 need_ranks, qc.enabled != 0, dedup_map, forms,
-                                                 twin_h, twin_rep);
-            }
-            __syncthreads();
-            // Region 2 of the record. The two canonicalizations run on the WHOLE warp: every
-            // lane enters the shared core together under the all-lanes policy, and the block
-            // is one warp (kMatchBlockThreads), so the collectives' full mask holds. The
-            // branches here read only shared or uniform values, so the lanes stay converged.
-            // Downstream of the hashes, publishing and signatures are thread 0's, the expansion
-            // capture runs on every lane, and identity and depth are thread 0's.
-            {
-                const unsigned long long t1 = clock64();
-                // SPLIT THE canon BUCKET INTO ITS PARTS.
-                //
-                // acc_canon spans this whole region, so it has been reporting
-                // "canonicalization" for a span that also stamps event signatures, drives
-                // the quotient causal DP, captures the class-frame expansion and consults
-                // dedup. A 99% reading was taken to mean individualization-refinement and does
-                // not: an isolated measurement puts device IR at 62.9x the host on one state,
-                // not the thousands the whole-block figure implied. Slots 11-15 name the
-                // parts so the next question is asked of the right one.
-                uint64_t h = 0;
-                uint32_t* form = nullptr;
-                uint32_t form_words = 0;
-                ExactHashStatus key_st = ExactHashStatus::kOk;
-                if (child_sid != INVALID_ID && !twin_taken) {
-                    key_st = state_key_device(ds, child_sid, state_mode, arena, ir_slot,
-                                              ir_slot_words, h, need_ranks, qc.enabled != 0,
-                                              &form, &form_words, IrWarpAll{});
-                }
-                if (threadIdx.x == 0) acc_irkey += clock64() - t1;
-
-                // The exact isomorphism hash is a different question from the mode's key and
-                // coincides with it only in Full. Computed only when an event identity or a
-                // transition key will read it (run_needs_exact_hash).
-                uint64_t exact = h;
-                ExactHashStatus ex_st = ExactHashStatus::kOk;
-                uint32_t* eform = nullptr;
-                uint32_t eform_words = 0;
-                if (child_sid != INVALID_ID && key_st == ExactHashStatus::kOk && need_exact &&
-                    state_mode != CanonicalizationMode::Full) {
-                    ex_st = state_exact_hash_device(ds, child_sid, arena, ir_slot,
-                                                    ir_slot_words, exact, need_ranks,
-                                                    false, &eform, &eform_words, IrWarpAll{});
-                }
-
-                if (threadIdx.x == 0) {
-                const MatchRecord& rec = found.at(claimed);
-                const uint32_t step = rec.step;
-                capture_go = false;
-
-                // Expand the child only if it exists, the step budget allows it, its exact
-                // hash is computable, and the exploration rule keeps it. The hash is the
-                // dedup KEY, so a state whose hash could not be computed is not enqueued
-                // under a coarser one -- 1-WL merges non-isomorphic states.
-                if (child_sid != INVALID_ID) {
-                    if (key_st != ExactHashStatus::kOk) {
-                        ds.errors.record(error_kind_for(key_st));
-                    } else {
-                        // IDENTITY FIRST. In Full mode the class's key, claimed on the
-                        // canonical form (state_claim_full), is the state's canonical hash, so it
-                        // is claimed before the hash is published and everything keyed by the
-                        // hash -- event identity, the quotient's classes -- reads the key.
-                        if (twin_taken) {
-                            h = twin_h;
-                            exact = h;
-                            id_canonical = dedup ? twin_rep : child_sid;
-                            id_fresh = !dedup;
-                        } else if (state_mode == CanonicalizationMode::Full) {
-                            const StateClaim c =
-                                state_claim_form(ds, child_sid, h & ds.canonical_key_mask, form,
-                                                 form_words, dedup_map, forms);
-                            h = c.key;
-                            exact = h;
-                            id_canonical = dedup ? c.canonical : child_sid;
-                            id_fresh = dedup ? c.fresh : true;
-                        } else if (state_mode == CanonicalizationMode::Automatic) {
-                            const StateClaim c = state_claim_content(ds, child_sid, h, dedup_map);
-                            h = c.key;
-                            id_canonical = dedup ? c.canonical : child_sid;
-                            id_fresh = dedup ? c.fresh : true;
-                        } else {
-                            const StateIdentity id =
-                                state_identity(ds, child_sid, h, dedup_map, dedup);
-                            id_canonical = id.canonical;
-                            id_fresh = id.fresh;
-                        }
-                        // Publish before anything reads it: a transition OUT of this state
-                        // needs it as an input hash, and that read happens on another block.
-                        ds.state_canonical_hash[child_sid] = h;
-
-                        if (need_exact) {
-                            if (ex_st != ExactHashStatus::kOk) {
-                                ds.errors.record(error_kind_for(ex_st));
-                                exact = 0;
-                            } else if (state_mode != CanonicalizationMode::Full) {
-                                // The exact hash event identity reads, claimed on the IR form
-                                // (the host's event_canonical_state_map_).
-                                exact = state_claim_form(ds, child_sid, exact & ds.event_key_mask,
-                                                         eform, eform_words, exact_map,
-                                                         forms).key;
-                            }
-                            ds.state_exact_hash[child_sid] = exact;
-                        }
-
-                        // The event identity, at the only point where both halves exist: the
-                        // input hash, published when the parent was created, and the output
-                        // hash just computed. The rewrite wrote this event BEFORE its output
-                        // state was canonicalized, which is precisely why a scheduler with a
-                        // phase boundary between rewriting and hashing cannot fill it in --
-                        // and why the persistent one can.
-                        // Built from the EXACT hashes, never the mode's key: event identity is
-                        // defined over isomorphism classes independently of how states are
-                        // being identified (SPEC.md sec 4). Keying it off the mode's hash is
-                        // the defect b82049f fixed on the host.
-                        if (event_keys != EVENT_SIG_NONE && child_event != INVALID_ID) {
-                            const uint64_t s1 = clock64();
-                            stamp_event_signature(ds, child_event, event_keys, event_map);
-                            acc_evkey += clock64() - s1;
-                        }
-
-                        // Quotient causal: EVERY raw event registers its canonical transition,
-                        // whether or not the child survives dedup below -- the host registers
-                        // per raw event too. Both endpoint hashes and orbit tables exist at this
-                        // point (the parent's from its own canon, the child's from the pass just
-                        // above). The capture runs on every lane, between this part and the next.
-                        capture_go = child_event != INVALID_ID;
-                    }
-                }
-                } // threadIdx.x == 0
-                __syncthreads();
-                // The class frame's match record (qe_capture_expansion), on every lane. The
-                // block's slice of the survivor scratch is indexed by blockIdx.
-                if (capture_go) {
+            if (claimed_count == 1) {
+                // ONE RECORD: thread 0 applies it, and the whole warp copies and canonicalises the
+                // child.
+                if (lane == 0) {
+                    const unsigned long long t0 = clock64();
                     const MatchRecord& rec = found.at(claimed);
-                    const unsigned long long s3 = (threadIdx.x == 0) ? clock64() : 0;
-                    qe_capture_expansion(ds, qe, rec.state_id, child_sid, child_event,
-                                         rec.rule_id, rec.step, blockIdx.x, surv_shared);
-                    if (threadIdx.x == 0) acc_qe += clock64() - s3;
+                    await_match(rec);
+                    const unsigned long long t0b = clock64();
+                    acc_wait += t0b - t0;
+                    // The event carries the depth of the state it PRODUCES -- see the note in
+                    // k_persistent_match_rewrite. The exploration depth below is the same value.
+                    const AppliedMatch a = apply_one_match(
+                        ds, rules, rec, rec.step + 1u, phase_cycles ? phase_cycles + 5 : nullptr);
+                    child_sid = a.state;
+                    child_event = a.event;
+                    child_step = rec.step + 1u;
+                    child_kept = a.kept;
+                    child_keyed = a.keyed;
+                    child_parent = rec.state_id;
+                    child_rule = rec.rule_id;
+                    child_pstep = rec.step;
+                    acc_rewrite += clock64() - t0b;
                 }
                 __syncthreads();
-                if (threadIdx.x == 0) {
-                const MatchRecord& rec = found.at(claimed);
-                if (child_sid != INVALID_ID && key_st == ExactHashStatus::kOk) {
-                        // IDENTITY, THEN DEPTH (explore_depth.hpp). The first arrival of a key
-                        // is its canonical state; a fresh state the exploration coin or a cap
-                        // refuses, under the budget or in a session, is claimed unexpanded, so
-                        // no later path expands it. Every arrival registers under its parent,
-                        // and one that lowers the canonical state's depth admits it and lowers
-                        // its descendants.
-                        {
-                            const uint64_t s4 = clock64();
-                            const StateIdentity id{id_canonical, id_fresh};
-                            if (id.fresh && (child_step < max_steps || sess.enabled) &&
-                                !state_retained(ds, child_sid, child_step, rec.state_id,
-                                                explore_threshold_u32, explore_seed))
-                                ev.claim(id.canonical);
-                            DeviceExploreCtx xc{ds, ev, sess, max_steps,
-                                                ev.frame_node + size_t(blockIdx.x) * ev.frame_levels,
-                                                ev.frame_depth + size_t(blockIdx.x) * ev.frame_levels,
-                                                ev.frame_levels};
-                            const uint32_t d = hgcommon::explore_register_child(
-                                xc, rec.state_id, id.canonical, child_step);
-                            if (d != hgcommon::kExploreNoDepth) {
-                                xc.admit(id.canonical, d);
-                                if (!hgcommon::explore_relax(xc, id.canonical, d))
-                                    ds.errors.record(ErrorKind::kScratchOverflow);
-                            }
-                            acc_dedup += clock64() - s4;
-                        }
+                if (child_sid != INVALID_ID) copy_kept_edges(ds, child_kept, IrWarpAll{});
+                __syncthreads();
+                const unsigned long long t1 = clock64();
+                ChildIdentity id{};
+                if (child_sid != INVALID_ID)
+                    id = canonicalise_child(ds, child_sid, child_event, child_parent, child_keyed,
+                                            state_mode, event_keys, need_ranks, need_exact,
+                                            qc.enabled != 0, dedup, arena, ir_slot, ir_slot_words,
+                                            dedup_map, exact_map, event_map, forms, acc_irkey,
+                                            acc_evkey, IrWarpAll{});
+                if (id.capture) {
+                    const unsigned long long s3 = (lane == 0) ? clock64() : 0;
+                    qe_capture_expansion(ds, qe, child_parent, child_sid, child_event, child_rule,
+                                         child_pstep, blockIdx.x, surv_shared);
+                    if (lane == 0) acc_qe += clock64() - s3;
                 }
-                acc_canon += clock64() - t1;
-                } // threadIdx.x == 0
+                __syncthreads();
+                if (lane == 0) {
+                    if (id.ok) {
+                        const uint64_t s4 = clock64();
+                        register_child(ds, ev, sess, child_sid, child_parent, id.canonical,
+                                       id.fresh, child_step, max_steps, explore_threshold_u32,
+                                       explore_seed);
+                        acc_dedup += clock64() - s4;
+                    }
+                    acc_canon += clock64() - t1;
+                }
+                __syncthreads();
+            } else {
+                // A BATCH: a record per tile of kBatchTile lanes. The tile's leader applies it,
+                // and the tile copies and canonicalises the child (IrTile). A child of more than
+                // kLaneStateEdges edges, and every child of a batch on fewer than kLaneBatchMin
+                // lanes, is copied and canonicalised by the whole warp instead, one at a time.
+                // The class-frame captures (every lane together) and the identity and depth
+                // registration (thread 0: the walk's frames are per block) then run child by
+                // child.
+                constexpr uint32_t T = kBatchTile;
+                using Tile = IrTile<T>;
+                const uint32_t tile = lane / T;
+                const bool tlead = (lane & (T - 1u)) == 0u;
+                StateId sid = INVALID_ID, parent = INVALID_ID;
+                EventId evt = INVALID_ID;
+                uint32_t cstep = 0, keyed = 0, rule = 0, pstep = 0;
+                KeptCopy kept{};
+                {
+                    const unsigned long long t0 = clock64();
+                    if (tlead && tile < claimed_count) {
+                        const MatchRecord& rec =
+                            found.at(tile == 0 ? claimed : claimed_more + tile - 1u);
+                        await_match(rec);
+                        if (lane == 0) acc_wait += clock64() - t0;
+                        parent = rec.state_id;
+                        rule = rec.rule_id;
+                        pstep = rec.step;
+                        // The event carries the depth of the state it PRODUCES -- see the note
+                        // in k_persistent_match_rewrite. The exploration depth below is the same.
+                        cstep = rec.step + 1u;
+                        const AppliedMatch a = apply_one_match(
+                            ds, rules, rec, cstep, phase_cycles ? phase_cycles + 5 : nullptr);
+                        sid = a.state;
+                        evt = a.event;
+                        keyed = a.keyed;
+                        kept = a.kept;
+                    }
+                    if (lane == 0) acc_rewrite += clock64() - t0;
+                }
+                __syncwarp();
+                // The tile leader's child on every lane of its tile.
+                sid = __shfl_sync(0xFFFFFFFFu, sid, 0, T);
+                evt = __shfl_sync(0xFFFFFFFFu, evt, 0, T);
+                parent = __shfl_sync(0xFFFFFFFFu, parent, 0, T);
+                keyed = __shfl_sync(0xFFFFFFFFu, keyed, 0, T);
+                cstep = __shfl_sync(0xFFFFFFFFu, cstep, 0, T);
+                kept.src_offset = __shfl_sync(0xFFFFFFFFu, kept.src_offset, 0, T);
+                kept.src_count = __shfl_sync(0xFFFFFFFFu, kept.src_count, 0, T);
+                kept.dst_offset = __shfl_sync(0xFFFFFFFFu, kept.dst_offset, 0, T);
+                kept.n_consumed = __shfl_sync(0xFFFFFFFFu, kept.n_consumed, 0, T);
+                #pragma unroll
+                for (uint32_t i = 0; i < kMaxPatternEdges; ++i)
+                    kept.consumed[i] = __shfl_sync(0xFFFFFFFFu, kept.consumed[i], 0, T);
+                const bool warp = sid != INVALID_ID &&
+                                  (claimed_count * T < kLaneBatchMin ||
+                                   ds.state_edge_slices[sid].count > kLaneStateEdges);
+                if (sid != INVALID_ID && !warp) copy_kept_edges(ds, kept, Tile{});
+
+                const unsigned long long t1 = clock64();
+                ChildIdentity id{};
+                if (sid != INVALID_ID && !warp)
+                    id = canonicalise_child(ds, sid, evt, parent, keyed, state_mode, event_keys,
+                                            need_ranks, need_exact, qc.enabled != 0, dedup, arena,
+                                            tile_slot[tile], tile_slot_words[tile], dedup_map,
+                                            exact_map, event_map, forms, acc_irkey, acc_evkey,
+                                            Tile{});
+                for (uint32_t bigs = __ballot_sync(0xFFFFFFFFu, tlead && warp); bigs;
+                     bigs &= bigs - 1u) {
+                    const uint32_t b = __ffs(bigs) - 1u;
+                    if (lane == b) child_kept = kept;
+                    __syncwarp();
+                    copy_kept_edges(ds, child_kept, IrWarpAll{});
+                    __syncwarp();
+                    const ChildIdentity bid = canonicalise_child(
+                        ds, __shfl_sync(0xFFFFFFFFu, sid, b), __shfl_sync(0xFFFFFFFFu, evt, b),
+                        __shfl_sync(0xFFFFFFFFu, parent, b), __shfl_sync(0xFFFFFFFFu, keyed, b),
+                        state_mode, event_keys, need_ranks, need_exact, qc.enabled != 0, dedup,
+                        arena, ir_slot, ir_slot_words, dedup_map, exact_map, event_map, forms,
+                        acc_irkey, acc_evkey, IrWarpAll{});
+                    if (lane == b) id = bid;
+                }
+                __syncwarp();
+
+                // The class frame's match record (qe_capture_expansion), every lane together,
+                // child by child. The block's slice of the survivor scratch is indexed by blockIdx.
+                for (uint32_t caps = __ballot_sync(0xFFFFFFFFu, tlead && id.capture); caps;
+                     caps &= caps - 1u) {
+                    const uint32_t c = __ffs(caps) - 1u;
+                    const unsigned long long s3 = (lane == 0) ? clock64() : 0;
+                    qe_capture_expansion(ds, qe, __shfl_sync(0xFFFFFFFFu, parent, c),
+                                         __shfl_sync(0xFFFFFFFFu, sid, c),
+                                         __shfl_sync(0xFFFFFFFFu, evt, c),
+                                         __shfl_sync(0xFFFFFFFFu, rule, c),
+                                         __shfl_sync(0xFFFFFFFFu, pstep, c), blockIdx.x,
+                                         surv_shared);
+                    if (lane == 0) acc_qe += clock64() - s3;
+                    __syncthreads();
+                }
+
+                // Identity, then depth (register_child), child by child on thread 0.
+                for (uint32_t oks = __ballot_sync(0xFFFFFFFFu, tlead && id.ok); oks;
+                     oks &= oks - 1u) {
+                    const uint32_t c = __ffs(oks) - 1u;
+                    const StateId ccanon = __shfl_sync(0xFFFFFFFFu, id.canonical, c);
+                    const bool cfresh = __shfl_sync(0xFFFFFFFFu, id.fresh ? 1u : 0u, c) != 0;
+                    const StateId csid = __shfl_sync(0xFFFFFFFFu, sid, c);
+                    const StateId cparent = __shfl_sync(0xFFFFFFFFu, parent, c);
+                    const uint32_t ccstep = __shfl_sync(0xFFFFFFFFu, cstep, c);
+                    if (lane == 0) {
+                        const uint64_t s4 = clock64();
+                        register_child(ds, ev, sess, csid, cparent, ccanon, cfresh, ccstep,
+                                       max_steps, explore_threshold_u32, explore_seed);
+                        acc_dedup += clock64() - s4;
+                    }
+                    __syncwarp();
+                }
+                if (lane == 0) acc_canon += clock64() - t1;
+                __syncthreads();
             }
-            __syncthreads();
 
             if (threadIdx.x == 0) {
                 __threadfence();
-                atomicAdd(rewrites_done, 1u);
+                atomicAdd(rewrites_done, claimed_count);
                 // 1024, which is what the detector's note beside the progress print already
                 // states this to be. A flush is ten atomics on one 128-byte line, shared by
                 // every block, so at eight it cost 1.25 per record -- and the reason the
@@ -984,7 +1159,8 @@ __global__ void k_persistent_evolve(
                 // attributable, which 1024 serves exactly as well as 8. A block leaving the
                 // loop flushes on the way out either way (exit_requested, stalled), so a run
                 // shorter than the interval loses nothing.
-                if (++records_since_flush >= 1024u) {
+                records_since_flush += claimed_count;
+                if (records_since_flush >= 1024u) {
                     flush_cycles();
                     records_since_flush = 0;
                 }
@@ -1038,6 +1214,7 @@ __global__ void k_persistent_evolve(
                 __threadfence();
                 ev.expand.book(1u);
                 idle_ns = 64;
+                busy_streak += busy_streak < 255u ? 1u : 0u;
                 idle_spins = 0;
             }
             __syncthreads();
@@ -1053,6 +1230,7 @@ __global__ void k_persistent_evolve(
             if (threadIdx.x == 0) {
                 term.mark_completed(kRoleMatch);
                 idle_ns = 64;
+                busy_streak += busy_streak < 255u ? 1u : 0u;
                 idle_spins = 0;            // consecutive, not cumulative -- see the guard below
                 acc_match += clock64() - tA;
             }
@@ -1078,6 +1256,7 @@ __global__ void k_persistent_evolve(
                 if (threadIdx.x == 0) {
                     qe.tasks.book(task_count);
                     idle_ns = 64;
+                    busy_streak += busy_streak < 255u ? 1u : 0u;
                     idle_spins = 0;
                     acc_canon += clock64() - tQ;
                     acc_qe    += clock64() - tQ;
@@ -1126,6 +1305,7 @@ __global__ void k_persistent_evolve(
                 ds.errors.record(ErrorKind::kPersistentStall);
                 stalled = true;
             } else {
+                busy_streak = 0;
                 __nanosleep(idle_ns);
                 if (idle_ns < 4096u) idle_ns <<= 1;
             }

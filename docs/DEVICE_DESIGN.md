@@ -186,14 +186,21 @@ with one lane per state in the twin check.
 
 ### 4.3 Rewrite
 
-One match per lane, 32 per warp. Every allocation (state id, event id, edges, vertices, chunk
-slots) is a warp prefix sum and one atomic. The per-record phase-timing atomics
-(`rewrite.cu:536-542`) are removed; stats go to per-warp counters flushed at exit.
+A block claims one record, then up to seven more in one exchange when the first child has at
+most 32 edges, 64 records are readable and the block found work in its last two iterations;
+a short burst, or one of large children, spreads over the grid one record per block, where a
+batch would hold records for a tile IR while other blocks wait. Each four-lane tile applies
+one match, eight per warp. Every allocation (state id, event id, edges, vertices, slice) is
+one atomic per warp (`coalesced_add`, `coalesced_bounded_claim`). The per-record phase-timing
+atomics (`rewrite.cu:536-542`) are removed; stats go to per-warp counters flushed at exit.
 
 ### 4.4 Canonicalisation
 
-- Small states: IR with the serial policy, one state per lane, 32 states per warp. States of
-  similar size are batched together, so lanes finish together.
+- Small states: IR on a tile of four lanes (`IrTile<4>`), eight states per warp; a state of more
+  than 32 edges, or a batch on fewer than four lanes, runs on the whole warp. One state per lane
+  (the serial policy) costs 3.2-7.4x the warp's per-state latency for 4-10x its throughput per
+  warp: saturated runs gain and latency-bound ones lose (wolftri +15%); four lanes keep most of
+  the gain (cycle4 -40% against -54%) at wolftri +4%.
 - Medium and large states: the refinement is made warp-parallel. A refinement round is a
   segmented sort of (cell, signature) keys and a scan for cell boundaries, both warp or block
   primitives; the leader-only splitter pop, gather and split (`ir_core.hpp:434-608`) become one
@@ -287,7 +294,8 @@ host suite for shared cores, and the collision tests.
    warp-aggregated pool allocation. Everything else is built on these.
 2. **Execution model.** Four-warp blocks, stage queues with size classes, termination by idle
    warps, no reserved detector.
-3. **Rewrite and claims per lane.** One match per lane in the rewrite; 32 claims per warp.
+3. **Rewrite and claims per tile.** One match per four-lane tile in the rewrite; one atomic per
+   counter per warp. Built.
 4. **Replay.** Ancestry producers, class overlap lists and instance batches, in `hgcommon` for
    both engines.
 5. **Shared chunks.** The chunked copy-on-write structure in `hgcommon`; child states on the
@@ -295,8 +303,8 @@ host suite for shared cores, and the collision tests.
    it wins on time and instruction counts against what it replaces.
 6. **Matching.** Drain-time inheritance on the device; delta joins; signature-ordered chunks and
    level-wise warp joins.
-7. **Canonicalisation.** State-per-lane batches for small states; data-parallel refinement for
-   large ones.
+7. **Canonicalisation.** State-per-tile batches for small states (built); data-parallel
+   refinement for large ones.
 8. **Per-call cost.** One clear kernel over used ranges; nothing else remains to clear.
 
 Steps 4 and 5 change the host too, and are measured on both engines.
