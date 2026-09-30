@@ -42,5 +42,80 @@ HG_HD inline uint64_t token_produced(uint32_t rewrite_id, uint32_t index) {
 // candidate twin; equal token sets decide it.
 HG_HD inline uint64_t token_term(uint64_t token) { return splitmix64(token); }
 
+// A rewrite's key: the rule, then each consumed token (match order) as two words, and the hash
+// the key is claimed under. Returns the word count, 1 + 2 * n; 0 when a token is 0.
+HG_HD inline uint32_t rewrite_key(uint16_t rule, const uint64_t* tokens, uint8_t n,
+                                  uint32_t* words, uint64_t& hash) {
+    uint32_t w = 0;
+    words[w++] = rule;
+    hash = fnv_hash(FNV_OFFSET, rule);
+    for (uint8_t i = 0; i < n; ++i) {
+        if (tokens[i] == 0) return 0;
+        words[w++] = static_cast<uint32_t>(tokens[i]);
+        words[w++] = static_cast<uint32_t>(tokens[i] >> 32);
+        hash = fnv_hash(hash, tokens[i]);
+    }
+    return w;
+}
+
+// A sum is never 0, which marks "no sum".
+HG_HD inline uint64_t token_sum_nonzero(uint64_t sum) { return sum == 0 ? 1 : sum; }
+
+// The token sum of a state made by rewrite `rid` from a state with sum `parent_sum`: 0 when the
+// parent has no sum or a consumed token is 0.
+HG_HD inline uint64_t child_token_sum(uint64_t parent_sum, const uint64_t* consumed,
+                                      uint8_t num_consumed, uint32_t rid, uint8_t num_produced) {
+    if (parent_sum == 0) return 0;
+    uint64_t sum = parent_sum;
+    for (uint8_t i = 0; i < num_consumed; ++i) {
+        if (consumed[i] == 0) return 0;
+        sum -= token_term(consumed[i]);
+    }
+    for (uint8_t i = 0; i < num_produced; ++i) sum += token_term(token_produced(rid, i));
+    return token_sum_nonzero(sum);
+}
+
+// A state's edges by token: an open-addressed table from token to the edge's position in the
+// state's id order, over storage the caller provides (token_index_capacity slots of each). A
+// token occurs at most once in a state; a repeat, or a token 0, clears `valid`.
+struct TokenIndex {
+    uint64_t* keys;
+    uint32_t* pos;
+    uint32_t mask;
+    uint32_t n;
+    bool valid;
+};
+
+// The slot count for a state of `count` edges: a power of two, at least 2 * count and 16.
+HG_HD inline uint32_t token_index_capacity(uint32_t count) {
+    uint32_t cap = 16;
+    while (cap < 2 * count) cap <<= 1;
+    return cap;
+}
+
+HG_HD inline TokenIndex token_index_open(uint64_t* keys, uint32_t* pos, uint32_t cap) {
+    for (uint32_t i = 0; i < cap; ++i) keys[i] = 0;
+    return TokenIndex{keys, pos, cap - 1, 0, true};
+}
+
+// Adds the next edge's token; positions are given in the order tokens are added.
+HG_HD inline void token_index_add(TokenIndex& x, uint64_t t) {
+    if (t == 0) { x.valid = false; ++x.n; return; }
+    for (uint32_t h = static_cast<uint32_t>(splitmix64(t)) & x.mask;; h = (h + 1) & x.mask) {
+        if (x.keys[h] == 0) { x.keys[h] = t; x.pos[h] = x.n; break; }
+        if (x.keys[h] == t) { x.valid = false; break; }
+    }
+    ++x.n;
+}
+
+// The position of the edge with token `t`, UINT32_MAX when there is none.
+HG_HD inline uint32_t token_index_find(const TokenIndex& x, uint64_t t) {
+    if (t == 0) return 0xFFFFFFFFu;
+    for (uint32_t h = static_cast<uint32_t>(splitmix64(t)) & x.mask;; h = (h + 1) & x.mask) {
+        if (x.keys[h] == t) return x.pos[h];
+        if (x.keys[h] == 0) return 0xFFFFFFFFu;
+    }
+}
+
 }  // namespace common
 }  // namespace HG_NAMESPACE

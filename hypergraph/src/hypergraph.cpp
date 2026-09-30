@@ -292,15 +292,16 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
         if (token_sum != 0 && (keyed_rewrite & hgcommon::REWRITE_TWIN_CANDIDATE)) {
             // The claim's edge correspondence, sized before the claim so its scratch outlives it.
             auto mk = worker_scratch().mark();
-            SVec<EdgeId> ids;
-            SVec<uint32_t> at;
-            ids.resize(edges.count());
-            at.resize(edges.count());
-            const StateId twin = claim_twin(new_sid, token_sum, ids.data(), at.data());
+            const size_t n = edges.count();
+            auto* ids = static_cast<EdgeId*>(
+                worker_scratch().allocate_raw(n * sizeof(EdgeId), alignof(EdgeId)));
+            auto* at = static_cast<uint32_t*>(
+                worker_scratch().allocate_raw(n * sizeof(uint32_t), alignof(uint32_t)));
+            const StateId twin = claim_twin(new_sid, token_sum, ids, at);
             uint64_t key = 0;
             StateId rep = INVALID_ID;
             const bool taken = twin != INVALID_ID && twin != new_sid &&
-                take_twin(new_sid, twin, need_ranks, quotient, key, rep, ids.data(), at.data());
+                take_twin(new_sid, twin, need_ranks, quotient, key, rep, ids, at);
             worker_scratch().release(mk);
             if (taken) {
                 HG_STAT(twin_reuses_.fetch_add(1, std::memory_order_relaxed));
@@ -566,17 +567,12 @@ Hypergraph::CanonicalClaim Hypergraph::claim_content_state(StateId sid, uint64_t
 uint32_t Hypergraph::intern_rewrite(uint16_t rule, const EdgeId* consumed, uint8_t num_consumed,
                                      bool& repeated) {
     repeated = false;
+    uint64_t tokens[MAX_PATTERN_EDGES];
+    for (uint8_t i = 0; i < num_consumed; ++i) tokens[i] = edge_token(consumed[i]);
     uint32_t words[1 + 2 * MAX_PATTERN_EDGES];
-    uint32_t n = 0;
-    words[n++] = rule;
-    uint64_t h = hgcommon::fnv_hash(hgcommon::FNV_OFFSET, rule);
-    for (uint8_t i = 0; i < num_consumed; ++i) {
-        const uint64_t t = edge_token(consumed[i]);
-        if (t == 0) return hgcommon::REWRITE_ID_NONE;
-        words[n++] = static_cast<uint32_t>(t);
-        words[n++] = static_cast<uint32_t>(t >> 32);
-        h = hgcommon::fnv_hash(h, t);
-    }
+    uint64_t h = 0;
+    const uint32_t n = hgcommon::rewrite_key(rule, tokens, num_consumed, words, h);
+    if (n == 0) return hgcommon::REWRITE_ID_NONE;
     using Rec = const hgcommon::CanonicalFormRecord*;
     uint64_t rec_bytes = 0;
     auto same = [&](Rec r) { return hgcommon::canonical_form_equals(r, words, n); };
@@ -678,65 +674,18 @@ uint64_t Hypergraph::state_token_sum(StateId s) {
         sum += hgcommon::token_term(t);
     });
     if (!ok) return 0;
-    if (sum == 0) sum = 1;
+    sum = hgcommon::token_sum_nonzero(sum);
     sum_ref.store(sum, std::memory_order_relaxed);
     return sum;
 }
 
 uint64_t Hypergraph::child_token_sum(StateId parent, const EdgeId* consumed, uint8_t num_consumed,
                                      uint32_t rid, uint8_t num_produced) {
-    uint64_t sum = state_token_sum(parent);
-    if (sum == 0) return 0;
-    for (uint8_t i = 0; i < num_consumed; ++i) {
-        const uint64_t t = edge_token(consumed[i]);
-        if (t == 0) return 0;
-        sum -= hgcommon::token_term(t);
-    }
-    for (uint8_t i = 0; i < num_produced; ++i)
-        sum += hgcommon::token_term(hgcommon::token_produced(rid, i));
-    return sum == 0 ? 1 : sum;
+    uint64_t tokens[MAX_PATTERN_EDGES];
+    for (uint8_t i = 0; i < num_consumed; ++i) tokens[i] = edge_token(consumed[i]);
+    return hgcommon::child_token_sum(state_token_sum(parent), tokens, num_consumed, rid,
+                                     num_produced);
 }
-
-namespace {
-
-// A state's edges by token: an open-addressed table from token to the edge's position in the
-// state's id order, built in O(edges) in worker scratch. A token occurs at most once in a state
-// (hgcommon/token_core.hpp); a repeat marks the table `valid = false`.
-struct TokenIndex {
-    SVec<uint64_t> keys;
-    SVec<uint32_t> pos;
-    uint32_t mask = 0;
-    uint32_t n = 0;
-    bool valid = true;
-
-    template <class ForEach>
-    void build(uint32_t count, ForEach&& for_each_token) {
-        uint32_t cap = 16;
-        while (cap < 2 * count) cap <<= 1;
-        keys.assign(cap, 0);
-        pos.assign(cap, 0);
-        mask = cap - 1;
-        for_each_token([&](uint64_t t) {
-            if (t == 0) { valid = false; ++n; return; }
-            for (uint32_t h = static_cast<uint32_t>(hgcommon::splitmix64(t)) & mask;;
-                 h = (h + 1) & mask) {
-                if (keys[h] == 0) { keys[h] = t; pos[h] = n; break; }
-                if (keys[h] == t) { valid = false; break; }
-            }
-            ++n;
-        });
-    }
-    uint32_t find(uint64_t t) const {
-        if (t == 0) return UINT32_MAX;
-        for (uint32_t h = static_cast<uint32_t>(hgcommon::splitmix64(t)) & mask;;
-             h = (h + 1) & mask) {
-            if (keys[h] == t) return pos[h];
-            if (keys[h] == 0) return UINT32_MAX;
-        }
-    }
-};
-
-}  // namespace
 
 bool Hypergraph::same_tokens(StateId a, StateId b, EdgeId* ids, uint32_t* at) {
     const SparseBitset& ea = states_[a].edges;
@@ -744,13 +693,18 @@ bool Hypergraph::same_tokens(StateId a, StateId b, EdgeId* ids, uint32_t* at) {
     const uint32_t n = static_cast<uint32_t>(ea.count());
     if (n != eb.count()) return false;
     auto mk = worker_scratch().mark();
-    TokenIndex idx;
-    idx.build(n, [&](auto&& f) { eb.for_each([&](EdgeId e) { f(edge_token(e)); }); });
+    const uint32_t cap = hgcommon::token_index_capacity(n);
+    auto* keys = static_cast<uint64_t*>(
+        worker_scratch().allocate_raw(cap * sizeof(uint64_t), alignof(uint64_t)));
+    auto* pos = static_cast<uint32_t*>(
+        worker_scratch().allocate_raw(cap * sizeof(uint32_t), alignof(uint32_t)));
+    hgcommon::TokenIndex idx = hgcommon::token_index_open(keys, pos, cap);
+    eb.for_each([&](EdgeId e) { hgcommon::token_index_add(idx, edge_token(e)); });
     bool eq = idx.valid;
     uint32_t i = 0;
     if (eq) ea.for_each([&](EdgeId e) {
         if (!eq) return;
-        at[i] = idx.find(edge_token(e));
+        at[i] = hgcommon::token_index_find(idx, edge_token(e));
         ids[i++] = e;
         eq = at[i - 1] != UINT32_MAX;
     });
