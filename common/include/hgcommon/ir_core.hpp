@@ -500,14 +500,18 @@ HG_HD inline void ir_refine(
         // Per touched vertex, the multiset of keys over the S-incident edges it lies on.
         // Counted first so each vertex's run is contiguous (leader), then filled and sorted
         // by the lanes: a fill's order inside a vertex's run is normalised by its sort, and
-        // the run reservation is the policy's fetch_add.
+        // the run reservation is the policy's fetch_add. A vertex alone in its cell cannot
+        // split and is left out.
         uint32_t n_touched = 0;
         if (par.leader()) {
             for (uint32_t i = 0; i < n_inc; ++i) {
                 const uint32_t e = inc_edges[i];
                 for (uint8_t p = 0; p < ea[e]; ++p) {
                     const uint32_t u = ev[eoff[e] + p];
-                    if (!on_touched[u]) { on_touched[u] = 1; touched[n_touched++] = u; sig_cnt[u] = 0; }
+                    if (!on_touched[u]) {
+                        if (pi.clen_at[pi.cell_of[u]] == 1u) continue;
+                        on_touched[u] = 1; touched[n_touched++] = u; sig_cnt[u] = 0;
+                    }
                     sig_cnt[u]++;
                 }
             }
@@ -527,6 +531,7 @@ HG_HD inline void ir_refine(
                 if (pi.cell_of[ev[eoff[e] + q]] == S) spos |= (uint64_t(1) << q);
             for (uint32_t q = 0; q < arity; ++q) {
                 const uint32_t u = ev[eoff[e] + q];
+                if (!on_touched[u]) continue;
                 const uint32_t w2 = par.fetch_add(sig_cnt + u, 1u);
                 sig_buf[sig_off[u] + w2] =
                     (uint64_t(arity & 0xFF) << 56) | (uint64_t(q & 0xFF) << 48) | spos;
