@@ -144,7 +144,7 @@ struct StateClaim {
 template <class View, class P>
 __device__ inline StateClaim keyed_claim_device(const DeviceState& ds, uint32_t id,
                                                 uint64_t first_key, View map, P& p) {
-    using V = std::remove_pointer_t<decltype(View::values)>;
+    using V = typename View::value_type;
     struct Ops {
         const DeviceState& ds;
         View& map;

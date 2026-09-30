@@ -40,14 +40,15 @@ namespace gpu {
 // most callers here do not (they offer a constant presence marker). The host map carries the
 // same rule for the same reason, with a model-checked harness for it.
 //
-// THE TWO STEPS ARE WHY BOTH ARRAYS CARRY STATE: a claimed slot whose value is not yet
-// published must READ as unpublished, so clear() fills the values as well as the keys.
+// THE TWO STEPS ARE WHY BOTH HALVES OF A SLOT CARRY STATE: a claimed slot whose value is not yet
+// published must READ as unpublished, so clear() fills the values as well as the keys. A slot
+// holds its key and value together (MapSlot), in a power-of-two table probed by mask.
 //
 // Reserved keys: EMPTY marks a free slot and LOCKED is the second reserved key; a genuine key
 // equal to either is folded onto a neighbour rather than lost. Mirrors
 // hypergraph/include/hypergraph/concurrent_map.hpp:
 //
-//   insert: atomicCAS(keys[slot], EMPTY, key) publishes the key; atomicCAS(values[slot],
+//   insert: atomicCAS(slot.key, EMPTY, key) publishes the key; atomicCAS(slot.value,
 //           UNPUBLISHED, value) publishes the value AND elects the inserter, because that
 //           exchange succeeds exactly once per slot. Everyone who meets an unpublished value
 //           offers its own rather than waiting, so the window closes at the first arrival.
@@ -60,10 +61,10 @@ namespace gpu {
 // reserved here).
 //
 // Memory-ordering audit:
-//   Writer:  values[slot].store(release)  ──┐
-//            keys[slot].store(release)   ──┼─> pair with
-//   Reader:  keys[slot].load(acquire)    <─┤  acquire load
-//            values[slot].load(acquire)  <─┘  of the key
+//   Writer:  slot.value.store(release)  ──┐
+//            slot.key.store(release)    ──┼─> pair with
+//   Reader:  slot.key.load(acquire)     <─┤  acquire load
+//            slot.value.load(acquire)   <─┘  of the key
 //   CAS EMPTY→key:    acq_rel (the winner's publication is release; the
 //                     losers' observation is acquire).
 //   The publish store on keys must happen AFTER the values write to
@@ -80,17 +81,36 @@ namespace gpu {
 // through engine_state.hpp, so a shared specialization would be registered once per unit under
 // one name; the runtime then keeps whichever was registered first and reports the rest as
 // duplicates. Internal linkage gives each unit its own kernel and leaves the choice to nobody.
+// A slot holds its key and its value together, so a probe that matches reads one 16-byte sector
+// for both instead of one line in each of two arrays.
+template <typename K, typename V>
+struct alignas(16) MapSlot {
+    K key;
+    V value;
+};
+
 namespace {
-template <typename K, K EMPTY, K LOCKED>
-__global__ void k_gather_keys(const K* __restrict__ keys, uint32_t capacity,
+template <typename K, typename V, K EMPTY, K LOCKED>
+__global__ void k_gather_keys(const MapSlot<K, V>* __restrict__ slots, uint32_t capacity,
                               K* __restrict__ out, uint32_t out_cap,
                               uint32_t* __restrict__ count) {
     const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= capacity) return;
-    const K k = keys[i];
+    const K k = slots[i].key;
     if (k == EMPTY || k == LOCKED) return;
     const uint32_t at = atomicAdd(count, 1u);
     if (at < out_cap) out[at] = k;
+}
+
+// Every slot to (EMPTY, UNPUBLISHED): one 16-byte store per slot.
+template <typename K, typename V, K EMPTY>
+__global__ void k_clear_slots(MapSlot<K, V>* __restrict__ slots, uint32_t capacity) {
+    const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= capacity) return;
+    MapSlot<K, V> s;
+    s.key = EMPTY;
+    s.value = static_cast<V>(~V{0});
+    slots[i] = s;
 }
 }  // namespace
 
@@ -165,9 +185,10 @@ public:
             return key;
         }
 
-        K*       keys;
-        V*       values;
-        uint32_t capacity;
+        using value_type = V;
+        MapSlot<K, V>* slots;
+        uint32_t capacity;   // a power of two
+        uint32_t mask;       // capacity - 1
         // SET ONCE A PROBE RUN HAS EXHAUSTED THE TABLE, read before every insert.
         //
         // Without it a full table costs O(capacity) PER INSERT, because the probe walks every
@@ -196,7 +217,7 @@ public:
         }
 
         __device__ uint32_t initial_slot(K key) const {
-            return mix(static_cast<uint64_t>(key)) % capacity;
+            return mix(static_cast<uint64_t>(key)) & mask;
         }
 
         // Reports not-found while a concurrent insert holds the key but has not published a
@@ -206,10 +227,10 @@ public:
             key = normalize(key);
             uint32_t slot = initial_slot(key);
             for (uint32_t i = 0; i < capacity; ++i) {
-                cuda::atomic_ref<K, cuda::thread_scope_device> kref(keys[slot]);
+                cuda::atomic_ref<K, cuda::thread_scope_device> kref(slots[slot].key);
                 K cur = kref.load(cuda::memory_order_acquire);
                 if (cur == key) {
-                    cuda::atomic_ref<V, cuda::thread_scope_device> vref(values[slot]);
+                    cuda::atomic_ref<V, cuda::thread_scope_device> vref(slots[slot].value);
                     const V v = vref.load(cuda::memory_order_acquire);
                     // THE KEY IS PUBLISHED BEFORE THE VALUE, so a matching key is a claim and
                     // not yet an answer. Returning UNPUBLISHED as data hands the caller the
@@ -219,7 +240,7 @@ public:
                 }
                 if (cur == EMPTY) return LookupResult{V{}, false};
                 // LOCKED → skip without spin
-                slot = (slot + 1) % capacity;
+                slot = (slot + 1) & mask;
             }
             return LookupResult{V{}, false};
         }
@@ -245,10 +266,10 @@ public:
 
             __device__ uint32_t capacity() const { return v->capacity; }
             __device__ uint32_t initial_slot() const { return v->initial_slot(key); }
-            __device__ uint32_t next_slot(uint32_t s) const { return (s + 1) % v->capacity; }
+            __device__ uint32_t next_slot(uint32_t s) const { return (s + 1) & v->mask; }
 
             __device__ hgcommon::KeyState key_state(uint32_t s) const {
-                cuda::atomic_ref<K, cuda::thread_scope_device> kref(v->keys[s]);
+                cuda::atomic_ref<K, cuda::thread_scope_device> kref(v->slots[s].key);
                 const K cur = kref.load(cuda::memory_order_acquire);
                 if (cur == key)   return hgcommon::KeyState::Ours;
                 if (cur == EMPTY) return hgcommon::KeyState::Empty;
@@ -256,7 +277,7 @@ public:
             }
 
             __device__ bool claim_key(uint32_t s) {
-                cuda::atomic_ref<K, cuda::thread_scope_device> kref(v->keys[s]);
+                cuda::atomic_ref<K, cuda::thread_scope_device> kref(v->slots[s].key);
                 K expected = EMPTY;
                 return kref.compare_exchange_strong(expected, key,
                                                     cuda::memory_order_acq_rel,
@@ -264,7 +285,7 @@ public:
             }
 
             __device__ hgcommon::InsertOutcome offer_value(uint32_t s) {
-                cuda::atomic_ref<V, cuda::thread_scope_device> vref(v->values[s]);
+                cuda::atomic_ref<V, cuda::thread_scope_device> vref(v->slots[s].value);
                 V expect_v = UNPUBLISHED;
                 if (vref.compare_exchange_strong(expect_v, value,
                                                  cuda::memory_order_acq_rel,
@@ -315,16 +336,19 @@ public:
         }
     };
 
-    explicit ConcurrentMap(uint32_t capacity) : capacity_(capacity) {
-        HG_CUDA_CHECK(cudaMalloc(&keys_,   sizeof(K) * capacity_), "ConcurrentMap keys alloc");
-        HG_CUDA_CHECK(cudaMalloc(&values_, sizeof(V) * capacity_), "ConcurrentMap values alloc");
+    // The capacity is rounded up to a power of two, so the start slot and each probe step are a
+    // mask rather than a division.
+    explicit ConcurrentMap(uint32_t capacity) {
+        capacity_ = 1;
+        while (capacity_ < capacity && capacity_ < (1u << 31)) capacity_ <<= 1;
+        HG_CUDA_CHECK(cudaMalloc(&slots_, sizeof(MapSlot<K, V>) * capacity_),
+                      "ConcurrentMap slots alloc");
         HG_CUDA_CHECK(cudaMalloc(&saturated_, sizeof(uint32_t)), "ConcurrentMap saturated alloc");
         clear();
     }
 
     ~ConcurrentMap() {
-        if (keys_)         cudaFree(keys_);
-        if (values_)       cudaFree(values_);
+        if (slots_)        cudaFree(slots_);
         if (saturated_)    cudaFree(saturated_);
         if (gather_count_) cudaFree(gather_count_);
         if (gather_dense_) cudaFree(gather_dense_);
@@ -334,14 +358,14 @@ public:
     ConcurrentMap& operator=(const ConcurrentMap&) = delete;
 
     ConcurrentMap(ConcurrentMap&& o) noexcept
-        : keys_(o.keys_), values_(o.values_), capacity_(o.capacity_), saturated_(o.saturated_),
+        : slots_(o.slots_), capacity_(o.capacity_), saturated_(o.saturated_),
           gather_count_(o.gather_count_), gather_dense_(o.gather_dense_),
           gather_cap_(o.gather_cap_) {
-        o.keys_ = nullptr; o.values_ = nullptr; o.capacity_ = 0; o.saturated_ = nullptr;
+        o.slots_ = nullptr; o.capacity_ = 0; o.saturated_ = nullptr;
         o.gather_count_ = nullptr; o.gather_dense_ = nullptr; o.gather_cap_ = 0;
     }
 
-    DeviceView view() const { return DeviceView{keys_, values_, capacity_, saturated_}; }
+    DeviceView view() const { return DeviceView{slots_, capacity_, capacity_ - 1u, saturated_}; }
 
     uint32_t capacity() const { return capacity_; }
 
@@ -368,7 +392,7 @@ public:
         uint32_t n = 0;
         for (;;) {
             HG_CUDA_CHECK(cudaMemset(gather_count_, 0, sizeof(uint32_t)), "key gather count clear");
-            k_gather_keys<K, EMPTY, LOCKED><<<grid, block>>>(keys_, capacity_, gather_dense_,
+            k_gather_keys<K, V, EMPTY, LOCKED><<<grid, block>>>(slots_, capacity_, gather_dense_,
                                                              gather_cap_, gather_count_);
             HG_CUDA_CHECK(cudaGetLastError(), "key gather launch");
             HG_CUDA_CHECK(cudaMemcpy(&n, gather_count_, sizeof(uint32_t), cudaMemcpyDeviceToHost),
@@ -387,24 +411,19 @@ public:
     }
 
     void clear() {
-        // BOTH ARRAYS CARRY STATE, and the values are the half that is easy to get wrong.
+        // BOTH HALVES OF A SLOT CARRY STATE, and the value is the half that is easy to get wrong.
         //
         // A slot is free because its KEY says so, and a value is read only under a key that has
-        // already matched. That does not make the value array incidental: the key is published
+        // already matched. That does not make the value incidental: the key is published
         // FIRST, in one exchange, and the value follows under its own exchange against
         // UNPUBLISHED. Between those two steps a reader sees the key and reads the value, so the
         // value a claimed slot holds before its owner publishes has to mean "not yet" -- and if
-        // the array still held what a previous run left there, it would mean that run's answer.
+        // the slot still held what a previous run left there, it would mean that run's answer.
         // These maps are cleared and reused per evolve call, so that is one call reading
         // another's values.
-        //
-        // Both sentinels are chosen so this stays two memsets rather than two fill kernels:
-        // EMPTY is all zeroes and UNPUBLISHED is all ones.
-        static_assert(EMPTY == K{0},
-            "clear() relies on EMPTY == 0; provide a fill kernel for other sentinels");
-        HG_CUDA_CHECK(cudaMemset(keys_, 0, sizeof(K) * capacity_), "ConcurrentMap clear keys");
-        HG_CUDA_CHECK(cudaMemset(values_, 0xFF, sizeof(V) * capacity_),
-                      "ConcurrentMap clear values");
+        const uint32_t block = 256;
+        k_clear_slots<K, V, EMPTY><<<(capacity_ + block - 1) / block, block>>>(slots_, capacity_);
+        HG_CUDA_CHECK(cudaGetLastError(), "ConcurrentMap clear slots");
         // The table has room again, so the latch must go with the keys. Leaving it set would
         // make a reused map reject every insert for the remainder of the run.
         if (saturated_)
@@ -414,9 +433,8 @@ public:
 
 private:
 
-    K*        keys_      = nullptr;
-    V*        values_    = nullptr;
-    uint32_t  capacity_  = 0;
+    MapSlot<K, V>* slots_ = nullptr;
+    uint32_t  capacity_  = 0;   // a power of two
     // Latched when a probe run exhausts the table; cleared with the keys, since a cleared table
     // has room again and a stale flag would refuse every insert for the rest of the run.
     uint32_t* saturated_ = nullptr;

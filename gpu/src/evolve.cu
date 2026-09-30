@@ -793,11 +793,17 @@ void fit_config_to_cap(EngineConfig& cfg, uint64_t cap) {
 uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     // Sum the pools EngineState allocates. Element sizes: Edge 24; DeviceEvent
     // 168; DeviceCausal/Branchial edge 12; StateEdgeSlice 8; a LockFreeList node
-    // is sizeof(value)+4 rounded up; a ConcurrentMap slot is sizeof(K)+sizeof(V).
+    // is sizeof(value)+4 rounded up; a ConcurrentMap slot is 16 B at a power-of-two capacity.
     // A 4-byte id is the unit for most index/id pools. Approximate — a 15%
     // headroom covers the small frontier/hash scratch buffers and allocation
     // granularity, so the estimate errs high (refusing borderline growth).
     auto u64 = [](uint32_t v) { return static_cast<uint64_t>(v); };
+    // A hash map: 16-byte slots (hash_table.hpp MapSlot), its capacity rounded up to a power of two.
+    auto map_bytes = [](uint64_t slots) {
+        uint64_t cap = 1;
+        while (cap < slots) cap <<= 1;
+        return cap * 16;
+    };
     uint64_t b = 0;
     b += u64(cfg.max_vertex_slots)    * 4;          // vertex_pool
     b += u64(cfg.max_edges)           * 24;         // edge_pool (Edge)
@@ -811,14 +817,16 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     b += u64(cfg.max_branchial_edges) * 12;         // branchial_edge_pool
     b += u64(cfg.max_edges)           * 4 + u64(cfg.edge_consumer_nodes)   * 8;   // edge_consumers
     b += u64(cfg.branchial_index_buckets) * 4 + u64(cfg.branchial_index_nodes) * 16; // branchial index
-    b += u64(cfg.causal_triple_slots) * 12;
-    b += u64(cfg.causal_pair_slots)   * 12;
-    b += u64(cfg.branchial_pair_slots)* 12;
+    b += map_bytes(cfg.causal_triple_slots);
+    b += map_bytes(cfg.causal_pair_slots);
+    b += map_bytes(cfg.branchial_pair_slots);
     b += u64(cfg.max_events)          * 4  + u64(cfg.tr_preds_nodes) * 8;  // preds_list
     // QeState, whose pools all scale off max_events * qe_capacity_scale: the expansion arena
-    // (16 words per event), the pair maps and instance/match pools. Omitting it let the
-    // grow-and-retry memory cap approve a config the device could not hold.
-    b += u64(cfg.max_events) * u64(cfg.qe_capacity_scale) * 128;
+    // (16 words per event, 64 B), its maps (19 slots per event at 16 B: rep 1, applied 4,
+    // canon_seen 2, causal_pairs 4, qm_points 2, qm_consumed 2, qm_overlaps 2, frame 2) and the
+    // instance/match pools (64 B). Omitting it let the grow-and-retry memory cap approve a config
+    // the device could not hold.
+    b += u64(cfg.max_events) * u64(cfg.qe_capacity_scale) * (64 + 19 * 16 + 64);
     // The multiplicity queues at their minimum per-driver size (256 items), which
     // descent_work_scale multiplies; a deep run's queues are larger still.
     b += u64(default_persistent_grid()) * 256u * u64(cfg.descent_work_scale) *
@@ -828,14 +836,15 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     b += u64(default_persistent_grid()) * u64(cfg.survivor_scratch) * 8u;    // survivor scratch
     // The claim maps: states and exact hashes at two slots per state, event signatures at two
     // per event (persistent.cu reuse_map).
-    b += u64(cfg.max_states) * 2 * 12 * 2 + u64(cfg.max_events) * 2 * 12;
+    b += map_bytes(u64(cfg.max_states) * 2) * 2 + map_bytes(u64(cfg.max_events) * 2);
     b += u64(cfg.canonical_form_words) * 4;         // canonical form records
     if (cfg.keyed_rewrites) {
         // Keyed rewrites: per-state token sum and first produced edge, the rewrite map (two
         // slots per event) and the twin map (two slots per state).
-        b += u64(cfg.max_states) * 12 + u64(cfg.max_events) * 2 * 12 + u64(cfg.max_states) * 2 * 12;
+        b += u64(cfg.max_states) * 12 + map_bytes(u64(cfg.max_events) * 2) +
+             map_bytes(u64(cfg.max_states) * 2);
     }
-    b += u64(cfg.match_dedup_slots)   * 12 + u64(cfg.event_canon_slots) * 12;
+    b += map_bytes(cfg.match_dedup_slots) + map_bytes(cfg.event_canon_slots);
     b += u64(cfg.max_states)          * 8 * 76;     // matches pool (max_states*8 records ~76B)
     b += u64(cfg.max_states)          * 16;         // d_frontier + d_next_frontier + state_canonical_hash
 
