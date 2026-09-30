@@ -30,14 +30,6 @@ struct EvolveInput {
     // states nothing gets what it always got.
     hgcommon::RecordSet record;
 
-    // CARRY THE EDGE IDENTITY OUT WITH THE STATES: the per-state list of global edge ids, and
-    // the edge id -> vertices table. all_state_edges_host() already copies both down -- it reads
-    // the slices, the ids, the edge records and the vertex pool in one call and then keeps only
-    // the vertex contents -- so this decides whether they are KEPT, not whether they are
-    // fetched. Off by default because holding them roughly doubles what the result carries
-    // about edges, and only "GlobalEdges" and "StateBitvectors" ask for them.
-    bool edge_identity = false;
-
     std::vector<RewriteRule> rules;
     std::vector<std::vector<VertexId>> initial_state;
     // Multiple initial states (multiway with several roots). When non-empty this
@@ -64,8 +56,8 @@ struct EvolveInput {
     // The reconstructed applications' input class, output class and rule, for a caller that
     // reads them as events or graphs (EvolveResult::reconstructed_event_from_class ...).
     bool materialize_events = false;
-    // Each state's edge contents in EvolveResult::states. Off, a state carries its id and hash
-    // and no edges: the readback builds one vector per edge per state, 90 ms at 290,087 states.
+    // Read back the state-edge arrays (EvolveResult::state_edge_ids, edge_records, vertex_pool).
+    // Off, a state carries its id and hash and no edges, and the four copies are skipped.
     bool materialize_state_edges = true;
 
     // Quotient exploration: expand each canonical state exactly once, at its
@@ -159,10 +151,27 @@ struct ClassRuleMatches {
     uint64_t count;
 };
 
+// A run of ids in a buffer the result owns: one edge's vertices, or an event's edges.
+template <class T>
+struct IdSpan {
+    const T* first = nullptr;
+    uint32_t count = 0;
+    const T* begin() const { return first; }
+    const T* end() const { return first + count; }
+    uint32_t size() const { return count; }
+    bool empty() const { return count == 0; }
+    const T& operator[](uint32_t i) const { return first[i]; }
+};
+using VertexSpan = IdSpan<VertexId>;
+using EdgeSpan = IdSpan<EdgeId>;
+
+// A state and where its edge ids sit in EvolveResult::state_edge_ids: first_edge ..
+// first_edge + num_edges. EvolveResult::edge_ids, edge and edges_of read them.
 struct CanonicalState {
     StateId id = INVALID_ID;
     uint64_t canonical_hash = 0;
-    std::vector<std::vector<VertexId>> edges;
+    uint32_t first_edge = 0;
+    uint32_t num_edges = 0;
 };
 
 struct Event {
@@ -178,8 +187,12 @@ struct Event {
     StateId output_state = INVALID_ID;
     RuleId  rule = 0;
     uint32_t step = 0;
-    std::vector<EdgeId> consumed_edges;
-    std::vector<EdgeId> produced_edges;
+    uint8_t num_consumed = 0;
+    uint8_t num_produced = 0;
+    EdgeId consumed[kMaxPatternEdges] = {};
+    EdgeId produced[kMaxPatternEdges] = {};
+    EdgeSpan consumed_edges() const { return {consumed, num_consumed}; }
+    EdgeSpan produced_edges() const { return {produced, num_produced}; }
 };
 
 struct CausalEdge {
@@ -194,12 +207,39 @@ struct BranchialEdge {
 
 struct EvolveResult {
     std::vector<CanonicalState> states;
-    // Global edge ids of each state, indexed by StateId and parallel to `states`, and the edge
-    // id -> vertices table. Both empty unless EvolveInput::edge_identity was set: CanonicalState
-    // carries edge CONTENTS with no ids, and Event carries edge IDS with no contents, so neither
-    // "StateBitvectors" nor "GlobalEdges" can be answered from the rest of this structure.
-    std::vector<std::vector<EdgeId>> state_edge_ids;
-    std::vector<std::vector<VertexId>> global_edges;
+    // The device's state-edge arrays, as read back when EvolveInput::materialize_state_edges is
+    // set, and empty otherwise. state_edge_ids holds every state's global edge ids, each state's
+    // run at CanonicalState::first_edge; edge_records is the global edge table, indexed by
+    // EdgeId; an edge's vertices are vertex_pool[vertex_offset .. vertex_offset + arity).
+    std::vector<EdgeId> state_edge_ids;
+    std::vector<Edge> edge_records;
+    std::vector<VertexId> vertex_pool;
+
+    // State `s`'s global edge ids.
+    EdgeSpan edge_ids(const CanonicalState& s) const {
+        return {state_edge_ids.data() + s.first_edge, s.num_edges};
+    }
+    // Global edge `eid`'s vertices; empty for an id past the table or a record past the pool.
+    VertexSpan edge_vertices(EdgeId eid) const {
+        if (eid >= edge_records.size()) return {};
+        const Edge& e = edge_records[eid];
+        if (static_cast<size_t>(e.vertex_offset) + e.arity > vertex_pool.size()) return {};
+        return {vertex_pool.data() + e.vertex_offset, e.arity};
+    }
+    // Edge `i` of state `s`.
+    VertexSpan edge(const CanonicalState& s, uint32_t i) const {
+        return edge_vertices(state_edge_ids[s.first_edge + i]);
+    }
+    // State `s`'s edges as nested vectors, for callers that take that form.
+    std::vector<std::vector<VertexId>> edges_of(const CanonicalState& s) const {
+        std::vector<std::vector<VertexId>> out;
+        out.reserve(s.num_edges);
+        for (uint32_t i = 0; i < s.num_edges; ++i) {
+            const VertexSpan e = edge(s, i);
+            out.emplace_back(e.begin(), e.end());
+        }
+        return out;
+    }
     std::vector<Event> events;
     std::vector<CausalEdge> causal_edges;
     std::vector<BranchialEdge> branchial_edges;

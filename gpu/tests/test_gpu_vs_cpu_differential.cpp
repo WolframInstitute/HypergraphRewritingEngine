@@ -391,7 +391,7 @@ NormalizedResult run_gpu(const Workload& w) {
                     w.name.c_str(), result.states.size(), result.events.size());
         for (const auto& s : result.states) {
             std::printf("  gpu state %u edges:", s.id);
-            for (const auto& e : s.edges) {
+            for (const auto& e : result.edges_of(s)) {
                 std::printf(" (");
                 for (auto v : e) std::printf("%u,", v);
                 std::printf(")");
@@ -404,10 +404,10 @@ NormalizedResult run_gpu(const Workload& w) {
     hypergraph::IRCanonicalizer ir;
     std::unordered_map<uint32_t, uint64_t> state_hash_by_id;
     for (const auto& s : result.states) {
-        uint64_t h = ir.compute_canonical_hash(s.edges);
+        uint64_t h = ir.compute_canonical_hash(result.edges_of(s));
         state_hash_by_id[s.id] = h;
         out.canonical_state_hashes.insert(h);
-        out.content_multiset.insert(content_key(s.edges));
+        out.content_multiset.insert(content_key(result.edges_of(s)));
         out.iso_multiset.insert(h);
         out.engine_state_hashes.insert(s.canonical_hash);
     }
@@ -458,7 +458,7 @@ NormalizedResult run_gpu(const Workload& w) {
         out.produced_states = outs.size();
         std::set<uint64_t> content;
         for (const auto& s : result.states) {
-            auto e = s.edges;
+            auto e = result.edges_of(s);
             std::sort(e.begin(), e.end());
             uint64_t h = 1469598103934665603ULL;
             for (const auto& ed : e) {
@@ -1307,18 +1307,12 @@ TEST(CanonicalEventCount, ModesVsCpu) {
         << "no event mode merged anything on this workload, so the comparison is vacuous";
 }
 
-// Diagnostic: print the count conventions across modes and root counts so the GPU marshalling's
-// NumStates (= the CPU's num_canonical_states()) can be reproduced exactly, not reverse-engineered.
-// THE EDGE IDENTITY THE READBACK CARRIES OUT MUST DESCRIBE THE STATES IT CARRIES OUT.
+// EVERY STATE EDGE ID NAMES AN EDGE IN THE TABLE, AND THAT EDGE'S VERTICES ARE IN THE POOL.
 //
-// all_state_edges_host() builds each state's edge CONTENTS by mapping that state's edge id list
-// through the global edge table, and returns those two alongside the contents when asked. The
-// three are therefore redundant by construction, which is exactly what makes the check sharp: if
-// the ids came back in a different order from the contents built out of them, or an entry were
-// dropped, then "StateBitvectors" would name edges belonging to another state and "GlobalEdges"
-// would give them the wrong vertices -- and NOTHING else in the result would move, because every
-// other consumer reads the contents.
-TEST(EdgeIdentity, TheIdsDescribeTheContents) {
+// A state's edges are read through its ids into the global edge table and the vertex pool, the
+// arrays "StateBitvectors" and "GlobalEdges" serialise. An id past the table, or a record past
+// the pool, would drop an edge from the state's contents.
+TEST(EdgeIdentity, EveryStateEdgeIsInTheTable) {
     Workload w;
     w.name = "edge_identity";
     w.rules = {rule({{0, 1}}, {{0, 2}, {2, 1}})};
@@ -1326,36 +1320,27 @@ TEST(EdgeIdentity, TheIdsDescribeTheContents) {
     w.num_steps = 4;
     w.canon_mode = hg_gpu::CanonicalizationMode::Full;
 
-    hg_gpu::EvolveInput in = make_input(w);
-    in.edge_identity = true;
-    auto result = hg_gpu::evolve(in);
+    auto result = hg_gpu::evolve(make_input(w));
 
     ASSERT_FALSE(result.states.empty());
-    ASSERT_EQ(result.state_edge_ids.size(), result.states.size())
-        << "one id list per state, indexed the same way";
-    ASSERT_FALSE(result.global_edges.empty());
-
+    ASSERT_FALSE(result.edge_records.empty());
     size_t checked = 0;
-    for (size_t s = 0; s < result.states.size(); ++s) {
-        const auto& contents = result.states[s].edges;
-        const auto& ids = result.state_edge_ids[s];
-        ASSERT_EQ(ids.size(), contents.size())
-            << "state " << s << ": " << ids.size() << " edge ids for "
-            << contents.size() << " edges";
-        for (size_t k = 0; k < ids.size(); ++k) {
-            ASSERT_LT(static_cast<size_t>(ids[k]), result.global_edges.size())
-                << "state " << s << " slot " << k << ": edge id past the global table";
-            EXPECT_EQ(result.global_edges[ids[k]], contents[k])
-                << "state " << s << " slot " << k
-                << ": the id list and the contents built from it disagree";
+    for (const auto& st : result.states) {
+        ASSERT_LE(static_cast<size_t>(st.first_edge) + st.num_edges, result.state_edge_ids.size())
+            << "state " << st.id << ": edge id run past the id array";
+        const hg_gpu::EdgeSpan ids = result.edge_ids(st);
+        for (uint32_t k = 0; k < ids.size(); ++k) {
+            ASSERT_LT(static_cast<size_t>(ids[k]), result.edge_records.size())
+                << "state " << st.id << " slot " << k << ": edge id past the table";
+            EXPECT_EQ(result.edge_vertices(ids[k]).size(), 2u)
+                << "state " << st.id << " slot " << k << ": edge vertices outside the pool";
             ++checked;
         }
     }
     EXPECT_GT(checked, 0u) << "the workload produced no edges to check";
 }
 
-// And a run that does not ask for it does not carry it. The two arrays roughly double what the
-// result holds about edges, and only "GlobalEdges" and "StateBitvectors" ask.
+// A run with materialize_state_edges off reads none of the state-edge arrays back.
 TEST(EdgeIdentity, AbsentUnlessAskedFor) {
     Workload w;
     w.name = "edge_identity_off";
@@ -1364,12 +1349,15 @@ TEST(EdgeIdentity, AbsentUnlessAskedFor) {
     w.num_steps = 4;
     w.canon_mode = hg_gpu::CanonicalizationMode::Full;
 
-    hg_gpu::EvolveInput in = make_input(w);   // edge_identity defaults false
+    hg_gpu::EvolveInput in = make_input(w);
+    in.materialize_state_edges = false;
     auto result = hg_gpu::evolve(in);
 
     ASSERT_FALSE(result.states.empty()) << "the run must still produce states";
     EXPECT_TRUE(result.state_edge_ids.empty());
-    EXPECT_TRUE(result.global_edges.empty());
+    EXPECT_TRUE(result.edge_records.empty());
+    EXPECT_TRUE(result.vertex_pool.empty());
+    for (const auto& st : result.states) EXPECT_EQ(st.num_edges, 0u);
 }
 
 // A THINNED RUN KEEPS THE SAME TRANSITIONS ON BOTH ENGINES.
@@ -1611,7 +1599,7 @@ TEST(KeyedRewrites, DeviceChangesNoCount) {
         in.keyed_sum_mask = mask;
         const hg_gpu::EvolveResult r = hg_gpu::evolve(in);
         Counts c{{}, r.events.size(), r.causal_edges.size(), r.branchial_edges.size()};
-        for (const auto& st : r.states) c.states.insert(ir.compute_canonical_hash(st.edges));
+        for (const auto& st : r.states) c.states.insert(ir.compute_canonical_hash(r.edges_of(st)));
         return c;
     };
     size_t checked = 0;
@@ -1675,7 +1663,7 @@ TEST(RecordSet, NotRecordingRawEventsLeavesTheCanonicalAnswerUnchanged) {
     auto state_hashes = [](const hg_gpu::EvolveResult& x) {
         hypergraph::IRCanonicalizer ir;
         std::multiset<uint64_t> h;
-        for (const auto& st : x.states) h.insert(ir.compute_canonical_hash(st.edges));
+        for (const auto& st : x.states) h.insert(ir.compute_canonical_hash(x.edges_of(st)));
         return h;
     };
 
@@ -1778,7 +1766,7 @@ TEST(RecordSet, MultiplicityCountsWithoutRawStates) {
     auto classes = [](const hg_gpu::EvolveResult& r) {
         hypergraph::IRCanonicalizer ir;
         std::set<uint64_t> h;
-        for (const auto& st : r.states) h.insert(ir.compute_canonical_hash(st.edges));
+        for (const auto& st : r.states) h.insert(ir.compute_canonical_hash(r.edges_of(st)));
         return h.size();
     };
     const hg_gpu::EvolveResult d10 = run(10);
@@ -1897,7 +1885,7 @@ TEST(RecordSet, DeviceSkipsOnlyWhatItWasNotAskedFor) {
             }
             hypergraph::IRCanonicalizer ir;
             std::unordered_map<uint32_t, uint64_t> state_hash;
-            for (const auto& st : x.states) state_hash[st.id] = ir.compute_canonical_hash(st.edges);
+            for (const auto& st : x.states) state_hash[st.id] = ir.compute_canonical_hash(x.edges_of(st));
             std::unordered_map<uint32_t, uint64_t> ekey;
             for (const auto& ev : x.events) {
                 const uint64_t ih = state_hash.count(ev.input_state) ? state_hash[ev.input_state] : 0ull;

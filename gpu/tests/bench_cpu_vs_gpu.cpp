@@ -164,7 +164,7 @@ RunResult run_gpu_with_engine(hg_gpu::Engine& engine, const hg_gpu::EvolveInput&
     if (verify) {
         hypergraph::IRCanonicalizer ir;
         for (const auto& s : result.states) {
-            out.canonical_state_hashes.insert(ir.compute_canonical_hash(s.edges));
+            out.canonical_state_hashes.insert(ir.compute_canonical_hash(result.edges_of(s)));
         }
         out.num_states = out.canonical_state_hashes.size();
     } else {

@@ -161,7 +161,7 @@ EngineState::EngineState(EngineConfig cfg): cfg_(cfg)
               "EngineState state_edge_ids alloc");
         // state_edge_ids_counter_ is bumped before the capacity check and before the vertex
         // reservations that can still fail, so slots below the counter can be reserved and never
-        // written, and all_state_edges_host() copies everything below it. One memset here gives
+        // written, and the state-edge readback copies everything below it. One memset here gives
         // those slots a defined value; clear() leaves this array alone on the per-run path
         // because a slot is only ever read through a slice that was written with it.
         HG_CUDA_CHECK(cudaMemset(state_edge_ids_, 0,
@@ -580,74 +580,14 @@ std::vector<VertexId> EngineState::edge_vertices_host(EdgeId eid) const {
         return out;
     }
 
-std::vector<std::vector<std::vector<VertexId>>> EngineState::all_state_edges_host(
-            std::vector<std::vector<EdgeId>>* out_edge_ids ,
-            std::vector<std::vector<VertexId>>* out_global_edges) const {
-        return all_state_edges_host(counters_snapshot_host(), out_edge_ids, out_global_edges);
-    }
-
-std::vector<std::vector<std::vector<VertexId>>> EngineState::all_state_edges_host(
-            const CounterSnapshot& snap,
-            std::vector<std::vector<EdgeId>>* out_edge_ids ,
-            std::vector<std::vector<VertexId>>* out_global_edges) const {
-        ReadbackBatch batch(*this);
-        StateEdgeArrays a;
-        add_state_edges(batch, snap, a);
-        batch.finish();
-        return assemble_state_edges(a, snap.states, out_edge_ids, out_global_edges);
-    }
-
 void EngineState::add_state_edges(ReadbackBatch& batch, const CounterSnapshot& snap,
-                                  StateEdgeArrays& out) const {
+                                  std::vector<StateEdgeSlice>& slices, EvolveResult& out) const {
         if (snap.states == 0) return;
-        batch.add(out.edges, edge_pool_.view().data, snap.edges);
-        batch.add(out.verts, vertex_pool_.view().data, snap.vertex_slots);
-        batch.add(out.slices, static_cast<const StateEdgeSlice*>(state_edge_slices_),
-                  snap.states);
-        batch.add(out.ids, static_cast<const EdgeId*>(state_edge_ids_), snap.state_edge_ids);
-    }
-
-std::vector<std::vector<std::vector<VertexId>>> EngineState::assemble_state_edges(
-            const StateEdgeArrays& a, uint32_t n_states,
-            std::vector<std::vector<EdgeId>>* out_edge_ids,
-            std::vector<std::vector<VertexId>>* out_global_edges) {
-        std::vector<std::vector<std::vector<VertexId>>> out(n_states);
-        if (out_edge_ids) out_edge_ids->assign(n_states, {});
-        if (out_global_edges) out_global_edges->clear();
-        if (n_states == 0) return out;
-        const auto& edges = a.edges;
-        const auto& verts = a.verts;
-        const auto& ids = a.ids;
-        const uint32_t n_edges = static_cast<uint32_t>(edges.size());
-
-        if (out_global_edges) {
-            out_global_edges->assign(n_edges, {});
-            for (uint32_t eid = 0; eid < n_edges; ++eid) {
-                const Edge& e = edges[eid];
-                if (static_cast<size_t>(e.vertex_offset) + e.arity > verts.size()) continue;
-                std::vector<VertexId> vs(e.arity);
-                for (uint8_t i = 0; i < e.arity; ++i) vs[i] = verts[e.vertex_offset + i];
-                (*out_global_edges)[eid] = std::move(vs);
-            }
-        }
-
-        for (uint32_t s = 0; s < n_states && s < a.slices.size(); ++s) {
-            const StateEdgeSlice& sl = a.slices[s];
-            if (static_cast<size_t>(sl.offset) + sl.count > ids.size()) continue;
-            for (uint32_t k = 0; k < sl.count; ++k) {
-                EdgeId eid = ids[sl.offset + k];
-                if (eid >= n_edges) continue;
-                if (out_edge_ids) (*out_edge_ids)[s].push_back(eid);
-                const Edge& e = edges[eid];
-                if (static_cast<size_t>(e.vertex_offset) + e.arity > verts.size()) continue;
-                std::vector<VertexId> vs(e.arity);
-                for (uint8_t i = 0; i < e.arity; ++i) {
-                    vs[i] = verts[e.vertex_offset + i];
-                }
-                out[s].push_back(std::move(vs));
-            }
-        }
-        return out;
+        batch.add(out.edge_records, edge_pool_.view().data, snap.edges);
+        batch.add(out.vertex_pool, vertex_pool_.view().data, snap.vertex_slots);
+        batch.add(slices, static_cast<const StateEdgeSlice*>(state_edge_slices_), snap.states);
+        batch.add(out.state_edge_ids, static_cast<const EdgeId*>(state_edge_ids_),
+                  snap.state_edge_ids);
     }
 
 void EngineState::ReadbackBatch::finish() {

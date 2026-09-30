@@ -22,6 +22,6 @@ TEST(HgGpuSmoke, NoRulesYieldsJustInitialState) {
     EXPECT_EQ(result.states.size(), 1u);
     EXPECT_TRUE(result.events.empty());
     if (!result.states.empty()) {
-        EXPECT_EQ(result.states[0].edges.size(), 2u);
+        EXPECT_EQ(result.states[0].num_edges, 2u);
     }
 }

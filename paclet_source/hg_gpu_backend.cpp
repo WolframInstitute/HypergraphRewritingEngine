@@ -134,8 +134,10 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
         in.materialize_events = job.include_events || gneeds.events || job.session_op == "Open";
         // State contents: read by the state records, event records (their input and output
         // states), every graph (vertex data), step statistics, a host-computed CanonicalHash,
-        // genesis events and the branchial state views; a session may be asked for any later.
+        // genesis events, the branchial state views, "GlobalEdges" and "StateBitvectors"; a
+        // session may be asked for any later.
         in.materialize_state_edges =
+            job.include_global_edges || job.include_state_bitvectors ||
             job.include_states || job.include_events || !job.graph_properties.empty() ||
             job.include_step_statistics || job.include_canonical_hashes ||
             job.show_genesis_events || job.include_branchial_state_edges ||
@@ -151,12 +153,6 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
     in.max_successor_states_per_parent =
         static_cast<uint32_t>(job.max_successor_states_per_parent);
     in.matches_per_state_rule = static_cast<uint32_t>(job.matches_per_state_rule);
-    // These components need the edge id -> contents table or the per-state id lists: "States"
-    // records carry each edge's id. Genesis synthesis needs the per-state edge ids too: an INITIAL edge is one that
-    // appears in a root state's list, and that is the only way to tell one from an edge a
-    // rewrite produced.
-    in.edge_identity = job.include_global_edges || job.include_state_bitvectors ||
-                       job.show_genesis_events || job.include_states;
     in.max_device_memory_bytes = job.max_device_memory_bytes;
     return in;
 }
@@ -316,7 +312,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
     std::unordered_map<uint64_t, hg_gpu::StateId> hash_to_rep;
     std::unordered_map<hg_gpu::StateId, hg_gpu::StateId> state_to_rep;
     std::unordered_map<hg_gpu::StateId, uint64_t> state_hash;
-    std::unordered_map<hg_gpu::StateId, const std::vector<std::vector<hg_gpu::VertexId>>*> state_edges;
+    std::unordered_map<hg_gpu::StateId, const hg_gpu::CanonicalState*> state_by_id;
     std::vector<hg_gpu::StateId> class_reps;
     // Under Full the device's key IS the exact isomorphism hash, from the same ir_core the host
     // runs, so it is read rather than recomputed. Under None and Automatic the device key is not
@@ -325,8 +321,8 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
                          (job.include_canonical_hashes || job.include_step_statistics);
     for (const auto& s : result.states) {
         state_hash[s.id] = canon_mode == hg_gpu::CanonicalizationMode::Full ? s.canonical_hash
-                         : host_ir ? ir.compute_canonical_hash(s.edges) : 0;
-        state_edges[s.id] = &s.edges;
+                         : host_ir ? ir.compute_canonical_hash(result.edges_of(s)) : 0;
+        state_by_id[s.id] = &s;
         // Automatic groups by the key THE DEVICE DEDUPLICATED WITH. CanonicalState::canonical_hash
         // carries what state_key_device wrote for the requested mode, so under Automatic it is
         // the content hash the evolution itself used. Recomputing content identity here would be
@@ -397,9 +393,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
             if (is_output.count(st.id)) continue;            // produced by an event: not a root
             const size_t at = genesis_roots.size();
             genesis_roots.push_back(st.id);
-            if (st.id < result.state_edge_ids.size()) {
-                for (auto eid : result.state_edge_ids[st.id]) initial_edge_root[eid] = at;
-            }
+            for (auto eid : result.edge_ids(st)) initial_edge_root[eid] = at;
         }
     }
 
@@ -408,18 +402,17 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
     if (job.include_states) {
         wxf::WXFValueAssociation states_assoc;
         hgmarshal::ValueRecordSink sink;
-        // (edge id, vertices), the ids from state_edge_ids (set by edge_identity, which a States
-        // request turns on), parallel to the state's edge contents.
+        // (edge id, vertices) for each of the state's edges.
         auto record_edges = [&](hg_gpu::StateId s) {
-            const auto& contents = *state_edges[s];
-            const std::vector<hg_gpu::EdgeId>* ids =
-                s < result.state_edge_ids.size() ? &result.state_edge_ids[s] : nullptr;
+            const hg_gpu::CanonicalState& st = *state_by_id[s];
+            const hg_gpu::EdgeSpan ids = result.edge_ids(st);
             std::vector<std::pair<int64_t, std::vector<uint32_t>>> edges;
-            edges.reserve(contents.size());
-            for (size_t k = 0; k < contents.size(); ++k)
-                edges.emplace_back(ids && k < ids->size() ? static_cast<int64_t>((*ids)[k])
-                                                          : static_cast<int64_t>(k),
-                                   std::vector<uint32_t>(contents[k].begin(), contents[k].end()));
+            edges.reserve(st.num_edges);
+            for (uint32_t k = 0; k < st.num_edges; ++k) {
+                const hg_gpu::VertexSpan e = result.edge_vertices(ids[k]);
+                edges.emplace_back(static_cast<int64_t>(ids[k]),
+                                   std::vector<uint32_t>(e.begin(), e.end()));
+            }
             return edges;
         };
         std::vector<int64_t> listed;
@@ -511,9 +504,9 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
             if (recon_events) break;
             consumed.clear();
             produced.clear();
-            for (auto c : e.consumed_edges)
+            for (auto c : e.consumed_edges())
                 if (c != hg_gpu::INVALID_ID) consumed.push_back(static_cast<int64_t>(c));
-            for (auto pe : e.produced_edges)
+            for (auto pe : e.produced_edges())
                 if (pe != hg_gpu::INVALID_ID) produced.push_back(static_cast<int64_t>(pe));
             hgmarshal::write_event_record(sink,
                 hgmarshal::EventRecordIds{
@@ -533,8 +526,8 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
             const int64_t gid = static_cast<int64_t>(first_genesis_event + i);
             consumed.clear();
             produced.clear();
-            if (root < result.state_edge_ids.size())
-                for (auto pe : result.state_edge_ids[root]) produced.push_back(static_cast<int64_t>(pe));
+            for (auto pe : result.edge_ids(*state_by_id[root]))
+                produced.push_back(static_cast<int64_t>(pe));
             hgmarshal::write_event_record(sink,
                 hgmarshal::EventRecordIds{gid, gid, -1, static_cast<int64_t>(genesis_state_id),
                                           static_cast<int64_t>(root),
@@ -588,7 +581,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
         // rewrite.
         for (const auto& e : result.events) {
             if (e.id == hg_gpu::INVALID_ID) continue;
-            for (auto c : e.consumed_edges) {
+            for (auto c : e.consumed_edges()) {
                 if (c == hg_gpu::INVALID_ID) continue;
                 auto it = initial_edge_root.find(c);
                 if (it == initial_edge_root.end()) continue;
@@ -691,13 +684,12 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
     // content, Full -> distinct IR class. (The CPU's None-mode sentinel undercount is fixed in
     // create_or_get_canonical_state, so no adjustment is needed here.)
     // GlobalEdges -> {edge_id, v1, v2, ...} for every edge the evolution created, and
-    // StateBitvectors -> state id -> the edge ids that state holds. Both come from
-    // EvolveResult::global_edges / state_edge_ids, which the readback fills when
-    // EvolveInput::edge_identity is set. Same shape as the host serialises.
+    // StateBitvectors -> state id -> the edge ids that state holds, from the state-edge arrays
+    // in EvolveResult. Same shape as the host serialises.
     if (job.include_global_edges) {
         wxf::WXFValueList global_edges;
-        for (size_t eid = 0; eid < result.global_edges.size(); ++eid) {
-            const auto& vs = result.global_edges[eid];
+        for (size_t eid = 0; eid < result.edge_records.size(); ++eid) {
+            const hg_gpu::VertexSpan vs = result.edge_vertices(static_cast<hg_gpu::EdgeId>(eid));
             if (vs.empty()) continue;
             wxf::WXFValueList edge_data;
             edge_data.push_back(wxf::WXFValue(static_cast<int64_t>(eid)));
@@ -708,12 +700,12 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
     }
     if (job.include_state_bitvectors) {
         wxf::WXFValueAssociation state_bitvectors;
-        for (size_t sid = 0; sid < result.state_edge_ids.size(); ++sid) {
+        for (const auto& st : result.states) {
             wxf::WXFValueList edge_ids;
-            for (auto eid : result.state_edge_ids[sid]) {
+            for (auto eid : result.edge_ids(st)) {
                 edge_ids.push_back(wxf::WXFValue(static_cast<int64_t>(eid)));
             }
-            state_bitvectors.push_back({wxf::WXFValue(static_cast<int64_t>(sid)),
+            state_bitvectors.push_back({wxf::WXFValue(static_cast<int64_t>(st.id)),
                                         wxf::WXFValue(edge_ids)});
         }
         full_result.push_back({wxf::WXFValue("StateBitvectors"),
@@ -758,7 +750,11 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
         std::map<uint32_t, std::map<int64_t, uint64_t>> rule_counts;
         auto contents = [&](hg_gpu::StateId s) {
             std::vector<std::vector<uint32_t>> out;
-            for (const auto& e : *state_edges[s]) out.emplace_back(e.begin(), e.end());
+            const hg_gpu::CanonicalState& st = *state_by_id[s];
+            for (uint32_t k = 0; k < st.num_edges; ++k) {
+                const hg_gpu::VertexSpan e = result.edge(st, k);
+                out.emplace_back(e.begin(), e.end());
+            }
             return out;
         };
         if (!result.class_multiplicities.empty()) {
@@ -804,18 +800,18 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
 
         auto serialize_edges = [&](hg_gpu::StateId sid) -> wxf::WXFValueList {
             wxf::WXFValueList edge_list;
-            auto it = state_edges.find(sid);
-            if (it == state_edges.end()) return edge_list;
+            auto it = state_by_id.find(sid);
+            if (it == state_by_id.end()) return edge_list;
             int64_t idx = 0;
             if (full) {
-                auto canon = ir.canonicalize_edges(*it->second);
+                auto canon = ir.canonicalize_edges(result.edges_of(*it->second));
                 for (const auto& ce : canon.canonical_form.edges) {
                     wxf::WXFValueList ed; ed.push_back(wxf::WXFValue(idx++));
                     for (auto v : ce) ed.push_back(wxf::WXFValue(static_cast<int64_t>(v)));
                     edge_list.push_back(wxf::WXFValue(ed));
                 }
             } else {
-                for (const auto& ce : *it->second) {
+                for (const auto& ce : result.edges_of(*it->second)) {
                     wxf::WXFValueList ed; ed.push_back(wxf::WXFValue(idx++));
                     for (auto v : ce) ed.push_back(wxf::WXFValue(static_cast<int64_t>(v)));
                     edge_list.push_back(wxf::WXFValue(ed));
@@ -901,7 +897,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
         gsrc.n_states = max_state + 1;
         gsrc.n_events = recon_content ? static_cast<uint32_t>(result.reconstructed_event_from_class.size())
                                       : max_event + 1;
-        gsrc.state_valid_ = [&](uint32_t sid) { return state_edges.find(sid) != state_edges.end(); };
+        gsrc.state_valid_ = [&](uint32_t sid) { return state_by_id.find(sid) != state_by_id.end(); };
         gsrc.eff_state_ = [&](uint32_t sid) { return rep_of(sid); };
         gsrc.step_ = step_of;
         gsrc.state_data_ = [&](uint32_t sid) -> wxf::WXFValueAssociation {
@@ -944,8 +940,8 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
             if (eit == event_by_id.end()) return d;
             const hg_gpu::Event& e = *eit->second;
             wxf::WXFValueList consumed, produced;
-            for (auto c : e.consumed_edges) if (c != hg_gpu::INVALID_ID) consumed.push_back(wxf::WXFValue(static_cast<int64_t>(c)));
-            for (auto p : e.produced_edges) if (p != hg_gpu::INVALID_ID) produced.push_back(wxf::WXFValue(static_cast<int64_t>(p)));
+            for (auto c : e.consumed_edges()) if (c != hg_gpu::INVALID_ID) consumed.push_back(wxf::WXFValue(static_cast<int64_t>(c)));
+            for (auto p : e.produced_edges()) if (p != hg_gpu::INVALID_ID) produced.push_back(wxf::WXFValue(static_cast<int64_t>(p)));
             d.push_back({wxf::WXFValue("Id"), wxf::WXFValue(static_cast<int64_t>(eid))});
             d.push_back({wxf::WXFValue("CanonicalId"), wxf::WXFValue(eff_event(eid))});
             d.push_back({wxf::WXFValue("RuleIndex"), wxf::WXFValue(static_cast<int64_t>(e.rule))});

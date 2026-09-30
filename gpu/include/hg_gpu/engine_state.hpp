@@ -411,18 +411,6 @@ public:
 
     std::vector<VertexId> edge_vertices_host(EdgeId eid) const;
 
-    // Read back every state's edge-vertex-tuple list from the device via
-    // four bulk cudaMemcpy calls (slices, ids, edges, vertices) then
-    // reconstructs on host. O(total state-edge slots) on the wire rather
-    // than the O(max_states × max_edges/32) bitset readback.
-    // `out_edge_ids` and `out_global_edges`, when non-null, are filled from the four arrays
-    // this already copies down: the per-state edge id lists, and the edge id -> vertices table.
-    // Neither costs an additional transfer -- the ids and the edge records are read here either
-    // way, and were being discarded once the vertex contents had been built from them.
-    std::vector<std::vector<std::vector<VertexId>>> all_state_edges_host(
-            std::vector<std::vector<EdgeId>>* out_edge_ids = nullptr,
-            std::vector<std::vector<VertexId>>* out_global_edges = nullptr) const;
-
     // Read back one state's EdgeId list.
     std::vector<EdgeId> state_edges_host(StateId sid) const;
 
@@ -506,12 +494,6 @@ public:
     static constexpr uint32_t counter_block_words() { return kCounterSlots; }
     DeviceErrors& errors() { return errors_; }
     LaunchScratch& launch_scratch(uint32_t num_rules, uint32_t num_states) const;
-    // all_state_edges_host with the four sizing counts taken from a snapshot instead of four
-    // cudaMemcpy calls. Declared here because the snapshot type is.
-    std::vector<std::vector<std::vector<VertexId>>> all_state_edges_host(
-            const CounterSnapshot& snap,
-            std::vector<std::vector<EdgeId>>* out_edge_ids = nullptr,
-            std::vector<std::vector<VertexId>>* out_global_edges = nullptr) const;
 
     // DEVICE-TO-HOST READS ISSUED TOGETHER. add() sizes the vector and records the region;
     // finish() issues every region as a cudaMemcpyAsync into the engine's pinned staging buffer,
@@ -536,20 +518,11 @@ public:
         std::vector<Region> regions_;
     };
 
-    // The four arrays a state-edge readback reads, sized from a snapshot, and the per-state
-    // edge lists assembled from them.
-    struct StateEdgeArrays {
-        std::vector<Edge>           edges;
-        std::vector<VertexId>       verts;
-        std::vector<StateEdgeSlice> slices;
-        std::vector<EdgeId>         ids;
-    };
+    // The state-edge readback, sized from a snapshot: the per-state slices into `slices`, and
+    // the edge id lists, edge table and vertex pool into `out`'s state_edge_ids, edge_records
+    // and vertex_pool.
     void add_state_edges(ReadbackBatch& batch, const CounterSnapshot& snap,
-                         StateEdgeArrays& out) const;
-    static std::vector<std::vector<std::vector<VertexId>>> assemble_state_edges(
-            const StateEdgeArrays& a, uint32_t n_states,
-            std::vector<std::vector<EdgeId>>* out_edge_ids,
-            std::vector<std::vector<VertexId>>* out_global_edges);
+                         std::vector<StateEdgeSlice>& slices, EvolveResult& out) const;
     void add_events(ReadbackBatch& batch, uint32_t n, std::vector<DeviceEvent>& out) const;
     void add_causal_edges(ReadbackBatch& batch, uint32_t n,
                           std::vector<DeviceCausalEdge>& out) const;

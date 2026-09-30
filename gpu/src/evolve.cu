@@ -536,12 +536,11 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     // arrays and the three relation pools, and every region is read in one batch: one
     // synchronization for all of them.
     const uint32_t total_states = snap.states;
-    const bool want_state_edges = in.edge_identity || in.materialize_state_edges;
     EngineState::ReadbackBatch batch(engine);
     std::vector<uint64_t> h_hashes;
     batch.add(h_hashes, static_cast<const uint64_t*>(d_state_hashes), total_states);
-    EngineState::StateEdgeArrays state_edges;
-    if (want_state_edges) engine.add_state_edges(batch, snap, state_edges);
+    std::vector<StateEdgeSlice> slices;
+    if (in.materialize_state_edges) engine.add_state_edges(batch, snap, slices, out);
     std::vector<DeviceEvent> d_events;
     engine.add_events(batch, snap.events, d_events);
     std::vector<DeviceCausalEdge> d_causal;
@@ -553,27 +552,27 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         std::chrono::steady_clock::now() - t_readback_start).count();
 
     auto t_readback_states_start = std::chrono::steady_clock::now();
-    std::vector<std::vector<std::vector<VertexId>>> all_edges;
-    if (want_state_edges)
-        all_edges = EngineState::assemble_state_edges(
-            state_edges, total_states, in.edge_identity ? &out.state_edge_ids : nullptr,
-            in.edge_identity ? &out.global_edges : nullptr);
-    out.states.reserve(total_states);
+    out.states.resize(total_states);
     for (uint32_t s = 0; s < total_states; ++s) {
-        CanonicalState cs;
+        CanonicalState& cs = out.states[s];
         cs.id             = s;
         cs.canonical_hash = (s < h_hashes.size()) ? h_hashes[s] : 0;
-        if (s < all_edges.size()) cs.edges = std::move(all_edges[s]);
-        out.states.push_back(std::move(cs));
+        // A slice past the id array describes no edges.
+        if (s < slices.size() &&
+            static_cast<size_t>(slices[s].offset) + slices[s].count <= out.state_edge_ids.size()) {
+            cs.first_edge = slices[s].offset;
+            cs.num_edges  = slices[s].count;
+        }
     }
 
     double t_readback_states = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_readback_states_start).count();
 
     auto t_readback_evcb_start = std::chrono::steady_clock::now();
-    out.events.reserve(d_events.size());
-    for (const auto& de : d_events) {
-        Event e;
+    out.events.resize(d_events.size());
+    for (size_t i = 0; i < d_events.size(); ++i) {
+        const DeviceEvent& de = d_events[i];
+        Event& e = out.events[i];
         e.id            = de.id;
         e.canonical_id  = de.canonical_id;
         e.signature     = de.signature;
@@ -581,9 +580,10 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         e.output_state  = de.output_state;
         e.rule          = de.rule;
         e.step          = de.step;
-        for (uint8_t i = 0; i < de.num_consumed; ++i) e.consumed_edges.push_back(de.consumed_edges[i]);
-        for (uint8_t i = 0; i < de.num_produced; ++i) e.produced_edges.push_back(de.produced_edges[i]);
-        out.events.push_back(std::move(e));
+        e.num_consumed  = de.num_consumed < kMaxPatternEdges ? de.num_consumed : kMaxPatternEdges;
+        e.num_produced  = de.num_produced < kMaxPatternEdges ? de.num_produced : kMaxPatternEdges;
+        for (uint8_t k = 0; k < e.num_consumed; ++k) e.consumed[k] = de.consumed_edges[k];
+        for (uint8_t k = 0; k < e.num_produced; ++k) e.produced[k] = de.produced_edges[k];
     }
 
     out.causal_edges.reserve(d_causal.size());
