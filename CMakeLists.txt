@@ -358,20 +358,12 @@ add_executable(thinning_mode_probe tools/thinning_mode_probe.cpp)
 target_include_directories(thinning_mode_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(thinning_mode_probe PRIVATE hypergraph)
 
-# S2's instrument. Measures the individualization-refinement search's SIZE (leaves, nodes,
-# depth) rather than its wall time, and calibrates itself on C_6 -- a 6-cycle's automorphism
-# group is dihedral of order 12 and its initial refinement is one cell, so the search must
-# branch. If that case reports no search the counters are dead and the rest is meaningless.
-add_executable(ir_core_phase_probe tools/ir_core_phase_probe.cpp)
-target_include_directories(ir_core_phase_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(ir_core_phase_probe PRIVATE hypergraph)
-
 # ---------------------------------------------------------------------------------------------
 # EVERY REMAINING tools/ PROGRAM, REGISTERED.
 #
 # 55 of 66 files here were built by nothing. That is not a tidiness point: a probe nothing
 # compiles rots invisibly and, worse, its FINDINGS go missing. Registering probes on
-# 2026-08-18 (ir_core_phase_probe among them) is what closed the "IR 1100x high-symmetry
+# 2026-08-18 is what closed the "IR 1100x high-symmetry
 # pathology" as unreproducible AND found a per-call memset worth 1.09% of engine instructions --
 # a real cost that survived precisely because its instrument was unregistered.
 #
