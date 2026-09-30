@@ -40,15 +40,14 @@ public:
         // left to climb it reaches 2^32, wraps, and returns a small index that passes the test
         // below, handing a caller a slot outside the allocation. Pulling it back to capacity on
         // the failing path bounds the excess to what is in flight, so the wrap is unreachable.
-        __device__ uint32_t claim() {
-            uint32_t idx = atomicAdd(counter, 1u);
-            if (idx < capacity) return idx;
-            atomicMin(counter, capacity);
-            return kInvalid;
-        }
+        __device__ uint32_t claim() { return settle(atomicAdd(counter, 1u), 1u); }
 
-        __device__ uint32_t claim_n(uint32_t n) {
-            uint32_t idx = atomicAdd(counter, n);
+        __device__ uint32_t claim_n(uint32_t n) { return settle(atomicAdd(counter, n), n); }
+
+        // The outcome of an add that returned `idx` for `n` slots: `idx`, or kInvalid with the
+        // counter clamped. Callers that add to the counter some other way (one add for a group
+        // of threads) settle each thread's share here.
+        __device__ uint32_t settle(uint32_t idx, uint32_t n) {
             if ((uint64_t)idx + n <= capacity) return idx;
             atomicMin(counter, capacity);
             return kInvalid;

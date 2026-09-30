@@ -12,6 +12,8 @@
 
 #include <cuda_runtime.h>
 #include <cuda/atomic>
+#include <cooperative_groups.h>
+#include <cooperative_groups/scan.h>
 
 #include <stdexcept>
 #include <string>
@@ -20,6 +22,48 @@ namespace HG_NAMESPACE {
 namespace gpu {
 
 namespace {
+
+namespace cg = cooperative_groups;
+
+// An add of `n` to `counter` made by the threads that reach it together: one atomicAdd for the
+// coalesced group, and each thread's share starts at the exclusive prefix of the shares of the
+// threads ranked below it. A lone thread makes one atomicAdd of its own `n`, and a total of 0
+// makes none. Returns what the thread's own atomicAdd would have returned had the group's adds
+// run in rank order; a thread asking for 0 gets an unspecified value.
+__device__ __forceinline__ uint32_t coalesced_add(uint32_t* counter, uint32_t n) {
+    if (__popc(__activemask()) == 1) return n ? atomicAdd(counter, n) : 0u;
+    const cg::coalesced_group g = cg::coalesced_threads();
+    const uint32_t prefix = cg::exclusive_scan(g, n);
+    const uint32_t total = g.shfl(prefix + n, g.size() - 1);
+    uint32_t base = 0;
+    if (g.thread_rank() == 0 && total) base = atomicAdd(counter, total);
+    return g.shfl(base, 0) + prefix;
+}
+
+// A claim of one slot from `counter`, which never passes `limit`, made by the threads that reach
+// it together: the group's first thread takes as many slots as fit in one exchange, and a thread
+// ranked past them gets none. A lone thread makes its own exchange. Returns the slot, or
+// INVALID_ID when none fit.
+__device__ __forceinline__ uint32_t coalesced_bounded_claim(uint32_t* counter, uint32_t limit) {
+    const auto take_from = [&](uint32_t want, uint32_t& base) {
+        uint32_t cur = *counter;
+        for (;;) {
+            const uint32_t take = cur >= limit ? 0u : min(want, limit - cur);
+            if (take == 0) return 0u;
+            const uint32_t prev = atomicCAS(counter, cur, cur + take);
+            if (prev == cur) { base = cur; return take; }
+            cur = prev;
+        }
+    };
+    uint32_t base = 0;
+    if (__popc(__activemask()) == 1) return take_from(1u, base) ? base : INVALID_ID;
+    const cg::coalesced_group g = cg::coalesced_threads();
+    uint32_t take = 0;
+    if (g.thread_rank() == 0) take = take_from(g.size(), base);
+    base = g.shfl(base, 0);
+    take = g.shfl(take, 0);
+    return g.thread_rank() < take ? base + g.thread_rank() : INVALID_ID;
+}
 
 // ---------------------------------------------------------------------------
 // Event + causal + branchial device helpers
@@ -279,34 +323,29 @@ __device__ AppliedMatch apply_one_match(DeviceState       ds,
         vert_slots_needed += rule.rhs[r].arity;
     }
 
-    // Reserve state slot. Use CAS-loop so we never bump state_count past
-    // max_states — this keeps host-side downstream indexing safe without a
-    // post-hoc cap.
-    uint32_t new_sid;
-    {
-        uint32_t cur = *ds.state_count;
-        for (;;) {
-            if (cur >= ds.max_states) {
-                ds.errors.record(ErrorKind::kStatePoolFull);
-                return AppliedMatch{};
-            }
-            uint32_t prev = atomicCAS(ds.state_count, cur, cur + 1u);
-            if (prev == cur) { new_sid = cur; break; }
-            cur = prev;
-        }
+    // THE RESERVATIONS BELOW ARE COALESCED: the threads of a warp that reach each one together
+    // make one atomic on its counter between them (coalesced_add, coalesced_bounded_claim),
+    // where one atomic per thread on one address serialises the warp.
+    //
+    // Reserve the state slot. state_count never passes max_states, which keeps host-side
+    // indexing safe without a post-hoc cap.
+    const uint32_t new_sid = coalesced_bounded_claim(ds.state_count, ds.max_states);
+    if (new_sid == INVALID_ID) {
+        ds.errors.record(ErrorKind::kStatePoolFull);
+        return AppliedMatch{};
     }
 
     // Reserve event slot.
-    EventId my_event = ds.event_pool.claim();
+    EventId my_event = ds.event_pool.settle(coalesced_add(ds.event_pool.counter, 1u), 1u);
     if (my_event == Pool<DeviceEvent>::kInvalid) {
         ds.errors.record(ErrorKind::kEventPoolFull);
         return AppliedMatch{};
     }
 
     // Reserve all RHS edges in one consecutive run.
-    uint32_t first_eid = (rule.num_rhs_edges == 0)
-        ? 0u
-        : ds.edge_pool.claim_n(rule.num_rhs_edges);
+    uint32_t first_eid = ds.edge_pool.settle(
+        coalesced_add(ds.edge_pool.counter, rule.num_rhs_edges), rule.num_rhs_edges);
+    if (rule.num_rhs_edges == 0) first_eid = 0u;
     if (rule.num_rhs_edges > 0 && first_eid == Pool<Edge>::kInvalid) {
         ds.errors.record(ErrorKind::kEdgePoolFull);
         return AppliedMatch{};
@@ -326,9 +365,8 @@ __device__ AppliedMatch apply_one_match(DeviceState       ds,
         return AppliedMatch{};
     }
     const uint32_t new_slice_count = static_cast<uint32_t>(kept_and_produced - consumed);
-    const uint32_t new_slice_offset =
-        (new_slice_count == 0) ? 0u
-        : atomicAdd(ds.state_edge_ids_counter, new_slice_count);
+    const uint32_t slice_at = coalesced_add(ds.state_edge_ids_counter, new_slice_count);
+    const uint32_t new_slice_offset = (new_slice_count == 0) ? 0u : slice_at;
     if (new_slice_count > 0 &&
         static_cast<uint64_t>(new_slice_offset) + new_slice_count
             > ds.state_edge_ids_capacity) {
@@ -345,9 +383,9 @@ __device__ AppliedMatch apply_one_match(DeviceState       ds,
     }
 
     // Reserve all vertex slots in one consecutive run.
-    uint32_t first_vert_off = (vert_slots_needed == 0)
-        ? 0u
-        : ds.vertex_pool.claim_n(vert_slots_needed);
+    uint32_t first_vert_off = ds.vertex_pool.settle(
+        coalesced_add(ds.vertex_pool.counter, vert_slots_needed), vert_slots_needed);
+    if (vert_slots_needed == 0) first_vert_off = 0u;
     if (vert_slots_needed > 0 && first_vert_off == Pool<VertexId>::kInvalid) {
         ds.errors.record(ErrorKind::kVertexPoolFull);
         return AppliedMatch{};
@@ -355,9 +393,9 @@ __device__ AppliedMatch apply_one_match(DeviceState       ds,
 
     // Reserve fresh vertex IDs (vertex_high_water bump).
     uint32_t vid_base = 0;
+    const uint32_t fresh_at = coalesced_add(ds.vertex_high_water, num_new_vars);
     if (num_new_vars > 0) {
-        vid_base = atomicAdd(ds.vertex_high_water,
-                             static_cast<uint32_t>(num_new_vars));
+        vid_base = fresh_at;
         // vertex_inverted_index keys range over [0, num_keys).
         if (vid_base + num_new_vars > ds.vertex_inverted_index.list.num_keys) {
             ds.errors.record(ErrorKind::kVertexPoolFull);
