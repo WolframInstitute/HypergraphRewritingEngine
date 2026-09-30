@@ -54,14 +54,17 @@ class Rewriter {
 public:
     explicit Rewriter(Hypergraph* hg);
 
-    // Apply a match to create a new state
+    // Apply a match to create a new state. `inherited` says every edge of the match predates the
+    // input state, so its parent holds the match too and the rewrite may have been applied before
+    // (hgcommon/token_core.hpp).
     RewriteResult apply(
         const RewriteRule& rule,
         StateId input_state,
         const EdgeId* matched_edges,
         uint8_t num_matched,
         const VariableBinding& binding,
-        uint32_t output_step = 0
+        uint32_t output_step = 0,
+        bool inherited = false
     );
 };
 

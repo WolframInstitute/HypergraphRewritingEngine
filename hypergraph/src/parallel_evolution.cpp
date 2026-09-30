@@ -1616,14 +1616,21 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
 
     const RewriteRule& rule = rules_[match.rule_index()];
 
-    // Apply the rewrite
+    // A match whose edges all predate its state is also a match of the parent, so applying it can
+    // repeat a rewrite (hgcommon/token_core.hpp). An inherited match is one; without forwarding
+    // the state finds such matches itself.
+    bool inherited = match.is_forwarded != 0;
+    if (!inherited && !enable_match_forwarding_ && hg_->keyed_active())
+        inherited = hg_->match_predates_state(match.source_state, match.matched_edges(),
+                                              match.num_edges());
     RewriteResult rr = rewriter_.apply(
         rule,
         match.source_state,
         match.matched_edges(),
         match.num_edges(),
         match.binding(),
-        step
+        step,
+        inherited
     );
 
     // Both budgets count states this parent actually contributed, so a rewrite that

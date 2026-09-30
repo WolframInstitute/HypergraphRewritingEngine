@@ -4,6 +4,7 @@
 #include "hypergraph/rewriter.hpp"
 #include "hgcommon/portable_intrinsics.hpp"
 #include "hgcommon/rewrite_core.hpp"
+#include "hgcommon/token_core.hpp"
 
 namespace HG_NAMESPACE {
 namespace engine {
@@ -14,7 +15,8 @@ RewriteResult Rewriter::apply(
     const EdgeId* matched_edges,
     uint8_t num_matched,
     const VariableBinding& binding,
-    uint32_t output_step
+    uint32_t output_step,
+    bool inherited
 ) {
     RewriteResult result;
 
@@ -70,11 +72,26 @@ RewriteResult Rewriter::apply(
     if (num_fresh || rule.num_rhs_edges)
         hg_->alloc_edges_and_vertices(rule.num_rhs_edges, num_fresh, first_edge, fresh_base);
 
+    // Keyed rewrites (hgcommon/token_core.hpp): from the run's first inherited match on, every
+    // rewrite is interned; its state claims a twin when the rewrite may have been applied before.
+    // `keyed_rewrite` is the rewrite id (0: none) with REWRITE_TWIN_CANDIDATE set when the state
+    // claims a twin. ARMED plus an inherited match, or INTERNING, interns.
+    uint32_t keyed_rewrite = 0;
+    const uint8_t keyed = hg_->keyed_state();
+    if (keyed + uint8_t(inherited) >= Hypergraph::KEYED_INTERNING) {
+        if (keyed == Hypergraph::KEYED_ARMED) hg_->note_inherited_rewrite();
+        bool repeated = false;
+        const uint32_t rid = hg_->intern_rewrite(rule.index, matched_edges, num_matched, repeated);
+        if (rid != hgcommon::REWRITE_ID_NONE)
+            keyed_rewrite = rid | ((inherited || repeated) ? hgcommon::REWRITE_TWIN_CANDIDATE : 0u);
+    }
+
     VertexId fresh_by_var[MAX_VARS];
     std::memset(fresh_by_var, 0xFF, sizeof(fresh_by_var));
     hgcommon::assign_fresh_consecutive(new_var_mask, fresh_base, fresh_by_var);
 
-    // Create new edges from RHS pattern, under the ids taken above.
+    // The event's id is taken before its produced edges, so each is created with its creator.
+    const EventId event_id = hg_->reserve_event_id();
     result.num_produced = 0;
     for (uint8_t i = 0; i < rule.num_rhs_edges; ++i) {
         const PatternEdge& rhs_edge = rule.rhs[i];
@@ -86,12 +103,16 @@ RewriteResult Rewriter::apply(
                                             binding.bindings, fresh_by_var, vertices)) {
             return result;
         }
-
-        // Create the edge (producer will be set after event is created)
-        EdgeId eid = hg_->create_edge_at(first_edge + i, vertices, rhs_edge.arity, INVALID_ID,
+        EdgeId eid = hg_->create_edge_at(first_edge + i, vertices, rhs_edge.arity, event_id,
                                          output_step);
         result.produced_edges[result.num_produced++] = eid;
         new_edges.set(eid, hg_->arena());
+    }
+    // A known rewrite id gives the produced tokens now, before the state exists.
+    if (keyed_rewrite) {
+        const uint32_t rid = keyed_rewrite & ~hgcommon::REWRITE_TWIN_CANDIDATE;
+        for (uint8_t i = 0; i < result.num_produced; ++i)
+            hg_->cache_edge_token(result.produced_edges[i], hgcommon::token_produced(rid, i));
     }
 
     // Create or get existing canonical state (canonical hash computed inside,
@@ -103,7 +124,8 @@ RewriteResult Rewriter::apply(
         INVALID_ID,  // Will be updated when event is created
         input_state,
         matched_edges, num_matched,
-        result.produced_edges, result.num_produced
+        result.produced_edges, result.num_produced,
+        keyed_rewrite
     );
 
     result.new_state = canonical_id;
@@ -116,14 +138,16 @@ RewriteResult Rewriter::apply(
     // the canonical representative which may be a different state.
     // This is critical for ByStateAndEdges event canonicalization which needs
     // to find edge correspondence between the output_state and canonical_output.
-    auto event_result = hg_->create_event(
+    auto event_result = hg_->create_event_at(
+        event_id,
         input_state,
         result.raw_state,  // Use raw state that contains produced edges
         rule.index,
         matched_edges,
         num_matched,
         result.produced_edges,
-        result.num_produced
+        result.num_produced,
+        keyed_rewrite & ~hgcommon::REWRITE_TWIN_CANDIDATE
     );
     result.event = event_result.event_id;
     result.canonical_event = event_result.canonical_event_id;

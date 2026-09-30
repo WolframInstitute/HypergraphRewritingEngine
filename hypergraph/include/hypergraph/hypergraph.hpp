@@ -20,6 +20,7 @@
 #include "hgcommon/quotient_replay_core.hpp"
 #include "hgcommon/ir_core.hpp"
 #include "hgcommon/canonical_form_core.hpp"
+#include "hgcommon/token_core.hpp"
 #include "lock_free_list.hpp"
 #include "causal_graph.hpp"
 #include "concurrent_map.hpp"
@@ -625,6 +626,34 @@ class Hypergraph {
     // values event_values_of recomputes on a key hit (claim_event). The signature is computed
     // from the keys event_signature_keys_ selects.
     ConcurrentMap<uint64_t, EventId, uint64_t{0}, ~uint64_t{0}, INVALID_ID> canonical_event_map_;
+
+    // Keyed rewrites (hgcommon/token_core.hpp). An edge's token is computed on demand from its
+    // creator event's rewrite id (edge_token, event_rewrite_id) and cached in *edge_tokens_ (0: not
+    // cached), where a rewrite with a known id also writes its produced tokens; the cache is built
+    // at the switch to KEYED_INTERNING (note_inherited_rewrite). Each state's token
+    // sum is State::token_sum (0: not computed). rewrite_map_ interns a rewrite (rule, consumed tokens)
+    // as a record whose id is the rewrite id (intern_rewrite). twin_map_ maps a token sum to the
+    // first raw state with that token set (claim_twin).
+    std::atomic<SegmentedArray<uint64_t>*> edge_tokens_{nullptr};
+    uint32_t edge_token_seg_shift_ = 0;
+    ConcurrentMap<uint64_t, const hgcommon::CanonicalFormRecord*> rewrite_map_;
+    std::atomic<uint32_t> next_rewrite_id_{1};
+    ConcurrentMap<uint64_t, StateId, uint64_t{0}, ~uint64_t{0}, INVALID_ID> twin_map_;
+    bool keyed_rewrites_{true};
+    // The run's keyed-rewrite state. OFF: no tokens (configuration, or stopped). ARMED: nothing is
+    // interned yet. INTERNING: every rewrite is interned and every new state gets a token sum,
+    // from the run's first application of an inherited match (one whose edges all predate its
+    // state, match_predates_state). That is the run's first repeated rewrite: a rewrite applied
+    // once has its produced tokens in one state and that state's descendants, so a repeat before it
+    // would need an inherited match.
+    std::atomic<uint8_t> keyed_state_{0};
+    // Twin claims made; after keyed_claim_limit_ claims without a twin the run goes OFF.
+    uint32_t keyed_claim_limit_ = 1024;
+    std::atomic<uint32_t> keyed_claims_{0};
+    std::atomic<bool> twin_seen_{false};
+#if HG_ENGINE_STATS
+    std::atomic<uint64_t> twin_reuses_{0};
+#endif
     std::atomic<uint32_t> canonical_event_count_{0};
 
     // Times an event signature used a RAW edge id because no edge correspondence was found.
@@ -865,7 +894,8 @@ public:
         EventId parent_event = INVALID_ID,
         StateId incr_parent = INVALID_ID,
         const EdgeId* incr_consumed = nullptr, uint8_t incr_num_consumed = 0,
-        const EdgeId* incr_produced = nullptr, uint8_t incr_num_produced = 0
+        const EdgeId* incr_produced = nullptr, uint8_t incr_num_produced = 0,
+        uint32_t keyed_rewrite = 0
     );
 
 
@@ -938,6 +968,78 @@ public:
     // Test hook, set before evolution: the first probe key of an event signature (and of the IR
     // key claimed under None and Automatic) is ANDed with `mask`.
     void set_event_key_mask(uint64_t mask) { event_key_mask_ = mask; }
+    // Set before evolution: tokens and twin reuse (hgcommon/token_core.hpp). On by default.
+    void set_keyed_rewrites(bool on) {
+        keyed_rewrites_ = on;
+        update_keyed_state();
+    }
+    // Test hook, set before evolution: twin claims made without a twin before the run stops.
+    void set_keyed_claim_limit(uint32_t limit) { keyed_claim_limit_ = limit; }
+    // Values of keyed_state_.
+    enum : uint8_t { KEYED_OFF = 0, KEYED_ARMED = 1, KEYED_INTERNING = 2 };
+    uint8_t keyed_state() const { return keyed_state_.load(std::memory_order_acquire); }
+    bool keyed_active() const { return keyed_state() != KEYED_OFF; }
+    // keyed_state_ from the configuration: ARMED when keyed rewrites are on, the mode is Full (the
+    // only mode that takes twins) and event identity is not positional (which reads each raw
+    // state's own labelling); OFF otherwise.
+    void update_keyed_state() {
+        const bool on = keyed_rewrites_ &&
+                        state_canonicalization_mode_.load(std::memory_order_relaxed) ==
+                            StateCanonicalizationMode::Full &&
+                        !positional_event_identity_.load(std::memory_order_relaxed);
+        keyed_state_.store(on ? KEYED_ARMED : KEYED_OFF, std::memory_order_relaxed);
+    }
+    // ARMED to INTERNING, at the run's first application of an inherited match; builds the token
+    // cache.
+    void note_inherited_rewrite();
+    // Whether every edge of a match found in state `s` is older than the edges `s` was made with.
+    // Then `s`'s parent holds the same match and applies it, so applying it in `s` repeats a
+    // rewrite. A state's produced edges have larger ids than every edge it holds from before.
+    bool match_predates_state(StateId s, const EdgeId* edges, uint8_t n) const {
+        const State& st = states_[s];
+        if (st.parent_state == INVALID_ID) return false;
+        if (st.num_delta_edges == 0) return true;
+        const EdgeId first = st.delta_edges[0];
+        for (uint8_t i = 0; i < n; ++i)
+            if (edges[i] >= first) return false;
+        return true;
+    }
+    // Whether any state took its canonical results from a twin.
+    bool twin_seen() const { return twin_seen_.load(std::memory_order_relaxed); }
+#if HG_ENGINE_STATS
+    // States that took their canonical results from a twin with the same token set.
+    uint64_t twin_reuses() const { return twin_reuses_.load(std::memory_order_relaxed); }
+#endif
+    // The rewrite id of (rule, consumed edges in match order), exact over their tokens:
+    // REWRITE_ID_NONE when the id space is exhausted. `repeated` is set when the key was interned
+    // before this call.
+    uint32_t intern_rewrite(uint16_t rule, const EdgeId* consumed, uint8_t num_consumed,
+                            bool& repeated);
+    // The token of edge `e`, and the rewrite id of event `ev`, computed on first use: 0 and
+    // REWRITE_ID_NONE when the id space is exhausted. An edge is read once its rewrite has
+    // returned, or through the cache, which a rewrite with a known id fills before its state
+    // exists; either way its creator Event is stored when the cache misses.
+    uint64_t edge_token(EdgeId e);
+    // Caches the token of edge `e` (edge_tokens_; nothing before the cache exists).
+    void cache_edge_token(EdgeId e, uint64_t token) {
+        if (SegmentedArray<uint64_t>* c = edge_tokens_.load(std::memory_order_acquire))
+            hgcommon::atomic_ref<uint64_t>(c->slot(e, arena_)).store(token, std::memory_order_relaxed);
+    }
+    uint32_t event_rewrite_id(EventId ev);
+    // The token sum of state `s`, computed over its edges on first use; 0 when a token is 0.
+    uint64_t state_token_sum(StateId s);
+    // The token sum of a new state from its parent's by the consumed and produced tokens (the
+    // produced tokens from rewrite id `rid`); 0 when a token is 0.
+    uint64_t child_token_sum(StateId parent, const EdgeId* consumed, uint8_t num_consumed,
+                             uint32_t rid, uint8_t num_produced);
+    // Whether two states hold the same token set.
+    bool same_tokens(StateId a, StateId b);
+    // The first raw state with the token set of `s` (sum `sum`): `s` itself when it is the
+    // first, INVALID_ID when the claim could not decide.
+    StateId claim_twin(StateId s, uint64_t sum);
+    // `s` takes its twin `t`'s canonical results: the class key and, when the run keeps them,
+    // the rank and orbit tables carried across by token. False when `t` has not published them.
+    bool take_twin(StateId s, StateId t, bool ranks, bool orbits, uint64_t& key, StateId& rep);
     // Test hook, set before evolution: the replay refuses raw event and instance ids at or past
     // `limit` (hgcommon::QR_ID_LIMIT otherwise).
     void set_replay_id_limit(uint32_t limit) { qc_id_limit_ = limit; }
@@ -1021,6 +1123,22 @@ public:
         const EdgeId* produced,
         uint8_t num_produced
     );
+    // create_event under `eid`, an id from reserve_event_id, with the event's rewrite id when
+    // known (hgcommon/token_core.hpp; REWRITE_ID_UNSET otherwise).
+    CreateEventResult create_event_at(
+        EventId eid,
+        StateId input_state,
+        StateId output_state,
+        RuleIndex rule_index,
+        const EdgeId* consumed,
+        uint8_t num_consumed,
+        const EdgeId* produced,
+        uint8_t num_produced,
+        uint32_t rewrite_id
+    );
+    // An event id for a rewrite whose produced edges are created before its event, so that each
+    // edge is created with its creator. The Event is stored by create_event_at.
+    EventId reserve_event_id() { return counters_.alloc_event(); }
 
     // Get event by ID
     const Event& get_event(EventId eid) const;

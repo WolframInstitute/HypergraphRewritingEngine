@@ -240,6 +240,9 @@ int main(int argc, char** argv) {
                     : cm && cm[0] == 'a' ? StateCanonicalizationMode::Automatic
                                          : StateCanonicalizationMode::Full);
             }
+            // HG_BENCH_KEYED=0 turns keyed rewrites (tokens and twin reuse) off; unset is on.
+            if (const char* kr = std::getenv("HG_BENCH_KEYED"); kr && kr[0] == '0')
+                g.set_keyed_rewrites(false);
             // HG_BENCH_EVENT_MODE=full|automatic selects an event identity; unset is None.
             {
                 const char* em = std::getenv("HG_BENCH_EVENT_MODE");
@@ -366,6 +369,12 @@ int main(int argc, char** argv) {
                 std::printf("  siblings: parents=%zu events=%zu match_orbit_keys=%zu child_classes=%zu\n",
                             per.size(), events, keys, classes);
             }
+#if HG_ENGINE_STATS
+            std::printf("  keyed: twin_reuses=%llu active=%d\n", (unsigned long long)g.twin_reuses(),
+                        int(g.keyed_active()));
+#else
+            std::printf("  keyed: twin_seen=%d active=%d\n", int(g.twin_seen()), int(g.keyed_active()));
+#endif
             // id_bound over raw_events is the event-id blocks' fill: every block a worker
             // abandons for a producer above it leaves ids unused.
             std::printf("  recon: causal_pairs=%zu reduced_pairs=%zu branchial=%zu "

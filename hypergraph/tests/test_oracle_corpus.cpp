@@ -210,6 +210,62 @@ TEST(OracleCorpus, ReplayIdLimitTruncatesAndReports) {
     EXPECT_GT(checked, 0u);
 }
 
+// Keyed rewrites (hgcommon/token_core.hpp): a state with an earlier twin (same token set) takes
+// its canonical results and runs no IR. Every count must equal the run with keyed rewrites off,
+// in every state and event mode, under full capture and quotient exploration, and the corpus
+// must exercise the twin path.
+TEST(OracleCorpus, KeyedRewritesChangeNoCount) {
+    struct Counts {
+        size_t states; uint64_t events, causal, branchial;
+        bool operator==(const Counts& o) const {
+            return states == o.states && events == o.events && causal == o.causal &&
+                   branchial == o.branchial;
+        }
+    };
+    bool seen = false;
+    auto run = [&](const oracle::Case& c, StateCanonicalizationMode mode,
+                   hgcommon::EventSignatureKeys keys, bool quotient, unsigned threads, bool keyed,
+                   uint32_t claim_limit = 1024) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(mode);
+        hg.set_event_signature_keys(keys);
+        hg.set_keyed_rewrites(keyed);
+        hg.set_keyed_claim_limit(claim_limit);
+        ParallelEvolutionEngine engine(&hg, threads);
+        engine.set_explore_from_canonical_states_only(quotient);
+        for (const auto& r : c.rules) engine.add_rule(r);
+        engine.evolve(c.init, c.oracle_steps + 1);
+        seen = seen || hg.twin_seen();
+        return Counts{hg.num_canonical_states(), hg.observable_num_events(),
+                      hg.observable_num_causal_edges(), hg.observable_num_branchial()};
+    };
+    struct Mode { const char* name; StateCanonicalizationMode mode; bool quotient; };
+    const Mode modes[] = {
+        {"None",          StateCanonicalizationMode::None,      false},
+        {"Automatic",     StateCanonicalizationMode::Automatic, false},
+        {"Full",          StateCanonicalizationMode::Full,      false},
+        {"Full quotient", StateCanonicalizationMode::Full,      true},
+    };
+    const hgcommon::EventSignatureKeys key_sets[] = {
+        hgcommon::EVENT_SIG_NONE, hgcommon::EVENT_SIG_FULL, hgcommon::EVENT_SIG_AUTOMATIC};
+    for (const auto& c : oracle::corpus()) {
+        for (const auto& m : modes) {
+            for (auto k : key_sets) {
+                const Counts off = run(c, m.mode, k, m.quotient, 1, false);
+                for (unsigned t : {1u, 4u}) {
+                    EXPECT_EQ(run(c, m.mode, k, m.quotient, t, true), off)
+                        << c.name << " state " << m.name << " keys " << int(k) << " @" << t;
+                    // A claim limit reached during the run: interning stops partway.
+                    EXPECT_EQ(run(c, m.mode, k, m.quotient, t, true, 3), off)
+                        << c.name << " state " << m.name << " keys " << int(k) << " @" << t
+                        << " claim limit 3";
+                }
+            }
+        }
+    }
+    EXPECT_TRUE(seen);
+}
+
 TEST(OracleCorpus, DeterministicAcrossThreadCounts) {
     for (const auto& c : oracle::corpus()) {
         size_t t1 = oracle::engine_full_count(c.rules, c.init, c.oracle_steps, 1);

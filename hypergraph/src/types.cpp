@@ -101,30 +101,32 @@ void Edge::copy_vertices_from(const Edge& o) {
 Event::Event(EventId id_, StateId input, StateId output, RuleIndex rule,
              EdgeId* consumed, uint8_t n_consumed,
              EdgeId* produced, uint8_t n_produced,
-             EventId canonical_id)
+             EventId canonical_id, uint32_t rewrite_id_)
     : id(id_)
     , input_state(input)
     , output_state(output)
-    , rule_index(rule)
+    , canonical_event_id(canonical_id)
     , consumed_edges(consumed)
     , produced_edges(produced)
+    , signature(0)
+    , rule_index(rule)
     , num_consumed(n_consumed)
     , num_produced(n_produced)
-    , canonical_event_id(canonical_id)
-    , signature(0)
+    , rewrite_id(rewrite_id_)
 {}
 
 Event::Event()
     : id(INVALID_ID)
     , input_state(INVALID_ID)
     , output_state(INVALID_ID)
-    , rule_index(0)
+    , canonical_event_id(INVALID_ID)
     , consumed_edges(nullptr)
     , produced_edges(nullptr)
+    , signature(0)
+    , rule_index(0)
     , num_consumed(0)
     , num_produced(0)
-    , canonical_event_id(INVALID_ID)
-    , signature(0)
+    , rewrite_id(0)
 {}
 
 bool Event::is_canonical() const { return canonical_event_id == INVALID_ID; }
@@ -150,6 +152,7 @@ State::State(StateId id_, SparseBitset&& edge_set, uint32_t step_,
     , parent_state(INVALID_ID)
     , edge_ranks(nullptr)
     , edge_orbits(nullptr)
+    , token_sum(0)
 {}
 
 State::State()
@@ -168,6 +171,7 @@ State::State()
     , parent_state(INVALID_ID)
     , edge_ranks(nullptr)
     , edge_orbits(nullptr)
+    , token_sum(0)
 {}
 
 State::State(State&& other) noexcept
@@ -186,6 +190,7 @@ State::State(State&& other) noexcept
     , parent_state(other.parent_state)
     , edge_ranks(other.edge_ranks)
     , edge_orbits(other.edge_orbits)
+    , token_sum(other.token_sum)
 {
     other.id = INVALID_ID;
 }
@@ -207,6 +212,7 @@ State& State::operator=(State&& other) noexcept {
         parent_state = other.parent_state;
         edge_ranks = other.edge_ranks;
         edge_orbits = other.edge_orbits;
+        token_sum = other.token_sum;
         other.id = INVALID_ID;
     }
     return *this;

@@ -121,23 +121,21 @@ struct Edge {
 private:
     void copy_vertices_from(const Edge& o);
 };
+static_assert(sizeof(Edge) == 32, "Edge outgrew 32 bytes");
 
 // =============================================================================
 // Event
 // =============================================================================
-// Represents a rewrite event. Immutable after creation.
+// Represents a rewrite event. Immutable after creation except rewrite_id, which is filled once.
 // Allocated from arena.
 
 struct Event {
     EventId id;
     StateId input_state;
     StateId output_state;
-    RuleIndex rule_index;
+    EventId canonical_event_id;  // Points to canonical event if this is a duplicate, INVALID_ID if this is canonical
     EdgeId* consumed_edges;  // Arena-allocated array
     EdgeId* produced_edges;  // Arena-allocated array
-    uint8_t num_consumed;
-    uint8_t num_produced;
-    EventId canonical_event_id;  // Points to canonical event if this is a duplicate, INVALID_ID if this is canonical
 
     // The identity this run computed for the event, from hgcommon::event_signature. 0 under
     // EventSignatureKeys None, where events are kept distinct by computing no signature at all.
@@ -148,6 +146,14 @@ struct Event {
     // every count intact. DeviceEvent carries the same field for the same reason.
     uint64_t signature;
 
+    RuleIndex rule_index;
+    uint8_t num_consumed;
+    uint8_t num_produced;
+    // Keyed rewrites (hgcommon/token_core.hpp): the rewrite id of (rule, consumed tokens), or
+    // REWRITE_ID_UNSET until Hypergraph::event_rewrite_id fills it, or REWRITE_ID_NONE when the
+    // id space is exhausted. Read and written through std::atomic_ref.
+    uint32_t rewrite_id;
+
     // The match's VariableBinding is NOT stored on the event: it is consumed during
     // RHS instantiation and never read from a persistent event afterwards (the event
     // records consumed/produced edges explicitly). Keeping it cost 132 B per event,
@@ -155,7 +161,7 @@ struct Event {
     Event(EventId id_, StateId input, StateId output, RuleIndex rule,
           EdgeId* consumed, uint8_t n_consumed,
           EdgeId* produced, uint8_t n_produced,
-          EventId canonical_id = INVALID_ID);
+          EventId canonical_id = INVALID_ID, uint32_t rewrite_id_ = 0);
 
     // Default constructor for array allocation
     Event();
@@ -163,6 +169,7 @@ struct Event {
     // Check if this event is canonical (not a duplicate)
     bool is_canonical() const;
 };
+static_assert(sizeof(Event) == 48, "Event has padding");
 
 // =============================================================================
 // State
@@ -211,6 +218,9 @@ struct State {
     // from null with release, read with acquire (atomic_ref).
     mutable EdgeRankTable* edge_ranks;
     mutable EdgeOrbitTable* edge_orbits;
+    // Keyed rewrites (hgcommon/token_core.hpp): the sum of the state's token terms; 0 until it is
+    // computed (Hypergraph::state_token_sum), and when the state has no token identity.
+    uint64_t token_sum;
 
     State(StateId id_, SparseBitset&& edge_set, uint32_t step_,
           uint64_t hash, EventId parent, StateId canonical = INVALID_ID);

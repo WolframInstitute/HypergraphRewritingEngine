@@ -255,7 +255,8 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
     EventId parent_event,
     StateId incr_parent,
     const EdgeId* incr_consumed, uint8_t incr_num_consumed,
-    const EdgeId* incr_produced, uint8_t incr_num_produced
+    const EdgeId* incr_produced, uint8_t incr_num_produced,
+    uint32_t keyed_rewrite
 ) {
     // Create the state; its canonical hash is filled in below.
     StateId new_sid = create_state(std::move(edge_set), step, 0, parent_event,
@@ -275,6 +276,40 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
     const bool full = mode != StateCanonicalizationMode::None &&
                       mode != StateCanonicalizationMode::Automatic;
     const bool quotient = full && quotient_causal_.load(std::memory_order_relaxed);
+    // KEYED REWRITES: a state whose token set an earlier raw state already holds is isomorphic
+    // to it through the tokens, so in Full mode it takes that state's class and tables and runs
+    // no IR. A twin that has not published them yet is not waited for; this state runs IR.
+    // A state gets its sum here when its rewrite was interned (`keyed_rewrite`, the rewrite id
+    // with REWRITE_TWIN_CANDIDATE). A state whose rewrite is applied for the first time holds
+    // tokens no earlier state holds, so it has no earlier twin; it does not claim. It can still be
+    // the twin of a later state, which then runs IR.
+    if (keyed_rewrite != 0) {
+        const uint32_t rewrite_id = keyed_rewrite & ~hgcommon::REWRITE_TWIN_CANDIDATE;
+        const uint64_t token_sum = child_token_sum(incr_parent, incr_consumed, incr_num_consumed,
+                                                   rewrite_id, incr_num_produced);
+        hgcommon::atomic_ref<uint64_t>(states_[new_sid].token_sum)
+            .store(token_sum, std::memory_order_relaxed);
+        if (token_sum != 0 && (keyed_rewrite & hgcommon::REWRITE_TWIN_CANDIDATE)) {
+            const StateId twin = claim_twin(new_sid, token_sum);
+            uint64_t key = 0;
+            StateId rep = INVALID_ID;
+            if (twin != INVALID_ID && twin != new_sid &&
+                take_twin(new_sid, twin, need_ranks, quotient, key, rep)) {
+                HG_STAT(twin_reuses_.fetch_add(1, std::memory_order_relaxed));
+                if (!twin_seen_.load(std::memory_order_relaxed))
+                    twin_seen_.store(true, std::memory_order_relaxed);
+                hgcommon::atomic_ref<uint64_t>(states_[new_sid].canonical_hash)
+                    .store(key, std::memory_order_release);
+                hgcommon::atomic_ref<StateId>(states_[new_sid].canonical_id)
+                    .store(rep, std::memory_order_release);
+                return {rep, new_sid, false};
+            }
+            if (!twin_seen_.load(std::memory_order_relaxed) &&
+                keyed_claims_.fetch_add(1, std::memory_order_relaxed) + 1 >= keyed_claim_limit_ &&
+                !twin_seen_.load(std::memory_order_relaxed))
+                keyed_state_.store(KEYED_OFF, std::memory_order_relaxed);
+        }
+    }
     // The state's IR canonical form, filled by whichever call below computes its IR hash: in
     // Full mode claim_canonical_state compares it, in None and Automatic with event identity on
     // the claim of the IR key in event_canonical_state_map_ does.
@@ -390,6 +425,9 @@ namespace {
 //
 // max_probes is unbounded: every key visited holds a distinct class, and a claim that stopped
 // early would have no key to be found under.
+//
+// `offer_first`: the probe reports a miss without a lookup, so each key costs one insert. For a
+// value that is free to make (a state id), where a lookup before the insert only repeats it.
 template <class V, class Map, class Same, class Make, class RepOf, class OnCollision>
 struct KeyedClaim {
     Map& map;
@@ -398,6 +436,7 @@ struct KeyedClaim {
     Make& make;
     RepOf& rep_of;
     OnCollision& on_collision;
+    bool offer_first = false;
     V mine{};
     bool made = false;
     bool won = false;
@@ -408,6 +447,7 @@ struct KeyedClaim {
     uint64_t probe_key(uint32_t k) const { return hgcommon::dedup_probe_key(h, k, 0, ~uint64_t{0}); }
 
     hgcommon::ProbeState probe(uint64_t k) {
+        if (offer_first) return hgcommon::ProbeState::Miss;
         const auto v = map.lookup(k);
         if (!v) return hgcommon::ProbeState::Miss;
         if (!same(*v)) return hgcommon::ProbeState::Collision;
@@ -429,9 +469,9 @@ struct KeyedClaim {
 template <class V, class Map, class Same, class Make, class RepOf, class OnCollision>
 KeyedClaim<V, Map, Same, Make, RepOf, OnCollision>
 keyed_claim(Map& map, uint64_t first_key, Same& same, Make& make, RepOf& rep_of,
-            OnCollision& on_collision) {
+            OnCollision& on_collision, bool offer_first = false) {
     KeyedClaim<V, Map, Same, Make, RepOf, OnCollision> c{map, first_key, same, make, rep_of,
-                                                         on_collision};
+                                                         on_collision, offer_first};
     c.won = hgcommon::dedup_claim(c);
     return c;
 }
@@ -511,6 +551,273 @@ Hypergraph::CanonicalClaim Hypergraph::claim_content_state(StateId sid, uint64_t
                                   rep_of, on_collision);
     worker_scratch().release(mk);
     return {c.rep, c.key, c.won};
+}
+
+// A rewrite key is (rule, consumed tokens in match order); its record's id is the rewrite id,
+// taken from next_rewrite_id_ when the key is new.
+uint32_t Hypergraph::intern_rewrite(uint16_t rule, const EdgeId* consumed, uint8_t num_consumed,
+                                     bool& repeated) {
+    repeated = false;
+    uint32_t words[1 + 2 * MAX_PATTERN_EDGES];
+    uint32_t n = 0;
+    words[n++] = rule;
+    uint64_t h = hgcommon::fnv_hash(hgcommon::FNV_OFFSET, rule);
+    for (uint8_t i = 0; i < num_consumed; ++i) {
+        const uint64_t t = edge_token(consumed[i]);
+        if (t == 0) return hgcommon::REWRITE_ID_NONE;
+        words[n++] = static_cast<uint32_t>(t);
+        words[n++] = static_cast<uint32_t>(t >> 32);
+        h = hgcommon::fnv_hash(h, t);
+    }
+    using Rec = const hgcommon::CanonicalFormRecord*;
+    uint64_t rec_bytes = 0;
+    auto same = [&](Rec r) { return hgcommon::canonical_form_equals(r, words, n); };
+    auto make = [&]() -> Rec {
+        const uint32_t id = next_rewrite_id_.fetch_add(1, std::memory_order_relaxed);
+        // Width 4: token halves use the whole word, so a narrower width never applies.
+        rec_bytes = hgcommon::canonical_form_record_bytes(n, 4);
+        auto* rec = static_cast<hgcommon::CanonicalFormRecord*>(
+            arena_.allocate_raw(rec_bytes, alignof(hgcommon::CanonicalFormRecord)));
+        hgcommon::canonical_form_encode(id, words, n, 4, rec);
+        return rec;
+    };
+    auto rep_of = [](Rec r) { return r->id; };
+    auto on_collision = [] {};
+    auto c = keyed_claim<Rec>(rewrite_map_, hgcommon::avoid_reserved_keys(h), same, make, rep_of,
+                              on_collision);
+    if (!c.won && c.made)
+        arena_.release_last(const_cast<hgcommon::CanonicalFormRecord*>(c.mine), rec_bytes);
+    // Ids at or past 2^31 would overlap REWRITE_TWIN_CANDIDATE and REWRITE_ID_NONE.
+    if (c.rep >= (1u << 31)) return hgcommon::REWRITE_ID_NONE;
+    repeated = !c.won;
+    return c.rep;
+}
+
+void Hypergraph::note_inherited_rewrite() {
+    if (!edge_tokens_.load(std::memory_order_acquire)) {
+        // A thread that loses the exchange leaves its array in the arena unused.
+        auto* cache = arena_.template create<SegmentedArray<uint64_t>>(edge_token_seg_shift_);
+        SegmentedArray<uint64_t>* none = nullptr;
+        edge_tokens_.compare_exchange_strong(none, cache, std::memory_order_acq_rel);
+    }
+    uint8_t armed = KEYED_ARMED;
+    // Release: a thread that reads INTERNING (acquire, keyed_state) sees the cache.
+    keyed_state_.compare_exchange_strong(armed, KEYED_INTERNING, std::memory_order_release,
+                                         std::memory_order_relaxed);
+}
+
+uint64_t Hypergraph::edge_token(EdgeId e) {
+    if (SegmentedArray<uint64_t>* cache = edge_tokens_.load(std::memory_order_acquire)) {
+        if (const uint64_t* c = cache->find(e)) {
+            const uint64_t t = hgcommon::atomic_ref<uint64_t>(*const_cast<uint64_t*>(c))
+                                   .load(std::memory_order_relaxed);
+            if (t != 0) return t;
+        }
+    }
+    const Edge& edge = edges_[e];
+    const EventId ev = edge.creator_event;
+    uint64_t t = hgcommon::token_initial(e);
+    if (ev != INVALID_ID) {
+        const uint32_t rid = event_rewrite_id(ev);
+        if (rid == hgcommon::REWRITE_ID_NONE) return 0;
+        // A rewrite's produced edges have consecutive ids (Rewriter::apply).
+        t = hgcommon::token_produced(rid, e - events_[ev].produced_edges[0]);
+    }
+    cache_edge_token(e, t);
+    return t;
+}
+
+// The events whose ids are missing are resolved oldest first: an event's consumed edges were
+// produced by older events, so the walk stops at initial edges or at events with ids.
+uint32_t Hypergraph::event_rewrite_id(EventId ev) {
+    auto rid_of = [this](EventId x) {
+        return hgcommon::atomic_ref<uint32_t>(events_[x].rewrite_id).load(std::memory_order_relaxed);
+    };
+    uint32_t rid = rid_of(ev);
+    if (rid != hgcommon::REWRITE_ID_UNSET) return rid;
+    auto mk = worker_scratch().mark();
+    SVec<EventId> pending;
+    pending.push_back(ev);
+    while (!pending.empty()) {
+        const Event& x = events_[pending.back()];
+        EventId missing = INVALID_ID;
+        for (uint8_t i = 0; i < x.num_consumed && missing == INVALID_ID; ++i) {
+            const EventId c = edges_[x.consumed_edges[i]].creator_event;
+            if (c != INVALID_ID && rid_of(c) == hgcommon::REWRITE_ID_UNSET) missing = c;
+        }
+        if (missing != INVALID_ID) {
+            pending.push_back(missing);
+            continue;
+        }
+        bool repeated = false;
+        const uint32_t r = intern_rewrite(x.rule_index, x.consumed_edges, x.num_consumed, repeated);
+        hgcommon::atomic_ref<uint32_t>(events_[pending.back()].rewrite_id)
+            .store(r, std::memory_order_relaxed);
+        pending.pop_back();
+    }
+    worker_scratch().release(mk);
+    return rid_of(ev);
+}
+
+uint64_t Hypergraph::state_token_sum(StateId s) {
+    auto sum_ref = hgcommon::atomic_ref<uint64_t>(states_[s].token_sum);
+    uint64_t sum = sum_ref.load(std::memory_order_relaxed);
+    if (sum != 0) return sum;
+    bool ok = true;
+    states_[s].edges.for_each([&](EdgeId e) {
+        const uint64_t t = edge_token(e);
+        ok = ok && t != 0;
+        sum += hgcommon::token_term(t);
+    });
+    if (!ok) return 0;
+    if (sum == 0) sum = 1;
+    sum_ref.store(sum, std::memory_order_relaxed);
+    return sum;
+}
+
+uint64_t Hypergraph::child_token_sum(StateId parent, const EdgeId* consumed, uint8_t num_consumed,
+                                     uint32_t rid, uint8_t num_produced) {
+    uint64_t sum = state_token_sum(parent);
+    if (sum == 0) return 0;
+    for (uint8_t i = 0; i < num_consumed; ++i) {
+        const uint64_t t = edge_token(consumed[i]);
+        if (t == 0) return 0;
+        sum -= hgcommon::token_term(t);
+    }
+    for (uint8_t i = 0; i < num_produced; ++i)
+        sum += hgcommon::token_term(hgcommon::token_produced(rid, i));
+    return sum == 0 ? 1 : sum;
+}
+
+namespace {
+
+// A state's edges by token: an open-addressed table from token to the edge's position in the
+// state's id order, built in O(edges) in worker scratch. A token occurs at most once in a state
+// (hgcommon/token_core.hpp); a repeat marks the table `valid = false`.
+struct TokenIndex {
+    SVec<uint64_t> keys;
+    SVec<uint32_t> pos;
+    uint32_t mask = 0;
+    uint32_t n = 0;
+    bool valid = true;
+
+    template <class ForEach>
+    void build(uint32_t count, ForEach&& for_each_token) {
+        uint32_t cap = 16;
+        while (cap < 2 * count) cap <<= 1;
+        keys.assign(cap, 0);
+        pos.assign(cap, 0);
+        mask = cap - 1;
+        for_each_token([&](uint64_t t) {
+            if (t == 0) { valid = false; ++n; return; }
+            for (uint32_t h = static_cast<uint32_t>(hgcommon::splitmix64(t)) & mask;;
+                 h = (h + 1) & mask) {
+                if (keys[h] == 0) { keys[h] = t; pos[h] = n; break; }
+                if (keys[h] == t) { valid = false; break; }
+            }
+            ++n;
+        });
+    }
+    uint32_t find(uint64_t t) const {
+        if (t == 0) return UINT32_MAX;
+        for (uint32_t h = static_cast<uint32_t>(hgcommon::splitmix64(t)) & mask;;
+             h = (h + 1) & mask) {
+            if (keys[h] == t) return pos[h];
+            if (keys[h] == 0) return UINT32_MAX;
+        }
+    }
+};
+
+}  // namespace
+
+bool Hypergraph::same_tokens(StateId a, StateId b) {
+    const SparseBitset& ea = states_[a].edges;
+    const SparseBitset& eb = states_[b].edges;
+    const uint32_t n = static_cast<uint32_t>(ea.count());
+    if (n != eb.count()) return false;
+    auto mk = worker_scratch().mark();
+    TokenIndex idx;
+    idx.build(n, [&](auto&& f) { eb.for_each([&](EdgeId e) { f(edge_token(e)); }); });
+    bool eq = idx.valid;
+    if (eq) ea.for_each([&](EdgeId e) { eq = eq && idx.find(edge_token(e)) != UINT32_MAX; });
+    worker_scratch().release(mk);
+    return eq;
+}
+
+StateId Hypergraph::claim_twin(StateId s, uint64_t sum) {
+    auto same = [&](StateId t) { return same_tokens(s, t); };
+    auto make = [&] { return s; };
+    auto rep_of = [](StateId t) { return t; };
+    auto on_collision = [] {};
+    auto c = keyed_claim<StateId>(twin_map_, sum, same, make, rep_of, on_collision,
+                                  /*offer_first=*/true);
+    return c.rep;
+}
+
+// The tables of `s` are those of `t` read through the token correspondence: the edge of `s`
+// with token x takes the values of the edge of `t` with token x. Slots are recomputed in the
+// edge order of `s` (hgcommon::slots_from_orbits), as for a table built by IR.
+bool Hypergraph::take_twin(StateId s, StateId t, bool ranks, bool orbits, uint64_t& key,
+                           StateId& rep) {
+    const uint64_t tk =
+        hgcommon::atomic_ref<uint64_t>(states_[t].canonical_hash).load(std::memory_order_acquire);
+    if (tk == 0) return false;
+    const EdgeRankTable* tr = ranks ? read_table(states_[t].edge_ranks) : nullptr;
+    const EdgeOrbitTable* to = orbits ? read_table(states_[t].edge_orbits) : nullptr;
+    if ((ranks && !tr) || (orbits && !to)) return false;
+    const auto r = canonical_form_map_.lookup(tk);
+    if (!r) return false;
+    rep = (*r)->id;
+    key = tk;
+
+    auto mk = worker_scratch().mark();
+    const SparseBitset& et = states_[t].edges;
+    TokenIndex tidx;
+    tidx.build(static_cast<uint32_t>(et.count()),
+               [&](auto&& f) { et.for_each([&](EdgeId e) { f(edge_token(e)); }); });
+    SVec<EdgeId> ids;
+    SVec<uint32_t> at;   // for each edge of s (id order), its position in t's id order
+    states_[s].edges.for_each([&](EdgeId e) {
+        ids.push_back(e);
+        at.push_back(tidx.find(edge_token(e)));
+    });
+    const uint32_t n = static_cast<uint32_t>(ids.size());
+    if (tr) {
+        EdgeId* arr_edges = arena_.allocate_array<EdgeId>(n ? n : 1);
+        uint32_t* arr_rank = arena_.allocate_array<uint32_t>(n ? n : 1);
+        for (uint32_t i = 0; i < n; ++i) { arr_edges[i] = ids[i]; arr_rank[i] = tr->rank[at[i]]; }
+        EdgeRankTable* tbl = arena_.template create<EdgeRankTable>();
+        tbl->n = n; tbl->edges = arr_edges; tbl->rank = arr_rank;
+        publish_table(states_[s].edge_ranks, tbl);
+    }
+    if (to) {
+        EdgeId* arr_edges = arena_.allocate_array<EdgeId>(n ? n : 1);
+        uint32_t* arr_orbit = arena_.allocate_array<uint32_t>(n ? n : 1);
+        uint32_t* arr_slot  = arena_.allocate_array<uint32_t>(n ? n : 1);
+        uint32_t* arr_class = arena_.allocate_array<uint32_t>(n ? n : 1);
+        uint32_t* arr_rank  = arena_.allocate_array<uint32_t>(n ? n : 1);
+        const uint32_t num_orbits = to->num_orbits;
+        for (uint32_t i = 0; i < n; ++i) {
+            arr_edges[i] = ids[i];
+            arr_orbit[i] = to->orbit[at[i]];
+            arr_class[i] = to->klass[at[i]];
+            arr_rank[i]  = to->rank[at[i]];
+        }
+        {
+            SVec<uint32_t> counts;
+            counts.resize(num_orbits ? num_orbits : 1);
+            hgcommon::slots_from_orbits(arr_orbit, n, arr_slot, counts.data(), num_orbits);
+        }
+        uint32_t* arr_osize = arena_.allocate_array<uint32_t>(num_orbits ? num_orbits : 1);
+        for (uint32_t j = 0; j < num_orbits; ++j) arr_osize[j] = to->orbit_size[j];
+        EdgeOrbitTable* tbl = arena_.template create<EdgeOrbitTable>();
+        tbl->n = n; tbl->num_orbits = num_orbits;
+        tbl->edges = arr_edges; tbl->orbit = arr_orbit; tbl->orbit_size = arr_osize;
+        tbl->slot = arr_slot; tbl->klass = arr_class; tbl->rank = arr_rank;
+        publish_table(states_[s].edge_orbits, tbl);
+    }
+    worker_scratch().release(mk);
+    return true;
 }
 
 uint32_t Hypergraph::event_values_of(EventId e, uint64_t* out, bool count_fallbacks) {
@@ -801,9 +1108,22 @@ Hypergraph::CreateEventResult Hypergraph::create_event(
     const EdgeId* produced,
     uint8_t num_produced
 ) {
-    // Allocate event ID
-    EventId eid = counters_.alloc_event();
+    return create_event_at(counters_.alloc_event(), input_state, output_state, rule_index,
+                           consumed, num_consumed, produced, num_produced,
+                           hgcommon::REWRITE_ID_UNSET);
+}
 
+Hypergraph::CreateEventResult Hypergraph::create_event_at(
+    EventId eid,
+    StateId input_state,
+    StateId output_state,
+    RuleIndex rule_index,
+    const EdgeId* consumed,
+    uint8_t num_consumed,
+    const EdgeId* produced,
+    uint8_t num_produced,
+    uint32_t rewrite_id
+) {
     // Allocate and copy edge arrays
     EdgeId* cons = arena_.allocate_array<EdgeId>(num_consumed);
     std::memcpy(cons, consumed, num_consumed * sizeof(EdgeId));
@@ -814,7 +1134,7 @@ Hypergraph::CreateEventResult Hypergraph::create_event(
     // Stored before its identity is claimed: a claim that hits this event's key reads its
     // signature values from the Event.
     events_.emplace_at(eid, arena_, eid, input_state, output_state, rule_index,
-                       cons, num_consumed, prod, num_produced, INVALID_ID);
+                       cons, num_consumed, prod, num_produced, INVALID_ID, rewrite_id);
     const EventIdentity id = assign_event_identity(eid);
     note_published_event(eid);
 
@@ -2029,6 +2349,7 @@ EventSignatureKeys Hypergraph::event_signature_keys() const { return event_signa
 
 void Hypergraph::set_positional_event_identity(bool on) {
     positional_event_identity_.store(on, std::memory_order_relaxed);
+    update_keyed_state();
 }
 
 bool Hypergraph::positional_event_identity() const {
@@ -2353,6 +2674,7 @@ size_t Hypergraph::num_canonical_states() const {
 // weak model like ARM64.
 void Hypergraph::set_state_canonicalization_mode(StateCanonicalizationMode mode) {
     state_canonicalization_mode_.store(mode, std::memory_order_release);
+    update_keyed_state();
 }
 
 StateCanonicalizationMode Hypergraph::state_canonicalization_mode() const {
@@ -2574,6 +2896,9 @@ Hypergraph::Hypergraph(uint32_t capacity_scale)
     , qc_kept_(std::make_unique<SegmentedArray<QcKept>>(seg_shift_for(capacity_scale)))
     , qc_event_runsig_(seg_shift_for(capacity_scale))
     , canonical_event_map_(decltype(canonical_event_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
+    , edge_token_seg_shift_(seg_shift_for(capacity_scale))
+    , rewrite_map_(decltype(rewrite_map_)::LAZY_INITIAL_CAPACITY, &arena_)
+    , twin_map_(decltype(twin_map_)::LAZY_INITIAL_CAPACITY, &arena_)
 
 {
     // Edges and their signatures are read by id only; nothing enumerates them or asks their extent.
