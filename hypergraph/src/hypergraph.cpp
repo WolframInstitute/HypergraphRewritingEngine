@@ -290,11 +290,19 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
         hgcommon::atomic_ref<uint64_t>(states_[new_sid].token_sum)
             .store(token_sum, std::memory_order_relaxed);
         if (token_sum != 0 && (keyed_rewrite & hgcommon::REWRITE_TWIN_CANDIDATE)) {
-            const StateId twin = claim_twin(new_sid, token_sum);
+            // The claim's edge correspondence, sized before the claim so its scratch outlives it.
+            auto mk = worker_scratch().mark();
+            SVec<EdgeId> ids;
+            SVec<uint32_t> at;
+            ids.resize(edges.count());
+            at.resize(edges.count());
+            const StateId twin = claim_twin(new_sid, token_sum, ids.data(), at.data());
             uint64_t key = 0;
             StateId rep = INVALID_ID;
-            if (twin != INVALID_ID && twin != new_sid &&
-                take_twin(new_sid, twin, need_ranks, quotient, key, rep)) {
+            const bool taken = twin != INVALID_ID && twin != new_sid &&
+                take_twin(new_sid, twin, need_ranks, quotient, key, rep, ids.data(), at.data());
+            worker_scratch().release(mk);
+            if (taken) {
                 HG_STAT(twin_reuses_.fetch_add(1, std::memory_order_relaxed));
                 if (!twin_seen_.load(std::memory_order_relaxed))
                     twin_seen_.store(true, std::memory_order_relaxed);
@@ -730,7 +738,7 @@ struct TokenIndex {
 
 }  // namespace
 
-bool Hypergraph::same_tokens(StateId a, StateId b) {
+bool Hypergraph::same_tokens(StateId a, StateId b, EdgeId* ids, uint32_t* at) {
     const SparseBitset& ea = states_[a].edges;
     const SparseBitset& eb = states_[b].edges;
     const uint32_t n = static_cast<uint32_t>(ea.count());
@@ -739,13 +747,19 @@ bool Hypergraph::same_tokens(StateId a, StateId b) {
     TokenIndex idx;
     idx.build(n, [&](auto&& f) { eb.for_each([&](EdgeId e) { f(edge_token(e)); }); });
     bool eq = idx.valid;
-    if (eq) ea.for_each([&](EdgeId e) { eq = eq && idx.find(edge_token(e)) != UINT32_MAX; });
+    uint32_t i = 0;
+    if (eq) ea.for_each([&](EdgeId e) {
+        if (!eq) return;
+        at[i] = idx.find(edge_token(e));
+        ids[i++] = e;
+        eq = at[i - 1] != UINT32_MAX;
+    });
     worker_scratch().release(mk);
     return eq;
 }
 
-StateId Hypergraph::claim_twin(StateId s, uint64_t sum) {
-    auto same = [&](StateId t) { return same_tokens(s, t); };
+StateId Hypergraph::claim_twin(StateId s, uint64_t sum, EdgeId* ids, uint32_t* at) {
+    auto same = [&](StateId t) { return same_tokens(s, t, ids, at); };
     auto make = [&] { return s; };
     auto rep_of = [](StateId t) { return t; };
     auto on_collision = [] {};
@@ -755,10 +769,11 @@ StateId Hypergraph::claim_twin(StateId s, uint64_t sum) {
 }
 
 // The tables of `s` are those of `t` read through the token correspondence: the edge of `s`
-// with token x takes the values of the edge of `t` with token x. Slots are recomputed in the
-// edge order of `s` (hgcommon::slots_from_orbits), as for a table built by IR.
+// with token x takes the values of the edge of `t` with token x, whose position in `t`'s id
+// order is at[i] for the i-th edge ids[i] of `s` (same_tokens). Slots are recomputed in the edge
+// order of `s` (hgcommon::slots_from_orbits), as for a table built by IR.
 bool Hypergraph::take_twin(StateId s, StateId t, bool ranks, bool orbits, uint64_t& key,
-                           StateId& rep) {
+                           StateId& rep, const EdgeId* ids, const uint32_t* at) {
     const uint64_t tk =
         hgcommon::atomic_ref<uint64_t>(states_[t].canonical_hash).load(std::memory_order_acquire);
     if (tk == 0) return false;
@@ -771,17 +786,7 @@ bool Hypergraph::take_twin(StateId s, StateId t, bool ranks, bool orbits, uint64
     key = tk;
 
     auto mk = worker_scratch().mark();
-    const SparseBitset& et = states_[t].edges;
-    TokenIndex tidx;
-    tidx.build(static_cast<uint32_t>(et.count()),
-               [&](auto&& f) { et.for_each([&](EdgeId e) { f(edge_token(e)); }); });
-    SVec<EdgeId> ids;
-    SVec<uint32_t> at;   // for each edge of s (id order), its position in t's id order
-    states_[s].edges.for_each([&](EdgeId e) {
-        ids.push_back(e);
-        at.push_back(tidx.find(edge_token(e)));
-    });
-    const uint32_t n = static_cast<uint32_t>(ids.size());
+    const uint32_t n = static_cast<uint32_t>(states_[s].edges.count());
     if (tr) {
         EdgeId* arr_edges = arena_.allocate_array<EdgeId>(n ? n : 1);
         uint32_t* arr_rank = arena_.allocate_array<uint32_t>(n ? n : 1);

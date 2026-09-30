@@ -1032,14 +1032,19 @@ public:
     // produced tokens from rewrite id `rid`); 0 when a token is 0.
     uint64_t child_token_sum(StateId parent, const EdgeId* consumed, uint8_t num_consumed,
                              uint32_t rid, uint8_t num_produced);
-    // Whether two states hold the same token set.
-    bool same_tokens(StateId a, StateId b);
+    // Whether two states hold the same token set. Fills ids[i], the i-th edge of `a` in id order,
+    // and at[i], the position in `b`'s id order of the edge with the same token; both hold
+    // `a`'s edge count.
+    bool same_tokens(StateId a, StateId b, EdgeId* ids, uint32_t* at);
     // The first raw state with the token set of `s` (sum `sum`): `s` itself when it is the
-    // first, INVALID_ID when the claim could not decide.
-    StateId claim_twin(StateId s, uint64_t sum);
+    // first, INVALID_ID when the claim could not decide. ids and at are same_tokens' for the
+    // state returned.
+    StateId claim_twin(StateId s, uint64_t sum, EdgeId* ids, uint32_t* at);
     // `s` takes its twin `t`'s canonical results: the class key and, when the run keeps them,
-    // the rank and orbit tables carried across by token. False when `t` has not published them.
-    bool take_twin(StateId s, StateId t, bool ranks, bool orbits, uint64_t& key, StateId& rep);
+    // the rank and orbit tables carried across by token (ids and at from claim_twin). False when
+    // `t` has not published them.
+    bool take_twin(StateId s, StateId t, bool ranks, bool orbits, uint64_t& key, StateId& rep,
+                   const EdgeId* ids, const uint32_t* at);
     // Test hook, set before evolution: the replay refuses raw event and instance ids at or past
     // `limit` (hgcommon::QR_ID_LIMIT otherwise).
     void set_replay_id_limit(uint32_t limit) { qc_id_limit_ = limit; }
