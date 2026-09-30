@@ -360,6 +360,7 @@ DeviceState EngineState::device() const {
         d.max_states              = cfg_.max_states;
         d.ir_generators           = cfg_.ir_generators;
         d.ir_depth                = cfg_.ir_depth;
+        d.max_edge_arity          = cfg_.max_edge_arity ? cfg_.max_edge_arity : kMaxArity;
         d.canonical_key_mask      = cfg_.canonical_key_mask;
         d.event_key_mask          = cfg_.event_key_mask;
         d.replay_id_limit         = cfg_.replay_id_limit;

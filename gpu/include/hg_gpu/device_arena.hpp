@@ -13,10 +13,10 @@
 // So a worker sizes its scratch from its own state's edge and occurrence counts and claims
 // exactly that, with no host involved and no fixed ceiling per state.
 //
-// There is no free. A worker finishes with its scratch before taking the next item, so blocks
-// reuse a slot and only claim again when they need a LARGER one, abandoning the smaller. With
-// doubling that costs at most one wasted slot per block, bounded by the peak, and the whole
-// arena resets at the end of the run.
+// There is no free. The persistent kernel lays the arena out as one region per block and a pool
+// behind them (run_persistent_evolve): a block's scratch for each claim is its region, and only a
+// state larger than its share of the region claims from the pool. Other callers reuse a slot and
+// claim again only for a larger one. The whole arena resets at the end of the run.
 //
 // Exhaustion is a capacity overflow like any other: the claim fails, the caller records it and
 // returns partial work. It cannot grow, because growing needs the host.

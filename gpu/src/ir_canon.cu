@@ -14,45 +14,6 @@ namespace gpu {
 
 namespace {
 
-// Slot geometry for one thread: every field a flattened state needs, then the shared core's
-// scratch behind it. Sized from the states that will use it, never from a constant, because a
-// state past a fixed bound would have to be keyed by the 1-WL hash and that MERGES
-// non-isomorphic states.
-//
-// The slot lives in global memory: shared memory cannot hold the search's per-level
-// partitions, and the core wants one contiguous span.
-struct IrSlotShape {
-    uint32_t cap_verts = 0;
-    uint32_t cap_edges = 0;
-    uint32_t cap_occs  = 0;
-    // Generator rows the scratch is sized for. Must match the budget handed to the core, or
-    // the search would write past what this slot reserved.
-    uint32_t generators = hgcommon::IR_DEVICE_GENERATORS;
-    uint32_t depth     = 0;
-
-    HG_HD uint32_t ea_words()   const { return (cap_edges + 3) / 4; }
-    HG_HD uint32_t eoff_words() const { return cap_edges + 1; }
-    // Three cap_edges spans sit between the flattened state and the core's scratch: the ranks
-    // the core reports, the CSR slot each flattened edge came from, and the per-edge orbits.
-    // The slot map exists because flattening skips edges the slice still holds, so flat index
-    // j and slot k diverge and neither ranks nor orbits can be scattered back without it. All
-    // three are dwarfed by ir_scratch_words.
-    HG_HD uint32_t rank_words() const { return 3u * cap_edges; }
-    HG_HD uint64_t scratch_words() const {
-        return hgcommon::ir_scratch_words(cap_verts, cap_edges, cap_occs, depth, generators);
-    }
-    // The canonical form the core writes when asked (one arity word and the labelled vertices
-    // per edge), after the scratch: a Full-mode dedup compares it on a key hit.
-    HG_HD uint32_t form_words() const { return cap_edges + cap_occs; }
-    HG_HD uint64_t words() const {
-        return ea_words() + eoff_words() + cap_occs + cap_verts + rank_words()
-             + scratch_words() + form_words() + 8;
-    }
-    // Even, so every slot base keeps the 8-byte alignment the pool starts with.
-    HG_HD uint64_t stride() const { return (words() + 1ull) & ~1ull; }
-};
-
-
 // Flatten a state's CSR slice to the core's convention: local vertex indices assigned in SORTED
 // VERTEX ID order, which is what the host does. Returns false if the state exceeds the slot's
 // bounds.
@@ -194,12 +155,7 @@ __device__ ExactHashStatus state_exact_hash_device(DeviceState ds, StateId sid,
         return ExactHashStatus::kOk;
     }
 
-    IrSlotShape shape;
-    shape.cap_edges = n_edges + 1;
-    shape.cap_occs  = total_occ + 1;
-    shape.cap_verts = total_occ + 1;   // every occurrence could be a distinct vertex
-    shape.depth     = ds.ir_depth;
-    shape.generators = ds.ir_generators;
+    IrSlotShape shape = ir_slot_shape(n_edges, total_occ, ds.ir_depth, ds.ir_generators);
 
     const uint64_t need = shape.stride();
     if (!grow_ir_slot(arena, slot, slot_words, need, par)) return ExactHashStatus::kArenaExhausted;
@@ -401,12 +357,8 @@ void compute_state_ir_hashes_range(EngineState& engine, uint32_t lo, uint32_t hi
     HG_CUDA_CHECK(cudaMemcpy(h_max, d_max, sizeof(h_max), cudaMemcpyDeviceToHost), "measure copy");
     cudaFree(d_max);
 
-    IrSlotShape shape;
-    shape.cap_edges  = h_max[0] + 1;
-    shape.cap_occs   = h_max[1] + 1;
-    shape.cap_verts  = h_max[1] + 1;    // every occurrence could be a distinct vertex
-    shape.depth      = engine.config().ir_depth;
-    shape.generators = engine.config().ir_generators;
+    const IrSlotShape shape = ir_slot_shape(h_max[0], h_max[1], engine.config().ir_depth,
+                                            engine.config().ir_generators);
     const uint64_t slot_words = shape.stride();
 
     uint32_t threads = n < kExactHashRangeThreads ? n : kExactHashRangeThreads;

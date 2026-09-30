@@ -510,9 +510,6 @@ __global__ void k_persistent_match_rewrite(
     }
 }
 
-// The size class: a child of at most this many edges is canonicalised by its batch tile, a larger
-// one by the whole warp (DEVICE_DESIGN 3.2).
-constexpr uint32_t kLaneStateEdges = 32;
 // The fewest lanes a batch occupies (records x kBatchTile) for its children to be canonicalised
 // by their tiles. A batch costs about one tile IR whatever its size, where the warp canonicalises
 // one child faster than a tile does, so a batch on fewer lanes is canonicalised by the warp,
@@ -521,8 +518,6 @@ constexpr uint32_t kLaneBatchMin = 4;
 // The readable records below which a block claims one at a time: a short backlog is spread over
 // the grid, where a batch would leave the other blocks idle.
 constexpr uint32_t kLaneBatchBacklog = 64;
-// The most edges the first claimed record's child has for the block to claim a batch.
-constexpr uint32_t kLaneBatchEdges = 32;
 // The lanes that canonicalise one child of a batch together (IrTile): a batch holds
 // 32 / kBatchTile records.
 constexpr uint32_t kBatchTile = 4;
@@ -537,7 +532,8 @@ constexpr uint32_t kBatchBusyStreak = 2;
 // A rewritten child's canonical identity: its hash (IR, or a twin's through keyed rewrites), its
 // class claim, the published hash and exact hash, and its event's signature. One body for a child
 // canonicalised by a batch tile (IrTile<kBatchTile>) and by the whole warp (IrWarpAll, a
-// large one): par.leader() runs the claims, and what the caller branches on crosses to every lane.
+// single record): par.leader() runs the claims, and what the caller branches on crosses to every
+// lane.
 struct ChildIdentity {
     StateId canonical = INVALID_ID;
     bool fresh = false;
@@ -743,7 +739,9 @@ __global__ void k_persistent_evolve(
         SessionView sess,
         ExploreView ev,
         typename Pool<uint32_t>::DeviceView forms,
-        typename RingBuffer<uint32_t>::DeviceView ready) {
+        typename RingBuffer<uint32_t>::DeviceView ready,
+        uint32_t* regions,             // region_words of IR scratch per block, from its start
+        uint32_t region_words) {
 
     // Ranks are the reconstruction's frame alignment, Automatic's signature, AND the transition
     // draw's key. One predicate answers it for the roots and for every child; see its note.
@@ -998,11 +996,11 @@ __global__ void k_persistent_evolve(
 
     for (;;) {
         // Rewrite first: it drains what matching produced, and letting the pool run ahead
-        // unboundedly is what makes it overflow. A block claims one record; when its child has
-        // at most kLaneBatchEdges edges, kLaneBatchBacklog records are readable and the block found
-        // work in its last kBatchBusyStreak iterations, it claims up to 32 / kBatchTile - 1 more in
-        // one exchange. A short burst, or one of large children, spreads over the grid. The record
-        // is read only after it is claimed.
+        // unboundedly is what makes it overflow. A block claims one record; when the IR slots of
+        // more children like it fit the block's region (ir_slot_shape at max_edge_arity),
+        // kLaneBatchBacklog records are readable and the block found work in its last
+        // kBatchBusyStreak iterations, it claims up to 32 / kBatchTile - 1 more in one exchange. A
+        // short burst spreads over the grid. The record is read only after it is claimed.
         if (threadIdx.x == 0) {
             claimed = claim_next_record(consume_cursor, found);
             claimed_count = 0;
@@ -1013,9 +1011,16 @@ __global__ void k_persistent_evolve(
                 const DeviceRule& rule = rules[r.rule_id];
                 const uint32_t child = ds.state_edge_slices[r.state_id].count +
                                        rule.num_rhs_edges - rule.num_lhs_edges;
-                if (child <= kLaneBatchEdges && busy_streak >= kBatchBusyStreak) {
-                    const auto more = [](uint32_t, uint32_t available) {
-                        return available >= kLaneBatchBacklog ? 32u / kBatchTile - 1u : 0u;
+                // As many records as tiles whose child's IR slot fits a share of the region.
+                const uint64_t need =
+                    ir_slot_shape(child, child * ds.max_edge_arity, ds.ir_depth, ds.ir_generators)
+                        .stride();
+                const uint64_t fit = need ? region_words / need : 32u;
+                const uint32_t batch = fit < 32u / kBatchTile ? static_cast<uint32_t>(fit)
+                                                              : 32u / kBatchTile;
+                if (batch > 1u && busy_streak >= kBatchBusyStreak) {
+                    const auto more = [batch](uint32_t, uint32_t available) {
+                        return available >= kLaneBatchBacklog ? batch - 1u : 0u;
                     };
                     claimed_count += claim_next_records(consume_cursor, found, more, claimed_more);
                 }
@@ -1035,6 +1040,18 @@ __global__ void k_persistent_evolve(
                 child_rule = x.rule;
                 child_pstep = x.step - 1u;
                 child_keyed = x.rewrite_id | hgcommon::REWRITE_TWIN_CANDIDATE;
+            }
+            // This claim's IR scratch: the block's region, whole for the warp, and for a batch a
+            // share per tile. A state larger than its share claims from the pool (grow_ir_slot).
+            if (claimed_count) {
+                uint32_t* region = regions + size_t(blockIdx.x) * region_words;
+                ir_slot = region;
+                ir_slot_words = region_words;
+                const uint32_t share = (region_words / claimed_count) & ~1u;
+                for (uint32_t t = 0; t < claimed_count; ++t) {
+                    tile_slot[t] = region + size_t(t) * share;
+                    tile_slot_words[t] = share;
+                }
             }
         }
         __syncthreads();
@@ -1082,9 +1099,9 @@ __global__ void k_persistent_evolve(
                 __syncthreads();
             } else {
                 // A BATCH: a record per tile of kBatchTile lanes. The tile's leader applies it,
-                // and the tile copies and canonicalises the child (IrTile). A child of more than
-                // kLaneStateEdges edges, and every child of a batch on fewer than kLaneBatchMin
-                // lanes, is copied and canonicalised by the whole warp instead, one at a time.
+                // and the tile copies and canonicalises the child (IrTile) in its share of the
+                // block's region. Every child of a batch on fewer than kLaneBatchMin lanes is
+                // copied and canonicalised by the whole warp instead, one at a time.
                 // The class-frame captures (every lane together) and the identity and depth
                 // registration (thread 0: the walk's frames are per block) then run child by
                 // child.
@@ -1132,9 +1149,7 @@ __global__ void k_persistent_evolve(
                 #pragma unroll
                 for (uint32_t i = 0; i < kMaxPatternEdges; ++i)
                     kept.consumed[i] = __shfl_sync(0xFFFFFFFFu, kept.consumed[i], 0, T);
-                const bool warp = sid != INVALID_ID &&
-                                  (claimed_count * T < kLaneBatchMin ||
-                                   ds.state_edge_slices[sid].count > kLaneStateEdges);
+                const bool warp = sid != INVALID_ID && claimed_count * T < kLaneBatchMin;
                 if (sid != INVALID_ID && !warp) copy_kept_edges(ds, kept, Tile{});
 
                 const unsigned long long t1 = clock64();
@@ -1674,6 +1689,16 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     // have children, so max_steps + 2 bounds a walk.
     const uint32_t grid_req = blocks ? blocks : default_persistent_grid();
     const uint32_t grid = grid_req < 2 ? 2 : grid_req;
+    // The arena is one region per block, from its start, and the pool behind them: a block's IR
+    // scratch is its region, laid out anew for every claim (a single record takes it whole, a
+    // batch divides it), and a state larger than its share of the region claims from the pool.
+    // Sixteen seventeenths of the arena are regions (persistent_arena_words), each an even word
+    // count.
+    const uint32_t region_words = static_cast<uint32_t>(
+        std::min<uint64_t>((arena.capacity_words() * 16u / 17u / grid) & ~1ull, 0xFFFFFFFEull));
+    DeviceArena::View pool_v = arena.view();
+    pool_v.base += uint64_t(region_words) * grid;
+    pool_v.capacity -= uint64_t(region_words) * grid;
     {
         const uint32_t levels = max_steps + 2u;
         const size_t words = size_t(grid) * levels * 2u;
@@ -1845,7 +1870,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                  dsv.matches_per_state_rule),
             run_needs_edge_ranks(event_keys, qe.enabled != 0, dsv.transition_rate,
                                  dsv.num_rule_weights, dsv.matches_per_state_rule),
-            arena.view(), qc, qe, ev, forms_v, exact_v);
+            pool_v, qc, qe, ev, forms_v, exact_v);
     }
 
     // Block 0 is the detector, so at least two blocks are needed for any work to happen.
@@ -1861,7 +1886,8 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         session ? sess_v.states : canonical_owner->view(), dedup,
         explore_threshold_u32, explore_seed, max_steps, state_mode, event_keys,
         session ? sess_v.events : owned_event_ids->view(), exact_v,
-        arena.view(), term.view(), qc, qe, d_phase_cycles, sess_v, ev, forms_v, ready_v);
+        pool_v, term.view(), qc, qe, d_phase_cycles, sess_v, ev, forms_v, ready_v,
+        arena.view().base, region_words);
     HG_CUDA_CHECK(cudaDeviceSynchronize(), "persistent evolve sync");
     if (!read_stats) return stats;
 
@@ -1871,7 +1897,8 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     const auto ctr = engine.counters_snapshot_host();
     stats.matches_found    = scratch_matches.size_host();
     stats.states_after     = ctr.states;
-    stats.arena_words_used = arena.used_words_host();
+    // The regions are every block's whether used or not; the pool counts what was claimed.
+    stats.arena_words_used = uint64_t(region_words) * grid + arena.used_words_host();
     stats.canonical_events = ctr.canonical_ev;
 
     unsigned long long phase[16] = {};
@@ -1903,7 +1930,9 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
 // once. The kernels and the SessionView the device sees stay in the header.
 
 uint64_t persistent_arena_words(uint32_t share_words, uint32_t holders) {
-    return static_cast<uint64_t>(holders) * static_cast<uint64_t>(share_words);
+    // A region of share_words per holder, and a sixteenth of that again as the pool a state larger
+    // than its region claims from.
+    return static_cast<uint64_t>(holders) * static_cast<uint64_t>(share_words) * 17u / 16u;
 }
 
 // ---- ExploreState ------------------------------------------------------------------------

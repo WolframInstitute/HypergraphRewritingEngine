@@ -200,8 +200,11 @@ atomics (`rewrite.cu:536-542`) are removed; stats go to per-warp counters flushe
 
 ### 4.4 Canonicalisation
 
-- Small states: IR on a tile of four lanes (`IrTile<4>`), eight states per warp; a state of more
-  than 32 edges, or a batch on fewer than four lanes, runs on the whole warp. One state per lane
+- States of every size: IR on a tile of four lanes (`IrTile<4>`), up to eight states per warp,
+  as many as fit the block's scratch region (a 130-edge cycle needs about 13.5K words of the
+  65,536, so four); a batch on fewer than four lanes runs on the whole warp. The refinement is
+  leader-serial on a cycle-like state, so a large state on the warp leaves most lanes idle, and
+  four in flight per warp cut bigpath n128 by 16%. One state per lane
   (the serial policy) costs 3.2-7.4x the warp's per-state latency for 4-10x its throughput per
   warp: saturated runs gain and latency-bound ones lose (wolftri +15%); four lanes keep most of
   the gain (cycle4 -40% against -54%) at wolftri +4%.

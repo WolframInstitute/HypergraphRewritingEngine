@@ -428,6 +428,9 @@ struct EngineConfig {
     // kIRDepthExceeded, which grow-and-retry answers by doubling THIS -- the device never keys
     // a state by a coarser hash, because a coarser key MERGES non-isomorphic states.
     uint32_t ir_depth = 8;
+    // The largest edge arity the run can hold (initial edges and every rule's right-hand side);
+    // 0 when unknown, read as kMaxArity. Bounds a state's vertex occurrences by edges x this.
+    uint32_t max_edge_arity = 0;
 };
 
 // One-shot evolve: constructs a fresh Engine for `input`, runs once,

@@ -170,6 +170,7 @@ struct DeviceState {
     // generator budget: grow-and-retry raises it, because the alternative to searching deeper
     // is a key that merges non-isomorphic states.
     uint32_t ir_depth;
+    uint32_t max_edge_arity;   // EngineConfig::max_edge_arity, kMaxArity when unknown
     // EngineConfig::canonical_key_mask: ANDed into a Full-mode canonical hash before it is the
     // first dedup probe key. All ones except in tests.
     uint64_t canonical_key_mask;

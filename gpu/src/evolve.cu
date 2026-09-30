@@ -91,6 +91,11 @@ EngineConfig config_from_input(const EvolveInput& in) {
     cfg.keyed_rewrites         = in.keyed_rewrites;
     cfg.keyed_claim_limit      = in.keyed_claim_limit;
     cfg.keyed_sum_mask         = in.keyed_sum_mask;
+    for (const auto& e : in.initial_state)
+        cfg.max_edge_arity = std::max<uint32_t>(cfg.max_edge_arity, static_cast<uint32_t>(e.size()));
+    for (const auto& r : in.rules)
+        for (const auto& e : r.rhs)
+            cfg.max_edge_arity = std::max<uint32_t>(cfg.max_edge_arity, static_cast<uint32_t>(e.size()));
     return cfg;
 }
 
