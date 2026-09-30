@@ -186,7 +186,7 @@ int main(int argc, char** argv) {
             auto a = std::chrono::steady_clock::now();
             auto r = ev.run(in);
             auto b = std::chrono::steady_clock::now();
-            (void)r;
+            ev.recycle(std::move(r));
             t.push_back(std::chrono::duration<double, std::milli>(b - a).count());
         }
         const char* grid = std::getenv("HG_GPU_PERSISTENT_BLOCKS");
@@ -231,14 +231,14 @@ int main(int argc, char** argv) {
     {
         const auto ramp_deadline = std::chrono::steady_clock::now() +
                                    std::chrono::milliseconds(400);
-        while (std::chrono::steady_clock::now() < ramp_deadline) (void)evolver.run(in);
+        while (std::chrono::steady_clock::now() < ramp_deadline) evolver.recycle(evolver.run(in));
     }
     std::vector<double> tb;
     for (int i = 0; i < iters; ++i) {
         auto a = std::chrono::steady_clock::now();
         auto r = evolver.run(in);
         auto b = std::chrono::steady_clock::now();
-        (void)r;
+        evolver.recycle(std::move(r));
         tb.push_back(std::chrono::duration<double, std::milli>(b - a).count());
     }
 

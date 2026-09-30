@@ -1017,6 +1017,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
                                wxf::WXFValue(static_cast<int64_t>(held.handle))});
     }
     writer.write(wxf::WXFValue(full_result));
+    evolver.recycle(std::move(result));
     return writer.data();
 }
 

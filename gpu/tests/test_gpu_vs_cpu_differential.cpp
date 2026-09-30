@@ -1360,6 +1360,53 @@ TEST(EdgeIdentity, AbsentUnlessAskedFor) {
     for (const auto& st : result.states) EXPECT_EQ(st.num_edges, 0u);
 }
 
+// A RUN INTO RECYCLED STORAGE EQUALS A RUN INTO NEW STORAGE. The small run reads back into the
+// vectors of a larger one (PersistentEvolver::recycle), so any element past the small run's
+// counts left behind by the larger one would show here.
+TEST(Recycle, ASmallRunIntoALargeRunsStorageEqualsAFreshRun) {
+    Workload big;
+    big.name = "recycle_big";
+    big.rules = {rule({{0, 1}}, {{0, 2}, {2, 1}})};
+    big.initial_states = {{{0u, 1u}}};
+    big.num_steps = 6;
+    big.canon_mode = hg_gpu::CanonicalizationMode::Full;
+    Workload small = big;
+    small.name = "recycle_small";
+    small.num_steps = 3;
+
+    const hg_gpu::EvolveResult fresh = hg_gpu::evolve(make_input(small));
+
+    hg_gpu::PersistentEvolver ev;
+    hg_gpu::EvolveResult first = ev.run(make_input(big));
+    ASSERT_GT(first.events.size(), fresh.events.size());
+    ev.recycle(std::move(first));
+    const hg_gpu::EvolveResult again = ev.run(make_input(small));
+
+    // Ids are per run, so the two runs are compared as multisets.
+    auto hashes = [](const hg_gpu::EvolveResult& r) {
+        std::vector<uint64_t> h;
+        for (const auto& st : r.states) h.push_back(st.canonical_hash);
+        std::sort(h.begin(), h.end());
+        return h;
+    };
+    auto signatures = [](const hg_gpu::EvolveResult& r) {
+        std::vector<uint64_t> g;
+        for (const auto& e : r.events) g.push_back(e.signature);
+        std::sort(g.begin(), g.end());
+        return g;
+    };
+    EXPECT_EQ(hashes(again), hashes(fresh));
+    EXPECT_EQ(signatures(again), signatures(fresh));
+    EXPECT_EQ(again.state_edge_ids.size(), fresh.state_edge_ids.size());
+    EXPECT_EQ(again.edge_records.size(), fresh.edge_records.size());
+    EXPECT_EQ(again.vertex_pool.size(), fresh.vertex_pool.size());
+    for (const auto& st : again.states)
+        for (uint32_t k = 0; k < st.num_edges; ++k)
+            EXPECT_EQ(again.edge(st, k).size(), 2u) << "state " << st.id << " edge " << k;
+    EXPECT_EQ(again.causal_edges.size(), fresh.causal_edges.size());
+    EXPECT_EQ(again.branchial_edges.size(), fresh.branchial_edges.size());
+}
+
 // A THINNED RUN KEEPS THE SAME TRANSITIONS ON BOTH ENGINES.
 //
 // "TransitionRate" and "RuleWeights" were reported to the caller as unimplemented on the GPU.

@@ -222,6 +222,19 @@ struct EvolveResult {
     std::vector<CausalEdge> causal_edges;
     std::vector<BranchialEdge> branchial_edges;
 
+    // Takes `from`'s seven large vectors, emptied with their capacity kept, so the readback
+    // fills memory that is already paged in. `from` is left with empty vectors.
+    void adopt_storage(EvolveResult& from) {
+        auto take = [](auto& mine, auto& theirs) { mine.swap(theirs); mine.clear(); };
+        take(states, from.states);
+        take(state_edge_ids, from.state_edge_ids);
+        take(edge_records, from.edge_records);
+        take(vertex_pool, from.vertex_pool);
+        take(events, from.events);
+        take(causal_edges, from.causal_edges);
+        take(branchial_edges, from.branchial_edges);
+    }
+
     // Capacity overflows observed during the run. Empty on a successful
     // (uncapped) run; otherwise contains one OverflowWarning per
     // (kernel-launch × ErrorKind) overflow event with a `context` string
@@ -551,9 +564,10 @@ public:
     // `session` non-null makes the run CONTINUABLE: identity is remembered across calls and
     // the budget's boundary states are recorded. `start_step` non-zero continues from that
     // frontier instead of re-seeding the roots. See persistent.hpp for why a frontier is
-    // required rather than simply re-running.
+    // required rather than simply re-running. `storage` non-null lends its vectors to the
+    // result (EvolveResult::adopt_storage).
     EvolveResult run(const EvolveInput& input, SessionView* session = nullptr,
-                     uint32_t start_step = 0);
+                     uint32_t start_step = 0, EvolveResult* storage = nullptr);
     void reset();
 
     const EngineConfig& config() const;
@@ -599,10 +613,17 @@ public:
     bool has_engine() const;
     const EngineConfig& engine_config() const;
 
+    // Hands a result the caller has finished with back to the evolver. The next run() or
+    // run_session() reads back into its vectors, which are already paged in: on cycle4 depth 6
+    // the host fill of 24 MB takes 3.1 ms into new allocations and 1.2 ms into reused ones.
+    // The evolver holds that storage until the next run.
+    void recycle(EvolveResult&& done);
+
 private:
     std::unique_ptr<Engine> engine_;
     EngineConfig            cfg_{};
     bool                    has_engine_ = false;
+    EvolveResult            spare_;
 };
 
 }  // namespace gpu

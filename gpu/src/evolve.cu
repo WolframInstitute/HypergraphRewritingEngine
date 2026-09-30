@@ -143,7 +143,7 @@ struct Engine::Impl {
     }
 
     EvolveResult run(const EvolveInput& in, SessionView* session = nullptr,
-                     uint32_t start_step = 0);
+                     uint32_t start_step = 0, EvolveResult* storage = nullptr);
 
     EngineConfig                       cfg_;
     EngineState                        state_;
@@ -159,8 +159,8 @@ Engine::~Engine() { delete impl_; }
 void Engine::reset() { impl_->reset(); }
 const EngineConfig& Engine::config() const { return impl_->cfg_; }
 EvolveResult Engine::run(const EvolveInput& in, SessionView* session,
-                         uint32_t start_step) {
-    return impl_->run(in, session, start_step);
+                         uint32_t start_step, EvolveResult* storage) {
+    return impl_->run(in, session, start_step, storage);
 }
 
 namespace {
@@ -168,7 +168,7 @@ namespace {
 }  // namespace
 
 EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
-                               uint32_t start_step) {
+                               uint32_t start_step, EvolveResult* storage) {
     // Reset device state from any prior run() -- EXCEPT when continuing a session. A Step's
     // accumulated states ARE the graph being extended, and the frontier it seeds from holds ids
     // into those pools, so clearing them leaves the run seeding ids that no longer name
@@ -177,6 +177,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     if (start_step == 0) reset();
 
     EvolveResult out;
+    if (storage) out.adopt_storage(*storage);
     if (in.rules.empty() && in.num_steps == 0 && in.initial_state.empty()) {
         return out;
     }
@@ -1061,7 +1062,7 @@ PersistentEvolver::SessionRun PersistentEvolver::run_session(const EvolveInput& 
     }
 
     try {
-        out.result = engine_->run(in, session, start_step);
+        out.result = engine_->run(in, session, start_step, &spare_);
     } catch (const std::exception& e) {
         // Same reasoning as run(): the engine may be inconsistent, so it goes. The session dies
         // with it rather than continuing against a rebuilt device.
@@ -1074,6 +1075,8 @@ PersistentEvolver::SessionRun PersistentEvolver::run_session(const EvolveInput& 
     out.ok = true;
     return out;
 }
+
+void PersistentEvolver::recycle(EvolveResult&& done) { spare_.adopt_storage(done); }
 
 EvolveResult PersistentEvolver::run(const EvolveInput& in) {
     // Never shrink: start from the live engine's config if there is one, else size to this
@@ -1091,7 +1094,7 @@ EvolveResult PersistentEvolver::run(const EvolveInput& in) {
             has_engine_ = true;
         }
         try {
-            return engine_->run(in);
+            return engine_->run(in, nullptr, 0, &spare_);
         } catch (...) {
             // This evolver REUSES engine_ across calls, so an engine a throw left inconsistent
             // would poison every later call in this worker. It is discarded, and the next
