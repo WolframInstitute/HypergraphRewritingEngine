@@ -126,6 +126,27 @@ __device__ bool flatten_state(DeviceState ds, StateId sid, uint32_t* slot,
 
 }  // namespace
 
+// Grows `slot` to at least `need` words for the IR of one state: kept when it already holds
+// them, else replaced by a claim of exactly `need` (the previous slot is abandoned; a bump arena
+// has no free). The claim is the leader's -- one arena bump per state, not one per lane -- and
+// under a fanning policy `slot`/`slot_words` refer to storage the policy's lanes share, so the
+// leader's write is every lane's after the sync; the verdict crosses by shuffle so a refusal
+// returns on every lane together, with the caller's old slot intact.
+template <class Par>
+__device__ bool grow_ir_slot(DeviceArena::View arena, uint32_t*& slot, uint64_t& slot_words,
+                             uint64_t need, Par par) {
+    // The leader alone reads slot_words, which it writes below: a lane that read it after that
+    // write would return here, skip the sync and broadcast, and pair them with its next ones.
+    if (par.bcast(par.leader() && need <= slot_words ? 1u : 0u) != 0u) return true;
+    uint32_t got = 0;
+    if (par.leader()) {
+        uint32_t* bigger = arena.claim(need);
+        if (bigger) { slot = bigger; slot_words = need; got = 1u; }
+    }
+    par.sync();
+    return par.bcast(got) != 0;
+}
+
 // Exact canonical hash of ONE state, sized and allocated entirely on device.
 //
 // The batched entry point measures a range on the host and shapes one slot to the largest
@@ -181,22 +202,7 @@ __device__ ExactHashStatus state_exact_hash_device(DeviceState ds, StateId sid,
     shape.generators = ds.ir_generators;
 
     const uint64_t need = shape.stride();
-    if (need > slot_words) {
-        // Grow. The previous slot is abandoned rather than freed -- a bump arena has no free,
-        // and with each block growing at most to its own peak the waste is bounded. The claim
-        // is the leader's -- one arena bump per state, not one per lane -- and under a fanning
-        // policy `slot`/`slot_words` refer to block-shared storage, so the leader's write is
-        // every lane's after the sync; the verdict crosses by shuffle so a refusal returns on
-        // every lane together, with the caller's old slot intact.
-        uint32_t got = 0;
-        if (par.leader()) {
-            uint32_t* bigger = arena.claim(need);
-            if (bigger) { slot = bigger; slot_words = need; got = 1u; }
-        }
-        par.sync();
-        got = par.bcast(got);
-        if (!got) return ExactHashStatus::kArenaExhausted;
-    }
+    if (!grow_ir_slot(arena, slot, slot_words, need, par)) return ExactHashStatus::kArenaExhausted;
 
     // The slot's layout follows from the shape alone, so the rank/slot/orbit spans can be
     // addressed before the flattening runs and filled by that same pass.
@@ -257,14 +263,8 @@ __device__ ExactHashStatus state_exact_hash_device(DeviceState ds, StateId sid,
         IrSlotShape deep = shape;
         deep.depth = deep_rungs[ri];
         const uint64_t deep_need = deep.stride();
-        uint32_t got = 0;
-        if (par.leader()) {
-            uint32_t* deep_slot = arena.claim(deep_need);
-            if (deep_slot) { slot = deep_slot; slot_words = deep_need; got = 1u; }
-        }
-        par.sync();
-        got = par.bcast(got);
-        if (!got) break;
+        // The state is flattened again below, so a slot that already holds deep_need is reused.
+        if (!grow_ir_slot(arena, slot, slot_words, deep_need, par)) break;
         shape = deep;
         rank_buf = slot + shape.ea_words() + shape.eoff_words()
                  + shape.cap_occs + shape.cap_verts;
