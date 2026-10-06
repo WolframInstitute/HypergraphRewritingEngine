@@ -143,7 +143,28 @@ __device__ bool is_reachable_preds(const DeviceState& ds, EventId p, EventId c) 
 // backward-reachability oracle, and a KEPT edge's only bookkeeping is one
 // preds_list push per unique event pair. EXTERNAL linkage (declared in rewrite.hpp): the
 // quotient-causal DP emits its canonical-event pairs through this same machinery.
-__device__ void try_add_causal_edge(const DeviceState& ds, EventId p, EventId c, EdgeId e) {
+namespace {
+
+// The views causal registration uses, loaded once per rewrite. Read through the DeviceState
+// reference inside the consumer walk, each is reloaded after every atomic, since the reference
+// may alias what the atomics write (the branchial walk's BranchialViews, for the same reason).
+struct CausalViews {
+    decltype(DeviceState::causal_pair_dedup)    pairs;
+    decltype(DeviceState::causal_triple_dedup)  triples;
+    decltype(DeviceState::causal_edge_pool)     pool;
+    decltype(DeviceState::preds_list)           preds;
+    decltype(DeviceState::edge_consumers)       consumers;
+    EventId*                                    producer;
+    DeviceErrors::DeviceView                    errors;
+    bool                                        tr;
+    __device__ explicit CausalViews(const DeviceState& ds)
+        : pairs(ds.causal_pair_dedup), triples(ds.causal_triple_dedup),
+          pool(ds.causal_edge_pool), preds(ds.preds_list), consumers(ds.edge_consumers),
+          producer(ds.edge_producer), errors(ds.errors), tr(ds.tr_enabled != 0) {}
+};
+
+__device__ void add_causal_edge(const DeviceState& ds, const CausalViews& v, EventId p,
+                                EventId c, EdgeId e) {
     if (p == INVALID_ID || c == INVALID_ID || p == c) return;
 
     // Mirror CPU causal_graph.cpp::add_causal_edge:
@@ -152,32 +173,38 @@ __device__ void try_add_causal_edge(const DeviceState& ds, EventId p, EventId c,
     //   different shared edges between the same pair are all kept)
     // - TR disabled: always add
     const uint64_t pair_key = hgcommon::id_key(p, c);
-    if (ds.tr_enabled) {
-        auto pair_lookup = ds.causal_pair_dedup.lookup(pair_key);
+    if (v.tr) {
+        auto pair_lookup = v.pairs.lookup(pair_key);
         if (!pair_lookup.found && is_reachable_preds(ds, p, c)) return;
     }
 
     uint64_t key = hash_causal_triple(p, c, e);
-    auto r = ds.causal_triple_dedup.insert_if_absent(key, 1u);
+    auto r = v.triples.insert_if_absent(key, 1u);
     if (!r.inserted) return;  // already present (dup) — silently skip
-    uint32_t idx = ds.causal_edge_pool.claim();
+    uint32_t idx = v.pool.claim();
     if (idx == Pool<DeviceCausalEdge>::kInvalid) {
-        ds.errors.record(ErrorKind::kCausalPoolFull);
+        v.errors.record(ErrorKind::kCausalPoolFull);
         return;
     }
-    ds.causal_edge_pool.at(idx) = DeviceCausalEdge{p, c, e};
+    v.pool.at(idx) = DeviceCausalEdge{p, c, e};
 
-    if (ds.tr_enabled) {
+    if (v.tr) {
         // Record the kept edge in the reduced adjacency once per unique event pair (so
         // preds_list holds no duplicate producers), and mark the pair as seen — subsequent
         // edges between the same (p, c) skip the reachability check.
-        auto pr = ds.causal_pair_dedup.insert_if_absent(pair_key, 1u);
+        auto pr = v.pairs.insert_if_absent(pair_key, 1u);
         if (pr.inserted) {
-            if (ds.preds_list.push(c, p) == INVALID_ID) {
-                ds.errors.record(ErrorKind::kTrPredsNodes);
+            if (v.preds.push(c, p) == INVALID_ID) {
+                v.errors.record(ErrorKind::kTrPredsNodes);
             }
         }
     }
+}
+
+}  // namespace
+
+__device__ void try_add_causal_edge(const DeviceState& ds, EventId p, EventId c, EdgeId e) {
+    add_causal_edge(ds, CausalViews(ds), p, c, e);
 }
 
 namespace {
@@ -212,16 +239,17 @@ __device__ __forceinline__ void try_add_branchial_edge(const BranchialViews& v, 
 // Causal rendezvous: register this event as producer of `eid` (via atomic
 // CAS on edge_producer[]), then iterate existing consumers and create causal
 // edges for each.
-__device__ void register_as_producer(const DeviceState& ds, EventId my_event, EdgeId eid) {
-    cuda::atomic_ref<EventId, cuda::thread_scope_device> pref(ds.edge_producer[eid]);
+__device__ void register_as_producer(const DeviceState& ds, const CausalViews& v,
+                                     EventId my_event, EdgeId eid) {
+    cuda::atomic_ref<EventId, cuda::thread_scope_device> pref(v.producer[eid]);
     EventId expected = INVALID_ID;
     bool won = pref.compare_exchange_strong(
         expected, my_event,
         cuda::memory_order_release, cuda::memory_order_acquire);
     if (!won) return;  // another event already claimed this producer slot
     // We won. Iterate consumers already registered for this edge.
-    ds.edge_consumers.for_each(eid, [&](EventId consumer) {
-        try_add_causal_edge(ds, my_event, consumer, eid);
+    v.consumers.for_each(eid, [&](EventId consumer) {
+        add_causal_edge(ds, v, my_event, consumer, eid);
     });
 }
 
@@ -230,18 +258,19 @@ __device__ void register_as_producer(const DeviceState& ds, EventId my_event, Ed
 // (producer or consumer) always detects the other because producer writes
 // the slot before iterating consumers and consumer appends to the list
 // before loading the slot.
-__device__ void register_as_consumer(const DeviceState& ds, EventId my_event, EdgeId eid) {
-    if (ds.edge_consumers.push(eid, my_event) == INVALID_ID) {
-        ds.errors.record(ErrorKind::kEdgeConsumerNodes);
+__device__ void register_as_consumer(const DeviceState& ds, const CausalViews& v,
+                                     EventId my_event, EdgeId eid) {
+    if (v.consumers.push(eid, my_event) == INVALID_ID) {
+        v.errors.record(ErrorKind::kEdgeConsumerNodes);
         // Don't return — we still want the producer-side detection so the
         // causal edge isn't lost; the missed-listing only affects future
         // consumers of this edge.
     }
     // After append, reload producer with acquire.
-    cuda::atomic_ref<EventId, cuda::thread_scope_device> pref(ds.edge_producer[eid]);
+    cuda::atomic_ref<EventId, cuda::thread_scope_device> pref(v.producer[eid]);
     EventId p = pref.load(cuda::memory_order_acquire);
     if (p != INVALID_ID) {
-        try_add_causal_edge(ds, p, my_event, eid);
+        add_causal_edge(ds, v, p, my_event, eid);
     }
 }
 
@@ -533,8 +562,9 @@ __device__ AppliedMatch apply_one_match(const DeviceState& ds,
     // way, as on the host.
     if (!ds.quotient_causal) {
     // 8. Causal rendezvous — producer side (our produced edges).
+    const CausalViews causal(ds);
     for (uint8_t r = 0; r < rule.num_rhs_edges; ++r) {
-        if (ds.record_causal) register_as_producer(ds, my_event, first_eid + r);
+        if (ds.record_causal) register_as_producer(ds, causal, my_event, first_eid + r);
     }
 
     // 9. Causal rendezvous — consumer side (our consumed edges).
@@ -571,7 +601,7 @@ __device__ AppliedMatch apply_one_match(const DeviceState& ds,
 
     for (uint8_t p = 0; p < n_cons; ++p) {
         EdgeId eid = consumed_sorted[p];
-        if (eid != INVALID_ID && ds.record_causal) register_as_consumer(ds, my_event, eid);
+        if (eid != INVALID_ID && ds.record_causal) register_as_consumer(ds, causal, my_event, eid);
     }
     }  // end !quotient_causal (raw-edge rendezvous)
     const unsigned long long t_causal = clock64();
