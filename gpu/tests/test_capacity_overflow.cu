@@ -183,3 +183,18 @@ TEST(CapacityOverflow, AFullClaimMapIsRetriedLarger) {
     EXPECT_EQ(cfg.max_states, 2 * states);
     EXPECT_EQ(cfg.max_events, 2 * events);
 }
+
+// A replay group's overflow doubles that group from its resolved size and leaves the others.
+TEST(CapacityOverflow, AReplayGroupGrowsAlone) {
+    hg_gpu::EngineConfig cfg;
+    const hg_gpu::QeEntries before = hg_gpu::qe_entries(cfg);
+    ASSERT_TRUE(hg_gpu::grow_config_for(cfg, hg_gpu::ErrorKind::kQeInstancesFull));
+    const hg_gpu::QeEntries after = hg_gpu::qe_entries(cfg);
+    EXPECT_EQ(after.instances, 2 * before.instances);
+    EXPECT_EQ(after.classes, before.classes);
+    EXPECT_EQ(after.events, before.events);
+    EXPECT_EQ(after.pairs, before.pairs);
+    EXPECT_EQ(after.words, before.words);
+    ASSERT_TRUE(hg_gpu::grow_config_for(cfg, hg_gpu::ErrorKind::kQeWordsFull));
+    EXPECT_EQ(hg_gpu::qe_entries(cfg).words, 2 * before.words);
+}

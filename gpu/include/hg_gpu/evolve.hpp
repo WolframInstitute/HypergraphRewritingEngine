@@ -372,6 +372,7 @@ struct EngineConfig {
     // Test lever: the first dedup probe key of a Full-mode state is its canonical hash ANDed
     // with this. All ones except in tests, which narrow it so non-isomorphic states share keys.
     uint64_t canonical_key_mask   = ~uint64_t{0};
+
     // Test lever: the first probe key of an event signature, a replay class's run signature and
     // the exact hash None/Automatic event identity reads is ANDed with this.
     uint64_t event_key_mask       = ~uint64_t{0};
@@ -435,18 +436,24 @@ struct EngineConfig {
     // pair. Reachability is answered by backward search over it, so no closure is stored.
     uint32_t tr_preds_nodes = 1u << 20;
 
-    // How much bigger the QUOTIENT REPLAY's pools are than the event count they were sized from.
-    //
-    // Every QeState pool scaled off max_events, but the ones holding the reconstructed causal
-    // and branchial relations are filled by PAIRS, and pairs are not linear in events: measured
-    // on disc-l3a2g2r2 depth 3, ~4,515 reconstructed events carry 971,040 kept causal pairs,
-    // about 215 producers per consumer. A pool sized 4x the event count therefore saturated at
-    // exactly max_events*4 and the device returned 31% of the host's relation with a warning.
-    //
-    // Density is a property of the workload, so no fixed multiple is right. This is the knob
-    // grow-and-retry doubles on kQcNodes, which is what turns the truncation back into an exact
-    // result rather than a smaller one.
-    uint32_t qe_capacity_scale = 1u;
+    // THE QUOTIENT REPLAY'S TABLES, in five groups, each with its own capacity and its own
+    // overflow kind, so grow-and-retry doubles only the group that filled. 0 means the default
+    // in qe_entries(). The groups fill at different rates: on bigpath n256 at three steps there
+    // are 769 classes and 16,842,496 raw instances.
+    //   qe_class_entries     captured matches, class representatives and match counts,
+    //                        multiplicity points (kQcNodes); default max_events
+    //   qe_instance_entries  instances, bound list, instance lists (kQeInstancesFull);
+    //                        default max_events
+    //   qe_event_entries     per raw event: task log (2 per event), applied lists (2), content,
+    //                        identity and kept producers (kQeEventsFull); default max_events
+    //   qe_pair_entries      (instance, match) claims and causal pairs, 4 slots per entry
+    //                        (kQePairsFull); default max_events
+    //   qe_word_entries      the word arena (kQeWordsFull); default 16 * max_events
+    uint32_t qe_class_entries    = 0;
+    uint32_t qe_instance_entries = 0;
+    uint32_t qe_event_entries    = 0;
+    uint32_t qe_pair_entries     = 0;
+    uint32_t qe_word_entries     = 0;
 
     // Multiplies the per-driver queues of the multiplicity cascade (64 items per level, at least
     // 256). Grow-and-retry doubles this on kQeWorkOverflow, which would otherwise drop a point's
@@ -491,6 +498,15 @@ struct EngineConfig {
     // The largest left-hand side among the rules; 0 when unknown, read as kMaxPatternEdges.
     uint16_t max_lhs_edges = 0;
 };
+
+// The replay's group capacities with the defaults resolved (EngineConfig::qe_class_entries and
+// the four after it). Each is at most kQeEntryLimit, and words at most kQeWordLimit.
+struct QeEntries {
+    uint32_t classes, instances, events, pairs, words;
+};
+inline constexpr uint32_t kQeEntryLimit = 1u << 28;
+inline constexpr uint32_t kQeWordLimit  = 1u << 31;
+QeEntries qe_entries(const EngineConfig& cfg);
 
 // An event's consumed ids take this many words of DeviceState::event_consumed.
 inline uint32_t event_consumed_stride(const EngineConfig& cfg) {

@@ -2256,6 +2256,61 @@ TEST(QuotientReconstruction, ReplayIdLimitTruncatesAndReports) {
     EXPECT_LE(got.reconstructed_raw_events, 100u);
 }
 
+// Each replay table group, starved alone, reports its own kind on a single attempt, and growing
+// on the warnings reaches the result of an unstarved run. The pair maps, the per-event arrays
+// and the class representative map dropped work without a warning before they had kinds.
+TEST(QuotientReconstruction, EachReplayGroupReportsAndGrowsAlone) {
+    Workload w;
+    w.name = "growshrink3";
+    w.rules = {rule({{0, 1}, {0, 2}}, {{0, 1}, {0, 3}, {1, 3}, {2, 3}}),
+               rule({{0, 1}, {1, 2}}, {{0, 2}}),
+               rule({{0, 1}}, {{0, 2}, {2, 1}})};
+    w.initial_state = {{0u, 1u}, {0u, 2u}};
+    w.num_steps = 4;
+    w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+    w.explore_from_canonical_states_only = true;
+    hg_gpu::EvolveInput in = make_input(w);
+    in.record = hgcommon::RecordSet{true, true, true};
+    const auto ref = hg_gpu::evolve(in);
+    ASSERT_TRUE(ref.warnings.empty());
+    ASSERT_GT(ref.reconstructed_raw_events, 200u);
+    ASSERT_GT(ref.reconstructed_causal_pairs, 64u);
+
+    struct Group { const char* name; hg_gpu::ErrorKind kind; uint32_t hg_gpu::EngineConfig::*field;
+                   uint32_t starved; };
+    const Group groups[] = {
+        {"classes",   hg_gpu::ErrorKind::kQcNodes,          &hg_gpu::EngineConfig::qe_class_entries,    4},
+        {"instances", hg_gpu::ErrorKind::kQeInstancesFull,  &hg_gpu::EngineConfig::qe_instance_entries, 8},
+        {"events",    hg_gpu::ErrorKind::kQeEventsFull,     &hg_gpu::EngineConfig::qe_event_entries,    8},
+        {"pairs",     hg_gpu::ErrorKind::kQePairsFull,      &hg_gpu::EngineConfig::qe_pair_entries,     8},
+        {"words",     hg_gpu::ErrorKind::kQeWordsFull,      &hg_gpu::EngineConfig::qe_word_entries,     64},
+    };
+    for (const Group& g : groups) {
+        hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
+        cfg.*g.field = g.starved;
+        auto has = [&](const hg_gpu::EvolveResult& r) {
+            for (const auto& x : r.warnings) if (x.kind == g.kind) return true;
+            return false;
+        };
+        hg_gpu::EvolveResult got;
+        {
+            hg_gpu::Engine engine(cfg);
+            got = engine.run(in);
+        }
+        EXPECT_TRUE(has(got)) << g.name << " starved at " << g.starved << " reported no overflow";
+        for (int attempt = 0; attempt < 16 && !got.warnings.empty(); ++attempt) {
+            for (const auto& x : got.warnings) hg_gpu::grow_config_for(cfg, x.kind);
+            hg_gpu::Engine engine(cfg);
+            got = engine.run(in);
+        }
+        EXPECT_TRUE(got.warnings.empty()) << g.name;
+        EXPECT_EQ(got.reconstructed_raw_events, ref.reconstructed_raw_events) << g.name;
+        EXPECT_EQ(got.reconstructed_events, ref.reconstructed_events) << g.name;
+        EXPECT_EQ(got.reconstructed_causal_pairs, ref.reconstructed_causal_pairs) << g.name;
+        EXPECT_EQ(got.reconstructed_branchial, ref.reconstructed_branchial) << g.name;
+    }
+}
+
 TEST(QuotientExploration, AClassIsExpandedFromItsShortestDepth) {
     Workload w;
     w.name = "growshrink3";

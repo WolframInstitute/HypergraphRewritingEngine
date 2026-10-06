@@ -38,10 +38,23 @@ enum class ErrorKind : uint32_t {
     // nodes. Sized from the config (one node per unique kept causal pair), so growing is a
     // real remedy.
     kTrPredsNodes        = 25,
-    // A replay structure (QeState's pools, pair maps and multiplicity points) ran out of
-    // capacity. Config-sized, so growing is a real remedy; the relations reachable only through
-    // the dropped work are missing from the result.
+    // A replay per-class table ran out of capacity: the captured matches, their lists, the
+    // class representatives and match counts, or the multiplicity points. Grown through
+    // EngineConfig::qe_class_entries. The relations reachable only through the dropped work are
+    // missing from the result. The replay's other groups have their own kinds below.
     kQcNodes             = 26,
+    // The replay's instance pool, its bound list or its instance lists was full
+    // (EngineConfig::qe_instance_entries): the instance and every application from it were
+    // dropped.
+    kQeInstancesFull     = 35,
+    // The replay's per-raw-event tables were full (EngineConfig::qe_event_entries): the task
+    // log, the applied lists, or the per-event content, identity and kept-producer arrays.
+    kQeEventsFull        = 36,
+    // A replay pair map was full (EngineConfig::qe_pair_entries): an (instance, match) claim
+    // past the instance's claim bits, or a reconstructed causal pair.
+    kQePairsFull         = 37,
+    // The replay's word arena was full (EngineConfig::qe_word_entries).
+    kQeWordsFull         = 38,
     kSigIndexNodes       = 16,
     kInvIndexNodes       = 17,
     kFrontierCapFull     = 18,
@@ -116,7 +129,7 @@ enum class ErrorKind : uint32_t {
     // are not dense, so an implicit kCount tracks only the LAST entry -- which is how
     // kTrPredsNodes (25) and kQcNodes (26) came to sit above an implicit kCount of 25 and could
     // never be reported at all. Stated explicitly, with the static_assert below as the guard.
-    kCount               = 35
+    kCount               = 39
 };
 
 // DISTINCT VALUES, NOT MERELY IN-RANGE ONES. record() indexes the counter array by the enum
@@ -133,6 +146,8 @@ static_assert(static_cast<uint32_t>(ErrorKind::kIRGeneratorsExceeded) !=
 // which turns a capacity failure into no signal at all.
 static_assert(static_cast<uint32_t>(ErrorKind::kQcNodes) <
               static_cast<uint32_t>(ErrorKind::kCount), "kQcNodes is unrecordable");
+static_assert(static_cast<uint32_t>(ErrorKind::kQeWordsFull) <
+              static_cast<uint32_t>(ErrorKind::kCount), "kQeWordsFull is unrecordable");
 static_assert(static_cast<uint32_t>(ErrorKind::kUncomputedStateHash) <
               static_cast<uint32_t>(ErrorKind::kCount), "kUncomputedStateHash is unrecordable");
 static_assert(static_cast<uint32_t>(ErrorKind::kCanonicalFormsFull) <

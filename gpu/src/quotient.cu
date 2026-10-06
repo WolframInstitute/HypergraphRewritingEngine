@@ -27,24 +27,26 @@ static uint32_t qe_list_buckets(uint32_t max_events) {
     return n;
 }
 
-QeState::QeState(bool on, uint32_t max_events): matches_(on ? max_events : 1u),
-          by_from_(on ? qe_list_buckets(max_events) : 1u, on ? max_events : 1u),
-          instances_(on ? max_events : 1u),
-          blocked_(on ? max_events : 1u),
+// Each table is sized from its group in `n` (EngineConfig::qe_class_entries and the four after
+// it), and its overflow reports that group's kind.
+QeState::QeState(bool on, const QeEntries& n): matches_(on ? n.classes : 1u),
+          by_from_(on ? qe_list_buckets(n.classes) : 1u, on ? n.classes : 1u),
+          instances_(on ? n.instances : 1u),
+          blocked_(on ? n.instances : 1u),
           // An application is attempted once from each side of the rendezvous at most.
-          tasks_(on ? max_events * 2u : 1u),
-          by_key_(on ? qe_list_buckets(max_events) : 1u, on ? max_events : 1u),
-          rep_(on ? max_events : 8u),
-          applied_(on ? max_events * 4u : 8u),
-          canon_seen_(on ? max_events * 2u : 8u),
-          causal_pairs_(on ? max_events * 4u : 8u),
-          qm_points_(on ? max_events * 2u : 8u),
-          qm_consumed_(on ? max_events * 2u : 8u),
-          qm_overlaps_(on ? max_events * 2u : 8u),
-          qm_capacity_(on ? max_events : 1u),
-          inst_applied_(on ? qe_list_buckets(max_events) : 1u, on ? max_events * 2u : 1u),
-          frame_(on ? max_events * 2u : 8u),
-          arr_cap_(on ? max_events * 16u : 1u),
+          tasks_(on ? n.events * 2u : 1u),
+          by_key_(on ? qe_list_buckets(n.instances) : 1u, on ? n.instances : 1u),
+          rep_(on ? n.classes : 8u),
+          applied_(on ? n.pairs * 4u : 8u),
+          canon_seen_(on ? n.classes * 2u : 8u),
+          causal_pairs_(on ? n.pairs * 4u : 8u),
+          qm_points_(on ? n.classes * 2u : 8u),
+          qm_consumed_(on ? n.classes * 2u : 8u),
+          qm_overlaps_(on ? n.classes * 2u : 8u),
+          qm_capacity_(on ? n.classes : 1u),
+          inst_applied_(on ? qe_list_buckets(n.events) : 1u, on ? n.events * 2u : 1u),
+          frame_(on ? n.classes * 2u : 8u),
+          arr_cap_(on ? n.words : 1u),
           on_(on) {
         HG_CUDA_CHECK(cudaMalloc(&arr_, sizeof(uint32_t) * arr_cap_), "QeState arr alloc");
         // THE SCALARS IN ONE BLOCK, so the host reads them in ONE transfer.
@@ -74,14 +76,14 @@ QeState::QeState(bool on, uint32_t max_events): matches_(on ? max_events : 1u),
                       "QeState multiplicity queue flags alloc");
         HG_CUDA_CHECK(cudaMalloc(&qm_point_class_, sizeof(unsigned long long) * qm_capacity_),
                       "QeState multiplicity point class alloc");
-        class_nmatch_cap_ = on ? max_events : 1u;
+        class_nmatch_cap_ = on ? n.classes : 1u;
         HG_CUDA_CHECK(cudaMalloc(&class_nmatch_, sizeof(uint32_t) * class_nmatch_cap_),
                       "QeState class match counts alloc");
         HG_CUDA_CHECK(cudaMemset(class_nmatch_, 0, sizeof(uint32_t) * class_nmatch_cap_),
                       "QeState class match counts init");
         HG_CUDA_CHECK(cudaMalloc(&qm_point_depth_, sizeof(uint32_t) * qm_capacity_),
                       "QeState multiplicity point depth alloc");
-        event_sig_capacity_ = on ? max_events : 1u;
+        event_sig_capacity_ = on ? n.events : 1u;
         HG_CUDA_CHECK(cudaMalloc(&event_sig_, sizeof(uint64_t) * event_sig_capacity_),
                       "QeState event sig alloc");
         HG_CUDA_CHECK(cudaMalloc(&event_runsig_, sizeof(uint64_t) * event_sig_capacity_),

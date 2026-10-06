@@ -172,7 +172,7 @@ TEST(QuotientExpansion, NoOrbitArrayMeansNoSlot) {
 // to the capacity, not up to the cursor: a copy past the allocation fails, and the failure ends
 // the grow-and-retry ladder instead of growing the arena.
 TEST(QuotientExpansion, ReducedReadbackAfterArenaOverflowReadsOnlyTheArena) {
-    hg_gpu::QeState qe(/*on=*/true, /*max_events=*/1);   // an arena of 16 words
+    hg_gpu::QeState qe(/*on=*/true, hg_gpu::QeEntries{1, 1, 1, 1, 16});   // an arena of 16 words
     const hg_gpu::QeView v = qe.view(/*max_steps=*/1, hgcommon::EVENT_SIG_NONE,
                                      /*replay=*/true, /*multiplicity=*/false,
                                      /*event_content=*/false);
@@ -213,7 +213,7 @@ TEST(QuotientExpansion, ArenaAllocationNearTheCursorWrapIsRefused) {
     cfg.sig_index_pool       = 64;
     cfg.inverted_pool        = 256;
     hg_gpu::EngineState engine(cfg);   // for the error channel qe_alloc_words records into
-    hg_gpu::QeState qe(/*on=*/true, /*max_events=*/1);   // an arena of 16 words
+    hg_gpu::QeState qe(/*on=*/true, hg_gpu::QeEntries{1, 1, 1, 1, 16});   // an arena of 16 words
     const hg_gpu::QeView v = qe.view(/*max_steps=*/1, hgcommon::EVENT_SIG_NONE,
                                      /*replay=*/true, /*multiplicity=*/false,
                                      /*event_content=*/false);

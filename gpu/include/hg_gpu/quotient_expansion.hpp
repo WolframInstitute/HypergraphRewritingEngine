@@ -778,7 +778,9 @@ __device__ inline void qe_capture_expansion(const DeviceState& ds, QeView qe,
     uint32_t go = 0;
     if (lane == 0) {
         const uint32_t claim = static_cast<uint32_t>(parent) + 1u;
-        if (qe.rep.insert_if_absent(from, claim).value == claim) {
+        const auto won = qe.rep.insert_if_absent(from, claim);
+        if (won.overflowed) ds.errors.record(ErrorKind::kQcNodes);
+        if (won.value == claim) {
             go = 1;
             // Both endpoints are given a frame before any slot is taken, so every slot below
             // resolves. A short-circuiting || would skip the second whenever the first
@@ -927,7 +929,7 @@ __device__ __forceinline__ uint32_t qe_alloc_words(const DeviceState& ds, QeView
     const uint32_t off = cur.fetch_add(n, cuda::memory_order_relaxed);
     if (static_cast<uint64_t>(off) + n > qe.arr_capacity) {
         cur.fetch_min(qe.arr_capacity, cuda::memory_order_relaxed);
-        ds.errors.record(ErrorKind::kQcNodes);
+        ds.errors.record(ErrorKind::kQeWordsFull);
         return UINT32_MAX;
     }
     return off;
@@ -943,7 +945,7 @@ __device__ inline uint32_t qe_add_instance(const DeviceState& ds, QeView qe, uin
 
     const uint32_t rec = qe.instances.claim();
     if (rec == Pool<DeviceQcInstance>::kInvalid) {
-        ds.errors.record(ErrorKind::kQcNodes);
+        ds.errors.record(ErrorKind::kQeInstancesFull);
         return UINT32_MAX;
     }
     DeviceQcInstance& inst = qe.instances.at(rec);
@@ -977,7 +979,7 @@ __device__ inline uint32_t qe_add_instance(const DeviceState& ds, QeView qe, uin
     // At the bound the instance is recorded and not expanded; a continuation drives it.
     if (depth >= qe.max_steps) {
         const uint32_t b = qe.blocked.claim();
-        if (b == Pool<QeWorkItem>::kInvalid) ds.errors.record(ErrorKind::kQcNodes);
+        if (b == Pool<QeWorkItem>::kInvalid) ds.errors.record(ErrorKind::kQeInstancesFull);
         else qe.blocked.at(b) = QeWorkItem{state_hash, rec, depth};
     }
 
@@ -988,7 +990,7 @@ __device__ inline uint32_t qe_add_instance(const DeviceState& ds, QeView qe, uin
     if (qe.by_key.push(qe_inst_bucket(qe, key, (blockIdx.x * blockDim.x + threadIdx.x) &
                                                    (kQeInstShards - 1u)),
                        QeInstRef{key, rec}) == INVALID_ID)
-        ds.errors.record(ErrorKind::kQcNodes);
+        ds.errors.record(ErrorKind::kQeInstancesFull);
     return rec;
 }
 
@@ -1051,7 +1053,7 @@ __device__ __forceinline__ void qe_apply(const DeviceState& ds, QeView qe, const
 __device__ inline void qe_task_append(const DeviceState& ds, QeView qe, uint64_t hash, uint32_t rec,
                                       uint32_t depth, uint32_t match) {
     if (!qe.tasks.append(QeTask{hash, rec, depth, match, 0u}))
-        ds.errors.record(ErrorKind::kQcNodes);
+        ds.errors.record(ErrorKind::kQeEventsFull);
 }
 
 // Instance side of the rendezvous: a task per match already captured for this class.
@@ -1138,7 +1140,9 @@ struct DeviceQrCtx {
             const uint32_t bit = 1u << (m.local & 31u);
             return (w.fetch_or(bit, cuda::memory_order_acq_rel) & bit) == 0u;
         }
-        return qe.applied.insert_if_absent(hgcommon::qr_apply_key(inst.id, m.id), 1u).inserted;
+        const auto r = qe.applied.insert_if_absent(hgcommon::qr_apply_key(inst.id, m.id), 1u);
+        if (r.overflowed) ds.errors.record(ErrorKind::kQePairsFull);
+        return r.inserted;
     }
     // One shared counter: every producer's id was taken before this one, so the id is above
     // them all.
@@ -1158,9 +1162,13 @@ struct DeviceQrCtx {
     // this replaces seeded FNV with the 64-bit basis missing its last digit, so every
     // reconstructed identity the device reported was a relabelling of the host's; routing the
     // call is what makes that unrepeatable rather than merely fixed.
+    // An event past event_sig_capacity reports kQeEventsFull here, once; record_runsig and
+    // record_kept skip it.
     __device__ void record_content(uint32_t ev, uint64_t from_class, uint64_t to_class,
                                    uint32_t rule) {
-        if (ev < qe.event_sig_capacity) {
+        if (ev >= qe.event_sig_capacity) {
+            ds.errors.record(ErrorKind::kQeEventsFull);
+        } else {
             qe.event_sig[ev] = hgcommon::qr_content_hash(from_class, to_class, rule);
             if (qe.event_from_class) {
                 qe.event_from_class[ev] = from_class;
@@ -1203,7 +1211,9 @@ struct DeviceQrCtx {
         // actually here for -- whether some OTHER application recorded this pair.
         if (!distinct_pair) return;
         const uint64_t pk = hgcommon::id_key(producer, consumer);
-        if (!qe.causal_pairs.insert_if_absent(pk, 1u).inserted) return;
+        const auto r = qe.causal_pairs.insert_if_absent(pk, 1u);
+        if (r.overflowed) ds.errors.record(ErrorKind::kQePairsFull);
+        if (!r.inserted) return;
         ++causal_pairs_seen;
     }
     // hgcommon::redundant_producers over the kept sets of earlier events. The search runs in local
@@ -1277,7 +1287,7 @@ struct DeviceQrCtx {
                 QeAppliedMatch{inst.id, m.id, ev, m.num_consumed,
                                static_cast<uint32_t>(m.w - qe.arr_words)});
         if (at == INVALID_ID) {
-            ds.errors.record(ErrorKind::kQcNodes);
+            ds.errors.record(ErrorKind::kQeEventsFull);
             return INVALID_ID;
         }
         __threadfence();
@@ -1332,7 +1342,7 @@ __device__ __forceinline__ void qe_apply(const DeviceState& ds, QeView qe, const
 // that an interactive caller would otherwise pay every evolve.
 class QeState {
 public:
-    QeState(bool on, uint32_t max_events);
+    QeState(bool on, const QeEntries& entries);
     ~QeState();
     QeState(const QeState&)            = delete;
     QeState& operator=(const QeState&) = delete;

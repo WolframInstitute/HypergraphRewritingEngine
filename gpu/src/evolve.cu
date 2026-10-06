@@ -287,12 +287,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     // causality is exactly a run whose event identity comes from the class frame rather than
     // each raw state's labelling.
     if (!qe_state_ || qe_state_->enabled() != qc_route) {
-        // Saturating, because the scale doubles on retry and max_events is already large: a
-        // wrapped product would silently SHRINK the pools on the attempt meant to grow them.
-        const uint64_t qe_events = std::min<uint64_t>(
-            static_cast<uint64_t>(cfg.max_events) * cfg.qe_capacity_scale,
-            static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) / 16u);
-        qe_state_ = std::make_unique<QeState>(qc_route, static_cast<uint32_t>(qe_events));
+        qe_state_ = std::make_unique<QeState>(qc_route, qe_entries(cfg));
     } else if (start_step == 0 && qc_route) {
         // A continuation keeps the reconstruction: its captures, instances, counts and the
         // points the old bound left standing, which the run drives (k_qe_redrive). Off the
@@ -612,8 +607,26 @@ void grow_size_pools(EngineConfig& cfg) {
         grow_config_for(cfg, k);
 }
 
+QeEntries qe_entries(const EngineConfig& cfg) {
+    auto pick = [&](uint32_t set, uint64_t dflt, uint32_t limit) {
+        return static_cast<uint32_t>(std::min<uint64_t>(set ? set : dflt, limit));
+    };
+    const uint64_t e = cfg.max_events;
+    return QeEntries{pick(cfg.qe_class_entries, e, kQeEntryLimit),
+                     pick(cfg.qe_instance_entries, e, kQeEntryLimit),
+                     pick(cfg.qe_event_entries, e, kQeEntryLimit),
+                     pick(cfg.qe_pair_entries, e, kQeEntryLimit),
+                     pick(cfg.qe_word_entries, 16u * e, kQeWordLimit)};
+}
+
 bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
     auto dbl = [](uint32_t& f) { f = (f >= (1u << 31)) ? f : (f * 2u); };
+    // A replay group grows from its resolved size, so a group left at its default doubles
+    // what the run had rather than what max_events would give after other growth.
+    auto dbl_qe = [&](uint32_t& f, uint32_t resolved, uint32_t limit) {
+        f = static_cast<uint32_t>(std::min<uint64_t>(2ull * resolved, limit));
+    };
+    const QeEntries qe = qe_entries(cfg);
     switch (kind) {
         case ErrorKind::kEdgePoolFull:
             dbl(cfg.max_edges);
@@ -651,10 +664,12 @@ bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
         // seen, so the run keeps states it might have merged and reports an over-complete answer.
         // Growing the map is what turns that warning back into an exact result.
         // Every claim map (states, event signatures, exact hashes, keyed rewrites and twins) is
-        // sized from max_states or max_events, so both grow.
+        // sized from max_states or max_events, so both grow. The replay's run-signature and
+        // frame maps report this kind too and are in the class group.
         case ErrorKind::kCanonicalMapFull:
             dbl(cfg.max_states);
             dbl(cfg.max_events);
+            if (cfg.qe_class_entries) dbl_qe(cfg.qe_class_entries, qe.classes, kQeEntryLimit);
             return true;
         case ErrorKind::kCanonicalFormsFull:  dbl(cfg.canonical_form_words); return true;
         case ErrorKind::kCausalTripleMapFull: dbl(cfg.causal_triple_slots);  return true;
@@ -663,12 +678,19 @@ bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
         case ErrorKind::kEdgeConsumerNodes:   dbl(cfg.edge_consumer_nodes);  return true;
         case ErrorKind::kBranchialIndexNodes: dbl(cfg.branchial_index_nodes); return true;
         case ErrorKind::kTrPredsNodes:        dbl(cfg.tr_preds_nodes);       return true;
-        // Every QeState pool reports this one kind -- the expansion arena, the match and
-        // instance pools, the by_from/by_key/preds lists and the pair maps -- so the answer is
-        // to scale them together rather than guess which one filled. Retryable, and it must be:
-        // a full pair map does not lose speed, it loses CAUSAL EDGES, and the run reports a
-        // relation smaller than the one the host computes.
-        case ErrorKind::kQcNodes:             dbl(cfg.qe_capacity_scale);    return true;
+        // Each replay group has its own kind and grows alone. Retryable, and it must be: a full
+        // replay table loses applications or causal pairs, and the run reports a relation
+        // smaller than the one the host computes.
+        case ErrorKind::kQcNodes:
+            dbl_qe(cfg.qe_class_entries, qe.classes, kQeEntryLimit);       return true;
+        case ErrorKind::kQeInstancesFull:
+            dbl_qe(cfg.qe_instance_entries, qe.instances, kQeEntryLimit);  return true;
+        case ErrorKind::kQeEventsFull:
+            dbl_qe(cfg.qe_event_entries, qe.events, kQeEntryLimit);        return true;
+        case ErrorKind::kQePairsFull:
+            dbl_qe(cfg.qe_pair_entries, qe.pairs, kQeEntryLimit);          return true;
+        case ErrorKind::kQeWordsFull:
+            dbl_qe(cfg.qe_word_entries, qe.words, kQeWordLimit);           return true;
         case ErrorKind::kQeWorkOverflow:      dbl(cfg.descent_work_scale);   return true;
         case ErrorKind::kSigIndexNodes:       dbl(cfg.sig_index_pool);       return true;
         case ErrorKind::kInvIndexNodes:       dbl(cfg.inverted_pool);        return true;
@@ -738,7 +760,11 @@ static void log_winning_config(const EngineConfig& initial,
     LOG_FIELD(branchial_index_buckets);
     LOG_FIELD(branchial_index_nodes);
     LOG_FIELD(tr_preds_nodes);
-    LOG_FIELD(qe_capacity_scale);
+    LOG_FIELD(qe_class_entries);
+    LOG_FIELD(qe_instance_entries);
+    LOG_FIELD(qe_event_entries);
+    LOG_FIELD(qe_pair_entries);
+    LOG_FIELD(qe_word_entries);
     LOG_FIELD(descent_work_scale);
     LOG_FIELD(tr_scratch_scale);
     LOG_FIELD(survivor_scratch);
@@ -802,12 +828,20 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     b += map_bytes(cfg.causal_pair_slots);
     b += map_bytes(cfg.branchial_pair_slots);
     b += u64(cfg.max_events)          * 4  + u64(cfg.tr_preds_nodes) * 8;  // preds_list
-    // QeState, whose pools all scale off max_events * qe_capacity_scale: the expansion arena
-    // (16 words per event, 64 B), its maps (19 slots per event at 16 B: rep 1, applied 4,
-    // canon_seen 2, causal_pairs 4, qm_points 2, qm_consumed 2, qm_overlaps 2, frame 2) and the
-    // instance/match pools (64 B). Omitting it let the grow-and-retry memory cap approve a config
-    // the device could not hold.
-    b += u64(cfg.max_events) * u64(cfg.qe_capacity_scale) * (64 + 19 * 16 + 64);
+    // QeState, per group entry (quotient.cu QeState::QeState; map slots are 16 B and rounded up
+    // to a power of two, which the factor 2 on the maps covers). Omitting it let the
+    // grow-and-retry memory cap approve a config the device could not hold.
+    //   class:    matches 72, by_from 24, rep 16, frame 32, canon_seen 32, class_nmatch 4,
+    //             multiplicity maps 96 and arrays 32: 308, maps 176 of it
+    //   instance: instance 28, bound item 16, instance list 24: 68
+    //   event:    tasks 2 x 24, applied lists 2 x 24, content 8 + 8, kept 20: 132
+    //   pair:     applied 4 x 16, causal pairs 4 x 16: 128, all map
+    //   word:     4
+    {
+        const QeEntries qe = qe_entries(cfg);
+        b += u64(qe.classes) * (308 + 176) + u64(qe.instances) * 68 + u64(qe.events) * 132 +
+             u64(qe.pairs) * 256 + u64(qe.words) * 4;
+    }
     // The multiplicity queues at their minimum per-driver size (256 items), which
     // descent_work_scale multiplies; a deep run's queues are larger still.
     b += u64(default_persistent_grid()) * 256u * u64(cfg.descent_work_scale) *
@@ -861,7 +895,7 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
 // retryable warning, the retry ceiling, the memory cap, or a throw), the caller gets that
 // attempt's partial result and its warnings, plus one saying why the ladder stopped.
 //
-// Eight retries, not six. The ladder doubles ONE knob per retry and qe_capacity_scale sizes
+// Eight retries, not six. The ladder doubles ONE knob per retry and the replay's groups size
 // pools that are filled per APPLICATION while their base counts EVENTS -- measured on
 // disc-l3a2g2r2 depth 3, 970,584 applications against 4,512 events, 215 to 1. At a 64x ceiling
 // qe_events reaches 288,768 and the applied pool 577,536, and the run reported needing at least
@@ -937,15 +971,17 @@ static EvolveResult run_with_growth(EngineConfig cfg, uint64_t mem_cap, Attempt&
             }
         }
         // THE REPLAY'S POOLS GROW 4x PER ATTEMPT when the grown config stays under the memory
-        // cap, 2x otherwise. They are sized from the state budget while the replay grows with
-        // raw applications, exponentially in depth, so doubling took multirule at 7 steps
-        // through five attempts (qe_capacity_scale 1 -> 32, descent_work_scale 1 -> 4), each a
-        // full run from the start.
+        // cap, 2x otherwise. They start from the event budget while the replay grows with raw
+        // applications, exponentially in depth: doubling alone takes multirule at 7 steps
+        // through five attempts (replay tables 32x, descent_work_scale 4x), each a full run
+        // from the start.
         {
             EngineConfig quad = cfg;
             bool replay_grew = false;
             for (const auto& w : result.warnings)
-                if (w.kind == ErrorKind::kQcNodes || w.kind == ErrorKind::kQeWorkOverflow)
+                if (w.kind == ErrorKind::kQcNodes || w.kind == ErrorKind::kQeInstancesFull ||
+                    w.kind == ErrorKind::kQeEventsFull || w.kind == ErrorKind::kQePairsFull ||
+                    w.kind == ErrorKind::kQeWordsFull || w.kind == ErrorKind::kQeWorkOverflow)
                     replay_grew = grow_config_for(quad, w.kind) || replay_grew;
             if (replay_grew && (mem_cap == 0 || estimated_device_bytes(quad) <= mem_cap))
                 cfg = quad;

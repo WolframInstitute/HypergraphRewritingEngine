@@ -37,7 +37,11 @@ const char* error_kind_name(ErrorKind k) {
         case ErrorKind::kEdgeConsumerNodes:   return "edge_consumers (node pool)";
         case ErrorKind::kBranchialIndexNodes: return "branchial_index (node pool)";
         case ErrorKind::kTrPredsNodes:        return "tr_preds (node pool)";
-        case ErrorKind::kQcNodes:             return "quotient-causal records/nodes";
+        case ErrorKind::kQcNodes:             return "replay class tables";
+        case ErrorKind::kQeInstancesFull:     return "replay instances";
+        case ErrorKind::kQeEventsFull:        return "replay raw-event tables";
+        case ErrorKind::kQePairsFull:         return "replay pair maps";
+        case ErrorKind::kQeWordsFull:         return "replay word arena";
         case ErrorKind::kSigIndexNodes:       return "signature_index (node pool)";
         case ErrorKind::kInvIndexNodes:       return "vertex_inverted_index (node pool)";
         case ErrorKind::kFrontierCapFull:     return "frontier buffer";
