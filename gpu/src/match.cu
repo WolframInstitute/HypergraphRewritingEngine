@@ -82,25 +82,6 @@ std::vector<uint64_t> compatible_signature_hashes(const DevicePatternEdge& pe) {
     return out;
 }
 
-__device__ bool state_contains(const DeviceState& ds, StateId sid, EdgeId eid) {
-    // Binary search in the state's sorted CSR edge-id slice. Slices stay
-    // sorted because initial state has ascending IDs and each rewrite
-    // appends its (consecutive, higher) produced IDs after the surviving
-    // parent tail — see rewrite.cu's commit section.
-    if (sid >= ds.max_states) return false;
-    StateEdgeSlice sl = ds.state_edge_slices[sid];
-    uint32_t lo = sl.offset;
-    uint32_t hi = sl.offset + sl.count;
-    while (lo < hi) {
-        uint32_t mid = lo + ((hi - lo) >> 1);
-        EdgeId v = ds.state_edge_ids[mid];
-        if (v == eid) return true;
-        if (v < eid) lo = mid + 1;
-        else         hi = mid;
-    }
-    return false;
-}
-
 // What match_state_rule below owns, and what it does not.
 //
 // THE JOIN IS NOT HERE. The recursion, edge-injectivity, binding and unwind, and which pattern
@@ -137,6 +118,19 @@ struct MatchJoinCtx {
     const DeviceState& ds;
     const DeviceRule& rule;
     StateId           state_id;
+    // Loaded once: read through `ds` inside the join, each would be reloaded after every match
+    // the join emits, since an emit's atomics may write what the reference points at.
+    const Edge*       edges;
+    const VertexId*   verts;
+    const EdgeId*     ids;
+    StateEdgeSlice    slice;
+    uint32_t          scan_max;
+
+    __device__ MatchJoinCtx(const DeviceState& d, const DeviceRule& r, StateId s)
+        : ds(d), rule(r), state_id(s), edges(d.edge_pool.data), verts(d.vertex_pool.data),
+          ids(d.state_edge_ids),
+          slice(s < d.max_states ? d.state_edge_slices[s] : StateEdgeSlice{0, 0}),
+          scan_max(d.slice_scan_max_edges) {}
 
     __device__ uint8_t num_lhs_edges() const { return rule.num_lhs_edges; }
 
@@ -155,11 +149,11 @@ struct MatchJoinCtx {
     __device__ EdgeId candidate_id(EdgeId e) const { return e; }
 
     __device__ const VertexId* edge_vertices(EdgeId e) const {
-        return &ds.vertex_pool.at(ds.edge_pool.at(e).vertex_offset);
+        return verts + edges[e].vertex_offset;
     }
-    __device__ uint8_t edge_arity(EdgeId e) const { return ds.edge_pool.at(e).arity; }
+    __device__ uint8_t edge_arity(EdgeId e) const { return edges[e].arity; }
 
-    __device__ bool usable(EdgeId e) const { return state_contains(ds, state_id, e); }
+    __device__ bool usable(EdgeId e) const { return slice_position(ids, slice, e) != UINT32_MAX; }
     __device__ bool aborted() const { return false; }
 
     // Adaptive on state size, and the paths are strictly EITHER/OR: running two of them
@@ -172,9 +166,8 @@ struct MatchJoinCtx {
     __device__ void for_each_candidate(uint8_t p, const MatchJoinState& st, F&& f) const {
         const DevicePatternEdge& pe = rule.lhs[p];
 
-        const StateEdgeSlice sl = ds.state_edge_slices[state_id];
-        if (sl.count <= ds.slice_scan_max_edges) {
-            for (uint32_t i = 0; i < sl.count; ++i) f(ds.state_edge_ids[sl.offset + i]);
+        if (slice.count <= scan_max) {
+            for (uint32_t i = 0; i < slice.count; ++i) f(ids[slice.offset + i]);
             return;
         }
 
@@ -295,7 +288,7 @@ __device__ __noinline__ void match_state_rule_pass(
 
     if (rule.num_lhs_edges == 0) return;
 
-    const MatchJoinCtx ctx{ds, rule, state_id};
+    const MatchJoinCtx ctx(ds, rule, state_id);
 
     // A completed match. matched_edges is indexed by PATTERN position, not by depth.
     auto emit = [&] (const MatchJoinState& st) {
