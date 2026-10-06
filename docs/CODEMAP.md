@@ -177,6 +177,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`ir_canonicalization.hpp`)
 - **`ring_buffer.hpp`** -- `RingBuffer<T>` (bounded MPMC ring; per-slot sequence numbers + CAS reservation, so producers that are also consumers neither lose nor duplicate an item across wraps)
 - **`termination.hpp`** -- `TerminationDetector` (per-role quiescence for a persistent-kernel model)
 - **`device_arena.hpp`** -- `DeviceArena` (bump allocator the device claims from; scratch whose size is only known once the work is in hand)
+- **`clear_batch.hpp`** -- `ClearBatch` (device regions filled with one byte value by one kernel launch; the per-run clears of `EngineState`, `QeState` and the persistent launch's scratch go through it, and every pool, list, map, ring, detector and arena reset takes one)
 - **`edge_signature.hpp`** -- `EdgeSignature` + device `signature_*` helpers (bit-identical to CPU)
 - **`signature_index.hpp` / `vertex_inverted_index.hpp`** -- `SignatureIndex` / `VertexInvertedIndex` (device match-candidate indices)
 - **`match.hpp`** -- `DevicePatternEdge`/`DeviceRhsEdge`/`DeviceRule`/`MatchRecord` (carries its `step` and a `published` flag); device `match_state_rule`/`publish_match`/`await_match`; host `make_device_rule`/`run_match_kernel[_batch][_nosync]`

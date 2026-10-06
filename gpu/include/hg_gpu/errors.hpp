@@ -2,6 +2,7 @@
 #include "hgcommon/namespace.hpp"
 
 #include "hg_gpu/overflow.hpp"   // ErrorKind / error_kind_name / OverflowWarning
+#include "hg_gpu/clear_batch.hpp"
 
 #include <cuda_runtime.h>
 #include <cuda/atomic>
@@ -63,7 +64,7 @@ struct DeviceErrors {
 
     DeviceView view() const;
 
-    void clear();
+    void clear(ClearBatch* batch = nullptr);
 
     // Drain the device counters into `out` as OverflowWarning entries
     // tagged with `context`, then clear the counters so the next kernel

@@ -4,6 +4,7 @@
 
 #include "hg_gpu/types.hpp"
 #include "hg_gpu/cuda_check.hpp"
+#include "hg_gpu/clear_batch.hpp"
 
 #include <cuda_runtime.h>
 
@@ -144,8 +145,10 @@ public:
               "Pool copy_to_host");
     }
 
-    void reset() {
-        HG_CUDA_CHECK(cudaMemset(counter_, 0, sizeof(uint32_t)), "Pool reset");
+    // With a batch the counter is cleared at its flush.
+    void reset(ClearBatch* batch = nullptr) {
+        if (batch) batch->add(counter_, sizeof(uint32_t), 0);
+        else HG_CUDA_CHECK(cudaMemset(counter_, 0, sizeof(uint32_t)), "Pool reset");
     }
 
     // Zero the payload as well as the counter. Needed by a consumer that reads records
@@ -158,14 +161,15 @@ public:
     // reads zero on a pool that was written means reset() ran since the writes, and the extent
     // is unknown, so the whole payload is zeroed. The match pool is 8 x max_states records
     // (88 MB at the default config) and a small run writes a few.
-    void reset_and_clear() {
-        if (!written_since_clear_) { reset(); return; }
+    void reset_and_clear(ClearBatch* batch = nullptr) {
+        if (!written_since_clear_) { reset(batch); return; }
         uint32_t n = 0;
         HG_CUDA_CHECK(cudaMemcpy(&n, counter_, sizeof(uint32_t), cudaMemcpyDeviceToHost),
                       "Pool clear extent");
         const uint32_t dirty = (n == 0 || n > capacity_) ? capacity_ : n;
-        reset();
-        HG_CUDA_CHECK(cudaMemset(data_, 0, sizeof(T) * dirty), "Pool clear data");
+        reset(batch);
+        if (batch) batch->add(data_, sizeof(T) * dirty, 0);
+        else HG_CUDA_CHECK(cudaMemset(data_, 0, sizeof(T) * dirty), "Pool clear data");
         written_since_clear_ = false;
     }
 

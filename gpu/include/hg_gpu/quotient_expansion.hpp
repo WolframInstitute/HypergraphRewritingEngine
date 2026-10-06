@@ -1478,6 +1478,9 @@ private:
     unsigned long long*       qm_point_class_ = nullptr;
     uint32_t*                 qm_point_depth_ = nullptr;
     uint32_t                  qm_capacity_ = 0;
+    // False until the first clear(), which covers the per-event arrays in full; later clears
+    // cover the prefix below the previous run's raw event count.
+    bool                      cleared_once_ = false;
     LockFreeList<QeAppliedMatch> inst_applied_;
     uint32_t*                 inst_next_id_ = nullptr;
     uint32_t*                 next_raw_event_ = nullptr;

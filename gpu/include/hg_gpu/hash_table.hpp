@@ -5,6 +5,7 @@
 
 #include "hg_gpu/types.hpp"
 #include "hg_gpu/cuda_check.hpp"
+#include "hg_gpu/clear_batch.hpp"
 
 #include <cuda_runtime.h>
 #include <cuda/atomic>
@@ -410,7 +411,9 @@ public:
                                      cudaMemcpyDeviceToHost), "ConcurrentMap key readback");
     }
 
-    void clear() {
+    // With a batch the saturation latch is cleared at its flush; the slots are cleared by their
+    // own kernel, launched here.
+    void clear(ClearBatch* batch = nullptr) {
         // BOTH HALVES OF A SLOT CARRY STATE, and the value is the half that is easy to get wrong.
         //
         // A slot is free because its KEY says so, and a value is read only under a key that has
@@ -426,7 +429,8 @@ public:
         HG_CUDA_CHECK(cudaGetLastError(), "ConcurrentMap clear slots");
         // The table has room again, so the latch must go with the keys. Leaving it set would
         // make a reused map reject every insert for the remainder of the run.
-        if (saturated_)
+        if (saturated_ && batch) batch->add(saturated_, sizeof(uint32_t), 0);
+        else if (saturated_)
             HG_CUDA_CHECK(cudaMemset(saturated_, 0, sizeof(uint32_t)),
                           "ConcurrentMap clear saturated");
     }

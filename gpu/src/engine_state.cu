@@ -15,6 +15,7 @@
 // What stays in engine_state.hpp is DeviceState and the DeviceView structs, which are what the
 // kernels actually use, plus the constexpr stack-size constants a launch reads.
 
+#include <algorithm>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -37,8 +38,9 @@ DeviceArena::~DeviceArena() {
     if (cursor_) cudaFree(cursor_);
 }
 
-void DeviceArena::reset() {
-    HG_CUDA_CHECK(cudaMemset(cursor_, 0, sizeof(uint64_t)), "arena cursor clear");
+void DeviceArena::reset(ClearBatch* batch) {
+    if (batch) batch->add(cursor_, sizeof(uint64_t), 0);
+    else HG_CUDA_CHECK(cudaMemset(cursor_, 0, sizeof(uint64_t)), "arena cursor clear");
 }
 
 DeviceArena::View DeviceArena::view() { return View{base_, cursor_, capacity_}; }
@@ -71,7 +73,7 @@ SignatureIndex::DeviceView SignatureIndex::view() const {
 uint32_t SignatureIndex::num_buckets() const { return list_.num_keys(); }
 uint32_t SignatureIndex::used() const { return list_.pool_used_host(); }
 
-void SignatureIndex::clear() { list_.clear(); }
+void SignatureIndex::clear(ClearBatch* batch) { list_.clear(0xFFFFFFFFu, batch); }
 
 // =============================================================================
 // VertexInvertedIndex
@@ -87,7 +89,46 @@ VertexInvertedIndex::DeviceView VertexInvertedIndex::view() const {
 uint32_t VertexInvertedIndex::max_vertices() const { return list_.num_keys(); }
 uint32_t VertexInvertedIndex::used() const { return list_.pool_used_host(); }
 
-void VertexInvertedIndex::clear(uint32_t used_vertices) { list_.clear(used_vertices); }
+void VertexInvertedIndex::clear(uint32_t used_vertices, ClearBatch* batch) {
+    list_.clear(used_vertices, batch);
+}
+
+// =============================================================================
+// ClearBatch
+// =============================================================================
+
+// blockIdx.y is the region; the x blocks stride over its words.
+__global__ void k_clear_regions(const ClearBatch::Set set) {
+    if (blockIdx.y >= set.n) return;
+    const ClearRegion r = set.r[blockIdx.y];
+    uint32_t* p = static_cast<uint32_t*>(r.ptr);
+    const uint64_t words = r.bytes / 4u;
+    for (uint64_t w = uint64_t(blockIdx.x) * blockDim.x + threadIdx.x; w < words;
+         w += uint64_t(gridDim.x) * blockDim.x)
+        p[w] = r.word;
+}
+
+void ClearBatch::add(void* ptr, uint64_t bytes, uint8_t fill) {
+    if (bytes == 0) return;
+    if ((reinterpret_cast<uintptr_t>(ptr) | bytes) & 3u) {
+        HG_CUDA_CHECK(cudaMemset(ptr, fill, bytes), "ClearBatch unaligned region");
+        return;
+    }
+    if (set_.n == kMaxRegions) flush();
+    set_.r[set_.n++] = ClearRegion{ptr, bytes, 0x01010101u * fill};
+}
+
+void ClearBatch::flush() {
+    if (set_.n == 0) return;
+    uint64_t most = 0;
+    for (uint32_t i = 0; i < set_.n; ++i) most = std::max<uint64_t>(most, set_.r[i].bytes / 4u);
+    constexpr uint32_t block = 256;
+    const uint32_t x = static_cast<uint32_t>(
+        std::min<uint64_t>(std::max<uint64_t>((most + block - 1) / block, 1), 1024));
+    k_clear_regions<<<dim3(x, set_.n), block>>>(set_);
+    HG_CUDA_CHECK(cudaGetLastError(), "ClearBatch launch");
+    set_.n = 0;
+}
 
 // =============================================================================
 // EngineState
@@ -476,66 +517,50 @@ void EngineState::clear() {
             prev.state_edge_ids <= cfg_.max_state_edge_total ? prev.state_edge_ids
                                                              : cfg_.max_state_edge_total;
 
-        HG_CUDA_CHECK(cudaMemset(state_edge_slices_, 0,
-              sizeof(StateEdgeSlice) * cfg_.max_states),
-              "EngineState clear state_edge_slices");
-        HG_CUDA_CHECK(cudaMemset(state_edge_ids_counter_, 0, sizeof(uint32_t)),
-              "EngineState clear state_edge_ids_counter");
-        HG_CUDA_CHECK(cudaMemset(state_count_,       0, sizeof(uint32_t)), "EngineState clear state_count");
+        // The per-state and per-edge arrays the same way: a run writes state ids below its state
+        // counter and edge ids below its edge counter. The first clear, from the constructor,
+        // covers them in full.
+        const uint32_t dirty_states =
+            !cleared_once_ || prev.states > cfg_.max_states ? cfg_.max_states : prev.states;
+        const uint32_t dirty_edges =
+            !cleared_once_ || prev.edges > cfg_.max_edges ? cfg_.max_edges : prev.edges;
+
+        // Every region below is cleared by one kernel launch (ClearBatch).
+        ClearBatch batch;
+        // Every counter, the pools' included (slots 6..10), restarts at zero.
+        batch.add(counter_block_, sizeof(uint32_t) * kCounterSlots, 0);
+        batch.add(state_edge_slices_, sizeof(StateEdgeSlice) * dirty_states, 0);
         // 0 means "not yet computed", which is why the empty state has its own reserved hash
         // rather than 0 -- see EMPTY_STATE_CANONICAL_HASH.
-        HG_CUDA_CHECK(cudaMemset(state_canonical_hash_, 0, sizeof(uint64_t) * cfg_.max_states),
-              "EngineState clear state_canonical_hash");
-        HG_CUDA_CHECK(cudaMemset(state_exact_hash_, 0, sizeof(uint64_t) * cfg_.max_states),
-              "EngineState clear state_exact_hash");
-        if (state_edge_rank_) {
-            // UINT32_MAX, not 0: 0 is a valid rank (the canonically first edge), so a zeroed
-            // array would read as "every edge ranks first" instead of "no ranks yet".
-            HG_CUDA_CHECK(cudaMemset(state_edge_rank_, 0xFF,
-                  sizeof(uint32_t) * dirty_edge_slots),
-                  "EngineState clear state_edge_rank");
-        }
+        batch.add(state_canonical_hash_, sizeof(uint64_t) * dirty_states, 0);
+        batch.add(state_exact_hash_, sizeof(uint64_t) * dirty_states, 0);
+        // UINT32_MAX, not 0: 0 is a valid rank (the canonically first edge), so a zeroed array
+        // would read as "every edge ranks first" instead of "no ranks yet".
+        if (state_edge_rank_) batch.add(state_edge_rank_, sizeof(uint32_t) * dirty_edge_slots, 0xFF);
         if (state_edge_orbit_) {
-            HG_CUDA_CHECK(cudaMemset(state_edge_orbit_, 0xFF,
-                  sizeof(uint32_t) * dirty_edge_slots),
-                  "EngineState clear state_edge_orbit");
-            HG_CUDA_CHECK(cudaMemset(state_num_orbits_, 0, sizeof(uint32_t) * cfg_.max_states),
-                  "EngineState clear state_num_orbits");
+            batch.add(state_edge_orbit_, sizeof(uint32_t) * dirty_edge_slots, 0xFF);
+            batch.add(state_num_orbits_, sizeof(uint32_t) * dirty_states, 0);
         }
-        if (event_sig_fallbacks_) {
-            HG_CUDA_CHECK(cudaMemset(event_sig_fallbacks_, 0, sizeof(uint32_t)),
-                  "EngineState clear event_sig_raw_fallbacks");
-        }
-        if (canonical_event_count_) {
-            HG_CUDA_CHECK(cudaMemset(canonical_event_count_, 0, sizeof(uint32_t)),
-                  "EngineState clear canonical_event_count");
-        }
-        HG_CUDA_CHECK(cudaMemset(needs_indices_,     0, sizeof(uint32_t)), "EngineState clear needs_indices");
-        HG_CUDA_CHECK(cudaMemset(vertex_high_water_, 0, sizeof(uint32_t)), "EngineState clear vertex_high_water");
         // edge_producer init to INVALID_ID (0xFF bytes).
-        HG_CUDA_CHECK(cudaMemset(edge_producer_, 0xFF, sizeof(EventId) * cfg_.max_edges),
-              "EngineState clear edge_producer");
-        vertex_pool_.reset();
-        edge_pool_.reset();
-        signature_index_.clear();
-        vertex_inverted_index_.clear(dirty_vertices);
-        event_pool_.reset();
-        causal_edge_pool_.reset();
-        branchial_edge_pool_.reset();
-        edge_consumers_.clear(dirty_edges_lf);
-        branchial_index_.clear();
+        batch.add(edge_producer_, sizeof(EventId) * dirty_edges, 0xFF);
+        signature_index_.clear(&batch);
+        vertex_inverted_index_.clear(dirty_vertices, &batch);
+        edge_consumers_.clear(dirty_edges_lf, &batch);
+        branchial_index_.clear(0xFFFFFFFFu, &batch);
         // The relation dedup maps are written only on the way to a claim on their pool
         // (try_add_causal_edge inserts the triple, then claims; the pair after a claim;
         // try_add_branchial_edge inserts, then claims), and a pool counter only grows, so a
         // previous run whose counter reads zero left the map as its last clear did. Together
         // they are 60 MB of memset at the default config.
         if (prev.causal) {
-            causal_triple_dedup_.clear();
-            causal_pair_dedup_.clear();
+            causal_triple_dedup_.clear(&batch);
+            causal_pair_dedup_.clear(&batch);
         }
-        if (prev.branchial) branchial_pair_dedup_.clear();
-        preds_list_.clear(dirty_events);
-        errors_.clear();
+        if (prev.branchial) branchial_pair_dedup_.clear(&batch);
+        preds_list_.clear(dirty_events, &batch);
+        errors_.clear(&batch);
+        batch.flush();
+        cleared_once_ = true;
     }
 
 const EngineConfig& EngineState::config() const { return cfg_; }

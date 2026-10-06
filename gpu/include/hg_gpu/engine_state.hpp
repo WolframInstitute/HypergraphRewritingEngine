@@ -460,6 +460,9 @@ private:
     EdgeId*                            state_edge_ids_         = nullptr;
     // Alias of block_.p, kept because the slot pointers below are offsets into it.
     uint32_t*                          counter_block_          = nullptr;
+    // False until the first clear(), which covers every per-state and per-edge array in full;
+    // later clears cover the prefix the previous run wrote.
+    bool                               cleared_once_           = false;
 public:
     // GROW-ONLY DEVICE SCRATCH for the launch chain's per-run buffers (rules, seed states,
     // counters, phase cycles). Allocating these per run cost ~34

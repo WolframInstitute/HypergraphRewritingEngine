@@ -23,6 +23,7 @@
 
 #include "hg_gpu/types.hpp"
 #include "hg_gpu/cuda_check.hpp"
+#include "hg_gpu/clear_batch.hpp"
 
 #include <cuda_runtime.h>
 
@@ -58,7 +59,7 @@ public:
     DeviceArena(const DeviceArena&)            = delete;
     DeviceArena& operator=(const DeviceArena&) = delete;
 
-    void reset();
+    void reset(ClearBatch* batch = nullptr);
 
     View view();
 

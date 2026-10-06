@@ -1473,26 +1473,31 @@ EngineState::PersistentScratch& EngineState::persistent_scratch() const {
 
 namespace {
 
+// With a batch, a reused structure's counters are cleared at the batch's flush.
 template <class T>
-RingBuffer<T>& reuse_ring(std::unique_ptr<RingBuffer<T>>& slot, uint32_t capacity) {
-    if (slot && slot->capacity() == capacity) slot->clear();
+RingBuffer<T>& reuse_ring(std::unique_ptr<RingBuffer<T>>& slot, uint32_t capacity,
+                          ClearBatch* batch = nullptr) {
+    if (slot && slot->capacity() == capacity) slot->clear(batch);
     else { slot.reset(); slot = std::make_unique<RingBuffer<T>>(capacity); }
     return *slot;
 }
 
-RingBuffer<MatchWorkItem>& reuse_ring(const EngineState& engine, uint32_t capacity) {
-    return reuse_ring(engine.persistent_scratch().ring, capacity);
+RingBuffer<MatchWorkItem>& reuse_ring(const EngineState& engine, uint32_t capacity,
+                                      ClearBatch* batch = nullptr) {
+    return reuse_ring(engine.persistent_scratch().ring, capacity, batch);
 }
 
-DedupMap& reuse_map(std::unique_ptr<DedupMap>& slot, uint32_t capacity) {
-    if (slot && slot->capacity() == capacity) slot->clear();
+DedupMap& reuse_map(std::unique_ptr<DedupMap>& slot, uint32_t capacity,
+                    ClearBatch* batch = nullptr) {
+    if (slot && slot->capacity() == capacity) slot->clear(batch);
     else { slot.reset(); slot = std::make_unique<DedupMap>(capacity); }
     return *slot;
 }
 
-TerminationDetector& reuse_term(const EngineState& engine, uint32_t num_roles = 1) {
+TerminationDetector& reuse_term(const EngineState& engine, uint32_t num_roles = 1,
+                                ClearBatch* batch = nullptr) {
     auto& slot = engine.persistent_scratch().term;
-    if (slot && slot->num_roles() == num_roles) slot->clear();
+    if (slot && slot->num_roles() == num_roles) slot->clear(batch);
     else { slot.reset(); slot = std::make_unique<TerminationDetector>(num_roles); }
     return *slot;
 }
@@ -1619,9 +1624,13 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     QeView qe{};
     if (qe_in) qe = *qe_in;
 
+    // Every clear of this launch's scratch goes to one batch, flushed by one kernel launch
+    // before the first kernel that reads any of it (after arena.reset below).
+    ClearBatch clears;
+
     // Records are consumed while they are still being produced, so their publication flags
     // must start clear. The scheduler that relies on the flag is the one that clears it.
-    scratch_matches.reset_and_clear();
+    scratch_matches.reset_and_clear(&clears);
 
     const uint32_t num_rules = static_cast<uint32_t>(rules.size());
     const uint32_t num_seed  = static_cast<uint32_t>(num_rules * roots.size());
@@ -1645,7 +1654,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     uint32_t cap = 2;
     while (cap < num_seed) cap <<= 1;
     while (cap < scratch_matches.capacity() && cap < (1u << 20)) cap <<= 1;
-    RingBuffer<MatchWorkItem>& match_q = reuse_ring(engine, cap);
+    RingBuffer<MatchWorkItem>& match_q = reuse_ring(engine, cap, &clears);
 
     // The canonical map is the dedup key store for the whole run. Sized to the state pool: one
     // entry per state is the worst case, and the map must not fill, because a full map would
@@ -1666,7 +1675,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         forms_v = sess_v.forms;
     } else {
         const uint32_t fw = engine.config().canonical_form_words;
-        if (ps.forms && ps.forms->capacity() == fw) ps.forms->reset();
+        if (ps.forms && ps.forms->capacity() == fw) ps.forms->reset(&clears);
         else ps.forms = std::make_unique<Pool<uint32_t>>(fw);
         forms_v = ps.forms->view();
     }
@@ -1676,11 +1685,11 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     ExploreView ev;
     if (session) {
         ev = sess_v.explore;
-        explore_reset_async(ev, /*full=*/false);
+        explore_reset_async(ev, /*full=*/false, &clears);
     } else {
         const uint32_t ms = engine.config().max_states, me = engine.config().max_events;
         if (ps.explore && ps.explore->max_states() == ms && ps.explore->max_events() == me)
-            ps.explore->clear();
+            ps.explore->clear(&clears);
         else
             ps.explore = std::make_unique<ExploreState>(ms, me);
         ev = ps.explore->view();
@@ -1714,7 +1723,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         ev.frame_levels = levels;
     }
     DedupMap* canonical_owner =
-        session ? nullptr : &reuse_map(ps.canonical, engine.config().max_states * 2u);
+        session ? nullptr : &reuse_map(ps.canonical, engine.config().max_states * 2u, &clears);
 
     // Signature -> first event with it. Sized off the event budget rather than the state one:
     // an evolution has as many applications as it has matches, which is not bounded by its
@@ -1727,7 +1736,8 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     const bool want_event_ids = (event_keys != EVENT_SIG_NONE);
     DedupMap* owned_event_ids =
         session ? nullptr
-                : &reuse_map(ps.event_ids, want_event_ids ? engine.config().max_events * 2u : 8u);
+                : &reuse_map(ps.event_ids, want_event_ids ? engine.config().max_events * 2u : 8u,
+                             &clears);
     if (want_event_ids) engine.ensure_event_identity();
 
     // Exact hash -> record, claimed under None and Automatic when an event identity or a
@@ -1741,7 +1751,8 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
             state_mode != CanonicalizationMode::Full &&
             run_needs_exact_hash(event_keys, dsx.transition_rate, dsx.num_rule_weights,
                                  dsx.matches_per_state_rule);
-        exact_v = reuse_map(ps.exact, want_exact ? engine.config().max_states * 2u : 8u).view();
+        exact_v = reuse_map(ps.exact, want_exact ? engine.config().max_states * 2u : 8u, &clears)
+                      .view();
     }
 
     // Keyed rewrites (keyed.hpp), when hgcommon::keyed_rewrites_apply admits the run: the
@@ -1769,8 +1780,9 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                           cudaMemcpyHostToDevice, 0),
                           "keyed words init");
             dsk.keyed.rewrites =
-                reuse_map(ps.keyed_rewrites, engine.config().max_events * 2u).view();
-            dsk.keyed.twins = reuse_map(ps.keyed_twins, engine.config().max_states * 2u).view();
+                reuse_map(ps.keyed_rewrites, engine.config().max_events * 2u, &clears).view();
+            dsk.keyed.twins =
+                reuse_map(ps.keyed_twins, engine.config().max_states * 2u, &clears).view();
             dsk.keyed.words = ps.keyed_words;
         }
         dsk.keyed.claim_limit = engine.config().keyed_claim_limit;
@@ -1783,7 +1795,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     uint32_t ready_cap = 2;
     if (keyed)
         while (ready_cap < engine.config().max_states && ready_cap < (1u << 31)) ready_cap <<= 1;
-    const auto ready_v = reuse_ring(ps.keyed_ready, ready_cap).view();
+    const auto ready_v = reuse_ring(ps.keyed_ready, ready_cap, &clears).view();
 
     const double t_maps = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_maps0).count();
@@ -1794,14 +1806,14 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     // is memory traffic at the start and end only, with ONE synchronization -- after the last
     // kernel.
     uint32_t* d_cursor = sc.cursor;
-    HG_CUDA_CHECK(cudaMemset(d_cursor, 0, sizeof(uint32_t) * 2), "cursor clear");
+    clears.add(d_cursor, sizeof(uint32_t) * 2, 0);
     uint32_t* d_rewrites_done = d_cursor + 1;
 
     // 5 top-level phases + apply_one_match's 6 sub-stretches (see rewrite.hpp).
     unsigned long long* d_phase_cycles = sc.phase_cycles;
-    HG_CUDA_CHECK(cudaMemset(d_phase_cycles, 0, sizeof(unsigned long long) * 16), "phase cycles clear");
+    clears.add(d_phase_cycles, sizeof(unsigned long long) * 16, 0);
 
-    TerminationDetector& term = reuse_term(engine);
+    TerminationDetector& term = reuse_term(engine, 1, &clears);
 
     // The whole evolution is a launch CHAIN on one stream: root hashing appends each root to
     // the expand log, which the detector counts, and the evolve kernel consumes it. Stream order
@@ -1811,7 +1823,8 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         std::chrono::steady_clock::now() - t_alloc0).count();
     auto t_seed0 = std::chrono::steady_clock::now();
 
-    arena.reset();
+    arena.reset(&clears);
+    clears.flush();
 
     // THE ENGINE MUST FIT IN PHYSICAL VRAM. Under WDDM (Windows, WSL) cudaMalloc does not fail
     // past the device's memory: the driver pages device memory to system memory and every
@@ -1946,21 +1959,21 @@ __global__ void k_expand_log_clear(ExploreView v) {
         v.expand.items.at(i).published = 0u;
 }
 
-void explore_reset_async(const ExploreView& v, bool full) {
+// The regions go to `batch` when one is given, flushed after this launch; otherwise they are
+// cleared here.
+void explore_reset_async(const ExploreView& v, bool full, ClearBatch* batch) {
     k_expand_log_clear<<<64, 256>>>(v);
-    HG_CUDA_CHECK(cudaMemsetAsync(v.expand.items.counter, 0, sizeof(uint32_t)),
-                  "expand log counter clear");
-    HG_CUDA_CHECK(cudaMemsetAsync(v.expand.cursor, 0, sizeof(uint32_t) * 2u),
-                  "expand log cursor clear");
-    if (!full) return;
-    HG_CUDA_CHECK(cudaMemsetAsync(v.depth, 0xFF, sizeof(uint32_t) * v.max_states),
-                  "explore depth clear");
-    HG_CUDA_CHECK(cudaMemsetAsync(v.claimed, 0, sizeof(uint32_t) * v.max_states),
-                  "explore claim clear");
-    HG_CUDA_CHECK(cudaMemsetAsync(v.children.heads, 0xFF, sizeof(uint32_t) * v.children.num_keys),
-                  "explore child heads clear");
-    HG_CUDA_CHECK(cudaMemsetAsync(v.children.pool.counter, 0, sizeof(uint32_t)),
-                  "explore child pool clear");
+    ClearBatch own;
+    ClearBatch& b = batch ? *batch : own;
+    b.add(v.expand.items.counter, sizeof(uint32_t), 0);
+    b.add(v.expand.cursor, sizeof(uint32_t) * 2u, 0);
+    if (full) {
+        b.add(v.depth, sizeof(uint32_t) * v.max_states, 0xFF);
+        b.add(v.claimed, sizeof(uint32_t) * v.max_states, 0);
+        b.add(v.children.heads, sizeof(uint32_t) * v.children.num_keys, 0xFF);
+        b.add(v.children.pool.counter, sizeof(uint32_t), 0);
+    }
+    if (!batch) own.flush();
 }
 
 ExploreState::ExploreState(uint32_t max_states, uint32_t max_events)
@@ -1975,7 +1988,7 @@ ExploreState::ExploreState(uint32_t max_states, uint32_t max_events)
 
 ExploreState::~ExploreState() { if (words_) cudaFree(words_); }
 
-void ExploreState::clear() { explore_reset_async(view(), /*full=*/true); }
+void ExploreState::clear(ClearBatch* batch) { explore_reset_async(view(), /*full=*/true, batch); }
 
 ExploreView ExploreState::view() const {
     ExploreView v;

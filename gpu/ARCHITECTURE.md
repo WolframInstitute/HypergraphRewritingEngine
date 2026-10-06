@@ -69,6 +69,10 @@ round trip for any other reason is the same defect in a different place. Three c
 - **Hash tables** (`hash_table.hpp`): open-addressing concurrent maps with the EMPTY/LOCKED key
   discipline; a key equal to a sentinel is rejected rather than silently lost.
 - **DeviceArena** (`device_arena.hpp`): bump allocation for variable-size per-state data.
+- **Per-run clears** (`clear_batch.hpp`): `EngineState::clear`, `QeState::clear` and the
+  persistent launch's setup each collect their regions in one `ClearBatch` and clear them with one
+  kernel launch. Per-state, per-edge and per-event arrays are cleared up to the previous run's
+  counter, and in full on the first clear.
 - **State and event records** live in structure-of-arrays form on `EngineState`
   (`engine_state.hpp`); the device stack is a small constant plus a bounded
   reconstruction-nesting term, requested per run as the minimum of the budget and the depth.

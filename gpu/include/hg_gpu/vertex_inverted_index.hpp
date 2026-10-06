@@ -46,7 +46,7 @@ public:
 
     // `used_vertices` bounds the head reset to the ids a run actually minted; see
     // LockFreeList::clear. Vertex ids come from a monotone counter, so the prefix is exact.
-    void clear(uint32_t used_vertices = 0xFFFFFFFFu);
+    void clear(uint32_t used_vertices = 0xFFFFFFFFu, ClearBatch* batch = nullptr);
 
 private:
     LockFreeList<EdgeId> list_;

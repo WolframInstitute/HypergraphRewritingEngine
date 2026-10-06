@@ -115,54 +115,45 @@ QeState::~QeState() {
 bool QeState::enabled() const { return on_; }
 
 void QeState::clear() {
-        frame_.clear();
-        by_from_.clear();
-        matches_.reset();
-        by_key_.clear();
-        instances_.reset();
-        blocked_.reset();
+        // The per-event arrays are written below the raw event counter, so the previous run's
+        // count bounds what this clear has to cover; the first clear, from the constructor,
+        // covers them in full.
+        uint32_t prev[kNumCounters] = {};
+        HG_CUDA_CHECK(cudaMemcpy(prev, counters_, sizeof(prev), cudaMemcpyDeviceToHost),
+                      "QeState counters read for clear");
+        const uint32_t events = !cleared_once_ || prev[3] > event_sig_capacity_
+                                    ? event_sig_capacity_ : prev[3];
+
+        // Every region below is cleared by one kernel launch (ClearBatch).
+        ClearBatch batch;
+        frame_.clear(&batch);
+        by_from_.clear(0xFFFFFFFFu, &batch);
+        matches_.reset(&batch);
+        by_key_.clear(0xFFFFFFFFu, &batch);
+        instances_.reset(&batch);
+        blocked_.reset(&batch);
         // Published flags start clear; reset_and_clear zeroes the prefix the last run wrote.
-        tasks_.reset_and_clear();
-        HG_CUDA_CHECK(cudaMemset(counters_ + 13, 0, sizeof(uint32_t) * 2u),
-                      "QeState task cursor clear");
+        tasks_.reset_and_clear(&batch);
+        // Every scalar counter and cursor restarts at zero.
+        batch.add(counters_, sizeof(uint32_t) * kNumCounters, 0);
         // The slices it names are in the arena, which restarts with this run.
-        if (lane_reach_)
-            HG_CUDA_CHECK(cudaMemset(lane_reach_, 0, sizeof(uint32_t) * lane_reach_slots_),
-                          "QeState lane reach clear");
-        rep_.clear();
-        applied_.clear();
-        canon_seen_.clear();
-        causal_pairs_.clear();
-        qm_points_.clear();
-        qm_consumed_.clear();
-        qm_overlaps_.clear();
-        // The masses, cells and flags are zeroed by whoever claims them; only the counts and the
-        // cursors restart.
-        HG_CUDA_CHECK(cudaMemset(qm_words_ + 2ull * qm_capacity_, 0, sizeof(unsigned long long) * 3u),
-                      "QeState multiplicity counts clear");
-        HG_CUDA_CHECK(cudaMemset(counters_ + 10, 0, sizeof(uint32_t) * 2u),
-                      "QeState multiplicity cursors clear");
-        inst_applied_.clear();
-        HG_CUDA_CHECK(cudaMemset(inst_next_id_, 0, sizeof(uint32_t)), "QeState inst id clear");
-        HG_CUDA_CHECK(cudaMemset(class_nmatch_, 0, sizeof(uint32_t) * class_nmatch_cap_),
-                      "QeState class match counts clear");
-        HG_CUDA_CHECK(cudaMemset(next_raw_event_, 0, sizeof(uint32_t)), "QeState raw ev clear");
-        HG_CUDA_CHECK(cudaMemset(align_moved_, 0, sizeof(uint32_t)), "QeState align moved clear");
-        HG_CUDA_CHECK(cudaMemset(align_fail_, 0, sizeof(uint32_t)), "QeState align fail clear");
-        HG_CUDA_CHECK(cudaMemset(num_canon_, 0, sizeof(uint32_t)), "QeState canon clear");
-        HG_CUDA_CHECK(cudaMemset(num_causal_pairs_, 0, sizeof(uint32_t)), "QeState c-pairs clear");
-        HG_CUDA_CHECK(cudaMemset(num_causal_edges_, 0, sizeof(uint32_t)), "QeState c-edges clear");
-        HG_CUDA_CHECK(cudaMemset(num_branchial_, 0, sizeof(uint32_t)), "QeState branchial clear");
-        HG_CUDA_CHECK(cudaMemset(num_reduced_pairs_, 0, sizeof(uint32_t)), "QeState reduced clear");
-        HG_CUDA_CHECK(cudaMemset(event_kept_, 0,
-                                 sizeof(uint32_t) * kQeKeptStride * size_t(event_sig_capacity_)),
-                      "QeState event kept clear");
-        HG_CUDA_CHECK(cudaMemset(event_sig_, 0, sizeof(uint64_t) * event_sig_capacity_),
-                      "QeState event sig clear");
-        HG_CUDA_CHECK(cudaMemset(event_runsig_, 0, sizeof(uint64_t) * event_sig_capacity_),
-                      "QeState event runsig clear");
-        HG_CUDA_CHECK(cudaMemset(cursor_, 0, sizeof(uint32_t)), "QeState cursor clear");
-        HG_CUDA_CHECK(cudaMemset(next_id_, 0, sizeof(uint32_t)), "QeState next_id clear");
+        if (lane_reach_) batch.add(lane_reach_, sizeof(uint32_t) * lane_reach_slots_, 0);
+        rep_.clear(&batch);
+        applied_.clear(&batch);
+        canon_seen_.clear(&batch);
+        causal_pairs_.clear(&batch);
+        qm_points_.clear(&batch);
+        qm_consumed_.clear(&batch);
+        qm_overlaps_.clear(&batch);
+        // The masses, cells and flags are zeroed by whoever claims them; only the counts restart.
+        batch.add(qm_words_ + 2ull * qm_capacity_, sizeof(unsigned long long) * 3u, 0);
+        inst_applied_.clear(0xFFFFFFFFu, &batch);
+        batch.add(class_nmatch_, sizeof(uint32_t) * class_nmatch_cap_, 0);
+        batch.add(event_kept_, sizeof(uint32_t) * kQeKeptStride * size_t(events), 0);
+        batch.add(event_sig_, sizeof(uint64_t) * events, 0);
+        batch.add(event_runsig_, sizeof(uint64_t) * events, 0);
+        batch.flush();
+        cleared_once_ = true;
     }
 
 QeState::Counters QeState::counters_host(bool multiplicity) const {

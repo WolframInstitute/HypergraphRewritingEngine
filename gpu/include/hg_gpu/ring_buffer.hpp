@@ -5,6 +5,7 @@
 
 #include "hg_gpu/types.hpp"
 #include "hg_gpu/cuda_check.hpp"
+#include "hg_gpu/clear_batch.hpp"
 
 #include <cuda_runtime.h>
 #include <cuda/atomic>
@@ -146,9 +147,15 @@ public:
     // seq[i] = i, so position i is the first producer turn for slot i. A memset cannot express
     // that, and a fill kernel defined in this header would be registered once per including
     // translation unit, so the ramp is built on the host and uploaded.
-    void clear() {
-        HG_CUDA_CHECK(cudaMemset(head_, 0, sizeof(uint64_t)), "RingBuffer clear head");
-        HG_CUDA_CHECK(cudaMemset(tail_, 0, sizeof(uint64_t)), "RingBuffer clear tail");
+    // With a batch the head and tail are cleared at its flush.
+    void clear(ClearBatch* batch = nullptr) {
+        if (batch) {
+            batch->add(head_, sizeof(uint64_t), 0);
+            batch->add(tail_, sizeof(uint64_t), 0);
+        } else {
+            HG_CUDA_CHECK(cudaMemset(head_, 0, sizeof(uint64_t)), "RingBuffer clear head");
+            HG_CUDA_CHECK(cudaMemset(tail_, 0, sizeof(uint64_t)), "RingBuffer clear tail");
+        }
         // The ramp is written ON DEVICE. Building it host-side and copying it up cost eight
         // bytes per slot per clear -- 8 MB and 1.45 ms of H2D per run at the launch chain's
         // 2^20 capacity, about a quarter of the device's per-call floor -- for values that

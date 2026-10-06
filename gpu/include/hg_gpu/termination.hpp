@@ -3,6 +3,7 @@
 
 #include "hg_gpu/types.hpp"
 #include "hg_gpu/cuda_check.hpp"
+#include "hg_gpu/clear_batch.hpp"
 
 #include <cuda_runtime.h>
 #include <cuda/atomic>
@@ -105,7 +106,7 @@ public:
 
     DeviceView view();
 
-    void clear();
+    void clear(ClearBatch* batch = nullptr);
 
     // Record work the HOST enqueued before launching, so the counters start balanced against
     // what the workers will complete. Without it the detector sees pushed == completed == 0 at

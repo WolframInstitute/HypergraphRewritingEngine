@@ -97,8 +97,9 @@ DeviceErrors::~DeviceErrors() {
 
 DeviceErrors::DeviceView DeviceErrors::view() const { return DeviceView{counters_}; }
 
-void DeviceErrors::clear() {
-    cudaMemset(counters_, 0, sizeof(uint32_t) * kMaxKinds);
+void DeviceErrors::clear(ClearBatch* batch) {
+    if (batch) batch->add(counters_, sizeof(uint32_t) * kMaxKinds, 0);
+    else cudaMemset(counters_, 0, sizeof(uint32_t) * kMaxKinds);
 }
 
 DeviceErrors::PoolOverflow::PoolOverflow(ErrorKind k, uint32_t cnt, const std::string& full_msg)
@@ -194,7 +195,13 @@ TerminationDetector::DeviceView TerminationDetector::view() {
     return DeviceView{pushed_, completed_, should_exit_, num_roles_};
 }
 
-void TerminationDetector::clear() {
+void TerminationDetector::clear(ClearBatch* batch) {
+    if (batch) {
+        batch->add(pushed_, sizeof(uint64_t) * kMaxRoles, 0);
+        batch->add(completed_, sizeof(uint64_t) * kMaxRoles, 0);
+        batch->add(should_exit_, sizeof(uint32_t), 0);
+        return;
+    }
     HG_CUDA_CHECK(cudaMemset(pushed_,      0, sizeof(uint64_t) * kMaxRoles), "TD clear pushed");
     HG_CUDA_CHECK(cudaMemset(completed_,   0, sizeof(uint64_t) * kMaxRoles), "TD clear completed");
     HG_CUDA_CHECK(cudaMemset(should_exit_, 0, sizeof(uint32_t)),             "TD clear should_exit");

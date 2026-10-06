@@ -150,11 +150,13 @@ public:
     // handful of states paid for the estimate: the head arrays are what remains of the gigabytes
     // of cudaMemset a depth-3 run was measured issuing. Lists keyed by a HASH BUCKET cannot use
     // this -- their entries are scattered across the whole array -- and pass nothing.
-    void clear(uint32_t used_keys = 0xFFFFFFFFu) {
+    // With a batch the heads and the pool counter are cleared at its flush.
+    void clear(uint32_t used_keys = 0xFFFFFFFFu, ClearBatch* batch = nullptr) {
         const uint32_t n = used_keys < num_keys_ ? used_keys : num_keys_;
-        if (n) HG_CUDA_CHECK(cudaMemset(heads_, 0xFF, sizeof(uint32_t) * n),
-                             "LockFreeList clear heads");
-        pool_.reset();
+        if (batch) batch->add(heads_, sizeof(uint32_t) * n, 0xFF);
+        else if (n) HG_CUDA_CHECK(cudaMemset(heads_, 0xFF, sizeof(uint32_t) * n),
+                                  "LockFreeList clear heads");
+        pool_.reset(batch);
     }
 
     uint32_t num_keys()       const { return num_keys_; }

@@ -52,7 +52,7 @@ struct ExploreView {
 
 // Stream-ordered reset through the view: the expand log (published flags, counter, cursor, done)
 // always; depths, claims and child lists as well when `full`.
-void explore_reset_async(const ExploreView& v, bool full);
+void explore_reset_async(const ExploreView& v, bool full, ClearBatch* batch = nullptr);
 
 // Host owner. Sized from the state and event budgets; a session keeps one across calls and a
 // one-shot run clears its own per launch.
@@ -67,7 +67,7 @@ public:
     uint32_t max_events() const { return max_events_; }
 
     // Every state unreached and unclaimed, the lists and the log empty.
-    void clear();
+    void clear(ClearBatch* batch = nullptr);
     ExploreView view() const;
 
 private:

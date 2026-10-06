@@ -42,7 +42,7 @@ public:
     uint32_t num_buckets() const;
     uint32_t used() const;
 
-    void clear();
+    void clear(ClearBatch* batch = nullptr);
 
 private:
     LockFreeList<EdgeId> list_;
