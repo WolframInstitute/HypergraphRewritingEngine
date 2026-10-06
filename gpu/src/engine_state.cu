@@ -120,36 +120,18 @@ EngineState::EngineState(EngineConfig cfg): cfg_(cfg)
         , branchial_pair_dedup_(cfg.branchial_pair_slots)
         , preds_list_(cfg.max_events, cfg.tr_preds_nodes) {
         // Every kernel that runs against an EngineState needs more per-thread stack than the
-        // 1 KB default: match_state_rule's DFS recurses to the LHS edge count, apply_one_match
-        // holds several kMaxPatternEdges arrays, and a scheduler that calls both from one
-        // kernel carries the sum. Raising it here rather than in one scheduler's constructor
-        // is what makes it hold for every entry point -- a scheduler that missed it would fail
-        // as a stack overflow reported as an illegal memory access.
-        // Checked, and then READ BACK. A driver may clamp the request rather than refuse it, so a
-        // successful return does not mean the stack is the size that was asked for -- and the
-        // failure mode either way is a stack overflow surfacing as an illegal memory access,
-        // which reads like a pointer bug and is diagnosed as one.
-        // ASK FOR LESS RATHER THAN FAIL. The driver reserves this per-thread size across every
-        // thread the device can hold resident -- not across the launch grid -- so on a small or
-        // busy device even this fixed request can exceed what is available, and
-        // cudaDeviceSetLimit returns out-of-memory. Throwing there would turn a run that could
-        // have proceeded into no run at all. Halving until it is accepted reaches the largest
-        // stack the device will actually grant.
-        size_t want_stack = kDeviceStackBytes;
-        cudaError_t st_rc = cudaDeviceSetLimit(cudaLimitStackSize, want_stack);
-        while (st_rc != cudaSuccess && want_stack > kDeviceStackFloorBytes) {
-            cudaGetLastError();                      // clear the sticky error before retrying
-            want_stack = want_stack / 2 > kDeviceStackFloorBytes ? want_stack / 2
-                                                                 : kDeviceStackFloorBytes;
-            st_rc = cudaDeviceSetLimit(cudaLimitStackSize, want_stack);
-        }
-        HG_CUDA_CHECK(st_rc, "set device stack size");
+        // 1 KB default (kDeviceStackBytes). Raising it here rather than in one scheduler's
+        // constructor makes it hold for every entry point; a stack overflow reports as an
+        // illegal memory access.
+        // Checked, and then READ BACK: a driver may clamp the request rather than refuse it.
+        HG_CUDA_CHECK(cudaDeviceSetLimit(cudaLimitStackSize, kDeviceStackBytes),
+                      "set device stack size");
         size_t actual_stack = 0;
         HG_CUDA_CHECK(cudaDeviceGetLimit(&actual_stack, cudaLimitStackSize), "read device stack size");
-        if (actual_stack < kDeviceStackFloorBytes) {
+        if (actual_stack < kDeviceStackBytes) {
             throw std::runtime_error(
                 "EngineState: device stack is " + std::to_string(actual_stack) +
-                " bytes after requesting " + std::to_string(want_stack) +
+                " bytes after requesting " + std::to_string(kDeviceStackBytes) +
                 "; match_state_rule's DFS would overflow it and report an illegal memory access");
         }
         slice_scan_max_edges_ = cfg.slice_scan_max_edges;

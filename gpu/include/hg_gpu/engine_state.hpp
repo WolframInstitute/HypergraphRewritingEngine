@@ -297,16 +297,15 @@ __device__ __forceinline__ uint64_t* survivor_buffer(const DeviceState& ds, uint
 
 class EngineState {
 public:
-    // Per-thread device stack. See the constructor for why the default is not enough.
-    //
-    // The floor covers the kernels whose stack need is fixed: match_state_rule's DFS recurses
-    // to the LHS edge count and apply_one_match holds several kMaxPatternEdges arrays, both
-    // bounded by kMaxPatternEdges.
-    static constexpr size_t kDeviceStackFloorBytes = 32u * 1024u;
-
-    // The replay carries reconstruction depth in a worklist in device memory, so the request is
-    // this constant however deep the run is.
-    static constexpr size_t kDeviceStackBytes = kDeviceStackFloorBytes;
+    // Per-thread device stack. The driver reserves it for every thread the device can hold
+    // resident (196,608 on an RTX 4090: 2.25 GB at this size), so it is the measured need plus
+    // a margin. hgcommon::join_dfs recurses once per LHS edge, so nvlink cannot size the
+    // matching kernels and this limit is what they run in. tools/dev/ptx_frame_sizes.py
+    // --calls gives the frames: k_persistent_evolve's matcher path is 4,240 B and 208 B per join
+    // level for up to kMaxPatternEdges levels, 7,568 B before the per-call ABI bytes; its rewrite
+    // path is 6,672 B. EngineState.TheDeepestJoinFitsTheStack runs the deepest join through the
+    // persistent kernel: it faults at 8,192 B and runs at 9,216 B.
+    static constexpr size_t kDeviceStackBytes = 12u * 1024u;
 
 
     // Per-block global scratch of the reachability search at tr_scratch_scale 1: 8 times the

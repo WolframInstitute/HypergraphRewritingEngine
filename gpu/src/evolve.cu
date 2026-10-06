@@ -881,8 +881,8 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     // they had to share with pushed the total over. Both attempts were reverted for it.
     //
     // The driver reserves it for every thread the device can hold resident, not for the grid
-    // launched: on an RTX 4090, 128 SMs x 1,536 threads x 32 KB = 6.0 GB, measured as the first
-    // engine's allocation less the second's (CapacityOverflow.TheEstimateCoversTheAllocation).
+    // launched: at 32 KB on an RTX 4090 (128 SMs x 1,536 threads), the first engine of a process
+    // took 6.0 GB more than the second (CapacityOverflow.TheEstimateCoversTheAllocation).
     b += static_cast<uint64_t>(EngineState::kDeviceStackBytes) * device_resident_threads();
 
     return b + b / 6;   // ~17% headroom

@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "hg_gpu/engine_state.hpp"
+#include "hg_gpu/evolve.hpp"
 #include "hg_gpu/initial_upload.hpp"
 
 #include <cuda_runtime.h>
@@ -205,3 +206,26 @@ TEST(EngineState, ASignatureBuiltFromARawEdgeIdIsReportedToTheCaller) {
 }
 
 }  // namespace
+
+// The deepest join the engine admits, kMaxPatternEdges levels, run through the persistent kernel
+// at the shipped device stack (EngineState::kDeviceStackBytes): a 16-edge path pattern on a
+// 16-edge path, whose one match recurses once per edge and rewrites all 16. A stack too small
+// for it faults as an illegal memory access.
+TEST(EngineState, TheDeepestJoinFitsTheStack) {
+    constexpr uint8_t n = hg_gpu::kMaxPatternEdges;
+    hg_gpu::RewriteRule r;
+    for (uint8_t i = 0; i < n; ++i) r.lhs.push_back({i, static_cast<uint8_t>(i + 1)});
+    r.rhs = r.lhs;
+    r.rhs.back() = {static_cast<uint8_t>(n - 1), static_cast<uint8_t>(n + 1)};
+    r.num_lhs_vars = n + 1;
+    r.num_rhs_vars = n + 2;
+    hg_gpu::EvolveInput in;
+    in.rules = {r};
+    for (VertexId i = 0; i < n; ++i) in.initial_state.push_back({i, i + 1});
+    in.num_steps = 1;
+    in.canonicalization = hg_gpu::CanonicalizationMode::Full;
+    const hg_gpu::EvolveResult res = hg_gpu::evolve(in);
+    EXPECT_TRUE(res.warnings.empty());
+    EXPECT_EQ(res.events.size(), 1u);
+    EXPECT_EQ(cudaGetLastError(), cudaSuccess);
+}
