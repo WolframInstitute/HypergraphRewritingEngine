@@ -149,11 +149,14 @@ struct RuleSetFacts {
     bool has_cyclic_multiedge_lhs = false;
     // A rule whose LHS falls into two or more components joined by nothing.
     bool has_disconnected_lhs = false;
-    // Some rule's LHS joins two or more edges, so re-matching a child is a join rather than an
-    // index scan. That is the property match forwarding has to beat: forwarding replaces the
-    // re-match with a walk of the ancestor's records plus the coordination that keeps the walk
-    // complete, and against identical event counts it costs +22% / +45% on single-edge rule sets
-    // while paying 19% on a multi-edge one.
+    // Some rule's LHS joins two or more edges through shared variables, so re-matching a child
+    // is a join rather than an index scan. That is the property match forwarding has to beat:
+    // forwarding hands a child the parent's matches that survive the rewrite, and against
+    // identical event counts it costs +22% / +45% on single-edge rule sets while paying 19% on a
+    // multi-edge one. A DISCONNECTED LHS does not count: its matches are a product of its
+    // components' matches, so the inherited list is quadratic in the state while the delta
+    // re-match is the new edges times the state (disc2x2 at four steps, callgrind: 45.21M
+    // instructions forwarded, 43.29M re-matched).
     bool forwarding_pays = false;
 };
 

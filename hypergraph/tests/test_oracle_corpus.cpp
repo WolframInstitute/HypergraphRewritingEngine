@@ -1324,3 +1324,17 @@ TEST(OracleCorpus, GyoSeparatesTheTriangleFromThePath) {
     EXPECT_FALSE(lhs_is_acyclic(cycle4));
     EXPECT_EQ(lhs_edge_cover(cycle4), 2u);
 }
+
+// Match forwarding is chosen for a rule set with a connected multi-edge left-hand side, and not
+// for one whose only multi-edge left-hand side is disconnected or whose rules have one edge.
+TEST(RuleAnalysis, ForwardingIsChosenForConnectedJoinsOnly) {
+    const RewriteRule chain = make_rule(0).lhs({0, 1}).lhs({1, 2}).rhs({0, 2}).build();
+    const RewriteRule disc =
+        make_rule(0).lhs({0, 1}).lhs({2, 3}).rhs({0, 1}).rhs({2, 3}).rhs({1, 4}).build();
+    const RewriteRule single = make_rule(1).lhs({0, 1}).rhs({0, 2}).rhs({2, 1}).build();
+    EXPECT_TRUE(analyze_rules({chain}).forwarding_pays);
+    EXPECT_FALSE(analyze_rules({disc}).forwarding_pays);
+    EXPECT_FALSE(analyze_rules({single}).forwarding_pays);
+    EXPECT_TRUE(analyze_rules({disc, chain}).forwarding_pays);
+    EXPECT_FALSE(analyze_rules({disc, single}).forwarding_pays);
+}

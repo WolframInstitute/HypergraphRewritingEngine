@@ -141,7 +141,7 @@ RuleSetFacts analyze_rules(const std::vector<RewriteRule>& rules) {
     for (const auto& r : rules) {
         if (r.num_rhs_edges > r.num_lhs_edges) s.non_growing = false;
         if (r.num_new_vars > 0) s.bounded_vertices = false;
-        if (r.num_lhs_edges >= 2) s.forwarding_pays = true;
+        if (r.num_lhs_edges >= 2 && lhs_is_connected(r)) s.forwarding_pays = true;
         if (r.num_lhs_edges >= 3 && !lhs_is_acyclic(r)) s.has_cyclic_multiedge_lhs = true;
         if (!lhs_is_connected(r)) s.has_disconnected_lhs = true;
     }
