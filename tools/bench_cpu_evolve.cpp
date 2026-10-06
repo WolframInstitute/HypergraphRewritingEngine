@@ -117,6 +117,14 @@ static std::vector<Workload> workloads() {
     return out;
 }
 
+// The branchial readback in its own frame, so callgrind can collect it alone
+// (--toggle-collect='*enumerate_branchial*').
+__attribute__((noinline)) static uint64_t enumerate_branchial(const Hypergraph& g) {
+    uint64_t pairs = 0;
+    g.for_each_reconstructed_branchial([&](uint64_t, uint64_t) { ++pairs; });
+    return pairs;
+}
+
 int main(int argc, char** argv) {
     // The configuration this binary was built with, first, so every log that carries a number
     // carries the record a reader needs to know what the number is evidence for; and alone on
@@ -375,6 +383,11 @@ int main(int argc, char** argv) {
                         g.num_reconstructed_branchial(),
                         (unsigned long long)g.num_reconstructed_raw_events(),
                         g.reconstructed_event_id_bound());
+            // HG_BENCH_ENUM_BRANCHIAL=1: the readback of the branchial relation, which a caller
+            // asking for the relation pays and the count does not.
+            if (const char* eb = std::getenv("HG_BENCH_ENUM_BRANCHIAL"); eb && eb[0] == '1')
+                std::printf("  enumerated branchial pairs=%llu\n",
+                            (unsigned long long)enumerate_branchial(g));
             // WHAT THE REPLAY PAID FOR AGAINST WHAT IT KEPT. Every (instance, match) pair the
             // cross product offers takes a claim, and the width test that rejects a pair whose
             // capture and instance disagree on the class width runs against the pair after it.
