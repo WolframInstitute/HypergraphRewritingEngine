@@ -720,9 +720,11 @@ TEST(OracleCorpus, ContinuingASampledRunMatchesRunningItInOneCall) {
 //
 // The replay materialises one instance per raw state and counts its applications; the
 // multiplicity path counts the same applications as m(class, depth) * matches without building an
-// instance. Compared per corpus case under quotient exploration (identity None and Automatic),
-// under the Automatic-identity reconstruction without quotient exploration, at 1 and 8 threads,
-// continued in two calls, and sampled.
+// instance. Both count branchial pairs as sum W(c, d) * B(c), W the multiplicity or the replay's
+// instance count, so the replay's count is also compared with the pairs the readback enumerates
+// from its instances. Compared per corpus case under quotient exploration (identity None and
+// Automatic), under the Automatic-identity reconstruction without quotient exploration, at 1 and
+// 8 threads, continued in two calls, and sampled.
 TEST(OracleCorpus, MultiplicityCountsMatchTheReplay) {
     struct Leg { const char* name; bool qexpl; hgcommon::EventSignatureKeys keys; double rate;
                  unsigned threads; bool split; };
@@ -734,7 +736,8 @@ TEST(OracleCorpus, MultiplicityCountsMatchTheReplay) {
         {"qexpl/None/split",   true,  hgcommon::EVENT_SIG_NONE,      0.0,  4, true},
         {"qexpl/None/sampled", true,  hgcommon::EVENT_SIG_NONE,      0.25, 4, false},
     };
-    struct Counts { uint64_t states, events, branchial; size_t instances; bool multiplicity; };
+    struct Counts { uint64_t states, events, branchial, enumerated; size_t instances;
+                    bool multiplicity; };
     auto run = [](const oracle::Case& c, const Leg& leg, bool counts_only) {
         Hypergraph hg;
         hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
@@ -754,8 +757,10 @@ TEST(OracleCorpus, MultiplicityCountsMatchTheReplay) {
         } else {
             e.evolve(c.init, c.measure_steps);
         }
+        uint64_t enumerated = 0;
+        hg.for_each_reconstructed_branchial([&](uint64_t, uint64_t) { ++enumerated; });
         return Counts{hg.num_canonical_states(), hg.observable_num_events(),
-                      hg.observable_num_branchial(), hg.num_reconstructed_instances(),
+                      hg.observable_num_branchial(), enumerated, hg.num_reconstructed_instances(),
                       hg.quotient_multiplicity()};
     };
     size_t compared = 0;
@@ -772,6 +777,7 @@ TEST(OracleCorpus, MultiplicityCountsMatchTheReplay) {
             EXPECT_EQ(mult.states, replay.states) << leg.name << " " << c.name;
             EXPECT_EQ(mult.events, replay.events) << leg.name << " " << c.name;
             EXPECT_EQ(mult.branchial, replay.branchial) << leg.name << " " << c.name;
+            EXPECT_EQ(replay.branchial, replay.enumerated) << leg.name << " " << c.name;
             if (replay.events) ++compared;
         }
     }

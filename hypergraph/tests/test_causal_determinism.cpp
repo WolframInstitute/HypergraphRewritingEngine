@@ -50,7 +50,7 @@ struct Fingerprint {
     // whose online reduction was exact; a positive value names that run as the faulty one.
     long tr_surplus = 0;
     std::string drop_witness;
-    long not_rep = 0, visits = 0;
+    long not_rep = 0;
     long matches = 0, instances = 0, unique = 0;
     uint64_t shape = 0;
     std::vector<uint32_t> shape_v;
@@ -232,14 +232,12 @@ Fingerprint fingerprint(hg::engine::Hypergraph& g) {
     }
     fp.align_fail = static_cast<long>(g.num_alignment_failures());
     fp.badcorr    = static_cast<long>(g.num_bad_correspondences());
-    // THE THREE THE ENGINE ALREADY COUNTED AND NOTHING READ. A firing whose EVENT count moved
-    // by one needs to say where the extra application came from, and these separate the
-    // candidates: not_rep says whether a different raw state won its class's expansion, visits
-    // says how many times an (instance, match) pair was reached, and the shape is the sorted
-    // multiset of per-instance application counts -- so a new instance and an existing instance
-    // gaining one are distinguishable rather than both reading as "one more event".
+    // A firing whose EVENT count moved by one needs to say where the extra application came
+    // from, and these separate the candidates: not_rep says whether a different raw state won
+    // its class's expansion, and the shape is the sorted multiset of per-instance application
+    // counts -- so a new instance and an existing instance gaining one are distinguishable
+    // rather than both reading as "one more event".
     fp.not_rep    = static_cast<long>(g.capture_skipped_not_representative());
-    fp.visits     = static_cast<long>(g.applied_visits());
     fp.matches    = static_cast<long>(g.captured_matches());
     fp.instances  = static_cast<long>(g.reconstruction_instances());
     fp.unique     = static_cast<long>(g.applied_unique());
@@ -379,7 +377,7 @@ struct Variant {
     // alone -- the observed shape -- and each was invisible until it was counted.
     long claims, drops, align_fail, badcorr;
     long tr_skipped, causal_pairs;
-    long not_rep, visits;
+    long not_rep;
     long matches, instances, unique;
     uint64_t shape;
     std::vector<uint32_t> shape_v;
@@ -414,7 +412,6 @@ std::string describe(const Spread& s, const std::map<uint64_t, Variant>& v,
                " not_rep=" + std::to_string(var.not_rep) +
                " tr_skipped=" + std::to_string(var.tr_skipped) +
                " causal_pairs=" + std::to_string(var.causal_pairs) +
-               " visits=" + std::to_string(var.visits) +
                " matches=" + std::to_string(var.matches) +
                " instances=" + std::to_string(var.instances) +
                " claims_minus_unique=" + std::to_string(var.claims - var.unique) +
@@ -638,7 +635,7 @@ Spread spread(const Workload& w, bool quotient) {
                                   f.num_causal, f.num_branchial,
                                   f.claims, f.drops, f.align_fail, f.badcorr,
                                   f.tr_skipped, f.causal_pairs,
-                                  f.not_rep, f.visits, f.matches, f.instances, f.unique,
+                                  f.not_rep, f.matches, f.instances, f.unique,
                                   f.shape, f.shape_v};
                 s.states_v.emplace(f.states, var);
                 s.causal_v.emplace(f.causal, var);

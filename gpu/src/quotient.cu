@@ -29,6 +29,47 @@ static uint32_t qe_list_buckets(uint32_t max_events) {
 
 // Each table is sized from its group in `n` (EngineConfig::qe_class_entries and the four after
 // it), and its overflow reports that group's kind.
+// One thread per multiplicity point, or per class with replay instances; each sums its terms
+// locally and adds once.
+__global__ void k_qe_count_branchial(const __grid_constant__ DeviceState ds, const QeView qe,
+                                     uint32_t multiplicity) {
+    const uint32_t steps = qe.max_steps;
+    unsigned long long local = 0;
+    const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const uint32_t stride = gridDim.x * blockDim.x;
+    if (multiplicity) {
+        const uint32_t n = qe.qm_cursor[0] < qe.qm_capacity ? qe.qm_cursor[0] : qe.qm_capacity;
+        for (uint32_t p = tid; p < n; p += stride) {
+            if (qe.qm_point_depth[p] >= steps) continue;
+            const auto r = qe.rep.lookup(qe.qm_point_class[p]);
+            if (!r.found || r.value - 1u >= qe.class_nmatch_cap) continue;
+            const uint64_t b = qe.class_pairs[r.value - 1u];
+            if (b) local = hgcommon::qm_branchial_add(local, qe.qm_mass[p], b);
+        }
+    } else {
+        // A class's representative is a raw state, so its index is a state id.
+        for (uint32_t c = tid; c < qe.class_nmatch_cap; c += stride) {
+            const uint64_t b = qe.class_pairs[c];
+            if (!b) continue;
+            const uint64_t h = ds.state_canonical_hash[c];
+            for (uint32_t d = 0; d < steps; ++d) {
+                uint64_t count = 0;
+                qe_for_each_instance(qe, h, d, [&](const DeviceQcInstance&) { ++count; });
+                local = hgcommon::qm_branchial_add(local, count, b);
+            }
+        }
+    }
+    if (local && (qe_qm_add(&qe.qm_counts[1], local) || local >= hgcommon::QM_SATURATED))
+        qe.qm_counts[2] = 1ull;
+}
+
+void qe_count_branchial(const DeviceState& ds, const QeView& qe, bool multiplicity) {
+    HG_CUDA_CHECK(cudaMemsetAsync(qe.qm_counts + 1, 0, sizeof(unsigned long long)),
+                  "QeState branchial count clear");
+    k_qe_count_branchial<<<1024, 128>>>(ds, qe, multiplicity ? 1u : 0u);
+    HG_CUDA_CHECK(cudaGetLastError(), "QeState branchial count launch");
+}
+
 QeState::QeState(bool on, const QeEntries& n): matches_(on ? n.classes : 1u),
           by_from_(on ? qe_list_buckets(n.classes) : 1u, on ? n.classes : 1u),
           instances_(on ? n.instances : 1u),
@@ -67,7 +108,7 @@ QeState::QeState(bool on, const QeEntries& n): matches_(on ? n.classes : 1u),
         num_canon_         = counters_ + 6;
         num_causal_pairs_  = counters_ + 7;
         num_causal_edges_  = counters_ + 8;
-        num_branchial_     = counters_ + 9;
+        // counters_ + 9 is unused.
         num_reduced_pairs_ = counters_ + 12;
         // counters_ + 10 and + 11: the multiplicity point and consumed-cell cursors.
         HG_CUDA_CHECK(cudaMalloc(&qm_words_, sizeof(unsigned long long) * (2ull * qm_capacity_ + 3u)),
@@ -81,6 +122,8 @@ QeState::QeState(bool on, const QeEntries& n): matches_(on ? n.classes : 1u),
                       "QeState class match counts alloc");
         HG_CUDA_CHECK(cudaMemset(class_nmatch_, 0, sizeof(uint32_t) * class_nmatch_cap_),
                       "QeState class match counts init");
+        HG_CUDA_CHECK(cudaMalloc(&class_pairs_, sizeof(unsigned long long) * class_nmatch_cap_),
+                      "QeState class pairs alloc");
         HG_CUDA_CHECK(cudaMalloc(&qm_point_depth_, sizeof(uint32_t) * qm_capacity_),
                       "QeState multiplicity point depth alloc");
         event_sig_capacity_ = on ? n.events : 1u;
@@ -103,6 +146,7 @@ QeState::~QeState() {
         if (event_runsig_) cudaFree(event_runsig_);
         if (event_kept_) cudaFree(event_kept_);
         if (class_nmatch_) cudaFree(class_nmatch_);
+        if (class_pairs_) cudaFree(class_pairs_);
         if (event_from_class_) cudaFree(event_from_class_);
         if (event_to_class_) cudaFree(event_to_class_);
         if (event_rule_) cudaFree(event_rule_);
@@ -149,6 +193,7 @@ void QeState::clear() {
         batch.add(qm_words_ + 2ull * qm_capacity_, sizeof(unsigned long long) * 3u, 0);
         inst_applied_.clear(0xFFFFFFFFu, &batch);
         batch.add(class_nmatch_, sizeof(uint32_t) * class_nmatch_cap_, 0);
+        batch.add(class_pairs_, sizeof(unsigned long long) * class_nmatch_cap_, 0);
         batch.add(event_kept_, sizeof(uint32_t) * kQeKeptStride * size_t(events), 0);
         batch.add(event_sig_, sizeof(uint64_t) * events, 0);
         batch.add(event_runsig_, sizeof(uint64_t) * events, 0);
@@ -168,7 +213,7 @@ QeState::Counters QeState::counters_host(bool multiplicity) const {
     }
 
 QeState::Counters QeState::counters_from(const uint32_t* v, const unsigned long long* q) {
-        return Counters{v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9],
+        return Counters{v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8],
                         q[0], q[1], q[2] != 0};
 
     }
@@ -217,7 +262,6 @@ uint32_t QeState::num_reduced_pairs_host() { return read_counter(num_reduced_pai
 
 uint32_t QeState::num_causal_edges_host() { return read_counter(num_causal_edges_, "QeState c-edges read"); }
 
-uint32_t QeState::num_branchial_host() { return read_counter(num_branchial_, "QeState branchial read"); }
 
 void QeState::reconstructed_pairs_host(std::vector<std::pair<uint64_t, uint64_t>>& causal,
                                   std::vector<std::pair<uint64_t, uint64_t>>& causal_reduced,
@@ -435,6 +479,7 @@ QeView QeState::view(uint32_t max_steps, EventSignatureKeys keys,
         q.applied        = applied_.view();
         q.class_nmatch     = class_nmatch_;
         q.class_nmatch_cap = class_nmatch_cap_;
+        q.class_pairs      = class_pairs_;
         q.align_moved    = align_moved_;
         q.canon_seen     = canon_seen_.view();
         q.num_canon      = num_canon_;
@@ -445,7 +490,6 @@ QeView QeState::view(uint32_t max_steps, EventSignatureKeys keys,
         q.event_to_class   = event_content ? event_to_class_ : nullptr;
         q.event_rule       = event_content ? event_rule_ : nullptr;
         q.inst_applied     = inst_applied_.view();
-        q.num_branchial    = num_branchial_;
         q.causal_pairs   = causal_pairs_.view();
         q.num_causal_pairs = num_causal_pairs_;
         q.num_causal_edges = num_causal_edges_;

@@ -1615,6 +1615,8 @@ void Hypergraph::qc_add_instance(uint64_t state_hash, uint32_t depth,
     if (r.has_value()) sh = *r;
     else {
         auto* ns = arena_.template create<QcInstanceShards>();
+        ns->class_hash = state_hash;
+        ns->depth = depth;
         auto ins = qc_instances_.insert_if_absent(key, ns);
         sh = ins.second ? ns : ins.first;
         if (ins.second && static_cast<int>(depth) >= maxs)
@@ -1819,13 +1821,19 @@ void Hypergraph::qc_capture_expansion(EventId e) {
     const auto* node = lst->push(m, arena_);
 
     if (!quotient_reconstruction_.load(std::memory_order_relaxed)) return;
-    if (quotient_multiplicity()) {
-        // b_j over the matches linked before this one, then ready, then the mass already
-        // standing at this class at every depth. Partner: the run in qm_drain.
-        uint64_t b = 0;
+    const bool mult = quotient_multiplicity();
+    // b_j over the matches linked before this one, into the class's B(c), whenever branchial
+    // pairs are counted (num_reconstructed_branchial).
+    uint64_t b = 0;
+    if (mult || (quotient_replay() && record_branchial_.load(std::memory_order_relaxed))) {
         lst->for_each_before(node, [&](const SlotMatch& other) {
             if (hgcommon::qr_consumed_overlap(cs, m.num_consumed, other)) ++b;
         });
+        xp->pairs.fetch_add(b, std::memory_order_relaxed);
+    }
+    if (mult) {
+        // b_j, then ready, then the mass already standing at this class at every depth.
+        // Partner: the run in qm_drain.
         qm_overlaps_.insert_if_absent(static_cast<uint64_t>(m.id) + 1, b + 1);
         // The list's copy: the pass may keep a reference to the match (claim_replay_event).
         qm_cascade([&](QmCtx& c) {
@@ -1974,7 +1982,8 @@ bool Hypergraph::quotient_replay() const {
 }
 
 bool Hypergraph::quotient_counts_saturated() const {
-    return qm_saturated_.load(std::memory_order_relaxed);
+    return qm_saturated_.load(std::memory_order_relaxed) ||
+           num_reconstructed_branchial() >= hgcommon::QM_SATURATED;
 }
 
 uint64_t Hypergraph::num_reconstructed_events() const {
@@ -2007,9 +2016,6 @@ size_t Hypergraph::num_reconstructed_causal_pairs(bool transitively_reduced) con
     return qc_causal_pairs_count();
 }
 
-size_t Hypergraph::applied_scans() const {
-    return qc_ctr_total(&QcCounterSlot::applied_scans);
-}
 
 size_t Hypergraph::applied_claims() const {
     return qc_applied_.size() + qc_ctr_total(&QcCounterSlot::bit_claims);
@@ -2070,9 +2076,6 @@ uint32_t Hypergraph::capture_no_orbits_reason() const {
     return w == ~uint64_t{0} ? 0u : static_cast<uint32_t>(w >> 32);
 }
 
-size_t Hypergraph::applied_visits() const {
-    return qc_ctr_total(&QcCounterSlot::applied_visits);
-}
 
 size_t Hypergraph::captured_matches() const {
     return qc_next_match_id_.load(std::memory_order_relaxed);
@@ -2591,28 +2594,14 @@ void Hypergraph::QrCtx::record_kept(uint32_t ev, const uint32_t* kept, uint32_t 
     qc_slot(hg.qc_ctr_).reduced_pairs += nkept;
 }
 
-bool Hypergraph::QrCtx::applied_ref_valid(AppliedRef r) { return r != nullptr; }
 
-Hypergraph::QrCtx::AppliedRef Hypergraph::QrCtx::publish_applied(const QcInstance& inst,
-                                                                 const SlotMatch& m,
-                                                                 uint32_t ev) {
+void Hypergraph::QrCtx::publish_applied(const QcInstance& inst, const SlotMatch& m,
+                                        uint32_t ev) {
     auto& applied = hg.qc_inst_applied_.slot(qc_ev_slot(inst.id), hg.arena_);
-    return applied.push(QcAppliedMatch{m.id, ev, m.num_consumed, m.consumed_slots}, hg.arena_);
+    applied.push(QcAppliedMatch{m.id, ev, m.num_consumed, m.consumed_slots}, hg.arena_);
 }
 
-void Hypergraph::QrCtx::record_branchial_pair(uint32_t lo, uint32_t hi) {
-    (void)lo; (void)hi;
-    ++branchial_seen;
-}
-
-Hypergraph::QrCtx::~QrCtx() {
-    // Same contract as the causal-edge count above: num_reconstructed_branchial is a semantic
-    // observable (read by the bench and four probes), so the flush runs in every build.
-    if (branchial_seen)
-        qc_slot(hg.qc_ctr_).branchial += branchial_seen;
-}
-
-// The child instance: survivors carry their producer across, produced slots take THIS event.
+// The child instance, recorded by its lineage.
 void Hypergraph::QrCtx::descend(const SlotMatch& m, uint32_t depth, uint32_t ev,
                                 const QcInstance& parent) {
     auto* lin = hg.arena_.template create<QcLineage>();
@@ -2646,8 +2635,30 @@ bool Hypergraph::is_full_canonicalization() const {
 }
 
 uint64_t Hypergraph::num_reconstructed_branchial() const {
-    if (!quotient_replay()) return qm_branchial_.load(std::memory_order_relaxed);
-    return qc_ctr_total(&QcCounterSlot::branchial);
+    // Sum over the points below the step bound of W(c, d) * B(c) (hgcommon::qm_branchial_add):
+    // W the multiplicity when the cascade ran, else the replay's instance count.
+    const uint32_t steps = static_cast<uint32_t>(qc_max_steps_.load(std::memory_order_relaxed));
+    auto pairs_of = [&](uint64_t class_hash) -> uint64_t {
+        auto r = qc_expansion_.lookup(class_hash);
+        return r.has_value() ? (*r)->pairs.load(std::memory_order_relaxed) : 0;
+    };
+    uint64_t total = 0;
+    if (quotient_multiplicity()) {
+        qm_points_.for_each([&](uint64_t, QmPoint* p) {
+            if (p->depth < steps)
+                total = hgcommon::qm_branchial_add(
+                    total, p->mass.load(std::memory_order_acquire), pairs_of(p->class_hash));
+        });
+    } else if (quotient_replay()) {
+        qc_instances_.for_each([&](uint64_t, QcInstanceShards* sh) {
+            if (sh->depth >= steps) return;
+            uint64_t n = 0;
+            for (uint32_t l = 0; l < kInstShards; ++l)
+                sh->shard[l].list.for_each([&](const QcInstance&) { ++n; });
+            total = hgcommon::qm_branchial_add(total, n, pairs_of(sh->class_hash));
+        });
+    }
+    return total;
 }
 
 // =============================================================================
@@ -2740,10 +2751,7 @@ bool Hypergraph::QmCtx::advance(const SlotMatch& m, uint32_t depth, uint64_t& ex
         expected, desired, std::memory_order_acq_rel, std::memory_order_acquire);
 }
 
-void Hypergraph::QmCtx::count(uint64_t events, uint64_t branchial) {
-    hg.qm_add(hg.qm_events_, events);
-    if (branchial) hg.qm_add(hg.qm_branchial_, branchial);
-}
+void Hypergraph::QmCtx::count(uint64_t events) { hg.qm_add(hg.qm_events_, events); }
 
 hgcommon::EventSignatureKeys Hypergraph::QmCtx::keys() const { return hg.event_signature_keys(); }
 

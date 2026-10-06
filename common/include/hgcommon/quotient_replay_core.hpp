@@ -25,11 +25,11 @@
 //                 descent that made the instance this application runs on, so every path into
 //                 the event exists when it is judged and no later event adds one: the kept set
 //                 is the unique reduction of the relation, whatever the schedule.
-//   branchial     siblings expanding the SAME instance whose consumed slots overlap. Publish
-//                 into the instance's applied list, THEN scan it: membership of that list is
-//                 the proof the other application happened, and an application that never
-//                 claims never publishes. Both sides can see each other, so the unordered pair
-//                 is claimed and the winner counts it.
+//   branchial     siblings expanding the SAME instance whose consumed slots overlap. The
+//                 application is published into the instance's applied list, from which the
+//                 readback enumerates the pairs; the pair COUNT comes from class
+//                 multiplicities (quotient_multiplicity_core.hpp), which count the same pairs
+//                 without enumerating them.
 //   descend       the child instance, recorded by its lineage (parent instance, the match that
 //                 made it, this event), and drive it.
 //
@@ -63,19 +63,12 @@
 //                              one in the same application's list, which is the ONLY way a
 //                              (producer, consumer) pair can repeat -- see below. The edge
 //                              multiset counts every call; the PAIR is recorded only when set.
-//   AppliedRef publish_applied(const Instance&, const Match&, uint32_t ev);   a position in the
-//                              instance's applied list, or a value the Ctx reports as not
-//                              published through applied_ref_valid
-//   bool     applied_ref_valid(AppliedRef) const;
-//   template <class F> void for_each_applied_before(const Instance&, AppliedRef, F&& f);
-//                              f(const Applied&) over the applications published STRICTLY
-//                              EARLIER than the given position
-//   void     record_branchial_pair(uint32_t lo, uint32_t hi);
+//   void     publish_applied(const Instance&, const Match&, uint32_t ev);   into the
+//                              instance's applied list, for the readback's enumeration
 //   void     descend(const Match&, uint32_t depth, uint32_t ev, const Instance& parent);
 //
 // A Match supplies: id, to_hash, rule, from_slots, to_slots, num_consumed/produced/survivors,
-// and consumed(i)/produced(i)/surv_from(i)/surv_to(i). An Instance supplies id and nslots. An
-// Applied supplies event, num_consumed and consumed(j).
+// and consumed(i)/produced(i)/surv_from(i)/surv_to(i). An Instance supplies id and nslots.
 
 #include <cstdint>
 
@@ -339,44 +332,10 @@ HG_HD uint32_t qr_apply(Ctx& c, const typename Ctx::Instance& inst,
         c.record_kept(ev, kept, nkept);
     }
 
-    // Branchial: siblings expanding the SAME instance whose consumed slots overlap. The order
-    // that matters is APPLICATION order, not match-id order -- ids come from a global counter
-    // while the list is appended concurrently, so a lower id can arrive after a higher one has
-    // scanned. Publication order is the order the two applications agree on.
-    //
-    // Each pair is reported by the LATER of the two applications, and only by it: the scan
-    // visits the applications published strictly before this one, so of any two exactly one
-    // sees the other. That is what makes the relation exact WITHOUT a set of pairs to dedup
-    // against -- and a set of pairs is the thing that does not fit, at 133,218,996 entries on
-    // disc-l3a2g2r2 depth 3 against the 970,584 applications they are derived from.
-    typename Ctx::AppliedRef mine{};
-    if (m.num_consumed && c.want_branchial() &&
-        c.applied_ref_valid(mine = c.publish_applied(inst, m, ev))) {
-        // This application's consumed slots are read once, not once per sibling. The scan below
-        // visits every application already published against the instance -- 167 of them on
-        // average on disc-l3a2g2r2 depth 3 -- and reading them through the view inside the
-        // comparison made the accessor alone a measurable share of the run.
-        //
-        // A 64-bit fold of the slots, tested against each sibling's fold to reject the disjoint
-        // ones in one AND, was measured and REJECTED: 81.6% of these comparisons DO share a
-        // slot on this workload, so the old loop usually decided on its first comparison, and
-        // computing a fold per sibling added a pass rather than replacing one --
-        // 14,509,903,885 instructions to 16,752,095,733, +15.5%.
-        uint32_t mine_slots[MAX_PATTERN_EDGES];
-        uint32_t mine_n = 0;
-        for (uint32_t i = 0; i < m.num_consumed && mine_n < MAX_PATTERN_EDGES; ++i)
-            mine_slots[mine_n++] = m.consumed(i);
-        c.for_each_applied_before(inst, mine, [&](const typename Ctx::Applied& other) {
-            if (other.event == ev) return;                 // this application
-            if (!qr_consumed_overlap(mine_slots, mine_n, other)) return;
-            // Keyed on the two EVENTS, so the pair reads back as a pair of event signatures and
-            // set-compares against full capture, which keys its own branchial edges the same
-            // way. A key over match ids has the same scope and nothing can be recovered from it.
-            const uint32_t lo = ev < other.event ? ev : other.event;
-            const uint32_t hi = ev < other.event ? other.event : ev;
-            c.record_branchial_pair(lo, hi);
-        });
-    }
+    // Branchial: published for the readback, which pairs the instance's applications whose
+    // consumed slots overlap. The run counts the pairs from class multiplicities, so nothing
+    // here scans the siblings.
+    if (m.num_consumed && c.want_branchial()) c.publish_applied(inst, m, ev);
 
     // The child instance, recorded by its lineage (qr_producer_of). Building and driving it is
     // the Ctx's, because where an instance record lives is the one thing about it that differs.

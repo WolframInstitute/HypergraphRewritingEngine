@@ -171,6 +171,10 @@ class Hypergraph {
     struct QcExpansion {
         LockFreeList<SlotMatch> list;
         std::atomic<uint32_t> n{0};   // matches captured; SlotMatch::local is taken from it
+        // B(c): pairs of the class's matches whose consumed slots overlap, the sum of their b_j
+        // (hgcommon/quotient_multiplicity_core.hpp). Accumulated at capture when branchial pairs
+        // are counted.
+        std::atomic<uint64_t> pairs{0};
     };
     ConcurrentMap<uint64_t, QcExpansion*> qc_expansion_;
     ConcurrentMap<uint64_t, uint64_t> qc_expansion_rep_;   // canonical hash -> StateId + 1
@@ -233,6 +237,8 @@ class Hypergraph {
     };
     struct QcInstanceShards {
         QcInstanceShard shard[kInstShards];
+        uint64_t class_hash = 0;
+        uint32_t depth = 0;
     };
     ConcurrentMap<uint64_t, QcInstanceShards*> qc_instances_;   // key(hash,depth,0)
     // set_qc_spawn's function and context.
@@ -347,7 +353,6 @@ class Hypergraph {
     // b_j + 1, keyed by match id + 1. Present once the match is ready.
     ConcurrentMap<uint64_t, uint64_t> qm_overlaps_;
     std::atomic<uint64_t> qm_events_{0};
-    std::atomic<uint64_t> qm_branchial_{0};
     std::atomic<bool> qm_saturated_{false};
 
     // The reconstructed causal relation over raw event ids, every pair: the TR-off view. The
@@ -456,9 +461,6 @@ class Hypergraph {
     struct alignas(64) QcCounterSlot {
         size_t causal_edges = 0;
         size_t causal_pairs = 0;
-        size_t branchial = 0;
-        size_t applied_scans = 0;
-        size_t applied_visits = 0;
         size_t applications = 0;   // reconstruction applications this worker performed
         size_t reduced_pairs = 0;  // pairs the online reduction kept (qr_apply)
         size_t bit_claims = 0;     // (instance, match) claims won in an instance's claim bits
@@ -530,15 +532,7 @@ class Hypergraph {
     struct QrCtx {
         using Instance = QcInstance;
         using Match    = SlotMatch;
-        using Applied  = QcAppliedMatch;
         Hypergraph& hg;
-        // Branchial pairs counted into a LOCAL and published once, by the destructor, at the
-        // end of the apply this context was made for. Incremented in place it is one atomic
-        // read-modify-write per pair on a counter every worker shares -- 133,218,996 of them
-        // on disc-l3a2g2r2 depth 3, against 970,584 applies -- so the line carrying it moves
-        // between cores once per pair. The published total is identical.
-        size_t branchial_seen = 0;
-        ~QrCtx();
 
         bool claim(const QcInstance& inst, const SlotMatch& m);
         uint32_t mint_event(uint32_t above);
@@ -563,32 +557,7 @@ class Hypergraph {
         void record_causal(uint32_t producer, uint32_t consumer, bool distinct_pair);
         uint32_t redundant(const uint32_t* producers, uint32_t n) const;
         void record_kept(uint32_t ev, const uint32_t* kept, uint32_t nkept);
-        using AppliedRef = const LockFreeList<QcAppliedMatch>::Node*;
-        static bool applied_ref_valid(AppliedRef r);
-        AppliedRef publish_applied(const QcInstance& inst, const SlotMatch& m, uint32_t ev);
-        template <class F>
-        void for_each_applied_before(const QcInstance& inst, AppliedRef mine, F&& f) {
-            // THE FAN-OUT, counted. The scan visits the applications published before this one
-            // and tests slot overlap inside, so its cost is m per application and m^2/2 per
-            // instance. Measured on disc-l3a2g2r2 depth 3: 970,584 scans, 163,228,620 visits,
-            // 133,218,996 pairs -- 81.6% of visits emit, so the visits are not the waste and an
-            // inverted index by (instance, slot) would save 18% rather than a quadratic.
-            //
-            // The visit count is summed in a LOCAL and published once per scan. Incremented in
-            // the loop it is one atomic read-modify-write per visit on a counter every worker
-            // shares -- 163,228,620 of them on the workload above against 970,584 scans -- so
-            // the line carrying it moves between cores once per visit and the instrument costs
-            // more than the scan it measures. Per scan the published total is identical.
-            HG_STAT(++qc_slot(hg.qc_ctr_).applied_scans);
-            size_t visits = 0;
-            hg.qc_inst_applied_.slot(qc_ev_slot(inst.id), hg.arena_).for_each_before(
-                mine, [&](const QcAppliedMatch& a) {
-                    ++visits;
-                    f(a);
-                });
-            HG_STAT(qc_slot(hg.qc_ctr_).applied_visits += visits);
-        }
-        void record_branchial_pair(uint32_t lo, uint32_t hi);
+        void publish_applied(const QcInstance& inst, const SlotMatch& m, uint32_t ev);
         void descend(const SlotMatch& m, uint32_t depth, uint32_t ev, const QcInstance& parent);
     };
 
@@ -606,7 +575,7 @@ class Hypergraph {
         void add_mass(uint64_t class_hash, uint32_t depth, uint64_t delta);
         uint64_t consumed(const SlotMatch& m, uint32_t depth);
         bool advance(const SlotMatch& m, uint32_t depth, uint64_t& expected, uint64_t desired);
-        void count(uint64_t events, uint64_t branchial);
+        void count(uint64_t events);
         hgcommon::EventSignatureKeys keys() const;
         uint32_t frame_step(uint64_t class_hash, uint32_t fallback) const;
         void note_signature(const SlotMatch& m, uint64_t from_class, uint32_t out_step);
@@ -1412,7 +1381,6 @@ public:
     // only until one of them is wrong, and here the reduced count is what a caller compares
     // against what for_each_reconstructed_causal_as emits.
     size_t num_reconstructed_causal_pairs(bool transitively_reduced = false) const;
-    size_t applied_scans() const;
 
     // HOW MANY (instance, match) PAIRS THE REPLAY CLAIMED, distinct.
     //
@@ -1458,7 +1426,6 @@ public:
     // why -- 1 the map held no entry, 2 it held one with no slot array.
     StateId capture_no_orbits_state() const;
     uint32_t capture_no_orbits_reason() const;
-    size_t applied_visits() const;
 
     // THE TWO POPULATIONS THE APPLICATIONS ARE DRAWN FROM. An application is one (instance,
     // match) pair, so a run with one application too many either replayed a pair it should not
@@ -1475,12 +1442,10 @@ public:
     // stands between the two paths into qc_apply, and cannot be seen in any other count.
     size_t applied_unique() const;
 
-    // DERIVED FROM THE SET, not from the counter that fed it. qc_num_branchial_ is incremented
-    // when insert() reports a win; this returns what for_each will actually emit. The two are
-    // the same number only while every winning claim stays reachable, and that invariant broke
-    // once -- migrate_into dropped keys the caller had already been told it won (f694c062),
-    // giving 20,558 pairs enumerated against 30,063 claimed. Reporting the enumeration removes
-    // the class of divergence rather than re-synchronising one more site.
+    // The branchial pairs of the raw unfolding, counted from class multiplicities, which run
+    // whenever branchial pairs are recorded under the reconstruction (ParallelEvolutionEngine).
+    // They equal the pairs the readback enumerates (OracleCorpus.MultiplicityCountsMatchTheReplay,
+    // CausalDeterminism's count-against-enumeration check).
     uint64_t num_reconstructed_branchial() const;
 #if HG_ENGINE_STATS
     size_t num_frame_alignment_disagreements() const;

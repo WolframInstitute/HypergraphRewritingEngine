@@ -145,14 +145,6 @@ struct QeAppliedMatch {
     uint32_t consumed_offset;   // into arr_words
 };
 
-// A QeAppliedMatch bound to the arena its consumed slots live in.
-struct QeAppliedView {
-    const uint32_t* w;
-    uint32_t event, num_consumed;
-    __device__ QeAppliedView(const QeAppliedMatch& a, const uint32_t* words)
-        : w(words + a.consumed_offset), event(a.event), num_consumed(a.num_consumed) {}
-    __device__ uint32_t consumed(uint32_t j) const { return w[j]; }
-};
 
 // The slot-has-no-producer sentinel, from hgcommon: the replay core writes it into a
 // child's producer vector and this file reads it back, so one value or neither works.
@@ -209,6 +201,9 @@ struct QeView {
     // representative at or past class_nmatch_cap gives its matches no class index.
     uint32_t* class_nmatch;
     uint32_t  class_nmatch_cap;
+    // B(c) per class, indexed as class_nmatch: pairs of the class's matches whose consumed slots
+    // overlap, the sum of their b_j. Accumulated at capture when branchial pairs are counted.
+    unsigned long long* class_pairs;
     uint32_t* next_raw_event;  // device atomic; dense raw-event ids
 
     // Slots the frame MOVED -- resolved through a state that did not hold the frame, and landing
@@ -266,7 +261,6 @@ struct QeView {
     uint32_t* event_rule;
 
     typename LockFreeList<QeAppliedMatch>::DeviceView inst_applied;
-    uint32_t* num_branchial;
 
     // canonical hash -> (StateId + 1) of the state whose matches define this class's expansion.
     // +1 because the map reserves 0 as its EMPTY sentinel, so a raw key of StateId 0 could never
@@ -645,10 +639,8 @@ struct DeviceQmCtx {
         expected = seen;
         return false;
     }
-    __device__ void count(uint64_t events, uint64_t branchial) {
-        bool sat = qe_qm_add(&qe.qm_counts[0], events);
-        if (branchial) sat = qe_qm_add(&qe.qm_counts[1], branchial) || sat;
-        if (sat) qe.qm_counts[2] = 1ull;
+    __device__ void count(uint64_t events) {
+        if (qe_qm_add(&qe.qm_counts[0], events)) qe.qm_counts[2] = 1ull;
     }
     __device__ hgcommon::EventSignatureKeys keys() const { return qe.keys; }
     __device__ uint32_t frame_step(uint64_t class_hash, uint32_t fallback) const {
@@ -699,16 +691,21 @@ __device__ inline __noinline__ void qe_seed_multiplicity(const DeviceState& ds, 
 // The capture side of the multiplicity count: b_j over the matches linked into the class's
 // bucket before this one, then ready, then the mass already standing at the class at every
 // depth. The host's branch in Hypergraph::qc_capture_expansion.
-__device__ inline __noinline__ void qe_capture_multiplicity(const DeviceState& ds, QeView qe, const DeviceSlotMatch& m,
-                                               uint64_t from, uint32_t at,
-                                               const uint32_t* consumed, uint32_t nc,
-                                               QeWork& work) {
+// b_j: the matches of class `from` linked into the bucket before `at` whose consumed slots
+// overlap `consumed`.
+__device__ inline uint32_t qe_overlaps_before(QeView qe, uint64_t from, uint32_t at,
+                                              const uint32_t* consumed, uint32_t nc) {
     uint32_t b = 0;
     qe.by_from.for_each_before(at, [&](const QeMatchRef& r) {
         if (r.from_hash != from) return;
         if (hgcommon::qr_consumed_overlap(consumed, nc, QeMatchView(qe.matches.at(r.record), qe.arr_words)))
             ++b;
     });
+    return b;
+}
+
+__device__ inline __noinline__ void qe_capture_multiplicity(const DeviceState& ds, QeView qe, const DeviceSlotMatch& m,
+                                               uint64_t from, uint32_t b, QeWork& work) {
     if (qe.qm_overlaps.insert_if_absent(static_cast<uint64_t>(m.id) + 1u, b + 1u).overflowed) {
         ds.errors.record(ErrorKind::kQcNodes);
         return;
@@ -906,9 +903,15 @@ __device__ inline void qe_capture_expansion(const DeviceState& ds, QeView qe,
             return UINT32_MAX;
         }
 
-        if (qe.multiplicity) {
-            QeWork work = qe_work_for(ds, qe, work_slice);
-            qe_capture_multiplicity(ds, qe, m, from, at, consumed, nc, work);
+        // b_j into the class's B(c) whenever branchial pairs are counted (QeState::count_branchial).
+        if (qe.multiplicity || (qe.replay && ds.record_branchial)) {
+            const uint32_t b = qe_overlaps_before(qe, from, at, consumed, nc);
+            if (b && static_cast<uint32_t>(parent) < qe.class_nmatch_cap)
+                atomicAdd(&qe.class_pairs[parent], static_cast<unsigned long long>(b));
+            if (qe.multiplicity) {
+                QeWork work = qe_work_for(ds, qe, work_slice);
+                qe_capture_multiplicity(ds, qe, m, from, b, work);
+            }
         }
         return rec;
     }();
@@ -1105,7 +1108,6 @@ __device__ inline QeWork qe_work_for(const DeviceState& ds, QeView qe, uint32_t 
 struct DeviceQrCtx {
     using Instance = DeviceQcInstance;
     using Match    = QeMatchView;
-    using Applied  = QeAppliedView;
     // REFERENCES, not copies. DeviceState and QeView are large aggregates and this Ctx is
     // constructed once per application, so holding either by value would copy it that often.
     // The caller's copies outlive this object.
@@ -1119,15 +1121,13 @@ struct DeviceQrCtx {
     // applications on disc-l3a2g2r2 depth 3. An application emits far fewer than 2^32, so the
     // published totals are identical to counting in place.
     //
-    // Its host twin is Hypergraph::QrCtx, which batches the same three for the same reason and
+    // Its host twin is Hypergraph::QrCtx, which batches the same counts for the same reason and
     // publishes them from its own destructor.
-    uint32_t branchial_seen = 0;
     uint32_t causal_edges_seen = 0;
     uint32_t causal_pairs_seen = 0;
     uint32_t reduced_pairs_seen = 0;
 
     __device__ ~DeviceQrCtx() {
-        if (branchial_seen)    atomicAdd(qe.num_branchial, branchial_seen);
         if (causal_edges_seen) atomicAdd(qe.num_causal_edges, causal_edges_seen);
         if (causal_pairs_seen) atomicAdd(qe.num_causal_pairs, causal_pairs_seen);
         if (reduced_pairs_seen) atomicAdd(qe.num_reduced_pairs, reduced_pairs_seen);
@@ -1278,41 +1278,13 @@ struct DeviceQrCtx {
         __threadfence();
         reduced_pairs_seen += stored;
     }
-    using AppliedRef = uint32_t;
-    __device__ static bool applied_ref_valid(AppliedRef r) { return r != INVALID_ID; }
-    __device__ AppliedRef publish_applied(const DeviceQcInstance& inst, const QeMatchView& m,
-                                          uint32_t ev) {
+    __device__ void publish_applied(const DeviceQcInstance& inst, const QeMatchView& m,
+                                    uint32_t ev) {
         const uint32_t bucket = qe_bucket(hgcommon::id_key(inst.id), qe.inst_applied.num_keys);
-        const uint32_t at = qe.inst_applied.push(bucket,
-                QeAppliedMatch{inst.id, m.id, ev, m.num_consumed,
-                               static_cast<uint32_t>(m.w - qe.arr_words)});
-        if (at == INVALID_ID) {
+        if (qe.inst_applied.push(bucket, QeAppliedMatch{inst.id, m.id, ev, m.num_consumed,
+                                                        static_cast<uint32_t>(m.w - qe.arr_words)})
+            == INVALID_ID)
             ds.errors.record(ErrorKind::kQeEventsFull);
-            return INVALID_ID;
-        }
-        __threadfence();
-        return at;
-    }
-    template <class F>
-    __device__ void for_each_applied_before(const DeviceQcInstance& inst, AppliedRef mine, F&& f) {
-        // The bucket is shared between instances, so walking below `mine` gives every
-        // application published earlier and the instance filter selects this one's.
-        qe.inst_applied.for_each_before(mine, [&](const QeAppliedMatch& other) {
-            // The bucket is shared, so the record's own instance is what selects this
-            // instance's applications out of it. Slots are positions in the class frame, so
-            // comparing them across two instances would compare coordinates in the same frame
-            // belonging to different occurrences of it.
-            if (other.instance != inst.id) return;
-            f(QeAppliedView(other, qe.arr_words));
-        });
-    }
-    __device__ void record_branchial_pair(uint32_t lo, uint32_t hi) {
-        // Counted on every emission, because the replay emits each pair exactly once: the pair
-        // belongs to the later of its two applications and only that one scans the other. The
-        // map is storage for the readback, not a dedup the count depends on.
-        (void)lo;
-        (void)hi;
-        ++branchial_seen;
     }
     // __forceinline__ so its depot merges into qr_apply's frame rather than taking one of its
     // own (tools/dev/ptx_frame_sizes.py measured 1104 bytes as its own frame).
@@ -1335,6 +1307,12 @@ __device__ __forceinline__ void qe_apply(const DeviceState& ds, QeView qe, const
     DeviceQrCtx c{ds, qe};
     hgcommon::qr_apply(c, inst, QeMatchView(m, qe.arr_words), state_hash, depth);
 }
+
+// The branchial count of a run, after it: sum over the points below qe.max_steps of
+// W(c, d) * B(c) (hgcommon::qm_branchial_add) into qe.qm_counts[1], with W the multiplicity when
+// `multiplicity`, else the replay's instance count of (c, d). The host twin is
+// Hypergraph::num_reconstructed_branchial. One kernel on the default stream.
+void qe_count_branchial(const DeviceState& ds, const QeView& qe, bool multiplicity);
 
 // Host-side owner of the capture's device structures, so a run's records are one body of
 // state whether the host seeding or the device loop wrote them. Token-sized when the route is
@@ -1364,9 +1342,10 @@ public:
     // caller reads them the same way it read the accessors.
     struct Counters {
         uint32_t cursor, next_id, instances, raw_events, aligned, align_failures,
-                 canon_events, causal_pairs, causal_edges, branchial;
+                 canon_events, causal_pairs, causal_edges;
         // The multiplicity counts (QeView::qm_counts), read in a second transfer and only for a
-        // run that counted multiplicities; zero otherwise.
+        // run that counted multiplicities or branchial pairs; zero otherwise. qm_branchial is
+        // count_branchial's sum.
         uint64_t qm_raw_events, qm_branchial;
         bool qm_saturated;
     };
@@ -1406,7 +1385,6 @@ public:
 
     // Distinct branchial pairs: sibling applications of one instance whose consumed edges
     // overlap. The host's num_reconstructed_branchial.
-    uint32_t num_branchial_host();
 
     // The reconstructed relations as pairs of CONTENT TRIPLES. A count says two engines
     // disagree; a pair set says which pair is missing, which a count cannot. `raw_events` is
@@ -1490,7 +1468,7 @@ private:
     uint32_t*                 num_canon_        = nullptr;
     uint32_t*                 num_causal_pairs_ = nullptr;
     uint32_t*                 num_causal_edges_ = nullptr;
-    uint32_t*                 num_branchial_    = nullptr;
+    unsigned long long*       class_pairs_      = nullptr;   // class_nmatch_cap_ entries
     uint64_t*                 event_sig_        = nullptr;
     uint64_t*                 event_runsig_     = nullptr;
     uint32_t*                 event_kept_       = nullptr;   // kQeKeptStride words per raw event

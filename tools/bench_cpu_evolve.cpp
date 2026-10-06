@@ -306,15 +306,6 @@ int main(int argc, char** argv) {
                             "this run is NOT pinned\n", e.worker_pin_failures());
             // Twin of the device bench's line: the reconstruction's size, so the two engines can
             // be compared on work done and not only on time.
-            // S1: the quotient branchial fan-out. visits/scans is the mean applications per
-            // instance (m). The scan costs sum m^2 while the relation is sum m(m-1)/2, so a
-            // large m says an inverted index by (instance, slot) -- what the direct path
-            // already uses -- would turn the scan linear in the co-consumers it actually finds.
-            {
-                const size_t sc = g.applied_scans(), vi = g.applied_visits();
-                std::printf("  fanout: scans=%zu visits=%zu mean_m=%.2f\n",
-                            sc, vi, sc ? double(vi) / double(sc) : 0.0);
-            }
 #if HG_ENGINE_STATS
             // Every engine counter (HG_EVOLUTION_COUNTERS), summed over workers.
             {

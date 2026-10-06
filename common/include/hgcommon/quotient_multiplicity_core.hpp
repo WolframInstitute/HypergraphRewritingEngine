@@ -16,6 +16,11 @@
 // counts by materialising one instance per raw state; here the work is one pass per (class,
 // depth, match) plus one per arrival of mass.
 //
+// The raw event count is accumulated by the passes. The branchial count is evaluated from the
+// points when it is read (qm_branchial_add): the weight of a point is m(c, d) here and the
+// replay's instance count of (c, d) when the replay runs, so the replay counts its pairs without
+// the cascade and without scanning an instance's applications.
+//
 // ONLINE. m(c, d) is an accumulator that grows as parents pass mass on, and a match of c may be
 // captured after mass has reached c. Each match j keeps, per depth, the mass it has passed on,
 // consumed_j(d), and advances it by compare-and-swap to the accumulator's current value, passing
@@ -40,7 +45,7 @@
 //
 // b_j is the number of matches linked into c's capture list before j whose consumed slots
 // overlap j's. Each overlapping pair is counted by its later member only, so the b_j of c sum
-// to B(c).
+// to B(c), which the capture accumulates per class.
 //
 // SATURATION. Counts stop at QM_SATURATED, the largest value the int64 reply field holds, and
 // the Ctx records that it happened. m grows exponentially with depth on rules with many matches
@@ -57,7 +62,7 @@
 //   bool     advance(const Match&, uint32_t depth, uint64_t& expected, uint64_t desired);
 //                              compare-and-swap on consumed_j(depth); on failure `expected`
 //                              holds the current value
-//   void     count(uint64_t events, uint64_t branchial);   saturating adds
+//   void     count(uint64_t events);   saturating add
 //   hgcommon::EventSignatureKeys keys() const;  uint32_t frame_step(uint64_t, uint32_t) const;
 //   void     note_signature(const Match& m, uint64_t from_class, uint32_t out_step);   the
 //                                          run's distinct-event set (qr_signature_values)
@@ -90,6 +95,13 @@ HG_HD inline uint64_t qm_sat_add(uint64_t a, uint64_t b) {
 HG_HD inline uint64_t qm_sat_mul(uint64_t a, uint64_t b) {
     if (a == 0 || b == 0) return 0;
     return a > QM_SATURATED / b ? QM_SATURATED : a * b;
+}
+
+// One point's term of the branchial count: `total` plus W(c, d) * B(c), for a point at a depth
+// below the step bound. W is m(c, d) on the multiplicity path and the replay's instance count of
+// (c, d) on the replay path.
+HG_HD inline uint64_t qm_branchial_add(uint64_t total, uint64_t weight, uint64_t class_pairs) {
+    return qm_sat_add(total, qm_sat_mul(weight, class_pairs));
 }
 
 // The cascade queue: a binary min-heap on `depth` over the caller's array. T has a `depth`
@@ -141,7 +153,7 @@ HG_HD void qm_pass(Ctx& c, const typename Ctx::Match& m, uint64_t state_hash, ui
         if (c.advance(m, depth, done, have)) break;
     }
     const uint64_t delta = have - done;
-    c.count(delta, qm_sat_mul(delta, b));
+    c.count(delta);
     if (c.keys() != EVENT_SIG_NONE) {
         c.note_signature(m, state_hash, qr_out_step(c, m, depth));
     }

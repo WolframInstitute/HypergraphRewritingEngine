@@ -183,7 +183,7 @@ static Sample run_once(const Workload& w, int threads, uint64_t seed) {
     }
 
     return { fp, bfp, sfp, be.size(), st.size(), g.num_reconstructed_instances(),
-             g.num_reconstructed_branchial(), g.applied_scans(), g.applied_claims(),
+             g.num_reconstructed_branchial(), g.num_reconstructed_raw_events(), g.applied_claims(),
              g.capture_dropped_no_orbits(), g.capture_skipped_not_representative(),
              g.applied_shape_fingerprint(),
              g.num_frame_alignment_disagreements(), g.num_alignment_failures(),
