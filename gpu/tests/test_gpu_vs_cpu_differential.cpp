@@ -1407,6 +1407,49 @@ TEST(Recycle, ASmallRunIntoALargeRunsStorageEqualsAFreshRun) {
     EXPECT_EQ(again.branchial_edges.size(), fresh.branchial_edges.size());
 }
 
+// A RUN ON A REUSED ENGINE EQUALS A RUN ON A NEW ONE, for every corpus workload, after every
+// other: the corpus runs through one PersistentEvolver forward and then reversed, and each run is
+// compared with evolve() on a fresh engine. An array the per-run clear misses carries the
+// previous run's values into the next and shows here.
+TEST(Recycle, EveryCorpusRunOnAReusedEngineEqualsAFreshRun) {
+    const std::vector<Workload> corpus = build_corpus();
+    std::vector<hg_gpu::EvolveResult> fresh;
+    for (const Workload& w : corpus) fresh.push_back(hg_gpu::evolve(make_input(w)));
+    auto sorted = [](std::vector<uint64_t> v) { std::sort(v.begin(), v.end()); return v; };
+    auto hashes = [&](const hg_gpu::EvolveResult& r) {
+        std::vector<uint64_t> h;
+        for (const auto& st : r.states) h.push_back(st.canonical_hash);
+        return sorted(h);
+    };
+    auto signatures = [&](const hg_gpu::EvolveResult& r) {
+        std::vector<uint64_t> g;
+        for (const auto& e : r.events) g.push_back(e.signature);
+        return sorted(g);
+    };
+    hg_gpu::PersistentEvolver ev;
+    std::vector<size_t> order(corpus.size());
+    for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+    for (int pass = 0; pass < 2; ++pass) {
+        if (pass == 1) std::reverse(order.begin(), order.end());
+        for (size_t i : order) {
+            const hg_gpu::EvolveResult got = ev.run(make_input(corpus[i]));
+            const hg_gpu::EvolveResult& ref = fresh[i];
+            const std::string tag = corpus[i].name + (pass ? " (reversed)" : "");
+            EXPECT_EQ(got.warnings.size(), ref.warnings.size()) << tag;
+            EXPECT_EQ(hashes(got), hashes(ref)) << tag;
+            EXPECT_EQ(signatures(got), signatures(ref)) << tag;
+            EXPECT_EQ(got.causal_edges.size(), ref.causal_edges.size()) << tag;
+            EXPECT_EQ(got.branchial_edges.size(), ref.branchial_edges.size()) << tag;
+            EXPECT_EQ(got.reconstructed_raw_events, ref.reconstructed_raw_events) << tag;
+            EXPECT_EQ(got.reconstructed_events, ref.reconstructed_events) << tag;
+            EXPECT_EQ(got.reconstructed_causal_pairs, ref.reconstructed_causal_pairs) << tag;
+            EXPECT_EQ(got.reconstructed_causal_pairs_reduced,
+                      ref.reconstructed_causal_pairs_reduced) << tag;
+            EXPECT_EQ(got.reconstructed_branchial, ref.reconstructed_branchial) << tag;
+        }
+    }
+}
+
 // A REUSED EVOLVER WIDENS ITS EVENT RECORDS FOR A LARGER LEFT-HAND SIDE. Event consumed ids are
 // stored at a stride of the rules' largest left-hand side (EngineConfig::max_lhs_edges); a
 // PersistentEvolver sized by a one-edge rule and then given a three-edge rule must rebuild at the
