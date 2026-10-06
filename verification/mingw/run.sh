@@ -8,10 +8,17 @@
 # runs the reproducer instead, so the claim is a command anyone can repeat and a toolchain that
 # fixes the defect is noticed rather than assumed.
 #
-# EACH CELL DECLARES ITS VERDICT, in the table below: CLEAN (exit 0) or CORRUPT (exit 116, WSL's
-# truncation of STATUS_HEAP_CORRUPTION). The CLEAN cells are the calibration -- they are one knob
-# away from the corrupting one, so a build that reports CORRUPT for all of them is not
-# reproducing this defect, it is reporting something else.
+# EACH CELL DECLARES ITS VERDICT, in the table below: CLEAN (every run exits 0) or CORRUPT (at
+# least one run exits 116, WSL's truncation of STATUS_HEAP_CORRUPTION). The one-worker CLEAN cells
+# are the calibration -- they are one knob away from the corrupting one, so a build that reports
+# CORRUPT for all of them is not reproducing this defect, it is reporting something else.
+#
+# THE CORRUPTION IS INTERMITTENT, so a CORRUPT verdict asks for one hit in HG_TLS_REPS runs.
+# Measured 2026-10-06 (WSL kernel 6.18.40.1, x86_64-w64-mingw32-g++ 13-posix), 20 runs per cell
+# at one worker: two_tls_static_alloc 3/20 at 16 blocks x 8 rounds, 2/20 at 32 x 4, every other
+# cell 0/20. With two or more workers every cell corrupts,
+# the single-thread_local baseline included (8 blocks, 2 workers, 8 rounds: baseline 5/20,
+# two_tls_static_alloc 9/20; 16 x 4 x 16: baseline 4/10, the rest 9-10/10): baseline_4w pins that.
 #
 # THE CORRUPT CELL IS A PINNED REPRODUCER, the same pattern verification/genmc/run.sh uses for
 # its violation harnesses: it passes exactly when the defect is still reachable. When a future
@@ -36,14 +43,14 @@
 #
 # Environment:
 #   MINGW_CXX   the cross compiler   (default: x86_64-w64-mingw32-g++)
-#   HG_TLS_REPS how many runs per cell, all of which must agree   (default: 3)
+#   HG_TLS_REPS runs per cell   (default: 40)
 
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SRC="$HERE/tls_teardown.cpp"
 
 MINGW_CXX="${MINGW_CXX:-x86_64-w64-mingw32-g++}"
-REPS="${HG_TLS_REPS:-3}"
+REPS="${HG_TLS_REPS:-40}"
 
 # WSL's truncation of STATUS_HEAP_CORRUPTION (0xC0000374 & 0xFF).
 readonly kCorrupt=116
@@ -56,23 +63,24 @@ fi
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-# name|flags|verdict
+# name|flags|blocks workers rounds|verdict
+# 16 blocks, one worker, eight rounds for the knob map. Sequential rounds matter -- one worker
+# exiting once is clean at every size measured, including 256 MB.
 CELLS=(
-  "baseline|                                                          |CLEAN"
-  "two_tls|-DTWO_TLS                                                  |CLEAN"
-  "two_tls_alloc|-DTWO_TLS -DGUARD_ALLOCATES                          |CLEAN"
-  "two_tls_static|-DTWO_TLS -DGUARD_TOUCHES_STATIC                    |CLEAN"
-  "two_tls_static_alloc|-DTWO_TLS -DGUARD_TOUCHES_STATIC -DGUARD_ALLOCATES|CORRUPT"
-  "split_fn|-DTWO_TLS -DSPLIT_FN -DGUARD_TOUCHES_STATIC -DGUARD_ALLOCATES|CLEAN"
-  "three_tls|-DTHREE_TLS                                              |CLEAN"
+  "baseline|                                                          |16 1 8|CLEAN"
+  "two_tls|-DTWO_TLS                                                  |16 1 8|CLEAN"
+  "two_tls_alloc|-DTWO_TLS -DGUARD_ALLOCATES                          |16 1 8|CLEAN"
+  "two_tls_static|-DTWO_TLS -DGUARD_TOUCHES_STATIC                    |16 1 8|CLEAN"
+  "two_tls_static_alloc|-DTWO_TLS -DGUARD_TOUCHES_STATIC -DGUARD_ALLOCATES|16 1 8|CORRUPT"
+  "split_fn|-DTWO_TLS -DSPLIT_FN -DGUARD_TOUCHES_STATIC -DGUARD_ALLOCATES|16 1 8|CLEAN"
+  "three_tls|-DTHREE_TLS                                              |16 1 8|CLEAN"
+  "baseline_4w|                                                       |16 4 16|CORRUPT"
 )
 
-# 16 blocks, one worker, eight rounds: the smallest configuration that shows it. Sequential
-# rounds matter -- one worker exiting once is clean at every size measured, including 256 MB.
-ARGS=(16 1 8)
-
 run_cell() {
-    local name="$1" flags="$2" verdict="$3"
+    local name="$1" flags="$2" verdict="$4"
+    local -a args
+    read -r -a args <<< "$3"
     # ONE FIXED BINARY NAME, each cell in its own directory. The output filename is itself a
     # layout axis: the same source and flags built as t.exe corrupts 3/3 and as
     # two_tls_static_alloc.exe is clean 3/3. Holding the name constant is what makes the cells
@@ -90,7 +98,7 @@ run_cell() {
 
     local codes=() rc
     for _ in $(seq 1 "$REPS"); do
-        ( cd "$dir" && ./t.exe "${ARGS[@]}" >/dev/null 2>&1 )
+        ( cd "$dir" && ./t.exe "${args[@]}" >/dev/null 2>&1 )
         rc=$?
         codes+=("$rc")
         # A host that cannot run a Windows binary at all reports 126/127, not a program status.
@@ -103,17 +111,19 @@ run_cell() {
     local want_zero=0
     [ "$verdict" = "CLEAN" ] && want_zero=1
 
-    local ok=1
+    local hits=0 other=0
     for rc in "${codes[@]}"; do
-        if [ "$want_zero" -eq 1 ]; then
-            [ "$rc" -eq 0 ] || ok=0
-        else
-            [ "$rc" -eq "$kCorrupt" ] || ok=0
-        fi
+        if [ "$rc" -eq "$kCorrupt" ]; then hits=$((hits + 1))
+        elif [ "$rc" -ne 0 ]; then other=$((other + 1)); fi
     done
+    local ok=0
+    if [ "$other" -eq 0 ]; then
+        if [ "$want_zero" -eq 1 ]; then [ "$hits" -eq 0 ] && ok=1
+        else [ "$hits" -gt 0 ] && ok=1; fi
+    fi
 
     if [ "$ok" -eq 1 ]; then
-        echo "--- $name: $verdict as declared (exits: ${codes[*]})"
+        echo "--- $name: $verdict as declared ($hits of ${#codes[@]} runs corrupted)"
         return 0
     fi
     if [ "$verdict" = "CORRUPT" ]; then
@@ -130,9 +140,9 @@ run_cell() {
 
 fail=0
 for cell in "${CELLS[@]}"; do
-    IFS='|' read -r name flags verdict <<< "$cell"
+    IFS='|' read -r name flags cargs verdict <<< "$cell"
     if [ $# -ge 1 ] && [ "$1" != "$name" ]; then continue; fi
     echo "=== $name ==="
-    run_cell "$name" "$flags" "$verdict" || fail=1
+    run_cell "$name" "$flags" "$cargs" "$verdict" || fail=1
 done
 exit $fail
