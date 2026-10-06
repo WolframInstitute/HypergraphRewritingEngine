@@ -137,6 +137,9 @@ struct SlotMatch {
     const uint32_t* produced_slots = nullptr;    // length num_produced (slot in `to`)
     const uint32_t* surv_from_slot = nullptr;    // length num_survivors (slot in `from`)
     const uint32_t* surv_to_slot = nullptr;      // length num_survivors (slot in `to`)
+    // Per `to` slot, its `from` slot or QR_SOURCE_PRODUCED / QR_SOURCE_NONE
+    // (hgcommon::qr_fill_child_sources); length to_slots.
+    const uint32_t* child_source = nullptr;
     // The claimed run-signature key and the output step it was claimed for
     // (hgcommon::qr_cached_key); accessed through atomic_ref.
     mutable uint64_t runsig_key = 0;

@@ -1556,9 +1556,7 @@ void Hypergraph::quotient_causal_seed(StateId initial_state, int max_steps) {
         qc_frame_slots(h, initial_state, orb, slots.data());
         worker_scratch().release(mk);
 
-        uint32_t* p0 = arena_.allocate_array<uint32_t>(orb->n ? orb->n : 1);
-        for (uint32_t i = 0; i < orb->n; ++i) p0[i] = QC_NO_PRODUCER;
-        qc_add_instance(h, 0, p0, orb->n);
+        qc_add_instance(h, 0, arena_.template create<QcLineage>(), orb->n);
     }
 }
 
@@ -1590,7 +1588,7 @@ void Hypergraph::qc_apply(const QcInstance& inst, const SlotMatch& m, uint64_t s
 }
 
 void Hypergraph::qc_add_instance(uint64_t state_hash, uint32_t depth,
-                                 const uint32_t* prod, uint32_t nslots) {
+                                 const QcLineage* lineage, uint32_t nslots) {
     const int maxs = qc_max_steps_.load(std::memory_order_relaxed);
     if (static_cast<int>(depth) > maxs) return;
 
@@ -1598,7 +1596,7 @@ void Hypergraph::qc_add_instance(uint64_t state_hash, uint32_t depth,
     inst.id = alloc_instance_id();
     if (inst.id == INVALID_ID) return;
     inst.nslots = nslots;
-    inst.prod = prod;
+    inst.lineage = lineage;
     // Claim words only for an instance that will be expanded; one at the bound claims nothing.
     if (static_cast<int>(depth) < maxs) {
         uint32_t class_matches = 0;
@@ -1761,7 +1759,7 @@ void Hypergraph::qc_capture_expansion(EventId e) {
     // replays correctly against an instance built from any other raw state of the same class.
     // The scratch vectors live in an inner scope: the arena mark may only be released once
     // they are destroyed, or the rendezvous scan further down would allocate over them.
-    uint32_t *cs = nullptr, *ps = nullptr, *sfs = nullptr, *sts = nullptr;
+    uint32_t *cs = nullptr, *ps = nullptr, *sfs = nullptr, *sts = nullptr, *csrc = nullptr;
     uint32_t nsurv = 0;
     {
         auto mk = worker_scratch().mark();
@@ -1792,6 +1790,8 @@ void Hypergraph::qc_capture_expansion(EventId e) {
             sfs = nsurv ? arena_.allocate_array<uint32_t>(nsurv) : nullptr;
             sts = nsurv ? arena_.allocate_array<uint32_t>(nsurv) : nullptr;
             for (uint32_t i = 0; i < nsurv; ++i) { sfs[i] = surv[i].first; sts[i] = surv[i].second; }
+            csrc = arena_.allocate_array<uint32_t>(out_orb->n ? out_orb->n : 1);
+            hgcommon::qr_fill_child_sources(ps, nprod, sfs, sts, nsurv, out_orb->n, csrc);
         }
         worker_scratch().release(mk);
     }
@@ -1804,6 +1804,7 @@ void Hypergraph::qc_capture_expansion(EventId e) {
     m.num_consumed = ev.num_consumed; m.num_produced = nprod; m.num_survivors = nsurv;
     m.consumed_slots = cs; m.produced_slots = ps;
     m.surv_from_slot = sfs; m.surv_to_slot = sts;
+    m.child_source = csrc;
 
     QcExpansion* xp;
     auto r = qc_expansion_.lookup(from);
@@ -2558,7 +2559,7 @@ bool Hypergraph::QrCtx::want_branchial() const {
 }
 
 uint32_t Hypergraph::QrCtx::producer_at(const QcInstance& inst, uint32_t slot) const {
-    return inst.prod[slot];
+    return hgcommon::qr_producer_of(*this, inst.lineage, slot);
 }
 
 void Hypergraph::QrCtx::record_causal(uint32_t producer, uint32_t consumer, bool distinct_pair) {
@@ -2614,17 +2615,11 @@ Hypergraph::QrCtx::~QrCtx() {
 // The child instance: survivors carry their producer across, produced slots take THIS event.
 void Hypergraph::QrCtx::descend(const SlotMatch& m, uint32_t depth, uint32_t ev,
                                 const QcInstance& parent) {
-    uint32_t* cp = hg.arena_.allocate_array<uint32_t>(m.to_slots ? m.to_slots : 1);
-    for (uint32_t i = 0; i < m.to_slots; ++i) cp[i] = hgcommon::QR_NO_PRODUCER;
-    for (uint32_t i = 0; i < m.num_survivors; ++i) {
-        const uint32_t a = m.surv_from(i), b = m.surv_to(i);
-        if (a < parent.nslots && b < m.to_slots) cp[b] = parent.prod[a];
-    }
-    for (uint32_t i = 0; i < m.num_produced; ++i) {
-        const uint32_t s = m.produced(i);
-        if (s < m.to_slots) cp[s] = ev;
-    }
-    hg.qc_add_instance(m.to_hash, depth + 1, cp, m.to_slots);
+    auto* lin = hg.arena_.template create<QcLineage>();
+    lin->parent = parent.lineage;
+    lin->via = &m;
+    lin->event = ev;
+    hg.qc_add_instance(m.to_hash, depth + 1, lin, m.to_slots);
 }
 
 // count_unique rather than size: ConcurrentMap can hold duplicate keys when two threads insert

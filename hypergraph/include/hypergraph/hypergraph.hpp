@@ -201,23 +201,27 @@ class Hypergraph {
     void qc_check_frame_stable(StateId s, const uint32_t* slots, uint32_t n);
 
     // Per-instance raw reconstruction. One QcInstance is one raw state of the full expansion,
-    // carrying the producing reconstructed-event id per slot; replaying every expansion match
-    // against every instance regenerates the raw event set the quotient never explores.
+    // with its lineage (hgcommon::qr_producer_of gives a slot's producing event from it);
+    // replaying every expansion match against every instance regenerates the raw event set the
+    // quotient never explores.
     // Reconstructed event ids come from a counter -- counts and causal edges need only ids,
     // not Event records, so this does not undo the quotient's state/edge compression.
+    // An instance's parent, the match that made it and that match's event; a root has none.
+    struct QcLineage {
+        const QcLineage* parent = nullptr;
+        const SlotMatch* via = nullptr;
+        uint32_t event = 0;
+    };
     struct QcInstance {
         uint32_t id = 0;
         uint32_t nslots = 0;
-        const uint32_t* prod = nullptr;   // length nslots; QC_NO_PRODUCER for initial edges
+        const QcLineage* lineage = nullptr;
         // One claim bit per class match with local index below claim_cap, which is
         // hgcommon::qr_claim_bits of the instance's words (hgcommon::qr_claim_words of the
         // matches the class held when it was created). A pair past it claims in qc_applied_.
         uint32_t claim_cap = 0;
         std::atomic<uint64_t>* claim_bits = nullptr;
     };
-    // The slot-has-no-producer sentinel, from hgcommon: the replay core writes it into a
-    // child's producer vector and this class reads it back, so one value or neither works.
-    static constexpr uint32_t QC_NO_PRODUCER = hgcommon::QR_NO_PRODUCER;
     // The instances of one (class, depth), in kInstShards lists: a worker pushes to list
     // (worker index % kInstShards) and a reader walks all of them. Every new instance of a class
     // pushes to its entry, which on a rule with few classes is most of the replay; the eight
@@ -548,6 +552,14 @@ class Hypergraph {
         bool want_causal() const;
         bool want_branchial() const;
         uint32_t producer_at(const QcInstance& inst, uint32_t slot) const;
+        // hgcommon::qr_producer_of's face.
+        static bool lineage_root(const QcLineage* n) { return n->via == nullptr; }
+        static uint32_t lineage_source(const QcLineage* n, uint32_t slot) {
+            return slot < n->via->to_slots ? n->via->child_source[slot]
+                                           : hgcommon::QR_SOURCE_NONE;
+        }
+        static uint32_t lineage_event(const QcLineage* n) { return n->event; }
+        static const QcLineage* lineage_parent(const QcLineage* n) { return n->parent; }
         void record_causal(uint32_t producer, uint32_t consumer, bool distinct_pair);
         uint32_t redundant(const uint32_t* producers, uint32_t n) const;
         void record_kept(uint32_t ev, const uint32_t* kept, uint32_t nkept);
@@ -619,7 +631,8 @@ class Hypergraph {
     void qm_cascade(F&& start);
     void qc_capture_expansion(EventId e);
     const EdgeOrbitTable* qc_orbits_or_build(StateId s);
-    void qc_add_instance(uint64_t state_hash, uint32_t depth, const uint32_t* prod, uint32_t nslots);
+    void qc_add_instance(uint64_t state_hash, uint32_t depth, const QcLineage* lineage,
+                         uint32_t nslots);
     void qc_apply(const QcInstance& inst, const SlotMatch& m, uint64_t state_hash, uint32_t depth);
 
     // Event canonicalization: probe key of the event signature -> the class's first event, whose

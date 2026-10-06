@@ -30,8 +30,8 @@
 //                 the proof the other application happened, and an application that never
 //                 claims never publishes. Both sides can see each other, so the unordered pair
 //                 is claimed and the winner counts it.
-//   descend       the child instance -- survivors carry their producer across, produced slots
-//                 take THIS event -- and drive it.
+//   descend       the child instance, recorded by its lineage (parent instance, the match that
+//                 made it, this event), and drive it.
 //
 // Every one of those is a decision about the reconstructed relation, and none of them is a
 // storage question. What differs between the engines is only where things are held: a
@@ -52,7 +52,8 @@
 //                                          the run signature of `m` applied: a function of the
 //                                          three (qr_signature_values)
 //   bool     want_causal() const;  bool want_branchial() const;
-//   uint32_t producer_at(const Instance&, uint32_t slot) const;   NO_PRODUCER when none
+//   uint32_t producer_at(const Instance&, uint32_t slot) const;   NO_PRODUCER when none; the
+//                                          Ctx answers it with qr_producer_of below
 //   void     record_causal(uint32_t producer, uint32_t consumer, bool distinct_pair);
 //   uint32_t redundant(const uint32_t* producers, uint32_t n);
 //                              hgcommon::redundant_producers over the recorded kept sets
@@ -95,6 +96,45 @@ constexpr uint32_t QR_ID_LIMIT = 0xFFF00000u;
 constexpr const char* QR_IDS_EXHAUSTED_MESSAGE =
     "the replay minted its limit of raw event or instance ids; the reconstructed raw events and "
     "relations are TRUNCATED at that point";
+
+// WHERE A SLOT'S EDGE CAME FROM, per captured match: for each slot of the child frame, the
+// parent slot it survived from, QR_SOURCE_PRODUCED when the match produced it, or
+// QR_SOURCE_NONE. `out` holds to_slots entries.
+constexpr uint32_t QR_SOURCE_PRODUCED = 0xFFFFFFFEu;
+constexpr uint32_t QR_SOURCE_NONE     = 0xFFFFFFFFu;
+HG_HD inline void qr_fill_child_sources(const uint32_t* produced, uint32_t np,
+                                        const uint32_t* surv_from, const uint32_t* surv_to,
+                                        uint32_t ns, uint32_t to_slots, uint32_t* out) {
+    for (uint32_t i = 0; i < to_slots; ++i) out[i] = QR_SOURCE_NONE;
+    for (uint32_t i = 0; i < ns; ++i)
+        if (surv_to[i] < to_slots) out[surv_to[i]] = surv_from[i];
+    for (uint32_t i = 0; i < np; ++i)
+        if (produced[i] < to_slots) out[produced[i]] = QR_SOURCE_PRODUCED;
+}
+
+// THE PRODUCER OF A SLOT, BY LINEAGE. An instance records its parent instance, the match that
+// made it and that match's event, not a producer per slot: a slot the match produced was
+// produced by that event, and any other slot survived from a parent slot, whose producer is the
+// parent's answer for it. The walk is at most the instance's depth, which is the step count.
+// A per-slot vector per instance is the replay's largest store on large states (17 GB on a
+// 256-edge path at three steps); a lineage record is three words.
+//
+// The Ctx supplies, over its own lineage handle L:
+//   bool     lineage_root(L) const;              the instance has no parent (a root)
+//   uint32_t lineage_source(L, uint32_t slot) const;   the making match's child source table
+//   uint32_t lineage_event(L) const;             the making match's event
+//   L        lineage_parent(L) const;
+template <class Ctx, class L>
+HG_HD uint32_t qr_producer_of(const Ctx& c, L node, uint32_t slot) {
+    for (;;) {
+        if (c.lineage_root(node)) return QR_NO_PRODUCER;
+        const uint32_t src = c.lineage_source(node, slot);
+        if (src == QR_SOURCE_PRODUCED) return c.lineage_event(node);
+        if (src == QR_SOURCE_NONE) return QR_NO_PRODUCER;
+        slot = src;
+        node = c.lineage_parent(node);
+    }
+}
 
 // The (instance, match) pair, mixed the same way on both engines because it is one claim set.
 HG_HD inline uint64_t qr_apply_key(uint32_t instance, uint32_t match) {
@@ -338,9 +378,8 @@ HG_HD uint32_t qr_apply(Ctx& c, const typename Ctx::Instance& inst,
         });
     }
 
-    // The child instance: survivors carry their producer across, produced slots take THIS
-    // event. Building and driving it is the Ctx's, because where a producer vector lives is
-    // the one thing about it that differs.
+    // The child instance, recorded by its lineage (qr_producer_of). Building and driving it is
+    // the Ctx's, because where an instance record lives is the one thing about it that differs.
     c.descend(m, depth, ev, inst);
     return ev;
 }
