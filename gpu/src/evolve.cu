@@ -730,19 +730,17 @@ bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
     }
 }
 
-// Log the EngineConfig that worked (after grow-and-retry) so the user can
-// pre-size on subsequent calls. Only the fields that were grown beyond
-// their initial value are printed — keeps the message focused. Format is
-// stable so callers can grep it.
-static void log_winning_config(const EngineConfig& initial,
-                               const EngineConfig& winning) {
+// The fields grow-and-retry changed, after `header`, and the estimated size of `winning`:
+// logged for the config that worked, so a caller can pre-size the next call, and for the one
+// that did not fit. The format is stable so callers can grep it.
+static void log_config_growth(const char* header, const EngineConfig& initial,
+                              const EngineConfig& winning) {
 #define LOG_FIELD(field) \
     if (winning.field != initial.field) { \
         std::fprintf(stderr, "  %s: %u → %u\n", #field, initial.field, winning.field); \
     }
-    std::fprintf(stderr,
-        "hg_gpu::evolve: succeeded after grow-and-retry; pass these to "
-        "Engine(cfg) directly to skip the retry loop next time:\n");
+    std::fprintf(stderr, "hg_gpu::evolve: %s (estimated %llu MB):\n", header,
+                 (unsigned long long)(estimated_device_bytes(winning) >> 20));
     LOG_FIELD(max_edges);
     LOG_FIELD(max_vertices);
     LOG_FIELD(max_vertex_slots);
@@ -944,11 +942,15 @@ static EvolveResult run_with_growth(EngineConfig cfg, uint64_t mem_cap, Attempt&
             std::fprintf(stderr,
                 "hg_gpu::evolve: the engine at this size failed (%s) — returning the last "
                 "completed attempt's partial result.\n", e.what());
+            log_config_growth("the size that failed", initial_cfg, cfg);
             return best;
         }
 
         if (result.warnings.empty()) {
-            if (attempt_no > 0) log_winning_config(initial_cfg, cfg);
+            if (attempt_no > 0)
+                log_config_growth("succeeded after grow-and-retry; pass these to Engine(cfg) "
+                                  "directly to skip the retry loop next time",
+                                  initial_cfg, cfg);
             return result;
         }
 
