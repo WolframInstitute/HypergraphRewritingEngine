@@ -41,8 +41,8 @@ namespace HG_NAMESPACE {
 namespace gpu {
 
 // One captured match of a canonical class, in that class's frame slots. The slot arrays live in
-// the expansion word arena at arr_offset: consumed | produced | surv_from | surv_to,
-// contiguously.
+// the expansion word arena at arr_offset: consumed | produced | surv_from | surv_to |
+// child_source (to_slots words, hgcommon::qr_fill_child_sources), contiguously.
 struct DeviceSlotMatch {
     uint64_t to_hash = 0;
     uint32_t id = 0;              // dense; the replay's (instance, match) claim keys on it
@@ -57,8 +57,8 @@ struct DeviceSlotMatch {
     mutable uint64_t runsig_key = 0;
     mutable uint32_t runsig_step = hgcommon::QR_NO_STEP;
 
-    // The four slot arrays live contiguously in the expansion word arena at arr_offset:
-    // consumed | produced | surv_from | surv_to. `words` is that arena's base, which the
+    // The slot arrays live contiguously in the expansion word arena at arr_offset:
+    // consumed | produced | surv_from | surv_to | child_source. `words` is that arena's base, which the
     // record cannot hold because it is a device pointer the host rebuilds per run -- so the
     // view below binds the two together for hgcommon/quotient_replay_core.hpp, which reads
     // both engines' layouts through one set of calls.
@@ -68,7 +68,7 @@ struct DeviceSlotMatch {
 // A DeviceSlotMatch bound to the arena its slots live in. What the shared replay sees.
 struct QeMatchView {
     const DeviceSlotMatch* src;   // the record in the match pool
-    const uint32_t* w;            // consumed | produced | surv_from | surv_to
+    const uint32_t* w;            // consumed | produced | surv_from | surv_to | child_source
     uint64_t to_hash;
     uint32_t id, local, rule, from_slots, to_slots;
     uint32_t num_consumed, num_produced, num_survivors;
@@ -86,6 +86,9 @@ struct QeMatchView {
     __device__ uint32_t surv_to(uint32_t i) const {
         return w[num_consumed + num_produced + num_survivors + i];
     }
+    __device__ uint32_t child_source(uint32_t i) const {
+        return w[num_consumed + num_produced + 2u * num_survivors + i];
+    }
     __device__ const uint32_t* consumed_ptr() const { return w; }
     __device__ const uint32_t* produced_ptr() const { return w + num_consumed; }
 };
@@ -102,17 +105,20 @@ struct QeMatchRef {
 __device__ __forceinline__ uint64_t qe_inst_key(uint64_t state_hash, uint32_t depth) {
     return hgcommon::qc_key(state_hash, depth, 0u);
 }
-// One raw occurrence of a canonical class, at one depth. `prod_offset` addresses `nslots` words
-// in the expansion arena: per FRAME SLOT, the event that produced the edge now in that slot, or
-// kQeNoProducer for an edge the initial state came with.
+// One raw occurrence of a canonical class, at one depth, recorded by its lineage: the parent
+// instance's record, the record of the match that made it and that match's event, or
+// kQeNoParent for a root. A slot's producing event is hgcommon::qr_producer_of over it.
 //
 // Slots rather than edge ids is the whole point: the class's captured matches are in frame
 // slots, so an instance built from any raw state of the class replays them without knowing
 // which raw edges the frame state happened to have.
+inline constexpr uint32_t kQeNoParent = 0xFFFFFFFFu;
 struct DeviceQcInstance {
     uint32_t id = 0;           // dense; the replay's (instance, match) claim keys on it
     uint32_t nslots = 0;
-    uint32_t prod_offset = 0;
+    uint32_t parent = kQeNoParent;
+    uint32_t via = 0;
+    uint32_t event = 0;
     // A pair whose match has class index below claim_cap claims its bit at bits_offset in the
     // expansion arena, two 32-bit words per 64-bit claim word; any other pair claims in
     // `applied`. claim_cap is hgcommon::qr_claim_bits of hgcommon::qr_claim_words of the
@@ -150,7 +156,6 @@ struct QeAppliedView {
 
 // The slot-has-no-producer sentinel, from hgcommon: the replay core writes it into a
 // child's producer vector and this file reads it back, so one value or neither works.
-inline constexpr uint32_t kQeNoProducer = hgcommon::QR_NO_PRODUCER;
 
 // A (class, instance record, depth) point: an instance the depth bound left standing
 // (QeView::blocked), and an entry of the multiplicity cascade's queue.
@@ -849,16 +854,21 @@ __device__ inline void qe_capture_expansion(const DeviceState& ds, QeView qe,
         hgcommon::sort_u64(surv, ns);
 
         // Copy the slot arrays into the expansion arena, then publish the record.
-        const uint32_t need = nc + np + 2u * ns;
+        const uint32_t to_slots = ds.state_edge_slices[child].count;
+        const uint32_t need = nc + np + 2u * ns + to_slots;
         uint32_t off = 0;
         if (need) {
             off = qe_alloc_words(ds, qe, need);
             if (off == UINT32_MAX) return UINT32_MAX;
             uint32_t* w = qe.arr_words + off;
             for (uint32_t i = 0; i < nc; ++i) *w++ = consumed[i];
+            uint32_t* pw = w;
             for (uint32_t i = 0; i < np; ++i) *w++ = produced[i];
+            uint32_t* fw = w;
             for (uint32_t i = 0; i < ns; ++i) *w++ = hgcommon::id_pair_from_key(surv[i]).a;
+            uint32_t* tw = w;
             for (uint32_t i = 0; i < ns; ++i) *w++ = hgcommon::id_pair_from_key(surv[i]).b;
+            hgcommon::qr_fill_child_sources(pw, np, fw, tw, ns, to_slots, w);
         }
 
         const uint32_t rec = qe.matches.claim();
@@ -880,7 +890,7 @@ __device__ inline void qe_capture_expansion(const DeviceState& ds, QeView qe,
         }
         m.rule = rule;
         m.from_slots = ds.state_edge_slices[parent].count;
-        m.to_slots   = ds.state_edge_slices[child].count;
+        m.to_slots   = to_slots;
         m.num_consumed = nc; m.num_produced = np; m.num_survivors = ns;
         m.arr_offset = off;
         m.from_hash = from;
@@ -923,11 +933,12 @@ __device__ __forceinline__ uint32_t qe_alloc_words(const DeviceState& ds, QeView
     return off;
 }
 
-// Record one instance of `state_hash` at `depth`, whose per-slot producers are already written
-// at `prod_offset`. The device twin of Hypergraph::qc_add_instance.
+// Record one instance of `state_hash` at `depth`, made from instance record `parent` by match
+// record `via`, whose event is `event` (kQeNoParent for a root). The device twin of
+// Hypergraph::qc_add_instance.
 __device__ inline uint32_t qe_add_instance(const DeviceState& ds, QeView qe, uint64_t state_hash,
-                                           uint32_t depth, uint32_t prod_offset,
-                                           uint32_t nslots) {
+                                           uint32_t depth, uint32_t parent, uint32_t via,
+                                           uint32_t event, uint32_t nslots) {
     if (!qe.enabled || depth > qe.max_steps) return UINT32_MAX;
 
     const uint32_t rec = qe.instances.claim();
@@ -941,7 +952,9 @@ __device__ inline uint32_t qe_add_instance(const DeviceState& ds, QeView qe, uin
         inst.id = nid.fetch_add(1u, cuda::memory_order_relaxed);
     }
     inst.nslots      = nslots;
-    inst.prod_offset = prod_offset;
+    inst.parent      = parent;
+    inst.via         = via;
+    inst.event       = event;
     inst.claim_cap   = 0;
     inst.bits_offset = 0;
     // Claim words only for an instance that will be expanded; one at the bound claims nothing.
@@ -980,9 +993,9 @@ __device__ inline uint32_t qe_add_instance(const DeviceState& ds, QeView qe, uin
 }
 
 // The root instance of a class: every slot's edge came with the initial state, so no event
-// produced any of them. Claims the class frame first, so the root's producer vector and the
-// expansion captured from it are in the SAME labelling by construction -- the host does the
-// same, and for the same reason.
+// produced any of them. Claims the class frame first, so the root's slots and the expansion
+// captured from it are in the SAME labelling by construction -- the host does the same, and for
+// the same reason.
 __device__ inline void qe_seed_root_instance(const DeviceState& ds, QeView qe, StateId root,
                                              uint32_t work_slice) {
     if (!qe.enabled) return;
@@ -1000,10 +1013,7 @@ __device__ inline void qe_seed_root_instance(const DeviceState& ds, QeView qe, S
     }
     if (!qe.replay) return;
 
-    const uint32_t off = qe_alloc_words(ds, qe, nslots);
-    if (off == UINT32_MAX) return;
-    for (uint32_t i = 0; i < nslots; ++i) qe.arr_words[off + i] = kQeNoProducer;
-    const uint32_t rec = qe_add_instance(ds, qe, h, 0u, off, nslots);
+    const uint32_t rec = qe_add_instance(ds, qe, h, 0u, kQeNoParent, 0u, 0u, nslots);
     if (rec == UINT32_MAX) return;
     qe_drive_instance(ds, qe, rec, h, 0u);
 }
@@ -1174,7 +1184,17 @@ struct DeviceQrCtx {
     __device__ bool want_causal() const    { return ds.record_causal != 0; }
     __device__ bool want_branchial() const { return ds.record_branchial != 0; }
     __device__ uint32_t producer_at(const DeviceQcInstance& inst, uint32_t slot) const {
-        return qe.arr_words[inst.prod_offset + slot];
+        return hgcommon::qr_producer_of(*this, &inst, slot);
+    }
+    // hgcommon::qr_producer_of's face, over instance records.
+    __device__ bool lineage_root(const DeviceQcInstance* n) const { return n->parent == kQeNoParent; }
+    __device__ uint32_t lineage_source(const DeviceQcInstance* n, uint32_t slot) const {
+        const QeMatchView m(qe.matches.at(n->via), qe.arr_words);
+        return slot < m.to_slots ? m.child_source(slot) : hgcommon::QR_SOURCE_NONE;
+    }
+    __device__ uint32_t lineage_event(const DeviceQcInstance* n) const { return n->event; }
+    __device__ const DeviceQcInstance* lineage_parent(const DeviceQcInstance* n) const {
+        return &qe.instances.at(n->parent);
     }
     __device__ void record_causal(uint32_t producer, uint32_t consumer, bool distinct_pair) {
         ++causal_edges_seen;
@@ -1288,20 +1308,10 @@ struct DeviceQrCtx {
     // own (tools/dev/ptx_frame_sizes.py measured 1104 bytes as its own frame).
     __device__ __forceinline__ void descend(const QeMatchView& m, uint32_t depth, uint32_t ev,
                                             const DeviceQcInstance& parent) {
-        const uint32_t off = qe_alloc_words(ds, qe, m.to_slots);
-        if (off == UINT32_MAX) return;
-        for (uint32_t i = 0; i < m.to_slots; ++i)
-            qe.arr_words[off + i] = hgcommon::QR_NO_PRODUCER;
-        for (uint32_t i = 0; i < m.num_survivors; ++i) {
-            const uint32_t f = m.surv_from(i), t = m.surv_to(i);
-            if (f < parent.nslots && t < m.to_slots)
-                qe.arr_words[off + t] = qe.arr_words[parent.prod_offset + f];
-        }
-        for (uint32_t i = 0; i < m.num_produced; ++i) {
-            const uint32_t s = m.produced(i);
-            if (s < m.to_slots) qe.arr_words[off + s] = ev;
-        }
-        const uint32_t rec = qe_add_instance(ds, qe, m.to_hash, depth + 1u, off, m.to_slots);
+        const uint32_t prec = static_cast<uint32_t>(&parent - qe.instances.data);
+        const uint32_t mrec = static_cast<uint32_t>(m.src - qe.matches.data);
+        const uint32_t rec =
+            qe_add_instance(ds, qe, m.to_hash, depth + 1u, prec, mrec, ev, m.to_slots);
         if (rec == UINT32_MAX) return;
         // The child's applications are tasks, which any warp's lanes run.
         qe_drive_instance(ds, qe, rec, m.to_hash, depth + 1u);
