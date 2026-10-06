@@ -70,7 +70,9 @@
 // A Match supplies: id, to_hash, rule, from_slots, to_slots, num_consumed/produced/survivors,
 // and consumed(i)/produced(i)/surv_from(i)/surv_to(i). An Instance supplies id and nslots.
 
+#include <algorithm>
 #include <cstdint>
+#include <utility>
 
 #include "hgcommon/core.hpp"
 #include "hgcommon/event_core.hpp"
@@ -275,6 +277,61 @@ HG_HD inline bool qr_consumed_overlap(const uint32_t* mine, uint32_t mine_n, con
         for (uint32_t j = 0; j < on; ++j)
             if (mine[i] == other.consumed(j)) { overlaps = true; break; }
     return overlaps;
+}
+
+// THE BRANCHIAL PAIRS OF ONE INSTANCE, for a readback of the relation: every unordered pair of
+// the instance's applications whose consumed slots overlap, once each, as emit(lo event,
+// hi event). Up to QR_PAIR_TEST_MAX applications every pair is tested. Above it the
+// applications' (slot, index) entries are sorted by slot and a pair is emitted from the group of
+// its LOWEST common slot only, so the work is the sort plus the pairs that share a slot, where
+// testing every pair is m(m-1)/2. `entries` is the caller's buffer of
+// std::pair<uint32_t, uint32_t>. App supplies event, num_consumed and consumed(j). Host only.
+constexpr uint32_t QR_PAIR_TEST_MAX = 32;
+template <class App, class Buf, class Emit>
+HG_INLINE void qr_instance_branchial_pairs(const App* apps, uint32_t n, Buf& entries, Emit&& emit) {
+    if (n <= QR_PAIR_TEST_MAX) {
+        for (uint32_t i = 0; i < n; ++i) {
+            const App& a = apps[i];
+            for (uint32_t j = i + 1; j < n; ++j) {
+                const App& b = apps[j];
+                if (a.event == b.event) continue;
+                bool overlaps = false;
+                for (uint32_t x = 0; x < a.num_consumed && !overlaps; ++x)
+                    for (uint32_t y = 0; y < b.num_consumed; ++y)
+                        if (a.consumed(x) == b.consumed(y)) { overlaps = true; break; }
+                if (!overlaps) continue;
+                const uint32_t lo = a.event < b.event ? a.event : b.event;
+                const uint32_t hi = a.event < b.event ? b.event : a.event;
+                emit(lo, hi);
+            }
+        }
+        return;
+    }
+    entries.clear();
+    for (uint32_t i = 0; i < n; ++i)
+        for (uint32_t j = 0; j < apps[i].num_consumed; ++j)
+            entries.push_back({apps[i].consumed(j), i});
+    std::sort(entries.begin(), entries.end());
+    auto lowest_common = [](const App& a, const App& b) {
+        uint32_t lo = ~0u;
+        for (uint32_t x = 0; x < a.num_consumed; ++x)
+            for (uint32_t y = 0; y < b.num_consumed; ++y)
+                if (a.consumed(x) == b.consumed(y) && a.consumed(x) < lo) lo = a.consumed(x);
+        return lo;
+    };
+    for (size_t g = 0; g < entries.size();) {
+        size_t e = g;
+        while (e < entries.size() && entries[e].first == entries[g].first) ++e;
+        const uint32_t slot = entries[g].first;
+        for (size_t x = g; x < e; ++x)
+            for (size_t y = x + 1; y < e; ++y) {
+                const App& a = apps[entries[x].second];
+                const App& b = apps[entries[y].second];
+                if (a.event == b.event || lowest_common(a, b) != slot) continue;
+                emit(a.event < b.event ? a.event : b.event, a.event < b.event ? b.event : a.event);
+            }
+        g = e;
+    }
 }
 
 // Apply one match to one instance. Returns the minted event id, or INVALID_ID when the pair

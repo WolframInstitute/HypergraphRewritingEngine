@@ -1590,42 +1590,20 @@ public:
         // DERIVED FROM THE APPLICATIONS, not from a stored list of pairs. The pairs are the
         // per-instance applications that share a consumed slot, so the applications ARE the
         // relation in the form it is generated -- 970,584 of them against the 133,218,996 pairs
-        // they imply on disc-l3a2g2r2 depth 3. Storing the expansion cost ~1.07 GB and is what
-        // the device's 2^22 branchial ceiling was up against.
-        //
-        // The SAME rule the replay applies: a pair belongs to the LATER of its two
-        // applications, so walking each node against the ones published before it yields every
-        // pair exactly once, with nothing to dedup against.
-        // THE WALK IS QUIESCENT -- this runs at serialization time, after the evolution -- so
-        // each instance's list is FLATTENED once into contiguous scratch and the quadratic
-        // pair loop runs over the flat array. The list costs one dependent load per node; the
-        // pair loop visits each element k times, so walking the LIST there is k dependent
-        // loads per element where the flat array costs none: 162,258,036 node visits against
-        // 970,584 flatten loads on disc-l3a2g2r2 depth 3. Order is preserved exactly --
-        // for_each_node is newest-first and for_each_before(mine) is everything older, which
-        // flat[i] against flat[j], j > i, reproduces pair for pair.
+        // they imply on disc-l3a2g2r2 depth 3. Each instance's list is flattened and paired by
+        // hgcommon::qr_instance_branchial_pairs, which the device readback
+        // (QeState::reconstructed_pairs_host) calls too.
         const uint32_t n = qc_applied_slot_bound();
         std::vector<QcAppliedMatch> flat;
+        std::vector<std::pair<uint32_t, uint32_t>> entries;
         for (uint32_t i = 0; i < n; ++i) {
             const LockFreeList<QcAppliedMatch>* lst = qc_inst_applied_.find(i);
             if (!lst) continue;
             flat.clear();
             lst->for_each([&](const QcAppliedMatch& m) { flat.push_back(m); });
-            for (uint32_t ai = 0; ai < flat.size(); ++ai) {
-                const QcAppliedMatch& a = flat[ai];
-                for (uint32_t bi = ai + 1; bi < flat.size(); ++bi) {
-                    const QcAppliedMatch& b = flat[bi];
-                    if (a.event == b.event) continue;
-                    bool overlaps = false;
-                    for (uint32_t x = 0; x < a.num_consumed && !overlaps; ++x)
-                        for (uint32_t y = 0; y < b.num_consumed; ++y)
-                            if (a.consumed(x) == b.consumed(y)) { overlaps = true; break; }
-                    if (!overlaps) continue;
-                    const uint32_t lo = a.event < b.event ? a.event : b.event;
-                    const uint32_t hi = a.event < b.event ? b.event : a.event;
-                    f(id(lo), id(hi));
-                }
-            }
+            hgcommon::qr_instance_branchial_pairs(
+                flat.data(), static_cast<uint32_t>(flat.size()), entries,
+                [&](uint32_t lo, uint32_t hi) { f(id(lo), id(hi)); });
         }
     }
 

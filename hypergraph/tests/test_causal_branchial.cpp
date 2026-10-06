@@ -1000,3 +1000,60 @@ TEST(CausalGraphTracking, OnlineTransitiveReduction_DisabledByDefault) {
     EXPECT_EQ(cg.num_redundant_edges_skipped(), 0u);
 }
 
+
+// hgcommon::qr_instance_branchial_pairs, the readback's pairing on both engines, against testing
+// every pair: random instances of up to 60 applications consuming one to three of 4 or 64 slots
+// (dense and sparse overlap), compared as sets of (lo, hi) event pairs.
+TEST(BranchialReadback, PairingBySlotEqualsTestingEveryPair) {
+    struct App {
+        uint32_t event, num_consumed;
+        uint32_t s[3];
+        uint32_t consumed(uint32_t j) const { return s[j]; }
+    };
+    uint64_t rng = 0x9E3779B97F4A7C15ull;
+    auto next = [&](uint32_t bound) {
+        rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17;
+        return static_cast<uint32_t>(rng % bound);
+    };
+    std::vector<std::pair<uint32_t, uint32_t>> entries;
+    size_t compared = 0;
+    for (uint32_t trial = 0; trial < 400; ++trial) {
+        const uint32_t nslots = trial % 2 ? 64u : 4u;
+        const uint32_t n = next(60);
+        std::vector<App> apps(n);
+        for (uint32_t i = 0; i < n; ++i) {
+            App& a = apps[i];
+            a.event = 1000u + i;
+            a.num_consumed = 1u + next(3);
+            for (uint32_t j = 0; j < a.num_consumed; ++j) {
+                uint32_t v;
+                bool dup;
+                do {
+                    v = next(nslots);
+                    dup = false;
+                    for (uint32_t k = 0; k < j; ++k) dup = dup || a.s[k] == v;
+                } while (dup);
+                a.s[j] = v;
+            }
+        }
+        std::set<std::pair<uint32_t, uint32_t>> want, got;
+        for (uint32_t i = 0; i < n; ++i)
+            for (uint32_t j = i + 1; j < n; ++j) {
+                bool overlap = false;
+                for (uint32_t x = 0; x < apps[i].num_consumed; ++x)
+                    for (uint32_t y = 0; y < apps[j].num_consumed; ++y)
+                        overlap = overlap || apps[i].s[x] == apps[j].s[y];
+                if (overlap) want.insert({apps[i].event, apps[j].event});
+            }
+        size_t emitted = 0;
+        hgcommon::qr_instance_branchial_pairs(apps.data(), n, entries,
+                                              [&](uint32_t lo, uint32_t hi) {
+                                                  ++emitted;
+                                                  got.insert({lo, hi});
+                                              });
+        EXPECT_EQ(got, want) << "trial " << trial;
+        EXPECT_EQ(emitted, want.size()) << "trial " << trial << ": a pair was emitted twice";
+        compared += want.size();
+    }
+    EXPECT_GT(compared, 1000u);
+}

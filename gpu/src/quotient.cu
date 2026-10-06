@@ -357,10 +357,8 @@ void QeState::reconstructed_pairs_host(std::vector<std::pair<uint64_t, uint64_t>
         // expansion on the device is what its 2^22 map ceiling was, and truncating it returned a
         // partial relation with a warning rather than an answer.
         //
-        // Order does not matter here, only the SET, so the host groups by instance and takes
-        // each unordered pair once. The device's own counter is incremented per emission under
-        // the strictly-earlier scan rule, so it and this enumeration are two routes to one
-        // number and disagreeing is a defect either can catch.
+        // Grouped by instance and paired by hgcommon::qr_instance_branchial_pairs, the function
+        // the host engine's readback calls.
         std::vector<LockFreeList<QeAppliedMatch>::Node> nodes;
         inst_applied_.copy_nodes_to_host(nodes);
         // The arena prefix the run filled, not its capacity.
@@ -373,33 +371,27 @@ void QeState::reconstructed_pairs_host(std::vector<std::pair<uint64_t, uint64_t>
             HG_CUDA_CHECK(cudaMemcpy(slots.data(), arr_, sizeof(uint32_t) * used,
                                      cudaMemcpyDeviceToHost), "QeState arr read");
 
-        std::unordered_map<uint32_t, std::vector<const QeAppliedMatch*>> by_instance;
-        for (const auto& nd : nodes) by_instance[nd.value.instance].push_back(&nd.value);
-        for (const auto& kv : by_instance) {
-            const auto& v = kv.second;
-            for (size_t i = 0; i < v.size(); ++i) {
-                for (size_t j = i + 1; j < v.size(); ++j) {
-                    const QeAppliedMatch& a = *v[i];
-                    const QeAppliedMatch& b = *v[j];
-                    if (a.event == b.event) continue;
-                    bool overlaps = false;
-                    for (uint32_t x = 0; x < a.num_consumed && !overlaps; ++x) {
-                        const uint32_t ax = a.consumed_offset + x;
-                        if (ax >= slots.size()) break;
-                        for (uint32_t y = 0; y < b.num_consumed; ++y) {
-                            const uint32_t by = b.consumed_offset + y;
-                            if (by >= slots.size()) break;
-                            if (slots[ax] == slots[by]) { overlaps = true; break; }
-                        }
-                    }
-                    if (!overlaps) continue;
-                    const uint32_t lo = a.event < b.event ? a.event : b.event;
-                    const uint32_t hi = a.event < b.event ? b.event : a.event;
+        // An application bound to the copied arena; consumed slots past the copy are not read.
+        struct App {
+            uint32_t event, num_consumed;
+            const uint32_t* s;
+            uint32_t consumed(uint32_t j) const { return s[j]; }
+        };
+        std::unordered_map<uint32_t, std::vector<App>> by_instance;
+        for (const auto& nd : nodes) {
+            const QeAppliedMatch& a = nd.value;
+            const uint32_t off = a.consumed_offset < used ? a.consumed_offset : used;
+            const uint32_t nc = std::min(a.num_consumed, used - off);
+            by_instance[a.instance].push_back(App{a.event, nc, slots.data() + off});
+        }
+        std::vector<std::pair<uint32_t, uint32_t>> entries;
+        for (const auto& kv : by_instance)
+            hgcommon::qr_instance_branchial_pairs(
+                kv.second.data(), static_cast<uint32_t>(kv.second.size()), entries,
+                [&](uint32_t lo, uint32_t hi) {
                     branchial.emplace_back(sig_of(lo), sig_of(hi));
                     if (branchial_raw) branchial_raw->emplace_back(lo, hi);
-                }
-            }
-        }
+                });
 
     }
 
