@@ -54,15 +54,20 @@ EngineConfig config_from_input(const EvolveInput& in) {
     cfg.max_edges              = expected_edges;
     cfg.max_states             = expected_states;
     cfg.max_vertex_slots       = expected_edges * 4u;
-    // Total edge-ID slots across all states' CSR rows. Each rewrite
-    // consumes parent.count + rhs slots; assume average state size ~
-    // max(n_init, 64) and room for ~16 edges per state on average.
-    uint32_t avg_state_edges   = std::max<uint32_t>(64u,
-                                 static_cast<uint32_t>(n_init) + growth * 16u);
-    cfg.max_state_edge_total   = static_cast<uint32_t>(
-        std::min<uint64_t>(
-            static_cast<uint64_t>(expected_states) * avg_state_edges,
-            1ull << 30));  // ≤ 4 GB × sizeof(EdgeId)=4 → ≤ 1G slots
+    // Total edge-ID slots across all states' CSR rows: one slice per state id. A rewrite changes
+    // a state's edge count by |rhs| - |lhs| of its rule, so a state at depth d holds at most the
+    // largest initial state's edges plus d times the largest growth of any rule. At most 1G
+    // slots (4 GB).
+    size_t largest_init = n_init;
+    for (const auto& s : in.initial_states) largest_init = std::max(largest_init, s.size());
+    int64_t rule_growth = 0;
+    for (const auto& r : in.rules)
+        rule_growth = std::max<int64_t>(rule_growth, static_cast<int64_t>(r.rhs.size()) -
+                                                         static_cast<int64_t>(r.lhs.size()));
+    const uint64_t state_edges_bound =
+        std::max<uint64_t>(1u, largest_init + static_cast<uint64_t>(steps) * rule_growth);
+    cfg.max_state_edge_total   = static_cast<uint32_t>(std::min<uint64_t>(
+        static_cast<uint64_t>(expected_states) * state_edges_bound, 1ull << 30));
     // Each event allocates ≤ kMaxVars fresh vertices, so vertex IDs bound
     // by n_init-vertices + events × kMaxVars. Be generous.
     cfg.max_vertices           = std::max<uint32_t>(expected_edges,
