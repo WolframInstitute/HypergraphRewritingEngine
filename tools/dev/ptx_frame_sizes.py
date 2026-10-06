@@ -195,19 +195,21 @@ def report_calls(path):
         for f in sorted(c, key=lambda f: -frames.get(f, 0)):
             print(f'  {frames.get(f, 0):6d}    {pretty.get(f, f)[:150]}')
     # Deepest chain over the condensation: a component costs its depot sum once.
-    memo = {}
+    memo, via = {}, {}
 
     def deepest(ci):
         if ci in memo:
             return memo[ci]
         memo[ci] = 0
         own = sum(frames.get(f, 0) for f in comps[ci])
-        best = 0
+        best, arg = 0, None
         for f in comps[ci]:
             for g in callees.get(f, ()):
                 if g in comp_of and comp_of[g] != ci:
-                    best = max(best, deepest(comp_of[g]))
-        memo[ci] = own + best
+                    d = deepest(comp_of[g])
+                    if d > best:
+                        best, arg = d, comp_of[g]
+        memo[ci], via[ci] = own + best, arg
         return memo[ci]
 
     print()
@@ -217,6 +219,14 @@ def report_calls(path):
         rec = any(comp_of[e] == comps.index(c) for c in cyclic) or \
             _reaches_cycle(comp_of[e], comps, comp_of, callees, cyclic)
         print(f'{size:6d}  {"recursive " if rec else ""}{pretty.get(e, e)[:140]}')
+    if rows:
+        print()
+        print('The deepest chain, frame by frame:')
+        ci = comp_of[rows[0][1]]
+        while ci is not None:
+            for f in sorted(comps[ci], key=lambda f: -frames.get(f, 0)):
+                print(f'{frames.get(f, 0):6d}    {pretty.get(f, f)[:150]}')
+            ci = via.get(ci)
 
 
 def _reaches_cycle(ci, comps, comp_of, callees, cyclic):
