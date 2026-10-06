@@ -23,9 +23,11 @@
 #include <gtest/gtest.h>
 
 #include "hg_gpu/evolve.hpp"
+#include "hg_gpu/persistent.hpp"
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <vector>
 
 namespace {
@@ -182,6 +184,77 @@ TEST(CapacityOverflow, AFullClaimMapIsRetriedLarger) {
     ASSERT_TRUE(hg_gpu::grow_config_for(cfg, hg_gpu::ErrorKind::kCanonicalMapFull));
     EXPECT_EQ(cfg.max_states, 2 * states);
     EXPECT_EQ(cfg.max_events, 2 * events);
+}
+
+// estimated_device_bytes covers what an engine allocates, building it and running a quotient
+// replay, in total and per replay group. Grow-and-retry stops on the estimate, so an estimate
+// below the allocation lets it build an engine that does not fit.
+TEST(CapacityOverflow, TheEstimateCoversTheAllocation) {
+    hg_gpu::EvolveInput in = growing_input(3);
+    in.explore_from_canonical_states_only = true;
+    in.record = hgcommon::RecordSet{true, true, true};
+    auto allocated = [&](const hg_gpu::EngineConfig& cfg) -> int64_t {
+        cudaDeviceSynchronize();
+        size_t free0 = 0, total = 0, free1 = 0;
+        EXPECT_EQ(cudaMemGetInfo(&free0, &total), cudaSuccess);
+        hg_gpu::Engine engine(cfg);
+        const hg_gpu::EvolveResult r = engine.run(in);
+        EXPECT_TRUE(r.warnings.empty());
+        cudaDeviceSynchronize();
+        EXPECT_EQ(cudaMemGetInfo(&free1, &total), cudaSuccess);
+        return static_cast<int64_t>(free0) - static_cast<int64_t>(free1);
+    };
+    hg_gpu::EngineConfig base = hg_gpu::config_from_input(in);
+    base.qe_class_entries = base.qe_instance_entries = base.qe_event_entries =
+        base.qe_pair_entries = 1u << 16;
+    base.qe_word_entries = 1u << 20;
+    // The first engine of the process also reserves the device stack for every resident
+    // thread, and the reservation stays for the process; it is added back below.
+    (void)allocated(base);
+    size_t stack = 0;
+    ASSERT_EQ(cudaDeviceGetLimit(&stack, cudaLimitStackSize), cudaSuccess);
+    const int64_t reserved = static_cast<int64_t>(stack * hg_gpu::device_resident_threads());
+    const int64_t base_raw = allocated(base);
+    const int64_t base_bytes = base_raw + reserved;
+    const int64_t base_est = static_cast<int64_t>(hg_gpu::estimated_device_bytes(base));
+    std::printf("base: allocated %lld MB (stack %lld MB), estimated %lld MB\n",
+                (long long)(base_bytes >> 20), (long long)(reserved >> 20),
+                (long long)(base_est >> 20));
+    EXPECT_LE(base_bytes, base_est);
+
+    // Every sized field. The replay groups are given explicitly above, so growing max_events or
+    // max_states moves only the engine's own tables.
+    struct Group { const char* name; uint32_t hg_gpu::EngineConfig::*field; };
+#define HG_FIELD(f) {#f, &hg_gpu::EngineConfig::f}
+    const Group groups[] = {HG_FIELD(qe_class_entries), HG_FIELD(qe_instance_entries),
+                            HG_FIELD(qe_event_entries), HG_FIELD(qe_pair_entries),
+                            HG_FIELD(qe_word_entries), HG_FIELD(max_edges),
+                            HG_FIELD(max_vertices), HG_FIELD(max_vertex_slots),
+                            HG_FIELD(max_states), HG_FIELD(max_state_edge_total),
+                            HG_FIELD(inverted_pool), HG_FIELD(sig_index_pool),
+                            HG_FIELD(canonical_form_words), HG_FIELD(match_dedup_slots),
+                            HG_FIELD(event_canon_slots), HG_FIELD(max_events),
+                            HG_FIELD(max_causal_edges), HG_FIELD(max_branchial_edges),
+                            HG_FIELD(causal_triple_slots), HG_FIELD(causal_pair_slots),
+                            HG_FIELD(branchial_pair_slots), HG_FIELD(edge_consumer_nodes),
+                            HG_FIELD(branchial_index_nodes), HG_FIELD(tr_preds_nodes)};
+#undef HG_FIELD
+    for (const Group& g : groups) {
+        hg_gpu::EngineConfig big = base;
+        // 2^22 to 2^28 entries more: enough that cudaMalloc's 2 MB page rounding is under 1 B
+        // per entry, and few enough that no array passes 4 GiB, past which the driver takes
+        // more device memory than the allocation (measured: three 4,311,744,512 B arrays took
+        // 16.3 B per entry of free memory for 12 B allocated).
+        const uint64_t grow = std::min<uint64_t>(
+            std::max<uint64_t>(uint64_t(base.*g.field) * 7u, 1u << 22), 1u << 28);
+        big.*g.field = static_cast<uint32_t>((base.*g.field) + grow);
+        const int64_t d_bytes = allocated(big) - base_raw;
+        const int64_t d_est = static_cast<int64_t>(hg_gpu::estimated_device_bytes(big)) - base_est;
+        const double per = double(d_bytes) / double((big.*g.field) - (base.*g.field));
+        const double per_est = double(d_est) / double((big.*g.field) - (base.*g.field));
+        std::printf("%-22s per entry: allocated %.1f B, estimated %.1f B\n", g.name, per, per_est);
+        EXPECT_LE(d_bytes, d_est) << g.name;
+    }
 }
 
 // A replay group's overflow doubles that group from its resolved size and leaves the others.

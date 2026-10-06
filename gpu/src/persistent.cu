@@ -1423,6 +1423,22 @@ uint32_t default_persistent_grid() {
     return cached;
 }
 
+uint64_t device_resident_threads() {
+    static uint64_t cached = 0;
+    if (cached) return cached;
+    int sms = 0, per_sm = 0;
+    if (cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, 0) != cudaSuccess ||
+        cudaDeviceGetAttribute(&per_sm, cudaDevAttrMaxThreadsPerMultiProcessor, 0) !=
+            cudaSuccess ||
+        sms <= 0 || per_sm <= 0) {
+        cudaGetLastError();   // do not leave a sticky status behind for the next launch
+        sms = 32;
+        per_sm = 2048;        // the largest any supported architecture holds
+    }
+    cached = static_cast<uint64_t>(sms) * static_cast<uint64_t>(per_sm);
+    return cached;
+}
+
 // A launch's ring, dedup maps and detector. Built on first use at the sizes the launch asks for
 // and rebuilt only when a later launch asks for a different size; each launch clears what it
 // takes. A PersistentEvolver's config never shrinks, so after its first run every launch reuses

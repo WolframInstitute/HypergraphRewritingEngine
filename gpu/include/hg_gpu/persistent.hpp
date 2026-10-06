@@ -114,6 +114,10 @@ PersistentRunStats run_persistent_match_rewrite(EngineState& engine,
 // grows. See gpu/src/persistent.cu for the sweep behind eight-per-SM.
 uint32_t default_persistent_grid();
 
+// Threads the device can hold resident: SMs x maximum threads per SM. The driver reserves the
+// per-thread stack (cudaLimitStackSize) for this many threads, whatever grid is launched.
+uint64_t device_resident_threads();
+
 // Words of IR arena to provide for `holders` concurrent slot holders at `share_words` average
 // words each (EngineConfig::ir_arena_share_words). The arena is one shared bump pool; a holder
 // keeps one slot at a time and grows it to the largest state it personally canonicalizes, so
