@@ -160,8 +160,8 @@ struct MatchJoinCtx {
     // would enumerate a candidate twice and emit a duplicate match. Multiway states are
     // small (tens of edges) while the signature and vertex-inverted indices span the whole
     // evolution, so their buckets cost O(evolution) per state; at or below
-    // slice_scan_max_edges the state's own CSR slice gives each edge exactly once, with no
-    // dedup buffer and with membership for free.
+    // slice_scan_max_edges the state's own CSR slice gives each edge exactly once, with
+    // membership for free.
     template <typename F>
     __device__ void for_each_candidate(uint8_t p, const MatchJoinState& st, F&& f) const {
         const DevicePatternEdge& pe = rule.lhs[p];
@@ -171,31 +171,11 @@ struct MatchJoinCtx {
             return;
         }
 
+        // The pivot vertex's incident list holds each incident edge once
+        // (VertexInvertedIndex), so it goes to the join as it is walked.
         if (pe.pivot_var != kNoPivotVar) {
-            const VertexId pivot_vert = st.binding[pe.pivot_var];
-            // Bounded dedup: a self-loop {a,a} appears twice in list[a], and concurrent
-            // inserts from rewrite kernels interleave those with other edges, so a
-            // last-seen check is not enough. Collect first, then hand over -- only one
-            // enumerator may call f, because a candidate tried during collection would be
-            // tried again by the signature walk after an overflow.
-            constexpr uint32_t kMaxIncidentSeen = 256;
-            EdgeId   seen[kMaxIncidentSeen];
-            uint32_t n_seen = 0;
-            bool     overflowed = false;
-            ds.vertex_inverted_index.for_each_incident(
-                pivot_vert,
-                [&] (EdgeId cand) {
-                    if (overflowed) return;
-                    for (uint32_t i = 0; i < n_seen; ++i) {
-                        if (seen[i] == cand) return;
-                    }
-                    if (n_seen >= kMaxIncidentSeen) { overflowed = true; return; }
-                    seen[n_seen++] = cand;
-                });
-            if (!overflowed) {
-                for (uint32_t i = 0; i < n_seen; ++i) f(seen[i]);
-                return;
-            }
+            ds.vertex_inverted_index.for_each_incident(st.binding[pe.pivot_var], f);
+            return;
         }
 
         // Union over every compatible signature bucket: Wolfram binding lets distinct vars

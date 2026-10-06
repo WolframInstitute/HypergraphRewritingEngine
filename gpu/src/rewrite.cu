@@ -504,6 +504,7 @@ __device__ AppliedMatch apply_one_match(const DeviceState& ds,
             for (uint8_t i = 0; i < re.arity; ++i) {
                 VertexId v = binding[re.vars[i]];
                 if (v >= ds.vertex_inverted_index.list.num_keys) continue;
+                if (!first_occurrence([&](uint8_t k) { return binding[re.vars[k]]; }, i)) continue;
                 if (ds.vertex_inverted_index.insert(v, new_eid) == INVALID_ID) {
                     ds.errors.record(ErrorKind::kInvIndexNodes);
                 }

@@ -10,9 +10,10 @@ namespace HG_NAMESPACE {
 namespace gpu {
 
 // Vertex → list-of-edge-ids inverted index. For each VertexId in
-// [0, max_vertices), maintains a LockFreeList of EdgeIds that contain that
-// vertex (counting multiplicity — a self-loop appears twice for the same
-// vertex).
+// [0, max_vertices), maintains a LockFreeList of the EdgeIds that contain that
+// vertex, each once: an edge in which the vertex occurs several times is
+// inserted for its first occurrence only, so a walk of the list yields every
+// incident edge exactly once.
 //
 // Used by the match kernel for "edges incident on this vertex" lookup
 // during candidate generation: when a partial match has bound variable v
@@ -24,10 +25,8 @@ public:
     struct DeviceView {
         typename LockFreeList<EdgeId>::DeviceView list;
 
-        // Insert edge_id under vertex `v`. Caller must invoke once per
-        // (v, edge_id) occurrence — i.e. for an edge {a, b, c} the rewrite
-        // kernel calls insert(a, eid), insert(b, eid), insert(c, eid).
-        // For a self-loop {a, a} it calls insert twice (degree counts).
+        // Insert edge_id under vertex `v`, once per distinct vertex of the edge: for
+        // {a, b, a} the caller inserts under a and b (first_occurrence below).
         __device__ uint32_t insert(VertexId v, EdgeId eid) const {
             return list.push(v, eid);
         }
@@ -52,6 +51,14 @@ public:
 private:
     LockFreeList<EdgeId> list_;
 };
+
+// True when position i of an edge is the first occurrence of its vertex, read through `at`.
+template <typename At>
+__host__ __device__ inline bool first_occurrence(At&& at, uint8_t i) {
+    for (uint8_t j = 0; j < i; ++j)
+        if (at(j) == at(i)) return false;
+    return true;
+}
 
 }  // namespace gpu
 }  // namespace HG_NAMESPACE

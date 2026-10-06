@@ -20,9 +20,10 @@ __global__ void k_init_indices(const __grid_constant__ DeviceState ds, uint32_t 
 
     Edge& e = ds.edge_pool.at(eid);
     ds.signature_index.insert(eid, e.signature);
+    auto vertex_at = [&](uint8_t k) { return ds.vertex_pool.at(e.vertex_offset + k); };
     for (uint8_t i = 0; i < e.arity; ++i) {
-        VertexId v = ds.vertex_pool.at(e.vertex_offset + i);
-        ds.vertex_inverted_index.insert(v, eid);
+        if (!first_occurrence(vertex_at, i)) continue;
+        ds.vertex_inverted_index.insert(vertex_at(i), eid);
     }
 }
 
