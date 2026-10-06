@@ -9,7 +9,9 @@
 # ignored, and a measurement box with ONE card compiled SASS for five architectures. Setting
 # the standard variable and letting the targets inherit it is what makes the standard knob
 # work; overriding a per-target property is what broke it.
-set(HG_GPU_ARCHS "75;80;86;89;90" CACHE STRING
+# Turing (7.5) to Blackwell (10.0 data centre, 12.0 RTX 50-series). SASS only: the device link of
+# relocatable device code keeps no PTX, so a card outside this list cannot run the binary.
+set(HG_GPU_ARCHS "75;80;86;89;90;100;120" CACHE STRING
     "Default CUDA architectures for shipped artifacts; CMAKE_CUDA_ARCHITECTURES overrides")
 if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
     set(CMAKE_CUDA_ARCHITECTURES ${HG_GPU_ARCHS})
@@ -63,7 +65,7 @@ target_compile_options(hg_gpu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--Werror=cross-execution-space-call>
     # Compile the per-architecture code-generation passes in parallel (one nvcc invocation emits
     # SASS for every arch in CUDA_ARCHITECTURES; without this it does them serially). 0 = use all
-    # CPUs. This is the dominant cost of the broad (Turing..Hopper) shippable build.
+    # CPUs. This is the dominant cost of the broad (Turing..Blackwell) shippable build.
     $<$<COMPILE_LANGUAGE:CUDA>:--threads=0>
 )
 
