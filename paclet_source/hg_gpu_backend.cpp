@@ -484,6 +484,12 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
     // exploration, where the materialised events are only the explored skeleton's.
     const bool recon_content = recon_ran && !result.reconstructed_event_from_class.empty();
     const bool recon_events = recon_content && job.explore_from_canonical_states_only;
+    // "Events" is then keyed by application id, every one below the count of applications, so
+    // genesis ids start there, as the host's start at its id bound.
+    if (recon_events)
+        first_genesis_event = std::max<hg_gpu::EventId>(
+            first_genesis_event,
+            static_cast<hg_gpu::EventId>(result.reconstructed_event_from_class.size()));
     // Every application the replay minted has content; under an event identity it must also
     // carry the identity the count groups by.
     auto recon_app_valid = [&](uint32_t e) -> bool {
