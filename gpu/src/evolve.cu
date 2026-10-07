@@ -31,6 +31,16 @@ namespace {
 
 }  // namespace (close anon — config_from_input has external linkage)
 
+// The most edges a state can hold `steps` rewrites from a root of `largest_root` edges: a rewrite
+// changes a state's edge count by |rhs| - |lhs| of its rule.
+static size_t max_state_edges(size_t largest_root, const std::vector<RewriteRule>& rules,
+                              uint32_t steps) {
+    size_t max_growth = 0;
+    for (const auto& r : rules)
+        if (r.rhs.size() > r.lhs.size()) max_growth = std::max(max_growth, r.rhs.size() - r.lhs.size());
+    return largest_root + max_growth * static_cast<size_t>(steps);
+}
+
 EngineConfig config_from_input(const EvolveInput& in) {
     EngineConfig cfg;
     size_t n_init   = in.initial_state.size();
@@ -54,18 +64,12 @@ EngineConfig config_from_input(const EvolveInput& in) {
     cfg.max_edges              = expected_edges;
     cfg.max_states             = expected_states;
     cfg.max_vertex_slots       = expected_edges * 4u;
-    // Total edge-ID slots across all states' CSR rows: one slice per state id. A rewrite changes
-    // a state's edge count by |rhs| - |lhs| of its rule, so a state at depth d holds at most the
-    // largest initial state's edges plus d times the largest growth of any rule. At most 1G
-    // slots (4 GB).
+    // Total edge-ID slots across all states' CSR rows: one slice per state id, each at most
+    // max_state_edges. At most 1G slots (4 GB).
     size_t largest_init = n_init;
     for (const auto& s : in.initial_states) largest_init = std::max(largest_init, s.size());
-    int64_t rule_growth = 0;
-    for (const auto& r : in.rules)
-        rule_growth = std::max<int64_t>(rule_growth, static_cast<int64_t>(r.rhs.size()) -
-                                                         static_cast<int64_t>(r.lhs.size()));
     const uint64_t state_edges_bound =
-        std::max<uint64_t>(1u, largest_init + static_cast<uint64_t>(steps) * rule_growth);
+        std::max<uint64_t>(1u, max_state_edges(largest_init, in.rules, steps));
     cfg.max_state_edge_total   = static_cast<uint32_t>(std::min<uint64_t>(
         static_cast<uint64_t>(expected_states) * state_edges_bound, 1ull << 30));
     // Each event allocates ≤ kMaxVars fresh vertices, so vertex IDs bound
@@ -238,14 +242,8 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     // without clearing -- so turning maintenance on after the upload and rebuilding puts every
     // root edge in its bucket twice, which surfaces as duplicate candidates, duplicate matches
     // and duplicate events on any state large enough to be matched through the indices.
-    size_t max_growth = 0;
-    for (const auto& r : in.rules) {
-        const size_t lhs = r.lhs.size(), rhs = r.rhs.size();
-        if (rhs > lhs) max_growth = std::max(max_growth, rhs - lhs);
-    }
-    const size_t max_state_edges =
-        max_root_edges + max_growth * static_cast<size_t>(in.num_steps);
-    engine.set_maintain_indices(max_state_edges > engine.config_slice_scan_max_edges());
+    engine.set_maintain_indices(max_state_edges(max_root_edges, in.rules, in.num_steps) >
+                                engine.config_slice_scan_max_edges());
     // Continuing: the roots are already in the pools from the call that opened the session, so
     // uploading them again would add a second copy of every root and re-seed the evolution from
     // depth 0 alongside the frontier.
