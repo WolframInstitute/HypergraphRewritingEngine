@@ -168,6 +168,17 @@ struct is_map<std::unordered_map<K, V>> : std::true_type {};
 template<typename T>
 inline constexpr bool is_map_v = is_map<T>::value;
 
+// Nesting depth of std::vector<...> and its innermost element type; a packed array decodes into
+// a vector type whose depth equals the array's rank.
+template<typename T>
+struct vector_depth { static constexpr size_t value = 0; using leaf = T; };
+
+template<typename U>
+struct vector_depth<std::vector<U>> {
+    static constexpr size_t value = 1 + vector_depth<U>::value;
+    using leaf = typename vector_depth<U>::leaf;
+};
+
 /**
  * WXF Parser - Deserializes WXF binary data to C++ types
  */
@@ -245,6 +256,22 @@ private:
     // Step over a PackedArray or NumericArray body: element type, rank, the dimensions,
     // then the product of the dimensions times the element size.
     void skip_array();
+    // A PackedArray or NumericArray header, read and checked, with the cursor moved past the
+    // body: element type, dimensions, and a pointer to the little-endian elements.
+    struct ArrayBody {
+        uint8_t type;
+        size_t elem;
+        std::vector<size_t> dims;
+        const uint8_t* body;
+    };
+    ArrayBody read_array();
+    // Element `i` of an array body as an integer or a real; TypeError when the element type
+    // cannot be represented (a real read as an integer, an unsigned value past int64_t, a
+    // complex element).
+    int64_t array_integer(const ArrayBody& a, size_t i) const;
+    double array_real(const ArrayBody& a, size_t i) const;
+    template<typename T>
+    T decode_array(const ArrayBody& a, size_t level, size_t& next) const;
     // Both big-number tokens have one wire shape; one body reads either.
     std::string read_big_number(Token expected, const char* what);
 };
@@ -314,10 +341,20 @@ T Parser::read() {
         throw ParseError("BigReal not implemented - requires arbitrary precision library", read_position_);
     } else if (token == Token::DelayedRule) {
         throw ParseError("DelayedRule not implemented", read_position_);
-    } else if (token == Token::PackedArray) {
-        throw ParseError("PackedArray not implemented", read_position_);
-    } else if (token == Token::NumericArray) {
-        throw ParseError("NumericArray not implemented", read_position_);
+    } else if (token == Token::PackedArray || token == Token::NumericArray) {
+        if constexpr (is_vector_v<T> && !std::is_same_v<T, std::vector<uint8_t>> &&
+                      std::is_arithmetic_v<typename vector_depth<T>::leaf>) {
+            const ArrayBody a = read_array();
+            if (a.dims.size() != vector_depth<T>::value) {
+                throw TypeError("array rank " + std::to_string(a.dims.size()) +
+                                " does not match the expected nesting depth " +
+                                std::to_string(vector_depth<T>::value), read_position_);
+            }
+            size_t next = 0;
+            return decode_array<T>(a, 0, next);
+        } else {
+            throw TypeError("an array where a scalar was expected", read_position_);
+        }
     }
 
     if constexpr (std::is_integral_v<T>) {
@@ -438,6 +475,29 @@ void Writer::write(const T& value) {
         write_association(value);
     } else {
         static_assert(is_wxf_serializable<T>::value, "Type not supported for WXF serialization");
+    }
+}
+
+template<typename T>
+T Parser::decode_array(const ArrayBody& a, size_t level, size_t& next) const {
+    if constexpr (is_vector_v<T>) {
+        T out;
+        out.reserve(a.dims[level]);
+        for (size_t i = 0; i < a.dims[level]; ++i)
+            out.push_back(decode_array<typename T::value_type>(a, level + 1, next));
+        return out;
+    } else if constexpr (std::is_integral_v<T>) {
+        const int64_t v = array_integer(a, next++);
+        if (v < static_cast<int64_t>(std::numeric_limits<T>::min()) ||
+            (v > 0 && static_cast<uint64_t>(v) > static_cast<uint64_t>(std::numeric_limits<T>::max()))) {
+            throw TypeError("array element out of range for the requested integer type",
+                            read_position_);
+        }
+        return static_cast<T>(v);
+    } else if constexpr (std::is_same_v<T, double>) {
+        return array_real(a, next++);
+    } else {
+        static_assert(std::is_same_v<T, double>, "array elements decode to integers or doubles");
     }
 }
 

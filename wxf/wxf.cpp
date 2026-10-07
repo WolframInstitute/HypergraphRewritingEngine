@@ -258,6 +258,59 @@ size_t array_element_size(uint8_t type) {
 
 }  // namespace
 
+Parser::ArrayBody Parser::read_array() {
+    read_byte();                            // the PackedArray / NumericArray token
+    ArrayBody a{};
+    a.type = read_byte();
+    a.elem = array_element_size(a.type);
+    if (a.elem == 0) throw TypeError("array of unknown element type", read_position_);
+    const size_t rank = read_varint();
+    if (rank == 0 || rank > MAX_SKIP_DEPTH) throw ParseError("array rank out of range", read_position_);
+    size_t count = 1;
+    for (size_t i = 0; i < rank; ++i) {
+        const size_t d = read_varint();
+        if (d != 0 && count > (size_t(-1) / a.elem) / d) {
+            throw ParseError("array dimensions overflow", read_position_);
+        }
+        count *= d;
+        a.dims.push_back(d);
+    }
+    const size_t bytes = count * a.elem;
+    ensure_bytes(bytes);
+    a.body = data_ + read_position_;
+    read_position_ += bytes;
+    return a;
+}
+
+int64_t Parser::array_integer(const ArrayBody& a, size_t i) const {
+    const uint8_t* p = a.body + i * a.elem;
+    switch (a.type) {
+        case 0x00: { int8_t v;   std::memcpy(&v, p, 1); return v; }
+        case 0x01: { int16_t v;  std::memcpy(&v, p, 2); return v; }
+        case 0x02: { int32_t v;  std::memcpy(&v, p, 4); return v; }
+        case 0x03: { int64_t v;  std::memcpy(&v, p, 8); return v; }
+        case 0x10: { uint8_t v;  std::memcpy(&v, p, 1); return v; }
+        case 0x11: { uint16_t v; std::memcpy(&v, p, 2); return v; }
+        case 0x12: { uint32_t v; std::memcpy(&v, p, 4); return v; }
+        case 0x13: {
+            uint64_t v; std::memcpy(&v, p, 8);
+            if (v > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+                throw TypeError("unsigned array element exceeds int64", read_position_);
+            return static_cast<int64_t>(v);
+        }
+        default: throw TypeError("expected an integer array", read_position_);
+    }
+}
+
+double Parser::array_real(const ArrayBody& a, size_t i) const {
+    const uint8_t* p = a.body + i * a.elem;
+    switch (a.type) {
+        case 0x22: { float v;  std::memcpy(&v, p, 4); return v; }
+        case 0x23: { double v; std::memcpy(&v, p, 8); return v; }
+        default:   return static_cast<double>(array_integer(a, i));
+    }
+}
+
 void Parser::skip_array() {
     read_byte();                            // the PackedArray / NumericArray token
     const uint8_t type = read_byte();

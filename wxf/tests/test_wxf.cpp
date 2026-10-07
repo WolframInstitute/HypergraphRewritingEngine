@@ -580,15 +580,72 @@ TEST_F(WXFTest, UnimplementedTypes) {
     parser3.skip_header();
     EXPECT_THROW(parser3.read<int64_t>(), wxf::ParseError);
 
-    std::vector<uint8_t> packed_array_data = {'8', ':', 0xC1, 0, 0};
+    // An array where a scalar is expected.
+    std::vector<uint8_t> packed_array_data = {'8', ':', 0xC1, 0, 1, 1, 7};
     wxf::Parser parser4(packed_array_data);
     parser4.skip_header();
-    EXPECT_THROW(parser4.read<int64_t>(), wxf::ParseError);
+    EXPECT_THROW(parser4.read<int64_t>(), wxf::TypeError);
 
-    std::vector<uint8_t> numeric_array_data = {'8', ':', 0xC2, 0, 0};
+    std::vector<uint8_t> numeric_array_data = {'8', ':', 0xC2, 0, 1, 1, 7};
     wxf::Parser parser5(numeric_array_data);
     parser5.skip_header();
-    EXPECT_THROW(parser5.read<int64_t>(), wxf::ParseError);
+    EXPECT_THROW(parser5.read<int64_t>(), wxf::TypeError);
+}
+
+// BinarySerialize[Range[3]] is 56 58 193 0 1 3 1 2 3: header "8:", PackedArray, Integer8, rank 1,
+// dimension 3, then the elements.
+TEST_F(WXFTest, PackedIntegerArrayDecodes) {
+    const std::vector<uint8_t> bytes = {56, 58, 193, 0, 1, 3, 1, 2, 3};
+    wxf::Parser parser(bytes);
+    parser.skip_header();
+    EXPECT_EQ(parser.read<std::vector<int64_t>>(), (std::vector<int64_t>{1, 2, 3}));
+    EXPECT_TRUE(parser.at_end());
+}
+
+// A rank-2 Integer16 array, {{1, -2}, {300, 4}}, read row by row in the order the body holds.
+TEST_F(WXFTest, PackedRankTwoArrayDecodesRowMajor) {
+    const std::vector<uint8_t> bytes = {'8', ':', 0xC1, 0x01, 2, 2, 2,
+                                        1, 0, 0xFE, 0xFF, 0x2C, 0x01, 4, 0};
+    wxf::Parser parser(bytes);
+    parser.skip_header();
+    EXPECT_EQ(parser.read<std::vector<std::vector<int64_t>>>(),
+              (std::vector<std::vector<int64_t>>{{1, -2}, {300, 4}}));
+}
+
+// A List of packed states: each state is a rank-2 array inside the List the outer level reads,
+// which is what BinarySerialize gives for {{{1,2},{2,3}}, {{1,2}}}.
+TEST_F(WXFTest, ListOfPackedArraysDecodes) {
+    const std::vector<uint8_t> bytes = {'8', ':', 'f', 2, 's', 4, 'L', 'i', 's', 't',
+                                        0xC1, 0x00, 2, 2, 2, 1, 2, 2, 3,
+                                        0xC1, 0x00, 2, 1, 2, 1, 2};
+    wxf::Parser parser(bytes);
+    parser.skip_header();
+    EXPECT_EQ(parser.read<std::vector<std::vector<std::vector<int64_t>>>>(),
+              (std::vector<std::vector<std::vector<int64_t>>>{{{1, 2}, {2, 3}}, {{1, 2}}}));
+}
+
+// A packed Real64 array reads as doubles; read as integers it is refused.
+TEST_F(WXFTest, PackedRealArrayDecodesAsDoubles) {
+    std::vector<uint8_t> bytes = {'8', ':', 0xC1, 0x23, 1, 2};
+    for (double d : {0.25, 1.5}) {
+        uint8_t b[8];
+        std::memcpy(b, &d, 8);
+        bytes.insert(bytes.end(), b, b + 8);
+    }
+    wxf::Parser parser(bytes);
+    parser.skip_header();
+    EXPECT_EQ(parser.read<std::vector<double>>(), (std::vector<double>{0.25, 1.5}));
+    wxf::Parser as_int(bytes);
+    as_int.skip_header();
+    EXPECT_THROW(as_int.read<std::vector<int64_t>>(), wxf::TypeError);
+}
+
+// A rank that does not match the nesting depth asked for is refused, not reinterpreted.
+TEST_F(WXFTest, PackedArrayOfTheWrongRankIsRefused) {
+    const std::vector<uint8_t> bytes = {56, 58, 193, 0, 1, 3, 1, 2, 3};
+    wxf::Parser parser(bytes);
+    parser.skip_header();
+    EXPECT_THROW((parser.read<std::vector<std::vector<int64_t>>>()), wxf::TypeError);
 }
 
 // ============================================================================
