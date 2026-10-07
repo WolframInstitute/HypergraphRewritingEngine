@@ -141,7 +141,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`ir_canonicalization.hpp`)
   - `ParallelEvolutionEngine` (`evolve` x2, `add_rule`, `set_*` config; private task methods `execute_*_task`/`submit_*_task`; forwarding `store_match_for_state`/`register_child_with_parent`/`inherit_from_parent`; pruning/RNG/quotient `should_explore`/`sampling_rng`/`ExploreCtx`)
   - `last_error()`/`raise_worker_error()` -- `wait_for_completion()` returns the moment a worker latches an error, so every run-completion path raises anything but `Aborted` rather than returning a truncated graph as a complete one
   - `try_claim_budget`/`release_step_slot` -- the per-step budget is claimed by CAS (a fetch-add-then-rollback publishes a count above the limit, which the reader prunes on), and every path that produces no new state returns its slot
-  - `drain_candidates`/`select_successors` -- the drain selections: a state's own matches in seeded rank order (k per rule under MatchesPerStateRule), and under MaxSuccessorStatesPerParent a task that rewrites them in that order until k distinct successors exist; a cut walk is deferred with its position (`deferred_selections_`)
+  - `drain_candidates`/`cap_at_drain` -- the drain selections: a state's own matches in seeded rank order (k per rule under MatchesPerStateRule), of which MaxSuccessorStatesPerParent keeps the k lowest-ranked; a transition not kept is not taken
   - structs `MatchRecord`, `EvolutionStats` (each counter `alignas(64)`), `MatchContext`, `ScanTaskData`, `ExpandTaskData`, `ChildInfo`; enum `EvolutionJobType`
 - **`rewriter.hpp`** -- applies a rule+match to produce a new state (declaration).
   - `RewriteResult`, `Rewriter` (`apply`), `apply_rewrite()`

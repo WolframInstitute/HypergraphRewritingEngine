@@ -646,23 +646,10 @@ private:
         uint32_t step;
     };
     LockFreeList<DeferredRewrite> deferred_rewrites_;
-    // A per-parent selection a stop or the step budget cut short: the next candidate in rank
-    // order and the successor states already chosen, so a continuation takes the walk up where
-    // it stopped instead of applying its rewrites again.
-    struct DeferredSelection {
-        StateId state;
-        uint32_t step;
-        uint32_t next;
-        uint32_t num_chosen;
-        const StateId* chosen;   // arena-held
-    };
-    LockFreeList<DeferredSelection> deferred_selections_;
     std::atomic<size_t> deferred_count_{0};
 
     void defer_match_task(StateId state, uint32_t step);
     void defer_rewrite_task(const MatchRecord& match, uint32_t step);
-    void defer_selection(StateId state, uint32_t step, uint32_t next, const StateId* chosen,
-                         uint32_t num_chosen);
     // A STOP (a limit or request_stop) ON A CONTINUABLE RUN keeps the work it cut short on the
     // frontier, the way the step budget keeps work past the budget. This defers a state's
     // matching for a full re-match on resume, giving back the quotient claim the resume takes
@@ -996,8 +983,8 @@ public:
     // single rule to zero.
     bool sampling_active() const;
     // True while a state's own transitions wait for its drain, because choosing k of M needs
-    // all M and M is complete only there: k matches per rule (MatchesPerStateRule), k successor
-    // states per parent (MaxSuccessorStatesPerParent), or both.
+    // all M and M is complete only there: k transitions per rule (MatchesPerStateRule), k per
+    // state (MaxSuccessorStatesPerParent), or both.
     bool defers_to_drain() const;
 
     // A state's own matches are recorded for forwarding and for the two drain decisions: the
@@ -1326,12 +1313,6 @@ private:
     // work here is a hash insert and two list pushes, less than the cost of scheduling it.
     bool complete_match(const ExpandTaskData& data, MatchRecord& out);
     void execute_rewrite_task(const MatchRecord& match, uint32_t step);
-    // One rewrite and everything that follows from it. Applied: *successor (when non-null) is
-    // the child's state under the run's state identity. Deferred: a stop, a limit or the step
-    // budget keeps it for a continuation, which the caller records. Refused: the per-step cap,
-    // or a rewrite that produced no state.
-    enum class RewriteOutcome : uint8_t { Applied, Deferred, Refused };
-    RewriteOutcome apply_rewrite(const MatchRecord& match, uint32_t step, StateId* successor);
 
     // Pruning helpers
     bool can_create_states_at_step(uint32_t step) const;
@@ -1416,14 +1397,9 @@ private:
         MatchRecord match;
     };
     void drain_candidates(StateId state, std::vector<RankedMatch>& out);
-    // At a state's drain: submit the chosen matches' rewrites, or, under
-    // MaxSuccessorStatesPerParent, a task that applies them in rank order until that many
-    // distinct successor states exist (select_successors).
+    // At a state's drain: submit the rewrites of the chosen matches -- drain_candidates, and
+    // under MaxSuccessorStatesPerParent only the k lowest-ranked of them.
     void cap_at_drain(StateId state, uint32_t step);
-    void submit_select_task(StateId state, uint32_t step, uint32_t next, const StateId* chosen,
-                            uint32_t num_chosen);
-    void select_successors(StateId state, uint32_t step, uint32_t next, const StateId* chosen,
-                           uint32_t num_chosen);
 
     // The transition-level draw, on the key above, so the same transition gets the same verdict
     // however the run is scheduled. Every acceptance point -- both discovery paths and both

@@ -1437,7 +1437,7 @@ TEST(OracleCorpus, CountsHoldPastTheArenaWorkerCeiling) {
     EXPECT_EQ(hg.causal_graph().num_branchial_edges(), branchial);
 }
 
-// MaxSuccessorStatesPerParent chooses each parent's successors at its drain, in seeded rank order,
+// MaxSuccessorStatesPerParent keeps the k lowest-ranked of each state's own transitions at its drain,
 // so a seeded run reaches the same states and events at any worker count. Measured before the
 // drain selection: up to 4 distinct state sets in 5 runs on the corpus (first come, first kept).
 TEST(OracleCorpus, APerParentCapIsReproducibleAcrossWorkerCounts) {
