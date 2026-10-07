@@ -105,7 +105,8 @@ Do[
   Module[{blocks = blocksOf[src], ctx = "DocExample`" <> FileBaseName[src] <> "`"},
     Print["\n=== ", FileNameTake[src], ": ", Length[blocks], " block(s) ==="];
     Do[
-      Module[{code = blocks[[i, 1]], hint = blocks[[i, 2]], msgs = {}, firstMsg = None, res, bad, hintBad},
+      Module[{code = blocks[[i, 1]], hint = blocks[[i, 2]], msgs = {}, firstMsg = None, res, bad,
+              hintBad, stated, msgBad},
         total++;
         (* The handler fires for EVERY message, as Hold[Message[name, args], on], including ones
            that are switched off (on is False), which a user is not shown and this ignores.
@@ -128,18 +129,18 @@ Do[
           Print["WARN  block ", i, "  ran on the CPU (HGEvolve::gpudev)"];
           msgs = DeleteCases[msgs, "HGEvolve::gpudev"]];
         hintBad = StringQ[hint] && ! hintMatchQ[res, hint];
-        (* The messages the hint says the block issues. *)
-        With[{stated = If[StringQ[hint],
+        (* The messages the hint says the block issues; the block must issue exactly those. *)
+        stated = If[StringQ[hint],
             StringCases[hint, "the message " ~~ m : (WordCharacter .. ~~ "::" ~~ WordCharacter ..) ~~ " is issued" :> m],
-            {}]},
-          If[stated =!= {} && Union[msgs] === Union[stated], msgs = {}]];
-        If[bad || msgs =!= {} || hintBad,
+            {}];
+        msgBad = Union[msgs] =!= Union[stated];
+        If[bad || msgBad || hintBad,
           AppendTo[failed, {FileNameTake[src], i}];
           Print["FAIL  block ", i, "  ", StringTake[StringReplace[code, "\n" -> " "],
                                                     UpTo[70]]];
-          If[msgs =!= {},
+          If[msgBad,
             Print["      ", Length[msgs], " message(s), distinct: ",
-                  Take[Tally[msgs], UpTo[6]], "\n      first: ", firstMsg]];
+                  Take[Tally[msgs], UpTo[6]], "; stated: ", stated, "\n      first: ", firstMsg]];
           If[bad, Print["      returned: ", ToString[Short[res, 2]]]];
           If[hintBad, Print["      hint:     ", hint, "\n      returned: ",
                             collapse[ToString[res, InputForm, PageWidth -> Infinity]]]],
