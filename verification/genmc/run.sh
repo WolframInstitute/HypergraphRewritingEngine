@@ -385,8 +385,22 @@ run_one() {
     # (engine_rule at --unroll=16384: 136,431), and the default 8 MB stack overflows in them
     # (SIGSEGV, 30 identical frames on the box's gdb). The stack limit is raised to 2 GB, which
     # is address space reserved on demand, not memory.
-    ( [ -n "$mem_cap_kb" ] && ulimit -v "$mem_cap_kb"; ulimit -s 2097152; exec "$GENMC" $extra "$@" "$WORK/$name.ll" )
-    local rc=$?
+    ( [ -n "$mem_cap_kb" ] && ulimit -v "$mem_cap_kb"; ulimit -s 2097152; exec "$GENMC" $extra "$@" "$WORK/$name.ll" ) 2>&1 | tee "$WORK/$name.out"
+    local rc=${PIPESTATUS[0]}
+    # A thread that passes the --unroll bound is ended, and the checker counts the execution as
+    # complete ("(N cut at the unroll bound)", printed by the hg-fixes fork). When every complete
+    # execution was cut, no execution reached the harness's assertions and "No errors" checked
+    # nothing, so the run fails.
+    if [ $rc -eq 0 ]; then
+        local explored cut
+        explored="$(sed -n 's|^Number of complete executions explored: \([0-9]*\).*|\1|p' "$WORK/$name.out" | tail -1)"
+        cut="$(sed -n 's|.*(\([0-9]*\) cut at the unroll bound).*|\1|p' "$WORK/$name.out" | tail -1)"
+        if [ -n "$explored" ] && [ -n "$cut" ] && [ "$cut" = "$explored" ]; then
+            echo "--- $name: all $explored complete executions were cut at the unroll bound;"
+            echo "    nothing was checked -- raise the harness's --unroll"
+            return 3
+        fi
+    fi
     if [ "$expect" = "violation" ]; then
         if [ $rc -eq 42 ]; then
             echo "--- $name: EXPECTED violation still reachable (pinned reproducer) -> pass"
