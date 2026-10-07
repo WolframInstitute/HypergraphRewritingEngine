@@ -1690,6 +1690,48 @@ TEST(Sampling, PerParentCapKeepsTheSameTransitionsAcrossEngines) {
     }
 }
 
+// MaxStatesPerStep keeps the N lowest-ranked transitions of each step on both engines, once the
+// step's matching is complete: the host on the depth join's report, the device in the block that
+// finishes the step's last piece of work. Alone, with the per-state cap, and under quotient
+// exploration. Before the device took the same choice the engines gave 7 and 11 states where the
+// host gave 4 and 7 on the branch rule at depth 3 with N = 1 and 2.
+TEST(Sampling, PerStepCapKeepsTheSameTransitionsAcrossEngines) {
+    Workload one_edge;
+    one_edge.name = "stepcap";
+    one_edge.rules = {rule({{0, 1}}, {{0, 2}, {2, 1}}),
+                      rule({{0, 1}}, {{1, 0}})};
+    one_edge.initial_states = {{{0u, 1u}}};
+    one_edge.num_steps = 5;
+    Workload join;
+    join.name = "stepcap-join";
+    join.rules = {rule({{0, 1}, {0, 2}}, {{0, 2}, {0, 3}, {1, 3}, {2, 3}})};
+    join.initial_states = {{{0u, 0u}, {0u, 0u}}};
+    join.num_steps = 4;
+
+    for (Workload w : {one_edge, join}) {
+        w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+        w.random_seed = 0x5EED;
+        for (int variant = 0; variant < 3; ++variant) {
+            for (uint32_t n : {1u, 2u, 3u}) {
+                Workload v = w;
+                v.max_states_per_step = n;
+                if (variant == 1) v.max_successor_states_per_parent = 1;
+                if (variant == 2) v.explore_from_canonical_states_only = true;
+                NormalizedResult cpu = run_cpu(v);
+                NormalizedResult gpu = run_gpu(v);
+                // A run that faulted returns nothing; a step's lowest-ranked transition can map a
+                // state to itself, so the check is on events, not states.
+                EXPECT_GT(gpu.event_keys.size(), 0u)
+                    << v.name << " N=" << n << " variant " << variant << ": nothing evolved";
+                EXPECT_EQ(cpu.canonical_state_hashes, gpu.canonical_state_hashes)
+                    << v.name << " N=" << n << " variant " << variant << ": different states";
+                EXPECT_EQ(cpu.event_keys, gpu.event_keys)
+                    << v.name << " N=" << n << " variant " << variant << ": different transitions";
+            }
+        }
+    }
+}
+
 TEST(CanonicalStateCount, ModesVsCpu) {
     using M = hg_gpu::CanonicalizationMode;
     auto r = rule({{0, 1}}, {{0, 2}, {2, 1}});   // binary edge splitting

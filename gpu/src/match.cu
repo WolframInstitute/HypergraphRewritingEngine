@@ -453,7 +453,10 @@ __device__ void match_state_rule(const DeviceState& ds,
                                  typename Pool<MatchRecord>::DeviceView out) {
     const uint32_t cap_k = ds.matches_per_state_rule;
     const uint32_t parent_k = ds.max_successor_states_per_parent;
-    const bool sampling = ds.transition_rate < 1.0 || ds.num_rule_weights != 0u;
+    // No draw applies where a cap chooses: under MaxStatesPerStep every transition is a candidate
+    // of its step, as on the host.
+    const bool sampling = (ds.transition_rate < 1.0 || ds.num_rule_weights != 0u) &&
+                          ds.max_states_per_step == 0u;
     if (cap_k == 0u && parent_k == 0u && !sampling) {
         match_state_rule_pass(ds, rules, state_id, rid, step, out, nullptr);
         return;

@@ -389,8 +389,8 @@ DeviceState EngineState::device() const {
         d.num_rule_weights                 = num_rule_weights_;
         d.sampling_seed                    = sampling_seed_;
         d.max_states_per_step              = max_states_per_step_;
-        d.states_per_step                  = states_per_step_;
-        d.max_states_per_step_slots        = states_per_step_slots_;
+        d.step_pending                     = states_per_step_;
+        d.step_slots                       = states_per_step_slots_;
         d.max_successor_states_per_parent  = max_succ_per_parent_;
         d.matches_per_state_rule           = matches_per_state_rule_;
         d.num_rules                        = num_rules_;

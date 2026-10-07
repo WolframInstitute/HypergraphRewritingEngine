@@ -85,10 +85,12 @@ struct DeviceState {
     const double* rule_weights;         // null = every rule weighted 1
     uint32_t      num_rule_weights;
     uint64_t      sampling_seed;
-    // Hard bounds; 0 is unlimited. The counters are device atomics, cleared per run.
+    // MaxStatesPerStep (0 is no cap) and, per step, the work that can still produce the step's
+    // candidates: the token of the previous step's selection, its selected rewrites, the step's
+    // expand entries and its match items (persistent.cu, step selection). Cleared per run.
     uint32_t  max_states_per_step;
-    uint32_t* states_per_step;                  // [max_steps + 2]
-    uint32_t  max_states_per_step_slots;
+    uint32_t* step_pending;                     // [step_slots] = [max_steps + 2]
+    uint32_t  step_slots;
     uint32_t  max_successor_states_per_parent;
     // Kept per (state, rule), chosen by rank at the point one block has found every match for
     // that pair -- the device's drain. 0 is unlimited.

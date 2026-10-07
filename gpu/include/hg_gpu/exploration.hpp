@@ -258,9 +258,8 @@ __device__ inline StateClaim state_claim_content(const DeviceState& ds, StateId 
     return keyed_claim_device(ds, sid, hash & ds.canonical_key_mask, map, p);
 }
 
-// Whether a fresh state is kept for expansion: the exploration coin and the two hard bounds.
-__device__ inline bool state_retained(const DeviceState& ds, StateId sid, uint32_t step,
-                                      StateId parent_sid, uint32_t explore_threshold_u32,
+// Whether a fresh state is kept for expansion: the exploration coin.
+__device__ inline bool state_retained(StateId sid, uint32_t step, uint32_t explore_threshold_u32,
                                       uint64_t explore_seed) {
     // Stochastic-exploration coin flip. UINT32_MAX == "always explore"
     // (the threshold encoding for probability 1.0); skip the hash work
@@ -273,18 +272,6 @@ __device__ inline bool state_retained(const DeviceState& ds, StateId sid, uint32
                                   ^ static_cast<uint64_t>(sid));
         uint32_t draw = static_cast<uint32_t>(mix);
         if (draw >= explore_threshold_u32) return false;
-    }
-
-    // THE TWO HARD BOUNDS, applied AFTER dedup for the reason the host applies them there: the
-    // cap counts states RETAINED, and a state that merged into an existing one was never
-    // retained, so charging it would make the bound depend on how many duplicates arrived.
-    //
-    // Both admit the first k to arrive. Which k those are is not reproducible -- the same
-    // statement the host's documentation makes about these two options, and the reason
-    // "MatchesPerStateRule" exists for a caller who needs the kept set to be stable.
-    if (ds.max_states_per_step != 0u && step < ds.max_states_per_step_slots) {
-        cuda::atomic_ref<uint32_t, cuda::thread_scope_device> c(ds.states_per_step[step]);
-        if (c.fetch_add(1u, cuda::memory_order_relaxed) >= ds.max_states_per_step) return false;
     }
     return true;
 }

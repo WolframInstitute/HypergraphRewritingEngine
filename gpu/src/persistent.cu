@@ -58,6 +58,135 @@ __global__ void k_seq_ramp(uint64_t* seq, uint32_t n) {
     if (i < n) seq[i] = i;
 }
 
+// MaxStatesPerStep: the device twin of the host's select_step. Under the cap a step's
+// transitions are held in a candidate pool until every piece of work that can still produce one
+// has finished, and then the N lowest-ranked are appended to the rewrite pool. ds.step_pending[s]
+// counts that work for step s: the token of step s - 1's selection, its selected rewrites (until
+// each child is registered), step s's expand entries and its match items. Each unit is booked
+// before the work it stands for can be seen and released after the work is done, so the count
+// reaches zero once, after the last of them. Whichever block releases the last unit runs the
+// selection, before it reports its own work done, so termination cannot be detected while
+// candidates are held. Nothing waits.
+struct StepSelectScratch {
+    uint64_t* rank;    // [cap] the step's candidate ranks
+    uint32_t* idx;     // [cap] their candidate-pool indices
+    uint32_t* words;   // [2] candidates gathered, ranks equal to the threshold taken
+    uint32_t  cap;
+};
+
+__device__ inline void step_book(const DeviceState& ds, uint32_t d, uint32_t n) {
+    if (ds.max_states_per_step != 0u && d < ds.step_slots) atomicAdd(&ds.step_pending[d], n);
+}
+// True when this release brings step d's count to zero.
+__device__ inline bool step_release(const DeviceState& ds, uint32_t d, uint32_t n) {
+    if (ds.max_states_per_step == 0u || d >= ds.step_slots) return false;
+    __threadfence();   // the released work's effects before the count that admits the selection
+    return atomicSub(&ds.step_pending[d], n) == n;
+}
+
+// The steps below the first one with work hold tokens nothing would release: their selections
+// have no candidates. Released from the bottom, before the persistent loop starts.
+__global__ void k_step_release_empty(const __grid_constant__ DeviceState ds) {
+    for (uint32_t s = 0; s + 1 < ds.step_slots && ds.step_pending[s] == 0u; ++s)
+        ds.step_pending[s + 1] -= 1u;
+}
+
+// Selection of step s on the calling block: rank the step's candidates, find the N-th smallest
+// rank by radix selection, and append the N lowest to `found`; equal ranks are automorphic
+// transitions, and `quota` of those at the N-th rank are taken. The selected rewrites are booked
+// on step s + 1 before any of them is visible.
+__device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
+                                         typename Pool<MatchRecord>::DeviceView cand,
+                                         typename Pool<MatchRecord>::DeviceView found,
+                                         StepSelectScratch sel) {
+    const uint32_t tid = threadIdx.x, nt = blockDim.x;
+    __shared__ uint32_t s_cnt;
+    __shared__ uint32_t s_remaining;
+    __shared__ uint64_t s_prefix;
+    if (tid == 0) { sel.words[0] = 0u; sel.words[1] = 0u; }
+    __syncthreads();
+    const uint32_t n = min(*cand.counter, cand.capacity);
+    for (uint32_t i = tid; i < n; i += nt) {
+        const MatchRecord& r = cand.at(i);
+        if (r.step != s) continue;
+        EdgeId edges[kMaxPatternEdges];
+        for (uint32_t k = 0; k < kMaxPatternEdges; ++k) edges[k] = r.matched_edges[k];
+        const uint64_t key = transition_key_device(ds, r.state_id, r.rule_id, edges, r.num_edges);
+        const uint32_t at = atomicAdd(&sel.words[0], 1u);
+        if (at < sel.cap) {
+            sel.rank[at] = hgcommon::transition_rank(key, ds.sampling_seed);
+            sel.idx[at] = i;
+        }
+    }
+    __syncthreads();
+    const uint32_t m = min(sel.words[0], sel.cap);
+    const uint32_t cap_n = ds.max_states_per_step;
+    uint64_t threshold = ~0ULL;
+    uint32_t quota = 0;
+    if (m > cap_n) {
+        if (tid == 0) { s_prefix = 0; s_remaining = cap_n; }
+        uint64_t mask = 0;
+        for (int bit = 63; bit >= 0; --bit) {
+            const uint64_t b = 1ULL << bit;
+            if (tid == 0) s_cnt = 0;
+            __syncthreads();
+            const uint64_t prefix = s_prefix;
+            uint32_t local = 0;
+            for (uint32_t i = tid; i < m; i += nt) {
+                const uint64_t r = sel.rank[i];
+                if ((r & mask) == prefix && !(r & b)) ++local;
+            }
+            atomicAdd(&s_cnt, local);
+            __syncthreads();
+            if (tid == 0 && s_remaining > s_cnt) { s_remaining -= s_cnt; s_prefix |= b; }
+            mask |= b;
+            __syncthreads();
+        }
+        threshold = s_prefix;     // the N-th smallest rank
+        quota = s_remaining;      // how many of the ranks equal to it are taken
+    }
+    const uint32_t take = m < cap_n ? m : cap_n;
+    if (tid == 0) step_book(ds, s + 1u, take);
+    __syncthreads();
+    for (uint32_t i = tid; i < m; i += nt) {
+        const uint64_t r = sel.rank[i];
+        const bool keep = m <= cap_n || r < threshold ||
+                          (r == threshold && atomicAdd(&sel.words[1], 1u) < quota);
+        if (!keep) continue;
+        const uint32_t k = found.claim();
+        if (k == Pool<MatchRecord>::kInvalid) {
+            ds.errors.record(ErrorKind::kMatchPoolFull);
+            step_release(ds, s + 1u, 1u);   // the token is still held, so this is not the last
+            continue;
+        }
+        const MatchRecord& src = cand.at(sel.idx[i]);
+        MatchRecord& dst = found.at(k);
+        dst.rule_id = src.rule_id;
+        dst.state_id = src.state_id;
+        dst.step = src.step;
+        dst.num_edges = src.num_edges;
+        for (uint32_t e = 0; e < kMaxPatternEdges; ++e) dst.matched_edges[e] = src.matched_edges[e];
+        publish_match(dst);
+    }
+    __syncthreads();
+}
+
+// Step s's selection on the calling block, then each step whose count its token release brings
+// to zero (a step with no candidates).
+__device__ void run_step_selections(const DeviceState& ds, uint32_t s,
+                                    typename Pool<MatchRecord>::DeviceView cand,
+                                    typename Pool<MatchRecord>::DeviceView found,
+                                    StepSelectScratch sel) {
+    __shared__ uint32_t s_next;
+    for (;;) {
+        select_step(ds, s, cand, found, sel);
+        if (threadIdx.x == 0) s_next = step_release(ds, s + 1u, 1u) ? 1u : 0u;
+        __syncthreads();
+        if (!s_next) return;
+        ++s;
+    }
+}
+
 __global__ void k_seed_frontier(const __grid_constant__ DeviceState ds, ExploreView ev, const StateId* ids,
                                 const uint32_t* steps, const uint32_t* count, uint32_t cap) {
     const uint32_t live = min(*count, cap);
@@ -72,7 +201,11 @@ __global__ void k_seed_frontier(const __grid_constant__ DeviceState ds, ExploreV
     uint32_t d = steps[tid];
     const uint32_t known = ev.depth[s];
     if (known < d) d = known;
-    if (!ev.expand.append(ExpandEntry{s, d, 0u})) ds.errors.record(ErrorKind::kStatePoolFull);
+    step_book(ds, d, 1u);
+    if (!ev.expand.append(ExpandEntry{s, d, 0u})) {
+        ds.errors.record(ErrorKind::kStatePoolFull);
+        step_release(ds, d, 1u);
+    }
 }
 
 // The key this run identifies states BY -- the device twin of compute_state_dedup_keys, and it
@@ -240,7 +373,11 @@ __global__ void k_seed_root_hashes(const __grid_constant__ DeviceState ds, const
         return;
     }
     ev.claim(sid);
-    if (!ev.expand.append(ExpandEntry{sid, 0u, 0u})) ds.errors.record(ErrorKind::kStatePoolFull);
+    step_book(ds, 0u, 1u);
+    if (!ev.expand.append(ExpandEntry{sid, 0u, 0u})) {
+        ds.errors.record(ErrorKind::kStatePoolFull);
+        step_release(ds, 0u, 1u);
+    }
 }
 
 
@@ -281,7 +418,11 @@ struct DeviceExploreCtx {
     __device__ void admit(uint32_t s, uint32_t d) {
         if (d >= max_steps) { session_frontier_append(ds, sess, s, d); return; }
         if (!ev.claim(s)) return;
-        if (!ev.expand.append(ExpandEntry{s, d, 0u})) ds.errors.record(ErrorKind::kStatePoolFull);
+        step_book(ds, d, 1u);
+        if (!ev.expand.append(ExpandEntry{s, d, 0u})) {
+            ds.errors.record(ErrorKind::kStatePoolFull);
+            step_release(ds, d, 1u);
+        }
     }
     __device__ bool frame_push(Node at, uint32_t d) {
         if (frames == levels) return false;
@@ -688,7 +829,7 @@ __device__ __forceinline__ void register_child(
         StateId parent, StateId canonical, bool fresh, uint32_t step, uint32_t max_steps,
         uint32_t explore_threshold_u32, uint64_t explore_seed) {
     if (fresh && (step < max_steps || sess.enabled) &&
-        !state_retained(ds, sid, step, parent, explore_threshold_u32, explore_seed))
+        !state_retained(sid, step, explore_threshold_u32, explore_seed))
         ev.claim(canonical);
     DeviceExploreCtx xc{ds, ev, sess, max_steps,
                         ev.frame_node + size_t(blockIdx.x) * ev.frame_levels,
@@ -749,17 +890,24 @@ __global__ void k_persistent_evolve(
         typename Pool<uint32_t>::DeviceView forms,
         typename RingBuffer<uint32_t>::DeviceView ready,
         uint32_t* regions,             // region_words of IR scratch per block, from its start
-        uint32_t region_words) {
+        uint32_t region_words,
+        typename Pool<MatchRecord>::DeviceView cand,   // MaxStatesPerStep's held candidates
+        StepSelectScratch step_sel) {
+    // Under MaxStatesPerStep a match goes to the step's candidates, not to the rewrite pool.
+    const typename Pool<MatchRecord>::DeviceView match_out =
+        ds.max_states_per_step != 0u ? cand : found;
 
     // Ranks are the reconstruction's frame alignment, Automatic's signature, AND the transition
     // draw's key. One predicate answers it for the roots and for every child; see its note.
     const bool need_ranks = run_needs_edge_ranks(event_keys, qe.enabled != 0,
                                                  ds.transition_rate, ds.num_rule_weights,
                                                  hgcommon::drain_selects(ds.matches_per_state_rule,
-                                        ds.max_successor_states_per_parent, 0u));
+                                        ds.max_successor_states_per_parent,
+                                        ds.max_states_per_step));
     const bool need_exact = run_needs_exact_hash(event_keys, ds.transition_rate,
                                                  ds.num_rule_weights, hgcommon::drain_selects(ds.matches_per_state_rule,
-                                        ds.max_successor_states_per_parent, 0u));
+                                        ds.max_successor_states_per_parent,
+                                        ds.max_states_per_step));
 
     if (blockIdx.x == 0) {
         if (threadIdx.x != 0) return;
@@ -1212,6 +1360,21 @@ __global__ void k_persistent_evolve(
                 __syncthreads();
             }
 
+            // A selected record's unit on its child's step goes once the child is registered.
+            if (ds.max_states_per_step != 0u && !have_ready) {
+                __shared__ uint32_t s_sel_step;
+                if (threadIdx.x == 0) {
+                    s_sel_step = INVALID_ID;
+                    for (uint32_t t = 0; t < claimed_count; ++t) {
+                        const uint32_t d =
+                            found.at(t == 0 ? claimed : claimed_more + t - 1u).step + 1u;
+                        if (step_release(ds, d, 1u)) s_sel_step = d;
+                    }
+                }
+                __syncthreads();
+                if (s_sel_step != INVALID_ID)
+                    run_step_selections(ds, s_sel_step, cand, found, step_sel);
+            }
             if (threadIdx.x == 0) {
                 __threadfence();
                 atomicAdd(rewrites_done, claimed_count - waiting);
@@ -1240,6 +1403,7 @@ __global__ void k_persistent_evolve(
                 const ExpandEntry& e = ev.expand.await(expand_base);
                 child_sid  = e.state;
                 child_step = e.depth;
+                step_book(ds, child_step, num_rules);
             }
         }
         __syncthreads();
@@ -1269,9 +1433,21 @@ __global__ void k_persistent_evolve(
                 const unsigned long long tA =
                     (threadIdx.x == 0 && run_rule_inline) ? clock64() : 0;
                 if (run_rule_inline)
-                    match_state_rule(ds, rules, child_sid, r, child_step, found);
+                    match_state_rule(ds, rules, child_sid, r, child_step, match_out);
                 __syncthreads();
                 if (threadIdx.x == 0 && run_rule_inline) acc_match += clock64() - tA;
+                if (run_rule_inline && ds.max_states_per_step != 0u) {
+                    __shared__ uint32_t s_inline_sel;
+                    if (threadIdx.x == 0) s_inline_sel = step_release(ds, child_step, 1u);
+                    __syncthreads();
+                    if (s_inline_sel) run_step_selections(ds, child_step, cand, found, step_sel);
+                }
+            }
+            if (ds.max_states_per_step != 0u) {
+                __shared__ uint32_t s_entry_sel;
+                if (threadIdx.x == 0) s_entry_sel = step_release(ds, child_step, 1u);
+                __syncthreads();
+                if (s_entry_sel) run_step_selections(ds, child_step, cand, found, step_sel);
             }
             if (threadIdx.x == 0) {
                 __threadfence();
@@ -1288,8 +1464,14 @@ __global__ void k_persistent_evolve(
         __syncthreads();
         if (have) {
             const unsigned long long tA = (threadIdx.x == 0) ? clock64() : 0;
-            match_state_rule(ds, rules, mitem.state_id, mitem.rule_id, mitem.step, found);
+            match_state_rule(ds, rules, mitem.state_id, mitem.rule_id, mitem.step, match_out);
             __syncthreads();
+            if (ds.max_states_per_step != 0u) {
+                __shared__ uint32_t s_item_sel;
+                if (threadIdx.x == 0) s_item_sel = step_release(ds, mitem.step, 1u);
+                __syncthreads();
+                if (s_item_sel) run_step_selections(ds, mitem.step, cand, found, step_sel);
+            }
             if (threadIdx.x == 0) {
                 term.mark_completed(kRoleMatch);
                 idle_ns = 64;
@@ -1469,7 +1651,16 @@ struct EngineState::PersistentScratch {
     uint32_t* keyed_words = nullptr;             // KeyedView::words
     uint32_t* explore_frames = nullptr;
     size_t    explore_frame_words = 0;
+    // MaxStatesPerStep: the held candidates and the selection's ranks, indices and two counters.
+    std::unique_ptr<Pool<MatchRecord>> step_cand;
+    uint64_t* step_rank = nullptr;
+    uint32_t* step_idx = nullptr;
+    uint32_t* step_words = nullptr;
+    uint32_t  step_cap = 0;
     ~PersistentScratch() {
+        if (step_rank) cudaFree(step_rank);
+        if (step_idx) cudaFree(step_idx);
+        if (step_words) cudaFree(step_words);
         if (explore_frames) cudaFree(explore_frames);
         if (keyed_words) cudaFree(keyed_words);
     }
@@ -1762,7 +1953,8 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
             state_mode != CanonicalizationMode::Full &&
             run_needs_exact_hash(event_keys, dsx.transition_rate, dsx.num_rule_weights,
                                  hgcommon::drain_selects(dsx.matches_per_state_rule,
-                                        dsx.max_successor_states_per_parent, 0u));
+                                        dsx.max_successor_states_per_parent,
+                                        dsx.max_states_per_step));
         exact_v = reuse_map(ps.exact, want_exact ? engine.config().max_states * 2u : 8u, &clears)
                       .view();
     }
@@ -1777,7 +1969,8 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         /*positional_events=*/false,
         hgcommon::run_reads_rank_tuples(event_keys, dsk.transition_rate, dsk.num_rule_weights,
                                         hgcommon::drain_selects(dsk.matches_per_state_rule,
-                                        dsk.max_successor_states_per_parent, 0u)));
+                                        dsk.max_successor_states_per_parent,
+                                        dsk.max_states_per_step)));
     if (keyed) {
         engine.ensure_keyed();
         dsk = engine.device();
@@ -1855,6 +2048,30 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         }
         cudaGetLastError();
     }
+    // MaxStatesPerStep's candidate pool (as large as the rewrite pool), selection scratch, and the
+    // tokens: step_pending was cleared by set_sampling, and every step from 1 holds one.
+    typename Pool<MatchRecord>::DeviceView cand_v = scratch_matches.view();
+    StepSelectScratch step_sel{};
+    if (dsk.max_states_per_step != 0u) {
+        const uint32_t cap = scratch_matches.capacity();
+        if (!ps.step_cand || ps.step_cand->capacity() != cap) {
+            ps.step_cand = std::make_unique<Pool<MatchRecord>>(cap);
+            if (ps.step_rank) cudaFree(ps.step_rank);
+            if (ps.step_idx) cudaFree(ps.step_idx);
+            if (!ps.step_words)
+                HG_CUDA_CHECK(cudaMalloc(&ps.step_words, sizeof(uint32_t) * 2u), "step words");
+            HG_CUDA_CHECK(cudaMalloc(&ps.step_rank, sizeof(uint64_t) * cap), "step ranks");
+            HG_CUDA_CHECK(cudaMalloc(&ps.step_idx, sizeof(uint32_t) * cap), "step indices");
+            ps.step_cap = cap;
+        }
+        ps.step_cand->reset_and_clear(&clears);
+        cand_v = ps.step_cand->view();
+        step_sel = StepSelectScratch{ps.step_rank, ps.step_idx, ps.step_words, ps.step_cap};
+        std::vector<uint32_t> tokens(dsk.step_slots, 1u);
+        tokens[0] = 0u;
+        HG_CUDA_CHECK(cudaMemcpy(dsk.step_pending, tokens.data(), sizeof(uint32_t) * tokens.size(),
+                                 cudaMemcpyHostToDevice), "step tokens");
+    }
     // CONTINUING rather than starting: the frontier already holds hashed, deduplicated states,
     // so it is seeded straight into the queue at each entry's own recorded depth. The
     // root path would re-hash them and, worse, consult dedup -- which they already satisfy, so
@@ -1902,12 +2119,18 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
             session ? sess_v.states : canonical_owner->view(), state_mode,
             run_needs_exact_hash(event_keys, dsv.transition_rate, dsv.num_rule_weights,
                                  hgcommon::drain_selects(dsv.matches_per_state_rule,
-                                        dsv.max_successor_states_per_parent, 0u)),
+                                        dsv.max_successor_states_per_parent,
+                                        dsv.max_states_per_step)),
             run_needs_edge_ranks(event_keys, qe.enabled != 0, dsv.transition_rate,
                                  dsv.num_rule_weights, hgcommon::drain_selects(dsv.matches_per_state_rule,
-                                        dsv.max_successor_states_per_parent, 0u)),
+                                        dsv.max_successor_states_per_parent,
+                                        dsv.max_states_per_step)),
             pool_v, qc, qe, ev, forms_v, exact_v, max_steps, sess_v);
     }
+
+    // MaxStatesPerStep: every step from 1 holds its token (the previous step's selection), then
+    // the empty steps below the first one with work give theirs back.
+    if (dsk.max_states_per_step != 0u) k_step_release_empty<<<1, 1>>>(dsk);
 
     // Block 0 is the detector, so at least two blocks are needed for any work to happen.
     const double t_seed = std::chrono::duration<double, std::milli>(
@@ -1923,7 +2146,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         explore_threshold_u32, explore_seed, max_steps, state_mode, event_keys,
         session ? sess_v.events : owned_event_ids->view(), exact_v,
         pool_v, term.view(), qc, qe, d_phase_cycles, sess_v, ev, forms_v, ready_v,
-        arena.view().base, region_words);
+        arena.view().base, region_words, cand_v, step_sel);
     HG_CUDA_CHECK(cudaDeviceSynchronize(), "persistent evolve sync");
     if (!read_stats) return stats;
 

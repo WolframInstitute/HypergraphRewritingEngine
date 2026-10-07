@@ -411,7 +411,8 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
             in.transition_rate, in.rule_weights.data(),
             static_cast<uint32_t>(in.rule_weights.size()),
             hgcommon::drain_selects(in.matches_per_state_rule,
-                                    in.max_successor_states_per_parent, 0u));
+                                    in.max_successor_states_per_parent,
+                                    in.max_states_per_step));
         if (sampling_needs_ranks ||
             (ekeys & (hgcommon::EventKey_ConsumedEdges | hgcommon::EventKey_ProducedEdges))) {
             engine.ensure_edge_ranks();
