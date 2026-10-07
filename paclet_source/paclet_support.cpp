@@ -47,12 +47,17 @@ std::string SessionSlot::already_live_message(uint64_t live_handle) {
            "); this build serves one session at a time";
 }
 
+uint64_t SessionSlot::mint_handle() {
+    static uint64_t next = 1;   // 0 is reserved, and handles are never reused
+    return next++;
+}
+
 uint64_t SessionSlot::open(std::unique_ptr<EngineHolder> holder) {
     if (!holder) throw SessionError("Open: no engine holder");
     if (state_ == SessionState::Live)
         throw SessionError(already_live_message(handle_));
     holder_ = std::move(holder);
-    handle_ = next_++;
+    handle_ = mint_handle();
     state_ = SessionState::Live;
     return handle_;
 }

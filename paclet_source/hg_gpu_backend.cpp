@@ -157,7 +157,32 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
     return in;
 }
 
+// THE HELD SESSION, if any. One per process: a session pins the engine, because a rebuild
+// would drop its accumulated states while handing back something shaped like a
+// continuation, and the worker runs jobs serially against one device anyway.
+//
+// `last` is kept so Query costs nothing: it reports what the session holds and extends by
+// nothing, which is exactly the previous result.
+struct HeldSession {
+    std::unique_ptr<hg_gpu::GpuSession> state;
+    hg_gpu::EvolveInput  input;
+    hg_gpu::EvolveResult last;
+    // Host mirror of the device frontier, read back after every run. A steered Step is
+    // resolved against `by_eff` -- built when the frontier was last REPORTED, so the ids it
+    // reads are the ids the caller read. One entry per effective id, first wins: on the
+    // device each frontier entry is its own dedup class under the run's mode, so the map is
+    // 1:1; keeping the host's emplace discipline anyway means the two resolvers stay twins.
+    std::vector<hg_gpu::StateId>          frontier_ids;
+    std::vector<uint32_t>                 frontier_steps;
+    std::unordered_map<int64_t, size_t>   frontier_by_eff;
+    uint32_t steps_done = 0;
+    uint64_t handle     = 0;
+};
+HeldSession held;
+
 }  // namespace
+
+uint64_t gpu_session_handle() { return held.handle; }
 
 std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host) {
     hg_gpu::EvolveInput in = build_input(job);
@@ -169,30 +194,6 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
     // a process-lifetime evolver is safe; the one-shot binary just uses it once.
     // The evolver grows on overflow and never shrinks (high-water-mark).
     static hg_gpu::PersistentEvolver evolver;
-
-    // THE HELD SESSION, if any. One per process: a session pins the engine, because a rebuild
-    // would drop its accumulated states while handing back something shaped like a
-    // continuation, and the worker runs jobs serially against one device anyway.
-    //
-    // `last` is kept so Query costs nothing: it reports what the session holds and extends by
-    // nothing, which is exactly the previous result.
-    struct HeldSession {
-        std::unique_ptr<hg_gpu::GpuSession> state;
-        hg_gpu::EvolveInput  input;
-        hg_gpu::EvolveResult last;
-        // Host mirror of the device frontier, read back after every run. A steered Step is
-        // resolved against `by_eff` -- built when the frontier was last REPORTED, so the ids it
-        // reads are the ids the caller read. One entry per effective id, first wins: on the
-        // device each frontier entry is its own dedup class under the run's mode, so the map is
-        // 1:1; keeping the host's emplace discipline anyway means the two resolvers stay twins.
-        std::vector<hg_gpu::StateId>          frontier_ids;
-        std::vector<uint32_t>                 frontier_steps;
-        std::unordered_map<int64_t, size_t>   frontier_by_eff;
-        uint32_t steps_done = 0;
-        uint64_t handle     = 0;
-    };
-    static HeldSession held;
-    static uint64_t next_handle = 1;
 
     const std::string& op = job.session_op;
     const bool is_open  = (op == "Open");
@@ -227,7 +228,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
             held.state = std::make_unique<hg_gpu::GpuSession>(cfg.max_states, cfg.max_events);
             held.input = in;
             held.steps_done = 0;
-            held.handle = next_handle++;
+            held.handle = hgffi::SessionSlot::mint_handle();
         }
         // A STEERED STEP: the caller's effective ids are resolved against the frontier as it
         // was last REPORTED, the selected entries are written down as the whole device

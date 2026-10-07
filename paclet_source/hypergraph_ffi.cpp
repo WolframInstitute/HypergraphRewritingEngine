@@ -802,6 +802,15 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         }
 
 #ifdef HG_GPU_BACKEND
+        // One session per worker across both engines (D7): an Open is refused while the other
+        // engine holds one.
+        if (req.session_op == "Open") {
+            const uint64_t other = on_cpu ? gpu_session_handle()
+                                 : worker_session().is_live() ? worker_session().handle() : 0;
+            if (other)
+                throw std::runtime_error(std::string("Open refused: ") +
+                                         hgffi::SessionSlot::already_live_message(other));
+        }
         // The GPU binary answers the job on the device unless it runs on the CPU engine (above).
         if (!on_cpu) return run_gpu_job(req, host);
 #endif

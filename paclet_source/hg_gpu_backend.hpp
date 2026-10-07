@@ -124,4 +124,7 @@ struct GpuJob {
 // match the CPU. Throws std::exception on error.
 std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host);
 
+// The handle of the device session this process holds, or 0.
+uint64_t gpu_session_handle();
+
 #endif  // HG_GPU_BACKEND

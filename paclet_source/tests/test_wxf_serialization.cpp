@@ -2078,7 +2078,18 @@ TEST(GpuBinaryGate, PositionalRunsOnTheCpuEngine) {
     const auto one = run_rewriting_core(branch_job(3, "Evolve", 0, options(false), 3), host);
     EXPECT_EQ(read_int_key(stepped, "NumEvents"), read_int_key(one, "NumEvents"))
         << "a Positional session stepped 3 does not hold one evolve of 3";
+    // One session per worker across both engines, and one handle sequence: a device Open is
+    // refused while the CPU engine holds a session, and after Close it gets a new handle.
+    auto plain = [](wxf::Writer& wr) { put_str_list_option(wr, "RequestedData", {"NumStates"}); };
+    EXPECT_TRUE(worker_call(w, branch_job(0, "Open", 0, plain, 1)).empty())
+        << "a device Open was accepted while the CPU engine held a session";
     EXPECT_FALSE(worker_call(w, branch_job(0, "Close", handle, options(false), 3)).empty());
+    const auto device = worker_call(w, branch_job(0, "Open", 0, plain, 1));
+    ASSERT_FALSE(device.empty());
+    EXPECT_NE(read_int_key(device, "Session"), handle)
+        << "the device session took the handle the CPU session had";
+    EXPECT_FALSE(
+        worker_call(w, branch_job(0, "Close", read_int_key(device, "Session"), plain, 1)).empty());
     worker_stop(w);
 }
 // A state record's edges carry the ids the event records name, on both devices: every event's
