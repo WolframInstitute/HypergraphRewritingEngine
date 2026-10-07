@@ -353,7 +353,11 @@ HG_HD uint32_t qr_apply(Ctx& c, const typename Ctx::Instance& inst,
     // Collected before the mint: the event's id is minted above its largest producer, so ids
     // increase along every causal edge, which the reduction's search requires.
     const bool causal = c.want_causal();
+    // producers[0] is written before the collect: the optimiser may load it for the mint's
+    // argument below even when np is 0, and a model checker reads that load as a read of
+    // uninitialised memory (GenMC, quotient_capture_composition).
     uint32_t producers[MAX_PATTERN_EDGES];
+    producers[0] = QR_NO_PRODUCER;
     const uint32_t np = causal ? qr_collect_producers(c, inst, m, producers) : 0;
     const uint32_t ev = c.mint_event(np ? producers[0] : QR_NO_PRODUCER);
     if (ev == INVALID_ID) return INVALID_ID;
