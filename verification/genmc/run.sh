@@ -54,6 +54,9 @@
 #   HG_GENMC_HEARTBEAT  seconds between heartbeat lines (30 unset; needs HG_GENMC_PROGRESS): the
 #                  pass and function the transformation is on, or the exploration's executions,
 #                  queued revisits and instructions interpreted, at that moment.
+#   HG_GENMC_COMPILE_ONLY set to compile (and for a composed harness, link) every harness and stop
+#                  before the checker runs: `HG_GENMC_COMPILE_ONLY=1 run.sh all` finds a harness
+#                  the engine's API has moved away from in minutes.
 #   HG_GENMC_ERROR_SITE set to have the patched checker print, for a load it reports an error on,
 #                  the LLVM instruction, its address and the functions on the call stack. Error
 #                  reports name events only, and -g makes the composed engine module crash the
@@ -221,6 +224,10 @@ run_one() {
         tail -30 "$WORK/$name.cc.err"
         return 3
     fi
+    if [ -n "${HG_GENMC_COMPILE_ONLY:-}" ] && [ -z "$link_engine" ]; then
+        echo "--- $name: compiled"
+        return 0
+    fi
 
     local to_opt="$WORK/$name.raw.ll"
     local opt_extra=()
@@ -268,6 +275,10 @@ run_one() {
             return 3
         fi
         to_opt="$WORK/$name.linked.ll"
+        if [ -n "${HG_GENMC_COMPILE_ONLY:-}" ]; then
+            echo "--- $name: compiled and linked"
+            return 0
+        fi
 
         # LIBSTDC++'S TYPEINFO OBJECTS ARE DEFINED HERE, ZERO-FILLED. A class derived from a
         # standard exception carries a typeinfo whose initializer points at the base's --
