@@ -1772,6 +1772,7 @@ void Hypergraph::qc_capture_expansion(EventId e) {
             if (!qc_frame_slots(from, ev.input_state, in_orb, in_slot.data()) ||
                 !qc_frame_slots(to, ev.output_state, out_orb, out_slot.data())) {
                 HG_STAT(qc_align_fail_.fetch_add(1, std::memory_order_relaxed));
+                qc_captures_dropped_.fetch_add(1, std::memory_order_relaxed);
                 return;                          // cannot align; drop rather than mix frames
             }
             auto in_slot_of  = [&](EdgeId x) { const uint32_t i = in_orb->index_of(x);

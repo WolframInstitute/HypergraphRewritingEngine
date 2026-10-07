@@ -997,6 +997,10 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             req.ffi_warnings.push_back({"ReplayIdsExhausted", static_cast<int64_t>(n),
                                         hgcommon::QR_IDS_EXHAUSTED_MESSAGE, true});
         }
+        if (const uint64_t n = hg.captures_dropped()) {
+            req.ffi_warnings.push_back({"CapturesDropped", static_cast<int64_t>(n),
+                                        hgcommon::QR_CAPTURES_DROPPED_MESSAGE, true});
+        }
 
         // A rank that was unavailable was substituted with a raw edge id and counted (SPEC.md
         // sec 4.2); such an event signature is not an isomorphism invariant, and a caller

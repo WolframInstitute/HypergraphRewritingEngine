@@ -63,6 +63,7 @@ const char* error_kind_name(ErrorKind k) {
         case ErrorKind::kDrainCapBufferFull:  return "DrainCapBufferFull";
         // The kind name the CPU reports.
         case ErrorKind::kReplayIdsExhausted:  return "ReplayIdsExhausted";
+        case ErrorKind::kCapturesDropped:     return "CapturesDropped";
         default:                              return "unknown";
     }
 }

@@ -309,6 +309,7 @@ class Hypergraph {
     // hgcommon::QR_ID_LIMIT except in tests (set_replay_id_limit); ids refused at it.
     uint32_t qc_id_limit_ = hgcommon::QR_ID_LIMIT;
     std::atomic<uint64_t> qc_ids_refused_{0};
+    std::atomic<uint64_t> qc_captures_dropped_{0};
     // An id counter read as a bound on the ids it issued.
     uint32_t qc_id_bound(const std::atomic<uint64_t>& counter) const {
         const uint64_t v = counter.load(std::memory_order_relaxed);
@@ -1048,6 +1049,9 @@ public:
     // Applications and instances the replay dropped at the id limit; non-zero means the
     // reconstructed raw events and relations are truncated ("ReplayIdsExhausted").
     uint64_t replay_ids_refused() const { return qc_ids_refused_.load(std::memory_order_relaxed); }
+    // Captures dropped because their frames could not be aligned; non-zero means the reconstructed
+    // raw events and relations are truncated ("CapturesDropped").
+    uint64_t captures_dropped() const { return qc_captures_dropped_.load(std::memory_order_relaxed); }
     struct IrWorkTotals {
         uint64_t calls, searched, leaves, nodes, depth_sum, retries, fallbacks;
     };

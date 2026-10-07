@@ -124,12 +124,16 @@ enum class ErrorKind : uint32_t {
     // past it were dropped, so the reconstructed raw events and relations are truncated. Not
     // retryable: the ids are 32-bit.
     kReplayIdsExhausted = 34,
+    // A captured transition lost its alignment to its class's frame (hgcommon::
+    // QR_CAPTURES_DROPPED_MESSAGE): dropped whole, or a survivor slot dropped, so the
+    // reconstructed raw events and relations are truncated. Not retryable.
+    kCapturesDropped    = 39,
     // The counter array is sized kCount and DeviceErrors::record drops any kind whose value is
     // not below it, so kCount must exceed every value above. The values are assigned by hand and
     // are not dense, so an implicit kCount tracks only the LAST entry -- which is how
     // kTrPredsNodes (25) and kQcNodes (26) came to sit above an implicit kCount of 25 and could
     // never be reported at all. Stated explicitly, with the static_assert below as the guard.
-    kCount               = 39
+    kCount               = 40
 };
 
 // DISTINCT VALUES, NOT MERELY IN-RANGE ONES. record() indexes the counter array by the enum
@@ -154,6 +158,8 @@ static_assert(static_cast<uint32_t>(ErrorKind::kCanonicalFormsFull) <
               static_cast<uint32_t>(ErrorKind::kCount), "kCanonicalFormsFull is unrecordable");
 static_assert(static_cast<uint32_t>(ErrorKind::kReplayIdsExhausted) <
               static_cast<uint32_t>(ErrorKind::kCount), "kReplayIdsExhausted is unrecordable");
+static_assert(static_cast<uint32_t>(ErrorKind::kCapturesDropped) <
+              static_cast<uint32_t>(ErrorKind::kCount), "kCapturesDropped is unrecordable");
 static_assert(static_cast<uint32_t>(ErrorKind::kCanonicalMapFull) <
               static_cast<uint32_t>(ErrorKind::kCount), "kCanonicalMapFull is unrecordable");
 static_assert(static_cast<uint32_t>(ErrorKind::kEventSigRawFallback) <

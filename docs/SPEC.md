@@ -238,6 +238,10 @@ warning `CountSaturated`. *(Gates: `OracleCorpus.MultiplicityCountsMatchTheRepla
 reports the partial warning `ReplayIdsExhausted`, with the number dropped on the host. *(Gates:
 `OracleCorpus.ReplayIdLimitTruncatesAndReports`, `QuotientReconstruction.ReplayIdLimitTruncatesAndReports`.)*
 
+**Unaligned captures.** A captured transition whose edges have no image in its class's frame
+cannot be replayed and is dropped; the run reports the partial warning `CapturesDropped` with the
+number of captures. No input is known to reach it.
+
 **`StepStatistics`.** Per step, the population of raw states at that step: `RawStates`, `Classes`,
 `Redundancy`, `MaxMultiplicity`, `MultiplicityHistogram`, `ClassEntropyBits`,
 `ClassEntropyNormalized`, `Events` and `RuleCounts` (raw events whose output state is at the

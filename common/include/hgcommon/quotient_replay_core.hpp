@@ -88,6 +88,11 @@ constexpr uint32_t QR_NO_PRODUCER = 0xFFFFFFFFu;
 // "ReplayIdsExhausted". The 2^20 below 2^32 bounds the device counter's overshoot by the lanes
 // that pass the limit check together, so the counter cannot wrap.
 constexpr uint32_t QR_ID_LIMIT = 0xFFF00000u;
+// A captured transition whose edges have no image in its class's frame cannot be replayed, so it
+// is dropped; both engines count such captures and report "CapturesDropped".
+constexpr const char* QR_CAPTURES_DROPPED_MESSAGE =
+    "a captured transition could not be aligned to its class's frame and was dropped; the "
+    "reconstructed raw events and relations are TRUNCATED at that point";
 constexpr const char* QR_IDS_EXHAUSTED_MESSAGE =
     "the replay minted its limit of raw event or instance ids; the reconstructed raw events and "
     "relations are TRUNCATED at that point";

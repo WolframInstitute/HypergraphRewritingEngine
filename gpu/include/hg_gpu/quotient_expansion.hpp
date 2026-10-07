@@ -816,7 +816,10 @@ __device__ inline void qe_capture_expansion(const DeviceState& ds, QeView qe,
         bad = my_slot == UINT32_MAX;
     }
     // No frame slot: drop rather than corrupt.
-    if (__any_sync(0xffffffffu, bad)) return;
+    if (__any_sync(0xffffffffu, bad)) {
+        if (lane == 0) ds.errors.record(ErrorKind::kCapturesDropped);
+        return;
+    }
     uint32_t consumed[kMaxPatternEdges];
     uint32_t produced[kMaxPatternEdges];
     for (uint32_t i = 0; i < nc; ++i) consumed[i] = __shfl_sync(0xffffffffu, my_slot, i);
@@ -835,6 +838,7 @@ __device__ inline void qe_capture_expansion(const DeviceState& ds, QeView qe,
         return;
     }
     uint32_t ns = 0;
+    bool lost = false;   // a survivor with no frame image: the capture loses that slot
     for (uint32_t base = 0; base < csl.count; base += 32u) {
         const uint32_t k = base + lane;
         uint64_t key = 0;
@@ -848,6 +852,8 @@ __device__ inline void qe_capture_expansion(const DeviceState& ds, QeView qe,
                 if (ps != UINT32_MAX && cs != UINT32_MAX) {
                     key = hgcommon::id_key(ps, cs);
                     keep = true;
+                } else {
+                    lost = true;
                 }
             }
         }
@@ -855,6 +861,7 @@ __device__ inline void qe_capture_expansion(const DeviceState& ds, QeView qe,
         if (keep) surv[ns + __popc(mask & ((1u << lane) - 1u))] = key;
         ns += __popc(mask);
     }
+    if (__any_sync(0xffffffffu, lost) && lane == 0) ds.errors.record(ErrorKind::kCapturesDropped);
     __syncwarp();
     // Lane 0 sorts the survivors and publishes the record; the index is broadcast, and the
     // match side of the rendezvous then scans on every lane (qe_drive_match).
