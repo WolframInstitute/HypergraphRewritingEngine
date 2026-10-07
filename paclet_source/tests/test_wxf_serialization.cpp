@@ -310,20 +310,30 @@ std::vector<uint8_t> build_input_requesting(int64_t steps, const std::string& op
     return w.release_data();
 }
 
-std::vector<uint8_t> build_input_with_op(int64_t steps, const std::string& op,
-                                         int64_t session = 0, bool with_rules = true,
-                                         const std::vector<int64_t>& from = {},
-                                         const std::function<void(wxf::Writer&)>& opts = {},
-                                         uint64_t n_opts = 0) {
+// A job envelope for any verb: the seed and the one rule (sent when `with_rules`), the steps, the
+// options, the verb, and the optional From, Session and Delivery -> "Delta" keys.
+std::vector<uint8_t> session_envelope(const StateList& seed, const EdgeList& lhs,
+                                      const EdgeList& rhs, int64_t steps, const std::string& op,
+                                      int64_t session, bool with_rules,
+                                      const std::vector<int64_t>& from,
+                                      const std::function<void(wxf::Writer&)>& opts,
+                                      uint64_t n_opts, bool delta) {
     wxf::Writer w;
     w.write_header();
 
     w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-    w.write_varint(4 + (session ? 1 : 0) + (with_rules ? 1 : 0) + (from.empty() ? 0 : 1));
+    w.write_varint(4 + (session ? 1 : 0) + (with_rules ? 1 : 0) + (from.empty() ? 0 : 1) +
+                   (delta ? 1 : 0));
+
+    if (delta) {
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Delivery"));
+        w.write(std::string("Delta"));
+    }
 
     w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
     w.write(std::string("InitialStates"));
-    w.write(kSeed);
+    w.write(seed);
 
     if (with_rules) {
         w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
@@ -333,8 +343,8 @@ std::vector<uint8_t> build_input_with_op(int64_t steps, const std::string& op,
         w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
         w.write(std::string("r0"));
         w.write_function("Rule", 2);
-        w.write(kLhs);
-        w.write(kRhs);
+        w.write(lhs);
+        w.write(rhs);
     }
 
     w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
@@ -364,6 +374,16 @@ std::vector<uint8_t> build_input_with_op(int64_t steps, const std::string& op,
     }
 
     return w.release_data();
+}
+
+// A job on the single-edge rule kLhs -> kRhs from kSeed.
+std::vector<uint8_t> build_input_with_op(int64_t steps, const std::string& op,
+                                         int64_t session = 0, bool with_rules = true,
+                                         const std::vector<int64_t>& from = {},
+                                         const std::function<void(wxf::Writer&)>& opts = {},
+                                         uint64_t n_opts = 0, bool delta = false) {
+    return session_envelope(kSeed, kLhs, kRhs, steps, op, session, with_rules, from, opts,
+                            n_opts, delta);
 }
 
 // The session envelope's compatibility guarantee, which is the whole of its first commit: a job
@@ -1343,43 +1363,10 @@ namespace {
 // Evolve and Open only; a held verb carries none.
 std::vector<uint8_t> branch_job(int64_t steps, const std::string& op, int64_t session,
                                 const std::function<void(wxf::Writer&)>& write_options,
-                                std::size_t option_count) {
-    const bool with_rules = (op == "Evolve" || op == "Open");
-    wxf::Writer w;
-    w.write_header();
-    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-    w.write_varint(4 + (session ? 1 : 0) + (with_rules ? 1 : 0));
-    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-    w.write(std::string("InitialStates"));
-    w.write(kBranchSeed);
-    if (with_rules) {
-        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-        w.write(std::string("Rules"));
-        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-        w.write_varint(1);
-        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-        w.write(std::string("r0"));
-        w.write_function("Rule", 2);
-        w.write(kBranchLhs);
-        w.write(kBranchRhs);
-    }
-    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-    w.write(std::string("Steps"));
-    w.write(steps);
-    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-    w.write(std::string("Options"));
-    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-    w.write_varint(option_count);
-    write_options(w);
-    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-    w.write(std::string("Op"));
-    w.write(op);
-    if (session) {
-        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-        w.write(std::string("Session"));
-        w.write(session);
-    }
-    return w.release_data();
+                                std::size_t option_count, bool delta = false) {
+    return session_envelope(kBranchSeed, kBranchLhs, kBranchRhs, steps, op, session,
+                            op == "Evolve" || op == "Open", {}, write_options, option_count,
+                            delta);
 }
 
 bool reply_mentions(const std::vector<uint8_t>& out, const std::string& text) {
@@ -2591,3 +2578,53 @@ TEST(StateStatistics, WeightedSummary) {
     EXPECT_NEAR(rounded.histogram.begin()->first, 1.23, 1e-12);
 }
 
+// Under "Delivery" -> "Delta" a BranchialGraph at its default step, the final one, is delivered
+// whole on every verb: the final step moves with each Step, so the graph is not append-only and
+// an increment merged into the earlier graph kept the edges of steps that are no longer final.
+// The StatesGraph beside it is an increment.
+TEST(Session, ADeltaBranchialGraphAtTheFinalStepIsDeliveredWhole) {
+    HostBridge host;
+    auto opts = [](wxf::Writer& w) {
+        put_str_list_option(w, "GraphProperties", {"BranchialGraph", "StatesGraph"});
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("BranchialStep"));
+        w.write(int64_t{-1});
+    };
+    // The IsDelta marker and the edge count of one property's GraphData.
+    auto graph_of = [](const std::vector<uint8_t>& out, const std::string& prop) {
+        std::pair<int64_t, int64_t> v{-1, -1};
+        wxf::Parser parser(out);
+        parser.skip_header();
+        parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+            if (k != "GraphData") { vp.skip_value(); return; }
+            vp.read_association([&](const std::string& name, wxf::Parser& gp) {
+                if (name != prop) { gp.skip_value(); return; }
+                gp.read_association([&](const std::string& field, wxf::Parser& fp) {
+                    if (field == "IsDelta") {
+                        v.first = fp.read<int64_t>();
+                    } else if (field == "Edges") {
+                        fp.read_function([&](const std::string&, size_t n, wxf::Parser& ep) {
+                            for (size_t i = 0; i < n; ++i) ep.skip_value();
+                            v.second = static_cast<int64_t>(n);
+                        });
+                    } else {
+                        fp.skip_value();
+                    }
+                });
+            });
+        });
+        return v;
+    };
+    const auto opened = run_rewriting_core(branch_job(1, "Open", 0, opts, 2), host);
+    const int64_t h = read_int_key(opened, "Session");
+    ASSERT_GT(h, 0);
+    run_rewriting_core(branch_job(1, "Step", h, opts, 2, true), host);
+    const auto step = run_rewriting_core(branch_job(1, "Step", h, opts, 2, true), host);
+    const auto full = run_rewriting_core(branch_job(0, "Query", h, opts, 2), host);
+    EXPECT_EQ(graph_of(step, "BranchialGraph").first, 0);
+    EXPECT_EQ(graph_of(step, "StatesGraph").first, 1);
+    EXPECT_EQ(graph_of(step, "BranchialGraph").second, graph_of(full, "BranchialGraph").second)
+        << "the delivered BranchialGraph is not the whole graph at the final step";
+    EXPECT_GT(graph_of(full, "BranchialGraph").second, 0);
+    run_rewriting_core(branch_job(0, "Close", h, opts, 2), host);
+}

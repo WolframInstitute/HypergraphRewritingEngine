@@ -403,9 +403,14 @@ wxf::WXFValue build_graph_data(const Source& src,
         // carries Id and its endpoint state ids (InputState doubles as the state/event vertex
         // discriminator), a states-graph edge carries the event id its tooltip names.
         const bool is_structure = graph_property.find("Structure") != std::string::npos;
+        // A branchial graph read at a step counted from the end (a negative BranchialStep, the
+        // default for BranchialGraph) shows a later step after each Step, so it does not only
+        // grow: it is delivered whole, with IsDelta 0, every time.
+        ffi::DeliveryCursor* const cur =
+            opts.branchial_step < 0 && (is_branchial || has_branchial) ? nullptr : cursor;
         // Read before the walk records anything: after it, every property has been delivered.
         const bool delivered_before =
-            cursor != nullptr && cursor->delivered_before(graph_property);
+            cur != nullptr && cur->delivered_before(graph_property);
 
         auto lean_state_data = [&](uint32_t raw_sid) {
             wxf::WXFValueAssociation d;
@@ -442,7 +447,7 @@ wxf::WXFValue build_graph_data(const Source& src,
         // delivered -- the one field of a delivered vertex that changes. An event's payload is
         // immutable, so its revision is constant.
         auto send_vertex = [&](int64_t id, uint32_t revision) {
-            return cursor == nullptr || cursor->take_vertex(graph_property, id, revision);
+            return cur == nullptr || cur->take_vertex(graph_property, id, revision);
         };
         // One edge per (from, to, type, index): its two endpoints, its type, and -- for the
         // un-deduplicated causal case, where N edges share a pair -- its index among them. A
@@ -450,7 +455,7 @@ wxf::WXFValue build_graph_data(const Source& src,
         // share an event identity share one edge on either path.
         std::set<std::tuple<int64_t, int64_t, uint32_t, uint32_t>> sent_edges;
         auto send_edge = [&](int64_t from, int64_t to, uint32_t type_tag, uint32_t index) {
-            if (cursor != nullptr) return cursor->take_edge(graph_property, from, to, type_tag, index);
+            if (cur != nullptr) return cur->take_edge(graph_property, from, to, type_tag, index);
             return sent_edges.emplace(from, to, type_tag, index).second;
         };
 
@@ -636,7 +641,7 @@ wxf::WXFValue build_graph_data(const Source& src,
         // convention and an accident.
         graph_data.push_back(
             {wxf::WXFValue("IsDelta"),
-             wxf::WXFValue(static_cast<int64_t>(cursor != nullptr && delivered_before))});
+             wxf::WXFValue(static_cast<int64_t>(cur != nullptr && delivered_before))});
         graph_data.push_back({wxf::WXFValue("Vertices"), wxf::WXFValue(vertices)});
         graph_data.push_back({wxf::WXFValue("Edges"), wxf::WXFValue(edges)});
         graph_data.push_back({wxf::WXFValue("VertexData"), wxf::WXFValue(vertex_data)});
