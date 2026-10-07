@@ -12,8 +12,8 @@
 # check or reports a non-allocated access, does not finish dependence_dag_paths within the ten
 # minutes this script gives it, reports no race on the cas_fail_* reproducers, fails
 # memmove_overlap_tail's assertion, reports no error on copy_longer_than_unroll, prints no
-# assertion message or error site, and aborts on opaque_memcpy_struct and
-# runtime_length_memset.
+# assertion message or error site, and aborts on opaque_memcpy_struct, runtime_length_memset and
+# thread_atexit_records_nothing.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 GENMC="${GENMC:-$HOME/genmc/build/bin/genmc}"
