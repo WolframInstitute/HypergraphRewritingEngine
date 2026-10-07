@@ -465,11 +465,12 @@ class Hypergraph {
         size_t reduced_pairs = 0;  // pairs the online reduction kept (qr_apply)
         size_t bit_claims = 0;     // (instance, match) claims won in an instance's claim bits
     };
-    mutable QcCounterSlot qc_ctr_[MAX_ARENA_WORKERS];
+    mutable QcCounterSlot qc_ctr_[kCounterSlots];
 
-    static QcCounterSlot& qc_slot(QcCounterSlot* slots) {
-        const int w = arena_worker_index();
-        return slots[w >= 0 ? w : 0];
+    template <typename M>
+    static void qc_count(QcCounterSlot* slots, M member, size_t n = 1) {
+        const int slot = counter_slot();
+        counter_add(slots[slot].*member, slot, n);
     }
     template <typename M>
     size_t qc_ctr_total(M member) const {

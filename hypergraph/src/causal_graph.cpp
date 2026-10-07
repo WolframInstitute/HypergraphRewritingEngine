@@ -180,7 +180,7 @@ void CausalGraph::add_causal_edge(EventId producer, EventId consumer, EdgeId edg
 
     if (seen_causal_triples_.insert(triple_key)) {
         causal_edges_[list_worker()].list.push(CausalEdge(producer, consumer, edge), *arena_);
-        ++my_counts().causal_edges;
+        count_one(&CountSlot::causal_edges);
 
 #ifdef HYPERGRAPH_ENABLE_VISUALIZATION
         VIZ_EMIT_CAUSAL_EDGE(producer, consumer, edge);
@@ -188,7 +188,7 @@ void CausalGraph::add_causal_edge(EventId producer, EventId consumer, EdgeId edg
 
         const uint64_t pair_key = causal_pair_key(producer, consumer);
         if (seen_causal_event_pairs_.insert(pair_key)) {
-            ++my_counts().causal_event_pairs;
+            count_one(&CountSlot::causal_event_pairs);
             // Record the kept edge in the reduced adjacency once per unique event
             // pair, so preds_ holds no duplicate producers for a consumer.
             if (transitive_reduction_enabled_.load(std::memory_order_relaxed))
@@ -205,7 +205,7 @@ void CausalGraph::record_reduced_edge(EventId producer, EventId consumer) {
 
 void CausalGraph::add_branchial_edge(EventId e1, EventId e2, EdgeId shared) {
     branchial_edges_[list_worker()].list.push(BranchialEdge(e1, e2, shared), *arena_);
-    ++my_counts().branchial_edges;
+    count_one(&CountSlot::branchial_edges);
 
 #ifdef HYPERGRAPH_ENABLE_VISUALIZATION
     VIZ_EMIT_BRANCHIAL_EDGE(e1, e2, 0);

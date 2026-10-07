@@ -149,14 +149,16 @@ static_assert(sizeof(MatchRecord) == sizeof(const MatchCore*) + sizeof(StateId) 
 // rather than plain size_t because total() reads these while workers are still writing them, and
 // a data race on a non-atomic is undefined however benign the arithmetic looks.
 //
-// A worker beyond MAX_ARENA_WORKERS gets index -1 from arena_worker_index() and is folded into
-// slot 0, which it then shares. That is the same fallback the arena's own cursors take, and it
-// costs contention only in a configuration that already exceeds the registry.
+// A thread beyond MAX_ARENA_WORKERS gets index -1 from arena_worker_index(); every such thread
+// shares the extra slot kSharedCounterSlot, where the increment is a fetch_add.
 struct EvolutionStats {
     struct Counter {
         std::atomic<size_t> v{0};
         void bump(size_t n = 1) {
-            v.store(v.load(std::memory_order_relaxed) + n, std::memory_order_relaxed);
+            if (counter_slot() == kSharedCounterSlot)
+                v.fetch_add(n, std::memory_order_relaxed);
+            else
+                v.store(v.load(std::memory_order_relaxed) + n, std::memory_order_relaxed);
         }
         size_t get() const { return v.load(std::memory_order_relaxed); }
     };
@@ -174,12 +176,9 @@ struct EvolutionStats {
 #undef HG_DECL_TOTAL
     };
 
-    Slot per_worker[MAX_ARENA_WORKERS];
+    Slot per_worker[kCounterSlots];
 
-    Slot& mine() {
-        const int w = arena_worker_index();
-        return per_worker[w >= 0 ? w : 0];
-    }
+    Slot& mine() { return per_worker[counter_slot()]; }
 
     // Summed across every slot. Not a snapshot: workers may be writing while this runs, so the
     // result is a sum of values each of which was current at some point during the call. Nothing

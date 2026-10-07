@@ -376,6 +376,22 @@ int arena_worker_index();
 
 #endif  // HG_VERIFICATION
 
+// Per-worker plain counters: one slot per arena worker index and one more, kSharedCounterSlot,
+// for every thread past the worker ceiling. Those threads share it, so they add atomically; a
+// thread with an index owns its slot and adds plainly. Totals are read after the run.
+inline constexpr int kCounterSlots = MAX_ARENA_WORKERS + 1;
+inline constexpr int kSharedCounterSlot = MAX_ARENA_WORKERS;
+inline int counter_slot() {
+    const int w = arena_worker_index();
+    return w >= 0 ? w : kSharedCounterSlot;
+}
+inline void counter_add(size_t& c, int slot, size_t n) {
+    if (slot == kSharedCounterSlot)
+        std::atomic_ref<size_t>(c).fetch_add(n, std::memory_order_relaxed);
+    else
+        c += n;
+}
+
 // =============================================================================
 // ConcurrentHeterogeneousArena: Untyped thread-safe arena allocator
 // =============================================================================

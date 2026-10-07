@@ -222,15 +222,16 @@ private:
         size_t causal_event_pairs = 0;   // unique event pairs with a causal relationship
         size_t branchial_edges = 0;
     };
-    std::unique_ptr<CountSlot[]> counts_ = std::make_unique<CountSlot[]>(MAX_ARENA_WORKERS);
-    CountSlot& my_counts() {
-        const int w = arena_worker_index();
-        return counts_[w >= 0 ? w : 0];
+    std::unique_ptr<CountSlot[]> counts_ = std::make_unique<CountSlot[]>(kCounterSlots);
+    template <typename M>
+    void count_one(M member) {
+        const int slot = counter_slot();
+        counter_add(counts_[slot].*member, slot, 1);
     }
     template <typename M>
     size_t count_total(M member) const {
         size_t n = 0;
-        for (int i = 0; i < MAX_ARENA_WORKERS; ++i) n += counts_[i].*member;
+        for (int i = 0; i < kCounterSlots; ++i) n += counts_[i].*member;
         return n;
     }
 

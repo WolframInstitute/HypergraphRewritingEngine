@@ -1568,7 +1568,7 @@ void Hypergraph::qc_record_causal(uint32_t producer, uint32_t consumer, bool dis
     // build: the occurrences are deliberately not stored -- adjacent repeats are skipped, not
     // recorded -- so no enumeration can recover this number after the fact. A plain increment
     // on this worker's own 64-byte slot, no shared line, no RMW.
-    ++qc_slot(qc_ctr_).causal_edges;
+    qc_count(qc_ctr_, &QcCounterSlot::causal_edges);
 
     // NO DEDUP STRUCTURE, and none is needed. `consumer` is the event this application just
     // minted, so the pair cannot repeat across applications; within this one the caller has
@@ -1577,7 +1577,7 @@ void Hypergraph::qc_record_causal(uint32_t producer, uint32_t consumer, bool dis
     if (!distinct_pair) return;
     const int w = arena_worker_index();
     qc_causal_pairs_[w >= 0 ? w : 0].push(qc_pair_key(producer, consumer), arena_);
-    HG_STAT(++qc_slot(qc_ctr_).causal_pairs);
+    HG_STAT(qc_count(qc_ctr_, &QcCounterSlot::causal_pairs));
 
 }
 
@@ -2431,14 +2431,14 @@ bool Hypergraph::QrCtx::claim(const QcInstance& inst, const SlotMatch& m) {
         const uint64_t bit = uint64_t{1} << (m.local & 63u);
         if (inst.claim_bits[m.local >> 6].fetch_or(bit, std::memory_order_acq_rel) & bit)
             return false;
-        ++qc_slot(hg.qc_ctr_).bit_claims;
+        qc_count(hg.qc_ctr_, &QcCounterSlot::bit_claims);
         return true;
     }
     return hg.qc_applied_.insert(hgcommon::qr_apply_key(inst.id, m.id));
 }
 
 uint32_t Hypergraph::QrCtx::mint_event(uint32_t above) {
-    HG_STAT(++qc_slot(hg.qc_ctr_).applications);
+    HG_STAT(qc_count(hg.qc_ctr_, &QcCounterSlot::applications));
     return hg.alloc_event_id(above);
 }
 
@@ -2591,7 +2591,7 @@ void Hypergraph::QrCtx::record_kept(uint32_t ev, const uint32_t* kept, uint32_t 
         k.more = rest;
     }
     hg.qc_kept_->emplace_at(qc_ev_slot(ev), hg.arena_, k);
-    qc_slot(hg.qc_ctr_).reduced_pairs += nkept;
+    qc_count(hg.qc_ctr_, &QcCounterSlot::reduced_pairs, nkept);
 }
 
 

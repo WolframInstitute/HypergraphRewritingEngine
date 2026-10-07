@@ -1418,3 +1418,21 @@ TEST(OracleCorpus, AStopDuringADeltaScanLosesNoMatch) {
     EXPECT_GT(stopped, 0) << "no run was stopped, so nothing was cut short";
     EXPECT_EQ(differing, 0) << "a continuation after a stop reached different states or events";
 }
+
+// More workers than arena worker indices: the threads past the ceiling share one counter slot,
+// so the causal and branchial counts must still equal the edges the lists enumerate. The lost
+// increment is rare; ThreadSanitizer (build_tsan) reports the race on the shared slot directly.
+TEST(OracleCorpus, CountsHoldPastTheArenaWorkerCeiling) {
+    Hypergraph hg;
+    hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+    ParallelEvolutionEngine e(&hg, MAX_ARENA_WORKERS + 44);
+    e.add_rule(hypergraph::make_rule(0).lhs({0, 1}).lhs({0, 2})
+                   .rhs({0, 1}).rhs({0, 3}).rhs({1, 3}).rhs({2, 3}).build());
+    e.evolve({{0, 1}, {0, 2}}, 5);
+    size_t causal = 0, branchial = 0;
+    hg.causal_graph().for_each_causal_edge([&](const CausalEdge&) { ++causal; });
+    hg.causal_graph().for_each_branchial_edge([&](const BranchialEdge&) { ++branchial; });
+    ASSERT_GT(causal, 0u);
+    EXPECT_EQ(hg.causal_graph().num_causal_edges(), causal);
+    EXPECT_EQ(hg.causal_graph().num_branchial_edges(), branchial);
+}
