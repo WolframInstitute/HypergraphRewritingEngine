@@ -3,6 +3,7 @@
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/evolve.hpp"
 #include "hg_gpu/initial_upload.hpp"
+#include "hg_gpu/keyed.hpp"
 #include "hg_gpu/ir_canon.hpp"
 #include "hg_gpu/match.hpp"
 #include "hg_gpu/persistent.hpp"
@@ -993,6 +994,54 @@ TEST(Rewrite, AKeyedDeviceSessionReachesWhatOneRunDoes) {
     }
     EXPECT_EQ(run(true, true, hgcommon::EVENT_SIG_AUTOMATIC).twins, 0u)
         << "a run that reads edge ranks took a twin";
+}
+
+// A keyed run on a reused engine starts with every follower stack empty, as a fresh engine does,
+// and takes the twins a fresh one takes. Two blocks make the twin count deterministic (see above).
+TEST(Rewrite, AKeyedRunOnAReusedEngineTakesTheTwinsAFreshOneDoes) {
+    constexpr uint32_t kBlocks = 2;
+    hg_gpu::RewriteRule r;
+    r.lhs = {{0, 1}, {1, 2}};
+    r.rhs = {{0, 1}, {1, 3}, {3, 2}};
+    r.num_lhs_vars = 3;
+    r.num_rhs_vars = 4;
+    // A path of 34 edges: only a state above kFollowEdges (32) edges has a follower stack.
+    std::vector<std::vector<VertexId>> init;
+    for (VertexId v = 0; v < 34; ++v) init.push_back({v, v + 1u});
+    hg_gpu::EvolveInput in;
+    in.rules = {r};
+    in.initial_state = init;
+    in.num_steps = 2;
+    in.canonicalization = hg_gpu::CanonicalizationMode::Full;
+    in.keyed_rewrites = true;
+    hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
+    hg_gpu::EngineState eng(cfg);
+    std::vector<hg_gpu::DeviceRule> rules = {hg_gpu::make_device_rule(r)};
+    hg_gpu::Pool<hg_gpu::MatchRecord> matches(cfg.max_states * 8u);
+    hg_gpu::DeviceArena arena(32ull << 20);
+    uint32_t twins[2] = {0, 0}, states[2] = {0, 0};
+    for (int i = 0; i < 2; ++i) {
+        if (i) eng.clear();
+        hg_gpu::upload_initial_state(eng, init);
+        matches.reset();
+        const auto st = hg_gpu::run_persistent_evolve(
+            eng, rules, {0u}, 2u, matches, arena, /*dedup=*/false, 0xFFFFFFFFu, 0,
+            hg_gpu::CanonicalizationMode::Full, hgcommon::EVENT_SIG_FULL, kBlocks);
+        twins[i] = st.keyed_twins;
+        states[i] = st.states_after;
+    }
+    EXPECT_EQ(states[1], states[0]);
+    EXPECT_GT(twins[0], 0u) << "the first run took no twin, so there is nothing to compare";
+    EXPECT_EQ(twins[1], twins[0]) << "the second run on the engine took a different number of twins";
+    // A run closes the follower stack of every state it hashes; clear() empties them again.
+    eng.clear();
+    std::vector<uint32_t> heads(states[1]);
+    ASSERT_EQ(cudaMemcpy(heads.data(), eng.device().keyed.follow_head,
+                         sizeof(uint32_t) * heads.size(), cudaMemcpyDeviceToHost),
+              cudaSuccess);
+    size_t not_empty = 0;
+    for (uint32_t h : heads) not_empty += h != hg_gpu::FOLLOW_EMPTY;
+    EXPECT_EQ(not_empty, 0u) << "follower stacks left closed or holding events after clear()";
 }
 
 // The reduction rejects a redundant edge whose proof visits more events than the search's local

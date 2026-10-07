@@ -543,6 +543,10 @@ void EngineState::clear() {
         }
         // edge_producer init to INVALID_ID (0xFF bytes).
         batch.add(edge_producer_, sizeof(EventId) * dirty_edges, 0xFF);
+        // A run closes the follower stack of every keyed state it hashes; FOLLOW_EMPTY (0xFF
+        // bytes) again for the next run's states.
+        if (keyed_follow_head_)
+            batch.add(keyed_follow_head_, sizeof(uint32_t) * dirty_states, 0xFF);
         signature_index_.clear(&batch);
         vertex_inverted_index_.clear(dirty_vertices, &batch);
         edge_consumers_.clear(dirty_edges_lf, &batch);
