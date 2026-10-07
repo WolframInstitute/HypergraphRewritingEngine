@@ -1234,7 +1234,7 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
   {inputData, wxfBytes, resultBytes, wxfData, requiredData, options,
    states, events, causalEdges, branchialEdges, graphOptions, props,
    canonicalizeStates, canonicalizeEvents, graphProperties, colorByRule,
-   normalizedRules, rulesAssoc, initialStatesData, device},
+   normalizedRules, rulesAssoc, initialStatesData, device, propertyWasList},
 
   If[steps < 0, Message[HGEvolve::steps, steps]; Return[$Failed]];
   initialStatesData = hgCheckInput[rules, initialEdges];
