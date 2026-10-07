@@ -1444,28 +1444,14 @@ std::string gpu_binary_path() {
 }
 
 
-// One --serve worker, driven for the life of the fixture. Frames are 8-byte little-endian
-// lengths followed by the WXF payload, matching run_serve exactly; a ZERO-length reply is how
-// the worker reports that a job threw, which is distinct from a reply that happens to be empty.
-class ServeWorker {
-public:
-    explicit ServeWorker(const std::string& exe) {
-        const std::string cmd = "\"" + exe + "\" --serve 2>/dev/null";
-        pipe_ = popen(cmd.c_str(), "w");   // write jobs; replies come back on a second channel
-    }
-    ~ServeWorker() { if (pipe_) pclose(pipe_); }
-    bool ok() const { return pipe_ != nullptr; }
-private:
-    FILE* pipe_ = nullptr;
-};
-
-// popen gives one direction only, so the worker is driven through a pair of FIFOs instead:
-// jobs in, replies out, one process for all four verbs.
+// One --serve worker, driven through a pair of FIFOs: jobs in, replies out, one process for all
+// four verbs. Frames are 8-byte little-endian lengths followed by the payload, matching run_serve.
 struct WorkerPipes {
     std::string dir, in_path, out_path;
     pid_t pid = -1;
     int in_fd = -1, out_fd = -1;
     bool started = false;
+    std::string last_error;   // the last error frame's message
 };
 
 // Each worker has its own FIFO pair, and the test's ends are close-on-exec: a second worker
@@ -1519,8 +1505,10 @@ bool read_exact_fd(int fd, size_t n, std::vector<uint8_t>& out) {
     return true;
 }
 
-// Send one job, read one reply. Empty reply means the worker reported an error for that job.
+// Send one job, read one reply. Empty reply means the worker reported an error for that job; its
+// message is in w.last_error.
 std::vector<uint8_t> worker_call(WorkerPipes& w, const std::vector<uint8_t>& job) {
+    w.last_error.clear();
     uint8_t len[8];
     for (int i = 0; i < 8; ++i) len[i] = static_cast<uint8_t>((job.size() >> (8 * i)) & 0xFF);
     if (::write(w.in_fd, len, 8) != 8) return {};
@@ -1535,8 +1523,14 @@ std::vector<uint8_t> worker_call(WorkerPipes& w, const std::vector<uint8_t>& job
     uint64_t reply_len = 0;
     for (int i = 0; i < 8; ++i) reply_len |= static_cast<uint64_t>(lenbuf[i]) << (8 * i);
     if (reply_len == 0) return {};
+    const bool error = (reply_len >> 62) == 1;   // bit 62 set, bit 63 clear: an error frame
+    reply_len &= ~(3ull << 62);
     std::vector<uint8_t> reply;
     if (!read_exact_fd(w.out_fd, reply_len, reply)) return {};
+    if (error) {
+        w.last_error.assign(reply.begin(), reply.end());
+        return {};
+    }
     return reply;
 }
 
@@ -2205,6 +2199,18 @@ TEST(GpuBinaryGate, StateEdgeIdsAreTheIdsEventsName) {
     check(worker_call(w, branch_job(2, "Evolve", 0, opts, 1)), "GPU");
     worker_stop(w);
 }
+// A job the engine refuses comes back as an error frame carrying the engine's message, and the
+// worker serves the next job. The message went only to the worker's stderr, which no client reads.
+TEST(Session, AWorkerReportsARefusedJobWithItsMessage) {
+    CpuWorker w;
+    ASSERT_TRUE(w.ok) << "could not start hg_evolve --serve";
+    EXPECT_TRUE(w(build_input_with_op(1, "Step", 12345, false)).empty());
+    EXPECT_NE(w.w.last_error.find("12345"), std::string::npos)
+        << "error frame: '" << w.w.last_error << "'";
+    EXPECT_FALSE(w(build_input_with_op(1, "Evolve")).empty());
+    EXPECT_TRUE(w.w.last_error.empty());
+}
+
 // "ContentStateId" is the lowest id among the listed states with the same edge list, on both
 // devices and in every "CanonicalizeStates" mode, so it is always a "States" key. The GPU once
 // gave each state its own id, and the CPU under Full could name a state "States" does not list.
@@ -2567,3 +2573,4 @@ TEST(StateStatistics, WeightedSummary) {
     ASSERT_EQ(rounded.histogram.size(), 1u);
     EXPECT_NEAR(rounded.histogram.begin()->first, 1.23, 1e-12);
 }
+

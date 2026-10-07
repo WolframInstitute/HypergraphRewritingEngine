@@ -60,6 +60,11 @@ constexpr uint64_t kMaxJobBytes = 1ull << 30;
 // hgReadFrame prints or skips progress frames and returns the reply.
 constexpr uint64_t kProgressFrameBit = 1ull << 63;
 
+// A reply frame's length with this bit set (and bit 63 clear) is an ERROR frame: the job failed,
+// its payload is the error message as UTF-8 text, and no reply frame follows. hgReadFrame returns
+// it as hgEngineError[message].
+constexpr uint64_t kErrorFrameBit = 1ull << 62;
+
 // The 8-byte little-endian header of a frame of `len` bytes.
 void frame_header(uint64_t len, uint8_t hdr[8]) {
     for (int i = 0; i < 8; ++i) hdr[i] = static_cast<uint8_t>(len >> (8 * i));
@@ -85,6 +90,14 @@ void write_frame(const std::vector<uint8_t>& payload) {
     frame_header(static_cast<uint64_t>(payload.size()), hdr);
     std::fwrite(hdr, 1, 8, stdout);
     if (!payload.empty()) std::fwrite(payload.data(), 1, payload.size(), stdout);
+    std::fflush(stdout);
+}
+
+void write_error_frame(const std::string& message) {
+    uint8_t hdr[8];
+    frame_header(kErrorFrameBit | static_cast<uint64_t>(message.size()), hdr);
+    std::fwrite(hdr, 1, 8, stdout);
+    std::fwrite(message.data(), 1, message.size(), stdout);
     std::fflush(stdout);
 }
 
@@ -132,8 +145,7 @@ int run_serve(const HostBridge& host_in) {
             std::vector<uint8_t> out = run_rewriting_core(job, host);
             write_frame(out);
         } catch (const std::exception& e) {
-            std::fprintf(stderr, "HGEvolve job error: %s\n", e.what());
-            write_frame({});  // zero-length frame = this job errored
+            write_error_frame(e.what());
         }
     }
     return 0;
@@ -216,6 +228,11 @@ int run_serve_socket(const HostBridge& host_in, const char* portfile) {
         frame_header(kProgressFrameBit | static_cast<uint64_t>(m.size()), hdr);
         if (sock_send_all(conn, hdr, 8)) sock_send_all(conn, m.data(), m.size());
     };
+    auto send_error_frame = [conn](const std::string& m) {
+        uint8_t hdr[8];
+        frame_header(kErrorFrameBit | static_cast<uint64_t>(m.size()), hdr);
+        return sock_send_all(conn, hdr, 8) && sock_send_all(conn, m.data(), m.size());
+    };
     uint8_t lenbuf[8];
     std::vector<uint8_t> job;
     for (;;) {
@@ -227,11 +244,9 @@ int run_serve_socket(const HostBridge& host_in, const char* portfile) {
         // out of main and terminates the worker the client is still talking to. Reject it as
         // a job error, which the frame protocol already expresses.
         if (len > kMaxJobBytes) {
-            std::fprintf(stderr, "HGEvolve: job frame of %llu bytes exceeds the %llu-byte cap\n",
-                         static_cast<unsigned long long>(len),
-                         static_cast<unsigned long long>(kMaxJobBytes));
-            uint8_t zero[8] = {0};                  // a zero-length reply frame = job errored
-            if (!sock_send_all(conn, zero, 8)) break;
+            const std::string m = "job frame of " + std::to_string(len) + " bytes exceeds the " +
+                                  std::to_string(kMaxJobBytes) + "-byte cap";
+            if (!send_error_frame(m)) break;
             continue;                               // the stream is unusable past this point,
         }                                           // but the client decides whether to retry
         job.resize(static_cast<size_t>(len));
@@ -240,8 +255,8 @@ int run_serve_socket(const HostBridge& host_in, const char* portfile) {
         try {
             out = run_rewriting_core(job, host);
         } catch (const std::exception& e) {
-            std::fprintf(stderr, "HGEvolve job error: %s\n", e.what());
-            out.clear();  // zero-length reply frame = this job errored
+            if (!send_error_frame(e.what())) break;
+            continue;
         }
         uint8_t hdr[8];
         const uint64_t olen = out.size();

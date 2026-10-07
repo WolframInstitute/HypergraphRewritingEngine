@@ -100,10 +100,7 @@ HGSessionOpen::noworker =
   "mint a handle in a process that exits with the reply. HGEvolve itself still works.";
 HGSessionOpen::nohandle =
   "The engine answered the Open but returned no session handle, so there is nothing to continue.";
-HGSessionOpen::refused =
-  "The engine refused this session job. The usual causes: a session is already open on this " <>
-  "worker (one is served at a time, so close it before opening another), or the verb named a " <>
-  "session this worker does not hold.";
+HGSessionOpen::refused = "The engine refused this session job: `1`";
 HGSessionStep::badsession =
   "`1` is not an HGSessionObject.";
 HGSessionStep::negsteps =
@@ -238,10 +235,11 @@ hgWorkerStart[device_] := Module[{exe, portfile, proc, port, sock},
 (* Read a job's reply from the worker: frames of [8-byte little-endian length][payload]. A length
    with bit 63 set is a PROGRESS frame (hg_evolve_main.cpp, kProgressFrameBit): its payload is one
    progress message, printed when the call asked for progress ($hgShowProgress) and skipped
-   otherwise, and the reply frame follows. The reply's chunks are appended to a DynamicArray and
-   joined once, so reassembly is O(n). Returns the reply payload for BinaryDeserialize, $Failed on
-   a dead socket, or an empty ByteArray if the engine flagged the job as errored (a zero-length
-   reply). *)
+   otherwise, and the reply frame follows. A length with bit 62 set is an ERROR frame
+   (kErrorFrameBit): the job failed, the payload is the message, and nothing follows. The reply's
+   chunks are appended to a DynamicArray and joined once, so reassembly is O(n). Returns the reply
+   payload for BinaryDeserialize, hgEngineError[message] for an error frame, or $Failed on a dead
+   socket. *)
 $hgShowProgress = False;
 hgReadFrame[sock_] := Module[{pending = ByteArray[{}], chunk, len, ds, got},
   While[True,
@@ -259,6 +257,13 @@ hgReadFrame[sock_] := Module[{pending = ByteArray[{}], chunk, len, ds, got},
       If[TrueQ[$hgShowProgress] && len > 0, Print[ByteArrayToString[pending[[9 ;; 8 + len]]]]];
       pending = If[Length[pending] > 8 + len, pending[[9 + len ;;]], ByteArray[{}]];
       Continue[]];
+    If[len >= 2^62,
+      len -= 2^62;
+      While[Length[pending] < 8 + len,
+        chunk = SocketReadMessage[sock];
+        If[!ByteArrayQ[chunk], Return[$Failed]];
+        pending = Join[pending, chunk]];
+      Return[hgEngineError[If[len > 0, ByteArrayToString[pending[[9 ;; 8 + len]]], ""]]]];
     ds = CreateDataStructure["DynamicArray"];
     ds["Append", pending];
     got = Length[pending];
@@ -268,8 +273,6 @@ hgReadFrame[sock_] := Module[{pending = ByteArray[{}], chunk, len, ds, got},
       ds["Append", chunk]; got += Length[chunk]];
     Return[If[len == 0, ByteArray[{}], Take[Join @@ Normal[ds], {9, 8 + len}]]]]
 ];
-
-$hgEngineRefused = "EngineRefusedJob";   (* distinct from $Failed: see hgWorkerTry *)
 
 hgWorkerTry[device_, wxfBytes_ByteArray] := Module[{payload},
   If[TrueQ[$hgWorkerBroken[device]], Return[$Failed]];
@@ -283,12 +286,9 @@ hgWorkerTry[device_, wxfBytes_ByteArray] := Module[{payload},
   payload = hgReadFrame[$hgWorkerSock[device]];
   Which[
     payload === $Failed, hgWorkerKill[device]; $hgWorkerBroken[device] = True; $Failed,
-    (* THE ENGINE REFUSED THIS JOB, and the worker is alive. Distinguished from a dead transport
-       because the two call for opposite responses: a caller with a fallback should take it on a
-       dead worker and NOT on a refused job (the fallback would refuse it too), and a session
-       verb, which has no fallback, must report the engine's refusal rather than "no worker is
-       available" -- which is what a second Open on a live session used to say. *)
-    Length[payload] == 0, $hgEngineRefused,
+    (* The engine refused this job and the worker is alive: hgEngineError[message]. A caller
+       with a fallback takes it only on a dead worker, since the fallback would refuse the job
+       too, and a session verb reports the message. *)
     True, payload]
 ];
 
@@ -306,6 +306,8 @@ hgResolveDevice[requested_] := Switch[requested,
 hgCallEngine[wxfBytes_, dev_:"CPU"] := Module[{r},
   r = hgWorkerTry[dev, wxfBytes];
   If[ByteArrayQ[r], Return[r]];
+  If[MatchQ[r, hgEngineError[_String]],
+    Message[HGEvolve::enginemsg, First[r]]; Return[$Failed]];
   Which[
     dev === "GPU", hgRunEngineBinary[$HypergraphEngineBinaryGPU, wxfBytes],
     StringQ[$HypergraphEngineBinary] && FileExistsQ[$HypergraphEngineBinary],
@@ -1101,14 +1103,14 @@ hgSendJob[inputData_Association, device_, sessionQ_] := Module[{wxfBytes, result
          transport hiccup during an unrelated evolve into "this kernel can never open a session
          again". So a session verb clears it and tries once more; if the worker still cannot
          start, THAT is the failure worth reporting. *)
-      (* A refused job is the ENGINE speaking, not the transport: report it as such and do not
-         restart a healthy worker underneath it. *)
-      If[r === $hgEngineRefused, Message[HGSessionOpen::refused]; Return[$Failed]];
+      (* A refused job is the engine's answer, not a transport failure: report its message and
+         keep the worker. *)
+      If[MatchQ[r, hgEngineError[_String]], Message[HGSessionOpen::refused, First[r]]; Return[$Failed]];
       If[!ByteArrayQ[r] && TrueQ[$hgWorkerBroken[dev]],
         $hgWorkerBroken = KeyDrop[$hgWorkerBroken, dev];
         hgWorkerKill[dev];
         r = hgWorkerTry[dev, wxfBytes]];
-      If[r === $hgEngineRefused, Message[HGSessionOpen::refused]; Return[$Failed]];
+      If[MatchQ[r, hgEngineError[_String]], Message[HGSessionOpen::refused, First[r]]; Return[$Failed]];
       If[!ByteArrayQ[r], Message[HGSessionOpen::noworker, device]; Return[$Failed]];
       r],
     hgCallEngine[wxfBytes, device]]];
