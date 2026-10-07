@@ -247,8 +247,6 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                             Pool<MatchRecord>& scratch_matches,
                                             DeviceArena& arena,
                                             bool dedup,
-                                            uint32_t explore_threshold_u32 = 0xFFFFFFFFu,
-                                            uint64_t explore_seed = 0,
                                             // How states are identified. The device twin of
                                             // compute_state_dedup_keys: the host seeding and
                                             // the device loop deduplicating different

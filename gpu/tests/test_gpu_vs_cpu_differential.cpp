@@ -61,6 +61,7 @@ struct Workload {
     uint32_t max_states_per_step = 0;
     uint32_t max_successor_states_per_parent = 0;
     uint32_t matches_per_state_rule = 0;
+    double   exploration_probability = 1.0;
     // Collapse isomorphic initial states under quotient exploration (default off).
 };
 
@@ -215,6 +216,7 @@ NormalizedResult run_cpu(const Workload& w) {
     engine.set_max_states_per_step(w.max_states_per_step);
     engine.set_max_successor_states_per_parent(w.max_successor_states_per_parent);
     engine.set_matches_per_state_rule(w.matches_per_state_rule);
+    engine.set_exploration_probability(w.exploration_probability);
 
     if (!w.initial_states.empty()) {
         std::vector<std::vector<std::vector<hypergraph::VertexId>>> roots;
@@ -377,6 +379,7 @@ hg_gpu::EvolveInput make_input(const Workload& w) {
     in.max_states_per_step = w.max_states_per_step;
     in.max_successor_states_per_parent = w.max_successor_states_per_parent;
     in.matches_per_state_rule = w.matches_per_state_rule;
+    in.exploration_probability = w.exploration_probability;
     return in;
 }
 
@@ -1727,6 +1730,35 @@ TEST(Sampling, PerStepCapKeepsTheSameTransitionsAcrossEngines) {
                     << v.name << " N=" << n << " variant " << variant << ": different states";
                 EXPECT_EQ(cpu.event_keys, gpu.event_keys)
                     << v.name << " N=" << n << " variant " << variant << ": different transitions";
+            }
+        }
+    }
+}
+
+// ExplorationProbability keeps the same states on both engines: the coin is the same function of
+// the same invariant key and the seed -- the class's canonical hash under quotient exploration,
+// the creating transition's key under full capture.
+TEST(Sampling, ExplorationProbabilityKeepsTheSameStatesAcrossEngines) {
+    Workload w;
+    w.name = "explore";
+    w.rules = {rule({{0, 1}, {0, 2}}, {{0, 2}, {0, 3}, {1, 3}, {2, 3}})};
+    w.initial_states = {{{0u, 0u}, {0u, 0u}}};
+    w.num_steps = 4;
+    w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+    for (uint64_t seed : {uint64_t(0), uint64_t(0x5EED)}) {
+        for (bool quotient : {false, true}) {
+            for (double p : {0.3, 0.6}) {
+                Workload v = w;
+                v.random_seed = seed;
+                v.explore_from_canonical_states_only = quotient;
+                v.exploration_probability = p;
+                NormalizedResult cpu = run_cpu(v);
+                NormalizedResult gpu = run_gpu(v);
+                EXPECT_GT(gpu.canonical_state_hashes.size(), 1u);
+                EXPECT_EQ(cpu.canonical_state_hashes, gpu.canonical_state_hashes)
+                    << "seed " << seed << " quotient " << quotient << " p " << p;
+                EXPECT_EQ(cpu.event_keys, gpu.event_keys)
+                    << "seed " << seed << " quotient " << quotient << " p " << p;
             }
         }
     }

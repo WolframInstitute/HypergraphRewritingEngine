@@ -67,6 +67,12 @@ __global__ void k_seq_ramp(uint64_t* seq, uint32_t n) {
 // reaches zero once, after the last of them. Whichever block releases the last unit runs the
 // selection, before it reports its own work done, so termination cannot be detected while
 // candidates are held. Nothing waits.
+// A full-capture run that explores with a probability below 1 keys its coin on the creating
+// transition (explore_key), so it reads the parent's ranks and exact hash.
+__host__ __device__ inline uint32_t explore_reads_ranks(const DeviceState& ds, bool dedup) {
+    return (ds.exploration_probability < 1.0 && !dedup) ? 1u : 0u;
+}
+
 struct StepSelectScratch {
     uint64_t* rank;    // [cap] the step's candidate ranks
     uint32_t* idx;     // [cap] their candidate-pool indices
@@ -819,17 +825,30 @@ __device__ __forceinline__ ChildIdentity canonicalise_child(
     return out;
 }
 
+// The key ExplorationProbability's coin draws on, the host's: the class's canonical hash under
+// quotient exploration (claim_canonical_for_expansion), the creating transition's key under full
+// capture (the rewrite site).
+__device__ inline uint64_t explore_key(const DeviceState& ds, bool dedup, StateId canonical,
+                                       const MatchRecord* rec) {
+    if (dedup) return ds.state_canonical_hash[canonical];
+    EdgeId edges[kMaxPatternEdges];
+    for (uint32_t k = 0; k < kMaxPatternEdges; ++k) edges[k] = rec->matched_edges[k];
+    return transition_key_device(ds, rec->state_id, rec->rule_id, edges, rec->num_edges);
+}
+
 // IDENTITY, THEN DEPTH (explore_depth.hpp) for one child with a hash, on thread 0. The first
-// arrival of a key is its canonical state; a fresh state the exploration coin or a cap refuses,
-// under the budget or in a session, is claimed unexpanded, so no later path expands it. Every
-// arrival registers under its parent, and one that lowers the canonical state's depth admits it
-// and lowers its descendants.
+// arrival of a key is its canonical state; a fresh state the exploration coin refuses, under the
+// budget or in a session, is claimed unexpanded, so no later path expands it. Every arrival
+// registers under its parent, and one that lowers the canonical state's depth admits it and
+// lowers its descendants. `rec` is the rewritten record, read for the coin's key.
 __device__ __forceinline__ void register_child(
         const DeviceState& ds, ExploreView& ev, const SessionView& sess, StateId sid,
         StateId parent, StateId canonical, bool fresh, uint32_t step, uint32_t max_steps,
-        uint32_t explore_threshold_u32, uint64_t explore_seed) {
-    if (fresh && (step < max_steps || sess.enabled) &&
-        !state_retained(sid, step, explore_threshold_u32, explore_seed))
+        bool dedup, const MatchRecord* rec) {
+    if (fresh && (step < max_steps || sess.enabled) && ds.exploration_probability < 1.0 &&
+        (rec != nullptr || dedup) &&
+        !hgcommon::explore_survives(explore_key(ds, dedup, canonical, rec), ds.sampling_seed,
+                                    ds.exploration_probability))
         ev.claim(canonical);
     DeviceExploreCtx xc{ds, ev, sess, max_steps,
                         ev.frame_node + size_t(blockIdx.x) * ev.frame_levels,
@@ -873,8 +892,6 @@ __global__ void k_persistent_evolve(
         uint32_t* rewrites_done,
         DedupMap::DeviceView dedup_map,
         bool dedup,
-        uint32_t explore_threshold_u32,
-        uint64_t explore_seed,
         uint32_t max_steps,
         CanonicalizationMode state_mode,
         EventSignatureKeys event_keys,
@@ -901,13 +918,15 @@ __global__ void k_persistent_evolve(
     // draw's key. One predicate answers it for the roots and for every child; see its note.
     const bool need_ranks = run_needs_edge_ranks(event_keys, qe.enabled != 0,
                                                  ds.transition_rate, ds.num_rule_weights,
-                                                 hgcommon::drain_selects(ds.matches_per_state_rule,
+                                                 (hgcommon::drain_selects(ds.matches_per_state_rule,
                                         ds.max_successor_states_per_parent,
-                                        ds.max_states_per_step));
+                                        ds.max_states_per_step) |
+                                         explore_reads_ranks(ds, dedup)));
     const bool need_exact = run_needs_exact_hash(event_keys, ds.transition_rate,
-                                                 ds.num_rule_weights, hgcommon::drain_selects(ds.matches_per_state_rule,
+                                                 ds.num_rule_weights, (hgcommon::drain_selects(ds.matches_per_state_rule,
                                         ds.max_successor_states_per_parent,
-                                        ds.max_states_per_step));
+                                        ds.max_states_per_step) |
+                                         explore_reads_ranks(ds, dedup)));
 
     if (blockIdx.x == 0) {
         if (threadIdx.x != 0) return;
@@ -1144,7 +1163,8 @@ __global__ void k_persistent_evolve(
             if (id.ok) {
                 const uint64_t s4 = clock64();
                 register_child(ds, ev, sess, child_sid, child_parent, id.canonical, id.fresh,
-                               child_step, max_steps, explore_threshold_u32, explore_seed);
+                               child_step, max_steps, dedup,
+                               have_ready ? nullptr : &found.at(claimed));
                 acc_dedup += clock64() - s4;
             }
             acc_canon += clock64() - t1;
@@ -1348,8 +1368,10 @@ __global__ void k_persistent_evolve(
                     const uint32_t ccstep = __shfl_sync(0xFFFFFFFFu, cstep, c);
                     if (lane == 0) {
                         const uint64_t s4 = clock64();
+                        const uint32_t ctile = c / T;
                         register_child(ds, ev, sess, csid, cparent, ccanon, cfresh, ccstep,
-                                       max_steps, explore_threshold_u32, explore_seed);
+                                       max_steps, dedup,
+                                       &found.at(ctile == 0 ? claimed : claimed_more + ctile - 1u));
                         acc_dedup += clock64() - s4;
                     }
                     __syncwarp();
@@ -1808,8 +1830,6 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                             Pool<MatchRecord>& scratch_matches,
                                             DeviceArena& arena,
                                             bool dedup,
-                                            uint32_t explore_threshold_u32,
-                                            uint64_t explore_seed,
                                             CanonicalizationMode state_mode,
                                             EventSignatureKeys event_keys,
                                             uint32_t blocks,
@@ -1952,9 +1972,10 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         const bool want_exact =
             state_mode != CanonicalizationMode::Full &&
             run_needs_exact_hash(event_keys, dsx.transition_rate, dsx.num_rule_weights,
-                                 hgcommon::drain_selects(dsx.matches_per_state_rule,
+                                 (hgcommon::drain_selects(dsx.matches_per_state_rule,
                                         dsx.max_successor_states_per_parent,
-                                        dsx.max_states_per_step));
+                                        dsx.max_states_per_step) |
+                                         explore_reads_ranks(dsx, dedup)));
         exact_v = reuse_map(ps.exact, want_exact ? engine.config().max_states * 2u : 8u, &clears)
                       .view();
     }
@@ -1968,9 +1989,10 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         engine.config().keyed_rewrites, state_mode == CanonicalizationMode::Full,
         /*positional_events=*/false,
         hgcommon::run_reads_rank_tuples(event_keys, dsk.transition_rate, dsk.num_rule_weights,
-                                        hgcommon::drain_selects(dsk.matches_per_state_rule,
+                                        (hgcommon::drain_selects(dsk.matches_per_state_rule,
                                         dsk.max_successor_states_per_parent,
-                                        dsk.max_states_per_step)));
+                                        dsk.max_states_per_step) |
+                                         explore_reads_ranks(dsk, dedup))));
     if (keyed) {
         engine.ensure_keyed();
         dsk = engine.device();
@@ -2118,13 +2140,15 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
             dsv, d_states, n,
             session ? sess_v.states : canonical_owner->view(), state_mode,
             run_needs_exact_hash(event_keys, dsv.transition_rate, dsv.num_rule_weights,
-                                 hgcommon::drain_selects(dsv.matches_per_state_rule,
+                                 (hgcommon::drain_selects(dsv.matches_per_state_rule,
                                         dsv.max_successor_states_per_parent,
-                                        dsv.max_states_per_step)),
+                                        dsv.max_states_per_step) |
+                                         explore_reads_ranks(dsv, dedup))),
             run_needs_edge_ranks(event_keys, qe.enabled != 0, dsv.transition_rate,
-                                 dsv.num_rule_weights, hgcommon::drain_selects(dsv.matches_per_state_rule,
+                                 dsv.num_rule_weights, (hgcommon::drain_selects(dsv.matches_per_state_rule,
                                         dsv.max_successor_states_per_parent,
-                                        dsv.max_states_per_step)),
+                                        dsv.max_states_per_step) |
+                                         explore_reads_ranks(dsv, dedup))),
             pool_v, qc, qe, ev, forms_v, exact_v, max_steps, sess_v);
     }
 
@@ -2143,7 +2167,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         dsk, d_rules, num_rules, match_q.view(), scratch_matches.view(),
         d_cursor, d_rewrites_done,
         session ? sess_v.states : canonical_owner->view(), dedup,
-        explore_threshold_u32, explore_seed, max_steps, state_mode, event_keys,
+        max_steps, state_mode, event_keys,
         session ? sess_v.events : owned_event_ids->view(), exact_v,
         pool_v, term.view(), qc, qe, d_phase_cycles, sess_v, ev, forms_v, ready_v,
         arena.view().base, region_words, cand_v, step_sel);

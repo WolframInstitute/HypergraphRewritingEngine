@@ -258,23 +258,5 @@ __device__ inline StateClaim state_claim_content(const DeviceState& ds, StateId 
     return keyed_claim_device(ds, sid, hash & ds.canonical_key_mask, map, p);
 }
 
-// Whether a fresh state is kept for expansion: the exploration coin.
-__device__ inline bool state_retained(StateId sid, uint32_t step, uint32_t explore_threshold_u32,
-                                      uint64_t explore_seed) {
-    // Stochastic-exploration coin flip. UINT32_MAX == "always explore"
-    // (the threshold encoding for probability 1.0); skip the hash work
-    // entirely on that fast path so the existing all-deterministic
-    // workloads pay zero overhead.
-    if (explore_threshold_u32 != 0xFFFFFFFFu) {
-        if (explore_threshold_u32 == 0u) return false;  // probability 0.0
-        uint64_t mix = hgcommon::splitmix64(explore_seed
-                                  ^ (static_cast<uint64_t>(step) << 32)
-                                  ^ static_cast<uint64_t>(sid));
-        uint32_t draw = static_cast<uint32_t>(mix);
-        if (draw >= explore_threshold_u32) return false;
-    }
-    return true;
-}
-
 }  // namespace gpu
 }  // namespace HG_NAMESPACE

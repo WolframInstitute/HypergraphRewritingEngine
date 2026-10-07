@@ -81,12 +81,11 @@ struct EvolveInput {
     // pruning); 0.0 = never expand any new state (only the initial state
     // is matched). Values outside [0,1] are clamped.
     //
-    // `exploration_seed`: deterministic seed for the per-(step, state)
-    // coin flip. When 0 (default), a non-deterministic seed is drawn
-    // from std::random_device at run start, mirroring the CPU side which
-    // uses a thread_local mt19937 with random_device seeding. Set to a
-    // non-zero value for reproducible runs.
-    float    exploration_probability = 1.0f;
+    // `exploration_seed` is the run's seed (RandomSeed): it keys the exploration coin, the
+    // transition draw and the caps' ranks, as random_seed does on the host. 0 is a seed like any
+    // other. The coin is hgcommon::explore_survives on the host's key: the class's canonical hash
+    // under quotient exploration, the creating transition's key under full capture.
+    double   exploration_probability = 1.0;
     uint64_t exploration_seed        = 0;
 
     // SAMPLING AND CAPPING, the same options the host accepts and applies. These were reported

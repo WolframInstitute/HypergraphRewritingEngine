@@ -329,12 +329,13 @@ uint32_t EngineState::event_sig_raw_fallbacks() const {
     }
 
 void EngineState::set_sampling(double transition_rate, const double* weights, uint32_t num_weights,
-                      uint64_t seed, uint32_t max_states_per_step,
+                      uint64_t seed, double exploration_probability, uint32_t max_states_per_step,
                       uint32_t max_successor_states_per_parent, uint32_t matches_per_state_rule,
                       uint32_t num_steps, uint32_t num_rules) {
         transition_rate_     = transition_rate;
         num_rules_           = num_rules;
         sampling_seed_       = seed;
+        exploration_probability_ = exploration_probability;
         max_states_per_step_ = max_states_per_step;
         max_succ_per_parent_ = max_successor_states_per_parent;
         matches_per_state_rule_ = matches_per_state_rule;
@@ -388,6 +389,7 @@ DeviceState EngineState::device() const {
         d.rule_weights                     = rule_weights_dev_;
         d.num_rule_weights                 = num_rule_weights_;
         d.sampling_seed                    = sampling_seed_;
+        d.exploration_probability          = exploration_probability_;
         d.max_states_per_step              = max_states_per_step_;
         d.step_pending                     = states_per_step_;
         d.step_slots                       = states_per_step_slots_;

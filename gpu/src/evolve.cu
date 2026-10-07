@@ -293,22 +293,10 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     // array. A buffer owned by Engine::Impl would have made the assembly private to the host.
     uint64_t* d_state_hashes  = engine.device().state_canonical_hash;
 
-    // Resolve exploration-probability parameters once per run.
-    //   threshold == UINT32_MAX → fast path: always explore (zero overhead).
-    //   threshold == 0          → never expand any new state.
-    //   else                    → admit with probability ≈ threshold / 2^32.
-    float clamped_p = in.exploration_probability;
-    if (!(clamped_p > 0.0f)) clamped_p = 0.0f;
-    if (clamped_p > 1.0f)    clamped_p = 1.0f;
-    uint32_t explore_threshold_u32;
-    if (clamped_p >= 1.0f) {
-        explore_threshold_u32 = 0xFFFFFFFFu;
-    } else if (clamped_p <= 0.0f) {
-        explore_threshold_u32 = 0u;
-    } else {
-        explore_threshold_u32 = static_cast<uint32_t>(
-            static_cast<double>(clamped_p) * 4294967296.0);
-    }
+    // ExplorationProbability, clamped to [0, 1] as the host clamps it.
+    double clamped_p = in.exploration_probability;
+    if (!(clamped_p > 0.0)) clamped_p = 0.0;
+    if (clamped_p > 1.0)    clamped_p = 1.0;
     // The quotient route flag: on the route every state also computes its edge orbits.
     auto t_qcsetup_start = std::chrono::steady_clock::now();
     if (!qc_state_ || qc_state_->enabled() != qc_route)
@@ -366,18 +354,12 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
                         in.rule_weights.empty() ? nullptr : in.rule_weights.data(),
                         static_cast<uint32_t>(in.rule_weights.size()),
                         in.exploration_seed,
+                        clamped_p,
                         in.max_states_per_step,
                         in.max_successor_states_per_parent,
                         in.matches_per_state_rule,
                         in.num_steps,
                         static_cast<uint32_t>(in.rules.size()));
-
-    uint64_t resolved_seed = in.exploration_seed;
-    if (resolved_seed == 0 && clamped_p < 1.0f) {
-        std::random_device rd;
-        resolved_seed = (static_cast<uint64_t>(rd()) << 32) | rd();
-        if (resolved_seed == 0) resolved_seed = 0xA5A5A5A5A5A5A5A5ull;
-    }
 
     const bool dbg = std::getenv("HG_GPU_DBG_TIME") != nullptr;
     // Carried out of the persistent branch so the summary below can attribute the whole call.
@@ -412,7 +394,8 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
             static_cast<uint32_t>(in.rule_weights.size()),
             hgcommon::drain_selects(in.matches_per_state_rule,
                                     in.max_successor_states_per_parent,
-                                    in.max_states_per_step));
+                                    in.max_states_per_step)) ||
+            (clamped_p < 1.0 && !in.explore_from_canonical_states_only);
         if (sampling_needs_ranks ||
             (ekeys & (hgcommon::EventKey_ConsumedEdges | hgcommon::EventKey_ProducedEdges))) {
             engine.ensure_edge_ranks();
@@ -433,7 +416,6 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         PersistentEvolveStats st = run_persistent_evolve(
             engine, rules, roots, in.num_steps, matches, arena,
             /*dedup=*/in.explore_from_canonical_states_only,
-            explore_threshold_u32, resolved_seed,
             in.canonicalization, ekeys, /*blocks=*/0,
             qc_route ? &qc_view : nullptr,
             qc_route ? &qe_view : nullptr,

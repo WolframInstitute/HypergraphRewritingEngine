@@ -70,6 +70,23 @@ HG_HD inline uint64_t transition_rank(uint64_t transition_key, uint64_t random_s
     return x ^ (x >> 31);
 }
 
+// The ExplorationProbability coin: whether a state is expanded, drawn on an isomorphism-invariant
+// key -- the class's canonical hash under quotient exploration, the creating transition's key
+// under full capture -- and the seed, on a stream of its own so it does not correlate with the
+// transition draw on the same key.
+HG_HD inline bool explore_survives(uint64_t invariant_key, uint64_t seed, double probability) {
+    if (probability >= 1.0) return true;
+    if (probability <= 0.0) return false;
+    constexpr uint64_t kStateStream = 0xD1B54A32D192ED03ULL;
+    uint64_t x = (invariant_key ^ kStateStream) ^ (seed * 0x9E3779B97F4A7C15ULL);
+    x += 0x9E3779B97F4A7C15ULL;
+    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
+    x ^= (x >> 31);
+    const double u = static_cast<double>(x >> 11) * (1.0 / 9007199254740992.0);
+    return u < probability;
+}
+
 // Whether a run chooses transitions by transition_rank once the matches they are chosen from are
 // complete, instead of taking each as it is found: k per rule of a state (MatchesPerStateRule)
 // and k per state (MaxSuccessorStatesPerParent), chosen at the state's drain; N per step

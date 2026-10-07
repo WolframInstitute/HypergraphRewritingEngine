@@ -160,7 +160,6 @@ TEST(Rewrite, PersistentEvolveStepBudgetStopsAtOne) {
 
     const auto stats = hg_gpu::run_persistent_evolve(
         persistent, rules, /*roots=*/{0u}, /*max_steps=*/1u, matches, arena, /*dedup=*/true,
-        /*explore_threshold_u32=*/0xFFFFFFFFu, /*explore_seed=*/0,
         hg_gpu::CanonicalizationMode::Full, hgcommon::EVENT_SIG_NONE, /*blocks=*/5);
 
     // Two matches in the root (one per edge), so two children and no further expansion.
@@ -217,7 +216,6 @@ TEST(Rewrite, PersistentEvolveMatchesTheLevelSynchronousEngine) {
 
     const auto stats = hg_gpu::run_persistent_evolve(
         persistent, rules, /*roots=*/{0u}, kSteps, matches, arena, /*dedup=*/true,
-        /*explore_threshold_u32=*/0xFFFFFFFFu, /*explore_seed=*/0,
         hg_gpu::CanonicalizationMode::Full, hgcommon::EVENT_SIG_NONE, /*blocks=*/9);
 
     EXPECT_EQ(stats.states_after, ref.states.size());
@@ -298,7 +296,7 @@ TEST(Rewrite, PersistentEvolveStampsTheSharedEventIdentity) {
     hg_gpu::DeviceArena arena(64ull << 20);
 
     hg_gpu::run_persistent_evolve(engine, rules, /*roots=*/{0u}, kSteps, matches, arena,
-                                  /*dedup=*/true, 0xFFFFFFFFu, 0,
+                                  /*dedup=*/true,
                                   hg_gpu::CanonicalizationMode::Full,
                                   hgcommon::EVENT_SIG_FULL, /*blocks=*/9);
 
@@ -485,7 +483,7 @@ TEST(Rewrite, PersistentEvolveSeparatesApplicationsUnderAutomaticEventIdentity) 
         hg_gpu::DeviceArena arena(64ull << 20);
 
         hg_gpu::run_persistent_evolve(engine, rules, /*roots=*/{0u}, kSteps, matches, arena,
-                                      /*dedup=*/true, 0xFFFFFFFFu, 0,
+                                      /*dedup=*/true,
                                       hg_gpu::CanonicalizationMode::Full, keys, /*blocks=*/9);
 
         const uint32_t ne = engine.num_events_host();
@@ -548,7 +546,7 @@ TEST(Rewrite, AutomaticEventIdentityIsTheSameAtEveryBlockCountOnRigidStates) {
         hg_gpu::DeviceArena arena(64ull << 20);
 
         hg_gpu::run_persistent_evolve(engine, rules, /*roots=*/{0u}, kSteps, matches, arena,
-                                      /*dedup=*/true, 0xFFFFFFFFu, 0,
+                                      /*dedup=*/true,
                                       hg_gpu::CanonicalizationMode::Full, keys, blocks);
 
         const uint32_t ne = engine.num_events_host();
@@ -630,7 +628,7 @@ TEST(Rewrite, EventIdentityModesActuallyMergeEvents) {
 
         auto st = hg_gpu::run_persistent_evolve(
             engine, rules, /*roots=*/{0u}, kSteps, matches, arena,
-            /*dedup=*/true, 0xFFFFFFFFu, 0,
+            /*dedup=*/true,
             hg_gpu::CanonicalizationMode::Full, keys, /*blocks=*/9);
         return Result{engine.num_events_host(), st.canonical_events};
     };
@@ -706,7 +704,7 @@ TEST(Rewrite, StarvedIRArenaReportsARetryableKind) {
         hg_gpu::DeviceArena arena(arena_words);
 
         hg_gpu::run_persistent_evolve(engine, rules, /*roots=*/{0u}, kSteps, matches, arena,
-                                      /*dedup=*/true, 0xFFFFFFFFu, 0,
+                                      /*dedup=*/true,
                                       hg_gpu::CanonicalizationMode::Full,
                                       hgcommon::EVENT_SIG_FULL, /*blocks=*/9);
         std::vector<hg_gpu::OverflowWarning> w;
@@ -786,7 +784,7 @@ TEST(Rewrite, AutomorphicStateEventIdentityIsTheSameAtEveryBlockCount) {
         hg_gpu::DeviceArena arena(64ull << 20);
 
         hg_gpu::run_persistent_evolve(engine, rules, /*roots=*/{0u}, kSteps, matches, arena,
-                                      /*dedup=*/true, 0xFFFFFFFFu, 0,
+                                      /*dedup=*/true,
                                       hg_gpu::CanonicalizationMode::Full,
                                       hgcommon::EVENT_SIG_AUTOMATIC, blocks);
 
@@ -878,7 +876,7 @@ TEST(Rewrite, ADeviceSessionExtendsToExactlyWhatOneRunOfTheSameBudgetProduces) {
         hg_gpu::DeviceArena arena(32ull << 20);
         const auto st = hg_gpu::run_persistent_evolve(
             eng, rules, /*roots=*/{0u}, /*max_steps=*/4u, matches, arena, /*dedup=*/true,
-            0xFFFFFFFFu, 0, hg_gpu::CanonicalizationMode::Full, hgcommon::EVENT_SIG_AUTOMATIC);
+            hg_gpu::CanonicalizationMode::Full, hgcommon::EVENT_SIG_AUTOMATIC);
         ref_states = st.states_after;
         ref_events = st.canonical_events;
     }
@@ -898,7 +896,7 @@ TEST(Rewrite, ADeviceSessionExtendsToExactlyWhatOneRunOfTheSameBudgetProduces) {
 
         hg_gpu::run_persistent_evolve(
             eng, rules, /*roots=*/{0u}, /*max_steps=*/2u, matches, arena, /*dedup=*/true,
-            0xFFFFFFFFu, 0, hg_gpu::CanonicalizationMode::Full, hgcommon::EVENT_SIG_AUTOMATIC,
+            hg_gpu::CanonicalizationMode::Full, hgcommon::EVENT_SIG_AUTOMATIC,
             /*blocks=*/0, nullptr, nullptr, &v, /*start_step=*/0u);
 
         // The budget stopped somewhere, so it must have recorded where.
@@ -906,7 +904,7 @@ TEST(Rewrite, ADeviceSessionExtendsToExactlyWhatOneRunOfTheSameBudgetProduces) {
 
         hg_gpu::run_persistent_evolve(
             eng, rules, /*roots=*/{0u}, /*max_steps=*/3u, matches, arena, /*dedup=*/true,
-            0xFFFFFFFFu, 0, hg_gpu::CanonicalizationMode::Full, hgcommon::EVENT_SIG_AUTOMATIC,
+            hg_gpu::CanonicalizationMode::Full, hgcommon::EVENT_SIG_AUTOMATIC,
             /*blocks=*/0, nullptr, nullptr, &v, /*start_step=*/2u);
 
         // A THIRD CALL, because two cannot tell consume from accumulate. If the frontier were
@@ -914,7 +912,7 @@ TEST(Rewrite, ADeviceSessionExtendsToExactlyWhatOneRunOfTheSameBudgetProduces) {
         // as the depth-3 one, submitting states at a depth they have already passed.
         const auto st3 = hg_gpu::run_persistent_evolve(
             eng, rules, /*roots=*/{0u}, /*max_steps=*/4u, matches, arena, /*dedup=*/true,
-            0xFFFFFFFFu, 0, hg_gpu::CanonicalizationMode::Full, hgcommon::EVENT_SIG_AUTOMATIC,
+            hg_gpu::CanonicalizationMode::Full, hgcommon::EVENT_SIG_AUTOMATIC,
             /*blocks=*/0, nullptr, nullptr, &v, /*start_step=*/3u);
         ext_states = st3.states_after;
         ext_events = st3.canonical_events;
@@ -965,7 +963,7 @@ TEST(Rewrite, AKeyedDeviceSessionReachesWhatOneRunDoes) {
         Out out{0, 0, 0};
         if (!session) {
             const auto st = hg_gpu::run_persistent_evolve(
-                eng, rules, {0u}, 4u, matches, arena, /*dedup=*/false, 0xFFFFFFFFu, 0,
+                eng, rules, {0u}, 4u, matches, arena, /*dedup=*/false,
                 hg_gpu::CanonicalizationMode::Full, keys, kBlocks);
             return Out{st.states_after, st.canonical_events, st.keyed_twins};
         }
@@ -974,7 +972,7 @@ TEST(Rewrite, AKeyedDeviceSessionReachesWhatOneRunDoes) {
         uint32_t start = 0;
         for (uint32_t steps : {2u, 3u, 4u}) {
             const auto st = hg_gpu::run_persistent_evolve(
-                eng, rules, {0u}, steps, matches, arena, /*dedup=*/false, 0xFFFFFFFFu, 0,
+                eng, rules, {0u}, steps, matches, arena, /*dedup=*/false,
                 hg_gpu::CanonicalizationMode::Full, keys,
                 kBlocks, nullptr, nullptr, &v, start);
             start = steps;
@@ -1025,7 +1023,7 @@ TEST(Rewrite, AKeyedRunOnAReusedEngineTakesTheTwinsAFreshOneDoes) {
         hg_gpu::upload_initial_state(eng, init);
         matches.reset();
         const auto st = hg_gpu::run_persistent_evolve(
-            eng, rules, {0u}, 2u, matches, arena, /*dedup=*/false, 0xFFFFFFFFu, 0,
+            eng, rules, {0u}, 2u, matches, arena, /*dedup=*/false,
             hg_gpu::CanonicalizationMode::Full, hgcommon::EVENT_SIG_FULL, kBlocks);
         twins[i] = st.keyed_twins;
         states[i] = st.states_after;

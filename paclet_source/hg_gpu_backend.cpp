@@ -146,7 +146,7 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
     }
     in.transitive_reduction = job.transitive_reduction;
     in.explore_from_canonical_states_only = job.explore_from_canonical_states_only;
-    in.exploration_probability = static_cast<float>(job.exploration_probability);
+    in.exploration_probability = job.exploration_probability;
     in.exploration_seed = job.random_seed;
     in.transition_rate = job.transition_rate;
     in.rule_weights = job.rule_weights;

@@ -1429,7 +1429,11 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
     hg_->set_quotient_causal(qc);
     hg_->set_reads_rank_tuples(hgcommon::run_reads_rank_tuples(
         hg_->event_signature_keys(), transition_rate_,
-        static_cast<uint32_t>(rule_weights_.size()), defers_to_drain() ? 1u : 0u));
+        static_cast<uint32_t>(rule_weights_.size()),
+        // A full-capture run that explores with a probability below 1 keys its coin on the
+        // creating transition, which reads rank tuples too.
+        (defers_to_drain() ||
+         (exploration_probability_ < 1.0 && !explore_from_canonical_states_only_)) ? 1u : 0u));
 
     // The exploration strategy and the raw reconstruction are separate decisions, and only the
     // second is expensive. Quotient causal exploration decides state identity and costs what the
@@ -1478,20 +1482,7 @@ ParallelEvolutionEngine::OpeningSettings ParallelEvolutionEngine::current_settin
 }
 
 bool ParallelEvolutionEngine::should_explore(uint64_t invariant_key) const {
-    if (exploration_probability_ >= 1.0) return true;
-    if (exploration_probability_ <= 0.0) return false;
-
-    // Same construction as the transition draw, on a separate stream. The two samplers must
-    // not correlate: under full capture they are keyed on the same object, so sharing a stream
-    // would make "explored" and "transition kept" the same coin rather than two.
-    constexpr uint64_t kStateStream = 0xD1B54A32D192ED03ULL;
-    uint64_t x = (invariant_key ^ kStateStream) ^ (random_seed_ * 0x9E3779B97F4A7C15ULL);
-    x += 0x9E3779B97F4A7C15ULL;
-    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
-    x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
-    x ^= (x >> 31);
-    const double u = static_cast<double>(x >> 11) * (1.0 / 9007199254740992.0);
-    return u < exploration_probability_;
+    return hgcommon::explore_survives(invariant_key, random_seed_, exploration_probability_);
 }
 
 // =============================================================================

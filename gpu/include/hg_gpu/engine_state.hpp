@@ -88,6 +88,7 @@ struct DeviceState {
     // MaxStatesPerStep (0 is no cap) and, per step, the work that can still produce the step's
     // candidates: the token of the previous step's selection, its selected rewrites, the step's
     // expand entries and its match items (persistent.cu, step selection). Cleared per run.
+    double    exploration_probability;          // ExplorationProbability; 1 expands every state
     uint32_t  max_states_per_step;
     uint32_t* step_pending;                     // [step_slots] = [max_steps + 2]
     uint32_t  step_slots;
@@ -370,7 +371,7 @@ public:
     // run and a session's second Step must not inherit the first's tallies. Clearing costs one
     // memset of (steps + 2) and one of max_states, both of which the run is about to write.
     void set_sampling(double transition_rate, const double* weights, uint32_t num_weights,
-                      uint64_t seed, uint32_t max_states_per_step,
+                      uint64_t seed, double exploration_probability, uint32_t max_states_per_step,
                       uint32_t max_successor_states_per_parent, uint32_t matches_per_state_rule,
                       uint32_t num_steps, uint32_t num_rules);
 
@@ -582,6 +583,7 @@ private:
     double*                            rule_weights_dev_       = nullptr;
     uint32_t                           num_rule_weights_       = 0;
     uint64_t                           sampling_seed_          = 0;
+    double                             exploration_probability_ = 1.0;
     uint32_t                           max_states_per_step_    = 0;
     uint32_t*                          states_per_step_        = nullptr;
     uint32_t                           states_per_step_slots_  = 0;
