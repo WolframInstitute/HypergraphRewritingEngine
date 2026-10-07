@@ -2360,6 +2360,62 @@ TEST(QuotientReconstruction, EachReplayGroupReportsAndGrowsAlone) {
 // under Automatic event identity, the reconstruction runs over raw states and representatives
 // carry raw state ids; the class group is set to exactly the matches the run captures, so no
 // table overflows, and the branchial count must equal an unconstrained run's.
+// At 0 steps every initial state is returned with its canonical hash, as at any other depth: two
+// non-isomorphic roots carry two distinct non-zero hashes.
+TEST(ZeroSteps, EveryRootCarriesItsCanonicalHash) {
+    Workload w;
+    w.rules = {rule({{0, 1}}, {{0, 2}, {2, 1}})};
+    w.initial_state = {{0u, 1u}};
+    w.num_steps = 0;
+    w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+    hg_gpu::EvolveInput in = make_input(w);
+    in.initial_states = {{{0u, 1u}}, {{0u, 1u}, {1u, 2u}}};
+    const hg_gpu::EvolveResult r = hg_gpu::evolve(in);
+    ASSERT_EQ(r.states.size(), 2u);
+    EXPECT_NE(r.states[0].canonical_hash, 0u);
+    EXPECT_NE(r.states[1].canonical_hash, 0u);
+    EXPECT_NE(r.states[0].canonical_hash, r.states[1].canonical_hash);
+}
+
+// A session opened at 0 steps lists its roots on the frontier, and a first Step from there reaches
+// what one run of that budget reaches (the paclet opens every session at 0 steps).
+TEST(ZeroSteps, ASessionOpenedAtZeroStepsListsItsRootsAndSteps) {
+    Workload w;
+    w.rules = {rule({{0, 1}}, {{0, 2}, {2, 1}})};
+    w.initial_state = {{0u, 1u}};
+    w.num_steps = 0;
+    w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+    hg_gpu::EvolveInput in = make_input(w);
+    in.initial_states = {{{0u, 1u}}, {{0u, 1u}, {1u, 2u}}};
+    hg_gpu::EvolveInput three = in;
+    three.num_steps = 3;
+    const hg_gpu::EvolveResult ref = hg_gpu::evolve(three);
+
+    const hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(three);
+    hg_gpu::GpuSession session(cfg.max_states, cfg.max_events);
+    hg_gpu::Engine engine(cfg);
+    const hg_gpu::EvolveResult opened = engine.run(in, session.view(), 0);
+    ASSERT_EQ(opened.states.size(), 2u);
+    EXPECT_NE(opened.states[0].canonical_hash, 0u);
+    EXPECT_EQ(session.frontier_size(), 2u);
+    const hg_gpu::EvolveResult stepped = engine.run(three, session.view(), 0);
+    EXPECT_EQ(stepped.states.size(), ref.states.size());
+    EXPECT_EQ(stepped.events.size(), ref.events.size());
+    // The Step's frontier is its own boundary; the roots the Open listed are not on it.
+    std::vector<hg_gpu::StateId> ids;
+    std::vector<uint32_t> steps;
+    session.frontier_host(ids, steps);
+    EXPECT_FALSE(ids.empty());
+    for (const uint32_t d : steps) EXPECT_EQ(d, 3u);
+    // A continuation from there starts at the boundary of the Step, not at the roots again.
+    hg_gpu::EvolveInput four = in;
+    four.num_steps = 4;
+    const hg_gpu::EvolveResult ref4 = hg_gpu::evolve(four);
+    const hg_gpu::EvolveResult continued = engine.run(four, session.view(), 3);
+    EXPECT_EQ(continued.states.size(), ref4.states.size());
+    EXPECT_EQ(continued.events.size(), ref4.events.size());
+}
+
 // A session continuation extends captures, instances and counts built under the opening call's
 // record set and modes, so a continuation that changes them is refused; one that repeats them
 // runs. Opened with branchial off and continued to depth 4 with it on, growshrink3 reported 5,310

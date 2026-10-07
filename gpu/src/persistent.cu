@@ -128,12 +128,28 @@ __global__ void k_qe_redrive(const __grid_constant__ DeviceState ds, QeView qe, 
     qe_redrive(ds, qe, old_bound, tid, qe.work_slices);
 }
 
+// Record `s` on a session's frontier at `step`: the budget refused it and a continuation resumes
+// from it. Past the capacity the entry is dropped and reported.
+__device__ inline void session_frontier_append(const DeviceState& ds, const SessionView& sess,
+                                               StateId s, uint32_t step) {
+    if (!sess.enabled) return;
+    cuda::atomic_ref<uint32_t, cuda::thread_scope_device> fc(*sess.frontier_count);
+    const uint32_t at = fc.fetch_add(1u, cuda::memory_order_relaxed);
+    if (at < sess.frontier_cap) {
+        sess.frontier[at]      = s;
+        sess.frontier_step[at] = step;
+    } else {
+        ds.errors.record(ErrorKind::kFrontierCapFull);
+    }
+}
+
 __global__ void k_seed_root_hashes(const __grid_constant__ DeviceState ds, const StateId* roots, uint32_t num_roots,
                                    DedupMap::DeviceView map, CanonicalizationMode state_mode,
                                    bool need_exact, bool need_ranks, DeviceArena::View arena,
                                    QcView qc, QeView qe, ExploreView ev,
                                    typename Pool<uint32_t>::DeviceView forms,
-                                   DedupMap::DeviceView exact_map) {
+                                   DedupMap::DeviceView exact_map, uint32_t max_steps,
+                                   SessionView sess) {
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= num_roots) return;
     const StateId sid = roots[tid];
@@ -204,7 +220,7 @@ __global__ void k_seed_root_hashes(const __grid_constant__ DeviceState ds, const
     if (full || automatic) {
         if (!claim.fresh) {
             atomicMin(&ev.depth[claim.canonical], 0u);
-            ev.claim(claim.canonical);
+            if (max_steps) ev.claim(claim.canonical);
         }
     } else if (key == 0) {
         ds.errors.record(ErrorKind::kUncomputedStateHash);   // keep it; see the kind
@@ -212,28 +228,19 @@ __global__ void k_seed_root_hashes(const __grid_constant__ DeviceState ds, const
         const auto r = map.insert_if_absent(key, sid);
         if (!r.inserted && !r.overflowed) {
             atomicMin(&ev.depth[r.value], 0u);
-            ev.claim(r.value);
+            if (max_steps) ev.claim(r.value);
         }
     }
     atomicMin(&ev.depth[sid], 0u);
+    // A budget of 0 expands nothing: the root is hashed and recorded on a session's frontier.
+    if (max_steps == 0) {
+        session_frontier_append(ds, sess, sid, 0u);
+        return;
+    }
     ev.claim(sid);
     if (!ev.expand.append(ExpandEntry{sid, 0u, 0u})) ds.errors.record(ErrorKind::kStatePoolFull);
 }
 
-// Record `s` on a session's frontier at `step`: the budget refused it and a continuation resumes
-// from it. Past the capacity the entry is dropped and reported.
-__device__ inline void session_frontier_append(const DeviceState& ds, const SessionView& sess,
-                                               StateId s, uint32_t step) {
-    if (!sess.enabled) return;
-    cuda::atomic_ref<uint32_t, cuda::thread_scope_device> fc(*sess.frontier_count);
-    const uint32_t at = fc.fetch_add(1u, cuda::memory_order_relaxed);
-    if (at < sess.frontier_cap) {
-        sess.frontier[at]      = s;
-        sess.frontier_step[at] = step;
-    } else {
-        ds.errors.record(ErrorKind::kFrontierCapFull);
-    }
-}
 
 // This engine's face for hgcommon/explore_depth_core.hpp, run by a block's thread 0 over the
 // block's frame slice. A state admitted under the budget is claimed and appended to the expand
@@ -1617,7 +1624,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                             uint32_t start_step,
                                             bool read_stats) {
     PersistentEvolveStats stats;
-    if (rules.empty() || roots.empty() || max_steps == 0) return stats;
+    if (rules.empty() || roots.empty()) return stats;
 
     QcView qc{};
     if (qc_in) qc = *qc_in;
@@ -1872,6 +1879,11 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                       "session frontier consume");
     } else
     {
+        // An opening run starts the session's frontier: entries an earlier opening at a budget
+        // of 0 recorded are the roots seeded again below.
+        if (session)
+            HG_CUDA_CHECK(cudaMemsetAsync(sess_v.frontier_count, 0, sizeof(uint32_t)),
+                          "session frontier open");
         const uint32_t block = 64;
         const uint32_t n = static_cast<uint32_t>(roots.size());
         // The device view is taken once: the rank predicate reads the run's sampling parameters
@@ -1884,7 +1896,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                  dsv.matches_per_state_rule),
             run_needs_edge_ranks(event_keys, qe.enabled != 0, dsv.transition_rate,
                                  dsv.num_rule_weights, dsv.matches_per_state_rule),
-            pool_v, qc, qe, ev, forms_v, exact_v);
+            pool_v, qc, qe, ev, forms_v, exact_v, max_steps, sess_v);
     }
 
     // Block 0 is the detector, so at least two blocks are needed for any work to happen.
