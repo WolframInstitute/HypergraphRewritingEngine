@@ -466,7 +466,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         out.reconstructed_branchial = qc_counts.qm_branchial;
         if (qc_route && in.record.multiplicities)
             qe_state_->class_multiplicities_host(out.class_multiplicities, out.class_rule_matches);
-        if (qe_multiplicity && qc_counts.qm_saturated)
+        if ((qe_multiplicity || qe_branchial) && qc_counts.qm_saturated)
             out.warnings.push_back(OverflowWarning{ErrorKind::kCountSaturated, 1u,
                                                    hgcommon::QM_SATURATED_MESSAGE});
         // Causal and its reduction are built whenever the route ran, because the reduced COUNT
