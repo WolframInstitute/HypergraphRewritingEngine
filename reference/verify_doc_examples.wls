@@ -24,7 +24,7 @@
    them); the block then passes if it raises exactly the messages its hint names.
 
    A GPU EXAMPLE THAT RAN ON THE CPU FAILS: HGEvolve::gpudev says the device was not available,
-   so the page would show a result the device did not produce. HG_ALLOW_GPU_FALLBACK=1 reports
+   so the page would show a result the device did not produce. --allow-gpu-fallback reports
    it and continues, for a machine without the GPU worker.
 
    Each page's blocks share one context of their own, so a definition on one page is not
@@ -89,10 +89,16 @@ collapse[text_String] := StringReplace[StringTrim[text], Whitespace -> " "];
 hintMatchQ[res_, hint_String] := With[{got = collapse[ToString[res, InputForm, PageWidth -> Infinity]]},
   got === collapse[hint] ||
   (StringContainsQ[hint, "; "] && got === collapse[First[StringSplit[hint, "; ", 2]]])];
-gpuFallbackOK = Environment["HG_ALLOW_GPU_FALLBACK"] === "1";
+gpuFallbackOK = MemberQ[Rest[$ScriptCommandLine], "--allow-gpu-fallback"];
 
+(* Page names (file base names) given after the script limit the run to those pages:
+   wolframscript -file verify_doc_examples.wls HGEvolve SamplingAndPruning. With none, every page
+   is evaluated. Arguments, not environment variables: a variable set in WSL does not reach the
+   Windows kernel. *)
+pageFilter = Select[Rest[$ScriptCommandLine], ! StringStartsQ[#, "--"] &];
 sources = Select[FileNames["*.md", FileNameJoin[{repo, "docs", "en"}], Infinity],
-  ! StringContainsQ[#, ".generated"] &];
+  ! StringContainsQ[#, ".generated"] &&
+    (pageFilter === {} || MemberQ[pageFilter, FileBaseName[#]]) &];
 total = 0; failed = {};
 
 Do[
