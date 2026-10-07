@@ -2365,6 +2365,34 @@ TEST(GpuBinaryGate, CausalGraphsDrawGenesisEventsOnBothDevices) {
     worker_stop(w);
 }
 
+// A cap past 32 bits is no cap on either device: the GPU saturates it rather than keeping its low
+// bits, so MaxStatesPerStep -> 2^32 + 1 returns what no cap returns.
+TEST(GpuBinaryGate, ACapPast32BitsIsNoCap) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    for (const char* key : {"MaxStatesPerStep", "MaxSuccessorStatesPerParent", "MatchesPerStateRule"}) {
+        auto none = [](wxf::Writer& ww) { put_str_list_option(ww, "RequestedData", {"NumStates"}); };
+        auto huge = [key](wxf::Writer& ww) {
+            put_str_list_option(ww, "RequestedData", {"NumStates"});
+            ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            ww.write(std::string(key));
+            ww.write(static_cast<int64_t>((int64_t{1} << 32) + 1));
+        };
+        const auto ref = worker_call(w, branch_job(3, "Evolve", 0, none, 1));
+        const auto got = worker_call(w, branch_job(3, "Evolve", 0, huge, 2));
+        ASSERT_FALSE(got.empty()) << key;
+        EXPECT_EQ(read_int_key(got, "NumStates"), read_int_key(ref, "NumStates")) << key;
+    }
+    worker_stop(w);
+}
+
 // "StepStatistics" is the same reply on both devices: under quotient exploration from each
 // engine's class multiplicities, under full capture from its raw states.
 TEST(GpuBinaryGate, StepStatisticsAgreeAcrossDevices) {

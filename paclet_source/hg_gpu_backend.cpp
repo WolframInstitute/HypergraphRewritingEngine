@@ -150,10 +150,14 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
     in.exploration_seed = job.random_seed;
     in.transition_rate = job.transition_rate;
     in.rule_weights = job.rule_weights;
-    in.max_states_per_step = static_cast<uint32_t>(job.max_states_per_step);
-    in.max_successor_states_per_parent =
-        static_cast<uint32_t>(job.max_successor_states_per_parent);
-    in.matches_per_state_rule = static_cast<uint32_t>(job.matches_per_state_rule);
+    // The device's caps are 32-bit. A larger cap saturates, where a cast would keep the low bits
+    // (2^32 + 1 became a cap of 1) while the host treats it as unreachable.
+    auto cap32 = [](uint64_t v) {
+        return v > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<uint32_t>(v);
+    };
+    in.max_states_per_step = cap32(job.max_states_per_step);
+    in.max_successor_states_per_parent = cap32(job.max_successor_states_per_parent);
+    in.matches_per_state_rule = cap32(job.matches_per_state_rule);
     in.max_device_memory_bytes = job.max_device_memory_bytes;
     return in;
 }
