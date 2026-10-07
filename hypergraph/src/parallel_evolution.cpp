@@ -2712,10 +2712,10 @@ const char* ParallelEvolutionEngine::get_error_description() const {
 
 ParallelEvolutionEngine::MatchTaskGuard::MatchTaskGuard(ParallelEvolutionEngine& engine,
                                                         StateId state, uint32_t step)
-    : engine_(engine), state_(state), step_(step) {}
+    : engine_(engine), state_(state), step_(step), uncaught_at_entry_(std::uncaught_exceptions()) {}
 
-ParallelEvolutionEngine::MatchTaskGuard::~MatchTaskGuard() {
-    engine_.note_match_task_done(state_, step_);
+ParallelEvolutionEngine::MatchTaskGuard::~MatchTaskGuard() noexcept(false) {
+    if (std::uncaught_exceptions() == uncaught_at_entry_) engine_.note_match_task_done(state_, step_);
 }
 
 }  // namespace engine

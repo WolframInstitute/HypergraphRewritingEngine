@@ -1422,6 +1422,21 @@ TEST(OracleCorpus, AStopDuringADeltaScanLosesNoMatch) {
 // More workers than arena worker indices: the threads past the ceiling share one counter slot,
 // so the causal and branchial counts must still equal the edges the lists enumerate. The lost
 // increment is rare; ThreadSanitizer (build_tsan) reports the race on the shared slot directly.
+// A throw while a state's matching completes reaches the job system's error latch: evolve()
+// reports it as a worker error, and the process does not terminate. The drain runs from the
+// match task's guard destructor, so the throw stands for a bad_alloc during the drain's submits.
+TEST(OracleCorpus, AThrowAtADrainIsReportedAsAWorkerError) {
+    Hypergraph hg;
+    ParallelEvolutionEngine e(&hg, 4);
+    e.add_rule(make_rule(0).lhs({0, 1}).rhs({0, 2}).rhs({2, 1}).build());
+    std::atomic<int> drained{0};
+    e.set_on_state_matches_complete([&](StateId, uint32_t) {
+        if (drained.fetch_add(1) + 1 == 3) throw std::runtime_error("drain failed");
+    });
+    EXPECT_THROW(e.evolve({{0, 1}}, 4), std::runtime_error);
+    EXPECT_EQ(e.get_error_type(), job_system::ErrorType::Exception);
+}
+
 TEST(OracleCorpus, CountsHoldPastTheArenaWorkerCeiling) {
     Hypergraph hg;
     hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);

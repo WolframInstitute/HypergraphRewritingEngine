@@ -3,6 +3,7 @@
 #include "hgcommon/namespace.hpp"
 
 #include <atomic>
+#include <exception>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -1412,16 +1413,20 @@ private:
 
 
     // Books one match task's completion however its function exits.
+    // The drain the destructor runs submits jobs and grows containers, so it can throw; the
+    // destructor lets that reach run_job's catch, which latches the error. A task already
+    // unwinding has latched its own error, so its completion is not booked.
     class MatchTaskGuard {
     public:
         MatchTaskGuard(ParallelEvolutionEngine& engine, StateId state, uint32_t step);
-        ~MatchTaskGuard();
+        ~MatchTaskGuard() noexcept(false);
         MatchTaskGuard(const MatchTaskGuard&) = delete;
         MatchTaskGuard& operator=(const MatchTaskGuard&) = delete;
     private:
         ParallelEvolutionEngine& engine_;
         StateId state_;
         uint32_t step_;
+        int uncaught_at_entry_;
     };
 
     // Keep this state, with probability exploration_probability_, drawn on an
