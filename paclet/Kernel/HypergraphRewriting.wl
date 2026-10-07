@@ -382,7 +382,7 @@ HGEvolve::badmultiedge = "\"MultiedgeStyle\" -> `1` is not valid; use Automatic 
 HGEvolve::baddev = "TargetDevice -> `1` is not valid; use \"CPU\" or \"GPU\". Using CPU.";
 HGEvolve::enginemsg = "Engine binary reported: `1`";
 HGEvolve::enginefail = "Engine binary exited with code `1` and produced no result.";
-HGEvolve::overflow = "The GPU engine reached a capacity limit (`1`; `2` overflow event(s)) and returned a PARTIAL result. Raise the device-memory cap / reduce the workload, or evaluate on the CPU.";
+HGEvolve::overflow = "The engine returned a PARTIAL result (`1`; `2` occurrence(s)): `3`";
 HGEvolve::warn = "The engine returned warnings (`1`): `2`";
 
 (* ============================================================================ *)
@@ -1123,7 +1123,8 @@ hgSendJob[inputData_Association, device_, sessionQ_] := Module[{wxfBytes, result
 
   (* Surface the engine's warning trail. Both backends serve it under "Warnings"
      (Kind/Count/Context/Partial). "Partial" -> 1 marks a result the engine cut short
-     (a GPU capacity overflow), reported as HGEvolve::overflow; every other warning is
+     (a capacity limit or a dropped part of the reconstruction, on either device), reported as
+     HGEvolve::overflow with the engine's explanation; every other warning is
      reported as HGEvolve::warn. *)
   hgReportWarnings[Lookup[wxfData, "Warnings", {}]];
   wxfData
@@ -1135,7 +1136,8 @@ hgReportWarnings[warns_List] := Module[{advisories, overflows},
   If[Length[overflows] > 0,
     Message[HGEvolve::overflow,
       DeleteDuplicates[Lookup[overflows, "Kind", "?"]],
-      Total[Lookup[overflows, "Count", 0]]]];
+      Total[Lookup[overflows, "Count", 0]],
+      StringRiffle[DeleteDuplicates[Lookup[overflows, "Context", ""]], " | "]]];
   If[Length[advisories] > 0,
     Message[HGEvolve::warn,
       DeleteDuplicates[Lookup[advisories, "Kind", "?"]],
