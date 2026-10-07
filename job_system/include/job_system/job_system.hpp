@@ -573,7 +573,9 @@ private:
                     double_executions_.fetch_add(1, std::memory_order_relaxed));
         if (data) data->jobs_executing.fetch_add(1);
         try {
-            job->execute();
+            // After an error the job is discarded unrun, so the queues drain without running the
+            // jobs they hold or the children those would submit.
+            if (error_type_.load(std::memory_order_acquire) == ErrorType::None) job->execute();
         } catch (const hgcommon::CapacityExhausted& e) {
             record_error_message(e.what());
             error_type_.store(ErrorType::CapacityExhausted, std::memory_order_release);

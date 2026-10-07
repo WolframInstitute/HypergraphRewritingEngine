@@ -5,6 +5,7 @@
 #include <limits>
 #include <vector>
 #include <chrono>
+#include <functional>
 #include <random>
 #include <thread>
 #include <hgcommon/park.hpp>
@@ -809,6 +810,29 @@ TEST(JobSystemErrors, AfterAnErrorTheWaitEndsWhenNoJobIsRunning) {
     js.wait_for_completion();
     EXPECT_EQ(js.get_error_type(), ErrorType::CapacityExhausted);
     EXPECT_TRUE(b_done.load()) << "the wait returned while another worker was still in a job";
+    js.shutdown();
+}
+
+// After an error the workers discard what is queued instead of running it, so a run that fails
+// ends soon after: a chain of jobs, each submitting the next, stops well short of its length
+// once another job has thrown.
+TEST(JobSystemErrors, AfterAnErrorQueuedWorkIsDiscarded) {
+    using namespace job_system;
+    JobSystem<TestJobType> js(2);
+    js.start();
+    constexpr int kLength = 1000000;
+    std::atomic<int> links{0};
+    std::function<void()> link = [&] {
+        if (links.fetch_add(1) + 1 < kLength)
+            js.submit(make_job<TestJobType>(link, TestJobType::PHYSICS));
+    };
+    js.submit(make_job<TestJobType>(link, TestJobType::PHYSICS));
+    js.submit(make_job<TestJobType>([] {
+        throw hgcommon::CapacityExhausted("a configured container ceiling was reached");
+    }, TestJobType::PHYSICS));
+    js.wait_for_completion();
+    EXPECT_EQ(js.get_error_type(), ErrorType::CapacityExhausted);
+    EXPECT_LT(links.load(), kLength) << "the chain ran to its end after the error";
     js.shutdown();
 }
 
