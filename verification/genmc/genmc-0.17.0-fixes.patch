@@ -786,18 +786,22 @@ index 4866e5e..d00da8a 100644
  	void add(auto &&item) { wlist_.emplace_back(std::move(item)); }
  
 diff --git a/lli/Runtime/Execution.cpp b/lli/Runtime/Execution.cpp
-index fe659e6..0491905 100644
+index fe659e6..aeebb29 100644
 --- a/lli/Runtime/Execution.cpp
 +++ b/lli/Runtime/Execution.cpp
-@@ -31,6 +31,7 @@
+@@ -29,8 +29,11 @@
+ 
+ #include "genmc/Execution/Event.hpp"
  #include "Runtime/Interpreter.h"
++#include <cstdio>
++#include <cstdlib>
  #include "passes/LLVMUtils.hpp"
  #include "genmc/Support/Error.hpp"
 +#include "genmc/Support/HgProgress.hpp"
  #include "genmc/Support/SExprVisitor.hpp"
  #include "genmc/Verification/GenMCDriver.hpp"
  #include "llvm/ADT/APInt.h"
-@@ -1366,6 +1367,17 @@ void Interpreter::visitReturnInst(ReturnInst &I)
+@@ -1366,6 +1369,17 @@ void Interpreter::visitReturnInst(ReturnInst &I)
  	popStackAndReturnValueToCaller(RetTy, Result, &I);
  }
  
@@ -815,7 +819,30 @@ index fe659e6..0491905 100644
  void Interpreter::visitUnreachableInst(UnreachableInst &I)
  {
  	report_fatal_error("Program executed an 'unreachable' instruction!");
-@@ -1679,7 +1691,8 @@ void Interpreter::visitAtomicCmpXchgInst(AtomicCmpXchgInst &I)
+@@ -1592,8 +1606,21 @@ void Interpreter::visitLoadInst(LoadInst &I)
+ 	}
+ 
+ 	auto retVal = std::get_if<SVal>(&val);
+-	if (!retVal)
++	if (!retVal) {
++		/* HG_GENMC_ERROR_SITE=1: a load the driver reported an error on prints its
++		 * instruction, address and the call stack's functions, innermost first, so an error
++		 * report names its source without debug info. */
++		static const bool site = std::getenv("HG_GENMC_ERROR_SITE") != nullptr;
++		if (site && std::holds_alternative<VerificationError>(val)) {
++			llvm::errs() << "HG-ERROR-SITE load addr=" << (void *)ptr << " size=" << size
++				     << ": " << I << "\n";
++			for (auto it = ECStack().rbegin(); it != ECStack().rend(); ++it)
++				llvm::errs() << "HG-ERROR-SITE   in "
++					     << (it->CurFunction ? it->CurFunction->getName() : "?")
++					     << "\n";
++		}
+ 		return;
++	}
+ 
+ 	updateDataDeps(thr.id, &I, currPos());
+ 	updateAddrPoDeps(thr.id, I.getPointerOperand());
+@@ -1679,7 +1706,8 @@ void Interpreter::visitAtomicCmpXchgInst(AtomicCmpXchgInst &I)
  #define IMPLEMENT_CAS_VISIT(__kindR, __kindW)                                                      \
  	case switchPair(EventLabel::__kindR, EventLabel::__kindW): {                               \
  		auto ret = CALL_DRIVER(handle##__kindR, currDbgInfo(ptr), currPos(),               \
@@ -825,7 +852,7 @@ index fe659e6..0491905 100644
  				       GV_TO_SVAL(cmpVal, typ), GV_TO_SVAL(newVal, typ),           \
  				       getWriteAttr(I), nullptr, getCurrentAnnotConcretized(),     \
  				       GET_DEPS(lDeps));                                           \
-@@ -3202,6 +3215,15 @@ void Interpreter::callAtExit(Function *F, const std::vector<GenericValue> &ArgVa
+@@ -3202,6 +3230,15 @@ void Interpreter::callAtExit(Function *F, const std::vector<GenericValue> &ArgVa
  	returnValueToCaller(F->getReturnType(), INT_TO_GV(F->getReturnType(), 0));
  }
  
@@ -841,7 +868,7 @@ index fe659e6..0491905 100644
  void Interpreter::callMutexInit(Function *F, const std::vector<GenericValue> &ArgVals,
  				const std::unique_ptr<EventDeps> &specialDeps)
  {
-@@ -3604,14 +3626,74 @@ void Interpreter::runAtExitHandlers()
+@@ -3604,14 +3641,74 @@ void Interpreter::runAtExitHandlers()
  	setProgramState(oldState);
  }
  

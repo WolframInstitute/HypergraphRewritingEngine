@@ -7,12 +7,12 @@
 #
 # A reproducer whose first line is `// Expect: <text>` must print <text>; every other one must
 # report "No errors were detected". A line `// Args: <flags>` in the first three passes the flags
-# to the checker.
+# to the checker, and a line `// Env: NAME=value` in the first three sets that variable for it.
 # A checker without the patch aborts on the allocation and promotion reproducers with an internal
 # check or reports a non-allocated access, does not finish dependence_dag_paths within the ten
 # minutes this script gives it, reports no race on the cas_fail_* reproducers, fails
 # memmove_overlap_tail's assertion, reports no error on copy_longer_than_unroll, prints no
-# assertion message, and aborts on opaque_memcpy_struct and
+# assertion message or error site, and aborts on opaque_memcpy_struct and
 # runtime_length_memset.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -23,7 +23,8 @@ for src in "$HERE"/*.cpp; do
     expect="$(sed -n '1s|^// Expect: ||p' "$src")"
     [ -n "$expect" ] || expect='No errors were detected'
     read -r -a args <<<"$(sed -n '1,3s|^// Args: ||p' "$src")"
-    out="$(timeout 600 "$GENMC" --disable-estimation "${args[@]}" -- -std=c++17 "$src" 2>&1)"
+    read -r -a envs <<<"$(sed -n '1,3s|^// Env: ||p' "$src")"
+    out="$(env "${envs[@]}" timeout 600 "$GENMC" --disable-estimation "${args[@]}" -- -std=c++17 "$src" 2>&1)"
     if grep -qF "$expect" <<<"$out"; then
         echo "ok    $name ($expect; $(grep -oE 'explored: [0-9]+' <<<"$out"))"
     else

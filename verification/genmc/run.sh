@@ -54,6 +54,10 @@
 #   HG_GENMC_HEARTBEAT  seconds between heartbeat lines (30 unset; needs HG_GENMC_PROGRESS): the
 #                  pass and function the transformation is on, or the exploration's executions,
 #                  queued revisits and instructions interpreted, at that moment.
+#   HG_GENMC_ERROR_SITE set to have the patched checker print, for a load it reports an error on,
+#                  the LLVM instruction, its address and the functions on the call stack. Error
+#                  reports name events only, and -g makes the composed engine module crash the
+#                  checker ("Cannot get variable naming info!", then a segmentation fault).
 #   THE TRANSFORM IS PAID ONCE PER BOUND. The checker's own passes take ~58 minutes on the
 #                  fully inlined evolve() module (43M instructions; the inliner, SROA and stock
 #                  LLVM JumpThreading are the cost), and they run again on every invocation.
