@@ -97,7 +97,19 @@ if [[ "$DO_GPU" == "1" ]]; then
         echo "       Re-run the CUDA installer and include 'Visual Studio Integration' (the props ship with it)."
         exit 1
     }
-    echo "==> toolchain: $GEN, CUDA $CUDA_VER (toolset via Toolkit path), archs [${HG_GPU_ARCHS:-gpu/CMakeLists.txt default}]"
+    # Every requested architecture must be one this nvcc knows; otherwise each .cu fails with
+    # "Unsupported gpu architecture" after the configure. The default list is read from
+    # gpu/CMakeLists.txt, where it is defined.
+    ARCHS="${HG_GPU_ARCHS:-$(sed -n 's|^set(HG_GPU_ARCHS "\([0-9;]*\)".*|\1|p' gpu/CMakeLists.txt)}"
+    KNOWN="$("$CUDA_DIR_WSL/bin/nvcc.exe" --list-gpu-arch 2>/dev/null | tr -d '\r')"
+    for a in ${ARCHS//;/ }; do
+        grep -qx "compute_$a" <<<"$KNOWN" || {
+            echo "error: CUDA $CUDA_VER cannot build compute_$a (archs: $ARCHS)."
+            echo "       Install a CUDA Toolkit that supports it, or set HG_GPU_ARCHS to a subset."
+            exit 1
+        }
+    done
+    echo "==> toolchain: $GEN, CUDA $CUDA_VER (toolset via Toolkit path), archs [$ARCHS]"
 else
     echo "==> toolchain: $GEN (CPU only, no CUDA needed)"
 fi
