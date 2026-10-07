@@ -102,7 +102,7 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 | `"BranchialStep"` | `Automatic` | the step whose branchial pairs the branchial graph shows: `Automatic`, `All`, `-1` (the final step) or a step number from 1 |
 | `"EdgeDeduplication"` | `True` | whether a causal or branchial graph has one edge per event pair, rather than one per shared hyperedge |
 | `"TargetDevice"` | `"CPU"` | `"CPU"` or `"GPU"` |
-| `"RandomSeed"` | `Automatic` | the seed of every sampling draw and of a generated initial condition; `Automatic` draws a new seed on each run |
+| `"RandomSeed"` | `Automatic` | the seed of every sampling draw and of a generated initial condition; `Automatic` uses the seed `0` for the sampling draws and a new seed for a generated initial condition on each run |
 | `"IncludeCanonicalHashes"` | `False` | whether each state record has a `"CanonicalHash"` |
 | `"ShowGenesisEvents"` | `False` | whether the events that create the initial states are part of the result |
 | `"ColorByRule"` | `False` | whether a styled graph colors each transition by the rule that fired it, with a legend |
@@ -1612,17 +1612,6 @@ A styled graph draws every state, so a styled picture of a large evolution is sl
 ```wl
 HGEvolve[{{1, 2}, {1, 3}} -> {{1, 2}, {1, 4}, {2, 4}, {3, 4}}, {{1, 2}, {1, 3}}, 4, "StatesGraphStructure", "CanonicalizeStates" -> Full, ImageSize -> 450, AspectRatio -> 1/2]
 ```
-
----
-
-A run capped by `"MaxStatesPerStep"` with no `"RandomSeed"` can keep different states each time:
-
-```wl
-loops = {{1, 2}, {2, 3}} -> {{1, 3}, {3, 4}, {1, 4}, {2, 4}};
-HGEvolve[loops, {{1, 1}, {1, 1}}, 3, "NumStates", "MaxStatesPerStep" -> 2]
-```
-
-<!-- => 7; the message HGEvolve::warn is issued -->
 
 ---
 

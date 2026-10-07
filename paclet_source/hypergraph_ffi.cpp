@@ -507,8 +507,7 @@ static void configure_and_evolve(hgffi::ParsedJob& req, hypergraph::Hypergraph& 
     // Per-rule multipliers on that rate. Composes with it rather than replacing it, so a rate
     // of 1 with one rule weighted to 0 still samples.
     engine.set_rule_weights(req.rule_weights);
-    // 0 keeps the engine's default -- a fresh seed per run. Nonzero is what makes the
-    // sampling draws reproducible, which is the whole content of the option.
+    // The seed of every sampling draw; 0 (RandomSeed -> Automatic) is a seed like any other.
     engine.set_random_seed(req.random_seed);
     engine.set_max_successor_states_per_parent(req.max_successor_states_per_parent);
     engine.set_max_states_per_step(effective_max_states_per_step(req));

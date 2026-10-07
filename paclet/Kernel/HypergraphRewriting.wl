@@ -66,7 +66,7 @@ Options[HGEvolve] = {
   (* Sampling options *)
   "EdgeThreshold" -> Automatic,  (* Max distance for edge creation *)
   "PoissonMinDistance" -> 1.0,  (* Minimum separation for Poisson disk *)
-  "RandomSeed" -> Automatic  (* Random seed for reproducibility *)
+  "RandomSeed" -> Automatic  (* Seed of the sampling draws (Automatic is 0) and of a generated initial condition (Automatic draws a new one) *)
 };
 
 HGSessionObject::usage =
@@ -1016,10 +1016,7 @@ hgJobOptions[ov_, requiredData_, graphProperties_] := Module[{branchialStepValue
     "ExplorationProbability" -> N[ov["ExplorationProbability"]],
     "TransitionRate" -> N[ov["TransitionRate"]],
     "RuleWeights" -> N[ov["RuleWeights"]],
-    (* The seed the sampling draws use. Automatic means "a fresh one each run", which the
-       engine spells as 0; anything else fixes the sample. Without this the option reached the
-       initial-condition generators only, and a sampled evolution was irreproducible however it
-       was set. *)
+    (* The seed the sampling draws use; Automatic is the seed 0. *)
     "RandomSeed" -> Replace[ov["RandomSeed"], Automatic -> 0],
     "ExploreFromCanonicalStatesOnly" -> ov["ExploreFromCanonicalStatesOnly"],
     "ShowProgress" -> ov["ShowProgress"],
