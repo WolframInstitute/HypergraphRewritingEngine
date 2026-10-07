@@ -16,7 +16,6 @@
 #include <functional>
 #include <limits>
 #include <numeric>
-#include <random>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -119,8 +118,6 @@ void ParallelEvolutionEngine::evolve(
     max_steps_ = steps;
     should_stop_.store(false, std::memory_order_relaxed);
     configure_identity_and_quotient();
-    // New run: re-seed the per-thread sampling RNGs from random_seed_.
-    sampling_generation_.fetch_add(1, std::memory_order_relaxed);
     reset_depth_join();
 
     // Create initial state
@@ -228,8 +225,6 @@ void ParallelEvolutionEngine::evolve(
     max_steps_ = steps;
     should_stop_.store(false, std::memory_order_relaxed);
     configure_identity_and_quotient();
-    // New run: re-seed the per-thread sampling RNGs from random_seed_.
-    sampling_generation_.fetch_add(1, std::memory_order_relaxed);
 
     reset_depth_join();
 
@@ -1335,32 +1330,6 @@ void ParallelEvolutionEngine::note_match_task_done(StateId state, uint32_t step)
     }
 }
 
-// The per-thread sampling RNG. A free function taking the two values it reads rather than a
-// member, because a member has to be DECLARED in the header and its return type spells
-// std::mt19937 there -- and <random> is one of the two standard headers whose removal from
-// this engine's header closure is worth 196 ms of a 1198 ms translation unit.
-//
-// Re-seeds whenever the run's sampling generation advances; `seed` of 0 draws a fresh
-// random_device seed, which is what makes an unseeded run differ between invocations.
-namespace {
-
-std::mt19937& sampling_rng(uint64_t generation, uint64_t seed) {
-    HG_THREAD_LOCAL(std::mt19937, rng);
-    thread_local uint64_t seen_gen = std::numeric_limits<uint64_t>::max();
-    if (seen_gen != generation) {
-        uint64_t s = seed
-            ? (seed ^ (0x9e3779b97f4a7c15ULL *
-                 static_cast<uint64_t>(std::hash<std::thread::id>{}(std::this_thread::get_id()))))
-            : static_cast<uint64_t>(std::random_device{}());
-        rng.seed(static_cast<std::mt19937::result_type>(s));
-        seen_gen = generation;
-    }
-    return rng;
-}
-
-}  // namespace
-
-
 void ParallelEvolutionEngine::configure_identity_and_quotient() {
     // Positional identity reads ranks from each raw state's own canonical labelling, and the
     // quotient never materialises raw presentations -- the two cannot agree by construction.
@@ -1441,16 +1410,14 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
             "it takes a cartesian product over the state's edges -- quadratic in the state size "
             "per extra component. Joining the components with a shared variable removes it.");
     }
-    // A RUN THAT IS NOT REPRODUCIBLE SAYS SO. Dropping work makes rule order observable, and the
-    // order is then drawn from std::random_device unless a seed was set, so two invocations of
-    // the same call return different answers. That is what an unseeded sampled run is for, and it
-    // is indistinguishable from a defect unless the run states it.
-    if (drops_work() && random_seed_ == 0) {
+    // A RUN THAT IS NOT REPRODUCIBLE SAYS SO. Every sampling draw and every cap is keyed on the
+    // transition and the seed, so those runs are reproducible with or without a seed. A state or
+    // event limit is not: it stops the run where the workers are when it is reached.
+    if ((max_states_ != 0 || max_events_ != 0) && !is_serial() && num_threads_ > 1) {
         warnings_.push_back(
-            "this run discards work (a sampling probability, a transition rate, or a cap) and no "
-            "random seed was set, so the rule order is drawn afresh each run and the states, "
-            "events and relations returned WILL DIFFER between invocations of the same call. Set "
-            "a random seed to make the sample reproducible.");
+            "a state or event limit stops the run where the workers are when the limit is "
+            "reached, so with more than one worker which states and events are returned depends "
+            "on the thread schedule; a random seed does not change that.");
     }
     if (facts.has_cyclic_multiedge_lhs) {
         warnings_.push_back(
@@ -1525,46 +1492,6 @@ bool ParallelEvolutionEngine::should_explore(uint64_t invariant_key) const {
     x ^= (x >> 31);
     const double u = static_cast<double>(x >> 11) * (1.0 / 9007199254740992.0);
     return u < exploration_probability_;
-}
-
-bool ParallelEvolutionEngine::should_explore() {
-    if (exploration_probability_ >= 1.0) return true;
-    if (exploration_probability_ <= 0.0) return false;
-
-    auto& rng = sampling_rng(sampling_generation_.load(std::memory_order_relaxed),
-                             random_seed_);
-    HG_THREAD_LOCAL(std::uniform_real_distribution<double>, dist, 0.0, 1.0);
-
-    return dist(rng) < exploration_probability_;
-}
-
-bool ParallelEvolutionEngine::drops_work() const {
-    return exploration_probability_ < 1.0 || transition_rate_ < 1.0 ||
-           max_states_ != 0 || max_events_ != 0 ||
-           max_states_per_step_ != 0 || max_successor_states_per_parent_ != 0;
-}
-
-SVec<uint16_t> ParallelEvolutionEngine::get_shuffled_rule_indices() const {
-    SVec<uint16_t> indices(rules_.size());
-    std::iota(indices.begin(), indices.end(), 0);
-
-    // THE SHUFFLE IS ONLY FOR MODES THAT DROP WORK. When a probability, a rate or a cap discards
-    // transitions, which rule is offered first decides which survivors are kept, and a fixed
-    // order biases the sample toward rule 0. Nothing is dropped otherwise: every rule is matched
-    // against every state, so the order they are submitted in changes no state, event or relation
-    // the engine reports.
-    //
-    // AND DRAWING ONE COSTS THE RUN ITS DETERMINISM. sampling_rng seeds from std::random_device
-    // when random_seed_ is 0, which is the default, so an unguarded shuffle makes every
-    // invocation of an unsampled run a different run. That is intended for a sampled run and is
-    // a defect for an unsampled one, which is every run the determinism contract covers.
-    if (!drops_work()) return indices;
-
-    std::shuffle(indices.begin(), indices.end(),
-                 sampling_rng(sampling_generation_.load(std::memory_order_relaxed),
-                              random_seed_));
-
-    return indices;
 }
 
 // =============================================================================
@@ -1880,9 +1807,7 @@ void ParallelEvolutionEngine::execute_match_task(
         // matches arrive through inherit_from_parent, at the parent's drain.
         if (task_based_matching_) {
             // Task-based delta matching: spawn SCAN tasks for each rule
-            // Shuffle rule order to mitigate bias in pruning modes
-            auto shuffled_rules = get_shuffled_rule_indices();
-            for (uint16_t r : shuffled_rules) {
+            for (uint16_t r = 0; r < rules_.size(); ++r) {
                 ScanTaskData scan_data;
                 scan_data.state = state;
                 scan_data.rule_index = r;
@@ -1912,9 +1837,7 @@ void ParallelEvolutionEngine::execute_match_task(
 
         if (task_based_matching_) {
             // Task-based matching: spawn SCAN tasks for each rule
-            // Shuffle rule order to mitigate bias in pruning modes
-            auto shuffled_rules = get_shuffled_rule_indices();
-            for (uint16_t r : shuffled_rules) {
+            for (uint16_t r = 0; r < rules_.size(); ++r) {
                 ScanTaskData scan_data;
                 scan_data.state = state;
                 scan_data.rule_index = r;

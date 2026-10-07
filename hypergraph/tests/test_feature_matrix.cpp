@@ -428,8 +428,7 @@ TEST(FeatureMatrix, MultipleInitialStatesOracleAndDeterministic) {
 
 // -----------------------------------------------------------------------------
 // Uniform-random sampling reproducibility: with a fixed nonzero seed on a single thread,
-// repeated runs must draw the identical sample (all count invariants equal). This pins
-// the sampling RNG re-seed path (sampling_generation_) under the lock-free engine.
+// repeated runs must draw the identical sample (all count invariants equal).
 // -----------------------------------------------------------------------------
 TEST(FeatureMatrix, SampledEvolutionReproducibleSameSeed) {
     for (const auto& c : oracle::corpus()) {

@@ -356,7 +356,7 @@ int main(int argc, char** argv) {
     //
     // IT TESTS FOR THE CEILING AND NOT FOR "A WARNING". The engine warns about things that are
     // not truncation -- a disconnected left side costs a cartesian product and says so, and a run
-    // that discards work without a seed says it is not reproducible. Treating any warning as
+    // under a state or event limit says it is not reproducible. Treating any warning as
     // truncation marks every disconnected workload truncated whether or not it reached the
     // ceiling, which silently deletes the disconnected shape from every figure that filters on
     // this field.

@@ -709,11 +709,7 @@ private:
     // state's drain by spine_rank, not by arrival: arrival order depends on the schedule, and a
     // cap by arrival is what max_states_per_step_ already is.
     size_t matches_per_state_rule_{0};
-    uint64_t random_seed_{0};                      // Sampling RNG seed (0 = random_device each run)
-    // Bumped at the start of every dataflow evolve() so each run re-seeds its
-    // per-thread sampling RNGs from random_seed_, making repeated same-seed runs
-    // draw identical exploration/shuffle streams.
-    mutable std::atomic<uint64_t> sampling_generation_{0};
+    uint64_t random_seed_{0};                      // Keys every draw and every rank; 0 is a seed like any other
 
     // Exploration deduplication: only explore from canonical state representatives.
     // When enabled, states equivalent to already-seen states are created (with events)
@@ -1117,12 +1113,6 @@ public:
     bool warning_truncates(size_t i) const;
 
     // The order rules are submitted in. PUBLIC BECAUSE IT IS THE INVARIANT A DETERMINISM GATE HAS
-    // TO ASSERT: a run that discards nothing must submit rules in identity order, because the only
-    // alternative is a draw from std::random_device, and then the run is not a function of its
-    // inputs. Asserting the run's COUNTS instead cannot see that -- with nothing dropping work the
-    // order changes no count, so the counts agree whether or not the order was drawn, and the
-    // divergence only appears once a ceiling or a cap makes which-rule-first decide what is kept.
-    SVec<uint16_t> get_shuffled_rule_indices() const;
 
     // Request early termination of evolution
     // This is non-blocking; evolution will stop as soon as currently queued jobs check the flag.
@@ -1446,10 +1436,6 @@ private:
     //                 why ExplorationProbability is only a distinct knob under quotient.
     bool should_explore(uint64_t invariant_key) const;
 
-    // Worker-RNG draw. Reachable only where no invariant key exists; the surviving set it
-    // produces depends on which worker drew, so it cannot be reproduced across worker counts.
-    bool should_explore();
-
 
     // Applies the identity-mode rules at the top of every evolve():
     //   Positional + quotient -> quotient exploration disabled (the identity needs raw
@@ -1457,12 +1443,6 @@ private:
     //   exploration strategies, so their observables agree by construction.
     void configure_identity_and_quotient();
 
-
-    // The per-thread sampling RNG lives in parallel_evolution.cpp, as a file-local function
-    // taking the two values it reads -- sampling_generation_ and random_seed_. Declaring it
-    // here instead would spell std::mt19937 in the header, and <random> is the second most
-    // expensive standard header this engine's headers reach: dropping it and <sstream> from
-    // the closure together is 196 ms off a 1198 ms translation unit.
 
     // Quotient exploration: canonical transitions discovered so far, parent canonical
     // state to child canonical state. Relaxing a state's depth walks these to push the
@@ -1488,12 +1468,6 @@ private:
     // decide which classes exist at all.
     bool claim_canonical_for_expansion(StateId canonical_state);
 
-    // Bias mitigation: returns rule indices in shuffled order
-    // Whether this run DISCARDS work it could have done -- a probability, a rate, or any of the
-    // four caps. It is the condition under which rule order becomes observable, because which
-    // rule is offered first then decides which survivors are kept, and it is therefore the
-    // condition under which the order is shuffled and the run stops being reproducible.
-    bool drops_work() const;
 };
 
 }  // namespace engine

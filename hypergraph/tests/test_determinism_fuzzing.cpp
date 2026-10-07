@@ -615,37 +615,19 @@ std::vector<hg::engine::RewriteRule> two_rules() {
 
 }  // namespace
 
-// A run that discards nothing must not consult the generator at all: every rule is matched
-// against every state, so the submission order changes no state, event or relation, and drawing
-// an order would cost the run its reproducibility for nothing.
+// A run with no state or event limit reports nothing about reproducibility: sampling draws and caps
+// are keyed on the transition and the seed.
 TEST_F(DeterminismFuzzing, DefaultRunIsReproducibleAndWarnsAboutNothing) {
-    const auto rules = two_rules();
     const std::vector<std::vector<hg::engine::VertexId>> initial = {{0, 1}, {1, 2}};
-
-    // THE ORDER, NOT THE COUNTS. With nothing dropping work the order changes no count, so
-    // comparing counts across repeats passes whether or not the order was drawn from
-    // std::random_device -- it is the divergence that only surfaces once a ceiling or a cap makes
-    // which-rule-first decide what is kept, and by then the run is already unreproducible.
-    // Sixteen rules, so a drawn permutation coincides with the identity at a negligible rate.
     auto hg = std::make_unique<hg::engine::Hypergraph>();
-    hg::engine::ParallelEvolutionEngine e(hg.get(), 1);
+    hg::engine::ParallelEvolutionEngine e(hg.get(), 4);
     for (uint16_t r = 0; r < 16; ++r)
         e.add_rule(hg::engine::make_rule(r).lhs({0, 1}).rhs({0, 1}).rhs({1, 2}).build());
-
-    for (int i = 0; i < 8; ++i) {
-        const auto order = e.get_shuffled_rule_indices();
-        ASSERT_EQ(order.size(), 16u);
-        for (uint16_t k = 0; k < 16; ++k)
-            ASSERT_EQ(order[k], k)
-                << "a run that discards nothing permuted its rule order, so it drew from "
-                   "std::random_device and is not a function of its inputs";
-    }
-
-    for (const auto& r : rules) (void)r;
+    e.set_max_states_per_step(3);
     e.evolve(initial, 3);
     for (const std::string& w : e.warnings())
-        EXPECT_EQ(w.find("no random seed was set"), std::string::npos)
-            << "a run that discards nothing reported itself unreproducible: " << w;
+        EXPECT_EQ(w.find("thread schedule"), std::string::npos)
+            << "a run with no state or event limit reported itself unreproducible: " << w;
 }
 
 // With a cap the order IS observable, so a seeded run has to pin it: same seed, same answer.
@@ -666,20 +648,21 @@ TEST_F(DeterminismFuzzing, CappedRunWithASeedIsReproducible) {
     EXPECT_EQ(states.size(), 1u) << "a seeded capped run is not reproducible";
 }
 
-// And an UNSEEDED capped run is allowed to differ between invocations -- that is what an unseeded
-// sample is for -- but it must say so, because a caller cannot tell that answer from a defect.
-TEST_F(DeterminismFuzzing, UnseededCappedRunWarnsThatItIsNotReproducible) {
+// A state limit stops a multi-worker run where the workers are, which a seed cannot fix; the run
+// says so.
+TEST_F(DeterminismFuzzing, ALimitedRunWithSeveralWorkersWarnsThatItIsNotReproducible) {
     const auto rules = two_rules();
     const std::vector<std::vector<hg::engine::VertexId>> initial = {{0, 1}, {1, 2}};
 
     auto hg = std::make_unique<hg::engine::Hypergraph>();
-    hg::engine::ParallelEvolutionEngine e(hg.get(), 1);
+    hg::engine::ParallelEvolutionEngine e(hg.get(), 4);
     e.set_max_states(40);
+    e.set_random_seed(0x5eed);
     for (const auto& r : rules) e.add_rule(r);
     e.evolve(initial, 5);
 
     bool warned = false;
     for (const std::string& w : e.warnings())
-        if (w.find("no random seed was set") != std::string::npos) warned = true;
-    EXPECT_TRUE(warned) << "an unseeded run that discards work did not report itself unreproducible";
+        if (w.find("thread schedule") != std::string::npos) warned = true;
+    EXPECT_TRUE(warned) << "a multi-worker run under a state limit did not report itself unreproducible";
 }
