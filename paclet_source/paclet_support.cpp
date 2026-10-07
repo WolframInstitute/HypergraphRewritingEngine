@@ -433,7 +433,8 @@ Summary summarise(const std::vector<std::pair<double, uint64_t>>& value_weight, 
     }
     s.median = (lo + hi) / 2;
     for (const auto& [v, w] : vw) {
-        const double key = round == 1.0 ? v : std::round(v / round) * round;
+        // Halves to even (nearbyint in the default rounding mode), as Round[x, round] does.
+        const double key = round == 1.0 ? v : std::nearbyint(v / round) * round;
         s.histogram[key] = hgcommon::qm_sat_add(s.histogram[key], w);
     }
     return s;

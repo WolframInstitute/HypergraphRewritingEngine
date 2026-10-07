@@ -2685,3 +2685,16 @@ TEST(Session, AHeldVerbIsServedUnderTheSessionsSettings) {
     EXPECT_EQ(read_int_key(stepped, "NumCausalEdges"), read_int_key(after, "NumCausalEdges"));
     run_rewriting_core(branch_job(0, "Close", h, with("None", true), 3), host);
 }
+
+// Histogram keys round to the nearest multiple with halves to even, as the reference's
+// Round[x, 0.01] does: 1.125 (MeanDegree 9/8) is 112.5 hundredths exactly and keys as 1.12.
+TEST(StateStatistics, HistogramKeysRoundHalvesToEven) {
+    const auto s = hg::stats::summarise({{1.125, 1}}, 0.01);
+    ASSERT_EQ(s.histogram.size(), 1u);
+    EXPECT_NEAR(s.histogram.begin()->first, 1.12, 1e-12);
+    // 0.125 and 0.375 are halves of 0.25: Round gives 0 and 0.5.
+    const auto q = hg::stats::summarise({{0.125, 1}, {0.375, 1}}, 0.25);
+    ASSERT_EQ(q.histogram.size(), 2u);
+    EXPECT_EQ(q.histogram.begin()->first, 0.0);
+    EXPECT_EQ(q.histogram.rbegin()->first, 0.5);
+}
