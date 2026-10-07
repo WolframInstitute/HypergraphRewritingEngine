@@ -410,6 +410,14 @@ static size_t effective_max_states_per_step(const hgffi::ParsedJob& req) {
 // CPU path, and this block was never part of it.
 
 static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge& host) {
+        // The device numbers genesis events after the run's raw events, so their ids move with
+        // every Step and a delivery cursor keyed on ids would leave stale vertices in the
+        // caller's merged graph. Graphs are delivered whole, and the caller is told.
+        if (req.delivery_delta && !req.graph_properties.empty())
+            req.ffi_warnings.push_back(
+                {"OptionSkipped", 1,
+                 "Delivery -> \"Delta\" is not served by the GPU engine: its event ids are not "
+                 "stable across Steps. This reply carries the whole graph."});
         // Sessions are served on the device: SessionState carries the identity maps and the
         // budget's frontier across calls, and run_session refuses to rebuild the engine. The
         // verb rides on the job and the backend answers it. The device applies the transition

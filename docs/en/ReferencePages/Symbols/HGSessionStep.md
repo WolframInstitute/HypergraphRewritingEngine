@@ -33,7 +33,7 @@ RelatedTutorials: [Sessions, GettingStarted]
 
 - With `"From"`, only the named frontier states are expanded; the others stay on the frontier, and a later step without `"From"` expands them up to the depth that step reaches.
 - A `"From"` naming a state that is not on the frontier issues the message `HGSessionOpen::refused` and gives <code>[$Failed]()</code>; the session is unchanged.
-- With `"Delivery" -> "Delta"` the result is still the whole evolution; only the transfer from the engine is smaller.
+- With `"Delivery" -> "Delta"` the result is still the whole evolution; only the transfer from the engine is smaller. The GPU engine and quotient reconstruction send the whole graph and issue `HGEvolve::warn`.
 - A negative or non-integer *n* issues the message `HGSessionStep::negsteps` and gives <code>[$Failed]()</code>. A property [HGEvolve]() does not accept issues `HGEvolve::unknownprop` and gives <code>[$Failed]()</code>.
 - On a closed session it issues the message `HGSessionOpen::refused` and gives <code>[$Failed]()</code>; for an expression that is not an [HGSessionObject]() it issues `HGSessionStep::badsession` and gives <code>[$Failed]()</code>.
 

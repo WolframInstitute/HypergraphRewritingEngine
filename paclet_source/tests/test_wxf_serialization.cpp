@@ -2622,7 +2622,13 @@ TEST(Session, ADeltaBranchialGraphAtTheFinalStepIsDeliveredWhole) {
     const auto step = run_rewriting_core(branch_job(1, "Step", h, opts, 2, true), host);
     const auto full = run_rewriting_core(branch_job(0, "Query", h, opts, 2), host);
     EXPECT_EQ(graph_of(step, "BranchialGraph").first, 0);
+#ifdef HG_GPU_BACKEND
+    // The device delivers every graph whole under Delta and says so.
+    EXPECT_EQ(graph_of(step, "StatesGraph").first, 0);
+    EXPECT_TRUE(reply_mentions(step, "OptionSkipped"));
+#else
     EXPECT_EQ(graph_of(step, "StatesGraph").first, 1);
+#endif
     EXPECT_EQ(graph_of(step, "BranchialGraph").second, graph_of(full, "BranchialGraph").second)
         << "the delivered BranchialGraph is not the whole graph at the final step";
     EXPECT_GT(graph_of(full, "BranchialGraph").second, 0);
