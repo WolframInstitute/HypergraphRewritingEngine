@@ -182,6 +182,13 @@ struct HeldSession {
     std::unordered_map<int64_t, size_t>   frontier_by_eff;
     uint32_t steps_done = 0;
     uint64_t handle     = 0;
+    // The Open's identity and relation settings. A held verb is served under these, as the host
+    // reads them back from its engine (hypergraph_ffi.cpp, read_back_session_identity).
+    int  event_canon_mode = 0;
+    int  state_canon_mode = 0;
+    bool show_genesis_events = false;
+    bool transitive_reduction = true;
+    bool explore_from_canonical_states_only = false;
 };
 HeldSession held;
 
@@ -189,7 +196,16 @@ HeldSession held;
 
 uint64_t gpu_session_handle() { return held.handle; }
 
-std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host) {
+std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& host) {
+    GpuJob job = request;
+    if ((job.session_op == "Step" || job.session_op == "Query") && held.handle != 0 &&
+        job.session_handle == held.handle) {
+        job.event_canon_mode = held.event_canon_mode;
+        job.state_canon_mode = held.state_canon_mode;
+        job.show_genesis_events = held.show_genesis_events;
+        job.transitive_reduction = held.transitive_reduction;
+        job.explore_from_canonical_states_only = held.explore_from_canonical_states_only;
+    }
     hg_gpu::EvolveInput in = build_input(job);
 
     // Reuse one device Engine across every job this process handles. The
@@ -245,6 +261,11 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
             held.input = in;
             held.steps_done = 0;
             held.handle = hgffi::SessionSlot::mint_handle();
+            held.event_canon_mode = job.event_canon_mode;
+            held.state_canon_mode = job.state_canon_mode;
+            held.show_genesis_events = job.show_genesis_events;
+            held.transitive_reduction = job.transitive_reduction;
+            held.explore_from_canonical_states_only = job.explore_from_canonical_states_only;
             undelivered_open.armed = true;
         }
         // A STEERED STEP: the caller's effective ids are resolved against the frontier as it

@@ -2655,3 +2655,33 @@ TEST(WxfSerializationPin, BranchialGraphKeepsEveryPair) {
     ASSERT_GT(pairs, 0);
     EXPECT_EQ(graph_edge_count(out), pairs);
 }
+
+// A held verb is served under its session's settings on either device: a Query asking for
+// another state canonicalization reports the session's states, and a Step asking for another
+// one and another transitive reduction reports what a Query under the session's settings does.
+// The device served both under the request's settings.
+TEST(Session, AHeldVerbIsServedUnderTheSessionsSettings) {
+    HostBridge host;
+    auto with = [](const char* canon, bool tr) {
+        return [canon, tr](wxf::Writer& w) {
+            put_str_list_option(w, "RequestedData", {"States", "NumStates", "NumCausalEdges"});
+            put_str_option(w, "CanonicalizeStates", canon);
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("CausalTransitiveReduction"));
+            w.write_symbol(tr ? "True" : "False");
+        };
+    };
+    const auto opened = run_rewriting_core(branch_job(3, "Open", 0, with("None", true), 3), host);
+    const int64_t h = read_int_key(opened, "Session");
+    ASSERT_GT(h, 0);
+    const auto same = run_rewriting_core(branch_job(0, "Query", h, with("None", true), 3), host);
+    const auto other = run_rewriting_core(branch_job(0, "Query", h, with("Full", true), 3), host);
+    EXPECT_EQ(read_int_key(other, "NumStates"), read_int_key(same, "NumStates"));
+    EXPECT_EQ(count_assoc_entries(other, "States"), count_assoc_entries(same, "States"));
+    EXPECT_TRUE(other == same) << "a Query asking for Full served a different reply";
+    const auto stepped = run_rewriting_core(branch_job(1, "Step", h, with("Full", false), 3), host);
+    const auto after = run_rewriting_core(branch_job(0, "Query", h, with("None", true), 3), host);
+    EXPECT_EQ(read_int_key(stepped, "NumStates"), read_int_key(after, "NumStates"));
+    EXPECT_EQ(read_int_key(stepped, "NumCausalEdges"), read_int_key(after, "NumCausalEdges"));
+    run_rewriting_core(branch_job(0, "Close", h, with("None", true), 3), host);
+}
