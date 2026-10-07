@@ -1,6 +1,7 @@
 #pragma once
 #include "hgcommon/namespace.hpp"
 #include "hypergraph/zero_value_init.hpp"
+#include "hypergraph/atomic_compat.hpp"
 
 #include <atomic>
 #include <cstdio>
@@ -387,7 +388,7 @@ inline int counter_slot() {
 }
 inline void counter_add(size_t& c, int slot, size_t n) {
     if (slot == kSharedCounterSlot)
-        std::atomic_ref<size_t>(c).fetch_add(n, std::memory_order_relaxed);
+        hgcommon::atomic_ref<size_t>(c).fetch_add(n, std::memory_order_relaxed);
     else
         c += n;
 }
