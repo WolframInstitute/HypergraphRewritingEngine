@@ -75,7 +75,7 @@ __device__ uint64_t hash_causal_triple(EventId p, EventId c, EdgeId e) {
     h ^= c; h *= 1099511628211ULL;
     h ^= e; h *= 1099511628211ULL;
     // BOTH reserved keys, not just EMPTY. The map reserves 0 and ~0, and a hash is as able to
-    // land on one as the other; qe_apply_key guards the pair too.
+    // land on one as the other; hgcommon::qr_apply_key guards the pair too.
     if (h == 0) h = 1;
     if (h == ~0ULL) h = ~0ULL - 1ULL;
     return h;

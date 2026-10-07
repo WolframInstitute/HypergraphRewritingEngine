@@ -1046,15 +1046,6 @@ __device__ inline void qe_for_each_instance(QeView qe, uint64_t state_hash, uint
     }
 }
 
-// The (instance, match) claim key. Same mixing as the host's apply_key, and nudged off both
-// map sentinels for the same reason.
-__device__ __forceinline__ uint64_t qe_apply_key(uint32_t instance, uint32_t match) {
-    uint64_t k = hgcommon::FNV_OFFSET;
-    k ^= instance; k *= hgcommon::FNV_PRIME;
-    k ^= match;    k *= hgcommon::FNV_PRIME;
-    return (k == 0 || k == ~0ULL) ? 1 : k;
-}
-
 // The storage face hgcommon/quotient_replay_core.hpp drives. WHERE an instance's lineage, an
 // applied list or a claim set lives is here; what an application DOES -- what it claims, what
 // it identifies the event by, which causal and branchial relations follow -- is in the core,
