@@ -12,8 +12,10 @@ RelatedTutorials: [GettingStarted]
 
 The number of states of a multiway system grows quickly with the number of steps. [HGEvolve]() has two kinds of options that limit it:
 
-- caps by arrival order, `"MaxSuccessorStatesPerParent"`, `"MaxStatesPerStep"` and `"UniformRandom"` with `"MatchesPerStep"`, which bound the work but keep states that depend on the thread schedule;
-- reproducible selections, `"MatchesPerStateRule"`, `"TransitionRate"` with `"RuleWeights"`, and `"ExplorationProbability"`, which keep the same states on every run with the same `"RandomSeed"`.
+- caps, `"MaxSuccessorStatesPerParent"`, `"MaxStatesPerStep"`, `"UniformRandom"` with `"MatchesPerStep"`, and `"MatchesPerStateRule"`, which keep the lowest-ranked transitions;
+- samples, `"TransitionRate"` with `"RuleWeights"`, and `"ExplorationProbability"`, which keep each transition or state with a probability.
+
+Both draw from the identity of each transition or state and the `"RandomSeed"`, so they keep the same states on every run with the same seed, at any thread count.
 
 This tutorial applies each to one rule, and combines two sampled runs using the canonical hashes of their states.
 
@@ -72,9 +74,9 @@ HGEvolve[rule, init, 3, "StatesGraphStructure", AspectRatio -> 1/2]
 
 A run that sets no `"RandomSeed"` and is capped by arrival order or thinned by `"TransitionRate"` or `"ExplorationProbability"` can give a different result each time, and issues the message `HGEvolve::warn`. Every example below sets a seed.
 
-## Caps by arrival order
+## Caps
 
-`"MaxSuccessorStatesPerParent"`, `"MaxStatesPerStep"` and `"UniformRandom"` with `"MatchesPerStep"` count states as they are produced and keep no more once the cap is reached. The bound holds at any thread count. Which states are kept depends on the order the threads produce them in, so a capped run can keep different states on another run or thread count.
+`"MaxSuccessorStatesPerParent"`, `"MaxStatesPerStep"` and `"UniformRandom"` with `"MatchesPerStep"` keep the lowest-ranked transitions: of each state, once its matching is complete, or of each step, once the step's matching is complete. A transition not kept is not taken.
 
 ### Successors per parent
 
@@ -118,7 +120,7 @@ HGEvolve[rule, init, 4, "NumStates", "MaxStatesPerStep" -> 3, "RandomSeed" -> 3]
 
 ### Matches per step
 
-`"UniformRandom" -> True` with `"MatchesPerStep" -> 3` also keeps at most three states per step, in arrival order, and gives the same count as `"MaxStatesPerStep" -> 3`:
+`"UniformRandom" -> True` with `"MatchesPerStep" -> 3` is `"MaxStatesPerStep" -> 3` under another name, and gives the same count:
 
 ```wl
 {HGEvolve[rule, init, 4, "NumStates", "MaxStatesPerStep" -> 3, "RandomSeed" -> 3], HGEvolve[rule, init, 4, "NumStates", "UniformRandom" -> True, "MatchesPerStep" -> 3, "RandomSeed" -> 3]}

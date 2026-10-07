@@ -100,7 +100,7 @@ branching = {{{1, 2}, {2, 3}} -> {{1, 3}, {3, 4}, {1, 4}, {2, 4}}};
 HGEvolve[branching, {{1, 1}, {1, 1}}, 5, "StatesGraphStructure", "TransitionRate" -> 0.25, "RandomSeed" -> 7, "TargetDevice" -> "GPU", ImageSize -> 400, AspectRatio -> 1/2]
 ```
 
-The caps by arrival order, `"MaxStatesPerStep"`, `"MaxSuccessorStatesPerParent"` and `"UniformRandom"` with `"MatchesPerStep"`, keep states that depend on the thread schedule on either device, so two capped runs can differ.
+The caps, `"MaxStatesPerStep"`, `"MaxSuccessorStatesPerParent"` and `"UniformRandom"` with `"MatchesPerStep"`, keep the same transitions as on the CPU.
 
 ## A session on the GPU
 

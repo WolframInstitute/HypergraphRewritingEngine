@@ -48,7 +48,7 @@ Multiway hypergraph rewriting applies a set of rules to a hypergraph in every po
 
 ### Sampling and Caps
 
-- `HGEvolve` `"TransitionRate"`, `"RuleWeights"`, `"ExplorationProbability"` and `"MatchesPerStateRule"` select a reproducible subsystem with `"RandomSeed"`; `"MaxStatesPerStep"` and `"MaxSuccessorStatesPerParent"` cap the work in arrival order
+- `HGEvolve` `"TransitionRate"`, `"RuleWeights"`, `"ExplorationProbability"`, `"MatchesPerStateRule"`, `"MaxStatesPerStep"` and `"MaxSuccessorStatesPerParent"` select a reproducible subsystem with `"RandomSeed"`
 
 ### Generated Initial Conditions
 

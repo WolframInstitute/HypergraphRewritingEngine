@@ -148,10 +148,11 @@ exact configuration. Sampling and capping options refine this as follows:
 - **`MatchesPerStateRule`** caps each state's transitions per rule, chosen at the state's drain
   by the same invariant key — schedule-independent. A run under it matches every state in full
   (match forwarding off), so the drain chooses from all of the state's matches.
-- **`MaxStatesPerStep`** and **`MaxSuccessorStatesPerParent`** are **arrival-order caps**: above
-  the cap, *which* states got in is decided by the schedule. They bound work, not identity.
-  `UniformRandom -> True` with `MatchesPerStep` selects arrival-order capping and is
-  `MaxStatesPerStep` under another name.
+- **`MaxSuccessorStatesPerParent`** keeps the k lowest-ranked of a state's own transitions, chosen
+  at the state's drain; **`MaxStatesPerStep`** keeps the N lowest-ranked transitions of a step,
+  chosen once the step's matching is complete. The rank is the same invariant key, so both are
+  schedule-independent, and a transition not kept is not taken (no event, no state).
+  `UniformRandom -> True` with `MatchesPerStep` is `MaxStatesPerStep` under another name.
 
 *(Gates: `SamplingReproducibility.*` — same states at every worker count, reproducible per seed;
 `CausalDeterminism.*` at 1–32 threads.)*

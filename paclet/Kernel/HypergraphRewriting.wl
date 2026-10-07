@@ -32,9 +32,9 @@ Options[HGEvolve] = {
   "IncludeCanonicalHashes" -> False,  (* True: include per-state IR canonical hash ("CanonicalHash"); stable across runs, for fusing pruned runs by isomorphism class *)
   "BranchialStep" -> Automatic,  (* Automatic: BranchialGraph->-1 (final), Evolution*Branchial*->All; or explicit: -1, All, 1-based step *)
   "EdgeDeduplication" -> True,  (* True: one edge per event pair; False: N edges for N shared hypergraph edges *)
-  "UniformRandom" -> False,  (* True: with "MatchesPerStep", stop keeping new states once that many exist for the step. A cap by ARRIVAL ORDER, which depends on the schedule, not a uniform draw. "TransitionRate" is the uniform, reproducible sampler. *)
+  "UniformRandom" -> False,  (* True: with "MatchesPerStep", keep that many transitions per step, the lowest-ranked: "MaxStatesPerStep" under another name. "TransitionRate" is the uniform sampler. *)
   "MatchesPerStep" -> 0,  (* How many matches to apply per step in uniform random mode (0 = all) *)
-  "MatchesPerStateRule" -> 0,  (* Keep at most this many of a state's own transitions PER RULE. 0 keeps all. Chosen at the state's drain by the transition's own isomorphism-invariant rank, so the kept set is the same at any thread count and for a given RandomSeed -- unlike "MatchesPerStep", which caps by ARRIVAL ORDER and therefore keeps a schedule-dependent set. Caps per (state, rule); "MaxSuccessorStatesPerParent" caps children per parent regardless of rule. Applies on both devices. *)
+  "MatchesPerStateRule" -> 0,  (* Keep at most this many of a state's own transitions PER RULE. 0 keeps all. Chosen at the state's drain by the transition's own isomorphism-invariant rank, so the kept set is the same at any thread count and for a given RandomSeed. Caps per (state, rule); "MaxSuccessorStatesPerParent" caps a state's transitions regardless of rule, and "MaxStatesPerStep" a step's. Applies on both devices. *)
   (* Rulial-space plot: color each transition edge by the rule that fired it (the
      fiber of the rule -> multiway functor). Applies to the styled graph
      properties, whose edge payloads carry RuleIndex; Structure variants ship

@@ -90,8 +90,8 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 | `"CanonicalizeStates"` | `None` | when two states are one state: `None` (never), `Automatic` (identical edge lists) or `Full` (isomorphic) |
 | `"CanonicalizeEvents"` | `None` | when two applications are one event: `None`, `Full`, `Automatic`, `"Positional"` or a list of identity components |
 | `"CausalTransitiveReduction"` | `True` | whether to drop a causal pair implied by a longer causal path |
-| `"MaxSuccessorStatesPerParent"` | `0` | the most successors kept per state, in arrival order (`0` for no cap) |
-| `"MaxStatesPerStep"` | `0` | the most states kept per step, in arrival order (`0` for no cap) |
+| `"MaxSuccessorStatesPerParent"` | `0` | the most transitions kept per state, the lowest-ranked (`0` for no cap) |
+| `"MaxStatesPerStep"` | `0` | the most transitions kept per step, the lowest-ranked (`0` for no cap) |
 | `"ExplorationProbability"` | `1.` | the probability of exploring each state |
 | `"TransitionRate"` | `1.` | the probability of keeping each transition |
 | `"RuleWeights"` | `{}` | per-rule multipliers on `"TransitionRate"`, in rule order |
@@ -113,9 +113,9 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 - `"CanonicalizeStates"` is applied while the evolution runs, so it also determines which states are expanded. `Automatic` identifies states whose edge lists are identical. This is finer than isomorphism: two isomorphic states with different vertex names stay separate. The vertices of each initial state are numbered from 0 separately, so two initial states that differ only in vertex names are one state under `Automatic`.
 - `"CanonicalizeEvents"` builds an event's identity from isomorphism-invariant components. `Full` uses the canonical input and output states. `Automatic` also uses the step and the canonical positions of the consumed and produced edges within the state's isomorphism class; it needs `"CanonicalizeStates" -> Full`. `"Positional"` uses the same components with positions read from each state's own vertex labels, as the Wolfram Multicomputation paclet does. A list of any of `"InputState"`, `"OutputState"`, `"Step"`, `"Rule"`, `"ConsumedEdges"` and `"ProducedEdges"` selects the components.
 - With `"ExploreFromCanonicalStatesOnly" -> True`, every property is the same as under full exploration; only the cost of the evolution changes. It needs `"CanonicalizeStates" -> Full`.
-- `"MaxSuccessorStatesPerParent"`, `"MaxStatesPerStep"` and `"UniformRandom"` with `"MatchesPerStep"` cap by arrival order. The bound holds at any thread count, and which states are kept depends on the thread schedule. `"TransitionRate"`, `"ExplorationProbability"` and `"MatchesPerStateRule"` draw from the identity of each transition or state together with `"RandomSeed"`, so the same seed keeps the same states at any thread count and on either device.
+- `"MaxSuccessorStatesPerParent"`, `"MaxStatesPerStep"`, `"UniformRandom"` with `"MatchesPerStep"`, `"MatchesPerStateRule"`, `"TransitionRate"` and `"ExplorationProbability"` choose from the identity of each transition or state together with `"RandomSeed"`, so the same seed keeps the same states at any thread count and on either device. A transition a cap does not keep is not taken.
 - `"TransitionRate"` keeps a state's lowest-keyed transition when every draw at that state failed, so a sparse sample reaches the requested depth. `"ExplorationProbability"` does not.
-- A run that sets no `"RandomSeed"` and discards states through an arrival-order cap, `"ExplorationProbability"` or `"TransitionRate"` issues the message `HGEvolve::warn`, and its result can differ from run to run. `"MatchesPerStateRule"` keeps the same transitions with or without a seed and issues no warning.
+- Without a `"RandomSeed"` the selections use the seed `0`, so a run without one gives the same result every time.
 - `"TargetDevice" -> "GPU"` runs the evolution on the GPU engine bundled for the platform, which gives the same states, events and relations as the CPU. Where no GPU engine is bundled, the message `HGEvolve::gpudev` is issued and the evolution runs on the CPU. A GPU evolution that reaches a capacity limit issues `HGEvolve::overflow` and gives a partial result.
 - A generated initial condition is named by *init*: `"Grid"`, `"Cylinder"`, `"Torus"`, `"Sphere"`, `"Klein"`, `"Mobius"`, `"Sprinkling"` (also `"Minkowski"`), `"BrillLindquist"`, `"Poisson"` or `"Uniform"`. The same names go in the `"Type"` key of an association, where the other keys shape the instance and take precedence over the options below.
 - The initial-condition options are:
@@ -838,7 +838,7 @@ EdgeCount @ TransitiveReductionGraph @ HGEvolve[loops, {{1, 1}, {1, 1}}, 3, "Cau
 
 ### "MaxSuccessorStatesPerParent"
 
-A positive value caps the successors kept per state, in the order they arrive. Three steps of the loops rule without a cap:
+A positive value keeps at most that many transitions out of each state: the lowest-ranked, by a rank drawn from each transition's identity and `"RandomSeed"`. Three steps of the loops rule without a cap:
 
 ```wl
 loops = {{1, 2}, {2, 3}} -> {{1, 3}, {3, 4}, {1, 4}, {2, 4}};
@@ -863,11 +863,11 @@ Max @ VertexOutDegree @ HGEvolve[loops, {{1, 1}, {1, 1}}, 3, "StatesGraphStructu
 
 <!-- => 2 -->
 
-The bound holds at any thread count. Which successors are kept depends on the thread schedule, so a capped run can keep different states on another thread count.
+The same seed keeps the same transitions at any thread count and on either device.
 
 ### "MaxStatesPerStep"
 
-A positive value caps the states kept per step, in the order they arrive:
+A positive value keeps at most that many transitions in each step: the lowest-ranked of all the transitions out of the step's states, chosen once the step's matching is complete:
 
 ```wl
 loops = {{1, 2}, {2, 3}} -> {{1, 3}, {3, 4}, {1, 4}, {2, 4}};
