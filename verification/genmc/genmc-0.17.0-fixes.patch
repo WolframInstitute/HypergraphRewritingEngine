@@ -119,7 +119,7 @@ index 54be00d..56ac80f 100644
  			    SVal swap, WriteAttr wattr, EventLabel *rfLab,                         \
  			    std::optional<Annotation> annot, const EventDeps &deps = EventDeps())  \
 diff --git a/genmc/genmc/Execution/ExecutionGraph.cpp b/genmc/genmc/Execution/ExecutionGraph.cpp
-index 9131b56..c759285 100644
+index 9131b56..db69925 100644
 --- a/genmc/genmc/Execution/ExecutionGraph.cpp
 +++ b/genmc/genmc/Execution/ExecutionGraph.cpp
 @@ -12,6 +12,7 @@
@@ -150,10 +150,10 @@ index 9131b56..c759285 100644
 +			std::cerr << "Read of uninitialised heap memory during value resolution: address "
 +				  << access.addr.get() << " width " << access.size.get()
 +				  << " reader instruction "
-+				  << hgprog::siteName(hgprog::state().curInst.load(std::memory_order_relaxed))
-+				  << "\n";
-+			if (hgprog::state().stackDump)
-+				std::cerr << "  reader's frames, innermost first:\n" << hgprog::state().stackDump();
++				  << hgprog::siteName(hgprog::explorer().curInst) << "\n";
++			if (hgprog::explorer().stackDump)
++				std::cerr << "  reader's frames, innermost first:\n"
++					  << hgprog::explorer().stackDump();
 +			/* Every write in the graph within 32 bytes of the address, so the object the
 +			 * reader holds can be told from one that was never written there. */
 +			std::cerr << "  writes within 32 bytes of the address:\n";
@@ -198,10 +198,10 @@ index b869518..cb1700b 100644
  	{
 diff --git a/genmc/genmc/Support/HgProgress.hpp b/genmc/genmc/Support/HgProgress.hpp
 new file mode 100644
-index 0000000..fa2d96a
+index 0000000..23a925c
 --- /dev/null
 +++ b/genmc/genmc/Support/HgProgress.hpp
-@@ -0,0 +1,364 @@
+@@ -0,0 +1,378 @@
 +/*
 + * Progress reporting for long runs (HG_GENMC_PROGRESS). A heartbeat thread prints, every
 + * HG_GENMC_HEARTBEAT seconds (30 when unset), what the checker is doing RIGHT NOW: during the
@@ -268,10 +268,10 @@ index 0000000..fa2d96a
 +	std::atomic<uint64_t> starts{0};
 +	static constexpr size_t kThreads = 64;
 +	std::atomic<uint64_t> threadInsts[kThreads] = {};
-+	// The instruction the interpreter is executing, and the interpreter's own account of the
-+	// executing thread's call stack (set by the interpreter; empty until it runs).
++	// The instruction an interpreter last executed, for the heartbeat and the at-exit report;
++	// with --nthreads above 1 it is whichever explorer stored last. Attribution reads the
++	// executing explorer's own record (explorer()).
 +	std::atomic<const llvm::Instruction *> curInst{nullptr};
-+	std::function<std::string()> stackDump;
 +	// Choice attribution (estimation mode). The state-space estimate of an execution is the
 +	// product, over its reads and writes, of the number of alternatives each one has; every
 +	// alternative set larger than one is booked here against the site of the instruction
@@ -279,8 +279,6 @@ index 0000000..fa2d96a
 +	// the estimate comes from. A store that becomes a new alternative for earlier loads is
 +	// booked at the store's site with the log2 growth it causes.
 +	std::map<std::string, std::pair<uint64_t, double>> choices; // site -> (count, sum log2); mtx
-+	uint64_t execChoicePoints{0};                                // this execution; mtx
-+	double execChoiceLog2{0};                                    // this execution; mtx
 +	uint64_t log2Samples{0};                                     // Welford over executions; mtx
 +	long double log2Mean{0}, log2M2{0};                          // of log2(sample); mtx
 +	long double residualSum{0};                                  // |log2 sample - booked|; mtx
@@ -294,6 +292,21 @@ index 0000000..fa2d96a
 +{
 +	static State s;
 +	return s;
++}
++
++/* One explorer's own record: each explorer (--nthreads) runs its own interpreter on its own
++ * thread, so what it is executing and its execution's choice totals are per thread. */
++struct Explorer {
++	const llvm::Instruction *curInst = nullptr;
++	std::function<std::string()> stackDump; // the interpreter's call stack, innermost first
++	uint64_t execChoicePoints = 0;
++	double execChoiceLog2 = 0;
++};
++
++inline Explorer &explorer()
++{
++	thread_local Explorer e;
++	return e;
 +}
 +
 +inline bool enabled() { return std::getenv("HG_GENMC_PROGRESS") != nullptr; }
@@ -321,14 +334,14 @@ index 0000000..fa2d96a
 +inline void choice(size_t alternatives)
 +{
 +	auto &s = state();
-+	const auto *I = s.curInst.load(std::memory_order_relaxed);
++	auto &x = explorer();
 +	const double w = std::log2(static_cast<double>(alternatives));
++	++x.execChoicePoints;
++	x.execChoiceLog2 += w;
 +	std::lock_guard<std::mutex> g(s.mtx);
-+	auto &e = s.choices[siteName(I)];
++	auto &e = s.choices[siteName(x.curInst)];
 +	++e.first;
 +	e.second += w;
-+	++s.execChoicePoints;
-+	s.execChoiceLog2 += w;
 +}
 +
 +inline void choiceRevisit(double log2Growth)
@@ -336,29 +349,30 @@ index 0000000..fa2d96a
 +	if (log2Growth <= 0)
 +		return;
 +	auto &s = state();
-+	const auto *I = s.curInst.load(std::memory_order_relaxed);
++	auto &x = explorer();
++	++x.execChoicePoints;
++	x.execChoiceLog2 += log2Growth;
 +	std::lock_guard<std::mutex> g(s.mtx);
-+	auto &e = s.choices[siteName(I) + " (store revisits earlier loads)"];
++	auto &e = s.choices[siteName(x.curInst) + " (store revisits earlier loads)"];
 +	++e.first;
 +	e.second += log2Growth;
-+	++s.execChoicePoints;
-+	s.execChoiceLog2 += log2Growth;
 +}
 +
 +/* One estimation sample ended: SAMPLE is the product of the alternative counts. */
 +inline void endEstimationSample(long double sample)
 +{
 +	auto &s = state();
++	auto &x = explorer();
 +	std::lock_guard<std::mutex> g(s.mtx);
 +	const long double l = std::log2(sample);
 +	++s.log2Samples;
 +	const long double d = l - s.log2Mean;
 +	s.log2Mean += d / s.log2Samples;
 +	s.log2M2 += d * (l - s.log2Mean);
-+	s.residualSum += std::fabs(l - (long double)s.execChoiceLog2);
-+	s.choicePointsSum += s.execChoicePoints;
-+	s.execChoicePoints = 0;
-+	s.execChoiceLog2 = 0;
++	s.residualSum += std::fabs(l - (long double)x.execChoiceLog2);
++	s.choicePointsSum += x.execChoicePoints;
++	x.execChoicePoints = 0;
++	x.execChoiceLog2 = 0;
 +}
 +
 +inline std::string choiceTable(size_t n)
@@ -786,7 +800,7 @@ index 4866e5e..d00da8a 100644
  	void add(auto &&item) { wlist_.emplace_back(std::move(item)); }
  
 diff --git a/lli/Runtime/Execution.cpp b/lli/Runtime/Execution.cpp
-index fe659e6..aeebb29 100644
+index fe659e6..0f7d97f 100644
 --- a/lli/Runtime/Execution.cpp
 +++ b/lli/Runtime/Execution.cpp
 @@ -29,8 +29,11 @@
@@ -868,7 +882,7 @@ index fe659e6..aeebb29 100644
  void Interpreter::callMutexInit(Function *F, const std::vector<GenericValue> &ArgVals,
  				const std::unique_ptr<EventDeps> &specialDeps)
  {
-@@ -3604,14 +3641,74 @@ void Interpreter::runAtExitHandlers()
+@@ -3604,14 +3641,75 @@ void Interpreter::runAtExitHandlers()
  	setProgramState(oldState);
  }
  
@@ -912,7 +926,7 @@ index fe659e6..aeebb29 100644
 +	hgRegisterLastInstructionReport();
 +	/* The executing thread's frames, innermost first, for the reports raised below the
 +	 * interpreter: each frame is named by the instruction it is at. */
-+	hgprog::state().stackDump = [this]() {
++	hgprog::explorer().stackDump = [this]() {
 +		std::string out;
 +		const auto &stack = ECStack();
 +		for (size_t i = stack.size(); i-- > 0;) {
@@ -928,6 +942,7 @@ index fe659e6..aeebb29 100644
  		scheduleThread(std::get<int>(tid));
  		llvm::ExecutionContext &SF = ECStack().back();
  		llvm::Instruction &I = *SF.CurInst++;
++		hgprog::explorer().curInst = &I;
 +		hgprog::state().curInst.store(&I, std::memory_order_relaxed);
  		visit(I);
 +		const auto instsSoFar =
