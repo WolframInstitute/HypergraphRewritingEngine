@@ -71,7 +71,6 @@ ParallelEvolutionEngine::ParallelEvolutionEngine(Hypergraph* hg, size_t num_thre
     state_matches_.set_arena(arena);
     state_children_.set_arena(arena);
     missing_match_hashes_.set_arena(arena);
-    states_per_step_.set_arena(arena);
     match_join_.set_arena(arena);
 
     job_system_ = std::make_unique<job_system::JobSystem<EvolutionJobType>>(
@@ -603,7 +602,6 @@ void ParallelEvolutionEngine::submit_match_task(StateId state, uint32_t step) {
     // exactly here. The caps below are different -- a cap is a decision, and resuming past one
     // would undo it.
     if (step > match_budget()) { defer_match_task(state, step); return; }
-    if (!can_create_states_at_step(step + 1)) return;
 
     DEBUG_LOG("SUBMIT_MATCH state=%u step=%u (full)", state, step);
 
@@ -628,7 +626,6 @@ void ParallelEvolutionEngine::submit_match_task_with_context(
 ) {
     if (should_stop_.load(std::memory_order_relaxed)) { defer_cut_match_task(state, step); return; }
     if (step > match_budget()) { defer_match_task(state, step); return; }
-    if (!can_create_states_at_step(step + 1)) return;
 
     DEBUG_LOG("SUBMIT_MATCH state=%u step=%u parent=%u produced=%u consumed=%u (delta)",
               state, step, ctx.parent_state, ctx.num_produced, ctx.num_consumed);
@@ -645,22 +642,21 @@ void ParallelEvolutionEngine::submit_match_task_with_context(
     job_system_->submit(std::move(job));
 }
 
-void ParallelEvolutionEngine::submit_rewrite_task(const MatchRecord& match, uint32_t step) {
+void ParallelEvolutionEngine::submit_rewrite_task(const MatchRecord& match, uint32_t step,
+                                                  uint32_t booked_at) {
     if (should_stop_.load(std::memory_order_relaxed)) { defer_rewrite_task(match, step); return; }
     // Past the budget: the match is already stored on its state, so dropping the rewrite would
     // strand it -- the state's own matching will not re-offer a match it already holds.
     if (step > step_budget()) { defer_rewrite_task(match, step); return; }
-    // Early check (non-reserving) - execute_rewrite_task does the actual atomic reservation
-    if (!can_create_states_at_step(step + 1)) return;
 
     DEBUG_LOG("SUBMIT_REWRITE state=%u rule=%u step=%u", match.source_state, match.rule_index(), step);
 
     // A rewrite belongs to no state's match join -- it is the step that CREATES a state, not
     // one that matches on it -- so the depth join is where it is counted.
-    note_depth_task_pushed(step);
+    note_depth_task_pushed(booked_at);
     auto job = job_system::make_job<EvolutionJobType>(
-        [this, match, step]() {
-            DepthTaskGuard depth_guard(*this, step);
+        [this, match, step, booked_at]() {
+            DepthTaskGuard depth_guard(*this, booked_at);
             execute_rewrite_task(match, step);
         },
         EvolutionJobType::REWRITE
@@ -707,7 +703,6 @@ void ParallelEvolutionEngine::dispatch_expansion(StateId state, uint32_t step,
     }
     // Whole-state gates, checked once here rather than once per match. execute_rewrite_task
     // still does the reserving check per child, so this is a filter, not the decision.
-    if (!can_create_states_at_step(step + 1)) return;
 
     if (count <= kExpandChunkSize) {
         // Everything on this thread: no arena copy, no job, and the parent's data is already
@@ -735,7 +730,6 @@ void ParallelEvolutionEngine::dispatch_expansion(StateId state, uint32_t step,
 void ParallelEvolutionEngine::submit_scan_task(const ScanTaskData& data) {
     if (should_stop_.load(std::memory_order_relaxed)) return;
     if (data.step > match_budget()) return;
-    if (!can_create_states_at_step(data.step + 1)) return;
 
     DEBUG_LOG("SUBMIT_SCAN state=%u rule=%u step=%u delta=%d",
               data.state, data.rule_index, data.step, data.is_delta);
@@ -756,7 +750,6 @@ void ParallelEvolutionEngine::submit_scan_task(const ScanTaskData& data) {
 void ParallelEvolutionEngine::submit_expand_task(const ExpandTaskData& data) {
     if (should_stop_.load(std::memory_order_relaxed)) return;
     if (data.step > match_budget()) return;
-    if (!can_create_states_at_step(data.step + 1)) return;
 
     DEBUG_LOG("SUBMIT_EXPAND state=%u rule=%u matched=%u/%u step=%u",
               data.state, data.rule_index, data.num_matched, data.num_pattern_edges, data.step);
@@ -778,46 +771,8 @@ void ParallelEvolutionEngine::submit_expand_task(const ExpandTaskData& data) {
 // Pruning Helpers
 // =============================================================================
 
-bool ParallelEvolutionEngine::can_create_states_at_step(uint32_t step) const {
-    if (max_states_per_step_ == 0) return true;
-
-    auto result = states_per_step_.lookup(step);
-    if (!result.has_value()) return true;
-
-    return (*result)->load(std::memory_order_relaxed) < max_states_per_step_;
-}
-
 // Find, or install, the budget counter a key shares across threads. Templated because
 // the step and successor maps carry different reserved sentinel bands.
-template <typename Map>
-static std::atomic<size_t>* budget_counter(Map& counters, uint64_t key,
-                                           ConcurrentHeterogeneousArena& arena) {
-    auto result = counters.lookup(key);
-    if (result.has_value()) return *result;
-
-    auto* counter = arena.template create<std::atomic<size_t>>(0);
-    auto [existing, inserted] = counters.insert_if_absent(key, counter);
-    return inserted ? counter : existing;  // another thread installed one first
-}
-
-// Claim one unit of a budget, or report it exhausted.
-//
-// A fetch_add followed by a rollback would publish a count above the limit for as long as the
-// rollback takes, and the plain reader (can_create_states_at_step) prunes on exactly that value,
-// so concurrent claimants would make each other's in-budget work look out-of-budget. Claiming by
-// CAS never publishes a count above the limit. Which claimants win is the order they arrive in.
-bool ParallelEvolutionEngine::try_claim_budget(std::atomic<size_t>* counter, size_t limit) {
-    size_t cur = counter->load(std::memory_order_relaxed);
-    while (cur < limit) {
-        if (counter->compare_exchange_weak(cur, cur + 1,
-                                           std::memory_order_acq_rel,
-                                           std::memory_order_relaxed)) {
-            return true;
-        }
-    }
-    return false;
-}
-
 // =============================================================================
 // Per-State Match Join
 // =============================================================================
@@ -900,34 +855,68 @@ void ParallelEvolutionEngine::drain_candidates(StateId state, std::vector<Ranked
     (*stored)->for_each([&](const MatchRecord& m) {
         if (m.is_forwarded) return;
         const uint64_t key = canonical_transition_key(state, m);
-        out.push_back(RankedMatch{spine_rank(key), key, m});
+        out.push_back(RankedMatch{spine_rank(key), key, &m});
     });
-    auto before = [](const RankedMatch& x, const RankedMatch& y) {
-        return x.rank != y.rank ? x.rank < y.rank : x.key < y.key;
-    };
-    std::sort(out.begin(), out.end(), before);
+    std::sort(out.begin(), out.end(), ranked_before);
     const size_t k = matches_per_state_rule_;
     if (k == 0) return;
     // Keep the first k of each rule; the list stays in rank order.
     std::vector<size_t> taken(rules_.size(), 0);
     size_t w = 0;
     for (size_t i = 0; i < out.size(); ++i) {
-        const uint16_t rule = out[i].match.rule_index();
+        const uint16_t rule = out[i].match->rule_index();
         if (rule < taken.size() && taken[rule]++ < k) out[w++] = out[i];
     }
     out.resize(w);
 }
 
 // MatchesPerStateRule keeps k of each rule (drain_candidates); MaxSuccessorStatesPerParent then
-// keeps the k lowest-ranked of what remains. A transition not kept is not taken: no rewrite, no
-// event, no state. Both are a pure function of the state's own matches and the seed.
+// keeps the k lowest-ranked of what remains; MaxStatesPerStep chooses among what every drain of
+// the step keeps (select_step). A transition not kept is not taken: no rewrite, no event, no
+// state. Each is a pure function of the matches and the seed.
 void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
     std::vector<RankedMatch> cands;
     drain_candidates(state, cands);
     const size_t k = max_successor_states_per_parent_;
     const size_t n = k != 0 && k < cands.size() ? k : cands.size();
-    for (size_t i = 0; i < n; ++i) submit_rewrite_task(cands[i].match, step);
+    if (max_states_per_step_ != 0) {
+        if (step < num_step_candidate_lists_)
+            for (size_t i = 0; i < n; ++i) step_candidates_[step].push(cands[i], hg_->arena());
+        return;
+    }
+    for (size_t i = 0; i < n; ++i) submit_rewrite_task(*cands[i].match, step);
     if (n) HG_STAT(stats_.mine().spine_forced.bump(n));
+}
+
+// The N lowest-ranked of step `step`'s candidates are rewritten; the rest are not taken. Runs as
+// the task the depth join's report of `step` submits, booked on step + 1's token, so the rewrites
+// it submits are booked on step + 1 before that step can settle. Ties in rank and key name
+// automorphic transitions, so which of them falls at the cut does not change the result up to
+// isomorphism.
+void ParallelEvolutionEngine::select_step(uint32_t step) {
+    if (step >= num_step_candidate_lists_) return;
+    std::vector<RankedMatch> cands;
+    step_candidates_[step].for_each([&](const RankedMatch& c) { cands.push_back(c); });
+    step_candidates_[step].reset();
+    const size_t n = max_states_per_step_ < cands.size() ? max_states_per_step_ : cands.size();
+    if (n < cands.size())
+        std::nth_element(cands.begin(), cands.begin() + static_cast<std::ptrdiff_t>(n), cands.end(),
+                         ranked_before);
+    for (size_t i = 0; i < n; ++i) submit_rewrite_task(*cands[i].match, step, step + 1);
+    if (n) HG_STAT(stats_.mine().spine_forced.bump(n));
+}
+
+void ParallelEvolutionEngine::depth_settled(uint32_t depth) {
+    if (max_states_per_step_ != 0 && depth + 1 < depth_join_.depths()) {
+        // Runs on step depth + 1's token, booked by reset_depth_join, and releases it when done.
+        job_system_->submit(job_system::make_job<EvolutionJobType>(
+            [this, depth]() {
+                DepthTaskGuard depth_guard(*this, depth + 1);
+                select_step(depth);
+            },
+            EvolutionJobType::REWRITE));
+    }
+    if (on_depth_complete_) on_depth_complete_(depth);
 }
 
 void ParallelEvolutionEngine::spine_at_drain(StateId state, uint32_t step, MatchJoin* join) {
@@ -1255,11 +1244,25 @@ void ParallelEvolutionEngine::note_match_task_pushed(StateId state) {
 // where a submit past the budget would land; it is never settled, which is harmless because
 // nothing waits on it.
 void ParallelEvolutionEngine::reset_depth_join() {
-    depth_signal_available_ = depth_signal_available() && on_depth_complete_ != nullptr;
+    // Under MaxStatesPerStep a state at step s exists before any state at s + 1 (each step's
+    // states come from the previous step's selection), so the first path to a state is a shortest
+    // one and the relaxation that rules the join out under quotient exploration cannot occur.
+    depth_signal_available_ = (depth_signal_available() && on_depth_complete_ != nullptr) ||
+                              max_states_per_step_ != 0;
     // Rebuilt rather than resized: Slot holds atomics, so it is neither copyable nor movable and
     // a vector of them cannot grow. Sized once per run, which is the only time this runs.
     depth_slots_ = std::vector<hgcommon::DepthJoin::Slot>(max_steps_ + 2);
     depth_join_.seat(depth_slots_.data(), static_cast<uint32_t>(depth_slots_.size()));
+    if (max_states_per_step_ != 0) {
+        // One candidate list per step, and one token per step from 2 up: step s's selection is
+        // booked on step s + 1 (depth_settled), and step 1 has no selection before it.
+        if (num_step_candidate_lists_ != depth_slots_.size()) {
+            num_step_candidate_lists_ = depth_slots_.size();
+            step_candidates_ = std::make_unique<LockFreeList<RankedMatch>[]>(num_step_candidate_lists_);
+        }
+        for (size_t d = 0; d < num_step_candidate_lists_; ++d) step_candidates_[d].reset();
+        for (uint32_t d = 2; d < depth_join_.depths(); ++d) depth_join_.push(d);
+    }
 }
 
 void ParallelEvolutionEngine::note_depth_task_pushed(uint32_t depth) {
@@ -1269,12 +1272,12 @@ void ParallelEvolutionEngine::note_depth_task_pushed(uint32_t depth) {
 
 void ParallelEvolutionEngine::note_depth_task_done(uint32_t depth) {
     if (!depth_signal_available_) return;
-    depth_join_.done(depth, [this](uint32_t d) { on_depth_complete_(d); });
+    depth_join_.done(depth, [this](uint32_t d) { depth_settled(d); });
 }
 
 void ParallelEvolutionEngine::try_complete_depth(uint32_t depth) {
     if (!depth_signal_available_) return;
-    depth_join_.settle_from(depth, [this](uint32_t d) { on_depth_complete_(d); });
+    depth_join_.settle_from(depth, [this](uint32_t d) { depth_settled(d); });
 }
 
 void ParallelEvolutionEngine::note_match_task_done(StateId state, uint32_t step) {
@@ -1329,21 +1332,6 @@ void ParallelEvolutionEngine::note_match_task_done(StateId state, uint32_t step)
                 }
             });
         if (any) kids->for_each([&](const ChildInfo& c) { inherit_from_parent(state, c); });
-    }
-}
-
-bool ParallelEvolutionEngine::try_reserve_step_slot(uint32_t step) {
-    if (max_states_per_step_ == 0) return true;  // Unlimited
-    return try_claim_budget(budget_counter(states_per_step_, step, hg_->arena()),
-                            max_states_per_step_);
-}
-
-void ParallelEvolutionEngine::release_step_slot(uint32_t step) {
-    if (max_states_per_step_ == 0) return;  // Unlimited, nothing to release
-
-    auto result = states_per_step_.lookup(step);
-    if (result.has_value()) {
-        (*result)->fetch_sub(1, std::memory_order_relaxed);
     }
 }
 
@@ -1605,11 +1593,6 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
         return;
     }
 
-    // Pruning: check max_states_per_step (child will be at step+1)
-    if (!try_reserve_step_slot(step + 1)) {
-        return;  // Too many states at this generation
-    }
-
     const RewriteRule& rule = rules_[match.rule_index()];
 
     // A match whose edges all predate its state is also a match of the parent, so applying it can
@@ -1629,20 +1612,10 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
         inherited
     );
 
-    // The step budget counts states this rewrite actually contributed, so a rewrite that
-    // produces none gives its slot back.
-    if (rr.new_state == INVALID_ID) {
-        release_step_slot(step + 1);
-        return;
-    }
+    if (rr.new_state == INVALID_ID) return;
 
     total_rewrites_.fetch_add(1, std::memory_order_relaxed);
     total_events_.fetch_add(1, std::memory_order_relaxed);
-
-    if (!rr.was_new_state) {
-        // Duplicate state - release the reserved slot (only count unique states)
-        release_step_slot(step + 1);
-    }
 
     // Emit visualization events for canonical states only
 #ifdef HYPERGRAPH_ENABLE_VISUALIZATION
@@ -1805,8 +1778,6 @@ void ParallelEvolutionEngine::execute_match_task(
     if (should_stop_.load(std::memory_order_relaxed)) return;
     if (step > match_budget()) return;
 
-    // Early exit if rewrites are impossible due to limits
-    if (!can_create_states_at_step(step + 1)) return;
 
     const State& s = hg_->get_state(state);
     const AncestryCandidates cands{hg_, state, &s.edges};
@@ -1992,7 +1963,6 @@ void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
     if (data.step > match_budget()) return;
 
     // Early exit if rewrites are impossible due to limits
-    if (!can_create_states_at_step(data.step + 1)) return;
     HG_STAT(match_join_for(data.state)->trace.fetch_or(2u, std::memory_order_relaxed));
 
     DEBUG_LOG("EXEC_SCAN state=%u rule=%u step=%u delta=%d",
@@ -2132,7 +2102,6 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
     if (data.step > match_budget()) return;
 
     // Early exit if rewrites are impossible due to limits
-    if (!can_create_states_at_step(data.step + 1)) return;
 
     HG_STAT(match_join_for(data.state)->trace.fetch_or(256u, std::memory_order_relaxed));
     DEBUG_LOG("EXEC_EXPAND state=%u rule=%u matched=%u/%u step=%u",
@@ -2234,7 +2203,6 @@ bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRe
     if (data.step > match_budget()) return false;
 
     // Early exit if rewrites are impossible due to limits
-    if (!can_create_states_at_step(data.step + 1)) return false;
 
     HG_STAT(match_join_for(data.state)->trace.fetch_or(32u, std::memory_order_relaxed));
     DEBUG_LOG("EXEC_SINK state=%u rule=%u matched=%u step=%u",
@@ -2428,7 +2396,8 @@ const std::vector<double>& ParallelEvolutionEngine::rule_weights() const { retur
 
 bool ParallelEvolutionEngine::defers_to_drain() const {
     return hgcommon::drain_selects(static_cast<uint32_t>(matches_per_state_rule_),
-                                   static_cast<uint32_t>(max_successor_states_per_parent_)) != 0;
+                                   static_cast<uint32_t>(max_successor_states_per_parent_),
+                                   static_cast<uint32_t>(max_states_per_step_)) != 0;
 }
 
 bool ParallelEvolutionEngine::records_own_matches() const { return enable_match_forwarding_ || sampling_active(); }

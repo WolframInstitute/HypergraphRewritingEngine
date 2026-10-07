@@ -741,10 +741,6 @@ private:
     // Indices into warnings_ of the notices that say the result is truncated (a capacity limit).
     mutable std::vector<size_t> truncation_warnings_;
 
-    // Per-step state count tracking (for max_states_per_step)
-    static constexpr uint64_t STEP_MAP_EMPTY = (1ULL << 62) + 600;
-    static constexpr uint64_t STEP_MAP_LOCKED = (1ULL << 62) + 601;
-    ConcurrentMap<uint64_t, std::atomic<size_t>*, STEP_MAP_EMPTY, STEP_MAP_LOCKED> states_per_step_;
 
     // Per-state match-task join. See docs/ARCHITECTURE.md, Sampling.
     //
@@ -822,8 +818,8 @@ private:
     // verification/genmc/depth_report_order.cpp runs the same header this does.
     std::vector<hgcommon::DepthJoin::Slot> depth_slots_;
     hgcommon::DepthJoin depth_join_;
-    // Whether the arrival invariant this signal needs holds for this run. See the note on
-    // set_on_depth_complete.
+    // Whether the depth join runs: for the caller's hook where the arrival invariant it needs
+    // holds (see the note on set_on_depth_complete), and always under MaxStatesPerStep.
     bool depth_signal_available_{false};
     std::function<void(uint32_t)> on_depth_complete_;
 
@@ -1283,7 +1279,12 @@ private:
     // Task Submission
     void submit_match_task(StateId state, uint32_t step);
     void submit_match_task_with_context(StateId state, uint32_t step, const MatchContext& ctx);
-    void submit_rewrite_task(const MatchRecord& match, uint32_t step);
+    // `booked_at` is the depth the task is counted at: its own step, or the step above for a
+    // rewrite the per-step selection submits after its own step has settled.
+    void submit_rewrite_task(const MatchRecord& match, uint32_t step, uint32_t booked_at);
+    void submit_rewrite_task(const MatchRecord& match, uint32_t step) {
+        submit_rewrite_task(match, step, step);
+    }
 
     // Apply one chunk's matches. Runs them back to back on this thread so the parent's data
     // stays hot for the whole range.
@@ -1313,9 +1314,6 @@ private:
     // work here is a hash insert and two list pushes, less than the cost of scheduling it.
     bool complete_match(const ExpandTaskData& data, MatchRecord& out);
     void execute_rewrite_task(const MatchRecord& match, uint32_t step);
-
-    // Pruning helpers
-    bool can_create_states_at_step(uint32_t step) const;
 
     // Per-state match join. The two ordering rules below are what make the drain exact, and
     // both are invariants rather than observations:
@@ -1394,12 +1392,28 @@ private:
     struct RankedMatch {
         uint64_t rank;
         uint64_t key;
-        MatchRecord match;
+        const MatchRecord* match;   // in the state's stored list, which outlives the run
     };
+    static bool ranked_before(const RankedMatch& x, const RankedMatch& y) {
+        return x.rank != y.rank ? x.rank < y.rank : x.key < y.key;
+    }
     void drain_candidates(StateId state, std::vector<RankedMatch>& out);
-    // At a state's drain: submit the rewrites of the chosen matches -- drain_candidates, and
-    // under MaxSuccessorStatesPerParent only the k lowest-ranked of them.
+    // At a state's drain: the chosen matches -- drain_candidates, and under
+    // MaxSuccessorStatesPerParent only the k lowest-ranked of them -- are rewritten, or under
+    // MaxStatesPerStep added to their step's candidates (step_candidates_).
     void cap_at_drain(StateId state, uint32_t step);
+
+    // MaxStatesPerStep. Every transition the drains of step s keep is a candidate of step s; once
+    // the depth join reports step s complete, select_step submits the N lowest-ranked of them.
+    // Step s+1 is held open for that selection by a token booked there when the join is seated
+    // (reset_depth_join), which the selection task releases when it finishes, so the rewrites it
+    // submits land on a step that has not settled. Nothing waits: the selection is a task the
+    // join's report submits.
+    std::unique_ptr<LockFreeList<RankedMatch>[]> step_candidates_;
+    size_t num_step_candidate_lists_ = 0;
+    void select_step(uint32_t step);
+    // The join's report of a settled depth: the per-step selection, then the caller's hook.
+    void depth_settled(uint32_t depth);
 
     // The transition-level draw, on the key above, so the same transition gets the same verdict
     // however the run is scheduled. Every acceptance point -- both discovery paths and both
@@ -1420,9 +1434,6 @@ private:
         uint32_t step_;
     };
 
-    static bool try_claim_budget(std::atomic<size_t>* counter, size_t limit);
-    bool try_reserve_step_slot(uint32_t step);
-    void release_step_slot(uint32_t step);
     // Keep this state, with probability exploration_probability_, drawn on an
     // isomorphism-invariant key so the surviving set is the same at any worker count.
     //
