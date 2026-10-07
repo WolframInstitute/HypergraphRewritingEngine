@@ -2066,15 +2066,21 @@ void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
     SVec<MatchRecord> completed;
 
     if (data.is_delta) {
-        // Delta matching: start from produced edges
-        for (uint8_t p = 0; p < data.num_produced; ++p) {
+        // Delta matching: start from produced edges. A stop ends the scan, and the matches
+        // already completed still go to dispatch_expansion, which defers them: complete_match
+        // has claimed them, so a resumed scan would find them claimed and drop them.
+        bool stopped = false;
+        for (uint8_t p = 0; p < data.num_produced && !stopped; ++p) {
             EdgeId produced = data.produced_edges[p];
             if (!s.edges.contains(produced)) continue;
             HG_STAT(match_join_for(data.state)->trace.fetch_or(4u, std::memory_order_relaxed));
 
             // Try this produced edge at each pattern position
             for (uint8_t pos = 0; pos < rule.num_lhs_edges; ++pos) {
-                if (should_stop_.load(std::memory_order_relaxed)) return;
+                if (should_stop_.load(std::memory_order_relaxed)) {
+                    stopped = true;
+                    break;
+                }
 
                 const PatternEdge& pattern_edge = rule.lhs[pos];
                 const auto& edge = get_edge(produced);

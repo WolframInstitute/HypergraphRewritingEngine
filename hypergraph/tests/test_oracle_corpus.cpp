@@ -1373,3 +1373,48 @@ TEST(OracleCorpus, AContinuationThatChangesTheRecordSetIsRefused) {
     e.set_transitive_reduction(true);
     EXPECT_NO_THROW(e.evolve_more(2));
 }
+
+// A stop that lands in a delta scan keeps the single-edge matches the scan already completed:
+// complete_match has claimed them, so they are deferred for the continuation rather than dropped.
+// A single-edge rule with forwarding forced on, stopped after a varying number of drained states
+// and continued one step, must reach the states and events of one run of the whole budget. Before
+// the fix 9 and 21 of 400 runs differed in two trials; the stop has to land between a completed match and the dispatch.
+TEST(OracleCorpus, AStopDuringADeltaScanLosesNoMatch) {
+    const auto rule = hypergraph::make_rule(0).lhs({0, 1}).rhs({0, 2}).rhs({1, 2}).build();
+    const std::vector<std::vector<VertexId>> init = {{0, 1}};
+    auto fingerprint = [](Hypergraph& hg) {
+        std::multiset<uint64_t> h;
+        for (uint32_t s = 0; s < hg.num_published_states(); ++s)
+            if (hg.get_state(s).id != INVALID_ID) h.insert(hg.get_or_compute_canonical_hash(s));
+        return std::make_pair(hg.num_events(), h);
+    };
+    Hypergraph whole;
+    whole.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+    {
+        ParallelEvolutionEngine w(&whole, 4);
+        w.set_match_forwarding(true);
+        w.add_rule(rule);
+        w.evolve(init, 5);
+    }
+    const auto ref = fingerprint(whole);
+    int differing = 0, stopped = 0;
+    for (int it = 0; it < 400; ++it) {
+        Hypergraph split;
+        split.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        ParallelEvolutionEngine e(&split, 4);
+        e.set_match_forwarding(true);
+        e.add_rule(rule);
+        e.set_continuable(true);
+        std::atomic<int> drained{0};
+        const int at = 2 + it % 9;
+        e.set_on_state_matches_complete([&](StateId, uint32_t) {
+            if (drained.fetch_add(1) + 1 == at) e.request_stop();
+        });
+        e.evolve(init, 4);
+        if (e.stop_requested()) ++stopped;
+        e.evolve_more(1);
+        if (fingerprint(split) != ref) ++differing;
+    }
+    EXPECT_GT(stopped, 0) << "no run was stopped, so nothing was cut short";
+    EXPECT_EQ(differing, 0) << "a continuation after a stop reached different states or events";
+}
