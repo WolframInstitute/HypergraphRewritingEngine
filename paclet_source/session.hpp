@@ -106,9 +106,11 @@ public:
 
     uint64_t open(std::unique_ptr<EngineHolder> holder);
 
-    // The next session handle of this process. The GPU binary holds a host session here and a
-    // device session in hg_gpu_backend.cpp, and both take their handles from this one sequence,
-    // so two live handles never name different sessions with the same number.
+    // The next session handle. The GPU binary holds a host session here and a device session in
+    // hg_gpu_backend.cpp, and both take their handles from this one sequence. The sequence starts
+    // at a random base below 2^62 drawn once per process, so the CPU worker, the GPU worker and a
+    // restarted worker issue different handles, and a handle the caller holds names at most one
+    // session in any worker.
     static uint64_t mint_handle();
 
     // The live session's engine. Throws rather than returning null, because every caller of this

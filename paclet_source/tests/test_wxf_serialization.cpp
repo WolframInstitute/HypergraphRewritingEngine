@@ -2211,6 +2211,23 @@ TEST(Session, AWorkerReportsARefusedJobWithItsMessage) {
     EXPECT_TRUE(w.w.last_error.empty());
 }
 
+// Two worker processes issue different session handles, so a caller holding sessions in the CPU
+// and GPU workers, or in a worker and its restart, never addresses one session by the other's
+// handle. Each process counted from 1, so both Opens returned 1.
+TEST(Session, TwoWorkerProcessesIssueDifferentHandles) {
+    CpuWorker a, b;
+    ASSERT_TRUE(a.ok && b.ok) << "could not start hg_evolve --serve";
+    const int64_t ha = read_int_key(a(build_input_with_op(1, "Open")), "Session");
+    const int64_t hb = read_int_key(b(build_input_with_op(1, "Open")), "Session");
+    ASSERT_GT(ha, 0);
+    ASSERT_GT(hb, 0);
+    EXPECT_NE(ha, hb);
+    // A handle from one worker is refused by the other, and the refusal says why.
+    EXPECT_TRUE(b(build_input_with_op(1, "Step", ha, false)).empty());
+    EXPECT_NE(b.w.last_error.find("is not this worker's live session"), std::string::npos)
+        << "error frame: '" << b.w.last_error << "'";
+}
+
 // "ContentStateId" is the lowest id among the listed states with the same edge list, on both
 // devices and in every "CanonicalizeStates" mode, so it is always a "States" key. The GPU once
 // gave each state its own id, and the CPU under Full could name a state "States" does not list.

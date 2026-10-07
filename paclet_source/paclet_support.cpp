@@ -15,7 +15,9 @@
 #include "hgcommon/quotient_multiplicity_core.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <random>
 #include <functional>
 #include <type_traits>
 
@@ -48,7 +50,13 @@ std::string SessionSlot::already_live_message(uint64_t live_handle) {
 }
 
 uint64_t SessionSlot::mint_handle() {
-    static uint64_t next = 1;   // 0 is reserved, and handles are never reused
+    // 0 is reserved, and handles are never reused.
+    static uint64_t next = [] {
+        std::random_device rd;
+        const uint64_t seed = (static_cast<uint64_t>(rd()) << 32) ^ rd() ^
+            static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
+        return (hgcommon::mix64(seed) >> 2) | 1;
+    }();
     return next++;
 }
 
