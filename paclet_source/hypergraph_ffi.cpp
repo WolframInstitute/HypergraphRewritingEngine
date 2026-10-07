@@ -746,7 +746,9 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // computes edge ranks in the class frame only, so it has no Positional mode. Such a job,
         // and every later verb on a session this binary opened on the CPU engine, takes the CPU
         // path below, which this binary links.
-        const bool cpu_session = req.session_handle != 0 && worker_session().is_live() &&
+        // An invalidated session keeps its handle, so its verbs reach the CPU path and are told
+        // it was invalidated.
+        const bool cpu_session = req.session_handle != 0 &&
                                  worker_session().handle() == req.session_handle;
         const bool on_cpu = req.positional_event_identity || cpu_session;
         if (req.positional_event_identity && !cpu_session)
