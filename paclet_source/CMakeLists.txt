@@ -425,4 +425,6 @@ if(TARGET hg_gpu AND BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}
     )
     target_link_libraries(gpu_ffi_tests PRIVATE hypergraph hg_gpu wxf GTest::gtest GTest::gtest_main)
+    # The GpuBinaryGate tests drive both worker binaries, so they are built with the tests.
+    add_dependencies(gpu_ffi_tests hg_evolve hg_evolve_gpu)
 endif()

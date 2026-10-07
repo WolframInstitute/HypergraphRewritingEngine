@@ -1468,8 +1468,13 @@ struct WorkerPipes {
     bool started = false;
 };
 
+// Each worker has its own FIFO pair, and the test's ends are close-on-exec: a second worker
+// forked while the first is live would otherwise inherit the first's write end, and the first
+// would never see end of input when the test closes it.
 bool worker_start(WorkerPipes& w, const std::string& exe) {
-    w.dir = std::string(HG_SOURCE_DIR) + "/.gpu_gate_fifo";
+    static int next_worker = 0;
+    w.dir = std::string(HG_SOURCE_DIR) + "/.gpu_gate_fifo." + std::to_string(::getpid()) + "." +
+            std::to_string(next_worker++);
     ::mkdir(w.dir.c_str(), 0700);
     w.in_path  = w.dir + "/in";
     w.out_path = w.dir + "/out";
@@ -1488,8 +1493,8 @@ bool worker_start(WorkerPipes& w, const std::string& exe) {
         ::execl(exe.c_str(), exe.c_str(), "--serve", (char*)nullptr);
         ::_exit(127);
     }
-    w.in_fd  = ::open(w.in_path.c_str(),  O_WRONLY);
-    w.out_fd = ::open(w.out_path.c_str(), O_RDONLY);
+    w.in_fd  = ::open(w.in_path.c_str(),  O_WRONLY | O_CLOEXEC);
+    w.out_fd = ::open(w.out_path.c_str(), O_RDONLY | O_CLOEXEC);
     w.started = (w.in_fd >= 0 && w.out_fd >= 0);
     return w.started;
 }
@@ -1534,6 +1539,20 @@ std::vector<uint8_t> worker_call(WorkerPipes& w, const std::vector<uint8_t>& job
     if (!read_exact_fd(w.out_fd, reply_len, reply)) return {};
     return reply;
 }
+
+// The host engine's answer. In this binary run_rewriting_core answers on the device (it is built
+// with HG_GPU_BACKEND), so a gate comparing devices takes the host's answer from the CPU worker
+// binary, hg_evolve, built from this tree beside hg_evolve_gpu.
+std::string cpu_binary_path() {
+    return std::string(HG_SOURCE_DIR) + "/paclet/LibraryResources/Linux-x86-64/hg_evolve";
+}
+struct CpuWorker {
+    WorkerPipes w;
+    bool ok = false;
+    CpuWorker() { ok = worker_start(w, cpu_binary_path()); }
+    ~CpuWorker() { worker_stop(w); }
+    std::vector<uint8_t> operator()(const std::vector<uint8_t>& job) { return worker_call(w, job); }
+};
 
 }  // namespace
 
@@ -2180,8 +2199,9 @@ TEST(GpuBinaryGate, StateEdgeIdsAreTheIdsEventsName) {
         worker_stop(w);
         GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
     }
-    HostBridge host;
-    check(run_rewriting_core(branch_job(2, "Evolve", 0, opts, 1), host), "CPU");
+    CpuWorker cpu;
+    ASSERT_TRUE(cpu.ok) << "could not start hg_evolve --serve";
+    check(cpu(branch_job(2, "Evolve", 0, opts, 1)), "CPU");
     check(worker_call(w, branch_job(2, "Evolve", 0, opts, 1)), "GPU");
     worker_stop(w);
 }
@@ -2238,8 +2258,9 @@ TEST(GpuBinaryGate, ContentStateIdIsTheLowestListedStateOfEqualContent) {
             put_str_list_option(ww, "RequestedData", {"States"});
             put_str_option(ww, "CanonicalizeStates", mode);
         };
-        HostBridge host;
-        const auto cpu = read(run_rewriting_core(branch_job(3, "Evolve", 0, opts, 2), host));
+        CpuWorker host;
+        ASSERT_TRUE(host.ok) << "could not start hg_evolve --serve";
+        const auto cpu = read(host(branch_job(3, "Evolve", 0, opts, 2)));
         const auto gpu = read(worker_call(w, branch_job(3, "Evolve", 0, opts, 2)));
         for (const auto* side : {&cpu, &gpu}) {
             const char* device = side == &cpu ? "CPU" : "GPU";
@@ -2281,8 +2302,9 @@ TEST(GpuBinaryGate, StepStatisticsAgreeAcrossDevices) {
             put_str_option(ww, "CanonicalizeStates", quotient ? "Full" : "None");
             put_str_option(ww, "ExploreFromCanonicalStatesOnly", quotient ? "True" : "False");
         };
-        HostBridge host;
-        const auto cpu = run_rewriting_core(branch_job(3, "Evolve", 0, opts, 3), host);
+        CpuWorker host;
+        ASSERT_TRUE(host.ok) << "could not start hg_evolve --serve";
+        const auto cpu = host(branch_job(3, "Evolve", 0, opts, 3));
         const auto gpu = worker_call(w, branch_job(3, "Evolve", 0, opts, 3));
         const auto c = value_bytes(cpu, "StepStatistics"), g = value_bytes(gpu, "StepStatistics");
         ASSERT_FALSE(c.empty()) << "quotient=" << quotient;
@@ -2320,8 +2342,9 @@ TEST(GpuBinaryGate, WarningsAgreeAcrossDevices) {
             put_str_list_option(ww, "RequestedData", {"NumStates", "NumEvents"});
             option(ww);
         };
-        HostBridge host;
-        const auto cpu = run_rewriting_core(branch_job(3, "Evolve", 0, opts, 2), host);
+        CpuWorker host;
+        ASSERT_TRUE(host.ok) << "could not start hg_evolve --serve";
+        const auto cpu = host(branch_job(3, "Evolve", 0, opts, 2));
         const auto gpu = worker_call(w, branch_job(3, "Evolve", 0, opts, 2));
         ASSERT_FALSE(gpu.empty()) << name;
         const auto c = value_bytes(cpu, "Warnings"), g = value_bytes(gpu, "Warnings");
@@ -2351,8 +2374,9 @@ TEST(GpuBinaryGate, SessionStepStatisticsAgreeWithOneEvolve) {
             put_str_option(ww, "ExploreFromCanonicalStatesOnly", "True");
         };
     };
-    HostBridge host;
-    const auto direct = run_rewriting_core(branch_job(3, "Evolve", 0, opts("StepStatistics"), 3), host);
+    CpuWorker host;
+    ASSERT_TRUE(host.ok) << "could not start hg_evolve --serve";
+    const auto direct = host(branch_job(3, "Evolve", 0, opts("StepStatistics"), 3));
     const auto opened = worker_call(w, branch_job(0, "Open", 0, opts("NumStates"), 3));
     const int64_t handle = read_int_key(opened, "Session");
     ASSERT_NE(handle, 0);
