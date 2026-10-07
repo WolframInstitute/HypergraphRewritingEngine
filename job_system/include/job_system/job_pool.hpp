@@ -5,6 +5,15 @@
 #include <cstddef>
 #include <cstdlib>
 
+// The number of pool slots and the slots per chunk. The model-checking harnesses keep them small
+// (verification/genmc/job_system_error_wait.cpp); the shipped default is below.
+#ifndef HG_JOB_MAX_POOLS
+#define HG_JOB_MAX_POOLS 1024
+#endif
+#ifndef HG_JOB_CHUNK_SLOTS
+#define HG_JOB_CHUNK_SLOTS 256
+#endif
+
 namespace HG_NAMESPACE {
 namespace jobs {
 
@@ -32,7 +41,7 @@ class JobSlotPool {
 public:
     static constexpr std::size_t kHeaderSize = 16;   // holds owner ptr; keeps payload 16-aligned
     static constexpr std::size_t kSlotSize   = 512;  // payload capacity; covers every engine task
-    static constexpr std::size_t kChunkSlots = 256;  // slots per malloc'd chunk
+    static constexpr std::size_t kChunkSlots = HG_JOB_CHUNK_SLOTS;  // slots per malloc'd chunk
 
     static void* allocate(std::size_t size);
     static void deallocate(void* payload) noexcept;
@@ -60,7 +69,7 @@ private:
     // a slot whose owner can be taken; releasing is a store. Both are lock-free, and neither
     // is on the allocation hot path -- which is a reason the lock was never measured, not a
     // reason to keep it.
-    static constexpr std::size_t kMaxPools = 1024;
+    static constexpr std::size_t kMaxPools = HG_JOB_MAX_POOLS;
 
     struct Registry {
         // occupied[i] true means slots[i] holds a RETIRED pool available for reuse. A slot is

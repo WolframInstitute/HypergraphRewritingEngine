@@ -14,6 +14,9 @@
 #ifndef HG_JOB_INJECTOR_CAPACITY
 #define HG_JOB_INJECTOR_CAPACITY 32768
 #endif
+#ifndef HG_JOB_ERROR_MESSAGE_CAP
+#define HG_JOB_ERROR_MESSAGE_CAP 512
+#endif
 #if defined(HG_VERIFICATION)
 #include <genmc.h>  // __VERIFIER_thread_create_symmetric
 #endif
@@ -269,7 +272,7 @@ private:
     //
     // Three states, so a reader never observes a partially written buffer: 0 empty,
     // 1 claimed by the thread that won the exchange, 2 published. Only 2 may be read.
-    static constexpr size_t kErrorMessageCap = 512;
+    static constexpr size_t kErrorMessageCap = HG_JOB_ERROR_MESSAGE_CAP;
     char error_message_[kErrorMessageCap]{};
     std::atomic<uint8_t> error_message_state_{0};
 
@@ -298,6 +301,20 @@ private:
     static inline thread_local JobSystem* t_sys_ = nullptr;
     static inline thread_local WorkerData* t_worker_ = nullptr;
 
+    // What a throwing job does (run_job's catch clauses): latch the kind, stop every worker.
+    void latch_error(ErrorType kind) {
+        error_type_.store(kind, std::memory_order_release);
+        stop_all_workers();
+    }
+
+public:
+#if defined(HG_VERIFICATION)
+    // A job's way to fail under a model checker, which interprets no C++ exception: the latch a
+    // CapacityExhausted throw reaches through run_job's catch.
+    void fail_current_job_for_verification() { latch_error(ErrorType::CapacityExhausted); }
+#endif
+
+private:
     // Latch an error: stop every worker and wake all waiters so no wait can hang on a
     // job orphaned in an exited worker's queue.
     void stop_all_workers() {
@@ -578,22 +595,17 @@ private:
             if (error_type_.load(std::memory_order_acquire) == ErrorType::None) job->execute();
         } catch (const hgcommon::CapacityExhausted& e) {
             record_error_message(e.what());
-            error_type_.store(ErrorType::CapacityExhausted, std::memory_order_release);
-            stop_all_workers();
+            latch_error(ErrorType::CapacityExhausted);
         } catch (const std::bad_alloc& e) {
             record_error_message(e.what());
-            error_type_.store(ErrorType::OutOfMemory, std::memory_order_release);
-            stop_all_workers();
+            latch_error(ErrorType::OutOfMemory);
         } catch (const std::exception& e) {
             const bool aborted = std::strcmp(e.what(), "Operation aborted") == 0;
             if (!aborted) record_error_message(e.what());
-            error_type_.store(aborted ? ErrorType::Aborted : ErrorType::Exception,
-                              std::memory_order_release);
-            stop_all_workers();
+            latch_error(aborted ? ErrorType::Aborted : ErrorType::Exception);
         } catch (...) {
             record_error_message("non-std exception");
-            error_type_.store(ErrorType::Unhandled, std::memory_order_release);
-            stop_all_workers();
+            latch_error(ErrorType::Unhandled);
         }
         delete job;
         if (recycle_scratch && on_job_complete_) on_job_complete_();  // recycle per-worker scratch
@@ -879,8 +891,13 @@ public:
         // on a small machine a spawned thread can lag past an entire short workload before it
         // first runs. One yield loop, once per start; the workers park themselves if no work
         // arrives, so this costs thread-spawn latency and nothing else.
+        // Not in the verification build: it has no pinning, so the count settles nothing, and the
+        // checker explored no execution in which this loop read the workers' increments (0
+        // complete, 24 blocked on job_system_error_wait).
+#if !defined(HG_VERIFICATION)
         while (workers_entered_.load(std::memory_order_acquire) < workers_.size())
             std::this_thread::yield();
+#endif
         is_running_.store(true);
     }
 
@@ -955,6 +972,9 @@ public:
             // when the last one has left. Each leaving worker bumps quiescence_seq_.
             const uint32_t q = quiescence_seq_.load(std::memory_order_acquire);
             if (error_type_.load(std::memory_order_acquire) != ErrorType::None) {
+#if defined(HG_ERROR_WAIT_EARLY)
+                return;   // calibration only (verification/genmc/job_system_error_wait.cpp)
+#endif
                 if (workers_exited_.load(std::memory_order_acquire) == workers_.size()) return;
             } else if (is_quiescent()) {
                 HG_STAT(count_abandoned());
