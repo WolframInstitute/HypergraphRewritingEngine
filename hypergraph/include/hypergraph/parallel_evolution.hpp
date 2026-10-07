@@ -1223,11 +1223,13 @@ public:
     void evolve(const std::vector<std::vector<std::vector<VertexId>>>& initial_states, size_t steps);
 
 private:
-    // Raise whatever a worker latched during the run. wait_for_completion() returns the
-    // moment a worker latches an error, so tasks are still outstanding and the graph is
-    // truncated; without this the run returns looking complete. Aborted is the caller's
-    // own request, so it returns quietly with whatever was built.
+    // Raise whatever a worker latched during the run. After an error the graph is truncated at
+    // that point; without this the run returns looking complete. Aborted is the caller's own
+    // request, so it returns quietly with whatever was built.
     void raise_worker_error() const;
+    // An error stops the job system's workers for good, so a later evolve() or evolve_more() on
+    // this engine would run nothing and return the graph unchanged. Both throw instead.
+    void refuse_after_worker_error(const char* call) const;
 
     void finalize_evolution();
 

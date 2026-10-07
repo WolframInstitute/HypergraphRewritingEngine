@@ -170,6 +170,10 @@ private:
     // Workers that have passed their binding attempt this start; start() waits for all of
     // them, which is what makes pin_failures() settled rather than racing worker startup.
     std::atomic<size_t> workers_entered_{0};
+    // Workers that have left worker_loop this start. After an error a worker leaves once it finds
+    // no job, and wait_for_completion returns only when every worker has, so no job is still
+    // writing when the caller reads the results.
+    std::atomic<size_t> workers_exited_{0};
     // Submits made from a worker that is not inside a job. The quiescence predicate's soundness
     // rests on this being zero; see enqueue().
     std::atomic<size_t> late_submits_{0};
@@ -686,6 +690,9 @@ private:
 
         t_sys_ = nullptr;
         t_worker_ = nullptr;
+        workers_exited_.fetch_add(1, std::memory_order_release);
+        quiescence_seq_.fetch_add(1, std::memory_order_release);
+        hgcommon::unpark_all(quiescence_seq_);
     }
 
     void drain_and_delete() {
@@ -851,6 +858,7 @@ public:
             workers_[i]->stop.store(false, std::memory_order_relaxed);
         }
         workers_entered_.store(0, std::memory_order_relaxed);
+        workers_exited_.store(0, std::memory_order_relaxed);
         ensure_default_cpu_order();               // before the map: the map is derived from it
         build_domain_map();                       // before any worker exists: parks index it
         build_cache_peers();                      // before any worker exists: see peer_begin_
@@ -941,11 +949,15 @@ public:
             leave{completion_waiters_};
 
         while (true) {
-            if (error_type_.load(std::memory_order_acquire) != ErrorType::None) return;
-            if (is_quiescent()) { HG_STAT(count_abandoned()); return; }
-
+            // After an error the workers run what their queues hold and leave; the wait ends
+            // when the last one has left. Each leaving worker bumps quiescence_seq_.
             const uint32_t q = quiescence_seq_.load(std::memory_order_acquire);
-            if (is_quiescent()) { HG_STAT(count_abandoned()); return; }
+            if (error_type_.load(std::memory_order_acquire) != ErrorType::None) {
+                if (workers_exited_.load(std::memory_order_acquire) == workers_.size()) return;
+            } else if (is_quiescent()) {
+                HG_STAT(count_abandoned());
+                return;
+            }
             hgcommon::park_if_equal(quiescence_seq_, q);
         }
     }

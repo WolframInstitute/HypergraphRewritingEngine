@@ -789,6 +789,29 @@ TEST(JobSystemErrors, ACapacityLimitIsItsOwnKindAndNotAGenericException) {
     js.shutdown();
 }
 
+// After an error, wait_for_completion returns only when no worker is still running a job: the
+// caller reads the results next, and a job still running would be writing them. One worker throws
+// while the other is inside a job that finishes 50 ms later.
+TEST(JobSystemErrors, AfterAnErrorTheWaitEndsWhenNoJobIsRunning) {
+    using namespace job_system;
+    JobSystem<TestJobType> js(2);
+    js.start();
+    std::atomic<bool> b_started{false}, b_done{false};
+    js.submit(make_job<TestJobType>([&] {
+        b_started.store(true);
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        b_done.store(true);
+    }, TestJobType::PHYSICS));
+    js.submit(make_job<TestJobType>([&] {
+        while (!b_started.load()) std::this_thread::yield();
+        throw hgcommon::CapacityExhausted("a configured container ceiling was reached");
+    }, TestJobType::PHYSICS));
+    js.wait_for_completion();
+    EXPECT_EQ(js.get_error_type(), ErrorType::CapacityExhausted);
+    EXPECT_TRUE(b_done.load()) << "the wait returned while another worker was still in a job";
+    js.shutdown();
+}
+
 // The kinds that ARE defects stay defects: adding a bucket must not widen it.
 TEST(JobSystemErrors, AnOrdinaryExceptionIsStillAGenericException) {
     using namespace job_system;

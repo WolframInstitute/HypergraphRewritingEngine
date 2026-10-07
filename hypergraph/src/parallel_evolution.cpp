@@ -116,6 +116,7 @@ void ParallelEvolutionEngine::evolve(
     size_t steps
 ) {
     if (!hg_ || rules_.empty()) return;
+    refuse_after_worker_error("evolve");
 
     max_steps_ = steps;
     should_stop_.store(false, std::memory_order_relaxed);
@@ -224,6 +225,7 @@ void ParallelEvolutionEngine::evolve(
     size_t steps
 ) {
     if (!hg_ || rules_.empty() || initial_states.empty()) return;
+    refuse_after_worker_error("evolve");
 
     max_steps_ = steps;
     should_stop_.store(false, std::memory_order_relaxed);
@@ -253,6 +255,12 @@ void ParallelEvolutionEngine::evolve(
 // =============================================================================
 // Private Helper Methods
 // =============================================================================
+
+void ParallelEvolutionEngine::refuse_after_worker_error(const char* call) const {
+    if (last_error() != job_system::ErrorType::None)
+        throw std::runtime_error(std::string(call) + ": an earlier run on this engine ended on a "
+                                 "worker error, which stops its workers; construct a new engine");
+}
 
 void ParallelEvolutionEngine::raise_worker_error() const {
     switch (last_error()) {
@@ -1070,6 +1078,7 @@ void ParallelEvolutionEngine::evolve_more(size_t additional_steps,
             "set_continuable(true) before evolve(); resuming without it would return the "
             "unchanged graph, which reads as a converged one.");
     }
+    refuse_after_worker_error("evolve_more");
     {
         const OpeningSettings now = current_settings();
         const char* what = !hgcommon::same_record_set(now.record, opening_.record) ? "record set"
