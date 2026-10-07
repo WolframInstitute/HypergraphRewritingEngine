@@ -293,6 +293,10 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
         result = held.last;
     } else if (is_query) {
         result = held.last;
+    } else if (held.handle != 0) {
+        // The held session owns the evolver's engine: running this job on it would reset or
+        // rebuild the graph the session extends. It runs on an engine of its own.
+        result = hg_gpu::evolve(in);
     } else {
         result = evolver.run(in);
     }

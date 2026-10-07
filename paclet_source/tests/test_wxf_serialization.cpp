@@ -1600,6 +1600,10 @@ TEST(GpuBinaryGate, SessionVerbsThroughTheWorkerMatchOneEvolveOfTheSameDepth) {
     // one, which is exactly how that defect survived its first gate.
     const auto s1 = worker_call(w, build_input_with_op(1, "Step", handle, /*with_rules=*/false));
     ASSERT_FALSE(s1.empty()) << "the first Step errored";
+    // A plain Evolve on the same worker between two Steps runs beside the session and leaves the
+    // graph it holds alone.
+    const auto between = worker_call(w, build_input_with_op(2, "Evolve"));
+    ASSERT_FALSE(between.empty()) << "an Evolve while a session is open errored";
     const auto s2 = worker_call(w, build_input_with_op(1, "Step", handle, /*with_rules=*/false));
     ASSERT_FALSE(s2.empty()) << "the second Step errored";
 
