@@ -49,6 +49,24 @@ std::string SessionSlot::already_live_message(uint64_t live_handle) {
            "); this build serves one session at a time";
 }
 
+std::vector<size_t> steered_entries(const std::vector<int64_t>& entry_ids,
+                                    const std::vector<int64_t>& wanted) {
+    std::vector<size_t> out;
+    for (int64_t want : wanted) {
+        const size_t before = out.size();
+        for (size_t i = 0; i < entry_ids.size(); ++i)
+            if (entry_ids[i] == want) out.push_back(i);
+        if (out.size() == before)
+            throw std::runtime_error(
+                "Step: state " + std::to_string(want) + " is not on this session's frontier, so "
+                "there is nothing to continue from it. The frontier is reported as \"Frontier\" "
+                "in every session reply.");
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+}
+
 uint64_t SessionSlot::mint_handle() {
     // 0 is reserved, and handles are never reused.
     static uint64_t next = [] {

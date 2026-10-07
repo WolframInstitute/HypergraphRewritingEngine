@@ -173,13 +173,11 @@ struct HeldSession {
     hg_gpu::EvolveInput  input;
     hg_gpu::EvolveResult last;
     // Host mirror of the device frontier, read back after every run. A steered Step is
-    // resolved against `by_eff` -- built when the frontier was last REPORTED, so the ids it
-    // reads are the ids the caller read. One entry per effective id, first wins: on the
-    // device each frontier entry is its own dedup class under the run's mode, so the map is
-    // 1:1; keeping the host's emplace discipline anyway means the two resolvers stay twins.
+    // resolved by hgffi::steered_entries against `frontier_eff`, built when the frontier was
+    // last reported, so the ids it reads are the ids the caller read.
     std::vector<hg_gpu::StateId>          frontier_ids;
     std::vector<uint32_t>                 frontier_steps;
-    std::unordered_map<int64_t, size_t>   frontier_by_eff;
+    std::vector<int64_t>                  frontier_eff;   // entry i's effective id, as reported
     uint32_t steps_done = 0;
     uint64_t handle     = 0;
     // The Open's identity and relation settings. A held verb is served under these, as the host
@@ -278,15 +276,10 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
         std::vector<uint32_t>        retained_steps;
         if (is_step && !job.session_from.empty()) {
             std::vector<char> take(held.frontier_ids.size(), 0);
-            for (int64_t want : job.session_from) {
-                auto it = held.frontier_by_eff.find(want);
-                if (it == held.frontier_by_eff.end())
-                    throw std::runtime_error(
-                        "Step: state " + std::to_string(want) + " is not on this session's "
-                        "frontier, so there is nothing to continue from it. The frontier is "
-                        "reported as \"Frontier\" in every session reply.");
-                take[it->second] = 1;
-            }
+            const std::vector<int64_t> none;
+            const auto& entry_ids =
+                held.frontier_eff.size() == held.frontier_ids.size() ? held.frontier_eff : none;
+            for (size_t i : hgffi::steered_entries(entry_ids, job.session_from)) take[i] = 1;
             std::vector<hg_gpu::StateId> sel_ids;
             std::vector<uint32_t>        sel_steps;
             for (size_t i = 0; i < take.size(); ++i) {
@@ -314,7 +307,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
         held.state->frontier_host(held.frontier_ids, held.frontier_steps);
         // The map indexes the frontier as last reported; it is rebuilt with this reply, and until
         // then a steered Step resolves nothing rather than an index into the replaced list.
-        held.frontier_by_eff.clear();
+        held.frontier_eff.clear();
         if (!retained_ids.empty()) {
             held.frontier_ids.insert(held.frontier_ids.end(),
                                      retained_ids.begin(), retained_ids.end());
@@ -1114,12 +1107,12 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
         // class can sit on the frontier together while the caller sees one id. The resolution
         // map is rebuilt HERE, where the ids are minted, so a later steered Step reads exactly
         // the identity this reply reported.
-        held.frontier_by_eff.clear();
+        held.frontier_eff.clear();
         std::set<int64_t> seen;
         wxf::WXFValueList frontier;
         for (size_t i = 0; i < held.frontier_ids.size(); ++i) {
             const int64_t eff = rep_of(held.frontier_ids[i]);
-            held.frontier_by_eff.emplace(eff, i);
+            held.frontier_eff.push_back(eff);
             if (seen.insert(eff).second) frontier.push_back(wxf::WXFValue(eff));
         }
         full_result.push_back({wxf::WXFValue("Frontier"), wxf::WXFValue(frontier)});

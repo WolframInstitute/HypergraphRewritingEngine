@@ -2698,3 +2698,27 @@ TEST(StateStatistics, HistogramKeysRoundHalvesToEven) {
     EXPECT_EQ(q.histogram.begin()->first, 0.0);
     EXPECT_EQ(q.histogram.rbegin()->first, 0.5);
 }
+
+// A steered Step from an id expands every frontier state that id stands for. Under
+// CanonicalizeStates -> Full without quotient exploration several raw states of one class sit on
+// the frontier under one id; only the first was expanded, and the id stayed on the frontier.
+TEST(Session, ASteeredStepExpandsEveryStateItsIdStandsFor) {
+    HostBridge host;
+    auto opts = [](wxf::Writer& w) {
+        put_str_list_option(w, "RequestedData", {"NumStates"});
+        put_str_option(w, "CanonicalizeStates", "Full");
+    };
+    const auto opened = run_rewriting_core(branch_job(1, "Open", 0, opts, 2), host);
+    const int64_t h = read_int_key(opened, "Session");
+    ASSERT_GT(h, 0);
+    const std::vector<int64_t> frontier = read_int_list_key(opened, "Frontier");
+    ASSERT_FALSE(frontier.empty());
+    const int64_t id = frontier.front();
+    const auto stepped = run_rewriting_core(
+        session_envelope(kBranchSeed, kBranchLhs, kBranchRhs, 1, "Step", h, false, {id}, opts, 2,
+                         false), host);
+    const std::vector<int64_t> after = read_int_list_key(stepped, "Frontier");
+    EXPECT_EQ(std::count(after.begin(), after.end(), id), 0)
+        << "state " << id << " is still on the frontier after a Step from it";
+    run_rewriting_core(branch_job(0, "Close", h, opts, 2), host);
+}

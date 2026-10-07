@@ -964,19 +964,13 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 // unexplained empty step.
                 std::vector<hgcommon::StateId> only_from;
                 if (!req.session_from.empty()) {
-                    std::unordered_map<int64_t, hgcommon::StateId> by_effective;
-                    for (hgcommon::StateId raw : holder->frontier())
-                        by_effective.emplace(get_effective_state_id(raw), raw);
-                    for (int64_t want : req.session_from) {
-                        auto it = by_effective.find(want);
-                        if (it == by_effective.end())
-                            throw std::runtime_error(
-                                "Step: state " + std::to_string(want) + " is not on this "
-                                "session's frontier, so there is nothing to continue from it. "
-                                "The frontier is reported as \"Frontier\" in every session "
-                                "reply.");
-                        only_from.push_back(it->second);
-                    }
+                    const auto& frontier = holder->frontier();
+                    std::vector<int64_t> entry_ids;
+                    entry_ids.reserve(frontier.size());
+                    for (hgcommon::StateId raw : frontier)
+                        entry_ids.push_back(get_effective_state_id(raw));
+                    for (size_t i : hgffi::steered_entries(entry_ids, req.session_from))
+                        only_from.push_back(frontier[i]);
                 }
                 try {
                     holder->extend(req.steps, only_from);

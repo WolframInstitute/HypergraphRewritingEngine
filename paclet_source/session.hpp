@@ -130,5 +130,12 @@ private:
     SessionState state_ = SessionState::None;
 };
 
+// The frontier entries a steered Step expands, on either device: every entry whose effective id
+// (`entry_ids[i]` for entry i) is one of `wanted`. Several entries share an id when several raw
+// states of one class are on the frontier. Throws std::runtime_error naming the first wanted id
+// with no entry.
+std::vector<size_t> steered_entries(const std::vector<int64_t>& entry_ids,
+                                    const std::vector<int64_t>& wanted);
+
 }  // namespace ffi
 }  // namespace HG_NAMESPACE
