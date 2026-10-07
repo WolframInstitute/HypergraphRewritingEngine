@@ -733,8 +733,8 @@ __device__ inline __noinline__ void qe_capture_multiplicity(const DeviceState& d
 // continued past the depth it last stopped at.
 __device__ inline __noinline__ void qe_redrive(const DeviceState& ds, QeView qe, uint32_t old_bound,
                                                uint32_t slice, uint32_t stride) {
-    QeWork work = qe_work_for(ds, qe, slice);
     if (qe.multiplicity) {
+        QeWork work = qe_work_for(ds, qe, slice);
         const uint32_t n = qe.qm_cursor[0] < qe.qm_capacity ? qe.qm_cursor[0] : qe.qm_capacity;
         DeviceQmCtx c{ds, qe, work};
         for (uint32_t p = slice; p < n; p += stride) {

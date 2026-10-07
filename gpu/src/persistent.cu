@@ -121,11 +121,13 @@ __device__ ExactHashStatus state_key_device(const DeviceState& ds, StateId sid,
 //
 // Every root is compacted into out_ids/out_count, isomorphic ones included, and the queue is
 // seeded from those.
-// One thread per replay driver: the points the previous run's bound left standing.
-__global__ void k_qe_redrive(const __grid_constant__ DeviceState ds, QeView qe, uint32_t old_bound) {
+// One thread per driver: the points the previous run's bound left standing. `slices` drivers:
+// the multiplicity arena's slices when the cascade runs, otherwise one per replay lane.
+__global__ void k_qe_redrive(const __grid_constant__ DeviceState ds, QeView qe, uint32_t old_bound,
+                             uint32_t slices) {
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= qe.work_slices) return;
-    qe_redrive(ds, qe, old_bound, tid, qe.work_slices);
+    if (tid >= slices) return;
+    qe_redrive(ds, qe, old_bound, tid, slices);
 }
 
 // Record `s` on a session's frontier at `step`: the budget refused it and a continuation resumes
@@ -1857,10 +1859,12 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         // A continuation raised the depth bound: drive what the old bound left standing. On the
         // default stream, so it completes before the frontier below is expanded; the replay's
         // rendezvous makes the order of the two irrelevant to the answer.
-        if (qe.enabled && (qe.replay || qe.multiplicity) && qe.work_slices) {
+        const uint32_t slices = qe.multiplicity ? qe.work_slices
+                                                : default_persistent_grid() * kMatchBlockThreads;
+        if (qe.enabled && (qe.replay || qe.multiplicity) && slices) {
             const uint32_t rblock = 64;
-            k_qe_redrive<<<(qe.work_slices + rblock - 1) / rblock, rblock>>>(
-                engine.device(), qe, start_step);
+            k_qe_redrive<<<(slices + rblock - 1) / rblock, rblock>>>(engine.device(), qe,
+                                                                      start_step, slices);
         }
         const uint32_t block = 128;
         const uint32_t seed_grid = (sess_v.frontier_cap + block - 1) / block;

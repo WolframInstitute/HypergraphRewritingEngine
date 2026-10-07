@@ -2450,6 +2450,37 @@ TEST(Session, AContinuationThatChangesTheRecordSetIsRefused) {
     EXPECT_NO_THROW(engine.run(next, session.view(), 2));
 }
 
+// A session continuation that replays without the multiplicity cascade drives the instances the
+// opening run's bound left standing: continued from depth 2 to 4 it reconstructs the raw events
+// and causal pairs one run to depth 4 does.
+TEST(Session, AReplayOnlyContinuationDrivesWhatTheOldBoundLeft) {
+    Workload w;
+    w.name = "growshrink3_replay_session";
+    w.rules = {rule({{0, 1}, {0, 2}}, {{0, 1}, {0, 3}, {1, 3}, {2, 3}}),
+               rule({{0, 1}, {1, 2}}, {{0, 2}}),
+               rule({{0, 1}}, {{0, 2}, {2, 1}})};
+    w.initial_state = {{0u, 1u}, {0u, 2u}};
+    w.num_steps = 2;
+    w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+    hg_gpu::EvolveInput in = make_input(w);
+    in.event_canonicalization = hg_gpu::EventCanonicalizationMode::Automatic;
+    in.explore_from_canonical_states_only = true;
+    in.record = hgcommon::RecordSet{true, false, false};
+    in.record.multiplicities = false;
+    hg_gpu::EvolveInput four = in;
+    four.num_steps = 4;
+    const hg_gpu::EvolveResult ref = hg_gpu::evolve(four);
+    ASSERT_GT(ref.reconstructed_events, 0u);
+    const hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(four);
+    hg_gpu::GpuSession session(cfg.max_states, cfg.max_events);
+    hg_gpu::Engine engine(cfg);
+    engine.run(in, session.view(), 0);
+    const hg_gpu::EvolveResult got = engine.run(four, session.view(), 2);
+    EXPECT_EQ(got.reconstructed_events, ref.reconstructed_events);
+    EXPECT_EQ(got.reconstructed_raw_events, ref.reconstructed_raw_events);
+    EXPECT_EQ(got.reconstructed_causal_pairs, ref.reconstructed_causal_pairs);
+}
+
 TEST(QuotientReconstruction, ClassArraysCoverEveryRepresentativeStateId) {
     Workload w;
     w.name = "growshrink3_automatic";
