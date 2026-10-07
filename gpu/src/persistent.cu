@@ -755,9 +755,11 @@ __global__ void k_persistent_evolve(
     // draw's key. One predicate answers it for the roots and for every child; see its note.
     const bool need_ranks = run_needs_edge_ranks(event_keys, qe.enabled != 0,
                                                  ds.transition_rate, ds.num_rule_weights,
-                                                 ds.matches_per_state_rule);
+                                                 hgcommon::drain_selects(ds.matches_per_state_rule,
+                                        ds.max_successor_states_per_parent, 0u));
     const bool need_exact = run_needs_exact_hash(event_keys, ds.transition_rate,
-                                                 ds.num_rule_weights, ds.matches_per_state_rule);
+                                                 ds.num_rule_weights, hgcommon::drain_selects(ds.matches_per_state_rule,
+                                        ds.max_successor_states_per_parent, 0u));
 
     if (blockIdx.x == 0) {
         if (threadIdx.x != 0) return;
@@ -1759,7 +1761,8 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         const bool want_exact =
             state_mode != CanonicalizationMode::Full &&
             run_needs_exact_hash(event_keys, dsx.transition_rate, dsx.num_rule_weights,
-                                 dsx.matches_per_state_rule);
+                                 hgcommon::drain_selects(dsx.matches_per_state_rule,
+                                        dsx.max_successor_states_per_parent, 0u));
         exact_v = reuse_map(ps.exact, want_exact ? engine.config().max_states * 2u : 8u, &clears)
                       .view();
     }
@@ -1773,7 +1776,8 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         engine.config().keyed_rewrites, state_mode == CanonicalizationMode::Full,
         /*positional_events=*/false,
         hgcommon::run_reads_rank_tuples(event_keys, dsk.transition_rate, dsk.num_rule_weights,
-                                        dsk.matches_per_state_rule));
+                                        hgcommon::drain_selects(dsk.matches_per_state_rule,
+                                        dsk.max_successor_states_per_parent, 0u)));
     if (keyed) {
         engine.ensure_keyed();
         dsk = engine.device();
@@ -1897,9 +1901,11 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
             dsv, d_states, n,
             session ? sess_v.states : canonical_owner->view(), state_mode,
             run_needs_exact_hash(event_keys, dsv.transition_rate, dsv.num_rule_weights,
-                                 dsv.matches_per_state_rule),
+                                 hgcommon::drain_selects(dsv.matches_per_state_rule,
+                                        dsv.max_successor_states_per_parent, 0u)),
             run_needs_edge_ranks(event_keys, qe.enabled != 0, dsv.transition_rate,
-                                 dsv.num_rule_weights, dsv.matches_per_state_rule),
+                                 dsv.num_rule_weights, hgcommon::drain_selects(dsv.matches_per_state_rule,
+                                        dsv.max_successor_states_per_parent, 0u)),
             pool_v, qc, qe, ev, forms_v, exact_v, max_steps, sess_v);
     }
 

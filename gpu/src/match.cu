@@ -206,10 +206,12 @@ struct MatchJoinCtx {
 //   kDraw       emit the matches that survive their draw; record the state's minimum rank
 //               and whether any match survived
 //   kSpineEmit  emit the one match whose rank is that minimum
+//   kParentCount  record each match's rank and rule, emit nothing   } the per-state cap: the k
+//   kParentEmit   emit a match while its rank's quota remains       } lowest-ranked transitions
 // The rank is hgcommon::transition_rank and the draw hgcommon::transition_survives, both keyed
 // on transition_key_device: the host's cap_at_drain, transition_survives and spine_at_drain
 // call the same functions on the same key.
-enum class EmitMode : uint8_t { kCapCount, kCapEmit, kDraw, kSpineEmit };
+enum class EmitMode : uint8_t { kCapCount, kCapEmit, kDraw, kSpineEmit, kParentCount, kParentEmit };
 
 struct EmitCtl {
     EmitMode            mode;
@@ -221,6 +223,12 @@ struct EmitCtl {
     uint64_t*           s_ranks;
     unsigned long long* s_min_rank;
     uint32_t*           s_survived;
+    // kParentCount: the rule of each recorded rank. kParentEmit: the kept ranks (an entry per
+    // kept transition, so equal ranks appear once per transition kept) and a bit of quota each.
+    uint16_t*           s_rules = nullptr;
+    const uint64_t*     s_keep_rank = nullptr;
+    uint32_t*           s_keep_quota = nullptr;
+    uint32_t            keep_n = 0;
 };
 
 // Not inlined: it is called from the join's innermost completion callback, which is
@@ -255,6 +263,24 @@ __device__ __noinline__ bool emit_admit(const DeviceState& ds, StateId state_id,
     }
     case EmitMode::kSpineEmit:
         return r == c.threshold && atomicAdd(c.s_emitted, 1u) == 0u;
+    case EmitMode::kParentCount: {
+        const uint32_t at = atomicAdd(c.s_seen, 1u);
+        if (at < kDrainCapBuffer) {
+            c.s_ranks[at] = r;
+            c.s_rules[at] = static_cast<uint16_t>(rid);
+        } else {
+            atomicExch(c.s_overflow, 1u);
+        }
+        return false;
+    }
+    case EmitMode::kParentEmit:
+        // Equal ranks name automorphic transitions, so any of them takes the entry's place.
+        for (uint32_t i = 0; i < c.keep_n; ++i) {
+            if (c.s_keep_rank[i] != r) continue;
+            const uint32_t bit = 1u << (i & 31u);
+            if (atomicAnd(c.s_keep_quota + (i >> 5), ~bit) & bit) return true;
+        }
+        return false;
     }
     return false;
 }
@@ -330,6 +356,83 @@ __device__ __noinline__ void match_state_rule_pass(
     drive_join();
 }
 
+// MaxSuccessorStatesPerParent, in the block of the state's rule 0, over every rule: the host's
+// cap_at_drain. The first pass ranks every transition of the state; the block then keeps, in
+// (rank, recorded position) order, the cap_k lowest of each rule under MatchesPerStateRule and the
+// parent_k lowest of those; the second pass emits a transition while a kept entry of its rank has
+// quota. Equal ranks are automorphic transitions, so which of them a quota admits is the host's
+// choice up to isomorphism. No draw is applied to the kept transitions, as on the host.
+__device__ __noinline__ void match_state_parent_capped(
+        const DeviceState& ds, const DeviceRule* rules, StateId state_id, uint32_t step,
+        typename Pool<MatchRecord>::DeviceView out, uint32_t* s_seen, uint32_t* s_overflow,
+        uint32_t* s_keep_n, uint64_t* s_ranks) {
+    const uint32_t cap_k = ds.matches_per_state_rule;
+    const uint32_t parent_k = ds.max_successor_states_per_parent;
+    __shared__ uint16_t s_rules[kDrainCapBuffer];
+    __shared__ uint8_t  s_kept[kDrainCapBuffer];
+    __shared__ uint32_t s_quota[kDrainCapBuffer / 32u];
+
+    if (threadIdx.x == 0) { *s_seen = 0; *s_overflow = 0; *s_keep_n = 0; }
+    for (uint32_t w = threadIdx.x; w < kDrainCapBuffer / 32u; w += blockDim.x) s_quota[w] = 0u;
+    __syncthreads();
+    EmitCtl count{EmitMode::kParentCount, 0u, 0u, s_seen, s_overflow, nullptr,
+                  s_ranks, nullptr, nullptr};
+    count.s_rules = s_rules;
+    for (uint32_t r = 0; r < ds.num_rules; ++r)
+        match_state_rule_pass(ds, rules, state_id, r, step, out, &count);
+    __syncthreads();
+
+    if (*s_overflow) {
+        // More transitions than the buffer can rank: the kept set cannot be identified, so every
+        // transition is emitted rather than a wrong k. Recorded, which puts the run under the
+        // engine's partial-result contract.
+        if (threadIdx.x == 0) ds.errors.record(ErrorKind::kDrainCapBufferFull);
+        __syncthreads();
+        for (uint32_t r = 0; r < ds.num_rules; ++r)
+            match_state_rule_pass(ds, rules, state_id, r, step, out, nullptr);
+        return;
+    }
+    const uint32_t n = *s_seen;
+    auto before = [&](uint32_t a, uint32_t b) {
+        return s_ranks[a] != s_ranks[b] ? s_ranks[a] < s_ranks[b] : a < b;
+    };
+    // Kept by MatchesPerStateRule: fewer than cap_k of its rule come before it.
+    for (uint32_t i = threadIdx.x; i < n; i += blockDim.x) {
+        uint32_t ahead = 0;
+        if (cap_k != 0u)
+            for (uint32_t j = 0; j < n; ++j)
+                if (s_rules[j] == s_rules[i] && before(j, i)) ++ahead;
+        s_kept[i] = (cap_k == 0u || ahead < cap_k) ? 1u : 0u;
+    }
+    __syncthreads();
+    // Kept by the per-state cap: fewer than parent_k kept transitions come before it. Written to
+    // s_rules, which nothing reads past the loop above.
+    for (uint32_t i = threadIdx.x; i < n; i += blockDim.x) {
+        uint32_t ahead = 0;
+        if (s_kept[i])
+            for (uint32_t j = 0; j < n; ++j)
+                if (s_kept[j] && before(j, i)) ++ahead;
+        s_rules[i] = (s_kept[i] && ahead < parent_k) ? 1u : 0u;
+    }
+    __syncthreads();
+    // The kept ranks, compacted in place by one thread: each lands at or before its slot.
+    if (threadIdx.x == 0) {
+        uint32_t w = 0;
+        for (uint32_t i = 0; i < n; ++i)
+            if (s_rules[i] == 1u) s_ranks[w++] = s_ranks[i];
+        *s_keep_n = w;
+        for (uint32_t i = 0; i < w; ++i) s_quota[i >> 5] |= 1u << (i & 31u);
+    }
+    __syncthreads();
+    EmitCtl keep{EmitMode::kParentEmit, 0u, 0u, nullptr, nullptr, nullptr, nullptr, nullptr,
+                 nullptr};
+    keep.s_keep_rank = s_ranks;
+    keep.s_keep_quota = s_quota;
+    keep.keep_n = *s_keep_n;
+    for (uint32_t r = 0; r < ds.num_rules; ++r)
+        match_state_rule_pass(ds, rules, state_id, r, step, out, &keep);
+}
+
 // The entry point: one block, one (state, rule) pair. Unsampled and uncapped, a single pass that
 // emits every match.
 //
@@ -349,8 +452,9 @@ __device__ void match_state_rule(const DeviceState& ds,
                                  uint32_t          step,
                                  typename Pool<MatchRecord>::DeviceView out) {
     const uint32_t cap_k = ds.matches_per_state_rule;
+    const uint32_t parent_k = ds.max_successor_states_per_parent;
     const bool sampling = ds.transition_rate < 1.0 || ds.num_rule_weights != 0u;
-    if (cap_k == 0u && !sampling) {
+    if (cap_k == 0u && parent_k == 0u && !sampling) {
         match_state_rule_pass(ds, rules, state_id, rid, step, out, nullptr);
         return;
     }
@@ -362,6 +466,13 @@ __device__ void match_state_rule(const DeviceState& ds,
     __shared__ uint64_t s_threshold;
     __shared__ unsigned long long s_min_rank;
     __shared__ uint64_t s_ranks[kDrainCapBuffer];
+
+    if (parent_k != 0u) {
+        if (rid == 0u)
+            match_state_parent_capped(ds, rules, state_id, step, out, &s_seen, &s_overflow,
+                                      &s_emitted, s_ranks);
+        return;
+    }
 
     if (cap_k == 0u) {
         if (rid != 0u) return;

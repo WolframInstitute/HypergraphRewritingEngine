@@ -32,19 +32,19 @@ using hgcommon::event_keys_need_ranks;
 // swapped parameters -- which reads like a seeding bug and is not one.
 HG_HD inline bool run_needs_edge_ranks(EventSignatureKeys event_keys, bool expansion_enabled,
                                        double transition_rate, uint32_t num_rule_weights,
-                                       uint32_t matches_per_state_rule) {
+                                       uint32_t drain_selection) {
     return event_keys_need_ranks(event_keys) || expansion_enabled ||
-           transition_rate < 1.0 || num_rule_weights != 0u || matches_per_state_rule != 0u;
+           transition_rate < 1.0 || num_rule_weights != 0u || drain_selection != 0u;
 }
 
 // Whether this run reads each state's exact isomorphism hash (state_exact_hash): the event
-// identity does, and so does the transition key of the draw, the spine and the per-state cap
-// (transition_key_device). In Full mode it is the state's key; in None and Automatic it is a
+// identity does, and so does the transition key of the draw, the spine and the drain selections
+// (transition_key_device; drain_selection is hgcommon::drain_selects). In Full mode it is the state's key; in None and Automatic it is a
 // separate individualization-refinement pass.
 HG_HD inline bool run_needs_exact_hash(EventSignatureKeys event_keys, double transition_rate,
-                                       uint32_t num_rule_weights, uint32_t matches_per_state_rule) {
+                                       uint32_t num_rule_weights, uint32_t drain_selection) {
     return event_keys != hgcommon::EVENT_SIG_NONE || transition_rate < 1.0 ||
-           num_rule_weights != 0u || matches_per_state_rule != 0u;
+           num_rule_weights != 0u || drain_selection != 0u;
 }
 
 // Rank of `edge` inside `sid`, from the array the canonicalization pass filled. A linear scan

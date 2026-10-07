@@ -1578,9 +1578,8 @@ TEST(Sampling, RuleWeightsAgreeAcrossEngines) {
         << "silencing a rule removed nothing, so the weight was not applied";
 }
 
-// THE TWO HARD BOUNDS HOLD ON THE DEVICE. Which states meet them is arrival-ordered and not
-// reproducible -- the same statement the host makes -- so what is asserted is the BOUND, plus
-// the fact that it bound something.
+// THE TWO HARD BOUNDS HOLD ON THE DEVICE: each binds something, and each leaves more than the root,
+// since a run that faulted returns nothing and would satisfy any upper bound.
 TEST(Sampling, DeviceHonoursTheHardBounds) {
     Workload base;
     base.name = "bounds";
@@ -1597,11 +1596,13 @@ TEST(Sampling, DeviceHonoursTheHardBounds) {
     const size_t capped_parent = run_gpu(per_parent).raw_states;
     EXPECT_LT(capped_parent, uncapped)
         << "MaxSuccessorStatesPerParent bound nothing on the device";
+    EXPECT_GT(capped_parent, 1u) << "the per-parent capped run returned no successor";
 
     Workload per_step = base;
     per_step.max_states_per_step = 2;
     const size_t capped_step = run_gpu(per_step).raw_states;
     EXPECT_LT(capped_step, uncapped) << "MaxStatesPerStep bound nothing on the device";
+    EXPECT_GT(capped_step, 1u) << "the per-step capped run returned no successor";
 }
 
 // THE PER-(state, rule) CAP KEEPS THE SAME k ON BOTH ENGINES.
@@ -1650,6 +1651,41 @@ TEST(Sampling, DrainCapKeepsTheSameMatchesAcrossEngines) {
             EXPECT_LT(gpu.canonical_state_hashes.size(),
                       run_gpu(uncapped).canonical_state_hashes.size())
                 << w.name << " k=" << k << ": the cap removed nothing on the device";
+        }
+    }
+}
+
+// MaxSuccessorStatesPerParent keeps the k lowest-ranked transitions of each state on both engines:
+// the host at the state's drain, the device in the block that matches every rule of the state. A
+// transition not kept is not taken on either. Before the device took the same choice, the host
+// gave 4 states and the device 7 on the branch rule at depth 3 with k = 1.
+TEST(Sampling, PerParentCapKeepsTheSameTransitionsAcrossEngines) {
+    Workload one_edge;
+    one_edge.name = "parentcap";
+    one_edge.rules = {rule({{0, 1}}, {{0, 2}, {2, 1}}),
+                      rule({{0, 1}}, {{1, 0}})};
+    one_edge.initial_states = {{{0u, 1u}}};
+    one_edge.num_steps = 4;
+    Workload join;
+    join.name = "parentcap-join";
+    join.rules = {rule({{0, 1}, {0, 2}}, {{0, 2}, {0, 3}, {1, 3}, {2, 3}})};
+    join.initial_states = {{{0u, 0u}, {0u, 0u}}};
+    join.num_steps = 3;
+
+    for (Workload w : {one_edge, join}) {
+        w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+        w.random_seed = 0x5EED;
+        for (uint32_t mpsr : {0u, 2u}) {
+            for (uint32_t k : {1u, 2u}) {
+                w.max_successor_states_per_parent = k;
+                w.matches_per_state_rule = mpsr;
+                NormalizedResult cpu = run_cpu(w);
+                NormalizedResult gpu = run_gpu(w);
+                EXPECT_EQ(cpu.canonical_state_hashes, gpu.canonical_state_hashes)
+                    << w.name << " k=" << k << " mpsr=" << mpsr << ": different states";
+                EXPECT_EQ(cpu.event_keys, gpu.event_keys)
+                    << w.name << " k=" << k << " mpsr=" << mpsr << ": different transitions";
+            }
         }
     }
 }

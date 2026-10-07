@@ -286,12 +286,6 @@ __device__ inline bool state_retained(const DeviceState& ds, StateId sid, uint32
         cuda::atomic_ref<uint32_t, cuda::thread_scope_device> c(ds.states_per_step[step]);
         if (c.fetch_add(1u, cuda::memory_order_relaxed) >= ds.max_states_per_step) return false;
     }
-    if (ds.max_successor_states_per_parent != 0u && parent_sid < ds.max_states) {
-        cuda::atomic_ref<uint32_t, cuda::thread_scope_device> c(
-            ds.successors_per_parent[parent_sid]);
-        if (c.fetch_add(1u, cuda::memory_order_relaxed) >= ds.max_successor_states_per_parent)
-            return false;
-    }
     return true;
 }
 

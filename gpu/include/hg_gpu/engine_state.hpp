@@ -90,7 +90,6 @@ struct DeviceState {
     uint32_t* states_per_step;                  // [max_steps + 2]
     uint32_t  max_states_per_step_slots;
     uint32_t  max_successor_states_per_parent;
-    uint32_t* successors_per_parent;            // [max_states]
     // Kept per (state, rule), chosen by rank at the point one block has found every match for
     // that pair -- the device's drain. 0 is unlimited.
     uint32_t  matches_per_state_rule;
@@ -585,7 +584,6 @@ private:
     uint32_t*                          states_per_step_        = nullptr;
     uint32_t                           states_per_step_slots_  = 0;
     uint32_t                           max_succ_per_parent_    = 0;
-    uint32_t*                          successors_per_parent_  = nullptr;
     uint32_t                           matches_per_state_rule_ = 0;
     uint32_t                           num_rules_              = 0;
     uint32_t*                          state_edge_orbit_       = nullptr;

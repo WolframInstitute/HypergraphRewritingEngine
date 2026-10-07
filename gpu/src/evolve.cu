@@ -407,9 +407,11 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         // whether there is anywhere to put them. Without it the kernel writes through a null
         // pointer, the run faults, and the grow-and-retry loop reports the engine as too large
         // for the device rather than naming the real fault.
-        const bool sampling_needs_ranks =
-            in.transition_rate < 1.0 || !in.rule_weights.empty() ||
-            in.matches_per_state_rule != 0u;
+        const bool sampling_needs_ranks = hgcommon::sampling_active(
+            in.transition_rate, in.rule_weights.data(),
+            static_cast<uint32_t>(in.rule_weights.size()),
+            hgcommon::drain_selects(in.matches_per_state_rule,
+                                    in.max_successor_states_per_parent, 0u));
         if (sampling_needs_ranks ||
             (ekeys & (hgcommon::EventKey_ConsumedEdges | hgcommon::EventKey_ProducedEdges))) {
             engine.ensure_edge_ranks();

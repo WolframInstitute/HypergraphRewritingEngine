@@ -236,7 +236,6 @@ EngineState::~EngineState() {
         if (state_edge_ids_)         cudaFree(state_edge_ids_);
         if (rule_weights_dev_)       cudaFree(rule_weights_dev_);
         if (states_per_step_)        cudaFree(states_per_step_);
-        if (successors_per_parent_)  cudaFree(successors_per_parent_);
         // The scalar counters and the pool counters are slices of block_, which frees itself;
         // nothing here is freed individually.
         if (launch_scratch_.rules)        cudaFree(launch_scratch_.rules);
@@ -364,16 +363,6 @@ void EngineState::set_sampling(double transition_rate, const double* weights, ui
             HG_CUDA_CHECK(cudaMemset(states_per_step_, 0, sizeof(uint32_t) * states_per_step_slots_),
                           "EngineState states_per_step clear");
         }
-        if (max_succ_per_parent_) {
-            if (!successors_per_parent_) {
-                HG_CUDA_CHECK(cudaMalloc(&successors_per_parent_,
-                                         sizeof(uint32_t) * cfg_.max_states),
-                              "EngineState successors_per_parent alloc");
-            }
-            HG_CUDA_CHECK(cudaMemset(successors_per_parent_, 0,
-                                     sizeof(uint32_t) * cfg_.max_states),
-                          "EngineState successors_per_parent clear");
-        }
     }
 
 DeviceState EngineState::device() const {
@@ -405,7 +394,6 @@ DeviceState EngineState::device() const {
         d.max_successor_states_per_parent  = max_succ_per_parent_;
         d.matches_per_state_rule           = matches_per_state_rule_;
         d.num_rules                        = num_rules_;
-        d.successors_per_parent            = successors_per_parent_;
         d.state_edge_orbit        = state_edge_orbit_;
         d.state_num_orbits        = state_num_orbits_;
         d.keyed                   = KeyedView{};
