@@ -1565,6 +1565,42 @@ TEST(GpuBinaryGate, AQuotientSessionSteppedHoldsWhatOneEvolveReconstructs) {
     worker_stop(w);
 }
 
+// A quotient session opened for counts serves the relation lists a later Step asks for: the Open
+// records everything a session may be asked later, the lists included.
+void quotient_relation_list_options(wxf::Writer& w) {
+    put_str_option(w, "CanonicalizeStates", "Full");
+    put_str_option(w, "ExploreFromCanonicalStatesOnly", "True");
+    put_str_list_option(w, "RequestedData", {"CausalEdges", "BranchialEdges"});
+}
+TEST(GpuBinaryGate, AQuotientSessionServesRelationListsItsOpenDidNotName) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    const auto one_shot = worker_call(w, branch_job(2, "Evolve", 0, quotient_relation_list_options, 3));
+    if (one_shot.empty()) {
+        worker_stop(w);
+        GTEST_SKIP() << "the worker returned no result for a plain Evolve (no usable device?)";
+    }
+    const int64_t ref_causal = count_list_entries(one_shot, "CausalEdges");
+    const int64_t ref_branchial = count_list_entries(one_shot, "BranchialEdges");
+    ASSERT_GT(ref_branchial, 0) << "this workload branches, so one Evolve lists branchial pairs";
+    const auto opened = worker_call(w, branch_job(1, "Open", 0, quotient_session_options, 3));
+    const int64_t handle = read_int_key(opened, "Session");
+    ASSERT_GT(handle, 0);
+    const auto s1 = worker_call(w, branch_job(1, "Step", handle, quotient_relation_list_options, 3));
+    ASSERT_FALSE(s1.empty());
+    EXPECT_EQ(count_list_entries(s1, "CausalEdges"), ref_causal);
+    EXPECT_EQ(count_list_entries(s1, "BranchialEdges"), ref_branchial);
+    worker_call(w, branch_job(0, "Close", handle, quotient_session_options, 3));
+    worker_stop(w);
+}
+
 TEST(GpuBinaryGate, SessionVerbsThroughTheWorkerMatchOneEvolveOfTheSameDepth) {
     {
         std::ifstream probe(gpu_binary_path(), std::ios::binary);

@@ -124,11 +124,12 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
         const hgmarshal::GraphPropertyNeeds gneeds =
             hgmarshal::graph_property_needs(job.graph_properties);
         in.record = hgmarshal::record_set_for(job, gneeds);
-        // An Open materialises the reconstructed relations as pair vectors when it reads them as
-        // data or graphs; a counts-only request keeps this off.
-        if (job.session_op == "Open")
-            in.materialize_relations = job.include_causal_edges || job.include_branchial_edges ||
-                                       gneeds.causal || gneeds.branchial;
+        // The reconstructed relations as pair vectors: read by "CausalEdges", "BranchialEdges"
+        // and the graphs over them; a session may be asked for either later. A counts-only
+        // request keeps this off.
+        in.materialize_relations = job.include_causal_edges || job.include_branchial_edges ||
+                                   gneeds.causal || gneeds.branchial ||
+                                   job.session_op == "Open";
         // The reconstructed applications as events and graph vertices: read by "Events" and by
         // every graph over events; a session may be asked for either later.
         in.materialize_events = job.include_events || gneeds.events || job.session_op == "Open";
