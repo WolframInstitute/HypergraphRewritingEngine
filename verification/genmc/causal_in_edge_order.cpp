@@ -1,5 +1,6 @@
 // GENMC-LINK: engine
 // GENMC-DEFINES: -DHG_CONCURRENT_MAP_INITIAL_CAPACITY=2
+// GENMC-ARGS: --disable-estimation
 //
 // GenMC harness: an event's in-edges are recorded in the one order the online transitive
 // reduction is exact under, while the producer map grows underneath the registration.
@@ -75,7 +76,6 @@ int main() {
     g_arena = &arena;
     g_cg = &cg;
     cg.set_transitive_reduction(true);
-    cg.set_ids_are_topological(true);
 
     // The chain 0 -> 1 -> 2, each produced edge registered before it is consumed.
     cg.set_edge_producer(CanonicalEdgeKey{e0}, 0, e0);
