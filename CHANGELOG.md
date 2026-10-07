@@ -43,6 +43,22 @@ User-visible changes since v1.0.0-rc1:
   state's transitions, so seeded samples differ from rc1's; the GPU transitive reduction was
   inexact past its local arrays; GPU quotient exploration did not capture states above a size
   limit.
+- `"MaxSuccessorStatesPerParent"`, `"MaxStatesPerStep"` and `"UniformRandom"` with
+  `"MatchesPerStep"` keep the lowest-ranked transitions, ranked from each transition's identity
+  and `"RandomSeed"`. A transition not kept is not taken. The kept set is the same at any worker
+  count and on both devices.
+- `"ExplorationProbability"` keeps the same states on both devices.
+- `"RandomSeed" -> Automatic` is the seed 0 for the sampling draws, so a sampled run without a
+  seed gives the same result every time. A generated initial condition still draws a new seed.
+- Packed arrays are accepted as initial states and as `"RuleWeights"`.
+- A refused session verb reports the engine's reason in `HGSessionOpen::refused`.
+- Session handles from the CPU and GPU workers, or from a restarted worker, are distinct.
+- Under `"Delivery" -> "Delta"`, a branchial graph at the final step is the graph of the current
+  final step.
+- `HGEvolve::overflow` states the reason for a partial result and is issued on either device.
+  A capture dropped during reconstruction is reported as `CapturesDropped`.
+- An error inside a worker is reported as an error of the run on the CPU; it could end the
+  process. After an error the run stops promptly.
 
 ---
 
