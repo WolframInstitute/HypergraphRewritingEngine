@@ -727,6 +727,18 @@ private:
     // capacity limit: the run is over, nothing else observes this, and the alternative is making
     // the whole error path non-const to append one string.
     mutable std::vector<std::string> warnings_;
+    // The settings the last evolve() ran under, after configure_identity_and_quotient adjusted
+    // them. evolve_more extends what they built and refuses to run under different ones.
+    struct OpeningSettings {
+        RecordSet record;
+        StateCanonicalizationMode states = StateCanonicalizationMode::Full;
+        hgcommon::EventSignatureKeys keys = hgcommon::EVENT_SIG_NONE;
+        bool positional = false;
+        bool transitive_reduction = false;
+        bool quotient = false;
+    };
+    OpeningSettings current_settings() const;
+    OpeningSettings opening_;
     // Indices into warnings_ of the notices that say the result is truncated (a capacity limit).
     mutable std::vector<size_t> truncation_warnings_;
 

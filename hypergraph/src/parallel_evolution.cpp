@@ -17,6 +17,8 @@
 #include <limits>
 #include <numeric>
 #include <random>
+#include <stdexcept>
+#include <string>
 #include <thread>
 #include <unordered_set>
 
@@ -1068,6 +1070,20 @@ void ParallelEvolutionEngine::evolve_more(size_t additional_steps,
             "set_continuable(true) before evolve(); resuming without it would return the "
             "unchanged graph, which reads as a converged one.");
     }
+    {
+        const OpeningSettings now = current_settings();
+        const char* what = !hgcommon::same_record_set(now.record, opening_.record) ? "record set"
+                         : now.states != opening_.states ? "state canonicalization"
+                         : now.keys != opening_.keys ? "event signature keys"
+                         : now.positional != opening_.positional ? "positional event identity"
+                         : now.transitive_reduction != opening_.transitive_reduction
+                             ? "transitive reduction"
+                         : now.quotient != opening_.quotient ? "quotient exploration"
+                         : nullptr;
+        if (what)
+            throw std::invalid_argument(std::string("evolve_more: a continuation must use the "
+                                                    "opening evolve()'s ") + what);
+    }
     // No early return on an empty frontier. An exploration can have nothing deferred and the
     // run still be unfinished: quotient exploration matches each CLASS once, so a system with
     // one canonical class settles at depth zero with no frontier at all, while the
@@ -1522,6 +1538,18 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
     } else {
         hg_->set_qc_spawn(nullptr, nullptr);
     }
+    opening_ = current_settings();
+}
+
+ParallelEvolutionEngine::OpeningSettings ParallelEvolutionEngine::current_settings() const {
+    OpeningSettings s;
+    s.record = hg_->record_set();
+    s.states = hg_->state_canonicalization_mode();
+    s.keys = hg_->event_signature_keys();
+    s.positional = hg_->positional_event_identity();
+    s.transitive_reduction = hg_->causal_graph().transitive_reduction_enabled();
+    s.quotient = explore_from_canonical_states_only_;
+    return s;
 }
 
 bool ParallelEvolutionEngine::should_explore(uint64_t invariant_key) const {

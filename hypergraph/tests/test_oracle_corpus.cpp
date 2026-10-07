@@ -11,6 +11,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <stdexcept>
 #include <string>
 
 #include "hgcommon/quotient_multiplicity_core.hpp"
@@ -1337,4 +1338,38 @@ TEST(RuleAnalysis, ForwardingIsChosenForConnectedJoinsOnly) {
     EXPECT_FALSE(analyze_rules({single}).forwarding_pays);
     EXPECT_TRUE(analyze_rules({disc, chain}).forwarding_pays);
     EXPECT_FALSE(analyze_rules({disc, single}).forwarding_pays);
+}
+
+// A continuation extends captures, instances and per-class branchial sums built under the opening
+// evolve()'s record set and modes, so evolve_more refuses to run after they change; it runs when
+// they are restored. Opened at depth 2 with branchial off and continued to depth 4 with it on,
+// multi-rule reported 88 branchial pairs against 108 from one run.
+TEST(OracleCorpus, AContinuationThatChangesTheRecordSetIsRefused) {
+    const std::vector<oracle::Case> cases = oracle::corpus();
+    const oracle::Case* mr = nullptr;
+    for (const auto& c : cases)
+        if (std::string(c.name) == "multi-rule") mr = &c;
+    ASSERT_NE(mr, nullptr);
+    Hypergraph hg;
+    hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+    hg.set_event_signature_keys(hgcommon::EVENT_SIG_AUTOMATIC);
+    RecordSet opening;
+    opening.branchial = false;
+    hg.set_record_set(opening);
+    ParallelEvolutionEngine e(&hg, 4);
+    e.set_transitive_reduction(true);
+    e.set_explore_from_canonical_states_only(true);
+    for (const auto& r : mr->rules) e.add_rule(r);
+    e.set_continuable(true);
+    e.evolve(mr->init, 2);
+
+    RecordSet changed = opening;
+    changed.branchial = true;
+    hg.set_record_set(changed);
+    EXPECT_THROW(e.evolve_more(2), std::invalid_argument);
+    hg.set_record_set(opening);
+    e.set_transitive_reduction(false);
+    EXPECT_THROW(e.evolve_more(2), std::invalid_argument);
+    e.set_transitive_reduction(true);
+    EXPECT_NO_THROW(e.evolve_more(2));
 }

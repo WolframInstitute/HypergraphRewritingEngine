@@ -244,6 +244,14 @@ struct RecordSet {
     bool multiplicities = false;
 };
 
+// Whether two record sets ask for the same relations. A session continuation must record what
+// its opening call recorded: both engines refuse one that does not.
+HG_HD inline bool same_record_set(const RecordSet& a, const RecordSet& b) {
+    return a.causal == b.causal && a.branchial == b.branchial &&
+           a.state_events == b.state_events && a.raw_events == b.raw_events &&
+           a.raw_counts_only == b.raw_counts_only && a.multiplicities == b.multiplicities;
+}
+
 
 // Canonical hash of the state holding no edges. Any rule whose RHS is empty reaches it, so it
 // is an ordinary canonical form and needs a hash of its own -- a canonicalizer given no edges

@@ -126,15 +126,9 @@ EventSignatureKeys event_keys_for(EventCanonicalizationMode m) {
 
 namespace {
 
-bool same_record(const hgcommon::RecordSet& a, const hgcommon::RecordSet& b) {
-    return a.causal == b.causal && a.branchial == b.branchial &&
-           a.state_events == b.state_events && a.raw_events == b.raw_events &&
-           a.raw_counts_only == b.raw_counts_only && a.multiplicities == b.multiplicities;
-}
-
 // The setting in which `in` differs from the session's opening call, or nullptr.
 const char* continuation_mismatch(const EvolveInput& open, const EvolveInput& in) {
-    if (!same_record(open.record, in.record)) return "record set";
+    if (!hgcommon::same_record_set(open.record, in.record)) return "record set";
     if (open.canonicalization != in.canonicalization) return "canonicalization";
     if (open.event_canonicalization != in.event_canonicalization)
         return "event canonicalization";
