@@ -1,5 +1,5 @@
 // GENMC-LINK: engine
-// GENMC-ARGS: --unroll=2
+// GENMC-ARGS: --unroll=65536
 // GENMC-DEFINES: -DHG_SEGMENTED_ARRAY_MAX_SEGMENTS=8 -DHG_SEGMENTED_ARRAY_MAX_SHIFT=4 -DHG_CONCURRENT_MAP_INITIAL_CAPACITY=16 -DHG_JOB_QUEUE_CAPACITY=16 -DHG_JOB_INJECTOR_CAPACITY=64 -DHG_MAX_ARENA_WORKERS=8 -DHG_KEY_SET_SHARDS=4 -DHG_MAX_PATTERN_EDGES=4 -DHG_MAX_CACHED_SIGS=8 -DHG_ARENA_BLOCK_SIZE=512
 //
 // GenMC harness: TWO REWRITES OF ONE PARENT UNDER QUOTIENT RECONSTRUCTION, through the real
@@ -15,13 +15,13 @@
 // which verification builds leave off. The rebuild counter is NOT asserted -- a miss is a
 // schedule fact and rebuilding is the correct response to it.
 //
-// WHAT IS BOUNDED. Two rewrites on one parent at depth 1; every loop unrolled twice, which ends
-// a thread that exceeds it as blocked, never as an error.
+// WHAT IS BOUNDED. Two rewrites on one parent at depth 1; every loop unrolled to the bound, which
+// ends a thread that exceeds it as blocked, never as an error.
 //
-// THE END IS NOT REACHED. The HG_HARNESS_CALIBRATE_END assertion is not reported at any bound
-// tried, --unroll=2 through --unroll=1024 (1 or 2 complete executions each), so main does not
-// reach the assertions after the joins and the verdict covers a prefix of main. The same
-// calibration is reported for engine_construct at --unroll=1024.
+// THE END IS REACHED AT --unroll=65536 (measured 2026-10-07): the HG_HARNESS_CALIBRATE_END
+// assertion is reported there. At 2048 and 16384 a memory intrinsic lowered to a loop is longer
+// than the bound and the checker stops on it. The property run at 65536 explored 1,000 executions
+// in 28 minutes with no error and 529 revisits pending, so the verdict is not exhaustive.
 #include "hypergraph/hypergraph.hpp"
 #include "hypergraph/rewriter.hpp"
 #include "hypergraph/pattern.hpp"
