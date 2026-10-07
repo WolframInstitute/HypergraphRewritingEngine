@@ -2354,6 +2354,36 @@ TEST(QuotientReconstruction, EachReplayGroupReportsAndGrowsAlone) {
     }
 }
 
+// A class's per-class arrays are indexed by its representative, a raw state, so they cover every
+// state id and not only as many entries as the class group holds. Without quotient exploration,
+// under Automatic event identity, the reconstruction runs over raw states and representatives
+// carry raw state ids; the class group is set to exactly the matches the run captures, so no
+// table overflows, and the branchial count must equal an unconstrained run's.
+TEST(QuotientReconstruction, ClassArraysCoverEveryRepresentativeStateId) {
+    Workload w;
+    w.name = "growshrink3_automatic";
+    w.rules = {rule({{0, 1}, {0, 2}}, {{0, 1}, {0, 3}, {1, 3}, {2, 3}}),
+               rule({{0, 1}, {1, 2}}, {{0, 2}}),
+               rule({{0, 1}}, {{0, 2}, {2, 1}})};
+    w.initial_state = {{0u, 1u}, {0u, 2u}};
+    w.num_steps = 4;
+    w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+    w.event_canon_mode = hg_gpu::EventCanonicalizationMode::Automatic;
+    hg_gpu::EvolveInput in = make_input(w);
+    in.record = hgcommon::RecordSet{true, true, true};
+    const hg_gpu::EvolveResult ref = hg_gpu::evolve(in);
+    ASSERT_TRUE(ref.warnings.empty());
+    ASSERT_GT(ref.reconstructed_branchial, 0u);
+    ASSERT_GT(ref.states.size(), ref.expansion_matches)
+        << "representatives need state ids above the class group for this test to say anything";
+    hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
+    cfg.qe_class_entries = ref.expansion_matches;
+    hg_gpu::Engine engine(cfg);
+    const hg_gpu::EvolveResult got = engine.run(in);
+    EXPECT_TRUE(got.warnings.empty());
+    EXPECT_EQ(got.reconstructed_branchial, ref.reconstructed_branchial);
+}
+
 TEST(QuotientExploration, AClassIsExpandedFromItsShortestDepth) {
     Workload w;
     w.name = "growshrink3";

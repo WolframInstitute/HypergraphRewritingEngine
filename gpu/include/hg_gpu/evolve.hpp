@@ -500,9 +500,12 @@ struct EngineConfig {
 };
 
 // The replay's group capacities with the defaults resolved (EngineConfig::qe_class_entries and
-// the four after it). Each is at most kQeEntryLimit, and words at most kQeWordLimit.
+// the four after it). Each is at most kQeEntryLimit, and words at most kQeWordLimit. `states`
+// is max_states: the per-class arrays indexed by a class's representative, which is a raw
+// state, are sized by it.
 struct QeEntries {
     uint32_t classes, instances, events, pairs, words;
+    uint32_t states = 1;
 };
 inline constexpr uint32_t kQeEntryLimit = 1u << 28;
 inline constexpr uint32_t kQeWordLimit  = 1u << 31;

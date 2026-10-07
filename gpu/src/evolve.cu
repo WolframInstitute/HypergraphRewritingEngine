@@ -624,7 +624,8 @@ QeEntries qe_entries(const EngineConfig& cfg) {
                      pick(cfg.qe_instance_entries, e, kQeEntryLimit),
                      pick(cfg.qe_event_entries, e, kQeEntryLimit),
                      pick(cfg.qe_pair_entries, e, kQeEntryLimit),
-                     pick(cfg.qe_word_entries, 16u * e, kQeWordLimit)};
+                     pick(cfg.qe_word_entries, 16u * e, kQeWordLimit),
+                     cfg.max_states ? cfg.max_states : 1u};
 }
 
 bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
@@ -839,16 +840,17 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     // QeState, per group entry (quotient.cu QeState::QeState; map slots are 16 B and rounded up
     // to a power of two, which the factor 2 on the maps covers). Omitting it let the
     // grow-and-retry memory cap approve a config the device could not hold.
-    //   class:    matches 72, by_from 24, rep 16, frame 32, canon_seen 32, class_nmatch 4,
-    //             multiplicity maps 96 and arrays 32: 308, maps 176 of it
+    //   class:    matches 72, by_from 24, rep 16, frame 32, canon_seen 32, multiplicity maps
+    //             96 and arrays 32: 304, maps 176 of it
+    //   per state: class_nmatch 4 and class_pairs 8, indexed by a class's representative
     //   instance: instance 28, bound item 16, instance list 24: 68
     //   event:    tasks 2 x 24, applied lists 2 x 24, content 8 + 8, kept 20: 132
     //   pair:     applied 4 x 16, causal pairs 4 x 16: 128, all map
     //   word:     4
     {
         const QeEntries qe = qe_entries(cfg);
-        b += u64(qe.classes) * (308 + 176) + u64(qe.instances) * 68 + u64(qe.events) * 132 +
-             u64(qe.pairs) * 256 + u64(qe.words) * 4;
+        b += u64(qe.classes) * (304 + 176) + u64(qe.instances) * 68 + u64(qe.events) * 132 +
+             u64(qe.pairs) * 256 + u64(qe.words) * 4 + u64(qe.states) * 12;
     }
     // The multiplicity queues at their minimum per-driver size (256 items), which
     // descent_work_scale multiplies; a deep run's queues are larger still.

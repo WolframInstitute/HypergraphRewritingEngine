@@ -117,7 +117,7 @@ QeState::QeState(bool on, const QeEntries& n): matches_(on ? n.classes : 1u),
                       "QeState multiplicity queue flags alloc");
         HG_CUDA_CHECK(cudaMalloc(&qm_point_class_, sizeof(unsigned long long) * qm_capacity_),
                       "QeState multiplicity point class alloc");
-        class_nmatch_cap_ = on ? n.classes : 1u;
+        class_nmatch_cap_ = on ? n.states : 1u;
         HG_CUDA_CHECK(cudaMalloc(&class_nmatch_, sizeof(uint32_t) * class_nmatch_cap_),
                       "QeState class match counts alloc");
         HG_CUDA_CHECK(cudaMemset(class_nmatch_, 0, sizeof(uint32_t) * class_nmatch_cap_),

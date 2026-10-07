@@ -197,8 +197,8 @@ struct QeView {
     // Claims an (instance, match) application. An application mints a raw event, so unlike the
     // producer-set DP it is not idempotent and the pair must be claimed exactly once.
     DedupMap::DeviceView applied;
-    // Matches captured per class, indexed by the class's representative raw state (rep); a
-    // representative at or past class_nmatch_cap gives its matches no class index.
+    // Matches captured per class, indexed by the class's representative raw state (rep);
+    // class_nmatch_cap is max_states.
     uint32_t* class_nmatch;
     uint32_t  class_nmatch_cap;
     // B(c) per class, indexed as class_nmatch: pairs of the class's matches whose consumed slots
