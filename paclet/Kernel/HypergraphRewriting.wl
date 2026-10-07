@@ -1068,7 +1068,8 @@ hgMergeGraphData[handle_, graphData_Association] := Module[{acc, merged},
   merged
 ];
 
-hgForgetSessionGraphData[handle_] := ($hgSessionGraphData = KeyDrop[$hgSessionGraphData, handle];);
+hgForgetSessionGraphData[handle_] := ($hgSessionGraphData = KeyDrop[$hgSessionGraphData, handle];
+  $hgSessionDeltaUnsafe = KeyDrop[$hgSessionDeltaUnsafe, handle];);
 
 (* Serialize a job, run it, deserialize the reply, and surface the engine's warning trail.
    Returns the reply association, or $Failed.
@@ -1393,9 +1394,14 @@ HGSessionOpen[rules_List, initialEdges_List,
 
 (* Step and Query differ in ONE field. Writing them as two bodies would be two chances to
    disagree about what a held verb's envelope contains. *)
+(* Handles whose last verb failed. The engine records what a Delta delivery sends as it builds
+   the reply, so a reply that never arrived leaves it ahead of the cache here; such a session's
+   next Delta request goes out as Full, which resets the engine's record and replaces the cache. *)
+$hgSessionDeltaUnsafe = <||>;
+
 hgSessionVerb[HGSessionObject[d_Association], op_String, steps_Integer, property_,
               from_ : All, delivery_ : "Full"] := Module[
-  {props, wasList, requiredData, graphProperties, view, options, inputData},
+  {props, wasList, requiredData, graphProperties, view, options, inputData, delta, result},
 
   props = If[property === Automatic, d["Properties"], DeleteDuplicates[Flatten[{property}]]];
   wasList = If[property === Automatic, d["PropertyWasList"], ListQ[property]];
@@ -1423,9 +1429,15 @@ hgSessionVerb[HGSessionObject[d_Association], op_String, steps_Integer, property
   (* `from` names which frontier states this Step expands. Absent means all of them, which is
      what every unsteered call sends, so the bytes on the wire are unchanged for them. *)
   If[from =!= All, inputData["From"] = from];
-  If[delivery === "Delta", inputData["Delivery"] = "Delta"];
+  delta = delivery === "Delta" && !TrueQ[$hgSessionDeltaUnsafe[d["Handle"]]];
+  If[delta, inputData["Delivery"] = "Delta"];
 
-  hgRunJob[inputData, d["Device"], props, wasList, view, d["Handle"]]
+  result = hgRunJob[inputData, d["Device"], props, wasList, view, d["Handle"]];
+  Which[
+    result === $Failed, $hgSessionDeltaUnsafe[d["Handle"]] = True,
+    !delta && graphProperties =!= {},
+      $hgSessionDeltaUnsafe = KeyDrop[$hgSessionDeltaUnsafe, d["Handle"]]];
+  result
 ];
 
 (* The property slot excludes rules, so HGSessionStep[s, n, "From" -> {...}] passes the rule to
