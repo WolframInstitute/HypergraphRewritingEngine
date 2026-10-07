@@ -312,6 +312,9 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
         // rejoin it now, at the depths they were stranded at. Entries past the session's
         // capacity are dropped with the same warning kind the device append records.
         held.state->frontier_host(held.frontier_ids, held.frontier_steps);
+        // The map indexes the frontier as last reported; it is rebuilt with this reply, and until
+        // then a steered Step resolves nothing rather than an index into the replaced list.
+        held.frontier_by_eff.clear();
         if (!retained_ids.empty()) {
             held.frontier_ids.insert(held.frontier_ids.end(),
                                      retained_ids.begin(), retained_ids.end());
