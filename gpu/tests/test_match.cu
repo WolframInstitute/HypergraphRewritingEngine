@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "hg_gpu/engine_state.hpp"
+#include "hg_gpu/evolve.hpp"
 #include "hg_gpu/initial_upload.hpp"
 #include "hg_gpu/match.hpp"
 #include "hg_gpu/persistent.hpp"
@@ -218,3 +219,73 @@ TEST(Match, PathShapedLhsThroughTheSingleStateEntryPoint) {
 }
 
 }  // namespace
+
+// A pattern edge's compatible signatures that share a signature-index bucket enumerate it once.
+// The engine has 16 signature buckets and the arity is the smallest whose compatible signatures
+// collide there; the state holds one edge per repetition pattern of that arity, so every
+// compatible signature has an edge in its bucket, and is matched through the index
+// (slice_scan_max_edges 1). A one-edge left-hand side of distinct variables matches every edge of
+// its arity once, so one step makes one event per edge. Walking a shared bucket once per
+// signature enumerated its edges twice.
+TEST(Match, CompatibleSignaturesSharingABucketMatchEachEdgeOnce) {
+    constexpr uint32_t kBuckets = 16;
+    const uint32_t mask = kBuckets - 1u;
+    uint8_t arity = 0;
+    // Up to five: a sixth position has more compatible signatures than make_device_rule holds.
+    for (uint8_t a = 2; a <= 5 && arity == 0; ++a) {
+        hg_gpu::RewriteRule r;
+        std::vector<uint8_t> e(a);
+        for (uint8_t i = 0; i < a; ++i) e[i] = i;
+        r.lhs = {e};
+        r.rhs = {e};
+        r.num_lhs_vars = r.num_rhs_vars = a;
+        const hg_gpu::DeviceRule d = hg_gpu::make_device_rule(r);
+        for (uint8_t s = 0; s < d.lhs[0].num_compat_sigs && arity == 0; ++s)
+            if (!hg_gpu::compat_sig_bucket_first(d.lhs[0], s, mask)) arity = a;
+    }
+    ASSERT_NE(arity, 0) << "no arity up to kMaxArity has two compatible signatures in one bucket";
+
+    // Every set partition of the arity's positions, as restricted growth strings, one edge each
+    // on its own vertices.
+    std::vector<std::vector<VertexId>> edges;
+    std::vector<uint32_t> rgs(arity, 0);
+    VertexId next_vertex = 0;
+    for (;;) {
+        std::vector<VertexId> edge(arity);
+        uint32_t blocks = 0;
+        for (uint8_t i = 0; i < arity; ++i) {
+            edge[i] = next_vertex + rgs[i];
+            blocks = std::max(blocks, rgs[i] + 1);
+        }
+        next_vertex += blocks;
+        edges.push_back(edge);
+        int i = arity - 1;
+        for (; i > 0; --i) {
+            uint32_t prefix_max = 0;
+            for (int j = 0; j < i; ++j) prefix_max = std::max(prefix_max, rgs[j]);
+            if (rgs[i] <= prefix_max) { ++rgs[i]; break; }
+            rgs[i] = 0;
+        }
+        if (i == 0) break;
+    }
+
+    hg_gpu::RewriteRule r;
+    std::vector<uint8_t> e(arity);
+    for (uint8_t i = 0; i < arity; ++i) e[i] = i;
+    r.lhs = {e};
+    r.rhs = {e, {0, arity}};
+    r.num_lhs_vars = arity;
+    r.num_rhs_vars = static_cast<uint8_t>(arity + 1);
+    hg_gpu::EvolveInput in;
+    in.rules = {r};
+    in.initial_state = edges;
+    in.num_steps = 1;
+    in.slice_scan_max_edges = 1;
+    hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
+    cfg.sig_index_buckets = kBuckets;
+    hg_gpu::Engine engine(cfg);
+    const hg_gpu::EvolveResult res = engine.run(in);
+    EXPECT_TRUE(res.warnings.empty());
+    EXPECT_EQ(res.events.size(), edges.size()) << "arity " << int(arity) << ", " << edges.size()
+                                               << " edges";
+}

@@ -180,10 +180,11 @@ struct MatchJoinCtx {
 
         // Union over every compatible signature bucket: Wolfram binding lets distinct vars
         // collapse onto one vertex, so a matching data edge's signature may be coarser than
-        // the pattern's. Each edge appears in its own bucket exactly once.
+        // the pattern's. Each edge appears in its own bucket exactly once, and each bucket is
+        // walked once (compat_sig_bucket_first).
         for (uint8_t s = 0; s < pe.num_compat_sigs; ++s) {
-            ds.signature_index.list.for_each(
-                static_cast<uint32_t>(pe.compat_sig_hashes[s]) & ds.signature_index.mask, f);
+            if (!compat_sig_bucket_first(pe, s, ds.signature_index.mask)) continue;
+            ds.signature_index.list.for_each(compat_sig_bucket(pe, s, ds.signature_index.mask), f);
         }
     }
 };
@@ -313,8 +314,9 @@ __device__ __noinline__ void match_state_rule_pass(
         } else {
             uint32_t cand_seen = 0;
             for (uint8_t s = 0; s < pe0.num_compat_sigs; ++s) {
+                if (!compat_sig_bucket_first(pe0, s, ds.signature_index.mask)) continue;
                 ds.signature_index.list.for_each(
-                    static_cast<uint32_t>(pe0.compat_sig_hashes[s]) & ds.signature_index.mask,
+                    compat_sig_bucket(pe0, s, ds.signature_index.mask),
                     [&] (EdgeId cand) {
                         if ((cand_seen % blockDim.x) == threadIdx.x) {
                             run_dfs_from_root(cand);

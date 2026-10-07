@@ -48,6 +48,22 @@ struct DevicePatternEdge {
     uint64_t compat_sig_hashes[kMaxCompatibleSigs] = {0};
 };
 
+// The signature-index bucket of compatible signature `s`, and whether `s` is the first of the
+// pattern edge's compatible signatures to land in it. A walk over the compatible signatures
+// takes each bucket once: two signatures can share a bucket, and walking it for both would
+// enumerate its edges twice, giving duplicate matches.
+__host__ __device__ inline uint32_t compat_sig_bucket(const DevicePatternEdge& pe, uint8_t s,
+                                                      uint32_t mask) {
+    return static_cast<uint32_t>(pe.compat_sig_hashes[s]) & mask;
+}
+__host__ __device__ inline bool compat_sig_bucket_first(const DevicePatternEdge& pe, uint8_t s,
+                                                        uint32_t mask) {
+    const uint32_t b = compat_sig_bucket(pe, s, mask);
+    for (uint8_t t = 0; t < s; ++t)
+        if (compat_sig_bucket(pe, t, mask) == b) return false;
+    return true;
+}
+
 // RHS edges reference LHS variable indices [0, num_lhs_vars) for re-used vars
 // and fresh-var indices [num_lhs_vars, num_rhs_vars) for newly introduced
 // variables. The rewrite kernel atomically allocates a fresh VertexId per
