@@ -1024,9 +1024,20 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // A refusal (one session is already live, D7) aborts the job rather than silently
         // returning an unretained result, because a caller that asked for a session and got a
         // plain answer has no way to tell.
+        // An Open whose reply is not built hands the caller no handle, so a session it cannot
+        // name or close would refuse every later Open (D7). It is closed if the job throws
+        // before its reply is returned.
+        struct UndeliveredOpen {
+            uint64_t handle = 0;
+            ~UndeliveredOpen() {
+                if (!handle) return;
+                try { worker_session().close(handle); } catch (...) {}
+            }
+        } undelivered_open;
         if (opening_session) {
             try {
                 const uint64_t h = worker_session().open(std::move(engine_holder));
+                undelivered_open.handle = h;
                 full_result.push_back({wxf::WXFValue("Session"),
                                        wxf::WXFValue(static_cast<int64_t>(h))});
             } catch (const hgffi::SessionError& e) {
@@ -1946,6 +1957,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             core_progress(host, "HGEvolve: Serialization complete.");
         }
 
+        undelivered_open.handle = 0;
         return wxf_data;
 
     } catch (const wxf::TypeError& e) {

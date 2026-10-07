@@ -223,6 +223,17 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
     }
 
     hg_gpu::EvolveResult result;
+    // An Open whose reply is not built hands the caller no handle, so a session it cannot name
+    // or close would refuse every later Open (D7). It is released if the job throws before its
+    // reply is returned.
+    struct UndeliveredOpen {
+        bool armed = false;
+        ~UndeliveredOpen() {
+            if (!armed) return;
+            held.state.reset();
+            held = HeldSession{};
+        }
+    } undelivered_open;
     if (is_open || is_step) {
         if (is_open && held.handle != 0) {
             // The same refusal the host gives, from the one place that spells it.
@@ -234,6 +245,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
             held.input = in;
             held.steps_done = 0;
             held.handle = hgffi::SessionSlot::mint_handle();
+            undelivered_open.armed = true;
         }
         // A STEERED STEP: the caller's effective ids are resolved against the frontier as it
         // was last REPORTED, the selected entries are written down as the whole device
@@ -1092,6 +1104,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
     }
     writer.write(wxf::WXFValue(full_result));
     evolver.recycle(std::move(result));
+    undelivered_open.armed = false;
     return writer.data();
 }
 
