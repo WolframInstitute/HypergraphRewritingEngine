@@ -1057,3 +1057,23 @@ TEST(BranchialReadback, PairingBySlotEqualsTestingEveryPair) {
     }
     EXPECT_GT(compared, 1000u);
 }
+
+// An application that names a slot twice is paired once with each application sharing it, on the
+// sorting path (more than hgcommon::QR_PAIR_TEST_MAX applications).
+TEST(BranchialReadback, AnApplicationNamingASlotTwiceIsPairedOnce) {
+    struct App {
+        uint32_t event, num_consumed;
+        uint32_t s[2];
+        uint32_t consumed(uint32_t j) const { return s[j]; }
+    };
+    std::vector<App> apps;
+    apps.push_back(App{0, 2, {7, 7}});
+    apps.push_back(App{1, 1, {7, 0}});
+    for (uint32_t i = 2; i < hgcommon::QR_PAIR_TEST_MAX + 8; ++i)
+        apps.push_back(App{i, 1, {100 + i, 0}});
+    std::vector<std::pair<uint32_t, uint32_t>> entries, got;
+    hgcommon::qr_instance_branchial_pairs(apps.data(), static_cast<uint32_t>(apps.size()), entries,
+                                          [&](uint32_t lo, uint32_t hi) { got.push_back({lo, hi}); });
+    ASSERT_EQ(got.size(), 1u);
+    EXPECT_EQ(got[0], std::make_pair(0u, 1u));
+}

@@ -311,7 +311,9 @@ HG_INLINE void qr_instance_branchial_pairs(const App* apps, uint32_t n, Buf& ent
     for (uint32_t i = 0; i < n; ++i)
         for (uint32_t j = 0; j < apps[i].num_consumed; ++j)
             entries.push_back({apps[i].consumed(j), i});
+    // An application that names a slot twice contributes it once.
     std::sort(entries.begin(), entries.end());
+    entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
     auto lowest_common = [](const App& a, const App& b) {
         uint32_t lo = ~0u;
         for (uint32_t x = 0; x < a.num_consumed; ++x)
