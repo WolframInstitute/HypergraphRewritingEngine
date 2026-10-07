@@ -2447,6 +2447,9 @@ TEST(Session, AContinuationThatChangesTheRecordSetIsRefused) {
     next.canonicalization = hg_gpu::CanonicalizationMode::None;
     EXPECT_THROW(engine.run(next, session.view(), 2), std::invalid_argument);
     next.canonicalization = in.canonicalization;
+    next.materialize_events = !in.materialize_events;
+    EXPECT_THROW(engine.run(next, session.view(), 2), std::invalid_argument);
+    next.materialize_events = in.materialize_events;
     EXPECT_NO_THROW(engine.run(next, session.view(), 2));
 }
 

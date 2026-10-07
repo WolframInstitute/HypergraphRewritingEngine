@@ -135,6 +135,8 @@ const char* continuation_mismatch(const EvolveInput& open, const EvolveInput& in
     if (open.transitive_reduction != in.transitive_reduction) return "transitive_reduction";
     if (open.explore_from_canonical_states_only != in.explore_from_canonical_states_only)
         return "explore_from_canonical_states_only";
+    // The per-event content arrays are written as events are minted, only when this is set.
+    if (open.materialize_events != in.materialize_events) return "materialize_events";
     return nullptr;
 }
 
@@ -210,6 +212,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         opening_.event_canonicalization = in.event_canonicalization;
         opening_.transitive_reduction = in.transitive_reduction;
         opening_.explore_from_canonical_states_only = in.explore_from_canonical_states_only;
+        opening_.materialize_events = in.materialize_events;
     } else if (const char* what = continuation_mismatch(opening_, in)) {
         throw std::invalid_argument(std::string("a session continuation must use the opening "
                                                 "call's ") + what);
