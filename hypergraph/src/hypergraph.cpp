@@ -1550,7 +1550,7 @@ void Hypergraph::quotient_causal_seed(StateId initial_state, int max_steps) {
         qm_cascade([&](QmCtx& c) { hgcommon::qm_credit(c, h, 0, 1); });
     if (orb && quotient_replay()) {
         // Claim the initial state as its class's frame before any instance exists, so the root
-        // producer vector and the expansion captured from it agree by construction.
+        // instance's slots and the expansion captured from it agree by construction.
         auto mk = worker_scratch().mark();
         SVec<uint32_t> slots(orb->n ? orb->n : 1);
         qc_frame_slots(h, initial_state, orb, slots.data());
@@ -2422,7 +2422,7 @@ const GlobalCounters& Hypergraph::counters() const { return counters_; }
 // =============================================================================
 // QrCtx -- the storage face the shared replay core drives
 // =============================================================================
-// WHERE a producer vector, an applied list or a claim set lives is here; what an application
+// WHERE an instance's lineage, an applied list or a claim set lives is here; what an application
 // DOES is in hgcommon, which is the body the device runs too. The core is instantiated in this
 // translation unit and nowhere else, which is what lets these bodies live here.
 

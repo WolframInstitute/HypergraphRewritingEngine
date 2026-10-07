@@ -185,9 +185,9 @@ class Hypergraph {
     //
     // Slots are read off a state's canonical labeling, and two raw states of one class have
     // labelings differing by an automorphism -- different reference frames. Without a frame the
-    // reconstruction mixes them: a child's producer vector would be written in the producing
-    // event's own output-state numbering but read against a different state's, and which state
-    // that is depends on thread scheduling. Pinning one frame per class removes the choice.
+    // reconstruction mixes them: a child's slots would be written in the producing event's own
+    // output-state numbering but read against a different state's, and which state that is
+    // depends on thread scheduling. Pinning one frame per class removes the choice.
     ConcurrentMap<uint64_t, uint64_t> qc_frame_;           // canonical hash -> StateId + 1
 
     // Fills out[i] with the frame slot of orb->edges[i]. Identity when `s` IS the frame (the
@@ -526,7 +526,7 @@ class Hypergraph {
     static uint64_t qc_key(uint64_t state_hash, uint32_t depth, uint32_t orbit);
 
     // The storage face hgcommon/quotient_replay_core.hpp drives. Same division as QcCtx above:
-    // WHERE a producer vector, an applied list or a claim set lives is here; what an
+    // WHERE an instance's lineage, an applied list or a claim set lives is here; what an
     // application DOES -- what it claims, what it identifies the event by, which causal and
     // branchial relations follow -- is in the core, which is the body the device runs too.
     struct QrCtx {
@@ -1442,10 +1442,10 @@ public:
     // stands between the two paths into qc_apply, and cannot be seen in any other count.
     size_t applied_unique() const;
 
-    // The branchial pairs of the raw unfolding, counted from class multiplicities, which run
-    // whenever branchial pairs are recorded under the reconstruction (ParallelEvolutionEngine).
-    // They equal the pairs the readback enumerates (OracleCorpus.MultiplicityCountsMatchTheReplay,
-    // CausalDeterminism's count-against-enumeration check).
+    // The branchial pairs of the raw unfolding: the sum over the (class, depth) points below the
+    // step bound of W(c, d) * B(c), W the class multiplicity when the multiplicities ran and the
+    // replay's instance count otherwise. They equal the pairs the readback enumerates
+    // (OracleCorpus.MultiplicityCountsMatchTheReplay).
     uint64_t num_reconstructed_branchial() const;
 #if HG_ENGINE_STATS
     size_t num_frame_alignment_disagreements() const;

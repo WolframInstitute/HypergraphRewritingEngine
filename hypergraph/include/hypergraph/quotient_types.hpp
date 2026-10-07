@@ -121,11 +121,8 @@ struct EdgeOrbitTable {
 // The representative's matches are kept in full, undeduplicated: two matches consuming
 // different edges of one orbit are two matches, and full capture fires both.
 //
-// Consumed/produced stay in MATCH order (not sorted): a replay reads
-// producer[consumed_slots[i]] and writes the new raw event into producer[produced_slots[i]],
-// so the i-th entry must remain the i-th matched / i-th RHS edge. `from_slots`/`to_slots` are
-// the slot counts of the source and child states -- the sizes of the producer vectors this
-// match reads and writes.
+// Consumed/produced stay in MATCH order: the run signature reads them as the i-th matched and
+// i-th RHS edge. `from_slots`/`to_slots` are the slot counts of the source and child states.
 struct SlotMatch {
     uint64_t to_hash = 0;
     uint32_t id = 0;               // dense id, unique per captured match (claims key on it)

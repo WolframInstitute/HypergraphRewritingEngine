@@ -146,9 +146,6 @@ struct QeAppliedMatch {
 };
 
 
-// The slot-has-no-producer sentinel, from hgcommon: the replay core writes it into a
-// child's producer vector and this file reads it back, so one value or neither works.
-
 // A (class, instance record, depth) point: an instance the depth bound left standing
 // (QeView::blocked), and an entry of the multiplicity cascade's queue.
 struct QeWorkItem {
@@ -1058,7 +1055,7 @@ __device__ __forceinline__ uint64_t qe_apply_key(uint32_t instance, uint32_t mat
     return (k == 0 || k == ~0ULL) ? 1 : k;
 }
 
-// The storage face hgcommon/quotient_replay_core.hpp drives. WHERE a producer vector, an
+// The storage face hgcommon/quotient_replay_core.hpp drives. WHERE an instance's lineage, an
 // applied list or a claim set lives is here; what an application DOES -- what it claims, what
 // it identifies the event by, which causal and branchial relations follow -- is in the core,
 // which is the body the host runs too.
@@ -1398,9 +1395,6 @@ public:
     // Pairs the online reduction kept: the TR view of the same relation. The host's
     // num_reconstructed_causal_pairs(true).
     uint32_t num_reduced_pairs_host();
-
-    // Distinct branchial pairs: sibling applications of one instance whose consumed edges
-    // overlap. The host's num_reconstructed_branchial.
 
     // The reconstructed relations as pairs of CONTENT TRIPLES. A count says two engines
     // disagree; a pair set says which pair is missing, which a count cannot. `raw_events` is
