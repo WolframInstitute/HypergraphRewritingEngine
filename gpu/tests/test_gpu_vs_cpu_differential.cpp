@@ -23,6 +23,7 @@
 #include <iterator>
 #include <map>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -2359,6 +2360,40 @@ TEST(QuotientReconstruction, EachReplayGroupReportsAndGrowsAlone) {
 // under Automatic event identity, the reconstruction runs over raw states and representatives
 // carry raw state ids; the class group is set to exactly the matches the run captures, so no
 // table overflows, and the branchial count must equal an unconstrained run's.
+// A session continuation extends captures, instances and counts built under the opening call's
+// record set and modes, so a continuation that changes them is refused; one that repeats them
+// runs. Opened with branchial off and continued to depth 4 with it on, growshrink3 reported 5,310
+// branchial pairs against 5,703 from one run.
+TEST(Session, AContinuationThatChangesTheRecordSetIsRefused) {
+    Workload w;
+    w.name = "growshrink3_session";
+    w.rules = {rule({{0, 1}, {0, 2}}, {{0, 1}, {0, 3}, {1, 3}, {2, 3}}),
+               rule({{0, 1}, {1, 2}}, {{0, 2}}),
+               rule({{0, 1}}, {{0, 2}, {2, 1}})};
+    w.initial_state = {{0u, 1u}, {0u, 2u}};
+    w.num_steps = 2;
+    w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+    hg_gpu::EvolveInput in = make_input(w);
+    in.event_canonicalization = hg_gpu::EventCanonicalizationMode::Automatic;
+    in.record = hgcommon::RecordSet{true, false, true};
+    hg_gpu::EvolveInput big = in;
+    big.num_steps = 4;
+    const hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(big);
+    hg_gpu::GpuSession session(cfg.max_states, cfg.max_events);
+    hg_gpu::Engine engine(cfg);
+    engine.run(in, session.view(), 0);
+
+    hg_gpu::EvolveInput next = in;
+    next.num_steps = 3;
+    next.record.branchial = true;
+    EXPECT_THROW(engine.run(next, session.view(), 2), std::invalid_argument);
+    next.record.branchial = false;
+    next.canonicalization = hg_gpu::CanonicalizationMode::None;
+    EXPECT_THROW(engine.run(next, session.view(), 2), std::invalid_argument);
+    next.canonicalization = in.canonicalization;
+    EXPECT_NO_THROW(engine.run(next, session.view(), 2));
+}
+
 TEST(QuotientReconstruction, ClassArraysCoverEveryRepresentativeStateId) {
     Workload w;
     w.name = "growshrink3_automatic";

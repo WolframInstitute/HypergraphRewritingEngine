@@ -126,6 +126,24 @@ EventSignatureKeys event_keys_for(EventCanonicalizationMode m) {
 
 namespace {
 
+bool same_record(const hgcommon::RecordSet& a, const hgcommon::RecordSet& b) {
+    return a.causal == b.causal && a.branchial == b.branchial &&
+           a.state_events == b.state_events && a.raw_events == b.raw_events &&
+           a.raw_counts_only == b.raw_counts_only && a.multiplicities == b.multiplicities;
+}
+
+// The setting in which `in` differs from the session's opening call, or nullptr.
+const char* continuation_mismatch(const EvolveInput& open, const EvolveInput& in) {
+    if (!same_record(open.record, in.record)) return "record set";
+    if (open.canonicalization != in.canonicalization) return "canonicalization";
+    if (open.event_canonicalization != in.event_canonicalization)
+        return "event canonicalization";
+    if (open.transitive_reduction != in.transitive_reduction) return "transitive_reduction";
+    if (open.explore_from_canonical_states_only != in.explore_from_canonical_states_only)
+        return "explore_from_canonical_states_only";
+    return nullptr;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -161,6 +179,10 @@ struct Engine::Impl {
     EngineConfig                       cfg_;
     EngineState                        state_;
     Pool<MatchRecord>                  matches_;
+    // The settings of the call that opened the current session (start_step 0), which a
+    // continuation must repeat: the captures, instances and counts it extends were built under
+    // them.
+    EvolveInput                        opening_;
     // Engine-lifetime, cleared per run: rebuilding its maps costs tens of MB of cudaMalloc
     // per evolve. Constructed on the first run that routes quotient causal.
     std::unique_ptr<QcState>           qc_state_;
@@ -188,6 +210,16 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     // anything and it produces nothing. Opening (start_step 0) still resets, which is what
     // keeps a session from inheriting a previous job's graph.
     if (start_step == 0) reset();
+    if (start_step == 0) {
+        opening_.record = in.record;
+        opening_.canonicalization = in.canonicalization;
+        opening_.event_canonicalization = in.event_canonicalization;
+        opening_.transitive_reduction = in.transitive_reduction;
+        opening_.explore_from_canonical_states_only = in.explore_from_canonical_states_only;
+    } else if (const char* what = continuation_mismatch(opening_, in)) {
+        throw std::invalid_argument(std::string("a session continuation must use the opening "
+                                                "call's ") + what);
+    }
 
     EvolveResult out;
     if (storage) out.adopt_storage(*storage);
