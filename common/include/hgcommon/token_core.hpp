@@ -35,7 +35,7 @@ constexpr uint32_t REWRITE_TWIN_CANDIDATE = 1u << 31;
 
 // Whether a run reads RANK TUPLES: canonical edge ranks compared as values, by edge-keyed event
 // identity (consumed or produced edges; each raw event is signed from its raw states' ranks) and
-// by the transition draw (a rate below 1, rule weights, or a per-state match cap). A twin's ranks
+// by the transition draw (a rate below 1, rule weights, or a selection at the drain). A twin's ranks
 // are its earlier state's labelling read through the tokens; on a state with a nontrivial
 // automorphism group that is a different labelling from the one the state's own IR gives
 // (measured: ranks 1,3,0,2 copied against 0,2,1,3 computed on a 4-edge growshrink3 state), and
@@ -43,10 +43,9 @@ constexpr uint32_t REWRITE_TWIN_CANDIDATE = 1u << 31;
 // Quotient exploration by itself reads ranks only to match edges of equal rank between a state
 // and its class frame, and orbits, which any canonical labelling gives alike.
 HG_HD inline bool run_reads_rank_tuples(EventSignatureKeys event_keys, double transition_rate,
-                                        uint32_t num_rule_weights,
-                                        uint32_t matches_per_state_rule) {
+                                        uint32_t num_rule_weights, uint32_t drain_selection) {
     return event_keys_need_ranks(event_keys) || transition_rate < 1.0 ||
-           num_rule_weights != 0u || matches_per_state_rule != 0u;
+           num_rule_weights != 0u || drain_selection != 0u;
 }
 
 // Whether a run keys its rewrites and takes twins: Full mode (the only mode that takes twins),

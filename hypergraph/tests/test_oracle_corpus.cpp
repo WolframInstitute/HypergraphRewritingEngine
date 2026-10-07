@@ -1436,3 +1436,30 @@ TEST(OracleCorpus, CountsHoldPastTheArenaWorkerCeiling) {
     EXPECT_EQ(hg.causal_graph().num_causal_edges(), causal);
     EXPECT_EQ(hg.causal_graph().num_branchial_edges(), branchial);
 }
+
+// MaxSuccessorStatesPerParent chooses each parent's successors at its drain, in seeded rank order,
+// so a seeded run reaches the same states and events at any worker count. Measured before the
+// drain selection: up to 4 distinct state sets in 5 runs on the corpus (first come, first kept).
+TEST(OracleCorpus, APerParentCapIsReproducibleAcrossWorkerCounts) {
+    const std::vector<oracle::Case> cases = oracle::corpus();
+    for (const auto& c : cases) {
+        for (size_t mpsr : {size_t(0), size_t(2)}) {
+            std::set<std::pair<size_t, std::multiset<uint64_t>>> seen;
+            for (size_t threads : {size_t(1), size_t(8), size_t(4), size_t(8)}) {
+                Hypergraph hg;
+                hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+                ParallelEvolutionEngine e(&hg, threads);
+                e.set_max_successor_states_per_parent(1);
+                e.set_matches_per_state_rule(mpsr);
+                e.set_random_seed(12345);
+                for (const auto& r : c.rules) e.add_rule(r);
+                e.evolve(c.init, c.measure_steps);
+                std::multiset<uint64_t> h;
+                for (uint32_t s = 0; s < hg.num_published_states(); ++s)
+                    if (hg.get_state(s).id != INVALID_ID) h.insert(hg.get_or_compute_canonical_hash(s));
+                seen.insert({hg.num_events(), h});
+            }
+            EXPECT_EQ(seen.size(), 1u) << c.name << " MatchesPerStateRule=" << mpsr;
+        }
+    }
+}

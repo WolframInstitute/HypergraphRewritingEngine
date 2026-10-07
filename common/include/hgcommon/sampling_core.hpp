@@ -70,12 +70,21 @@ HG_HD inline uint64_t transition_rank(uint64_t transition_key, uint64_t random_s
     return x ^ (x >> 31);
 }
 
+// Whether a run chooses each state's transitions when the state's own matching completes (its
+// drain): k matches per rule (MatchesPerStateRule) or k successor states per parent
+// (MaxSuccessorStatesPerParent), both by transition_rank.
+HG_HD inline uint32_t drain_selects(uint32_t matches_per_state_rule,
+                                    uint32_t successors_per_parent) {
+    return (matches_per_state_rule != 0u || successors_per_parent != 0u) ? 1u : 0u;
+}
+
 // Whether ANY draw can fail. Testing `transition_rate < 1` alone would skip sampling entirely for
-// a caller who left the rate at 1 and weighted a single rule to zero.
+// a caller who left the rate at 1 and weighted a single rule to zero. `drain_selection` is
+// drain_selects above.
 HG_HD inline bool sampling_active(double transition_rate, const double* weights,
-                                  uint32_t num_weights, uint32_t matches_per_state_rule) {
+                                  uint32_t num_weights, uint32_t drain_selection) {
     if (transition_rate < 1.0) return true;
-    if (matches_per_state_rule != 0) return true;
+    if (drain_selection != 0) return true;
     for (uint32_t i = 0; weights != nullptr && i < num_weights; ++i)
         if (weights[i] < 1.0) return true;
     return false;

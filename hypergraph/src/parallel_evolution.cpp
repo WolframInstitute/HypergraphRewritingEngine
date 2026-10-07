@@ -71,7 +71,6 @@ ParallelEvolutionEngine::ParallelEvolutionEngine(Hypergraph* hg, size_t num_thre
     state_matches_.set_arena(arena);
     state_children_.set_arena(arena);
     missing_match_hashes_.set_arena(arena);
-    parent_successor_count_.set_arena(arena);
     states_per_step_.set_arena(arena);
     match_join_.set_arena(arena);
 
@@ -605,7 +604,6 @@ void ParallelEvolutionEngine::submit_match_task(StateId state, uint32_t step) {
     // would undo it.
     if (step > match_budget()) { defer_match_task(state, step); return; }
     if (!can_create_states_at_step(step + 1)) return;
-    if (!can_have_more_children(state)) return;
 
     DEBUG_LOG("SUBMIT_MATCH state=%u step=%u (full)", state, step);
 
@@ -631,7 +629,6 @@ void ParallelEvolutionEngine::submit_match_task_with_context(
     if (should_stop_.load(std::memory_order_relaxed)) { defer_cut_match_task(state, step); return; }
     if (step > match_budget()) { defer_match_task(state, step); return; }
     if (!can_create_states_at_step(step + 1)) return;
-    if (!can_have_more_children(state)) return;
 
     DEBUG_LOG("SUBMIT_MATCH state=%u step=%u parent=%u produced=%u consumed=%u (delta)",
               state, step, ctx.parent_state, ctx.num_produced, ctx.num_consumed);
@@ -653,9 +650,8 @@ void ParallelEvolutionEngine::submit_rewrite_task(const MatchRecord& match, uint
     // Past the budget: the match is already stored on its state, so dropping the rewrite would
     // strand it -- the state's own matching will not re-offer a match it already holds.
     if (step > step_budget()) { defer_rewrite_task(match, step); return; }
-    // Early check (non-reserving) - execute_rewrite_task does the actual atomic reservation
+    // Early check (non-reserving) - apply_rewrite does the actual atomic reservation
     if (!can_create_states_at_step(step + 1)) return;
-    if (!can_have_more_children(match.source_state)) return;
 
     DEBUG_LOG("SUBMIT_REWRITE state=%u rule=%u step=%u", match.source_state, match.rule_index(), step);
 
@@ -712,7 +708,6 @@ void ParallelEvolutionEngine::dispatch_expansion(StateId state, uint32_t step,
     // Whole-state gates, checked once here rather than once per match. execute_rewrite_task
     // still does the reserving check per child, so this is a filter, not the decision.
     if (!can_create_states_at_step(step + 1)) return;
-    if (!can_have_more_children(state)) return;
 
     if (count <= kExpandChunkSize) {
         // Everything on this thread: no arena copy, no job, and the parent's data is already
@@ -741,7 +736,6 @@ void ParallelEvolutionEngine::submit_scan_task(const ScanTaskData& data) {
     if (should_stop_.load(std::memory_order_relaxed)) return;
     if (data.step > match_budget()) return;
     if (!can_create_states_at_step(data.step + 1)) return;
-    if (!can_have_more_children(data.state)) return;
 
     DEBUG_LOG("SUBMIT_SCAN state=%u rule=%u step=%u delta=%d",
               data.state, data.rule_index, data.step, data.is_delta);
@@ -763,7 +757,6 @@ void ParallelEvolutionEngine::submit_expand_task(const ExpandTaskData& data) {
     if (should_stop_.load(std::memory_order_relaxed)) return;
     if (data.step > match_budget()) return;
     if (!can_create_states_at_step(data.step + 1)) return;
-    if (!can_have_more_children(data.state)) return;
 
     DEBUG_LOG("SUBMIT_EXPAND state=%u rule=%u matched=%u/%u step=%u",
               data.state, data.rule_index, data.num_matched, data.num_pattern_edges, data.step);
@@ -794,15 +787,6 @@ bool ParallelEvolutionEngine::can_create_states_at_step(uint32_t step) const {
     return (*result)->load(std::memory_order_relaxed) < max_states_per_step_;
 }
 
-bool ParallelEvolutionEngine::can_have_more_children(StateId parent) const {
-    if (max_successor_states_per_parent_ == 0) return true;
-
-    auto result = parent_successor_count_.lookup(parent);
-    if (!result.has_value()) return true;
-
-    return (*result)->load(std::memory_order_relaxed) < max_successor_states_per_parent_;
-}
-
 // Find, or install, the budget counter a key shares across threads. Templated because
 // the step and successor maps carry different reserved sentinel bands.
 template <typename Map>
@@ -818,12 +802,10 @@ static std::atomic<size_t>* budget_counter(Map& counters, uint64_t key,
 
 // Claim one unit of a budget, or report it exhausted.
 //
-// A fetch_add followed by a rollback would publish a count above the limit for as long
-// as the rollback takes, and the plain readers (can_create_states_at_step,
-// can_have_more_children) prune on exactly that value -- so N concurrent claimants would
-// make each other's in-budget work look out-of-budget, and which work got pruned would
-// depend on the interleaving. Claiming by CAS never publishes a count above the limit,
-// so the budget prunes the same work whatever the schedule.
+// A fetch_add followed by a rollback would publish a count above the limit for as long as the
+// rollback takes, and the plain reader (can_create_states_at_step) prunes on exactly that value,
+// so concurrent claimants would make each other's in-budget work look out-of-budget. Claiming by
+// CAS never publishes a count above the limit. Which claimants win is the order they arrive in.
 bool ParallelEvolutionEngine::try_claim_budget(std::atomic<size_t>* counter, size_t limit) {
     size_t cur = counter->load(std::memory_order_relaxed);
     while (cur < limit) {
@@ -904,53 +886,98 @@ bool ParallelEvolutionEngine::transition_survives_spined(StateId source, uint64_
     return false;
 }
 
-// k of a state's matches per RULE, chosen by spine_rank once its matching is complete.
+// The state's own matches, in the order the drain selections take them: by transition_rank, ties
+// by canonical transition key. Under MatchesPerStateRule only the k lowest-ranked of each rule.
 //
-// Under the cap the run turns match forwarding off (configure), so a state's own matching finds
-// all of its matches and this list is the whole population. A forwarded record is still skipped:
-// it would have arrived after the drain, and counting it would keep a different set at a
-// different worker count.
-//
-// The selection is a full pass per rule rather than a sort: a state's match count is small, the
-// arena has no room for a scratch vector here, and k is typically 1-2 -- so k passes each taking
-// the smallest rank above the previous winner costs less than materialising the list.
-void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
-    const size_t k = matches_per_state_rule_;
-    if (k == 0) return;
+// Under either drain selection the run turns match forwarding off (configure), so a state's own
+// matching finds all of its matches and this list is the whole population. A forwarded record is
+// still skipped: it would have arrived after the drain, and counting it would choose a different
+// set at a different worker count.
+void ParallelEvolutionEngine::drain_candidates(StateId state, std::vector<RankedMatch>& out) {
+    out.clear();
     auto stored = state_matches_.lookup(id_key(state));
     if (!stored.has_value()) return;
+    (*stored)->for_each([&](const MatchRecord& m) {
+        if (m.is_forwarded) return;
+        const uint64_t key = canonical_transition_key(state, m);
+        out.push_back(RankedMatch{spine_rank(key), key, m});
+    });
+    auto before = [](const RankedMatch& x, const RankedMatch& y) {
+        return x.rank != y.rank ? x.rank < y.rank : x.key < y.key;
+    };
+    std::sort(out.begin(), out.end(), before);
+    const size_t k = matches_per_state_rule_;
+    if (k == 0) return;
+    // Keep the first k of each rule; the list stays in rank order.
+    std::vector<size_t> taken(rules_.size(), 0);
+    size_t w = 0;
+    for (size_t i = 0; i < out.size(); ++i) {
+        const uint16_t rule = out[i].match.rule_index();
+        if (rule < taken.size() && taken[rule]++ < k) out[w++] = out[i];
+    }
+    out.resize(w);
+}
 
-    // The cap is per rule, so the selection runs once for each rule the engine holds. A rule
-    // with no own-found match at this state finds nothing on its first pass and costs one walk
-    // of the state's match list; a rule set is bounded by RuleIndex, which is 16 bits wide, and
-    // nothing narrower may decide which rules are considered -- a rule left out here has every
-    // one of its matches dropped, because under this option cap_at_drain is the only path that
-    // submits them.
-    size_t submitted = 0;
-    const size_t num_rules = rules_.size();
-    for (size_t rule_slot = 0; rule_slot < num_rules; ++rule_slot) {
-        const uint16_t rule = static_cast<uint16_t>(rule_slot);
+void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
+    if (max_successor_states_per_parent_ != 0) {
+        submit_select_task(state, step, 0, nullptr, 0);
+        return;
+    }
+    std::vector<RankedMatch> cands;
+    drain_candidates(state, cands);
+    for (const RankedMatch& c : cands) submit_rewrite_task(c.match, step);
+    if (!cands.empty()) HG_STAT(stats_.mine().spine_forced.bump(cands.size()));
+}
 
-        uint64_t floor_rank = 0;
-        bool have_floor = false;
-        for (size_t i = 0; i < k; ++i) {
-            uint64_t best_rank = ~0ULL;
-            MatchRecord best{};
-            bool found = false;
-            (*stored)->for_each([&](const MatchRecord& m) {
-                if (m.rule_index() != rule) return;
-                if (m.is_forwarded) return;          // not this state's own population
-                const uint64_t r = spine_rank(canonical_transition_key(state, m));
-                if (have_floor && r <= floor_rank) return;   // already taken
-                if (r < best_rank) { best_rank = r; best = m; found = true; }
-            });
-            if (!found) break;                                // fewer than k for this rule
-            floor_rank = best_rank; have_floor = true;
-            submit_rewrite_task(best, step);
-            ++submitted;
+void ParallelEvolutionEngine::submit_select_task(StateId state, uint32_t step, uint32_t next,
+                                                 const StateId* chosen, uint32_t num_chosen) {
+    if (should_stop_.load(std::memory_order_relaxed) || step > step_budget()) {
+        defer_selection(state, step, next, chosen, num_chosen);
+        return;
+    }
+    std::vector<StateId> held(chosen, chosen + num_chosen);
+    note_depth_task_pushed(step);
+    job_system_->submit(job_system::make_job<EvolutionJobType>(
+        [this, state, step, next, held]() {
+            DepthTaskGuard depth_guard(*this, step);
+            select_successors(state, step, next, held.data(), static_cast<uint32_t>(held.size()));
+        },
+        EvolutionJobType::REWRITE));
+}
+
+// MaxSuccessorStatesPerParent: the state's candidates are rewritten in rank order until k distinct
+// successor states exist, under the run's state identity; candidates tied in rank with the one
+// that completes the k-th are taken too, since a tie names automorphic transitions and either
+// order is the same choice. The rest are not taken. Every step of the walk reads only the state's
+// own matches and their successors' identities, so the result is the same on any schedule.
+//
+// A stop, a limit or the step budget cuts the walk; the position and the successors chosen so far
+// are deferred together, and a continuation resumes the walk (submit_select_task).
+void ParallelEvolutionEngine::select_successors(StateId state, uint32_t step, uint32_t next,
+                                                const StateId* chosen, uint32_t num_chosen) {
+    const size_t k = max_successor_states_per_parent_;
+    std::vector<RankedMatch> cands;
+    drain_candidates(state, cands);
+    std::vector<StateId> seen(chosen, chosen + num_chosen);
+    uint64_t cut_rank = 0;
+    bool cut = seen.size() >= k;
+    if (cut && next > 0 && next <= cands.size()) cut_rank = cands[next - 1].rank;
+    for (size_t i = next; i < cands.size(); ++i) {
+        if (cut && cands[i].rank != cut_rank) break;
+        StateId succ = INVALID_ID;
+        const RewriteOutcome o = apply_rewrite(cands[i].match, step, &succ);
+        if (o == RewriteOutcome::Deferred) {
+            defer_selection(state, step, static_cast<uint32_t>(i), seen.data(),
+                            static_cast<uint32_t>(seen.size()));
+            return;
+        }
+        if (o != RewriteOutcome::Applied || cut) continue;
+        if (std::find(seen.begin(), seen.end(), succ) == seen.end()) seen.push_back(succ);
+        if (seen.size() >= k) {
+            cut = true;
+            cut_rank = cands[i].rank;
         }
     }
-    if (submitted) HG_STAT(stats_.mine().spine_forced.bump(submitted));
 }
 
 void ParallelEvolutionEngine::spine_at_drain(StateId state, uint32_t step, MatchJoin* join) {
@@ -1026,6 +1053,18 @@ void ParallelEvolutionEngine::defer_rewrite_task(const MatchRecord& match, uint3
     deferred_count_.fetch_add(1, std::memory_order_relaxed);
 }
 
+void ParallelEvolutionEngine::defer_selection(StateId state, uint32_t step, uint32_t next,
+                                              const StateId* chosen, uint32_t num_chosen) {
+    if (!continuable_) return;
+    StateId* held = nullptr;
+    if (num_chosen) {
+        held = hg_->arena().allocate_array<StateId>(num_chosen);
+        std::copy(chosen, chosen + num_chosen, held);
+    }
+    deferred_selections_.push(DeferredSelection{state, step, next, num_chosen, held}, hg_->arena());
+    deferred_count_.fetch_add(1, std::memory_order_relaxed);
+}
+
 void ParallelEvolutionEngine::defer_cut_match_task(StateId state, uint32_t step) {
     if (!continuable_) return;
     // Every path that cuts a state's matching comes through here, including a match task
@@ -1051,6 +1090,9 @@ std::vector<std::pair<StateId, uint32_t>> ParallelEvolutionEngine::frontier() co
         if (seen.insert(d.match.source_state).second) {
             out.emplace_back(d.match.source_state, d.step);
         }
+    });
+    deferred_selections_.for_each([&](const DeferredSelection& d) {
+        if (seen.insert(d.state).second) out.emplace_back(d.state, d.step);
     });
     return out;
 }
@@ -1121,8 +1163,11 @@ void ParallelEvolutionEngine::evolve_more(size_t additional_steps,
     deferred_frontier_.for_each([&](const DeferredMatch& d) { resume.push_back(d); });
     ArenaVector<DeferredRewrite> resume_rw(worker_scratch(), 64);
     deferred_rewrites_.for_each([&](const DeferredRewrite& d) { resume_rw.push_back(d); });
+    std::vector<DeferredSelection> resume_sel;
+    deferred_selections_.for_each([&](const DeferredSelection& d) { resume_sel.push_back(d); });
     deferred_frontier_.reset();   // quiescent: no worker is running between evolve calls
     deferred_rewrites_.reset();
+    deferred_selections_.reset();
     deferred_count_.store(0, std::memory_order_release);
 
     // THE RAISED BOUND'S WORK GOES INTO THE POOL. The points the old bound left standing are
@@ -1181,6 +1226,16 @@ void ParallelEvolutionEngine::evolve_more(size_t additional_steps,
         }
         go_rw.push_back(d);
     }
+    // A cut selection is the state's transitions, selected with the state; a single-match steer
+    // puts it back, as it does a deferred match task.
+    std::vector<DeferredSelection> go_sel;
+    for (const DeferredSelection& d : resume_sel) {
+        if (!selected(d.state) || only_match != nullptr) {
+            defer_selection(d.state, d.step, d.next, d.chosen, d.num_chosen);
+            continue;
+        }
+        go_sel.push_back(d);
+    }
     std::vector<DeferredMatch> go_m;
     // A stop can defer one state's matching more than once (every task of it that ended after the
     // stop defers it), so after one each (state, step) is taken once.
@@ -1201,6 +1256,10 @@ void ParallelEvolutionEngine::evolve_more(size_t additional_steps,
         // the frontier's matching means the states they create are matched in the same pass.
         for (const DeferredRewrite& d : go_rw) {
             if (all || d.step == step) submit_rewrite_task(d.match, d.step);
+        }
+        for (const DeferredSelection& d : go_sel) {
+            if (all || d.step == step)
+                submit_select_task(d.state, d.step, d.next, d.chosen, d.num_chosen);
         }
         for (const DeferredMatch& d : go_m) {
             if (!all && d.step != step) continue;
@@ -1237,8 +1296,9 @@ void ParallelEvolutionEngine::evolve_more(size_t additional_steps,
         // for its own step: step + additional_steps - 1. A pass resumes only its own entries,
         // so what an earlier pass defers stays on the frontier.
         std::vector<uint32_t> steps;
-        steps.reserve(go_rw.size() + go_m.size());
+        steps.reserve(go_rw.size() + go_sel.size() + go_m.size());
         for (const DeferredRewrite& d : go_rw) steps.push_back(d.step);
+        for (const DeferredSelection& d : go_sel) steps.push_back(d.step);
         for (const DeferredMatch& d : go_m) steps.push_back(d.step);
         std::sort(steps.begin(), steps.end());
         steps.erase(std::unique(steps.begin(), steps.end()), steps.end());
@@ -1257,6 +1317,10 @@ void ParallelEvolutionEngine::evolve_more(size_t additional_steps,
                 for (size_t h = g + 1; h < steps.size(); ++h) {
                     for (const DeferredRewrite& d : go_rw) {
                         if (d.step == steps[h]) defer_rewrite_task(d.match, d.step);
+                    }
+                    for (const DeferredSelection& d : go_sel) {
+                        if (d.step == steps[h])
+                            defer_selection(d.state, d.step, d.next, d.chosen, d.num_chosen);
                     }
                     for (const DeferredMatch& d : go_m) {
                         if (d.step == steps[h]) defer_match_task(d.state, d.step);
@@ -1352,21 +1416,6 @@ void ParallelEvolutionEngine::note_match_task_done(StateId state, uint32_t step)
                 }
             });
         if (any) kids->for_each([&](const ChildInfo& c) { inherit_from_parent(state, c); });
-    }
-}
-
-bool ParallelEvolutionEngine::try_reserve_successor_slot(StateId parent) {
-    if (max_successor_states_per_parent_ == 0) return true;  // Unlimited
-    return try_claim_budget(budget_counter(parent_successor_count_, parent, hg_->arena()),
-                            max_successor_states_per_parent_);
-}
-
-void ParallelEvolutionEngine::release_successor_slot(StateId parent) {
-    if (max_successor_states_per_parent_ == 0) return;  // Unlimited, nothing to release
-
-    auto result = parent_successor_count_.lookup(parent);
-    if (result.has_value()) {
-        (*result)->fetch_sub(1, std::memory_order_relaxed);
     }
 }
 
@@ -1473,10 +1522,10 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
     if (sampling_active() && enable_match_forwarding_) {
         if (match_forwarding_explicit_) {
             warnings_.push_back(
-                "match forwarding was requested together with TransitionRate, RuleWeights or "
-                "MatchesPerStateRule. These choose among each state's matches when the state's own "
-                "matching completes, and a forwarded match arrives after that, so the run turns "
-                "forwarding off.");
+                "match forwarding was requested together with TransitionRate, RuleWeights, "
+                "MatchesPerStateRule or MaxSuccessorStatesPerParent. These choose among each "
+                "state's matches when the state's own matching completes, and a forwarded match "
+                "arrives after that, so the run turns forwarding off.");
         }
         enable_match_forwarding_ = false;
     }
@@ -1512,8 +1561,7 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
     hg_->set_quotient_causal(qc);
     hg_->set_reads_rank_tuples(hgcommon::run_reads_rank_tuples(
         hg_->event_signature_keys(), transition_rate_,
-        static_cast<uint32_t>(rule_weights_.size()),
-        static_cast<uint32_t>(matches_per_state_rule_)));
+        static_cast<uint32_t>(rule_weights_.size()), defers_to_drain() ? 1u : 0u));
 
     // The exploration strategy and the raw reconstruction are separate decisions, and only the
     // second is expensive. Quotient causal exploration decides state identity and costs what the
@@ -1623,36 +1671,34 @@ SVec<uint16_t> ParallelEvolutionEngine::get_shuffled_rule_indices() const {
 // =============================================================================
 
 void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uint32_t step) {
+    if (apply_rewrite(match, step, nullptr) == RewriteOutcome::Deferred)
+        defer_rewrite_task(match, step);
+}
+
+ParallelEvolutionEngine::RewriteOutcome ParallelEvolutionEngine::apply_rewrite(
+        const MatchRecord& match, uint32_t step, StateId* successor) {
     hgcommon::PhaseTimer _pt(hgcommon::Phase::Rewrite);
 
     // A stop keeps this rewrite for a continuation (kept only on a continuable run), as the
     // limits below do when they are what stops the run.
-    if (should_stop_.load(std::memory_order_relaxed)) { defer_rewrite_task(match, step); return; }
+    if (should_stop_.load(std::memory_order_relaxed)) return RewriteOutcome::Deferred;
 
-    // Check step limit - don't spawn REWRITEs past max_steps
-    if (step > step_budget()) return;
+    // Past the step budget: the frontier, kept for a continuation.
+    if (step > step_budget()) return RewriteOutcome::Deferred;
 
     // Check limits before applying
     if (max_states_ > 0 && hg_->num_states() >= max_states_) {
         should_stop_.store(true, std::memory_order_relaxed);
-        defer_rewrite_task(match, step);
-        return;
+        return RewriteOutcome::Deferred;
     }
     if (max_events_ > 0 && hg_->num_events() >= max_events_) {
         should_stop_.store(true, std::memory_order_relaxed);
-        defer_rewrite_task(match, step);
-        return;
-    }
-
-    // Pruning: check max_successor_states_per_parent
-    if (!try_reserve_successor_slot(match.source_state)) {
-        return;  // Parent has too many children already
+        return RewriteOutcome::Deferred;
     }
 
     // Pruning: check max_states_per_step (child will be at step+1)
     if (!try_reserve_step_slot(step + 1)) {
-        release_successor_slot(match.source_state);  // no child will occupy it
-        return;  // Too many states at this generation
+        return RewriteOutcome::Refused;  // Too many states at this generation
     }
 
     const RewriteRule& rule = rules_[match.rule_index()];
@@ -1674,23 +1720,20 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
         inherited
     );
 
-    // Both budgets count states this parent actually contributed, so a rewrite that
-    // produces none gives both slots back. Holding the successor slot here would retire
-    // a parent's child budget on work that never became a child.
+    // The step budget counts states this rewrite actually contributed, so a rewrite that
+    // produces none gives its slot back.
     if (rr.new_state == INVALID_ID) {
-        // Rewrite failed - release the reserved slots
         release_step_slot(step + 1);
-        release_successor_slot(match.source_state);
-        return;
+        return RewriteOutcome::Refused;
     }
+    if (successor) *successor = rr.new_state;
 
     total_rewrites_.fetch_add(1, std::memory_order_relaxed);
     total_events_.fetch_add(1, std::memory_order_relaxed);
 
     if (!rr.was_new_state) {
-        // Duplicate state - release the reserved slots (only count unique states)
+        // Duplicate state - release the reserved slot (only count unique states)
         release_step_slot(step + 1);
-        release_successor_slot(match.source_state);
     }
 
     // Emit visualization events for canonical states only
@@ -1777,7 +1820,7 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
             ExploreCtx ec{*this, frames};
             const uint32_t child_depth =
                 hgcommon::explore_register_child(ec, parent_canonical, rr.new_state, step);
-            if (child_depth == hgcommon::kExploreNoDepth) { worker_scratch().release(mark); return; }
+            if (child_depth == hgcommon::kExploreNoDepth) { worker_scratch().release(mark); return RewriteOutcome::Applied; }
 
             const uint32_t budget = match_depth_bound(match_budget());
             // Past the budget this child is the frontier, not a dead end, so it is kept for a
@@ -1804,7 +1847,7 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
             }
             hgcommon::explore_relax(ec, rr.new_state, child_depth);
             worker_scratch().release(mark);
-            return;
+            return RewriteOutcome::Applied;
         }
 
         // Exploration-probability pruning: full multiway expands every raw state, so one coin
@@ -1818,7 +1861,7 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
         // is what keeps them from being literally the same coin.
         if (exploration_probability_ < 1.0 &&
             !should_explore(canonical_transition_key(match.source_state, match))) {
-            return;
+            return RewriteOutcome::Applied;
         }
 
         // A child past the match budget is not matched in this run (submit_match_task_with_context
@@ -1836,6 +1879,7 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
                 step);
         }
     }
+    return RewriteOutcome::Applied;
 }
 
 // =============================================================================
@@ -1856,7 +1900,6 @@ void ParallelEvolutionEngine::execute_match_task(
 
     // Early exit if rewrites are impossible due to limits
     if (!can_create_states_at_step(step + 1)) return;
-    if (!can_have_more_children(state)) return;
 
     const State& s = hg_->get_state(state);
     const AncestryCandidates cands{hg_, state, &s.edges};
@@ -2043,7 +2086,6 @@ void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
 
     // Early exit if rewrites are impossible due to limits
     if (!can_create_states_at_step(data.step + 1)) return;
-    if (!can_have_more_children(data.state)) return;
     HG_STAT(match_join_for(data.state)->trace.fetch_or(2u, std::memory_order_relaxed));
 
     DEBUG_LOG("EXEC_SCAN state=%u rule=%u step=%u delta=%d",
@@ -2184,7 +2226,6 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
 
     // Early exit if rewrites are impossible due to limits
     if (!can_create_states_at_step(data.step + 1)) return;
-    if (!can_have_more_children(data.state)) return;
 
     HG_STAT(match_join_for(data.state)->trace.fetch_or(256u, std::memory_order_relaxed));
     DEBUG_LOG("EXEC_EXPAND state=%u rule=%u matched=%u/%u step=%u",
@@ -2287,7 +2328,6 @@ bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRe
 
     // Early exit if rewrites are impossible due to limits
     if (!can_create_states_at_step(data.step + 1)) return false;
-    if (!can_have_more_children(data.state)) return false;
 
     HG_STAT(match_join_for(data.state)->trace.fetch_or(32u, std::memory_order_relaxed));
     DEBUG_LOG("EXEC_SINK state=%u rule=%u matched=%u step=%u",
@@ -2479,7 +2519,10 @@ void ParallelEvolutionEngine::set_rule_weights(std::vector<double> w) { rule_wei
 
 const std::vector<double>& ParallelEvolutionEngine::rule_weights() const { return rule_weights_; }
 
-bool ParallelEvolutionEngine::defers_to_drain() const { return matches_per_state_rule_ != 0; }
+bool ParallelEvolutionEngine::defers_to_drain() const {
+    return hgcommon::drain_selects(static_cast<uint32_t>(matches_per_state_rule_),
+                                   static_cast<uint32_t>(max_successor_states_per_parent_)) != 0;
+}
 
 bool ParallelEvolutionEngine::records_own_matches() const { return enable_match_forwarding_ || sampling_active(); }
 
@@ -2655,7 +2698,7 @@ double ParallelEvolutionEngine::rate_for_rule(uint16_t rule) const {
 bool ParallelEvolutionEngine::sampling_active() const {
     return hgcommon::sampling_active(transition_rate_, rule_weights_.data(),
                                      static_cast<uint32_t>(rule_weights_.size()),
-                                     static_cast<uint32_t>(matches_per_state_rule_));
+                                     defers_to_drain() ? 1u : 0u);
 }
 
 uint64_t ParallelEvolutionEngine::spine_rank(uint64_t canonical_key) const {
