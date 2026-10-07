@@ -26,6 +26,17 @@ __global__ void k_alloc_words(const __grid_constant__ DeviceState ds, hg_gpu::Qe
     *out = hg_gpu::qe_alloc_words(ds, qe, n);
 }
 
+// Push one instance reference for `key` into the bucket of `shard`, then count the instances
+// qe_for_each_instance visits for (hash, depth).
+__global__ void k_count_one_instance(hg_gpu::QeView qe, uint64_t hash, uint32_t depth,
+                                     uint32_t shard, uint32_t* out) {
+    const uint64_t key = hg_gpu::qe_inst_key(hash, depth);
+    qe.by_key.push(hg_gpu::qe_inst_bucket(qe, key, shard), hg_gpu::QeInstRef{key, 0u});
+    uint32_t n = 0;
+    hg_gpu::qe_for_each_instance(qe, hash, depth, [&](const hg_gpu::DeviceQcInstance&) { ++n; });
+    *out = n;
+}
+
 __global__ void k_slots(const __grid_constant__ DeviceState ds, const EdgeId* edges, uint32_t n, uint32_t* out) {
     for (uint32_t i = 0; i < n; ++i) out[i] = hg_gpu::qe_slot_of(ds, 0u, edges[i]);
 }
@@ -233,5 +244,36 @@ TEST(QuotientExpansion, ArenaAllocationNearTheCursorWrapIsRefused) {
     EXPECT_LE(cursor, v.arr_capacity) << "a refused allocation left the cursor past the arena";
 }
 
+
+// Two shards of one (class, depth) key can hash to one bucket. qe_for_each_instance -- what the
+// device's branchial count walks -- takes each bucket once: an instance in a shared bucket is
+// visited once, not once per shard that maps there.
+TEST(QuotientExpansion, AnInstanceInABucketTwoShardsShareIsVisitedOnce) {
+    hg_gpu::QeState qe(/*on=*/true, hg_gpu::QeEntries{1, 1, 1, 1, 16});
+    const hg_gpu::QeView v = qe.view(/*max_steps=*/1, hgcommon::EVENT_SIG_NONE,
+                                     /*replay=*/true, /*multiplicity=*/false,
+                                     /*event_content=*/false);
+    const uint32_t buckets = v.by_key.num_keys;
+    uint64_t hash = 0;
+    uint32_t shard = 0;   // a shard whose bucket an earlier shard of the same key also takes
+    for (uint64_t h = 1; h < 10000000ull && hash == 0; ++h)
+        for (uint32_t s = 1; s < hg_gpu::kQeInstShards; ++s)
+            if (!hg_gpu::qe_inst_shard_first(hg_gpu::qe_inst_key(h, 0), s, buckets)) {
+                hash = h;
+                shard = s;
+                break;
+            }
+    ASSERT_NE(hash, 0u) << "no key below 10^7 has two shards in one of " << buckets << " buckets";
+    uint32_t* d_out = nullptr;
+    ASSERT_EQ(cudaMalloc(&d_out, sizeof(uint32_t)), cudaSuccess);
+    k_count_one_instance<<<1, 1>>>(v, hash, 0u, shard, d_out);
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+    uint32_t got = 0;
+    cudaMemcpy(&got, d_out, sizeof(got), cudaMemcpyDeviceToHost);
+    cudaFree(d_out);
+    EXPECT_EQ(got, 1u) << "one instance was visited " << got << " times";
+}
+
 }  // namespace
+
 

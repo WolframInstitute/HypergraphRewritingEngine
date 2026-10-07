@@ -102,7 +102,7 @@ struct QeMatchRef {
 
 // (class, depth) as one key: hgcommon::qc_key with orbit 0, the key the host's instances and
 // multiplicity points use. An instance is keyed by its class and depth alone.
-__device__ __forceinline__ uint64_t qe_inst_key(uint64_t state_hash, uint32_t depth) {
+__host__ __device__ __forceinline__ uint64_t qe_inst_key(uint64_t state_hash, uint32_t depth) {
     return hgcommon::qc_key(state_hash, depth, 0u);
 }
 // One raw occurrence of a canonical class, at one depth, recorded by its lineage: the parent
@@ -353,7 +353,7 @@ __device__ __forceinline__ uint32_t qe_alloc_words(const DeviceState& ds, QeView
 // Bucket a hash into a list's key space.
 //
 // The full 64-bit value modulo the key count, so `num_keys` need not be a power of two.
-__device__ __forceinline__ uint32_t qe_bucket(uint64_t h, uint32_t num_keys) {
+__host__ __device__ __forceinline__ uint32_t qe_bucket(uint64_t h, uint32_t num_keys) {
     h ^= h >> 33; h *= 0xff51afd7ed558ccdULL; h ^= h >> 33;
     return static_cast<uint32_t>(h % (num_keys ? num_keys : 1u));
 }
@@ -362,8 +362,21 @@ __device__ __forceinline__ uint32_t qe_bucket(uint64_t h, uint32_t num_keys) {
 // shard of its lane across the grid and a scanner walks all of them. Every lane of a warp
 // creates instances, so a shard per block would put a warp's lanes on one list head.
 constexpr uint32_t kQeInstShards = 16;
+__host__ __device__ __forceinline__ uint32_t qe_inst_bucket_of(uint64_t key, uint32_t shard,
+                                                              uint32_t num_keys) {
+    return qe_bucket(key + 0x9E3779B97F4A7C15ull * shard, num_keys);
+}
 __device__ __forceinline__ uint32_t qe_inst_bucket(const QeView& qe, uint64_t key, uint32_t shard) {
-    return qe_bucket(key + 0x9E3779B97F4A7C15ull * shard, qe.by_key.num_keys);
+    return qe_inst_bucket_of(key, shard, qe.by_key.num_keys);
+}
+// Two shards of one key can hash to the same bucket. A walk over a key's shards takes a bucket
+// from the first shard that lands in it only, or it visits that bucket's instances twice.
+__host__ __device__ __forceinline__ bool qe_inst_shard_first(uint64_t key, uint32_t shard,
+                                                             uint32_t num_keys) {
+    const uint32_t b = qe_inst_bucket_of(key, shard, num_keys);
+    for (uint32_t t = 0; t < shard; ++t)
+        if (qe_inst_bucket_of(key, t, num_keys) == b) return false;
+    return true;
 }
 
 // The frame slot of `edge` in `sid`: its rank under (orbit, EdgeId).
@@ -1028,10 +1041,12 @@ template <typename F>
 __device__ inline void qe_for_each_instance(QeView qe, uint64_t state_hash, uint32_t depth,
                                             F&& f) {
     const uint64_t key = qe_inst_key(state_hash, depth);
-    for (uint32_t s = 0; s < kQeInstShards; ++s)
+    for (uint32_t s = 0; s < kQeInstShards; ++s) {
+        if (!qe_inst_shard_first(key, s, qe.by_key.num_keys)) continue;
         qe.by_key.for_each(qe_inst_bucket(qe, key, s), [&](const QeInstRef& r) {
             if (r.key == key) f(qe.instances.at(r.record));
         });
+    }
 }
 
 // The (instance, match) claim key. Same mixing as the host's apply_key, and nudged off both
@@ -1086,6 +1101,7 @@ __device__ inline void qe_drive_match(const DeviceState& ds, QeView qe, uint32_t
     for (uint32_t u = threadIdx.x & 31u; u < units; u += 32u) {
         const uint32_t d = u / kQeInstShards;
         const uint64_t key = qe_inst_key(from_hash, d);
+        if (!qe_inst_shard_first(key, u % kQeInstShards, qe.by_key.num_keys)) continue;
         qe.by_key.for_each(qe_inst_bucket(qe, key, u % kQeInstShards), [&](const QeInstRef& r) {
             if (r.key == key) qe_task_append(ds, qe, from_hash, r.record, d, match_rec);
         });
