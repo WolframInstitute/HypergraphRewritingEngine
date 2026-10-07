@@ -389,8 +389,8 @@ run_one() {
     local rc=${PIPESTATUS[0]}
     # A thread that passes the --unroll bound is ended, and the checker counts the execution as
     # complete ("(N cut at the unroll bound)", printed by the hg-fixes fork). When every complete
-    # execution was cut, no execution reached the harness's assertions and "No errors" checked
-    # nothing, so the run fails.
+    # execution was cut, or none completed, no execution reached the harness's assertions and
+    # "No errors" checked nothing, so the run fails.
     if [ $rc -eq 0 ]; then
         local explored cut
         explored="$(sed -n 's|^Number of complete executions explored: \([0-9]*\).*|\1|p' "$WORK/$name.out" | tail -1)"
@@ -398,6 +398,12 @@ run_one() {
         if [ -n "$explored" ] && [ -n "$cut" ] && [ "$cut" = "$explored" ]; then
             echo "--- $name: all $explored complete executions were cut at the unroll bound;"
             echo "    nothing was checked -- raise the harness's --unroll"
+            return 3
+        fi
+        # Every execution blocked (spin-assume, or a thread cut while the others wait): none
+        # reached the end, so none reached an assertion either.
+        if [ "$explored" = "0" ]; then
+            echo "--- $name: no execution completed; nothing was checked"
             return 3
         fi
     fi
