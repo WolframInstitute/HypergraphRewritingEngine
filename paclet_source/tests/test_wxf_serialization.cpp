@@ -2634,3 +2634,24 @@ TEST(Session, ADeltaBranchialGraphAtTheFinalStepIsDeliveredWhole) {
     EXPECT_GT(graph_of(full, "BranchialGraph").second, 0);
     run_rewriting_core(branch_job(0, "Close", h, opts, 2), host);
 }
+
+// The branchial graph keeps every branchial pair as an edge, so with all steps shown its edge
+// count is NumBranchialEdges. Under CanonicalizeStates -> Full sibling pairs reach the same two
+// classes, and a repeated pair in the same order was sent once while one in the other order was
+// kept, so the count depended on event order.
+TEST(WxfSerializationPin, BranchialGraphKeepsEveryPair) {
+    HostBridge host;
+    auto in = build_input(kBranchSeed, kBranchLhs, kBranchRhs, 3, [](wxf::Writer& w) {
+        put_str_list_option(w, "GraphProperties", {"BranchialGraph"});
+        put_str_option(w, "CanonicalizeStates", "Full");
+        put_str_list_option(w, "RequestedData", {"NumBranchialEdges"});
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("BranchialStep"));
+        w.write(int64_t{0});
+    }, 4);
+    const auto out = run_rewriting_core(in, host);
+    ASSERT_FALSE(out.empty());
+    const int64_t pairs = read_int_key(out, "NumBranchialEdges");
+    ASSERT_GT(pairs, 0);
+    EXPECT_EQ(graph_edge_count(out), pairs);
+}

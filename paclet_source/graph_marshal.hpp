@@ -555,11 +555,15 @@ wxf::WXFValue build_graph_data(const Source& src,
                 vertices.push_back(wxf::WXFValue(eff));
                 vertex_data.push_back({wxf::WXFValue(eff), wxf::WXFValue(state_payload(raw))});
             }
+            // Every pair is an edge (multiplicity is meaning, see above): its index is the
+            // number of earlier pairs between the same two states in the same order, which a
+            // session's cursor sees unchanged as the pair list grows.
+            std::map<std::pair<int64_t, int64_t>, uint32_t> occurrence;
             for (const auto& [e1, e2] : pairs) {
                 if (filter_by_step && src.state_step(src.event_output_state(e1)) != target_step) continue;
                 int64_t s1 = src.effective_state_id(src.event_output_state(e1));
                 int64_t s2 = src.effective_state_id(src.event_output_state(e2));
-                if (!send_edge(s1, s2, kEdgeBranchialState, 0)) continue;
+                if (!send_edge(s1, s2, kEdgeBranchialState, occurrence[{s1, s2}]++)) continue;
                 wxf::WXFValueAssociation branchial_data;
                 branchial_data.push_back({wxf::WXFValue("State1"), wxf::WXFValue(s1)});
                 branchial_data.push_back({wxf::WXFValue("State2"), wxf::WXFValue(s2)});
