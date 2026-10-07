@@ -2330,6 +2330,41 @@ TEST(GpuBinaryGate, GenesisEventsAreListedOnceBesideEveryApplication) {
     worker_stop(w);
 }
 
+// The causal graphs with genesis events shown draw each genesis event and the causal edges it
+// starts, on both devices: the GPU builds its genesis events from the result, and its graphs take
+// them as the host's do.
+TEST(GpuBinaryGate, CausalGraphsDrawGenesisEventsOnBothDevices) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    CpuWorker host;
+    ASSERT_TRUE(host.ok) << "could not start hg_evolve --serve";
+    for (const char* graph : {"CausalGraph", "EvolutionCausalGraph"}) {
+        for (bool quotient : {false, true}) {
+            auto opts = [graph, quotient](wxf::Writer& ww) {
+                put_str_list_option(ww, "GraphProperties", {graph});
+                put_str_option(ww, "CanonicalizeStates", "Full");
+                put_str_option(ww, "ExploreFromCanonicalStatesOnly", quotient ? "True" : "False");
+                put_str_option(ww, "ShowGenesisEvents", "True");
+            };
+            const auto cpu = host(branch_job(3, "Evolve", 0, opts, 4));
+            const auto gpu = worker_call(w, branch_job(3, "Evolve", 0, opts, 4));
+            ASSERT_FALSE(gpu.empty()) << graph << " quotient=" << quotient;
+            EXPECT_EQ(graph_vertex_count(gpu), graph_vertex_count(cpu))
+                << graph << " quotient=" << quotient;
+            EXPECT_EQ(graph_edge_count(gpu), graph_edge_count(cpu))
+                << graph << " quotient=" << quotient;
+        }
+    }
+    worker_stop(w);
+}
+
 // "StepStatistics" is the same reply on both devices: under quotient exploration from each
 // engine's class multiplicities, under full capture from its raw states.
 TEST(GpuBinaryGate, StepStatisticsAgreeAcrossDevices) {

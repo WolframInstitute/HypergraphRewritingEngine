@@ -403,6 +403,28 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
         }
     }
 
+    // THE GENESIS HALF OF THE CAUSAL RELATION. A genesis event produces its initial state's
+    // edges, so any event CONSUMING one of those edges is caused by it -- which is why showing
+    // genesis events changes the causal relation and not only the event list. The device records
+    // no producer for an initial edge, so the pair is derived here from the same fact that
+    // identifies one: an edge in a root state's edge list was never produced by a rewrite. Read
+    // by "CausalEdges" and by the causal graphs. Ids are final only below, where the
+    // reconstruction may raise first_genesis_event, so these hold root indices.
+    std::vector<std::pair<size_t, uint32_t>> genesis_causal;   // (root index, consumer event)
+    if (job.show_genesis_events) {
+        std::unordered_set<uint64_t> seen_genesis;
+        for (const auto& e : result.events) {
+            if (e.id == hg_gpu::INVALID_ID) continue;
+            for (auto c : result.consumed_of(e)) {
+                if (c == hg_gpu::INVALID_ID) continue;
+                auto it = initial_edge_root.find(c);
+                if (it == initial_edge_root.end()) continue;
+                const uint64_t key = (static_cast<uint64_t>(it->second) << 32) | e.id;
+                if (seen_genesis.insert(key).second) genesis_causal.emplace_back(it->second, e.id);
+            }
+        }
+    }
+
     wxf::WXFValueAssociation full_result;
 
     if (job.include_states) {
@@ -585,29 +607,17 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
                 causal.push_back(wxf::WXFValue(ed));
             }
         }
-        // THE GENESIS HALF OF THE RELATION. A genesis event produces its initial state's edges,
-        // so any event CONSUMING one of those edges is caused by it -- which is why showing
-        // genesis events changes the causal relation and not only the event list. The device
-        // records no producer for an initial edge, so the pair is derived here from the same
-        // fact that identifies one: an edge in a root state's edge list was never produced by a
-        // rewrite.
-        for (const auto& e : result.events) {
-            if (e.id == hg_gpu::INVALID_ID) continue;
-            for (auto c : result.consumed_of(e)) {
-                if (c == hg_gpu::INVALID_ID) continue;
-                auto it = initial_edge_root.find(c);
-                if (it == initial_edge_root.end()) continue;
-                const uint32_t from = static_cast<uint32_t>(first_genesis_event + it->second);
-                const uint64_t key = (static_cast<uint64_t>(from) << 32) | e.id;
-                if (!seen.insert(key).second) continue;
-                if (job.include_causal_edges) {
-                    wxf::WXFValueAssociation ed;
-                    ed.push_back({wxf::WXFValue("From"), wxf::WXFValue(static_cast<int64_t>(from))});
-                    ed.push_back({wxf::WXFValue("To"), wxf::WXFValue(static_cast<int64_t>(e.id))});
-                    ed.push_back({wxf::WXFValue("RawFrom"), wxf::WXFValue(static_cast<int64_t>(from))});
-                    ed.push_back({wxf::WXFValue("RawTo"), wxf::WXFValue(static_cast<int64_t>(e.id))});
-                    causal.push_back(wxf::WXFValue(ed));
-                }
+        for (const auto& [root, to] : genesis_causal) {
+            const uint32_t from = static_cast<uint32_t>(first_genesis_event + root);
+            const uint64_t key = (static_cast<uint64_t>(from) << 32) | to;
+            if (!seen.insert(key).second) continue;
+            if (job.include_causal_edges) {
+                wxf::WXFValueAssociation ed;
+                ed.push_back({wxf::WXFValue("From"), wxf::WXFValue(static_cast<int64_t>(from))});
+                ed.push_back({wxf::WXFValue("To"), wxf::WXFValue(static_cast<int64_t>(to))});
+                ed.push_back({wxf::WXFValue("RawFrom"), wxf::WXFValue(static_cast<int64_t>(from))});
+                ed.push_back({wxf::WXFValue("RawTo"), wxf::WXFValue(static_cast<int64_t>(to))});
+                causal.push_back(wxf::WXFValue(ed));
             }
         }
 
@@ -905,15 +915,38 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
             std::vector<std::pair<uint32_t, uint32_t>> branchial_event_pairs() const { return branchial_pairs_; }
         };
 
+        // The genesis state and events are drawn when shown and the graph is over the device's
+        // events; under the reconstruction the host draws the replay's applications only, and so
+        // does this. The genesis state is the host's: no edges, step 0.
+        const bool graph_genesis = !genesis_roots.empty() && !result.reconstruction_ran;
+        const uint32_t genesis_end =
+            graph_genesis ? static_cast<uint32_t>(first_genesis_event + genesis_roots.size()) : 0u;
+        auto is_genesis_event = [&](uint32_t eid) {
+            return graph_genesis && eid >= first_genesis_event && eid < genesis_end;
+        };
+        auto is_genesis_state = [&](uint32_t sid) { return graph_genesis && sid == genesis_state_id; };
+
         GpuGraphSource gsrc;
-        gsrc.n_states = max_state + 1;
+        gsrc.n_states = std::max<uint32_t>(max_state + 1, graph_genesis ? genesis_state_id + 1 : 0u);
         gsrc.n_events = recon_content ? static_cast<uint32_t>(result.reconstructed_event_from_class.size())
-                                      : max_event + 1;
-        gsrc.state_valid_ = [&](uint32_t sid) { return state_by_id.find(sid) != state_by_id.end(); };
-        gsrc.eff_state_ = [&](uint32_t sid) { return rep_of(sid); };
-        gsrc.step_ = step_of;
+                                      : std::max<uint32_t>(max_event + 1, genesis_end);
+        gsrc.state_valid_ = [&](uint32_t sid) {
+            return is_genesis_state(sid) || state_by_id.find(sid) != state_by_id.end();
+        };
+        gsrc.eff_state_ = [&](uint32_t sid) {
+            return is_genesis_state(sid) ? static_cast<int64_t>(sid) : rep_of(sid);
+        };
+        gsrc.step_ = [&](uint32_t sid) { return is_genesis_state(sid) ? 0u : step_of(sid); };
         gsrc.state_data_ = [&](uint32_t sid) -> wxf::WXFValueAssociation {
             wxf::WXFValueAssociation d;
+            if (is_genesis_state(sid)) {
+                d.push_back({wxf::WXFValue("Id"), wxf::WXFValue(static_cast<int64_t>(sid))});
+                d.push_back({wxf::WXFValue("CanonicalId"), wxf::WXFValue(static_cast<int64_t>(sid))});
+                d.push_back({wxf::WXFValue("Step"), wxf::WXFValue(static_cast<int64_t>(0))});
+                d.push_back({wxf::WXFValue("Edges"), wxf::WXFValue(wxf::WXFValueList{})});
+                d.push_back({wxf::WXFValue("IsInitial"), wxf::WXFValue(true)});
+                return d;
+            }
             d.push_back({wxf::WXFValue("Id"), wxf::WXFValue(static_cast<int64_t>(sid))});
             d.push_back({wxf::WXFValue("CanonicalId"), wxf::WXFValue(rep_of(sid))});
             d.push_back({wxf::WXFValue("Step"), wxf::WXFValue(static_cast<int64_t>(step_of(sid)))});
@@ -925,6 +958,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
             // An application whose identity the replay never registered stands for no vertex,
             // which is what keeps the vertex set equal to the set the count describes.
             if (recon_content) return recon_app_valid(eid);
+            if (is_genesis_event(eid)) return true;
             if (recon_identity) {
                 if (job.event_canon_mode == 0)
                     return eid < result.reconstructed_event_signature.size() &&
@@ -933,15 +967,36 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
             }
             return event_by_id.find(eid) != event_by_id.end();
         };
-        gsrc.eff_event_ = eff_event;
+        gsrc.eff_event_ = [&](uint32_t eid) -> int64_t {
+            return is_genesis_event(eid) ? static_cast<int64_t>(eid) : eff_event(eid);
+        };
         // A reconstructed application's endpoints are the states standing for its classes.
         gsrc.in_state_ = [&](uint32_t eid) -> uint32_t {
+            if (is_genesis_event(eid)) return genesis_state_id;
             if (recon_content) return static_cast<uint32_t>(class_state(result.reconstructed_event_from_class[eid]));
             auto it = event_by_id.find(eid); return it == event_by_id.end() ? 0u : it->second->input_state; };
         gsrc.out_state_ = [&](uint32_t eid) -> uint32_t {
+            if (is_genesis_event(eid)) return genesis_roots[eid - first_genesis_event];
             if (recon_content) return static_cast<uint32_t>(class_state(result.reconstructed_event_to_class[eid]));
             auto it = event_by_id.find(eid); return it == event_by_id.end() ? 0u : it->second->output_state; };
         gsrc.event_data_ = [&](uint32_t eid) -> wxf::WXFValueAssociation {
+            if (is_genesis_event(eid)) {
+                const hg_gpu::StateId root = genesis_roots[eid - first_genesis_event];
+                wxf::WXFValueList produced;
+                for (auto pe : result.edge_ids(*state_by_id[root]))
+                    produced.push_back(wxf::WXFValue(static_cast<int64_t>(pe)));
+                wxf::WXFValueAssociation d;
+                d.push_back({wxf::WXFValue("Id"), wxf::WXFValue(static_cast<int64_t>(eid))});
+                d.push_back({wxf::WXFValue("CanonicalId"), wxf::WXFValue(static_cast<int64_t>(eid))});
+                d.push_back({wxf::WXFValue("RuleIndex"), wxf::WXFValue(static_cast<int64_t>(-1))});
+                d.push_back({wxf::WXFValue("InputState"), wxf::WXFValue(static_cast<int64_t>(genesis_state_id))});
+                d.push_back({wxf::WXFValue("OutputState"), wxf::WXFValue(static_cast<int64_t>(root))});
+                d.push_back({wxf::WXFValue("ConsumedEdges"), wxf::WXFValue(wxf::WXFValueList{})});
+                d.push_back({wxf::WXFValue("ProducedEdges"), wxf::WXFValue(produced)});
+                d.push_back({wxf::WXFValue("InputStateEdges"), wxf::WXFValue(wxf::WXFValueList{})});
+                d.push_back({wxf::WXFValue("OutputStateEdges"), wxf::WXFValue(serialize_edges(root))});
+                return d;
+            }
             if (recon_content)
                 return hgmarshal::reconstructed_event_data(
                     eff_event(eid), static_cast<int64_t>(result.reconstructed_event_rule[eid]),
@@ -976,6 +1031,9 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host
         } else {
         for (const auto& c : result.causal_edges)
             gsrc.causal_pairs_.emplace_back(static_cast<uint32_t>(c.from), static_cast<uint32_t>(c.to));
+        if (graph_genesis)
+            for (const auto& [root, to] : genesis_causal)
+                gsrc.causal_pairs_.emplace_back(static_cast<uint32_t>(first_genesis_event + root), to);
         for (const auto& b : result.branchial_edges)
             gsrc.branchial_pairs_.emplace_back(static_cast<uint32_t>(b.a), static_cast<uint32_t>(b.b));
         }
