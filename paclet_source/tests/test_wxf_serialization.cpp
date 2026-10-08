@@ -28,6 +28,7 @@
 #include "wxf.hpp"
 #include "paclet_source/hg_core.hpp"
 #include "paclet_source/state_statistics.hpp"
+#include "paclet_source/graph_marshal.hpp"
 
 // Pin test for the FFI WXF serialization (run_rewriting_core), the LibraryLink /
 // standalone-binary output contract. This path has no wolframscript-free coverage
@@ -2964,4 +2965,53 @@ TEST(Session, ASteeredStepExpandsEveryStateItsIdStandsFor) {
     EXPECT_EQ(std::count(after.begin(), after.end(), id), 0)
         << "state " << id << " is still on the frontier after a Step from it";
     run_rewriting_core(branch_job(0, "Close", h, opts, 2), host);
+}
+
+// =============================================================================
+// Input limits and option values, checked in the shared parse for both devices
+// =============================================================================
+namespace {
+
+// The Context string of every entry of the reply's Warnings list.
+std::vector<std::string> warning_contexts(const std::vector<uint8_t>& out) {
+    std::vector<std::string> ctx;
+    wxf::Parser parser(out);
+    parser.skip_header();
+    parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+        if (k != "Warnings") { vp.skip_value(); return; }
+        vp.read_function([&](const std::string&, size_t count, wxf::Parser& ep) {
+            for (size_t i = 0; i < count; ++i)
+                ep.read_association([&](const std::string& wk, wxf::Parser& wp) {
+                    if (wk == "Context") ctx.push_back(wp.read<std::string>());
+                    else wp.skip_value();
+                });
+        });
+    });
+    return ctx;
+}
+
+// kSeed under kLhs -> kRhs for 2 steps, asking for NumStates, with `put` writing one more option.
+std::vector<uint8_t> job_with_option(const std::function<void(wxf::Writer&)>& put) {
+    return build_input(kSeed, kLhs, kRhs, 2, [&](wxf::Writer& w) {
+        put_str_list_option(w, "RequestedData", {"NumStates"});
+        put(w);
+    }, 2);
+}
+
+}  // namespace
+
+// An option key that is not valid UTF-8 is quoted in the warning with its bad bytes as \xNN.
+TEST(FfiInput, AWarningQuotesACorruptOptionKeyAsValidUtf8) {
+    HostBridge host;
+    const std::string corrupt = std::string("Re") + char(0xFE) + "ues" + char(0xB3) + "edData";
+    const auto out = run_rewriting_core(job_with_option([&](wxf::Writer& w) {
+        put_str_option(w, corrupt.c_str(), "True");
+    }), host);
+    const auto ctx = warning_contexts(out);
+    ASSERT_EQ(ctx.size(), 1u);
+    EXPECT_NE(ctx[0].find("option 'Re\\xFEues\\xB3edData'"), std::string::npos) << ctx[0];
+    EXPECT_EQ(hgmarshal::valid_utf8("caf\xC3\xA9 \xE2\x82\xAC \xF0\x9F\x98\x80"),
+              "caf\xC3\xA9 \xE2\x82\xAC \xF0\x9F\x98\x80");
+    EXPECT_EQ(hgmarshal::valid_utf8("\xC0\x80\xED\xA0\x80\xF4\x90\x80\x80\xE2\x82"),
+              "\\xC0\\x80\\xED\\xA0\\x80\\xF4\\x90\\x80\\x80\\xE2\\x82");
 }

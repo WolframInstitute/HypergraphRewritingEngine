@@ -1991,7 +1991,12 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         return wxf_data;
 
     } catch (const wxf::TypeError& e) {
-        throw std::runtime_error(std::string("WXF TypeError: ") + e.what());
+        throw std::runtime_error(hgmarshal::valid_utf8(std::string("WXF TypeError: ") + e.what()));
+    } catch (const std::bad_alloc&) {
+        throw;
+    } catch (const std::exception& e) {
+        // Error messages quote names from the request; the caller decodes them as UTF-8.
+        throw std::runtime_error(hgmarshal::valid_utf8(e.what()));
     }
 }
 
