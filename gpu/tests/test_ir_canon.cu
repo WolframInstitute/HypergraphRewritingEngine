@@ -45,8 +45,6 @@ hg_gpu::EngineConfig small_cfg() {
     // index is keyed on global VertexId, so vertices must fit in
     // [0, max_vertices) at upload time.
     cfg.max_vertices         = 256;
-    cfg.sig_index_buckets    = 16;
-    cfg.sig_index_pool       = 64;
     cfg.inverted_pool        = 256;
     return cfg;
 }
@@ -203,8 +201,6 @@ TEST(IrCanon, ALargeStateIsStillHashedExactly) {
     cfg.max_states           = 8;
     cfg.max_vertex_slots     = kEdges * 4;
     cfg.max_vertices         = kEdges * 4;
-    cfg.sig_index_buckets    = 64;
-    cfg.sig_index_pool       = kEdges * 4;
     cfg.inverted_pool        = kEdges * 4;
 
     // A long path: enough structure that refinement discretises, and far past the old cap.

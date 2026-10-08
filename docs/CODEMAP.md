@@ -179,8 +179,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`ir_canonicalization.hpp`)
 - **`termination.hpp`** -- `TerminationDetector` (per-role quiescence for a persistent-kernel model)
 - **`device_arena.hpp`** -- `DeviceArena` (bump allocator the device claims from; scratch whose size is only known once the work is in hand)
 - **`clear_batch.hpp`** -- `ClearBatch` (device regions filled with one byte value by one kernel launch; the per-run clears of `EngineState`, `QeState` and the persistent launch's scratch go through it, and every pool, list, map, ring, detector and arena reset takes one)
-- **`edge_signature.hpp`** -- `EdgeSignature` + device `signature_*` helpers (bit-identical to CPU)
-- **`signature_index.hpp` / `vertex_inverted_index.hpp`** -- `SignatureIndex` / `VertexInvertedIndex` (device match-candidate indices)
+- **`vertex_inverted_index.hpp`** -- `VertexInvertedIndex` (the device match-candidate index for a bound pivot vertex)
 - **`match.hpp`** -- `DevicePatternEdge`/`DeviceRhsEdge`/`DeviceRule`/`MatchRecord` (carries its `step` and a `published` flag); device `match_state_rule`/`publish_match`/`await_match`; host `make_device_rule`/`run_match_kernel[_batch][_nosync]`
 - **`rewrite.hpp`** -- device `apply_one_match` (returns the state it created); host `run_rewrite_kernel[_with][_nosync]`
 - **`exploration.hpp`** -- `DedupMap`; `keyed_claim_device`, the device twin of the host's `keyed_claim` (`hgcommon::dedup_claim` over a map whose value names a class, a policy deciding a key hit); `state_claim_form` (a claim on an IR canonical form: Full-mode states, and the exact hash None/Automatic event identity reads), `state_claim_content` (Automatic states, `hgcommon::content_equal`), `state_identity` (None) and `state_retained` (the exploration coin and the two hard bounds on a fresh state)
@@ -199,7 +198,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`ir_canonicalization.hpp`)
 
 ## `gpu/src/` -- CUDA kernels + drivers
 
-- **`engine_state.cu`** -- the HOST bodies of `EngineState` (the constructor's device allocations, `clear`, `device()`, `set_sampling`, the readback helpers) and of the three device-side containers it owns (`DeviceArena`, `SignatureIndex`, `VertexInvertedIndex`). `engine_state.hpp` is included by sixteen translation units and every one of them was compiling all of it; what stays there is `DeviceState` and the `DeviceView` structs the kernels actually use
+- **`engine_state.cu`** -- the HOST bodies of `EngineState` (the constructor's device allocations, `clear`, `device()`, `set_sampling`, the readback helpers) and of the two device-side containers it owns (`DeviceArena`, `VertexInvertedIndex`). `engine_state.hpp` is included by sixteen translation units and every one of them was compiling all of it; what stays there is `DeviceState` and the `DeviceView` structs the kernels actually use
 - **`errors.cu`** -- the port's error reporting: `cuda_fail` (the throw `HG_CUDA_CHECK` jumps to -- `cuda_check_at` stays inline, being one comparison at every CUDA call), `error_kind_name`, `DeviceErrors`' allocation and drain, and `TerminationDetector`'s host side
 - **`quotient.cu`** -- the host bodies of `QeState`: allocation, `clear`, the counter readbacks and the `view()` call that hands the device struct to a kernel. The replay is `__device__` and stays in its header
 - **`evolve.cu`** -- the driver: `Engine::Impl` sizes the device state, launches `run_persistent_evolve` (which seeds its own roots and owns the dedup map), and assembles the result; host `config_from_input`/`grow_config_for`/`fit_config_to_cap`/`estimated_device_bytes`/`evolve`/`PersistentEvolver::run`

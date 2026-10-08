@@ -42,7 +42,6 @@ const char* error_kind_name(ErrorKind k) {
         case ErrorKind::kQeEventsFull:        return "replay raw-event tables";
         case ErrorKind::kQePairsFull:         return "replay pair maps";
         case ErrorKind::kQeWordsFull:         return "replay word arena";
-        case ErrorKind::kSigIndexNodes:       return "signature_index (node pool)";
         case ErrorKind::kInvIndexNodes:       return "vertex_inverted_index (node pool)";
         case ErrorKind::kFrontierCapFull:     return "frontier buffer";
         case ErrorKind::kScratchOverflow:     return "per-thread scratch";

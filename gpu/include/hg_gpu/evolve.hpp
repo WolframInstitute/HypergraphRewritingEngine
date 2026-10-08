@@ -386,9 +386,7 @@ struct EngineConfig {
     // empirically max_states * avg_state_edges fits most workloads. Sizing
     // is linear in the total edge-slot count, not max_states * max_edges.
     uint32_t max_state_edge_total = 1u << 22;   // 4M EdgeId slots (16 MB)
-    uint32_t sig_index_buckets    = 1024;       // power of two; sig_hash & (n-1)
     uint32_t inverted_pool        = 1u << 18;   // shared LockFreeList node capacity
-    uint32_t sig_index_pool       = 1u << 16;   // shared LockFreeList node capacity
     // Words of canonical-form records: one record per Full-mode canonical state, a 3-word
     // header and its IR canonical form at 1, 2 or 4 bytes per word (hgcommon/
     // canonical_form_core.hpp). Grown on kCanonicalFormsFull.

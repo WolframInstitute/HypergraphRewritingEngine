@@ -1,6 +1,5 @@
 #include "hgcommon/namespace.hpp"
 #include "hgcommon/reach_core.hpp"
-#include "hg_gpu/edge_signature.hpp"
 #include "hgcommon/core.hpp"          // id_key -- the packed-pair rule, shared with the host
 #include "hgcommon/rewrite_core.hpp"  // shared with the host rewriter
 #include "hgcommon/ir_core.hpp"       // IrSerial, the one-thread lane policy
@@ -537,21 +536,15 @@ __device__ AppliedMatch apply_one_match(const DeviceState& ds,
         Edge ne{};
         ne.arity         = re.arity;
         ne.vertex_offset = vert_off;
-        ne.signature     = signature_hash_from_vertices(local_verts, re.arity);
         ne.creator_event = my_event;
         ne.step          = step;
         ds.edge_pool.at(new_eid) = ne;
 
-        // Indices are maintained only once some state has exceeded the slice-scan
-        // threshold; below it the match kernels never read them, and skipping the
-        // inserts avoids heavy CAS contention on hub-vertex and shared-signature
-        // bucket heads. signature_index.insert / vertex_inverted_index.insert push
-        // into LockFreeLists whose node pools may be full. Record softly — this
-        // causes match-candidate misses, not memory corruption.
+        // The vertex index is maintained only once some state can exceed the slice-scan
+        // threshold; below it the match kernels never read it, and skipping the inserts avoids
+        // CAS contention on hub-vertex heads. vertex_inverted_index.insert pushes into a
+        // LockFreeList whose node pool may be full: recorded, and the run is partial.
         if (ds.maintain_indices) {
-            if (ds.signature_index.insert(new_eid, ne.signature) == INVALID_ID) {
-                ds.errors.record(ErrorKind::kSigIndexNodes);
-            }
             for (uint8_t i = 0; i < re.arity; ++i) {
                 VertexId v = binding[re.vars[i]];
                 if (v >= ds.vertex_inverted_index.list.num_keys) continue;

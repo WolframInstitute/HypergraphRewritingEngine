@@ -2,7 +2,6 @@
 #include "hg_gpu/persistent.hpp"   // default_persistent_grid
 #include "hg_gpu/device_arena.hpp"
 #include "hg_gpu/match.hpp"
-#include "hg_gpu/signature_index.hpp"
 #include "hg_gpu/vertex_inverted_index.hpp"
 
 // The HOST bodies of EngineState and of the three device-side containers it owns.
@@ -52,28 +51,6 @@ uint64_t DeviceArena::used_words_host() const {
     cudaMemcpy(&v, cursor_, sizeof(uint64_t), cudaMemcpyDeviceToHost);
     return v;
 }
-
-// =============================================================================
-// SignatureIndex
-// =============================================================================
-
-SignatureIndex::SignatureIndex(uint32_t num_buckets_pow2, uint32_t max_edges)
-    : list_(num_buckets_pow2, max_edges),
-      mask_(num_buckets_pow2 - 1)
-{
-    if ((num_buckets_pow2 & mask_) != 0 || num_buckets_pow2 == 0) {
-        throw std::invalid_argument("SignatureIndex num_buckets must be a power of two ≥ 1");
-    }
-}
-
-SignatureIndex::DeviceView SignatureIndex::view() const {
-    return DeviceView{list_.view(), mask_};
-}
-
-uint32_t SignatureIndex::num_buckets() const { return list_.num_keys(); }
-uint32_t SignatureIndex::used() const { return list_.pool_used_host(); }
-
-void SignatureIndex::clear(ClearBatch* batch) { list_.clear(0xFFFFFFFFu, batch); }
 
 // =============================================================================
 // VertexInvertedIndex
@@ -149,7 +126,6 @@ EngineState::CounterBlock::~CounterBlock() { if (p) cudaFree(p); }
 EngineState::EngineState(EngineConfig cfg): cfg_(cfg)
         , vertex_pool_(cfg.max_vertex_slots, block_.p + 7)
         , edge_pool_(cfg.max_edges, block_.p + 6)
-        , signature_index_(cfg.sig_index_buckets, cfg.sig_index_pool)
         , vertex_inverted_index_(cfg.max_vertices, cfg.inverted_pool)
         , event_pool_(cfg.max_events, block_.p + 8)
         , causal_edge_pool_(cfg.max_causal_edges, block_.p + 9)
@@ -419,7 +395,6 @@ DeviceState EngineState::device() const {
         d.event_sig_raw_fallbacks = event_sig_fallbacks_;
         d.canonical_event_count   = canonical_event_count_;
         d.vertex_high_water       = vertex_high_water_;
-        d.signature_index         = signature_index_.view();
         d.vertex_inverted_index   = vertex_inverted_index_.view();
         d.event_pool              = event_pool_.view();
         d.causal_edge_pool        = causal_edge_pool_.view();
@@ -551,7 +526,6 @@ void EngineState::clear() {
         // bytes) again for the next run's states.
         if (keyed_follow_head_)
             batch.add(keyed_follow_head_, sizeof(uint32_t) * dirty_states, 0xFF);
-        signature_index_.clear(&batch);
         vertex_inverted_index_.clear(dirty_vertices, &batch);
         edge_consumers_.clear(dirty_edges_lf, &batch);
         branchial_index_.clear(0xFFFFFFFFu, &batch);

@@ -1,6 +1,5 @@
 #include "hgcommon/namespace.hpp"
 #include "hg_gpu/initial_upload.hpp"
-#include "hg_gpu/edge_signature.hpp"
 #include "hg_gpu/cuda_check.hpp"
 
 #include <cuda_runtime.h>
@@ -11,17 +10,14 @@
 namespace HG_NAMESPACE {
 namespace gpu {
 
-// Kernel that, for every edge in [0, num_edges), pushes (signature_hash →
-// edge_id) into the signature index and (each vertex → edge_id) into the
-// vertex inverted index. An insert the node pools cannot hold is recorded, as the rewrite
-// records its own; the edge is then missing from a candidate list.
+// Kernel that, for every edge in [0, num_edges), pushes (each vertex → edge_id) into the vertex
+// inverted index. An insert the node pool cannot hold is recorded, as the rewrite records its
+// own; the edge is then missing from a candidate list.
 __global__ void k_init_indices(const __grid_constant__ DeviceState ds, uint32_t num_edges) {
     uint32_t eid = blockIdx.x * blockDim.x + threadIdx.x;
     if (eid >= num_edges) return;
 
     Edge& e = ds.edge_pool.at(eid);
-    if (ds.signature_index.insert(eid, e.signature) == INVALID_ID)
-        ds.errors.record(ErrorKind::kSigIndexNodes);
     auto vertex_at = [&](uint8_t k) { return ds.vertex_pool.at(e.vertex_offset + k); };
     for (uint8_t i = 0; i < e.arity; ++i) {
         if (!first_occurrence(vertex_at, i)) continue;
@@ -54,7 +50,6 @@ uint32_t upload_initial_states(EngineState& engine,
             Edge e{};
             e.arity         = static_cast<uint8_t>(tuple.size());
             e.vertex_offset = static_cast<uint32_t>(flat_vertices.size());
-            e.signature     = signature_hash_from_vertices(tuple.data(), e.arity);
             e.creator_event = INVALID_ID;
             e.step          = 0;
             const EdgeId eid = static_cast<EdgeId>(edges.size());
@@ -126,7 +121,7 @@ StateId upload_initial_state(EngineState& engine,
     return 0u;
 }
 
-// Bulk (re)build of the signature and vertex-inverted indices from the edge
+// Bulk (re)build of the vertex-inverted index from the edge
 // pool. Runs once when lazy index maintenance flips on: edges created while
 // maintenance was off are absent from the indices, and incremental inserts
 // resume after this call, so every edge appears in its buckets exactly once.

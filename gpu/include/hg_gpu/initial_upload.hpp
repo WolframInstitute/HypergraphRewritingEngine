@@ -1,8 +1,8 @@
 #pragma once
 #include "hgcommon/namespace.hpp"
 
-#include "hg_gpu/edge_signature.hpp"
 #include "hg_gpu/engine_state.hpp"
+#include "hg_gpu/vertex_inverted_index.hpp"
 #include "hg_gpu/types.hpp"
 
 #include <cstdint>
@@ -11,7 +11,7 @@
 namespace HG_NAMESPACE {
 namespace gpu {
 
-// Bulk (re)build of the signature and vertex-inverted indices from the edge
+// Bulk (re)build of the vertex-inverted index from the edge
 // pool; used when lazy index maintenance turns on mid-run.
 void rebuild_indices(EngineState& engine, uint32_t num_edges);
 

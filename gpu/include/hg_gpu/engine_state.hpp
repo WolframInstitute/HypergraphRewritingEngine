@@ -7,7 +7,6 @@
 #include "hg_gpu/evolve.hpp"
 #include "hg_gpu/hash_table.hpp"
 #include "hg_gpu/lock_free_list.hpp"
-#include "hg_gpu/signature_index.hpp"
 #include "hg_gpu/types.hpp"
 #include "hg_gpu/vertex_inverted_index.hpp"
 #include "hg_gpu/cuda_check.hpp"
@@ -151,7 +150,6 @@ struct DeviceState {
     uint32_t* vertex_high_water;      // monotonic max VertexId issued + 1
 
     // Indices
-    SignatureIndex::DeviceView        signature_index;
     VertexInvertedIndex::DeviceView   vertex_inverted_index;
 
     // Events and causal/branchial structures
@@ -608,7 +606,6 @@ private:
     // Owned by the engine, not by a run. See ir_arena().
     std::unique_ptr<DeviceArena>       ir_arena_;
     uint32_t*                          vertex_high_water_      = nullptr;
-    SignatureIndex                     signature_index_;
     VertexInvertedIndex                vertex_inverted_index_;
     Pool<DeviceEvent>                  event_pool_;
     Pool<DeviceCausalEdge>             causal_edge_pool_;
