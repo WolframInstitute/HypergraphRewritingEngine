@@ -119,7 +119,12 @@ static std::vector<Workload> workloads() {
 
 // The branchial readback in its own frame, so callgrind can collect it alone
 // (--toggle-collect='*enumerate_branchial*').
-__attribute__((noinline)) static uint64_t enumerate_branchial(const Hypergraph& g) {
+#if defined(_MSC_VER) && !defined(__clang__)
+__declspec(noinline)
+#else
+__attribute__((noinline))
+#endif
+static uint64_t enumerate_branchial(const Hypergraph& g) {
     uint64_t pairs = 0;
     g.for_each_reconstructed_branchial([&](uint64_t, uint64_t) { ++pairs; });
     return pairs;
