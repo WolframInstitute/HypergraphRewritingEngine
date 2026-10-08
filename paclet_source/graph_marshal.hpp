@@ -70,6 +70,12 @@
 namespace HG_NAMESPACE {
 namespace marshal {
 
+// The CanonicalHash a reply reports for a state, on both devices: EMPTY_STATE_CANONICAL_HASH for
+// the empty state in every mode, otherwise `hash`, the state's IR canonical hash.
+inline uint64_t reported_state_hash(bool empty, uint64_t hash) {
+    return empty ? hgcommon::EMPTY_STATE_CANONICAL_HASH : hash;
+}
+
 // The reply for a verb that returns a session handle and no evolution.
 //
 // ONE BODY, BOTH DEVICES, for the same reason build_graph_data() is one body: a caller cannot

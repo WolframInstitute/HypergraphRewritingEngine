@@ -359,8 +359,10 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
     const bool host_ir = canon_mode != hg_gpu::CanonicalizationMode::Full &&
                          (job.include_canonical_hashes || job.include_step_statistics);
     for (const auto& s : result.states) {
-        state_hash[s.id] = canon_mode == hg_gpu::CanonicalizationMode::Full ? s.canonical_hash
-                         : host_ir ? ir.compute_canonical_hash(result.edges_of(s)) : 0;
+        state_hash[s.id] = hgmarshal::reported_state_hash(
+            s.num_edges == 0,
+            canon_mode == hg_gpu::CanonicalizationMode::Full ? s.canonical_hash
+            : host_ir ? ir.compute_canonical_hash(result.edges_of(s)) : 0);
         state_by_id[s.id] = &s;
         // Automatic groups by the key THE DEVICE DEDUPLICATED WITH. CanonicalState::canonical_hash
         // carries what state_key_device wrote for the requested mode, so under Automatic it is

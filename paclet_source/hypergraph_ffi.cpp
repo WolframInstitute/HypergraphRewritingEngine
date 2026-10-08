@@ -1164,7 +1164,8 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                     // state.canonical_hash holds it whenever it is stored (Full mode, and every
                     // mode under event canonicalization); a zero means the coarse modes deferred
                     // it, so it is computed here, per serialized state, only under the option.
-                    // The empty state keeps its dedicated engine hash.
+                    // The empty state reports EMPTY_STATE_CANONICAL_HASH in every mode
+                    // (hgmarshal::reported_state_hash).
                     exact_hash = state.canonical_hash;
                     if (exact_hash == 0 && !edges.empty()) {
                         std::vector<std::vector<hypergraph::VertexId>> contents;
@@ -1172,6 +1173,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                         hypergraph::IRCanonicalizer ir;
                         exact_hash = ir.compute_canonical_hash(contents);
                     }
+                    exact_hash = hgmarshal::reported_state_hash(edges.empty(), exact_hash);
                 }
                 // Association key: raw state id.
                 sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));

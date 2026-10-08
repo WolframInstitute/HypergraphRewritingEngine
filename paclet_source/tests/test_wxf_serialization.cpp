@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -26,6 +27,7 @@
 #include "wxf.hpp"
 #include "paclet_source/hg_core.hpp"
 #include "paclet_source/state_statistics.hpp"
+#include "hgcommon/core.hpp"
 
 // Pin test for the FFI WXF serialization (run_rewriting_core), the LibraryLink /
 // standalone-binary output contract. This path has no wolframscript-free coverage
@@ -971,6 +973,38 @@ TEST(WxfSerializationPin, FullCanonicalizationWithHashes) {
     });
     EXPECT_GT(seen_states, 0);
     EXPECT_EQ(with_hash, seen_states);
+}
+
+// The empty state reports hgcommon::EMPTY_STATE_CANONICAL_HASH as its CanonicalHash in every
+// state mode. Rule {{1}} -> {} from {{1}}, one step: the states are {{1}} and {}.
+TEST(WxfSerializationPin, TheEmptyStateHasOneCanonicalHash) {
+    for (const char* mode : {"None", "Automatic", "Full"}) {
+        auto input = build_input({{{1}}}, {{1}}, {}, 1,
+                                 [&](wxf::Writer& w) {
+                                     put_str_option(w, "CanonicalizeStates", mode);
+                                     put_str_option(w, "IncludeCanonicalHashes", "True");
+                                 },
+                                 2);
+        HostBridge host;
+        auto out = run_rewriting_core(input, host);
+        std::set<int64_t> hashes;
+        wxf::Parser parser(out);
+        parser.skip_header();
+        parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+            if (k != "States") { vp.skip_value(); return; }
+            vp.read_association_generic([&](wxf::Parser& kp, wxf::Parser& valp) {
+                kp.skip_value();
+                valp.read_association([&](const std::string& fk, wxf::Parser& fvp) {
+                    if (fk == "CanonicalHash") hashes.insert(fvp.read<int64_t>());
+                    else fvp.skip_value();
+                });
+            });
+        });
+        EXPECT_EQ(hashes.size(), 2u) << mode;
+        EXPECT_EQ(hashes.count(static_cast<int64_t>(hgcommon::EMPTY_STATE_CANONICAL_HASH)), 1u)
+            << mode;
+        EXPECT_EQ(hashes.count(0), 0u) << mode;
+    }
 }
 
 TEST(WxfSerializationPin, MinimalEvents) {
