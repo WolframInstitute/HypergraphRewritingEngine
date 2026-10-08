@@ -84,7 +84,9 @@ struct EvolveInput {
     // `exploration_seed` is the run's seed (RandomSeed): it keys the exploration coin, the
     // transition draw and the caps' ranks, as random_seed does on the host. 0 is a seed like any
     // other. The coin is hgcommon::explore_survives on the host's key: the class's canonical hash
-    // under quotient exploration, the creating transition's key under full capture.
+    // under quotient exploration and under full capture with Full states, where a class holding
+    // an initial state is expanded without it; the creating transition's key under full capture
+    // with None or Automatic states.
     double   exploration_probability = 1.0;
     uint64_t exploration_seed        = 0;
 

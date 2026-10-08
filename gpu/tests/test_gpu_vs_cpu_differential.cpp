@@ -21,13 +21,14 @@
 #include "hypergraph/pattern.hpp"
 
 #include <algorithm>
+#include <array>
 #include <iterator>
 #include <map>
 #include <random>
 #include <set>
 #include <stdexcept>
-#include <string>
 #include <tuple>
+#include <string>
 #include <vector>
 
 namespace {
@@ -1898,6 +1899,40 @@ TEST(Sampling, ExplorationProbabilityKeepsTheSameStatesAcrossEngines) {
                     << "seed " << seed << " quotient " << quotient << " p " << p;
             }
         }
+    }
+}
+
+// ExplorationProbability under Full states samples per canonical class on both routes and both
+// engines: the coin is keyed on the class hash, and a class holding an initial state is expanded
+// without it. Rule {{2,1}} -> {{1,2}} from {{1,1}}, 2 steps, p = 0.645, seeds 1 to 8: the host
+// gave full capture (classes, events, causal) (1,1,0) against quotient (1,2,1) on seeds 3, 5, 7
+// and 8 before it keyed the coin on the class.
+TEST(Sampling, ExplorationProbabilitySamplesClassesOnBothRoutes) {
+    Workload w;
+    w.name = "explore-classes";
+    w.rules = {rule({{1, 0}}, {{0, 1}})};
+    w.initial_states = {{{0u, 0u}}};
+    w.num_steps = 2;
+    w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+    w.exploration_probability = 0.645;
+    for (uint64_t seed = 1; seed <= 8; ++seed) {
+        w.random_seed = seed;
+        std::vector<std::array<size_t, 3>> got;
+        for (bool quotient : {false, true}) {
+            Workload v = w;
+            v.explore_from_canonical_states_only = quotient;
+            const NormalizedResult cpu = run_cpu(v);
+            const NormalizedResult gpu = run_gpu(v);
+            got.push_back({cpu.canonical_state_hashes.size(), cpu.num_events,
+                           cpu.observable_causal});
+            got.push_back({gpu.canonical_state_hashes.size(), gpu.num_events,
+                           gpu.observable_causal});
+            EXPECT_EQ(gpu.canonical_state_hashes, cpu.canonical_state_hashes)
+                << "seed " << seed << " quotient " << quotient;
+        }
+        for (size_t i = 1; i < got.size(); ++i)
+            EXPECT_EQ(got[i], got[0]) << "seed " << seed << " run " << i
+                                      << " (CPU full, GPU full, CPU quotient, GPU quotient)";
     }
 }
 

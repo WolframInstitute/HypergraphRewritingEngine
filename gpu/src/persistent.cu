@@ -67,10 +67,13 @@ __global__ void k_seq_ramp(uint64_t* seq, uint32_t n) {
 // reaches zero once, after the last of them. Whichever block releases the last unit runs the
 // selection, before it reports its own work done, so termination cannot be detected while
 // candidates are held. Nothing waits.
-// A full-capture run that explores with a probability below 1 keys its coin on the creating
-// transition (explore_key), so it reads the parent's ranks and exact hash.
-__host__ __device__ inline uint32_t explore_reads_ranks(const DeviceState& ds, bool dedup) {
-    return (ds.exploration_probability < 1.0 && !dedup) ? 1u : 0u;
+// A full-capture run that explores with a probability below 1 under None or Automatic states keys
+// its coin on the creating transition (explore_key), so it reads the parent's ranks and exact
+// hash. Under Full states the coin reads the child's class hash.
+__host__ __device__ inline uint32_t explore_reads_ranks(const DeviceState& ds, bool dedup,
+                                                        CanonicalizationMode state_mode) {
+    return (ds.exploration_probability < 1.0 && !dedup &&
+            state_mode != CanonicalizationMode::Full) ? 1u : 0u;
 }
 
 struct StepSelectScratch {
@@ -719,6 +722,7 @@ constexpr uint32_t kBatchBusyStreak = 2;
 // lane.
 struct ChildIdentity {
     StateId canonical = INVALID_ID;
+    StateId rep = INVALID_ID;   // the class representative under Full and Automatic states
     bool fresh = false;
     bool capture = false;   // the event's class-frame capture runs (qe_capture_expansion)
     bool ok = false;        // the child has a hash; its identity and depth are registered
@@ -777,7 +781,7 @@ __device__ __forceinline__ ChildIdentity canonicalise_child(
         ex_st = state_exact_hash_device(ds, sid, arena, slot, slot_words, exact, need_ranks,
                                         false, &eform, &eform_words, par);
 
-    uint32_t canonical = INVALID_ID, fresh = 0, capture = 0, ok = 0;
+    uint32_t canonical = INVALID_ID, rep = INVALID_ID, fresh = 0, capture = 0, ok = 0;
     if (par.leader()) {
         if (key_st != ExactHashStatus::kOk) {
             // The hash is the dedup KEY, so a state whose hash could not be computed is not
@@ -791,6 +795,7 @@ __device__ __forceinline__ ChildIdentity canonicalise_child(
             if (twin) {
                 h = twin_h;
                 exact = h;
+                rep = twin_rep;
                 canonical = dedup ? twin_rep : sid;
                 fresh = dedup ? 0u : 1u;
             } else if (state_mode == CanonicalizationMode::Full) {
@@ -798,11 +803,13 @@ __device__ __forceinline__ ChildIdentity canonicalise_child(
                                                       form_words, dedup_map, forms);
                 h = c.key;
                 exact = h;
+                rep = c.canonical;
                 canonical = dedup ? c.canonical : sid;
                 fresh = (dedup ? c.fresh : true) ? 1u : 0u;
             } else if (state_mode == CanonicalizationMode::Automatic) {
                 const StateClaim c = state_claim_content(ds, sid, h, dedup_map);
                 h = c.key;
+                rep = c.canonical;
                 canonical = dedup ? c.canonical : sid;
                 fresh = (dedup ? c.fresh : true) ? 1u : 0u;
             } else {
@@ -847,6 +854,7 @@ __device__ __forceinline__ ChildIdentity canonicalise_child(
     }
     ChildIdentity out;
     out.canonical = par.bcast(canonical);
+    out.rep = par.bcast(rep);
     out.fresh = par.bcast(fresh) != 0;
     out.capture = par.bcast(capture) != 0;
     out.ok = par.bcast(ok) != 0;
@@ -854,11 +862,12 @@ __device__ __forceinline__ ChildIdentity canonicalise_child(
 }
 
 // The key ExplorationProbability's coin draws on, the host's: the class's canonical hash under
-// quotient exploration (claim_canonical_for_expansion), the creating transition's key under full
-// capture (the rewrite site).
-__device__ inline uint64_t explore_key(const DeviceState& ds, bool dedup, StateId canonical,
-                                       const MatchRecord* rec) {
-    if (dedup) return ds.state_canonical_hash[canonical];
+// quotient exploration (claim_canonical_for_expansion) and under full capture with Full states,
+// the creating transition's key under full capture with None or Automatic states (the rewrite
+// site).
+__device__ inline uint64_t explore_key(const DeviceState& ds, bool dedup, bool full_states,
+                                       StateId canonical, const MatchRecord* rec) {
+    if (dedup || full_states) return ds.state_canonical_hash[canonical];
     EdgeId edges[kMaxPatternEdges];
     for (uint32_t k = 0; k < kMaxPatternEdges; ++k) edges[k] = rec->matched_edges[k];
     return transition_key_device(ds, rec->state_id, rec->rule_id, edges, rec->num_edges);
@@ -868,19 +877,31 @@ __device__ inline uint64_t explore_key(const DeviceState& ds, bool dedup, StateI
 // arrival of a key is its canonical state; a fresh state the exploration coin refuses, under the
 // budget or in a session, is claimed unexpanded, so no later path expands it. Every arrival
 // registers under its parent, and one that lowers the canonical state's depth admits it and
-// lowers its descendants. `rec` is the rewritten record, read for the coin's key.
+// lowers its descendants. `rec` is the rewritten record, read for the coin's key under None and
+// Automatic states; `rep` is the child's class representative under Full states.
 __device__ __forceinline__ void register_child(
         const DeviceState& ds, ExploreView& ev, const SessionView& sess, StateId sid,
         StateId parent, StateId canonical, bool fresh, uint32_t step, uint32_t max_steps,
-        bool dedup, const MatchRecord* rec) {
-    // Full capture: each state is registered once, as it is created, and the coin is drawn then,
-    // on the creating transition. Under quotient exploration it is drawn at the claim (admit),
-    // so a class first reached past the budget and later under it is drawn when it is claimed.
-    if (!dedup && fresh && rec != nullptr && (step < max_steps || sess.enabled) &&
-        ds.exploration_probability < 1.0 &&
-        !hgcommon::explore_survives(explore_key(ds, dedup, canonical, rec), ds.sampling_seed,
-                                    ds.exploration_probability))
-        ev.claim(canonical);
+        bool dedup, CanonicalizationMode state_mode, StateId rep, const MatchRecord* rec) {
+    // Full capture: each state is registered once, as it is created, and the coin is drawn then.
+    // Under Full states it is keyed on the child's class hash, and a class holding an initial
+    // state (its representative is a root, at depth 0) is expanded without it, as quotient
+    // exploration expands it (the host's initial_classes_). Under None and Automatic it is keyed
+    // on the creating transition. Under quotient exploration it is drawn at the claim (admit), so
+    // a class first reached past the budget and later under it is drawn when it is claimed.
+    const bool full_states = state_mode == CanonicalizationMode::Full;
+    if (!dedup && fresh && (full_states || rec != nullptr) && (step < max_steps || sess.enabled) &&
+        ds.exploration_probability < 1.0) {
+        bool initial_class = false;
+        if (full_states && rep < ev.max_states) {
+            cuda::atomic_ref<uint32_t, cuda::thread_scope_device> d(ev.depth[rep]);
+            initial_class = d.load(cuda::memory_order_relaxed) == 0u;
+        }
+        if (!initial_class &&
+            !hgcommon::explore_survives(explore_key(ds, dedup, full_states, canonical, rec),
+                                        ds.sampling_seed, ds.exploration_probability))
+            ev.claim(canonical);
+    }
     DeviceExploreCtx xc{ds, ev, sess, max_steps,
                         ev.frame_node + size_t(blockIdx.x) * ev.frame_levels,
                         ev.frame_depth + size_t(blockIdx.x) * ev.frame_levels, ev.frame_levels,
@@ -953,12 +974,12 @@ __global__ void k_persistent_evolve(
                                                  (hgcommon::drain_selects(ds.matches_per_state_rule,
                                         ds.max_successor_states_per_parent,
                                         ds.max_states_per_step) |
-                                         explore_reads_ranks(ds, dedup)));
+                                         explore_reads_ranks(ds, dedup, state_mode)));
     const bool need_exact = run_needs_exact_hash(event_keys, ds.transition_rate,
                                                  ds.num_rule_weights, (hgcommon::drain_selects(ds.matches_per_state_rule,
                                         ds.max_successor_states_per_parent,
                                         ds.max_states_per_step) |
-                                         explore_reads_ranks(ds, dedup)));
+                                         explore_reads_ranks(ds, dedup, state_mode)));
 
     if (blockIdx.x == 0) {
         if (threadIdx.x != 0) return;
@@ -1195,7 +1216,7 @@ __global__ void k_persistent_evolve(
             if (id.ok) {
                 const uint64_t s4 = clock64();
                 register_child(ds, ev, sess, child_sid, child_parent, id.canonical, id.fresh,
-                               child_step, max_steps, dedup,
+                               child_step, max_steps, dedup, state_mode, id.rep,
                                have_ready ? nullptr : &found.at(claimed));
                 acc_dedup += clock64() - s4;
             }
@@ -1394,6 +1415,7 @@ __global__ void k_persistent_evolve(
                      oks &= oks - 1u) {
                     const uint32_t c = __ffs(oks) - 1u;
                     const StateId ccanon = __shfl_sync(0xFFFFFFFFu, id.canonical, c);
+                    const StateId crep = __shfl_sync(0xFFFFFFFFu, id.rep, c);
                     const bool cfresh = __shfl_sync(0xFFFFFFFFu, id.fresh ? 1u : 0u, c) != 0;
                     const StateId csid = __shfl_sync(0xFFFFFFFFu, sid, c);
                     const StateId cparent = __shfl_sync(0xFFFFFFFFu, parent, c);
@@ -1402,7 +1424,7 @@ __global__ void k_persistent_evolve(
                         const uint64_t s4 = clock64();
                         const uint32_t ctile = c / T;
                         register_child(ds, ev, sess, csid, cparent, ccanon, cfresh, ccstep,
-                                       max_steps, dedup,
+                                       max_steps, dedup, state_mode, crep,
                                        &found.at(ctile == 0 ? claimed : claimed_more + ctile - 1u));
                         acc_dedup += clock64() - s4;
                     }
@@ -2035,7 +2057,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                  (hgcommon::drain_selects(dsx.matches_per_state_rule,
                                         dsx.max_successor_states_per_parent,
                                         dsx.max_states_per_step) |
-                                         explore_reads_ranks(dsx, dedup)));
+                                         explore_reads_ranks(dsx, dedup, state_mode)));
         exact_v = reuse_map(ps.exact, want_exact ? engine.config().max_states * 2u : 8u, &clears)
                       .view();
     }
@@ -2052,7 +2074,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                         (hgcommon::drain_selects(dsk.matches_per_state_rule,
                                         dsk.max_successor_states_per_parent,
                                         dsk.max_states_per_step) |
-                                         explore_reads_ranks(dsk, dedup))));
+                                         explore_reads_ranks(dsk, dedup, state_mode))));
     if (keyed) {
         engine.ensure_keyed();
         dsk = engine.device();
@@ -2204,12 +2226,12 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                  (hgcommon::drain_selects(dsv.matches_per_state_rule,
                                         dsv.max_successor_states_per_parent,
                                         dsv.max_states_per_step) |
-                                         explore_reads_ranks(dsv, dedup))),
+                                         explore_reads_ranks(dsv, dedup, state_mode))),
             run_needs_edge_ranks(event_keys, qe.enabled != 0, dsv.transition_rate,
                                  dsv.num_rule_weights, (hgcommon::drain_selects(dsv.matches_per_state_rule,
                                         dsv.max_successor_states_per_parent,
                                         dsv.max_states_per_step) |
-                                         explore_reads_ranks(dsv, dedup))),
+                                         explore_reads_ranks(dsv, dedup, state_mode))),
             pool_v, qc, qe, ev, forms_v, exact_v, max_steps, sess_v);
     }
 
