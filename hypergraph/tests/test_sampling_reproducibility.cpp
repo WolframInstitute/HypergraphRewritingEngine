@@ -542,3 +542,23 @@ TEST(RuleWeights, AWeightOfOneEverywhereChangesNothing) {
     // And a SHORT vector is a partial override: rule 1 is unmentioned and takes weight 1.
     EXPECT_EQ(run_weighted({}, 31337, 4), run_weighted({1.0}, 31337, 4));
 }
+
+// The depth join's work and storage follow the depth a run reaches, not its step budget. The
+// rule {{x,y}} -> {{y}} stops after one step; with a budget of 2,000,000 steps only the depths
+// it reached are reported, under the caller's hook and under MaxStatesPerStep.
+TEST(SamplingReproducibility, DepthJoinFollowsTheDepthReached) {
+    for (const bool per_step_cap : {false, true}) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        ParallelEvolutionEngine e(&hg, 4);
+        e.add_rule(make_rule(0).lhs({0, 1}).rhs({1}).build());
+        if (per_step_cap) e.set_max_states_per_step(1);
+        std::atomic<uint32_t> fires{0};
+        e.set_on_depth_complete([&](uint32_t) { fires.fetch_add(1); });
+        e.evolve(std::vector<std::vector<VertexId>>{{0u, 1u}}, 2000000);
+        EXPECT_EQ(hg.num_states(), 2u);
+        EXPECT_LE(fires.load(), 3u) << "per_step_cap=" << per_step_cap;
+        EXPECT_EQ(e.depth_late_arrivals(), 0u);
+        EXPECT_LE(e.depth_join_bytes(), 64u * 1024u) << "per_step_cap=" << per_step_cap;
+    }
+}

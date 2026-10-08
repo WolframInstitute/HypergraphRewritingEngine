@@ -750,9 +750,9 @@ private:
     std::function<void(StateId, uint32_t)> on_state_matches_complete_;
     std::atomic<size_t> states_drained_{0};
 
-    // Per-depth join, derived from the per-state one above. Flat and sized once per run: depth
-    // is bounded by the step budget, so a map would buy nothing and cost a lookup on a path
-    // every match task walks.
+    // Per-depth join, derived from the per-state one above. Its slots are allocated as depths
+    // are reached (hgcommon::GrowingDepthSlots), so a run's storage follows the depth it reaches
+    // and not its step budget.
     //
     // `live` counts the tasks submitted to run at this depth that have not finished. A task at
     // depth d only ever submits at depths ABOVE d, so once d-1 has settled nothing can put work
@@ -764,8 +764,16 @@ private:
     // The protocol is hgcommon::DepthJoin; this owns only the storage it runs over and the
     // policy around it. Keeping the rule there is what makes it checkable on its own --
     // verification/genmc/depth_report_order.cpp runs the same header this does.
-    std::vector<hgcommon::DepthJoin::Slot> depth_slots_;
-    hgcommon::DepthJoin depth_join_;
+    // The state's own matches chosen at its drain, in rank order (transition_rank, ties by
+    // canonical transition key): every own match, or the k lowest-ranked per rule under
+    // MatchesPerStateRule. Ranks of equal value name automorphic transitions.
+    struct RankedMatch {
+        uint64_t rank;
+        uint64_t key;
+        const MatchRecord* match;   // in the state's stored list, which outlives the run
+    };
+    // Each depth's slot carries that step's MaxStatesPerStep candidates (select_step).
+    hgcommon::DepthJoinT<hgcommon::GrowingDepthSlots<LockFreeList<RankedMatch>>> depth_join_;
     // Whether the depth join runs: for the caller's hook where the arrival invariant it needs
     // holds (see the note on set_on_depth_complete), and always under MaxStatesPerStep.
     bool depth_signal_available_{false};
@@ -967,6 +975,8 @@ public:
     bool depth_signal_available() const;
     // States that arrived at a depth already reported complete. Must be zero.
     size_t depth_late_arrivals() const;
+    // Bytes the depth join's slots hold; they are allocated as depths are reached.
+    size_t depth_join_bytes() const { return depth_join_.storage().bytes(); }
     // Submits made by a worker that was not inside a job. The job system's quiescence predicate
     // is sound only while this is zero -- a child owed after its parent was booked complete is
     // invisible to any ordering of the reads. See JobSystem::enqueue.
@@ -1328,14 +1338,6 @@ private:
     // with the minimum canonical transition key, so every reachable state keeps at least one
     // outgoing transition at any rate.
     void spine_at_drain(StateId state, uint32_t step, MatchJoin* join);
-    // The state's own matches chosen at its drain, in rank order (transition_rank, ties by
-    // canonical transition key): every own match, or the k lowest-ranked per rule under
-    // MatchesPerStateRule. Ranks of equal value name automorphic transitions.
-    struct RankedMatch {
-        uint64_t rank;
-        uint64_t key;
-        const MatchRecord* match;   // in the state's stored list, which outlives the run
-    };
     static bool ranked_before(const RankedMatch& x, const RankedMatch& y) {
         return x.rank != y.rank ? x.rank < y.rank : x.key < y.key;
     }
@@ -1345,14 +1347,15 @@ private:
     // MaxStatesPerStep added to their step's candidates (step_candidates_).
     void cap_at_drain(StateId state, uint32_t step);
 
-    // MaxStatesPerStep. Every transition the drains of step s keep is a candidate of step s; once
-    // the depth join reports step s complete, select_step submits the N lowest-ranked of them.
-    // Step s+1 is held open for that selection by a token booked there when the join is seated
-    // (reset_depth_join), which the selection task releases when it finishes, so the rewrites it
-    // submits land on a step that has not settled. Nothing waits: the selection is a task the
-    // join's report submits.
-    std::unique_ptr<LockFreeList<RankedMatch>[]> step_candidates_;
-    size_t num_step_candidate_lists_ = 0;
+    // MaxStatesPerStep. Every transition the drains of step s keep is a candidate of step s, in
+    // step s's depth slot; once the depth join reports step s complete, select_step submits the N
+    // lowest-ranked of them. Step s+1 is held open for that selection by a hold pushed there when
+    // the first task arrives at step s (note_depth_task_pushed), which the selection task
+    // releases when it finishes, so the rewrites it submits land on a step that has not settled.
+    // Nothing waits: the selection is a task the join's report submits.
+    LockFreeList<RankedMatch>* step_candidates(uint32_t step) const {
+        return depth_join_.storage().find_extra(step);
+    }
     void select_step(uint32_t step);
     // The join's report of a settled depth: the per-step selection, then the caller's hook.
     void depth_settled(uint32_t depth);

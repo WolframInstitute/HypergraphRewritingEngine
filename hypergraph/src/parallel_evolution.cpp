@@ -205,7 +205,7 @@ void ParallelEvolutionEngine::evolve(
     // runs at step 1 -- the step of the states it will create -- so the depth this signal is
     // indexed by is the step a task RUNS at, and depth 0 holds nothing.
     submit_match_task(raw_state, 1);
-    depth_join_.mark_roots_seeded();
+    depth_join_.mark_roots_seeded(1);
     try_complete_depth(0);
 
     // Single synchronization point at the end
@@ -234,7 +234,7 @@ void ParallelEvolutionEngine::evolve(
     }
     // Depth 0's arrivals are all booked: it may now settle. A root that already drained left
     // the counters equal without settling, so the attempt is made here rather than waited for.
-    depth_join_.mark_roots_seeded();
+    depth_join_.mark_roots_seeded(1);
     try_complete_depth(0);
 
     // Single synchronization point at the end
@@ -871,8 +871,8 @@ void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
     const size_t k = max_successor_states_per_parent_;
     const size_t n = k != 0 && k < cands.size() ? k : cands.size();
     if (max_states_per_step_ != 0) {
-        if (step < num_step_candidate_lists_)
-            for (size_t i = 0; i < n; ++i) step_candidates_[step].push(cands[i], hg_->arena());
+        if (auto* list = step_candidates(step))
+            for (size_t i = 0; i < n; ++i) list->push(cands[i], hg_->arena());
         return;
     }
     for (size_t i = 0; i < n; ++i) submit_rewrite_task(*cands[i].match, step);
@@ -885,10 +885,11 @@ void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
 // automorphic transitions, so which of them falls at the cut does not change the result up to
 // isomorphism.
 void ParallelEvolutionEngine::select_step(uint32_t step) {
-    if (step >= num_step_candidate_lists_) return;
+    auto* list = step_candidates(step);
+    if (!list) return;
     std::vector<RankedMatch> cands;
-    step_candidates_[step].for_each([&](const RankedMatch& c) { cands.push_back(c); });
-    step_candidates_[step].reset();
+    list->for_each([&](const RankedMatch& c) { cands.push_back(c); });
+    list->reset();
     const size_t n = max_states_per_step_ < cands.size() ? max_states_per_step_ : cands.size();
     if (n < cands.size())
         std::nth_element(cands.begin(), cands.begin() + static_cast<std::ptrdiff_t>(n), cands.end(),
@@ -898,8 +899,10 @@ void ParallelEvolutionEngine::select_step(uint32_t step) {
 }
 
 void ParallelEvolutionEngine::depth_settled(uint32_t depth) {
-    if (max_states_per_step_ != 0 && depth + 1 < depth_join_.depths()) {
-        // Runs on step depth + 1's token, booked by reset_depth_join, and releases it when done.
+    if (max_states_per_step_ != 0 && depth + 1 < depth_join_.depths() &&
+        depth_join_.arrived(depth)) {
+        // Runs on step depth + 1's hold, pushed when the first task arrived at this depth, and
+        // releases it when done.
         job_system_->submit(job_system::make_job<EvolutionJobType>(
             [this, depth]() {
                 DepthTaskGuard depth_guard(*this, depth + 1);
@@ -1155,11 +1158,17 @@ void ParallelEvolutionEngine::evolve_more(size_t additional_steps,
     auto run_pass = [&](bool all, uint32_t step) {
         // Rewrites first: they mint the transitions the budget stranded, and doing them before
         // the frontier's matching means the states they create are matched in the same pass.
+        // The deepest step a resumed entry is booked at: the depth join's seed floor.
+        uint32_t floor = 0;
         for (const DeferredRewrite& d : go_rw) {
-            if (all || d.step == step) submit_rewrite_task(d.match, d.step);
+            if (all || d.step == step) {
+                submit_rewrite_task(d.match, d.step);
+                floor = std::max(floor, d.step);
+            }
         }
         for (const DeferredMatch& d : go_m) {
             if (!all && d.step != step) continue;
+            floor = std::max(floor, d.step);
             // Quotient exploration matches a canonical state once, under a claim, so its
             // frontier resumes through the same decision the relaxation walk makes rather than
             // a second copy of it. An initial state resumes as evolve() seeds it: its class is
@@ -1178,7 +1187,7 @@ void ParallelEvolutionEngine::evolve_more(size_t additional_steps,
             }
         }
         // The frontier is in: depth 0 may settle, exactly as after the roots are seeded.
-        depth_join_.mark_roots_seeded();
+        depth_join_.mark_roots_seeded(floor);
         try_complete_depth(0);
         job_system_->wait_for_completion();
     };
@@ -1232,32 +1241,24 @@ void ParallelEvolutionEngine::note_match_task_pushed(StateId state) {
 
 // Per-depth join for this run. A task runs at steps 1..max_steps, and the entry above that is
 // where a submit past the budget would land; it is never settled, which is harmless because
-// nothing waits on it.
+// nothing waits on it. No slot is allocated here: a depth's slot is allocated when the depth is
+// first pushed.
 void ParallelEvolutionEngine::reset_depth_join() {
     // Under MaxStatesPerStep a state at step s exists before any state at s + 1 (each step's
     // states come from the previous step's selection), so the first path to a state is a shortest
     // one and the relaxation that rules the join out under quotient exploration cannot occur.
     depth_signal_available_ = (depth_signal_available() && on_depth_complete_ != nullptr) ||
                               max_states_per_step_ != 0;
-    // Rebuilt rather than resized: Slot holds atomics, so it is neither copyable nor movable and
-    // a vector of them cannot grow. Sized once per run, which is the only time this runs.
-    depth_slots_ = std::vector<hgcommon::DepthJoin::Slot>(max_steps_ + 2);
-    depth_join_.seat(depth_slots_.data(), static_cast<uint32_t>(depth_slots_.size()));
-    if (max_states_per_step_ != 0) {
-        // One candidate list per step, and one token per step from 2 up: step s's selection is
-        // booked on step s + 1 (depth_settled), and step 1 has no selection before it.
-        if (num_step_candidate_lists_ != depth_slots_.size()) {
-            num_step_candidate_lists_ = depth_slots_.size();
-            step_candidates_ = std::make_unique<LockFreeList<RankedMatch>[]>(num_step_candidate_lists_);
-        }
-        for (size_t d = 0; d < num_step_candidate_lists_; ++d) step_candidates_[d].reset();
-        for (uint32_t d = 2; d < depth_join_.depths(); ++d) depth_join_.push(d);
-    }
+    const size_t depths = std::min<size_t>(max_steps_ + 2, std::numeric_limits<uint32_t>::max());
+    depth_join_.seat(static_cast<uint32_t>(depths));
+    depth_join_.storage().for_each_extra([](LockFreeList<RankedMatch>& l) { l.reset(); });
 }
 
+// Under MaxStatesPerStep step s's selection runs on a hold at s + 1 (depth_settled), pushed by
+// the first task at s: that task is live, so s cannot settle before the hold is in place.
 void ParallelEvolutionEngine::note_depth_task_pushed(uint32_t depth) {
     if (!depth_signal_available_) return;
-    depth_join_.push(depth);
+    if (depth_join_.push(depth) && max_states_per_step_ != 0) depth_join_.hold(depth + 1);
 }
 
 void ParallelEvolutionEngine::note_depth_task_done(uint32_t depth) {
