@@ -488,6 +488,21 @@ TEST(WxfSerializationPin, ANegativeInitialStateVertexIsRefused) {
     EXPECT_GT(read_int_key(ok, "NumStates"), 1);
 }
 
+// A HYPEREDGE HAS AT LEAST ONE VERTEX AND AN INITIAL STATE AT LEAST ONE EDGE. An empty edge in
+// a rule or an initial state, and an empty initial state, are refused for both devices.
+TEST(WxfSerializationPin, AnEmptyHyperedgeIsRefused) {
+    HostBridge host;
+    auto run = [&](const StateList& seed, const EdgeList& lhs, const EdgeList& rhs) {
+        return run_rewriting_core(build_input(seed, lhs, rhs, 2, [](wxf::Writer&) {}, 0), host);
+    };
+    EXPECT_THROW(run({{{1}}}, {{1}}, {{1}, {}}), std::runtime_error);
+    EXPECT_THROW(run({{{1}}}, {{1}, {}}, {{1}}), std::runtime_error);
+    EXPECT_THROW(run({{{1, 2}, {}}}, {{1, 2}}, {{1, 2}, {2, 3}}), std::runtime_error);
+    EXPECT_THROW(run({{{}}}, {{1, 2}}, {{1, 2}, {2, 3}}), std::runtime_error);
+    EXPECT_THROW(run({{{1, 2}}, {}}, {{1, 2}}, {{1, 2}, {2, 3}}), std::runtime_error);
+    EXPECT_FALSE(run({{{1}}}, {{1}}, {{1}, {1}}).empty());
+}
+
 TEST(WxfSerializationPin, AskingForLessDoesNotAnswerLess) {
     HostBridge host;
 

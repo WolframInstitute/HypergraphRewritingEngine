@@ -1117,3 +1117,18 @@ TEST(EmptyRuleSet, EvolveKeepsTheInitialStates) {
         }
     }
 }
+
+// An edge has at least one vertex: the hypergraph refuses to create an arity-0 edge, and the
+// engine refuses a rule with an arity-0 edge on either side.
+TEST(EmptyEdge, IsRefused) {
+    Hypergraph hg;
+    EXPECT_THROW(hg.create_edge(nullptr, 0), std::invalid_argument);
+    ParallelEvolutionEngine engine(&hg, 1);
+    RewriteRule rhs_empty = make_rule(0).lhs({0}).rhs({0}).build();
+    rhs_empty.rhs[rhs_empty.num_rhs_edges++].arity = 0;
+    EXPECT_THROW(engine.add_rule(rhs_empty), std::invalid_argument);
+    RewriteRule lhs_empty = make_rule(0).lhs({0}).rhs({0}).build();
+    lhs_empty.lhs[lhs_empty.num_lhs_edges++].arity = 0;
+    EXPECT_THROW(engine.add_rule(lhs_empty), std::invalid_argument);
+    EXPECT_NO_THROW(engine.add_rule(make_rule(0).lhs({0}).rhs({0}).rhs({0}).build()));
+}

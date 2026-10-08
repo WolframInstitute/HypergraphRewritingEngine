@@ -28,12 +28,33 @@ namespace engine {
 // Edge Management
 // =============================================================================
 
+namespace {
+// Downstream code (pattern matcher, EdgeSignature) uses fixed-size MAX_ARITY buffers on the
+// stack, so an over-arity edge is refused rather than corrupting them. An edge has at least one
+// vertex: the matcher finds edges through their vertices, and hgcommon::ir_canonical_hash sizes
+// its orbit scratch for arity >= 1.
+//
+// The parameter is wide enough to hold whatever the caller counted: a caller that narrowed to
+// the storage width first would present 260 vertices as 4 and pass a check MAX_ARITY makes on
+// the true count.
+void check_edge_arity(size_t requested_arity) {
+    if (requested_arity > MAX_ARITY) {
+        throw std::length_error("Hypergraph::create_edge: arity exceeds MAX_ARITY");
+    }
+    if (requested_arity == 0) {
+        throw std::invalid_argument("Hypergraph::create_edge: an edge has at least one vertex");
+    }
+}
+}  // namespace
+
+// The arity is checked before an edge id is allocated, so a refused edge leaves no gap.
 EdgeId Hypergraph::create_edge(
     const VertexId* vertices,
     size_t requested_arity,
     EventId creator_event,
     uint32_t step
 ) {
+    check_edge_arity(requested_arity);
     return create_edge_at(counters_.alloc_edge(), vertices, requested_arity, creator_event, step);
 }
 
@@ -49,15 +70,7 @@ EdgeId Hypergraph::create_edge_at(
     EventId creator_event,
     uint32_t step
 ) {
-    // Downstream code (pattern matcher, EdgeSignature) uses fixed-size MAX_ARITY
-    // buffers on the stack. Reject over-arity edges rather than silently corrupt.
-    //
-    // The parameter is wide enough to hold whatever the caller counted: a caller that
-    // narrowed to the storage width first would present 260 vertices as 4 and pass a check
-    // MAX_ARITY makes on the true count.
-    if (requested_arity > MAX_ARITY) {
-        throw std::length_error("Hypergraph::create_edge: arity exceeds MAX_ARITY");
-    }
+    check_edge_arity(requested_arity);
     const uint8_t arity = static_cast<uint8_t>(requested_arity);
 
     // Small-arity edges store their vertices inline in the Edge; only higher-arity

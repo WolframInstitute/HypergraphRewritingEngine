@@ -1634,6 +1634,14 @@ HGEvolve[{{1, 2}} -> 3, {{1, 2}}, 2, "NumStates"]
 
 <!-- => $Failed; the message HGEvolve::badrule is issued -->
 
+A hyperedge has at least one vertex:
+
+```wl
+HGEvolve[{{1}} -> {{1}, {}}, {{1}}, 2, "NumStates"]
+```
+
+<!-- => $Failed; the message HGEvolve::badrule is issued -->
+
 A flat list is not a hypergraph:
 
 ```wl

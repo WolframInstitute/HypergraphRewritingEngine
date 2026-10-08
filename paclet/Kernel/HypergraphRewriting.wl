@@ -372,8 +372,8 @@ computeRequiredData[prop_String] := computeRequiredData[{prop}]
 
 HGEvolve::unknownic = "Unknown initial condition type `1`.";
 HGEvolve::emptyic = "The `1` initial condition generated no edges; raise SprinklingDensity or EdgeThreshold, or set RandomSeed to another value.";
-HGEvolve::badrule = "`1` is not a rule lhs -> rhs with a non-empty list of hyperedges on the left and a list of hyperedges on the right, each hyperedge a list of vertices.";
-HGEvolve::badinit = "`1` is not a hypergraph or a list of hypergraphs. A hypergraph is a non-empty list of hyperedges, each a list of vertices.";
+HGEvolve::badrule = "`1` is not a rule lhs -> rhs with a non-empty list of hyperedges on the left and a list of hyperedges on the right, each hyperedge a non-empty list of vertices.";
+HGEvolve::badinit = "`1` is not a hypergraph or a list of hypergraphs. A hypergraph is a non-empty list of hyperedges, each a non-empty list of vertices.";
 HGEvolve::steps = "The number of steps `1` is not a non-negative integer.";
 HGEvolve::unknownprop = "Unknown property(s): `1`. Valid properties are: States, Events, CausalEdges, BranchialEdges, StatesGraph, CausalGraph, BranchialGraph, EvolutionGraph, their Structure variants, GlobalEdges, StateBitvectors, All.";
 HGEvolve::missingdata = "FFI did not return requested data: `1`. This indicates a bug in the FFI layer.";
@@ -801,8 +801,8 @@ normalizeInitialStates[states_List] := Module[{vertexMap},
   Map[vertexMap, states, {3}]
 ];
 
-(* A hyperedge is a list of vertices, and a vertex is anything but a list. *)
-hgHypergraphQ[h_List] := AllTrue[h, VectorQ[#, Not @* ListQ] &]
+(* A hyperedge is a non-empty list of vertices, and a vertex is anything but a list. *)
+hgHypergraphQ[h_List] := AllTrue[h, # =!= {} && VectorQ[#, Not @* ListQ] &]
 hgHypergraphQ[_] := False
 
 hgRuleQ[lhs_List -> rhs_List] := lhs =!= {} && hgHypergraphQ[lhs] && hgHypergraphQ[rhs]

@@ -2441,6 +2441,14 @@ ParallelEvolutionEngine::ParallelEvolutionEngine() : hg_(nullptr), rewriter_(nul
 // per-edge signature and compatible-signature caches the matcher reads. A hand-built RewriteRule
 // need only populate lhs/rhs and the edge counts. Idempotent.
 void ParallelEvolutionEngine::add_rule(const RewriteRule& rule) {
+    // Hypergraph::create_edge_at refuses an arity-0 edge; a rule that would create or match one
+    // is refused here, before a worker applies it.
+    for (uint8_t i = 0; i < rule.num_lhs_edges; ++i)
+        if (rule.lhs[i].arity == 0)
+            throw std::invalid_argument("add_rule: a left-hand side edge has no vertices");
+    for (uint8_t i = 0; i < rule.num_rhs_edges; ++i)
+        if (rule.rhs[i].arity == 0)
+            throw std::invalid_argument("add_rule: a right-hand side edge has no vertices");
     rules_.push_back(rule);
     rules_.back().compute_var_counts();
 }

@@ -581,7 +581,7 @@ static void configure_and_evolve(hgffi::ParsedJob& req, hypergraph::Hypergraph& 
                     pe.vars[pe.arity++] = static_cast<uint8_t>(v);
                     if (static_cast<uint8_t>(v) > max_var) max_var = static_cast<uint8_t>(v);
                 }
-                if (pe.arity > 0) num_edges++;
+                num_edges++;
                 ++edge_index;
             }
         };
@@ -637,18 +637,14 @@ static void configure_and_evolve(hgffi::ParsedJob& req, hypergraph::Hypergraph& 
                     edge_vertices.push_back(it->second);
                 }
             }
-            if (!edge_vertices.empty()) {
-                state_edges.push_back(edge_vertices);
-            }
+            state_edges.push_back(edge_vertices);
         }
-        if (!state_edges.empty()) {
-            // GeodesicSources are given in the USER'S labels; the engine sees only the
-            // dense renumbering above. Keep the first state's map so the sources can be
-            // translated at the geodesic block (initial vertices keep their engine ids
-            // through the evolution, so the translation stays valid on evolved states).
-            if (initial_states.empty()) initial_vertex_map = vertex_map;
-            initial_states.push_back(std::move(state_edges));
-        }
+        // GeodesicSources are given in the USER'S labels; the engine sees only the dense
+        // renumbering above. Keep the first state's map so the sources can be translated at
+        // the geodesic block (initial vertices keep their engine ids through the evolution, so
+        // the translation stays valid on evolved states).
+        if (initial_states.empty()) initial_vertex_map = vertex_map;
+        initial_states.push_back(std::move(state_edges));
     }
 
     // Run the evolution. Abort is a process kill by the parent, so there is
@@ -733,6 +729,32 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                             std::to_string(ei) + " has a negative vertex " + std::to_string(v) +
                             "; vertices name themselves and a negative names nothing");
                     }
+                }
+            }
+        }
+
+        // AN EDGE WITH NO VERTICES AND AN INITIAL STATE WITH NO EDGES ARE REFUSED, here for both
+        // devices: the engines create no arity-0 edge (Hypergraph::create_edge_at), and an empty
+        // initial state has nothing to rewrite. HGEvolve refuses both with badrule and badinit
+        // before a job is built.
+        for (size_t si = 0; si < req.initial_states_raw.size(); ++si) {
+            const auto& state = req.initial_states_raw[si];
+            if (state.empty())
+                throw std::runtime_error("initial state " + std::to_string(si) + " has no edges");
+            for (size_t ei = 0; ei < state.size(); ++ei) {
+                if (state[ei].empty())
+                    throw std::runtime_error("initial state " + std::to_string(si) + " edge " +
+                                             std::to_string(ei) + " has no vertices");
+            }
+        }
+        for (size_t ri = 0; ri < req.parsed_rules_raw.size(); ++ri) {
+            const auto& sides = req.parsed_rules_raw[ri].second;
+            for (size_t side = 0; side < sides.size(); ++side) {
+                for (size_t ei = 0; ei < sides[side].size(); ++ei) {
+                    if (sides[side][ei].empty())
+                        throw std::runtime_error(
+                            "rule " + std::to_string(ri) + (side == 0 ? " LHS" : " RHS") +
+                            " edge " + std::to_string(ei) + " has no vertices");
                 }
             }
         }
