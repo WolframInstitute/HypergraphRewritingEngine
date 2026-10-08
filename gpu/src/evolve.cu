@@ -876,8 +876,10 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     // descent_work_scale multiplies; a deep run's queues are larger still.
     b += u64(default_persistent_grid()) * 256u * u64(cfg.descent_work_scale) *
          sizeof(QeWorkItem);
-    b += u64(default_persistent_grid()) * 4u * u64(cfg.tr_scratch_scale) *
-         (EngineState::kTrScratchStack + EngineState::kTrScratchVisited);   // reachability scratch
+    // Reachability scratch and its busy words.
+    b += u64(default_persistent_grid()) * 4u *
+         (u64(EngineState::tr_scratch_scale_of(cfg)) *
+              (EngineState::kTrScratchStack + EngineState::kTrScratchVisited) + 1u);
     b += u64(default_persistent_grid()) * u64(cfg.survivor_scratch) * 8u;    // survivor scratch
     // The claim maps: states and exact hashes at two slots per state, event signatures at two
     // per event (persistent.cu reuse_map).

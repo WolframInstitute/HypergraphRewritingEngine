@@ -104,11 +104,13 @@ __device__ uint64_t branchial_pair_key(EventId a, EventId b) {
 // release/acquire handshake orders that before c's rewrite.
 //
 // The search runs in a local stack and open-addressed visited table. When either fills, the
-// calling block's thread 0 runs it again in the block's slice of ds.tr_scratch, which is 8 times
-// larger at tr_scratch_scale 1. Only when that fills too does the search record
-// kTrScratchOverflow and answer "not reachable", which KEEPS the candidate edge: the causal
-// relation stays complete and only the reduction may retain a redundant edge, until
-// grow-and-retry doubles tr_scratch_scale and runs again.
+// calling thread runs it again in a slice of ds.tr_scratch, which is 8 times larger at
+// tr_scratch_scale 1. Any thread may need one, so a slice is taken by an exchange on its busy
+// word, starting from one that depends on the block and lane, and given back after the search.
+// When no slice is free, or the slice fills too, the search records kTrScratchOverflow and
+// answers "not reachable", which KEEPS the candidate edge: the causal relation stays complete
+// and only the reduction may retain a redundant edge, until grow-and-retry doubles
+// tr_scratch_scale and runs again.
 constexpr uint32_t kReachStack   = 256;
 constexpr uint32_t kReachVisited = 512;   // power of two; entries store id + 1, 0 = empty
 
@@ -121,14 +123,26 @@ __device__ bool is_reachable_preds(const DeviceState& ds, EventId p, EventId c) 
     if (hgcommon::reach_backward(local, p, c, /*topological=*/true)) return true;
     if (!local.overflow) return false;
 
-    if (ds.tr_scratch != nullptr && threadIdx.x == 0 && blockIdx.x < ds.tr_scratch_slots) {
-        uint32_t* slice = ds.tr_scratch + static_cast<size_t>(blockIdx.x) *
+    const uint32_t slots = ds.tr_scratch != nullptr ? ds.tr_scratch_slots : 0u;
+    const uint32_t home = slots ? (blockIdx.x * blockDim.x + threadIdx.x) % slots : 0u;
+    for (uint32_t k = 0; k < slots; ++k) {
+        const uint32_t s = (home + k) % slots;
+        cuda::atomic_ref<uint32_t, cuda::thread_scope_device> busy(ds.tr_scratch_busy[s]);
+        uint32_t idle = 0u;
+        if (!busy.compare_exchange_strong(idle, 1u, cuda::memory_order_acquire,
+                                          cuda::memory_order_relaxed))
+            continue;
+        uint32_t* slice = ds.tr_scratch + static_cast<size_t>(s) *
                                               (ds.tr_scratch_stack + ds.tr_scratch_visited);
         hgcommon::BoundedReachCtx<decltype(preds)> wide(preds, slice, ds.tr_scratch_stack,
                                                         slice + ds.tr_scratch_stack,
                                                         ds.tr_scratch_visited);
-        if (hgcommon::reach_backward(wide, p, c, /*topological=*/true)) return true;
-        if (!wide.overflow) return false;
+        const bool reached = hgcommon::reach_backward(wide, p, c, /*topological=*/true);
+        const bool full = wide.overflow;
+        busy.store(0u, cuda::memory_order_release);
+        if (reached) return true;
+        if (!full) return false;
+        break;
     }
     ds.errors.record(ErrorKind::kTrScratchOverflow);
     return false;
@@ -678,15 +692,16 @@ __global__ void k_rewrite(const __grid_constant__ DeviceState ds,
 }  // namespace
 
 namespace {
-__global__ void k_redundant_edge_over_chain(const __grid_constant__ DeviceState ds, uint32_t n) {
-    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+__global__ void k_redundant_edge_over_chain(const __grid_constant__ DeviceState ds, uint32_t n,
+                                            uint32_t lane) {
+    if (threadIdx.x != lane || blockIdx.x != 0) return;
     for (uint32_t k = 1; k <= n + 1; ++k) ds.preds_list.push(k + 1, k);
     try_add_causal_edge(ds, 1u, n + 2u, 0u);
 }
 }  // namespace
 
-void add_redundant_edge_over_chain(EngineState& engine, uint32_t n) {
-    k_redundant_edge_over_chain<<<1, kMatchBlockThreads>>>(engine.device(), n);
+void add_redundant_edge_over_chain(EngineState& engine, uint32_t n, uint32_t lane) {
+    k_redundant_edge_over_chain<<<1, kMatchBlockThreads>>>(engine.device(), n, lane);
     HG_CUDA_CHECK(cudaDeviceSynchronize(), "add_redundant_edge_over_chain sync");
 }
 

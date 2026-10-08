@@ -376,3 +376,16 @@ TEST(CapacityOverflow, AFullRelationMapIsReported) {
     }
 }
 
+// The reachability search masks into its visited table, so the table is a power of two at any
+// tr_scratch_scale.
+TEST(CapacityOverflow, TheReachabilityTableIsAPowerOfTwo) {
+    for (uint32_t scale : {1u, 3u, 5u, 6u}) {
+        hg_gpu::EngineConfig cfg;
+        cfg.tr_scratch_scale = scale;
+        hg_gpu::EngineState engine(cfg);
+        const uint32_t v = engine.device().tr_scratch_visited;
+        EXPECT_EQ(v & (v - 1u), 0u) << "scale " << scale << ": visited table of " << v;
+        EXPECT_GE(v, hg_gpu::EngineState::kTrScratchVisited * scale) << "scale " << scale;
+    }
+}
+

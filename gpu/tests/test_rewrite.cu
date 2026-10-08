@@ -1043,27 +1043,31 @@ TEST(Rewrite, AKeyedRunOnAReusedEngineTakesTheTwinsAFreshOneDoes) {
 }
 
 // The reduction rejects a redundant edge whose proof visits more events than the search's local
-// arrays hold: the calling block reruns the search in its global scratch slice. Past that slice
-// the edge is kept and kTrScratchOverflow is recorded, which grow-and-retry grows.
+// arrays hold: the calling thread reruns the search in a global scratch slice. Past that slice
+// the edge is kept and kTrScratchOverflow is recorded, which grow-and-retry grows. The search runs
+// on lane 0 and on lane 5: a batch's tile leaders call it from lanes 0, 1, 2, 4, 8, ...
 TEST(Rewrite, TransitiveReductionIsExactPastTheLocalScratch) {
+    for (uint32_t lane : {0u, 5u}) {
     for (uint32_t n : {100u, 600u, 20000u}) {
         hg_gpu::EngineConfig cfg = small_cfg();
         cfg.max_events     = 32768;
         cfg.tr_preds_nodes = 32768;
         hg_gpu::EngineState engine(cfg);
         engine.set_tr_enabled(true);
-        hg_gpu::add_redundant_edge_over_chain(engine, n);
+        hg_gpu::add_redundant_edge_over_chain(engine, n, lane);
         std::vector<hg_gpu::OverflowWarning> w;
         engine.collect_warnings_into(w, "tr chain");
         const bool overflowed = std::any_of(w.begin(), w.end(), [](const auto& x) {
             return x.kind == hg_gpu::ErrorKind::kTrScratchOverflow; });
         if (n <= hg_gpu::EngineState::kTrScratchVisited / 2) {
             EXPECT_EQ(engine.num_causal_edges_host(), 0u)
-                << "chain " << n << ": the redundant edge was kept";
-            EXPECT_FALSE(overflowed) << "chain " << n;
+                << "lane " << lane << ", chain " << n << ": the redundant edge was kept";
+            EXPECT_FALSE(overflowed) << "lane " << lane << ", chain " << n;
         } else {
-            EXPECT_EQ(engine.num_causal_edges_host(), 1u) << "chain " << n;
-            EXPECT_TRUE(overflowed) << "chain " << n << ": a kept edge past the scratch must be reported";
+            EXPECT_EQ(engine.num_causal_edges_host(), 1u) << "lane " << lane << ", chain " << n;
+            EXPECT_TRUE(overflowed) << "lane " << lane << ", chain " << n
+                                    << ": a kept edge past the scratch must be reported";
         }
+    }
     }
 }
