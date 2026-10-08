@@ -33,6 +33,7 @@
 //
 // GENMC-ARGS: --disable-estimation
 // GENMC-EXPECT: pass
+// GENMC-CALIBRATE: -DHG_CALIBRATE_LIST_NO_RETRY
 //
 // Build/run: verification/genmc/run.sh lock_free_list_completeness
 

@@ -84,6 +84,18 @@ private:
         return (static_cast<std::uint64_t>(tag) << 32) | (static_cast<std::uint32_t>(h) << 16) | t;
     }
     static constexpr std::uint32_t tag_of(std::uint64_t v)  { return static_cast<std::uint32_t>(v >> 32); }
+    // Model-checker calibrations: HG_CALIBRATE_DEQUE_FROZEN_TAG commits without advancing the
+    // tag; HG_CALIBRATE_DEQUE_POP_WITHOUT_CAS commits a pop whose compare-exchange failed.
+#if defined(HG_CALIBRATE_DEQUE_FROZEN_TAG)
+    static constexpr std::uint32_t next_tag(std::uint64_t v) { return tag_of(v); }
+#else
+    static constexpr std::uint32_t next_tag(std::uint64_t v) { return tag_of(v) + 1; }
+#endif
+#if defined(HG_CALIBRATE_DEQUE_POP_WITHOUT_CAS)
+    static constexpr bool kPopIgnoresCas = true;
+#else
+    static constexpr bool kPopIgnoresCas = false;
+#endif
     static constexpr std::uint16_t head_of(std::uint64_t v) { return static_cast<std::uint16_t>((v >> 16) & 0xffffu); }
     static constexpr std::uint16_t tail_of(std::uint64_t v) { return static_cast<std::uint16_t>(v & 0xffffu); }
 
@@ -120,7 +132,7 @@ public:
             std::uint16_t h = head_of(v), t = tail_of(v);
             std::uint32_t slot = static_cast<std::uint16_t>(h - 1) & mask_;
             if (buffer_[slot].load(std::memory_order_acquire) != nullptr) return false;
-            if (ht_.compare_exchange_weak(v, pack(tag_of(v) + 1, h - 1, t),
+            if (ht_.compare_exchange_weak(v, pack(next_tag(v), h - 1, t),
                                           std::memory_order_acq_rel, std::memory_order_acquire)) {
                 buffer_[slot].store(make_slot(std::move(value)), std::memory_order_release);
                 return true;
@@ -135,7 +147,7 @@ public:
             std::uint16_t h = head_of(v), t = tail_of(v);
             std::uint32_t slot = t & mask_;
             if (buffer_[slot].load(std::memory_order_acquire) != nullptr) return false;
-            if (ht_.compare_exchange_weak(v, pack(tag_of(v) + 1, h, t + 1),
+            if (ht_.compare_exchange_weak(v, pack(next_tag(v), h, t + 1),
                                           std::memory_order_acq_rel, std::memory_order_acquire)) {
                 buffer_[slot].store(make_slot(std::move(value)), std::memory_order_release);
                 return true;
@@ -153,8 +165,8 @@ public:
             std::uint32_t slot = h & mask_;
             Slot item = buffer_[slot].load(std::memory_order_acquire);
             if (item == nullptr) return std::nullopt;
-            if (ht_.compare_exchange_weak(v, pack(tag_of(v) + 1, h + 1, t),
-                                          std::memory_order_acq_rel, std::memory_order_acquire)) {
+            if (ht_.compare_exchange_weak(v, pack(next_tag(v), h + 1, t),
+                                          std::memory_order_acq_rel, std::memory_order_acquire) || kPopIgnoresCas) {
                 buffer_[slot].store(nullptr, std::memory_order_release);
                 return std::optional<T>(take_slot(item));
             }
@@ -169,8 +181,8 @@ public:
             std::uint32_t slot = static_cast<std::uint16_t>(t - 1) & mask_;
             Slot item = buffer_[slot].load(std::memory_order_acquire);
             if (item == nullptr) return std::nullopt;
-            if (ht_.compare_exchange_weak(v, pack(tag_of(v) + 1, h, t - 1),
-                                          std::memory_order_acq_rel, std::memory_order_acquire)) {
+            if (ht_.compare_exchange_weak(v, pack(next_tag(v), h, t - 1),
+                                          std::memory_order_acq_rel, std::memory_order_acquire) || kPopIgnoresCas) {
                 buffer_[slot].store(nullptr, std::memory_order_release);
                 return std::optional<T>(take_slot(item));
             }

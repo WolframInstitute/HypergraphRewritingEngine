@@ -52,6 +52,8 @@
 //
 // GENMC-ARGS: --disable-estimation
 // GENMC-EXPECT: pass
+// GENMC-CALIBRATE: -DCALIBRATE_NO_MATCH_FENCE
+// GENMC-CALIBRATE: -DCALIBRATE_NO_INSTANCE_FENCE
 //
 // Build/run: verification/genmc/run.sh quotient_instance_match_rendezvous
 

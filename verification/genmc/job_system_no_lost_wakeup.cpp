@@ -1,5 +1,6 @@
 // GENMC-LINK: job_system
 // GENMC-ARGS: --check-liveness
+// GENMC-CALIBRATE: -DHG_PARK_GATE_WEAK_ORDERS
 //
 // GenMC harness: a worker that parks is always woken, so no submitted job is left unclaimed.
 //

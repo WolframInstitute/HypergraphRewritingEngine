@@ -34,6 +34,7 @@
 //
 // GENMC-ARGS: --disable-estimation
 // GENMC-EXPECT: pass
+// GENMC-CALIBRATE: -DHG_CALIBRATE_ARENA_INDEX_CHECK_THEN_ACT
 //
 // Build/run: verification/genmc/run.sh arena_worker_index_exclusive
 

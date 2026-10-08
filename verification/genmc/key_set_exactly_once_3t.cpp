@@ -55,6 +55,7 @@
 //
 // GENMC-ARGS: --disable-estimation --sc --bound=1 --bound-type=context
 // GENMC-EXPECT: pass
+// GENMC-CALIBRATE: -DHG_CALIBRATE_KEYSET_NO_SEAL
 
 #include <pthread.h>
 #include <cassert>

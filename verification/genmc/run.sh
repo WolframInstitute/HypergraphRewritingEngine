@@ -55,6 +55,10 @@
 #   HG_GENMC_HEARTBEAT  seconds between heartbeat lines (30 unset; needs HG_GENMC_PROGRESS): the
 #                  pass and function the transformation is on, or the exploration's executions,
 #                  queued revisits and instructions interpreted, at that moment.
+#   HG_GENMC_CALIBRATE set to run each of the harness's `// GENMC-CALIBRATE: <defines>` lines
+#                  instead of the harness: the defines reinstate a known defect, and the run
+#                  passes only if the checker reports a violation (exit 42) under the harness's
+#                  own bounds. A harness without such a line fails in this mode.
 #   HG_GENMC_COMPILE_ONLY set to compile (and for a composed harness, link) every harness and stop
 #                  before the checker runs: `HG_GENMC_COMPILE_ONLY=1 run.sh all` finds a harness
 #                  the engine's API has moved away from in minutes.
@@ -421,6 +425,40 @@ run_one() {
     return $rc
 }
 
+# A calibration line names defines that reinstate a defect the harness exists to catch. Each is
+# run under the harness's own GENMC-ARGS and defines, and is caught when the checker reports a
+# violation. A harness that cannot fail under its bounds proves nothing at those bounds.
+calibrate_one() {
+    local name="$1"; shift
+    local src
+    case "$name" in
+        */*|*.cpp) src="$name" ;;
+        *)         src="$HERE/$name.cpp" ;;
+    esac
+    [ -f "$src" ] || { echo "run.sh: no such harness '$src'" >&2; return 2; }
+    local cals=() c rc fail=0
+    mapfile -t cals < <(sed -n 's|^// GENMC-CALIBRATE: *||p' "$src")
+    if [ ${#cals[@]} -eq 0 ]; then
+        echo "--- $(basename "$src" .cpp): no GENMC-CALIBRATE line"
+        return 1
+    fi
+    for c in "${cals[@]}"; do
+        echo "=== calibration: $c"
+        HG_HARNESS_DEFINES="$c ${HG_HARNESS_DEFINES:-}" run_one "$name" "$@"
+        rc=$?
+        if [ $rc -eq 42 ]; then
+            echo "--- $(basename "$src" .cpp) [$c]: violation reported -- calibration caught"
+        else
+            echo "--- $(basename "$src" .cpp) [$c]: exit $rc -- calibration NOT caught"
+            fail=1
+        fi
+    done
+    return $fail
+}
+run_or_calibrate() {
+    if [ -n "${HG_GENMC_CALIBRATE:-}" ]; then calibrate_one "$@"; else run_one "$@"; fi
+}
+
 if [ "${1:-}" = "all" ]; then
     fail=0
     for src in "$HERE"/*.cpp; do
@@ -428,7 +466,7 @@ if [ "${1:-}" = "all" ]; then
         # definitions the interpreter lacks and has no main. Running it reports an error about
         # this directory's layout rather than about the engine.
         [ "$(basename "$src")" = "genmc_support.cpp" ] && continue
-        run_one "$(basename "$src" .cpp)" || fail=1
+        run_or_calibrate "$(basename "$src" .cpp)" || fail=1
         echo
     done
     exit $fail
@@ -436,4 +474,4 @@ fi
 
 [ $# -ge 1 ] || { sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 name="$1"; shift
-run_one "$name" "$@"
+run_or_calibrate "$name" "$@"

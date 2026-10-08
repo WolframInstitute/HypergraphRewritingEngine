@@ -28,6 +28,7 @@
 // SHARED body, in the real path, rather than in a copy of it that could drift from what ships.
 //
 // GENMC-ARGS: --disable-estimation
+// GENMC-CALIBRATE: -DHG_CALIBRATE_DEDUP_HASH_ONLY
 
 #include <pthread.h>
 #include <cassert>

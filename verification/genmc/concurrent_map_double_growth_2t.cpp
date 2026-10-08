@@ -39,6 +39,7 @@
 //
 // GENMC-ARGS: --disable-estimation
 // GENMC-EXPECT: pass
+// GENMC-CALIBRATE: -DHG_CALIBRATE_MAP_NO_CHAIN_SCAN
 
 #include <pthread.h>
 #include <cassert>

@@ -386,7 +386,13 @@ public:
         // chain_clear is read BEFORE any probe of the head, which is what makes skipping the
         // scan sound: true means every older table drained before the flag's release, so the
         // settled copies those drains promised are visible to every probe this call makes.
-        if (increment_count && head->prev &&
+#if defined(HG_CALIBRATE_MAP_NO_CHAIN_SCAN)
+        // Model-checker calibration: claim at the head without scanning the older tables.
+        constexpr bool kChainScan = false;
+#else
+        constexpr bool kChainScan = true;
+#endif
+        if (kChainScan && increment_count && head->prev &&
             !head->chain_clear.load(std::memory_order_acquire)) {
             auto settled = find_and_settle_in_chain(head->prev, key, value);
             if (settled.has_value()) return *settled;
@@ -414,8 +420,9 @@ public:
         // settled the original stays the only winner. Three harnesses bound this, and they
         // bound different things: concurrent_map_double_growth_2t EXHAUSTS two workers across
         // two growths under RC11, concurrent_map_double_growth_3t exhausts three workers with
-        // both claimants offering the same value under a four-context bound, and
-        // concurrent_map_double_growth samples three workers -- estimation, not proof.
+        // both claimants offering the same value under SC and a four-context bound, and
+        // map_insert_existing_during_double_growth exhausts a claimant of a settled key against
+        // two growers under RC11.
         return insert_into_table(head, key, value, increment_count);
     }
 
@@ -450,6 +457,10 @@ public:
             auto r = table->chain_clear.load(std::memory_order_acquire) ? lookup_in_table(table, key)
                                                                         : lookup_in_chain(table, key);
             if (r.has_value()) return r;
+#if defined(HG_CALIBRATE_MAP_LOOKUP_STALE)
+            // Model-checker calibration: answer absent without re-checking the head.
+            return std::nullopt;
+#endif
             if (table_.load(std::memory_order_acquire) == table) return std::nullopt;
         }
     }
@@ -637,6 +648,9 @@ private:
 
         V current = entry.value.load(std::memory_order_acquire);
         if (current == forwarded_value()) return std::nullopt;
+#if defined(HG_CALIBRATE_MAP_VERDICT_BY_VALUE)
+        if (current != ABSENT_VALUE) return std::make_pair(current, current == value);
+#endif
         if (current != ABSENT_VALUE) return std::make_pair(current, false);
 
         if (entry.value.compare_exchange_strong(current, value,
@@ -645,6 +659,14 @@ private:
             return std::make_pair(value, true);
         }
         if (current == forwarded_value()) return std::nullopt;   // the seal won the exchange
+#if defined(HG_CALIBRATE_MAP_LOSER_KEEPS_VALUE)
+        // Model-checker calibration: the loser answers with its own value, as the inserter.
+        return std::make_pair(value, true);
+#endif
+#if defined(HG_CALIBRATE_MAP_VERDICT_BY_VALUE)
+        // Model-checker calibration: the verdict compares values rather than reading the exchange.
+        return std::make_pair(current, current == value);
+#endif
         return std::make_pair(current, false);   // another thread's value won
     }
 
@@ -739,6 +761,9 @@ private:
                 if (current == key) {
                     const V v = entry.value.load(std::memory_order_acquire);
                     if (v == forwarded_value()) break;    // sealed dead claim; try the next
+#if defined(HG_CALIBRATE_MAP_VERDICT_BY_VALUE)
+                    if (v != ABSENT_VALUE) return std::make_pair(v, v == value);
+#endif
                     if (v != ABSENT_VALUE) return std::make_pair(v, false);
                     if (!unsettled) unsettled = &entry;   // fresh claim or copy: decide below
                     break;
@@ -767,7 +792,12 @@ private:
                 skip[chain_len] = t->drained.load(std::memory_order_acquire);
         size_t depth = 0;
         while (table) {
+#if defined(HG_CALIBRATE_MAP_LATE_DRAINED_READ)
+            // Model-checker calibration: read the drained flag on arrival, after newer probes.
+            const bool probe = !table->drained.load(std::memory_order_acquire);
+#else
             const bool probe = depth >= kSnapshot || !skip[depth];
+#endif
             ++depth;
             if (probe) {
                 auto result = lookup_in_table(table, key);
@@ -904,7 +934,13 @@ private:
         // head rather than resolving to the original below. That is what makes `drained`
         // safe to set after this loop -- every settled key of this table has a settled copy
         // strictly above it, published before the flag's release.
-        for (size_t i = 0; i < old_table->capacity; ++i) {
+#if defined(HG_CALIBRATE_MAP_NO_CARRY)
+        // Model-checker calibration: retire the table without carrying its settled entries.
+        constexpr size_t carry_end = 0;
+#else
+        const size_t carry_end = old_table->capacity;
+#endif
+        for (size_t i = 0; i < carry_end; ++i) {
             const K key = old_table->entries[i].key.load(std::memory_order_acquire);
             if (key == EMPTY_KEY || key == LOCKED_KEY) continue;
             const V value = old_table->entries[i].value.load(std::memory_order_acquire);

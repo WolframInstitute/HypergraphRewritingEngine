@@ -1,6 +1,7 @@
 // GENMC-LINK: engine
 // GENMC-DEFINES: -DHG_CONCURRENT_MAP_INITIAL_CAPACITY=2
 // GENMC-ARGS: --disable-estimation
+// GENMC-CALIBRATE: -DHG_CALIBRATE_IN_EDGE_ORDER_ASCENDING
 //
 // GenMC harness: an event's in-edges are recorded in the one order the online transitive
 // reduction is exact under, while the producer map grows underneath the registration.

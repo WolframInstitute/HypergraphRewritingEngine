@@ -1,3 +1,4 @@
+// GENMC-CALIBRATE: -DHG_CALIBRATE_MAP_LOSER_KEEPS_VALUE
 // GenMC harness: ConcurrentMap get-or-create agreement.
 //
 // WHAT IS BEING PROVED. Two threads call insert_if_absent(K, ...) with the SAME key and

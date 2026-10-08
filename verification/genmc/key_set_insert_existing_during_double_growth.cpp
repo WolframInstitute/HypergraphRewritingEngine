@@ -8,6 +8,7 @@
 //
 // GENMC-ARGS: --disable-estimation
 // GENMC-EXPECT: pass
+// GENMC-CALIBRATE: -DHG_CALIBRATE_KEYSET_NO_CHAIN_SCAN
 #include <pthread.h>
 #include <cassert>
 #include <cstdint>

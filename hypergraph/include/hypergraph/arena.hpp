@@ -311,6 +311,11 @@ public:
     int acquire() {
         for (int i = 0; i < MAX_ARENA_WORKERS; ++i) {
             if (in_use_[i].load(std::memory_order_relaxed)) continue;
+#if defined(HG_CALIBRATE_ARENA_INDEX_CHECK_THEN_ACT)
+            // Model-checker calibration: claim with a store after the check.
+            in_use_[i].store(true, std::memory_order_relaxed);
+            return i;
+#endif
             bool expected = false;
             if (in_use_[i].compare_exchange_strong(
                     expected, true,

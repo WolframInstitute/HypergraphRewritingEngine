@@ -511,7 +511,12 @@ void ConcurrentHeterogeneousArena::allocate_new_block(size_t min_cap) {
     // The block created here is reachable from no cursor. Two shared-path threads racing may
     // leave the loser's block unbumped mid-chain, costing its capacity; that is waste on the
     // rare fallback path rather than two callers holding one address.
+#if defined(HG_CALIBRATE_ARENA_PUBLISH_HEAD)
+    // Model-checker calibration: publish head_, which a cursor may be bumping.
+    current_block_.store(head_.load(std::memory_order_acquire), std::memory_order_release);
+#else
     current_block_.store(nb, std::memory_order_release);
+#endif
 }
 
 // Advance to the next block when the current one is full: recycle an already-allocated successor

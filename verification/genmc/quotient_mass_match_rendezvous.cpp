@@ -34,6 +34,8 @@
 //
 // GENMC-ARGS: --disable-estimation --disable-ipr
 // GENMC-EXPECT: pass
+// GENMC-CALIBRATE: -DCALIBRATE_NO_FENCE
+// GENMC-CALIBRATE: -DCALIBRATE_CLEAR_LATE
 //
 // Build/run: verification/genmc/run.sh quotient_mass_match_rendezvous
 

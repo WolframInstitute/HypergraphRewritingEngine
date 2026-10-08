@@ -1,3 +1,4 @@
+// GENMC-CALIBRATE: -DHG_CALIBRATE_KEYSET_NO_SEAL -DHG_CALIBRATE_KEYSET_SEAL_BY_STORE
 // GenMC harness: ConcurrentKeySet reports insertion exactly once per key, ACROSS A GROWTH.
 //
 // WHAT IS BEING PROVED. Two threads insert the SAME key into a set whose table is too small to

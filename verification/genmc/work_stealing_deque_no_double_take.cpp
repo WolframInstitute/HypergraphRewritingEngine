@@ -37,6 +37,7 @@
 // make this report the violation, and it does.
 //
 // GENMC-EXPECT: pass
+// GENMC-CALIBRATE: -DHG_CALIBRATE_RV_NO_FENCE=DequeTakeSteal
 
 #include <pthread.h>
 #include <cassert>

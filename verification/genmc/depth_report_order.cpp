@@ -1,3 +1,4 @@
+// GENMC-CALIBRATE: -DCALIBRATE_REPORT_AFTER_SETTLE
 // GenMC harness: a depth's completion is REPORTED in depth order, whatever order it is SETTLED in.
 //
 // Runs hgcommon/depth_join.hpp itself -- the same header the engine's depth signal is, not a

@@ -1,6 +1,7 @@
 // GENMC-LINK: job_system
 // GENMC-ARGS: --unroll=64 --disable-estimation
 // GENMC-DEFINES: -DHG_JOB_QUEUE_CAPACITY=4 -DHG_JOB_INJECTOR_CAPACITY=16 -DHG_JOB_MAX_POOLS=4 -DHG_JOB_CHUNK_SLOTS=4 -DHG_JOB_ERROR_MESSAGE_CAP=32
+// GENMC-CALIBRATE: -DHG_ERROR_WAIT_EARLY
 //
 // GenMC harness: after a job fails, wait_for_completion returns only once no worker is inside a
 // job.

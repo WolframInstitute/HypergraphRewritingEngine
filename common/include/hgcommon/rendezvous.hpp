@@ -50,6 +50,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <type_traits>
 #if defined(HG_RENDEZVOUS_CHAOS)
 #  include <sched.h>
 #endif
@@ -94,11 +95,23 @@ inline void rendezvous_chaos_point() {
 inline void rendezvous_chaos_point() {}
 #endif
 
+// MODEL-CHECKER CALIBRATION. -DHG_CALIBRATE_RV_NO_FENCE=<tag> (a name from rv above) drops the
+// barrier of that one handshake, on both sides; every other handshake keeps its fence. A
+// harness that checks a handshake is calibrated by showing the checker reports the missed
+// meeting with that tag's fence gone.
+#if defined(HG_CALIBRATE_RV_NO_FENCE)
+template <class Tag>
+inline constexpr bool rv_fenced = !std::is_same_v<Tag, rv::HG_CALIBRATE_RV_NO_FENCE>;
+#else
+template <class Tag>
+inline constexpr bool rv_fenced = true;
+#endif
+
 template <class Tag, class Publish, class Scan>
 inline void rendezvous(Publish&& publish, Scan&& scan) {
     publish();
     rendezvous_chaos_point();
-    std::atomic_thread_fence(std::memory_order_seq_cst);
+    if constexpr (rv_fenced<Tag>) std::atomic_thread_fence(std::memory_order_seq_cst);
     rendezvous_chaos_point();
     scan();
 }
@@ -110,7 +123,7 @@ inline void rendezvous(Publish&& publish, Scan&& scan) {
 template <class Tag>
 inline void rendezvous_barrier() {
     rendezvous_chaos_point();
-    std::atomic_thread_fence(std::memory_order_seq_cst);
+    if constexpr (rv_fenced<Tag>) std::atomic_thread_fence(std::memory_order_seq_cst);
     rendezvous_chaos_point();
 }
 

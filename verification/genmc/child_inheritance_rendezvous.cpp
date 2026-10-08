@@ -30,6 +30,8 @@
 //
 // GENMC-ARGS: --disable-estimation
 // GENMC-EXPECT: pass
+// GENMC-CALIBRATE: -DCALIBRATE_NO_FENCE
+// GENMC-CALIBRATE: -DCALIBRATE_RELAXED_DRAINED
 //
 // Build/run: verification/genmc/run.sh child_inheritance_rendezvous
 

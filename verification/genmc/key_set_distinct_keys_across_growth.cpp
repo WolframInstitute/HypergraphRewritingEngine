@@ -28,6 +28,7 @@
 //
 // GENMC-ARGS: --disable-estimation
 // GENMC-EXPECT: pass
+// GENMC-CALIBRATE: -DHG_CALIBRATE_KEYSET_ANY_OCCUPANT
 //
 // Build/run: verification/genmc/run.sh key_set_distinct_keys_across_growth
 

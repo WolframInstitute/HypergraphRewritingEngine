@@ -72,6 +72,12 @@ public:
         std::atomic_thread_fence(std::memory_order_release);
 
         Node* old_head = head_.load(std::memory_order_acquire);
+#if defined(HG_CALIBRATE_LIST_NO_RETRY)
+        // Model-checker calibration: publish from the stale head without a compare-exchange.
+        new_node->prev = old_head;
+        head_.store(new_node, std::memory_order_release);
+        return new_node;
+#endif
         do {
             new_node->prev = old_head;
         } while (!head_.compare_exchange_weak(
@@ -110,6 +116,12 @@ public:
     void for_each_before(const Node* mine, F&& f) const {
         if (!mine) return;
         std::atomic_thread_fence(std::memory_order_acquire);
+#if defined(HG_CALIBRATE_LIST_WALK_FROM_HEAD)
+        // Model-checker calibration: walk everything from the head, skipping only `mine`.
+        for (const Node* n = head_.load(std::memory_order_acquire); n; n = n->prev)
+            if (n != mine) f(n->value);
+        return;
+#endif
         for (const Node* n = mine->prev; n; n = n->prev) f(n->value);
     }
 

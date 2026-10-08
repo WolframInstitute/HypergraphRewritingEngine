@@ -236,7 +236,13 @@ public:
             // Checked by removing the scan's seal and re-running both harnesses -- 781
             // executions, no violation -- which is what says the seal was redundant here.
             bool in_chain = false;
-            if (!head->chain_clear.load(std::memory_order_acquire)) {
+#if defined(HG_CALIBRATE_KEYSET_NO_CHAIN_SCAN)
+            // Model-checker calibration: claim at the head without scanning older tables.
+            constexpr bool chain_scan = false;
+#else
+            constexpr bool chain_scan = true;
+#endif
+            if (chain_scan && !head->chain_clear.load(std::memory_order_acquire)) {
                 for (Table* t = head->prev; t && !in_chain; t = t->prev)
                     if (!t->drained.load(std::memory_order_acquire)) in_chain = find_in_table(t, key);
             }
@@ -328,6 +334,11 @@ private:
     // capacity, so it is logarithmic in the largest table plus any unsealed stragglers.
     static bool find_oldest_first(const Table* t, K key) {
         if (!t) return false;
+#if defined(HG_CALIBRATE_KEYSET_NEWEST_FIRST)
+        // Model-checker calibration: probe this table before the older ones.
+        if (!t->drained.load(std::memory_order_acquire) && find_in_table(t, key)) return true;
+        return find_oldest_first(t->prev, key);
+#endif
         if (find_oldest_first(t->prev, key)) return true;
         return !t->drained.load(std::memory_order_acquire) && find_in_table(t, key);
     }
@@ -338,6 +349,10 @@ private:
         const size_t idx = hash(key) & t->mask;
         for (size_t p = 0; p < t->capacity; ++p) {
             const K cur = t->keys[(idx + p) & t->mask].load(std::memory_order_acquire);
+#if defined(HG_CALIBRATE_KEYSET_ANY_OCCUPANT)
+            // Model-checker calibration: stop at any occupant, not at the key.
+            if (cur != EMPTY_KEY) return true;
+#endif
             if (cur == key) return true;
             if (cur == EMPTY_KEY) return false;
         }
@@ -476,7 +491,13 @@ private:
         // gate saw as one extra raw event, one extra causal edge and its branchial pairs --
         // claims 18313 against 18312 with the claim tally one ahead of the keys the set could
         // enumerate.
-        for (size_t i = 0; i < expected->capacity; ++i) {
+#if defined(HG_CALIBRATE_KEYSET_NO_SEAL)
+        // Model-checker calibration: install the successor without sealing this table first.
+        constexpr size_t seal_end = 0;
+#else
+        const size_t seal_end = expected->capacity;
+#endif
+        for (size_t i = 0; i < seal_end; ++i) {
             std::atomic<K>& slot = expected->keys[i];
             K k = slot.load(std::memory_order_acquire);
             if (k == EMPTY_KEY)
@@ -521,10 +542,21 @@ private:
             for (;;) {
                 K k = slot.load(std::memory_order_acquire);
                 if (k == MIGRATED_KEY) break;
-                if (k != EMPTY_KEY && !migrate_into(nt, k)) {   // carry BEFORE sealing
+#if defined(HG_CALIBRATE_KEYSET_NO_CARRY)
+                // Model-checker calibration: seal the slot without carrying its key.
+                constexpr bool carry = false;
+#else
+                constexpr bool carry = true;
+#endif
+                if (carry && k != EMPTY_KEY && !migrate_into(nt, k)) {   // carry BEFORE sealing
                     all_sealed = false;
                     break;                                      // leave it here, still reachable
                 }
+#if defined(HG_CALIBRATE_KEYSET_SEAL_BY_STORE)
+                // Model-checker calibration: seal with a store, over a claim that landed since.
+                slot.store(MIGRATED_KEY, std::memory_order_release);
+                break;
+#endif
                 if (slot.compare_exchange_strong(k, MIGRATED_KEY, std::memory_order_acq_rel,
                                                  std::memory_order_acquire))
                     break;

@@ -21,6 +21,7 @@
 //
 // GENMC-ARGS: --disable-estimation
 // GENMC-EXPECT: pass
+// GENMC-CALIBRATE: -DHG_CALIBRATE_MAP_LATE_DRAINED_READ
 
 #include <pthread.h>
 

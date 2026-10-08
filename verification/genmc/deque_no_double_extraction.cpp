@@ -1,3 +1,4 @@
+// GENMC-CALIBRATE: -DHG_CALIBRATE_DEQUE_POP_WITHOUT_CAS
 // GenMC harness: the work-stealing deque never hands one item to two consumers.
 //
 // WHAT IS BEING PROVED. An owner pops from the back while a thief pops from the front, with

@@ -31,6 +31,7 @@
 //
 // GENMC-ARGS: --disable-estimation
 // GENMC-EXPECT: pass
+// GENMC-CALIBRATE: -DCALIBRATE_NO_FENCE
 //
 // Build/run: verification/genmc/run.sh depth_relax_child_registration
 

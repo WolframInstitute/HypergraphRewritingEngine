@@ -1,3 +1,4 @@
+// GENMC-CALIBRATE: -DHG_CALIBRATE_KEYSET_NO_CARRY
 // GenMC harness: ConcurrentKeySet enumerates every key exactly once, ACROSS A GROWTH.
 //
 // WHAT IS BEING PROVED. One thread inserts a key while another grows the table under it, and the

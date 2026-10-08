@@ -1,3 +1,4 @@
+// GENMC-CALIBRATE: -DCALIBRATE_PLAIN_LINK
 // GenMC harness: the tagged free-list hands every node to exactly one popper, across the
 // speculative link read.
 //

@@ -1,3 +1,4 @@
+// GENMC-CALIBRATE: -DHG_CALIBRATE_DEQUE_FROZEN_TAG
 // GenMC harness: the packed word's tag stops a stale pop from claiming an item twice.
 //
 // WHAT IS BEING PROVED, AND WHY IT NEEDS ITS OWN HARNESS. deque_no_double_extraction covers two

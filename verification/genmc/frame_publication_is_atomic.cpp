@@ -44,6 +44,7 @@
 //
 // GENMC-ARGS: --disable-estimation
 // GENMC-EXPECT: pass
+// GENMC-CALIBRATE: -DHG_TWO_MAP_FRAME
 
 #include <pthread.h>
 #include <cassert>

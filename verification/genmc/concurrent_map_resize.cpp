@@ -1,3 +1,4 @@
+// GENMC-CALIBRATE: -DHG_CALIBRATE_MAP_NO_CARRY
 // GenMC harness: a key inserted while the table is being replaced still gets ONE entry.
 //
 // WHAT IS BEING PROVED. Resize is a different algorithm from insert -- allocate a bigger table,

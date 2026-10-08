@@ -30,6 +30,7 @@
 //
 // GENMC-ARGS: --disable-estimation
 // GENMC-EXPECT: pass
+// GENMC-CALIBRATE: -DHG_CALIBRATE_LIST_WALK_FROM_HEAD
 //
 // Build/run: verification/genmc/run.sh lock_free_list_pairs_meet_once
 

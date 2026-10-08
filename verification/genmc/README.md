@@ -28,6 +28,14 @@ verification/genmc/run.sh all                          # every harness in this d
 
 `run.sh` exits non-zero if any harness fails, so it can gate a commit.
 
+Every harness carries one or more `// GENMC-CALIBRATE: <defines>` lines. Each names macros that
+reinstate a defect the harness exists to catch: an `HG_CALIBRATE_*` arm in the engine source
+(default off, so the shipped code is unchanged) or a `CALIBRATE_*` arm in the harness itself.
+`HG_GENMC_CALIBRATE=1 verification/genmc/run.sh <harness>` (or `all`) runs each line under the
+harness's own bounds and passes only when the checker reports the violation.
+`-DHG_CALIBRATE_RV_NO_FENCE=<tag>` drops the barrier of one named handshake in
+`hgcommon/rendezvous.hpp`.
+
 ## Building GenMC
 
 The suite runs on **GenMC v0.19.0 with the fixes below**, built against **LLVM 22**: branch

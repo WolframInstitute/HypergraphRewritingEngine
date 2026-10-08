@@ -38,6 +38,7 @@
 //
 // GENMC-ARGS: --disable-estimation
 // GENMC-EXPECT: pass
+// GENMC-CALIBRATE: -DHG_CALIBRATE_ARENA_PUBLISH_HEAD
 //
 // Build/run: verification/genmc/run.sh arena_cursor_vs_shared_disjoint
 

@@ -1,5 +1,6 @@
 // GENMC-LINK: job_system
 // GENMC-ARGS: --check-liveness
+// GENMC-CALIBRATE: -DHG_PARK_GATE_NO_REMOTE_SCAN
 // A WORKER PARKED IN ANOTHER CACHE DOMAIN IS STILL WOKEN.
 //
 // job_system_no_lost_wakeup.cpp proves the pairing for ONE park word: a submitter that reads

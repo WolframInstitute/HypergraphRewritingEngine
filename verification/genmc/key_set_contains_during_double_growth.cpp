@@ -10,6 +10,7 @@
 //
 // GENMC-ARGS: --disable-estimation
 // GENMC-EXPECT: pass
+// GENMC-CALIBRATE: -DHG_CALIBRATE_KEYSET_NEWEST_FIRST
 #include <pthread.h>
 #include <cassert>
 #include <cstdint>

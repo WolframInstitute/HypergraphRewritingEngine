@@ -28,6 +28,7 @@
 //
 // GENMC-ARGS: --disable-estimation
 // GENMC-EXPECT: pass
+// GENMC-CALIBRATE: -DHG_CALIBRATE_MAP_VERDICT_BY_VALUE
 
 #include <pthread.h>
 #include <cassert>
