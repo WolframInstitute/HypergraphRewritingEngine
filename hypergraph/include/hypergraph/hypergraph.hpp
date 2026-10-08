@@ -597,7 +597,7 @@ class Hypergraph {
     uint32_t qc_frame_step(uint64_t class_hash, uint32_t fallback) const;
     QmPoint* qm_point(uint64_t class_hash, uint32_t depth);
     std::atomic<uint64_t>* qm_consumed_cell(uint32_t match_id, uint32_t depth);
-    // Add `delta` to a counter, stopping at QM_SATURATED and recording that it did.
+    // Add `delta` to a counter, stopping at QM_SATURATED.
     void qm_add(std::atomic<uint64_t>& counter, uint64_t delta);
     // One cascade: `start` passes or queues the first mass, then the queue drains.
     template <class F>
