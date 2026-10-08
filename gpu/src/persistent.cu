@@ -2257,6 +2257,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         pool_v, term.view(), qc, qe, d_phase_cycles, sess_v, ev, forms_v, ready_v,
         arena.view().base, region_words, cand_v, step_sel);
     HG_CUDA_CHECK(cudaDeviceSynchronize(), "persistent evolve sync");
+    stats.explore_depth = ev.depth;
     if (!read_stats) return stats;
 
     // states_after and canonical_events are both slots of the engine's counter block, so one

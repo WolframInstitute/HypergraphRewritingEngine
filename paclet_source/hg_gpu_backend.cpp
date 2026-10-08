@@ -411,6 +411,37 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
         is_output.insert(e.output_state);
     }
 
+    // The Step a state record and its graph vertex data report (hgmarshal::reported_state_step,
+    // the host's rule): under Full the class's explore depth under quotient exploration, the
+    // least of its states' steps otherwise; outside Full the state's own step.
+    const bool full_states = canon_mode == hg_gpu::CanonicalizationMode::Full;
+    auto own_step = [&](hg_gpu::StateId s) -> uint32_t {
+        auto it = state_step.find(s);
+        return it == state_step.end() ? 0u : it->second;
+    };
+    std::unordered_map<hg_gpu::StateId, uint32_t> class_least, class_depth;   // by class rep
+    if (full_states) {
+        for (const auto& st : result.states) {
+            if (st.id == hg_gpu::INVALID_ID) continue;
+            const auto rep = static_cast<hg_gpu::StateId>(rep_of(st.id));
+            auto [it, fresh] = class_least.emplace(rep, own_step(st.id));
+            if (!fresh) it->second = std::min(it->second, own_step(st.id));
+            if (!job.explore_from_canonical_states_only ||
+                st.explore_depth == hgcommon::kExploreNoDepth)
+                continue;
+            auto [jt, first] = class_depth.emplace(rep, st.explore_depth);
+            if (!first) jt->second = std::min(jt->second, st.explore_depth);
+        }
+    }
+    auto reported_step = [&](hg_gpu::StateId s) -> uint32_t {
+        const auto rep = static_cast<hg_gpu::StateId>(rep_of(s));
+        const auto d = class_depth.find(rep);
+        const auto l = class_least.find(rep);
+        return hgmarshal::reported_state_step(
+            full_states, d == class_depth.end() ? hgcommon::kExploreNoDepth : d->second,
+            l == class_least.end() ? UINT32_MAX : l->second, own_step(s));
+    };
+
     // GENESIS EVENTS, SYNTHESISED HERE BECAUSE THE DEVICE HAS NONE.
     //
     // On the host a genesis event is a real event: it connects a synthetic genesis state to an
@@ -509,12 +540,11 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
         for (size_t i = 0; i < emit.size(); ++i) {
             const hg_gpu::StateId s = emit[i];
             auto edges = record_edges(s);
-            const bool is_init = is_output.find(s) == is_output.end();
             hgmarshal::write_state_record(sink,
                 hgmarshal::StateRecordIds{
                     static_cast<int64_t>(s), rep_of(s),
                     content_id.at(listed_hash[i]),
-                    is_init ? 0 : static_cast<int64_t>(state_step[s]),
+                    static_cast<int64_t>(reported_step(s)),
                     job.include_canonical_hashes, static_cast<int64_t>(state_hash[s])},
                 canon_mode == hg_gpu::CanonicalizationMode::Full, std::move(edges));
             states_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(s)), wxf::WXFValue(sink.take())});
@@ -941,9 +971,6 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
             auto it = state_step.find(sid);
             return it == state_step.end() ? 0u : it->second;
         };
-        auto is_init = [&](hg_gpu::StateId sid) -> bool {
-            return is_output.find(sid) == is_output.end();
-        };
         // THE EVENT IDENTITY THE COUNT USES, when the reconstruction ran.
         //
         // observable_num_events reports the reconstruction's distinct identities. Mapping a
@@ -1048,9 +1075,10 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
             }
             d.push_back({wxf::WXFValue("Id"), wxf::WXFValue(static_cast<int64_t>(sid))});
             d.push_back({wxf::WXFValue("CanonicalId"), wxf::WXFValue(rep_of(sid))});
-            d.push_back({wxf::WXFValue("Step"), wxf::WXFValue(static_cast<int64_t>(step_of(sid)))});
+            const uint32_t step = reported_step(sid);
+            d.push_back({wxf::WXFValue("Step"), wxf::WXFValue(static_cast<int64_t>(step))});
             d.push_back({wxf::WXFValue("Edges"), wxf::WXFValue(serialize_edges(sid))});
-            d.push_back({wxf::WXFValue("IsInitial"), wxf::WXFValue(is_init(sid))});
+            d.push_back({wxf::WXFValue("IsInitial"), wxf::WXFValue(step == 0)});
             return d;
         };
         gsrc.event_valid_ = [&](uint32_t eid) {

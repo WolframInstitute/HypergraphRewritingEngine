@@ -917,33 +917,33 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // Full canonicalization mode: IR-based dedup, exact edge correspondence, canonical output
         const bool full_canonicalization = (req.state_canon_mode == hypergraph::StateCanonicalizationMode::Full);
 
-        // The Step a state record reports. Under Full it is the class's: the least step of any
+        // The Step a state record reports (hgmarshal::reported_state_step). Under Full it is the
+        // class's: its explore depth under quotient exploration, otherwise the least step of any
         // raw state in the class, the shortest depth that reaches it. The class's representative
         // is the raw state that won the dedup claim, and its own step depends on the schedule.
-        // Computed on first use, after the evolution.
+        // The least steps are computed on first use, after the evolution.
         std::vector<uint32_t> class_min_step;
         auto reported_step = [&](uint32_t sid) -> uint32_t {
-            if (!full_canonicalization) return hg.get_state(sid).step;
+            const uint32_t own = hg.get_state(sid).step;
+            if (!full_canonicalization) return own;
             // Under quotient exploration a raw state's step is its parent's depth at the
             // parent's claim plus one, and a depth lowered after the claim leaves it stale; the
             // class's explore depth is the shortest depth (hgcommon/explore_depth_core.hpp).
-            if (engine.explore_from_canonical_states_only()) {
-                const uint32_t d = hg.explore_depth_of(hg.get_canonical_state(sid));
-                if (d != hgcommon::kExploreNoDepth) return d;
-            }
-            if (class_min_step.empty()) {
+            const uint32_t c = hg.get_canonical_state(sid);
+            const uint32_t depth = engine.explore_from_canonical_states_only()
+                                       ? hg.explore_depth_of(c) : hgcommon::kExploreNoDepth;
+            if (depth == hgcommon::kExploreNoDepth && class_min_step.empty()) {
                 const uint32_t n = hg.num_published_states();
                 class_min_step.assign(n ? n : 1, UINT32_MAX);
                 for (uint32_t s = 0; s < n; ++s) {
                     const hypergraph::State& st = hg.get_state(s);
                     if (st.id == hypergraph::INVALID_ID) continue;
-                    const uint32_t c = hg.get_canonical_state(s);
-                    if (c < n && st.step < class_min_step[c]) class_min_step[c] = st.step;
+                    const uint32_t cls = hg.get_canonical_state(s);
+                    if (cls < n && st.step < class_min_step[cls]) class_min_step[cls] = st.step;
                 }
             }
-            const uint32_t c = hg.get_canonical_state(sid);
-            return c < class_min_step.size() && class_min_step[c] != UINT32_MAX
-                       ? class_min_step[c] : hg.get_state(sid).step;
+            const uint32_t least = c < class_min_step.size() ? class_min_step[c] : UINT32_MAX;
+            return hgmarshal::reported_state_step(true, depth, least, own);
         };
 
         // What this call must RECORD, derived from what it will return. An artifact nothing asked

@@ -56,6 +56,7 @@
 
 #include "delivery_cursor.hpp"
 #include "hgcommon/core.hpp"
+#include "hgcommon/explore_depth_core.hpp"
 #include "wxf.hpp"
 
 #include <cstdint>
@@ -74,6 +75,17 @@ namespace marshal {
 // the empty state in every mode, otherwise `hash`, the state's IR canonical hash.
 inline uint64_t reported_state_hash(bool empty, uint64_t hash) {
     return empty ? hgcommon::EMPTY_STATE_CANONICAL_HASH : hash;
+}
+
+// The Step a reply reports for a state, on both devices: outside Full states the state's own
+// step. Under Full the class's: its explore depth under quotient exploration (the shortest depth
+// from an initial state; hgcommon::kExploreNoDepth when not known), otherwise the least step of
+// any raw state of the class (UINT32_MAX when not known), otherwise the state's own step.
+inline uint32_t reported_state_step(bool full, uint32_t class_explore_depth,
+                                    uint32_t class_min_step, uint32_t own_step) {
+    if (!full) return own_step;
+    if (class_explore_depth != hgcommon::kExploreNoDepth) return class_explore_depth;
+    return class_min_step != UINT32_MAX ? class_min_step : own_step;
 }
 
 // The reply for a verb that returns a session handle and no evolution.

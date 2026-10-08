@@ -388,6 +388,8 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     // readback below both size from it.
     EngineState::CounterSnapshot snap{};
     double t_match = 0, t_rewrite = 0, t_hash = 0, t_dedup = 0;
+    // Under quotient exploration, the run's per-state explore depth on the device.
+    const uint32_t* d_explore_depth = nullptr;
 
 
     // The whole evolution in ONE launch: the device decides what work exists, who takes it, and
@@ -442,6 +444,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
 
         t_persist_call = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - t_kern_start).count();
+        if (in.explore_from_canonical_states_only) d_explore_depth = st.explore_depth;
 
         auto t_recon_start = std::chrono::steady_clock::now();
         // Branchial pairs are counted from the points after the run (qe_count_branchial).
@@ -578,6 +581,8 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     EngineState::ReadbackBatch batch(engine);
     std::vector<uint64_t> h_hashes;
     batch.add(h_hashes, static_cast<const uint64_t*>(d_state_hashes), total_states);
+    std::vector<uint32_t> h_depths;
+    if (d_explore_depth && total_states) batch.add(h_depths, d_explore_depth, total_states);
     std::vector<StateEdgeSlice> slices;
     // The slices are read without the edge arrays too: a state a failed rewrite claimed carries
     // the slice {INVALID_ID, 0} (apply_one_match), and reads back with id INVALID_ID.
@@ -604,6 +609,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         CanonicalState& cs = out.states[s];
         cs.id             = (s < slices.size() && slices[s].offset == INVALID_ID) ? INVALID_ID : s;
         cs.canonical_hash = (s < h_hashes.size()) ? h_hashes[s] : 0;
+        cs.explore_depth  = (s < h_depths.size()) ? h_depths[s] : hgcommon::kExploreNoDepth;
         // A slice past the id array describes no edges.
         if (s < slices.size() &&
             static_cast<size_t>(slices[s].offset) + slices[s].count <= out.state_edge_ids.size()) {

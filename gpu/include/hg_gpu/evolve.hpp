@@ -8,6 +8,7 @@
 #include <memory>
 #include <string>
 #include "hgcommon/core.hpp"
+#include "hgcommon/explore_depth_core.hpp"  // kExploreNoDepth
 #include "hgcommon/quotient_replay_core.hpp"  // QR_ID_LIMIT
 
 #include <set>
@@ -173,6 +174,10 @@ using EdgeSpan = IdSpan<EdgeId>;
 // first_edge + num_edges. EvolveResult::edge_ids, edge and edges_of read them.
 struct CanonicalState {
     StateId id = INVALID_ID;
+    // Under quotient exploration, the shortest depth any path from an initial state reached
+    // this state by (ExploreView::depth), which for a class's expanded state is the class's
+    // explore depth; hgcommon::kExploreNoDepth otherwise.
+    uint32_t explore_depth = hgcommon::kExploreNoDepth;
     uint64_t canonical_hash = 0;
     uint32_t first_edge = 0;
     uint32_t num_edges = 0;

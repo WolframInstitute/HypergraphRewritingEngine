@@ -2836,6 +2836,96 @@ TEST(GpuBinaryGate, GenesisEventsGiveTheHostsCounts) {
     worker_stop(w);
 }
 
+// Under Full states a state record's Step is its class's on the GPU as on the host: the class's
+// explore depth under quotient exploration, its least step under full capture. Two rules whose
+// classes are reached at several depths, 4 steps (the case of WxfSerializationPin.
+// QuotientStateStepIsTheClassShortestDepth): 6 GPU runs of each route give one (CanonicalHash,
+// Step) set, equal to the host's, and NumEvents under CanonicalizeEvents Automatic, whose
+// identity reads the event's Step, equals the host's on both routes.
+TEST(GpuBinaryGate, StateStepIsTheClassStepOnBothDevices) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    CpuWorker host;
+    ASSERT_TRUE(host.ok) << "could not start hg_evolve --serve";
+    auto job = [](bool ecso, const char* events) {
+        wxf::Writer ww;
+        ww.write_header();
+        ww.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        ww.write_varint(4);
+        ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        ww.write(std::string("InitialStates"));
+        ww.write(StateList{{{3, 1}, {3, 2, 1}, {3, 2}, {1, 1}, {3, 3}}});
+        ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        ww.write(std::string("Rules"));
+        ww.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        ww.write_varint(2);
+        ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        ww.write(std::string("r0"));
+        ww.write_function("Rule", 2);
+        ww.write(EdgeList{{4, 3}, {1, 2}});
+        ww.write(EdgeList{{5, 5}, {2, 3}});
+        ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        ww.write(std::string("r1"));
+        ww.write_function("Rule", 2);
+        ww.write(EdgeList{{3, 2, 3}, {2, 2}});
+        ww.write(EdgeList{{3, 2, 2}, {2, 2, 3}, {2, 2, 2}});
+        ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        ww.write(std::string("Steps"));
+        ww.write(int64_t{4});
+        ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        ww.write(std::string("Options"));
+        ww.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        ww.write_varint(5);
+        put_str_option(ww, "CanonicalizeStates", "Full");
+        put_str_option(ww, "CanonicalizeEvents", events);
+        put_str_option(ww, "IncludeCanonicalHashes", "True");
+        put_str_option(ww, "ExploreFromCanonicalStatesOnly", ecso ? "True" : "False");
+        put_str_list_option(ww, "RequestedData", {"States", "NumEvents"});
+        return ww.release_data();
+    };
+    auto hash_steps = [](const std::vector<uint8_t>& out) {
+        std::set<std::pair<int64_t, int64_t>> hash_step;
+        wxf::Parser parser(out);
+        parser.skip_header();
+        parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+            if (k != "States") { vp.skip_value(); return; }
+            vp.read_association_generic([&](wxf::Parser& kp, wxf::Parser& valp) {
+                kp.skip_value();
+                int64_t h = 0, step = -1;
+                valp.read_association([&](const std::string& fk, wxf::Parser& fvp) {
+                    if (fk == "CanonicalHash") h = fvp.read<int64_t>();
+                    else if (fk == "Step") step = fvp.read<int64_t>();
+                    else fvp.skip_value();
+                });
+                hash_step.insert({h, step});
+            });
+        });
+        return hash_step;
+    };
+    for (bool ecso : {false, true}) {
+        const auto cpu = hash_steps(host(job(ecso, "None")));
+        ASSERT_FALSE(cpu.empty());
+        std::set<std::set<std::pair<int64_t, int64_t>>> seen;
+        for (int rep = 0; rep < 6; ++rep) {
+            const auto gpu = worker_call(w, job(ecso, "None"));
+            ASSERT_FALSE(gpu.empty()) << "quotient " << ecso;
+            seen.insert(hash_steps(gpu));
+        }
+        EXPECT_EQ(seen.size(), 1u) << "quotient " << ecso;
+        EXPECT_EQ(*seen.begin(), cpu) << "quotient " << ecso;
+        EXPECT_EQ(read_int_key(worker_call(w, job(ecso, "Automatic")), "NumEvents"),
+                  read_int_key(host(job(ecso, "Automatic")), "NumEvents")) << "quotient " << ecso;
+    }
+    worker_stop(w);
+}
+
 // A cap past 32 bits is no cap on either device: the GPU saturates it rather than keeping its low
 // bits, so MaxStatesPerStep -> 2^32 + 1 returns what no cap returns.
 TEST(GpuBinaryGate, ACapPast32BitsIsNoCap) {
