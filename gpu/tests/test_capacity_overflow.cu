@@ -443,3 +443,10 @@ TEST(CapacityOverflow, TheReachabilityTableIsAPowerOfTwo) {
     }
 }
 
+// The persistent queue holds a power of two at least the seed count; past 2^31 there is none.
+TEST(CapacityOverflow, TheRingCapacityHasABound) {
+    EXPECT_EQ(hg_gpu::persistent_ring_capacity(0), 2u);
+    EXPECT_EQ(hg_gpu::persistent_ring_capacity(3), 4u);
+    EXPECT_EQ(hg_gpu::persistent_ring_capacity(1u << 31), 1u << 31);
+    EXPECT_THROW(hg_gpu::persistent_ring_capacity((1ull << 31) + 1), std::length_error);
+}

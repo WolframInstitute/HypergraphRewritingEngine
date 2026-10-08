@@ -121,6 +121,10 @@ uint64_t device_resident_threads();
 // The largest per-thread stack (cudaFuncAttributes::localSizeBytes) among this file's kernels.
 size_t persistent_kernels_stack_bytes();
 
+// Slots of a persistent work queue that seeds `items`: the least power of two at or above it,
+// and at least 2. Throws std::length_error past 2^31, which no 32-bit power of two covers.
+uint32_t persistent_ring_capacity(uint64_t items);
+
 // Words of IR arena to provide for `holders` concurrent slot holders at `share_words` average
 // words each (EngineConfig::ir_arena_share_words). The arena is one shared bump pool; a holder
 // keeps one slot at a time and grows it to the largest state it personally canonicalizes, so

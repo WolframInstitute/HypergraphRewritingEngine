@@ -1638,6 +1638,15 @@ uint32_t default_persistent_grid() {
     return cached;
 }
 
+uint32_t persistent_ring_capacity(uint64_t items) {
+    if (items > (1ull << 31))
+        throw std::length_error("a persistent work queue of " + std::to_string(items) +
+                                " items is past 2^31 slots");
+    uint64_t cap = 2;
+    while (cap < items) cap <<= 1;
+    return static_cast<uint32_t>(cap);
+}
+
 size_t persistent_kernels_stack_bytes() {
     size_t need = 0;
     auto take = [&](const void* k) {
@@ -1752,7 +1761,8 @@ uint32_t run_persistent_match(const EngineState& engine,
     if (rules.empty() || states.empty()) return out.size_host();
 
     const uint32_t num_rules = static_cast<uint32_t>(rules.size());
-    const uint32_t num_items = static_cast<uint32_t>(num_rules * states.size());
+    const uint32_t cap = persistent_ring_capacity(uint64_t{num_rules} * states.size());
+    const uint32_t num_items = static_cast<uint32_t>(uint64_t{num_rules} * states.size());
 
     // Engine-lifetime grow-only scratch: allocating these per call was API-call overhead on
     // the per-call floor.
@@ -1763,8 +1773,6 @@ uint32_t run_persistent_match(const EngineState& engine,
     HG_CUDA_CHECK(cudaMemcpyAsync(sc.states, states.data(), sizeof(StateId) * states.size(),
                      cudaMemcpyHostToDevice, 0), "states copy");
 
-    uint32_t cap = 2;
-    while (cap < num_items) cap <<= 1;
     RingBuffer<MatchWorkItem>& queue = reuse_ring(engine, cap);
 
     {
@@ -1800,7 +1808,8 @@ PersistentRunStats run_persistent_match_rewrite(EngineState& engine,
     scratch_matches.reset_and_clear();
 
     const uint32_t num_rules = static_cast<uint32_t>(rules.size());
-    const uint32_t num_items = static_cast<uint32_t>(num_rules * states.size());
+    const uint32_t cap = persistent_ring_capacity(uint64_t{num_rules} * states.size());
+    const uint32_t num_items = static_cast<uint32_t>(uint64_t{num_rules} * states.size());
 
     // Engine-lifetime grow-only scratch; see run_persistent_match.
     EngineState::LaunchScratch& sc =
@@ -1810,8 +1819,6 @@ PersistentRunStats run_persistent_match_rewrite(EngineState& engine,
     HG_CUDA_CHECK(cudaMemcpyAsync(sc.states, states.data(), sizeof(StateId) * states.size(),
                      cudaMemcpyHostToDevice, 0), "states copy");
 
-    uint32_t cap = 2;
-    while (cap < num_items) cap <<= 1;
     RingBuffer<MatchWorkItem>& match_q = reuse_ring(engine, cap);
     {
         const uint32_t block = 128;
@@ -1871,7 +1878,8 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     scratch_matches.reset_and_clear(&clears);
 
     const uint32_t num_rules = static_cast<uint32_t>(rules.size());
-    const uint32_t num_seed  = static_cast<uint32_t>(num_rules * roots.size());
+    const uint32_t seed_cap = persistent_ring_capacity(uint64_t{num_rules} * roots.size());
+    const uint32_t num_seed  = static_cast<uint32_t>(uint64_t{num_rules} * roots.size());
 
     // Engine-lifetime grow-only scratch; see run_persistent_match.
     EngineState::LaunchScratch& sc =
@@ -1889,8 +1897,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     // The ring holds work in flight, not the whole evolution: a run that outgrows it does not
     // fail, it runs the excess inline on the pushing block. Sized to the match pool so the
     // inline path is an escape valve rather than the normal case.
-    uint32_t cap = 2;
-    while (cap < num_seed) cap <<= 1;
+    uint32_t cap = seed_cap;
     while (cap < scratch_matches.capacity() && cap < (1u << 20)) cap <<= 1;
     RingBuffer<MatchWorkItem>& match_q = reuse_ring(engine, cap, &clears);
 
