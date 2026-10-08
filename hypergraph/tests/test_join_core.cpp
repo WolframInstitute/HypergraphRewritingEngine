@@ -53,9 +53,13 @@ struct ScanCtx {
     bool usable(EdgeId) const { return true; }
     bool aborted() const { return false; }
 
-    template <typename F>
-    void for_each_candidate(uint8_t, const St&, F&& f) const {
-        for (EdgeId e = 0; e < edges->size(); ++e) f(e);
+    using Cand = EdgeId;
+    struct Cursor { EdgeId next = 0; };
+    void cursor_open(uint8_t, const St&, Cursor& c) const { c.next = 0; }
+    bool cursor_next(Cursor& c, EdgeId& out) const {
+        if (c.next >= edges->size()) return false;
+        out = c.next++;
+        return true;
     }
 };
 

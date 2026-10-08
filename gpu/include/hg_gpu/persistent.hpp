@@ -118,6 +118,9 @@ uint32_t default_persistent_grid();
 // per-thread stack (cudaLimitStackSize) for this many threads, whatever grid is launched.
 uint64_t device_resident_threads();
 
+// The largest per-thread stack (cudaFuncAttributes::localSizeBytes) among this file's kernels.
+size_t persistent_kernels_stack_bytes();
+
 // Words of IR arena to provide for `holders` concurrent slot holders at `share_words` average
 // words each (EngineConfig::ir_arena_share_words). The arena is one shared bump pool; a holder
 // keeps one slot at a time and grows it to the largest state it personally canonicalizes, so

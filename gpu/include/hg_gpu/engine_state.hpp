@@ -299,15 +299,11 @@ __device__ __forceinline__ uint64_t* survivor_buffer(const DeviceState& ds, uint
 
 class EngineState {
 public:
-    // Per-thread device stack. The driver reserves it for every thread the device can hold
-    // resident (196,608 on an RTX 4090: 2.25 GB at this size), so it is the measured need plus
-    // a margin. hgcommon::join_dfs recurses once per LHS edge, so nvlink cannot size the
-    // matching kernels and this limit is what they run in. tools/dev/ptx_frame_sizes.py
-    // --calls gives the frames: k_persistent_evolve's matcher path is 4,240 B and 208 B per join
-    // level for up to kMaxPatternEdges levels, 7,568 B before the per-call ABI bytes; its rewrite
-    // path is 6,672 B. EngineState.TheDeepestJoinFitsTheStack runs the deepest join through the
-    // persistent kernel: it faults at 8,192 B and runs at 9,216 B.
-    static constexpr size_t kDeviceStackBytes = 12u * 1024u;
+    // Per-thread device stack: the largest stack the linker computed for the engine's kernels
+    // (cudaFuncAttributes::localSizeBytes of the persistent and matching kernels), which no
+    // kernel exceeds because none has a call cycle. The driver reserves it for every thread the
+    // device can hold resident (device_resident_threads). Read once per process.
+    static size_t device_stack_bytes();
 
 
     // Per-block global scratch of the reachability search at tr_scratch_scale 1: 8 times the

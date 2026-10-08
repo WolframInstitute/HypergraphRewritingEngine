@@ -14,12 +14,14 @@
 //   1. CANDIDATE ENUMERATION. The host intersects an inverted vertex index; the device strides
 //      a CSR slice, or walks the pivot vertex's incident list, or walks the compatible
 //      signature buckets. This is a genuine difference -- different memory systems want
-//      different access -- so it is the Ctx's job and nothing else here knows about it.
+//      different access -- so it is the Ctx's job, behind a per-depth cursor, and nothing else
+//      here knows about it.
 //   2. WHAT AN EMITTED MATCH IS. The host calls a callback; the device claims a pool slot and
 //      publishes. Emit's job.
 //
-// WHAT IS NOT DIFFERENT, and is therefore stated once here: the recursion, the edge-injectivity
-// rule, the binding and its unwind, and the order in which pattern edges are bound.
+// WHAT IS NOT DIFFERENT, and is therefore stated once here: the depth-first search, the
+// edge-injectivity rule, the binding and its unwind, and the order in which pattern edges are
+// bound.
 //
 // THE ORDER IS AN EXPLICIT PARAMETER, because the two sides represent it differently and that
 // difference was invisible. The host keeps the LHS in its authored order and indirects through
@@ -58,6 +60,7 @@ namespace common {
 // limits without a second definition.
 template <uint32_t MaxEdges, uint32_t MaxVars, typename EdgeIdT, typename VertexIdT>
 struct JoinState {
+    static constexpr uint32_t kMaxEdges = MaxEdges;
     EdgeIdT   matched[MaxEdges];   // the edge bound at each DEPTH
     uint8_t   pattern[MaxEdges];   // the pattern edge bound at each depth
     VertexIdT binding[MaxVars];
@@ -133,7 +136,9 @@ HG_HD inline void join_unbind_since(St& st, uint32_t saved_mask) {
 //   const VertexIdT*    edge_vertices(const Cand& c) const
 //   uint8_t             edge_arity(const Cand& c) const
 //   bool                usable(EdgeIdT e) const             -- e.g. "is in this state"
-//   template <class F> void for_each_candidate(uint8_t p, const St& st, F&& f) const
+//   using Cursor = ...;                                       -- one depth's place in its candidates
+//   void                cursor_open(uint8_t p, const St& st, Cursor& c) const
+//   bool                cursor_next(Cursor& c, Cand& out) const   -- false when exhausted
 //   bool                aborted() const
 //
 // A CANDIDATE IS WHATEVER THE ENUMERATOR PRODUCES, not necessarily an edge id. Enumerating a
@@ -143,45 +148,76 @@ HG_HD inline void join_unbind_since(St& st, uint32_t saved_mask) {
 //
 // Emit is called with the completed state; it may inspect st.matched / st.pattern / st.binding.
 //
-// Depth is bounded by MaxEdges through num_lhs_edges(), which every caller validates at rule
-// construction, so the recursion terminates without its own guard.
+// ITERATIVE, with one cursor per depth. A recursive join has a call cycle, and a device linker
+// cannot size the stack of a kernel that contains one; this body has none. The order of the
+// matches is the depth-first order of the candidates each cursor yields. Depth is bounded by
+// MaxEdges through num_lhs_edges(), which every caller validates at rule construction.
 template <typename Ctx, typename St, typename Emit>
 HG_HD void join_dfs(const Ctx& ctx, St& st, Emit&& emit) {
+    using Cursor = typename Ctx::Cursor;
+    using Cand = typename Ctx::Cand;
+    const uint8_t n = ctx.num_lhs_edges();
+    const uint8_t base = st.depth;
+    const uint32_t mask0 = st.bound_mask;
     if (ctx.aborted()) return;
+    if (base == n) { emit(st); return; }
 
-    if (st.depth == ctx.num_lhs_edges()) {
-        emit(st);
-        return;
+    auto next_position = [&]() {
+        return join_next_position([&](uint8_t k) { return ctx.order_at(k); }, n,
+                                  st.bound_pattern_mask());
+    };
+    Cursor cur[St::kMaxEdges];
+    uint8_t at[St::kMaxEdges];         // the pattern position each depth binds
+    uint32_t saved[St::kMaxEdges];     // the mask before each depth's binding
+    {
+        const uint8_t p = next_position();
+        if (p == 0xFFu) return;        // every position bound but depth disagreed: emit nothing
+        at[base] = p;
+        ctx.cursor_open(p, st, cur[base]);
     }
-
-    const uint8_t p = join_next_position([&](uint8_t k) { return ctx.order_at(k); },
-                                         ctx.num_lhs_edges(), st.bound_pattern_mask());
-    if (p == 0xFFu) return;   // every position bound but depth disagreed: emit nothing
-
-    ctx.for_each_candidate(p, st, [&](const auto& cand) {
-        if (ctx.aborted()) return;
+    uint8_t d = base;
+    for (;;) {
+        if (ctx.aborted()) {
+            st.depth = base;
+            st.bound_mask = mask0;
+            return;
+        }
+        Cand cand;
+        if (!ctx.cursor_next(cur[d], cand)) {
+            if (d == base) return;
+            --d;
+            --st.depth;
+            join_unbind_since(st, saved[d]);
+            continue;
+        }
         const auto id = ctx.candidate_id(cand);
-        if (!ctx.usable(id)) return;
-        if (st.already_taken(id)) return;            // edge-injective
+        if (!ctx.usable(id)) continue;
+        if (st.already_taken(id)) continue;           // edge-injective
 
-        const uint32_t saved = st.bound_mask;
+        const uint8_t p = at[d];
+        saved[d] = st.bound_mask;
         if (!bind_pattern_edge(ctx.edge_vertices(cand), ctx.edge_arity(cand),
                                ctx.pattern_vars(p), ctx.pattern_arity(p),
                                st.binding, st.bound_mask)) {
             // bind_pattern_edge may have bound some variables before hitting the mismatch.
-            join_unbind_since(st, saved);
-            return;
+            join_unbind_since(st, saved[d]);
+            continue;
         }
-
-        st.pattern[st.depth] = p;
-        st.matched[st.depth] = id;
+        st.pattern[d] = p;
+        st.matched[d] = id;
         ++st.depth;
 
-        join_dfs(ctx, st, emit);
-
-        --st.depth;
-        join_unbind_since(st, saved);
-    });
+        const uint8_t next = st.depth == n ? 0xFFu : next_position();
+        if (st.depth == n && !ctx.aborted()) emit(st);
+        if (next == 0xFFu) {
+            --st.depth;
+            join_unbind_since(st, saved[d]);
+            continue;
+        }
+        ++d;
+        at[d] = next;
+        ctx.cursor_open(next, st, cur[d]);
+    }
 }
 
 // Seed the join at a GIVEN pattern position with a GIVEN edge, then run it.

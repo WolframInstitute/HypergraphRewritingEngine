@@ -1638,6 +1638,22 @@ uint32_t default_persistent_grid() {
     return cached;
 }
 
+size_t persistent_kernels_stack_bytes() {
+    size_t need = 0;
+    auto take = [&](const void* k) {
+        cudaFuncAttributes a{};
+        HG_CUDA_CHECK(cudaFuncGetAttributes(&a, k), "persistent kernel attributes");
+        need = std::max<size_t>(need, a.localSizeBytes);
+    };
+    take(reinterpret_cast<const void*>(&k_persistent_evolve));
+    take(reinterpret_cast<const void*>(&k_persistent_match));
+    take(reinterpret_cast<const void*>(&k_persistent_match_rewrite));
+    take(reinterpret_cast<const void*>(&k_qe_redrive));
+    take(reinterpret_cast<const void*>(&k_seed_root_hashes));
+    take(reinterpret_cast<const void*>(&k_seed_frontier));
+    return need;
+}
+
 uint64_t device_resident_threads() {
     static uint64_t cached = 0;
     if (cached) return cached;

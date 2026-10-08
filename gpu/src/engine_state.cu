@@ -160,20 +160,18 @@ EngineState::EngineState(EngineConfig cfg): cfg_(cfg)
         , causal_pair_dedup_(cfg.causal_pair_slots)
         , branchial_pair_dedup_(cfg.branchial_pair_slots)
         , preds_list_(cfg.max_events, cfg.tr_preds_nodes) {
-        // Every kernel that runs against an EngineState needs more per-thread stack than the
-        // 1 KB default (kDeviceStackBytes). Raising it here rather than in one scheduler's
-        // constructor makes it hold for every entry point; a stack overflow reports as an
-        // illegal memory access.
+        // The stack the engine's kernels need (device_stack_bytes), set here so it holds for
+        // every entry point and is reserved before any pool is allocated.
         // Checked, and then READ BACK: a driver may clamp the request rather than refuse it.
-        HG_CUDA_CHECK(cudaDeviceSetLimit(cudaLimitStackSize, kDeviceStackBytes),
-                      "set device stack size");
+        const size_t stack = device_stack_bytes();
+        HG_CUDA_CHECK(cudaDeviceSetLimit(cudaLimitStackSize, stack), "set device stack size");
         size_t actual_stack = 0;
         HG_CUDA_CHECK(cudaDeviceGetLimit(&actual_stack, cudaLimitStackSize), "read device stack size");
-        if (actual_stack < kDeviceStackBytes) {
+        if (actual_stack < stack) {
             throw std::runtime_error(
                 "EngineState: device stack is " + std::to_string(actual_stack) +
-                " bytes after requesting " + std::to_string(kDeviceStackBytes) +
-                "; match_state_rule's DFS would overflow it and report an illegal memory access");
+                " bytes after requesting " + std::to_string(stack) +
+                "; a kernel would overflow it and report an illegal memory access");
         }
         slice_scan_max_edges_ = cfg.slice_scan_max_edges;
         HG_CUDA_CHECK(cudaMalloc(&state_edge_slices_,
@@ -311,6 +309,14 @@ uint32_t EngineState::canonical_event_count() const {
               "EngineState read canonical_event_count");
         return n;
     }
+
+size_t EngineState::device_stack_bytes() {
+    static size_t cached = 0;
+    if (cached) return cached;
+    size_t need = std::max(persistent_kernels_stack_bytes(), match_kernels_stack_bytes());
+    cached = std::max<size_t>(need, 1024u);   // the driver's default
+    return cached;
+}
 
 DeviceArena& EngineState::ir_arena(uint64_t needed_words) {
         if (!ir_arena_ || ir_arena_->capacity_words() < needed_words) {

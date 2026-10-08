@@ -208,8 +208,8 @@ TEST(EngineState, ASignatureBuiltFromARawEdgeIdIsReportedToTheCaller) {
 }  // namespace
 
 // The deepest join the engine admits, kMaxPatternEdges levels, run through the persistent kernel
-// at the shipped device stack (EngineState::kDeviceStackBytes): a 16-edge path pattern on a
-// 16-edge path, whose one match recurses once per edge and rewrites all 16. A stack too small
+// at the shipped device stack (EngineState::device_stack_bytes): a 16-edge path pattern on a
+// 16-edge path, whose one match descends once per edge and rewrites all 16. A stack too small
 // for it faults as an illegal memory access.
 TEST(EngineState, TheDeepestJoinFitsTheStack) {
     constexpr uint8_t n = hg_gpu::kMaxPatternEdges;

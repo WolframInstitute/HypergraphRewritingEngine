@@ -100,7 +100,7 @@ std::vector<uint64_t> compatible_signature_hashes(const DevicePatternEdge& pe) {
 //     because match_state_rule's body stripes across exactly those threads -- every scheduler
 //     calling it must launch with this shape, so it is contract, not a private detail.
 //
-// ENUMERATION is adaptive on state size, in Ctx::for_each_candidate. Multiway states are small
+// ENUMERATION is adaptive on state size, in the Ctx's cursor. Multiway states are small
 // (tens of edges) while the signature and vertex-inverted indices are global across the whole
 // evolution, so their buckets grow with total edge count and walking them costs O(evolution)
 // per state. At or below DeviceState::slice_scan_max_edges (an EngineConfig knob) candidates
@@ -162,29 +162,69 @@ struct MatchJoinCtx {
     // evolution, so their buckets cost O(evolution) per state; at or below
     // slice_scan_max_edges the state's own CSR slice gives each edge exactly once, with
     // membership for free.
-    template <typename F>
-    __device__ void for_each_candidate(uint8_t p, const MatchJoinState& st, F&& f) const {
+    //
+    // The pivot vertex's incident list holds each incident edge once (VertexInvertedIndex). The
+    // signature path takes the union over every compatible signature bucket: Wolfram binding
+    // lets distinct vars collapse onto one vertex, so a matching data edge's signature may be
+    // coarser than the pattern's. Each edge appears in its own bucket exactly once, and each
+    // bucket is walked once (compat_sig_bucket_first).
+    using Cand = EdgeId;
+    using List = typename LockFreeList<EdgeId>::DeviceView;
+    static constexpr uint8_t kScan = 0, kPivot = 1, kSignature = 2;
+    static constexpr uint32_t kEnd = Pool<typename LockFreeList<EdgeId>::Node>::kInvalid;
+    struct Cursor {
+        uint32_t at;     // kScan: the next slice index; otherwise the next list node or kEnd
+        uint8_t  mode;
+        uint8_t  p;      // the pattern position
+        uint8_t  sig;    // kSignature: the next compatible signature to open
+    };
+
+    // The first node of list[key], as LockFreeList::DeviceView::for_each starts its walk: a
+    // relaxed load for an empty list, the acquire only for a list that has a node.
+    __device__ static uint32_t list_first(const List& l, uint32_t key) {
+        if (key >= l.num_keys) return kEnd;
+        typename List::Ops ops{&l, key};
+        if (ops.head_load_relaxed() == ops.invalid()) return kEnd;
+        return ops.head_load_acquire();
+    }
+
+    __device__ void cursor_open(uint8_t p, const MatchJoinState& st, Cursor& c) const {
+        c.p = p;
+        c.sig = 0;
+        c.at = 0;
+        if (slice.count <= scan_max) { c.mode = kScan; return; }
         const DevicePatternEdge& pe = rule.lhs[p];
-
-        if (slice.count <= scan_max) {
-            for (uint32_t i = 0; i < slice.count; ++i) f(ids[slice.offset + i]);
-            return;
-        }
-
-        // The pivot vertex's incident list holds each incident edge once
-        // (VertexInvertedIndex), so it goes to the join as it is walked.
         if (pe.pivot_var != kNoPivotVar) {
-            ds.vertex_inverted_index.for_each_incident(st.binding[pe.pivot_var], f);
+            c.mode = kPivot;
+            c.at = list_first(ds.vertex_inverted_index.list, st.binding[pe.pivot_var]);
             return;
         }
+        c.mode = kSignature;
+        c.at = kEnd;
+    }
 
-        // Union over every compatible signature bucket: Wolfram binding lets distinct vars
-        // collapse onto one vertex, so a matching data edge's signature may be coarser than
-        // the pattern's. Each edge appears in its own bucket exactly once, and each bucket is
-        // walked once (compat_sig_bucket_first).
-        for (uint8_t s = 0; s < pe.num_compat_sigs; ++s) {
+    __device__ bool cursor_next(Cursor& c, EdgeId& out) const {
+        if (c.mode == kScan) {
+            if (c.at >= slice.count) return false;
+            out = ids[slice.offset + c.at++];
+            return true;
+        }
+        const List& l = c.mode == kPivot ? ds.vertex_inverted_index.list
+                                         : ds.signature_index.list;
+        for (;;) {
+            if (c.at != kEnd) {
+                const auto& node = l.pool.at(c.at);
+                out = node.value;
+                c.at = node.next;
+                return true;
+            }
+            if (c.mode == kPivot) return false;
+            const DevicePatternEdge& pe = rule.lhs[c.p];
+            if (c.sig >= pe.num_compat_sigs) return false;
+            const uint8_t s = c.sig++;
             if (!compat_sig_bucket_first(pe, s, ds.signature_index.mask)) continue;
-            ds.signature_index.list.for_each(compat_sig_bucket(pe, s, ds.signature_index.mask), f);
+            c.at = list_first(ds.signature_index.list,
+                              compat_sig_bucket(pe, s, ds.signature_index.mask));
         }
     }
 };
@@ -778,6 +818,13 @@ uint32_t run_match_kernel(const EngineState&             engine,
     cudaFree(d_rules);
 
     return out_matches.size_host();
+}
+
+size_t match_kernels_stack_bytes() {
+    cudaFuncAttributes a{};
+    HG_CUDA_CHECK(cudaFuncGetAttributes(&a, reinterpret_cast<const void*>(&k_match_batch)),
+                  "match kernel attributes");
+    return a.localSizeBytes;
 }
 
 }  // namespace gpu

@@ -7,6 +7,9 @@
 #include <utility>
 #include <atomic>
 #include <functional>
+#include <array>
+#include <memory>
+#include <vector>
 
 #include "types.hpp"
 #include "signature.hpp"
@@ -276,6 +279,12 @@ struct HostJoinContext {
 
     PatternMatchingContext<EdgeAccessor, SignatureAccessor>* mc;
 
+    explicit HostJoinContext(PatternMatchingContext<EdgeAccessor, SignatureAccessor>* m)
+        : mc(m), levels(level_frames().take()) {}
+    ~HostJoinContext() { level_frames().give_back(); }
+    HostJoinContext(const HostJoinContext&) = delete;
+    HostJoinContext& operator=(const HostJoinContext&) = delete;
+
     // Enumerating a candidate already fetched its edge, so the candidate carries it rather than
     // handing the join an id to look up again.
     //
@@ -312,14 +321,49 @@ struct HostJoinContext {
         return mc->should_terminate && mc->should_terminate->load();
     }
 
-    template<typename F>
-    void for_each_candidate(uint8_t p, const JoinState& st, F&& f) const {
+    // A depth's candidates are generated when the depth is opened and read back one at a time.
+    // generate_candidates walks its indices through callbacks, so the cursor holds the list the
+    // walk produced; each depth has its own buffer, reused across joins on this thread.
+    using Cand = Candidate;
+    struct Cursor {
+        const Candidate* items = nullptr;
+        size_t n = 0, i = 0;
+    };
+    void cursor_open(uint8_t p, const JoinState& st, Cursor& c) const {
+        std::vector<Candidate>& buf = (*levels)[st.depth];
+        buf.clear();
         generate_candidates(
             mc->rule->lhs[p], mc->rule->lhs_sig[p], mc->rule->lhs_cache[p],
             st.binding, st.bound_mask, *mc->state_edges,
             *mc->candidates, mc->get_edge,
-            [&](EdgeId eid, const EdgeType& edge) { f(Candidate{eid, &edge}); });
+            [&](EdgeId eid, const EdgeType& edge) { buf.push_back(Candidate{eid, &edge}); });
+        c.items = buf.data();
+        c.n = buf.size();
+        c.i = 0;
     }
+    bool cursor_next(Cursor& c, Candidate& out) const {
+        if (c.i >= c.n) return false;
+        out = c.items[c.i++];
+        return true;
+    }
+
+private:
+    using Levels = std::array<std::vector<Candidate>, MAX_PATTERN_EDGES>;
+    // One Levels per join live on this thread: an emit may run another join before returning.
+    struct LevelFrames {
+        std::vector<std::unique_ptr<Levels>> frames;
+        size_t in_use = 0;
+        Levels* take() {
+            if (in_use == frames.size()) frames.push_back(std::make_unique<Levels>());
+            return frames[in_use++].get();
+        }
+        void give_back() { --in_use; }
+    };
+    static LevelFrames& level_frames() {
+        HG_THREAD_LOCAL(LevelFrames, frames);
+        return frames;
+    }
+    Levels* levels;
 };
 
 // A completed match: deduplicate, report, count. One body for the full scan and the seeded scan.
@@ -373,7 +417,7 @@ void scan_pattern(
 ) {
     if (mc.rule->num_lhs_edges == 0) return;
 
-    HostJoinContext<EdgeAccessor, SignatureAccessor> ctx{&mc};
+    HostJoinContext<EdgeAccessor, SignatureAccessor> ctx(&mc);
     typename decltype(ctx)::JoinState st;
     st.reset();
     VariableBinding scratch;
@@ -464,7 +508,7 @@ void scan_pattern_from_edge(
         return;
     }
 
-    HostJoinContext<EdgeAccessor, SignatureAccessor> ctx{&mc};
+    HostJoinContext<EdgeAccessor, SignatureAccessor> ctx(&mc);
     typename decltype(ctx)::JoinState st;
     VariableBinding scratch;
     hgcommon::join_seed(ctx, st, starting_edge, pattern_position,

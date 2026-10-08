@@ -882,22 +882,10 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     b += u64(cfg.max_states)          * 8 * 76;     // matches pool (max_states*8 records ~76B)
     b += u64(cfg.max_states)          * 16;         // d_frontier + d_next_frontier + state_canonical_hash
 
-    // THE DEVICE STACK IS PART OF THE BUDGET AND WAS MISSING FROM IT.
-    //
-    // EngineState's constructor raises cudaLimitStackSize before it allocates any pool, and the
-    // driver reserves that per-thread size across every resident thread -- so it is real device
-    // memory, and this estimate did not count a byte of it. It is a CONSTANT now -- the
-    // reconstruction carries depth in a worklist rather than on the stack -- so what a deep run
-    // reserves is what a shallow one does.
-    // The consequence was not academic: scaling the state estimate with depth twice produced
-    // "engine at the grown size no longer fits in device memory ... set device stack size: out of
-    // memory" on an 80-step run, because the budget said the pools fitted while the reservation
-    // they had to share with pushed the total over. Both attempts were reverted for it.
-    //
-    // The driver reserves it for every thread the device can hold resident, not for the grid
-    // launched: at 32 KB on an RTX 4090 (128 SMs x 1,536 threads), the first engine of a process
-    // took 6.0 GB more than the second (CapacityOverflow.TheEstimateCoversTheAllocation).
-    b += static_cast<uint64_t>(EngineState::kDeviceStackBytes) * device_resident_threads();
+    // The device stack: EngineState's constructor sets cudaLimitStackSize, and the driver
+    // reserves that per-thread size for every thread the device can hold resident, not for the
+    // grid launched (CapacityOverflow.TheEstimateCoversTheAllocation).
+    b += static_cast<uint64_t>(EngineState::device_stack_bytes()) * device_resident_threads();
 
     return b + b / 6;   // ~17% headroom
 }

@@ -147,6 +147,9 @@ __device__ void match_state_rule(const DeviceState& ds, const DeviceRule* rules,
 
 // Run the match kernel for (state_id, all rules), populating out_matches.
 // Returns the number of matches written. `step` is stamped on every record.
+// The largest per-thread stack (cudaFuncAttributes::localSizeBytes) among the matching kernels.
+size_t match_kernels_stack_bytes();
+
 uint32_t run_match_kernel(const EngineState&            engine,
                           const std::vector<DeviceRule>& rules,
                           StateId                        state_id,
