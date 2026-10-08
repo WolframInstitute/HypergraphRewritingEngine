@@ -61,12 +61,17 @@ using FrameMap = ConcurrentMap<uint64_t, uint64_t>;
 __device__ inline __noinline__ uint64_t transition_key_device(const DeviceState& ds, StateId state_id,
                                                  RuleId rule_id, const EdgeId* matched_edges,
                                                  uint8_t num_edges) {
+    // Under the quotient reconstruction (state_edge_orbit is allocated exactly then) the matched
+    // edges' automorphism orbit ids, as the host's canonical_transition_key reads them: one raw
+    // state per class defines the class's expansion, and keyed on orbits automorphic transitions
+    // tie, so a cap keeps or drops them together from every raw state of the class.
+    const uint32_t* coord = ds.state_edge_orbit ? ds.state_edge_orbit : ds.state_edge_rank;
     uint32_t ranks[kMaxPatternEdges];
     uint8_t n = 0;
     for (uint8_t i = 0; i < num_edges && n < kMaxPatternEdges; ++i) {
         if (matched_edges[i] == INVALID_ID) continue;
         const uint32_t pos = state_edge_index(ds, state_id, matched_edges[i]);
-        ranks[n++] = (pos == UINT32_MAX) ? UINT32_MAX : ds.state_edge_rank[pos];
+        ranks[n++] = (pos == UINT32_MAX) ? UINT32_MAX : coord[pos];
     }
     return hgcommon::event_signature(hgcommon::EVENT_SIG_TRANSITION,
                                      ds.state_exact_hash[state_id],

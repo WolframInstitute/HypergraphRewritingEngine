@@ -27,6 +27,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace {
@@ -1660,34 +1661,102 @@ TEST(Sampling, DrainCapKeepsTheSameMatchesAcrossEngines) {
     }
 }
 
-// The k-lowest selection with ranks counted with multiplicity (hgcommon::rank_cut), which the
-// device applies under MatchesPerStateRule, keeps the ranks the host keeps by taking the first k
-// of its rank-sorted list (ParallelEvolutionEngine::drain_candidates): ranks {5, 5, 9} with k = 2
-// keep {5, 5}, and random multisets with repeated ranks keep equal multisets.
+// The device's three cuts keep the host's selection: the host keeps the first
+// hgcommon::cap_keep_count entries of its rank-sorted list (the first k and every entry tied with
+// the k-th); the device keeps the ranks at or below hgcommon::rank_cut (MatchesPerStateRule,
+// MaxStatesPerStep) and the entries with fewer than k ranked strictly below them
+// (hgcommon::cap_keeps, MaxSuccessorStatesPerParent). Ranks {5, 5, 9} with k = 1 keep {5, 5};
+// random multisets with repeated ranks keep equal multisets under all three.
 TEST(Sampling, RankCutKeepsTheHostsSelection) {
-    auto device_keeps = [](const std::vector<uint64_t>& r, uint32_t k) {
+    auto cut_keeps = [](const std::vector<uint64_t>& r, uint32_t k) {
         const hgcommon::RankCut cut =
             hgcommon::rank_cut(r.data(), static_cast<uint32_t>(r.size()), k);
         std::multiset<uint64_t> kept;
-        uint32_t at = 0;
+        for (const uint64_t x : r)
+            if (hgcommon::rank_cut_keeps(cut, x)) kept.insert(x);
+        return kept;
+    };
+    auto below_keeps = [](const std::vector<uint64_t>& r, uint32_t k) {
+        std::multiset<uint64_t> kept;
         for (const uint64_t x : r) {
-            if (cut.all || x < cut.rank) kept.insert(x);
-            else if (x == cut.rank && at < cut.at_cut) { kept.insert(x); ++at; }
+            uint64_t below = 0;
+            for (const uint64_t y : r) below += y < x ? 1u : 0u;
+            if (hgcommon::cap_keeps(below, k)) kept.insert(x);
         }
         return kept;
     };
     auto host_keeps = [](std::vector<uint64_t> r, uint32_t k) {
         std::sort(r.begin(), r.end());
-        return std::multiset<uint64_t>(r.begin(), r.begin() + std::min<size_t>(k, r.size()));
+        const uint64_t n = hgcommon::cap_keep_count(
+            r.size(), k, [&](uint64_t a, uint64_t b) { return r[a] == r[b]; });
+        return std::multiset<uint64_t>(r.begin(), r.begin() + static_cast<std::ptrdiff_t>(n));
     };
-    EXPECT_EQ(device_keeps({5, 5, 9}, 2), (std::multiset<uint64_t>{5, 5}));
+    EXPECT_EQ(cut_keeps({5, 5, 9}, 1), (std::multiset<uint64_t>{5, 5}));
+    EXPECT_EQ(below_keeps({5, 5, 9}, 1), (std::multiset<uint64_t>{5, 5}));
+    EXPECT_EQ(host_keeps({5, 5, 9}, 1), (std::multiset<uint64_t>{5, 5}));
     std::mt19937_64 rng(7);
     for (int t = 0; t < 2000; ++t) {
         const uint32_t n = 1 + static_cast<uint32_t>(rng() % 40);
         const uint32_t k = 1 + static_cast<uint32_t>(rng() % 12);
         std::vector<uint64_t> r(n);
         for (auto& x : r) x = rng() % 8;
-        EXPECT_EQ(device_keeps(r, k), host_keeps(r, k)) << "n " << n << ", k " << k;
+        const auto host = host_keeps(r, k);
+        EXPECT_EQ(cut_keeps(r, k), host) << "n " << n << ", k " << k;
+        EXPECT_EQ(below_keeps(r, k), host) << "n " << n << ", k " << k;
+    }
+}
+
+// Transitions tied at a cap's cut are kept whole on the device, as on the host, so the kept set
+// does not depend on the schedule and equals the host's. MaxStatesPerStep 12 on rules
+// {{1}} -> {{2}} and {{1}} -> {} from {{1},{1}}, 3 steps; and each cap under the reconstruction
+// (Full states, Automatic events) on {{1,2}} -> {{3,4},{1,2}} from {{1,2},{3,2}}, 2 steps. Six
+// device runs of each give one result, equal to the host's.
+TEST(Sampling, CapTiesAreKeptWholeOnBothEngines) {
+    Workload step;
+    step.name = "step-cap-ties";
+    step.rules = {rule({{0}}, {{1}}), rule({{0}}, {})};
+    step.initial_states = {{{0u}, {0u}}};
+    step.num_steps = 3;
+    step.max_states_per_step = 12;
+    std::vector<Workload> cases;
+    for (auto mode : {hg_gpu::CanonicalizationMode::None, hg_gpu::CanonicalizationMode::Full}) {
+        Workload v = step;
+        v.canon_mode = mode;
+        cases.push_back(v);
+    }
+    Workload recon;
+    recon.name = "recon-cap-ties";
+    recon.rules = {rule({{0, 1}}, {{2, 3}, {0, 1}})};
+    recon.initial_states = {{{0u, 1u}, {2u, 1u}}};
+    recon.num_steps = 2;
+    recon.canon_mode = hg_gpu::CanonicalizationMode::Full;
+    recon.event_canon_mode = hg_gpu::EventCanonicalizationMode::Automatic;
+    for (int cap = 0; cap < 3; ++cap) {
+        Workload v = recon;
+        if (cap == 0) v.matches_per_state_rule = 2;
+        if (cap == 1) v.max_successor_states_per_parent = 2;
+        if (cap == 2) v.max_states_per_step = 3;
+        cases.push_back(v);
+    }
+    for (const Workload& w : cases) {
+        const NormalizedResult cpu = run_cpu(w);
+        std::set<std::tuple<std::set<uint64_t>, size_t, size_t, std::multiset<uint64_t>>> seen;
+        for (int rep = 0; rep < 6; ++rep) {
+            const NormalizedResult gpu = run_gpu(w);
+            seen.insert({gpu.canonical_state_hashes, gpu.num_events, gpu.observable_causal,
+                         gpu.recon_causal});
+            EXPECT_EQ(gpu.canonical_state_hashes, cpu.canonical_state_hashes) << w.name;
+            EXPECT_EQ(gpu.num_events, cpu.num_events) << w.name;
+            EXPECT_EQ(gpu.observable_causal, cpu.observable_causal) << w.name;
+            EXPECT_EQ(gpu.recon_causal, cpu.recon_causal) << w.name;
+            if (w.event_canon_mode == hg_gpu::EventCanonicalizationMode::None) {
+                EXPECT_EQ(gpu.event_keys, cpu.event_keys) << w.name;
+                EXPECT_EQ(gpu.causal_edge_keys, cpu.causal_edge_keys) << w.name;
+            }
+        }
+        EXPECT_EQ(seen.size(), 1u) << w.name << " max_states_per_step " << w.max_states_per_step
+                                   << " per_parent " << w.max_successor_states_per_parent
+                                   << " per_rule " << w.matches_per_state_rule;
     }
 }
 

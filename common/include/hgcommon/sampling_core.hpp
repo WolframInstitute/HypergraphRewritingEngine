@@ -70,22 +70,25 @@ HG_HD inline uint64_t transition_rank(uint64_t transition_key, uint64_t random_s
     return x ^ (x >> 31);
 }
 
+// Whether a cap of k keeps a candidate that `below` candidates rank strictly below. Over a
+// rank-sorted list these are the cap_keep_count(total, k, equal rank) first entries: the first k
+// and every entry tied with the k-th. transition_rank is a bijection of the transition key, so
+// equal ranks are the host's ties on (rank, key). The device's per-rule, per-state and per-step
+// caps keep by this predicate, or by rank_cut_keeps, which is the same set.
+HG_HD inline bool cap_keeps(uint64_t below, uint64_t k) { return below < k; }
+
 // THE CUT OF A k-LOWEST SELECTION, ranks counted with multiplicity: the k-th smallest of
-// ranks[0, n) and how many entries of that rank are kept, k minus the number below it. `all` when
-// n <= k, which keeps every entry. Equal ranks name automorphic transitions, so which entries of
-// the cut rank are kept does not change the kept set up to isomorphism.
-//
-// The host keeps the first k of its rank-sorted list (ParallelEvolutionEngine::drain_candidates);
-// the device, which ranks its matches as they are emitted, keeps every rank below the cut and
-// `at_cut` of the ranks at it. Both keep the same ranks.
+// ranks[0, n). `all` when n <= k. rank_cut_keeps keeps every entry whose rank is at or below the
+// cut, the entries with fewer than k ranked strictly below them (cap_keeps).
 struct RankCut {
     uint64_t rank;
-    uint32_t at_cut;
     bool     all;
 };
 
+HG_HD inline bool rank_cut_keeps(RankCut c, uint64_t rank) { return c.all || rank <= c.rank; }
+
 HG_HD inline RankCut rank_cut(const uint64_t* ranks, uint32_t n, uint32_t k) {
-    if (n <= k) return RankCut{~0ULL, n, true};
+    if (n <= k) return RankCut{~0ULL, true};
     uint32_t below = 0;
     uint64_t floor = 0;
     bool have_floor = false;
@@ -100,7 +103,7 @@ HG_HD inline RankCut rank_cut(const uint64_t* ranks, uint32_t n, uint32_t k) {
             if (count == 0 || r < next) { next = r; count = 1; }
             else if (r == next) ++count;
         }
-        if (below + count >= k) return RankCut{next, k - below, false};
+        if (below + count >= k) return RankCut{next, false};
         below += count;
         floor = next;
         have_floor = true;

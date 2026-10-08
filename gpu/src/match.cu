@@ -150,7 +150,7 @@ struct MatchJoinCtx {
 // See gpu/ARCHITECTURE.md sec 2.
 // Which completed matches a pass emits.
 //   kCapCount   record each match's rank, emit nothing     } the per-(state, rule) cap: the k
-//   kCapEmit    emit ranks below the cut, and cap_k at it   } smallest ranks of the pair
+//   kCapEmit    emit ranks at or below the cut               } smallest ranks of the pair, ties kept
 //   kDraw       emit the matches that survive their draw; record the state's minimum rank
 //               and whether any match survived
 //   kSpineEmit  emit the one match whose rank is that minimum
@@ -163,7 +163,7 @@ enum class EmitMode : uint8_t { kCapCount, kCapEmit, kDraw, kSpineEmit, kParentC
 
 struct EmitCtl {
     EmitMode            mode;
-    uint32_t            cap_k;        // kCapEmit: how many matches of the cut rank are kept
+    uint32_t            cut_all;      // kCapEmit: the cut keeps every match (RankCut::all)
     uint64_t            threshold;    // kCapEmit: the cut rank; kSpineEmit: the minimum
     uint32_t*           s_seen;
     uint32_t*           s_overflow;
@@ -199,9 +199,7 @@ __device__ __noinline__ bool emit_admit(const DeviceState& ds, StateId state_id,
         return false;
     }
     case EmitMode::kCapEmit:
-        if (r < c.threshold) return true;
-        if (r > c.threshold) return false;
-        return atomicAdd(c.s_emitted, 1u) < c.cap_k;
+        return hgcommon::rank_cut_keeps(hgcommon::RankCut{c.threshold, c.cut_all != 0u}, r);
     case EmitMode::kDraw: {
         atomicMin(c.s_min_rank, static_cast<unsigned long long>(r));
         const double rate = hgcommon::sampling_rate_for_rule(
@@ -282,11 +280,12 @@ __device__ __noinline__ void match_state_rule_pass(
 }
 
 // MaxSuccessorStatesPerParent, in the block of the state's rule 0, over every rule: the host's
-// cap_at_drain. The first pass ranks every transition of the state; the block then keeps, in
-// (rank, recorded position) order, the cap_k lowest of each rule under MatchesPerStateRule and the
-// parent_k lowest of those; the second pass emits a transition while a kept entry of its rank has
-// quota. Equal ranks are automorphic transitions, so which of them a quota admits is the host's
-// choice up to isomorphism. No draw is applied to the kept transitions, as on the host.
+// cap_at_drain. The first pass ranks every transition of the state; the block then keeps the
+// transitions with fewer than cap_k of their rule ranked strictly below them under
+// MatchesPerStateRule, and of those the ones with fewer than parent_k kept transitions ranked
+// strictly below them (hgcommon::cap_keeps: the k lowest and every transition tied with the k-th,
+// as cap_keep_count keeps on the host); the second pass emits a transition while a kept entry of
+// its rank has quota. No draw is applied to the kept transitions, as on the host.
 __device__ __noinline__ void match_state_parent_capped(
         const DeviceState& ds, const DeviceRule* rules, StateId state_id, uint32_t step,
         typename Pool<MatchRecord>::DeviceView out, uint32_t* s_seen, uint32_t* s_overflow,
@@ -318,26 +317,23 @@ __device__ __noinline__ void match_state_parent_capped(
         return;
     }
     const uint32_t n = *s_seen;
-    auto before = [&](uint32_t a, uint32_t b) {
-        return s_ranks[a] != s_ranks[b] ? s_ranks[a] < s_ranks[b] : a < b;
-    };
-    // Kept by MatchesPerStateRule: fewer than cap_k of its rule come before it.
+    // Kept by MatchesPerStateRule: fewer than cap_k of its rule rank strictly below it.
     for (uint32_t i = threadIdx.x; i < n; i += blockDim.x) {
-        uint32_t ahead = 0;
+        uint32_t below = 0;
         if (cap_k != 0u)
             for (uint32_t j = 0; j < n; ++j)
-                if (s_rules[j] == s_rules[i] && before(j, i)) ++ahead;
-        s_kept[i] = (cap_k == 0u || ahead < cap_k) ? 1u : 0u;
+                if (s_rules[j] == s_rules[i] && s_ranks[j] < s_ranks[i]) ++below;
+        s_kept[i] = (cap_k == 0u || hgcommon::cap_keeps(below, cap_k)) ? 1u : 0u;
     }
     __syncthreads();
-    // Kept by the per-state cap: fewer than parent_k kept transitions come before it. Written to
-    // s_rules, which nothing reads past the loop above.
+    // Kept by the per-state cap: fewer than parent_k kept transitions rank strictly below it.
+    // Written to s_rules, which nothing reads past the loop above.
     for (uint32_t i = threadIdx.x; i < n; i += blockDim.x) {
-        uint32_t ahead = 0;
+        uint32_t below = 0;
         if (s_kept[i])
             for (uint32_t j = 0; j < n; ++j)
-                if (s_kept[j] && before(j, i)) ++ahead;
-        s_rules[i] = (s_kept[i] && ahead < parent_k) ? 1u : 0u;
+                if (s_kept[j] && s_ranks[j] < s_ranks[i]) ++below;
+        s_rules[i] = (s_kept[i] && hgcommon::cap_keeps(below, parent_k)) ? 1u : 0u;
     }
     __syncthreads();
     // The kept ranks, compacted in place by one thread: each lands at or before its slot.
@@ -362,7 +358,7 @@ __device__ __noinline__ void match_state_parent_capped(
 // emits every match.
 //
 // Under the per-(state, rule) cap, two passes: the first ranks every match of the pair, the
-// second emits the k smallest. The block has found all of the pair's matches after the first,
+// second emits the k smallest and every match tied with the k-th (hgcommon::rank_cut). The block has found all of the pair's matches after the first,
 // which is the completion point the host calls the state's drain. No draw is applied to the
 // kept k, as on the host.
 //
@@ -392,7 +388,7 @@ __device__ void match_state_rule(const DeviceState& ds,
     __shared__ uint32_t s_emitted;
     __shared__ uint32_t s_survived;
     __shared__ uint64_t s_threshold;
-    __shared__ uint32_t s_cut_quota;
+    __shared__ uint32_t s_cut_all;
     __shared__ unsigned long long s_min_rank;
     __shared__ uint64_t s_ranks[kDrainCapBuffer];
 
@@ -437,18 +433,18 @@ __device__ void match_state_rule(const DeviceState& ds,
             // returning a differently-sampled answer.
             ds.errors.record(ErrorKind::kDrainCapBufferFull);
             s_threshold = ~0ULL;
-            s_cut_quota = UINT32_MAX;
+            s_cut_all = 1u;
         } else {
-            // The k lowest ranks counted with multiplicity, the host's cut (hgcommon::rank_cut):
-            // every rank below the cut rank, and at_cut matches of the cut rank.
+            // The k-th smallest rank counted with multiplicity (hgcommon::rank_cut); every match
+            // ranked at or below it is kept.
             const hgcommon::RankCut cut = hgcommon::rank_cut(s_ranks, n, cap_k);
-            s_threshold = cut.all ? ~0ULL : cut.rank;
-            s_cut_quota = cut.all ? UINT32_MAX : cut.at_cut;
+            s_threshold = cut.rank;
+            s_cut_all = cut.all ? 1u : 0u;
         }
     }
     __syncthreads();
 
-    const EmitCtl keep{EmitMode::kCapEmit, s_cut_quota, s_threshold, &s_seen, &s_overflow,
+    const EmitCtl keep{EmitMode::kCapEmit, s_cut_all, s_threshold, &s_seen, &s_overflow,
                        &s_emitted, s_ranks, nullptr, nullptr};
     match_state_rule_pass(ds, rules, state_id, rid, step, out, &keep);
 }
