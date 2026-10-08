@@ -1,6 +1,7 @@
 // GENMC-LINK: engine
-// GENMC-ARGS: --unroll=1024
+// GENMC-ARGS: --disable-estimation
 // GENMC-DEFINES: -DHG_SEGMENTED_ARRAY_MAX_SEGMENTS=8 -DHG_SEGMENTED_ARRAY_MAX_SHIFT=4 -DHG_CONCURRENT_MAP_INITIAL_CAPACITY=16 -DHG_JOB_QUEUE_CAPACITY=16 -DHG_JOB_INJECTOR_CAPACITY=64 -DHG_MAX_ARENA_WORKERS=8 -DHG_KEY_SET_SHARDS=4 -DHG_MAX_PATTERN_EDGES=4 -DHG_MAX_CACHED_SIGS=8 -DHG_ARENA_BLOCK_SIZE=512
+// GENMC-CALIBRATE: -DHG_HARNESS_CALIBRATE_END
 //
 // GenMC harness: the composed engine with a rule added. Second rung of the ladder
 // engine_construct -> engine_rule -> engine_evolve; see engine_construct.cpp for what the ladder
@@ -10,8 +11,8 @@
 // engine code past construction that touches shared state -- the rule table the workers will
 // read. Measured: 19,477 lines after prune, and the rung at which the interpreter used to stop.
 //
-// --unroll=1024 is a bound at which main reaches its end (the HG_HARNESS_CALIBRATE_END assertion
-// is reported); at 2 it is not. Measured at 1024: 442 complete executions, 16 blocked, 48 s.
+// No --unroll, for the reason engine_construct.cpp gives. Measured on the v0.19 fork: 1768
+// complete executions, no error, 101 s.
 #include "hypergraph/hypergraph.hpp"
 #include "hypergraph/parallel_evolution.hpp"
 #include "hypergraph/pattern.hpp"

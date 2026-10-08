@@ -1,6 +1,7 @@
 // GENMC-LINK: engine
-// GENMC-ARGS: --unroll=65536
-// GENMC-DEFINES: -DHG_SEGMENTED_ARRAY_MAX_SEGMENTS=8 -DHG_SEGMENTED_ARRAY_MAX_SHIFT=4 -DHG_CONCURRENT_MAP_INITIAL_CAPACITY=16 -DHG_JOB_QUEUE_CAPACITY=16 -DHG_JOB_INJECTOR_CAPACITY=64 -DHG_MAX_ARENA_WORKERS=8 -DHG_KEY_SET_SHARDS=4 -DHG_MAX_PATTERN_EDGES=4 -DHG_MAX_CACHED_SIGS=8 -DHG_ARENA_BLOCK_SIZE=512
+// GENMC-ARGS: --disable-estimation
+// GENMC-DEFINES: -DHG_SEGMENTED_ARRAY_MAX_SEGMENTS=8 -DHG_SEGMENTED_ARRAY_MAX_SHIFT=4 -DHG_CONCURRENT_MAP_INITIAL_CAPACITY=16 -DHG_JOB_QUEUE_CAPACITY=16 -DHG_JOB_INJECTOR_CAPACITY=64 -DHG_MAX_ARENA_WORKERS=8 -DHG_KEY_SET_SHARDS=4 -DHG_MAX_PATTERN_EDGES=4 -DHG_MAX_CACHED_SIGS=8 -DHG_ARENA_BLOCK_SIZE=512 -DHG_QC_EV_BLOCK=16
+// GENMC-CALIBRATE: -DHG_HARNESS_CALIBRATE_END
 //
 // GenMC harness: TWO REWRITES OF ONE PARENT UNDER QUOTIENT RECONSTRUCTION, through the real
 // Rewriter::apply. Each thread runs create_or_get_canonical_state (which fills the edge-orbit
@@ -15,13 +16,15 @@
 // which verification builds leave off. The rebuild counter is NOT asserted -- a miss is a
 // schedule fact and rebuilding is the correct response to it.
 //
-// WHAT IS BOUNDED. Two rewrites on one parent at depth 1; every loop unrolled to the bound, which
-// ends a thread that exceeds it as blocked, never as an error.
+// WHAT IS BOUNDED. Two rewrites on one parent at depth 1. No --unroll, for the reason
+// engine_construct.cpp gives. -DHG_QC_EV_BLOCK=16: the first event's content otherwise lands at
+// a permuted slot up to 4095, and the segments below it (98 KB, one event per word) were zeroed in
+// every execution: 121,529 events per execution, 25,800 with the define.
 //
-// THE END IS REACHED AT --unroll=65536 (measured 2026-10-07): the HG_HARNESS_CALIBRATE_END
-// assertion is reported there. At 2048 and 16384 a memory intrinsic lowered to a loop is longer
-// than the bound and the checker stops on it. The property run at 65536 explored 1,000 executions
-// in 28 minutes with no error and 529 revisits pending, so the verdict is not exhaustive.
+// NOT EXHAUSTIVE. The checker's estimate is 2^97 executions, 57% of the choices inside the two
+// Rewriter::apply calls (state registration, canonical maps, the arena). Measured on the v0.19
+// fork without --unroll and before the define: 307 executions in 516 s with 601 revisits
+// pending, no error.
 #include "hypergraph/hypergraph.hpp"
 #include "hypergraph/rewriter.hpp"
 #include "hypergraph/pattern.hpp"

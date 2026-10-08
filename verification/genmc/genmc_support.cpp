@@ -132,6 +132,9 @@ void* g_vmi_class_type_info_vtable[4] asm("_ZTVN10__cxxabiv121__vmi_class_type_i
 // semantics the container relies on: a hash that is a function of the bytes, and a bucket
 // policy that grows the table before the load factor is exceeded.
 namespace std {
+// The match task's completion guard (parallel_evolution.cpp, MatchTaskGuard) compares the count
+// at entry and exit. The checker interprets no throw, so the count is 0 on every explored path.
+int uncaught_exceptions() noexcept { return 0; }
 size_t _Hash_bytes(const void* p, size_t n, size_t seed) {
     const auto* b = static_cast<const unsigned char*>(p);
     size_t h = seed ^ 0xcbf29ce484222325ULL;

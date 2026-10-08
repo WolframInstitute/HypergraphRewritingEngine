@@ -1,6 +1,7 @@
 // GENMC-LINK: engine
-// GENMC-ARGS: --unroll=2048
+// GENMC-ARGS: --disable-estimation
 // GENMC-DEFINES: -DHG_SEGMENTED_ARRAY_MAX_SEGMENTS=8 -DHG_SEGMENTED_ARRAY_MAX_SHIFT=4 -DHG_CONCURRENT_MAP_INITIAL_CAPACITY=16 -DHG_JOB_QUEUE_CAPACITY=16 -DHG_JOB_INJECTOR_CAPACITY=64 -DHG_MAX_ARENA_WORKERS=8 -DHG_KEY_SET_SHARDS=4 -DHG_MAX_PATTERN_EDGES=4 -DHG_MAX_CACHED_SIGS=8 -DHG_ARENA_BLOCK_SIZE=512
+// GENMC-CALIBRATE: -DHG_HARNESS_CALIBRATE_END
 //
 // GenMC harness: THE WHOLE ENGINE, one evolve() call. Every job-system path (submit, steal,
 // park, wake, quiescence), the matcher, the rewriter, the causal graph and the state and event
@@ -47,16 +48,15 @@
 //                               and the verdict of the property arm under that bound covers
 //                               only the prefix the bound allows.
 //
-// WHAT IS BOUNDED. Every loop is bounded to --unroll iterations per entry; a thread that
-// exceeds the bound is KILLED there, and an execution whose threads were killed still counts
-// as complete with no error. So a bound has to be shown to reach the end before its verdict
-// means anything, which is what the calibration arm is for. Measured 2026-08-29 on the live
-// arm at --unroll=2 (execution graph of the saved module): the main thread is killed after
-// 1,237 events inside construction, before any worker thread exists, so "No errors, 2
-// executions" at that bound covered construction alone. The bound is baked into the module by
-// the checker's unroll pass, so each bound is its own transform. The module is the fully
-// inlined engine (43M LLVM instructions before the checker's own passes), so this is run with
-// HG_GENMC_PROGRESS and saved with --output-llvm-after=<file>.bc once per bound and arm.
+// WHAT IS BOUNDED. No --unroll: the workers' spin loops become assumes, the weak compare-exchange
+// retry loops are handled by the checker's stutter pass, and every other loop is finite, so no
+// execution is cut. The bound is the workload: the threads, rule, initial edges and steps of the
+// arm. The module is the fully inlined engine; the checker's passes end at 9.8M instructions and
+// take about 15 minutes, so a run is saved with --output-llvm-after=<file>.bc once per arm.
+//
+// MEASURED on the v0.19 fork, default arm: 23,548 complete executions explored in 83 minutes
+// (4.7 per second, 23,167 events each, real rewrites by two workers), no error, and no verdict:
+// the exploration had not ended.
 #include "hypergraph/hypergraph.hpp"
 #include "hypergraph/parallel_evolution.hpp"
 #include "hypergraph/pattern.hpp"

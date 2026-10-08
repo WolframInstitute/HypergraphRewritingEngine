@@ -1,6 +1,7 @@
 // GENMC-LINK: engine
-// GENMC-ARGS: --unroll=1024
+// GENMC-ARGS: --disable-estimation --check-liveness
 // GENMC-DEFINES: -DHG_SEGMENTED_ARRAY_MAX_SEGMENTS=8 -DHG_SEGMENTED_ARRAY_MAX_SHIFT=4 -DHG_CONCURRENT_MAP_INITIAL_CAPACITY=16 -DHG_JOB_QUEUE_CAPACITY=16 -DHG_JOB_INJECTOR_CAPACITY=64 -DHG_MAX_ARENA_WORKERS=8 -DHG_KEY_SET_SHARDS=4 -DHG_MAX_PATTERN_EDGES=4 -DHG_MAX_CACHED_SIGS=8 -DHG_ARENA_BLOCK_SIZE=512
+// GENMC-CALIBRATE: -DHG_HARNESS_CALIBRATE_END
 //
 // GenMC harness: THE COMPOSED ENGINE, constructed. Every engine translation unit is linked, and
 // what main reaches is what the checker is handed -- a Hypergraph, a ParallelEvolutionEngine with
@@ -13,13 +14,10 @@
 // README.md under "What HG_VERIFICATION changes" and in run.sh at the link step, and every one of
 // those rewrites is a pipeline step applied to the code as it is, not an edit to a module.
 //
-// --unroll=1024 bounds every loop to 1024 iterations. The workers' loops are spin loops on the
-// park word and the job deques, which the spin-assume transformation turns into assumes; the
-// bound is what keeps a worker that never receives work from being explored forever. A bounded
-// loop that exceeds its bound ends that thread's execution as BLOCKED, never as an error, so the
-// bound can hide a behaviour but cannot manufacture one. 1024 is a bound at which main reaches
-// its end (the HG_HARNESS_CALIBRATE_END assertion is reported); at 2 it is not, and the verdict
-// covers construction's prefix only. Measured at 1024: 442 complete executions, 16 blocked, 24 s.
+// NO --unroll. The workers' loops are spin loops on the park word and the job deques, which the
+// spin-assume transformation turns into assumes, and the retry loops' weak compare-exchanges are
+// handled by the checker's stutter pass; every other loop is finite, so no execution is cut at a
+// bound. Measured on the v0.19 fork: 1768 complete executions, no error, 46 s.
 #include "hypergraph/hypergraph.hpp"
 #include "hypergraph/parallel_evolution.hpp"
 #include "hypergraph/pattern.hpp"

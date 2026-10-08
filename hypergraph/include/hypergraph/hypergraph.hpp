@@ -422,7 +422,12 @@ class Hypergraph {
     //
     // EVERY reader goes through this. A reader that indexed by the raw id would read another
     // event's content, so the permutation is spelled once and the array is private.
-    static constexpr uint32_t QC_EV_BLOCK = 4096;   // power of two
+    // Overridable so a model checker need not zero 4096 records (98 KB, one event per word)
+    // before the first event's content lands; the permutation is the same rule at any block.
+#ifndef HG_QC_EV_BLOCK
+#define HG_QC_EV_BLOCK 4096
+#endif
+    static constexpr uint32_t QC_EV_BLOCK = HG_QC_EV_BLOCK;   // power of two
     static constexpr uint32_t QC_EV_STRIDE = 171;   // odd => coprime with the block
     static uint32_t qc_ev_slot(uint32_t e) {
         return (e / QC_EV_BLOCK) * QC_EV_BLOCK
