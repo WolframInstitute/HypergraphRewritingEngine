@@ -165,6 +165,21 @@ class Hypergraph {
     struct QcPoint { uint64_t state_hash; uint32_t depth; };
     LockFreeList<QcPoint> qc_blocked_;
     std::atomic<int> qc_max_steps_{0};
+    // One past the deepest depth that holds a replay instance or a multiplicity point. Raised
+    // before the instance or point is published, and read by a captured match after its
+    // rendezvous fence: the match visits depths below it only, so its work follows the depth
+    // reached and not the step budget.
+    std::atomic<uint32_t> qc_depth_hi_{0};
+    void qc_note_depth(uint32_t depth) {
+        const uint32_t want = depth + 1;
+        uint32_t cur = qc_depth_hi_.load(std::memory_order_relaxed);
+        while (cur < want && !qc_depth_hi_.compare_exchange_weak(cur, want, std::memory_order_relaxed)) {
+        }
+    }
+    uint32_t qc_depth_bound(uint32_t max_steps) const {
+        const uint32_t hi = qc_depth_hi_.load(std::memory_order_relaxed);
+        return hi < max_steps ? hi : max_steps;
+    }
 
     // The expanded representative's FULL match list per canonical state, in slots -- the
     // input to the per-instance raw reconstruction. Two matches over one orbit both survive

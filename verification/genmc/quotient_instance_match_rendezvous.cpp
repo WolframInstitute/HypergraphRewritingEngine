@@ -44,16 +44,23 @@
 // (Hypergraph::QrCtx::claim). The two sides choose the same place because they compare the same
 // two values, each written before its record is published; exactly one claim must win.
 //
+// THE DEPTH BOUND. The match side visits only depths below Hypergraph::qc_depth_hi_, which the
+// instance side raises (qc_note_depth) before it publishes and the match side reads after its
+// fence. Here the one depth is 0, so the match side looks the shards up only once it reads the
+// bound at 1.
+//
 // CALIBRATION -- the harness must be able to fail. -DCALIBRATE_NO_MATCH_FENCE removes the match
 // side's seq_cst fence and -DCALIBRATE_NO_INSTANCE_FENCE the instance side's: the publishes and
 // the scans then interleave so that each scan runs before the other's publish is visible. -DCALIBRATE_SPLIT_CLAIM makes the match side always claim in the
-// key set, so the two sides claim in different places and both win. A harness that cannot fail
-// proves nothing.
+// key set, so the two sides claim in different places and both win. -DCALIBRATE_DEPTH_BOUND_LATE
+// raises the depth bound after the instance side's scan instead of before its publish. A harness
+// that cannot fail proves nothing.
 //
 // GENMC-ARGS: --disable-estimation
 // GENMC-EXPECT: pass
 // GENMC-CALIBRATE: -DCALIBRATE_NO_MATCH_FENCE
 // GENMC-CALIBRATE: -DCALIBRATE_NO_INSTANCE_FENCE
+// GENMC-CALIBRATE: -DCALIBRATE_DEPTH_BOUND_LATE
 //
 // Build/run: verification/genmc/run.sh quotient_instance_match_rendezvous
 
@@ -107,6 +114,14 @@ InstRec g_inst_rec[2];
 uint32_t g_match_local = 0;
 hypergraph::ConcurrentKeySet<uint64_t>* g_applied;
 std::atomic<int> g_wins[2];
+std::atomic<uint32_t> g_depth_hi{0};   // Hypergraph::qc_depth_hi_
+
+// Hypergraph::qc_note_depth for depth 0.
+void note_depth() {
+    uint32_t cur = g_depth_hi.load(std::memory_order_relaxed);
+    while (cur < 1 && !g_depth_hi.compare_exchange_weak(cur, 1, std::memory_order_relaxed)) {
+    }
+}
 
 void fence(bool on) {
     if (on) std::atomic_thread_fence(std::memory_order_seq_cst);
@@ -135,6 +150,9 @@ void claim(uint64_t inst, bool match_side) {
 void instance_side(uint64_t inst) {
     g_inst_rec[inst].claim_cap = hgcommon::qr_claim_bits(
         hgcommon::qr_claim_words(g_class_nmatch.load(std::memory_order_acquire)));
+#if !defined(CALIBRATE_DEPTH_BOUND_LATE)
+    note_depth();
+#endif
     g_instances->insert_if_absent(kClass, g_shards);
     g_shards->list[inst].push(inst, *g_arena);
 #if defined(CALIBRATE_NO_INSTANCE_FENCE)
@@ -145,6 +163,9 @@ void instance_side(uint64_t inst) {
     if (auto r = g_matches->lookup(kClass)) {
         (*r)->for_each([&](uint64_t v) { if (v == kMatch) claim(inst, false); });
     }
+#if defined(CALIBRATE_DEPTH_BOUND_LATE)
+    note_depth();
+#endif
 }
 void* instance0(void*) { instance_side(0); return nullptr; }
 void* instance1(void*) { instance_side(1); return nullptr; }
@@ -172,6 +193,8 @@ void* match_side(void*) {
 #endif
     pthread_t spawned;
     bool spawned_one = false;
+    // Hypergraph::qc_depth_bound: depth 0 is visited only when the bound reads above it.
+    if (g_depth_hi.load(std::memory_order_relaxed) == 0) return nullptr;
     if (auto r = g_instances->lookup(kClass)) {
         bool ran_one = false;
         for (uint32_t l = 0; l < 2; ++l) {

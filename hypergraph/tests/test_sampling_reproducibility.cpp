@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <mutex>
 #include <set>
@@ -560,5 +561,24 @@ TEST(SamplingReproducibility, DepthJoinFollowsTheDepthReached) {
         EXPECT_LE(fires.load(), 3u) << "per_step_cap=" << per_step_cap;
         EXPECT_EQ(e.depth_late_arrivals(), 0u);
         EXPECT_LE(e.depth_join_bytes(), 64u * 1024u) << "per_step_cap=" << per_step_cap;
+    }
+}
+
+// The quotient reconstruction's per-match work follows the depth reached, not the step budget:
+// a captured match is offered to the depths that hold an instance or a mass point. The rule
+// {{x,y}} -> {{y}} stops after one step; the budget is 1,000,000,000 steps.
+TEST(SamplingReproducibility, QuotientReplayFollowsTheDepthReached) {
+    for (const bool quotient : {false, true}) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        hg.set_event_signature_keys(hgcommon::EVENT_SIG_AUTOMATIC);
+        ParallelEvolutionEngine e(&hg, 2);
+        e.set_explore_from_canonical_states_only(quotient);
+        e.add_rule(make_rule(0).lhs({0, 1}).rhs({1}).build());
+        const auto t0 = std::chrono::steady_clock::now();
+        e.evolve(std::vector<std::vector<VertexId>>{{0u, 1u}, {1u, 2u}}, 1000000000);
+        const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        EXPECT_EQ(e.last_error(), job_system::ErrorType::None);
+        EXPECT_LT(s, 1.0) << "quotient=" << quotient;
     }
 }

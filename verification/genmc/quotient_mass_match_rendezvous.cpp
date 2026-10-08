@@ -28,6 +28,10 @@
 // instead of before them: mass that arrives between the run's read and the clear finds the flag
 // held and is left to a run that has already read.
 //
+// THE DEPTH BOUND. The capture passes only the depths below Hypergraph::qc_depth_hi_, which an
+// arrival raises (qc_note_depth, in qm_point) before it adds its mass and the capture reads after
+// its fence. -DCALIBRATE_DEPTH_BOUND_LATE raises it after the arrival's cascade instead.
+//
 // --disable-ipr: an arrival's failed exchange on the queued flag and the holder's clearing store
 // are two writes with no order between them, which is the handoff itself. GenMC reports that as
 // "unordered writes" and stops when in-place revisiting is on.
@@ -36,6 +40,7 @@
 // GENMC-EXPECT: pass
 // GENMC-CALIBRATE: -DCALIBRATE_NO_FENCE
 // GENMC-CALIBRATE: -DCALIBRATE_CLEAR_LATE
+// GENMC-CALIBRATE: -DCALIBRATE_DEPTH_BOUND_LATE
 //
 // Build/run: verification/genmc/run.sh quotient_mass_match_rendezvous
 
@@ -65,6 +70,15 @@ struct Match {
 Match g_j;
 std::atomic<uint64_t> g_overlaps{0};      // qm_overlaps_[j]: b_j + 1 once ready
 std::atomic<uint64_t> g_mass_c{0};        // m(c, 0)
+std::atomic<uint32_t> g_depth_hi{0};      // Hypergraph::qc_depth_hi_
+
+// Hypergraph::qc_note_depth.
+void note_depth(uint32_t depth) {
+    uint32_t cur = g_depth_hi.load(std::memory_order_relaxed);
+    while (cur < depth + 1 &&
+           !g_depth_hi.compare_exchange_weak(cur, depth + 1, std::memory_order_relaxed)) {
+    }
+}
 std::atomic<uint64_t> g_mass_t{0};        // m(t, 1)
 std::atomic<uint32_t> g_queued_c{0};      // QmPoint::queued of (c, 0)
 std::atomic<uint64_t> g_consumed{0};      // consumed_j(0)
@@ -91,7 +105,12 @@ struct Ctx {
     uint64_t mass(uint64_t h, uint32_t) const {
         return (h == kC ? g_mass_c : g_mass_t).load(std::memory_order_acquire);
     }
-    void add_mass(uint64_t h, uint32_t, uint64_t d) { sat_add(h == kC ? g_mass_c : g_mass_t, d); }
+    void add_mass(uint64_t h, uint32_t depth, uint64_t d) {
+#if !defined(CALIBRATE_DEPTH_BOUND_LATE)
+        note_depth(depth);
+#endif
+        sat_add(h == kC ? g_mass_c : g_mass_t, d);
+    }
     uint64_t consumed(const Match&, uint32_t) { return g_consumed.load(std::memory_order_acquire); }
     bool advance(const Match&, uint32_t, uint64_t& expected, uint64_t desired) {
         return g_consumed.compare_exchange_strong(expected, desired, std::memory_order_acq_rel,
@@ -134,7 +153,10 @@ void* capture(void*) {
     g_overlaps.store(1, std::memory_order_release);   // b_j = 0
     Ctx c;
     c.fence();
-    for (uint32_t d = 0; d < c.max_steps(); ++d) hgcommon::qm_pass(c, g_j, kC, d);
+    // Hypergraph::qc_depth_bound.
+    const uint32_t hi = g_depth_hi.load(std::memory_order_relaxed);
+    const uint32_t depths = hi < c.max_steps() ? hi : c.max_steps();
+    for (uint32_t d = 0; d < depths; ++d) hgcommon::qm_pass(c, g_j, kC, d);
     hgcommon::qm_drain(c);
     return nullptr;
 }
@@ -144,6 +166,9 @@ void* arrive(void* delta) {
     Ctx c;
     hgcommon::qm_credit(c, kC, 0, reinterpret_cast<uintptr_t>(delta));
     hgcommon::qm_drain(c);
+#if defined(CALIBRATE_DEPTH_BOUND_LATE)
+    note_depth(0);
+#endif
     return nullptr;
 }
 

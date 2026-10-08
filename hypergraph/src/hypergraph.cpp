@@ -1680,6 +1680,7 @@ void Hypergraph::qc_add_instance(uint64_t state_hash, uint32_t depth,
             inst.claim_bits[i].store(0, std::memory_order_relaxed);
     }
 
+    qc_note_depth(depth);
     const uint64_t key = qc_key(state_hash, depth, 0);
     QcInstanceShards* sh;
     auto r = qc_instances_.lookup(key);
@@ -1911,7 +1912,8 @@ void Hypergraph::qc_capture_expansion(EventId e) {
         // The list's copy: the pass may keep a reference to the match (claim_replay_event).
         qm_cascade([&](QmCtx& c) {
             c.fence();
-            for (uint32_t d = 0; d < c.max_steps(); ++d)
+            const uint32_t depths = qc_depth_bound(c.max_steps());
+            for (uint32_t d = 0; d < depths; ++d)
                 hgcommon::qm_pass(c, node->value, from, d);
         });
     }
@@ -1928,7 +1930,8 @@ void Hypergraph::qc_capture_expansion(EventId e) {
     // here and the rest go to qc_spawn_ as jobs, which scan after the publish above and so keep
     // the rendezvous; the claim in qc_apply keeps each pair to one application.
     const SlotMatch* stored = &node->value;
-    const int maxs = qc_max_steps_.load(std::memory_order_relaxed);
+    const int maxs = static_cast<int>(qc_depth_bound(static_cast<uint32_t>(
+        std::max(0, qc_max_steps_.load(std::memory_order_relaxed)))));
     bool ran_one = false;
     for (int d = 0; d < maxs; ++d) {
         auto ri = qc_instances_.lookup(qc_key(from, static_cast<uint32_t>(d), 0));
@@ -2731,6 +2734,7 @@ uint64_t Hypergraph::qm_consumed_key(uint32_t match_id, uint32_t depth) {
 Hypergraph::QmPoint* Hypergraph::qm_point(uint64_t class_hash, uint32_t depth) {
     const uint64_t key = qm_point_key(class_hash, depth);
     if (auto r = qm_points_.lookup(key)) return *r;
+    qc_note_depth(depth);
     QmPoint* p = arena_.template create<QmPoint>();
     p->depth = depth;
     p->class_hash = class_hash;
