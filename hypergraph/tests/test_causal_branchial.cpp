@@ -1090,3 +1090,30 @@ TEST(CausalGraphTracking, BranchialBucketKeyCoversEveryStateEdgePair) {
     ASSERT_NO_THROW(cg.record_state_event(0, state));
     EXPECT_EQ(cg.num_branchial_edges(), 1u);
 }
+
+// An empty rule set leaves the initial states and applies no event, on both entry points and
+// both exploration strategies.
+TEST(EmptyRuleSet, EvolveKeepsTheInitialStates) {
+    for (bool quotient : {false, true}) {
+        {
+            Hypergraph hg;
+            hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+            ParallelEvolutionEngine engine(&hg, 4);
+            engine.set_explore_from_canonical_states_only(quotient);
+            engine.evolve(std::vector<std::vector<VertexId>>{{0u, 1u}, {1u, 2u}}, 3);
+            EXPECT_EQ(engine.last_error(), job_system::ErrorType::None);
+            EXPECT_EQ(hg.num_states(), 1u) << "quotient=" << quotient;
+            EXPECT_EQ(hg.num_events(), 0u) << "quotient=" << quotient;
+        }
+        {
+            Hypergraph hg;
+            hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+            ParallelEvolutionEngine engine(&hg, 4);
+            engine.set_explore_from_canonical_states_only(quotient);
+            engine.evolve(std::vector<std::vector<std::vector<VertexId>>>{{{0u, 1u}}, {{0u, 1u}, {1u, 2u}}}, 3);
+            EXPECT_EQ(engine.last_error(), job_system::ErrorType::None);
+            EXPECT_EQ(hg.num_states(), 2u) << "quotient=" << quotient;
+            EXPECT_EQ(hg.num_events(), 0u) << "quotient=" << quotient;
+        }
+    }
+}

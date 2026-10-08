@@ -112,7 +112,7 @@ void ParallelEvolutionEngine::evolve(
     const std::vector<std::vector<VertexId>>& initial_edges,
     size_t steps
 ) {
-    if (!hg_ || rules_.empty()) return;
+    if (!hg_) return;
     refuse_after_worker_error("evolve");
 
     max_steps_ = steps;
@@ -219,7 +219,7 @@ void ParallelEvolutionEngine::evolve(
     const std::vector<std::vector<std::vector<VertexId>>>& initial_states,
     size_t steps
 ) {
-    if (!hg_ || rules_.empty() || initial_states.empty()) return;
+    if (!hg_ || initial_states.empty()) return;
     refuse_after_worker_error("evolve");
 
     max_steps_ = steps;
