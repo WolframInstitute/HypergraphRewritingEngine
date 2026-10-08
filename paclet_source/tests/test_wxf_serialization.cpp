@@ -1153,6 +1153,24 @@ TEST(WxfSerializationPin, RelationEndpointsAreEventsUnderTheReconstruction) {
     EXPECT_EQ(labelled.size(), 1u) << got;
 }
 
+// Under ShowGenesisEvents the genesis event's input state, which stands before the initial
+// states, is not one of the evolution's states: "States" lists NumStates records. Rule
+// {{1,2}} -> {{1,2},{2,3}} from {{1,2}}, 1 step, None and Full.
+TEST(WxfSerializationPin, GenesisInputStateIsNotListed) {
+    for (const char* mode : {"None", "Full"}) {
+        auto input = build_input({{{1, 2}}}, {{1, 2}}, {{1, 2}, {2, 3}}, 1,
+                                 [&](wxf::Writer& w) {
+                                     put_str_option(w, "CanonicalizeStates", mode);
+                                     put_str_option(w, "ShowGenesisEvents", "True");
+                                     put_str_list_option(w, "RequestedData", {"States", "NumStates"});
+                                 },
+                                 3);
+        HostBridge host;
+        const auto out = run_rewriting_core(input, host);
+        EXPECT_EQ(count_assoc_entries(out, "States"), read_int_key(out, "NumStates")) << mode;
+    }
+}
+
 TEST(WxfSerializationPin, MinimalEvents) {
     // RequestedData -> {"EventsMinimal"}: only the minimal Events association is emitted.
     auto input = build_input(kSeed, kLhs, kRhs, 2,

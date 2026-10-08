@@ -1176,6 +1176,9 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 const hypergraph::State& state = hg.get_state(sid);
                 if (state.id == hypergraph::INVALID_ID) continue;
                 if (full_canonicalization && hg.get_canonical_state(sid) != sid) continue;
+                // The genesis event's input state stands before the initial states and is not
+                // one of the evolution's states (NumStates does not count it).
+                if (hg.is_genesis_state(sid)) continue;
                 emit_sids.push_back(sid);
             }
 
