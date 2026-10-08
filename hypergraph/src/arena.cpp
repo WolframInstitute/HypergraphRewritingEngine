@@ -453,9 +453,6 @@ void* ConcurrentHeterogeneousArena::allocate_shared(size_t size, size_t alignmen
     }
 }
 
-// See ConcurrentArena<T>::allocate_new_block for the rationale: sync current_block_ from head_
-// after installing the new block so the last store always reflects the most-recent head rather
-// than a racing thread's older block.
 // Allocate a block of the given capacity and splice it onto the head of the chain (lock-free).
 // Shared by the per-worker cursor path and allocate_new_block.
 ConcurrentHeterogeneousArena::Block*

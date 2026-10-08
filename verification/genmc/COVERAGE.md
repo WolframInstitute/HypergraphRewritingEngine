@@ -77,7 +77,6 @@ the composed harnesses.
 | P22 spine sampling (`own_min_key`, `own_spawned`), 6 | Reached only with sampling enabled; no harness enables it. |
 | P27 keyed rewrite tokens and twins, 17 | Reached only when `keyed_state_` is armed; no harness arms it. |
 | P30 quotient replay signature cache, 7 | Reached only with event signature keys set; no harness sets them. |
-| P16 `Arena<T>`, `ConcurrentArena<T>`, 17 | Never instantiated anywhere in the tree. |
 | P38 matcher early-termination flag, 4 | Every engine caller passes no `should_terminate`. |
 | P34 debug callback pointer, 3 | Set by no engine path. |
 | P08 `JobSlotPool::release_pool`, 3 | Runs from a thread-exit destructor; the checker runs none (`__cxa_thread_atexit` records nothing). |
