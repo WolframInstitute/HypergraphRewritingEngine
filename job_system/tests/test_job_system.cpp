@@ -20,6 +20,7 @@
 #include <memory>
 #include <stdexcept>
 #include <cstdlib>
+#include <sys/resource.h>
 
 enum class TestJobType {
     GRAPHICS,
@@ -1116,4 +1117,34 @@ TEST(JobSystemAffinity, DefaultPlacementFollowsTheTopology) {
                 << "worker CPU " << c << " is outside the allowed set";
     }
     js.shutdown();
+}
+
+// A worker that cannot be created makes start() throw, after the workers already running are
+// stopped and joined; the JobSystem is then destroyed without std::terminate. The address-space
+// limit is lowered to the current usage plus 64 MB, so 64 workers with 8 MB stacks cannot all
+// be created.
+TEST(JobSystemStart, AFailedSpawnThrowsAndLeavesNoRunningWorker) {
+    struct rlimit old{};
+    ASSERT_EQ(getrlimit(RLIMIT_AS, &old), 0);
+    size_t vm_kb = 0;
+    if (FILE* f = std::fopen("/proc/self/status", "r")) {
+        char line[256];
+        while (std::fgets(line, sizeof line, f))
+            if (std::sscanf(line, "VmSize: %zu kB", &vm_kb) == 1) break;
+        std::fclose(f);
+    }
+    ASSERT_GT(vm_kb, 0u);
+    struct rlimit tight = old;
+    tight.rlim_cur = static_cast<rlim_t>(vm_kb + 64 * 1024) * 1024;
+    if (old.rlim_cur != RLIM_INFINITY && tight.rlim_cur > old.rlim_cur) tight.rlim_cur = old.rlim_cur;
+    ASSERT_EQ(setrlimit(RLIMIT_AS, &tight), 0);
+    bool threw = false;
+    try {
+        job_system::JobSystem<TestJobType> js(64);
+        js.start();
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    ASSERT_EQ(setrlimit(RLIMIT_AS, &old), 0);
+    EXPECT_TRUE(threw);
 }

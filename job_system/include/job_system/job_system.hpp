@@ -878,14 +878,21 @@ public:
         build_cache_peers();                      // before any worker exists: see peer_begin_
 #if defined(HG_VERIFICATION)
         spawn_workers();
-        for (size_t i = 0; i < workers_.size(); ++i) {
-            auto* worker = workers_[i].get();
 #else
-        for (size_t i = 0; i < workers_.size(); ++i) {
-            auto* worker = workers_[i].get();
-            worker->thread.spawn(this, worker, i);
-#endif
+        // A spawn that fails (std::system_error when the thread or its stack cannot be created)
+        // stops and joins the workers already running before the error leaves start(): a
+        // joinable std::thread destroyed with this object calls std::terminate.
+        size_t spawned = 0;
+        try {
+            for (; spawned < workers_.size(); ++spawned)
+                workers_[spawned]->thread.spawn(this, workers_[spawned].get(), spawned);
+        } catch (...) {
+            for (auto& worker : workers_) worker->stop.store(true, std::memory_order_release);
+            wake_all_workers();
+            for (size_t i = 0; i < spawned; ++i) workers_[i]->thread.join();
+            throw;
         }
+#endif
         // Wait until every worker has passed its binding attempt, so pin_failures() is a
         // settled count when start() returns rather than a snapshot racing worker startup --
         // on a small machine a spawned thread can lag past an entire short workload before it
