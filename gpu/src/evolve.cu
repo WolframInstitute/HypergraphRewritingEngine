@@ -518,6 +518,9 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
             qe_state_->reconstructed_event_content_host(out.reconstructed_event_from_class,
                                                         out.reconstructed_event_to_class,
                                                         out.reconstructed_event_rule);
+        if (in.genesis_pairs && qc_route && qe_replay)
+            qe_state_->reconstructed_genesis_pairs_host(in.transitive_reduction,
+                                                        out.reconstructed_genesis_pairs);
         // DERIVED from the relation the caller receives, not counted beside it: the reduction
         // is computed during that readback, so a separate tally could only ever disagree.
         out.reconstructed_causal_pairs_reduced =

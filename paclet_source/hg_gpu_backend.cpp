@@ -3,6 +3,7 @@
 #include "hg_gpu_backend.hpp"
 
 #include "hg_gpu/evolve.hpp"
+#include "hgcommon/quotient_replay_core.hpp"
 #include "hypergraph/ir_canonicalization.hpp"
 #include "wxf.hpp"
 #include "graph_marshal.hpp"
@@ -20,6 +21,9 @@
 #include <vector>
 
 namespace {
+
+// A genesis event's "RuleIndex": the host's RuleIndex(-1), a 16-bit rule index.
+constexpr int64_t kGenesisRuleIndex = 0xFFFF;
 
 // Build a hg_gpu::EvolveInput from the parsed job. Rule vertices double as
 // pattern-variable indices; each initial state's vertices are remapped to
@@ -133,6 +137,8 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
         // The reconstructed applications as events and graph vertices: read by "Events" and by
         // every graph over events; a session may be asked for either later.
         in.materialize_events = job.include_events || gneeds.events || job.session_op == "Open";
+        // The reconstruction's genesis pairs: read by every reply that shows genesis events.
+        in.genesis_pairs = job.show_genesis_events;
         // State contents: read by the state records, event records (their input and output
         // states), every graph (vertex data), step statistics, a host-computed CanonicalHash,
         // genesis events, the branchial state views, "GlobalEdges" and "StateBitvectors"; a
@@ -440,25 +446,30 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
         }
     }
 
-    // THE GENESIS HALF OF THE CAUSAL RELATION. A genesis event produces its initial state's
-    // edges, so any event CONSUMING one of those edges is caused by it -- which is why showing
-    // genesis events changes the causal relation and not only the event list. The device records
-    // no producer for an initial edge, so the pair is derived here from the same fact that
-    // identifies one: an edge in a root state's edge list was never produced by a rewrite. Read
-    // by "CausalEdges" and by the causal graphs. Ids are final only below, where the
-    // reconstruction may raise first_genesis_event, so these hold root indices.
+    // THE GENESIS HALF OF THE CAUSAL RELATION (docs/SPEC.md §5.2). A genesis event produces its
+    // initial state's edges, and an event that consumed one of them is paired with it; under the
+    // transitive reduction only an event that consumed no produced edge
+    // (hgcommon::qr_genesis_pair_kept). The device records no producer for an initial edge, so
+    // the full-capture pairs are derived here: an edge in a root state's edge list was never
+    // produced by a rewrite. The reconstruction's pairs come from the device
+    // (EvolveResult::reconstructed_genesis_pairs). Read by "CausalEdges", NumCausalEdges and the
+    // causal graphs. Ids are final only below, where the reconstruction may raise
+    // first_genesis_event, so these hold root indices.
     std::vector<std::pair<size_t, uint32_t>> genesis_causal;   // (root index, consumer event)
-    if (job.show_genesis_events) {
-        std::unordered_set<uint64_t> seen_genesis;
+    if (job.show_genesis_events && !result.reconstruction_ran) {
         for (const auto& e : result.events) {
             if (e.id == hg_gpu::INVALID_ID) continue;
+            size_t root = SIZE_MAX;
+            bool produced = false;
             for (auto c : result.consumed_of(e)) {
                 if (c == hg_gpu::INVALID_ID) continue;
                 auto it = initial_edge_root.find(c);
-                if (it == initial_edge_root.end()) continue;
-                const uint64_t key = (static_cast<uint64_t>(it->second) << 32) | e.id;
-                if (seen_genesis.insert(key).second) genesis_causal.emplace_back(it->second, e.id);
+                if (it == initial_edge_root.end()) produced = true;
+                else root = it->second;
             }
+            if (root != SIZE_MAX &&
+                hgcommon::qr_genesis_pair_kept(true, produced, job.transitive_reduction))
+                genesis_causal.emplace_back(root, e.id);
         }
     }
 
@@ -551,12 +562,27 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
     // relations' ids join with it.
     const bool recon_content = recon_ran && !result.reconstructed_event_from_class.empty();
     const bool recon_events = recon_content;
-    // "Events" is then keyed by application id, every one below the count of applications, so
-    // genesis ids start there, as the host's start at its id bound.
-    if (recon_events)
+    // "Events" and the relations are then keyed by application id or by identity, every one
+    // below the count of applications, so genesis ids start there, as the host's start at its id
+    // bound.
+    if (recon_ran)
         first_genesis_event = std::max<hg_gpu::EventId>(
             first_genesis_event,
-            static_cast<hg_gpu::EventId>(result.reconstructed_event_from_class.size()));
+            static_cast<hg_gpu::EventId>(std::max<uint64_t>(
+                result.reconstructed_raw_events, result.reconstructed_event_signature.size())));
+    // The reconstruction's genesis pairs as (root index, application), one per (genesis event,
+    // reported identity of the application), as the host deduplicates them.
+    std::vector<std::pair<size_t, uint32_t>> recon_genesis;
+    if (recon_ran && job.show_genesis_events) {
+        std::unordered_map<hg_gpu::StateId, size_t> root_index;
+        for (size_t i = 0; i < genesis_roots.size(); ++i) root_index.emplace(genesis_roots[i], i);
+        std::set<std::pair<size_t, int64_t>> seen;
+        for (const auto& [root, ev] : result.reconstructed_genesis_pairs) {
+            auto it = root_index.find(root);
+            if (it == root_index.end()) continue;
+            if (seen.insert({it->second, recon_id(ev)}).second) recon_genesis.emplace_back(it->second, ev);
+        }
+    }
     // Every application the replay minted has content; under an event identity it must also
     // carry the identity the count groups by.
     auto recon_app_valid = [&](uint32_t e) -> bool {
@@ -598,8 +624,8 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
                 job.include_events_minimal, consumed, produced);
             events_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(e.id)), wxf::WXFValue(sink.take())});
         }
-        // One genesis event per initial state, in the same shape a real one has. Rule index -1
-        // is the host's sentinel for "no rule applied", which is what produced these edges.
+        // One genesis event per initial state, in the same shape a real one has. Rule index
+        // 65535 is the host's RuleIndex(-1), "no rule applied", which is what produced these edges.
         for (size_t i = 0; i < genesis_roots.size(); ++i) {
             const hg_gpu::StateId root = genesis_roots[i];
             const int64_t gid = static_cast<int64_t>(first_genesis_event + i);
@@ -608,7 +634,8 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
             for (auto pe : result.edge_ids(*state_by_id[root]))
                 produced.push_back(static_cast<int64_t>(pe));
             hgmarshal::write_event_record(sink,
-                hgmarshal::EventRecordIds{gid, gid, -1, static_cast<int64_t>(genesis_state_id),
+                hgmarshal::EventRecordIds{gid, gid, kGenesisRuleIndex,
+                                          static_cast<int64_t>(genesis_state_id),
                                           static_cast<int64_t>(root),
                                           static_cast<int64_t>(genesis_state_id), rep_of(root)},
                 job.include_events_minimal, consumed, produced);
@@ -646,9 +673,18 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
                 ed.push_back({wxf::WXFValue("RawTo"), wxf::WXFValue(static_cast<int64_t>(c))});
                 causal.push_back(wxf::WXFValue(ed));
             }
+            for (const auto& [root, ev] : recon_genesis) {
+                const int64_t from = static_cast<int64_t>(first_genesis_event + root);
+                wxf::WXFValueAssociation ed;
+                ed.push_back({wxf::WXFValue("From"), wxf::WXFValue(from)});
+                ed.push_back({wxf::WXFValue("To"), wxf::WXFValue(recon_id(ev))});
+                ed.push_back({wxf::WXFValue("RawFrom"), wxf::WXFValue(from)});
+                ed.push_back({wxf::WXFValue("RawTo"), wxf::WXFValue(static_cast<int64_t>(ev))});
+                causal.push_back(wxf::WXFValue(ed));
+            }
             full_result.push_back({wxf::WXFValue("CausalEdges"), wxf::WXFValue(causal)});
         }
-        num_causal = static_cast<int64_t>(raw.size());
+        num_causal = static_cast<int64_t>(raw.size() + recon_genesis.size());
     } else {
         wxf::WXFValueList causal;
         std::unordered_set<uint64_t> seen;
@@ -800,8 +836,11 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
     // otherwise. The rule lives in EvolveResult so this and the differential harness cannot
     // disagree about which number the device serves.
     if (job.include_num_events) {
+        // Under ShowGenesisEvents the genesis events are counted, one per initial state, on both
+        // routes (docs/SPEC.md §5.2).
         full_result.push_back({wxf::WXFValue("NumEvents"),
-                               wxf::WXFValue(static_cast<int64_t>(result.observable_num_events()))});
+                               wxf::WXFValue(static_cast<int64_t>(result.observable_num_events() +
+                                                                  genesis_roots.size()))});
     }
     // The RECONSTRUCTION's relations wherever it ran, as hypergraph_ffi.cpp:1319 does -- on that
     // route the materialised edges counted above belong to the explored representatives alone.
@@ -811,7 +850,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
         full_result.push_back({wxf::WXFValue("NumCausalEdges"),
                                wxf::WXFValue(result.reconstruction_ran
                                    ? static_cast<int64_t>(result.observable_num_causal_pairs(
-                                         job.transitive_reduction))
+                                         job.transitive_reduction) + recon_genesis.size())
                                    : num_causal)});
     }
     if (job.include_num_branchial_edges) {
@@ -972,10 +1011,10 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
             std::vector<std::pair<uint32_t, uint32_t>> branchial_event_pairs() const { return branchial_pairs_; }
         };
 
-        // The genesis state and events are drawn when shown and the graph is over the device's
-        // events; under the reconstruction the host draws the replay's applications only, and so
-        // does this. The genesis state is the host's: no edges, step 0.
-        const bool graph_genesis = !genesis_roots.empty() && !result.reconstruction_ran;
+        // The genesis state and events are drawn when shown, over the device's events or the
+        // reconstruction's applications, as the host draws them. The genesis state is the host's:
+        // no edges, step 0.
+        const bool graph_genesis = !genesis_roots.empty();
         const uint32_t genesis_end =
             graph_genesis ? static_cast<uint32_t>(first_genesis_event + genesis_roots.size()) : 0u;
         auto is_genesis_event = [&](uint32_t eid) {
@@ -985,8 +1024,11 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
 
         GpuGraphSource gsrc;
         gsrc.n_states = std::max<uint32_t>(max_state + 1, graph_genesis ? genesis_state_id + 1 : 0u);
-        gsrc.n_events = recon_content ? static_cast<uint32_t>(result.reconstructed_event_from_class.size())
-                                      : std::max<uint32_t>(max_event + 1, genesis_end);
+        gsrc.n_events = recon_content
+                            ? std::max<uint32_t>(
+                                  static_cast<uint32_t>(result.reconstructed_event_from_class.size()),
+                                  genesis_end)
+                            : std::max<uint32_t>(max_event + 1, genesis_end);
         gsrc.state_valid_ = [&](uint32_t sid) {
             return is_genesis_state(sid) || state_by_id.find(sid) != state_by_id.end();
         };
@@ -1014,8 +1056,8 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
         gsrc.event_valid_ = [&](uint32_t eid) {
             // An application whose identity the replay never registered stands for no vertex,
             // which is what keeps the vertex set equal to the set the count describes.
-            if (recon_content) return recon_app_valid(eid);
             if (is_genesis_event(eid)) return true;
+            if (recon_content) return recon_app_valid(eid);
             if (recon_identity) {
                 if (job.event_canon_mode == 0)
                     return eid < result.reconstructed_event_signature.size() &&
@@ -1045,7 +1087,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
                 wxf::WXFValueAssociation d;
                 d.push_back({wxf::WXFValue("Id"), wxf::WXFValue(static_cast<int64_t>(eid))});
                 d.push_back({wxf::WXFValue("CanonicalId"), wxf::WXFValue(static_cast<int64_t>(eid))});
-                d.push_back({wxf::WXFValue("RuleIndex"), wxf::WXFValue(static_cast<int64_t>(-1))});
+                d.push_back({wxf::WXFValue("RuleIndex"), wxf::WXFValue(kGenesisRuleIndex)});
                 d.push_back({wxf::WXFValue("InputState"), wxf::WXFValue(static_cast<int64_t>(genesis_state_id))});
                 d.push_back({wxf::WXFValue("OutputState"), wxf::WXFValue(static_cast<int64_t>(root))});
                 d.push_back({wxf::WXFValue("ConsumedEdges"), wxf::WXFValue(wxf::WXFValueList{})});
@@ -1083,6 +1125,8 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
             const auto& raw = job.transitive_reduction ? result.reconstructed_causal_raw_reduced
                                                        : result.reconstructed_causal_raw;
             gsrc.causal_pairs_.assign(raw.begin(), raw.end());
+            for (const auto& [root, ev] : recon_genesis)
+                gsrc.causal_pairs_.emplace_back(static_cast<uint32_t>(first_genesis_event + root), ev);
             gsrc.branchial_pairs_.assign(result.reconstructed_branchial_raw.begin(),
                                          result.reconstructed_branchial_raw.end());
         } else {

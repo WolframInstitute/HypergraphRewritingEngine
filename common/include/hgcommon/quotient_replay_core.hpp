@@ -136,6 +136,35 @@ HG_HD uint32_t qr_producer_of(const Ctx& c, L node, uint32_t slot) {
     }
 }
 
+// The root instance of a lineage, the initial state's: the parents walked to the end.
+template <class Ctx, class L>
+HG_HD L qr_lineage_root(const Ctx& c, L node) {
+    while (!c.lineage_root(node)) node = c.lineage_parent(node);
+    return node;
+}
+
+// THE GENESIS PAIR RULE (docs/SPEC.md §5.2). An application is paired with its initial state's
+// genesis event when it consumed an edge of that state, and under the transitive reduction only
+// when it consumed no produced edge: each producer is reached from the same genesis event. Full
+// capture reads the two facts from the consumed edges' producers, the reconstruction from
+// qr_genesis_paired below.
+HG_HD inline bool qr_genesis_pair_kept(bool consumed_initial, bool consumed_produced,
+                                       bool reduced) {
+    return consumed_initial && !(reduced && consumed_produced);
+}
+
+// The rule over one reconstructed application: `m` applied to the instance whose lineage is
+// `parent`. A consumed slot with no producer (qr_producer_of) is an edge of the initial state.
+template <class Ctx, class L, class M>
+HG_HD bool qr_genesis_paired(const Ctx& c, L parent, const M& m, bool reduced) {
+    bool initial = false, produced = false;
+    for (uint32_t j = 0; j < m.num_consumed; ++j) {
+        if (qr_producer_of(c, parent, m.consumed(j)) == QR_NO_PRODUCER) initial = true;
+        else produced = true;
+    }
+    return qr_genesis_pair_kept(initial, produced, reduced);
+}
+
 // The (instance, match) pair, mixed the same way on both engines because it is one claim set.
 HG_HD inline uint64_t qr_apply_key(uint32_t instance, uint32_t match) {
     uint64_t k = FNV_OFFSET;

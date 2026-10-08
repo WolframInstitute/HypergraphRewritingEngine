@@ -2762,6 +2762,80 @@ TEST(GpuBinaryGate, CausalGraphsDrawGenesisEventsOnBothDevices) {
     worker_stop(w);
 }
 
+// ShowGenesisEvents under Full states (docs/SPEC.md §5.2) gives the host's counts on the GPU, on
+// both routes and with and without CausalTransitiveReduction: NumStates, NumEvents (one genesis
+// event per initial state), NumCausalEdges and the causal list, one "Events" record with
+// "RuleIndex" 65535 per initial state, and a "States" list of NumStates records. The cases of
+// WxfSerializationPin.GenesisEventsAgreeAcrossRoutes.
+TEST(GpuBinaryGate, GenesisEventsGiveTheHostsCounts) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    CpuWorker host;
+    ASSERT_TRUE(host.ok) << "could not start hg_evolve --serve";
+    struct Case { StateList init; EdgeList lhs, rhs; int64_t steps; };
+    const Case cases[] = {
+        {{{{1, 2}}}, {{1, 2}}, {{1, 3}, {3, 2}}, 2},
+        {{{{1, 2}}}, {{1, 2}}, {{1, 2}, {2, 3}}, 2},
+        {{{{1, 2}, {2, 3}}}, {{1, 2}, {2, 3}}, {{1, 3}, {3, 4}, {4, 2}}, 2},
+        {{{{1, 1}, {1, 1}}}, {{1, 2}}, {{1, 2}, {2, 3}}, 3},
+        {{{{1, 2}}, {{1, 1}, {2, 1}}}, {{1, 2}}, {{1, 3}, {3, 2}}, 2},
+    };
+    auto genesis_records = [](const std::vector<uint8_t>& out) {
+        int64_t n = 0;
+        wxf::Parser parser(out);
+        parser.skip_header();
+        parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+            if (k != "Events") { vp.skip_value(); return; }
+            vp.read_association_generic([&](wxf::Parser& kp, wxf::Parser& valp) {
+                kp.skip_value();
+                valp.read_association([&](const std::string& fk, wxf::Parser& fvp) {
+                    if (fk == "RuleIndex") n += fvp.read<int64_t>() == 65535 ? 1 : 0;
+                    else fvp.skip_value();
+                });
+            });
+        });
+        return n;
+    };
+    for (const Case& c : cases) {
+        for (const char* tr : {"True", "False"}) {
+            for (const char* quotient : {"False", "True"}) {
+                auto input = build_input(c.init, c.lhs, c.rhs, c.steps,
+                                         [&](wxf::Writer& ww) {
+                                             put_str_option(ww, "CanonicalizeStates", "Full");
+                                             put_str_option(ww, "ShowGenesisEvents", "True");
+                                             put_str_option(ww, "CausalTransitiveReduction", tr);
+                                             put_str_option(ww, "ExploreFromCanonicalStatesOnly",
+                                                            quotient);
+                                             put_str_list_option(ww, "RequestedData",
+                                                 {"States", "Events", "NumStates", "NumEvents",
+                                                  "NumCausalEdges", "CausalEdges"});
+                                         },
+                                         5);
+                const auto cpu = host(input);
+                const auto gpu = worker_call(w, input);
+                ASSERT_FALSE(gpu.empty());
+                const std::string at = "steps " + std::to_string(c.steps) + " TR " + tr +
+                                       " quotient " + quotient;
+                for (const char* key : {"NumStates", "NumEvents", "NumCausalEdges"})
+                    EXPECT_EQ(read_int_key(gpu, key), read_int_key(cpu, key)) << at << " " << key;
+                EXPECT_EQ(count_list_entries(gpu, "CausalEdges"),
+                          count_list_entries(cpu, "CausalEdges")) << at;
+                EXPECT_EQ(genesis_records(gpu), static_cast<int64_t>(c.init.size())) << at;
+                EXPECT_EQ(genesis_records(cpu), static_cast<int64_t>(c.init.size())) << at;
+                EXPECT_EQ(count_assoc_entries(gpu, "States"), read_int_key(gpu, "NumStates")) << at;
+            }
+        }
+    }
+    worker_stop(w);
+}
+
 // A cap past 32 bits is no cap on either device: the GPU saturates it rather than keeping its low
 // bits, so MaxStatesPerStep -> 2^32 + 1 returns what no cap returns.
 TEST(GpuBinaryGate, ACapPast32BitsIsNoCap) {

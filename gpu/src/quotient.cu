@@ -6,6 +6,7 @@
 // themselves are __device__ and stay in their headers, as does everything the shared
 // hgcommon cores reach.
 
+#include <algorithm>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -463,6 +464,76 @@ void QeState::reconstructed_event_content_host(std::vector<uint64_t>& from_class
                                  cudaMemcpyDeviceToHost), "QeState event to-class read");
         HG_CUDA_CHECK(cudaMemcpy(rule.data(), event_rule_, sizeof(uint32_t) * n,
                                  cudaMemcpyDeviceToHost), "QeState event rule read");
+}
+
+namespace {
+
+// hgcommon::qr_producer_of's face over the copied records. A record whose match or
+// parent lies past the copy, or whose slot arrays lie past the filled arena, ends the
+// walk at "no producer".
+struct GenesisCtx {
+    const DeviceQcInstance* inst;
+    size_t n_inst;
+    const DeviceSlotMatch* matches;
+    size_t n_matches;
+    const uint32_t* words;
+    size_t n_words;
+    __host__ __device__ bool readable(const DeviceSlotMatch& m) const {
+        const uint64_t end = uint64_t{m.arr_offset} + m.num_consumed + m.num_produced +
+                             2ull * m.num_survivors + m.to_slots;
+        return end <= n_words;
+    }
+    __host__ __device__ bool lineage_root(const DeviceQcInstance* n) const {
+        return n->parent == kQeNoParent || n->parent >= n_inst ||
+               n->via >= n_matches || !readable(matches[n->via]);
+    }
+    __host__ __device__ uint32_t lineage_source(const DeviceQcInstance* n,
+                                                uint32_t slot) const {
+        const QeMatchView m(matches[n->via], words);
+        return slot < m.to_slots ? m.child_source(slot) : hgcommon::QR_SOURCE_NONE;
+    }
+    __host__ __device__ uint32_t lineage_event(const DeviceQcInstance* n) const {
+        return n->event;
+    }
+    __host__ __device__ const DeviceQcInstance* lineage_parent(
+            const DeviceQcInstance* n) const {
+        return inst + n->parent;
+    }
+};
+
+}  // namespace
+
+void QeState::reconstructed_genesis_pairs_host(bool reduced,
+                                               std::vector<std::pair<uint32_t, uint32_t>>& out) {
+        out.clear();
+        if (!on_) return;
+        std::vector<DeviceQcInstance> inst;
+        instances_.copy_to_host(inst);
+        if (inst.empty()) return;
+        std::vector<DeviceSlotMatch> matches;
+        matches_.copy_to_host(matches);
+        // The arena prefix the run filled, not its capacity.
+        uint32_t used = 0;
+        HG_CUDA_CHECK(cudaMemcpy(&used, cursor_, sizeof(uint32_t), cudaMemcpyDeviceToHost),
+                      "QeState cursor read");
+        used = std::min(used, arr_cap_);
+        std::vector<uint32_t> words(std::max<uint32_t>(used, 1u), 0u);
+        if (used)
+            HG_CUDA_CHECK(cudaMemcpy(words.data(), arr_, sizeof(uint32_t) * used,
+                                     cudaMemcpyDeviceToHost), "QeState arr read");
+
+        const GenesisCtx c{inst.data(), inst.size(), matches.data(), matches.size(),
+                           words.data(), words.size()};
+
+        for (const DeviceQcInstance& n : inst) {
+            if (c.lineage_root(&n)) continue;
+            const DeviceQcInstance* root = hgcommon::qr_lineage_root(c, &n);
+            if (root->parent != kQeNoParent) continue;   // a lineage cut short by the copy
+            const QeMatchView m(matches[n.via], words.data());
+            const DeviceQcInstance* parent = inst.data() + n.parent;
+            if (hgcommon::qr_genesis_paired(c, parent, m, reduced))
+                out.emplace_back(root->event, n.event);
+        }
 }
 
 QeView QeState::view(uint32_t max_steps, EventSignatureKeys keys,

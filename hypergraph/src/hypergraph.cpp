@@ -1655,22 +1655,13 @@ std::vector<std::pair<EventId, uint32_t>> Hypergraph::reconstructed_genesis_pair
             s.list.for_each([&](const QcInstance& inst) {
                 const QcLineage* node = inst.lineage;
                 if (!node || !node->via) return;
-                const QcLineage* root = node;
-                while (root->via) root = root->parent;
+                const QcLineage* root = hgcommon::qr_lineage_root(c, node);
                 EventId genesis = INVALID_ID;
                 for (const QcGenesisRoot& g : qc_genesis_roots_)
                     if (g.root == root) { genesis = g.genesis; break; }
                 if (genesis == INVALID_ID) return;
-                const SlotMatch& m = *node->via;
-                bool initial = false, produced = false;
-                for (uint32_t j = 0; j < m.num_consumed; ++j) {
-                    if (hgcommon::qr_producer_of(c, node->parent, m.consumed(j)) ==
-                        hgcommon::QR_NO_PRODUCER)
-                        initial = true;
-                    else
-                        produced = true;
-                }
-                if (initial && !(reduced && produced)) out.emplace_back(genesis, node->event);
+                if (hgcommon::qr_genesis_paired(c, node->parent, *node->via, reduced))
+                    out.emplace_back(genesis, node->event);
             });
         }
     });

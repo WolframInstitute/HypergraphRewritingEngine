@@ -62,7 +62,7 @@ struct DeviceSlotMatch {
     // record cannot hold because it is a device pointer the host rebuilds per run -- so the
     // view below binds the two together for hgcommon/quotient_replay_core.hpp, which reads
     // both engines' layouts through one set of calls.
-    __device__ const uint32_t* at(const uint32_t* words) const { return words + arr_offset; }
+    __host__ __device__ const uint32_t* at(const uint32_t* words) const { return words + arr_offset; }
 };
 
 // A DeviceSlotMatch bound to the arena its slots live in. What the shared replay sees.
@@ -73,12 +73,12 @@ struct QeMatchView {
     uint32_t id, local, rule, from_slots, to_slots;
     uint32_t num_consumed, num_produced, num_survivors;
 
-    __device__ QeMatchView(const DeviceSlotMatch& m, const uint32_t* words)
+    __host__ __device__ QeMatchView(const DeviceSlotMatch& m, const uint32_t* words)
         : src(&m), w(m.at(words)), to_hash(m.to_hash), id(m.id), local(m.local), rule(m.rule),
           from_slots(m.from_slots), to_slots(m.to_slots), num_consumed(m.num_consumed),
           num_produced(m.num_produced), num_survivors(m.num_survivors) {}
 
-    __device__ uint32_t consumed(uint32_t i)  const { return w[i]; }
+    __host__ __device__ uint32_t consumed(uint32_t i)  const { return w[i]; }
     __device__ uint32_t produced(uint32_t i)  const { return w[num_consumed + i]; }
     __device__ uint32_t surv_from(uint32_t i) const {
         return w[num_consumed + num_produced + i];
@@ -86,7 +86,7 @@ struct QeMatchView {
     __device__ uint32_t surv_to(uint32_t i) const {
         return w[num_consumed + num_produced + num_survivors + i];
     }
-    __device__ uint32_t child_source(uint32_t i) const {
+    __host__ __device__ uint32_t child_source(uint32_t i) const {
         return w[num_consumed + num_produced + 2u * num_survivors + i];
     }
     __device__ const uint32_t* consumed_ptr() const { return w; }
@@ -121,7 +121,7 @@ struct DeviceQcInstance {
     uint32_t nslots = 0;
     uint32_t parent = kQeNoParent;
     uint32_t via = 0;
-    uint32_t event = 0;
+    uint32_t event = 0;        // a root instance: its initial state's StateId (genesis pairs)
     // A pair whose match has class index below claim_cap claims its bit at bits_offset in the
     // expansion arena, two 32-bit words per 64-bit claim word; any other pair claims in
     // `applied`. claim_cap is hgcommon::qr_claim_bits of hgcommon::qr_claim_words of the
@@ -939,8 +939,8 @@ __device__ __forceinline__ uint32_t qe_alloc_words(const DeviceState& ds, QeView
 }
 
 // Record one instance of `state_hash` at `depth`, made from instance record `parent` by match
-// record `via`, whose event is `event` (kQeNoParent for a root). The device twin of
-// Hypergraph::qc_add_instance.
+// record `via`, whose event is `event`; a root has parent kQeNoParent and `event` its initial
+// state's StateId. The device twin of Hypergraph::qc_add_instance.
 __device__ inline uint32_t qe_add_instance(const DeviceState& ds, QeView qe, uint64_t state_hash,
                                            uint32_t depth, uint32_t parent, uint32_t via,
                                            uint32_t event, uint32_t nslots) {
@@ -1018,7 +1018,7 @@ __device__ inline void qe_seed_root_instance(const DeviceState& ds, QeView qe, S
     }
     if (!qe.replay) return;
 
-    const uint32_t rec = qe_add_instance(ds, qe, h, 0u, kQeNoParent, 0u, 0u, nslots);
+    const uint32_t rec = qe_add_instance(ds, qe, h, 0u, kQeNoParent, 0u, root, nslots);
     if (rec == UINT32_MAX) return;
     qe_drive_instance(ds, qe, rec, h, 0u);
 }
@@ -1414,6 +1414,13 @@ public:
     void reconstructed_event_content_host(std::vector<uint64_t>& from_class,
                                           std::vector<uint64_t>& to_class,
                                           std::vector<uint32_t>& rule);
+
+    // The reconstruction's genesis pairs (docs/SPEC.md §5.2) as (initial state, raw event): each
+    // application is the event of the child instance it created, and is paired with its root
+    // instance's initial state when hgcommon::qr_genesis_paired holds, under the transitive
+    // reduction when `reduced`. The host's Hypergraph::reconstructed_genesis_pairs.
+    void reconstructed_genesis_pairs_host(bool reduced,
+                                          std::vector<std::pair<uint32_t, uint32_t>>& out);
 
     QeView view(uint32_t max_steps, EventSignatureKeys keys,
                 bool replay, bool multiplicity, bool event_content);

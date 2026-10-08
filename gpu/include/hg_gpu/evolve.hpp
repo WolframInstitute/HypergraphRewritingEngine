@@ -56,6 +56,9 @@ struct EvolveInput {
     // The reconstructed applications' input class, output class and rule, for a caller that
     // reads them as events or graphs (EvolveResult::reconstructed_event_from_class ...).
     bool materialize_events = false;
+    // The reconstruction's genesis pairs, for a caller that shows genesis events
+    // (EvolveResult::reconstructed_genesis_pairs).
+    bool genesis_pairs = false;
     // Read back the state-edge arrays (EvolveResult::state_edge_ids, edge_records, vertex_pool).
     // Off, a state carries its id and hash and no edges, and the four copies are skipped.
     bool materialize_state_edges = true;
@@ -338,6 +341,10 @@ struct EvolveResult {
     std::vector<uint64_t> reconstructed_event_from_class;
     std::vector<uint64_t> reconstructed_event_to_class;
     std::vector<uint32_t> reconstructed_event_rule;
+    // With genesis_pairs on the reconstruction route: (initial state, raw event) for each
+    // application paired with that initial state's genesis event, under the transitive reduction
+    // when transitive_reduction is set (QeState::reconstructed_genesis_pairs_host). Empty otherwise.
+    std::vector<std::pair<uint32_t, uint32_t>> reconstructed_genesis_pairs;
 
     // With record.multiplicities under quotient exploration: the (class, depth) multiplicities
     // and each class's matches per rule (QeState::class_multiplicities_host).
