@@ -319,13 +319,13 @@ edgeData["StateBitvectors"][0]
 
 <!-- => {0, 1} -->
 
-The number of edges each state holds:
+The numbers of edges the states hold, sorted:
 
 ```wl
-Length /@ edgeData["StateBitvectors"]
+Sort @ Values[Length /@ edgeData["StateBitvectors"]]
 ```
 
-<!-- => <|0 -> 2, 1 -> 3, 2 -> 3, 3 -> 4, 4 -> 4, 5 -> 4, 6 -> 4|> -->
+<!-- => {2, 3, 3, 4, 4, 4, 4} -->
 
 Edge ids start at 0 and the store is in id order, so a state's edges are the store entries at its ids plus 1. They are the `"Edges"` of the state's record, for every state:
 

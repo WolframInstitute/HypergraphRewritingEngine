@@ -1028,7 +1028,7 @@ HGEvolve[chain, {{1, 2}}, 20, {"NumStates", "NumEvents"}, "CanonicalizeStates" -
 
 ### "MatchesPerStateRule"
 
-A positive value keeps at most that many of a state's transitions for each rule. They are chosen after the state's matching is complete, by the transitions' identities and the seed, so the same transitions are kept at any thread count. Keeping one transition per state makes four steps of the chain rule a single path:
+A positive value keeps that many of a state's transitions for each rule, together with any that tie with the last one kept. They are chosen after the state's matching is complete, by the transitions' identities and the seed, so the same transitions are kept at any thread count. Keeping one transition per state makes four steps of the chain rule a single path:
 
 ```wl
 chain = {{1, 2}} -> {{1, 3}, {3, 2}};

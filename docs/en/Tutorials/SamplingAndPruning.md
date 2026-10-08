@@ -104,7 +104,7 @@ HGEvolve[rule, init, 4, "NumStates", "MaxSuccessorStatesPerParent" -> 2, "Random
 
 ### States per step
 
-`"MaxStatesPerStep" -> 3` keeps at most three states per step. Step 1 has two states, so the cap applies from step 2:
+`"MaxStatesPerStep" -> 3` keeps the three lowest-ranked transitions of each step, together with any that tie with the third, so the choice does not depend on the order the work is done in. Step 1 has two states, so the cap applies from step 2:
 
 ```wl
 HGEvolve[rule, init, 3, "StatesGraphStructure", "MaxStatesPerStep" -> 3, "RandomSeed" -> 3, AspectRatio -> 1/2]
@@ -116,7 +116,15 @@ At four steps:
 HGEvolve[rule, init, 4, "NumStates", "MaxStatesPerStep" -> 3, "RandomSeed" -> 3]
 ```
 
-<!-- => 12 -->
+<!-- => 15 -->
+
+On this rule a tie at the cut keeps a fourth state at each step from step 2:
+
+```wl
+Sort @ Tally @ Lookup["Step"] @ Values @ HGEvolve[rule, init, 4, "States", "MaxStatesPerStep" -> 3, "RandomSeed" -> 3]
+```
+
+<!-- => {{0, 1}, {1, 2}, {2, 4}, {3, 4}, {4, 4}} -->
 
 ### Matches per step
 
@@ -126,7 +134,7 @@ HGEvolve[rule, init, 4, "NumStates", "MaxStatesPerStep" -> 3, "RandomSeed" -> 3]
 {HGEvolve[rule, init, 4, "NumStates", "MaxStatesPerStep" -> 3, "RandomSeed" -> 3], HGEvolve[rule, init, 4, "NumStates", "UniformRandom" -> True, "MatchesPerStep" -> 3, "RandomSeed" -> 3]}
 ```
 
-<!-- => {12, 12} -->
+<!-- => {15, 15} -->
 
 ## Reproducible selections
 
@@ -134,7 +142,7 @@ These options decide each transition or state from its isomorphism-invariant ide
 
 ### Transitions per state and rule
 
-`"MatchesPerStateRule" -> k` keeps at most *k* transitions of each state for each rule. They are chosen after all matches of the state are found, by the transitions' identities and the seed. Under this option every state is matched in full, since a match passed down from the parent state would arrive too late to be counted.
+`"MatchesPerStateRule" -> k` keeps *k* transitions of each state for each rule, together with any that tie with the *k*-th. They are chosen after all matches of the state are found, by the transitions' identities and the seed. Under this option every state is matched in full, since a match passed down from the parent state would arrive too late to be counted.
 
 Two transitions per state and rule, at three steps:
 
