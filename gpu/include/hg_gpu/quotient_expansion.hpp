@@ -1363,6 +1363,8 @@ public:
     struct Counters {
         uint32_t cursor, next_id, instances, raw_events, aligned, align_failures,
                  canon_events, causal_pairs, causal_edges;
+        // The kept producers the replay stored: the size of the reduced causal relation.
+        uint32_t reduced_pairs;
         // The multiplicity counts (QeView::qm_counts), read in a second transfer and only for a
         // run that counted multiplicities or branchial pairs; zero otherwise. qm_branchial is
         // count_branchial's sum.
@@ -1414,6 +1416,9 @@ public:
                                   std::vector<std::pair<uint32_t, uint32_t>>* causal_raw = nullptr,
                                   std::vector<std::pair<uint32_t, uint32_t>>* causal_raw_reduced = nullptr,
                                   std::vector<std::pair<uint32_t, uint32_t>>* branchial_raw = nullptr);
+    // The run identity of each minted application, the `event_signature` of
+    // reconstructed_pairs_host, for a run that reads no relation.
+    void event_signature_host(std::vector<uint64_t>& event_signature, uint32_t raw_events);
 
     // Distinct event identities the replay produced under the run's mode. The host's
     // qc_num_canon_events_, and what a caller is told the event count is when a mode is selected.

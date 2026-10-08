@@ -500,10 +500,19 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         out.reconstructed_branchial = qc_counts.qm_branchial;
         if (qc_route && in.record.multiplicities)
             qe_state_->class_multiplicities_host(out.class_multiplicities, out.class_rule_matches);
-        // Causal and its reduction are built whenever the route ran, because the reduced COUNT
-        // is the size of that relation and deriving it is the only way to know it. Branchial is
-        // the expansion, so it is built only for a caller that will read the pairs.
-        if (qc_route)
+        // The relations are read back for a caller that will read the pairs. A counts-only run
+        // reads the run identities and takes the causal counts from the replay's counters
+        // (num_causal_pairs, num_reduced_pairs), as the host engine does.
+        if (qc_route && !in.materialize_relations) {
+            out.reconstructed_causal_relation.clear();
+            out.reconstructed_causal_relation_reduced.clear();
+            out.reconstructed_branchial_relation.clear();
+            out.reconstructed_causal_raw.clear();
+            out.reconstructed_causal_raw_reduced.clear();
+            out.reconstructed_branchial_raw.clear();
+            qe_state_->event_signature_host(out.reconstructed_event_signature,
+                                            qc_counts.raw_events);
+        } else if (qc_route)
             qe_state_->reconstructed_pairs_host(out.reconstructed_causal_relation,
                                                 out.reconstructed_causal_relation_reduced,
                                                 out.reconstructed_branchial_relation,
@@ -521,10 +530,12 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         if (in.genesis_pairs && qc_route && qe_replay)
             qe_state_->reconstructed_genesis_pairs_host(in.transitive_reduction,
                                                         out.reconstructed_genesis_pairs);
-        // DERIVED from the relation the caller receives, not counted beside it: the reduction
-        // is computed during that readback, so a separate tally could only ever disagree.
+        // The size of the relation the caller receives, or the replay's counter when no relation
+        // was read back (gpu_differential_tests compares the two on every workload).
         out.reconstructed_causal_pairs_reduced =
-            static_cast<uint32_t>(out.reconstructed_causal_relation_reduced.size());
+            qc_route && !in.materialize_relations
+                ? qc_counts.reduced_pairs
+                : static_cast<uint32_t>(out.reconstructed_causal_relation_reduced.size());
         out.frame_alignments = qc_counts.aligned;
         out.frame_align_failures = qc_counts.align_failures;
         engine.errors().warnings_from(err_raw.data(), out.warnings, "persistent evolve");
@@ -1251,8 +1262,7 @@ EvolveResult PersistentEvolver::run(const EvolveInput& in) {
 
 size_t EvolveResult::observable_num_causal_pairs(bool reduced) const {
         if (reconstruction_ran)
-            return reduced ? reconstructed_causal_relation_reduced.size()
-                           : reconstructed_causal_relation.size();
+            return reduced ? reconstructed_causal_pairs_reduced : reconstructed_causal_pairs;
         std::set<std::pair<EventId, EventId>> seen;
         for (const auto& c : causal_edges) seen.insert({c.from, c.to});
         return seen.size();

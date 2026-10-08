@@ -215,7 +215,7 @@ QeState::Counters QeState::counters_host(bool multiplicity) const {
     }
 
 QeState::Counters QeState::counters_from(const uint32_t* v, const unsigned long long* q) {
-        return Counters{v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8],
+        return Counters{v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[12],
                         q[0], q[1]};
 
     }
@@ -264,6 +264,15 @@ uint32_t QeState::num_reduced_pairs_host() { return read_counter(num_reduced_pai
 
 uint32_t QeState::num_causal_edges_host() { return read_counter(num_causal_edges_, "QeState c-edges read"); }
 
+
+void QeState::event_signature_host(std::vector<uint64_t>& event_signature, uint32_t raw_events) {
+        const uint32_t written = std::min(raw_events, event_sig_capacity_);
+        event_signature.resize(written);
+        if (written)
+            HG_CUDA_CHECK(cudaMemcpy(event_signature.data(), event_runsig_,
+                                     sizeof(uint64_t) * written, cudaMemcpyDeviceToHost),
+                          "QeState event runsig read");
+    }
 
 void QeState::reconstructed_pairs_host(std::vector<std::pair<uint64_t, uint64_t>>& causal,
                                   std::vector<std::pair<uint64_t, uint64_t>>& causal_reduced,
