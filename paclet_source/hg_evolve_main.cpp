@@ -55,6 +55,30 @@ namespace {
 // length that cannot be allocated.
 constexpr uint64_t kMaxJobBytes = 1ull << 30;
 
+// THE REPLY STREAM. The parent reads replies from fd 1, and libraries the engine links write
+// diagnostics to the process's standard output: the CUDA runtime prints device printf there. So
+// take_reply_stream() keeps a duplicate of fd 1 for the replies and points fd 1 at stderr; every
+// reply byte goes through reply().
+FILE* g_reply = nullptr;
+
+FILE* reply() { return g_reply ? g_reply : stdout; }
+
+void take_reply_stream() {
+    std::fflush(stdout);
+#if defined(_WIN32)
+    const int fd = _dup(_fileno(stdout));
+    if (fd < 0) return;
+    _setmode(fd, _O_BINARY);
+    g_reply = _fdopen(fd, "wb");
+    if (g_reply) _dup2(_fileno(stderr), _fileno(stdout));
+#else
+    const int fd = ::dup(1);
+    if (fd < 0) return;
+    g_reply = ::fdopen(fd, "wb");
+    if (g_reply) ::dup2(2, 1);
+#endif
+}
+
 // A reply frame's 8-byte length with this bit set is a PROGRESS frame: its payload is one
 // progress message as UTF-8 text, and the job's reply frame still follows. The kernel's
 // hgReadFrame prints or skips progress frames and returns the reply.
@@ -88,25 +112,25 @@ bool read_exact(size_t n, std::vector<uint8_t>& out) {
 void write_frame(const std::vector<uint8_t>& payload) {
     uint8_t hdr[8];
     frame_header(static_cast<uint64_t>(payload.size()), hdr);
-    std::fwrite(hdr, 1, 8, stdout);
-    if (!payload.empty()) std::fwrite(payload.data(), 1, payload.size(), stdout);
-    std::fflush(stdout);
+    std::fwrite(hdr, 1, 8, reply());
+    if (!payload.empty()) std::fwrite(payload.data(), 1, payload.size(), reply());
+    std::fflush(reply());
 }
 
 void write_error_frame(const std::string& message) {
     uint8_t hdr[8];
     frame_header(kErrorFrameBit | static_cast<uint64_t>(message.size()), hdr);
-    std::fwrite(hdr, 1, 8, stdout);
-    std::fwrite(message.data(), 1, message.size(), stdout);
-    std::fflush(stdout);
+    std::fwrite(hdr, 1, 8, reply());
+    std::fwrite(message.data(), 1, message.size(), reply());
+    std::fflush(reply());
 }
 
 void write_progress_frame(const std::string& message) {
     uint8_t hdr[8];
     frame_header(kProgressFrameBit | static_cast<uint64_t>(message.size()), hdr);
-    std::fwrite(hdr, 1, 8, stdout);
-    std::fwrite(message.data(), 1, message.size(), stdout);
-    std::fflush(stdout);
+    std::fwrite(hdr, 1, 8, reply());
+    std::fwrite(message.data(), 1, message.size(), reply());
+    std::fflush(reply());
 }
 
 int run_one_shot(const HostBridge& host) {
@@ -120,8 +144,8 @@ int run_one_shot(const HostBridge& host) {
     }
     try {
         std::vector<uint8_t> out = run_rewriting_core(input, host);
-        if (!out.empty()) std::fwrite(out.data(), 1, out.size(), stdout);
-        std::fflush(stdout);
+        if (!out.empty()) std::fwrite(out.data(), 1, out.size(), reply());
+        std::fflush(reply());
         return 0;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "HGEvolve fatal: %s\n", e.what());
@@ -213,8 +237,8 @@ int run_serve_socket(const HostBridge& host_in, const char* portfile) {
         FILE* f = std::fopen(tmp.c_str(), "w");
         if (f) { std::fprintf(f, "%u\n", port); std::fclose(f); std::rename(tmp.c_str(), portfile); }
     } else {
-        std::printf("HGPORT %u\n", port);
-        std::fflush(stdout);
+        std::fprintf(reply(), "HGPORT %u\n", port);
+        std::fflush(reply());
     }
 
     if (listen(listener, 1) != 0) { std::fprintf(stderr, "HGEvolve: listen() failed\n"); HG_CLOSESOCK(listener); return 1; }
@@ -327,6 +351,8 @@ int main(int argc, char** argv) {
             return 2;
         }
     }
+
+    take_reply_stream();
 
     HostBridge host;
     host.progress = [](const std::string& m) {

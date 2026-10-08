@@ -2465,6 +2465,34 @@ TEST(GpuBinaryGate, ACapPast32BitsIsNoCap) {
     worker_stop(w);
 }
 
+// The worker's fd 1 is stderr once it serves: the CUDA runtime writes device printf (the
+// persistent kernel's progress and stall lines) to the process's standard output, and the
+// replies go through a duplicate of the fd the parent gave, so those lines cannot enter a frame.
+TEST(GpuBinaryGate, OnlyRepliesReachTheReplyStream) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    auto none = [](wxf::Writer& ww) { put_str_list_option(ww, "RequestedData", {"NumStates"}); };
+    ASSERT_FALSE(worker_call(w, branch_job(2, "Evolve", 0, none, 1)).empty());
+    auto target = [&](int fd) {
+        char buf[4096];
+        const std::string link = "/proc/" + std::to_string(w.pid) + "/fd/" + std::to_string(fd);
+        const ssize_t n = ::readlink(link.c_str(), buf, sizeof(buf) - 1);
+        return n < 0 ? std::string() : std::string(buf, static_cast<size_t>(n));
+    };
+    const std::string out = target(1), err = target(2);
+    ASSERT_FALSE(err.empty());
+    EXPECT_EQ(out, err) << "fd 1 of the worker is " << out << ", where device printf lands";
+    EXPECT_EQ(out.find(w.out_path), std::string::npos);
+    worker_stop(w);
+}
+
 // "StepStatistics" is the same reply on both devices: under quotient exploration from each
 // engine's class multiplicities, under full capture from its raw states.
 TEST(GpuBinaryGate, StepStatisticsAgreeAcrossDevices) {
