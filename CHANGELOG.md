@@ -56,7 +56,13 @@ User-visible changes since v1.0.0-rc1:
   `"MatchesPerStep"` keep the lowest-ranked transitions, ranked from each transition's identity
   and `"RandomSeed"`. A transition not kept is not taken. The kept set is the same at any worker
   count and on both devices.
+- Transitions tied with the last one kept at a cap's cut are kept too, so a cap can keep more
+  than its value: `"MaxStatesPerStep" -> 3` keeps 4 states at some steps of the documented
+  example. The kept set does not depend on the schedule, on either device.
 - `"ExplorationProbability"` keeps the same states on both devices.
+- Under `"CanonicalizeStates" -> Full`, `"ExplorationProbability"` draws one coin per
+  isomorphism class, and a class that holds an initial state is always expanded. Full capture and
+  quotient exploration sample the same classes.
 - `"RandomSeed" -> Automatic` is the seed 0 for the sampling draws, so a sampled run without a
   seed gives the same result every time. A generated initial condition still draws a new seed.
 - Packed arrays are accepted as initial states and as `"RuleWeights"`.
@@ -68,6 +74,65 @@ User-visible changes since v1.0.0-rc1:
   A capture dropped during reconstruction is reported as `CapturesDropped`.
 - An error inside a worker is reported as an error of the run on the CPU; it could end the
   process. After an error the run stops promptly.
+- An empty rule set gives the initial states and no events.
+- An edge with no vertices (`{}`) in a rule or an initial state is refused with
+  `HGEvolve::badrule` or `HGEvolve::badinit`.
+- An edge of more than 16 vertices, a rule side of more than 16 edges and an empty left-hand side
+  are refused with `HGEvolve::enginemsg` on both devices, before a device is chosen.
+- A generated initial condition with no edges issues `HGEvolve::emptyic`, naming the condition.
+- A negative `"MaxStatesPerStep"`, `"MaxSuccessorStatesPerParent"`, `"MatchesPerStateRule"` or
+  `"MatchesPerStep"` is ignored with a warning and the run is uncapped.
+- A NaN or infinite `"ExplorationProbability"`, `"TransitionRate"` or `"RuleWeights"` entry is
+  ignored with a warning and the default is used, on both devices.
+- A warning or error that quotes bytes from the request which are not valid UTF-8 shows each
+  such byte as `\xNN`.
+- `"ExploreFromCanonicalStatesOnly" -> True` is applied only under
+  `"CanonicalizeStates" -> Full`. Otherwise every state is expanded, and the `QuotientNeedsFull`
+  warning names only the option the call set.
+- Setting up a rule whose left-hand edges have many distinct vertices takes milliseconds: a rule
+  with a 14-vertex left-hand edge sets up in 0.005 s on the CPU, against 1.06 s in rc1. The GPU
+  accepts left-hand edges of up to 16 distinct vertices.
+- Under `"CanonicalizeStates" -> Full`, a state's `"Step"` is the least step at which its class
+  occurs and is the same on every run. On the GPU this holds under full capture; under quotient
+  exploration the GPU's `"Step"` is not yet the class's least step.
+- The empty state has one `"CanonicalHash"` in every state mode, on both devices.
+- Under `"CanonicalizeStates" -> Full` with `"CanonicalizeEvents" -> Automatic`, `"Events"` lists
+  the rule applications that the causal and branchial records name.
+- Under `"ShowGenesisEvents" -> True`, `"States"` does not list the genesis event's empty input
+  state. `"NumEvents"` counts one genesis event per initial state, and the causal edges include
+  the genesis pairs, under quotient exploration as under full capture and on both devices. A
+  genesis event has `"RuleIndex"` 65535 on both devices.
+- The branchial graph keeps every branchial pair, so its edge count equals
+  `"NumBranchialEdges"`.
+- `"StepStatistics"` histogram keys round halves to even, as `Round` does.
+- Very large `"Steps"` cost only the depth the evolution reaches: a run with `"Steps"` 10^9 that
+  stops growing after a few steps finishes in milliseconds.
+- A run that reaches about 2^30 states no longer stops with an internal error in the branchial
+  index.
+- A reply larger than the available memory gives an error instead of ending the worker process.
+  A failure to start a worker thread is reported as an error.
+- Sessions: a steered `HGSessionStep` expands every frontier state its id stands for; after a
+  failed session verb the next `"Delta"` request is sent as `"Full"`; a verb on an invalidated
+  session says it was invalidated, on both binaries.
+- GPU: a session verb is served under the settings the session was opened with; a session
+  opened after a larger run fits its engine; a continuation matches through every edge of the
+  state; a continuation reports only its own warnings.
+- GPU: `"Delivery" -> "Delta"` is reported as not served, with an `OptionSkipped` warning, and the
+  whole graph is sent.
+- GPU: `"States"` lists every state outside `"CanonicalizeStates" -> Full`, and causal and
+  branchial endpoints name canonical events under an event identity, as on the CPU.
+- GPU: a run sized past the device returns partial work, and a partial result holds no record
+  that a failed rewrite left unwritten. A full causal or branchial map and a full index at upload
+  are reported as `HGEvolve::overflow`.
+- GPU: the transitive reduction is exact whichever thread runs it. `"MatchesPerStateRule"` keeps
+  the same transitions as the CPU when ranks are equal.
+- GPU: an initial state of 32,768 edges run for three steps is sized in 64 bits and runs; it
+  returned an empty result.
+- GPU: device output printed during a long run no longer corrupts the reply.
+- GPU: `"MaxStatesPerStep"` selection reads only the candidates since the previous step: 100,000
+  steps with `"MaxStatesPerStep" -> 1` take 4.17 s, against 28.7 s.
+- GPU: the device stack reservation is sized from the kernels: 1,522 MB on an RTX 4090, against
+  2,304 MB.
 
 ---
 
