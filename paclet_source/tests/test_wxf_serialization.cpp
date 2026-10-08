@@ -2999,7 +2999,42 @@ std::vector<uint8_t> job_with_option(const std::function<void(wxf::Writer&)>& pu
     }, 2);
 }
 
+std::string run_error(const std::vector<uint8_t>& job) {
+    HostBridge host;
+    try {
+        run_rewriting_core(job, host);
+    } catch (const std::runtime_error& e) {
+        return e.what();
+    }
+    return "";
+}
+
 }  // namespace
+
+// Input both devices answered differently (F15): the CPU gave 0 states for an empty initial state
+// and the GPU 1; an edge above arity 16 was an error on the CPU and an empty result on the GPU.
+// Each is refused with an error before a device is chosen.
+TEST(FfiInput, InvalidInitialStatesAndRulesAreRefused) {
+    const auto none = [](wxf::Writer&) {};
+    struct Case { StateList init; EdgeList lhs, rhs; const char* says; };
+    const EdgeList a17 = {{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}};
+    const StateList init17 = {a17};
+    const std::vector<Case> cases = {
+        {{}, kLhs, kRhs, "InitialStates is empty"},
+        {{{}}, kLhs, kRhs, "initial state 0 has no edges"},
+        {{{{}}}, kLhs, kRhs, "initial state 0 edge 0 has arity 0"},
+        {{{{1, 2}}, {}}, kLhs, kRhs, "initial state 1 has no edges"},
+        {init17, kLhs, kRhs, "initial state 0 edge 0 has arity 17"},
+        {kSeed, a17, kRhs, "rule 0 LHS edge 0 has arity 17"},
+        {kSeed, kLhs, {{1, 2}, {}}, "rule 0 RHS edge 1 has arity 0"},
+        {kSeed, {}, kRhs, "rule 0 has an empty left-hand side"},
+    };
+    for (const Case& c : cases) {
+        const std::string err = run_error(build_input(c.init, c.lhs, c.rhs, 1, none, 0));
+        EXPECT_NE(err.find(c.says), std::string::npos) << "expected '" << c.says << "', got '" << err << "'";
+    }
+    EXPECT_EQ(run_error(build_input(kSeed, kLhs, kRhs, 1, none, 0)), "");
+}
 
 // A negative cap is skipped with a warning; it was cast to 2^64-1 and acted as no cap silently.
 TEST(FfiInput, ANegativeCapIsSkippedWithAWarning) {

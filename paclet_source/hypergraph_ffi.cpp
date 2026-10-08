@@ -414,6 +414,63 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
         });
 }
 
+// THE INPUT LIMITS, checked once for both devices before either is chosen. A job that builds an
+// engine (Evolve, Open) is refused with an error when:
+//   - it has no initial state, or an initial state has no edges (the WL side's HGEvolve::badinit
+//     refuses the same before sending);
+//   - an edge of an initial state or a rule has arity 0 or above MAX_ARITY (16);
+//   - a rule side has more than MAX_PATTERN_EDGES (16) edges, a pattern variable is negative or
+//     at least MAX_VARS (32), or a left-hand side is empty.
+// An edge of arity 0 is refused rather than dropped: dropping it evolves a different
+// hypergraph or rule than the caller wrote.
+static void refuse_invalid_input(const hgffi::ParsedJob& req) {
+    if (req.initial_states_raw.empty())
+        throw std::runtime_error("InitialStates is empty; give at least one state with at least one edge");
+    for (size_t si = 0; si < req.initial_states_raw.size(); ++si) {
+        const auto& state = req.initial_states_raw[si];
+        if (state.empty())
+            throw std::runtime_error("initial state " + std::to_string(si) +
+                                     " has no edges; a state needs at least one edge");
+        for (size_t ei = 0; ei < state.size(); ++ei) {
+            const size_t a = state[ei].size();
+            if (a == 0 || a > hypergraph::MAX_ARITY)
+                throw std::runtime_error("initial state " + std::to_string(si) + " edge " +
+                                         std::to_string(ei) + " has arity " + std::to_string(a) +
+                                         "; an edge has arity 1 to " +
+                                         std::to_string(hypergraph::MAX_ARITY));
+        }
+    }
+    for (size_t ri = 0; ri < req.parsed_rules_raw.size(); ++ri) {
+        const auto& sides = req.parsed_rules_raw[ri].second;
+        if (sides.size() != 2) throw std::runtime_error("rule " + std::to_string(ri) + " is not lhs -> rhs");
+        const char* names[2] = {"LHS", "RHS"};
+        if (sides[0].empty())
+            throw std::runtime_error("rule " + std::to_string(ri) + " has an empty left-hand side");
+        for (int side = 0; side < 2; ++side) {
+            const std::string where = "rule " + std::to_string(ri) + " " + names[side];
+            if (sides[side].size() > hypergraph::MAX_PATTERN_EDGES)
+                throw std::runtime_error(where + " has more than " +
+                                         std::to_string(hypergraph::MAX_PATTERN_EDGES) + " edges");
+            for (size_t ei = 0; ei < sides[side].size(); ++ei) {
+                const auto& edge = sides[side][ei];
+                if (edge.empty() || edge.size() > hypergraph::MAX_ARITY)
+                    throw std::runtime_error(where + " edge " + std::to_string(ei) + " has arity " +
+                                             std::to_string(edge.size()) + "; an edge has arity 1 to " +
+                                             std::to_string(hypergraph::MAX_ARITY));
+                for (int64_t v : edge) {
+                    if (v < 0)
+                        throw std::runtime_error(where + " edge " + std::to_string(ei) +
+                                                 " has a negative pattern variable");
+                    if (v >= static_cast<int64_t>(hypergraph::MAX_VARS))
+                        throw std::runtime_error(where + " uses pattern variable " +
+                                                 std::to_string(v) + ", but the maximum is " +
+                                                 std::to_string(hypergraph::MAX_VARS - 1));
+                }
+            }
+        }
+    }
+}
+
 // "MatchesPerStep" IS MaxStatesPerStep under another name, and only when "UniformRandom" selects
 // arrival-order capping -- which is what the host does, applying it after the plain option so it
 // wins. Spelled once here so the two devices cannot disagree about which of the two options took
@@ -548,8 +605,6 @@ static void configure_and_evolve(hgffi::ParsedJob& req, hypergraph::Hypergraph& 
     // Convert rules to unified format
     uint16_t rule_index = 0;
     for (const auto& [rule_name, rule_data] : req.parsed_rules_raw) {
-        if (rule_data.size() != 2) continue;
-
         hypergraph::RewriteRule rule;
         rule.index = rule_index++;
 
@@ -557,72 +612,33 @@ static void configure_and_evolve(hgffi::ParsedJob& req, hypergraph::Hypergraph& 
         uint8_t max_lhs_var = 0;
         uint8_t max_rhs_var = 0;
 
-        // Parse one side of the rule. Every limit is REPORTED, not absorbed: silently
-        // truncating an over-long pattern, dropping an out-of-range variable or skipping a
-        // negative id all hand back a DIFFERENT rule than the caller wrote, and the run
-        // then succeeds, so nothing downstream can tell that it happened.
-        //
-        // The variable bound is the one that matters most. A pattern variable is an index
-        // into VariableBinding's MAX_VARS-entry array and a bit position in its 32-bit
-        // bound_mask, so a variable at or above MAX_VARS writes out of bounds and shifts
-        // by more than the width -- memory corruption, not a wrong answer. Above 255 it
-        // also wraps through uint8_t, silently merging two distinct variables.
+        // One side of the rule. refuse_invalid_input has already held every edge to the
+        // limits (edge count, arity, variable range): a pattern variable is an index into
+        // VariableBinding's MAX_VARS-entry array and a bit of its 32-bit bound_mask, so one
+        // out of range would write out of bounds.
         auto parse_side = [&](const auto& edges, hypergraph::PatternEdge* out,
-                              uint8_t& num_edges, uint8_t& max_var, const char* side) {
+                              uint8_t& num_edges, uint8_t& max_var) {
             num_edges = 0;
-            size_t edge_index = 0;
             for (const auto& edge : edges) {
-                if (num_edges >= hypergraph::MAX_PATTERN_EDGES) {
-                    throw std::runtime_error(
-                        std::string("rule ") + std::to_string(rule.index) + " " + side +
-                        " has more than " + std::to_string(hypergraph::MAX_PATTERN_EDGES) +
-                        " edges");
-                }
-                hypergraph::PatternEdge& pe = out[num_edges];
+                hypergraph::PatternEdge& pe = out[num_edges++];
                 pe.arity = 0;
                 for (int64_t v : edge) {
-                    if (v < 0) {
-                        throw std::runtime_error(
-                            std::string("rule ") + std::to_string(rule.index) + " " + side +
-                            " edge " + std::to_string(edge_index) +
-                            " has a negative pattern variable");
-                    }
-                    if (v >= static_cast<int64_t>(hypergraph::MAX_VARS)) {
-                        throw std::runtime_error(
-                            std::string("rule ") + std::to_string(rule.index) + " " + side +
-                            " uses pattern variable " + std::to_string(v) +
-                            ", but the maximum is " +
-                            std::to_string(hypergraph::MAX_VARS - 1));
-                    }
-                    if (pe.arity >= hypergraph::MAX_ARITY) {
-                        throw std::runtime_error(
-                            std::string("rule ") + std::to_string(rule.index) + " " + side +
-                            " edge " + std::to_string(edge_index) + " has arity above " +
-                            std::to_string(hypergraph::MAX_ARITY));
-                    }
                     pe.vars[pe.arity++] = static_cast<uint8_t>(v);
                     if (static_cast<uint8_t>(v) > max_var) max_var = static_cast<uint8_t>(v);
                 }
-                if (pe.arity > 0) num_edges++;
-                ++edge_index;
             }
         };
 
-        parse_side(rule_data[0], rule.lhs, rule.num_lhs_edges, max_lhs_var, "LHS");
-        parse_side(rule_data[1], rule.rhs, rule.num_rhs_edges, max_rhs_var, "RHS");
+        parse_side(rule_data[0], rule.lhs, rule.num_lhs_edges, max_lhs_var);
+        parse_side(rule_data[1], rule.rhs, rule.num_rhs_edges, max_rhs_var);
 
         rule.num_lhs_vars = max_lhs_var + 1;
         rule.num_rhs_vars = max_rhs_var + 1;
         rule.num_new_vars = (max_rhs_var > max_lhs_var) ? (max_rhs_var - max_lhs_var) : 0;
 
-        // An EMPTY RHS is a legitimate rule -- {{x,y}} -> {} deletes an edge, and the
-        // engine gives the resulting empty state a canonical hash of its own precisely so
-        // it works. Only an empty LHS is rejected, since it matches everywhere and would
-        // not terminate.
-        if (rule.num_lhs_edges == 0) {
-            throw std::runtime_error(std::string("rule ") + std::to_string(rule.index) +
-                                     " has an empty left-hand side");
-        }
+        // An EMPTY RHS is a legitimate rule -- {{x,y}} -> {} deletes an edge, and the engine
+        // gives the resulting empty state a canonical hash of its own. An empty LHS is
+        // refused by refuse_invalid_input.
         engine.add_rule(rule);
     }
 
@@ -659,18 +675,14 @@ static void configure_and_evolve(hgffi::ParsedJob& req, hypergraph::Hypergraph& 
                     edge_vertices.push_back(it->second);
                 }
             }
-            if (!edge_vertices.empty()) {
-                state_edges.push_back(edge_vertices);
-            }
+            state_edges.push_back(std::move(edge_vertices));
         }
-        if (!state_edges.empty()) {
-            // GeodesicSources are given in the USER'S labels; the engine sees only the
-            // dense renumbering above. Keep the first state's map so the sources can be
-            // translated at the geodesic block (initial vertices keep their engine ids
-            // through the evolution, so the translation stays valid on evolved states).
-            if (initial_states.empty()) initial_vertex_map = vertex_map;
-            initial_states.push_back(std::move(state_edges));
-        }
+        // GeodesicSources are given in the USER'S labels; the engine sees only the dense
+        // renumbering above. Keep the first state's map so the sources can be translated at
+        // the geodesic block (initial vertices keep their engine ids through the evolution, so
+        // the translation stays valid on evolved states).
+        if (initial_states.empty()) initial_vertex_map = vertex_map;
+        initial_states.push_back(std::move(state_edges));
     }
 
     // Run the evolution. Abort is a process kill by the parent, so there is
@@ -830,6 +842,8 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 "it opened; applying these would answer about a system the session is not "
                 "exploring");
         }
+
+        if (!held_session) refuse_invalid_input(req);
 
         if (!held_session && req.state_canon_mode != hypergraph::StateCanonicalizationMode::Full &&
             hgcommon::quotient_route_requested(req.explore_from_canonical_states_only,
