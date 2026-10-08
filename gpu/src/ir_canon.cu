@@ -290,10 +290,13 @@ namespace {
 //
 // A state the exact path cannot key leaves its hash at 0 -- which the readers already treat as
 // "not computed", and which kUncomputedStateHash reports -- rather than taking a coarser key.
+// Exactly `threads` threads take part, the number the arena holds a slot for: the launch rounds
+// up to whole blocks, and a thread past the count would claim a slot the arena was not sized for.
 __global__ void k_exact_hash_range(const __grid_constant__ DeviceState ds, uint32_t lo, uint32_t hi, uint64_t* out,
-                                   DeviceArena::View arena) {
+                                   DeviceArena::View arena, uint32_t threads) {
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
-    const uint32_t stride = gridDim.x * blockDim.x;
+    if (tid >= threads) return;
+    const uint32_t stride = threads;
     uint32_t* slot = nullptr;
     uint64_t slot_words = 0;
     for (uint32_t i = lo + tid; i < hi; i += stride) {
@@ -371,7 +374,8 @@ void compute_state_ir_hashes_range(EngineState& engine, uint32_t lo, uint32_t hi
     arena.reset();
     const uint32_t block = threads < 64 ? threads : 64;
     const uint32_t grid = (threads + block - 1) / block;
-    k_exact_hash_range<<<grid, block>>>(engine.device(), lo, hi, out_hashes_device, arena.view());
+    k_exact_hash_range<<<grid, block>>>(engine.device(), lo, hi, out_hashes_device, arena.view(),
+                                        threads);
     HG_CUDA_CHECK(cudaDeviceSynchronize(), "k_exact_hash_range sync");
 }
 
