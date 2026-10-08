@@ -2,11 +2,14 @@
 
 #include "hg_gpu/evolve.hpp"
 
-TEST(HgGpuSmoke, EmptyEvolveYieldsEmptyResult) {
+// No rules and an empty initial state: the empty initial state is the whole evolution, as on the
+// host (DifferentialEvolution/empty_rules_empty_initial_zero_steps).
+TEST(HgGpuSmoke, EmptyEvolveYieldsTheEmptyInitialState) {
     hg_gpu::EvolveInput in;
     in.num_steps = 0;
     auto result = hg_gpu::evolve(in);
-    EXPECT_TRUE(result.states.empty());
+    ASSERT_EQ(result.states.size(), 1u);
+    EXPECT_EQ(result.states[0].num_edges, 0u);
     EXPECT_TRUE(result.events.empty());
     EXPECT_TRUE(result.causal_edges.empty());
     EXPECT_TRUE(result.branchial_edges.empty());

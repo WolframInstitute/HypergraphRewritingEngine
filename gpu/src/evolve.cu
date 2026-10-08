@@ -226,9 +226,6 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
 
     EvolveResult out;
     if (storage) out.adopt_storage(*storage);
-    if (in.rules.empty() && in.num_steps == 0 && in.initial_state.empty()) {
-        return out;
-    }
 
     auto t_total_start = std::chrono::steady_clock::now();
     auto t_init_start = std::chrono::steady_clock::now();

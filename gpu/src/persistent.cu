@@ -1916,7 +1916,9 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                             uint32_t start_step,
                                             bool read_stats) {
     PersistentEvolveStats stats;
-    if (rules.empty() || roots.empty()) return stats;
+    // With no rule the roots are the whole evolution: they are hashed and recorded, and no match
+    // is found (the host's evolve with an empty rule set, 41e1ba83).
+    if (roots.empty()) return stats;
 
     QcView qc{};
     if (qc_in) qc = *qc_in;

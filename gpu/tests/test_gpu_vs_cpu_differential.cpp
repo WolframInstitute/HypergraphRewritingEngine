@@ -677,6 +677,10 @@ std::vector<Workload> build_corpus() {
     std::vector<Workload> ws;
 
     ws.push_back({.name = "empty_rules_empty_initial_zero_steps", .num_steps = 0});
+    // With no rule the initial states are the whole evolution, at any step count.
+    ws.push_back({.name = "empty_rules_two_initial_states",
+                  .initial_states = {V{{0u, 1u}}, V{{0u, 1u}, {1u, 2u}}},
+                  .num_steps = 2});
 
     // A rule that CONSUMES its match and produces nothing, so the evolution reaches the empty
     // state. The empty state's canonical hash is a value both devices must agree on: it is what
