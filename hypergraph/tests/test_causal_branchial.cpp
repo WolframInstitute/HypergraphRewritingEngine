@@ -1210,3 +1210,31 @@ TEST(ExplorationProbability, FullCaptureAndQuotientSampleTheSameClasses) {
     for (uint64_t seed = 1; seed <= 8; ++seed)
         EXPECT_EQ(run(false, seed), run(true, seed)) << "seed " << seed;
 }
+
+// Under quotient exploration an event's Step is its own step (the depth of the raw application),
+// whatever depth its input class was first claimed at: an event key set with Step counts the
+// same events as full capture, at every thread count. Two rules whose classes are reached at
+// several depths, 4 steps.
+TEST(QuotientEventStep, StepKeysAgreeWithFullCaptureAtEveryThreadCount) {
+    auto run = [](bool quotient, unsigned threads, hgcommon::EventSignatureKeys keys) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        hg.set_event_signature_keys(keys);
+        ParallelEvolutionEngine engine(&hg, threads);
+        engine.set_explore_from_canonical_states_only(quotient);
+        engine.add_rule(make_rule(0).lhs({4, 3}).lhs({1, 2}).rhs({5, 5}).rhs({2, 3}).build());
+        engine.add_rule(make_rule(1).lhs({3, 2, 3}).lhs({2, 2}).rhs({3, 2, 2}).rhs({2, 2, 3})
+                            .rhs({2, 2, 2}).build());
+        engine.evolve(std::vector<std::vector<VertexId>>{{3u, 1u}, {3u, 2u, 1u}, {3u, 2u},
+                                                         {1u, 1u}, {3u, 3u}}, 4);
+        return std::array<uint64_t, 2>{hg.observable_num_events(), hg.observable_num_causal_edges()};
+    };
+    for (hgcommon::EventSignatureKeys keys :
+         {static_cast<hgcommon::EventSignatureKeys>(EventKey_Step | EventKey_Rule),
+          static_cast<hgcommon::EventSignatureKeys>(EventKey_InputState | EventKey_Step),
+          hgcommon::EVENT_SIG_AUTOMATIC}) {
+        const auto ref = run(false, 1, keys);
+        for (unsigned t : {1u, 16u, 16u, 16u, 16u, 16u})
+            EXPECT_EQ(run(true, t, keys), ref) << "keys " << int(keys) << " t " << t;
+    }
+}

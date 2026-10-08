@@ -38,6 +38,7 @@
 #include "hgcommon/build_stamp.hpp"  // the configuration this artifact was built with
 #include "hgcommon/quotient_multiplicity_core.hpp"  // qm_sat_add
 #include "hgcommon/quotient_route.hpp"
+#include "hgcommon/explore_depth_core.hpp"  // kExploreNoDepth
 #include "state_statistics.hpp"
 
 using namespace hypergraph;
@@ -923,6 +924,13 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         std::vector<uint32_t> class_min_step;
         auto reported_step = [&](uint32_t sid) -> uint32_t {
             if (!full_canonicalization) return hg.get_state(sid).step;
+            // Under quotient exploration a raw state's step is its parent's depth at the
+            // parent's claim plus one, and a depth lowered after the claim leaves it stale; the
+            // class's explore depth is the shortest depth (hgcommon/explore_depth_core.hpp).
+            if (engine.explore_from_canonical_states_only()) {
+                const uint32_t d = hg.explore_depth_of(hg.get_canonical_state(sid));
+                if (d != hgcommon::kExploreNoDepth) return d;
+            }
             if (class_min_step.empty()) {
                 const uint32_t n = hg.num_published_states();
                 class_min_step.assign(n ? n : 1, UINT32_MAX);
