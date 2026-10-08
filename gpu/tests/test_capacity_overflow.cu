@@ -376,6 +376,21 @@ TEST(CapacityOverflow, AFullRelationMapIsReported) {
     }
 }
 
+// The pool sizes are computed in 64 bits and clamped. A 32,768-edge root at three steps asks for
+// 2^30 edges and four times that many vertex slots, past 32 bits.
+TEST(CapacityOverflow, ConfigSizingDoesNotWrap) {
+    hg_gpu::EvolveInput in = growing_input(3);
+    in.initial_state.clear();
+    for (hg_gpu::VertexId v = 0; v < 32768; ++v) in.initial_state.push_back({v, v + 1});
+    const hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
+    EXPECT_GE(cfg.max_edges, 32768u);
+    EXPECT_GE(cfg.max_vertex_slots, cfg.max_edges);
+    EXPECT_GE(cfg.inverted_pool, cfg.max_edges);
+    EXPECT_GE(cfg.sig_index_pool, cfg.max_edges);
+    EXPECT_GE(cfg.edge_consumer_nodes, cfg.max_edges);
+    EXPECT_GE(cfg.max_states, 1u << 17);
+}
+
 namespace {
 __global__ void k_arena_claims(hg_gpu::DeviceArena::View a, uint64_t first, uint64_t second,
                                uint32_t* got) {

@@ -58,12 +58,19 @@ EngineConfig config_from_input(const EvolveInput& in) {
     // (Stream 2) size linearly in the total edge-slot count rather than
     // quadratically in max_states * max_edges, so max_states and max_edges
     // can be large without a memory blow-up.
-    uint32_t expected_edges  = std::max<uint32_t>(1u << 20, static_cast<uint32_t>(n_init) * growth * 512u);
-    uint32_t expected_states = std::max<uint32_t>(1u << 17, static_cast<uint32_t>(n_init) * growth * 32u);
+    //
+    // Computed in 64 bits and each field clamped to 2^31, the ceiling grow_config_for doubles
+    // to: a 32,768-edge root at three steps asks for 2^30 edges and 2^32 vertex slots. A config
+    // past the device is scaled to it by fit_config_to_cap.
+    auto field = [](uint64_t v) { return static_cast<uint32_t>(std::min<uint64_t>(v, 1ull << 31)); };
+    const uint64_t expected_edges  =
+        std::max<uint64_t>(1u << 20, static_cast<uint64_t>(n_init) * growth * 512u);
+    const uint64_t expected_states =
+        std::max<uint64_t>(1u << 17, static_cast<uint64_t>(n_init) * growth * 32u);
 
-    cfg.max_edges              = expected_edges;
-    cfg.max_states             = expected_states;
-    cfg.max_vertex_slots       = expected_edges * 4u;
+    cfg.max_edges              = field(expected_edges);
+    cfg.max_states             = field(expected_states);
+    cfg.max_vertex_slots       = field(expected_edges * 4u);
     // Total edge-ID slots across all states' CSR rows: one slice per state id, each at most
     // max_state_edges. At most 1G slots (4 GB).
     size_t largest_init = n_init;
@@ -71,30 +78,30 @@ EngineConfig config_from_input(const EvolveInput& in) {
     const uint64_t state_edges_bound =
         std::max<uint64_t>(1u, max_state_edges(largest_init, in.rules, steps));
     cfg.max_state_edge_total   = static_cast<uint32_t>(std::min<uint64_t>(
-        static_cast<uint64_t>(expected_states) * state_edges_bound, 1ull << 30));
+        static_cast<uint64_t>(cfg.max_states) * state_edges_bound, 1ull << 30));
     // Each event allocates ≤ kMaxVars fresh vertices, so vertex IDs bound
     // by n_init-vertices + events × kMaxVars. Be generous.
-    cfg.max_vertices           = std::max<uint32_t>(expected_edges,
-                                 static_cast<uint32_t>(n_init) * 4u + expected_states * 4u);
+    cfg.max_vertices           = field(std::max<uint64_t>(
+        expected_edges, static_cast<uint64_t>(n_init) * 4u + expected_states * 4u));
     cfg.sig_index_buckets      = 1024;
-    cfg.sig_index_pool         = expected_edges * 2u;
-    cfg.inverted_pool          = expected_edges * 4u;
+    cfg.sig_index_pool         = field(expected_edges * 2u);
+    cfg.inverted_pool          = field(expected_edges * 4u);
 
     if (in.slice_scan_max_edges) cfg.slice_scan_max_edges = in.slice_scan_max_edges;
     if (in.max_blocks_per_launch) cfg.max_blocks_per_launch = in.max_blocks_per_launch;
 
-    uint32_t expected_events   = expected_states;
-    cfg.max_events             = expected_events;
-    cfg.max_causal_edges       = expected_events * 8u;
-    cfg.max_branchial_edges    = expected_events * 8u;
-    cfg.causal_triple_slots    = expected_events * 16u;
-    cfg.causal_pair_slots      = expected_events * 8u;
-    cfg.branchial_pair_slots   = expected_events * 16u;
-    cfg.edge_consumer_nodes    = expected_edges * 4u;
+    const uint64_t expected_events = expected_states;
+    cfg.max_events             = field(expected_events);
+    cfg.max_causal_edges       = field(expected_events * 8u);
+    cfg.max_branchial_edges    = field(expected_events * 8u);
+    cfg.causal_triple_slots    = field(expected_events * 16u);
+    cfg.causal_pair_slots      = field(expected_events * 8u);
+    cfg.branchial_pair_slots   = field(expected_events * 16u);
+    cfg.edge_consumer_nodes    = field(expected_edges * 4u);
     cfg.branchial_index_buckets = 1u << 20;
-    cfg.branchial_index_nodes   = expected_events * 4u;
+    cfg.branchial_index_nodes   = field(expected_events * 4u);
     // One preds node per unique kept causal pair; kept pairs are a subset of causal pairs.
-    cfg.tr_preds_nodes         = expected_events * 8u;
+    cfg.tr_preds_nodes         = field(expected_events * 8u);
     cfg.canonical_key_mask     = in.canonical_key_mask;
     cfg.event_key_mask         = in.event_key_mask;
     cfg.replay_id_limit        = in.replay_id_limit;
@@ -159,7 +166,8 @@ struct Engine::Impl {
     explicit Impl(EngineConfig cfg)
         : cfg_(cfg)
         , state_(cfg)
-        , matches_(cfg.max_states * 8u)
+        , matches_(static_cast<uint32_t>(
+              std::min<uint64_t>(uint64_t{cfg.max_states} * 8u, 1ull << 31)))
     {}
 
     void reset() {
