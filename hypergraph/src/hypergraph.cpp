@@ -106,13 +106,20 @@ EdgeId Hypergraph::create_edge(std::initializer_list<VertexId> vertices,
 // and thrown away -- two of every three attempts on disc-l3a2g2r2 at depth 2 -- while a rung
 // above the need costs scratch words and nothing else, since the search stops at a discrete
 // partition. Escalation past the hint stays: a state deeper than its predecessor climbs.
+//
+// A call never skips its own top rung `top`: a hint above it (set by a search deeper than
+// IR_MAX_DEPTH_DEFAULT, which only ir_hash_and_orbits' n_verts + 1 rung reaches) would otherwise
+// skip every rung and send every later state on the thread to the unbounded fallback. The top
+// rung's search then sets the hint from its own depth.
 namespace {
 constexpr uint32_t kIrDepthRungs[] = {1u, 8u, hgcommon::IR_MAX_DEPTH_DEFAULT};
 uint32_t& ir_depth_hint() {
     HG_THREAD_LOCAL(uint32_t, hint);
     return hint;
 }
-inline bool ir_rung_below_hint(uint32_t rung) { return rung < ir_depth_hint(); }
+inline bool ir_rung_below_hint(uint32_t rung, uint32_t top) {
+    return rung < std::min(ir_depth_hint(), top);
+}
 inline void ir_note_search(const hgcommon::IrWork& work) { ir_depth_hint() = work.max_depth + 1; }
 
 // The IR canonical form of a state whose search outran every bounded rung, in the core's flat
@@ -992,7 +999,7 @@ uint64_t Hypergraph::cache_state_edge_ranks(StateId state_id, const SparseBitset
             form = out_form->data();
         }
         for (uint32_t depth : kIrDepthRungs) {
-            if (ir_rung_below_hint(depth)) continue;
+            if (ir_rung_below_hint(depth, hgcommon::IR_MAX_DEPTH_DEFAULT)) continue;
             const uint64_t words = hgcommon::ir_scratch_words(n_verts, n, total_occ, depth);
             auto* scratch = static_cast<uint32_t*>(
                 worker_scratch().allocate_raw((words + 2) * sizeof(uint32_t), alignof(uint64_t)));
@@ -1299,7 +1306,7 @@ uint64_t Hypergraph::compute_canonical_hash(const SparseBitset& edges,
         form = out_form->data();
     }
     for (uint32_t depth : kIrDepthRungs) {
-        if (ir_rung_below_hint(depth)) continue;
+        if (ir_rung_below_hint(depth, hgcommon::IR_MAX_DEPTH_DEFAULT)) continue;
         const uint64_t words =
             hgcommon::ir_scratch_words(n_verts, n_edges, total_occ, depth);
         // Raw, so the buffer is not zeroed on the way in: the core writes every word it
@@ -1408,9 +1415,10 @@ uint64_t ir_hash_and_orbits(const SegmentedArray<Edge>& edge_table,
         out_form->resize(hgcommon::ir_canonical_form_words(n, total_occ));
         form = out_form->data();
     }
+    const uint32_t top_rung = std::max(rung_cap, hgcommon::IR_MAX_DEPTH_DEFAULT);
     for (uint32_t depth : rungs) {
         if (depth == 0u) continue;
-        if (ir_rung_below_hint(depth)) continue;
+        if (ir_rung_below_hint(depth, top_rung)) continue;
         for (uint32_t gens = hgcommon::IR_HOST_GENERATORS; gens <= (1u << 16); gens *= 4u) {
             const uint64_t words = hgcommon::ir_scratch_words(n_verts, n, total_occ, depth, gens);
             auto* scratch = static_cast<uint32_t*>(worker_scratch().allocate_raw(

@@ -5,6 +5,7 @@
 #include <set>
 #include <algorithm>
 #include <map>
+#include <thread>
 #include "hgcommon/ir_core.hpp"
 
 using namespace hypergraph;
@@ -496,3 +497,33 @@ TEST_F(IRCanonicalizationTest, MarkedFormsSeparateMarkingsUpToIsomorphism) {
     const std::vector<std::vector<VertexId>> mixed = {{0, 1}, {1, 2, 3}};
     EXPECT_NE(marked_hash(mixed, {0}), marked_hash(mixed, {1}));
 }
+
+#if HG_ENGINE_STATS
+// The per-thread depth hint. A star with 100 leaves needs one search level per leaf, past every
+// static rung; a triangle on the same thread afterwards is still canonicalised by the bounded
+// core, not by the unbounded fallback. Run on a fresh thread so no earlier test's hint applies.
+TEST(IRDepthHint, DeepStateDoesNotSendLaterStatesToTheFallback) {
+    std::thread t([] {
+        Hypergraph hg;
+        SparseBitset star, triangle;
+        const VertexId hub = hg.alloc_vertex();
+        for (int i = 0; i < 100; ++i)
+            star.set(hg.create_edge({hub, hg.alloc_vertex()}), hg.arena());
+        const VertexId a = hg.alloc_vertex(), b = hg.alloc_vertex(), c = hg.alloc_vertex();
+        triangle.set(hg.create_edge({a, b}), hg.arena());
+        triangle.set(hg.create_edge({b, c}), hg.arena());
+        triangle.set(hg.create_edge({c, a}), hg.arena());
+
+        hg.compute_and_cache_state_orbits(0, star, /*cache=*/false);
+        const auto after_star = hg.ir_work();
+        EXPECT_EQ(after_star.fallbacks, 0u);
+
+        hg.compute_canonical_hash(triangle);
+        hg.compute_and_cache_state_orbits(1, triangle, /*cache=*/false);
+        const auto after_triangle = hg.ir_work();
+        EXPECT_EQ(after_triangle.fallbacks, after_star.fallbacks);
+        EXPECT_EQ(after_triangle.calls, after_star.calls + 2);
+    });
+    t.join();
+}
+#endif
