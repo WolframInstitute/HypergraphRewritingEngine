@@ -2520,7 +2520,14 @@ void Hypergraph::record_state_event(EventId event, StateId input_state) {
 
 void Hypergraph::record_branchial_overlaps(EventId event, StateId input_state,
                                            const EdgeId* consumed_edges, uint8_t num_consumed) {
-    causal_graph_.record_branchial_overlaps(event, input_state, consumed_edges, num_consumed);
+    causal_graph_.record_branchial_overlaps(
+        event, input_state, consumed_edges, num_consumed,
+        [](const void* ctx, EventId e, uint8_t* n) -> const EdgeId* {
+            const Event& ev = static_cast<const Hypergraph*>(ctx)->get_event(e);
+            *n = ev.num_consumed;
+            return ev.consumed_edges;
+        },
+        this);
 }
 
 size_t Hypergraph::num_causal_edges() const { return causal_graph_.num_causal_edges(); }

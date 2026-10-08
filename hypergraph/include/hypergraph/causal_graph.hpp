@@ -143,8 +143,6 @@ class CausalGraph {
     // 2^32-1, so the +1 cannot carry into the neighbouring field.
     static uint64_t causal_pair_key(EventId producer, EventId consumer);
 
-    // Deduplication map for branchial edges: (e1 << 32 | e2) -> true
-    ShardedKeySet<uint64_t> seen_branchial_pairs_;
 
     // =========================================================================
     // Online Transitive Reduction (backward-reachability oracle)
@@ -306,13 +304,19 @@ public:
     // The branchial PAIR relation: two events branch iff they consumed a common edge at a
     // shared input state.
     //
-    // Both events in a pair may detect the overlap and try to add the edge, but only one
-    // succeeds due to ConcurrentMap deduplication.
+    // A pair is recorded once, with no shared set: from the bucket of the LOWEST edge id the
+    // two events share, by the event pushed second into that bucket (it scans the entries
+    // pushed before its own, LockFreeList::for_each_before). `consumed_of` gives another
+    // event's consumed edges; it is read only when this event consumed an edge with a lower id
+    // than the bucket's.
+    using ConsumedOf = const EdgeId* (*)(const void* ctx, EventId event, uint8_t* num_consumed);
     void record_branchial_overlaps(
         EventId event,
         StateId input_state,
         const EdgeId* consumed_edges,
-        uint8_t num_consumed
+        uint8_t num_consumed,
+        ConsumedOf consumed_of,
+        const void* consumed_ctx
     );
 
     // =========================================================================
@@ -347,17 +351,6 @@ public:
     // Number of unique event pairs with a causal relationship.
     size_t num_causal_event_pairs() const;
 
-    // Pairs the branchial dedup actually claimed. add_branchial_edge is reached ONLY on a
-    // winning claim, so this must equal num_branchial_edges() at every point in a run.
-    //
-    // The two counts are maintained by different mechanisms -- one is a map's occupancy, the
-    // other a counter incremented by the winner -- so equality is a real check on the map's
-    // exactly-once contract rather than a restatement of it. A duplicate admitted under
-    // contention shows up here on the run that produced it, with that run's parameters, instead
-    // of only as two runs disagreeing afterwards: the branchial graph went non-deterministic at
-    // 8 threads once in 24 runs (30064 edges against 30063, states/events/causal identical),
-    // and a spread across runs cannot say WHICH run was wrong or why.
-    size_t num_branchial_pairs_claimed() const;
 
     // The branchial relation AS CLIQUES. Every event in one (state, shared-edge) bucket is
     // branchially related to every other, so the bucket IS the relation and the pair list is a

@@ -188,25 +188,32 @@ Fingerprint fingerprint(hg::engine::Hypergraph& g) {
 
     // EXACTLY-ONCE, checked on THIS run rather than inferred from a disagreement between runs.
     //
-    // add_branchial_edge is reached only when the pair dedup reports a winning claim, so the
-    // edge count must equal the number of claimed pairs. The two are maintained by different
-    // mechanisms -- a map's occupancy against a counter the winner increments -- so equality
-    // tests the map's exactly-once contract instead of restating it.
+    // Under full capture each branchial pair is recorded once (CausalGraph::
+    // record_branchial_overlaps), so the edge count must equal the number of DISTINCT event
+    // pairs among the recorded edges. A pair recorded twice makes the two differ.
     //
     // The spread across runs cannot do this job: it reports that two runs disagreed, not which
     // one was wrong. Observed once at 8 threads, 1 of 24 runs, 30064 edges against 30063 with
     // states, events and causal identical -- a duplicate pair, not a lost or extra event. This
     // fires on the run that produced it, with that run's thread count and seed.
+    long distinct_pairs = 0;
+    if (!g.quotient_reconstruction()) {
+        std::vector<uint64_t> ids;
+        for (const auto& b : g.causal_graph().get_branchial_edges())
+            ids.push_back((uint64_t{b.event1} << 32) | b.event2);
+        std::sort(ids.begin(), ids.end());
+        distinct_pairs = static_cast<long>(std::unique(ids.begin(), ids.end()) - ids.begin());
+    }
     fp.branchial_pairs = g.quotient_reconstruction()
         ? static_cast<long>(g.num_reconstructed_branchial())
-        : static_cast<long>(g.causal_graph().num_branchial_pairs_claimed());
+        : distinct_pairs;
 
     // WHICH SIDE OF THE HANDOFF LOST IT. num_branchial_edges_ is incremented inside
     // add_branchial_edge, so it counts edges STORED; be.size() counts edges ENUMERATED; and
-    // branchial_pairs counts distinct keys CLAIMED. Three counters over one quantity split the
-    // failure instead of merely reporting it:
-    //   stored == claimed, enumerated < stored  -> the edge exists and the walk misses it
-    //   stored <  claimed                       -> a winning claim produced no edge
+    // branchial_pairs counts DISTINCT pairs among them. Three counters over one quantity split
+    // the failure instead of merely reporting it:
+    //   stored == distinct, enumerated < stored  -> the edge exists and the walk misses it
+    //   stored >  distinct                       -> a pair was recorded twice
     // Without this the assertion says an edge is missing and cannot say where.
     fp.branchial_stored = g.quotient_reconstruction()
         ? fp.branchial_pairs
@@ -483,17 +490,14 @@ Spread spread(const Workload& w, bool quotient) {
                     << "the walk and " << f.branchial_stored << " after. evolve() returned while "
                        "workers were still pushing, so any shortfall is quiescence, not the list.";
                 EXPECT_EQ(f.branchial_stored, f.branchial_pairs)
-                    << w.name << ": claim/store split at threads=" << th << " rep=" << rep
-                    << " -- " << f.branchial_pairs << " distinct keys claimed but "
-                    << f.branchial_stored << " edges stored. add_branchial_edge runs on every "
-                       "winning claim, so a shortfall here is a claim that won and produced no "
-                       "edge.";
+                    << w.name << ": branchial pair recorded twice at threads=" << th
+                    << " rep=" << rep << " -- " << f.branchial_stored << " edges stored for "
+                    << f.branchial_pairs << " distinct pairs.";
                 EXPECT_EQ(f.num_branchial, f.branchial_pairs)
-                    << w.name << ": branchial dedup admitted a duplicate at threads=" << th
+                    << w.name << ": branchial pair recorded twice at threads=" << th
                     << " seed=" << (seed ? "fixed" : "random") << " rep=" << rep
-                    << " -- " << f.num_branchial << " edges from "
-                    << f.branchial_pairs << " claimed pairs. add_branchial_edge runs only on a "
-                       "winning claim, so the two cannot differ unless one key was claimed twice.";
+                    << " -- " << f.num_branchial << " edges enumerated for "
+                    << f.branchial_pairs << " distinct pairs.";
                 // THE SILENT DROPS ARE ASSERTED, not merely reported. Each of the four
                 // counters below removes an application from the reconstruction while leaving
                 // the STATE set intact, so the relations come out short and the shape of the

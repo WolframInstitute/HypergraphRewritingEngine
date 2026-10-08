@@ -406,7 +406,7 @@ int main(int argc, char** argv) {
                 static_cast<size_t>(hg.num_canonical_states()),
                 static_cast<size_t>(hg.num_events()), rich_matches,
                 cg.num_causal_edges(), cg.num_causal_event_pairs(),
-                cg.num_branchial_edges(), cg.num_branchial_pairs_claimed(),
+                cg.num_branchial_edges(), cg.num_branchial_edges(),
                 max_width, depth_reached, truncated ? 1 : 0,
                 hg.arena().bytes_allocated(), arena_block_bytes_live(),
                 discovered, forwarded, invalidated,

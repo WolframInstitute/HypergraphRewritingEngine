@@ -1086,10 +1086,38 @@ TEST(CausalGraphTracking, BranchialBucketKeyCoversEveryStateEdgePair) {
     CausalGraph cg(&arena);
     const StateId state = (1u << 30) - 1u;
     const EdgeId consumed[] = {7u, 8u};
-    ASSERT_NO_THROW(cg.record_branchial_overlaps(0, state, consumed, 2));
-    ASSERT_NO_THROW(cg.record_branchial_overlaps(1, state, consumed, 1));
+    struct Table { const EdgeId* edges[2]; uint8_t n[2]; } table{{consumed, consumed}, {2, 1}};
+    auto of = [](const void* ctx, EventId e, uint8_t* n) -> const EdgeId* {
+        const auto* t = static_cast<const Table*>(ctx);
+        *n = t->n[e];
+        return t->edges[e];
+    };
+    ASSERT_NO_THROW(cg.record_branchial_overlaps(0, state, consumed, 2, of, &table));
+    ASSERT_NO_THROW(cg.record_branchial_overlaps(1, state, consumed, 1, of, &table));
     ASSERT_NO_THROW(cg.record_state_event(0, state));
     EXPECT_EQ(cg.num_branchial_edges(), 1u);
+}
+
+// Two events of one state sharing two edges are one branchial pair, recorded from the bucket of
+// the lower edge id, whichever order the events consume them in.
+TEST(CausalGraphTracking, BranchialPairSharingTwoEdgesIsRecordedOnce) {
+    ConcurrentHeterogeneousArena arena;
+    CausalGraph cg(&arena);
+    const EdgeId a[] = {9u, 4u};
+    const EdgeId b[] = {4u, 9u, 12u};
+    struct Table { const EdgeId* edges[2]; uint8_t n[2]; } table{{a, b}, {2, 3}};
+    auto of = [](const void* ctx, EventId e, uint8_t* n) -> const EdgeId* {
+        const auto* t = static_cast<const Table*>(ctx);
+        *n = t->n[e];
+        return t->edges[e];
+    };
+    cg.record_branchial_overlaps(0, 3, a, 2, of, &table);
+    cg.record_branchial_overlaps(1, 3, b, 3, of, &table);
+    const auto edges = cg.get_branchial_edges();
+    ASSERT_EQ(edges.size(), 1u);
+    EXPECT_EQ(edges[0].event1, 0u);
+    EXPECT_EQ(edges[0].event2, 1u);
+    EXPECT_EQ(edges[0].shared_edge, 4u);
 }
 
 // An empty rule set leaves the initial states and applies no event, on both entry points and

@@ -257,7 +257,6 @@ void CausalGraph::set_arena(ConcurrentHeterogeneousArena* arena) {
     arena_ = arena;
     seen_causal_triples_.set_arena(arena);
     seen_causal_event_pairs_.set_arena(arena);
-    seen_branchial_pairs_.set_arena(arena);
     state_events_.set_arena(arena);
     state_edge_events_.set_arena(arena);
     edge_producers_.set_arena(arena);
@@ -276,26 +275,35 @@ void CausalGraph::record_branchial_overlaps(
     EventId event,
     StateId input_state,
     const EdgeId* consumed_edges,
-    uint8_t num_consumed
+    uint8_t num_consumed,
+    ConsumedOf consumed_of,
+    const void* consumed_ctx
 ) {
-    // Inverted index: for each consumed edge, publish this event into that edge's
-    // co-consumer bucket, then scan the same bucket. Per bucket this is
-    // "add first, then check", so both events of a pair see each other (whichever
-    // scans the shared bucket second finds the first); seen_branchial_pairs_
-    // dedups the double add. Work is proportional to the actual number of
-    // co-consumers, replacing the O(events^2) pairwise scan of the whole state's
-    // event list (one bucket lookup per consumed edge, not two).
+    // Inverted index: for each consumed edge, publish this event into that edge's co-consumer
+    // bucket, then scan the entries pushed before it. Of the two events of a pair sharing that
+    // edge, the second to push sees the first, and the first cannot see the second, so each
+    // bucket reports the pair once. A pair sharing several edges is reported only from the bucket
+    // of the lowest shared edge id. Work is proportional to the co-consumers.
     for (uint8_t i = 0; i < num_consumed; ++i) {
-        EdgeId shared = consumed_edges[i];
+        const EdgeId shared = consumed_edges[i];
+        // Whether this event consumed an edge below `shared`: only then can a pair found here
+        // share a lower edge, and only then is the other event's edge list read.
+        bool lower = false;
+        for (uint8_t j = 0; j < num_consumed; ++j) lower |= consumed_edges[j] < shared;
         LockFreeList<EventId>* bucket = get_or_create_state_edge_events(input_state, shared);
-        bucket->push(event, *arena_);
-        bucket->for_each([&](EventId other_event) {
-            if (other_event == event) return;  // Skip self
-            EventId e1 = std::min(event, other_event);
-            EventId e2 = std::max(event, other_event);
-            if (seen_branchial_pairs_.insert(id_key(e1, e2))) {
-                add_branchial_edge(e1, e2, shared);
+        const auto* mine = bucket->push(event, *arena_);
+        bucket->for_each_before(mine, [&](EventId other_event) {
+            if (other_event == event) return;
+            if (lower) {
+                uint8_t on = 0;
+                const EdgeId* oc = consumed_of(consumed_ctx, other_event, &on);
+                for (uint8_t x = 0; x < on; ++x) {
+                    if (oc[x] >= shared) continue;
+                    for (uint8_t j = 0; j < num_consumed; ++j)
+                        if (consumed_edges[j] == oc[x]) return;
+                }
             }
+            add_branchial_edge(std::min(event, other_event), std::max(event, other_event), shared);
         });
     }
 }
@@ -310,10 +318,6 @@ size_t CausalGraph::num_causal_edges() const {
 
 size_t CausalGraph::num_causal_event_pairs() const {
     return count_total(&CountSlot::causal_event_pairs);
-}
-
-size_t CausalGraph::num_branchial_pairs_claimed() const {
-    return seen_branchial_pairs_.count_enumerated();
 }
 
 size_t CausalGraph::num_branchial_edges() const {
