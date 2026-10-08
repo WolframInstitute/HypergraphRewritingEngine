@@ -4,6 +4,9 @@
 
 User-visible changes since v1.0.0-rc1:
 
+- The `"Step"` of an event identity is the step of the state the event produces. `Automatic`
+  and key lists with `"Step"` count an event that repeats at a later step as a new event.
+
 - In a `"CanonicalizeEvents"` key list, `"ConsumedEdges"` and `"ProducedEdges"` are the input and
   output states with the consumed and produced edges marked, up to isomorphism. Such a list
   counts the same events with and without `"ExploreFromCanonicalStatesOnly"` and at any thread
