@@ -66,7 +66,7 @@ Options[HGEvolve] = {
   (* Sampling options *)
   "EdgeThreshold" -> Automatic,  (* Max distance for edge creation *)
   "PoissonMinDistance" -> 1.0,  (* Minimum separation for Poisson disk *)
-  "RandomSeed" -> Automatic  (* Seed of the sampling draws (Automatic is 0) and of a generated initial condition (Automatic draws a new one) *)
+  "RandomSeed" -> Automatic  (* Seed of the sampling draws and of a generated initial condition; Automatic draws one from the kernel's random generator *)
 };
 
 HGSessionObject::usage =
@@ -1018,8 +1018,9 @@ hgJobOptions[ov_, requiredData_, graphProperties_] := Module[{branchialStepValue
     "ExplorationProbability" -> N[ov["ExplorationProbability"]],
     "TransitionRate" -> N[ov["TransitionRate"]],
     "RuleWeights" -> N[ov["RuleWeights"]],
-    (* The seed the sampling draws use; Automatic is the seed 0. *)
-    "RandomSeed" -> Replace[ov["RandomSeed"], Automatic -> 0],
+    (* The seed the sampling draws use. Automatic draws one from the kernel's random generator,
+       as RandomSeeding -> Automatic does, so SeedRandom makes an unseeded call repeatable. *)
+    "RandomSeed" -> Replace[ov["RandomSeed"], Automatic :> RandomInteger[{0, 2^62}]],
     "ExploreFromCanonicalStatesOnly" -> ov["ExploreFromCanonicalStatesOnly"],
     "ShowProgress" -> ov["ShowProgress"],
     "ShowGenesisEvents" -> ov["ShowGenesisEvents"],

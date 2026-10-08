@@ -102,7 +102,7 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 | `"BranchialStep"` | `Automatic` | the step whose branchial pairs the branchial graph shows: `Automatic`, `All`, `-1` (the final step) or a step number from 1 |
 | `"EdgeDeduplication"` | `True` | whether a causal graph has one edge per event pair, rather than one per shared hyperedge |
 | `"TargetDevice"` | `"CPU"` | `"CPU"` or `"GPU"` |
-| `"RandomSeed"` | `Automatic` | the seed of every sampling draw and of a generated initial condition; `Automatic` uses the seed `0` for the sampling draws and a new seed for a generated initial condition on each run |
+| `"RandomSeed"` | `Automatic` | the seed of every sampling draw and of a generated initial condition; `Automatic` draws a new seed from the kernel's random generator, so `SeedRandom` makes the call repeatable |
 | `"IncludeCanonicalHashes"` | `False` | whether each state record has a `"CanonicalHash"` |
 | `"ShowGenesisEvents"` | `False` | whether the events that create the initial states are part of the result |
 | `"ColorByRule"` | `False` | whether a styled graph colors each transition by the rule that fired it, with a legend |
@@ -115,7 +115,7 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 - With `"ExploreFromCanonicalStatesOnly" -> True`, every property is the same as under full exploration; only the cost of the evolution changes. It needs `"CanonicalizeStates" -> Full`.
 - `"MaxSuccessorStatesPerParent"`, `"MaxStatesPerStep"`, `"UniformRandom"` with `"MatchesPerStep"`, `"MatchesPerStateRule"`, `"TransitionRate"` and `"ExplorationProbability"` choose from the identity of each transition or state together with `"RandomSeed"`, so the same seed keeps the same states at any thread count and on either device. A transition a cap does not keep is not taken.
 - `"TransitionRate"` keeps a state's lowest-keyed transition when every draw at that state failed, so a sparse sample reaches the requested depth. `"ExplorationProbability"` does not.
-- Without a `"RandomSeed"` the selections use the seed `0`, so a run without one gives the same result every time.
+- Without a `"RandomSeed"` each call draws a new seed, as other random functions do; give `"RandomSeed"` or call `SeedRandom` first to repeat a sampled run.
 - `"TargetDevice" -> "GPU"` runs the evolution on the GPU engine bundled for the platform, which gives the same states, events and relations as the CPU. Where no GPU engine is bundled, the message `HGEvolve::gpudev` is issued and the evolution runs on the CPU. An evolution whose result is partial, such as a GPU evolution that reaches a capacity limit, issues `HGEvolve::overflow` with the reason and gives the partial result.
 - A generated initial condition is named by *init*: `"Grid"`, `"Cylinder"`, `"Torus"`, `"Sphere"`, `"Klein"`, `"Mobius"`, `"Sprinkling"` (also `"Minkowski"`), `"BrillLindquist"`, `"Poisson"` or `"Uniform"`. The same names go in the `"Type"` key of an association, where the other keys shape the instance and take precedence over the options below.
 - The initial-condition options are:

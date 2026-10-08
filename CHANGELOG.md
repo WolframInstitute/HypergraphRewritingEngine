@@ -63,8 +63,10 @@ User-visible changes since v1.0.0-rc1:
 - Under `"CanonicalizeStates" -> Full`, `"ExplorationProbability"` draws one coin per
   isomorphism class, and a class that holds an initial state is always expanded. Full capture and
   quotient exploration sample the same classes.
-- `"RandomSeed" -> Automatic` is the seed 0 for the sampling draws, so a sampled run without a
-  seed gives the same result every time. A generated initial condition still draws a new seed.
+- `"RandomSeed" -> Automatic` draws the seed from the kernel's random generator for the sampling
+  draws as well as for a generated initial condition, so `SeedRandom` makes an unseeded call
+  repeatable. The same `"RandomSeed"` gives the same sample on both devices and at any thread
+  count.
 - Packed arrays are accepted as initial states and as `"RuleWeights"`.
 - A refused session verb reports the engine's reason in `HGSessionOpen::refused`.
 - Session handles from the CPU and GPU workers, or from a restarted worker, are distinct.
