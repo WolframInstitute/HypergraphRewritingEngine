@@ -60,8 +60,15 @@ constexpr EventSignatureKeys EVENT_SIG_TRANSITION =
 // Under the Automatic preset they enter as canonical RANKS, one value per edge, in match order
 // for the consumed edges and RHS order for the produced, as the Wolfram/Multicomputation paclet's
 // CanonicalEventFunction -> Automatic identifies them. A rank is fixed by the canonical labelling
-// only up to the state's automorphisms; with both endpoint states in the same signature the
-// count of distinct signatures does not depend on which labelling a run used.
+// only up to the state's automorphisms, so the count of distinct signatures depends on the
+// labelling each state is read in, and a labelling drawn independently per raw state can change
+// it: 3 or 4 events for {{1,1}} -> {{1,2}} from {{1,1},{1,1}} at 3 steps.
+// The engine reads one labelling per state that is a function of the input. Under Full states
+// it is the class frame of the quotient reconstruction, shared by every event at the class:
+// changing the frame applies one bijection to the slots of every event at that class, and both
+// endpoint classes are in the signature, so the count does not depend on which raw state
+// defined the frame. Otherwise it is the raw state's own IR ranks, whose ties between
+// automorphic edges break on the state's edge order, which its derivation fixes.
 //
 // Under any other key set they enter as MARKED FORMS, one value each: the canonical hash of the
 // input state with its consumed edges marked, and of the output state with its produced edges
