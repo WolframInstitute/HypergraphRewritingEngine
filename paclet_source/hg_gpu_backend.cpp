@@ -615,6 +615,18 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
         full_result.push_back({wxf::WXFValue("Events"), wxf::WXFValue(events_assoc)});
     }
 
+    // An event's id under the event identity in force: its canonical event, or itself. From and To
+    // of the causal and branchial lists carry it and RawFrom/RawTo the raw ids, as on the host
+    // (Hypergraph::get_canonical_event).
+    std::unordered_map<uint32_t, uint32_t> canonical_event;
+    for (const auto& e : result.events)
+        if (e.id != hg_gpu::INVALID_ID && e.canonical_id != hg_gpu::INVALID_ID)
+            canonical_event.emplace(e.id, e.canonical_id);
+    auto event_id_of = [&](uint32_t raw) -> int64_t {
+        auto it = canonical_event.find(raw);
+        return static_cast<int64_t>(it == canonical_event.end() ? raw : it->second);
+    };
+
     // CausalEdges: dedup by raw (from,to), matching the FFI. The deduped count feeds
     // NumCausalEdges and must be computed even when the edge list itself is not requested
     // (e.g. the counts-only "Debug" property), so the count matches the CPU in every case.
@@ -643,8 +655,8 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
             if (!seen.insert(key).second) continue;
             if (job.include_causal_edges) {
                 wxf::WXFValueAssociation ed;
-                ed.push_back({wxf::WXFValue("From"), wxf::WXFValue(static_cast<int64_t>(c.from))});
-                ed.push_back({wxf::WXFValue("To"), wxf::WXFValue(static_cast<int64_t>(c.to))});
+                ed.push_back({wxf::WXFValue("From"), wxf::WXFValue(event_id_of(c.from))});
+                ed.push_back({wxf::WXFValue("To"), wxf::WXFValue(event_id_of(c.to))});
                 ed.push_back({wxf::WXFValue("RawFrom"), wxf::WXFValue(static_cast<int64_t>(c.from))});
                 ed.push_back({wxf::WXFValue("RawTo"), wxf::WXFValue(static_cast<int64_t>(c.to))});
                 causal.push_back(wxf::WXFValue(ed));
@@ -683,8 +695,8 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
         wxf::WXFValueList branchial;
         for (const auto& b : result.branchial_edges) {
             wxf::WXFValueAssociation ed;
-            ed.push_back({wxf::WXFValue("From"), wxf::WXFValue(static_cast<int64_t>(b.a))});
-            ed.push_back({wxf::WXFValue("To"), wxf::WXFValue(static_cast<int64_t>(b.b))});
+            ed.push_back({wxf::WXFValue("From"), wxf::WXFValue(event_id_of(b.a))});
+            ed.push_back({wxf::WXFValue("To"), wxf::WXFValue(event_id_of(b.b))});
             branchial.push_back(wxf::WXFValue(ed));
         }
         full_result.push_back({wxf::WXFValue("BranchialEdges"), wxf::WXFValue(branchial)});

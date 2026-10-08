@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstdint>
 #include <map>
+#include <set>
+#include <utility>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -2490,6 +2492,72 @@ TEST(GpuBinaryGate, OnlyRepliesReachTheReplyStream) {
     ASSERT_FALSE(err.empty());
     EXPECT_EQ(out, err) << "fd 1 of the worker is " << out << ", where device printf lands";
     EXPECT_EQ(out.find(w.out_path), std::string::npos);
+    worker_stop(w);
+}
+
+// "States" lists every state outside Full on both devices, and under event identity the causal and
+// branchial lists name canonical events on both: rule {{4},{2}} -> {} from {{1},{1},{1}} at two steps
+// under CanonicalizeStates Automatic has 7 states of 2 classes; rule {{1},{2}} -> {} from
+// {{1},{2},{3}} at one step under CanonicalizeEvents Full has 6 applications of one event, so its
+// 15 branchial pairs join that event to itself.
+TEST(GpuBinaryGate, StateListsAndEventEndpointsAgreeAcrossDevices) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    CpuWorker host;
+    ASSERT_TRUE(host.ok) << "could not start hg_evolve --serve";
+    {
+        auto opts = [](wxf::Writer& ww) {
+            put_str_list_option(ww, "RequestedData", {"States", "NumStates"});
+            put_str_option(ww, "CanonicalizeStates", "Automatic");
+        };
+        const auto job = session_envelope({{{1}, {1}, {1}}}, {{4}, {2}}, {}, 2, "Evolve", 0, true,
+                                          {}, opts, 2, false);
+        const auto cpu = host(job);
+        const auto gpu = worker_call(w, job);
+        ASSERT_FALSE(gpu.empty());
+        EXPECT_EQ(count_assoc_entries(cpu, "States"), 7);
+        EXPECT_EQ(count_assoc_entries(gpu, "States"), count_assoc_entries(cpu, "States"));
+        EXPECT_EQ(read_int_key(gpu, "NumStates"), read_int_key(cpu, "NumStates"));
+    }
+    {
+        auto opts = [](wxf::Writer& ww) {
+            put_str_list_option(ww, "RequestedData", {"BranchialEdges", "NumEvents"});
+            put_str_option(ww, "CanonicalizeEvents", "Full");
+        };
+        const auto job = session_envelope({{{1}, {2}, {3}}}, {{1}, {2}}, {}, 1, "Evolve", 0, true,
+                                          {}, opts, 2, false);
+        const auto cpu = host(job);
+        const auto gpu = worker_call(w, job);
+        ASSERT_FALSE(gpu.empty());
+        EXPECT_EQ(read_int_key(gpu, "NumEvents"), 1);
+        // The ids the list names: one event, so one id, on each device.
+        auto endpoint_ids = [](const std::vector<uint8_t>& out) {
+            std::set<int64_t> ids;
+            size_t records = 0;
+            wxf::Parser parser(out);
+            parser.skip_header();
+            parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+                if (k != "BranchialEdges") { vp.skip_value(); return; }
+                vp.read_function([&](const std::string&, size_t n, wxf::Parser& args) {
+                    for (size_t i = 0; i < n; ++i, ++records)
+                        args.read_association([&](const std::string& f, wxf::Parser& v) {
+                            if (f == "From" || f == "To") ids.insert(v.read<int64_t>());
+                            else v.skip_value();
+                        });
+                });
+            });
+            return std::make_pair(records, ids.size());
+        };
+        EXPECT_EQ(endpoint_ids(cpu), std::make_pair(size_t{15}, size_t{1}));
+        EXPECT_EQ(endpoint_ids(gpu), std::make_pair(size_t{15}, size_t{1}));
+    }
     worker_stop(w);
 }
 
