@@ -5,6 +5,7 @@
 #include <array>
 #include <chrono>
 #include <cstddef>
+#include <map>
 #include <mutex>
 #include <set>
 #include <unordered_map>
@@ -580,5 +581,88 @@ TEST(SamplingReproducibility, QuotientReplayFollowsTheDepthReached) {
         const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         EXPECT_EQ(e.last_error(), job_system::ErrorType::None);
         EXPECT_LT(s, 1.0) << "quotient=" << quotient;
+    }
+}
+
+namespace {
+// An isomorphism-invariant fingerprint of the causal graph over full-capture events: each event
+// is labelled (rule, canonical input hash, canonical output hash), then by its label with the
+// sorted labels of its causal predecessors and successors; the result is the sorted list.
+std::vector<uint64_t> causal_fingerprint(Hypergraph& hg) {
+    std::map<EventId, uint64_t> label;
+    std::map<EventId, std::vector<uint64_t>> pred, succ;
+    auto label_of = [&](EventId e) {
+        auto it = label.find(e);
+        if (it != label.end()) return it->second;
+        const Event& ev = hg.get_event(e);
+        uint64_t h = hgcommon::fnv_hash(hgcommon::FNV_OFFSET, ev.rule_index);
+        h = hgcommon::fnv_hash(h, ev.input_state == INVALID_ID ? 0 : hg.get_or_compute_canonical_hash(ev.input_state));
+        h = hgcommon::fnv_hash(h, hg.get_or_compute_canonical_hash(ev.output_state));
+        label[e] = h;
+        return h;
+    };
+    hg.causal_graph().for_each_causal_edge([&](const CausalEdge& c) {
+        pred[c.consumer].push_back(label_of(c.producer));
+        succ[c.producer].push_back(label_of(c.consumer));
+    });
+    std::vector<uint64_t> out;
+    for (uint32_t e = 0; e < hg.num_published_events(); ++e) {
+        if (hg.get_event(e).id == INVALID_ID) continue;
+        uint64_t h = label_of(e);
+        auto& p = pred[e]; auto& s = succ[e];
+        std::sort(p.begin(), p.end()); std::sort(s.begin(), s.end());
+        for (uint64_t x : p) h = hgcommon::fnv_hash(h, x);
+        h = hgcommon::fnv_hash(h, 0xFFu);
+        for (uint64_t x : s) h = hgcommon::fnv_hash(h, x);
+        out.push_back(h);
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+}  // namespace
+
+// MaxStatesPerStep chooses among transitions that tie on (rank, key) -- automorphic transitions
+// of one state -- by a rule that does not read the schedule: the causal graph is the same, up
+// to isomorphism, in every run. Rules {{4}} -> {{5}} and {{2}} -> {} from {{2},{2}}, 3 steps,
+// cap 12, 16 threads.
+TEST(SamplingReproducibility, StepCapTiesDoNotDependOnTheSchedule) {
+    std::set<std::vector<uint64_t>> seen;
+    for (int rep = 0; rep < 25; ++rep) {
+        Hypergraph hg;
+        ParallelEvolutionEngine e(&hg, 16);
+        e.add_rule(make_rule(0).lhs({0}).rhs({1}).build());
+        e.add_rule(make_rule(1).lhs({0}).build());
+        e.set_max_states_per_step(12);
+        e.evolve(std::vector<std::vector<VertexId>>{{0u}, {0u}}, 3);
+        seen.insert(causal_fingerprint(hg));
+    }
+    EXPECT_EQ(seen.size(), 1u);
+}
+
+// The per-state caps and MaxStatesPerStep under the reconstruction route (Full states,
+// Automatic events): the causal count is the same at every thread count. Rule
+// {{4,1}} -> {{5,6},{4,1}} from {{5,4},{1,4}}, 2 steps.
+TEST(SamplingReproducibility, CapTiesUnderTheReconstructionDoNotDependOnTheSchedule) {
+    enum Cap { PER_RULE, PER_PARENT, PER_STEP };
+    for (Cap cap : {PER_RULE, PER_PARENT, PER_STEP}) {
+        std::set<std::array<uint64_t, 3>> seen;
+        for (unsigned threads : {1u, 16u, 16u, 16u, 16u, 16u, 16u, 16u, 16u, 16u, 16u}) {
+            Hypergraph hg;
+            hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+            hg.set_event_signature_keys(hgcommon::EVENT_SIG_AUTOMATIC);
+            ParallelEvolutionEngine e(&hg, threads);
+            e.add_rule(make_rule(0).lhs({0, 1}).rhs({2, 3}).rhs({0, 1}).build());
+            if (cap == PER_RULE) e.set_matches_per_state_rule(2);
+            if (cap == PER_PARENT) e.set_max_successor_states_per_parent(2);
+            if (cap == PER_STEP) e.set_max_states_per_step(3);
+            e.evolve(std::vector<std::vector<VertexId>>{{0u, 1u}, {2u, 1u}}, 2);
+            seen.insert({hg.num_canonical_states(), hg.observable_num_events(),
+                         hg.observable_num_causal_edges()});
+        }
+        std::string got;
+        for (const auto& s : seen)
+            got += " (" + std::to_string(s[0]) + "," + std::to_string(s[1]) + "," +
+                   std::to_string(s[2]) + ")";
+        EXPECT_EQ(seen.size(), 1u) << "cap " << static_cast<int>(cap) << ":" << got;
     }
 }

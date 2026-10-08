@@ -90,8 +90,8 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 | `"CanonicalizeStates"` | `None` | when two states are one state: `None` (never), `Automatic` (identical edge lists) or `Full` (isomorphic) |
 | `"CanonicalizeEvents"` | `None` | when two applications are one event: `None`, `Full`, `Automatic`, `"Positional"` or a list of identity components |
 | `"CausalTransitiveReduction"` | `True` | whether to drop a causal pair implied by a longer causal path |
-| `"MaxSuccessorStatesPerParent"` | `0` | the most transitions kept per state, the lowest-ranked (`0` for no cap) |
-| `"MaxStatesPerStep"` | `0` | the most transitions kept per step, the lowest-ranked (`0` for no cap) |
+| `"MaxSuccessorStatesPerParent"` | `0` | the number of transitions kept per state, the lowest-ranked, with ties at the cut kept (`0` for no cap) |
+| `"MaxStatesPerStep"` | `0` | the number of transitions kept per step, the lowest-ranked, with ties at the cut kept (`0` for no cap) |
 | `"ExplorationProbability"` | `1.` | the probability of exploring each state |
 | `"TransitionRate"` | `1.` | the probability of keeping each transition |
 | `"RuleWeights"` | `{}` | per-rule multipliers on `"TransitionRate"`, in rule order |
@@ -838,7 +838,7 @@ EdgeCount @ TransitiveReductionGraph @ HGEvolve[loops, {{1, 1}, {1, 1}}, 3, "Cau
 
 ### "MaxSuccessorStatesPerParent"
 
-A positive value keeps at most that many transitions out of each state: the lowest-ranked, by a rank drawn from each transition's identity and `"RandomSeed"`. Three steps of the loops rule without a cap:
+A positive value keeps that many transitions out of each state: the lowest-ranked, by a rank drawn from each transition's identity and `"RandomSeed"`. Transitions that tie with the last one kept are kept as well. Three steps of the loops rule without a cap:
 
 ```wl
 loops = {{1, 2}, {2, 3}} -> {{1, 3}, {3, 4}, {1, 4}, {2, 4}};
@@ -867,7 +867,7 @@ The same seed keeps the same transitions at any thread count and on either devic
 
 ### "MaxStatesPerStep"
 
-A positive value keeps at most that many transitions in each step: the lowest-ranked of all the transitions out of the step's states, chosen once the step's matching is complete:
+A positive value keeps that many transitions in each step: the lowest-ranked of all the transitions out of the step's states, chosen once the step's matching is complete, with transitions that tie with the last one kept kept as well:
 
 ```wl
 loops = {{1, 2}, {2, 3}} -> {{1, 3}, {3, 4}, {1, 4}, {2, 4}};

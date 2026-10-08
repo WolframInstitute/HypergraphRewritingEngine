@@ -1341,6 +1341,9 @@ private:
     static bool ranked_before(const RankedMatch& x, const RankedMatch& y) {
         return x.rank != y.rank ? x.rank < y.rank : x.key < y.key;
     }
+    static bool ranked_tied(const RankedMatch& x, const RankedMatch& y) {
+        return x.rank == y.rank && x.key == y.key;
+    }
     void drain_candidates(StateId state, std::vector<RankedMatch>& out);
     // At a state's drain: the chosen matches -- drain_candidates, and under
     // MaxSuccessorStatesPerParent only the k lowest-ranked of them -- are rewritten, or under

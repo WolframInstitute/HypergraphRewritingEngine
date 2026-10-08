@@ -164,6 +164,11 @@ exact configuration. Sampling and capping options refine this as follows:
   at the state's drain; **`MaxStatesPerStep`** keeps the N lowest-ranked transitions of a step,
   chosen once the step's matching is complete. The rank is the same invariant key, so both are
   schedule-independent, and a transition not kept is not taken (no event, no state).
+- **Ties at a cap's cut are kept.** Transitions with equal rank and key are automorphic, and every
+  cap (per rule, per state, per step) keeps all of them when the k-th kept one is among them
+  (`hgcommon::cap_keep_count`), so the kept set does not depend on list order. Under the
+  quotient reconstruction the key reads the matched edges' automorphism orbits, so automorphic
+  transitions tie there as well.
   `UniformRandom -> True` with `MatchesPerStep` is `MaxStatesPerStep` under another name.
 
 *(Gates: `SamplingReproducibility.*` — same states at every worker count, reproducible per seed;

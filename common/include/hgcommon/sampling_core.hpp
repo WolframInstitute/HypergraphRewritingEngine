@@ -97,6 +97,21 @@ HG_HD inline uint32_t drain_selects(uint32_t matches_per_state_rule,
             states_per_step != 0u) ? 1u : 0u;
 }
 
+// How many candidates a cap of k keeps from `total` in rank order: k, extended over every
+// candidate after the k-th that ties it. `tied(i, j)` is whether candidates i and j have equal
+// (rank, key). Tied candidates are automorphic transitions of one class, and list order decides
+// which of them falls at the cut; list order is set by the schedule, and the raw causal relation
+// depends on which one is applied, so a cut never falls inside a tie. Used by
+// MatchesPerStateRule (per rule), MaxSuccessorStatesPerParent and MaxStatesPerStep.
+template <class Tied>
+HG_HD inline uint64_t cap_keep_count(uint64_t total, uint64_t k, Tied&& tied) {
+    if (k >= total) return total;
+    if (k == 0) return 0;
+    uint64_t n = k;
+    while (n < total && tied(n - 1, n)) ++n;
+    return n;
+}
+
 // Whether ANY draw can fail. Testing `transition_rate < 1` alone would skip sampling entirely for
 // a caller who left the rate at 1 and weighted a single rule to zero. `drain_selection` is
 // drain_selects above.

@@ -785,15 +785,29 @@ MatchJoin* ParallelEvolutionEngine::match_join_for(StateId state) {
 uint64_t ParallelEvolutionEngine::canonical_transition_key(StateId state,
                                                           const MatchRecord& match) {
     const State& s = hg_->get_state(state);
-    const AncestryCandidates cands{hg_, state, &s.edges};
+    const uint64_t input_hash = hg_->get_or_compute_canonical_hash(state);
+    uint32_t ranks[MAX_PATTERN_EDGES];
+    const uint8_t n = match.num_edges();
+
+    // Under the quotient reconstruction one raw state per class defines the class's expansion
+    // (qc_capture_expansion), and which one is the schedule's choice. Keyed on the matched edges'
+    // automorphism ORBITS, automorphic transitions share a key, so a cap keeps or drops them
+    // together (hgcommon::cap_keep_count) and the kept set is the same from every raw state of
+    // the class. Ranks break ties within an orbit by the raw state's edge order.
+    if (hg_->quotient_causal()) {
+        if (const EdgeOrbitTable* orb = hg_->edge_orbits(state)) {
+            for (uint8_t i = 0; i < n && i < MAX_PATTERN_EDGES; ++i)
+                ranks[i] = orb->orbit_of(match.matched_edges()[i]);
+            return hgcommon::event_signature(hgcommon::EVENT_SIG_TRANSITION, input_hash,
+                                             /*output_state_hash=*/0, /*step=*/0,
+                                             match.rule_index(), ranks, n,
+                                             /*produced_ranks=*/nullptr, 0);
+        }
+    }
 
     // Ranks come from the same individualization-refinement pass as the state's canonical
     // hash, so asking for them costs one IR pass per state and nothing per match after that.
     hg_->ensure_state_edge_ranks(state, s.edges);
-    const uint64_t input_hash = hg_->get_or_compute_canonical_hash(state);
-
-    uint32_t ranks[MAX_PATTERN_EDGES];
-    const uint8_t n = match.num_edges();
     const EdgeRankTable* table = hg_->edge_rank_table(state);
     for (uint8_t i = 0; i < n && i < MAX_PATTERN_EDGES; ++i) {
         ranks[i] = Hypergraph::edge_rank_in(table, match.matched_edges()[i]);
@@ -851,13 +865,23 @@ void ParallelEvolutionEngine::drain_candidates(StateId state, std::vector<Ranked
     std::sort(out.begin(), out.end(), ranked_before);
     const size_t k = matches_per_state_rule_;
     if (k == 0) return;
-    // Keep the first k of each rule; the list stays in rank order.
-    std::vector<size_t> taken(rules_.size(), 0);
-    size_t w = 0;
+    // Keep the first k of each rule and the candidates tied with the k-th
+    // (hgcommon::cap_keep_count over each rule's subsequence); the list stays in rank order.
+    std::vector<std::vector<uint32_t>> of_rule(rules_.size());
     for (size_t i = 0; i < out.size(); ++i) {
         const uint16_t rule = out[i].match->rule_index();
-        if (rule < taken.size() && taken[rule]++ < k) out[w++] = out[i];
+        if (rule < of_rule.size()) of_rule[rule].push_back(static_cast<uint32_t>(i));
     }
+    std::vector<uint8_t> keep(out.size(), 0);
+    for (const auto& idx : of_rule) {
+        const uint64_t n = hgcommon::cap_keep_count(idx.size(), k, [&](uint64_t a, uint64_t b) {
+            return ranked_tied(out[idx[a]], out[idx[b]]);
+        });
+        for (uint64_t j = 0; j < n; ++j) keep[idx[j]] = 1;
+    }
+    size_t w = 0;
+    for (size_t i = 0; i < out.size(); ++i)
+        if (keep[i]) out[w++] = out[i];
     out.resize(w);
 }
 
@@ -869,7 +893,11 @@ void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
     std::vector<RankedMatch> cands;
     drain_candidates(state, cands);
     const size_t k = max_successor_states_per_parent_;
-    const size_t n = k != 0 && k < cands.size() ? k : cands.size();
+    const size_t n = k == 0 ? cands.size()
+                            : static_cast<size_t>(hgcommon::cap_keep_count(
+                                  cands.size(), k, [&](uint64_t a, uint64_t b) {
+                                      return ranked_tied(cands[a], cands[b]);
+                                  }));
     if (max_states_per_step_ != 0) {
         if (auto* list = step_candidates(step))
             for (size_t i = 0; i < n; ++i) list->push(cands[i], hg_->arena());
@@ -890,10 +918,18 @@ void ParallelEvolutionEngine::select_step(uint32_t step) {
     std::vector<RankedMatch> cands;
     list->for_each([&](const RankedMatch& c) { cands.push_back(c); });
     list->reset();
-    const size_t n = max_states_per_step_ < cands.size() ? max_states_per_step_ : cands.size();
-    if (n < cands.size())
-        std::nth_element(cands.begin(), cands.begin() + static_cast<std::ptrdiff_t>(n), cands.end(),
-                         ranked_before);
+    size_t n = max_states_per_step_ < cands.size() ? max_states_per_step_ : cands.size();
+    if (n != 0 && n < cands.size()) {
+        // The n-th lowest at n - 1 and everything after it no lower; the candidates tied with it
+        // moved next to it, so cap_keep_count extends the cut over them.
+        std::nth_element(cands.begin(), cands.begin() + static_cast<std::ptrdiff_t>(n - 1),
+                         cands.end(), ranked_before);
+        const RankedMatch pivot = cands[n - 1];
+        std::partition(cands.begin() + static_cast<std::ptrdiff_t>(n), cands.end(),
+                       [&](const RankedMatch& c) { return ranked_tied(c, pivot); });
+        n = static_cast<size_t>(hgcommon::cap_keep_count(
+            cands.size(), n, [&](uint64_t a, uint64_t b) { return ranked_tied(cands[a], cands[b]); }));
+    }
     for (size_t i = 0; i < n; ++i) submit_rewrite_task(*cands[i].match, step, step + 1);
     if (n) HG_STAT(stats_.mine().spine_forced.bump(n));
 }

@@ -1264,6 +1264,9 @@ public:
     // returning the state's canonical hash (the same IR canonicalization serves both, so
     // this replaces the plain dedup hash in quotient mode at no extra canon cost).
     // `out_form`, when given, receives the state's IR canonical form from the same pass.
+    // The state's edge-orbit table, built if absent (qc_orbits_or_build); null for a state id
+    // that names no state.
+    const EdgeOrbitTable* edge_orbits(StateId s) { return qc_orbits_or_build(s); }
     uint64_t compute_and_cache_state_orbits(StateId s, const SparseBitset& edges,
                                             bool cache = true,
                                             std::vector<uint32_t>* out_form = nullptr);
