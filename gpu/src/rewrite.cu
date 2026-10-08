@@ -180,6 +180,12 @@ __device__ void add_causal_edge(const DeviceState& ds, const CausalViews& v, Eve
 
     uint64_t key = hash_causal_triple(p, c, e);
     auto r = v.triples.insert_if_absent(key, 1u);
+    if (r.overflowed) {
+        // With the map full, whether the triple is present is unknown. The edge is not added and
+        // the overflow is recorded; grow-and-retry doubles causal_triple_slots.
+        v.errors.record(ErrorKind::kCausalTripleMapFull);
+        return;
+    }
     if (!r.inserted) return;  // already present (dup) — silently skip
     uint32_t idx = v.pool.claim();
     if (idx == Pool<DeviceCausalEdge>::kInvalid) {
@@ -191,9 +197,12 @@ __device__ void add_causal_edge(const DeviceState& ds, const CausalViews& v, Eve
     if (v.tr) {
         // Record the kept edge in the reduced adjacency once per unique event pair (so
         // preds_list holds no duplicate producers), and mark the pair as seen — subsequent
-        // edges between the same (p, c) skip the reachability check.
+        // edges between the same (p, c) skip the reachability check. With the pair map full, the
+        // producer is pushed: a repeated predecessor leaves reachability unchanged, and a
+        // missing one leaves redundant edges in the reduction.
         auto pr = v.pairs.insert_if_absent(pair_key, 1u);
-        if (pr.inserted) {
+        if (pr.overflowed) v.errors.record(ErrorKind::kCausalPairMapFull);
+        if (pr.inserted || pr.overflowed) {
             if (v.preds.push(c, p) == INVALID_ID) {
                 v.errors.record(ErrorKind::kTrPredsNodes);
             }
@@ -225,6 +234,12 @@ __device__ __forceinline__ void try_add_branchial_edge(const BranchialViews& v, 
     if (a == INVALID_ID || b == INVALID_ID || a == b) return;
     uint64_t key = branchial_pair_key(a, b);
     auto r = v.pairs.insert_if_absent(key, 1u);
+    if (r.overflowed) {
+        // The pair is not added and the overflow is recorded; grow-and-retry doubles
+        // branchial_pair_slots.
+        v.errors.record(ErrorKind::kBranchialMapFull);
+        return;
+    }
     if (!r.inserted) return;  // already added (dup)
     uint32_t idx = v.pool.claim();
     if (idx == Pool<DeviceBranchialEdge>::kInvalid) {

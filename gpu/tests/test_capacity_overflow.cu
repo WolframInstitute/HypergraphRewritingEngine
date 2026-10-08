@@ -24,10 +24,14 @@
 
 #include "hg_gpu/evolve.hpp"
 #include "hg_gpu/persistent.hpp"
+#include "hg_gpu/device_arena.hpp"
+#include "hg_gpu/engine_state.hpp"
+#include "hg_gpu/initial_upload.hpp"
 
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <stdexcept>
 #include <vector>
 
 namespace {
@@ -269,3 +273,50 @@ TEST(CapacityOverflow, AReplayGroupGrowsAlone) {
     ASSERT_TRUE(hg_gpu::grow_config_for(cfg, hg_gpu::ErrorKind::kQeWordsFull));
     EXPECT_EQ(hg_gpu::qe_entries(cfg).words, 2 * before.words);
 }
+
+namespace {
+
+bool has_kind(const std::vector<hg_gpu::OverflowWarning>& w, hg_gpu::ErrorKind k) {
+    return std::any_of(w.begin(), w.end(), [k](const auto& x) { return x.kind == k; });
+}
+
+}  // namespace
+
+// A full relation dedup map is a capacity overflow the run reports, which names the map so the
+// retry grows it. Each map is given 16 slots on a run that records more relations than that: the
+// raw-event route (state and event identity None), with a second rule whose matches share consumed edges
+// with the first's, so sibling events are branchial pairs.
+TEST(CapacityOverflow, AFullRelationMapIsReported) {
+    struct Map { const char* name; uint32_t hg_gpu::EngineConfig::*field; hg_gpu::ErrorKind kind; };
+    const Map maps[] = {
+        {"causal triples", &hg_gpu::EngineConfig::causal_triple_slots,
+         hg_gpu::ErrorKind::kCausalTripleMapFull},
+        {"causal pairs", &hg_gpu::EngineConfig::causal_pair_slots,
+         hg_gpu::ErrorKind::kCausalPairMapFull},
+        {"branchial pairs", &hg_gpu::EngineConfig::branchial_pair_slots,
+         hg_gpu::ErrorKind::kBranchialMapFull}};
+    for (const Map& m : maps) {
+        hg_gpu::EvolveInput in = growing_input(3);
+        hg_gpu::RewriteRule path;
+        path.lhs = {{0, 1}, {1, 2}};
+        path.rhs = {{0, 1}, {1, 2}, {1, 3}};
+        path.num_lhs_vars = 3;
+        path.num_rhs_vars = 4;
+        in.rules.push_back(path);
+        in.canonicalization = hg_gpu::CanonicalizationMode::None;
+        in.event_canonicalization = hg_gpu::EventCanonicalizationMode::None;
+        in.transitive_reduction = true;
+        in.record = hgcommon::RecordSet{true, true, true};
+        hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
+        cfg.*m.field = 16;
+        hg_gpu::Engine engine(cfg);
+        const hg_gpu::EvolveResult r = engine.run(in);
+        EXPECT_TRUE(has_kind(r.warnings, m.kind)) << m.name << ": the map filled and the run "
+                                                  << "reported " << r.warnings.size()
+                                                  << " warnings, none naming it";
+        hg_gpu::EngineConfig grown = cfg;
+        ASSERT_TRUE(hg_gpu::grow_config_for(grown, m.kind)) << m.name;
+        EXPECT_EQ(grown.*m.field, 32u) << m.name;
+    }
+}
+
