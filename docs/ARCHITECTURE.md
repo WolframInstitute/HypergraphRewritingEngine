@@ -135,9 +135,9 @@ Boundary + tooling:
   addressed with no tombstone, so a claimed slot must never return to EMPTY — that
   cuts the probe run of every key passing through it, and the next insert of a hidden
   key reports itself as newly inserted, which is what every dedup decision reads. A
-  key equal to a sentinel is unstorable and is rejected loudly. `SegmentedArray`'s
-  `count_` is a high-water mark, so an index is readable only after its own `emplace`
-  returned, and its capacity is a CONFIGURED CEILING rather than an assumption: the
+  key equal to a sentinel is unstorable and is rejected loudly. `SegmentedArray`
+  records no extent, so an index is readable only after its writer published it to the
+  reader, and its capacity is a CONFIGURED CEILING rather than an assumption: the
   segment table is an inline array of `MAX_SEGMENTS` pointers, so a workload past
   `MAX_SEGMENTS * segment_size` elements raises `CapacityExhausted`, and the engine
   serves the states, events and relations it reached with a warning instead of

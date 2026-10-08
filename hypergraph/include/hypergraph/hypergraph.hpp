@@ -268,7 +268,7 @@ class Hypergraph {
     // structure neither had written, so nothing ordered their reads against each other.
     //
     // A SegmentedArray, not a ConcurrentMap: instance ids are dense, so a direct-indexed slot
-    // has no resize chain and no sentinel-key domain, and get_or_default hands both threads
+    // has no resize chain and no sentinel-key domain, and slot() hands both threads
     // the same list object. A map could hand them two lists during a resize window, which
     // would put the two sides on different heads and void the argument above.
     struct QcAppliedMatch {

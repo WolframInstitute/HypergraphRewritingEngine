@@ -26,12 +26,15 @@ namespace engine {
 // Array of fixed-size segments. Never reallocates existing segments, so
 // pointers to elements remain stable. New segments allocated on demand.
 //
-// Thread safety: Lock-free append via atomic count. Safe concurrent reads.
+// Thread safety: an element is placed at an index the caller's own counter handed out
+// (emplace_at), or reached by index with no construction (slot). The array records no extent. A
+// reader reaches an index only after the element's writer published that index to it (a job, a
+// state's edge set, a fenced rendezvous), which orders the construction before the read.
 //
 // Usage:
 //   SegmentedArray<Edge> edges;
-//   EdgeId id = edges.emplace(arena, ...);  // Returns index
-//   Edge& e = edges[id];                    // O(1) access
+//   edges.emplace_at(id, arena, ...);   // id from the caller's counter
+//   Edge& e = edges[id];                // O(1) access
 //
 
 template<typename T>
@@ -47,9 +50,9 @@ public:
     // more expensive to construct than the step under test is to run, and the exploration never
     // reaches the property.
     //
-    // The value changes CAPACITY and nothing else: segments are still created in order, the index
-    // decomposition is unchanged, and the growth schedule is unchanged. A harness that shrinks it
-    // checks the same algorithm on a smaller directory.
+    // The value changes CAPACITY and nothing else: the index decomposition and the growth
+    // schedule are unchanged. A harness that shrinks it checks the same algorithm on a smaller
+    // directory.
 #ifndef HG_SEGMENTED_ARRAY_MAX_SEGMENTS
 #define HG_SEGMENTED_ARRAY_MAX_SEGMENTS 4096
 #endif
@@ -95,12 +98,7 @@ public:
         , seg_mask_(segment_size_ - 1)
         , geom_end_(segment_size_ * ((size_t(1) << (GROWTH_STEPS + 1)) - 1))
         , cap_shift_(segment_shift + GROWTH_STEPS)
-        , cap_mask_((segment_size_ << GROWTH_STEPS) - 1)
-        , claim_(0)
-        , count_(0) {
-        // segment_size must be a power of two so index decomposition is a shift/mask
-        // rather than a 64-bit divide on the hottest accessor path.
-        // Initialize segment pointers to null
+        , cap_mask_((segment_size_ << GROWTH_STEPS) - 1) {
         for (size_t i = 0; i < MAX_SEGMENTS; ++i) {
             segments_[i].store(nullptr, std::memory_order_relaxed);
         }
@@ -117,64 +115,18 @@ public:
     SegmentedArray(SegmentedArray&&) = delete;
     SegmentedArray& operator=(SegmentedArray&&) = delete;
 
-    // Append a new element, return its index
-    // Thread-safe, lock-free
-    //
-    // Construct-before-publish: the slot index is claimed from a private counter
-    // (claim_), then emplace_at constructs the element, publishes the segment
-    // pointer, and only then advances the reader-visible count_. That ordering alone
-    // covers the emplace which OWNS the slot; it does not cover a lower slot in a
-    // different segment, whose emplace may still be in flight while this one advances
-    // count_ past it. Segments are therefore created in order (see
-    // get_or_create_segment), which gives: if a segment exists, so do all below it.
-    // The thread advancing count_ has created its own segment, so every index it
-    // publishes resolves to a live segment and operator[]/for_each cannot dereference
-    // a null one.
-    //
-    // CONTRACT: count_ is a high-water mark, advanced independently by each emplace,
-    // so under CONCURRENT emplace a reader iterating [0, size()) may observe a lower
-    // slot whose own emplace has not finished constructing its element yet -- it reads
-    // the arena's default-constructed value, not the eventual argument value. Access
-    // an index only after its own emplace() has returned, or iterate only when
-    // emplaces are quiescent. (For default-constructed element types -- the
-    // ensure_size / get_or_default usage -- the default read IS the value, so
-    // iteration is always safe.)
-    template<typename Arena, typename... Args>
-    uint32_t emplace(Arena& arena, Args&&... args) {
-        uint32_t idx = claim_.fetch_add(1, std::memory_order_relaxed);
-        emplace_at(idx, arena, std::forward<Args>(args)...);
-        return idx;
-    }
-
-    // Access element by index - O(1).
-    //
-    // DOES NOT WAIT. Reaching an index whose own emplace has not published is a violation of
-    // the contract above, not a condition to sit out: the caller holds an id that is not yet
-    // an element, and no amount of waiting makes that a correct thing to have done. Waiting
-    // for it also hid where the id came from -- the engine's num_states()/num_edges()/
-    // num_raw_events() report CLAIM counters, which run ahead of what is published, so a loop
-    // bounded by one of those would stall here rather than report the mismatch.
-    // The index is not checked against count_ outside stats builds. Every emplace writes
-    // count_, so reading it here put a line every creating thread writes on the path of every
-    // edge and state read; at 16 workers that miss was most of the rewrite's cost. A caller
-    // holds an index only after the element's creator published it to that caller (a job, a
-    // state's edge set), which is what orders the construction before this read.
+    // Access element by index - O(1). Does not wait: the caller holds the index only after the
+    // element's writer published it to that caller (a job, a state's edge set), which orders
+    // the construction before this read. The engine's num_states()/num_edges()/
+    // num_raw_events() report claim counters, which run ahead of what is published, so they do
+    // not bound a valid index.
     const T& at_published(uint32_t idx) const {
-#if HG_ENGINE_STATS
-        // Relaxed, so a stats build synchronizes exactly as a release build does and cannot
-        // mask a missing publication.
-        if (counted_ && idx >= count_.load(std::memory_order_relaxed)) {
-            throw std::logic_error(
-                "SegmentedArray: index is not published yet. Access an index only after its "
-                "own emplace() has returned, or iterate only while emplaces are quiescent.");
-        }
-#endif
         const Loc L = locate(idx);
         T* segment = segments_[L.seg].load(std::memory_order_acquire);
         if (!segment) {
             throw std::logic_error(
-                "SegmentedArray: segment for this index is not published yet (count_ is a "
-                "high-water mark, so a LOWER index can still be in flight).");
+                "SegmentedArray: the segment for this index is not published; the index was "
+                "reached before its writer published it.");
         }
         return segment[L.off];
     }
@@ -185,116 +137,11 @@ public:
 
     const T& operator[](uint32_t idx) const { return at_published(idx); }
 
-    // Get pointer to element (may be null if not yet allocated)
-    T* get(uint32_t idx) {
-        if (idx >= count_.load(std::memory_order_acquire)) {
-            return nullptr;
-        }
-        const Loc L = locate(idx);
-        T* segment = segments_[L.seg].load(std::memory_order_acquire);
-        return segment ? &segment[L.off] : nullptr;
-    }
-
-    const T* get(uint32_t idx) const {
-        if (idx >= count_.load(std::memory_order_acquire)) {
-            return nullptr;
-        }
-        const Loc L = locate(idx);
-        T* segment = segments_[L.seg].load(std::memory_order_acquire);
-        return segment ? &segment[L.off] : nullptr;
-    }
-
-    // Current number of elements
-    uint32_t size() const {
-        return count_.load(std::memory_order_acquire);
-    }
-
-    bool empty() const {
-        return size() == 0;
-    }
-
-    // Ensure array has at least 'required' elements, thread-safe, wait-free
-    // Each thread only emplaces what it needs - no waiting for other threads
-    template<typename Arena>
-    void ensure_size(uint32_t required, Arena& arena) {
-        while (size() < required) {
-            emplace(arena);
-        }
-    }
-
-    // Iterate over all elements
-    template<typename F>
-    void for_each(F&& f) {
-        uint32_t n = size();
-        for (uint32_t i = 0; i < n; ++i) {
-            f((*this)[i]);
-        }
-    }
-
-    template<typename F>
-    void for_each(F&& f) const {
-        uint32_t n = size();
-        for (uint32_t i = 0; i < n; ++i) {
-            f((*this)[i]);
-        }
-    }
-
-    // Iterate with index
-    template<typename F>
-    void for_each_indexed(F&& f) {
-        uint32_t n = size();
-        for (uint32_t i = 0; i < n; ++i) {
-            f(i, (*this)[i]);
-        }
-    }
-
-    template<typename F>
-    void for_each_indexed(F&& f) const {
-        uint32_t n = size();
-        for (uint32_t i = 0; i < n; ++i) {
-            f(i, (*this)[i]);
-        }
-    }
-
-    // Ensure element at index is accessible without constructing it
-    // Used when elements are externally indexed (e.g., vertex IDs) and default
-    // construction is sufficient. The segment allocation already default-constructs
-    // all elements, so this just ensures the segment exists.
-    //
-    // Thread-safe: Multiple threads can call this concurrently for the same or
-    // different indices. Only one will create the segment, others will use it.
-    template<typename Arena>
-    T& get_or_default(uint32_t idx, Arena& arena) {
-        const Loc L = locate(idx);
-        const size_t seg_idx = L.seg, offset = L.off;
-
-        // Ensure segment exists (thread-safe via CAS in get_or_create_segment)
-        // When segment is created, all elements are default-constructed by arena
-        T* segment = get_or_create_segment(seg_idx, arena);
-
-        // The same look-ahead as emplace_at, for the same reason: callers index these arrays
-        // by slots handed out in sequence, so the boundary is crossed by many threads at once.
-        if (offset == (segment_capacity(seg_idx) * 3) / 4 && seg_idx + 1 < MAX_SEGMENTS) {
-            get_or_create_segment(seg_idx + 1, arena);
-        }
-
-        // Update count_ to at least idx+1 for iteration purposes
-        // This is safe because we only increase, never decrease
-        uint32_t expected = count_.load(std::memory_order_relaxed);
-        while (expected <= idx) {
-            if (count_.compare_exchange_weak(expected, idx + 1,
-                    std::memory_order_release,
-                    std::memory_order_relaxed)) {
-                break;
-            }
-        }
-
-        return segment[offset];
-    }
-
-    // get_or_default without advancing count_, for an array read only through slot(): count_ is
-    // one shared line every new index would otherwise compare-and-swap, and get() and for_each,
-    // which read it, are not used on such an array.
+    // The element at idx, its segment created if absent. Every element of a segment is
+    // value-initialised by the arena before the segment pointer is published, so the element is
+    // its default until a caller writes it. Concurrent callers for one index get one object.
+    // The look-ahead is emplace_at's, for the same reason: callers index these arrays by slots
+    // handed out in sequence, so the boundary is crossed by many threads at once.
     template<typename Arena>
     T& slot(uint32_t idx, Arena& arena) {
         const Loc L = locate(idx);
@@ -304,24 +151,17 @@ public:
         return segment[L.off];
     }
 
-    // The element at idx if its segment exists, without consulting count_: the reader of an
-    // array written through slot(). An element never written reads as its default.
+    // The element at idx if its segment exists: the reader of an array written through slot().
+    // An element never written reads as its default.
     const T* find(uint32_t idx) const {
         const Loc L = locate(idx);
         T* segment = segments_[L.seg].load(std::memory_order_acquire);
         return segment ? &segment[L.off] : nullptr;
     }
 
-    // Construct element directly at a specific index
-    // Used when the index is managed by an external counter (e.g., edge IDs)
-    // This avoids the race condition in ensure_size/emplace where another thread
-    // might be constructing the same slot
-    //
-    // MEMORY ORDERING:
-    // 1. Element construction happens-before release fence
-    // 2. Release fence happens-before segment store (release)
-    // 3. Segment store (release) synchronizes-with segment load (acquire) in operator[]
-    // 4. Therefore: element data is visible to threads that load the segment
+    // Construct the element at an index the caller's counter handed out (edge, state and event
+    // ids). The construction is published by the caller's own publication of the index; the
+    // array adds none.
     template<typename Arena, typename... Args>
     void emplace_at(uint32_t idx, Arena& arena, Args&&... args) {
         const Loc L = locate(idx);
@@ -345,22 +185,9 @@ public:
 
         // Construct the element directly with provided arguments
         new (&segment[offset]) T(std::forward<Args>(args)...);
-
-        // Published to iterators by the release on count_ below. The segment pointer was stored
-        // when the segment was created and is not stored again: a store here wrote the shared
-        // segment table once per element from every creating thread.
-
-        // Update count_ to at least idx+1 for iteration purposes
-        // This is safe because we only increase, never decrease
-        if (!counted_) return;
-        uint32_t expected = count_.load(std::memory_order_relaxed);
-        while (expected <= idx) {
-            if (count_.compare_exchange_weak(expected, idx + 1,
-                    std::memory_order_release,
-                    std::memory_order_relaxed)) {
-                break;
-            }
-        }
+#if defined(HG_CALIBRATE_SEGMENTED_HIGH_WATER)
+        calibration_advance(idx);
+#endif
     }
 
     // The segment geometry, for a caller that reasons about bytes per segment (the test that
@@ -396,9 +223,7 @@ private:
     T* get_or_create_segment(size_t seg_idx, Arena& arena) {
         // The segment table is a fixed inline array, so an index past it would CAS into
         // whatever member follows and corrupt it with no symptom at the point of the
-        // mistake. Every write path funnels through here, so one check covers them all;
-        // reads cannot outrun it, because count_ only reaches idx+1 once idx's write
-        // succeeded.
+        // mistake. Every write path funnels through here, so one check covers them all.
         if (seg_idx >= MAX_SEGMENTS) {
             // A CONFIGURED LIMIT, not a defect: hgcommon::CapacityExhausted is what the job
             // system classifies on and what lets the engine serve the truncated graph with a
@@ -412,30 +237,6 @@ private:
         T* segment = segments_[seg_idx].load(std::memory_order_acquire);
         if (segment) {
             return segment;
-        }
-
-        // A SEGMENT IS NEVER CREATED BEFORE ITS PREDECESSORS.
-        //
-        // count_ is a per-emplace high-water mark, so the thread that fills a slot in segment k
-        // can advance count_ past a LOWER index whose own emplace, in segment j < k, has not
-        // reached its allocation yet. A reader then sees the index as published, indexes into a
-        // null segment, and at_published throws -- which is what it is for, but the read was
-        // legitimate and the array was wrong. Measured as an intermittent failure of the
-        // determinism and continuation tests at roughly one run in three.
-        //
-        // Creating the predecessors first establishes: if segment k exists, every segment below
-        // it exists. The thread that advances count_ to idx+1 has created segment(idx), so every
-        // lower index now resolves to a live segment. What a reader may still see is the
-        // DOCUMENTED case -- an element whose constructor has not run, reading as
-        // default-constructed -- and not an absent segment.
-        //
-        // The walk is on the creation path only: an existing segment returned above never
-        // reaches here, and each segment is created once, so this costs one pass over already
-        // published pointers per new segment and nothing in steady state.
-        for (size_t j = 0; j < seg_idx; ++j) {
-            if (!segments_[j].load(std::memory_order_acquire)) {
-                get_or_create_segment(j, arena);
-            }
         }
 
         // Need to allocate new segment
@@ -468,22 +269,26 @@ private:
     size_t geom_end_;      // first index past the doubling region
     uint32_t cap_shift_;   // log2(segment_size_ << GROWTH_STEPS)
     size_t cap_mask_;      // (segment_size_ << GROWTH_STEPS) - 1
-    // claim_ hands out unique slot indices to concurrent emplace() callers. count_ is
-    // the reader-visible high-water mark, advanced (by emplace_at) only after an
-    // element's segment is published -- so a reader that sees count_ > idx never
-    // dereferences a null segment for idx (see the emplace contract note on
-    // per-element construction ordering under concurrency).
-    std::atomic<uint32_t> claim_;
-    std::atomic<uint32_t> count_;
-    // False for an array whose extent nothing reads (set_uncounted): emplace_at then does not
-    // advance count_, which is one shared compare-and-swap per element saved.
-    bool counted_ = true;
     std::atomic<T*> segments_[MAX_SEGMENTS];
 
+#if defined(HG_CALIBRATE_SEGMENTED_HIGH_WATER)
+    // MODEL-CHECKER CALIBRATION (verification/genmc/segmented_array_published_read.cpp): an
+    // extent advanced by each emplace_at as a high-water mark, and a reader bounded by it. A
+    // lower index whose emplace is still constructing reads as published.
+    std::atomic<uint32_t> count_{0};
+
 public:
-    // For an array read only through at_published: size(), get() and for_each are not used on
-    // it. Called before the first emplace.
-    void set_uncounted() { counted_ = false; }
+    const T* get(uint32_t idx) const {
+        if (idx >= count_.load(std::memory_order_acquire)) return nullptr;
+        return find(idx);
+    }
+    void calibration_advance(uint32_t idx) {
+        uint32_t expected = count_.load(std::memory_order_relaxed);
+        while (expected <= idx &&
+               !count_.compare_exchange_weak(expected, idx + 1, std::memory_order_release,
+                                             std::memory_order_relaxed)) {}
+    }
+#endif
 };
 
 }  // namespace engine

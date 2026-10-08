@@ -24,7 +24,6 @@
 # Usage:
 #   verification/tla/run.sh              every cell
 #   verification/tla/run.sh <cell>       one cell, named without .cfg
-#   verification/tla/run.sh --quick      every cell except the deep ones (see kDeep below)
 #
 # Environment:
 #   TLA2TOOLS_JAR   path to tla2tools.jar          (default ~/tla/tla2tools.jar)
@@ -47,16 +46,11 @@ if [ ! -f "$JAR" ]; then
     exit 2
 fi
 
-# The deep cell is a minute on its own, against seconds for every other cell. --quick drops it so
-# the routine gate stays cheap; the full run includes it.
-is_deep() { case "$1" in *Deep) return 0 ;; *) return 1 ;; esac; }
-
 # A cell's module is the spec it instantiates: the MCMatchForwarding cells go through the
-# MCMatchForwarding wrapper, the SegmentedArray cells straight at SegmentedArray.
+# MCMatchForwarding wrapper.
 module_for() {
     case "$1" in
         MCMatchForwarding*) echo "MCMatchForwarding.tla" ;;
-        MCSegmentedArray*)  echo "SegmentedArray.tla" ;;
         MCDepthRelaxation*) echo "DepthRelaxation.tla" ;;
         MCQuiescence*)      echo "Quiescence.tla" ;;
         MCQuotientContinuation*) echo "QuotientContinuation.tla" ;;
@@ -64,10 +58,8 @@ module_for() {
     esac
 }
 
-QUICK=0
 CELLS=()
 case "${1:-}" in
-    --quick) QUICK=1 ;;
     "")      ;;
     *)       CELLS=("$1") ;;
 esac
@@ -77,17 +69,11 @@ if [ ${#CELLS[@]} -eq 0 ]; then
 fi
 
 fails=0
-skipped=0
 for cell in "${CELLS[@]}"; do
     cfg="$cell.cfg"
     if [ ! -f "$cfg" ]; then
         echo "--- $cell: NO SUCH CELL ($cfg)" >&2
         fails=$((fails + 1))
-        continue
-    fi
-    if [ "$QUICK" = 1 ] && is_deep "$cell"; then
-        echo "--- $cell: skipped (--quick)"
-        skipped=$((skipped + 1))
         continue
     fi
 
@@ -138,5 +124,5 @@ if [ "$fails" -gt 0 ]; then
     echo "$fails cell(s) did not match their declared verdict." >&2
     exit 1
 fi
-echo "all cells matched their declared verdict ($skipped skipped)."
+echo "all cells matched their declared verdict."
 exit 0

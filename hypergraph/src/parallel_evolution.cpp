@@ -563,10 +563,10 @@ struct ParallelEvolutionEngine::ExploreCtx {
         return e.hg_->explore_depth_cas(s, expected, desired);
     }
     void children_push(uint32_t parent, uint32_t child) {
-        e.canon_children_.get_or_default(parent, e.hg_->arena()).push(child, e.hg_->arena());
+        e.canon_children_.slot(parent, e.hg_->arena()).push(child, e.hg_->arena());
     }
     Node children_head(uint32_t s) const {
-        const LockFreeList<StateId>* l = e.canon_children_.get(s);
+        const LockFreeList<StateId>* l = e.canon_children_.find(s);
         return l ? l->head() : nullptr;
     }
     static bool children_end(Node n) { return n == nullptr; }

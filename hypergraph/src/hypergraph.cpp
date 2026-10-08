@@ -2898,16 +2898,6 @@ Hypergraph::Hypergraph(uint32_t capacity_scale)
     , twin_map_(decltype(twin_map_)::LAZY_INITIAL_CAPACITY, &arena_)
 
 {
-    // Edges and their signatures are read by id only; nothing enumerates them or asks their extent.
-    edges_.set_uncounted();
-    qc_inst_applied_.set_uncounted();
-    qc_event_sig_.set_uncounted();
-    qc_kept_->set_uncounted();
-    qc_event_runsig_.set_uncounted();
-    edge_signatures_.set_uncounted();
-    // Their extent is num_published_states/events, from the per-worker marks.
-    states_.set_uncounted();
-    events_.set_uncounted();
     causal_graph_.set_arena(&arena_);
     // The dedup sets are seated in the arena like every other member: a table on fresh arena
     // bytes needs no sentinel fill, and every table is reclaimed with the arena.

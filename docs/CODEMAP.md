@@ -101,9 +101,8 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`ir_canonicalization.hpp`)
 - **`bitset.hpp`** -- sparse chunked bitset for a state's edge set.
   - `SparseBitset` (+ `derive()`, `from_edges()`), nested `Chunk`/`ChunkEntry`
 - **`segmented_array.hpp`** -- append-only fixed-segment array, stable pointers, O(1) access.
-  - `SegmentedArray<T>` (`emplace`/`emplace_at`/`get_or_default`/`ensure_size`/`operator[]`/`for_each`)
+  - `SegmentedArray<T>` (`emplace_at`/`slot`/`find`/`operator[]`); records no extent: an index is read only after its writer published it to the reader
   - `MAX_SEGMENTS` is now enforced in `get_or_create_segment` (throws `std::length_error`); every write path funnels through it, and past it the CAS would land in the adjacent member
-  - CONTRACT: `count_` is a high-water mark, so an index may be read only after its own `emplace` returned, or during quiescence
 - **`concurrent_map.hpp`** -- lock-free open-addressing append-only hash map.
   - `ConcurrentMap<K,V,EMPTY,LOCKED>` (`insert_if_absent[_waiting]`, `lookup[_waiting]`, `count_unique`, `for_each`, optional arena backing via ctor/`set_arena`, `bytes_allocated`), nested `Entry`/`Table`. The ctor's third argument is the size the FIRST growth jumps to, defaulted -- a parameter so a model checker can bound the protocol, since a growth out of a 1024-slot table is 2048 atomic operations to interleave
   - **No tombstone**: a claimed slot is always resolved to a real key, never back to EMPTY, or the probe run of every key passing through it would be cut. Inserters therefore await a claimed slot IN PLACE before claiming one of their own.
@@ -285,7 +284,7 @@ implementation is written `MultiwayReference` and the directory `reference/`.
 
 ## `tools/` -- standalone probes (each a `main()`)
 
-Validation: `arena_reset_test`, `segmented_array_stress`, `determinism_forwarding_repro`, `causal_tr_determinism_probe`, `causal_tr_exactness_probe`, `canonical_causal_oracle`, `quotient_reconstruction_probe`, `multiplicity_propagation_probe`, `multi_init_rule_2x2_probe`.
+Validation: `arena_reset_test`, `determinism_forwarding_repro`, `causal_tr_determinism_probe`, `causal_tr_exactness_probe`, `canonical_causal_oracle`, `quotient_reconstruction_probe`, `multiplicity_propagation_probe`, `multi_init_rule_2x2_probe`.
 Canonicalization research: `ir_edge_map_probe`, `ir_edge_orbit_probe`, `ir_incremental_probe`, `ir_malloc_bench`, `incremental_probe`.
 Physics hunches: `branchial_flux_probe`, `budget_collapse_probe`, `higgs_shadow_probe`.
 Profiling: `profile_evolve` (single-threaded, for callgrind/cachegrind), `bench_gpu_evolve` (GPU evolve() vs PersistentEvolver timing; `HG_GPU_DBG_TIME=1` prints the persistent scheduler's phase-cycle attribution), `bench_cpu_evolve` (the CPU twin of the same workload).

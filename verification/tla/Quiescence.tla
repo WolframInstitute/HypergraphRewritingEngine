@@ -8,8 +8,7 @@
    produce and is harder to see, because no warning is attached to it.
 
    WHY TLA+ AND NOT GENMC. The property is a global predicate over every worker read while those
-   workers run, which is a protocol rather than one structure's memory operations, and it is the
-   same reason SegmentedArray is here.
+   workers run, which is a protocol rather than one structure's memory operations.
 
    THE PROTOCOL, from job_system.hpp. A submit bumps `submitted` and puts the job somewhere. A
    worker takes a job, marks itself executing, may submit children WHILE EXECUTING, then bumps

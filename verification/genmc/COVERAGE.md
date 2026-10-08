@@ -39,7 +39,7 @@ harness. The park protocol is checked on its spin backend, which waits on the sa
 | P09 ConcurrentMap insert/settle/lookup/grow/carry/drain | 54 | concurrent_map_agreement (2), concurrent_map_double_growth_2t (2), concurrent_map_double_growth_3t (3, SC), concurrent_map_repeated_offer (2), concurrent_map_resize (2), map_insert_existing_during_double_growth (2), map_lookup_during_growth (2), map_lookup_during_double_growth (3), frame_publication_is_atomic (2), claim_match_rendezvous (2) |
 | P10 ConcurrentKeySet claim/grow/migrate | 38 | key_set_contains_during_growth (2), key_set_contains_during_double_growth (3), key_set_distinct_keys_across_growth (2), key_set_enumeration (2), key_set_exactly_once (2), key_set_exactly_once_3t (3, SC), key_set_insert_existing_during_double_growth (3) |
 | P11 LockFreeList push/iterate | 21 | lock_free_list_completeness (2), lock_free_list_pairs_meet_once (2), lock_free_list_three_meet_once (3) |
-| P12 SegmentedArray publish and count | 16 | causal_in_edge_order (2), engine_* (inferred) |
+| P12 SegmentedArray segment creation and publication | 5 | segmented_array_published_read (3), causal_in_edge_order (2), engine_* (inferred) |
 | P13 arena: cursor, shared bump, block chain, construction fences | 49 | arena_cursor_vs_shared_disjoint (2), arena_worker_index_exclusive (2), engine_* |
 | P14 arena block pool (tagged Treiber stack) | 10 | block_pool_exactly_once (2) on `hgcommon/pool_core.hpp`; the engine's instance is `!HG_VERIFICATION` |
 | P18 DepthJoin settle cascade and report baton | 25 | depth_report_order (2) |

@@ -35,7 +35,6 @@ TEST(SegmentedArrayGrowth, EveryIndexReadsBackWhatWasWrittenAcrossSegmentRegimes
 
     for (uint32_t i = 0; i < n; ++i)
         ASSERT_EQ(a[i], i * 2654435761u) << "index " << i << " did not read back its own value";
-    EXPECT_EQ(a.size(), n);
 }
 
 // The old uniform layout held MAX_SEGMENTS * segment_size = 4,194,304 elements and raised
@@ -47,7 +46,6 @@ TEST(SegmentedArrayGrowth, AddressesPastTheUniformCeiling) {
     const uint32_t beyond = 4u * 1024u * 1024u + 7u;
     a.emplace_at(beyond, arena, 0xABCDEF01u);
     EXPECT_EQ(a[beyond], 0xABCDEF01u);
-    EXPECT_GT(a.size(), 4u * 1024u * 1024u);
 }
 
 // Concurrent creators of one segment each allocate it and one installs it. The losers give
@@ -142,7 +140,7 @@ TEST(SegmentedArrayGrowth, LosingSegmentAllocationsAreGivenBack) {
             // The first index of each segment, in the same order on every thread, so every
             // segment is raced by every thread.
             for (uint32_t s = 0; s < kSegments; ++s)
-                a.get_or_default(static_cast<uint32_t>(a.segment_first_index(s)), arena);
+                a.slot(static_cast<uint32_t>(a.segment_first_index(s)), arena);
         });
     }
     while (ready.load(std::memory_order_acquire) < kThreads) {}

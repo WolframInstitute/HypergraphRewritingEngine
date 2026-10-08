@@ -196,7 +196,9 @@ run_one() {
     # before.
     # The marker's VALUE picks the source set. `engine` is everything; `job_system` is the job
     # system alone, which is 543 lines against the engine's tens of thousands -- so a harness about
-    # the job system is checkable where one reaching evolve() is not.
+    # the job system is checkable where one reaching evolve() is not. `support` is genmc_support.cpp
+    # alone: the C++ ABI definitions a header-only harness needs once it reaches a throw (the
+    # type-info vtables, which libstdc++ declares as zero-length arrays the checker cannot place).
     local link_engine link_srcs=()
     link_engine="$(sed -n 's|^// GENMC-LINK: *||p' "$src" | head -1)"
     case "$link_engine" in
@@ -204,6 +206,7 @@ run_one() {
         engine)     link_srcs=("$ROOT"/hypergraph/src/*.cpp "$ROOT"/job_system/src/*.cpp
                                "$HERE"/genmc_support.cpp) ;;
         job_system) link_srcs=("$ROOT"/job_system/src/*.cpp "$HERE"/genmc_support.cpp) ;;
+        support)    link_srcs=("$HERE"/genmc_support.cpp) ;;
         *) echo "--- $name: unknown GENMC-LINK target '$link_engine'" >&2; return 2 ;;
     esac
 

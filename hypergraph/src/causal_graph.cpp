@@ -241,11 +241,9 @@ uint64_t CausalGraph::causal_pair_key(EventId producer, EventId consumer) {
     return id_key(producer, consumer);
 }
 
-CausalGraph::CausalGraph() : arena_(nullptr) { preds_.set_uncounted(); }
+CausalGraph::CausalGraph() : arena_(nullptr) {}
 
-CausalGraph::CausalGraph(ConcurrentHeterogeneousArena* arena) : arena_(arena) {
-    preds_.set_uncounted();
-}
+CausalGraph::CausalGraph(ConcurrentHeterogeneousArena* arena) : arena_(arena) {}
 
 void CausalGraph::set_transitive_reduction(bool enabled) {
     transitive_reduction_enabled_.store(enabled, std::memory_order_relaxed);

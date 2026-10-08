@@ -67,8 +67,8 @@ jobs:
           quotient_reconstruction_probe causal_tr_exactness_probe
 
       # tla_cells SKIPS without a JVM and tla2tools.jar, and a silent skip is the same as no
-      # coverage. The jar is 2.3 MB and the --quick cells are ~20s, so it is fetched here and the
-      # gate runs for real. Two of those cells are CALIBRATIONS that must VIOLATE; a spec edit
+      # coverage. The jar is 2.3 MB and the cells are ~20s, so it is fetched here and the
+      # gate runs for real. Six of those cells are CALIBRATIONS that must VIOLATE; a spec edit
       # that turns one green is exactly what this catches.
       #
       # PINNED, and the pin is checked rather than assumed: v1.7.4 carries TLC2 2.19, the version

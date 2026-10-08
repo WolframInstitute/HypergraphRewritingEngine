@@ -524,10 +524,6 @@ add_executable(sampling_cost_smoke EXCLUDE_FROM_ALL tools/sampling_cost_smoke.cp
 target_include_directories(sampling_cost_smoke PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(sampling_cost_smoke PRIVATE hypergraph)
 add_dependencies(probes sampling_cost_smoke)
-add_executable(segmented_array_stress EXCLUDE_FROM_ALL tools/segmented_array_stress.cpp)
-target_include_directories(segmented_array_stress PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(segmented_array_stress PRIVATE hypergraph)
-add_dependencies(probes segmented_array_stress)
 add_executable(spine_probe EXCLUDE_FROM_ALL tools/spine_probe.cpp)
 target_include_directories(spine_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(spine_probe PRIVATE hypergraph)
@@ -740,15 +736,10 @@ set_tests_properties(genmc_harnesses PROPERTIES
 # disabled the calibration, and only a runner that knows the expected verdict can see that; a
 # table of results in a README cannot.
 #
-# --quick drops the deep SegmentedArray cell, which is about a minute on its own against about a
-# second for each of the other eleven (measured 2026-09-26, 1s or less each). The
-# deep cell is run from the full `run.sh` when a minute is available, and its numbers live in
-# verification/tla/README.md.
-#
 # SKIPPED where the toolchain is absent, as with genmc: TLC needs a JVM and tla2tools.jar, and
 # neither is a dependency of this project, so run.sh exits 2 and that is mapped to a skip.
 add_test(NAME tla_cells
-         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/verification/tla/run.sh --quick)
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/verification/tla/run.sh)
 set_tests_properties(tla_cells PROPERTIES
                      TIMEOUT 600
                      SKIP_RETURN_CODE 2)
