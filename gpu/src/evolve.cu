@@ -271,8 +271,19 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     // without clearing -- so turning maintenance on after the upload and rebuilding puts every
     // root edge in its bucket twice, which surfaces as duplicate candidates, duplicate matches
     // and duplicate events on any state large enough to be matched through the indices.
-    engine.set_maintain_indices(max_state_edges(max_root_edges, in.rules, in.num_steps) >
-                                engine.config_slice_scan_max_edges());
+    //
+    // A continuation extends the bound with its larger num_steps. Maintenance that was off until
+    // now turns on with the indices empty -- nothing was inserted since the opening call's clear
+    // -- so every edge the session holds is inserted once (rebuild_indices) before the run.
+    // Maintenance that was on stays on.
+    const bool maintain = max_state_edges(max_root_edges, in.rules, in.num_steps) >
+                          engine.config_slice_scan_max_edges();
+    if (start_step == 0) {
+        engine.set_maintain_indices(maintain);
+    } else if (maintain && !engine.maintain_indices()) {
+        engine.set_maintain_indices(true);
+        rebuild_indices(engine, std::min(engine.num_edges_host(), engine.config().max_edges));
+    }
     // Continuing: the roots are already in the pools from the call that opened the session, so
     // uploading them again would add a second copy of every root and re-seed the evolution from
     // depth 0 alongside the frontier.
@@ -1074,6 +1085,7 @@ GpuSession::GpuSession(uint32_t max_states, uint32_t max_events)
 GpuSession::~GpuSession() = default;
 
 SessionView* GpuSession::view() { return &impl_->view; }
+uint32_t GpuSession::state_capacity() const { return impl_->view.explore.max_states; }
 uint32_t GpuSession::frontier_size() const { return impl_->state.frontier_size(); }
 void GpuSession::frontier_host(std::vector<StateId>& ids, std::vector<uint32_t>& steps) const {
     impl_->state.frontier_host(ids, steps);
@@ -1102,9 +1114,12 @@ PersistentEvolver::SessionRun PersistentEvolver::run_session(const EvolveInput& 
 
     // Opening: size the engine from this input, exactly as a first run would. A live engine
     // whose event_consumed stride is narrower than this input's largest left-hand side is
-    // rebuilt too.
+    // rebuilt too, and so is one with more state ids than the session's per-state arrays cover:
+    // its states would index them past their end.
+    const uint32_t session_states = session->explore.max_states;
     if (has_engine_ && start_step == 0 &&
-        config_from_input(in).max_lhs_edges > cfg_.max_lhs_edges) {
+        (config_from_input(in).max_lhs_edges > cfg_.max_lhs_edges ||
+         cfg_.max_states > session_states)) {
         engine_.reset();
         has_engine_ = false;
     }
@@ -1115,6 +1130,12 @@ PersistentEvolver::SessionRun PersistentEvolver::run_session(const EvolveInput& 
             return out;
         }
         EngineConfig cfg = config_from_input(in);
+        if (cfg.max_states > session_states) {
+            out.error = "the session covers " + std::to_string(session_states) +
+                        " states and this input sizes an engine of " +
+                        std::to_string(cfg.max_states) + "; open the session at that size";
+            return out;
+        }
         try {
             engine_ = std::make_unique<Engine>(cfg);
         } catch (const std::exception& e) {

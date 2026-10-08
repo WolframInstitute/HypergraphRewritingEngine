@@ -2624,6 +2624,64 @@ TEST(Session, AReplayOnlyContinuationDrivesWhatTheOldBoundLeft) {
     EXPECT_EQ(got.reconstructed_causal_pairs, ref.reconstructed_causal_pairs);
 }
 
+// A session opened on an evolver whose engine a larger run built is run on an engine no larger
+// than the session: the session's per-state depth and claim arrays are indexed by the engine's
+// state ids.
+TEST(Session, AnOpenAfterALargerRunFitsTheSession) {
+    // The large run is sized from a 100-edge root at four steps and matches nothing: its rule
+    // needs a self-loop.
+    hg_gpu::EvolveInput big;
+    big.rules = {rule({{0, 0}}, {{0, 0}, {0, 1}})};
+    for (hg_gpu::VertexId v = 0; v < 100; ++v) big.initial_state.push_back({v, v + 1});
+    big.num_steps = 4;
+    big.canonicalization = hg_gpu::CanonicalizationMode::Full;
+    hg_gpu::EvolveInput small = big;
+    small.initial_state = {{0u, 0u}};
+    small.num_steps = 1;
+    small.explore_from_canonical_states_only = true;
+    ASSERT_GT(hg_gpu::config_from_input(big).max_states,
+              hg_gpu::config_from_input(small).max_states);
+
+    hg_gpu::PersistentEvolver evolver;
+    evolver.run(big);
+    const hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(small);
+    hg_gpu::GpuSession session(cfg.max_states, cfg.max_events);
+    const auto sr = evolver.run_session(small, session.view(), 0);
+    ASSERT_TRUE(sr.ok) << sr.error;
+    EXPECT_LE(evolver.engine_config().max_states, session.state_capacity());
+}
+
+// A continuation that takes the states past slice_scan_max_edges matches them through the
+// indices, so the indices hold every edge, the roots' included. The root is a 249-edge path with
+// a self-loop on its first vertex; the rule moves the self-loop one vertex along the path and adds
+// an edge, so every step has one event and matches a root edge of the path. Opened at one step
+// (251 edges, under the threshold of 256, so no index is built) and continued to eleven, the
+// states past 256 edges are matched through the indices, which must hold the root edges.
+TEST(Session, AContinuationPastTheScanThresholdMatchesThroughFullIndices) {
+    hg_gpu::EvolveInput in;
+    in.rules = {rule({{0, 0}, {0, 1}}, {{0, 1}, {1, 1}, {0, 2}})};
+    in.initial_state = {{0u, 0u}};
+    for (hg_gpu::VertexId v = 0; v < 249; ++v) in.initial_state.push_back({v, v + 1});
+    in.num_steps = 1;
+    in.canonicalization = hg_gpu::CanonicalizationMode::Full;
+    hg_gpu::EvolveInput eleven = in;
+    eleven.num_steps = 11;
+    const hg_gpu::EvolveResult ref = hg_gpu::evolve(eleven);
+    ASSERT_TRUE(ref.warnings.empty());
+    ASSERT_EQ(ref.events.size(), 11u);
+
+    hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(eleven);
+    cfg.survivor_scratch = 1024;   // states past 256 edges have more survivors than fit locally
+    hg_gpu::GpuSession session(cfg.max_states, cfg.max_events);
+    hg_gpu::Engine engine(cfg);
+    engine.run(in, session.view(), 0);
+    const hg_gpu::EvolveResult got = engine.run(eleven, session.view(), 1);
+    for (const auto& wn : got.warnings)
+        ADD_FAILURE() << "warning " << hg_gpu::error_kind_name(wn.kind) << " x" << wn.count;
+    EXPECT_EQ(got.events.size(), ref.events.size());
+    EXPECT_EQ(got.states.size(), ref.states.size());
+}
+
 TEST(QuotientReconstruction, ClassArraysCoverEveryRepresentativeStateId) {
     Workload w;
     w.name = "growshrink3_automatic";
