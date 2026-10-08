@@ -12,6 +12,7 @@
 #include <map>
 #include "hypergraph/ir_canonicalization.hpp"
 #include <algorithm>
+#include <array>
 
 using namespace hypergraph;
 
@@ -1150,4 +1151,42 @@ TEST(CausalGraphTracking, CountsAreReadableWhileWorkersRun) {
     engine.evolve(std::vector<std::vector<VertexId>>{{0u, 1u}, {1u, 2u}}, 5);
     EXPECT_GT(seen.load(), 0u);
     EXPECT_GT(hg.causal_graph().num_causal_edges(), 0u);
+}
+
+// ExploreFromCanonicalStatesOnly needs Full state canonicalization and is not applied under
+// None or Automatic: the run equals the same run without it. Rule
+// {{1,2}} -> {{2,1},{2,1},{1,1,1,1}} from {{1,1},{2,2},{2,2}}, 3 steps.
+TEST(QuotientNeedsFull, ExploreFromCanonicalStatesOnlyIsNotAppliedWithoutFullStates) {
+    auto run = [](StateCanonicalizationMode mode, bool ecso, unsigned threads) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(mode);
+        ParallelEvolutionEngine engine(&hg, threads);
+        engine.set_explore_from_canonical_states_only(ecso);
+        engine.add_rule(make_rule(0).lhs({0, 1}).rhs({1, 0}).rhs({1, 0}).rhs({0, 0, 0, 0}).build());
+        engine.evolve(std::vector<std::vector<VertexId>>{{0u, 0u}, {1u, 1u}, {1u, 1u}}, 3);
+        return std::array<size_t, 3>{hg.num_canonical_states(),
+                                     static_cast<size_t>(hg.observable_num_events()),
+                                     static_cast<size_t>(hg.observable_num_causal_edges())};
+    };
+    for (auto mode : {StateCanonicalizationMode::None, StateCanonicalizationMode::Automatic}) {
+        const auto ref = run(mode, false, 1);
+        for (unsigned t : {1u, 4u})
+            EXPECT_EQ(run(mode, true, t), ref) << "mode=" << static_cast<int>(mode) << " t=" << t;
+    }
+}
+
+// The same under None with ExplorationProbability: the exploration coin is keyed as without
+// ExploreFromCanonicalStatesOnly. Rule {{2,1}} -> {{1,2}} from {{1,1}}, 2 steps, p = 0.645.
+TEST(QuotientNeedsFull, ExplorationCoinIsUnchangedWithoutFullStates) {
+    auto run = [](bool ecso) {
+        Hypergraph hg;
+        ParallelEvolutionEngine engine(&hg, 1);
+        engine.set_explore_from_canonical_states_only(ecso);
+        engine.set_exploration_probability(0.645);
+        engine.set_random_seed(1718414059u);
+        engine.add_rule(make_rule(0).lhs({1, 0}).rhs({0, 1}).build());
+        engine.evolve(std::vector<std::vector<VertexId>>{{0u, 0u}}, 2);
+        return std::array<size_t, 2>{hg.num_states(), hg.num_events()};
+    };
+    EXPECT_EQ(run(true), run(false));
 }

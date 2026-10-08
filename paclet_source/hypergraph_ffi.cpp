@@ -840,6 +840,9 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 "Automatic need \"CanonicalizeStates\" -> Full. Without it every state is "
                 "expanded and the causal relation is computed from the individual edges."});
         }
+        // Not applied without Full, on either device (docs/SPEC.md §5.4).
+        if (!held_session && req.state_canon_mode != hypergraph::StateCanonicalizationMode::Full)
+            req.explore_from_canonical_states_only = false;
 
 #ifdef HG_GPU_BACKEND
         // One session per worker across both engines (D7): an Open is refused while the other

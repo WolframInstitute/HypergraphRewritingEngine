@@ -1353,6 +1353,9 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
     // causal, where None with a non-Automatic key set gives 4 events and 32 causal edges.
     const bool full_states =
         hg_->state_canonicalization_mode() == StateCanonicalizationMode::Full;
+    // Quotient exploration is defined over Full classes (docs/SPEC.md §5.4) and is not applied
+    // under None or Automatic: every state is expanded. The FFI reports it (QuotientNeedsFull).
+    if (!full_states) explore_from_canonical_states_only_ = false;
     const bool qc = full_states &&
                     hgcommon::quotient_route_requested(explore_from_canonical_states_only_,
                                                        hg_->positional_event_identity(),
