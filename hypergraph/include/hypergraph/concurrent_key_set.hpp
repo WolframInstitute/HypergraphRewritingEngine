@@ -218,13 +218,14 @@ public:
             // ONE GROWER PER TRIGGER, AND NOBODY WAITS -- the same election ConcurrentMap makes.
             // grow() builds its replacement BEFORE the exchange that installs it, so every thread
             // that took the trigger would otherwise build one and all but one abandon it in an
-            // arena that cannot free it. A thread that does not take the ticket re-drives at the
-            // head rather than waiting; a probe exhausted on a table being sealed re-drives too
-            // (claim()), which is what makes progress independent of who holds the ticket.
-            if (want_grow_.load(std::memory_order_relaxed) || count_past_threshold(head)) {
-                grow_guarded(head, /*forced=*/false);
+            // arena that cannot free it. A thread that does not take the ticket claims at the
+            // head it read: a slot the growth has already sealed sends the claim back here
+            // (claim() returns kStale), and an unsealed slot is carried by the growth. Re-driving
+            // instead spun every other inserter on the trigger until the growth finished (wpp
+            // depth 7 full multiway, 32 threads: 17% of user samples in that loop).
+            if ((want_grow_.load(std::memory_order_relaxed) || count_past_threshold(head)) &&
+                grow_guarded(head, /*forced=*/false))
                 continue;
-            }
             // A key already settled in a superseded table must not be claimed again at the head.
             //
             // This scan does NOT need to seal what it passes, and that is a consequence of the
@@ -441,16 +442,18 @@ private:
     // before the growth it asked for completed would otherwise take the freed ticket with the
     // successor as its head and grow that too (measured: one growth per growth, doubling to a
     // 268M-entry table at 13,716 keys).
-    void grow_guarded(Table* t, bool forced) {
-        if (growing_.exchange(true, std::memory_order_acquire)) return;
+    // False when another thread holds the ticket; true when this thread took it.
+    bool grow_guarded(Table* t, bool forced) {
+        if (growing_.exchange(true, std::memory_order_acquire)) return false;
         struct ReleaseTicket {
             std::atomic<bool>& flag;
             ~ReleaseTicket() { flag.store(false, std::memory_order_release); }
         } release{growing_};
-        if (table_.load(std::memory_order_acquire) != t) return;
-        if (!forced && !want_grow_.load(std::memory_order_relaxed) && !count_past_threshold(t)) return;
+        if (table_.load(std::memory_order_acquire) != t) return true;
+        if (!forced && !want_grow_.load(std::memory_order_relaxed) && !count_past_threshold(t)) return true;
         grow(t);
         want_grow_.store(false, std::memory_order_relaxed);
+        return true;
     }
 
     // SEAL EACH SLOT AS IT IS CARRIED, BEFORE INSTALLING.
