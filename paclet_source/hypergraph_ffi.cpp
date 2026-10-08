@@ -845,16 +845,20 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
 
         if (!held_session) refuse_invalid_input(req);
 
-        if (!held_session && req.state_canon_mode != hypergraph::StateCanonicalizationMode::Full &&
-            hgcommon::quotient_route_requested(req.explore_from_canonical_states_only,
-                                               req.positional_event_identity,
-                                               req.event_signature_keys)) {
-            req.ffi_warnings.push_back({"QuotientNeedsFull", 1,
-                "\"ExploreFromCanonicalStatesOnly\" -> True and \"CanonicalizeEvents\" -> "
-                "Automatic need \"CanonicalizeStates\" -> Full. Without it every state is "
-                "expanded and the causal relation is computed from the individual edges."});
-            // As the warning says, on both engines: quotient exploration needs Full states.
-            req.explore_from_canonical_states_only = false;
+        // quotient_route_requested counts two requests; each is named only when the job made it.
+        if (!held_session && req.state_canon_mode != hypergraph::StateCanonicalizationMode::Full) {
+            if (req.explore_from_canonical_states_only) {
+                req.ffi_warnings.push_back({"QuotientNeedsFull", 1,
+                    "\"ExploreFromCanonicalStatesOnly\" -> True needs \"CanonicalizeStates\" -> "
+                    "Full. Without it every state is expanded."});
+                // As the warning says, on both engines: quotient exploration needs Full states.
+                req.explore_from_canonical_states_only = false;
+            }
+            if (hgcommon::quotient_route_requested(false, req.positional_event_identity,
+                                                   req.event_signature_keys))
+                req.ffi_warnings.push_back({"QuotientNeedsFull", 1,
+                    "\"CanonicalizeEvents\" -> Automatic needs \"CanonicalizeStates\" -> Full. "
+                    "Without it the causal relation is computed from the individual edges."});
         }
 
 #ifdef HG_GPU_BACKEND

@@ -3095,3 +3095,27 @@ TEST(FfiInput, AWarningQuotesACorruptOptionKeyAsValidUtf8) {
     EXPECT_EQ(hgmarshal::valid_utf8("\xC0\x80\xED\xA0\x80\xF4\x90\x80\x80\xE2\x82"),
               "\\xC0\\x80\\xED\\xA0\\x80\\xF4\\x90\\x80\\x80\\xE2\\x82");
 }
+
+// QuotientNeedsFull names the option the job set: CanonicalizeEvents -> Automatic alone does not
+// mention ExploreFromCanonicalStatesOnly, and the reverse.
+TEST(FfiInput, QuotientNeedsFullNamesTheOptionTheJobSet) {
+    HostBridge host;
+    const auto events_only = warning_contexts(run_rewriting_core(job_with_option([](wxf::Writer& w) {
+        put_str_option(w, "CanonicalizeEvents", "Automatic");
+    }), host));
+    ASSERT_EQ(events_only.size(), 1u);
+    EXPECT_NE(events_only[0].find("\"CanonicalizeEvents\" -> Automatic needs"), std::string::npos);
+    EXPECT_EQ(events_only[0].find("ExploreFromCanonicalStatesOnly"), std::string::npos);
+
+    const auto ecso_only = warning_contexts(run_rewriting_core(job_with_option([](wxf::Writer& w) {
+        put_str_option(w, "ExploreFromCanonicalStatesOnly", "True");
+    }), host));
+    ASSERT_EQ(ecso_only.size(), 1u);
+    EXPECT_NE(ecso_only[0].find("\"ExploreFromCanonicalStatesOnly\" -> True needs"), std::string::npos);
+    EXPECT_EQ(ecso_only[0].find("CanonicalizeEvents"), std::string::npos);
+
+    const auto full = warning_contexts(run_rewriting_core(job_with_option([](wxf::Writer& w) {
+        put_str_option(w, "CanonicalizeStates", "Full");
+    }), host));
+    EXPECT_TRUE(full.empty());
+}
