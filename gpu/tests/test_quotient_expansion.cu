@@ -221,8 +221,6 @@ TEST(QuotientExpansion, ArenaAllocationNearTheCursorWrapIsRefused) {
     cfg.max_states           = 8;
     cfg.max_vertex_slots     = 256;
     cfg.max_vertices         = 64;
-    cfg.sig_index_buckets    = 16;
-    cfg.sig_index_pool       = 64;
     cfg.inverted_pool        = 256;
     hg_gpu::EngineState engine(cfg);   // for the error channel qe_alloc_words records into
     hg_gpu::QeState qe(/*on=*/true, hg_gpu::QeEntries{1, 1, 1, 1, 16});   // an arena of 16 words

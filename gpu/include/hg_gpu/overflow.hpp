@@ -55,7 +55,6 @@ enum class ErrorKind : uint32_t {
     kQePairsFull         = 37,
     // The replay's word arena was full (EngineConfig::qe_word_entries).
     kQeWordsFull         = 38,
-    kSigIndexNodes       = 16,
     kInvIndexNodes       = 17,
     kFrontierCapFull     = 18,
     kScratchOverflow     = 19,   // bounded local scratch (IR, a replay driver without a work slice)

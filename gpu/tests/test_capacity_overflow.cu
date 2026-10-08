@@ -233,7 +233,7 @@ TEST(CapacityOverflow, TheEstimateCoversTheAllocation) {
                             HG_FIELD(qe_word_entries), HG_FIELD(max_edges),
                             HG_FIELD(max_vertices), HG_FIELD(max_vertex_slots),
                             HG_FIELD(max_states), HG_FIELD(max_state_edge_total),
-                            HG_FIELD(inverted_pool), HG_FIELD(sig_index_pool),
+                            HG_FIELD(inverted_pool),
                             HG_FIELD(canonical_form_words), HG_FIELD(match_dedup_slots),
                             HG_FIELD(event_canon_slots), HG_FIELD(max_events),
                             HG_FIELD(max_causal_edges), HG_FIELD(max_branchial_edges),
@@ -386,7 +386,6 @@ TEST(CapacityOverflow, ConfigSizingDoesNotWrap) {
     EXPECT_GE(cfg.max_edges, 32768u);
     EXPECT_GE(cfg.max_vertex_slots, cfg.max_edges);
     EXPECT_GE(cfg.inverted_pool, cfg.max_edges);
-    EXPECT_GE(cfg.sig_index_pool, cfg.max_edges);
     EXPECT_GE(cfg.edge_consumer_nodes, cfg.max_edges);
     EXPECT_GE(cfg.max_states, 1u << 17);
 }
@@ -417,7 +416,6 @@ TEST(CapacityOverflow, ARefusedArenaClaimLeavesTheArenaUsable) {
 // An index insert the initial upload cannot place is a capacity overflow the run reports.
 TEST(CapacityOverflow, AFullIndexAtUploadIsReported) {
     hg_gpu::EngineConfig cfg;
-    cfg.sig_index_pool = 4;
     cfg.inverted_pool = 4;
     hg_gpu::EngineState engine(cfg);
     engine.set_maintain_indices(true);
@@ -426,7 +424,6 @@ TEST(CapacityOverflow, AFullIndexAtUploadIsReported) {
     hg_gpu::upload_initial_state(engine, edges);
     std::vector<hg_gpu::OverflowWarning> w;
     engine.collect_warnings_into(w, "upload");
-    EXPECT_TRUE(has_kind(w, hg_gpu::ErrorKind::kSigIndexNodes));
     EXPECT_TRUE(has_kind(w, hg_gpu::ErrorKind::kInvIndexNodes));
 }
 

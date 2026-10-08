@@ -12,10 +12,9 @@
 // WHAT IS ACTUALLY DIFFERENT between the two sides, and therefore what is a parameter here:
 //
 //   1. CANDIDATE ENUMERATION. The host intersects an inverted vertex index; the device strides
-//      a CSR slice, or walks the pivot vertex's incident list, or walks the compatible
-//      signature buckets. This is a genuine difference -- different memory systems want
-//      different access -- so it is the Ctx's job, behind a per-depth cursor, and nothing else
-//      here knows about it.
+//      a CSR slice or walks the pivot vertex's incident list. This is a genuine difference --
+//      different memory systems want different access -- so it is the Ctx's job, behind a
+//      per-depth cursor, and nothing else here knows about it.
 //   2. WHAT AN EMITTED MATCH IS. The host calls a callback; the device claims a pool slot and
 //      publishes. Emit's job.
 //

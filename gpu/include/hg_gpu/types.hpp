@@ -103,11 +103,10 @@ struct Edge {
     uint8_t  arity;          // number of vertex slots occupied
     uint8_t  pad0_[3];
     uint32_t vertex_offset;  // index into vertex_pool for this edge's first vertex
-    uint64_t signature;      // precomputed arity-order-signature
     EventId  creator_event;  // event that produced this edge; INVALID_ID for initial
     uint32_t step;           // step at which this edge was created
 };
-static_assert(sizeof(Edge) == 24, "Edge layout must pack to 24 bytes");
+static_assert(sizeof(Edge) == 16, "Edge layout must pack to 16 bytes");
 
 // Per-state edge list descriptor: a compressed-sparse-row layout where
 // `state_edge_slices[sid] = {offset, count}` points at a sorted run of EdgeIds

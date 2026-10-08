@@ -14,55 +14,25 @@
 namespace HG_NAMESPACE {
 namespace gpu {
 
-// Maximum number of compatible data signatures per pattern edge. Equal to the
-// largest Bell number we admit: Bell(5)=52, Bell(6)=203 — pick 64 to cover up
-// to arity 5 (typical Wolfram rules use arity 2–3).
-constexpr uint32_t kMaxCompatibleSigs = 64;
-
 // Sentinel for DevicePatternEdge::pivot_var meaning "no bound var to pivot
 // from" — only valid on pattern edge 0 (connectivity-scheduling ensures every
 // subsequent pattern edge shares at least one var with a prior edge).
 constexpr uint8_t kNoPivotVar = 0xFF;
 
-// Device-side pattern edge: per-position variable indices and the precomputed
-// list of compatible data-edge signature hashes. Wolfram non-distinct binding
-// allows distinct pattern vars to bind to the same data vertex, so a single
-// pattern signature is compatible with multiple data signatures (every
-// coarsening of the pattern partition). Precomputing the compat list on the
-// host means the match kernel can seed candidates via the signature index for
-// pattern edge 0 without per-match enumeration.
+// Device-side pattern edge: per-position variable indices and the pivot.
 //
-// `pivot_var` is the connectivity-schedule's contribution: for every pattern
-// edge at depth ≥ 1, pivot_var is the LHS variable index (guaranteed bound
-// at the point this edge runs) that ties this edge to the subgraph matched
-// so far. The match kernel looks up `vertex_inverted_index[binding[pivot_var]]`
-// to get a degree-bounded candidate list (typically 2–10 entries) instead of
-// walking the global signature_index bucket (1000s of entries on dense
-// graphs). This is the adapted-HGMatch pattern: signature_index seeds edge
-// 0; inverted_index drives edges 1..R-1.
+// `pivot_var` is the connectivity-schedule's contribution: for every pattern edge at depth ≥ 1,
+// pivot_var is the LHS variable index (guaranteed bound at the point this edge runs) that ties
+// this edge to the subgraph matched so far. The match kernel looks up
+// `vertex_inverted_index[binding[pivot_var]]` to get a degree-bounded candidate list (typically
+// 2–10 entries). Pattern edge 0, and an edge without a pivot, take their candidates from the
+// state's own edge slice; hgcommon::bind_pattern_edge, which the host runs too, rejects an edge
+// of another arity or with vertex repetitions the pattern does not allow.
 struct DevicePatternEdge {
     uint8_t  arity = 0;
     uint8_t  vars[kMaxArity] = {0};
-    uint8_t  num_compat_sigs = 0;
     uint8_t  pivot_var = kNoPivotVar;
-    uint64_t compat_sig_hashes[kMaxCompatibleSigs] = {0};
 };
-
-// The signature-index bucket of compatible signature `s`, and whether `s` is the first of the
-// pattern edge's compatible signatures to land in it. A walk over the compatible signatures
-// takes each bucket once: two signatures can share a bucket, and walking it for both would
-// enumerate its edges twice, giving duplicate matches.
-__host__ __device__ inline uint32_t compat_sig_bucket(const DevicePatternEdge& pe, uint8_t s,
-                                                      uint32_t mask) {
-    return static_cast<uint32_t>(pe.compat_sig_hashes[s]) & mask;
-}
-__host__ __device__ inline bool compat_sig_bucket_first(const DevicePatternEdge& pe, uint8_t s,
-                                                        uint32_t mask) {
-    const uint32_t b = compat_sig_bucket(pe, s, mask);
-    for (uint8_t t = 0; t < s; ++t)
-        if (compat_sig_bucket(pe, t, mask) == b) return false;
-    return true;
-}
 
 // RHS edges reference LHS variable indices [0, num_lhs_vars) for re-used vars
 // and fresh-var indices [num_lhs_vars, num_rhs_vars) for newly introduced

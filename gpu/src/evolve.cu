@@ -83,8 +83,6 @@ EngineConfig config_from_input(const EvolveInput& in) {
     // by n_init-vertices + events × kMaxVars. Be generous.
     cfg.max_vertices           = field(std::max<uint64_t>(
         expected_edges, static_cast<uint64_t>(n_init) * 4u + expected_states * 4u));
-    cfg.sig_index_buckets      = 1024;
-    cfg.sig_index_pool         = field(expected_edges * 2u);
     cfg.inverted_pool          = field(expected_edges * 4u);
 
     if (in.slice_scan_max_edges) cfg.slice_scan_max_edges = in.slice_scan_max_edges;
@@ -682,7 +680,6 @@ bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
     switch (kind) {
         case ErrorKind::kEdgePoolFull:
             dbl(cfg.max_edges);
-            dbl(cfg.sig_index_pool);
             dbl(cfg.inverted_pool);
             dbl(cfg.edge_consumer_nodes);
             return true;
@@ -744,7 +741,6 @@ bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
         case ErrorKind::kQeWordsFull:
             dbl_qe(cfg.qe_word_entries, qe.words, kQeWordLimit);           return true;
         case ErrorKind::kQeWorkOverflow:      dbl(cfg.descent_work_scale);   return true;
-        case ErrorKind::kSigIndexNodes:       dbl(cfg.sig_index_pool);       return true;
         case ErrorKind::kInvIndexNodes:       dbl(cfg.inverted_pool);        return true;
         case ErrorKind::kFrontierCapFull:     dbl(cfg.max_states);           return true;
         case ErrorKind::kIRArenaExhausted:
@@ -798,7 +794,6 @@ static void log_config_growth(const char* header, const EngineConfig& initial,
     LOG_FIELD(max_vertex_slots);
     LOG_FIELD(max_states);
     LOG_FIELD(max_state_edge_total);
-    LOG_FIELD(sig_index_pool);
     LOG_FIELD(inverted_pool);
     LOG_FIELD(max_events);
     LOG_FIELD(max_causal_edges);
@@ -837,7 +832,7 @@ void fit_config_to_cap(EngineConfig& cfg, uint64_t cap) {
     };
     sc(cfg.max_edges, 1u<<12);            sc(cfg.max_vertices, 1u<<12);
     sc(cfg.max_vertex_slots, 1u<<14);     sc(cfg.max_states, 1u<<10);
-    sc(cfg.max_state_edge_total, 1u<<16); sc(cfg.sig_index_pool, 1u<<12);
+    sc(cfg.max_state_edge_total, 1u<<16);
     sc(cfg.inverted_pool, 1u<<12);        sc(cfg.max_events, 1u<<10);
     sc(cfg.max_causal_edges, 1u<<12);     sc(cfg.max_branchial_edges, 1u<<12);
     sc(cfg.causal_triple_slots, 1u<<12);  sc(cfg.causal_pair_slots, 1u<<12);
@@ -847,7 +842,7 @@ void fit_config_to_cap(EngineConfig& cfg, uint64_t cap) {
 }
 
 uint64_t estimated_device_bytes(const EngineConfig& cfg) {
-    // Sum the pools EngineState allocates. Element sizes: Edge 24; DeviceEvent
+    // Sum the pools EngineState allocates. Element sizes: Edge 16; DeviceEvent
     // 48; DeviceCausal/Branchial edge 12; StateEdgeSlice 8; a LockFreeList node
     // is sizeof(value)+4 rounded up; a ConcurrentMap slot is 16 B at a power-of-two capacity.
     // A 4-byte id is the unit for most index/id pools. Approximate — a 15%
@@ -862,13 +857,12 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     };
     uint64_t b = 0;
     b += u64(cfg.max_vertex_slots)    * 4;          // vertex_pool
-    b += u64(cfg.max_edges)           * 24;         // edge_pool (Edge)
+    b += u64(cfg.max_edges)           * sizeof(Edge);   // edge_pool
     b += u64(cfg.max_edges)           * 4;          // edge_producer
     b += u64(cfg.max_states)          * 8;          // state_edge_slices
     // state_edge_ids, and the edge ranks and orbits the canonical and quotient routes allocate
     // (EngineState::ensure_edge_ranks, ensure_edge_orbits).
     b += u64(cfg.max_state_edge_total) * 12;
-    b += u64(cfg.sig_index_buckets)   * 4 + u64(cfg.sig_index_pool) * 8;   // signature index
     b += u64(cfg.max_vertices)        * 4 + u64(cfg.inverted_pool)  * 8;   // vertex inverted index
     b += u64(cfg.max_events)          * sizeof(DeviceEvent);   // event_pool
     b += u64(cfg.max_events)          * 4 * event_consumed_stride(cfg);   // event_consumed

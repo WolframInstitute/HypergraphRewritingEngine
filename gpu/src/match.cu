@@ -1,5 +1,4 @@
 #include "hgcommon/namespace.hpp"
-#include "hg_gpu/edge_signature.hpp"
 #include "hg_gpu/match.hpp"
 #include "hg_gpu/cuda_check.hpp"
 
@@ -19,69 +18,6 @@ namespace gpu {
 
 namespace {
 
-// Recursively enumerate all coarsenings of the pattern partition into `out`.
-// Each coarsening is an EdgeSignature whose partition is coarser-than-or-
-// equal to the pattern partition (i.e. positions in the same pattern var
-// class also share a data class; positions in different pattern classes may
-// be merged or kept separate).
-//
-// merge_to[c] = data class that pattern class c collapses into. Builds up
-// merge_to one pattern class at a time; at depth = num_classes emits the
-// induced data signature hash.
-void enumerate_coarsenings(const EdgeSignature& pattern,
-                           uint8_t num_classes,
-                           uint8_t depth,
-                           int     max_data_class,   // -1 ⇒ no class assigned yet
-                           uint8_t* merge_to,
-                           std::vector<uint64_t>& out) {
-    if (depth == num_classes) {
-        EdgeSignature data;
-        data.arity = pattern.arity;
-        for (uint8_t i = 0; i < pattern.arity; ++i) {
-            data.pattern[i] = merge_to[pattern.pattern[i]];
-        }
-        out.push_back(signature_hash(data));
-        return;
-    }
-    int upper = max_data_class + 1;
-    for (int c = 0; c <= upper; ++c) {
-        merge_to[depth] = static_cast<uint8_t>(c);
-        int new_max = (c > max_data_class) ? c : max_data_class;
-        enumerate_coarsenings(pattern, num_classes, depth + 1, new_max,
-                              merge_to, out);
-    }
-}
-
-std::vector<uint64_t> compatible_signature_hashes(const DevicePatternEdge& pe) {
-    EdgeSignature pattern;
-    pattern.arity = pe.arity;
-    uint8_t var_to_class[kMaxArity];
-    for (auto& v : var_to_class) v = 0xFF;
-    uint8_t num_classes = 0;
-    for (uint8_t i = 0; i < pe.arity; ++i) {
-        uint8_t v = pe.vars[i];
-        if (var_to_class[v] == 0xFF) var_to_class[v] = num_classes++;
-        pattern.pattern[i] = var_to_class[v];
-    }
-
-    std::vector<uint64_t> out;
-    if (pe.arity == 0) {
-        out.push_back(signature_hash(pattern));
-        return out;
-    }
-
-    uint8_t merge_to[kMaxArity];
-    enumerate_coarsenings(pattern, num_classes, 0, /*max_data_class=*/-1,
-                          merge_to, out);
-
-    // Coarsenings can produce duplicates when the pattern itself has
-    // multiple classes containing only one var (each independent class can
-    // be assigned to the same data class) — sort + unique.
-    std::sort(out.begin(), out.end());
-    out.erase(std::unique(out.begin(), out.end()), out.end());
-    return out;
-}
-
 // What match_state_rule below owns, and what it does not.
 //
 // THE JOIN IS NOT HERE. The recursion, edge-injectivity, binding and unwind, and which pattern
@@ -100,14 +36,12 @@ std::vector<uint64_t> compatible_signature_hashes(const DevicePatternEdge& pe) {
 //     because match_state_rule's body stripes across exactly those threads -- every scheduler
 //     calling it must launch with this shape, so it is contract, not a private detail.
 //
-// ENUMERATION is adaptive on state size, in the Ctx's cursor. Multiway states are small
-// (tens of edges) while the signature and vertex-inverted indices are global across the whole
-// evolution, so their buckets grow with total edge count and walking them costs O(evolution)
-// per state. At or below DeviceState::slice_scan_max_edges (an EngineConfig knob) candidates
-// come straight from the state's own CSR slice: O(|state|), each edge exactly once, no dedup
-// buffer, membership free. Above it -- single huge states, the visualiser regime -- the global
-// indices win and the pivot/signature machinery is used. The threshold also gates lazy index
-// maintenance: below it the indices are never read.
+// ENUMERATION, in the Ctx's cursor. Pattern edge 0, and an edge with no bound pivot vertex, take
+// their candidates from the state's own CSR slice: O(|state|), each edge exactly once, membership
+// free. An edge with a bound pivot vertex in a state past DeviceState::slice_scan_max_edges walks
+// the pivot's incident list (VertexInvertedIndex), which is degree-bounded; at or below the
+// threshold the slice is cheaper. The threshold also gates lazy index maintenance: below it the
+// index is never read.
 
 using MatchJoinState = hgcommon::JoinState<kMaxPatternEdges, kMaxVars, EdgeId, VertexId>;
 
@@ -156,27 +90,17 @@ struct MatchJoinCtx {
     __device__ bool usable(EdgeId e) const { return slice_position(ids, slice, e) != UINT32_MAX; }
     __device__ bool aborted() const { return false; }
 
-    // Adaptive on state size, and the paths are strictly EITHER/OR: running two of them
-    // would enumerate a candidate twice and emit a duplicate match. Multiway states are
-    // small (tens of edges) while the signature and vertex-inverted indices span the whole
-    // evolution, so their buckets cost O(evolution) per state; at or below
-    // slice_scan_max_edges the state's own CSR slice gives each edge exactly once, with
-    // membership for free.
-    //
-    // The pivot vertex's incident list holds each incident edge once (VertexInvertedIndex). The
-    // signature path takes the union over every compatible signature bucket: Wolfram binding
-    // lets distinct vars collapse onto one vertex, so a matching data edge's signature may be
-    // coarser than the pattern's. Each edge appears in its own bucket exactly once, and each
-    // bucket is walked once (compat_sig_bucket_first).
+    // The two paths are strictly EITHER/OR per pattern position: running both would enumerate a
+    // candidate twice and emit a duplicate match. The pivot vertex's incident list holds each
+    // incident edge once (VertexInvertedIndex).
     using Cand = EdgeId;
     using List = typename LockFreeList<EdgeId>::DeviceView;
-    static constexpr uint8_t kScan = 0, kPivot = 1, kSignature = 2;
+    static constexpr uint8_t kScan = 0, kPivot = 1;
     static constexpr uint32_t kEnd = Pool<typename LockFreeList<EdgeId>::Node>::kInvalid;
     struct Cursor {
-        uint32_t at;     // kScan: the next slice index; otherwise the next list node or kEnd
+        uint32_t at;     // kScan: the next slice index; kPivot: the next list node or kEnd
         uint8_t  mode;
         uint8_t  p;      // the pattern position
-        uint8_t  sig;    // kSignature: the next compatible signature to open
     };
 
     // The first node of list[key], as LockFreeList::DeviceView::for_each starts its walk: a
@@ -190,17 +114,13 @@ struct MatchJoinCtx {
 
     __device__ void cursor_open(uint8_t p, const MatchJoinState& st, Cursor& c) const {
         c.p = p;
-        c.sig = 0;
         c.at = 0;
-        if (slice.count <= scan_max) { c.mode = kScan; return; }
+        c.mode = kScan;
         const DevicePatternEdge& pe = rule.lhs[p];
-        if (pe.pivot_var != kNoPivotVar) {
+        if (slice.count > scan_max && pe.pivot_var != kNoPivotVar) {
             c.mode = kPivot;
             c.at = list_first(ds.vertex_inverted_index.list, st.binding[pe.pivot_var]);
-            return;
         }
-        c.mode = kSignature;
-        c.at = kEnd;
     }
 
     __device__ bool cursor_next(Cursor& c, EdgeId& out) const {
@@ -209,23 +129,11 @@ struct MatchJoinCtx {
             out = ids[slice.offset + c.at++];
             return true;
         }
-        const List& l = c.mode == kPivot ? ds.vertex_inverted_index.list
-                                         : ds.signature_index.list;
-        for (;;) {
-            if (c.at != kEnd) {
-                const auto& node = l.pool.at(c.at);
-                out = node.value;
-                c.at = node.next;
-                return true;
-            }
-            if (c.mode == kPivot) return false;
-            const DevicePatternEdge& pe = rule.lhs[c.p];
-            if (c.sig >= pe.num_compat_sigs) return false;
-            const uint8_t s = c.sig++;
-            if (!compat_sig_bucket_first(pe, s, ds.signature_index.mask)) continue;
-            c.at = list_first(ds.signature_index.list,
-                              compat_sig_bucket(pe, s, ds.signature_index.mask));
-        }
+        if (c.at == kEnd) return false;
+        const auto& node = ds.vertex_inverted_index.list.pool.at(c.at);
+        out = node.value;
+        c.at = node.next;
+        return true;
     }
 };
 
@@ -365,38 +273,12 @@ __device__ __noinline__ void match_state_rule_pass(
         hgcommon::join_seed(ctx, st, root_cand, 0, emit);
     };
 
-    // Stride pattern edge 0's candidates across the block's threads. THIS is the device's part
-    // of matching -- the parallelism -- and it is why match_state_rule exists rather than a
-    // call straight into join_core. Small states index their slice directly; the
-    // signature-bucket walk covers large states, where every thread traverses the bucket and
-    // takes the candidates whose edge id is its thread index modulo the block size.
-    //
-    // The stripe is keyed on the edge id because each thread loads the bucket's head itself, and
-    // another block may push between two of those loads. The state's own edges were indexed
-    // before the state was queued, so every thread's walk holds each of them once, and the edge
-    // id gives each one to exactly one thread. A stripe on the position in the walk would differ
-    // between two threads whose walks differ by a pushed node.
-    const DevicePatternEdge& pe0 = rule.lhs[0];
-    StateEdgeSlice sl0 = ds.state_edge_slices[state_id];
-
-    auto drive_join = [&] () {
-        if (sl0.count <= ds.slice_scan_max_edges) {
-            for (uint32_t i = threadIdx.x; i < sl0.count; i += blockDim.x) {
-                run_dfs_from_root(ds.state_edge_ids[sl0.offset + i]);
-            }
-        } else {
-            for (uint8_t s = 0; s < pe0.num_compat_sigs; ++s) {
-                if (!compat_sig_bucket_first(pe0, s, ds.signature_index.mask)) continue;
-                ds.signature_index.list.for_each(
-                    compat_sig_bucket(pe0, s, ds.signature_index.mask),
-                    [&] (EdgeId cand) {
-                        if ((cand % blockDim.x) == threadIdx.x) run_dfs_from_root(cand);
-                    });
-            }
-        }
-    };
-
-    drive_join();
+    // Stride pattern edge 0's candidates -- the state's own edge slice -- across the block's
+    // threads. THIS is the device's part of matching -- the parallelism -- and it is why
+    // match_state_rule exists rather than a call straight into join_core.
+    const StateEdgeSlice sl0 = ds.state_edge_slices[state_id];
+    for (uint32_t i = threadIdx.x; i < sl0.count; i += blockDim.x)
+        run_dfs_from_root(ds.state_edge_ids[sl0.offset + i]);
 }
 
 // MaxSuccessorStatesPerParent, in the block of the state's rule 0, over every rule: the host's
@@ -601,13 +483,12 @@ namespace {
 // edge being bound must share at least one variable with a pattern edge
 // already bound at a shallower depth. This lets the match kernel look up
 // candidates via `vertex_inverted_index[binding[pivot_var]]` — a degree-
-// bounded list — instead of walking the global signature_index bucket.
+// bounded list — instead of scanning the state's whole edge slice.
 //
 // Greedy schedule: start with the first edge of rule.lhs that has at least
 // one variable (any rule with a non-empty LHS). For each subsequent slot,
 // pick the unplaced LHS edge whose variable set has largest overlap with
-// already-bound variables. On ties, pick the edge with smallest signature
-// bucket (heuristic — prefer more selective seeds). The pivot_var emitted
+// already-bound variables; on ties, the earliest in rule.lhs. The pivot_var emitted
 // for each edge ≥ 1 is one of the variables shared with the bound set
 // (pick the first one found in the source LHS positional order for
 // determinism).
@@ -615,7 +496,7 @@ namespace {
 // If a rule's LHS is disconnected (no overlap between some pair of components)
 // the greedy picks one edge from the second component without a pivot —
 // for safety we emit pivot_var = kNoPivotVar on that edge and the match
-// kernel falls back to signature_index for it. In practice Wolfram rules
+// kernel scans the state's slice for it. In practice Wolfram rules
 // have connected LHS.
 struct ScheduledEdge {
     uint8_t src_index;       // original index in rule.lhs
@@ -660,7 +541,7 @@ std::vector<ScheduledEdge> schedule_lhs_edges(const RewriteRule& rule) {
         if (best_idx < 0) break;  // shouldn't happen given placed[] bookkeeping
         // best_pivot is kNoPivotVar only if this edge shares no var with the
         // already-bound subgraph (disconnected rule). Match kernel handles
-        // that case by falling back to signature_index for this edge.
+        // that case by scanning the state's slice for this edge.
         out.push_back({static_cast<uint8_t>(best_idx), best_pivot});
         placed[best_idx] = true;
         for (uint8_t v : rule.lhs[best_idx]) bound_var[v] = true;
@@ -737,15 +618,6 @@ DeviceRule make_device_rule(const RewriteRule& rule) {
         dst.arity = static_cast<uint8_t>(src.size());
         for (uint8_t i = 0; i < dst.arity; ++i) dst.vars[i] = src[i];
         dst.pivot_var = sch.pivot_var;
-
-        auto compats = compatible_signature_hashes(dst);
-        if (compats.size() > kMaxCompatibleSigs) {
-            throw std::runtime_error(
-                "make_device_rule: pattern edge has more than kMaxCompatibleSigs"
-                " compatible signatures (raise kMaxCompatibleSigs or reduce arity)");
-        }
-        dst.num_compat_sigs = static_cast<uint8_t>(compats.size());
-        for (size_t k = 0; k < compats.size(); ++k) dst.compat_sig_hashes[k] = compats[k];
     }
 
     for (uint8_t e = 0; e < d.num_rhs_edges; ++e) {

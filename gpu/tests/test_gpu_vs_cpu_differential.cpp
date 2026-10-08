@@ -1691,6 +1691,41 @@ TEST(Sampling, RankCutKeepsTheHostsSelection) {
     }
 }
 
+// A left-hand edge of arity 1 to 16, all variables distinct and with one repeat, matches the
+// same edges on both engines, through the state's slice and through the large-state path
+// (slice_scan_max_edges 1). The data edges are all distinct, all one vertex, and half repeated.
+TEST(Matching, EveryArityMatchesTheSameEdgesAcrossEngines) {
+    for (uint8_t a = 1; a <= hgcommon::MAX_ARITY; ++a) {
+        for (const bool repeat : {false, true}) {
+            if (repeat && a < 2) continue;
+            std::vector<uint8_t> lhs(a), rhs(a);
+            for (uint8_t i = 0; i < a; ++i) lhs[i] = rhs[i] = i;
+            if (repeat) lhs[a - 1] = rhs[a - 1] = 0;
+            std::vector<hg_gpu::VertexId> distinct(a), same(a, 7), half(a);
+            for (uint8_t i = 0; i < a; ++i) {
+                distinct[i] = 10u + i;
+                half[i] = 40u + i / 2;
+            }
+            std::vector<hg_gpu::VertexId> loop(a);
+            for (uint8_t i = 0; i < a; ++i) loop[i] = 70u + i;
+            loop[a - 1] = 70u;
+            for (const uint32_t scan : {0u, 1u}) {
+                Workload w;
+                w.name = "arity" + std::to_string(a) + (repeat ? "-repeat" : "");
+                w.rules = {rule({lhs}, {rhs, {0, static_cast<uint8_t>(a)}})};
+                w.initial_state = {distinct, same, half, loop};
+                w.num_steps = 1;
+                w.canon_mode = hg_gpu::CanonicalizationMode::None;
+                w.slice_scan_max_edges = scan;
+                const NormalizedResult cpu = run_cpu(w);
+                const NormalizedResult gpu = run_gpu(w);
+                EXPECT_EQ(cpu.event_keys, gpu.event_keys) << w.name << " scan " << scan;
+                EXPECT_EQ(cpu.raw_events, gpu.raw_events) << w.name << " scan " << scan;
+            }
+        }
+    }
+}
+
 // MaxSuccessorStatesPerParent keeps the k lowest-ranked transitions of each state on both engines:
 // the host at the state's drain, the device in the block that matches every rule of the state. A
 // transition not kept is not taken on either. Before the device took the same choice, the host

@@ -46,8 +46,6 @@ hg_gpu::EngineConfig small_cfg() {
     cfg.max_states             = 32;
     cfg.max_vertex_slots       = 512;
     cfg.max_vertices           = 128;
-    cfg.sig_index_buckets      = 32;
-    cfg.sig_index_pool         = 256;
     cfg.inverted_pool          = 512;
     return cfg;
 }
