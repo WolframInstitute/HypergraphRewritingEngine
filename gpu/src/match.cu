@@ -367,8 +367,14 @@ __device__ __noinline__ void match_state_rule_pass(
     // Stride pattern edge 0's candidates across the block's threads. THIS is the device's part
     // of matching -- the parallelism -- and it is why match_state_rule exists rather than a
     // call straight into join_core. Small states index their slice directly; the
-    // signature-bucket walk covers large states, where every thread traverses the bucket but
-    // acts only on its own stripe.
+    // signature-bucket walk covers large states, where every thread traverses the bucket and
+    // takes the candidates whose edge id is its thread index modulo the block size.
+    //
+    // The stripe is keyed on the edge id because each thread loads the bucket's head itself, and
+    // another block may push between two of those loads. The state's own edges were indexed
+    // before the state was queued, so every thread's walk holds each of them once, and the edge
+    // id gives each one to exactly one thread. A stripe on the position in the walk would differ
+    // between two threads whose walks differ by a pushed node.
     const DevicePatternEdge& pe0 = rule.lhs[0];
     StateEdgeSlice sl0 = ds.state_edge_slices[state_id];
 
@@ -378,16 +384,12 @@ __device__ __noinline__ void match_state_rule_pass(
                 run_dfs_from_root(ds.state_edge_ids[sl0.offset + i]);
             }
         } else {
-            uint32_t cand_seen = 0;
             for (uint8_t s = 0; s < pe0.num_compat_sigs; ++s) {
                 if (!compat_sig_bucket_first(pe0, s, ds.signature_index.mask)) continue;
                 ds.signature_index.list.for_each(
                     compat_sig_bucket(pe0, s, ds.signature_index.mask),
                     [&] (EdgeId cand) {
-                        if ((cand_seen % blockDim.x) == threadIdx.x) {
-                            run_dfs_from_root(cand);
-                        }
-                        ++cand_seen;
+                        if ((cand % blockDim.x) == threadIdx.x) run_dfs_from_root(cand);
                     });
             }
         }
