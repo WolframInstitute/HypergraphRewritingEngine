@@ -16,6 +16,7 @@
 //
 // GENMC-ARGS: --disable-estimation
 // GENMC-EXPECT: pass
+// GENMC-CALIBRATE: -DHG_CALIBRATE_MAP_LOOKUP_STALE
 #include <pthread.h>
 #include <cassert>
 #include <cstdint>
@@ -25,7 +26,7 @@
 namespace {
 using Map = hypergraph::ConcurrentMap<uint64_t, uint64_t>;
 constexpr uint64_t kProbe = 7;   // settled before the threads start; must be seen
-constexpr uint64_t kB = 3, kC = 5, kD = 9, kE = 11;
+constexpr uint64_t kB = 3, kC = 5, kD = 9;   // three inserts: the settled key plus these cross 1.5 and 3, two growths
 Map* g_map;
 uint64_t g_seen;
 
@@ -43,7 +44,6 @@ void* w_grow1(void*) {
 }
 void* w_grow2(void*) {
     g_map->insert_if_absent(kD, 60);
-    g_map->insert_if_absent(kE, 70);
     return nullptr;
 }
 }  // namespace
