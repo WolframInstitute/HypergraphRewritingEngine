@@ -58,12 +58,19 @@ EngineConfig config_from_input(const EvolveInput& in) {
     // (Stream 2) size linearly in the total edge-slot count rather than
     // quadratically in max_states * max_edges, so max_states and max_edges
     // can be large without a memory blow-up.
-    uint32_t expected_edges  = std::max<uint32_t>(1u << 20, static_cast<uint32_t>(n_init) * growth * 512u);
-    uint32_t expected_states = std::max<uint32_t>(1u << 17, static_cast<uint32_t>(n_init) * growth * 32u);
+    //
+    // Computed in 64 bits and each field clamped to 2^31, the ceiling grow_config_for doubles
+    // to: a 32,768-edge root at three steps asks for 2^30 edges and 2^32 vertex slots. A config
+    // past the device is scaled to it by fit_config_to_cap.
+    auto field = [](uint64_t v) { return static_cast<uint32_t>(std::min<uint64_t>(v, 1ull << 31)); };
+    const uint64_t expected_edges  =
+        std::max<uint64_t>(1u << 20, static_cast<uint64_t>(n_init) * growth * 512u);
+    const uint64_t expected_states =
+        std::max<uint64_t>(1u << 17, static_cast<uint64_t>(n_init) * growth * 32u);
 
-    cfg.max_edges              = expected_edges;
-    cfg.max_states             = expected_states;
-    cfg.max_vertex_slots       = expected_edges * 4u;
+    cfg.max_edges              = field(expected_edges);
+    cfg.max_states             = field(expected_states);
+    cfg.max_vertex_slots       = field(expected_edges * 4u);
     // Total edge-ID slots across all states' CSR rows: one slice per state id, each at most
     // max_state_edges. At most 1G slots (4 GB).
     size_t largest_init = n_init;
@@ -71,30 +78,30 @@ EngineConfig config_from_input(const EvolveInput& in) {
     const uint64_t state_edges_bound =
         std::max<uint64_t>(1u, max_state_edges(largest_init, in.rules, steps));
     cfg.max_state_edge_total   = static_cast<uint32_t>(std::min<uint64_t>(
-        static_cast<uint64_t>(expected_states) * state_edges_bound, 1ull << 30));
+        static_cast<uint64_t>(cfg.max_states) * state_edges_bound, 1ull << 30));
     // Each event allocates ≤ kMaxVars fresh vertices, so vertex IDs bound
     // by n_init-vertices + events × kMaxVars. Be generous.
-    cfg.max_vertices           = std::max<uint32_t>(expected_edges,
-                                 static_cast<uint32_t>(n_init) * 4u + expected_states * 4u);
+    cfg.max_vertices           = field(std::max<uint64_t>(
+        expected_edges, static_cast<uint64_t>(n_init) * 4u + expected_states * 4u));
     cfg.sig_index_buckets      = 1024;
-    cfg.sig_index_pool         = expected_edges * 2u;
-    cfg.inverted_pool          = expected_edges * 4u;
+    cfg.sig_index_pool         = field(expected_edges * 2u);
+    cfg.inverted_pool          = field(expected_edges * 4u);
 
     if (in.slice_scan_max_edges) cfg.slice_scan_max_edges = in.slice_scan_max_edges;
     if (in.max_blocks_per_launch) cfg.max_blocks_per_launch = in.max_blocks_per_launch;
 
-    uint32_t expected_events   = expected_states;
-    cfg.max_events             = expected_events;
-    cfg.max_causal_edges       = expected_events * 8u;
-    cfg.max_branchial_edges    = expected_events * 8u;
-    cfg.causal_triple_slots    = expected_events * 16u;
-    cfg.causal_pair_slots      = expected_events * 8u;
-    cfg.branchial_pair_slots   = expected_events * 16u;
-    cfg.edge_consumer_nodes    = expected_edges * 4u;
+    const uint64_t expected_events = expected_states;
+    cfg.max_events             = field(expected_events);
+    cfg.max_causal_edges       = field(expected_events * 8u);
+    cfg.max_branchial_edges    = field(expected_events * 8u);
+    cfg.causal_triple_slots    = field(expected_events * 16u);
+    cfg.causal_pair_slots      = field(expected_events * 8u);
+    cfg.branchial_pair_slots   = field(expected_events * 16u);
+    cfg.edge_consumer_nodes    = field(expected_edges * 4u);
     cfg.branchial_index_buckets = 1u << 20;
-    cfg.branchial_index_nodes   = expected_events * 4u;
+    cfg.branchial_index_nodes   = field(expected_events * 4u);
     // One preds node per unique kept causal pair; kept pairs are a subset of causal pairs.
-    cfg.tr_preds_nodes         = expected_events * 8u;
+    cfg.tr_preds_nodes         = field(expected_events * 8u);
     cfg.canonical_key_mask     = in.canonical_key_mask;
     cfg.event_key_mask         = in.event_key_mask;
     cfg.replay_id_limit        = in.replay_id_limit;
@@ -159,7 +166,8 @@ struct Engine::Impl {
     explicit Impl(EngineConfig cfg)
         : cfg_(cfg)
         , state_(cfg)
-        , matches_(cfg.max_states * 8u)
+        , matches_(static_cast<uint32_t>(
+              std::min<uint64_t>(uint64_t{cfg.max_states} * 8u, 1ull << 31)))
     {}
 
     void reset() {
@@ -271,14 +279,29 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     // without clearing -- so turning maintenance on after the upload and rebuilding puts every
     // root edge in its bucket twice, which surfaces as duplicate candidates, duplicate matches
     // and duplicate events on any state large enough to be matched through the indices.
-    engine.set_maintain_indices(max_state_edges(max_root_edges, in.rules, in.num_steps) >
-                                engine.config_slice_scan_max_edges());
+    //
+    // A continuation extends the bound with its larger num_steps. Maintenance that was off until
+    // now turns on with the indices empty -- nothing was inserted since the opening call's clear
+    // -- so every edge the session holds is inserted once (rebuild_indices) before the run.
+    // Maintenance that was on stays on.
+    const bool maintain = max_state_edges(max_root_edges, in.rules, in.num_steps) >
+                          engine.config_slice_scan_max_edges();
+    if (start_step == 0) {
+        engine.set_maintain_indices(maintain);
+    } else if (maintain && !engine.maintain_indices()) {
+        engine.set_maintain_indices(true);
+        rebuild_indices(engine, std::min(engine.num_edges_host(), engine.config().max_edges));
+    }
     // Continuing: the roots are already in the pools from the call that opened the session, so
     // uploading them again would add a second copy of every root and re-seed the evolution from
     // depth 0 alongside the frontier.
     const uint32_t num_roots = (start_step == 0)
                                    ? upload_initial_states(engine, roots)
                                    : static_cast<uint32_t>(roots.size());
+
+    // The fallback count lives in the counter block, which a continuation keeps; the warnings
+    // are per call (DeviceErrors::warnings_from clears them), so the count is this call's too.
+    const uint32_t fallbacks_before = start_step != 0 ? engine.event_sig_raw_fallbacks() : 0u;
 
     // The launch uploads the rules into its own scratch (run_persistent_evolve).
     std::vector<DeviceRule> rules;
@@ -504,7 +527,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         out.frame_align_failures = qc_counts.align_failures;
         engine.errors().warnings_from(err_raw.data(), out.warnings, "persistent evolve");
         EngineState::report_event_sig_fallbacks(out.warnings, "persistent evolve",
-                                                snap.sig_fallbacks);
+                                                snap.sig_fallbacks - fallbacks_before);
         t_recon = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - t_recon_start).count();
         if (dbg) {
@@ -557,11 +580,22 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     std::vector<uint64_t> h_hashes;
     batch.add(h_hashes, static_cast<const uint64_t*>(d_state_hashes), total_states);
     std::vector<StateEdgeSlice> slices;
+    // The slices are read without the edge arrays too: a state a failed rewrite claimed carries
+    // the slice {INVALID_ID, 0} (apply_one_match), and reads back with id INVALID_ID.
     if (in.materialize_state_edges) engine.add_state_edges(batch, snap, slices, out);
+    else if (total_states)
+        batch.add(slices, static_cast<const StateEdgeSlice*>(engine.device().state_edge_slices),
+                  total_states);
     engine.add_events(batch, snap.events, out.events, out.event_consumed);
     engine.add_causal_edges(batch, snap.causal, out.causal_edges);
     engine.add_branchial_edges(batch, snap.branchial, out.branchial_edges);
     batch.finish();
+    // A rewrite that claimed its event and then failed a later claim leaves the event with id
+    // INVALID_ID (apply_one_match). Only a run that recorded an overflow has one.
+    if (!out.warnings.empty())
+        out.events.erase(std::remove_if(out.events.begin(), out.events.end(),
+                                        [](const Event& e) { return e.id == INVALID_ID; }),
+                         out.events.end());
     double t_readback_copy = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_readback_start).count();
 
@@ -569,7 +603,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     out.states.resize(total_states);
     for (uint32_t s = 0; s < total_states; ++s) {
         CanonicalState& cs = out.states[s];
-        cs.id             = s;
+        cs.id             = (s < slices.size() && slices[s].offset == INVALID_ID) ? INVALID_ID : s;
         cs.canonical_hash = (s < h_hashes.size()) ? h_hashes[s] : 0;
         // A slice past the id array describes no edges.
         if (s < slices.size() &&
@@ -865,8 +899,10 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     // descent_work_scale multiplies; a deep run's queues are larger still.
     b += u64(default_persistent_grid()) * 256u * u64(cfg.descent_work_scale) *
          sizeof(QeWorkItem);
-    b += u64(default_persistent_grid()) * 4u * u64(cfg.tr_scratch_scale) *
-         (EngineState::kTrScratchStack + EngineState::kTrScratchVisited);   // reachability scratch
+    // Reachability scratch and its busy words.
+    b += u64(default_persistent_grid()) * 4u *
+         (u64(EngineState::tr_scratch_scale_of(cfg)) *
+              (EngineState::kTrScratchStack + EngineState::kTrScratchVisited) + 1u);
     b += u64(default_persistent_grid()) * u64(cfg.survivor_scratch) * 8u;    // survivor scratch
     // The claim maps: states and exact hashes at two slots per state, event signatures at two
     // per event (persistent.cu reuse_map).
@@ -938,12 +974,28 @@ static EvolveResult run_with_growth(EngineConfig cfg, uint64_t mem_cap, Attempt&
     // computed, and if the next, larger engine cannot be built that partial is what the caller
     // gets, never an exception.
     EvolveResult best;
+    int first_shrinks = 0;
 
     for (int attempt_no = 0; attempt_no <= kMaxRetries; ++attempt_no) {
         EvolveResult result;
         try {
             result = attempt(cfg);
         } catch (const std::exception& e) {
+            // No attempt has completed, so there is no partial result to return. The first
+            // config is sized from Steps and can be larger than the free device memory (Steps
+            // 1,000,000 asks for 16.7 GB): it is halved, up to kFirstShrinks times, and the run
+            // tried again, so a run that outgrows the smaller engine returns partial work.
+            constexpr int kFirstShrinks = 3;
+            if (attempt_no == 0 && first_shrinks < kFirstShrinks) {
+                ++first_shrinks;
+                fit_config_to_cap(cfg, estimated_device_bytes(cfg) / 2);
+                std::fprintf(stderr,
+                    "hg_gpu::evolve: the first engine failed (%s) -- halving it to ~%llu MB and "
+                    "retrying.\n", e.what(),
+                    (unsigned long long)(estimated_device_bytes(cfg) >> 20));
+                --attempt_no;
+                continue;
+            }
             best.warnings.push_back(OverflowWarning{
                 ErrorKind::kDeviceOutOfMemory, 1u,
                 std::string("attempt ") + std::to_string(attempt_no + 1) + ": " + e.what()});
@@ -1061,6 +1113,7 @@ GpuSession::GpuSession(uint32_t max_states, uint32_t max_events)
 GpuSession::~GpuSession() = default;
 
 SessionView* GpuSession::view() { return &impl_->view; }
+uint32_t GpuSession::state_capacity() const { return impl_->view.explore.max_states; }
 uint32_t GpuSession::frontier_size() const { return impl_->state.frontier_size(); }
 void GpuSession::frontier_host(std::vector<StateId>& ids, std::vector<uint32_t>& steps) const {
     impl_->state.frontier_host(ids, steps);
@@ -1089,9 +1142,12 @@ PersistentEvolver::SessionRun PersistentEvolver::run_session(const EvolveInput& 
 
     // Opening: size the engine from this input, exactly as a first run would. A live engine
     // whose event_consumed stride is narrower than this input's largest left-hand side is
-    // rebuilt too.
+    // rebuilt too, and so is one with more state ids than the session's per-state arrays cover:
+    // its states would index them past their end.
+    const uint32_t session_states = session->explore.max_states;
     if (has_engine_ && start_step == 0 &&
-        config_from_input(in).max_lhs_edges > cfg_.max_lhs_edges) {
+        (config_from_input(in).max_lhs_edges > cfg_.max_lhs_edges ||
+         cfg_.max_states > session_states)) {
         engine_.reset();
         has_engine_ = false;
     }
@@ -1102,6 +1158,12 @@ PersistentEvolver::SessionRun PersistentEvolver::run_session(const EvolveInput& 
             return out;
         }
         EngineConfig cfg = config_from_input(in);
+        if (cfg.max_states > session_states) {
+            out.error = "the session covers " + std::to_string(session_states) +
+                        " states and this input sizes an engine of " +
+                        std::to_string(cfg.max_states) + "; open the session at that size";
+            return out;
+        }
         try {
             engine_ = std::make_unique<Engine>(cfg);
         } catch (const std::exception& e) {

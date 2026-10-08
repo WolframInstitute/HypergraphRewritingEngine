@@ -5,11 +5,13 @@
 #include <cstdint>
 #include <map>
 #include <set>
+#include <utility>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <limits>
 // The process gate below drives a worker through a pair of FIFOs, which needs fork, mkfifo and
 // waitpid. None of them exists on Windows, and the gate is compiled out there rather than
 // emulated: what it checks -- that the SHIPPED binary serves the four verbs over the wire -- is
@@ -28,6 +30,7 @@
 #include "paclet_source/hg_core.hpp"
 #include "paclet_source/state_statistics.hpp"
 #include "hgcommon/core.hpp"
+#include "paclet_source/graph_marshal.hpp"
 
 // Pin test for the FFI WXF serialization (run_rewriting_core), the LibraryLink /
 // standalone-binary output contract. This path has no wolframscript-free coverage
@@ -488,21 +491,6 @@ TEST(WxfSerializationPin, ANegativeInitialStateVertexIsRefused) {
         build_input_requesting(3, "Evolve", props, 0, true, false, kSeed), host);
     ASSERT_FALSE(ok.empty());
     EXPECT_GT(read_int_key(ok, "NumStates"), 1);
-}
-
-// A HYPEREDGE HAS AT LEAST ONE VERTEX AND AN INITIAL STATE AT LEAST ONE EDGE. An empty edge in
-// a rule or an initial state, and an empty initial state, are refused for both devices.
-TEST(WxfSerializationPin, AnEmptyHyperedgeIsRefused) {
-    HostBridge host;
-    auto run = [&](const StateList& seed, const EdgeList& lhs, const EdgeList& rhs) {
-        return run_rewriting_core(build_input(seed, lhs, rhs, 2, [](wxf::Writer&) {}, 0), host);
-    };
-    EXPECT_THROW(run({{{1}}}, {{1}}, {{1}, {}}), std::runtime_error);
-    EXPECT_THROW(run({{{1}}}, {{1}, {}}, {{1}}), std::runtime_error);
-    EXPECT_THROW(run({{{1, 2}, {}}}, {{1, 2}}, {{1, 2}, {2, 3}}), std::runtime_error);
-    EXPECT_THROW(run({{{}}}, {{1, 2}}, {{1, 2}, {2, 3}}), std::runtime_error);
-    EXPECT_THROW(run({{{1, 2}}, {}}, {{1, 2}}, {{1, 2}, {2, 3}}), std::runtime_error);
-    EXPECT_FALSE(run({{{1}}}, {{1}}, {{1}, {1}}).empty());
 }
 
 TEST(WxfSerializationPin, AskingForLessDoesNotAnswerLess) {
@@ -2575,6 +2563,185 @@ TEST(GpuBinaryGate, ACapPast32BitsIsNoCap) {
     worker_stop(w);
 }
 
+// The worker's fd 1 is stderr once it serves: the CUDA runtime writes device printf (the
+// persistent kernel's progress and stall lines) to the process's standard output, and the
+// replies go through a duplicate of the fd the parent gave, so those lines cannot enter a frame.
+TEST(GpuBinaryGate, OnlyRepliesReachTheReplyStream) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    auto none = [](wxf::Writer& ww) { put_str_list_option(ww, "RequestedData", {"NumStates"}); };
+    ASSERT_FALSE(worker_call(w, branch_job(2, "Evolve", 0, none, 1)).empty());
+    auto target = [&](int fd) {
+        char buf[4096];
+        const std::string link = "/proc/" + std::to_string(w.pid) + "/fd/" + std::to_string(fd);
+        const ssize_t n = ::readlink(link.c_str(), buf, sizeof(buf) - 1);
+        return n < 0 ? std::string() : std::string(buf, static_cast<size_t>(n));
+    };
+    const std::string out = target(1), err = target(2);
+    ASSERT_FALSE(err.empty());
+    EXPECT_EQ(out, err) << "fd 1 of the worker is " << out << ", where device printf lands";
+    EXPECT_EQ(out.find(w.out_path), std::string::npos);
+    worker_stop(w);
+}
+
+// "States" lists every state outside Full on both devices, and under event identity the causal and
+// branchial lists name canonical events on both: rule {{4},{2}} -> {} from {{1},{1},{1}} at two steps
+// under CanonicalizeStates Automatic has 7 states of 2 classes; rule {{1},{2}} -> {} from
+// {{1},{2},{3}} at one step under CanonicalizeEvents Full has 6 applications of one event, so its
+// 15 branchial pairs join that event to itself.
+TEST(GpuBinaryGate, StateListsAndEventEndpointsAgreeAcrossDevices) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    CpuWorker host;
+    ASSERT_TRUE(host.ok) << "could not start hg_evolve --serve";
+    {
+        auto opts = [](wxf::Writer& ww) {
+            put_str_list_option(ww, "RequestedData", {"States", "NumStates"});
+            put_str_option(ww, "CanonicalizeStates", "Automatic");
+        };
+        const auto job = session_envelope({{{1}, {1}, {1}}}, {{4}, {2}}, {}, 2, "Evolve", 0, true,
+                                          {}, opts, 2, false);
+        const auto cpu = host(job);
+        const auto gpu = worker_call(w, job);
+        ASSERT_FALSE(gpu.empty());
+        EXPECT_EQ(count_assoc_entries(cpu, "States"), 7);
+        EXPECT_EQ(count_assoc_entries(gpu, "States"), count_assoc_entries(cpu, "States"));
+        EXPECT_EQ(read_int_key(gpu, "NumStates"), read_int_key(cpu, "NumStates"));
+    }
+    {
+        auto opts = [](wxf::Writer& ww) {
+            put_str_list_option(ww, "RequestedData", {"BranchialEdges", "NumEvents"});
+            put_str_option(ww, "CanonicalizeEvents", "Full");
+        };
+        const auto job = session_envelope({{{1}, {2}, {3}}}, {{1}, {2}}, {}, 1, "Evolve", 0, true,
+                                          {}, opts, 2, false);
+        const auto cpu = host(job);
+        const auto gpu = worker_call(w, job);
+        ASSERT_FALSE(gpu.empty());
+        EXPECT_EQ(read_int_key(gpu, "NumEvents"), 1);
+        // The ids the list names: one event, so one id, on each device.
+        auto endpoint_ids = [](const std::vector<uint8_t>& out) {
+            std::set<int64_t> ids;
+            size_t records = 0;
+            wxf::Parser parser(out);
+            parser.skip_header();
+            parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+                if (k != "BranchialEdges") { vp.skip_value(); return; }
+                vp.read_function([&](const std::string&, size_t n, wxf::Parser& args) {
+                    for (size_t i = 0; i < n; ++i, ++records)
+                        args.read_association([&](const std::string& f, wxf::Parser& v) {
+                            if (f == "From" || f == "To") ids.insert(v.read<int64_t>());
+                            else v.skip_value();
+                        });
+                });
+            });
+            return std::make_pair(records, ids.size());
+        };
+        EXPECT_EQ(endpoint_ids(cpu), std::make_pair(size_t{15}, size_t{1}));
+        EXPECT_EQ(endpoint_ids(gpu), std::make_pair(size_t{15}, size_t{1}));
+    }
+    worker_stop(w);
+}
+
+// Inputs both devices refuse alike: an edge past MAX_ARITY in a rule or in an initial state is an
+// error frame naming the arity (the GPU ran it and returned an empty result with a device-memory
+// warning), and an ExplorationProbability that is not a finite number is skipped with an
+// OptionSkipped warning, so both devices run the default (the GPU kept NaN and gave 2 states
+// where the CPU gave 10).
+TEST(GpuBinaryGate, MalformedInputsAreRefusedAlikeOnBothDevices) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    CpuWorker host;
+    ASSERT_TRUE(host.ok) << "could not start hg_evolve --serve";
+    auto counts = [](wxf::Writer& ww) { put_str_list_option(ww, "RequestedData", {"NumStates"}); };
+    Edge wide;
+    for (int64_t v = 1; v <= 17; ++v) wide.push_back(v);
+    const auto wide_rule = session_envelope({{{1, 2}}}, {wide}, {{1, 2}}, 1, "Evolve", 0, true, {},
+                                            counts, 1, false);
+    const auto wide_init = session_envelope({{wide}}, {{1, 2}}, {{1, 2}, {2, 3}}, 1, "Evolve", 0,
+                                            true, {}, counts, 1, false);
+    for (const auto* job : {&wide_rule, &wide_init}) {
+        EXPECT_TRUE(host(*job).empty());
+        EXPECT_FALSE(host.w.last_error.empty());
+        EXPECT_TRUE(worker_call(w, *job).empty());
+        EXPECT_NE(w.last_error.find("arity"), std::string::npos) << w.last_error;
+    }
+    auto nan_opts = [](wxf::Writer& ww) {
+        put_str_list_option(ww, "RequestedData", {"NumStates"});
+        ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        ww.write(std::string("ExplorationProbability"));
+        ww.write(std::nan(""));
+    };
+    const auto nan_job = branch_job(3, "Evolve", 0, nan_opts, 2);
+    const auto cpu = host(nan_job);
+    const auto gpu = worker_call(w, nan_job);
+    ASSERT_FALSE(gpu.empty());
+    EXPECT_TRUE(reply_mentions(cpu, "OptionSkipped"));
+    EXPECT_TRUE(reply_mentions(gpu, "OptionSkipped"));
+    EXPECT_EQ(read_int_key(gpu, "NumStates"), read_int_key(cpu, "NumStates"));
+    worker_stop(w);
+}
+
+// ExploreFromCanonicalStatesOnly needs Full states: under Automatic it is refused with the
+// QuotientNeedsFull warning and every state is expanded, on both devices, so the counts are the
+// counts without it. Rule {{1,2}} -> {{2,1},{2,1},{1,1,1,1}} from {{1,1},{2,2},{2,2}} at three
+// steps gives (18, 75, 48) states, events and causal edges; with the option applied the devices
+// gave (18, 31, 19) and the GPU's causal count varied between runs.
+TEST(GpuBinaryGate, QuotientExplorationNeedsFullStatesOnBothDevices) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    CpuWorker host;
+    ASSERT_TRUE(host.ok) << "could not start hg_evolve --serve";
+    for (const bool ecso : {false, true}) {
+        auto opts = [ecso](wxf::Writer& ww) {
+            put_str_list_option(ww, "RequestedData", {"NumStates", "NumEvents", "NumCausalEdges"});
+            put_str_option(ww, "CanonicalizeStates", "Automatic");
+            put_str_option(ww, "ExploreFromCanonicalStatesOnly", ecso ? "True" : "False");
+        };
+        const auto job = session_envelope({{{1, 1}, {2, 2}, {2, 2}}}, {{1, 2}},
+                                          {{2, 1}, {2, 1}, {1, 1, 1, 1}}, 3, "Evolve", 0, true,
+                                          {}, opts, 3, false);
+        for (int run = 0; run < 3; ++run) {
+            const auto cpu = host(job);
+            const auto gpu = worker_call(w, job);
+            ASSERT_FALSE(gpu.empty());
+            for (const char* key : {"NumStates", "NumEvents", "NumCausalEdges"})
+                EXPECT_EQ(read_int_key(gpu, key), read_int_key(cpu, key)) << key << " ecso " << ecso;
+            EXPECT_EQ(read_int_key(gpu, "NumEvents"), 75) << "ecso " << ecso;
+            EXPECT_EQ(read_int_key(gpu, "NumCausalEdges"), 48) << "ecso " << ecso;
+        }
+    }
+    worker_stop(w);
+}
+
 // "StepStatistics" is the same reply on both devices: under quotient exploration from each
 // engine's class multiplicities, under full capture from its raw states.
 TEST(GpuBinaryGate, StepStatisticsAgreeAcrossDevices) {
@@ -2893,4 +3060,156 @@ TEST(Session, ASteeredStepExpandsEveryStateItsIdStandsFor) {
     EXPECT_EQ(std::count(after.begin(), after.end(), id), 0)
         << "state " << id << " is still on the frontier after a Step from it";
     run_rewriting_core(branch_job(0, "Close", h, opts, 2), host);
+}
+
+// =============================================================================
+// Input limits and option values, checked in the shared parse for both devices
+// =============================================================================
+namespace {
+
+// The Context string of every entry of the reply's Warnings list.
+std::vector<std::string> warning_contexts(const std::vector<uint8_t>& out) {
+    std::vector<std::string> ctx;
+    wxf::Parser parser(out);
+    parser.skip_header();
+    parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+        if (k != "Warnings") { vp.skip_value(); return; }
+        vp.read_function([&](const std::string&, size_t count, wxf::Parser& ep) {
+            for (size_t i = 0; i < count; ++i)
+                ep.read_association([&](const std::string& wk, wxf::Parser& wp) {
+                    if (wk == "Context") ctx.push_back(wp.read<std::string>());
+                    else wp.skip_value();
+                });
+        });
+    });
+    return ctx;
+}
+
+// kSeed under kLhs -> kRhs for 2 steps, asking for NumStates, with `put` writing one more option.
+std::vector<uint8_t> job_with_option(const std::function<void(wxf::Writer&)>& put) {
+    return build_input(kSeed, kLhs, kRhs, 2, [&](wxf::Writer& w) {
+        put_str_list_option(w, "RequestedData", {"NumStates"});
+        put(w);
+    }, 2);
+}
+
+std::string run_error(const std::vector<uint8_t>& job) {
+    HostBridge host;
+    try {
+        run_rewriting_core(job, host);
+    } catch (const std::runtime_error& e) {
+        return e.what();
+    }
+    return "";
+}
+
+}  // namespace
+
+// Input both devices answered differently (F15): the CPU gave 0 states for an empty initial state
+// and the GPU 1; an edge above arity 16 was an error on the CPU and an empty result on the GPU.
+// Each is refused with an error before a device is chosen.
+TEST(FfiInput, InvalidInitialStatesAndRulesAreRefused) {
+    const auto none = [](wxf::Writer&) {};
+    struct Case { StateList init; EdgeList lhs, rhs; const char* says; };
+    const EdgeList a17 = {{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}};
+    const StateList init17 = {a17};
+    const std::vector<Case> cases = {
+        {{}, kLhs, kRhs, "InitialStates is empty"},
+        {{{}}, kLhs, kRhs, "initial state 0 has no edges"},
+        {{{{}}}, kLhs, kRhs, "initial state 0 edge 0 has arity 0"},
+        {{{{1, 2}}, {}}, kLhs, kRhs, "initial state 1 has no edges"},
+        {init17, kLhs, kRhs, "initial state 0 edge 0 has arity 17"},
+        {kSeed, a17, kRhs, "rule 0 LHS edge 0 has arity 17"},
+        {kSeed, kLhs, {{1, 2}, {}}, "rule 0 RHS edge 1 has arity 0"},
+        {kSeed, {}, kRhs, "rule 0 has an empty left-hand side"},
+    };
+    for (const Case& c : cases) {
+        const std::string err = run_error(build_input(c.init, c.lhs, c.rhs, 1, none, 0));
+        EXPECT_NE(err.find(c.says), std::string::npos) << "expected '" << c.says << "', got '" << err << "'";
+    }
+    EXPECT_EQ(run_error(build_input(kSeed, kLhs, kRhs, 1, none, 0)), "");
+}
+
+// A negative cap is skipped with a warning; it was cast to 2^64-1 and acted as no cap silently.
+TEST(FfiInput, ANegativeCapIsSkippedWithAWarning) {
+    HostBridge host;
+    const int64_t plain = read_int_key(run_rewriting_core(job_with_option([](wxf::Writer& w) {
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("RandomSeed"));
+        w.write(int64_t{0});
+    }), host), "NumStates");
+    for (const char* cap : {"MaxStatesPerStep", "MaxSuccessorStatesPerParent", "MatchesPerStateRule",
+                            "MatchesPerStep"}) {
+        const auto out = run_rewriting_core(job_with_option([&](wxf::Writer& w) {
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string(cap));
+            w.write(int64_t{-1});
+        }), host);
+        EXPECT_EQ(read_int_key(out, "NumStates"), plain) << cap;
+        const auto ctx = warning_contexts(out);
+        ASSERT_EQ(ctx.size(), 1u) << cap;
+        EXPECT_NE(ctx[0].find(std::string("option '") + cap + "' ignored: a cap is a non-negative integer"),
+                  std::string::npos) << ctx[0];
+    }
+}
+
+// NaN or infinity for a probability, rate or weight is skipped with a warning in the shared parse.
+// NaN ExplorationProbability gave (10,9,8,0) on the CPU and (2,1,0,0) on the GPU.
+TEST(FfiInput, ANonFiniteProbabilityRateOrWeightIsSkippedWithAWarning) {
+    HostBridge host;
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+    for (const char* key : {"ExplorationProbability", "TransitionRate", "RuleWeights"}) {
+        for (double v : {nan, inf, -inf}) {
+            const auto out = run_rewriting_core(job_with_option([&](wxf::Writer& w) {
+                w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                w.write(std::string(key));
+                if (std::string(key) == "RuleWeights") w.write(std::vector<double>{v});
+                else w.write(v);
+            }), host);
+            const auto ctx = warning_contexts(out);
+            ASSERT_EQ(ctx.size(), 1u) << key << " " << v;
+            EXPECT_NE(ctx[0].find("not a finite real number"), std::string::npos) << ctx[0];
+        }
+    }
+}
+
+// An option key that is not valid UTF-8 is quoted in the warning with its bad bytes as \xNN.
+TEST(FfiInput, AWarningQuotesACorruptOptionKeyAsValidUtf8) {
+    HostBridge host;
+    const std::string corrupt = std::string("Re") + char(0xFE) + "ues" + char(0xB3) + "edData";
+    const auto out = run_rewriting_core(job_with_option([&](wxf::Writer& w) {
+        put_str_option(w, corrupt.c_str(), "True");
+    }), host);
+    const auto ctx = warning_contexts(out);
+    ASSERT_EQ(ctx.size(), 1u);
+    EXPECT_NE(ctx[0].find("option 'Re\\xFEues\\xB3edData'"), std::string::npos) << ctx[0];
+    EXPECT_EQ(hgmarshal::valid_utf8("caf\xC3\xA9 \xE2\x82\xAC \xF0\x9F\x98\x80"),
+              "caf\xC3\xA9 \xE2\x82\xAC \xF0\x9F\x98\x80");
+    EXPECT_EQ(hgmarshal::valid_utf8("\xC0\x80\xED\xA0\x80\xF4\x90\x80\x80\xE2\x82"),
+              "\\xC0\\x80\\xED\\xA0\\x80\\xF4\\x90\\x80\\x80\\xE2\\x82");
+}
+
+// QuotientNeedsFull names the option the job set: CanonicalizeEvents -> Automatic alone does not
+// mention ExploreFromCanonicalStatesOnly, and the reverse.
+TEST(FfiInput, QuotientNeedsFullNamesTheOptionTheJobSet) {
+    HostBridge host;
+    const auto events_only = warning_contexts(run_rewriting_core(job_with_option([](wxf::Writer& w) {
+        put_str_option(w, "CanonicalizeEvents", "Automatic");
+    }), host));
+    ASSERT_EQ(events_only.size(), 1u);
+    EXPECT_NE(events_only[0].find("\"CanonicalizeEvents\" -> Automatic needs"), std::string::npos);
+    EXPECT_EQ(events_only[0].find("ExploreFromCanonicalStatesOnly"), std::string::npos);
+
+    const auto ecso_only = warning_contexts(run_rewriting_core(job_with_option([](wxf::Writer& w) {
+        put_str_option(w, "ExploreFromCanonicalStatesOnly", "True");
+    }), host));
+    ASSERT_EQ(ecso_only.size(), 1u);
+    EXPECT_NE(ecso_only[0].find("\"ExploreFromCanonicalStatesOnly\" -> True needs"), std::string::npos);
+    EXPECT_EQ(ecso_only[0].find("CanonicalizeEvents"), std::string::npos);
+
+    const auto full = warning_contexts(run_rewriting_core(job_with_option([](wxf::Writer& w) {
+        put_str_option(w, "CanonicalizeStates", "Full");
+    }), host));
+    EXPECT_TRUE(full.empty());
 }

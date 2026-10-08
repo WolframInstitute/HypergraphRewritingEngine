@@ -815,7 +815,7 @@ __device__ inline void qe_capture_expansion(const DeviceState& ds, QeView qe,
         return;
     }
     uint32_t ns = 0;
-    bool lost = false;   // a survivor with no frame image: the capture loses that slot
+    bool lost = false;   // a survivor with no frame image
     for (uint32_t base = 0; base < csl.count; base += 32u) {
         const uint32_t k = base + lane;
         uint64_t key = 0;
@@ -838,7 +838,13 @@ __device__ inline void qe_capture_expansion(const DeviceState& ds, QeView qe,
         if (keep) surv[ns + __popc(mask & ((1u << lane) - 1u))] = key;
         ns += __popc(mask);
     }
-    if (__any_sync(0xffffffffu, lost) && lane == 0) ds.errors.record(ErrorKind::kCapturesDropped);
+    // A survivor with no frame image drops the whole capture, as an unaligned consumed or
+    // produced edge does above and as the host drops a capture whose frame slots it cannot
+    // resolve (Hypergraph's qc_frame_slots).
+    if (__any_sync(0xffffffffu, lost)) {
+        if (lane == 0) ds.errors.record(ErrorKind::kCapturesDropped);
+        return;
+    }
     __syncwarp();
     // Lane 0 sorts the survivors and publishes the record; the index is broadcast, and the
     // match side of the rendezvous then scans on every lane (qe_drive_match).

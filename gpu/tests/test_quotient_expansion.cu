@@ -13,6 +13,7 @@
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/quotient_expansion.hpp"
 
+#include <stdexcept>
 #include <vector>
 
 namespace {
@@ -277,3 +278,11 @@ TEST(QuotientExpansion, AnInstanceInABucketTwoShardsShareIsVisitedOnce) {
 }  // namespace
 
 
+
+// The multiplicity queues' size is computed in 64 bits: 2^20 steps at descent_work_scale 2^16 is
+// 2^42 items per driver, past the 32-bit slice index, and is refused.
+TEST(QuotientExpansion, MultiplicityQueueSizingDoesNotWrap) {
+    hg_gpu::QeState qe(/*on=*/true, hg_gpu::QeEntries{1, 1, 1, 1, 16});
+    EXPECT_THROW(qe.ensure_work(1, 1u << 20, 1u << 16), std::length_error);
+    EXPECT_NO_THROW(qe.ensure_work(4, 8, 2));
+}

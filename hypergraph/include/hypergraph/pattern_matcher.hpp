@@ -138,10 +138,8 @@ struct PatternMatchingContext {
     // Signature accessor (cached signatures for O(1) lookup)
     SignatureAccessor get_signature;
 
-    // Per-edge pattern signatures and compatible-signature caches are read directly
-    // from `rule` (immutable after RewriteRule::compute_var_counts) — no per-session
-    // copy: the context used to embed EdgeSignature[16] + CompatibleSignatureCache[16]
-    // (~17 KB) and memcpy them from the rule on every state x rule matching session.
+    // Per-edge pattern signatures are read from `rule` (immutable after
+    // RewriteRule::compute_var_counts); the context holds no copy.
 
     // Coordination
     std::atomic<bool>* should_terminate;
@@ -186,8 +184,7 @@ template<typename EdgeAccessor, typename CandidateCallback>
 void generate_candidates(
     const PatternEdge& pattern_edge,
     const EdgeSignature& pattern_sig,
-    const CompatibleSignatureCache& sig_cache,  // Pre-computed compatible signatures
-    const VertexId* bindings,                   // indexed by variable; read only where bound
+    const VertexId* bindings,                  // indexed by variable; read only where bound
     uint32_t bound_mask,
     const SparseBitset& state_edges,
     const AncestryCandidates& candidates,
@@ -211,13 +208,9 @@ void generate_candidates(
     if (num_bound == 0) {
         if (pattern_sig.num_distinct() == pattern_edge.arity) {
             // All-distinct pattern edge: it imposes no vertex-repetition constraint, so
-            // its compatible data signatures are every set-partition of the arity
-            // (Bell(k)), whose per-signature edge-lists re-union to exactly the arity-k
-            // edges present in this state. The signature index holds whole-evolution
-            // history keyed by signature; drawing candidates from it walks that global
-            // history filtered by the state bitset. Scan this state's own edges once and
-            // keep those of matching arity — the same candidate set in one pass.
-            // validate_candidate re-checks arity downstream.
+            // every arity-k edge of this state is a candidate. Scan this state's own edges
+            // once and keep those of matching arity. validate_candidate re-checks arity
+            // downstream.
             HG_MATCH_BRANCH_HIT(0);
             const uint8_t want_arity = pattern_edge.arity;
             state_edges.for_each([&](EdgeId eid) {
@@ -227,10 +220,9 @@ void generate_candidates(
                 }
             });
         } else {
-            // Repeated-variable seed edge: the signature level genuinely prunes, so scan
-            // the compatible signature partition using the pre-computed cache.
+            // Repeated-variable seed edge: keep the edges whose signature is compatible
+            // with the pattern's (signature_compatible, O(arity) per edge).
             HG_MATCH_BRANCH_HIT(1);
-            (void)sig_cache;
             candidates.for_each_edge_compatible(
                 pattern_sig,
                 [&](EdgeId eid) {
@@ -333,7 +325,7 @@ struct HostJoinContext {
         std::vector<Candidate>& buf = (*levels)[st.depth];
         buf.clear();
         generate_candidates(
-            mc->rule->lhs[p], mc->rule->lhs_sig[p], mc->rule->lhs_cache[p],
+            mc->rule->lhs[p], mc->rule->lhs_sig[p],
             st.binding, st.bound_mask, *mc->state_edges,
             *mc->candidates, mc->get_edge,
             [&](EdgeId eid, const EdgeType& edge) { buf.push_back(Candidate{eid, &edge}); });

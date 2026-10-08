@@ -14,6 +14,7 @@
 
 #include "hgcommon/quotient_multiplicity_core.hpp"
 #include "hgcommon/quotient_replay_core.hpp"
+#include "hgcommon/sampling_core.hpp"
 #include "hypergraph/hypergraph.hpp"
 #include "hypergraph/ir_canonicalization.hpp"
 #include "hypergraph/parallel_evolution.hpp"
@@ -22,6 +23,7 @@
 #include <algorithm>
 #include <iterator>
 #include <map>
+#include <random>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -1658,6 +1660,37 @@ TEST(Sampling, DrainCapKeepsTheSameMatchesAcrossEngines) {
     }
 }
 
+// The k-lowest selection with ranks counted with multiplicity (hgcommon::rank_cut), which the
+// device applies under MatchesPerStateRule, keeps the ranks the host keeps by taking the first k
+// of its rank-sorted list (ParallelEvolutionEngine::drain_candidates): ranks {5, 5, 9} with k = 2
+// keep {5, 5}, and random multisets with repeated ranks keep equal multisets.
+TEST(Sampling, RankCutKeepsTheHostsSelection) {
+    auto device_keeps = [](const std::vector<uint64_t>& r, uint32_t k) {
+        const hgcommon::RankCut cut =
+            hgcommon::rank_cut(r.data(), static_cast<uint32_t>(r.size()), k);
+        std::multiset<uint64_t> kept;
+        uint32_t at = 0;
+        for (const uint64_t x : r) {
+            if (cut.all || x < cut.rank) kept.insert(x);
+            else if (x == cut.rank && at < cut.at_cut) { kept.insert(x); ++at; }
+        }
+        return kept;
+    };
+    auto host_keeps = [](std::vector<uint64_t> r, uint32_t k) {
+        std::sort(r.begin(), r.end());
+        return std::multiset<uint64_t>(r.begin(), r.begin() + std::min<size_t>(k, r.size()));
+    };
+    EXPECT_EQ(device_keeps({5, 5, 9}, 2), (std::multiset<uint64_t>{5, 5}));
+    std::mt19937_64 rng(7);
+    for (int t = 0; t < 2000; ++t) {
+        const uint32_t n = 1 + static_cast<uint32_t>(rng() % 40);
+        const uint32_t k = 1 + static_cast<uint32_t>(rng() % 12);
+        std::vector<uint64_t> r(n);
+        for (auto& x : r) x = rng() % 8;
+        EXPECT_EQ(device_keeps(r, k), host_keeps(r, k)) << "n " << n << ", k " << k;
+    }
+}
+
 // MaxSuccessorStatesPerParent keeps the k lowest-ranked transitions of each state on both engines:
 // the host at the state's drain, the device in the block that matches every rule of the state. A
 // transition not kept is not taken on either. Before the device took the same choice, the host
@@ -2589,6 +2622,64 @@ TEST(Session, AReplayOnlyContinuationDrivesWhatTheOldBoundLeft) {
     EXPECT_EQ(got.reconstructed_events, ref.reconstructed_events);
     EXPECT_EQ(got.reconstructed_raw_events, ref.reconstructed_raw_events);
     EXPECT_EQ(got.reconstructed_causal_pairs, ref.reconstructed_causal_pairs);
+}
+
+// A session opened on an evolver whose engine a larger run built is run on an engine no larger
+// than the session: the session's per-state depth and claim arrays are indexed by the engine's
+// state ids.
+TEST(Session, AnOpenAfterALargerRunFitsTheSession) {
+    // The large run is sized from a 100-edge root at four steps and matches nothing: its rule
+    // needs a self-loop.
+    hg_gpu::EvolveInput big;
+    big.rules = {rule({{0, 0}}, {{0, 0}, {0, 1}})};
+    for (hg_gpu::VertexId v = 0; v < 100; ++v) big.initial_state.push_back({v, v + 1});
+    big.num_steps = 4;
+    big.canonicalization = hg_gpu::CanonicalizationMode::Full;
+    hg_gpu::EvolveInput small = big;
+    small.initial_state = {{0u, 0u}};
+    small.num_steps = 1;
+    small.explore_from_canonical_states_only = true;
+    ASSERT_GT(hg_gpu::config_from_input(big).max_states,
+              hg_gpu::config_from_input(small).max_states);
+
+    hg_gpu::PersistentEvolver evolver;
+    evolver.run(big);
+    const hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(small);
+    hg_gpu::GpuSession session(cfg.max_states, cfg.max_events);
+    const auto sr = evolver.run_session(small, session.view(), 0);
+    ASSERT_TRUE(sr.ok) << sr.error;
+    EXPECT_LE(evolver.engine_config().max_states, session.state_capacity());
+}
+
+// A continuation that takes the states past slice_scan_max_edges matches them through the
+// indices, so the indices hold every edge, the roots' included. The root is a 249-edge path with
+// a self-loop on its first vertex; the rule moves the self-loop one vertex along the path and adds
+// an edge, so every step has one event and matches a root edge of the path. Opened at one step
+// (251 edges, under the threshold of 256, so no index is built) and continued to eleven, the
+// states past 256 edges are matched through the indices, which must hold the root edges.
+TEST(Session, AContinuationPastTheScanThresholdMatchesThroughFullIndices) {
+    hg_gpu::EvolveInput in;
+    in.rules = {rule({{0, 0}, {0, 1}}, {{0, 1}, {1, 1}, {0, 2}})};
+    in.initial_state = {{0u, 0u}};
+    for (hg_gpu::VertexId v = 0; v < 249; ++v) in.initial_state.push_back({v, v + 1});
+    in.num_steps = 1;
+    in.canonicalization = hg_gpu::CanonicalizationMode::Full;
+    hg_gpu::EvolveInput eleven = in;
+    eleven.num_steps = 11;
+    const hg_gpu::EvolveResult ref = hg_gpu::evolve(eleven);
+    ASSERT_TRUE(ref.warnings.empty());
+    ASSERT_EQ(ref.events.size(), 11u);
+
+    hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(eleven);
+    cfg.survivor_scratch = 1024;   // states past 256 edges have more survivors than fit locally
+    hg_gpu::GpuSession session(cfg.max_states, cfg.max_events);
+    hg_gpu::Engine engine(cfg);
+    engine.run(in, session.view(), 0);
+    const hg_gpu::EvolveResult got = engine.run(eleven, session.view(), 1);
+    for (const auto& wn : got.warnings)
+        ADD_FAILURE() << "warning " << hg_gpu::error_kind_name(wn.kind) << " x" << wn.count;
+    EXPECT_EQ(got.events.size(), ref.events.size());
+    EXPECT_EQ(got.states.size(), ref.states.size());
 }
 
 TEST(QuotientReconstruction, ClassArraysCoverEveryRepresentativeStateId) {

@@ -590,6 +590,8 @@ public:
     GpuSession& operator=(const GpuSession&) = delete;
 
     SessionView* view();
+    // The state ids its per-state arrays cover: an engine it runs on holds at most this many.
+    uint32_t state_capacity() const;
     // Boundary states the last call's budget refused, so a caller can tell a converged run from
     // one that stopped at its budget.
     uint32_t frontier_size() const;

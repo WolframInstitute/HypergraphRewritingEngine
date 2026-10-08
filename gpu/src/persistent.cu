@@ -76,13 +76,22 @@ __host__ __device__ inline uint32_t explore_reads_ranks(const DeviceState& ds, b
 struct StepSelectScratch {
     uint64_t* rank;    // [cap] the step's candidate ranks
     uint32_t* idx;     // [cap] their candidate-pool indices
-    uint32_t* words;   // [2] candidates gathered, ranks equal to the threshold taken
+    uint32_t* words;   // [3] candidates gathered, ranks equal to the threshold taken, scan start
     uint32_t  cap;
 };
 
 __device__ inline void step_book(const DeviceState& ds, uint32_t d, uint32_t n) {
     if (ds.max_states_per_step != 0u && d < ds.step_slots) atomicAdd(&ds.step_pending[d], n);
 }
+// Under quotient exploration the ExplorationProbability coin is drawn when a class is claimed for
+// expansion, keyed on its canonical hash, whichever path claims it: the host's
+// claim_canonical_for_expansion. A refused class stays claimed and is not expanded.
+__device__ inline bool explore_admits(const DeviceState& ds, StateId canonical) {
+    return ds.exploration_probability >= 1.0 ||
+           hgcommon::explore_survives(ds.state_canonical_hash[canonical], ds.sampling_seed,
+                                      ds.exploration_probability);
+}
+
 // True when this release brings step d's count to zero.
 __device__ inline bool step_release(const DeviceState& ds, uint32_t d, uint32_t n) {
     if (ds.max_states_per_step == 0u || d >= ds.step_slots) return false;
@@ -109,12 +118,22 @@ __device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
     __shared__ uint32_t s_cnt;
     __shared__ uint32_t s_remaining;
     __shared__ uint64_t s_prefix;
-    if (tid == 0) { sel.words[0] = 0u; sel.words[1] = 0u; }
-    __syncthreads();
+    // THE SCAN STARTS AT sel.words[2]: below it every candidate belongs to a step already
+    // selected. A candidate of step s + 1 or later is produced from a state step s's selection
+    // creates, after this scan reads the counter, or was seeded before the run (a session
+    // frontier at mixed depths); the lowest index of those this scan passes is where the next
+    // one starts, so a step's scan covers what was produced since the selection before it.
+    __shared__ uint32_t s_next_start;
+    const uint32_t start = sel.words[2];
     const uint32_t n = min(*cand.counter, cand.capacity);
-    for (uint32_t i = tid; i < n; i += nt) {
+    if (tid == 0) { sel.words[0] = 0u; sel.words[1] = 0u; s_next_start = n; }
+    __syncthreads();
+    for (uint32_t i = start + tid; i < n; i += nt) {
         const MatchRecord& r = cand.at(i);
-        if (r.step != s) continue;
+        if (r.step != s) {
+            if (r.step > s) atomicMin(&s_next_start, i);
+            continue;
+        }
         EdgeId edges[kMaxPatternEdges];
         for (uint32_t k = 0; k < kMaxPatternEdges; ++k) edges[k] = r.matched_edges[k];
         const uint64_t key = transition_key_device(ds, r.state_id, r.rule_id, edges, r.num_edges);
@@ -125,6 +144,7 @@ __device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
         }
     }
     __syncthreads();
+    if (tid == 0) sel.words[2] = s_next_start;
     const uint32_t m = min(sel.words[0], sel.cap);
     const uint32_t cap_n = ds.max_states_per_step;
     uint64_t threshold = ~0ULL;
@@ -194,7 +214,8 @@ __device__ void run_step_selections(const DeviceState& ds, uint32_t s,
 }
 
 __global__ void k_seed_frontier(const __grid_constant__ DeviceState ds, ExploreView ev, const StateId* ids,
-                                const uint32_t* steps, const uint32_t* count, uint32_t cap) {
+                                const uint32_t* steps, const uint32_t* count, uint32_t cap,
+                                bool dedup) {
     const uint32_t live = min(*count, cap);
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= live) return;
@@ -202,6 +223,7 @@ __global__ void k_seed_frontier(const __grid_constant__ DeviceState ds, ExploreV
     // A state lowered under the old budget later in the run that recorded it was expanded
     // then, and holds the claim.
     if (!ev.claim(s)) return;
+    if (dedup && !explore_admits(ds, s)) return;
     // Depth is PER ENTRY: after a steered Step the frontier mixes entries stranded by
     // different budgets. The state's own depth is the smallest any path reached it by.
     uint32_t d = steps[tid];
@@ -399,6 +421,7 @@ struct DeviceExploreCtx {
     uint32_t*          frame_node;
     uint32_t*          frame_depth;
     uint32_t           levels;
+    bool               dedup;      // quotient exploration: the coin is drawn at the claim
     uint32_t           frames = 0;
 
     __device__ uint32_t depth_load(uint32_t s) const {
@@ -424,6 +447,7 @@ struct DeviceExploreCtx {
     __device__ void admit(uint32_t s, uint32_t d) {
         if (d >= max_steps) { session_frontier_append(ds, sess, s, d); return; }
         if (!ev.claim(s)) return;
+        if (dedup && !explore_admits(ds, s)) return;
         step_book(ds, d, 1u);
         if (!ev.expand.append(ExpandEntry{s, d, 0u})) {
             ds.errors.record(ErrorKind::kStatePoolFull);
@@ -845,14 +869,18 @@ __device__ __forceinline__ void register_child(
         const DeviceState& ds, ExploreView& ev, const SessionView& sess, StateId sid,
         StateId parent, StateId canonical, bool fresh, uint32_t step, uint32_t max_steps,
         bool dedup, const MatchRecord* rec) {
-    if (fresh && (step < max_steps || sess.enabled) && ds.exploration_probability < 1.0 &&
-        (rec != nullptr || dedup) &&
+    // Full capture: each state is registered once, as it is created, and the coin is drawn then,
+    // on the creating transition. Under quotient exploration it is drawn at the claim (admit),
+    // so a class first reached past the budget and later under it is drawn when it is claimed.
+    if (!dedup && fresh && rec != nullptr && (step < max_steps || sess.enabled) &&
+        ds.exploration_probability < 1.0 &&
         !hgcommon::explore_survives(explore_key(ds, dedup, canonical, rec), ds.sampling_seed,
                                     ds.exploration_probability))
         ev.claim(canonical);
     DeviceExploreCtx xc{ds, ev, sess, max_steps,
                         ev.frame_node + size_t(blockIdx.x) * ev.frame_levels,
-                        ev.frame_depth + size_t(blockIdx.x) * ev.frame_levels, ev.frame_levels};
+                        ev.frame_depth + size_t(blockIdx.x) * ev.frame_levels, ev.frame_levels,
+                        dedup};
     const uint32_t d = hgcommon::explore_register_child(xc, parent, canonical, step);
     if (d != hgcommon::kExploreNoDepth) {
         xc.admit(canonical, d);
@@ -1638,6 +1666,15 @@ uint32_t default_persistent_grid() {
     return cached;
 }
 
+uint32_t persistent_ring_capacity(uint64_t items) {
+    if (items > (1ull << 31))
+        throw std::length_error("a persistent work queue of " + std::to_string(items) +
+                                " items is past 2^31 slots");
+    uint64_t cap = 2;
+    while (cap < items) cap <<= 1;
+    return static_cast<uint32_t>(cap);
+}
+
 size_t persistent_kernels_stack_bytes() {
     size_t need = 0;
     auto take = [&](const void* k) {
@@ -1752,7 +1789,8 @@ uint32_t run_persistent_match(const EngineState& engine,
     if (rules.empty() || states.empty()) return out.size_host();
 
     const uint32_t num_rules = static_cast<uint32_t>(rules.size());
-    const uint32_t num_items = static_cast<uint32_t>(num_rules * states.size());
+    const uint32_t cap = persistent_ring_capacity(uint64_t{num_rules} * states.size());
+    const uint32_t num_items = static_cast<uint32_t>(uint64_t{num_rules} * states.size());
 
     // Engine-lifetime grow-only scratch: allocating these per call was API-call overhead on
     // the per-call floor.
@@ -1763,8 +1801,6 @@ uint32_t run_persistent_match(const EngineState& engine,
     HG_CUDA_CHECK(cudaMemcpyAsync(sc.states, states.data(), sizeof(StateId) * states.size(),
                      cudaMemcpyHostToDevice, 0), "states copy");
 
-    uint32_t cap = 2;
-    while (cap < num_items) cap <<= 1;
     RingBuffer<MatchWorkItem>& queue = reuse_ring(engine, cap);
 
     {
@@ -1800,7 +1836,8 @@ PersistentRunStats run_persistent_match_rewrite(EngineState& engine,
     scratch_matches.reset_and_clear();
 
     const uint32_t num_rules = static_cast<uint32_t>(rules.size());
-    const uint32_t num_items = static_cast<uint32_t>(num_rules * states.size());
+    const uint32_t cap = persistent_ring_capacity(uint64_t{num_rules} * states.size());
+    const uint32_t num_items = static_cast<uint32_t>(uint64_t{num_rules} * states.size());
 
     // Engine-lifetime grow-only scratch; see run_persistent_match.
     EngineState::LaunchScratch& sc =
@@ -1810,8 +1847,6 @@ PersistentRunStats run_persistent_match_rewrite(EngineState& engine,
     HG_CUDA_CHECK(cudaMemcpyAsync(sc.states, states.data(), sizeof(StateId) * states.size(),
                      cudaMemcpyHostToDevice, 0), "states copy");
 
-    uint32_t cap = 2;
-    while (cap < num_items) cap <<= 1;
     RingBuffer<MatchWorkItem>& match_q = reuse_ring(engine, cap);
     {
         const uint32_t block = 128;
@@ -1871,7 +1906,8 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     scratch_matches.reset_and_clear(&clears);
 
     const uint32_t num_rules = static_cast<uint32_t>(rules.size());
-    const uint32_t num_seed  = static_cast<uint32_t>(num_rules * roots.size());
+    const uint32_t seed_cap = persistent_ring_capacity(uint64_t{num_rules} * roots.size());
+    const uint32_t num_seed  = static_cast<uint32_t>(uint64_t{num_rules} * roots.size());
 
     // Engine-lifetime grow-only scratch; see run_persistent_match.
     EngineState::LaunchScratch& sc =
@@ -1889,8 +1925,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     // The ring holds work in flight, not the whole evolution: a run that outgrows it does not
     // fail, it runs the excess inline on the pushing block. Sized to the match pool so the
     // inline path is an escape valve rather than the normal case.
-    uint32_t cap = 2;
-    while (cap < num_seed) cap <<= 1;
+    uint32_t cap = seed_cap;
     while (cap < scratch_matches.capacity() && cap < (1u << 20)) cap <<= 1;
     RingBuffer<MatchWorkItem>& match_q = reuse_ring(engine, cap, &clears);
 
@@ -1948,7 +1983,12 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     pool_v.base += uint64_t(region_words) * grid;
     pool_v.capacity -= uint64_t(region_words) * grid;
     {
-        const uint32_t levels = max_steps + 2u;
+        // A walk descends one level per state it lowers, along a parent-child chain of distinct
+        // states, so it is bounded by the state budget as well as the depth. Without
+        // deduplication every state is registered once, as it is created, and is never lowered
+        // again: its walk is the one frame of its own (empty) child list.
+        const uint32_t chain = std::min(max_steps, engine.config().max_states);
+        const uint32_t levels = dedup ? chain + 2u : 2u;
         const size_t words = size_t(grid) * levels * 2u;
         if (ps.explore_frame_words < words) {
             if (ps.explore_frames) cudaFree(ps.explore_frames);
@@ -2097,12 +2137,13 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
             if (ps.step_rank) cudaFree(ps.step_rank);
             if (ps.step_idx) cudaFree(ps.step_idx);
             if (!ps.step_words)
-                HG_CUDA_CHECK(cudaMalloc(&ps.step_words, sizeof(uint32_t) * 2u), "step words");
+                HG_CUDA_CHECK(cudaMalloc(&ps.step_words, sizeof(uint32_t) * 3u), "step words");
             HG_CUDA_CHECK(cudaMalloc(&ps.step_rank, sizeof(uint64_t) * cap), "step ranks");
             HG_CUDA_CHECK(cudaMalloc(&ps.step_idx, sizeof(uint32_t) * cap), "step indices");
             ps.step_cap = cap;
         }
         ps.step_cand->reset_and_clear(&clears);
+        clears.add(ps.step_words, sizeof(uint32_t) * 3u, 0);
         cand_v = ps.step_cand->view();
         step_sel = StepSelectScratch{ps.step_rank, ps.step_idx, ps.step_words, ps.step_cap};
         std::vector<uint32_t> tokens(dsk.step_slots, 1u);
@@ -2130,7 +2171,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         if (seed_grid) {
             k_seed_frontier<<<seed_grid, block>>>(
                 engine.device(), ev, sess_v.frontier, sess_v.frontier_step,
-                sess_v.frontier_count, sess_v.frontier_cap);
+                sess_v.frontier_count, sess_v.frontier_cap, dedup);
         }
         // THE FRONTIER IS CONSUMED, NOT ACCUMULATED. The states it held are being expanded now,
         // and this run's own boundary takes their place -- so the counter is reset between the

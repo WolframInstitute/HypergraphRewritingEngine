@@ -359,6 +359,8 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
     const bool host_ir = canon_mode != hg_gpu::CanonicalizationMode::Full &&
                          (job.include_canonical_hashes || job.include_step_statistics);
     for (const auto& s : result.states) {
+        // A state slot a failed rewrite claimed (a partial result) reads back with id INVALID_ID.
+        if (s.id == hg_gpu::INVALID_ID) continue;
         state_hash[s.id] = hgmarshal::reported_state_hash(
             s.num_edges == 0,
             canon_mode == hg_gpu::CanonicalizationMode::Full ? s.canonical_hash
@@ -478,25 +480,33 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
             }
             return edges;
         };
+        // Every state, or under Full one per class: the host's rule (hypergraph_ffi.cpp, States).
+        std::vector<hg_gpu::StateId> emit;
+        if (canon_mode == hg_gpu::CanonicalizationMode::Full) {
+            emit = class_reps;
+        } else {
+            for (const auto& s : result.states)
+                if (s.id != hg_gpu::INVALID_ID) emit.push_back(s.id);
+        }
         std::vector<int64_t> listed;
         std::vector<uint64_t> listed_hash;
-        for (hg_gpu::StateId rep : class_reps) {
-            listed.push_back(static_cast<int64_t>(rep));
-            listed_hash.push_back(hgmarshal::content_hash_of(record_edges(rep)));
+        for (hg_gpu::StateId s : emit) {
+            listed.push_back(static_cast<int64_t>(s));
+            listed_hash.push_back(hgmarshal::content_hash_of(record_edges(s)));
         }
         const auto content_id = hgmarshal::lowest_id_by_content(listed, listed_hash);
-        for (size_t i = 0; i < class_reps.size(); ++i) {
-            const hg_gpu::StateId rep = class_reps[i];
-            auto edges = record_edges(rep);
-            const bool is_init = is_output.find(rep) == is_output.end();
+        for (size_t i = 0; i < emit.size(); ++i) {
+            const hg_gpu::StateId s = emit[i];
+            auto edges = record_edges(s);
+            const bool is_init = is_output.find(s) == is_output.end();
             hgmarshal::write_state_record(sink,
                 hgmarshal::StateRecordIds{
-                    static_cast<int64_t>(rep), static_cast<int64_t>(rep),
+                    static_cast<int64_t>(s), rep_of(s),
                     content_id.at(listed_hash[i]),
-                    is_init ? 0 : static_cast<int64_t>(state_step[rep]),
-                    job.include_canonical_hashes, static_cast<int64_t>(state_hash[rep])},
+                    is_init ? 0 : static_cast<int64_t>(state_step[s]),
+                    job.include_canonical_hashes, static_cast<int64_t>(state_hash[s])},
                 canon_mode == hg_gpu::CanonicalizationMode::Full, std::move(edges));
-            states_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(rep)), wxf::WXFValue(sink.take())});
+            states_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(s)), wxf::WXFValue(sink.take())});
         }
         full_result.push_back({wxf::WXFValue("States"), wxf::WXFValue(states_assoc)});
     }
@@ -607,6 +617,18 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
         full_result.push_back({wxf::WXFValue("Events"), wxf::WXFValue(events_assoc)});
     }
 
+    // An event's id under the event identity in force: its canonical event, or itself. From and To
+    // of the causal and branchial lists carry it and RawFrom/RawTo the raw ids, as on the host
+    // (Hypergraph::get_canonical_event).
+    std::unordered_map<uint32_t, uint32_t> canonical_event;
+    for (const auto& e : result.events)
+        if (e.id != hg_gpu::INVALID_ID && e.canonical_id != hg_gpu::INVALID_ID)
+            canonical_event.emplace(e.id, e.canonical_id);
+    auto event_id_of = [&](uint32_t raw) -> int64_t {
+        auto it = canonical_event.find(raw);
+        return static_cast<int64_t>(it == canonical_event.end() ? raw : it->second);
+    };
+
     // CausalEdges: dedup by raw (from,to), matching the FFI. The deduped count feeds
     // NumCausalEdges and must be computed even when the edge list itself is not requested
     // (e.g. the counts-only "Debug" property), so the count matches the CPU in every case.
@@ -635,8 +657,8 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
             if (!seen.insert(key).second) continue;
             if (job.include_causal_edges) {
                 wxf::WXFValueAssociation ed;
-                ed.push_back({wxf::WXFValue("From"), wxf::WXFValue(static_cast<int64_t>(c.from))});
-                ed.push_back({wxf::WXFValue("To"), wxf::WXFValue(static_cast<int64_t>(c.to))});
+                ed.push_back({wxf::WXFValue("From"), wxf::WXFValue(event_id_of(c.from))});
+                ed.push_back({wxf::WXFValue("To"), wxf::WXFValue(event_id_of(c.to))});
                 ed.push_back({wxf::WXFValue("RawFrom"), wxf::WXFValue(static_cast<int64_t>(c.from))});
                 ed.push_back({wxf::WXFValue("RawTo"), wxf::WXFValue(static_cast<int64_t>(c.to))});
                 causal.push_back(wxf::WXFValue(ed));
@@ -675,8 +697,8 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
         wxf::WXFValueList branchial;
         for (const auto& b : result.branchial_edges) {
             wxf::WXFValueAssociation ed;
-            ed.push_back({wxf::WXFValue("From"), wxf::WXFValue(static_cast<int64_t>(b.a))});
-            ed.push_back({wxf::WXFValue("To"), wxf::WXFValue(static_cast<int64_t>(b.b))});
+            ed.push_back({wxf::WXFValue("From"), wxf::WXFValue(event_id_of(b.a))});
+            ed.push_back({wxf::WXFValue("To"), wxf::WXFValue(event_id_of(b.b))});
             branchial.push_back(wxf::WXFValue(ed));
         }
         full_result.push_back({wxf::WXFValue("BranchialEdges"), wxf::WXFValue(branchial)});

@@ -267,12 +267,48 @@ uint64_t content_hash_of(std::vector<std::pair<int64_t, std::vector<uint32_t>>> 
     return ch.value();
 }
 
+std::string valid_utf8(const std::string& s) {
+    static const char hex[] = "0123456789ABCDEF";
+    std::string out;
+    out.reserve(s.size());
+    const size_t n = s.size();
+    auto byte = [&](size_t i) { return static_cast<unsigned char>(s[i]); };
+    auto cont = [&](size_t i) { return i < n && (byte(i) & 0xC0) == 0x80; };
+    for (size_t i = 0; i < n;) {
+        const unsigned char c = byte(i);
+        // Length of the well-formed sequence starting at i (RFC 3629 table 3-7), or 0.
+        size_t len = 0;
+        if (c < 0x80) {
+            len = 1;
+        } else if (c >= 0xC2 && c <= 0xDF) {
+            len = cont(i + 1) ? 2 : 0;
+        } else if (c >= 0xE0 && c <= 0xEF) {
+            const unsigned char lo = c == 0xE0 ? 0xA0 : 0x80, hi = c == 0xED ? 0x9F : 0xBF;
+            len = (i + 1 < n && byte(i + 1) >= lo && byte(i + 1) <= hi && cont(i + 2)) ? 3 : 0;
+        } else if (c >= 0xF0 && c <= 0xF4) {
+            const unsigned char lo = c == 0xF0 ? 0x90 : 0x80, hi = c == 0xF4 ? 0x8F : 0xBF;
+            len = (i + 1 < n && byte(i + 1) >= lo && byte(i + 1) <= hi && cont(i + 2) &&
+                   cont(i + 3)) ? 4 : 0;
+        }
+        if (len == 0) {
+            out += "\\x";
+            out += hex[c >> 4];
+            out += hex[c & 0xF];
+            ++i;
+        } else {
+            out.append(s, i, len);
+            i += len;
+        }
+    }
+    return out;
+}
+
 wxf::WXFValue warning_record(const std::string& kind, int64_t count, const std::string& context,
                              bool partial) {
     wxf::WXFValueAssociation wa;
     wa.push_back({wxf::WXFValue("Kind"), wxf::WXFValue(kind)});
     wa.push_back({wxf::WXFValue("Count"), wxf::WXFValue(count)});
-    wa.push_back({wxf::WXFValue("Context"), wxf::WXFValue(context)});
+    wa.push_back({wxf::WXFValue("Context"), wxf::WXFValue(valid_utf8(context))});
     wa.push_back({wxf::WXFValue("Partial"), wxf::WXFValue(static_cast<int64_t>(partial ? 1 : 0))});
     return wxf::WXFValue(wa);
 }

@@ -5,6 +5,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <string>
+#ifndef _WIN32
+#include <sys/resource.h>
+#endif
 #include <thread>
 
 /**
@@ -1150,3 +1155,43 @@ TEST(WXFSkip, BigNumbersReadBackAsTheirText) {
     parser.skip_header();
     EXPECT_EQ(parser.read_big_integer(), "1208925819614629174706176");
 }
+
+#ifndef _WIN32
+// A copy of a large list that runs out of address space throws std::bad_alloc. The child builds
+// 200000 {From -> i, To -> i} associations (the shape of a BranchialEdges reply), caps its address
+// space 16 MB above its current size, and copies the list; the copy needs about 30 MB. Exit 0 is
+// a caught bad_alloc; a SIGSEGV fails the test.
+namespace {
+long vm_size_kb() {
+    std::ifstream f("/proc/self/status");
+    std::string line;
+    while (std::getline(f, line))
+        if (line.rfind("VmSize:", 0) == 0) return std::atol(line.c_str() + 7);
+    return 0;
+}
+
+void copy_list_under_cap() {
+    wxf::WXFValueList list;
+    for (int64_t i = 0; i < 200000; ++i) {
+        wxf::WXFValueAssociation a;
+        a.push_back({wxf::WXFValue("From"), wxf::WXFValue(i)});
+        a.push_back({wxf::WXFValue("To"), wxf::WXFValue(i)});
+        list.push_back(wxf::WXFValue(std::move(a)));
+    }
+    const rlim_t cap = static_cast<rlim_t>(vm_size_kb() + 16 * 1024) * 1024;
+    rlimit r{cap, cap};
+    if (setrlimit(RLIMIT_AS, &r) != 0) std::_Exit(3);
+    try {
+        wxf::WXFValue copy(list);
+        std::_Exit(copy.get<wxf::WXFValueList>().size() == list.size() ? 2 : 4);
+    } catch (const std::bad_alloc&) {
+        std::_Exit(0);
+    }
+}
+}  // namespace
+
+TEST(WxfValueCopy, BadAllocDuringCopyThrows) {
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_EXIT(copy_list_under_cap(), ::testing::ExitedWithCode(0), "");
+}
+#endif

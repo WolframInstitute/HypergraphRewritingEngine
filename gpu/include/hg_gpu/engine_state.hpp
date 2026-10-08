@@ -213,10 +213,12 @@ struct DeviceState {
     // c's kept causal edges, one node per unique kept (producer, consumer) pair. Reachability
     // queries walk it backward; no closure is stored. Device twin of CausalGraph::preds_.
     typename LockFreeList<EventId>::DeviceView    preds_list;
-    // The reduction's reachability search runs in local arrays and, when they fill, again in the
-    // calling block's slice of this buffer: tr_scratch_slots slices of tr_scratch_stack stack
-    // words followed by tr_scratch_visited visited-table words (a power of two).
+    // The reduction's reachability search runs in local arrays and, when they fill, again in a
+    // slice of this buffer: tr_scratch_slots slices of tr_scratch_stack stack words followed by
+    // tr_scratch_visited visited-table words (a power of two). A thread takes a slice by
+    // exchanging its tr_scratch_busy word from 0 to 1 and gives it back by storing 0.
     uint32_t* tr_scratch;
+    uint32_t* tr_scratch_busy;
     uint32_t  tr_scratch_stack;
     uint32_t  tr_scratch_visited;
     uint32_t  tr_scratch_slots;
@@ -310,6 +312,14 @@ public:
     // search's local arrays (rewrite.cu, kReachStack and kReachVisited).
     static constexpr uint32_t kTrScratchStack   = 2048;
     static constexpr uint32_t kTrScratchVisited = 4096;   // a power of two
+
+    // EngineConfig::tr_scratch_scale rounded up to a power of two, at least 1: the visited table
+    // is kTrScratchVisited times it and the search masks into the table.
+    static uint32_t tr_scratch_scale_of(const EngineConfig& cfg) {
+        uint32_t s = 1;
+        while (s < cfg.tr_scratch_scale && s < (1u << 31)) s <<= 1;
+        return s;
+    }
 
     explicit EngineState(EngineConfig cfg);
 
@@ -571,6 +581,7 @@ private:
     hgcommon::RecordSet                record_{};
     uint32_t*                          state_edge_rank_        = nullptr;
     uint32_t*                          tr_scratch_             = nullptr;
+    uint32_t*                          tr_scratch_busy_        = nullptr;
     uint32_t                           tr_scratch_slots_       = 0;
     uint64_t*                          survivor_scratch_       = nullptr;
     // Sampling and capping. The weights and the two counters are the only device memory these

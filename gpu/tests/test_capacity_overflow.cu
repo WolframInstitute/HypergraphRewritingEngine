@@ -24,10 +24,14 @@
 
 #include "hg_gpu/evolve.hpp"
 #include "hg_gpu/persistent.hpp"
+#include "hg_gpu/device_arena.hpp"
+#include "hg_gpu/engine_state.hpp"
+#include "hg_gpu/initial_upload.hpp"
 
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <stdexcept>
 #include <vector>
 
 namespace {
@@ -268,4 +272,181 @@ TEST(CapacityOverflow, AReplayGroupGrowsAlone) {
     EXPECT_EQ(after.words, before.words);
     ASSERT_TRUE(hg_gpu::grow_config_for(cfg, hg_gpu::ErrorKind::kQeWordsFull));
     EXPECT_EQ(hg_gpu::qe_entries(cfg).words, 2 * before.words);
+}
+
+namespace {
+
+bool has_kind(const std::vector<hg_gpu::OverflowWarning>& w, hg_gpu::ErrorKind k) {
+    return std::any_of(w.begin(), w.end(), [k](const auto& x) { return x.kind == k; });
+}
+
+}  // namespace
+
+// Every record a partial result returns was written by the run that returns it, or is marked: a
+// state slot a failed rewrite claimed has id INVALID_ID; every other non-root state is the output
+// of exactly one event, every event names states in the result, every state holds edges, and
+// every edge record with vertices belongs to a state. Each case starves one pool
+// so the run fails a claim after others succeeded, with a capacity the two-edge claims straddle.
+// Each engine first completes a smaller run, so a slot the overflowing run claimed and left
+// unwritten still holds that run's record.
+TEST(CapacityOverflow, APartialResultHoldsNoUnwrittenRecords) {
+    struct Starve { const char* name; uint32_t hg_gpu::EngineConfig::*field; uint32_t size; };
+    const Starve cases[] = {{"states", &hg_gpu::EngineConfig::max_states, 61},
+                            {"events", &hg_gpu::EngineConfig::max_events, 61},
+                            {"edges", &hg_gpu::EngineConfig::max_edges, 129},
+                            {"vertex slots", &hg_gpu::EngineConfig::max_vertex_slots, 259},
+                            {"state edge slots", &hg_gpu::EngineConfig::max_state_edge_total, 501}};
+    for (const Starve& c : cases) {
+        const hg_gpu::EvolveInput small = growing_input(2);   // 25 states, 52 edges
+        const hg_gpu::EvolveInput big = growing_input(3);     // 145 states, 292 edges
+        hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(big);
+        cfg.*c.field = c.size;
+        hg_gpu::Engine engine(cfg);
+        const hg_gpu::EvolveResult first = engine.run(small);
+        ASSERT_TRUE(first.warnings.empty()) << c.name << ": the first run must complete";
+        const hg_gpu::EvolveResult r = engine.run(big);
+        ASSERT_FALSE(r.warnings.empty()) << c.name << ": the second run must overflow";
+
+        const size_t n = r.states.size();
+        std::vector<uint32_t> produced_by(n, 0);
+        for (const auto& e : r.events) {
+            ASSERT_NE(e.id, hg_gpu::INVALID_ID) << c.name;
+            ASSERT_LT(e.input_state, n) << c.name << ": event " << e.id;
+            ASSERT_LT(e.output_state, n) << c.name << ": event " << e.id;
+            ++produced_by[e.output_state];
+        }
+        EXPECT_EQ(produced_by[0], 0u) << c.name << ": the root is some event's output";
+        std::vector<char> referenced(r.edge_records.size(), 0);
+        for (size_t s = 0; s < n; ++s) {
+            // A state slot a failed rewrite claimed reads back with id INVALID_ID.
+            if (r.states[s].id == hg_gpu::INVALID_ID) {
+                EXPECT_EQ(produced_by[s], 0u) << c.name << ": marked state " << s;
+                continue;
+            }
+            EXPECT_EQ(r.states[s].id, s) << c.name;
+            if (s != 0)
+                EXPECT_EQ(produced_by[s], 1u) << c.name << ": state " << s << " is the output of "
+                                              << produced_by[s] << " events";
+            EXPECT_GT(r.states[s].num_edges, 0u) << c.name << ": state " << s << " holds no edges";
+            for (const auto eid : r.edge_ids(r.states[s]))
+                if (eid < referenced.size()) referenced[eid] = 1;
+        }
+        for (size_t eid = 0; eid < r.edge_records.size(); ++eid)
+            if (!r.edge_vertices(static_cast<hg_gpu::EdgeId>(eid)).empty())
+                EXPECT_TRUE(referenced[eid]) << c.name << ": edge " << eid
+                                             << " has vertices and belongs to no state";
+    }
+}
+
+// A full relation dedup map is a capacity overflow the run reports, which names the map so the
+// retry grows it. Each map is given 16 slots on a run that records more relations than that: the
+// raw-event route (state and event identity None), with a second rule whose matches share consumed edges
+// with the first's, so sibling events are branchial pairs.
+TEST(CapacityOverflow, AFullRelationMapIsReported) {
+    struct Map { const char* name; uint32_t hg_gpu::EngineConfig::*field; hg_gpu::ErrorKind kind; };
+    const Map maps[] = {
+        {"causal triples", &hg_gpu::EngineConfig::causal_triple_slots,
+         hg_gpu::ErrorKind::kCausalTripleMapFull},
+        {"causal pairs", &hg_gpu::EngineConfig::causal_pair_slots,
+         hg_gpu::ErrorKind::kCausalPairMapFull},
+        {"branchial pairs", &hg_gpu::EngineConfig::branchial_pair_slots,
+         hg_gpu::ErrorKind::kBranchialMapFull}};
+    for (const Map& m : maps) {
+        hg_gpu::EvolveInput in = growing_input(3);
+        hg_gpu::RewriteRule path;
+        path.lhs = {{0, 1}, {1, 2}};
+        path.rhs = {{0, 1}, {1, 2}, {1, 3}};
+        path.num_lhs_vars = 3;
+        path.num_rhs_vars = 4;
+        in.rules.push_back(path);
+        in.canonicalization = hg_gpu::CanonicalizationMode::None;
+        in.event_canonicalization = hg_gpu::EventCanonicalizationMode::None;
+        in.transitive_reduction = true;
+        in.record = hgcommon::RecordSet{true, true, true};
+        hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
+        cfg.*m.field = 16;
+        hg_gpu::Engine engine(cfg);
+        const hg_gpu::EvolveResult r = engine.run(in);
+        EXPECT_TRUE(has_kind(r.warnings, m.kind)) << m.name << ": the map filled and the run "
+                                                  << "reported " << r.warnings.size()
+                                                  << " warnings, none naming it";
+        hg_gpu::EngineConfig grown = cfg;
+        ASSERT_TRUE(hg_gpu::grow_config_for(grown, m.kind)) << m.name;
+        EXPECT_EQ(grown.*m.field, 32u) << m.name;
+    }
+}
+
+// The pool sizes are computed in 64 bits and clamped. A 32,768-edge root at three steps asks for
+// 2^30 edges and four times that many vertex slots, past 32 bits.
+TEST(CapacityOverflow, ConfigSizingDoesNotWrap) {
+    hg_gpu::EvolveInput in = growing_input(3);
+    in.initial_state.clear();
+    for (hg_gpu::VertexId v = 0; v < 32768; ++v) in.initial_state.push_back({v, v + 1});
+    const hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
+    EXPECT_GE(cfg.max_edges, 32768u);
+    EXPECT_GE(cfg.max_vertex_slots, cfg.max_edges);
+    EXPECT_GE(cfg.inverted_pool, cfg.max_edges);
+    EXPECT_GE(cfg.sig_index_pool, cfg.max_edges);
+    EXPECT_GE(cfg.edge_consumer_nodes, cfg.max_edges);
+    EXPECT_GE(cfg.max_states, 1u << 17);
+}
+
+namespace {
+__global__ void k_arena_claims(hg_gpu::DeviceArena::View a, uint64_t first, uint64_t second,
+                               uint32_t* got) {
+    got[0] = a.claim(first) != nullptr ? 1u : 0u;
+    got[1] = a.claim(second) != nullptr ? 1u : 0u;
+}
+}  // namespace
+
+// A refused arena claim takes nothing: a later claim that fits is granted.
+TEST(CapacityOverflow, ARefusedArenaClaimLeavesTheArenaUsable) {
+    hg_gpu::DeviceArena arena(1024);
+    arena.reset();
+    uint32_t* d = nullptr;
+    ASSERT_EQ(cudaMalloc(&d, sizeof(uint32_t) * 2), cudaSuccess);
+    k_arena_claims<<<1, 1>>>(arena.view(), 4096, 16, d);
+    uint32_t got[2] = {9, 9};
+    ASSERT_EQ(cudaMemcpy(got, d, sizeof(got), cudaMemcpyDeviceToHost), cudaSuccess);
+    cudaFree(d);
+    EXPECT_EQ(got[0], 0u) << "a claim of 4096 words from 1024 was granted";
+    EXPECT_EQ(got[1], 1u) << "a claim of 16 words was refused after a refused oversized one";
+    EXPECT_EQ(arena.used_words_host(), 16u);
+}
+
+// An index insert the initial upload cannot place is a capacity overflow the run reports.
+TEST(CapacityOverflow, AFullIndexAtUploadIsReported) {
+    hg_gpu::EngineConfig cfg;
+    cfg.sig_index_pool = 4;
+    cfg.inverted_pool = 4;
+    hg_gpu::EngineState engine(cfg);
+    engine.set_maintain_indices(true);
+    std::vector<std::vector<hg_gpu::VertexId>> edges;
+    for (hg_gpu::VertexId v = 0; v < 16; ++v) edges.push_back({v, v + 1});
+    hg_gpu::upload_initial_state(engine, edges);
+    std::vector<hg_gpu::OverflowWarning> w;
+    engine.collect_warnings_into(w, "upload");
+    EXPECT_TRUE(has_kind(w, hg_gpu::ErrorKind::kSigIndexNodes));
+    EXPECT_TRUE(has_kind(w, hg_gpu::ErrorKind::kInvIndexNodes));
+}
+
+// The reachability search masks into its visited table, so the table is a power of two at any
+// tr_scratch_scale.
+TEST(CapacityOverflow, TheReachabilityTableIsAPowerOfTwo) {
+    for (uint32_t scale : {1u, 3u, 5u, 6u}) {
+        hg_gpu::EngineConfig cfg;
+        cfg.tr_scratch_scale = scale;
+        hg_gpu::EngineState engine(cfg);
+        const uint32_t v = engine.device().tr_scratch_visited;
+        EXPECT_EQ(v & (v - 1u), 0u) << "scale " << scale << ": visited table of " << v;
+        EXPECT_GE(v, hg_gpu::EngineState::kTrScratchVisited * scale) << "scale " << scale;
+    }
+}
+
+// The persistent queue holds a power of two at least the seed count; past 2^31 there is none.
+TEST(CapacityOverflow, TheRingCapacityHasABound) {
+    EXPECT_EQ(hg_gpu::persistent_ring_capacity(0), 2u);
+    EXPECT_EQ(hg_gpu::persistent_ring_capacity(3), 4u);
+    EXPECT_EQ(hg_gpu::persistent_ring_capacity(1u << 31), 1u << 31);
+    EXPECT_THROW(hg_gpu::persistent_ring_capacity((1ull << 31) + 1), std::length_error);
 }

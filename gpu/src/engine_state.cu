@@ -214,13 +214,19 @@ EngineState::EngineState(EngineConfig cfg): cfg_(cfg)
         HG_CUDA_CHECK(cudaMalloc(&event_consumed_,
               sizeof(EdgeId) * uint64_t(cfg_.max_events) * event_consumed_stride(cfg_)),
               "EngineState event_consumed alloc");
-        // One reachability slice per persistent block; the kernels call the search from each
-        // block's thread 0.
+        // One reachability slice per persistent block, taken by whichever thread needs one
+        // (rewrite.cu is_reachable_preds). The visited table is masked, so the scale is rounded
+        // up to a power of two.
+        cfg_.tr_scratch_scale = tr_scratch_scale_of(cfg_);
         tr_scratch_slots_ = default_persistent_grid();
         HG_CUDA_CHECK(cudaMalloc(&tr_scratch_, sizeof(uint32_t) * tr_scratch_slots_ *
                                                    (kTrScratchStack + kTrScratchVisited) *
                                                    cfg_.tr_scratch_scale),
                       "EngineState tr_scratch alloc");
+        HG_CUDA_CHECK(cudaMalloc(&tr_scratch_busy_, sizeof(uint32_t) * tr_scratch_slots_),
+                      "EngineState tr_scratch busy alloc");
+        HG_CUDA_CHECK(cudaMemset(tr_scratch_busy_, 0, sizeof(uint32_t) * tr_scratch_slots_),
+                      "EngineState tr_scratch busy init");
         if (cfg_.survivor_scratch)
             HG_CUDA_CHECK(cudaMalloc(&survivor_scratch_, sizeof(uint64_t) * tr_scratch_slots_ *
                                                             cfg_.survivor_scratch),
@@ -244,6 +250,7 @@ EngineState::~EngineState() {
         if (state_exact_hash_)       cudaFree(state_exact_hash_);
         if (state_edge_rank_)        cudaFree(state_edge_rank_);
         if (tr_scratch_)             cudaFree(tr_scratch_);
+        if (tr_scratch_busy_)        cudaFree(tr_scratch_busy_);
         if (survivor_scratch_)       cudaFree(survivor_scratch_);
         if (state_edge_orbit_)       cudaFree(state_edge_orbit_);
         if (state_num_orbits_)       cudaFree(state_num_orbits_);
@@ -428,6 +435,7 @@ DeviceState EngineState::device() const {
         d.preds_list              = preds_list_.view();
         d.tr_enabled              = tr_enabled_;
         d.tr_scratch              = tr_scratch_;
+        d.tr_scratch_busy         = tr_scratch_busy_;
         d.tr_scratch_stack        = kTrScratchStack * cfg_.tr_scratch_scale;
         d.tr_scratch_visited      = kTrScratchVisited * cfg_.tr_scratch_scale;
         d.tr_scratch_slots        = tr_scratch_slots_;

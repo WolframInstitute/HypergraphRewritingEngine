@@ -98,7 +98,7 @@ using WXFValueList = std::vector<WXFValue>;
 using WXFValueAssociation = std::vector<std::pair<WXFValue, WXFValue>>;  // Key-value pairs, keys can be any expression
 
 struct WXFValue {
-    std::variant<
+    using Data = std::variant<
         std::monostate,           // Null/empty
         int64_t,                  // Integer
         double,                   // Real
@@ -106,13 +106,34 @@ struct WXFValue {
         std::vector<uint8_t>,     // BinaryString
         WXFValueList,             // List of values
         WXFValueAssociation       // Association (arbitrary keys and values)
-    > data;
+    >;
+    Data data;
 
     WXFValue() : data(std::monostate{}) {}
 
     template<typename T,
              typename = std::enable_if_t<!std::is_same_v<std::decay_t<T>, WXFValue>>>
     WXFValue(T&& value) : data(std::forward<T>(value)) {}
+
+    // COPIES GO THROUGH copy_of, NOT std::variant's copy constructor. Every alternative here is
+    // one libstdc++ marks never-valueless (_Never_valueless_alt), so _Variant_storage::_M_valid()
+    // returns true unconditionally; when an alternative's copy throws (bad_alloc on a large
+    // list), the copy constructor's cleanup destroys index variant_npos and jumps through the
+    // visit table out of bounds (SIGSEGV, libstdc++ 13 and 15). The in_place_type constructor
+    // has no such cleanup: a throw from the alternative leaves no variant to destroy.
+    // WxfValueCopy.BadAllocDuringCopyThrows reproduces it.
+    static Data copy_of(const Data& d) {
+        return std::visit(
+            [](const auto& x) -> Data { return Data(std::in_place_type<std::decay_t<decltype(x)>>, x); },
+            d);
+    }
+    WXFValue(const WXFValue& other) : data(copy_of(other.data)) {}
+    WXFValue(WXFValue&&) noexcept = default;
+    WXFValue& operator=(const WXFValue& other) {
+        data = copy_of(other.data);
+        return *this;
+    }
+    WXFValue& operator=(WXFValue&&) noexcept = default;
 
     template<typename T>
     T& get() { return std::get<T>(data); }

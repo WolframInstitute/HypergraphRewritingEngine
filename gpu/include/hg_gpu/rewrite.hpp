@@ -102,9 +102,9 @@ __device__ void try_add_causal_edge(const DeviceState& ds, EventId p, EventId c,
 
 // The transitive-reduction gate's setup: builds the causal chain 1 <- 2 <- ... <- n + 1 <- n + 2
 // in the reduced predecessor lists and offers the edge 1 -> n + 2, which the chain makes
-// redundant. Needs tr enabled and max_events, tr_preds_nodes above n + 2. The test reads the
-// causal edge count and the warnings.
-void add_redundant_edge_over_chain(EngineState& engine, uint32_t n);
+// redundant, from thread `lane` of block 0. Needs tr enabled and max_events, tr_preds_nodes above
+// n + 2. The test reads the causal edge count and the warnings.
+void add_redundant_edge_over_chain(EngineState& engine, uint32_t n, uint32_t lane = 0);
 
 uint32_t run_rewrite_kernel(EngineState&                   engine,
                             const std::vector<DeviceRule>& rules,

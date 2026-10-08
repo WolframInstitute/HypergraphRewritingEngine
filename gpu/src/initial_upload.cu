@@ -13,17 +13,20 @@ namespace gpu {
 
 // Kernel that, for every edge in [0, num_edges), pushes (signature_hash →
 // edge_id) into the signature index and (each vertex → edge_id) into the
-// vertex inverted index.
+// vertex inverted index. An insert the node pools cannot hold is recorded, as the rewrite
+// records its own; the edge is then missing from a candidate list.
 __global__ void k_init_indices(const __grid_constant__ DeviceState ds, uint32_t num_edges) {
     uint32_t eid = blockIdx.x * blockDim.x + threadIdx.x;
     if (eid >= num_edges) return;
 
     Edge& e = ds.edge_pool.at(eid);
-    ds.signature_index.insert(eid, e.signature);
+    if (ds.signature_index.insert(eid, e.signature) == INVALID_ID)
+        ds.errors.record(ErrorKind::kSigIndexNodes);
     auto vertex_at = [&](uint8_t k) { return ds.vertex_pool.at(e.vertex_offset + k); };
     for (uint8_t i = 0; i < e.arity; ++i) {
         if (!first_occurrence(vertex_at, i)) continue;
-        ds.vertex_inverted_index.insert(vertex_at(i), eid);
+        if (ds.vertex_inverted_index.insert(vertex_at(i), eid) == INVALID_ID)
+            ds.errors.record(ErrorKind::kInvIndexNodes);
     }
 }
 

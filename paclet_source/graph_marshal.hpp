@@ -349,6 +349,11 @@ uint64_t content_hash_of(std::vector<std::pair<int64_t, std::vector<uint32_t>>> 
 wxf::WXFValue warning_record(const std::string& kind, int64_t count, const std::string& context,
                              bool partial);
 
+// `s` with every byte that is not part of a well-formed UTF-8 sequence written as the four
+// characters \xNN. Warning contexts and error messages quote names from the request (an
+// option key, an Op), which arrive as raw bytes; the WL side decodes the reply as UTF-8.
+std::string valid_utf8(const std::string& s);
+
 // Whether a request reads the raw events and branchial pairs only through NumEvents and
 // NumBranchialEdges. Under quotient exploration those then come from class multiplicities
 // (RecordSet::raw_counts_only). Both engines' jobs carry these fields under these names.
