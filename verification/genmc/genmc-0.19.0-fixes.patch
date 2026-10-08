@@ -1,17 +1,17 @@
 diff --git a/genmc/genmc/Execution/EventLabel.cpp b/genmc/genmc/Execution/EventLabel.cpp
-index 95fe963..a1ae4df 100644
+index a159773..1aef410 100644
 --- a/genmc/genmc/Execution/EventLabel.cpp
 +++ b/genmc/genmc/Execution/EventLabel.cpp
-@@ -14,6 +14,8 @@
- #include "genmc/Execution/EventLabel.hpp"
- #include "genmc/Execution/Consistency/ConsistencyChecker.hpp"
- #include "genmc/Execution/ExecutionGraph.hpp"
+@@ -24,6 +24,8 @@
+ #include "genmc/Support/SVal.hpp"
+ 
+ #include <algorithm>
 +#include <cstdlib>
 +#include <iostream>
- #include "genmc/Support/ModuleVarID.hpp"
- #include "genmc/Support/SExprVisitor.hpp"
+ #include <memory>
+ #include <ranges>
  
-@@ -23,6 +25,15 @@ SVal EventLabel::getAccessValue(const AAccess &access) const
+@@ -33,6 +35,15 @@ auto EventLabel::getAccessValue(const AAccess &access) const -> SVal
  
  	VERIFY(getPos().isInitializer() || genmc::isa<MemAccessLabel>(this));
  	const auto *rLab = genmc::dyn_cast<ReadLabel>(this);
@@ -19,7 +19,7 @@ index 95fe963..a1ae4df 100644
 +	 * the report below names the READER and the interpreter's exit report names the
 +	 * instruction being executed (HG_GENMC_PROFILE); resolveAccessValue then stops. */
 +	if (rLab && rLab->getRf() && rLab->getRf()->getPos().isInitializer() && access.addr.isDynamic() &&
-+	    g.hasNAs()) {
++	    g.hasNAs() && !g.wasPruned()) {
 +		std::cerr << "Read of uninitialised heap memory: reader at (" << getPos().thread << ", "
 +			  << getPos().index << ") address " << access.addr.get() << " width "
 +			  << access.size.get() << "\n";
@@ -27,126 +27,29 @@ index 95fe963..a1ae4df 100644
  	return g.resolveAccessValue(rLab ? rLab->getRf() : this, access);
  }
  
-@@ -157,6 +168,14 @@ void ReadLabel::setRf(EventLabel *rfLab)
- 
- 	/* and adjust the max flag */
- 	this->setAddedMax(getParent()->co_max(this->getAddr()) == rfLab);
-+
-+	/* A CAS read takes the success or the failure ordering by the value of this rf.
-+	 * Candidate rfs tried by pickRandomRf and findConsistentRf pass through here, so an
-+	 * uninitialised read is resolved without a report; checkInitializedMem and the
-+	 * final value resolution report it. */
-+	if (auto *casLab = genmc::dyn_cast<CasReadLabel>(this))
-+		casLab->setOrderingForValue(
-+			getParent()->resolveAccessValue(rfLab, getAccess(), false));
- }
- 
- void WriteLabel::addCo(EventLabel *predLab)
-diff --git a/genmc/genmc/Execution/EventLabel.hpp b/genmc/genmc/Execution/EventLabel.hpp
-index 54be00d..56ac80f 100644
---- a/genmc/genmc/Execution/EventLabel.hpp
-+++ b/genmc/genmc/Execution/EventLabel.hpp
-@@ -878,14 +878,26 @@ FAIREAD_PURE_SUBCLASS(BIncFaiRead);
- class CasReadLabel : public ReadLabel {
- 
- protected:
-+	CasReadLabel(EventLabelKind k, Event pos, MemOrdering ord, MemOrdering failOrd, SAddr addr,
-+		     ASize size, SVal exp, SVal swap, WriteAttr wattr, EventLabel *rfLab,
-+		     std::optional<Annotation> annot, const EventDeps &deps = EventDeps())
-+		: ReadLabel(k, pos, ord, addr, size, rfLab, std::move(annot), deps), expected(exp),
-+		  swapValue(swap), wattr(wattr), successOrd(ord), failureOrd(failOrd)
-+	{}
- 	CasReadLabel(EventLabelKind k, Event pos, MemOrdering ord, SAddr addr, ASize size, SVal exp,
- 		     SVal swap, WriteAttr wattr, EventLabel *rfLab, std::optional<Annotation> annot,
- 		     const EventDeps &deps = EventDeps())
--		: ReadLabel(k, pos, ord, addr, size, rfLab, std::move(annot), deps), expected(exp),
--		  swapValue(swap), wattr(wattr)
-+		: CasReadLabel(k, pos, ord, ord, addr, size, exp, swap, wattr, rfLab,
-+			       std::move(annot), deps)
- 	{}
- 
- public:
-+	CasReadLabel(Event pos, MemOrdering ord, MemOrdering failOrd, SAddr addr, ASize size,
-+		     SVal exp, SVal swap, WriteAttr wattr, EventLabel *rfLab,
-+		     std::optional<Annotation> annot, const EventDeps &deps = EventDeps())
-+		: CasReadLabel(CasRead, pos, ord, failOrd, addr, size, exp, swap, wattr, rfLab,
-+			       std::move(annot), deps)
-+	{}
- 	CasReadLabel(Event pos, MemOrdering ord, SAddr addr, ASize size, SVal exp, SVal swap,
- 		     WriteAttr wattr, EventLabel *rfLab, std::optional<Annotation> annot,
- 		     const EventDeps &deps = EventDeps())
-@@ -918,6 +930,19 @@ public:
- 	/** Checks whether the write part has the specified attributes */
- 	bool hasAttr(WriteAttr a) const { return !!(wattr & a); }
- 
-+	/** The instruction's orderings: the read and the write of a successful CAS take the
-+	 * success ordering; the read of a failed CAS takes the failure ordering */
-+	MemOrdering getSuccessOrdering() const { return successOrd; }
-+	MemOrdering getFailureOrdering() const { return failureOrd; }
-+
-+	/** Sets the read's ordering to the success ordering if VAL is the expected value
-+	 * and to the failure ordering otherwise. ReadLabel::setRf calls it with the value
-+	 * of every rf it sets. */
-+	void setOrderingForValue(const SVal &val)
-+	{
-+		setOrdering(val == expected ? successOrd : failureOrd);
-+	}
-+
- 	virtual void reset() override { ReadLabel::reset(); }
- 
- 	DEFINE_STANDARD_MEMBERS_RANGE(CasRead)
-@@ -931,12 +956,22 @@ private:
- 
- 	/** The attributes of the write part of the RMW */
- 	WriteAttr wattr = WriteAttr::None;
-+
-+	/** The instruction's success and failure orderings */
-+	const MemOrdering successOrd;
-+	const MemOrdering failureOrd;
- };
- 
- #define CASREAD_PURE_SUBCLASS(name)                                                                \
- 	class name##Label : public CasReadLabel {                                                  \
-                                                                                                    \
- 	public:                                                                                    \
-+		name##Label(Event pos, MemOrdering ord, MemOrdering failOrd, SAddr addr,           \
-+			    ASize size, SVal exp, SVal swap, WriteAttr wattr, EventLabel *rfLab,   \
-+			    std::optional<Annotation> annot, const EventDeps &deps = EventDeps())  \
-+			: CasReadLabel(name, pos, ord, failOrd, addr, size, exp, swap, wattr,      \
-+				       rfLab, std::move(annot), deps)                              \
-+		{}                                                                                 \
- 		name##Label(Event pos, MemOrdering ord, SAddr addr, ASize size, SVal exp,          \
- 			    SVal swap, WriteAttr wattr, EventLabel *rfLab,                         \
- 			    std::optional<Annotation> annot, const EventDeps &deps = EventDeps())  \
 diff --git a/genmc/genmc/Execution/ExecutionGraph.cpp b/genmc/genmc/Execution/ExecutionGraph.cpp
-index 9131b56..db69925 100644
+index e0c21c9..db8d665 100644
 --- a/genmc/genmc/Execution/ExecutionGraph.cpp
 +++ b/genmc/genmc/Execution/ExecutionGraph.cpp
-@@ -12,6 +12,7 @@
-  */
- 
- #include "genmc/Execution/ExecutionGraph.hpp"
+@@ -15,6 +15,7 @@
+ #include "genmc/ADT/Rc.hpp"
+ #include "genmc/ADT/VSet.hpp"
+ #include "genmc/ADT/View.hpp"
 +#include "genmc/Support/HgProgress.hpp"
  #include "genmc/Execution/Consistency/ConsistencyChecker.hpp"
- 
- #include <iostream>
-@@ -22,13 +23,45 @@
-  ***********************************************************/
- 
- [[nodiscard]] auto ExecutionGraph::resolveAccessValue(const EventLabel *lab,
--						      const AAccess &access) const -> SVal
-+						      const AAccess &access, bool reportUninit) const
-+	-> SVal
- {
- 	auto &state = getState();
+ #include "genmc/Execution/EventLabel.hpp"
+ #include "genmc/Execution/Stamp.hpp"
+@@ -51,8 +52,39 @@ static constexpr uint64_t BYTE_MASK = 0xFF;
  
  	/* Special case for initializer */
  	if (lab->getPos().isInitializer()) {
--		VERIFY(!(haveNAs_ && access.addr.isDynamic()));
-+		/* A heap location no write in the graph covers, read while non-atomic accesses
-+		 * are tracked: a read of uninitialised memory that reached value resolution.
-+		 * Reported with the address, where an internal check named nothing. */
-+		if (reportUninit && haveNAs_ && access.addr.isDynamic()) {
+-		/* Dynamic-loc accesses can read init only if the graph has been cut */
+-		VERIFY(!(haveNAs_ && access.addr.isDynamic() && !pruned_));
++		/* Dynamic-loc accesses can read init only if the graph has been cut. Otherwise a
++		 * heap location no write in the graph covers, read while non-atomic accesses are
++		 * tracked, is a read of uninitialised memory that reached value resolution; it is
++		 * reported with the address, where an internal check named nothing. */
++		if (haveNAs_ && access.addr.isDynamic() && !pruned_) {
 +			std::cerr << "Read of uninitialised heap memory during value resolution: address "
 +				  << access.addr.get() << " width " << access.size.get()
 +				  << " reader instruction "
@@ -175,27 +78,21 @@ index 9131b56..db69925 100644
 +					     "PromoteMemIntrinsicPass.\n";
 +			ERROR("Read of uninitialised heap memory during value resolution\n");
 +		}
- 		auto val = access.addr.isDynamic() ? SVal(0) : getInitVal(access);
- 		/* TODO (WRD): View{} assumes the graph is complete here */
- 		return haveNAs_ ? val : state.reconstructMemValue(access, View{}, val);
+ 		auto val = (access.addr.isDynamic() && !initVals_.contains(access.addr))
+ 				   ? SVal(0)
+ 				   : getInitVal(access);
 diff --git a/genmc/genmc/Execution/ExecutionGraph.hpp b/genmc/genmc/Execution/ExecutionGraph.hpp
-index b869518..cb1700b 100644
+index 820f838..11a8d26 100644
 --- a/genmc/genmc/Execution/ExecutionGraph.hpp
 +++ b/genmc/genmc/Execution/ExecutionGraph.hpp
-@@ -967,8 +967,11 @@ public:
+@@ -988,6 +988,7 @@ public:
  	}
  	auto containsLoc(SAddr addr) const -> bool { return coherence.contains(addr); }
  
--	[[nodiscard]] auto resolveAccessValue(const EventLabel *lab, const AAccess &access) const
--		-> SVal;
 +	[[nodiscard]] auto hasNAs() const -> bool { return haveNAs_; }
-+	/** The value ACCESS reads from LAB. With REPORTUNINIT unset, a read of a heap
-+	 * location that no write covers yields 0 and is not reported. */
-+	[[nodiscard]] auto resolveAccessValue(const EventLabel *lab, const AAccess &access,
-+					      bool reportUninit = true) const -> SVal;
+ 	[[nodiscard]] auto resolveAccessValue(const EventLabel *lab, const AAccess &access) const
+ 		-> SVal;
  
- 	auto isLocEmpty(SAddr addr) const -> bool
- 	{
 diff --git a/genmc/genmc/Support/HgProgress.hpp b/genmc/genmc/Support/HgProgress.hpp
 new file mode 100644
 index 0000000..23a925c
@@ -599,7 +496,7 @@ index f1e772d..2fede01 100644
  	std::unordered_map<Event, VSet<Event>> cmap_;
  };
 diff --git a/genmc/genmc/Verification/GenMCDriver.cpp b/genmc/genmc/Verification/GenMCDriver.cpp
-index a0d1865..7042404 100644
+index 7ea8312..59122b8 100644
 --- a/genmc/genmc/Verification/GenMCDriver.cpp
 +++ b/genmc/genmc/Verification/GenMCDriver.cpp
 @@ -11,6 +11,9 @@
@@ -610,26 +507,38 @@ index a0d1865..7042404 100644
 +#include "genmc/Support/HgProgress.hpp"
 +#include <cmath>
  #include "GenMCDriver.hpp"
+ #include "genmc/ADT/DepView.hpp"
  #include "genmc/Execution/Consistency/BoundDecider.hpp"
- #include "genmc/Execution/Consistency/ConsistencyChecker.hpp"
-@@ -216,6 +219,7 @@ static void reconstructState(ExecutionGraph &g, ExecutionState &state)
+@@ -249,6 +252,7 @@ static void reconstructState(ExecutionGraph &g, ExecutionState &state)
  
- bool GenMCDriver::handleExecutionStart()
+ auto GenMCDriver::handleExecutionStart() -> bool
  {
 +	hgprog::state().starts.fetch_add(1, std::memory_order_relaxed);
  	auto &g = getExec().getGraph();
  	auto &state = getExec().getGraph().getState();
  
-@@ -289,6 +293,8 @@ void GenMCDriver::updateStSpaceEstimation()
- 	auto &choices = getExec().getChoiceMap();
- 	auto sample = std::accumulate(choices.begin(), choices.end(), 1.0L,
- 				      [](auto sum, auto &kv) { return sum *= kv.second.size(); });
+@@ -323,6 +327,8 @@ void GenMCDriver::updateStSpaceEstimation()
+ 		choices.begin(), choices.end(),
+ 		1.0L, // NOLINT(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
+ 		[](auto sum, auto &kv) { return sum *= kv.second.size(); });
 +	if (hgprog::enabled())
 +		hgprog::endEstimationSample(sample);
  
  	/* This is the (i+1)-th exploration */
  	auto totalExplored = (long double)result.explored + result.exploredBlocked + 1L;
-@@ -366,6 +372,25 @@ auto GenMCDriver::handleExecutionEnd() -> std::optional<VerificationError>
+@@ -388,9 +394,37 @@ auto GenMCDriver::handleExecutionEnd() -> std::optional<VerificationError>
+ 	if (getConf()->printExecGraphs)
+ 		printGraph(g, dbgInfo_);
+ 
++	/* A thread ended by the loop-unroll bound did not run to its end: whatever the harness
++	 * asserts after that point was not checked in this execution. */
++	for (auto i = 0U; i < g.getNumThreads(); i++) {
++		if (!g.isThreadEmpty(i) && genmc::isa<ThreadKillLabel>(g.getLastThreadLabel(i))) {
++			++result.unrollCut;
++			break;
++		}
++	}
++
  	GENMC_DEBUG(if (getConf()->boundsHistogram && inVerificationMode()) trackExecutionBound(););
  
  	++result.explored;
@@ -655,8 +564,8 @@ index a0d1865..7042404 100644
  	if (fullExecutionExceedsBound())
  		++result.boundExceeding;
  
-@@ -395,7 +420,15 @@ auto GenMCDriver::handleExecutionEnd() -> std::optional<VerificationError>
- bool GenMCDriver::done()
+@@ -454,7 +488,15 @@ void GenMCDriver::restartExecution()
+ auto GenMCDriver::done() -> bool
  {
  	auto validExecution = false;
 +	hgprog::setPhase("explore");
@@ -670,11 +579,11 @@ index a0d1865..7042404 100644
 +		}
  		auto item = getExec().getWorkqueue().getNext();
  		if (!item) {
- 			if (popExecution())
-@@ -804,7 +837,16 @@ auto GenMCDriver::checkLiveness() -> std::optional<VerificationError>
+ 			/* Random mode never revisits: resample while the
+@@ -911,7 +953,16 @@ auto GenMCDriver::checkLiveness() -> std::optional<VerificationError>
  	/* Collect all threads blocked at spinloops */
  	std::vector<int> spinBlocked;
- 	for (auto i = 0U; i < g.getNumThreads(); i++) {
+ 	for (auto i = 0; i < g.getNumThreads(); i++) {
 -		if (genmc::isa<SpinloopBlockLabel>(g.getLastThreadLabel(i)))
 +		/* An execution in which some thread is blocked for a reason other than a spinloop
 +		 * (an assume(false), a helped CAS, a confirmation) is being pruned from the search
@@ -689,17 +598,8 @@ index a0d1865..7042404 100644
  			spinBlocked.push_back(i);
  	}
  
-@@ -985,7 +1027,7 @@ bool GenMCDriver::checkHelpingCasCondition(const HelpingCasLabel *hLab)
- 			      auto *rLab = genmc::dyn_cast<HelpedCasReadLabel>(&lab);
- 			      return rLab && rLab->isRMW() && rLab->getAddr() == hLab->getAddr() &&
- 				     rLab->getSize() == hLab->getSize() &&
--				     rLab->getOrdering() == hLab->getOrdering() &&
-+				     rLab->getSuccessOrdering() == hLab->getOrdering() &&
- 				     rLab->getExpected() == hLab->getExpected() &&
- 				     rLab->getSwapVal() == hLab->getSwapVal();
- 		      });
-@@ -1474,8 +1516,11 @@ GenMCDriver::HandleResult<SVal> GenMCDriver::handleLoad(std::unique_ptr<ReadLabe
- 	EventLabel *rf = nullptr;
+@@ -1557,8 +1608,11 @@ auto GenMCDriver::handleLoad(std::unique_ptr<ReadLabel> rLab, std::optional<SVal
+ 	const EventLabel *rf = nullptr;
  
  	if (inEstimationMode() || inRandomMode()) {
 -		if (inEstimationMode())
@@ -711,24 +611,8 @@ index a0d1865..7042404 100644
  		filterAtomicityViolations(lab, stores);
  		rf = pickRandomRf(lab, stores);
  	} else {
-@@ -1560,11 +1605,11 @@ GenMCDriver::HandleResult<SVal> GenMCDriver::handleLoad(std::unique_ptr<ReadLabe
- #define HANDLE_CAS_LOAD_LABEL(name)                                                                \
- 	GenMCDriver::HandleResult<SVal> GenMCDriver::handle##name(                                 \
- 		const EventDbgInfo *dbg, Event pos, GENMC_OLD_VAL_PARAM MemOrdering ord,           \
--		SAddr addr, ASize size, SVal exp, SVal swap, WriteAttr wattr, EventLabel *rfLab,   \
--		std::optional<Annotation> annot, const EventDeps &deps)                            \
-+		MemOrdering failOrd, SAddr addr, ASize size, SVal exp, SVal swap, WriteAttr wattr, \
-+		EventLabel *rfLab, std::optional<Annotation> annot, const EventDeps &deps)         \
- 	{                                                                                          \
--		LOAD_INTERCEPTOR_LOGIC(name##Label, GENMC_OLD_VAL_PASS, ord, addr, size, exp,      \
--				       swap, wattr, rfLab, annot, deps);                           \
-+		LOAD_INTERCEPTOR_LOGIC(name##Label, GENMC_OLD_VAL_PASS, ord, failOrd, addr, size,  \
-+				       exp, swap, wattr, rfLab, annot, deps);                      \
- 	}
- 
- #define HANDLE_LOCK_LOAD_LABEL(name)                                                               \
-@@ -1867,8 +1912,11 @@ GenMCDriver::HandleResult<bool> GenMCDriver::handleStore(std::unique_ptr<WriteLa
- 	EventLabel *co = nullptr;
+@@ -1990,8 +2044,11 @@ auto GenMCDriver::handleStore(std::unique_ptr<WriteLabel> wLab, std::optional<SV
+ 	const EventLabel *co = nullptr;
  	if (inEstimationMode() || inRandomMode()) {
  		co = pickRandomCo(lab, cos);
 -		if (inEstimationMode())
@@ -740,53 +624,54 @@ index a0d1865..7042404 100644
  	} else {
  		co = findConsistentCo(lab, cos);
  		calcCoOrderings(lab, cos);
-@@ -2955,8 +3003,18 @@ void GenMCDriver::calcRevisits(WriteLabel *sLab)
+@@ -2784,6 +2841,15 @@ void GenMCDriver::calcRevisits(WriteLabel *sLab)
  
- 	/* If operating in estimation/random mode, don't actually revisit */
- 	if (inEstimationMode() || inRandomMode()) {
--		if (inEstimationMode())
-+		if (inEstimationMode()) {
-+			if (hgprog::enabled()) {
-+				double growth = 0;
-+				for (const auto *l : loads) {
-+					const auto k = getExec().getChoiceMap().sizeOf(l->getPos());
-+					if (k > 0)
-+						growth += std::log2((double)(k + 1) / (double)k);
-+				}
-+				hgprog::choiceRevisit(growth);
+ 	/* If operating in estimation mode, don't actually revisit */
+ 	if (inEstimationMode()) {
++		if (hgprog::enabled()) {
++			double growth = 0;
++			for (const auto *l : loads) {
++				const auto k = getExec().getChoiceMap().sizeOf(l->getPos());
++				if (k > 0)
++					growth += std::log2((double)(k + 1) / (double)k);
 +			}
- 			getExec().getChoiceMap().update(loads, sLab);
++			hgprog::choiceRevisit(growth);
 +		}
+ 		getExec().getChoiceMap().update(loads, sLab);
  		return;
  	}
- 
-@@ -3368,7 +3426,7 @@ auto GenMCDriver::handleError(const EventDbgInfo *dbg, Event pos, std::string ms
- 		return {*err};
+@@ -3223,7 +3289,7 @@ auto GenMCDriver::handleError(const EventDbgInfo *dbg, Event pos, std::string ms
+ 		return {.result = *err};
  	if (isExecutionDrivenByGraph(pos))
- 		return {std::monostate(), 1U};
+ 		return {.result = std::monostate(), .count = 1U};
 -	auto result = handleDummy(ErrorLabel::create(pos, std::move(msg)));
 +	auto result = handleDummy(ErrorLabel::create(pos, msg));
  	VERIFY(std::holds_alternative<std::monostate>(result.result));
  	reportError(pos, {pos, VerificationError::VE_Safety, std::move(msg)});
- 	return {VerificationError::VE_Safety, 1U};
-diff --git a/genmc/genmc/Verification/GenMCDriver.hpp b/genmc/genmc/Verification/GenMCDriver.hpp
-index 59b5337..a655103 100644
---- a/genmc/genmc/Verification/GenMCDriver.hpp
-+++ b/genmc/genmc/Verification/GenMCDriver.hpp
-@@ -194,8 +194,9 @@ public:
- 
- #define HANDLE_CAS_LOAD_LABEL(name)                                                                \
- 	HandleResult<SVal> handle##name(const EventDbgInfo *dbg, Event pos,                        \
--					GENMC_OLD_VAL_ARG MemOrdering ord, SAddr addr, ASize size, \
--					SVal exp, SVal swap, WriteAttr wattr, EventLabel *rfLab,   \
-+					GENMC_OLD_VAL_ARG MemOrdering ord, MemOrdering failOrd,    \
-+					SAddr addr, ASize size, SVal exp, SVal swap,               \
-+					WriteAttr wattr, EventLabel *rfLab,                        \
- 					std::optional<Annotation> annot, const EventDeps &deps);
- 
- #define HANDLE_LOCK_LOAD_LABEL(name)                                                               \
+ 	return {.result = VerificationError::VE_Safety, .count = 1U};
+diff --git a/genmc/genmc/Verification/VerificationResult.hpp b/genmc/genmc/Verification/VerificationResult.hpp
+index de33b82..493c407 100644
+--- a/genmc/genmc/Verification/VerificationResult.hpp
++++ b/genmc/genmc/Verification/VerificationResult.hpp
+@@ -17,6 +17,8 @@ struct VerificationResult {
+ 	unsigned explored{};			 /**< Number of complete executions explored */
+ 	unsigned exploredBlocked{};		 /**< Number of blocked executions explored */
+ 	unsigned boundExceeding{};	  /**< Number of bound-exceeding executions explored */
++	unsigned unrollCut{};		  /**< Of the complete ones, those with a thread ended
++					     at the --unroll bound (a KILL label) */
+ 	long double estimationMean{};	  /**< The mean of estimations */
+ 	long double estimationVariance{}; /**< The (biased) variance of the estimations */
+ #ifdef ENABLE_GENMC_DEBUG
+@@ -42,6 +44,7 @@ struct VerificationResult {
+ 		explored += other.explored;
+ 		exploredBlocked += other.exploredBlocked;
+ 		boundExceeding += other.boundExceeding;
++		unrollCut += other.unrollCut;
+ 		estimationMean += other.estimationMean;
+ 		estimationVariance += other.estimationVariance;
+ #ifdef ENABLE_GENMC_DEBUG
 diff --git a/genmc/genmc/Verification/WorkList.hpp b/genmc/genmc/Verification/WorkList.hpp
-index 4866e5e..d00da8a 100644
+index 9d936e0..fd768d6 100644
 --- a/genmc/genmc/Verification/WorkList.hpp
 +++ b/genmc/genmc/Verification/WorkList.hpp
 @@ -31,6 +31,9 @@ public:
@@ -800,22 +685,27 @@ index 4866e5e..d00da8a 100644
  	void add(auto &&item) { wlist_.emplace_back(std::move(item)); }
  
 diff --git a/lli/Runtime/Execution.cpp b/lli/Runtime/Execution.cpp
-index fe659e6..0f7d97f 100644
+index 5d7e272..73413d1 100644
 --- a/lli/Runtime/Execution.cpp
 +++ b/lli/Runtime/Execution.cpp
-@@ -29,8 +29,11 @@
- 
- #include "genmc/Execution/Event.hpp"
+@@ -30,6 +30,7 @@
  #include "Runtime/Interpreter.h"
-+#include <cstdio>
-+#include <cstdlib>
- #include "passes/LLVMUtils.hpp"
+ #include "genmc/Execution/Event.hpp"
  #include "genmc/Support/Error.hpp"
 +#include "genmc/Support/HgProgress.hpp"
  #include "genmc/Support/SExprVisitor.hpp"
  #include "genmc/Verification/GenMCDriver.hpp"
- #include "llvm/ADT/APInt.h"
-@@ -1366,6 +1369,17 @@ void Interpreter::visitReturnInst(ReturnInst &I)
+ #include "passes/LLVMUtils.hpp"
+@@ -48,6 +49,8 @@
+ 
+ #include <algorithm>
+ #include <cmath>
++#include <cstdio>
++#include <cstdlib>
+ 
+ using namespace llvm;
+ 
+@@ -1297,6 +1300,17 @@ void Interpreter::visitReturnInst(ReturnInst &I)
  	popStackAndReturnValueToCaller(RetTy, Result, &I);
  }
  
@@ -833,7 +723,7 @@ index fe659e6..0f7d97f 100644
  void Interpreter::visitUnreachableInst(UnreachableInst &I)
  {
  	report_fatal_error("Program executed an 'unreachable' instruction!");
-@@ -1592,8 +1606,21 @@ void Interpreter::visitLoadInst(LoadInst &I)
+@@ -1523,8 +1537,21 @@ void Interpreter::visitLoadInst(LoadInst &I)
  	}
  
  	auto retVal = std::get_if<SVal>(&val);
@@ -856,17 +746,7 @@ index fe659e6..0f7d97f 100644
  
  	updateDataDeps(thr.id, &I, currPos());
  	updateAddrPoDeps(thr.id, I.getPointerOperand());
-@@ -1679,7 +1706,8 @@ void Interpreter::visitAtomicCmpXchgInst(AtomicCmpXchgInst &I)
- #define IMPLEMENT_CAS_VISIT(__kindR, __kindW)                                                      \
- 	case switchPair(EventLabel::__kindR, EventLabel::__kindW): {                               \
- 		auto ret = CALL_DRIVER(handle##__kindR, currDbgInfo(ptr), currPos(),               \
--				       toGenMCOrdering(I.getSuccessOrdering()), ptr, size,         \
-+				       toGenMCOrdering(I.getSuccessOrdering()),                    \
-+				       toGenMCOrdering(I.getFailureOrdering()), ptr, size,         \
- 				       GV_TO_SVAL(cmpVal, typ), GV_TO_SVAL(newVal, typ),           \
- 				       getWriteAttr(I), nullptr, getCurrentAnnotConcretized(),     \
- 				       GET_DEPS(lDeps));                                           \
-@@ -3202,6 +3230,15 @@ void Interpreter::callAtExit(Function *F, const std::vector<GenericValue> &ArgVa
+@@ -3062,6 +3089,15 @@ void Interpreter::callAtExit(Function *F, const std::vector<GenericValue> &ArgVa
  	returnValueToCaller(F->getReturnType(), INT_TO_GV(F->getReturnType(), 0));
  }
  
@@ -882,7 +762,7 @@ index fe659e6..0f7d97f 100644
  void Interpreter::callMutexInit(Function *F, const std::vector<GenericValue> &ArgVals,
  				const std::unique_ptr<EventDeps> &specialDeps)
  {
-@@ -3604,14 +3641,75 @@ void Interpreter::runAtExitHandlers()
+@@ -3464,14 +3500,75 @@ void Interpreter::runAtExitHandlers()
  	setProgramState(oldState);
  }
  
@@ -959,7 +839,7 @@ index fe659e6..0f7d97f 100644
  			dynState.globalInstructions[currPos().thread].kind =
  				getInstKind(&*ECStack().back().CurInst);
 diff --git a/lli/Runtime/Interpreter.cpp b/lli/Runtime/Interpreter.cpp
-index 3cabc7a..e4cdb0b 100644
+index a4b0704..7405c2d 100644
 --- a/lli/Runtime/Interpreter.cpp
 +++ b/lli/Runtime/Interpreter.cpp
 @@ -140,6 +140,29 @@ Thread &Interpreter::createAddNewThread(llvm::Function *F, SVal arg, int tid, in
@@ -1008,18 +888,18 @@ index 3cabc7a..e4cdb0b 100644
  		}
  
 diff --git a/lli/Runtime/Interpreter.h b/lli/Runtime/Interpreter.h
-index 4ab7493..c92cc21 100644
+index 44b91fb..96681f9 100644
 --- a/lli/Runtime/Interpreter.h
 +++ b/lli/Runtime/Interpreter.h
 @@ -497,6 +497,7 @@ public:
+ 	void visitCallInstWrapper(CallInstWrapper CIW);
  	void visitCallBase(CallBase &CB) { visitCallInstWrapper(CallInstWrapper(CB)); }
- #endif
  	void visitUnreachableInst(UnreachableInst &I);
 +	void visitFreezeInst(FreezeInst &I);
  
  	void visitShl(BinaryOperator &I);
  	void visitLShr(BinaryOperator &I);
-@@ -586,6 +587,7 @@ private: // Helper functions
+@@ -589,6 +590,7 @@ private: // Helper functions
  
  	/* Collects the addresses (and some naming information) for all variables with
  	 * static storage. Also calculates the starting address of the allocation pool */
@@ -1028,18 +908,18 @@ index 4ab7493..c92cc21 100644
  
  	/* Sets up how some errors will be reported to the user */
 diff --git a/lli/main.cpp b/lli/main.cpp
-index 4fbfa13..f20165b 100644
+index 5795e76..4c5fa49 100644
 --- a/lli/main.cpp
 +++ b/lli/main.cpp
-@@ -14,6 +14,7 @@
+@@ -13,6 +13,7 @@
+ 
  #include "Runtime/Interpreter.h"
- #include "passes/LLIConfig.hpp"
- #include "passes/LLVMModule.hpp"
-+#include "genmc/Support/HgProgress.hpp"
- #include "genmc/lli_config.h"
  #include "genmc/Support/Error.hpp"
++#include "genmc/Support/HgProgress.hpp"
  #include "genmc/Support/Logger.hpp"
-@@ -734,11 +735,16 @@ static void printEstimationResults(const std::shared_ptr<const Config> &conf,
+ #include "genmc/Support/ThreadPool.hpp"
+ #include "genmc/Verification/Config.hpp"
+@@ -759,11 +760,16 @@ static void printEstimationResults(const std::shared_ptr<const Config> &conf,
  	      (!res.status.has_value() ? "*** Estimation complete"
  				       : "\n*** Estimation unsuccessful"));
  
@@ -1060,6 +940,27 @@ index 4fbfa13..f20165b 100644
  	GENMC_DEBUG(if (conf->printEstimationStats) {
  		PRINT(VerbosityLevel::Error, "Estimation moot: {}\n", res.exploredMoot);
  		PRINT(VerbosityLevel::Error, "Estimation blocked: {}\n", res.exploredBlocked);
+@@ -780,6 +786,8 @@ static void printVerificationResults(const std::shared_ptr<const Config> &conf,
+ 				       : "\n*** Verification unsuccesful"));
+ 
+ 	PRINT(VerbosityLevel::Error, "Number of complete executions explored: {}", res.explored);
++	if (res.unrollCut)
++		PRINT(VerbosityLevel::Error, " ({} cut at the unroll bound)", res.unrollCut);
+ 	GENMC_DEBUG(if (conf->countDuplicateExecs)
+ 			    PRINT(VerbosityLevel::Error, " ({} duplicates)", res.duplicates););
+ 	if (res.boundExceeding) {
+diff --git a/passes/CMakeLists.txt b/passes/CMakeLists.txt
+index 1a9f0e9..fafa400 100644
+--- a/passes/CMakeLists.txt
++++ b/passes/CMakeLists.txt
+@@ -29,6 +29,7 @@ set(PASSES_SOURCES
+   passes/Transforms/RustPrepPass.cpp
+   passes/Transforms/SpinAssumePass.cpp
+   passes/Transforms/StrengthenCASPass.cpp
++  passes/Transforms/WeakCASStutterPass.cpp
+   passes/Transforms/BarrierResultCheckerPass.cpp
+ )
+ 
 diff --git a/passes/passes/InternalFunction.def b/passes/passes/InternalFunction.def
 index 517cbac..1c13957 100644
 --- a/passes/passes/InternalFunction.def
@@ -1075,22 +976,25 @@ index 517cbac..1c13957 100644
  #undef FIRST_PURE_FUNCTION
  #undef HANDLE_PURE_FUNCTION
 diff --git a/passes/passes/InternalFunctions.cpp b/passes/passes/InternalFunctions.cpp
-index 22631de..553b75f 100644
+index 62cf832..0966a13 100644
 --- a/passes/passes/InternalFunctions.cpp
 +++ b/passes/passes/InternalFunctions.cpp
-@@ -19,5 +19,7 @@ const std::unordered_map<std::string, InternalFunctions> internalFunNames = {
+@@ -21,5 +21,10 @@ const std::unordered_map<std::string, InternalFunctions> internalFunNames = {
  
  	/* Some extra C++ calls */
  	{"_Znwm", InternalFunctions::Malloc},
 +	{"_Znam", InternalFunctions::Malloc},
  	{"_ZdlPv", InternalFunctions::Free},
 +	{"_ZdaPv", InternalFunctions::Free},
++	/* Sized delete, which clang emits by default since LLVM 19; the size argument is unused */
++	{"_ZdlPvm", InternalFunctions::Free},
++	{"_ZdaPvm", InternalFunctions::Free},
  };
 diff --git a/passes/passes/LLVMModule.cpp b/passes/passes/LLVMModule.cpp
-index 80ed9cd..bbcfca0 100644
+index 696dec0..fa4e59e 100644
 --- a/passes/passes/LLVMModule.cpp
 +++ b/passes/passes/LLVMModule.cpp
-@@ -11,7 +11,14 @@
+@@ -11,9 +11,16 @@
   *     https://opensource.org/licenses/MIT
   */
  
@@ -1101,19 +1005,33 @@ index 80ed9cd..bbcfca0 100644
 +#include <cstdlib>
 +#include <chrono>
  #include "LLVMModule.hpp"
+ #include "genmc/Support/Error.hpp"
+ #include "genmc/Support/SExprVisitor.hpp"
 +#include "genmc/Support/HgProgress.hpp"
  #include "passes/LLIConfig.hpp"
+ #include "passes/ModuleInfo.hpp"
  #include "passes/Transforms/BarrierResultCheckerPass.hpp"
- #include "passes/Transforms/BisimilarityCheckerPass.hpp"
-@@ -48,6 +55,7 @@
+@@ -42,6 +49,7 @@
+ #include "passes/Transforms/RustPrepPass.hpp"
+ #include "passes/Transforms/SpinAssumePass.hpp"
+ #include "passes/Transforms/StrengthenCASPass.hpp"
++#include "passes/Transforms/WeakCASStutterPass.hpp"
+ 
+ #include <llvm/Analysis/CGSCCPassManager.h>
+ #include <llvm/Analysis/LoopAnalysisManager.h>
+@@ -53,9 +61,10 @@
  #include <llvm/IR/PassManager.h>
  #include <llvm/IR/Verifier.h>
  #include <llvm/IRReader/IRReader.h>
 +#include <llvm/Support/CommandLine.h>
  #include <llvm/Linker/Linker.h>
  #include <llvm/Passes/PassBuilder.h>
+-#if LLVM_VERSION_MAJOR >= 22
++#if __has_include(<llvm/Plugins/PassPlugin.h>)
+ #include <llvm/Plugins/PassPlugin.h>
+ #else
  #include <llvm/Passes/PassPlugin.h>
-@@ -70,6 +78,13 @@ auto parseLLVMModule(const std::string &filename, const std::unique_ptr<llvm::LL
+@@ -87,6 +96,13 @@ auto parseLLVMModule(const std::string &filename, const std::unique_ptr<llvm::LL
  {
  	llvm::SMDiagnostic err;
  
@@ -1127,11 +1045,11 @@ index 80ed9cd..bbcfca0 100644
  	auto mod = llvm::parseIRFile(filename, err, *ctx);
  	if (!mod) {
  		err.print(filename.c_str(), llvm::dbgs());
-@@ -206,7 +221,73 @@ auto transformLLVMModule(llvm::Module &mod, ModuleInfo &MI, const LLIConfig *con
+@@ -223,7 +239,73 @@ auto transformLLVMModule(llvm::Module &mod, ModuleInfo &MI, const LLIConfig *con
  	fam.registerPass([&] { return BisimilarityAnalysis(); });
  	fam.registerPass([&] { return LoadAnnotationAnalysis(); });
  
--	llvm::PassBuilder pb;
+-	llvm::PassBuilder PB;
 +	/* Progress through the transformation, when asked for: which pass is running, how long it
 +	 * took, the resident set after it and the module's instruction count -- the numbers that
 +	 * say where the time and memory of a large module go, and whether to keep waiting. */
@@ -1198,11 +1116,11 @@ index 80ed9cd..bbcfca0 100644
 +		fam.registerPass([&] { return llvm::PassInstrumentationAnalysis(&pic); });
 +	}
 +
-+	llvm::PassBuilder pb(nullptr, llvm::PipelineTuningOptions(), std::nullopt, &pic);
- 	pb.registerModuleAnalyses(mam);
- 	pb.registerCGSCCAnalyses(cgam);
- 	pb.registerFunctionAnalyses(fam);
-@@ -226,9 +307,9 @@ auto transformLLVMModule(llvm::Module &mod, ModuleInfo &MI, const LLIConfig *con
++	llvm::PassBuilder PB(nullptr, llvm::PipelineTuningOptions(), std::nullopt, &pic);
+ 	PB.registerModuleAnalyses(mam);
+ 	PB.registerCGSCCAnalyses(cgam);
+ 	PB.registerFunctionAnalyses(fam);
+@@ -243,13 +325,18 @@ auto transformLLVMModule(llvm::Module &mod, ModuleInfo &MI, const LLIConfig *con
  		basicOptsMGR.addPass(FunctionInlinerPass());
  	{
  		llvm::FunctionPassManager fpm;
@@ -1214,10 +1132,7 @@ index 80ed9cd..bbcfca0 100644
 +		fpm.addPass(PromoteMemIntrinsicPass(/*lowerOpaque=*/false));
  		if (conf->castElimination)
  			fpm.addPass(EliminateCastsPass());
- #if LLVM_VERSION_MAJOR < 14
-@@ -239,6 +320,11 @@ auto transformLLVMModule(llvm::Module &mod, ModuleInfo &MI, const LLIConfig *con
  		fpm.addPass(SROAPass(SROAOptions::PreserveCFG));
- #endif
  		fpm.addPass(PromotePass()); // Mem2Reg
 +		/* Now that closure fields and pointer slots are the allocas they held, the copies
 +		 * that were opaque above are typed; what is still opaque is lowered to a loop. */
@@ -1227,13 +1142,23 @@ index 80ed9cd..bbcfca0 100644
  		basicOptsMGR.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(fpm)));
  	}
  	basicOptsMGR.addPass(DeadArgumentEliminationPass());
-@@ -310,6 +396,24 @@ void printLLVMModule(llvm::Module &mod, const std::string &out)
- #endif
+@@ -281,6 +368,9 @@ auto transformLLVMModule(llvm::Module &mod, ModuleInfo &MI, const LLIConfig *con
+ 			fpm.addPass(CodeCondenserPass());
+ 		if (conf->loopJumpThreading)
+ 			fpm.addPass(createFunctionToLoopPassAdaptor(LoopJumpThreadingPass()));
++		/* Before SpinAssume and unrolling, which both rewrite the retry cycle. */
++		if (!std::getenv("HG_GENMC_NO_STUTTER"))
++			fpm.addPass(WeakCASStutterPass());
+ 		loopOptsMGR.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(fpm)));
+ 	}
+ 	if (conf->spinAssume)
+@@ -317,6 +407,24 @@ void printLLVMModule(llvm::Module &mod, const std::string &filename)
+ 	auto flags = llvm::sys::fs::OF_None;
  	std::error_code errs;
- 	auto os = std::make_unique<llvm::raw_fd_ostream>(out.c_str(), errs, flags);
+ 	auto out = std::make_unique<llvm::raw_fd_ostream>(filename.c_str(), errs, flags);
 +	/* A ".bc" name writes bitcode: it round-trips exactly and parses in seconds, where the
 +	 * textual form of a multi-gigabyte module emits block labels its own reader rejects. */
-+	if (out.size() > 3 && out.compare(out.size() - 3, 3, ".bc") == 0) {
++	if (filename.size() > 3 && filename.compare(filename.size() - 3, 3, ".bc") == 0) {
 +		/* Block and value names that the transformation has grown by repeated splitting
 +		 * (".loopexit.split-lp.loopexit.split-lp...", kilobytes long on a large module)
 +		 * are rejected by LLVM's textual reader past 1024 bytes
@@ -1246,42 +1171,42 @@ index 80ed9cd..bbcfca0 100644
 +					if (I.hasName())
 +						I.setName("");
 +			}
-+		llvm::WriteBitcodeToFile(mod, *os);
++		llvm::WriteBitcodeToFile(mod, *out);
 +		return;
 +	}
  
  	/* TODO: Do we need an exception? If yes, properly handle it */
  	if (errs) {
 diff --git a/passes/passes/LLVMUtils.cpp b/passes/passes/LLVMUtils.cpp
-index c4e90d2..aef0139 100644
+index ea0a1d9..31a642f 100644
 --- a/passes/passes/LLVMUtils.cpp
 +++ b/passes/passes/LLVMUtils.cpp
-@@ -12,6 +12,8 @@
-  */
+@@ -16,6 +16,7 @@
+ #include "genmc/Support/ActionEnums.hpp"
+ #include "passes/InternalFunctions.hpp"
  
- #include "LLVMUtils.hpp"
 +#include <llvm/ADT/DenseSet.h>
-+#include <llvm/ADT/SmallVector.h>
- #include <llvm/IR/Constants.h>
- #include <llvm/IR/Dominators.h>
- #include <llvm/IR/ValueHandle.h>
-@@ -114,28 +116,34 @@ AtomicCmpXchgInst *extractsFromCAS(ExtractValueInst *extract)
+ #include <llvm/ADT/STLFunctionalExtras.h>
+ #include <llvm/ADT/SmallPtrSet.h>
+ #include <llvm/ADT/SmallVector.h>
+@@ -131,29 +132,34 @@ auto extractsFromCAS(ExtractValueInst *extract) -> AtomicCmpXchgInst *
  	return dyn_cast<AtomicCmpXchgInst>(extract->getAggregateOperand());
  }
  
--bool isDependentOn(const Instruction *i1, const Instruction *i2, VSet<const Instruction *> chain)
+-static auto isDependentOn(const Instruction *i1, const Instruction *i2,
+-			  VSet<const Instruction *> chain) -> bool
 +/* i1 depends on i2 iff i2 is reachable from i1 through operand edges. Reachability is a
 + * visited-set search: an instruction that has been explored once does not reach i2 through
 + * any path, so it is never explored again. Iterative, so a long dependence chain cannot
 + * exhaust the stack. */
-+bool isDependentOn(const Instruction *i1, const Instruction *i2)
++auto isDependentOn(const Instruction *i1, const Instruction *i2) -> bool
  {
--	if (!i1 || !i2 || chain.find(i1) != chain.end())
+-	if (!i1 || !i2 || chain.contains(i1))
 +	if (!i1 || !i2)
  		return false;
  
--	for (auto &u : i1->operands()) {
--		if (auto *i = dyn_cast<Instruction>(u.get())) {
+-	for (const auto &use : i1->operands()) {
+-		if (auto *i = dyn_cast<Instruction>(use.get())) {
 -			chain.insert(i1);
 -			if (i == i2 || isDependentOn(i, i2, chain))
 -				return true;
@@ -1293,11 +1218,11 @@ index c4e90d2..aef0139 100644
 +		const auto *cur = work.pop_back_val();
 +		if (!visited.insert(cur).second)
 +			continue;
-+		for (auto &u : cur->operands()) {
-+			if (auto *i = dyn_cast<Instruction>(u.get())) {
++		for (const auto &use : cur->operands()) {
++			if (auto *i = dyn_cast<Instruction>(use.get())) {
 +				if (i == i2)
 +					return true;
-+				if (!visited.count(i))
++				if (!visited.contains(i))
 +					work.push_back(i);
 +			}
  		}
@@ -1305,17 +1230,17 @@ index c4e90d2..aef0139 100644
  	return false;
  }
  
--bool isDependentOn(const Instruction *i1, const Instruction *i2)
+-auto isDependentOn(const Instruction *i1, const Instruction *i2) -> bool
 -{
--	VSet<const Instruction *> chain;
+-	const VSet<const Instruction *> chain;
 -	return isDependentOn(i1, i2, chain);
 -}
 -
- bool hasSideEffects(const Instruction *i, const VSet<Function *> *cleanFuns /* = nullptr */)
+ auto hasSideEffects(const Instruction *i, const VSet<Function *> *cleanFuns /* = nullptr */) -> bool
  {
  	if (isa<AllocaInst>(i))
 diff --git a/passes/passes/LLVMUtils.hpp b/passes/passes/LLVMUtils.hpp
-index 4f86c4f..cf64a90 100644
+index 8c3c541..5655573 100644
 --- a/passes/passes/LLVMUtils.hpp
 +++ b/passes/passes/LLVMUtils.hpp
 @@ -14,6 +14,9 @@
@@ -1327,9 +1252,9 @@ index 4f86c4f..cf64a90 100644
 +#include <llvm/IR/CFG.h>
  #include "genmc/ADT/VSet.hpp"
  #include "genmc/Execution/EventAttr.hpp"
- #include "passes/InternalFunctions.hpp"
-@@ -218,6 +221,32 @@ void foreachInBackPathTo(llvm::BasicBlock *from, llvm::BasicBlock *to, F &&fun)
- 	::details::foreachInBackPathTo(from, to, path, fun);
+ #include "genmc/Support/ActionEnums.hpp"
+@@ -187,6 +190,32 @@ void foreachInBackPathTo(llvm::BasicBlock *from, llvm::BasicBlock *toBB, F &&fun
+ 	::details::foreachInBackPathTo(from, toBB, path, fun);
  }
  
 +/**
@@ -1361,19 +1286,41 @@ index 4f86c4f..cf64a90 100644
  /*
   * LLVM Utilities for older LLVM versions
   */
+diff --git a/passes/passes/Transforms/DeclareInternalsPass.cpp b/passes/passes/Transforms/DeclareInternalsPass.cpp
+index 9427d95..0a95615 100644
+--- a/passes/passes/Transforms/DeclareInternalsPass.cpp
++++ b/passes/passes/Transforms/DeclareInternalsPass.cpp
+@@ -24,7 +24,7 @@
+ #include <llvm/IR/Module.h>
+ #include <llvm/Pass.h>
+ #include <llvm/Passes/PassBuilder.h>
+-#if LLVM_VERSION_MAJOR >= 22
++#if __has_include(<llvm/Plugins/PassPlugin.h>)
+ #include <llvm/Plugins/PassPlugin.h>
+ #else
+ #include <llvm/Passes/PassPlugin.h>
 diff --git a/passes/passes/Transforms/DefineLibcFunsPass.cpp b/passes/passes/Transforms/DefineLibcFunsPass.cpp
-index 7027135..44ee6e0 100644
+index a7ecf70..b193b1c 100644
 --- a/passes/passes/Transforms/DefineLibcFunsPass.cpp
 +++ b/passes/passes/Transforms/DefineLibcFunsPass.cpp
-@@ -41,13 +41,27 @@ void replaceFunWithNop(Module &M, std::string name)
- 	ReturnInst::Create(F->getContext(), res, BB);
+@@ -21,7 +21,7 @@
+ #include <llvm/IR/Instructions.h>
+ #include <llvm/IR/Module.h>
+ #include <llvm/IR/PassManager.h>
+-#if LLVM_VERSION_MAJOR >= 22
++#if __has_include(<llvm/Plugins/PassPlugin.h>)
+ #include <llvm/Plugins/PassPlugin.h>
+ #else
+ #include <llvm/Passes/PassPlugin.h>
+@@ -53,13 +53,27 @@ static void replaceFunWithNop(Module &M, std::string name)
+ 	ReturnInst::Create(F->getContext(), res, bb);
  }
  
 +/* A data symbol the C++ runtime provides and the program only declares: defined here as a zero
 + * global, since the execution engine cannot resolve an undefined global. __dso_handle is passed
 + * to __cxa_thread_atexit by every thread_local with a destructor, and the interpreter's
 + * __cxa_thread_atexit records nothing, so its value is never read. */
-+void defineDataAsZero(Module &M, std::string name)
++static void defineDataAsZero(Module &M, const std::string &name)
 +{
 +	auto *GV = M.getGlobalVariable(name);
 +	if (!GV || !GV->isDeclaration())
@@ -1382,7 +1329,7 @@ index 7027135..44ee6e0 100644
 +	GV->setLinkage(GlobalValue::InternalLinkage);
 +}
 +
- auto DefineLibcFunsPass::run(Module &M, ModuleAnalysisManager &AM) -> PreservedAnalyses
+ auto DefineLibcFunsPass::run(Module &M, ModuleAnalysisManager & /*AM*/) -> PreservedAnalyses
  {
 +	defineDataAsZero(M, "__dso_handle");
  	replaceFunWithNop(M, "fclose");
@@ -1395,10 +1342,10 @@ index 7027135..44ee6e0 100644
  
  //-----------------------------------------------------------------------------
 diff --git a/passes/passes/Transforms/FunctionInlinerPass.cpp b/passes/passes/Transforms/FunctionInlinerPass.cpp
-index d49a945..45ae518 100644
+index 433de46..7d71c90 100644
 --- a/passes/passes/Transforms/FunctionInlinerPass.cpp
 +++ b/passes/passes/Transforms/FunctionInlinerPass.cpp
-@@ -29,24 +29,9 @@ using namespace llvm;
+@@ -38,20 +38,6 @@ using namespace llvm;
   * f->f1->f2->f3->f4->f2->f3->f4... => f->f2->f3->f4->f2->f3->f4
   * f->f1->f2->f2->f2->... => main->f2->f2->f2...
   */
@@ -1416,15 +1363,11 @@ index d49a945..45ae518 100644
 -	return !F.isDeclaration() && !isInternalFunction(F.getName().str()) && !isRecursive(CG, F);
 -}
 -
- static auto inlineCall(CallBase *cb) -> bool
+ static auto inlineCall(CallBase *callBase) -> bool
  {
  	llvm::InlineFunctionInfo ifi;
--
- #if LLVM_VERSION_MAJOR >= 11
- 	return InlineFunction(*cb, ifi).isSuccess();
- #else
-@@ -54,27 +39,23 @@ static auto inlineCall(CallBase *cb) -> bool
- #endif
+@@ -59,27 +45,23 @@ static auto inlineCall(CallBase *callBase) -> bool
+ 	return InlineFunction(*callBase, ifi).isSuccess();
  }
  
 -static auto inlineFunction(Module &M, Function *toInline) -> bool
@@ -1445,9 +1388,9 @@ index d49a945..45ae518 100644
 -			if (!isa<InvokeInst>(&iit) && !isa<CallInst>(&iit))
 -				continue;
 -
--			auto *cb = dyn_cast<CallBase>(&iit);
--			if (cb->getCalledFunction() == toInline)
--				calls.push_back(cb);
+-			auto *callBase = cast<CallBase>(&iit);
+-			if (callBase->getCalledFunction() == toInline)
+-				calls.push_back(callBase);
 -		}
 +		if (cb->getFunction() == toInline) /* No need to inline calls to itself */
 +			continue;
@@ -1462,7 +1405,7 @@ index d49a945..45ae518 100644
  	return changed;
  }
  
-@@ -82,12 +63,21 @@ auto FunctionInlinerPass::run(Module &M, ModuleAnalysisManager &AM) -> Preserved
+@@ -87,12 +69,21 @@ auto FunctionInlinerPass::run(Module &M, ModuleAnalysisManager & /*AM*/) -> Pres
  {
  	CallGraph CG(M);
  
@@ -1489,8 +1432,21 @@ index d49a945..45ae518 100644
  	}
  	return changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
  }
+diff --git a/passes/passes/Transforms/FunctionInlinerPass.hpp b/passes/passes/Transforms/FunctionInlinerPass.hpp
+index c0074cf..daea1b0 100644
+--- a/passes/passes/Transforms/FunctionInlinerPass.hpp
++++ b/passes/passes/Transforms/FunctionInlinerPass.hpp
+@@ -16,7 +16,7 @@
+ 
+ #include <llvm/IR/PassManager.h>
+ #include <llvm/Passes/PassBuilder.h>
+-#if LLVM_VERSION_MAJOR >= 22
++#if __has_include(<llvm/Plugins/PassPlugin.h>)
+ #include <llvm/Plugins/PassPlugin.h>
+ #else
+ #include <llvm/Passes/PassPlugin.h>
 diff --git a/passes/passes/Transforms/PromoteMemIntrinsicPass.cpp b/passes/passes/Transforms/PromoteMemIntrinsicPass.cpp
-index b31c6cd..c3a6007 100644
+index cd01ccc..dea97ca 100644
 --- a/passes/passes/Transforms/PromoteMemIntrinsicPass.cpp
 +++ b/passes/passes/Transforms/PromoteMemIntrinsicPass.cpp
 @@ -11,6 +11,7 @@
@@ -1500,19 +1456,24 @@ index b31c6cd..c3a6007 100644
 +#include <llvm/IR/Operator.h>
  #include "PromoteMemIntrinsicPass.hpp"
  #include "genmc/Support/Error.hpp"
- #include <llvm/ADT/Twine.h>
-@@ -23,6 +24,10 @@
- #include <llvm/IR/Instruction.h>
- #include <llvm/IR/Instructions.h>
+ 
+@@ -31,11 +32,15 @@
+ #include <llvm/IR/IntrinsicInst.h>
  #include <llvm/IR/Module.h>
+ #include <llvm/IR/PassManager.h>
 +#include <llvm/IR/Verifier.h>
 +#include <llvm/Support/raw_ostream.h>
-+#include <cstdlib>
-+#include <algorithm>
  #include <llvm/IR/Type.h>
+ #include <llvm/Support/Alignment.h>
+ #include <llvm/Support/Casting.h>
  
++#include <algorithm>
+ #include <cstdint>
++#include <cstdlib>
  #include <ranges>
-@@ -144,37 +149,73 @@ static auto lowerFortifiedCalls(Function &F) -> bool
+ #include <utility>
+ #include <vector>
+@@ -141,37 +146,73 @@ static auto lowerFortifiedCalls(Function &F) -> bool
  	return modified;
  }
  
@@ -1602,7 +1563,7 @@ index b31c6cd..c3a6007 100644
  
  	remainingLen -= len;
  	auto *srcLoad = builder.CreateLoad(typ, srcGEP, "memcpy.src.load");
-@@ -182,7 +223,7 @@ static void promoteMemCpy(IRBuilder<> &builder, Value *dst, Value *src,
+@@ -179,7 +220,7 @@ static void promoteMemCpy(IRBuilder<> &builder, Value *dst, Value *src,
  }
  
  static void promoteMemSet(IRBuilder<> &builder, Value *dst, Value *argVal,
@@ -1611,17 +1572,17 @@ index b31c6cd..c3a6007 100644
  {
  	VERIFY(typ->isIntegerTy() || typ->isPointerTy());
  	VERIFY(isa<ConstantInt>(argVal));
-@@ -193,8 +234,7 @@ static void promoteMemSet(IRBuilder<> &builder, Value *dst, Value *argVal,
- 	long int ival = dyn_cast<ConstantInt>(argVal)->getSExtValue();
+@@ -190,8 +231,7 @@ static void promoteMemSet(IRBuilder<> &builder, Value *dst, Value *argVal,
+ 	const long int ival = cast<ConstantInt>(argVal)->getSExtValue();
  	Value *val = Constant::getIntegerValue(typ, APInt(sizeInBits, ival));
  
 -	Value *dstGEP =
 -		builder.CreateInBoundsGEP(getPromotionGEPType(dst), dst, args, "memset.dst.gep");
 +	Value *dstGEP = builder.CreateInBoundsGEP(gepTy, dst, args, "memset.dst.gep");
- 	Value *dstStore = builder.CreateStore(val, dstGEP);
+ 	builder.CreateStore(val, dstGEP);
  }
  
-@@ -340,23 +380,65 @@ static auto tryPromoteMemCpy(MemCpyInst *MI, SmallVector<llvm::MemIntrinsic *, 8
+@@ -336,23 +376,65 @@ static auto tryPromoteMemCpy(MemCpyInst *MI, SmallVector<llvm::MemIntrinsic *, 8
  
  	/* Recast args to same types for GEP indexing later */
  	auto [src, dst] = getRecastedOperands(MI, builder);
@@ -1690,7 +1651,7 @@ index b31c6cd..c3a6007 100644
  	if (!canPromoteMemIntrinsic(MS))
  		return false;
  
-@@ -367,12 +449,15 @@ static auto tryPromoteMemSet(MemSetInst *MS, SmallVector<MemIntrinsic *, 8> &pro
+@@ -363,12 +445,15 @@ static auto tryPromoteMemSet(MemSetInst *MS, SmallVector<MemIntrinsic *, 8> &pro
  	auto *nullInt = Constant::getNullValue(i64Ty);
  	auto *dstTyp = getPromotionGEPType(dst);
  	VERIFY(dstTyp);
@@ -1707,7 +1668,7 @@ index b31c6cd..c3a6007 100644
  	});
  	promoted.push_back(MS);
  	return true;
-@@ -395,6 +480,194 @@ static void removePromoted(std::ranges::input_range auto &&promoted)
+@@ -391,6 +476,194 @@ static void removePromoted(std::ranges::input_range auto &&promoted)
  	}
  }
  
@@ -1838,7 +1799,7 @@ index b31c6cd..c3a6007 100644
 +					  {ptrTy, ptrTy, Type::getInt32Ty(ctx)}, false));
 +		/* Named: the execution engine maps globals to memory by name, and two unnamed
 +		 * globals share one slot. */
-+		auto *msg = fb.CreateGlobalStringPtr(
++		auto *msg = fb.CreateGlobalString(
 +			"a memory intrinsic lowered to a loop is longer than the --unroll bound",
 +			"memintr.too.long.msg");
 +		fb.CreateCall(assertFail, {msg, msg, ConstantInt::get(Type::getInt32Ty(ctx), 0)});
@@ -1899,10 +1860,10 @@ index b31c6cd..c3a6007 100644
 +	return true;
 +}
 +
- auto PromoteMemIntrinsicPass::run(Function &F, FunctionAnalysisManager &FAM) -> PreservedAnalyses
+ auto PromoteMemIntrinsicPass::run(Function &F, FunctionAnalysisManager & /*FAM*/)
+ 	-> PreservedAnalyses
  {
- 	/* Locate mem intrinsics of interest */
-@@ -402,14 +675,48 @@ auto PromoteMemIntrinsicPass::run(Function &F, FunctionAnalysisManager &FAM) ->
+@@ -399,14 +672,48 @@ auto PromoteMemIntrinsicPass::run(Function &F, FunctionAnalysisManager & /*FAM*/
  	auto modified = false;
  
  	modified |= lowerFortifiedCalls(F);
@@ -1993,8 +1954,21 @@ index 4cb68da..4b2f5e0 100644
  };
  
  #endif /* GENMC_PROMOTE_MEMINTRINSIC_PASS_HPP */
+diff --git a/passes/passes/Transforms/RustPrepPass.hpp b/passes/passes/Transforms/RustPrepPass.hpp
+index 517a75c..2eb7cf5 100644
+--- a/passes/passes/Transforms/RustPrepPass.hpp
++++ b/passes/passes/Transforms/RustPrepPass.hpp
+@@ -16,7 +16,7 @@
+ 
+ #include <llvm/IR/PassManager.h>
+ #include <llvm/Passes/PassBuilder.h>
+-#if LLVM_VERSION_MAJOR >= 22
++#if __has_include(<llvm/Plugins/PassPlugin.h>)
+ #include <llvm/Plugins/PassPlugin.h>
+ #else
+ #include <llvm/Passes/PassPlugin.h>
 diff --git a/passes/passes/Transforms/SpinAssumePass.cpp b/passes/passes/Transforms/SpinAssumePass.cpp
-index cfc466b..ae80e02 100644
+index 814ae99..2a50f6b 100644
 --- a/passes/passes/Transforms/SpinAssumePass.cpp
 +++ b/passes/passes/Transforms/SpinAssumePass.cpp
 @@ -11,6 +11,7 @@
@@ -2004,8 +1978,8 @@ index cfc466b..ae80e02 100644
 +#include "genmc/Support/HgProgress.hpp"
  #include "SpinAssumePass.hpp"
  #include "genmc/ADT/VSet.hpp"
- #include "genmc/Execution/LoadAnnotation.hpp"
-@@ -370,7 +371,7 @@ static auto isPathToHeaderEffectFree(BasicBlock *latch, Loop *l, ModuleAnalysisM
+ #include "genmc/Execution/EventAttr.hpp"
+@@ -388,7 +389,7 @@ static auto isPathToHeaderEffectFree(BasicBlock *latch, Loop *l, ModuleAnalysisM
  	auto effects = false;
  	std::vector<AtomicCmpXchgInst *> cass;
  
@@ -2014,7 +1988,7 @@ index cfc466b..ae80e02 100644
  		/* Try to prove that failed CASes imply another iteration */
  		if (auto *casi = dyn_cast<AtomicCmpXchgInst>(&i)) {
  			cass.push_back(casi);
-@@ -462,7 +463,7 @@ static auto isPathToHeaderFAIZNE(BasicBlock *latch, Loop *l, ModuleAnalysisManag
+@@ -478,7 +479,7 @@ static auto isPathToHeaderFAIZNE(BasicBlock *latch, Loop *l, ModuleAnalysisManag
  	VSet<AtomicCmpXchgInst *> cass;
  	VSet<AtomicRMWInst *> fais;
  
@@ -2023,7 +1997,7 @@ index cfc466b..ae80e02 100644
  		if (auto *faii = dyn_cast<AtomicRMWInst>(&i)) {
  			fais.insert(faii);
  			return;
-@@ -520,7 +521,7 @@ static auto isPathToHeaderLockZNE(BasicBlock *latch, Loop *l, ModuleAnalysisMana
+@@ -536,7 +537,7 @@ static auto isPathToHeaderLockZNE(BasicBlock *latch, Loop *l, ModuleAnalysisMana
  	VSet<CallInst *> unlocks;
  	VSet<PHINode *> phis;
  
@@ -2032,7 +2006,7 @@ index cfc466b..ae80e02 100644
  		if (auto *ci = dyn_cast<CallInst>(&i)) {
  			auto name = getCalledFunOrStripValName(*ci);
  			if (isInternalFunction(name)) {
-@@ -689,6 +690,12 @@ auto SpinAssumePass::run(Module &M, ModuleAnalysisManager &MAM) -> PreservedAnal
+@@ -694,6 +695,12 @@ auto SpinAssumePass::run(Module &M, ModuleAnalysisManager &MAM) const -> Preserv
  	auto &FAM = MAM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
  	auto modified = false;
  	for (auto &F : M | std::views::filter([&](auto &F) { return !F.isDeclaration(); })) {
@@ -2045,3 +2019,539 @@ index cfc466b..ae80e02 100644
  		auto &LI = FAM.getResult<LoopAnalysis>(F);
  		for (auto &L : std::views::reverse(LI.getLoopsInPreorder())) {
  			modified |= checkLoop(L, MAM, markStarts_);
+diff --git a/passes/passes/Transforms/WeakCASStutterPass.cpp b/passes/passes/Transforms/WeakCASStutterPass.cpp
+new file mode 100644
+index 0000000..26544c9
+--- /dev/null
++++ b/passes/passes/Transforms/WeakCASStutterPass.cpp
+@@ -0,0 +1,471 @@
++/*
++ * GenMC -- Generic Model Checking.
++ *
++ * This project is dual-licensed under the Apache License 2.0 and the MIT License.
++ * You may choose to use, distribute, or modify this software under either license.
++ *
++ * Apache License 2.0:
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * MIT License:
++ *     https://opensource.org/licenses/MIT
++ */
++
++#include "WeakCASStutterPass.hpp"
++
++#include <llvm/ADT/DenseMap.h>
++#include <llvm/ADT/SmallPtrSet.h>
++#include <llvm/ADT/SmallVector.h>
++#include <llvm/Analysis/LoopInfo.h>
++#include <llvm/IR/Dominators.h>
++#include <llvm/IR/Function.h>
++#include <llvm/IR/InstIterator.h>
++#include <llvm/IR/Instructions.h>
++#include <llvm/IR/IntrinsicInst.h>
++#include <llvm/IR/Module.h>
++#include <llvm/IR/PassManager.h>
++#include <llvm/Support/raw_ostream.h>
++
++#include <cstdlib>
++#include <string>
++
++using namespace llvm;
++
++namespace {
++
++/* Regions larger than this are not a retry loop's failure path. */
++constexpr unsigned kMaxRegionBlocks = 32;
++
++/* Applies the two tests described in WeakCASStutterPass.hpp to one weak CAS. */
++class StutterCheck {
++public:
++	StutterCheck(AtomicCmpXchgInst *cas, const DataLayout &dl, const LoopInfo &li,
++		     const DominatorTree &dt)
++		: cas_(cas), dl_(dl), li_(li), dt_(dt)
++	{}
++
++	auto run() -> bool
++	{
++		casBB_ = cas_->getParent();
++		auto *loop = li_.getLoopFor(casBB_);
++		if (!loop)
++			return fail("the CAS is not in a loop");
++		/* The decision on the flag can sit a few blocks after the CAS, behind unconditional
++		 * branches or a conditional one whose targets coincide. Those blocks run on
++		 * success and on failure alike. */
++		decBB_ = casBB_;
++		for (auto k = 0; k < 4; ++k) {
++			auto *t = dyn_cast<BranchInst>(decBB_->getTerminator());
++			if (!t || (t->isConditional() && t->getSuccessor(0) != t->getSuccessor(1)))
++				break;
++			auto *next = t->getSuccessor(0);
++			if (next->getUniquePredecessor() != decBB_ || !loop->contains(next))
++				break;
++			chain_.insert(next);
++			decBB_ = next;
++		}
++		auto *br = dyn_cast<BranchInst>(decBB_->getTerminator());
++		if (!br || !br->isConditional())
++			return fail("no conditional branch follows the CAS");
++
++		/* The branch is on the success flag, possibly negated. */
++		auto *cond = br->getCondition();
++		auto negated = false;
++		if (auto *flag = negatedFlag(cond)) {
++			cond = flag;
++			negated = true;
++		}
++		if (!isFlag(cond))
++			return fail("the CAS block's branch is not on the success flag");
++		auto *succBB = br->getSuccessor(negated ? 1 : 0);
++		auto *failBB = br->getSuccessor(negated ? 0 : 1);
++		if (loop->contains(succBB))
++			return fail("the success edge stays in the loop");
++		if (!loop->contains(failBB))
++			return fail("the failure edge leaves the loop");
++
++		loop_ = loop;
++		failBB_ = failBB;
++		if (dropIteration())
++			return true;
++		const std::string dropWhy = reason_;
++		region_.clear();
++		memo_.clear();
++		if (repeatAttempt())
++			return true;
++		why_ = "drop: " + dropWhy + "; repeat: " + reason_;
++		reason_ = why_.c_str();
++		return false;
++	}
++
++	[[nodiscard]] auto reason() const -> const char * { return reason_; }
++
++private:
++	/*
++	 * The iteration that ends in the spurious failure, from the loop header to the header
++	 * again, contains reads and fences only (the CAS's failed read among them), and every
++	 * header phi has the same value after it as before. Deleting the iteration's events from
++	 * the execution leaves a consistent execution -- deleting reads and fences only removes
++	 * constraints -- in which the thread starts the next iteration in the same state and
++	 * every remaining read reads the same write. That execution has no spurious failure at
++	 * this point and is explored.
++	 */
++	auto dropIteration() -> bool
++	{
++		auto *header = loop_->getHeader();
++
++		/* The failure path back to the header must stay in the loop: an exit taken after a
++		 * spurious failure is behaviour of its own. */
++		SmallPtrSet<BasicBlock *, 16> post;
++		SmallVector<BasicBlock *, 16> work;
++		if (failBB_ != header) {
++			post.insert(failBB_);
++			work.push_back(failBB_);
++		}
++		while (!work.empty()) {
++			auto *bb = work.pop_back_val();
++			for (auto *s : successors(bb)) {
++				if (s == header)
++					continue;
++				if (!loop_->contains(s))
++					return fail("the failure path can leave the loop");
++				if (s == casBB_)
++					return fail("the failure path reaches the CAS without the header");
++				if (post.insert(s).second) {
++					if (post.size() > kMaxRegionBlocks)
++						return fail("the failure path is larger than a retry loop");
++					work.push_back(s);
++				}
++			}
++		}
++		post.insert(chain_.begin(), chain_.end());
++
++		/* The blocks an iteration passes on its way from the header to the CAS. */
++		SmallPtrSet<BasicBlock *, 16> fromHeader;
++		work.push_back(header);
++		fromHeader.insert(header);
++		while (!work.empty()) {
++			auto *bb = work.pop_back_val();
++			if (bb == casBB_)
++				continue;
++			for (auto *s : successors(bb))
++				if (s != header && loop_->contains(s) && fromHeader.insert(s).second)
++					work.push_back(s);
++		}
++		SmallPtrSet<BasicBlock *, 16> toCas;
++		work.push_back(casBB_);
++		toCas.insert(casBB_);
++		while (!work.empty()) {
++			auto *bb = work.pop_back_val();
++			if (bb == header)
++				continue;
++			for (auto *p : predecessors(bb))
++				if (loop_->contains(p) && toCas.insert(p).second)
++					work.push_back(p);
++		}
++
++		region_.insert(post.begin(), post.end());
++		for (auto *bb : fromHeader)
++			if (toCas.contains(bb))
++				region_.insert(bb);
++		if (region_.size() > kMaxRegionBlocks)
++			return fail("the iteration is larger than a retry loop");
++
++		for (auto *bb : region_) {
++			/* A load before the CAS is also in the execution where the CAS succeeds,
++			 * which is explored, so an error it meets is reported there. A load after
++			 * the CAS runs only on a failure, with the spurious failure's value. */
++			auto beforeCas = !post.contains(bb);
++			for (auto &i : *bb) {
++				if (&i == cas_) {
++					beforeCas = false;
++					continue;
++				}
++				if (isa<DbgInfoIntrinsic>(&i) || i.isTerminator())
++					continue;
++				if (auto *phi = dyn_cast<PHINode>(&i)) {
++					if (bb == header && !phiKeepsValue(phi))
++						return fail("a loop-carried value changes in the iteration");
++					continue;
++				}
++				if (isa<FenceInst>(&i) || (beforeCas && isa<LoadInst>(&i)))
++					continue;
++				if (i.mayReadOrWriteMemory() || i.mayHaveSideEffects())
++					return fail("the iteration writes, calls or has another side "
++						    "effect");
++			}
++		}
++		return true;
++	}
++
++	/*
++	 * The spurious failure is followed by the same attempt from the same state: the path
++	 * back to the CAS repeats the previous arrival's, loop-carried values are unchanged and
++	 * the only memory accesses besides the CAS are stores of unchanged values to unchanged
++	 * addresses that the previous arrival also executed.
++	 */
++	auto repeatAttempt() -> bool
++	{
++		auto *loop = loop_;
++		auto *failBB = failBB_;
++		region_.insert(casBB_);
++		region_.insert(chain_.begin(), chain_.end());
++		SmallVector<BasicBlock *, 16> work;
++		if (failBB != casBB_) {
++			region_.insert(failBB);
++			work.push_back(failBB);
++		}
++		auto reachesCas = (failBB == casBB_);
++		while (!work.empty()) {
++			auto *bb = work.pop_back_val();
++			auto *term = bb->getTerminator();
++			if (!isa<BranchInst>(term) && !isa<SwitchInst>(term))
++				return fail("the failure path ends in something other than a branch");
++			for (auto *s : successors(bb)) {
++				if (s == casBB_) {
++					reachesCas = true;
++					continue;
++				}
++				if (!loop->contains(s)) {
++					if (!dt_.dominates(bb, casBB_))
++						return fail("the failure path can leave the loop");
++					continue;
++				}
++				if (region_.insert(s).second) {
++					if (region_.size() > kMaxRegionBlocks)
++						return fail("the failure path is larger than a retry loop");
++					work.push_back(s);
++				}
++			}
++		}
++		if (!reachesCas)
++			return fail("the failure path does not return to the CAS");
++
++		/* The CAS is the same operation on the next arrival. */
++		if (!invariant(cas_->getPointerOperand()) || !invariant(cas_->getCompareOperand()) ||
++		    !invariant(cas_->getNewValOperand()))
++			return fail("the CAS's operands change on the failure path");
++
++		for (auto *bb : region_) {
++			auto ranBefore = (bb == casBB_) || dt_.dominates(bb, casBB_);
++			for (auto &i : *bb) {
++				if (&i == cas_) {
++					ranBefore = false;
++					continue;
++				}
++				if (auto *phi = dyn_cast<PHINode>(&i)) {
++					if (!phiKeepsValue(phi))
++						return fail("a loop-carried value changes on the failure "
++							    "path");
++					continue;
++				}
++				if (isa<DbgInfoIntrinsic>(&i))
++					continue;
++				if (i.isTerminator()) {
++					if (bb == casBB_ || chain_.contains(bb))
++						continue;
++					Value *c = nullptr;
++					if (auto *b = dyn_cast<BranchInst>(&i); b && b->isConditional())
++						c = b->getCondition();
++					else if (auto *sw = dyn_cast<SwitchInst>(&i))
++						c = sw->getCondition();
++					if (c && !invariant(c))
++						return fail("a branch on the failure path depends on a "
++							    "changed value");
++					continue;
++				}
++				if (auto *si = dyn_cast<StoreInst>(&i)) {
++					/* The previous arrival executed this store with the same
++					 * operands, so the stutter's copy repeats one that is kept. */
++					if (!ranBefore || si->isVolatile() ||
++					    !invariant(si->getPointerOperand()) ||
++					    !invariant(si->getValueOperand()))
++						return fail("a store on the failure path is not a repeat");
++					continue;
++				}
++				if (i.mayReadOrWriteMemory() || i.mayHaveSideEffects())
++					return fail("the failure path reads memory, calls or has "
++						    "another side effect");
++			}
++		}
++		return true;
++	}
++
++	auto fail(const char *why) -> bool
++	{
++		reason_ = why;
++		return false;
++	}
++
++	/* The success flag, possibly widened and narrowed again (the inlined
++	 * compare_exchange_weak passes it through an i8). */
++	auto isFlag(Value *v) const -> bool
++	{
++		while (true) {
++			if (auto *c = dyn_cast<ZExtInst>(v))
++				v = c->getOperand(0);
++			else if (auto *t = dyn_cast<TruncInst>(v); t && t->getType()->isIntegerTy(1))
++				v = t->getOperand(0);
++			else
++				break;
++		}
++		auto *ev = dyn_cast<ExtractValueInst>(v);
++		return ev && ev->getAggregateOperand() == cas_ && ev->getNumIndices() == 1 &&
++		       ev->getIndices()[0] == 1;
++	}
++
++	/* The flag when `v` is `xor flag, true`. */
++	auto negatedFlag(Value *v) const -> Value *
++	{
++		auto *bo = dyn_cast<BinaryOperator>(v);
++		if (!bo || bo->getOpcode() != Instruction::Xor)
++			return nullptr;
++		auto *c = dyn_cast<ConstantInt>(bo->getOperand(1));
++		if (!c || !c->isOne() || !isFlag(bo->getOperand(0)))
++			return nullptr;
++		return bo->getOperand(0);
++	}
++
++	auto isLoaded(Value *v) const -> bool
++	{
++		auto *ev = dyn_cast<ExtractValueInst>(v);
++		return ev && ev->getAggregateOperand() == cas_ && ev->getNumIndices() == 1 &&
++		       ev->getIndices()[0] == 0;
++	}
++
++	/* The arm a select on the flag takes when the CAS fails; null if `v` is not one. */
++	auto failureArm(Value *v) const -> Value *
++	{
++		auto *sel = dyn_cast<SelectInst>(v);
++		if (!sel)
++			return nullptr;
++		if (isFlag(sel->getCondition()))
++			return sel->getFalseValue();
++		if (negatedFlag(sel->getCondition()))
++			return sel->getTrueValue();
++		return nullptr;
++	}
++
++	/* Bit-for-bit conversions only: the value is the same bits on both sides. */
++	auto stripCasts(Value *v) const -> Value *
++	{
++		while (auto *c = dyn_cast<CastInst>(v)) {
++			if (!isa<PtrToIntInst>(c) && !isa<IntToPtrInst>(c) && !isa<BitCastInst>(c))
++				break;
++			if (dl_.getTypeSizeInBits(c->getSrcTy()) != dl_.getTypeSizeInBits(c->getDestTy()))
++				break;
++			v = c->getOperand(0);
++		}
++		return v;
++	}
++
++	auto inRegion(Value *v) const -> bool
++	{
++		auto *i = dyn_cast<Instruction>(v);
++		return i && region_.contains(i->getParent());
++	}
++
++	/* Under a spurious failure the CAS returns its compare operand, so a value carried
++	 * back to `phi` keeps the phi's value when it is the phi itself, or the CAS's loaded
++	 * value with the phi as the compare operand, or a select on the flag whose failure
++	 * arm is one of those. */
++	auto equalUnderStutter(Value *v, PHINode *phi) const -> bool
++	{
++		v = stripCasts(v);
++		if (auto *arm = failureArm(v))
++			v = stripCasts(arm);
++		if (v == phi)
++			return true;
++		return isLoaded(v) && stripCasts(cas_->getCompareOperand()) == phi;
++	}
++
++	auto phiKeepsValue(PHINode *phi) const -> bool
++	{
++		for (unsigned k = 0; k < phi->getNumIncomingValues(); ++k)
++			if (region_.contains(phi->getIncomingBlock(k)) &&
++			    !equalUnderStutter(phi->getIncomingValue(k), phi))
++				return false;
++		return true;
++	}
++
++	/* The value on the next arrival at the CAS equals the value on the previous one. Phis
++	 * are checked separately (phiKeepsValue) and the whole CAS is rejected if one does not
++	 * keep its value, so a phi of the region counts as invariant here. */
++	auto invariant(Value *v) -> bool
++	{
++		if (!inRegion(v) || isa<PHINode>(v))
++			return true;
++		if (auto *arm = failureArm(v))
++			return invariant(arm);
++		if (v == cas_ || isFlag(v))
++			return false;
++		if (isLoaded(v))
++			return invariant(cas_->getCompareOperand());
++		auto *i = cast<Instruction>(v);
++		if (i->mayReadOrWriteMemory() || i->mayHaveSideEffects())
++			return false;
++		auto [it, fresh] = memo_.try_emplace(i, true);
++		if (!fresh)
++			return it->second;
++		auto ok = true;
++		for (auto &op : i->operands())
++			ok = ok && invariant(op.get());
++		memo_[i] = ok;
++		return ok;
++	}
++
++	AtomicCmpXchgInst *cas_;
++	const DataLayout &dl_;
++	const LoopInfo &li_;
++	const DominatorTree &dt_;
++	BasicBlock *casBB_ = nullptr;
++	SmallPtrSet<BasicBlock *, 16> region_;
++	DenseMap<Instruction *, bool> memo_;
++	const char *reason_ = "";
++	std::string why_;
++	Loop *loop_ = nullptr;
++	BasicBlock *failBB_ = nullptr;
++	BasicBlock *decBB_ = nullptr;
++	SmallPtrSet<BasicBlock *, 4> chain_;
++};
++
++} // namespace
++
++auto WeakCASStutterPass::run(Function &F, FunctionAnalysisManager &FAM) -> PreservedAnalyses
++{
++	const auto report = std::getenv("HG_GENMC_STUTTER_REPORT") != nullptr;
++	SmallVector<AtomicCmpXchgInst *, 8> weak;
++	for (auto &inst : instructions(F))
++		if (auto *casi = dyn_cast<AtomicCmpXchgInst>(&inst); casi && casi->isWeak())
++			weak.push_back(casi);
++	if (weak.empty())
++		return PreservedAnalyses::all();
++
++	const auto &dl = F.getParent()->getDataLayout();
++	const auto &li = FAM.getResult<LoopAnalysis>(F);
++	const auto &dt = FAM.getResult<DominatorTreeAnalysis>(F);
++	auto modified = false;
++	for (auto *casi : weak) {
++		StutterCheck check(casi, dl, li, dt);
++		const auto stutter = check.run();
++		if (report) {
++			errs() << "HG-STUTTER " << (stutter ? "strong " : "weak   ") << F.getName();
++			if (const auto &loc = casi->getDebugLoc())
++				errs() << " " << loc->getFilename() << ":" << loc.getLine();
++			if (!stutter)
++				errs() << " -- " << check.reason();
++			errs() << "\n";
++			if (!stutter && std::getenv("HG_GENMC_STUTTER_REPORT")[0] == '2')
++				casi->getParent()->getParent()->print(errs());
++		}
++		if (stutter) {
++			casi->setWeak(false);
++			modified = true;
++		}
++	}
++	if (!modified)
++		return PreservedAnalyses::all();
++	PreservedAnalyses pa;
++	pa.preserveSet<CFGAnalyses>();
++	return pa;
++}
+diff --git a/passes/passes/Transforms/WeakCASStutterPass.hpp b/passes/passes/Transforms/WeakCASStutterPass.hpp
+new file mode 100644
+index 0000000..bd1e9c7
+--- /dev/null
++++ b/passes/passes/Transforms/WeakCASStutterPass.hpp
+@@ -0,0 +1,53 @@
++/*
++ * GenMC -- Generic Model Checking.
++ *
++ * This project is dual-licensed under the Apache License 2.0 and the MIT License.
++ * You may choose to use, distribute, or modify this software under either license.
++ *
++ * Apache License 2.0:
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * MIT License:
++ *     https://opensource.org/licenses/MIT
++ */
++
++#ifndef GENMC_WEAK_CAS_STUTTER_PASS_HPP
++#define GENMC_WEAK_CAS_STUTTER_PASS_HPP
++
++#include <llvm/Passes/PassBuilder.h>
++
++using namespace llvm;
++
++/**
++ * Makes a weak CAS strong when its spurious failure adds no behaviour. The checker models a
++ * spurious failure as a failed read of the write the CAS would have succeeded on, so the CAS
++ * returns its expected value. Two shapes of retry loop qualify:
++ *
++ *  - Drop the iteration. From the loop header to the header again the iteration holds reads
++ *    and fences only (loads before the CAS; nothing but pure code after it), the failure path
++ *    stays in the loop, and every header phi has the same value after the iteration as before.
++ *    Deleting the iteration's events leaves a consistent execution -- deleting reads and fences
++ *    only removes constraints -- in which the thread starts the next iteration in the same state
++ *    and every remaining read reads the same write.
++ *
++ *  - Repeat the attempt. The failure path returns to the CAS with every loop-carried value and
++ *    branch condition unchanged, and the only memory accesses on the cycle are stores of
++ *    unchanged values to unchanged addresses that the previous arrival also executed (a
++ *    Treiber push storing the link before the CAS). The execution with the spurious failure
++ *    differs from the one without it by one read and the repeated stores. Remaining
++ *    assumption: no other thread writes a stored address between the two copies; for a
++ *    non-atomic store such a writer is a data race, which the checker reports through the copy
++ *    that is kept.
++ *
++ * Every other weak CAS stays weak and its spurious failures are explored: one not in a loop,
++ * one whose failure leaves the loop, loads after the CAS, calls, writes a changed value, or
++ * changes a loop-carried value such as an attempt counter. Runs before SpinAssume and unrolling,
++ * which rewrite the cycle. HG_GENMC_STUTTER_REPORT=1 prints the decision per CAS (=2 also
++ * prints the function of a CAS kept weak); HG_GENMC_NO_STUTTER=1 disables the pass.
++ */
++class WeakCASStutterPass : public PassInfoMixin<WeakCASStutterPass> {
++public:
++	auto run(Function &F, FunctionAnalysisManager &FAM) -> PreservedAnalyses;
++};
++
++#endif /* GENMC_WEAK_CAS_STUTTER_PASS_HPP */

@@ -1,3 +1,8 @@
+// Thread c writes into a's block after a CAS whose success ordering is release only. c reaches
+// a's block through an acquire read: its first load, or a failed CAS, which reads with the
+// failure ordering (acquire). So the write does not race. The retry loops are pure
+// compare_exchange_weak loops; their spurious failures repeat the attempt and are dropped, so the
+// run ends without --unroll.
 #include <pthread.h>
 #include <atomic>
 #include <cassert>

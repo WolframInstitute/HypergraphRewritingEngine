@@ -38,10 +38,11 @@
 #   verification/genmc/run.sh all
 #
 # Environment:
-#   GENMC          path to the genmc binary        (default: ~/genmc/build/bin/genmc)
+#   GENMC          path to the genmc binary        (default: ~/genmc-019/build/bin/genmc, the
+#                  hg-fixes-0.19 branch of github.com/richardassar/genmc built against LLVM 22)
 #   GENMC_INCLUDE  path to its runtime-include/c   (default: derived from GENMC)
-#   CLANGXX        clang++ to emit the IR          (default: /usr/lib/llvm-18/bin/clang++)
-#   OPT            matching llvm opt               (default: /usr/lib/llvm-18/bin/opt)
+#   CLANGXX        clang++ to emit the IR          (default: /usr/lib/llvm-22/bin/clang++)
+#   OPT            matching llvm opt               (default: /usr/lib/llvm-22/bin/opt)
 #   HG_GENMC_DEBUG_INFO set to compile with -g, so the checker's --print-error-trace names source
 #                  lines. Off by default: debug metadata more than doubles the pruned module
 #                  (111,538 -> 274,828 lines on the evolve() harness) and the transformation
@@ -80,10 +81,10 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 
-GENMC="${GENMC:-$HOME/genmc/build/bin/genmc}"
-CLANGXX="${CLANGXX:-/usr/lib/llvm-18/bin/clang++}"
+GENMC="${GENMC:-$HOME/genmc-019/build/bin/genmc}"
+CLANGXX="${CLANGXX:-/usr/lib/llvm-22/bin/clang++}"
 LLVM_LINK="${LLVM_LINK:-$(dirname "$CLANGXX")/llvm-link}"
-OPT="${OPT:-/usr/lib/llvm-18/bin/opt}"
+OPT="${OPT:-/usr/lib/llvm-22/bin/opt}"
 
 if [ ! -x "$GENMC" ]; then
     cat >&2 <<EOF
@@ -104,7 +105,7 @@ fi
 if [ -z "${GENMC_INCLUDE:-}" ]; then
     for cand in "$(dirname "$GENMC")/../../lli/runtime-include/c" \
                 "$(dirname "$GENMC")/../include/genmc/c" \
-                "$HOME/genmc/lli/runtime-include/c"; do
+                "$HOME/genmc-019/lli/runtime-include/c"; do
         [ -f "$cand/pthread.h" ] && { GENMC_INCLUDE="$(cd "$cand" && pwd)"; break; }
     done
 fi

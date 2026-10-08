@@ -30,19 +30,26 @@ verification/genmc/run.sh all                          # every harness in this d
 
 ## Building GenMC
 
-Verified against **GenMC v0.17.0** and **LLVM 18**.
+The suite runs on **GenMC v0.19.0 with the fixes below**, built against **LLVM 22**: branch
+`hg-fixes-0.19` of `github.com/richardassar/genmc`, which is upstream `v0.19.0` plus the commits in
+`genmc-0.19.0-fixes.patch` here. v0.19 needs LLVM 19 or later. `run.sh` compiles every harness and
+every engine translation unit with the same LLVM 22 `clang++`, `opt` and `llvm-link`: LLVM 22
+cannot read LLVM 18 IR that carries the old `inrange` vtable GEPs.
 
 ```
-git clone --depth 1 https://github.com/MPI-SWS/genmc.git ~/genmc
-cd ~/genmc
+git clone -b hg-fixes-0.19 https://github.com/richardassar/genmc.git ~/genmc-019
+cd ~/genmc-019
 CC=/usr/bin/gcc CXX=/usr/bin/g++ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_PREFIX_PATH="/usr/lib/llvm-18/cmake;/usr/lib/llvm-18/lib/cmake/clang" \
+    -DCMAKE_PREFIX_PATH="/usr/lib/llvm-22/cmake;/usr/lib/llvm-22/lib/cmake/clang" \
     -DCMAKE_IGNORE_PREFIX_PATH="$HOME/miniforge3;$HOME/miniforge3/envs/sage"
-cmake --build build -j4
+cmake --build build -j4 --target genmc
 ```
+
+The same tree is reproduced from upstream with `git checkout v0.19.0 && git apply
+genmc-0.19.0-fixes.patch`.
 
 `CMAKE_IGNORE_PREFIX_PATH` is not optional on a machine with a conda environment on `PATH`. CMake
-otherwise resolves `libxml2`, `zstd`, `zlib` and `libedit` to conda's copies while LLVM 18 was
+otherwise resolves `libxml2`, `zstd`, `zlib` and `libedit` to conda's copies while LLVM was
 linked against the system ones, and the build fails at link with undefined references to versioned
 `libxml2` symbols. Everything compiles first, so the failure arrives at the very end.
 
@@ -87,8 +94,8 @@ So `run.sh` compiles the IR itself:
 
 ## The checker is patched, and the patch ships here
 
-`genmc-0.17.0-fixes.patch` applies to GenMC v0.17.0 (`git apply` in the checker's tree, then
-rebuild). Every hunk was forced by this engine and each is a defect in the checker, not a
+`genmc-0.19.0-fixes.patch` applies to GenMC v0.19.0 (`git apply` in the checker's tree, then
+rebuild); the rows were found on v0.17.0 and ported. Every hunk was forced by this engine and each is a defect in the checker, not a
 concession to it; each is reproduced by a program of under thirty lines under `checker/`, and `checker/run.sh` runs them all against the built checker.
 Without the patch the composed engine and the composition harness stop inside the checker
 instead of reaching a verdict.
@@ -108,6 +115,7 @@ instead of reaching a verdict.
 | `SpinAssumePass.cpp` + `LLVMUtils.hpp`: the latch-to-header blocks are walked once (`foreachInBackBlocksTo`) | Enumerated every simple CFG path from a loop's latch back to its header, exponential in the loop body's branching, for callbacks that only union sets and OR a flag. | 26 minutes on the evolve() module's loops (stack-sampled). `LoadAnnotationPass` keeps the path walk; its callback carries per-path state. | -- (module-scale only) |
 | `Interpreter.cpp`: a thread-local's aggregate initializer is walked to its scalar leaves | Stored a thread-local's initializer through `getConstantValue` once per byte, which has no case for an aggregate. | The guard byte of a function-scope `static thread_local` with a destructor (`JobSlotPool::tls_pool`) is a `{ i8 }` zeroinitializer: "Constant unimplemented for type" at static initialisation, after the whole transform. | `checker/thread_local_aggregate_init.cpp` |
 | `InternalFunction.def` + `Execution.cpp`: `__cxa_thread_atexit` is an internal function that records nothing | The thread-local destructor registration reached the interpreter as an unknown external function. | Same reproducer, one step later; the checker runs no thread-exit destructors, so the registration reports success. COVERAGE LIMIT: no thread-exit destructor is ever explored, so the job pool's recycling at thread exit (`TlsGuard::~TlsGuard` calling `JobSlotPool::release_pool`, `job_system/src/job_pool.cpp`) is not checked by any harness. | `checker/thread_local_aggregate_init.cpp` |
+| `WeakCASStutterPass.cpp` (v0.19 only): a weak CAS is made strong when its spurious failure adds no behaviour -- the iteration ending in it holds only reads before the CAS and carries every loop value back unchanged (dropped), or the failure path returns to the same attempt with only repeated stores of unchanged values (repeated). Every other weak CAS stays weak. | v0.18 and later explore a spurious failure of every successful weak CAS as a separate execution, and strengthen a weak CAS only inside a spinloop. In a retry loop each spurious failure is followed by another attempt, so the exploration never ended. | Every harness whose module contains a weak CAS gave no verdict in 1500 s on v0.19; `failed_cas_acquire` gave none without `--unroll`. `HG_GENMC_STUTTER_REPORT=1` prints the decision per CAS with the reason a CAS stays weak. | `checker/failed_cas_acquire.cpp`, `checker/weak_cas_push_stutter.cpp`, `checker/weak_cas_reload_retry.cpp`; kept weak and reported: `checker/weak_cas_spurious_single_shot.cpp`, `checker/weak_cas_spurious_counted_retry.cpp`, `checker/weak_cas_spurious_failure_path_load.cpp` |
 
 Three of the rows are not wrong answers but no answer: the checker as released does not reach a
 verdict on a module of this size in any time worth waiting, and the composed engine is that

@@ -1,22 +1,25 @@
 #!/usr/bin/env bash
-# The reproducers for genmc-0.17.0-fixes.patch, each a program of a few lines that the unpatched
-# checker gets wrong and the patched one gets right, except uninit_heap_read_reported, which both
-# get right: the patch changes the code that reports it. Run after building the checker:
+# The reproducers for the checker fork (branch hg-fixes-0.19 of github.com/richardassar/genmc,
+# also as genmc-0.19.0-fixes.patch here), each a program of a few lines. Run after building the
+# checker:
 #
 #   verification/genmc/checker/run.sh
 #
 # A reproducer whose first line is `// Expect: <text>` must print <text>; every other one must
 # report "No errors were detected". A line `// Args: <flags>` in the first three passes the flags
 # to the checker, and a line `// Env: NAME=value` in the first three sets that variable for it.
-# A checker without the patch aborts on the allocation and promotion reproducers with an internal
-# check or reports a non-allocated access, does not finish dependence_dag_paths within the ten
-# minutes this script gives it, reports no race on the cas_fail_* reproducers, fails
-# memmove_overlap_tail's assertion, reports no error on copy_longer_than_unroll, prints no
+# Measured on v0.17.0 without the fixes: it aborts on the allocation and promotion reproducers
+# with an internal check or reports a non-allocated access, does not finish dependence_dag_paths
+# within the ten minutes this script gives it, reports no race on the cas_fail_* reproducers,
+# fails memmove_overlap_tail's assertion, reports no error on copy_longer_than_unroll, prints no
 # assertion message or error site, and aborts on opaque_memcpy_struct, runtime_length_memset and
-# thread_atexit_records_nothing.
+# thread_atexit_records_nothing. Measured on the fork with HG_GENMC_NO_STUTTER=1: it does not
+# finish failed_cas_acquire or weak_cas_push_stutter. uninit_heap_read_reported pins the report's
+# wording, and the weak_cas_spurious_* pair pins that a spurious failure of a weak CAS is explored
+# wherever it is not a repeat of the attempt before it.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-GENMC="${GENMC:-$HOME/genmc/build/bin/genmc}"
+GENMC="${GENMC:-$HOME/genmc-019/build/bin/genmc}"
 fail=0
 for src in "$HERE"/*.cpp; do
     name="$(basename "$src" .cpp)"
