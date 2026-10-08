@@ -2561,6 +2561,52 @@ TEST(GpuBinaryGate, StateListsAndEventEndpointsAgreeAcrossDevices) {
     worker_stop(w);
 }
 
+// Inputs both devices refuse alike: an edge past MAX_ARITY in a rule or in an initial state is an
+// error frame naming the arity (the GPU ran it and returned an empty result with a device-memory
+// warning), and an ExplorationProbability that is not a finite number is skipped with an
+// OptionSkipped warning, so both devices run the default (the GPU kept NaN and gave 2 states
+// where the CPU gave 10).
+TEST(GpuBinaryGate, MalformedInputsAreRefusedAlikeOnBothDevices) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    CpuWorker host;
+    ASSERT_TRUE(host.ok) << "could not start hg_evolve --serve";
+    auto counts = [](wxf::Writer& ww) { put_str_list_option(ww, "RequestedData", {"NumStates"}); };
+    Edge wide;
+    for (int64_t v = 1; v <= 17; ++v) wide.push_back(v);
+    const auto wide_rule = session_envelope({{{1, 2}}}, {wide}, {{1, 2}}, 1, "Evolve", 0, true, {},
+                                            counts, 1, false);
+    const auto wide_init = session_envelope({{wide}}, {{1, 2}}, {{1, 2}, {2, 3}}, 1, "Evolve", 0,
+                                            true, {}, counts, 1, false);
+    for (const auto* job : {&wide_rule, &wide_init}) {
+        EXPECT_TRUE(host(*job).empty());
+        EXPECT_FALSE(host.w.last_error.empty());
+        EXPECT_TRUE(worker_call(w, *job).empty());
+        EXPECT_NE(w.last_error.find("arity"), std::string::npos) << w.last_error;
+    }
+    auto nan_opts = [](wxf::Writer& ww) {
+        put_str_list_option(ww, "RequestedData", {"NumStates"});
+        ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        ww.write(std::string("ExplorationProbability"));
+        ww.write(std::nan(""));
+    };
+    const auto nan_job = branch_job(3, "Evolve", 0, nan_opts, 2);
+    const auto cpu = host(nan_job);
+    const auto gpu = worker_call(w, nan_job);
+    ASSERT_FALSE(gpu.empty());
+    EXPECT_TRUE(reply_mentions(cpu, "OptionSkipped"));
+    EXPECT_TRUE(reply_mentions(gpu, "OptionSkipped"));
+    EXPECT_EQ(read_int_key(gpu, "NumStates"), read_int_key(cpu, "NumStates"));
+    worker_stop(w);
+}
+
 // "StepStatistics" is the same reply on both devices: under quotient exploration from each
 // engine's class multiplicities, under full capture from its raw states.
 TEST(GpuBinaryGate, StepStatisticsAgreeAcrossDevices) {

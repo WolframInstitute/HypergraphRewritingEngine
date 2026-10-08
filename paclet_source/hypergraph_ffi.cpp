@@ -15,6 +15,8 @@
 #include <atomic>
 #include <mutex>
 #include <functional>
+#include <cmath>
+#include <stdexcept>
 
 #include "hg_core.hpp"
 #include "hg_gpu_backend.hpp"
@@ -52,6 +54,15 @@ const char kBuildStamp[] = HG_BUILD_STAMP_LITERAL;
 }  // namespace ffi
 }  // namespace HG_NAMESPACE
 
+
+namespace {
+// A probability option that is not a finite number is refused; the option parser's catch skips
+// it with an OptionSkipped warning and the run uses the default, on both devices.
+double finite_option(double v) {
+    if (!std::isfinite(v)) throw std::invalid_argument("not a finite number");
+    return v;
+}
+}  // namespace
 
 // WXF Helper Functions using comprehensive wxf library
 namespace ffi_helpers {
@@ -188,9 +199,9 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                         } else if (option_key == "RandomSeed") {
                             req.random_seed = static_cast<uint64_t>(option_parser.read<int64_t>());
                         } else if (option_key == "ExplorationProbability") {
-                            req.exploration_probability = option_parser.read<double>();
+                            req.exploration_probability = finite_option(option_parser.read<double>());
                         } else if (option_key == "TransitionRate") {
-                            req.transition_rate = option_parser.read<double>();
+                            req.transition_rate = finite_option(option_parser.read<double>());
                         } else if (option_key == "RuleWeights") {
                             req.rule_weights = option_parser.read<std::vector<double>>();
                         } else if (option_key == "BranchialStep") {

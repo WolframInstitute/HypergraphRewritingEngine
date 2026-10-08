@@ -55,9 +55,20 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
             }
             return static_cast<uint8_t>(v);
         };
+        // The host's refusal (hypergraph_ffi.cpp parse_side), before the engine is built: an edge
+        // the device cannot represent is a malformed request, not a capacity overflow.
+        auto checked_arity = [&](size_t arity, const char* side, size_t edge_index) {
+            if (arity > hgcommon::MAX_ARITY)
+                throw std::runtime_error("rule " + std::to_string(rule_index) + " " + side +
+                                         " edge " + std::to_string(edge_index) +
+                                         " has arity above " +
+                                         std::to_string(hgcommon::MAX_ARITY));
+        };
         hg_gpu::RewriteRule r;
         uint8_t lhs_max = 0, rhs_max = 0;
-        for (const auto& edge : parts[0]) {
+        for (size_t k = 0; k < parts[0].size(); ++k) {
+            const auto& edge = parts[0][k];
+            checked_arity(edge.size(), "LHS", k);
             std::vector<uint8_t> e;
             for (int64_t v : edge) {
                 const uint8_t u = checked_var(v, "LHS");
@@ -66,7 +77,9 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
             }
             if (!e.empty()) r.lhs.push_back(std::move(e));
         }
-        for (const auto& edge : parts[1]) {
+        for (size_t k = 0; k < parts[1].size(); ++k) {
+            const auto& edge = parts[1][k];
+            checked_arity(edge.size(), "RHS", k);
             std::vector<uint8_t> e;
             for (int64_t v : edge) {
                 const uint8_t u = checked_var(v, "RHS");
@@ -94,6 +107,9 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
         hg_gpu::VertexId next = 0;
         std::vector<std::vector<hg_gpu::VertexId>> edges;
         for (const auto& edge : state) {
+            if (edge.size() > hgcommon::MAX_ARITY)
+                throw std::runtime_error("an initial edge has arity " + std::to_string(edge.size()) +
+                                         ", above " + std::to_string(hgcommon::MAX_ARITY));
             std::vector<hg_gpu::VertexId> e;
             for (int64_t v : edge) {
                 auto it = vmap.find(v);
