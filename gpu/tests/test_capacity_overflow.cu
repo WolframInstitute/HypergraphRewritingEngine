@@ -414,6 +414,22 @@ TEST(CapacityOverflow, ARefusedArenaClaimLeavesTheArenaUsable) {
     EXPECT_EQ(arena.used_words_host(), 16u);
 }
 
+// An index insert the initial upload cannot place is a capacity overflow the run reports.
+TEST(CapacityOverflow, AFullIndexAtUploadIsReported) {
+    hg_gpu::EngineConfig cfg;
+    cfg.sig_index_pool = 4;
+    cfg.inverted_pool = 4;
+    hg_gpu::EngineState engine(cfg);
+    engine.set_maintain_indices(true);
+    std::vector<std::vector<hg_gpu::VertexId>> edges;
+    for (hg_gpu::VertexId v = 0; v < 16; ++v) edges.push_back({v, v + 1});
+    hg_gpu::upload_initial_state(engine, edges);
+    std::vector<hg_gpu::OverflowWarning> w;
+    engine.collect_warnings_into(w, "upload");
+    EXPECT_TRUE(has_kind(w, hg_gpu::ErrorKind::kSigIndexNodes));
+    EXPECT_TRUE(has_kind(w, hg_gpu::ErrorKind::kInvIndexNodes));
+}
+
 // The reachability search masks into its visited table, so the table is a power of two at any
 // tr_scratch_scale.
 TEST(CapacityOverflow, TheReachabilityTableIsAPowerOfTwo) {
