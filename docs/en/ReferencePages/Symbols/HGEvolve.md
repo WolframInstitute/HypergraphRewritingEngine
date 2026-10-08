@@ -100,7 +100,7 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 | `"UniformRandom"` | `False` | whether `"MatchesPerStep"` caps the states kept per step |
 | `"MatchesPerStep"` | `0` | the per-step cap used with `"UniformRandom"` (`0` for no cap) |
 | `"BranchialStep"` | `Automatic` | the step whose branchial pairs the branchial graph shows: `Automatic`, `All`, `-1` (the final step) or a step number from 1 |
-| `"EdgeDeduplication"` | `True` | whether a causal or branchial graph has one edge per event pair, rather than one per shared hyperedge |
+| `"EdgeDeduplication"` | `True` | whether a causal graph has one edge per event pair, rather than one per shared hyperedge |
 | `"TargetDevice"` | `"CPU"` | `"CPU"` or `"GPU"` |
 | `"RandomSeed"` | `Automatic` | the seed of every sampling draw and of a generated initial condition; `Automatic` uses the seed `0` for the sampling draws and a new seed for a generated initial condition on each run |
 | `"IncludeCanonicalHashes"` | `False` | whether each state record has a `"CanonicalHash"` |

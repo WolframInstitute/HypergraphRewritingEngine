@@ -210,9 +210,10 @@ including a workload whose raw DAG has bypassed pairs so the reduction visibly b
 
 Two events are branchially related iff they **share the same input state and consumed a common
 edge instance**. Computed on the raw event structure; independent of the event-identity choice;
-no reduction applies; multiplicity is preserved in the graph form (`EdgeDeduplication` off keeps
-one edge per shared hyperedge). `BranchialEdges` and the branchial graphs follow §5.2's
-one-relation rule.
+no reduction applies. The relation has one edge per event pair, however many edges the two
+events both consumed, and the branchial state graph has one edge per event pair between their
+output states; `EdgeDeduplication` does not apply to it. `BranchialEdges` and the branchial
+graphs follow §5.2's one-relation rule.
 
 ### 5.4 Quotient exploration and reconstruction
 
