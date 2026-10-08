@@ -376,6 +376,29 @@ TEST(CapacityOverflow, AFullRelationMapIsReported) {
     }
 }
 
+namespace {
+__global__ void k_arena_claims(hg_gpu::DeviceArena::View a, uint64_t first, uint64_t second,
+                               uint32_t* got) {
+    got[0] = a.claim(first) != nullptr ? 1u : 0u;
+    got[1] = a.claim(second) != nullptr ? 1u : 0u;
+}
+}  // namespace
+
+// A refused arena claim takes nothing: a later claim that fits is granted.
+TEST(CapacityOverflow, ARefusedArenaClaimLeavesTheArenaUsable) {
+    hg_gpu::DeviceArena arena(1024);
+    arena.reset();
+    uint32_t* d = nullptr;
+    ASSERT_EQ(cudaMalloc(&d, sizeof(uint32_t) * 2), cudaSuccess);
+    k_arena_claims<<<1, 1>>>(arena.view(), 4096, 16, d);
+    uint32_t got[2] = {9, 9};
+    ASSERT_EQ(cudaMemcpy(got, d, sizeof(got), cudaMemcpyDeviceToHost), cudaSuccess);
+    cudaFree(d);
+    EXPECT_EQ(got[0], 0u) << "a claim of 4096 words from 1024 was granted";
+    EXPECT_EQ(got[1], 1u) << "a claim of 16 words was refused after a refused oversized one";
+    EXPECT_EQ(arena.used_words_host(), 16u);
+}
+
 // The reachability search masks into its visited table, so the table is a power of two at any
 // tr_scratch_scale.
 TEST(CapacityOverflow, TheReachabilityTableIsAPowerOfTwo) {

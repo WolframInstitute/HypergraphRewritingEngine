@@ -42,13 +42,20 @@ public:
         uint64_t  capacity;    // words
 
         // Claim `words`, 8-byte aligned so the callers' uint64 views inside the block are
-        // valid. Returns nullptr when the arena is exhausted -- never partially satisfies.
+        // valid. Returns nullptr when the arena cannot hold them, and then takes nothing, so a
+        // refused large claim leaves the rest for smaller ones. The cursor moves only by an
+        // exchange that fits; claims are per state, not per item, so the retry on a lost
+        // exchange is rare.
         __device__ uint32_t* claim(uint64_t words) {
-            const uint64_t padded = (words + 1ull) & ~1ull;   // keep every claim even
-            const uint64_t off = atomicAdd(reinterpret_cast<unsigned long long*>(cursor),
-                                           static_cast<unsigned long long>(padded));
-            if (off + padded > capacity) return nullptr;
-            return base + off;
+            const unsigned long long padded = (words + 1ull) & ~1ull;   // keep every claim even
+            unsigned long long* cur = reinterpret_cast<unsigned long long*>(cursor);
+            unsigned long long off = *reinterpret_cast<volatile unsigned long long*>(cur);
+            for (;;) {
+                if (off > capacity || padded > capacity - off) return nullptr;
+                const unsigned long long seen = atomicCAS(cur, off, off + padded);
+                if (seen == off) return base + off;
+                off = seen;
+            }
         }
     };
 

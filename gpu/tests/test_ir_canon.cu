@@ -269,3 +269,31 @@ TEST(IrCanon, ADeepIndividualizationSearchIsRetriedRatherThanDegraded) {
                "doubled EngineConfig::ir_depth until the search fit";
     }
 }
+
+// A deeper rung the arena cannot hold is an arena overflow, which grow-and-retry answers by
+// growing ir_arena_share_words. Sixteen disjoint two-edge paths need more than depth 2, and the
+// range launch sizes its arena for the depth-2 slot, so the deep rung's slot is refused. Growing
+// ir_depth (kIRDepthExceeded) does not enlarge the arena.
+TEST(IrCanon, ARefusedDeepRungIsAnArenaOverflow) {
+    std::vector<std::vector<hg_gpu::VertexId>> edges;
+    for (uint32_t c = 0; c < 16; ++c) {
+        const hg_gpu::VertexId a = static_cast<hg_gpu::VertexId>(c * 3);
+        edges.push_back({a, static_cast<hg_gpu::VertexId>(a + 1)});
+        edges.push_back({static_cast<hg_gpu::VertexId>(a + 1),
+                         static_cast<hg_gpu::VertexId>(a + 2)});
+    }
+    hg_gpu::EngineConfig cfg = small_cfg();
+    cfg.ir_depth = 2;
+    hg_gpu::EngineState eng(cfg);
+    hg_gpu::upload_initial_state(eng, edges);
+    EXPECT_EQ(hg_gpu::compute_state_ir_hash_host(eng, 0), 0u) << "the deep rung ran";
+    std::vector<hg_gpu::OverflowWarning> w;
+    eng.collect_warnings_into(w, "deep rung");
+    bool arena = false, depth = false;
+    for (const auto& x : w) {
+        arena = arena || x.kind == hg_gpu::ErrorKind::kIRArenaExhausted;
+        depth = depth || x.kind == hg_gpu::ErrorKind::kIRDepthExceeded;
+    }
+    EXPECT_TRUE(arena);
+    EXPECT_FALSE(depth);
+}

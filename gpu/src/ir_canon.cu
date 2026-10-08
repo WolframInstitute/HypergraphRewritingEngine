@@ -220,7 +220,9 @@ __device__ ExactHashStatus state_exact_hash_device(const DeviceState& ds, StateI
         deep.depth = deep_rungs[ri];
         const uint64_t deep_need = deep.stride();
         // The state is flattened again below, so a slot that already holds deep_need is reused.
-        if (!grow_ir_slot(arena, slot, slot_words, deep_need, par)) break;
+        // A refused slot is an arena overflow: grow-and-retry grows ir_arena_share_words.
+        if (!grow_ir_slot(arena, slot, slot_words, deep_need, par))
+            return ExactHashStatus::kArenaExhausted;
         shape = deep;
         rank_buf = slot + shape.ea_words() + shape.eoff_words()
                  + shape.cap_occs + shape.cap_verts;
@@ -229,7 +231,8 @@ __device__ ExactHashStatus state_exact_hash_device(const DeviceState& ds, StateI
         scratch = orbit_buf + shape.cap_edges;
         form_buf = scratch + shape.scratch_words();
         if (!flatten_state(ds, sid, slot, shape, ea, eoff, ev, fn_edges, n_verts, fn_occ,
-                           verts_local, (ranks || orbits) ? flat_to_slot : nullptr, par)) break;
+                           verts_local, (ranks || orbits) ? flat_to_slot : nullptr, par))
+            return ExactHashStatus::kMalformedState;
         r = run_at(shape.depth);
     }
     if (r.status == hgcommon::IR_NEED_DEPTH) return ExactHashStatus::kDepthExceeded;
