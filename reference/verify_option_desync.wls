@@ -118,6 +118,9 @@ Module[{chain = {{{1, 2}} -> {{1, 3}, {3, 2}}}, run, rows, valid},
     {run[HGEvolve[chain, {{1, 2}}, -1, "NumStates"]], {$Failed, {"HGEvolve::steps"}}},
     {run[HGEvolve[chain, {{1, 2}}, 2.5, "NumStates"]], {$Failed, {"HGEvolve::steps"}}},
     {run[HGEvolve[chain, "Grid", -1, "NumStates"]], {$Failed, {"HGEvolve::steps"}}},
+    {run[HGEvolve[chain, "BrillLindquist", 0, "NumStates", "SprinklingDensity" -> 10,
+       "BrillLindquistMass1" -> 0.1, "BrillLindquistMass2" -> 0.1, "RandomSeed" -> 1]],
+     {$Failed, {"HGEvolve::emptyic"}}},
     {run[HGSessionOpen[{{{1, 2}} -> 3}, {{1, 2}}, "NumStates"]], {$Failed, {"HGEvolve::badrule"}}},
     {run[HGSessionOpen[chain, {1, 2}, "NumStates"]], {$Failed, {"HGEvolve::badinit"}}}};
   valid = {

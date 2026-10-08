@@ -371,6 +371,7 @@ computeRequiredData[props_List] := Module[
 computeRequiredData[prop_String] := computeRequiredData[{prop}]
 
 HGEvolve::unknownic = "Unknown initial condition type `1`.";
+HGEvolve::emptyic = "The `1` initial condition generated no edges; raise SprinklingDensity or EdgeThreshold, or set RandomSeed to another value.";
 HGEvolve::badrule = "`1` is not a rule lhs -> rhs with a non-empty list of hyperedges on the left and a list of hyperedges on the right, each hyperedge a list of vertices.";
 HGEvolve::badinit = "`1` is not a hypergraph or a list of hypergraphs. A hypergraph is a non-empty list of hyperedges, each a list of vertices.";
 HGEvolve::steps = "The number of steps `1` is not a non-negative integer.";
@@ -983,6 +984,7 @@ hgInitialEdges[initialSpec_Association, opts_List] := Module[
     Return[$Failed]
   ];
 
+  If[edges === {}, Message[HGEvolve::emptyic, icType]; Return[$Failed]];
   edges
 ]
 

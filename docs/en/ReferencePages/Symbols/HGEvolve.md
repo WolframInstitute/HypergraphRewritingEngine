@@ -142,7 +142,7 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 | `"PoissonMinDistance"` | `1.` | the least separation of the points of `"Poisson"` (key `"MinDistance"`) |
 
 - The seed of a generated initial condition is `"RandomSeed"` (key `"Seed"`).
-- Malformed input issues one message and gives <code>[$Failed]()</code>: `HGEvolve::badrule` for a rule, `HGEvolve::badinit` for *init*, `HGEvolve::steps` for *n*, `HGEvolve::unknownprop` for a property and `HGEvolve::unknownic` for an initial-condition name. A platform whose paclet has no engine issues `HGEvolve::noengine`.
+- Malformed input issues one message and gives <code>[$Failed]()</code>: `HGEvolve::badrule` for a rule, `HGEvolve::badinit` for *init*, `HGEvolve::steps` for *n*, `HGEvolve::unknownprop` for a property and `HGEvolve::unknownic` for an initial-condition name. A generated initial condition with no edges issues `HGEvolve::emptyic`. A platform whose paclet has no engine issues `HGEvolve::noengine`.
 - [HGSessionOpen]() takes the same arguments and options and opens an evolution that [HGSessionStep]() continues without running it again.
 
 ## Basic Examples
