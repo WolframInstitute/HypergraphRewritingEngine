@@ -1710,11 +1710,7 @@ void Hypergraph::qc_add_instance(uint64_t state_hash, uint32_t depth,
         uint32_t class_matches = 0;
         if (auto xr = qc_expansion_.lookup(state_hash))
             class_matches = (*xr)->n.load(std::memory_order_acquire);
-        const uint32_t words = hgcommon::qr_claim_words(class_matches);
-        inst.claim_cap = hgcommon::qr_claim_bits(words);
-        inst.claim_bits = arena_.allocate_array<std::atomic<uint64_t>>(words);
-        for (uint32_t i = 0; i < words; ++i)
-            inst.claim_bits[i].store(0, std::memory_order_relaxed);
+        inst.claims = qc_new_claim_block(hgcommon::qr_claim_words(class_matches));
     }
 
     qc_note_depth(depth);
@@ -2544,15 +2540,41 @@ const GlobalCounters& Hypergraph::counters() const { return counters_; }
 // DOES is in hgcommon, which is the body the device runs too. The core is instantiated in this
 // translation unit and nowhere else, which is what lets these bodies live here.
 
+Hypergraph::QcClaimBlock* Hypergraph::qc_new_claim_block(uint32_t words) {
+    void* raw = arena_.allocate_raw(sizeof(QcClaimBlock) + words * sizeof(uint64_t),
+                                    alignof(QcClaimBlock));
+    auto* b = new (raw) QcClaimBlock;
+    b->words = words;
+    for (uint32_t i = 0; i < words; ++i) new (&b->bits()[i]) std::atomic<uint64_t>(0);
+    return b;
+}
+
 bool Hypergraph::QrCtx::claim(const QcInstance& inst, const SlotMatch& m) {
-    if (m.local < inst.claim_cap) {
-        const uint64_t bit = uint64_t{1} << (m.local & 63u);
-        if (inst.claim_bits[m.local >> 6].fetch_or(bit, std::memory_order_acq_rel) & bit)
-            return false;
-        qc_count(hg.qc_ctr_, &QcCounterSlot::bit_claims);
-        return true;
-    }
-    return hg.qc_applied_.insert(hgcommon::qr_apply_key(inst.id, m.id));
+    if (!inst.claims) return hg.qc_applied_.insert(hgcommon::qr_apply_key(inst.id, m.id));
+    struct Chain {
+        Hypergraph& hg;
+        using Block = QcClaimBlock*;
+        bool is_null(Block b) const { return b == nullptr; }
+        uint32_t words(Block b) const { return b->words; }
+        Block next(Block b) const { return b->next.load(std::memory_order_acquire); }
+        Block install_next(Block b, uint32_t words) {
+            Block made = hg.qc_new_claim_block(words);
+            Block expected = nullptr;
+            if (b->next.compare_exchange_strong(expected, made, std::memory_order_acq_rel,
+                                                std::memory_order_acquire))
+                return made;
+            hg.arena_.release_last(made, sizeof(QcClaimBlock) + words * sizeof(uint64_t));
+            return expected;
+        }
+        bool set_bit(Block b, uint32_t bit) {
+            const uint64_t mask = uint64_t{1} << (bit & 63u);
+            return (b->bits()[bit >> 6].fetch_or(mask, std::memory_order_acq_rel) & mask) == 0;
+        }
+    } chain{hg};
+    if (hgcommon::qr_claim_chain(chain, inst.claims, m.local) != hgcommon::QR_CLAIM_WON)
+        return false;
+    qc_count(hg.qc_ctr_, &QcCounterSlot::bit_claims);
+    return true;
 }
 
 uint32_t Hypergraph::QrCtx::mint_event(uint32_t above) {

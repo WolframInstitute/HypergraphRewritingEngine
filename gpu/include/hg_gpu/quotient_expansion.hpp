@@ -116,18 +116,18 @@ __host__ __device__ __forceinline__ uint64_t qe_inst_key(uint64_t state_hash, ui
 // slots, so an instance built from any raw state of the class replays them without knowing
 // which raw edges the frame state happened to have.
 inline constexpr uint32_t kQeNoParent = 0xFFFFFFFFu;
+inline constexpr uint32_t kQeNoClaims = 0xFFFFFFFFu;
 struct DeviceQcInstance {
     uint32_t id = 0;           // dense; the replay's (instance, match) claim keys on it
     uint32_t nslots = 0;
     uint32_t parent = kQeNoParent;
     uint32_t via = 0;
     uint32_t event = 0;        // a root instance: its initial state's StateId (genesis pairs)
-    // A pair whose match has class index below claim_cap claims its bit at bits_offset in the
-    // expansion arena, two 32-bit words per 64-bit claim word; any other pair claims in
-    // `applied`. claim_cap is hgcommon::qr_claim_bits of hgcommon::qr_claim_words of the
-    // matches the class held at creation, the host's rule; 0 for an instance at the bound.
-    uint32_t claim_cap = 0;
-    uint32_t bits_offset = 0;
+    // The first block of the instance's claim chain (hgcommon::qr_claim_chain) in the expansion
+    // arena: the next block's offset (kQeNoClaims for none), the block's 64-bit claim words, then
+    // two 32-bit words per claim word. kQeNoClaims for an instance at the bound, and when a block
+    // cannot be allocated; those pairs claim in `applied`.
+    uint32_t claims = kQeNoClaims;
 };
 
 // An instance reference bucketed by key(hash, depth); the node carries the exact key so a
@@ -938,6 +938,18 @@ __device__ __forceinline__ uint32_t qe_alloc_words(const DeviceState& ds, QeView
     return off;
 }
 
+// A zeroed claim block of `words` 64-bit claim words (DeviceQcInstance::claims); kQeNoClaims when
+// the arena is full.
+__device__ __forceinline__ uint32_t qe_new_claim_block(const DeviceState& ds, QeView qe,
+                                                       uint32_t words) {
+    const uint32_t off = qe_alloc_words(ds, qe, 2u + 2u * words);
+    if (off == UINT32_MAX) return kQeNoClaims;
+    qe.arr_words[off] = kQeNoClaims;
+    qe.arr_words[off + 1u] = words;
+    for (uint32_t i = 0; i < 2u * words; ++i) qe.arr_words[off + 2u + i] = 0u;
+    return off;
+}
+
 // Record one instance of `state_hash` at `depth`, made from instance record `parent` by match
 // record `via`, whose event is `event`; a root has parent kQeNoParent and `event` its initial
 // state's StateId. The device twin of Hypergraph::qc_add_instance.
@@ -960,8 +972,7 @@ __device__ inline uint32_t qe_add_instance(const DeviceState& ds, QeView qe, uin
     inst.parent      = parent;
     inst.via         = via;
     inst.event       = event;
-    inst.claim_cap   = 0;
-    inst.bits_offset = 0;
+    inst.claims      = kQeNoClaims;
     // Claim words only for an instance that will be expanded; one at the bound claims nothing.
     if (depth < qe.max_steps) {
         uint32_t class_matches = 0;
@@ -970,13 +981,7 @@ __device__ inline uint32_t qe_add_instance(const DeviceState& ds, QeView qe, uin
             cuda::atomic_ref<uint32_t, cuda::thread_scope_device> n(qe.class_nmatch[rep.value - 1u]);
             class_matches = n.load(cuda::memory_order_acquire);
         }
-        const uint32_t words = hgcommon::qr_claim_words(class_matches);
-        const uint32_t off = qe_alloc_words(ds, qe, 2u * words);
-        if (off != UINT32_MAX) {
-            for (uint32_t i = 0; i < 2u * words; ++i) qe.arr_words[off + i] = 0u;
-            inst.claim_cap   = hgcommon::qr_claim_bits(words);
-            inst.bits_offset = off;
-        }
+        inst.claims = qe_new_claim_block(ds, qe, hgcommon::qr_claim_words(class_matches));
     }
 
     // At the bound the instance is recorded and not expanded; a continuation drives it.
@@ -1127,12 +1132,38 @@ struct DeviceQrCtx {
         if (reduced_pairs_seen) atomicAdd(qe.num_reduced_pairs, reduced_pairs_seen);
     }
 
+    struct ClaimChain {
+        const DeviceState& ds;
+        QeView qe;
+        using Block = uint32_t;
+        __device__ bool is_null(Block b) const { return b == kQeNoClaims; }
+        __device__ uint32_t words(Block b) const { return qe.arr_words[b + 1u]; }
+        __device__ Block next(Block b) const {
+            cuda::atomic_ref<uint32_t, cuda::thread_scope_device> n(qe.arr_words[b]);
+            return n.load(cuda::memory_order_acquire);
+        }
+        __device__ Block install_next(Block b, uint32_t w) {
+            const Block made = qe_new_claim_block(ds, qe, w);
+            if (made == kQeNoClaims) return kQeNoClaims;
+            cuda::atomic_ref<uint32_t, cuda::thread_scope_device> n(qe.arr_words[b]);
+            uint32_t expected = kQeNoClaims;
+            if (n.compare_exchange_strong(expected, made, cuda::memory_order_acq_rel,
+                                          cuda::memory_order_acquire))
+                return made;
+            return expected;
+        }
+        __device__ bool set_bit(Block b, uint32_t bit) {
+            cuda::atomic_ref<uint32_t, cuda::thread_scope_device> w(qe.arr_words[b + 2u + (bit >> 5)]);
+            const uint32_t mask = 1u << (bit & 31u);
+            return (w.fetch_or(mask, cuda::memory_order_acq_rel) & mask) == 0u;
+        }
+    };
+
     __device__ bool claim(const Instance& inst, const Match& m) {
-        if (m.local < inst.claim_cap) {
-            cuda::atomic_ref<uint32_t, cuda::thread_scope_device> w(
-                qe.arr_words[inst.bits_offset + (m.local >> 5)]);
-            const uint32_t bit = 1u << (m.local & 31u);
-            return (w.fetch_or(bit, cuda::memory_order_acq_rel) & bit) == 0u;
+        if (inst.claims != kQeNoClaims) {
+            ClaimChain chain{ds, qe};
+            const hgcommon::QrClaim c = hgcommon::qr_claim_chain(chain, inst.claims, m.local);
+            if (c != hgcommon::QR_CLAIM_NO_ROOM) return c == hgcommon::QR_CLAIM_WON;
         }
         const auto r = qe.applied.insert_if_absent(hgcommon::qr_apply_key(inst.id, m.id), 1u);
         if (r.overflowed) ds.errors.record(ErrorKind::kQePairsFull);

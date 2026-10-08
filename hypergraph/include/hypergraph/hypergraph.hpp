@@ -241,15 +241,22 @@ class Hypergraph {
     // any worker runs.
     struct QcGenesisRoot { const QcLineage* root; EventId genesis; };
     std::vector<QcGenesisRoot> qc_genesis_roots_;
+    // One block of an instance's claim chain (hgcommon::qr_claim_chain): `words` 64-bit claim
+    // words follow the header in the same allocation.
+    struct QcClaimBlock {
+        std::atomic<QcClaimBlock*> next{nullptr};
+        uint32_t words = 0;
+        std::atomic<uint64_t>* bits() { return reinterpret_cast<std::atomic<uint64_t>*>(this + 1); }
+    };
+    QcClaimBlock* qc_new_claim_block(uint32_t words);
     struct QcInstance {
         uint32_t id = 0;
         uint32_t nslots = 0;
         const QcLineage* lineage = nullptr;
-        // One claim bit per class match with local index below claim_cap, which is
-        // hgcommon::qr_claim_bits of the instance's words (hgcommon::qr_claim_words of the
-        // matches the class held when it was created). A pair past it claims in qc_applied_.
-        uint32_t claim_cap = 0;
-        std::atomic<uint64_t>* claim_bits = nullptr;
+        // The first block of the instance's claim chain; null for an instance made at the depth
+        // bound, whose pairs (applied only when a continuation raises the bound) claim in
+        // qc_applied_.
+        QcClaimBlock* claims = nullptr;
     };
     // The instances of one (class, depth), in kInstShards lists: a worker pushes to list
     // (worker index % kInstShards) and a reader walks all of them. Every new instance of a class

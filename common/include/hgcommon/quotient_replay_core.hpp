@@ -173,16 +173,48 @@ HG_HD inline uint64_t qr_apply_key(uint32_t instance, uint32_t match) {
     return avoid_reserved_keys(k);
 }
 
-// WHERE A PAIR IS CLAIMED. An instance carries claim words, fixed when it is created; a pair
-// whose match has per-class index below qr_claim_bits(words) claims its bit there, and any other
-// pair claims its qr_apply_key in a shared set. Both sides of the rendezvous compare the same two
-// fixed numbers, so a pair always claims in the same place. An instance gets one word for every
-// 64 matches its class held at creation and at least one, so the matches a class captures after
-// the instance also claim in bits up to the word's 64.
+// WHERE A PAIR IS CLAIMED. An instance carries a chain of claim blocks with one bit per class
+// match, in per-class match order. The first block is made with the instance: one 64-bit word
+// for every 64 matches its class held then, and at least one. A match past the chain's end
+// installs the next block, which starts where the chain ends and holds the larger of the words
+// that reach the match and the words of the block before it. A block is installed by one
+// compare-and-swap on its predecessor's next link and never changes after, so both sides of the
+// rendezvous walk to the same bit.
 HG_HD inline uint32_t qr_claim_words(uint32_t class_matches) {
     return class_matches ? (class_matches + 63u) / 64u : 1u;
 }
 HG_HD inline uint32_t qr_claim_bits(uint32_t words) { return words * 64u; }
+
+enum QrClaim : int { QR_CLAIM_LOST = 0, QR_CLAIM_WON = 1, QR_CLAIM_NO_ROOM = 2 };
+
+// Claim bit `local` in the chain starting at `first`. QR_CLAIM_NO_ROOM when a block the claim
+// needs could not be allocated; the caller then claims the pair elsewhere. `B` supplies:
+//   using Block = ...;
+//   bool     is_null(Block) const;
+//   uint32_t words(Block) const;
+//   Block    next(Block) const;                       acquire
+//   Block    install_next(Block b, uint32_t words);   a zeroed block of `words` words linked
+//                                                     after b by compare-and-swap; the block
+//                                                     another claimer linked when that one won;
+//                                                     null when allocation failed
+//   bool     set_bit(Block, uint32_t bit);            fetch_or; true when this call set it
+template <class B>
+HG_HD QrClaim qr_claim_chain(B& b, typename B::Block blk, uint32_t local) {
+    uint32_t base = 0;
+    for (;;) {
+        const uint32_t words = b.words(blk);
+        const uint32_t end = base + qr_claim_bits(words);
+        if (local < end) return b.set_bit(blk, local - base) ? QR_CLAIM_WON : QR_CLAIM_LOST;
+        typename B::Block n = b.next(blk);
+        if (b.is_null(n)) {
+            const uint32_t need = (local - end) / 64u + 1u;
+            n = b.install_next(blk, need > words ? need : words);
+            if (b.is_null(n)) return QR_CLAIM_NO_ROOM;
+        }
+        blk = n;
+        base = end;
+    }
+}
 
 // The event's CONTENT triple. Isomorphism-invariant and schedule-independent, so it is the
 // identity a cross-run or cross-engine comparison of the relations is made on -- which is
