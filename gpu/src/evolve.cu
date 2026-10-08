@@ -974,12 +974,28 @@ static EvolveResult run_with_growth(EngineConfig cfg, uint64_t mem_cap, Attempt&
     // computed, and if the next, larger engine cannot be built that partial is what the caller
     // gets, never an exception.
     EvolveResult best;
+    int first_shrinks = 0;
 
     for (int attempt_no = 0; attempt_no <= kMaxRetries; ++attempt_no) {
         EvolveResult result;
         try {
             result = attempt(cfg);
         } catch (const std::exception& e) {
+            // No attempt has completed, so there is no partial result to return. The first
+            // config is sized from Steps and can be larger than the free device memory (Steps
+            // 1,000,000 asks for 16.7 GB): it is halved, up to kFirstShrinks times, and the run
+            // tried again, so a run that outgrows the smaller engine returns partial work.
+            constexpr int kFirstShrinks = 3;
+            if (attempt_no == 0 && first_shrinks < kFirstShrinks) {
+                ++first_shrinks;
+                fit_config_to_cap(cfg, estimated_device_bytes(cfg) / 2);
+                std::fprintf(stderr,
+                    "hg_gpu::evolve: the first engine failed (%s) -- halving it to ~%llu MB and "
+                    "retrying.\n", e.what(),
+                    (unsigned long long)(estimated_device_bytes(cfg) >> 20));
+                --attempt_no;
+                continue;
+            }
             best.warnings.push_back(OverflowWarning{
                 ErrorKind::kDeviceOutOfMemory, 1u,
                 std::string("attempt ") + std::to_string(attempt_no + 1) + ": " + e.what()});

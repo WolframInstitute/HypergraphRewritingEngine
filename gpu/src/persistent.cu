@@ -1966,7 +1966,12 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     pool_v.base += uint64_t(region_words) * grid;
     pool_v.capacity -= uint64_t(region_words) * grid;
     {
-        const uint32_t levels = max_steps + 2u;
+        // A walk descends one level per state it lowers, along a parent-child chain of distinct
+        // states, so it is bounded by the state budget as well as the depth. Without
+        // deduplication every state is registered once, as it is created, and is never lowered
+        // again: its walk is the one frame of its own (empty) child list.
+        const uint32_t chain = std::min(max_steps, engine.config().max_states);
+        const uint32_t levels = dedup ? chain + 2u : 2u;
         const size_t words = size_t(grid) * levels * 2u;
         if (ps.explore_frame_words < words) {
             if (ps.explore_frames) cudaFree(ps.explore_frames);
