@@ -93,8 +93,7 @@ User-visible changes since v1.0.0-rc1:
   with a 14-vertex left-hand edge sets up in 0.005 s on the CPU, against 1.06 s in rc1. The GPU
   accepts left-hand edges of up to 16 distinct vertices.
 - Under `"CanonicalizeStates" -> Full`, a state's `"Step"` is the least step at which its class
-  occurs and is the same on every run. On the GPU this holds under full capture; under quotient
-  exploration the GPU's `"Step"` is not yet the class's least step.
+  occurs and is the same on every run, on both devices.
 - The empty state has one `"CanonicalHash"` in every state mode, on both devices.
 - Under `"CanonicalizeStates" -> Full` with `"CanonicalizeEvents" -> Automatic`, `"Events"` lists
   the rule applications that the causal and branchial records name.
