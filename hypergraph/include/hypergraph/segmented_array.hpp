@@ -101,6 +101,7 @@ public:
         , cap_mask_((segment_size_ << GROWTH_STEPS) - 1) {
         for (size_t i = 0; i < MAX_SEGMENTS; ++i) {
             segments_[i].store(nullptr, std::memory_order_relaxed);
+            ahead_[i].store(0, std::memory_order_relaxed);
         }
     }
 
@@ -146,8 +147,7 @@ public:
     T& slot(uint32_t idx, Arena& arena) {
         const Loc L = locate(idx);
         T* segment = get_or_create_segment(L.seg, arena);
-        if (L.off == (segment_capacity(L.seg) * 3) / 4 && L.seg + 1 < MAX_SEGMENTS)
-            get_or_create_segment(L.seg + 1, arena);
+        look_ahead(L, arena);
         return segment[L.off];
     }
 
@@ -170,18 +170,7 @@ public:
         // Ensure segment exists (thread-safe)
         T* segment = get_or_create_segment(seg_idx, arena);
 
-        // Look ahead: the thread placing the element three quarters of the way through a
-        // segment creates the next one. Indices are handed out by a shared counter, so the
-        // threads that cross a segment boundary do so within microseconds of each other; a
-        // look-ahead at the boundary itself is too late for them and every one of them
-        // allocated the segment and all but one lost the CAS (measured on wpp depth 7 at 16
-        // threads: 68 allocations of the State segments, 80 of the Edge segments, for the
-        // seven of each the run installs). A quarter of a segment ahead the creator publishes
-        // long before the boundary is reached. Skipped at the last segment: this is a
-        // look-ahead, and the element being placed here still fits.
-        if (offset == (segment_capacity(seg_idx) * 3) / 4 && seg_idx + 1 < MAX_SEGMENTS) {
-            get_or_create_segment(seg_idx + 1, arena);
-        }
+        look_ahead(L, arena);
 
         // Construct the element directly with provided arguments
         new (&segment[offset]) T(std::forward<Args>(args)...);
@@ -217,6 +206,26 @@ private:
 
     size_t segment_capacity(size_t seg_idx) const {
         return segment_size_ << (seg_idx <= GROWTH_STEPS ? seg_idx : GROWTH_STEPS);
+    }
+
+    // Look ahead: the first thread to place an element in the second half of a segment creates
+    // the next one. Indices are handed out by shared counters, so the threads that cross a
+    // segment boundary do so within microseconds of each other; a thread that reaches an absent
+    // segment allocates and zero-fills it, and all but one lose the install CAS. Half a segment
+    // ahead the creator publishes long before the boundary is reached. The creator is elected by
+    // an exchange on the next segment's flag, so the other threads in the second half read two
+    // words and do not allocate. A single trigger index (three quarters through) was measured
+    // too late on the replay's arrays, whose slots are filled out of order: bigpath n128 depth 3
+    // quotient at 16 threads spent 29% of its time in memset of segments that lost the CAS.
+    // Skipped at the last segment: the element being placed here still fits.
+    template<typename Arena>
+    void look_ahead(const Loc& L, Arena& arena) {
+        if (L.off < segment_capacity(L.seg) / 2 || L.seg + 1 >= MAX_SEGMENTS) return;
+        const size_t next = L.seg + 1;
+        if (segments_[next].load(std::memory_order_relaxed)) return;
+        if (ahead_[next].load(std::memory_order_relaxed)) return;
+        if (ahead_[next].exchange(1, std::memory_order_relaxed)) return;
+        get_or_create_segment(next, arena);
     }
 
     template<typename Arena>
@@ -270,6 +279,8 @@ private:
     uint32_t cap_shift_;   // log2(segment_size_ << GROWTH_STEPS)
     size_t cap_mask_;      // (segment_size_ << GROWTH_STEPS) - 1
     std::atomic<T*> segments_[MAX_SEGMENTS];
+    // look_ahead's election: set by the one thread that creates segment i ahead of need.
+    std::atomic<uint8_t> ahead_[MAX_SEGMENTS];
 
 #if defined(HG_CALIBRATE_SEGMENTED_HIGH_WATER)
     // MODEL-CHECKER CALIBRATION (verification/genmc/segmented_array_published_read.cpp): an
