@@ -1077,3 +1077,16 @@ TEST(BranchialReadback, AnApplicationNamingASlotTwiceIsPairedOnce) {
     ASSERT_EQ(got.size(), 1u);
     EXPECT_EQ(got[0], std::make_pair(0u, 1u));
 }
+
+// The per-(state, edge) bucket key is id_key(state, edge). State 2^30 - 1 with edge 7 or 8
+// packs to 2^62 + 8 or 2^62 + 9; the map takes every key id_key can produce.
+TEST(CausalGraphTracking, BranchialBucketKeyCoversEveryStateEdgePair) {
+    ConcurrentHeterogeneousArena arena;
+    CausalGraph cg(&arena);
+    const StateId state = (1u << 30) - 1u;
+    const EdgeId consumed[] = {7u, 8u};
+    ASSERT_NO_THROW(cg.record_branchial_overlaps(0, state, consumed, 2));
+    ASSERT_NO_THROW(cg.record_branchial_overlaps(1, state, consumed, 1));
+    ASSERT_NO_THROW(cg.record_state_event(0, state));
+    EXPECT_EQ(cg.num_branchial_edges(), 1u);
+}

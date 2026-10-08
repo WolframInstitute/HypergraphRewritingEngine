@@ -106,10 +106,9 @@ class CausalGraph {
     // given edge at a given input state. Two events at the same input state are
     // branchially related iff they consumed a common edge, so scanning this bucket
     // finds all co-consumers in O(bucket size) instead of an O(events^2) pairwise
-    // scan of the whole state's event list. Key = (state << 32) | edge.
-    static constexpr uint64_t STATE_EDGE_MAP_EMPTY = (1ULL << 62) + 8;
-    static constexpr uint64_t STATE_EDGE_MAP_LOCKED = (1ULL << 62) + 9;
-    ConcurrentMap<uint64_t, LockFreeList<EventId>*, STATE_EDGE_MAP_EMPTY, STATE_EDGE_MAP_LOCKED> state_edge_events_;
+    // scan of the whole state's event list. Key = id_key(state, edge), which spans the whole
+    // high band, so the map keeps the default sentinels 0 and ~0 that id_key never produces.
+    ConcurrentMap<uint64_t, LockFreeList<EventId>*> state_edge_events_;
 
     // Causal edges (producer -> consumer) and branchial edges (event <-> event with a shared
     // input), one list per worker on its own cache line: a single list put every recorded edge
