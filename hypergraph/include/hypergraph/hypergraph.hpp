@@ -261,7 +261,11 @@ class Hypergraph {
         uint64_t class_hash = 0;
         uint32_t depth = 0;
     };
-    ConcurrentMap<uint64_t, QcInstanceShards*> qc_instances_;   // key(hash,depth,0)
+    // Keyed by qc_key(hash, depth, 0) & qc_key_mask_ through the keyed-claim walk
+    // (qc_point_claim / qc_point_find): the key selects where to look and the entry's
+    // (class_hash, depth) decides, so two points whose keys collide each get a key.
+    ConcurrentMap<uint64_t, QcInstanceShards*> qc_instances_;
+    QcInstanceShards* qc_instances_at(uint64_t class_hash, uint32_t depth) const;
     // set_qc_spawn's function and context.
     void (*qc_spawn_)(void*, Hypergraph*, const SlotMatch*, uint64_t, uint32_t, uint32_t) = nullptr;
     void* qc_spawn_ctx_ = nullptr;
@@ -315,9 +319,9 @@ class Hypergraph {
     uint32_t alloc_instance_id();
     template <typename F>
     void for_each_instance_at(uint64_t state_hash, uint32_t depth, F&& f) {
-        auto ri = qc_instances_.lookup(qc_key(state_hash, depth, 0));
-        if (!ri.has_value()) return;
-        for (const QcInstanceShard& s : (*ri)->shard) s.list.for_each(f);
+        const QcInstanceShards* sh = qc_instances_at(state_hash, depth);
+        if (!sh) return;
+        for (const QcInstanceShard& s : sh->shard) s.list.for_each(f);
     }
     // Raw event ids: a worker takes them in blocks of kEventIdBlock from qc_next_raw_event_,
     // and uses its block only for an event whose producers are all below the block's next id.
@@ -369,7 +373,11 @@ class Hypergraph {
         uint32_t depth = 0;
         uint64_t class_hash = 0;
     };
-    ConcurrentMap<uint64_t, QmPoint*> qm_points_;
+    ConcurrentMap<uint64_t, QmPoint*> qm_points_;   // keyed as qc_instances_
+    QmPoint* qm_point_at(uint64_t class_hash, uint32_t depth) const;
+    // ANDed into qc_key for the first probe key of qc_instances_ and qm_points_. All ones except
+    // in tests, which narrow it so that different (class, depth) points share keys.
+    uint64_t qc_key_mask_{~uint64_t{0}};
     // consumed_j(depth): the mass match j has passed on from its class at that depth.
     ConcurrentMap<uint64_t, std::atomic<uint64_t>*> qm_consumed_;
     // b_j + 1, keyed by match id + 1. Present once the match is ready.
@@ -613,7 +621,6 @@ class Hypergraph {
         }
         void fence();
     };
-    static uint64_t qm_point_key(uint64_t class_hash, uint32_t depth);
     static uint64_t qm_consumed_key(uint32_t match_id, uint32_t depth);
     QmPoint* qm_point(uint64_t class_hash, uint32_t depth);
     std::atomic<uint64_t>* qm_consumed_cell(uint32_t match_id, uint32_t depth);
@@ -978,6 +985,9 @@ public:
     // Test hook, set before evolution: the first probe key of an event signature (and of the IR
     // key claimed under None and Automatic) is ANDed with `mask`.
     void set_event_key_mask(uint64_t mask) { event_key_mask_ = mask; }
+    // Test hook, set before evolution: the first probe key of a quotient reconstruction point
+    // (qc_instances_, qm_points_) is ANDed with `mask`.
+    void set_quotient_key_mask(uint64_t mask) { qc_key_mask_ = mask; }
     // Set before evolution: tokens and twin reuse (hgcommon/token_core.hpp). On by default.
     void set_keyed_rewrites(bool on) {
         keyed_rewrites_ = on;

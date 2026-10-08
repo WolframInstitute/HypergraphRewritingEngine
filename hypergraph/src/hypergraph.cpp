@@ -510,6 +510,17 @@ keyed_claim(Map& map, uint64_t first_key, Same& same, Make& make, RepOf& rep_of,
     return c;
 }
 
+// The reader of a map written through keyed_claim: the probe keys in the claim's order, to the
+// first key whose value `same` accepts or the first free key.
+template <class V, class Map, class Same>
+V keyed_find(const Map& map, uint64_t first_key, Same&& same) {
+    for (uint32_t n = 0;; ++n) {
+        const auto v = map.lookup(hgcommon::dedup_probe_key(first_key, n, 0, ~uint64_t{0}));
+        if (!v) return V{};
+        if (same(*v)) return *v;
+    }
+}
+
 }  // namespace
 
 // A record map: the value is the class's record (representative id and words). A record that
@@ -1681,19 +1692,20 @@ void Hypergraph::qc_add_instance(uint64_t state_hash, uint32_t depth,
     }
 
     qc_note_depth(depth);
-    const uint64_t key = qc_key(state_hash, depth, 0);
-    QcInstanceShards* sh;
-    auto r = qc_instances_.lookup(key);
-    if (r.has_value()) sh = *r;
-    else {
+    QcInstanceShards* sh = nullptr;
+    auto same = [&](QcInstanceShards* s) { return s->class_hash == state_hash && s->depth == depth; };
+    auto make = [&] {
         auto* ns = arena_.template create<QcInstanceShards>();
         ns->class_hash = state_hash;
         ns->depth = depth;
-        auto ins = qc_instances_.insert_if_absent(key, ns);
-        sh = ins.second ? ns : ins.first;
-        if (ins.second && static_cast<int>(depth) >= maxs)
-            qc_blocked_.push(QcPoint{state_hash, depth}, arena_);
-    }
+        return ns;
+    };
+    auto rep_of = [&](QcInstanceShards* s) { sh = s; return 0u; };
+    auto on_collision = [] {};
+    const auto claim = keyed_claim<QcInstanceShards*>(
+        qc_instances_, qc_key(state_hash, depth, 0) & qc_key_mask_, same, make, rep_of, on_collision);
+    if (claim.won && static_cast<int>(depth) >= maxs)
+        qc_blocked_.push(QcPoint{state_hash, depth}, arena_);
     const int w = arena_worker_index();
     sh->shard[w < 0 ? 0u : static_cast<uint32_t>(w) % kInstShards].list.push(inst, arena_);
 
@@ -1934,10 +1946,10 @@ void Hypergraph::qc_capture_expansion(EventId e) {
         std::max(0, qc_max_steps_.load(std::memory_order_relaxed)))));
     bool ran_one = false;
     for (int d = 0; d < maxs; ++d) {
-        auto ri = qc_instances_.lookup(qc_key(from, static_cast<uint32_t>(d), 0));
-        if (!ri.has_value()) continue;
+        const QcInstanceShards* ri = qc_instances_at(from, static_cast<uint32_t>(d));
+        if (!ri) continue;
         for (uint32_t l = 0; l < kInstShards; ++l) {
-            if ((*ri)->shard[l].list.empty()) continue;
+            if (ri->shard[l].list.empty()) continue;
             if (ran_one && qc_spawn_) {
                 qc_spawn_(qc_spawn_ctx_, this, stored, from, static_cast<uint32_t>(d), l);
                 continue;
@@ -1949,9 +1961,9 @@ void Hypergraph::qc_capture_expansion(EventId e) {
 }
 
 void Hypergraph::qc_apply_list(const SlotMatch* m, uint64_t from, uint32_t depth, uint32_t list) {
-    auto ri = qc_instances_.lookup(qc_key(from, depth, 0));
-    if (!ri.has_value()) return;
-    (*ri)->shard[list].list.for_each([&](const QcInstance& inst) { qc_apply(inst, *m, from, depth); });
+    const QcInstanceShards* ri = qc_instances_at(from, depth);
+    if (!ri) return;
+    ri->shard[list].list.for_each([&](const QcInstance& inst) { qc_apply(inst, *m, from, depth); });
 }
 
 void Hypergraph::register_quotient_transition(EventId e) {
@@ -2732,8 +2744,17 @@ uint64_t Hypergraph::num_reconstructed_branchial() const {
 // =============================================================================
 // Raw counts from class multiplicities: the storage behind quotient_multiplicity_core.hpp.
 
-uint64_t Hypergraph::qm_point_key(uint64_t class_hash, uint32_t depth) {
-    return hgcommon::avoid_reserved_keys(hgcommon::qc_key(class_hash, depth, 0));
+Hypergraph::QcInstanceShards* Hypergraph::qc_instances_at(uint64_t class_hash,
+                                                          uint32_t depth) const {
+    return keyed_find<QcInstanceShards*>(
+        qc_instances_, qc_key(class_hash, depth, 0) & qc_key_mask_,
+        [&](const QcInstanceShards* s) { return s->class_hash == class_hash && s->depth == depth; });
+}
+
+Hypergraph::QmPoint* Hypergraph::qm_point_at(uint64_t class_hash, uint32_t depth) const {
+    return keyed_find<QmPoint*>(
+        qm_points_, qc_key(class_hash, depth, 0) & qc_key_mask_,
+        [&](const QmPoint* p) { return p->class_hash == class_hash && p->depth == depth; });
 }
 
 uint64_t Hypergraph::qm_consumed_key(uint32_t match_id, uint32_t depth) {
@@ -2741,16 +2762,22 @@ uint64_t Hypergraph::qm_consumed_key(uint32_t match_id, uint32_t depth) {
 }
 
 Hypergraph::QmPoint* Hypergraph::qm_point(uint64_t class_hash, uint32_t depth) {
-    const uint64_t key = qm_point_key(class_hash, depth);
-    if (auto r = qm_points_.lookup(key)) return *r;
-    qc_note_depth(depth);
-    QmPoint* p = arena_.template create<QmPoint>();
-    p->depth = depth;
-    p->class_hash = class_hash;
-    const auto ins = qm_points_.insert_if_absent(key, p);
-    if (ins.second && static_cast<int>(depth) >= qc_max_steps_.load(std::memory_order_relaxed))
+    QmPoint* found = nullptr;
+    auto same = [&](QmPoint* p) { return p->class_hash == class_hash && p->depth == depth; };
+    auto make = [&] {
+        qc_note_depth(depth);
+        QmPoint* p = arena_.template create<QmPoint>();
+        p->depth = depth;
+        p->class_hash = class_hash;
+        return p;
+    };
+    auto rep_of = [&](QmPoint* p) { found = p; return 0u; };
+    auto on_collision = [] {};
+    const auto claim = keyed_claim<QmPoint*>(
+        qm_points_, qc_key(class_hash, depth, 0) & qc_key_mask_, same, make, rep_of, on_collision);
+    if (claim.won && static_cast<int>(depth) >= qc_max_steps_.load(std::memory_order_relaxed))
         qc_blocked_.push(QcPoint{class_hash, depth}, arena_);
-    return ins.first;
+    return found;
 }
 
 std::atomic<uint64_t>* Hypergraph::qm_consumed_cell(uint32_t match_id, uint32_t depth) {
@@ -2799,8 +2826,8 @@ bool Hypergraph::QmCtx::ready(const SlotMatch& m, uint64_t& b) const {
 }
 
 uint64_t Hypergraph::QmCtx::mass(uint64_t class_hash, uint32_t depth) const {
-    auto r = hg.qm_points_.lookup(qm_point_key(class_hash, depth));
-    return r.has_value() ? (*r)->mass.load(std::memory_order_acquire) : 0;
+    const QmPoint* p = hg.qm_point_at(class_hash, depth);
+    return p ? p->mass.load(std::memory_order_acquire) : 0;
 }
 
 void Hypergraph::QmCtx::add_mass(uint64_t class_hash, uint32_t depth, uint64_t delta) {

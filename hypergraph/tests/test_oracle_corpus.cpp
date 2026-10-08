@@ -125,9 +125,10 @@ TEST(OracleCorpus, CanonicalKeyCollisionsKeepStateIdentityExact) {
     (void)collisions;
 }
 
-// Masks of 0x3 on the state key and the event key force hash collisions in every identity map:
-// Automatic content, the IR keys of None/Automatic states, event signatures, and the quotient
-// replay's event classes. Every count must equal the unmasked run's.
+// Masks of 0x3 on the state key, the event key and the quotient point key force hash collisions
+// in every identity map: Automatic content, the IR keys of None/Automatic states, event
+// signatures, the quotient replay's event classes and its (class, depth) instance points. Every
+// count must equal the unmasked run's.
 TEST(OracleCorpus, EventKeyCollisionsKeepEventIdentityExact) {
     constexpr uint64_t kMask = 0x3;
     struct Counts {
@@ -145,6 +146,7 @@ TEST(OracleCorpus, EventKeyCollisionsKeepEventIdentityExact) {
         hg.set_event_signature_keys(keys);
         hg.set_canonical_key_mask(mask);
         hg.set_event_key_mask(mask);
+        hg.set_quotient_key_mask(mask);
         ParallelEvolutionEngine engine(&hg, threads);
         engine.set_explore_from_canonical_states_only(quotient);
         for (const auto& r : c.rules) engine.add_rule(r);
@@ -829,7 +831,8 @@ TEST(OracleCorpus, MultiplicityCountsMatchTheReplay) {
 // The multiplicity of a class at a depth is the number of raw states of that class at that step
 // of the unfolding. The reference is a full-capture run with no state identification, whose
 // states are the raw states; each is grouped by (step, canonical hash). The quotient run counts
-// the same from class multiplicities, with the replay on and with it off.
+// the same from class multiplicities, with the replay on and with it off, and with the
+// quotient point key masked to 0 so that every (class, depth) point shares one probe chain.
 TEST(OracleCorpus, ClassMultiplicitiesCountTheRawStates) {
     size_t compared = 0;
     for (const auto& c : oracle::corpus()) {
@@ -845,8 +848,10 @@ TEST(OracleCorpus, ClassMultiplicitiesCountTheRawStates) {
                     ++raw[{hg.get_state(s).step, hg.get_or_compute_canonical_hash(s)}];
         }
         for (bool replay : {false, true}) {
+          for (uint64_t mask : {~uint64_t{0}, uint64_t{0}}) {
             Hypergraph hg;
             hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+            hg.set_quotient_key_mask(mask);
             RecordSet rs{replay, replay, false};
             rs.raw_events = replay;
             rs.multiplicities = true;
@@ -861,8 +866,9 @@ TEST(OracleCorpus, ClassMultiplicitiesCountTheRawStates) {
             hg.for_each_class_multiplicity([&](uint64_t h, uint32_t d, uint64_t m) {
                 mult[{d, h}] += m;
             });
-            EXPECT_EQ(mult, raw) << c.name << " replay=" << replay;
+            EXPECT_EQ(mult, raw) << c.name << " replay=" << replay << " mask=" << mask;
             ++compared;
+          }
         }
     }
     EXPECT_GT(compared, 0u);
