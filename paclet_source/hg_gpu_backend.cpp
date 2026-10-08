@@ -1080,10 +1080,17 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
     }
 
     // The warning trail: capacity overflows mark a partial result, the other kinds do not.
-    if (!job.job_warnings.empty() || !result.warnings.empty()) {
+    std::vector<HG_NAMESPACE::ffi::FfiWarning> count_warnings;
+    if (result.reconstruction_ran)
+        HG_NAMESPACE::ffi::append_saturation_warnings(
+            job.include_num_events, result.observable_num_events(),
+            job.include_num_branchial_edges, result.observable_num_branchial(), count_warnings);
+    if (!job.job_warnings.empty() || !count_warnings.empty() || !result.warnings.empty()) {
         wxf::WXFValueList warn;
         bool partial = false;
         for (const auto& w : job.job_warnings)
+            warn.push_back(hgmarshal::warning_record(w.kind, w.count, w.context, w.partial));
+        for (const auto& w : count_warnings)
             warn.push_back(hgmarshal::warning_record(w.kind, w.count, w.context, w.partial));
         for (const auto& w : result.warnings) {
             const bool p = hg_gpu::error_kind_is_partial(w.kind);

@@ -331,7 +331,7 @@ struct QeView {
     unsigned long long* qm_consumed_cells = nullptr;
     uint32_t*           qm_cursor         = nullptr;   // [0] next point, [1] next consumed cell
     uint32_t            qm_capacity       = 0;         // entries in each array above
-    unsigned long long* qm_counts         = nullptr;   // [0] raw events, [1] branchial, [2] saturated
+    unsigned long long* qm_counts         = nullptr;   // [0] raw events, [1] branchial
 };
 
 // The rendezvous: publishing an instance appends a task per captured match of its class,
@@ -570,13 +570,13 @@ __device__ inline QeRunsigClaim qe_claim_runsig(const DeviceState& ds, const QeV
     return {c.key, c.fresh};
 }
 
-// The saturating add of hgcommon::qm_sat_add on a device counter; true when it clamped.
-__device__ inline bool qe_qm_add(unsigned long long* counter, uint64_t delta) {
+// The saturating add of hgcommon::qm_sat_add on a device counter.
+__device__ inline void qe_qm_add(unsigned long long* counter, uint64_t delta) {
     unsigned long long old = *reinterpret_cast<volatile unsigned long long*>(counter);
     for (;;) {
         const unsigned long long next = hgcommon::qm_sat_add(old, delta);
         const unsigned long long seen = atomicCAS(counter, old, next);
-        if (seen == old) return next == hgcommon::QM_SATURATED && old + delta != next;
+        if (seen == old) return;
         old = seen;
     }
 }
@@ -633,7 +633,7 @@ struct DeviceQmCtx {
     __device__ void add_mass(uint64_t class_hash, uint32_t depth, uint64_t delta) {
         const uint32_t p = point(class_hash, depth);
         if (p == UINT32_MAX) return;
-        if (qe_qm_add(&qe.qm_mass[p], delta)) qe.qm_counts[2] = 1ull;
+        qe_qm_add(&qe.qm_mass[p], delta);
     }
     __device__ uint64_t consumed(const QeMatchView& m, uint32_t depth) {
         const auto r = qe.qm_consumed.lookup(hgcommon::qr_apply_key(m.id, depth));
@@ -650,7 +650,7 @@ struct DeviceQmCtx {
         return false;
     }
     __device__ void count(uint64_t events) {
-        if (qe_qm_add(&qe.qm_counts[0], events)) qe.qm_counts[2] = 1ull;
+        qe_qm_add(&qe.qm_counts[0], events);
     }
     __device__ hgcommon::EventSignatureKeys keys() const { return qe.keys; }
     __device__ uint32_t frame_step(uint64_t class_hash, uint32_t fallback) const {
@@ -1358,11 +1358,10 @@ public:
         // run that counted multiplicities or branchial pairs; zero otherwise. qm_branchial is
         // count_branchial's sum.
         uint64_t qm_raw_events, qm_branchial;
-        bool qm_saturated;
     };
     Counters counters_host(bool multiplicity) const;
     // For a caller that reads these in a batch with others: the counter block (counter_words()
-    // words), the three multiplicity counts, the capture pool's counter, and the parse of host
+    // words), the two multiplicity counts, the capture pool's counter, and the parse of host
     // copies of the first two. counters_host is the reads followed by counters_from.
     const uint32_t* counters_device() const { return counters_; }
     static constexpr uint32_t counter_words() { return kNumCounters; }
@@ -1458,7 +1457,7 @@ private:
     DedupMap                  qm_points_;
     DedupMap                  qm_consumed_;
     DedupMap                  qm_overlaps_;
-    // qm_capacity_ masses, then qm_capacity_ consumed cells, then the three qm_counts.
+    // qm_capacity_ masses, then qm_capacity_ consumed cells, then the two qm_counts.
     unsigned long long*       qm_words_  = nullptr;
     uint32_t*                 qm_queued_ = nullptr;
     unsigned long long*       qm_point_class_ = nullptr;

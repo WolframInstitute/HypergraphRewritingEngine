@@ -144,7 +144,7 @@ TEST(CapacityOverflow, TruncationStaysWithinCapacityEvenThoughItsPointIsNotFixed
     }
 }
 
-// A capacity overflow marks a partial result; the three kinds that describe a complete run do not,
+// A capacity overflow marks a partial result; the two kinds that describe a complete run do not,
 // and carry the names the CPU reports for the same conditions. The kernel reports only a partial
 // warning as HGEvolve::overflow.
 TEST(CapacityOverflow, OnlyCapacityKindsMarkAPartialResult) {
@@ -152,10 +152,8 @@ TEST(CapacityOverflow, OnlyCapacityKindsMarkAPartialResult) {
     EXPECT_TRUE(hg_gpu::error_kind_is_partial(hg_gpu::ErrorKind::kEventPoolFull));
     EXPECT_FALSE(hg_gpu::error_kind_is_partial(hg_gpu::ErrorKind::kEventSigRawFallback));
     EXPECT_FALSE(hg_gpu::error_kind_is_partial(hg_gpu::ErrorKind::kDrainCapBufferFull));
-    EXPECT_FALSE(hg_gpu::error_kind_is_partial(hg_gpu::ErrorKind::kCountSaturated));
     EXPECT_STREQ(hg_gpu::error_kind_name(hg_gpu::ErrorKind::kEventSigRawFallback),
                  "EventSigRawFallback");
-    EXPECT_STREQ(hg_gpu::error_kind_name(hg_gpu::ErrorKind::kCountSaturated), "CountSaturated");
 }
 
 // An engine that does not fit in the free device memory stops before its first kernel and

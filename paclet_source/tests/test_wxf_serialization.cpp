@@ -1423,6 +1423,34 @@ TEST(WxfSerializationPin, AnUnrecognisedIdentityValueIsReported) {
     }
 }
 
+// {{1,1},{1,1}} -> {{1,1},{1,1},{1,1}} at 12 steps under quotient exploration: NumEvents is
+// 3,002,019,319,241,196,638 and the branchial count passes 2^63 - 1. A CountSaturated warning is
+// given for a saturated count the job asked for, and it names that count.
+TEST(WxfSerializationPin, ACountSaturatedWarningNamesARequestedCount) {
+    const StateList seed = {{{1, 1}, {1, 1}}};
+    const EdgeList lhs = {{1, 1}, {1, 1}};
+    const EdgeList rhs = {{1, 1}, {1, 1}, {1, 1}};
+    auto job = [&](std::vector<std::string> requested) {
+        auto opts = [requested](wxf::Writer& w) {
+            put_str_option(w, "CanonicalizeStates", "Full");
+            put_str_option(w, "ExploreFromCanonicalStatesOnly", "True");
+            put_str_list_option(w, "RequestedData", requested);
+        };
+        return session_envelope(seed, lhs, rhs, 12, "Evolve", 0, true, {}, opts, 3, false);
+    };
+    HostBridge host;
+    const auto events_only = run_rewriting_core(job({"NumEvents"}), host);
+    EXPECT_EQ(read_int_key(events_only, "NumEvents"), 3002019319241196638ll);
+    EXPECT_LE(count_warnings(events_only), 0);
+    EXPECT_FALSE(reply_mentions(events_only, "CountSaturated"));
+
+    const auto both = run_rewriting_core(job({"NumEvents", "NumBranchialEdges"}), host);
+    EXPECT_EQ(read_int_key(both, "NumBranchialEdges"), 0x7FFFFFFFFFFFFFFFll);
+    EXPECT_EQ(count_warnings(both), 1);
+    EXPECT_TRUE(reply_mentions(both, "NumBranchialEdges is at least 2^63 - 1"));
+    EXPECT_FALSE(reply_mentions(both, "NumEvents is at least"));
+}
+
 #ifndef _WIN32
 namespace {
 

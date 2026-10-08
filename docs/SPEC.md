@@ -229,8 +229,9 @@ number of raw states of class c at step d of the unfolding. When a request reads
 and branchial pairs only as `NumEvents` and `NumBranchialEdges`, they are computed from the
 multiplicities and no raw instance is replayed: the raw events are the sum of m(c, d) M(c) over
 d < steps, M(c) the class's matches, and the branchial pairs the sum of m(c, d) B(c), B(c) its
-pairs of matches with overlapping consumed edges. Counts above 2^63 - 1 report 2^63 - 1 with the
-warning `CountSaturated`. *(Gates: `OracleCorpus.MultiplicityCountsMatchTheReplay`,
+pairs of matches with overlapping consumed edges. Counts above 2^63 - 1 report 2^63 - 1; a
+requested count that does so gives the warning `CountSaturated` naming it. *(Gates:
+`OracleCorpus.MultiplicityCountsMatchTheReplay`, `WxfSerializationPin.ACountSaturatedWarningNamesARequestedCount`,
 `OracleCorpus.ClassMultiplicitiesCountTheRawStates`, `RecordSet.ClassMultiplicitiesMatchTheHost`.)*
 
 **Replay ids.** The replay's raw event and instance ids are 32-bit and minted below

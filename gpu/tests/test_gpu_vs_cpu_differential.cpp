@@ -1998,11 +1998,6 @@ TEST(RecordSet, MultiplicityCountsWithoutRawStates) {
         in.record.raw_counts_only = true;
         return hg_gpu::evolve(in);
     };
-    auto saturated = [](const hg_gpu::EvolveResult& r) {
-        return std::any_of(r.warnings.begin(), r.warnings.end(), [](const auto& w) {
-            return w.kind == hg_gpu::ErrorKind::kCountSaturated;
-        });
-    };
     // "states" holds every materialised raw state, so the classes are counted by content.
     auto classes = [](const hg_gpu::EvolveResult& r) {
         hypergraph::IRCanonicalizer ir;
@@ -2014,12 +2009,14 @@ TEST(RecordSet, MultiplicityCountsWithoutRawStates) {
     EXPECT_EQ(classes(d10), 11u);
     EXPECT_EQ(d10.observable_num_events(), 146181741036638ull);
     EXPECT_EQ(d10.observable_num_branchial(), 2701668796795399ull);
-    EXPECT_FALSE(saturated(d10));
+    EXPECT_FALSE(hgcommon::qm_count_saturated(d10.observable_num_events()));
+    EXPECT_FALSE(hgcommon::qm_count_saturated(d10.observable_num_branchial()));
 
     const hg_gpu::EvolveResult d12 = run(12);
     EXPECT_EQ(d12.observable_num_events(), 3002019319241196638ull);
     EXPECT_EQ(d12.observable_num_branchial(), hgcommon::QM_SATURATED);
-    EXPECT_TRUE(saturated(d12));
+    EXPECT_FALSE(hgcommon::qm_count_saturated(d12.observable_num_events()));
+    EXPECT_TRUE(hgcommon::qm_count_saturated(d12.observable_num_branchial()));
 }
 
 // The device's (class, depth) multiplicities equal the host's on every corpus workload without

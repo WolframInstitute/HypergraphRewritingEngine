@@ -83,10 +83,15 @@ namespace HG_NAMESPACE {
 namespace common {
 
 constexpr uint64_t QM_SATURATED = 0x7FFFFFFFFFFFFFFFull;
-// The warning both engines attach to a saturated count, under the kind "CountSaturated".
-constexpr const char* QM_SATURATED_MESSAGE =
-    "a raw event or branchial count exceeds 2^63 - 1; NumEvents and NumBranchialEdges report "
-    "2^63 - 1";
+// A count equal to QM_SATURATED stands for any value at or above it: every sum and product
+// above clamps there, and every raw event is counted in the mass it passes on, so a saturated
+// mass with a match saturates the event count too.
+HG_HD inline bool qm_count_saturated(uint64_t count) { return count >= QM_SATURATED; }
+// The warnings, under the kind "CountSaturated", for a saturated count the caller asked for.
+constexpr const char* QM_EVENTS_SATURATED_MESSAGE =
+    "NumEvents is at least 2^63 - 1 and is reported as 2^63 - 1";
+constexpr const char* QM_BRANCHIAL_SATURATED_MESSAGE =
+    "NumBranchialEdges is at least 2^63 - 1 and is reported as 2^63 - 1";
 
 HG_HD inline uint64_t qm_sat_add(uint64_t a, uint64_t b) {
     return (a >= QM_SATURATED || b >= QM_SATURATED - a) ? QM_SATURATED : a + b;

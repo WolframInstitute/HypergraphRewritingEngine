@@ -59,8 +59,7 @@ __global__ void k_qe_count_branchial(const __grid_constant__ DeviceState ds, con
             }
         }
     }
-    if (local && (qe_qm_add(&qe.qm_counts[1], local) || local >= hgcommon::QM_SATURATED))
-        qe.qm_counts[2] = 1ull;
+    if (local) qe_qm_add(&qe.qm_counts[1], local);
 }
 
 void qe_count_branchial(const DeviceState& ds, const QeView& qe, bool multiplicity) {
@@ -111,7 +110,7 @@ QeState::QeState(bool on, const QeEntries& n): matches_(on ? n.classes : 1u),
         // counters_ + 9 is unused.
         num_reduced_pairs_ = counters_ + 12;
         // counters_ + 10 and + 11: the multiplicity point and consumed-cell cursors.
-        HG_CUDA_CHECK(cudaMalloc(&qm_words_, sizeof(unsigned long long) * (2ull * qm_capacity_ + 3u)),
+        HG_CUDA_CHECK(cudaMalloc(&qm_words_, sizeof(unsigned long long) * (2ull * qm_capacity_ + 2u)),
                       "QeState multiplicity alloc");
         HG_CUDA_CHECK(cudaMalloc(&qm_queued_, sizeof(uint32_t) * qm_capacity_),
                       "QeState multiplicity queue flags alloc");
@@ -190,7 +189,7 @@ void QeState::clear() {
         qm_consumed_.clear(&batch);
         qm_overlaps_.clear(&batch);
         // The masses, cells and flags are zeroed by whoever claims them; only the counts restart.
-        batch.add(qm_words_ + 2ull * qm_capacity_, sizeof(unsigned long long) * 3u, 0);
+        batch.add(qm_words_ + 2ull * qm_capacity_, sizeof(unsigned long long) * 2u, 0);
         inst_applied_.clear(0xFFFFFFFFu, &batch);
         batch.add(class_nmatch_, sizeof(uint32_t) * class_nmatch_cap_, 0);
         batch.add(class_pairs_, sizeof(unsigned long long) * class_nmatch_cap_, 0);
@@ -205,7 +204,7 @@ QeState::Counters QeState::counters_host(bool multiplicity) const {
         uint32_t v[kNumCounters] = {};
         HG_CUDA_CHECK(cudaMemcpy(v, counters_, sizeof(v), cudaMemcpyDeviceToHost),
               "QeState counters read");
-        unsigned long long q[3] = {};
+        unsigned long long q[2] = {};
         if (multiplicity)
             HG_CUDA_CHECK(cudaMemcpy(q, qm_words_ + 2ull * qm_capacity_, sizeof(q),
                                      cudaMemcpyDeviceToHost), "QeState multiplicity counts read");
@@ -214,7 +213,7 @@ QeState::Counters QeState::counters_host(bool multiplicity) const {
 
 QeState::Counters QeState::counters_from(const uint32_t* v, const unsigned long long* q) {
         return Counters{v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8],
-                        q[0], q[1], q[2] != 0};
+                        q[0], q[1]};
 
     }
 

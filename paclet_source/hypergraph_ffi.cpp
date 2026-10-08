@@ -33,7 +33,7 @@
 #include "ffi_job.hpp"           // ParsedJob -- the envelope, parsed once
 #include "cpu_engine_holder.hpp"   // owns the Hypergraph and its engine as one lifetime
 #include "hgcommon/build_stamp.hpp"  // the configuration this artifact was built with
-#include "hgcommon/quotient_multiplicity_core.hpp"  // QM_SATURATED_MESSAGE, qm_sat_add
+#include "hgcommon/quotient_multiplicity_core.hpp"  // qm_sat_add
 #include "hgcommon/quotient_route.hpp"
 #include "state_statistics.hpp"
 
@@ -993,9 +993,10 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             req.ffi_warnings.push_back(
                 {"Engine", 1, engine.warnings()[i], engine.warning_truncates(i)});
 
-        if (hg.quotient_counts_saturated()) {
-            req.ffi_warnings.push_back({"CountSaturated", 1, hgcommon::QM_SATURATED_MESSAGE});
-        }
+        if (hg.quotient_reconstruction())
+            HG_NAMESPACE::ffi::append_saturation_warnings(
+                req.include_num_events, hg.observable_num_events(),
+                req.include_num_branchial_edges, hg.observable_num_branchial(), req.ffi_warnings);
         if (const uint64_t n = hg.replay_ids_refused()) {
             req.ffi_warnings.push_back({"ReplayIdsExhausted", static_cast<int64_t>(n),
                                         hgcommon::QR_IDS_EXHAUSTED_MESSAGE, true});

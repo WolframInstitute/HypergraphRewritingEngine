@@ -851,12 +851,14 @@ TEST(OracleCorpus, MultiplicityCountsWithoutRawStates) {
     EXPECT_EQ(d10->num_canonical_states(), 11u);
     EXPECT_EQ(d10->observable_num_events(), 146181741036638ull);
     EXPECT_EQ(d10->observable_num_branchial(), 2701668796795399ull);
-    EXPECT_FALSE(d10->quotient_counts_saturated());
+    EXPECT_FALSE(hgcommon::qm_count_saturated(d10->observable_num_events()));
+    EXPECT_FALSE(hgcommon::qm_count_saturated(d10->observable_num_branchial()));
 
     auto d12 = run(12);
     EXPECT_EQ(d12->observable_num_events(), 3002019319241196638ull);
     EXPECT_EQ(d12->observable_num_branchial(), hgcommon::QM_SATURATED);
-    EXPECT_TRUE(d12->quotient_counts_saturated());
+    EXPECT_FALSE(hgcommon::qm_count_saturated(d12->observable_num_events()));
+    EXPECT_TRUE(hgcommon::qm_count_saturated(d12->observable_num_branchial()));
 }
 
 // A run that was not made continuable says so, rather than returning the graph it already had.

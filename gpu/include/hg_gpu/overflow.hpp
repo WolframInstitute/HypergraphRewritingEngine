@@ -113,9 +113,6 @@ enum class ErrorKind : uint32_t {
     // "MatchesPerStateRule" was not applied to it. Not a wrong answer: an UNCAPPED one, said out
     // loud, which is the engine's partial-result contract rather than a silent substitution.
     kDrainCapBufferFull = 31,
-    // A raw event or branchial count from class multiplicities exceeded 2^63 - 1 and reports
-    // that value. Not retryable: no capacity bounds it.
-    kCountSaturated     = 32,
     // The pool of canonical-form records (one per Full-mode canonical state, compared on a
     // dedup key hit) was full: the state was kept as its own class and not compared, so the
     // answer may hold duplicates. Config-sized, so growing is a real remedy.
@@ -170,13 +167,11 @@ static_assert(static_cast<uint32_t>(ErrorKind::kPersistentStall) <
               static_cast<uint32_t>(ErrorKind::kCount), "kPersistentStall is unrecordable");
 static_assert(static_cast<uint32_t>(ErrorKind::kDrainCapBufferFull) <
               static_cast<uint32_t>(ErrorKind::kCount), "kDrainCapBufferFull is unrecordable");
-static_assert(static_cast<uint32_t>(ErrorKind::kCountSaturated) <
-              static_cast<uint32_t>(ErrorKind::kCount), "kCountSaturated is unrecordable");
 
 const char* error_kind_name(ErrorKind k);
 
 // Whether a warning of this kind means the run was cut short and its result is partial. False for
-// kEventSigRawFallback, kDrainCapBufferFull and kCountSaturated, which describe a complete run.
+// kEventSigRawFallback and kDrainCapBufferFull, which describe a complete run.
 bool error_kind_is_partial(ErrorKind k);
 
 // One occurrence of a capacity overflow during evolve(). A count is the

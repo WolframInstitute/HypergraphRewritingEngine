@@ -1982,11 +1982,6 @@ bool Hypergraph::quotient_replay() const {
     return quotient_replay_.load(std::memory_order_relaxed);
 }
 
-bool Hypergraph::quotient_counts_saturated() const {
-    return qm_saturated_.load(std::memory_order_relaxed) ||
-           num_reconstructed_branchial() >= hgcommon::QM_SATURATED;
-}
-
 uint64_t Hypergraph::num_reconstructed_events() const {
     // Under an event-identity mode the observable is the count of distinct identities; with no
     // identity selected every application is its own event and the raw count IS the answer.
@@ -2699,8 +2694,6 @@ void Hypergraph::qm_add(std::atomic<uint64_t>& counter, uint64_t delta) {
         next = hgcommon::qm_sat_add(old, delta);
     } while (!counter.compare_exchange_weak(old, next, std::memory_order_acq_rel,
                                             std::memory_order_relaxed));
-    if (next == hgcommon::QM_SATURATED && old + delta != next)
-        qm_saturated_.store(true, std::memory_order_relaxed);
 }
 
 // The cascade's queued points, a min-heap on depth (hgcommon::qm_heap_push / qm_heap_pop).

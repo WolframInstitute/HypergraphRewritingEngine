@@ -19,6 +19,7 @@
 #include <utility>
 #include <vector>
 
+#include "hgcommon/quotient_multiplicity_core.hpp"
 #include "hypergraph/types.hpp"
 
 namespace HG_NAMESPACE {
@@ -34,6 +35,17 @@ struct FfiWarning {
     // The result is cut short ("Partial" -> 1 in the reply).
     bool partial = false;
 };
+
+// One CountSaturated warning per saturated count the job asked for, naming that count. Both
+// backends call this with the numbers they put in the reply.
+inline void append_saturation_warnings(bool events_requested, uint64_t num_events,
+                                       bool branchial_requested, uint64_t num_branchial,
+                                       std::vector<FfiWarning>& out) {
+    if (events_requested && hgcommon::qm_count_saturated(num_events))
+        out.push_back({"CountSaturated", 1, hgcommon::QM_EVENTS_SATURATED_MESSAGE});
+    if (branchial_requested && hgcommon::qm_count_saturated(num_branchial))
+        out.push_back({"CountSaturated", 1, hgcommon::QM_BRANCHIAL_SATURATED_MESSAGE});
+}
 
 struct ParsedJob {
     std::vector<std::vector<std::vector<int64_t>>> initial_states_raw;

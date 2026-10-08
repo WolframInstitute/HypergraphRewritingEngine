@@ -435,7 +435,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         std::vector<uint32_t> eng_raw(EngineState::counter_block_words());
         std::vector<uint32_t> err_raw(DeviceErrors::kMaxKinds);
         std::vector<uint32_t> qe_raw(hg_gpu::QeState::counter_words());
-        unsigned long long qm_raw[3] = {};
+        unsigned long long qm_raw[2] = {};
         uint32_t qe_matches = 0;
         {
             EngineState::ReadbackBatch counters(engine);
@@ -478,9 +478,6 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         out.reconstructed_branchial = qc_counts.qm_branchial;
         if (qc_route && in.record.multiplicities)
             qe_state_->class_multiplicities_host(out.class_multiplicities, out.class_rule_matches);
-        if ((qe_multiplicity || qe_branchial) && qc_counts.qm_saturated)
-            out.warnings.push_back(OverflowWarning{ErrorKind::kCountSaturated, 1u,
-                                                   hgcommon::QM_SATURATED_MESSAGE});
         // Causal and its reduction are built whenever the route ran, because the reduced COUNT
         // is the size of that relation and deriving it is the only way to know it. Branchial is
         // the expansion, so it is built only for a caller that will read the pairs.

@@ -56,8 +56,6 @@ const char* error_kind_name(ErrorKind k) {
         case ErrorKind::kPersistentStall:     return "persistent scheduler spin budget (defect)";
         case ErrorKind::kCanonicalMapFull:    return "canonical dedup map (retryable: grow config)";
         case ErrorKind::kCanonicalFormsFull:  return "canonical form records (retryable: grow config)";
-        // The kernel reads this name as an advisory, the same kind the CPU reports.
-        case ErrorKind::kCountSaturated:      return "CountSaturated";
         // The same kind names the CPU reports.
         case ErrorKind::kEventSigRawFallback: return "EventSigRawFallback";
         case ErrorKind::kDrainCapBufferFull:  return "DrainCapBufferFull";
@@ -72,7 +70,6 @@ bool error_kind_is_partial(ErrorKind k) {
     switch (k) {
         case ErrorKind::kEventSigRawFallback:
         case ErrorKind::kDrainCapBufferFull:
-        case ErrorKind::kCountSaturated:
             return false;
         default:
             return true;

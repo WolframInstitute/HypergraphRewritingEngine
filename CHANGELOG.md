@@ -15,7 +15,8 @@ User-visible changes since v1.0.0-rc1:
   `WolframModelPlot` and `WolframPhysicsProjectStyleData` resource functions.
 - Under quotient exploration, `"NumEvents"` and `"NumBranchialEdges"` asked for alone are
   computed from class multiplicities, so much deeper runs are possible. Counts above 2^63 - 1
-  are reported as 2^63 - 1 with the warning `CountSaturated`.
+  are reported as 2^63 - 1 with the warning `CountSaturated`, given only for a requested
+  count and naming it.
 - Malformed input issues one message and gives `$Failed`: `HGEvolve::badrule`,
   `HGEvolve::badinit` and `HGEvolve::steps`. A negative vertex in an initial state is refused.
 - An unrecognised `"CanonicalizeEvents"` or `"CanonicalizeStates"` value is reported through

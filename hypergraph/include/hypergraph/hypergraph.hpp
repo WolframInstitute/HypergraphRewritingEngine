@@ -354,7 +354,6 @@ class Hypergraph {
     // b_j + 1, keyed by match id + 1. Present once the match is ready.
     ConcurrentMap<uint64_t, uint64_t> qm_overlaps_;
     std::atomic<uint64_t> qm_events_{0};
-    std::atomic<bool> qm_saturated_{false};
 
     // The reconstructed causal relation over raw event ids, every pair: the TR-off view. The
     // reduction is kept separately, per consumer, in qc_kept_.
@@ -1365,8 +1364,6 @@ public:
             if (m) f(p->class_hash, p->depth, m);
         });
     }
-    // A multiplicity count reached QM_SATURATED (2^63 - 1) and is a lower bound.
-    bool quotient_counts_saturated() const;
     // Raw observables recovered by the reconstruction (the full-capture counts).
     uint64_t num_reconstructed_events() const;
     uint64_t num_reconstructed_raw_events() const;
