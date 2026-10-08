@@ -1183,6 +1183,10 @@ private:
     // Helper: Create an initial state from a set of edges and register it for matching
     // Returns the raw state ID, or INVALID_ID if creation failed
     StateId create_and_register_initial_state(const std::vector<std::vector<VertexId>>& edges);
+    // The class hashes of the initial states, sorted; written before the first task is submitted
+    // and read-only after. Filled only under Full states with ExplorationProbability below 1.
+    std::vector<uint64_t> initial_classes_;
+    void note_initial_class(StateId raw_state);
 
 public:
     // =========================================================================

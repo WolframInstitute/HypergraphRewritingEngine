@@ -1190,3 +1190,23 @@ TEST(QuotientNeedsFull, ExplorationCoinIsUnchangedWithoutFullStates) {
     };
     EXPECT_EQ(run(true), run(false));
 }
+
+// ExplorationProbability under Full states samples per canonical class on both routes: full
+// capture and quotient exploration expand the same classes. Rule {{2,1}} -> {{1,2}} from {{1,1}},
+// 2 steps, p = 0.645, seeds 1 to 8.
+TEST(ExplorationProbability, FullCaptureAndQuotientSampleTheSameClasses) {
+    auto run = [](bool quotient, uint64_t seed) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        ParallelEvolutionEngine engine(&hg, 4);
+        engine.set_explore_from_canonical_states_only(quotient);
+        engine.set_exploration_probability(0.645);
+        engine.set_random_seed(seed);
+        engine.add_rule(make_rule(0).lhs({1, 0}).rhs({0, 1}).build());
+        engine.evolve(std::vector<std::vector<VertexId>>{{0u, 0u}}, 2);
+        return std::array<uint64_t, 3>{hg.num_canonical_states(), hg.observable_num_events(),
+                                       hg.observable_num_causal_edges()};
+    };
+    for (uint64_t seed = 1; seed <= 8; ++seed)
+        EXPECT_EQ(run(false, seed), run(true, seed)) << "seed " << seed;
+}

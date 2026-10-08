@@ -201,6 +201,9 @@ void ParallelEvolutionEngine::evolve(
         hg_->try_claim_expanded(canonical_state);
     }
 
+    initial_classes_.clear();
+    note_initial_class(raw_state);
+
     // Submit MATCH task for initial state - this kicks off the dataflow. A root's match task
     // runs at step 1 -- the step of the states it will create -- so the depth this signal is
     // indexed by is the step a task RUNS at, and depth 0 holds nothing.
@@ -228,10 +231,17 @@ void ParallelEvolutionEngine::evolve(
 
     reset_depth_join();
 
-    // Create all initial states - they will all be explored
+    // Create all initial states, then submit them: every initial class is recorded
+    // (note_initial_class) before any task can read the record.
+    initial_classes_.clear();
+    std::vector<StateId> roots;
+    roots.reserve(initial_states.size());
     for (const auto& state_edges : initial_states) {
-        create_and_register_initial_state(state_edges);
+        roots.push_back(create_and_register_initial_state(state_edges));
+        note_initial_class(roots.back());
     }
+    std::sort(initial_classes_.begin(), initial_classes_.end());
+    for (StateId root : roots) submit_match_task(root, 1);
     // Depth 0's arrivals are all booked: it may now settle. A root that already drained left
     // the counters equal without settling, so the attempt is made here rather than waited for.
     depth_join_.mark_roots_seeded(1);
@@ -386,9 +396,17 @@ StateId ParallelEvolutionEngine::create_and_register_initial_state(
         hg_->try_lower_explore_depth(canonical_state, 0);
         hg_->try_claim_expanded(canonical_state);
     }
-    submit_match_task(raw_state, 1);
-
     return raw_state;
+}
+
+// Under Full states with ExplorationProbability below 1, the class hash of an initial state:
+// quotient exploration expands an initial state's class without the coin, and full capture
+// expands every raw state of such a class (should_expand_child).
+void ParallelEvolutionEngine::note_initial_class(StateId raw_state) {
+    if (exploration_probability_ >= 1.0 ||
+        hg_->state_canonicalization_mode() != StateCanonicalizationMode::Full)
+        return;
+    initial_classes_.push_back(hg_->get_or_compute_canonical_hash(raw_state));
 }
 
 LockFreeList<MatchRecord>* ParallelEvolutionEngine::get_or_create_state_matches(StateId state) {
@@ -1465,10 +1483,11 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
     hg_->set_reads_rank_tuples(hgcommon::run_reads_rank_tuples(
         hg_->event_signature_keys(), transition_rate_,
         static_cast<uint32_t>(rule_weights_.size()),
-        // A full-capture run that explores with a probability below 1 keys its coin on the
-        // creating transition, which reads rank tuples too.
+        // A full-capture run that explores with a probability below 1 under None or Automatic
+        // states keys its coin on the creating transition, which reads rank tuples too.
         (defers_to_drain() ||
-         (exploration_probability_ < 1.0 && !explore_from_canonical_states_only_)) ? 1u : 0u));
+         (exploration_probability_ < 1.0 && !explore_from_canonical_states_only_ && !full_states))
+            ? 1u : 0u));
 
     // The exploration strategy and the raw reconstruction are separate decisions, and only the
     // second is expensive. Quotient causal exploration decides state identity and costs what the
@@ -1684,18 +1703,25 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
             return;
         }
 
-        // Exploration-probability pruning: full multiway expands every raw state, so one coin
-        // flip per raw state is one per state.
+        // Exploration-probability pruning, one coin per canonical state (docs/SPEC.md §5).
         //
-        // Keyed on the transition that created this state, because that is the only
-        // isomorphism-invariant name a RAW state has -- its own id is an allocation order.
-        // Raw states stand in bijection with the events that create them, so this is also the
-        // exact sense in which ExplorationProbability and TransitionRate are one knob under
-        // full capture and two only under quotient; the separate stream inside should_explore
-        // is what keeps them from being literally the same coin.
-        if (exploration_probability_ < 1.0 &&
-            !should_explore(canonical_transition_key(match.source_state, match))) {
-            return;
+        // Under Full states the coin is keyed on the child's class hash, the key quotient
+        // exploration uses (claim_canonical_for_expansion), and a class with an initial state
+        // is expanded without it, as quotient exploration expands it, so both routes expand
+        // the same classes. Under None and Automatic every raw state is its own state, and the only
+        // isomorphism-invariant name a raw state has is the transition that created it -- its
+        // own id is an allocation order. Raw states stand in bijection with the events that
+        // create them, so there ExplorationProbability and TransitionRate draw on one key; the
+        // separate stream inside should_explore keeps them from being the same coin.
+        if (exploration_probability_ < 1.0) {
+            if (hg_->state_canonicalization_mode() == StateCanonicalizationMode::Full) {
+                const uint64_t h = hg_->get_or_compute_canonical_hash(rr.new_state);
+                if (!std::binary_search(initial_classes_.begin(), initial_classes_.end(), h) &&
+                    !should_explore(h))
+                    return;
+            } else if (!should_explore(canonical_transition_key(match.source_state, match))) {
+                return;
+            }
         }
 
         // A child past the match budget is not matched in this run (submit_match_task_with_context
