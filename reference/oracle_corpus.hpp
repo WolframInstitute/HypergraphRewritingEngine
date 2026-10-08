@@ -236,8 +236,7 @@ inline Counts engine_counts(const std::vector<RewriteRule>& rules,
     c.diag = "late_submits=" + std::to_string(engine.late_submits()) +
              " warnings=" + std::to_string(engine.warnings().size());
 #if HG_ENGINE_STATS
-    c.diag += " dropped_children=" + std::to_string(engine.dropped_fresh_children()) +
-              " invalid_matches=" + std::to_string(hg.invalid_matches()) +
+    c.diag += " invalid_matches=" + std::to_string(hg.invalid_matches()) +
               " hash_collisions=" + std::to_string(engine.hash_collisions()) +
               " canonical_key_collisions=" + std::to_string(hg.canonical_key_collisions()) +
               " probe_exhaustions=" + std::to_string(engine.dedup_probe_exhaustions()) +

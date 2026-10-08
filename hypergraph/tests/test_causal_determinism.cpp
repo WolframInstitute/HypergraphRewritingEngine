@@ -58,7 +58,6 @@ struct Fingerprint {
     long stored_before_walk = 0;
     long branchial_pairs = 0;
     long late_submits = 0;
-    long dropped_children = 0;
     long invalid_matches = 0;
     long double_executions = 0, abandoned_jobs = 0, abandoned_already_run = 0;
     long expand_retry_found = 0;
@@ -270,7 +269,6 @@ Fingerprint run(const std::vector<hg::engine::RewriteRule>& rules,
     // READ BEFORE THE ENGINE GOES OUT OF SCOPE. This is the precondition the quiescence
     // predicate rests on, not a property of the hypergraph, so it comes from the engine.
     fp.late_submits = static_cast<long>(e.late_submits());
-    fp.dropped_children = static_cast<long>(e.dropped_fresh_children());
     fp.tr_skipped   = static_cast<long>(g.causal_graph().num_redundant_edges_skipped());
     fp.producer_side = static_cast<long>(g.causal_graph().producer_side_emissions());
     fp.causal_pairs = static_cast<long>(g.causal_graph().num_causal_event_pairs());
@@ -599,14 +597,6 @@ Spread spread(const Workload& w, bool quotient) {
                     << w.name << " at threads=" << th << " rep=" << rep << ": "
                     << f.invalid_matches << " match(es) named an edge their input state does not "
                        "hold and were dropped without being applied.";
-                // A SUBTREE THAT WAS NEVER EXPLORED, and the only symptom is a shorter run.
-                // Every rewrite creates a NEW raw state, so the set that decides whether to
-                // match it cannot already hold that id; if it says otherwise the child and
-                // everything below it is dropped silently.
-                EXPECT_EQ(f.dropped_children, 0)
-                    << w.name << " at threads=" << th << " rep=" << rep << ": "
-                    << f.dropped_children << " freshly-created state(s) were reported as already "
-                       "matched, so their subtrees were never explored.";
 #if HG_ENGINE_STATS
                 EXPECT_EQ(f.expand_retry_found, 0)
                     << w.name << " at threads=" << th << " rep=" << rep << ": "

@@ -503,23 +503,6 @@ public:
 #endif
 private:
 
-    // Track which raw states have been matched (lock-free)
-    // Prevents duplicate MATCH tasks for the same raw state
-    // Use uint64_t as key to avoid template issues with 32-bit StateId
-    // StateId is 32-bit, so we use keys outside that range for EMPTY/LOCKED
-    static constexpr uint64_t STATE_MAP_EMPTY = 1ULL << 62;
-    static constexpr uint64_t STATE_MAP_LOCKED = (1ULL << 62) | 1;
-    // WHICH RAW STATES HAVE BEEN HANDED A MATCH TASK. The question is membership, so the key is
-    // the whole record and there is no value to store, publish or wait on: a set's key goes
-    // EMPTY -> key in one exchange, where a map has to publish a value afterwards and a rival
-    // has to wait to learn who won.
-    //
-    // It carries the SAME reserved pair as the maps beside it, so exactly the same keys are
-    // legal here as there -- StateId is 32-bit and a raw state of 0 is an ordinary one, which a
-    // set defaulting to 0 for EMPTY would drop without saying so.
-    ConcurrentKeySet<uint64_t, STATE_MAP_EMPTY, STATE_MAP_LOCKED> matched_raw_states_;
-    // See execute_rewrite_task: a fresh raw id reported as already present, which drops a subtree.
-    std::atomic<size_t> dropped_fresh_child_{0};
 
     // Per-state match storage for match forwarding
     // Maps state -> list of matches found in that state
@@ -992,10 +975,6 @@ public:
     struct MatchTaskCounts { size_t pushed = 0, completed = 0, matches = 0; uint32_t trace = 0; };
     MatchTaskCounts match_task_counts(StateId state);
 #if HG_ENGINE_STATS
-    // Rewrites whose freshly-created raw state was reported as already matched. Must be zero:
-    // the id is new, so the dedup set cannot have seen it. A non-zero value is a subtree that
-    // was never explored. See execute_rewrite_task.
-    size_t dropped_fresh_children() const;
     size_t states_drained() const;
 #endif
 

@@ -66,7 +66,6 @@ ParallelEvolutionEngine::ParallelEvolutionEngine(Hypergraph* hg, size_t num_thre
     // lifetime; re-homing here is single-threaded setup, before any task runs.
     ConcurrentHeterogeneousArena* arena = &hg_->arena();
     seen_match_hashes_.set_arena(arena);
-    matched_raw_states_.set_arena(arena);
     state_matches_.set_arena(arena);
     state_children_.set_arena(arena);
     missing_match_hashes_.set_arena(arena);
@@ -194,9 +193,6 @@ void ParallelEvolutionEngine::evolve(
             canonical_state,
             static_cast<int>(std::min<size_t>(steps, (std::numeric_limits<int>::max)())),
             genesis_event);
-
-    // Mark initial state as matched (waiting version for correctness)
-    matched_raw_states_.insert(raw_state);
 
     // Under quotient exploration the initial state sits at depth zero and is expanded here.
     if (explore_from_canonical_states_only_) {
@@ -349,9 +345,6 @@ StateId ParallelEvolutionEngine::create_initial_state_only(
         hg_->create_genesis_event(raw_state, edge_ids.data(), edge_ids.size());
     }
 
-    // Mark as seen but do NOT submit match task
-    matched_raw_states_.insert(raw_state);
-
     return raw_state;
 }
 
@@ -391,9 +384,6 @@ StateId ParallelEvolutionEngine::create_and_register_initial_state(
             canonical_state,
             static_cast<int>(std::min<size_t>(max_steps_, (std::numeric_limits<int>::max)())),
             genesis_event);
-
-    // Mark initial state as matched and submit for pattern matching
-    matched_raw_states_.insert(raw_state);
 
     // Under quotient exploration every initial state sits at depth zero, and its class is
     // claimed so that a later state of the class is not expanded again. Every initial state is
@@ -1635,20 +1625,9 @@ void ParallelEvolutionEngine::execute_rewrite_task(const MatchRecord& match, uin
     );
 #endif
 
-    // Spawn MATCH task for the new raw state if it hasn't been matched yet
-    const bool inserted = matched_raw_states_.insert(rr.raw_state);
-    // A FRESH ID CANNOT ALREADY BE PRESENT. create_or_get_canonical_state allocates a new raw
-    // state for every rewrite -- the canonical id may be one that already existed, the RAW one
-    // never is -- so this insert must always win. If it ever reports otherwise, the dedup set
-    // said present for a key it has not seen, and the whole subtree below this state is never
-    // matched: the run comes back short, with no error and no warning, and looks exactly like
-    // non-determinism when compared against another thread count.
-    //
-    // Counted rather than asserted here because this runs on a worker, where a throw would
-    // surface as an unrelated failure; the gate reads it after the run.
-    if (!inserted) HG_STAT(dropped_fresh_child_.fetch_add(1, std::memory_order_relaxed));
-
-    if (inserted) {
+    // The match task for the new raw state. create_or_get_canonical_state makes a new raw state
+    // for every rewrite, so each raw state reaches this point once.
+    {
         DEBUG_LOG("STATE parent=%u -> child=%u (canonical=%u) rule=%u step=%u new=%d",
                   match.source_state, rr.raw_state, rr.new_state, match.rule_index(), step, rr.was_new_state);
 
@@ -2582,9 +2561,6 @@ size_t ParallelEvolutionEngine::depth_late_arrivals() const {
 
 #if HG_ENGINE_STATS
 
-size_t ParallelEvolutionEngine::dropped_fresh_children() const {
-    return dropped_fresh_child_.load(std::memory_order_relaxed);
-}
 #endif
 
 ParallelEvolutionEngine::MatchTaskCounts ParallelEvolutionEngine::match_task_counts(StateId state) {
