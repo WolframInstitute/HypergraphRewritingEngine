@@ -318,8 +318,12 @@ class Hypergraph {
     // be unique -- it keys the application claim and the applied list -- so gaps are harmless;
     // the instance count is the per-worker counts summed. 64-bit so that it cannot wrap; ids at or
     // past qc_id_limit_ are refused (alloc_instance_id).
-    std::atomic<uint64_t> qc_next_instance_{0};
-    std::atomic<uint64_t> qc_instances_made_outside_{0};
+    // Alone on its line: every worker's block refill writes it, and the members after it
+    // (qc_inst_blocks_ is read on every instance) would otherwise be reloaded after each refill
+    // by another worker (multirule depth 7 quotient, 16 threads: 31% of qc_add_instance's
+    // samples on the load of qc_inst_blocks_).
+    alignas(64) std::atomic<uint64_t> qc_next_instance_{0};
+    alignas(64) std::atomic<uint64_t> qc_instances_made_outside_{0};
     static constexpr uint32_t kIdBlock = 64;
     struct alignas(64) IdBlock {
         uint32_t next = 0;
@@ -341,9 +345,10 @@ class Hypergraph {
     // QcEventContent::written tells a reader so, and the event count is the per-worker counts
     // summed. 64-bit so that it cannot wrap; ids at or past qc_id_limit_ are refused
     // (alloc_event_id).
-    std::atomic<uint64_t> qc_next_raw_event_{0};
+    // Alone on its line, for the reason qc_next_instance_ is.
+    alignas(64) std::atomic<uint64_t> qc_next_raw_event_{0};
     // hgcommon::QR_ID_LIMIT except in tests (set_replay_id_limit); ids refused at it.
-    uint32_t qc_id_limit_ = hgcommon::QR_ID_LIMIT;
+    alignas(64) uint32_t qc_id_limit_ = hgcommon::QR_ID_LIMIT;
     std::atomic<uint64_t> qc_ids_refused_{0};
     std::atomic<uint64_t> qc_captures_dropped_{0};
     // An id counter read as a bound on the ids it issued.
