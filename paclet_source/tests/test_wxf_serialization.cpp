@@ -1056,6 +1056,103 @@ TEST(WxfSerializationPin, FullStateStepIsTheClassLeastStep) {
     EXPECT_EQ(seen.size(), 1u);
 }
 
+// Under Full states and Automatic events the causal and branchial lists' From/To are ids of the
+// "Events" property, in every run (docs/SPEC.md §5.1). Full capture, two rules, 4 steps, 8 runs.
+TEST(WxfSerializationPin, RelationEndpointsAreEventsUnderTheReconstruction) {
+    auto job = [] {
+        wxf::Writer w;
+        w.write_header();
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        w.write_varint(4);
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("InitialStates"));
+        w.write(StateList{{{4, 2, 2}, {5, 5, 4}}});
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Rules"));
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        w.write_varint(2);
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("r0"));
+        w.write_function("Rule", 2);
+        w.write(EdgeList{{2, 2, 1}});
+        w.write(EdgeList{{2, 2, 2}});
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("r1"));
+        w.write_function("Rule", 2);
+        w.write(EdgeList{{1, 1, 1}});
+        w.write(EdgeList{{2, 3, 3, 3}, {3, 3}, {1}});
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Steps"));
+        w.write(int64_t{4});
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Options"));
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        w.write_varint(3);
+        put_str_option(w, "CanonicalizeStates", "Full");
+        put_str_option(w, "CanonicalizeEvents", "Automatic");
+        put_str_list_option(w, "RequestedData", {"Events", "CausalEdges", "BranchialEdges"});
+        return w.release_data();
+    };
+    std::set<std::multiset<std::pair<int64_t, int64_t>>> labelled;
+    for (int rep = 0; rep < 8; ++rep) {
+        HostBridge host;
+        const auto out = run_rewriting_core(job(), host);
+        std::set<int64_t> event_ids;
+        std::map<int64_t, int64_t> rule_of;
+        std::vector<int64_t> endpoints;
+        std::vector<bool> unordered;   // per pair: a branchial pair
+        wxf::Parser parser(out);
+        parser.skip_header();
+        parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+            if (k == "Events") {
+                vp.read_association_generic([&](wxf::Parser& kp, wxf::Parser& valp) {
+                    kp.skip_value();
+                    int64_t id = -1, rule = -1;
+                    valp.read_association([&](const std::string& fk, wxf::Parser& fvp) {
+                        if (fk == "CanonicalId") id = fvp.read<int64_t>();
+                        else if (fk == "RuleIndex") rule = fvp.read<int64_t>();
+                        else fvp.skip_value();
+                    });
+                    event_ids.insert(id);
+                    rule_of.emplace(id, rule);
+                });
+            } else if (k == "CausalEdges" || k == "BranchialEdges") {
+                vp.read_function([&](const std::string&, size_t n, wxf::Parser& ep) {
+                    for (size_t i = 0; i < n; ++i) {
+                        ep.read_association([&](const std::string& fk, wxf::Parser& fvp) {
+                            if (fk == "From" || fk == "To") endpoints.push_back(fvp.read<int64_t>());
+                            else fvp.skip_value();
+                        });
+                        unordered.push_back(k == "BranchialEdges");
+                    }
+                });
+            } else {
+                vp.skip_value();
+            }
+        });
+        ASSERT_FALSE(endpoints.empty());
+        std::multiset<std::pair<int64_t, int64_t>> pairs;
+        for (size_t i = 0; i < endpoints.size(); ++i)
+            EXPECT_EQ(event_ids.count(endpoints[i]), 1u) << "run " << rep << ": endpoint " << endpoints[i];
+        // A branchial pair is unordered: its From is the lower id, and ids are run-local.
+        for (size_t i = 0; i + 1 < endpoints.size(); i += 2) {
+            int64_t a = rule_of[endpoints[i]], b = rule_of[endpoints[i + 1]];
+            if (unordered[i / 2] && b < a) std::swap(a, b);
+            pairs.insert({a, b});
+        }
+        labelled.insert(pairs);
+    }
+    // The relations joined to "Events" by id, as (rule of From, rule of To): one answer.
+    std::string got;
+    for (const auto& ps : labelled) {
+        got += " {";
+        for (const auto& pr : ps)
+            got += "(" + std::to_string(pr.first) + "," + std::to_string(pr.second) + ")";
+        got += "}";
+    }
+    EXPECT_EQ(labelled.size(), 1u) << got;
+}
+
 TEST(WxfSerializationPin, MinimalEvents) {
     // RequestedData -> {"EventsMinimal"}: only the minimal Events association is emitted.
     auto input = build_input(kSeed, kLhs, kRhs, 2,

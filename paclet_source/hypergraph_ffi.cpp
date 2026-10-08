@@ -1267,10 +1267,11 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         if (req.include_events || req.include_events_minimal) {
             const bool minimal = !req.include_events;
             const uint32_t num_raw_events = hg.num_published_events();
-            // Under quotient exploration the materialised events are the explored skeleton's;
-            // the rule applications are the reconstruction's. A reconstructed application has
-            // no edge lists: the replay materialises none.
-            const bool from_reconstruction = recon.active && engine.explore_from_canonical_states_only();
+            // Whenever the reconstruction runs, the causal and branchial relations are over its
+            // applications, so "Events" lists them too and the ids join (under quotient
+            // exploration the materialised events are only the explored skeleton's). A
+            // reconstructed application has no edge lists: the replay materialises none.
+            const bool from_reconstruction = recon.active;
             if (from_reconstruction) {
                 std::vector<uint32_t> apps;
                 for (uint32_t e = 0; e < recon.id_bound; ++e)

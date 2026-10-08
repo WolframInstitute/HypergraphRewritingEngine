@@ -547,10 +547,10 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
         return it == state_of_class.end() ? -1 : it->second;
     };
     // The reconstruction's applications with their classes and rules, when read back. The graphs
-    // are drawn over them whenever present, as on the host. "Events" lists them under quotient
-    // exploration, where the materialised events are only the explored skeleton's.
+    // are drawn over them whenever present, as on the host, and "Events" lists them, so the
+    // relations' ids join with it.
     const bool recon_content = recon_ran && !result.reconstructed_event_from_class.empty();
-    const bool recon_events = recon_content && job.explore_from_canonical_states_only;
+    const bool recon_events = recon_content;
     // "Events" is then keyed by application id, every one below the count of applications, so
     // genesis ids start there, as the host's start at its id bound.
     if (recon_events)
