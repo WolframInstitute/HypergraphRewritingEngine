@@ -437,3 +437,62 @@ TEST_F(IRCanonicalizationTest, BoundedCoreHashIsInvariantUnderPresentation) {
         }
     }
 }
+
+namespace {
+
+// The canonical hash of `edges` with the edges at the indices in `marked` marked
+// (hgcommon::ir_colour_pad), through the shared core.
+uint64_t marked_hash(const std::vector<std::vector<hypergraph::VertexId>>& edges,
+                     const std::set<uint32_t>& marked) {
+    const uint32_t e = static_cast<uint32_t>(edges.size());
+    std::vector<uint8_t> ea(e);
+    std::vector<uint32_t> eoff(e), ev;
+    for (uint32_t i = 0; i < e; ++i) {
+        ea[i] = static_cast<uint8_t>(edges[i].size());
+        eoff[i] = static_cast<uint32_t>(ev.size());
+        for (auto v : edges[i]) ev.push_back(v);
+    }
+    const uint32_t occ = static_cast<uint32_t>(ev.size());
+    std::vector<uint32_t> verts(occ);
+    uint32_t n = hgcommon::ir_renumber_sorted(ev.data(), occ, verts.data());
+    auto is_marked = [&](uint32_t i) { return marked.count(i) != 0; };
+    ev.resize(occ + hgcommon::ir_colour_extra_occ(ea.data(), e, is_marked));
+    const uint32_t total = hgcommon::ir_colour_pad(ea.data(), eoff.data(), ev.data(), e, occ, n,
+                                                   is_marked);
+    for (uint32_t depth : {1u, 8u, 64u, n + 1}) {
+        std::vector<uint32_t> scratch(hgcommon::ir_scratch_words(n, e, total, depth) + 2);
+        const auto r = hgcommon::ir_canonical_hash(ea.data(), eoff.data(), ev.data(), e, n, total,
+                                                   scratch.data(), depth);
+        if (r.status == hgcommon::IR_OK) return r.hash;
+    }
+    ADD_FAILURE() << "marked hash did not finish";
+    return 0;
+}
+
+}  // namespace
+
+// A marked form is an invariant of the state with its marked edges: isomorphic markings agree,
+// non-isomorphic markings of one state differ, and marking nothing gives the plain hash.
+TEST_F(IRCanonicalizationTest, MarkedFormsSeparateMarkingsUpToIsomorphism) {
+    // A path a->b->c->d: the end edges are not automorphic to the middle one.
+    const std::vector<std::vector<VertexId>> path = {{0, 1}, {1, 2}, {2, 3}};
+    const std::vector<std::vector<VertexId>> relabelled = {{11, 10}, {12, 11}, {10, 13}};
+    EXPECT_NE(marked_hash(path, {0}), marked_hash(path, {1}));
+    EXPECT_NE(marked_hash(path, {0}), marked_hash(path, {2}));
+    EXPECT_NE(marked_hash(path, {0, 1}), marked_hash(path, {0, 2}));
+    // relabelled is the path 12->11->10->13: its edge 1 is the first edge, edge 0 the second.
+    EXPECT_EQ(marked_hash(path, {0}), marked_hash(relabelled, {1}));
+    EXPECT_EQ(marked_hash(path, {1}), marked_hash(relabelled, {0}));
+    EXPECT_EQ(marked_hash(path, {}), ir.compute_canonical_hash(path));
+
+    // A 4-cycle: any one edge is automorphic to any other; two adjacent edges are not
+    // automorphic to two opposite ones.
+    const std::vector<std::vector<VertexId>> c4 = {{0, 1}, {1, 2}, {2, 3}, {3, 0}};
+    EXPECT_EQ(marked_hash(c4, {0}), marked_hash(c4, {2}));
+    EXPECT_EQ(marked_hash(c4, {0, 1}), marked_hash(c4, {2, 3}));
+    EXPECT_NE(marked_hash(c4, {0, 1}), marked_hash(c4, {0, 2}));
+
+    // Arity is kept: marking a binary edge differs from marking a ternary one.
+    const std::vector<std::vector<VertexId>> mixed = {{0, 1}, {1, 2, 3}};
+    EXPECT_NE(marked_hash(mixed, {0}), marked_hash(mixed, {1}));
+}

@@ -68,7 +68,8 @@
 //   void     descend(const Match&, uint32_t depth, uint32_t ev, const Instance& parent);
 //
 // A Match supplies: id, to_hash, rule, from_slots, to_slots, num_consumed/produced/survivors,
-// and consumed(i)/produced(i)/surv_from(i)/surv_to(i). An Instance supplies id and nslots.
+// consumed(i)/produced(i)/surv_from(i)/surv_to(i), and marked_forms(): the marked forms of the
+// raw event it was captured from (EventMarkedForms). An Instance supplies id and nslots.
 
 #include <algorithm>
 #include <cstdint>
@@ -200,6 +201,9 @@ struct QrRunSignature {
 };
 
 // The signature of match `m` applied from class `from_hash`, with `out_step` as the output step.
+// Under event_keys_mark_edges the edges enter as the captured event's marked forms: every
+// instance of a class is the frame under an isomorphism that carries the captured event's edges
+// to the match's slots, so the forms are the same for every application of the match.
 template <class Match>
 HG_HD void qr_signature_values(EventSignatureKeys keys, const Match& m, uint64_t from_hash,
                                uint32_t out_step, QrRunSignature& out) {
@@ -208,7 +212,8 @@ HG_HD void qr_signature_values(EventSignatureKeys keys, const Match& m, uint64_t
     out.n = event_signature_values(keys, from_hash, m.to_hash, out_step, m.rule,
                                    m.consumed_ptr(), static_cast<uint8_t>(m.num_consumed),
                                    m.produced_ptr(), static_cast<uint8_t>(m.num_produced),
-                                   out.values);
+                                   out.values,
+                                   event_keys_mark_edges(keys) ? m.marked_forms() : nullptr);
     out.sig = avoid_reserved_keys(event_signature_of_values(out.values, out.n));
 }
 
@@ -369,8 +374,9 @@ HG_HD uint32_t qr_apply(Ctx& c, const typename Ctx::Instance& inst,
     c.record_content(ev, state_hash, m.to_hash, m.rule);
 
     // The RUN's event identity, which is a different question from the invariant above.
-    // Slots ARE the canonical ranks the signature wants, and consumed/produced stay in
-    // match/RHS order as it requires.
+    // Under the Automatic preset the signature reads the match's slots in match/RHS order where
+    // full capture reads canonical ranks; the endpoint classes are in the same signature, and
+    // both are injective on a state's edges, so the count of distinct signatures is the same.
     if (c.keys() != EVENT_SIG_NONE) {
         c.record_runsig(ev, m, state_hash, qr_out_step(c, m, depth));
     }

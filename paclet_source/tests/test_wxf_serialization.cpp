@@ -2105,6 +2105,40 @@ TEST(WxfSerializationPin, SessionFrontierIdsAreStatesKeys) {
 // Positional event identity has no device mode, so the GPU binary runs such a job on its CPU
 // engine and says so; the counts are the CPU engine's. A session opened that way is served by the
 // CPU engine for every later verb.
+// A CanonicalizeEvents key list other than the Full and Automatic presets runs on the CPU engine
+// in the GPU binary, and gives the CPU's count.
+TEST(GpuBinaryGate, ACustomEventKeySetRunsOnTheCpuEngine) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    auto options = [](bool quotient) {
+        return [quotient](wxf::Writer& w) {
+            put_str_list_option(w, "RequestedData", {"NumStates", "NumEvents"});
+            put_str_option(w, "CanonicalizeStates", "Full");
+            put_str_list_option(w, "CanonicalizeEvents", {"ConsumedEdges", "ProducedEdges"});
+            if (quotient) put_str_option(w, "ExploreFromCanonicalStatesOnly", "True");
+        };
+    };
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    for (bool quotient : {false, true}) {
+        const std::size_t n = quotient ? 4 : 3;
+        HostBridge host;
+        const auto cpu = run_rewriting_core(branch_job(3, "Evolve", 0, options(quotient), n), host);
+        const auto gpu = worker_call(w, branch_job(3, "Evolve", 0, options(quotient), n));
+        ASSERT_FALSE(gpu.empty()) << "quotient=" << quotient;
+        EXPECT_EQ(read_int_key(gpu, "NumEvents"), read_int_key(cpu, "NumEvents"))
+            << "quotient=" << quotient;
+        EXPECT_TRUE(reply_mentions(gpu, "A CanonicalizeEvents key list runs on the CPU engine"))
+            << "quotient=" << quotient;
+    }
+    worker_stop(w);
+}
+
 TEST(GpuBinaryGate, PositionalRunsOnTheCpuEngine) {
     {
         std::ifstream probe(gpu_binary_path(), std::ios::binary);

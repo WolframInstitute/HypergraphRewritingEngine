@@ -82,6 +82,9 @@ class Hypergraph {
 
     // Event storage
     SegmentedArray<Event> events_;
+    // Each event's marked forms, indexed by event id, written before the event's identity is
+    // claimed; filled only when hgcommon::event_keys_mark_edges(event_signature_keys_).
+    SegmentedArray<hgcommon::EventMarkedForms> event_forms_;
 
     // Pattern matching indices
 
@@ -1252,6 +1255,11 @@ public:
     // read from the stored Event; returns their count. `count_fallbacks` counts each raw edge id
     // that stands in for a missing rank.
     uint32_t event_values_of(EventId e, uint64_t* out, bool count_fallbacks);
+    // The canonical hash of state `s` with the `n` edges in `marked` marked
+    // (hgcommon::ir_colour_pad).
+    uint64_t marked_form_hash(StateId s, const EdgeId* marked, uint8_t n);
+    // Event `e`'s marked forms into event_forms_, when the run's keys read them.
+    void record_event_forms(EventId e);
     // Event `e`'s identity, claimed in canonical_event_map_ on its signature values. The Event is
     // stored before the call; a key hit compares against the class's first event. The claim's
     // key is the event's reported signature.

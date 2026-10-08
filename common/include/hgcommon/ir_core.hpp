@@ -330,6 +330,48 @@ HG_HD inline uint32_t ir_renumber_sorted(uint32_t* ev, uint32_t occ, uint32_t* v
 }
 
 // -----------------------------------------------------------------------------------------
+// EDGE COLOURING. A state with a set of marked edges is canonicalised as a plain hypergraph in
+// which every marked edge of arity k is extended to IR_COLOUR_ARITY by IR_COLOUR_ARITY - k
+// occurrences of one added vertex M. No edge of a state has arity above MAX_ARITY, so the marked
+// edges are exactly the edges of arity IR_COLOUR_ARITY, an isomorphism of two padded states maps
+// M to M, and k is recovered as the position of the first M. Two marked states are isomorphic
+// (by an isomorphism that maps marked edges to marked edges) exactly when their padded states
+// are, so the canonical hash of the padded state is a complete invariant of the marked state.
+constexpr uint8_t IR_COLOUR_ARITY = MAX_ARITY + 1;
+
+// The occurrences padding adds to a flattened state: IR_COLOUR_ARITY - ea[e] per marked edge.
+template <class Marked>
+HG_HD inline uint32_t ir_colour_extra_occ(const uint8_t* ea, uint32_t n_edges, Marked&& marked) {
+    uint32_t extra = 0;
+    for (uint32_t e = 0; e < n_edges; ++e)
+        if (marked(e)) extra += IR_COLOUR_ARITY - ea[e];
+    return extra;
+}
+
+// Pads a flattened state in place (ea, eoff, ev as ir_canonical_hash reads them). `ev` holds
+// total_occ + ir_colour_extra_occ words. Updates n_verts (M is local vertex n_verts, added only
+// when an edge is marked) and returns the padded occurrence count.
+template <class Marked>
+HG_HD inline uint32_t ir_colour_pad(uint8_t* ea, uint32_t* eoff, uint32_t* ev, uint32_t n_edges,
+                                    uint32_t total_occ, uint32_t& n_verts, Marked&& marked) {
+    const uint32_t extra = ir_colour_extra_occ(ea, n_edges, marked);
+    if (extra == 0) return total_occ;
+    const uint32_t m = n_verts++;
+    uint32_t shift = extra;   // padding at and after edge e, while walking e downwards
+    for (uint32_t e = n_edges; e-- > 0;) {
+        const uint32_t k = ea[e];
+        const uint32_t pad = marked(e) ? IR_COLOUR_ARITY - k : 0u;
+        shift -= pad;         // padding of the edges before e
+        const uint32_t from = eoff[e], to = from + shift;
+        for (uint32_t p = k; p-- > 0;) ev[to + p] = ev[from + p];
+        for (uint32_t p = 0; p < pad; ++p) ev[to + k + p] = m;
+        eoff[e] = to;
+        ea[e] = static_cast<uint8_t>(k + pad);
+    }
+    return total_occ + extra;
+}
+
+// -----------------------------------------------------------------------------------------
 // THE EXECUTION POLICY: one body, two shapes. The search runs either on one thread (the
 // host's workers, and every device path that owns a whole state per thread) or on all 32
 // lanes of one warp TOGETHER (the persistent kernel). Under the warp policy every lane

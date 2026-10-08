@@ -91,6 +91,9 @@ struct QeMatchView {
     }
     __device__ const uint32_t* consumed_ptr() const { return w; }
     __device__ const uint32_t* produced_ptr() const { return w + num_consumed; }
+    // The device serves the key sets None, Full and Automatic, none of which reads marked forms
+    // (hgcommon::event_keys_mark_edges); the paclet runs every other key set on the CPU engine.
+    __device__ const hgcommon::EventMarkedForms* marked_forms() const { return nullptr; }
 };
 
 // A captured match reference, bucketed by from_hash; the node carries its exact hash so the

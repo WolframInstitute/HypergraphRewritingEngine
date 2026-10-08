@@ -748,13 +748,22 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // path below, which this binary links.
         // An invalidated session keeps its handle, so its verbs reach the CPU path and are told
         // it was invalidated.
+        // A KEY SET OTHER THAN None, Full AND Automatic RUNS ON THE CPU ENGINE too: the device
+        // computes those three only (hg_gpu::EventCanonicalizationMode).
         const bool cpu_session = req.session_handle != 0 &&
                                  worker_session().handle() == req.session_handle;
-        const bool on_cpu = req.positional_event_identity || cpu_session;
+        const bool custom_keys = req.event_signature_keys != hypergraph::EVENT_SIG_NONE &&
+                                 req.event_signature_keys != hypergraph::EVENT_SIG_FULL &&
+                                 req.event_signature_keys != hypergraph::EVENT_SIG_AUTOMATIC;
+        const bool on_cpu = req.positional_event_identity || custom_keys || cpu_session;
         if (req.positional_event_identity && !cpu_session)
             req.ffi_warnings.push_back({"Engine", 1,
                 "Positional event identity runs on the CPU engine: the device has no Positional "
                 "mode"});
+        else if (custom_keys && !cpu_session)
+            req.ffi_warnings.push_back({"Engine", 1,
+                "A CanonicalizeEvents key list runs on the CPU engine: the device serves None, "
+                "Full and Automatic"});
 #endif
         if (req.session_op == "Close") {
             // ANSWERED BEFORE THE RULES ARE CHECKED, on either device: a Close carries no

@@ -820,7 +820,56 @@ uint32_t Hypergraph::event_values_of(EventId e, uint64_t* out, bool count_fallba
         keys,
         (keys & EventKey_InputState)  ? get_or_compute_canonical_hash(ev.input_state)  : 0,
         (keys & EventKey_OutputState) ? get_or_compute_canonical_hash(ev.output_state) : 0,
-        canonical_out.step, ev.rule_index, consumed_ranks, nc, produced_ranks, np, out);
+        canonical_out.step, ev.rule_index, consumed_ranks, nc, produced_ranks, np, out,
+        hgcommon::event_keys_mark_edges(keys) ? &event_forms_[e] : nullptr);
+}
+
+uint64_t Hypergraph::marked_form_hash(StateId s, const EdgeId* marked, uint8_t n_marked) {
+    auto mk = worker_scratch().mark();
+    SVec<uint8_t> ea, mark;
+    SVec<uint32_t> eoff, ev;
+    std::atomic_thread_fence(std::memory_order_acquire);
+    get_state_edges(s).for_each([&](EdgeId eid) {
+        const Edge& e = edges_[eid];
+        eoff.push_back(static_cast<uint32_t>(ev.size()));
+        ea.push_back(e.arity);
+        for (uint8_t p = 0; p < e.arity; ++p) ev.push_back(e.vertices[p]);
+        bool m = false;
+        for (uint8_t i = 0; i < n_marked; ++i) m = m || marked[i] == eid;
+        mark.push_back(m ? 1 : 0);
+    });
+    const uint32_t n = static_cast<uint32_t>(ea.size());
+    if (n == 0) {
+        worker_scratch().release(mk);
+        return EMPTY_STATE_CANONICAL_HASH;
+    }
+    const uint32_t occ = static_cast<uint32_t>(ev.size());
+    SVec<uint32_t> verts(occ);
+    uint32_t n_verts = hgcommon::ir_renumber_sorted(ev.data(), occ, verts.data());
+    auto is_marked = [&](uint32_t e) { return mark[e] != 0; };
+    ev.resize(occ + hgcommon::ir_colour_extra_occ(ea.data(), n, is_marked));
+    const uint32_t total_occ =
+        hgcommon::ir_colour_pad(ea.data(), eoff.data(), ev.data(), n, occ, n_verts, is_marked);
+    uint64_t hash = 0;
+    for (uint32_t depth : {1u, 8u, hgcommon::IR_MAX_DEPTH_DEFAULT, n_verts + 1}) {
+        const uint64_t words = hgcommon::ir_scratch_words(n_verts, n, total_occ, depth);
+        auto* scratch = static_cast<uint32_t*>(
+            worker_scratch().allocate_raw((words + 2) * sizeof(uint32_t), alignof(uint64_t)));
+        const auto r = hgcommon::ir_canonical_hash(ea.data(), eoff.data(), ev.data(), n, n_verts,
+                                                   total_occ, scratch, depth);
+        if (r.status == hgcommon::IR_OK) { hash = r.hash; break; }
+    }
+    worker_scratch().release(mk);
+    return hash;
+}
+
+void Hypergraph::record_event_forms(EventId e) {
+    if (!hgcommon::event_keys_mark_edges(event_signature_keys_)) return;
+    const Event& ev = events_[e];
+    hgcommon::EventMarkedForms f;
+    f.consumed = marked_form_hash(ev.input_state, ev.consumed_edges, ev.num_consumed);
+    f.produced = marked_form_hash(ev.output_state, ev.produced_edges, ev.num_produced);
+    event_forms_.emplace_at(e, arena_, f);
 }
 
 // Under an event identity mode: the event's signature values, claimed; a duplicate records the
@@ -1099,6 +1148,7 @@ Hypergraph::CreateEventResult Hypergraph::create_event_at(
     // signature values from the Event.
     events_.emplace_at(eid, arena_, eid, input_state, output_state, rule_index,
                        cons, num_consumed, prod, num_produced, INVALID_ID, rewrite_id);
+    record_event_forms(eid);
     const EventIdentity id = assign_event_identity(eid);
     note_published_event(eid);
 
@@ -1139,6 +1189,7 @@ EventId Hypergraph::create_genesis_event(StateId initial_state, const EdgeId* ed
                        nullptr, 0,  // consumed_edges (none)
                        produced, num_edges,  // produced_edges
                        INVALID_ID);
+    record_event_forms(eid);
     assign_event_identity(eid);
     note_published_event(eid);
 
@@ -1808,6 +1859,7 @@ void Hypergraph::qc_capture_expansion(EventId e) {
     m.consumed_slots = cs; m.produced_slots = ps;
     m.surv_from_slot = sfs; m.surv_to_slot = sts;
     m.child_source = csrc;
+    if (hgcommon::event_keys_mark_edges(event_signature_keys_)) m.forms = event_forms_[e];
 
     QcExpansion* xp;
     auto r = qc_expansion_.lookup(from);
@@ -2847,6 +2899,7 @@ Hypergraph::Hypergraph(uint32_t capacity_scale)
     , edge_signatures_(seg_shift_for(capacity_scale))
     , states_(seg_shift_for(capacity_scale))
     , events_(seg_shift_for(capacity_scale))
+    , event_forms_(seg_shift_for(capacity_scale))
     , canonical_state_map_(decltype(canonical_state_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
     , canonical_form_map_(decltype(canonical_form_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
     , event_canonical_state_map_(

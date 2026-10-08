@@ -4,6 +4,11 @@
 
 User-visible changes since v1.0.0-rc1:
 
+- In a `"CanonicalizeEvents"` key list, `"ConsumedEdges"` and `"ProducedEdges"` are the input and
+  output states with the consumed and produced edges marked, up to isomorphism. Such a list
+  counts the same events with and without `"ExploreFromCanonicalStatesOnly"` and at any thread
+  count, and runs on the CPU engine under `TargetDevice -> "GPU"`.
+
 - `"StepStatistics"`: for each step, the number of states, the isomorphism classes, the entropy
   of the states over the classes and summaries of per-state invariants, on both devices.
 - Every option of `Graph` is an option of `HGEvolve` and `HGSessionOpen` and goes to the graph a

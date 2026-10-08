@@ -183,6 +183,42 @@ TEST(OracleCorpus, EventKeyCollisionsKeepEventIdentityExact) {
     }
 }
 
+// A custom event key set counts the same events under full capture and under quotient
+// exploration, at 1, 4 and 8 threads, on every corpus case at its measure depth.
+TEST(OracleCorpus, CustomEventKeySetsAgreeAcrossRoutesAndThreads) {
+    struct Keys { const char* name; hgcommon::EventSignatureKeys keys; };
+    const Keys key_sets[] = {
+        {"Consumed",          EventKey_ConsumedEdges},
+        {"Produced",          EventKey_ProducedEdges},
+        {"ConsumedProduced",  EventKey_ConsumedEdges | EventKey_ProducedEdges},
+        {"RuleConsumed",      EventKey_Rule | EventKey_ConsumedEdges},
+        {"InputProduced",     EventKey_InputState | EventKey_ProducedEdges},
+        {"Automatic",         hgcommon::EVENT_SIG_AUTOMATIC},
+    };
+    for (const auto& c : oracle::corpus()) {
+        for (const auto& k : key_sets) {
+            std::set<uint64_t> seen;
+            for (bool quotient : {false, true}) {
+                for (unsigned t : {1u, 4u, 8u}) {
+                    for (int rep = 0; rep < 2; ++rep) {
+                        Hypergraph hg;
+                        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+                        hg.set_event_signature_keys(k.keys);
+                        ParallelEvolutionEngine engine(&hg, t);
+                        engine.set_explore_from_canonical_states_only(quotient);
+                        for (const auto& r : c.rules) engine.add_rule(r);
+                        engine.evolve(c.init, c.measure_steps);
+                        seen.insert(hg.observable_num_events());
+                    }
+                }
+            }
+            std::string counts;
+            for (uint64_t n : seen) counts += " " + std::to_string(n);
+            EXPECT_EQ(seen.size(), 1u) << c.name << " keys " << k.name << ":" << counts;
+        }
+    }
+}
+
 // The replay mints raw event and instance ids below a limit and refuses past it: the run counts
 // the refusals, the ids it issued stay below the limit, and the default limit refuses nothing.
 TEST(OracleCorpus, ReplayIdLimitTruncatesAndReports) {

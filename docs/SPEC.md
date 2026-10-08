@@ -109,6 +109,15 @@ states (§4.1). The class's key is the signature reported.
 | `Positional` | as `Automatic` | ranks read from each raw state's **own** labeling rather than the class frame — the upstream parity mode, below |
 | `{keys…}` | any subset of `"InputState"`, `"OutputState"`, `"Step"`, `"Rule"`, `"ConsumedEdges"`, `"ProducedEdges"` | a custom point of the lattice |
 
+In a key list, `"ConsumedEdges"` is the canonical hash of the input state with the consumed edges
+marked, and `"ProducedEdges"` that of the output state with the produced edges marked
+(`hgcommon::ir_colour_pad`; `reference/MultiwayReference.wl` `eventSigAutomaticCanonical`). A
+marked edge of arity k is extended to arity 17 by an added vertex, so the hash is a complete
+invariant of the state with its marked edges. A key list counts the same events under full capture
+and quotient exploration at any thread count (`OracleCorpus.CustomEventKeySetsAgreeAcrossRoutesAndThreads`).
+The GPU engine serves `None`, `Full` and `Automatic`; a key list runs on the CPU engine with an
+`Engine` warning (`GpuBinaryGate.ACustomEventKeySetRunsOnTheCpuEngine`).
+
 **`Automatic` is the linked-hypergraph convention**: ranks are resolved in the canonical frame of
 the state's isomorphism class, so the identity is a property of the event and not of the schedule
 or presentation that produced it. It is adjudicated step-exact against the authoritative

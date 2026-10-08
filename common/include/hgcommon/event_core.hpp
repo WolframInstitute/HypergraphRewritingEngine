@@ -30,8 +30,8 @@ enum EventSignatureKey : uint8_t {
     EventKey_OutputState    = 1 << 1,  // canonical output state
     EventKey_Step           = 1 << 2,
     EventKey_Rule           = 1 << 3,
-    EventKey_ConsumedEdges  = 1 << 4,  // canonical ranks of the consumed edges, in match order
-    EventKey_ProducedEdges  = 1 << 5,  // canonical ranks of the produced edges, in RHS order
+    EventKey_ConsumedEdges  = 1 << 4,  // the consumed edges (event_keys_mark_edges)
+    EventKey_ProducedEdges  = 1 << 5,  // the produced edges (event_keys_mark_edges)
 };
 
 using EventSignatureKeys = uint8_t;
@@ -55,12 +55,37 @@ constexpr EventSignatureKeys EVENT_SIG_AUTOMATIC =
 constexpr EventSignatureKeys EVENT_SIG_TRANSITION =
     EventKey_InputState | EventKey_Rule | EventKey_ConsumedEdges;
 
-// The values an event's signature is taken over, in order: the selected keys' fields, one value
-// per rank. Ranks are consumed IN ORDER -- match order for the consumed edges, RHS order for the
-// produced -- because Positional identity distinguishes which role an edge played, not merely
-// which edges took part. Two events are the same under `keys` exactly when these values are
-// equal; the signature is a 64-bit digest of them, and a table keyed by it compares the values
-// on a hit (hgcommon/canonical_form_core.hpp, two words per value).
+// HOW THE CONSUMED AND PRODUCED EDGES ENTER A SIGNATURE.
+//
+// Under the Automatic preset they enter as canonical RANKS, one value per edge, in match order
+// for the consumed edges and RHS order for the produced, as the Wolfram/Multicomputation paclet's
+// CanonicalEventFunction -> Automatic identifies them. A rank is fixed by the canonical labelling
+// only up to the state's automorphisms; with both endpoint states in the same signature the
+// count of distinct signatures does not depend on which labelling a run used.
+//
+// Under any other key set they enter as MARKED FORMS, one value each: the canonical hash of the
+// input state with its consumed edges marked, and of the output state with its produced edges
+// marked (ir_colour_pad; reference/MultiwayReference.wl eventSigAutomaticCanonical). A marked form
+// is an invariant of the event, so a key set that compares edges across states without both
+// endpoint states counts the same events on either route, at any thread count.
+HG_HD inline bool event_keys_mark_edges(EventSignatureKeys keys) {
+    return (keys & (EventKey_ConsumedEdges | EventKey_ProducedEdges)) != 0 &&
+           keys != EVENT_SIG_AUTOMATIC;
+}
+
+// The two marked forms of one event: [0] the input state with the consumed edges marked, [1] the
+// output state with the produced edges marked.
+struct EventMarkedForms {
+    uint64_t consumed = 0;
+    uint64_t produced = 0;
+};
+
+// The values an event's signature is taken over, in order: the selected keys' fields. Two
+// events are the same under `keys` exactly when these values are equal; the signature is a
+// 64-bit digest of them, and a table keyed by it compares the values on a hit
+// (hgcommon/canonical_form_core.hpp, two words per value). An event identity passes `forms` when
+// event_keys_mark_edges(keys) and the ranks otherwise; the transition key (EVENT_SIG_TRANSITION)
+// reads ranks.
 constexpr uint32_t EVENT_SIG_MAX_VALUES = 4u + 2u * MAX_PATTERN_EDGES;
 
 HG_HD inline uint32_t event_signature_values(
@@ -69,13 +94,18 @@ HG_HD inline uint32_t event_signature_values(
     uint32_t step, uint16_t rule_index,
     const uint32_t* consumed_ranks, uint8_t num_consumed,
     const uint32_t* produced_ranks, uint8_t num_produced,
-    uint64_t* out)
+    uint64_t* out, const EventMarkedForms* forms = nullptr)
 {
     uint32_t n = 0;
     if (keys & EventKey_InputState)  out[n++] = input_state_hash;
     if (keys & EventKey_OutputState) out[n++] = output_state_hash;
     if (keys & EventKey_Step)        out[n++] = static_cast<uint64_t>(step);
     if (keys & EventKey_Rule)        out[n++] = static_cast<uint64_t>(rule_index);
+    if (forms) {
+        if (keys & EventKey_ConsumedEdges) out[n++] = forms->consumed;
+        if (keys & EventKey_ProducedEdges) out[n++] = forms->produced;
+        return n;
+    }
     if (keys & EventKey_ConsumedEdges)
         for (uint8_t i = 0; i < num_consumed; ++i) out[n++] = consumed_ranks[i];
     if (keys & EventKey_ProducedEdges)

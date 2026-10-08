@@ -141,6 +141,8 @@ struct SlotMatch {
     // (hgcommon::qr_cached_key); accessed through atomic_ref.
     mutable uint64_t runsig_key = 0;
     mutable uint32_t runsig_step = hgcommon::QR_NO_STEP;
+    // The marked forms of the raw event this match was captured from.
+    hgcommon::EventMarkedForms forms;
 
     // Accessors, because hgcommon/quotient_replay_core.hpp reads the slot arrays through them
     // and the device packs its four into one contiguous word arena. The replay walks both
@@ -152,6 +154,7 @@ struct SlotMatch {
     // The signature reads consumed/produced as CONTIGUOUS runs in match/RHS order.
     const uint32_t* consumed_ptr() const;
     const uint32_t* produced_ptr() const;
+    const hgcommon::EventMarkedForms* marked_forms() const { return &forms; }
 };
 
 }  // namespace engine
