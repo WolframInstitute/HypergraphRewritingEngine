@@ -7,6 +7,8 @@
 // hgcommon cores reach.
 
 #include <map>
+#include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -408,12 +410,18 @@ uint32_t QeState::num_instances_host() { return instances_.size_host(); }
 // and runs again.
 void QeState::ensure_work(uint32_t slices, uint32_t max_steps, uint32_t scale) {
     if (!on_) return;
-    const uint32_t cap = (max_steps * 64u < 256u ? 256u : max_steps * 64u) * scale;
+    // In 64 bits: a slice holds at most 2^32 - 1 items, its index is 32 bits on the device.
+    const uint64_t per_level = uint64_t{max_steps} * 64u;
+    const uint64_t want = (per_level < 256u ? 256u : per_level) * uint64_t{scale};
+    if (want > UINT32_MAX)
+        throw std::length_error("multiplicity queues of " + std::to_string(want) +
+                                " items per driver are past 2^32");
+    const uint32_t cap = static_cast<uint32_t>(want);
     if (work_items_ && work_slices_ >= slices && work_cap_ >= cap) return;
     if (work_items_) { cudaFree(work_items_); work_items_ = nullptr; }
     work_slices_ = slices > work_slices_ ? slices : work_slices_;
     work_cap_    = cap > work_cap_ ? cap : work_cap_;
-    const size_t bytes = sizeof(QeWorkItem) * work_slices_ * work_cap_;
+    const size_t bytes = sizeof(QeWorkItem) * size_t{work_slices_} * size_t{work_cap_};
     HG_CUDA_CHECK(cudaMalloc(&work_items_, bytes), "QeState multiplicity queues alloc");
 }
 
