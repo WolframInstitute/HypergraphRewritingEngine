@@ -900,6 +900,28 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // Full canonicalization mode: IR-based dedup, exact edge correspondence, canonical output
         const bool full_canonicalization = (req.state_canon_mode == hypergraph::StateCanonicalizationMode::Full);
 
+        // The Step a state record reports. Under Full it is the class's: the least step of any
+        // raw state in the class, the shortest depth that reaches it. The class's representative
+        // is the raw state that won the dedup claim, and its own step depends on the schedule.
+        // Computed on first use, after the evolution.
+        std::vector<uint32_t> class_min_step;
+        auto reported_step = [&](uint32_t sid) -> uint32_t {
+            if (!full_canonicalization) return hg.get_state(sid).step;
+            if (class_min_step.empty()) {
+                const uint32_t n = hg.num_published_states();
+                class_min_step.assign(n ? n : 1, UINT32_MAX);
+                for (uint32_t s = 0; s < n; ++s) {
+                    const hypergraph::State& st = hg.get_state(s);
+                    if (st.id == hypergraph::INVALID_ID) continue;
+                    const uint32_t c = hg.get_canonical_state(s);
+                    if (c < n && st.step < class_min_step[c]) class_min_step[c] = st.step;
+                }
+            }
+            const uint32_t c = hg.get_canonical_state(sid);
+            return c < class_min_step.size() && class_min_step[c] != UINT32_MAX
+                       ? class_min_step[c] : hg.get_state(sid).step;
+        };
+
         // What this call must RECORD, derived from what it will return. An artifact nothing asked
         // for is not built at all. Every consumer is named here and nowhere else:
         //
@@ -1185,7 +1207,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                         static_cast<int64_t>(sid),
                         static_cast<int64_t>(hg.get_canonical_state(sid)),
                         static_cast<int64_t>(content_hash_to_id.at(state_content_hashes[sid])),
-                        static_cast<int64_t>(state.step),
+                        static_cast<int64_t>(reported_step(sid)),
                         req.include_canonical_hashes, static_cast<int64_t>(exact_hash)},
                     full_canonicalization, std::move(edges));
             }
@@ -1578,13 +1600,13 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
 
             // Helper: Serialize state data for tooltips
             auto serialize_state_data = [&](hypergraph::StateId sid) -> wxf::WXFValueAssociation {
-                const hypergraph::State& state = hg.get_state(sid);
                 wxf::WXFValueAssociation d;
                 d.push_back({wxf::WXFValue("Id"), wxf::WXFValue(static_cast<int64_t>(sid))});
                 d.push_back({wxf::WXFValue("CanonicalId"), wxf::WXFValue(static_cast<int64_t>(hg.get_canonical_state(sid)))});
-                d.push_back({wxf::WXFValue("Step"), wxf::WXFValue(static_cast<int64_t>(state.step))});
+                const uint32_t step = reported_step(sid);
+                d.push_back({wxf::WXFValue("Step"), wxf::WXFValue(static_cast<int64_t>(step))});
                 d.push_back({wxf::WXFValue("Edges"), wxf::WXFValue(serialize_state_edges(sid))});
-                d.push_back({wxf::WXFValue("IsInitial"), wxf::WXFValue(state.step == 0)});
+                d.push_back({wxf::WXFValue("IsInitial"), wxf::WXFValue(step == 0)});
                 return d;
             };
 

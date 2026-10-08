@@ -1007,6 +1007,67 @@ TEST(WxfSerializationPin, TheEmptyStateHasOneCanonicalHash) {
     }
 }
 
+// Under Full a state record's Step is its class's least step, the same in every run. Two rules
+// whose classes are reached at several depths; 12 runs at the default worker count.
+TEST(WxfSerializationPin, FullStateStepIsTheClassLeastStep) {
+    auto job = [] {
+        wxf::Writer w;
+        w.write_header();
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        w.write_varint(4);
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("InitialStates"));
+        w.write(StateList{{{3, 1}, {3, 2, 1}, {3, 2}, {1, 1}, {3, 3}}});
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Rules"));
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        w.write_varint(2);
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("r0"));
+        w.write_function("Rule", 2);
+        w.write(EdgeList{{4, 3}, {1, 2}});
+        w.write(EdgeList{{5, 5}, {2, 3}});
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("r1"));
+        w.write_function("Rule", 2);
+        w.write(EdgeList{{3, 2, 3}, {2, 2}});
+        w.write(EdgeList{{3, 2, 2}, {2, 2, 3}, {2, 2, 2}});
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Steps"));
+        w.write(int64_t{4});
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Options"));
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        w.write_varint(2);
+        put_str_option(w, "CanonicalizeStates", "Full");
+        put_str_option(w, "IncludeCanonicalHashes", "True");
+        return w.release_data();
+    };
+    std::set<std::set<std::pair<int64_t, int64_t>>> seen;
+    for (int rep = 0; rep < 12; ++rep) {
+        HostBridge host;
+        const auto out = run_rewriting_core(job(), host);
+        std::set<std::pair<int64_t, int64_t>> hash_step;
+        wxf::Parser parser(out);
+        parser.skip_header();
+        parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+            if (k != "States") { vp.skip_value(); return; }
+            vp.read_association_generic([&](wxf::Parser& kp, wxf::Parser& valp) {
+                kp.skip_value();
+                int64_t h = 0, step = -1;
+                valp.read_association([&](const std::string& fk, wxf::Parser& fvp) {
+                    if (fk == "CanonicalHash") h = fvp.read<int64_t>();
+                    else if (fk == "Step") step = fvp.read<int64_t>();
+                    else fvp.skip_value();
+                });
+                hash_step.insert({h, step});
+            });
+        });
+        seen.insert(hash_step);
+    }
+    EXPECT_EQ(seen.size(), 1u);
+}
+
 TEST(WxfSerializationPin, MinimalEvents) {
     // RequestedData -> {"EventsMinimal"}: only the minimal Events association is emitted.
     auto input = build_input(kSeed, kLhs, kRhs, 2,
