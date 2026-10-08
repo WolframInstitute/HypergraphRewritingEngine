@@ -1684,7 +1684,7 @@ void Hypergraph::qc_record_causal(uint32_t producer, uint32_t consumer, bool dis
     // Appending to this worker's own list touches no line another worker reads.
     if (!distinct_pair) return;
     const int w = arena_worker_index();
-    qc_causal_pairs_[w >= 0 ? w : 0].push(qc_pair_key(producer, consumer), arena_);
+    qc_causal_pairs_[w >= 0 ? w : 0].list.push(qc_pair_key(producer, consumer), arena_);
     HG_STAT(qc_count(qc_ctr_, &QcCounterSlot::causal_pairs));
 
 }

@@ -412,15 +412,19 @@ class Hypergraph {
     // MEASURED as the reason: this set took 95,600 inserts on cycle4 against qc_applied_'s
     // 68,184, and ConcurrentKeySet::insert went from 12.9% of the run at one thread to 41.2% at
     // four on a part whose cores do not share a last-level cache.
-    LockFreeList<uint64_t> qc_causal_pairs_[MAX_ARENA_WORKERS];
+    // One list head per 64-byte line: eight 8-byte heads on one line made every push a
+    // contended compare-and-swap (multirule depth 7 quotient, 16 threads: 44% of the run in this
+    // push's retry loop).
+    struct alignas(64) QcPairList { LockFreeList<uint64_t> list; };
+    QcPairList qc_causal_pairs_[MAX_ARENA_WORKERS];
 
     template <typename F>
     void qc_causal_pairs_for_each(F&& f) const {
-        for (const LockFreeList<uint64_t>& l : qc_causal_pairs_) l.for_each(f);
+        for (const QcPairList& l : qc_causal_pairs_) l.list.for_each(f);
     }
     size_t qc_causal_pairs_count() const {
         size_t n = 0;
-        for (const LockFreeList<uint64_t>& l : qc_causal_pairs_) n += l.size();
+        for (const QcPairList& l : qc_causal_pairs_) n += l.list.size();
         return n;
     }
     // Isomorphism-invariant signature per reconstructed event: fnv(from hash, to hash, rule).
