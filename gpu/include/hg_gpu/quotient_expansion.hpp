@@ -408,29 +408,14 @@ __device__ __forceinline__ uint32_t qe_rank_of(const DeviceState& ds, StateId si
     return i == UINT32_MAX ? UINT32_MAX : ds.state_edge_rank[i];
 }
 
-// Register `sid` as the frame of its class if no state holds it yet, recording the step the
-// signature reads. Idempotent, and the winner is whichever state gets there first -- which is
-// all the frame has to be, since every state of the class is isomorphic to it.
-// TRUE when the class's frame or its step could not be recorded because a table is full.
-//
-// The caller has to be told, because the failure LATCHES and is otherwise silent: once a table
-// saturates every later insert returns immediately, so from the first overflow onward no class
-// receives a frame step, every replayed event signs with its instance depth instead of the
-// class's, and the signature sets go disjoint. The engine's contract is a partial answer with a
-// warning, not a quiet substitution -- state_identity records kCanonicalMapFull for the same
-// condition on the dedup map.
-//
-// The owner and the step are ONE value in ONE map, so a class is either published complete or
-// not published at all. Two maps under one flag left a loser of the first insert reading the
-// second before the winner wrote it -- finding the slot EMPTY rather than locked, so there was
-// nothing to wait on -- and taking its own depth as the class's.
-__device__ __forceinline__ bool qe_register_frame(QeView qe, uint64_t class_hash, StateId sid,
-                                                  uint32_t step) {
-    // ONE insert. The owner and its step are published together or not at all, so a thread that
-    // loses this exchange cannot observe the class mid-publication -- there is no second write
-    // for it to arrive ahead of.
+// Register `sid` as the frame of its class if no state holds it yet. Idempotent, and the winner
+// is whichever state gets there first -- which is all the frame has to be, since every state of
+// the class is isomorphic to it. TRUE when the map is full and the frame could not be recorded:
+// a full map refuses every later insert, so the caller reports kCanonicalMapFull rather than
+// replaying against classes with no frame.
+__device__ __forceinline__ bool qe_register_frame(QeView qe, uint64_t class_hash, StateId sid) {
     return qe.frame.insert_if_absent(
-        class_hash, hgcommon::id_key(step, static_cast<uint32_t>(sid))).overflowed;
+        class_hash, hgcommon::id_key(0u, static_cast<uint32_t>(sid))).overflowed;
 }
 
 // Alignment outcomes counted into a caller's local and published when it returns.
@@ -499,14 +484,6 @@ __device__ inline void qe_for_each_match_from(QeView qe, uint64_t from_hash, F&&
         if (r.from_hash != from_hash) return;
         f(qe.matches.at(r.record));
     });
-}
-
-// The step of the class's frame state, which an event signature records as the output step;
-// `fallback` when the class holds no frame.
-__device__ inline uint32_t qe_frame_step(const QeView& qe, uint64_t class_hash, uint32_t fallback) {
-    const auto fs = qe.frame.lookup(class_hash);
-    if (!fs.found || fs.value == 0) return fallback;
-    return hgcommon::id_pair_from_key(fs.value).a;
 }
 
 // A replay application's event class, the host's Hypergraph::claim_replay_event: the run
@@ -656,9 +633,6 @@ struct DeviceQmCtx {
         qe_qm_add(&qe.qm_counts[0], events);
     }
     __device__ hgcommon::EventSignatureKeys keys() const { return qe.keys; }
-    __device__ uint32_t frame_step(uint64_t class_hash, uint32_t fallback) const {
-        return qe_frame_step(qe, class_hash, fallback);
-    }
     __device__ void note_signature(const QeMatchView& m, uint64_t from_class, uint32_t out_step) {
         if (qe_claim_runsig(ds, qe, m, from_class, out_step).won) atomicAdd(qe.num_canon, 1u);
     }
@@ -795,8 +769,8 @@ __device__ inline void qe_capture_expansion(const DeviceState& ds, QeView qe,
             // Both endpoints are given a frame before any slot is taken, so every slot below
             // resolves. A short-circuiting || would skip the second whenever the first
             // overflowed, and the second is what the child side's slots resolve against.
-            const bool frame_from = qe_register_frame(qe, from, parent, depth);
-            const bool frame_to   = qe_register_frame(qe, to, child, depth + 1u);
+            const bool frame_from = qe_register_frame(qe, from, parent);
+            const bool frame_to   = qe_register_frame(qe, to, child);
             if (frame_from || frame_to) ds.errors.record(ErrorKind::kCanonicalMapFull);
         }
     }
@@ -1027,7 +1001,7 @@ __device__ inline void qe_seed_root_instance(const DeviceState& ds, QeView qe, S
     const uint64_t h = ds.state_canonical_hash[root];
     const uint32_t nslots = ds.state_edge_slices[root].count;
 
-    if (qe_register_frame(qe, h, root, 0u)) ds.errors.record(ErrorKind::kCanonicalMapFull);
+    if (qe_register_frame(qe, h, root)) ds.errors.record(ErrorKind::kCanonicalMapFull);
 
     // The frame above is registered whatever the caller records: event identity reads it. The
     // instance below is the root of the replay, and without it no descendant instance exists,
@@ -1192,11 +1166,6 @@ struct DeviceQrCtx {
         }
     }
     __device__ hgcommon::EventSignatureKeys keys() const { return qe.keys; }
-    // The canonical OUTPUT class's step, which is one value per class rather than the depth this
-    // instance happens to sit at; the caller's depth stands in when the class holds no frame.
-    __device__ uint32_t frame_step(uint64_t class_hash, uint32_t fallback) const {
-        return qe_frame_step(qe, class_hash, fallback);
-    }
     __device__ void record_runsig(uint32_t ev, const QeMatchView& m, uint64_t from_class,
                                   uint32_t out_step) {
         const QeRunsigClaim c = qe_claim_runsig(ds, qe, m, from_class, out_step);

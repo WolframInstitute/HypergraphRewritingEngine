@@ -109,6 +109,9 @@ states (§4.1). The class's key is the signature reported.
 | `Positional` | as `Automatic` | ranks read from each raw state's **own** labeling rather than the class frame — the upstream parity mode, below |
 | `{keys…}` | any subset of `"InputState"`, `"OutputState"`, `"Step"`, `"Rule"`, `"ConsumedEdges"`, `"ProducedEdges"` | a custom point of the lattice |
 
+`"Step"` is the event's own step, the step of the raw state it produces (`hgcommon::qr_out_step`),
+on both engines and both routes.
+
 In a key list, `"ConsumedEdges"` is the canonical hash of the input state with the consumed edges
 marked, and `"ProducedEdges"` that of the output state with the produced edges marked
 (`hgcommon::ir_colour_pad`; `reference/MultiwayReference.wl` `eventSigAutomaticCanonical`). A

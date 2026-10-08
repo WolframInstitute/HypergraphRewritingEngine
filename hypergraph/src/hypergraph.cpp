@@ -814,13 +814,12 @@ uint32_t Hypergraph::event_values_of(EventId e, uint64_t* out, bool count_fallba
         const EdgeRankTable* t = edge_rank_table(ev.output_state);
         for (uint8_t i = 0; i < np; ++i) produced_ranks[i] = rank(t, ev.produced_edges[i]);
     }
-    const State& canonical_out =
-        get_state(get_canonical_state_for_event(ev.output_state));
+    // The event's own step: the step of the raw state it produced (hgcommon::qr_out_step).
     return hgcommon::event_signature_values(
         keys,
         (keys & EventKey_InputState)  ? get_or_compute_canonical_hash(ev.input_state)  : 0,
         (keys & EventKey_OutputState) ? get_or_compute_canonical_hash(ev.output_state) : 0,
-        canonical_out.step, ev.rule_index, consumed_ranks, nc, produced_ranks, np, out,
+        get_state(ev.output_state).step, ev.rule_index, consumed_ranks, nc, produced_ranks, np, out,
         hgcommon::event_keys_mark_edges(keys) ? &event_forms_[e] : nullptr);
 }
 
@@ -2527,18 +2526,6 @@ hgcommon::EventSignatureKeys Hypergraph::QrCtx::keys() const {
     return hg.event_signature_keys();
 }
 
-uint32_t Hypergraph::QrCtx::frame_step(uint64_t class_hash, uint32_t fallback) const {
-    return hg.qc_frame_step(class_hash, fallback);
-}
-
-// The step of the class's frame state, which is what an event signature records as the output
-// step; `fallback` when the class has no frame yet.
-uint32_t Hypergraph::qc_frame_step(uint64_t class_hash, uint32_t fallback) const {
-    if (auto fo = qc_frame_.lookup(class_hash))
-        return get_state(static_cast<StateId>(*fo - 1)).step;
-    return fallback;
-}
-
 // The replay's event class, claimed on the signature's values like every event identity; the
 // class's key is the signature recorded for the event.
 void Hypergraph::QrCtx::record_runsig(uint32_t ev, const SlotMatch& m, uint64_t from_class,
@@ -2800,10 +2787,6 @@ bool Hypergraph::QmCtx::advance(const SlotMatch& m, uint32_t depth, uint64_t& ex
 void Hypergraph::QmCtx::count(uint64_t events) { hg.qm_add(hg.qm_events_, events); }
 
 hgcommon::EventSignatureKeys Hypergraph::QmCtx::keys() const { return hg.event_signature_keys(); }
-
-uint32_t Hypergraph::QmCtx::frame_step(uint64_t class_hash, uint32_t fallback) const {
-    return hg.qc_frame_step(class_hash, fallback);
-}
 
 void Hypergraph::QmCtx::note_signature(const SlotMatch& m, uint64_t from_class,
                                         uint32_t out_step) {

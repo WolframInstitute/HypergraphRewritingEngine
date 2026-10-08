@@ -184,7 +184,8 @@ TEST(OracleCorpus, EventKeyCollisionsKeepEventIdentityExact) {
 }
 
 // A custom event key set counts the same events under full capture and under quotient
-// exploration, at 1, 4 and 8 threads, on every corpus case at its measure depth.
+// exploration, at 1, 4 and 8 threads, on every corpus case at its measure depth. The Step
+// component is the event's own step.
 TEST(OracleCorpus, CustomEventKeySetsAgreeAcrossRoutesAndThreads) {
     struct Keys { const char* name; hgcommon::EventSignatureKeys keys; };
     const Keys key_sets[] = {
@@ -194,6 +195,10 @@ TEST(OracleCorpus, CustomEventKeySetsAgreeAcrossRoutesAndThreads) {
         {"RuleConsumed",      EventKey_Rule | EventKey_ConsumedEdges},
         {"InputProduced",     EventKey_InputState | EventKey_ProducedEdges},
         {"Automatic",         hgcommon::EVENT_SIG_AUTOMATIC},
+        {"Step",              EventKey_Step},
+        {"StepRule",          EventKey_Step | EventKey_Rule},
+        {"InputStep",         EventKey_InputState | EventKey_Step},
+        {"ConsumedStep",      EventKey_ConsumedEdges | EventKey_Step},
     };
     for (const auto& c : oracle::corpus()) {
         for (const auto& k : key_sets) {

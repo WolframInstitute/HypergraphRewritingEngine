@@ -542,7 +542,6 @@ class Hypergraph {
         uint32_t mint_event(uint32_t above);
         void record_content(uint32_t ev, uint64_t from_class, uint64_t to_class, uint32_t rule);
         hgcommon::EventSignatureKeys keys() const;
-        uint32_t frame_step(uint64_t class_hash, uint32_t fallback) const;
         // Kept per event as well as counted, so the causal and branchial accessors report the
         // relation under the identity the CALLER selected -- reporting the internal triple
         // instead makes every pair look like a disagreement with full capture.
@@ -581,7 +580,6 @@ class Hypergraph {
         bool advance(const SlotMatch& m, uint32_t depth, uint64_t& expected, uint64_t desired);
         void count(uint64_t events);
         hgcommon::EventSignatureKeys keys() const;
-        uint32_t frame_step(uint64_t class_hash, uint32_t fallback) const;
         void note_signature(const SlotMatch& m, uint64_t from_class, uint32_t out_step);
         bool claim_queued(uint64_t class_hash, uint32_t depth);
         void push(uint64_t class_hash, uint32_t depth);
@@ -594,7 +592,6 @@ class Hypergraph {
     };
     static uint64_t qm_point_key(uint64_t class_hash, uint32_t depth);
     static uint64_t qm_consumed_key(uint32_t match_id, uint32_t depth);
-    uint32_t qc_frame_step(uint64_t class_hash, uint32_t fallback) const;
     QmPoint* qm_point(uint64_t class_hash, uint32_t depth);
     std::atomic<uint64_t>* qm_consumed_cell(uint32_t match_id, uint32_t depth);
     // Add `delta` to a counter, stopping at QM_SATURATED.

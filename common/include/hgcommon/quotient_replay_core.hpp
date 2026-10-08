@@ -47,7 +47,6 @@
 //                                          exhausted (QR_ID_LIMIT), which the Ctx reports
 //   void     record_content(uint32_t ev, uint64_t from_class, uint64_t to_class, uint32_t rule);
 //   EventSignatureKeys keys() const;           EVENT_SIG_NONE to skip the run signature
-//   uint32_t frame_step(uint64_t class_hash, uint32_t fallback) const;
 //   void     record_runsig(uint32_t ev, const Match& m, uint64_t from_class, uint32_t out_step);
 //                                          the run signature of `m` applied: a function of the
 //                                          three (qr_signature_values)
@@ -249,13 +248,12 @@ HG_HD inline bool qr_same_values(const QrRunSignature& a, const QrRunSignature& 
     return true;
 }
 
-// The output step a run signature records: the canonical OUTPUT state's step, not this replay's
-// depth. Full capture signs with one value per class; the depth is where this instance happens
-// to sit, so signing with it makes the two signature sets disjoint for every event.
-template <class Ctx>
-HG_HD uint32_t qr_out_step(const Ctx& c, const typename Ctx::Match& m, uint32_t depth) {
-    return c.frame_step(m.to_hash, depth);
-}
+// The step a run signature records: the event's own step, the step of the raw state it
+// produces. An application to an instance at `depth` produces a state at depth + 1, as a raw
+// event from a state at step s produces one at s + 1 under full capture (the host's output
+// state's step, the device's DeviceEvent::step). Known when the event is made, so it does not
+// depend on which state of a class was explored first.
+HG_HD inline uint32_t qr_out_step(uint32_t depth) { return depth + 1u; }
 
 // Whether two matches of one state consume a common slot: the branchial test. `mine` holds the
 // first match's consumed slots; `other` supplies num_consumed and consumed(j).
@@ -378,7 +376,7 @@ HG_HD uint32_t qr_apply(Ctx& c, const typename Ctx::Instance& inst,
     // full capture reads canonical ranks; the endpoint classes are in the same signature, and
     // both are injective on a state's edges, so the count of distinct signatures is the same.
     if (c.keys() != EVENT_SIG_NONE) {
-        c.record_runsig(ev, m, state_hash, qr_out_step(c, m, depth));
+        c.record_runsig(ev, m, state_hash, qr_out_step(depth));
     }
 
     if (causal) {

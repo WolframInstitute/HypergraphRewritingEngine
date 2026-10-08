@@ -63,7 +63,7 @@
 //                              compare-and-swap on consumed_j(depth); on failure `expected`
 //                              holds the current value
 //   void     count(uint64_t events);   saturating add
-//   hgcommon::EventSignatureKeys keys() const;  uint32_t frame_step(uint64_t, uint32_t) const;
+//   hgcommon::EventSignatureKeys keys() const;
 //   void     note_signature(const Match& m, uint64_t from_class, uint32_t out_step);   the
 //                                          run's distinct-event set (qr_signature_values)
 //   bool     claim_queued(uint64_t class_hash, uint32_t depth);   set the flag; true if it was clear
@@ -160,7 +160,7 @@ HG_HD void qm_pass(Ctx& c, const typename Ctx::Match& m, uint64_t state_hash, ui
     const uint64_t delta = have - done;
     c.count(delta);
     if (c.keys() != EVENT_SIG_NONE) {
-        c.note_signature(m, state_hash, qr_out_step(c, m, depth));
+        c.note_signature(m, state_hash, qr_out_step(depth));
     }
     qm_credit(c, m.to_hash, depth + 1, delta);
 }
