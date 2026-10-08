@@ -21,13 +21,7 @@ void RewriteRule::compute_var_counts() {
 
     compute_match_order();
 
-    // Precompute per-edge signature + compatible-signature cache once, so match
-    // tasks never repeat the from_pattern Bell enumeration. Indexed by original
-    // LHS edge index (see lhs_sig / lhs_cache).
-    for (uint8_t i = 0; i < num_lhs_edges; ++i) {
-        lhs_sig[i] = lhs[i].signature();
-        lhs_cache[i] = CompatibleSignatureCache::from_pattern(lhs_sig[i]);
-    }
+    for (uint8_t i = 0; i < num_lhs_edges; ++i) lhs_sig[i] = lhs[i].signature();
 }
 
 int RewriteRule::edge_constraint_score(uint8_t e) const {

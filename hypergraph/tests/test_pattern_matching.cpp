@@ -839,39 +839,58 @@ TEST(EngineIntegration, SelfLoopEvolution) {
     EXPECT_EQ(unary.vertices[0], 0);
 }
 
-// A high-arity all-distinct pattern edge has more compatible data signatures (Bell(arity)) than
-// the CompatibleSignatureCache holds (64). Candidate generation tests each edge's signature
-// directly, so every one of the Bell(6) = 203 signature classes is found.
-TEST(PatternMatchingBellOverflow, EveryCompatibleSignatureIsFound) {
-    const uint8_t arity = 6;
-    uint8_t pattern_vars[arity] = {0, 1, 2, 3, 4, 5};
-    EdgeSignature pattern_sig = EdgeSignature::from_pattern(pattern_vars, arity);
-    CompatibleSignatureCache cache = CompatibleSignatureCache::from_pattern(pattern_sig);
-    ASSERT_TRUE(cache.overflowed) << "arity-6 all-distinct should overflow the signature cache";
+// Single-edge patterns of arity 1..16 against data edges of every repetition shape listed below.
+// The matched edges are exactly those a brute-force check accepts: wherever the pattern repeats a
+// variable, the data edge repeats the vertex. Building the arity-16 rule and matching it takes
+// milliseconds (a set-partition enumeration over the 16 variables visits Bell(16) = 1.05e10
+// partitions).
+TEST(PatternMatchingArity, SingleEdgeMatchesEqualBruteForceUpToArity16) {
+    using Shape = std::vector<uint8_t>;
+    auto shapes_of = [](uint8_t k) {
+        std::vector<Shape> s;
+        Shape distinct(k), same(k, 0), first_two(k), first_last(k), alternating(k), halves(k);
+        for (uint8_t i = 0; i < k; ++i) {
+            distinct[i] = i;
+            first_two[i] = i == 0 ? 0 : static_cast<uint8_t>(i - 1);
+            first_last[i] = i == k - 1 ? 0 : i;
+            alternating[i] = i % 2;
+            halves[i] = i < k / 2 ? 0 : i;
+        }
+        for (const Shape& x : {distinct, same, first_two, first_last, alternating, halves}) s.push_back(x);
+        return s;
+    };
+    for (uint8_t k = 1; k <= 16; ++k) {
+        const std::vector<Shape> shapes = shapes_of(k);
+        TestHypergraph hg;
+        std::vector<EdgeId> data;
+        for (size_t d = 0; d < shapes.size(); ++d) {
+            std::vector<VertexId> verts(k);
+            for (uint8_t i = 0; i < k; ++i) verts[i] = static_cast<VertexId>(100 * d + shapes[d][i]);
+            const EdgeId eid = hg.hg.create_edge(verts.data(), k);
+            hg.ids.push_back(eid);
+            data.push_back(eid);
+        }
+        // One edge of another arity, which no pattern here matches.
+        std::vector<VertexId> other(k == 1 ? 2 : k - 1, 7);
+        hg.ids.push_back(hg.hg.create_edge(other.data(), other.size()));
 
-    std::vector<EdgeSignature> sigs;
-    enumerate_compatible_signatures(
-        pattern_sig,
-        [](const EdgeSignature& s, void* ud) {
-            static_cast<std::vector<EdgeSignature>*>(ud)->push_back(s);
-        },
-        &sigs);
-    ASSERT_GT(sigs.size(), static_cast<size_t>(CompatibleSignatureCache::MAX_CACHED_SIGS));
-
-    // One data edge per compatible signature, all in one root state.
-    Hypergraph hg;
-    std::vector<EdgeId> ids;
-    for (size_t i = 0; i < sigs.size(); ++i) {
-        VertexId verts[arity];
-        VertexId base = static_cast<VertexId>(i) * arity + 1000;
-        for (uint8_t p = 0; p < arity; ++p) verts[p] = base + sigs[i].pattern[p];
-        ids.push_back(hg.create_edge(verts, arity));
+        for (const Shape& p : shapes) {
+            RewriteRule rule = make_rule(0).lhs(p).rhs(p).build();
+            std::set<EdgeId> expected;
+            for (size_t d = 0; d < shapes.size(); ++d) {
+                bool ok = true;
+                for (uint8_t i = 0; i < k && ok; ++i)
+                    for (uint8_t j = 0; j < k && ok; ++j)
+                        if (p[i] == p[j] && shapes[d][i] != shapes[d][j]) ok = false;
+                if (ok) expected.insert(data[d]);
+            }
+            std::set<EdgeId> found;
+            find_matches(rule, 0, 0, hg.edges(), hg.candidates(), hg.get_edge_accessor(),
+                         [&](uint16_t, const EdgeId* edges, uint8_t, const VariableBinding&, StateId) {
+                             found.insert(edges[0]);
+                         });
+            EXPECT_EQ(found, expected) << "arity " << int(k);
+        }
     }
-    StateId s0 = hg.create_state(ids.data(), static_cast<uint32_t>(ids.size()));
-    const State& st = hg.get_state(s0);
-    AncestryCandidates cands{&hg, s0, &st.edges};
-    std::set<EdgeId> found;
-    cands.for_each_edge_compatible(pattern_sig, [&](EdgeId eid) { return hg.edge_signature(eid); },
-                                   [&](EdgeId e) { found.insert(e); });
-    EXPECT_EQ(found.size(), sigs.size());
 }
+

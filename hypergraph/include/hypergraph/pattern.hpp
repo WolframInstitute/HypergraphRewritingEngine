@@ -91,12 +91,9 @@ struct alignas(8) RewriteRule {
     // to identity (declaration order) until computed. Same matches, better search.
     uint8_t match_order[MAX_PATTERN_EDGES];
 
-    // Per-rule precomputed matching data, indexed by ORIGINAL LHS edge index (the
-    // same index space as lhs[]; match_order maps into it). Filled once by
-    // compute_var_counts so per-task matching reads these instead of re-running the
-    // recursive Bell-number set-partition enumeration in from_pattern per task.
+    // Each LHS edge's signature, indexed by ORIGINAL LHS edge index (the same index space
+    // as lhs[]; match_order maps into it). Filled once by compute_var_counts.
     EdgeSignature lhs_sig[MAX_PATTERN_EDGES];
-    CompatibleSignatureCache lhs_cache[MAX_PATTERN_EDGES];
 
     // Default constructor
     RewriteRule();

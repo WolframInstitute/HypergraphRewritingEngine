@@ -1893,8 +1893,7 @@ void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
         return hg_->edge_signature(eid);
     };
 
-    // Per-edge pattern signatures and compatible-signature caches are precomputed
-    // once on the rule (rule.lhs_sig / rule.lhs_cache); read them here.
+    // Per-edge pattern signatures are precomputed once on the rule (rule.lhs_sig).
 
     // Single-edge rules complete a match on the seed itself. Collect them here and expand
     // them together at the end rather than one task per match: they are all children of the
@@ -1956,12 +1955,11 @@ void ParallelEvolutionEngine::execute_scan_task(const ScanTaskData& data) {
         const uint8_t first_pidx = rule.match_order[0];
         const PatternEdge& first_edge = rule.lhs[first_pidx];
         const EdgeSignature& first_sig = rule.lhs_sig[first_pidx];
-        const CompatibleSignatureCache& first_cache = rule.lhs_cache[first_pidx];
 
         // Generate candidates for first edge
         const VariableBinding unbound;
         generate_candidates(
-            first_edge, first_sig, first_cache,
+            first_edge, first_sig,
             unbound.bindings, unbound.bound_mask, s.edges, cands, get_edge,
             [&](EdgeId candidate, const auto& edge) {
                 if (should_stop_.load(std::memory_order_relaxed)) return;
@@ -2045,7 +2043,6 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
 
     const PatternEdge& pattern_edge = rule.lhs[pattern_idx];
     const EdgeSignature& pattern_sig = rule.lhs_sig[pattern_idx];
-    const CompatibleSignatureCache& sig_cache = rule.lhs_cache[pattern_idx];
 
     // Completions of the LAST pattern edge are siblings: same parent, same rule, differing in
     // one edge. They are the natural expansion batch -- collected here and applied together
@@ -2056,7 +2053,7 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
 
     // Generate candidates
     generate_candidates(
-        pattern_edge, pattern_sig, sig_cache,
+        pattern_edge, pattern_sig,
         data.binding.bindings, data.binding.bound_mask, s.edges, cands, get_edge,
         [&](EdgeId candidate, const auto& edge) {
             if (should_stop_.load(std::memory_order_relaxed)) return;
@@ -2090,7 +2087,7 @@ void ParallelEvolutionEngine::execute_expand_task(const ExpandTaskData& data) {
         // answering differently to the same question.
         size_t again = 0;
         generate_candidates(
-            pattern_edge, pattern_sig, sig_cache,
+            pattern_edge, pattern_sig,
             data.binding.bindings, data.binding.bound_mask, s.edges, cands, get_edge,
             [&](EdgeId candidate, const auto&) { if (!data.contains_edge(candidate)) ++again; });
         if (again > 0) {
