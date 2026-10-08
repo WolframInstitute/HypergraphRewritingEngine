@@ -76,7 +76,7 @@ __host__ __device__ inline uint32_t explore_reads_ranks(const DeviceState& ds, b
 struct StepSelectScratch {
     uint64_t* rank;    // [cap] the step's candidate ranks
     uint32_t* idx;     // [cap] their candidate-pool indices
-    uint32_t* words;   // [2] candidates gathered, ranks equal to the threshold taken
+    uint32_t* words;   // [3] candidates gathered, ranks equal to the threshold taken, scan start
     uint32_t  cap;
 };
 
@@ -109,12 +109,22 @@ __device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
     __shared__ uint32_t s_cnt;
     __shared__ uint32_t s_remaining;
     __shared__ uint64_t s_prefix;
-    if (tid == 0) { sel.words[0] = 0u; sel.words[1] = 0u; }
-    __syncthreads();
+    // THE SCAN STARTS AT sel.words[2]: below it every candidate belongs to a step already
+    // selected. A candidate of step s + 1 or later is produced from a state step s's selection
+    // creates, after this scan reads the counter, or was seeded before the run (a session
+    // frontier at mixed depths); the lowest index of those this scan passes is where the next
+    // one starts, so a step's scan covers what was produced since the selection before it.
+    __shared__ uint32_t s_next_start;
+    const uint32_t start = sel.words[2];
     const uint32_t n = min(*cand.counter, cand.capacity);
-    for (uint32_t i = tid; i < n; i += nt) {
+    if (tid == 0) { sel.words[0] = 0u; sel.words[1] = 0u; s_next_start = n; }
+    __syncthreads();
+    for (uint32_t i = start + tid; i < n; i += nt) {
         const MatchRecord& r = cand.at(i);
-        if (r.step != s) continue;
+        if (r.step != s) {
+            if (r.step > s) atomicMin(&s_next_start, i);
+            continue;
+        }
         EdgeId edges[kMaxPatternEdges];
         for (uint32_t k = 0; k < kMaxPatternEdges; ++k) edges[k] = r.matched_edges[k];
         const uint64_t key = transition_key_device(ds, r.state_id, r.rule_id, edges, r.num_edges);
@@ -125,6 +135,7 @@ __device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
         }
     }
     __syncthreads();
+    if (tid == 0) sel.words[2] = s_next_start;
     const uint32_t m = min(sel.words[0], sel.cap);
     const uint32_t cap_n = ds.max_states_per_step;
     uint64_t threshold = ~0ULL;
@@ -2104,12 +2115,13 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
             if (ps.step_rank) cudaFree(ps.step_rank);
             if (ps.step_idx) cudaFree(ps.step_idx);
             if (!ps.step_words)
-                HG_CUDA_CHECK(cudaMalloc(&ps.step_words, sizeof(uint32_t) * 2u), "step words");
+                HG_CUDA_CHECK(cudaMalloc(&ps.step_words, sizeof(uint32_t) * 3u), "step words");
             HG_CUDA_CHECK(cudaMalloc(&ps.step_rank, sizeof(uint64_t) * cap), "step ranks");
             HG_CUDA_CHECK(cudaMalloc(&ps.step_idx, sizeof(uint32_t) * cap), "step indices");
             ps.step_cap = cap;
         }
         ps.step_cand->reset_and_clear(&clears);
+        clears.add(ps.step_words, sizeof(uint32_t) * 3u, 0);
         cand_v = ps.step_cand->view();
         step_sel = StepSelectScratch{ps.step_rank, ps.step_idx, ps.step_words, ps.step_cap};
         std::vector<uint32_t> tokens(dsk.step_slots, 1u);
