@@ -2607,6 +2607,45 @@ TEST(GpuBinaryGate, MalformedInputsAreRefusedAlikeOnBothDevices) {
     worker_stop(w);
 }
 
+// ExploreFromCanonicalStatesOnly needs Full states: under Automatic it is refused with the
+// QuotientNeedsFull warning and every state is expanded, on both devices, so the counts are the
+// counts without it. Rule {{1,2}} -> {{2,1},{2,1},{1,1,1,1}} from {{1,1},{2,2},{2,2}} at three
+// steps gives (18, 75, 48) states, events and causal edges; with the option applied the devices
+// gave (18, 31, 19) and the GPU's causal count varied between runs.
+TEST(GpuBinaryGate, QuotientExplorationNeedsFullStatesOnBothDevices) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    CpuWorker host;
+    ASSERT_TRUE(host.ok) << "could not start hg_evolve --serve";
+    for (const bool ecso : {false, true}) {
+        auto opts = [ecso](wxf::Writer& ww) {
+            put_str_list_option(ww, "RequestedData", {"NumStates", "NumEvents", "NumCausalEdges"});
+            put_str_option(ww, "CanonicalizeStates", "Automatic");
+            put_str_option(ww, "ExploreFromCanonicalStatesOnly", ecso ? "True" : "False");
+        };
+        const auto job = session_envelope({{{1, 1}, {2, 2}, {2, 2}}}, {{1, 2}},
+                                          {{2, 1}, {2, 1}, {1, 1, 1, 1}}, 3, "Evolve", 0, true,
+                                          {}, opts, 3, false);
+        for (int run = 0; run < 3; ++run) {
+            const auto cpu = host(job);
+            const auto gpu = worker_call(w, job);
+            ASSERT_FALSE(gpu.empty());
+            for (const char* key : {"NumStates", "NumEvents", "NumCausalEdges"})
+                EXPECT_EQ(read_int_key(gpu, key), read_int_key(cpu, key)) << key << " ecso " << ecso;
+            EXPECT_EQ(read_int_key(gpu, "NumEvents"), 75) << "ecso " << ecso;
+            EXPECT_EQ(read_int_key(gpu, "NumCausalEdges"), 48) << "ecso " << ecso;
+        }
+    }
+    worker_stop(w);
+}
+
 // "StepStatistics" is the same reply on both devices: under quotient exploration from each
 // engine's class multiplicities, under full capture from its raw states.
 TEST(GpuBinaryGate, StepStatisticsAgreeAcrossDevices) {

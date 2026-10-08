@@ -828,6 +828,8 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 "\"ExploreFromCanonicalStatesOnly\" -> True and \"CanonicalizeEvents\" -> "
                 "Automatic need \"CanonicalizeStates\" -> Full. Without it every state is "
                 "expanded and the causal relation is computed from the individual edges."});
+            // As the warning says, on both engines: quotient exploration needs Full states.
+            req.explore_from_canonical_states_only = false;
         }
 
 #ifdef HG_GPU_BACKEND
