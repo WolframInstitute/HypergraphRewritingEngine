@@ -242,7 +242,7 @@ struct MatchJoinCtx {
 // See gpu/ARCHITECTURE.md sec 2.
 // Which completed matches a pass emits.
 //   kCapCount   record each match's rank, emit nothing     } the per-(state, rule) cap: the k
-//   kCapEmit    emit ranks up to the k-th smallest          } smallest ranks of the pair
+//   kCapEmit    emit ranks below the cut, and cap_k at it   } smallest ranks of the pair
 //   kDraw       emit the matches that survive their draw; record the state's minimum rank
 //               and whether any match survived
 //   kSpineEmit  emit the one match whose rank is that minimum
@@ -255,8 +255,8 @@ enum class EmitMode : uint8_t { kCapCount, kCapEmit, kDraw, kSpineEmit, kParentC
 
 struct EmitCtl {
     EmitMode            mode;
-    uint32_t            cap_k;
-    uint64_t            threshold;    // kCapEmit: the k-th smallest rank; kSpineEmit: the minimum
+    uint32_t            cap_k;        // kCapEmit: how many matches of the cut rank are kept
+    uint64_t            threshold;    // kCapEmit: the cut rank; kSpineEmit: the minimum
     uint32_t*           s_seen;
     uint32_t*           s_overflow;
     uint32_t*           s_emitted;
@@ -291,6 +291,7 @@ __device__ __noinline__ bool emit_admit(const DeviceState& ds, StateId state_id,
         return false;
     }
     case EmitMode::kCapEmit:
+        if (r < c.threshold) return true;
         if (r > c.threshold) return false;
         return atomicAdd(c.s_emitted, 1u) < c.cap_k;
     case EmitMode::kDraw: {
@@ -509,6 +510,7 @@ __device__ void match_state_rule(const DeviceState& ds,
     __shared__ uint32_t s_emitted;
     __shared__ uint32_t s_survived;
     __shared__ uint64_t s_threshold;
+    __shared__ uint32_t s_cut_quota;
     __shared__ unsigned long long s_min_rank;
     __shared__ uint64_t s_ranks[kDrainCapBuffer];
 
@@ -553,27 +555,19 @@ __device__ void match_state_rule(const DeviceState& ds,
             // returning a differently-sampled answer.
             ds.errors.record(ErrorKind::kDrainCapBufferFull);
             s_threshold = ~0ULL;
-        } else if (n > cap_k) {
-            // The k-th smallest, k small: k passes of a min above a floor. Same shape the host's
-            // drain uses, and it needs no sort and no scratch.
-            uint64_t floor = 0; bool have_floor = false;
-            for (uint32_t taken = 0; taken < cap_k; ++taken) {
-                uint64_t best = ~0ULL; bool found = false;
-                for (uint32_t i = 0; i < n; ++i) {
-                    const uint64_t r = s_ranks[i];
-                    if (have_floor && r <= floor) continue;
-                    if (r < best) { best = r; found = true; }
-                }
-                if (!found) break;
-                floor = best; have_floor = true;
-            }
-            s_threshold = have_floor ? floor : ~0ULL;
+            s_cut_quota = UINT32_MAX;
+        } else {
+            // The k lowest ranks counted with multiplicity, the host's cut (hgcommon::rank_cut):
+            // every rank below the cut rank, and at_cut matches of the cut rank.
+            const hgcommon::RankCut cut = hgcommon::rank_cut(s_ranks, n, cap_k);
+            s_threshold = cut.all ? ~0ULL : cut.rank;
+            s_cut_quota = cut.all ? UINT32_MAX : cut.at_cut;
         }
     }
     __syncthreads();
 
-    const EmitCtl keep{EmitMode::kCapEmit, cap_k, s_threshold, &s_seen, &s_overflow, &s_emitted,
-                       s_ranks, nullptr, nullptr};
+    const EmitCtl keep{EmitMode::kCapEmit, s_cut_quota, s_threshold, &s_seen, &s_overflow,
+                       &s_emitted, s_ranks, nullptr, nullptr};
     match_state_rule_pass(ds, rules, state_id, rid, step, out, &keep);
 }
 

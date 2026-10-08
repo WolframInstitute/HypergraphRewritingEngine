@@ -14,6 +14,7 @@
 
 #include "hgcommon/quotient_multiplicity_core.hpp"
 #include "hgcommon/quotient_replay_core.hpp"
+#include "hgcommon/sampling_core.hpp"
 #include "hypergraph/hypergraph.hpp"
 #include "hypergraph/ir_canonicalization.hpp"
 #include "hypergraph/parallel_evolution.hpp"
@@ -22,6 +23,7 @@
 #include <algorithm>
 #include <iterator>
 #include <map>
+#include <random>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -1655,6 +1657,37 @@ TEST(Sampling, DrainCapKeepsTheSameMatchesAcrossEngines) {
                       run_gpu(uncapped).canonical_state_hashes.size())
                 << w.name << " k=" << k << ": the cap removed nothing on the device";
         }
+    }
+}
+
+// The k-lowest selection with ranks counted with multiplicity (hgcommon::rank_cut), which the
+// device applies under MatchesPerStateRule, keeps the ranks the host keeps by taking the first k
+// of its rank-sorted list (ParallelEvolutionEngine::drain_candidates): ranks {5, 5, 9} with k = 2
+// keep {5, 5}, and random multisets with repeated ranks keep equal multisets.
+TEST(Sampling, RankCutKeepsTheHostsSelection) {
+    auto device_keeps = [](const std::vector<uint64_t>& r, uint32_t k) {
+        const hgcommon::RankCut cut =
+            hgcommon::rank_cut(r.data(), static_cast<uint32_t>(r.size()), k);
+        std::multiset<uint64_t> kept;
+        uint32_t at = 0;
+        for (const uint64_t x : r) {
+            if (cut.all || x < cut.rank) kept.insert(x);
+            else if (x == cut.rank && at < cut.at_cut) { kept.insert(x); ++at; }
+        }
+        return kept;
+    };
+    auto host_keeps = [](std::vector<uint64_t> r, uint32_t k) {
+        std::sort(r.begin(), r.end());
+        return std::multiset<uint64_t>(r.begin(), r.begin() + std::min<size_t>(k, r.size()));
+    };
+    EXPECT_EQ(device_keeps({5, 5, 9}, 2), (std::multiset<uint64_t>{5, 5}));
+    std::mt19937_64 rng(7);
+    for (int t = 0; t < 2000; ++t) {
+        const uint32_t n = 1 + static_cast<uint32_t>(rng() % 40);
+        const uint32_t k = 1 + static_cast<uint32_t>(rng() % 12);
+        std::vector<uint64_t> r(n);
+        for (auto& x : r) x = rng() % 8;
+        EXPECT_EQ(device_keeps(r, k), host_keeps(r, k)) << "n " << n << ", k " << k;
     }
 }
 

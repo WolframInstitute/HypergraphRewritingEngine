@@ -70,6 +70,43 @@ HG_HD inline uint64_t transition_rank(uint64_t transition_key, uint64_t random_s
     return x ^ (x >> 31);
 }
 
+// THE CUT OF A k-LOWEST SELECTION, ranks counted with multiplicity: the k-th smallest of
+// ranks[0, n) and how many entries of that rank are kept, k minus the number below it. `all` when
+// n <= k, which keeps every entry. Equal ranks name automorphic transitions, so which entries of
+// the cut rank are kept does not change the kept set up to isomorphism.
+//
+// The host keeps the first k of its rank-sorted list (ParallelEvolutionEngine::drain_candidates);
+// the device, which ranks its matches as they are emitted, keeps every rank below the cut and
+// `at_cut` of the ranks at it. Both keep the same ranks.
+struct RankCut {
+    uint64_t rank;
+    uint32_t at_cut;
+    bool     all;
+};
+
+HG_HD inline RankCut rank_cut(const uint64_t* ranks, uint32_t n, uint32_t k) {
+    if (n <= k) return RankCut{~0ULL, n, true};
+    uint32_t below = 0;
+    uint64_t floor = 0;
+    bool have_floor = false;
+    for (;;) {
+        // The next distinct rank above the floor, and how many entries hold it. One exists:
+        // `below` < k < n.
+        uint64_t next = 0;
+        uint32_t count = 0;
+        for (uint32_t i = 0; i < n; ++i) {
+            const uint64_t r = ranks[i];
+            if (have_floor && r <= floor) continue;
+            if (count == 0 || r < next) { next = r; count = 1; }
+            else if (r == next) ++count;
+        }
+        if (below + count >= k) return RankCut{next, k - below, false};
+        below += count;
+        floor = next;
+        have_floor = true;
+    }
+}
+
 // The ExplorationProbability coin: whether a state is expanded, drawn on an isomorphism-invariant
 // key -- the class's canonical hash under quotient exploration, the creating transition's key
 // under full capture -- and the seed, on a stream of its own so it does not correlate with the
