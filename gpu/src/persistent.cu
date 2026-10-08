@@ -83,6 +83,15 @@ struct StepSelectScratch {
 __device__ inline void step_book(const DeviceState& ds, uint32_t d, uint32_t n) {
     if (ds.max_states_per_step != 0u && d < ds.step_slots) atomicAdd(&ds.step_pending[d], n);
 }
+// Under quotient exploration the ExplorationProbability coin is drawn when a class is claimed for
+// expansion, keyed on its canonical hash, whichever path claims it: the host's
+// claim_canonical_for_expansion. A refused class stays claimed and is not expanded.
+__device__ inline bool explore_admits(const DeviceState& ds, StateId canonical) {
+    return ds.exploration_probability >= 1.0 ||
+           hgcommon::explore_survives(ds.state_canonical_hash[canonical], ds.sampling_seed,
+                                      ds.exploration_probability);
+}
+
 // True when this release brings step d's count to zero.
 __device__ inline bool step_release(const DeviceState& ds, uint32_t d, uint32_t n) {
     if (ds.max_states_per_step == 0u || d >= ds.step_slots) return false;
@@ -205,7 +214,8 @@ __device__ void run_step_selections(const DeviceState& ds, uint32_t s,
 }
 
 __global__ void k_seed_frontier(const __grid_constant__ DeviceState ds, ExploreView ev, const StateId* ids,
-                                const uint32_t* steps, const uint32_t* count, uint32_t cap) {
+                                const uint32_t* steps, const uint32_t* count, uint32_t cap,
+                                bool dedup) {
     const uint32_t live = min(*count, cap);
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= live) return;
@@ -213,6 +223,7 @@ __global__ void k_seed_frontier(const __grid_constant__ DeviceState ds, ExploreV
     // A state lowered under the old budget later in the run that recorded it was expanded
     // then, and holds the claim.
     if (!ev.claim(s)) return;
+    if (dedup && !explore_admits(ds, s)) return;
     // Depth is PER ENTRY: after a steered Step the frontier mixes entries stranded by
     // different budgets. The state's own depth is the smallest any path reached it by.
     uint32_t d = steps[tid];
@@ -410,6 +421,7 @@ struct DeviceExploreCtx {
     uint32_t*          frame_node;
     uint32_t*          frame_depth;
     uint32_t           levels;
+    bool               dedup;      // quotient exploration: the coin is drawn at the claim
     uint32_t           frames = 0;
 
     __device__ uint32_t depth_load(uint32_t s) const {
@@ -435,6 +447,7 @@ struct DeviceExploreCtx {
     __device__ void admit(uint32_t s, uint32_t d) {
         if (d >= max_steps) { session_frontier_append(ds, sess, s, d); return; }
         if (!ev.claim(s)) return;
+        if (dedup && !explore_admits(ds, s)) return;
         step_book(ds, d, 1u);
         if (!ev.expand.append(ExpandEntry{s, d, 0u})) {
             ds.errors.record(ErrorKind::kStatePoolFull);
@@ -856,14 +869,18 @@ __device__ __forceinline__ void register_child(
         const DeviceState& ds, ExploreView& ev, const SessionView& sess, StateId sid,
         StateId parent, StateId canonical, bool fresh, uint32_t step, uint32_t max_steps,
         bool dedup, const MatchRecord* rec) {
-    if (fresh && (step < max_steps || sess.enabled) && ds.exploration_probability < 1.0 &&
-        (rec != nullptr || dedup) &&
+    // Full capture: each state is registered once, as it is created, and the coin is drawn then,
+    // on the creating transition. Under quotient exploration it is drawn at the claim (admit),
+    // so a class first reached past the budget and later under it is drawn when it is claimed.
+    if (!dedup && fresh && rec != nullptr && (step < max_steps || sess.enabled) &&
+        ds.exploration_probability < 1.0 &&
         !hgcommon::explore_survives(explore_key(ds, dedup, canonical, rec), ds.sampling_seed,
                                     ds.exploration_probability))
         ev.claim(canonical);
     DeviceExploreCtx xc{ds, ev, sess, max_steps,
                         ev.frame_node + size_t(blockIdx.x) * ev.frame_levels,
-                        ev.frame_depth + size_t(blockIdx.x) * ev.frame_levels, ev.frame_levels};
+                        ev.frame_depth + size_t(blockIdx.x) * ev.frame_levels, ev.frame_levels,
+                        dedup};
     const uint32_t d = hgcommon::explore_register_child(xc, parent, canonical, step);
     if (d != hgcommon::kExploreNoDepth) {
         xc.admit(canonical, d);
@@ -2154,7 +2171,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         if (seed_grid) {
             k_seed_frontier<<<seed_grid, block>>>(
                 engine.device(), ev, sess_v.frontier, sess_v.frontier_step,
-                sess_v.frontier_count, sess_v.frontier_cap);
+                sess_v.frontier_count, sess_v.frontier_cap, dedup);
         }
         // THE FRONTIER IS CONSUMED, NOT ACCUMULATED. The states it held are being expanded now,
         // and this run's own boundary takes their place -- so the counter is reset between the
