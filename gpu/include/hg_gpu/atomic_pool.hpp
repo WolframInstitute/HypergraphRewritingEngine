@@ -39,8 +39,15 @@ public:
         // rather than merely tidy. The add lands before exhaustion is reported and is never
         // rolled back, so an overflowing run drives the counter upward for as long as it lasts;
         // left to climb it reaches 2^32, wraps, and returns a small index that passes the test
-        // below, handing a caller a slot outside the allocation. Pulling it back to capacity on
-        // the failing path bounds the excess to what is in flight, so the wrap is unreachable.
+        // below, handing a caller a slot outside the allocation. Pulling it back on the failing
+        // path bounds the excess to what is in flight, so the wrap is unreachable.
+        //
+        // A failed claim of n slots that starts below the capacity straddles it: slots
+        // [idx, capacity) are reserved for it and written by nobody, since every later add
+        // started at or past idx + n. It lowers the counter to idx, so they are not counted and a
+        // later claim may take them. Every other failed claim lowers it to the capacity. The
+        // counter never falls below a granted claim's end: a granted claim ending above idx was
+        // made after the counter was lowered to idx or below.
         __device__ uint32_t claim() const { return settle(atomicAdd(counter, 1u), 1u); }
 
         __device__ uint32_t claim_n(uint32_t n) const { return settle(atomicAdd(counter, n), n); }
@@ -50,7 +57,7 @@ public:
         // of threads) settle each thread's share here.
         __device__ uint32_t settle(uint32_t idx, uint32_t n) const {
             if ((uint64_t)idx + n <= capacity) return idx;
-            atomicMin(counter, capacity);
+            atomicMin(counter, idx < capacity ? idx : capacity);
             return kInvalid;
         }
 

@@ -557,11 +557,22 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     std::vector<uint64_t> h_hashes;
     batch.add(h_hashes, static_cast<const uint64_t*>(d_state_hashes), total_states);
     std::vector<StateEdgeSlice> slices;
+    // The slices are read without the edge arrays too: a state a failed rewrite claimed carries
+    // the slice {INVALID_ID, 0} (apply_one_match), and reads back with id INVALID_ID.
     if (in.materialize_state_edges) engine.add_state_edges(batch, snap, slices, out);
+    else if (total_states)
+        batch.add(slices, static_cast<const StateEdgeSlice*>(engine.device().state_edge_slices),
+                  total_states);
     engine.add_events(batch, snap.events, out.events, out.event_consumed);
     engine.add_causal_edges(batch, snap.causal, out.causal_edges);
     engine.add_branchial_edges(batch, snap.branchial, out.branchial_edges);
     batch.finish();
+    // A rewrite that claimed its event and then failed a later claim leaves the event with id
+    // INVALID_ID (apply_one_match). Only a run that recorded an overflow has one.
+    if (!out.warnings.empty())
+        out.events.erase(std::remove_if(out.events.begin(), out.events.end(),
+                                        [](const Event& e) { return e.id == INVALID_ID; }),
+                         out.events.end());
     double t_readback_copy = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_readback_start).count();
 
@@ -569,7 +580,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     out.states.resize(total_states);
     for (uint32_t s = 0; s < total_states; ++s) {
         CanonicalState& cs = out.states[s];
-        cs.id             = s;
+        cs.id             = (s < slices.size() && slices[s].offset == INVALID_ID) ? INVALID_ID : s;
         cs.canonical_hash = (s < h_hashes.size()) ? h_hashes[s] : 0;
         // A slice past the id array describes no edges.
         if (s < slices.size() &&

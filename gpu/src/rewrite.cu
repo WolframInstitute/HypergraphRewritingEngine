@@ -366,12 +366,11 @@ __device__ AppliedMatch apply_one_match(const DeviceState& ds,
     }
 
     // -------------------------------------------------------------------
-    // Preflight reservation: claim every capacity-bounded resource we need
-    // before doing ANY mutation. If any claim fails, record the specific
-    // error and abort leaving no half-initialized state. This replaces the
-    // previous piecemeal "claim, then silently early-return mid-kernel"
-    // pattern which left the new state's bitset uninitialized and produced
-    // spurious OOBs in the WL hash / dedup downstream.
+    // Reservation: state, event, edges, CSR slice, vertex slots, fresh vertex ids. A claim that
+    // fails records its kind and returns, and the slots already claimed are left as records the
+    // readback marks or drops: the state's slice is {INVALID_ID, 0} (its id reads back as
+    // INVALID_ID), the event's id is INVALID_ID, the edges have arity 0. Slice and vertex slots
+    // are reached only through a state or an edge, so they need nothing.
     // -------------------------------------------------------------------
     const uint8_t num_new_vars = static_cast<uint8_t>(__popc(rule.new_var_mask));
 
@@ -380,6 +379,20 @@ __device__ AppliedMatch apply_one_match(const DeviceState& ds,
     for (uint8_t r = 0; r < rule.num_rhs_edges; ++r) {
         vert_slots_needed += rule.rhs[r].arity;
     }
+
+    // The new state's CSR edge-list size: parent.count - n_consumed + n_produced. Widen before
+    // subtracting. The match invariant is that every consumed edge is in the parent slice, which
+    // keeps this non-negative; computed in 32 bits, a state that broke it would wrap to about
+    // four billion and reserve that.
+    StateEdgeSlice parent_slice = ds.state_edge_slices[m.state_id];
+    const uint64_t kept_and_produced =
+        static_cast<uint64_t>(parent_slice.count) + static_cast<uint64_t>(rule.num_rhs_edges);
+    const uint64_t consumed = static_cast<uint64_t>(rule.num_lhs_edges);
+    if (kept_and_produced < consumed) {
+        ds.errors.record(ErrorKind::kStatePoolFull);
+        return AppliedMatch{};
+    }
+    const uint32_t new_slice_count = static_cast<uint32_t>(kept_and_produced - consumed);
 
     // THE RESERVATIONS BELOW ARE COALESCED: the threads of a warp that reach each one together
     // make one atomic on its counter between them (coalesced_add, coalesced_bounded_claim),
@@ -393,61 +406,65 @@ __device__ AppliedMatch apply_one_match(const DeviceState& ds,
         return AppliedMatch{};
     }
 
-    // Reserve event slot.
-    EventId my_event = ds.event_pool.settle(coalesced_add(ds.event_pool.counter, 1u), 1u);
-    if (my_event == Pool<DeviceEvent>::kInvalid) {
-        ds.errors.record(ErrorKind::kEventPoolFull);
+    EventId my_event = INVALID_ID;
+    uint32_t first_eid = 0u;
+    uint32_t claimed_edges = 0;
+    // A failed claim after the state's: the claimed state, event and edges become records the
+    // readback marks or drops.
+    auto abandon = [&](ErrorKind kind) {
+        ds.errors.record(kind);
+        ds.state_edge_slices[new_sid] = StateEdgeSlice{INVALID_ID, 0u};
+        if (my_event != INVALID_ID) {
+            DeviceEvent& dead = ds.event_pool.at(my_event);
+            dead.id = INVALID_ID;
+            dead.input_state = INVALID_ID;
+            dead.output_state = INVALID_ID;
+        }
+        for (uint32_t r = 0; r < claimed_edges; ++r) {
+            Edge none{};
+            none.creator_event = INVALID_ID;
+            ds.edge_pool.at(first_eid + r) = none;
+        }
         return AppliedMatch{};
+    };
+
+    // Reserve event slot.
+    my_event = ds.event_pool.settle(coalesced_add(ds.event_pool.counter, 1u), 1u);
+    if (my_event == Pool<DeviceEvent>::kInvalid) {
+        my_event = INVALID_ID;
+        return abandon(ErrorKind::kEventPoolFull);
     }
 
     // Reserve all RHS edges in one consecutive run.
-    uint32_t first_eid = ds.edge_pool.settle(
+    first_eid = ds.edge_pool.settle(
         coalesced_add(ds.edge_pool.counter, rule.num_rhs_edges), rule.num_rhs_edges);
     if (rule.num_rhs_edges == 0) first_eid = 0u;
-    if (rule.num_rhs_edges > 0 && first_eid == Pool<Edge>::kInvalid) {
-        ds.errors.record(ErrorKind::kEdgePoolFull);
-        return AppliedMatch{};
-    }
-    // Reserve the new state's CSR edge-list slice up front. Size is
-    // parent.count - n_consumed + n_produced. Failure to reserve means
-    // the per-step state-edge budget is exceeded — report and abort.
-    StateEdgeSlice parent_slice = ds.state_edge_slices[m.state_id];
-    // Widen before subtracting. The match invariant is that every consumed edge is in the
-    // parent slice, which keeps this non-negative; computed in 32 bits, a state that broke it
-    // would wrap to about four billion and reserve that.
-    const uint64_t kept_and_produced =
-        static_cast<uint64_t>(parent_slice.count) + static_cast<uint64_t>(rule.num_rhs_edges);
-    const uint64_t consumed = static_cast<uint64_t>(rule.num_lhs_edges);
-    if (kept_and_produced < consumed) {
-        ds.errors.record(ErrorKind::kStatePoolFull);
-        return AppliedMatch{};
-    }
-    const uint32_t new_slice_count = static_cast<uint32_t>(kept_and_produced - consumed);
+    if (rule.num_rhs_edges > 0 && first_eid == Pool<Edge>::kInvalid)
+        return abandon(ErrorKind::kEdgePoolFull);
+    claimed_edges = rule.num_rhs_edges;
+
+    // Reserve the new state's CSR edge-list slice.
     const uint32_t slice_at = coalesced_add(ds.state_edge_ids_counter, new_slice_count);
     const uint32_t new_slice_offset = (new_slice_count == 0) ? 0u : slice_at;
     if (new_slice_count > 0 &&
         static_cast<uint64_t>(new_slice_offset) + new_slice_count
             > ds.state_edge_ids_capacity) {
-        // CLAMP THE COUNTER, because the add above happens before this check and is never
-        // rolled back: every failing reservation still advances it. Left alone it climbs
-        // through the whole run and eventually past 2^32, where it wraps and hands a later
-        // reservation a small offset that passes this bound and writes outside the allocation.
-        // Pulling it back to the ceiling on the failing path bounds the excess to what is in
-        // flight, so it cannot reach the wrap. AtomicPool::claim_n widens the same comparison
-        // for the same reason.
-        atomicMin(ds.state_edge_ids_counter, ds.state_edge_ids_capacity);
-        ds.errors.record(ErrorKind::kStatePoolFull);
-        return AppliedMatch{};
+        // SETTLE THE COUNTER, because the add above happens before this check and is never
+        // rolled back. Left alone it climbs through the whole run and eventually past 2^32,
+        // where it wraps and hands a later reservation a small offset that passes this bound
+        // and writes outside the allocation. The failing claim lowers it to its own offset when
+        // that is below the capacity, which drops the slots it straddled, and to the capacity
+        // otherwise; Pool::settle is the same rule.
+        atomicMin(ds.state_edge_ids_counter, min(new_slice_offset, ds.state_edge_ids_capacity));
+        return abandon(ErrorKind::kStatePoolFull);
     }
 
     // Reserve all vertex slots in one consecutive run.
     uint32_t first_vert_off = ds.vertex_pool.settle(
         coalesced_add(ds.vertex_pool.counter, vert_slots_needed), vert_slots_needed);
     if (vert_slots_needed == 0) first_vert_off = 0u;
-    if (vert_slots_needed > 0 && first_vert_off == Pool<VertexId>::kInvalid) {
-        ds.errors.record(ErrorKind::kVertexPoolFull);
-        return AppliedMatch{};
-    }
+    if (vert_slots_needed > 0 && first_vert_off == Pool<VertexId>::kInvalid)
+        return abandon(ErrorKind::kVertexPoolFull);
 
     // Reserve fresh vertex IDs (vertex_high_water bump).
     uint32_t vid_base = 0;
@@ -455,10 +472,8 @@ __device__ AppliedMatch apply_one_match(const DeviceState& ds,
     if (num_new_vars > 0) {
         vid_base = fresh_at;
         // vertex_inverted_index keys range over [0, num_keys).
-        if (vid_base + num_new_vars > ds.vertex_inverted_index.list.num_keys) {
-            ds.errors.record(ErrorKind::kVertexPoolFull);
-            return AppliedMatch{};
-        }
+        if (vid_base + num_new_vars > ds.vertex_inverted_index.list.num_keys)
+            return abandon(ErrorKind::kVertexPoolFull);
         // The fresh ids are consecutive from the high-water bump; which variable takes which
         // is the rewrite's rule and lives in hgcommon.
         VertexId merged[kMaxVars];
@@ -469,13 +484,28 @@ __device__ AppliedMatch apply_one_match(const DeviceState& ds,
         for (uint32_t v = 0; v < kMaxVars; ++v) binding[v] = merged[v];
     }
 
+    // The produced edges' vertices resolve before the state is claimed: a rule naming a
+    // variable that is neither matched nor new fails here, and the commit below resolves the
+    // same binding again. The device merges its fresh vertices into the binding, so the same
+    // array serves as both sources.
+    VertexId local_binding[kMaxVars];
+    #pragma unroll
+    for (uint32_t v = 0; v < kMaxVars; ++v) local_binding[v] = binding[v];
+    for (uint8_t r = 0; r < rule.num_rhs_edges; ++r) {
+        VertexId resolved[kMaxArity];
+        if (!hgcommon::resolve_rhs_vertices(rule.rhs[r].vars, rule.rhs[r].arity, local_binding,
+                                            local_binding, resolved))
+            return abandon(ErrorKind::kVertexPoolFull);
+    }
+
+
     // -------------------------------------------------------------------
     // Commit: every reservation above succeeded, so from here on we write
     // freely into our reserved slots without further capacity checks.
     // -------------------------------------------------------------------
     const unsigned long long t_reserved = clock64();
 
-    // For each RHS edge: claim edge record + indices. RHS edge r is edge first_eid + r.
+    // For each RHS edge: the edge record and its index entries. RHS edge r is edge first_eid + r.
     uint32_t vert_cursor = first_vert_off;
     for (uint8_t r = 0; r < rule.num_rhs_edges; ++r) {
         const DeviceRhsEdge& re = rule.rhs[r];
@@ -483,17 +513,9 @@ __device__ AppliedMatch apply_one_match(const DeviceState& ds,
         uint32_t vert_off = vert_cursor;
         vert_cursor += re.arity;
 
-        VertexId local_binding[kMaxVars];
-        #pragma unroll
-        for (uint32_t v = 0; v < kMaxVars; ++v) local_binding[v] = binding[v];
         VertexId local_verts[kMaxArity];
-        // The device merges its fresh vertices into the binding, so the same array serves
-        // as both sources.
-        if (!hgcommon::resolve_rhs_vertices(re.vars, re.arity, local_binding, local_binding,
-                                            local_verts)) {
-            ds.errors.record(ErrorKind::kVertexPoolFull);
-            return AppliedMatch{};
-        }
+        hgcommon::resolve_rhs_vertices(re.vars, re.arity, local_binding, local_binding,
+                                       local_verts);
         for (uint8_t i = 0; i < re.arity; ++i) {
             ds.vertex_pool.at(vert_off + i) = local_verts[i];
         }

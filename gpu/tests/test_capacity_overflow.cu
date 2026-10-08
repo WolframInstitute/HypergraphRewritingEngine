@@ -282,6 +282,62 @@ bool has_kind(const std::vector<hg_gpu::OverflowWarning>& w, hg_gpu::ErrorKind k
 
 }  // namespace
 
+// Every record a partial result returns was written by the run that returns it, or is marked: a
+// state slot a failed rewrite claimed has id INVALID_ID; every other non-root state is the output
+// of exactly one event, every event names states in the result, every state holds edges, and
+// every edge record with vertices belongs to a state. Each case starves one pool
+// so the run fails a claim after others succeeded, with a capacity the two-edge claims straddle.
+// Each engine first completes a smaller run, so a slot the overflowing run claimed and left
+// unwritten still holds that run's record.
+TEST(CapacityOverflow, APartialResultHoldsNoUnwrittenRecords) {
+    struct Starve { const char* name; uint32_t hg_gpu::EngineConfig::*field; uint32_t size; };
+    const Starve cases[] = {{"states", &hg_gpu::EngineConfig::max_states, 61},
+                            {"events", &hg_gpu::EngineConfig::max_events, 61},
+                            {"edges", &hg_gpu::EngineConfig::max_edges, 129},
+                            {"vertex slots", &hg_gpu::EngineConfig::max_vertex_slots, 259},
+                            {"state edge slots", &hg_gpu::EngineConfig::max_state_edge_total, 501}};
+    for (const Starve& c : cases) {
+        const hg_gpu::EvolveInput small = growing_input(2);   // 25 states, 52 edges
+        const hg_gpu::EvolveInput big = growing_input(3);     // 145 states, 292 edges
+        hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(big);
+        cfg.*c.field = c.size;
+        hg_gpu::Engine engine(cfg);
+        const hg_gpu::EvolveResult first = engine.run(small);
+        ASSERT_TRUE(first.warnings.empty()) << c.name << ": the first run must complete";
+        const hg_gpu::EvolveResult r = engine.run(big);
+        ASSERT_FALSE(r.warnings.empty()) << c.name << ": the second run must overflow";
+
+        const size_t n = r.states.size();
+        std::vector<uint32_t> produced_by(n, 0);
+        for (const auto& e : r.events) {
+            ASSERT_NE(e.id, hg_gpu::INVALID_ID) << c.name;
+            ASSERT_LT(e.input_state, n) << c.name << ": event " << e.id;
+            ASSERT_LT(e.output_state, n) << c.name << ": event " << e.id;
+            ++produced_by[e.output_state];
+        }
+        EXPECT_EQ(produced_by[0], 0u) << c.name << ": the root is some event's output";
+        std::vector<char> referenced(r.edge_records.size(), 0);
+        for (size_t s = 0; s < n; ++s) {
+            // A state slot a failed rewrite claimed reads back with id INVALID_ID.
+            if (r.states[s].id == hg_gpu::INVALID_ID) {
+                EXPECT_EQ(produced_by[s], 0u) << c.name << ": marked state " << s;
+                continue;
+            }
+            EXPECT_EQ(r.states[s].id, s) << c.name;
+            if (s != 0)
+                EXPECT_EQ(produced_by[s], 1u) << c.name << ": state " << s << " is the output of "
+                                              << produced_by[s] << " events";
+            EXPECT_GT(r.states[s].num_edges, 0u) << c.name << ": state " << s << " holds no edges";
+            for (const auto eid : r.edge_ids(r.states[s]))
+                if (eid < referenced.size()) referenced[eid] = 1;
+        }
+        for (size_t eid = 0; eid < r.edge_records.size(); ++eid)
+            if (!r.edge_vertices(static_cast<hg_gpu::EdgeId>(eid)).empty())
+                EXPECT_TRUE(referenced[eid]) << c.name << ": edge " << eid
+                                             << " has vertices and belongs to no state";
+    }
+}
+
 // A full relation dedup map is a capacity overflow the run reports, which names the map so the
 // retry grows it. Each map is given 16 slots on a run that records more relations than that: the
 // raw-event route (state and event identity None), with a second rule whose matches share consumed edges
