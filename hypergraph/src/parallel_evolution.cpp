@@ -772,7 +772,7 @@ void ParallelEvolutionEngine::submit_expand_task(const ExpandTaskData& data) {
 // Per-State Match Join
 // =============================================================================
 
-ParallelEvolutionEngine::MatchJoin* ParallelEvolutionEngine::match_join_for(StateId state) {
+MatchJoin* ParallelEvolutionEngine::match_join_for(StateId state) {
     const uint64_t key = id_key(state);
     auto result = match_join_.lookup(key);
     if (result.has_value()) return *result;
@@ -818,11 +818,7 @@ bool ParallelEvolutionEngine::transition_survives_spined(StateId source, uint64_
     // saturates at skeleton-plus-bushes; seeding it makes each seed explore a different
     // skeleton, which is what lets repeated sampling recover the graph. Still a pure
     // function of (transition, seed): schedule-stable, device-stable.
-    const uint64_t ranked = spine_rank(canonical_key);
-    uint64_t seen = join->own_min_key.load(std::memory_order_relaxed);
-    while (ranked < seen &&
-           !join->own_min_key.compare_exchange_weak(seen, ranked,
-                                                    std::memory_order_relaxed)) {}
+    join->fold_own_rank(spine_rank(canonical_key));
     // A k-of-M cap needs M, and M is complete only at this state's drain. So the answer here is
     // NO for every own-found match and cap_at_drain submits the winners. Capping by arrival
     // instead is what max_states_per_step_ already does, and it clips the offspring distribution
@@ -830,7 +826,7 @@ bool ParallelEvolutionEngine::transition_survives_spined(StateId source, uint64_
     if (defers_to_drain()) return false;
 
     if (transition_survives(canonical_key, site, rule)) {
-        join->own_spawned.store(1, std::memory_order_release);
+        join->mark_own_spawned();
         return true;
     }
     return false;
@@ -915,9 +911,8 @@ void ParallelEvolutionEngine::depth_settled(uint32_t depth) {
 }
 
 void ParallelEvolutionEngine::spine_at_drain(StateId state, uint32_t step, MatchJoin* join) {
-    if (join->own_spawned.load(std::memory_order_acquire) != 0) return;
-    const uint64_t want = join->own_min_key.load(std::memory_order_acquire);
-    if (want == ~0ULL) return;   // no own-found matches: no spine for this state
+    const uint64_t want = join->spine_rank_at_drain();
+    if (want == MatchJoin::kNoSpine) return;
     auto stored = state_matches_.lookup(id_key(state));
     if (!stored.has_value()) return;
 
@@ -934,7 +929,7 @@ void ParallelEvolutionEngine::spine_at_drain(StateId state, uint32_t step, Match
     if (!found) return;
 
     HG_STAT(stats_.mine().spine_forced.bump(1));
-    join->own_spawned.store(1, std::memory_order_release);
+    join->mark_own_spawned();
     submit_rewrite_task(best, step);
 }
 
@@ -1232,7 +1227,7 @@ void ParallelEvolutionEngine::evolve_more(size_t additional_steps,
 }
 
 void ParallelEvolutionEngine::note_match_task_pushed(StateId state) {
-    match_join_for(state)->pushed.fetch_add(1, std::memory_order_release);
+    match_join_for(state)->note_pushed();
 }
 
 // Per-depth join for this run. A task runs at steps 1..max_steps, and the entry above that is
@@ -1282,7 +1277,7 @@ void ParallelEvolutionEngine::note_match_task_done(StateId state, uint32_t step)
     // resume re-matches it in full, and the matches it already stored are not offered twice.
     const bool cut = continuable_ && should_stop_.load(std::memory_order_relaxed);
     if (cut) defer_cut_match_task(state, step);
-    const size_t done = join->completed.fetch_add(1, std::memory_order_acq_rel) + 1;
+    const size_t done = join->note_completed();
 
     // A cut state drains only through its resumed matching. Its inheritance can complete in the
     // continuation before the resume is submitted, which balances the counters over a partial
@@ -1293,7 +1288,7 @@ void ParallelEvolutionEngine::note_match_task_done(StateId state, uint32_t step)
     // Read `pushed` AFTER booking the completion. A task that will still spawn more has not
     // reached its own guard, so anything it pushes is already counted here; and if `pushed`
     // has moved on since, this task is simply not the last one and whichever is will fire.
-    if (done != join->pushed.load(std::memory_order_acquire)) return;
+    if (!join->drains_at(done)) return;
     // The drain of a state whose matching was deferred above runs when the resumed matching
     // completes, so nothing here chooses from a set the stop left partial.
     if (cut) { DEBUG_LOG("CUT state=%u step=%u", state, step); return; }

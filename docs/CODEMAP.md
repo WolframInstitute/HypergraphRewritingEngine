@@ -115,6 +115,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`ir_canonicalization.hpp`)
   - Carries the quotient reconstruction's (instance, match) claims: `QcInstance::claim_bits` for the matches its class held when the instance was created, `qc_applied_` for the rest; the set is model-checked by `verification/genmc/key_set_exactly_once` and `key_set_enumeration`
 - **`lock_free_list.hpp`** -- append-only lock-free linked list. `push` returns the node it linked, and `for_each_before(node)` walks the nodes linked strictly earlier; `for_each_node` hands over nodes rather than values so a caller can position itself. Two pushers meet EXACTLY ONCE under this pair -- of any two nodes one is older, so only one scan sees the other -- which is how the quotient branchial relation is formed without a set of pairs to dedup against.
   - `LockFreeList<T>` (`for_each`/`for_each_while`), `SingleThreadedList<T>`
+- **`match_join.hpp`** -- `MatchJoin`, the per-state match-task join and the sampling spine's fields. `note_pushed`/`note_completed`/`drains_at` are the join's counters; `fold_own_rank`, `mark_own_spawned` and `spine_rank_at_drain` are the spine's minimum-rank fold, passed-draw mark and drain read. Model-checked by `verification/genmc/spine_min_rank`.
 - **`signature.hpp`** -- edge vertex-repetition signatures + compatible-signature enumeration.
   - `EdgeSignature`, `signature_compatible()`, `enumerate_compatible_signatures()`, `CompatibleSignatureCache`
 - **`pattern.hpp`** -- rule representation, builder, partial-match state.

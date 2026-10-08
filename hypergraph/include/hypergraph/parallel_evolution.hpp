@@ -33,6 +33,7 @@
 #include "concurrent_map.hpp"
 #include "concurrent_key_set.hpp"
 #include "lock_free_list.hpp"
+#include "match_join.hpp"
 #include "segmented_array.hpp"
 #include "hypergraph/debug_log.hpp"
 
@@ -738,59 +739,9 @@ private:
     // Indices into warnings_ of the notices that say the result is truncated (a capacity limit).
     mutable std::vector<size_t> truncation_warnings_;
 
-
-    // Per-state match-task join. See docs/ARCHITECTURE.md, Sampling.
-    //
-    // Matching one state is a tree of MATCH/SCAN/EXPAND tasks, so no single task sees all of
-    // that state's matches. Anything that has to act on the state's matches AS A SET needs to
-    // know when that tree has drained. Today that is the sampling spine: a state whose every
-    // draw failed keeps its lowest-keyed own-found transition, and "every draw failed" is only
-    // decidable once no more draws can arrive. A size-k cap per (state, rule) would be the
-    // other such consumer and is #58's remaining half -- it must choose AT the drain, because
-    // exactly-k needs the population, which is what makes it different from a cap by arrival
-    // order.
-    //
-    // Two monotone counters and the task that equalises them is the drainer. This is a JOIN
-    // over one state's own tasks, not a barrier: every other state runs through untouched, and
-    // nothing global is consulted.
+    // Per-state match-task join (match_join.hpp), keyed by state id.
     static constexpr uint64_t MATCH_JOIN_EMPTY  = (1ULL << 62) + 700;
     static constexpr uint64_t MATCH_JOIN_LOCKED = (1ULL << 62) + 701;
-    struct MatchJoin {
-        std::atomic<size_t> pushed{0};
-        std::atomic<size_t> completed{0};
-        // Matches this state has accepted, post-dedup. The drain gate needs it to show the
-        // drain fired after the last one rather than merely once.
-        std::atomic<size_t> matches{0};
-        // Set at this state's drain, before its children list is read (rv::ChildInheritance).
-        std::atomic<uint32_t> drained{0};
-        // Claimed by whichever side hands this state its parent's matches, so it happens once.
-        std::atomic<uint32_t> inherited{0};
-        // Set when a stop cuts this state's matching; cleared when the resume is submitted. The
-        // state does not drain while it is set.
-        std::atomic<uint32_t> resume_pending{0};
-        // Stages the state's scan and expand tasks reached, ORed (stats builds): a lost
-        // claim reads back as the highest stage its tasks got to. Bits: 1 scan entered,
-        // 2 scan past its gates, 4 a produced edge was in the state's set, 8 a signature
-        // matched, 16 a candidate validated, 32 complete_match reached, 64 a claim won,
-        // 128 a claim answered duplicate, 256 expand entered, 512 expand saw a candidate.
-        std::atomic<uint32_t> trace{0};
-        // Sampling spine bookkeeping (transition_rate_ < 1 only). A fixed rate is a knife-edge:
-        // below 1/branching the sampled evolution goes extinct before reaching depth. The spine
-        // keeps the minimum-canonical-key OWN-FOUND transition alive when none of the state's
-        // own draws passed.
-        //
-        // OWN-FOUND ONLY, deliberately: a state's own matching completes exactly at its drain,
-        // so the minimum over own keys is a pure function of the state -- while the stored list
-        // also holds forwarded arrivals, which race the drain, and a spine over the snapshot
-        // made WHICH transition survived depend on the schedule (caught at 8 workers by
-        // SamplingReproducibility). Forwarded draws neither mark nor force: the surviving set is
-        // own-passers, plus forwarded-passers, plus the own-minimum when no own draw passed --
-        // every term key-deterministic. A state with NO own-found matches has no spine and
-        // relies on its forwarded draws; that hole is documented, and measured not to bite on
-        // the corpus.
-        std::atomic<uint32_t> own_spawned{0};
-        std::atomic<uint64_t> own_min_key{~0ULL};
-    };
     ConcurrentMap<uint64_t, MatchJoin*, MATCH_JOIN_EMPTY, MATCH_JOIN_LOCKED> match_join_;
 
     // Fires once per state, after that state's last match task. Set by tests today; nothing in

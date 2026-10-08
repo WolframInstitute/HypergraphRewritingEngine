@@ -45,7 +45,8 @@ harness. The park protocol is checked on its spin backend, which waits on the sa
 | P18 DepthJoin settle cascade and report baton | 25 | depth_report_order (2) |
 | P19 explore depth relax and child registration | 3 | depth_relax_child_registration (2) |
 | P20 dedup claim | 2 | claim_match_rendezvous (2) |
-| P21 MatchJoin drain and child inheritance | 19 | child_inheritance_rendezvous (2) |
+| P21 MatchJoin drain and child inheritance | 19 | child_inheritance_rendezvous (2), spine_min_rank (3; the `pushed`/`completed` counters) |
+| P22 spine sampling (`own_min_key`, `own_spawned`) | 6 | spine_min_rank (3) on the engine's `MatchJoin` members (`hypergraph/match_join.hpp`) |
 | P23 stop and resume flags | 29 | engine_* (3) |
 | P24 causal producer/consumer rendezvous | 2 | causal_in_edge_order (2) |
 | P25 edge/state/event publication by fence | 12 | causal_in_edge_order (2), engine_evolve (partial) |
@@ -70,11 +71,15 @@ layout), P29 (`Hypergraph::QmCtx` not called), P14 (`pool_core` on harness array
 function each one calls is the engine's; the engine's binding of it is reached only through
 the composed harnesses.
 
+spine_min_rank (P22) calls the engine's `MatchJoin` members in the order
+`transition_survives_spined`, `note_match_task_done` and `spine_at_drain` call them; that call
+sequence is the harness's, and the stop-cut and `resume_pending` branches of
+`note_match_task_done` are not in it.
+
 ## Not covered
 
 | Points | Reason |
 |---|---|
-| P22 spine sampling (`own_min_key`, `own_spawned`), 6 | Reached only with sampling enabled; no harness enables it. |
 | P27 keyed rewrite tokens and twins, 17 | Reached only when `keyed_state_` is armed; no harness arms it. |
 | P30 quotient replay signature cache, 7 | Reached only with event signature keys set; no harness sets them. |
 | P38 matcher early-termination flag, 4 | Every engine caller passes no `should_terminate`. |
