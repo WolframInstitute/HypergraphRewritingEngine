@@ -2122,7 +2122,7 @@ size_t Hypergraph::capture_dropped_no_orbits() const {
 
 std::vector<size_t> Hypergraph::reconstruction_applications_by_worker() const {
     std::vector<size_t> out;
-    for (const QcCounterSlot& s : qc_ctr_) out.push_back(s.applications);
+    for (const QcCounterSlot& s : qc_ctr_) out.push_back(counter_read(s.applications));
     return out;
 }
 #endif
@@ -2218,6 +2218,10 @@ uint64_t Hypergraph::get_state_content_hash(StateId sid) const {
     return compute_content_ordered_hash(states_[sid].edges);
 }
 
+uint32_t Hypergraph::published_mark(const uint32_t& mark) {
+    return hgcommon::atomic_ref<uint32_t>(const_cast<uint32_t&>(mark)).load(std::memory_order_acquire);
+}
+
 uint32_t Hypergraph::num_states() const {
     return counters_.next_state.load(std::memory_order_relaxed);
 }
@@ -2226,11 +2230,16 @@ uint32_t Hypergraph::num_states() const {
 // ahead of what exists.
 uint32_t Hypergraph::num_published_states() const {
     uint32_t n = published_states_outside_.load(std::memory_order_acquire);
-    for (int i = 0; i < MAX_ARENA_WORKERS; ++i) n = std::max(n, published_[i].states);
+    for (int i = 0; i < MAX_ARENA_WORKERS; ++i) n = std::max(n, published_mark(published_[i].states));
     return n;
 }
 
 namespace {
+// A worker's own mark: only that worker writes it, so a load and a store raise it.
+void raise_own(uint32_t& mark, uint32_t v) {
+    hgcommon::atomic_ref<uint32_t> r(mark);
+    if (r.load(std::memory_order_relaxed) < v) r.store(v, std::memory_order_release);
+}
 void raise_to(std::atomic<uint32_t>& a, uint32_t v) {
     uint32_t cur = a.load(std::memory_order_relaxed);
     while (cur < v && !a.compare_exchange_weak(cur, v, std::memory_order_release,
@@ -2241,13 +2250,13 @@ void raise_to(std::atomic<uint32_t>& a, uint32_t v) {
 void Hypergraph::note_published_state(StateId sid) {
     const int w = arena_worker_index();
     if (w < 0) { raise_to(published_states_outside_, sid + 1); return; }
-    if (published_[w].states < sid + 1) published_[w].states = sid + 1;
+    raise_own(published_[w].states, sid + 1);
 }
 
 void Hypergraph::note_published_event(EventId eid) {
     const int w = arena_worker_index();
     if (w < 0) { raise_to(published_events_outside_, eid + 1); return; }
-    if (published_[w].events < eid + 1) published_[w].events = eid + 1;
+    raise_own(published_[w].events, eid + 1);
 }
 
 // INVALID_ID until a genesis state is published, and no state id equals INVALID_ID, so the
@@ -2365,7 +2374,7 @@ uint32_t Hypergraph::num_raw_events() const {
 // counter is not that bound.
 uint32_t Hypergraph::num_published_events() const {
     uint32_t n = published_events_outside_.load(std::memory_order_acquire);
-    for (int i = 0; i < MAX_ARENA_WORKERS; ++i) n = std::max(n, published_[i].events);
+    for (int i = 0; i < MAX_ARENA_WORKERS; ++i) n = std::max(n, published_mark(published_[i].events));
     return n;
 }
 

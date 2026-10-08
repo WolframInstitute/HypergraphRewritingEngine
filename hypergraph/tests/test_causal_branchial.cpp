@@ -1132,3 +1132,22 @@ TEST(EmptyEdge, IsRefused) {
     EXPECT_THROW(engine.add_rule(lhs_empty), std::invalid_argument);
     EXPECT_NO_THROW(engine.add_rule(make_rule(0).lhs({0}).rhs({0}).rhs({0}).build()));
 }
+
+// The relation counts and the published-id bounds are read while workers run, from a hook on a
+// worker thread. Every access is atomic (counter_add / counter_read, raise_own /
+// published_mark), so this is not a data race; the ThreadSanitizer build checks it.
+TEST(CausalGraphTracking, CountsAreReadableWhileWorkersRun) {
+    Hypergraph hg;
+    hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+    ParallelEvolutionEngine engine(&hg, 4);
+    engine.add_rule(make_rule(0).lhs({0, 1}).rhs({1, 2}).rhs({2, 0}).build());
+    std::atomic<size_t> seen{0};
+    engine.set_on_state_matches_complete([&](StateId, uint32_t) {
+        seen.fetch_add(hg.causal_graph().num_causal_edges() + hg.causal_graph().num_branchial_edges() +
+                           hg.num_published_states() + hg.num_published_events(),
+                       std::memory_order_relaxed);
+    });
+    engine.evolve(std::vector<std::vector<VertexId>>{{0u, 1u}, {1u, 2u}}, 5);
+    EXPECT_GT(seen.load(), 0u);
+    EXPECT_GT(hg.causal_graph().num_causal_edges(), 0u);
+}

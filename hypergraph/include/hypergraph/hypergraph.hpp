@@ -54,9 +54,11 @@ class Hypergraph {
     GlobalCounters counters_;
 
     // One past the largest state and event id each worker has published, one cache line per
-    // worker. num_published_states and num_published_events take the maximum when read, which
-    // is after the run; a shared high-water mark on the arrays was one compare-and-swap per state
-    // and per event on one line. A thread that is not a worker publishes through the atomics.
+    // worker. num_published_states and num_published_events take the maximum when read; a shared
+    // high-water mark on the arrays was one compare-and-swap per state and per event on one line.
+    // The owning worker writes its mark with a release store and readers load it with acquire,
+    // so a read while workers run is not a data race. A thread that is not a worker publishes
+    // through the atomics.
     struct alignas(64) PublishedMark {
         uint32_t states = 0;
         uint32_t events = 0;
@@ -65,6 +67,7 @@ class Hypergraph {
     std::unique_ptr<PublishedMark[]> published_ = std::make_unique<PublishedMark[]>(MAX_ARENA_WORKERS);
     std::atomic<uint32_t> published_states_outside_{0};
     std::atomic<uint32_t> published_events_outside_{0};
+    static uint32_t published_mark(const uint32_t& mark);
     void note_published_state(StateId sid);
     void note_published_event(EventId eid);
 
@@ -498,7 +501,7 @@ class Hypergraph {
     template <typename M>
     size_t qc_ctr_total(M member) const {
         size_t n = 0;
-        for (const QcCounterSlot& s : qc_ctr_) n += s.*member;
+        for (const QcCounterSlot& s : qc_ctr_) n += counter_read(s.*member);
         return n;
     }
 

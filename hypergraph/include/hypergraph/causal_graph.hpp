@@ -230,7 +230,7 @@ private:
     template <typename M>
     size_t count_total(M member) const {
         size_t n = 0;
-        for (int i = 0; i < kCounterSlots; ++i) n += counts_[i].*member;
+        for (int i = 0; i < kCounterSlots; ++i) n += counter_read(counts_[i].*member);
         return n;
     }
 
