@@ -11,6 +11,7 @@
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <limits>
 // The process gate below drives a worker through a pair of FIFOs, which needs fork, mkfifo and
 // waitpid. None of them exists on Windows, and the gate is compiled out there rather than
 // emulated: what it checks -- that the SHIPPED binary serves the four verbs over the wire -- is
@@ -2999,6 +3000,50 @@ std::vector<uint8_t> job_with_option(const std::function<void(wxf::Writer&)>& pu
 }
 
 }  // namespace
+
+// A negative cap is skipped with a warning; it was cast to 2^64-1 and acted as no cap silently.
+TEST(FfiInput, ANegativeCapIsSkippedWithAWarning) {
+    HostBridge host;
+    const int64_t plain = read_int_key(run_rewriting_core(job_with_option([](wxf::Writer& w) {
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("RandomSeed"));
+        w.write(int64_t{0});
+    }), host), "NumStates");
+    for (const char* cap : {"MaxStatesPerStep", "MaxSuccessorStatesPerParent", "MatchesPerStateRule",
+                            "MatchesPerStep"}) {
+        const auto out = run_rewriting_core(job_with_option([&](wxf::Writer& w) {
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string(cap));
+            w.write(int64_t{-1});
+        }), host);
+        EXPECT_EQ(read_int_key(out, "NumStates"), plain) << cap;
+        const auto ctx = warning_contexts(out);
+        ASSERT_EQ(ctx.size(), 1u) << cap;
+        EXPECT_NE(ctx[0].find(std::string("option '") + cap + "' ignored: a cap is a non-negative integer"),
+                  std::string::npos) << ctx[0];
+    }
+}
+
+// NaN or infinity for a probability, rate or weight is skipped with a warning in the shared parse.
+// NaN ExplorationProbability gave (10,9,8,0) on the CPU and (2,1,0,0) on the GPU.
+TEST(FfiInput, ANonFiniteProbabilityRateOrWeightIsSkippedWithAWarning) {
+    HostBridge host;
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+    for (const char* key : {"ExplorationProbability", "TransitionRate", "RuleWeights"}) {
+        for (double v : {nan, inf, -inf}) {
+            const auto out = run_rewriting_core(job_with_option([&](wxf::Writer& w) {
+                w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                w.write(std::string(key));
+                if (std::string(key) == "RuleWeights") w.write(std::vector<double>{v});
+                else w.write(v);
+            }), host);
+            const auto ctx = warning_contexts(out);
+            ASSERT_EQ(ctx.size(), 1u) << key << " " << v;
+            EXPECT_NE(ctx[0].find("not a finite real number"), std::string::npos) << ctx[0];
+        }
+    }
+}
 
 // An option key that is not valid UTF-8 is quoted in the warning with its bad bytes as \xNN.
 TEST(FfiInput, AWarningQuotesACorruptOptionKeyAsValidUtf8) {

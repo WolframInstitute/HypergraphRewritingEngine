@@ -6,6 +6,7 @@
 #include <set>
 #include <map>
 #include <unordered_set>
+#include <cmath>
 #include <cstring>
 #include <cstdio>
 #include <unordered_map>
@@ -54,15 +55,6 @@ const char kBuildStamp[] = HG_BUILD_STAMP_LITERAL;
 }  // namespace ffi
 }  // namespace HG_NAMESPACE
 
-
-namespace {
-// A probability option that is not a finite number is refused; the option parser's catch skips
-// it with an OptionSkipped warning and the run uses the default, on both devices.
-double finite_option(double v) {
-    if (!std::isfinite(v)) throw std::invalid_argument("not a finite number");
-    return v;
-}
-}  // namespace
 
 // WXF Helper Functions using comprehensive wxf library
 namespace ffi_helpers {
@@ -187,23 +179,42 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                     // parses from a shifted offset. Recovery seeks back here first.
                     const size_t option_value_start = option_parser.position();
                     try {
+                        // A cap is a count, and 0 is no cap. A negative value is refused here
+                        // (the catch below skips it with a warning) rather than cast to size_t,
+                        // where -1 becomes 2^64-1 and acts as no cap without a message.
+                        auto read_cap = [&]() -> size_t {
+                            const int64_t v = option_parser.read<int64_t>();
+                            if (v < 0)
+                                throw std::runtime_error(
+                                    "a cap is a non-negative integer (0 is no cap), got " +
+                                    std::to_string(v));
+                            return static_cast<size_t>(v);
+                        };
+                        // A probability, rate or weight that is NaN or infinite compares false
+                        // with every bound, so each device's sampler would read it differently.
+                        auto finite = [](double v) {
+                            if (!std::isfinite(v))
+                                throw std::runtime_error("the value is not a finite real number");
+                            return v;
+                        };
                         if (option_key == "MaxSuccessorStatesPerParent") {
-                            req.max_successor_states_per_parent = static_cast<size_t>(option_parser.read<int64_t>());
+                            req.max_successor_states_per_parent = read_cap();
                         } else if (option_key == "MaxStatesPerStep") {
-                            req.max_states_per_step = static_cast<size_t>(option_parser.read<int64_t>());
+                            req.max_states_per_step = read_cap();
                         } else if (option_key == "MatchesPerStep") {
-                            req.matches_per_step = static_cast<size_t>(option_parser.read<int64_t>());
+                            req.matches_per_step = read_cap();
                         } else if (option_key == "MatchesPerStateRule") {
-                            req.matches_per_state_rule =
-                                static_cast<size_t>(option_parser.read<int64_t>());
+                            req.matches_per_state_rule = read_cap();
                         } else if (option_key == "RandomSeed") {
                             req.random_seed = static_cast<uint64_t>(option_parser.read<int64_t>());
                         } else if (option_key == "ExplorationProbability") {
-                            req.exploration_probability = finite_option(option_parser.read<double>());
+                            req.exploration_probability = finite(option_parser.read<double>());
                         } else if (option_key == "TransitionRate") {
-                            req.transition_rate = finite_option(option_parser.read<double>());
+                            req.transition_rate = finite(option_parser.read<double>());
                         } else if (option_key == "RuleWeights") {
-                            req.rule_weights = option_parser.read<std::vector<double>>();
+                            std::vector<double> weights = option_parser.read<std::vector<double>>();
+                            for (double w : weights) finite(w);
+                            req.rule_weights = std::move(weights);
                         } else if (option_key == "BranchialStep") {
                             // 0=All, positive=1-based step index, negative=from end (-1=final)
                             req.branchial_step = static_cast<int>(option_parser.read<int64_t>());
