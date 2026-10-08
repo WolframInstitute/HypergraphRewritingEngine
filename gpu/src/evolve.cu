@@ -299,6 +299,10 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
                                    ? upload_initial_states(engine, roots)
                                    : static_cast<uint32_t>(roots.size());
 
+    // The fallback count lives in the counter block, which a continuation keeps; the warnings
+    // are per call (DeviceErrors::warnings_from clears them), so the count is this call's too.
+    const uint32_t fallbacks_before = start_step != 0 ? engine.event_sig_raw_fallbacks() : 0u;
+
     // The launch uploads the rules into its own scratch (run_persistent_evolve).
     std::vector<DeviceRule> rules;
     rules.reserve(in.rules.size());
@@ -523,7 +527,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         out.frame_align_failures = qc_counts.align_failures;
         engine.errors().warnings_from(err_raw.data(), out.warnings, "persistent evolve");
         EngineState::report_event_sig_fallbacks(out.warnings, "persistent evolve",
-                                                snap.sig_fallbacks);
+                                                snap.sig_fallbacks - fallbacks_before);
         t_recon = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - t_recon_start).count();
         if (dbg) {
