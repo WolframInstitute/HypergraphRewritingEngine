@@ -1619,7 +1619,7 @@ uint32_t Hypergraph::alloc_instance_id() {
     return b.next++;
 }
 
-void Hypergraph::quotient_causal_seed(StateId initial_state, int max_steps) {
+void Hypergraph::quotient_causal_seed(StateId initial_state, int max_steps, EventId genesis) {
     qc_max_steps_.store(max_steps, std::memory_order_relaxed);
     // Through the builder: a miss here leaves the root class with no root instance, so the whole
     // reconstruction hangs off nothing and every relation under it is absent.
@@ -1638,8 +1638,43 @@ void Hypergraph::quotient_causal_seed(StateId initial_state, int max_steps) {
         qc_frame_slots(h, initial_state, orb, slots.data());
         worker_scratch().release(mk);
 
-        qc_add_instance(h, 0, arena_.template create<QcLineage>(), orb->n);
+        const QcLineage* root = arena_.template create<QcLineage>();
+        if (genesis != INVALID_ID) qc_genesis_roots_.push_back(QcGenesisRoot{root, genesis});
+        qc_add_instance(h, 0, root, orb->n);
     }
+}
+
+std::vector<std::pair<EventId, uint32_t>> Hypergraph::reconstructed_genesis_pairs(bool reduced) const {
+    std::vector<std::pair<EventId, uint32_t>> out;
+    if (qc_genesis_roots_.empty()) return out;
+    QrCtx c{const_cast<Hypergraph&>(*this)};
+    // Every application creates one child instance whose lineage node names it (descend): the
+    // node's event, the match it applied and the lineage of the instance it was applied to.
+    qc_instances_.for_each([&](uint64_t, QcInstanceShards* sh) {
+        for (const QcInstanceShard& s : sh->shard) {
+            s.list.for_each([&](const QcInstance& inst) {
+                const QcLineage* node = inst.lineage;
+                if (!node || !node->via) return;
+                const QcLineage* root = node;
+                while (root->via) root = root->parent;
+                EventId genesis = INVALID_ID;
+                for (const QcGenesisRoot& g : qc_genesis_roots_)
+                    if (g.root == root) { genesis = g.genesis; break; }
+                if (genesis == INVALID_ID) return;
+                const SlotMatch& m = *node->via;
+                bool initial = false, produced = false;
+                for (uint32_t j = 0; j < m.num_consumed; ++j) {
+                    if (hgcommon::qr_producer_of(c, node->parent, m.consumed(j)) ==
+                        hgcommon::QR_NO_PRODUCER)
+                        initial = true;
+                    else
+                        produced = true;
+                }
+                if (initial && !(reduced && produced)) out.emplace_back(genesis, node->event);
+            });
+        }
+    });
+    return out;
 }
 
 

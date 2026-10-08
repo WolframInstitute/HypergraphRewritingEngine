@@ -237,6 +237,10 @@ class Hypergraph {
         const SlotMatch* via = nullptr;
         uint32_t event = 0;
     };
+    // Each initial state's root lineage and genesis event, written by quotient_causal_seed before
+    // any worker runs.
+    struct QcGenesisRoot { const QcLineage* root; EventId genesis; };
+    std::vector<QcGenesisRoot> qc_genesis_roots_;
     struct QcInstance {
         uint32_t id = 0;
         uint32_t nslots = 0;
@@ -1324,7 +1328,18 @@ public:
     // Seed the quotient causal reconstruction at an initial state (depth 0): mark it
     // reachable and give each of its edge orbits the sentinel INIT producer (INVALID_ID,
     // skipped at emission -- initial edges have no producer). max_steps bounds the depth.
-    void quotient_causal_seed(StateId initial_state, int max_steps);
+    // `genesis`, when not INVALID_ID, is the initial state's genesis event (ShowGenesisEvents),
+    // recorded against the root instance for reconstructed_genesis_pairs.
+    void quotient_causal_seed(StateId initial_state, int max_steps, EventId genesis = INVALID_ID);
+
+    // Under ShowGenesisEvents, the causal pairs (genesis event, application) of the
+    // reconstruction: an application that consumed an edge of its initial state is caused by
+    // that state's genesis event. With `reduced` (CausalTransitiveReduction) only the
+    // applications that consumed no produced edge: every produced edge's producer is reached
+    // from the same genesis event, so the pair is the end of a longer path. Read after the run.
+    std::vector<std::pair<EventId, uint32_t>> reconstructed_genesis_pairs(bool reduced) const;
+    // The genesis events recorded by quotient_causal_seed.
+    size_t num_reconstructed_genesis_events() const { return qc_genesis_roots_.size(); }
 
     // Extend the reconstruction's depth budget for a continued run. The replay refuses to
     // expand an instance past it, so a continuation that raised the engine's budget and not

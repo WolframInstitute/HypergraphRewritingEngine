@@ -141,13 +141,6 @@ void ParallelEvolutionEngine::evolve(
     auto [canonical_state, raw_state, was_new] = hg_->create_or_get_canonical_state(
         std::move(initial_edge_set), 0, INVALID_ID);
 
-    // Seed the quotient causal reconstruction at this root (depth 0). The reconstruction runs
-    // whenever quotient_causal is on -- which includes full capture under Automatic identity --
-    // so the seed follows that switch, not the exploration strategy.
-    if (hg_->quotient_causal())
-        hg_->quotient_causal_seed(
-            canonical_state, static_cast<int>(std::min<size_t>(steps, (std::numeric_limits<int>::max)())));
-
     // Emit visualization event for initial state
 #ifdef HYPERGRAPH_ENABLE_VISUALIZATION
     {
@@ -170,8 +163,9 @@ void ParallelEvolutionEngine::evolve(
 
     // Create genesis event if enabled
     // This allows causal edges from initial state edges to be tracked
+    EventId genesis_event = INVALID_ID;
     if (enable_genesis_events_) {
-        [[maybe_unused]] EventId genesis_event = hg_->create_genesis_event(
+        genesis_event = hg_->create_genesis_event(
             raw_state,
             edge_ids.data(),
             edge_ids.size()
@@ -191,6 +185,15 @@ void ParallelEvolutionEngine::evolve(
         );
 #endif
     }
+
+    // Seed the quotient causal reconstruction at this root (depth 0), with its genesis event.
+    // The reconstruction runs whenever quotient_causal is on -- which includes full capture
+    // under Automatic identity -- so the seed follows that switch, not the exploration strategy.
+    if (hg_->quotient_causal())
+        hg_->quotient_causal_seed(
+            canonical_state,
+            static_cast<int>(std::min<size_t>(steps, (std::numeric_limits<int>::max)())),
+            genesis_event);
 
     // Mark initial state as matched (waiting version for correctness)
     matched_raw_states_.insert(raw_state);
@@ -375,16 +378,19 @@ StateId ParallelEvolutionEngine::create_and_register_initial_state(
         std::move(initial_edge_set), 0, INVALID_ID);
 
     // Create genesis event if enabled
+    EventId genesis_event = INVALID_ID;
     if (enable_genesis_events_) {
-        hg_->create_genesis_event(raw_state, edge_ids.data(), edge_ids.size());
+        genesis_event = hg_->create_genesis_event(raw_state, edge_ids.data(), edge_ids.size());
     }
 
-    // Seed the quotient causal reconstruction at this root (depth 0). The reconstruction runs
-    // whenever quotient_causal is on -- which includes full capture under Automatic identity --
-    // so the seed follows that switch, not the exploration strategy.
+    // Seed the quotient causal reconstruction at this root (depth 0), with its genesis event.
+    // The reconstruction runs whenever quotient_causal is on -- which includes full capture
+    // under Automatic identity -- so the seed follows that switch, not the exploration strategy.
     if (hg_->quotient_causal())
         hg_->quotient_causal_seed(
-            canonical_state, static_cast<int>(std::min<size_t>(max_steps_, (std::numeric_limits<int>::max)())));
+            canonical_state,
+            static_cast<int>(std::min<size_t>(max_steps_, (std::numeric_limits<int>::max)())),
+            genesis_event);
 
     // Mark initial state as matched and submit for pattern matching
     matched_raw_states_.insert(raw_state);

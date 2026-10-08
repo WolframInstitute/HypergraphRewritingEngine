@@ -192,7 +192,11 @@ their vertices. Within one reply the ids are consistent: under `CanonicalizeStat
 An edge instance carries the identity of the event that produced it (its **producer**); an
 initial edge's producer is its root's genesis event. There is a causal pair `p → c` whenever
 event `c` **consumes an edge that event `p` produced**. `ShowGenesisEvents` (default off) decides
-whether pairs involving genesis events are part of the observable relation.
+whether pairs involving genesis events are part of the observable relation. With it, each initial
+state has one genesis event (`"RuleIndex"` 65535), counted in `NumEvents`, and a pair `g → c` for
+every event `c` that consumed an edge of `g`'s initial state (under `CausalTransitiveReduction`,
+only those that consumed no produced edge); its input state is not one of `"States"`. Both
+exploration routes give the same events and pairs.
 
 **Transitive reduction (`CausalTransitiveReduction`, default on)** applies to the causal relation
 *only* (never states, events, or branchial), and removes a pair `p → c` when a longer directed

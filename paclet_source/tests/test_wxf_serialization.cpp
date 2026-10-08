@@ -1233,6 +1233,56 @@ TEST(WxfSerializationPin, GenesisInputStateIsNotListed) {
     }
 }
 
+// ShowGenesisEvents under Full states: quotient exploration gives full capture's NumEvents,
+// NumCausalEdges and causal list, with and without CausalTransitiveReduction (docs/SPEC.md
+// §5.2, §5.4): the genesis event of an initial state causes every application that consumed
+// one of its edges.
+TEST(WxfSerializationPin, GenesisEventsAgreeAcrossRoutes) {
+    struct Case { StateList init; EdgeList lhs, rhs; int64_t steps; };
+    const Case cases[] = {
+        {{{{1, 2}}}, {{1, 2}}, {{1, 3}, {3, 2}}, 2},
+        {{{{1, 2}}}, {{1, 2}}, {{1, 2}, {2, 3}}, 2},
+        {{{{1, 2}, {2, 3}}}, {{1, 2}, {2, 3}}, {{1, 3}, {3, 4}, {4, 2}}, 2},
+        {{{{1, 1}, {1, 1}}}, {{1, 2}}, {{1, 2}, {2, 3}}, 3},
+        {{{{1, 2}}, {{1, 1}, {2, 1}}}, {{1, 2}}, {{1, 3}, {3, 2}}, 2},
+    };
+    for (const Case& c : cases) {
+        for (const char* tr : {"True", "False"}) {
+            int64_t counts[2][4] = {};
+            for (int q = 0; q < 2; ++q) {
+                auto input = build_input(c.init, c.lhs, c.rhs, c.steps,
+                                         [&](wxf::Writer& w) {
+                                             put_str_option(w, "CanonicalizeStates", "Full");
+                                             put_str_option(w, "ShowGenesisEvents", "True");
+                                             put_str_option(w, "CausalTransitiveReduction", tr);
+                                             put_str_option(w, "ExploreFromCanonicalStatesOnly",
+                                                            q ? "True" : "False");
+                                             put_str_list_option(w, "RequestedData",
+                                                 {"NumStates", "NumEvents", "NumCausalEdges",
+                                                  "CausalEdges"});
+                                         },
+                                         5);
+                HostBridge host;
+                const auto out = run_rewriting_core(input, host);
+                counts[q][0] = read_int_key(out, "NumStates");
+                counts[q][1] = read_int_key(out, "NumEvents");
+                counts[q][2] = read_int_key(out, "NumCausalEdges");
+                counts[q][3] = count_list_entries(out, "CausalEdges");
+            }
+            for (int k = 0; k < 4; ++k)
+                EXPECT_EQ(counts[1][k], counts[0][k])
+                    << "case steps " << c.steps << " TR " << tr << " field " << k;
+            EXPECT_EQ(counts[0][3], counts[0][2]);
+            // The chain rule from {{1,2}}, 2 steps, as HGEvolve.md documents it: 4 events with
+            // the genesis event, 3 causal pairs.
+            if (&c == &cases[0] && std::string(tr) == "True") {
+                EXPECT_EQ(counts[0][1], 4);
+                EXPECT_EQ(counts[0][2], 3);
+            }
+        }
+    }
+}
+
 TEST(WxfSerializationPin, MinimalEvents) {
     // RequestedData -> {"EventsMinimal"}: only the minimal Events association is emitted.
     auto input = build_input(kSeed, kLhs, kRhs, 2,

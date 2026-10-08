@@ -1271,6 +1271,18 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                     recon.content[id] = c;
                 });
         }
+        // Under ShowGenesisEvents the reconstruction's causal pairs from the genesis events
+        // (Hypergraph::reconstructed_genesis_pairs), one per (genesis event, reported identity of
+        // the application). A genesis event is reported under id recon.id_bound + its event id,
+        // as "Events" lists it.
+        std::vector<std::pair<hypergraph::EventId, uint32_t>> recon_genesis_pairs;
+        if (recon.active && req.show_genesis_events) {
+            std::set<std::pair<hypergraph::EventId, uint64_t>> seen;
+            for (const auto& [g, ev] : hg.reconstructed_genesis_pairs(
+                     hg.causal_graph().transitive_reduction_enabled()))
+                if (seen.insert({g, recon_event_key(ev)}).second)
+                    recon_genesis_pairs.emplace_back(g, ev);
+        }
 
         // Events -> Association[event_id -> event record]: every event, not only canonical ones,
         // so the caller can merge by CanonicalId and keep each event's own endpoints.
@@ -1418,6 +1430,16 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                                              wxf::WXFValue(static_cast<int64_t>(c))});
                         causal_edges.push_back(wxf::WXFValue(edge_data));
                     });
+                for (const auto& [g, ev] : recon_genesis_pairs) {
+                    const int64_t from = static_cast<int64_t>(recon.id_bound) + g;
+                    wxf::WXFValueAssociation edge_data;
+                    edge_data.push_back({wxf::WXFValue("From"), wxf::WXFValue(from)});
+                    edge_data.push_back({wxf::WXFValue("To"), wxf::WXFValue(dense_id(ev))});
+                    edge_data.push_back({wxf::WXFValue("RawFrom"), wxf::WXFValue(from)});
+                    edge_data.push_back({wxf::WXFValue("RawTo"),
+                                         wxf::WXFValue(static_cast<int64_t>(ev))});
+                    causal_edges.push_back(wxf::WXFValue(edge_data));
+                }
             } else {
             auto causal_edge_vec = hg.causal_graph().get_causal_edges();
 
@@ -1692,6 +1714,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 // so they ask the request, which is the thing that pairing decides.
                 bool needs_causal;
                 bool needs_branchial;
+                const std::vector<std::pair<hypergraph::EventId, uint32_t>>& genesis_pairs;
 
                 // THE SCAN BOUND IS WHAT IS PUBLISHED, NOT WHAT WAS CLAIMED. State ids come
                 // from an atomic increment taken before the state is constructed, so the claim
@@ -1710,15 +1733,25 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 uint32_t num_raw_events() const {
                     // Published, not claimed, for the same reason as num_states above. The
                     // reconstruction's own count is a materialised total and is already exact.
-                    return recon.active ? recon.id_bound : hg.num_published_events();
+                    // Under ShowGenesisEvents the genesis events follow, at id_bound + id.
+                    if (!recon.active) return hg.num_published_events();
+                    return show_genesis ? recon.id_bound + hg.num_published_events() : recon.id_bound;
                 }
+                // A genesis event under the reconstruction, at id_bound + its event id.
+                bool genesis_id(uint32_t eid) const { return recon.active && eid >= recon.id_bound; }
                 bool is_valid_event(uint32_t eid) const {
                     if (!recon.active) return valid_event(eid);
+                    if (genesis_id(eid)) {
+                        const uint32_t g = eid - recon.id_bound;
+                        return show_genesis && hg.get_event(g).id != hypergraph::INVALID_ID &&
+                               hg.is_genesis_event(g);
+                    }
                     // An application whose identity was not registered stands for no vertex.
                     return recon.dense_of_sig.count(key(eid)) != 0;
                 }
                 int64_t effective_event_id(uint32_t eid) const {
                     if (!recon.active) return eff_event(eid);
+                    if (genesis_id(eid)) return static_cast<int64_t>(eid);
                     auto it = recon.dense_of_sig.find(key(eid));
                     return it == recon.dense_of_sig.end() ? -1 : it->second;
                 }
@@ -1727,16 +1760,19 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 // materialised for the event itself.
                 uint32_t event_input_state(uint32_t eid) const {
                     if (!recon.active) return hg.get_event(eid).input_state;
+                    if (genesis_id(eid)) return hg.get_event(eid - recon.id_bound).input_state;
                     const auto* c = hg.reconstructed_event_content(eid);
                     return c ? hg.class_frame_state(c->from_class) : hypergraph::INVALID_ID;
                 }
                 uint32_t event_output_state(uint32_t eid) const {
                     if (!recon.active) return hg.get_event(eid).output_state;
+                    if (genesis_id(eid)) return hg.get_event(eid - recon.id_bound).output_state;
                     const auto* c = hg.reconstructed_event_content(eid);
                     return c ? hg.class_frame_state(c->to_class) : hypergraph::INVALID_ID;
                 }
                 wxf::WXFValueAssociation serialize_event_data(uint32_t eid) const {
                     if (!recon.active) return event_data(eid);
+                    if (genesis_id(eid)) return event_data(eid - recon.id_bound);
                     // What the reconstruction holds and no more: the identity, the rule, and the
                     // endpoint classes as their frame states. A reconstructed event has no
                     // consumed/produced edge lists -- the replay mints an id and materialises
@@ -1767,6 +1803,8 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                             [&](uint64_t p, uint64_t c) {
                                 out.emplace_back(static_cast<uint32_t>(p), static_cast<uint32_t>(c));
                             });
+                        for (const auto& [g, ev] : genesis_pairs)
+                            out.emplace_back(recon.id_bound + g, ev);
                         return out;
                     }
                     // The stored relation already honours CausalTransitiveReduction: a
@@ -1804,7 +1842,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             CpuGraphSource gsrc{hg, recon, recon_event_key, req.show_genesis_events,
                 get_effective_state_id, get_effective_event_id, is_valid_event,
                 serialize_state_data, serialize_event_data,
-                gneeds.causal, gneeds.branchial};
+                gneeds.causal, gneeds.branchial, recon_genesis_pairs};
             hgmarshal::GraphOptions gopts;
             gopts.edge_deduplication = req.edge_deduplication;
             gopts.branchial_step = req.branchial_step;
@@ -1847,7 +1885,9 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             // path) the observable event count is the reconstruction's -- the authority-anchored
             // identity count the golden matrix pins -- not the materialised dedup count.
             const int64_t n_events = hg.quotient_reconstruction()
-                ? static_cast<int64_t>(hg.observable_num_events())
+                ? static_cast<int64_t>(hg.observable_num_events() +
+                                       (req.show_genesis_events
+                                            ? hg.num_reconstructed_genesis_events() : 0))
                 : static_cast<int64_t>(engine.num_events());
             full_result.push_back({wxf::WXFValue("NumEvents"), wxf::WXFValue(n_events)});
         }
@@ -1869,7 +1909,8 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 // read; passing the flag here is what keeps the quotient's numbers equal to
                 // full capture's in the same cell, which is the exploration contract.
                 causal_count = static_cast<int64_t>(hg.observable_num_causal_pairs(
-                    hg.causal_graph().transitive_reduction_enabled()));
+                    hg.causal_graph().transitive_reduction_enabled()) +
+                    recon_genesis_pairs.size());
             } else if (req.show_genesis_events) {
                 // Include all pairs
                 causal_count = static_cast<int64_t>(hg.num_causal_event_pairs());
