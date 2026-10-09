@@ -613,28 +613,19 @@ void Writer::write_real64(double value) {
 void Writer::write_string(const std::string& value) {
     write_byte(static_cast<uint8_t>(Token::String));
     write_varint(value.size());
-
-    for (char c : value) {
-        write_byte(static_cast<uint8_t>(c));
-    }
+    data_.insert(data_.end(), value.begin(), value.end());
 }
 
 void Writer::write_symbol(const std::string& value) {
     write_byte(static_cast<uint8_t>(Token::Symbol));
     write_varint(value.size());
-
-    for (char c : value) {
-        write_byte(static_cast<uint8_t>(c));
-    }
+    data_.insert(data_.end(), value.begin(), value.end());
 }
 
 void Writer::write_binary_string(const std::vector<uint8_t>& value) {
     write_byte(static_cast<uint8_t>(Token::BinaryString));
     write_varint(value.size());
-
-    for (uint8_t b : value) {
-        write_byte(b);
-    }
+    data_.insert(data_.end(), value.begin(), value.end());
 }
 
 void Writer::write_function(const std::string& head, size_t arg_count) {
