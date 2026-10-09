@@ -386,11 +386,13 @@ hgcommon::RecordSet record_set_for(const Job& job, const GraphPropertyNeeds& g) 
     r.causal = job.include_causal_edges || job.include_num_causal_edges || g.causal ||
                job.show_progress;
     r.branchial = job.include_branchial_edges || job.include_num_branchial_edges ||
-                  job.include_branchial_state_edges || g.branchial || job.show_progress;
+                  job.include_branchial_state_edges || g.branchial || job.show_progress ||
+                  (job.include_step_statistics && job.step_statistics_branchial != 0);
     r.state_events = job.include_branchial_state_edges_all_siblings;
     r.raw_events = job.include_events || job.include_events_minimal || job.include_num_events ||
                    job.include_branchial_state_edges ||
-                   job.include_branchial_state_edges_all_siblings || g.events || job.show_progress;
+                   job.include_branchial_state_edges_all_siblings || g.events || job.show_progress ||
+                   (job.include_step_statistics && job.step_statistics_branchial != 0);
     r.raw_counts_only = reads_raw_counts_only(job, g);
     r.multiplicities = job.include_step_statistics;
     if (job.session_op == "Open")

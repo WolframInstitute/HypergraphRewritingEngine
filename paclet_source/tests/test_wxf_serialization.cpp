@@ -3436,7 +3436,37 @@ double number_at(const wxf::WXFValue& v, const std::string& key) {
     return std::nan("");
 }
 
+bool bytes_contain(const std::vector<uint8_t>& bytes, const std::string& s) {
+    return std::search(bytes.begin(), bytes.end(), s.begin(), s.end()) != bytes.end();
+}
+
 }  // namespace
+
+// The per-step branchial metrics of one step worked by hand: states 10 and 11 joined (the pair
+// listed both ways), 12 alone (its pair with itself adds nothing). Vertex sets {0,1,2,5},
+// {0,1,2,6} and {7}: overlaps 3/5, 0, 0; vertices 0, 1, 2 held twice, 5, 6, 7 once.
+TEST(StateStatistics, BranchialStepMetricsOfASmallStep) {
+    hg::stats::BranchialStep s;
+    s.nodes = {10, 11, 12};
+    s.pairs = {{10, 11}, {11, 10}, {12, 12}};
+    s.vertex_sets = {{0, 1, 2, 5}, {0, 1, 2, 6}, {7}};
+    const auto out = hg::stats::branchial_step_metrics(
+        {{1u, s}}, hg::stats::kBranchialGraph | hg::stats::kBranchialOverlap);
+    ASSERT_EQ(out.size(), 1u);
+    const wxf::WXFValue rec(out.at(1));
+    ASSERT_NE(assoc_at(rec, "BranchialDegree"), nullptr);
+    EXPECT_EQ(number_at(*assoc_at(rec, "BranchialDegree"), "N"), 3);
+    EXPECT_DOUBLE_EQ(number_at(*assoc_at(rec, "BranchialDegree"), "Mean"), 2.0 / 3.0);
+    EXPECT_EQ(number_at(*assoc_at(rec, "BranchialDistance"), "N"), 1);
+    EXPECT_EQ(number_at(*assoc_at(rec, "BranchialDistance"), "Max"), 1);
+    EXPECT_EQ(number_at(rec, "BranchialComponents"), 2);
+    EXPECT_DOUBLE_EQ(number_at(rec, "BranchialDimension"), 1.0);   // K2: log 2 / log 2
+    EXPECT_EQ(number_at(*assoc_at(rec, "StateOverlap"), "N"), 3);
+    EXPECT_DOUBLE_EQ(number_at(*assoc_at(rec, "StateOverlap"), "Mean"), 0.2);
+    EXPECT_EQ(number_at(*assoc_at(rec, "VertexSharpness"), "N"), 6);
+    EXPECT_DOUBLE_EQ(number_at(*assoc_at(rec, "VertexSharpness"), "Mean"), 0.75);
+    EXPECT_DOUBLE_EQ(number_at(*assoc_at(rec, "BranchEntropy"), "Mean"), 0.5);
+}
 
 // "StepStatisticsWeighting" -> "Classes" counts a class once; "States" counts its raw states.
 TEST(StateStatistics, WeightingByClassesCountsEachClassOnce) {
@@ -3445,7 +3475,7 @@ TEST(StateStatistics, WeightingByClassesCountsEachClassOnce) {
         {1, {{1, 2}}}, {2, {{1, 2}, {2, 3}}}};
     auto vertex_count = [&](bool by_class) {
         const wxf::WXFValue steps = hg::stats::step_statistics(
-            points, edges, {}, {}, hg::stats::StepStatisticsOptions{by_class});
+            points, edges, {}, {}, hg::stats::StepStatisticsOptions{by_class, nullptr});
         const auto& first = std::get<wxf::WXFValueList>(steps.data).at(0);
         EXPECT_EQ(number_at(first, "RawStates"), 4);
         return *assoc_at(*assoc_at(first, "Invariants"), "VertexCount");
@@ -3455,6 +3485,31 @@ TEST(StateStatistics, WeightingByClassesCountsEachClassOnce) {
     EXPECT_DOUBLE_EQ(number_at(states, "Mean"), (3 * 2 + 3) / 4.0);
     EXPECT_EQ(number_at(classes, "N"), 2);
     EXPECT_DOUBLE_EQ(number_at(classes, "Mean"), 2.5);
+}
+
+// Through the FFI: the options are read, the branchial keys appear under None, and under Full
+// the overlap keys are left out with a warning.
+TEST(StateStatistics, BranchialOptionThroughTheFfi) {
+    auto run = [&](const char* canon) {
+        HostBridge host;
+        return run_rewriting_core(build_input({{{1, 2}, {1, 3}}}, kBranchLhs, kBranchRhs, 2,
+            [&](wxf::Writer& w) {
+                put_str_list_option(w, "RequestedData", {"StepStatistics"});
+                put_str_option(w, "CanonicalizeStates", canon);
+                put_str_list_option(w, "StepStatisticsBranchial", {"Graph", "Overlap"});
+                put_str_option(w, "StepStatisticsWeighting", "Classes");
+            }, 4), host);
+    };
+    const auto none = run("None");
+    const auto stats = value_bytes(none, "StepStatistics");
+    for (const char* k : {"BranchialDegree", "BranchialComponents", "StateOverlap",
+                          "VertexSharpness", "BranchEntropy", "WolframHausdorffDimension",
+                          "BallGrowthDimension"})
+        EXPECT_TRUE(bytes_contain(stats, k)) << k;
+    const auto full = run("Full");
+    EXPECT_TRUE(bytes_contain(value_bytes(full, "StepStatistics"), "BranchialDegree"));
+    EXPECT_FALSE(bytes_contain(value_bytes(full, "StepStatistics"), "StateOverlap"));
+    EXPECT_TRUE(bytes_contain(value_bytes(full, "Warnings"), "StepStatisticsBranchial"));
 }
 
 // Histogram keys round to the nearest multiple with halves to even, as the reference's
