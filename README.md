@@ -4,7 +4,7 @@ A high-performance multiway hypergraph rewriting engine for the Wolfram Physics 
 
 ## Status
 
-v1.0.0-rc1: feature-complete, gated by CI, model checking and a brute-force oracle. APIs
+v1.0.0-rc2: feature-complete, gated by CI, model checking and a brute-force oracle. APIs
 are stable from this release line onward.
 
 ## Paper
@@ -45,10 +45,10 @@ Wolfram Physics Project*](paper/main.pdf). To cite it:
 
 ### Mathematica Paclet
 
-Install the paclet from the GitHub release:
+Install the paclet from the GitHub release. rc1 and rc2 both carry paclet version 1.0.0, so uninstall rc1 first if it is installed (`PacletUninstall["WolframInstitute/HypergraphRewriteEngine"]`).
 
 ```mathematica
-PacletInstall["https://github.com/WolframInstitute/HypergraphRewritingEngine/releases/download/v1.0.0-rc1/WolframInstitute__HypergraphRewriteEngine-1.0.0.paclet"]
+PacletInstall["https://github.com/WolframInstitute/HypergraphRewritingEngine/releases/download/v1.0.0-rc2/WolframInstitute__HypergraphRewriteEngine-1.0.0.paclet"]
 Needs["HypergraphRewriting`"]
 ```
 

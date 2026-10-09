@@ -85,7 +85,7 @@ User-visible changes since v1.0.0-rc1:
 - An error inside a worker is reported as an error of the run on the CPU; it could end the
   process. After an error the run stops promptly.
 - An empty rule set gives the initial states and no events.
-- An edge with no vertices (`{}`) in a rule or an initial state is refused with
+- An empty hyperedge `{}` in a rule or an initial state is refused with
   `HGEvolve::badrule` or `HGEvolve::badinit`.
 - An edge of more than 16 vertices, a rule side of more than 16 edges and an empty left-hand side
   are refused with `HGEvolve::enginemsg` on both devices, before a device is chosen.
