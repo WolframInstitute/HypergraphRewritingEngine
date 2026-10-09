@@ -130,6 +130,29 @@ COMMIT_ALLOWANCES = {
         "move. Callgrind on {{x,y},{y,z}}->{{x,y},{y,z},{z,w}} to depth 8 (46,234 states), "
         "threaded and serial, counts the same arena mark() and release() instructions at "
         "5b8a2efe and at this commit, so the overflow branch is not reached there",
+    # The six StepStatistics commits below (two merges) declare Measurement-deferred with the
+    # cost of the new metrics on StepStatistics runs. No fragment in paper/tables measures a
+    # StepStatistics run or a paclet reply.
+    "dffb1f39b86109edb3e4ae73532c410ebffa4c9f":
+        "adds StepStatistics metrics in hgcommon/state_geometry_core.hpp and "
+        "state_invariants_core.hpp and grows EngineState's invariant pool. The CPU engine calls "
+        "them only under record_state_invariants_ (hypergraph.cpp:443) and the device only under "
+        "ds.record_invariants (persistent.cu:354, 379, 814; evolve.cu:251, 604); the pool is "
+        "allocated only by ensure_state_invariants. Stats-off bench_gpu_evolve built at "
+        "f278c71a and at d6bb6e0e, 5 interleaved runs each: wpp d7 full median 35.18 ms and "
+        "35.35 ms, wpp d8 quotient 272.47 ms and 272.34 ms, same state and event counts",
+    "9f1737dd6ac6a59d946f85e3300c8672f2f9a5f8":
+        "changes stats::summarise in paclet_source, which only builds StepStatistics replies",
+    "1f121d5c54545acc3f9a77fcbbcae05e1c715105":
+        "adds StepStatisticsBranchial keys in paclet_source and hgcommon/"
+        "branchial_overlap_core.hpp, read only when a reply asks for StepStatistics",
+    "d22f15e3e40264050c3725c7e4edb025a40dedd3":
+        "changes the StepStatisticsBranchial edge counting in paclet_source, read only when a "
+        "reply asks for StepStatistics",
+    "10fa9fed3a1457b9cd9aa376d236671f245ec296":
+        "merges dffb1f39 and 9f1737dd (see those entries)",
+    "d6bb6e0e62ba947d483d49ba26bf613852f3a3da":
+        "merges 1f121d5c and d22f15e3 (see those entries)",
 }
 
 VERDICT_RE = re.compile(r"\b(DIFFERS|FAILED|FAIL|NaN|nan|[-+]?inf)\b")
