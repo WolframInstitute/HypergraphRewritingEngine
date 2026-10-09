@@ -30,6 +30,13 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <hypergraph/ir_canonicalization.hpp>
+#if defined(_WIN32)
+#define NOMINMAX
+#include <windows.h>
+#include <psapi.h>
+#else
+#include <sys/resource.h>
+#endif
 
 using namespace hypergraph;
 
@@ -115,6 +122,21 @@ static std::vector<Workload> workloads() {
     }
     for (size_t i = 0; i < out.size(); ++i) out[i].name = names[names.size() - out.size() + i].c_str();
     return out;
+}
+
+// The process's page faults so far (Windows: PageFaultCount, soft and hard; elsewhere: minor and
+// major faults), for HG_BENCH_FAULTS=1, which prints the faults each timed evolve() took.
+static unsigned long long page_faults_so_far() {
+#if defined(_WIN32)
+    PROCESS_MEMORY_COUNTERS c{};
+    c.cb = sizeof(c);
+    if (!GetProcessMemoryInfo(GetCurrentProcess(), &c, sizeof(c))) return 0;
+    return c.PageFaultCount;
+#else
+    rusage u{};
+    getrusage(RUSAGE_SELF, &u);
+    return static_cast<unsigned long long>(u.ru_minflt) + static_cast<unsigned long long>(u.ru_majflt);
+#endif
 }
 
 // The branchial readback in its own frame, so callgrind can collect it alone
@@ -293,10 +315,14 @@ int main(int argc, char** argv) {
             // HG_BENCH_FORWARDING=0|1 fixes match forwarding; unset leaves the engine's rule.
             if (const char* v = std::getenv("HG_BENCH_FORWARDING")) e.set_match_forwarding(v[0] != '0');
             for (const auto& r : sel->rules) e.add_rule(r);
+            const unsigned long long f0 = page_faults_so_far();
             const auto t0 = std::chrono::steady_clock::now();
             e.evolve(sel->init, steps);
             const auto t1 = std::chrono::steady_clock::now();
             ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+            if (const char* pf = std::getenv("HG_BENCH_FAULTS"); pf && pf[0] == '1')
+                std::printf("  iteration %d: %.3f ms, %llu page faults\n", i, ms.back(),
+                            page_faults_so_far() - f0);
             hg_arena_hw = g.arena().block_bytes_high_water();
             hg_arena_used = g.arena().bytes_allocated();
 #if HG_ENGINE_STATS
