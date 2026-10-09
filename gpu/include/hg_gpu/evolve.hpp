@@ -672,9 +672,9 @@ private:
 // (tens of ms of cudaMalloc/cudaFree) dominates small and medium workloads --
 // 6-13x of the wall time on interactive-sized runs. A caller that evolves many
 // times (the persistent worker process, a benchmark, a notebook session) should
-// hold one PersistentEvolver: the engine is sized on the first run, only ever
-// grows (on overflow), never shrinks, so every subsequent run reuses it. Results
-// are identical to evolve(); run() resets the engine internally between calls.
+// hold one PersistentEvolver: a run reuses the engine when the engine's config
+// covers the run's own config, and widens it otherwise. Results are identical to
+// evolve(); run() resets the engine internally between calls.
 class PersistentEvolver {
 public:
     PersistentEvolver();

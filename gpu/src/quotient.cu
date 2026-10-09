@@ -72,6 +72,15 @@ void qe_count_branchial(const DeviceState& ds, const QeView& qe, bool multiplici
     HG_CUDA_CHECK(cudaGetLastError(), "QeState branchial count launch");
 }
 
+// Every raw device buffer QeState holds outside its RAII members. The destructor frees them, and
+// so does the constructor when its body throws, because the destructor does not run for an
+// object whose constructor threw.
+#define HG_QE_STATE_DEVICE_BUFFERS(X)                                                          \
+    X(work_items_) X(lane_reach_) X(arr_) X(counters_) X(event_sig_) X(event_runsig_)          \
+    X(event_kept_) X(class_nmatch_) X(class_pairs_) X(event_from_class_) X(event_to_class_)    \
+    X(event_rule_) X(qm_words_) X(qm_queued_) X(qm_point_class_) X(qm_point_depth_)
+#define HG_FREE_DEVICE(p) if (p) { cudaFree(p); p = nullptr; }
+
 QeState::QeState(bool on, const QeEntries& n): matches_(on ? n.classes : 1u),
           by_from_(on ? qe_list_buckets(n.classes) : 1u, on ? n.classes : 1u),
           instances_(on ? n.instances : 1u),
@@ -91,6 +100,7 @@ QeState::QeState(bool on, const QeEntries& n): matches_(on ? n.classes : 1u),
           frame_(on ? n.classes * 2u : 8u),
           arr_cap_(on ? n.words : 1u),
           on_(on) {
+      try {
         HG_CUDA_CHECK(cudaMalloc(&arr_, sizeof(uint32_t) * arr_cap_), "QeState arr alloc");
         // THE SCALARS IN ONE BLOCK, so the host reads them in ONE transfer.
         //
@@ -137,26 +147,16 @@ QeState::QeState(bool on, const QeEntries& n): matches_(on ? n.classes : 1u),
                                  sizeof(uint32_t) * kQeKeptStride * size_t(event_sig_capacity_)),
                       "QeState event kept alloc");
         clear();
+      } catch (...) {
+        HG_QE_STATE_DEVICE_BUFFERS(HG_FREE_DEVICE)
+        throw;
+      }
     }
 
-QeState::~QeState() {
-    if (work_items_) cudaFree(work_items_);
-    if (lane_reach_) cudaFree(lane_reach_);
-        if (arr_)     cudaFree(arr_);
-        if (counters_) cudaFree(counters_);
-        if (event_sig_) cudaFree(event_sig_);
-        if (event_runsig_) cudaFree(event_runsig_);
-        if (event_kept_) cudaFree(event_kept_);
-        if (class_nmatch_) cudaFree(class_nmatch_);
-        if (class_pairs_) cudaFree(class_pairs_);
-        if (event_from_class_) cudaFree(event_from_class_);
-        if (event_to_class_) cudaFree(event_to_class_);
-        if (event_rule_) cudaFree(event_rule_);
-        if (qm_words_) cudaFree(qm_words_);
-        if (qm_queued_) cudaFree(qm_queued_);
-        if (qm_point_class_) cudaFree(qm_point_class_);
-        if (qm_point_depth_) cudaFree(qm_point_depth_);
-    }
+QeState::~QeState() { HG_QE_STATE_DEVICE_BUFFERS(HG_FREE_DEVICE) }
+
+#undef HG_FREE_DEVICE
+#undef HG_QE_STATE_DEVICE_BUFFERS
 
 bool QeState::enabled() const { return on_; }
 

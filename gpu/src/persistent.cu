@@ -1763,8 +1763,8 @@ uint64_t device_resident_threads() {
 
 // A launch's ring, dedup maps and detector. Built on first use at the sizes the launch asks for
 // and rebuilt only when a later launch asks for a different size; each launch clears what it
-// takes. A PersistentEvolver's config never shrinks, so after its first run every launch reuses
-// them and makes no cudaMalloc or cudaFree call for them (13 per run before, 0.26 ms of the
+// takes. A PersistentEvolver reuses its engine while the engine's config covers the run, and
+// then every launch reuses them and makes no cudaMalloc or cudaFree call for them (13 per run before, 0.26 ms of the
 // 3.7 ms floor of wpp at 2 steps being the maps' and ring's frees alone).
 struct EngineState::PersistentScratch {
     std::unique_ptr<RingBuffer<MatchWorkItem>> ring;
@@ -2359,17 +2359,29 @@ void explore_reset_async(const ExploreView& v, bool full, ClearBatch* batch) {
     if (!batch) own.flush();
 }
 
+// The destructors below free their raw device buffers with this, and so do the constructors when
+// their bodies throw: the destructor does not run for an object whose constructor threw, so a
+// failed cudaMalloc would otherwise keep every buffer allocated before it for the life of the
+// process.
+#define HG_FREE_DEVICE(p) if (p) { cudaFree(p); p = nullptr; }
+#define HG_SESSION_STATE_DEVICE_BUFFERS(X) X(frontier_) X(step_) X(count_) X(keyed_words_)
+
 ExploreState::ExploreState(uint32_t max_states, uint32_t max_events)
     : max_states_(max_states), max_events_(max_events),
       children_(max_states, max_events), expand_(max_states) {
-    HG_CUDA_CHECK(cudaMalloc(&words_, sizeof(uint32_t) * (2ull * max_states + 2u)),
-                  "explore words alloc");
-    HG_CUDA_CHECK(cudaMemset(expand_.view().data, 0, sizeof(ExpandEntry) * size_t(max_states)),
-                  "expand log init");
-    clear();
+    try {
+        HG_CUDA_CHECK(cudaMalloc(&words_, sizeof(uint32_t) * (2ull * max_states + 2u)),
+                      "explore words alloc");
+        HG_CUDA_CHECK(cudaMemset(expand_.view().data, 0, sizeof(ExpandEntry) * size_t(max_states)),
+                      "expand log init");
+        clear();
+    } catch (...) {
+        HG_FREE_DEVICE(words_)
+        throw;
+    }
 }
 
-ExploreState::~ExploreState() { if (words_) cudaFree(words_); }
+ExploreState::~ExploreState() { HG_FREE_DEVICE(words_) }
 
 void ExploreState::clear(ClearBatch* batch) { explore_reset_async(view(), /*full=*/true, batch); }
 
@@ -2386,6 +2398,7 @@ ExploreView ExploreState::view() const {
 }
 
 SessionState::SessionState(uint32_t max_states, uint32_t max_events): states_(max_states * 2u), events_(max_events * 2u), explore_(max_states, max_events), forms_(max_states * 32u), exact_(max_states * 2u), keyed_rewrites_(max_events * 2u), keyed_twins_(max_states * 2u), cap_(max_states) {
+      try {
         states_.clear();
         events_.clear();
         exact_.clear();
@@ -2400,14 +2413,16 @@ SessionState::SessionState(uint32_t max_states, uint32_t max_events): states_(ma
         HG_CUDA_CHECK(cudaMalloc(&count_, sizeof(uint32_t)), "session frontier count alloc");
         HG_CUDA_CHECK(cudaMemset(count_, 0, sizeof(uint32_t)),
                       "session frontier count clear");
+      } catch (...) {
+        HG_SESSION_STATE_DEVICE_BUFFERS(HG_FREE_DEVICE)
+        throw;
+      }
     }
 
-SessionState::~SessionState() {
-        if (frontier_) cudaFree(frontier_);
-        if (step_)     cudaFree(step_);
-        if (count_)    cudaFree(count_);
-        if (keyed_words_) cudaFree(keyed_words_);
-    }
+SessionState::~SessionState() { HG_SESSION_STATE_DEVICE_BUFFERS(HG_FREE_DEVICE) }
+
+#undef HG_SESSION_STATE_DEVICE_BUFFERS
+#undef HG_FREE_DEVICE
 
 uint32_t SessionState::frontier_size() const {
         uint32_t n = 0;
