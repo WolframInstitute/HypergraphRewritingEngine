@@ -1124,6 +1124,10 @@ TEST(JobSystemAffinity, DefaultPlacementFollowsTheTopology) {
 // limit is lowered to the current usage plus 64 MB, so 64 workers with 8 MB stacks cannot all
 // be created.
 TEST(JobSystemStart, AFailedSpawnThrowsAndLeavesNoRunningWorker) {
+#if !defined(__linux__)
+    // The test reads /proc/self/status and lowers RLIMIT_AS, which only Linux enforces.
+    GTEST_SKIP() << "needs /proc and an enforced RLIMIT_AS (Linux)";
+#endif
     struct rlimit old{};
     ASSERT_EQ(getrlimit(RLIMIT_AS, &old), 0);
     size_t vm_kb = 0;
