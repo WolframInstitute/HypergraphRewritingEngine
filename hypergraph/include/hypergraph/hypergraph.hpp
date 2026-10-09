@@ -21,6 +21,7 @@
 #include "hgcommon/ir_core.hpp"
 #include "hgcommon/canonical_form_core.hpp"
 #include "hgcommon/token_core.hpp"
+#include "hgcommon/state_invariants_core.hpp"
 #include "lock_free_list.hpp"
 #include "causal_graph.hpp"
 #include "concurrent_map.hpp"
@@ -88,6 +89,9 @@ class Hypergraph {
     // Each event's marked forms, indexed by event id, written before the event's identity is
     // claimed; filled only when hgcommon::event_keys_mark_edges(event_signature_keys_).
     SegmentedArray<hgcommon::EventMarkedForms> event_forms_;
+    // Each class's invariants, filled only when record_state_invariants_: canonical hash -> a
+    // cell the worker that claims the hash fills with the record (record_state_invariants).
+    ConcurrentMap<uint64_t, const hgcommon::StateInvariantRecord**> state_invariants_;
 
     // Pattern matching indices
 
@@ -143,6 +147,7 @@ class Hypergraph {
     std::atomic<bool> record_raw_events_{true};
     std::atomic<bool> record_raw_counts_only_{false};
     std::atomic<bool> record_multiplicities_{false};
+    std::atomic<bool> record_state_invariants_{false};
 
     // A state's edge-orbit table and canonical rank table are State::edge_orbits and
     // State::edge_ranks. The orbits are computed once at state canonicalization in quotient mode
@@ -1348,6 +1353,9 @@ public:
     uint64_t marked_form_hash(StateId s, const EdgeId* marked, uint8_t n);
     // Event `e`'s marked forms into event_forms_, when the run's keys read them.
     void record_event_forms(EventId e);
+    // The invariants of class `hash` into state_invariants_, computed from state `sid` on the
+    // calling worker when this call claims the hash.
+    void record_state_invariants(StateId sid, uint64_t hash);
     // Event `e`'s identity, claimed in canonical_event_map_ on its signature values. The Event is
     // stored before the call; a key hit compares against the class's first event. The claim's
     // key is the event's reported signature.
@@ -1752,6 +1760,15 @@ public:
     // two components are stored as atomics like every other pre-evolution switch here.
     void set_record_set(RecordSet r);
     RecordSet record_set() const;
+
+    // The invariants of the class with canonical hash `hash` (RecordSet::state_invariants), or
+    // nullptr when the run did not record them. Read after the run.
+    const hgcommon::StateInvariantRecord* state_invariants(uint64_t hash) const {
+        const auto cell = state_invariants_.lookup(hgcommon::avoid_reserved_keys(hash));
+        return cell ? hgcommon::atomic_ref<const hgcommon::StateInvariantRecord*>(**cell)
+                          .load(std::memory_order_acquire)
+                    : nullptr;
+    }
 
     // Create a genesis event for an initial state.
     // This synthetic event connects the empty genesis state to the initial state.

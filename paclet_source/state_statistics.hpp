@@ -8,7 +8,8 @@
 //
 // Every invariant is isomorphism-invariant, so a step's population is summarised from one
 // representative per class weighted by the class's multiplicity, and no raw state is built.
-// The invariants are hgcommon::state_invariants (state_invariants_core.hpp).
+// The invariants are hgcommon::state_invariants (state_invariants_core.hpp), computed by each
+// engine as it creates a class; step_statistics reads one record per class.
 
 #include <cstdint>
 #include <map>
@@ -77,12 +78,12 @@ void events_from_multiplicities(
     std::map<uint32_t, std::map<int64_t, uint64_t>>& rule_counts);
 
 // The "StepStatistics" reply: one association per step, in step order, with the keys of the
-// probes' per-step record that a class and its multiplicity determine. `class_edges` holds each
-// class's representative; `events` and `rule_counts` the raw events whose output state is at a
-// step, in total and per rule index.
+// probes' per-step record that a class and its multiplicity determine. `class_invariants` holds
+// each class's record; a class without one reads as the state with no edges. `events` and
+// `rule_counts` hold the raw events whose output state is at a step, in total and per rule index.
 wxf::WXFValue step_statistics(
     const std::vector<StepPoint>& points,
-    const std::unordered_map<uint64_t, std::vector<std::vector<uint32_t>>>& class_edges,
+    const std::unordered_map<uint64_t, const hgcommon::StateInvariantRecord*>& class_invariants,
     const std::map<uint32_t, uint64_t>& events,
     const std::map<uint32_t, std::map<int64_t, uint64_t>>& rule_counts);
 

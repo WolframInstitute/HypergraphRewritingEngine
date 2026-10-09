@@ -1946,25 +1946,13 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // the multiplicities come from the engine's count; under full capture every raw state is
         // present and counts once.
         if (req.include_step_statistics) {
-            auto contents = [&](hypergraph::StateId sid) {
-                std::vector<std::vector<uint32_t>> out;
-                hg.get_state(sid).edges.for_each([&](hypergraph::EdgeId eid) {
-                    const auto& e = hg.get_edge(eid);
-                    out.emplace_back(e.vertices, e.vertices + e.arity);
-                });
-                return out;
-            };
+            // Each class's invariants, recorded by the worker that created the class.
             std::vector<hg::stats::StepPoint> points;
-            std::unordered_map<uint64_t, std::vector<std::vector<uint32_t>>> class_edges;
+            std::unordered_map<uint64_t, const hgcommon::StateInvariantRecord*> class_invariants;
             std::map<uint32_t, uint64_t> events;
             std::map<uint32_t, std::map<int64_t, uint64_t>> rule_counts;
             const uint32_t n_pub = hg.num_published_states();
             if (hg.quotient_multiplicity()) {
-                for (uint32_t sid = 0; sid < n_pub; ++sid) {
-                    const hypergraph::State& st = hg.get_state(sid);
-                    if (st.id == hypergraph::INVALID_ID) continue;
-                    if (!class_edges.count(st.canonical_hash)) class_edges[st.canonical_hash] = contents(sid);
-                }
                 std::unordered_map<uint64_t, std::map<int64_t, uint64_t>> matches_by_rule;
                 hg.for_each_class_multiplicity([&](uint64_t h, uint32_t d, uint64_t m) {
                     points.push_back({d, h, m});
@@ -1974,6 +1962,8 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                         ++by_rule[static_cast<int64_t>(sm.rule)];
                     });
                 });
+                for (const auto& p : points)
+                    class_invariants.emplace(p.class_hash, hg.state_invariants(p.class_hash));
                 hg::stats::events_from_multiplicities(points, matches_by_rule,
                                                       static_cast<uint32_t>(req.steps), events,
                                                       rule_counts);
@@ -1983,7 +1973,8 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                     if (st.id == hypergraph::INVALID_ID) continue;
                     const uint64_t h = hg.get_or_compute_canonical_hash(sid);
                     points.push_back({st.step, h, 1});
-                    if (!class_edges.count(h)) class_edges[h] = contents(sid);
+                    auto& r = class_invariants[h];
+                    if (!r) r = hg.state_invariants(h);
                 }
                 const uint32_t n_ev = hg.num_published_events();
                 for (uint32_t eid = 0; eid < n_ev; ++eid) {
@@ -1996,7 +1987,8 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 }
             }
             full_result.push_back({wxf::WXFValue("StepStatistics"),
-                                   hg::stats::step_statistics(points, class_edges, events, rule_counts)});
+                                   hg::stats::step_statistics(points, class_invariants, events,
+                                                              rule_counts)});
         }
 
         // GlobalEdges -> List of all edges created during evolution

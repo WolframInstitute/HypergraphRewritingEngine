@@ -393,8 +393,10 @@ hgcommon::RecordSet record_set_for(const Job& job, const GraphPropertyNeeds& g) 
                    job.include_branchial_state_edges_all_siblings || g.events || job.show_progress;
     r.raw_counts_only = reads_raw_counts_only(job, g);
     r.multiplicities = job.include_step_statistics;
+    r.state_invariants = job.include_step_statistics;
     if (job.session_op == "Open")
-        r.causal = r.branchial = r.state_events = r.raw_events = r.multiplicities = true;
+        r.causal = r.branchial = r.state_events = r.raw_events = r.multiplicities =
+            r.state_invariants = true;
     return r;
 }
 

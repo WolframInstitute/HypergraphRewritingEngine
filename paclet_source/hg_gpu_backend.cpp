@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <map>
 #include <set>
@@ -897,7 +898,8 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
     // quotient exploration and from every raw state under full capture.
     if (job.include_step_statistics) {
         std::vector<hg::stats::StepPoint> points;
-        std::unordered_map<uint64_t, std::vector<std::vector<uint32_t>>> class_edges;
+        std::unordered_map<uint64_t, const hgcommon::StateInvariantRecord*> class_invariants;
+        std::deque<std::vector<uint64_t>> record_storage;
         std::map<uint32_t, uint64_t> events;
         std::map<uint32_t, std::map<int64_t, uint64_t>> rule_counts;
         auto contents = [&](hg_gpu::StateId s) {
@@ -910,8 +912,13 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
             return out;
         };
         if (!result.class_multiplicities.empty()) {
-            for (const auto& st : result.states)
-                if (!class_edges.count(state_hash[st.id])) class_edges[state_hash[st.id]] = contents(st.id);
+            for (const auto& st : result.states) {
+                if (!class_invariants.count(state_hash[st.id])) {
+                    record_storage.emplace_back();
+                    class_invariants[state_hash[st.id]] =
+                        hg::stats::invariant_record(contents(st.id), record_storage.back());
+                }
+            }
             for (const auto& p : result.class_multiplicities)
                 points.push_back({p.depth, p.class_hash, p.multiplicity});
             std::unordered_map<uint64_t, std::map<int64_t, uint64_t>> matches_by_rule;
@@ -925,7 +932,11 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
                 const auto it = state_step.find(st.id);
                 const uint32_t step = it == state_step.end() ? 0u : it->second;
                 points.push_back({step, state_hash[st.id], 1});
-                if (!class_edges.count(state_hash[st.id])) class_edges[state_hash[st.id]] = contents(st.id);
+                if (!class_invariants.count(state_hash[st.id])) {
+                    record_storage.emplace_back();
+                    class_invariants[state_hash[st.id]] =
+                        hg::stats::invariant_record(contents(st.id), record_storage.back());
+                }
             }
             for (const auto& e : result.events) {
                 ++events[e.step];
@@ -933,7 +944,8 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
             }
         }
         full_result.push_back({wxf::WXFValue("StepStatistics"),
-                               hg::stats::step_statistics(points, class_edges, events, rule_counts)});
+                               hg::stats::step_statistics(points, class_invariants, events,
+                                                          rule_counts)});
     }
 
     // GraphData for the requested *Graph properties, built through the SAME shared

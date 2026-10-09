@@ -472,7 +472,7 @@ void events_from_multiplicities(
 
 wxf::WXFValue step_statistics(
     const std::vector<StepPoint>& points,
-    const std::unordered_map<uint64_t, std::vector<std::vector<uint32_t>>>& class_edges,
+    const std::unordered_map<uint64_t, const hgcommon::StateInvariantRecord*>& class_invariants,
     const std::map<uint32_t, uint64_t>& events,
     const std::map<uint32_t, std::map<int64_t, uint64_t>>& rule_counts) {
     std::map<uint32_t, std::map<uint64_t, uint64_t>> by_step;
@@ -481,14 +481,10 @@ wxf::WXFValue step_statistics(
             auto& w = by_step[p.step][p.class_hash];
             w = hgcommon::qm_sat_add(w, p.weight);
         }
-    std::unordered_map<uint64_t, StateInvariants> inv;
-    auto invariants = [&](uint64_t h) -> const StateInvariants& {
-        auto it = inv.find(h);
-        if (it != inv.end()) return it->second;
-        auto e = class_edges.find(h);
-        static const std::vector<std::vector<uint32_t>> kNone;
-        return inv.emplace(h, state_invariants(e != class_edges.end() ? e->second : kNone))
-            .first->second;
+    static const hgcommon::StateInvariantRecord kNone{};
+    auto invariants = [&](uint64_t h) -> const hgcommon::StateInvariantRecord& {
+        auto it = class_invariants.find(h);
+        return it != class_invariants.end() && it->second ? *it->second : kNone;
     };
 
     wxf::WXFValueList steps;
@@ -515,7 +511,8 @@ wxf::WXFValue step_statistics(
         std::map<int64_t, uint64_t> arity_hist, degree_hist;
         std::map<std::vector<int64_t>, uint64_t> arity_sig_hist, degree_seq_hist;
         for (const auto& [h, w] : classes) {
-            const StateInvariants& s = invariants(h);
+            const hgcommon::StateInvariantRecord& r = invariants(h);
+            const hgcommon::StateInvariantValues& s = r.v;
             vertex_count.push_back({double(s.vertex_count), w});
             edge_count.push_back({double(s.edge_count), w});
             max_degree.push_back({double(s.max_degree), w});
@@ -527,11 +524,12 @@ wxf::WXFValue step_statistics(
             inc_diameter.push_back({double(s.incidence_diameter), w});
             inc_mean_distance.push_back({s.incidence_mean_distance, w});
             largest_fraction.push_back({s.largest_component_fraction, w});
-            for (int64_t a : s.arities) arity_hist[a] = hgcommon::qm_sat_add(arity_hist[a], w);
-            for (int64_t d : s.degree_sequence) degree_hist[d] = hgcommon::qm_sat_add(degree_hist[d], w);
-            arity_sig_hist[s.arities] = hgcommon::qm_sat_add(arity_sig_hist[s.arities], w);
-            degree_seq_hist[s.degree_sequence] =
-                hgcommon::qm_sat_add(degree_seq_hist[s.degree_sequence], w);
+            const std::vector<int64_t> arities(r.arities(), r.arities() + r.num_edges);
+            const std::vector<int64_t> degrees(r.degrees(), r.degrees() + r.num_vertices);
+            for (int64_t a : arities) arity_hist[a] = hgcommon::qm_sat_add(arity_hist[a], w);
+            for (int64_t d : degrees) degree_hist[d] = hgcommon::qm_sat_add(degree_hist[d], w);
+            arity_sig_hist[arities] = hgcommon::qm_sat_add(arity_sig_hist[arities], w);
+            degree_seq_hist[degrees] = hgcommon::qm_sat_add(degree_seq_hist[degrees], w);
         }
 
         wxf::WXFValueAssociation invs;

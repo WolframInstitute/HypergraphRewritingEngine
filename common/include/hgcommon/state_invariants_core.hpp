@@ -1,8 +1,9 @@
 #pragma once
 #include "hgcommon/namespace.hpp"
-// PER-STATE HYPERGRAPH INVARIANTS, one body for host and device. "StepStatistics"
-// (paclet_source/state_statistics.hpp) summarises them per step. The definitions are those of
-// the multiway-statistics probes; reference/verify_state_statistics.wls checks them.
+// PER-STATE HYPERGRAPH INVARIANTS, one body for host and device. The CPU engine computes them on
+// the worker that first claims a class's hash (Hypergraph::record_state_invariants), and
+// "StepStatistics" (paclet_source/state_statistics.hpp) summarises them per step. The definitions
+// are those of the multiway-statistics probes; reference/verify_state_statistics.wls checks them.
 //
 // A state is m edges in CSR form: edge i's vertices are verts[off[i] .. off[i + 1]), S = off[m]
 // slots in all. Vertex ids are arbitrary. The incidence graph has a node per distinct vertex and

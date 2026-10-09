@@ -438,6 +438,13 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
     hgcommon::atomic_ref<StateId>(states_[new_sid].canonical_id)
         .store(existing_or_new, std::memory_order_release);
 
+    // "StepStatistics": the invariants of each class, keyed by its canonical hash. Under None
+    // and Automatic without event identity the hash is computed here, on this worker.
+    if (record_state_invariants_.load(std::memory_order_relaxed))
+        record_state_invariants(new_sid, canonical_hash != 0
+                                             ? canonical_hash
+                                             : get_or_compute_canonical_hash(new_sid));
+
     if (!was_inserted) {
         return {existing_or_new, new_sid, false};
     }
@@ -900,6 +907,51 @@ void Hypergraph::record_event_forms(EventId e) {
     f.consumed = marked_form_hash(ev.input_state, ev.consumed_edges, ev.num_consumed);
     f.produced = marked_form_hash(ev.output_state, ev.produced_edges, ev.num_produced);
     event_forms_.emplace_at(e, arena_, f);
+}
+
+void Hypergraph::record_state_invariants(StateId sid, uint64_t hash) {
+    // One worker claims the hash and fills the cell; the others return without waiting.
+    const uint64_t key = hgcommon::avoid_reserved_keys(hash);
+    if (state_invariants_.lookup(key)) return;
+    auto* cell = static_cast<const hgcommon::StateInvariantRecord**>(
+        arena_.allocate_raw(sizeof(void*), alignof(void*)));
+    *cell = nullptr;
+    if (!state_invariants_.insert_if_absent(key, cell).second) return;
+    const SparseBitset& edges = states_[sid].edges;
+    const uint32_t m = static_cast<uint32_t>(edges.count());
+    auto mk = worker_scratch().mark();
+    auto* off = static_cast<uint32_t*>(
+        worker_scratch().allocate_raw((m + 1) * sizeof(uint32_t), alignof(uint32_t)));
+    uint32_t slots = 0, i = 0;
+    edges.for_each([&](EdgeId eid) { off[i++] = slots; slots += get_edge(eid).arity; });
+    off[m] = slots;
+    auto* verts = static_cast<uint32_t*>(
+        worker_scratch().allocate_raw((slots + 1) * sizeof(uint32_t), alignof(uint32_t)));
+    i = 0;
+    edges.for_each([&](EdgeId eid) {
+        const Edge& e = get_edge(eid);
+        for (uint8_t k = 0; k < e.arity; ++k) verts[off[i] + k] = e.vertices[k];
+        ++i;
+    });
+    const uint64_t words = hgcommon::si_scratch_words(slots, m, 1);
+    auto* scratch = static_cast<uint32_t*>(
+        worker_scratch().allocate_raw(words * sizeof(uint32_t), alignof(uint64_t)));
+    auto* arities = static_cast<uint32_t*>(
+        worker_scratch().allocate_raw((m + slots + 1) * sizeof(uint32_t), alignof(uint32_t)));
+    uint32_t* degrees = arities + m;
+    hgcommon::StateInvariantValues v;
+    hgcommon::state_invariants(off, verts, m, scratch, v, arities, degrees);
+    const uint32_t n = static_cast<uint32_t>(v.vertex_count);
+    auto* rec = static_cast<hgcommon::StateInvariantRecord*>(arena_.allocate_raw(
+        hgcommon::StateInvariantRecord::bytes(m, n), alignof(hgcommon::StateInvariantRecord)));
+    rec->v = v;
+    rec->num_edges = m;
+    rec->num_vertices = n;
+    auto* words_out = reinterpret_cast<uint32_t*>(rec + 1);
+    std::memcpy(words_out, arities, sizeof(uint32_t) * (uint64_t{m} + n));
+    worker_scratch().release(mk);
+    hgcommon::atomic_ref<const hgcommon::StateInvariantRecord*>(*cell).store(
+        rec, std::memory_order_release);
 }
 
 // Under an event identity mode: the event's signature values, claimed; a duplicate records the
@@ -2545,6 +2597,7 @@ void Hypergraph::set_record_set(RecordSet r) {
     record_raw_events_.store(r.raw_events, std::memory_order_relaxed);
     record_raw_counts_only_.store(r.raw_counts_only, std::memory_order_relaxed);
     record_multiplicities_.store(r.multiplicities, std::memory_order_relaxed);
+    record_state_invariants_.store(r.state_invariants, std::memory_order_relaxed);
 }
 
 RecordSet Hypergraph::record_set() const {
@@ -2553,7 +2606,8 @@ RecordSet Hypergraph::record_set() const {
                      record_state_events_.load(std::memory_order_relaxed),
                      record_raw_events_.load(std::memory_order_relaxed),
                      record_raw_counts_only_.load(std::memory_order_relaxed),
-                     record_multiplicities_.load(std::memory_order_relaxed)};
+                     record_multiplicities_.load(std::memory_order_relaxed),
+                     record_state_invariants_.load(std::memory_order_relaxed)};
 }
 
 // The per-state event list and the branchial pair relation are recorded independently: they feed
@@ -3042,6 +3096,7 @@ Hypergraph::Hypergraph(uint32_t capacity_scale)
     , states_(seg_shift_for(capacity_scale))
     , events_(seg_shift_for(capacity_scale))
     , event_forms_(seg_shift_for(capacity_scale))
+    , state_invariants_(decltype(state_invariants_)::DEFAULT_INITIAL_CAPACITY, &arena_)
     , canonical_state_map_(decltype(canonical_state_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
     , canonical_form_map_(decltype(canonical_form_map_)::DEFAULT_INITIAL_CAPACITY, &arena_)
     , event_canonical_state_map_(

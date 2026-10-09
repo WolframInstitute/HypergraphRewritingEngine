@@ -242,6 +242,8 @@ struct RecordSet {
     // The raw-state multiplicity of each class at each depth (Hypergraph::
     // for_each_class_multiplicity), counted alongside whatever else the run records.
     bool multiplicities = false;
+    // Each class's invariants (state_invariants_core.hpp), computed when the class is created.
+    bool state_invariants = false;
 };
 
 // Whether two record sets ask for the same relations. A session continuation must record what
@@ -249,7 +251,8 @@ struct RecordSet {
 HG_HD inline bool same_record_set(const RecordSet& a, const RecordSet& b) {
     return a.causal == b.causal && a.branchial == b.branchial &&
            a.state_events == b.state_events && a.raw_events == b.raw_events &&
-           a.raw_counts_only == b.raw_counts_only && a.multiplicities == b.multiplicities;
+           a.raw_counts_only == b.raw_counts_only && a.multiplicities == b.multiplicities &&
+           a.state_invariants == b.state_invariants;
 }
 
 
