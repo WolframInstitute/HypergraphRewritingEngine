@@ -766,6 +766,15 @@ bool Hypergraph::take_twin(StateId s, StateId t, bool ranks, bool orbits, uint64
                            StateId& rep, const EdgeId* ids, const uint32_t* at) {
     const uint64_t tk =
         hgcommon::atomic_ref<uint64_t>(states_[t].canonical_hash).load(std::memory_order_acquire);
+#if defined(HG_CALIBRATE_TWIN_TAKE_UNPUBLISHED)
+    // GenMC calibration (keyed_twin_rendezvous): the twin's results are taken whether or not it
+    // has published them.
+    if (!ranks && !orbits) {
+        rep = t;
+        key = tk;
+        return true;
+    }
+#endif
     if (tk == 0) return false;
     const EdgeRankTable* tr = ranks ? read_table(states_[t].edge_ranks) : nullptr;
     const EdgeOrbitTable* to = orbits ? read_table(states_[t].edge_orbits) : nullptr;

@@ -253,6 +253,7 @@ handling of thread_local class types is what blocked in the first place.
 | `claim_chain_exactly_once` | an instance's claim chain (`hgcommon::qr_claim_chain`) claims each pair once while two threads install the blocks past the first | 2 threads, a one-word first block, matches 64 and 200 claimed in opposite orders | **No errors, 24 complete executions** |
 | `runsig_cache_step` | a match's cached run-signature key is read only for the output step it was claimed for (`hgcommon::qr_cached_key`, `qr_cache_key`) | 2 threads applying one match at output steps 1 and 2, then main reading both | **No errors, 4 complete executions** |
 | `keyed_intern_once` | two applications of one rewrite after the switch to INTERNING get one rewrite id, and exactly one is told the rewrite is new (`Hypergraph::intern_rewrite`, `edge_token`) | 2 threads, one rewrite; sequential consistency, 4 context switches | **No errors, 17,319 complete executions** (9,205 past the bound) |
+| `keyed_twin_rendezvous` | two children with one token set, made at once under Full canonicalisation, end in one class with one nonzero key: one claims the twin map, the other takes its key once published or runs IR (`create_or_get_canonical_state`, `claim_twin`, `take_twin`) | 2 threads; sequential consistency, 1 context switch | **No errors, 1,265 complete executions** (1,171 past the bound) |
 
 ### What this found
 
@@ -343,6 +344,7 @@ assertion inverted, and the checker must report a safety violation:
 | `claim_chain_exactly_once` | `-DCALIBRATE_INSTALL_BY_STORE` (a block linked by a plain store); `-DCALIBRATE_RELAXED_LINK` (the link installed and loaded relaxed) | violation reported, both |
 | `runsig_cache_step` | `-DHG_CALIBRATE_RUNSIG_UNGATED` (the key stored whether or not the step swap succeeded); `-DCALIBRATE_KEY_BEFORE_STEP` (the key stored before the step swap) | violation reported, both |
 | `keyed_intern_once` | `-DHG_CALIBRATE_MAP_LOSER_KEEPS_VALUE` (the map's losing claimant answers as the inserter) | violation reported |
+| `keyed_twin_rendezvous` | `-DHG_CALIBRATE_TWIN_TAKE_UNPUBLISHED` (a twin's key taken before it is published) | violation reported |
 
 Do this for any harness added here, before believing its clean run.
 
