@@ -53,6 +53,7 @@ harness. The park protocol is checked on its spin backend, which waits on the sa
 | P25 edge/state/event publication by fence | 12 | causal_in_edge_order (2), engine_evolve (partial) |
 | P26 state identity publication (hash, id, rank and orbit tables) | 26 | engine_evolve (partial) |
 | P28 quotient instance/match rendezvous | 9 | quotient_instance_match_rendezvous (4) |
+| P28 an instance's claim chain (`hgcommon::qr_claim_chain`: a block installed by compare-and-swap on its predecessor's link, bits by fetch_or) | 4 | claim_chain_exactly_once (2) |
 | P29 quotient multiplicity mass cascade | 14 | quotient_mass_match_rendezvous (3) |
 | P31 quotient id allocation and bounds | 27 | quotient_capture_composition (2, partial) |
 | P32 configuration flags (written before workers start) | 36 | engine_* |
@@ -67,8 +68,9 @@ registration points are reached only by engine_evolve, which is partial.
 
 These harnesses drive the shared `hgcommon` core with a context the harness defines, not the
 engine's own context class: P19 (`ExploreCtx` replaced), P20 (`claim_match` with its own probe
-key), P21 (both sides of the inheritance rendezvous), P28 (`QrCtx::claim` with a different bit
-layout), P29 (`Hypergraph::QmCtx` not called), P14 (`pool_core` on harness arrays). The core
+key), P21 (both sides of the inheritance rendezvous), P28 (`QrCtx::claim` with one claim word in
+quotient_instance_match_rendezvous; the chain's `Chain` context transcribed with the host's
+orders in claim_chain_exactly_once), P29 (`Hypergraph::QmCtx` not called), P14 (`pool_core` on harness arrays). The core
 function each one calls is the engine's; the engine's binding of it is reached only through
 the composed harnesses.
 
