@@ -631,24 +631,8 @@ void branchial_graph_metrics(const BranchialGraph& graph, wxf::WXFValueAssociati
     if (have) rec.push_back({wxf::WXFValue("BranchialDimension"), wxf::WXFValue(best)});
 }
 
-// For each id held by k of `sets` (each sorted and without repeats), the number of ids held by
-// k states, by k. The vertex and the edge multiplicity metrics both read it.
-std::map<uint64_t, uint64_t> ids_by_holder_count(const std::vector<std::vector<uint32_t>>& sets) {
-    std::vector<uint32_t> all;
-    size_t total = 0;
-    for (const auto& s : sets) total += s.size();
-    all.reserve(total);
-    for (const auto& s : sets) all.insert(all.end(), s.begin(), s.end());
-    std::sort(all.begin(), all.end());
-    std::map<uint64_t, uint64_t> out;
-    for (size_t i = 0, j; i < all.size(); i = j) {
-        for (j = i + 1; j < all.size() && all[j] == all[i]; ++j) {}
-        ++out[j - i];
-    }
-    return out;
-}
-
-// The summaries of 1/k and log2 k over the ids held by k states, one value per id.
+// The summaries of 1/k and log2 k over the ids held by k states, one value per id, from the
+// number of ids held by k states, by k.
 void put_multiplicity(wxf::WXFValueAssociation& rec, const char* sharpness_key,
                       const char* entropy_key, const std::map<uint64_t, uint64_t>& by_k) {
     std::vector<std::pair<double, uint64_t>> sharpness, entropy;
@@ -922,8 +906,20 @@ void overlap_metrics(const BranchialStep& s, const BranchialGraph* graph,
         }
         put_summary(rec, "InitialStateMutualInformation", values(mi), 0.01, false);
     }
-    put_multiplicity(rec, "VertexSharpness", "BranchEntropy", ids_by_holder_count(sets));
-    put_multiplicity(rec, "EdgeSharpness", "EdgeBranchEntropy", ids_by_holder_count(edge_sets));
+    std::map<uint64_t, uint64_t> by_k;
+    for (const auto& [v, hs] : holders) ++by_k[hs.size()];
+    put_multiplicity(rec, "VertexSharpness", "BranchEntropy", by_k);
+    // Edge numbers are dense over the run: one count per number.
+    uint32_t edge_end = 0;
+    for (const auto& e : edge_sets)
+        if (!e.empty()) edge_end = std::max(edge_end, e.back() + 1);
+    std::vector<uint32_t> edge_holders(edge_end, 0);
+    for (const auto& e : edge_sets)
+        for (uint32_t x : e) ++edge_holders[x];
+    by_k.clear();
+    for (uint32_t k_e : edge_holders)
+        if (k_e) ++by_k[k_e];
+    put_multiplicity(rec, "EdgeSharpness", "EdgeBranchEntropy", by_k);
     if (graph) {
         wxf::WXFValueAssociation per;
         for (const auto& [d, n] : at_distance) {
