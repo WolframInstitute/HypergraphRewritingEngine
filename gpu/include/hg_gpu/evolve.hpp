@@ -181,7 +181,10 @@ struct CanonicalState {
     uint32_t explore_depth = hgcommon::kExploreNoDepth;
     uint64_t canonical_hash = 0;
     uint32_t first_edge = 0;
+    // The edges readable through state_edge_ids: 0 when the run did not read state contents back.
     uint32_t num_edges = 0;
+    // The state's edge count, read back on every run.
+    uint32_t edge_count = 0;
     // With RecordSet::state_invariants: the state's exact isomorphism hash under None and
     // Automatic (0 otherwise), and the offset of its class record in
     // EvolveResult::invariant_pool, UINT32_MAX when this state did not create the record.

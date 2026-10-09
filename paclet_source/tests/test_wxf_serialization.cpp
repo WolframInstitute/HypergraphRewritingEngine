@@ -3703,3 +3703,21 @@ TEST(FfiInput, QuotientNeedsFullNamesTheOptionTheJobSet) {
     }), host));
     EXPECT_TRUE(full.empty());
 }
+
+// A counts-only request under CanonicalizeStates -> Full counts the isomorphism classes on either
+// device. The GPU reply read every state as empty when no state contents were requested (their
+// edge counts were not read back), so every state fell into one class and NumStates was 1.
+TEST(WxfSerializationPin, ACountsOnlyFullRunCountsTheClasses) {
+    HostBridge host;
+    auto run = [&](std::vector<std::string> requested) {
+        return read_int_key(run_rewriting_core(build_input(kBranchSeed, kBranchLhs, kBranchRhs, 3,
+            [&](wxf::Writer& w) {
+                put_str_list_option(w, "RequestedData", requested);
+                put_str_option(w, "CanonicalizeStates", "Full");
+            }, 2), host), "NumStates");
+    };
+    const int64_t counts_only = run({"NumStates"});
+    const int64_t with_states = run({"NumStates", "States"});
+    EXPECT_GT(with_states, 1);
+    EXPECT_EQ(counts_only, with_states);
+}

@@ -370,7 +370,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
         // A state slot a failed rewrite claimed (a partial result) reads back with id INVALID_ID.
         if (s.id == hg_gpu::INVALID_ID) continue;
         state_hash[s.id] = hgmarshal::reported_state_hash(
-            s.num_edges == 0,
+            s.edge_count == 0,
             canon_mode == hg_gpu::CanonicalizationMode::Full ? s.canonical_hash
             : s.exact_hash ? s.exact_hash
             : host_ir ? ir.compute_canonical_hash(result.edges_of(s)) : 0);

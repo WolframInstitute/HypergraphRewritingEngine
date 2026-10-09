@@ -639,6 +639,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         cs.explore_depth  = (s < h_depths.size()) ? h_depths[s] : hgcommon::kExploreNoDepth;
         cs.invariants_at  = (s < h_inv_at.size()) ? h_inv_at[s] : UINT32_MAX;
         cs.exact_hash     = (s < h_exact.size()) ? h_exact[s] : 0;
+        if (s < slices.size() && slices[s].offset != INVALID_ID) cs.edge_count = slices[s].count;
         // A slice past the id array describes no edges.
         if (s < slices.size() &&
             static_cast<size_t>(slices[s].offset) + slices[s].count <= out.state_edge_ids.size()) {
