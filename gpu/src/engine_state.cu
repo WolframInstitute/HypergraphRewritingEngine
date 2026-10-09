@@ -410,8 +410,11 @@ DeviceState EngineState::device() const {
         d.max_successor_states_per_parent  = max_succ_per_parent_;
         d.matches_per_state_rule           = matches_per_state_rule_;
         d.num_rules                        = num_rules_;
-        d.state_edge_orbit        = state_edge_orbit_;
-        d.state_num_orbits        = state_num_orbits_;
+        // The orbit arrays stay allocated after a quotient run; a later run of this engine on
+        // another route sees null, as a fresh engine does (transition_key_device keys on orbits
+        // whenever the pointer is set).
+        d.state_edge_orbit        = quotient_causal_ ? state_edge_orbit_ : nullptr;
+        d.state_num_orbits        = quotient_causal_ ? state_num_orbits_ : nullptr;
         d.keyed                   = KeyedView{};
         d.keyed.state_token_sum   = keyed_token_sum_;
         d.keyed.state_first_new_edge = keyed_first_new_edge_;

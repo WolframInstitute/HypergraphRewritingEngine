@@ -3163,6 +3163,128 @@ TEST(GpuBinaryGate, StepStatisticsAgreeAcrossDevices) {
     worker_stop(w);
 }
 
+// The sampling and cap options keep the same transitions on both devices, through one worker
+// that has run other jobs. First the GPUEvolution tutorial's calls in its order, sent with every
+// option of hgJobOptions: the last, the branching rule from two loops at 5 steps with
+// TransitionRate 0.25 and RandomSeed 7, is {11, 10, 9, 2} on the CPU. Then each sampling and cap
+// option under CanonicalizeStates None, Automatic, Full and Full with quotient exploration, at
+// three seeds. The four counts agree on every job.
+TEST(GpuBinaryGate, SamplingAndCapsKeepTheSameTransitionsOnBothDevices) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    CpuWorker host;
+    ASSERT_TRUE(host.ok) << "could not start hg_evolve --serve";
+    const char* counts[] = {"NumStates", "NumEvents", "NumCausalEdges", "NumBranchialEdges"};
+    auto agree = [&](const std::vector<uint8_t>& job, const std::string& at) {
+        const auto cpu = host(job);
+        const auto gpu = worker_call(w, job);
+        EXPECT_FALSE(cpu.empty()) << at;
+        EXPECT_FALSE(gpu.empty()) << at << ": " << w.last_error;
+        for (const char* k : counts)
+            EXPECT_EQ(read_int_key(gpu, k), read_int_key(cpu, k)) << at << " " << k;
+        return cpu;
+    };
+    auto sym = [](wxf::Writer& ww, const char* k, const char* s) {
+        ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        ww.write(std::string(k));
+        ww.write_symbol(s);
+    };
+    auto key = [](wxf::Writer& ww, const char* k) {
+        ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        ww.write(std::string(k));
+    };
+    const StateList seed = {{{1, 1}, {1, 1}}};
+    const EdgeList lhs = {{1, 2}, {2, 3}};
+    const EdgeList rhs = {{1, 3}, {3, 4}, {1, 4}, {2, 4}};
+
+    struct Call { StateList init; EdgeList l, r; int64_t steps; const char* mode; const char* ecso;
+                  double rate; };
+    const StateList physics_init = {{{1, 2}, {1, 3}}};
+    const EdgeList physics_l = {{1, 2}, {1, 3}}, physics_r = {{1, 2}, {1, 4}, {2, 4}, {3, 4}};
+    const Call calls[] = {
+        {{{{1, 2}}}, {{1, 2}}, {{1, 3}, {3, 2}}, 5, "None", "False", 1.0},
+        {{{{1, 2}}}, {{1, 2}}, {{1, 3}, {3, 2}}, 5, "Full", "False", 1.0},
+        {physics_init, physics_l, physics_r, 3, "Full", "False", 1.0},
+        {physics_init, physics_l, physics_r, 4, "Full", "False", 1.0},
+        {physics_init, physics_l, physics_r, 4, "Full", "True", 1.0},
+        {seed, lhs, rhs, 5, "None", "False", 0.25},
+    };
+    std::vector<uint8_t> last;
+    for (const Call& c : calls) {
+        last = agree(build_input(c.init, c.l, c.r, c.steps, [&](wxf::Writer& ww) {
+            sym(ww, "CanonicalizeStates", c.mode);
+            sym(ww, "CanonicalizeEvents", "None");
+            sym(ww, "CausalTransitiveReduction", "True");
+            key(ww, "MaxSuccessorStatesPerParent"); ww.write(int64_t{0});
+            key(ww, "MaxStatesPerStep"); ww.write(int64_t{0});
+            key(ww, "ExplorationProbability"); ww.write(1.0);
+            key(ww, "TransitionRate"); ww.write(c.rate);
+            key(ww, "RuleWeights"); ww.write_function("List", 0);
+            key(ww, "RandomSeed"); ww.write(int64_t{7});
+            sym(ww, "ExploreFromCanonicalStatesOnly", c.ecso);
+            sym(ww, "ShowProgress", "False");
+            sym(ww, "ShowGenesisEvents", "False");
+            key(ww, "BranchialStep"); ww.write(int64_t{-1});
+            sym(ww, "EdgeDeduplication", "True");
+            sym(ww, "IncludeCanonicalHashes", "False");
+            put_str_option(ww, "StepStatisticsWeighting", "States");
+            key(ww, "StepStatisticsBranchial"); ww.write_function("List", 0);
+            put_str_list_option(ww, "RequestedData", {counts[0], counts[1], counts[2], counts[3]});
+            key(ww, "GraphProperties"); ww.write_function("List", 0);
+            sym(ww, "UniformRandom", "False");
+            key(ww, "MatchesPerStep"); ww.write(int64_t{0});
+            key(ww, "MatchesPerStateRule"); ww.write(int64_t{0});
+        }, 22), "tutorial call " + std::to_string(&c - calls));
+    }
+    EXPECT_EQ(read_int_key(last, "NumStates"), 11);
+    EXPECT_EQ(read_int_key(last, "NumEvents"), 10);
+    EXPECT_EQ(read_int_key(last, "NumCausalEdges"), 9);
+    EXPECT_EQ(read_int_key(last, "NumBranchialEdges"), 2);
+
+    struct Option { const char* key; double real; int64_t integer; bool list; };
+    const Option options[] = {
+        {"TransitionRate", 0.25, 0, false},
+        {"TransitionRate", 0.5, 0, false},
+        {"ExplorationProbability", 0.5, 0, false},
+        {"RuleWeights", 0.4, 0, true},
+        {"MaxSuccessorStatesPerParent", 0, 2, false},
+        {"MaxStatesPerStep", 0, 3, false},
+        {"MatchesPerStateRule", 0, 1, false},
+    };
+    struct Mode { const char* states; const char* ecso; };
+    const Mode modes[] = {{"Full", "True"}, {"None", "False"}, {"Automatic", "False"},
+                          {"Full", "False"}};
+    for (const Option& o : options) {
+        for (int64_t rs : {int64_t{7}, int64_t{1}, int64_t{12345}}) {
+            for (const Mode& m : modes) {
+                const std::string at = std::string(o.key) + " " +
+                    (o.integer != 0 ? std::to_string(o.integer) : std::to_string(o.real)) +
+                    " CanonicalizeStates " + m.states + " ExploreFromCanonicalStatesOnly " +
+                    m.ecso + " RandomSeed " + std::to_string(rs);
+                agree(build_input(seed, lhs, rhs, 5, [&](wxf::Writer& ww) {
+                    put_str_list_option(ww, "RequestedData",
+                                        {counts[0], counts[1], counts[2], counts[3]});
+                    sym(ww, "CanonicalizeStates", m.states);
+                    sym(ww, "ExploreFromCanonicalStatesOnly", m.ecso);
+                    key(ww, o.key);
+                    if (o.list) ww.write(std::vector<double>{o.real});
+                    else if (o.integer != 0) ww.write(o.integer);
+                    else ww.write(o.real);
+                    key(ww, "RandomSeed"); ww.write(rs);
+                }, 5), at);
+            }
+        }
+    }
+    worker_stop(w);
+}
+
 // Both devices report the same warnings: quotient exploration or Automatic event identity
 // without Full state canonicalization, and an option value the parser skips.
 TEST(GpuBinaryGate, WarningsAgreeAcrossDevices) {
