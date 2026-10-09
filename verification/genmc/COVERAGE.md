@@ -55,6 +55,7 @@ harness. The park protocol is checked on its spin backend, which waits on the sa
 | P28 quotient instance/match rendezvous | 9 | quotient_instance_match_rendezvous (4) |
 | P28 an instance's claim chain (`hgcommon::qr_claim_chain`: a block installed by compare-and-swap on its predecessor's link, bits by fetch_or) | 4 | claim_chain_exactly_once (2) |
 | P29 quotient multiplicity mass cascade | 14 | quotient_mass_match_rendezvous (3) |
+| P30 quotient replay signature cache | 7 | runsig_cache_step (2): the match's step and key cells (`hgcommon::qr_cached_key`, `qr_cache_key`), 4 points. The class claim on `qc_canon_events_` is a ConcurrentMap claim (P09), the per-event record a SegmentedArray emplace (P12) and `qc_num_canon_events_` a relaxed counter read after the run |
 | P31 quotient id allocation and bounds | 27 | quotient_capture_composition (2, partial) |
 | P32 configuration flags (written before workers start) | 36 | engine_* |
 | P35-P37, P39 bitset count cache, published-id marks, phase timing slot, id counters | 28 | engine_* (inferred) |
@@ -84,7 +85,6 @@ sequence is the harness's, and the stop-cut and `resume_pending` branches of
 | Points | Reason |
 |---|---|
 | P27 keyed rewrite tokens and twins, 17 | Reached only when `keyed_state_` is armed; no harness arms it. |
-| P30 quotient replay signature cache, 7 | Reached only with event signature keys set; no harness sets them. |
 | P38 matcher early-termination flag, 4 | Every engine caller passes no `should_terminate`. |
 | P34 debug callback pointer, 3 | Set by no engine path. |
 | P08 `JobSlotPool::release_pool`, 3 | Runs from a thread-exit destructor; the checker runs none (`__cxa_thread_atexit` records nothing). |

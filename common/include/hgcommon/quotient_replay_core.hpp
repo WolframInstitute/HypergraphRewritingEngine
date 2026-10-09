@@ -298,7 +298,14 @@ HG_HD bool qr_cached_key(const A& a, uint32_t out_step, uint64_t& key) {
 
 template <class A>
 HG_HD void qr_cache_key(A& a, uint32_t out_step, uint64_t key) {
+#if defined(HG_CALIBRATE_RUNSIG_UNGATED)
+    // GenMC calibration (runsig_cache_step): the key is stored whether or not this call set
+    // the step.
+    a.step_cas(QR_NO_STEP, out_step);
+    a.key_store(key);
+#else
     if (a.step_cas(QR_NO_STEP, out_step)) a.key_store(key);
+#endif
 }
 
 // True when two signatures have the same values.

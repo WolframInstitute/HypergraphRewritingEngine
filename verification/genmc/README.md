@@ -251,6 +251,7 @@ handling of thread_local class types is what blocked in the first place.
 | `frame_publication_is_atomic` | a class's frame OWNER and its STEP are observed together or not at all. The caller-side shape only, over the real host map: the device map's own atomics are not compiled here (see the device section below) | 2 threads, one class, two differing (step, sid) offers, capacity 4 | **No errors, 32 complete executions** |
 | `branchial_pair_once` | events that consumed the same two edges of one state are recorded as branchial pairs once each, from the bucket of the lowest shared edge, with no shared set of recorded pairs (`CausalGraph::record_branchial_overlaps`) | main records event 3, then 2 threads record events 1 and 2, all consuming edges 5 and 7 of state 0 | **No errors, 8,192 complete executions** |
 | `claim_chain_exactly_once` | an instance's claim chain (`hgcommon::qr_claim_chain`) claims each pair once while two threads install the blocks past the first | 2 threads, a one-word first block, matches 64 and 200 claimed in opposite orders | **No errors, 24 complete executions** |
+| `runsig_cache_step` | a match's cached run-signature key is read only for the output step it was claimed for (`hgcommon::qr_cached_key`, `qr_cache_key`) | 2 threads applying one match at output steps 1 and 2, then main reading both | **No errors, 4 complete executions** |
 
 ### What this found
 
@@ -339,6 +340,7 @@ assertion inverted, and the checker must report a safety violation:
 | `frame_publication_is_atomic` | the two-map publication reinstated (`-DHG_TWO_MAP_FRAME`), which is the protocol that shipped | `Verification unsuccesful`, exit 42, 0 executions |
 | `branchial_pair_once` | `-DHG_CALIBRATE_BRANCHIAL_WALK_ALL` (the whole bucket walked); `-DHG_CALIBRATE_BRANCHIAL_EVERY_BUCKET` (no lowest-shared-edge test) | violation reported, both |
 | `claim_chain_exactly_once` | `-DCALIBRATE_INSTALL_BY_STORE` (a block linked by a plain store); `-DCALIBRATE_RELAXED_LINK` (the link installed and loaded relaxed) | violation reported, both |
+| `runsig_cache_step` | `-DHG_CALIBRATE_RUNSIG_UNGATED` (the key stored whether or not the step swap succeeded); `-DCALIBRATE_KEY_BEFORE_STEP` (the key stored before the step swap) | violation reported, both |
 
 Do this for any harness added here, before believing its clean run.
 
