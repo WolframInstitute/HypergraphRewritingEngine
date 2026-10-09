@@ -31,6 +31,9 @@
 //   FisherInformation          mean over v of (1 + mean_u |d_u - d_v|) / (var_u d_u + 1/100),
 //                              u over B(v, 2) minus v, d_u the vertex's own Hausdorff dimension
 //
+// The logarithms, powers and Gamma function are det_math.hpp's, and every product that feeds a sum
+// is dm_mul, so the host and the device compute the same doubles.
+//
 // NO ALLOCATION. Every array lives in caller memory handed over as a byte buffer. Building G
 // needs sg_build_bytes(slots, pairs) and the metrics need sg_metric_bytes(n, max_degree) more;
 // sg_state_geometry reports the total it needed when the buffer is short, and computes nothing.
@@ -46,6 +49,7 @@
 #include <cstdint>
 
 #include "hgcommon/core.hpp"
+#include "hgcommon/det_math.hpp"
 
 namespace HG_NAMESPACE {
 namespace common {
@@ -368,7 +372,7 @@ HG_HD inline size_t sg_metric_bytes(size_t n, size_t max_degree) {
 // Shannon entropy in bits of a distribution given as counts over `total`.
 HG_HD inline double sg_entropy_term(uint32_t count, uint32_t total) {
     const double p = static_cast<double>(count) / static_cast<double>(total);
-    return -p * ::log2(p);
+    return -dm_mul(p, dm_log2(p));
 }
 
 // The degree entropy over the vertices queue[0 .. k). `counts` is zero on entry and on return.
@@ -432,7 +436,7 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
         uint64_t ball = 1;
         for (uint32_t r = 1; r <= e; ++r) {
             const uint64_t next = ball + layer[r];
-            log_sum[r] += ::log(static_cast<double>(next)) - ::log(static_cast<double>(ball));
+            log_sum[r] += dm_log(static_cast<double>(next)) - dm_log(static_cast<double>(ball));
             ball_sum[r] += next;
             ball = next;
         }
@@ -452,8 +456,8 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
                 for (uint32_t i = 0; i < reached_w; ++i) if (mark[queue2[i]] == v + 1) ++both;
                 sg_bfs_clear(dist2, queue2, reached_w);
                 const double uni = static_cast<double>(b2) + reached_w - both;
-                const double pmi = ::log2(static_cast<double>(both) * uni /
-                                          (static_cast<double>(b2) * reached_w));
+                const double pmi = dm_log2(dm_mul(static_cast<double>(both), uni) /
+                                           dm_mul(static_cast<double>(b2), reached_w));
                 sum += pmi > 0.0 ? pmi : 0.0;
             }
             mi_total += sum / g.degree(v);
@@ -497,8 +501,8 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
         double s = 0.0;
         for (uint32_t r = 1; r <= R; ++r) {
             const uint64_t next = ball + layer[r];
-            s += (::log(static_cast<double>(next)) - ::log(static_cast<double>(ball))) /
-                 (::log(r + 1.0) - ::log(static_cast<double>(r)));
+            s += (dm_log(static_cast<double>(next)) - dm_log(static_cast<double>(ball))) /
+                 (dm_log(r + 1.0) - dm_log(static_cast<double>(r)));
             ball = next;
         }
         dimv[v] = s / R;
@@ -510,16 +514,17 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
     out.ball_radii = R;
     for (uint32_t r = 1; r <= R && r <= ball_capacity; ++r)
         ball_dimension[r - 1] =
-            log_sum[r] / n / (::log(r + 1.0) - ::log(static_cast<double>(r)));
+            log_sum[r] / n / (dm_log(r + 1.0) - dm_log(static_cast<double>(r)));
 
     // Ricci scalar at dimension d: linear in |B(v, r)|, so the per-radius ball sums suffice.
     const double pi = 3.14159265358979323846;
-    const double c = ::tgamma(d / 2.0 + 1.0) / ::pow(pi, d / 2.0);
+    const double c = dm_tgamma(d / 2.0 + 1.0) / dm_pow(pi, d / 2.0);
     double ricci = 0.0;
     for (uint32_t r = 1; r <= R; ++r) {
         const double rr = static_cast<double>(r);
-        ricci += 6.0 * (d + 2.0) / (rr * rr) *
-                 (static_cast<double>(n) - static_cast<double>(ball_sum[r]) * c / ::pow(rr, d));
+        ricci += dm_mul(dm_mul(6.0, d + 2.0) / dm_mul(rr, rr),
+                        static_cast<double>(n) -
+                            dm_mul(static_cast<double>(ball_sum[r]), c) / dm_pow(rr, d));
     }
     out.ricci_scalar = ricci / R / n;
     out.defined |= SG_RICCI;
@@ -542,7 +547,7 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
         grad /= k;
         double var = 0.0;
         for (uint32_t i = 1; i < reached; ++i)
-            var += (dimv[queue[i]] - mean) * (dimv[queue[i]] - mean);
+            var += dm_mul(dimv[queue[i]] - mean, dimv[queue[i]] - mean);
         var /= k;
         fisher_total += (1.0 + grad) / (var + 0.01);
     }

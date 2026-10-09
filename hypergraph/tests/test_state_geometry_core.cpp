@@ -8,7 +8,10 @@
 
 #include "hgcommon/state_geometry_core.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 #include <cstdint>
 #include <vector>
 
@@ -186,4 +189,48 @@ TEST(StateGeometryCore, ShortScratchReportsWhatItNeeds) {
     }
     EXPECT_EQ(g.radius, 2);
     EXPECT_LE(needed, big.size());
+}
+
+namespace {
+// Distance in units in the last place between two finite doubles of the same sign.
+int64_t ulps(double a, double b) {
+    int64_t ia = 0, ib = 0;
+    std::memcpy(&ia, &a, 8);
+    std::memcpy(&ib, &b, 8);
+    return ia > ib ? ia - ib : ib - ia;
+}
+}  // namespace
+
+// det_math.hpp against glibc over the arguments the geometry passes: ball sizes and radii to
+// log, probabilities and overlap ratios to log2, dimensions to pow and tgamma.
+TEST(DetMath, AgreesWithTheLibrary) {
+    int64_t worst_log = 0, worst_log2 = 0, worst_exp = 0;
+    double worst_gamma = 0.0;
+    for (uint32_t i = 1; i <= 200000; ++i) {
+        const double x = static_cast<double>(i);
+        worst_log = std::max(worst_log, ulps(hgcommon::dm_log(x), std::log(x)));
+        const double p = 1.0 / x;
+        if (i > 1) worst_log2 = std::max(worst_log2, ulps(hgcommon::dm_log2(p), std::log2(p)));
+        const double q = 1.0 + 3.0 / (x + 7.0);
+        worst_log2 = std::max(worst_log2, ulps(hgcommon::dm_log2(q), std::log2(q)));
+        const double y = -40.0 + 80.0 * x / 200000.0;
+        worst_exp = std::max(worst_exp, ulps(hgcommon::dm_exp(y), std::exp(y)));
+        const double z = 1.0 + 11.0 * x / 200000.0;
+        worst_gamma = std::max(worst_gamma,
+                               std::fabs(hgcommon::dm_tgamma(z) / std::tgamma(z) - 1.0));
+    }
+    EXPECT_LE(worst_log, 2);
+    EXPECT_LE(worst_log2, 3);
+    EXPECT_LE(worst_exp, 2);
+    EXPECT_LE(worst_gamma, 1.5e-15);
+    EXPECT_EQ(hgcommon::dm_log(1.0), 0.0);
+    EXPECT_EQ(hgcommon::dm_log2(0.25), -2.0);
+    EXPECT_EQ(hgcommon::dm_log2(1024.0), 10.0);
+    EXPECT_EQ(hgcommon::dm_pow(1.0, 2.7), 1.0);
+    EXPECT_EQ(hgcommon::dm_tgamma(1.0), 1.0);
+    EXPECT_EQ(hgcommon::dm_tgamma(2.0), 1.0);
+    EXPECT_EQ(hgcommon::dm_tgamma(5.0), 24.0);
+    std::printf("[ DetMath  ] worst: log %lld ulp, log2 %lld ulp, exp %lld ulp, tgamma %.3g\n",
+                static_cast<long long>(worst_log), static_cast<long long>(worst_log2),
+                static_cast<long long>(worst_exp), worst_gamma);
 }

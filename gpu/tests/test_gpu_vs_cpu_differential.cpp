@@ -2265,13 +2265,9 @@ TEST(RecordSet, ClassMultiplicitiesMatchTheHost) {
 }
 
 // Each class's "StepStatistics" record on the device equals the host's on every corpus workload
-// without sampling or caps, under quotient exploration: the invariants and the arity and degree
-// arrays exactly, the geometry's integer fields exactly and its reals to 1e-12 relative,
-// absolute below 1 (the device's log2, pow and tgamma differ from the host's in the last bits).
+// without sampling or caps, under quotient exploration, bit for bit.
 TEST(RecordSet, ClassInvariantsMatchTheHost) {
-    auto close = [](double a, double b) {
-        return a == b || std::fabs(a - b) <= 1e-12 * std::max({1.0, std::fabs(a), std::fabs(b)});
-    };
+    auto same = [](double a, double b) { return std::memcmp(&a, &b, sizeof a) == 0; };
     size_t compared = 0;
     for (Workload w : build_corpus()) {
         if (w.num_steps == 0) continue;
@@ -2342,9 +2338,9 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
                   &hgcommon::SgGeometry::degree_entropy, &hgcommon::SgGeometry::local_entropy,
                   &hgcommon::SgGeometry::mutual_information,
                   &hgcommon::SgGeometry::fisher_information})
-                EXPECT_TRUE(close(a->g.*f, b->g.*f)) << w.name << " " << a->g.*f << " " << b->g.*f;
+                EXPECT_TRUE(same(a->g.*f, b->g.*f)) << w.name << " " << a->g.*f << " " << b->g.*f;
             for (uint32_t k = 0; k < a->num_ball; ++k)
-                EXPECT_TRUE(close(a->ball()[k], b->ball()[k])) << w.name;
+                EXPECT_TRUE(same(a->ball()[k], b->ball()[k])) << w.name;
             ++compared;
         }
     }
