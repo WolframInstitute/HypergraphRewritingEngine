@@ -32,6 +32,7 @@ RelatedTutorials: [Sessions, GettingStarted]
 - With `"Delivery" -> "Delta"` the result is still the whole evolution; only the transfer from the engine is smaller.
 - A property [HGEvolve]() does not accept issues the message `HGEvolve::unknownprop` and gives <code>[$Failed]()</code>.
 - On a closed session it issues the message `HGSessionOpen::refused` and gives <code>[$Failed]()</code>; for an expression that is not an [HGSessionObject]() it issues `HGSessionStep::badsession` and gives <code>[$Failed]()</code>.
+- If the engine process that holds the session has ended (an aborted call ends it), it issues the message `HGSessionStep::expired` and gives <code>[$Failed]()</code>; open a new session.
 
 ## Basic Examples
 

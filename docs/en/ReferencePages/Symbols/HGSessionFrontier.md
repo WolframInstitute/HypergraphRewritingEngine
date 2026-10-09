@@ -23,6 +23,7 @@ RelatedTutorials: [Sessions, GettingStarted]
 - Some of the frontier's ids can be given to [HGSessionStep]() as `"From" -> {`*id*, ...`}` to expand only those states; the others stay on the frontier.
 - [HGSessionFrontier]() does not explore.
 - On a closed session it issues the message `HGSessionOpen::refused` and gives <code>[$Failed]()</code>; for an expression that is not an [HGSessionObject]() it issues `HGSessionStep::badsession` and gives <code>[$Failed]()</code>.
+- If the engine process that holds the session has ended (an aborted call ends it), it issues the message `HGSessionStep::expired` and gives <code>[$Failed]()</code>; open a new session.
 
 ## Basic Examples
 

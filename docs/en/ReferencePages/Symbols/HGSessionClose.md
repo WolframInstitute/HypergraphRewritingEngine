@@ -22,6 +22,7 @@ RelatedTutorials: [Sessions, GettingStarted]
 - A session's handle is not reused, so a verb on a closed session is refused rather than answered from a session opened later.
 - One session is open at a time for each device. [HGSessionOpen]() is refused while another session is open, so a session that is no longer needed should be closed.
 - An expression that is not an [HGSessionObject]() issues the message `HGSessionStep::badsession` and gives <code>[$Failed]()</code>.
+- If the engine process that holds the session has ended (an aborted call ends it), it issues the message `HGSessionStep::expired` and gives <code>[$Failed]()</code>; open a new session.
 
 ## Basic Examples
 

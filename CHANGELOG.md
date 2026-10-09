@@ -55,6 +55,8 @@ User-visible changes since v1.0.0-rc1:
   `HGSessionStep` takes `"From"` without a property; a step with `"From"` advances by the steps
   it asks for; `"BranchialStep" -> Automatic` is resolved for each verb's properties.
 - `"ShowProgress"` messages reach the kernel through the persistent worker.
+- An aborted call ends its engine worker, so the next call gets its own reply. A session held by
+  that worker issues `HGSessionStep::expired`.
 - Fixed: the match drain considered only the first 64 rules; the GPU reported
   `NumBranchialEdges` 0 under quotient exploration; the sampling spine chose among a subset of a
   state's transitions, so seeded samples differ from rc1's; the GPU transitive reduction was
