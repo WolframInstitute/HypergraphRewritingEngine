@@ -159,9 +159,14 @@ RewriteResult Rewriter::apply(
 
     // Quotient mode: capture this event's canonical transition into the causal skeleton
     // (deduplicated); the depth-indexed producer-set reconstruction propagates over it.
+    // HG_HARNESS_DEFER_QUOTIENT_CAPTURE (GenMC only, verification/genmc/quotient_capture_*.cpp):
+    // the harness calls register_quotient_transition itself, so the registration and the
+    // capture are checked as separate harnesses.
+#if !defined(HG_HARNESS_DEFER_QUOTIENT_CAPTURE)
     if (hg_->quotient_causal()) {
         hg_->register_quotient_transition(result.event);
     }
+#endif
 
     const RecordSet rec = hg_->record_set();
 

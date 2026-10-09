@@ -58,7 +58,8 @@ harness. The park protocol is checked on its spin backend, which waits on the sa
 | P28 an instance's claim chain (`hgcommon::qr_claim_chain`: a block installed by compare-and-swap on its predecessor's link, bits by fetch_or) | 4 | claim_chain_exactly_once (2) |
 | P29 quotient multiplicity mass cascade | 14 | quotient_mass_match_rendezvous (3) |
 | P30 quotient replay signature cache | 7 | runsig_cache_step (2): the match's step and key cells (`hgcommon::qr_cached_key`, `qr_cache_key`), 4 points. The class claim on `qc_canon_events_` is a ConcurrentMap claim (P09), the per-event record a SegmentedArray emplace (P12) and `qc_num_canon_events_` a relaxed counter read after the run |
-| P31 quotient id allocation and bounds | 27 | quotient_capture_composition (2, partial) |
+| P31 quotient id allocation and bounds | 27 | quotient_capture_frame (2, SC, 1 context), quotient_capture_composition (2, partial) |
+| class-frame capture (`register_quotient_transition`: the match recorded on its class, `qc_capture_expansion`, the replay applied to the root instance, the descent to a bound instance, `SlotMatch::child_point`) | -- | quotient_capture_frame (2, SC, 1 context), quotient_capture_composition (2, partial) |
 | P32 configuration flags (written before workers start) | 36 | engine_* |
 | P35-P37, P39 bitset count cache, published-id marks, phase timing slot, id counters | 28 | engine_* (inferred) |
 
@@ -100,6 +101,8 @@ sequence is the harness's, and the stop-cut and `resume_pending` branches of
 - keyed_intern_once checks sequential consistency with 4 context switches: its RC11 exploration
   gave no verdict in 2,770 s. keyed_twin_rendezvous checks sequential consistency with 1 context
   switch: its RC11 estimate is 2^51 executions and 2 switches gave no verdict in 1,500 s.
+  quotient_capture_frame checks sequential consistency with 1 context switch: its RC11 estimate
+  is 2^87 executions.
 - concurrent_map_double_growth_3t and key_set_exactly_once_3t check sequential consistency with a
   context bound (`--sc --bound`); GenMC's bounding requires `--sc`. They find interleaving
   defects, not weak-memory ones. Their RC11 counterparts are the two-thread harnesses of the same
