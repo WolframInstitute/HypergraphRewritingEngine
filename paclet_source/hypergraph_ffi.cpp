@@ -326,6 +326,12 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                                 throw std::runtime_error(
                                     "'" + symbol + "' is not None, Automatic or Full");
                             }
+                        } else if (option_key == "StepStatisticsWeighting") {
+                            const std::string w = option_parser.read<std::string>();
+                            if (w == "States") req.step_statistics_by_class = false;
+                            else if (w == "Classes") req.step_statistics_by_class = true;
+                            else throw std::runtime_error(
+                                "StepStatisticsWeighting '" + w + "' is not States or Classes");
                         } else if (option_key == "GraphProperties") {
                             // Graph properties for graph-ready data output (list)
                             req.graph_properties = option_parser.read<std::vector<std::string>>();
@@ -553,6 +559,7 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
             req.session_from,
             req.ffi_warnings,
         };
+        job.step_statistics_by_class = req.step_statistics_by_class;
         if (req.show_progress) {
             core_progress(host, "HGEvolve: Starting GPU evolution...");
         }
@@ -1996,7 +2003,8 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 }
             }
             full_result.push_back({wxf::WXFValue("StepStatistics"),
-                                   hg::stats::step_statistics(points, class_edges, events, rule_counts)});
+                                   hg::stats::step_statistics(points, class_edges, events, rule_counts,
+                                       hg::stats::StepStatisticsOptions{req.step_statistics_by_class})});
         }
 
         // GlobalEdges -> List of all edges created during evolution

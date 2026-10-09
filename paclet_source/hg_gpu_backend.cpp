@@ -933,7 +933,8 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
             }
         }
         full_result.push_back({wxf::WXFValue("StepStatistics"),
-                               hg::stats::step_statistics(points, class_edges, events, rule_counts)});
+                               hg::stats::step_statistics(points, class_edges, events, rule_counts,
+                                   hg::stats::StepStatisticsOptions{job.step_statistics_by_class})});
     }
 
     // GraphData for the requested *Graph properties, built through the SAME shared

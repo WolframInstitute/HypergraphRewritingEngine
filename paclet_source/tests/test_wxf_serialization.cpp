@@ -3416,6 +3416,47 @@ TEST(Session, AHeldVerbIsServedUnderTheSessionsSettings) {
     run_rewriting_core(branch_job(0, "Close", h, with("None", true), 3), host);
 }
 
+namespace {
+
+const wxf::WXFValue* assoc_at(const wxf::WXFValue& v, const std::string& key) {
+    const auto* a = std::get_if<wxf::WXFValueAssociation>(&v.data);
+    if (!a) return nullptr;
+    for (const auto& [k, x] : *a) {
+        const auto* s = std::get_if<std::string>(&k.data);
+        if (s && *s == key) return &x;
+    }
+    return nullptr;
+}
+
+double number_at(const wxf::WXFValue& v, const std::string& key) {
+    const wxf::WXFValue* x = assoc_at(v, key);
+    if (!x) return std::nan("");
+    if (const auto* d = std::get_if<double>(&x->data)) return *d;
+    if (const auto* i = std::get_if<int64_t>(&x->data)) return static_cast<double>(*i);
+    return std::nan("");
+}
+
+}  // namespace
+
+// "StepStatisticsWeighting" -> "Classes" counts a class once; "States" counts its raw states.
+TEST(StateStatistics, WeightingByClassesCountsEachClassOnce) {
+    const std::vector<hg::stats::StepPoint> points = {{0, 1, 3}, {0, 2, 1}};
+    const std::unordered_map<uint64_t, std::vector<std::vector<uint32_t>>> edges = {
+        {1, {{1, 2}}}, {2, {{1, 2}, {2, 3}}}};
+    auto vertex_count = [&](bool by_class) {
+        const wxf::WXFValue steps = hg::stats::step_statistics(
+            points, edges, {}, {}, hg::stats::StepStatisticsOptions{by_class});
+        const auto& first = std::get<wxf::WXFValueList>(steps.data).at(0);
+        EXPECT_EQ(number_at(first, "RawStates"), 4);
+        return *assoc_at(*assoc_at(first, "Invariants"), "VertexCount");
+    };
+    const wxf::WXFValue states = vertex_count(false), classes = vertex_count(true);
+    EXPECT_EQ(number_at(states, "N"), 4);
+    EXPECT_DOUBLE_EQ(number_at(states, "Mean"), (3 * 2 + 3) / 4.0);
+    EXPECT_EQ(number_at(classes, "N"), 2);
+    EXPECT_DOUBLE_EQ(number_at(classes, "Mean"), 2.5);
+}
+
 // Histogram keys round to the nearest multiple with halves to even, as the reference's
 // Round[x, 0.01] does: 1.125 (MeanDegree 9/8) is 112.5 hundredths exactly and keys as 1.12.
 TEST(StateStatistics, HistogramKeysRoundHalvesToEven) {

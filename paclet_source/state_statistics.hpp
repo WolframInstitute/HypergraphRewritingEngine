@@ -79,6 +79,13 @@ struct StateGeometry {
 
 StateGeometry state_geometry(const std::vector<std::vector<uint32_t>>& edges);
 
+// How a step's population is weighted.
+struct StepStatisticsOptions {
+    // False: each class stands for its raw states ("StepStatisticsWeighting" -> "States").
+    // True: each class counts once ("Classes").
+    bool weight_by_classes = false;
+};
+
 // The "StepStatistics" reply: one association per step, in step order, with the keys of the
 // probes' per-step record that a class and its multiplicity determine. `class_edges` holds each
 // class's representative; `events` and `rule_counts` the raw events whose output state is at a
@@ -87,7 +94,8 @@ wxf::WXFValue step_statistics(
     const std::vector<StepPoint>& points,
     const std::unordered_map<uint64_t, std::vector<std::vector<uint32_t>>>& class_edges,
     const std::map<uint32_t, uint64_t>& events,
-    const std::map<uint32_t, std::map<int64_t, uint64_t>>& rule_counts);
+    const std::map<uint32_t, std::map<int64_t, uint64_t>>& rule_counts,
+    const StepStatisticsOptions& options = {});
 
 }  // namespace stats
 }  // namespace HG_NAMESPACE

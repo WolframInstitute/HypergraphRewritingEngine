@@ -113,6 +113,9 @@ struct GpuJob {
     // Warnings recorded before the device runs, such as option values the parser skipped.
     // The reply lists them ahead of the device's own.
     std::vector<HG_NAMESPACE::ffi::FfiWarning> job_warnings;
+
+    // "StepStatisticsWeighting" -> "Classes". Set after the job is built.
+    bool step_statistics_by_class = false;
 };
 
 // Run the job on the GPU (hg_gpu::evolve) and marshal the result into the same

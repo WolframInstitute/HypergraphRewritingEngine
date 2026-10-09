@@ -585,7 +585,8 @@ wxf::WXFValue step_statistics(
     const std::vector<StepPoint>& points,
     const std::unordered_map<uint64_t, std::vector<std::vector<uint32_t>>>& class_edges,
     const std::map<uint32_t, uint64_t>& events,
-    const std::map<uint32_t, std::map<int64_t, uint64_t>>& rule_counts) {
+    const std::map<uint32_t, std::map<int64_t, uint64_t>>& rule_counts,
+    const StepStatisticsOptions& options) {
     std::map<uint32_t, std::map<uint64_t, uint64_t>> by_step;
     for (const auto& p : points)
         if (p.weight) {
@@ -637,7 +638,8 @@ wxf::WXFValue step_statistics(
         std::vector<std::pair<double, uint64_t>> radius, eccentricity, hausdorff, ricci, ollivier,
             degree_entropy, local_entropy, mutual_information, fisher;
         std::map<uint32_t, std::vector<std::pair<double, uint64_t>>> ball_growth;
-        for (const auto& [h, w] : classes) {
+        for (const auto& [h, mult] : classes) {
+            const uint64_t w = options.weight_by_classes ? 1 : mult;
             const StateInvariants& s = invariants(h);
             const StateGeometry& gm = geometry(h);
             const hgcommon::SgGeometry& g = gm.values;

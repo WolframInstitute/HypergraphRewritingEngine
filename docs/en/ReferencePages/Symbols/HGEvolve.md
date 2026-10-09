@@ -104,6 +104,7 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 | `"TargetDevice"` | `"CPU"` | `"CPU"` or `"GPU"` |
 | `"RandomSeed"` | `Automatic` | the seed of every sampling draw and of a generated initial condition; `Automatic` draws a new seed from the kernel's random generator, so `SeedRandom` makes the call repeatable |
 | `"IncludeCanonicalHashes"` | `False` | whether each state record has a `"CanonicalHash"` |
+| `"StepStatisticsWeighting"` | `"States"` | how `"StepStatistics"` counts a class: `"States"` (once per state in the class) or `"Classes"` (once) |
 | `"ShowGenesisEvents"` | `False` | whether the events that create the initial states are part of the result |
 | `"ColorByRule"` | `False` | whether a styled graph colors each transition by the rule that fired it, with a legend |
 | `"MultiedgeStyle"` | `Automatic` | `Automatic` draws one edge per event or pair; `"Merged"` draws edges with the same endpoints as one edge |
