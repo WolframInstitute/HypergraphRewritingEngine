@@ -1696,7 +1696,7 @@ void Hypergraph::qc_apply(const QcInstance& inst, const SlotMatch& m, uint64_t s
 }
 
 void Hypergraph::qc_add_instance(uint64_t state_hash, uint32_t depth,
-                                 const QcLineage* lineage, uint32_t nslots) {
+                                 const QcLineage* lineage, uint32_t nslots, const SlotMatch* via) {
     const int maxs = qc_max_steps_.load(std::memory_order_relaxed);
     if (static_cast<int>(depth) > maxs) return;
 
@@ -1706,28 +1706,50 @@ void Hypergraph::qc_add_instance(uint64_t state_hash, uint32_t depth,
     inst.nslots = nslots;
     inst.lineage = lineage;
     // Claim words only for an instance that will be expanded; one at the bound claims nothing.
+    // The class's expansion entry, when it exists already, is kept for the scan below: an entry
+    // is never replaced, so the scan reads the same list a second lookup would.
+    QcExpansion* xp = nullptr;
     if (static_cast<int>(depth) < maxs) {
         uint32_t class_matches = 0;
-        if (auto xr = qc_expansion_.lookup(state_hash))
-            class_matches = (*xr)->n.load(std::memory_order_acquire);
+        if (auto xr = qc_expansion_.lookup(state_hash)) {
+            xp = *xr;
+            class_matches = xp->n.load(std::memory_order_acquire);
+        }
         inst.claims = qc_new_claim_block(hgcommon::qr_claim_words(class_matches));
     }
 
     qc_note_depth(depth);
+    // The point (state_hash, depth). A match's applications all descend into one class, so the
+    // first point an application of it finds is kept on the match (child_point, written once:
+    // rewriting it per depth made every worker that applies the match write one shared line)
+    // and the map is searched only at another depth. A point never moves once made.
+    constexpr uint64_t kAddrMask = (uint64_t{1} << 48) - 1;
     QcInstanceShards* sh = nullptr;
-    auto same = [&](QcInstanceShards* s) { return s->class_hash == state_hash && s->depth == depth; };
-    auto make = [&] {
-        auto* ns = arena_.template create<QcInstanceShards>();
-        ns->class_hash = state_hash;
-        ns->depth = depth;
-        return ns;
-    };
-    auto rep_of = [&](QcInstanceShards* s) { sh = s; return 0u; };
-    auto on_collision = [] {};
-    const auto claim = keyed_claim<QcInstanceShards*>(
-        qc_instances_, qc_key(state_hash, depth, 0) & qc_key_mask_, same, make, rep_of, on_collision);
-    if (claim.won && static_cast<int>(depth) >= maxs)
-        qc_blocked_.push(QcPoint{state_hash, depth}, arena_);
+    uint64_t cp = 0;
+    if (via && depth < 0xFFFFu) {
+        cp = hgcommon::atomic_ref<uint64_t>(via->child_point).load(std::memory_order_acquire);
+        if (cp != 0 && (cp >> 48) == depth) sh = reinterpret_cast<QcInstanceShards*>(cp & kAddrMask);
+    }
+    if (!sh) {
+        auto same = [&](QcInstanceShards* s) { return s->class_hash == state_hash && s->depth == depth; };
+        auto make = [&] {
+            auto* ns = arena_.template create<QcInstanceShards>();
+            ns->class_hash = state_hash;
+            ns->depth = depth;
+            return ns;
+        };
+        auto rep_of = [&](QcInstanceShards* s) { sh = s; return 0u; };
+        auto on_collision = [] {};
+        const auto claim = keyed_claim<QcInstanceShards*>(
+            qc_instances_, qc_key(state_hash, depth, 0) & qc_key_mask_, same, make, rep_of, on_collision);
+        if (claim.won && static_cast<int>(depth) >= maxs)
+            qc_blocked_.push(QcPoint{state_hash, depth}, arena_);
+        const uint64_t addr = reinterpret_cast<uint64_t>(sh);
+        if (via && cp == 0 && depth < 0xFFFFu && (addr & ~kAddrMask) == 0)
+            hgcommon::atomic_ref<uint64_t>(via->child_point)
+                .compare_exchange_strong(cp, (uint64_t{depth} << 48) | addr,
+                                         std::memory_order_release, std::memory_order_relaxed);
+    }
     qc_push_instance(sh, inst);
 
     // Instances at the final depth are recorded but never expanded: the DP runs its match
@@ -1737,7 +1759,10 @@ void Hypergraph::qc_add_instance(uint64_t state_hash, uint32_t depth,
     // Publish before scanning, so a match captured concurrently cannot be missed by both
     // sides. The push above is this side's publish; the partner is in qc_capture_expansion.
     hgcommon::rendezvous_barrier<hgcommon::rv::QuotientInstanceMatch>();
-    for_each_expansion_match(state_hash, [&](const SlotMatch& m) { qc_apply(inst, m, state_hash, depth); });
+    if (!xp) {
+        if (auto xr = qc_expansion_.lookup(state_hash)) xp = *xr;
+    }
+    if (xp) xp->list.for_each([&](const SlotMatch& m) { qc_apply(inst, m, state_hash, depth); });
 }
 
 void Hypergraph::qc_push_instance(QcInstanceShards* sh, const QcInstance& inst) {
@@ -2761,7 +2786,7 @@ void Hypergraph::QrCtx::descend(const SlotMatch& m, uint32_t depth, uint32_t ev,
     lin->parent = parent.lineage;
     lin->via = &m;
     lin->event = ev;
-    hg.qc_add_instance(m.to_hash, depth + 1, lin, m.to_slots);
+    hg.qc_add_instance(m.to_hash, depth + 1, lin, m.to_slots, &m);
 }
 
 // count_unique rather than size: ConcurrentMap can hold duplicate keys when two threads insert

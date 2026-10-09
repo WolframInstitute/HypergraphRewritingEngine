@@ -141,6 +141,10 @@ struct SlotMatch {
     // (hgcommon::qr_cached_key); accessed through atomic_ref.
     mutable uint64_t runsig_key = 0;
     mutable uint32_t runsig_step = hgcommon::QR_NO_STEP;
+    // The first instance point (class to_hash, depth d) an application of this match descended
+    // into: the point's address in the low 48 bits and d above them, 0 when none
+    // (Hypergraph::qc_add_instance); written once, through atomic_ref.
+    mutable uint64_t child_point = 0;
     // The marked forms of the raw event this match was captured from.
     hgcommon::EventMarkedForms forms;
 

@@ -670,7 +670,7 @@ class Hypergraph {
     void qc_capture_expansion(EventId e);
     const EdgeOrbitTable* qc_orbits_or_build(StateId s);
     void qc_add_instance(uint64_t state_hash, uint32_t depth, const QcLineage* lineage,
-                         uint32_t nslots);
+                         uint32_t nslots, const SlotMatch* via = nullptr);
     void qc_apply(const QcInstance& inst, const SlotMatch& m, uint64_t state_hash, uint32_t depth);
 
     // Event canonicalization: probe key of the event signature -> the class's first event, whose
