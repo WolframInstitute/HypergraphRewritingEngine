@@ -171,27 +171,78 @@ inline BranchialStateEdgeSet branchial_state_edges_from_pairs(
     return out;
 }
 
+// Numbers for lists of vertex ids, by first appearance: an open-addressed table of numbers over a
+// pool holding each list as its length and then its ids.
+class ListNumbers {
+public:
+    uint32_t number(const uint32_t* list, uint32_t length) {
+        if ((offset_of_.size() + 1) * 2 > slots_.size()) grow();
+        size_t i = hash(list, length) & (slots_.size() - 1);
+        for (; slots_[i]; i = (i + 1) & (slots_.size() - 1)) {
+            const uint32_t at = offset_of_[slots_[i] - 1];
+            if (pool_[at] == length && std::equal(list, list + length, pool_.begin() + at + 1))
+                return slots_[i] - 1;
+        }
+        const uint32_t n = static_cast<uint32_t>(offset_of_.size());
+        offset_of_.push_back(static_cast<uint32_t>(pool_.size()));
+        pool_.push_back(length);
+        pool_.insert(pool_.end(), list, list + length);
+        slots_[i] = n + 1;
+        return n;
+    }
+
+private:
+    static size_t hash(const uint32_t* list, uint32_t length) {
+        uint64_t h = 0x9E3779B97F4A7C15ull ^ length;
+        for (uint32_t k = 0; k < length; ++k) h = (h ^ list[k]) * 0x100000001B3ull;
+        return static_cast<size_t>(h ^ (h >> 29));
+    }
+    void grow() {
+        slots_.assign(std::max<size_t>(64, slots_.size() * 2), 0);
+        for (uint32_t n = 0; n < offset_of_.size(); ++n) {
+            const uint32_t at = offset_of_[n];
+            size_t i = hash(pool_.data() + at + 1, pool_[at]) & (slots_.size() - 1);
+            while (slots_[i]) i = (i + 1) & (slots_.size() - 1);
+            slots_[i] = n + 1;
+        }
+    }
+    std::vector<uint32_t> pool_, offset_of_, slots_;
+};
+
 // "StepStatisticsBranchial": each step's states and branchial state pairs
 // (stats::branchial_step_metrics), for both engines. The states are the ids below `num_states`
 // that `valid` admits, each at `step_of(sid)` under `effective(sid)`; with kBranchialOverlap
-// `vertices_of(sid, out)` appends a state's vertices. With kBranchialGraph `pairs` are the
-// branchial event pairs, genesis filtered, projected through `output_state_of` by
+// `contents_of(sid, out)` appends each of a state's edges as its arity and then its vertex ids.
+// An edge is its ordered list of vertex ids, numbered here by first appearance: the edge
+// metrics read which states hold the same list, so two members of an Automatic class, which
+// hold the same lists under different edge ids, give one edge set. With kBranchialGraph `pairs`
+// are the branchial event pairs, genesis filtered, projected through `output_state_of` by
 // branchial_state_edges_from_pairs with every step's pairs kept.
-template <class Valid, class Effective, class StepOf, class VerticesOf, class OutputStateOf>
+template <class Valid, class Effective, class StepOf, class ContentsOf, class OutputStateOf>
 std::map<uint32_t, stats::BranchialStep> branchial_steps(
         uint32_t which, uint32_t num_states, Valid&& valid, Effective&& effective,
-        StepOf&& step_of, VerticesOf&& vertices_of,
+        StepOf&& step_of, ContentsOf&& contents_of,
         const std::vector<std::pair<uint32_t, uint32_t>>& pairs, OutputStateOf&& output_state_of,
         int steps) {
     std::map<uint32_t, stats::BranchialStep> out;
+    ListNumbers edge_number;
+    std::vector<uint32_t> flat;
     for (uint32_t sid = 0; sid < num_states; ++sid) {
         if (!valid(sid)) continue;
         auto& b = out[step_of(sid)];
         b.nodes.push_back(effective(sid));
         if (which & stats::kBranchialOverlap) {
-            std::vector<uint32_t> vs;
-            vertices_of(sid, vs);
+            flat.clear();
+            contents_of(sid, flat);
+            std::vector<uint32_t> vs, es;
+            vs.reserve(flat.size());
+            for (size_t i = 0; i < flat.size(); i += 1 + flat[i]) {
+                vs.insert(vs.end(), flat.begin() + static_cast<std::ptrdiff_t>(i + 1),
+                          flat.begin() + static_cast<std::ptrdiff_t>(i + 1 + flat[i]));
+                es.push_back(edge_number.number(flat.data() + i + 1, flat[i]));
+            }
             b.vertex_sets.push_back(std::move(vs));
+            b.edge_sets.push_back(std::move(es));
         }
     }
     if (which & stats::kBranchialGraph) {

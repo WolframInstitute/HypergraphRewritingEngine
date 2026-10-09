@@ -19,6 +19,9 @@ User-visible changes since v1.0.0-rc1:
   `"OllivierDegreeCorrelation"`, and the per-step key `"VertexInvariants"`: the local dimension,
   Ollivier curvature and Ricci scalar of every vertex of the step's states, with quartiles,
   10th and 90th percentiles, skewness and kurtosis.
+- `"StepStatisticsBranchial"` adds `"StateCosineSimilarity"`, `"StateMutualInformation"`,
+  `"InitialStateMutualInformation"`, `"EdgeSharpness"`, `"EdgeBranchEntropy"` and, with both
+  `"Graph"` and `"Overlap"`, `"OverlapByBranchialDistance"`, on both devices.
 - Every option of `Graph` is an option of `HGEvolve` and `HGSessionOpen` and goes to the graph a
   graph property returns.
 - `"MultiedgeStyle" -> "Merged"` draws the events between two states as one edge.

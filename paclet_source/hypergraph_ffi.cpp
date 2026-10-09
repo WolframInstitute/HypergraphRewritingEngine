@@ -2041,6 +2041,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                     [&](uint32_t sid, std::vector<uint32_t>& vs) {
                         hg.get_state(sid).edges.for_each([&](hypergraph::EdgeId eid) {
                             const auto& e = hg.get_edge(eid);
+                            vs.push_back(e.arity);
                             vs.insert(vs.end(), e.vertices, e.vertices + e.arity);
                         });
                     },

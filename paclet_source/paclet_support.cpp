@@ -13,6 +13,7 @@
 #include "hgcommon/content_core.hpp"
 #include "state_statistics.hpp"
 #include "hgcommon/quotient_multiplicity_core.hpp"
+#include "hgcommon/branchial_overlap_core.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -607,17 +608,26 @@ void put_summary(wxf::WXFValueAssociation& rec, const char* key,
     rec.push_back({wxf::WXFValue(key), summary_value(summarise(values, round), integral)});
 }
 
-// The branchial graph metrics of one step: the graph on the step's states, joined by the
-// step's pairs (a pair of one state with itself adds nothing, and a repeated pair one edge).
-void branchial_graph_metrics(const BranchialStep& s, wxf::WXFValueAssociation& rec) {
-    std::vector<int64_t> ids = s.nodes;
+// The branchial graph of one step: the step's states (`ids`, by effective id, ascending), joined
+// by the step's pairs (a pair of one state with itself adds nothing, and a repeated pair one
+// edge).
+struct BranchialGraph {
+    std::vector<int64_t> ids;
+    std::vector<std::pair<uint32_t, uint32_t>> edges;   // x < y, ascending
+    std::vector<std::vector<uint32_t>> adj;
+};
+
+BranchialGraph branchial_graph(const BranchialStep& s) {
+    BranchialGraph g;
+    std::vector<int64_t>& ids = g.ids;
+    ids = s.nodes;
     std::sort(ids.begin(), ids.end());
     ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
     const uint32_t n = static_cast<uint32_t>(ids.size());
     auto index = [&](int64_t id) {
         return static_cast<uint32_t>(std::lower_bound(ids.begin(), ids.end(), id) - ids.begin());
     };
-    std::vector<std::pair<uint32_t, uint32_t>> edges;
+    std::vector<std::pair<uint32_t, uint32_t>>& edges = g.edges;
     for (const auto& [a, b] : s.pairs) {
         if (a == b) continue;
         uint32_t x = index(a), y = index(b);
@@ -627,8 +637,16 @@ void branchial_graph_metrics(const BranchialStep& s, wxf::WXFValueAssociation& r
     }
     std::sort(edges.begin(), edges.end());
     edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
-    std::vector<std::vector<uint32_t>> adj(n);
-    for (const auto& [x, y] : edges) { adj[x].push_back(y); adj[y].push_back(x); }
+    g.adj.assign(n, {});
+    for (const auto& [x, y] : edges) { g.adj[x].push_back(y); g.adj[y].push_back(x); }
+    return g;
+}
+
+// The branchial graph metrics of one step.
+void branchial_graph_metrics(const BranchialGraph& graph, wxf::WXFValueAssociation& rec) {
+    const uint32_t n = static_cast<uint32_t>(graph.ids.size());
+    const auto& edges = graph.edges;
+    const auto& adj = graph.adj;
 
     std::vector<std::pair<double, uint64_t>> degree, distance;
     for (uint32_t v = 0; v < n; ++v) degree.push_back({double(adj[v].size()), 1});
@@ -698,56 +716,203 @@ void branchial_graph_metrics(const BranchialStep& s, wxf::WXFValueAssociation& r
     if (have) rec.push_back({wxf::WXFValue("BranchialDimension"), wxf::WXFValue(best)});
 }
 
-// The vertex-overlap metrics of one step: each state is its vertex set, and a vertex is shared
-// by the states that inherited it.
-void overlap_metrics(const BranchialStep& s, wxf::WXFValueAssociation& rec) {
+// The summaries of 1/k and log2 k over the ids held by k states, one value per id, from the
+// number of ids held by k states, by k.
+void put_multiplicity(wxf::WXFValueAssociation& rec, const char* sharpness_key,
+                      const char* entropy_key, const std::map<uint64_t, uint64_t>& by_k) {
+    std::vector<std::pair<double, uint64_t>> sharpness, entropy;
+    for (const auto& [k, ids] : by_k) {
+        sharpness.push_back({hgcommon::bo_sharpness(k), ids});
+        entropy.push_back({hgcommon::bo_branch_entropy(k), ids});
+    }
+    put_summary(rec, sharpness_key, sharpness, 0.01, false);
+    put_summary(rec, entropy_key, entropy, 0.01, false);
+}
+
+// The counts of a pair of states: the smaller and the larger vertex count, the shared vertices,
+// and the pair's branchial distance. Distance 0 counts every pair that shares a vertex; a
+// distance d > 0 counts every pair of one branchial component at distance d, sharing or not, so a
+// pair can be counted under both.
+struct PairCounts {
+    uint32_t distance, lo, hi, both;
+    bool operator==(const PairCounts& o) const {
+        return distance == o.distance && lo == o.lo && hi == o.hi && both == o.both;
+    }
+    bool operator<(const PairCounts& o) const {
+        if (distance != o.distance) return distance < o.distance;
+        if (lo != o.lo) return lo < o.lo;
+        if (hi != o.hi) return hi < o.hi;
+        return both < o.both;
+    }
+};
+struct PairCountsHash {
+    size_t operator()(const PairCounts& k) const {
+        uint64_t h = (uint64_t{k.lo} << 32 | k.hi) * 0x9E3779B97F4A7C15ull;
+        h ^= (uint64_t{k.both} << 32 | k.distance) + 0x632BE59BD9B4E019ull + (h << 6) + (h >> 2);
+        return static_cast<size_t>(h * 0xBF58476D1CE4E5B9ull);
+    }
+};
+
+// One row's pair counts, keyed by distance << 48 | |B| << 24 | shared, in an open-addressed
+// table cleared slot by slot after the row: a pair costs one probe of a table sized to the row's
+// distinct keys, and each key reaches the thread's PairCounts map once per row.
+struct RowTally {
+    static constexpr uint64_t kEmpty = ~uint64_t{0};
+    std::vector<uint64_t> keys = std::vector<uint64_t>(64, kEmpty);
+    std::vector<uint64_t> counts = std::vector<uint64_t>(64, 0);
+    std::vector<uint32_t> used;
+
+    static bool fits(uint32_t distance, uint32_t size, uint32_t both) {
+        return distance < (1u << 16) && size < (1u << 24) && both < (1u << 24);
+    }
+    static uint64_t key(uint32_t distance, uint32_t size, uint32_t both) {
+        return uint64_t{distance} << 48 | uint64_t{size} << 24 | both;
+    }
+    static size_t slot_hash(uint64_t k) {
+        k ^= k >> 29;
+        k *= 0xBF58476D1CE4E5B9ull;
+        return static_cast<size_t>(k ^ (k >> 32));
+    }
+    size_t find(uint64_t k) const {
+        const size_t mask = keys.size() - 1;
+        size_t i = slot_hash(k) & mask;
+        while (keys[i] != kEmpty && keys[i] != k) i = (i + 1) & mask;
+        return i;
+    }
+    void add(uint64_t k) {
+        if ((used.size() + 1) * 2 > keys.size()) {
+            std::vector<uint64_t> old_keys(keys.size() * 2, kEmpty), old_counts(keys.size() * 2, 0);
+            old_keys.swap(keys);
+            old_counts.swap(counts);
+            for (uint32_t& u : used) {
+                const size_t j = find(old_keys[u]);
+                keys[j] = old_keys[u];
+                counts[j] = old_counts[u];
+                u = static_cast<uint32_t>(j);
+            }
+        }
+        const size_t i = find(k);
+        if (keys[i] == kEmpty) {
+            keys[i] = k;
+            used.push_back(static_cast<uint32_t>(i));
+        }
+        ++counts[i];
+    }
+    // Calls f(distance, size, both, pairs) for each key and clears the table.
+    template <class F>
+    void drain(F&& f) {
+        for (uint32_t i : used) {
+            const uint64_t k = keys[i];
+            f(static_cast<uint32_t>(k >> 48), static_cast<uint32_t>(k >> 24) & 0xFFFFFFu,
+              static_cast<uint32_t>(k) & 0xFFFFFFu, counts[i]);
+            keys[i] = kEmpty;
+            counts[i] = 0;
+        }
+        used.clear();
+    }
+};
+
+// The overlap metrics of one step. Each state is its set of the engine's vertex ids, and a vertex
+// is shared by the states that inherited it; an edge is its list of vertex ids, numbered in
+// BranchialStep::edge_sets.
+// `graph`, when the branchial graph metrics are computed too, gives each pair's branchial
+// distance for "OverlapByBranchialDistance". `initial`, the vertices of step 0's states, gives
+// "InitialStateMutualInformation".
+void overlap_metrics(const BranchialStep& s, const BranchialGraph* graph,
+                     const std::vector<uint32_t>* initial, wxf::WXFValueAssociation& rec) {
     // Each state once, by effective id.
-    std::map<int64_t, const std::vector<uint32_t>*> by_id;
+    std::map<int64_t, size_t> by_id;
     for (size_t i = 0; i < s.nodes.size() && i < s.vertex_sets.size(); ++i)
-        by_id.emplace(s.nodes[i], &s.vertex_sets[i]);
-    std::vector<std::vector<uint32_t>> sets;
-    for (const auto& [id, vs] : by_id) {
-        std::vector<uint32_t> v = *vs;
+        by_id.emplace(s.nodes[i], i);
+    std::vector<std::vector<uint32_t>> sets, edge_sets;
+    std::vector<int64_t> ids;
+    for (const auto& [id, i] : by_id) {
+        std::vector<uint32_t> v = s.vertex_sets[i];
         std::sort(v.begin(), v.end());
         v.erase(std::unique(v.begin(), v.end()), v.end());
         sets.push_back(std::move(v));
+        std::vector<uint32_t> e;
+        if (i < s.edge_sets.size()) e = s.edge_sets[i];
+        std::sort(e.begin(), e.end());
+        e.erase(std::unique(e.begin(), e.end()), e.end());
+        edge_sets.push_back(std::move(e));
+        ids.push_back(id);
     }
     const size_t k = sets.size();
     // Inverted index: vertex -> the states holding it, in state order.
     std::map<uint32_t, std::vector<uint32_t>> holders;
     for (uint32_t i = 0; i < k; ++i)
         for (uint32_t v : sets[i]) holders[v].push_back(i);
+    // A state's index in the branchial graph, and back.
+    std::vector<uint32_t> to_graph, from_graph;
+    if (graph) {
+        from_graph.assign(graph->ids.size(), UINT32_MAX);
+        for (uint32_t i = 0; i < k; ++i) {
+            const auto it = std::lower_bound(graph->ids.begin(), graph->ids.end(), ids[i]);
+            const uint32_t x = it != graph->ids.end() && *it == ids[i]
+                                   ? static_cast<uint32_t>(it - graph->ids.begin())
+                                   : UINT32_MAX;
+            to_graph.push_back(x);
+            if (x != UINT32_MAX) from_graph[x] = i;
+        }
+    }
     // Each state a against the states b > a that share a vertex with it: a count per b in a
-    // dense array, the rows split over threads, each thread with its own array and counts.
-    // The counts are merged in key order, so the order the rows land in does not reach the reply.
+    // dense array, the rows split over threads, each thread with its own array and counts. With
+    // the branchial graph, a breadth-first search from a also gives every b > a in a's component,
+    // sharing or not, with its distance. A pair's values are functions of its PairCounts, so each
+    // thread counts the pairs per PairCounts and the counts are merged in key order: the order
+    // the rows land in does not reach the reply. The search costs O(component) per row, the
+    // cost of the "BranchialDistance" pass.
     std::vector<std::vector<const std::vector<uint32_t>*>> row_holders(k);
     for (uint32_t a = 0; a < k; ++a)
         for (uint32_t v : sets[a]) row_holders[a].push_back(&holders[v]);
     const size_t threads =
         std::min<size_t>(k / 64 + 1, std::max(1u, std::thread::hardware_concurrency()));
-    // A pair's overlap is a function of (shared vertices, union size), so each thread counts the
-    // pairs per (shared, union) and the counts are merged in key order: the summary reads
-    // weighted values and the storage is the number of distinct ratios.
-    std::vector<std::unordered_map<uint64_t, uint64_t>> part(threads);
-    std::vector<uint64_t> sharing(threads, 0);
+    std::vector<std::unordered_map<PairCounts, uint64_t, PairCountsHash>> part(threads);
     std::vector<std::exception_ptr> failed(threads);
     std::atomic<uint32_t> next_row{0};
+    auto counts_of = [](uint32_t x, uint32_t y, uint32_t both, uint32_t distance) {
+        return PairCounts{distance, std::min(x, y), std::max(x, y), both};
+    };
     auto rows = [&](size_t t) {
         try {
-            std::vector<uint32_t> count(k, 0), touched;
+            std::vector<uint32_t> count(k, 0), touched, queue;
+            std::vector<int32_t> dist(graph ? graph->ids.size() : 0, -1);
+            RowTally tally;
             for (uint32_t a; (a = next_row.fetch_add(1, std::memory_order_relaxed)) < k;) {
+                const uint32_t size_a = static_cast<uint32_t>(sets[a].size());
+                auto pair = [&](uint32_t b, uint32_t distance) {
+                    const uint32_t size_b = static_cast<uint32_t>(sets[b].size());
+                    if (RowTally::fits(distance, size_b, count[b]))
+                        tally.add(RowTally::key(distance, size_b, count[b]));
+                    else
+                        ++part[t][counts_of(size_a, size_b, count[b], distance)];
+                };
                 for (const auto* hs : row_holders[a])
                     for (auto it = std::upper_bound(hs->begin(), hs->end(), a); it != hs->end();
                          ++it)
                         if (count[*it]++ == 0) touched.push_back(*it);
+                queue.clear();
+                if (graph && to_graph[a] != UINT32_MAX) {
+                    queue.push_back(to_graph[a]);
+                    dist[to_graph[a]] = 0;
+                    for (size_t i = 0; i < queue.size(); ++i)
+                        for (uint32_t w : graph->adj[queue[i]])
+                            if (dist[w] < 0) { dist[w] = dist[queue[i]] + 1; queue.push_back(w); }
+                    for (uint32_t w : queue) {
+                        const uint32_t b = from_graph[w];
+                        if (b != UINT32_MAX && b > a) pair(b, static_cast<uint32_t>(dist[w]));
+                    }
+                }
                 for (uint32_t b : touched) {
-                    const uint64_t both = count[b];
-                    const uint64_t uni = sets[a].size() + sets[b].size() - both;
-                    ++part[t][(both << 32) | uni];
+                    pair(b, 0);
                     count[b] = 0;
                 }
-                sharing[t] += touched.size();
+                for (uint32_t w : queue) dist[w] = -1;
                 touched.clear();
+                tally.drain([&](uint32_t distance, uint32_t size_b, uint32_t both, uint64_t n) {
+                    part[t][counts_of(size_a, size_b, both, distance)] += n;
+                });
             }
         } catch (...) {
             failed[t] = std::current_exception();
@@ -759,24 +924,105 @@ void overlap_metrics(const BranchialStep& s, wxf::WXFValueAssociation& rec) {
     for (auto& th : pool) th.join();
     for (const auto& e : failed)
         if (e) std::rethrow_exception(e);
-    std::map<uint64_t, uint64_t> ratios;
+    std::map<PairCounts, uint64_t> counted;
+    for (size_t t = 0; t < threads; ++t)
+        for (const auto& [key, n] : part[t]) counted[key] += n;
+
+    // The pairs that share no vertex: per (lo, hi), every pair of states of those sizes less the
+    // ones counted at distance 0.
+    std::map<uint32_t, uint64_t> by_size;
+    for (const auto& v : sets) ++by_size[static_cast<uint32_t>(v.size())];
+    std::map<std::pair<uint32_t, uint32_t>, uint64_t> rest;
+    for (auto i = by_size.begin(); i != by_size.end(); ++i) {
+        rest[{i->first, i->first}] = i->second * (i->second - 1) / 2;
+        for (auto j = std::next(i); j != by_size.end(); ++j)
+            rest[{i->first, j->first}] = i->second * j->second;
+    }
+    for (const auto& [key, n] : counted)
+        if (key.distance == 0) rest[{key.lo, key.hi}] -= n;
+
+    const uint64_t universe = holders.size();
+    std::map<uint64_t, uint64_t> ratios;   // (shared << 32 | union) -> pairs, shared > 0
+    std::map<double, uint64_t> cosine, information;
+    std::map<uint32_t, std::map<uint64_t, uint64_t>> by_distance;   // the same, per distance
+    std::map<uint32_t, uint64_t> at_distance;                       // every pair, per distance
     uint64_t shared_pairs = 0;
-    for (size_t t = 0; t < threads; ++t) {
-        for (const auto& [key, n] : part[t]) ratios[key] += n;
-        shared_pairs += sharing[t];
+    for (const auto& [key, n] : counted) {
+        const uint64_t uni = uint64_t{key.lo} + key.hi - key.both;
+        if (key.distance) {
+            at_distance[key.distance] += n;
+            if (key.both) by_distance[key.distance][uint64_t{key.both} << 32 | uni] += n;
+            continue;
+        }
+        ratios[uint64_t{key.both} << 32 | uni] += n;
+        shared_pairs += n;
+        cosine[hgcommon::bo_cosine(key.both, key.lo, key.hi)] += n;
+        information[hgcommon::bo_mutual_information(key.both, key.lo, key.hi, universe)] += n;
     }
-    std::vector<std::pair<double, uint64_t>> overlap, sharpness, entropy;
-    for (const auto& [key, n] : ratios)
-        overlap.push_back({double(key >> 32) / double(key & 0xFFFFFFFFu), n});
-    uint64_t disjoint = static_cast<uint64_t>(k) * (k - (k ? 1 : 0)) / 2 - shared_pairs;
-    if (disjoint) overlap.push_back({0.0, disjoint});
-    for (const auto& [v, hs] : holders) {
-        sharpness.push_back({1.0 / double(hs.size()), 1});
-        entropy.push_back({std::log2(double(hs.size())), 1});
+    for (const auto& [sizes, n] : rest) {
+        if (!n) continue;
+        cosine[0.0] += n;
+        information[hgcommon::bo_mutual_information(0, sizes.first, sizes.second, universe)] += n;
     }
-    put_summary(rec, "StateOverlap", overlap, 0.01, false);
-    put_summary(rec, "VertexSharpness", sharpness, 0.01, false);
-    put_summary(rec, "BranchEntropy", entropy, 0.01, false);
+    // The Jaccard values of (shared << 32 | union) counts, with `zero` pairs sharing nothing.
+    auto jaccard_values = [](const std::map<uint64_t, uint64_t>& r, uint64_t zero) {
+        std::vector<std::pair<double, uint64_t>> out;
+        for (const auto& [key, n] : r)
+            out.push_back({hgcommon::bo_jaccard_of_union(key >> 32, key & 0xFFFFFFFFu), n});
+        if (zero) out.push_back({0.0, zero});
+        return out;
+    };
+    auto values = [](const std::map<double, uint64_t>& m) {
+        return std::vector<std::pair<double, uint64_t>>(m.begin(), m.end());
+    };
+    const uint64_t pairs = static_cast<uint64_t>(k) * (k - (k ? 1 : 0)) / 2;
+    put_summary(rec, "StateOverlap", jaccard_values(ratios, pairs - shared_pairs), 0.01, false);
+    put_summary(rec, "StateCosineSimilarity", values(cosine), 0.01, false);
+    put_summary(rec, "StateMutualInformation", values(information), 0.01, false);
+    if (initial) {
+        // U is the step's vertices and S0's; each state once against S0.
+        uint64_t u = universe;
+        for (uint32_t v : *initial) u += holders.count(v) ? 0 : 1;
+        std::map<double, uint64_t> mi;
+        for (const auto& v : sets) {
+            uint64_t both = 0;
+            for (uint32_t x : v) both += std::binary_search(initial->begin(), initial->end(), x);
+            ++mi[hgcommon::bo_mutual_information(both, v.size(), initial->size(), u)];
+        }
+        put_summary(rec, "InitialStateMutualInformation", values(mi), 0.01, false);
+    }
+    std::map<uint64_t, uint64_t> by_k;
+    for (const auto& [v, hs] : holders) ++by_k[hs.size()];
+    put_multiplicity(rec, "VertexSharpness", "BranchEntropy", by_k);
+    // Edge numbers are dense over the run: one count per number.
+    uint32_t edge_end = 0;
+    for (const auto& e : edge_sets)
+        if (!e.empty()) edge_end = std::max(edge_end, e.back() + 1);
+    std::vector<uint32_t> edge_holders(edge_end, 0);
+    for (const auto& e : edge_sets)
+        for (uint32_t x : e) ++edge_holders[x];
+    by_k.clear();
+    for (uint32_t k_e : edge_holders)
+        if (k_e) ++by_k[k_e];
+    put_multiplicity(rec, "EdgeSharpness", "EdgeBranchEntropy", by_k);
+    if (graph) {
+        wxf::WXFValueAssociation per;
+        for (const auto& [d, n] : at_distance) {
+            const auto it = by_distance.find(d);
+            uint64_t shared = 0;
+            if (it != by_distance.end())
+                for (const auto& [key, m] : it->second) shared += m;
+            static const std::map<uint64_t, uint64_t> none;
+            per.push_back({wxf::WXFValue(static_cast<int64_t>(d)),
+                           summary_value(summarise(jaccard_values(it == by_distance.end()
+                                                                      ? none
+                                                                      : it->second,
+                                                                  n - shared),
+                                                   0.01),
+                                         false)});
+        }
+        rec.push_back({wxf::WXFValue("OverlapByBranchialDistance"), wxf::WXFValue(per)});
+    }
 }
 
 }  // namespace
@@ -784,10 +1030,23 @@ void overlap_metrics(const BranchialStep& s, wxf::WXFValueAssociation& rec) {
 std::map<uint32_t, wxf::WXFValueAssociation> branchial_step_metrics(
     const std::map<uint32_t, BranchialStep>& steps, uint32_t which) {
     std::map<uint32_t, wxf::WXFValueAssociation> out;
+    // S0: the vertices of step 0's states.
+    std::vector<uint32_t> initial;
+    const auto zero = steps.find(0);
+    if (zero != steps.end())
+        for (const auto& v : zero->second.vertex_sets) initial.insert(initial.end(), v.begin(), v.end());
+    std::sort(initial.begin(), initial.end());
+    initial.erase(std::unique(initial.begin(), initial.end()), initial.end());
     for (const auto& [step, s] : steps) {
         wxf::WXFValueAssociation& rec = out[step];
-        if (which & kBranchialGraph) branchial_graph_metrics(s, rec);
-        if (which & kBranchialOverlap) overlap_metrics(s, rec);
+        BranchialGraph graph;
+        if (which & kBranchialGraph) {
+            graph = branchial_graph(s);
+            branchial_graph_metrics(graph, rec);
+        }
+        if (which & kBranchialOverlap)
+            overlap_metrics(s, (which & kBranchialGraph) ? &graph : nullptr,
+                            zero != steps.end() ? &initial : nullptr, rec);
     }
     return out;
 }

@@ -950,6 +950,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
                     const hg_gpu::CanonicalState& st = result.states[sid];
                     for (uint32_t k = 0; k < st.num_edges; ++k) {
                         const hg_gpu::VertexSpan e = result.edge(st, k);
+                        vs.push_back(e.size());
                         vs.insert(vs.end(), e.begin(), e.end());
                     }
                 },
