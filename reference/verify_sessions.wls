@@ -268,6 +268,52 @@ Module[{tri = {{{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}}, init3 = {{1, 2}, {
           gotLast === EdgeCount[HGEvolve[tri, init3, 3, "EvolutionBranchialGraphStructure",
                                          "BranchialStep" -> -1]]]]];
 
+(* ABORTED CALLS. A call cut short by TimeConstrained or a user abort leaves its job running in the
+   worker. The paclet kills that worker, so the next call starts a new one and reads its own
+   reply, and a session held by the killed worker reports HGSessionStep::expired. The slow job is
+   a sampled run on an 800-edge state: 60 steps take 2.4 s on the CPU and 335 s on the GPU
+   (measured on Wolfram 15.0, Windows), so 400 steps on the CPU and 60 on the GPU are still
+   running when TimeConstrained stops them at 2 s. *)
+Module[{slowRule, big, slow, cut, sAb, sNew, msgs},
+  slowRule = {{{1, 2}, {2, 3}, {3, 4}, {4, 5}} -> {{2, 6}, {6, 5}, {4, 1}, {1, 6}}};
+  big = Join[Table[{i, Mod[i, 400] + 1}, {i, 400}], Table[{i, Mod[3 i, 400] + 1}, {i, 400}]];
+  slow[steps_, opts___] := HGEvolve[slowRule, big, steps, "NumStates", "UniformRandom" -> True,
+                                    "MatchesPerStep" -> 10, "RandomSeed" -> 1, opts];
+
+  cut = TimeConstrained[slow[400], 2, "cut"];
+  check["the slow HGEvolve is cut short by TimeConstrained", cut === "cut"];
+  check["an HGEvolve after an aborted one returns its own result",
+        HGEvolve[rules, init, 2, prop] === oneShot[[3]] &&
+        HGEvolve[rules, init, 3, prop] === oneShot[[4]]];
+
+  sAb = HGSessionOpen[slowRule, big, "NumStates", "UniformRandom" -> True,
+                      "MatchesPerStep" -> 10, "RandomSeed" -> 1];
+  check["a session for the abort check opens", Head[sAb] === HGSessionObject];
+  If[Head[sAb] === HGSessionObject,
+    cut = TimeConstrained[HGSessionStep[sAb, 400], 2, "cut"];
+    check["the slow HGSessionStep is cut short by TimeConstrained", cut === "cut"];
+    msgs = Block[{$MessageList = {}}, cut = HGSessionStep[sAb, 1]; $MessageList];
+    check["a session whose worker was killed by an abort reports HGSessionStep::expired",
+          cut === $Failed && MemberQ[msgs, HoldForm[HGSessionStep::expired]]];
+    check["and so do Query and Frontier",
+          Quiet[HGSessionQuery[sAb]] === $Failed && Quiet[HGSessionFrontier[sAb]] === $Failed];
+    sNew = HGSessionOpen[rules, init, prop];
+    check["a new session opens after the abort", Head[sNew] === HGSessionObject];
+    If[Head[sNew] === HGSessionObject,
+      check["the new session answers for itself",
+            HGSessionStep[sNew, 2] === oneShot[[3]] && HGSessionStep[sNew, 1] === oneShot[[4]]];
+      check["the expired session still reports expired beside a live one",
+            Quiet[HGSessionStep[sAb, 1]] === $Failed];
+      HGSessionClose[sNew]]];
+
+  If[!TrueQ[Quiet[Check[HGEvolve[rules, init, 1, prop, "TargetDevice" -> "GPU"]; True, False]]],
+    Print["SKIP  device abort leg: no usable GPU on this machine"],
+    cut = TimeConstrained[slow[60, "TargetDevice" -> "GPU"], 2, "cut"];
+    check["the slow device HGEvolve is cut short by TimeConstrained", cut === "cut"];
+    check["a device HGEvolve after an aborted one returns its own result",
+          HGEvolve[rules, init, 2, prop, "TargetDevice" -> "GPU"] === oneShot[[3]] &&
+          HGEvolve[rules, init, 3, prop, "TargetDevice" -> "GPU"] === oneShot[[4]]]]];
+
 Print["\nfailures: ", failures];
 Print[If[failures == 0, "SESSIONS_VERIFIED", "SESSIONS_FAILED"]];
 Exit[If[failures == 0, 0, 1]]

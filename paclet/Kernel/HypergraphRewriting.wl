@@ -105,6 +105,9 @@ HGSessionOpen::nohandle =
 HGSessionOpen::refused = "The engine refused this session job: `1`";
 HGSessionStep::badsession =
   "`1` is not an HGSessionObject.";
+HGSessionStep::expired =
+  "The engine worker that held this session has stopped, so the session is gone. An aborted " <>
+  "call stops the worker. Open a new session with HGSessionOpen.";
 HGSessionStep::negsteps =
   "HGSessionStep needs a non-negative integer number of steps, not `1`. Use HGSessionQuery to " <>
   "re-read the session without exploring.";
@@ -197,10 +200,17 @@ hgRunEngineBinary[exe_String, wxfBytes_ByteArray] := Module[{proc, outStr, stder
    device broken and every call falls back to the one-shot RunProcess path --
    correct everywhere, amortised where the socket worker is available. When the
    kernel exits its socket closes and the worker's serve loop ends, so no process
-   is left behind. *)
+   is left behind.
+   An aborted call (TimeConstrained, Abort[], Alt+.) kills the worker, because the aborted job's
+   reply is still on its way and the next call would read it as its own. The next call starts a
+   new worker. Each started worker gets a new $hgWorkerGeneration number; a session records the
+   number of the worker that opened it and reports HGSessionStep::expired once that worker is
+   gone. *)
 $hgWorkerProc = <||>;     (* device -> ProcessObject *)
 $hgWorkerSock = <||>;     (* device -> SocketObject *)
 $hgWorkerBroken = <||>;   (* device -> True once found unavailable *)
+$hgWorkerGeneration = <||>;  (* device -> number of the live worker, unique within the kernel *)
+$hgWorkerStarts = 0;
 
 hgFrame[bytes_ByteArray] := Join[ByteArray[Reverse[IntegerDigits[Length[bytes], 256, 8]]], bytes];
 hgWorkerExe[device_] := If[device === "GPU", $HypergraphEngineBinaryGPU, $HypergraphEngineBinary];
@@ -212,25 +222,33 @@ hgWorkerKill[device_] := (
   $hgWorkerSock = KeyDrop[$hgWorkerSock, device];
 );
 
-hgWorkerStart[device_] := Module[{exe, portfile, proc, port, sock},
+hgWorkerStart[device_] := Module[{exe, portfile, proc = None, port, sock = None, done = False},
   exe = hgWorkerExe[device];
   If[!(StringQ[exe] && FileExistsQ[exe]), Return[$Failed]];
   portfile = FileNameJoin[{$TemporaryDirectory, "hgport-" <> ToString[$ProcessID] <>
     "-" <> device <> "-" <> IntegerString[RandomInteger[10^12]] <> ".txt"}];
   Quiet[If[FileExistsQ[portfile], DeleteFile[portfile]]];
-  proc = StartProcess[{exe, "--serve-socket", portfile}];
-  port = Null;
-  Do[
-    If[FileExistsQ[portfile],
-      port = Quiet[ToExpression[StringTrim[Import[portfile, "String"]]]];
-      If[IntegerQ[port], Break[]]];
-    Pause[0.02],
-    250];  (* poll up to ~5 s for the OS-assigned port *)
-  Quiet[If[FileExistsQ[portfile], DeleteFile[portfile]]];
-  If[!IntegerQ[port], Quiet[KillProcess[proc]]; Return[$Failed]];
-  sock = TimeConstrained[SocketConnect["127.0.0.1:" <> ToString[port]], 10, $Failed];
-  If[Head[sock] =!= SocketObject, Quiet[KillProcess[proc]]; Return[$Failed]];
+  (* An abort during the start kills the half-started process: it waits in accept() for a
+     connection that never comes, and the kernel's exit does not end it. *)
+  WithCleanup[
+    proc = StartProcess[{exe, "--serve-socket", portfile}];
+    port = Null;
+    Do[
+      If[FileExistsQ[portfile],
+        port = Quiet[ToExpression[StringTrim[Import[portfile, "String"]]]];
+        If[IntegerQ[port], Break[]]];
+      Pause[0.02],
+      250];  (* poll up to ~5 s for the OS-assigned port *)
+    If[IntegerQ[port],
+      sock = TimeConstrained[SocketConnect["127.0.0.1:" <> ToString[port]], 10, $Failed]];
+    done = Head[sock] === SocketObject,
+    Quiet[If[FileExistsQ[portfile], DeleteFile[portfile]]];
+    If[!done,
+      Quiet[If[Head[sock] === SocketObject, Close[sock]]];
+      Quiet[If[MatchQ[proc, _ProcessObject], KillProcess[proc]]]]];
+  If[!done, Return[$Failed]];
   $hgWorkerProc[device] = proc; $hgWorkerSock[device] = sock;
+  $hgWorkerGeneration[device] = ++$hgWorkerStarts;
   True
 ];
 
@@ -276,16 +294,21 @@ hgReadFrame[sock_] := Module[{pending = ByteArray[{}], chunk, len, ds, got},
     Return[If[len == 0, ByteArray[{}], Take[Join @@ Normal[ds], {9, 8 + len}]]]]
 ];
 
-hgWorkerTry[device_, wxfBytes_ByteArray] := Module[{payload},
+hgWorkerTry[device_, wxfBytes_ByteArray] := Module[{payload, written, done = False},
   If[TrueQ[$hgWorkerBroken[device]], Return[$Failed]];
   If[Head[$hgWorkerSock[device]] =!= SocketObject
       || Quiet[ProcessStatus[$hgWorkerProc[device]]] =!= "Running",
     hgWorkerKill[device];
     If[hgWorkerStart[device] =!= True, $hgWorkerBroken[device] = True; Return[$Failed]]
   ];
-  If[Quiet[BinaryWrite[$hgWorkerSock[device], hgFrame[wxfBytes]]] === $Failed,
-    hgWorkerKill[device]; $hgWorkerBroken[device] = True; Return[$Failed]];
-  payload = hgReadFrame[$hgWorkerSock[device]];
+  (* An abort between the write and the end of the read kills the worker: its reply to this job
+     would otherwise be read by the next call. The abort itself propagates unchanged. *)
+  WithCleanup[
+    written = Quiet[BinaryWrite[$hgWorkerSock[device], hgFrame[wxfBytes]]] =!= $Failed;
+    If[written, payload = hgReadFrame[$hgWorkerSock[device]]];
+    done = True,
+    If[!done, hgWorkerKill[device]]];
+  If[!written, hgWorkerKill[device]; $hgWorkerBroken[device] = True; Return[$Failed]];
   Which[
     payload === $Failed, hgWorkerKill[device]; $hgWorkerBroken[device] = True; $Failed,
     (* The engine refused this job and the worker is alive: hgEngineError[message]. A caller
@@ -1096,10 +1119,23 @@ hgForgetSessionGraphData[handle_] := ($hgSessionGraphData = KeyDrop[$hgSessionGr
 $hgLastEngineTime = 0.;
 $hgLastReplyBytes = 0;
 
-hgSendJob[inputData_Association, device_, sessionQ_] := Module[{wxfBytes, resultBytes, wxfData, t0},
+(* `worker` is the $hgWorkerGeneration number of the worker holding the session, or None for an
+   Open and for HGEvolve. A held session's verb goes only to that worker: a new worker does not
+   hold the session, and its own session handles count from the same start, so a held handle
+   could name a different session there. *)
+hgSendJob[inputData_Association, device_, sessionQ_, worker_ : None] := Module[{wxfBytes, resultBytes, wxfData, t0},
   t0 = AbsoluteTime[];
   wxfBytes = BinarySerialize[inputData];
   resultBytes = Block[{$hgShowProgress = TrueQ[Lookup[Lookup[inputData, "Options", <||>], "ShowProgress", False]]},
+   If[TrueQ[sessionQ] && worker =!= None,
+    Module[{dev = device, r},
+      If[worker =!= Lookup[$hgWorkerGeneration, dev, None]
+          || Quiet[ProcessStatus[$hgWorkerProc[dev]]] =!= "Running",
+        Message[HGSessionStep::expired]; Return[$Failed]];
+      r = hgWorkerTry[dev, wxfBytes];
+      If[MatchQ[r, hgEngineError[_String]], Message[HGSessionOpen::refused, First[r]]; Return[$Failed]];
+      If[!ByteArrayQ[r], Message[HGSessionStep::expired]; Return[$Failed]];
+      r],
    If[TrueQ[sessionQ],
     Module[{dev = device, r},
       r = hgWorkerTry[dev, wxfBytes];
@@ -1107,7 +1143,7 @@ hgSendJob[inputData_Association, device_, sessionQ_] := Module[{wxfBytes, result
          dead worker only means "stop paying to retry", because a one-shot RunProcess answers
          the same job correctly. A session has no fallback, so the same latch turns one
          transport hiccup during an unrelated evolve into "this kernel can never open a session
-         again". So a session verb clears it and tries once more; if the worker still cannot
+         again". So an Open clears it and tries once more; if the worker still cannot
          start, THAT is the failure worth reporting. *)
       (* A refused job is the engine's answer, not a transport failure: report its message and
          keep the worker. *)
@@ -1119,7 +1155,7 @@ hgSendJob[inputData_Association, device_, sessionQ_] := Module[{wxfBytes, result
       If[MatchQ[r, hgEngineError[_String]], Message[HGSessionOpen::refused, First[r]]; Return[$Failed]];
       If[!ByteArrayQ[r], Message[HGSessionOpen::noworker, device]; Return[$Failed]];
       r],
-    hgCallEngine[wxfBytes, device]]];
+    hgCallEngine[wxfBytes, device]]]];
 
   If[!ByteArrayQ[resultBytes] || Length[resultBytes] == 0, Return[$Failed]];
   wxfData = BinaryDeserialize[resultBytes];
@@ -1172,7 +1208,7 @@ hgRunJob[inputData_Association, device_, props_List, propertyWasList_, view_Asso
   canonicalizeStates      = view["CanonicalizeStates"];
   canonicalizeEvents      = view["CanonicalizeEvents"];
 
-  wxfData = hgSendJob[inputData, device, TrueQ[view["SessionQ"]]];
+  wxfData = hgSendJob[inputData, device, TrueQ[view["SessionQ"]], Lookup[view, "Worker", None]];
   If[!AssociationQ[wxfData], Return[$Failed]];
   (* A delta reply carries only what this session had not been sent, so it is merged into what
      the session already holds BEFORE anything reads it. Callers therefore always see a whole
@@ -1394,6 +1430,7 @@ HGSessionOpen[rules_List, initialEdges_List,
   handle = Lookup[reply, "Session", Missing[]];
   If[!IntegerQ[handle] || handle === 0, Message[HGSessionOpen::nohandle]; Return[$Failed]];
 
+  view["Worker"] = Lookup[$hgWorkerGeneration, device, None];
   HGSessionObject[<|"Handle" -> handle, "Device" -> device, "View" -> view,
                     "Properties" -> props, "PropertyWasList" -> propertyWasListLocal,
                     "GraphProperties" -> graphProperties, "Options" -> options,
@@ -1477,7 +1514,7 @@ HGSessionFrontier[HGSessionObject[d_Association]] := Module[{reply},
   reply = hgSendJob[<|"Steps" -> 0, "Op" -> "Query", "Session" -> d["Handle"],
                       "Options" -> Join[d["Options"], <|"RequestedData" -> {"NumStates"},
                                                         "GraphProperties" -> {}|>]|>,
-                    d["Device"], True];
+                    d["Device"], True, d["View"]["Worker"]];
   If[AssociationQ[reply], Lookup[reply, "Frontier", {}], $Failed]
 ];
 HGSessionFrontier[other_] := (Message[HGSessionStep::badsession, other]; $Failed);
@@ -1486,7 +1523,7 @@ HGSessionQuery[other_, ___] := (Message[HGSessionStep::badsession, other]; $Fail
 HGSessionClose[HGSessionObject[d_Association]] := Module[{reply},
   hgForgetSessionGraphData[d["Handle"]];
   reply = hgSendJob[<|"Op" -> "Close", "Session" -> d["Handle"],
-                      "Options" -> <|"Op" -> "Close"|>|>, d["Device"], True];
+                      "Options" -> <|"Op" -> "Close"|>|>, d["Device"], True, d["View"]["Worker"]];
   If[AssociationQ[reply], Null, $Failed]
 ];
 HGSessionClose[other_] := (Message[HGSessionStep::badsession, other]; $Failed);
