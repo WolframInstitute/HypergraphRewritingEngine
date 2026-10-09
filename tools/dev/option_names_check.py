@@ -45,6 +45,14 @@ USE_RE = re.compile(r'"([A-Za-z][A-Za-z0-9]*)"\s*->')
 ASSOC_RE = re.compile(r'<\|.*?\|>', re.DOTALL)
 
 
+# Options of other functions that the documentation quotes as part of a definition, mapped to
+# the function: docs/SPEC.md defines the geometry invariants by their Function Repository calls.
+FOREIGN_OPTIONS = {
+    "DimensionMethod": 'ResourceFunction["WolframHausdorffDimension"]',
+    "VertexMethod": 'ResourceFunction["WolframHausdorffDimension"]',
+}
+
+
 def without_associations(text):
     return ASSOC_RE.sub(lambda m: "\n" * m.group(0).count("\n"), text)
 
@@ -96,7 +104,7 @@ def main():
         for lineno, line in enumerate(without_associations(f.read_text()).splitlines(), 1):
             for m in USE_RE.finditer(line):
                 name = m.group(1)
-                if name not in accepted:
+                if name not in accepted and name not in FOREIGN_OPTIONS:
                     findings.append((f.relative_to(ROOT), lineno, name))
 
     # Every option the MARKDOWN documents must appear in a BUILT notebook. The notebooks are
