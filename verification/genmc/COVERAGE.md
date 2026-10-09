@@ -40,7 +40,7 @@ harness. The park protocol is checked on its spin backend, which waits on the sa
 | P10 ConcurrentKeySet claim/grow/migrate | 38 | key_set_contains_during_growth (2), key_set_contains_during_double_growth (3), key_set_distinct_keys_across_growth (2), key_set_enumeration (2), key_set_exactly_once (2), key_set_exactly_once_3t (3, SC), key_set_insert_existing_during_double_growth (3) |
 | P11 LockFreeList push/iterate | 21 | lock_free_list_completeness (2), lock_free_list_pairs_meet_once (2), lock_free_list_three_meet_once (3) |
 | P11 branchial pair recording (`CausalGraph::record_branchial_overlaps`: push, walk the entries before, lowest shared edge) | 2 | branchial_pair_once (2) |
-| P12 SegmentedArray segment creation and publication | 5 | segmented_array_published_read (3), causal_in_edge_order (2), engine_* (inferred) |
+| P12 SegmentedArray segment creation and publication, and the look-ahead election (`ahead_` exchange, 813f22c8) | 6 | segmented_array_published_read (3; index 1 of a two-element segment elects the creation of segment 1, one candidate), causal_in_edge_order (2), engine_* (inferred). The scattered trigger (`set_scattered`, b591bd1d) is set by no harness; it moves only the index that triggers the election |
 | P13 arena: cursor, shared bump, block chain, construction fences | 49 | arena_cursor_vs_shared_disjoint (2), arena_worker_index_exclusive (2), engine_* |
 | P14 arena block pool (tagged Treiber stack) | 10 | block_pool_exactly_once (2) on `hgcommon/pool_core.hpp`; the engine's instance is `!HG_VERIFICATION` |
 | P18 DepthJoin settle cascade and report baton | 25 | depth_report_order (2) |
@@ -89,6 +89,7 @@ sequence is the harness's, and the stop-cut and `resume_pending` branches of
 |---|---|
 | P38 matcher early-termination flag, 4 | Every engine caller passes no `should_terminate`. |
 | P34 debug callback pointer, 3 | Set by no engine path. |
+| replay causal-pair chunks (`Hypergraph::QcPairList`: count stored release, head stored release), 4 | One writer per list (the worker whose `arena_worker_index()` names it); read after the workers finish. Pushes from a thread that is not a worker go to `qc_causal_pairs_outside_`, a LockFreeList (P11). |
 | P08 `JobSlotPool::release_pool`, 3 | Runs from a thread-exit destructor; the checker runs none (`__cxa_thread_atexit` records nothing). |
 | P09 `for_each`, `for_each_in_every_table`, `set_arena`, `bytes_allocated`, `size`, 12 | Read after the workers finish, or before they start. |
 | P11 move constructor/assignment, `reset`, 6 | Single-threaded lifecycle. |
