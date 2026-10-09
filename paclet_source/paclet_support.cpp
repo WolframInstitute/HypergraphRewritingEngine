@@ -15,9 +15,12 @@
 #include "hgcommon/quotient_multiplicity_core.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <exception>
 #include <chrono>
 #include <cmath>
 #include <random>
+#include <thread>
 #include <functional>
 #include <type_traits>
 
@@ -629,16 +632,58 @@ void overlap_metrics(const BranchialStep& s, wxf::WXFValueAssociation& rec) {
     std::map<uint32_t, std::vector<uint32_t>> holders;
     for (uint32_t i = 0; i < k; ++i)
         for (uint32_t v : sets[i]) holders[v].push_back(i);
-    std::map<std::pair<uint32_t, uint32_t>, uint64_t> shared;
-    for (const auto& [v, hs] : holders)
-        for (size_t a = 0; a < hs.size(); ++a)
-            for (size_t b = a + 1; b < hs.size(); ++b) ++shared[{hs[a], hs[b]}];
-    std::vector<std::pair<double, uint64_t>> overlap, sharpness, entropy;
-    uint64_t disjoint = static_cast<uint64_t>(k) * (k - (k ? 1 : 0)) / 2 - shared.size();
-    for (const auto& [ab, both] : shared) {
-        const double uni = double(sets[ab.first].size() + sets[ab.second].size() - both);
-        overlap.push_back({double(both) / uni, 1});
+    // Each state a against the states b > a that share a vertex with it: a count per b in a
+    // dense array, the rows split over threads, each thread with its own array and counts.
+    // The counts are merged in key order, so the order the rows land in does not reach the reply.
+    std::vector<std::vector<const std::vector<uint32_t>*>> row_holders(k);
+    for (uint32_t a = 0; a < k; ++a)
+        for (uint32_t v : sets[a]) row_holders[a].push_back(&holders[v]);
+    const size_t threads =
+        std::min<size_t>(k / 64 + 1, std::max(1u, std::thread::hardware_concurrency()));
+    // A pair's overlap is a function of (shared vertices, union size), so each thread counts the
+    // pairs per (shared, union) and the counts are merged in key order: the summary reads
+    // weighted values and the storage is the number of distinct ratios.
+    std::vector<std::unordered_map<uint64_t, uint64_t>> part(threads);
+    std::vector<uint64_t> sharing(threads, 0);
+    std::vector<std::exception_ptr> failed(threads);
+    std::atomic<uint32_t> next_row{0};
+    auto rows = [&](size_t t) {
+        try {
+            std::vector<uint32_t> count(k, 0), touched;
+            for (uint32_t a; (a = next_row.fetch_add(1, std::memory_order_relaxed)) < k;) {
+                for (const auto* hs : row_holders[a])
+                    for (auto it = std::upper_bound(hs->begin(), hs->end(), a); it != hs->end();
+                         ++it)
+                        if (count[*it]++ == 0) touched.push_back(*it);
+                for (uint32_t b : touched) {
+                    const uint64_t both = count[b];
+                    const uint64_t uni = sets[a].size() + sets[b].size() - both;
+                    ++part[t][(both << 32) | uni];
+                    count[b] = 0;
+                }
+                sharing[t] += touched.size();
+                touched.clear();
+            }
+        } catch (...) {
+            failed[t] = std::current_exception();
+        }
+    };
+    std::vector<std::thread> pool;
+    for (size_t t = 1; t < threads; ++t) pool.emplace_back(rows, t);
+    rows(0);
+    for (auto& th : pool) th.join();
+    for (const auto& e : failed)
+        if (e) std::rethrow_exception(e);
+    std::map<uint64_t, uint64_t> ratios;
+    uint64_t shared_pairs = 0;
+    for (size_t t = 0; t < threads; ++t) {
+        for (const auto& [key, n] : part[t]) ratios[key] += n;
+        shared_pairs += sharing[t];
     }
+    std::vector<std::pair<double, uint64_t>> overlap, sharpness, entropy;
+    for (const auto& [key, n] : ratios)
+        overlap.push_back({double(key >> 32) / double(key & 0xFFFFFFFFu), n});
+    uint64_t disjoint = static_cast<uint64_t>(k) * (k - (k ? 1 : 0)) / 2 - shared_pairs;
     if (disjoint) overlap.push_back({0.0, disjoint});
     for (const auto& [v, hs] : holders) {
         sharpness.push_back({1.0 / double(hs.size()), 1});
