@@ -41,22 +41,29 @@ struct StateInvariantValues {
 };
 
 // One state's invariants and geometry (state_geometry_core.hpp) as stored per class: the values,
-// then num_ball ball-growth dimensions (doubles), num_edges arities ascending and num_vertices
-// slot degrees descending (uint32 words), directly after the record.
+// then num_distributions per-vertex distributions (SgDistribution, SG_DISTS of them or none),
+// num_ball ball-growth dimensions (doubles), num_edges arities ascending and num_vertices slot
+// degrees descending (uint32 words), directly after the record.
 struct StateInvariantRecord {
     StateInvariantValues v;
     SgGeometry g;
     uint32_t num_edges = 0;
     uint32_t num_vertices = 0;
     uint32_t num_ball = 0;
-    uint32_t reserved = 0;
-    HG_HD const double* ball() const { return reinterpret_cast<const double*>(this + 1); }
+    uint32_t num_distributions = 0;
+    HG_HD const SgDistribution* distributions() const {
+        return reinterpret_cast<const SgDistribution*>(this + 1);
+    }
+    HG_HD const double* ball() const {
+        return reinterpret_cast<const double*>(distributions() + num_distributions);
+    }
     HG_HD const uint32_t* arities() const {
         return reinterpret_cast<const uint32_t*>(ball() + num_ball);
     }
     HG_HD const uint32_t* degrees() const { return arities() + num_edges; }
-    HG_HD static uint64_t bytes(uint32_t m, uint32_t n, uint32_t nball) {
-        return (sizeof(StateInvariantRecord) + 8 * uint64_t{nball} + 4 * (uint64_t{m} + n) + 7) &
+    HG_HD static uint64_t bytes(uint32_t m, uint32_t n, uint32_t nball, uint32_t ndist) {
+        return (sizeof(StateInvariantRecord) + sizeof(SgDistribution) * uint64_t{ndist} +
+                8 * uint64_t{nball} + 4 * (uint64_t{m} + n) + 7) &
                ~uint64_t{7};
     }
 };
@@ -77,13 +84,15 @@ HG_HD inline void si_sort(uint32_t* a, uint32_t n) {
 }  // namespace si_detail
 
 // The invariants of one state. `arities_out` receives the m arities ascending, `degrees_out` the
-// vertex_count slot degrees descending. Every lane of the policy calls it with the same
-// arguments; `out` and the two arrays are written by the leader.
+// vertex_count slot degrees descending, and `largest_out`, when given, the largest component's
+// vertices as indices into the distinct vertices ascending, itself ascending. Every lane of the
+// policy calls it with the same arguments; `out` and the arrays are written by the leader.
+// Returns the number of vertices written to `largest_out`, on every lane.
 template <class Par = IrSerial>
-HG_HD inline void state_invariants(const uint32_t* off, const uint32_t* verts, uint32_t m,
-                                   uint32_t* scratch, StateInvariantValues& out,
-                                   uint32_t* arities_out, uint32_t* degrees_out,
-                                   Par par = Par{}) {
+HG_HD inline uint32_t state_invariants(const uint32_t* off, const uint32_t* verts, uint32_t m,
+                                       uint32_t* scratch, StateInvariantValues& out,
+                                       uint32_t* arities_out, uint32_t* degrees_out,
+                                       Par par = Par{}, uint32_t* largest_out = nullptr) {
     const uint32_t S = off[m];
     const uint32_t L = par.width();
     const uint32_t N = S + m;   // bound on the incidence graph's nodes
@@ -98,7 +107,7 @@ HG_HD inline void state_invariants(const uint32_t* off, const uint32_t* verts, u
     uint32_t* comp   = stamp + S;          // N: component of each node
     uint32_t* order  = comp + N;           // N: nodes in discovery order, component by component
     uint32_t* cstart = order + N;          // N + 1: each component's run in `order`
-    uint32_t* hdr    = cstart + (N + 1);   // 8: n, components, most, incidences
+    uint32_t* hdr    = cstart + (N + 1);   // 8: n, components, most, 0, chosen, largest size
     uint32_t* part   = hdr + 8;            // 4 L: per-lane total (2 words), diameter, spare
     uint32_t* ldist  = part + 4 * L;       // L N
     uint32_t* lq     = ldist + uint64_t{L} * N;   // L N
@@ -210,7 +219,7 @@ HG_HD inline void state_invariants(const uint32_t* off, const uint32_t* verts, u
         out.cycle_rank = out.two_section_edge_count - out.vertex_count + out.components;
         out.incidence_cycle_rank = static_cast<int64_t>(incidences) -
                                    static_cast<int64_t>(nodes) + out.components;
-        hdr[0] = n; hdr[1] = c; hdr[2] = most; hdr[3] = 0;
+        hdr[0] = n; hdr[1] = c; hdr[2] = most; hdr[3] = 0; hdr[4] = 0; hdr[5] = 0;
     }
     par.sync();
     const uint32_t n = hdr[0], c = hdr[1], most = hdr[2];
@@ -282,11 +291,21 @@ HG_HD inline void state_invariants(const uint32_t* off, const uint32_t* verts, u
                 out.incidence_diameter = dd;
                 out.incidence_mean_distance = mean;
                 out.largest_component_fraction = fraction;
+                hdr[4] = ci;
             }
         }
         chosen = true;
         par.sync();
     }
+    if (largest_out && par.leader() && c) {
+        const uint32_t b = cstart[hdr[4]], e = cstart[hdr[4] + 1];
+        uint32_t k = 0;
+        for (uint32_t h = b; h < e; ++h) if (order[h] < n) largest_out[k++] = order[h];
+        si_detail::si_sort(largest_out, k);
+        hdr[5] = k;
+    }
+    par.sync();
+    return hdr[5];
 }
 
 // A state in CSR form as state_geometry_core.hpp reads an edge list.
@@ -299,11 +318,12 @@ struct SiCsrEdges {
     HG_HD uint32_t at(uint32_t i, uint32_t k) const { return verts[off[i] + k]; }
 };
 
-// Scratch bytes state_record needs before the geometry: the invariants' words, the two output
-// arrays and the ball-growth dimensions.
+// Scratch bytes state_record needs before the geometry: the invariants' words, the three output
+// arrays, the per-vertex distributions and the ball-growth dimensions.
 HG_HD inline uint64_t si_record_fixed_bytes(uint32_t slots, uint32_t m, uint32_t lanes) {
-    const uint64_t words = si_scratch_words(slots, m, lanes) + m + slots + 1;
-    return ((4 * words + 7) & ~uint64_t{7}) + 8 * (uint64_t{slots} + 1);
+    const uint64_t words = si_scratch_words(slots, m, lanes) + m + 2 * uint64_t{slots} + 1;
+    return ((4 * words + 7) & ~uint64_t{7}) + sizeof(SgDistribution) * SG_DISTS +
+           8 * (uint64_t{slots} + 1);
 }
 
 // A first scratch size for state_record: the geometry's graph and its metrics at maximum degree 8.
@@ -332,21 +352,23 @@ HG_HD inline uint32_t si_form_csr(const uint32_t* form, uint32_t words, uint32_t
 struct SiResult {
     StateInvariantValues v;
     SgGeometry g;
+    const SgDistribution* dists = nullptr;
     const double* ball = nullptr;
     const uint32_t* arities = nullptr;
     const uint32_t* degrees = nullptr;
     uint32_t m = 0, n = 0, nball = 0;
-    HG_HD uint64_t bytes() const { return StateInvariantRecord::bytes(m, n, nball); }
+    HG_HD uint64_t bytes() const { return StateInvariantRecord::bytes(m, n, nball, SG_DISTS); }
 };
 
-// The invariants (state_invariants) of the state off/verts/m and the geometry
-// (sg_state_geometry) of goff/gverts/gm, the same state in its IR canonical labelling
-// (si_form_csr), in `capacity` bytes of 8-byte aligned `scratch`. The geometry's floating-point
-// sums follow the vertex order, so the canonical labelling makes them one value per class. False
+// The invariants (state_invariants) and the geometry (sg_state_geometry) of goff/gverts/gm, the
+// state off/verts/m in its IR canonical labelling (si_form_csr), in `capacity` bytes of 8-byte
+// aligned `scratch`; off/verts/m size the scratch. The geometry's floating-point sums follow the
+// vertex order, and a tie between components that the largest-component rule leaves goes to the
+// first in that order, so the canonical labelling makes every value one value per class. False
 // when the scratch is short, with `needed` set to a size to retry with; every lane returns the
 // same verdict and size. Both run on every lane of the policy; `r` is the leader's.
 template <class Par = IrSerial>
-HG_HD inline bool state_record(const uint32_t* off, const uint32_t* verts, uint32_t m,
+HG_HD inline bool state_record(const uint32_t* off, const uint32_t* /*verts*/, uint32_t m,
                                const uint32_t* goff, const uint32_t* gverts, uint32_t gm,
                                unsigned char* scratch, uint64_t capacity, uint64_t& needed,
                                SiResult& r, Par par = Par{}) {
@@ -354,28 +376,33 @@ HG_HD inline bool state_record(const uint32_t* off, const uint32_t* verts, uint3
     const uint64_t siw = si_scratch_words(S, m, par.width());
     uint32_t* words = reinterpret_cast<uint32_t*>(scratch);
     uint32_t* arrays = words + siw;
+    uint32_t* largest = arrays + m + S + 1;
     const uint64_t fixed = si_record_fixed_bytes(S, m, par.width());
     double* ball = reinterpret_cast<double*>(scratch + fixed - 8 * (uint64_t{S} + 1));
+    auto* dists = reinterpret_cast<SgDistribution*>(reinterpret_cast<unsigned char*>(ball) -
+                                                    sizeof(SgDistribution) * SG_DISTS);
     if (fixed > capacity) {
         needed = si_record_bytes_hint(S, m, par.width());
         return false;
     }
+    const uint32_t largest_n =
+        state_invariants(goff, gverts, gm, words, r.v, arrays, arrays + gm, par, largest);
     uint64_t need = 0;
     size_t geo_need = 0;
     if (!sg_state_geometry(SiCsrEdges{goff, gverts, gm}, scratch + fixed, capacity - fixed, r.g,
-                           ball, S + 1, geo_need, ~0u, par))
+                           ball, S + 1, geo_need, ~0u, par, largest, largest_n, dists))
         need = fixed + geo_need;
     par.sync();
     if (need) {
         needed = need;
         return false;
     }
-    state_invariants(off, verts, m, words, r.v, arrays, arrays + m, par);
     if (par.leader()) {
+        r.dists = dists;
         r.ball = ball;
         r.arities = arrays;
-        r.degrees = arrays + m;
-        r.m = m;
+        r.degrees = arrays + gm;
+        r.m = gm;
         r.n = static_cast<uint32_t>(r.v.vertex_count);
         r.nball = r.g.ball_radii;
     }
@@ -390,8 +417,10 @@ HG_HD inline StateInvariantRecord* si_record_write(void* mem, const SiResult& r)
     rec->num_edges = r.m;
     rec->num_vertices = r.n;
     rec->num_ball = r.nball;
-    rec->reserved = 0;
-    double* b = reinterpret_cast<double*>(rec + 1);
+    rec->num_distributions = SG_DISTS;
+    auto* d = reinterpret_cast<SgDistribution*>(rec + 1);
+    for (uint32_t k = 0; k < SG_DISTS; ++k) d[k] = r.dists[k];
+    double* b = reinterpret_cast<double*>(d + SG_DISTS);
     for (uint32_t i = 0; i < r.nball; ++i) b[i] = r.ball[i];
     uint32_t* w = reinterpret_cast<uint32_t*>(b + r.nball);
     for (uint32_t i = 0; i < r.m; ++i) w[i] = r.arities[i];

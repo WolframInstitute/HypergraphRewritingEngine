@@ -410,8 +410,8 @@ struct EngineConfig {
     // Test lever: the twin claim key is the token sum ANDed with this.
     uint64_t keyed_sum_mask       = ~uint64_t{0};
     // 8-byte words of "StepStatistics" records (RecordSet::state_invariants): one
-    // hgcommon::StateInvariantRecord per class, and at least 16 per state slot
-    // (EngineState::invariant_pool_words). Allocated only when the run records them; grown on
+    // hgcommon::StateInvariantRecord per class, and at least half a record's fixed bytes per
+    // state slot (EngineState::invariant_pool_words). Allocated only when the run records them; grown on
     // kStateInvariantsFull.
     uint64_t state_invariant_words = uint64_t{1} << 20;
     uint32_t max_edges            = 1u << 16;   // 65K edge slots

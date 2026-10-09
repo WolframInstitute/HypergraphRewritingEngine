@@ -14,6 +14,11 @@ User-visible changes since v1.0.0-rc1:
 
 - `"StepStatistics"`: for each step, the number of states, the isomorphism classes, the entropy
   of the states over the classes and summaries of per-state invariants, on both devices.
+- `"StepStatistics"` invariants `"LargestComponentDimension"`, `"LocalDimensionMax"` and
+  `"LocalDimensionStandardDeviation"` (defined for disconnected states), `"OllivierMoranI"` and
+  `"OllivierDegreeCorrelation"`, and the per-step key `"VertexInvariants"`: the local dimension,
+  Ollivier curvature and Ricci scalar of every vertex of the step's states, with quartiles,
+  10th and 90th percentiles, skewness and kurtosis.
 - Every option of `Graph` is an option of `HGEvolve` and `HGSessionOpen` and goes to the graph a
   graph property returns.
 - `"MultiedgeStyle" -> "Merged"` draws the events between two states as one edge.

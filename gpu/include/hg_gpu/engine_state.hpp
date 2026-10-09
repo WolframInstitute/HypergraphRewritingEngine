@@ -350,9 +350,14 @@ public:
     // only a run recording RecordSet::state_invariants reads. Idempotent; call before launching.
     void ensure_state_invariants();
     // The capacity of invariant_pool in 8-byte words: EngineConfig::state_invariant_words, and at
-    // least 16 per state slot, so a run that grows its states grows the pool with them.
+    // least half a record's fixed bytes per state slot (49 words), so a run that grows its states
+    // grows the pool with them.
+    static constexpr uint64_t kInvariantWordsPerState =
+        (sizeof(hgcommon::StateInvariantRecord) +
+         hgcommon::SG_DISTS * sizeof(hgcommon::SgDistribution)) / 16;
     uint64_t invariant_pool_words() const {
-        return std::max<uint64_t>(cfg_.state_invariant_words, uint64_t{16} * cfg_.max_states);
+        return std::max<uint64_t>(cfg_.state_invariant_words,
+                                  kInvariantWordsPerState * cfg_.max_states);
     }
     // The words of invariant_pool the last run wrote: one synchronous read of the counter.
     uint64_t invariant_pool_used() const;

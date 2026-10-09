@@ -31,6 +31,28 @@
 //   FisherInformation          mean over v of (1 + mean_u |d_u - d_v|) / (var_u d_u + 1/100),
 //                              u over B(v, 2) minus v, d_u the vertex's own Hausdorff dimension
 //
+// G' is the largest component of G, given by the caller (state_invariants' largest component;
+// G itself when G is connected), and R' its radius. d_v is the mean over r = 1..R' of the
+// ball-growth term above, for v in G'.
+//
+//   LargestComponentDimension  mean of d_v over G'; equal to WolframHausdorffDimension when G
+//                              is connected
+//   LocalDimensionMax          max of d_v over G'
+//   LocalDimensionStandardDeviation  population standard deviation of d_v over G'
+//   k_v                        Ollivier curvature of vertex v: mean over the edges v-w of the
+//                              edge's curvature, for every v with a neighbour
+//   OllivierMoranI             (n1 / |E|) sum over edges x-y of z_x z_y / sum_v z_v^2, z = k - mean
+//                              k, n1 the vertices with a neighbour; undefined when k is constant
+//   OllivierDegreeCorrelation  Pearson correlation of k_v with deg v over the vertices with a
+//                              neighbour; undefined when either is constant
+//   K_v                        Wolfram-Ricci scalar of v in G': mean over r = 1..R' of
+//                              6(D+2)/r^2 (1 - |B(v,r)| Gamma(D/2+1) / (pi^(D/2) r^D)), D the
+//                              LargestComponentDimension
+// The per-vertex values d_v (over G'), k_v (over G) and K_v (over G') are kept as SgDistribution
+// summaries: count, min, max, the sums of x, x^2, x^3 and x^4, and a histogram of SG_DIST_BINS
+// equal bins over a fixed range per quantity (sg_dist_range); a value outside the range counts in
+// the end bin.
+//
 // The logarithms, powers and Gamma function are det_math.hpp's, and every product that feeds a sum
 // is dm_mul, so the host and the device compute the same doubles.
 //
@@ -40,9 +62,10 @@
 // computes nothing.
 //
 // COST. One breadth-first search per vertex for the balls and eccentricities, a second for the
-// per-vertex dimensions the Fisher information reads, and radius-2 searches for the local
-// measures: O(n (n + m)) per state. Each edge's transport problem is solved exactly by
-// successive shortest paths on the (deg x + 1) x (deg y + 1) supports. The searches and the
+// per-vertex dimensions the Fisher information reads, a third for the per-vertex Ricci scalars,
+// and radius-2 searches for the local measures: O(n (n + m)) per state. Each edge's transport
+// problem is solved exactly by successive shortest paths on the (deg x + 1) x (deg y + 1)
+// supports. The searches and the
 // transport problems are spread over the lanes of the policy (IrSerial on the host, IrTile on
 // the device), as state_invariants_core.hpp spreads its distance pass.
 
@@ -349,7 +372,60 @@ enum : uint32_t {
     SG_DEGREE_ENTROPY = 1u << 4,         // degree_entropy, local_entropy: n >= 1
     SG_MUTUAL_INFORMATION = 1u << 5,     // mutual_information: G has an edge
     SG_FISHER = 1u << 6,                 // fisher_information: as SG_HAUSDORFF
+    SG_LARGEST_DIMENSION = 1u << 7,      // largest_dimension, local_dimension_max/_sd: |G'| >= 2
+    SG_OLLIVIER_MORAN = 1u << 8,         // ollivier_moran_i: G has an edge, k not constant
+    SG_OLLIVIER_DEGREE = 1u << 9,        // ollivier_degree_correlation: k and deg not constant
+    SG_VERTEX_DISTRIBUTIONS = 1u << 10,  // `want` only: write the per-vertex distributions
 };
+
+// The per-vertex distributions of a state, in this order.
+enum : uint32_t {
+    SG_DIST_LOCAL_DIMENSION = 0,         // d_v over G'
+    SG_DIST_OLLIVIER = 1,                // k_v over the vertices of G with a neighbour
+    SG_DIST_RICCI = 2,                   // K_v over G'
+    SG_DISTS = 3,
+};
+constexpr uint32_t SG_DIST_BINS = 32;
+
+// Histogram range [lo, hi) of a distribution; the bin width (hi - lo) / SG_DIST_BINS is a power
+// of two times 1 or 3, so a value's bin is one exact subtraction and one division.
+HG_HD inline void sg_dist_range(uint32_t which, double& lo, double& hi) {
+    if (which == SG_DIST_LOCAL_DIMENSION) { lo = 0.0; hi = 8.0; }
+    else if (which == SG_DIST_OLLIVIER) { lo = -2.0; hi = 1.0; }
+    else { lo = -24.0; hi = 8.0; }
+}
+
+// A per-vertex distribution: the count, extremes, sum[k] = sum of x^(k+1) in vertex order, and
+// the histogram.
+struct SgDistribution {
+    uint32_t count = 0;
+    uint32_t reserved = 0;
+    double min = 0.0;
+    double max = 0.0;
+    double sum[4] = {0.0, 0.0, 0.0, 0.0};
+    uint32_t bins[SG_DIST_BINS] = {};
+};
+
+HG_HD inline uint32_t sg_dist_bin(uint32_t which, double x) {
+    double lo = 0.0, hi = 0.0;
+    sg_dist_range(which, lo, hi);
+    if (!(x > lo)) return 0;
+    if (x >= hi) return SG_DIST_BINS - 1;
+    const double b = ::floor((x - lo) / ((hi - lo) / SG_DIST_BINS));
+    return b >= SG_DIST_BINS - 1 ? SG_DIST_BINS - 1 : static_cast<uint32_t>(b);
+}
+
+HG_HD inline void sg_dist_add(SgDistribution& d, uint32_t which, double x) {
+    if (d.count == 0 || x < d.min) d.min = x;
+    if (d.count == 0 || x > d.max) d.max = x;
+    const double x2 = dm_mul(x, x);
+    d.sum[0] += x;
+    d.sum[1] += x2;
+    d.sum[2] += dm_mul(x2, x);
+    d.sum[3] += dm_mul(x2, x2);
+    ++d.bins[sg_dist_bin(which, x)];
+    ++d.count;
+}
 
 struct SgGeometry {
     uint32_t defined = 0;
@@ -365,6 +441,11 @@ struct SgGeometry {
     double mutual_information = 0.0;
     double fisher_information = 0.0;
     uint32_t ball_radii = 0;             // R: entries written to the ball-dimension output
+    double largest_dimension = 0.0;
+    double local_dimension_max = 0.0;
+    double local_dimension_sd = 0.0;
+    double ollivier_moran_i = 0.0;
+    double ollivier_degree_correlation = 0.0;
 };
 
 // Bytes of one lane's transport scratch, a multiple of 8.
@@ -382,13 +463,14 @@ HG_HD inline uint32_t sg_transport_lanes(size_t max_degree, uint32_t lanes) {
 // Bytes sg_geometry_of takes for a graph of n vertices, the given maximum degree and edge count,
 // on `lanes` lanes. Per lane and per vertex: dist, dist2, queue, queue2, mark, layer and counts
 // (4 bytes each) and the log term (8 bytes). Per vertex: the eccentricity (4 bytes), and the
-// dimension, local entropy, mutual information, Fisher term, log sum and ball sum (8 bytes each).
-// Per edge: the Ollivier curvature (8 bytes). Then the transport lanes' scratch, and 8 bytes of
+// dimension, local entropy, mutual information, Fisher term, log sum, ball sum, vertex
+// curvature, vertex Ricci scalar and the two per-radius Ricci coefficients (8 bytes each). Per
+// edge: the Ollivier curvature (8 bytes). Then the transport lanes' scratch, and 8 bytes of
 // alignment per array.
 HG_HD inline size_t sg_metric_bytes(size_t n, size_t max_degree, size_t edges, uint32_t lanes) {
     const size_t n1 = n + 1;
-    return 64 + size_t{lanes} * n1 * (7 * 4 + 8) + n1 * 4 + 6 * n1 * 8 + 8 * (edges + 1) +
-           sg_transport_lanes(max_degree, lanes) * sg_transport_stride(max_degree) + 20 * 8;
+    return 64 + size_t{lanes} * n1 * (7 * 4 + 8) + n1 * 4 + 10 * n1 * 8 + 8 * (edges + 1) +
+           sg_transport_lanes(max_degree, lanes) * sg_transport_stride(max_degree) + 24 * 8;
 }
 
 // Shannon entropy in bits of a distribution given as counts over `total`.
@@ -421,17 +503,29 @@ HG_HD inline double sg_degree_entropy_of(const SgGraph& g, const uint32_t* vs, u
 // strided over sg_transport_lanes lanes. Each vertex's and each edge's real values are stored,
 // and every sum over vertices or edges is taken in vertex or edge order, so the result is the
 // same double for every lane count.
+//
+// G' is `largest` (largest_n vertex indices of G, ascending) when G is disconnected, and G when
+// it is connected; with no `largest` a disconnected G has no G'. `dists`, when given, receives
+// the SG_DISTS per-vertex distributions under SG_VERTEX_DISTRIBUTIONS, written by the leader.
 template <class Par = IrSerial>
 HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& out,
                                  double* ball_dimension, uint32_t ball_capacity,
-                                 uint32_t want = ~0u, Par par = Par{}) {
+                                 uint32_t want = ~0u, Par par = Par{},
+                                 const uint32_t* largest = nullptr, uint32_t largest_n = 0,
+                                 SgDistribution* dists = nullptr) {
     const bool want_local = (want & (SG_DEGREE_ENTROPY | SG_MUTUAL_INFORMATION)) != 0;
+    const bool want_dists = dists != nullptr && (want & SG_VERTEX_DISTRIBUTIONS) != 0;
+    const bool want_vertex_ollivier =
+        want_dists || (want & (SG_OLLIVIER_MORAN | SG_OLLIVIER_DEGREE)) != 0;
+    const bool want_sub = want_dists || (want & SG_LARGEST_DIMENSION) != 0;
     const uint32_t n = g.n;
     const uint32_t L = par.width(), me = par.rank();
     if (par.leader()) {
         out = SgGeometry{};
         out.vertex_count = n;
         out.edge_count = g.edges;
+        if (dists)
+            for (uint32_t k = 0; k < SG_DISTS; ++k) dists[k] = SgDistribution{};
     }
     if (n == 0) return true;
     const size_t n1 = size_t{n} + 1;
@@ -453,6 +547,10 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
     double* log_sum = arena.take<double>(n1);              // per r: sum over v of the log term
     uint64_t* ball_sum = arena.take<uint64_t>(n1);         // per r: sum over v of |B(v, r)|
     double* oll = arena.take<double>(size_t{g.edges} + 1);
+    double* ollv = arena.take<double>(n1);                 // per vertex: k_v
+    double* ricv = arena.take<double>(n1);                 // per vertex: K_v
+    double* ric_a = arena.take<double>(n1);                // per r: 6(D+2)/r^2
+    double* ric_p = arena.take<double>(n1);                // per r: r^D
     uint64_t* transport_all = arena.take<uint64_t>(TL * tstride / 8);
     if (arena.failed) return false;
     int32_t* dist = dist_all + me * n1;
@@ -542,7 +640,7 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
             }
         }
     }
-    if ((want & SG_OLLIVIER) && g.edges) {
+    if (((want & SG_OLLIVIER) || want_vertex_ollivier) && g.edges) {
         if (me < TL) {
             auto* transport = reinterpret_cast<unsigned char*>(transport_all + me * (tstride / 8));
             uint32_t j = 0;
@@ -560,21 +658,80 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
             out.ollivier_ricci = sum / g.edges;
             out.defined |= SG_OLLIVIER;
         }
+        if (want_vertex_ollivier && par.leader()) {
+            // k_v: each edge's curvature added to both ends in edge order, over the degree.
+            for (uint32_t v = 0; v < n; ++v) ollv[v] = 0.0;
+            uint32_t j = 0;
+            for (uint32_t x = 0; x < n; ++x)
+                for (uint32_t k = g.off[x]; k < g.off[x + 1]; ++k) {
+                    if (g.nbr[k] <= x) continue;
+                    ollv[x] += oll[j];
+                    ollv[g.nbr[k]] += oll[j];
+                    ++j;
+                }
+            uint32_t n_with = 0;
+            double k_sum = 0.0, d_sum = 0.0, k_lo = 0.0, k_hi = 0.0;
+            uint32_t d_lo = 0, d_hi = 0;
+            for (uint32_t v = 0; v < n; ++v) {
+                const uint32_t dv = g.degree(v);
+                if (!dv) continue;
+                ollv[v] /= dv;
+                if (!n_with || ollv[v] < k_lo) k_lo = ollv[v];
+                if (!n_with || ollv[v] > k_hi) k_hi = ollv[v];
+                if (!n_with || dv < d_lo) d_lo = dv;
+                if (!n_with || dv > d_hi) d_hi = dv;
+                k_sum += ollv[v];
+                d_sum += dv;
+                ++n_with;
+            }
+            if (k_lo != k_hi) {
+                const double k_mean = k_sum / n_with, d_mean = d_sum / n_with;
+                double kk = 0.0, kd = 0.0, dd = 0.0, cross = 0.0;
+                for (uint32_t v = 0; v < n; ++v) {
+                    if (!g.degree(v)) continue;
+                    const double zk = ollv[v] - k_mean, zd = g.degree(v) - d_mean;
+                    kk += dm_mul(zk, zk);
+                    kd += dm_mul(zk, zd);
+                    dd += dm_mul(zd, zd);
+                }
+                for (uint32_t x = 0; x < n; ++x)
+                    for (uint32_t k = g.off[x]; k < g.off[x + 1]; ++k)
+                        if (g.nbr[k] > x) cross += dm_mul(ollv[x] - k_mean, ollv[g.nbr[k]] - k_mean);
+                out.ollivier_moran_i = dm_mul(static_cast<double>(n_with), cross) /
+                                       dm_mul(static_cast<double>(g.edges), kk);
+                out.defined |= SG_OLLIVIER_MORAN;
+                if (d_lo != d_hi) {
+                    out.ollivier_degree_correlation = kd / ::sqrt(dm_mul(kk, dd));
+                    out.defined |= SG_OLLIVIER_DEGREE;
+                }
+            }
+            if (want_dists)
+                for (uint32_t v = 0; v < n; ++v)
+                    if (g.degree(v)) sg_dist_add(dists[SG_DIST_OLLIVIER], SG_DIST_OLLIVIER, ollv[v]);
+        }
     }
-    if (!connected) return true;
-    if (par.leader()) {
+    if (connected && par.leader()) {
         uint64_t ecc_total = 0;
         for (uint32_t v = 0; v < n; ++v) ecc_total += ecc[v];
         out.radius = static_cast<int32_t>(radius);
         out.mean_eccentricity = static_cast<double>(ecc_total) / n;
         out.defined |= SG_RADIUS;
     }
-    if (radius == 0) return true;   // one vertex: no radius to average over
-    if (!(want & (SG_HAUSDORFF | SG_RICCI | SG_FISHER))) return true;
-    const uint32_t R = radius;
+    // G': every vertex when G is connected, else the caller's list. R' is its least
+    // eccentricity; a search from a vertex stays in its component, so ecc[] is that eccentricity.
+    const uint32_t* sub = connected ? nullptr : largest;
+    const uint32_t ns = connected ? n : (largest ? largest_n : 0u);
+    auto vat = [&](uint32_t i) { return sub ? sub[i] : i; };
+    uint32_t Rs = UINT32_MAX;
+    for (uint32_t i = 0; i < ns; ++i) if (ecc[vat(i)] < Rs) Rs = ecc[vat(i)];
+    const bool whole = connected && radius > 0 && (want & (SG_HAUSDORFF | SG_RICCI | SG_FISHER));
+    const bool part = want_sub && ns >= 2 && Rs > 0;
+    if (!whole && !part) return true;
+    const uint32_t R = Rs;   // the radius of G when G is connected
 
-    // PASS 2: each vertex's own dimension over r = 1..R.
-    for (uint32_t v = me; v < n; v += L) {
+    // PASS 2: each vertex's own dimension over r = 1..R, for the vertices of G'.
+    for (uint32_t i = me; i < ns; i += L) {
+        const uint32_t v = vat(i);
         uint32_t reached = 0;
         sg_bfs(g, v, dist, queue, layer, R, reached);
         sg_bfs_clear(dist, queue, reached);
@@ -589,7 +746,8 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
         dimv[v] = s / R;
     }
     par.sync();
-    if (par.leader()) {
+    const double pi = 3.14159265358979323846;
+    if (par.leader() && whole) {
         double dim_total = 0.0;
         for (uint32_t v = 0; v < n; ++v) dim_total += dimv[v];
         const double d = dim_total / n;
@@ -601,7 +759,6 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
                 log_sum[r] / n / (dm_log(r + 1.0) - dm_log(static_cast<double>(r)));
 
         // Ricci scalar at dimension d: linear in |B(v, r)|, so the per-radius ball sums suffice.
-        const double pi = 3.14159265358979323846;
         const double c = dm_tgamma(d / 2.0 + 1.0) / dm_pow(pi, d / 2.0);
         double ricci = 0.0;
         for (uint32_t r = 1; r <= R; ++r) {
@@ -613,10 +770,60 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
         out.ricci_scalar = ricci / R / n;
         out.defined |= SG_RICCI;
     }
+    if (par.leader() && part) {
+        double total = 0.0, top = 0.0;
+        for (uint32_t i = 0; i < ns; ++i) {
+            const double x = dimv[vat(i)];
+            total += x;
+            if (i == 0 || x > top) top = x;
+        }
+        const double mean = total / ns;
+        double sq = 0.0;
+        for (uint32_t i = 0; i < ns; ++i) sq += dm_mul(dimv[vat(i)] - mean, dimv[vat(i)] - mean);
+        out.largest_dimension = mean;
+        out.local_dimension_max = top;
+        out.local_dimension_sd = ::sqrt(sq / ns);
+        out.defined |= SG_LARGEST_DIMENSION;
+        if (want_dists) {
+            for (uint32_t i = 0; i < ns; ++i)
+                sg_dist_add(dists[SG_DIST_LOCAL_DIMENSION], SG_DIST_LOCAL_DIMENSION, dimv[vat(i)]);
+            // The per-radius coefficients of K_v at D = the LargestComponentDimension.
+            const double c = dm_tgamma(mean / 2.0 + 1.0) / dm_pow(pi, mean / 2.0);
+            for (uint32_t r = 1; r <= R; ++r) {
+                const double rr = static_cast<double>(r);
+                ric_a[r] = dm_mul(6.0, mean + 2.0) / dm_mul(rr, rr);
+                ric_p[r] = dm_pow(rr, mean);
+            }
+            ric_a[0] = c;
+        }
+    }
 
-    if (!(want & SG_FISHER)) return true;
+    // PASS 3: K_v for the vertices of G', from each vertex's balls to radius R'.
+    if (part && want_dists) {
+        par.sync();
+        const double c = ric_a[0];
+        for (uint32_t i = me; i < ns; i += L) {
+            const uint32_t v = vat(i);
+            uint32_t reached = 0;
+            sg_bfs(g, v, dist, queue, layer, R, reached);
+            sg_bfs_clear(dist, queue, reached);
+            uint64_t ball = 1;
+            double s = 0.0;
+            for (uint32_t r = 1; r <= R; ++r) {
+                ball += layer[r];
+                s += dm_mul(ric_a[r], 1.0 - dm_mul(static_cast<double>(ball), c) / ric_p[r]);
+            }
+            ricv[v] = s / R;
+        }
+        par.sync();
+        if (par.leader())
+            for (uint32_t i = 0; i < ns; ++i)
+                sg_dist_add(dists[SG_DIST_RICCI], SG_DIST_RICCI, ricv[vat(i)]);
+    }
 
-    // PASS 3: Fisher information from the dimensions within distance 2.
+    if (!whole || !(want & SG_FISHER)) return true;
+
+    // PASS 4: Fisher information from the dimensions within distance 2.
     for (uint32_t v = me; v < n; v += L) {
         uint32_t reached = 0;
         sg_bfs(g, v, dist, queue, nullptr, 2, reached);
@@ -649,11 +856,14 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
 // false with `needed` set to the bytes that would have sufficed for the stage reached; a caller
 // that grows its buffer to `needed` and calls again either succeeds or learns the next stage's
 // need. Every lane of the policy calls it with the same arguments and gets the same verdict and
-// `needed`; the leader builds G and `out` is the leader's.
+// `needed`; the leader builds G and `out` is the leader's. `largest`, `largest_n` and `dists`
+// are sg_geometry_of's.
 template <class EdgeList, class Par = IrSerial>
 HG_HD bool sg_state_geometry(const EdgeList& el, unsigned char* scratch, size_t capacity,
                              SgGeometry& out, double* ball_dimension, uint32_t ball_capacity,
-                             size_t& needed, uint32_t want = ~0u, Par par = Par{}) {
+                             size_t& needed, uint32_t want = ~0u, Par par = Par{},
+                             const uint32_t* largest = nullptr, uint32_t largest_n = 0,
+                             SgDistribution* dists = nullptr) {
     SgArena arena;
     arena.base = scratch;
     arena.capacity = capacity;
@@ -681,7 +891,8 @@ HG_HD bool sg_state_geometry(const EdgeList& el, unsigned char* scratch, size_t 
     g.nbr = reinterpret_cast<const uint32_t*>(scratch + par.bcast64(nbr_at));
     arena.used = static_cast<size_t>(par.bcast64(arena.used));
     const size_t built = arena.used;
-    if (!sg_geometry_of(g, arena, out, ball_dimension, ball_capacity, want, par)) {
+    if (!sg_geometry_of(g, arena, out, ball_dimension, ball_capacity, want, par, largest,
+                        largest_n, dists)) {
         needed = built + sg_metric_bytes(g.n, g.max_degree, g.edges, par.width());
         return false;
     }
