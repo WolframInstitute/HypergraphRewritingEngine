@@ -558,9 +558,13 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
     // array would collapse them.
     const bool recon_ran = result.reconstruction_ran &&
                            !result.reconstructed_event_signature.empty();
+    // Read by recon_id, which only "Events", the causal and branchial edge lists and the genesis
+    // pairs call; a reply without them builds no map.
     auto recon_dense = [&]() {
         std::unordered_map<uint64_t, int64_t> dense;
-        if (recon_ran && job.event_canon_mode != 0) {
+        const bool read = job.include_events || job.include_causal_edges ||
+                          job.include_branchial_edges || job.show_genesis_events;
+        if (read && recon_ran && job.event_canon_mode != 0) {
             for (uint64_t sig : result.reconstructed_event_signature) {
                 if (sig == 0ull) continue;
                 dense.emplace(sig, static_cast<int64_t>(dense.size()));

@@ -1256,20 +1256,19 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         };
         struct ReconEvents {
             bool active = false;
-            std::unordered_map<uint64_t, int64_t> dense_of_sig;   // identity -> vertex id
-            std::unordered_map<int64_t, hypergraph::QcEventContent> content;
+            // identity -> vertex id; read by "Events" and the graphs, so built only for those.
+            std::unordered_map<uint64_t, int64_t> dense_of_sig;
             uint32_t id_bound = 0;   // every application id is below it; ids can have gaps
         };
         ReconEvents recon;
         if (hg.quotient_reconstruction()) {
             recon.active = true;
             recon.id_bound = hg.reconstructed_event_id_bound();
-            hg.for_each_reconstructed_event(
-                [&](uint32_t dense, uint32_t raw, const hypergraph::QcEventContent& c) {
-                    const int64_t id = static_cast<int64_t>(dense);
-                    recon.dense_of_sig[recon_event_key(raw)] = id;
-                    recon.content[id] = c;
-                });
+            if (req.include_events || req.include_events_minimal || !req.graph_properties.empty())
+                hg.for_each_reconstructed_event(
+                    [&](uint32_t dense, uint32_t raw, const hypergraph::QcEventContent&) {
+                        recon.dense_of_sig[recon_event_key(raw)] = static_cast<int64_t>(dense);
+                    });
         }
         // Under ShowGenesisEvents the reconstruction's causal pairs from the genesis events
         // (Hypergraph::reconstructed_genesis_pairs), one per (genesis event, reported identity of
