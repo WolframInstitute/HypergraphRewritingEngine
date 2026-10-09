@@ -4,6 +4,7 @@
 #include "hgcommon/rewrite_core.hpp"  // shared with the host rewriter
 #include "hgcommon/ir_core.hpp"       // IrSerial, the one-thread lane policy
 #include "hg_gpu/rewrite.hpp"
+#include "hg_gpu/coalesced.hpp"
 
 #include "hg_gpu/exploration.hpp"
 #include "hg_gpu/keyed.hpp"
@@ -11,8 +12,6 @@
 
 #include <cuda_runtime.h>
 #include <cuda/atomic>
-#include <cooperative_groups.h>
-#include <cooperative_groups/scan.h>
 
 #include <stdexcept>
 #include <string>
@@ -21,48 +20,6 @@ namespace HG_NAMESPACE {
 namespace gpu {
 
 namespace {
-
-namespace cg = cooperative_groups;
-
-// An add of `n` to `counter` made by the threads that reach it together: one atomicAdd for the
-// coalesced group, and each thread's share starts at the exclusive prefix of the shares of the
-// threads ranked below it. A lone thread makes one atomicAdd of its own `n`, and a total of 0
-// makes none. Returns what the thread's own atomicAdd would have returned had the group's adds
-// run in rank order; a thread asking for 0 gets an unspecified value.
-__device__ __forceinline__ uint32_t coalesced_add(uint32_t* counter, uint32_t n) {
-    if (__popc(__activemask()) == 1) return n ? atomicAdd(counter, n) : 0u;
-    const cg::coalesced_group g = cg::coalesced_threads();
-    const uint32_t prefix = cg::exclusive_scan(g, n);
-    const uint32_t total = g.shfl(prefix + n, g.size() - 1);
-    uint32_t base = 0;
-    if (g.thread_rank() == 0 && total) base = atomicAdd(counter, total);
-    return g.shfl(base, 0) + prefix;
-}
-
-// A claim of one slot from `counter`, which never passes `limit`, made by the threads that reach
-// it together: the group's first thread takes as many slots as fit in one exchange, and a thread
-// ranked past them gets none. A lone thread makes its own exchange. Returns the slot, or
-// INVALID_ID when none fit.
-__device__ __forceinline__ uint32_t coalesced_bounded_claim(uint32_t* counter, uint32_t limit) {
-    const auto take_from = [&](uint32_t want, uint32_t& base) {
-        uint32_t cur = *counter;
-        for (;;) {
-            const uint32_t take = cur >= limit ? 0u : min(want, limit - cur);
-            if (take == 0) return 0u;
-            const uint32_t prev = atomicCAS(counter, cur, cur + take);
-            if (prev == cur) { base = cur; return take; }
-            cur = prev;
-        }
-    };
-    uint32_t base = 0;
-    if (__popc(__activemask()) == 1) return take_from(1u, base) ? base : INVALID_ID;
-    const cg::coalesced_group g = cg::coalesced_threads();
-    uint32_t take = 0;
-    if (g.thread_rank() == 0) take = take_from(g.size(), base);
-    base = g.shfl(base, 0);
-    take = g.shfl(take, 0);
-    return g.thread_rank() < take ? base + g.thread_rank() : INVALID_ID;
-}
 
 // ---------------------------------------------------------------------------
 // Event + causal + branchial device helpers
@@ -407,12 +364,12 @@ __device__ AppliedMatch apply_one_match(const DeviceState& ds,
     }
     const uint32_t new_slice_count = static_cast<uint32_t>(kept_and_produced - consumed);
 
-    // THE RESERVATIONS BELOW ARE COALESCED: the threads of a warp that reach each one together
-    // make one atomic on its counter between them (coalesced_add, coalesced_bounded_claim),
-    // where one atomic per thread on one address serialises the warp.
+    // THE RESERVATIONS BELOW ARE COALESCED: a full warp that reaches one together makes one
+    // atomic on its counter (coalesced_add, coalesced_bounded_claim, hg_gpu/coalesced.hpp), where
+    // one atomic per thread on one address serialises the warp.
     //
-    // Reserve the state slot. state_count never passes max_states, which keeps host-side
-    // indexing safe without a post-hoc cap.
+    // Reserve the state slot. Every claim leaves state_count at or below max_states, which keeps
+    // host-side indexing safe without a post-hoc cap.
     const uint32_t new_sid = coalesced_bounded_claim(ds.state_count, ds.max_states);
     if (new_sid == INVALID_ID) {
         ds.errors.record(ErrorKind::kStatePoolFull);

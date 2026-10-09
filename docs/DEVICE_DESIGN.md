@@ -195,7 +195,8 @@ most 32 edges, 64 records are readable and the block found work in its last two 
 a short burst, or one of large children, spreads over the grid one record per block, where a
 batch would hold records for a tile IR while other blocks wait. Each four-lane tile applies
 one match, eight per warp. Every allocation (state id, event id, edges, vertices, slice) is
-one atomic per warp (`coalesced_add`, `coalesced_bounded_claim`). The per-record phase-timing
+one atomic per full warp and one per thread otherwise (`coalesced_add`, `coalesced_bounded_claim`,
+`hg_gpu/coalesced.hpp`). The per-record phase-timing
 atomics (`rewrite.cu:536-542`) are removed; stats go to per-warp counters flushed at exit.
 
 ### 4.4 Canonicalisation

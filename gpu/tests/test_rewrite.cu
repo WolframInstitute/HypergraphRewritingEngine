@@ -8,10 +8,14 @@
 #include "hg_gpu/match.hpp"
 #include "hg_gpu/persistent.hpp"
 #include "hg_gpu/rewrite.hpp"
+#include "hg_gpu/coalesced.hpp"
 
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <chrono>
+#include <cstdlib>
+#include <thread>
 #include <set>
 #include <string>
 #include <vector>
@@ -1068,4 +1072,100 @@ TEST(Rewrite, TransitiveReductionIsExactPastTheLocalScratch) {
         }
     }
     }
+}
+
+namespace {
+
+// One call of the reservation helpers as apply_one_match makes them: a real call, a
+// data-dependent number of adds, an early return for some lanes, and a data-dependent wait, so
+// the lanes of a warp reach the bounded claim in several subsets.
+__device__ __noinline__ uint32_t coalesced_probe_call(uint32_t* ctr, uint32_t h, uint32_t* adds) {
+    for (uint32_t i = 0; i < (h & 3u); ++i) adds[i] = hg_gpu::coalesced_add(ctr + 2 + i, 1u + i);
+    if ((h >> 4) % 5u == 0u) return hg_gpu::INVALID_ID - 1u;
+    const long long t0 = clock64();
+    while (clock64() - t0 < static_cast<long long>((h >> 8) & 3u) * 100) {}
+    return hg_gpu::coalesced_bounded_claim(ctr, 0xF0000000u);
+}
+
+// ctr[0] is the claim counter, ctr[1] counts claims that returned INVALID_ID, ctr[2..4] are the
+// add counters. claims[r][t] is thread t's claimed slot in round r (INVALID_ID - 1 for an early
+// return), adds[r][t][i] its i-th add's offset.
+__global__ void k_coalesced_probe(uint32_t* ctr, uint32_t* claims, uint32_t* adds,
+                                  uint32_t rounds, uint32_t stride) {
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint32_t gid = blockIdx.x * blockDim.x + threadIdx.x;
+    const uint32_t nthreads = gridDim.x * blockDim.x;
+    if (lane % stride) return;
+    for (uint32_t r = 0; r < rounds; ++r) {
+        uint32_t h = (gid * 2654435761u) ^ (r * 40503u);
+        h ^= h >> 13; h *= 0x5bd1e995u; h ^= h >> 15;
+        uint32_t* a = adds + (size_t(r) * nthreads + gid) * 3u;
+        const uint32_t v = coalesced_probe_call(ctr, h, a);
+        claims[size_t(r) * nthreads + gid] = v;
+        if (v == hg_gpu::INVALID_ID) atomicAdd(ctr + 1, 1u);
+    }
+}
+
+}  // namespace
+
+// The reservation helpers driven from subsets of one warp that reach them at different times:
+// every claim below the limit gets a slot, the slots are distinct, and every add's range is
+// disjoint from the others on its counter. A kernel that does not finish in 30 s fails the test
+// and ends the process, since a hung context cannot be recovered.
+TEST(Rewrite, CoalescedReservationsFromSubsetsOfOneWarp) {
+    const uint32_t blocks = 512, threads = 32, rounds = 256;
+    const size_t n = size_t(rounds) * blocks * threads;
+    uint32_t *d_ctr = nullptr, *d_claims = nullptr, *d_adds = nullptr;
+    ASSERT_EQ(cudaMalloc(&d_ctr, 8 * sizeof(uint32_t)), cudaSuccess);
+    ASSERT_EQ(cudaMalloc(&d_claims, n * sizeof(uint32_t)), cudaSuccess);
+    ASSERT_EQ(cudaMalloc(&d_adds, n * 3 * sizeof(uint32_t)), cudaSuccess);
+    for (uint32_t stride : {1u, 2u}) {
+        cudaMemset(d_ctr, 0, 8 * sizeof(uint32_t));
+        cudaMemset(d_claims, 0xff, n * sizeof(uint32_t));
+        cudaMemset(d_adds, 0xff, n * 3 * sizeof(uint32_t));
+        k_coalesced_probe<<<blocks, threads>>>(d_ctr, d_claims, d_adds, rounds, stride);
+        const auto t0 = std::chrono::steady_clock::now();
+        while (cudaStreamQuery(0) == cudaErrorNotReady) {
+            if (std::chrono::steady_clock::now() - t0 > std::chrono::seconds(30)) {
+                ADD_FAILURE() << "stride " << stride << ": the kernel did not finish in 30 s";
+                std::fprintf(stderr, "CoalescedReservationsFromSubsetsOfOneWarp: kernel hung\n");
+                std::_Exit(1);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+        uint32_t ctr[8];
+        std::vector<uint32_t> claims(n), adds(n * 3);
+        cudaMemcpy(ctr, d_ctr, sizeof(ctr), cudaMemcpyDeviceToHost);
+        cudaMemcpy(claims.data(), d_claims, n * sizeof(uint32_t), cudaMemcpyDeviceToHost);
+        cudaMemcpy(adds.data(), d_adds, n * 3 * sizeof(uint32_t), cudaMemcpyDeviceToHost);
+        EXPECT_EQ(ctr[1], 0u) << "stride " << stride << ": claims returned INVALID_ID below the limit";
+
+        // Claims: every slot below the counter, each once.
+        std::vector<uint32_t> slots;
+        for (uint32_t v : claims)
+            if (v != hg_gpu::INVALID_ID && v != hg_gpu::INVALID_ID - 1u) slots.push_back(v);
+        std::sort(slots.begin(), slots.end());
+        EXPECT_EQ(std::adjacent_find(slots.begin(), slots.end()), slots.end())
+            << "stride " << stride << ": a claimed slot was handed out twice";
+        EXPECT_EQ(slots.size(), size_t(ctr[0])) << "stride " << stride;
+
+        // Adds: on counter i every thread adds i + 1, so the offsets are distinct multiples
+        // tiling [0, counter).
+        for (uint32_t i = 0; i < 3; ++i) {
+            std::vector<uint32_t> offs;
+            for (size_t t = 0; t < n; ++t)
+                if (adds[t * 3 + i] != hg_gpu::INVALID_ID) offs.push_back(adds[t * 3 + i]);
+            std::sort(offs.begin(), offs.end());
+            bool tiled = true;
+            for (size_t k = 0; k < offs.size(); ++k)
+                if (offs[k] != k * (i + 1)) { tiled = false; break; }
+            EXPECT_TRUE(tiled) << "stride " << stride << " counter " << i
+                               << ": the add offsets do not tile the counter";
+            EXPECT_EQ(size_t(ctr[2 + i]), offs.size() * (i + 1)) << "stride " << stride;
+        }
+    }
+    cudaFree(d_ctr);
+    cudaFree(d_claims);
+    cudaFree(d_adds);
 }
