@@ -9,12 +9,15 @@ engine code that contains it; reach was traced per protocol from each harness's 
 instruction by an instrument, and rows marked (inferred) were traced through the composed
 engine's call graph without a run that names the site.
 
-Every harness below except engine_evolve and quotient_capture_composition reaches a verdict on
-the v0.19 fork with no execution cut at an unroll bound, and every harness carries
-`// GENMC-CALIBRATE:` cells that the checker catches (`HG_GENMC_CALIBRATE=1 run.sh`). The two
-exceptions run to the end of main (their HG_HARNESS_CALIBRATE_END cell is reported) but their
-explorations do not end: engine_evolve explored 23,548 executions in 83 minutes, and
-quotient_capture_composition is estimated at 2^97. Their protocols are marked (partial) below.
+Every harness below except quotient_capture_composition reaches a verdict on the v0.19 fork
+with no execution cut at an unroll bound, and every harness carries `// GENMC-CALIBRATE:` cells
+that the checker catches (`HG_GENMC_CALIBRATE=1 run.sh`). Seven reach theirs under sequential
+consistency with a context bound (listed under "Bounds" below): engine_evolve,
+keyed_intern_once, keyed_twin_rendezvous, quotient_capture_frame, quotient_capture_register and
+the two 3-thread harnesses. quotient_capture_composition runs to the end of main (its
+HG_HARNESS_CALIBRATE_END cell is reported) but its RC11 exploration is estimated at 2^97 and
+does not end; quotient_capture_frame and quotient_capture_register check it by phase. Protocols
+reached only by engine_evolve are marked (partial): its verdict is at one context switch.
 engine_construct, engine_rule and engine_evolve calibrate reachability of the end only; no
 defect calibration is caught at their bounds. Threads are the concurrent threads of the harness,
 main included when it races.
@@ -39,7 +42,8 @@ harness. The park protocol is checked on its spin backend, which waits on the sa
 | P09 ConcurrentMap insert/settle/lookup/grow/carry/drain | 54 | concurrent_map_agreement (2), concurrent_map_double_growth_2t (2), concurrent_map_double_growth_3t (3, SC), concurrent_map_repeated_offer (2), concurrent_map_resize (2), map_insert_existing_during_double_growth (2), map_lookup_during_growth (2), map_lookup_during_double_growth (3), frame_publication_is_atomic (2), claim_match_rendezvous (2) |
 | P10 ConcurrentKeySet claim/grow/migrate | 38 | key_set_contains_during_growth (2), key_set_contains_during_double_growth (3), key_set_distinct_keys_across_growth (2), key_set_enumeration (2), key_set_exactly_once (2), key_set_exactly_once_3t (3, SC), key_set_insert_existing_during_double_growth (3) |
 | P11 LockFreeList push/iterate | 21 | lock_free_list_completeness (2), lock_free_list_pairs_meet_once (2), lock_free_list_three_meet_once (3) |
-| P12 SegmentedArray segment creation and publication | 5 | segmented_array_published_read (3), causal_in_edge_order (2), engine_* (inferred) |
+| P11 branchial pair recording (`CausalGraph::record_branchial_overlaps`: push, walk the entries before, lowest shared edge) | 2 | branchial_pair_once (2) |
+| P12 SegmentedArray segment creation and publication, and the look-ahead election (`ahead_` exchange, 813f22c8) | 6 | segmented_array_published_read (3; index 1 of a two-element segment elects the creation of segment 1, one candidate), causal_in_edge_order (2), engine_* (inferred). The scattered trigger (`set_scattered`, b591bd1d) is set by no harness; it moves only the index that triggers the election |
 | P13 arena: cursor, shared bump, block chain, construction fences | 49 | arena_cursor_vs_shared_disjoint (2), arena_worker_index_exclusive (2), engine_* |
 | P14 arena block pool (tagged Treiber stack) | 10 | block_pool_exactly_once (2) on `hgcommon/pool_core.hpp`; the engine's instance is `!HG_VERIFICATION` |
 | P18 DepthJoin settle cascade and report baton | 25 | depth_report_order (2) |
@@ -49,25 +53,33 @@ harness. The park protocol is checked on its spin backend, which waits on the sa
 | P22 spine sampling (`own_min_key`, `own_spawned`) | 6 | spine_min_rank (3) on the engine's `MatchJoin` members (`hypergraph/match_join.hpp`) |
 | P23 stop and resume flags | 29 | engine_* (3) |
 | P24 causal producer/consumer rendezvous | 2 | causal_in_edge_order (2) |
-| P25 edge/state/event publication by fence | 12 | causal_in_edge_order (2), engine_evolve (partial) |
-| P26 state identity publication (hash, id, rank and orbit tables) | 26 | engine_evolve (partial) |
+| P25 edge/state/event publication by fence | 12 | causal_in_edge_order (2), quotient_capture_register (2, SC, 1 context), engine_evolve (partial) |
+| P26 state identity publication (hash, id, rank and orbit tables) | 26 | quotient_capture_register (2, SC, 1 context; Full, orbit tables, colliding class keys), keyed_twin_rendezvous (2, SC, 1 context), engine_evolve (partial) |
+| P27 keyed rewrites: the rewrite intern (`intern_rewrite` on `rewrite_map_`, `next_rewrite_id_`) and the token cache fill (`edge_token`, `cache_edge_token`) | about 9 of 17 | keyed_intern_once (2, SC, 4 contexts) |
+| P27 keyed rewrites: the twin claim and take (`claim_twin` offer-first, `same_tokens`, `take_twin` after the twin publishes its key), through `create_or_get_canonical_state` | about 8 of 17 | keyed_twin_rendezvous (2, SC, 1 context) |
 | P28 quotient instance/match rendezvous | 9 | quotient_instance_match_rendezvous (4) |
+| P28 an instance's claim chain (`hgcommon::qr_claim_chain`: a block installed by compare-and-swap on its predecessor's link, bits by fetch_or) | 4 | claim_chain_exactly_once (2) |
 | P29 quotient multiplicity mass cascade | 14 | quotient_mass_match_rendezvous (3) |
-| P31 quotient id allocation and bounds | 27 | quotient_capture_composition (2, partial) |
+| P30 quotient replay signature cache | 7 | runsig_cache_step (2): the match's step and key cells (`hgcommon::qr_cached_key`, `qr_cache_key`), 4 points. The class claim on `qc_canon_events_` is a ConcurrentMap claim (P09), the per-event record a SegmentedArray emplace (P12) and `qc_num_canon_events_` a relaxed counter read after the run |
+| P31 quotient id allocation and bounds | 27 | quotient_capture_frame (2, SC, 1 context), quotient_capture_composition (2, partial) |
+| class-frame capture (`register_quotient_transition`: the match recorded on its class, `qc_capture_expansion`, the replay applied to the root instance, the descent to a bound instance, `SlotMatch::child_point`) | -- | quotient_capture_frame (2, SC, 1 context), quotient_capture_composition (2, partial) |
 | P32 configuration flags (written before workers start) | 36 | engine_* |
 | P35-P37, P39 bitset count cache, published-id marks, phase timing slot, id counters | 28 | engine_* (inferred) |
 
 `engine_*` is engine_construct, engine_rule and engine_evolve: the composed engine with two
 workers and main. engine_construct and engine_rule are exhaustive (1768 executions each) and
 reach construction, rule setup, worker start, parking and shutdown; the matching, rewriting and
-registration points are reached only by engine_evolve, which is partial.
+registration points are reached only by engine_evolve, which is partial: its verdict (38
+executions, no errors) is under sequential consistency with one context switch, and its RC11
+exploration gave no verdict in 83 minutes.
 
 ## Harnesses that run a copy of the protocol
 
 These harnesses drive the shared `hgcommon` core with a context the harness defines, not the
 engine's own context class: P19 (`ExploreCtx` replaced), P20 (`claim_match` with its own probe
-key), P21 (both sides of the inheritance rendezvous), P28 (`QrCtx::claim` with a different bit
-layout), P29 (`Hypergraph::QmCtx` not called), P14 (`pool_core` on harness arrays). The core
+key), P21 (both sides of the inheritance rendezvous), P28 (`QrCtx::claim` with one claim word in
+quotient_instance_match_rendezvous; the chain's `Chain` context transcribed with the host's
+orders in claim_chain_exactly_once), P29 (`Hypergraph::QmCtx` not called), P14 (`pool_core` on harness arrays). The core
 function each one calls is the engine's; the engine's binding of it is reached only through
 the composed harnesses.
 
@@ -80,10 +92,9 @@ sequence is the harness's, and the stop-cut and `resume_pending` branches of
 
 | Points | Reason |
 |---|---|
-| P27 keyed rewrite tokens and twins, 17 | Reached only when `keyed_state_` is armed; no harness arms it. |
-| P30 quotient replay signature cache, 7 | Reached only with event signature keys set; no harness sets them. |
 | P38 matcher early-termination flag, 4 | Every engine caller passes no `should_terminate`. |
 | P34 debug callback pointer, 3 | Set by no engine path. |
+| replay causal-pair chunks (`Hypergraph::QcPairList`: count stored release, head stored release), 4 | One writer per list (the worker whose `arena_worker_index()` names it); read after the workers finish. Pushes from a thread that is not a worker go to `qc_causal_pairs_outside_`, a LockFreeList (P11). |
 | P08 `JobSlotPool::release_pool`, 3 | Runs from a thread-exit destructor; the checker runs none (`__cxa_thread_atexit` records nothing). |
 | P09 `for_each`, `for_each_in_every_table`, `set_arena`, `bytes_allocated`, `size`, 12 | Read after the workers finish, or before they start. |
 | P11 move constructor/assignment, `reset`, 6 | Single-threaded lifecycle. |
@@ -93,6 +104,17 @@ sequence is the harness's, and the stop-cut and `resume_pending` branches of
 
 ## Bounds that limit what a harness reaches
 
+- engine_evolve checks sequential consistency with 1 context switch (38 executions, 332
+  blocked): its RC11 exploration gave no verdict in 83 minutes, and its transform needs more
+  than 12,000 MB of address space (run with HG_GENMC_MEM_MB=16000).
+- keyed_intern_once checks sequential consistency with 4 context switches: its RC11 exploration
+  gave no verdict in 2,770 s. keyed_twin_rendezvous checks sequential consistency with 1 context
+  switch: its RC11 estimate is 2^51 executions and 2 switches gave no verdict in 1,500 s.
+  quotient_capture_frame checks sequential consistency with 1 context switch: its RC11 estimate
+  is 2^87 executions. quotient_capture_register checks sequential consistency with 1 context
+  switch: its RC11 estimate is 2^61 executions. The two split quotient_capture_composition by
+  phase (registration, then capture); an interleaving of one rewrite's registration with the
+  other's capture is checked by the composition alone, which has no verdict.
 - concurrent_map_double_growth_3t and key_set_exactly_once_3t check sequential consistency with a
   context bound (`--sc --bound`); GenMC's bounding requires `--sc`. They find interleaving
   defects, not weak-memory ones. Their RC11 counterparts are the two-thread harnesses of the same

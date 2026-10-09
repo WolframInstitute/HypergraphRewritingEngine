@@ -1,5 +1,5 @@
 // GENMC-LINK: engine
-// GENMC-ARGS: --disable-estimation
+// GENMC-ARGS: --disable-estimation --sc --bound=1 --bound-type=context
 // GENMC-DEFINES: -DHG_SEGMENTED_ARRAY_MAX_SEGMENTS=8 -DHG_SEGMENTED_ARRAY_MAX_SHIFT=4 -DHG_CONCURRENT_MAP_INITIAL_CAPACITY=16 -DHG_JOB_QUEUE_CAPACITY=16 -DHG_JOB_INJECTOR_CAPACITY=64 -DHG_MAX_ARENA_WORKERS=8 -DHG_KEY_SET_SHARDS=4 -DHG_MAX_PATTERN_EDGES=4 -DHG_ARENA_BLOCK_SIZE=512
 // GENMC-CALIBRATE: -DHG_HARNESS_CALIBRATE_END
 //
@@ -54,9 +54,12 @@
 // arm. The module is the fully inlined engine; the checker's passes end at 9.8M instructions and
 // take about 15 minutes, so a run is saved with --output-llvm-after=<file>.bc once per arm.
 //
-// MEASURED on the v0.19 fork, default arm: 23,548 complete executions explored in 83 minutes
-// (4.7 per second, 23,167 events each, real rewrites by two workers), no error, and no verdict:
-// the exploration had not ended.
+// MEASURED on the v0.19 fork, default arm. RC11: 23,548 complete executions explored in 83
+// minutes (4.7 per second, 23,167 events each, real rewrites by two workers), no error, and no
+// verdict. Sequential consistency with 1 context switch (`--sc --bound=1 --bound-type=context`,
+// the arm's GENMC-ARGS): no errors, 38 complete executions (all past the bound) and 332 blocked
+// ones, 695 s with the transform, which needs more than 12,000 MB of address space (16,000
+// used). -DHG_HARNESS_CALIBRATE_END is reported at that bound.
 #include "hypergraph/hypergraph.hpp"
 #include "hypergraph/parallel_evolution.hpp"
 #include "hypergraph/pattern.hpp"
