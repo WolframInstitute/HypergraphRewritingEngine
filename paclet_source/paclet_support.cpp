@@ -529,7 +529,38 @@ wxf::WXFValue count_association(const std::map<Key, uint64_t>& m) {
     return wxf::WXFValue(a);
 }
 
+// A state's hyperedges as the EdgeList hgcommon::sg_state_geometry reads.
+struct NestedEdges {
+    const std::vector<std::vector<uint32_t>>* e;
+    uint32_t count() const { return static_cast<uint32_t>(e->size()); }
+    uint32_t arity(uint32_t i) const { return static_cast<uint32_t>((*e)[i].size()); }
+    uint32_t at(uint32_t i, uint32_t k) const { return (*e)[i][k]; }
+};
+
+// sg_state_geometry with a buffer that grows to what the call reports it needs.
+template <class EdgeList>
+hgcommon::SgGeometry geometry_with_scratch(const EdgeList& el, std::vector<double>& ball,
+                                           uint32_t want) {
+    static thread_local std::vector<unsigned char> scratch(1 << 16);
+    hgcommon::SgGeometry g;
+    size_t needed = 0;
+    while (!hgcommon::sg_state_geometry(el, scratch.data(), scratch.size(), g, ball.data(),
+                                        static_cast<uint32_t>(ball.size()), needed, want))
+        scratch.resize(std::max(needed, scratch.size() * 2));
+    return g;
+}
+
 }  // namespace
+
+StateGeometry state_geometry(const std::vector<std::vector<uint32_t>>& edges) {
+    StateGeometry r;
+    size_t slots = 0;
+    for (const auto& e : edges) slots += e.size();
+    r.ball_dimension.assign(slots + 1, 0.0);   // R < number of vertices <= slots
+    r.values = geometry_with_scratch(NestedEdges{&edges}, r.ball_dimension, ~0u);
+    r.ball_dimension.resize(r.values.ball_radii);
+    return r;
+}
 
 void events_from_multiplicities(
     const std::vector<StepPoint>& points,
@@ -570,6 +601,15 @@ wxf::WXFValue step_statistics(
         return inv.emplace(h, state_invariants(e != class_edges.end() ? e->second : kNone))
             .first->second;
     };
+    std::unordered_map<uint64_t, StateGeometry> geo;
+    auto geometry = [&](uint64_t h) -> const StateGeometry& {
+        auto it = geo.find(h);
+        if (it != geo.end()) return it->second;
+        auto e = class_edges.find(h);
+        static const std::vector<std::vector<uint32_t>> kNone;
+        return geo.emplace(h, state_geometry(e != class_edges.end() ? e->second : kNone))
+            .first->second;
+    };
 
     wxf::WXFValueList steps;
     for (const auto& [step, classes] : by_step) {
@@ -594,8 +634,29 @@ wxf::WXFValue step_statistics(
             largest_fraction;
         std::map<int64_t, uint64_t> arity_hist, degree_hist;
         std::map<std::vector<int64_t>, uint64_t> arity_sig_hist, degree_seq_hist;
+        std::vector<std::pair<double, uint64_t>> radius, eccentricity, hausdorff, ricci, ollivier,
+            degree_entropy, local_entropy, mutual_information, fisher;
+        std::map<uint32_t, std::vector<std::pair<double, uint64_t>>> ball_growth;
         for (const auto& [h, w] : classes) {
             const StateInvariants& s = invariants(h);
+            const StateGeometry& gm = geometry(h);
+            const hgcommon::SgGeometry& g = gm.values;
+            if (g.defined & hgcommon::SG_RADIUS) {
+                radius.push_back({double(g.radius), w});
+                eccentricity.push_back({g.mean_eccentricity, w});
+            }
+            if (g.defined & hgcommon::SG_HAUSDORFF) hausdorff.push_back({g.hausdorff_dimension, w});
+            if (g.defined & hgcommon::SG_RICCI) ricci.push_back({g.ricci_scalar, w});
+            if (g.defined & hgcommon::SG_OLLIVIER) ollivier.push_back({g.ollivier_ricci, w});
+            if (g.defined & hgcommon::SG_DEGREE_ENTROPY) {
+                degree_entropy.push_back({g.degree_entropy, w});
+                local_entropy.push_back({g.local_entropy, w});
+            }
+            if (g.defined & hgcommon::SG_MUTUAL_INFORMATION)
+                mutual_information.push_back({g.mutual_information, w});
+            if (g.defined & hgcommon::SG_FISHER) fisher.push_back({g.fisher_information, w});
+            for (uint32_t r = 0; r < gm.ball_dimension.size(); ++r)
+                ball_growth[r + 1].push_back({gm.ball_dimension[r], w});
             vertex_count.push_back({double(s.vertex_count), w});
             edge_count.push_back({double(s.edge_count), w});
             max_degree.push_back({double(s.max_degree), w});
@@ -630,6 +691,19 @@ wxf::WXFValue step_statistics(
         put("IncidenceDiameter", inc_diameter, 1.0, true);
         put("IncidenceMeanDistance", inc_mean_distance, 0.01, false);
         put("LargestComponentFraction", largest_fraction, 0.01, false);
+        put("GraphRadius", radius, 1.0, true);
+        put("MeanEccentricity", eccentricity, 0.01, false);
+        put("WolframHausdorffDimension", hausdorff, 0.01, false);
+        put("WolframRicciCurvatureScalar", ricci, 0.01, false);
+        put("OllivierRicciCurvature", ollivier, 0.01, false);
+        put("DegreeEntropy", degree_entropy, 0.01, false);
+        put("LocalEntropy", local_entropy, 0.01, false);
+        put("MutualInformation", mutual_information, 0.01, false);
+        put("FisherInformation", fisher, 0.01, false);
+        wxf::WXFValueAssociation balls;
+        for (const auto& [r, v] : ball_growth)
+            balls.push_back({wxf::WXFValue(static_cast<int64_t>(r)),
+                             summary_value(summarise(v, 0.01), false)});
 
         wxf::WXFValueAssociation rec;
         auto i64 = [](uint64_t v) { return wxf::WXFValue(static_cast<int64_t>(v)); };
@@ -655,6 +729,7 @@ wxf::WXFValue step_statistics(
         rec.push_back({wxf::WXFValue("AritySignatureHistogram"), count_association(arity_sig_hist)});
         rec.push_back({wxf::WXFValue("DegreeHistogram"), count_association(degree_hist)});
         rec.push_back({wxf::WXFValue("DegreeSequenceHistogram"), count_association(degree_seq_hist)});
+        rec.push_back({wxf::WXFValue("BallGrowthDimension"), wxf::WXFValue(std::move(balls))});
         steps.push_back(wxf::WXFValue(rec));
     }
     return wxf::WXFValue(steps);

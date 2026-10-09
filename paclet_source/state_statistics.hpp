@@ -14,6 +14,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "hgcommon/state_geometry_core.hpp"
 #include "wxf.hpp"
 
 namespace HG_NAMESPACE {
@@ -68,6 +69,15 @@ void events_from_multiplicities(
     const std::unordered_map<uint64_t, std::map<int64_t, uint64_t>>& matches_by_rule,
     uint32_t steps, std::map<uint32_t, uint64_t>& events,
     std::map<uint32_t, std::map<int64_t, uint64_t>>& rule_counts);
+
+// The geometry of one state (hgcommon/state_geometry_core.hpp): the values and the ball-growth
+// dimension at r = 1..R.
+struct StateGeometry {
+    hgcommon::SgGeometry values;
+    std::vector<double> ball_dimension;
+};
+
+StateGeometry state_geometry(const std::vector<std::vector<uint32_t>>& edges);
 
 // The "StepStatistics" reply: one association per step, in step order, with the keys of the
 // probes' per-step record that a class and its multiplicity determine. `class_edges` holds each
