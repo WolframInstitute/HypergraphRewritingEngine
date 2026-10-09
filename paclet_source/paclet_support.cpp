@@ -425,10 +425,16 @@ Summary summarise(const std::vector<std::pair<double, uint64_t>>& value_weight, 
         seen += w;
     }
     s.median = (lo + hi) / 2;
+    // vw is ascending and the rounding is monotonic, so the keys arrive ascending and each new key
+    // goes at the end of the map.
     for (const auto& [v, w] : vw) {
         // Halves to even (nearbyint in the default rounding mode), as Round[x, round] does.
         const double key = round == 1.0 ? v : std::nearbyint(v / round) * round;
-        s.histogram[key] = hgcommon::qm_sat_add(s.histogram[key], w);
+        if (!s.histogram.empty() && std::prev(s.histogram.end())->first == key)
+            std::prev(s.histogram.end())->second =
+                hgcommon::qm_sat_add(std::prev(s.histogram.end())->second, w);
+        else
+            s.histogram.emplace_hint(s.histogram.end(), key, w);
     }
     return s;
 }
