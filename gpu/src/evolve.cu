@@ -978,21 +978,24 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
 // qe_events reaches 288,768 and the applied pool 577,536, and the run reported needing at least
 // 354,113 / 402,555 / 390,638 more slots across its attempts: short by one doubling, three times
 // over.
+// The device-memory ceiling: explicit request, else 90% of total VRAM; 0 when the total cannot be
+// read. The total does not change, so it is queried once per process.
+static uint64_t resolved_memory_cap(uint64_t requested) {
+    if (requested != 0) return requested;
+    static const uint64_t total_vram = [] {
+        size_t freeB = 0, totalB = 0;
+        const bool ok = cudaMemGetInfo(&freeB, &totalB) == cudaSuccess;
+        cudaGetLastError();  // clear any sticky status from the query
+        return ok ? static_cast<uint64_t>(totalB) : uint64_t{0};
+    }();
+    return static_cast<uint64_t>(static_cast<double>(total_vram) * 0.90);
+}
+
 template <class Attempt>
 static EvolveResult run_with_growth(EngineConfig cfg, uint64_t mem_cap, Attempt&& attempt) {
     constexpr int kMaxRetries = 8;  // up to 256x capacity growth
 
-    // The device-memory ceiling: explicit request, else 90% of total VRAM. The total does not
-    // change, so it is queried once per process.
-    if (mem_cap == 0) {
-        static const uint64_t total_vram = [] {
-            size_t freeB = 0, totalB = 0;
-            const bool ok = cudaMemGetInfo(&freeB, &totalB) == cudaSuccess;
-            cudaGetLastError();  // clear any sticky status from the query
-            return ok ? static_cast<uint64_t>(totalB) : uint64_t{0};
-        }();
-        mem_cap = static_cast<uint64_t>(static_cast<double>(total_vram) * 0.90);
-    }
+    mem_cap = resolved_memory_cap(mem_cap);
     // Shrink the initial config to the ceiling if it was sized past it; the ladder then never
     // grows back over the cap.
     if (mem_cap != 0 && estimated_device_bytes(cfg) > mem_cap) {
@@ -1233,20 +1236,67 @@ PersistentEvolver::SessionRun PersistentEvolver::run_session(const EvolveInput& 
 
 void PersistentEvolver::recycle(EvolveResult&& done) { spare_.adopt_storage(done); }
 
+// The live engine's config widened to cover `own`, an input's own config: each capacity field is
+// the larger of the two, and each setting (key masks, replay and keyed limits, launch bounds) is
+// the input's. A replay group left at 0 sizes itself from max_events; it stays 0 when both are 0
+// and is otherwise the larger resolved size.
+static EngineConfig covering_config(const EngineConfig& live, const EngineConfig& own) {
+    EngineConfig c = own;
+    auto widen = [&](auto EngineConfig::*f) { c.*f = std::max(live.*f, own.*f); };
+    widen(&EngineConfig::state_invariant_words);
+    widen(&EngineConfig::max_edges);
+    widen(&EngineConfig::max_vertices);
+    widen(&EngineConfig::max_vertex_slots);
+    widen(&EngineConfig::max_states);
+    widen(&EngineConfig::max_state_edge_total);
+    widen(&EngineConfig::inverted_pool);
+    widen(&EngineConfig::canonical_form_words);
+    widen(&EngineConfig::match_dedup_slots);
+    widen(&EngineConfig::event_canon_slots);
+    widen(&EngineConfig::max_events);
+    widen(&EngineConfig::max_causal_edges);
+    widen(&EngineConfig::max_branchial_edges);
+    widen(&EngineConfig::causal_triple_slots);
+    widen(&EngineConfig::causal_pair_slots);
+    widen(&EngineConfig::branchial_pair_slots);
+    widen(&EngineConfig::edge_consumer_nodes);
+    widen(&EngineConfig::branchial_index_buckets);
+    widen(&EngineConfig::branchial_index_nodes);
+    widen(&EngineConfig::tr_preds_nodes);
+    widen(&EngineConfig::descent_work_scale);
+    widen(&EngineConfig::tr_scratch_scale);
+    widen(&EngineConfig::survivor_scratch);
+    widen(&EngineConfig::ir_arena_share_words);
+    widen(&EngineConfig::ir_generators);
+    widen(&EngineConfig::ir_depth);
+    widen(&EngineConfig::max_edge_arity);
+    widen(&EngineConfig::max_lhs_edges);
+    const QeEntries ql = qe_entries(live), qo = qe_entries(own);
+    auto group = [&](uint32_t EngineConfig::*f, uint32_t rl, uint32_t ro) {
+        c.*f = (live.*f == 0 && own.*f == 0) ? 0u : std::max(rl, ro);
+    };
+    group(&EngineConfig::qe_class_entries, ql.classes, qo.classes);
+    group(&EngineConfig::qe_instance_entries, ql.instances, qo.instances);
+    group(&EngineConfig::qe_event_entries, ql.events, qo.events);
+    group(&EngineConfig::qe_pair_entries, ql.pairs, qo.pairs);
+    group(&EngineConfig::qe_word_entries, ql.words, qo.words);
+    return c;
+}
+
+// A run starts from the live engine's config widened to this input's own config, so it reuses the
+// engine whenever that config already covers the input. A run that ends partial from there is run
+// again from the input's own config, which is where a fresh evolver starts: the live config can
+// sit at the memory cap with a pool smaller than this input needs (a previous job that overflowed
+// to the cap), and grow-and-retry cannot grow it.
 EvolveResult PersistentEvolver::run(const EvolveInput& in) {
-    // Never shrink: start from the live engine's config if there is one, else size to this
-    // input. The engine is rebuilt only when the config changes, so a run whose input fits the
-    // current engine reuses it and pays no allocation.
-    EngineConfig start = config_from_input(in);
+    const EngineConfig own = config_from_input(in);
+    const uint64_t mem_cap = resolved_memory_cap(in.max_device_memory_bytes);
+    EngineConfig start = own;
     if (has_engine_) {
-        // The live config, widened when this input's largest left-hand side needs a wider
-        // event_consumed stride; a changed config rebuilds the engine below.
-        const uint16_t lhs = start.max_lhs_edges;
-        start = cfg_;
-        start.max_lhs_edges = std::max(start.max_lhs_edges, lhs);
+        const EngineConfig cover = covering_config(cfg_, own);
+        if (mem_cap == 0 || estimated_device_bytes(cover) <= mem_cap) start = cover;
     }
-    return run_with_growth(start, in.max_device_memory_bytes,
-                           [&](const EngineConfig& cfg) {
+    auto attempt = [&](const EngineConfig& cfg) {
         // On a grow the old engine is freed before the larger one is built, so peak VRAM is
         // bounded by the larger config, not their sum.
         static_assert(std::has_unique_object_representations_v<EngineConfig>,
@@ -1269,7 +1319,21 @@ EvolveResult PersistentEvolver::run(const EvolveInput& in) {
             cudaGetLastError();
             throw;
         }
-    });
+    };
+    EvolveResult result = run_with_growth(start, mem_cap, attempt);
+    const bool partial = std::any_of(result.warnings.begin(), result.warnings.end(),
+                                     [](const OverflowWarning& w) {
+                                         return error_kind_is_partial(w.kind);
+                                     });
+    if (partial && std::memcmp(&start, &own, sizeof(EngineConfig)) != 0) {
+        std::fprintf(stderr, "hg_gpu::evolve: partial from the live engine's config -- running "
+                             "again from this input's own config.\n");
+        recycle(std::move(result));
+        engine_.reset();
+        has_engine_ = false;
+        result = run_with_growth(own, mem_cap, attempt);
+    }
+    return result;
 }
 
 
