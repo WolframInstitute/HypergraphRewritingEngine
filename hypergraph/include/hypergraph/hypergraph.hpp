@@ -470,40 +470,17 @@ class Hypergraph {
     };
     std::unique_ptr<SegmentedArray<QcKept>> qc_kept_;   // by pointer: a SegmentedArray is 32 KB
 
-    // WHERE EVENT `e`'S CONTENT LIVES, which is deliberately NOT slot e.
-    //
-    // QcEventContent is 24 bytes, so nearly three of them share a cache line. Event ids come
-    // from one global counter, so concurrent workers mint ADJACENT ids and write ADJACENT
-    // slots -- three workers to a line, every one of them taking it exclusive. Measured on the
-    // EPYC 9174F, whose cores do not share a last-level cache: separating these entries moved
-    // cycle4 from 0.89x to 0.98x at eight workers.
-    //
-    // Separating them by PADDING the record to a line works and costs 34% of the run's resident
-    // set (45.8 MB to 61.4 MB on cycle4). Permuting the index costs nothing: a stride of K
-    // slots inside a block of B, with K odd and B a power of two, is a bijection on the block,
-    // so every id still has exactly one home and the array is the same size. K*24 = 4,104 bytes
-    // puts consecutive ids on different lines by a wide margin.
-    //
-    // EVERY reader goes through this. A reader that indexed by the raw id would read another
-    // event's content, so the permutation is spelled once and the array is private.
-    // Overridable so a model checker need not zero 4096 records (98 KB, one event per word)
-    // before the first event's content lands; the permutation is the same rule at any block.
-#ifndef HG_QC_EV_BLOCK
-#define HG_QC_EV_BLOCK 4096
-#endif
-    static constexpr uint32_t QC_EV_BLOCK = HG_QC_EV_BLOCK;   // power of two
-    static constexpr uint32_t QC_EV_STRIDE = 171;   // odd => coprime with the block
-    static uint32_t qc_ev_slot(uint32_t e) {
-        return (e / QC_EV_BLOCK) * QC_EV_BLOCK
-             + ((e % QC_EV_BLOCK) * QC_EV_STRIDE) % QC_EV_BLOCK;
-    }
+    // WHERE EVENT `e`'S CONTENT LIVES: slot e. Event and instance ids are taken in per-worker
+    // blocks of 64 (kEventIdBlock, kIdBlock), so a worker writes a run of consecutive slots and
+    // two workers share a cache line only at a block's edge. Any permutation of slots within a
+    // block of ids larger than 64 puts slots of different workers on one line.
+    static uint32_t qc_ev_slot(uint32_t e) { return e; }
     // These four arrays are written through emplace_at on an uncounted array or slot(), and read
     // through find(): no shared high-water counter is written per event or read per lookup. A
     // reader bounds its walk by the id counter. Ids below it that were never written (instance
     // ids skipped at the end of a worker's block) read as empty lists.
     uint32_t qc_applied_slot_bound() const {
-        const uint64_t n = qc_id_bound(qc_next_instance_);
-        return static_cast<uint32_t>((n + QC_EV_BLOCK - 1) / QC_EV_BLOCK * QC_EV_BLOCK);
+        return qc_id_bound(qc_next_instance_);
     }
     // The same events under the RUN'S event identity, indexed the same way. The pair accessors
     // need this and not qc_event_sig_: a caller comparing the reconstructed causal or branchial
