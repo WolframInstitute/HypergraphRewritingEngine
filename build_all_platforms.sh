@@ -39,6 +39,9 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_ROOT"
 
 BUILD_JOBS="${BUILD_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
+# nvcc runs a multi-GB cicc/ptxas chain per translation unit and architecture, so the Linux GPU
+# leg builds one translation unit at a time.
+GPU_BUILD_JOBS="${GPU_BUILD_JOBS:-1}"
 HOST_OS="$(uname -s)"                          # Linux | Darwin
 OSXCROSS_ROOT="${OSXCROSS_ROOT:-$HOME/osxcross}"
 LR="paclet/LibraryResources"
@@ -135,7 +138,7 @@ if selected "Linux-x86-64"; then
         # GPU artifacts carry whatever that one definition says. HG_GPU_ARCHS narrows it.
         if cmake -S . -B build_linux_gpu -DCMAKE_BUILD_TYPE=Release -DHG_ENGINE_STATS=OFF \
                  -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON -DBUILD_GPU=ON \
-           && cmake --build build_linux_gpu --target hg_evolve_gpu -j"$BUILD_JOBS" \
+           && cmake --build build_linux_gpu --target hg_evolve_gpu -j"$GPU_BUILD_JOBS" \
            && [[ -f "$gpu_out" ]]; then
             echo -e "${GREEN}Linux-x86-64/hg_evolve_gpu: OK${NC}"
             BUILT+=("Linux-x86-64/hg_evolve_gpu")
