@@ -931,11 +931,42 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
                 ++rule_counts[e.step][static_cast<int64_t>(e.rule)];
             }
         }
+        // "StepStatisticsBranchial": from the device's branchial pairs and state contents.
+        std::map<uint32_t, wxf::WXFValueAssociation> branchial_keys;
+        const uint32_t which = job.step_statistics_branchial;
+        if (which) {
+            std::unordered_map<hg_gpu::EventId, hg_gpu::StateId> output_of;
+            for (const auto& e : result.events) output_of[e.id] = e.output_state;
+            std::vector<std::pair<uint32_t, uint32_t>> pairs;
+            if (which & hg::stats::kBranchialGraph)
+                for (const auto& b : result.branchial_edges)
+                    pairs.emplace_back(static_cast<uint32_t>(b.a), static_cast<uint32_t>(b.b));
+            const auto bsteps = hgmarshal::branchial_steps(
+                which, static_cast<uint32_t>(result.states.size()),
+                [&](uint32_t sid) { return result.states[sid].id != hg_gpu::INVALID_ID; },
+                [&](uint32_t sid) { return rep_of(sid); },
+                [&](uint32_t sid) { return own_step(sid); },
+                [&](uint32_t sid, std::vector<uint32_t>& vs) {
+                    const hg_gpu::CanonicalState& st = result.states[sid];
+                    for (uint32_t k = 0; k < st.num_edges; ++k) {
+                        const hg_gpu::VertexSpan e = result.edge(st, k);
+                        vs.insert(vs.end(), e.begin(), e.end());
+                    }
+                },
+                pairs,
+                [&](uint32_t eid) {
+                    const auto it = output_of.find(eid);
+                    return it == output_of.end() ? 0u : static_cast<uint32_t>(it->second);
+                },
+                static_cast<int>(run_steps));
+            branchial_keys = hg::stats::branchial_step_metrics(bsteps, which);
+        }
         full_result.push_back({wxf::WXFValue("StepStatistics"),
                                hg::stats::step_statistics(
                                    points, class_invariants, events, rule_counts,
                                    hg::stats::StepStatisticsOptions{job.step_statistics_by_class,
-                                                                    nullptr})});
+                                                                    which ? &branchial_keys
+                                                                          : nullptr})});
     }
 
     // GraphData for the requested *Graph properties, built through the SAME shared

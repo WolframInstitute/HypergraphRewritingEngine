@@ -495,6 +495,25 @@ static size_t effective_max_states_per_step(const hgffi::ParsedJob& req) {
     return req.max_states_per_step;
 }
 
+// The "StepStatisticsBranchial" metrics a run computes, on either engine: none under quotient
+// exploration, which stores one state per class, and no overlap under Full states, since a Full
+// class has no vertices of its own. Each one left out is warned about.
+static uint32_t admitted_branchial(hgffi::ParsedJob& req, bool quotient) {
+    uint32_t which = req.include_step_statistics ? req.step_statistics_branchial : 0u;
+    if (which && quotient) {
+        req.ffi_warnings.push_back({"StepStatistics", 1,
+            "StepStatisticsBranchial is not computed under ExploreFromCanonicalStatesOnly"});
+        which = 0;
+    }
+    if ((which & hg::stats::kBranchialOverlap) && req.canonicalize_states_mode == "Full") {
+        req.ffi_warnings.push_back({"StepStatistics", 1,
+            "the StepStatisticsBranchial overlap metrics need CanonicalizeStates None or "
+            "Automatic"});
+        which &= ~hg::stats::kBranchialOverlap;
+    }
+    return which;
+}
+
 #ifdef HG_GPU_BACKEND
 // The GPU binary's whole job: translate a ParsedJob into a GpuJob, run hg_gpu::evolve, and
 // marshal the result through the same WXF path the CPU uses.
@@ -516,6 +535,7 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
         // budget's frontier across calls, and run_session refuses to rebuild the engine. The
         // verb rides on the job and the backend answers it. The device applies the transition
         // draw, the spine and the per-state cap at match emission (match.cu, emit_admit).
+        const uint32_t branchial = admitted_branchial(req, req.explore_from_canonical_states_only);
         GpuJob job{
             req.parsed_rules_raw,
             req.initial_states_raw,
@@ -568,6 +588,7 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
             req.ffi_warnings,
         };
         job.step_statistics_by_class = req.step_statistics_by_class;
+        job.step_statistics_branchial = branchial;
         if (req.show_progress) {
             core_progress(host, "HGEvolve: Starting GPU evolution...");
         }
@@ -804,15 +825,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         const bool custom_keys = req.event_signature_keys != hypergraph::EVENT_SIG_NONE &&
                                  req.event_signature_keys != hypergraph::EVENT_SIG_FULL &&
                                  req.event_signature_keys != hypergraph::EVENT_SIG_AUTOMATIC;
-        // THE STEPSTATISTICS BRANCHIAL METRICS RUN ON THE CPU ENGINE too: the device reply builds
-        // no per-step branchial graph.
-        const bool branchial_stats = req.include_step_statistics && req.step_statistics_branchial;
-        const bool on_cpu = req.positional_event_identity || custom_keys || cpu_session ||
-                            branchial_stats;
-        if (branchial_stats && !cpu_session)
-            req.ffi_warnings.push_back({"Engine", 1,
-                "StepStatisticsBranchial runs on the CPU engine: the device computes no per-step "
-                "branchial metrics"});
+        const bool on_cpu = req.positional_event_identity || custom_keys || cpu_session;
         if (req.positional_event_identity && !cpu_session)
             req.ffi_warnings.push_back({"Engine", 1,
                 "Positional event identity runs on the CPU engine: the device has no Positional "
@@ -2010,62 +2023,30 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 }
             }
             // "StepStatisticsBranchial": per step, the branchial graph on the step's states and
-            // the vertex overlap of its raw states. Neither exists under quotient exploration,
-            // which stores one state per class, and the overlap needs each state's own vertices,
-            // which a Full class does not have.
-            uint32_t which = req.step_statistics_branchial;
-            if (which && hg.quotient_multiplicity()) {
-                req.ffi_warnings.push_back({"StepStatistics", 1,
-                    "StepStatisticsBranchial is not computed under ExploreFromCanonicalStatesOnly"});
-                which = 0;
-            }
-            if ((which & hg::stats::kBranchialOverlap) && req.canonicalize_states_mode == "Full") {
-                req.ffi_warnings.push_back({"StepStatistics", 1,
-                    "the StepStatisticsBranchial overlap metrics need CanonicalizeStates None or "
-                    "Automatic"});
-                which &= ~hg::stats::kBranchialOverlap;
-            }
+            // the vertex overlap of its raw states (admitted_branchial).
+            const uint32_t which = admitted_branchial(req, hg.quotient_multiplicity());
             std::map<uint32_t, wxf::WXFValueAssociation> branchial_keys;
             if (which) {
-                std::map<uint32_t, hg::stats::BranchialStep> bsteps;
-                for (uint32_t sid = 0; sid < n_pub; ++sid) {
-                    const hypergraph::State& st = hg.get_state(sid);
-                    if (st.id == hypergraph::INVALID_ID) continue;
-                    auto& b = bsteps[st.step];
-                    b.nodes.push_back(static_cast<int64_t>(hg.get_canonical_state(sid)));
-                    if (which & hg::stats::kBranchialOverlap) {
-                        std::vector<uint32_t> vs;
-                        hg.get_state(sid).edges.for_each([&](hypergraph::EdgeId eid) {
-                            const auto& e = hg.get_edge(eid);
-                            vs.insert(vs.end(), e.vertices, e.vertices + e.arity);
-                        });
-                        b.vertex_sets.push_back(std::move(vs));
-                    }
-                }
-                if (which & hg::stats::kBranchialGraph) {
-                    std::vector<std::pair<uint32_t, uint32_t>> pairs;
+                std::vector<std::pair<uint32_t, uint32_t>> pairs;
+                if (which & hg::stats::kBranchialGraph)
                     for (const auto& be : hg.causal_graph().get_branchial_edges()) {
                         if (hg.is_genesis_event(be.event1) || hg.is_genesis_event(be.event2)) continue;
                         pairs.emplace_back(be.event1, be.event2);
                     }
-                    // Each endpoint carries its state's step above bit 40, so one unfiltered
-                    // projection gives every step's pairs.
-                    constexpr int kStepShift = 40;
-                    hgmarshal::GraphOptions all_steps;
-                    all_steps.branchial_step = 0;
-                    all_steps.steps = static_cast<int>(req.steps);
-                    const auto set = hgmarshal::branchial_state_edges_from_pairs(
-                        pairs,
-                        [&](uint32_t eid) { return static_cast<uint32_t>(hg.get_event(eid).output_state); },
-                        [&](uint32_t sid) {
-                            return (static_cast<int64_t>(hg.get_state(sid).step) << kStepShift) |
-                                   static_cast<int64_t>(hg.get_canonical_state(sid));
-                        },
-                        [&](uint32_t sid) { return hg.get_state(sid).step; }, all_steps);
-                    const int64_t mask = (int64_t{1} << kStepShift) - 1;
-                    for (const auto& [a, b] : set.edges)
-                        bsteps[static_cast<uint32_t>(a >> kStepShift)].pairs.emplace_back(a & mask, b & mask);
-                }
+                const auto bsteps = hgmarshal::branchial_steps(
+                    which, n_pub,
+                    [&](uint32_t sid) { return hg.get_state(sid).id != hypergraph::INVALID_ID; },
+                    [&](uint32_t sid) { return static_cast<int64_t>(hg.get_canonical_state(sid)); },
+                    [&](uint32_t sid) { return hg.get_state(sid).step; },
+                    [&](uint32_t sid, std::vector<uint32_t>& vs) {
+                        hg.get_state(sid).edges.for_each([&](hypergraph::EdgeId eid) {
+                            const auto& e = hg.get_edge(eid);
+                            vs.insert(vs.end(), e.vertices, e.vertices + e.arity);
+                        });
+                    },
+                    pairs,
+                    [&](uint32_t eid) { return static_cast<uint32_t>(hg.get_event(eid).output_state); },
+                    static_cast<int>(req.steps));
                 branchial_keys = hg::stats::branchial_step_metrics(bsteps, which);
             }
             full_result.push_back({wxf::WXFValue("StepStatistics"),

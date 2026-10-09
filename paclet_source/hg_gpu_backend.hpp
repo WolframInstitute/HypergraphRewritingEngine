@@ -116,7 +116,8 @@ struct GpuJob {
 
     // "StepStatisticsWeighting" -> "Classes". Set after the job is built.
     bool step_statistics_by_class = false;
-    // "StepStatisticsBranchial": always 0 here, since a job asking for it runs on the CPU engine.
+    // "StepStatisticsBranchial": stats::kBranchial* bits, as admitted for this run. Set after the
+    // job is built.
     uint32_t step_statistics_branchial = 0;
 };
 

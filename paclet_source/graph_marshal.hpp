@@ -57,6 +57,7 @@
 #include "delivery_cursor.hpp"
 #include "hgcommon/core.hpp"
 #include "hgcommon/explore_depth_core.hpp"
+#include "state_statistics.hpp"
 #include "wxf.hpp"
 
 #include <cstdint>
@@ -167,6 +168,49 @@ inline BranchialStateEdgeSet branchial_state_edges_from_pairs(
         out.edges.emplace_back(state1, state2);
     }
     out.vertices.assign(unique_states.begin(), unique_states.end());
+    return out;
+}
+
+// "StepStatisticsBranchial": each step's states and branchial state pairs
+// (stats::branchial_step_metrics), for both engines. The states are the ids below `num_states`
+// that `valid` admits, each at `step_of(sid)` under `effective(sid)`; with kBranchialOverlap
+// `vertices_of(sid, out)` appends a state's vertices. With kBranchialGraph `pairs` are the
+// branchial event pairs, genesis filtered, projected through `output_state_of` by
+// branchial_state_edges_from_pairs with every step's pairs kept.
+template <class Valid, class Effective, class StepOf, class VerticesOf, class OutputStateOf>
+std::map<uint32_t, stats::BranchialStep> branchial_steps(
+        uint32_t which, uint32_t num_states, Valid&& valid, Effective&& effective,
+        StepOf&& step_of, VerticesOf&& vertices_of,
+        const std::vector<std::pair<uint32_t, uint32_t>>& pairs, OutputStateOf&& output_state_of,
+        int steps) {
+    std::map<uint32_t, stats::BranchialStep> out;
+    for (uint32_t sid = 0; sid < num_states; ++sid) {
+        if (!valid(sid)) continue;
+        auto& b = out[step_of(sid)];
+        b.nodes.push_back(effective(sid));
+        if (which & stats::kBranchialOverlap) {
+            std::vector<uint32_t> vs;
+            vertices_of(sid, vs);
+            b.vertex_sets.push_back(std::move(vs));
+        }
+    }
+    if (which & stats::kBranchialGraph) {
+        // Each endpoint carries its state's step above bit 40, so one unfiltered projection
+        // gives every step's pairs.
+        constexpr int kStepShift = 40;
+        GraphOptions all_steps;
+        all_steps.branchial_step = 0;
+        all_steps.steps = steps;
+        const auto set = branchial_state_edges_from_pairs(
+            pairs, output_state_of,
+            [&](uint32_t sid) {
+                return (static_cast<int64_t>(step_of(sid)) << kStepShift) | effective(sid);
+            },
+            step_of, all_steps);
+        const int64_t mask = (int64_t{1} << kStepShift) - 1;
+        for (const auto& [a, b] : set.edges)
+            out[static_cast<uint32_t>(a >> kStepShift)].pairs.emplace_back(a & mask, b & mask);
+    }
     return out;
 }
 
