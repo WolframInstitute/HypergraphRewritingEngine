@@ -1912,6 +1912,8 @@ std::string cpu_binary_path() {
     return std::string(HG_SOURCE_DIR) + "/paclet/LibraryResources/Linux-x86-64/hg_evolve";
 }
 struct CpuWorker {
+    // hg_evolve is built only with BUILD_WOLFRAM_LANGUAGE_PACLET, which CI's bare runner turns off.
+    static bool built() { return ::access(cpu_binary_path().c_str(), X_OK) == 0; }
     WorkerPipes w;
     bool ok = false;
     CpuWorker() { ok = worker_start(w, cpu_binary_path()); }
@@ -2607,6 +2609,7 @@ TEST(GpuBinaryGate, StateEdgeIdsAreTheIdsEventsName) {
 // A job the engine refuses comes back as an error frame carrying the engine's message, and the
 // worker serves the next job. The message went only to the worker's stderr, which no client reads.
 TEST(Session, AWorkerReportsARefusedJobWithItsMessage) {
+    if (!CpuWorker::built()) GTEST_SKIP() << "hg_evolve is not built here";
     CpuWorker w;
     ASSERT_TRUE(w.ok) << "could not start hg_evolve --serve";
     EXPECT_TRUE(w(build_input_with_op(1, "Step", 12345, false)).empty());
@@ -2620,6 +2623,7 @@ TEST(Session, AWorkerReportsARefusedJobWithItsMessage) {
 // and GPU workers, or in a worker and its restart, never addresses one session by the other's
 // handle. Each process counted from 1, so both Opens returned 1.
 TEST(Session, TwoWorkerProcessesIssueDifferentHandles) {
+    if (!CpuWorker::built()) GTEST_SKIP() << "hg_evolve is not built here";
     CpuWorker a, b;
     ASSERT_TRUE(a.ok && b.ok) << "could not start hg_evolve --serve";
     const int64_t ha = read_int_key(a(build_input_with_op(1, "Open")), "Session");
