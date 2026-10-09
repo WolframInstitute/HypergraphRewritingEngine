@@ -35,13 +35,16 @@
 // is dm_mul, so the host and the device compute the same doubles.
 //
 // NO ALLOCATION. Every array lives in caller memory handed over as a byte buffer. Building G
-// needs sg_build_bytes(slots, pairs) and the metrics need sg_metric_bytes(n, max_degree) more;
-// sg_state_geometry reports the total it needed when the buffer is short, and computes nothing.
+// needs sg_build_bytes(slots, pairs) and the metrics need sg_metric_bytes(n, max_degree, edges,
+// lanes) more; sg_state_geometry reports the total it needed when the buffer is short, and
+// computes nothing.
 //
 // COST. One breadth-first search per vertex for the balls and eccentricities, a second for the
 // per-vertex dimensions the Fisher information reads, and radius-2 searches for the local
 // measures: O(n (n + m)) per state. Each edge's transport problem is solved exactly by
-// successive shortest paths on the (deg x + 1) x (deg y + 1) supports.
+// successive shortest paths on the (deg x + 1) x (deg y + 1) supports. The searches and the
+// transport problems are spread over the lanes of the policy (IrSerial on the host, IrTile on
+// the device), as state_invariants_core.hpp spreads its distance pass.
 
 #include <math.h>
 
@@ -50,6 +53,7 @@
 
 #include "hgcommon/core.hpp"
 #include "hgcommon/det_math.hpp"
+#include "hgcommon/ir_core.hpp"
 
 namespace HG_NAMESPACE {
 namespace common {
@@ -362,11 +366,28 @@ struct SgGeometry {
     uint32_t ball_radii = 0;             // R: entries written to the ball-dimension output
 };
 
-HG_HD inline size_t sg_metric_bytes(size_t n, size_t max_degree) {
-    // dist, dist2, queue, queue2, mark, ecc, layer, degree counts (4 bytes each, n + 1 entries),
-    // per-vertex dimension and the per-radius sums (8 bytes each), and one transport problem.
-    return 64 + 8 * 4 * (n + 1) + 3 * 8 * (n + 1) + 8 * (n + 1) + 64 +
-           sg_transport_bytes(max_degree + 1);
+// Bytes of one lane's transport scratch, a multiple of 8.
+HG_HD inline size_t sg_transport_stride(size_t max_degree) {
+    return (sg_transport_bytes(max_degree + 1) + 7) & ~size_t{7};
+}
+
+// Lanes that solve Ollivier transport problems at once, out of `lanes`: as many as fit in 1 MB
+// of transport scratch, and at least one.
+HG_HD inline uint32_t sg_transport_lanes(size_t max_degree, uint32_t lanes) {
+    const size_t fit = (size_t{1} << 20) / sg_transport_stride(max_degree);
+    return fit == 0 ? 1u : (fit < lanes ? static_cast<uint32_t>(fit) : lanes);
+}
+
+// Bytes sg_geometry_of takes for a graph of n vertices, the given maximum degree and edge count,
+// on `lanes` lanes. Per lane and per vertex: dist, dist2, queue, queue2, mark, layer and counts
+// (4 bytes each) and the log term (8 bytes). Per vertex: the eccentricity (4 bytes), and the
+// dimension, local entropy, mutual information, Fisher term, log sum and ball sum (8 bytes each).
+// Per edge: the Ollivier curvature (8 bytes). Then the transport lanes' scratch, and 8 bytes of
+// alignment per array.
+HG_HD inline size_t sg_metric_bytes(size_t n, size_t max_degree, size_t edges, uint32_t lanes) {
+    const size_t n1 = n + 1;
+    return 64 + size_t{lanes} * n1 * (7 * 4 + 8) + n1 * 4 + 6 * n1 * 8 + 8 * (edges + 1) +
+           sg_transport_lanes(max_degree, lanes) * sg_transport_stride(max_degree) + 20 * 8;
 }
 
 // Shannon entropy in bits of a distribution given as counts over `total`.
@@ -392,108 +413,167 @@ HG_HD inline double sg_degree_entropy_of(const SgGraph& g, const uint32_t* vs, u
 // entries. `want` is a mask of the SG_* values to compute: the radius and eccentricity are
 // always computed, SG_DEGREE_ENTROPY and SG_MUTUAL_INFORMATION each bring both, and SG_RICCI
 // and SG_FISHER each bring SG_HAUSDORFF. False when the arena is short.
+//
+// LANES. Every lane of the policy calls it with the same arguments; `out` and `ball_dimension`
+// are written by the leader. Each lane has its own search arrays. The per-vertex searches run
+// with the vertices strided over the lanes, and the Ollivier transport problems with the edges
+// strided over sg_transport_lanes lanes. Each vertex's and each edge's real values are stored,
+// and every sum over vertices or edges is taken in vertex or edge order, so the result is the
+// same double for every lane count.
+template <class Par = IrSerial>
 HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& out,
                                  double* ball_dimension, uint32_t ball_capacity,
-                                 uint32_t want = ~0u) {
+                                 uint32_t want = ~0u, Par par = Par{}) {
     const bool want_local = (want & (SG_DEGREE_ENTROPY | SG_MUTUAL_INFORMATION)) != 0;
     const uint32_t n = g.n;
-    out = SgGeometry{};
-    out.vertex_count = n;
-    out.edge_count = g.edges;
+    const uint32_t L = par.width(), me = par.rank();
+    if (par.leader()) {
+        out = SgGeometry{};
+        out.vertex_count = n;
+        out.edge_count = g.edges;
+    }
     if (n == 0) return true;
-    int32_t* dist = arena.take<int32_t>(n + 1);
-    int32_t* dist2 = arena.take<int32_t>(n + 1);
-    uint32_t* queue = arena.take<uint32_t>(n + 1);
-    uint32_t* queue2 = arena.take<uint32_t>(n + 1);
-    uint32_t* mark = arena.take<uint32_t>(n + 1);
-    uint32_t* ecc = arena.take<uint32_t>(n + 1);
-    uint32_t* layer = arena.take<uint32_t>(n + 1);
-    uint32_t* counts = arena.take<uint32_t>(n + 1);
-    double* dimv = arena.take<double>(n + 1);
-    double* log_sum = arena.take<double>(n + 1);       // per r: sum over v of the log ratio
-    uint64_t* ball_sum = arena.take<uint64_t>(n + 1);  // per r: sum over v of |B(v, r)|
-    unsigned char* transport = arena.take<unsigned char>(sg_transport_bytes(g.max_degree + 1) + 64);
+    const size_t n1 = size_t{n} + 1;
+    const uint32_t TL = sg_transport_lanes(g.max_degree, L);
+    const size_t tstride = sg_transport_stride(g.max_degree);
+    int32_t* dist_all = arena.take<int32_t>(L * n1);
+    int32_t* dist2_all = arena.take<int32_t>(L * n1);
+    uint32_t* queue_all = arena.take<uint32_t>(L * n1);
+    uint32_t* queue2_all = arena.take<uint32_t>(L * n1);
+    uint32_t* mark_all = arena.take<uint32_t>(L * n1);
+    uint32_t* layer_all = arena.take<uint32_t>(L * n1);    // per r: |B(v, r)| after pass 1's search
+    uint32_t* counts_all = arena.take<uint32_t>(L * n1);
+    double* term_all = arena.take<double>(L * n1);         // per r: log|B(v, r)| - log|B(v, r-1)|
+    uint32_t* ecc = arena.take<uint32_t>(n1);
+    double* dimv = arena.take<double>(n1);
+    double* localv = arena.take<double>(n1);
+    double* miv = arena.take<double>(n1);
+    double* fishv = arena.take<double>(n1);
+    double* log_sum = arena.take<double>(n1);              // per r: sum over v of the log term
+    uint64_t* ball_sum = arena.take<uint64_t>(n1);         // per r: sum over v of |B(v, r)|
+    double* oll = arena.take<double>(size_t{g.edges} + 1);
+    uint64_t* transport_all = arena.take<uint64_t>(TL * tstride / 8);
     if (arena.failed) return false;
-    transport = reinterpret_cast<unsigned char*>(
-        (reinterpret_cast<uintptr_t>(transport) + 7) & ~static_cast<uintptr_t>(7));
-    for (uint32_t i = 0; i <= n; ++i) {
-        dist[i] = -1; dist2[i] = -1; mark[i] = 0; counts[i] = 0;
-        log_sum[i] = 0.0; ball_sum[i] = 0;
-    }
+    int32_t* dist = dist_all + me * n1;
+    int32_t* dist2 = dist2_all + me * n1;
+    uint32_t* queue = queue_all + me * n1;
+    uint32_t* queue2 = queue2_all + me * n1;
+    uint32_t* mark = mark_all + me * n1;
+    uint32_t* layer = layer_all + me * n1;
+    uint32_t* counts = counts_all + me * n1;
+    double* term = term_all + me * n1;
+    for (size_t i = 0; i < n1; ++i) { dist[i] = -1; dist2[i] = -1; mark[i] = 0; counts[i] = 0; }
+    par.fan(static_cast<uint32_t>(n1), [&](uint32_t i) { log_sum[i] = 0.0; ball_sum[i] = 0; });
 
-    // PASS 1: every vertex's balls, eccentricity, local entropy and mutual information.
-    bool connected = true;
-    uint32_t radius = UINT32_MAX;
-    double ecc_total = 0.0, local_total = 0.0, mi_total = 0.0;
-    uint32_t mi_vertices = 0;
-    for (uint32_t v = 0; v < n; ++v) {
-        uint32_t reached = 0;
-        const uint32_t e = sg_bfs(g, v, dist, queue, layer, UINT32_MAX, reached);
-        if (reached != n) connected = false;
-        ecc[v] = e;
-        ecc_total += e;
-        if (e < radius) radius = e;
-        uint64_t ball = 1;
-        for (uint32_t r = 1; r <= e; ++r) {
-            const uint64_t next = ball + layer[r];
-            log_sum[r] += dm_log(static_cast<double>(next)) - dm_log(static_cast<double>(ball));
-            ball_sum[r] += next;
-            ball = next;
-        }
-        if (!want_local) { sg_bfs_clear(dist, queue, reached); continue; }
-        // B(v, 2) is the queue's prefix of vertices at distance at most 2.
-        uint32_t b2 = 0;
-        while (b2 < reached && dist[queue[b2]] <= 2) ++b2;
-        local_total += sg_degree_entropy_of(g, queue, b2, counts);
-        for (uint32_t i = 0; i < b2; ++i) mark[queue[i]] = v + 1;
-        sg_bfs_clear(dist, queue, reached);
-        if (g.degree(v)) {
-            double sum = 0.0;
-            for (uint32_t k = g.off[v]; k < g.off[v + 1]; ++k) {
-                uint32_t reached_w = 0;
-                sg_bfs(g, g.nbr[k], dist2, queue2, nullptr, 2, reached_w);
-                uint32_t both = 0;
-                for (uint32_t i = 0; i < reached_w; ++i) if (mark[queue2[i]] == v + 1) ++both;
-                sg_bfs_clear(dist2, queue2, reached_w);
-                const double uni = static_cast<double>(b2) + reached_w - both;
-                const double pmi = dm_log2(dm_mul(static_cast<double>(both), uni) /
-                                           dm_mul(static_cast<double>(b2), reached_w));
-                sum += pmi > 0.0 ? pmi : 0.0;
+    // PASS 1: every vertex's balls, eccentricity, local entropy and mutual information, L
+    // vertices per round. After each round the round's terms enter log_sum and ball_sum in
+    // vertex order, the radii strided over the lanes.
+    uint32_t connected = 1;
+    for (uint32_t base = 0; base < n; base += L) {
+        const uint32_t v = base + me;
+        if (v < n) {
+            uint32_t reached = 0;
+            const uint32_t e = sg_bfs(g, v, dist, queue, layer, UINT32_MAX, reached);
+            if (v == 0) connected = reached == n ? 1u : 0u;
+            ecc[v] = e;
+            uint32_t ball = 1;
+            for (uint32_t r = 1; r <= e; ++r) {
+                const uint32_t next = ball + layer[r];
+                term[r] = dm_log(static_cast<double>(next)) - dm_log(static_cast<double>(ball));
+                layer[r] = next;
+                ball = next;
             }
-            mi_total += sum / g.degree(v);
-            ++mi_vertices;
+            if (!want_local) {
+                sg_bfs_clear(dist, queue, reached);
+            } else {
+                // B(v, 2) is the queue's prefix of vertices at distance at most 2.
+                uint32_t b2 = 0;
+                while (b2 < reached && dist[queue[b2]] <= 2) ++b2;
+                localv[v] = sg_degree_entropy_of(g, queue, b2, counts);
+                for (uint32_t i = 0; i < b2; ++i) mark[queue[i]] = v + 1;
+                sg_bfs_clear(dist, queue, reached);
+                double sum = 0.0;
+                for (uint32_t k = g.off[v]; k < g.off[v + 1]; ++k) {
+                    uint32_t reached_w = 0;
+                    sg_bfs(g, g.nbr[k], dist2, queue2, nullptr, 2, reached_w);
+                    uint32_t both = 0;
+                    for (uint32_t i = 0; i < reached_w; ++i) if (mark[queue2[i]] == v + 1) ++both;
+                    sg_bfs_clear(dist2, queue2, reached_w);
+                    const double uni = static_cast<double>(b2) + reached_w - both;
+                    const double pmi = dm_log2(dm_mul(static_cast<double>(both), uni) /
+                                               dm_mul(static_cast<double>(b2), reached_w));
+                    sum += pmi > 0.0 ? pmi : 0.0;
+                }
+                miv[v] = g.degree(v) ? sum / g.degree(v) : 0.0;
+            }
         }
+        par.sync();
+        const uint32_t cnt = n - base < L ? n - base : L;
+        uint32_t top = 0;
+        for (uint32_t i = 0; i < cnt; ++i) if (ecc[base + i] > top) top = ecc[base + i];
+        for (uint32_t r = 1 + me; r <= top; r += L)
+            for (uint32_t i = 0; i < cnt; ++i) {
+                if (r > ecc[base + i]) continue;
+                log_sum[r] += term_all[i * n1 + r];
+                ball_sum[r] += layer_all[i * n1 + r];
+            }
+        par.sync();
     }
-    {
+    connected = par.bcast(connected);
+    uint32_t radius = UINT32_MAX;
+    for (uint32_t v = 0; v < n; ++v) if (ecc[v] < radius) radius = ecc[v];
+    if (par.leader()) {
         uint32_t* all = queue;
         for (uint32_t i = 0; i < n; ++i) all[i] = i;
         out.degree_entropy = sg_degree_entropy_of(g, all, n, counts);
-        out.local_entropy = local_total / n;
-        if (want_local) out.defined |= SG_DEGREE_ENTROPY;
-    }
-    if (want_local && mi_vertices) {
-        out.mutual_information = mi_total / mi_vertices;
-        out.defined |= SG_MUTUAL_INFORMATION;
+        if (want_local) {
+            double local_total = 0.0, mi_total = 0.0;
+            uint32_t mi_vertices = 0;
+            for (uint32_t v = 0; v < n; ++v) {
+                local_total += localv[v];
+                if (g.degree(v)) { mi_total += miv[v]; ++mi_vertices; }
+            }
+            out.local_entropy = local_total / n;
+            out.defined |= SG_DEGREE_ENTROPY;
+            if (mi_vertices) {
+                out.mutual_information = mi_total / mi_vertices;
+                out.defined |= SG_MUTUAL_INFORMATION;
+            }
+        }
     }
     if ((want & SG_OLLIVIER) && g.edges) {
-        double sum = 0.0;
-        for (uint32_t x = 0; x < n; ++x)
-            for (uint32_t k = g.off[x]; k < g.off[x + 1]; ++k)
-                if (g.nbr[k] > x) sum += sg_ollivier_edge(g, x, g.nbr[k], transport);
-        out.ollivier_ricci = sum / g.edges;
-        out.defined |= SG_OLLIVIER;
+        if (me < TL) {
+            auto* transport = reinterpret_cast<unsigned char*>(transport_all + me * (tstride / 8));
+            uint32_t j = 0;
+            for (uint32_t x = 0; x < n; ++x)
+                for (uint32_t k = g.off[x]; k < g.off[x + 1]; ++k) {
+                    if (g.nbr[k] <= x) continue;
+                    if (j % TL == me) oll[j] = sg_ollivier_edge(g, x, g.nbr[k], transport);
+                    ++j;
+                }
+        }
+        par.sync();
+        if (par.leader()) {
+            double sum = 0.0;
+            for (uint32_t j = 0; j < g.edges; ++j) sum += oll[j];
+            out.ollivier_ricci = sum / g.edges;
+            out.defined |= SG_OLLIVIER;
+        }
     }
     if (!connected) return true;
-    out.radius = static_cast<int32_t>(radius);
-    out.mean_eccentricity = ecc_total / n;
-    out.defined |= SG_RADIUS;
+    if (par.leader()) {
+        uint64_t ecc_total = 0;
+        for (uint32_t v = 0; v < n; ++v) ecc_total += ecc[v];
+        out.radius = static_cast<int32_t>(radius);
+        out.mean_eccentricity = static_cast<double>(ecc_total) / n;
+        out.defined |= SG_RADIUS;
+    }
     if (radius == 0) return true;   // one vertex: no radius to average over
     if (!(want & (SG_HAUSDORFF | SG_RICCI | SG_FISHER))) return true;
     const uint32_t R = radius;
 
     // PASS 2: each vertex's own dimension over r = 1..R.
-    double dim_total = 0.0;
-    for (uint32_t v = 0; v < n; ++v) {
+    for (uint32_t v = me; v < n; v += L) {
         uint32_t reached = 0;
         sg_bfs(g, v, dist, queue, layer, R, reached);
         sg_bfs_clear(dist, queue, reached);
@@ -506,34 +586,37 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
             ball = next;
         }
         dimv[v] = s / R;
-        dim_total += dimv[v];
     }
-    const double d = dim_total / n;
-    out.hausdorff_dimension = d;
-    out.defined |= SG_HAUSDORFF;
-    out.ball_radii = R;
-    for (uint32_t r = 1; r <= R && r <= ball_capacity; ++r)
-        ball_dimension[r - 1] =
-            log_sum[r] / n / (dm_log(r + 1.0) - dm_log(static_cast<double>(r)));
+    par.sync();
+    if (par.leader()) {
+        double dim_total = 0.0;
+        for (uint32_t v = 0; v < n; ++v) dim_total += dimv[v];
+        const double d = dim_total / n;
+        out.hausdorff_dimension = d;
+        out.defined |= SG_HAUSDORFF;
+        out.ball_radii = R;
+        for (uint32_t r = 1; r <= R && r <= ball_capacity; ++r)
+            ball_dimension[r - 1] =
+                log_sum[r] / n / (dm_log(r + 1.0) - dm_log(static_cast<double>(r)));
 
-    // Ricci scalar at dimension d: linear in |B(v, r)|, so the per-radius ball sums suffice.
-    const double pi = 3.14159265358979323846;
-    const double c = dm_tgamma(d / 2.0 + 1.0) / dm_pow(pi, d / 2.0);
-    double ricci = 0.0;
-    for (uint32_t r = 1; r <= R; ++r) {
-        const double rr = static_cast<double>(r);
-        ricci += dm_mul(dm_mul(6.0, d + 2.0) / dm_mul(rr, rr),
-                        static_cast<double>(n) -
-                            dm_mul(static_cast<double>(ball_sum[r]), c) / dm_pow(rr, d));
+        // Ricci scalar at dimension d: linear in |B(v, r)|, so the per-radius ball sums suffice.
+        const double pi = 3.14159265358979323846;
+        const double c = dm_tgamma(d / 2.0 + 1.0) / dm_pow(pi, d / 2.0);
+        double ricci = 0.0;
+        for (uint32_t r = 1; r <= R; ++r) {
+            const double rr = static_cast<double>(r);
+            ricci += dm_mul(dm_mul(6.0, d + 2.0) / dm_mul(rr, rr),
+                            static_cast<double>(n) -
+                                dm_mul(static_cast<double>(ball_sum[r]), c) / dm_pow(rr, d));
+        }
+        out.ricci_scalar = ricci / R / n;
+        out.defined |= SG_RICCI;
     }
-    out.ricci_scalar = ricci / R / n;
-    out.defined |= SG_RICCI;
 
     if (!(want & SG_FISHER)) return true;
 
     // PASS 3: Fisher information from the dimensions within distance 2.
-    double fisher_total = 0.0;
-    for (uint32_t v = 0; v < n; ++v) {
+    for (uint32_t v = me; v < n; v += L) {
         uint32_t reached = 0;
         sg_bfs(g, v, dist, queue, nullptr, 2, reached);
         sg_bfs_clear(dist, queue, reached);
@@ -549,34 +632,56 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
         for (uint32_t i = 1; i < reached; ++i)
             var += dm_mul(dimv[queue[i]] - mean, dimv[queue[i]] - mean);
         var /= k;
-        fisher_total += (1.0 + grad) / (var + 0.01);
+        fishv[v] = (1.0 + grad) / (var + 0.01);
     }
-    out.fisher_information = fisher_total / n;
-    out.defined |= SG_FISHER;
+    par.sync();
+    if (par.leader()) {
+        double fisher_total = 0.0;
+        for (uint32_t v = 0; v < n; ++v) fisher_total += fishv[v];
+        out.fisher_information = fisher_total / n;
+        out.defined |= SG_FISHER;
+    }
     return true;
 }
 
 // Builds G from `el` in `scratch` and computes its geometry. When `capacity` is short, returns
 // false with `needed` set to the bytes that would have sufficed for the stage reached; a caller
 // that grows its buffer to `needed` and calls again either succeeds or learns the next stage's
-// need.
-template <class EdgeList>
+// need. Every lane of the policy calls it with the same arguments and gets the same verdict and
+// `needed`; the leader builds G and `out` is the leader's.
+template <class EdgeList, class Par = IrSerial>
 HG_HD bool sg_state_geometry(const EdgeList& el, unsigned char* scratch, size_t capacity,
                              SgGeometry& out, double* ball_dimension, uint32_t ball_capacity,
-                             size_t& needed, uint32_t want = ~0u) {
+                             size_t& needed, uint32_t want = ~0u, Par par = Par{}) {
     SgArena arena;
     arena.base = scratch;
     arena.capacity = capacity;
     SgGraph g;
     size_t slots = 0, pairs = 0;
     sg_sizes(el, slots, pairs);
-    if (!sg_build(el, arena, g)) {
-        needed = sg_build_bytes(slots, pairs) + sg_metric_bytes(slots, 0);
+    uint32_t built_ok = 1;
+    uint64_t off_at = 0, nbr_at = 0;
+    if (par.leader()) {
+        built_ok = sg_build(el, arena, g) ? 1u : 0u;
+        if (built_ok) {
+            off_at = static_cast<uint64_t>(reinterpret_cast<const unsigned char*>(g.off) - scratch);
+            nbr_at = static_cast<uint64_t>(reinterpret_cast<const unsigned char*>(g.nbr) - scratch);
+        }
+    }
+    par.sync();
+    if (!par.bcast(built_ok)) {
+        needed = sg_build_bytes(slots, pairs) + sg_metric_bytes(slots, 0, 0, par.width());
         return false;
     }
+    g.n = par.bcast(g.n);
+    g.edges = par.bcast(g.edges);
+    g.max_degree = par.bcast(g.max_degree);
+    g.off = reinterpret_cast<const uint32_t*>(scratch + par.bcast64(off_at));
+    g.nbr = reinterpret_cast<const uint32_t*>(scratch + par.bcast64(nbr_at));
+    arena.used = static_cast<size_t>(par.bcast64(arena.used));
     const size_t built = arena.used;
-    if (!sg_geometry_of(g, arena, out, ball_dimension, ball_capacity, want)) {
-        needed = built + sg_metric_bytes(g.n, g.max_degree);
+    if (!sg_geometry_of(g, arena, out, ball_dimension, ball_capacity, want, par)) {
+        needed = built + sg_metric_bytes(g.n, g.max_degree, g.edges, par.width());
         return false;
     }
     needed = arena.used;

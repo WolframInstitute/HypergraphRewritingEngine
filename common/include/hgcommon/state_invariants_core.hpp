@@ -310,7 +310,7 @@ HG_HD inline uint64_t si_record_fixed_bytes(uint32_t slots, uint32_t m, uint32_t
 // state_record reports the size it needs when that is short.
 HG_HD inline uint64_t si_record_bytes_hint(uint32_t slots, uint32_t m, uint32_t lanes) {
     return si_record_fixed_bytes(slots, m, lanes) + sg_build_bytes(slots, slots) +
-           sg_metric_bytes(slots, 8);
+           sg_metric_bytes(slots, 8, slots, lanes);
 }
 
 // An IR canonical form (ir_core.hpp: per edge in canonical order, its arity then its canonical
@@ -344,7 +344,7 @@ struct SiResult {
 // (si_form_csr), in `capacity` bytes of 8-byte aligned `scratch`. The geometry's floating-point
 // sums follow the vertex order, so the canonical labelling makes them one value per class. False
 // when the scratch is short, with `needed` set to a size to retry with; every lane returns the
-// same verdict and size. The geometry runs on the leader; `r` is the leader's.
+// same verdict and size. Both run on every lane of the policy; `r` is the leader's.
 template <class Par = IrSerial>
 HG_HD inline bool state_record(const uint32_t* off, const uint32_t* verts, uint32_t m,
                                const uint32_t* goff, const uint32_t* gverts, uint32_t gm,
@@ -361,14 +361,11 @@ HG_HD inline bool state_record(const uint32_t* off, const uint32_t* verts, uint3
         return false;
     }
     uint64_t need = 0;
-    if (par.leader()) {
-        size_t geo_need = 0;
-        if (!sg_state_geometry(SiCsrEdges{goff, gverts, gm}, scratch + fixed, capacity - fixed, r.g,
-                               ball, S + 1, geo_need))
-            need = fixed + geo_need;
-    }
+    size_t geo_need = 0;
+    if (!sg_state_geometry(SiCsrEdges{goff, gverts, gm}, scratch + fixed, capacity - fixed, r.g,
+                           ball, S + 1, geo_need, ~0u, par))
+        need = fixed + geo_need;
     par.sync();
-    need = par.bcast64(need);
     if (need) {
         needed = need;
         return false;
