@@ -268,7 +268,11 @@ ConcurrentHeterogeneousArena::Block::create(size_t data_capacity) {
     void*  map_base = nullptr;
     size_t map_len  = 0;
 #if defined(HG_VERIFICATION)
-    mem = ::operator new(total);
+    // Over-allocated and aligned by hand to alignof(Block); map_base keeps the pointer that
+    // operator delete takes back.
+    map_base = ::operator new(total + alignof(Block));
+    mem = reinterpret_cast<void*>((reinterpret_cast<uintptr_t>(map_base) + alignof(Block) - 1) &
+                                  ~uintptr_t(alignof(Block) - 1));
 #else
     const bool huge = total >= kHugePageBytes;
     if (huge) total = (total + kHugePageBytes - 1) & ~(kHugePageBytes - 1);
@@ -328,7 +332,7 @@ ConcurrentHeterogeneousArena::Block::create(size_t data_capacity) {
 
 void ConcurrentHeterogeneousArena::Block::release(Block* block) {
 #if defined(HG_VERIFICATION)
-    ::operator delete(block);
+    ::operator delete(block->map_base);
 #else
     pool_push(g_block_pool[pool_class_of(block->map_len)], block);
 #endif

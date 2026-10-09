@@ -219,9 +219,12 @@ public:
     ConcurrentHeterogeneousArena(ConcurrentHeterogeneousArena&&) = delete;
     ConcurrentHeterogeneousArena& operator=(ConcurrentHeterogeneousArena&&) = delete;
 
+    // The largest alignment create and allocate_array give: Block::data's.
+    static constexpr size_t kMaxAlign = 64;
     // Allocate and construct a new T
     template<typename T, typename... Args>
     T* create(Args&&... args) {
+        static_assert(alignof(T) <= kMaxAlign, "the arena aligns to at most kMaxAlign");
         void* mem = allocate_raw(sizeof(T), alignof(T));
 
         // Memory barrier: ensure prior reads see prior writes before we construct
@@ -349,6 +352,7 @@ public:
     // Allocate array of T (value-initialised, destructors tracked if needed).
     template<typename T>
     T* allocate_array(size_t n) {
+        static_assert(alignof(T) <= kMaxAlign, "the arena aligns to at most kMaxAlign");
         bool  zero = false;
         void* mem  = allocate_raw(sizeof(T) * n, alignof(T), &zero);
         T* arr = static_cast<T*>(mem);
@@ -430,7 +434,10 @@ private:
         // hash tables use to skip their fills; one below it fills as value-initialisation
         // requires. Capacity under HG_VERIFICATION, where a block is operator new.
         size_t dirty_end;
-        alignas(std::max_align_t) char data[];
+        // allocate_raw aligns an offset into data[], so an alignment up to kMaxAlign holds in
+        // memory only because data[] is itself kMaxAlign-aligned. std::max_align_t is 8 bytes
+        // under MSVC and 16 under GCC and Clang, so it does not give that alignment.
+        alignas(64) char data[];
 
         // A block from the process-wide pool of released blocks when one of the size class
         // is there, else a fresh mapping. release() returns it to the pool.
