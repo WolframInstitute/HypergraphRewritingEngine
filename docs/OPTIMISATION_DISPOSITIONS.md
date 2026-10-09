@@ -486,4 +486,9 @@ quotient 1942 -> 1634 at one thread and 334 -> 152 at 32. The two few-class quot
   is not yet measured; it matters to a Windows process that runs several evolutions (the
   serve worker, the LibraryLink library). A one-shot hg_evolve.exe of wpp d8 quotient with
   causal and branchial records takes 3.47 s against 1.02 s for the Linux binary under WSL.
+  The same in the serve worker (tools/hg_serve_probe.py, wpp d8 quotient job with causal and
+  branchial records, default threads): Windows hg_evolve.exe 3,272 ms for the first job and
+  5,430 / 5,607 / 5,748 ms for the next three; the Linux binary under WSL 995 / 872 / 827 /
+  802 ms. Every job after the first in a Windows process is 1.7x slower than the first, and the
+  serve worker is the path a Windows session runs its evolutions through.
   The ClangCL toolset is not installed on this box, so clang-cl was not measured.
