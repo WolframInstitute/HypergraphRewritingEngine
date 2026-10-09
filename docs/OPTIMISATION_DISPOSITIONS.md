@@ -379,6 +379,8 @@ fastest at 8 threads (55.1 ms) and took 101.2 ms at 32.
 | e1d71d2a | a replay event's slot is its id (the stride-171 permutation removed) | with per-worker id blocks the permutation put different workers' slots on one line: 15% of qr_apply's 16-thread samples on an applied-list head | multirule d7 q 8t 29.6 -> 25.3 ms; bigpath q 16t 18.3 -> 14.8 |
 | ad360afd | the early segment creation of b591bd1d only above eight workers | the early segment costs one zero-fill; off is faster at 2-8 threads | bigpath q 8t 15.8 -> 14.6 ms; 16/32 unchanged |
 | e1d66677 | a worker appends its replay causal pairs to its own chunks (no node, no compare-and-swap) | qc_record_causal 10% of one-thread instructions (multirule d7 q) | multirule d7 q 1t 114.9 -> 105.5 ms; arena 443 -> 423 MB |
+| 263c781d | worker threads and hg_evolve's main thread opt out of Windows power throttling (EcoQoS) | Windows ran every evolve() after the first in a process on efficiency cores at reduced clock: bench wpp d8 q one thread 2,640 then 4,029 / 4,347 ms | 2,655 / 2,474 / 2,481 ms; serve jobs 3,272 then 5,430-5,748 ms -> 3,098-3,189 ms |
+| aad7132d | a paclet reply builds the reconstruction's event-identity map only when it lists events or graphs (and an unread content map is deleted) | two std::unordered_maps over all 6.66M replayed applications for every reply, counts-only included | serve job wpp d8 q counts-only: Linux 1,028 -> 306 ms, Windows 3,135 -> 250 ms |
 | 544d81cc | arena Block::data aligned to 64 bytes (a defect found on Windows, not a speed change) | alignas(std::max_align_t) is 8 under MSVC: alignas(64) arena objects sat 8 bytes off a line, and after aa6287a8 MSVC's aligned stores faulted on every quotient replay run | Windows quotient runs complete; sizeof(Block) 56 -> 64 |
 
 After (gcc, `build_linux`, median of 3, ms; before aa6287a8):
@@ -465,6 +467,13 @@ quotient 1942 -> 1634 at one thread and 334 -> 152 at 32. The two few-class quot
   and with them the zero-token and repeated-token checks the test makes today.
 - GPU quotient replay: multirule d7 quotient takes 206 ms on the device against 23 ms on 16 CPU
   threads, all of it in the persistent kernel's replay phase (DEVICE_DESIGN 4.6.3).
+- Paclet replies with graphs: a wpp depth 7 quotient job asking for States, Events, CausalEdges,
+  StatesGraph and CausalGraph takes about 2.0 s, 98% of its samples on the main thread building
+  WXFValue trees and writing them (malloc/free about 30% of that thread); the engine's part is
+  under 0.1 s. An unordered set for the marshaller's sent-edge membership instead of std::set
+  measured within spread (1,976 / 2,028 against 2,170 / 2,161 ms) and was not landed. Writing the
+  graph sections directly to the stream, as the "States" and "Events" sections already are, is
+  the change that would remove it.
 - Windows native (MSVC Release, HEAD 544d81cc) against WSL (gcc, `build_linux`),
   bench_cpu_evolve, median of 3, ms at 1 / 8 / 16 / 32 threads:
 
@@ -477,18 +486,8 @@ quotient 1942 -> 1634 at one thread and 334 -> 152 at 32. The two few-class quot
   | bigpath n128 d3 quotient | 103 / 20 / 18 / 17 | 76 / 16 / 15 / 23 (min 19) |
   | cycle4 d6 full | 129 / 23 / 17 / 12 | 117 / 20 / 15 / 13 |
 
-  One thread, MSVC is 10-35% slower than gcc. The wpp d8 quotient one-thread median comes
-  from a per-process effect measured with HG_BENCH_FAULTS: the first evolve() in a process
-  takes 2,640 ms with 632,849 page faults, the second and third 4,029 and 4,347 ms with 29,815
-  and 17,409 faults; with the block pool disabled the later ones take 4,360 and 4,467 ms with
-  ~628,000 faults each, so neither faults nor the pool explain it. At 16 threads the same run
-  is 278 / 278 / 272 / 260 ms over four iterations (Linux 345 / 287 / 261 / 252). The cause
-  is not yet measured; it matters to a Windows process that runs several evolutions (the
-  serve worker, the LibraryLink library). A one-shot hg_evolve.exe of wpp d8 quotient with
-  causal and branchial records takes 3.47 s against 1.02 s for the Linux binary under WSL.
-  The same in the serve worker (tools/hg_serve_probe.py, wpp d8 quotient job with causal and
-  branchial records, default threads): Windows hg_evolve.exe 3,272 ms for the first job and
-  5,430 / 5,607 / 5,748 ms for the next three; the Linux binary under WSL 995 / 872 / 827 /
-  802 ms. Every job after the first in a Windows process is 1.7x slower than the first, and the
-  serve worker is the path a Windows session runs its evolutions through.
+  One thread, MSVC is 10-35% slower than gcc (that table predates 263c781d). The slowdown of
+  every evolve() after the first in a Windows process was power throttling, closed by
+  263c781d; the remaining 3x gap of the counts-only serve job was the reply's identity maps,
+  closed by aad7132d (Windows 250 ms against Linux 306 ms per job after both).
   The ClangCL toolset is not installed on this box, so clang-cl was not measured.
