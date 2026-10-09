@@ -7,7 +7,7 @@ Paclet: WolframInstitute/HypergraphRewriteEngine
 URI: WolframInstitute/HypergraphRewriteEngine/guide/HypergraphRewriting
 Description: Multiway hypergraph rewriting: states, events, causal and branchial graphs, state and event identity, statistics of each step, sampling, generated initial conditions, sessions and the GPU
 Keywords: [hypergraph, multiway, rewriting, causal graph, branchial graph, Wolfram physics, isomorphism, canonicalization, statistics, sampling, session, GPU]
-RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning, InitialConditions, Sessions, GPUEvolution]
+RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning, InitialConditions, Sessions, GPUEvolution, ScienceWithStepStatistics]
 Links: ["[HypergraphRewritingEngine on GitHub](https://github.com/WolframInstitute/HypergraphRewritingEngine)", "[Wolfram Physics Project technical introduction](https://www.wolframphysics.org/technical-introduction/)"]
 ---
 

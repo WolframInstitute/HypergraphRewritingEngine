@@ -7,7 +7,7 @@ URI: WolframInstitute/HypergraphRewriteEngine/ref/HGEvolve
 Keywords: [hypergraph, multiway, rewriting, Wolfram physics, causal graph, branchial graph, evolution, canonicalization, isomorphism, sampling, initial condition]
 SeeAlso: [HGSessionOpen, HGSessionStep, HGSessionQuery]
 RelatedGuides: [HypergraphRewriting]
-RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning, InitialConditions, Sessions, GPUEvolution]
+RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning, InitialConditions, Sessions, GPUEvolution, ScienceWithStepStatistics]
 ---
 
 ## Usage
@@ -83,6 +83,21 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 - Two events are causally related when one consumes a hyperedge the other produced. The causal relation is transitively reduced by default. `"NumCausalEdges"`, `"CausalEdges"` and the causal graphs give the same relation.
 - Two events are branchially related when they are applied to the same state and consume a common hyperedge. `"BranchialEdges"` lists every such pair; the branchial graph joins the output states of the pairs at the step `"BranchialStep"` selects.
 - A `"StepStatistics"` entry has the keys `"Step"`, `"RawStates"`, `"Classes"` (isomorphism classes), `"Redundancy"` (states per class), `"MaxMultiplicity"`, `"MultiplicityHistogram"`, `"ClassEntropyBits"` and `"ClassEntropyNormalized"` (the entropy of the states over the classes), `"Events"` and `"RuleCounts"` (the events whose output state is at the step), `"Invariants"` (for each of twenty-five per-state invariants, such as `"VertexCount"`, `"Components"`, `"IncidenceDiameter"` and the geometry entries below, its `"N"`, `"Mean"`, `"StandardDeviation"`, `"Min"`, `"Max"`, `"Median"` and `"Histogram"`), `"VertexInvariants"` (distributions over the vertices of all the step's states, below), histograms of hyperedge arity and vertex degree, and `"BallGrowthDimension"` (for each radius r, the summary of the states' ball-growth dimension at r). Under `"ExploreFromCanonicalStatesOnly" -> True` they are computed from one state per class and the number of states in the class. `"StepStatisticsWeighting" -> "Classes"` counts each class once in `"Invariants"`, `"BallGrowthDimension"` and the histograms.
+- The structural entries of `"Invariants"` are computed on the state's hypergraph and its incidence graph (a node for each vertex and each hyperedge, joined when the vertex is in the hyperedge):
+
+|   |   |
+|---|---|
+| `"VertexCount"`, `"EdgeCount"` | the number of vertices and of hyperedges |
+| `"MaxDegree"`, `"MeanDegree"` | the largest and the mean number of hyperedge slots a vertex fills |
+| `"TwoSectionEdgeCount"` | the number of distinct vertex pairs that share a hyperedge |
+| `"Components"` | the number of components of the incidence graph |
+| `"CycleRank"` | `"TwoSectionEdgeCount"` - `"VertexCount"` + `"Components"` |
+| `"IncidenceCycleRank"` | the number of incidences - (`"VertexCount"` + `"EdgeCount"`) + `"Components"` |
+| `"IncidenceDiameter"`, `"IncidenceMeanDistance"` | the longest and the mean distance between nodes of the largest incidence component |
+| `"LargestComponentFraction"` | the vertices of the largest incidence component over `"VertexCount"` |
+
+- `"ArityHistogram"` and `"DegreeHistogram"` count the hyperedges by arity and the vertices by degree over the step's states. `"AritySignatureHistogram"` and `"DegreeSequenceHistogram"` count the states by their list of hyperedge arities and by their degree sequence. All four are weighted as `"Invariants"` is.
+
 - The geometry entries of `"Invariants"` are computed on a state's graph: its vertices, with an edge between consecutive vertices of each hyperedge. A state where an entry is undefined is left out of that entry, so `"N"` counts the states where it is defined.
 
 |   |   |
