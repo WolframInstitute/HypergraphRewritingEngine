@@ -1309,7 +1309,10 @@ private:
     // raw state id or an edge id is assigned by whichever worker got there first, so a draw
     // keyed on one selects a different subgraph every run and there is nothing to compare
     // against the unpruned evolution.
-    uint64_t canonical_transition_key(StateId state, const MatchRecord& match);
+    // `by_orbit` false reads the raw state's own edge ranks under the quotient reconstruction
+    // too: the key full capture ranks by, which the spine breaks orbit ties on.
+    uint64_t canonical_transition_key(StateId state, const MatchRecord& match,
+                                      bool by_orbit = true);
 
     // The sampling draw with the spine guarantee: a passing draw records that its source state
     // has a survivor; a failing draw on a state that has already drained with NO survivor is

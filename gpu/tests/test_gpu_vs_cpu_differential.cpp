@@ -893,6 +893,20 @@ std::vector<Workload> build_corpus() {
         .num_steps = 5,
         .explore_from_canonical_states_only = true,
     });
+    // Sampled quotient run whose draws fail at every state, so the spine carries each step, and
+    // whose spine transitions tie under the orbit key (fuzz seed 201768). Both engines break the
+    // tie on the full-capture key (hgcommon::spine_before).
+    ws.push_back({
+        .name = "quotient_sampled_spine_ties",
+        .rules = {rule({{4, 3, 5, 2}}, {{3, 5}, {5, 4}, {4, 4}}),
+                  rule({{2, 4}, {4, 2}}, {{4}, {4, 4}, {2, 2}})},
+        .initial_state = V{{0u, 1u}, {1u, 1u}, {2u, 1u, 1u, 0u}, {1u, 0u, 1u, 1u}},
+        .num_steps = 5,
+        .explore_from_canonical_states_only = true,
+        .transition_rate = 0.317,
+        .rule_weights = {0.43, 0.24},
+        .random_seed = 1855184222,
+    });
     ws.push_back({
         .name = "quotient_all_three_triangle",
         .rules = {rule({{0,1}}, {{0,2},{2,1}}),

@@ -60,12 +60,15 @@ using FrameMap = ConcurrentMap<uint64_t, uint64_t>;
 // assembling match.cu. One call per completed match is not the cost that matters here.
 __device__ inline __noinline__ uint64_t transition_key_device(const DeviceState& ds, StateId state_id,
                                                  RuleId rule_id, const EdgeId* matched_edges,
-                                                 uint8_t num_edges) {
+                                                 uint8_t num_edges, bool by_orbit = true) {
     // Under the quotient reconstruction (state_edge_orbit is allocated exactly then) the matched
     // edges' automorphism orbit ids, as the host's canonical_transition_key reads them: one raw
     // state per class defines the class's expansion, and keyed on orbits automorphic transitions
-    // tie, so a cap keeps or drops them together from every raw state of the class.
-    const uint32_t* coord = ds.state_edge_orbit ? ds.state_edge_orbit : ds.state_edge_rank;
+    // tie, so a cap keeps or drops them together from every raw state of the class. `by_orbit`
+    // false reads the edge ranks, the key full capture ranks by, which the spine breaks orbit
+    // ties on (hgcommon::spine_before).
+    const uint32_t* coord =
+        (by_orbit && ds.state_edge_orbit) ? ds.state_edge_orbit : ds.state_edge_rank;
     uint32_t ranks[kMaxPatternEdges];
     uint8_t n = 0;
     for (uint8_t i = 0; i < num_edges && n < kMaxPatternEdges; ++i) {
