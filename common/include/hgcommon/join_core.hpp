@@ -22,13 +22,10 @@
 // edge-injectivity rule, the binding and its unwind, and the order in which pattern edges are
 // bound.
 //
-// THE ORDER IS AN EXPLICIT PARAMETER, because the two sides represent it differently and that
-// difference was invisible. The host keeps the LHS in its authored order and indirects through
-// RewriteRule::match_order at match time (pattern.hpp:116). The device physically reorders
-// DeviceRule::lhs[] when the rule is built (match.cu:515, "we physically reorder here") and then
-// binds lhs[depth]. Both express "bind this pattern edge at this depth"; only one of them can be
-// read off a rule. Ctx::order_at(k) is that function, so a reader sees the choice instead of
-// inferring it from which array is indexed.
+// THE ORDER IS AN EXPLICIT PARAMETER. Both sides keep the LHS in its authored order and read the
+// schedule from an order array: RewriteRule::match_order on the host (pattern.hpp), DeviceRule::order
+// on the device (match.hpp). Ctx::order_at(k) returns the authored pattern edge bound at depth k,
+// and a match's edges are indexed by authored position on both sides.
 //
 // EDGE-INJECTIVE, VERTEX-NON-INJECTIVE. A match is a morphism that is injective on EDGES and
 // unrestricted on vertices: distinct pattern variables may bind the same vertex, and two pattern
@@ -99,11 +96,9 @@ struct JoinState {
 // order[0] never bound at all, so every match through it is silently missed, and because
 // forwarding is inductive each miss deletes a whole subtree while the run stays self-consistent.
 //
-// Takes the schedule as an accessor, not an array, for two reasons: the device HAS no order
-// array (it physically reorders DeviceRule::lhs[] at build time, so its schedule is the
-// identity), and a caller that expands by SPAWNING A TASK per candidate instead of recursing --
-// ParallelEvolutionEngine::execute_expand_task -- selects with this same function rather than
-// its own copy of the loop.
+// Takes the schedule as an accessor so that a caller that expands by SPAWNING A TASK per
+// candidate instead of recursing -- ParallelEvolutionEngine::execute_expand_task -- selects with
+// this same function.
 //
 // 0xFF means every position is bound.
 template <typename OrderAt>

@@ -68,11 +68,9 @@ struct MatchJoinCtx {
 
     __device__ uint8_t num_lhs_edges() const { return rule.num_lhs_edges; }
 
-    // The device's schedule is the IDENTITY: build_device_rule physically reorders
-    // DeviceRule::lhs[] into join order when the rule is built, so position k of the
-    // schedule is lhs[k]. The host instead keeps its LHS authored and indirects through
-    // RewriteRule::match_order. Both say "bind this pattern edge at this position".
-    __device__ uint8_t order_at(uint8_t k) const { return k; }
+    // DeviceRule::order, as the host's RewriteRule::match_order: the authored pattern edge
+    // bound at depth k.
+    __device__ uint8_t order_at(uint8_t k) const { return rule.order[k]; }
 
     __device__ const uint8_t* pattern_vars(uint8_t p)  const { return rule.lhs[p].vars; }
     __device__ uint8_t        pattern_arity(uint8_t p) const { return rule.lhs[p].arity; }
@@ -264,11 +262,12 @@ __device__ __noinline__ void match_state_rule_pass(
         publish_match(m);
     };
 
-    // One thread, one depth-0 candidate, one whole DFS subtree: the join anchored at position 0.
-    // A single-edge rule completes on the anchor itself and emits through this same path.
+    // One thread, one depth-0 candidate, one whole DFS subtree: the join anchored at the
+    // schedule's first pattern edge. A single-edge rule completes on the anchor itself and emits
+    // through this same path.
     auto run_dfs_from_root = [&] (EdgeId root_cand) {
         MatchJoinState st;
-        hgcommon::join_seed(ctx, st, root_cand, 0, emit);
+        hgcommon::join_seed(ctx, st, root_cand, rule.order[0], emit);
     };
 
     // Stride pattern edge 0's candidates -- the state's own edge slice -- across the block's
@@ -604,16 +603,17 @@ DeviceRule make_device_rule(const RewriteRule& rule) {
         d.new_var_mask = rhs_mask & ~lhs_mask;
     }
 
-    // Emit LHS in connectivity-scheduled order. The DFS binds edges in the
-    // ORDER they appear in `d.lhs[]`, so we physically reorder here.
+    // LHS in authored order; the connectivity schedule goes in d.order and each edge's pivot on
+    // the edge itself.
     auto schedule = schedule_lhs_edges(rule);
     for (uint8_t e = 0; e < d.num_lhs_edges; ++e) {
         const auto& sch = schedule[e];
         const auto& src = rule.lhs[sch.src_index];
-        DevicePatternEdge& dst = d.lhs[e];
+        DevicePatternEdge& dst = d.lhs[sch.src_index];
         dst.arity = static_cast<uint8_t>(src.size());
         for (uint8_t i = 0; i < dst.arity; ++i) dst.vars[i] = src[i];
         dst.pivot_var = sch.pivot_var;
+        d.order[e] = sch.src_index;
     }
 
     for (uint8_t e = 0; e < d.num_rhs_edges; ++e) {
