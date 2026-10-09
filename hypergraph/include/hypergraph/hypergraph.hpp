@@ -435,19 +435,59 @@ class Hypergraph {
     // MEASURED as the reason: this set took 95,600 inserts on cycle4 against qc_applied_'s
     // 68,184, and ConcurrentKeySet::insert went from 12.9% of the run at one thread to 41.2% at
     // four on a part whose cores do not share a last-level cache.
-    // One list head per 64-byte line: eight 8-byte heads on one line made every push a
-    // contended compare-and-swap (multirule depth 7 quotient, 16 threads: 44% of the run in this
-    // push's retry loop).
-    struct alignas(64) QcPairList { LockFreeList<uint64_t> list; };
+    // A worker's list is written by that worker alone: chunks of kCap pairs, the newest at
+    // `head`, each with a count a reader loads with acquire after the writer's release, so an
+    // append is a store and a count increment, with no compare-and-swap and no node per pair.
+    // One head per 64-byte line (eight 8-byte heads on one line measured 44% of a 16-thread
+    // multirule depth 7 quotient run in the push). A thread that is not a worker appends to
+    // qc_causal_pairs_outside_, which several such threads may share.
+    struct QcPairChunk {
+        static constexpr uint32_t kCap = 252;
+        std::atomic<uint32_t> n{0};
+        QcPairChunk* prev = nullptr;
+        uint64_t v[kCap];
+    };
+    struct alignas(64) QcPairList {
+        std::atomic<QcPairChunk*> head{nullptr};
+        template <typename Arena>
+        void push(uint64_t key, Arena& arena) {
+            QcPairChunk* c = head.load(std::memory_order_relaxed);
+            uint32_t n = c ? c->n.load(std::memory_order_relaxed) : QcPairChunk::kCap;
+            if (n == QcPairChunk::kCap) {
+                QcPairChunk* made = arena.template create<QcPairChunk>();
+                made->prev = c;
+                head.store(made, std::memory_order_release);
+                c = made;
+                n = 0;
+            }
+            c->v[n] = key;
+            c->n.store(n + 1, std::memory_order_release);
+        }
+        template <typename F>
+        void for_each(F&& f) const {
+            for (const QcPairChunk* c = head.load(std::memory_order_acquire); c; c = c->prev) {
+                const uint32_t n = c->n.load(std::memory_order_acquire);
+                for (uint32_t i = 0; i < n; ++i) f(c->v[i]);
+            }
+        }
+        size_t size() const {
+            size_t n = 0;
+            for (const QcPairChunk* c = head.load(std::memory_order_acquire); c; c = c->prev)
+                n += c->n.load(std::memory_order_acquire);
+            return n;
+        }
+    };
     QcPairList qc_causal_pairs_[MAX_ARENA_WORKERS];
+    LockFreeList<uint64_t> qc_causal_pairs_outside_;
 
     template <typename F>
     void qc_causal_pairs_for_each(F&& f) const {
-        for (const QcPairList& l : qc_causal_pairs_) l.list.for_each(f);
+        for (const QcPairList& l : qc_causal_pairs_) l.for_each(f);
+        qc_causal_pairs_outside_.for_each(f);
     }
     size_t qc_causal_pairs_count() const {
-        size_t n = 0;
-        for (const QcPairList& l : qc_causal_pairs_) n += l.list.size();
+        size_t n = qc_causal_pairs_outside_.size();
+        for (const QcPairList& l : qc_causal_pairs_) n += l.size();
         return n;
     }
     // Isomorphism-invariant signature per reconstructed event: fnv(from hash, to hash, rule).
