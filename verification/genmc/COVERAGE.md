@@ -9,12 +9,15 @@ engine code that contains it; reach was traced per protocol from each harness's 
 instruction by an instrument, and rows marked (inferred) were traced through the composed
 engine's call graph without a run that names the site.
 
-Every harness below except engine_evolve and quotient_capture_composition reaches a verdict on
-the v0.19 fork with no execution cut at an unroll bound, and every harness carries
-`// GENMC-CALIBRATE:` cells that the checker catches (`HG_GENMC_CALIBRATE=1 run.sh`). The two
-exceptions run to the end of main (their HG_HARNESS_CALIBRATE_END cell is reported) but their
-explorations do not end: engine_evolve explored 23,548 executions in 83 minutes, and
-quotient_capture_composition is estimated at 2^97. Their protocols are marked (partial) below.
+Every harness below except quotient_capture_composition reaches a verdict on the v0.19 fork
+with no execution cut at an unroll bound, and every harness carries `// GENMC-CALIBRATE:` cells
+that the checker catches (`HG_GENMC_CALIBRATE=1 run.sh`). Seven reach theirs under sequential
+consistency with a context bound (listed under "Bounds" below): engine_evolve,
+keyed_intern_once, keyed_twin_rendezvous, quotient_capture_frame, quotient_capture_register and
+the two 3-thread harnesses. quotient_capture_composition runs to the end of main (its
+HG_HARNESS_CALIBRATE_END cell is reported) but its RC11 exploration is estimated at 2^97 and
+does not end; quotient_capture_frame and quotient_capture_register check it by phase. Protocols
+reached only by engine_evolve are marked (partial): its verdict is at one context switch.
 engine_construct, engine_rule and engine_evolve calibrate reachability of the end only; no
 defect calibration is caught at their bounds. Threads are the concurrent threads of the harness,
 main included when it races.
@@ -66,7 +69,9 @@ harness. The park protocol is checked on its spin backend, which waits on the sa
 `engine_*` is engine_construct, engine_rule and engine_evolve: the composed engine with two
 workers and main. engine_construct and engine_rule are exhaustive (1768 executions each) and
 reach construction, rule setup, worker start, parking and shutdown; the matching, rewriting and
-registration points are reached only by engine_evolve, which is partial.
+registration points are reached only by engine_evolve, which is partial: its verdict (38
+executions, no errors) is under sequential consistency with one context switch, and its RC11
+exploration gave no verdict in 83 minutes.
 
 ## Harnesses that run a copy of the protocol
 
@@ -99,6 +104,9 @@ sequence is the harness's, and the stop-cut and `resume_pending` branches of
 
 ## Bounds that limit what a harness reaches
 
+- engine_evolve checks sequential consistency with 1 context switch (38 executions, 332
+  blocked): its RC11 exploration gave no verdict in 83 minutes, and its transform needs more
+  than 12,000 MB of address space (run with HG_GENMC_MEM_MB=16000).
 - keyed_intern_once checks sequential consistency with 4 context switches: its RC11 exploration
   gave no verdict in 2,770 s. keyed_twin_rendezvous checks sequential consistency with 1 context
   switch: its RC11 estimate is 2^51 executions and 2 switches gave no verdict in 1,500 s.
