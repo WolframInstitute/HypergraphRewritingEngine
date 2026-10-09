@@ -8,9 +8,9 @@ state and causal-edge counts, its C++ core is $\SpeedupAtLowDepth\times$ faster 
 \SpeedupLowDepth{} and $\SpeedupAtHighDepth\times$ faster at depth \SpeedupHighDepth{}
 (Table~\ref{tab:t2-speedup}); through the paclet's Wolfram interface it is still
 $\PacletVsAuthorityDeep\times$ faster. On the CPU, evolution reaches a speedup of
-$\MaxHostSpeedup\times$ at \MaxHostSpeedupThreads{} workers (Table~\ref{tab:t8-scaling}), limited
-by cache traffic between L3 domains rather than by contention on the shared structures
-(Section~\ref{sec:memory-scaling}). On the GPU, the resident kernel is
+$\MaxHostSpeedup\times$ at \MaxHostSpeedupThreads{} workers (Table~\ref{tab:t8-scaling}); on a
+part with eight L3 domains it is limited by cache traffic between them rather than by contention on
+the shared structures (Section~\ref{sec:memory-scaling}). On the GPU, the resident kernel is
 $\GpuSpeedupAtDeepest\times$ faster than eight CPU threads at depth \GpuDeepestDepth{}
 (Table~\ref{tab:t7-gpu}), and is limited by the serial steps of the canonicalization search.
 

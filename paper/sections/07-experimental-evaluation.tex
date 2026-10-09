@@ -22,8 +22,8 @@ change the result? (Tables~\ref{tab:t9-ablation}, \ref{tab:t6-quotient}, \ref{ta
 \subsection{Experimental Setup}
 
 \begin{description}
-\item[Hardware:] AMD EPYC 9174F (16 cores, 32 threads, one socket), 503\,GB RAM, NVIDIA RTX 4090 (24\,GB, compute capability 8.9), on bare metal. The cores are identical, so speedups divide comparable quantities. Workers are placed in the engine's default order, read from the cache topology at start-up: the cores of one last-level-cache domain and their SMT siblings are filled before the next domain is used. The Wolfram comparison of Table~\ref{tab:t2-speedup} needs a licensed Wolfram kernel and ran on a different machine, an Intel i9-14900K.
-\item[Software:] Ubuntu 24.04, Linux 6.8, GCC with C++20, CUDA 12.0, Wolfram Language 14.3.
+\item[Hardware:] Intel i9-14900K (8 performance cores with SMT and 16 efficiency cores, 32 threads, one L3), 31\,GB RAM, NVIDIA RTX 4090 (24\,GB, compute capability 8.9), under WSL2. Workers are placed in the engine's default order, read from the cache topology at start-up. The left-hand-side sweep (Figures~\ref{fig:lhs-scaling} and~\ref{fig:shape-space}, Table~\ref{tab:t14-shape-space}), the occupancy table (Table~\ref{tab:device-occupancy}) and the hardware-counter measurements of Section~\ref{sec:memory-scaling} were taken on an AMD EPYC 9174F (16 cores, 32 threads, eight L3 domains), 503\,GB RAM, with the same GPU model, on bare metal.
+\item[Software:] Linux 6.18 (WSL2), GCC 15.2 with C++20, CUDA 13.3, Wolfram Language 14.3.
 \item[Workloads:] A corpus of 17 workloads covering rule types (single and multiple rules; productive, idempotent, reductive and mixed-arity rules; several initial-state shapes), and deeper runs of the canonical Wolfram rule $\{\{x,y,z\}\} \to \{\{x,y,w\},\{y,z,w\}\}$ for the scaling and GPU measurements.
 \item[Methodology:] Wall times are medians over repeated runs on an otherwise idle machine, and the two arms of any comparison are measured in the same session, because run-to-run variation on this machine exceeds many of the effects reported. Counts, instruction counts and \texttt{getrusage} figures are deterministic and come from a single run. The left-hand-side sweep of Figure~\ref{fig:lhs-scaling} reports the \emph{minimum} of its repeats, because interference from other load can only slow a run, and it starts a timed run only when the machine is idle.
 \end{description}
@@ -38,8 +38,8 @@ oracle. All seventeen workloads agree exactly.
 
 Table~\ref{tab:t3-deheap} gives the memory the same runs use. Arena bytes come from the arena's own
 counter, which is deterministic, rather than from the resident set size. The global allocator is
-called $455$ to $475$ times per run, for set-up that does not grow with the evolution, so calls
-per event fall from $456$ on the smallest workload to $0.007$ on the largest.
+called $259$ to $280$ times per run, for set-up that does not grow with the evolution, so calls
+per event fall from $259$ on the smallest workload to $0.004$ on the largest.
 
 \begin{table}[htbp]
 \centering
@@ -113,19 +113,20 @@ counts and is not timed.}
 \end{table*}
 
 \subsection{Thread Scaling}
-Strong scaling is measured on the Wolfram rule at depth seven, the deepest run in
-Table~\ref{tab:t7-gpu}, at 1, 2, 4, 8, 16, 24 and 32 workers; the host has sixteen
-cores, so workers beyond sixteen share a core with another worker through SMT. Wall time falls at
-every step, by less each time, and by less again once the physical cores are used up, reaching a
-speedup of $\MaxHostSpeedup\times$ at \MaxHostSpeedupThreads{} workers (Table~\ref{tab:t8-scaling}).
+Strong scaling is measured on the Wolfram rule at depths five to seven, the depths of
+Table~\ref{tab:t7-gpu}, at 1, 2, 4, 8, 16, 24 and 32 workers; the host has eight performance cores
+with SMT and sixteen efficiency cores. At depth seven wall time falls at every step, by less each
+time, reaching a speedup of $\MaxHostSpeedup\times$ at \MaxHostSpeedupThreads{} workers
+(Table~\ref{tab:t8-scaling}). At depths five and six, below $10$\,ms of single-threaded work, it
+stops falling at eight workers.
 The expanded state set and the transition multiset are the same at every thread count and seed.
 Table~\ref{tab:t12-shapes} gives the spread across rule shapes, and Table~\ref{tab:t13-memory} what
 the extra time at high thread counts is spent on.
 
 \begin{table}[htbp]
 \centering
-\caption{Strong scaling: median wall time and speedup over one worker by worker
-count, Wolfram rule at depth seven ($28{,}542$ canonical and $45{,}317$ raw states at every
+\caption{Strong scaling: median wall time and parallel efficiency by worker count, Wolfram rule
+at depths five to seven ($28{,}542$ canonical and $45{,}317$ raw states at depth seven, at every
 worker count), workers in the engine's default placement.}
 \label{tab:t8-scaling}
 \input{tables/t8_scaling}
@@ -147,7 +148,7 @@ worker count), workers in the engine's default placement.}
 \end{tikzpicture}
 \caption{User and system time against worker count, for the runs of
 Table~\ref{tab:t13-memory}: across a $\ThreadSweepFactor\times$ increase in workers, user time
-grows $\UserTimeGrowth\times$ and system time, thirty to forty-five times smaller, grows
+grows $\UserTimeGrowth\times$ and system time, seven to fifteen times smaller, grows
 $\SysTimeGrowth\times$.}
 \label{fig:scaling}
 \end{figure}
@@ -156,11 +157,11 @@ $\SysTimeGrowth\times$.}
 The amount of parallel work in a run depends on the rule. Table~\ref{tab:t12-shapes} measures two
 rules at every thread count: a one-edge left-hand side, which matches by an index scan and expands
 each state narrowly, and a two-edge left-hand side, which matches by a join and produces a wider
-frontier. With both sized to seconds of single-threaded work, their efficiencies are within a few
+frontier. With both sized to seconds of single-threaded work, their efficiencies are within ten
 points of each other at every thread count (the lower of the two is $\EffAtEight$ at eight threads
-and $\EffAtSixteen$ at sixteen), and both still gain in wall time at thirty-two threads. The
-decline is not thread start-up, since both single-threaded runs take seconds; it starts at the
-thread count that first uses a second L3 domain (Section~\ref{sec:memory-scaling}).
+and $\EffAtSixteen$ at sixteen). The two-edge left-hand side still gains in wall time at
+thirty-two threads; the one-edge left-hand side is fastest at twenty-four. The decline is not
+thread start-up, since both single-threaded runs take seconds.
 Section~\ref{sec:lhs-space} measures the same size axis at four sizes and greater depths, together
 with two other properties of the left-hand side.
 
@@ -304,15 +305,15 @@ mode; the grey line $y=1$ is ideal scaling.}
 \label{sec:memory-scaling}
 Falling efficiency at high thread counts could come from contention on the shared structures or
 from the cost of acquiring memory. Table~\ref{tab:t13-memory} gives \texttt{getrusage} figures for
-a workload of eighteen seconds of single-threaded work. Across a $\ThreadSweepFactor\times$
+a workload of $4.6$ seconds of single-threaded work. Across a $\ThreadSweepFactor\times$
 increase in workers, user time grows $\UserTimeGrowth\times$ and system time
-$\SysTimeGrowth\times$, reaching $2.9$\,s of $128.7$\,s of CPU time at 32 workers, so the extra
+$\SysTimeGrowth\times$, reaching $2.2$\,s of $16.6$\,s of CPU time at 32 workers, so the extra
 time is in user code. Peak
-resident set grows by a quarter and minor faults eleven-fold, and system time, which follows the
+resident set grows by an eighth and minor faults eighteen-fold, and system time, which follows the
 faults as each worker draws its own arena blocks, stays small, so memory acquisition is not the
 cause. The instruction count is flat across the sweep (below), so spinning is not the cause either.
 
-Hardware counters identify the cause. On the Wolfram rule at depth seven, executed instructions
+Hardware counters on the EPYC host identify the cause there. On the Wolfram rule at depth seven, executed instructions
 are $14.5$G at one thread and $15.8$G at 32, while cycles double, so instructions per cycle fall
 from $1.44$ to $0.69$. The counter that grows is demand fills served from another L3 domain's cache
 (AMD \texttt{ls\_dmnd\_fills\_from\_sys.near\_cache}): $47$k at one thread and $10.6$M at 32. Fills
@@ -324,8 +325,8 @@ without changing the total or the wall time; the fills move to neighboring code.
 from the evolution itself: about twelve cross-domain fills per object created, because a state
 created on one core complex is read by workers on others, and this part has eight L3 domains.
 
-The cost appears in wall time at the worker that first uses a second L3 domain. On this part an L3
-domain holds two cores. With one worker per physical core, wall time rises from two workers to
+The cost appears in wall time at the worker that first uses a second L3 domain. On the EPYC part
+an L3 domain holds two cores. With one worker per physical core, wall time rises from two workers to
 three on every large workload (\texttt{wpp} by $12.7\%$, \texttt{multirule} by $36.1\%$), and
 placing the third worker on an SMT sibling in the first domain removes the rise. The engine
 therefore fills each domain's two cores and their SMT siblings before using the next domain. This
@@ -452,9 +453,8 @@ the remaining columns are the sizes of the three objects the run built.}
 \caption{Median time against the resident kernel's grid size
 (Table~\ref{tab:t11-saturation}).}
 \end{subfigure}
-\caption{Device comparison. The device is slower than eight CPU threads at depth five and faster
-from depth six; time stops improving beyond eight blocks per streaming multiprocessor, the default
-grid.}
+\caption{Device comparison. The device is slower than eight CPU threads at depths five and six and
+faster at depth seven; time stops improving beyond four blocks per streaming multiprocessor.}
 \label{fig:gpu}
 \end{figure}
 
@@ -462,19 +462,18 @@ grid.}
 Both engines run the same rule, initial state, canonicalization mode and exploration strategy, and
 report medians from one session (Figure~\ref{fig:gpu}, Table~\ref{tab:t7-gpu}). At depth five the
 CPU is faster, because there is too little work to cover the device's fixed cost per evolution.
-From depth six the device is faster than both CPU configurations, and the margin grows with depth,
-to $\GpuSpeedupAtDeepest\times$ eight CPU threads at depth $\GpuDeepestDepth$ and more against one
-thread.
+At depth six the device is faster than one CPU thread and slower than eight. At depth
+$\GpuDeepestDepth$ it is faster than both, $\GpuSpeedupAtDeepest\times$ against eight CPU threads
+and more against one.
 
 Table~\ref{tab:t16-persistent} compares the resident kernel with a per-step \texttt{evolve()} on the
 device, on the same workload. The resident kernel is $\PersistentSpeedupFour\times$ faster at depth
-four, $\PersistentSpeedupFive\times$ at five, $\PersistentSpeedupSix\times$ at six and
-$\PersistentSpeedupSeven\times$ at seven. The difference is a fixed cost per call:
-\texttt{evolve()} takes $\PersistentEvolveConstLo$--$\PersistentEvolveConstHi$\,ms at depths four
-to six while the state count grows from $\PersistentStatesLo$ to $\PersistentStatesHi$. From depth
-\PersistentTieDepthWord{} ($\PersistentStatesTie$ states) the evolution outweighs that cost and the
-two take the same time within run-to-run variation ($\PersistentSpeedupEight\times$ and
-$\PersistentSpeedupNine\times$ at depths eight and nine).
+four, $\PersistentSpeedupFive\times$ at five, $\PersistentSpeedupSix\times$ at six,
+$\PersistentSpeedupSeven\times$ at seven and $\PersistentSpeedupEight\times$ at eight
+($\PersistentStatesTie$ states). At depths four to six the difference is a fixed cost per call:
+\texttt{evolve()} takes $\PersistentEvolveConstLo$--$\PersistentEvolveConstHi$\,ms while the state
+count grows from $\PersistentStatesLo$ to $\PersistentStatesHi$. Depth nine needs more device
+memory than the card has.
 
 \begin{table}[htbp]
 \centering
@@ -504,8 +503,9 @@ device, by depth on the same rule and initial state.}
 
 \subsection{Device Saturation}
 The resident kernel is launched with a fixed number of blocks per streaming multiprocessor, so that
-number is a tuning parameter. Wall time falls as blocks are added until eight per SM, the default,
-and sixteen per SM is within measurement variation of eight (Table~\ref{tab:t11-saturation}). The
+number is a tuning parameter. On the Wolfram rule at depth eight, wall time falls as blocks are
+added until four per SM; eight per SM, the default, is $1.1\%$ slower than four, and sixteen
+$4.9\%$ slower (Table~\ref{tab:t11-saturation}). The
 last column, the driver's peak SM-busy reading, reports whether the multiprocessors were busy, not
 how many warps were resident; it reads $100\%$ at every point.
 
@@ -618,8 +618,8 @@ compares different computations; Section~\ref{sec:event-canon} reports how their
 and Table~\ref{tab:t6-quotient} reports quotient exploration. The static analysis of
 Section~\ref{sec:static-analysis} turns forwarding on or off per rule set. Table~\ref{tab:t9-ablation}
 gives best-of-$N$ wall times for both settings. On the one-edge left-hand side (depth eight) the
-analysis turns forwarding off, and forwarding on is $1.16\times$ slower. On the two-edge left-hand
-side (depth six) it turns forwarding on, and forwarding on is $1.10\times$ slower than off. Both settings give
+analysis turns forwarding off, and forwarding on is $1.04\times$ slower. On the two-edge left-hand
+side (depth six) it turns forwarding on, and forwarding on is $1.01\times$ slower than off. Both settings give
 the same state and event counts on both workloads.
 
 \begin{table}[htbp]
@@ -652,10 +652,10 @@ Executed instruction counts are deterministic for a single-threaded run and unaf
 load, so they attribute time to parts of the engine. Table~\ref{tab:t15-instructions}
 comes from one \texttt{callgrind} run of a single-threaded depth-six evolution of the Wolfram rule
 under quotient exploration with the raw relations reconstructed, the CPU benchmark's default
-configuration. The quotient reconstruction ($\InstrShareRecon\%$) and canonicalization
-($\InstrShareCanon\%$) are the two largest parts and are close; the concurrent sets and maps
-($\InstrShareSets\%$) and libc's copies, fills and heap calls ($\InstrShareLibc\%$) follow; matching,
-its join and the rewrite together are $\InstrShareMatch\%$. The unattributed $\InstrUnattributedPct\%$
+configuration. Canonicalization ($\InstrShareCanon\%$) and the quotient reconstruction
+($\InstrShareRecon\%$) are the two largest parts; matching, its join and the rewrite together are
+$\InstrShareMatch\%$, libc's copies, fills and heap calls $\InstrShareLibc\%$, and the concurrent
+sets and maps $\InstrShareSets\%$. The unattributed $\InstrUnattributedPct\%$
 is functions below the reporting threshold and code not assigned to a group.
 
 \begin{table}[htbp]
@@ -673,10 +673,10 @@ evolution.}
 \subsection{Limitations}
 \label{sec:limitations}
 
-\textbf{Two machines.} The Wolfram comparison ran on an Intel i9-14900K desktop and everything else
-on the AMD EPYC host of Section~\ref{sec:benchmarks}. The scaling results depend on that host's
-memory system and core count, and the thread count at which efficiency declines differs on other
-hardware.
+\textbf{Two machines.} The left-hand-side sweep, the occupancy table and the hardware-counter
+measurements ran on the AMD EPYC host and everything else on the Intel i9-14900K desktop of
+Section~\ref{sec:benchmarks}. The scaling results depend on each host's memory system and core
+count, and the thread count at which efficiency declines differs on other hardware.
 
 \textbf{Quotient reconstruction grows with the raw system.} Quotient exploration visits one state
 per isomorphism class, but the reconstruction of raw observables creates as many instances as the

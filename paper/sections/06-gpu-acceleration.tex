@@ -17,9 +17,8 @@ frontier is small. The engine runs a single persistent kernel for the whole evol
 frontier, the match queues and the epoch counter kept in device memory, so a step costs a
 device-side barrier rather than a launch. The match, rewrite and state queues are resident, and a
 new state becomes a match task without returning to the host. The resident kernel is
-$\PersistentSpeedupFour\times$ faster than a per-step \texttt{evolve()} at depth four, and the two
-take the same time from depth \PersistentTieDepthWord{} on, where the evolution itself outweighs
-the launch cost (Section~\ref{sec:benchmarks}).
+$\PersistentSpeedupFour\times$ faster than a per-step \texttt{evolve()} at depth four and
+$\PersistentSpeedupEight\times$ faster at depth eight (Section~\ref{sec:benchmarks}).
 
 One block matches one (state, rule) pair, and its threads divide the candidates for the first
 pattern edge. Later pattern edges take their candidates from a vertex index through a variable

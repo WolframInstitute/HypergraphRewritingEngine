@@ -103,8 +103,8 @@ at configured limits.
 Evolution allocates from per-worker arenas. Each worker bumps a pointer into blocks it owns, so
 allocation during matching and rewriting needs no synchronization, and memory is freed in bulk by
 resetting the arena. The global allocator is called only to obtain those blocks:
-Table~\ref{tab:t3-deheap} reports $455$ to $475$ calls for an entire run, which on the largest
-workloads is $0.007$ calls per event.
+Table~\ref{tab:t3-deheap} reports $259$ to $280$ calls for an entire run, which on the largest
+workloads is $0.004$ calls per event.
 
 \subsection{Static Rule Analysis}
 \label{sec:static-analysis}
