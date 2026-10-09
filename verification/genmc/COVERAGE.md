@@ -50,8 +50,8 @@ harness. The park protocol is checked on its spin backend, which waits on the sa
 | P22 spine sampling (`own_min_key`, `own_spawned`) | 6 | spine_min_rank (3) on the engine's `MatchJoin` members (`hypergraph/match_join.hpp`) |
 | P23 stop and resume flags | 29 | engine_* (3) |
 | P24 causal producer/consumer rendezvous | 2 | causal_in_edge_order (2) |
-| P25 edge/state/event publication by fence | 12 | causal_in_edge_order (2), engine_evolve (partial) |
-| P26 state identity publication (hash, id, rank and orbit tables) | 26 | engine_evolve (partial) |
+| P25 edge/state/event publication by fence | 12 | causal_in_edge_order (2), quotient_capture_register (2, SC, 1 context), engine_evolve (partial) |
+| P26 state identity publication (hash, id, rank and orbit tables) | 26 | quotient_capture_register (2, SC, 1 context; Full, orbit tables, colliding class keys), keyed_twin_rendezvous (2, SC, 1 context), engine_evolve (partial) |
 | P27 keyed rewrites: the rewrite intern (`intern_rewrite` on `rewrite_map_`, `next_rewrite_id_`) and the token cache fill (`edge_token`, `cache_edge_token`) | about 9 of 17 | keyed_intern_once (2, SC, 4 contexts) |
 | P27 keyed rewrites: the twin claim and take (`claim_twin` offer-first, `same_tokens`, `take_twin` after the twin publishes its key), through `create_or_get_canonical_state` | about 8 of 17 | keyed_twin_rendezvous (2, SC, 1 context) |
 | P28 quotient instance/match rendezvous | 9 | quotient_instance_match_rendezvous (4) |
@@ -102,7 +102,10 @@ sequence is the harness's, and the stop-cut and `resume_pending` branches of
   gave no verdict in 2,770 s. keyed_twin_rendezvous checks sequential consistency with 1 context
   switch: its RC11 estimate is 2^51 executions and 2 switches gave no verdict in 1,500 s.
   quotient_capture_frame checks sequential consistency with 1 context switch: its RC11 estimate
-  is 2^87 executions.
+  is 2^87 executions. quotient_capture_register checks sequential consistency with 1 context
+  switch: its RC11 estimate is 2^61 executions. The two split quotient_capture_composition by
+  phase (registration, then capture); an interleaving of one rewrite's registration with the
+  other's capture is checked by the composition alone, which has no verdict.
 - concurrent_map_double_growth_3t and key_set_exactly_once_3t check sequential consistency with a
   context bound (`--sc --bound`); GenMC's bounding requires `--sc`. They find interleaving
   defects, not weak-memory ones. Their RC11 counterparts are the two-thread harnesses of the same

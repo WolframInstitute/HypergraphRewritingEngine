@@ -255,6 +255,7 @@ handling of thread_local class types is what blocked in the first place.
 | `keyed_intern_once` | two applications of one rewrite after the switch to INTERNING get one rewrite id, and exactly one is told the rewrite is new (`Hypergraph::intern_rewrite`, `edge_token`) | 2 threads, one rewrite; sequential consistency, 4 context switches | **No errors, 17,319 complete executions** (9,205 past the bound) |
 | `keyed_twin_rendezvous` | two children with one token set, made at once under Full canonicalisation, end in one class with one nonzero key: one claims the twin map, the other takes its key once published or runs IR (`create_or_get_canonical_state`, `claim_twin`, `take_twin`) | 2 threads; sequential consistency, 1 context switch | **No errors, 1,265 complete executions** (1,171 past the bound) |
 | `quotient_capture_frame` | the capture half of `quotient_capture_composition`: two captures of one parent's two events both record their match on the parent's class, and the class's match list holds both | main applies both rewrites with the capture deferred; 2 threads capture; seed depth 1; sequential consistency, 1 context switch | **No errors, 4,392 complete executions** (4,206 past the bound) |
+| `quotient_capture_register` | the registration half of `quotient_capture_composition`: two rewrites of one parent through the real `Rewriter::apply`, capture deferred, give two events and two children in their own classes with published keys and orbit tables, while every class claim meets on one key | 2 threads; canonical key mask 0; sequential consistency, 1 context switch | **No errors, 2,684 complete executions** (2,540 past the bound) |
 
 ### What this found
 
@@ -347,6 +348,7 @@ assertion inverted, and the checker must report a safety violation:
 | `keyed_intern_once` | `-DHG_CALIBRATE_MAP_LOSER_KEEPS_VALUE` (the map's losing claimant answers as the inserter) | violation reported |
 | `keyed_twin_rendezvous` | `-DHG_CALIBRATE_TWIN_TAKE_UNPUBLISHED` (a twin's key taken before it is published) | violation reported |
 | `quotient_capture_frame` | `-DHG_CALIBRATE_LIST_NO_RETRY` (a list push from a stale head, no compare-and-swap) | violation reported, 5 executions |
+| `quotient_capture_register` | `-DHG_CALIBRATE_DEDUP_HASH_ONLY` (any key hit taken as the same class) | violation reported |
 
 Do this for any harness added here, before believing its clean run.
 
