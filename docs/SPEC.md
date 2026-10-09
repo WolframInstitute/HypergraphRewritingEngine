@@ -276,6 +276,75 @@ the most nodes, then the greatest diameter, then the greatest mean distance, the
 vertices. *(Gate: `reference/verify_state_statistics.wls`, against the definitions computed in
 Wolfram Language from a raw run.)*
 
+With `"StepStatisticsWeighting" -> "Classes"` each class at a step counts once in `Invariants`,
+`BallGrowthDimension` and the pooled histograms; `RawStates`, `Classes`, the multiplicities,
+the class entropy, `Events` and `RuleCounts` are unchanged. The default `"States"` counts each
+class m(c, d) times.
+
+**`StepStatistics` geometry.** Nine more `Invariants` entries, each an isomorphism invariant of
+a state, computed by `common/include/hgcommon/state_geometry_core.hpp`. A state's graph G is
+the undirected simple graph on the state's vertices with an edge between the consecutive
+vertices of each hyperedge ({a, b, c} gives a-b and b-c); self-loops are dropped and a
+repeated pair is one edge. B(v, r) is the set of vertices at distance at most r from v, so
+|B(v, 0)| = 1, and R is the graph radius of G. A state for which a value is undefined is left
+out of that entry's summary, so its `N` counts the states where it is defined.
+
+| Entry | Definition | Undefined when |
+|---|---|---|
+| `GraphRadius` | the least eccentricity of a vertex of G (an integer number of edges) | G is empty or disconnected |
+| `MeanEccentricity` | the mean over vertices of the eccentricity | as `GraphRadius` |
+| `WolframHausdorffDimension` | the mean over vertices v of the mean over r = 1..R of (log\|B(v,r)\| - log\|B(v,r-1)\|) / (log(r+1) - log r); ResourceFunction["WolframHausdorffDimension"][G, All, "VertexMethod" -> Mean] | G is disconnected or has fewer than 2 vertices |
+| `WolframRicciCurvatureScalar` | with d the state's `WolframHausdorffDimension`, the mean over vertices v of the mean over r = 1..R of 6(d+2)/r^2 (1 - \|B(v,r)\| Γ(d/2+1) / (π^(d/2) r^d)); ResourceFunction["WolframRicciCurvatureScalar"][G, d, All, "VertexMethod" -> Mean] | as `WolframHausdorffDimension` |
+| `OllivierRicciCurvature` | the mean over edges x-y of G of 1 - W1(m_x, m_y), where m_x puts 1/2 on x and 1/(2 deg x) on each neighbour of x, and W1 is the optimal transport cost under the graph distance | G has no edge |
+| `DegreeEntropy` | the Shannon entropy in bits of the distribution of vertex degrees in G | G is empty |
+| `LocalEntropy` | the mean over vertices v of the entropy in bits of the degrees of the vertices in B(v, 2) | G is empty |
+| `MutualInformation` | the mean over vertices v with a neighbour of the mean over neighbours w of max(0, log2(\|B(v,2) ∩ B(w,2)\| \|B(v,2) ∪ B(w,2)\| / (\|B(v,2)\| \|B(w,2)\|))) | G has no edge |
+| `FisherInformation` | with d_u the mean over r = 1..R of u's own ball-growth term, the mean over vertices v of (1 + mean\|d_u - d_v\|) / (var d_u + 1/100), mean and population variance over u in B(v, 2) other than v | as `WolframHausdorffDimension` |
+
+The per-step key `BallGrowthDimension` maps each radius r to the summary, over the states with
+R >= r, of the mean over vertices v of (log\|B(v,r)\| - log\|B(v,r-1)\|) / (log(r+1) - log r):
+ResourceFunction["WolframHausdorffDimension"][G, All, R, "DimensionMethod" -> Identity,
+"VertexMethod" -> Mean]. Dimensions and entropies are dimensionless; curvatures are in units of
+inverse edge length squared (`WolframRicciCurvatureScalar`) or dimensionless
+(`OllivierRicciCurvature`).
+
+The radius, the per-radius dimensions and the Ricci scalar take one breadth-first search per
+vertex; the per-vertex dimensions used by `FisherInformation` take a second; each edge's
+transport problem is solved exactly by successive shortest paths over the (deg x + 1) x
+(deg y + 1) supports, with the masses scaled to integers by 2 deg x deg y. Graph construction,
+transport and every sum run in caller memory without allocation, so the device can call the
+same functions. Geodesic bundle spread and proper time (hypergraph_viz) are not provided: both
+are defined from random walks or chosen source vertices, and their shortest-path form is the
+eccentricity.
+
+**`StepStatistics` branchial metrics.** With `"StepStatisticsBranchial"`, each step's record
+gains per-step keys. Neither kind is computed under `"ExploreFromCanonicalStatesOnly" -> True`,
+which stores one state per class; the run warns instead. Both run on the CPU engine; a GPU
+request runs there with a warning.
+
+`"Graph"`: the branchial graph of step s has the step's states (by the run's state identity) as
+vertices, and joins the output states of every branchial pair whose first event's output state
+is at step s (the rule of `"BranchialStateEdges"`); a pair of one state with itself adds
+nothing. `BranchialDegree` is the summary of the vertex degrees, `BranchialDistance` the
+summary of the distances between every two states in one component, `BranchialComponents` the
+number of components, and `BranchialDimension` the `WolframHausdorffDimension` of the largest
+component (most states, then the greatest dimension), absent when that component has fewer than
+2 states.
+
+`"Overlap"`: each state at the step is its set of vertices. The engine gives a new vertex a new
+id, so two states share a vertex exactly when both inherited it from a common ancestor, and the
+values depend on the history and not on the numbering. A branch is a state at the step, which
+is how hypergraph_viz's branchial analysis assigns branch ids (its index within its step).
+`StateOverlap` is the summary over every two states A, B of |A ∩ B| / |A ∪ B| (0 when both
+have no vertices); for each vertex held by k of the step's states, `VertexSharpness`
+summarises 1/k and `BranchEntropy` log2 k bits. These need each state's own vertices, so under
+`"CanonicalizeStates" -> Full` the run warns and leaves them out; under `Automatic` a state
+stands for its identical edge lists.
+*(Gate: `reference/verify_state_statistics.wls`: the engine against
+`reference/StateGeometryReference.wl`, an independent Wolfram Language implementation, on the
+corpus and on random rules; the two Function Repository metrics against ResourceFunction itself.
+Hand-checked values: `StateGeometryCore.*`.)*
+
 ### 5.5 Proof obligations, and the gates that discharge them
 
 1. **quotient ≡ full capture** on every observable, incl. cyclic rules — `cost_matrix` (oracle

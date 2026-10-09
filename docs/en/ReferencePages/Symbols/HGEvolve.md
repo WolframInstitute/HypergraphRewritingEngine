@@ -82,7 +82,19 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 - The engine numbers the vertices of a state from 0 in order of first appearance, and hyperedges from 0 in order of creation. State and event ids are assigned in the order the engine creates them, which can differ between two evolutions of the same input, so ids are only meaningful within one result.
 - Two events are causally related when one consumes a hyperedge the other produced. The causal relation is transitively reduced by default. `"NumCausalEdges"`, `"CausalEdges"` and the causal graphs give the same relation.
 - Two events are branchially related when they are applied to the same state and consume a common hyperedge. `"BranchialEdges"` lists every such pair; the branchial graph joins the output states of the pairs at the step `"BranchialStep"` selects.
-- A `"StepStatistics"` entry has the keys `"Step"`, `"RawStates"`, `"Classes"` (isomorphism classes), `"Redundancy"` (states per class), `"MaxMultiplicity"`, `"MultiplicityHistogram"`, `"ClassEntropyBits"` and `"ClassEntropyNormalized"` (the entropy of the states over the classes), `"Events"` and `"RuleCounts"` (the events whose output state is at the step), `"Invariants"` (for each of eleven per-state invariants, such as `"VertexCount"`, `"Components"` and `"IncidenceDiameter"`, its `"N"`, `"Mean"`, `"StandardDeviation"`, `"Min"`, `"Max"`, `"Median"` and `"Histogram"`), and histograms of hyperedge arity and vertex degree. Under `"ExploreFromCanonicalStatesOnly" -> True` they are computed from one state per class and the number of states in the class.
+- A `"StepStatistics"` entry has the keys `"Step"`, `"RawStates"`, `"Classes"` (isomorphism classes), `"Redundancy"` (states per class), `"MaxMultiplicity"`, `"MultiplicityHistogram"`, `"ClassEntropyBits"` and `"ClassEntropyNormalized"` (the entropy of the states over the classes), `"Events"` and `"RuleCounts"` (the events whose output state is at the step), `"Invariants"` (for each of twenty per-state invariants, such as `"VertexCount"`, `"Components"`, `"IncidenceDiameter"` and the geometry entries below, its `"N"`, `"Mean"`, `"StandardDeviation"`, `"Min"`, `"Max"`, `"Median"` and `"Histogram"`), histograms of hyperedge arity and vertex degree, and `"BallGrowthDimension"` (for each radius r, the summary of the states' ball-growth dimension at r). Under `"ExploreFromCanonicalStatesOnly" -> True` they are computed from one state per class and the number of states in the class. `"StepStatisticsWeighting" -> "Classes"` counts each class once in `"Invariants"`, `"BallGrowthDimension"` and the histograms.
+- The geometry entries of `"Invariants"` are computed on a state's graph: its vertices, with an edge between consecutive vertices of each hyperedge. A state where an entry is undefined is left out of that entry, so `"N"` counts the states where it is defined.
+
+|   |   |
+|---|---|
+| `"GraphRadius"`, `"MeanEccentricity"` | the least and the mean eccentricity of a vertex; undefined for a disconnected state |
+| `"WolframHausdorffDimension"` | [ResourceFunction]()["WolframHausdorffDimension"] of the graph, averaged over vertices, with the graph radius as the largest ball; undefined for a disconnected state or one vertex |
+| `"WolframRicciCurvatureScalar"` | [ResourceFunction]()["WolframRicciCurvatureScalar"] of the graph at the state's own `"WolframHausdorffDimension"`, averaged over vertices; undefined as that is |
+| `"OllivierRicciCurvature"` | the mean over edges x-y of 1 - W1(m_x, m_y), with m_x half on x and half spread over its neighbours, and W1 the exact transport cost; undefined for a state with no edge |
+| `"DegreeEntropy"`, `"LocalEntropy"` | the entropy in bits of the vertex degrees, over the whole graph and averaged over the balls of radius 2 |
+| `"MutualInformation"`, `"FisherInformation"` | neighbourhood overlap and dimension sharpness measures from radius-2 balls, defined in docs/SPEC.md |
+
+- `"StepStatisticsBranchial" -> "Graph"` adds per-step keys about the branchial graph of the step, whose vertices are the step's states: `"BranchialDegree"` and `"BranchialDistance"` (summaries), `"BranchialComponents"` and `"BranchialDimension"` (the `"WolframHausdorffDimension"` of its largest component, absent when that has one state). `"Overlap"` adds `"StateOverlap"` (the summary of \|A ∩ B\| / \|A ∪ B\| over every two states, as vertex sets), and `"VertexSharpness"` and `"BranchEntropy"` (for each vertex held by k states, 1/k and log2 k). `"Overlap"` needs `"CanonicalizeStates"` `None` or `Automatic`; neither is computed under `"ExploreFromCanonicalStatesOnly" -> True`, and each runs on the CPU engine.
 - [HGEvolve]() takes every option of [Graph]() and passes it to the graph a graph property returns, so [ImageSize](), [AspectRatio](), [VertexLabels]() or [GraphLayout]() change the picture. A styled graph needs about 55 points of width for each state in its widest layer. The following options can also be given:
 
 |   |   |   |
@@ -638,6 +650,18 @@ The summary of one invariant over the states of the last step:
 
 ```wl
 Last[stats]["Invariants", "VertexCount"]
+```
+
+The Wolfram-Hausdorff dimension of the states of the last step, with each isomorphism class counted once:
+
+```wl
+Last[HGEvolve[{{1, 2}, {1, 3}} -> {{1, 2}, {1, 4}, {2, 4}, {3, 4}}, {{1, 2}, {1, 3}}, 3, "StepStatistics", "StepStatisticsWeighting" -> "Classes"]]["Invariants", "WolframHausdorffDimension"]
+```
+
+The branchial graph and the vertex overlap of the states at each step:
+
+```wl
+Lookup[HGEvolve[{{1, 2}, {1, 3}} -> {{1, 2}, {1, 4}, {2, 4}, {3, 4}}, {{1, 2}, {1, 3}}, 3, "StepStatistics", "StepStatisticsBranchial" -> All], {"Step", "BranchialComponents", "BranchialDegree", "StateOverlap"}]
 ```
 
 ---
