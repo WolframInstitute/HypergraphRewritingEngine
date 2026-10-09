@@ -1651,8 +1651,8 @@ std::vector<std::pair<EventId, uint32_t>> Hypergraph::reconstructed_genesis_pair
     // Every application creates one child instance whose lineage node names it (descend): the
     // node's event, the match it applied and the lineage of the instance it was applied to.
     qc_instances_.for_each([&](uint64_t, QcInstanceShards* sh) {
-        for (const QcInstanceShard& s : sh->shard) {
-            s.list.for_each([&](const QcInstance& inst) {
+        {
+            sh->for_each([&](const QcInstance& inst) {
                 const QcLineage* node = inst.lineage;
                 if (!node || !node->via) return;
                 const QcLineage* root = hgcommon::qr_lineage_root(c, node);
@@ -1728,8 +1728,7 @@ void Hypergraph::qc_add_instance(uint64_t state_hash, uint32_t depth,
         qc_instances_, qc_key(state_hash, depth, 0) & qc_key_mask_, same, make, rep_of, on_collision);
     if (claim.won && static_cast<int>(depth) >= maxs)
         qc_blocked_.push(QcPoint{state_hash, depth}, arena_);
-    const int w = arena_worker_index();
-    sh->shard[w < 0 ? 0u : static_cast<uint32_t>(w) % kInstShards].list.push(inst, arena_);
+    qc_push_instance(sh, inst);
 
     // Instances at the final depth are recorded but never expanded: the DP runs its match
     // loop over depths 0..steps-1, producing into depth steps and never reading it.
@@ -1739,6 +1738,23 @@ void Hypergraph::qc_add_instance(uint64_t state_hash, uint32_t depth,
     // sides. The push above is this side's publish; the partner is in qc_capture_expansion.
     hgcommon::rendezvous_barrier<hgcommon::rv::QuotientInstanceMatch>();
     for_each_expansion_match(state_hash, [&](const SlotMatch& m) { qc_apply(inst, m, state_hash, depth); });
+}
+
+void Hypergraph::qc_push_instance(QcInstanceShards* sh, const QcInstance& inst) {
+    QcInstanceShard* m = sh->more.load(std::memory_order_acquire);
+    auto* node = sh->first.list.make_node(inst, arena_);
+    if (!m) {
+        if (sh->first.list.try_link(node)) return;
+        auto* made = arena_.allocate_array<QcInstanceShard>(kInstShards);
+        QcInstanceShard* expected = nullptr;
+        if (sh->more.compare_exchange_strong(expected, made, std::memory_order_acq_rel,
+                                             std::memory_order_acquire))
+            m = made;
+        else
+            m = expected;
+    }
+    const int w = arena_worker_index();
+    m[w < 0 ? 0u : static_cast<uint32_t>(w) % kInstShards].list.push_node(node);
 }
 
 bool Hypergraph::qc_frame_slots(uint64_t state_hash, StateId s, const EdgeOrbitTable* orb,
@@ -1970,8 +1986,9 @@ void Hypergraph::qc_capture_expansion(EventId e) {
     for (int d = 0; d < maxs; ++d) {
         const QcInstanceShards* ri = qc_instances_at(from, static_cast<uint32_t>(d));
         if (!ri) continue;
-        for (uint32_t l = 0; l < kInstShards; ++l) {
-            if (ri->shard[l].list.empty()) continue;
+        for (uint32_t l = 0; l < kInstLists; ++l) {
+            const LockFreeList<QcInstance>* x = ri->list(l);
+            if (!x || x->empty()) continue;
             if (ran_one && qc_spawn_) {
                 qc_spawn_(qc_spawn_ctx_, this, stored, from, static_cast<uint32_t>(d), l);
                 continue;
@@ -1985,7 +2002,8 @@ void Hypergraph::qc_capture_expansion(EventId e) {
 void Hypergraph::qc_apply_list(const SlotMatch* m, uint64_t from, uint32_t depth, uint32_t list) {
     const QcInstanceShards* ri = qc_instances_at(from, depth);
     if (!ri) return;
-    ri->shard[list].list.for_each([&](const QcInstance& inst) { qc_apply(inst, *m, from, depth); });
+    if (const LockFreeList<QcInstance>* x = ri->list(list))
+        x->for_each([&](const QcInstance& inst) { qc_apply(inst, *m, from, depth); });
 }
 
 void Hypergraph::register_quotient_transition(EventId e) {
@@ -2788,8 +2806,7 @@ uint64_t Hypergraph::num_reconstructed_branchial() const {
         qc_instances_.for_each([&](uint64_t, QcInstanceShards* sh) {
             if (sh->depth >= steps) return;
             uint64_t n = 0;
-            for (uint32_t l = 0; l < kInstShards; ++l)
-                sh->shard[l].list.for_each([&](const QcInstance&) { ++n; });
+            sh->for_each([&](const QcInstance&) { ++n; });
             total = hgcommon::qm_branchial_add(total, n, pairs_of(sh->class_hash));
         });
     }

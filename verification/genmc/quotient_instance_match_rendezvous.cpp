@@ -6,11 +6,15 @@
 //
 //   instance side (Hypergraph::qc_add_instance)      match side (Hypergraph::qc_capture_expansion)
 //     insert the shard entry into qc_instances_        insert the match list into qc_expansion_
-//     push the instance to its worker's shard          push the match
+//     push the instance (qc_push_instance)             push the match
 //     seq_cst fence                                    seq_cst fence
 //     look up qc_expansion_ and scan it                look up qc_instances_; for each shard
 //                                                      that is not empty, scan the first here
 //                                                      and hand the rest to qc_spawn_ jobs
+//
+// qc_push_instance links the instance into the entry's `first` list with one compare-and-swap;
+// a push that loses it installs `more`, the per-worker lists, by compare-and-swap and links the
+// instance there. A reader walks `first` and, when it reads `more` installed, every list of it.
 //
 // A job scans after the capture's fence in happens-before order but on another thread. The
 // capture decides which shards to hand off from its own empty() reads after its fence, so a
@@ -30,8 +34,9 @@
 // has not published, so the peer's own scan runs later and catches it -- chains a liveness claim
 // onto an ordering one. That is the argument this harness exists to check rather than believe.
 //
-// WHAT IS BOUNDED. One class, one match and two instances in two shards, so a capture that sees
-// both hands one to a job: three threads plus the job, which the capture starts with
+// WHAT IS BOUNDED. One class, one match and two instances that race for `first`, so one may
+// install `more` and land there, and a capture that sees both lists hands one to a job: three
+// threads plus the job, which the capture starts with
 // pthread_create as its happens-before edge (the job system's push and pop). Over the REAL
 // ConcurrentMap and the REAL LockFreeList. A statement about every execution of THIS program
 // under RC11, not about unbounded thread counts.
@@ -79,7 +84,19 @@
 namespace {
 
 using List = hypergraph::LockFreeList<uint64_t>;
-struct Shards { List list[2]; };                     // QcInstanceShards, two shards
+// QcInstanceShards: `first`, and `more` (two lists here) installed by a push that loses `first`.
+struct Shards {
+    List first;
+    std::atomic<List*> more{nullptr};
+    // Hypergraph::QcInstanceShards::list: list l of 3, nullptr when `more` is not installed.
+    List* list(uint32_t l) {
+        if (l == 0) return &first;
+        List* m = more.load(std::memory_order_acquire);
+        return m ? &m[l - 1] : nullptr;
+    }
+};
+// The arrays an installer offers, one per instance thread (the engine's arena allocation).
+List g_more_storage[2][2];
 using InstMap  = hypergraph::ConcurrentMap<uint64_t, Shards*>;
 using MatchMap = hypergraph::ConcurrentMap<uint64_t, List*>;
 
@@ -154,7 +171,16 @@ void instance_side(uint64_t inst) {
     note_depth();
 #endif
     g_instances->insert_if_absent(kClass, g_shards);
-    g_shards->list[inst].push(inst, *g_arena);
+    // Hypergraph::qc_push_instance.
+    auto* node = g_shards->first.make_node(inst, *g_arena);
+    if (!g_shards->first.try_link(node)) {
+        List* expected = nullptr;
+        List* m = g_more_storage[inst];
+        if (!g_shards->more.compare_exchange_strong(expected, m, std::memory_order_acq_rel,
+                                                    std::memory_order_acquire))
+            m = expected;
+        m[inst].push_node(node);
+    }
 #if defined(CALIBRATE_NO_INSTANCE_FENCE)
     fence(false);
 #else
@@ -173,7 +199,7 @@ void* instance1(void*) { instance_side(1); return nullptr; }
 // Hypergraph::qc_apply_list: look the shards up again and apply the match to one of them.
 void apply_list(uint32_t l) {
     if (auto r = g_instances->lookup(kClass)) {
-        (*r)->list[l].for_each([&](uint64_t inst) { claim(inst, true); });
+        if (List* x = (*r)->list(l)) x->for_each([&](uint64_t inst) { claim(inst, true); });
     }
 }
 void* job(void* arg) {
@@ -197,8 +223,9 @@ void* match_side(void*) {
     if (g_depth_hi.load(std::memory_order_relaxed) == 0) return nullptr;
     if (auto r = g_instances->lookup(kClass)) {
         bool ran_one = false;
-        for (uint32_t l = 0; l < 2; ++l) {
-            if ((*r)->list[l].empty()) continue;
+        for (uint32_t l = 0; l < 3; ++l) {
+            List* x = (*r)->list(l);
+            if (!x || x->empty()) continue;
             if (ran_one) {
                 pthread_create(&spawned, nullptr, job, reinterpret_cast<void*>(static_cast<long>(l)));
                 spawned_one = true;

@@ -258,20 +258,38 @@ class Hypergraph {
         // qc_applied_.
         QcClaimBlock* claims = nullptr;
     };
-    // The instances of one (class, depth), in kInstShards lists: a worker pushes to list
-    // (worker index % kInstShards) and a reader walks all of them. Every new instance of a class
-    // pushes to its entry, which on a rule with few classes is most of the replay; the eight
-    // heads split those pushes, each on its own cache line so a push moves only its own shard's
-    // line. A reader (a capture's scan) walks the eight lines after one map lookup.
+    // The instances of one (class, depth). Every instance is pushed to `first` until a push
+    // loses its compare-and-swap there; that push installs `more`, kInstShards further lists,
+    // and from then on a worker pushes to more[worker index % kInstShards]. A reader walks
+    // `first` and, when installed, every list of `more` (kInstLists in all, `first` at index
+    // 0). On a rule with few classes most of the replay pushes to a few entries, and the shards,
+    // each on its own cache line, split those pushes (unpadded heads, measured: multirule
+    // depth 7 quotient 22.7 -> 72.8 ms at 16 threads). Most entries hold one or two instances
+    // and never install `more`: 128 bytes each where eight padded heads took 528 (wpp depth 8
+    // quotient, 348,615 classes: arena 2,658 -> 2,509 MB).
     static constexpr uint32_t kInstShards = 8;
+    static constexpr uint32_t kInstLists = kInstShards + 1;
     struct alignas(64) QcInstanceShard {
         LockFreeList<QcInstance> list;
     };
-    struct QcInstanceShards {
-        QcInstanceShard shard[kInstShards];
+    struct alignas(64) QcInstanceShards {
+        QcInstanceShard first;
+        std::atomic<QcInstanceShard*> more{nullptr};
         uint64_t class_hash = 0;
         uint32_t depth = 0;
+        // List l of kInstLists, or nullptr when `more` is not installed.
+        const LockFreeList<QcInstance>* list(uint32_t l) const {
+            if (l == 0) return &first.list;
+            const QcInstanceShard* m = more.load(std::memory_order_acquire);
+            return m ? &m[l - 1].list : nullptr;
+        }
+        template <typename F>
+        void for_each(F&& f) const {
+            for (uint32_t l = 0; l < kInstLists; ++l)
+                if (const LockFreeList<QcInstance>* x = list(l)) x->for_each(f);
+        }
     };
+    void qc_push_instance(QcInstanceShards* sh, const QcInstance& inst);
     // Keyed by qc_key(hash, depth, 0) & qc_key_mask_ through the keyed-claim walk
     // (qc_point_claim / qc_point_find): the key selects where to look and the entry's
     // (class_hash, depth) decides, so two points whose keys collide each get a key.
@@ -336,7 +354,7 @@ class Hypergraph {
     void for_each_instance_at(uint64_t state_hash, uint32_t depth, F&& f) {
         const QcInstanceShards* sh = qc_instances_at(state_hash, depth);
         if (!sh) return;
-        for (const QcInstanceShard& s : sh->shard) s.list.for_each(f);
+        sh->for_each(f);
     }
     // Raw event ids: a worker takes them in blocks of kEventIdBlock from qc_next_raw_event_,
     // and uses its block only for an event whose producers are all below the block's next id.

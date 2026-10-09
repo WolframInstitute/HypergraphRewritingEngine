@@ -87,6 +87,29 @@ public:
         return new_node;
     }
 
+    // A push in two parts, for a caller that acts on contention: make_node builds the node, and
+    // try_link links it with ONE compare-and-swap, returning false when another push moved the
+    // head first. A node that failed to link can be linked into another list with push_node.
+    template<typename Arena>
+    Node* make_node(const T& value, Arena& arena) {
+        Node* new_node = arena.template create<Node>(value, nullptr);
+        std::atomic_thread_fence(std::memory_order_release);
+        return new_node;
+    }
+    bool try_link(Node* new_node) {
+        Node* old_head = head_.load(std::memory_order_acquire);
+        new_node->prev = old_head;
+        return head_.compare_exchange_strong(old_head, new_node, std::memory_order_release,
+                                             std::memory_order_acquire);
+    }
+    void push_node(Node* new_node) {
+        Node* old_head = head_.load(std::memory_order_acquire);
+        do {
+            new_node->prev = old_head;
+        } while (!head_.compare_exchange_weak(old_head, new_node, std::memory_order_release,
+                                              std::memory_order_acquire));
+    }
+
     // Every NODE, newest first, so a caller that must position itself relative to the others
     // can pass what it visits back to for_each_before. Same traversal as for_each; it hands
     // over the node rather than the value.
