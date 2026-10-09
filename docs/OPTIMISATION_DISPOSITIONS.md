@@ -339,3 +339,93 @@ was permuted from `std::random_device` on every run, unguarded, so a run that di
 not reproducible. Fixed, and gated by asserting the ORDER rather than the counts -- a gate on
 counts passes with the defect reintroduced, because with nothing dropping work the order changes
 no count.
+
+## rc2 pass: thread scaling and the quotient replay (2026-10-08/09)
+
+Instruments: `bench_cpu_evolve` (clang -O3 `build_prof` for A/Bs, gcc -O3 `build_linux` for the
+shipping-compiler sweep), `perf record` at 16 and 32 threads to find the cause, callgrind for
+one-thread instruction counts, `bench_gpu_evolve` (persistent evolver) with the RTX 4090 idle.
+i9-14900K: CPUs 0-15 are the 8 P-cores with their SMT siblings, 16-31 the E-cores. Medians of
+3 to 7 runs, box quiet.
+
+### Where the time went at the start (HEAD 9ec5a313, gcc, one thread)
+
+| mode | largest shares (callgrind, inclusive) |
+|---|---|
+| full multiway (wpp d7, cycle4 d6, multirule d6, wolftri d6) | create_or_get_canonical_state 47-53%, IR 19-33%, same_tokens 9-13% |
+| quotient (wpp d8, multirule d7, bigpath n128 d3, growshrink3 d6) | the replay (qr_apply, qc_add_instance, qc_capture_expansion) 60-98%; IR 4-38% |
+
+Thread-scaling defects at the start: full multiway was slower at 32 threads than at 16 (wpp d7
+91.7 -> 106.7 ms, multirule d6 35.5 -> 44.2, allfour d5 33.4 -> 36.8); multirule d7 quotient
+stopped improving at 8 threads (50.6, 45.2, 60.7 ms at 8, 16, 32); bigpath n128 d3 quotient was
+fastest at 8 threads (55.1 ms) and took 101.2 ms at 32.
+
+### CLOSED
+
+| commit | change | measured cause | result |
+|---|---|---|---|
+| 813f22c8 | SegmentedArray: one elected thread creates the next segment from the second half | 46% of 16-thread samples in memset of segments that lost the install CAS (bigpath q) | bigpath q 16t 43.6 -> 21.8 ms, 32t 53.8 -> 30.7 |
+| ec91d506 | claim bits as a chain of blocks (hgcommon::qr_claim_chain, host and device) | instances made before their class's matches claimed in a shared key set: 1,065,597 inserts at 16 threads against 33,722 at 1 (bigpath q) | inserts 766; bigpath q 4t 65.0 -> 36.8 ms; one thread +1.2% instructions; device within spread |
+| fefd1f93 | per-worker causal-pair list heads on their own lines | 44% of samples in the push's CAS retry loop (multirule d7 q, 16t) | multirule d7 q 4t 77.8 -> 55.0 ms, 16t 41.4 -> 30.1 |
+| 1f24972a | delete matched_raw_states_ | a set every insert won, 23% of 32-thread samples (wpp d7 full) | wpp d7 full 32t 108.2 -> 76.7 ms; multirule d6 full 32t 38.0 -> 22.0 |
+| c2749671 | a branchial pair is recorded once by the second event to push into the bucket of the lowest shared edge, without a shared set | record_branchial_overlaps 18% and its set 11% (wpp d7 full, 16t) | wpp d7 full 1t 568 -> 482 ms, 32t 77.3 -> 57.3; arena -1.3% |
+| 3d307cc9 | a key-set insert claims at the head it read when another thread holds the growth ticket | inserters looped on the growth trigger: 17% of 32-thread samples | wpp d7 full 32t 62.0 -> 47.2 ms |
+| 71d8693f | GPU: a counts-only quotient run reads no relation back; counts come from the replay's counters | 122 ms of a 295 ms call building causal pair vectors nobody asked for (multirule d7 q) | GPU wpp d8 q 668 -> 266 ms, multirule d7 q 302 -> 206, growshrink3 d6 q 58 -> 36 |
+| 80a09c28 | the replay's id counters each on their own line | 31% of qc_add_instance samples on the load of qc_inst_blocks_, which shared a line with qc_next_instance_ | multirule d7 q 16t 27.6 -> 26.2 ms; wpp d8 q 32t 231 -> 220 |
+| b591bd1d | with several workers, qc_event_sig_ and qc_kept_ create the next segment from the first element | 26 losing 1M-entry segments per run at 32 threads (temporary counter) | multirule d7 q 32t 35.9 -> 22.7 ms; bigpath q 32t 35.9 -> 17.8; 2-8 threads bigpath +1 ms |
+
+After (gcc, `build_linux`, median of 3, ms):
+
+| workload | 1 | 2 | 4 | 8 | 16 | 32 |
+|---|---|---|---|---|---|---|
+| wpp d8 quotient | 2467 | 1343 | 736 | 421 | 292 | 207 |
+| wpp d7 full | 514 | 285 | 157 | 89 | 60 | 49 |
+| multirule d6 full | 192 | 108 | 62 | 36 | 25 | 21 |
+| allfour d6 quotient | 1731 | 975 | 529 | 313 | 202 | 171 |
+| allfour d5 full | 210 | 118 | 66 | 38 | 26 | 22 |
+| wolftri d6 full | 191 | 106 | 60 | 34 | 22 | 20 |
+| bigcycle n64 d3 full | 958 | 512 | 269 | 148 | 98 | 76 |
+| growshrink3 d6 quotient | 304 | 171 | 94 | 57 | 35 | 26 |
+| cycle4 d6 full | 121 | 64 | 35 | 20 | 15 | 15 |
+
+That sweep predates b591bd1d; with it (clang, median of 7) multirule d7 quotient is 113 / 29 /
+23 / 23 ms at 1 / 8 / 16 / 32 threads and bigpath n128 d3 quotient 77 / 20 / 17 / 18.
+
+### REFUTED
+
+- **Descent as a job.** The replay descends depth-first, so a child instance was submitted as
+  a job whenever the descending worker's deque was empty. Measured alone, two interleaved
+  rounds, quotient wpp d8, multirule d7, bigpath n128 d3, growshrink3 d6 at 4/16/32 threads:
+  every pair within spread (multirule 16t 29.4/28.9 against 29.1/28.9 ms). Removed;
+  `.scratch/opt/patches/batch1_pre_spawn_revert.patch`.
+- **kStale on a sealed key-set slot once the head moved.** Within spread on all six full-multiway
+  workloads at 4/16/32 threads (wpp d7 32t 46.4 against 50.3 ms). Not landed.
+- **Early segment creation for every SegmentedArray.** Full multiway wpp d7 arena 523 -> 684 MB
+  and 32 threads 45.5 -> 50.7 ms. Landed only for the two replay arrays (b591bd1d).
+- **RewriteRule's zero-fill.** The 7.2 M instructions in `RewriteRule::RewriteRule` are 386
+  constructions by the benchmark's corpus generator; the engine constructs one per rule.
+  Not an engine cost.
+
+### OPEN, with the measurement
+
+- Full multiway, 32 threads: the causal triple and pair sets (`seen_causal_triples_`,
+  `seen_causal_event_pairs_`) are 14-26% of samples (cycle4 d6 26%, wpp d7 14%); cycle4 d6 is
+  14.8 ms at 16 threads and 15.3 at 32. Removing the sets needs the producer/consumer
+  rendezvous rebuilt on one list per edge, which changes protocol P24 and the online
+  reduction's in-edge order.
+- Quotient replay per application: about 1,000 instructions per raw event, spread over claim,
+  mint, content, run signature, causal records, reduction and descent, none above 18%.
+  At 32 threads bigpath still loses 1M-entry segments of qc_event_sig_ when blocks come from
+  the pool. Instance points are 528 B each (8 padded shard heads), about 1.3 per class: about
+  240 MB of wpp d8 quotient's 2.66 GB arena (estimated from 3,422 points for 2,677 classes on
+  wpp d6 and 348,615 classes on wpp d8).
+- GPU quotient replay: multirule d7 quotient takes 206 ms on the device against 23 ms on 16 CPU
+  threads, all of it in the persistent kernel's replay phase (DEVICE_DESIGN 4.6.3).
+- Windows native (MSVC, same commit) against WSL (clang), bench_cpu_evolve medians: one thread
+  1.15-1.5x slower (wpp d7 full 559 against 481 ms, bigpath q 116 against 77); wpp d7 full is
+  slower at 32 threads than at 16 on Windows (89.6 against 83.5 ms). A one-shot hg_evolve.exe
+  quotient job (wpp d8 with causal and branchial) takes 3.47 s against 1.02 s for the Linux
+  binary under WSL; on one CPU 6.3 s against 3.9 s. bench wpp d8 quotient at one thread on
+  Windows: median 4785 ms, minimum 2931 ms over three runs (WSL 2340 ms). The Windows arena
+  maps blocks with VirtualAlloc and has no counterpart of the 2 MB huge-page advice; the cause
+  of the gap is not yet measured on Windows.
