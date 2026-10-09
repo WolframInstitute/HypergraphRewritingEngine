@@ -1156,7 +1156,7 @@ TEST(WXFSkip, BigNumbersReadBackAsTheirText) {
     EXPECT_EQ(parser.read_big_integer(), "1208925819614629174706176");
 }
 
-#ifndef _WIN32
+#if defined(__linux__)
 // A copy of a large list that runs out of address space throws std::bad_alloc. The child builds
 // 200000 {From -> i, To -> i} associations (the shape of a BranchialEdges reply), caps its address
 // space 16 MB above its current size, and copies the list; the copy needs about 30 MB. Exit 0 is
