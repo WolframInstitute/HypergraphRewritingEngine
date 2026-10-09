@@ -341,8 +341,7 @@ eccentricity.
 
 **`StepStatistics` branchial metrics.** With `"StepStatisticsBranchial"`, each step's record
 gains per-step keys. Neither kind is computed under `"ExploreFromCanonicalStatesOnly" -> True`,
-which stores one state per class; the run warns instead. Both run on the CPU engine; a GPU
-request runs there with a warning.
+which stores one state per class; the run warns instead. Both devices compute them.
 
 `"Graph"`: the branchial graph of step s has the step's states (by the run's state identity) as
 vertices, and joins the output states of every branchial pair whose first event's output state
