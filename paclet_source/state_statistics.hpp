@@ -8,12 +8,14 @@
 //
 // Every invariant is isomorphism-invariant, so a step's population is summarised from one
 // representative per class weighted by the class's multiplicity, and no raw state is built.
+// The invariants are hgcommon::state_invariants (state_invariants_core.hpp).
 
 #include <cstdint>
 #include <map>
 #include <unordered_map>
 #include <vector>
 
+#include "hgcommon/state_invariants_core.hpp"
 #include "wxf.hpp"
 
 namespace HG_NAMESPACE {
@@ -40,6 +42,11 @@ struct StateInvariants {
 };
 
 StateInvariants state_invariants(const std::vector<std::vector<uint32_t>>& edges);
+
+// The record of one state given as its edge list, computed on the calling thread and held in
+// `storage`.
+const hgcommon::StateInvariantRecord* invariant_record(
+    const std::vector<std::vector<uint32_t>>& edges, std::vector<uint64_t>& storage);
 
 // A summary of a weighted population of numbers: every value stands for `weight` raw states.
 // Mean, sample standard deviation (N - 1), min, max and median over the N = sum of weights

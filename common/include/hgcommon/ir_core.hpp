@@ -386,9 +386,13 @@ HG_HD inline uint32_t ir_colour_pad(uint8_t* ea, uint32_t* eoff, uint32_t* ev, u
 //   par.sync()       orders leader writes against the lanes' reads.
 //   par.bcast(v)     hands a leader-computed scalar to every lane (shuffle; identity
 //                    serially).
+//   par.rank(), par.width()   the lane's index and the lane count (0 and 1 serially), for a
+//                    body that gives each lane its own scratch.
 // The atomicity a fanned body needs for a shared counter comes with the policy too.
 struct IrSerial {
     static constexpr bool kFans = false;
+    HG_HD uint32_t rank() const { return 0; }
+    HG_HD uint32_t width() const { return 1; }
     HG_HD bool leader() const { return true; }
     HG_HD void sync() const {}
     template <class F>

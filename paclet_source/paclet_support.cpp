@@ -332,125 +332,45 @@ namespace stats {
 // state_invariants / summarise
 // =============================================================================
 
+const hgcommon::StateInvariantRecord* invariant_record(
+    const std::vector<std::vector<uint32_t>>& edges, std::vector<uint64_t>& storage) {
+    const uint32_t m = static_cast<uint32_t>(edges.size());
+    std::vector<uint32_t> off(m + 1, 0), verts;
+    for (uint32_t i = 0; i < m; ++i) {
+        off[i] = static_cast<uint32_t>(verts.size());
+        verts.insert(verts.end(), edges[i].begin(), edges[i].end());
+    }
+    off[m] = static_cast<uint32_t>(verts.size());
+    const uint32_t slots = off[m];
+    std::vector<uint32_t> scratch(hgcommon::si_scratch_words(slots, m, 1));
+    storage.assign((hgcommon::StateInvariantRecord::bytes(m, slots) + 7) / 8, 0);
+    auto* rec = new (storage.data()) hgcommon::StateInvariantRecord{};
+    auto* words = reinterpret_cast<uint32_t*>(rec + 1);
+    hgcommon::state_invariants(off.data(), verts.data(), m, scratch.data(), rec->v, words,
+                               words + m);
+    rec->num_edges = m;
+    rec->num_vertices = static_cast<uint32_t>(rec->v.vertex_count);
+    return rec;
+}
+
 StateInvariants state_invariants(const std::vector<std::vector<uint32_t>>& edges) {
+    std::vector<uint64_t> storage;
+    const hgcommon::StateInvariantRecord& rec = *invariant_record(edges, storage);
+    const hgcommon::StateInvariantValues& v = rec.v;
     StateInvariants r;
-    // Vertices in ascending value: the order the probes' vertex list takes (Union), which fixes
-    // which of two equally large components is "the largest".
-    std::vector<uint32_t> vs;
-    for (const auto& e : edges) vs.insert(vs.end(), e.begin(), e.end());
-    std::sort(vs.begin(), vs.end());
-    vs.erase(std::unique(vs.begin(), vs.end()), vs.end());
-    const size_t n = vs.size(), m = edges.size();
-    auto index_of = [&](uint32_t v) {
-        return static_cast<size_t>(std::lower_bound(vs.begin(), vs.end(), v) - vs.begin());
-    };
-    r.vertex_count = static_cast<int64_t>(n);
-    r.edge_count = static_cast<int64_t>(m);
-
-    std::vector<int64_t> degree(n, 0);
-    int64_t slots = 0;
-    std::vector<std::vector<size_t>> distinct(m);   // per edge, its distinct vertex indices
-    std::vector<uint64_t> pairs;
-    for (size_t i = 0; i < m; ++i) {
-        r.arities.push_back(static_cast<int64_t>(edges[i].size()));
-        for (uint32_t v : edges[i]) { ++degree[index_of(v)]; ++slots; }
-        auto& d = distinct[i];
-        for (uint32_t v : edges[i]) d.push_back(index_of(v));
-        std::sort(d.begin(), d.end());
-        d.erase(std::unique(d.begin(), d.end()), d.end());
-        for (size_t a = 0; a < d.size(); ++a)
-            for (size_t b = a + 1; b < d.size(); ++b)
-                pairs.push_back((static_cast<uint64_t>(d[a]) << 32) | d[b]);
-    }
-    std::sort(r.arities.begin(), r.arities.end());
-    r.degree_sequence = degree;
-    std::sort(r.degree_sequence.begin(), r.degree_sequence.end(), std::greater<int64_t>());
-    r.max_degree = n ? r.degree_sequence.front() : 0;
-    r.mean_degree = n ? static_cast<double>(slots) / static_cast<double>(n) : 0.0;
-    std::sort(pairs.begin(), pairs.end());
-    r.two_section_edge_count =
-        static_cast<int64_t>(std::unique(pairs.begin(), pairs.end()) - pairs.begin());
-
-    // The incidence graph: nodes 0..n-1 are vertices, n..n+m-1 edges.
-    const size_t nodes = n + m;
-    std::vector<std::vector<size_t>> adj(nodes);
-    int64_t incidences = 0;
-    for (size_t i = 0; i < m; ++i)
-        for (size_t v : distinct[i]) {
-            adj[n + i].push_back(v);
-            adj[v].push_back(n + i);
-            ++incidences;
-        }
-    std::vector<int64_t> comp(nodes, -1);
-    std::vector<std::vector<size_t>> members;
-    for (size_t s = 0; s < nodes; ++s) {
-        if (comp[s] >= 0) continue;
-        const int64_t c = static_cast<int64_t>(members.size());
-        members.emplace_back();
-        std::vector<size_t> stack{s};
-        comp[s] = c;
-        while (!stack.empty()) {
-            const size_t u = stack.back();
-            stack.pop_back();
-            members[c].push_back(u);
-            for (size_t w : adj[u])
-                if (comp[w] < 0) { comp[w] = c; stack.push_back(w); }
-        }
-    }
-    r.components = static_cast<int64_t>(members.size());
-    r.cycle_rank = r.two_section_edge_count - r.vertex_count + r.components;
-    r.incidence_cycle_rank = incidences - static_cast<int64_t>(nodes) + r.components;
-    if (members.empty()) return r;
-
-    // THE LARGEST COMPONENT: most nodes, then the greatest diameter, then the greatest mean
-    // distance, then the most vertices. A choice among equal node counts by position would
-    // depend on the labelling, and these values are computed once per isomorphism class.
-    std::vector<int64_t> dist(nodes, -1);
-    std::vector<size_t> queue;
-    auto distances = [&](const std::vector<size_t>& in, int64_t& diameter, double& mean) {
-        diameter = 0;
-        mean = 0.0;
-        const size_t k = in.size();
-        if (k <= 1) return;
-        double total = 0.0;
-        for (size_t s : in) {
-            for (size_t u : in) dist[u] = -1;
-            queue.clear();
-            queue.push_back(s);
-            dist[s] = 0;
-            for (size_t qi = 0; qi < queue.size(); ++qi) {
-                const size_t u = queue[qi];
-                for (size_t w : adj[u])
-                    if (dist[w] < 0) { dist[w] = dist[u] + 1; queue.push_back(w); }
-            }
-            for (size_t u : in) {
-                total += static_cast<double>(dist[u]);
-                if (dist[u] > diameter) diameter = dist[u];
-            }
-        }
-        mean = total / (static_cast<double>(k) * static_cast<double>(k - 1));
-    };
-    size_t most = 0;
-    for (const auto& c : members) most = std::max(most, c.size());
-    bool chosen = false;
-    for (const auto& c : members) {
-        if (c.size() != most) continue;
-        int64_t d = 0;
-        double mean = 0.0;
-        distances(c, d, mean);
-        size_t vertices_in = 0;
-        for (size_t u : c) if (u < n) ++vertices_in;
-        const double fraction =
-            n ? static_cast<double>(vertices_in) / static_cast<double>(n) : 0.0;
-        if (!chosen || d > r.incidence_diameter ||
-            (d == r.incidence_diameter && (mean > r.incidence_mean_distance ||
-             (mean == r.incidence_mean_distance && fraction > r.largest_component_fraction)))) {
-            r.incidence_diameter = d;
-            r.incidence_mean_distance = mean;
-            r.largest_component_fraction = fraction;
-            chosen = true;
-        }
-    }
+    r.vertex_count = v.vertex_count;
+    r.edge_count = v.edge_count;
+    r.arities.assign(rec.arities(), rec.arities() + rec.num_edges);
+    r.degree_sequence.assign(rec.degrees(), rec.degrees() + rec.num_vertices);
+    r.max_degree = v.max_degree;
+    r.mean_degree = v.mean_degree;
+    r.two_section_edge_count = v.two_section_edge_count;
+    r.components = v.components;
+    r.cycle_rank = v.cycle_rank;
+    r.incidence_cycle_rank = v.incidence_cycle_rank;
+    r.incidence_diameter = v.incidence_diameter;
+    r.incidence_mean_distance = v.incidence_mean_distance;
+    r.largest_component_fraction = v.largest_component_fraction;
     return r;
 }
 
