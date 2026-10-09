@@ -20,6 +20,7 @@
 // on the device (rank, width, leader, sync).
 #include "hgcommon/core.hpp"
 #include "hgcommon/ir_core.hpp"
+#include "hgcommon/state_geometry_core.hpp"
 
 namespace HG_NAMESPACE {
 namespace common {
@@ -38,16 +39,24 @@ struct StateInvariantValues {
     double largest_component_fraction = 0.0;  // that component's vertices / vertex_count
 };
 
-// One state's invariants as stored per class: the values, then num_edges arities ascending and
-// num_vertices slot degrees descending, as uint32 words directly after the record.
+// One state's invariants and geometry (state_geometry_core.hpp) as stored per class: the values,
+// then num_ball ball-growth dimensions (doubles), num_edges arities ascending and num_vertices
+// slot degrees descending (uint32 words), directly after the record.
 struct StateInvariantRecord {
     StateInvariantValues v;
+    SgGeometry g;
     uint32_t num_edges = 0;
     uint32_t num_vertices = 0;
-    HG_HD const uint32_t* arities() const { return reinterpret_cast<const uint32_t*>(this + 1); }
+    uint32_t num_ball = 0;
+    uint32_t reserved = 0;
+    HG_HD const double* ball() const { return reinterpret_cast<const double*>(this + 1); }
+    HG_HD const uint32_t* arities() const {
+        return reinterpret_cast<const uint32_t*>(ball() + num_ball);
+    }
     HG_HD const uint32_t* degrees() const { return arities() + num_edges; }
-    HG_HD static uint64_t bytes(uint32_t m, uint32_t n) {
-        return sizeof(StateInvariantRecord) + 4 * (uint64_t{m} + n);
+    HG_HD static uint64_t bytes(uint32_t m, uint32_t n, uint32_t nball) {
+        return (sizeof(StateInvariantRecord) + 8 * uint64_t{nball} + 4 * (uint64_t{m} + n) + 7) &
+               ~uint64_t{7};
     }
 };
 
@@ -277,6 +286,119 @@ HG_HD inline void state_invariants(const uint32_t* off, const uint32_t* verts, u
         chosen = true;
         par.sync();
     }
+}
+
+// A state in CSR form as state_geometry_core.hpp reads an edge list.
+struct SiCsrEdges {
+    const uint32_t* off;
+    const uint32_t* verts;
+    uint32_t m;
+    HG_HD uint32_t count() const { return m; }
+    HG_HD uint32_t arity(uint32_t i) const { return off[i + 1] - off[i]; }
+    HG_HD uint32_t at(uint32_t i, uint32_t k) const { return verts[off[i] + k]; }
+};
+
+// Scratch bytes state_record needs before the geometry: the invariants' words, the two output
+// arrays and the ball-growth dimensions.
+HG_HD inline uint64_t si_record_fixed_bytes(uint32_t slots, uint32_t m, uint32_t lanes) {
+    const uint64_t words = si_scratch_words(slots, m, lanes) + m + slots + 1;
+    return ((4 * words + 7) & ~uint64_t{7}) + 8 * (uint64_t{slots} + 1);
+}
+
+// A first scratch size for state_record: the geometry's graph and its metrics at maximum degree 8.
+// state_record reports the size it needs when that is short.
+HG_HD inline uint64_t si_record_bytes_hint(uint32_t slots, uint32_t m, uint32_t lanes) {
+    return si_record_fixed_bytes(slots, m, lanes) + sg_build_bytes(slots, slots) +
+           sg_metric_bytes(slots, 8);
+}
+
+// An IR canonical form (ir_core.hpp: per edge in canonical order, its arity then its canonical
+// vertex labels; `words` words) as CSR: `off` gets m + 1 entries and `verts` the labels. Returns
+// m. `off` holds at least one entry per form word plus one.
+HG_HD inline uint32_t si_form_csr(const uint32_t* form, uint32_t words, uint32_t* off,
+                                  uint32_t* verts) {
+    uint32_t m = 0, s = 0;
+    for (uint32_t w = 0; w < words;) {
+        const uint32_t a = form[w++];
+        off[m++] = s;
+        for (uint32_t k = 0; k < a; ++k) verts[s++] = form[w++];
+    }
+    off[m] = s;
+    return m;
+}
+
+// One state's values, with the arrays in the scratch state_record was given.
+struct SiResult {
+    StateInvariantValues v;
+    SgGeometry g;
+    const double* ball = nullptr;
+    const uint32_t* arities = nullptr;
+    const uint32_t* degrees = nullptr;
+    uint32_t m = 0, n = 0, nball = 0;
+    HG_HD uint64_t bytes() const { return StateInvariantRecord::bytes(m, n, nball); }
+};
+
+// The invariants (state_invariants) of the state off/verts/m and the geometry
+// (sg_state_geometry) of goff/gverts/gm, the same state in its IR canonical labelling
+// (si_form_csr), in `capacity` bytes of 8-byte aligned `scratch`. The geometry's floating-point
+// sums follow the vertex order, so the canonical labelling makes them one value per class. False
+// when the scratch is short, with `needed` set to a size to retry with; every lane returns the
+// same verdict and size. The geometry runs on the leader; `r` is the leader's.
+template <class Par = IrSerial>
+HG_HD inline bool state_record(const uint32_t* off, const uint32_t* verts, uint32_t m,
+                               const uint32_t* goff, const uint32_t* gverts, uint32_t gm,
+                               unsigned char* scratch, uint64_t capacity, uint64_t& needed,
+                               SiResult& r, Par par = Par{}) {
+    const uint32_t S = off[m];
+    const uint64_t siw = si_scratch_words(S, m, par.width());
+    uint32_t* words = reinterpret_cast<uint32_t*>(scratch);
+    uint32_t* arrays = words + siw;
+    const uint64_t fixed = si_record_fixed_bytes(S, m, par.width());
+    double* ball = reinterpret_cast<double*>(scratch + fixed - 8 * (uint64_t{S} + 1));
+    if (fixed > capacity) {
+        needed = si_record_bytes_hint(S, m, par.width());
+        return false;
+    }
+    uint64_t need = 0;
+    if (par.leader()) {
+        size_t geo_need = 0;
+        if (!sg_state_geometry(SiCsrEdges{goff, gverts, gm}, scratch + fixed, capacity - fixed, r.g,
+                               ball, S + 1, geo_need))
+            need = fixed + geo_need;
+    }
+    par.sync();
+    need = par.bcast64(need);
+    if (need) {
+        needed = need;
+        return false;
+    }
+    state_invariants(off, verts, m, words, r.v, arrays, arrays + m, par);
+    if (par.leader()) {
+        r.ball = ball;
+        r.arities = arrays;
+        r.degrees = arrays + m;
+        r.m = m;
+        r.n = static_cast<uint32_t>(r.v.vertex_count);
+        r.nball = r.g.ball_radii;
+    }
+    return true;
+}
+
+// `r` written as a record into `mem`, r.bytes() bytes, 8-byte aligned.
+HG_HD inline StateInvariantRecord* si_record_write(void* mem, const SiResult& r) {
+    auto* rec = reinterpret_cast<StateInvariantRecord*>(mem);
+    rec->v = r.v;
+    rec->g = r.g;
+    rec->num_edges = r.m;
+    rec->num_vertices = r.n;
+    rec->num_ball = r.nball;
+    rec->reserved = 0;
+    double* b = reinterpret_cast<double*>(rec + 1);
+    for (uint32_t i = 0; i < r.nball; ++i) b[i] = r.ball[i];
+    uint32_t* w = reinterpret_cast<uint32_t*>(b + r.nball);
+    for (uint32_t i = 0; i < r.m; ++i) w[i] = r.arities[i];
+    for (uint32_t i = 0; i < r.n; ++i) w[r.m + i] = r.degrees[i];
+    return rec;
 }
 
 }  // namespace common

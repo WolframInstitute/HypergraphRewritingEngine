@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "hgcommon/state_invariants_core.hpp"
+#include "hgcommon/state_geometry_core.hpp"
 #include "wxf.hpp"
 
 namespace HG_NAMESPACE {
@@ -77,6 +78,42 @@ void events_from_multiplicities(
     uint32_t steps, std::map<uint32_t, uint64_t>& events,
     std::map<uint32_t, std::map<int64_t, uint64_t>>& rule_counts);
 
+// The geometry of one state (hgcommon/state_geometry_core.hpp): the values and the ball-growth
+// dimension at r = 1..R.
+struct StateGeometry {
+    hgcommon::SgGeometry values;
+    std::vector<double> ball_dimension;
+};
+
+StateGeometry state_geometry(const std::vector<std::vector<uint32_t>>& edges);
+
+// One step's states and branchial pairs, for the per-step branchial metrics. `nodes` are the
+// step's states by effective id; `pairs` the branchial state pairs whose first event's output
+// state is at the step; `vertex_sets[i]`, for the overlap metrics, the vertices of nodes[i].
+struct BranchialStep {
+    std::vector<int64_t> nodes;
+    std::vector<std::pair<int64_t, int64_t>> pairs;
+    std::vector<std::vector<uint32_t>> vertex_sets;
+};
+
+// Which per-step branchial metrics a request asks for ("StepStatisticsBranchial").
+enum : uint32_t { kBranchialGraph = 1u, kBranchialOverlap = 2u };
+
+// The per-step keys of the branchial metrics for each step, from its BranchialStep: with
+// kBranchialGraph "BranchialDegree", "BranchialDistance", "BranchialComponents" and
+// "BranchialDimension" (absent when undefined); with kBranchialOverlap "StateOverlap",
+// "VertexSharpness" and "BranchEntropy".
+std::map<uint32_t, wxf::WXFValueAssociation> branchial_step_metrics(
+    const std::map<uint32_t, BranchialStep>& steps, uint32_t which);
+
+// How a step's population is weighted, and keys appended to each step's record.
+struct StepStatisticsOptions {
+    // False: each class stands for its raw states ("StepStatisticsWeighting" -> "States").
+    // True: each class counts once ("Classes").
+    bool weight_by_classes = false;
+    const std::map<uint32_t, wxf::WXFValueAssociation>* extra = nullptr;
+};
+
 // The "StepStatistics" reply: one association per step, in step order, with the keys of the
 // probes' per-step record that a class and its multiplicity determine. `class_invariants` holds
 // each class's record; a class without one reads as the state with no edges. `events` and
@@ -85,7 +122,8 @@ wxf::WXFValue step_statistics(
     const std::vector<StepPoint>& points,
     const std::unordered_map<uint64_t, const hgcommon::StateInvariantRecord*>& class_invariants,
     const std::map<uint32_t, uint64_t>& events,
-    const std::map<uint32_t, std::map<int64_t, uint64_t>>& rule_counts);
+    const std::map<uint32_t, std::map<int64_t, uint64_t>>& rule_counts,
+    const StepStatisticsOptions& options = {});
 
 }  // namespace stats
 }  // namespace HG_NAMESPACE

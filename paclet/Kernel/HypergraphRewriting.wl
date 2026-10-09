@@ -30,6 +30,8 @@ Options[HGEvolve] = {
   "ShowGenesisEvents" -> False,
   "DebugFFI" -> False,
   "IncludeCanonicalHashes" -> False,  (* True: include per-state IR canonical hash ("CanonicalHash"); stable across runs, for fusing pruned runs by isomorphism class *)
+  "StepStatisticsWeighting" -> "States",  (* "States": each class of a step counts as its raw states; "Classes": each class counts once *)
+  "StepStatisticsBranchial" -> None,  (* None, "Graph", "Overlap", a list of them, or All: the per-step branchial metrics "StepStatistics" adds *)
   "BranchialStep" -> Automatic,  (* Automatic: BranchialGraph->-1 (final), Evolution*Branchial*->All; or explicit: -1, All, 1-based step *)
   "EdgeDeduplication" -> True,  (* True: one edge per event pair; False: N edges for N shared hypergraph edges *)
   "UniformRandom" -> False,  (* True: with "MatchesPerStep", keep that many transitions per step, the lowest-ranked: "MaxStatesPerStep" under another name. "TransitionRate" is the uniform sampler. *)
@@ -1027,6 +1029,9 @@ hgJobOptions[ov_, requiredData_, graphProperties_] := Module[{branchialStepValue
     "BranchialStep" -> branchialStepValue,  (* 0=All, positive=1-based step, negative=from end *)
     "EdgeDeduplication" -> ov["EdgeDeduplication"],
     "IncludeCanonicalHashes" -> ov["IncludeCanonicalHashes"],
+    "StepStatisticsWeighting" -> ov["StepStatisticsWeighting"],
+    "StepStatisticsBranchial" -> Flatten[{Replace[ov["StepStatisticsBranchial"],
+      {None -> {}, All -> {"Graph", "Overlap"}}]}],
     "RequestedData" -> requiredData,
     "GraphProperties" -> graphProperties,  (* List of graph properties for FFI to generate *)
     (* Uniform random evolution mode *)

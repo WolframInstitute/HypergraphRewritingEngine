@@ -443,7 +443,8 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
     if (record_state_invariants_.load(std::memory_order_relaxed))
         record_state_invariants(new_sid, canonical_hash != 0
                                              ? canonical_hash
-                                             : get_or_compute_canonical_hash(new_sid));
+                                             : get_or_compute_canonical_hash(new_sid),
+                                full || need_ranks ? &form : nullptr);
 
     if (!was_inserted) {
         return {existing_or_new, new_sid, false};
@@ -909,7 +910,8 @@ void Hypergraph::record_event_forms(EventId e) {
     event_forms_.emplace_at(e, arena_, f);
 }
 
-void Hypergraph::record_state_invariants(StateId sid, uint64_t hash) {
+void Hypergraph::record_state_invariants(StateId sid, uint64_t hash,
+                                         const std::vector<uint32_t>* form) {
     // One worker claims the hash and fills the cell; the others return without waiting.
     const uint64_t key = hgcommon::avoid_reserved_keys(hash);
     if (state_invariants_.lookup(key)) return;
@@ -933,22 +935,28 @@ void Hypergraph::record_state_invariants(StateId sid, uint64_t hash) {
         for (uint8_t k = 0; k < e.arity; ++k) verts[off[i] + k] = e.vertices[k];
         ++i;
     });
-    const uint64_t words = hgcommon::si_scratch_words(slots, m, 1);
-    auto* scratch = static_cast<uint32_t*>(
-        worker_scratch().allocate_raw(words * sizeof(uint32_t), alignof(uint64_t)));
-    auto* arities = static_cast<uint32_t*>(
-        worker_scratch().allocate_raw((m + slots + 1) * sizeof(uint32_t), alignof(uint32_t)));
-    uint32_t* degrees = arities + m;
-    hgcommon::StateInvariantValues v;
-    hgcommon::state_invariants(off, verts, m, scratch, v, arities, degrees);
-    const uint32_t n = static_cast<uint32_t>(v.vertex_count);
-    auto* rec = static_cast<hgcommon::StateInvariantRecord*>(arena_.allocate_raw(
-        hgcommon::StateInvariantRecord::bytes(m, n), alignof(hgcommon::StateInvariantRecord)));
-    rec->v = v;
-    rec->num_edges = m;
-    rec->num_vertices = n;
-    auto* words_out = reinterpret_cast<uint32_t*>(rec + 1);
-    std::memcpy(words_out, arities, sizeof(uint32_t) * (uint64_t{m} + n));
+    HG_THREAD_LOCAL(std::vector<uint32_t>, own_form);
+    if (!form) {
+        compute_canonical_hash(edges, &own_form);
+        form = &own_form;
+    }
+    const uint32_t form_words = static_cast<uint32_t>(form->size());
+    auto* goff = static_cast<uint32_t*>(
+        worker_scratch().allocate_raw((form_words + 2) * sizeof(uint32_t), alignof(uint32_t)));
+    auto* gverts = static_cast<uint32_t*>(
+        worker_scratch().allocate_raw((form_words + 1) * sizeof(uint32_t), alignof(uint32_t)));
+    const uint32_t gm = hgcommon::si_form_csr(form->data(), form_words, goff, gverts);
+    uint64_t bytes = hgcommon::si_record_bytes_hint(slots, m, 1);
+    hgcommon::SiResult r;
+    for (;;) {
+        auto* scratch = static_cast<unsigned char*>(worker_scratch().allocate_raw(bytes, 8));
+        uint64_t needed = 0;
+        if (hgcommon::state_record(off, verts, m, goff, gverts, gm, scratch, bytes, needed, r))
+            break;
+        bytes = needed > bytes ? needed : 2 * bytes;
+    }
+    auto* rec = hgcommon::si_record_write(
+        arena_.allocate_raw(r.bytes(), alignof(hgcommon::StateInvariantRecord)), r);
     worker_scratch().release(mk);
     hgcommon::atomic_ref<const hgcommon::StateInvariantRecord*>(*cell).store(
         rec, std::memory_order_release);

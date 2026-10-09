@@ -342,15 +342,31 @@ const hgcommon::StateInvariantRecord* invariant_record(
     }
     off[m] = static_cast<uint32_t>(verts.size());
     const uint32_t slots = off[m];
-    std::vector<uint32_t> scratch(hgcommon::si_scratch_words(slots, m, 1));
-    storage.assign((hgcommon::StateInvariantRecord::bytes(m, slots) + 7) / 8, 0);
-    auto* rec = new (storage.data()) hgcommon::StateInvariantRecord{};
-    auto* words = reinterpret_cast<uint32_t*>(rec + 1);
-    hgcommon::state_invariants(off.data(), verts.data(), m, scratch.data(), rec->v, words,
-                               words + m);
-    rec->num_edges = m;
-    rec->num_vertices = static_cast<uint32_t>(rec->v.vertex_count);
-    return rec;
+    // The geometry reads the state in its IR canonical labelling (state_record).
+    std::vector<uint32_t> goff(1, 0), gverts;
+    if (m) {
+        const std::vector<std::vector<hypergraph::VertexId>> in(edges.begin(), edges.end());
+        for (const auto& e : hypergraph::IRCanonicalizer{}.canonicalize_edges(in)
+                                 .canonical_form.edges) {
+            gverts.insert(gverts.end(), e.begin(), e.end());
+            goff.push_back(static_cast<uint32_t>(gverts.size()));
+        }
+    }
+    const uint32_t gm = static_cast<uint32_t>(goff.size() - 1);
+    uint64_t bytes = hgcommon::si_record_bytes_hint(slots, m, 1);
+    std::vector<uint64_t> scratch;
+    hgcommon::SiResult r;
+    for (;;) {
+        scratch.assign((bytes + 7) / 8, 0);
+        uint64_t needed = 0;
+        if (hgcommon::state_record(off.data(), verts.data(), m, goff.data(), gverts.data(), gm,
+                                   reinterpret_cast<unsigned char*>(scratch.data()), bytes,
+                                   needed, r))
+            break;
+        bytes = needed > bytes ? needed : 2 * bytes;
+    }
+    storage.assign(r.bytes() / 8, 0);
+    return hgcommon::si_record_write(storage.data(), r);
 }
 
 StateInvariants state_invariants(const std::vector<std::vector<uint32_t>>& edges) {
@@ -449,7 +465,192 @@ wxf::WXFValue count_association(const std::map<Key, uint64_t>& m) {
     return wxf::WXFValue(a);
 }
 
+// A state's hyperedges as the EdgeList hgcommon::sg_state_geometry reads.
+struct NestedEdges {
+    const std::vector<std::vector<uint32_t>>* e;
+    uint32_t count() const { return static_cast<uint32_t>(e->size()); }
+    uint32_t arity(uint32_t i) const { return static_cast<uint32_t>((*e)[i].size()); }
+    uint32_t at(uint32_t i, uint32_t k) const { return (*e)[i][k]; }
+};
+
+// sg_state_geometry with a buffer that grows to what the call reports it needs.
+template <class EdgeList>
+hgcommon::SgGeometry geometry_with_scratch(const EdgeList& el, std::vector<double>& ball,
+                                           uint32_t want) {
+    static thread_local std::vector<unsigned char> scratch(1 << 16);
+    hgcommon::SgGeometry g;
+    size_t needed = 0;
+    while (!hgcommon::sg_state_geometry(el, scratch.data(), scratch.size(), g, ball.data(),
+                                        static_cast<uint32_t>(ball.size()), needed, want))
+        scratch.resize(std::max(needed, scratch.size() * 2));
+    return g;
+}
+
 }  // namespace
+
+StateGeometry state_geometry(const std::vector<std::vector<uint32_t>>& edges) {
+    StateGeometry r;
+    size_t slots = 0;
+    for (const auto& e : edges) slots += e.size();
+    r.ball_dimension.assign(slots + 1, 0.0);   // R < number of vertices <= slots
+    r.values = geometry_with_scratch(NestedEdges{&edges}, r.ball_dimension, ~0u);
+    r.ball_dimension.resize(r.values.ball_radii);
+    return r;
+}
+
+namespace {
+
+// A branchial graph's nodes and edges as an EdgeList: one binary edge per pair, and a unary
+// edge per node so that a node with no pair is a vertex.
+struct BranchialEdges {
+    const std::vector<std::pair<uint32_t, uint32_t>>* pairs;
+    uint32_t nodes;
+    uint32_t count() const { return static_cast<uint32_t>(pairs->size()) + nodes; }
+    uint32_t arity(uint32_t i) const { return i < pairs->size() ? 2u : 1u; }
+    uint32_t at(uint32_t i, uint32_t k) const {
+        if (i >= pairs->size()) return i - static_cast<uint32_t>(pairs->size());
+        return k == 0 ? (*pairs)[i].first : (*pairs)[i].second;
+    }
+};
+
+void put_summary(wxf::WXFValueAssociation& rec, const char* key,
+                 const std::vector<std::pair<double, uint64_t>>& values, double round,
+                 bool integral) {
+    rec.push_back({wxf::WXFValue(key), summary_value(summarise(values, round), integral)});
+}
+
+// The branchial graph metrics of one step: the graph on the step's states, joined by the
+// step's pairs (a pair of one state with itself adds nothing, and a repeated pair one edge).
+void branchial_graph_metrics(const BranchialStep& s, wxf::WXFValueAssociation& rec) {
+    std::vector<int64_t> ids = s.nodes;
+    std::sort(ids.begin(), ids.end());
+    ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+    const uint32_t n = static_cast<uint32_t>(ids.size());
+    auto index = [&](int64_t id) {
+        return static_cast<uint32_t>(std::lower_bound(ids.begin(), ids.end(), id) - ids.begin());
+    };
+    std::vector<std::pair<uint32_t, uint32_t>> edges;
+    for (const auto& [a, b] : s.pairs) {
+        if (a == b) continue;
+        uint32_t x = index(a), y = index(b);
+        if (x >= n || y >= n || ids[x] != a || ids[y] != b) continue;
+        if (x > y) std::swap(x, y);
+        edges.emplace_back(x, y);
+    }
+    std::sort(edges.begin(), edges.end());
+    edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
+    std::vector<std::vector<uint32_t>> adj(n);
+    for (const auto& [x, y] : edges) { adj[x].push_back(y); adj[y].push_back(x); }
+
+    std::vector<std::pair<double, uint64_t>> degree, distance;
+    for (uint32_t v = 0; v < n; ++v) degree.push_back({double(adj[v].size()), 1});
+    std::vector<int64_t> comp(n, -1), dist(n, -1);
+    std::vector<std::vector<uint32_t>> members;
+    std::vector<uint32_t> queue;
+    std::map<int64_t, uint64_t> distance_counts;
+    for (uint32_t v = 0; v < n; ++v) {
+        if (comp[v] < 0) {
+            const int64_t c = static_cast<int64_t>(members.size());
+            members.emplace_back();
+            queue.assign(1, v);
+            comp[v] = c;
+            for (size_t i = 0; i < queue.size(); ++i) {
+                members[c].push_back(queue[i]);
+                for (uint32_t w : adj[queue[i]])
+                    if (comp[w] < 0) { comp[w] = c; queue.push_back(w); }
+            }
+        }
+        // Distances to the later states of the same component: each unordered pair once.
+        queue.assign(1, v);
+        dist[v] = 0;
+        for (size_t i = 0; i < queue.size(); ++i)
+            for (uint32_t w : adj[queue[i]])
+                if (dist[w] < 0) { dist[w] = dist[queue[i]] + 1; queue.push_back(w); }
+        for (uint32_t w : queue) {
+            if (w > v) ++distance_counts[dist[w]];
+            dist[w] = -1;
+        }
+    }
+    for (const auto& [d, k] : distance_counts) distance.push_back({double(d), k});
+    put_summary(rec, "BranchialDegree", degree, 1.0, true);
+    put_summary(rec, "BranchialDistance", distance, 1.0, true);
+    rec.push_back({wxf::WXFValue("BranchialComponents"),
+                   wxf::WXFValue(static_cast<int64_t>(members.size()))});
+
+    // The dimension of the largest component: most states, then the greatest dimension.
+    size_t most = 0;
+    for (const auto& c : members) most = std::max(most, c.size());
+    bool have = false;
+    double best = 0.0;
+    std::vector<double> ball(most + 1);
+    for (const auto& c : members) {
+        if (c.size() != most || most < 2) continue;
+        std::vector<uint32_t> local(n, 0);
+        for (uint32_t i = 0; i < c.size(); ++i) local[c[i]] = i;
+        std::vector<std::pair<uint32_t, uint32_t>> sub;
+        for (const auto& [x, y] : edges)
+            if (comp[x] == comp[c[0]]) sub.emplace_back(local[x], local[y]);
+        const hgcommon::SgGeometry g = geometry_with_scratch(
+            BranchialEdges{&sub, static_cast<uint32_t>(c.size())}, ball, hgcommon::SG_HAUSDORFF);
+        if ((g.defined & hgcommon::SG_HAUSDORFF) && (!have || g.hausdorff_dimension > best)) {
+            best = g.hausdorff_dimension;
+            have = true;
+        }
+    }
+    if (have) rec.push_back({wxf::WXFValue("BranchialDimension"), wxf::WXFValue(best)});
+}
+
+// The vertex-overlap metrics of one step: each state is its vertex set, and a vertex is shared
+// by the states that inherited it.
+void overlap_metrics(const BranchialStep& s, wxf::WXFValueAssociation& rec) {
+    // Each state once, by effective id.
+    std::map<int64_t, const std::vector<uint32_t>*> by_id;
+    for (size_t i = 0; i < s.nodes.size() && i < s.vertex_sets.size(); ++i)
+        by_id.emplace(s.nodes[i], &s.vertex_sets[i]);
+    std::vector<std::vector<uint32_t>> sets;
+    for (const auto& [id, vs] : by_id) {
+        std::vector<uint32_t> v = *vs;
+        std::sort(v.begin(), v.end());
+        v.erase(std::unique(v.begin(), v.end()), v.end());
+        sets.push_back(std::move(v));
+    }
+    const size_t k = sets.size();
+    // Inverted index: vertex -> the states holding it, in state order.
+    std::map<uint32_t, std::vector<uint32_t>> holders;
+    for (uint32_t i = 0; i < k; ++i)
+        for (uint32_t v : sets[i]) holders[v].push_back(i);
+    std::map<std::pair<uint32_t, uint32_t>, uint64_t> shared;
+    for (const auto& [v, hs] : holders)
+        for (size_t a = 0; a < hs.size(); ++a)
+            for (size_t b = a + 1; b < hs.size(); ++b) ++shared[{hs[a], hs[b]}];
+    std::vector<std::pair<double, uint64_t>> overlap, sharpness, entropy;
+    uint64_t disjoint = static_cast<uint64_t>(k) * (k - (k ? 1 : 0)) / 2 - shared.size();
+    for (const auto& [ab, both] : shared) {
+        const double uni = double(sets[ab.first].size() + sets[ab.second].size() - both);
+        overlap.push_back({double(both) / uni, 1});
+    }
+    if (disjoint) overlap.push_back({0.0, disjoint});
+    for (const auto& [v, hs] : holders) {
+        sharpness.push_back({1.0 / double(hs.size()), 1});
+        entropy.push_back({std::log2(double(hs.size())), 1});
+    }
+    put_summary(rec, "StateOverlap", overlap, 0.01, false);
+    put_summary(rec, "VertexSharpness", sharpness, 0.01, false);
+    put_summary(rec, "BranchEntropy", entropy, 0.01, false);
+}
+
+}  // namespace
+
+std::map<uint32_t, wxf::WXFValueAssociation> branchial_step_metrics(
+    const std::map<uint32_t, BranchialStep>& steps, uint32_t which) {
+    std::map<uint32_t, wxf::WXFValueAssociation> out;
+    for (const auto& [step, s] : steps) {
+        wxf::WXFValueAssociation& rec = out[step];
+        if (which & kBranchialGraph) branchial_graph_metrics(s, rec);
+        if (which & kBranchialOverlap) overlap_metrics(s, rec);
+    }
+    return out;
+}
 
 void events_from_multiplicities(
     const std::vector<StepPoint>& points,
@@ -474,7 +675,8 @@ wxf::WXFValue step_statistics(
     const std::vector<StepPoint>& points,
     const std::unordered_map<uint64_t, const hgcommon::StateInvariantRecord*>& class_invariants,
     const std::map<uint32_t, uint64_t>& events,
-    const std::map<uint32_t, std::map<int64_t, uint64_t>>& rule_counts) {
+    const std::map<uint32_t, std::map<int64_t, uint64_t>>& rule_counts,
+    const StepStatisticsOptions& options) {
     std::map<uint32_t, std::map<uint64_t, uint64_t>> by_step;
     for (const auto& p : points)
         if (p.weight) {
@@ -510,9 +712,30 @@ wxf::WXFValue step_statistics(
             largest_fraction;
         std::map<int64_t, uint64_t> arity_hist, degree_hist;
         std::map<std::vector<int64_t>, uint64_t> arity_sig_hist, degree_seq_hist;
-        for (const auto& [h, w] : classes) {
+        std::vector<std::pair<double, uint64_t>> radius, eccentricity, hausdorff, ricci, ollivier,
+            degree_entropy, local_entropy, mutual_information, fisher;
+        std::map<uint32_t, std::vector<std::pair<double, uint64_t>>> ball_growth;
+        for (const auto& [h, mult] : classes) {
+            const uint64_t w = options.weight_by_classes ? 1 : mult;
             const hgcommon::StateInvariantRecord& r = invariants(h);
             const hgcommon::StateInvariantValues& s = r.v;
+            const hgcommon::SgGeometry& g = r.g;
+            if (g.defined & hgcommon::SG_RADIUS) {
+                radius.push_back({double(g.radius), w});
+                eccentricity.push_back({g.mean_eccentricity, w});
+            }
+            if (g.defined & hgcommon::SG_HAUSDORFF) hausdorff.push_back({g.hausdorff_dimension, w});
+            if (g.defined & hgcommon::SG_RICCI) ricci.push_back({g.ricci_scalar, w});
+            if (g.defined & hgcommon::SG_OLLIVIER) ollivier.push_back({g.ollivier_ricci, w});
+            if (g.defined & hgcommon::SG_DEGREE_ENTROPY) {
+                degree_entropy.push_back({g.degree_entropy, w});
+                local_entropy.push_back({g.local_entropy, w});
+            }
+            if (g.defined & hgcommon::SG_MUTUAL_INFORMATION)
+                mutual_information.push_back({g.mutual_information, w});
+            if (g.defined & hgcommon::SG_FISHER) fisher.push_back({g.fisher_information, w});
+            for (uint32_t b = 0; b < r.num_ball; ++b)
+                ball_growth[b + 1].push_back({r.ball()[b], w});
             vertex_count.push_back({double(s.vertex_count), w});
             edge_count.push_back({double(s.edge_count), w});
             max_degree.push_back({double(s.max_degree), w});
@@ -548,6 +771,19 @@ wxf::WXFValue step_statistics(
         put("IncidenceDiameter", inc_diameter, 1.0, true);
         put("IncidenceMeanDistance", inc_mean_distance, 0.01, false);
         put("LargestComponentFraction", largest_fraction, 0.01, false);
+        put("GraphRadius", radius, 1.0, true);
+        put("MeanEccentricity", eccentricity, 0.01, false);
+        put("WolframHausdorffDimension", hausdorff, 0.01, false);
+        put("WolframRicciCurvatureScalar", ricci, 0.01, false);
+        put("OllivierRicciCurvature", ollivier, 0.01, false);
+        put("DegreeEntropy", degree_entropy, 0.01, false);
+        put("LocalEntropy", local_entropy, 0.01, false);
+        put("MutualInformation", mutual_information, 0.01, false);
+        put("FisherInformation", fisher, 0.01, false);
+        wxf::WXFValueAssociation balls;
+        for (const auto& [r, v] : ball_growth)
+            balls.push_back({wxf::WXFValue(static_cast<int64_t>(r)),
+                             summary_value(summarise(v, 0.01), false)});
 
         wxf::WXFValueAssociation rec;
         auto i64 = [](uint64_t v) { return wxf::WXFValue(static_cast<int64_t>(v)); };
@@ -573,6 +809,12 @@ wxf::WXFValue step_statistics(
         rec.push_back({wxf::WXFValue("AritySignatureHistogram"), count_association(arity_sig_hist)});
         rec.push_back({wxf::WXFValue("DegreeHistogram"), count_association(degree_hist)});
         rec.push_back({wxf::WXFValue("DegreeSequenceHistogram"), count_association(degree_seq_hist)});
+        rec.push_back({wxf::WXFValue("BallGrowthDimension"), wxf::WXFValue(std::move(balls))});
+        if (options.extra) {
+            auto x = options.extra->find(step);
+            if (x != options.extra->end())
+                for (const auto& kv : x->second) rec.push_back(kv);
+        }
         steps.push_back(wxf::WXFValue(rec));
     }
     return wxf::WXFValue(steps);

@@ -3416,6 +3416,104 @@ TEST(Session, AHeldVerbIsServedUnderTheSessionsSettings) {
     run_rewriting_core(branch_job(0, "Close", h, with("None", true), 3), host);
 }
 
+namespace {
+
+const wxf::WXFValue* assoc_at(const wxf::WXFValue& v, const std::string& key) {
+    const auto* a = std::get_if<wxf::WXFValueAssociation>(&v.data);
+    if (!a) return nullptr;
+    for (const auto& [k, x] : *a) {
+        const auto* s = std::get_if<std::string>(&k.data);
+        if (s && *s == key) return &x;
+    }
+    return nullptr;
+}
+
+double number_at(const wxf::WXFValue& v, const std::string& key) {
+    const wxf::WXFValue* x = assoc_at(v, key);
+    if (!x) return std::nan("");
+    if (const auto* d = std::get_if<double>(&x->data)) return *d;
+    if (const auto* i = std::get_if<int64_t>(&x->data)) return static_cast<double>(*i);
+    return std::nan("");
+}
+
+bool bytes_contain(const std::vector<uint8_t>& bytes, const std::string& s) {
+    return std::search(bytes.begin(), bytes.end(), s.begin(), s.end()) != bytes.end();
+}
+
+}  // namespace
+
+// The per-step branchial metrics of one step worked by hand: states 10 and 11 joined (the pair
+// listed both ways), 12 alone (its pair with itself adds nothing). Vertex sets {0,1,2,5},
+// {0,1,2,6} and {7}: overlaps 3/5, 0, 0; vertices 0, 1, 2 held twice, 5, 6, 7 once.
+TEST(StateStatistics, BranchialStepMetricsOfASmallStep) {
+    hg::stats::BranchialStep s;
+    s.nodes = {10, 11, 12};
+    s.pairs = {{10, 11}, {11, 10}, {12, 12}};
+    s.vertex_sets = {{0, 1, 2, 5}, {0, 1, 2, 6}, {7}};
+    const auto out = hg::stats::branchial_step_metrics(
+        {{1u, s}}, hg::stats::kBranchialGraph | hg::stats::kBranchialOverlap);
+    ASSERT_EQ(out.size(), 1u);
+    const wxf::WXFValue rec(out.at(1));
+    ASSERT_NE(assoc_at(rec, "BranchialDegree"), nullptr);
+    EXPECT_EQ(number_at(*assoc_at(rec, "BranchialDegree"), "N"), 3);
+    EXPECT_DOUBLE_EQ(number_at(*assoc_at(rec, "BranchialDegree"), "Mean"), 2.0 / 3.0);
+    EXPECT_EQ(number_at(*assoc_at(rec, "BranchialDistance"), "N"), 1);
+    EXPECT_EQ(number_at(*assoc_at(rec, "BranchialDistance"), "Max"), 1);
+    EXPECT_EQ(number_at(rec, "BranchialComponents"), 2);
+    EXPECT_DOUBLE_EQ(number_at(rec, "BranchialDimension"), 1.0);   // K2: log 2 / log 2
+    EXPECT_EQ(number_at(*assoc_at(rec, "StateOverlap"), "N"), 3);
+    EXPECT_DOUBLE_EQ(number_at(*assoc_at(rec, "StateOverlap"), "Mean"), 0.2);
+    EXPECT_EQ(number_at(*assoc_at(rec, "VertexSharpness"), "N"), 6);
+    EXPECT_DOUBLE_EQ(number_at(*assoc_at(rec, "VertexSharpness"), "Mean"), 0.75);
+    EXPECT_DOUBLE_EQ(number_at(*assoc_at(rec, "BranchEntropy"), "Mean"), 0.5);
+}
+
+// "StepStatisticsWeighting" -> "Classes" counts a class once; "States" counts its raw states.
+TEST(StateStatistics, WeightingByClassesCountsEachClassOnce) {
+    const std::vector<hg::stats::StepPoint> points = {{0, 1, 3}, {0, 2, 1}};
+    std::vector<uint64_t> s1, s2;
+    const std::unordered_map<uint64_t, const hgcommon::StateInvariantRecord*> edges = {
+        {1, hg::stats::invariant_record({{1, 2}}, s1)},
+        {2, hg::stats::invariant_record({{1, 2}, {2, 3}}, s2)}};
+    auto vertex_count = [&](bool by_class) {
+        const wxf::WXFValue steps = hg::stats::step_statistics(
+            points, edges, {}, {}, hg::stats::StepStatisticsOptions{by_class, nullptr});
+        const auto& first = std::get<wxf::WXFValueList>(steps.data).at(0);
+        EXPECT_EQ(number_at(first, "RawStates"), 4);
+        return *assoc_at(*assoc_at(first, "Invariants"), "VertexCount");
+    };
+    const wxf::WXFValue states = vertex_count(false), classes = vertex_count(true);
+    EXPECT_EQ(number_at(states, "N"), 4);
+    EXPECT_DOUBLE_EQ(number_at(states, "Mean"), (3 * 2 + 3) / 4.0);
+    EXPECT_EQ(number_at(classes, "N"), 2);
+    EXPECT_DOUBLE_EQ(number_at(classes, "Mean"), 2.5);
+}
+
+// Through the FFI: the options are read, the branchial keys appear under None, and under Full
+// the overlap keys are left out with a warning.
+TEST(StateStatistics, BranchialOptionThroughTheFfi) {
+    auto run = [&](const char* canon) {
+        HostBridge host;
+        return run_rewriting_core(build_input({{{1, 2}, {1, 3}}}, kBranchLhs, kBranchRhs, 2,
+            [&](wxf::Writer& w) {
+                put_str_list_option(w, "RequestedData", {"StepStatistics"});
+                put_str_option(w, "CanonicalizeStates", canon);
+                put_str_list_option(w, "StepStatisticsBranchial", {"Graph", "Overlap"});
+                put_str_option(w, "StepStatisticsWeighting", "Classes");
+            }, 4), host);
+    };
+    const auto none = run("None");
+    const auto stats = value_bytes(none, "StepStatistics");
+    for (const char* k : {"BranchialDegree", "BranchialComponents", "StateOverlap",
+                          "VertexSharpness", "BranchEntropy", "WolframHausdorffDimension",
+                          "BallGrowthDimension"})
+        EXPECT_TRUE(bytes_contain(stats, k)) << k;
+    const auto full = run("Full");
+    EXPECT_TRUE(bytes_contain(value_bytes(full, "StepStatistics"), "BranchialDegree"));
+    EXPECT_FALSE(bytes_contain(value_bytes(full, "StepStatistics"), "StateOverlap"));
+    EXPECT_TRUE(bytes_contain(value_bytes(full, "Warnings"), "StepStatisticsBranchial"));
+}
+
 // Histogram keys round to the nearest multiple with halves to even, as the reference's
 // Round[x, 0.01] does: 1.125 (MeanDegree 9/8) is 112.5 hundredths exactly and keys as 1.12.
 TEST(StateStatistics, HistogramKeysRoundHalvesToEven) {

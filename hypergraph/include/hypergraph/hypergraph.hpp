@@ -1353,9 +1353,9 @@ public:
     uint64_t marked_form_hash(StateId s, const EdgeId* marked, uint8_t n);
     // Event `e`'s marked forms into event_forms_, when the run's keys read them.
     void record_event_forms(EventId e);
-    // The invariants of class `hash` into state_invariants_, computed from state `sid` on the
-    // calling worker when this call claims the hash.
-    void record_state_invariants(StateId sid, uint64_t hash);
+    // The invariants of class `hash` into state_invariants_, from state `sid` and its IR canonical
+    // form `form` (computed here when null), on the calling worker when this call claims the hash.
+    void record_state_invariants(StateId sid, uint64_t hash, const std::vector<uint32_t>* form);
     // Event `e`'s identity, claimed in canonical_event_map_ on its signature values. The Event is
     // stored before the call; a key hit compares against the class's first event. The claim's
     // key is the event's reported signature.
