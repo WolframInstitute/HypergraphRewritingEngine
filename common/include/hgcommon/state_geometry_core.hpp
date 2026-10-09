@@ -262,8 +262,7 @@ HG_HD inline double sg_ollivier_edge(const SgGraph& g, uint32_t x, uint32_t y,
     uint32_t* supply = flow + static_cast<size_t>(a) * b;   // remaining supply at A points
     uint32_t* demand = supply + a;                          // remaining demand at B points
     const uint32_t nodes = a + b + 2;
-    int64_t* dist = reinterpret_cast<int64_t*>(
-        (reinterpret_cast<uintptr_t>(demand + b) + 7) & ~static_cast<uintptr_t>(7));
+    int32_t* dist = reinterpret_cast<int32_t*>(demand + b);
     uint32_t* prev = reinterpret_cast<uint32_t*>(dist + nodes);
     uint32_t* inq = prev + nodes;
     uint32_t* queue = inq + nodes;
@@ -280,36 +279,38 @@ HG_HD inline double sg_ollivier_edge(const SgGraph& g, uint32_t x, uint32_t y,
     uint64_t moved = 0, total_cost = 0;
     // Node numbering: 0 source, 1..a the A points, a+1..a+b the B points, a+b+1 the sink.
     const uint32_t src = 0, sink = a + b + 1;
-    const int64_t inf = INT64_MAX / 4;
+    const int32_t inf = INT32_MAX / 2;
     while (moved < total) {
         for (uint32_t v = 0; v < nodes; ++v) { dist[v] = inf; inq[v] = 0; }
         uint32_t head = 0, count = 0;
         auto push = [&](uint32_t v) {
             if (inq[v]) return;
             inq[v] = 1;
-            queue[(head + count) % nodes] = v;
+            uint32_t at = head + count;
+            if (at >= nodes) at -= nodes;
+            queue[at] = v;
             ++count;
         };
         dist[src] = 0;
         push(src);
         while (count) {
             const uint32_t u = queue[head];
-            head = (head + 1) % nodes;
+            head = head + 1 == nodes ? 0 : head + 1;
             --count;
             inq[u] = 0;
-            auto relax = [&](uint32_t v, int64_t w) {
+            auto relax = [&](uint32_t v, int32_t w) {
                 if (dist[u] + w < dist[v]) { dist[v] = dist[u] + w; prev[v] = u; push(v); }
             };
             if (u == src) {
                 for (uint32_t i = 0; i < a; ++i) if (supply[i]) relax(1 + i, 0);
             } else if (u <= a) {
                 const uint32_t i = u - 1;
-                for (uint32_t j = 0; j < b; ++j) relax(1 + a + j, cost[i * b + j]);
+                for (uint32_t j = 0; j < b; ++j) relax(1 + a + j, static_cast<int32_t>(cost[i * b + j]));
             } else if (u < sink) {
                 const uint32_t j = u - 1 - a;
                 if (demand[j]) relax(sink, 0);
                 for (uint32_t i = 0; i < a; ++i)
-                    if (flow[i * b + j]) relax(1 + i, -static_cast<int64_t>(cost[i * b + j]));
+                    if (flow[i * b + j]) relax(1 + i, -static_cast<int32_t>(cost[i * b + j]));
             }
         }
         if (dist[sink] >= inf) break;   // cannot happen: supply and demand totals are equal
