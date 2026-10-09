@@ -2031,6 +2031,65 @@ TEST(GpuBinaryGate, AWorkerJobSequenceMatchesTheCpuJobByJob) {
     worker_stop(w);
 }
 
+// The StepStatisticsBranchial metrics are admitted by one rule on both devices, so the two
+// StepStatistics payloads are byte-equal across Graph/Overlap x None/Automatic/Full states x
+// ExploreFromCanonicalStatesOnly. Under Full states with Automatic events the CPU dropped the
+// metrics with the ExploreFromCanonicalStatesOnly warning, though the option was not set.
+TEST(GpuBinaryGate, StepStatisticsBranchialIsAdmittedAlikeOnBothDevices) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    if (!CpuWorker::built()) GTEST_SKIP() << "hg_evolve is not built here";
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    CpuWorker cpu;
+    ASSERT_TRUE(cpu.ok);
+    const auto job = [](int64_t steps, const char* states, const char* events, bool quotient,
+                        const std::vector<std::string>& branchial) {
+        return build_input({{{1, 2}}}, {{1, 2}}, {{1, 2}, {2, 3}}, steps,
+                           [&](wxf::Writer& o) {
+                               put_str_list_option(o, "RequestedData", {"StepStatistics"});
+                               put_str_list_option(o, "StepStatisticsBranchial", branchial);
+                               put_str_option(o, "CanonicalizeStates", states);
+                               put_str_option(o, "CanonicalizeEvents", events);
+                               if (quotient)
+                                   put_str_option(o, "ExploreFromCanonicalStatesOnly", "True");
+                           },
+                           quotient ? 5 : 4);
+    };
+    struct Case { int64_t steps; const char* states; bool quotient; std::vector<std::string> b; };
+    std::vector<Case> cases = {{1, "Full", false, {"Graph"}}};
+    for (const char* states : {"None", "Automatic", "Full"})
+        for (bool quotient : {false, true})
+            for (const auto& b : std::vector<std::vector<std::string>>{
+                     {"Graph"}, {"Overlap"}, {"Graph", "Overlap"}})
+                cases.push_back({3, states, quotient, b});
+    for (const auto& c : cases) {
+        const auto bytes = job(c.steps, c.states, "Automatic", c.quotient, c.b);
+        const auto host = cpu(bytes);
+        const auto device = worker_call(w, bytes);
+        ASSERT_FALSE(host.empty()) << cpu.w.last_error;
+        if (device.empty()) {
+            worker_stop(w);
+            GTEST_SKIP() << "the worker returned no result (no usable device?)";
+        }
+        const std::string what = std::string(c.states) + (c.quotient ? " quotient " : " ") +
+                                 c.b.front() + (c.b.size() > 1 ? "+" + c.b.back() : "") +
+                                 " steps " + std::to_string(c.steps);
+        const auto host_stats = value_bytes(host, "StepStatistics");
+        EXPECT_FALSE(host_stats.empty()) << what;
+        EXPECT_EQ(host_stats, value_bytes(device, "StepStatistics")) << what;
+        EXPECT_EQ(reply_mentions(host, "not computed under ExploreFromCanonicalStatesOnly"),
+                  reply_mentions(device, "not computed under ExploreFromCanonicalStatesOnly"))
+            << what;
+    }
+    worker_stop(w);
+}
+
 // A quotient session opened for counts serves the relation lists a later Step asks for: the Open
 // records everything a session may be asked later, the lists included.
 void quotient_relation_list_options(wxf::Writer& w) {
