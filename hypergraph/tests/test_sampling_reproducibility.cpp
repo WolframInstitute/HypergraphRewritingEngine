@@ -666,3 +666,45 @@ TEST(SamplingReproducibility, CapTiesUnderTheReconstructionDoNotDependOnTheSched
         EXPECT_EQ(seen.size(), 1u) << "cap " << static_cast<int>(cap) << ":" << got;
     }
 }
+
+// Under quotient exploration automorphic transitions share an orbit-keyed rank, so a sampled
+// state whose draws all fail has several spine candidates, and the reconstruction's causal
+// relation depends on which one is replayed. The spine breaks the tie on the full-capture key
+// (hgcommon::spine_before). Fuzz seed 201768 with the first-stored candidate gave 3, 4 or 5
+// causal edges by schedule; full capture gives 3.
+TEST(SamplingReproducibility, SpineTieUnderTheReconstructionMatchesFullCapture) {
+    auto run = [](size_t threads, bool quotient) {
+        Hypergraph hg;
+        hg.set_event_signature_keys(hgcommon::EventKey_Step);
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        ParallelEvolutionEngine e(&hg, threads);
+        e.set_max_steps(5);
+        e.set_transitive_reduction(true);
+        e.set_transition_rate(0.317);
+        e.set_rule_weights({0.43, 0.24});
+        e.set_random_seed(1855184222);
+        e.set_explore_from_canonical_states_only(quotient);
+        e.add_rule(make_rule(0).lhs({4, 3, 5, 2}).rhs({3, 5}).rhs({5, 4}).rhs({4, 4}).build());
+        e.add_rule(make_rule(1).lhs({2, 4}).lhs({4, 2}).rhs({4}).rhs({4, 4}).rhs({2, 2}).build());
+        e.evolve(std::vector<std::vector<VertexId>>{{0u, 1u}, {1u, 1u}, {2u, 1u, 1u, 0u},
+                                                    {1u, 0u, 1u, 1u}},
+                 5);
+        return std::vector<size_t>{hg.num_canonical_states(), hg.observable_num_events(),
+                                   hg.observable_num_causal_pairs(true),
+                                   hg.observable_num_causal_pairs(false)};
+    };
+    // Full capture with the reduction on stores the reduced pairs only, so its unreduced count is
+    // the reduced one; the quotient's unreduced count is compared against its own first run.
+    auto one = run(1, false);
+    ASSERT_EQ(one, (std::vector<size_t>{6, 5, 3, 3})) << "full capture changed";
+    one[3] = run(1, true)[3];
+    for (size_t threads : {size_t(1), size_t(2), size_t(4), size_t(8)}) {
+        for (int rep = 0; rep < 20; ++rep) {
+            const auto got = run(threads, true);
+            ASSERT_EQ(got, one) << threads << " workers, repetition " << rep << ": states "
+                                << got[0] << " events " << got[1] << " causal " << got[2]
+                                << " unreduced " << got[3] << " vs full capture " << one[0]
+                                << " " << one[1] << " " << one[2] << " " << one[3];
+        }
+    }
+}

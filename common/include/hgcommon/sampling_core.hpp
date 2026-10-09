@@ -70,6 +70,20 @@ HG_HD inline uint64_t transition_rank(uint64_t transition_key, uint64_t random_s
     return x ^ (x >> 31);
 }
 
+// THE SPINE'S ORDER. When every draw of a state fails, the spine keeps the one transition with
+// the smallest (rank, tie). `rank` is transition_rank of the run's transition key; `tie` is
+// transition_rank of the key over the raw state's own edge ranks, the key full capture ranks by.
+// Under the quotient reconstruction the run's key reads edge orbits, so automorphic transitions
+// share a rank and the tie selects one of them; outside it the two keys are equal.
+struct SpineKey {
+    uint64_t rank;
+    uint64_t tie;
+};
+
+HG_HD inline bool spine_before(SpineKey a, SpineKey b) {
+    return a.rank < b.rank || (a.rank == b.rank && a.tie < b.tie);
+}
+
 // Whether a cap of k keeps a candidate that `below` candidates rank strictly below. Over a
 // rank-sorted list these are the cap_keep_count(total, k, equal rank) first entries: the first k
 // and every entry tied with the k-th. transition_rank is a bijection of the transition key, so

@@ -151,13 +151,17 @@ struct MatchJoinCtx {
 //   kCapEmit    emit ranks at or below the cut               } smallest ranks of the pair, ties kept
 //   kDraw       emit the matches that survive their draw; record the state's minimum rank
 //               and whether any match survived
-//   kSpineEmit  emit the one match whose rank is that minimum
+//   kSpineTie   under the quotient reconstruction, record the smallest tie key among the matches
+//               at that minimum (hgcommon::SpineKey)
+//   kSpineEmit  emit the one match at the smallest (rank, tie)
 //   kParentCount  record each match's rank and rule, emit nothing   } the per-state cap: the k
 //   kParentEmit   emit a match while its rank's quota remains       } lowest-ranked transitions
 // The rank is hgcommon::transition_rank and the draw hgcommon::transition_survives, both keyed
 // on transition_key_device: the host's cap_at_drain, transition_survives and spine_at_drain
 // call the same functions on the same key.
-enum class EmitMode : uint8_t { kCapCount, kCapEmit, kDraw, kSpineEmit, kParentCount, kParentEmit };
+enum class EmitMode : uint8_t {
+    kCapCount, kCapEmit, kDraw, kSpineTie, kSpineEmit, kParentCount, kParentEmit
+};
 
 struct EmitCtl {
     EmitMode            mode;
@@ -175,6 +179,9 @@ struct EmitCtl {
     const uint64_t*     s_keep_rank = nullptr;
     uint32_t*           s_keep_quota = nullptr;
     uint32_t            keep_n = 0;
+    // kSpineEmit under the quotient reconstruction: the smallest tie key among the matches at
+    // the minimum rank (kSpineTie's reduction).
+    uint64_t            tie = 0;
 };
 
 // Not inlined: it is called from the join's innermost completion callback, which is
@@ -206,8 +213,25 @@ __device__ __noinline__ bool emit_admit(const DeviceState& ds, StateId state_id,
         atomicExch(c.s_survived, 1u);
         return true;
     }
-    case EmitMode::kSpineEmit:
-        return r == c.threshold && atomicAdd(c.s_emitted, 1u) == 0u;
+    case EmitMode::kSpineTie:
+        if (r == c.threshold) {
+            const uint64_t tie = hgcommon::transition_rank(
+                transition_key_device(ds, state_id, rid, edges, depth, false), ds.sampling_seed);
+            atomicMin(c.s_min_rank, static_cast<unsigned long long>(tie));
+        }
+        return false;
+    case EmitMode::kSpineEmit: {
+        if (r != c.threshold) return false;
+        if (ds.state_edge_orbit) {
+            // The match at the smallest (rank, tie), hgcommon::spine_before, as on the host.
+            const hgcommon::SpineKey mine{r, hgcommon::transition_rank(
+                transition_key_device(ds, state_id, rid, edges, depth, false), ds.sampling_seed)};
+            const hgcommon::SpineKey best{c.threshold, c.tie};
+            if (hgcommon::spine_before(best, mine)) return false;
+        }
+        // Equal (rank, tie) is one transition reached twice; it is emitted once.
+        return atomicAdd(c.s_emitted, 1u) == 0u;
+    }
     case EmitMode::kParentCount: {
         const uint32_t at = atomicAdd(c.s_seen, 1u);
         if (at < kDrainCapBuffer) {
@@ -408,8 +432,21 @@ __device__ void match_state_rule(const DeviceState& ds,
             match_state_rule_pass(ds, rules, state_id, r, step, out, &draw);
         __syncthreads();
         if (s_survived != 0u || s_min_rank == ~0ULL) return;
-        const EmitCtl spine{EmitMode::kSpineEmit, 0u, s_min_rank, nullptr, nullptr, &s_emitted,
-                            nullptr, nullptr, nullptr};
+        EmitCtl spine{EmitMode::kSpineEmit, 0u, s_min_rank, nullptr, nullptr, &s_emitted,
+                      nullptr, nullptr, nullptr};
+        if (ds.state_edge_orbit) {
+            // Automorphic transitions share an orbit rank: reduce the tie key over the matches
+            // at the minimum first, so the emitted one does not depend on which lane is first.
+            __shared__ unsigned long long s_min_tie;
+            if (threadIdx.x == 0) s_min_tie = ~0ULL;
+            __syncthreads();
+            const EmitCtl tie{EmitMode::kSpineTie, 0u, s_min_rank, nullptr, nullptr, nullptr,
+                              nullptr, &s_min_tie, nullptr};
+            for (uint32_t r = 0; r < ds.num_rules; ++r)
+                match_state_rule_pass(ds, rules, state_id, r, step, out, &tie);
+            __syncthreads();
+            spine.tie = s_min_tie;
+        }
         for (uint32_t r = 0; r < ds.num_rules; ++r)
             match_state_rule_pass(ds, rules, state_id, r, step, out, &spine);
         return;

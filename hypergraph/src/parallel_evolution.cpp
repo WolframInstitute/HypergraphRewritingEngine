@@ -797,7 +797,8 @@ MatchJoin* ParallelEvolutionEngine::match_join_for(StateId state) {
 }
 
 uint64_t ParallelEvolutionEngine::canonical_transition_key(StateId state,
-                                                          const MatchRecord& match) {
+                                                          const MatchRecord& match,
+                                                          bool by_orbit) {
     const State& s = hg_->get_state(state);
     const uint64_t input_hash = hg_->get_or_compute_canonical_hash(state);
     uint32_t ranks[MAX_PATTERN_EDGES];
@@ -808,7 +809,7 @@ uint64_t ParallelEvolutionEngine::canonical_transition_key(StateId state,
     // automorphism ORBITS, automorphic transitions share a key, so a cap keeps or drops them
     // together (hgcommon::cap_keep_count) and the kept set is the same from every raw state of
     // the class. Ranks break ties within an orbit by the raw state's edge order.
-    if (hg_->quotient_causal()) {
+    if (by_orbit && hg_->quotient_causal()) {
         if (const EdgeOrbitTable* orb = hg_->edge_orbits(state)) {
             for (uint8_t i = 0; i < n && i < MAX_PATTERN_EDGES; ++i)
                 ranks[i] = orb->orbit_of(match.matched_edges()[i]);
@@ -969,14 +970,18 @@ void ParallelEvolutionEngine::spine_at_drain(StateId state, uint32_t step, Match
     auto stored = state_matches_.lookup(id_key(state));
     if (!stored.has_value()) return;
 
-    // The own-minimum's record is in the stored list (every site stores before drawing);
-    // find it by its seeded rank.
+    // The own-minimum's records are in the stored list (every site stores before drawing). Under
+    // the quotient reconstruction automorphic transitions share the minimum rank, so the record
+    // kept is the smallest by hgcommon::spine_before, as on the device.
     bool found = false;
     MatchRecord best{};
+    hgcommon::SpineKey best_key{};
     (*stored)->for_each([&](const MatchRecord& m) {
         if (m.is_forwarded) return;   // own_min_key is fed by own draws only
-        if (!found && spine_rank(canonical_transition_key(state, m)) == want) {
-            found = true; best = m;
+        if (spine_rank(canonical_transition_key(state, m)) != want) return;
+        const hgcommon::SpineKey k{want, spine_rank(canonical_transition_key(state, m, false))};
+        if (!found || hgcommon::spine_before(k, best_key)) {
+            found = true; best = m; best_key = k;
         }
     });
     if (!found) return;
