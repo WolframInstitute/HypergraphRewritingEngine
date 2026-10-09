@@ -1504,6 +1504,8 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
                                    (counts_only || rec.multiplicities));
     hg_->set_quotient_replay(hg_->quotient_reconstruction() && replay && !counts_only);
 
+    hg_->set_replay_writers(job_system_ && !is_serial()
+                                ? static_cast<unsigned>(job_system_->get_num_workers()) : 1u);
     // A capture's scan units beyond its first run as jobs (Hypergraph::set_qc_spawn). The
     // capture runs inside a rewrite job and submits before it returns, so quiescence counts them.
     if (hg_->quotient_replay() && job_system_ && !is_serial()) {

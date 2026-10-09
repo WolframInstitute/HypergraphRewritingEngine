@@ -179,6 +179,12 @@ public:
 #endif
     }
 
+    // For a caller that places elements out of index order from several threads at once (the
+    // replay's per-event arrays, indexed through Hypergraph::qc_ev_slot): the next segment is
+    // created from the first element placed in a segment rather than from the second half. Set
+    // before the writers start.
+    void set_scattered(bool on) { scattered_.store(on, std::memory_order_relaxed); }
+
     // The segment geometry, for a caller that reasons about bytes per segment (the test that
     // pins the give-back of losing segment allocations).
     size_t segment_first_index(size_t seg_idx) const {
@@ -208,19 +214,23 @@ private:
         return segment_size_ << (seg_idx <= GROWTH_STEPS ? seg_idx : GROWTH_STEPS);
     }
 
-    // Look ahead: the first thread to place an element in the second half of a segment creates
-    // the next one. Indices are handed out by shared counters, so the threads that cross a
-    // segment boundary do so within microseconds of each other; a thread that reaches an absent
-    // segment allocates and zero-fills it, and all but one lose the install CAS. Half a segment
-    // ahead the creator publishes long before the boundary is reached. The creator is elected by
-    // an exchange on the next segment's flag, so the other threads in the second half read two
-    // words and do not allocate. A single trigger index (three quarters through) was measured
+    // Look ahead: the first thread to place an element in the second half of a segment (any
+    // element, for a scattered array) creates the next one. Indices are handed out by shared
+    // counters, so the threads that cross a segment boundary do so within microseconds of each
+    // other; a thread that reaches an absent segment allocates and zero-fills it, and all but
+    // one lose the install CAS. Half a segment ahead the creator publishes long before the
+    // boundary is reached. The creator is elected by an exchange on the next segment's flag, so
+    // the other threads in the second half read two words and do not allocate. A single trigger index (three quarters through) was measured
     // too late on the replay's arrays, whose slots are filled out of order: bigpath n128 depth 3
     // quotient at 16 threads spent 29% of its time in memset of segments that lost the CAS.
+    // Half a segment was still too late for those arrays at 32 threads (bigpath: 26 losing
+    // 1M-entry segments of qc_event_sig_ in one run), so a scattered array starts at once.
     // Skipped at the last segment: the element being placed here still fits.
     template<typename Arena>
     void look_ahead(const Loc& L, Arena& arena) {
-        if (L.off < segment_capacity(L.seg) / 2 || L.seg + 1 >= MAX_SEGMENTS) return;
+        if (L.seg + 1 >= MAX_SEGMENTS) return;
+        if (L.off < segment_capacity(L.seg) / 2 && !scattered_.load(std::memory_order_relaxed))
+            return;
         const size_t next = L.seg + 1;
         if (segments_[next].load(std::memory_order_relaxed)) return;
         if (ahead_[next].load(std::memory_order_relaxed)) return;
@@ -278,6 +288,8 @@ private:
     size_t geom_end_;      // first index past the doubling region
     uint32_t cap_shift_;   // log2(segment_size_ << GROWTH_STEPS)
     size_t cap_mask_;      // (segment_size_ << GROWTH_STEPS) - 1
+    // set_scattered: the next segment is created from the first element placed in a segment.
+    std::atomic<bool> scattered_{false};
     std::atomic<T*> segments_[MAX_SEGMENTS];
     // look_ahead's election: set by the one thread that creates segment i ahead of need.
     std::atomic<uint8_t> ahead_[MAX_SEGMENTS];

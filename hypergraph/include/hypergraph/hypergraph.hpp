@@ -1425,6 +1425,14 @@ public:
     // With it off the raw event and branchial counts come from the multiplicities, and no raw
     // event, causal pair or branchial pair is enumerable.
     void set_quotient_replay(bool on);
+    // The number of threads that will write the replay's per-event arrays. Above one, the arrays
+    // filled through qc_ev_slot create each next segment from the first element placed in a
+    // segment (SegmentedArray::set_scattered): at 32 threads the second-half trigger was late and
+    // up to 26 threads each allocated and zero-filled the same 1M-entry segment.
+    void set_replay_writers(unsigned n) {
+        qc_event_sig_.set_scattered(n > 1);
+        qc_kept_->set_scattered(n > 1);
+    }
     bool quotient_replay() const;
     // Every (class, depth) point the multiplicity count reached, after the run: f(class_hash,
     // depth, m), with m the raw states the class stands for at that depth (saturating at
