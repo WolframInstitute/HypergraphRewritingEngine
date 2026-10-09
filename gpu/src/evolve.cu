@@ -248,6 +248,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     engine.set_record_set(in.record);
     engine.set_tr_enabled(in.transitive_reduction && !qc_route);
     if (qc_route) { engine.ensure_edge_orbits(); engine.ensure_edge_ranks(); }
+    if (in.record.state_invariants) engine.ensure_state_invariants();
     double t_init = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_init_start).count();
 
@@ -594,6 +595,21 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     batch.add(h_hashes, static_cast<const uint64_t*>(d_state_hashes), total_states);
     std::vector<uint32_t> h_depths;
     if (d_explore_depth && total_states) batch.add(h_depths, d_explore_depth, total_states);
+    // "StepStatistics": each state's record offset, the exact hashes the records are grouped by
+    // under None and Automatic, and the records.
+    const DeviceState ds_rb = engine.device();
+    std::vector<uint32_t> h_inv_at;
+    std::vector<uint64_t> h_exact;
+    out.invariant_pool.clear();
+    if (ds_rb.record_invariants && total_states) {
+        batch.add(h_inv_at, static_cast<const uint32_t*>(ds_rb.state_invariant_at), total_states);
+        if (in.canonicalization != CanonicalizationMode::Full)
+            batch.add(h_exact, static_cast<const uint64_t*>(ds_rb.state_exact_hash), total_states);
+        const uint64_t used = engine.invariant_pool_used();
+        if (used)
+            batch.add(out.invariant_pool,
+                      reinterpret_cast<const uint64_t*>(ds_rb.invariant_pool), used);
+    }
     std::vector<StateEdgeSlice> slices;
     // The slices are read without the edge arrays too: a state a failed rewrite claimed carries
     // the slice {INVALID_ID, 0} (apply_one_match), and reads back with id INVALID_ID.
@@ -621,6 +637,8 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         cs.id             = (s < slices.size() && slices[s].offset == INVALID_ID) ? INVALID_ID : s;
         cs.canonical_hash = (s < h_hashes.size()) ? h_hashes[s] : 0;
         cs.explore_depth  = (s < h_depths.size()) ? h_depths[s] : hgcommon::kExploreNoDepth;
+        cs.invariants_at  = (s < h_inv_at.size()) ? h_inv_at[s] : UINT32_MAX;
+        cs.exact_hash     = (s < h_exact.size()) ? h_exact[s] : 0;
         // A slice past the id array describes no edges.
         if (s < slices.size() &&
             static_cast<size_t>(slices[s].offset) + slices[s].count <= out.state_edge_ids.size()) {
@@ -739,6 +757,9 @@ bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
             if (cfg.qe_class_entries) dbl_qe(cfg.qe_class_entries, qe.classes, kQeEntryLimit);
             return true;
         case ErrorKind::kCanonicalFormsFull:  dbl(cfg.canonical_form_words); return true;
+        case ErrorKind::kStateInvariantsFull:
+            cfg.state_invariant_words = 2 * cfg.state_invariant_words;
+            return true;
         case ErrorKind::kCausalTripleMapFull: dbl(cfg.causal_triple_slots);  return true;
         case ErrorKind::kCausalPairMapFull:   dbl(cfg.causal_pair_slots);    return true;
         case ErrorKind::kBranchialMapFull:    dbl(cfg.branchial_pair_slots); return true;
@@ -832,6 +853,7 @@ static void log_config_growth(const char* header, const EngineConfig& initial,
     LOG_FIELD(tr_scratch_scale);
     LOG_FIELD(survivor_scratch);
     LOG_FIELD(canonical_form_words);
+    LOG_FIELD(state_invariant_words);
 #undef LOG_FIELD
 }
 

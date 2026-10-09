@@ -22,6 +22,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <cstring>
 #include <iterator>
 #include <map>
 #include <random>
@@ -2258,6 +2260,93 @@ TEST(RecordSet, ClassMultiplicitiesMatchTheHost) {
                 EXPECT_EQ(dev_rules[k], n) << w.name << " replay=" << replay;
         }
         if (!host.empty()) ++compared;
+    }
+    EXPECT_GT(compared, 0u);
+}
+
+// Each class's "StepStatistics" record on the device equals the host's on every corpus workload
+// without sampling or caps, under quotient exploration: the invariants and the arity and degree
+// arrays exactly, the geometry's integer fields exactly and its reals to 1e-12 relative,
+// absolute below 1 (the device's log2, pow and tgamma differ from the host's in the last bits).
+TEST(RecordSet, ClassInvariantsMatchTheHost) {
+    auto close = [](double a, double b) {
+        return a == b || std::fabs(a - b) <= 1e-12 * std::max({1.0, std::fabs(a), std::fabs(b)});
+    };
+    size_t compared = 0;
+    for (Workload w : build_corpus()) {
+        if (w.num_steps == 0) continue;
+        if (w.transition_rate != 1.0 || !w.rule_weights.empty() || w.max_states_per_step != 0 ||
+            w.max_successor_states_per_parent != 0 || w.matches_per_state_rule != 0) continue;
+        w.explore_from_canonical_states_only = true;
+        w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+
+        hypergraph::Hypergraph hg;
+        hg.set_state_canonicalization_mode(hypergraph::StateCanonicalizationMode::Full);
+        hg.set_event_signature_keys(to_cpu_event_keys(w.event_canon_mode));
+        hypergraph::RecordSet rs{false, false, false};
+        rs.raw_events = false;
+        rs.multiplicities = true;
+        rs.state_invariants = true;
+        hg.set_record_set(rs);
+        hypergraph::ParallelEvolutionEngine pe(&hg, 1);
+        pe.set_explore_from_canonical_states_only(true);
+        for (size_t i = 0; i < w.rules.size(); ++i)
+            pe.add_rule(convert_rule(w.rules[i], static_cast<uint16_t>(i)));
+        if (!w.initial_states.empty()) {
+            std::vector<std::vector<std::vector<hypergraph::VertexId>>> roots;
+            for (const auto& r : w.initial_states) {
+                std::vector<std::vector<hypergraph::VertexId>> st;
+                for (const auto& e : r) st.emplace_back(e.begin(), e.end());
+                roots.push_back(std::move(st));
+            }
+            pe.evolve(roots, w.num_steps);
+        } else {
+            pe.evolve(w.initial_state, w.num_steps);
+        }
+
+        hg_gpu::EvolveInput in = make_input(w);
+        in.materialize_relations = false;
+        in.record.causal = false;
+        in.record.branchial = false;
+        in.record.raw_events = false;
+        in.record.multiplicities = true;
+        in.record.state_invariants = true;
+        const hg_gpu::EvolveResult r = hg_gpu::evolve(in);
+        std::map<uint64_t, const hgcommon::StateInvariantRecord*> dev;
+        for (const auto& s : r.states)
+            if (const auto* rec = r.invariants(s)) dev.emplace(s.canonical_hash, rec);
+
+        std::set<uint64_t> classes;
+        hg.for_each_class_multiplicity([&](uint64_t h, uint32_t, uint64_t) { classes.insert(h); });
+        for (uint64_t h : classes) {
+            const hgcommon::StateInvariantRecord* a = hg.state_invariants(h);
+            ASSERT_NE(a, nullptr) << w.name << " host class " << h;
+            const auto it = dev.find(h);
+            ASSERT_NE(it, dev.end()) << w.name << " device class " << h;
+            const hgcommon::StateInvariantRecord* b = it->second;
+            EXPECT_EQ(std::memcmp(&a->v, &b->v, sizeof(a->v)), 0) << w.name;
+            ASSERT_EQ(a->num_edges, b->num_edges) << w.name;
+            ASSERT_EQ(a->num_vertices, b->num_vertices) << w.name;
+            ASSERT_EQ(a->num_ball, b->num_ball) << w.name;
+            EXPECT_TRUE(std::equal(a->arities(), a->arities() + a->num_edges + a->num_vertices,
+                                   b->arities()))
+                << w.name;
+            EXPECT_EQ(a->g.defined, b->g.defined) << w.name;
+            EXPECT_EQ(a->g.vertex_count, b->g.vertex_count) << w.name;
+            EXPECT_EQ(a->g.edge_count, b->g.edge_count) << w.name;
+            EXPECT_EQ(a->g.radius, b->g.radius) << w.name;
+            EXPECT_EQ(a->g.ball_radii, b->g.ball_radii) << w.name;
+            for (double hgcommon::SgGeometry::* f :
+                 {&hgcommon::SgGeometry::mean_eccentricity, &hgcommon::SgGeometry::hausdorff_dimension,
+                  &hgcommon::SgGeometry::ricci_scalar, &hgcommon::SgGeometry::ollivier_ricci,
+                  &hgcommon::SgGeometry::degree_entropy, &hgcommon::SgGeometry::local_entropy,
+                  &hgcommon::SgGeometry::mutual_information,
+                  &hgcommon::SgGeometry::fisher_information})
+                EXPECT_TRUE(close(a->g.*f, b->g.*f)) << w.name << " " << a->g.*f << " " << b->g.*f;
+            for (uint32_t k = 0; k < a->num_ball; ++k)
+                EXPECT_TRUE(close(a->ball()[k], b->ball()[k])) << w.name;
+            ++compared;
+        }
     }
     EXPECT_GT(compared, 0u);
 }

@@ -77,6 +77,16 @@ __device__ ExactHashStatus state_exact_hash_device(const DeviceState& ds, StateI
                                                    uint32_t* out_form_words = nullptr,
                                                    Par par = Par{});
 
+// "StepStatistics": state `sid`'s invariants and geometry (hgcommon::state_record) as a record in
+// DeviceState::invariant_pool, its offset in DeviceState::state_invariant_at[sid]. `form` is the
+// state's IR canonical form, which the geometry reads; the slot is the caller's IR scratch.
+// A full pool records kStateInvariantsFull, an arena that cannot grow kIRArenaExhausted.
+template <class Par = hgcommon::IrSerial>
+__device__ void record_state_invariants_device(const DeviceState& ds, StateId sid,
+                                               const uint32_t* form, uint32_t form_words,
+                                               DeviceArena::View arena, uint32_t*& slot,
+                                               uint64_t& slot_words, Par par = Par{});
+
 
 // Slot geometry for one thread: every field a flattened state needs, then the shared core's
 // scratch behind it. Sized from the states that will use it, never from a constant, because a

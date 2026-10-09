@@ -12,7 +12,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <deque>
 #include <functional>
 #include <map>
 #include <set>
@@ -362,7 +361,9 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
     std::vector<hg_gpu::StateId> class_reps;
     // Under Full the device's key IS the exact isomorphism hash, from the same ir_core the host
     // runs, so it is read rather than recomputed. Under None and Automatic the device key is not
-    // isomorphism-invariant, and the IR hash is computed here only for the outputs that read it.
+    // isomorphism-invariant: the device's exact hash is read when the run recorded it
+    // (CanonicalState::exact_hash, "StepStatistics"), and otherwise the IR hash is computed here
+    // only for the outputs that read it.
     const bool host_ir = canon_mode != hg_gpu::CanonicalizationMode::Full &&
                          (job.include_canonical_hashes || job.include_step_statistics);
     for (const auto& s : result.states) {
@@ -371,6 +372,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
         state_hash[s.id] = hgmarshal::reported_state_hash(
             s.num_edges == 0,
             canon_mode == hg_gpu::CanonicalizationMode::Full ? s.canonical_hash
+            : s.exact_hash ? s.exact_hash
             : host_ir ? ir.compute_canonical_hash(result.edges_of(s)) : 0);
         state_by_id[s.id] = &s;
         // Automatic groups by the key THE DEVICE DEDUPLICATED WITH. CanonicalState::canonical_hash
@@ -899,26 +901,16 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
     if (job.include_step_statistics) {
         std::vector<hg::stats::StepPoint> points;
         std::unordered_map<uint64_t, const hgcommon::StateInvariantRecord*> class_invariants;
-        std::deque<std::vector<uint64_t>> record_storage;
         std::map<uint32_t, uint64_t> events;
         std::map<uint32_t, std::map<int64_t, uint64_t>> rule_counts;
-        auto contents = [&](hg_gpu::StateId s) {
-            std::vector<std::vector<uint32_t>> out;
-            const hg_gpu::CanonicalState& st = *state_by_id[s];
-            for (uint32_t k = 0; k < st.num_edges; ++k) {
-                const hg_gpu::VertexSpan e = result.edge(st, k);
-                out.emplace_back(e.begin(), e.end());
-            }
-            return out;
+        // Each class's record, written on the device by the warp that created the class.
+        auto take_record = [&](const hg_gpu::CanonicalState& st) {
+            auto& r = class_invariants[state_hash[st.id]];
+            if (!r) r = result.invariants(st);
         };
         if (!result.class_multiplicities.empty()) {
-            for (const auto& st : result.states) {
-                if (!class_invariants.count(state_hash[st.id])) {
-                    record_storage.emplace_back();
-                    class_invariants[state_hash[st.id]] =
-                        hg::stats::invariant_record(contents(st.id), record_storage.back());
-                }
-            }
+            for (const auto& st : result.states)
+                if (st.id != hg_gpu::INVALID_ID) take_record(st);
             for (const auto& p : result.class_multiplicities)
                 points.push_back({p.depth, p.class_hash, p.multiplicity});
             std::unordered_map<uint64_t, std::map<int64_t, uint64_t>> matches_by_rule;
@@ -932,11 +924,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
                 const auto it = state_step.find(st.id);
                 const uint32_t step = it == state_step.end() ? 0u : it->second;
                 points.push_back({step, state_hash[st.id], 1});
-                if (!class_invariants.count(state_hash[st.id])) {
-                    record_storage.emplace_back();
-                    class_invariants[state_hash[st.id]] =
-                        hg::stats::invariant_record(contents(st.id), record_storage.back());
-                }
+                take_record(st);
             }
             for (const auto& e : result.events) {
                 ++events[e.step];

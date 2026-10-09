@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <cstdint>
 #include <map>
 #include <set>
@@ -107,6 +108,75 @@ std::vector<uint8_t> value_bytes(const std::vector<uint8_t>& out, const std::str
     });
     return got;
 }
+
+#ifndef _WIN32
+// Whether two WXF values (no header) are the same expression with each pair of reals equal to
+// `rel` relative, absolute below 1. The device's log2, pow and tgamma differ from the host's in
+// the last bits, so the StepStatistics geometry agrees across devices to this tolerance and not
+// bit for bit.
+bool wxf_close(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b, double rel) {
+    size_t i = 0, j = 0;
+    auto varint = [](const std::vector<uint8_t>& v, size_t& p) {
+        uint64_t x = 0;
+        for (int s = 0; p < v.size(); s += 7) {
+            const uint8_t c = v[p++];
+            x |= uint64_t(c & 0x7F) << s;
+            if (!(c & 0x80)) break;
+        }
+        return x;
+    };
+    auto same = [&](size_t n) {
+        if (i + n > a.size() || j + n > b.size()) return false;
+        const bool eq = std::equal(a.begin() + i, a.begin() + i + n, b.begin() + j);
+        i += n;
+        j += n;
+        return eq;
+    };
+    std::function<bool()> walk = [&]() -> bool {
+        if (i >= a.size() || j >= b.size() || a[i] != b[j]) return false;
+        const uint8_t t = a[i];
+        ++i;
+        ++j;
+        switch (t) {
+            case 'C': return same(1);
+            case 'j': return same(2);
+            case 'i': return same(4);
+            case 'L': return same(8);
+            case 'r': {
+                if (i + 8 > a.size() || j + 8 > b.size()) return false;
+                double x, y;
+                std::memcpy(&x, a.data() + i, 8);
+                std::memcpy(&y, b.data() + j, 8);
+                i += 8;
+                j += 8;
+                return x == y ||
+                       std::fabs(x - y) <= rel * std::max({1.0, std::fabs(x), std::fabs(y)});
+            }
+            case 's': case 'S': case 'B': case 'I': case 'R': {
+                const uint64_t n = varint(a, i);
+                if (varint(b, j) != n) return false;
+                return same(n);
+            }
+            case 'f': {
+                const uint64_t n = varint(a, i);
+                if (varint(b, j) != n) return false;
+                for (uint64_t k = 0; k <= n; ++k)
+                    if (!walk()) return false;
+                return true;
+            }
+            case 'A': {
+                const uint64_t n = varint(a, i);
+                if (varint(b, j) != n) return false;
+                for (uint64_t k = 0; k < n; ++k)
+                    if (!same(1) || !walk() || !walk()) return false;
+                return true;
+            }
+            default: return false;
+        }
+    };
+    return walk() && i == a.size() && j == b.size();
+}
+#endif  // _WIN32
 
 void put_str_list_option(wxf::Writer& w, const char* key,
                          const std::vector<std::string>& values) {
@@ -3157,7 +3227,7 @@ TEST(GpuBinaryGate, StepStatisticsAgreeAcrossDevices) {
         const auto gpu = worker_call(w, branch_job(3, "Evolve", 0, opts, 3));
         const auto c = value_bytes(cpu, "StepStatistics"), g = value_bytes(gpu, "StepStatistics");
         ASSERT_FALSE(c.empty()) << "quotient=" << quotient;
-        EXPECT_EQ(c, g) << "quotient=" << quotient;
+        EXPECT_TRUE(wxf_close(c, g, 1e-12)) << "quotient=" << quotient;
     }
     worker_stop(w);
 }
@@ -3234,7 +3304,7 @@ TEST(GpuBinaryGate, SessionStepStatisticsAgreeWithOneEvolve) {
     worker_call(w, branch_job(0, "Close", handle, opts("NumStates"), 3));
     const auto want = value_bytes(direct, "StepStatistics");
     ASSERT_FALSE(want.empty());
-    EXPECT_EQ(value_bytes(queried, "StepStatistics"), want);
+    EXPECT_TRUE(wxf_close(value_bytes(queried, "StepStatistics"), want, 1e-12));
     worker_stop(w);
 }
 #endif  // _WIN32

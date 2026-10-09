@@ -351,6 +351,8 @@ __global__ void k_seed_root_hashes(const __grid_constant__ DeviceState ds, const
         claim = state_claim_form(ds, sid, key & ds.canonical_key_mask, form, form_words, map,
                                  forms);
         key = claim.key;
+        if (ds.record_invariants && claim.canonical == sid)
+            record_state_invariants_device(ds, sid, form, form_words, arena, slot, slot_words);
     } else if (automatic) {
         claim = state_claim_content(ds, sid, key, map);
         key = claim.key;
@@ -371,8 +373,12 @@ __global__ void k_seed_root_hashes(const __grid_constant__ DeviceState ds, const
                 ds.errors.record(error_kind_for(st));
                 return;
             }
-            exact = state_claim_form(ds, sid, exact & ds.event_key_mask, eform, eform_words,
-                                     exact_map, forms).key;
+            const StateClaim ec = state_claim_form(ds, sid, exact & ds.event_key_mask, eform,
+                                                   eform_words, exact_map, forms);
+            exact = ec.key;
+            if (ds.record_invariants && ec.canonical == sid)
+                record_state_invariants_device(ds, sid, eform, eform_words, arena, slot,
+                                               slot_words);
         }
         ds.state_exact_hash[sid] = exact;
     }
@@ -782,6 +788,10 @@ __device__ __forceinline__ ChildIdentity canonicalise_child(
                                         false, &eform, &eform_words, par);
 
     uint32_t canonical = INVALID_ID, rep = INVALID_ID, fresh = 0, capture = 0, ok = 0;
+    // "StepStatistics": whether this state created its class's record, and the IR canonical form
+    // the record's geometry reads.
+    uint32_t want_record = 0, record_form_words = 0;
+    const uint32_t* record_form = nullptr;
     if (par.leader()) {
         if (key_st != ExactHashStatus::kOk) {
             // The hash is the dedup KEY, so a state whose hash could not be computed is not
@@ -801,6 +811,11 @@ __device__ __forceinline__ ChildIdentity canonicalise_child(
             } else if (state_mode == CanonicalizationMode::Full) {
                 const StateClaim c = state_claim_form(ds, sid, h & ds.canonical_key_mask, form,
                                                       form_words, dedup_map, forms);
+                if (ds.record_invariants && c.canonical == sid) {
+                    want_record = 1;
+                    record_form = form;
+                    record_form_words = form_words;
+                }
                 h = c.key;
                 exact = h;
                 rep = c.canonical;
@@ -828,8 +843,14 @@ __device__ __forceinline__ ChildIdentity canonicalise_child(
                 } else if (state_mode != CanonicalizationMode::Full) {
                     // The exact hash event identity reads, claimed on the IR form (the host's
                     // event_canonical_state_map_).
-                    exact = state_claim_form(ds, sid, exact & ds.event_key_mask, eform,
-                                             eform_words, exact_map, forms).key;
+                    const StateClaim ec = state_claim_form(ds, sid, exact & ds.event_key_mask,
+                                                           eform, eform_words, exact_map, forms);
+                    exact = ec.key;
+                    if (ds.record_invariants && ec.canonical == sid) {
+                        want_record = 1;
+                        record_form = eform;
+                        record_form_words = eform_words;
+                    }
                 }
                 ds.state_exact_hash[sid] = exact;
             }
@@ -851,6 +872,13 @@ __device__ __forceinline__ ChildIdentity canonicalise_child(
         // above kFollowEdges can have followers.
         if (keyed != 0 && ds.state_edge_slices[sid].count > kFollowEdges)
             keyed_close_followers(ds, sid, ready);
+    }
+    if (ds.record_invariants && par.bcast(want_record)) {
+        record_form = reinterpret_cast<const uint32_t*>(
+            par.bcast64(reinterpret_cast<uint64_t>(record_form)));
+        record_form_words = par.bcast(record_form_words);
+        record_state_invariants_device(ds, sid, record_form, record_form_words, arena, slot,
+                                       slot_words, par);
     }
     ChildIdentity out;
     out.canonical = par.bcast(canonical);
@@ -975,7 +1003,7 @@ __global__ void k_persistent_evolve(
                                         ds.max_successor_states_per_parent,
                                         ds.max_states_per_step) |
                                          explore_reads_ranks(ds, dedup, state_mode)));
-    const bool need_exact = run_needs_exact_hash(event_keys, ds.transition_rate,
+    const bool need_exact = ds.record_invariants || run_needs_exact_hash(event_keys, ds.transition_rate,
                                                  ds.num_rule_weights, (hgcommon::drain_selects(ds.matches_per_state_rule,
                                         ds.max_successor_states_per_parent,
                                         ds.max_states_per_step) |
@@ -2055,11 +2083,11 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         const DeviceState dsx = engine.device();
         const bool want_exact =
             state_mode != CanonicalizationMode::Full &&
-            run_needs_exact_hash(event_keys, dsx.transition_rate, dsx.num_rule_weights,
+            (dsx.record_invariants || run_needs_exact_hash(event_keys, dsx.transition_rate, dsx.num_rule_weights,
                                  (hgcommon::drain_selects(dsx.matches_per_state_rule,
                                         dsx.max_successor_states_per_parent,
                                         dsx.max_states_per_step) |
-                                         explore_reads_ranks(dsx, dedup, state_mode)));
+                                         explore_reads_ranks(dsx, dedup, state_mode))));
         exact_v = reuse_map(ps.exact, want_exact ? engine.config().max_states * 2u : 8u, &clears)
                       .view();
     }
@@ -2224,7 +2252,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         k_seed_root_hashes<<<(n + block - 1) / block, block>>>(
             dsv, d_states, n,
             session ? sess_v.states : canonical_owner->view(), state_mode,
-            run_needs_exact_hash(event_keys, dsv.transition_rate, dsv.num_rule_weights,
+            dsv.record_invariants || run_needs_exact_hash(event_keys, dsv.transition_rate, dsv.num_rule_weights,
                                  (hgcommon::drain_selects(dsv.matches_per_state_rule,
                                         dsv.max_successor_states_per_parent,
                                         dsv.max_states_per_step) |

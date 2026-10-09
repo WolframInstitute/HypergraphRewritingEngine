@@ -13,6 +13,7 @@
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
@@ -186,6 +187,15 @@ struct DeviceState {
     uint32_t replay_id_limit;
     uint32_t record_causal;
     uint32_t record_branchial;
+    // "StepStatistics" (RecordSet::state_invariants): each class's record, written by the warp
+    // that creates the class (record_state_invariants_device) into invariant_pool at an offset
+    // claimed from invariant_pool_used, in 8-byte words; state_invariant_at[sid] is that offset,
+    // UINT32_MAX for a state that wrote none. Null and 0 when the run records none.
+    uint32_t  record_invariants;
+    uint32_t* state_invariant_at;
+    unsigned long long* invariant_pool;
+    unsigned long long* invariant_pool_used;
+    uint64_t  invariant_pool_words;
 
     typename LockFreeList<EventId>::DeviceView edge_consumers;
     // Per-state event list (LockFreeList keyed by raw StateId) — used by
@@ -335,6 +345,17 @@ public:
     // Take the per-slot edge orbit array and the per-state orbit counts, which only a
     // quotient-causal run reads (its DP keys on orbits). Idempotent; call before launching.
     void ensure_edge_orbits();
+
+    // Take the "StepStatistics" arrays (DeviceState::state_invariant_at, invariant_pool), which
+    // only a run recording RecordSet::state_invariants reads. Idempotent; call before launching.
+    void ensure_state_invariants();
+    // The capacity of invariant_pool in 8-byte words: EngineConfig::state_invariant_words, and at
+    // least 16 per state slot, so a run that grows its states grows the pool with them.
+    uint64_t invariant_pool_words() const {
+        return std::max<uint64_t>(cfg_.state_invariant_words, uint64_t{16} * cfg_.max_states);
+    }
+    // The words of invariant_pool the last run wrote: one synchronous read of the counter.
+    uint64_t invariant_pool_used() const;
 
     // Take the per-state keyed-rewrite arrays (KeyedView: token sum, first produced edge), which
     // only a keyed run reads. They need no clearing: a state's entries are written when it is
@@ -597,6 +618,9 @@ private:
     uint32_t                           num_rules_              = 0;
     uint32_t*                          state_edge_orbit_       = nullptr;
     uint32_t*                          state_num_orbits_       = nullptr;
+    uint32_t*                          state_invariant_at_     = nullptr;
+    unsigned long long*                invariant_pool_         = nullptr;
+    unsigned long long*                invariant_pool_used_    = nullptr;
     uint64_t*                          keyed_token_sum_        = nullptr;
     uint32_t*                          keyed_first_new_edge_   = nullptr;
     uint32_t*                          keyed_follow_head_      = nullptr;

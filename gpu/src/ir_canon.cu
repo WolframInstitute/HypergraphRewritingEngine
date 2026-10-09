@@ -3,6 +3,7 @@
 #include "hg_gpu/device_arena.hpp"
 #include "hg_gpu/cuda_check.hpp"
 #include "hgcommon/ir_core.hpp" // the canonical hash itself, shared with the host
+#include "hgcommon/state_invariants_core.hpp"
 
 #include <cuda_runtime.h>
 
@@ -281,6 +282,97 @@ template __device__ ExactHashStatus state_exact_hash_device<hgcommon::IrSerial>(
 template __device__ ExactHashStatus state_exact_hash_device<IrTile>(
     const DeviceState&, StateId, DeviceArena::View, uint32_t*&, uint64_t&, uint64_t&, bool, bool,
     uint32_t**, uint32_t*, IrTile);
+
+// "StepStatistics": state `sid`'s record (hgcommon::state_record) into ds.invariant_pool. The
+// invariants read the state's own CSR slice; the geometry reads `form` (form_words words), the
+// state's IR canonical form. The scratch is `slot`: the data is laid out after the form when the
+// form lies in the slot, and the slot is grown when that does not fit, which leaves the form
+// where it is (a bump arena has no free). Every lane of the policy calls it with the same
+// arguments.
+template <class Par>
+__device__ void record_state_invariants_device(const DeviceState& ds, StateId sid,
+                                               const uint32_t* form, uint32_t form_words,
+                                               DeviceArena::View arena, uint32_t*& slot,
+                                               uint64_t& slot_words, Par par) {
+    if (sid >= ds.max_states || !ds.state_invariant_at) return;
+    const StateEdgeSlice sl = ds.state_edge_slices[sid];
+    uint32_t m = 0, S = 0;
+    if (par.leader()) {
+        for (uint32_t k = 0; k < sl.count; ++k) {
+            const Edge& e = ds.edge_pool.at(ds.state_edge_ids[sl.offset + k]);
+            ++m;
+            S += e.arity;
+        }
+    }
+    par.sync();
+    m = par.bcast(m);
+    S = par.bcast(S);
+    // Words before the record scratch: the raw CSR (m + 1 offsets, S vertices) and the form's
+    // CSR (form_words + 2 offsets, form_words vertices), rounded to 8 bytes.
+    const uint64_t csr = ((uint64_t{m} + 1 + S + 2 * uint64_t{form_words} + 2) + 1) & ~uint64_t{1};
+    uint64_t bytes = hgcommon::si_record_bytes_hint(S, m, par.width());
+    hgcommon::SiResult r;
+    bool done = false;
+    for (int attempt = 0; attempt < 4 && !done; ++attempt) {
+        const bool form_in_slot = form && slot && form >= slot && form < slot + slot_words;
+        uint64_t base = form_in_slot ? ((static_cast<uint64_t>(form - slot) + form_words + 1) &
+                                        ~uint64_t{1})
+                                     : 0;
+        const uint64_t need = base + csr + (bytes + 7) / 4;
+        if (need > slot_words) {
+            if (!grow_ir_slot(arena, slot, slot_words, need, par)) {
+                if (par.leader()) ds.errors.record(ErrorKind::kIRArenaExhausted);
+                return;
+            }
+            base = 0;
+        }
+        uint32_t* off = slot + base;
+        uint32_t* verts = off + (m + 1);
+        uint32_t* goff = verts + S;
+        uint32_t* gverts = goff + (form_words + 2);
+        auto* scratch = reinterpret_cast<unsigned char*>(slot + base + csr);
+        uint32_t gm = 0;
+        if (par.leader()) {
+            uint32_t s = 0;
+            for (uint32_t k = 0; k < m; ++k) {
+                const Edge& e = ds.edge_pool.at(ds.state_edge_ids[sl.offset + k]);
+                off[k] = s;
+                for (uint8_t p = 0; p < e.arity; ++p) verts[s++] = ds.vertex_pool.at(e.vertex_offset + p);
+            }
+            off[m] = s;
+            gm = form ? hgcommon::si_form_csr(form, form_words, goff, gverts) : 0u;
+            if (!form) goff[0] = 0;
+        }
+        par.sync();
+        gm = par.bcast(gm);
+        uint64_t needed = 0;
+        done = hgcommon::state_record(off, verts, m, goff, gverts, gm, scratch, bytes, needed, r,
+                                      par);
+        if (!done) bytes = needed > bytes ? needed : 2 * bytes;
+    }
+    if (!done) {
+        if (par.leader()) ds.errors.record(ErrorKind::kIRArenaExhausted);
+        return;
+    }
+    if (par.leader()) {
+        const uint64_t words = r.bytes() / 8;
+        const unsigned long long at = atomicAdd(ds.invariant_pool_used, words);
+        if (at + words > ds.invariant_pool_words) {
+            ds.errors.record(ErrorKind::kStateInvariantsFull);
+        } else {
+            hgcommon::si_record_write(ds.invariant_pool + at, r);
+            ds.state_invariant_at[sid] = static_cast<uint32_t>(at);
+        }
+    }
+    par.sync();
+}
+
+template __device__ void record_state_invariants_device<hgcommon::IrSerial>(
+    const DeviceState&, StateId, const uint32_t*, uint32_t, DeviceArena::View, uint32_t*&,
+    uint64_t&, hgcommon::IrSerial);
+template __device__ void record_state_invariants_device<IrTile>(
+    const DeviceState&, StateId, const uint32_t*, uint32_t, DeviceArena::View, uint32_t*&,
+    uint64_t&, IrTile);
 
 namespace {
 

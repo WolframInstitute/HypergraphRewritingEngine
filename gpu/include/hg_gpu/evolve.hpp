@@ -10,6 +10,7 @@
 #include "hgcommon/core.hpp"
 #include "hgcommon/explore_depth_core.hpp"  // kExploreNoDepth
 #include "hgcommon/quotient_replay_core.hpp"  // QR_ID_LIMIT
+#include "hgcommon/state_invariants_core.hpp"  // StateInvariantRecord
 
 #include <set>
 #include <utility>
@@ -181,6 +182,11 @@ struct CanonicalState {
     uint64_t canonical_hash = 0;
     uint32_t first_edge = 0;
     uint32_t num_edges = 0;
+    // With RecordSet::state_invariants: the state's exact isomorphism hash under None and
+    // Automatic (0 otherwise), and the offset of its class record in
+    // EvolveResult::invariant_pool, UINT32_MAX when this state did not create the record.
+    uint64_t exact_hash = 0;
+    uint32_t invariants_at = UINT32_MAX;
 };
 
 // Events and relations as the device records them (types.hpp), read back without conversion.
@@ -241,6 +247,15 @@ struct EvolveResult {
             out.emplace_back(e.begin(), e.end());
         }
         return out;
+    }
+    // "StepStatistics" records (RecordSet::state_invariants), each written on the device by the
+    // warp that created the class; CanonicalState::invariants_at indexes it in 8-byte words.
+    std::vector<uint64_t> invariant_pool;
+    const hgcommon::StateInvariantRecord* invariants(const CanonicalState& s) const {
+        if (s.invariants_at == UINT32_MAX || s.invariants_at >= invariant_pool.size())
+            return nullptr;
+        return reinterpret_cast<const hgcommon::StateInvariantRecord*>(invariant_pool.data() +
+                                                                       s.invariants_at);
     }
     std::vector<Event> events;
     // Every event's consumed edge ids; Event::consumed_at indexes it.
@@ -391,6 +406,11 @@ struct EngineConfig {
     uint64_t event_key_mask       = ~uint64_t{0};
     // Test lever: the twin claim key is the token sum ANDed with this.
     uint64_t keyed_sum_mask       = ~uint64_t{0};
+    // 8-byte words of "StepStatistics" records (RecordSet::state_invariants): one
+    // hgcommon::StateInvariantRecord per class, and at least 16 per state slot
+    // (EngineState::invariant_pool_words). Allocated only when the run records them; grown on
+    // kStateInvariantsFull.
+    uint64_t state_invariant_words = uint64_t{1} << 20;
     uint32_t max_edges            = 1u << 16;   // 65K edge slots
     uint32_t max_vertices         = 1u << 16;   // 65K vertex IDs (atomic counter ceiling)
     uint32_t max_vertex_slots     = 1u << 18;   // 256K flat vertex-tuple slots (avg arity ≤ 4)

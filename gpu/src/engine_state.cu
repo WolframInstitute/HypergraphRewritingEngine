@@ -230,6 +230,9 @@ EngineState::~EngineState() {
         if (survivor_scratch_)       cudaFree(survivor_scratch_);
         if (state_edge_orbit_)       cudaFree(state_edge_orbit_);
         if (state_num_orbits_)       cudaFree(state_num_orbits_);
+        if (state_invariant_at_)     cudaFree(state_invariant_at_);
+        if (invariant_pool_)         cudaFree(invariant_pool_);
+        if (invariant_pool_used_)    cudaFree(invariant_pool_used_);
         if (keyed_token_sum_)        cudaFree(keyed_token_sum_);
         if (keyed_first_new_edge_)   cudaFree(keyed_first_new_edge_);
         if (keyed_follow_head_)      cudaFree(keyed_follow_head_);
@@ -261,6 +264,28 @@ void EngineState::ensure_edge_orbits() {
               "EngineState init state_edge_orbit");
         HG_CUDA_CHECK(cudaMemset(state_num_orbits_, 0, sizeof(uint32_t) * cfg_.max_states),
               "EngineState init state_num_orbits");
+    }
+
+void EngineState::ensure_state_invariants() {
+        if (state_invariant_at_) return;
+        HG_CUDA_CHECK(cudaMalloc(&state_invariant_at_, sizeof(uint32_t) * cfg_.max_states),
+              "EngineState state_invariant_at alloc");
+        HG_CUDA_CHECK(cudaMalloc(&invariant_pool_, 8 * invariant_pool_words()),
+              "EngineState invariant_pool alloc");
+        HG_CUDA_CHECK(cudaMalloc(&invariant_pool_used_, sizeof(unsigned long long)),
+              "EngineState invariant_pool_used alloc");
+        HG_CUDA_CHECK(cudaMemset(state_invariant_at_, 0xFF, sizeof(uint32_t) * cfg_.max_states),
+              "EngineState init state_invariant_at");
+        HG_CUDA_CHECK(cudaMemset(invariant_pool_used_, 0, sizeof(unsigned long long)),
+              "EngineState init invariant_pool_used");
+    }
+
+uint64_t EngineState::invariant_pool_used() const {
+        if (!invariant_pool_used_) return 0;
+        unsigned long long used = 0;
+        HG_CUDA_CHECK(cudaMemcpy(&used, invariant_pool_used_, sizeof(used), cudaMemcpyDeviceToHost),
+              "EngineState read invariant_pool_used");
+        return used < invariant_pool_words() ? used : invariant_pool_words();
     }
 
 void EngineState::ensure_keyed() {
@@ -422,6 +447,11 @@ DeviceState EngineState::device() const {
         d.maintain_indices        = maintain_indices_ ? 1u : 0u;
         d.record_causal           = record_.causal ? 1u : 0u;
         d.record_branchial        = record_.branchial ? 1u : 0u;
+        d.record_invariants       = (record_.state_invariants && state_invariant_at_) ? 1u : 0u;
+        d.state_invariant_at      = state_invariant_at_;
+        d.invariant_pool          = invariant_pool_;
+        d.invariant_pool_used     = invariant_pool_used_;
+        d.invariant_pool_words    = invariant_pool_ ? invariant_pool_words() : 0;
         d.needs_indices           = needs_indices_;
         d.errors                  = errors_.view();
         return d;
@@ -519,6 +549,10 @@ void EngineState::clear() {
         if (state_edge_orbit_) {
             batch.add(state_edge_orbit_, sizeof(uint32_t) * dirty_edge_slots, 0xFF);
             batch.add(state_num_orbits_, sizeof(uint32_t) * dirty_states, 0);
+        }
+        if (state_invariant_at_) {
+            batch.add(state_invariant_at_, sizeof(uint32_t) * dirty_states, 0xFF);
+            batch.add(invariant_pool_used_, sizeof(unsigned long long), 0);
         }
         // edge_producer init to INVALID_ID (0xFF bytes).
         batch.add(edge_producer_, sizeof(EventId) * dirty_edges, 0xFF);

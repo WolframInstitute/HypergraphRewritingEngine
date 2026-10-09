@@ -1,7 +1,8 @@
 #pragma once
 #include "hgcommon/namespace.hpp"
 // PER-STATE HYPERGRAPH INVARIANTS, one body for host and device. The CPU engine computes them on
-// the worker that first claims a class's hash (Hypergraph::record_state_invariants), and
+// the worker that first claims a class's hash (Hypergraph::record_state_invariants), the device
+// on the warp that creates the class (record_state_invariants_device, gpu/src/ir_canon.cu), and
 // "StepStatistics" (paclet_source/state_statistics.hpp) summarises them per step. The definitions
 // are those of the multiway-statistics probes; reference/verify_state_statistics.wls checks them.
 //
