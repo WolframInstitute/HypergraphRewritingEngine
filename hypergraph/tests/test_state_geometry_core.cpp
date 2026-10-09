@@ -101,6 +101,15 @@ TEST(StateGeometryCore, Star) {
     EXPECT_NEAR(r.g.degree_entropy, -0.25 * std::log2(0.25) - 0.75 * std::log2(0.75), kTol);
 }
 
+// Two K1,3 stars with their centres joined. The centre edge moves 3/8 across itself and 3/8
+// from leaves to leaves at distance 3: W1 = 3/2, curvature -1/2. Each leaf edge moves 3/8 a
+// distance 2: curvature 1/4. Mean over the 7 edges: 1/7.
+TEST(StateGeometryCore, JoinedStarsHaveANegativeEdge) {
+    const Result r = geometry({{0, 1}, {0, 2}, {0, 3}, {0, 10}, {10, 11}, {10, 12}, {10, 13}});
+    EXPECT_EQ(r.g.edge_count, 7u);
+    EXPECT_NEAR(r.g.ollivier_ricci, 1.0 / 7.0, kTol);
+}
+
 // C4: R = 2, balls 3 then 4 from every vertex; per edge, 1/4 moves across the edge and 1/4
 // along the opposite edge.
 TEST(StateGeometryCore, Square) {

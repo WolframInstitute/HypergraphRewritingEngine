@@ -326,7 +326,9 @@ HG_HD inline double sg_ollivier_edge(const SgGraph& g, uint32_t x, uint32_t y,
         moved += push_amount;
         total_cost += push_amount * static_cast<uint64_t>(dist[sink]);
     }
-    return 1.0 - static_cast<double>(total_cost) / static_cast<double>(total);
+    // One division of exact integers, so the value is the correctly rounded rational.
+    return static_cast<double>(static_cast<int64_t>(total) - static_cast<int64_t>(total_cost)) /
+           static_cast<double>(total);
 }
 
 // Which fields of SgGeometry hold a value.
@@ -383,9 +385,13 @@ HG_HD inline double sg_degree_entropy_of(const SgGraph& g, const uint32_t* vs, u
 
 // Computes the geometry of G already built in `arena`. `ball_dimension` receives the mean
 // over vertices of the ball-growth term at r = 1..R in entries 0..R-1, up to `ball_capacity`
-// entries. False when the arena is short.
+// entries. `want` is a mask of the SG_* values to compute: the radius and eccentricity are
+// always computed, SG_DEGREE_ENTROPY and SG_MUTUAL_INFORMATION each bring both, and SG_RICCI
+// and SG_FISHER each bring SG_HAUSDORFF. False when the arena is short.
 HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& out,
-                                 double* ball_dimension, uint32_t ball_capacity) {
+                                 double* ball_dimension, uint32_t ball_capacity,
+                                 uint32_t want = ~0u) {
+    const bool want_local = (want & (SG_DEGREE_ENTROPY | SG_MUTUAL_INFORMATION)) != 0;
     const uint32_t n = g.n;
     out = SgGeometry{};
     out.vertex_count = n;
@@ -430,6 +436,7 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
             ball_sum[r] += next;
             ball = next;
         }
+        if (!want_local) { sg_bfs_clear(dist, queue, reached); continue; }
         // B(v, 2) is the queue's prefix of vertices at distance at most 2.
         uint32_t b2 = 0;
         while (b2 < reached && dist[queue[b2]] <= 2) ++b2;
@@ -458,13 +465,13 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
         for (uint32_t i = 0; i < n; ++i) all[i] = i;
         out.degree_entropy = sg_degree_entropy_of(g, all, n, counts);
         out.local_entropy = local_total / n;
-        out.defined |= SG_DEGREE_ENTROPY;
+        if (want_local) out.defined |= SG_DEGREE_ENTROPY;
     }
-    if (mi_vertices) {
+    if (want_local && mi_vertices) {
         out.mutual_information = mi_total / mi_vertices;
         out.defined |= SG_MUTUAL_INFORMATION;
     }
-    if (g.edges) {
+    if ((want & SG_OLLIVIER) && g.edges) {
         double sum = 0.0;
         for (uint32_t x = 0; x < n; ++x)
             for (uint32_t k = g.off[x]; k < g.off[x + 1]; ++k)
@@ -477,6 +484,7 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
     out.mean_eccentricity = ecc_total / n;
     out.defined |= SG_RADIUS;
     if (radius == 0) return true;   // one vertex: no radius to average over
+    if (!(want & (SG_HAUSDORFF | SG_RICCI | SG_FISHER))) return true;
     const uint32_t R = radius;
 
     // PASS 2: each vertex's own dimension over r = 1..R.
@@ -516,6 +524,8 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
     out.ricci_scalar = ricci / R / n;
     out.defined |= SG_RICCI;
 
+    if (!(want & SG_FISHER)) return true;
+
     // PASS 3: Fisher information from the dimensions within distance 2.
     double fisher_total = 0.0;
     for (uint32_t v = 0; v < n; ++v) {
@@ -548,7 +558,7 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
 template <class EdgeList>
 HG_HD bool sg_state_geometry(const EdgeList& el, unsigned char* scratch, size_t capacity,
                              SgGeometry& out, double* ball_dimension, uint32_t ball_capacity,
-                             size_t& needed) {
+                             size_t& needed, uint32_t want = ~0u) {
     SgArena arena;
     arena.base = scratch;
     arena.capacity = capacity;
@@ -560,7 +570,7 @@ HG_HD bool sg_state_geometry(const EdgeList& el, unsigned char* scratch, size_t 
         return false;
     }
     const size_t built = arena.used;
-    if (!sg_geometry_of(g, arena, out, ball_dimension, ball_capacity)) {
+    if (!sg_geometry_of(g, arena, out, ball_dimension, ball_capacity, want)) {
         needed = built + sg_metric_bytes(g.n, g.max_degree);
         return false;
     }
