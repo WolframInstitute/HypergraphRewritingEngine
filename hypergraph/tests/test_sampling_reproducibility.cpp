@@ -667,11 +667,8 @@ TEST(SamplingReproducibility, CapTiesUnderTheReconstructionDoNotDependOnTheSched
     }
 }
 
-// Under quotient exploration automorphic transitions share an orbit-keyed rank, so a sampled
-// state whose draws all fail has several spine candidates, and the reconstruction's causal
-// relation depends on which one is replayed. The spine breaks the tie on the full-capture key
-// (hgcommon::spine_before). Fuzz seed 201768 with the first-stored candidate gave 3, 4 or 5
-// causal edges by schedule; full capture gives 3.
+// A sampled quotient run whose draws fail at every state, so the spine carries each step, from a
+// state with automorphic transitions (fuzz seed 201768). Full capture gives 3 causal edges.
 TEST(SamplingReproducibility, SpineTieUnderTheReconstructionMatchesFullCapture) {
     auto run = [](size_t threads, bool quotient) {
         Hypergraph hg;
@@ -705,6 +702,80 @@ TEST(SamplingReproducibility, SpineTieUnderTheReconstructionMatchesFullCapture) 
                                 << got[0] << " events " << got[1] << " causal " << got[2]
                                 << " unreduced " << got[3] << " vs full capture " << one[0]
                                 << " " << one[1] << " " << one[2] << " " << one[3];
+        }
+    }
+}
+
+// Every cap and every sampling draw keeps the same transitions under quotient exploration as
+// under full capture (SPEC.md §5): states, events, causal and branchial counts are equal, at 1
+// and 4 workers. Fuzz seed 201768 and two rules with symmetric states, each with
+// MatchesPerStateRule, MaxSuccessorStatesPerParent and MaxStatesPerStep at 1 and 2, and with
+// TransitionRate and RuleWeights at three seeds.
+TEST(SamplingReproducibility, CapsAndDrawsUnderQuotientExplorationMatchFullCapture) {
+    struct Case {
+        const char* name;
+        std::vector<RewriteRule> rules;
+        std::vector<std::vector<VertexId>> init;
+        size_t steps;
+    };
+    const std::vector<Case> cases = {
+        {"fuzz201768",
+         {make_rule(0).lhs({4, 3, 5, 2}).rhs({3, 5}).rhs({5, 4}).rhs({4, 4}).build(),
+          make_rule(1).lhs({2, 4}).lhs({4, 2}).rhs({4}).rhs({4, 4}).rhs({2, 2}).build()},
+         {{0u, 1u}, {1u, 1u}, {2u, 1u, 1u, 0u}, {1u, 0u, 1u, 1u}},
+         5},
+        {"pair_grow",
+         {make_rule(0).lhs({0, 1}).rhs({2, 3}).rhs({0, 1}).build()},
+         {{0u, 1u}, {2u, 1u}},
+         3},
+        {"wolfram",
+         {make_rule(0).lhs({0, 1}).lhs({0, 2}).rhs({0, 1}).rhs({0, 3}).rhs({1, 3}).rhs({2, 3})
+              .build()},
+         {{0u, 1u}, {0u, 2u}},
+         3},
+    };
+    enum Knob { PER_RULE, PER_PARENT, PER_STEP, RATE, WEIGHTS };
+    struct Setting { Knob knob; size_t k; uint64_t seed; };
+    std::vector<Setting> settings;
+    for (Knob kn : {PER_RULE, PER_PARENT, PER_STEP})
+        for (size_t k : {size_t(1), size_t(2)}) settings.push_back({kn, k, 0});
+    for (Knob kn : {RATE, WEIGHTS})
+        for (uint64_t seed : {uint64_t(1855184222), uint64_t(7), uint64_t(424242)})
+            settings.push_back({kn, 0, seed});
+
+    auto run = [](const Case& c, const Setting& s, size_t threads, bool quotient) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        ParallelEvolutionEngine e(&hg, threads);
+        e.set_max_steps(c.steps);
+        e.set_explore_from_canonical_states_only(quotient);
+        for (const auto& r : c.rules) e.add_rule(r);
+        if (s.knob == PER_RULE) e.set_matches_per_state_rule(s.k);
+        if (s.knob == PER_PARENT) e.set_max_successor_states_per_parent(s.k);
+        if (s.knob == PER_STEP) e.set_max_states_per_step(s.k);
+        if (s.knob == RATE || s.knob == WEIGHTS) {
+            e.set_transition_rate(s.knob == RATE ? 0.5 : 0.8);
+            if (s.knob == WEIGHTS) e.set_rule_weights({0.43, 0.6});
+            e.set_random_seed(s.seed);
+        }
+        e.evolve(c.init, c.steps);
+        return std::array<uint64_t, 4>{hg.num_canonical_states(), hg.observable_num_events(),
+                                       hg.observable_num_causal_edges(),
+                                       hg.observable_num_branchial()};
+    };
+    auto str = [](const std::array<uint64_t, 4>& a) {
+        return std::to_string(a[0]) + "," + std::to_string(a[1]) + "," + std::to_string(a[2]) +
+               "," + std::to_string(a[3]);
+    };
+    for (const auto& c : cases) {
+        for (const auto& s : settings) {
+            const auto full = run(c, s, 1, false);
+            for (size_t threads : {size_t(1), size_t(4)}) {
+                const auto q = run(c, s, threads, true);
+                EXPECT_EQ(q, full) << c.name << " knob " << static_cast<int>(s.knob) << " k "
+                                   << s.k << " seed " << s.seed << " threads " << threads
+                                   << ": quotient " << str(q) << " full capture " << str(full);
+            }
         }
     }
 }
