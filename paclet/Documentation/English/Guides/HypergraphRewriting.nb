@@ -10,10 +10,10 @@
 NotebookFileLineBreakTest
 NotebookFileLineBreakTest
 NotebookDataPosition[       154,          7]
-NotebookDataLength[     40084,       1094]
+NotebookDataLength[     40088,       1094]
 NotebookOptionsPosition[     30038,        898]
-NotebookOutlinePosition[     31274,        929]
-CellTagsIndexPosition[     31231,        926]
+NotebookOutlinePosition[     31278,        929]
+CellTagsIndexPosition[     31235,        926]
 WindowFrame->Normal*)
 
 (* Beginning of Notebook Content *)
@@ -905,7 +905,7 @@ TaggingRules->{
      "hypergraph", "multiway", "rewriting", "causal graph", "branchial graph",
        "Wolfram physics", "isomorphism", "canonicalization", "statistics", 
       "sampling", "session", "GPU"}, "summary" -> 
-    "Multiway hypergraph rewriting: states, events, causal and branchial \
+    "Multiway hypergraph rewriting with states, events, causal and branchial \
 graphs, state and event identity, statistics of each step, sampling, \
 generated initial conditions, sessions and the GPU", "paclet" -> 
     "WolframInstitute/HypergraphRewriteEngine", "uri" -> 
