@@ -435,6 +435,14 @@ quotient 1942 -> 1634 at one thread and 334 -> 152 at 32. The two few-class quot
 - **child_point rewritten at every depth**: multirule d7 quotient one thread 112.8 -> 116.9 ms
   despite 7.9% fewer instructions (every worker applying a match writes its line). Landed
   write-once (40aaf6b8).
+- **Key-set working capacity 8192 instead of 1024, for every set.** Full multiway one thread
+  -2 to -6% (multirule d6 174.3 -> 164.4 ms); not landed: key_set_exactly_once, which grows a
+  set built with the default, did not finish in 600 s under GenMC (1,286 executions at 1024).
+- **The same for the two causal sets only** (1024 kept under HG_VERIFICATION): one thread
+  -2.5 to -4.7% (wpp d7 full 479 -> 467 ms, multirule d6 172 -> 164, wolftri d6 182 -> 174),
+  16 and 32 threads within spread or better; peak RSS of a small run +5.7 MB (cycle4 d4 full
+  10.3 -> 16.0 MB), cost_matrix arena 233.3 -> 278.7 MB, large runs within 2%. A time-for-
+  footprint trade, not landed; `.scratch/opt/patches/causal_set_wc8192_trade.patch`.
 - **RewriteRule's zero-fill.** The 7.2 M instructions in `RewriteRule::RewriteRule` are 386
   constructions by the benchmark's corpus generator; the engine constructs one per rule.
   Not an engine cost.
