@@ -136,8 +136,12 @@ if selected "Linux-x86-64"; then
         # Linux binary carrying SASS for one card -- correct on the measurement box and unable
         # to start anywhere else. The Windows leg leaves it alone for the same reason, so both
         # GPU artifacts carry whatever that one definition says. HG_GPU_ARCHS narrows it.
+        # HG_GPU_ARCHS in the environment narrows the list for this leg as it does for the Windows
+        # leg; unset, the cache keeps the value it was configured with.
+        linux_gpu_archs=()
+        [[ -n "${HG_GPU_ARCHS:-}" ]] && linux_gpu_archs=(-DHG_GPU_ARCHS="$HG_GPU_ARCHS")
         if cmake -S . -B build_linux_gpu -DCMAKE_BUILD_TYPE=Release -DHG_ENGINE_STATS=OFF \
-                 -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON -DBUILD_GPU=ON \
+                 -DBUILD_WOLFRAM_LANGUAGE_PACLET=ON -DBUILD_GPU=ON "${linux_gpu_archs[@]}" \
            && cmake --build build_linux_gpu --target hg_evolve_gpu -j"$GPU_BUILD_JOBS" \
            && [[ -f "$gpu_out" ]]; then
             echo -e "${GREEN}Linux-x86-64/hg_evolve_gpu: OK${NC}"
