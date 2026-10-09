@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include "hgcommon/state_geometry_core.hpp"
+#include "hgcommon/state_invariants_core.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -189,6 +190,157 @@ TEST(StateGeometryCore, ShortScratchReportsWhatItNeeds) {
     }
     EXPECT_EQ(g.radius, 2);
     EXPECT_LE(needed, big.size());
+}
+
+namespace {
+
+// hgcommon::state_record of a state given as its edge list, the list standing in for its
+// canonical form: the record's geometry with the largest component and the distributions.
+struct Recorded {
+    hgcommon::SiResult r;
+    std::vector<uint64_t> scratch;
+};
+
+Recorded recorded(const std::vector<std::vector<uint32_t>>& edges) {
+    std::vector<uint32_t> off(1, 0), verts;
+    for (const auto& e : edges) {
+        verts.insert(verts.end(), e.begin(), e.end());
+        off.push_back(static_cast<uint32_t>(verts.size()));
+    }
+    const uint32_t m = static_cast<uint32_t>(edges.size());
+    Recorded out;
+    uint64_t bytes = hgcommon::si_record_bytes_hint(off[m], m, 1);
+    for (;;) {
+        out.scratch.assign((bytes + 7) / 8, 0);
+        uint64_t needed = 0;
+        if (hgcommon::state_record(off.data(), verts.data(), m, off.data(), verts.data(), m,
+                                   reinterpret_cast<unsigned char*>(out.scratch.data()), bytes,
+                                   needed, out.r))
+            return out;
+        bytes = needed > bytes ? needed : 2 * bytes;
+    }
+}
+
+// P4 = 1-2-3-4, R = 2. The ends have balls 2, 3 and the middle vertices 3, 4, so d_end = 1 and
+// d_mid = (log 3 / log 2 + (log 4 - log 3) / (log 3 - log 2)) / 2. The edge curvatures are 1/2,
+// 0, 1/2, so k = 1/2, 1/4, 1/4, 1/2.
+const double kDEnd = 1.0;
+const double kDMid = (std::log(3.0) / std::log(2.0) +
+                      (std::log(4.0) - std::log(3.0)) / (std::log(3.0) - std::log(2.0))) / 2;
+
+}  // namespace
+
+// R1 and R3 on P4: the mean, max and population SD of d_v; Moran's I of k is
+// (4/3) (-1/64) / (1/16) = -1/3; k falls exactly as the degree rises, correlation -1.
+TEST(StateGeometryCore, PathLocalDimensionAndCurvatureCorrelation) {
+    const Recorded rec = recorded({{1, 2}, {2, 3}, {3, 4}});
+    const SgGeometry& g = rec.r.g;
+    ASSERT_TRUE(g.defined & hgcommon::SG_LARGEST_DIMENSION);
+    EXPECT_EQ(g.largest_dimension, g.hausdorff_dimension);   // connected: G' = G, same sum
+    EXPECT_NEAR(g.largest_dimension, (kDEnd + kDMid) / 2, kTol);
+    EXPECT_NEAR(g.local_dimension_max, kDMid, kTol);
+    EXPECT_NEAR(g.local_dimension_sd, (kDMid - kDEnd) / 2, kTol);
+    ASSERT_TRUE(g.defined & hgcommon::SG_OLLIVIER_MORAN);
+    EXPECT_NEAR(g.ollivier_moran_i, -1.0 / 3.0, kTol);
+    ASSERT_TRUE(g.defined & hgcommon::SG_OLLIVIER_DEGREE);
+    EXPECT_NEAR(g.ollivier_degree_correlation, -1.0, kTol);
+
+    const hgcommon::SgDistribution* d = rec.r.dists;
+    const auto& dim = d[hgcommon::SG_DIST_LOCAL_DIMENSION];
+    EXPECT_EQ(dim.count, 4u);
+    EXPECT_NEAR(dim.sum[0], 2 * (kDEnd + kDMid), kTol);
+    EXPECT_NEAR(dim.sum[1], 2 * (kDEnd * kDEnd + kDMid * kDMid), kTol);
+    EXPECT_EQ(dim.min, kDEnd);
+    EXPECT_EQ(dim.bins[4], 4u);   // [1, 1.25): bin width 1/4 over [0, 8)
+    const auto& oll = d[hgcommon::SG_DIST_OLLIVIER];
+    EXPECT_EQ(oll.count, 4u);
+    EXPECT_NEAR(oll.sum[0], 1.5, kTol);
+    EXPECT_EQ(oll.min, 0.25);
+    EXPECT_EQ(oll.max, 0.5);
+    // Bin width 3/32 over [-2, 1): 1/4 lies in bin 24 = [0.25, 0.34375), 1/2 in bin 26.
+    EXPECT_EQ(oll.bins[24], 2u);
+    EXPECT_EQ(oll.bins[26], 2u);
+    // The mean of K_v over G is the state's Ricci scalar.
+    const auto& ric = d[hgcommon::SG_DIST_RICCI];
+    EXPECT_EQ(ric.count, 4u);
+    EXPECT_NEAR(ric.sum[0] / ric.count, g.ricci_scalar, 1e-12);
+}
+
+// C6 is vertex-transitive: every d_v is the same, and k is constant, so Moran's I and the degree
+// correlation are undefined.
+TEST(StateGeometryCore, CycleHasNoCurvatureCorrelation) {
+    const Recorded rec = recorded({{1, 2}, {2, 3}, {3, 4}, {4, 5}, {5, 6}, {6, 1}});
+    const SgGeometry& g = rec.r.g;
+    ASSERT_TRUE(g.defined & hgcommon::SG_LARGEST_DIMENSION);
+    EXPECT_EQ(g.largest_dimension, g.hausdorff_dimension);
+    EXPECT_EQ(g.local_dimension_max, rec.r.dists[hgcommon::SG_DIST_LOCAL_DIMENSION].min);
+    EXPECT_NEAR(g.local_dimension_sd, 0.0, kTol);
+    EXPECT_FALSE(g.defined & hgcommon::SG_OLLIVIER_MORAN);
+    EXPECT_FALSE(g.defined & hgcommon::SG_OLLIVIER_DEGREE);
+    EXPECT_EQ(rec.r.dists[hgcommon::SG_DIST_OLLIVIER].count, 6u);
+}
+
+// A 3x3 grid: G' = G, the K_v average to the Ricci scalar, and the d_v to the dimension.
+TEST(StateGeometryCore, GridDistributionsAverageToTheStateValues) {
+    std::vector<std::vector<uint32_t>> e;
+    for (uint32_t i = 0; i < 3; ++i)
+        for (uint32_t j = 0; j < 3; ++j) {
+            if (j + 1 < 3) e.push_back({3 * i + j, 3 * i + j + 1});
+            if (i + 1 < 3) e.push_back({3 * i + j, 3 * i + j + 3});
+        }
+    const Recorded rec = recorded(e);
+    const SgGeometry& g = rec.r.g;
+    const auto* d = rec.r.dists;
+    EXPECT_EQ(d[hgcommon::SG_DIST_LOCAL_DIMENSION].count, 9u);
+    EXPECT_NEAR(d[hgcommon::SG_DIST_LOCAL_DIMENSION].sum[0] / 9, g.hausdorff_dimension, kTol);
+    EXPECT_NEAR(d[hgcommon::SG_DIST_RICCI].sum[0] / 9, g.ricci_scalar, 1e-12);
+    // Corner, edge-middle and centre vertices: the curvature is not constant, so both are defined.
+    EXPECT_TRUE(g.defined & hgcommon::SG_OLLIVIER_MORAN);
+    EXPECT_TRUE(g.defined & hgcommon::SG_OLLIVIER_DEGREE);
+    uint32_t binned = 0;
+    for (uint32_t b = 0; b < hgcommon::SG_DIST_BINS; ++b)
+        binned += d[hgcommon::SG_DIST_RICCI].bins[b];
+    EXPECT_EQ(binned, 9u);
+}
+
+// Three components, as in the Brill-Lindquist states: P4 (7 incidence nodes), a triangle (6) and
+// one edge (3). The whole-state dimension is undefined; the largest component's is P4's. The
+// curvature distribution covers every vertex with a neighbour.
+TEST(StateGeometryCore, DisconnectedUsesTheLargestComponent) {
+    const Recorded rec = recorded({{10, 11}, {5, 6}, {6, 7}, {7, 5}, {1, 2}, {2, 3}, {3, 4}});
+    const SgGeometry& g = rec.r.g;
+    EXPECT_FALSE(g.defined & hgcommon::SG_HAUSDORFF);
+    ASSERT_TRUE(g.defined & hgcommon::SG_LARGEST_DIMENSION);
+    EXPECT_NEAR(g.largest_dimension, (kDEnd + kDMid) / 2, kTol);
+    EXPECT_NEAR(g.local_dimension_max, kDMid, kTol);
+    EXPECT_EQ(rec.r.dists[hgcommon::SG_DIST_LOCAL_DIMENSION].count, 4u);
+    EXPECT_EQ(rec.r.dists[hgcommon::SG_DIST_RICCI].count, 4u);
+    EXPECT_EQ(rec.r.dists[hgcommon::SG_DIST_OLLIVIER].count, 9u);
+    EXPECT_EQ(rec.r.v.components, 3);
+}
+
+// Two components of 7 incidence nodes, the star K1,3 and P4: the incidence diameter breaks the
+// tie (P4's is 6, the star's 4), whichever comes first.
+TEST(StateGeometryCore, LargestComponentTieFollowsTheIncidenceRule) {
+    for (const auto& e : {std::vector<std::vector<uint32_t>>{{1, 2}, {1, 3}, {1, 4},
+                                                             {5, 6}, {6, 7}, {7, 8}},
+                          std::vector<std::vector<uint32_t>>{{1, 2}, {2, 3}, {3, 4},
+                                                             {5, 6}, {5, 7}, {5, 8}}}) {
+        const Recorded rec = recorded(e);
+        ASSERT_TRUE(rec.r.g.defined & hgcommon::SG_LARGEST_DIMENSION);
+        EXPECT_NEAR(rec.r.g.largest_dimension, (kDEnd + kDMid) / 2, kTol);
+        EXPECT_EQ(rec.r.v.incidence_diameter, 6);
+    }
+}
+
+// The fixed histogram ranges: a value below the range counts in bin 0, above it in the last.
+TEST(StateGeometryCore, DistributionBinsClampToTheRange) {
+    EXPECT_EQ(hgcommon::sg_dist_bin(hgcommon::SG_DIST_OLLIVIER, -5.0), 0u);
+    EXPECT_EQ(hgcommon::sg_dist_bin(hgcommon::SG_DIST_OLLIVIER, 1.0), hgcommon::SG_DIST_BINS - 1);
+    EXPECT_EQ(hgcommon::sg_dist_bin(hgcommon::SG_DIST_RICCI, -24.0), 0u);
+    EXPECT_EQ(hgcommon::sg_dist_bin(hgcommon::SG_DIST_RICCI, -23.0), 1u);
+    EXPECT_EQ(hgcommon::sg_dist_bin(hgcommon::SG_DIST_LOCAL_DIMENSION, 100.0),
+              hgcommon::SG_DIST_BINS - 1);
 }
 
 namespace {

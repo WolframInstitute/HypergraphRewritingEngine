@@ -3135,7 +3135,8 @@ TEST(GpuBinaryGate, QuotientExplorationNeedsFullStatesOnBothDevices) {
 }
 
 // "StepStatistics" is the same reply on both devices: under quotient exploration from each
-// engine's class multiplicities, under full capture from its raw states.
+// engine's class multiplicities, and under None, Automatic and Full from its raw states. The
+// reply carries the per-vertex distributions and the per-state curvature correlations.
 TEST(GpuBinaryGate, StepStatisticsAgreeAcrossDevices) {
     {
         std::ifstream probe(gpu_binary_path(), std::ios::binary);
@@ -3146,10 +3147,12 @@ TEST(GpuBinaryGate, StepStatisticsAgreeAcrossDevices) {
         worker_stop(w);
         GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
     }
-    for (bool quotient : {true, false}) {
-        auto opts = [quotient](wxf::Writer& ww) {
+    const std::pair<const char*, bool> modes[] = {
+        {"Full", true}, {"None", false}, {"Automatic", false}, {"Full", false}};
+    for (const auto& [canon, quotient] : modes) {
+        auto opts = [canon, quotient](wxf::Writer& ww) {
             put_str_list_option(ww, "RequestedData", {"StepStatistics"});
-            put_str_option(ww, "CanonicalizeStates", quotient ? "Full" : "None");
+            put_str_option(ww, "CanonicalizeStates", canon);
             put_str_option(ww, "ExploreFromCanonicalStatesOnly", quotient ? "True" : "False");
         };
         CpuWorker host;
@@ -3157,8 +3160,11 @@ TEST(GpuBinaryGate, StepStatisticsAgreeAcrossDevices) {
         const auto cpu = host(branch_job(3, "Evolve", 0, opts, 3));
         const auto gpu = worker_call(w, branch_job(3, "Evolve", 0, opts, 3));
         const auto c = value_bytes(cpu, "StepStatistics"), g = value_bytes(gpu, "StepStatistics");
-        ASSERT_FALSE(c.empty()) << "quotient=" << quotient;
-        EXPECT_EQ(c, g) << "quotient=" << quotient;
+        ASSERT_FALSE(c.empty()) << canon << " quotient=" << quotient;
+        for (const char* k : {"VertexInvariants", "LargestComponentDimension", "OllivierMoranI",
+                              "OllivierDegreeCorrelation", "Kurtosis"})
+            EXPECT_NE(std::search(c.begin(), c.end(), k, k + std::strlen(k)), c.end()) << k;
+        EXPECT_EQ(c, g) << canon << " quotient=" << quotient;
     }
     worker_stop(w);
 }
@@ -3610,6 +3616,57 @@ TEST(StateStatistics, WeightingByClassesCountsEachClassOnce) {
     EXPECT_DOUBLE_EQ(number_at(states, "Mean"), (3 * 2 + 3) / 4.0);
     EXPECT_EQ(number_at(classes, "N"), 2);
     EXPECT_DOUBLE_EQ(number_at(classes, "Mean"), 2.5);
+}
+
+// "VertexInvariants" pools the vertices of every state at a step: P4 (3 raw states) and the
+// cycle C4 (1). P4's k are 1/2, 1/4, 1/4, 1/2 and C4's are all 1/2 (each C4 edge moves 1/4 one
+// step at each end, W1 = 1/2).
+// Under "States" N = 3 * 4 + 4 = 16; under "Classes" 8. The per-state values reach "Invariants".
+TEST(StateStatistics, VertexInvariantsPoolTheVerticesOfAStep) {
+    const std::vector<hg::stats::StepPoint> points = {{0, 1, 3}, {0, 2, 1}};
+    std::vector<uint64_t> s1, s2;
+    const std::unordered_map<uint64_t, const hgcommon::StateInvariantRecord*> recs = {
+        {1, hg::stats::invariant_record({{1, 2}, {2, 3}, {3, 4}}, s1)},
+        {2, hg::stats::invariant_record({{1, 2}, {2, 3}, {3, 4}, {4, 1}}, s2)}};
+    auto step = [&](bool by_class) {
+        const wxf::WXFValue steps = hg::stats::step_statistics(
+            points, recs, {}, {}, hg::stats::StepStatisticsOptions{by_class, nullptr});
+        return std::get<wxf::WXFValueList>(steps.data).at(0);
+    };
+    const wxf::WXFValue states = step(false), classes = step(true);
+    const wxf::WXFValue& oll = *assoc_at(*assoc_at(states, "VertexInvariants"),
+                                         "OllivierRicciCurvature");
+    EXPECT_EQ(number_at(oll, "N"), 16);
+    EXPECT_DOUBLE_EQ(number_at(oll, "Mean"), (3 * 1.5 + 2.0) / 16);
+    EXPECT_DOUBLE_EQ(number_at(oll, "Min"), 0.25);
+    EXPECT_DOUBLE_EQ(number_at(oll, "Max"), 0.5);
+    for (const char* k : {"Median", "Q1", "Q3", "P10", "P90", "Skewness", "Kurtosis", "Histogram"})
+        EXPECT_NE(assoc_at(oll, k), nullptr) << k;
+    // The 6 values 1/4 lie in bin [0.25, 0.34375): P10 at t = 1.6 is 0.25 + 1.6/6 of the bin.
+    EXPECT_NEAR(number_at(oll, "P10"), 0.25 + 1.6 / 6 * 0.09375, 1e-12);
+    // Population moments of 6 x 1/4 and 10 x 1/2: mean 13/32.
+    const double mean = 13.0 / 32;
+    double m2 = 0, m3 = 0, m4 = 0;
+    for (auto [x, c] : {std::pair{0.25, 6}, std::pair{0.5, 10}}) {
+        m2 += c * std::pow(x - mean, 2) / 16;
+        m3 += c * std::pow(x - mean, 3) / 16;
+        m4 += c * std::pow(x - mean, 4) / 16;
+    }
+    EXPECT_NEAR(number_at(oll, "Skewness"), m3 / std::pow(m2, 1.5), 1e-9);
+    EXPECT_NEAR(number_at(oll, "Kurtosis"), m4 / (m2 * m2), 1e-9);
+    EXPECT_NEAR(number_at(oll, "StandardDeviation"), std::sqrt(m2 * 16 / 15), 1e-12);
+    EXPECT_EQ(number_at(*assoc_at(*assoc_at(classes, "VertexInvariants"),
+                                  "OllivierRicciCurvature"), "N"), 8);
+    EXPECT_EQ(number_at(*assoc_at(*assoc_at(states, "VertexInvariants"), "LocalDimension"), "N"),
+              16);
+    const wxf::WXFValue& invs = *assoc_at(states, "Invariants");
+    EXPECT_EQ(number_at(*assoc_at(invs, "LargestComponentDimension"), "N"), 4);
+    EXPECT_EQ(number_at(*assoc_at(invs, "LocalDimensionMax"), "N"), 4);
+    EXPECT_EQ(number_at(*assoc_at(invs, "LocalDimensionStandardDeviation"), "N"), 4);
+    // C4's curvature is constant: only P4 has a Moran's I and a degree correlation.
+    EXPECT_EQ(number_at(*assoc_at(invs, "OllivierMoranI"), "N"), 3);
+    EXPECT_DOUBLE_EQ(number_at(*assoc_at(invs, "OllivierMoranI"), "Mean"), -1.0 / 3.0);
+    EXPECT_EQ(number_at(*assoc_at(invs, "OllivierDegreeCorrelation"), "N"), 3);
 }
 
 // Through the FFI: the options are read, the branchial keys appear under None, and under Full

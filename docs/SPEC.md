@@ -281,7 +281,7 @@ With `"StepStatisticsWeighting" -> "Classes"` each class at a step counts once i
 the class entropy, `Events` and `RuleCounts` are unchanged. The default `"States"` counts each
 class m(c, d) times.
 
-**`StepStatistics` geometry.** Nine more `Invariants` entries, each an isomorphism invariant of
+**`StepStatistics` geometry.** Fourteen more `Invariants` entries, each an isomorphism invariant of
 a state, computed by `common/include/hgcommon/state_geometry_core.hpp`. A state's graph G is
 the undirected simple graph on the state's vertices with an edge between the consecutive
 vertices of each hyperedge ({a, b, c} gives a-b and b-c); self-loops are dropped and a
@@ -300,6 +300,11 @@ out of that entry's summary, so its `N` counts the states where it is defined.
 | `LocalEntropy` | the mean over vertices v of the entropy in bits of the degrees of the vertices in B(v, 2) | G is empty |
 | `MutualInformation` | the mean over vertices v with a neighbour of the mean over neighbours w of max(0, log2(\|B(v,2) ∩ B(w,2)\| \|B(v,2) ∪ B(w,2)\| / (\|B(v,2)\| \|B(w,2)\|))) | G has no edge |
 | `FisherInformation` | with d_u the mean over r = 1..R of u's own ball-growth term, the mean over vertices v of (1 + mean\|d_u - d_v\|) / (var d_u + 1/100), mean and population variance over u in B(v, 2) other than v | as `WolframHausdorffDimension` |
+| `LargestComponentDimension` | with G' the vertices of the largest incidence component (the rule above; G itself when G is connected), R' its radius and d_v = the mean over r = 1..R' of (log\|B(v,r)\| - log\|B(v,r-1)\|) / (log(r+1) - log r), the mean of d_v over G'; equal to `WolframHausdorffDimension` when G is connected | G' has fewer than 2 vertices |
+| `LocalDimensionMax` | the maximum of d_v over G' | as `LargestComponentDimension` |
+| `LocalDimensionStandardDeviation` | the population standard deviation of d_v over G' | as `LargestComponentDimension` |
+| `OllivierMoranI` | with k_v the mean over the edges v-w of G of the edge's Ollivier curvature, z_v = k_v - mean k over the n1 vertices with a neighbour: (n1 / \|E\|) Σ_{x-y ∈ E} z_x z_y / Σ_v z_v^2, which is (n1 / 2\|E\|) Σ_{i,j} A_ij z_i z_j / Σ z^2 | G has no edge, or k_v is the same at every vertex with a neighbour |
+| `OllivierDegreeCorrelation` | the Pearson correlation of k_v with deg v over the vertices with a neighbour | k_v or deg v is the same at every vertex with a neighbour |
 
 The per-step key `BallGrowthDimension` maps each radius r to the summary, over the states with
 R >= r, of the mean over vertices v of (log\|B(v,r)\| - log\|B(v,r-1)\|) / (log(r+1) - log r):
@@ -308,8 +313,25 @@ ResourceFunction["WolframHausdorffDimension"][G, All, R, "DimensionMethod" -> Id
 inverse edge length squared (`WolframRicciCurvatureScalar`) or dimensionless
 (`OllivierRicciCurvature`).
 
+The per-step key `VertexInvariants` pools the vertices of every state at the step, each state
+weighted as in `Invariants`, into three distributions: `LocalDimension` (d_v over G'),
+`OllivierRicciCurvature` (k_v over the vertices of G with a neighbour) and
+`WolframRicciCurvatureScalar` (K_v over G', the mean over r = 1..R' of 6(D+2)/r^2
+(1 - \|B(v,r)\| Γ(D/2+1) / (π^(D/2) r^D)) with D the state's `LargestComponentDimension`).
+Each has `N`, `Mean`, `StandardDeviation` (N - 1), `Min`, `Max`, `Median`, `Q1`, `Q3`, `P10`,
+`P90`, `Skewness` (m3 / m2^(3/2)), `Kurtosis` (m4 / m2^2, not excess; both absent when every
+value is the same) and `Histogram`. Each state stores its count, minimum, maximum, the sums of
+x, x^2, x^3 and x^4, and 32 equal bins over a fixed range: [0, 8) for `LocalDimension`,
+[-2, 1) for `OllivierRicciCurvature` and [-24, 8) for `WolframRicciCurvatureScalar`, a value
+outside the range counting in the end bin. Pooling adds these, so the moments are exact and the
+quantiles are histogram quantiles: the bin holding the fraction q of the weight, linear inside
+the bin between its edges clipped to [`Min`, `Max`]. `Histogram` maps each non-empty bin's lower
+edge to its weight.
+
 The radius, the per-radius dimensions and the Ricci scalar take one breadth-first search per
-vertex; the per-vertex dimensions used by `FisherInformation` take a second; each edge's
+vertex; the per-vertex dimensions used by `FisherInformation` and `LargestComponentDimension`
+take a second, and K_v a third, to depth R'; k_v, `OllivierMoranI` and
+`OllivierDegreeCorrelation` take O(\|E\|) after the edge curvatures; each edge's
 transport problem is solved exactly by successive shortest paths over the (deg x + 1) x
 (deg y + 1) supports, with the masses scaled to integers by 2 deg x deg y. Graph construction,
 transport and every sum run in caller memory without allocation, so the device can call the

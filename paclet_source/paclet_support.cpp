@@ -453,6 +453,85 @@ wxf::WXFValue summary_value(const Summary& s, bool integral) {
     return wxf::WXFValue(a);
 }
 
+// One step's per-vertex distribution: the classes' hgcommon::SgDistribution summaries, each
+// weighted by its class's weight. Pooling adds the counts, power sums and histogram bins.
+struct PooledDistribution {
+    uint32_t which = 0;
+    uint64_t n = 0;
+    long double weight = 0, sum[4] = {0, 0, 0, 0};
+    double min = 0.0, max = 0.0;
+    long double bins[hgcommon::SG_DIST_BINS] = {};
+
+    void add(const hgcommon::SgDistribution& d, uint64_t w) {
+        if (d.count == 0 || w == 0) return;
+        if (n == 0 || d.min < min) min = d.min;
+        if (n == 0 || d.max > max) max = d.max;
+        n = hgcommon::qm_sat_add(n, hgcommon::qm_sat_mul(d.count, w));
+        const long double lw = static_cast<long double>(w);
+        weight += lw * d.count;
+        for (int k = 0; k < 4; ++k) sum[k] += lw * d.sum[k];
+        for (uint32_t b = 0; b < hgcommon::SG_DIST_BINS; ++b) bins[b] += lw * d.bins[b];
+    }
+
+    // The histogram quantile at q: the bin holding the q-th fraction of the weight, linear inside
+    // the bin between its edges clipped to [min, max].
+    double quantile(long double q) const {
+        double lo = 0.0, hi = 0.0;
+        hgcommon::sg_dist_range(which, lo, hi);
+        const double width = (hi - lo) / hgcommon::SG_DIST_BINS;
+        const long double t = q * weight;
+        long double seen = 0;
+        for (uint32_t b = 0; b < hgcommon::SG_DIST_BINS; ++b) {
+            if (bins[b] == 0 || seen + bins[b] < t) { seen += bins[b]; continue; }
+            const double a = b == 0 ? min : std::max(lo + b * width, min);
+            const double z = b + 1 == hgcommon::SG_DIST_BINS ? max : std::min(lo + (b + 1) * width, max);
+            const double v = static_cast<double>(a + (t - seen) / bins[b] * (z - a));
+            return std::min(std::max(v, min), max);
+        }
+        return max;
+    }
+};
+
+wxf::WXFValue pooled_value(const PooledDistribution& p) {
+    wxf::WXFValueAssociation a;
+    auto put = [&](const char* k, double v) { a.push_back({wxf::WXFValue(k), wxf::WXFValue(v)}); };
+    a.push_back({wxf::WXFValue("N"), wxf::WXFValue(static_cast<int64_t>(p.n))});
+    if (p.n == 0) return wxf::WXFValue(a);
+    const long double N = p.weight, mean = p.sum[0] / N;
+    const long double e2 = p.sum[1] / N, e3 = p.sum[2] / N, e4 = p.sum[3] / N;
+    long double m2 = 0, m3 = 0, m4 = 0;
+    if (p.min != p.max) {
+        m2 = e2 - mean * mean;
+        m3 = e3 - 3 * mean * e2 + 2 * mean * mean * mean;
+        m4 = e4 - 4 * mean * e3 + 6 * mean * mean * e2 - 3 * mean * mean * mean * mean;
+        if (m2 < 0) m2 = 0;
+    }
+    put("Mean", static_cast<double>(mean));
+    put("StandardDeviation", N > 1 ? static_cast<double>(std::sqrt(m2 * N / (N - 1))) : 0.0);
+    put("Min", p.min);
+    put("Max", p.max);
+    put("Median", p.quantile(0.5L));
+    put("Q1", p.quantile(0.25L));
+    put("Q3", p.quantile(0.75L));
+    put("P10", p.quantile(0.1L));
+    put("P90", p.quantile(0.9L));
+    if (m2 > 0) {
+        put("Skewness", static_cast<double>(m3 / (m2 * std::sqrt(m2))));
+        put("Kurtosis", static_cast<double>(m4 / (m2 * m2)));
+    }
+    double lo = 0.0, hi = 0.0;
+    hgcommon::sg_dist_range(p.which, lo, hi);
+    const double width = (hi - lo) / hgcommon::SG_DIST_BINS;
+    wxf::WXFValueAssociation h;
+    for (uint32_t b = 0; b < hgcommon::SG_DIST_BINS; ++b)
+        if (p.bins[b] > 0)
+            h.push_back({wxf::WXFValue(lo + b * width),
+                         wxf::WXFValue(static_cast<int64_t>(std::min<long double>(
+                             p.bins[b], static_cast<long double>(INT64_MAX))))});
+    a.push_back({wxf::WXFValue("Histogram"), wxf::WXFValue(h)});
+    return wxf::WXFValue(a);
+}
+
 template <class Key>
 wxf::WXFValue count_association(const std::map<Key, uint64_t>& m) {
     wxf::WXFValueAssociation a;
@@ -769,6 +848,10 @@ wxf::WXFValue step_statistics(
         std::map<std::vector<int64_t>, uint64_t> arity_sig_hist, degree_seq_hist;
         std::vector<std::pair<double, uint64_t>> radius, eccentricity, hausdorff, ricci, ollivier,
             degree_entropy, local_entropy, mutual_information, fisher;
+        std::vector<std::pair<double, uint64_t>> largest_dimension, local_dimension_max,
+            local_dimension_sd, moran, degree_correlation;
+        PooledDistribution pooled[hgcommon::SG_DISTS];
+        for (uint32_t k = 0; k < hgcommon::SG_DISTS; ++k) pooled[k].which = k;
         std::map<uint32_t, std::vector<std::pair<double, uint64_t>>> ball_growth;
         for (const auto& [h, mult] : classes) {
             const uint64_t w = options.weight_by_classes ? 1 : mult;
@@ -789,6 +872,16 @@ wxf::WXFValue step_statistics(
             if (g.defined & hgcommon::SG_MUTUAL_INFORMATION)
                 mutual_information.push_back({g.mutual_information, w});
             if (g.defined & hgcommon::SG_FISHER) fisher.push_back({g.fisher_information, w});
+            if (g.defined & hgcommon::SG_LARGEST_DIMENSION) {
+                largest_dimension.push_back({g.largest_dimension, w});
+                local_dimension_max.push_back({g.local_dimension_max, w});
+                local_dimension_sd.push_back({g.local_dimension_sd, w});
+            }
+            if (g.defined & hgcommon::SG_OLLIVIER_MORAN) moran.push_back({g.ollivier_moran_i, w});
+            if (g.defined & hgcommon::SG_OLLIVIER_DEGREE)
+                degree_correlation.push_back({g.ollivier_degree_correlation, w});
+            for (uint32_t k = 0; k < r.num_distributions && k < hgcommon::SG_DISTS; ++k)
+                pooled[k].add(r.distributions()[k], w);
             for (uint32_t b = 0; b < r.num_ball; ++b)
                 ball_growth[b + 1].push_back({r.ball()[b], w});
             vertex_count.push_back({double(s.vertex_count), w});
@@ -835,6 +928,18 @@ wxf::WXFValue step_statistics(
         put("LocalEntropy", local_entropy, 0.01, false);
         put("MutualInformation", mutual_information, 0.01, false);
         put("FisherInformation", fisher, 0.01, false);
+        put("LargestComponentDimension", largest_dimension, 0.01, false);
+        put("LocalDimensionMax", local_dimension_max, 0.01, false);
+        put("LocalDimensionStandardDeviation", local_dimension_sd, 0.01, false);
+        put("OllivierMoranI", moran, 0.01, false);
+        put("OllivierDegreeCorrelation", degree_correlation, 0.01, false);
+        wxf::WXFValueAssociation vertex_invs;
+        vertex_invs.push_back({wxf::WXFValue("LocalDimension"),
+                               pooled_value(pooled[hgcommon::SG_DIST_LOCAL_DIMENSION])});
+        vertex_invs.push_back({wxf::WXFValue("OllivierRicciCurvature"),
+                               pooled_value(pooled[hgcommon::SG_DIST_OLLIVIER])});
+        vertex_invs.push_back({wxf::WXFValue("WolframRicciCurvatureScalar"),
+                               pooled_value(pooled[hgcommon::SG_DIST_RICCI])});
         wxf::WXFValueAssociation balls;
         for (const auto& [r, v] : ball_growth)
             balls.push_back({wxf::WXFValue(static_cast<int64_t>(r)),
@@ -860,6 +965,7 @@ wxf::WXFValue step_statistics(
                        count_association(rc == rule_counts.end() ? std::map<int64_t, uint64_t>{}
                                                                  : rc->second)});
         rec.push_back({wxf::WXFValue("Invariants"), wxf::WXFValue(invs)});
+        rec.push_back({wxf::WXFValue("VertexInvariants"), wxf::WXFValue(vertex_invs)});
         rec.push_back({wxf::WXFValue("ArityHistogram"), count_association(arity_hist)});
         rec.push_back({wxf::WXFValue("AritySignatureHistogram"), count_association(arity_sig_hist)});
         rec.push_back({wxf::WXFValue("DegreeHistogram"), count_association(degree_hist)});
