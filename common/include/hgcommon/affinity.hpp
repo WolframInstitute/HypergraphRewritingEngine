@@ -62,6 +62,15 @@ constexpr bool affinity_supported() {
 // scaling curve it did not actually measure.
 bool pin_this_thread_to_cpu(unsigned cpu);
 
+// Exempt the CALLING thread from Windows power throttling (EcoQoS), which schedules the threads of
+// a process it judges to be in the background onto efficiency cores at reduced clock. A worker of
+// an engine run from a console, a service or a kernel without a window is such a thread: measured
+// on a 14900K under Windows 11, bench_cpu_evolve wpp depth 8 quotient at one thread took 2,640
+// ms for its first evolve() and 4,029 and 4,347 ms for the next two, and 2,658 / 2,471 / 2,450 ms
+// with the exemption. Returns whether it took effect; elsewhere there is nothing to exempt and it
+// returns false.
+bool exempt_this_thread_from_power_throttling();
+
 // THE FASTEST CLASS OF CORE ON THIS MACHINE, as logical CPU indices, or EMPTY when the
 // question has no answer here.
 //

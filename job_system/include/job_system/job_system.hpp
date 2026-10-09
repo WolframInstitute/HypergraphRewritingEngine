@@ -642,6 +642,7 @@ private:
     void worker_loop(WorkerData* data, size_t index) {
         t_sys_ = this;
         t_worker_ = data;
+        hgcommon::exempt_this_thread_from_power_throttling();
         // Bind this worker if the caller named a core set. Worker i takes the i-th CPU in that
         // set; more workers than CPUs means they share, which is the caller's choice to make
         // rather than this loop's to refuse. Empty set: placement stays the operating system's.

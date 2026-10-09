@@ -49,6 +49,21 @@ bool pin_this_thread_to_cpu([[maybe_unused]] unsigned cpu) {
 #endif
 }
 
+bool exempt_this_thread_from_power_throttling() {
+#if defined(_WIN32)
+    // The thread form of PROCESS_POWER_THROTTLING_STATE has the same three fields; MinGW's headers
+    // name the information class but not the thread struct, so the process struct is passed.
+    PROCESS_POWER_THROTTLING_STATE state{};
+    state.Version = 1;        // THREAD_POWER_THROTTLING_CURRENT_VERSION
+    state.ControlMask = 1;    // THREAD_POWER_THROTTLING_EXECUTION_SPEED
+    state.StateMask = 0;      // the control bit cleared: not throttled
+    return ::SetThreadInformation(::GetCurrentThread(), ThreadPowerThrottling, &state,
+                                  sizeof(state)) != 0;
+#else
+    return false;
+#endif
+}
+
 #if defined(__linux__)
 namespace {
 // Reads a sysfs CPU list ("0-7", "0,2,4", "0-3,8-11") into logical CPU indices. Returns false

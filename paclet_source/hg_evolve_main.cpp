@@ -18,6 +18,7 @@
 
 #include "hg_core.hpp"
 #include "hgcommon/build_stamp.hpp"
+#include "hgcommon/affinity.hpp"
 
 namespace HG_NAMESPACE { namespace ffi { extern const char kBuildStamp[]; } }  // hypergraph_ffi.cpp
 namespace hgffi = HG_NAMESPACE::ffi;
@@ -314,6 +315,10 @@ static const char* const kUsage =
     "  --help, -h              print this and exit.\n";
 
 int main(int argc, char** argv) {
+    // This thread reads jobs and builds replies, and a reply can be most of a job's time (the
+    // reconstructed counts and relations). The engine's workers exempt themselves; this is the
+    // one other thread that computes.
+    hgcommon::exempt_this_thread_from_power_throttling();
 #if defined(_WIN32)
     // stdin/stdout carry raw WXF bytes; keep them out of text (CRLF) mode.
     _setmode(_fileno(stdin), _O_BINARY);
