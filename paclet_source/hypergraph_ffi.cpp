@@ -495,12 +495,13 @@ static size_t effective_max_states_per_step(const hgffi::ParsedJob& req) {
     return req.max_states_per_step;
 }
 
-// The "StepStatisticsBranchial" metrics a run computes, on either engine: none under quotient
-// exploration, which stores one state per class, and no overlap under Full states, since a Full
-// class has no vertices of its own. Each one left out is warned about.
-static uint32_t admitted_branchial(hgffi::ParsedJob& req, bool quotient) {
+// The "StepStatisticsBranchial" metrics a run computes, on either engine: none under
+// ExploreFromCanonicalStatesOnly, and no overlap under Full states, since a Full class has no
+// vertices of its own. Each one left out is warned about. Both engines call this with the request
+// alone, so the admission cannot depend on which engine-internal route the run took.
+static uint32_t admitted_branchial(hgffi::ParsedJob& req) {
     uint32_t which = req.include_step_statistics ? req.step_statistics_branchial : 0u;
-    if (which && quotient) {
+    if (which && req.explore_from_canonical_states_only) {
         req.ffi_warnings.push_back({"StepStatistics", 1,
             "StepStatisticsBranchial is not computed under ExploreFromCanonicalStatesOnly"});
         which = 0;
@@ -535,7 +536,7 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
         // budget's frontier across calls, and run_session refuses to rebuild the engine. The
         // verb rides on the job and the backend answers it. The device applies the transition
         // draw, the spine and the per-state cap at match emission (match.cu, emit_admit).
-        const uint32_t branchial = admitted_branchial(req, req.explore_from_canonical_states_only);
+        const uint32_t branchial = admitted_branchial(req);
         GpuJob job{
             req.parsed_rules_raw,
             req.initial_states_raw,
@@ -2024,7 +2025,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             }
             // "StepStatisticsBranchial": per step, the branchial graph on the step's states and
             // the vertex overlap of its raw states (admitted_branchial).
-            const uint32_t which = admitted_branchial(req, hg.quotient_multiplicity());
+            const uint32_t which = admitted_branchial(req);
             std::map<uint32_t, wxf::WXFValueAssociation> branchial_keys;
             if (which) {
                 std::vector<std::pair<uint32_t, uint32_t>> pairs;
