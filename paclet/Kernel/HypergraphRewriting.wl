@@ -488,11 +488,11 @@ formatBranchialEdgeTooltip[data_Association] := Column[{
 (* Edge styles by type for GraphData-based graphs. The branchial colour is the one the Wolfram
    Physics Project style data gives branchial graphs. *)
 graphDataEdgeStyles[] := <|
-  "Directed" -> Directive[Gray, Arrowheads[0.02]],
-  "Causal" -> Directive[Orange, Arrowheads[0.02]],
-  "Branchial" -> Directive[Hue[0.89, 0.97, 0.71], Arrowheads[0.02]],
+  "Directed" -> Directive[Gray, Arrowheads[Small]],
+  "Causal" -> Directive[Orange, Arrowheads[Small]],
+  "Branchial" -> Directive[Hue[0.89, 0.97, 0.71], Arrowheads[Small]],
   "StateEvent" -> Directive[Gray],  (* Same gray as EventState for consistency *)
-  "EventState" -> Directive[Gray, Arrowheads[0.02]]
+  "EventState" -> Directive[Gray, Arrowheads[Small]]
 |>;
 
 (* Check if vertex data represents a state (has Edges but no RuleIndex) *)
@@ -600,6 +600,19 @@ mergeParallelEdges[graphData_Association, byRule_] := Module[{groups},
 
 formatMergedEdgeTooltip[tag_Association] :=
   Row[{Length[tag["EventIds"]], " events: ", Short[tag["EventIds"], 2]}];
+
+(* Default size of a styled graph. A state is drawn as a 32-point picture in a frame and an event
+   as two of them, so the width is 55 points per state and 110 per event in the widest row of the
+   layout, between 360 and 1600 points, and each row gets at least 75 points of height. *)
+styledSizeOptions[g_Graph, vertexData_] := Module[{coords, rows, width, w, span},
+  coords = GraphEmbedding[g];
+  If[!MatrixQ[coords, NumericQ], Return[{}]];
+  rows = GatherBy[Transpose[{VertexList[g], Round[coords[[All, 2]], 10.^-6]}], Last];
+  width[v_] := If[AssociationQ[vertexData[v]] && !isStateVertexData[vertexData[v]], 110, 55];
+  w = Clip[Max[Total[width /@ #[[All, 1]]] & /@ rows], {360, 1600}];
+  span = Max[#] - Min[#] & /@ Transpose[coords];
+  {ImageSize -> w, AspectRatio -> Max[If[span[[1]] > 0, span[[2]]/span[[1]], 1], 75 Length[rows]/w]}
+];
 
 (* Create graph from FFI GraphData - main entry point *)
 (* graphData: <|"Vertices" -> {...}, "Edges" -> {...}, "VertexData" -> <|...|>|> *)
@@ -764,10 +777,12 @@ createGraphFromData[graphData0_Association, graphOptions_List, styled_:False, co
         stateFn[##], eventFn[##]]]];
     (* The caller's Graph options come first: Graph takes the first setting of a repeated
        option, so a layout, labels, a size or a ratio given by the caller replaces the defaults. *)
-    addLegend[Graph[vertices, edgeList, Sequence @@ graphOptions,
+    g = Graph[vertices, edgeList, Sequence @@ graphOptions,
       VertexSize -> 1/2, VertexLabels -> vertexLabels, VertexShapeFunction -> vertexShapes,
       EdgeLabels -> edgeLabels, EdgeStyle -> edgeStyles,
-      GraphLayout -> "LayeredDigraphEmbedding", AspectRatio -> None]]
+      GraphLayout -> "LayeredDigraphEmbedding", AspectRatio -> None];
+    addLegend[Graph[g, Sequence @@ FilterRules[styledSizeOptions[g, vertexData],
+      Except[Alternatives @@ (Keys[graphOptions] /. s_String :> Symbol[s])]]]]
     ,
     (* Structure mode: simple styles *)
     vertexStyles = Map[
