@@ -374,7 +374,13 @@ fastest at 8 threads (55.1 ms) and took 101.2 ms at 32.
 | 80a09c28 | the replay's id counters each on their own line | 31% of qc_add_instance samples on the load of qc_inst_blocks_, which shared a line with qc_next_instance_ | multirule d7 q 16t 27.6 -> 26.2 ms; wpp d8 q 32t 231 -> 220 |
 | b591bd1d | with several workers, qc_event_sig_ and qc_kept_ create the next segment from the first element | 26 losing 1M-entry segments per run at 32 threads (temporary counter) | multirule d7 q 32t 35.9 -> 22.7 ms; bigpath q 32t 35.9 -> 17.8; 2-8 threads bigpath +1 ms |
 
-After (gcc, `build_linux`, median of 3, ms):
+| aa6287a8 | an instance point installs its eight padded shard lists only when a push loses the compare-and-swap on `first` | 528 B per (class, depth) point, most holding one or two instances | wpp d8 q arena 2,658 -> 2,509 MB, peak RSS 2,910 -> 2,752 MB; allfour d6 q RSS 1,991 -> 1,887 MB; time within spread |
+| 40aaf6b8 | an instance finds its point through the match that made it (child_point, written once) | the point's keyed claim on every instance: 4.5% of instructions (multirule d7 q) | instructions multirule d7 q -7.7%, bigpath q -9.8%; wpp d8 q 1t 2366 -> 2216 ms, 16t 291 -> 264 |
+| e1d71d2a | a replay event's slot is its id (the stride-171 permutation removed) | with per-worker id blocks the permutation put different workers' slots on one line: 15% of qr_apply's 16-thread samples on an applied-list head | multirule d7 q 8t 29.6 -> 25.3 ms; bigpath q 16t 18.3 -> 14.8 |
+| ad360afd | the early segment creation of b591bd1d only above eight workers | the early segment costs one zero-fill; off is faster at 2-8 threads | bigpath q 8t 15.8 -> 14.6 ms; 16/32 unchanged |
+| e1d66677 | a worker appends its replay causal pairs to its own chunks (no node, no compare-and-swap) | qc_record_causal 10% of one-thread instructions (multirule d7 q) | multirule d7 q 1t 114.9 -> 105.5 ms; arena 443 -> 423 MB |
+
+After (gcc, `build_linux`, median of 3, ms; before aa6287a8):
 
 | workload | 1 | 2 | 4 | 8 | 16 | 32 |
 |---|---|---|---|---|---|---|
@@ -388,8 +394,27 @@ After (gcc, `build_linux`, median of 3, ms):
 | growshrink3 d6 quotient | 304 | 171 | 94 | 57 | 35 | 26 |
 | cycle4 d6 full | 121 | 64 | 35 | 20 | 15 | 15 |
 
-That sweep predates b591bd1d; with it (clang, median of 7) multirule d7 quotient is 113 / 29 /
-23 / 23 ms at 1 / 8 / 16 / 32 threads and bigpath n128 d3 quotient 77 / 20 / 17 / 18.
+At HEAD e1d66677 (gcc, `build_linux`, median of 5, ms):
+
+| workload | 1 | 2 | 4 | 8 | 16 | 32 |
+|---|---|---|---|---|---|---|
+| wpp d8 quotient | 2258 | 1234 | 667 | 376 | 246 | 197 |
+| wpp d7 full | 517 | 290 | 160 | 88 | 60 | 46 |
+| multirule d7 quotient | 108 | 62 | 36 | 21 | 20 | 24 (min 19) |
+| multirule d6 full | 188 | 109 | 62 | 36 | 25 | 22 |
+| allfour d6 quotient | 1634 | 916 | 508 | 276 | 192 | 152 |
+| allfour d5 full | 214 | 122 | 67 | 38 | 26 | 22 |
+| wolftri d6 full | 197 | 106 | 59 | 33 | 23 | 22 |
+| bigpath n128 d3 quotient | 76 | 43 | 25 | 14 | 16 | 17 |
+| bigcycle n64 d3 full | 964 | 517 | 271 | 147 | 97 | 75 |
+| growshrink3 d6 quotient | 296 | 163 | 87 | 48 | 31 | 26 |
+| cycle4 d6 full | 115 | 65 | 36 | 20 | 14 | 14 |
+
+Against the start (gcc, HEAD 9ec5a313): wpp d8 quotient 2763 -> 2258 ms at one thread and 364 ->
+197 at 32; wpp d7 full 106.7 -> 46.2 at 32; multirule d7 quotient 137 -> 108 at one thread and
+45 -> 20 at 16; bigpath n128 d3 quotient 95 -> 76 at one thread and 59 -> 16 at 16; allfour d6
+quotient 1942 -> 1634 at one thread and 334 -> 152 at 32. The two few-class quotient workloads
+(multirule d7, bigpath n128 d3) stop improving at 8 threads and are within a few ms from 8 to 32.
 
 ### REFUTED
 
@@ -402,6 +427,13 @@ That sweep predates b591bd1d; with it (clang, median of 7) multirule d7 quotient
   workloads at 4/16/32 threads (wpp d7 32t 46.4 against 50.3 ms). Not landed.
 - **Early segment creation for every SegmentedArray.** Full multiway wpp d7 arena 523 -> 684 MB
   and 32 threads 45.5 -> 50.7 ms. Landed only for the two replay arrays (b591bd1d).
+- **Unpadded instance shard heads** (8 or 16 heads sharing lines, before aa6287a8): multirule d7
+  quotient 16 threads 22.7 -> 72.8 / 42.0 ms. The lazy `more` keeps the padding.
+- **16 or 32 instance shard lists** instead of 8 (after aa6287a8): within spread at 8 and 16
+  threads, worse at 32 (bigcycle n128 d3 17.9 -> 25.7 / 40.6 ms).
+- **child_point rewritten at every depth**: multirule d7 quotient one thread 112.8 -> 116.9 ms
+  despite 7.9% fewer instructions (every worker applying a match writes its line). Landed
+  write-once (40aaf6b8).
 - **RewriteRule's zero-fill.** The 7.2 M instructions in `RewriteRule::RewriteRule` are 386
   constructions by the benchmark's corpus generator; the engine constructs one per rule.
   Not an engine cost.
@@ -413,12 +445,15 @@ That sweep predates b591bd1d; with it (clang, median of 7) multirule d7 quotient
   14.8 ms at 16 threads and 15.3 at 32. Removing the sets needs the producer/consumer
   rendezvous rebuilt on one list per edge, which changes protocol P24 and the online
   reduction's in-edge order.
-- Quotient replay per application: about 1,000 instructions per raw event, spread over claim,
-  mint, content, run signature, causal records, reduction and descent, none above 18%.
-  At 32 threads bigpath still loses 1M-entry segments of qc_event_sig_ when blocks come from
-  the pool. Instance points are 528 B each (8 padded shard heads), about 1.3 per class: about
-  240 MB of wpp d8 quotient's 2.66 GB arena (estimated from 3,422 points for 2,677 classes on
-  wpp d6 and 348,615 classes on wpp d8).
+- Quotient replay per application: about 900 instructions per raw event after this pass,
+  spread over claim, mint, content, run signature, causal records, reduction and descent, none
+  above 18% of the run. The few-class workloads stop scaling at 8 threads (above).
+- GPU full multiway: the result readback copies every event and causal and branchial record
+  whether the caller asked for them or not (wpp d7: 8.4 of 34.6 ms), because the counts the
+  paclet reports on that route are derived from those vectors.
+- Twin check (same_tokens, edge_token): 7-13% of one-thread full-multiway instructions. Comparing
+  only the edges the two states do not share would skip the token reads of the shared ones,
+  and with them the zero-token and repeated-token checks the test makes today.
 - GPU quotient replay: multirule d7 quotient takes 206 ms on the device against 23 ms on 16 CPU
   threads, all of it in the persistent kernel's replay phase (DEVICE_DESIGN 4.6.3).
 - Windows native (MSVC, same commit) against WSL (clang), bench_cpu_evolve medians: one thread
