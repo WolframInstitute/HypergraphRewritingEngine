@@ -249,6 +249,7 @@ handling of thread_local class types is what blocked in the first place.
 | `checker/zero_index_gep_copy.cpp`, `arena_worker_index_exclusive` | Two live holders never share a worker index, which is the invariant `allocate_local`'s plain non-atomic cursor bump rests on | 2 threads, 1 acquire each, no release, `HG_MAX_ARENA_WORKERS=2` | **No errors, 4 complete executions** |
 | `claim_match_rendezvous` | The match-dedup rendezvous claims exactly once (two claimants of one match agree on one winner) and never drops on collision (two matches sharing a 64-bit hash BOTH win — the root of #74) | 2 threads per phase, 2 phases, capacity 8, probe depth 8 | **No errors, 2500 complete executions** |
 | `frame_publication_is_atomic` | a class's frame OWNER and its STEP are observed together or not at all. The caller-side shape only, over the real host map: the device map's own atomics are not compiled here (see the device section below) | 2 threads, one class, two differing (step, sid) offers, capacity 4 | **No errors, 32 complete executions** |
+| `branchial_pair_once` | events that consumed the same two edges of one state are recorded as branchial pairs once each, from the bucket of the lowest shared edge, with no shared set of recorded pairs (`CausalGraph::record_branchial_overlaps`) | main records event 3, then 2 threads record events 1 and 2, all consuming edges 5 and 7 of state 0 | **No errors, 8,192 complete executions** |
 
 ### What this found
 
@@ -335,6 +336,7 @@ assertion inverted, and the checker must report a safety violation:
 | `deque_no_double_extraction` | both consumers receive the item | `Error: Safety violation!`, exit 42 |
 | `claim_match_rendezvous` | P1 inverted (both claimants win); P2 inverted (a colliding claim loses) | `Error: Safety violation!`, exit 42, both |
 | `frame_publication_is_atomic` | the two-map publication reinstated (`-DHG_TWO_MAP_FRAME`), which is the protocol that shipped | `Verification unsuccesful`, exit 42, 0 executions |
+| `branchial_pair_once` | `-DHG_CALIBRATE_BRANCHIAL_WALK_ALL` (the whole bucket walked); `-DHG_CALIBRATE_BRANCHIAL_EVERY_BUCKET` (no lowest-shared-edge test) | violation reported, both |
 
 Do this for any harness added here, before believing its clean run.
 

@@ -290,9 +290,19 @@ void CausalGraph::record_branchial_overlaps(
         // share a lower edge, and only then is the other event's edge list read.
         bool lower = false;
         for (uint8_t j = 0; j < num_consumed; ++j) lower |= consumed_edges[j] < shared;
+#if defined(HG_CALIBRATE_BRANCHIAL_EVERY_BUCKET)
+        // GenMC calibration (branchial_pair_once): every shared bucket reports the pair.
+        lower = false;
+#endif
         LockFreeList<EventId>* bucket = get_or_create_state_edge_events(input_state, shared);
         const auto* mine = bucket->push(event, *arena_);
+#if defined(HG_CALIBRATE_BRANCHIAL_WALK_ALL)
+        // GenMC calibration (branchial_pair_once): the walk covers the whole bucket.
+        (void)mine;
+        bucket->for_each([&](EventId other_event) {
+#else
         bucket->for_each_before(mine, [&](EventId other_event) {
+#endif
             if (other_event == event) return;
             if (lower) {
                 uint8_t on = 0;
