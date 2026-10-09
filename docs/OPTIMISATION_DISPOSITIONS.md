@@ -379,6 +379,7 @@ fastest at 8 threads (55.1 ms) and took 101.2 ms at 32.
 | e1d71d2a | a replay event's slot is its id (the stride-171 permutation removed) | with per-worker id blocks the permutation put different workers' slots on one line: 15% of qr_apply's 16-thread samples on an applied-list head | multirule d7 q 8t 29.6 -> 25.3 ms; bigpath q 16t 18.3 -> 14.8 |
 | ad360afd | the early segment creation of b591bd1d only above eight workers | the early segment costs one zero-fill; off is faster at 2-8 threads | bigpath q 8t 15.8 -> 14.6 ms; 16/32 unchanged |
 | e1d66677 | a worker appends its replay causal pairs to its own chunks (no node, no compare-and-swap) | qc_record_causal 10% of one-thread instructions (multirule d7 q) | multirule d7 q 1t 114.9 -> 105.5 ms; arena 443 -> 423 MB |
+| 544d81cc | arena Block::data aligned to 64 bytes (a defect found on Windows, not a speed change) | alignas(std::max_align_t) is 8 under MSVC: alignas(64) arena objects sat 8 bytes off a line, and after aa6287a8 MSVC's aligned stores faulted on every quotient replay run | Windows quotient runs complete; sizeof(Block) 56 -> 64 |
 
 After (gcc, `build_linux`, median of 3, ms; before aa6287a8):
 
@@ -456,11 +457,25 @@ quotient 1942 -> 1634 at one thread and 334 -> 152 at 32. The two few-class quot
   and with them the zero-token and repeated-token checks the test makes today.
 - GPU quotient replay: multirule d7 quotient takes 206 ms on the device against 23 ms on 16 CPU
   threads, all of it in the persistent kernel's replay phase (DEVICE_DESIGN 4.6.3).
-- Windows native (MSVC, same commit) against WSL (clang), bench_cpu_evolve medians: one thread
-  1.15-1.5x slower (wpp d7 full 559 against 481 ms, bigpath q 116 against 77); wpp d7 full is
-  slower at 32 threads than at 16 on Windows (89.6 against 83.5 ms). A one-shot hg_evolve.exe
-  quotient job (wpp d8 with causal and branchial) takes 3.47 s against 1.02 s for the Linux
-  binary under WSL; on one CPU 6.3 s against 3.9 s. bench wpp d8 quotient at one thread on
-  Windows: median 4785 ms, minimum 2931 ms over three runs (WSL 2340 ms). The Windows arena
-  maps blocks with VirtualAlloc and has no counterpart of the 2 MB huge-page advice; the cause
-  of the gap is not yet measured on Windows.
+- Windows native (MSVC Release, HEAD 544d81cc) against WSL (gcc, `build_linux`),
+  bench_cpu_evolve, median of 3, ms at 1 / 8 / 16 / 32 threads:
+
+  | workload | Windows | WSL |
+  |---|---|---|
+  | wpp d8 quotient | 4098 (min 2664) / 570 / 337 / 317 | 2274 / 370 / 255 / 200 |
+  | wpp d7 full | 561 / 112 / 64 / 49 | 507 / 87 / 60 / 48 |
+  | multirule d7 quotient | 137 / 25 / 22 / 27 | 106 / 27 / 20 / 36 (min 22) |
+  | multirule d6 full | 206 / 38 / 25 / 21 | 187 / 36 / 25 / 22 |
+  | bigpath n128 d3 quotient | 103 / 20 / 18 / 17 | 76 / 16 / 15 / 23 (min 19) |
+  | cycle4 d6 full | 129 / 23 / 17 / 12 | 117 / 20 / 15 / 13 |
+
+  One thread, MSVC is 10-35% slower than gcc. The wpp d8 quotient one-thread median comes
+  from a per-process effect measured with HG_BENCH_FAULTS: the first evolve() in a process
+  takes 2,640 ms with 632,849 page faults, the second and third 4,029 and 4,347 ms with 29,815
+  and 17,409 faults; with the block pool disabled the later ones take 4,360 and 4,467 ms with
+  ~628,000 faults each, so neither faults nor the pool explain it. At 16 threads the same run
+  is 278 / 278 / 272 / 260 ms over four iterations (Linux 345 / 287 / 261 / 252). The cause
+  is not yet measured; it matters to a Windows process that runs several evolutions (the
+  serve worker, the LibraryLink library). A one-shot hg_evolve.exe of wpp d8 quotient with
+  causal and branchial records takes 3.47 s against 1.02 s for the Linux binary under WSL.
+  The ClangCL toolset is not installed on this box, so clang-cl was not measured.
