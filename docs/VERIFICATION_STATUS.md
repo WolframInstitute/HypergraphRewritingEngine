@@ -1,375 +1,237 @@
 # Verification status
 
-Two model checkers run against this tree, and what each covers is listed here so a gap is a
-stated absence rather than an unexamined one.
+Three checkers run against this tree. This page lists what each one covers and what none of them
+covers.
 
-- **GenMC** enumerates executions of the RC11 memory model for a bounded program. A harness under
-  `verification/genmc/` includes the engine's own header and calls its own functions, so it breaks
-  when the header breaks. `verification/genmc/run.sh <name>`. A harness marked
-  `// GENMC-LINK: engine` is instead compiled against every engine translation unit, linked, so it
-  can call code whose body is in a `.cpp`.
-- **GPUMC** is GenMC's scoped-RC11 sibling, for the GPU memory model: threads are organised into
-  CTAs and every access carries a SCOPE, so whether two threads synchronise depends on how close
-  they are. RC11 has no scopes, so GenMC would check a program the device does not run. It runs
-  from a container -- it is a fork of GenMC 0.9 supporting LLVM up to 15, and this tree builds
-  against 18. `verification/gpumc/run.sh <name>`. Eight harnesses: the termination decision, the
-  device work queue, the dedup map's election, the replay rendezvous, the multiplicity
-  mass/match rendezvous, the replay's task log, the exploration depth rendezvous, and the
-  kernel's loop with the ring, the record pool and the detector composed.
-- **TLA+** models a protocol rather than a translation unit, which is what makes it the right tool
-  where the property is about an ordering across many participants rather than about one
-  structure's memory operations. `verification/tla/run.sh <config>`.
+- **GenMC** enumerates the executions of a bounded C++ program under the RC11 memory model. A
+  harness under `verification/genmc/` includes the engine's own header and calls its own
+  functions, so it stops compiling when the header changes. A harness marked
+  `// GENMC-LINK: engine` is compiled against every engine translation unit and linked, so it can
+  call code whose body is in a `.cpp`. Run with `verification/genmc/run.sh <name>` or `all`.
+- **GPUMC** is the scoped-RC11 checker for the GPU memory model: threads are grouped into CTAs and
+  every access carries a scope, so whether two threads synchronise depends on the scope. RC11 has
+  no scopes. GPUMC is a fork of GenMC 0.9 on LLVM 15 and runs from a container (the CAV 2025
+  artifact). Run with `verification/gpumc/run.sh <name>`.
+- **TLA+** (TLC) checks a model of a protocol at any number of workers. Each spec names the code
+  it transcribes. Run with `verification/tla/run.sh [<config>]`.
 
-## What is covered
+## GenMC
 
-GenMC, 41 harness sources under `verification/genmc/` (the count grows with the protocols;
-`ls verification/genmc/*.cpp | wc -l` is the authority): the concurrent map (agreement, resize, double growth at two and three
-threads, repeated offer, lookup during growth), the key set (exactly-once at two and three
-threads, enumeration, contains and distinct keys across growth), both deques (no double
-extraction, no double take, tag defeats ABA), the lock-free list (completeness, pairs and triples
-meeting once), the job system's wake protocol (no lost wakeup, and the per-domain variant),
-the arena's exclusive worker index, frame publication atomicity, depth-relax child registration,
-the claim, quotient-instance, quotient-mass and child-inheritance rendezvous, and the depth join's report ordering.
+48 harness sources with a `main` under `verification/genmc/`; `genmc_support.cpp` is support
+code. The count is `grep -l "int main" verification/genmc/*.cpp | wc -l`. `COVERAGE.md` in that
+directory maps the engine's 837 atomic access points and 39 plain-field publication pairs to the
+harnesses that reach them.
 
-`causal_in_edge_order` is the COMPOSITION the transitive-reduction defect lived in: one thread
-registering an event's in-edges through `CausalGraph::consume_edges` while another forces the
-producer map through two growths -- the real ConcurrentMap, LockFreeList and arena, no models.
-Working capacity 2 by `GENMC-DEFINES`, so the growths happen under the registration. 1,035
-executions, clean; `HG_CALIBRATE_IN_EDGE_ORDER_ASCENDING` reverses the recorded order and the
-checker reports the redundant pair kept, in 17s. Reaching that verdict took four fixes to the
-checker itself, recorded with their reproducers in `verification/genmc/README.md`.
+### The checker
 
-`claim_match_rendezvous` runs `hgcommon/dedup_claim_core.hpp` itself. It was a TRANSCRIPTION --
-claim_match's loop copied out of `parallel_evolution.hpp` with a comment on each side asking the
-next reader to mirror a change into the other, which is the arrangement that let a fix to the
-original leave the harness verifying a rendezvous the engine no longer ran. The rule is now one
-body and the harness drives it; the storage half (which set, which probe-key derivation, which
-content comparison) stays the caller's, which is what makes the rule separable from a header the
-interpreter cannot take. Clean in 2,500 executions, and `HG_CALIBRATE_DEDUP_HASH_ONLY` -- deciding
-on hash equality without comparing contents, which is what dropped real matches -- fails in 4.
+The suite runs on GenMC v0.19.0 built against LLVM 22, with the fixes in
+`verification/genmc/genmc-0.19.0-fixes.patch` (branch `hg-fixes-0.19` of
+`github.com/richardassar/genmc`). `verification/genmc/README.md` lists each fix with the defect
+in the checker and a reproducer of under thirty lines under `verification/genmc/checker/`, which
+`checker/run.sh` runs against the built checker. The fixes cover allocation by `operator new[]`,
+the ordering of a failed compare-exchange's read, memory-intrinsic promotion and lowering,
+thread-local aggregate initialisers, the error report's message, and the transformation time on
+the composed engine.
 
-`depth_relax_child_registration` runs `hgcommon/explore_depth_core.hpp` itself, the quotient
-exploration depth rules both engines call: a child registered while its parent is relaxed ends
-at one past the parent's lowered depth. 7 executions over the host LockFreeList, clean;
-`-DCALIBRATE_NO_FENCE` reports the child stranded. Its device twin under scoped RC11,
-`verification/gpumc/depth_relax_child_registration.cpp`, drives the same core over the device
-list's orders and `__threadfence`: 9 executions, clean, and the same calibration fails.
+`WeakCASStutterPass` makes a weak compare-exchange strong only where its spurious failure adds no
+behaviour: the iteration ending in it holds only reads before the CAS and carries every loop value
+back unchanged, or the failure path returns to the same attempt with only repeated stores of
+unchanged values. Every other weak CAS stays weak, and its spurious failure is explored.
+`HG_GENMC_STUTTER_REPORT=1` prints the decision for each CAS.
 
-`depth_report_order` runs `hgcommon/depth_join.hpp` itself. It is the reason that protocol was
-lifted out of `ParallelEvolutionEngine`: it touches nothing but its own atomics, so the checker
-can be handed the protocol rather than the program around it. It found two defects on its first
-run -- a settle cascade with no barrier on either side, and a report order that a per-depth
-cursor was not enough to fix. Its `CALIBRATE_REPORT_AFTER_SETTLE` arm reinstates the second and
-must report a violation.
+### What a run checks
 
-WHAT THE COMPOSED LINK REACHES, measured. Linking every engine translation unit and pruning to
-what `main` reaches:
+- Every harness carries one or more `// GENMC-CALIBRATE: <defines>` lines. Each reinstates a
+  defect the harness must catch, either an `HG_CALIBRATE_*` arm in the engine source (off by
+  default) or a `CALIBRATE_*` arm in the harness. `HG_GENMC_CALIBRATE=1 run.sh <name>` runs each
+  line and passes only when the checker reports the violation.
+- A thread that passes the `--unroll` bound is ended, and the checker counts the execution as
+  complete; the fork prints how many were cut. `run.sh` fails a run in which every complete
+  execution was cut at the bound, or in which no execution completed.
+- Harnesses compile with `HG_VERIFICATION=1 HG_ENGINE_STATS=0`. The substitutions this makes are
+  listed in `verification/genmc/README.md`, each with the reason it does not weaken the result.
 
-| harness | lines after prune | result |
+### Harnesses
+
+All harnesses except `quotient_capture_composition` reach a verdict with no execution cut at an
+unroll bound, and every calibration cell is caught. Verdicts are exhaustive under RC11 unless the
+table says otherwise.
+
+| protocol | harnesses (threads) |
+|---|---|
+| injector deque, tagged head/tail CAS | `deque_no_double_extraction` (2), `deque_tag_defeats_aba` (2) |
+| work-stealing deque | `work_stealing_deque_no_double_take` (3) |
+| park/wake (`hgcommon/park_gate.hpp`) | `job_system_no_lost_wakeup` (2), `job_system_no_lost_wakeup_domains` (2) |
+| job system error wait | `job_system_error_wait` (2) |
+| ConcurrentMap | `concurrent_map_agreement` (2), `concurrent_map_resize` (2), `concurrent_map_repeated_offer` (2), `concurrent_map_double_growth_2t` (2), `concurrent_map_double_growth_3t` (3, SC, 4 context switches), `map_lookup_during_growth` (2), `map_lookup_during_double_growth` (3), `map_insert_existing_during_double_growth` (2) |
+| ConcurrentKeySet | `key_set_exactly_once` (2), `key_set_exactly_once_3t` (3, SC, 1 context switch), `key_set_enumeration` (2), `key_set_contains_during_growth` (2), `key_set_contains_during_double_growth` (3), `key_set_distinct_keys_across_growth` (2), `key_set_insert_existing_during_double_growth` (3) |
+| LockFreeList | `lock_free_list_completeness` (2), `lock_free_list_pairs_meet_once` (2), `lock_free_list_three_meet_once` (3) |
+| branchial pair recording | `branchial_pair_once` (2) |
+| SegmentedArray publication | `segmented_array_published_read` (3) |
+| arena | `arena_cursor_vs_shared_disjoint` (2), `arena_worker_index_exclusive` (2), `block_pool_exactly_once` (2) |
+| frame publication | `frame_publication_is_atomic` (2) |
+| causal in-edge registration | `causal_in_edge_order` (2) |
+| depth join report order | `depth_report_order` (2) |
+| explore depth relaxation | `depth_relax_child_registration` (2) |
+| match dedup claim | `claim_match_rendezvous` (2) |
+| child inheritance | `child_inheritance_rendezvous` (2) |
+| sampling spine | `spine_min_rank` (3) |
+| quotient instance/match rendezvous | `quotient_instance_match_rendezvous` (4), `claim_chain_exactly_once` (2) |
+| quotient multiplicity mass | `quotient_mass_match_rendezvous` (3) |
+| quotient replay signature cache | `runsig_cache_step` (2) |
+| keyed rewrites | `keyed_intern_once` (2, SC, 4 context switches), `keyed_twin_rendezvous` (2, SC, 1 context switch) |
+| quotient capture | `quotient_capture_register` (2, SC, 1 context switch), `quotient_capture_frame` (2, SC, 1 context switch), `quotient_capture_composition` (2, no verdict) |
+| composed engine | `engine_construct` (3), `engine_rule` (3), `engine_evolve` (3, SC, 1 context switch) |
+
+The harnesses added for rc2:
+
+- `spine_min_rank` runs the engine's `MatchJoin` members (`hypergraph/match_join.hpp`). The task
+  that balances a join's `pushed` and `completed` counters reads the minimum folded rank and the
+  spawned mark of every completed match task. A tree of three tasks over two joins: 28,224
+  executions, clean. Calibrations: completions booked relaxed, and the fold done as
+  load-compare-store.
+- `segmented_array_published_read`: a `SegmentedArray` element read after its writer published
+  the index is non-null and fully constructed, while two writers race to create its segment. 28
+  executions, clean. The calibration reads through a high-water extent with no publication.
+- `branchial_pair_once`: `CausalGraph::record_branchial_overlaps` records each branchial pair once,
+  from the bucket of the lowest shared edge, with no set of recorded pairs. Three events consuming
+  the same two edges: 8,192 executions, clean.
+- `claim_chain_exactly_once`: an instance's claim chain (`hgcommon::qr_claim_chain`) claims each
+  pair once while two threads install blocks past the first. 24 executions, clean.
+- `runsig_cache_step`: a match's cached run-signature key (`hgcommon::qr_cached_key`,
+  `qr_cache_key`) is read only for the output step it was claimed for. 4 executions, clean.
+- `keyed_intern_once`: two applications of one rewrite under interning get one rewrite id, and
+  exactly one is told the rewrite is new (`Hypergraph::intern_rewrite`, `edge_token`). 17,319
+  executions under SC with 4 context switches, clean.
+- `keyed_twin_rendezvous`: two children with one token set, made at once under Full
+  canonicalisation, end in one class with one nonzero key (`claim_twin`, `take_twin`). 1,265
+  executions under SC with 1 context switch, clean.
+- `quotient_capture_register` and `quotient_capture_frame` split `quotient_capture_composition` by
+  phase. Registration: two rewrites of one parent through `Rewriter::apply` give two events and
+  two children in their own classes with published keys and orbit tables, with every class claim
+  on one key (2,684 executions). Capture: both matches are recorded on the parent's class (4,392
+  executions). Both under SC with 1 context switch, clean.
+- `job_system_error_wait`: after a job fails, `wait_for_completion` returns only once no worker is
+  inside a job. One worker and one job at `--unroll=64`: 286 executions, clean. The calibration
+  returns from the wait when the error is seen.
+
+### Shared bodies
+
+A harness on a shared `hgcommon` core runs the body both engines call:
+`claim_match_rendezvous` runs `hgcommon/dedup_claim_core.hpp`, `depth_relax_child_registration`
+runs `hgcommon/explore_depth_core.hpp`, `depth_report_order` runs `hgcommon/depth_join.hpp`,
+`quotient_mass_match_rendezvous` runs `hgcommon/quotient_multiplicity_core.hpp`,
+`block_pool_exactly_once` runs `hgcommon/pool_core.hpp`, and the park/wake harnesses run
+`hgcommon/park_gate.hpp`. Several of these drive the core through a context class the harness
+defines rather than the engine's own; `COVERAGE.md` lists which.
+
+### ConcurrentMap lookup across two growths
+
+An absent answer from `ConcurrentMap::lookup` is final only if `table_` is still the head the walk
+started from; otherwise the walk restarts from the head it loads. Without that rule a lookup
+overtaken by two overlapping growths can skip the table holding a settled key.
+`map_lookup_during_double_growth` (one reader, two growers whose growths overlap) reports the
+violation in 7,508 executions without the rule and is exhaustively clean with it (18,112,955
+executions). The same shape is checked on the map's claim
+(`map_insert_existing_during_double_growth`) and on the key set
+(`key_set_contains_during_double_growth`, `key_set_insert_existing_during_double_growth`).
+
+### The composed engine
+
+`engine_construct` and `engine_rule` link every engine translation unit and run construction, rule
+setup, worker start, parking and shutdown with two workers and main: 1,768 executions each,
+exhaustive. `engine_evolve` runs one `evolve()` call; its verdict is under SC with 1 context switch
+(38 executions, no errors), and its transform needs more than 12,000 MB of address space
+(`HG_GENMC_MEM_MB=16000`). Each composed harness carries `-DHG_HARNESS_CALIBRATE_END=1`, an
+assertion at the end of `main`, so a verdict is reported only with a run that reaches the end. The
+three composed harnesses calibrate reachability of the end only; no defect calibration is caught
+at their bounds.
+
+`causal_in_edge_order` runs `CausalGraph::consume_edges` on one thread while another forces the
+producer map through two growths, over the engine's ConcurrentMap, LockFreeList and arena. 512
+executions, clean. `HG_CALIBRATE_IN_EDGE_ORDER_ASCENDING` reverses the recorded order and the
+checker reports the redundant pair.
+
+## GPUMC
+
+Eight harnesses under `verification/gpumc/`. Each runs a shared `hgcommon` core with the device's
+memory orders and scopes.
+
+| harness | core | property | result |
+|---|---|---|---|
+| `termination_no_early_exit` | `termination_core.hpp` | the detector never takes the quiescent exit while work is owed | 2,265 executions, clean |
+| `ring_exactly_once` | `ring_core.hpp` | no ring item is handed to two consumers, none is invented | 8 complete, 14 blocked, clean |
+| `hash_insert_elects_one` | `hash_insert_core.hpp` | exactly one thread is told `inserted`, and the stored value is that thread's | 4 executions, clean |
+| `replay_rendezvous_meets` | `list_core.hpp` | an instance and a match arriving at once never both miss each other | 3 executions, clean |
+| `mass_match_rendezvous` | `quotient_multiplicity_core.hpp` | class mass passes across each match exactly once | 160 executions, clean |
+| `replay_task_termination` | `term_detect_loop` | no quiescent exit while a replay task is claimed, unrun or owed | 174,129 executions (1 worker), 272,243,862 (2 workers), clean |
+| `depth_relax_child_registration` | `explore_depth_core.hpp` | a child never strands at a stale depth | 9 executions, clean |
+| `evolve_ring_termination` | `ring_core.hpp`, `termination_core.hpp` | the kernel loop composing ring, record pool and detector never exits with work in the ring | 672,126 executions (1 rule, 2 steps), 2,433,998 (3 rules, 1 step), clean |
+
+Every GPUMC harness has a calibration arm that the checker reports. The reservation CAS in
+`ring_exactly_once` is modelled weak, as the device writes it. A 32-bit compare-exchange always
+reports failure in the GPUMC build, so the harnesses use 64-bit words where the device uses 32-bit
+ids.
+
+## TLA+
+
+Five modules under `verification/tla/` (`MCMatchForwarding.tla` instantiates `MatchForwarding.tla`
+with a bounded universe) and 13 configurations. Line 1 of each `.cfg` declares its expected verdict
+and `run.sh` fails on a mismatch; it is the `tla_cells` ctest. Six configurations must report a
+violation.
+
+| configuration | expected | distinct states |
 |---|---|---|
-| construct a `Hypergraph` | 5,452 | verifies, 118.7s |
-| the same, with `HG_SEGMENTED_ARRAY_MAX_SEGMENTS=8` and `HG_CONCURRENT_MAP_INITIAL_CAPACITY=16` | 5,452 | verifies, 4.9s |
-| construct the evolution engine, two workers started (`engine_construct`) | 118,165 | **verifies at `--unroll=1024`: 442 complete executions, no errors** (884 with `--disable-sr`); its end is reachable at that bound (calibration arm at event 3,851). Before the empty-pop change the same exploration passed 252,000 executions without finishing. |
-| add a rule (`engine_rule`) | 19,477 | **verifies at `--unroll=1024`: 442 complete executions, no errors**; its end is reachable at that bound (event 9,083) |
-| two rewrites under quotient reconstruction through the real `Rewriter::apply` (`quotient_capture_composition`) | engine linked | its end is reachable at `--unroll=2048` (calibration arm at event 16,761; at 1024 a copy loop is killed first) -- the first composed rewrite run to reach its end; the exhaustive verdict at that bound is being computed (1.7 executions/s, 49 k events each) |
-| reach `evolve()` (`engine_evolve`) | 118,165 | the transform is ~60 min on the box (once per bound, saved as bitcode); the default and live arms' calibrations at `--unroll=2048` are running there |
-| construct a `JobSystem` | 2,659 | verifies |
-| `JobSystem::start()` | 8,952 | verifies, inside `engine_construct` |
-
-A bound has to be shown to reach a rung's end before its verdict means anything: the checker
-kills a thread that exceeds `--unroll` and counts the execution complete with no error, and at
-`--unroll=2` the main thread was killed inside construction after 1,237 events, before any
-worker existed (the execution graph of the saved live-shape module). Every rung carries
-`-DHG_HARNESS_CALIBRATE_END=1`, an assertion that fails at its end, and a bound's verdict is
-reported only alongside the calibration that reaches it.
-
-The three rows that used to stop were the interpreter's materialisation phase, and each was one
-global it could not build. What lifted them is a pipeline of four rewrites, each applied to the
-code as it is and each recorded with its justification in `verification/genmc/README.md`: a
-thread_local aggregate becomes a thread_local pointer, worker threads are spawned with the
-primitive the checker models, every data symbol the link leaves undefined is defined zero-filled
-from the link's own declarations, and loops are bounded with `--unroll`.
-
-The `JobSystem` row is the same story at a smaller scale: construction is checkable and starting
-is not. Getting that far needed two more shims -- GenMC's address allocator refuses a zero-size
-request, and libstdc++ declares the ABI's type-info vtables as `[0 x ptr]`, which every
-polymorphic class references and `std::thread`'s state class drags in -- and the segfault survives
-both those and `-fno-rtti`.
-
-Two ceilings, and they are different. The first is SIZE: GenMC's own transformation phase, before
-a single execution is explored, does not finish on the `evolve()` module. The mass is spread --
-32% libstdc++, 19% `ConcurrentMap` instantiations -- so no single ablation moves it.
-
-The second is a limitation of GenMC v0.17.0 rather than of the engine: it cannot materialise a
-`thread_local` of AGGREGATE type. Measured on minimal programs -- `std::vector`, a seven-field
-struct, and `unsigned char[64]` all fail with `Constant unimplemented for type`, while a
-`thread_local` scalar or pointer works and a non-TLS aggregate global works. The engine has
-fifteen aggregate `thread_local`s, so any harness reaching the evolution engine stops there. It
-also hard-errors on any `memset`/`memcpy` whose destination is a heap pointer, because its
-promotion pass accepts only Constant/Alloca/GEP; 104 of the 165 intrinsics in the `evolve()`
-module are in that class, most of them inside libstdc++.
-
-That is why the protocols are checked as UNITS rather than in situ, and why an extraction like
-`hgcommon/depth_join.hpp` is what makes one checkable at all.
-
-TLA+, 14 configurations, all matching their declared verdict:
-
-| model | verdict | distinct states |
-|---|---|---|
-| `MCSegmentedArray` | PASS | 2,284 |
-| `MCSegmentedArrayDeep` | PASS | 27,828,731 |
-| `MCSegmentedArrayBroken` | VIOLATION as declared | 341 |
 | `MCMatchForwarding` | PASS | 79,278 |
-| `MCMatchForwardingRegisterBroken` | VIOLATION as declared | 1,474 |
+| `MCMatchForwardingRegisterBroken` | VIOLATION | -- |
 | `MCMatchForwardingResume` | PASS | 30,103 |
-| `MCMatchForwardingResumeClaimBroken` | VIOLATION as declared | 1,376 |
+| `MCMatchForwardingResumeClaimBroken` | VIOLATION | -- |
 | `MCDepthRelaxation` | PASS | 14 |
-| `MCDepthRelaxationBroken` | VIOLATION as declared | 12 |
+| `MCDepthRelaxationBroken` | VIOLATION | -- |
 | `MCDepthRelaxationSteered` | PASS | 24 |
-| `MCDepthRelaxationSteeredBroken` | VIOLATION as declared | 26 |
+| `MCDepthRelaxationSteeredBroken` | VIOLATION | -- |
 | `MCQuiescence` | PASS | 22 |
-| `MCQuiescenceBroken` | PASS as declared | 22 |
-| `MCQuiescenceLateSubmit` | VIOLATION as declared | 34 |
+| `MCQuiescenceBroken` | PASS | 22 |
+| `MCQuiescenceLateSubmit` | VIOLATION | -- |
+| `MCQuotientContinuation` | PASS | 910,975 |
+| `MCQuotientContinuationNoBlocked` | VIOLATION | -- |
 
-The `Broken` configurations are what make the rest evidence: a model that cannot report a
-violation has not been shown to be able to detect one.
+TLC stops a violating configuration at its first counterexample, so its state count depends on
+the worker count and is not listed. `MCQuiescenceBroken` omits `jobs_executing` from the scan and
+passes: the `submitted` and `completed` counters cannot agree while a worker is inside a job. The
+host's quiescence rests on one precondition, that a job submits its children before it returns;
+`MCQuiescenceLateSubmit` breaks it and TLC reports the violation. The models assume sequentially
+consistent memory; the RC11 orderings of the same protocols are the GenMC harnesses'.
 
-## A lookup overtaken by two growths (found by the checker, 2026-08-28/29)
+## Open items
 
-`ConcurrentMap::lookup` answered ABSENT for a key settled before the call when two growths
-overlapped: the walk loaded head T1, a grower installed T2, a migrator carried T0's entries
-into T2 (the head as it stood at carry time) and drained T0; the walk's snapshot read T0 as
-drained and T1 as not, skipped T0, probed T1 -- which never held the key -- and stopped. The
-`drained` promise is "a settled copy strictly above", and "above" can be a table the walk
-never loaded. The engine's forwarding chain (`state_parent_`, `state_matches_`), the inverted
-index and the dedup map are this map; every lost event of the live nondeterminism failures
-sat at the last expanded level, where those maps' last growth lands, and the engine-side
-witness (an index lookup missing a bound vertex once and finding it on immediate retry, at a
-map size near a growth threshold) named the same window from inside a firing run.
-
-`verification/genmc/map_lookup_during_double_growth.cpp` -- one reader of a settled key, two
-growers whose growths overlap -- reports the violation in 7,508 executions (9 s) against the
-walk as it was. The one-grower harness (`map_lookup_during_growth`) cannot reach it: with one
-grower the growths never overlap. The rule that closes it: an absent answer is final only if
-`table_` is still the head the walk started from; otherwise the walk restarts from the head it
-now loads. With the rule in place the same harness is exhaustively clean: **No errors, 18,112,955
-complete executions** (78 min at six exploration threads); its three-insert spelling, which
-violates at 9,620 executions without the rule, is clean at 781,465. The same shape on the map's claim (`map_insert_existing_during_double_growth`) and
-on the key set (`key_set_contains_during_double_growth`, 4,020 executions;
-`key_set_insert_existing_during_double_growth`, 305,072) -- the key set already re-checks the
-head after an absent verdict -- is what "searching for the class" means here.
-
-## What is NOT covered, and why each matters
-
-**The DEVICE's kernel body.** The persistent kernel (`gpu/src/persistent.cu`,
-`k_persistent_evolve`) is not run under GPUMC from its own source. GPUMC is a fork of GenMC 0.9
-on LLVM 15 and takes C++ with scope annotations; the kernel and every header it calls are CUDA
-device code on `cuda::atomic_ref`, `__threadfence`, `__syncthreads` and the thread indices, and
-a host shim for that surface is what a run of the body would need. What the kernel DECIDES is
-covered: the ring's claim (`ring_core`), the dedup map's election (`hash_insert_core`), the
-replay lists (`list_core`), the multiplicity counts (`quotient_multiplicity_core`) and the
-termination decision (`termination_core`) are shared bodies the
-device drives, each checked under scoped RC11 by `verification/gpumc/`, and the loop that
-composes the ring, the record pool and the detector -- the order it books pushed/completed
-around the pushes, pops, claims and publishes -- is run as one program by
-`evolve_ring_termination.cpp` with those cores. Outside both is the per-item work thread 0
-performs between the bookings (matching, rewriting, canonicalization, the arena), enumerated by
-every atomic site in `gpu/include/hg_gpu/`: storage, monotonic counters, bump allocators and one
-release/acquire publish flag (`match.hpp`). The host's composition -- the whole engine as one
-program -- is `verification/genmc/engine_evolve.cpp`.
-
-~~**Two harnesses check a re-implementation, not the code.**~~ CLOSED. Both now drive
-`hgcommon/park_gate.hpp`, which is the park/wake protocol lifted out of `JobSystem`'s worker loop
-and `wake_one_worker`. They could not include the old shape for a real reason -- the protocol lived
-inside a loop that spawns threads and blocks in a futex, and a JobSystem is not reachable under
-GenMC (construction prunes to 2,659 lines and verifies; `start()` prunes to 8,952 and segfaults
-v0.17.0) -- so the protocol is a unit and is checked as one.
-
-Both are calibrated against the real path rather than a copy: `HG_PARK_GATE_WEAK_ORDERS` drops the
-handshake to release/acquire and `HG_PARK_GATE_NO_REMOTE_SCAN` removes the cross-domain fallback,
-and each makes the checker report a non-terminating spinloop -- a worker asleep with a job queued.
-
-EVERY harness under `verification/genmc/` now includes the header it is about.
-
-~~**The job system's completion handshake is barriered on one side.**~~ EXAMINED AND REFUTED.
-The completer bumps `quiescence_seq_` (release) and then reads `completion_waiters_` (acquire),
-which is not a StoreLoad, and each side writes one location and reads the other -- the shape of
-the class. It is not an instance of it, because the two reads do not gate the same thing: missing
-the waiter count skips a WAKE, while missing the sequence loses nothing, since the waiter parks on
-that very word under a value compare and the write it might have missed is the value it compares
-against. What makes it safe is the ORDER -- publish the sequence, then look for a waiter -- and
-inverting that is what would lose the wakeup.
-
-Checked rather than argued: the protocol was extracted and run under GenMC with and without the
-barrier, and the checker cannot tell the two arms apart. The extraction was then deleted, because
-it corrected nothing. What survives is in `job_system.hpp`, where the comment that used to defend
-this ordering by a timeout the waiter does not have now states the argument that holds.
-
-The general lesson is recorded in `hgcommon/rendezvous.hpp`: the test is not whether both sides
-read, but whether missing the read LOSES THE EVENT with no other path to it.
-
-**The quotient replay's continuation**, covered by `verification/tla/QuotientContinuation.tla`.
-A continuation raises the depth bound and redrives the points the old bound left on
-`qc_blocked_`, concurrently with the resumed run. Over three runs (bounds 1, 2, 3) every
-instance below the final bound meets every match of its class and the instances equal one run's:
-910,975 distinct states, clean. `MCQuotientContinuationNoBlocked` never pushes a blocked point
-and violates `Complete`.
-
-~~**Termination detection.**~~ COVERED for the HOST by `Quiescence.tla`. The checker reads its two
-halves in SEPARATE steps with workers running in between, because TLA+ evaluates a conjunction
-atomically and a single-step predicate cannot express the race at all.
-
-What the three cells establish together: the COUNTERS are load-bearing and the queue scan is
-defence in depth -- omitting `jobs_executing` still passes, because a worker inside a job has not
-completed and so `submitted` and `completed` cannot agree while it runs. And the soundness rests
-on a precondition: A JOB SUBMITS ITS CHILDREN BEFORE IT RETURNS. Complete-then-submit opens a
-window where the counters agree and every queue is empty while a child is still owed, and no
-ordering of the reads defends it, because at that instant there is nothing to see.
-`MCQuiescenceLateSubmit` is that defect, and TLC reports it.
-
-~~STILL OPEN: the DEVICE's `TerminationDetector`.~~ COVERED, under scoped-RC11, by
-`verification/gpumc/termination_no_early_exit.cpp`. The decision the persistent kernel's detector
-makes is `hgcommon/termination_core.hpp` and the harness runs THAT -- the same body both device
-detectors drive, not a model of it. It was written twice in `gpu/src/persistent.cu` before this,
-once per kernel, which is why it was neither shared nor checkable.
-
-The property: if the detector signals exit through the QUIESCENT path, every piece of work the run
-will ever complete has completed. A stall exit is a recorded defect returning partial work
-deliberately and claims nothing. 2,265 executions, clean.
-
-Calibrated by `-DCALIBRATE_COMPLETE_THEN_PUSH`, which books a worker complete BEFORE announcing
-the child it owes -- the same precondition the host's quiescence rests on, and the one
-`MCQuiescenceLateSubmit` reports there. The checker finds the early exit.
-
-Two things about the harness are worth keeping, because both made it report the defect arm as
-clean at first: the property must be asserted AT THE INSTANT OF THE DECISION, since after the
-threads are joined the worker has always finished; and it must be stated in the COUNTERS rather
-than in a "finished" flag, since a flag is set after the last counter write and so lags a state
-that is genuinely complete.
-
-**The DEVICE's work queue**, covered under scoped-RC11 by
-`verification/gpumc/ring_exactly_once.cpp`. The claim rule is `hgcommon/ring_core.hpp` and the
-harness runs THAT -- the same `ring_claim` body `gpu/include/hg_gpu/ring_buffer.hpp` drives for
-both of its roles. Producing and consuming are the same rule with two constants (a producer waits
-for `seq == pos` and leaves `pos + 1`; a consumer waits for `pos + 1` and leaves `pos + capacity`),
-so they are one body rather than two that agree until one is edited.
-
-The property: no item is handed to two consumers, and none is handed out that no producer
-published. For this queue that is a TERMINATION property rather than a throughput one -- the
-persistent kernel's producers are its own consumers, so an item that vanishes is a completion that
-can never be booked, and the detector above then waits for it forever. 8 complete executions, 14
-blocked on the retry loop, clean.
-
-Calibrated by `-DCALIBRATE_BUMP_CURSOR`, which reserves a position with an unconditional
-`fetch_add` instead of a compare-exchange. The cursor then hands out a position whose slot is not
-yet the reserver's, and with producers that are also consumers there is nothing to roll back with.
-The checker reports one item handed to two consumers.
-
-The reservation CAS is modelled WEAK, as the device writes it. Modelling it strong would remove
-the spurious-failure retries, and removing behaviours from a checker is the unsound direction.
-
-**The DEVICE's loop as one program**, covered under scoped-RC11 by
-`verification/gpumc/evolve_ring_termination.cpp`. `k_persistent_evolve` runs the record pool, the
-expand log, the ring and the detector in one loop per block, and the order that loop books its
-counts around each hand-off is what the detector's decision rests on. The harness runs that
-loop's control flow with the shared cores themselves (`ring_core`, `termination_core`), the pool
-protocol as `persistent.cu` and `match.hpp` define it (cursor CAS below a readable count read
-relaxed, acquire spin on the published flag, release publish; the detector reads the counts
-with acquire), the ring pop's relaxed emptiness check before its claim, and the expand log as
-`work_log.hpp` defines it. A rewrite under the step budget appends an expand entry; a block takes an entry,
-pushes one ring item per rule (booking `pushed[match]` first, matching inline when the ring is
-full) and books the entry done; the detector counts entries with the records. Bound: a two-slot
-ring, `HG_RULES` rules and a step budget of `HG_MAX_STEPS`, with the root's entry in the log
-before any block starts. One rule, two steps (an entry appended by a rewrite): 672,126
-executions, clean (183 s). Three rules, one step (the root's entry pushes three items into two
-slots and matches one inline): 2,433,998 executions, clean (568 s). The detector is limited to
-one stagnant round, the bound that lets the run finish.
-
-Calibrated twice. `-DCALIBRATE_DONE_BEFORE_PUSH` books an entry done before its pushes, and the
-checker reports the quiescent exit with the entry's work owed. `-DCALIBRATE_ONE_SLOT` shrinks the
-ring to one slot: at two rules and one step no execution completes (0, against 30,246 with two
-slots), because at capacity one the value a consumer releases with (`pos + 1`) is the value the
-next producer position tests as "holds an item", so the second push overwrites a live item and
-the pop after it never matches. That arm is a finding, not only a calibration: `run_persistent_match`
-and `run_persistent_match_rewrite` sized their ring as the smallest power of two at or above the
-seed count, which is ONE for one state and one rule. The floor is two in both derivations and in
-the `RingBuffer` constructor (`gpu/tests/test_ring_buffer.cu`, `CapacityBelowTwoIsRejected`).
-Booking `pushed[match]` after the push verifies clean at these bounds: every push happens inside
-an expand entry not yet booked done.
-
-The default arm found a second defect before it was clean. The kernel's detector read the
-record count and the rewrites-done count as plain loads while its snapshot of
-`pushed`/`completed` was acquire; under scoped RC11 a stale `pushed == completed` pair can be
-read beside a fresh `consumed >= produced`, the pair repeats across the two snapshots, and the
-quiescent exit fires with two items in the ring (45,259 executions to the counterexample).
-Both reads are acquire loads now, in `readable_records` and the two detector views in
-`persistent.cu`, and the harness's transcription of them is acquire for the same reason.
-
-**The DEVICE's replay rendezvous**, covered by `verification/gpumc/replay_rendezvous_meets.cpp`.
-The device list's prepend and walk are `hgcommon/list_core.hpp` -- the body
-`gpu/include/hg_gpu/lock_free_list.hpp` drives -- and the harness runs THAT with the shape the
-quotient replay puts around it: push, `__threadfence()`, walk the other side's list. The match
-side's walk runs on another lane of the capturing block after lane 0's push, fence and
-`__syncwarp`, transcribed as a work-group-scope release and acquire; a walk reads an empty head
-relaxed and returns (`LockFreeList::DeviceView::for_each`). The property
-is the host twin's (`quotient_instance_match_rendezvous`): an instance and a match arriving
-concurrently cannot both miss each other, or a raw event and every relation under it is dropped
-with the canonical counts untouched. 3 executions, clean; `-DCALIBRATE_NO_FENCE` removes both
-fences and the checker reports both walks missing.
-
-**Raw counts from class multiplicities**, on both engines. `hgcommon/quotient_multiplicity_core.hpp`
-passes a class's mass across each of its matches through rv::QuotientMassMatch: a match's
-capture, an arrival of mass, and a queued point's run each publish and then read. GenMC runs the
-core with the host's orders (`verification/genmc/quotient_mass_match_rendezvous.cpp`, 944
-executions, clean) and GPUMC with the device's relaxed device-scope RMWs and `__threadfence`
-(`verification/gpumc/mass_match_rendezvous.cpp`, 160 executions, clean). Without the fence both
-report mass never passed on; clearing the queued flag after the passes loses it too (GenMC).
-
-**The replay's task log**, covered by `verification/gpumc/replay_task_termination.cpp`. Each
-(instance, match) application is a task in an append-only log; a block claims up to 32 with one
-compare-exchange on the cursor, waits for each task's published flag, runs it, and books the
-batch in `tasks_done`. The harness transcribes `qe_task_append`, the persistent loop's task
-branch and `RewriteDetectorCtx`'s produced/consumed sums, and runs `hgcommon::term_detect_loop`.
-A quiescent exit with a task owed, a claimed task unrun or the record unrewritten is the defect.
-One worker: 174,129 executions, clean. Two workers (the batch-claim race): 272,243,862
-executions, clean (4.0 h). Every append is inside a unit not yet booked consumed (the
-record being rewritten, or the task being run): `-DCALIBRATE_DONE_BEFORE_RUN` books a batch before
-running it and `-DCALIBRATE_RECORD_BEFORE_CAPTURE` books the record before its appends, and both
-violate.
-
-**The DEVICE's dedup map election**, covered by `verification/gpumc/hash_insert_elects_one.cpp`.
-The insert rule is `hgcommon/hash_insert_core.hpp` and the harness runs THAT -- the same
-`hash_insert_claim` body `gpu/include/hg_gpu/hash_table.hpp` drives. The host `ConcurrentMap` had
-six GenMC harnesses and the device table had none, though it is what decides state and event
-identity on the GPU.
-
-The property has two halves and needs both: exactly one thread is told `inserted`, AND the value
-that is stored is that thread's. `inserted` is not a courtesy flag -- `event_identity` marks an
-event canonical on it and points every later event at the STORED value, and `qe.applied` gates an
-application on it -- so a run in which one thread reports inserted while another's value stands
-gives one signature two canonical events. One slot, two threads, the same key, distinct values.
-4 complete executions, clean.
-
-Calibrated by `-DCALIBRATE_ELECT_ON_KEY`, which elects on the key exchange instead of the value
-exchange. That elects one thread too, but a different one: the key winner can lose the value
-exchange. The checker reports the elected thread not being the one whose value stands.
-
-A CHECKER LIMITATION WORTH KNOWING, because it reads exactly like a defect: a 32-bit
-compare-exchange always reports failure in this build, while reading precisely the expected value
--- the trace shows the CAS read and no CAS write. The same exchange on a 64-bit word under the
-same orders succeeds. The harness's values are 64-bit for that reason; the device's are 32-bit ids
-and the election does not depend on the width.
-
-~~**The depth-relaxation cascade.**~~ COVERED by `DepthRelaxation.tla`. The property is that at
-quiescence the claimed set is exactly the nodes whose SHORTEST-PATH depth is below the budget, so
-a truncated run returns the same subset every time rather than one decided by the order paths were
-found. `MCDepthRelaxationBroken` derives a child's depth from the depth its parent carried WHEN
-CLAIMED instead of from its live minimum, which freezes an early long path into every descendant,
-and TLC reports the violation -- so the model is a gate rather than decoration.
-
-The graph is five nodes and the state counts are 14 and 12, which is small. It is sized to the
-shape that makes relaxation matter -- a node reachable both directly and through a longer path,
-with a descendant whose place under the budget depends on that lowering arriving -- rather than
-to breadth.
-
-
+- **Bounded under SC.** Seven GenMC harnesses have a verdict under sequential consistency with a
+  context bound, not an exhaustive RC11 verdict: `engine_evolve` (1 switch; RC11 gave no verdict
+  in 83 minutes), `keyed_intern_once` (4 switches; RC11 gave no verdict in 2,770 s),
+  `keyed_twin_rendezvous` (1 switch; RC11 estimate 2^51 executions), `quotient_capture_frame` (1
+  switch; RC11 estimate 2^87), `quotient_capture_register` (1 switch; RC11 estimate 2^61),
+  `concurrent_map_double_growth_3t` (4 switches) and `key_set_exactly_once_3t` (1 switch). The
+  two 3-thread harnesses have RC11 counterparts at two threads.
+- **No verdict.** `quotient_capture_composition` runs two rewrites of one parent under quotient
+  reconstruction through `Rewriter::apply`, with registration and capture interleaved. It reaches
+  the end of `main` (its `HG_HARNESS_CALIBRATE_END` cell is reported), and its RC11 exploration,
+  estimated at 2^97 executions, does not end. Its two phases are checked separately by
+  `quotient_capture_register` and `quotient_capture_frame`; an interleaving of one rewrite's
+  registration with the other's capture is checked by no harness.
+- **Partial protocols.** The matching, rewriting and registration points reached only by
+  `engine_evolve` are checked at its SC bound. `COVERAGE.md` marks them (partial).
+- **Thread exit.** The checker runs no thread-exit destructors, so `JobSlotPool::release_pool`
+  (called from `TlsGuard::~TlsGuard`, `job_system/src/job_pool.cpp`) is checked by no harness.
+- **Worker index reuse.** Under `HG_VERIFICATION` the arena's worker index comes from a counter
+  that never releases, and `arena_worker_index_exclusive` holds its indices. Release and
+  re-acquire are not checked.
+- **The device kernel body.** `k_persistent_evolve` (`gpu/src/persistent.cu`) is not run under
+  GPUMC from its own source: it is CUDA device code on `cuda::atomic_ref`, `__threadfence`,
+  `__syncthreads` and thread indices. Its decisions are the shared cores in the GPUMC table, and
+  `evolve_ring_termination` runs the loop that composes them. The per-item work between those
+  bookings (matching, rewriting, canonicalisation, the arena) uses storage, monotonic counters,
+  bump allocators and one release/acquire publish flag (`match.hpp`), and is not model-checked.
+- **Not reached.** `COVERAGE.md` lists the access points no harness reaches and the reason for each:
+  the matcher's early-termination flag and the debug callback pointer, which no engine path sets;
+  reads made before workers start or after they finish; single-threaded lifecycle code; and
+  statistics counters, which verification builds do not compile.
