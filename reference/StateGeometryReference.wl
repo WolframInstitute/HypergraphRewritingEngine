@@ -21,7 +21,8 @@ sgrStateGeometry::usage = "sgrStateGeometry[edges] gives an association of the p
 sgrBallGrowth::usage = "sgrBallGrowth[edges] gives the per-radius ball-growth dimensions for r = 1..R, or {} when undefined.";
 sgrVertexDimensions::usage = "sgrVertexDimensions[g] gives each vertex's own Hausdorff dimension over r = 1..GraphRadius[g].";
 sgrBranchialGraphMetrics::usage = "sgrBranchialGraphMetrics[nodes, pairs] gives the per-step branchial graph metrics for a step's states and its branchial state pairs.";
-sgrOverlapMetrics::usage = "sgrOverlapMetrics[vertexSets] gives the per-step overlap values for a step's states, each given as its vertex set.";
+sgrOverlapMetrics::usage = "sgrOverlapMetrics[vertexSets, edgeLists, initial] gives the per-step overlap values for a step's states, each given as its vertex set and its list of edges (each edge its vertex list); initial is the vertex set of step 0's states.";
+sgrOverlapByDistance::usage = "sgrOverlapByDistance[vertexSets, distanceMatrix] gives, for each finite branchial distance d > 0, the Jaccard index of every two states at distance d.";
 
 Begin["`Private`"];
 
@@ -119,18 +120,45 @@ sgrBranchialGraphMetrics[nodes_List, pairs_List] := Module[
   largest = MaximalBy[comps, {Length[#], Replace[dim[#], _Missing -> -Infinity]} &];
   <|"Degrees" -> (VertexDegree[g, #] & /@ nodes),
     "Distances" -> dists,
+    "DistanceMatrix" -> dm,
     "Components" -> Length[comps],
     "Dimension" -> If[largest === {}, Missing[], dim[First[largest]]]|>];
 
-sgrOverlapMetrics[vertexSets_List] := Module[{k = Length[vertexSets], counts},
-  counts = Counts[Catenate[DeleteDuplicates /@ vertexSets]];
-  <|"StateOverlap" -> Flatten[Table[
-      With[{u = Length[Union[vertexSets[[i]], vertexSets[[j]]]]},
+(* The mutual information in bits of the indicators of two sets of sizes a and b sharing n11
+   elements, inside a universe of u elements. *)
+mutualInformation[n11_, a_, b_, u_] := If[u == 0, 0., Max[0., N[Total[MapThread[
+    If[#1 == 0, 0, #1/u Log2[#1 u/(#2 #3)]] &,
+    {{n11, a - n11, b - n11, u - a - b + n11}, {a, a, u - a, u - a}, {b, u - b, b, u - b}}]]]]];
+
+sgrOverlapMetrics[vertexSets_List, edgeLists_List, initial_List] := Module[
+  {k = Length[vertexSets], sets = DeleteDuplicates /@ vertexSets, counts, edgeCounts, pairs,
+   shared, u},
+  counts = Counts[Catenate[sets]];
+  edgeCounts = Counts[Catenate[DeleteDuplicates /@ edgeLists]];
+  u = Length[counts];
+  pairs = Flatten[Table[{i, j}, {i, k}, {j, i + 1, k}], 1];
+  shared[{i_, j_}] := Length[Intersection[sets[[i]], sets[[j]]]];
+  <|"StateOverlap" -> (With[{w = Length[Union[sets[[#[[1]]]], sets[[#[[2]]]]]]},
         (* Two states with no vertices share nothing: overlap 0. *)
-        If[u == 0, 0., N[Length[Intersection[vertexSets[[i]], vertexSets[[j]]]]/u]]],
-      {i, k}, {j, i + 1, k}]],
+        If[w == 0, 0., N[shared[#]/w]]] & /@ pairs),
+    "StateCosineSimilarity" -> (With[{a = Length[sets[[#[[1]]]]], b = Length[sets[[#[[2]]]]]},
+        If[a b == 0, 0., N[shared[#]/Sqrt[a b]]]] & /@ pairs),
+    "StateMutualInformation" -> (mutualInformation[shared[#], Length[sets[[#[[1]]]]],
+        Length[sets[[#[[2]]]]], u] & /@ pairs),
+    "InitialStateMutualInformation" -> With[{w = Length[Union[Keys[counts], initial]]},
+      mutualInformation[Length[Intersection[#, initial]], Length[#], Length[initial], w] & /@
+        sets],
     "VertexSharpness" -> N[1/Values[counts]],
-    "BranchEntropy" -> N[Log2[Values[counts]]]|>];
+    "BranchEntropy" -> N[Log2[Values[counts]]],
+    "EdgeSharpness" -> N[1/Values[edgeCounts]],
+    "EdgeBranchEntropy" -> N[Log2[Values[edgeCounts]]]|>];
+
+sgrOverlapByDistance[vertexSets_List, dm_] := Module[
+  {k = Length[vertexSets], sets = DeleteDuplicates /@ vertexSets},
+  KeySort[GroupBy[Select[Flatten[Table[{dm[[i, j]],
+        With[{w = Length[Union[sets[[i]], sets[[j]]]]},
+          If[w == 0, 0., N[Length[Intersection[sets[[i]], sets[[j]]]]/w]]]},
+      {i, k}, {j, i + 1, k}], 1], #[[1]] =!= Infinity &], First -> Last]]];
 
 End[];
 EndPackage[];

@@ -1699,6 +1699,36 @@ bool reply_mentions(const std::vector<uint8_t>& out, const std::string& text) {
     return std::search(out.begin(), out.end(), text.begin(), text.end()) != out.end();
 }
 
+// The per-step branchial keys a "StepStatistics" reply carries.
+const std::vector<std::string> kBranchialKeys = {
+    "BranchialDegree", "BranchialDistance", "BranchialComponents", "BranchialDimension",
+    "StateOverlap", "StateCosineSimilarity", "StateMutualInformation",
+    "InitialStateMutualInformation", "VertexSharpness", "BranchEntropy", "EdgeSharpness",
+    "EdgeBranchEntropy", "OverlapByBranchialDistance"};
+
+// Per step, each branchial key of the step's "StepStatistics" record and its value's bytes.
+using KeyBytes = std::vector<std::pair<std::string, std::vector<uint8_t>>>;
+std::vector<KeyBytes> branchial_record_bytes(const std::vector<uint8_t>& out) {
+    const auto stats = value_bytes(out, "StepStatistics");
+    std::vector<KeyBytes> rows;
+    if (stats.empty()) return rows;
+    wxf::Parser p(stats);
+    p.read_function([&](const std::string&, size_t n, wxf::Parser& lp) {
+        for (size_t i = 0; i < n; ++i) {
+            KeyBytes row;
+            lp.read_association([&](const std::string& k, wxf::Parser& vp) {
+                const uint8_t* begin = vp.data();
+                vp.skip_value();
+                if (std::find(kBranchialKeys.begin(), kBranchialKeys.end(), k) !=
+                    kBranchialKeys.end())
+                    row.push_back({k, std::vector<uint8_t>(begin, begin + vp.position())});
+            });
+            rows.push_back(std::move(row));
+        }
+    });
+    return rows;
+}
+
 }  // namespace
 
 // "StepStatistics" asked of a session that was opened for another property is what one call
@@ -3160,6 +3190,34 @@ TEST(GpuBinaryGate, StepStatisticsAgreeAcrossDevices) {
         ASSERT_FALSE(c.empty()) << "quotient=" << quotient;
         EXPECT_EQ(c, g) << "quotient=" << quotient;
     }
+    // "StepStatisticsBranchial" -> All under each state canonicalization, both weightings.
+    for (const char* canon : {"None", "Automatic", "Full"})
+        for (const char* weighting : {"States", "Classes"}) {
+            auto opts = [canon, weighting](wxf::Writer& ww) {
+                put_str_list_option(ww, "RequestedData", {"StepStatistics"});
+                put_str_option(ww, "CanonicalizeStates", canon);
+                put_str_list_option(ww, "StepStatisticsBranchial", {"Graph", "Overlap"});
+                put_str_option(ww, "StepStatisticsWeighting", weighting);
+            };
+            CpuWorker host;
+            ASSERT_TRUE(host.ok) << "could not start hg_evolve --serve";
+            const auto cpu = host(branch_job(4, "Evolve", 0, opts, 4));
+            const auto gpu = worker_call(w, branch_job(4, "Evolve", 0, opts, 4));
+            const auto c = value_bytes(cpu, "StepStatistics");
+            ASSERT_FALSE(c.empty()) << canon << " " << weighting;
+            const bool full = std::string(canon) == "Full";
+            EXPECT_TRUE(reply_mentions(c, full ? "BranchialDegree" : "OverlapByBranchialDistance"))
+                << canon;
+            const auto rc = branchial_record_bytes(cpu), rg = branchial_record_bytes(gpu);
+            ASSERT_EQ(rc.size(), rg.size()) << canon << " " << weighting;
+            for (size_t i = 0; i < rc.size(); ++i) {
+                ASSERT_EQ(rc[i].size(), rg[i].size()) << canon << " step " << i;
+                for (size_t j = 0; j < rc[i].size(); ++j)
+                    EXPECT_TRUE(rc[i][j] == rg[i][j])
+                        << canon << " " << weighting << " step " << i << " " << rc[i][j].first;
+            }
+            EXPECT_EQ(c, value_bytes(gpu, "StepStatistics")) << canon << " " << weighting;
+        }
     worker_stop(w);
 }
 
@@ -3591,6 +3649,130 @@ TEST(StateStatistics, BranchialStepMetricsOfASmallStep) {
     EXPECT_DOUBLE_EQ(number_at(*assoc_at(rec, "BranchEntropy"), "Mean"), 0.5);
 }
 
+// The pairwise, initial-state and edge metrics of the same step worked by hand. Step 0 is one
+// state with vertices {0, 1} (S0). Step 1: A = {0,1,2,5}, B = {0,1,2,6}, C = {7}, U = {0,1,2,5,6,7};
+// edges {100,101}, {100,102}, {103}.
+//   cosine: A,B 3/sqrt(16) = 0.75; A,C and B,C 0.
+//   MI(A;B): (n11, n10, n01, n00) = (3, 1, 1, 1) over 6, 3/2 log2 3 - 7/3.
+//   MI(A;C) = MI(B;C): (0, 4, 1, 1) over 6, 2/3 + log2 3 - 5/6 log2 5.
+//   initial: U ∪ S0 has 6 elements; MI(A;S0) = MI(B;S0): (2, 2, 0, 2), log2 3 - 4/3.
+//   edges: 100 held twice, 101..103 once: EdgeSharpness mean (1/2 + 3)/4, EdgeBranchEntropy 1/4.
+//   OverlapByBranchialDistance: only A-B joined, at distance 1, Jaccard 3/5.
+TEST(StateStatistics, PairwiseInitialAndEdgeMetricsOfASmallStep) {
+    hg::stats::BranchialStep s0, s1;
+    s0.nodes = {1};
+    s0.vertex_sets = {{0, 1}};
+    s0.edge_sets = {{50}};
+    s1.nodes = {10, 11, 12};
+    s1.pairs = {{10, 11}};
+    s1.vertex_sets = {{0, 1, 2, 5}, {0, 1, 2, 6}, {7}};
+    s1.edge_sets = {{100, 101}, {100, 102}, {103}};
+    const auto out = hg::stats::branchial_step_metrics(
+        {{0u, s0}, {1u, s1}}, hg::stats::kBranchialGraph | hg::stats::kBranchialOverlap);
+    const wxf::WXFValue rec(out.at(1));
+    // One cell p log2(p / (pa pb)) of a 2x2 table over u elements.
+    auto cell = [](double n, double na, double nb, double u) {
+        return n == 0 ? 0.0 : n / u * std::log2(n * u / (na * nb));
+    };
+    auto mi = [&](double both, double a, double b, double u) {
+        return cell(both, a, b, u) + cell(a - both, a, u - b, u) + cell(b - both, u - a, b, u) +
+               cell(u - a - b + both, u - a, u - b, u);
+    };
+    const double ab = 1.5 * std::log2(3.0) - 7.0 / 3.0;
+    EXPECT_NEAR(mi(3, 4, 4, 6), ab, 1e-15);
+    const double ac = mi(0, 4, 1, 6);
+    EXPECT_NEAR(ac, 2.0 / 3.0 + std::log2(3.0) - 5.0 / 6.0 * std::log2(5.0), 1e-15);
+    const auto* cos = assoc_at(rec, "StateCosineSimilarity");
+    ASSERT_NE(cos, nullptr);
+    EXPECT_EQ(number_at(*cos, "N"), 3);
+    EXPECT_DOUBLE_EQ(number_at(*cos, "Mean"), 0.25);
+    EXPECT_DOUBLE_EQ(number_at(*cos, "Max"), 0.75);
+    const auto* inf = assoc_at(rec, "StateMutualInformation");
+    ASSERT_NE(inf, nullptr);
+    EXPECT_EQ(number_at(*inf, "N"), 3);
+    EXPECT_NEAR(number_at(*inf, "Mean"), (ab + 2 * ac) / 3, 1e-14);
+    EXPECT_NEAR(number_at(*inf, "Min"), ab, 1e-14);
+    const auto* ini = assoc_at(rec, "InitialStateMutualInformation");
+    ASSERT_NE(ini, nullptr);
+    EXPECT_EQ(number_at(*ini, "N"), 3);
+    const double a0 = std::log2(3.0) - 4.0 / 3.0;
+    EXPECT_NEAR(mi(2, 4, 2, 6), a0, 1e-15);
+    EXPECT_NEAR(number_at(*ini, "Mean"), (2 * a0 + mi(0, 1, 2, 6)) / 3, 1e-14);
+    const auto* es = assoc_at(rec, "EdgeSharpness");
+    ASSERT_NE(es, nullptr);
+    EXPECT_EQ(number_at(*es, "N"), 4);
+    EXPECT_DOUBLE_EQ(number_at(*es, "Mean"), 0.875);
+    EXPECT_DOUBLE_EQ(number_at(*assoc_at(rec, "EdgeBranchEntropy"), "Mean"), 0.25);
+    const auto* by = assoc_at(rec, "OverlapByBranchialDistance");
+    ASSERT_NE(by, nullptr);
+    const auto& per = std::get<wxf::WXFValueAssociation>(by->data);
+    ASSERT_EQ(per.size(), 1u);
+    EXPECT_EQ(std::get<int64_t>(per[0].first.data), 1);
+    EXPECT_EQ(number_at(per[0].second, "N"), 1);
+    EXPECT_DOUBLE_EQ(number_at(per[0].second, "Mean"), 0.6);
+    // Step 0 against itself: one state, so no pair, and S0 carries no information about itself.
+    const wxf::WXFValue rec0(out.at(0));
+    EXPECT_EQ(number_at(*assoc_at(rec0, "StateCosineSimilarity"), "N"), 0);
+    EXPECT_DOUBLE_EQ(number_at(*assoc_at(rec0, "InitialStateMutualInformation"), "Mean"), 0.0);
+}
+
+// A path of three states 20 - 21 - 22 with vertex sets {0,1}, {1,2}, {2,3}: Jaccard 1/3 at
+// distance 1 (twice) and 0 at distance 2, a pair that shares no vertex. Without "Graph" the key
+// is absent; without "Overlap" so are the overlap keys.
+TEST(StateStatistics, OverlapByBranchialDistanceCountsDisjointPairsOfAComponent) {
+    hg::stats::BranchialStep s;
+    s.nodes = {20, 21, 22};
+    s.pairs = {{20, 21}, {22, 21}};
+    s.vertex_sets = {{0, 1}, {1, 2}, {2, 3}};
+    s.edge_sets = {{0}, {1}, {2}};
+    const auto both = hg::stats::branchial_step_metrics(
+        {{1u, s}}, hg::stats::kBranchialGraph | hg::stats::kBranchialOverlap);
+    const wxf::WXFValue rec(both.at(1));
+    const auto& per =
+        std::get<wxf::WXFValueAssociation>(assoc_at(rec, "OverlapByBranchialDistance")->data);
+    ASSERT_EQ(per.size(), 2u);
+    EXPECT_EQ(std::get<int64_t>(per[0].first.data), 1);
+    EXPECT_EQ(number_at(per[0].second, "N"), 2);
+    EXPECT_DOUBLE_EQ(number_at(per[0].second, "Mean"), 1.0 / 3.0);
+    EXPECT_EQ(std::get<int64_t>(per[1].first.data), 2);
+    EXPECT_EQ(number_at(per[1].second, "N"), 1);
+    EXPECT_DOUBLE_EQ(number_at(per[1].second, "Mean"), 0.0);
+    // StateOverlap over all three pairs is unchanged by the distance pass: (1/3 + 1/3 + 0) / 3.
+    EXPECT_EQ(number_at(*assoc_at(rec, "StateOverlap"), "N"), 3);
+    EXPECT_DOUBLE_EQ(number_at(*assoc_at(rec, "StateOverlap"), "Mean"), 2.0 / 9.0);
+    const wxf::WXFValue overlap_only(
+        hg::stats::branchial_step_metrics({{1u, s}}, hg::stats::kBranchialOverlap).at(1));
+    EXPECT_EQ(assoc_at(overlap_only, "OverlapByBranchialDistance"), nullptr);
+    EXPECT_NE(assoc_at(overlap_only, "StateMutualInformation"), nullptr);
+    const wxf::WXFValue graph_only(
+        hg::stats::branchial_step_metrics({{1u, s}}, hg::stats::kBranchialGraph).at(1));
+    EXPECT_EQ(assoc_at(graph_only, "OverlapByBranchialDistance"), nullptr);
+    EXPECT_EQ(assoc_at(graph_only, "EdgeSharpness"), nullptr);
+}
+
+// The branchial values are functions of counts and read the same from any thread split: a step
+// of 300 states (rows split over several threads) gives the same record on every run.
+TEST(StateStatistics, BranchialMetricsDoNotDependOnTheRowSplit) {
+    hg::stats::BranchialStep s;
+    for (uint32_t i = 0; i < 300; ++i) {
+        s.nodes.push_back(i);
+        s.vertex_sets.push_back({i % 7, 7 + i % 11, 18 + i % 13, 31 + i});
+        s.edge_sets.push_back({i % 5, 5 + i % 9, 14 + i});
+        if (i) s.pairs.push_back({i - 1, i});
+    }
+    const uint32_t all = hg::stats::kBranchialGraph | hg::stats::kBranchialOverlap;
+    auto bytes = [&](wxf::WXFValue& v) {
+        v = wxf::WXFValue(hg::stats::branchial_step_metrics({{1u, s}}, all).at(1));
+        wxf::Writer w;
+        w.write(v);
+        return w.release_data();
+    };
+    wxf::WXFValue first, again;
+    const auto expected = bytes(first);
+    for (int run = 0; run < 3; ++run) EXPECT_EQ(bytes(again), expected);
+    EXPECT_EQ(number_at(*assoc_at(first, "StateMutualInformation"), "N"), 300 * 299 / 2);
+}
+
 // "StepStatisticsWeighting" -> "Classes" counts a class once; "States" counts its raw states.
 TEST(StateStatistics, WeightingByClassesCountsEachClassOnce) {
     const std::vector<hg::stats::StepPoint> points = {{0, 1, 3}, {0, 2, 1}};
@@ -3612,28 +3794,36 @@ TEST(StateStatistics, WeightingByClassesCountsEachClassOnce) {
     EXPECT_DOUBLE_EQ(number_at(classes, "Mean"), 2.5);
 }
 
-// Through the FFI: the options are read, the branchial keys appear under None, and under Full
-// the overlap keys are left out with a warning.
+// Through the FFI: the options are read, the branchial keys appear under None and Automatic, and
+// under Full the overlap keys are left out with a warning. The branchial keys count each state
+// once, so "StepStatisticsWeighting" leaves them unchanged.
 TEST(StateStatistics, BranchialOptionThroughTheFfi) {
-    auto run = [&](const char* canon) {
+    auto run = [&](const char* canon, const char* weighting) {
         HostBridge host;
         return run_rewriting_core(build_input({{{1, 2}, {1, 3}}}, kBranchLhs, kBranchRhs, 2,
             [&](wxf::Writer& w) {
                 put_str_list_option(w, "RequestedData", {"StepStatistics"});
                 put_str_option(w, "CanonicalizeStates", canon);
                 put_str_list_option(w, "StepStatisticsBranchial", {"Graph", "Overlap"});
-                put_str_option(w, "StepStatisticsWeighting", "Classes");
+                put_str_option(w, "StepStatisticsWeighting", weighting);
             }, 4), host);
     };
-    const auto none = run("None");
-    const auto stats = value_bytes(none, "StepStatistics");
-    for (const char* k : {"BranchialDegree", "BranchialComponents", "StateOverlap",
-                          "VertexSharpness", "BranchEntropy", "WolframHausdorffDimension",
-                          "BallGrowthDimension"})
-        EXPECT_TRUE(bytes_contain(stats, k)) << k;
-    const auto full = run("Full");
+    for (const char* canon : {"None", "Automatic"}) {
+        const auto classes = run(canon, "Classes");
+        const auto stats = value_bytes(classes, "StepStatistics");
+        for (const auto& k : kBranchialKeys)
+            if (k != "BranchialDimension") EXPECT_TRUE(bytes_contain(stats, k)) << k;
+        for (const char* k : {"WolframHausdorffDimension", "BallGrowthDimension"})
+            EXPECT_TRUE(bytes_contain(stats, k)) << k;
+        const auto rows = branchial_record_bytes(classes);
+        ASSERT_EQ(rows.size(), 3u) << canon;
+        EXPECT_EQ(rows, branchial_record_bytes(run(canon, "States"))) << canon;
+    }
+    const auto full = run("Full", "Classes");
     EXPECT_TRUE(bytes_contain(value_bytes(full, "StepStatistics"), "BranchialDegree"));
-    EXPECT_FALSE(bytes_contain(value_bytes(full, "StepStatistics"), "StateOverlap"));
+    for (const char* k : {"StateOverlap", "StateMutualInformation", "EdgeSharpness",
+                          "OverlapByBranchialDistance"})
+        EXPECT_FALSE(bytes_contain(value_bytes(full, "StepStatistics"), k)) << k;
     EXPECT_TRUE(bytes_contain(value_bytes(full, "Warnings"), "StepStatisticsBranchial"));
 }
 

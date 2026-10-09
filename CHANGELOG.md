@@ -14,6 +14,9 @@ User-visible changes since v1.0.0-rc1:
 
 - `"StepStatistics"`: for each step, the number of states, the isomorphism classes, the entropy
   of the states over the classes and summaries of per-state invariants, on both devices.
+- `"StepStatisticsBranchial"` adds `"StateCosineSimilarity"`, `"StateMutualInformation"`,
+  `"InitialStateMutualInformation"`, `"EdgeSharpness"`, `"EdgeBranchEntropy"` and, with both
+  `"Graph"` and `"Overlap"`, `"OverlapByBranchialDistance"`, on both devices.
 - Every option of `Graph` is an option of `HGEvolve` and `HGSessionOpen` and goes to the graph a
   graph property returns.
 - `"MultiedgeStyle" -> "Merged"` draws the events between two states as one edge.

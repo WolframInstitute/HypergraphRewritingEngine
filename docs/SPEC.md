@@ -319,8 +319,8 @@ eccentricity.
 
 **`StepStatistics` branchial metrics.** With `"StepStatisticsBranchial"`, each step's record
 gains per-step keys. Neither kind is computed under `"ExploreFromCanonicalStatesOnly" -> True`,
-which stores one state per class; the run warns instead. Both run on the CPU engine; a GPU
-request runs there with a warning.
+which stores one state per class; the run warns instead. Both devices compute them and give
+the same reply.
 
 `"Graph"`: the branchial graph of step s has the step's states (by the run's state identity) as
 vertices, and joins the output states of every branchial pair whose first event's output state
@@ -335,11 +335,31 @@ component (most states, then the greatest dimension), absent when that component
 id, so two states share a vertex exactly when both inherited it from a common ancestor, and the
 values depend on the history and not on the numbering. A branch is a state at the step, which
 is how hypergraph_viz's branchial analysis assigns branch ids (its index within its step).
-`StateOverlap` is the summary over every two states A, B of |A ∩ B| / |A ∪ B| (0 when both
-have no vertices); for each vertex held by k of the step's states, `VertexSharpness`
-summarises 1/k and `BranchEntropy` log2 k bits. These need each state's own vertices, so under
-`"CanonicalizeStates" -> Full` the run warns and leaves them out; under `Automatic` a state
-stands for its identical edge lists.
+Over every two states A, B, with U the union of the step's vertex sets and n11 = |A ∩ B|:
+`StateOverlap` summarises n11 / |A ∪ B| (0 when both have no vertices), `StateCosineSimilarity`
+n11 / sqrt(|A| |B|) (0 when either is empty), and `StateMutualInformation` the mutual
+information in bits of membership in A and in B over U: with n10 = |A| - n11,
+n01 = |B| - n11, n00 = |U| - |A| - |B| + n11 and p_ab = n_ab / |U|,
+max(0, Σ p_ab log2(p_ab / (p_a p_b))), terms with p_ab = 0 left out.
+`InitialStateMutualInformation` summarises over the step's states S the same quantity for S and
+S0, the union of the vertex sets of the step-0 states (every initial state), over U ∪ S0.
+For each vertex held by k of the step's states, `VertexSharpness` summarises 1/k and
+`BranchEntropy` log2 k bits; `EdgeSharpness` and `EdgeBranchEntropy` do the same for edges,
+where an edge is its ordered list of vertex ids, so two states hold the same edge when both
+hold an edge on the same inherited vertices in the same order (this is also the identity under
+which `Automatic` merges states). Each id counts once, and each state once under either
+`"StepStatisticsWeighting"`. With both `"Graph"` and `"Overlap"`, `OverlapByBranchialDistance`
+maps each distance d > 0 between two states of one branchial component to the summary of
+n11 / |A ∪ B| over the pairs at distance d; with one of the two it is absent. These need each
+state's own vertices, so under `"CanonicalizeStates" -> Full` the run warns and leaves them
+out; under `Automatic` a state stands for its identical edge lists.
+
+Cost: the pair pass visits every two states that share a vertex through an inverted index, rows
+split over the host threads, and counts pairs per (|A|, |B|, n11, distance), so every pairwise
+value is computed once per distinct count tuple; the pairs that share nothing are counted per
+(|A|, |B|) from the size histogram. With `"Graph"`, each row adds one breadth-first search of
+its branchial component, the cost of `BranchialDistance`. Both engines' replies run this pass
+on the host from the states and branchial pairs, through `hgcommon/branchial_overlap_core.hpp`.
 *(Gate: `reference/verify_state_statistics.wls`: the engine against
 `reference/StateGeometryReference.wl`, an independent Wolfram Language implementation, on the
 corpus and on random rules; the two Function Repository metrics against ResourceFunction itself.

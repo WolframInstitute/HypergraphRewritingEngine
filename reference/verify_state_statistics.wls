@@ -97,18 +97,27 @@ geometryKeys = {"GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
   "MutualInformation", "FisherInformation"};
 
 (* The branchial keys of one step from the raw run: the step's states, the branchial pairs
-   whose first event's output state is at the step, and each state's vertex set. *)
-branchialKeys[sts_List, pairs_List] := Module[{gm, ov},
+   whose first event's output state is at the step, each state's vertex set and edges, and the
+   vertex set of step 0's states. *)
+branchialKeys[sts_List, pairs_List, initial_List] := Module[{gm, ov, sets},
   gm = sgrBranchialGraphMetrics[Lookup[sts, "Id"], pairs];
-  ov = sgrOverlapMetrics[Union[Flatten[#Edges[[All, 2 ;;]]]] & /@ sts];
+  sets = Union[Flatten[#Edges[[All, 2 ;;]]]] & /@ sts;
+  ov = sgrOverlapMetrics[sets, #Edges[[All, 2 ;;]] & /@ sts, initial];
   Join[
     <|"BranchialDegree" -> summary[gm["Degrees"]],
       "BranchialDistance" -> summary[gm["Distances"]],
       "BranchialComponents" -> gm["Components"]|>,
     If[MissingQ[gm["Dimension"]], <||>, <|"BranchialDimension" -> gm["Dimension"]|>],
     <|"StateOverlap" -> summary[ov["StateOverlap"], 0.01],
+      "StateCosineSimilarity" -> summary[ov["StateCosineSimilarity"], 0.01],
+      "StateMutualInformation" -> summary[ov["StateMutualInformation"], 0.01],
+      "InitialStateMutualInformation" -> summary[ov["InitialStateMutualInformation"], 0.01],
       "VertexSharpness" -> summary[ov["VertexSharpness"], 0.01],
-      "BranchEntropy" -> summary[ov["BranchEntropy"], 0.01]|>]];
+      "BranchEntropy" -> summary[ov["BranchEntropy"], 0.01],
+      "EdgeSharpness" -> summary[ov["EdgeSharpness"], 0.01],
+      "EdgeBranchEntropy" -> summary[ov["EdgeBranchEntropy"], 0.01],
+      "OverlapByBranchialDistance" -> (summary[#, 0.01] & /@
+        sgrOverlapByDistance[sets, gm["DistanceMatrix"]])|>]];
 
 (* `byClass`: each class of a step once ("StepStatisticsWeighting" -> "Classes"); the counts of
    raw states, classes and events stay those of the raw states. `branchial`: add the
@@ -161,7 +170,8 @@ oracleSteps[res_Association, byClass_ : False, branchial_ : False] := Module[
         "BallGrowthDimension" -> Association[Table[
           r -> summary[Select[balls, Length[#] >= r &][[All, r]], 0.01],
           {r, Max[0, Length /@ balls]}]]|>;
-      If[branchial, Join[rec, branchialKeys[sts, Lookup[pairsByStep, k, {}]]], rec]]],
+      If[branchial, Join[rec, branchialKeys[sts, Lookup[pairsByStep, k, {}],
+        Union[Flatten[#Edges[[All, 2 ;;]] & /@ Lookup[byStep, 0, {}]]]]], rec]]],
     byStep]];
 
 (* === comparison === *)

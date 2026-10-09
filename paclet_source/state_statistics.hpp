@@ -89,11 +89,13 @@ StateGeometry state_geometry(const std::vector<std::vector<uint32_t>>& edges);
 
 // One step's states and branchial pairs, for the per-step branchial metrics. `nodes` are the
 // step's states by effective id; `pairs` the branchial state pairs whose first event's output
-// state is at the step; `vertex_sets[i]`, for the overlap metrics, the vertices of nodes[i].
+// state is at the step; for the overlap metrics, `vertex_sets[i]` the engine's vertex ids of
+// nodes[i] and `edge_sets[i]` its edges, one number per distinct list of vertex ids in the run.
 struct BranchialStep {
     std::vector<int64_t> nodes;
     std::vector<std::pair<int64_t, int64_t>> pairs;
     std::vector<std::vector<uint32_t>> vertex_sets;
+    std::vector<std::vector<uint32_t>> edge_sets;
 };
 
 // Which per-step branchial metrics a request asks for ("StepStatisticsBranchial").
@@ -102,7 +104,9 @@ enum : uint32_t { kBranchialGraph = 1u, kBranchialOverlap = 2u };
 // The per-step keys of the branchial metrics for each step, from its BranchialStep: with
 // kBranchialGraph "BranchialDegree", "BranchialDistance", "BranchialComponents" and
 // "BranchialDimension" (absent when undefined); with kBranchialOverlap "StateOverlap",
-// "VertexSharpness" and "BranchEntropy".
+// "StateCosineSimilarity", "StateMutualInformation", "InitialStateMutualInformation",
+// "VertexSharpness", "BranchEntropy", "EdgeSharpness" and "EdgeBranchEntropy"; with both,
+// "OverlapByBranchialDistance". "InitialStateMutualInformation" reads step 0's vertex sets.
 std::map<uint32_t, wxf::WXFValueAssociation> branchial_step_metrics(
     const std::map<uint32_t, BranchialStep>& steps, uint32_t which);
 
