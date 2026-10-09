@@ -44,7 +44,12 @@ struct DeviceRhsEdge {
 };
 
 struct DeviceRule {
+    // lhs[] is in the rule's authored order, as the host's RewriteRule::lhs, so a match's
+    // matched_edges[p] is the edge bound to authored pattern edge p on both devices; the
+    // transition key reads the matched edges' ranks in that order. order[k] is the authored
+    // index of the pattern edge the join binds at depth k (make_device_rule).
     DevicePatternEdge lhs[kMaxPatternEdges];
+    uint8_t           order[kMaxPatternEdges] = {0};
     DeviceRhsEdge     rhs[kMaxPatternEdges];
     uint8_t           num_lhs_edges = 0;
     uint8_t           num_lhs_vars  = 0;

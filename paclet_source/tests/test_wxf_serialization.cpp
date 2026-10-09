@@ -3350,6 +3350,37 @@ TEST(GpuBinaryGate, SamplingAndCapsKeepTheSameTransitionsOnBothDevices) {
             }
         }
     }
+    // A rule whose join order differs from its authored order ({2,1} at position 2 is bound
+    // before {2} at position 1), on a state of duplicate edges, with an empty right-hand side.
+    // A transition's key reads the matched edges' ranks in authored order on both devices.
+    const StateList dup_init = {{{1}, {1, 1}, {1}, {1, 1}, {1, 1}, {1, 1}}};
+    const EdgeList dup_lhs = {{2, 1}, {2}, {2, 1}};
+    const EdgeList dup_rhs = {};
+    const Option dup_options[] = {
+        {"TransitionRate", 0.25, 0, false},
+        {"MaxSuccessorStatesPerParent", 0, 4, false},
+        {"MatchesPerStateRule", 0, 4, false},
+    };
+    for (const Option& o : dup_options) {
+        for (int64_t rs : {int64_t{7}, int64_t{1}, int64_t{718832434}}) {
+            for (const Mode& m : modes) {
+                const std::string at = std::string("authored order ") + o.key + " " +
+                    (o.integer != 0 ? std::to_string(o.integer) : std::to_string(o.real)) +
+                    " CanonicalizeStates " + m.states + " ExploreFromCanonicalStatesOnly " +
+                    m.ecso + " RandomSeed " + std::to_string(rs);
+                agree(build_input(dup_init, dup_lhs, dup_rhs, 1, [&](wxf::Writer& ww) {
+                    put_str_list_option(ww, "RequestedData",
+                                        {counts[0], counts[1], counts[2], counts[3]});
+                    sym(ww, "CanonicalizeStates", m.states);
+                    sym(ww, "ExploreFromCanonicalStatesOnly", m.ecso);
+                    key(ww, o.key);
+                    if (o.integer != 0) ww.write(o.integer);
+                    else ww.write(o.real);
+                    key(ww, "RandomSeed"); ww.write(rs);
+                }, 5), at);
+            }
+        }
+    }
     worker_stop(w);
 }
 

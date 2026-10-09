@@ -174,9 +174,9 @@ TEST(JoinCore, EdgeBindingIsInjective) {
     EXPECT_EQ(got, brute_force(edges, lhs));
 }
 
-// THE ORDER IS A SCHEDULE, NOT A SEMANTIC. The host indirects through match_order at match time
-// and the device physically reorders its LHS at build time; both must yield the same match set.
-// Every permutation of the binding order is checked to produce exactly the same matches.
+// THE ORDER IS A SCHEDULE, NOT A SEMANTIC. The host reads RewriteRule::match_order and the device
+// DeviceRule::order, and they may differ; both must yield the same match set. Every permutation
+// of the binding order is checked to produce exactly the same matches.
 TEST(JoinCore, EveryBindingOrderYieldsTheSameMatches) {
     std::vector<Edge> edges{{{0,1}}, {{1,2}}, {{2,3}}, {{3,0}}, {{0,2}}};
     std::vector<std::vector<uint8_t>> lhs{{0,1},{1,2},{2,3}};
