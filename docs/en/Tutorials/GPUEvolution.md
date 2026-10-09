@@ -52,11 +52,15 @@ The states graph after three steps with isomorphic states merged, from the CPU:
 statesCPU = HGEvolve[physics, physicsInit, 3, "StatesGraphStructure", "CanonicalizeStates" -> Full, ImageSize -> 400, AspectRatio -> 1/2]
 ```
 
+![The states graph after three steps with isomorphic states merged, from the CPU](../images/GPUEvolution/GPUEvolution-4.png)
+
 The same graph from the GPU. State ids are assigned separately in each run, so the two graphs are compared by their sizes and out-degrees:
 
 ```wl
 statesGPU = HGEvolve[physics, physicsInit, 3, "StatesGraphStructure", "CanonicalizeStates" -> Full, "TargetDevice" -> "GPU", ImageSize -> 400, AspectRatio -> 1/2]
 ```
+
+![The same graph from the GPU.](../images/GPUEvolution/GPUEvolution-5.png)
 
 ```wl
 {Sort[VertexOutDegree[statesCPU]] === Sort[VertexOutDegree[statesGPU]], VertexCount /@ {statesCPU, statesGPU}, EdgeCount /@ {statesCPU, statesGPU}}
@@ -99,6 +103,8 @@ Table[Prepend[device] @ Values @ HGEvolve[branching, {{1, 1}, {1, 1}}, 5, "Debug
 branching = {{{1, 2}, {2, 3}} -> {{1, 3}, {3, 4}, {1, 4}, {2, 4}}};
 HGEvolve[branching, {{1, 1}, {1, 1}}, 5, "StatesGraphStructure", "TransitionRate" -> 0.25, "RandomSeed" -> 7, "TargetDevice" -> "GPU", ImageSize -> 400, AspectRatio -> 1/2]
 ```
+
+![A rule that replaces two adjacent edges by four, from two loops, keeping each transition with probability 0.25](../images/GPUEvolution/GPUEvolution-10.png)
 
 The caps, `"MaxStatesPerStep"`, `"MaxSuccessorStatesPerParent"` and `"UniformRandom"` with `"MatchesPerStep"`, keep the same transitions as on the CPU.
 

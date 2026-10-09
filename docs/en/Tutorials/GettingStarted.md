@@ -44,6 +44,8 @@ A binary hyperedge is a directed edge, so [Graph]() can draw each side of the ru
 Map[Graph[DirectedEdge @@@ #, VertexLabels -> Automatic, ImageSize -> Small] &, {First[chain], Last[chain]}]
 ```
 
+![A binary hyperedge is a directed edge, so Graph can draw each side of the rule](../images/GettingStarted/GettingStarted-3.png)
+
 ## One step, then three
 
 <code>[HGEvolve]()[*rules*, *init*, *n*, *prop*]</code> evolves the hypergraph *init* under *rules* for *n* steps and gives the property *prop*. `"StatesGraph"` is the graph whose vertices are the states reached and whose edges are the events between them; each state is drawn as its hypergraph.
@@ -54,6 +56,8 @@ One step of the chain rule from one edge has one match, so the states graph has 
 HGEvolve[chain, oneEdge, 1, "StatesGraph", ImageSize -> 200]
 ```
 
+![One step of the chain rule from one edge has one match, so the states graph has the initial state and one successor](../images/GettingStarted/GettingStarted-4.png)
+
 ---
 
 The path of two edges has two matches, so the second step adds two states, each a path of three edges. Each of those has three matches, so the third step adds six:
@@ -61,6 +65,8 @@ The path of two edges has two matches, so the second step adds two states, each 
 ```wl
 HGEvolve[chain, oneEdge, 3, "StatesGraph", ImageSize -> 540]
 ```
+
+![The path of two edges has two matches, so the second step adds two states, each a path of three edges.](../images/GettingStarted/GettingStarted-5.png)
 
 All states at one step are paths of the same length. They are separate states because they were reached by different histories, that is, by splitting the edges in a different order.
 
@@ -74,6 +80,8 @@ Two steps of the chain rule; the [AspectRatio]() option sets the height of the g
 HGEvolve[chain, oneEdge, 2, "EvolutionGraph", ImageSize -> 420, AspectRatio -> 1]
 ```
 
+![Two steps of the chain rule; the AspectRatio option sets the height of the graph relative to its width](../images/GettingStarted/GettingStarted-6.png)
+
 ---
 
 With no *prop*, [HGEvolve]() gives the evolution graph with the causal and branchial edges, `"EvolutionCausalBranchialGraph"`. An orange causal edge runs from an event to a later event that consumed an edge it produced. A pink branchial edge joins two events applied to the same state that consumed a common edge. The chain rule has no branchial edges, since each of its events consumes one edge and no two matches share one:
@@ -81,6 +89,8 @@ With no *prop*, [HGEvolve]() gives the evolution graph with the causal and branc
 ```wl
 HGEvolve[chain, oneEdge, 2, ImageSize -> 420, AspectRatio -> 1]
 ```
+
+![With no prop, HGEvolve gives the evolution graph with the causal and branchial edges, "EvolutionCausalBranchialGraph".](../images/GettingStarted/GettingStarted-7.png)
 
 ## Choosing what comes back
 
@@ -91,6 +101,8 @@ Each takes the suffix `Structure` for the same graph with plain vertices, which 
 ```wl
 HGEvolve[chain, oneEdge, 3, "StatesGraphStructure", ImageSize -> 400]
 ```
+
+![Each takes the suffix Structure for the same graph with plain vertices, which draws faster](../images/GettingStarted/GettingStarted-8.png)
 
 ---
 
@@ -158,6 +170,8 @@ This rule splits a ternary hyperedge into two that share the new vertex; a terna
 ```wl
 HGEvolve[{{1, 2, 3}} -> {{1, 2, 4}, {2, 4, 3}}, {{1, 2, 3}}, 2, "StatesGraph", ImageSize -> 420, AspectRatio -> 1/2]
 ```
+
+![This rule splits a ternary hyperedge into two that share the new vertex; a ternary hyperedge is drawn as a filled triangle](../images/GettingStarted/GettingStarted-14.png)
 
 ---
 
@@ -239,6 +253,8 @@ The two initial edges match the rule in either order, so the initial state has t
 HGEvolve[triangle, twoEdges, 2, "StatesGraph", ImageSize -> 420]
 ```
 
+![The two initial edges match the rule in either order, so the initial state has two successors](../images/GettingStarted/GettingStarted-22.png)
+
 ---
 
 The two states at step 1 are the same triangle with the closing edge in opposite directions:
@@ -257,6 +273,8 @@ The two events of step 1 both consume both initial edges, so neither follows the
 HGEvolve[triangle, twoEdges, 2, "CausalGraph", ImageSize -> 420, AspectRatio -> 1]
 ```
 
+![The two events of step 1 both consume both initial edges, so neither follows the other, and each starts its own causal tree](../images/GettingStarted/GettingStarted-24.png)
+
 ---
 
 Two events are branchially related when they were applied to the same state and consumed a common edge, so no single history contains both. `"BranchialGraph"` joins the two states such a pair of events produced. By default it shows the pairs of the final step:
@@ -265,6 +283,8 @@ Two events are branchially related when they were applied to the same state and 
 HGEvolve[triangle, twoEdges, 3, "BranchialGraph", ImageSize -> 540, AspectRatio -> 1/4]
 ```
 
+![Two events are branchially related when they were applied to the same state and consumed a common edge, so no single history contains both. "BranchialGraph" joins the two states such a pair of events produced.](../images/GettingStarted/GettingStarted-25.png)
+
 ---
 
 `"BranchialStep" -> All` shows the pairs of every step, nine of them, against six at the final step:
@@ -272,6 +292,8 @@ HGEvolve[triangle, twoEdges, 3, "BranchialGraph", ImageSize -> 540, AspectRatio 
 ```wl
 HGEvolve[triangle, twoEdges, 3, "BranchialGraph", "BranchialStep" -> All, ImageSize -> 640, AspectRatio -> 1/4]
 ```
+
+!["BranchialStep" -> All shows the pairs of every step, nine of them, against six at the final step](../images/GettingStarted/GettingStarted-26.png)
 
 ---
 
@@ -296,6 +318,8 @@ HGEvolve[triangle, twoEdges, 3, "NumStates", "CanonicalizeStates" -> Full]
 ```wl
 HGEvolve[triangle, twoEdges, 3, "StatesGraph", "CanonicalizeStates" -> Full, ImageSize -> 450, AspectRatio -> 1/2]
 ```
+
+![Up to isomorphism, 7 of the 19 states are distinct](../images/GettingStarted/GettingStarted-29.png)
 
 ## A rule from the Wolfram Physics Project
 
@@ -325,6 +349,8 @@ The states graph at three steps:
 HGEvolve[physicsRule, twoEdges, 3, "StatesGraph", "CanonicalizeStates" -> Full, ImageSize -> 540, AspectRatio -> 1/2]
 ```
 
+![The states graph at three steps](../images/GettingStarted/GettingStarted-32.png)
+
 ---
 
 The states graph at four steps, as a `Structure` graph:
@@ -332,6 +358,8 @@ The states graph at four steps, as a `Structure` graph:
 ```wl
 HGEvolve[physicsRule, twoEdges, 4, "StatesGraphStructure", "CanonicalizeStates" -> Full, ImageSize -> 500, AspectRatio -> 1/2]
 ```
+
+![The states graph at four steps, as a Structure graph](../images/GettingStarted/GettingStarted-33.png)
 
 ## Generated initial conditions and the GPU
 

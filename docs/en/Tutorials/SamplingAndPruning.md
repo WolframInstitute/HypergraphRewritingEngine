@@ -72,6 +72,8 @@ The full states graph at three steps, 27 states:
 HGEvolve[rule, init, 3, "StatesGraphStructure", AspectRatio -> 1/2]
 ```
 
+![The full states graph at three steps, 27 states](../images/SamplingAndPruning/SamplingAndPruning-6.png)
+
 A run that sets no `"RandomSeed"` and is capped by arrival order or thinned by `"TransitionRate"` or `"ExplorationProbability"` can give a different result each time, and issues the message `HGEvolve::warn`. Every example below sets a seed.
 
 ## Caps
@@ -85,6 +87,8 @@ At most two successors per state, at three steps, gives a binary tree of 15 stat
 ```wl
 capped = HGEvolve[rule, init, 3, "StatesGraphStructure", "MaxSuccessorStatesPerParent" -> 2, "RandomSeed" -> 3, AspectRatio -> 1/2]
 ```
+
+![At most two successors per state, at three steps, gives a binary tree of 15 states](../images/SamplingAndPruning/SamplingAndPruning-7.png)
 
 Seven states have two successors and eight have none:
 
@@ -109,6 +113,8 @@ HGEvolve[rule, init, 4, "NumStates", "MaxSuccessorStatesPerParent" -> 2, "Random
 ```wl
 HGEvolve[rule, init, 3, "StatesGraphStructure", "MaxStatesPerStep" -> 3, "RandomSeed" -> 3, AspectRatio -> 1/2]
 ```
+
+!["MaxStatesPerStep" -> 3 keeps the three lowest-ranked transitions of each step, together with any that tie with the third, so the choice does not depend on the order the work is done in.](../images/SamplingAndPruning/SamplingAndPruning-10.png)
 
 At four steps:
 
@@ -150,11 +156,15 @@ Two transitions per state and rule, at three steps:
 HGEvolve[rule, init, 3, "StatesGraphStructure", "MatchesPerStateRule" -> 2, "RandomSeed" -> 3, AspectRatio -> 1/2]
 ```
 
+![Two transitions per state and rule, at three steps](../images/SamplingAndPruning/SamplingAndPruning-14.png)
+
 With one transition per state, the kept states form a path:
 
 ```wl
 HGEvolve[rule, init, 4, "StatesGraphStructure", "MatchesPerStateRule" -> 1, "RandomSeed" -> 3, AspectRatio -> 1/4]
 ```
+
+![With one transition per state, the kept states form a path](../images/SamplingAndPruning/SamplingAndPruning-15.png)
 
 ---
 
@@ -192,6 +202,8 @@ At rate 0.5 and four steps, 14 of the 117 states are kept:
 HGEvolve[rule, init, 4, "StatesGraphStructure", "TransitionRate" -> 0.5, "RandomSeed" -> 2, AspectRatio -> 1/2]
 ```
 
+![At rate 0.5 and four steps, 14 of the 117 states are kept](../images/SamplingAndPruning/SamplingAndPruning-19.png)
+
 The number of states at several rates, with one seed:
 
 ```wl
@@ -207,6 +219,8 @@ A state whose draws all fail keeps its transition with the lowest key, so the sa
 ```wl
 HGEvolve[rule, init, 4, "StatesGraphStructure", "TransitionRate" -> 0.125, "RandomSeed" -> 2, AspectRatio -> 1/2]
 ```
+
+![A state whose draws all fail keeps its transition with the lowest key, so the sample always reaches the requested depth.](../images/SamplingAndPruning/SamplingAndPruning-21.png)
 
 The deepest step reached at that rate, for six seeds:
 
@@ -233,6 +247,8 @@ The transitions of each rule in their own color, at two steps with isomorphic st
 ```wl
 HGEvolve[two, init, 2, "StatesGraph", "ColorByRule" -> True, "CanonicalizeStates" -> Full, ImageSize -> 540]
 ```
+
+![The transitions of each rule in their own color, at two steps with isomorphic states merged](../images/SamplingAndPruning/SamplingAndPruning-24.png)
 
 The number of states at three steps with both rules, with the first only, and with the second only:
 
@@ -277,6 +293,8 @@ At probability 0.5 and four steps, 24 of the 117 states:
 ```wl
 HGEvolve[rule, init, 4, "StatesGraphStructure", "ExplorationProbability" -> 0.5, "RandomSeed" -> 14, AspectRatio -> 1/2]
 ```
+
+![At probability 0.5 and four steps, 24 of the 117 states](../images/SamplingAndPruning/SamplingAndPruning-29.png)
 
 The number of states for six seeds. A run with 3 states expanded neither state of step 1:
 
@@ -364,5 +382,7 @@ The number of states at four steps under each setting, with one seed:
 ```wl
 BarChart[Reverse @ Table[HGEvolve[rule, init, 4, "NumStates", "RandomSeed" -> 1, Sequence @@ control], {control, controls}], BarOrigin -> Left, ChartLabels -> Reverse @ Replace[controls, {{} -> "full system", setting_ :> Row[setting, ", "]}, {1}], LabelingFunction -> After, ImageSize -> 500]
 ```
+
+![The number of states at four steps under each setting, with one seed](../images/SamplingAndPruning/SamplingAndPruning-39.png)
 
 `"MaxSuccessorStatesPerParent" -> 2` and `"MatchesPerStateRule" -> 2` both keep 31 states. The first keeps the first two successors of each state the threads produce; the second keeps the two transitions selected by the seed, and keeps the same ones on every run. The `"TransitionRate"` and `"ExplorationProbability"` counts are for this seed; other seeds give other counts.

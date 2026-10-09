@@ -175,11 +175,15 @@ Two steps of the rule from a single edge, as the evolution graph with its causal
 HGEvolve[chain, {{1, 2}}, 2, ImageSize -> 600, AspectRatio -> 1/2]
 ```
 
+![Two steps of the rule from a single edge, as the evolution graph with its causal edges.](../../images/HGEvolve/HGEvolve-2.png)
+
 The states graph after three steps, each state drawn as its hypergraph:
 
 ```wl
 HGEvolve[chain, {{1, 2}}, 3, "StatesGraph", ImageSize -> 540, AspectRatio -> 1/2]
 ```
+
+![The states graph after three steps, each state drawn as its hypergraph](../../images/HGEvolve/HGEvolve-3.png)
 
 The number of states after three steps:
 
@@ -221,11 +225,15 @@ Its causal graph after three steps:
 HGEvolve[triangle, {{1, 2}, {1, 3}}, 3, "CausalGraph", ImageSize -> 640, AspectRatio -> 1/2]
 ```
 
+![Its causal graph after three steps](../../images/HGEvolve/HGEvolve-8.png)
+
 Its branchial graph, joining the states of the final step produced by events that consumed a common edge:
 
 ```wl
 HGEvolve[triangle, {{1, 2}, {1, 3}}, 3, "BranchialGraph", ImageSize -> 540, AspectRatio -> 1/2]
 ```
+
+![Its branchial graph, joining the states of the final step produced by events that consumed a common edge](../../images/HGEvolve/HGEvolve-9.png)
 
 ---
 
@@ -243,6 +251,8 @@ Its states after two steps from two loops at one vertex:
 HGEvolve[loops, {{1, 1}, {1, 1}}, 2, "StatesGraphStructure", AspectRatio -> 1/2]
 ```
 
+![Its states after two steps from two loops at one vertex](../../images/HGEvolve/HGEvolve-11.png)
+
 ---
 
 With a list of rules, every rule is applied at every step. These two extend an edge by one or by two new edges:
@@ -258,6 +268,8 @@ One step from two loops, with each transition colored by the rule that fired it:
 ```wl
 HGEvolve[extend, {{1, 1}, {1, 1}}, 1, "StatesGraph", "ColorByRule" -> True, ImageSize -> 420]
 ```
+
+![One step from two loops, with each transition colored by the rule that fired it](../../images/HGEvolve/HGEvolve-13.png)
 
 ## Scope
 
@@ -306,6 +318,8 @@ Hyperedges may have any number of vertices. A rule that splits a ternary hypered
 ```wl
 HGEvolve[{{1, 2, 3}} -> {{1, 2, 4}, {2, 4, 3}}, {{1, 1, 1}}, 2, "StatesGraph", ImageSize -> 420, AspectRatio -> 1/2]
 ```
+
+![Hyperedges may have any number of vertices.](../../images/HGEvolve/HGEvolve-18.png)
 
 ---
 
@@ -372,6 +386,8 @@ One step of the triangle rule on it:
 ```wl
 HGEvolve[triangle, "Grid", 1, "StatesGraph", "GridWidth" -> 2, "GridHeight" -> 2, "RandomSeed" -> 1, ImageSize -> 420, AspectRatio -> 1/2]
 ```
+
+![One step of the triangle rule on it](../../images/HGEvolve/HGEvolve-25.png)
 
 ---
 
@@ -499,11 +515,15 @@ triangle = {{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}};
 HGEvolve[triangle, {{1, 2}, {1, 3}}, 2, "StatesGraph", ImageSize -> 420]
 ```
 
+!["StatesGraph" gives the graph of states and the events between them](../../images/HGEvolve/HGEvolve-39.png)
+
 `"CausalGraph"` gives the graph of events with their causal edges:
 
 ```wl
 HGEvolve[triangle, {{1, 2}, {1, 3}}, 2, "CausalGraph", ImageSize -> 600, AspectRatio -> 1/2]
 ```
+
+!["CausalGraph" gives the graph of events with their causal edges](../../images/HGEvolve/HGEvolve-40.png)
 
 `"BranchialGraph"` gives the graph of the states at the final step with their branchial edges:
 
@@ -511,11 +531,15 @@ HGEvolve[triangle, {{1, 2}, {1, 3}}, 2, "CausalGraph", ImageSize -> 600, AspectR
 HGEvolve[triangle, {{1, 2}, {1, 3}}, 2, "BranchialGraph", ImageSize -> 420, AspectRatio -> 1/2]
 ```
 
+!["BranchialGraph" gives the graph of the states at the final step with their branchial edges](../../images/HGEvolve/HGEvolve-41.png)
+
 `"EvolutionGraph"` gives the graph of states and events, each event joined to its input and output states:
 
 ```wl
 HGEvolve[triangle, {{1, 2}, {1, 3}}, 2, "EvolutionGraph", ImageSize -> 600, AspectRatio -> 1/2]
 ```
+
+!["EvolutionGraph" gives the graph of states and events, each event joined to its input and output states](../../images/HGEvolve/HGEvolve-42.png)
 
 `"EvolutionCausalGraph"` adds the causal edges:
 
@@ -523,17 +547,23 @@ HGEvolve[triangle, {{1, 2}, {1, 3}}, 2, "EvolutionGraph", ImageSize -> 600, Aspe
 HGEvolve[triangle, {{1, 2}, {1, 3}}, 2, "EvolutionCausalGraph", ImageSize -> 600, AspectRatio -> 1/2]
 ```
 
+!["EvolutionCausalGraph" adds the causal edges](../../images/HGEvolve/HGEvolve-43.png)
+
 `"EvolutionBranchialGraph"` adds the branchial edges:
 
 ```wl
 HGEvolve[triangle, {{1, 2}, {1, 3}}, 2, "EvolutionBranchialGraph", ImageSize -> 600, AspectRatio -> 1/2]
 ```
 
+!["EvolutionBranchialGraph" adds the branchial edges](../../images/HGEvolve/HGEvolve-44.png)
+
 `"EvolutionCausalBranchialGraph"`, the default, adds both:
 
 ```wl
 HGEvolve[triangle, {{1, 2}, {1, 3}}, 2, "EvolutionCausalBranchialGraph", ImageSize -> 600, AspectRatio -> 1/2]
 ```
+
+!["EvolutionCausalBranchialGraph", the default, adds both](../../images/HGEvolve/HGEvolve-45.png)
 
 ---
 
@@ -543,6 +573,8 @@ The suffix `Structure` gives the same graph with plain vertices:
 chain = {{1, 2}} -> {{1, 3}, {3, 2}};
 HGEvolve[chain, {{1, 2}}, 3, "StatesGraphStructure", AspectRatio -> 1/2]
 ```
+
+![The suffix Structure gives the same graph with plain vertices](../../images/HGEvolve/HGEvolve-46.png)
 
 Its vertices are the state ids and its edges carry the event id:
 
@@ -743,11 +775,15 @@ chain = {{1, 2}} -> {{1, 3}, {3, 2}};
 HGEvolve[chain, {{1, 2}}, 2, "StatesGraphStructure", "CanonicalizeStates" -> None, AspectRatio -> 1/2]
 ```
 
+![The setting is applied while the evolution runs, so it also determines which states are expanded.](../../images/HGEvolve/HGEvolve-69.png)
+
 The same two steps under `Full`, where the two paths of three edges are one state:
 
 ```wl
 HGEvolve[chain, {{1, 2}}, 2, "StatesGraphStructure", "CanonicalizeStates" -> Full, AspectRatio -> 1/2]
 ```
+
+![The same two steps under Full, where the two paths of three edges are one state](../../images/HGEvolve/HGEvolve-70.png)
 
 ---
 
@@ -834,6 +870,8 @@ The causal graph has one vertex per event under the identity in use:
 chain = {{1, 2}} -> {{1, 3}, {3, 2}};
 HGEvolve[chain, {{1, 2}}, 3, "CausalGraphStructure", "CanonicalizeStates" -> Full, "CanonicalizeEvents" -> Automatic, AspectRatio -> 1/2]
 ```
+
+![The causal graph has one vertex per event under the identity in use](../../images/HGEvolve/HGEvolve-80.png)
 
 ### "CausalTransitiveReduction"
 
@@ -990,6 +1028,8 @@ Sort @ Tally @ Lookup["Step"] @ Values @ HGEvolve[loops, {{1, 1}, {1, 1}}, 6, "S
 HGEvolve[loops, {{1, 1}, {1, 1}}, 6, "StatesGraphStructure", "TransitionRate" -> 0.01, "RandomSeed" -> 7, AspectRatio -> 1/2]
 ```
 
+![A state whose every draw failed keeps its lowest-keyed transition, so the sample reaches the requested depth at any rate.](../../images/HGEvolve/HGEvolve-97.png)
+
 ### "RuleWeights"
 
 Per-rule multipliers on `"TransitionRate"`, in rule order; a rule's transitions are kept with the product of the two. Weights `{1, 0}` drop the second rule and keep every transition of the first:
@@ -1042,6 +1082,8 @@ HGEvolve[triangle, {{1, 2}, {1, 3}}, 4, "Debug", "CanonicalizeStates" -> Full, "
 ```wl
 HGEvolve[triangle, {{1, 2}, {1, 3}}, 4, "StatesGraphStructure", "CanonicalizeStates" -> Full, "ExploreFromCanonicalStatesOnly" -> True, AspectRatio -> 1/2]
 ```
+
+![The same counts with one state per class expanded.](../../images/HGEvolve/HGEvolve-103.png)
 
 ---
 
@@ -1147,6 +1189,8 @@ Table[EdgeCount[HGEvolve[triangle, {{1, 2}, {1, 3}}, 3, "BranchialGraphStructure
 HGEvolve[triangle, {{1, 2}, {1, 3}}, 3, "BranchialGraphStructure", "BranchialStep" -> All]
 ```
 
+![All shows every step](../../images/HGEvolve/HGEvolve-114.png)
+
 ### "EdgeDeduplication"
 
 By default a causal graph has one edge per pair of events. With `False`, it has one edge for each hyperedge the consumer took from the producer, tagged with its `"EdgeIndex"`; the counts and `"CausalEdges"` are unchanged. Three steps of the chain rule under `Full` event identity have three causal pairs:
@@ -1249,6 +1293,8 @@ The genesis event is the first vertex of the causal graph:
 HGEvolve[chain, {{1, 2}}, 2, "CausalGraphStructure", "ShowGenesisEvents" -> True, AspectRatio -> 1/2]
 ```
 
+![The genesis event is the first vertex of the causal graph](../../images/HGEvolve/HGEvolve-125.png)
+
 ### "ColorByRule"
 
 With `True`, a styled graph colors each transition by the rule that fired it and adds a legend of the rules:
@@ -1257,6 +1303,8 @@ With `True`, a styled graph colors each transition by the rule that fired it and
 extend = {{{1, 2}} -> {{1, 2}, {2, 3}}, {{1, 2}} -> {{1, 2}, {2, 3}, {3, 4}}};
 HGEvolve[extend, {{1, 1}, {1, 1}}, 1, "StatesGraph", "ColorByRule" -> True, ImageSize -> 420]
 ```
+
+![With True, a styled graph colors each transition by the rule that fired it and adds a legend of the rules](../../images/HGEvolve/HGEvolve-126.png)
 
 The result is a [Legended]() graph:
 
@@ -1282,6 +1330,8 @@ EdgeCount[HGEvolve[chain, {{1, 2}}, 5, "StatesGraph", "CanonicalizeStates" -> Fu
 ```wl
 HGEvolve[chain, {{1, 2}}, 5, "StatesGraph", "CanonicalizeStates" -> Full, "MultiedgeStyle" -> "Merged", ImageSize -> 400, AspectRatio -> 1/2]
 ```
+
+!["Merged" draws the events between two states as one edge, whose tooltip lists them](../../images/HGEvolve/HGEvolve-129.png)
 
 ```wl
 EdgeCount[HGEvolve[chain, {{1, 2}}, 5, "StatesGraph", "CanonicalizeStates" -> Full, "MultiedgeStyle" -> "Merged"]]
@@ -1320,6 +1370,8 @@ chain = {{1, 2}} -> {{1, 3}, {3, 2}};
 HGEvolve[chain, {{1, 2}}, 3, "StatesGraphStructure", AspectRatio -> 1/3, ImageSize -> 300]
 ```
 
+![Every option of Graph goes to the graph a graph property returns, and a value given in the call replaces the default](../../images/HGEvolve/HGEvolve-133.png)
+
 ```wl
 Options[HGEvolve[chain, {{1, 2}}, 3, "StatesGraphStructure", AspectRatio -> 1/3], AspectRatio]
 ```
@@ -1332,6 +1384,8 @@ Options[HGEvolve[chain, {{1, 2}}, 3, "StatesGraphStructure", AspectRatio -> 1/3]
 triangle = {{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}};
 HGEvolve[triangle, {{1, 2}, {1, 3}}, 2, "StatesGraphStructure", VertexLabels -> Automatic, AspectRatio -> 1/2]
 ```
+
+![VertexLabels shows the state ids of a Structure graph](../../images/HGEvolve/HGEvolve-135.png)
 
 ### "GridWidth"
 
@@ -1486,6 +1540,8 @@ HGEvolve[triangle, <|"Type" -> "Sprinkling", "Density" -> 12, "Seed" -> 1|>, 1, 
 HGEvolve[triangle, <|"Type" -> "Sprinkling", "Density" -> 12, "Seed" -> 1|>, 1, "StatesGraphStructure", ImageSize -> 450, AspectRatio -> 1/2]
 ```
 
+![One step of the triangle rule closes a triangle over each pair of links with the same first vertex, and reaches 43 states](../../images/HGEvolve/HGEvolve-150.png)
+
 Two steps reach 239 states up to isomorphism:
 
 ```wl
@@ -1638,6 +1694,8 @@ A styled graph draws every state, so a styled picture of a large evolution is sl
 ```wl
 HGEvolve[{{1, 2}, {1, 3}} -> {{1, 2}, {1, 4}, {2, 4}, {3, 4}}, {{1, 2}, {1, 3}}, 4, "StatesGraphStructure", "CanonicalizeStates" -> Full, ImageSize -> 450, AspectRatio -> 1/2]
 ```
+
+![A styled graph draws every state, so a styled picture of a large evolution is slow to render and hard to read.](../../images/HGEvolve/HGEvolve-166.png)
 
 ---
 

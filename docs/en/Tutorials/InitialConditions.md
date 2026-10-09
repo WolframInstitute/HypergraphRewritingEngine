@@ -28,6 +28,8 @@ An explicit initial state is a list of hyperedges. One step from a path of two e
 HGEvolve[rule, {{1, 2}, {2, 3}}, 1, "StatesGraph", ImageSize -> 300, AspectRatio -> 1/2]
 ```
 
+![An explicit initial state is a list of hyperedges.](../images/InitialConditions/InitialConditions-2.png)
+
 The engine numbers vertices from 0 in order of first appearance, and writes each edge as its id followed by its vertices:
 
 ```wl
@@ -54,6 +56,8 @@ initialStateGraph[globalEdges_List, opts___] := Graph[DirectedEdge @@@ Rest /@ g
 initialStateGraph[HGEvolve[rule, {{1, 2}, {2, 3}}, 0, "GlobalEdges"], ImageSize -> 250]
 ```
 
+![The generated families below are drawn from their "GlobalEdges" with this function](../images/InitialConditions/InitialConditions-6.png)
+
 ## A graph as the initial state
 
 The edges of a [Graph]() become the hyperedges, in the order [EdgeList]() gives them:
@@ -79,6 +83,8 @@ A list of states gives one initial state for each. The multiway system is the un
 ```wl
 HGEvolve[rule, {{{1, 2}}, {{1, 2}, {2, 3}}}, 1, "StatesGraph", ImageSize -> 420, AspectRatio -> 1/2]
 ```
+
+![A list of states gives one initial state for each.](../images/InitialConditions/InitialConditions-9.png)
 
 ```wl
 Dataset[HGEvolve[rule, {{{1, 2}}, {{1, 2}, {2, 3}}}, 0, "States"]]
@@ -120,6 +126,8 @@ HGEvolve[rule, "Grid", 0, "GlobalEdges", "GridWidth" -> 4, "GridHeight" -> 4, "R
 initialStateGraph[HGEvolve[rule, "Grid", 0, "GlobalEdges", "GridWidth" -> 4, "GridHeight" -> 4, "RandomSeed" -> 1], GraphLayout -> "SpringElectricalEmbedding"]
 ```
 
+!["Grid" is a rectangular lattice of "GridWidth" by "GridHeight" vertices, 10 by 10 by default, with each edge in a random direction.](../images/InitialConditions/InitialConditions-14.png)
+
 The default 10 by 10 grid has 180 edges:
 
 ```wl
@@ -143,6 +151,8 @@ HGEvolve[rule, "Grid", 2, "NumStates", "GridWidth" -> 4, "GridHeight" -> 4, "Ran
 ```wl
 initialStateGraph[HGEvolve[rule, "Grid", 0, "GlobalEdges", "GridWidth" -> 6, "GridHeight" -> 6, "GridHoles" -> {{1, 1, 0.8}, {4, 4, 0.8}}, "RandomSeed" -> 1], GraphLayout -> "SpringElectricalEmbedding"]
 ```
+
+!["GridHoles" cuts circular holes, each {x, y, radius}, where the vertex in column i and row j is at (i - 1, j - 1).](../images/InitialConditions/InitialConditions-17.png)
 
 The holes remove 8 of the 60 edges:
 
@@ -184,6 +194,8 @@ Length[HGEvolve[rule, "Torus", 0, "GlobalEdges", "GridWidth" -> 4, "RandomSeed" 
 initialStateGraph[HGEvolve[rule, "Torus", 0, "GlobalEdges", "GridWidth" -> 4, "RandomSeed" -> 1]]
 ```
 
+![A torus of resolution 4 has 32 edges](../images/InitialConditions/InitialConditions-21.png)
+
 The same seed gives the same torus, and another seed reverses some of its edges:
 
 ```wl
@@ -200,11 +212,15 @@ A cylinder of 6 columns and 3 rows:
 initialStateGraph[HGEvolve[rule, <|"Type" -> "Cylinder", "Resolution" -> 6, "Height" -> 3, "Seed" -> 1|>, 0, "GlobalEdges"]]
 ```
 
+![A cylinder of 6 columns and 3 rows](../images/InitialConditions/InitialConditions-23.png)
+
 A sphere of resolution 4:
 
 ```wl
 initialStateGraph[HGEvolve[rule, <|"Type" -> "Sphere", "Resolution" -> 4, "Seed" -> 1|>, 0, "GlobalEdges"]]
 ```
+
+![A sphere of resolution 4](../images/InitialConditions/InitialConditions-24.png)
 
 A Klein bottle of 5 columns and 3 rows:
 
@@ -212,11 +228,15 @@ A Klein bottle of 5 columns and 3 rows:
 initialStateGraph[HGEvolve[rule, <|"Type" -> "Klein", "Resolution" -> 5, "Height" -> 3, "Seed" -> 1|>, 0, "GlobalEdges"]]
 ```
 
+![A Klein bottle of 5 columns and 3 rows](../images/InitialConditions/InitialConditions-25.png)
+
 A Möbius strip of 6 columns and 3 rows:
 
 ```wl
 initialStateGraph[HGEvolve[rule, <|"Type" -> "Mobius", "Resolution" -> 6, "Width" -> 3, "Seed" -> 1|>, 0, "GlobalEdges"], GraphLayout -> "SpringElectricalEmbedding"]
 ```
+
+![A Möbius strip of 6 columns and 3 rows](../images/InitialConditions/InitialConditions-26.png)
 
 ---
 
@@ -239,6 +259,8 @@ A sprinkling of 24 points, with time running down the page:
 ```wl
 initialStateGraph[HGEvolve[rule, "Sprinkling", 0, "GlobalEdges", "SprinklingDensity" -> 24, "RandomSeed" -> 1], GraphLayout -> "LayeredDigraphEmbedding", ImageSize -> 420]
 ```
+
+![A sprinkling of 24 points, with time running down the page](../images/InitialConditions/InitialConditions-28.png)
 
 `"Sprinkling"` and `"Minkowski"` give the same result:
 
@@ -288,6 +310,8 @@ At most one link from each point gives a forest:
 initialStateGraph[HGEvolve[rule, "Sprinkling", 0, "GlobalEdges", "SprinklingDensity" -> 24, "SprinklingMaxEdgesPerVertex" -> 1, "RandomSeed" -> 1], GraphLayout -> "LayeredDigraphEmbedding"]
 ```
 
+![At most one link from each point gives a forest](../images/InitialConditions/InitialConditions-34.png)
+
 ---
 
 The association keys are the option names without `Sprinkling`: `"Density"`, `"TimeExtent"`, `"SpatialExtent"`, `"SpatialDim"`, `"LightconeAngle"`, `"AlexandrovCutoff"`, `"TransitivityReduction"`, `"MaxEdgesPerVertex"`, and `"Seed"`:
@@ -323,6 +347,8 @@ A smaller box and a threshold of 4 join the points into one piece:
 ```wl
 initialStateGraph[HGEvolve[rule, "BrillLindquist", 0, "GlobalEdges", "SprinklingDensity" -> 30, "BrillLindquistBoxX" -> {-8., 8.}, "BrillLindquistBoxY" -> {-8., 8.}, "EdgeThreshold" -> 4., "RandomSeed" -> 1]]
 ```
+
+![A smaller box and a threshold of 4 join the points into one piece](../images/InitialConditions/InitialConditions-38.png)
 
 A point with no edge is not in the hypergraph, so 29 of the 30 points appear:
 
@@ -386,6 +412,8 @@ Thirty points requested with a minimum distance of 2:
 initialStateGraph[HGEvolve[rule, "Poisson", 0, "GlobalEdges", "SprinklingDensity" -> 30, "PoissonMinDistance" -> 2., "RandomSeed" -> 1]]
 ```
 
+![Thirty points requested with a minimum distance of 2](../images/InitialConditions/InitialConditions-45.png)
+
 21 points are kept:
 
 ```wl
@@ -427,6 +455,8 @@ Twenty points:
 ```wl
 initialStateGraph[HGEvolve[rule, "Uniform", 0, "GlobalEdges", "SprinklingDensity" -> 20, "RandomSeed" -> 1]]
 ```
+
+![Twenty points](../images/InitialConditions/InitialConditions-50.png)
 
 The number of edges at thresholds 2, 3 and 4:
 

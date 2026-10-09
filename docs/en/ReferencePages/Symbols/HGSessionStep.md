@@ -96,6 +96,8 @@ s = HGSessionOpen[{{{1, 2}} -> {{1, 3}, {3, 2}}}, {{1, 2}}, "NumStates", ImageSi
 HGSessionStep[s, 3, "StatesGraphStructure"]
 ```
 
+![A graph, which takes the Graph options the session was opened with](../../images/HGSessionStep/HGSessionStep-7.png)
+
 ```wl
 HGSessionClose[s]
 ```

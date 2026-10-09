@@ -36,6 +36,8 @@ Three steps with the default settings. Each vertex is a state reached by one his
 HGEvolve[rule, init, 3, "StatesGraphStructure"]
 ```
 
+![Three steps with the default settings.](../images/AdvancedMultiwayEvolution/AdvancedMultiwayEvolution-3.png)
+
 ## When two states are one state
 
 `"CanonicalizeStates"` is applied while the evolution runs. Under `None` every history ends in its own state:
@@ -170,11 +172,15 @@ Under `Automatic` two pairs of states are merged, so the tree's 19 vertices beco
 HGEvolve[rule, init, 3, "StatesGraphStructure", "CanonicalizeStates" -> Automatic, AspectRatio -> 1/3]
 ```
 
+![Under Automatic two pairs of states are merged, so the tree's 19 vertices become 17, two of them with two parents](../images/AdvancedMultiwayEvolution/AdvancedMultiwayEvolution-18.png)
+
 Under `Full` there are 7 states, and parallel edges are separate applications between the same two classes:
 
 ```wl
 HGEvolve[rule, init, 3, "StatesGraphStructure", "CanonicalizeStates" -> Full, AspectRatio -> 1/2]
 ```
+
+![Under Full there are 7 states, and parallel edges are separate applications between the same two classes](../images/AdvancedMultiwayEvolution/AdvancedMultiwayEvolution-19.png)
 
 ## When two applications are one event
 
@@ -229,11 +235,15 @@ The evolution graph shows states in blue and events in yellow. With events disti
 HGEvolve[rule, init, 2, "EvolutionGraphStructure", "CanonicalizeStates" -> Full, AspectRatio -> 1/2]
 ```
 
+![The evolution graph shows states in blue and events in yellow.](../images/AdvancedMultiwayEvolution/AdvancedMultiwayEvolution-24.png)
+
 With `"CanonicalizeEvents" -> Full`, the applications between the same two classes are one event vertex, drawn with one edge for each application:
 
 ```wl
 HGEvolve[rule, init, 2, "EvolutionGraphStructure", "CanonicalizeStates" -> Full, "CanonicalizeEvents" -> Full, AspectRatio -> 1/2]
 ```
+
+![With "CanonicalizeEvents" -> Full, the applications between the same two classes are one event vertex, drawn with one edge for each application](../images/AdvancedMultiwayEvolution/AdvancedMultiwayEvolution-25.png)
 
 ## The canonical hash across runs
 
@@ -377,11 +387,15 @@ Reduced, the causal graph is two trees, one from each event of step 1:
 HGEvolve[rule, init, 3, "CausalGraphStructure", AspectRatio -> 1/2]
 ```
 
+![Reduced, the causal graph is two trees, one from each event of step 1](../images/AdvancedMultiwayEvolution/AdvancedMultiwayEvolution-41.png)
+
 Unreduced, it also has the four pairs from events to the events two steps later:
 
 ```wl
 HGEvolve[rule, init, 3, "CausalGraphStructure", "CausalTransitiveReduction" -> False, AspectRatio -> 1/2]
 ```
+
+![Unreduced, it also has the four pairs from events to the events two steps later](../images/AdvancedMultiwayEvolution/AdvancedMultiwayEvolution-42.png)
 
 ---
 
@@ -419,11 +433,15 @@ The four counts at two steps with and without the genesis event, which adds one 
 BarChart[Transpose[Values /@ Table[HGEvolve[rule, init, 2, "Debug", "ShowGenesisEvents" -> shown], {shown, {True, False}}]], ChartLabels -> {{"NumStates", "NumEvents", "NumCausalEdges", "NumBranchialEdges"}, None}, ChartLegends -> {"genesis event shown", "default"}, LabelingFunction -> Above, ImageSize -> 480]
 ```
 
+![The four counts at two steps with and without the genesis event, which adds one event and two causal pairs](../images/AdvancedMultiwayEvolution/AdvancedMultiwayEvolution-46.png)
+
 With the genesis event, the causal graph is one tree:
 
 ```wl
 HGEvolve[rule, init, 2, "CausalGraphStructure", "ShowGenesisEvents" -> True, AspectRatio -> 1/2]
 ```
+
+![With the genesis event, the causal graph is one tree](../images/AdvancedMultiwayEvolution/AdvancedMultiwayEvolution-47.png)
 
 ## The branchial relation
 
@@ -450,6 +468,8 @@ The final step of three, with six pairs among twelve states:
 ```wl
 HGEvolve[rule, init, 3, "BranchialGraphStructure", AspectRatio -> 1/3]
 ```
+
+![The final step of three, with six pairs among twelve states](../images/AdvancedMultiwayEvolution/AdvancedMultiwayEvolution-50.png)
 
 The edge and vertex counts for `Automatic`, `All`, `-1`, `1`, `2` and `3`:
 
@@ -478,6 +498,8 @@ The four counts with every state expanded, kept as `capture`, and with each clas
 ```wl
 BarChart[Transpose[Values /@ {capture = HGEvolve[wolframRule, init, 4, "Debug", "CanonicalizeStates" -> Full], quotient = HGEvolve[wolframRule, init, 4, "Debug", "CanonicalizeStates" -> Full, "ExploreFromCanonicalStatesOnly" -> True]}], ChartLabels -> {{"NumStates", "NumEvents", "NumCausalEdges", "NumBranchialEdges"}, None}, ChartLegends -> {"every state expanded", "each class expanded once"}, LabelingFunction -> Above, ImageSize -> 480]
 ```
+
+![The four counts with every state expanded, kept as capture, and with each class expanded once, kept as quotient](../images/AdvancedMultiwayEvolution/AdvancedMultiwayEvolution-53.png)
 
 ```wl
 capture === quotient
@@ -535,6 +557,8 @@ Under `Full` the states graph has three copies of every transition, 18 edges amo
 HGEvolve[rule, roots, 2, "StatesGraphStructure", "CanonicalizeStates" -> Full, AspectRatio -> 1/2]
 ```
 
+![Under Full the states graph has three copies of every transition, 18 edges among 4 states, with or without quotient exploration](../images/AdvancedMultiwayEvolution/AdvancedMultiwayEvolution-60.png)
+
 ```wl
 HGEvolve[rule, roots, 2, "Debug", "CanonicalizeStates" -> Full, "ExploreFromCanonicalStatesOnly" -> True]
 ```
@@ -572,6 +596,8 @@ KeySort @ Counts @ Lookup["RuleIndex"] @ Values @ HGEvolve[rules, {{1, 1}, {1, 1
 ```wl
 HGEvolve[rules, {{1, 1}, {1, 1}}, 2, "StatesGraph", "CanonicalizeStates" -> Full, "ColorByRule" -> True, ImageSize -> 540]
 ```
+
+!["ColorByRule" -> True colors each transition by its rule and adds a legend.](../images/AdvancedMultiwayEvolution/AdvancedMultiwayEvolution-65.png)
 
 `"RuleWeights"` thins the transitions of each rule separately; see [Sampling and Pruning the Multiway System](paclet:WolframInstitute/HypergraphRewriteEngine/tutorial/SamplingAndPruning).
 

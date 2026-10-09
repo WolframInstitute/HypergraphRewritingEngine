@@ -86,6 +86,8 @@ HGSessionStep[s, 3];
 HGSessionQuery[s, "StatesGraphStructure"]
 ```
 
+![A graph, from a session opened for a count; it takes the session's ImageSize](../../images/HGSessionQuery/HGSessionQuery-6.png)
+
 The state and event records:
 
 ```wl
