@@ -22,19 +22,31 @@
 namespace HG_NAMESPACE {
 namespace gpu {
 
+// The destructors below free their raw device buffers with this, and so do the constructors when
+// their bodies throw: the destructor does not run for an object whose constructor threw, so a
+// failed cudaMalloc would otherwise keep every buffer allocated before it for the life of the
+// process.
+#define HG_FREE_DEVICE(p) if (p) { cudaFree(p); p = nullptr; }
+
 // =============================================================================
 // DeviceArena
 // =============================================================================
 
 DeviceArena::DeviceArena(uint64_t capacity_words) : capacity_(capacity_words) {
-    HG_CUDA_CHECK(cudaMalloc(&base_, capacity_ * sizeof(uint32_t)), "arena alloc");
-    HG_CUDA_CHECK(cudaMalloc(&cursor_, sizeof(uint64_t)), "arena cursor alloc");
-    reset();
+    try {
+        HG_CUDA_CHECK(cudaMalloc(&base_, capacity_ * sizeof(uint32_t)), "arena alloc");
+        HG_CUDA_CHECK(cudaMalloc(&cursor_, sizeof(uint64_t)), "arena cursor alloc");
+        reset();
+    } catch (...) {
+        HG_FREE_DEVICE(base_)
+        HG_FREE_DEVICE(cursor_)
+        throw;
+    }
 }
 
 DeviceArena::~DeviceArena() {
-    if (base_)   cudaFree(base_);
-    if (cursor_) cudaFree(cursor_);
+    HG_FREE_DEVICE(base_)
+    HG_FREE_DEVICE(cursor_)
 }
 
 void DeviceArena::reset(ClearBatch* batch) {
@@ -111,6 +123,17 @@ void ClearBatch::flush() {
 // EngineState
 // =============================================================================
 
+// Every raw device buffer EngineState holds outside its RAII members, freed by the destructor
+// and by the constructor when its body throws.
+#define HG_ENGINE_STATE_DEVICE_BUFFERS(X)                                                      \
+    X(state_edge_slices_) X(state_edge_ids_) X(rule_weights_dev_) X(states_per_step_)          \
+    X(launch_scratch_.rules) X(launch_scratch_.states) X(launch_scratch_.cursor)               \
+    X(launch_scratch_.phase_cycles) X(state_canonical_hash_) X(state_exact_hash_)              \
+    X(state_edge_rank_) X(tr_scratch_) X(tr_scratch_busy_) X(survivor_scratch_)                \
+    X(state_edge_orbit_) X(state_num_orbits_) X(state_invariant_at_) X(invariant_pool_)        \
+    X(invariant_pool_used_) X(keyed_token_sum_) X(keyed_first_new_edge_)                      \
+    X(keyed_follow_head_) X(keyed_follow_next_) X(edge_producer_) X(event_consumed_)
+
 
 // The block exists before any pool member's constructor runs -- block_ is declared first --
 // so the pools can be constructed straight onto its slots.
@@ -136,6 +159,7 @@ EngineState::EngineState(EngineConfig cfg): cfg_(cfg)
         , causal_pair_dedup_(cfg.causal_pair_slots)
         , branchial_pair_dedup_(cfg.branchial_pair_slots)
         , preds_list_(cfg.max_events, cfg.tr_preds_nodes) {
+      try {
         // The stack the engine's kernels need (device_stack_bytes), set here so it holds for
         // every entry point and is reserved before any pool is allocated.
         // Checked, and then READ BACK: a driver may clamp the request rather than refuse it.
@@ -208,38 +232,20 @@ EngineState::EngineState(EngineConfig cfg): cfg_(cfg)
                                                             cfg_.survivor_scratch),
                           "EngineState survivor_scratch alloc");
         clear();
+      } catch (...) {
+        HG_ENGINE_STATE_DEVICE_BUFFERS(HG_FREE_DEVICE)
+        throw;
+      }
     }
 
+// The scalar counters and the pool counters are slices of block_, which frees itself.
 EngineState::~EngineState() {
-        if (pinned_)                 cudaFreeHost(pinned_);
-        if (state_edge_slices_)      cudaFree(state_edge_slices_);
-        if (state_edge_ids_)         cudaFree(state_edge_ids_);
-        if (rule_weights_dev_)       cudaFree(rule_weights_dev_);
-        if (states_per_step_)        cudaFree(states_per_step_);
-        // The scalar counters and the pool counters are slices of block_, which frees itself;
-        // nothing here is freed individually.
-        if (launch_scratch_.rules)        cudaFree(launch_scratch_.rules);
-        if (launch_scratch_.states)       cudaFree(launch_scratch_.states);
-        if (launch_scratch_.cursor)       cudaFree(launch_scratch_.cursor);
-        if (launch_scratch_.phase_cycles) cudaFree(launch_scratch_.phase_cycles);
-        if (state_canonical_hash_)   cudaFree(state_canonical_hash_);
-        if (state_exact_hash_)       cudaFree(state_exact_hash_);
-        if (state_edge_rank_)        cudaFree(state_edge_rank_);
-        if (tr_scratch_)             cudaFree(tr_scratch_);
-        if (tr_scratch_busy_)        cudaFree(tr_scratch_busy_);
-        if (survivor_scratch_)       cudaFree(survivor_scratch_);
-        if (state_edge_orbit_)       cudaFree(state_edge_orbit_);
-        if (state_num_orbits_)       cudaFree(state_num_orbits_);
-        if (state_invariant_at_)     cudaFree(state_invariant_at_);
-        if (invariant_pool_)         cudaFree(invariant_pool_);
-        if (invariant_pool_used_)    cudaFree(invariant_pool_used_);
-        if (keyed_token_sum_)        cudaFree(keyed_token_sum_);
-        if (keyed_first_new_edge_)   cudaFree(keyed_first_new_edge_);
-        if (keyed_follow_head_)      cudaFree(keyed_follow_head_);
-        if (keyed_follow_next_)      cudaFree(keyed_follow_next_);
-        if (edge_producer_)          cudaFree(edge_producer_);
-        if (event_consumed_)         cudaFree(event_consumed_);
+        if (pinned_) cudaFreeHost(pinned_);
+        HG_ENGINE_STATE_DEVICE_BUFFERS(HG_FREE_DEVICE)
     }
+
+#undef HG_FREE_DEVICE
+#undef HG_ENGINE_STATE_DEVICE_BUFFERS
 
 void EngineState::ensure_edge_ranks() {
         if (state_edge_rank_) return;

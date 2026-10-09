@@ -217,7 +217,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
     // per-call Engine allocation dominates small/medium runs, so amortizing it
     // is 6-12x on interactive workloads. Jobs run serially through the worker, so
     // a process-lifetime evolver is safe; the one-shot binary just uses it once.
-    // The evolver grows on overflow and never shrinks (high-water-mark).
+    // A job reuses the engine when the engine's config covers the job (PersistentEvolver::run).
     static hg_gpu::PersistentEvolver evolver;
 
     const std::string& op = job.session_op;

@@ -56,6 +56,83 @@ hg_gpu::EvolveInput growing_input(uint32_t steps) {
 
 }  // namespace
 
+// An engine whose construction fails part-way returns every device buffer it allocated. One
+// persistent worker builds engines job after job; a construction that fails on a device
+// allocation (grow-and-retry building past the free memory) and keeps its earlier buffers leaves
+// less memory for every later job, which then overflows from its first step. The config allocates
+// 1 GiB of state edge ids in the constructor body and then asks for a reachability scratch no
+// device has, four times over.
+TEST(CapacityOverflow, AFailedEngineConstructionReturnsItsDeviceMemory) {
+    const hg_gpu::EvolveInput in = growing_input(3);
+    hg_gpu::EngineConfig ok = hg_gpu::config_from_input(in);
+    // The first engine of the process reserves the device stack, which stays for the process.
+    hg_gpu::EvolveResult before;
+    {
+        hg_gpu::Engine engine(ok);
+        before = engine.run(in);
+    }
+    ASSERT_TRUE(before.warnings.empty());
+
+    hg_gpu::EngineConfig bad = ok;
+    bad.max_state_edge_total = 1u << 28;
+    bad.tr_scratch_scale     = 1u << 31;
+    cudaDeviceSynchronize();
+    size_t free0 = 0, free1 = 0, total = 0;
+    ASSERT_EQ(cudaMemGetInfo(&free0, &total), cudaSuccess);
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_THROW(hg_gpu::Engine engine(bad), std::exception);
+        cudaGetLastError();
+    }
+    cudaDeviceSynchronize();
+    ASSERT_EQ(cudaMemGetInfo(&free1, &total), cudaSuccess);
+    const int64_t lost = static_cast<int64_t>(free0) - static_cast<int64_t>(free1);
+    EXPECT_LT(lost, int64_t{256} << 20) << "lost " << (lost >> 20) << " MiB";
+
+    // The next engine runs the same input to the same result.
+    hg_gpu::Engine engine(ok);
+    const hg_gpu::EvolveResult after = engine.run(in);
+    EXPECT_TRUE(after.warnings.empty());
+    EXPECT_EQ(after.states.size(), before.states.size());
+    EXPECT_EQ(after.observable_num_events(), before.observable_num_events());
+}
+
+// One evolver, as one hg_evolve_gpu --serve worker holds it: a job that overflows to the memory
+// cap returns a partial result, and the next job gives what it gives on a fresh evolver, twice
+// over. The large job (a 4,096-edge path at 2 steps under a 4 GiB cap) leaves the engine at the
+// cap with its pools scaled down by fit_config_to_cap; the next job needs more than those pools
+// hold, which a fresh evolver gives it from its own config.
+TEST(CapacityOverflow, AJobAfterAnOverflowAtTheCapRunsAsOnAFreshEvolver) {
+    hg_gpu::EvolveInput small = growing_input(7);
+    small.max_device_memory_bytes = uint64_t{4} << 30;
+    hg_gpu::EvolveResult fresh;
+    {
+        hg_gpu::PersistentEvolver first;
+        fresh = first.run(small);
+    }
+    ASSERT_TRUE(fresh.warnings.empty());
+
+    hg_gpu::EvolveInput large = growing_input(2);
+    large.initial_state.clear();
+    for (uint32_t v = 0; v < 4096; ++v) large.initial_state.push_back({v, v + 1});
+    large.max_device_memory_bytes = uint64_t{4} << 30;
+
+    hg_gpu::PersistentEvolver evolver;
+    for (int round = 0; round < 2; ++round) {
+        const hg_gpu::EvolveResult partial = evolver.run(large);
+        EXPECT_FALSE(partial.warnings.empty()) << "round " << round;
+
+        const hg_gpu::EvolveResult next = evolver.run(small);
+        EXPECT_TRUE(next.warnings.empty()) << "round " << round;
+        EXPECT_EQ(next.states.size(), fresh.states.size()) << "round " << round;
+        EXPECT_EQ(next.observable_num_events(), fresh.observable_num_events()) << "round " << round;
+        EXPECT_EQ(next.observable_num_causal_pairs(true), fresh.observable_num_causal_pairs(true))
+            << "round " << round;
+        EXPECT_EQ(next.observable_num_branchial(), fresh.observable_num_branchial())
+            << "round " << round;
+    }
+}
+
+
 // Pools far too small for the evolution requested. The run must come back, say so, and stay
 // inside its allocations.
 TEST(CapacityOverflow, PartialResultWithWarningAndNoOutOfBounds) {
