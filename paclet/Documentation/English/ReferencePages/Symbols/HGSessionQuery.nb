@@ -10,10 +10,10 @@
 NotebookFileLineBreakTest
 NotebookFileLineBreakTest
 NotebookDataPosition[       154,          7]
-NotebookDataLength[     74041,       1963]
-NotebookOptionsPosition[     61533,       1701]
-NotebookOutlinePosition[     62700,       1735]
-CellTagsIndexPosition[     62620,       1730]
+NotebookDataLength[     74053,       1963]
+NotebookOptionsPosition[     61546,       1701]
+NotebookOutlinePosition[     62713,       1735]
+CellTagsIndexPosition[     62633,       1730]
 WindowFrame->Normal*)
 
 (* Beginning of Notebook Content *)
@@ -707,7 +707,7 @@ Cell[BoxData[
   NamespaceBox["NetworkGraphics",
    DynamicModuleBox[{Typeset`graph = HoldComplete[
      Graph[{0, 1, 2, 3, 4, 5, 6, 7, 8, 
-      9}, {{{1, 2}, {2, 3}, {2, 4}, {4, 5}, {4, 6}, {4, 7}, {3, 8}, {3, 9}, {
+      9}, {{{1, 2}, {2, 3}, {2, 4}, {3, 5}, {4, 6}, {4, 7}, {4, 8}, {3, 9}, {
        3, 10}}, 
        Null, {<|"EventId" -> 0|>, <|"EventId" -> 1|>, <|"EventId" -> 2|>, <|
         "EventId" -> 3|>, <|"EventId" -> 4|>, <|"EventId" -> 5|>, <|
@@ -719,45 +719,45 @@ Cell[BoxData[
            Row[{"Event ", 8}], Tooltip], 
          DirectedEdge[1, 2, <|"EventId" -> 1|>] -> Placed[
            Row[{"Event ", 1}], Tooltip], 
-         DirectedEdge[3, 4, <|"EventId" -> 3|>] -> Placed[
-           Row[{"Event ", 3}], Tooltip], 
          DirectedEdge[2, 8, <|"EventId" -> 7|>] -> Placed[
            Row[{"Event ", 7}], Tooltip], 
+         DirectedEdge[2, 4, <|"EventId" -> 3|>] -> Placed[
+           Row[{"Event ", 3}], Tooltip], 
          DirectedEdge[3, 6, <|"EventId" -> 5|>] -> Placed[
            Row[{"Event ", 5}], Tooltip], 
          DirectedEdge[1, 3, <|"EventId" -> 2|>] -> Placed[
            Row[{"Event ", 2}], Tooltip], 
-         DirectedEdge[2, 7, <|"EventId" -> 6|>] -> Placed[
+         DirectedEdge[3, 7, <|"EventId" -> 6|>] -> Placed[
            Row[{"Event ", 6}], Tooltip], 
          DirectedEdge[3, 5, <|"EventId" -> 4|>] -> Placed[
            Row[{"Event ", 4}], Tooltip]}, 
        EdgeStyle -> {DirectedEdge[3, 5, <|"EventId" -> 4|>] -> Directive[
            GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[0, 1, <|"EventId" -> 0|>] -> 
+           Arrowheads[Small]], DirectedEdge[3, 7, <|"EventId" -> 6|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[3, 6, <|"EventId" -> 5|>] -> 
+           Arrowheads[Small]], DirectedEdge[0, 1, <|"EventId" -> 0|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[3, 4, <|"EventId" -> 3|>] -> 
+           Arrowheads[Small]], DirectedEdge[3, 6, <|"EventId" -> 5|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[1, 3, <|"EventId" -> 2|>] -> 
+           Arrowheads[Small]], DirectedEdge[1, 3, <|"EventId" -> 2|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[2, 8, <|"EventId" -> 7|>] -> 
+           Arrowheads[Small]], DirectedEdge[2, 8, <|"EventId" -> 7|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[2, 7, <|"EventId" -> 6|>] -> 
+           Arrowheads[Small]], DirectedEdge[2, 4, <|"EventId" -> 3|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[1, 2, <|"EventId" -> 1|>] -> 
+           Arrowheads[Small]], DirectedEdge[1, 2, <|"EventId" -> 1|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[0.02]], DirectedEdge[2, 9, <|"EventId" -> 8|>] -> 
+           Arrowheads[Small]], DirectedEdge[2, 9, <|"EventId" -> 8|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[0.02]]}, GraphLayout -> "LayeredDigraphEmbedding", 
+           Arrowheads[Small]]}, GraphLayout -> "LayeredDigraphEmbedding", 
        ImageSize -> 300, VertexLabels -> {1 -> Placed[
            Column[{
              Row[{
@@ -864,67 +864,67 @@ Cell[BoxData[
         Medium], 
         TagBox[
          TooltipBox[
-          {GrayLevel[0.5], Arrowheads[0.02], 
+          {GrayLevel[0.5], Arrowheads[Small], 
            ArrowBox[{{0., 3.}, {0., 2.}}, 0.043048128342245986`]},
           TemplateBox[{"\"Event \"", "0"}, "RowDefault"]],
          Annotation[#, 
           Row[{"Event ", 0}], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
-          {GrayLevel[0.5], Arrowheads[0.02], 
+          {GrayLevel[0.5], Arrowheads[Small], 
            ArrowBox[{{0., 2.}, {0., 1.}}, 0.043048128342245986`]},
           TemplateBox[{"\"Event \"", "1"}, "RowDefault"]],
          Annotation[#, 
           Row[{"Event ", 1}], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
-          {GrayLevel[0.5], Arrowheads[0.02], 
+          {GrayLevel[0.5], Arrowheads[Small], 
            ArrowBox[{{0., 2.}, {-3., 1.}}, 0.043048128342245986`]},
           TemplateBox[{"\"Event \"", "2"}, "RowDefault"]],
          Annotation[#, 
           Row[{"Event ", 2}], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
-          {GrayLevel[0.5], Arrowheads[0.02], 
+          {GrayLevel[0.5], Arrowheads[Small], 
            ArrowBox[{{0., 1.}, {-1., 0.}}, 0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "6"}, "RowDefault"]],
+          TemplateBox[{"\"Event \"", "3"}, "RowDefault"]],
          Annotation[#, 
-          Row[{"Event ", 6}], "Tooltip"]& ], 
+          Row[{"Event ", 3}], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
-          {GrayLevel[0.5], Arrowheads[0.02], 
+          {GrayLevel[0.5], Arrowheads[Small], 
            ArrowBox[{{0., 1.}, {0., 0.}}, 0.043048128342245986`]},
           TemplateBox[{"\"Event \"", "7"}, "RowDefault"]],
          Annotation[#, 
           Row[{"Event ", 7}], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
-          {GrayLevel[0.5], Arrowheads[0.02], 
+          {GrayLevel[0.5], Arrowheads[Small], 
            ArrowBox[{{0., 1.}, {1., 0.}}, 0.043048128342245986`]},
           TemplateBox[{"\"Event \"", "8"}, "RowDefault"]],
          Annotation[#, 
           Row[{"Event ", 8}], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
-          {GrayLevel[0.5], Arrowheads[0.02], 
+          {GrayLevel[0.5], Arrowheads[Small], 
            ArrowBox[{{-3., 1.}, {-4., 0.}}, 0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "3"}, "RowDefault"]],
-         Annotation[#, 
-          Row[{"Event ", 3}], "Tooltip"]& ], 
-        TagBox[
-         TooltipBox[
-          {GrayLevel[0.5], Arrowheads[0.02], 
-           ArrowBox[{{-3., 1.}, {-3., 0.}}, 0.043048128342245986`]},
           TemplateBox[{"\"Event \"", "4"}, "RowDefault"]],
          Annotation[#, 
           Row[{"Event ", 4}], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
-          {GrayLevel[0.5], Arrowheads[0.02], 
-           ArrowBox[{{-3., 1.}, {-2., 0.}}, 0.043048128342245986`]},
+          {GrayLevel[0.5], Arrowheads[Small], 
+           ArrowBox[{{-3., 1.}, {-3., 0.}}, 0.043048128342245986`]},
           TemplateBox[{"\"Event \"", "5"}, "RowDefault"]],
          Annotation[#, 
-          Row[{"Event ", 5}], "Tooltip"]& ]}, 
+          Row[{"Event ", 5}], "Tooltip"]& ], 
+        TagBox[
+         TooltipBox[
+          {GrayLevel[0.5], Arrowheads[Small], 
+           ArrowBox[{{-3., 1.}, {-2., 0.}}, 0.043048128342245986`]},
+          TemplateBox[{"\"Event \"", "6"}, "RowDefault"]],
+         Annotation[#, 
+          Row[{"Event ", 6}], "Tooltip"]& ]}, 
        {Hue[0.6, 0.5, 1.], EdgeForm[{GrayLevel[0], Opacity[0.7]}], 
         TagBox[
          TooltipBox[
@@ -1045,7 +1045,7 @@ Cell[BoxData[
         TagBox[
          TooltipBox[
           {RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[
-           0.2, 0.3, 0.5]], DiskBox[{-4., 0.}, 0.043048128342245986]},
+           0.2, 0.3, 0.5]], DiskBox[{-1., 0.}, 0.043048128342245986]},
           TagBox[
            GridBox[{{
               TemplateBox[{
@@ -1074,7 +1074,7 @@ Cell[BoxData[
         TagBox[
          TooltipBox[
           {RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[
-           0.2, 0.3, 0.5]], DiskBox[{-3., 0.}, 0.043048128342245986]},
+           0.2, 0.3, 0.5]], DiskBox[{-4., 0.}, 0.043048128342245986]},
           TagBox[
            GridBox[{{
               TemplateBox[{
@@ -1103,7 +1103,7 @@ Cell[BoxData[
         TagBox[
          TooltipBox[
           {RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[
-           0.2, 0.3, 0.5]], DiskBox[{-2., 0.}, 0.043048128342245986]},
+           0.2, 0.3, 0.5]], DiskBox[{-3., 0.}, 0.043048128342245986]},
           TagBox[
            GridBox[{{
               TemplateBox[{
@@ -1132,7 +1132,7 @@ Cell[BoxData[
         TagBox[
          TooltipBox[
           {RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[
-           0.2, 0.3, 0.5]], DiskBox[{-1., 0.}, 0.043048128342245986]},
+           0.2, 0.3, 0.5]], DiskBox[{-2., 0.}, 0.043048128342245986]},
           TagBox[
            GridBox[{{
               TemplateBox[{
@@ -1530,14 +1530,29 @@ Cell[BoxData[
    RowBox[{"All", "."}]}]}]], "Message", "MSG",
  CellID->2064602208,ExpressionUUID->"78287f93-0f12-7c52-2828-76ddaaa746b8"],
 
+Cell[BoxData[
+ RowBox[{
+  StyleBox[
+   RowBox[{"General", "::", "stop"}], "MessageName"], 
+  RowBox[{":", " "}], 
+  RowBox[{"Further", " ", "output", " ", "of", " "}], 
+  TagBox[
+   StyleBox[
+    RowBox[{"HGEvolve", "::", "unknownprop"}], "MessageName"],
+   HoldCompleteForm], 
+  RowBox[{" ", 
+   RowBox[{"will", " ", "be", " ", "suppressed", " ", "during", " ", "this", " ", 
+    RowBox[{"calculation", "."}]}]}]}]], "Message", "MSG",
+ CellID->489176174,ExpressionUUID->"08285353-0e0e-39f8-3828-4b1dabb88bc2"],
+
 Cell[BoxData["$Failed"], "Output",
  CellLabel->"Out[1]= ",
- CellID->489176174,ExpressionUUID->"08285353-0e0e-39f8-3828-4b1dabb88bc2"]
+ CellID->577017398,ExpressionUUID->"1daed7d3-93e8-7698-4b55-ce9d259d5ce2"]
 }, Open  ]],
 
 Cell["A closed session, and an expression that is not a session:", \
 "ExampleText",
- CellID->1202300457,ExpressionUUID->"1daed7d3-93e8-7698-4b55-ce9d259d5ce2"],
+ CellID->1202300457,ExpressionUUID->"187adc3d-3961-76c2-4819-d667b8145c28"],
 
 Cell[CellGroupData[{
 
@@ -1546,7 +1561,7 @@ Cell[BoxData[{
   RowBox[{"HGSessionClose", "[", "s", "]"}], ";"}], "\n", 
  RowBox[{"HGSessionQuery", "[", "s", "]"}]}], "Input",
  CellLabel->"In[2]:= ",
- CellID->497123094,ExpressionUUID->"187adc3d-3961-76c2-4819-d667b8145c28"],
+ CellID->497123094,ExpressionUUID->"641c78eb-7f03-7846-0c24-71b57ab64aac"],
 
 Cell[BoxData[
  RowBox[{
@@ -1556,14 +1571,14 @@ Cell[BoxData[
   RowBox[{"The", " ", "engine", " ", "refused", " ", "this", " ", "session", " ", 
    RowBox[{"job", ":", " "}]}], 
   RowBox[{
-  "session", " ", "2228794157409978868", " ", "is", " ", "not", " ", "this", " ", 
+  "session", " ", "1876638813656186868", " ", "is", " ", "not", " ", "this", " ", 
    RowBox[{"worker", "'"}], "s", " ", "live", " ", "session"}]}]], "Message", \
 "MSG",
- CellID->1847341574,ExpressionUUID->"641c78eb-7f03-7846-0c24-71b57ab64aac"],
+ CellID->1847341574,ExpressionUUID->"5bfcc75d-c21d-6fb0-0983-df06f7a8359a"],
 
 Cell[BoxData["$Failed"], "Output",
  CellLabel->"Out[2]= ",
- CellID->247880487,ExpressionUUID->"5bfcc75d-c21d-6fb0-0983-df06f7a8359a"]
+ CellID->247880487,ExpressionUUID->"112ae6ec-4b5c-6ad2-4729-ffb66ee93838"]
 }, Open  ]],
 
 Cell[CellGroupData[{
@@ -1571,7 +1586,7 @@ Cell[CellGroupData[{
 Cell[BoxData[
  RowBox[{"HGSessionQuery", "[", "\"\<x\>\"", "]"}]], "Input",
  CellLabel->"In[3]:= ",
- CellID->1118670102,ExpressionUUID->"112ae6ec-4b5c-6ad2-4729-ffb66ee93838"],
+ CellID->1118670102,ExpressionUUID->"6121b9de-dddd-aca8-10de-309bd469f6f2"],
 
 Cell[BoxData[
  RowBox[{
@@ -1581,26 +1596,11 @@ Cell[BoxData[
   RowBox[{" ", 
    RowBox[{"is", " ", "not", " ", "an", " ", 
     RowBox[{"HGSessionObject", "."}]}]}]}]], "Message", "MSG",
- CellID->1418099714,ExpressionUUID->"6121b9de-dddd-aca8-10de-309bd469f6f2"],
-
-Cell[BoxData[
- RowBox[{
-  StyleBox[
-   RowBox[{"General", "::", "stop"}], "MessageName"], 
-  RowBox[{":", " "}], 
-  RowBox[{"Further", " ", "output", " ", "of", " "}], 
-  TagBox[
-   StyleBox[
-    RowBox[{"HGSessionStep", "::", "badsession"}], "MessageName"],
-   HoldCompleteForm], 
-  RowBox[{" ", 
-   RowBox[{"will", " ", "be", " ", "suppressed", " ", "during", " ", "this", " ", 
-    RowBox[{"calculation", "."}]}]}]}]], "Message", "MSG",
- CellID->1952473856,ExpressionUUID->"30209679-023a-ee91-61df-0823b7ccb4fb"],
+ CellID->1418099714,ExpressionUUID->"30209679-023a-ee91-61df-0823b7ccb4fb"],
 
 Cell[BoxData["$Failed"], "Output",
  CellLabel->"Out[3]= ",
- CellID->1528099014,ExpressionUUID->"29bc1606-c22d-409d-5f43-8863f7d812e7"]
+ CellID->1952473856,ExpressionUUID->"29bc1606-c22d-409d-5f43-8863f7d812e7"]
 }, Open  ]]
 }, Open  ]],
 
@@ -1729,7 +1729,7 @@ CellTagsIndex->{
 *)
 (*CellTagsIndex
 CellTagsIndex->{
- {"ExtendedExamples", 62426, 1723}
+ {"ExtendedExamples", 62439, 1723}
  }
 *)
 (*NotebookFileOutline
@@ -1838,130 +1838,130 @@ Cell[22092, 658, 416, 11, 70, "ExampleText",ExpressionUUID->"7085d256-6adc-aa08-
 Cell[CellGroupData[{
 Cell[22522, 673, 1086, 29, 70, "Input",ExpressionUUID->"5f932952-49a5-d34f-05a0-c11c6851a195",
  CellID->1764265925],
-Cell[23582, 704, 22842, 521, 70, "Output",ExpressionUUID->"160f17c4-d31a-fe19-3e34-8ea1e6acc563",
+Cell[23582, 704, 22860, 521, 70, "Output",ExpressionUUID->"160f17c4-d31a-fe19-3e34-8ea1e6acc563",
  CellID->1258921795]
 }, Open  ]],
-Cell[45918, 1228, 127, 1, 70, "ExampleText",ExpressionUUID->"10beb8bd-bdb6-ee93-4045-31e73440b4f9",
+Cell[45936, 1228, 127, 1, 70, "ExampleText",ExpressionUUID->"10beb8bd-bdb6-ee93-4045-31e73440b4f9",
  CellID->381594351],
 Cell[CellGroupData[{
-Cell[46069, 1233, 246, 5, 70, "Input",ExpressionUUID->"3fdc991b-fead-14b0-65e3-1144fb587e9a",
+Cell[46087, 1233, 246, 5, 70, "Input",ExpressionUUID->"3fdc991b-fead-14b0-65e3-1144fb587e9a",
  CellID->1819502047],
-Cell[46313, 1240, 620, 14, 70, "Output",ExpressionUUID->"3657d2c5-05c0-ac85-5e6c-cbafac7af6ef",
+Cell[46331, 1240, 620, 14, 70, "Output",ExpressionUUID->"3657d2c5-05c0-ac85-5e6c-cbafac7af6ef",
  CellID->1147788002]
 }, Open  ]],
 Cell[CellGroupData[{
-Cell[46956, 1259, 279, 6, 70, "Input",ExpressionUUID->"0642d375-09f3-9942-2e71-cb3faf87eba8",
+Cell[46974, 1259, 279, 6, 70, "Input",ExpressionUUID->"0642d375-09f3-9942-2e71-cb3faf87eba8",
  CellID->802381834],
-Cell[47232, 1267, 437, 8, 70, "Output",ExpressionUUID->"0651775d-2bad-791b-2e6f-6f074e584861",
+Cell[47250, 1267, 437, 8, 70, "Output",ExpressionUUID->"0651775d-2bad-791b-2e6f-6f074e584861",
  CellID->1472343854]
 }, Open  ]],
-Cell[47676, 1278, 170, 3, 70, "Input",ExpressionUUID->"63b9e3d6-2298-231e-1146-fa9057128e64",
+Cell[47694, 1278, 170, 3, 70, "Input",ExpressionUUID->"63b9e3d6-2298-231e-1146-fa9057128e64",
  CellID->1468503715]
 }, Open  ]],
-Cell[47858, 1284, 270, 5, 70, "ExampleSection",ExpressionUUID->"67c13665-f813-2f11-0dfe-a84ef9a6727b",
+Cell[47876, 1284, 270, 5, 70, "ExampleSection",ExpressionUUID->"67c13665-f813-2f11-0dfe-a84ef9a6727b",
  CellID->1020263627],
 Cell[CellGroupData[{
-Cell[48148, 1293, 249, 5, 70, "ExampleSection",ExpressionUUID->"4c440104-ea8a-4285-747b-99618f3f10ef",
+Cell[48166, 1293, 249, 5, 70, "ExampleSection",ExpressionUUID->"4c440104-ea8a-4285-747b-99618f3f10ef",
  CellID->2061341341],
 Cell[CellGroupData[{
-Cell[48417, 1302, 117, 1, 70, "ExampleSubsection",ExpressionUUID->"66c9a615-af45-c085-0ef6-385ecaf192ef",
+Cell[48435, 1302, 117, 1, 70, "ExampleSubsection",ExpressionUUID->"66c9a615-af45-c085-0ef6-385ecaf192ef",
  CellID->774517536],
-Cell[48536, 1305, 206, 4, 70, "ExampleText",ExpressionUUID->"0513e607-0f4c-1e20-3320-f861aaf9650a",
+Cell[48554, 1305, 206, 4, 70, "ExampleText",ExpressionUUID->"0513e607-0f4c-1e20-3320-f861aaf9650a",
  CellID->1184240770],
 Cell[CellGroupData[{
-Cell[48763, 1313, 1041, 29, 70, "Input",ExpressionUUID->"0371ff35-cd30-cda2-310e-f77ee4ca9788",
+Cell[48781, 1313, 1041, 29, 70, "Input",ExpressionUUID->"0371ff35-cd30-cda2-310e-f77ee4ca9788",
  CellID->670500628],
-Cell[49778, 1344, 129, 2, 70, "Output",ExpressionUUID->"6833ae6a-6ac5-a2c8-19c0-40340f71f012",
+Cell[49796, 1344, 129, 2, 70, "Output",ExpressionUUID->"6833ae6a-6ac5-a2c8-19c0-40340f71f012",
  CellID->435854199]
 }, Open  ]],
-Cell[49920, 1349, 170, 3, 70, "Input",ExpressionUUID->"5f7f2999-1aee-25a5-0504-c0c39e988f8f",
+Cell[49938, 1349, 170, 3, 70, "Input",ExpressionUUID->"5f7f2999-1aee-25a5-0504-c0c39e988f8f",
  CellID->1436252222]
 }, Open  ]]
 }, Open  ]],
-Cell[50114, 1356, 253, 5, 70, "ExampleSection",ExpressionUUID->"128c7526-c883-085d-42b4-6c83e9365aa7",
+Cell[50132, 1356, 253, 5, 70, "ExampleSection",ExpressionUUID->"128c7526-c883-085d-42b4-6c83e9365aa7",
  CellID->258228157],
 Cell[CellGroupData[{
-Cell[50387, 1365, 264, 5, 70, "ExampleSection",ExpressionUUID->"3279c00f-c9e2-8758-6206-da68ef94eda2",
+Cell[50405, 1365, 264, 5, 70, "ExampleSection",ExpressionUUID->"3279c00f-c9e2-8758-6206-da68ef94eda2",
  CellID->2123667759],
-Cell[50649, 1372, 574, 14, 70, "ExampleText",ExpressionUUID->"50b12ff8-e606-85f7-004e-c6a593b0efdd",
+Cell[50667, 1372, 574, 14, 70, "ExampleText",ExpressionUUID->"50b12ff8-e606-85f7-004e-c6a593b0efdd",
  CellID->1555662820],
 Cell[CellGroupData[{
-Cell[51234, 1390, 1955, 55, 70, "Input",ExpressionUUID->"640f47a5-4648-c62d-0c35-5e0f73e2ad77",
+Cell[51252, 1390, 1955, 55, 70, "Input",ExpressionUUID->"640f47a5-4648-c62d-0c35-5e0f73e2ad77",
  CellID->1852680185],
-Cell[53137, 1447, 182, 4, 70, "Output",ExpressionUUID->"63a48922-0fac-666c-115b-208caa594cb6",
+Cell[53155, 1447, 182, 4, 70, "Output",ExpressionUUID->"63a48922-0fac-666c-115b-208caa594cb6",
  CellID->494381976]
 }, Open  ]],
-Cell[53330, 1454, 170, 3, 70, "Input",ExpressionUUID->"387a9e0d-0234-0e73-6819-1057b7c15559",
+Cell[53348, 1454, 170, 3, 70, "Input",ExpressionUUID->"387a9e0d-0234-0e73-6819-1057b7c15559",
  CellID->1932788388]
 }, Open  ]],
 Cell[CellGroupData[{
-Cell[53534, 1462, 257, 5, 70, "ExampleSection",ExpressionUUID->"3f64ca0d-9927-5f44-651b-ec5718d225ae",
+Cell[53552, 1462, 257, 5, 70, "ExampleSection",ExpressionUUID->"3f64ca0d-9927-5f44-651b-ec5718d225ae",
  CellID->1305812373],
-Cell[53789, 1469, 490, 13, 70, "ExampleText",ExpressionUUID->"399d1ff3-4632-be92-6fa2-96bd73c404f8",
+Cell[53807, 1469, 490, 13, 70, "ExampleText",ExpressionUUID->"399d1ff3-4632-be92-6fa2-96bd73c404f8",
  CellID->1635850333],
 Cell[CellGroupData[{
-Cell[54291, 1486, 839, 23, 70, "Input",ExpressionUUID->"1170384d-2f38-2c50-470f-b2174acd76ba",
+Cell[54309, 1486, 839, 23, 70, "Input",ExpressionUUID->"1170384d-2f38-2c50-470f-b2174acd76ba",
  CellID->185668621],
-Cell[55110, 1511, 854, 19, 70, "Message",ExpressionUUID->"6ce33075-6d34-44a7-1490-aa3f04c12e8d",
+Cell[55128, 1511, 854, 19, 70, "Message",ExpressionUUID->"6ce33075-6d34-44a7-1490-aa3f04c12e8d",
  CellID->2064602208],
-Cell[55948, 1532, 135, 2, 70, "Output",ExpressionUUID->"54e2b6d5-0ba4-5b19-7c91-2f9fae512663",
- CellID->489176174]
+Cell[55966, 1532, 523, 13, 70, "Message",ExpressionUUID->"54e2b6d5-0ba4-5b19-7c91-2f9fae512663",
+ CellID->489176174],
+Cell[56479, 1547, 135, 2, 70, "Output",ExpressionUUID->"6334ac9c-43f1-85c0-12cb-45c67585ef2a",
+ CellID->577017398]
 }, Open  ]],
-Cell[56096, 1537, 161, 2, 70, "ExampleText",ExpressionUUID->"6334ac9c-43f1-85c0-12cb-45c67585ef2a",
+Cell[56627, 1552, 161, 2, 70, "ExampleText",ExpressionUUID->"74397683-04f4-1d4d-1dc7-6fedac816797",
  CellID->1202300457],
 Cell[CellGroupData[{
-Cell[56280, 1543, 242, 5, 70, "Input",ExpressionUUID->"74397683-04f4-1d4d-1dc7-6fedac816797",
+Cell[56811, 1558, 242, 5, 70, "Input",ExpressionUUID->"735e49d5-32a1-4a48-2166-609f47541892",
  CellID->497123094],
-Cell[56520, 1550, 506, 11, 70, "Message",ExpressionUUID->"735e49d5-32a1-4a48-2166-609f47541892",
+Cell[57051, 1565, 506, 11, 70, "Message",ExpressionUUID->"335d55a2-cf9b-493d-6163-4c0fea2e1807",
  CellID->1847341574],
-Cell[57018, 1563, 135, 2, 70, "Output",ExpressionUUID->"335d55a2-cf9b-493d-6163-4c0fea2e1807",
+Cell[57549, 1578, 135, 2, 70, "Output",ExpressionUUID->"3bfbbd45-edb8-1b0b-6998-352e844d6651",
  CellID->247880487]
 }, Open  ]],
 Cell[CellGroupData[{
-Cell[57188, 1570, 178, 3, 70, "Input",ExpressionUUID->"3bfbbd45-edb8-1b0b-6998-352e844d6651",
+Cell[57719, 1585, 178, 3, 70, "Input",ExpressionUUID->"045023ab-c37d-b770-2c6f-baf4f6091a5a",
  CellID->1118670102],
-Cell[57366, 1575, 339, 8, 70, "Message",ExpressionUUID->"045023ab-c37d-b770-2c6f-baf4f6091a5a",
+Cell[57897, 1590, 339, 8, 70, "Message",ExpressionUUID->"73e8aeff-5b91-f8f4-2197-47b95e25cade",
  CellID->1418099714],
-Cell[57700, 1585, 528, 13, 70, "Message",ExpressionUUID->"73e8aeff-5b91-f8f4-2197-47b95e25cade",
- CellID->1952473856],
-Cell[58218, 1600, 136, 2, 70, "Output",ExpressionUUID->"33e490f1-5bc8-e939-619b-09bb5e62b803",
- CellID->1528099014]
+Cell[58231, 1600, 136, 2, 70, "Output",ExpressionUUID->"33e490f1-5bc8-e939-619b-09bb5e62b803",
+ CellID->1952473856]
 }, Open  ]]
 }, Open  ]],
-Cell[58379, 1606, 262, 5, 70, "ExampleSection",ExpressionUUID->"794a4309-908b-2549-2f4a-5b53213f8f93",
+Cell[58392, 1606, 262, 5, 70, "ExampleSection",ExpressionUUID->"794a4309-908b-2549-2f4a-5b53213f8f93",
  CellID->1653164318],
-Cell[58639, 1613, 254, 5, 70, "ExampleSection",ExpressionUUID->"167ebcf0-2b32-2a61-3e05-35ba4ec7794b",
+Cell[58652, 1613, 254, 5, 70, "ExampleSection",ExpressionUUID->"167ebcf0-2b32-2a61-3e05-35ba4ec7794b",
  CellID->589267740]
 }, Open  ]],
 Cell[CellGroupData[{
-Cell[58925, 1623, 111, 1, 70, "MetadataSection",ExpressionUUID->"15eb24b6-b946-3a65-43e8-bdf038f0894f",
+Cell[58938, 1623, 111, 1, 70, "MetadataSection",ExpressionUUID->"15eb24b6-b946-3a65-43e8-bdf038f0894f",
  CellID->311882160],
-Cell[59038, 1626, 488, 12, 70, "History",ExpressionUUID->"27d2a24c-1e84-19ee-4de1-44169b316b34",
+Cell[59051, 1626, 488, 12, 70, "History",ExpressionUUID->"27d2a24c-1e84-19ee-4de1-44169b316b34",
  CellID->341476719],
 Cell[CellGroupData[{
-Cell[59539, 1642, 498, 13, 70, "CategorizationSection",ExpressionUUID->"285985c7-a1c8-13eb-5866-1ca0d07d6131",
+Cell[59552, 1642, 498, 13, 70, "CategorizationSection",ExpressionUUID->"285985c7-a1c8-13eb-5866-1ca0d07d6131",
  CellID->1755438392],
-Cell[60027, 1657, 136, 2, 70, "Categorization",ExpressionUUID->"57868ed1-450c-c474-7dbd-279b6cbeaf5e",
+Cell[60040, 1657, 136, 2, 70, "Categorization",ExpressionUUID->"57868ed1-450c-c474-7dbd-279b6cbeaf5e",
  CellID->686433507],
-Cell[60164, 1661, 170, 2, 70, "Categorization",ExpressionUUID->"0c5e608e-35dc-f74f-3466-79e8bc6edd95",
+Cell[60177, 1661, 170, 2, 70, "Categorization",ExpressionUUID->"0c5e608e-35dc-f74f-3466-79e8bc6edd95",
  CellID->605800465],
-Cell[60335, 1665, 146, 2, 70, "Categorization",ExpressionUUID->"1a1e4090-3303-05ed-4a26-59da46b66f37",
+Cell[60348, 1665, 146, 2, 70, "Categorization",ExpressionUUID->"1a1e4090-3303-05ed-4a26-59da46b66f37",
  CellID->468444828],
-Cell[60482, 1669, 185, 3, 70, "Categorization",ExpressionUUID->"10256af3-3972-af7a-41da-83bdb804f240",
+Cell[60495, 1669, 185, 3, 70, "Categorization",ExpressionUUID->"10256af3-3972-af7a-41da-83bdb804f240",
  CellID->1030425846]
 }, Closed]],
-Cell[60679, 1675, 111, 1, 70, "KeywordsSection",ExpressionUUID->"457602f1-d86e-ac86-730d-9bbad918f6ec",
+Cell[60692, 1675, 111, 1, 70, "KeywordsSection",ExpressionUUID->"457602f1-d86e-ac86-730d-9bbad918f6ec",
  CellID->477174294],
 Cell[CellGroupData[{
-Cell[60814, 1680, 121, 1, 70, "TemplatesSection",ExpressionUUID->"499f95c1-a958-6c18-7fa4-0caac8ed3762",
+Cell[60827, 1680, 121, 1, 70, "TemplatesSection",ExpressionUUID->"499f95c1-a958-6c18-7fa4-0caac8ed3762",
  CellID->1872225408],
-Cell[60937, 1683, 151, 2, 70, "Template",ExpressionUUID->"0f1e874b-6d22-b8ab-3525-1f1504d40af1",
+Cell[60950, 1683, 151, 2, 70, "Template",ExpressionUUID->"0f1e874b-6d22-b8ab-3525-1f1504d40af1",
  CellID->1562036412],
-Cell[61089, 1687, 139, 2, 70, "Template",ExpressionUUID->"0c02104f-9807-e6c4-3431-8a2919b3cc2e",
+Cell[61102, 1687, 139, 2, 70, "Template",ExpressionUUID->"0c02104f-9807-e6c4-3431-8a2919b3cc2e",
  CellID->158391909],
-Cell[61229, 1691, 138, 2, 70, "Template",ExpressionUUID->"6f909018-5ea1-6a32-15af-0a425b543918",
+Cell[61242, 1691, 138, 2, 70, "Template",ExpressionUUID->"6f909018-5ea1-6a32-15af-0a425b543918",
  CellID->1360575930],
-Cell[61368, 1695, 139, 2, 70, "Template",ExpressionUUID->"2f4595f3-090a-1216-557a-0cbda8bf617c",
+Cell[61381, 1695, 139, 2, 70, "Template",ExpressionUUID->"2f4595f3-090a-1216-557a-0cbda8bf617c",
  CellID->793782254]
 }, Closed]]
 }, Open  ]]
