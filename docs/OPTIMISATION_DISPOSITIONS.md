@@ -381,6 +381,8 @@ fastest at 8 threads (55.1 ms) and took 101.2 ms at 32.
 | e1d66677 | a worker appends its replay causal pairs to its own chunks (no node, no compare-and-swap) | qc_record_causal 10% of one-thread instructions (multirule d7 q) | multirule d7 q 1t 114.9 -> 105.5 ms; arena 443 -> 423 MB |
 | 263c781d | worker threads and hg_evolve's main thread opt out of Windows power throttling (EcoQoS) | Windows ran every evolve() after the first in a process on efficiency cores at reduced clock: bench wpp d8 q one thread 2,640 then 4,029 / 4,347 ms | 2,655 / 2,474 / 2,481 ms; serve jobs 3,272 then 5,430-5,748 ms -> 3,098-3,189 ms |
 | aad7132d | a paclet reply builds the reconstruction's event-identity map only when it lists events or graphs (and an unread content map is deleted) | two std::unordered_maps over all 6.66M replayed applications for every reply, counts-only included | serve job wpp d8 q counts-only: Linux 1,028 -> 306 ms, Windows 3,135 -> 250 ms |
+| bbc91dd8 | replies move their WXF trees at last use instead of deep-copying them | the graph marshaller copied each property's lists into GraphData and again into the return value; replies copied every edge list | graph reply (wpp d7 q, StatesGraph+CausalGraph, 188 MB) 2,009 -> 1,422 ms; edge lists reply 846 -> 755 ms |
+| 8aefa431 | the WXF writer appends strings, symbols and binary strings in one insert | one push_back per byte: write_string 6.6% and write_byte 5.0% of a graph reply's main thread | graph reply 1,451 -> 1,363 ms; edge lists reply 849 -> 737 ms |
 | 544d81cc | arena Block::data aligned to 64 bytes (a defect found on Windows, not a speed change) | alignas(std::max_align_t) is 8 under MSVC: alignas(64) arena objects sat 8 bytes off a line, and after aa6287a8 MSVC's aligned stores faulted on every quotient replay run | Windows quotient runs complete; sizeof(Block) 56 -> 64 |
 
 After (gcc, `build_linux`, median of 3, ms; before aa6287a8):
@@ -468,9 +470,9 @@ quotient 1942 -> 1634 at one thread and 334 -> 152 at 32. The two few-class quot
 - GPU quotient replay: multirule d7 quotient takes 206 ms on the device against 23 ms on 16 CPU
   threads, all of it in the persistent kernel's replay phase (DEVICE_DESIGN 4.6.3).
 - Paclet replies with graphs: a wpp depth 7 quotient job asking for States, Events, CausalEdges,
-  StatesGraph and CausalGraph takes about 2.0 s, 98% of its samples on the main thread building
+  StatesGraph and CausalGraph took about 2.0 s, 98% of its samples on the main thread building
   WXFValue trees and writing them (malloc/free about 30% of that thread); the engine's part is
-  under 0.1 s. An unordered set for the marshaller's sent-edge membership instead of std::set
+  under 0.1 s. After bbc91dd8 and 8aefa431 it takes 1.33-1.36 s (Linux) and 1.85 s (Windows). An unordered set for the marshaller's sent-edge membership instead of std::set
   measured within spread (1,976 / 2,028 against 2,170 / 2,161 ms) and was not landed. Writing the
   graph sections directly to the stream, as the "States" and "Events" sections already are, is
   the change that would remove it.
@@ -489,5 +491,8 @@ quotient 1942 -> 1634 at one thread and 334 -> 152 at 32. The two few-class quot
   One thread, MSVC is 10-35% slower than gcc (that table predates 263c781d). The slowdown of
   every evolve() after the first in a Windows process was power throttling, closed by
   263c781d; the remaining 3x gap of the counts-only serve job was the reply's identity maps,
-  closed by aad7132d (Windows 250 ms against Linux 306 ms per job after both).
+  closed by aad7132d (Windows 250 ms against Linux 306 ms per job after both). Serve jobs on
+  Windows, the binary built at the start of this pass against HEAD 8aefa431: counts-only wpp
+  d8 quotient 3,272 then 5,430-5,748 ms -> 341 then 263 ms; the graph reply 3,704 then 6,528
+  ms -> 1,833 then 1,845 ms.
   The ClangCL toolset is not installed on this box, so clang-cl was not measured.
