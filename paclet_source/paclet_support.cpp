@@ -587,9 +587,19 @@ void branchial_graph_metrics(const BranchialStep& s, wxf::WXFValueAssociation& r
         if (c.size() != most || most < 2) continue;
         std::vector<uint32_t> local(n, 0);
         for (uint32_t i = 0; i < c.size(); ++i) local[c[i]] = i;
-        std::vector<std::pair<uint32_t, uint32_t>> sub;
+        // The component in its IR canonical labelling, each edge in both directions so the
+        // labelling is one of the undirected graph: the dimension's floating-point sums follow
+        // the vertex order, and the states' ids are a function of the schedule.
+        std::vector<std::vector<hypergraph::VertexId>> both;
         for (const auto& [x, y] : edges)
-            if (comp[x] == comp[c[0]]) sub.emplace_back(local[x], local[y]);
+            if (comp[x] == comp[c[0]]) {
+                both.push_back({local[x], local[y]});
+                both.push_back({local[y], local[x]});
+            }
+        std::vector<std::pair<uint32_t, uint32_t>> sub;
+        for (const auto& e : hypergraph::IRCanonicalizer{}.canonicalize_edges(both)
+                                 .canonical_form.edges)
+            if (e[0] < e[1]) sub.emplace_back(e[0], e[1]);
         const hgcommon::SgGeometry g = geometry_with_scratch(
             BranchialEdges{&sub, static_cast<uint32_t>(c.size())}, ball, hgcommon::SG_HAUSDORFF);
         if ((g.defined & hgcommon::SG_HAUSDORFF) && (!have || g.hausdorff_dimension > best)) {
