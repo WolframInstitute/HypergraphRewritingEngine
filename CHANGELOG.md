@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## v1.0.0-rc2 (2026-10-09)
 
-User-visible changes since v1.0.0-rc1:
+User-visible changes since v1.0.0-rc1. The paclet version is 1.0.0, as in rc1.
 
 - The `"Step"` of an event identity is the step of the state the event produces. `Automatic`
   and key lists with `"Step"` count an event that repeats at a later step as a new event.
@@ -19,9 +19,13 @@ User-visible changes since v1.0.0-rc1:
   `"OllivierDegreeCorrelation"`, and the per-step key `"VertexInvariants"`: the local dimension,
   Ollivier curvature and Ricci scalar of every vertex of the step's states, with quartiles,
   10th and 90th percentiles, skewness and kurtosis.
-- `"StepStatisticsBranchial"` adds `"StateCosineSimilarity"`, `"StateMutualInformation"`,
-  `"InitialStateMutualInformation"`, `"EdgeSharpness"`, `"EdgeBranchEntropy"` and, with both
-  `"Graph"` and `"Overlap"`, `"OverlapByBranchialDistance"`, on both devices.
+- `"StepStatisticsWeighting" -> "Classes"` counts each isomorphism class of a step once in the
+  `"StepStatistics"` summaries; the default `"States"` counts each raw state.
+- `"StepStatisticsBranchial"` (`"Graph"`, `"Overlap"` or both) adds per-step branchial metrics
+  to `"StepStatistics"`: the branchial degree, distance, components and dimension, and the overlap
+  of the states' vertices and edges, including `"StateCosineSimilarity"`,
+  `"StateMutualInformation"`, `"InitialStateMutualInformation"`, `"EdgeSharpness"`,
+  `"EdgeBranchEntropy"` and, with both, `"OverlapByBranchialDistance"`, on both devices.
 - Every option of `Graph` is an option of `HGEvolve` and `HGSessionOpen` and goes to the graph a
   graph property returns.
 - `"MultiedgeStyle" -> "Merged"` draws the events between two states as one edge.
@@ -125,6 +129,8 @@ User-visible changes since v1.0.0-rc1:
 - Sessions: a steered `HGSessionStep` expands every frontier state its id stands for; after a
   failed session verb the next `"Delta"` request is sent as `"Full"`; a verb on an invalidated
   session says it was invalidated, on both binaries.
+- GPU: in one worker, a run after a run that reached the device memory cap is sized from its own
+  input and completes, as in a new worker.
 - GPU: a session verb is served under the settings the session was opened with; a session
   opened after a larger run fits its engine; a continuation matches through every edge of the
   state; a continuation reports only its own warnings.

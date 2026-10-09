@@ -17,7 +17,7 @@ This paclet provides efficient hypergraph rewriting capabilities with parallel p
 
 ### Prerequisites
 
-- Mathematica 13.0 or later
+- Mathematica 13.0 or later; the paclet is tested on 14.1 and 15.0
 - C++20-capable compiler (GCC 10+, Clang 12+, MSVC 19.29+)
 - CMake 3.14 or later
 

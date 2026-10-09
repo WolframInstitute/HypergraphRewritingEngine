@@ -162,8 +162,9 @@ identical reply shapes. The relation observables follow the one-relation rule of
 
 ## 9. Hardware baseline and differential testing
 
-Baseline is sm_75 (Turing); the shipping build compiles real SASS for sm_75, 80, 86, 89, 90, 100
-and 120 (Turing to Blackwell) and carries no PTX, so a card outside that list cannot run it. The
+Baseline is sm_75 (Turing). The shipped Linux and Windows binaries carry real SASS for sm_75, 80,
+86, 89 and 90 (Turing to Hopper) and no PTX, so a card outside that list cannot run them. A build
+from source uses the CMake default `HG_GPU_ARCHS`, which adds sm_100 and sm_120 (Blackwell). The
 CUDA 13 runtime it links statically needs NVIDIA driver 580 or newer. Device LTO is deliberately off (measured within noise of LTO on, and the
 multi-architecture LTO link is what made release builds unbuildable on the development box).
 Every kernel-level behaviour is differential-tested against the host engine; the suites and the

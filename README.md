@@ -39,7 +39,7 @@ Wolfram Physics Project*](paper/main.pdf). To cite it:
 - **Parallel Pattern Matching**: match-by-hyperedge join with signature-partitioned candidates and work-stealing scheduling.
 - **Incremental Match Forwarding**: re-use parent-state matches in child states; only find new matches that involve newly produced edges (selected per rule set by static analysis).
 - **Lock-free Data Structures**: concurrent hash map, key set, lock-free list, lock-free deque, thread-safe arena — the shared protocols model-checked under RC11/scoped-RC11 (GenMC, GPUMC) and TLA+ at their recorded bounds, sanitizer-gated in CI.
-- **Mathematica Paclet**: LibraryLink bindings with evolution, canonical/causal/branchial graph extraction, dimension / curvature / geodesic / branchial analyses, and topology / initial-condition generators.
+- **Mathematica Paclet**: LibraryLink bindings with evolution, canonical/causal/branchial graph extraction, dimension / curvature / geodesic / branchial analyses, per-step statistics (`"StepStatistics"`), and topology / initial-condition generators.
 
 ## Installation
 
@@ -141,7 +141,7 @@ The paclet includes native libraries for:
 - C++20 compiler (GCC 10+, Clang 12+)
 - CMake 3.14+
 - Google Test (automatically downloaded)
-- Mathematica 13+ (optional, for paclet)
+- Mathematica 13+ (optional, for paclet); the paclet is tested on 14.1 and 15.0
 
 ## Cross-Compilation
 
@@ -174,7 +174,7 @@ See [CROSS_COMPILATION.md](CROSS_COMPILATION.md) for detailed setup.
 ## Project Structure
 
 ```
-hypergraph/     Core CPU engine: evolution, matching, WL/IR canonicalization, storage
+hypergraph/     Core CPU engine: evolution, matching, IR canonicalization, storage
 gpu/            CUDA port (optional, BUILD_GPU=ON), mirrors the CPU algorithms
 job_system/     Work-stealing task scheduler the engine runs on
 lockfree_deque/ Lock-free concurrent deque backing the scheduler
@@ -201,7 +201,7 @@ New here? Users: **[docs/QUICKSTART.md](docs/QUICKSTART.md)**. Developers:
 **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
 The paclet's documentation, the reference pages of `HGEvolve` and the session functions, a
-guide and six tutorials, opens in the Wolfram Documentation Center once the paclet is installed;
+guide and seven tutorials, opens in the Wolfram Documentation Center once the paclet is installed;
 its sources are in [docs/en/](docs/en/), and [CONTRIBUTING.md](CONTRIBUTING.md) describes how
 they are built and checked.
 

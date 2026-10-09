@@ -201,8 +201,10 @@ well-defined; `docs/SPEC.md` §5 states which options are samplers and which are
   count and on either device, and reproducible for a fixed seed.
 - **The spine.** Below the branching factor a fixed rate makes the sampled evolution go
   extinct, so a state whose draws all failed keeps its transition with the smallest seeded rank
-  (`hgcommon::transition_rank`). The host decides it at the state's drain (`spine_at_drain`), the
-  device in the block that matches all of the state's rules (`match_state_rule`).
+  (`hgcommon::transition_rank`). Under the quotient reconstruction automorphic transitions share
+  a rank, and the tie goes to the smallest full-capture rank (`hgcommon::spine_before`). The host
+  decides it at the state's drain (`spine_at_drain`), the device in the block that matches all of
+  the state's rules (`match_state_rule`).
 - **The per-state match-task join.** Matching one state is a tree of tasks, so no single task
   sees all its matches; anything acting on them AS A SET needs to know when the tree drained.
   Two monotone per-state counters — `pushed` incremented before a spawned task is visible,
@@ -224,7 +226,7 @@ the drain fires once per state), `RuleWeights.*`.
 Ground truth is `reference/MultiwayReference.wl`, cross-checked against the Wolfram
 `Multicomputation` `MultiwaySystem` paclet. C++: `ctest`, which is the whole gate --
 `all_tests` aggregates the ENGINE suites only, and the job system and the two deques build their
-own binaries, so running it alone leaves those unexecuted and green. GPU adds `hg_gpu_tests` and
-`gpu_differential_tests`. Paclet: `reference/verify_paclet.wls` (golden corpus via
+own binaries, so running it alone leaves those unexecuted and green. GPU adds `hg_gpu_tests`,
+`gpu_differential_tests` and `gpu_ffi_tests`. Paclet: `reference/verify_paclet.wls` (golden corpus via
 wolframscript). The `ReferenceOracle` test compares canonical-state counts to a
 brute-force isomorphism oracle — the decisive correctness check.

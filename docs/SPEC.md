@@ -153,7 +153,9 @@ exact configuration. Sampling and capping options refine this as follows:
   drawn from the transition's isomorphism-invariant identity and the seed — so the sampled
   subgraph is the same at every worker count and on either device, and reproducible for a fixed
   `RandomSeed`. A spine keeps the state's transition with the smallest seeded rank when none of
-  its draws passed, so a fixed rate below the branching factor thins rather than extinguishes. A
+  its draws passed, so a fixed rate below the branching factor thins rather than extinguishes.
+  Under quotient exploration, transitions tied on that rank are ordered by their full-capture
+  rank, so the spine keeps the transition full capture keeps. A
   run under it matches every state in full (match forwarding off), so the draw and the spine see
   all of the state's transitions.
 - **`ExplorationProbability`** samples **per canonical state**, keyed the same way.

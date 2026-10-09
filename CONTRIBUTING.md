@@ -46,6 +46,7 @@ GPU (when built with `-DBUILD_GPU=ON`):
 ```bash
 ./build/gpu_differential_tests   # CPU-vs-GPU exact differential
 ./build/hg_gpu_tests             # GPU unit tests
+./build/gpu_ffi_tests            # FFI serialization tests answered by the GPU
 ```
 
 Paclet (needs a Wolfram Engine): `reference/verify_paclet.wls` loads the local paclet
