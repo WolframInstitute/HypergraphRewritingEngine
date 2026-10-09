@@ -22,6 +22,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/resource.h>
 #include <unistd.h>
 #endif
 #include <string>
@@ -1827,8 +1828,9 @@ struct WorkerPipes {
 
 // Each worker has its own FIFO pair, and the test's ends are close-on-exec: a second worker
 // forked while the first is live would otherwise inherit the first's write end, and the first
-// would never see end of input when the test closes it.
-bool worker_start(WorkerPipes& w, const std::string& exe) {
+// would never see end of input when the test closes it. A nonzero `address_space` caps the
+// worker's RLIMIT_AS in bytes.
+bool worker_start(WorkerPipes& w, const std::string& exe, uint64_t address_space = 0) {
     static int next_worker = 0;
     w.dir = std::string(HG_SOURCE_DIR) + "/.gpu_gate_fifo." + std::to_string(::getpid()) + "." +
             std::to_string(next_worker++);
@@ -1847,6 +1849,10 @@ bool worker_start(WorkerPipes& w, const std::string& exe) {
         const int fout = ::open(w.out_path.c_str(), O_WRONLY);
         if (fin >= 0)  ::dup2(fin, 0);
         if (fout >= 0) ::dup2(fout, 1);
+        if (address_space) {
+            const struct rlimit lim = {address_space, address_space};
+            ::setrlimit(RLIMIT_AS, &lim);
+        }
         ::execl(exe.c_str(), exe.c_str(), "--serve", (char*)nullptr);
         ::_exit(127);
     }
@@ -1890,9 +1896,16 @@ std::vector<uint8_t> worker_call(WorkerPipes& w, const std::vector<uint8_t>& job
         sent += static_cast<size_t>(r);
     }
     std::vector<uint8_t> lenbuf;
-    if (!read_exact_fd(w.out_fd, 8, lenbuf)) return {};
     uint64_t reply_len = 0;
-    for (int i = 0; i < 8; ++i) reply_len |= static_cast<uint64_t>(lenbuf[i]) << (8 * i);
+    for (;;) {
+        if (!read_exact_fd(w.out_fd, 8, lenbuf)) return {};
+        reply_len = 0;
+        for (int i = 0; i < 8; ++i) reply_len |= static_cast<uint64_t>(lenbuf[i]) << (8 * i);
+        if (!(reply_len >> 63)) break;
+        // A progress frame (bit 63) precedes the reply; its text is skipped.
+        std::vector<uint8_t> progress;
+        if (!read_exact_fd(w.out_fd, reply_len & ~(1ull << 63), progress)) return {};
+    }
     if (reply_len == 0) return {};
     const bool error = (reply_len >> 62) == 1;   // bit 62 set, bit 63 clear: an error frame
     reply_len &= ~(3ull << 62);
@@ -1947,6 +1960,73 @@ TEST(GpuBinaryGate, AQuotientSessionSteppedHoldsWhatOneEvolveReconstructs) {
         for (const char* k : {"NumEvents", "NumCausalEdges", "NumBranchialEdges"})
             EXPECT_EQ(read_int_key(s2, k), read_int_key(one_shot, k)) << k;
         worker_call(w, build_input_with_op(0, "Close", handle, false));
+    }
+    worker_stop(w);
+}
+
+// One GPU worker serves four jobs in sequence, and each reply's counts equal a CPU worker's for the
+// same job. Job 2 ran out of device memory after job 1 (100,736 states, CPU 137,432), and job 4
+// returned [1,0,0,0] with no warning (CPU [7,6,0,8]): the device config each job started from was
+// the previous job's. The worker runs under the fuzz harness's RLIMIT_AS of 16,384,000,000 bytes;
+// at 48 GB job 2 fits in the stale config and the sequence passes on the defective binary.
+TEST(GpuBinaryGate, AWorkerJobSequenceMatchesTheCpuJobByJob) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    if (!CpuWorker::built()) GTEST_SKIP() << "hg_evolve is not built here";
+    const std::vector<std::string> counts = {"NumStates", "NumEvents", "NumCausalEdges",
+                                             "NumBranchialEdges"};
+    const auto counts_job = [&](const StateList& init, const EdgeList& lhs, const EdgeList& rhs,
+                                const std::vector<std::string>& requested, int64_t max_states) {
+        return build_input(init, lhs, rhs, 1,
+                           [&](wxf::Writer& w) {
+                               put_str_list_option(w, "RequestedData", requested);
+                               if (max_states) {
+                                   w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                                   w.write(std::string("MaxStatesPerStep"));
+                                   w.write(max_states);
+                               }
+                           },
+                           max_states ? 2 : 1);
+    };
+    const auto big_job = [&](const std::vector<std::string>& requested) {
+        return build_input({{{1}, {1}, {1}, {1}, {1}, {1}}, {{3}, {3, 3, 5, 2}, {1}, {2}}},
+                           {{1}, {1}}, {{1, 1, 1}, {1}, {1, 1}}, 5,
+                           [&](wxf::Writer& w) {
+                               put_str_option(w, "IncludeCanonicalHashes", "True");
+                               put_str_list_option(w, "RequestedData", requested);
+                               put_str_option(w, "CanonicalizeStates", "None");
+                               put_str_option(w, "CanonicalizeEvents", "Automatic");
+                           },
+                           4);
+    };
+    const std::vector<std::vector<uint8_t>> jobs = {
+        counts_job({{{1, 2}}}, {{1, 2}, {2, 3}, {3, 4}}, {{1, 2}}, {"NumStates"}, 0),
+        big_job({"States", "Events", "CausalEdges", "BranchialEdges", "NumStates", "NumEvents",
+                 "NumCausalEdges", "NumBranchialEdges"}),
+        big_job(counts),
+        counts_job({{{1, 1}, {1, 1}, {1, 1}, {1, 1, 1}, {1, 1, 1}, {1, 1}}},
+                   {{3, 2, 2}, {2, 1}}, {{1}, {3, 2}}, counts, 6),
+    };
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path(), 16000000ull * 1024)) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    CpuWorker cpu;
+    ASSERT_TRUE(cpu.ok);
+    for (size_t j = 0; j < jobs.size(); ++j) {
+        const auto host = cpu(jobs[j]);
+        ASSERT_FALSE(host.empty()) << "job " << j << ": " << cpu.w.last_error;
+        const auto device = worker_call(w, jobs[j]);
+        if (j == 0 && device.empty()) {
+            worker_stop(w);
+            GTEST_SKIP() << "the worker returned no result (no usable device?)";
+        }
+        ASSERT_FALSE(device.empty()) << "job " << j << ": " << w.last_error;
+        for (const auto& k : counts)
+            EXPECT_EQ(read_int_key(device, k), read_int_key(host, k)) << "job " << j << " " << k;
     }
     worker_stop(w);
 }
