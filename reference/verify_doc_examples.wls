@@ -30,6 +30,17 @@
    Each page's blocks share one context of their own, so a definition on one page is not
    visible on the next.
 
+   A GRAPHICAL RESULT HAS ITS IMAGE. A block whose result contains a Graph, Graphics,
+   Graphics3D or Image is followed in the markdown by the image line tools/doc_images.wl
+   defines, naming docs/en/images/<Page>/<Page>-<n>.png, and that file exists. A block without
+   one fails, and so does an image line after a block whose result is not graphical.
+   --render-images rasterizes each graphical result as a notebook shows it (Rasterize,
+   ImageResolution 144, white background), writes the PNG, writes or replaces the image line
+   (its alt text is the first sentence of the paragraph before the block), removes image lines
+   from blocks whose result is not graphical, and deletes PNGs in images/<Page>/ that no line
+   names.
+   ./build_docs.sh images runs this mode.
+
    Exit code is the number of failing blocks. *)
 
 repo = ParentDirectory[DirectoryName[$InputFileName]];
@@ -64,10 +75,20 @@ Quiet@Check[HGEvolve[{{1, 2}} -> {{1, 2}, {2, 3}}, {{1, 2}}, 1], Null];
 Quiet@Check[HGEvolve[{{1, 2}} -> {{1, 2}, {2, 3}}, {{1, 2}}, 1, "NumStates",
                      "TargetDevice" -> "GPU"], Null];
 
-(* Fenced blocks, in file order, each with the hint that follows it (None when there is none).
-   A fence line opens or closes; text between an odd and an even fence is code. *)
-blocksOf[path_] := Module[{lines, out = {}, cur = {}, inside = False, n, j, hint},
-  lines = StringSplit[Import[path, "Text"], "\n"];
+Get[FileNameJoin[{repo, "tools", "doc_images.wl"}]];
+renderImages = MemberQ[Rest[$ScriptCommandLine], "--render-images"];
+
+(* The page's lines, read and written as UTF-8 bytes so a rewrite changes only the image lines. *)
+pageLines[path_] := StringSplit[ByteArrayToString[ReadByteArray[path], "UTF-8"], "\n", All];
+writePageLines[path_, lines_] := Export[path, StringToByteArray[StringRiffle[lines, "\n"], "UTF-8"], "Binary"];
+
+(* Fenced blocks, in file order. Each records its code, the hint that follows it (None when there
+   is none), the line numbers of its opening and closing fences, the line number of the image line
+   after it (None when there is none) and the paragraph before it. A fence line opens or closes;
+   text between an odd and an even fence is code. Between the closing fence and the hint come blank
+   lines and at most one image line. *)
+blocksOf[path_] := Module[{lines, out = {}, cur = {}, inside = False, n, j, hint, open = 0, img, p, para},
+  lines = pageLines[path];
   n = Length[lines];
   Do[
     With[{l = lines[[k]]},
@@ -75,15 +96,42 @@ blocksOf[path_] := Module[{lines, out = {}, cur = {}, inside = False, n, j, hint
         If[inside,
           j = k + 1;
           While[j <= n && StringTrim[lines[[j]]] === "", j++];
+          img = None;
+          If[j <= n && docImageLineQ[lines[[j]]],
+            img = j; j++;
+            While[j <= n && StringTrim[lines[[j]]] === "", j++]];
           hint = If[j <= n,
             StringCases[StringTrim[lines[[j]]], StartOfString ~~ "<!-- =>" ~~ h__ ~~ "-->" ~~ EndOfString :> StringTrim[h]],
             {}];
-          AppendTo[out, {StringRiffle[cur, "\n"], If[hint === {}, None, First[hint]]}];
+          p = open - 1;
+          While[p >= 1 && StringTrim[lines[[p]]] === "", p--];
+          para = {};
+          While[p >= 1 && StringTrim[lines[[p]]] =!= "" &&
+                ! StringStartsQ[StringTrim[lines[[p]]], "```" | "#" | "---" | "<!--" | "|" | "!["],
+            PrependTo[para, lines[[p]]]; p--];
+          (* A block that follows another block's hint, image or fence shares its paragraph. *)
+          If[para === {} && p >= 1 && out =!= {} &&
+             StringStartsQ[StringTrim[lines[[p]]], "```" | "<!--" | "!["],
+            para = {out[[-1]]["Para"]}];
+          AppendTo[out, <|"Code" -> StringRiffle[cur, "\n"], "Hint" -> If[hint === {}, None, First[hint]],
+            "Open" -> open, "Close" -> k, "Image" -> img, "Para" -> StringRiffle[para, " "]|>];
           cur = {}; inside = False,
-          inside = True],
+          inside = True; open = k],
         If[inside, AppendTo[cur, l]]]],
     {k, n}];
-  Select[out, StringTrim[First[#]] =!= "" &]];
+  Select[out, StringTrim[#Code] =!= "" &]];
+
+graphicalQ[res_] := ! FreeQ[res, _Graph | _Graphics | _Graphics3D | _Image | _Image3D];
+
+(* Alt text: the first sentence of the paragraph before the block in plain text, without the colon
+   that introduces the block. *)
+altText[para_String, page_String, i_Integer] := Module[{t},
+  t = StringReplace[para, {"[" ~~ s : Shortest[Except["]"] ...] ~~ "]()" :> s,
+    "<code>" | "</code>" | "*" | "`" | "[" | "]" -> ""}];
+  t = StringTrim[StringReplace[t, Whitespace -> " "]];
+  t = StringTrim[First[StringSplit[t, RegularExpression["(?<=\\.)\\s+(?=[A-Z])"], 2], ""]];
+  t = StringTrim[StringReplace[t, ":" ~~ EndOfString -> ""]];
+  If[t === "", page <> " example " <> IntegerString[i], t]];
 
 collapse[text_String] := StringReplace[StringTrim[text], Whitespace -> " "];
 hintMatchQ[res_, hint_String] := With[{got = collapse[ToString[res, InputForm, PageWidth -> Infinity]]},
@@ -96,17 +144,22 @@ gpuFallbackOK = MemberQ[Rest[$ScriptCommandLine], "--allow-gpu-fallback"];
    is evaluated. Arguments, not environment variables: a variable set in WSL does not reach the
    Windows kernel. *)
 pageFilter = Select[Rest[$ScriptCommandLine], ! StringStartsQ[#, "--"] &];
-sources = Select[FileNames["*.md", FileNameJoin[{repo, "docs", "en"}], Infinity],
+enDir = FileNameJoin[{repo, "docs", "en"}];
+sources = Select[FileNames["*.md", enDir, Infinity],
   ! StringContainsQ[#, ".generated"] &&
     (pageFilter === {} || MemberQ[pageFilter, FileBaseName[#]]) &];
 total = 0; failed = {};
 
 Do[
-  Module[{blocks = blocksOf[src], ctx = "DocExample`" <> FileBaseName[src] <> "`"},
+  Module[{blocks = blocksOf[src], page = FileBaseName[src], ctx = "DocExample`" <> FileBaseName[src] <> "`",
+          up, edits = {}, lines, imgDir},
+    up = StringRepeat["../", Length[FileNameSplit[DirectoryName[src]]] - Length[FileNameSplit[enDir]]];
+    imgDir = FileNameJoin[{enDir, "images", page}];
     Print["\n=== ", FileNameTake[src], ": ", Length[blocks], " block(s) ==="];
     Do[
-      Module[{code = blocks[[i, 1]], hint = blocks[[i, 2]], msgs = {}, firstMsg = None, res, bad,
-              hintBad, stated, msgBad},
+      Module[{code = blocks[[i]]["Code"], hint = blocks[[i]]["Hint"], img = blocks[[i]]["Image"],
+              msgs = {}, firstMsg = None, res, bad, hintBad, stated, msgBad, graphical, rel, imgBad = None,
+              raster},
         total++;
         (* The handler fires for EVERY message, as Hold[Message[name, args], on], including ones
            that are switched off (on is False), which a user is not shown and this ignores.
@@ -134,7 +187,28 @@ Do[
             StringCases[hint, "the message " ~~ m : (WordCharacter .. ~~ "::" ~~ WordCharacter ..) ~~ " is issued" :> m],
             {}];
         msgBad = Union[msgs] =!= Union[stated];
-        If[bad || msgBad || hintBad,
+        graphical = graphicalQ[res];
+        rel = docImageRel[page, i];
+        Which[
+          renderImages && graphical,
+            raster = Quiet@Check[Rasterize[res, "Image", ImageResolution -> 144, Background -> White], $Failed];
+            If[ImageQ[raster],
+              If[! DirectoryQ[imgDir], CreateDirectory[imgDir, CreateIntermediateDirectories -> True]];
+              Export[FileNameJoin[{enDir, rel}], raster, "PNG"];
+              AppendTo[edits, {blocks[[i]]["Close"], img,
+                "![" <> altText[blocks[[i]]["Para"], page, i] <> "](" <> up <> rel <> ")"}],
+              imgBad = "Rasterize did not give an image"],
+          renderImages,
+            If[img =!= None, AppendTo[edits, {blocks[[i]]["Close"], img, None}]],
+          graphical && img === None,
+            imgBad = "graphical result without an image line",
+          graphical && ! StringEndsQ[StringTrim[pageLines[src][[img]]], "](" <> up <> rel <> ")"],
+            imgBad = "image line does not name " <> up <> rel,
+          graphical && ! FileExistsQ[FileNameJoin[{enDir, rel}]],
+            imgBad = "missing image file " <> rel,
+          ! graphical && img =!= None,
+            imgBad = "image line after a result that is not graphical"];
+        If[bad || msgBad || hintBad || StringQ[imgBad],
           AppendTo[failed, {FileNameTake[src], i}];
           Print["FAIL  block ", i, "  ", StringTake[StringReplace[code, "\n" -> " "],
                                                     UpTo[70]]];
@@ -143,9 +217,25 @@ Do[
                   Take[Tally[msgs], UpTo[6]], "; stated: ", stated, "\n      first: ", firstMsg]];
           If[bad, Print["      returned: ", ToString[Short[res, 2]]]];
           If[hintBad, Print["      hint:     ", hint, "\n      returned: ",
-                            collapse[ToString[res, InputForm, PageWidth -> Infinity]]]],
-          Print["PASS  block ", i]]],
-      {i, Length[blocks]}]],
+                            collapse[ToString[res, InputForm, PageWidth -> Infinity]]]];
+          If[StringQ[imgBad], Print["      image:    ", imgBad]],
+          Print["PASS  block ", i, If[graphical, "  (image)", ""]]]],
+      {i, Length[blocks]}];
+    (* Apply the image-line edits from the last block up, so earlier line numbers stay valid. An
+       edit is {closing fence, existing image line or None, new line or None}. *)
+    If[renderImages,
+      lines = pageLines[src];
+      Scan[Function[e, Which[
+          e[[2]] =!= None && e[[3]] =!= None, lines[[e[[2]]]] = e[[3]],
+          e[[2]] =!= None, lines = Delete[lines, If[StringTrim[lines[[e[[2]] - 1]]] === "",
+                                                     {{e[[2]] - 1}, {e[[2]]}}, {{e[[2]]}}]],
+          True, lines = Insert[lines, e[[3]], e[[1]] + 1]; lines = Insert[lines, "", e[[1]] + 1]]],
+        ReverseSortBy[edits, First]];
+      If[lines =!= pageLines[src], writePageLines[src, lines]; Print["wrote ", FileNameTake[src]]];
+      With[{named = StringCases[StringRiffle[lines, "\n"],
+                      "](" ~~ ("../" ..) ~~ "images/" ~~ page ~~ "/" ~~ r : (Except[")" | "/"] .. ~~ ".png") ~~ ")" :> r]},
+        Scan[If[! MemberQ[named, FileNameTake[#]], DeleteFile[#]; Print["deleted ", #]] &,
+          FileNames["*.png", imgDir]]]]],
   {src, sources}];
 
 Print["\n============================================================"];

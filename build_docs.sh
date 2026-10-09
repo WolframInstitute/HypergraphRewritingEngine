@@ -8,6 +8,9 @@
 #   ./build_docs.sh                 generate and evaluate examples (renders the engine's output)
 #   ./build_docs.sh structure       input-only cells, into docs/en/.generated/
 #   ./build_docs.sh only=<regex>    only the sources whose file name matches <regex>
+#   ./build_docs.sh images [Page..] render each graphical example result to
+#                                   docs/en/images/<Page>/<Page>-<n>.png and write the image line
+#                                   after its block (reference/verify_doc_examples.wls --render-images)
 #
 # After placing the notebooks it deletes every notebook under the destination that no source
 # maps to, so a renamed or removed page leaves no notebook behind.
@@ -39,6 +42,14 @@ else
     WS_EXE="$(ls /mnt/c/Program\ Files/Wolfram*/*/*/wolframscript.exe 2>/dev/null | sort -V | tail -1 || true)"
     [[ -n "$WS_EXE" ]] || { echo "error: wolframscript not found (install Wolfram Engine or Mathematica)"; exit 1; }
     WS_KIND=windows
+fi
+
+# Images mode: evaluate the examples and write the result images; no notebooks are built.
+if [[ "${1:-}" == images ]]; then
+    VERIFY="$ROOT/reference/verify_doc_examples.wls"
+    [[ "$WS_KIND" == windows ]] && VERIFY="$(wslpath -w "$VERIFY")"
+    echo "==> rendering example images into docs/en/images/"
+    exec "$WS_EXE" -file "$VERIFY" --render-images "${@:2}"
 fi
 
 # 3. Build the notebooks.

@@ -74,6 +74,16 @@ toolStamp = Hash[{FileHash[mtnPath, "SHA256"], FileHash[$InputFileName, "SHA256"
 
 If[structureMode, $convertDepth = 1];
 
+(* A page's markdown without the image lines that show its example results on GitHub
+   (tools/doc_images.wl): the evaluated notebook shows each result itself. The converter reads
+   it from a copy named after the page in a temporary directory; the pages include no files by
+   relative path. *)
+Get[FileNameJoin[{repo, "tools", "doc_images.wl"}]];
+pageText[f_] := stripDocImageLines[ByteArrayToString[ReadByteArray[f], "UTF-8"]];
+strippedDir = CreateDirectory[];
+pageSource[f_] := With[{copy = FileNameJoin[{strippedDir, FileNameTake[f]}]},
+  Export[copy, StringToByteArray[pageText[f], "UTF-8"], "Binary"]; copy];
+
 subdirFor[tmpl_] := Switch[tmpl,
   "Symbol",   {"ReferencePages", "Symbols"},
   "Guide",    {"Guides"},
@@ -107,7 +117,7 @@ If[badNames =!= {},
 
 (* Incremental build: the manifest in `dest` maps each notebook to the key that produced the copy
    there. A page is rebuilt when its key changed or its notebook is missing. *)
-buildKey[f_] := Hash[{FileHash[f, "SHA256"], engineStamp, toolStamp, structureMode}];
+buildKey[f_] := Hash[{Hash[pageText[f], "SHA256"], engineStamp, toolStamp, structureMode}];
 manifestName = ".doc_manifest.wl";
 oldManifest  = With[{p = FileNameJoin[{dest, manifestName}]},
   If[FileExistsQ[p], Replace[Quiet@Get[p], Except[_?AssociationQ] -> <||>], <||>]];
@@ -129,7 +139,7 @@ Do[
         (* "UseCache" -> False: the converter's own output cache is keyed by the example code
            alone, so after an engine or kernel change it would serve the old outputs. Whether a
            page is rebuilt at all is decided above, by a key that covers both. *)
-        MarkdownToNotebook[f, target,
+        MarkdownToNotebook[pageSource[f], target,
           "EvaluateSeparator" -> If[page["Template"] === "TechNote", None, Automatic],
           "UseCache" -> False];
         (* Export can fail without aborting; a notebook that was not written is a failure. *)

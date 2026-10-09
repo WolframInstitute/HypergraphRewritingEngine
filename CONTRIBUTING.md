@@ -109,12 +109,24 @@ A comment after an example records its result, and the example gate compares it:
 
 Text after `; ` is a note. A block may issue only the messages its comment names.
 
+An example whose result contains a graph, graphics or an image is followed by an image of that
+result, so the page shows it on GitHub:
+
+```
+![The first sentence of the paragraph before the block](../images/<Page>/<Page>-<n>.png)
+```
+
+`./build_docs.sh images` evaluates the examples, rasterizes each graphical result into
+`docs/en/images/<Page>/` and writes these lines; rerunning it replaces them. The notebook build
+removes them, since an evaluated notebook shows the result itself.
+
 ### Building
 
 ```
 ./build_docs.sh                 # evaluate and convert every changed page
 ./build_docs.sh only=<regex>    # only the pages whose file name matches
 ./build_docs.sh structure       # input cells only, into docs/en/.generated/ (not tracked)
+./build_docs.sh images [Page..] # images of the graphical example results, into docs/en/images/
 ```
 
 The build needs `wolframscript` (native, or the Windows install used from WSL) and the engine
@@ -131,7 +143,7 @@ Wolfram kernel on every push that changes documentation.
 
 | Check | What it checks |
 |---|---|
-| `reference/verify_doc_examples.wls` | every example evaluates without an unstated message and matches its recorded result |
+| `reference/verify_doc_examples.wls` | every example evaluates without an unstated message and matches its recorded result; every graphical result has its image line and image file |
 | `tools/dev/doc_messages_check.py` | no built notebook shows a message its page does not state |
 | `tools/dev/lint_docs.py` | markdown lint of the pages and the other tracked markdown |
 | `tools/dev/docs_fresh_check.py` | no notebook was last changed in an older commit than its markdown |

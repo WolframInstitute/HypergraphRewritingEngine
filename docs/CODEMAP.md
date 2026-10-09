@@ -283,7 +283,7 @@ implementation is written `MultiwayReference` and the directory `reference/`.
 - **`verify_sessions.wls`** -- the session verbs' LIFETIME (open, refuse a second open, step, close, reopen), with every prefix depth compared against an independent one-shot `HGEvolve`
 - **`verify_state_statistics.wls`** -- "StepStatistics" against the multiway-statistics probes' definitions computed in Wolfram Language from a raw run, under quotient exploration and full capture, every key of every step; the geometry and branchial keys against `StateGeometryReference.wl`, with "StepStatisticsWeighting" -> "Classes" and "StepStatisticsBranchial" -> All, on the corpus and on random rules; and WolframHausdorffDimension and WolframRicciCurvatureScalar against the Function Repository
 - **`StateGeometryReference.wl`** -- an independent Wolfram Language implementation of the "StepStatistics" geometry and branchial metrics (docs/SPEC.md), from Graph built-ins and an exact transport linear program
-- **`verify_doc_examples.wls`** -- evaluates every example in `docs/en`, each page in a context of its own, and fails on a message, a `Failure`, an unevaluated `HGEvolve`, a `<!-- => ... -->` hint the result does not equal, or a GPU example that ran on the CPU (`--allow-gpu-fallback` reports that instead); page names after the script limit the run to those pages
+- **`verify_doc_examples.wls`** -- evaluates every example in `docs/en`, each page in a context of its own, and fails on a message, a `Failure`, an unevaluated `HGEvolve`, a `<!-- => ... -->` hint the result does not equal, a graphical result without its image line or image file, or a GPU example that ran on the CPU (`--allow-gpu-fallback` reports that instead); page names after the script limit the run to those pages. `--render-images` (`./build_docs.sh images`) writes the images to `docs/en/images/<Page>/` and the image lines after the blocks
 - **`validate.wls` / `compare_multiwaysystem.wls`** -- validate the reference vs a determinism corpus / cross-check vs the authoritative `MultiwaySystem` paclet
 - **`CANONICALIZATION.md`** -- the canonicalization naming cross-map across the four layers
 
@@ -293,7 +293,7 @@ Validation: `arena_reset_test`, `determinism_forwarding_repro`, `causal_tr_deter
 Canonicalization research: `ir_edge_map_probe`, `ir_edge_orbit_probe`, `ir_incremental_probe`, `ir_malloc_bench`, `incremental_probe`.
 Physics hunches: `branchial_flux_probe`, `budget_collapse_probe`, `higgs_shadow_probe`.
 Profiling: `profile_evolve` (single-threaded, for callgrind/cachegrind), `bench_gpu_evolve` (GPU evolve() vs PersistentEvolver timing; `HG_GPU_DBG_TIME=1` prints the persistent scheduler's phase-cycle attribution), `bench_cpu_evolve` (the CPU twin of the same workload).
-Build/docs: `build_paclet.wls` (CreatePacletArchive), `build_docs.wls` (markdown -> paclet notebooks).
+Build/docs: `build_paclet.wls` (CreatePacletArchive), `build_docs.wls` (markdown -> paclet notebooks), `doc_images.wl` (the image line after a graphical documentation example: its format, its path, and its removal before conversion).
 
 ## `tools/dev/` -- the measurement pipeline behind the paper
 
