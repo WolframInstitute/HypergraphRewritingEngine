@@ -549,7 +549,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
                 canon_mode == hg_gpu::CanonicalizationMode::Full, std::move(edges));
             states_assoc.push_back({wxf::WXFValue(static_cast<int64_t>(s)), wxf::WXFValue(sink.take())});
         }
-        full_result.push_back({wxf::WXFValue("States"), wxf::WXFValue(states_assoc)});
+        full_result.push_back({wxf::WXFValue("States"), wxf::WXFValue(std::move(states_assoc))});
     }
 
     // The identity a reconstructed application is REPORTED under, shared by the edge lists and
@@ -675,7 +675,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
                 job.include_events_minimal, consumed, produced);
             events_assoc.push_back({wxf::WXFValue(gid), wxf::WXFValue(sink.take())});
         }
-        full_result.push_back({wxf::WXFValue("Events"), wxf::WXFValue(events_assoc)});
+        full_result.push_back({wxf::WXFValue("Events"), wxf::WXFValue(std::move(events_assoc))});
     }
 
     // An event's id under the event identity in force: its canonical event, or itself. From and To
@@ -705,7 +705,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
                 ed.push_back({wxf::WXFValue("To"), wxf::WXFValue(recon_id(c))});
                 ed.push_back({wxf::WXFValue("RawFrom"), wxf::WXFValue(static_cast<int64_t>(p))});
                 ed.push_back({wxf::WXFValue("RawTo"), wxf::WXFValue(static_cast<int64_t>(c))});
-                causal.push_back(wxf::WXFValue(ed));
+                causal.push_back(wxf::WXFValue(std::move(ed)));
             }
             for (const auto& [root, ev] : recon_genesis) {
                 const int64_t from = static_cast<int64_t>(first_genesis_event + root);
@@ -714,9 +714,9 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
                 ed.push_back({wxf::WXFValue("To"), wxf::WXFValue(recon_id(ev))});
                 ed.push_back({wxf::WXFValue("RawFrom"), wxf::WXFValue(from)});
                 ed.push_back({wxf::WXFValue("RawTo"), wxf::WXFValue(static_cast<int64_t>(ev))});
-                causal.push_back(wxf::WXFValue(ed));
+                causal.push_back(wxf::WXFValue(std::move(ed)));
             }
-            full_result.push_back({wxf::WXFValue("CausalEdges"), wxf::WXFValue(causal)});
+            full_result.push_back({wxf::WXFValue("CausalEdges"), wxf::WXFValue(std::move(causal))});
         }
         num_causal = static_cast<int64_t>(raw.size() + recon_genesis.size());
     } else {
@@ -731,7 +731,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
                 ed.push_back({wxf::WXFValue("To"), wxf::WXFValue(event_id_of(c.to))});
                 ed.push_back({wxf::WXFValue("RawFrom"), wxf::WXFValue(static_cast<int64_t>(c.from))});
                 ed.push_back({wxf::WXFValue("RawTo"), wxf::WXFValue(static_cast<int64_t>(c.to))});
-                causal.push_back(wxf::WXFValue(ed));
+                causal.push_back(wxf::WXFValue(std::move(ed)));
             }
         }
         for (const auto& [root, to] : genesis_causal) {
@@ -744,13 +744,13 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
                 ed.push_back({wxf::WXFValue("To"), wxf::WXFValue(static_cast<int64_t>(to))});
                 ed.push_back({wxf::WXFValue("RawFrom"), wxf::WXFValue(static_cast<int64_t>(from))});
                 ed.push_back({wxf::WXFValue("RawTo"), wxf::WXFValue(static_cast<int64_t>(to))});
-                causal.push_back(wxf::WXFValue(ed));
+                causal.push_back(wxf::WXFValue(std::move(ed)));
             }
         }
 
         num_causal = static_cast<int64_t>(seen.size());
         if (job.include_causal_edges)
-            full_result.push_back({wxf::WXFValue("CausalEdges"), wxf::WXFValue(causal)});
+            full_result.push_back({wxf::WXFValue("CausalEdges"), wxf::WXFValue(std::move(causal))});
     }
 
     // BranchialEdges: no dedup (multiplicity matters).
@@ -760,18 +760,18 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
             wxf::WXFValueAssociation ed;
             ed.push_back({wxf::WXFValue("From"), wxf::WXFValue(recon_id(a))});
             ed.push_back({wxf::WXFValue("To"), wxf::WXFValue(recon_id(b))});
-            branchial.push_back(wxf::WXFValue(ed));
+            branchial.push_back(wxf::WXFValue(std::move(ed)));
         }
-        full_result.push_back({wxf::WXFValue("BranchialEdges"), wxf::WXFValue(branchial)});
+        full_result.push_back({wxf::WXFValue("BranchialEdges"), wxf::WXFValue(std::move(branchial))});
     } else if (job.include_branchial_edges) {
         wxf::WXFValueList branchial;
         for (const auto& b : result.branchial_edges) {
             wxf::WXFValueAssociation ed;
             ed.push_back({wxf::WXFValue("From"), wxf::WXFValue(event_id_of(b.a))});
             ed.push_back({wxf::WXFValue("To"), wxf::WXFValue(event_id_of(b.b))});
-            branchial.push_back(wxf::WXFValue(ed));
+            branchial.push_back(wxf::WXFValue(std::move(ed)));
         }
-        full_result.push_back({wxf::WXFValue("BranchialEdges"), wxf::WXFValue(branchial)});
+        full_result.push_back({wxf::WXFValue("BranchialEdges"), wxf::WXFValue(std::move(branchial))});
     }
 
     // BranchialStateEdges / BranchialStateEdgesAllSiblings: the state-endpoint projection of the
@@ -845,7 +845,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
             for (auto v : vs) edge_data.push_back(wxf::WXFValue(static_cast<int64_t>(v)));
             global_edges.push_back(wxf::WXFValue(edge_data));
         }
-        full_result.push_back({wxf::WXFValue("GlobalEdges"), wxf::WXFValue(global_edges)});
+        full_result.push_back({wxf::WXFValue("GlobalEdges"), wxf::WXFValue(std::move(global_edges))});
     }
     if (job.include_state_bitvectors) {
         wxf::WXFValueAssociation state_bitvectors;

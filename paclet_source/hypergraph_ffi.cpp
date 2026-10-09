@@ -1427,7 +1427,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                                              wxf::WXFValue(static_cast<int64_t>(p))});
                         edge_data.push_back({wxf::WXFValue("RawTo"),
                                              wxf::WXFValue(static_cast<int64_t>(c))});
-                        causal_edges.push_back(wxf::WXFValue(edge_data));
+                        causal_edges.push_back(wxf::WXFValue(std::move(edge_data)));
                     });
                 for (const auto& [g, ev] : recon_genesis_pairs) {
                     const int64_t from = static_cast<int64_t>(recon.id_bound) + g;
@@ -1437,7 +1437,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                     edge_data.push_back({wxf::WXFValue("RawFrom"), wxf::WXFValue(from)});
                     edge_data.push_back({wxf::WXFValue("RawTo"),
                                          wxf::WXFValue(static_cast<int64_t>(ev))});
-                    causal_edges.push_back(wxf::WXFValue(edge_data));
+                    causal_edges.push_back(wxf::WXFValue(std::move(edge_data)));
                 }
             } else {
             auto causal_edge_vec = hg.causal_graph().get_causal_edges();
@@ -1472,10 +1472,10 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 // Also include raw event IDs for when event canonicalization is disabled
                 edge_data.push_back({wxf::WXFValue("RawFrom"), wxf::WXFValue(static_cast<int64_t>(edge.producer))});
                 edge_data.push_back({wxf::WXFValue("RawTo"), wxf::WXFValue(static_cast<int64_t>(edge.consumer))});
-                causal_edges.push_back(wxf::WXFValue(edge_data));
+                causal_edges.push_back(wxf::WXFValue(std::move(edge_data)));
             }
             }
-            full_result.push_back({wxf::WXFValue("CausalEdges"), wxf::WXFValue(causal_edges)});
+            full_result.push_back({wxf::WXFValue("CausalEdges"), wxf::WXFValue(std::move(causal_edges))});
         }
 
         // BranchialEdges -> List of {From -> canonical_event_id, To -> canonical_event_id}
@@ -1508,7 +1508,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                         wxf::WXFValueAssociation edge_data;
                         edge_data.push_back({wxf::WXFValue("From"), wxf::WXFValue(dense_id(a))});
                         edge_data.push_back({wxf::WXFValue("To"), wxf::WXFValue(dense_id(b))});
-                        branchial_edges.push_back(wxf::WXFValue(edge_data));
+                        branchial_edges.push_back(wxf::WXFValue(std::move(edge_data)));
                     });
             } else {
             auto branchial_edge_vec = hg.causal_graph().get_branchial_edges();
@@ -1525,10 +1525,10 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 wxf::WXFValueAssociation edge_data;
                 edge_data.push_back({wxf::WXFValue("From"), wxf::WXFValue(static_cast<int64_t>(canonical_from))});
                 edge_data.push_back({wxf::WXFValue("To"), wxf::WXFValue(static_cast<int64_t>(canonical_to))});
-                branchial_edges.push_back(wxf::WXFValue(edge_data));
+                branchial_edges.push_back(wxf::WXFValue(std::move(edge_data)));
             }
             }
-            full_result.push_back({wxf::WXFValue("BranchialEdges"), wxf::WXFValue(branchial_edges)});
+            full_result.push_back({wxf::WXFValue("BranchialEdges"), wxf::WXFValue(std::move(branchial_edges))});
         }
 
         // BranchialStateEdges / BranchialStateEdgesAllSiblings -> the state-endpoint projection
@@ -2013,9 +2013,9 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 for (uint8_t i = 0; i < edge.arity; ++i) {
                     edge_data.push_back(wxf::WXFValue(static_cast<int64_t>(edge.vertices[i])));
                 }
-                global_edges.push_back(wxf::WXFValue(edge_data));
+                global_edges.push_back(wxf::WXFValue(std::move(edge_data)));
             }
-            full_result.push_back(std::make_pair(wxf::WXFValue("GlobalEdges"), wxf::WXFValue(global_edges)));
+            full_result.push_back(std::make_pair(wxf::WXFValue("GlobalEdges"), wxf::WXFValue(std::move(global_edges))));
         }
 
         // StateBitvectors -> Association[state_id -> List of edge IDs present in that state]

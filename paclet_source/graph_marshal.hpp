@@ -485,11 +485,12 @@ wxf::WXFValue build_graph_data(const Source& src,
         auto add_graph_edge = [&](wxf::WXFValue from, wxf::WXFValue to, const std::string& type,
                                   wxf::WXFValueAssociation data = {}) {
             wxf::WXFValueAssociation edge;
-            edge.push_back({wxf::WXFValue("From"), from});
-            edge.push_back({wxf::WXFValue("To"), to});
+            edge.reserve(4);
+            edge.push_back({wxf::WXFValue("From"), std::move(from)});
+            edge.push_back({wxf::WXFValue("To"), std::move(to)});
             edge.push_back({wxf::WXFValue("Type"), wxf::WXFValue(type)});
-            if (!data.empty()) edge.push_back({wxf::WXFValue("Data"), wxf::WXFValue(data)});
-            edges.push_back(wxf::WXFValue(edge));
+            if (!data.empty()) edge.push_back({wxf::WXFValue("Data"), wxf::WXFValue(std::move(data))});
+            edges.push_back(wxf::WXFValue(std::move(edge)));
         };
 
         // Causal edges: dedup to unique (producer, consumer) pairs; with
@@ -514,7 +515,7 @@ wxf::WXFValue build_graph_data(const Source& src,
                     causal_data.push_back({wxf::WXFValue("ConsumerEvent"), wxf::WXFValue(pair.second)});
                     if (num_edges > 1)
                         causal_data.push_back({wxf::WXFValue("EdgeIndex"), wxf::WXFValue(static_cast<int64_t>(k))});
-                    add_graph_edge(wxf::WXFValue(from_tag), wxf::WXFValue(to_tag), "Causal", causal_data);
+                    add_graph_edge(wxf::WXFValue(from_tag), wxf::WXFValue(to_tag), "Causal", std::move(causal_data));
                 }
             }
         };
@@ -556,7 +557,7 @@ wxf::WXFValue build_graph_data(const Source& src,
                 if (!send_vertex(eff, kEventRevision)) continue;
                 wxf::WXFValueList tag = {wxf::WXFValue("E"), wxf::WXFValue(eff)};
                 vertices.push_back(wxf::WXFValue(tag));
-                vertex_data.push_back({wxf::WXFValue(tag), wxf::WXFValue(event_payload(raw))});
+                vertex_data.push_back({wxf::WXFValue(std::move(tag)), wxf::WXFValue(event_payload(raw))});
             }
             add_causal_edges();
         }
@@ -590,7 +591,7 @@ wxf::WXFValue build_graph_data(const Source& src,
                 wxf::WXFValueAssociation branchial_data;
                 branchial_data.push_back({wxf::WXFValue("State1"), wxf::WXFValue(s1)});
                 branchial_data.push_back({wxf::WXFValue("State2"), wxf::WXFValue(s2)});
-                add_graph_edge(wxf::WXFValue(s1), wxf::WXFValue(s2), "Branchial", branchial_data);
+                add_graph_edge(wxf::WXFValue(s1), wxf::WXFValue(s2), "Branchial", std::move(branchial_data));
             }
         }
         else if (is_evolution) {
@@ -614,13 +615,13 @@ wxf::WXFValue build_graph_data(const Source& src,
                 if (!send_vertex(kStateVertexBias + sid, src.state_step(raw_states[sid]))) continue;
                 wxf::WXFValueList tag = {wxf::WXFValue("S"), wxf::WXFValue(sid)};
                 vertices.push_back(wxf::WXFValue(tag));
-                vertex_data.push_back({wxf::WXFValue(tag), wxf::WXFValue(state_payload(raw_states[sid]))});
+                vertex_data.push_back({wxf::WXFValue(std::move(tag)), wxf::WXFValue(state_payload(raw_states[sid]))});
             }
             for (auto& [eff, raw] : event_verts) {
                 if (!send_vertex(eff, kEventRevision)) continue;
                 wxf::WXFValueList tag = {wxf::WXFValue("E"), wxf::WXFValue(eff)};
                 vertices.push_back(wxf::WXFValue(tag));
-                vertex_data.push_back({wxf::WXFValue(tag), wxf::WXFValue(event_payload(raw))});
+                vertex_data.push_back({wxf::WXFValue(std::move(tag)), wxf::WXFValue(event_payload(raw))});
             }
             for (uint32_t eid = 0; eid < src.num_raw_events(); ++eid) {
                 if (!src.is_valid_event(eid)) continue;
@@ -635,7 +636,8 @@ wxf::WXFValue build_graph_data(const Source& src,
                 if (send_edge(in_id, eff_eid, kEdgeStateEvent, 0))
                     add_graph_edge(wxf::WXFValue(s_in), wxf::WXFValue(e_tag), "StateEvent", edge_data);
                 if (send_edge(eff_eid, out_id, kEdgeEventState, 0))
-                    add_graph_edge(wxf::WXFValue(e_tag), wxf::WXFValue(s_out), "EventState", edge_data);
+                    add_graph_edge(wxf::WXFValue(std::move(e_tag)), wxf::WXFValue(std::move(s_out)),
+                                   "EventState", std::move(edge_data));
             }
             if (has_causal) add_causal_edges();
             if (has_branchial) {
@@ -651,7 +653,8 @@ wxf::WXFValue build_graph_data(const Source& src,
                     wxf::WXFValueAssociation branchial_data;
                     branchial_data.push_back({wxf::WXFValue("Event1"), wxf::WXFValue(from)});
                     branchial_data.push_back({wxf::WXFValue("Event2"), wxf::WXFValue(to)});
-                    add_graph_edge(wxf::WXFValue(from_tag), wxf::WXFValue(to_tag), "Branchial", branchial_data);
+                    add_graph_edge(wxf::WXFValue(std::move(from_tag)), wxf::WXFValue(std::move(to_tag)),
+                                   "Branchial", std::move(branchial_data));
                 }
             }
         }
@@ -669,13 +672,13 @@ wxf::WXFValue build_graph_data(const Source& src,
         graph_data.push_back(
             {wxf::WXFValue("IsDelta"),
              wxf::WXFValue(static_cast<int64_t>(cur != nullptr && delivered_before))});
-        graph_data.push_back({wxf::WXFValue("Vertices"), wxf::WXFValue(vertices)});
-        graph_data.push_back({wxf::WXFValue("Edges"), wxf::WXFValue(edges)});
-        graph_data.push_back({wxf::WXFValue("VertexData"), wxf::WXFValue(vertex_data)});
-        all_graph_data.push_back({wxf::WXFValue(graph_property), wxf::WXFValue(graph_data)});
+        graph_data.push_back({wxf::WXFValue("Vertices"), wxf::WXFValue(std::move(vertices))});
+        graph_data.push_back({wxf::WXFValue("Edges"), wxf::WXFValue(std::move(edges))});
+        graph_data.push_back({wxf::WXFValue("VertexData"), wxf::WXFValue(std::move(vertex_data))});
+        all_graph_data.push_back({wxf::WXFValue(graph_property), wxf::WXFValue(std::move(graph_data))});
     }
 
-    return wxf::WXFValue(all_graph_data);
+    return wxf::WXFValue(std::move(all_graph_data));
 }
 
 }  // namespace marshal
