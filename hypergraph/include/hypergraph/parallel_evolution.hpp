@@ -689,7 +689,10 @@ private:
     // Pruning and random termination
     double exploration_probability_{1.0};          // Probability of exploring each new state (1.0 = always)
     size_t max_successor_states_per_parent_{0};    // Max children per parent state (0 = unlimited)
-    size_t max_states_per_step_{0};                // Max new states per generation/step (0 = unlimited)
+    // The per-step cap (0 = none): the transitions into the N lowest-ranked successor states of
+    // a step, or under step_cap_counts_matches_ (MatchesPerStep) the N lowest-ranked transitions.
+    size_t max_states_per_step_{0};
+    bool step_cap_counts_matches_{false};
     // Keep at most this many of a state's own transitions per RULE (0 = all). Chosen at the
     // state's drain by spine_rank, not by arrival: arrival order depends on the schedule, and a
     // cap by arrival is what max_states_per_step_ already is.
@@ -754,6 +757,9 @@ private:
         uint64_t rank;
         uint64_t key;
         const MatchRecord* match;   // in the state's stored list, which outlives the run
+        // The state the transition makes, which the successor caps count by
+        // (successor_identity); its own unless a cap counts successors.
+        hgcommon::SuccessorIdentity succ{0, 1};
     };
     // Each depth's slot carries that step's MaxStatesPerStep candidates (select_step).
     hgcommon::DepthJoinT<hgcommon::GrowingDepthSlots<LockFreeList<RankedMatch>>> depth_join_;
@@ -868,10 +874,10 @@ public:
     // Pruning options.
     //
     // Sampling / determinism contract:
-    //  - Hard caps (max_successor_states_per_parent, max_states_per_step) bound the
-    //    number of states kept DETERMINISTICALLY (atomic counters). WHICH states are
-    //    kept when a cap binds is scheduling-order dependent, so the retained subset
-    //    can differ run-to-run even though the count is capped.
+    //  - The caps (max_successor_states_per_parent, max_states_per_step, matches_per_step,
+    //    matches_per_state_rule) keep the lowest-ranked transitions by the transition's
+    //    identity and the seed, so the kept set is the same at any worker count
+    //    (hgcommon::SuccessorIdentity for the two that count successor states).
     //  - exploration_probability keeps each new state with probability p. The coin is a
     //    hash of an isomorphism-invariant key and the seed (should_explore), not a
     //    worker's RNG, so the explored set is the same at any worker count and
@@ -880,7 +886,13 @@ public:
     //    order-only and does NOT change the canonical result.
     void set_exploration_probability(double p);
     void set_max_successor_states_per_parent(size_t max);
+    // MaxSuccessorStatesPerParent and MaxStatesPerStep keep the transitions into the k
+    // lowest-ranked distinct successor states (of a state, of a step), told apart by the state
+    // identity in force (hgcommon::SuccessorIdentity).
     void set_max_states_per_step(size_t max);
+    // MatchesPerStep: the N lowest-ranked transitions of each step. Replaces a
+    // set_max_states_per_step cap; the two share the step's selection.
+    void set_matches_per_step(size_t max);
     // Seed for the keyed draws (exploration_probability, transition_rate, the spine and the
     // matches_per_state_rule ranking) and for the rule-order shuffle. 0 is an ordinary seed for
     // the keyed draws, so their sample repeats run to run; only the rule-order shuffle draws
@@ -1328,6 +1340,12 @@ private:
         return x.rank == y.rank && x.key == y.key;
     }
     void drain_candidates(StateId state, std::vector<RankedMatch>& out);
+    // The identity of the state `match` makes from `state` (hgcommon::SuccessorIdentity).
+    hgcommon::SuccessorIdentity successor_identity(StateId state, const MatchRecord& match);
+    // Keeps the candidates whose successor is among the k lowest-ranked successors, ties at the
+    // cut kept, in their order (hgcommon::successor_ranks, then the k-th smallest successor
+    // rank, hgcommon::rank_cut).
+    static void keep_lowest_successors(std::vector<RankedMatch>& cands, size_t k);
     // At a state's drain: the chosen matches -- drain_candidates, and under
     // MaxSuccessorStatesPerParent only the k lowest-ranked of them -- are rewritten, or under
     // MaxStatesPerStep added to their step's candidates (step_candidates_).

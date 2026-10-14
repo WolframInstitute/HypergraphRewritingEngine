@@ -381,6 +381,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     // Sampling and capping parameters for this run. Allocates only what is asked for, and
     // clears the two counters every call so a session's later Step does not inherit the
     // tallies of its first.
+    engine.set_step_cap_counts_matches(in.step_cap_counts_matches);
     engine.set_sampling(in.transition_rate,
                         in.rule_weights.empty() ? nullptr : in.rule_weights.data(),
                         static_cast<uint32_t>(in.rule_weights.size()),

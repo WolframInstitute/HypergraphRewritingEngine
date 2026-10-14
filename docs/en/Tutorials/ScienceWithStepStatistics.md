@@ -48,7 +48,7 @@ ListLogLogPlot[Table[Normal[classes[[s + 1]]["MultiplicityHistogram"]] /. Rule -
 
 ## Dimension of a growth history
 
-Does a growth rule settle at a fixed dimension? `"UniformRandom" -> True` with `"MatchesPerStep" -> 20` keeps 20 states at each step:
+Does a growth rule settle at a fixed dimension? `"UniformRandom" -> True` with `"MatchesPerStep" -> 20` keeps 20 transitions, and so 20 states, at each step:
 
 ```wl
 growth = {{x, y}, {x, z}} -> {{x, z}, {x, w}, {y, w}, {z, w}};

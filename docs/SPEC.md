@@ -160,9 +160,19 @@ exact configuration. Sampling and capping options refine this as follows:
 - **`MatchesPerStateRule`** caps each state's transitions per rule, chosen at the state's drain
   by the same invariant key — schedule-independent. A run under it matches every state in full
   (match forwarding off), so the drain chooses from all of the state's matches.
-- **`MaxSuccessorStatesPerParent`** keeps the k lowest-ranked of a state's own transitions, chosen
-  at the state's drain; **`MaxStatesPerStep`** keeps the N lowest-ranked transitions of a step,
-  chosen once the step's matching is complete. The rank is the same invariant key, so both are
+- **`MaxSuccessorStatesPerParent`** keeps the transitions out of a state into its k lowest-ranked
+  successor states, chosen at the state's drain; **`MaxStatesPerStep`** keeps the transitions of a
+  step into the step's N lowest-ranked successor states, chosen once the step's matching is
+  complete. Both count distinct successor STATES under the state identity in force (§4.1):
+  under `None` every transition makes its own state, so both count transitions; under
+  `Automatic` two transitions make one state when the edge lists of the states they make are
+  identical (a transition that creates a vertex makes its own state); under `Full` when those
+  states are isomorphic. A successor's rank is the smallest rank among the transitions into it,
+  and every transition into a kept successor is kept (`hgcommon::SuccessorIdentity`,
+  `hgcommon::successor_ranks`). Successors are told apart by their 64-bit identity hash (the
+  content hash under `Automatic`, the canonical hash under `Full`), computed before the rewrite
+  runs (`hgcommon::SuccessorCursor`). **`MatchesPerStep`** (with `UniformRandom -> True`) keeps
+  the N lowest-ranked transitions of a step and replaces `MaxStatesPerStep`. All three are
   schedule-independent, and a transition not kept is not taken (no event, no state).
 - **The key.** A transition's key is the input state's canonical hash, the rule, and one
   coordinate per matched edge: under `Full` states the edge's automorphism orbit, otherwise its
@@ -171,9 +181,8 @@ exact configuration. Sampling and capping options refine this as follows:
   state's automorphisms map onto itself, and the quotient reconstruction (§5.4) replays the same
   set onto every raw state of the class.
 - **Ties at a cap's cut are kept.** Every cap (per rule, per state, per step) keeps all the
-  transitions tied with the k-th kept one (`hgcommon::cap_keep_count`), so the kept set does not
-  depend on list order.
-  `UniformRandom -> True` with `MatchesPerStep` is `MaxStatesPerStep` under another name.
+  transitions, or successor states, tied with the k-th kept one (`hgcommon::cap_keep_count`,
+  `hgcommon::rank_cut`), so the kept set does not depend on list order.
 
 *(Gates: `SamplingReproducibility.*` — same states at every worker count, reproducible per seed;
 `CausalDeterminism.*` at 1–32 threads.)*
@@ -235,9 +244,9 @@ shortest depth, rather than once per raw isomorphic copy — the expensive work 
 canonicalization) is paid O(canonical states) times instead of O(raw states). It requires `Full`
 state canonicalization (its machinery is defined over canonical classes and their edge orbits)
 and is refused with a warning otherwise. It is also refused with a warning (`QuotientStepCap`)
-under `MaxStatesPerStep`: the step cap chooses among every transition of a step, raw copies
-included, and quotient exploration expands one raw state per class, at the class's shortest
-depth only. **It is a performance mode, never a semantic one.**
+under `MaxStatesPerStep` and `MatchesPerStep`: a step cap chooses among the transitions of a step,
+and quotient exploration expands one raw state per class, at the class's shortest depth only.
+**It is a performance mode, never a semantic one.**
 
 **Contract: every observable under quotient equals the same observable under full capture, in the
 same cell** — states, events, causal (count, list, graph), branchial, and the reduction — on the

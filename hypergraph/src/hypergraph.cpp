@@ -2,6 +2,8 @@
 #include "hgcommon/explore_depth_core.hpp"
 #include "hgcommon/rendezvous.hpp"
 #include "hgcommon/quotient_multiplicity_core.hpp"
+#include "hgcommon/rewrite_core.hpp"   // SuccessorCursor
+#include "hgcommon/content_core.hpp"   // content_hash_of
 #include "hgcommon/phase_timing.hpp"
 #include "hgcommon/namespace.hpp"
 // hypergraph.cpp - Implementation of Hypergraph class non-template methods
@@ -1431,6 +1433,65 @@ uint64_t Hypergraph::compute_canonical_hash(const SparseBitset& edges,
     IRCanonicalizer ir;
     uint64_t h = ir.compute_canonical_hash(edge_vectors);
     if (out_form) fallback_canonical_form(edge_vectors, *out_form);
+    worker_scratch().release(mk);
+    return h;
+}
+
+// A state's edges as a successor cursor's parent: ids in id order, the state's own order.
+struct HostEdgeCursor {
+    const SegmentedArray<Edge>& edges;
+    const SVec<EdgeId>& ids;
+    uint32_t at = 0;
+    bool next(EdgeId& id, uint32_t& arity, const uint32_t*& vertices) {
+        if (at >= ids.size()) return false;
+        id = ids[at++];
+        const Edge& e = edges[id];
+        arity = e.arity;
+        vertices = e.vertices;
+        return true;
+    }
+};
+
+uint64_t Hypergraph::successor_content_hash(StateId parent, const EdgeId* consumed,
+                                            uint8_t num_consumed, const RewriteRule& rule,
+                                            const VertexId* binding) const {
+    auto mk = worker_scratch().mark();
+    uint64_t h = 0;
+    {
+        SVec<EdgeId> ids;
+        std::atomic_thread_fence(std::memory_order_acquire);
+        get_state(parent).edges.for_each([&](EdgeId e) { ids.push_back(e); });
+        // No fresh vertex reaches a content hash: a transition that creates one makes its own
+        // state (hgcommon::SuccessorIdentity), so the base is never read.
+        hgcommon::SuccessorCursor<HostEdgeCursor, PatternEdge> c(
+            HostEdgeCursor{edges_, ids}, consumed, num_consumed, rule.rhs, rule.num_rhs_edges,
+            rule.new_var_mask(), binding, 0);
+        h = hgcommon::content_hash_of(c);
+    }
+    worker_scratch().release(mk);
+    return h;
+}
+
+uint64_t Hypergraph::successor_canonical_hash(StateId parent, const EdgeId* consumed,
+                                              uint8_t num_consumed, const RewriteRule& rule,
+                                              const VertexId* binding) const {
+    auto mk = worker_scratch().mark();
+    uint64_t h = 0;
+    {
+        SVec<EdgeId> ids;
+        std::atomic_thread_fence(std::memory_order_acquire);
+        get_state(parent).edges.for_each([&](EdgeId e) { ids.push_back(e); });
+        // Fresh vertices numbered from the run's vertex count, above every vertex the parent
+        // holds; the canonical hash does not read which numbers they are.
+        hgcommon::SuccessorCursor<HostEdgeCursor, PatternEdge> c(
+            HostEdgeCursor{edges_, ids}, consumed, num_consumed, rule.rhs, rule.num_rhs_edges,
+            rule.new_var_mask(), binding, num_vertices());
+        SVec<SVec<VertexId>> edges;
+        uint32_t arity = 0;
+        const uint32_t* v = nullptr;
+        while (c.next(arity, v)) edges.emplace_back(v, v + arity);
+        h = IRCanonicalizer{}.compute_canonical_hash(edges);
+    }
     worker_scratch().release(mk);
     return h;
 }

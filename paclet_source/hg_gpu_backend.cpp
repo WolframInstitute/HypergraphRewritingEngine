@@ -163,6 +163,7 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
         return v > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<uint32_t>(v);
     };
     in.max_states_per_step = cap32(job.max_states_per_step);
+    in.step_cap_counts_matches = job.step_cap_counts_matches;
     in.max_successor_states_per_parent = cap32(job.max_successor_states_per_parent);
     in.matches_per_state_rule = cap32(job.matches_per_state_rule);
     in.max_device_memory_bytes = job.max_device_memory_bytes;

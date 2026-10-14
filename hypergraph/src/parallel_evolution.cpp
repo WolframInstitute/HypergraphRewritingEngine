@@ -9,6 +9,7 @@
 
 #include "hgcommon/quotient_route.hpp"
 #include "hgcommon/sampling_core.hpp"
+#include "hgcommon/rewrite_core.hpp"   // num_fresh_variables
 #include "hypergraph/rule_analysis.hpp"
 
 #include <algorithm>
@@ -900,52 +901,82 @@ void ParallelEvolutionEngine::drain_candidates(StateId state, std::vector<Ranked
 }
 
 // MatchesPerStateRule keeps k of each rule (drain_candidates); MaxSuccessorStatesPerParent then
-// keeps the k lowest-ranked of what remains; MaxStatesPerStep chooses among what every drain of
-// the step keeps (select_step). A transition not kept is not taken: no rewrite, no event, no
-// state. Each is a pure function of the matches and the seed.
+// keeps the transitions into the k lowest-ranked successor states of what remains;
+// MaxStatesPerStep and MatchesPerStep choose among what every drain of the step keeps
+// (select_step). A transition not kept is not taken: no rewrite, no event, no state. Each is a
+// pure function of the matches and the seed.
 void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
     std::vector<RankedMatch> cands;
     drain_candidates(state, cands);
     const size_t k = max_successor_states_per_parent_;
-    const size_t n = k == 0 ? cands.size()
-                            : static_cast<size_t>(hgcommon::cap_keep_count(
-                                  cands.size(), k, [&](uint64_t a, uint64_t b) {
-                                      return ranked_tied(cands[a], cands[b]);
-                                  }));
+    if (k != 0 || (max_states_per_step_ != 0 && !step_cap_counts_matches_))
+        for (RankedMatch& c : cands) c.succ = successor_identity(state, *c.match);
+    if (k != 0) keep_lowest_successors(cands, k);
     if (max_states_per_step_ != 0) {
         if (auto* list = step_candidates(step))
-            for (size_t i = 0; i < n; ++i) list->push(cands[i], hg_->arena());
+            for (const RankedMatch& c : cands) list->push(c, hg_->arena());
         return;
     }
-    for (size_t i = 0; i < n; ++i) submit_rewrite_task(*cands[i].match, step);
-    if (n) HG_STAT(stats_.mine().spine_forced.bump(n));
+    for (const RankedMatch& c : cands) submit_rewrite_task(*c.match, step);
+    if (!cands.empty()) HG_STAT(stats_.mine().spine_forced.bump(cands.size()));
 }
 
-// The N lowest-ranked of step `step`'s candidates are rewritten; the rest are not taken. Runs as
-// the task the depth join's report of `step` submits, booked on step + 1's token, so the rewrites
-// it submits are booked on step + 1 before that step can settle. Ties in rank and key name
-// automorphic transitions, so which of them falls at the cut does not change the result up to
-// isomorphism.
+hgcommon::SuccessorIdentity ParallelEvolutionEngine::successor_identity(StateId state,
+                                                                       const MatchRecord& m) {
+    const StateCanonicalizationMode mode = hg_->state_canonicalization_mode();
+    if (mode == StateCanonicalizationMode::None) return {0, 1};
+    const RewriteRule& rule = rules_[m.rule_index()];
+    if (mode == StateCanonicalizationMode::Automatic) {
+        // A fresh vertex is in no other state.
+        if (hgcommon::num_fresh_variables(rule.new_var_mask()) != 0) return {0, 1};
+        return {hg_->successor_content_hash(state, m.matched_edges(), m.num_edges(), rule,
+                                            m.binding().bindings),
+                0};
+    }
+    return {hg_->successor_canonical_hash(state, m.matched_edges(), m.num_edges(), rule,
+                                          m.binding().bindings),
+            0};
+}
+
+void ParallelEvolutionEngine::keep_lowest_successors(std::vector<RankedMatch>& cands, size_t k) {
+    const uint32_t n = static_cast<uint32_t>(cands.size());
+    if (n == 0 || k == 0) return;
+    std::vector<uint64_t> rank(n), succ_rank(n);
+    std::vector<hgcommon::SuccessorIdentity> id(n);
+    std::vector<uint32_t> order(n);
+    std::vector<uint8_t> lead(n);
+    for (uint32_t i = 0; i < n; ++i) { rank[i] = cands[i].rank; id[i] = cands[i].succ; }
+    hgcommon::successor_ranks(rank.data(), id.data(), n, order.data(), succ_rank.data(),
+                              lead.data());
+    // One rank per successor; the k-th smallest is the cut (hgcommon::rank_cut, by selection).
+    std::vector<uint64_t> per_succ;
+    for (uint32_t i = 0; i < n; ++i)
+        if (lead[i]) per_succ.push_back(succ_rank[i]);
+    if (per_succ.size() <= k) return;
+    std::nth_element(per_succ.begin(), per_succ.begin() + static_cast<std::ptrdiff_t>(k - 1),
+                     per_succ.end());
+    const uint64_t cut = per_succ[k - 1];
+    size_t w = 0;
+    for (uint32_t i = 0; i < n; ++i)
+        if (succ_rank[i] <= cut) cands[w++] = cands[i];
+    cands.resize(w);
+}
+
+// The transitions of step `step` into its N lowest-ranked successor states are rewritten, or
+// under MatchesPerStep its N lowest-ranked transitions (each candidate its own successor); the
+// rest are not taken. Runs as the task the depth join's report of `step` submits, booked on
+// step + 1's token, so the rewrites it submits are booked on step + 1 before that step can
+// settle. A successor's rank is the smallest rank into it, ties at the cut are kept, and the
+// kept set does not depend on the candidates' list order.
 void ParallelEvolutionEngine::select_step(uint32_t step) {
     auto* list = step_candidates(step);
     if (!list) return;
     std::vector<RankedMatch> cands;
     list->for_each([&](const RankedMatch& c) { cands.push_back(c); });
     list->reset();
-    size_t n = max_states_per_step_ < cands.size() ? max_states_per_step_ : cands.size();
-    if (n != 0 && n < cands.size()) {
-        // The n-th lowest at n - 1 and everything after it no lower; the candidates tied with it
-        // moved next to it, so cap_keep_count extends the cut over them.
-        std::nth_element(cands.begin(), cands.begin() + static_cast<std::ptrdiff_t>(n - 1),
-                         cands.end(), ranked_before);
-        const RankedMatch pivot = cands[n - 1];
-        std::partition(cands.begin() + static_cast<std::ptrdiff_t>(n), cands.end(),
-                       [&](const RankedMatch& c) { return ranked_tied(c, pivot); });
-        n = static_cast<size_t>(hgcommon::cap_keep_count(
-            cands.size(), n, [&](uint64_t a, uint64_t b) { return ranked_tied(cands[a], cands[b]); }));
-    }
-    for (size_t i = 0; i < n; ++i) submit_rewrite_task(*cands[i].match, step, step + 1);
-    if (n) HG_STAT(stats_.mine().spine_forced.bump(n));
+    keep_lowest_successors(cands, max_states_per_step_);
+    for (const RankedMatch& c : cands) submit_rewrite_task(*c.match, step, step + 1);
+    if (!cands.empty()) HG_STAT(stats_.mine().spine_forced.bump(cands.size()));
 }
 
 void ParallelEvolutionEngine::depth_settled(uint32_t depth) {
@@ -2524,6 +2555,12 @@ void ParallelEvolutionEngine::set_max_successor_states_per_parent(size_t max) {
 
 void ParallelEvolutionEngine::set_max_states_per_step(size_t max) {
     max_states_per_step_ = max;
+    step_cap_counts_matches_ = false;
+}
+
+void ParallelEvolutionEngine::set_matches_per_step(size_t max) {
+    max_states_per_step_ = max;
+    step_cap_counts_matches_ = true;
 }
 
 void ParallelEvolutionEngine::set_random_seed(uint64_t seed) { random_seed_ = seed; }

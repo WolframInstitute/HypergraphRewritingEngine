@@ -1840,6 +1840,16 @@ public:
     uint64_t compute_canonical_hash(const SparseBitset& edges,
                                     std::vector<uint32_t>* out_form = nullptr) const;
 
+    // The identity hash of the state a rewrite of `parent` makes, before the rewrite runs
+    // (hgcommon::SuccessorCursor): its content hash under Automatic states, its canonical hash
+    // under Full. `consumed` are the matched edges; `binding` is indexed by variable.
+    // MaxSuccessorStatesPerParent and MaxStatesPerStep count successors by them
+    // (hgcommon::SuccessorIdentity).
+    uint64_t successor_content_hash(StateId parent, const EdgeId* consumed, uint8_t num_consumed,
+                                    const RewriteRule& rule, const VertexId* binding) const;
+    uint64_t successor_canonical_hash(StateId parent, const EdgeId* consumed,
+                                      uint8_t num_consumed, const RewriteRule& rule,
+                                      const VertexId* binding) const;
 
     // Count edges in a state
     uint32_t count_state_edges(StateId sid) const;

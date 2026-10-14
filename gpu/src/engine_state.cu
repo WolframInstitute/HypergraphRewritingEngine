@@ -411,6 +411,7 @@ DeviceState EngineState::device() const {
         d.sampling_seed                    = sampling_seed_;
         d.exploration_probability          = exploration_probability_;
         d.max_states_per_step              = max_states_per_step_;
+        d.step_cap_counts_matches          = step_cap_counts_matches_ ? 1u : 0u;
         d.step_pending                     = states_per_step_;
         d.step_slots                       = states_per_step_slots_;
         d.max_successor_states_per_parent  = max_succ_per_parent_;
