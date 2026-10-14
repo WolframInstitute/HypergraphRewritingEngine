@@ -713,9 +713,9 @@ public:
     void recycle(EvolveResult&& done);
 
     // After a job that failed: drop the engine and the recycled storage and reset the device,
-    // so the process holds what a fresh worker holds and the next run builds from the job's own
-    // config. A failed growth leaves the driver's address-space reservations for the larger
-    // engine in place until the context is reset (measured: 4.3 GB of VSZ).
+    // so the next run builds from its own config. Measured after a failed growth (worker_fuzz
+    // seed 6435 without its caps): resident 172 MB before the reset, 45 MB after; two 4 GB
+    // PROT_NONE address-space reservations stay mapped.
     void release_after_failure();
 
 private:
