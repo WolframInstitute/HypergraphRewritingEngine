@@ -1003,6 +1003,8 @@ public:
     // This is used for event canonicalization, which needs isomorphism-invariant
     // state hashes regardless of whether state_canonicalization_mode_ is None.
     uint64_t get_or_compute_canonical_hash(StateId state_id);
+    // Store `hash` as the state's canonical hash unless one is stored; the stored value.
+    uint64_t publish_canonical_hash(StateId state_id, uint64_t hash);
 
     // Build the state's canonical rank table and return the exact canonical hash from the
     // SAME individualization-refinement pass -- the event path needs both, and running IR

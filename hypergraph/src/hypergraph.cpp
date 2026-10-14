@@ -445,13 +445,20 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
     hgcommon::atomic_ref<StateId>(states_[new_sid].canonical_id)
         .store(existing_or_new, std::memory_order_release);
 
-    // "StepStatistics": the invariants of each class, keyed by its canonical hash. Under None
-    // and Automatic without event identity the hash is computed here, on this worker.
-    if (record_state_invariants_.load(std::memory_order_relaxed))
-        record_state_invariants(new_sid, canonical_hash != 0
-                                             ? canonical_hash
-                                             : get_or_compute_canonical_hash(new_sid),
-                                full || need_ranks ? &form : nullptr);
+    // "StepStatistics": the invariants of each class, keyed by its canonical hash and computed
+    // from its IR form. Under None and Automatic without event identity neither exists yet: one
+    // IR pass gives both, and the hash is published as get_or_compute_canonical_hash publishes it.
+    if (record_state_invariants_.load(std::memory_order_relaxed)) {
+        if (full || need_ranks)
+            record_state_invariants(new_sid, canonical_hash != 0
+                                                 ? canonical_hash
+                                                 : get_or_compute_canonical_hash(new_sid),
+                                    &form);
+        else
+            record_state_invariants(
+                new_sid, publish_canonical_hash(new_sid, compute_canonical_hash(edges, &form)),
+                &form);
+    }
 
     if (!was_inserted) {
         return {existing_or_new, new_sid, false};
@@ -1221,11 +1228,14 @@ uint64_t Hypergraph::get_or_compute_canonical_hash(StateId state_id) {
 
     // On-demand, and it must agree with what create_or_get_canonical_state published --
     // the event path reads both.
-    uint64_t hash = compute_canonical_hash(state.edges);
+    return publish_canonical_hash(state_id, compute_canonical_hash(state.edges));
+}
 
+uint64_t Hypergraph::publish_canonical_hash(StateId state_id, uint64_t hash) {
     // Published only over 0: racing on-demand writers compute the same value, and a value the
     // state's creator stored (in Full mode the class's key, which can differ from the hash) is
     // never overwritten. A failed exchange returns the stored value.
+    hgcommon::atomic_ref<uint64_t> atomic_hash(states_[state_id].canonical_hash);
     uint64_t expected = 0;
     if (!atomic_hash.compare_exchange_strong(expected, hash, std::memory_order_acq_rel,
                                              std::memory_order_acquire))
