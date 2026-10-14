@@ -1229,8 +1229,8 @@ wxf::WXFValue step_statistics(
         rec.push_back({wxf::WXFValue("RuleCounts"),
                        count_association(rc == rule_counts.end() ? std::map<int64_t, uint64_t>{}
                                                                  : rc->second)});
-        rec.push_back({wxf::WXFValue("Invariants"), wxf::WXFValue(invs)});
-        rec.push_back({wxf::WXFValue("VertexInvariants"), wxf::WXFValue(vertex_invs)});
+        rec.push_back({wxf::WXFValue("Invariants"), wxf::WXFValue(std::move(invs))});
+        rec.push_back({wxf::WXFValue("VertexInvariants"), wxf::WXFValue(std::move(vertex_invs))});
         rec.push_back({wxf::WXFValue("ArityHistogram"), count_association(arity_hist)});
         rec.push_back({wxf::WXFValue("AritySignatureHistogram"), count_association(arity_sig_hist)});
         rec.push_back({wxf::WXFValue("DegreeHistogram"), count_association(degree_hist)});
@@ -1241,9 +1241,9 @@ wxf::WXFValue step_statistics(
             if (x != options.extra->end())
                 for (const auto& kv : x->second) rec.push_back(kv);
         }
-        steps.push_back(wxf::WXFValue(rec));
+        steps.push_back(wxf::WXFValue(std::move(rec)));
     }
-    return wxf::WXFValue(steps);
+    return wxf::WXFValue(std::move(steps));
 }
 
 }  // namespace stats
