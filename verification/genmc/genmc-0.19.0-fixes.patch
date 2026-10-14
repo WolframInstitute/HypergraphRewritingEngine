@@ -495,8 +495,38 @@ index f1e772d..2fede01 100644
  private:
  	std::unordered_map<Event, VSet<Event>> cmap_;
  };
+diff --git a/genmc/genmc/Verification/Config.cpp b/genmc/genmc/Verification/Config.cpp
+index 2b90f35..edffa58 100644
+--- a/genmc/genmc/Verification/Config.cpp
++++ b/genmc/genmc/Verification/Config.cpp
+@@ -52,6 +52,12 @@ auto Config::validate(std::vector<std::string> &warnings) -> ValidationStatus
+ 		symmetryReduction = false;
+ 		ipr = false;
+ 	}
++	if (weakCasSpuriousBound.has_value() && *weakCasSpuriousBound == 0)
++		errors.emplace_back("--weak-cas-spurious-bound must be at least 1: a bound of 0 "
++				    "makes every weak CAS strong.");
++	if (weakCasSpuriousTotal.has_value() && *weakCasSpuriousTotal == 0)
++		errors.emplace_back("--weak-cas-spurious-total must be at least 1: a bound of 0 "
++				    "makes every weak CAS strong.");
+ 	if (!emitNALabels && instructionCaching)
+ 		errors.emplace_back("Instruction caching implies NA-label emission");
+ 
+diff --git a/genmc/genmc/Verification/Config.hpp b/genmc/genmc/Verification/Config.hpp
+index e7ecfa6..253cfbb 100644
+--- a/genmc/genmc/Verification/Config.hpp
++++ b/genmc/genmc/Verification/Config.hpp
+@@ -38,6 +38,8 @@ struct Config {
+ 	bool estimate{};
+ 	bool isDepTrackingModel{};
+ 	std::optional<unsigned int> bound;
++	std::optional<unsigned int> weakCasSpuriousBound;
++	std::optional<unsigned int> weakCasSpuriousTotal;
+ 	BoundType boundType{};
+ 	bool LAPOR{};
+ 	bool symmetryReduction{};
 diff --git a/genmc/genmc/Verification/GenMCDriver.cpp b/genmc/genmc/Verification/GenMCDriver.cpp
-index 7ea8312..59122b8 100644
+index 7ea8312..55e8477 100644
 --- a/genmc/genmc/Verification/GenMCDriver.cpp
 +++ b/genmc/genmc/Verification/GenMCDriver.cpp
 @@ -11,6 +11,9 @@
@@ -580,7 +610,53 @@ index 7ea8312..59122b8 100644
  		auto item = getExec().getWorkqueue().getNext();
  		if (!item) {
  			/* Random mode never revisits: resample while the
-@@ -911,7 +953,16 @@ auto GenMCDriver::checkLiveness() -> std::optional<VerificationError>
+@@ -748,6 +790,45 @@ void GenMCDriver::maybePushWeakCasFailure(const CasReadLabel *cLab)
+ 	 * callers must have already established success. */
+ 	if (!cLab->isWeak() || cLab->failsSpuriously() || !cLab->getRf())
+ 		return;
++	/* --weak-cas-spurious-bound=N: a thread's CAS on one address fails spuriously at most N
++	 * times in a row. Each option this drops is counted in VerificationResult::spuriousCut;
++	 * a run whose count is 0 explored every spurious failure. */
++	if (const auto bound = getConf()->weakCasSpuriousBound) {
++		const auto &g = getExec().getGraph();
++		auto run = 0U;
++		for (auto i = cLab->getPos().index - 1; i > 0 && run < *bound; --i) {
++			const auto *prev = genmc::dyn_cast<CasReadLabel>(
++				g.getEventLabel(Event(cLab->getThread(), i)));
++			if (!prev || prev->getAddr() != cLab->getAddr())
++				continue;
++			if (!prev->failsSpuriously())
++				break;
++			++run;
++		}
++		if (run >= *bound) {
++			++result.spuriousCut;
++			return;
++		}
++	}
++	/* --weak-cas-spurious-total=M: at most M spurious failures in one execution, over all
++	 * threads, counted among the events added before this CAS (the graph its revisit keeps). */
++	if (const auto total = getConf()->weakCasSpuriousTotal) {
++		const auto &g = getExec().getGraph();
++		auto failed = 0U;
++		for (auto t = 0U; t < g.getNumThreads() && failed < *total; ++t) {
++			for (auto i = 1; i < g.getThreadSize(t) && failed < *total; ++i) {
++				const auto *prev = genmc::dyn_cast<CasReadLabel>(
++					g.getEventLabel(Event(t, i)));
++				if (prev && prev->failsSpuriously() &&
++				    prev->getStamp() < cLab->getStamp())
++					++failed;
++			}
++		}
++		if (failed >= *total) {
++			++result.spuriousCut;
++			return;
++		}
++	}
+ 	getExec().getWorkqueue().add(
+ 		std::make_unique<WeakCasFailureRevisit>(cLab->getPos(), cLab->getRf()->getPos()));
+ }
+@@ -911,7 +992,16 @@ auto GenMCDriver::checkLiveness() -> std::optional<VerificationError>
  	/* Collect all threads blocked at spinloops */
  	std::vector<int> spinBlocked;
  	for (auto i = 0; i < g.getNumThreads(); i++) {
@@ -598,7 +674,7 @@ index 7ea8312..59122b8 100644
  			spinBlocked.push_back(i);
  	}
  
-@@ -1557,8 +1608,11 @@ auto GenMCDriver::handleLoad(std::unique_ptr<ReadLabel> rLab, std::optional<SVal
+@@ -1557,8 +1647,11 @@ auto GenMCDriver::handleLoad(std::unique_ptr<ReadLabel> rLab, std::optional<SVal
  	const EventLabel *rf = nullptr;
  
  	if (inEstimationMode() || inRandomMode()) {
@@ -611,7 +687,7 @@ index 7ea8312..59122b8 100644
  		filterAtomicityViolations(lab, stores);
  		rf = pickRandomRf(lab, stores);
  	} else {
-@@ -1990,8 +2044,11 @@ auto GenMCDriver::handleStore(std::unique_ptr<WriteLabel> wLab, std::optional<SV
+@@ -1990,8 +2083,11 @@ auto GenMCDriver::handleStore(std::unique_ptr<WriteLabel> wLab, std::optional<SV
  	const EventLabel *co = nullptr;
  	if (inEstimationMode() || inRandomMode()) {
  		co = pickRandomCo(lab, cos);
@@ -624,7 +700,7 @@ index 7ea8312..59122b8 100644
  	} else {
  		co = findConsistentCo(lab, cos);
  		calcCoOrderings(lab, cos);
-@@ -2784,6 +2841,15 @@ void GenMCDriver::calcRevisits(WriteLabel *sLab)
+@@ -2784,6 +2880,15 @@ void GenMCDriver::calcRevisits(WriteLabel *sLab)
  
  	/* If operating in estimation mode, don't actually revisit */
  	if (inEstimationMode()) {
@@ -640,7 +716,7 @@ index 7ea8312..59122b8 100644
  		getExec().getChoiceMap().update(loads, sLab);
  		return;
  	}
-@@ -3223,7 +3289,7 @@ auto GenMCDriver::handleError(const EventDbgInfo *dbg, Event pos, std::string ms
+@@ -3223,7 +3328,7 @@ auto GenMCDriver::handleError(const EventDbgInfo *dbg, Event pos, std::string ms
  		return {.result = *err};
  	if (isExecutionDrivenByGraph(pos))
  		return {.result = std::monostate(), .count = 1U};
@@ -650,23 +726,26 @@ index 7ea8312..59122b8 100644
  	reportError(pos, {pos, VerificationError::VE_Safety, std::move(msg)});
  	return {.result = VerificationError::VE_Safety, .count = 1U};
 diff --git a/genmc/genmc/Verification/VerificationResult.hpp b/genmc/genmc/Verification/VerificationResult.hpp
-index de33b82..493c407 100644
+index de33b82..507b206 100644
 --- a/genmc/genmc/Verification/VerificationResult.hpp
 +++ b/genmc/genmc/Verification/VerificationResult.hpp
-@@ -17,6 +17,8 @@ struct VerificationResult {
+@@ -17,6 +17,10 @@ struct VerificationResult {
  	unsigned explored{};			 /**< Number of complete executions explored */
  	unsigned exploredBlocked{};		 /**< Number of blocked executions explored */
  	unsigned boundExceeding{};	  /**< Number of bound-exceeding executions explored */
++	unsigned spuriousCut{};		  /**< Weak-CAS spurious failures not explored because of
++					     --weak-cas-spurious-bound */
 +	unsigned unrollCut{};		  /**< Of the complete ones, those with a thread ended
 +					     at the --unroll bound (a KILL label) */
  	long double estimationMean{};	  /**< The mean of estimations */
  	long double estimationVariance{}; /**< The (biased) variance of the estimations */
  #ifdef ENABLE_GENMC_DEBUG
-@@ -42,6 +44,7 @@ struct VerificationResult {
+@@ -42,6 +46,8 @@ struct VerificationResult {
  		explored += other.explored;
  		exploredBlocked += other.exploredBlocked;
  		boundExceeding += other.boundExceeding;
 +		unrollCut += other.unrollCut;
++		spuriousCut += other.spuriousCut;
  		estimationMean += other.estimationMean;
  		estimationVariance += other.estimationVariance;
  #ifdef ENABLE_GENMC_DEBUG
@@ -908,7 +987,7 @@ index 44b91fb..96681f9 100644
  
  	/* Sets up how some errors will be reported to the user */
 diff --git a/lli/main.cpp b/lli/main.cpp
-index 5795e76..4c5fa49 100644
+index 5795e76..a2eb0bf 100644
 --- a/lli/main.cpp
 +++ b/lli/main.cpp
 @@ -13,6 +13,7 @@
@@ -919,7 +998,39 @@ index 5795e76..4c5fa49 100644
  #include "genmc/Support/Logger.hpp"
  #include "genmc/Support/ThreadPool.hpp"
  #include "genmc/Verification/Config.hpp"
-@@ -759,11 +760,16 @@ static void printEstimationResults(const std::shared_ptr<const Config> &conf,
+@@ -104,6 +105,18 @@ static llvm::cl::opt<int>
+ 	clBound("bound", llvm::cl::cat(clGeneral), llvm::cl::init(-1), llvm::cl::value_desc("N"),
+ 		llvm::cl::desc("Do not explore executions exceeding given bound"));
+ 
++static llvm::cl::opt<int> clWeakCasSpuriousBound(
++	"weak-cas-spurious-bound", llvm::cl::cat(clGeneral), llvm::cl::init(-1),
++	llvm::cl::value_desc("N"),
++	llvm::cl::desc("Explore at most N spurious failures in a row of one thread's weak CAS on "
++		       "one address (N >= 1; unbounded when not given)"));
++
++static llvm::cl::opt<int> clWeakCasSpuriousTotal(
++	"weak-cas-spurious-total", llvm::cl::cat(clGeneral), llvm::cl::init(-1),
++	llvm::cl::value_desc("M"),
++	llvm::cl::desc("Explore at most M spurious failures of weak CASes in one execution, over "
++		       "all threads (M >= 1; unbounded when not given)"));
++
+ static llvm::cl::opt<BoundType>
+ 	clBoundType("bound-type", llvm::cl::cat(clGeneral), llvm::cl::init(BoundType::round),
+ 		    llvm::cl::desc("Choose type for -bound:"),
+@@ -425,6 +438,12 @@ static void saveConfigOptions(Config &conf, LLIConfig &lliConfig)
+ 
+ 	conf.bound = clBound >= 0 ? std::optional(clBound.getValue()) : std::nullopt;
+ 	conf.boundType = clBoundType.getNumOccurrences() > 0 ? clBoundType : BoundType::none;
++	if (clWeakCasSpuriousBound.getNumOccurrences() > 0)
++		conf.weakCasSpuriousBound = static_cast<unsigned int>(
++			std::max(0, clWeakCasSpuriousBound.getValue()));
++	if (clWeakCasSpuriousTotal.getNumOccurrences() > 0)
++		conf.weakCasSpuriousTotal = static_cast<unsigned int>(
++			std::max(0, clWeakCasSpuriousTotal.getValue()));
+ 	conf.LAPOR = clLAPOR;
+ 	conf.symmetryReduction = !clDisableSymmetryReduction;
+ 	conf.helper = !clDisableHelper;
+@@ -759,11 +778,16 @@ static void printEstimationResults(const std::shared_ptr<const Config> &conf,
  	      (!res.status.has_value() ? "*** Estimation complete"
  				       : "\n*** Estimation unsuccessful"));
  
@@ -940,24 +1051,31 @@ index 5795e76..4c5fa49 100644
  	GENMC_DEBUG(if (conf->printEstimationStats) {
  		PRINT(VerbosityLevel::Error, "Estimation moot: {}\n", res.exploredMoot);
  		PRINT(VerbosityLevel::Error, "Estimation blocked: {}\n", res.exploredBlocked);
-@@ -780,6 +786,8 @@ static void printVerificationResults(const std::shared_ptr<const Config> &conf,
+@@ -780,6 +804,15 @@ static void printVerificationResults(const std::shared_ptr<const Config> &conf,
  				       : "\n*** Verification unsuccesful"));
  
  	PRINT(VerbosityLevel::Error, "Number of complete executions explored: {}", res.explored);
 +	if (res.unrollCut)
 +		PRINT(VerbosityLevel::Error, " ({} cut at the unroll bound)", res.unrollCut);
++	if (conf->weakCasSpuriousBound && !conf->weakCasSpuriousTotal)
++		PRINT(VerbosityLevel::Error, "\nWeak CAS spurious failures past the bound of {}: {}",
++		      *conf->weakCasSpuriousBound, res.spuriousCut);
++	if (conf->weakCasSpuriousTotal)
++		PRINT(VerbosityLevel::Error,
++		      "\nWeak CAS spurious failures past the bound of {} per execution: {}",
++		      *conf->weakCasSpuriousTotal, res.spuriousCut);
  	GENMC_DEBUG(if (conf->countDuplicateExecs)
  			    PRINT(VerbosityLevel::Error, " ({} duplicates)", res.duplicates););
  	if (res.boundExceeding) {
 diff --git a/passes/CMakeLists.txt b/passes/CMakeLists.txt
-index 1a9f0e9..fafa400 100644
+index 1a9f0e9..2955537 100644
 --- a/passes/CMakeLists.txt
 +++ b/passes/CMakeLists.txt
-@@ -29,6 +29,7 @@ set(PASSES_SOURCES
+@@ -28,7 +28,6 @@ set(PASSES_SOURCES
+   passes/Transforms/PropagateAssumesPass.cpp
    passes/Transforms/RustPrepPass.cpp
    passes/Transforms/SpinAssumePass.cpp
-   passes/Transforms/StrengthenCASPass.cpp
-+  passes/Transforms/WeakCASStutterPass.cpp
+-  passes/Transforms/StrengthenCASPass.cpp
    passes/Transforms/BarrierResultCheckerPass.cpp
  )
  
@@ -991,7 +1109,7 @@ index 62cf832..0966a13 100644
 +	{"_ZdaPvm", InternalFunctions::Free},
  };
 diff --git a/passes/passes/LLVMModule.cpp b/passes/passes/LLVMModule.cpp
-index 696dec0..72c7cfb 100644
+index 696dec0..eef820a 100644
 --- a/passes/passes/LLVMModule.cpp
 +++ b/passes/passes/LLVMModule.cpp
 @@ -11,9 +11,16 @@
@@ -1011,15 +1129,15 @@ index 696dec0..72c7cfb 100644
  #include "passes/LLIConfig.hpp"
  #include "passes/ModuleInfo.hpp"
  #include "passes/Transforms/BarrierResultCheckerPass.hpp"
-@@ -42,6 +49,7 @@
+@@ -41,7 +48,6 @@
+ #include "passes/Transforms/PropagateAssumesPass.hpp"
  #include "passes/Transforms/RustPrepPass.hpp"
  #include "passes/Transforms/SpinAssumePass.hpp"
- #include "passes/Transforms/StrengthenCASPass.hpp"
-+#include "passes/Transforms/WeakCASStutterPass.hpp"
+-#include "passes/Transforms/StrengthenCASPass.hpp"
  
  #include <llvm/Analysis/CGSCCPassManager.h>
  #include <llvm/Analysis/LoopAnalysisManager.h>
-@@ -53,9 +61,10 @@
+@@ -53,9 +59,10 @@
  #include <llvm/IR/PassManager.h>
  #include <llvm/IR/Verifier.h>
  #include <llvm/IRReader/IRReader.h>
@@ -1031,7 +1149,7 @@ index 696dec0..72c7cfb 100644
  #include <llvm/Plugins/PassPlugin.h>
  #else
  #include <llvm/Passes/PassPlugin.h>
-@@ -80,6 +89,25 @@
+@@ -80,6 +87,25 @@
  #include <vector>
  namespace fs = std::filesystem;
  
@@ -1057,7 +1175,7 @@ index 696dec0..72c7cfb 100644
  namespace LLVMModule {
  
  auto parseLLVMModule(const std::string &filename, const std::unique_ptr<llvm::LLVMContext> &ctx)
-@@ -87,6 +115,13 @@ auto parseLLVMModule(const std::string &filename, const std::unique_ptr<llvm::LL
+@@ -87,6 +113,13 @@ auto parseLLVMModule(const std::string &filename, const std::unique_ptr<llvm::LL
  {
  	llvm::SMDiagnostic err;
  
@@ -1071,7 +1189,7 @@ index 696dec0..72c7cfb 100644
  	auto mod = llvm::parseIRFile(filename, err, *ctx);
  	if (!mod) {
  		err.print(filename.c_str(), llvm::dbgs());
-@@ -223,7 +258,73 @@ auto transformLLVMModule(llvm::Module &mod, ModuleInfo &MI, const LLIConfig *con
+@@ -223,7 +256,73 @@ auto transformLLVMModule(llvm::Module &mod, ModuleInfo &MI, const LLIConfig *con
  	fam.registerPass([&] { return BisimilarityAnalysis(); });
  	fam.registerPass([&] { return LoadAnnotationAnalysis(); });
  
@@ -1146,7 +1264,7 @@ index 696dec0..72c7cfb 100644
  	PB.registerModuleAnalyses(mam);
  	PB.registerCGSCCAnalyses(cgam);
  	PB.registerFunctionAnalyses(fam);
-@@ -239,17 +340,26 @@ auto transformLLVMModule(llvm::Module &mod, ModuleInfo &MI, const LLIConfig *con
+@@ -239,17 +338,26 @@ auto transformLLVMModule(llvm::Module &mod, ModuleInfo &MI, const LLIConfig *con
  	basicOptsMGR.addPass(MDataCollectionPass(PI));
  	if (conf->rust)
  		basicOptsMGR.addPass(RustPrepPass());
@@ -1177,17 +1295,7 @@ index 696dec0..72c7cfb 100644
  		basicOptsMGR.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(fpm)));
  	}
  	basicOptsMGR.addPass(DeadArgumentEliminationPass());
-@@ -281,6 +391,9 @@ auto transformLLVMModule(llvm::Module &mod, ModuleInfo &MI, const LLIConfig *con
- 			fpm.addPass(CodeCondenserPass());
- 		if (conf->loopJumpThreading)
- 			fpm.addPass(createFunctionToLoopPassAdaptor(LoopJumpThreadingPass()));
-+		/* Before SpinAssume and unrolling, which both rewrite the retry cycle. */
-+		if (!std::getenv("HG_GENMC_NO_STUTTER"))
-+			fpm.addPass(WeakCASStutterPass());
- 		loopOptsMGR.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(fpm)));
- 	}
- 	if (conf->spinAssume)
-@@ -291,7 +404,9 @@ auto transformLLVMModule(llvm::Module &mod, ModuleInfo &MI, const LLIConfig *con
+@@ -291,7 +399,9 @@ auto transformLLVMModule(llvm::Module &mod, ModuleInfo &MI, const LLIConfig *con
  				LoopUnrollPass(*conf->unroll, conf->noUnrollFuns))));
  	preserved.intersect(loopOptsMGR.run(mod, mam));
  
@@ -1198,10 +1306,11 @@ index 696dec0..72c7cfb 100644
  	{
  		llvm::FunctionPassManager fpm;
  		if (conf->assumePropagation)
-@@ -301,10 +416,10 @@ auto transformLLVMModule(llvm::Module &mod, ModuleInfo &MI, const LLIConfig *con
+@@ -300,11 +410,10 @@ auto transformLLVMModule(llvm::Module &mod, ModuleInfo &MI, const LLIConfig *con
+ 			fpm.addPass(ConfirmationAnnotationPass());
  		if (conf->loadAnnot)
  			fpm.addPass(LoadAnnotationPass(PI.annotInfo));
- 		fpm.addPass(StrengthenCASPass());
+-		fpm.addPass(StrengthenCASPass());
 -		basicOptsMGR.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(fpm)));
 +		annotOptsMGR.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(fpm)));
  	}
@@ -1211,7 +1320,7 @@ index 696dec0..72c7cfb 100644
  
  	initializeModuleInfo(MI, PI, mod);
  
-@@ -317,6 +432,24 @@ void printLLVMModule(llvm::Module &mod, const std::string &filename)
+@@ -317,6 +426,24 @@ void printLLVMModule(llvm::Module &mod, const std::string &filename)
  	auto flags = llvm::sys::fs::OF_None;
  	std::error_code errs;
  	auto out = std::make_unique<llvm::raw_fd_ostream>(filename.c_str(), errs, flags);
@@ -2078,539 +2187,110 @@ index 814ae99..2a50f6b 100644
  		auto &LI = FAM.getResult<LoopAnalysis>(F);
  		for (auto &L : std::views::reverse(LI.getLoopsInPreorder())) {
  			modified |= checkLoop(L, MAM, markStarts_);
-diff --git a/passes/passes/Transforms/WeakCASStutterPass.cpp b/passes/passes/Transforms/WeakCASStutterPass.cpp
-new file mode 100644
-index 0000000..26544c9
---- /dev/null
-+++ b/passes/passes/Transforms/WeakCASStutterPass.cpp
-@@ -0,0 +1,471 @@
-+/*
-+ * GenMC -- Generic Model Checking.
-+ *
-+ * This project is dual-licensed under the Apache License 2.0 and the MIT License.
-+ * You may choose to use, distribute, or modify this software under either license.
-+ *
-+ * Apache License 2.0:
-+ *     http://www.apache.org/licenses/LICENSE-2.0
-+ *
-+ * MIT License:
-+ *     https://opensource.org/licenses/MIT
-+ */
-+
-+#include "WeakCASStutterPass.hpp"
-+
-+#include <llvm/ADT/DenseMap.h>
-+#include <llvm/ADT/SmallPtrSet.h>
-+#include <llvm/ADT/SmallVector.h>
-+#include <llvm/Analysis/LoopInfo.h>
-+#include <llvm/IR/Dominators.h>
-+#include <llvm/IR/Function.h>
-+#include <llvm/IR/InstIterator.h>
-+#include <llvm/IR/Instructions.h>
-+#include <llvm/IR/IntrinsicInst.h>
-+#include <llvm/IR/Module.h>
-+#include <llvm/IR/PassManager.h>
-+#include <llvm/Support/raw_ostream.h>
-+
-+#include <cstdlib>
-+#include <string>
-+
-+using namespace llvm;
-+
-+namespace {
-+
-+/* Regions larger than this are not a retry loop's failure path. */
-+constexpr unsigned kMaxRegionBlocks = 32;
-+
-+/* Applies the two tests described in WeakCASStutterPass.hpp to one weak CAS. */
-+class StutterCheck {
-+public:
-+	StutterCheck(AtomicCmpXchgInst *cas, const DataLayout &dl, const LoopInfo &li,
-+		     const DominatorTree &dt)
-+		: cas_(cas), dl_(dl), li_(li), dt_(dt)
-+	{}
-+
-+	auto run() -> bool
-+	{
-+		casBB_ = cas_->getParent();
-+		auto *loop = li_.getLoopFor(casBB_);
-+		if (!loop)
-+			return fail("the CAS is not in a loop");
-+		/* The decision on the flag can sit a few blocks after the CAS, behind unconditional
-+		 * branches or a conditional one whose targets coincide. Those blocks run on
-+		 * success and on failure alike. */
-+		decBB_ = casBB_;
-+		for (auto k = 0; k < 4; ++k) {
-+			auto *t = dyn_cast<BranchInst>(decBB_->getTerminator());
-+			if (!t || (t->isConditional() && t->getSuccessor(0) != t->getSuccessor(1)))
-+				break;
-+			auto *next = t->getSuccessor(0);
-+			if (next->getUniquePredecessor() != decBB_ || !loop->contains(next))
-+				break;
-+			chain_.insert(next);
-+			decBB_ = next;
-+		}
-+		auto *br = dyn_cast<BranchInst>(decBB_->getTerminator());
-+		if (!br || !br->isConditional())
-+			return fail("no conditional branch follows the CAS");
-+
-+		/* The branch is on the success flag, possibly negated. */
-+		auto *cond = br->getCondition();
-+		auto negated = false;
-+		if (auto *flag = negatedFlag(cond)) {
-+			cond = flag;
-+			negated = true;
-+		}
-+		if (!isFlag(cond))
-+			return fail("the CAS block's branch is not on the success flag");
-+		auto *succBB = br->getSuccessor(negated ? 1 : 0);
-+		auto *failBB = br->getSuccessor(negated ? 0 : 1);
-+		if (loop->contains(succBB))
-+			return fail("the success edge stays in the loop");
-+		if (!loop->contains(failBB))
-+			return fail("the failure edge leaves the loop");
-+
-+		loop_ = loop;
-+		failBB_ = failBB;
-+		if (dropIteration())
-+			return true;
-+		const std::string dropWhy = reason_;
-+		region_.clear();
-+		memo_.clear();
-+		if (repeatAttempt())
-+			return true;
-+		why_ = "drop: " + dropWhy + "; repeat: " + reason_;
-+		reason_ = why_.c_str();
-+		return false;
-+	}
-+
-+	[[nodiscard]] auto reason() const -> const char * { return reason_; }
-+
-+private:
-+	/*
-+	 * The iteration that ends in the spurious failure, from the loop header to the header
-+	 * again, contains reads and fences only (the CAS's failed read among them), and every
-+	 * header phi has the same value after it as before. Deleting the iteration's events from
-+	 * the execution leaves a consistent execution -- deleting reads and fences only removes
-+	 * constraints -- in which the thread starts the next iteration in the same state and
-+	 * every remaining read reads the same write. That execution has no spurious failure at
-+	 * this point and is explored.
-+	 */
-+	auto dropIteration() -> bool
-+	{
-+		auto *header = loop_->getHeader();
-+
-+		/* The failure path back to the header must stay in the loop: an exit taken after a
-+		 * spurious failure is behaviour of its own. */
-+		SmallPtrSet<BasicBlock *, 16> post;
-+		SmallVector<BasicBlock *, 16> work;
-+		if (failBB_ != header) {
-+			post.insert(failBB_);
-+			work.push_back(failBB_);
-+		}
-+		while (!work.empty()) {
-+			auto *bb = work.pop_back_val();
-+			for (auto *s : successors(bb)) {
-+				if (s == header)
-+					continue;
-+				if (!loop_->contains(s))
-+					return fail("the failure path can leave the loop");
-+				if (s == casBB_)
-+					return fail("the failure path reaches the CAS without the header");
-+				if (post.insert(s).second) {
-+					if (post.size() > kMaxRegionBlocks)
-+						return fail("the failure path is larger than a retry loop");
-+					work.push_back(s);
-+				}
-+			}
-+		}
-+		post.insert(chain_.begin(), chain_.end());
-+
-+		/* The blocks an iteration passes on its way from the header to the CAS. */
-+		SmallPtrSet<BasicBlock *, 16> fromHeader;
-+		work.push_back(header);
-+		fromHeader.insert(header);
-+		while (!work.empty()) {
-+			auto *bb = work.pop_back_val();
-+			if (bb == casBB_)
-+				continue;
-+			for (auto *s : successors(bb))
-+				if (s != header && loop_->contains(s) && fromHeader.insert(s).second)
-+					work.push_back(s);
-+		}
-+		SmallPtrSet<BasicBlock *, 16> toCas;
-+		work.push_back(casBB_);
-+		toCas.insert(casBB_);
-+		while (!work.empty()) {
-+			auto *bb = work.pop_back_val();
-+			if (bb == header)
-+				continue;
-+			for (auto *p : predecessors(bb))
-+				if (loop_->contains(p) && toCas.insert(p).second)
-+					work.push_back(p);
-+		}
-+
-+		region_.insert(post.begin(), post.end());
-+		for (auto *bb : fromHeader)
-+			if (toCas.contains(bb))
-+				region_.insert(bb);
-+		if (region_.size() > kMaxRegionBlocks)
-+			return fail("the iteration is larger than a retry loop");
-+
-+		for (auto *bb : region_) {
-+			/* A load before the CAS is also in the execution where the CAS succeeds,
-+			 * which is explored, so an error it meets is reported there. A load after
-+			 * the CAS runs only on a failure, with the spurious failure's value. */
-+			auto beforeCas = !post.contains(bb);
-+			for (auto &i : *bb) {
-+				if (&i == cas_) {
-+					beforeCas = false;
-+					continue;
-+				}
-+				if (isa<DbgInfoIntrinsic>(&i) || i.isTerminator())
-+					continue;
-+				if (auto *phi = dyn_cast<PHINode>(&i)) {
-+					if (bb == header && !phiKeepsValue(phi))
-+						return fail("a loop-carried value changes in the iteration");
-+					continue;
-+				}
-+				if (isa<FenceInst>(&i) || (beforeCas && isa<LoadInst>(&i)))
-+					continue;
-+				if (i.mayReadOrWriteMemory() || i.mayHaveSideEffects())
-+					return fail("the iteration writes, calls or has another side "
-+						    "effect");
-+			}
-+		}
-+		return true;
-+	}
-+
-+	/*
-+	 * The spurious failure is followed by the same attempt from the same state: the path
-+	 * back to the CAS repeats the previous arrival's, loop-carried values are unchanged and
-+	 * the only memory accesses besides the CAS are stores of unchanged values to unchanged
-+	 * addresses that the previous arrival also executed.
-+	 */
-+	auto repeatAttempt() -> bool
-+	{
-+		auto *loop = loop_;
-+		auto *failBB = failBB_;
-+		region_.insert(casBB_);
-+		region_.insert(chain_.begin(), chain_.end());
-+		SmallVector<BasicBlock *, 16> work;
-+		if (failBB != casBB_) {
-+			region_.insert(failBB);
-+			work.push_back(failBB);
-+		}
-+		auto reachesCas = (failBB == casBB_);
-+		while (!work.empty()) {
-+			auto *bb = work.pop_back_val();
-+			auto *term = bb->getTerminator();
-+			if (!isa<BranchInst>(term) && !isa<SwitchInst>(term))
-+				return fail("the failure path ends in something other than a branch");
-+			for (auto *s : successors(bb)) {
-+				if (s == casBB_) {
-+					reachesCas = true;
-+					continue;
-+				}
-+				if (!loop->contains(s)) {
-+					if (!dt_.dominates(bb, casBB_))
-+						return fail("the failure path can leave the loop");
-+					continue;
-+				}
-+				if (region_.insert(s).second) {
-+					if (region_.size() > kMaxRegionBlocks)
-+						return fail("the failure path is larger than a retry loop");
-+					work.push_back(s);
-+				}
-+			}
-+		}
-+		if (!reachesCas)
-+			return fail("the failure path does not return to the CAS");
-+
-+		/* The CAS is the same operation on the next arrival. */
-+		if (!invariant(cas_->getPointerOperand()) || !invariant(cas_->getCompareOperand()) ||
-+		    !invariant(cas_->getNewValOperand()))
-+			return fail("the CAS's operands change on the failure path");
-+
-+		for (auto *bb : region_) {
-+			auto ranBefore = (bb == casBB_) || dt_.dominates(bb, casBB_);
-+			for (auto &i : *bb) {
-+				if (&i == cas_) {
-+					ranBefore = false;
-+					continue;
-+				}
-+				if (auto *phi = dyn_cast<PHINode>(&i)) {
-+					if (!phiKeepsValue(phi))
-+						return fail("a loop-carried value changes on the failure "
-+							    "path");
-+					continue;
-+				}
-+				if (isa<DbgInfoIntrinsic>(&i))
-+					continue;
-+				if (i.isTerminator()) {
-+					if (bb == casBB_ || chain_.contains(bb))
-+						continue;
-+					Value *c = nullptr;
-+					if (auto *b = dyn_cast<BranchInst>(&i); b && b->isConditional())
-+						c = b->getCondition();
-+					else if (auto *sw = dyn_cast<SwitchInst>(&i))
-+						c = sw->getCondition();
-+					if (c && !invariant(c))
-+						return fail("a branch on the failure path depends on a "
-+							    "changed value");
-+					continue;
-+				}
-+				if (auto *si = dyn_cast<StoreInst>(&i)) {
-+					/* The previous arrival executed this store with the same
-+					 * operands, so the stutter's copy repeats one that is kept. */
-+					if (!ranBefore || si->isVolatile() ||
-+					    !invariant(si->getPointerOperand()) ||
-+					    !invariant(si->getValueOperand()))
-+						return fail("a store on the failure path is not a repeat");
-+					continue;
-+				}
-+				if (i.mayReadOrWriteMemory() || i.mayHaveSideEffects())
-+					return fail("the failure path reads memory, calls or has "
-+						    "another side effect");
-+			}
-+		}
-+		return true;
-+	}
-+
-+	auto fail(const char *why) -> bool
-+	{
-+		reason_ = why;
-+		return false;
-+	}
-+
-+	/* The success flag, possibly widened and narrowed again (the inlined
-+	 * compare_exchange_weak passes it through an i8). */
-+	auto isFlag(Value *v) const -> bool
-+	{
-+		while (true) {
-+			if (auto *c = dyn_cast<ZExtInst>(v))
-+				v = c->getOperand(0);
-+			else if (auto *t = dyn_cast<TruncInst>(v); t && t->getType()->isIntegerTy(1))
-+				v = t->getOperand(0);
-+			else
-+				break;
-+		}
-+		auto *ev = dyn_cast<ExtractValueInst>(v);
-+		return ev && ev->getAggregateOperand() == cas_ && ev->getNumIndices() == 1 &&
-+		       ev->getIndices()[0] == 1;
-+	}
-+
-+	/* The flag when `v` is `xor flag, true`. */
-+	auto negatedFlag(Value *v) const -> Value *
-+	{
-+		auto *bo = dyn_cast<BinaryOperator>(v);
-+		if (!bo || bo->getOpcode() != Instruction::Xor)
-+			return nullptr;
-+		auto *c = dyn_cast<ConstantInt>(bo->getOperand(1));
-+		if (!c || !c->isOne() || !isFlag(bo->getOperand(0)))
-+			return nullptr;
-+		return bo->getOperand(0);
-+	}
-+
-+	auto isLoaded(Value *v) const -> bool
-+	{
-+		auto *ev = dyn_cast<ExtractValueInst>(v);
-+		return ev && ev->getAggregateOperand() == cas_ && ev->getNumIndices() == 1 &&
-+		       ev->getIndices()[0] == 0;
-+	}
-+
-+	/* The arm a select on the flag takes when the CAS fails; null if `v` is not one. */
-+	auto failureArm(Value *v) const -> Value *
-+	{
-+		auto *sel = dyn_cast<SelectInst>(v);
-+		if (!sel)
-+			return nullptr;
-+		if (isFlag(sel->getCondition()))
-+			return sel->getFalseValue();
-+		if (negatedFlag(sel->getCondition()))
-+			return sel->getTrueValue();
-+		return nullptr;
-+	}
-+
-+	/* Bit-for-bit conversions only: the value is the same bits on both sides. */
-+	auto stripCasts(Value *v) const -> Value *
-+	{
-+		while (auto *c = dyn_cast<CastInst>(v)) {
-+			if (!isa<PtrToIntInst>(c) && !isa<IntToPtrInst>(c) && !isa<BitCastInst>(c))
-+				break;
-+			if (dl_.getTypeSizeInBits(c->getSrcTy()) != dl_.getTypeSizeInBits(c->getDestTy()))
-+				break;
-+			v = c->getOperand(0);
-+		}
-+		return v;
-+	}
-+
-+	auto inRegion(Value *v) const -> bool
-+	{
-+		auto *i = dyn_cast<Instruction>(v);
-+		return i && region_.contains(i->getParent());
-+	}
-+
-+	/* Under a spurious failure the CAS returns its compare operand, so a value carried
-+	 * back to `phi` keeps the phi's value when it is the phi itself, or the CAS's loaded
-+	 * value with the phi as the compare operand, or a select on the flag whose failure
-+	 * arm is one of those. */
-+	auto equalUnderStutter(Value *v, PHINode *phi) const -> bool
-+	{
-+		v = stripCasts(v);
-+		if (auto *arm = failureArm(v))
-+			v = stripCasts(arm);
-+		if (v == phi)
-+			return true;
-+		return isLoaded(v) && stripCasts(cas_->getCompareOperand()) == phi;
-+	}
-+
-+	auto phiKeepsValue(PHINode *phi) const -> bool
-+	{
-+		for (unsigned k = 0; k < phi->getNumIncomingValues(); ++k)
-+			if (region_.contains(phi->getIncomingBlock(k)) &&
-+			    !equalUnderStutter(phi->getIncomingValue(k), phi))
-+				return false;
-+		return true;
-+	}
-+
-+	/* The value on the next arrival at the CAS equals the value on the previous one. Phis
-+	 * are checked separately (phiKeepsValue) and the whole CAS is rejected if one does not
-+	 * keep its value, so a phi of the region counts as invariant here. */
-+	auto invariant(Value *v) -> bool
-+	{
-+		if (!inRegion(v) || isa<PHINode>(v))
-+			return true;
-+		if (auto *arm = failureArm(v))
-+			return invariant(arm);
-+		if (v == cas_ || isFlag(v))
-+			return false;
-+		if (isLoaded(v))
-+			return invariant(cas_->getCompareOperand());
-+		auto *i = cast<Instruction>(v);
-+		if (i->mayReadOrWriteMemory() || i->mayHaveSideEffects())
-+			return false;
-+		auto [it, fresh] = memo_.try_emplace(i, true);
-+		if (!fresh)
-+			return it->second;
-+		auto ok = true;
-+		for (auto &op : i->operands())
-+			ok = ok && invariant(op.get());
-+		memo_[i] = ok;
-+		return ok;
-+	}
-+
-+	AtomicCmpXchgInst *cas_;
-+	const DataLayout &dl_;
-+	const LoopInfo &li_;
-+	const DominatorTree &dt_;
-+	BasicBlock *casBB_ = nullptr;
-+	SmallPtrSet<BasicBlock *, 16> region_;
-+	DenseMap<Instruction *, bool> memo_;
-+	const char *reason_ = "";
-+	std::string why_;
-+	Loop *loop_ = nullptr;
-+	BasicBlock *failBB_ = nullptr;
-+	BasicBlock *decBB_ = nullptr;
-+	SmallPtrSet<BasicBlock *, 4> chain_;
-+};
-+
-+} // namespace
-+
-+auto WeakCASStutterPass::run(Function &F, FunctionAnalysisManager &FAM) -> PreservedAnalyses
-+{
-+	const auto report = std::getenv("HG_GENMC_STUTTER_REPORT") != nullptr;
-+	SmallVector<AtomicCmpXchgInst *, 8> weak;
-+	for (auto &inst : instructions(F))
-+		if (auto *casi = dyn_cast<AtomicCmpXchgInst>(&inst); casi && casi->isWeak())
-+			weak.push_back(casi);
-+	if (weak.empty())
-+		return PreservedAnalyses::all();
-+
-+	const auto &dl = F.getParent()->getDataLayout();
-+	const auto &li = FAM.getResult<LoopAnalysis>(F);
-+	const auto &dt = FAM.getResult<DominatorTreeAnalysis>(F);
-+	auto modified = false;
-+	for (auto *casi : weak) {
-+		StutterCheck check(casi, dl, li, dt);
-+		const auto stutter = check.run();
-+		if (report) {
-+			errs() << "HG-STUTTER " << (stutter ? "strong " : "weak   ") << F.getName();
-+			if (const auto &loc = casi->getDebugLoc())
-+				errs() << " " << loc->getFilename() << ":" << loc.getLine();
-+			if (!stutter)
-+				errs() << " -- " << check.reason();
-+			errs() << "\n";
-+			if (!stutter && std::getenv("HG_GENMC_STUTTER_REPORT")[0] == '2')
-+				casi->getParent()->getParent()->print(errs());
-+		}
-+		if (stutter) {
-+			casi->setWeak(false);
-+			modified = true;
-+		}
-+	}
-+	if (!modified)
-+		return PreservedAnalyses::all();
-+	PreservedAnalyses pa;
-+	pa.preserveSet<CFGAnalyses>();
-+	return pa;
-+}
-diff --git a/passes/passes/Transforms/WeakCASStutterPass.hpp b/passes/passes/Transforms/WeakCASStutterPass.hpp
-new file mode 100644
-index 0000000..bd1e9c7
---- /dev/null
-+++ b/passes/passes/Transforms/WeakCASStutterPass.hpp
-@@ -0,0 +1,53 @@
-+/*
-+ * GenMC -- Generic Model Checking.
-+ *
-+ * This project is dual-licensed under the Apache License 2.0 and the MIT License.
-+ * You may choose to use, distribute, or modify this software under either license.
-+ *
-+ * Apache License 2.0:
-+ *     http://www.apache.org/licenses/LICENSE-2.0
-+ *
-+ * MIT License:
-+ *     https://opensource.org/licenses/MIT
-+ */
-+
-+#ifndef GENMC_WEAK_CAS_STUTTER_PASS_HPP
-+#define GENMC_WEAK_CAS_STUTTER_PASS_HPP
-+
-+#include <llvm/Passes/PassBuilder.h>
-+
-+using namespace llvm;
-+
-+/**
-+ * Makes a weak CAS strong when its spurious failure adds no behaviour. The checker models a
-+ * spurious failure as a failed read of the write the CAS would have succeeded on, so the CAS
-+ * returns its expected value. Two shapes of retry loop qualify:
-+ *
-+ *  - Drop the iteration. From the loop header to the header again the iteration holds reads
-+ *    and fences only (loads before the CAS; nothing but pure code after it), the failure path
-+ *    stays in the loop, and every header phi has the same value after the iteration as before.
-+ *    Deleting the iteration's events leaves a consistent execution -- deleting reads and fences
-+ *    only removes constraints -- in which the thread starts the next iteration in the same state
-+ *    and every remaining read reads the same write.
-+ *
-+ *  - Repeat the attempt. The failure path returns to the CAS with every loop-carried value and
-+ *    branch condition unchanged, and the only memory accesses on the cycle are stores of
-+ *    unchanged values to unchanged addresses that the previous arrival also executed (a
-+ *    Treiber push storing the link before the CAS). The execution with the spurious failure
-+ *    differs from the one without it by one read and the repeated stores. Remaining
-+ *    assumption: no other thread writes a stored address between the two copies; for a
-+ *    non-atomic store such a writer is a data race, which the checker reports through the copy
-+ *    that is kept.
-+ *
-+ * Every other weak CAS stays weak and its spurious failures are explored: one not in a loop,
-+ * one whose failure leaves the loop, loads after the CAS, calls, writes a changed value, or
-+ * changes a loop-carried value such as an attempt counter. Runs before SpinAssume and unrolling,
-+ * which rewrite the cycle. HG_GENMC_STUTTER_REPORT=1 prints the decision per CAS (=2 also
-+ * prints the function of a CAS kept weak); HG_GENMC_NO_STUTTER=1 disables the pass.
-+ */
-+class WeakCASStutterPass : public PassInfoMixin<WeakCASStutterPass> {
-+public:
-+	auto run(Function &F, FunctionAnalysisManager &FAM) -> PreservedAnalyses;
-+};
-+
-+#endif /* GENMC_WEAK_CAS_STUTTER_PASS_HPP */
+diff --git a/passes/passes/Transforms/StrengthenCASPass.cpp b/passes/passes/Transforms/StrengthenCASPass.cpp
+deleted file mode 100644
+index 13ec605..0000000
+--- a/passes/passes/Transforms/StrengthenCASPass.cpp
++++ /dev/null
+@@ -1,63 +0,0 @@
+-/*
+- * GenMC -- Generic Model Checking.
+- *
+- * This project is dual-licensed under the Apache License 2.0 and the MIT License.
+- * You may choose to use, distribute, or modify this software under either license.
+- *
+- * Apache License 2.0:
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * MIT License:
+- *     https://opensource.org/licenses/MIT
+- */
+-
+-#include "StrengthenCASPass.hpp"
+-#include "passes/Transforms/LoadAnnotationPass.hpp"
+-
+-#include "genmc/Execution/LoadAnnotation.hpp"
+-#include "genmc/Support/Error.hpp"
+-
+-#include <llvm/IR/DebugLoc.h>
+-#include <llvm/IR/Function.h>
+-#include <llvm/IR/InstIterator.h>
+-#include <llvm/IR/Instructions.h>
+-#include <llvm/IR/PassManager.h>
+-
+-#include <format>
+-#include <string>
+-
+-using namespace llvm;
+-
+-static auto sourceLocation(const Instruction *inst) -> std::string
+-{
+-	if (const auto &dl = inst->getDebugLoc())
+-		return std::format("{}:{}", dl->getFilename().str(), dl.getLine());
+-	return inst->getFunction()->getName().str();
+-}
+-
+-auto StrengthenCASPass::run(Function &F, FunctionAnalysisManager &FAM) -> PreservedAnalyses
+-{
+-	const auto &lai = FAM.getResult<LoadAnnotationAnalysis>(F);
+-	auto modified = false;
+-
+-	for (auto &inst : instructions(F)) {
+-		auto *casi = dyn_cast<AtomicCmpXchgInst>(&inst);
+-		if (!casi || !casi->isWeak())
+-			continue;
+-
+-		/* If the weak CAS is annotated, make it strong */
+-		auto it = lai.annotMap.find(casi);
+-		if (it != lai.annotMap.end() && it->second.first == AssumeType::Spinloop) {
+-			casi->setWeak(false);
+-			modified = true;
+-			continue;
+-		}
+-
+-		/* NB: keep this message free of the words the test driver greps for in
+-		 * GenMC's output ("explored", "blocked", "wall-clock"). */
+-		WARN("Weak CAS at {} could not be strengthened to a strong "
+-		     "one. Strong CASes enable more effective verification.",
+-		     sourceLocation(casi));
+-	}
+-	return modified ? PreservedAnalyses::none() : PreservedAnalyses::all();
+-}
+diff --git a/passes/passes/Transforms/StrengthenCASPass.hpp b/passes/passes/Transforms/StrengthenCASPass.hpp
+deleted file mode 100644
+index 71c1d70..0000000
+--- a/passes/passes/Transforms/StrengthenCASPass.hpp
++++ /dev/null
+@@ -1,32 +0,0 @@
+-/*
+- * GenMC -- Generic Model Checking.
+- *
+- * This project is dual-licensed under the Apache License 2.0 and the MIT License.
+- * You may choose to use, distribute, or modify this software under either license.
+- *
+- * Apache License 2.0:
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * MIT License:
+- *     https://opensource.org/licenses/MIT
+- */
+-
+-#ifndef GENMC_STRENGTHEN_CAS_PASS_HPP
+-#define GENMC_STRENGTHEN_CAS_PASS_HPP
+-
+-#include <llvm/Passes/PassBuilder.h>
+-
+-using namespace llvm;
+-
+-/** Strengthens weak CASes connected to spinloops into strong ones. Weak
+- * CASes that cannot be strengthened are left intact, with a warning that a
+- * strong CAS would enable more effective verification.
+- *
+- * Must run after the annotation passes, so that the spinloop assumes
+- * have been turned into load/CAS annotations. */
+-class StrengthenCASPass : public PassInfoMixin<StrengthenCASPass> {
+-public:
+-	auto run(Function &F, FunctionAnalysisManager &FAM) -> PreservedAnalyses;
+-};
+-
+-#endif /* GENMC_STRENGTHEN_CAS_PASS_HPP */
