@@ -80,6 +80,14 @@
 #                  arm -- the defect reinstated behind an ifdef -- is run through it with this,
 #                  so the calibration is a command anyone can repeat rather than a claim in a
 #                  comment. Word-split on purpose; pass several as one string.
+#   HG_GENMC_SPURIOUS_BOUND  N: explore at most N spurious failures in a row of one thread's weak
+#                  CAS on one address (--weak-cas-spurious-bound=N), replacing the bound in the
+#                  harness's GENMC-ARGS. Every successful weak CAS has its spurious failure
+#                  explored; a harness with a retry loop that repeats the same attempt carries a
+#                  bound in its GENMC-ARGS, and the run prints how many failures the bound dropped.
+#   HG_GENMC_SPURIOUS_TOTAL  M: explore at most M spurious failures in one execution over all
+#                  threads (--weak-cas-spurious-total=M), replacing the harness's. The composed
+#                  harnesses use it: their construction alone runs dozens of weak CASes.
 
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -368,6 +376,21 @@ run_one() {
     # checker takes one of them silently, so the harness's own --unroll is dropped when the
     # extra arguments carry one and the bound in effect is the one the caller named.
     case " $* " in *" --unroll="*) extra="$(sed -E 's/--unroll=[0-9]+ ?//g' <<<"$extra")" ;; esac
+    # The spurious-failure bounds follow the same rule: HG_GENMC_SPURIOUS_BOUND or
+    # HG_GENMC_SPURIOUS_TOTAL, or the caller's --weak-cas-spurious-bound or
+    # --weak-cas-spurious-total, replaces the harness's bound of that kind.
+    if [ -n "${HG_GENMC_SPURIOUS_BOUND:-}" ]; then
+        case " $* " in *" --weak-cas-spurious-bound="*) ;;
+            *) set -- "$@" "--weak-cas-spurious-bound=$HG_GENMC_SPURIOUS_BOUND" ;; esac
+    fi
+    if [ -n "${HG_GENMC_SPURIOUS_TOTAL:-}" ]; then
+        case " $* " in *" --weak-cas-spurious-total="*) ;;
+            *) set -- "$@" "--weak-cas-spurious-total=$HG_GENMC_SPURIOUS_TOTAL" ;; esac
+    fi
+    case " $* " in *" --weak-cas-spurious-bound="*)
+        extra="$(sed -E 's/--weak-cas-spurious-bound=[0-9]+ ?//g' <<<"$extra")" ;; esac
+    case " $* " in *" --weak-cas-spurious-total="*)
+        extra="$(sed -E 's/--weak-cas-spurious-total=[0-9]+ ?//g' <<<"$extra")" ;; esac
 
     # A `// GENMC-EXPECT: violation` harness is a PINNED REPRODUCER of a known-reachable defect:
     # it passes exactly when the checker still finds the violation, so the suite notices if the
@@ -415,6 +438,11 @@ run_one() {
             return 3
         fi
     fi
+    # Under a spurious-failure bound the checker prints how many spurious-failure options the
+    # bound dropped. 0 means the run equals the unbounded exploration.
+    local spur
+    spur="$(sed -n 's|^Weak CAS spurious failures past the bound of \([0-9]*\)\( per execution\)\{0,1\}: \([0-9]*\).*|\1\2: \3|p' "$WORK/$name.out" | tail -1)"
+    [ -n "$spur" ] && echo "--- $name: weak CAS bound ${spur%%:*}, ${spur##*: } spurious failures past it"
     if [ "$expect" = "violation" ]; then
         if [ $rc -eq 42 ]; then
             echo "--- $name: EXPECTED violation still reachable (pinned reproducer) -> pass"

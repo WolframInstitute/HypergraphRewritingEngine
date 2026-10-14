@@ -1,8 +1,7 @@
 // Expect: Assertion violation
 // A compare_exchange_weak retry loop that counts its attempts, with nobody else writing the word.
-// The count is carried round the loop and changes on a failure, so a spurious failure is not a
-// repeat of the attempt before it: the checker keeps the CAS weak, explores the spurious failure
-// and reports the assertion on the count.
+// Only a spurious failure makes a second attempt; the checker explores it and reports the
+// assertion on the count, with no bound on spurious failures.
 #include <pthread.h>
 #include <atomic>
 #include <cassert>

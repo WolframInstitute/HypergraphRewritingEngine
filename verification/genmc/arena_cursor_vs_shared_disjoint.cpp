@@ -14,29 +14,32 @@
 // decides whether the shared path then bumps it.
 //
 // WHY IT NEEDS TWO THREADS AND NOT MORE. A thread past the worker ceiling takes the shared path.
-// HG_MAX_ARENA_WORKERS is 1 here, so the first thread to allocate takes a cursor and the second
-// is turned away to the shared path: the tightest interleaving in which both disciplines are
-// live on one arena. HG_ARENA_BLOCK_SIZE is 512 so a block fills in two allocations, which is
-// what drives grab_block on one side and allocate_new_block on the other.
+// HG_MAX_ARENA_WORKERS is 1 here, so the first thread to ask for an index takes the cursor and
+// the second is turned away to the shared path: the tightest interleaving in which both
+// disciplines are live on one arena. HG_ARENA_BLOCK_SIZE is 512.
 //
-// WHAT IS BOUNDED. Two threads, two allocations each, 512-byte blocks. The assertion is that the
-// four regions are pairwise disjoint. Each thread also WRITES its own byte into what it is given
-// and reads it back, so an overlap is additionally a data race on those bytes, which the checker
-// reports on its own without needing the assertion to be reached.
+// THE WORKLOAD. Each thread asks for its index first and allocates by role. The cursor thread
+// makes two 16-byte allocations: the first grabs its block (grab_block puts it on head_), the
+// second bumps it privately. The shared thread makes two 400-byte allocations: the first fits
+// the block the constructor made, the second does not and runs allocate_new_block, which
+// publishes a block, and the claim that follows lands on whichever block was published. This is
+// the smallest workload in which a cursor's block can be on head_ while the shared path
+// publishes and both then bump it. The assertion is that the four regions are pairwise
+// disjoint. Each thread also WRITES its own byte into what it is given and reads it back, so an
+// overlap is additionally a data race on those bytes.
 //
-// CALIBRATION, MEASURED. Publishing head_ rather than the block the call created --
+// WHAT IS BOUNDED. Every weak compare-exchange on the path (the shared claim, grab_block's head_
+// CAS and note_block_grab's two high-water loops per block) has its spurious failures explored,
+// at most one in a row per thread and address (GENMC-ARGS). The high-water loop is checked
+// alone by arena_high_water_max.
+//
+// CALIBRATION. Publishing head_ rather than the block the call created --
 //     current_block_.store(head_.load(std::memory_order_acquire), std::memory_order_release);
-// in allocate_new_block -- makes this harness report a violation in 3 executions: three
-// non-atomic writes to one heap address from both threads, which is the overlap itself and not
-// a derived assertion. With the block the call created, 7,680 complete executions are clean.
+// in allocate_new_block (HG_CALIBRATE_ARENA_PUBLISH_HEAD) -- must make the checker report the
+// overlap.
 //
-// THE SIZING IS PART OF THE CALIBRATION. Two allocations per thread fits each inside one block,
-// so the shared path never grows, allocate_new_block never runs after construction, and the
-// defect's precondition never arises: at that size the broken allocator also passes, in 2
-// executions. Three allocations force a grow on both paths, which is what puts a cursor's block
-// on head_ while the shared path is publishing.
-//
-// GENMC-ARGS: --disable-estimation
+// GENMC-ARGS: --disable-estimation --weak-cas-spurious-bound=1
+// GENMC-BOUND: weak CAS spurious-failure bound 1: 406,912 complete executions, K = 286,343 dropped (bounded, not exhaustive).
 // GENMC-EXPECT: pass
 // GENMC-CALIBRATE: -DHG_CALIBRATE_ARENA_PUBLISH_HEAD
 //
@@ -72,20 +75,25 @@ void operator delete[](void* p, std::align_val_t) noexcept { ::operator delete(p
 #include "hypergraph/arena.hpp"
 #include "../../hypergraph/src/arena.cpp"
 
+
 namespace {
 
-constexpr size_t kPerThread = 3;
-constexpr size_t kSize = 256;      // two fill a 512-byte block, so the THIRD forces a grow
+constexpr size_t kPerThread = 2;
+constexpr size_t kCursorSize = 16;
+constexpr size_t kSharedSize = 400;   // two do not fit one 512-byte block
 
 hypergraph::ConcurrentHeterogeneousArena* g_arena;
 unsigned char* g_got[2][kPerThread];
+size_t g_size[2];
 
 void* worker(void* arg) {
     const long id = reinterpret_cast<long>(arg);
     const unsigned char stamp = static_cast<unsigned char>(id + 1);
+    const size_t size = hypergraph::arena_worker_index() >= 0 ? kCursorSize : kSharedSize;
+    g_size[id] = size;
     for (size_t i = 0; i < kPerThread; ++i) {
         unsigned char* p = static_cast<unsigned char*>(
-            g_arena->allocate_raw(kSize, alignof(max_align_t), nullptr));
+            g_arena->allocate_raw(size, alignof(max_align_t), nullptr));
         g_got[id][i] = p;
         // Writing and reading back makes an overlap a data race on these bytes as well as a
         // failed assertion, so the checker reports it even if the assertion is unreachable.
@@ -95,8 +103,8 @@ void* worker(void* arg) {
     return nullptr;
 }
 
-bool overlaps(const unsigned char* a, const unsigned char* b) {
-    return a < b + kSize && b < a + kSize;
+bool overlaps(const unsigned char* a, size_t na, const unsigned char* b, size_t nb) {
+    return a < b + nb && b < a + na;
 }
 
 }  // namespace
@@ -117,6 +125,6 @@ int main() {
             for (long b = 0; b < 2; ++b)
                 for (size_t j = 0; j < kPerThread; ++j)
                     if (a != b || i != j)
-                        assert(!overlaps(g_got[a][i], g_got[b][j]));
+                        assert(!overlaps(g_got[a][i], g_size[a], g_got[b][j], g_size[b]));
     return 0;
 }

@@ -1,11 +1,13 @@
 // GENMC-CALIBRATE: -DHG_CALIBRATE_DEQUE_FROZEN_TAG
+// GENMC-ARGS: --weak-cas-spurious-bound=1
+// GENMC-BOUND: weak CAS spurious-failure bound 1: 228 complete executions, K = 131 dropped (bounded, not exhaustive).
 // GenMC harness: the packed word's tag stops a stale pop from claiming an item twice.
 //
 // WHAT IS BEING PROVED, AND WHY IT NEEDS ITS OWN HARNESS. deque_no_double_extraction covers two
 // consumers racing for one item, and it covers it: injecting a double extraction there makes it
 // report a violation. What it does NOT cover is the tag. Freeze the tag -- replace
 // `pack(tag_of(v) + 1, ...)` with `pack(tag_of(v), ...)` at all four commit sites, deleting the
-// ABA defence outright -- and that harness still passes, in the same 6 executions. It cannot see
+// ABA defence outright -- and that harness still passes. It cannot see
 // the tag, because with one item pushed before the consumers start and one pop attempt each, no
 // (head,tail) pair can recur inside a popper's load-to-exchange window. So the tag was carried by
 // the header's argument and by nothing that runs.

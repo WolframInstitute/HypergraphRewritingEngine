@@ -17,7 +17,7 @@ covers.
 
 ## GenMC
 
-48 harness sources with a `main` under `verification/genmc/`; `genmc_support.cpp` is support
+49 harness sources with a `main` under `verification/genmc/`; `genmc_support.cpp` is support
 code. The count is `grep -l "int main" verification/genmc/*.cpp | wc -l`. `COVERAGE.md` in that
 directory maps the engine's 837 atomic access points and 39 plain-field publication pairs to the
 harnesses that reach them.
@@ -30,14 +30,23 @@ The suite runs on GenMC v0.19.0 built against LLVM 22, with the fixes in
 in the checker and a reproducer of under thirty lines under `verification/genmc/checker/`, which
 `checker/run.sh` runs against the built checker. The fixes cover allocation by `operator new[]`,
 the ordering of a failed compare-exchange's read, memory-intrinsic promotion and lowering,
-thread-local aggregate initialisers, the error report's message, and the transformation time on
-the composed engine.
+thread-local aggregate initialisers, the error report's message, the transformation time on the
+composed engine, and two bounds on the spurious failures of a weak compare-exchange.
 
-`WeakCASStutterPass` makes a weak compare-exchange strong only where its spurious failure adds no
-behaviour: the iteration ending in it holds only reads before the CAS and carries every loop value
-back unchanged, or the failure path returns to the same attempt with only repeated stores of
-unchanged values. Every other weak CAS stays weak, and its spurious failure is explored.
-`HG_GENMC_STUTTER_REPORT=1` prints the decision for each CAS.
+### Weak compare-exchange
+
+No weak compare-exchange is made strong. Every successful weak CAS also has its spurious failure
+explored. A retry loop whose failure repeats the same attempt has no finite exploration, so a
+harness that runs one carries `--weak-cas-spurious-bound=N` in its `GENMC-ARGS`.
+
+- A bound of N explores every execution in which no thread's CAS on one address fails spuriously
+  more than N times in a row. Executions with longer runs of spurious failures are not explored.
+- The checker prints K, the number of spurious-failure options the bound dropped. K = 0 means
+  the run is exhaustive. K > 0 means the verdict is bounded at N, not exhaustive.
+- `HG_GENMC_SPURIOUS_BOUND=N run.sh <name>` overrides the harness's bound. The checker refuses
+  N = 0, which would make every weak CAS strong.
+
+The bound and K of each harness are in the table under "Weak CAS bounds" below.
 
 ### What a run checks
 
@@ -54,8 +63,9 @@ unchanged values. Every other weak CAS stays weak, and its spurious failure is e
 ### Harnesses
 
 All harnesses except `quotient_capture_composition` reach a verdict with no execution cut at an
-unroll bound, and every calibration cell is caught. Verdicts are exhaustive under RC11 unless the
-table says otherwise.
+unroll bound, and every calibration cell is caught. Verdicts are under RC11 unless the table says
+otherwise. A harness whose module holds a weak compare-exchange has a bounded verdict; its bound
+and K are in "Weak CAS bounds" below.
 
 | protocol | harnesses (threads) |
 |---|---|
@@ -68,7 +78,7 @@ table says otherwise.
 | LockFreeList | `lock_free_list_completeness` (2), `lock_free_list_pairs_meet_once` (2), `lock_free_list_three_meet_once` (3) |
 | branchial pair recording | `branchial_pair_once` (2) |
 | SegmentedArray publication | `segmented_array_published_read` (3) |
-| arena | `arena_cursor_vs_shared_disjoint` (2), `arena_worker_index_exclusive` (2), `block_pool_exactly_once` (2) |
+| arena | `arena_cursor_vs_shared_disjoint` (2), `arena_high_water_max` (2), `arena_worker_index_exclusive` (2), `block_pool_exactly_once` (2) |
 | frame publication | `frame_publication_is_atomic` (2) |
 | causal in-edge registration | `causal_in_edge_order` (2) |
 | depth join report order | `depth_report_order` (2) |
@@ -87,33 +97,73 @@ The harnesses added for rc2:
 
 - `spine_min_rank` runs the engine's `MatchJoin` members (`hypergraph/match_join.hpp`). The task
   that balances a join's `pushed` and `completed` counters reads the minimum folded rank and the
-  spawned mark of every completed match task. A tree of three tasks over two joins: 28,224
-  executions, clean. Calibrations: completions booked relaxed, and the fold done as
+  spawned mark of every completed match task. A tree of three tasks over two joins, clean
+  (bounded; see "Weak CAS bounds"). Calibrations: completions booked relaxed, and the fold done as
   load-compare-store.
 - `segmented_array_published_read`: a `SegmentedArray` element read after its writer published
   the index is non-null and fully constructed, while two writers race to create its segment. 28
   executions, clean. The calibration reads through a high-water extent with no publication.
 - `branchial_pair_once`: `CausalGraph::record_branchial_overlaps` records each branchial pair once,
   from the bucket of the lowest shared edge, with no set of recorded pairs. Three events consuming
-  the same two edges: 8,192 executions, clean.
+  the same two edges, clean (bounded; see "Weak CAS bounds").
 - `claim_chain_exactly_once`: an instance's claim chain (`hgcommon::qr_claim_chain`) claims each
   pair once while two threads install blocks past the first. 24 executions, clean.
 - `runsig_cache_step`: a match's cached run-signature key (`hgcommon::qr_cached_key`,
   `qr_cache_key`) is read only for the output step it was claimed for. 4 executions, clean.
 - `keyed_intern_once`: two applications of one rewrite under interning get one rewrite id, and
-  exactly one is told the rewrite is new (`Hypergraph::intern_rewrite`, `edge_token`). 17,319
-  executions under SC with 4 context switches, clean.
+  exactly one is told the rewrite is new (`Hypergraph::intern_rewrite`, `edge_token`). Under SC
+  with 4 context switches (bounded; see "Weak CAS bounds").
 - `keyed_twin_rendezvous`: two children with one token set, made at once under Full
-  canonicalisation, end in one class with one nonzero key (`claim_twin`, `take_twin`). 1,265
-  executions under SC with 1 context switch, clean.
+  canonicalisation, end in one class with one nonzero key (`claim_twin`, `take_twin`). Under SC
+  with 1 context switch (bounded; see "Weak CAS bounds").
 - `quotient_capture_register` and `quotient_capture_frame` split `quotient_capture_composition` by
   phase. Registration: two rewrites of one parent through `Rewriter::apply` give two events and
   two children in their own classes with published keys and orbit tables, with every class claim
-  on one key (2,684 executions). Capture: both matches are recorded on the parent's class (4,392
-  executions). Both under SC with 1 context switch, clean.
+  on one key. Capture: both matches are recorded on the parent's class. Both under SC with 1
+  context switch (bounded; see "Weak CAS bounds").
 - `job_system_error_wait`: after a job fails, `wait_for_completion` returns only once no worker is
-  inside a job. One worker and one job at `--unroll=64`: 286 executions, clean. The calibration
+  inside a job. One worker and one job at `--unroll=64`, clean (bounded; see "Weak CAS bounds"). The calibration
   returns from the wait when the error is seen.
+
+### Weak CAS bounds
+
+23 harnesses run a weak compare-exchange. N is the bound per thread and address
+(`--weak-cas-spurious-bound`); M is the bound per execution over all threads
+(`--weak-cas-spurious-total`). Before is the count on the checker that made such CASes strong.
+K > 0 means the verdict is bounded at that N or M and is not exhaustive. Every listed verdict is
+"no errors", and every calibration cell of each harness is reported at the same bound.
+
+| harness | bound | executions | K | before |
+|---|---|---|---|---|
+| `deque_no_double_extraction` | N = 1 | 40 | 7 | 6 |
+| `deque_tag_defeats_aba` | N = 1 | 228 | 131 | 11 |
+| `child_inheritance_rendezvous` | N = 1 | 48 | 6 | 12 |
+| `depth_relax_child_registration` | N = 1 | 26 | 11 | 7 |
+| `lock_free_list_completeness` | N = 1 | 6,248 | 4,420 | 184 |
+| `lock_free_list_pairs_meet_once` | N = 1 | 44 | 30 | 8 |
+| `lock_free_list_three_meet_once` | N = 1 | 4,848 | 3,341 | 288 |
+| `job_system_error_wait` | N = 1 | 2,288 | 345 | 286 |
+| `block_pool_exactly_once` | N = 1 | 363,984 | 259,015 | 1,126 |
+| `spine_min_rank` | N = 1 | 2,306,832 | 346,821 | 28,224 |
+| `quotient_mass_match_rendezvous` | N = 1 | 13,220,608 | 12,740,467 | 19,616 |
+| `quotient_instance_match_rendezvous` | N = 1 | 5,958,272 | 571,074 | 663,552 |
+| `arena_cursor_vs_shared_disjoint` | N = 1 | 406,912 | 286,343 | 7,680 (larger workload) |
+| `arena_high_water_max` | N = 2 | 87 | 32 | -- |
+| `engine_construct` | M = 1 | 60,112 | 561 | 1,768 |
+| `engine_rule` | M = 1 | running | running | 1,768 |
+| `causal_in_edge_order` | M = 1 | running | running | running |
+| `branchial_pair_once` | M = 1 | running | running | running |
+| `keyed_twin_rendezvous` | M = 1, SC 1 switch | running | running | running |
+| `quotient_capture_register` | M = 1, SC 1 switch | running | running | running |
+| `quotient_capture_frame` | M = 1, SC 1 switch | running | running | running |
+| `keyed_intern_once` | M = 1, SC 4 switches | running | running | running |
+| `engine_evolve` | M = 1, SC 1 switch | running | running | 38 |
+
+At N = 1 the composed harnesses gave no verdict in 3,600 s (`engine_construct` and `engine_rule`):
+construction and worker start alone run dozens of weak CASes, and each successful one doubles the
+executions. `arena_cursor_vs_shared_disjoint` at its earlier workload (three 256-byte allocations
+per thread) gave no verdict at N = 1 in 3,600 s; it runs the smaller workload its header states,
+and `arena_high_water_max` checks `note_block_grab`'s high-water loop alone.
 
 ### Shared bodies
 
@@ -139,17 +189,17 @@ executions). The same shape is checked on the map's claim
 ### The composed engine
 
 `engine_construct` and `engine_rule` link every engine translation unit and run construction, rule
-setup, worker start, parking and shutdown with two workers and main: 1,768 executions each,
-exhaustive. `engine_evolve` runs one `evolve()` call; its verdict is under SC with 1 context switch
-(38 executions, no errors), and its transform needs more than 12,000 MB of address space
-(`HG_GENMC_MEM_MB=16000`). Each composed harness carries `-DHG_HARNESS_CALIBRATE_END=1`, an
+setup, worker start, parking and shutdown with two workers and main. `engine_evolve` runs one
+`evolve()` call under SC with 1 context switch, and its transform needs more than 12,000 MB of
+address space (`HG_GENMC_MEM_MB=16000`). All three run with at most one spurious failure per
+execution (`--weak-cas-spurious-total=1`); their counts are in "Weak CAS bounds". Each composed harness carries `-DHG_HARNESS_CALIBRATE_END=1`, an
 assertion at the end of `main`, so a verdict is reported only with a run that reaches the end. The
 three composed harnesses calibrate reachability of the end only; no defect calibration is caught
 at their bounds.
 
 `causal_in_edge_order` runs `CausalGraph::consume_edges` on one thread while another forces the
-producer map through two growths, over the engine's ConcurrentMap, LockFreeList and arena. 512
-executions, clean. `HG_CALIBRATE_IN_EDGE_ORDER_ASCENDING` reverses the recorded order and the
+producer map through two growths, over the engine's ConcurrentMap, LockFreeList and arena,
+clean (bounded; see "Weak CAS bounds"). `HG_CALIBRATE_IN_EDGE_ORDER_ASCENDING` reverses the recorded order and the
 checker reports the redundant pair.
 
 ## GPUMC
@@ -204,6 +254,10 @@ host's quiescence rests on one precondition, that a job submits its children bef
 consistent memory; the RC11 orderings of the same protocols are the GenMC harnesses'.
 
 ## Open items
+
+- **Bounded spurious failures.** Every harness that runs a weak compare-exchange has K > 0 at its
+  bound ("Weak CAS bounds"): executions with more spurious failures than the bound are not
+  explored.
 
 - **Bounded under SC.** Seven GenMC harnesses have a verdict under sequential consistency with a
   context bound, not an exhaustive RC11 verdict: `engine_evolve` (1 switch; RC11 gave no verdict

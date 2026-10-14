@@ -13,10 +13,10 @@
 # within the ten minutes this script gives it, reports no race on the cas_fail_* reproducers,
 # fails memmove_overlap_tail's assertion, reports no error on copy_longer_than_unroll, prints no
 # assertion message or error site, and aborts on opaque_memcpy_struct, runtime_length_memset and
-# thread_atexit_records_nothing. Measured on the fork with HG_GENMC_NO_STUTTER=1: it does not
-# finish failed_cas_acquire or weak_cas_push_stutter. uninit_heap_read_reported pins the report's
-# wording, and the weak_cas_spurious_* pair pins that a spurious failure of a weak CAS is explored
-# wherever it is not a repeat of the attempt before it.
+# thread_atexit_records_nothing. uninit_heap_read_reported pins the report's wording. The
+# weak_cas_spurious_* reproducers pin that every spurious failure of a weak CAS is explored, and
+# that --weak-cas-spurious-bound=N (N failures in a row) and --weak-cas-spurious-total=M (M per
+# execution) explore up to the bound and no further, and refuse 0.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 GENMC="${GENMC:-$HOME/genmc-019/build/bin/genmc}"
@@ -28,7 +28,7 @@ for src in "$HERE"/*.cpp; do
     read -r -a args <<<"$(sed -n '1,3s|^// Args: ||p' "$src")"
     read -r -a envs <<<"$(sed -n '1,3s|^// Env: ||p' "$src")"
     out="$(env "${envs[@]}" timeout 600 "$GENMC" --disable-estimation "${args[@]}" -- -std=c++17 "$src" 2>&1)"
-    if grep -qF "$expect" <<<"$out"; then
+    if grep -qF -- "$expect" <<<"$out"; then
         echo "ok    $name ($expect; $(grep -oE 'explored: [0-9]+' <<<"$out"))"
     else
         echo "FAIL  $name (expected: $expect)"; grep -E 'Error|INTERNAL|error|No errors' <<<"$out" | head -3; fail=1

@@ -22,9 +22,10 @@
 // CALIBRATED with the alternative for_each_before names and rejects: scanning from head_ instead
 // of from mine->prev. That is the "more than 3" direction -- two pushers whose pushes and scans
 // interleave each see the other, so a pair is reported twice -- and this harness reports a safety
-// violation for it in 5 executions (genmc exit 42). Restored, it is clean in 288.
+// violation for it (genmc exit 42). Restored, it is clean (GENMC-BOUND below).
 //
-// GENMC-ARGS: --disable-estimation
+// GENMC-ARGS: --disable-estimation --weak-cas-spurious-bound=1
+// GENMC-BOUND: weak CAS spurious-failure bound 1: 4,848 complete executions, K = 3,341 dropped (bounded, not exhaustive).
 // GENMC-EXPECT: pass
 // GENMC-CALIBRATE: -DHG_CALIBRATE_LIST_WALK_FROM_HEAD
 //

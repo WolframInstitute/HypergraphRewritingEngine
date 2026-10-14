@@ -1,8 +1,8 @@
+// Args: --weak-cas-spurious-bound=1
 // Thread c writes into a's block after a CAS whose success ordering is release only. c reaches
 // a's block through an acquire read: its first load, or a failed CAS, which reads with the
-// failure ordering (acquire). So the write does not race. The retry loops are pure
-// compare_exchange_weak loops; their spurious failures repeat the attempt and are dropped, so the
-// run ends without --unroll.
+// failure ordering (acquire). So the write does not race. The retry loops are compare_exchange_weak
+// loops; --weak-cas-spurious-bound=1 explores one spurious failure in a row per CAS.
 #include <pthread.h>
 #include <atomic>
 #include <cassert>

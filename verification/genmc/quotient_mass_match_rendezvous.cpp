@@ -36,7 +36,8 @@
 // are two writes with no order between them, which is the handoff itself. GenMC reports that as
 // "unordered writes" and stops when in-place revisiting is on.
 //
-// GENMC-ARGS: --disable-estimation --disable-ipr
+// GENMC-ARGS: --disable-estimation --disable-ipr --weak-cas-spurious-bound=1
+// GENMC-BOUND: weak CAS spurious-failure bound 1: 13,220,608 complete executions, K = 12,740,467 dropped (bounded, not exhaustive).
 // GENMC-EXPECT: pass
 // GENMC-CALIBRATE: -DCALIBRATE_NO_FENCE
 // GENMC-CALIBRATE: -DCALIBRATE_CLEAR_LATE
