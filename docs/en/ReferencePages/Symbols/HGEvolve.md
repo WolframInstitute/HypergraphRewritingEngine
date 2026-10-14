@@ -1256,6 +1256,7 @@ chain = {{1, 2}} -> {{1, 3}, {3, 2}};
 The `"Device"` property names the device that ran the evolution. On the GPU it also gives the name and compute capability of the card:
 
 ```wl
+chain = {{1, 2}} -> {{1, 3}, {3, 2}};
 Keys /@ {HGEvolve[chain, {{1, 2}}, 3, "Device", "TargetDevice" -> "GPU"], HGEvolve[chain, {{1, 2}}, 3, "Device"]}
 ```
 
