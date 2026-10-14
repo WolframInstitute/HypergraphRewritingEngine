@@ -244,7 +244,28 @@ struct RecordSet {
     bool multiplicities = false;
     // Each class's invariants (state_invariants_core.hpp), computed when the class is created.
     bool state_invariants = false;
+    // The raw causal and branchial pairs are enumerated ("CausalEdges", "BranchialEdges", the
+    // graphs over them). Under quotient exploration the replay keeps each instance's
+    // applications for the branchial enumeration only when this is on; the counts do not read
+    // them (wpp depth 8 quotient: 280 MB).
+    bool relation_lists = true;
+    // The raw events are enumerated ("Events", "EventsMinimal", the graphs over events).
+    // Under quotient exploration each reconstructed event's (from class, to class, rule) is kept
+    // only when this or relation_lists is on (wpp depth 8 quotient: 180 MB).
+    bool event_lists = true;
 };
+
+// Whether the replay publishes each application for the branchial enumeration
+// (hgcommon::qr_apply's want_branchial). Both engines call this.
+HG_HD inline bool qr_publishes_applications(bool branchial, bool relation_lists) {
+    return branchial && relation_lists;
+}
+
+// Whether the replay keeps each reconstructed event's (from class, to class, rule): read by the
+// event and relation enumerations, never by the counts.
+HG_HD inline bool qr_keeps_event_content(const RecordSet& r) {
+    return r.relation_lists || r.event_lists;
+}
 
 // Whether two record sets ask for the same relations. A session continuation must record what
 // its opening call recorded: both engines refuse one that does not.
@@ -252,7 +273,8 @@ HG_HD inline bool same_record_set(const RecordSet& a, const RecordSet& b) {
     return a.causal == b.causal && a.branchial == b.branchial &&
            a.state_events == b.state_events && a.raw_events == b.raw_events &&
            a.raw_counts_only == b.raw_counts_only && a.multiplicities == b.multiplicities &&
-           a.state_invariants == b.state_invariants;
+           a.state_invariants == b.state_invariants && a.relation_lists == b.relation_lists &&
+           a.event_lists == b.event_lists;
 }
 
 

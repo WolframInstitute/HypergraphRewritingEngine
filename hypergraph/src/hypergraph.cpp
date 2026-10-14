@@ -2718,6 +2718,11 @@ void Hypergraph::set_record_set(RecordSet r) {
     record_raw_counts_only_.store(r.raw_counts_only, std::memory_order_relaxed);
     record_multiplicities_.store(r.multiplicities, std::memory_order_relaxed);
     record_state_invariants_.store(r.state_invariants, std::memory_order_relaxed);
+    record_relation_lists_.store(r.relation_lists, std::memory_order_relaxed);
+    record_event_lists_.store(r.event_lists, std::memory_order_relaxed);
+    qc_publish_applied_.store(hgcommon::qr_publishes_applications(r.branchial, r.relation_lists),
+                              std::memory_order_relaxed);
+    qc_keep_content_.store(hgcommon::qr_keeps_event_content(r), std::memory_order_relaxed);
 }
 
 RecordSet Hypergraph::record_set() const {
@@ -2727,7 +2732,9 @@ RecordSet Hypergraph::record_set() const {
                      record_raw_events_.load(std::memory_order_relaxed),
                      record_raw_counts_only_.load(std::memory_order_relaxed),
                      record_multiplicities_.load(std::memory_order_relaxed),
-                     record_state_invariants_.load(std::memory_order_relaxed)};
+                     record_state_invariants_.load(std::memory_order_relaxed),
+                     record_relation_lists_.load(std::memory_order_relaxed),
+                     record_event_lists_.load(std::memory_order_relaxed)};
 }
 
 // The per-state event list and the branchial pair relation are recorded independently: they feed
@@ -2836,6 +2843,7 @@ uint32_t Hypergraph::alloc_event_id(uint32_t above) {
 
 void Hypergraph::QrCtx::record_content(uint32_t ev, uint64_t from_class, uint64_t to_class,
                                        uint32_t rule) {
+    if (!hg.qc_keep_content_.load(std::memory_order_relaxed)) return;
     hg.qc_event_sig_.emplace_at(Hypergraph::qc_ev_slot(ev), hg.arena_,
                                 QcEventContent{from_class, to_class, rule, 1u});
 }
@@ -2911,7 +2919,7 @@ bool Hypergraph::QrCtx::want_causal() const {
     return hg.record_causal_.load(std::memory_order_relaxed);
 }
 bool Hypergraph::QrCtx::want_branchial() const {
-    return hg.record_branchial_.load(std::memory_order_relaxed);
+    return hg.qc_publish_applied_.load(std::memory_order_relaxed);
 }
 
 uint32_t Hypergraph::QrCtx::producer_at(const QcInstance& inst, uint32_t slot) const {

@@ -101,7 +101,8 @@ QeState::QeState(bool on, const QeEntries& n): matches_(on ? n.classes : 1u),
           qm_consumed_(on ? n.classes * 2u : 8u),
           qm_overlaps_(on ? n.classes * 2u : 8u),
           qm_capacity_(on ? n.classes : 1u),
-          inst_applied_(on ? qe_list_buckets(n.events) : 1u, on ? n.events * 2u : 1u),
+          applied_buckets_(on ? qe_list_buckets(n.events) : 1u),
+          applied_nodes_(on ? n.events * 2u : 1u),
           frame_(on ? n.classes * 2u : 8u),
           arr_cap_(on ? n.words : 1u),
           on_(on) {
@@ -198,7 +199,7 @@ void QeState::clear() {
         qm_overlaps_.clear(&batch);
         // The masses, cells and flags are zeroed by whoever claims them; only the counts restart.
         batch.add(qm_words_ + 2ull * qm_capacity_, sizeof(unsigned long long) * 2u, 0);
-        inst_applied_.clear(0xFFFFFFFFu, &batch);
+        if (inst_applied_) inst_applied_->clear(0xFFFFFFFFu, &batch);
         batch.add(class_nmatch_, sizeof(uint32_t) * class_nmatch_cap_, 0);
         batch.add(class_pairs_, sizeof(unsigned long long) * class_nmatch_cap_, 0);
         batch.add(event_kept_, sizeof(uint32_t) * kQeKeptStride * size_t(events), 0);
@@ -376,7 +377,7 @@ void QeState::reconstructed_pairs_host(std::vector<std::pair<uint64_t, uint64_t>
         // Grouped by instance and paired by hgcommon::qr_instance_branchial_pairs, the function
         // the host engine's readback calls.
         std::vector<LockFreeList<QeAppliedMatch>::Node> nodes;
-        inst_applied_.copy_nodes_to_host(nodes);
+        if (inst_applied_) inst_applied_->copy_nodes_to_host(nodes);
         // The arena prefix the run filled, not its capacity.
         uint32_t used = 0;
         HG_CUDA_CHECK(cudaMemcpy(&used, cursor_, sizeof(uint32_t), cudaMemcpyDeviceToHost),
@@ -458,6 +459,11 @@ void QeState::ensure_event_content() {
                       "QeState event to-class alloc");
         HG_CUDA_CHECK(cudaMalloc(&event_rule_, sizeof(uint32_t) * event_sig_capacity_),
                       "QeState event rule alloc");
+}
+
+void QeState::ensure_applied() {
+    if (inst_applied_ || !on_) return;
+    inst_applied_ = std::make_unique<LockFreeList<QeAppliedMatch>>(applied_buckets_, applied_nodes_);
 }
 
 void QeState::reconstructed_event_content_host(std::vector<uint64_t>& from_class,
@@ -551,7 +557,7 @@ void QeState::reconstructed_genesis_pairs_host(bool reduced,
 }
 
 QeView QeState::view(uint32_t max_steps, EventSignatureKeys keys,
-                bool replay, bool multiplicity, bool event_content) {
+                bool replay, bool multiplicity, bool event_content, bool publish_applied) {
         QeView q{};
         q.matches      = matches_.view();
         q.by_from      = by_from_.view();
@@ -573,7 +579,8 @@ QeView QeState::view(uint32_t max_steps, EventSignatureKeys keys,
         q.event_from_class = event_content ? event_from_class_ : nullptr;
         q.event_to_class   = event_content ? event_to_class_ : nullptr;
         q.event_rule       = event_content ? event_rule_ : nullptr;
-        q.inst_applied     = inst_applied_.view();
+        if (inst_applied_) q.inst_applied = inst_applied_->view();
+        q.publish_applied  = (on_ && replay && publish_applied && inst_applied_) ? 1u : 0u;
         q.causal_pairs   = causal_pairs_.view();
         q.num_causal_pairs = num_causal_pairs_;
         q.num_causal_edges = num_causal_edges_;

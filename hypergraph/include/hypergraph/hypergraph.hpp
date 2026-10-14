@@ -155,6 +155,13 @@ class Hypergraph {
     std::atomic<bool> record_raw_counts_only_{false};
     std::atomic<bool> record_multiplicities_{false};
     std::atomic<bool> record_state_invariants_{false};
+    std::atomic<bool> record_relation_lists_{true};
+    std::atomic<bool> record_event_lists_{true};
+    // From the record set (hgcommon::qr_publishes_applications, qr_keeps_event_content): the
+    // replay publishes each application to qc_inst_applied_, and keeps each event's content in
+    // qc_event_sig_.
+    std::atomic<bool> qc_publish_applied_{true};
+    std::atomic<bool> qc_keep_content_{true};
     // Each step's raw states, newest first, filled by create_state while index_states_by_step_.
     std::atomic<bool> index_states_by_step_{false};
     hgcommon::GrowingDepthSlots<LockFreeList<StateId>> states_by_step_;
