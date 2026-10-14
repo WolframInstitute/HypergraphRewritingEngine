@@ -116,6 +116,27 @@ void JobSlotPool::release_pool(JobSlotPool* p) {
     // never hands out a pool another thread still owns.
 }
 
+std::size_t JobSlotPool::trim_retired_pools() {
+    Registry& r = registry();
+    std::size_t freed = 0;
+    for (std::size_t i = 0; i < kMaxPools; ++i) {
+        bool expected = true;
+        if (!r.occupied[i].compare_exchange_strong(expected, false, std::memory_order_acquire,
+                                                   std::memory_order_relaxed))
+            continue;
+        JobSlotPool* p = r.slots[i].load(std::memory_order_relaxed);
+        p->local_free_head_ = nullptr;
+        p->foreign_free_head_.store(nullptr, std::memory_order_relaxed);
+        while (char* chunk = p->chunk_list_head_) {
+            p->chunk_list_head_ = *reinterpret_cast<char**>(chunk);
+            std::free(chunk);
+            freed += kHeaderSize + (kHeaderSize + kSlotSize) * kChunkSlots;
+        }
+        r.occupied[i].store(true, std::memory_order_release);
+    }
+    return freed;
+}
+
 JobSlotPool* JobSlotPool::tls_pool() {
     if (t_pool_ == nullptr) {
         // Touch the registry before constructing the guard so it outlives it: the guard

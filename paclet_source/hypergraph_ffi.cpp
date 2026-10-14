@@ -2204,6 +2204,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         std::vector<uint8_t> out = run_rewriting_core(wxf_bytes, host);
         // The kernel process outlives the call: the evolution's pooled blocks are unmapped now.
         hypergraph::arena_trim_block_pool(hypergraph::kPooledBytesKeptBetweenJobs);
+        HG_NAMESPACE::jobs::JobSlotPool::trim_retired_pools();
 
         mint out_dims[1] = {static_cast<mint>(out.size())};
         MNumericArray result_array;

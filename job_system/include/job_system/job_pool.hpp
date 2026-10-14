@@ -46,6 +46,13 @@ public:
     static void* allocate(std::size_t size);
     static void deallocate(void* payload) noexcept;
 
+    // A retired pool (its thread exited) keeps its chunks for the next thread, sized to the most
+    // jobs its thread ever held at once. This frees the chunks of every retired pool and returns
+    // the bytes freed. QUIESCENT ONLY: no slot of a retired pool may be live, which holds when
+    // every job of the threads that held those pools has finished -- between a worker
+    // process's jobs.
+    static std::size_t trim_retired_pools();
+
 private:
     struct SlotHeader { JobSlotPool* owner; };
 
@@ -91,7 +98,7 @@ private:
 
     void* local_free_head_ = nullptr;                                  // owner-thread only
     alignas(64) std::atomic<void*> foreign_free_head_{nullptr};        // cross-thread frees
-    char* chunk_list_head_ = nullptr;                                  // for completeness
+    char* chunk_list_head_ = nullptr;                                  // freed by trim_retired_pools
     int registry_slot_ = -1;                                           // home slot, or -1
 
     static inline thread_local JobSlotPool* t_pool_ = nullptr;         // trivial; MinGW-safe

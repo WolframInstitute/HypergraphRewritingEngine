@@ -24,6 +24,7 @@
 #include "hgcommon/build_stamp.hpp"
 #include "hgcommon/affinity.hpp"
 #include "hypergraph/arena.hpp"
+#include "job_system/job_pool.hpp"
 #ifdef HG_GPU_BACKEND
 #include "hg_gpu/device_probe.hpp"
 #endif
@@ -178,10 +179,13 @@ int run_one_shot(const HostBridge& host) {
 // A finished job's arena blocks sit in the process-wide pool, mapped and resident, until an
 // arena takes them again (hypergraph/arena.hpp). A worker stays alive between jobs, so after each
 // job it unmaps the pooled blocks beyond 64 MB, which needs the pool quiescent: the job's engine
-// threads have exited, or wait idle for a held session's next verb. glibc keeps what those
+// threads have exited, or wait idle for a held session's next verb. The exited threads' job-slot
+// pools keep chunks for as many jobs as each thread ever held at once, and are freed (after the
+// A3 job at 32 workers, the idle worker's resident set 101 MB -> 80 MB). glibc keeps what those
 // threads freed in their malloc arenas until malloc_trim returns it.
 void release_job_memory() {
     hypergraph::arena_trim_block_pool(hypergraph::kPooledBytesKeptBetweenJobs);
+    HG_NAMESPACE::jobs::JobSlotPool::trim_retired_pools();
 #if defined(__GLIBC__)
     malloc_trim(0);
 #endif
