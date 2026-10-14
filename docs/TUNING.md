@@ -219,6 +219,55 @@ Derived per run: wakes per job, `wakes_empty / wakes_issued`, failed steals per 
 
 Failed steals per job, 16 to 32 workers: multirule 9.3 to 23.0, bigpath 3.7 to 10.5, cycle4 0.13 to 0.47, wpp 1.18 to 1.38. Wakes exceed parks by 3x (multirule) to 480x (wpp at 32). A park is woken at most once, so at least wakes minus parks `FUTEX_WAKE` calls found no sleeper: the idle count (`park_gate.hpp:138-153`) covers a worker from its announcement until its park has returned, and every submit in that window signals. wpp d8 quotient at 16 workers runs 41,475 to 73,832 jobs inline (a worker's 4,096-slot deque and the 32,768-slot injector both full), so the H17-H21 row's expectation of zero inline runs does not hold there.
 
+**Implemented: the throttle.** `hgcommon::ParkGate` (`common/include/hgcommon/park_gate.hpp`) carries the searching count on its own line, and `JobSystem` drives it:
+
+- A worker with an empty deque calls `search_begin`: counted as a searcher, or declined past `max(1, busy / 2)` searchers unless its last park returned (a woken worker always searches). A declined worker takes the last look and parks.
+- `wake_one` skips the wake while a worker searches, unless the submitter's own deque holds more than twice the searchers. A thread that is not a worker has backlog 0.
+- `search_found`: the last searcher out wakes one more worker when a worker is idle and the queue it took from still holds work: at least two jobs in a worker's deque, whose owner takes the next one itself, or any job in the injector.
+- `park_unless` takes a counted searcher out of the count before the idle announcement, so the barrier orders the decrement against the submitter's read.
+- Park domains are (cache, tier) pairs; tier is 0 for the first hardware thread of a fastest-class core, 1 for its sibling, 2 and 3 for the next class. A submit wakes from its cache's first domain. Workers are bound only on multi-cache parts or when the caller names CPUs, so on the i9-14900K under WSL and on bare metal with its one L3 there is one tier.
+
+Measuring the specified mechanism alone on this box, interleaved with the step-2 binary, showed failed steals per job at 32 workers unchanged or higher (bigpath 10.5 to 15.2, multirule 23.0 to 26.9) and no fall in empty wakes. Two changes to the steal search remove the failed reads:
+
+- **Awake mask.** Bit i is clear from worker i's idle announcement until its park returns, the span in which its deque is empty (only the owner pushes to it, and it found the deque empty before announcing). `steal_work` reads each awake worker's deque once, from a starting worker upward. Pools over 64 workers keep the random draw. The last look before a park still reads every deque.
+- **Starting victim.** The search starts at the worker's last successful victim, or after a park at the wake hint (the worker whose submit signalled, or the deque a chaining searcher found work in).
+
+**After.** Same command as the baseline, the step-2 binary (f8334d8a) and this one alternating process by process, 6 rounds of 5 evolves (n = 30 each), medians:
+
+| Row | Workers | Failed steals per job, before / after | Empty wakes, before / after | Wakes, before / after |
+|---|---|---|---|---|
+| multirule d7 q | 16 | 8.10 / 4.59 | 13 / 13 | 98 / 122 |
+| multirule d7 q | 32 | 30.47 / 18.24 | 28.5 [7-58] / 31 [5-53] | 301 / 360 |
+| bigpath n128 d3 q | 16 | 3.70 / 0.91 | 3 / 4.5 | 185 / 234 |
+| bigpath n128 d3 q | 32 | 16.11 / 4.23 | 66.5 [4-104] / 28.5 [4-95] | 487 / 755 |
+| cycle4 d6 f | 16 | 0.13 / 0.01 | 2 / 1 | 652 / 210 |
+| cycle4 d6 f | 32 | 0.41 / 0.07 | 40.5 [1-193] / 34 [2-104] | 31,260 / 39,646 |
+| wpp d8 q | 16 | 1.09 / 0.82 | 3 / 4 | 4,162 / 5,575 |
+| wpp d8 q | 32 | 1.89 / 1.69 | 4 [2-103] / 4 [0-41] | 30,098 / 31,436 |
+
+Failed steals per job fall on every row at both counts, by 11% (wpp at 32) to 92% (cycle4 at 16). Empty wakes at 32 fall on bigpath and cycle4 and do not move on multirule (a second interleaved run: 28 to 26) or wpp (4 in about 30,000 wakes). Total wakes rise on the narrow rows: the chain wakes add to the submit wakes. Job and state counts are identical (`CausalDeterminism.*`, `SamplingReproducibility.*` at 1, 2, 8, 16 and 32 threads pass under both policies).
+
+Proof: `verification/genmc/job_system_no_lost_wakeup{,_domains}.cpp` drive two looping workers, a submitter that is not a worker, and a caller that stops them, through the real header, with calibrations `HG_PARK_GATE_SEARCH_LEAVE_AFTER_BARRIER` (RC11 only) and `HG_PARK_GATE_SEARCH_LEAVE_LATE`; `verification/tla/Quiescence.tla` adds the searching state with `NoLostWakeup` and the cells `MCQuiescencePerSubmit`, `MCQuiescenceThreeWorkers` and `MCQuiescenceSearchLeaveLate` (VIOLATION).
+
+**Wall-clock A/B on a quiet box (deferred).** `HG_TUNE_WAKE_POLICY=per-submit` restores the per-submit wake; the awake mask and the starting victim apply under both policies. Build `bench_cpu_evolve` in a stats-OFF release directory (`build_linux`), then for each row interleave the two policies process by process:
+
+    cmake --build build_linux --target bench_cpu_evolve -j4
+    mkdir -p .scratch/c1
+    T=$(seq -s, 1 32)
+    for round in 1 2 3 4 5; do
+      for policy in throttled per-submit; do
+        for row in "multirule 7 1" "bigpath 3 1" "cycle4 6 0" "wolftri 6 0" "wpp 7 0" "wpp 8 1"; do
+          set -- $row
+          HG_TUNE_WAKE_POLICY=$policy HG_BENCH_CANON_ONLY=$3 HG_BENCH_LARGE_N=128 \
+            build_linux/bench_cpu_evolve $2 15 $T $1 > .scratch/c1/mono_${policy}_$1_d$2_q$3_r$round.log
+        done
+      done
+    done
+    python3 tools/dev/mono_check.py .scratch/c1/mono_throttled_*.log
+    python3 tools/dev/mono_check.py .scratch/c1/mono_per-submit_*.log
+
+The C1 gate is `mono_check` with no violation at the 5% band for the throttle; the policy with the lower median at 16 and 32 workers on each row is kept and the other is deleted with the `HG_TUNE_WAKE_POLICY` switch.
+
 ### 2.5 Order of implementation
 
 1. Host and device probes (2.1) and `--print-tuning`. Every later row reads them.

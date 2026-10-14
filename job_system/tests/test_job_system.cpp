@@ -656,6 +656,83 @@ TEST(JobSystemCounters, SchedulerCountersAreConsistent) {
     EXPECT_GE(c.busiest_worker_jobs, c.idlest_worker_jobs);
 }
 
+// The park domains of workers bound to CPUs split each cache by tier: two SMT siblings never
+// share a park word, and every worker's submits wake from the domain of its cache that holds the
+// first hardware threads. Four workers on the first four CPUs; on a machine whose CPUs 0-3 are
+// two SMT pairs (WSL on the i9-14900K: 0-1 and 2-3) that is two domains.
+TEST(JobSystemAffinity, ParkDomainsSeparateSmtSiblings) {
+    if (!hgcommon::affinity_supported()) GTEST_SKIP() << "no thread binding on this platform";
+    const hgcommon::HostTopology& t = hgcommon::host_topology();
+    std::vector<unsigned> cpus;
+    for (const auto& c : t.cpus) if (c.allowed && cpus.size() < 4) cpus.push_back(c.cpu);
+    if (cpus.size() < 4) GTEST_SKIP() << "fewer than four allowed CPUs";
+    job_system::JobSystem<TestJobType> js(4);
+    js.set_worker_cpus(cpus);
+    js.start();
+    std::atomic<int> ran{0};
+    for (int i = 0; i < 64; ++i)
+        js.submit(job_system::make_job([&] { ++ran; }, TestJobType::GRAPHICS));
+    js.wait_for_completion();
+    EXPECT_EQ(ran.load(), 64);
+    EXPECT_EQ(js.pin_failures(), 0u);
+    const std::vector<unsigned> cache = hgcommon::cache_domains_of(cpus);
+    std::cout << "[          ] park domains: " << js.park_domains() << " for cpus";
+    for (size_t i = 0; i < 4; ++i)
+        std::cout << " " << cpus[i] << "->" << js.worker_park_domain(i) << "(home "
+                  << js.worker_wake_home(i) << ")";
+    std::cout << "\n";
+    for (size_t i = 0; i < 4; ++i) {
+        const auto& ci = t.cpus[static_cast<size_t>(t.index_of(cpus[i]))];
+        EXPECT_LT(js.worker_park_domain(i), js.park_domains());
+        EXPECT_LE(js.worker_wake_home(i), js.worker_park_domain(i))
+            << "a submit must wake from its cache's first domain";
+        if (ci.first_thread && ci.core_class == 0)
+            EXPECT_EQ(js.worker_wake_home(i), js.worker_park_domain(i))
+                << "the first thread of a fastest-class core parks in its cache's first domain";
+        for (size_t j = 0; j < 4; ++j) {
+            const auto& cj = t.cpus[static_cast<size_t>(t.index_of(cpus[j]))];
+            if (i != j && ci.core == cj.core)
+                EXPECT_NE(js.worker_park_domain(i), js.worker_park_domain(j))
+                    << "SMT siblings " << cpus[i] << " and " << cpus[j] << " share a park word";
+            if (!cache.empty() && cache[i] == cache[j])
+                EXPECT_EQ(js.worker_wake_home(i), js.worker_wake_home(j))
+                    << "workers sharing a cache wake from different domains";
+        }
+    }
+    js.shutdown();
+}
+
+// HG_TUNE_WAKE_POLICY=per-submit selects the per-submit policy; unset is the throttle.
+TEST(JobSystemWakePolicy, EnvironmentSelectsThePolicy) {
+#if defined(_WIN32)
+    GTEST_SKIP() << "setenv is POSIX";
+#else
+    {
+        job_system::JobSystem<TestJobType> js(2);
+        js.start();
+        EXPECT_TRUE(js.wake_throttled());
+        js.shutdown();
+    }
+    ::setenv("HG_TUNE_WAKE_POLICY", "per-submit", 1);
+    {
+        job_system::JobSystem<TestJobType> js(2);
+        js.start();
+        EXPECT_FALSE(js.wake_throttled());
+        std::atomic<int> ran{0};
+        for (int i = 0; i < 64; ++i)
+            js.submit(job_system::make_job([&] {
+                ++ran;
+                for (int k = 0; k < 4; ++k)
+                    js.submit(job_system::make_job([&] { ++ran; }, TestJobType::GRAPHICS));
+            }, TestJobType::GRAPHICS));
+        js.wait_for_completion();
+        EXPECT_EQ(ran.load(), 64 * 5);
+        js.shutdown();
+    }
+    ::unsetenv("HG_TUNE_WAKE_POLICY");
+#endif
+}
+
 // A SUBMIT THAT FINDS EVERY QUEUE FULL RUNS THE JOB ON THE SUBMITTING THREAD, and that thread
 // need not be one of the workers: evolve_more seeds a continuation from its caller's thread, out
 // of resume lists it built in that thread's scratch arena. A job run there must leave the arena

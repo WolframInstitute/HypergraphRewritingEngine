@@ -33,7 +33,7 @@ harness. The park protocol is checked on its spin backend, which waits on the sa
 |---|---|---|
 | P01 injector Deque, tagged head/tail CAS | 20 | deque_no_double_extraction (2), deque_tag_defeats_aba (2), job_system_error_wait (2), engine_* (3) |
 | P02 WorkStealingDeque take/steal | 25 | work_stealing_deque_no_double_take (3), job_system_error_wait (2), engine_* (3) |
-| P03 ParkGate park/wake | 38 | job_system_no_lost_wakeup (2), job_system_no_lost_wakeup_domains (2), job_system_error_wait (2), engine_* (3) |
+| P03 ParkGate park/wake | 38 | job_system_no_lost_wakeup (4), job_system_no_lost_wakeup_domains (4), job_system_error_wait (2), engine_* (3) |
 | P04 JobSystem completion and quiescence | 27 | job_system_error_wait (2), engine_* (3) |
 | P05 JobSystem error latch and stop | 18 | job_system_error_wait (2) |
 | P06 JobSystem start/shutdown | 36 | job_system_error_wait (2), engine_* (3) |
