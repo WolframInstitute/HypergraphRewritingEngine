@@ -1,5 +1,5 @@
 // GENMC-LINK: engine
-// GENMC-ARGS: --disable-estimation --sc --bound=1 --bound-type=context
+// GENMC-ARGS: --disable-estimation --sc --bound=1 --bound-type=context --weak-cas-spurious-total=1
 // GENMC-DEFINES: -DHG_SEGMENTED_ARRAY_MAX_SEGMENTS=8 -DHG_SEGMENTED_ARRAY_MAX_SHIFT=4 -DHG_CONCURRENT_MAP_INITIAL_CAPACITY=16 -DHG_JOB_QUEUE_CAPACITY=16 -DHG_JOB_INJECTOR_CAPACITY=64 -DHG_MAX_ARENA_WORKERS=8 -DHG_KEY_SET_SHARDS=4 -DHG_MAX_PATTERN_EDGES=4 -DHG_ARENA_BLOCK_SIZE=512 -DHG_HARNESS_DEFER_QUOTIENT_CAPTURE=1
 // GENMC-CALIBRATE: -DHG_HARNESS_CALIBRATE_END
 // GENMC-CALIBRATE: -DHG_CALIBRATE_LIST_NO_RETRY
@@ -86,7 +86,7 @@ int main() {
     // captured_matches() counts the ids the captures took; the class's match list is what a
     // later instance of the class scans, so both matches must be in it.
     uint32_t listed = 0;
-    hg.for_each_expansion_match(hg.get_state(parent).canonical_hash, [&](const SlotMatch&) { ++listed; });
+    hg.for_each_expansion_match(hg.get_state(parent).canonical_hash, 0, [&](const SlotMatch&) { ++listed; });
     assert(listed == 2 && "a captured match is missing from its class's match list");
 #if defined(HG_HARNESS_CALIBRATE_END)
     assert(!"the end of the harness is reachable under this bound");

@@ -345,6 +345,18 @@ public:
             branchial_edges_[i].list.for_each([&](const BranchialEdge& edge) { visit(edge); });
     }
 
+    // A position in every worker's branchial list. Default-constructed it is before every edge.
+    using BranchialCursor = std::vector<const LockFreeList<BranchialEdge>::Node*>;
+    // The branchial edges recorded since `cursor` was last passed here, then `cursor` moves past
+    // them: each edge is visited once over a sequence of calls. One caller at a time per cursor.
+    template<typename Visitor>
+    void for_each_branchial_edge_since(BranchialCursor& cursor, Visitor&& visit) const {
+        cursor.resize(MAX_ARENA_WORKERS, nullptr);
+        for (int i = 0; i < MAX_ARENA_WORKERS; ++i)
+            cursor[i] = branchial_edges_[i].list.for_each_since(
+                cursor[i], [&](const BranchialEdge& edge) { visit(edge); });
+    }
+
     // Statistics
     size_t num_causal_edges() const;
 

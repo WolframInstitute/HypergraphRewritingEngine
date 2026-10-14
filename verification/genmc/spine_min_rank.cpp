@@ -27,7 +27,8 @@
 // -DHG_CALIBRATE_SPINE_FOLD_BY_STORE folds by load-compare-store: two folds that both read the
 // initial value can leave the larger rank as the minimum.
 //
-// GENMC-ARGS: --disable-estimation
+// GENMC-ARGS: --disable-estimation --weak-cas-spurious-bound=1
+// GENMC-BOUND: weak CAS spurious-failure bound 1: 2,306,832 complete executions, K = 346,821 dropped (bounded, not exhaustive).
 // GENMC-EXPECT: pass
 // GENMC-CALIBRATE: -DHG_CALIBRATE_MATCH_JOIN_RELAXED_COMPLETION
 // GENMC-CALIBRATE: -DHG_CALIBRATE_SPINE_FOLD_BY_STORE

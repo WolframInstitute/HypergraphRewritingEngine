@@ -22,6 +22,7 @@
 #include "hgcommon/canonical_form_core.hpp"
 #include "hgcommon/token_core.hpp"
 #include "hgcommon/state_invariants_core.hpp"
+#include "hgcommon/depth_join.hpp"
 #include "lock_free_list.hpp"
 #include "causal_graph.hpp"
 #include "concurrent_map.hpp"
@@ -141,6 +142,12 @@ class Hypergraph {
     // set, causal edges are keyed by canonical edge orbit so attribution is schedule-
     // independent across the labelings by which parents reach one canonical state.
     std::atomic<bool> quotient_causal_{false};
+    // Whether every Full state computes its edge-orbit table at creation because the run's
+    // transition key reads it (hgcommon::transition_key_reads_orbits).
+    std::atomic<bool> transition_orbits_{false};
+    // Whether the reconstruction keeps one expansion per (class, depth) rather than per class
+    // (hgcommon::qc_expansion_key): set under MaxStatesPerStep.
+    std::atomic<bool> qc_by_depth_{false};
     std::atomic<bool> record_causal_{true};
     std::atomic<bool> record_branchial_{true};
     std::atomic<bool> record_state_events_{true};
@@ -148,6 +155,9 @@ class Hypergraph {
     std::atomic<bool> record_raw_counts_only_{false};
     std::atomic<bool> record_multiplicities_{false};
     std::atomic<bool> record_state_invariants_{false};
+    // Each step's raw states, newest first, filled by create_state while index_states_by_step_.
+    std::atomic<bool> index_states_by_step_{false};
+    hgcommon::GrowingDepthSlots<LockFreeList<StateId>> states_by_step_;
 
     // A state's edge-orbit table and canonical rank table are State::edge_orbits and
     // State::edge_ranks. The orbits are computed once at state canonicalization in quotient mode
@@ -676,8 +686,8 @@ class Hypergraph {
         void push(uint64_t class_hash, uint32_t depth);
         bool pop(uint64_t& class_hash, uint32_t& depth);
         template <class F>
-        void for_each_match(uint64_t class_hash, F&& f) {
-            hg.for_each_expansion_match(class_hash, f);
+        void for_each_match(uint64_t class_hash, uint32_t depth, F&& f) {
+            hg.for_each_expansion_match(class_hash, depth, f);
         }
         void fence();
     };
@@ -1355,7 +1365,11 @@ public:
     void record_event_forms(EventId e);
     // The invariants of class `hash` into state_invariants_, from state `sid` and its IR canonical
     // form `form` (computed here when null), on the calling worker when this call claims the hash.
-    void record_state_invariants(StateId sid, uint64_t hash, const std::vector<uint32_t>* form);
+    // With `fill_pending`, a hash another worker claimed and has not yet filled is computed here
+    // too and published by compare-and-swap. Returns the published record, or null when this call
+    // left the hash to its claimer.
+    const hgcommon::StateInvariantRecord* record_state_invariants(
+        StateId sid, uint64_t hash, const std::vector<uint32_t>* form, bool fill_pending = false);
     // Event `e`'s identity, claimed in canonical_event_map_ on its signature values. The Event is
     // stored before the call; a key hit compares against the class's first event. The claim's
     // key is the event's reported signature.
@@ -1447,11 +1461,11 @@ public:
     // Apply the stored match `m` to every instance in list `list` of (from, depth).
     void qc_apply_list(const SlotMatch* m, uint64_t from, uint32_t depth, uint32_t list);
 
-    // Visit every match of the expanded representative of the canonical state `from_hash`,
-    // in slots and undeduplicated -- the input to the per-instance raw reconstruction.
+    // Visit every match of the expanded representative of the canonical state `from_hash` at
+    // `depth`, in slots and undeduplicated -- the input to the per-instance raw reconstruction.
     template <typename F>
-    void for_each_expansion_match(uint64_t from_hash, F&& f) const {
-        auto r = qc_expansion_.lookup(from_hash);
+    void for_each_expansion_match(uint64_t from_hash, uint32_t depth, F&& f) const {
+        auto r = qc_expansion_.lookup(qc_expansion_key(from_hash, depth));
         if (r.has_value()) (*r)->list.for_each([&](const SlotMatch& m) { f(m); });
     }
 
@@ -1754,6 +1768,16 @@ public:
     // Whether causal edges are keyed by canonical edge orbit (quotient exploration). Set
     // by the evolution engine before evolving; read when minting causal edge keys.
     void set_quotient_causal(bool q);
+    void set_transition_orbits(bool on) { transition_orbits_.store(on, std::memory_order_relaxed); }
+    void set_quotient_expansions_by_depth(bool on) {
+        qc_by_depth_.store(on, std::memory_order_relaxed);
+    }
+    // The key class `class_hash`'s expansion at `depth` is stored under
+    // (hgcommon::qc_expansion_key).
+    uint64_t qc_expansion_key(uint64_t class_hash, uint32_t depth) const {
+        return hgcommon::qc_expansion_key(class_hash, depth,
+                                          qc_by_depth_.load(std::memory_order_relaxed));
+    }
     bool quotient_causal() const;
 
     // Which artifacts this run builds. Set before evolving and read by the workers, so the
@@ -1768,6 +1792,25 @@ public:
         return cell ? hgcommon::atomic_ref<const hgcommon::StateInvariantRecord*>(**cell)
                           .load(std::memory_order_acquire)
                     : nullptr;
+    }
+    // The same during the run, for raw state `sid` of class `hash`: a record the class's
+    // claiming worker has not yet published (it can be running at a deeper step) is computed on
+    // the calling thread from `sid`. The record is a function of the class, so both copies are
+    // the same.
+    const hgcommon::StateInvariantRecord* state_invariants_of(StateId sid, uint64_t hash) {
+        if (const auto* r = state_invariants(hash)) return r;
+        return record_state_invariants(sid, hash, nullptr, /*fill_pending=*/true);
+    }
+
+    // Keep each step's raw states in a list as create_state publishes them. Set before evolving.
+    void set_index_states_by_step(bool on) {
+        index_states_by_step_.store(on, std::memory_order_relaxed);
+    }
+    // f(sid) for every raw state created at `step` while the index was on, newest first. Reads
+    // what is visible: complete once nothing can still create a state at the step.
+    template <class F>
+    void for_each_state_at_step(uint32_t step, F&& f) const {
+        if (const auto* list = states_by_step_.find_extra(step)) list->for_each(f);
     }
 
     // Create a genesis event for an initial state.
@@ -1824,6 +1867,16 @@ public:
     uint64_t compute_canonical_hash(const SparseBitset& edges,
                                     std::vector<uint32_t>* out_form = nullptr) const;
 
+    // The identity hash of the state a rewrite of `parent` makes, before the rewrite runs
+    // (hgcommon::SuccessorCursor): its content hash under Automatic states, its canonical hash
+    // under Full. `consumed` are the matched edges; `binding` is indexed by variable.
+    // MaxSuccessorStatesPerParent and MaxStatesPerStep count successors by them
+    // (hgcommon::SuccessorIdentity).
+    uint64_t successor_content_hash(StateId parent, const EdgeId* consumed, uint8_t num_consumed,
+                                    const RewriteRule& rule, const VertexId* binding) const;
+    uint64_t successor_canonical_hash(StateId parent, const EdgeId* consumed,
+                                      uint8_t num_consumed, const RewriteRule& rule,
+                                      const VertexId* binding) const;
 
     // Count edges in a state
     uint32_t count_state_edges(StateId sid) const;

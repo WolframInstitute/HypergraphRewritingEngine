@@ -209,15 +209,59 @@ private:
     std::vector<uint32_t> pool_, offset_of_, slots_;
 };
 
-// "StepStatisticsBranchial": each step's states and branchial state pairs
-// (stats::branchial_step_metrics), for both engines. The states are the ids below `num_states`
-// that `valid` admits, each at `step_of(sid)` under `effective(sid)`; with kBranchialOverlap
-// `contents_of(sid, out)` appends each of a state's edges as its arity and then its vertex ids.
-// An edge is its ordered list of vertex ids, numbered here by first appearance: the edge
-// metrics read which states hold the same list, so two members of an Automatic class, which
-// hold the same lists under different edge ids, give one edge set. With kBranchialGraph `pairs`
-// are the branchial event pairs, genesis filtered, projected through `output_state_of` by
-// branchial_state_edges_from_pairs with every step's pairs kept.
+// "StepStatisticsBranchial": one state of a step (stats::BranchialStepWork), for both engines,
+// appended to `b`: its id `effective`, and with kBranchialOverlap its vertex ids and edge
+// numbers from `contents_of(sid, out)`, which appends each of the state's edges as its arity and
+// then its vertex ids. An edge is its ordered list of vertex ids, numbered by `edge_number` by
+// first appearance: the edge metrics read which states hold the same list, so two members of an
+// Automatic class, which hold the same lists under different edge ids, give one edge set. The
+// metrics read only which states hold the same number, so the numbering may be per step or per
+// run. `flat` is the caller's scratch.
+template <class ContentsOf>
+void branchial_step_state(uint32_t which, uint32_t sid, int64_t effective,
+                          ContentsOf&& contents_of, ListNumbers& edge_number,
+                          std::vector<uint32_t>& flat, stats::BranchialStep& b) {
+    b.nodes.push_back(effective);
+    if (!(which & stats::kBranchialOverlap)) return;
+    flat.clear();
+    contents_of(sid, flat);
+    std::vector<uint32_t> vs, es;
+    vs.reserve(flat.size());
+    for (size_t i = 0; i < flat.size(); i += 1 + flat[i]) {
+        vs.insert(vs.end(), flat.begin() + static_cast<std::ptrdiff_t>(i + 1),
+                  flat.begin() + static_cast<std::ptrdiff_t>(i + 1 + flat[i]));
+        es.push_back(edge_number.number(flat.data() + i + 1, flat[i]));
+    }
+    b.vertex_sets.push_back(std::move(vs));
+    b.edge_sets.push_back(std::move(es));
+}
+
+// The branchial state pairs of branchial event pairs (genesis filtered), projected through
+// `output_state_of` by branchial_state_edges_from_pairs with every step's pairs kept:
+// f(step, a, b) for each, under the step of its first event's output state.
+template <class Effective, class StepOf, class OutputStateOf, class F>
+void branchial_step_pairs(const std::vector<std::pair<uint32_t, uint32_t>>& pairs,
+                          OutputStateOf&& output_state_of, Effective&& effective,
+                          StepOf&& step_of, int steps, F&& f) {
+    // Each endpoint carries its state's step above bit 40, so one unfiltered projection gives
+    // every step's pairs.
+    constexpr int kStepShift = 40;
+    GraphOptions all_steps;
+    all_steps.branchial_step = 0;
+    all_steps.steps = steps;
+    const auto set = branchial_state_edges_from_pairs(
+        pairs, output_state_of,
+        [&](uint32_t sid) {
+            return (static_cast<int64_t>(step_of(sid)) << kStepShift) | effective(sid);
+        },
+        step_of, all_steps);
+    const int64_t mask = (int64_t{1} << kStepShift) - 1;
+    for (const auto& [a, b] : set.edges) f(static_cast<uint32_t>(a >> kStepShift), a & mask, b & mask);
+}
+
+// Every step's BranchialStep: the states are the ids below `num_states` that `valid` admits,
+// each at `step_of(sid)` (branchial_step_state), and with kBranchialGraph the pairs of `pairs`
+// (branchial_step_pairs).
 template <class Valid, class Effective, class StepOf, class ContentsOf, class OutputStateOf>
 std::map<uint32_t, stats::BranchialStep> branchial_steps(
         uint32_t which, uint32_t num_states, Valid&& valid, Effective&& effective,
@@ -229,39 +273,14 @@ std::map<uint32_t, stats::BranchialStep> branchial_steps(
     std::vector<uint32_t> flat;
     for (uint32_t sid = 0; sid < num_states; ++sid) {
         if (!valid(sid)) continue;
-        auto& b = out[step_of(sid)];
-        b.nodes.push_back(effective(sid));
-        if (which & stats::kBranchialOverlap) {
-            flat.clear();
-            contents_of(sid, flat);
-            std::vector<uint32_t> vs, es;
-            vs.reserve(flat.size());
-            for (size_t i = 0; i < flat.size(); i += 1 + flat[i]) {
-                vs.insert(vs.end(), flat.begin() + static_cast<std::ptrdiff_t>(i + 1),
-                          flat.begin() + static_cast<std::ptrdiff_t>(i + 1 + flat[i]));
-                es.push_back(edge_number.number(flat.data() + i + 1, flat[i]));
-            }
-            b.vertex_sets.push_back(std::move(vs));
-            b.edge_sets.push_back(std::move(es));
-        }
+        branchial_step_state(which, sid, effective(sid), contents_of, edge_number, flat,
+                             out[step_of(sid)]);
     }
-    if (which & stats::kBranchialGraph) {
-        // Each endpoint carries its state's step above bit 40, so one unfiltered projection
-        // gives every step's pairs.
-        constexpr int kStepShift = 40;
-        GraphOptions all_steps;
-        all_steps.branchial_step = 0;
-        all_steps.steps = steps;
-        const auto set = branchial_state_edges_from_pairs(
-            pairs, output_state_of,
-            [&](uint32_t sid) {
-                return (static_cast<int64_t>(step_of(sid)) << kStepShift) | effective(sid);
-            },
-            step_of, all_steps);
-        const int64_t mask = (int64_t{1} << kStepShift) - 1;
-        for (const auto& [a, b] : set.edges)
-            out[static_cast<uint32_t>(a >> kStepShift)].pairs.emplace_back(a & mask, b & mask);
-    }
+    if (which & stats::kBranchialGraph)
+        branchial_step_pairs(pairs, output_state_of, effective, step_of, steps,
+                             [&](uint32_t step, int64_t a, int64_t b) {
+                                 out[step].pairs.emplace_back(a, b);
+                             });
     return out;
 }
 

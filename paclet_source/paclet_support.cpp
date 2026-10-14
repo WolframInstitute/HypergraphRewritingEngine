@@ -13,14 +13,18 @@
 #include "hgcommon/content_core.hpp"
 #include "state_statistics.hpp"
 #include "hgcommon/quotient_multiplicity_core.hpp"
+#include "hgcommon/quotient_causal_core.hpp"
 #include "hgcommon/branchial_overlap_core.hpp"
+#include "hgcommon/branchial_rows_core.hpp"
+#include "hgcommon/ir_core.hpp"
+#include "job_system/job_system.hpp"
 
 #include <algorithm>
 #include <atomic>
-#include <exception>
 #include <chrono>
 #include <cmath>
 #include <random>
+#include <stdexcept>
 #include <thread>
 #include <functional>
 #include <type_traits>
@@ -179,6 +183,166 @@ std::vector<hgcommon::StateId> CpuEngineHolder::frontier() const {
         out.push_back(state);
     }
     return out;
+}
+
+// =============================================================================
+// StepStatisticsCollector
+// =============================================================================
+
+StepStatisticsCollector::StepStatisticsCollector(hypergraph::Hypergraph& hg,
+                                                 hypergraph::ParallelEvolutionEngine& engine,
+                                                 uint32_t which, bool by_class, int steps)
+    : hg_(hg), engine_(engine), which_(which), steps_(steps),
+      jobs_(by_class, which, engine.num_threads(),
+            [&engine](std::function<void()> f) { engine.submit_side_job(std::move(f)); }) {}
+
+StepStatisticsCollector::~StepStatisticsCollector() {
+    if (attached_) {
+        engine_.set_on_depth_complete(nullptr);
+        hg_.set_index_states_by_step(false);
+    }
+}
+
+void StepStatisticsCollector::attach(bool step_cap) {
+    attached_ = true;
+    indexed_ = true;
+    hg_.set_index_states_by_step(true);
+    engine_.set_on_depth_complete([this, step_cap](uint32_t depth) {
+        if (inactive_) return;
+        // A run whose classes are weighted by the multiplicity count has its weights only when
+        // the run ends; the engine decides that before its first task.
+        if (hg_.quotient_multiplicity()) {
+            inactive_ = true;
+            indexed_ = false;
+            hg_.set_index_states_by_step(false);
+            return;
+        }
+        // The report runs inside a task's completion, where an exception cannot propagate;
+        // finish() rethrows it.
+        try {
+            close_through(step_cap ? depth - 1 : depth);
+        } catch (...) {
+            if (!failed_) failed_ = std::current_exception();
+        }
+    });
+}
+
+wxf::WXFValue StepStatisticsCollector::finish(std::map<uint32_t, stats::StepInput>* weighted) {
+    if (attached_) engine_.set_on_depth_complete(nullptr);
+    if (failed_) std::rethrow_exception(failed_);
+    weighted_ = weighted;
+    if (!indexed_) {
+        const uint32_t n_pub = hg_.num_published_states();
+        for (uint32_t sid = 0; sid < n_pub; ++sid) {
+            const hypergraph::State& st = hg_.get_state(sid);
+            if (st.id == hypergraph::INVALID_ID) continue;
+            if (st.step >= by_step_.size()) by_step_.resize(st.step + 1);
+            by_step_[st.step].push_back(sid);
+        }
+    }
+    // A step with no state ends the run's steps: every state at s + 1 comes from one at s.
+    uint32_t end = next_;
+    while (!states_at(end).empty()) ++end;
+    if (end > next_) {
+        closed_at_finish_ = end - next_;
+        close_through(end - 1);
+    }
+    engine_.wait_side_jobs();
+    return jobs_.reply();
+}
+
+// Closes steps next_..last, from one thread at a time: the depth join's reporter, or the caller
+// of finish once the run is over.
+void StepStatisticsCollector::close_through(uint32_t last) {
+    if (last < next_ || last == UINT32_MAX) return;
+    if (which_ & stats::kBranchialGraph) take_pairs();
+    for (; next_ <= last; ++next_) {
+        const uint32_t s = next_;
+        stats::StepStatisticsJobs::Step* slot = jobs_.reserve(s);
+        std::vector<std::pair<int64_t, int64_t>> pairs;
+        if (auto it = pairs_.find(s); it != pairs_.end()) {
+            pairs = std::move(it->second);
+            pairs_.erase(it);
+        }
+        // Step 0 is started here: every later step reads its vertices.
+        if (s == 0) {
+            jobs_.start(slot, gather(0, std::move(pairs)));
+            continue;
+        }
+        engine_.submit_side_job([this, slot, s, p = std::move(pairs)]() mutable {
+            jobs_.start(slot, gather(s, std::move(p)));
+        });
+    }
+}
+
+// The branchial state pairs recorded since the last call, by step.
+void StepStatisticsCollector::take_pairs() {
+    std::vector<std::pair<uint32_t, uint32_t>> events;
+    hg_.causal_graph().for_each_branchial_edge_since(
+        cursor_, [&](const hypergraph::BranchialEdge& be) {
+            if (hg_.is_genesis_event(be.event1) || hg_.is_genesis_event(be.event2)) return;
+            events.emplace_back(be.event1, be.event2);
+        });
+    marshal::branchial_step_pairs(
+        events,
+        [&](uint32_t eid) { return static_cast<uint32_t>(hg_.get_event(eid).output_state); },
+        [&](uint32_t sid) { return static_cast<int64_t>(hg_.get_canonical_state(sid)); },
+        [&](uint32_t sid) { return hg_.get_state(sid).step; }, steps_,
+        [&](uint32_t step, int64_t a, int64_t b) { pairs_[step].emplace_back(a, b); });
+}
+
+std::vector<uint32_t> StepStatisticsCollector::states_at(uint32_t step) const {
+    std::vector<uint32_t> sids;
+    if (indexed_) {
+        hg_.for_each_state_at_step(step, [&](hypergraph::StateId sid) { sids.push_back(sid); });
+        std::sort(sids.begin(), sids.end());
+    } else if (step < by_step_.size()) {
+        sids = by_step_[step];
+    }
+    return sids;
+}
+
+// Step `step`'s classes, with each class's record, and the events into the step, each the
+// creating event of one of its raw states; or, with weighted inputs from finish, the step's entry
+// there (read by this step's job only). Then the step's branchial input, the states in id order.
+stats::StepInput StepStatisticsCollector::gather(uint32_t step,
+                                                 std::vector<std::pair<int64_t, int64_t>> pairs) {
+    stats::StepInput in;
+    if (weighted_) {
+        if (auto it = weighted_->find(step); it != weighted_->end()) in = std::move(it->second);
+        in.branchial = {};
+    }
+    marshal::ListNumbers edge_number;
+    std::vector<uint32_t> flat;
+    auto contents = [&](uint32_t sid, std::vector<uint32_t>& vs) {
+        hg_.get_state(sid).edges.for_each([&](hypergraph::EdgeId eid) {
+            const auto& e = hg_.get_edge(eid);
+            vs.push_back(e.arity);
+            vs.insert(vs.end(), e.vertices, e.vertices + e.arity);
+        });
+    };
+    for (uint32_t sid : states_at(step)) {
+        const hypergraph::State& st = hg_.get_state(sid);
+        if (st.id == hypergraph::INVALID_ID) continue;
+        if (!weighted_) {
+            const uint64_t h = hg_.get_or_compute_canonical_hash(sid);
+            stats::add_class(in, h, 1, hg_.state_invariants_of(sid, h));
+            const hypergraph::EventId e = st.parent_event;
+            if (e != hypergraph::INVALID_ID && !hg_.is_genesis_event(e)) {
+                const hypergraph::Event& ev = hg_.get_event(e);
+                if (ev.id != hypergraph::INVALID_ID && ev.output_state == sid) {
+                    ++in.events;
+                    ++in.rule_counts[static_cast<int64_t>(ev.rule_index)];
+                }
+            }
+        }
+        if (which_)
+            marshal::branchial_step_state(which_, sid,
+                                          static_cast<int64_t>(hg_.get_canonical_state(sid)),
+                                          contents, edge_number, flat, in.branchial);
+    }
+    in.branchial.pairs = std::move(pairs);
+    return in;
 }
 
 }  // namespace ffi
@@ -812,126 +976,212 @@ struct RowTally {
     }
 };
 
-// The overlap metrics of one step. Each state is its set of the engine's vertex ids, and a vertex
-// is shared by the states that inherited it; an edge is its list of vertex ids, numbered in
-// BranchialStep::edge_sets.
-// `graph`, when the branchial graph metrics are computed too, gives each pair's branchial
-// distance for "OverlapByBranchialDistance". `initial`, the vertices of step 0's states, gives
-// "InitialStateMutualInformation".
-void overlap_metrics(const BranchialStep& s, const BranchialGraph* graph,
-                     const std::vector<uint32_t>* initial, wxf::WXFValueAssociation& rec) {
+}  // namespace
+
+// The overlap metrics of one step, in parts. Each state is its set of the engine's vertex ids, and
+// a vertex is shared by the states that inherited it; an edge is its list of vertex ids, numbered
+// in BranchialStep::edge_sets. `graph`, when the branchial graph metrics are computed too, gives
+// each pair's branchial distance for "OverlapByBranchialDistance". `initial`, the vertices of step
+// 0's states, gives "InitialStateMutualInformation".
+//
+// Each state a is counted against the states b > a that share a vertex with it: a count per b in
+// a dense array, the rows split into parts, each part with its own array and counts. With the
+// branchial graph, a breadth-first search from a also gives every b > a in a's component, sharing
+// or not, with its distance. A pair's values are functions of its PairCounts, so each part counts
+// the pairs per PairCounts and the counts are merged in key order: the order the rows land in does
+// not reach the reply. The search costs O(component) per row, the cost of the "BranchialDistance"
+// pass.
+struct BranchialStepWork::State {
+    BranchialStep step;
+    uint32_t which;
+    const std::vector<uint32_t>* initial;
+    BranchialGraph graph;
+    wxf::WXFValueAssociation graph_keys;
+    // The overlap pass.
+    std::vector<std::vector<uint32_t>> sets, edge_sets;
+    std::vector<int64_t> ids;
+    std::map<uint32_t, std::vector<uint32_t>> holders;   // vertex -> the states holding it
+    // The step in compressed rows (hgcommon::BrStep): vertices numbered densely in `holders`
+    // order.
+    std::vector<uint32_t> size, row_off, row_vert, hold_off, hold, adj_off, adj, to_graph,
+        from_graph;
+    hgcommon::BrStep view;
+    std::vector<std::unordered_map<PairCounts, uint64_t, PairCountsHash>> part;
+    std::atomic<uint32_t> next_row{0};
+
+    const BranchialGraph* graph_or_null() const {
+        return (which & kBranchialGraph) ? &graph : nullptr;
+    }
+};
+
+BranchialStepWork::BranchialStepWork(BranchialStep step, uint32_t which,
+                                     const std::vector<uint32_t>* initial)
+    : s_(new State) {
+    s_->step = std::move(step);
+    s_->which = which;
+    s_->initial = initial;
+}
+
+BranchialStepWork::~BranchialStepWork() = default;
+
+void BranchialStepWork::prepare(size_t max_parts) {
+    State& w = *s_;
+    if (w.which & kBranchialGraph) {
+        w.graph = branchial_graph(w.step);
+        branchial_graph_metrics(w.graph, w.graph_keys);
+    }
+    if (!(w.which & kBranchialOverlap)) return;
+    const BranchialStep& s = w.step;
     // Each state once, by effective id.
     std::map<int64_t, size_t> by_id;
     for (size_t i = 0; i < s.nodes.size() && i < s.vertex_sets.size(); ++i)
         by_id.emplace(s.nodes[i], i);
-    std::vector<std::vector<uint32_t>> sets, edge_sets;
-    std::vector<int64_t> ids;
     for (const auto& [id, i] : by_id) {
         std::vector<uint32_t> v = s.vertex_sets[i];
         std::sort(v.begin(), v.end());
         v.erase(std::unique(v.begin(), v.end()), v.end());
-        sets.push_back(std::move(v));
+        w.sets.push_back(std::move(v));
         std::vector<uint32_t> e;
         if (i < s.edge_sets.size()) e = s.edge_sets[i];
         std::sort(e.begin(), e.end());
         e.erase(std::unique(e.begin(), e.end()), e.end());
-        edge_sets.push_back(std::move(e));
-        ids.push_back(id);
+        w.edge_sets.push_back(std::move(e));
+        w.ids.push_back(id);
     }
-    const size_t k = sets.size();
-    // Inverted index: vertex -> the states holding it, in state order.
-    std::map<uint32_t, std::vector<uint32_t>> holders;
+    const uint32_t k = static_cast<uint32_t>(w.sets.size());
     for (uint32_t i = 0; i < k; ++i)
-        for (uint32_t v : sets[i]) holders[v].push_back(i);
-    // A state's index in the branchial graph, and back.
-    std::vector<uint32_t> to_graph, from_graph;
-    if (graph) {
-        from_graph.assign(graph->ids.size(), UINT32_MAX);
-        for (uint32_t i = 0; i < k; ++i) {
-            const auto it = std::lower_bound(graph->ids.begin(), graph->ids.end(), ids[i]);
-            const uint32_t x = it != graph->ids.end() && *it == ids[i]
-                                   ? static_cast<uint32_t>(it - graph->ids.begin())
-                                   : UINT32_MAX;
-            to_graph.push_back(x);
-            if (x != UINT32_MAX) from_graph[x] = i;
-        }
+        for (uint32_t v : w.sets[i]) w.holders[v].push_back(i);
+    std::unordered_map<uint32_t, uint32_t> dense;
+    dense.reserve(w.holders.size());
+    w.hold_off.push_back(0);
+    for (const auto& [v, hs] : w.holders) {
+        dense.emplace(v, static_cast<uint32_t>(dense.size()));
+        w.hold.insert(w.hold.end(), hs.begin(), hs.end());
+        w.hold_off.push_back(static_cast<uint32_t>(w.hold.size()));
     }
-    // Each state a against the states b > a that share a vertex with it: a count per b in a
-    // dense array, the rows split over threads, each thread with its own array and counts. With
-    // the branchial graph, a breadth-first search from a also gives every b > a in a's component,
-    // sharing or not, with its distance. A pair's values are functions of its PairCounts, so each
-    // thread counts the pairs per PairCounts and the counts are merged in key order: the order
-    // the rows land in does not reach the reply. The search costs O(component) per row, the
-    // cost of the "BranchialDistance" pass.
-    std::vector<std::vector<const std::vector<uint32_t>*>> row_holders(k);
-    for (uint32_t a = 0; a < k; ++a)
-        for (uint32_t v : sets[a]) row_holders[a].push_back(&holders[v]);
-    const size_t threads =
-        std::min<size_t>(k / 64 + 1, std::max(1u, std::thread::hardware_concurrency()));
-    std::vector<std::unordered_map<PairCounts, uint64_t, PairCountsHash>> part(threads);
-    std::vector<std::exception_ptr> failed(threads);
-    std::atomic<uint32_t> next_row{0};
-    auto counts_of = [](uint32_t x, uint32_t y, uint32_t both, uint32_t distance) {
-        return PairCounts{distance, std::min(x, y), std::max(x, y), both};
-    };
-    auto rows = [&](size_t t) {
-        try {
-            std::vector<uint32_t> count(k, 0), touched, queue;
-            std::vector<int32_t> dist(graph ? graph->ids.size() : 0, -1);
-            RowTally tally;
-            for (uint32_t a; (a = next_row.fetch_add(1, std::memory_order_relaxed)) < k;) {
-                const uint32_t size_a = static_cast<uint32_t>(sets[a].size());
-                auto pair = [&](uint32_t b, uint32_t distance) {
-                    const uint32_t size_b = static_cast<uint32_t>(sets[b].size());
-                    if (RowTally::fits(distance, size_b, count[b]))
-                        tally.add(RowTally::key(distance, size_b, count[b]));
-                    else
-                        ++part[t][counts_of(size_a, size_b, count[b], distance)];
-                };
-                for (const auto* hs : row_holders[a])
-                    for (auto it = std::upper_bound(hs->begin(), hs->end(), a); it != hs->end();
-                         ++it)
-                        if (count[*it]++ == 0) touched.push_back(*it);
-                queue.clear();
-                if (graph && to_graph[a] != UINT32_MAX) {
-                    queue.push_back(to_graph[a]);
-                    dist[to_graph[a]] = 0;
-                    for (size_t i = 0; i < queue.size(); ++i)
-                        for (uint32_t w : graph->adj[queue[i]])
-                            if (dist[w] < 0) { dist[w] = dist[queue[i]] + 1; queue.push_back(w); }
-                    for (uint32_t w : queue) {
-                        const uint32_t b = from_graph[w];
-                        if (b != UINT32_MAX && b > a) pair(b, static_cast<uint32_t>(dist[w]));
-                    }
-                }
-                for (uint32_t b : touched) {
-                    pair(b, 0);
-                    count[b] = 0;
-                }
-                for (uint32_t w : queue) dist[w] = -1;
-                touched.clear();
-                tally.drain([&](uint32_t distance, uint32_t size_b, uint32_t both, uint64_t n) {
-                    part[t][counts_of(size_a, size_b, both, distance)] += n;
-                });
-            }
-        } catch (...) {
-            failed[t] = std::current_exception();
+    w.row_off.push_back(0);
+    for (uint32_t a = 0; a < k; ++a) {
+        w.size.push_back(static_cast<uint32_t>(w.sets[a].size()));
+        for (uint32_t v : w.sets[a]) w.row_vert.push_back(dense.at(v));
+        w.row_off.push_back(static_cast<uint32_t>(w.row_vert.size()));
+    }
+    hgcommon::BrStep& view = w.view;
+    view.k = k;
+    view.size = w.size.data();
+    view.row_off = w.row_off.data();
+    view.row_vert = w.row_vert.data();
+    view.hold_off = w.hold_off.data();
+    view.hold = w.hold.data();
+    view.vertices = static_cast<uint32_t>(w.holders.size());
+    // A state's node in the branchial graph, and back.
+    if (const BranchialGraph* graph = w.graph_or_null()) {
+        const uint32_t n = static_cast<uint32_t>(graph->ids.size());
+        w.from_graph.assign(n, hgcommon::BR_NONE);
+        for (uint32_t i = 0; i < k; ++i) {
+            const auto it = std::lower_bound(graph->ids.begin(), graph->ids.end(), w.ids[i]);
+            const uint32_t x = it != graph->ids.end() && *it == w.ids[i]
+                                   ? static_cast<uint32_t>(it - graph->ids.begin())
+                                   : hgcommon::BR_NONE;
+            w.to_graph.push_back(x);
+            if (x != hgcommon::BR_NONE) w.from_graph[x] = i;
         }
-    };
-    std::vector<std::thread> pool;
-    for (size_t t = 1; t < threads; ++t) pool.emplace_back(rows, t);
-    rows(0);
-    for (auto& th : pool) th.join();
-    for (const auto& e : failed)
-        if (e) std::rethrow_exception(e);
+        w.adj_off.push_back(0);
+        for (uint32_t x = 0; x < n; ++x) {
+            w.adj.insert(w.adj.end(), graph->adj[x].begin(), graph->adj[x].end());
+            w.adj_off.push_back(static_cast<uint32_t>(w.adj.size()));
+        }
+        view.n = n;
+        view.adj_off = w.adj_off.data();
+        view.adj = w.adj.data();
+        view.to_graph = w.to_graph.data();
+        view.from_graph = w.from_graph.data();
+    }
+    w.part.resize(std::min<size_t>(k / 64 + 1, std::max<size_t>(1, max_parts)));
+}
+
+size_t BranchialStepWork::parts() const { return s_->part.size(); }
+
+const hgcommon::BrStep& BranchialStepWork::rows_view() const { return s_->view; }
+
+void BranchialStepWork::add_counts(uint32_t distance, uint32_t size_a, uint32_t size_b,
+                                   uint32_t shared, uint64_t n) {
+    s_->part.at(0)[PairCounts{distance, std::min(size_a, size_b), std::max(size_a, size_b),
+                              shared}] += n;
+}
+
+namespace {
+
+// hgcommon::br_row's scratch on one host worker: plain memory and a RowTally per row.
+struct HostRowCtx {
+    std::vector<uint32_t> count_v, touched_v, queue_v;
+    std::vector<int32_t> dist_v;
+    uint32_t* count;
+    uint32_t* touched;
+    int32_t* dist;
+    uint32_t* queue;
+    uint32_t touched_n = 0, queue_n = 0;
+    uint32_t* n_touched = &touched_n;
+    uint32_t* n_queue = &queue_n;
+    uint32_t size_a = 0;
+    RowTally tally;
+    std::unordered_map<PairCounts, uint64_t, PairCountsHash>* counted;
+
+    HostRowCtx(const hgcommon::BrStep& s, std::unordered_map<PairCounts, uint64_t, PairCountsHash>& c)
+        : count_v(s.k, 0), touched_v(s.k), queue_v(s.n), dist_v(s.n, -1), counted(&c) {
+        count = count_v.data();
+        touched = touched_v.data();
+        dist = dist_v.data();
+        queue = queue_v.data();
+    }
+    template <class T> T ld(const T* p) const { return *p; }
+    template <class T> void st(T* p, T v) const { *p = v; }
+    uint32_t add_count(uint32_t b) { return count[b]++; }
+    bool claim_dist(uint32_t x, int32_t d) {
+        if (dist[x] >= 0) return false;
+        dist[x] = d;
+        return true;
+    }
+    uint32_t push(uint32_t* counter) { return (*counter)++; }
+    void emit(uint32_t distance, uint32_t size_b, uint32_t shared) {
+        if (RowTally::fits(distance, size_b, shared))
+            tally.add(RowTally::key(distance, size_b, shared));
+        else
+            ++(*counted)[PairCounts{distance, std::min(size_a, size_b), std::max(size_a, size_b),
+                                    shared}];
+    }
+};
+
+}  // namespace
+
+void BranchialStepWork::rows(size_t t) {
+    State& w = *s_;
+    const hgcommon::BrStep& s = w.view;
+    auto& counted = w.part[t];
+    HostRowCtx c(s, counted);
+    for (uint32_t a; (a = w.next_row.fetch_add(1, std::memory_order_relaxed)) < s.k;) {
+        c.size_a = s.size[a];
+        hgcommon::br_row(c, s, a, hgcommon::IrSerial{});
+        c.tally.drain([&](uint32_t distance, uint32_t size_b, uint32_t both, uint64_t n) {
+            counted[PairCounts{distance, std::min(c.size_a, size_b), std::max(c.size_a, size_b),
+                               both}] += n;
+        });
+    }
+}
+
+wxf::WXFValueAssociation BranchialStepWork::finish() {
+    State& w = *s_;
+    wxf::WXFValueAssociation rec = std::move(w.graph_keys);
+    if (!(w.which & kBranchialOverlap)) return rec;
+    const BranchialGraph* graph = w.graph_or_null();
+    const size_t k = w.sets.size();
     std::map<PairCounts, uint64_t> counted;
-    for (size_t t = 0; t < threads; ++t)
-        for (const auto& [key, n] : part[t]) counted[key] += n;
+    for (const auto& p : w.part)
+        for (const auto& [key, n] : p) counted[key] += n;
 
     // The pairs that share no vertex: per (lo, hi), every pair of states of those sizes less the
     // ones counted at distance 0.
     std::map<uint32_t, uint64_t> by_size;
-    for (const auto& v : sets) ++by_size[static_cast<uint32_t>(v.size())];
+    for (const auto& v : w.sets) ++by_size[static_cast<uint32_t>(v.size())];
     std::map<std::pair<uint32_t, uint32_t>, uint64_t> rest;
     for (auto i = by_size.begin(); i != by_size.end(); ++i) {
         rest[{i->first, i->first}] = i->second * (i->second - 1) / 2;
@@ -941,7 +1191,7 @@ void overlap_metrics(const BranchialStep& s, const BranchialGraph* graph,
     for (const auto& [key, n] : counted)
         if (key.distance == 0) rest[{key.lo, key.hi}] -= n;
 
-    const uint64_t universe = holders.size();
+    const uint64_t universe = w.holders.size();
     std::map<uint64_t, uint64_t> ratios;   // (shared << 32 | union) -> pairs, shared > 0
     std::map<double, uint64_t> cosine, information;
     std::map<uint32_t, std::map<uint64_t, uint64_t>> by_distance;   // the same, per distance
@@ -979,27 +1229,28 @@ void overlap_metrics(const BranchialStep& s, const BranchialGraph* graph,
     put_summary(rec, "StateOverlap", jaccard_values(ratios, pairs - shared_pairs), 0.01, false);
     put_summary(rec, "StateCosineSimilarity", values(cosine), 0.01, false);
     put_summary(rec, "StateMutualInformation", values(information), 0.01, false);
-    if (initial) {
+    if (w.initial) {
         // U is the step's vertices and S0's; each state once against S0.
+        const std::vector<uint32_t>& initial = *w.initial;
         uint64_t u = universe;
-        for (uint32_t v : *initial) u += holders.count(v) ? 0 : 1;
+        for (uint32_t v : initial) u += w.holders.count(v) ? 0 : 1;
         std::map<double, uint64_t> mi;
-        for (const auto& v : sets) {
+        for (const auto& v : w.sets) {
             uint64_t both = 0;
-            for (uint32_t x : v) both += std::binary_search(initial->begin(), initial->end(), x);
-            ++mi[hgcommon::bo_mutual_information(both, v.size(), initial->size(), u)];
+            for (uint32_t x : v) both += std::binary_search(initial.begin(), initial.end(), x);
+            ++mi[hgcommon::bo_mutual_information(both, v.size(), initial.size(), u)];
         }
         put_summary(rec, "InitialStateMutualInformation", values(mi), 0.01, false);
     }
     std::map<uint64_t, uint64_t> by_k;
-    for (const auto& [v, hs] : holders) ++by_k[hs.size()];
+    for (const auto& [v, hs] : w.holders) ++by_k[hs.size()];
     put_multiplicity(rec, "VertexSharpness", "BranchEntropy", by_k);
     // Edge numbers are dense over the run: one count per number.
     uint32_t edge_end = 0;
-    for (const auto& e : edge_sets)
+    for (const auto& e : w.edge_sets)
         if (!e.empty()) edge_end = std::max(edge_end, e.back() + 1);
     std::vector<uint32_t> edge_holders(edge_end, 0);
-    for (const auto& e : edge_sets)
+    for (const auto& e : w.edge_sets)
         for (uint32_t x : e) ++edge_holders[x];
     by_k.clear();
     for (uint32_t k_e : edge_holders)
@@ -1023,42 +1274,25 @@ void overlap_metrics(const BranchialStep& s, const BranchialGraph* graph,
         }
         rec.push_back({wxf::WXFValue("OverlapByBranchialDistance"), wxf::WXFValue(per)});
     }
+    return rec;
 }
 
-}  // namespace
-
-std::map<uint32_t, wxf::WXFValueAssociation> branchial_step_metrics(
-    const std::map<uint32_t, BranchialStep>& steps, uint32_t which) {
-    std::map<uint32_t, wxf::WXFValueAssociation> out;
-    // S0: the vertices of step 0's states.
+std::vector<uint32_t> initial_vertices(const BranchialStep& step0) {
     std::vector<uint32_t> initial;
-    const auto zero = steps.find(0);
-    if (zero != steps.end())
-        for (const auto& v : zero->second.vertex_sets) initial.insert(initial.end(), v.begin(), v.end());
+    for (const auto& v : step0.vertex_sets) initial.insert(initial.end(), v.begin(), v.end());
     std::sort(initial.begin(), initial.end());
     initial.erase(std::unique(initial.begin(), initial.end()), initial.end());
-    for (const auto& [step, s] : steps) {
-        wxf::WXFValueAssociation& rec = out[step];
-        BranchialGraph graph;
-        if (which & kBranchialGraph) {
-            graph = branchial_graph(s);
-            branchial_graph_metrics(graph, rec);
-        }
-        if (which & kBranchialOverlap)
-            overlap_metrics(s, (which & kBranchialGraph) ? &graph : nullptr,
-                            zero != steps.end() ? &initial : nullptr, rec);
-    }
-    return out;
+    return initial;
 }
 
 void events_from_multiplicities(
     const std::vector<StepPoint>& points,
     const std::unordered_map<uint64_t, std::map<int64_t, uint64_t>>& matches_by_rule,
-    uint32_t steps, std::map<uint32_t, uint64_t>& events,
+    bool by_depth, uint32_t steps, std::map<uint32_t, uint64_t>& events,
     std::map<uint32_t, std::map<int64_t, uint64_t>>& rule_counts) {
     for (const auto& p : points) {
         if (p.step >= steps) continue;
-        auto it = matches_by_rule.find(p.class_hash);
+        auto it = matches_by_rule.find(hgcommon::qc_expansion_key(p.class_hash, p.step, by_depth));
         if (it == matches_by_rule.end()) continue;
         for (const auto& [rule, k] : it->second) {
             const uint64_t w = hgcommon::qm_sat_mul(p.weight, k);
@@ -1070,180 +1304,265 @@ void events_from_multiplicities(
     }
 }
 
-wxf::WXFValue step_statistics(
-    const std::vector<StepPoint>& points,
-    const std::unordered_map<uint64_t, const hgcommon::StateInvariantRecord*>& class_invariants,
-    const std::map<uint32_t, uint64_t>& events,
-    const std::map<uint32_t, std::map<int64_t, uint64_t>>& rule_counts,
-    const StepStatisticsOptions& options) {
-    std::map<uint32_t, std::map<uint64_t, uint64_t>> by_step;
-    for (const auto& p : points)
-        if (p.weight) {
-            auto& w = by_step[p.step][p.class_hash];
-            w = hgcommon::qm_sat_add(w, p.weight);
-        }
+void add_class(StepInput& in, uint64_t hash, uint64_t weight,
+               const hgcommon::StateInvariantRecord* record) {
+    if (!weight) return;
+    StepClass& c = in.classes[hash];
+    c.weight = hgcommon::qm_sat_add(c.weight, weight);
+    if (!c.record) c.record = record;
+}
+
+wxf::WXFValueAssociation step_record(uint32_t step, const StepInput& in, bool weight_by_classes) {
     static const hgcommon::StateInvariantRecord kNone{};
-    auto invariants = [&](uint64_t h) -> const hgcommon::StateInvariantRecord& {
-        auto it = class_invariants.find(h);
-        return it != class_invariants.end() && it->second ? *it->second : kNone;
-    };
-
-    wxf::WXFValueList steps;
-    for (const auto& [step, classes] : by_step) {
-        uint64_t raw = 0, max_mult = 0;
-        long double raw_ld = 0;
-        std::map<int64_t, uint64_t> mult_hist;
-        for (const auto& [h, w] : classes) {
-            raw = hgcommon::qm_sat_add(raw, w);
-            raw_ld += static_cast<long double>(w);
-            max_mult = std::max(max_mult, w);
-            ++mult_hist[static_cast<int64_t>(w)];
-        }
-        long double entropy = 0;
-        for (const auto& [h, w] : classes) {
-            const long double p = static_cast<long double>(w) / raw_ld;
-            entropy -= p * std::log2(p);
-        }
-        const size_t nclasses = classes.size();
-
-        std::vector<std::pair<double, uint64_t>> vertex_count, edge_count, max_degree, mean_degree,
-            two_section, components, cycle_rank, inc_cycle_rank, inc_diameter, inc_mean_distance,
-            largest_fraction;
-        std::map<int64_t, uint64_t> arity_hist, degree_hist;
-        std::map<std::vector<int64_t>, uint64_t> arity_sig_hist, degree_seq_hist;
-        std::vector<std::pair<double, uint64_t>> radius, eccentricity, hausdorff, ricci, ollivier,
-            degree_entropy, local_entropy, mutual_information, fisher;
-        std::vector<std::pair<double, uint64_t>> largest_dimension, local_dimension_max,
-            local_dimension_sd, moran, degree_correlation;
-        PooledDistribution pooled[hgcommon::SG_DISTS];
-        for (uint32_t k = 0; k < hgcommon::SG_DISTS; ++k) pooled[k].which = k;
-        std::map<uint32_t, std::vector<std::pair<double, uint64_t>>> ball_growth;
-        for (const auto& [h, mult] : classes) {
-            const uint64_t w = options.weight_by_classes ? 1 : mult;
-            const hgcommon::StateInvariantRecord& r = invariants(h);
-            const hgcommon::StateInvariantValues& s = r.v;
-            const hgcommon::SgGeometry& g = r.g;
-            if (g.defined & hgcommon::SG_RADIUS) {
-                radius.push_back({double(g.radius), w});
-                eccentricity.push_back({g.mean_eccentricity, w});
-            }
-            if (g.defined & hgcommon::SG_HAUSDORFF) hausdorff.push_back({g.hausdorff_dimension, w});
-            if (g.defined & hgcommon::SG_RICCI) ricci.push_back({g.ricci_scalar, w});
-            if (g.defined & hgcommon::SG_OLLIVIER) ollivier.push_back({g.ollivier_ricci, w});
-            if (g.defined & hgcommon::SG_DEGREE_ENTROPY) {
-                degree_entropy.push_back({g.degree_entropy, w});
-                local_entropy.push_back({g.local_entropy, w});
-            }
-            if (g.defined & hgcommon::SG_MUTUAL_INFORMATION)
-                mutual_information.push_back({g.mutual_information, w});
-            if (g.defined & hgcommon::SG_FISHER) fisher.push_back({g.fisher_information, w});
-            if (g.defined & hgcommon::SG_LARGEST_DIMENSION) {
-                largest_dimension.push_back({g.largest_dimension, w});
-                local_dimension_max.push_back({g.local_dimension_max, w});
-                local_dimension_sd.push_back({g.local_dimension_sd, w});
-            }
-            if (g.defined & hgcommon::SG_OLLIVIER_MORAN) moran.push_back({g.ollivier_moran_i, w});
-            if (g.defined & hgcommon::SG_OLLIVIER_DEGREE)
-                degree_correlation.push_back({g.ollivier_degree_correlation, w});
-            for (uint32_t k = 0; k < r.num_distributions && k < hgcommon::SG_DISTS; ++k)
-                pooled[k].add(r.distributions()[k], w);
-            for (uint32_t b = 0; b < r.num_ball; ++b)
-                ball_growth[b + 1].push_back({r.ball()[b], w});
-            vertex_count.push_back({double(s.vertex_count), w});
-            edge_count.push_back({double(s.edge_count), w});
-            max_degree.push_back({double(s.max_degree), w});
-            mean_degree.push_back({s.mean_degree, w});
-            two_section.push_back({double(s.two_section_edge_count), w});
-            components.push_back({double(s.components), w});
-            cycle_rank.push_back({double(s.cycle_rank), w});
-            inc_cycle_rank.push_back({double(s.incidence_cycle_rank), w});
-            inc_diameter.push_back({double(s.incidence_diameter), w});
-            inc_mean_distance.push_back({s.incidence_mean_distance, w});
-            largest_fraction.push_back({s.largest_component_fraction, w});
-            const std::vector<int64_t> arities(r.arities(), r.arities() + r.num_edges);
-            const std::vector<int64_t> degrees(r.degrees(), r.degrees() + r.num_vertices);
-            for (int64_t a : arities) arity_hist[a] = hgcommon::qm_sat_add(arity_hist[a], w);
-            for (int64_t d : degrees) degree_hist[d] = hgcommon::qm_sat_add(degree_hist[d], w);
-            arity_sig_hist[arities] = hgcommon::qm_sat_add(arity_sig_hist[arities], w);
-            degree_seq_hist[degrees] = hgcommon::qm_sat_add(degree_seq_hist[degrees], w);
-        }
-
-        wxf::WXFValueAssociation invs;
-        auto put = [&](const char* k, const std::vector<std::pair<double, uint64_t>>& v,
-                       double round, bool integral) {
-            invs.push_back({wxf::WXFValue(k), summary_value(summarise(v, round), integral)});
-        };
-        put("VertexCount", vertex_count, 1.0, true);
-        put("EdgeCount", edge_count, 1.0, true);
-        put("MaxDegree", max_degree, 1.0, true);
-        put("MeanDegree", mean_degree, 0.01, false);
-        put("TwoSectionEdgeCount", two_section, 1.0, true);
-        put("Components", components, 1.0, true);
-        put("CycleRank", cycle_rank, 1.0, true);
-        put("IncidenceCycleRank", inc_cycle_rank, 1.0, true);
-        put("IncidenceDiameter", inc_diameter, 1.0, true);
-        put("IncidenceMeanDistance", inc_mean_distance, 0.01, false);
-        put("LargestComponentFraction", largest_fraction, 0.01, false);
-        put("GraphRadius", radius, 1.0, true);
-        put("MeanEccentricity", eccentricity, 0.01, false);
-        put("WolframHausdorffDimension", hausdorff, 0.01, false);
-        put("WolframRicciCurvatureScalar", ricci, 0.01, false);
-        put("OllivierRicciCurvature", ollivier, 0.01, false);
-        put("DegreeEntropy", degree_entropy, 0.01, false);
-        put("LocalEntropy", local_entropy, 0.01, false);
-        put("MutualInformation", mutual_information, 0.01, false);
-        put("FisherInformation", fisher, 0.01, false);
-        put("LargestComponentDimension", largest_dimension, 0.01, false);
-        put("LocalDimensionMax", local_dimension_max, 0.01, false);
-        put("LocalDimensionStandardDeviation", local_dimension_sd, 0.01, false);
-        put("OllivierMoranI", moran, 0.01, false);
-        put("OllivierDegreeCorrelation", degree_correlation, 0.01, false);
-        wxf::WXFValueAssociation vertex_invs;
-        vertex_invs.push_back({wxf::WXFValue("LocalDimension"),
-                               pooled_value(pooled[hgcommon::SG_DIST_LOCAL_DIMENSION])});
-        vertex_invs.push_back({wxf::WXFValue("OllivierRicciCurvature"),
-                               pooled_value(pooled[hgcommon::SG_DIST_OLLIVIER])});
-        vertex_invs.push_back({wxf::WXFValue("WolframRicciCurvatureScalar"),
-                               pooled_value(pooled[hgcommon::SG_DIST_RICCI])});
-        wxf::WXFValueAssociation balls;
-        for (const auto& [r, v] : ball_growth)
-            balls.push_back({wxf::WXFValue(static_cast<int64_t>(r)),
-                             summary_value(summarise(v, 0.01), false)});
-
-        wxf::WXFValueAssociation rec;
-        auto i64 = [](uint64_t v) { return wxf::WXFValue(static_cast<int64_t>(v)); };
-        rec.push_back({wxf::WXFValue("Step"), wxf::WXFValue(static_cast<int64_t>(step))});
-        rec.push_back({wxf::WXFValue("RawStates"), i64(raw)});
-        rec.push_back({wxf::WXFValue("Classes"), i64(nclasses)});
-        rec.push_back({wxf::WXFValue("Redundancy"),
-                       wxf::WXFValue(static_cast<double>(raw_ld / nclasses))});
-        rec.push_back({wxf::WXFValue("MaxMultiplicity"), i64(max_mult)});
-        rec.push_back({wxf::WXFValue("MultiplicityHistogram"), count_association(mult_hist)});
-        rec.push_back({wxf::WXFValue("ClassEntropyBits"), wxf::WXFValue(static_cast<double>(entropy))});
-        rec.push_back({wxf::WXFValue("ClassEntropyNormalized"),
-                       wxf::WXFValue(nclasses == 1 ? 1.0
-                                     : static_cast<double>(entropy / std::log2(static_cast<long double>(nclasses))))});
-        auto ev = events.find(step);
-        rec.push_back({wxf::WXFValue("Events"), i64(ev == events.end() ? 0 : ev->second)});
-        auto rc = rule_counts.find(step);
-        rec.push_back({wxf::WXFValue("RuleCounts"),
-                       count_association(rc == rule_counts.end() ? std::map<int64_t, uint64_t>{}
-                                                                 : rc->second)});
-        rec.push_back({wxf::WXFValue("Invariants"), wxf::WXFValue(invs)});
-        rec.push_back({wxf::WXFValue("VertexInvariants"), wxf::WXFValue(vertex_invs)});
-        rec.push_back({wxf::WXFValue("ArityHistogram"), count_association(arity_hist)});
-        rec.push_back({wxf::WXFValue("AritySignatureHistogram"), count_association(arity_sig_hist)});
-        rec.push_back({wxf::WXFValue("DegreeHistogram"), count_association(degree_hist)});
-        rec.push_back({wxf::WXFValue("DegreeSequenceHistogram"), count_association(degree_seq_hist)});
-        rec.push_back({wxf::WXFValue("BallGrowthDimension"), wxf::WXFValue(std::move(balls))});
-        if (options.extra) {
-            auto x = options.extra->find(step);
-            if (x != options.extra->end())
-                for (const auto& kv : x->second) rec.push_back(kv);
-        }
-        steps.push_back(wxf::WXFValue(rec));
+    const auto& classes = in.classes;
+    uint64_t raw = 0, max_mult = 0;
+    long double raw_ld = 0;
+    std::map<int64_t, uint64_t> mult_hist;
+    for (const auto& [h, c] : classes) {
+        raw = hgcommon::qm_sat_add(raw, c.weight);
+        raw_ld += static_cast<long double>(c.weight);
+        max_mult = std::max(max_mult, c.weight);
+        ++mult_hist[static_cast<int64_t>(c.weight)];
     }
-    return wxf::WXFValue(steps);
+    long double entropy = 0;
+    for (const auto& [h, c] : classes) {
+        const long double p = static_cast<long double>(c.weight) / raw_ld;
+        entropy -= p * std::log2(p);
+    }
+    const size_t nclasses = classes.size();
+
+    std::vector<std::pair<double, uint64_t>> vertex_count, edge_count, max_degree, mean_degree,
+        two_section, components, cycle_rank, inc_cycle_rank, inc_diameter, inc_mean_distance,
+        largest_fraction;
+    std::map<int64_t, uint64_t> arity_hist, degree_hist;
+    std::map<std::vector<int64_t>, uint64_t> arity_sig_hist, degree_seq_hist;
+    std::vector<std::pair<double, uint64_t>> radius, eccentricity, hausdorff, ricci, ollivier,
+        degree_entropy, local_entropy, mutual_information, fisher;
+    std::vector<std::pair<double, uint64_t>> largest_dimension, local_dimension_max,
+        local_dimension_sd, moran, degree_correlation;
+    PooledDistribution pooled[hgcommon::SG_DISTS];
+    for (uint32_t k = 0; k < hgcommon::SG_DISTS; ++k) pooled[k].which = k;
+    std::map<uint32_t, std::vector<std::pair<double, uint64_t>>> ball_growth;
+    for (const auto& [h, c] : classes) {
+        const uint64_t w = weight_by_classes ? 1 : c.weight;
+        const hgcommon::StateInvariantRecord& r = c.record ? *c.record : kNone;
+        const hgcommon::StateInvariantValues& s = r.v;
+        const hgcommon::SgGeometry& g = r.g;
+        if (g.defined & hgcommon::SG_RADIUS) {
+            radius.push_back({double(g.radius), w});
+            eccentricity.push_back({g.mean_eccentricity, w});
+        }
+        if (g.defined & hgcommon::SG_HAUSDORFF) hausdorff.push_back({g.hausdorff_dimension, w});
+        if (g.defined & hgcommon::SG_RICCI) ricci.push_back({g.ricci_scalar, w});
+        if (g.defined & hgcommon::SG_OLLIVIER) ollivier.push_back({g.ollivier_ricci, w});
+        if (g.defined & hgcommon::SG_DEGREE_ENTROPY) {
+            degree_entropy.push_back({g.degree_entropy, w});
+            local_entropy.push_back({g.local_entropy, w});
+        }
+        if (g.defined & hgcommon::SG_MUTUAL_INFORMATION)
+            mutual_information.push_back({g.mutual_information, w});
+        if (g.defined & hgcommon::SG_FISHER) fisher.push_back({g.fisher_information, w});
+        if (g.defined & hgcommon::SG_LARGEST_DIMENSION) {
+            largest_dimension.push_back({g.largest_dimension, w});
+            local_dimension_max.push_back({g.local_dimension_max, w});
+            local_dimension_sd.push_back({g.local_dimension_sd, w});
+        }
+        if (g.defined & hgcommon::SG_OLLIVIER_MORAN) moran.push_back({g.ollivier_moran_i, w});
+        if (g.defined & hgcommon::SG_OLLIVIER_DEGREE)
+            degree_correlation.push_back({g.ollivier_degree_correlation, w});
+        for (uint32_t k = 0; k < r.num_distributions && k < hgcommon::SG_DISTS; ++k)
+            pooled[k].add(r.distributions()[k], w);
+        for (uint32_t b = 0; b < r.num_ball; ++b)
+            ball_growth[b + 1].push_back({r.ball()[b], w});
+        vertex_count.push_back({double(s.vertex_count), w});
+        edge_count.push_back({double(s.edge_count), w});
+        max_degree.push_back({double(s.max_degree), w});
+        mean_degree.push_back({s.mean_degree, w});
+        two_section.push_back({double(s.two_section_edge_count), w});
+        components.push_back({double(s.components), w});
+        cycle_rank.push_back({double(s.cycle_rank), w});
+        inc_cycle_rank.push_back({double(s.incidence_cycle_rank), w});
+        inc_diameter.push_back({double(s.incidence_diameter), w});
+        inc_mean_distance.push_back({s.incidence_mean_distance, w});
+        largest_fraction.push_back({s.largest_component_fraction, w});
+        const std::vector<int64_t> arities(r.arities(), r.arities() + r.num_edges);
+        const std::vector<int64_t> degrees(r.degrees(), r.degrees() + r.num_vertices);
+        for (int64_t a : arities) arity_hist[a] = hgcommon::qm_sat_add(arity_hist[a], w);
+        for (int64_t d : degrees) degree_hist[d] = hgcommon::qm_sat_add(degree_hist[d], w);
+        arity_sig_hist[arities] = hgcommon::qm_sat_add(arity_sig_hist[arities], w);
+        degree_seq_hist[degrees] = hgcommon::qm_sat_add(degree_seq_hist[degrees], w);
+    }
+
+    wxf::WXFValueAssociation invs;
+    auto put = [&](const char* k, const std::vector<std::pair<double, uint64_t>>& v,
+                   double round, bool integral) {
+        invs.push_back({wxf::WXFValue(k), summary_value(summarise(v, round), integral)});
+    };
+    put("VertexCount", vertex_count, 1.0, true);
+    put("EdgeCount", edge_count, 1.0, true);
+    put("MaxDegree", max_degree, 1.0, true);
+    put("MeanDegree", mean_degree, 0.01, false);
+    put("TwoSectionEdgeCount", two_section, 1.0, true);
+    put("Components", components, 1.0, true);
+    put("CycleRank", cycle_rank, 1.0, true);
+    put("IncidenceCycleRank", inc_cycle_rank, 1.0, true);
+    put("IncidenceDiameter", inc_diameter, 1.0, true);
+    put("IncidenceMeanDistance", inc_mean_distance, 0.01, false);
+    put("LargestComponentFraction", largest_fraction, 0.01, false);
+    put("GraphRadius", radius, 1.0, true);
+    put("MeanEccentricity", eccentricity, 0.01, false);
+    put("WolframHausdorffDimension", hausdorff, 0.01, false);
+    put("WolframRicciCurvatureScalar", ricci, 0.01, false);
+    put("OllivierRicciCurvature", ollivier, 0.01, false);
+    put("DegreeEntropy", degree_entropy, 0.01, false);
+    put("LocalEntropy", local_entropy, 0.01, false);
+    put("MutualInformation", mutual_information, 0.01, false);
+    put("FisherInformation", fisher, 0.01, false);
+    put("LargestComponentDimension", largest_dimension, 0.01, false);
+    put("LocalDimensionMax", local_dimension_max, 0.01, false);
+    put("LocalDimensionStandardDeviation", local_dimension_sd, 0.01, false);
+    put("OllivierMoranI", moran, 0.01, false);
+    put("OllivierDegreeCorrelation", degree_correlation, 0.01, false);
+    wxf::WXFValueAssociation vertex_invs;
+    vertex_invs.push_back({wxf::WXFValue("LocalDimension"),
+                           pooled_value(pooled[hgcommon::SG_DIST_LOCAL_DIMENSION])});
+    vertex_invs.push_back({wxf::WXFValue("OllivierRicciCurvature"),
+                           pooled_value(pooled[hgcommon::SG_DIST_OLLIVIER])});
+    vertex_invs.push_back({wxf::WXFValue("WolframRicciCurvatureScalar"),
+                           pooled_value(pooled[hgcommon::SG_DIST_RICCI])});
+    wxf::WXFValueAssociation balls;
+    for (const auto& [r, v] : ball_growth)
+        balls.push_back({wxf::WXFValue(static_cast<int64_t>(r)),
+                         summary_value(summarise(v, 0.01), false)});
+
+    wxf::WXFValueAssociation rec;
+    auto i64 = [](uint64_t v) { return wxf::WXFValue(static_cast<int64_t>(v)); };
+    rec.push_back({wxf::WXFValue("Step"), wxf::WXFValue(static_cast<int64_t>(step))});
+    rec.push_back({wxf::WXFValue("RawStates"), i64(raw)});
+    rec.push_back({wxf::WXFValue("Classes"), i64(nclasses)});
+    rec.push_back({wxf::WXFValue("Redundancy"),
+                   wxf::WXFValue(static_cast<double>(raw_ld / nclasses))});
+    rec.push_back({wxf::WXFValue("MaxMultiplicity"), i64(max_mult)});
+    rec.push_back({wxf::WXFValue("MultiplicityHistogram"), count_association(mult_hist)});
+    rec.push_back({wxf::WXFValue("ClassEntropyBits"), wxf::WXFValue(static_cast<double>(entropy))});
+    rec.push_back({wxf::WXFValue("ClassEntropyNormalized"),
+                   wxf::WXFValue(nclasses == 1 ? 1.0
+                                 : static_cast<double>(entropy / std::log2(static_cast<long double>(nclasses))))});
+    rec.push_back({wxf::WXFValue("Events"), i64(in.events)});
+    rec.push_back({wxf::WXFValue("RuleCounts"), count_association(in.rule_counts)});
+    rec.push_back({wxf::WXFValue("Invariants"), wxf::WXFValue(invs)});
+    rec.push_back({wxf::WXFValue("VertexInvariants"), wxf::WXFValue(vertex_invs)});
+    rec.push_back({wxf::WXFValue("ArityHistogram"), count_association(arity_hist)});
+    rec.push_back({wxf::WXFValue("AritySignatureHistogram"), count_association(arity_sig_hist)});
+    rec.push_back({wxf::WXFValue("DegreeHistogram"), count_association(degree_hist)});
+    rec.push_back({wxf::WXFValue("DegreeSequenceHistogram"), count_association(degree_seq_hist)});
+    rec.push_back({wxf::WXFValue("BallGrowthDimension"), wxf::WXFValue(std::move(balls))});
+    return rec;
+}
+
+// One submitted step: its input until the pooling job has read it, the pooled keys, and the
+// branchial work until its last part has written the branchial keys.
+struct StepStatisticsJobs::Step {
+    uint32_t step = 0;
+    bool populated = false;
+    StepInput in;
+    wxf::WXFValueAssociation pooled;
+    std::unique_ptr<BranchialStepWork> work;
+    wxf::WXFValueAssociation branchial;
+    std::atomic<size_t> remaining{0};
+};
+
+StepStatisticsJobs::StepStatisticsJobs(bool weight_by_classes, uint32_t which, size_t workers,
+                                       Submit submit, DeviceRows device_rows,
+                                       uint32_t device_min_states)
+    : weight_by_classes_(weight_by_classes), which_(which), workers_(workers ? workers : 1),
+      submit_(std::move(submit)), device_rows_(std::move(device_rows)),
+      device_min_states_(device_min_states) {}
+
+StepStatisticsJobs::~StepStatisticsJobs() = default;
+
+StepStatisticsJobs::Step* StepStatisticsJobs::reserve(uint32_t step) {
+    auto [it, fresh] = steps_.emplace(step, nullptr);
+    if (!fresh) return nullptr;
+    it->second = std::make_unique<Step>();
+    it->second->step = step;
+    return it->second.get();
+}
+
+void StepStatisticsJobs::start(Step* s, StepInput in) {
+    if ((which_ & kBranchialOverlap) && s->step == 0) {
+        initial_ = initial_vertices(in.branchial);
+        have_initial_ = true;
+    }
+    // A step without a population has no record, and its branchial keys have nowhere to go.
+    s->populated = !in.classes.empty();
+    if (!s->populated) return;
+    BranchialStep branchial = std::move(in.branchial);
+    s->in = std::move(in);
+    submit_([this, s] {
+        s->pooled = step_record(s->step, s->in, weight_by_classes_);
+        s->in = StepInput{};
+    });
+    if (!which_) return;
+    s->work = std::make_unique<BranchialStepWork>(std::move(branchial), which_,
+                                                  have_initial_ ? &initial_ : nullptr);
+    submit_([this, s] {
+        s->work->prepare(workers_);
+        const size_t n = s->work->parts();
+        auto run_part = [s](size_t p) {
+            s->work->rows(p);
+            if (s->remaining.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                s->branchial = s->work->finish();
+                s->work.reset();
+            }
+        };
+        // No overlap rows, or rows counted off the host.
+        if (n == 0 || (device_rows_ && s->work->rows_view().k >= device_min_states_ &&
+                       device_rows_(*s->work))) {
+            s->branchial = s->work->finish();
+            s->work.reset();
+            return;
+        }
+        s->remaining.store(n, std::memory_order_relaxed);
+        for (size_t p = 1; p < n; ++p) submit_([run_part, p] { run_part(p); });
+        run_part(0);
+    });
+}
+
+namespace {
+enum class HostStatsJob { Step };
+}  // namespace
+
+wxf::WXFValue step_statistics_on_host(std::map<uint32_t, StepInput> inputs,
+                                      bool weight_by_classes, uint32_t which,
+                                      StepStatisticsJobs::DeviceRows device_rows,
+                                      uint32_t device_min_states) {
+    job_system::JobSystem<HostStatsJob> system(std::thread::hardware_concurrency());
+    system.start();
+    StepStatisticsJobs jobs(
+        weight_by_classes, which, system.get_num_workers(),
+        [&system](std::function<void()> f) {
+            system.submit(job_system::make_job<HostStatsJob>(std::move(f), HostStatsJob::Step));
+        },
+        std::move(device_rows), device_min_states);
+    for (auto& [step, in] : inputs) jobs.submit(step, std::move(in));
+    system.wait_for_completion();
+    if (system.has_error())
+        throw std::runtime_error(std::string("StepStatistics failed in a worker: ") +
+                                 system.get_error_message());
+    std::atomic_thread_fence(std::memory_order_acquire);
+    return jobs.reply();
+}
+
+wxf::WXFValue StepStatisticsJobs::reply() {
+    wxf::WXFValueList out;
+    for (auto& [step, s] : steps_) {
+        if (!s->populated) continue;
+        wxf::WXFValueAssociation rec = std::move(s->pooled);
+        for (auto& kv : s->branchial) rec.push_back(std::move(kv));
+        out.push_back(wxf::WXFValue(std::move(rec)));
+    }
+    return wxf::WXFValue(std::move(out));
 }
 
 }  // namespace stats

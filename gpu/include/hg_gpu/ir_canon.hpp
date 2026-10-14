@@ -77,6 +77,17 @@ __device__ ExactHashStatus state_exact_hash_device(const DeviceState& ds, StateI
                                                    uint32_t* out_form_words = nullptr,
                                                    Par par = Par{});
 
+// The exact hash of the state a rewrite of `parent` makes, before the rewrite runs: the parent's
+// edges less `consumed`, then the right-hand side's under `binding` (hgcommon::SuccessorCursor).
+// MaxSuccessorStatesPerParent and MaxStatesPerStep tell successor states apart by it under Full
+// states (hgcommon::SuccessorIdentity). No ranks, orbits or form. Instantiated for DeviceRhsEdge
+// and IrTile.
+template <class Rhs, class Par>
+__device__ ExactHashStatus successor_exact_hash_device(
+    const DeviceState& ds, StateId parent, const EdgeId* consumed, uint32_t num_consumed,
+    const Rhs* rhs, uint32_t num_rhs, uint32_t new_var_mask, const VertexId* binding,
+    DeviceArena::View arena, uint32_t*& slot, uint64_t& slot_words, uint64_t& out_hash, Par par);
+
 // "StepStatistics": state `sid`'s invariants and geometry (hgcommon::state_record) as a record in
 // DeviceState::invariant_pool, its offset in DeviceState::state_invariant_at[sid]. `form` is the
 // state's IR canonical form, which the geometry reads; the slot is the caller's IR scratch.

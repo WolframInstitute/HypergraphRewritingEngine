@@ -20,6 +20,19 @@ HG_HD inline uint64_t qc_key(uint64_t state_hash, uint32_t depth, uint32_t orbit
     return h;
 }
 
+// The key a class's captured expansion is stored and found under. Without a step cap it is the
+// class hash: every raw state of a class keeps the same transitions at every depth. Under
+// MaxStatesPerStep (`by_depth`) a class keeps different transitions at different depths, so each
+// (class, depth) has its own expansion, captured from a raw state at that depth.
+HG_HD inline uint64_t qc_expansion_key(uint64_t class_hash, uint32_t depth, bool by_depth) {
+    return by_depth ? avoid_reserved_keys(qc_key(class_hash, depth, 0xFFFFFFFFu)) : class_hash;
+}
+
+// Whether a run keeps its expansions per (class, depth): under MaxStatesPerStep.
+HG_HD inline bool qc_expansions_by_depth(uint64_t max_states_per_step) {
+    return max_states_per_step != 0;
+}
+
 // The edges an event carries across unchanged -- every edge of its output state it did not
 // produce -- as index pairs into the input and output states' edge arrays, which both list
 // edges in ascending id, so one merge walk pairs them. An output edge the event did not produce

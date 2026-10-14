@@ -122,6 +122,9 @@ struct GpuJob {
     // "Device" in RequestedData: the reply names the device's name and compute capability. Set
     // after the job is built.
     bool include_device = false;
+    // The step cap counts transitions ("MatchesPerStep") rather than successor states. Set after
+    // the job is built.
+    bool step_cap_counts_matches = false;
 };
 
 // Run the job on the GPU (hg_gpu::evolve) and marshal the result into the same

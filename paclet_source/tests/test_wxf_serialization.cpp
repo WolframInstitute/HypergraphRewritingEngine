@@ -31,6 +31,10 @@
 #include "wxf.hpp"
 #include "paclet_source/hg_core.hpp"
 #include "paclet_source/state_statistics.hpp"
+#include "paclet_source/cpu_engine_holder.hpp"
+#ifdef HG_GPU_BACKEND
+#include "hg_gpu/branchial_rows.hpp"
+#endif
 #include "hgcommon/core.hpp"
 #include "paclet_source/graph_marshal.hpp"
 
@@ -3455,12 +3459,49 @@ TEST(GpuBinaryGate, StepStatisticsAgreeAcrossDevices) {
     worker_stop(w);
 }
 
+// A step of 2048 states or more has its overlap rows counted on the device
+// (hg_gpu::branchial_rows_device), and the reply is still the CPU's bytes: rule
+// {{x,y},{x,z}} -> {{x,y},{x,w},{y,w},{z,w}} from {{1,2},{1,3}} at 6 steps, whose step 6 has
+// 14792 states, with "StepStatisticsBranchial" All under both weightings.
+TEST(GpuBinaryGate, DeviceBranchialRowsGiveTheCpuStepStatistics) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    CpuWorker host;
+    ASSERT_TRUE(host.ok) << "could not start hg_evolve --serve";
+    for (const char* weighting : {"States", "Classes"}) {
+        auto opts = [weighting](wxf::Writer& ww) {
+            put_str_list_option(ww, "RequestedData", {"StepStatistics"});
+            put_str_list_option(ww, "StepStatisticsBranchial", {"Graph", "Overlap"});
+            put_str_option(ww, "StepStatisticsWeighting", weighting);
+        };
+        const auto job = session_envelope({{{1, 2}, {1, 3}}}, {{1, 2}, {1, 3}},
+                                          {{1, 2}, {1, 4}, {2, 4}, {3, 4}}, 6, "Evolve", 0, true,
+                                          {}, opts, 3, false);
+        const auto cpu = host(job);
+        const auto gpu = worker_call(w, job);
+        ASSERT_FALSE(gpu.empty()) << w.last_error;
+        const auto c = value_bytes(cpu, "StepStatistics");
+        ASSERT_FALSE(c.empty()) << weighting;
+        EXPECT_TRUE(reply_mentions(c, "OverlapByBranchialDistance")) << weighting;
+        EXPECT_EQ(c, value_bytes(gpu, "StepStatistics")) << weighting;
+    }
+    worker_stop(w);
+}
+
 // The sampling and cap options keep the same transitions on both devices, through one worker
 // that has run other jobs. First the GPUEvolution tutorial's calls in its order, sent with every
 // option of hgJobOptions: the last, the branching rule from two loops at 5 steps with
 // TransitionRate 0.25 and RandomSeed 7, is {11, 10, 9, 2} on the CPU. Then each sampling and cap
 // option under CanonicalizeStates None, Automatic, Full and Full with quotient exploration, at
-// three seeds. The four counts agree on every job.
+// three seeds. The four counts agree on every job, and quotient exploration gives the counts of
+// full capture.
 TEST(GpuBinaryGate, SamplingAndCapsKeepTheSameTransitionsOnBothDevices) {
     {
         std::ifstream probe(gpu_binary_path(), std::ios::binary);
@@ -3553,14 +3594,24 @@ TEST(GpuBinaryGate, SamplingAndCapsKeepTheSameTransitionsOnBothDevices) {
     struct Mode { const char* states; const char* ecso; };
     const Mode modes[] = {{"Full", "True"}, {"None", "False"}, {"Automatic", "False"},
                           {"Full", "False"}};
+    // Quotient exploration (modes[0]) and full capture (modes[3]) under Full states give the same
+    // counts (docs/SPEC.md §5.4); the devices agree with each other on each.
+    auto quotient_matches_full = [&](const std::vector<std::vector<uint8_t>>& by_mode,
+                                     const std::string& at) {
+        for (const char* k : counts)
+            EXPECT_EQ(read_int_key(by_mode[0], k), read_int_key(by_mode[3], k))
+                << at << " " << k << ": quotient exploration against full capture";
+    };
     for (const Option& o : options) {
         for (int64_t rs : {int64_t{7}, int64_t{1}, int64_t{12345}}) {
+            std::vector<std::vector<uint8_t>> by_mode;
+            std::string at;
             for (const Mode& m : modes) {
-                const std::string at = std::string(o.key) + " " +
+                at = std::string(o.key) + " " +
                     (o.integer != 0 ? std::to_string(o.integer) : std::to_string(o.real)) +
                     " CanonicalizeStates " + m.states + " ExploreFromCanonicalStatesOnly " +
                     m.ecso + " RandomSeed " + std::to_string(rs);
-                agree(build_input(seed, lhs, rhs, 5, [&](wxf::Writer& ww) {
+                by_mode.push_back(agree(build_input(seed, lhs, rhs, 5, [&](wxf::Writer& ww) {
                     put_str_list_option(ww, "RequestedData",
                                         {counts[0], counts[1], counts[2], counts[3]});
                     sym(ww, "CanonicalizeStates", m.states);
@@ -3570,8 +3621,26 @@ TEST(GpuBinaryGate, SamplingAndCapsKeepTheSameTransitionsOnBothDevices) {
                     else if (o.integer != 0) ww.write(o.integer);
                     else ww.write(o.real);
                     key(ww, "RandomSeed"); ww.write(rs);
-                }, 5), at);
+                }, 5), at));
             }
+            quotient_matches_full(by_mode, at);
+        }
+    }
+    // "MatchesPerStep" with "UniformRandom": a step's N lowest-ranked transitions.
+    for (int64_t rs : {int64_t{7}, int64_t{1}, int64_t{12345}}) {
+        for (const Mode& m : modes) {
+            const std::string at = std::string("MatchesPerStep 2 CanonicalizeStates ") + m.states +
+                                   " ExploreFromCanonicalStatesOnly " + m.ecso + " RandomSeed " +
+                                   std::to_string(rs);
+            agree(build_input(seed, lhs, rhs, 5, [&](wxf::Writer& ww) {
+                put_str_list_option(ww, "RequestedData",
+                                    {counts[0], counts[1], counts[2], counts[3]});
+                sym(ww, "CanonicalizeStates", m.states);
+                sym(ww, "ExploreFromCanonicalStatesOnly", m.ecso);
+                sym(ww, "UniformRandom", "True");
+                key(ww, "MatchesPerStep"); ww.write(int64_t{2});
+                key(ww, "RandomSeed"); ww.write(rs);
+            }, 6), at);
         }
     }
     // A rule whose join order differs from its authored order ({2,1} at position 2 is bound
@@ -3587,12 +3656,14 @@ TEST(GpuBinaryGate, SamplingAndCapsKeepTheSameTransitionsOnBothDevices) {
     };
     for (const Option& o : dup_options) {
         for (int64_t rs : {int64_t{7}, int64_t{1}, int64_t{718832434}}) {
+            std::vector<std::vector<uint8_t>> by_mode;
+            std::string at;
             for (const Mode& m : modes) {
-                const std::string at = std::string("authored order ") + o.key + " " +
+                at = std::string("authored order ") + o.key + " " +
                     (o.integer != 0 ? std::to_string(o.integer) : std::to_string(o.real)) +
                     " CanonicalizeStates " + m.states + " ExploreFromCanonicalStatesOnly " +
                     m.ecso + " RandomSeed " + std::to_string(rs);
-                agree(build_input(dup_init, dup_lhs, dup_rhs, 1, [&](wxf::Writer& ww) {
+                by_mode.push_back(agree(build_input(dup_init, dup_lhs, dup_rhs, 1, [&](wxf::Writer& ww) {
                     put_str_list_option(ww, "RequestedData",
                                         {counts[0], counts[1], counts[2], counts[3]});
                     sym(ww, "CanonicalizeStates", m.states);
@@ -3601,8 +3672,9 @@ TEST(GpuBinaryGate, SamplingAndCapsKeepTheSameTransitionsOnBothDevices) {
                     if (o.integer != 0) ww.write(o.integer);
                     else ww.write(o.real);
                     key(ww, "RandomSeed"); ww.write(rs);
-                }, 5), at);
+                }, 5), at));
             }
+            quotient_matches_full(by_mode, at);
         }
     }
     worker_stop(w);
@@ -3886,6 +3958,40 @@ bool bytes_contain(const std::vector<uint8_t>& bytes, const std::string& s) {
     return std::search(bytes.begin(), bytes.end(), s.begin(), s.end()) != bytes.end();
 }
 
+// Each step's branchial keys through hg::stats::BranchialStepWork, the overlap rows split into at
+// most `parts` parts run on this thread in reverse order. Step 0's vertices are S0.
+std::map<uint32_t, wxf::WXFValueAssociation> branchial_keys(
+    const std::map<uint32_t, hg::stats::BranchialStep>& steps, uint32_t which, size_t parts = 4) {
+    std::vector<uint32_t> initial;
+    const bool have_initial = steps.count(0) != 0;
+    if (have_initial) initial = hg::stats::initial_vertices(steps.at(0));
+    std::map<uint32_t, wxf::WXFValueAssociation> out;
+    for (const auto& [step, s] : steps) {
+        hg::stats::BranchialStepWork work(s, which, have_initial ? &initial : nullptr);
+        work.prepare(parts);
+        for (size_t p = work.parts(); p-- > 0;) work.rows(p);
+        out[step] = work.finish();
+    }
+    return out;
+}
+
+// The "StepStatistics" reply of a population given as points, built by
+// hg::stats::StepStatisticsJobs with every job run on this thread.
+wxf::WXFValue pooled_steps(
+    const std::vector<hg::stats::StepPoint>& points,
+    const std::unordered_map<uint64_t, const hgcommon::StateInvariantRecord*>& recs,
+    bool by_class) {
+    std::map<uint32_t, hg::stats::StepInput> inputs;
+    for (const auto& p : points) {
+        const auto r = recs.find(p.class_hash);
+        hg::stats::add_class(inputs[p.step], p.class_hash, p.weight,
+                             r == recs.end() ? nullptr : r->second);
+    }
+    hg::stats::StepStatisticsJobs jobs(by_class, 0, 1, [](std::function<void()> f) { f(); });
+    for (auto& [step, in] : inputs) jobs.submit(step, std::move(in));
+    return jobs.reply();
+}
+
 }  // namespace
 
 // The per-step branchial metrics of one step worked by hand: states 10 and 11 joined (the pair
@@ -3896,7 +4002,7 @@ TEST(StateStatistics, BranchialStepMetricsOfASmallStep) {
     s.nodes = {10, 11, 12};
     s.pairs = {{10, 11}, {11, 10}, {12, 12}};
     s.vertex_sets = {{0, 1, 2, 5}, {0, 1, 2, 6}, {7}};
-    const auto out = hg::stats::branchial_step_metrics(
+    const auto out = branchial_keys(
         {{1u, s}}, hg::stats::kBranchialGraph | hg::stats::kBranchialOverlap);
     ASSERT_EQ(out.size(), 1u);
     const wxf::WXFValue rec(out.at(1));
@@ -3932,7 +4038,7 @@ TEST(StateStatistics, PairwiseInitialAndEdgeMetricsOfASmallStep) {
     s1.pairs = {{10, 11}};
     s1.vertex_sets = {{0, 1, 2, 5}, {0, 1, 2, 6}, {7}};
     s1.edge_sets = {{100, 101}, {100, 102}, {103}};
-    const auto out = hg::stats::branchial_step_metrics(
+    const auto out = branchial_keys(
         {{0u, s0}, {1u, s1}}, hg::stats::kBranchialGraph | hg::stats::kBranchialOverlap);
     const wxf::WXFValue rec(out.at(1));
     // One cell p log2(p / (pa pb)) of a 2x2 table over u elements.
@@ -3990,7 +4096,7 @@ TEST(StateStatistics, OverlapByBranchialDistanceCountsDisjointPairsOfAComponent)
     s.pairs = {{20, 21}, {22, 21}};
     s.vertex_sets = {{0, 1}, {1, 2}, {2, 3}};
     s.edge_sets = {{0}, {1}, {2}};
-    const auto both = hg::stats::branchial_step_metrics(
+    const auto both = branchial_keys(
         {{1u, s}}, hg::stats::kBranchialGraph | hg::stats::kBranchialOverlap);
     const wxf::WXFValue rec(both.at(1));
     const auto& per =
@@ -4006,17 +4112,17 @@ TEST(StateStatistics, OverlapByBranchialDistanceCountsDisjointPairsOfAComponent)
     EXPECT_EQ(number_at(*assoc_at(rec, "StateOverlap"), "N"), 3);
     EXPECT_DOUBLE_EQ(number_at(*assoc_at(rec, "StateOverlap"), "Mean"), 2.0 / 9.0);
     const wxf::WXFValue overlap_only(
-        hg::stats::branchial_step_metrics({{1u, s}}, hg::stats::kBranchialOverlap).at(1));
+        branchial_keys({{1u, s}}, hg::stats::kBranchialOverlap).at(1));
     EXPECT_EQ(assoc_at(overlap_only, "OverlapByBranchialDistance"), nullptr);
     EXPECT_NE(assoc_at(overlap_only, "StateMutualInformation"), nullptr);
     const wxf::WXFValue graph_only(
-        hg::stats::branchial_step_metrics({{1u, s}}, hg::stats::kBranchialGraph).at(1));
+        branchial_keys({{1u, s}}, hg::stats::kBranchialGraph).at(1));
     EXPECT_EQ(assoc_at(graph_only, "OverlapByBranchialDistance"), nullptr);
     EXPECT_EQ(assoc_at(graph_only, "EdgeSharpness"), nullptr);
 }
 
-// The branchial values are functions of counts and read the same from any thread split: a step
-// of 300 states (rows split over several threads) gives the same record on every run.
+// The branchial values are functions of counts and read the same from any row split: a step of
+// 300 states gives the same record with its rows in 1, 2, 3 or 5 parts.
 TEST(StateStatistics, BranchialMetricsDoNotDependOnTheRowSplit) {
     hg::stats::BranchialStep s;
     for (uint32_t i = 0; i < 300; ++i) {
@@ -4026,16 +4132,131 @@ TEST(StateStatistics, BranchialMetricsDoNotDependOnTheRowSplit) {
         if (i) s.pairs.push_back({i - 1, i});
     }
     const uint32_t all = hg::stats::kBranchialGraph | hg::stats::kBranchialOverlap;
-    auto bytes = [&](wxf::WXFValue& v) {
-        v = wxf::WXFValue(hg::stats::branchial_step_metrics({{1u, s}}, all).at(1));
+    auto bytes = [&](wxf::WXFValue& v, size_t parts) {
+        v = wxf::WXFValue(branchial_keys({{1u, s}}, all, parts).at(1));
         wxf::Writer w;
         w.write(v);
         return w.release_data();
     };
     wxf::WXFValue first, again;
-    const auto expected = bytes(first);
-    for (int run = 0; run < 3; ++run) EXPECT_EQ(bytes(again), expected);
+    const auto expected = bytes(first, 1);
+    for (size_t parts : {2, 3, 5}) EXPECT_EQ(bytes(again, parts), expected) << parts;
     EXPECT_EQ(number_at(*assoc_at(first, "StateMutualInformation"), "N"), 300 * 299 / 2);
+}
+
+#ifdef HG_GPU_BACKEND
+// The overlap rows counted on the device (hg_gpu::branchial_rows_device) give the record the
+// host's rows give, on steps of 300 and 5000 states with a branchial path and with the graph
+// metrics off. With 5000 states some vertices are held by 2500 states, so a row's holder walk
+// spans many warps' worth of lanes.
+TEST(StateStatistics, DeviceRowsGiveTheHostRecord) {
+    for (const uint32_t k : {300u, 5000u})
+        for (const uint32_t which : {uint32_t{hg::stats::kBranchialOverlap},
+                                     uint32_t{hg::stats::kBranchialGraph | hg::stats::kBranchialOverlap}}) {
+            hg::stats::BranchialStep s;
+            for (uint32_t i = 0; i < k; ++i) {
+                s.nodes.push_back(i);
+                s.vertex_sets.push_back({i % 2, 2 + i % 7, 9 + i % 11, 20 + i % 13, 40 + i});
+                s.edge_sets.push_back({i % 5, 5 + i % 9, 14 + i});
+                if (i && i % 17) s.pairs.push_back({i - 1, i});
+            }
+            auto bytes = [](const wxf::WXFValueAssociation& rec) {
+                wxf::Writer w;
+                w.write(wxf::WXFValue(rec));
+                return w.release_data();
+            };
+            hg::stats::BranchialStepWork host(s, which, nullptr);
+            host.prepare(4);
+            for (size_t p = 0; p < host.parts(); ++p) host.rows(p);
+            const auto want = bytes(host.finish());
+            hg::stats::BranchialStepWork device(s, which, nullptr);
+            device.prepare(4);
+            const bool ran = hg_gpu::branchial_rows_device(
+                device.rows_view(),
+                [&device](uint32_t d, uint32_t sa, uint32_t sb, uint32_t sh, uint64_t n) {
+                    device.add_counts(d, sa, sb, sh, n);
+                });
+            if (!ran) GTEST_SKIP() << "no usable device";
+            EXPECT_EQ(bytes(device.finish()), want) << "k " << k << " which " << which;
+        }
+}
+#endif
+
+// "StepStatistics" under full capture, from hgffi::StepStatisticsCollector on rule
+// {{x,y},{x,z}} -> {{x,y},{x,w},{y,w},{z,w}} from {{0,1},{0,2}} at 5 steps: the reply's bytes at
+// `threads` workers, and the number of steps closed after the run. `online` closes steps as the
+// engine reports their depths; otherwise every step is closed after the run. `recurrent` adds
+// {{x,y},{y,z}} -> {{x,z}}, so a class can recur at a later step. Without `record_in_run` the
+// engine records no class record and the collector computes each one.
+std::pair<std::vector<uint8_t>, uint32_t> collected_step_statistics(
+    size_t threads, uint32_t which, bool by_class, bool online, size_t step_cap,
+    bool recurrent = false, bool record_in_run = true) {
+    hypergraph::Hypergraph hg;
+    hypergraph::ParallelEvolutionEngine engine(&hg, threads);
+    hgcommon::RecordSet rs;
+    rs.causal = false;
+    rs.branchial = (which & hg::stats::kBranchialGraph) != 0;
+    rs.state_events = false;
+    rs.state_invariants = record_in_run;
+    hg.set_record_set(rs);
+    engine.set_max_states_per_step(step_cap);
+    engine.add_rule(hypergraph::make_rule(0)
+                        .lhs({0, 1})
+                        .lhs({0, 2})
+                        .rhs({0, 1})
+                        .rhs({0, 3})
+                        .rhs({1, 3})
+                        .rhs({2, 3})
+                        .build());
+    if (recurrent)
+        engine.add_rule(hypergraph::make_rule(1).lhs({0, 1}).lhs({1, 2}).rhs({0, 2}).build());
+    hgffi::StepStatisticsCollector collector(hg, engine, which, by_class, 5);
+    if (online) collector.attach(step_cap != 0);
+    engine.evolve(std::vector<std::vector<hypergraph::VertexId>>{{0u, 1u}, {0u, 2u}}, 5);
+    const wxf::WXFValue reply = collector.finish();
+    wxf::Writer w;
+    w.write(reply);
+    return {w.release_data(), collector.closed_at_finish()};
+}
+
+// The reply is the same bytes at 1, 2, 8 and 16 threads under each weighting and each
+// "StepStatisticsBranchial" setting, and the same whether the steps are closed during the run or
+// after it. During the run every step is closed by the engine's depth reports, so the reply
+// builds no record; under "MaxStatesPerStep" the last step's states are selected on the depth
+// past the budget, which no task reaches, so that step is closed after the run.
+TEST(StateStatistics, CollectedStepStatisticsDoNotDependOnTheThreadCount) {
+    const uint32_t graph = hg::stats::kBranchialGraph, overlap = hg::stats::kBranchialOverlap;
+    for (const size_t cap : {size_t{0}, size_t{4}})
+        for (const uint32_t which : {0u, graph, overlap, graph | overlap})
+            for (const bool by_class : {false, true}) {
+                const auto after = collected_step_statistics(4, which, by_class, false, cap);
+                ASSERT_FALSE(after.first.empty());
+                EXPECT_EQ(after.second, 6u) << which;
+                for (const size_t threads : {1, 2, 8, 16}) {
+                    const auto during = collected_step_statistics(threads, which, by_class, true, cap);
+                    EXPECT_EQ(during.first, after.first)
+                        << "threads " << threads << " which " << which << " by_class " << by_class
+                        << " cap " << cap;
+                    EXPECT_LE(during.second, cap ? 1u : 0u) << "threads " << threads;
+                }
+            }
+    // A class recurring at a later step: its record can be claimed by a worker at the later
+    // step before the earlier step closes, and the step's job then computes it
+    // (Hypergraph::state_invariants_of). That computed record gives the same reply as the
+    // record its claiming worker writes.
+    for (const bool by_class : {false, true}) {
+        const auto after = collected_step_statistics(4, graph | overlap, by_class, false, 0, true);
+        EXPECT_EQ(
+            collected_step_statistics(4, graph | overlap, by_class, false, 0, true, false).first,
+            after.first);
+        for (const size_t threads : {1, 2, 8, 16})
+            for (int run = 0; run < 4; ++run) {
+                const auto during =
+                    collected_step_statistics(threads, graph | overlap, by_class, true, 0, true);
+                EXPECT_EQ(during.first, after.first) << "threads " << threads;
+                EXPECT_EQ(during.second, 0u) << "threads " << threads;
+            }
+    }
 }
 
 // "StepStatisticsWeighting" -> "Classes" counts a class once; "States" counts its raw states.
@@ -4046,8 +4267,8 @@ TEST(StateStatistics, WeightingByClassesCountsEachClassOnce) {
         {1, hg::stats::invariant_record({{1, 2}}, s1)},
         {2, hg::stats::invariant_record({{1, 2}, {2, 3}}, s2)}};
     auto vertex_count = [&](bool by_class) {
-        const wxf::WXFValue steps = hg::stats::step_statistics(
-            points, edges, {}, {}, hg::stats::StepStatisticsOptions{by_class, nullptr});
+        const wxf::WXFValue steps = pooled_steps(
+            points, edges, by_class);
         const auto& first = std::get<wxf::WXFValueList>(steps.data).at(0);
         EXPECT_EQ(number_at(first, "RawStates"), 4);
         return *assoc_at(*assoc_at(first, "Invariants"), "VertexCount");
@@ -4070,8 +4291,8 @@ TEST(StateStatistics, VertexInvariantsPoolTheVerticesOfAStep) {
         {1, hg::stats::invariant_record({{1, 2}, {2, 3}, {3, 4}}, s1)},
         {2, hg::stats::invariant_record({{1, 2}, {2, 3}, {3, 4}, {4, 1}}, s2)}};
     auto step = [&](bool by_class) {
-        const wxf::WXFValue steps = hg::stats::step_statistics(
-            points, recs, {}, {}, hg::stats::StepStatisticsOptions{by_class, nullptr});
+        const wxf::WXFValue steps = pooled_steps(
+            points, recs, by_class);
         return std::get<wxf::WXFValueList>(steps.data).at(0);
     };
     const wxf::WXFValue states = step(false), classes = step(true);
@@ -4330,6 +4551,30 @@ TEST(FfiInput, QuotientNeedsFullNamesTheOptionTheJobSet) {
         put_str_option(w, "CanonicalizeStates", "Full");
     }), host));
     EXPECT_TRUE(full.empty());
+}
+
+// ExploreFromCanonicalStatesOnly is not applied with MaxStatesPerStep: the reply warns
+// (QuotientStepCap) and its counts are the counts of full capture.
+TEST(FfiInput, QuotientExplorationIsNotAppliedWithAStepCap) {
+    HostBridge host;
+    auto job = [](bool ecso) {
+        return build_input(kSeed, kLhs, kRhs, 3, [&](wxf::Writer& w) {
+            put_str_list_option(w, "RequestedData", {"NumStates", "NumEvents", "NumCausalEdges"});
+            put_str_option(w, "CanonicalizeStates", "Full");
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("MaxStatesPerStep"));
+            w.write(int64_t{2});
+            put_str_option(w, "ExploreFromCanonicalStatesOnly", ecso ? "True" : "False");
+        }, 4);
+    };
+    const auto quotient = run_rewriting_core(job(true), host);
+    const auto full = run_rewriting_core(job(false), host);
+    const auto ctx = warning_contexts(quotient);
+    ASSERT_EQ(ctx.size(), 1u);
+    EXPECT_NE(ctx[0].find("does not apply with \"MaxStatesPerStep\""), std::string::npos);
+    EXPECT_TRUE(warning_contexts(full).empty());
+    for (const char* k : {"NumStates", "NumEvents", "NumCausalEdges"})
+        EXPECT_EQ(read_int_key(quotient, k), read_int_key(full, k)) << k;
 }
 
 // A counts-only request under CanonicalizeStates -> Full counts the isomorphism classes on either

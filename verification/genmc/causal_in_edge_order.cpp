@@ -1,6 +1,6 @@
 // GENMC-LINK: engine
 // GENMC-DEFINES: -DHG_CONCURRENT_MAP_INITIAL_CAPACITY=2
-// GENMC-ARGS: --disable-estimation
+// GENMC-ARGS: --disable-estimation --weak-cas-spurious-total=1
 // GENMC-CALIBRATE: -DHG_CALIBRATE_IN_EDGE_ORDER_ASCENDING
 //
 // GenMC harness: an event's in-edges are recorded in the one order the online transitive

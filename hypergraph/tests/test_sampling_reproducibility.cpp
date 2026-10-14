@@ -8,6 +8,7 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <tuple>
 #include <unordered_map>
 
 using namespace hypergraph;
@@ -667,11 +668,9 @@ TEST(SamplingReproducibility, CapTiesUnderTheReconstructionDoNotDependOnTheSched
     }
 }
 
-// Under quotient exploration automorphic transitions share an orbit-keyed rank, so a sampled
-// state whose draws all fail has several spine candidates, and the reconstruction's causal
-// relation depends on which one is replayed. The spine breaks the tie on the full-capture key
-// (hgcommon::spine_before). Fuzz seed 201768 with the first-stored candidate gave 3, 4 or 5
-// causal edges by schedule; full capture gives 3.
+// A sampled quotient run whose draws fail at every state, so the spine carries each step, from a
+// state with automorphic transitions (fuzz seed 201768). The spine keeps every transition at the
+// minimum rank, and automorphic transitions share it; full capture gives 2400 causal edges.
 TEST(SamplingReproducibility, SpineTieUnderTheReconstructionMatchesFullCapture) {
     auto run = [](size_t threads, bool quotient) {
         Hypergraph hg;
@@ -696,7 +695,7 @@ TEST(SamplingReproducibility, SpineTieUnderTheReconstructionMatchesFullCapture) 
     // Full capture with the reduction on stores the reduced pairs only, so its unreduced count is
     // the reduced one; the quotient's unreduced count is compared against its own first run.
     auto one = run(1, false);
-    ASSERT_EQ(one, (std::vector<size_t>{6, 5, 3, 3})) << "full capture changed";
+    ASSERT_EQ(one, (std::vector<size_t>{6, 5, 2400, 2400})) << "full capture changed";
     one[3] = run(1, true)[3];
     for (size_t threads : {size_t(1), size_t(2), size_t(4), size_t(8)}) {
         for (int rep = 0; rep < 20; ++rep) {
@@ -705,6 +704,274 @@ TEST(SamplingReproducibility, SpineTieUnderTheReconstructionMatchesFullCapture) 
                                 << got[0] << " events " << got[1] << " causal " << got[2]
                                 << " unreduced " << got[3] << " vs full capture " << one[0]
                                 << " " << one[1] << " " << one[2] << " " << one[3];
+        }
+    }
+}
+
+// Every cap and every sampling draw keeps the same transitions under quotient exploration as
+// under full capture (SPEC.md §5): states, events, causal and branchial counts are equal, at 1
+// and 4 workers. Fuzz seed 201768 and two rules with symmetric states, each with
+// MatchesPerStateRule, MaxSuccessorStatesPerParent and MaxStatesPerStep at 1 and 2, and with
+// TransitionRate and RuleWeights at three seeds.
+TEST(SamplingReproducibility, CapsAndDrawsUnderQuotientExplorationMatchFullCapture) {
+    struct Case {
+        const char* name;
+        std::vector<RewriteRule> rules;
+        std::vector<std::vector<VertexId>> init;
+        size_t steps;
+    };
+    const std::vector<Case> cases = {
+        {"fuzz201768",
+         {make_rule(0).lhs({4, 3, 5, 2}).rhs({3, 5}).rhs({5, 4}).rhs({4, 4}).build(),
+          make_rule(1).lhs({2, 4}).lhs({4, 2}).rhs({4}).rhs({4, 4}).rhs({2, 2}).build()},
+         {{0u, 1u}, {1u, 1u}, {2u, 1u, 1u, 0u}, {1u, 0u, 1u, 1u}},
+         5},
+        {"pair_grow",
+         {make_rule(0).lhs({0, 1}).rhs({2, 3}).rhs({0, 1}).build()},
+         {{0u, 1u}, {2u, 1u}},
+         3},
+        {"wolfram",
+         {make_rule(0).lhs({0, 1}).lhs({0, 2}).rhs({0, 1}).rhs({0, 3}).rhs({1, 3}).rhs({2, 3})
+              .build()},
+         {{0u, 1u}, {0u, 2u}},
+         3},
+    };
+    enum Knob { PER_RULE, PER_PARENT, PER_STEP, RATE, WEIGHTS };
+    struct Setting { Knob knob; size_t k; uint64_t seed; };
+    std::vector<Setting> settings;
+    for (Knob kn : {PER_RULE, PER_PARENT, PER_STEP})
+        for (size_t k : {size_t(1), size_t(2)}) settings.push_back({kn, k, 0});
+    for (Knob kn : {RATE, WEIGHTS})
+        for (uint64_t seed : {uint64_t(1855184222), uint64_t(7), uint64_t(424242)})
+            settings.push_back({kn, 0, seed});
+
+    auto run = [](const Case& c, const Setting& s, size_t threads, bool quotient) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        ParallelEvolutionEngine e(&hg, threads);
+        e.set_max_steps(c.steps);
+        e.set_explore_from_canonical_states_only(quotient);
+        for (const auto& r : c.rules) e.add_rule(r);
+        if (s.knob == PER_RULE) e.set_matches_per_state_rule(s.k);
+        if (s.knob == PER_PARENT) e.set_max_successor_states_per_parent(s.k);
+        if (s.knob == PER_STEP) e.set_max_states_per_step(s.k);
+        if (s.knob == RATE || s.knob == WEIGHTS) {
+            e.set_transition_rate(s.knob == RATE ? 0.5 : 0.8);
+            if (s.knob == WEIGHTS) e.set_rule_weights({0.43, 0.6});
+            e.set_random_seed(s.seed);
+        }
+        e.evolve(c.init, c.steps);
+        return std::array<uint64_t, 4>{hg.num_canonical_states(), hg.observable_num_events(),
+                                       hg.observable_num_causal_edges(),
+                                       hg.observable_num_branchial()};
+    };
+    auto str = [](const std::array<uint64_t, 4>& a) {
+        return std::to_string(a[0]) + "," + std::to_string(a[1]) + "," + std::to_string(a[2]) +
+               "," + std::to_string(a[3]);
+    };
+    for (const auto& c : cases) {
+        for (const auto& s : settings) {
+            const auto full = run(c, s, 1, false);
+            for (size_t threads : {size_t(1), size_t(4)}) {
+                const auto q = run(c, s, threads, true);
+                EXPECT_EQ(q, full) << c.name << " knob " << static_cast<int>(s.knob) << " k "
+                                   << s.k << " seed " << s.seed << " threads " << threads
+                                   << ": quotient " << str(q) << " full capture " << str(full);
+            }
+        }
+    }
+}
+
+namespace {
+struct SuccessorCapRun {
+    size_t states, events;
+    // The most distinct successor states one parent's events reach, and one step's.
+    size_t most_per_parent, most_per_step;
+    uint64_t causal, branchial;
+};
+
+SuccessorCapRun run_successor_cap(StateCanonicalizationMode mode,
+                                  const std::vector<RewriteRule>& rules,
+                                  const std::vector<std::vector<VertexId>>& init, size_t steps,
+                                  size_t per_parent, size_t per_step, size_t threads,
+                                  uint64_t seed) {
+    Hypergraph hg;
+    hg.set_state_canonicalization_mode(mode);
+    ParallelEvolutionEngine e(&hg, threads);
+    for (const auto& r : rules) e.add_rule(r);
+    if (per_parent) e.set_max_successor_states_per_parent(per_parent);
+    if (per_step) e.set_max_states_per_step(per_step);
+    e.set_random_seed(seed);
+    e.evolve(init, steps);
+    std::map<StateId, std::set<StateId>> by_parent;
+    std::map<uint32_t, std::set<StateId>> by_step;
+    for (uint32_t ev = 0; ev < hg.num_published_events(); ++ev) {
+        const Event& x = hg.get_event(ev);
+        if (x.id == INVALID_ID || hg.is_genesis_event(ev)) continue;
+        const StateId out = hg.get_canonical_state(x.output_state);
+        by_parent[x.input_state].insert(out);
+        by_step[hg.get_state(x.output_state).step].insert(out);
+    }
+    SuccessorCapRun r{hg.num_canonical_states(), hg.num_events(), 0, 0,
+                      hg.observable_num_causal_edges(), hg.observable_num_branchial()};
+    for (const auto& p : by_parent) r.most_per_parent = std::max(r.most_per_parent, p.second.size());
+    for (const auto& p : by_step) r.most_per_step = std::max(r.most_per_step, p.second.size());
+    return r;
+}
+}  // namespace
+
+// MaxSuccessorStatesPerParent and MaxStatesPerStep count distinct successor STATES under the
+// state identity in force, and keep every transition into a kept successor. Hand-counted cases:
+//  - {{x,y}} -> {} from the path {{1,2},{2,3},{3,4}}: deleting the first or the last edge makes
+//    a path of two edges, the middle one two disjoint edges. Full: 2 successor states (one by 2
+//    transitions); Automatic and None: 3 (the edge lists differ).
+//  - {{x}} -> {} from {{1},{1},{2}}: deleting either {1} makes {{1},{2}}, deleting {2} makes
+//    {{1},{1}}. Automatic and Full: 2 successor states, one by 2 transitions; None: 3.
+TEST(SamplingReproducibility, SuccessorCapsCountDistinctSuccessorStates) {
+    const auto del2 = std::vector<RewriteRule>{make_rule(0).lhs({0, 1}).build()};
+    const auto del1 = std::vector<RewriteRule>{make_rule(0).lhs({0}).build()};
+    const std::vector<std::vector<VertexId>> path = {{1, 2}, {2, 3}, {3, 4}};
+    const std::vector<std::vector<VertexId>> units = {{1}, {1}, {2}};
+    using M = StateCanonicalizationMode;
+
+    // k = 2 keeps both successors of the path under Full: all 3 transitions.
+    for (size_t threads : {size_t(1), size_t(4), size_t(16)}) {
+        const auto f = run_successor_cap(M::Full, del2, path, 1, 2, 0, threads, 7);
+        EXPECT_EQ(f.events, 3u) << threads;
+        EXPECT_EQ(f.states, 3u) << threads;
+        for (M m : {M::Automatic, M::None}) {
+            const auto a = run_successor_cap(m, del2, path, 1, 2, 0, threads, 7);
+            EXPECT_EQ(a.events, 2u) << threads << " mode " << static_cast<int>(m);
+            EXPECT_EQ(a.states, 3u) << threads << " mode " << static_cast<int>(m);
+        }
+    }
+    // k = 1 keeps one successor state, with every transition into it. Over seeds, the successor
+    // made by two transitions is kept with both.
+    for (M m : {M::Full, M::Automatic}) {
+        const auto& rules = m == M::Full ? del2 : del1;
+        const auto& init = m == M::Full ? path : units;
+        std::set<size_t> events;
+        for (uint64_t seed = 0; seed < 24; ++seed) {
+            const auto one = run_successor_cap(m, rules, init, 1, 1, 0, 1, seed);
+            EXPECT_EQ(one.states, 2u) << "mode " << static_cast<int>(m) << " seed " << seed;
+            EXPECT_EQ(one.most_per_parent, 1u);
+            events.insert(one.events);
+            for (size_t threads : {size_t(4), size_t(16)}) {
+                const auto t = run_successor_cap(m, rules, init, 1, 1, 0, threads, seed);
+                EXPECT_EQ(t.events, one.events) << "seed " << seed << " threads " << threads;
+            }
+        }
+        EXPECT_EQ(events, (std::set<size_t>{1u, 2u})) << "mode " << static_cast<int>(m);
+    }
+    // MaxStatesPerStep 1 on two steps of the path under Full: step 1 keeps one class and every
+    // transition into it; step 2 reaches one class, the single edge, from every kept state:
+    // 1 + 2 events (the disjoint pair kept) or 2 + 4 (the path kept).
+    std::set<size_t> step_events;
+    for (uint64_t seed = 0; seed < 24; ++seed) {
+        const auto s = run_successor_cap(M::Full, del2, path, 2, 0, 1, 1, seed);
+        EXPECT_EQ(s.states, 3u) << seed;
+        EXPECT_EQ(s.most_per_step, 1u) << seed;
+        step_events.insert(s.events);
+        for (size_t threads : {size_t(4), size_t(16)})
+            EXPECT_EQ(run_successor_cap(M::Full, del2, path, 2, 0, 1, threads, seed).events,
+                      s.events)
+                << "seed " << seed << " threads " << threads;
+    }
+    EXPECT_EQ(step_events, (std::set<size_t>{3u, 6u}));
+    // Under Automatic the path's successors all differ: one transition per step.
+    const auto a = run_successor_cap(M::Automatic, del2, path, 2, 0, 1, 1, 7);
+    EXPECT_EQ(a.events, 2u);
+    EXPECT_EQ(a.states, 3u);
+    // MatchesPerStep counts transitions: 2 of the path's 3 under Full, whichever states they make.
+    for (uint64_t seed = 0; seed < 8; ++seed) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(M::Full);
+        ParallelEvolutionEngine e(&hg, 4);
+        e.add_rule(del2[0]);
+        e.set_matches_per_step(2);
+        e.set_random_seed(seed);
+        e.evolve(path, 1);
+        EXPECT_EQ(hg.num_events(), 2u) << seed;
+    }
+}
+
+// Each parent's events reach at most k distinct successor states and each step's at most N, at
+// 1, 4 and 16 workers with equal counts, on growth rules under Automatic and Full states.
+TEST(SamplingReproducibility, SuccessorCapsBoundEveryParentAndStep) {
+    const std::vector<std::vector<RewriteRule>> rule_sets = {
+        {make_rule(0).lhs({0, 1}).lhs({0, 2}).rhs({0, 1}).rhs({0, 3}).rhs({1, 3}).rhs({2, 3})
+             .build()},
+        {make_rule(0).lhs({0, 1}).rhs({0, 1}).rhs({1, 2}).build(),
+         make_rule(1).lhs({0, 1}).lhs({1, 2}).rhs({0, 2}).build()},
+    };
+    const std::vector<std::vector<VertexId>> init = {{0, 1}, {0, 2}, {1, 2}};
+    using M = StateCanonicalizationMode;
+    for (const auto& rules : rule_sets) {
+        for (M m : {M::Automatic, M::Full}) {
+            for (size_t k : {size_t(1), size_t(2), size_t(3)}) {
+                const auto p = run_successor_cap(m, rules, init, 3, k, 0, 1, 11);
+                EXPECT_LE(p.most_per_parent, k) << "mode " << static_cast<int>(m) << " k " << k;
+                const auto s = run_successor_cap(m, rules, init, 3, 0, k, 1, 11);
+                EXPECT_LE(s.most_per_step, k) << "mode " << static_cast<int>(m) << " N " << k;
+                for (size_t threads : {size_t(4), size_t(16)}) {
+                    const auto pt = run_successor_cap(m, rules, init, 3, k, 0, threads, 11);
+                    const auto st = run_successor_cap(m, rules, init, 3, 0, k, threads, 11);
+                    EXPECT_EQ(std::make_tuple(pt.states, pt.events, pt.causal, pt.branchial),
+                              std::make_tuple(p.states, p.events, p.causal, p.branchial))
+                        << "per parent, mode " << static_cast<int>(m) << " k " << k
+                        << " threads " << threads;
+                    EXPECT_EQ(std::make_tuple(st.states, st.events, st.causal, st.branchial),
+                              std::make_tuple(s.states, s.events, s.causal, s.branchial))
+                        << "per step, mode " << static_cast<int>(m) << " N " << k
+                        << " threads " << threads;
+                }
+            }
+        }
+    }
+}
+
+// Under full capture with Full states and Automatic event identity, the causal and branchial
+// relations come from the quotient reconstruction. Under MaxStatesPerStep a class keeps different
+// transitions at different depths, and the reconstruction gives the relations of the raw
+// rewrites, which None event identity reports directly: equal raw events, unreduced causal pairs
+// and branchial pairs, at 1 and 4 workers. Rules whose classes recur at several depths.
+TEST(SamplingReproducibility, StepCapReconstructionMatchesTheRawRewrites) {
+    struct Case {
+        const char* name;
+        std::vector<RewriteRule> rules;
+        std::vector<std::vector<VertexId>> init;
+    };
+    const std::vector<Case> cases = {
+        {"flip", {make_rule(0).lhs({0, 1}).rhs({1, 0}).build()}, {{0u, 1u}, {1u, 2u}, {2u, 0u}}},
+        {"shortcut",
+         {make_rule(0).lhs({0, 1}).lhs({1, 2}).rhs({0, 2}).rhs({2, 1}).build()},
+         {{0u, 1u}, {1u, 2u}, {2u, 0u}, {0u, 0u}}},
+        {"two_rules",
+         {make_rule(0).lhs({0, 1}).rhs({1, 0}).build(),
+          make_rule(1).lhs({0, 1}).lhs({1, 2}).rhs({0, 2}).rhs({1, 1}).build()},
+         {{0u, 1u}, {1u, 2u}, {2u, 0u}, {2u, 3u}}},
+    };
+    for (const auto& c : cases) {
+        for (size_t k : {size_t(1), size_t(2), size_t(3), size_t(5)}) {
+            auto run = [&](hgcommon::EventSignatureKeys keys, size_t threads) {
+                Hypergraph hg;
+                hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+                hg.set_event_signature_keys(keys);
+                ParallelEvolutionEngine e(&hg, threads);
+                e.set_transitive_reduction(false);
+                for (const auto& r : c.rules) e.add_rule(r);
+                e.set_max_states_per_step(k);
+                e.evolve(c.init, 5);
+                const uint64_t raw = keys == hgcommon::EVENT_SIG_NONE
+                                         ? hg.num_events() : hg.num_reconstructed_raw_events();
+                return std::array<uint64_t, 4>{hg.num_canonical_states(), raw,
+                                               hg.observable_num_causal_pairs(false),
+                                               hg.observable_num_branchial()};
+            };
+            const auto raw = run(hgcommon::EVENT_SIG_NONE, 1);
+            for (size_t threads : {size_t(1), size_t(4)})
+                EXPECT_EQ(run(hgcommon::EVENT_SIG_AUTOMATIC, threads), raw)
+                    << c.name << " MaxStatesPerStep " << k << " threads " << threads;
         }
     }
 }

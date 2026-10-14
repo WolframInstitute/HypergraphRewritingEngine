@@ -29,7 +29,8 @@
 // CALIBRATION. -DCALIBRATE_NO_FENCE makes the Ctx's fence a no-op, and the checker must report
 // the child stranded at the parent's old depth plus one.
 //
-// GENMC-ARGS: --disable-estimation
+// GENMC-ARGS: --disable-estimation --weak-cas-spurious-bound=1
+// GENMC-BOUND: weak CAS spurious-failure bound 1: 26 complete executions, K = 11 dropped (bounded, not exhaustive).
 // GENMC-EXPECT: pass
 // GENMC-CALIBRATE: -DCALIBRATE_NO_FENCE
 //

@@ -1,9 +1,8 @@
-// Expect: Number of complete executions explored: 48
+// Args: --weak-cas-spurious-bound=1
 // Three threads push onto a Treiber stack with compare_exchange_weak, storing the link before
 // each attempt. A spurious failure returns the expected value, so the retry stores the same link
-// and attempts the same CAS: the checker drops that repeat and the run ends without --unroll.
-// The 48 executions are the push orders with their genuinely failed attempts. A checker that
-// explores the repeats does not end (HG_GENMC_NO_STUTTER=1: no verdict in 30 s).
+// and attempts the same CAS. Without a bound the run does not end; with
+// --weak-cas-spurious-bound=1 every CAS fails spuriously at most once in a row.
 #include <pthread.h>
 #include <atomic>
 #include <cassert>
