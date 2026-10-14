@@ -61,7 +61,8 @@
 // raises the depth bound after the instance side's scan instead of before its publish. A harness
 // that cannot fail proves nothing.
 //
-// GENMC-ARGS: --disable-estimation
+// GENMC-ARGS: --disable-estimation --weak-cas-spurious-bound=1
+// GENMC-BOUND: weak CAS spurious-failure bound 1: 5,958,272 complete executions, K = 571,074 dropped (bounded, not exhaustive).
 // GENMC-EXPECT: pass
 // GENMC-CALIBRATE: -DCALIBRATE_NO_MATCH_FENCE
 // GENMC-CALIBRATE: -DCALIBRATE_NO_INSTANCE_FENCE

@@ -31,7 +31,8 @@
 // head_) must make this harness report the safety violation. A harness that cannot fail proves
 // nothing, and this one asserts a property no existing harness states.
 //
-// GENMC-ARGS: --disable-estimation
+// GENMC-ARGS: --disable-estimation --weak-cas-spurious-bound=1
+// GENMC-BOUND: weak CAS spurious-failure bound 1: 6,248 complete executions, K = 4,420 dropped (bounded, not exhaustive).
 // GENMC-EXPECT: pass
 // GENMC-CALIBRATE: -DHG_CALIBRATE_LIST_NO_RETRY
 //
