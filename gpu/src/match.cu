@@ -7,6 +7,11 @@
 #include "hgcommon/join_core.hpp"   // THE JOIN -- one body, shared with the host matcher
 #include "hgcommon/sampling_core.hpp"
 #include "hg_gpu/exploration.hpp"
+#include "hg_gpu/content_hash.hpp"   // DeviceContentCursor
+#include "hg_gpu/ir_canon.hpp"       // successor_exact_hash_device
+#include "hg_gpu/rewrite.hpp"        // bind_matched_vertices
+#include "hgcommon/rewrite_core.hpp" // SuccessorCursor
+#include "hgcommon/content_core.hpp" // content_hash_of
 
 #include <algorithm>
 #include <stdexcept>
@@ -151,16 +156,15 @@ struct MatchJoinCtx {
 //   kCapEmit    emit ranks at or below the cut               } smallest ranks of the pair, ties kept
 //   kDraw       emit the matches that survive their draw; record the state's minimum rank
 //               and whether any match survived
-//   kSpineTie   under the quotient reconstruction, record the smallest tie key among the matches
-//               at that minimum (hgcommon::SpineKey)
-//   kSpineEmit  emit the one match at the smallest (rank, tie)
-//   kParentCount  record each match's rank and rule, emit nothing   } the per-state cap: the k
-//   kParentEmit   emit a match while its rank's quota remains       } lowest-ranked transitions
+//   kSpineEmit  emit the matches whose rank is that minimum
+//   kParentCount  record each match's rank, rule and edges, emit    } the per-state cap: the
+//                 nothing                                           } transitions into the k
+//   kParentEmit   emit a kept match, once                           } lowest-ranked successors
 // The rank is hgcommon::transition_rank and the draw hgcommon::transition_survives, both keyed
 // on transition_key_device: the host's cap_at_drain, transition_survives and spine_at_drain
 // call the same functions on the same key.
 enum class EmitMode : uint8_t {
-    kCapCount, kCapEmit, kDraw, kSpineTie, kSpineEmit, kParentCount, kParentEmit
+    kCapCount, kCapEmit, kDraw, kSpineEmit, kParentCount, kParentEmit
 };
 
 struct EmitCtl {
@@ -169,24 +173,20 @@ struct EmitCtl {
     uint64_t            threshold;    // kCapEmit: the cut rank; kSpineEmit: the minimum
     uint32_t*           s_seen;
     uint32_t*           s_overflow;
-    uint32_t*           s_emitted;
     uint64_t*           s_ranks;
     unsigned long long* s_min_rank;
     uint32_t*           s_survived;
-    // kParentCount: the rule of each recorded rank. kParentEmit: the kept ranks (an entry per
-    // kept transition, so equal ranks appear once per transition kept) and a bit of quota each.
+    // kParentCount: the rule and the edges (kMaxPatternEdges, by pattern position) of each
+    // recorded rank. kParentEmit: the kept transitions' rules and edges (keep_n of them) and a
+    // bit each, cleared by the one emission of the transition.
     uint16_t*           s_rules = nullptr;
-    const uint64_t*     s_keep_rank = nullptr;
+    EdgeId*             s_edges = nullptr;
     uint32_t*           s_keep_quota = nullptr;
     uint32_t            keep_n = 0;
-    // kSpineEmit under the quotient reconstruction: the smallest tie key among the matches at
-    // the minimum rank (kSpineTie's reduction).
-    uint64_t            tie = 0;
 };
 
 // Not inlined: it is called from the join's innermost completion callback, which is
 // instantiated per rule shape, and inlined there ptxas ran out of memory assembling this file.
-// The emitted-count check settles rank ties, so a pass never admits more than it allows.
 __device__ __noinline__ bool emit_admit(const DeviceState& ds, StateId state_id, RuleId rid,
                                         const uint8_t* pattern, const EdgeId* matched,
                                         uint8_t depth, const EmitCtl& c) {
@@ -213,41 +213,31 @@ __device__ __noinline__ bool emit_admit(const DeviceState& ds, StateId state_id,
         atomicExch(c.s_survived, 1u);
         return true;
     }
-    case EmitMode::kSpineTie:
-        if (r == c.threshold) {
-            const uint64_t tie = hgcommon::transition_rank(
-                transition_key_device(ds, state_id, rid, edges, depth, false), ds.sampling_seed);
-            atomicMin(c.s_min_rank, static_cast<unsigned long long>(tie));
-        }
-        return false;
-    case EmitMode::kSpineEmit: {
-        if (r != c.threshold) return false;
-        if (ds.state_edge_orbit) {
-            // The match at the smallest (rank, tie), hgcommon::spine_before, as on the host.
-            const hgcommon::SpineKey mine{r, hgcommon::transition_rank(
-                transition_key_device(ds, state_id, rid, edges, depth, false), ds.sampling_seed)};
-            const hgcommon::SpineKey best{c.threshold, c.tie};
-            if (hgcommon::spine_before(best, mine)) return false;
-        }
-        // Equal (rank, tie) is one transition reached twice; it is emitted once.
-        return atomicAdd(c.s_emitted, 1u) == 0u;
-    }
+    case EmitMode::kSpineEmit:
+        // Every match at the minimum rank: under Full states automorphic transitions share it.
+        return r == c.threshold;
     case EmitMode::kParentCount: {
         const uint32_t at = atomicAdd(c.s_seen, 1u);
         if (at < kDrainCapBuffer) {
             c.s_ranks[at] = r;
             c.s_rules[at] = static_cast<uint16_t>(rid);
+            for (uint8_t i = 0; i < kMaxPatternEdges; ++i)
+                c.s_edges[at * kMaxPatternEdges + i] = edges[i];
         } else {
             atomicExch(c.s_overflow, 1u);
         }
         return false;
     }
     case EmitMode::kParentEmit:
-        // Equal ranks name automorphic transitions, so any of them takes the entry's place.
+        // The kept transition with this rule and these edges, emitted once.
         for (uint32_t i = 0; i < c.keep_n; ++i) {
-            if (c.s_keep_rank[i] != r) continue;
+            if (c.s_rules[i] != rid) continue;
+            bool same = true;
+            for (uint8_t k = 0; k < kMaxPatternEdges && same; ++k)
+                same = c.s_edges[i * kMaxPatternEdges + k] == edges[k];
+            if (!same) continue;
             const uint32_t bit = 1u << (i & 31u);
-            if (atomicAnd(c.s_keep_quota + (i >> 5), ~bit) & bit) return true;
+            return (atomicAnd(c.s_keep_quota + (i >> 5), ~bit) & bit) != 0u;
         }
         return false;
     }
@@ -303,28 +293,47 @@ __device__ __noinline__ void match_state_rule_pass(
 }
 
 // MaxSuccessorStatesPerParent, in the block of the state's rule 0, over every rule: the host's
-// cap_at_drain. The first pass ranks every transition of the state; the block then keeps the
-// transitions with fewer than cap_k of their rule ranked strictly below them under
-// MatchesPerStateRule, and of those the ones with fewer than parent_k kept transitions ranked
-// strictly below them (hgcommon::cap_keeps: the k lowest and every transition tied with the k-th,
-// as cap_keep_count keeps on the host); the second pass emits a transition while a kept entry of
-// its rank has quota. No draw is applied to the kept transitions, as on the host.
+// cap_at_drain. The first pass ranks every transition of the state and records its rule and
+// edges; the block then keeps the transitions with fewer than cap_k of their rule ranked strictly
+// below them under MatchesPerStateRule (hgcommon::cap_keeps), and of those the transitions into
+// the parent_k lowest-ranked successor states (hgcommon::successor_ranks, then rank_cut over one
+// rank per successor, as keep_lowest_successors on the host); the second pass emits each kept
+// transition once, found by its rule and edges. No draw is applied to the kept transitions, as on
+// the host.
 __device__ __noinline__ void match_state_parent_capped(
         const DeviceState& ds, const DeviceRule* rules, StateId state_id, uint32_t step,
         typename Pool<MatchRecord>::DeviceView out, uint32_t* s_seen, uint32_t* s_overflow,
-        uint32_t* s_keep_n, uint64_t* s_ranks) {
+        uint32_t* s_keep_n, uint64_t* s_ranks, const SuccessorCtx* succ,
+        const SuccessorScratch* scratch) {
     const uint32_t cap_k = ds.matches_per_state_rule;
     const uint32_t parent_k = ds.max_successor_states_per_parent;
     __shared__ uint16_t s_rules[kDrainCapBuffer];
     __shared__ uint8_t  s_kept[kDrainCapBuffer];
     __shared__ uint32_t s_quota[kDrainCapBuffer / 32u];
 
+    if (!succ || !scratch || blockIdx.x >= scratch->blocks) {
+        // No scratch to hold the candidates: the cap cannot choose, so every transition is
+        // emitted and the run records it, under the engine's partial-result contract.
+        if (threadIdx.x == 0) ds.errors.record(ErrorKind::kScratchOverflow);
+        __syncthreads();
+        for (uint32_t r = 0; r < ds.num_rules; ++r)
+            match_state_rule_pass(ds, rules, state_id, r, step, out, nullptr);
+        return;
+    }
+    const size_t base = size_t(blockIdx.x) * kDrainCapBuffer;
+    EdgeId* s_edges = scratch->edges + base * kMaxPatternEdges;
+    hgcommon::SuccessorIdentity* id = scratch->id + base;
+    uint64_t* srank = scratch->rank + base;
+    uint32_t* order = scratch->order + base;
+    uint8_t* lead = scratch->lead + base;
+
     if (threadIdx.x == 0) { *s_seen = 0; *s_overflow = 0; *s_keep_n = 0; }
     for (uint32_t w = threadIdx.x; w < kDrainCapBuffer / 32u; w += blockDim.x) s_quota[w] = 0u;
     __syncthreads();
-    EmitCtl count{EmitMode::kParentCount, 0u, 0u, s_seen, s_overflow, nullptr,
-                  s_ranks, nullptr, nullptr};
+    EmitCtl count{EmitMode::kParentCount, 0u, 0u, s_seen, s_overflow, s_ranks, nullptr,
+                  nullptr};
     count.s_rules = s_rules;
+    count.s_edges = s_edges;
     for (uint32_t r = 0; r < ds.num_rules; ++r)
         match_state_rule_pass(ds, rules, state_id, r, step, out, &count);
     __syncthreads();
@@ -349,32 +358,90 @@ __device__ __noinline__ void match_state_parent_capped(
         s_kept[i] = (cap_k == 0u || hgcommon::cap_keeps(below, cap_k)) ? 1u : 0u;
     }
     __syncthreads();
-    // Kept by the per-state cap: fewer than parent_k kept transitions rank strictly below it.
-    // Written to s_rules, which nothing reads past the loop above.
-    for (uint32_t i = threadIdx.x; i < n; i += blockDim.x) {
-        uint32_t below = 0;
-        if (s_kept[i])
-            for (uint32_t j = 0; j < n; ++j)
-                if (s_kept[j] && s_ranks[j] < s_ranks[i]) ++below;
-        s_rules[i] = (s_kept[i] && hgcommon::cap_keeps(below, parent_k)) ? 1u : 0u;
-    }
-    __syncthreads();
-    // The kept ranks, compacted in place by one thread: each lands at or before its slot.
+    // The kept candidates, compacted in place by one thread: each lands at or before its slot.
     if (threadIdx.x == 0) {
         uint32_t w = 0;
-        for (uint32_t i = 0; i < n; ++i)
-            if (s_rules[i] == 1u) s_ranks[w++] = s_ranks[i];
+        for (uint32_t i = 0; i < n; ++i) {
+            if (!s_kept[i]) continue;
+            s_ranks[w] = s_ranks[i];
+            s_rules[w] = s_rules[i];
+            for (uint8_t k = 0; k < kMaxPatternEdges; ++k)
+                s_edges[w * kMaxPatternEdges + k] = s_edges[i * kMaxPatternEdges + k];
+            ++w;
+        }
         *s_keep_n = w;
-        for (uint32_t i = 0; i < w; ++i) s_quota[i >> 5] |= 1u << (i & 31u);
     }
     __syncthreads();
-    EmitCtl keep{EmitMode::kParentEmit, 0u, 0u, nullptr, nullptr, nullptr, nullptr, nullptr,
-                 nullptr};
-    keep.s_keep_rank = s_ranks;
+    const uint32_t m = *s_keep_n;
+    // Each candidate's successor, on the whole warp (a Full successor's hash runs on it).
+    for (uint32_t i = 0; i < m; ++i) {
+        hgcommon::SuccessorIdentity sid{0, 1};
+        if (!successor_identity_device(ds, rules[s_rules[i]], state_id,
+                                       s_edges + i * kMaxPatternEdges, *succ, sid))
+            sid = hgcommon::SuccessorIdentity{0, 1};
+        if (threadIdx.x == 0) id[i] = sid;
+    }
+    __syncthreads();
+    // The successor cut, by one thread: one rank per successor into s_ranks' front (the
+    // candidates' own ranks are in srank by then), rank_cut over them, and a keep bit per
+    // candidate whose successor is at or below the cut.
+    if (threadIdx.x == 0) {
+        hgcommon::successor_ranks(s_ranks, id, m, order, srank, lead);
+        uint32_t g = 0;
+        for (uint32_t i = 0; i < m; ++i)
+            if (lead[i]) s_ranks[g++] = srank[i];
+        const hgcommon::RankCut cut = hgcommon::rank_cut(s_ranks, g, parent_k);
+        for (uint32_t i = 0; i < m; ++i)
+            if (hgcommon::rank_cut_keeps(cut, srank[i])) s_quota[i >> 5] |= 1u << (i & 31u);
+    }
+    __syncthreads();
+    EmitCtl keep{EmitMode::kParentEmit, 0u, 0u, nullptr, nullptr, nullptr, nullptr, nullptr};
+    keep.s_rules = s_rules;
+    keep.s_edges = s_edges;
     keep.s_keep_quota = s_quota;
-    keep.keep_n = *s_keep_n;
+    keep.keep_n = m;
     for (uint32_t r = 0; r < ds.num_rules; ++r)
         match_state_rule_pass(ds, rules, state_id, r, step, out, &keep);
+}
+
+__device__ bool successor_identity_device(const DeviceState& ds, const DeviceRule& rule,
+                                          StateId parent, const EdgeId* matched,
+                                          const SuccessorCtx& ctx,
+                                          hgcommon::SuccessorIdentity& out) {
+    out = hgcommon::SuccessorIdentity{0, 1};
+    if (ctx.mode == CanonicalizationMode::None) return true;
+    // A fresh vertex is in no other state.
+    if (ctx.mode == CanonicalizationMode::Automatic &&
+        hgcommon::num_fresh_variables(rule.new_var_mask) != 0)
+        return true;
+    VertexId binding[kMaxVars];
+    bind_matched_vertices(ds, rule, matched, binding);
+    EdgeId consumed[kMaxPatternEdges];
+    uint32_t nc = 0;
+    for (uint8_t p = 0; p < rule.num_lhs_edges; ++p)
+        if (matched[p] != INVALID_ID) consumed[nc++] = matched[p];
+    if (ctx.mode == CanonicalizationMode::Automatic) {
+        uint64_t key = 0;
+        if ((threadIdx.x & 31u) == 0) {
+            const hgcommon::SuccessorCursor<DeviceContentCursor, DeviceRhsEdge> c(
+                DeviceContentCursor(ds, parent), consumed, nc, rule.rhs, rule.num_rhs_edges,
+                rule.new_var_mask, binding, 0u);
+            key = hgcommon::content_hash_of(c);
+        }
+        key = __shfl_sync(0xffffffffu, static_cast<unsigned long long>(key), 0);
+        out = hgcommon::SuccessorIdentity{key, 0};
+        return true;
+    }
+    uint64_t h = 0;
+    const ExactHashStatus st = successor_exact_hash_device(
+        ds, parent, consumed, nc, rule.rhs, rule.num_rhs_edges, rule.new_var_mask, binding,
+        ctx.arena, *ctx.slot, *ctx.slot_words, h, IrWarpAll{});
+    if (st != ExactHashStatus::kOk) {
+        if ((threadIdx.x & 31u) == 0) ds.errors.record(error_kind_for(st));
+        return false;
+    }
+    out = hgcommon::SuccessorIdentity{h, 0};
+    return true;
 }
 
 // The entry point: one block, one (state, rule) pair. Unsampled and uncapped, a single pass that
@@ -387,14 +454,16 @@ __device__ __noinline__ void match_state_parent_capped(
 //
 // Under sampling without the cap, the block of rule 0 matches EVERY rule of the state and the
 // blocks of the other rules do nothing. The spine chooses among all of a state's transitions:
-// when none survives its draw, the one with the smallest rank is emitted. That needs the whole
+// when none survives its draw, the ones with the smallest rank are emitted. That needs the whole
 // state in one block.
 __device__ void match_state_rule(const DeviceState& ds,
                                  const DeviceRule* rules,
                                  StateId           state_id,
                                  uint32_t          rid,
                                  uint32_t          step,
-                                 typename Pool<MatchRecord>::DeviceView out) {
+                                 typename Pool<MatchRecord>::DeviceView out,
+                                 const SuccessorCtx* succ,
+                                 const SuccessorScratch* scratch) {
     const uint32_t cap_k = ds.matches_per_state_rule;
     const uint32_t parent_k = ds.max_successor_states_per_parent;
     // No draw applies where a cap chooses: under MaxStatesPerStep every transition is a candidate
@@ -408,7 +477,7 @@ __device__ void match_state_rule(const DeviceState& ds,
 
     __shared__ uint32_t s_seen;
     __shared__ uint32_t s_overflow;
-    __shared__ uint32_t s_emitted;
+    __shared__ uint32_t s_keep_n;
     __shared__ uint32_t s_survived;
     __shared__ uint64_t s_threshold;
     __shared__ uint32_t s_cut_all;
@@ -418,45 +487,32 @@ __device__ void match_state_rule(const DeviceState& ds,
     if (parent_k != 0u) {
         if (rid == 0u)
             match_state_parent_capped(ds, rules, state_id, step, out, &s_seen, &s_overflow,
-                                      &s_emitted, s_ranks);
+                                      &s_keep_n, s_ranks, succ, scratch);
         return;
     }
 
     if (cap_k == 0u) {
         if (rid != 0u) return;
-        if (threadIdx.x == 0) { s_emitted = 0; s_survived = 0; s_min_rank = ~0ULL; }
+        if (threadIdx.x == 0) { s_survived = 0; s_min_rank = ~0ULL; }
         __syncthreads();
-        const EmitCtl draw{EmitMode::kDraw, 0u, 0u, nullptr, nullptr, nullptr, nullptr,
-                           &s_min_rank, &s_survived};
+        const EmitCtl draw{EmitMode::kDraw, 0u, 0u, nullptr, nullptr, nullptr, &s_min_rank,
+                           &s_survived};
         for (uint32_t r = 0; r < ds.num_rules; ++r)
             match_state_rule_pass(ds, rules, state_id, r, step, out, &draw);
         __syncthreads();
         if (s_survived != 0u || s_min_rank == ~0ULL) return;
-        EmitCtl spine{EmitMode::kSpineEmit, 0u, s_min_rank, nullptr, nullptr, &s_emitted,
-                      nullptr, nullptr, nullptr};
-        if (ds.state_edge_orbit) {
-            // Automorphic transitions share an orbit rank: reduce the tie key over the matches
-            // at the minimum first, so the emitted one does not depend on which lane is first.
-            __shared__ unsigned long long s_min_tie;
-            if (threadIdx.x == 0) s_min_tie = ~0ULL;
-            __syncthreads();
-            const EmitCtl tie{EmitMode::kSpineTie, 0u, s_min_rank, nullptr, nullptr, nullptr,
-                              nullptr, &s_min_tie, nullptr};
-            for (uint32_t r = 0; r < ds.num_rules; ++r)
-                match_state_rule_pass(ds, rules, state_id, r, step, out, &tie);
-            __syncthreads();
-            spine.tie = s_min_tie;
-        }
+        const EmitCtl spine{EmitMode::kSpineEmit, 0u, s_min_rank, nullptr, nullptr, nullptr,
+                            nullptr, nullptr};
         for (uint32_t r = 0; r < ds.num_rules; ++r)
             match_state_rule_pass(ds, rules, state_id, r, step, out, &spine);
         return;
     }
 
-    if (threadIdx.x == 0) { s_seen = 0; s_overflow = 0; s_emitted = 0; s_threshold = ~0ULL; }
+    if (threadIdx.x == 0) { s_seen = 0; s_overflow = 0; s_threshold = ~0ULL; }
     __syncthreads();
 
-    const EmitCtl count{EmitMode::kCapCount, cap_k, ~0ULL, &s_seen, &s_overflow, &s_emitted,
-                        s_ranks, nullptr, nullptr};
+    const EmitCtl count{EmitMode::kCapCount, cap_k, ~0ULL, &s_seen, &s_overflow, s_ranks,
+                        nullptr, nullptr};
     match_state_rule_pass(ds, rules, state_id, rid, step, out, &count);
     __syncthreads();
 
@@ -481,7 +537,7 @@ __device__ void match_state_rule(const DeviceState& ds,
     __syncthreads();
 
     const EmitCtl keep{EmitMode::kCapEmit, s_cut_all, s_threshold, &s_seen, &s_overflow,
-                       &s_emitted, s_ranks, nullptr, nullptr};
+                       s_ranks, nullptr, nullptr};
     match_state_rule_pass(ds, rules, state_id, rid, step, out, &keep);
 }
 

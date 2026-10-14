@@ -4,6 +4,9 @@
 #include "hg_gpu/cuda_check.hpp"
 #include "hgcommon/ir_core.hpp" // the canonical hash itself, shared with the host
 #include "hgcommon/state_invariants_core.hpp"
+#include "hgcommon/rewrite_core.hpp"  // SuccessorCursor
+#include "hg_gpu/content_hash.hpp"     // DeviceContentCursor
+#include "hg_gpu/match.hpp"            // DeviceRhsEdge
 
 #include <cuda_runtime.h>
 
@@ -86,6 +89,99 @@ __device__ bool flatten_state(const DeviceState& ds, StateId sid, uint32_t* slot
     return ok != 0u;
 }
 
+// The same flattening from a cursor (hgcommon::SuccessorCursor over a parent's slice): its edges
+// in the cursor's order, vertices renumbered by the shared rule. No CSR slot map: a successor
+// has no slice to scatter ranks onto.
+template <class Cursor, class Par>
+__device__ bool flatten_cursor(const Cursor& start, uint32_t* slot, const IrSlotShape& shape,
+                               uint8_t*& ea, uint32_t*& eoff, uint32_t*& ev,
+                               uint32_t& n_edges, uint32_t& n_verts, uint32_t& total_occ,
+                               VertexId*& verts_local, Par par) {
+    ea   = reinterpret_cast<uint8_t*>(slot);
+    eoff = slot + shape.ea_words();
+    ev   = eoff + shape.eoff_words();
+    verts_local = ev + shape.cap_occs;
+    n_edges = 0; n_verts = 0; total_occ = 0;
+    uint32_t ok = 1u;
+    if (par.leader()) {
+        uint32_t arity = 0;
+        const uint32_t* v = nullptr;
+        for (Cursor c = start; ok && c.next(arity, v);) {
+            if (n_edges >= shape.cap_edges || arity == 0 || arity > kMaxArity) { ok = 0u; break; }
+            eoff[n_edges] = total_occ;
+            ea[n_edges] = static_cast<uint8_t>(arity);
+            ++n_edges;
+            for (uint32_t p = 0; p < arity; ++p) {
+                if (total_occ >= shape.cap_occs) { ok = 0u; break; }
+                ev[total_occ++] = v[p];
+            }
+        }
+        if (ok) n_verts = hgcommon::ir_renumber_sorted(ev, total_occ, verts_local);
+    }
+    par.sync();
+    ok        = par.bcast(ok);
+    n_edges   = par.bcast(n_edges);
+    total_occ = par.bcast(total_occ);
+    n_verts   = par.bcast(n_verts);
+    return ok != 0u;
+}
+
+// The two sources the exact hash flattens: a state's own slice, and a cursor. Each measures
+// (exact counts, which size the slot) and flattens into a slot of that shape.
+struct StateSource {
+    const DeviceState& ds;
+    StateId sid;
+    __device__ void measure(uint32_t& n_edges, uint32_t& total_occ) const {
+        n_edges = 0; total_occ = 0;
+        if (sid >= ds.max_states) return;
+        StateEdgeSlice sl = ds.state_edge_slices[sid];
+        const uint32_t live = ds.edge_pool.size();
+        for (uint32_t k = 0; k < sl.count; ++k) {
+            EdgeId eid = ds.state_edge_ids[sl.offset + k];
+            if (eid >= live || eid >= ds.edge_pool.capacity) continue;
+            const Edge& e = ds.edge_pool.at(eid);
+            if (e.arity == 0 || e.arity > kMaxArity) continue;
+            ++n_edges; total_occ += e.arity;
+        }
+    }
+    template <class Par>
+    __device__ bool flatten(uint32_t* slot, const IrSlotShape& shape, uint8_t*& ea,
+                            uint32_t*& eoff, uint32_t*& ev, uint32_t& n_edges, uint32_t& n_verts,
+                            uint32_t& total_occ, VertexId*& verts_local, uint32_t* flat_to_slot,
+                            Par par) const {
+        return flatten_state(ds, sid, slot, shape, ea, eoff, ev, n_edges, n_verts, total_occ,
+                             verts_local, flat_to_slot, par);
+    }
+};
+
+template <class Cursor>
+struct CursorSource {
+    const Cursor& start;
+    __device__ void measure(uint32_t& n_edges, uint32_t& total_occ) const {
+        n_edges = 0; total_occ = 0;
+        uint32_t arity = 0;
+        const uint32_t* v = nullptr;
+        for (Cursor c = start; c.next(arity, v);) { ++n_edges; total_occ += arity; }
+    }
+    template <class Par>
+    __device__ bool flatten(uint32_t* slot, const IrSlotShape& shape, uint8_t*& ea,
+                            uint32_t*& eoff, uint32_t*& ev, uint32_t& n_edges, uint32_t& n_verts,
+                            uint32_t& total_occ, VertexId*& verts_local, uint32_t*,
+                            Par par) const {
+        return flatten_cursor(start, slot, shape, ea, eoff, ev, n_edges, n_verts, total_occ,
+                              verts_local, par);
+    }
+};
+
+// What exact_hash_from leaves for its caller: where the per-edge ranks, slot map and orbits are,
+// and how many edges were flattened.
+struct ExactHashSpans {
+    uint32_t* rank_buf = nullptr;
+    uint32_t* flat_to_slot = nullptr;
+    uint32_t* orbit_buf = nullptr;
+    uint32_t  n_edges = 0;
+};
+
 }  // namespace
 
 // Grows `slot` to at least `need` words for the IR of one state: kept when it already holds
@@ -126,45 +222,35 @@ __device__ bool grow_ir_slot(DeviceArena::View arena, uint32_t*& slot, uint64_t&
 // edge's own CSR slot. It rides on the pass the hash already runs, so Automatic event identity
 // costs no extra canonicalization -- only the scatter. Slots the flattening skipped keep
 // UINT32_MAX, which the signature site counts rather than silently substitutes.
-template <class Par>
-__device__ ExactHashStatus state_exact_hash_device(const DeviceState& ds, StateId sid,
-                                                   DeviceArena::View arena,
-                                                   uint32_t*& slot, uint64_t& slot_words,
-                                                   uint64_t& out_hash, bool want_ranks,
-                                                   bool want_orbits, uint32_t** out_form,
-                                                   uint32_t* out_form_words, Par par) {
+// THE EXACT HASH OF ONE FLATTENED SOURCE, sized and allocated entirely on device: measure, shape
+// the slot, flatten, run the core with the depth escalation below. `ranks` and `orbits` ask the
+// core for them; the caller scatters them (state_exact_hash_device).
+template <class Source, class Par>
+__device__ ExactHashStatus exact_hash_from(const Source& src, uint32_t ir_depth,
+                                           uint32_t ir_generators, DeviceArena::View arena,
+                                           uint32_t*& slot, uint64_t& slot_words,
+                                           uint64_t& out_hash, bool ranks, bool orbits,
+                                           uint32_t** out_form, uint32_t* out_form_words,
+                                           ExactHashSpans& spans, Par par) {
     if (out_form) { *out_form = nullptr; *out_form_words = 0; }
-    // Measure this state: exact counts, not a bound. Occurrences are summed rather than taken
+    // Measure this source: exact counts, not a bound. Occurrences are summed rather than taken
     // as edges * kMaxArity, which is 8x loose on the arity-2 edges real rules produce.
     uint32_t n_edges = 0, total_occ = 0;
-    {
-        if (sid >= ds.max_states) { out_hash = 0; return ExactHashStatus::kOk; }
-        StateEdgeSlice sl = ds.state_edge_slices[sid];
-        const uint32_t live = ds.edge_pool.size();
-        for (uint32_t k = 0; k < sl.count; ++k) {
-            EdgeId eid = ds.state_edge_ids[sl.offset + k];
-            if (eid >= live || eid >= ds.edge_pool.capacity) continue;
-            const Edge& e = ds.edge_pool.at(eid);
-            if (e.arity == 0 || e.arity > kMaxArity) continue;
-            ++n_edges; total_occ += e.arity;
-        }
-    }
+    src.measure(n_edges, total_occ);
     // No edges to canonicalize: the empty state's hash is the reserved one both engines agree
-    // on, not 0 -- 0 is what this array holds for "not computed yet".
+    // on, not 0 -- 0 is what the hash array holds for "not computed yet".
     if (n_edges == 0) {
         out_hash = hgcommon::EMPTY_STATE_CANONICAL_HASH;
         return ExactHashStatus::kOk;
     }
 
-    IrSlotShape shape = ir_slot_shape(n_edges, total_occ, ds.ir_depth, ds.ir_generators);
+    IrSlotShape shape = ir_slot_shape(n_edges, total_occ, ir_depth, ir_generators);
 
     const uint64_t need = shape.stride();
     if (!grow_ir_slot(arena, slot, slot_words, need, par)) return ExactHashStatus::kArenaExhausted;
 
     // The slot's layout follows from the shape alone, so the rank/slot/orbit spans can be
     // addressed before the flattening runs and filled by that same pass.
-    const bool ranks  = want_ranks && ds.state_edge_rank != nullptr;
-    const bool orbits = want_orbits && ds.state_edge_orbit != nullptr;
     uint32_t* rank_buf = slot + shape.ea_words() + shape.eoff_words()
                        + shape.cap_occs + shape.cap_verts;
     uint32_t* flat_to_slot = rank_buf + shape.cap_edges;
@@ -172,9 +258,9 @@ __device__ ExactHashStatus state_exact_hash_device(const DeviceState& ds, StateI
 
     uint8_t* ea; uint32_t* eoff; uint32_t* ev; VertexId* verts_local;
     uint32_t fn_edges, n_verts, fn_occ;
-    if (!flatten_state(ds, sid, slot, shape, ea, eoff, ev, fn_edges, n_verts, fn_occ,
-                       verts_local, (ranks || orbits) ? flat_to_slot : nullptr, par)) {
-        // Cannot happen: the shape was sized from this state's own counts. Reported under its
+    if (!src.flatten(slot, shape, ea, eoff, ev, fn_edges, n_verts, fn_occ, verts_local,
+                     (ranks || orbits) ? flat_to_slot : nullptr, par)) {
+        // Cannot happen: the shape was sized from this source's own counts. Reported under its
         // own status rather than silently hashing something else, and deliberately NOT as an
         // arena failure -- growing the config would not fix it, so calling it retryable would
         // send the host into six pointless doublings.
@@ -196,7 +282,6 @@ __device__ ExactHashStatus state_exact_hash_device(const DeviceState& ds, StateI
     };
     hgcommon::IrResult r = run_at(1);
     if (r.status == hgcommon::IR_NEED_DEPTH && shape.depth > 1) r = run_at(shape.depth);
-
     // THE HOST ESCALATES DEPTH WITHIN THE CALL; THE DEVICE MUST TOO.
     //
     // ir_canonicalization.cpp:75 tries {1, 8, IR_MAX_DEPTH_DEFAULT} per state. The device tried
@@ -231,8 +316,8 @@ __device__ ExactHashStatus state_exact_hash_device(const DeviceState& ds, StateI
         orbit_buf = flat_to_slot + shape.cap_edges;
         scratch = orbit_buf + shape.cap_edges;
         form_buf = scratch + shape.scratch_words();
-        if (!flatten_state(ds, sid, slot, shape, ea, eoff, ev, fn_edges, n_verts, fn_occ,
-                           verts_local, (ranks || orbits) ? flat_to_slot : nullptr, par))
+        if (!src.flatten(slot, shape, ea, eoff, ev, fn_edges, n_verts, fn_occ, verts_local,
+                         (ranks || orbits) ? flat_to_slot : nullptr, par))
             return ExactHashStatus::kMalformedState;
         r = run_at(shape.depth);
     }
@@ -245,32 +330,76 @@ __device__ ExactHashStatus state_exact_hash_device(const DeviceState& ds, StateI
         *out_form = form_buf;
         *out_form_words = hgcommon::ir_canonical_form_words(fn_edges, fn_occ);
     }
+    spans.rank_buf = rank_buf;
+    spans.flat_to_slot = flat_to_slot;
+    spans.orbit_buf = orbit_buf;
+    spans.n_edges = fn_edges;
+    return ExactHashStatus::kOk;
+}
+
+template <class Par>
+__device__ ExactHashStatus state_exact_hash_device(const DeviceState& ds, StateId sid,
+                                                   DeviceArena::View arena,
+                                                   uint32_t*& slot, uint64_t& slot_words,
+                                                   uint64_t& out_hash, bool want_ranks,
+                                                   bool want_orbits, uint32_t** out_form,
+                                                   uint32_t* out_form_words, Par par) {
+    if (sid >= ds.max_states) {
+        if (out_form) { *out_form = nullptr; *out_form_words = 0; }
+        out_hash = 0;
+        return ExactHashStatus::kOk;
+    }
+    const bool ranks  = want_ranks && ds.state_edge_rank != nullptr;
+    const bool orbits = want_orbits && ds.state_edge_orbit != nullptr;
+    ExactHashSpans spans;
+    const ExactHashStatus st =
+        exact_hash_from(StateSource{ds, sid}, ds.ir_depth, ds.ir_generators, arena, slot,
+                        slot_words, out_hash, ranks, orbits, out_form, out_form_words, spans, par);
+    if (st != ExactHashStatus::kOk || spans.n_edges == 0) return st;
 
     // The scatters fan: each CSR slot is written by exactly one lane (flat_to_slot is
     // injective), and the policy's sync between the prefill and the scatter orders the two.
+    const uint32_t fn_edges = spans.n_edges;
     if (ranks) {
         StateEdgeSlice sl = ds.state_edge_slices[sid];
         par.fan(sl.count, [&](uint32_t k) { ds.state_edge_rank[sl.offset + k] = UINT32_MAX; });
         par.fan(fn_edges, [&](uint32_t j) {
-            ds.state_edge_rank[sl.offset + flat_to_slot[j]] = rank_buf[j];
+            ds.state_edge_rank[sl.offset + spans.flat_to_slot[j]] = spans.rank_buf[j];
         });
     }
     if (orbits) {
         StateEdgeSlice sl = ds.state_edge_slices[sid];
         par.fan(sl.count, [&](uint32_t k) { ds.state_edge_orbit[sl.offset + k] = UINT32_MAX; });
         par.fan(fn_edges, [&](uint32_t j) {
-            ds.state_edge_orbit[sl.offset + flat_to_slot[j]] = orbit_buf[j];
+            ds.state_edge_orbit[sl.offset + spans.flat_to_slot[j]] = spans.orbit_buf[j];
         });
         if (par.leader()) {
             uint32_t num_orbits = 0;
             for (uint32_t j = 0; j < fn_edges; ++j)
-                if (orbit_buf[j] + 1 > num_orbits) num_orbits = orbit_buf[j] + 1;
+                if (spans.orbit_buf[j] + 1 > num_orbits) num_orbits = spans.orbit_buf[j] + 1;
             ds.state_num_orbits[sid] = num_orbits;
         }
         par.sync();
     }
     if (ranks || orbits) __threadfence();
     return ExactHashStatus::kOk;
+}
+
+template <class Rhs, class Par>
+__device__ ExactHashStatus successor_exact_hash_device(
+        const DeviceState& ds, StateId parent, const EdgeId* consumed, uint32_t num_consumed,
+        const Rhs* rhs, uint32_t num_rhs, uint32_t new_var_mask, const VertexId* binding,
+        DeviceArena::View arena, uint32_t*& slot, uint64_t& slot_words, uint64_t& out_hash,
+        Par par) {
+    // Fresh vertices numbered past every vertex id the device hands out; the canonical hash
+    // does not read which numbers they are.
+    const hgcommon::SuccessorCursor<DeviceContentCursor, Rhs> c(
+        DeviceContentCursor(ds, parent), consumed, num_consumed, rhs, num_rhs, new_var_mask,
+        binding, 0xFFFFFF00u);
+    ExactHashSpans spans;
+    return exact_hash_from(CursorSource<hgcommon::SuccessorCursor<DeviceContentCursor, Rhs>>{c},
+                           ds.ir_depth, ds.ir_generators, arena, slot, slot_words, out_hash,
+                           false, false, nullptr, nullptr, spans, par);
 }
 
 // The callers' policies, instantiated here so the template body stays in this translation
@@ -282,6 +411,9 @@ template __device__ ExactHashStatus state_exact_hash_device<hgcommon::IrSerial>(
 template __device__ ExactHashStatus state_exact_hash_device<IrTile>(
     const DeviceState&, StateId, DeviceArena::View, uint32_t*&, uint64_t&, uint64_t&, bool, bool,
     uint32_t**, uint32_t*, IrTile);
+template __device__ ExactHashStatus successor_exact_hash_device<DeviceRhsEdge, IrTile>(
+    const DeviceState&, StateId, const EdgeId*, uint32_t, const DeviceRhsEdge*, uint32_t, uint32_t,
+    const VertexId*, DeviceArena::View, uint32_t*&, uint64_t&, uint64_t&, IrTile);
 
 // "StepStatistics": state `sid`'s record (hgcommon::state_record) into ds.invariant_pool. The
 // invariants read the state's own CSR slice; the geometry reads `form` (form_words words), the

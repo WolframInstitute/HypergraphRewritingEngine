@@ -5,6 +5,7 @@
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/evolve.hpp"
 #include "hg_gpu/types.hpp"
+#include "hgcommon/sampling_core.hpp"  // SuccessorIdentity
 
 #include <cuda/atomic>
 
@@ -113,12 +114,48 @@ __device__ __forceinline__ void await_match(const MatchRecord& m) {
     while (ref.load(cuda::memory_order_acquire) == 0u) __nanosleep(64);
 }
 
+// What the successor caps (MaxSuccessorStatesPerParent, MaxStatesPerStep) need to tell a
+// transition's successor state apart (hgcommon::SuccessorIdentity): the run's state mode, and
+// for a Full successor the block's IR arena and slot (successor_exact_hash_device).
+struct SuccessorCtx {
+    CanonicalizationMode mode;
+    DeviceArena::View    arena;
+    uint32_t**           slot;
+    uint64_t*            slot_words;
+};
+
+// Per-block scratch of MaxSuccessorStatesPerParent: kDrainCapBuffer candidates of one state, each
+// with its matched edges (kMaxPatternEdges, by pattern position), its successor identity, its
+// successor rank and the sort scratch of hgcommon::successor_ranks. Indexed by blockIdx.x below
+// `blocks`.
+struct SuccessorScratch {
+    EdgeId*                      edges = nullptr;
+    hgcommon::SuccessorIdentity* id = nullptr;
+    uint64_t*                    rank = nullptr;
+    uint32_t*                    order = nullptr;
+    uint8_t*                     lead = nullptr;
+    uint32_t                     blocks = 0;
+};
+
+// The identity of the state rule `rule` makes from `parent` with the match `matched` (edges by
+// pattern position), under ctx.mode: hgcommon::SuccessorIdentity's rule. Every lane of the warp
+// calls it with the same arguments (the Full hash runs on the warp). False when the hash could
+// not be computed; the error is recorded.
+__device__ bool successor_identity_device(const DeviceState& ds, const DeviceRule& rule,
+                                          StateId parent, const EdgeId* matched,
+                                          const SuccessorCtx& ctx,
+                                          hgcommon::SuccessorIdentity& out);
+
 // One (state, rule) pair, matched by ONE BLOCK of kMatchBlockThreads threads. Exposed so a
 // scheduler in another translation unit drives this implementation rather than growing a
-// second copy of it.
+// second copy of it. `succ` and `scratch` serve MaxSuccessorStatesPerParent under Automatic and
+// Full states; a scheduler that passes null for them records kScratchOverflow when the cap
+// needs them.
 __device__ void match_state_rule(const DeviceState& ds, const DeviceRule* rules,
                                  StateId state_id, uint32_t rid, uint32_t step,
-                                 typename Pool<MatchRecord>::DeviceView out);
+                                 typename Pool<MatchRecord>::DeviceView out,
+                                 const SuccessorCtx* succ = nullptr,
+                                 const SuccessorScratch* scratch = nullptr);
 
 // Run the match kernel for (state_id, all rules), populating out_matches.
 // Returns the number of matches written. `step` is stamped on every record.

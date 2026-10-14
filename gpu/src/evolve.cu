@@ -239,15 +239,27 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     //
     // Full state canonicalization is required by both: the reconstruction is defined over
     // canonical states and their edge orbits, and no other mode computes orbit tables.
-    const bool qc_route = in.canonicalization == CanonicalizationMode::Full &&
+    const bool full_states = in.canonicalization == CanonicalizationMode::Full;
+    // Quotient exploration as it runs: the request, unless the state mode or MaxStatesPerStep
+    // turns it off, as on the host.
+    const bool explore = hgcommon::quotient_exploration_applies(
+        in.explore_from_canonical_states_only, full_states, in.max_states_per_step);
+    const bool qc_route = full_states &&
                           in.num_steps > 0 &&
                           hgcommon::quotient_route_requested(
-                              in.explore_from_canonical_states_only, /*positional=*/false,
+                              explore, /*positional=*/false,
                               event_keys_for(in.event_canonicalization));
+    const bool sampling = hgcommon::sampling_active(
+        in.transition_rate, in.rule_weights.data(), static_cast<uint32_t>(in.rule_weights.size()),
+        hgcommon::drain_selects(in.matches_per_state_rule, in.max_successor_states_per_parent,
+                                in.max_states_per_step));
+    const bool transition_orbits = hgcommon::transition_key_reads_orbits(full_states, sampling);
     engine.set_quotient_causal(qc_route);
+    engine.set_transition_orbits(transition_orbits);
     engine.set_record_set(in.record);
     engine.set_tr_enabled(in.transitive_reduction && !qc_route);
     if (qc_route) { engine.ensure_edge_orbits(); engine.ensure_edge_ranks(); }
+    if (transition_orbits) engine.ensure_edge_orbits();
     if (in.record.state_invariants) engine.ensure_state_invariants();
     double t_init = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_init_start).count();
@@ -369,6 +381,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     // Sampling and capping parameters for this run. Allocates only what is asked for, and
     // clears the two counters every call so a session's later Step does not inherit the
     // tallies of its first.
+    engine.set_step_cap_counts_matches(in.step_cap_counts_matches);
     engine.set_sampling(in.transition_rate,
                         in.rule_weights.empty() ? nullptr : in.rule_weights.data(),
                         static_cast<uint32_t>(in.rule_weights.size()),
@@ -410,14 +423,8 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         // whether there is anywhere to put them. Without it the kernel writes through a null
         // pointer, the run faults, and the grow-and-retry loop reports the engine as too large
         // for the device rather than naming the real fault.
-        const bool sampling_needs_ranks = hgcommon::sampling_active(
-            in.transition_rate, in.rule_weights.data(),
-            static_cast<uint32_t>(in.rule_weights.size()),
-            hgcommon::drain_selects(in.matches_per_state_rule,
-                                    in.max_successor_states_per_parent,
-                                    in.max_states_per_step)) ||
-            (clamped_p < 1.0 && !in.explore_from_canonical_states_only &&
-             in.canonicalization != CanonicalizationMode::Full);
+        const bool sampling_needs_ranks =
+            sampling || (clamped_p < 1.0 && !explore && !full_states);
         if (sampling_needs_ranks ||
             (ekeys & (hgcommon::EventKey_ConsumedEdges | hgcommon::EventKey_ProducedEdges))) {
             engine.ensure_edge_ranks();
@@ -437,7 +444,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         auto t_kern_start = std::chrono::steady_clock::now();
         PersistentEvolveStats st = run_persistent_evolve(
             engine, rules, roots, in.num_steps, matches, arena,
-            /*dedup=*/in.explore_from_canonical_states_only,
+            /*dedup=*/explore,
             in.canonicalization, ekeys, /*blocks=*/0,
             qc_route ? &qc_view : nullptr,
             qc_route ? &qe_view : nullptr,
@@ -445,7 +452,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
 
         t_persist_call = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - t_kern_start).count();
-        if (in.explore_from_canonical_states_only) d_explore_depth = st.explore_depth;
+        if (explore) d_explore_depth = st.explore_depth;
 
         auto t_recon_start = std::chrono::steady_clock::now();
         // Branchial pairs are counted from the points after the run (qe_count_branchial).

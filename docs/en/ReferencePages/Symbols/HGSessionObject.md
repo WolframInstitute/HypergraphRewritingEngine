@@ -19,7 +19,7 @@ RelatedTutorials: [Sessions, GettingStarted]
 - [HGSessionOpen]() gives an [HGSessionObject](). [HGSessionStep]() evolves it further, [HGSessionQuery]() reads it, [HGSessionFrontier]() lists the states the next step expands, and [HGSessionClose]() releases it.
 - The evolution (its states, events and frontier) is held by the engine worker process. The object holds what addresses it: a handle, the device, the properties named at [HGSessionOpen]() and the options that decide how replies are read.
 - It is displayed as a summary box showing the device and the properties the session reports, with the state canonicalization under the expander.
-- The device is the one serving the session. A session opened with `"TargetDevice" -> "GPU"` where no GPU engine is available issues the message `HGEvolve::gpudev` and is served, and shown, as `CPU`.
+- The device is the one serving the session. A session opened with `"TargetDevice" -> "GPU"` where no GPU engine is bundled or the machine has no usable NVIDIA GPU issues the message `HGEvolve::gpudev` and is served, and shown, as `CPU`.
 - An [HGSessionObject]() is made only by [HGSessionOpen]().
 - No verb changes the expression: it addresses the same session before and after a step, and a copy addresses the same session.
 - After [HGSessionClose](), every verb on the object issues the message `HGSessionOpen::refused` and gives <code>[$Failed]()</code>. A handle is not reused.

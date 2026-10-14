@@ -54,5 +54,22 @@ HG_HD bool content_equal(CursorA& a, CursorB& b) {
     }
 }
 
+// The ContentHasher value of the edges a cursor yields: a count pass, then the hash. The cursor is
+// copied for the count, so it is read twice from its start.
+//   Cursor: bool next(uint32_t& arity, const uint32_t*& vertices)
+template <class Cursor>
+HG_HD uint64_t content_hash_of(const Cursor& start) {
+    uint32_t n = 0, arity = 0;
+    const uint32_t* v = nullptr;
+    for (Cursor c = start; c.next(arity, v);) ++n;
+    ContentHasher ch(n);
+    for (Cursor c = start; c.next(arity, v);) {
+        ch.edge_begin(arity);
+        for (uint32_t i = 0; i < arity; ++i) ch.vertex(static_cast<uint64_t>(v[i]));
+        ch.edge_end();
+    }
+    return ch.value();
+}
+
 }  // namespace common
 }  // namespace HG_NAMESPACE

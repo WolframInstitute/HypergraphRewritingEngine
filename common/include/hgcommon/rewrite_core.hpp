@@ -86,5 +86,56 @@ HG_HD inline bool resolve_rhs_vertices(
     return true;
 }
 
+// THE STATE A REWRITE MAKES, as a cursor over its edges in that state's order: the parent's edges
+// the match does not consume, in the parent's order, then the right-hand side's edges in rule
+// order, their new variables taking first_fresh, first_fresh + 1, ... (assign_fresh_consecutive).
+// Both engines store a child in this order (Rewriter::apply and the device's apply_one_match give
+// the produced edges ids above every parent edge), so a content hash or a canonical form read
+// through it is the child's, before the rewrite runs (MaxSuccessorStatesPerParent and
+// MaxStatesPerStep count successors this way, sampling_core.hpp).
+//   Parent: bool next(EdgeId& id, uint32_t& arity, const uint32_t*& vertices)
+//   Rhs:    .vars (uint8_t per position), .arity
+// `binding` is indexed by variable, INVALID_ID where unbound. `ok` turns false when an RHS edge
+// names a variable that is neither bound nor new, as resolve_rhs_vertices reports.
+template <class Parent, class Rhs>
+struct SuccessorCursor {
+    Parent parent;
+    const EdgeId* consumed;
+    uint32_t num_consumed;
+    const Rhs* rhs;
+    uint32_t num_rhs;
+    const VertexId* binding;
+    VertexId fresh[MAX_VARS];
+    VertexId out[MAX_ARITY];
+    uint32_t r = 0;
+    bool ok = true;
+
+    HG_HD SuccessorCursor(const Parent& p, const EdgeId* c, uint32_t nc, const Rhs* rh,
+                          uint32_t nr, uint32_t new_var_mask, const VertexId* b,
+                          VertexId first_fresh)
+        : parent(p), consumed(c), num_consumed(nc), rhs(rh), num_rhs(nr), binding(b) {
+        for (uint32_t i = 0; i < MAX_VARS; ++i) fresh[i] = INVALID_ID;
+        assign_fresh_consecutive(new_var_mask, first_fresh, fresh);
+    }
+
+    HG_HD bool next(uint32_t& arity, const uint32_t*& vertices) {
+        EdgeId id = INVALID_ID;
+        while (parent.next(id, arity, vertices)) {
+            bool gone = false;
+            for (uint32_t i = 0; i < num_consumed && !gone; ++i) gone = consumed[i] == id;
+            if (!gone) return true;
+        }
+        if (r >= num_rhs || !ok) return false;
+        const Rhs& e = rhs[r++];
+        if (!resolve_rhs_vertices(e.vars, e.arity, binding, fresh, out)) {
+            ok = false;
+            return false;
+        }
+        arity = e.arity;
+        vertices = out;
+        return true;
+    }
+};
+
 }  // namespace common
 }  // namespace HG_NAMESPACE

@@ -18,6 +18,7 @@
 #include <cstdint>
 
 #include "hgcommon/core.hpp"
+#include "hgcommon/ir_core.hpp"  // ir_heapsort_idx
 
 namespace HG_NAMESPACE {
 namespace common {
@@ -68,20 +69,6 @@ HG_HD inline uint64_t transition_rank(uint64_t transition_key, uint64_t random_s
     x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
     x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
     return x ^ (x >> 31);
-}
-
-// THE SPINE'S ORDER. When every draw of a state fails, the spine keeps the one transition with
-// the smallest (rank, tie). `rank` is transition_rank of the run's transition key; `tie` is
-// transition_rank of the key over the raw state's own edge ranks, the key full capture ranks by.
-// Under the quotient reconstruction the run's key reads edge orbits, so automorphic transitions
-// share a rank and the tie selects one of them; outside it the two keys are equal.
-struct SpineKey {
-    uint64_t rank;
-    uint64_t tie;
-};
-
-HG_HD inline bool spine_before(SpineKey a, SpineKey b) {
-    return a.rank < b.rank || (a.rank == b.rank && a.tie < b.tie);
 }
 
 // Whether a cap of k keeps a candidate that `below` candidates rank strictly below. Over a
@@ -176,6 +163,68 @@ HG_HD inline bool sampling_active(double transition_rate, const double* weights,
     for (uint32_t i = 0; weights != nullptr && i < num_weights; ++i)
         if (weights[i] < 1.0) return true;
     return false;
+}
+
+// Whether a run's transition key reads the matched edges' automorphism orbits, and so whether
+// every state computes its orbit table. Under Full states a draw or a cap keys on orbits
+// (canonical_transition_key, transition_key_device): automorphic transitions share the key, so
+// the kept set is invariant under the state's automorphisms, which the quotient reconstruction
+// needs to replay it onto every instance of the class.
+HG_HD inline bool transition_key_reads_orbits(bool full_states, bool sampling) {
+    return full_states && sampling;
+}
+
+// THE SUCCESSOR CAP. MaxSuccessorStatesPerParent (over one state's transitions) and
+// MaxStatesPerStep (over one step's) keep every transition into the k lowest-ranked distinct
+// successor states. Successors are told apart by the run's state identity:
+//   None       every transition makes its own state, so the cap counts transitions;
+//   Automatic  the successor's content, read through SuccessorCursor (content_hash_of); a
+//              transition that creates a vertex makes a state no other transition makes;
+//   Full       the successor's canonical hash, from IR over SuccessorCursor.
+// A successor's rank is the smallest transition_rank among the transitions into it. The cut is
+// rank_cut over one rank per successor: the k lowest and every successor tied with the k-th.
+//
+// `unique`: the transition's successor is its own; otherwise `key` is the successor's 64-bit
+// identity hash, and two transitions with equal keys have one successor.
+struct SuccessorIdentity {
+    uint64_t key;
+    uint32_t unique;
+};
+
+HG_HD inline bool same_successor(SuccessorIdentity a, SuccessorIdentity b) {
+    return a.unique == 0u && b.unique == 0u && a.key == b.key;
+}
+
+// Each candidate's successor rank: out[i] is the smallest rank[j] over the candidates j with i's
+// successor. lead[i] is 1 for exactly one candidate of each successor, so the ranks at the lead
+// candidates are one per successor (successor_cap_keeps' input). `order` is n words of scratch.
+// O(n log n): one sort of the candidates by successor.
+HG_HD inline void successor_ranks(const uint64_t* rank, const SuccessorIdentity* id, uint32_t n,
+                                  uint32_t* order, uint64_t* out, uint8_t* lead) {
+    for (uint32_t i = 0; i < n; ++i) order[i] = i;
+    // Unique successors sort by index (each its own run), shared ones by key.
+    ir_heapsort_idx(order, n, [&](uint32_t a, uint32_t b) {
+        const uint64_t ka = id[a].unique ? a : id[a].key, kb = id[b].unique ? b : id[b].key;
+        if (id[a].unique != id[b].unique) return id[a].unique < id[b].unique ? -1 : 1;
+        if (ka != kb) return ka < kb ? -1 : 1;
+        return a < b ? -1 : (a > b ? 1 : 0);
+    });
+    uint32_t s = 0;
+    while (s < n) {
+        uint32_t e = s + 1;
+        while (e < n && same_successor(id[order[s]], id[order[e]])) ++e;
+        uint64_t m = rank[order[s]];
+        uint32_t first = order[s];
+        for (uint32_t j = s + 1; j < e; ++j) {
+            if (rank[order[j]] < m) m = rank[order[j]];
+            if (order[j] < first) first = order[j];
+        }
+        for (uint32_t j = s; j < e; ++j) {
+            out[order[j]] = m;
+            lead[order[j]] = order[j] == first ? 1u : 0u;
+        }
+        s = e;
+    }
 }
 
 }  // namespace common

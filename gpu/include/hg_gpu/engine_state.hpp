@@ -90,6 +90,8 @@ struct DeviceState {
     // expand entries and its match items (persistent.cu, step selection). Cleared per run.
     double    exploration_probability;          // ExplorationProbability; 1 expands every state
     uint32_t  max_states_per_step;
+    // The step cap counts transitions (MatchesPerStep) rather than successor states.
+    uint32_t  step_cap_counts_matches;
     uint32_t* step_pending;                     // [step_slots] = [max_steps + 2]
     uint32_t  step_slots;
     uint32_t  max_successor_states_per_parent;
@@ -437,6 +439,12 @@ public:
     void set_tr_enabled(bool enabled);
     void set_quotient_causal(bool enabled);
     bool quotient_causal() const;
+    // Whether every state computes its edge orbits because the run's transition key reads them
+    // (hgcommon::transition_key_reads_orbits). The orbit arrays reach DeviceState when this or
+    // quotient_causal is set.
+    void set_transition_orbits(bool enabled) { transition_orbits_ = enabled; }
+    // The step cap counts transitions (MatchesPerStep) rather than successor states.
+    void set_step_cap_counts_matches(bool on) { step_cap_counts_matches_ = on; }
 
     uint32_t config_slice_scan_max_edges() const;
     void set_maintain_indices(bool on);
@@ -650,6 +658,8 @@ private:
     DeviceErrors                       errors_;
     bool                               tr_enabled_ = false;
     bool                               quotient_causal_ = false;
+    bool                               transition_orbits_ = false;
+    bool                               step_cap_counts_matches_ = false;
     uint32_t slice_scan_max_edges_ = 256;
     bool maintain_indices_ = true;
     uint32_t* needs_indices_ = nullptr;

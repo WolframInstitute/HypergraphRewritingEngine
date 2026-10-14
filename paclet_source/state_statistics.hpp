@@ -74,11 +74,13 @@ struct StepPoint {
 
 // The raw events into each step of a quotient run, from its multiplicities: a class at depth d
 // with m raw states and M_r matches of rule r gives m * M_r events of rule r into step d + 1.
-// `matches_by_rule` maps a class to its captured matches per rule; no event leaves step `steps`.
+// `matches_by_rule` maps an expansion key (hgcommon::qc_expansion_key of the class and depth,
+// `by_depth` under MaxStatesPerStep) to its captured matches per rule; no event leaves step
+// `steps`.
 void events_from_multiplicities(
     const std::vector<StepPoint>& points,
     const std::unordered_map<uint64_t, std::map<int64_t, uint64_t>>& matches_by_rule,
-    uint32_t steps, std::map<uint32_t, uint64_t>& events,
+    bool by_depth, uint32_t steps, std::map<uint32_t, uint64_t>& events,
     std::map<uint32_t, std::map<int64_t, uint64_t>>& rule_counts);
 
 // The geometry of one state (hgcommon/state_geometry_core.hpp): the values and the ball-growth

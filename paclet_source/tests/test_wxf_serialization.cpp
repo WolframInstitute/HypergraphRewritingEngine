@@ -1833,8 +1833,10 @@ struct WorkerPipes {
 // Each worker has its own FIFO pair, and the test's ends are close-on-exec: a second worker
 // forked while the first is live would otherwise inherit the first's write end, and the first
 // would never see end of input when the test closes it. A nonzero `address_space` caps the
-// worker's RLIMIT_AS in bytes.
-bool worker_start(WorkerPipes& w, const std::string& exe, uint64_t address_space = 0) {
+// worker's RLIMIT_AS in bytes. A non-null `cuda_visible_devices` sets CUDA_VISIBLE_DEVICES for the
+// worker.
+bool worker_start(WorkerPipes& w, const std::string& exe, uint64_t address_space = 0,
+                  const char* cuda_visible_devices = nullptr) {
     static int next_worker = 0;
     w.dir = std::string(HG_SOURCE_DIR) + "/.gpu_gate_fifo." + std::to_string(::getpid()) + "." +
             std::to_string(next_worker++);
@@ -1857,6 +1859,7 @@ bool worker_start(WorkerPipes& w, const std::string& exe, uint64_t address_space
             const struct rlimit lim = {address_space, address_space};
             ::setrlimit(RLIMIT_AS, &lim);
         }
+        if (cuda_visible_devices) ::setenv("CUDA_VISIBLE_DEVICES", cuda_visible_devices, 1);
         ::execl(exe.c_str(), exe.c_str(), "--serve", (char*)nullptr);
         ::_exit(127);
     }
@@ -3272,6 +3275,88 @@ TEST(GpuBinaryGate, MalformedInputsAreRefusedAlikeOnBothDevices) {
     worker_stop(w);
 }
 
+// With no visible device (CUDA_VISIBLE_DEVICES empty) the GPU worker answers every job with an
+// error frame "no usable GPU: no CUDA-capable device is detected" and stays alive, and the
+// one-shot mode exits with kNoUsableDeviceExit and the same line on stderr. Before the device
+// probe the worker died at its first CUDA call: "match kernel attributes: no CUDA-capable device
+// is detected".
+TEST(GpuBinaryGate, NoUsableDeviceIsAStructuredRefusal) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    const std::string expected =
+        std::string(kNoUsableDevicePrefix) + "no CUDA-capable device is detected";
+    auto counts = [](wxf::Writer& ww) { put_str_list_option(ww, "RequestedData", {"NumStates"}); };
+    const auto job = build_input_with_op(2, "Evolve", 0, true, {}, counts, 1);
+
+    WorkerPipes w;
+    ASSERT_TRUE(worker_start(w, gpu_binary_path(), 0, ""));
+    for (int i = 0; i < 2; ++i) {
+        EXPECT_TRUE(worker_call(w, job).empty());
+        EXPECT_EQ(w.last_error, expected) << "job " << i;
+    }
+    worker_stop(w);
+
+    int in_pipe[2], err_pipe[2];
+    ASSERT_EQ(::pipe(in_pipe), 0);
+    ASSERT_EQ(::pipe(err_pipe), 0);
+    const pid_t pid = ::fork();
+    ASSERT_GE(pid, 0);
+    if (pid == 0) {
+        ::dup2(in_pipe[0], 0);
+        ::dup2(err_pipe[1], 2);
+        ::close(in_pipe[1]);
+        ::close(err_pipe[0]);
+        ::setenv("CUDA_VISIBLE_DEVICES", "", 1);
+        const std::string exe = gpu_binary_path();
+        ::execl(exe.c_str(), exe.c_str(), (char*)nullptr);
+        ::_exit(127);
+    }
+    ::close(in_pipe[0]);
+    ::close(err_pipe[1]);
+    EXPECT_EQ(::write(in_pipe[1], job.data(), job.size()), static_cast<ssize_t>(job.size()));
+    ::close(in_pipe[1]);
+    std::string err;
+    char buf[512];
+    for (ssize_t r; (r = ::read(err_pipe[0], buf, sizeof(buf))) > 0;) err.append(buf, r);
+    ::close(err_pipe[0]);
+    int status = 0;
+    ::waitpid(pid, &status, 0);
+    ASSERT_TRUE(WIFEXITED(status));
+    EXPECT_EQ(WEXITSTATUS(status), kNoUsableDeviceExit);
+    EXPECT_NE(err.find(expected), std::string::npos) << err;
+}
+
+// "Device" in RequestedData names the device that ran the job: <|"Type" -> "GPU", "Name" -> ...,
+// "ComputeCapability" -> "8.9"|> from the GPU binary, <|"Type" -> "CPU"|> from the CPU binary.
+TEST(GpuBinaryGate, TheDeviceComponentNamesTheDevice) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    auto device = [](wxf::Writer& ww) {
+        put_str_list_option(ww, "RequestedData", {"NumStates", "Device"});
+    };
+    const auto job = build_input_with_op(2, "Evolve", 0, true, {}, device, 1);
+    WorkerPipes w;
+    ASSERT_TRUE(worker_start(w, gpu_binary_path()));
+    const auto gpu = worker_call(w, job);
+    worker_stop(w);
+    if (gpu.empty()) GTEST_SKIP() << "no usable device: " << w.last_error;
+    EXPECT_TRUE(reply_mentions(gpu, "Device"));
+    EXPECT_TRUE(reply_mentions(gpu, "GPU"));
+    EXPECT_TRUE(reply_mentions(gpu, "ComputeCapability"));
+
+    if (!CpuWorker::built()) GTEST_SKIP() << "hg_evolve is not built here";
+    CpuWorker host;
+    ASSERT_TRUE(host.ok) << "could not start hg_evolve --serve";
+    const auto cpu = host(job);
+    EXPECT_TRUE(reply_mentions(cpu, "Device"));
+    EXPECT_TRUE(reply_mentions(cpu, "CPU"));
+    EXPECT_FALSE(reply_mentions(cpu, "ComputeCapability"));
+}
+
 // ExploreFromCanonicalStatesOnly needs Full states: under Automatic it is refused with the
 // QuotientNeedsFull warning and every state is expanded, on both devices, so the counts are the
 // counts without it. Rule {{1,2}} -> {{2,1},{2,1},{1,1,1,1}} from {{1,1},{2,2},{2,2}} at three
@@ -3415,7 +3500,8 @@ TEST(GpuBinaryGate, DeviceBranchialRowsGiveTheCpuStepStatistics) {
 // option of hgJobOptions: the last, the branching rule from two loops at 5 steps with
 // TransitionRate 0.25 and RandomSeed 7, is {11, 10, 9, 2} on the CPU. Then each sampling and cap
 // option under CanonicalizeStates None, Automatic, Full and Full with quotient exploration, at
-// three seeds. The four counts agree on every job.
+// three seeds. The four counts agree on every job, and quotient exploration gives the counts of
+// full capture.
 TEST(GpuBinaryGate, SamplingAndCapsKeepTheSameTransitionsOnBothDevices) {
     {
         std::ifstream probe(gpu_binary_path(), std::ios::binary);
@@ -3508,14 +3594,24 @@ TEST(GpuBinaryGate, SamplingAndCapsKeepTheSameTransitionsOnBothDevices) {
     struct Mode { const char* states; const char* ecso; };
     const Mode modes[] = {{"Full", "True"}, {"None", "False"}, {"Automatic", "False"},
                           {"Full", "False"}};
+    // Quotient exploration (modes[0]) and full capture (modes[3]) under Full states give the same
+    // counts (docs/SPEC.md §5.4); the devices agree with each other on each.
+    auto quotient_matches_full = [&](const std::vector<std::vector<uint8_t>>& by_mode,
+                                     const std::string& at) {
+        for (const char* k : counts)
+            EXPECT_EQ(read_int_key(by_mode[0], k), read_int_key(by_mode[3], k))
+                << at << " " << k << ": quotient exploration against full capture";
+    };
     for (const Option& o : options) {
         for (int64_t rs : {int64_t{7}, int64_t{1}, int64_t{12345}}) {
+            std::vector<std::vector<uint8_t>> by_mode;
+            std::string at;
             for (const Mode& m : modes) {
-                const std::string at = std::string(o.key) + " " +
+                at = std::string(o.key) + " " +
                     (o.integer != 0 ? std::to_string(o.integer) : std::to_string(o.real)) +
                     " CanonicalizeStates " + m.states + " ExploreFromCanonicalStatesOnly " +
                     m.ecso + " RandomSeed " + std::to_string(rs);
-                agree(build_input(seed, lhs, rhs, 5, [&](wxf::Writer& ww) {
+                by_mode.push_back(agree(build_input(seed, lhs, rhs, 5, [&](wxf::Writer& ww) {
                     put_str_list_option(ww, "RequestedData",
                                         {counts[0], counts[1], counts[2], counts[3]});
                     sym(ww, "CanonicalizeStates", m.states);
@@ -3525,8 +3621,26 @@ TEST(GpuBinaryGate, SamplingAndCapsKeepTheSameTransitionsOnBothDevices) {
                     else if (o.integer != 0) ww.write(o.integer);
                     else ww.write(o.real);
                     key(ww, "RandomSeed"); ww.write(rs);
-                }, 5), at);
+                }, 5), at));
             }
+            quotient_matches_full(by_mode, at);
+        }
+    }
+    // "MatchesPerStep" with "UniformRandom": a step's N lowest-ranked transitions.
+    for (int64_t rs : {int64_t{7}, int64_t{1}, int64_t{12345}}) {
+        for (const Mode& m : modes) {
+            const std::string at = std::string("MatchesPerStep 2 CanonicalizeStates ") + m.states +
+                                   " ExploreFromCanonicalStatesOnly " + m.ecso + " RandomSeed " +
+                                   std::to_string(rs);
+            agree(build_input(seed, lhs, rhs, 5, [&](wxf::Writer& ww) {
+                put_str_list_option(ww, "RequestedData",
+                                    {counts[0], counts[1], counts[2], counts[3]});
+                sym(ww, "CanonicalizeStates", m.states);
+                sym(ww, "ExploreFromCanonicalStatesOnly", m.ecso);
+                sym(ww, "UniformRandom", "True");
+                key(ww, "MatchesPerStep"); ww.write(int64_t{2});
+                key(ww, "RandomSeed"); ww.write(rs);
+            }, 6), at);
         }
     }
     // A rule whose join order differs from its authored order ({2,1} at position 2 is bound
@@ -3542,12 +3656,14 @@ TEST(GpuBinaryGate, SamplingAndCapsKeepTheSameTransitionsOnBothDevices) {
     };
     for (const Option& o : dup_options) {
         for (int64_t rs : {int64_t{7}, int64_t{1}, int64_t{718832434}}) {
+            std::vector<std::vector<uint8_t>> by_mode;
+            std::string at;
             for (const Mode& m : modes) {
-                const std::string at = std::string("authored order ") + o.key + " " +
+                at = std::string("authored order ") + o.key + " " +
                     (o.integer != 0 ? std::to_string(o.integer) : std::to_string(o.real)) +
                     " CanonicalizeStates " + m.states + " ExploreFromCanonicalStatesOnly " +
                     m.ecso + " RandomSeed " + std::to_string(rs);
-                agree(build_input(dup_init, dup_lhs, dup_rhs, 1, [&](wxf::Writer& ww) {
+                by_mode.push_back(agree(build_input(dup_init, dup_lhs, dup_rhs, 1, [&](wxf::Writer& ww) {
                     put_str_list_option(ww, "RequestedData",
                                         {counts[0], counts[1], counts[2], counts[3]});
                     sym(ww, "CanonicalizeStates", m.states);
@@ -3556,8 +3672,9 @@ TEST(GpuBinaryGate, SamplingAndCapsKeepTheSameTransitionsOnBothDevices) {
                     if (o.integer != 0) ww.write(o.integer);
                     else ww.write(o.real);
                     key(ww, "RandomSeed"); ww.write(rs);
-                }, 5), at);
+                }, 5), at));
             }
+            quotient_matches_full(by_mode, at);
         }
     }
     worker_stop(w);
@@ -4434,6 +4551,30 @@ TEST(FfiInput, QuotientNeedsFullNamesTheOptionTheJobSet) {
         put_str_option(w, "CanonicalizeStates", "Full");
     }), host));
     EXPECT_TRUE(full.empty());
+}
+
+// ExploreFromCanonicalStatesOnly is not applied with MaxStatesPerStep: the reply warns
+// (QuotientStepCap) and its counts are the counts of full capture.
+TEST(FfiInput, QuotientExplorationIsNotAppliedWithAStepCap) {
+    HostBridge host;
+    auto job = [](bool ecso) {
+        return build_input(kSeed, kLhs, kRhs, 3, [&](wxf::Writer& w) {
+            put_str_list_option(w, "RequestedData", {"NumStates", "NumEvents", "NumCausalEdges"});
+            put_str_option(w, "CanonicalizeStates", "Full");
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("MaxStatesPerStep"));
+            w.write(int64_t{2});
+            put_str_option(w, "ExploreFromCanonicalStatesOnly", ecso ? "True" : "False");
+        }, 4);
+    };
+    const auto quotient = run_rewriting_core(job(true), host);
+    const auto full = run_rewriting_core(job(false), host);
+    const auto ctx = warning_contexts(quotient);
+    ASSERT_EQ(ctx.size(), 1u);
+    EXPECT_NE(ctx[0].find("does not apply with \"MaxStatesPerStep\""), std::string::npos);
+    EXPECT_TRUE(warning_contexts(full).empty());
+    for (const char* k : {"NumStates", "NumEvents", "NumCausalEdges"})
+        EXPECT_EQ(read_int_key(quotient, k), read_int_key(full, k)) << k;
 }
 
 // A counts-only request under CanonicalizeStates -> Full counts the isomorphism classes on either

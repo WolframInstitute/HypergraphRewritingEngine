@@ -36,7 +36,13 @@ add_library(hg_gpu STATIC
     src/rewrite.cu
     src/content_hash.cu
     src/branchial_rows.cu
+    src/device_probe.cu
 )
+# The probe's message names the architectures this build carries kernels for. Commas, because a
+# semicolon would split the definition in two.
+string(REPLACE ";" "," HG_GPU_ARCH_LIST_DEF "${CMAKE_CUDA_ARCHITECTURES}")
+set_source_files_properties(src/device_probe.cu PROPERTIES
+    COMPILE_DEFINITIONS "HG_GPU_ARCH_LIST=\"${HG_GPU_ARCH_LIST_DEF}\"")
 
 
 # hg_gpu is built with separable compilation (relocatable device code), so its device symbols

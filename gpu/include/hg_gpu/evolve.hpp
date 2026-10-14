@@ -105,8 +105,11 @@ struct EvolveInput {
     // than the rule set (rules past its end weighted 1).
     double   transition_rate = 1.0;
     std::vector<double> rule_weights;
-    // Hard bounds. 0 means unlimited, as on the host.
+    // Hard bounds. 0 means unlimited, as on the host. max_states_per_step keeps the transitions
+    // into a step's N lowest-ranked successor states, or with step_cap_counts_matches
+    // (MatchesPerStep) its N lowest-ranked transitions.
     uint32_t max_states_per_step = 0;
+    bool     step_cap_counts_matches = false;
     uint32_t max_successor_states_per_parent = 0;
     uint32_t matches_per_state_rule = 0;
 
@@ -150,9 +153,10 @@ struct ClassMultiplicity {
     uint64_t multiplicity;
 };
 
-// How many of a class's captured matches apply a rule.
+// How many of an expansion's captured matches apply a rule. The expansion key is the class hash,
+// or under MaxStatesPerStep the (class, depth) key (hgcommon::qc_expansion_key).
 struct ClassRuleMatches {
-    uint64_t class_hash;
+    uint64_t expansion_key;
     uint32_t rule;
     uint64_t count;
 };

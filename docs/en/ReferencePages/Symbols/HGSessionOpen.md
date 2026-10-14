@@ -24,7 +24,7 @@ RelatedTutorials: [Sessions, GettingStarted]
 - The session starts at step 0: [HGSessionOpen]() applies no rule. After steps totalling *k*, the session reports what <code>[HGEvolve]()[*rules*, *init*, *k*, *prop*]</code> gives.
 - [HGSessionOpen]() takes the options of [HGEvolve](), with the same defaults, and every option of [Graph](). They hold for the whole session: a step or a query cannot change the rules, how states and events are identified, the device, or the options of the graphs it gives.
 - `"BranchialStep"` set to `Automatic` is resolved for each step's or query's own properties, so a graph asked for later has the branchial edges [HGEvolve]() gives it.
-- `"TargetDevice" -> "GPU"` opens the session on the GPU engine. Where no GPU engine is available, it issues the message `HGEvolve::gpudev` and opens on the CPU engine.
+- `"TargetDevice" -> "GPU"` opens the session on the GPU engine. Where no GPU engine is bundled or the machine has no usable NVIDIA GPU, it issues the message `HGEvolve::gpudev` naming the reason and opens on the CPU engine. `"TargetDevice" -> {"GPU", "Strict" -> True}` gives `$Failed` with the message `HGEvolve::nogpu` instead.
 - One session is open at a time for each device. While one is open, [HGSessionOpen]() issues the message `HGSessionOpen::refused` and gives <code>[$Failed]()</code>; the open session is unaffected.
 - The session is held by a persistent engine worker process. Where none can be started, [HGSessionOpen]() issues the message `HGSessionOpen::noworker` and gives <code>[$Failed]()</code>; [HGEvolve]() still works.
 - A property [HGEvolve]() does not accept issues the message `HGEvolve::unknownprop` and gives <code>[$Failed]()</code>.

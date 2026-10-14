@@ -44,6 +44,22 @@ struct KeptCopy {
     EdgeId   consumed[kMaxPatternEdges];
 };
 
+// The match's variable bindings, from its edges (matched[p] bound to the rule's left-hand edge
+// p): binding[v] the vertex variable v is bound to, INVALID_ID for a variable the left-hand side
+// does not hold. `Out` is VertexId or volatile VertexId (apply_one_match).
+template <class Out>
+__device__ inline void bind_matched_vertices(const DeviceState& ds, const DeviceRule& rule,
+                                             const EdgeId* matched, Out* binding) {
+    for (uint32_t v = 0; v < kMaxVars; ++v) binding[v] = INVALID_ID;
+    for (uint8_t p = 0; p < rule.num_lhs_edges; ++p) {
+        const EdgeId dedge = matched[p];
+        if (dedge == INVALID_ID) continue;
+        const Edge& e = ds.edge_pool.at(dedge);
+        for (uint8_t i = 0; i < rule.lhs[p].arity && i < e.arity; ++i)
+            binding[rule.lhs[p].vars[i]] = ds.vertex_pool.at(e.vertex_offset + i);
+    }
+}
+
 struct AppliedMatch {
     StateId  state = INVALID_ID;
     EventId  event = INVALID_ID;   // both are INVALID_ID when a capacity claim failed

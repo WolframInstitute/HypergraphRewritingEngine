@@ -2,9 +2,11 @@
 
 #include "hg_gpu_backend.hpp"
 
+#include "hg_gpu/device_probe.hpp"
 #include "hg_gpu/evolve.hpp"
 #include "hg_gpu/branchial_rows.hpp"
 #include "hgcommon/quotient_replay_core.hpp"
+#include "hgcommon/quotient_causal_core.hpp"
 #include "hypergraph/ir_canonicalization.hpp"
 #include "wxf.hpp"
 #include "graph_marshal.hpp"
@@ -164,6 +166,7 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
         return v > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<uint32_t>(v);
     };
     in.max_states_per_step = cap32(job.max_states_per_step);
+    in.step_cap_counts_matches = job.step_cap_counts_matches;
     in.max_successor_states_per_parent = cap32(job.max_successor_states_per_parent);
     in.matches_per_state_rule = cap32(job.matches_per_state_rule);
     in.max_device_memory_bytes = job.max_device_memory_bytes;
@@ -866,6 +869,17 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
                                wxf::WXFValue(state_bitvectors)});
     }
 
+    if (job.include_device) {
+        const hg_gpu::DeviceProbe& probe = hg_gpu::probe_device();
+        wxf::WXFValueAssociation device;
+        device.push_back({wxf::WXFValue("Type"), wxf::WXFValue("GPU")});
+        device.push_back({wxf::WXFValue("Name"), wxf::WXFValue(hgmarshal::valid_utf8(probe.name))});
+        device.push_back({wxf::WXFValue("ComputeCapability"),
+                          wxf::WXFValue(std::to_string(probe.major) + "." +
+                                        std::to_string(probe.minor))});
+        full_result.push_back({wxf::WXFValue("Device"), wxf::WXFValue(device)});
+    }
+
     if (job.include_num_states) {
         full_result.push_back({wxf::WXFValue("NumStates"),
                                wxf::WXFValue(static_cast<int64_t>(class_reps.size()))});
@@ -922,12 +936,12 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
             }
             std::unordered_map<uint64_t, std::map<int64_t, uint64_t>> matches_by_rule;
             for (const auto& c : result.class_rule_matches)
-                matches_by_rule[c.class_hash][static_cast<int64_t>(c.rule)] += c.count;
+                matches_by_rule[c.expansion_key][static_cast<int64_t>(c.rule)] += c.count;
             std::map<uint32_t, uint64_t> events;
             std::map<uint32_t, std::map<int64_t, uint64_t>> rule_counts;
-            hg::stats::events_from_multiplicities(points, matches_by_rule,
-                                                  static_cast<uint32_t>(run_steps), events,
-                                                  rule_counts);
+            hg::stats::events_from_multiplicities(
+                points, matches_by_rule, hgcommon::qc_expansions_by_depth(job.max_states_per_step),
+                static_cast<uint32_t>(run_steps), events, rule_counts);
             for (const auto& [step, n] : events) inputs[step].events = n;
             for (auto& [step, by_rule] : rule_counts) inputs[step].rule_counts = std::move(by_rule);
         } else {
