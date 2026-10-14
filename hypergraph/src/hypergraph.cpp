@@ -5,6 +5,7 @@
 #include "hgcommon/rewrite_core.hpp"   // SuccessorCursor
 #include "hgcommon/content_core.hpp"   // content_hash_of
 #include "hgcommon/phase_timing.hpp"
+#include "hgcommon/portable_intrinsics.hpp"   // atomic_raise
 #include "hgcommon/namespace.hpp"
 // hypergraph.cpp - Implementation of Hypergraph class non-template methods
 
@@ -2491,9 +2492,7 @@ void raise_own(uint32_t& mark, uint32_t v) {
     if (r.load(std::memory_order_relaxed) < v) r.store(v, std::memory_order_release);
 }
 void raise_to(std::atomic<uint32_t>& a, uint32_t v) {
-    uint32_t cur = a.load(std::memory_order_relaxed);
-    while (cur < v && !a.compare_exchange_weak(cur, v, std::memory_order_release,
-                                               std::memory_order_relaxed)) {}
+    hgcommon::atomic_raise(a, v, std::memory_order_release);
 }
 }  // namespace
 

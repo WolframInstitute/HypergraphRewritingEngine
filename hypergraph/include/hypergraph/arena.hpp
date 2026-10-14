@@ -388,10 +388,10 @@ public:
 
     // Statistics
     size_t bytes_allocated() const;
-    // Bytes of blocks this arena holds, and the most it has held: its share of the resident
-    // set, against bytes_allocated() which is what the blocks contain.
+    // Bytes of blocks this arena holds: its share of the resident set, against bytes_allocated()
+    // which is what the blocks contain. An arena frees its blocks only in its destructor, so this
+    // is also the most it has held.
     size_t block_bytes() const { return block_bytes_.load(std::memory_order_relaxed); }
-    size_t block_bytes_high_water() const { return block_bytes_high_water_.load(std::memory_order_relaxed); }
 
     // Stack-discipline checkpoint into a recycling scratch arena. mark() captures the
     // current position; release(m) rewinds to it, reclaiming everything allocated
@@ -520,7 +520,6 @@ private:
     size_t block_size_;
     bool recycle_;
     std::atomic<size_t> block_bytes_{0};
-    std::atomic<size_t> block_bytes_high_water_{0};
     std::atomic<Block*> head_{nullptr};
     std::atomic<Block*> current_block_{nullptr};
     std::atomic<DestructorNode*> destructor_head_;

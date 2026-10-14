@@ -325,7 +325,7 @@ int main(int argc, char** argv) {
             if (const char* pf = std::getenv("HG_BENCH_FAULTS"); pf && pf[0] == '1')
                 std::printf("  iteration %d: %.3f ms, %llu page faults\n", i, ms.back(),
                             page_faults_so_far() - f0);
-            hg_arena_hw = g.arena().block_bytes_high_water();
+            hg_arena_hw = g.arena().block_bytes();
             hg_arena_used = g.arena().bytes_allocated();
 #if HG_ENGINE_STATS
             if (std::getenv("HG_BENCH_ALLOC_PROFILE") && i == iters - 1)

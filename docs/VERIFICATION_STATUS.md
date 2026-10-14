@@ -127,7 +127,7 @@ The harnesses added for rc2:
 
 ### Weak CAS bounds
 
-23 harnesses run a weak compare-exchange. N is the bound per thread and address
+22 harnesses run a weak compare-exchange. N is the bound per thread and address
 (`--weak-cas-spurious-bound`); M is the bound per execution over all threads
 (`--weak-cas-spurious-total`). Before is the count on the checker that made such CASes strong.
 K > 0 means the verdict is bounded at that N or M and is not exhaustive. Every listed verdict is
@@ -148,7 +148,6 @@ K > 0 means the verdict is bounded at that N or M and is not exhaustive. Every l
 | `quotient_mass_match_rendezvous` | N = 1 | 13,220,608 | 12,740,467 | 19,616 |
 | `quotient_instance_match_rendezvous` | N = 1 | 5,958,272 | 571,074 | 663,552 |
 | `arena_cursor_vs_shared_disjoint` | N = 1 | 406,912 | 286,343 | 7,680 (larger workload) |
-| `arena_high_water_max` | N = 2 | 87 | 32 | -- |
 | `engine_construct` | M = 1 | 60,112 | 561 | 1,768 |
 | `engine_rule` | M = 1 | running | running | 1,768 |
 | `causal_in_edge_order` | M = 1 | running | running | running |
@@ -163,7 +162,8 @@ At N = 1 the composed harnesses gave no verdict in 3,600 s (`engine_construct` a
 construction and worker start alone run dozens of weak CASes, and each successful one doubles the
 executions. `arena_cursor_vs_shared_disjoint` at its earlier workload (three 256-byte allocations
 per thread) gave no verdict at N = 1 in 3,600 s; it runs the smaller workload its header states,
-and `arena_high_water_max` checks `note_block_grab`'s high-water loop alone.
+and `arena_high_water_max` checks `note_block_grab`'s high-water raise alone: one atomic max
+read-modify-write, exhaustive in 8 executions.
 
 ### Shared bodies
 
