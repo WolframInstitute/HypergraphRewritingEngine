@@ -94,6 +94,13 @@ class Writer;
 #endif
 struct WXFValue;
 
+// A packed array of reals: `dims` (rank 1 or more) and the elements in row-major order. Written
+// as a WXF PackedArray of Real64.
+struct PackedReals {
+    std::vector<size_t> dims;
+    std::vector<double> values;
+};
+
 using WXFValueList = std::vector<WXFValue>;
 using WXFValueAssociation = std::vector<std::pair<WXFValue, WXFValue>>;  // Key-value pairs, keys can be any expression
 
@@ -105,7 +112,8 @@ struct WXFValue {
         std::string,              // String or Symbol
         std::vector<uint8_t>,     // BinaryString
         WXFValueList,             // List of values
-        WXFValueAssociation       // Association (arbitrary keys and values)
+        WXFValueAssociation,      // Association (arbitrary keys and values)
+        PackedReals               // PackedArray of Real64
     >;
     Data data;
 
@@ -321,6 +329,9 @@ public:
     void write_string(const std::string& value);
     void write_symbol(const std::string& value);
     void write_binary_string(const std::vector<uint8_t>& value);
+    // A PackedArray of Real64; an array with a zero dimension as nested empty lists, which a
+    // packed array cannot hold.
+    void write_packed_reals(const PackedReals& value);
 
     // Template-based generic writer
     template<typename T>
@@ -485,6 +496,8 @@ void Writer::write(const T& value) {
         write_string(value);
     } else if constexpr (std::is_same_v<T, std::vector<uint8_t>>) {
         write_binary_string(value);
+    } else if constexpr (std::is_same_v<T, PackedReals>) {
+        write_packed_reals(value);
     } else if constexpr (is_vector_v<T>) {
         // Generic vector support - recursive template
         write_function("List", value.size());

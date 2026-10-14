@@ -21,6 +21,7 @@
 
 #include "hgcommon/quotient_multiplicity_core.hpp"
 #include "hypergraph/types.hpp"
+#include "state_statistics.hpp"
 
 namespace HG_NAMESPACE {
 namespace ffi {
@@ -103,7 +104,9 @@ struct ParsedJob {
     bool include_num_branchial_edges = true;
     bool include_step_statistics = false;   // "StepStatistics" (state_statistics.hpp)
     bool step_statistics_by_class = false;  // "StepStatisticsWeighting" -> "Classes"
-    uint32_t step_statistics_branchial = 0; // "StepStatisticsBranchial": stats::kBranchial* bits
+    uint32_t step_statistics_branchial = 0; // "StepStatisticsBranchial" and "StepStatisticsMatrices":
+                                            // stats::kBranchial* and kMatrix* bits
+    uint32_t step_statistics_matrix_limit = stats::kMatrixLimitDefault;  // "StepStatisticsMatrixLimit"
     bool include_global_edges = false;      // All edges created during evolution
     bool include_state_bitvectors = false;  // State edge sets as lists of edge IDs
     bool include_device = false;            // "Device": which device ran the job

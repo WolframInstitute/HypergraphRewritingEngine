@@ -84,6 +84,12 @@ public:
     wxf::WXFValue finish(std::map<uint32_t, stats::StepInput>* weighted = nullptr);
     // Steps closed by finish rather than during the run.
     uint32_t closed_at_finish() const { return closed_at_finish_; }
+    // "StepStatisticsMatrixLimit"; set before attach.
+    void set_matrix_limit(uint32_t limit) { jobs_.set_matrix_limit(limit); }
+    // After finish: (step, states) for each step whose matrices were over the limit.
+    std::vector<std::pair<uint32_t, uint32_t>> matrices_over_limit() const {
+        return jobs_.matrices_over_limit();
+    }
 
 private:
     void close_through(uint32_t last);

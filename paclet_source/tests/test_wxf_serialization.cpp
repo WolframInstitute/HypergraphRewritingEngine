@@ -1784,6 +1784,37 @@ TEST(WxfSerializationPin, AnUnrecognisedIdentityValueIsReported) {
     }
 }
 
+// "StepStatisticsMatrices" and "StepStatisticsMatrixLimit" through the request: the matrices
+// asked for reach each step's record, a step above the limit warns and has none, Full states
+// warn and give none, and a name that is not a matrix is reported as OptionSkipped.
+TEST(WxfSerializationPin, StepStatisticsMatricesOptions) {
+    auto run = [](const char* states, std::vector<std::string> names, int64_t limit) {
+        auto opts = [=](wxf::Writer& w) {
+            put_str_list_option(w, "RequestedData", {"StepStatistics"});
+            put_str_option(w, "CanonicalizeStates", states);
+            put_str_list_option(w, "StepStatisticsMatrices", names);
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("StepStatisticsMatrixLimit"));
+            w.write(limit);
+        };
+        HostBridge host;
+        return run_rewriting_core(branch_job(3, "Evolve", 0, opts, 4), host);
+    };
+    const auto all = run("None", {"StateMutualInformation", "StateEdgeOverlap"}, 1000);
+    EXPECT_TRUE(reply_mentions(all, "StateMatrices"));
+    EXPECT_TRUE(reply_mentions(all, "StateEdgeOverlap"));
+    EXPECT_FALSE(reply_mentions(all, "StateCosineSimilarity"));
+    EXPECT_FALSE(reply_mentions(all, "Warnings"));
+    const auto capped = run("Automatic", {"StateMutualInformation"}, 2);
+    EXPECT_TRUE(reply_mentions(capped, "above StepStatisticsMatrixLimit 2"));
+    const auto full = run("Full", {"StateMutualInformation"}, 1000);
+    EXPECT_TRUE(reply_mentions(full, "StepStatisticsMatrices needs CanonicalizeStates"));
+    EXPECT_FALSE(reply_mentions(full, "StateMatrices"));
+    const auto bad = run("None", {"Overlap"}, 1000);
+    EXPECT_TRUE(reply_mentions(bad, "OptionSkipped"));
+    EXPECT_TRUE(reply_mentions(bad, "StepStatisticsMatrices 'Overlap'"));
+}
+
 // {{1,1},{1,1}} -> {{1,1},{1,1},{1,1}} at 12 steps under quotient exploration: NumEvents is
 // 3,002,019,319,241,196,638 and the branchial count passes 2^63 - 1. A CountSaturated warning is
 // given for a saturated count the job asked for, and it names that count.
@@ -2038,10 +2069,72 @@ TEST(GpuBinaryGate, AWorkerJobSequenceMatchesTheCpuJobByJob) {
     worker_stop(w);
 }
 
+namespace {
+
+// Per step, for each state matrix of a "StepStatistics" reply (its bytes), the multiset of rows,
+// each as its diagonal cell and its cells sorted: the matrix up to a renumbering of the states.
+using MatrixRows = std::multiset<std::vector<double>>;
+std::vector<std::map<std::string, MatrixRows>> matrix_rows(const std::vector<uint8_t>& stats) {
+    std::vector<std::map<std::string, MatrixRows>> out;
+    wxf::Parser p(stats);
+    p.read_function([&](const std::string&, size_t n, wxf::Parser& lp) {
+        for (size_t i = 0; i < n; ++i) {
+            std::map<std::string, MatrixRows> step;
+            lp.read_association([&](const std::string& k, wxf::Parser& vp) {
+                if (k != "StateMatrices") {
+                    vp.skip_value();
+                    return;
+                }
+                vp.read_association([&](const std::string& name, wxf::Parser& mp) {
+                    if (name == "States") {
+                        mp.skip_value();
+                        return;
+                    }
+                    const auto m = mp.read<std::vector<std::vector<double>>>();
+                    for (size_t a = 0; a < m.size(); ++a) {
+                        std::vector<double> row = m[a];
+                        std::sort(row.begin(), row.end());
+                        row.insert(row.begin(), m[a][a]);
+                        step[name].insert(row);
+                    }
+                });
+            });
+            out.push_back(std::move(step));
+        }
+    });
+    return out;
+}
+
+// Per step, each key of a "StepStatistics" reply (its bytes) other than "StateMatrices", and
+// its value's bytes.
+std::vector<std::vector<std::pair<std::string, std::vector<uint8_t>>>> keys_but_matrices(
+    const std::vector<uint8_t>& stats) {
+    std::vector<std::vector<std::pair<std::string, std::vector<uint8_t>>>> rows;
+    wxf::Parser p(stats);
+    p.read_function([&](const std::string&, size_t n, wxf::Parser& lp) {
+        for (size_t i = 0; i < n; ++i) {
+            std::vector<std::pair<std::string, std::vector<uint8_t>>> row;
+            lp.read_association([&](const std::string& k, wxf::Parser& vp) {
+                const uint8_t* begin = vp.data();
+                vp.skip_value();
+                if (k != "StateMatrices")
+                    row.push_back({k, std::vector<uint8_t>(begin, begin + vp.position())});
+            });
+            rows.push_back(std::move(row));
+        }
+    });
+    return rows;
+}
+
+}  // namespace
+
 // The StepStatisticsBranchial metrics are admitted by one rule on both devices, so the two
 // StepStatistics payloads are byte-equal across Graph/Overlap x None/Automatic/Full states x
 // ExploreFromCanonicalStatesOnly. Under Full states with Automatic events the CPU dropped the
-// metrics with the ExploreFromCanonicalStatesOnly warning, though the option was not set.
+// metrics with the ExploreFromCanonicalStatesOnly warning, though the option was not set. Every
+// case also asks for all six state matrices: the two devices number the states in their own
+// creation order, so the matrices agree up to a renumbering of the states and every other key
+// byte for byte.
 TEST(GpuBinaryGate, StepStatisticsBranchialIsAdmittedAlikeOnBothDevices) {
     {
         std::ifstream probe(gpu_binary_path(), std::ios::binary);
@@ -2061,12 +2154,17 @@ TEST(GpuBinaryGate, StepStatisticsBranchialIsAdmittedAlikeOnBothDevices) {
                            [&](wxf::Writer& o) {
                                put_str_list_option(o, "RequestedData", {"StepStatistics"});
                                put_str_list_option(o, "StepStatisticsBranchial", branchial);
+                               put_str_list_option(
+                                   o, "StepStatisticsMatrices",
+                                   {"StateOverlap", "StateCosineSimilarity",
+                                    "StateMutualInformation", "StateEdgeOverlap",
+                                    "StateEdgeCosineSimilarity", "StateEdgeMutualInformation"});
                                put_str_option(o, "CanonicalizeStates", states);
                                put_str_option(o, "CanonicalizeEvents", events);
                                if (quotient)
                                    put_str_option(o, "ExploreFromCanonicalStatesOnly", "True");
                            },
-                           quotient ? 5 : 4);
+                           quotient ? 6 : 5);
     };
     struct Case { int64_t steps; const char* states; bool quotient; std::vector<std::string> b; };
     std::vector<Case> cases = {{1, "Full", false, {"Graph"}}};
@@ -2088,8 +2186,15 @@ TEST(GpuBinaryGate, StepStatisticsBranchialIsAdmittedAlikeOnBothDevices) {
                                  c.b.front() + (c.b.size() > 1 ? "+" + c.b.back() : "") +
                                  " steps " + std::to_string(c.steps);
         const auto host_stats = value_bytes(host, "StepStatistics");
+        const auto device_stats = value_bytes(device, "StepStatistics");
         EXPECT_FALSE(host_stats.empty()) << what;
-        EXPECT_EQ(host_stats, value_bytes(device, "StepStatistics")) << what;
+        EXPECT_EQ(keys_but_matrices(host_stats), keys_but_matrices(device_stats)) << what;
+        const auto host_rows = matrix_rows(host_stats);
+        EXPECT_EQ(host_rows, matrix_rows(device_stats)) << what;
+        size_t with_matrices = 0;
+        for (const auto& step : host_rows) with_matrices += step.size() == 6;
+        // ExploreFromCanonicalStatesOnly takes effect under Full states only.
+        EXPECT_EQ(with_matrices, std::string(c.states) == "Full" ? 0u : host_rows.size()) << what;
         EXPECT_EQ(reply_mentions(host, "not computed under ExploreFromCanonicalStatesOnly"),
                   reply_mentions(device, "not computed under ExploreFromCanonicalStatesOnly"))
             << what;
@@ -4251,6 +4356,158 @@ TEST(StateStatistics, BranchialMetricsDoNotDependOnTheRowSplit) {
     EXPECT_EQ(number_at(*assoc_at(first, "StateMutualInformation"), "N"), 300 * 299 / 2);
 }
 
+namespace {
+
+// Row-major k x k matrix `name` of a "StateMatrices" association.
+const wxf::PackedReals& matrix_at(const wxf::WXFValue& m, const std::string& name) {
+    return std::get<wxf::PackedReals>(assoc_at(m, name)->data);
+}
+
+uint32_t all_matrices() { return hg::stats::kBranchialMatrices; }
+
+}  // namespace
+
+// The state matrices of the step of PairwiseInitialAndEdgeMetricsOfASmallStep worked by hand.
+// States 10, 11, 12: A = {0,1,2,5}, B = {0,1,2,6}, C = {7}, U = 6 vertices; edges A {100,101},
+// B {100,102}, C {103}, 4 edges.
+//   StateOverlap: A,B 3/5; A,C and B,C 0; 1 on the diagonal.
+//   StateCosineSimilarity: A,B 3/4; 0 off it; 1 on the diagonal.
+//   StateMutualInformation: A,B (3,1,1,1) over 6; A,C (0,4,1,1) and B,C the same; A,A is the
+//     entropy of 4 of 6, C,C of 1 of 6.
+//   StateEdgeOverlap: A,B 1/3; StateEdgeCosineSimilarity: A,B 1/2;
+//   StateEdgeMutualInformation: A,B (1,1,1,1) over 4, which is 0; A,C (0,2,1,1) over 4.
+TEST(StateStatistics, StateMatricesOfASmallStep) {
+    hg::stats::BranchialStep s;
+    s.nodes = {12, 10, 11};
+    s.pairs = {{10, 11}};
+    s.vertex_sets = {{7}, {0, 1, 2, 5}, {0, 1, 2, 6}};
+    s.edge_sets = {{103}, {100, 101}, {100, 102}};
+    const auto out = branchial_keys({{1u, s}}, all_matrices() | hg::stats::kBranchialOverlap);
+    const wxf::WXFValue rec(out.at(1));
+    const wxf::WXFValue* m = assoc_at(rec, "StateMatrices");
+    ASSERT_NE(m, nullptr);
+    // The states ascending by id, whatever order the step listed them in.
+    const auto& ids = std::get<wxf::WXFValueList>(assoc_at(*m, "States")->data);
+    ASSERT_EQ(ids.size(), 3u);
+    for (size_t i = 0; i < 3; ++i) EXPECT_EQ(std::get<int64_t>(ids[i].data), int64_t(10 + i));
+    auto cell = [](double n, double na, double nb, double u) {
+        return n == 0 ? 0.0 : n / u * std::log2(n * u / (na * nb));
+    };
+    auto mi = [&](double both, double a, double b, double u) {
+        return cell(both, a, b, u) + cell(a - both, a, u - b, u) + cell(b - both, u - a, b, u) +
+               cell(u - a - b + both, u - a, u - b, u);
+    };
+    const std::vector<std::pair<std::string, std::vector<double>>> want = {
+        {"StateOverlap", {1, 0.6, 0, 0.6, 1, 0, 0, 0, 1}},
+        {"StateCosineSimilarity", {1, 0.75, 0, 0.75, 1, 0, 0, 0, 1}},
+        {"StateMutualInformation",
+         {mi(4, 4, 4, 6), mi(3, 4, 4, 6), mi(0, 4, 1, 6), mi(3, 4, 4, 6), mi(4, 4, 4, 6),
+          mi(0, 4, 1, 6), mi(0, 4, 1, 6), mi(0, 4, 1, 6), mi(1, 1, 1, 6)}},
+        {"StateEdgeOverlap", {1, 1.0 / 3, 0, 1.0 / 3, 1, 0, 0, 0, 1}},
+        {"StateEdgeCosineSimilarity", {1, 0.5, 0, 0.5, 1, 0, 0, 0, 1}},
+        {"StateEdgeMutualInformation",
+         {mi(2, 2, 2, 4), 0, mi(0, 2, 1, 4), 0, mi(2, 2, 2, 4), mi(0, 2, 1, 4), mi(0, 2, 1, 4),
+          mi(0, 2, 1, 4), mi(1, 1, 1, 4)}},
+    };
+    EXPECT_NEAR(mi(3, 4, 4, 6), 1.5 * std::log2(3.0) - 7.0 / 3.0, 1e-15);
+    EXPECT_NEAR(mi(4, 4, 4, 6), std::log2(3.0) - 2.0 / 3.0, 1e-15);   // H(2/3)
+    for (const auto& [name, values] : want) {
+        ASSERT_NE(assoc_at(*m, name), nullptr) << name;
+        const wxf::PackedReals& got = matrix_at(*m, name);
+        ASSERT_EQ(got.dims, (std::vector<size_t>{3, 3})) << name;
+        for (size_t i = 0; i < 9; ++i) EXPECT_NEAR(got.values[i], values[i], 1e-15) << name << i;
+        for (size_t a = 0; a < 3; ++a)
+            for (size_t b = 0; b < 3; ++b)
+                EXPECT_EQ(got.values[a * 3 + b], got.values[b * 3 + a]) << name;
+    }
+    // The off-diagonal cells are the values the summaries read: their mean is the summary's.
+    for (const char* name : {"StateOverlap", "StateCosineSimilarity", "StateMutualInformation"}) {
+        const wxf::PackedReals& got = matrix_at(*m, name);
+        EXPECT_NEAR((got.values[1] + got.values[2] + got.values[5]) / 3,
+                    number_at(*assoc_at(rec, name), "Mean"), 1e-15)
+            << name;
+    }
+    // Only the matrices asked for, after "States".
+    const wxf::WXFValue one(branchial_keys(
+        {{1u, s}}, hg::stats::kMatrixStateEdgeMutualInformation).at(1));
+    const auto& keys = std::get<wxf::WXFValueAssociation>(assoc_at(one, "StateMatrices")->data);
+    ASSERT_EQ(keys.size(), 2u);
+    EXPECT_EQ(std::get<std::string>(keys[1].first.data), "StateEdgeMutualInformation");
+    EXPECT_EQ(assoc_at(one, "StateOverlap"), nullptr);
+}
+
+// A step above "StepStatisticsMatrixLimit" has no "StateMatrices" and reports its state count;
+// a step at the limit has them.
+TEST(StateStatistics, StateMatricesRespectTheLimit) {
+    hg::stats::BranchialStep s;
+    s.nodes = {10, 11, 12};
+    s.vertex_sets = {{0, 1}, {1, 2}, {2, 3}};
+    s.edge_sets = {{0}, {1}, {2}};
+    for (const uint32_t limit : {2u, 3u}) {
+        hg::stats::BranchialStepWork work(s, all_matrices(), nullptr, limit);
+        work.prepare(2);
+        for (size_t p = 0; p < work.parts(); ++p) work.rows(p);
+        const wxf::WXFValue rec(work.finish());
+        EXPECT_EQ(assoc_at(rec, "StateMatrices") != nullptr, limit == 3) << limit;
+        EXPECT_EQ(work.matrices_over_limit(), limit == 3 ? 0u : 3u) << limit;
+    }
+    EXPECT_EQ(hg::stats::matrix_limit_warning(4, 1500, 1000),
+              "StepStatisticsMatrices: step 4 has 1500 states, above StepStatisticsMatrixLimit "
+              "1000; its StateMatrices are not returned");
+    hg::stats::StepStatisticsJobs jobs(false, all_matrices(), 1,
+                                       [](std::function<void()> f) { f(); });
+    jobs.set_matrix_limit(2);
+    hg::stats::StepInput in;
+    hg::stats::add_class(in, 1, 3, nullptr);
+    in.branchial = s;
+    jobs.submit(5, std::move(in));
+    jobs.reply();
+    EXPECT_EQ(jobs.matrices_over_limit(),
+              (std::vector<std::pair<uint32_t, uint32_t>>{{5u, 3u}}));
+}
+
+// The state matrices read the same from any row split, with and without the overlap keys.
+TEST(StateStatistics, StateMatricesDoNotDependOnTheRowSplit) {
+    hg::stats::BranchialStep s;
+    for (uint32_t i = 0; i < 300; ++i) {
+        s.nodes.push_back(i);
+        s.vertex_sets.push_back({i % 7, 7 + i % 11, 18 + i % 13, 31 + i});
+        s.edge_sets.push_back({i % 5, 5 + i % 9, 14 + i});
+        if (i) s.pairs.push_back({i - 1, i});
+    }
+    for (const uint32_t which :
+         {all_matrices(), all_matrices() | hg::stats::kBranchialGraph | hg::stats::kBranchialOverlap}) {
+        auto bytes = [&](size_t parts) {
+            wxf::Writer w;
+            w.write(wxf::WXFValue(branchial_keys({{1u, s}}, which, parts).at(1)));
+            return w.release_data();
+        };
+        const auto expected = bytes(1);
+        EXPECT_TRUE(bytes_contain(expected, "StateEdgeMutualInformation"));
+        for (size_t parts : {2, 3, 5}) EXPECT_EQ(bytes(parts), expected) << parts;
+    }
+}
+
+// The packed matrix is a WXF PackedArray of Real64 (0xC1 0x23), rank 2, and reads back as the
+// nested lists; a zero dimension is written as lists.
+TEST(StateStatistics, PackedRealsAreAPackedArray) {
+    wxf::Writer w;
+    w.write(wxf::WXFValue(wxf::PackedReals{{2, 2}, {1.0, -0.0, 0.5, 2.0}}));
+    const auto bytes = w.release_data();
+    ASSERT_GE(bytes.size(), 4u);
+    EXPECT_EQ(bytes[0], 0xC1);
+    EXPECT_EQ(bytes[1], 0x23);
+    EXPECT_EQ(bytes[2], 2);
+    wxf::Parser p(bytes);
+    const auto back = p.read<std::vector<std::vector<double>>>();
+    EXPECT_EQ(back, (std::vector<std::vector<double>>{{1.0, 0.0}, {0.5, 2.0}}));
+    EXPECT_FALSE(std::signbit(back[0][1]));
+    wxf::Writer e;
+    e.write(wxf::WXFValue(wxf::PackedReals{{0, 3}, {}}));
+    wxf::Parser q(e.data());
+    EXPECT_TRUE(q.read<std::vector<std::vector<double>>>().empty());
+}
+
 #ifdef HG_GPU_BACKEND
 // The overlap rows counted on the device (hg_gpu::branchial_rows_device) give the record the
 // host's rows give, on steps of 300 and 5000 states with a branchial path and with the graph
@@ -4287,6 +4544,51 @@ TEST(StateStatistics, DeviceRowsGiveTheHostRecord) {
             EXPECT_EQ(bytes(device.finish()), want) << "k " << k << " which " << which;
         }
 }
+
+// The state matrices' shared counts made on the device (the edge rows with nothing counted, then
+// the vertex rows with the overlap keys) give the host's record byte for byte, at 300 and 5000
+// states. At 5000 states one matrix of each level keeps the reply at 400 MB.
+TEST(StateStatistics, DeviceRowsGiveTheHostStateMatrices) {
+    for (const uint32_t k : {300u, 5000u}) {
+        const uint32_t matrices =
+            k > 1000 ? hg::stats::kMatrixStateMutualInformation | hg::stats::kMatrixStateEdgeOverlap
+                     : hg::stats::kBranchialMatrices;
+        for (const uint32_t which : {matrices, matrices | hg::stats::kBranchialGraph |
+                                                   hg::stats::kBranchialOverlap}) {
+            hg::stats::BranchialStep s;
+            for (uint32_t i = 0; i < k; ++i) {
+                s.nodes.push_back(i);
+                s.vertex_sets.push_back({i % 2, 2 + i % 7, 9 + i % 11, 20 + i % 13, 40 + i});
+                s.edge_sets.push_back({i % 5, 5 + i % 9, 14 + i});
+                if (i && i % 17) s.pairs.push_back({i - 1, i});
+            }
+            auto bytes = [](const wxf::WXFValueAssociation& rec) {
+                wxf::Writer w;
+                w.write(wxf::WXFValue(rec));
+                return w.release_data();
+            };
+            hg::stats::BranchialStepWork host(s, which, nullptr, k);
+            host.prepare(4);
+            for (size_t p = 0; p < host.parts(); ++p) host.rows(p);
+            const auto want = bytes(host.finish());
+            hg::stats::BranchialStepWork device(s, which, nullptr, k);
+            device.prepare(4);
+            ASSERT_NE(device.vertex_shared(), nullptr);
+            ASSERT_NE(device.edge_shared(), nullptr);
+            bool ran = hg_gpu::branchial_rows_device(device.edge_rows_view(), nullptr,
+                                                     device.edge_shared());
+            if (!ran) GTEST_SKIP() << "no usable device";
+            ran = hg_gpu::branchial_rows_device(
+                device.rows_view(),
+                [&device](uint32_t d, uint32_t sa, uint32_t sb, uint32_t sh, uint64_t n) {
+                    device.add_counts(d, sa, sb, sh, n);
+                },
+                device.vertex_shared());
+            ASSERT_TRUE(ran);
+            EXPECT_EQ(bytes(device.finish()), want) << "k " << k << " which " << which;
+        }
+    }
+}
 #endif
 
 // "StepStatistics" under full capture, from hgffi::StepStatisticsCollector on rule
@@ -4297,7 +4599,8 @@ TEST(StateStatistics, DeviceRowsGiveTheHostRecord) {
 // engine records no class record and the collector computes each one.
 std::pair<std::vector<uint8_t>, uint32_t> collected_step_statistics(
     size_t threads, uint32_t which, bool by_class, bool online, size_t step_cap,
-    bool recurrent = false, bool record_in_run = true) {
+    bool recurrent = false, bool record_in_run = true,
+    std::vector<std::pair<uint32_t, uint32_t>>* over_limit = nullptr) {
     hypergraph::Hypergraph hg;
     hypergraph::ParallelEvolutionEngine engine(&hg, threads);
     hgcommon::RecordSet rs;
@@ -4321,6 +4624,7 @@ std::pair<std::vector<uint8_t>, uint32_t> collected_step_statistics(
     if (online) collector.attach(step_cap != 0);
     engine.evolve(std::vector<std::vector<hypergraph::VertexId>>{{0u, 1u}, {0u, 2u}}, 5);
     const wxf::WXFValue reply = collector.finish();
+    if (over_limit) *over_limit = collector.matrices_over_limit();
     wxf::Writer w;
     w.write(reply);
     return {w.release_data(), collector.closed_at_finish()};
@@ -4363,6 +4667,34 @@ TEST(StateStatistics, CollectedStepStatisticsDoNotDependOnTheThreadCount) {
                 EXPECT_EQ(during.first, after.first) << "threads " << threads;
                 EXPECT_EQ(during.second, 0u) << "threads " << threads;
             }
+    }
+}
+
+
+// The state matrices at 1, 2, 8 and 16 threads, under full capture with the overlap and graph
+// keys, closed during the run and after it. The states are numbered by the run, so the matrices
+// are compared up to a renumbering of the states. Every step has its six matrices except the
+// steps reported over the limit of 1000 states.
+TEST(StateStatistics, CollectedStateMatricesDoNotDependOnTheThreadCount) {
+    const uint32_t which = hg::stats::kBranchialMatrices | hg::stats::kBranchialGraph |
+                           hg::stats::kBranchialOverlap;
+    for (const size_t cap : {size_t{0}, size_t{4}}) {
+        std::vector<std::pair<uint32_t, uint32_t>> over;
+        const auto after =
+            collected_step_statistics(4, which, false, false, cap, false, true, &over);
+        const auto want = matrix_rows(after.first);
+        ASSERT_EQ(want.size(), 6u);
+        for (uint32_t step = 0; step < want.size(); ++step) {
+            const bool over_limit = std::any_of(over.begin(), over.end(), [&](const auto& o) {
+                return o.first == step && o.second > 1000;
+            });
+            EXPECT_EQ(want[step].size(), over_limit ? 0u : 6u) << "step " << step << " cap " << cap;
+        }
+        EXPECT_EQ(over.size(), cap ? 0u : 1u);
+        for (const size_t threads : {1, 2, 8, 16}) {
+            const auto during = collected_step_statistics(threads, which, false, true, cap);
+            EXPECT_EQ(matrix_rows(during.first), want) << "threads " << threads << " cap " << cap;
+        }
     }
 }
 

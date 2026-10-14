@@ -978,6 +978,37 @@ struct RowTally {
 
 }  // namespace
 
+// One step's sets (each sorted and distinct) in compressed rows: each element numbered densely in
+// `holders` order, which lists each element's holders ascending.
+struct RowIndex {
+    std::vector<uint32_t> size, row_off, row_vert, hold_off, hold;
+
+    void build(const std::vector<std::vector<uint32_t>>& sets,
+               const std::map<uint32_t, std::vector<uint32_t>>& holders, hgcommon::BrStep& view) {
+        std::unordered_map<uint32_t, uint32_t> dense;
+        dense.reserve(holders.size());
+        hold_off.push_back(0);
+        for (const auto& [v, hs] : holders) {
+            dense.emplace(v, static_cast<uint32_t>(dense.size()));
+            hold.insert(hold.end(), hs.begin(), hs.end());
+            hold_off.push_back(static_cast<uint32_t>(hold.size()));
+        }
+        row_off.push_back(0);
+        for (const auto& set : sets) {
+            size.push_back(static_cast<uint32_t>(set.size()));
+            for (uint32_t v : set) row_vert.push_back(dense.at(v));
+            row_off.push_back(static_cast<uint32_t>(row_vert.size()));
+        }
+        view.k = static_cast<uint32_t>(sets.size());
+        view.size = size.data();
+        view.row_off = row_off.data();
+        view.row_vert = row_vert.data();
+        view.hold_off = hold_off.data();
+        view.hold = hold.data();
+        view.vertices = static_cast<uint32_t>(holders.size());
+    }
+};
+
 // The overlap metrics of one step, in parts. Each state is its set of the engine's vertex ids, and
 // a vertex is shared by the states that inherited it; an edge is its list of vertex ids, numbered
 // in BranchialStep::edge_sets. `graph`, when the branchial graph metrics are computed too, gives
@@ -995,6 +1026,7 @@ struct BranchialStepWork::State {
     BranchialStep step;
     uint32_t which;
     const std::vector<uint32_t>* initial;
+    uint32_t matrix_limit;
     BranchialGraph graph;
     wxf::WXFValueAssociation graph_keys;
     // The overlap pass.
@@ -1003,23 +1035,35 @@ struct BranchialStepWork::State {
     std::map<uint32_t, std::vector<uint32_t>> holders;   // vertex -> the states holding it
     // The step in compressed rows (hgcommon::BrStep): vertices numbered densely in `holders`
     // order.
-    std::vector<uint32_t> size, row_off, row_vert, hold_off, hold, adj_off, adj, to_graph,
-        from_graph;
+    RowIndex rows;
+    std::vector<uint32_t> adj_off, adj, to_graph, from_graph;
     hgcommon::BrStep view;
+    // The rows over edge numbers, for the edge-level matrices.
+    std::map<uint32_t, std::vector<uint32_t>> edge_holders;
+    RowIndex edge_rows;
+    hgcommon::BrStep edge_view;
+    // The state matrices' shared counts, hgcommon::br_pair_index cells; empty when not asked
+    // for or over the limit.
+    std::vector<uint32_t> vertex_shared, edge_shared;
+    uint32_t over_limit = 0;
     std::vector<std::unordered_map<PairCounts, uint64_t, PairCountsHash>> part;
     std::atomic<uint32_t> next_row{0};
 
     const BranchialGraph* graph_or_null() const {
         return (which & kBranchialGraph) ? &graph : nullptr;
     }
+    bool vertex_rows() const {
+        return (which & kBranchialOverlap) || !vertex_shared.empty();
+    }
 };
 
 BranchialStepWork::BranchialStepWork(BranchialStep step, uint32_t which,
-                                     const std::vector<uint32_t>* initial)
+                                     const std::vector<uint32_t>* initial, uint32_t matrix_limit)
     : s_(new State) {
     s_->step = std::move(step);
     s_->which = which;
     s_->initial = initial;
+    s_->matrix_limit = matrix_limit;
 }
 
 BranchialStepWork::~BranchialStepWork() = default;
@@ -1030,7 +1074,7 @@ void BranchialStepWork::prepare(size_t max_parts) {
         w.graph = branchial_graph(w.step);
         branchial_graph_metrics(w.graph, w.graph_keys);
     }
-    if (!(w.which & kBranchialOverlap)) return;
+    if (!(w.which & kBranchialContents)) return;
     const BranchialStep& s = w.step;
     // Each state once, by effective id.
     std::map<int64_t, size_t> by_id;
@@ -1051,30 +1095,25 @@ void BranchialStepWork::prepare(size_t max_parts) {
     const uint32_t k = static_cast<uint32_t>(w.sets.size());
     for (uint32_t i = 0; i < k; ++i)
         for (uint32_t v : w.sets[i]) w.holders[v].push_back(i);
-    std::unordered_map<uint32_t, uint32_t> dense;
-    dense.reserve(w.holders.size());
-    w.hold_off.push_back(0);
-    for (const auto& [v, hs] : w.holders) {
-        dense.emplace(v, static_cast<uint32_t>(dense.size()));
-        w.hold.insert(w.hold.end(), hs.begin(), hs.end());
-        w.hold_off.push_back(static_cast<uint32_t>(w.hold.size()));
-    }
-    w.row_off.push_back(0);
-    for (uint32_t a = 0; a < k; ++a) {
-        w.size.push_back(static_cast<uint32_t>(w.sets[a].size()));
-        for (uint32_t v : w.sets[a]) w.row_vert.push_back(dense.at(v));
-        w.row_off.push_back(static_cast<uint32_t>(w.row_vert.size()));
-    }
     hgcommon::BrStep& view = w.view;
-    view.k = k;
-    view.size = w.size.data();
-    view.row_off = w.row_off.data();
-    view.row_vert = w.row_vert.data();
-    view.hold_off = w.hold_off.data();
-    view.hold = w.hold.data();
-    view.vertices = static_cast<uint32_t>(w.holders.size());
-    // A state's node in the branchial graph, and back.
-    if (const BranchialGraph* graph = w.graph_or_null()) {
+    w.rows.build(w.sets, w.holders, view);
+    if (w.which & kBranchialMatrices) {
+        if (k > w.matrix_limit) {
+            w.over_limit = k;
+        } else {
+            const size_t cells = static_cast<size_t>(k) * (k - (k ? 1 : 0)) / 2;
+            if (w.which & kMatrixVertex) w.vertex_shared.assign(cells, 0);
+            if (w.which & kMatrixEdge) {
+                w.edge_shared.assign(cells, 0);
+                for (uint32_t i = 0; i < k; ++i)
+                    for (uint32_t e : w.edge_sets[i]) w.edge_holders[e].push_back(i);
+                w.edge_rows.build(w.edge_sets, w.edge_holders, w.edge_view);
+            }
+        }
+    }
+    // A state's node in the branchial graph, and back: "OverlapByBranchialDistance" reads it.
+    const BranchialGraph* graph = w.graph_or_null();
+    if (graph && (w.which & kBranchialOverlap)) {
         const uint32_t n = static_cast<uint32_t>(graph->ids.size());
         w.from_graph.assign(n, hgcommon::BR_NONE);
         for (uint32_t i = 0; i < k; ++i) {
@@ -1096,12 +1135,27 @@ void BranchialStepWork::prepare(size_t max_parts) {
         view.to_graph = w.to_graph.data();
         view.from_graph = w.from_graph.data();
     }
-    w.part.resize(std::min<size_t>(k / 64 + 1, std::max<size_t>(1, max_parts)));
+    if (w.vertex_rows() || !w.edge_shared.empty())
+        w.part.resize(std::min<size_t>(k / 64 + 1, std::max<size_t>(1, max_parts)));
 }
 
 size_t BranchialStepWork::parts() const { return s_->part.size(); }
 
 const hgcommon::BrStep& BranchialStepWork::rows_view() const { return s_->view; }
+
+bool BranchialStepWork::wants_vertex_rows() const { return s_->vertex_rows(); }
+
+uint32_t* BranchialStepWork::vertex_shared() {
+    return s_->vertex_shared.empty() ? nullptr : s_->vertex_shared.data();
+}
+
+uint32_t* BranchialStepWork::edge_shared() {
+    return s_->edge_shared.empty() ? nullptr : s_->edge_shared.data();
+}
+
+const hgcommon::BrStep& BranchialStepWork::edge_rows_view() const { return s_->edge_view; }
+
+uint32_t BranchialStepWork::matrices_over_limit() const { return s_->over_limit; }
 
 void BranchialStepWork::add_counts(uint32_t distance, uint32_t size_a, uint32_t size_b,
                                    uint32_t shared, uint64_t n) {
@@ -1111,7 +1165,10 @@ void BranchialStepWork::add_counts(uint32_t distance, uint32_t size_a, uint32_t 
 
 namespace {
 
-// hgcommon::br_row's scratch on one host worker: plain memory and a RowTally per row.
+// hgcommon::br_row's scratch on one host worker: plain memory and a RowTally per row. kCells: the
+// pairs write the step's shared counts by hgcommon::br_pair_index; kCount: the pairs are counted
+// for the overlap keys.
+template <bool kCells, bool kCount>
 struct HostRowCtx {
     std::vector<uint32_t> count_v, touched_v, queue_v;
     std::vector<int32_t> dist_v;
@@ -1123,11 +1180,16 @@ struct HostRowCtx {
     uint32_t* n_touched = &touched_n;
     uint32_t* n_queue = &queue_n;
     uint32_t size_a = 0;
+    uint32_t row = 0;
+    uint32_t k;
+    uint32_t* shared_cells;
     RowTally tally;
     std::unordered_map<PairCounts, uint64_t, PairCountsHash>* counted;
 
-    HostRowCtx(const hgcommon::BrStep& s, std::unordered_map<PairCounts, uint64_t, PairCountsHash>& c)
-        : count_v(s.k, 0), touched_v(s.k), queue_v(s.n), dist_v(s.n, -1), counted(&c) {
+    HostRowCtx(const hgcommon::BrStep& s, std::unordered_map<PairCounts, uint64_t, PairCountsHash>& c,
+               uint32_t* cells)
+        : count_v(s.k, 0), touched_v(s.k), queue_v(s.n), dist_v(s.n, -1), k(s.k),
+          shared_cells(cells), counted(&c) {
         count = count_v.data();
         touched = touched_v.data();
         dist = dist_v.data();
@@ -1142,7 +1204,10 @@ struct HostRowCtx {
         return true;
     }
     uint32_t push(uint32_t* counter) { return (*counter)++; }
-    void emit(uint32_t distance, uint32_t size_b, uint32_t shared) {
+    void emit(uint32_t distance, uint32_t b, uint32_t size_b, uint32_t shared) {
+        if constexpr (kCells)
+            if (distance == 0) shared_cells[hgcommon::br_pair_index(k, row, b)] = shared;
+        if constexpr (!kCount) return;
         if (RowTally::fits(distance, size_b, shared))
             tally.add(RowTally::key(distance, size_b, shared));
         else
@@ -1153,25 +1218,131 @@ struct HostRowCtx {
 
 }  // namespace
 
+// The vertex rows, then the edge rows, taken from one counter by every part.
+namespace {
+
+// Rows from `next` while they are below `end`, with `ctx`; returns the first row at `end` or
+// past it. Row r is row r - first of `s`.
+template <class Ctx>
+uint32_t run_rows(Ctx& ctx, const hgcommon::BrStep& s, uint32_t first, uint32_t end, uint32_t r,
+                  std::atomic<uint32_t>& next,
+                  std::unordered_map<PairCounts, uint64_t, PairCountsHash>& counted) {
+    for (; r < end; r = next.fetch_add(1, std::memory_order_relaxed)) {
+        ctx.row = r - first;
+        ctx.size_a = s.size[ctx.row];
+        hgcommon::br_row(ctx, s, ctx.row, hgcommon::IrSerial{});
+        ctx.tally.drain([&](uint32_t distance, uint32_t size_b, uint32_t both, uint64_t n) {
+            counted[PairCounts{distance, std::min(ctx.size_a, size_b),
+                               std::max(ctx.size_a, size_b), both}] += n;
+        });
+    }
+    return r;
+}
+
+}  // namespace
+
+// The vertex rows, then the edge rows, taken from one counter by every part.
 void BranchialStepWork::rows(size_t t) {
     State& w = *s_;
     const hgcommon::BrStep& s = w.view;
     auto& counted = w.part[t];
-    HostRowCtx c(s, counted);
-    for (uint32_t a; (a = w.next_row.fetch_add(1, std::memory_order_relaxed)) < s.k;) {
-        c.size_a = s.size[a];
-        hgcommon::br_row(c, s, a, hgcommon::IrSerial{});
-        c.tally.drain([&](uint32_t distance, uint32_t size_b, uint32_t both, uint64_t n) {
-            counted[PairCounts{distance, std::min(c.size_a, size_b), std::max(c.size_a, size_b),
-                               both}] += n;
-        });
+    const uint32_t vertex_rows = w.vertex_rows() ? s.k : 0;
+    const uint32_t edge_rows = w.edge_shared.empty() ? 0 : w.edge_view.k;
+    uint32_t r = w.next_row.fetch_add(1, std::memory_order_relaxed);
+    if (r < vertex_rows) {
+        uint32_t* cells = w.vertex_shared.empty() ? nullptr : w.vertex_shared.data();
+        if (!cells) {
+            HostRowCtx<false, true> c(s, counted, nullptr);
+            r = run_rows(c, s, 0, vertex_rows, r, w.next_row, counted);
+        } else if (w.which & kBranchialOverlap) {
+            HostRowCtx<true, true> c(s, counted, cells);
+            r = run_rows(c, s, 0, vertex_rows, r, w.next_row, counted);
+        } else {
+            HostRowCtx<true, false> c(s, counted, cells);
+            r = run_rows(c, s, 0, vertex_rows, r, w.next_row, counted);
+        }
     }
+    if (r < vertex_rows + edge_rows) {
+        HostRowCtx<true, false> e(w.edge_view, counted, w.edge_shared.data());
+        run_rows(e, w.edge_view, vertex_rows, vertex_rows + edge_rows, r, w.next_row, counted);
+    }
+}
+
+namespace {
+
+// "StateMatrices": the step's states and each asked-for k x k matrix, from the shared counts.
+// A pair's value is computed once, from (shared, smaller size, larger size), the key the overlap
+// summaries read, and written to both of its cells.
+wxf::WXFValue state_matrices(uint32_t which, const std::vector<int64_t>& ids,
+                             const std::vector<std::vector<uint32_t>>& vertex_sets,
+                             const std::vector<uint32_t>& vertex_shared, uint64_t vertices,
+                             const std::vector<std::vector<uint32_t>>& edge_sets,
+                             const std::vector<uint32_t>& edge_shared, uint64_t edges) {
+    const uint32_t k = static_cast<uint32_t>(ids.size());
+    wxf::WXFValueAssociation m;
+    wxf::WXFValueList states;
+    for (int64_t id : ids) states.push_back(wxf::WXFValue(id));
+    m.push_back({wxf::WXFValue("States"), wxf::WXFValue(std::move(states))});
+    for (uint32_t i = 0; i < 6; ++i) {
+        const uint32_t bit = kMatrixStateOverlap << i;
+        if (!(which & bit)) continue;
+        const bool edge_level = (bit & kMatrixEdge) != 0;
+        const auto& sets = edge_level ? edge_sets : vertex_sets;
+        const auto& shared = edge_level ? edge_shared : vertex_shared;
+        const uint64_t universe = edge_level ? edges : vertices;
+        const uint32_t kind = i % 3;   // overlap, cosine, mutual information
+        auto value = [&](uint32_t both, uint32_t a, uint32_t b) {
+            const uint32_t lo = std::min(a, b), hi = std::max(a, b);
+            if (kind == 0) return hgcommon::bo_jaccard_of_union(both, uint64_t{lo} + hi - both);
+            if (kind == 1) return hgcommon::bo_cosine(both, lo, hi);
+            return hgcommon::bo_mutual_information(both, lo, hi, universe);
+        };
+        wxf::PackedReals p;
+        p.dims = {k, k};
+        p.values.assign(static_cast<size_t>(k) * k, 0.0);
+        for (uint32_t a = 0; a < k; ++a) {
+            const uint32_t sa = static_cast<uint32_t>(sets[a].size());
+            p.values[static_cast<size_t>(a) * k + a] = value(sa, sa, sa);
+            for (uint32_t b = a + 1; b < k; ++b) {
+                const double x = value(shared[hgcommon::br_pair_index(k, a, b)], sa,
+                                       static_cast<uint32_t>(sets[b].size()));
+                p.values[static_cast<size_t>(a) * k + b] = x;
+                p.values[static_cast<size_t>(b) * k + a] = x;
+            }
+        }
+        m.push_back({wxf::WXFValue(kMatrixNames[i]), wxf::WXFValue(std::move(p))});
+    }
+    return wxf::WXFValue(std::move(m));
+}
+
+}  // namespace
+
+uint32_t matrix_bit(const std::string& name) {
+    for (uint32_t i = 0; i < 6; ++i)
+        if (name == kMatrixNames[i]) return kMatrixStateOverlap << i;
+    return 0;
+}
+
+std::string matrix_limit_warning(uint32_t step, uint32_t states, uint32_t limit) {
+    return "StepStatisticsMatrices: step " + std::to_string(step) + " has " +
+           std::to_string(states) + " states, above StepStatisticsMatrixLimit " +
+           std::to_string(limit) + "; its StateMatrices are not returned";
 }
 
 wxf::WXFValueAssociation BranchialStepWork::finish() {
     State& w = *s_;
     wxf::WXFValueAssociation rec = std::move(w.graph_keys);
-    if (!(w.which & kBranchialOverlap)) return rec;
+    if (!(w.which & kBranchialContents)) return rec;
+    if (w.which & kBranchialOverlap) overlap_keys(rec);
+    if ((w.which & kBranchialMatrices) && !w.over_limit)
+        rec.push_back({wxf::WXFValue("StateMatrices"),
+                       state_matrices(w.which, w.ids, w.sets, w.vertex_shared, w.holders.size(),
+                                      w.edge_sets, w.edge_shared, w.edge_holders.size())});
+    return rec;
+}
+
+void BranchialStepWork::overlap_keys(wxf::WXFValueAssociation& rec) {
+    State& w = *s_;
     const BranchialGraph* graph = w.graph_or_null();
     const size_t k = w.sets.size();
     std::map<PairCounts, uint64_t> counted;
@@ -1274,7 +1445,6 @@ wxf::WXFValueAssociation BranchialStepWork::finish() {
         }
         rec.push_back({wxf::WXFValue("OverlapByBranchialDistance"), wxf::WXFValue(per)});
     }
-    return rec;
 }
 
 std::vector<uint32_t> initial_vertices(const BranchialStep& step0) {
@@ -1472,6 +1642,7 @@ struct StepStatisticsJobs::Step {
     wxf::WXFValueAssociation pooled;
     std::unique_ptr<BranchialStepWork> work;
     wxf::WXFValueAssociation branchial;
+    uint32_t matrices_over_limit = 0;
     std::atomic<size_t> remaining{0};
 };
 
@@ -1508,7 +1679,8 @@ void StepStatisticsJobs::start(Step* s, StepInput in) {
     });
     if (!which_) return;
     s->work = std::make_unique<BranchialStepWork>(std::move(branchial), which_,
-                                                  have_initial_ ? &initial_ : nullptr);
+                                                  have_initial_ ? &initial_ : nullptr,
+                                                  matrix_limit_);
     submit_([this, s] {
         s->work->prepare(workers_);
         const size_t n = s->work->parts();
@@ -1516,6 +1688,7 @@ void StepStatisticsJobs::start(Step* s, StepInput in) {
             s->work->rows(p);
             if (s->remaining.fetch_sub(1, std::memory_order_acq_rel) == 1) {
                 s->branchial = s->work->finish();
+                s->matrices_over_limit = s->work->matrices_over_limit();
                 s->work.reset();
             }
         };
@@ -1523,6 +1696,7 @@ void StepStatisticsJobs::start(Step* s, StepInput in) {
         if (n == 0 || (device_rows_ && s->work->rows_view().k >= device_min_states_ &&
                        device_rows_(*s->work))) {
             s->branchial = s->work->finish();
+            s->matrices_over_limit = s->work->matrices_over_limit();
             s->work.reset();
             return;
         }
@@ -1539,7 +1713,8 @@ enum class HostStatsJob { Step };
 wxf::WXFValue step_statistics_on_host(std::map<uint32_t, StepInput> inputs,
                                       bool weight_by_classes, uint32_t which,
                                       StepStatisticsJobs::DeviceRows device_rows,
-                                      uint32_t device_min_states) {
+                                      uint32_t device_min_states, uint32_t matrix_limit,
+                                      std::vector<std::pair<uint32_t, uint32_t>>* over_limit) {
     job_system::JobSystem<HostStatsJob> system(std::thread::hardware_concurrency());
     system.start();
     StepStatisticsJobs jobs(
@@ -1548,13 +1723,23 @@ wxf::WXFValue step_statistics_on_host(std::map<uint32_t, StepInput> inputs,
             system.submit(job_system::make_job<HostStatsJob>(std::move(f), HostStatsJob::Step));
         },
         std::move(device_rows), device_min_states);
+    jobs.set_matrix_limit(matrix_limit);
     for (auto& [step, in] : inputs) jobs.submit(step, std::move(in));
     system.wait_for_completion();
     if (system.has_error())
         throw std::runtime_error(std::string("StepStatistics failed in a worker: ") +
                                  system.get_error_message());
     std::atomic_thread_fence(std::memory_order_acquire);
-    return jobs.reply();
+    wxf::WXFValue reply = jobs.reply();
+    if (over_limit) *over_limit = jobs.matrices_over_limit();
+    return reply;
+}
+
+std::vector<std::pair<uint32_t, uint32_t>> StepStatisticsJobs::matrices_over_limit() const {
+    std::vector<std::pair<uint32_t, uint32_t>> out;
+    for (const auto& [step, s] : steps_)
+        if (s->populated && s->matrices_over_limit) out.emplace_back(step, s->matrices_over_limit);
+    return out;
 }
 
 wxf::WXFValue StepStatisticsJobs::reply() {

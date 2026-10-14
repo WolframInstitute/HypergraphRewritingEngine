@@ -116,9 +116,11 @@ struct GpuJob {
 
     // "StepStatisticsWeighting" -> "Classes". Set after the job is built.
     bool step_statistics_by_class = false;
-    // "StepStatisticsBranchial": stats::kBranchial* bits, as admitted for this run. Set after the
-    // job is built.
+    // "StepStatisticsBranchial" and "StepStatisticsMatrices": stats::kBranchial* and kMatrix*
+    // bits, as admitted for this run. Set after the job is built.
     uint32_t step_statistics_branchial = 0;
+    // "StepStatisticsMatrixLimit". Set after the job is built.
+    uint32_t step_statistics_matrix_limit = HG_NAMESPACE::stats::kMatrixLimitDefault;
     // "Device" in RequestedData: the reply names the device's name and compute capability. Set
     // after the job is built.
     bool include_device = false;

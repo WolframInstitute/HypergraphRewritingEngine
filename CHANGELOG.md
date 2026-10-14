@@ -11,6 +11,10 @@
   GPU cannot be used.
 - The `"Device"` property names the device that ran an evolution, with the name and compute
   capability of the GPU.
+- `"StepStatisticsMatrices"` adds `"StateMatrices"` to each `"StepStatistics"` step: the step's
+  state ids and, for each matrix asked for, the state x state matrix of the overlap, the cosine
+  similarity or the mutual information of the states' vertex sets or edge sets, as packed arrays.
+  A step with more states than `"StepStatisticsMatrixLimit"` (default 1000) has none and warns.
 
 ## v1.0.0-rc2 (2026-10-09)
 

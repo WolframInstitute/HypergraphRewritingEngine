@@ -210,7 +210,7 @@ private:
 };
 
 // "StepStatisticsBranchial": one state of a step (stats::BranchialStepWork), for both engines,
-// appended to `b`: its id `effective`, and with kBranchialOverlap its vertex ids and edge
+// appended to `b`: its id `effective`, and with kBranchialContents its vertex ids and edge
 // numbers from `contents_of(sid, out)`, which appends each of the state's edges as its arity and
 // then its vertex ids. An edge is its ordered list of vertex ids, numbered by `edge_number` by
 // first appearance: the edge metrics read which states hold the same list, so two members of an
@@ -222,7 +222,7 @@ void branchial_step_state(uint32_t which, uint32_t sid, int64_t effective,
                           ContentsOf&& contents_of, ListNumbers& edge_number,
                           std::vector<uint32_t>& flat, stats::BranchialStep& b) {
     b.nodes.push_back(effective);
-    if (!(which & stats::kBranchialOverlap)) return;
+    if (!(which & stats::kBranchialContents)) return;
     flat.clear();
     contents_of(sid, flat);
     std::vector<uint32_t> vs, es;

@@ -23,6 +23,7 @@ sgrVertexDimensions::usage = "sgrVertexDimensions[g] gives each vertex's own Hau
 sgrBranchialGraphMetrics::usage = "sgrBranchialGraphMetrics[nodes, pairs] gives the per-step branchial graph metrics for a step's states and its branchial state pairs.";
 sgrOverlapMetrics::usage = "sgrOverlapMetrics[vertexSets, edgeLists, initial] gives the per-step overlap values for a step's states, each given as its vertex set and its list of edges (each edge its vertex list); initial is the vertex set of step 0's states.";
 sgrOverlapByDistance::usage = "sgrOverlapByDistance[vertexSets, distanceMatrix] gives, for each finite branchial distance d > 0, the Jaccard index of every two states at distance d.";
+sgrStateMatrices::usage = "sgrStateMatrices[vertexSets, edgeLists] gives the six state x state matrices of a step's states in the given order: the Jaccard index, the cosine similarity and the mutual information of every two states, over their vertex sets and over their edge sets (each edge its vertex list).";
 
 Begin["`Private`"];
 
@@ -159,6 +160,21 @@ sgrOverlapByDistance[vertexSets_List, dm_] := Module[
         With[{w = Length[Union[sets[[i]], sets[[j]]]]},
           If[w == 0, 0., N[Length[Intersection[sets[[i]], sets[[j]]]]/w]]]},
       {i, k}, {j, i + 1, k}], 1], #[[1]] =!= Infinity &], First -> Last]]];
+
+sgrStateMatrices[vertexSets_List, edgeLists_List] := Module[{level, v, e},
+  level[sets0_] := Module[{sets = DeleteDuplicates /@ sets0, u},
+    u = Length[Union @@ sets];
+    Table[Module[{a = sets[[i]], b = sets[[j]], n, w},
+        n = Length[Intersection[a, b]]; w = Length[Union[a, b]];
+        {If[w == 0, 0., N[n/w]],
+         If[Length[a] Length[b] == 0, 0., N[n/Sqrt[Length[a] Length[b]]]],
+         mutualInformation[n, Length[a], Length[b], u]}],
+      {i, Length[sets]}, {j, Length[sets]}]];
+  v = level[vertexSets]; e = level[edgeLists];
+  <|"StateOverlap" -> v[[All, All, 1]], "StateCosineSimilarity" -> v[[All, All, 2]],
+    "StateMutualInformation" -> v[[All, All, 3]], "StateEdgeOverlap" -> e[[All, All, 1]],
+    "StateEdgeCosineSimilarity" -> e[[All, All, 2]],
+    "StateEdgeMutualInformation" -> e[[All, All, 3]]|>];
 
 End[];
 EndPackage[];

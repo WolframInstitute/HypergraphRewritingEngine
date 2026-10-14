@@ -334,13 +334,36 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                             else throw std::runtime_error(
                                 "StepStatisticsWeighting '" + w + "' is not States or Classes");
                         } else if (option_key == "StepStatisticsBranchial") {
-                            req.step_statistics_branchial = 0;
+                            uint32_t bits = 0;
                             for (const auto& k : option_parser.read<std::vector<std::string>>()) {
-                                if (k == "Graph") req.step_statistics_branchial |= hg::stats::kBranchialGraph;
-                                else if (k == "Overlap") req.step_statistics_branchial |= hg::stats::kBranchialOverlap;
+                                if (k == "Graph") bits |= hg::stats::kBranchialGraph;
+                                else if (k == "Overlap") bits |= hg::stats::kBranchialOverlap;
                                 else throw std::runtime_error(
                                     "StepStatisticsBranchial '" + k + "' is not Graph or Overlap");
                             }
+                            req.step_statistics_branchial =
+                                (req.step_statistics_branchial & hg::stats::kBranchialMatrices) | bits;
+                        } else if (option_key == "StepStatisticsMatrices") {
+                            uint32_t bits = 0;
+                            for (const auto& k : option_parser.read<std::vector<std::string>>()) {
+                                const uint32_t bit = hg::stats::matrix_bit(k);
+                                if (!bit)
+                                    throw std::runtime_error(
+                                        "StepStatisticsMatrices '" + k + "' is not one of "
+                                        "StateOverlap, StateCosineSimilarity, "
+                                        "StateMutualInformation, StateEdgeOverlap, "
+                                        "StateEdgeCosineSimilarity, StateEdgeMutualInformation");
+                                bits |= bit;
+                            }
+                            req.step_statistics_branchial =
+                                (req.step_statistics_branchial & ~hg::stats::kBranchialMatrices) | bits;
+                        } else if (option_key == "StepStatisticsMatrixLimit") {
+                            const int64_t v = option_parser.read<int64_t>();
+                            if (v < 1 || v > UINT32_MAX)
+                                throw std::runtime_error(
+                                    "StepStatisticsMatrixLimit is a positive integer, got " +
+                                    std::to_string(v));
+                            req.step_statistics_matrix_limit = static_cast<uint32_t>(v);
                         } else if (option_key == "GraphProperties") {
                             // Graph properties for graph-ready data output (list)
                             req.graph_properties = option_parser.read<std::vector<std::string>>();
@@ -499,18 +522,18 @@ static size_t effective_max_states_per_step(const hgffi::ParsedJob& req) {
     return step_cap_counts_matches(req) ? req.matches_per_step : req.max_states_per_step;
 }
 
-// The "StepStatisticsBranchial" metrics a run computes, on either engine: none under
-// ExploreFromCanonicalStatesOnly, and no overlap under Full states, since a Full class has no
-// vertices of its own. Each one left out is warned about. Both engines call this with the request
-// alone, so the admission cannot depend on which engine-internal route the run took.
-// The "StepStatisticsBranchial" bits the run computes; with `warn`, a warning for each one the
-// options rule out.
+// The "StepStatisticsBranchial" and "StepStatisticsMatrices" metrics a run computes, on either
+// engine: none under ExploreFromCanonicalStatesOnly, and no overlap or matrices under Full
+// states, since a Full class has no vertices of its own. Each one left out is warned about. Both
+// engines call this with the request alone, so the admission cannot depend on which
+// engine-internal route the run took. With `warn`, a warning for each one the options rule out.
 static uint32_t admitted_branchial(hgffi::ParsedJob& req, bool warn = true) {
     uint32_t which = req.include_step_statistics ? req.step_statistics_branchial : 0u;
     if (which && req.explore_from_canonical_states_only) {
         if (warn)
             req.ffi_warnings.push_back({"StepStatistics", 1,
-                "StepStatisticsBranchial is not computed under ExploreFromCanonicalStatesOnly"});
+                "StepStatisticsBranchial and StepStatisticsMatrices are not computed under "
+                "ExploreFromCanonicalStatesOnly"});
         which = 0;
     }
     if ((which & hg::stats::kBranchialOverlap) && req.canonicalize_states_mode == "Full") {
@@ -519,6 +542,12 @@ static uint32_t admitted_branchial(hgffi::ParsedJob& req, bool warn = true) {
                 "the StepStatisticsBranchial overlap metrics need CanonicalizeStates None or "
                 "Automatic"});
         which &= ~hg::stats::kBranchialOverlap;
+    }
+    if ((which & hg::stats::kBranchialMatrices) && req.canonicalize_states_mode == "Full") {
+        if (warn)
+            req.ffi_warnings.push_back({"StepStatistics", 1,
+                "StepStatisticsMatrices needs CanonicalizeStates None or Automatic"});
+        which &= ~hg::stats::kBranchialMatrices;
     }
     return which;
 }
@@ -599,6 +628,7 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
         job.step_statistics_by_class = req.step_statistics_by_class;
         job.include_device = req.include_device;
         job.step_statistics_branchial = branchial;
+        job.step_statistics_matrix_limit = req.step_statistics_matrix_limit;
         job.step_cap_counts_matches = step_cap_counts_matches(req);
         if (req.show_progress) {
             core_progress(host, "HGEvolve: Starting GPU evolution...");
@@ -1025,6 +1055,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             step_statistics = std::make_unique<hgffi::StepStatisticsCollector>(
                 hg, engine, admitted_branchial(req, /*warn=*/false), req.step_statistics_by_class,
                 static_cast<int>(req.steps));
+            step_statistics->set_matrix_limit(req.step_statistics_matrix_limit);
             if (!opening_session && !held_session)
                 step_statistics->attach(effective_max_states_per_step(req) != 0);
         }
@@ -2055,11 +2086,18 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             } else {
                 // The states give each step's classes and events, or with the count only its
                 // branchial input.
-                if (!step_statistics)
+                if (!step_statistics) {
                     step_statistics = std::make_unique<hgffi::StepStatisticsCollector>(
                         hg, engine, which, req.step_statistics_by_class,
                         static_cast<int>(req.steps));
+                    step_statistics->set_matrix_limit(req.step_statistics_matrix_limit);
+                }
                 reply = step_statistics->finish(by_count ? &weighted : nullptr);
+                for (const auto& [step, states] : step_statistics->matrices_over_limit())
+                    req.ffi_warnings.push_back(
+                        {"StepStatistics", 1,
+                         hg::stats::matrix_limit_warning(step, states,
+                                                         req.step_statistics_matrix_limit)});
             }
             full_result.push_back({wxf::WXFValue("StepStatistics"), std::move(reply)});
         }

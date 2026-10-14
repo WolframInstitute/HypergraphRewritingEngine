@@ -153,7 +153,9 @@ Boundary + tooling:
   engine's workers: one pools the step's classes (`stats::step_record`), one builds the
   step's branchial graph and its metrics, and the overlap rows are split over up to one job
   per worker, the last of which merges the row counts in key order and writes the overlap
-  keys. A step's record is the same function of its classes and counts whichever job ran
+  keys. With "StepStatisticsMatrices" the same jobs run the rows over the states' edge numbers
+  too, and each pair that shares an element writes its count to its own cell, so the matrices
+  need no merge. A step's record is the same function of its classes and counts whichever job ran
   which part, so the reply is byte-identical at any thread count and on either engine; the
   pooling keeps its long-double sums in class-hash order, which is what makes the bytes match.
   Under full capture a step's jobs are submitted when its depth settles (the engine's depth

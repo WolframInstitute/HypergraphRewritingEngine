@@ -628,6 +628,36 @@ void Writer::write_binary_string(const std::vector<uint8_t>& value) {
     data_.insert(data_.end(), value.begin(), value.end());
 }
 
+void Writer::write_packed_reals(const PackedReals& value) {
+    size_t count = 1;
+    for (size_t d : value.dims) count *= d;
+    if (value.dims.empty() || count != value.values.size())
+        throw TypeError("packed array dimensions do not match its element count");
+    if (count == 0) {
+        // The leading dimensions as lists, down to the first zero.
+        std::function<void(size_t)> lists = [&](size_t level) {
+            const size_t n = value.dims[level];
+            write_function("List", n);
+            if (n) for (size_t i = 0; i < n; ++i) lists(level + 1);
+        };
+        lists(0);
+        return;
+    }
+    write_byte(static_cast<uint8_t>(Token::PackedArray));
+    write_byte(0x23);   // Real64
+    write_varint(value.dims.size());
+    for (size_t d : value.dims) write_varint(d);
+    uint16_t endian_test = 1;
+    const bool is_little_endian = (*reinterpret_cast<uint8_t*>(&endian_test) == 1);
+    for (double x : value.values) {
+        if (x == 0.0) x = 0.0;   // -0.0 as 0.0, as write_real64 writes it
+        uint64_t bits;
+        std::memcpy(&bits, &x, 8);
+        if (!is_little_endian) bits = wxf_bswap64(bits);
+        for (int i = 0; i < 8; i++) write_byte(static_cast<uint8_t>((bits >> (i * 8)) & 0xFF));
+    }
+}
+
 void Writer::write_function(const std::string& head, size_t arg_count) {
     write_byte(static_cast<uint8_t>(Token::Function));
     write_varint(arg_count);

@@ -404,6 +404,28 @@ this pass on host job-system workers from the states and branchial pairs, throug
 `hgcommon/branchial_rows_core.hpp` and `hgcommon/branchial_overlap_core.hpp` (ARCHITECTURE.md,
 "StepStatistics in the job system"); the GPU engine's reply counts the rows of a step of 2048
 states or more on the device.
+
+**`StepStatistics` state matrices.** `"StepStatisticsMatrices"` names any of six state x state
+matrices, which each step's record gives under `StateMatrices`: an association whose `States`
+lists the step's state ids ascending (the ids of `"States"`, under the run's state identity) and
+which holds each matrix asked for as a k x k packed array of reals, row and column i for the
+i-th state. `StateOverlap`, `StateCosineSimilarity` and `StateMutualInformation` hold, for every
+two states, the value the summary of the same name summarises; `StateEdgeOverlap`,
+`StateEdgeCosineSimilarity` and `StateEdgeMutualInformation` are the same three with each state
+as its set of edges (an edge is its ordered list of vertex ids, as for `EdgeSharpness`) and U the
+union of the step's edge sets. A pair's value is computed once from (n11, the smaller size, the
+larger size) and written to both cells, so the matrix is symmetric bit for bit and its cells above
+the diagonal are the values the summaries read. The diagonal is each state against itself: 1 for
+the overlap and the cosine (0 for an empty state), and for the mutual information the entropy in
+bits of membership in the state over U. A step with more states than
+`"StepStatisticsMatrixLimit"` (default 1000) has no `StateMatrices`, and the run warns with the
+step and its state count. State ids are numbered by the run (§5.1), so two runs give the same
+matrices up to a renumbering of the states. The admission is `"Overlap"`'s.
+
+Cost: n11 for every two states that share an element comes from the overlap pass's rows (one
+pass over the vertex sets, one over the edge sets), each pair writing its own cell of a
+k (k - 1) / 2 triangle; the device writes the cells of a step of 2048 states or more. Building
+the reply is O(k²) per matrix.
 *(Gate: `reference/verify_state_statistics.wls`: the engine against
 `reference/StateGeometryReference.wl`, an independent Wolfram Language implementation, on the
 corpus and on random rules; the two Function Repository metrics against ResourceFunction itself.

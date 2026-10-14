@@ -7,9 +7,10 @@
 // A step's k states are numbered 0..k-1 by effective id. Row a counts every state b > a that
 // shares a vertex with a, through the inverted index of holders (each vertex's holders,
 // ascending), and with the branchial graph every b > a in a's component, sharing or not, with its
-// distance. Each pair is emitted once as (distance, |B|, shared): distance 0 for every pair that
+// distance. Each pair is emitted once as (distance, b, |B|, shared): distance 0 for every pair that
 // shares a vertex, and its distance d > 0 for every pair of one component. The caller counts the
-// emissions per key; |A| is the row's.
+// emissions per key, or keeps each pair's shared count for the state matrices; |A| is the row's.
+// The same rows over the states' edge numbers in place of their vertices give the shared edges.
 //
 // The lanes of the policy (IrSerial on the host, IrTile on the device) split each holder list and
 // each breadth-first level. The search's distances and the shared counts do not depend on which
@@ -25,7 +26,7 @@
 //   uint32_t add_count(uint32_t b)     count[b] += 1, returns the old value; atomic on the device
 //   bool     claim_dist(uint32_t x, int32_t d)   dist[x] from -1 to d; true for the one claimer
 //   uint32_t push(uint32_t* counter)  returns the old value and adds 1; atomic on the device
-//   void     emit(uint32_t distance, uint32_t size_b, uint32_t shared)
+//   void     emit(uint32_t distance, uint32_t b, uint32_t size_b, uint32_t shared)
 
 #include <stdint.h>
 
@@ -52,6 +53,11 @@ struct BrStep {
     const uint32_t* to_graph = nullptr;     // k entries, BR_NONE for a state not in the graph
     const uint32_t* from_graph = nullptr;   // n entries, BR_NONE for a node with no state
 };
+
+// The cell of pair a < b in a step's upper triangle of k states, row by row: k (k - 1) / 2 cells.
+HG_HD inline uint64_t br_pair_index(uint32_t k, uint32_t a, uint32_t b) {
+    return uint64_t{a} * k - uint64_t{a} * (a + 1) / 2 + (b - a - 1);
+}
 
 // The first index in hs[0..len) whose value is above a; hs ascending.
 HG_HD inline uint32_t br_upper_bound(const uint32_t* hs, uint32_t len, uint32_t a) {
@@ -103,14 +109,14 @@ HG_HD void br_row(Ctx& c, const BrStep& s, uint32_t a, Par par) {
             const uint32_t x = c.ld(&c.queue[j]);
             const uint32_t b = s.from_graph[x];
             if (b != BR_NONE && b > a)
-                c.emit(static_cast<uint32_t>(c.ld(&c.dist[x])), s.size[b], c.ld(&c.count[b]));
+                c.emit(static_cast<uint32_t>(c.ld(&c.dist[x])), b, s.size[b], c.ld(&c.count[b]));
         });
         par.sync();
     }
     const uint32_t n_touched = par.bcast(c.ld(c.n_touched));
     par.fan(n_touched, [&](uint32_t j) {
         const uint32_t b = c.ld(&c.touched[j]);
-        c.emit(0, s.size[b], c.ld(&c.count[b]));
+        c.emit(0, b, s.size[b], c.ld(&c.count[b]));
         c.st(&c.count[b], 0u);
     });
     par.fan(reached, [&](uint32_t j) { c.st(&c.dist[c.ld(&c.queue[j])], -1); });

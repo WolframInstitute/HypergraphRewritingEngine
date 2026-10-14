@@ -103,8 +103,40 @@ struct BranchialStep {
     std::vector<std::vector<uint32_t>> edge_sets;
 };
 
-// Which per-step branchial metrics a request asks for ("StepStatisticsBranchial").
-enum : uint32_t { kBranchialGraph = 1u, kBranchialOverlap = 2u };
+// Which per-step branchial metrics a request asks for: "StepStatisticsBranchial" sets
+// kBranchialGraph and kBranchialOverlap, "StepStatisticsMatrices" the kMatrix* bits, one per
+// state x state matrix of "StateMatrices".
+enum : uint32_t {
+    kBranchialGraph = 1u,
+    kBranchialOverlap = 2u,
+    kMatrixStateOverlap = 1u << 2,
+    kMatrixStateCosineSimilarity = 1u << 3,
+    kMatrixStateMutualInformation = 1u << 4,
+    kMatrixStateEdgeOverlap = 1u << 5,
+    kMatrixStateEdgeCosineSimilarity = 1u << 6,
+    kMatrixStateEdgeMutualInformation = 1u << 7,
+    kMatrixVertex = kMatrixStateOverlap | kMatrixStateCosineSimilarity |
+                    kMatrixStateMutualInformation,
+    kMatrixEdge = kMatrixStateEdgeOverlap | kMatrixStateEdgeCosineSimilarity |
+                  kMatrixStateEdgeMutualInformation,
+    kBranchialMatrices = kMatrixVertex | kMatrixEdge,
+    // The bits that read each state's vertices and edges.
+    kBranchialContents = kBranchialOverlap | kBranchialMatrices,
+};
+
+// The "StepStatisticsMatrices" names, in kMatrix* bit order from kMatrixStateOverlap.
+constexpr const char* kMatrixNames[6] = {
+    "StateOverlap",     "StateCosineSimilarity",     "StateMutualInformation",
+    "StateEdgeOverlap", "StateEdgeCosineSimilarity", "StateEdgeMutualInformation"};
+
+// The kMatrix* bit of a "StepStatisticsMatrices" name; 0 for any other string.
+uint32_t matrix_bit(const std::string& name);
+
+// "StepStatisticsMatrixLimit": the most states a step may have for its "StateMatrices".
+constexpr uint32_t kMatrixLimitDefault = 1000;
+
+// The warning for a step whose `states` states are above `limit`.
+std::string matrix_limit_warning(uint32_t step, uint32_t states, uint32_t limit);
 
 // The vertices of step 0's states (S0), sorted and distinct, which
 // "InitialStateMutualInformation" reads at every step.
@@ -115,14 +147,16 @@ std::vector<uint32_t> initial_vertices(const BranchialStep& step0);
 // "BranchialDimension" (absent when undefined); with kBranchialOverlap "StateOverlap",
 // "StateCosineSimilarity", "StateMutualInformation", "InitialStateMutualInformation" (when
 // `initial` is given), "VertexSharpness", "BranchEntropy", "EdgeSharpness" and
-// "EdgeBranchEntropy"; with both, "OverlapByBranchialDistance".
+// "EdgeBranchEntropy"; with both, "OverlapByBranchialDistance"; with kMatrix* bits
+// "StateMatrices", when the step has at most `matrix_limit` states.
 //
 // Built in three calls so the overlap rows can run on several workers: prepare(max_parts), then
 // rows(p) for every p < parts(), concurrently and in any order, then finish(). The row counts
 // are merged in key order, so the keys do not depend on which part ran which row.
 class BranchialStepWork {
 public:
-    BranchialStepWork(BranchialStep step, uint32_t which, const std::vector<uint32_t>* initial);
+    BranchialStepWork(BranchialStep step, uint32_t which, const std::vector<uint32_t>* initial,
+                      uint32_t matrix_limit = kMatrixLimitDefault);
     ~BranchialStepWork();
     BranchialStepWork(const BranchialStepWork&) = delete;
     BranchialStepWork& operator=(const BranchialStepWork&) = delete;
@@ -138,9 +172,23 @@ public:
     const hgcommon::BrStep& rows_view() const;
     void add_counts(uint32_t distance, uint32_t size_a, uint32_t size_b, uint32_t shared,
                     uint64_t n);
+    // Whether rows_view()'s rows are wanted at all: the overlap keys or a vertex-level matrix.
+    bool wants_vertex_rows() const;
+    // The shared counts of the state matrices, k x k, row a holding a's pairs with every b > a:
+    // the vertex rows' shared vertices and the edge rows' shared edges. Null when not asked for
+    // or over the limit. Rows made elsewhere write the cells their pairs emit at distance 0.
+    uint32_t* vertex_shared();
+    uint32_t* edge_shared();
+    // The rows over the states' edge numbers, for edge_shared(); valid when edge_shared() is not
+    // null.
+    const hgcommon::BrStep& edge_rows_view() const;
     wxf::WXFValueAssociation finish();
+    // The step's states when its matrices were asked for and it has more than the limit, else 0.
+    uint32_t matrices_over_limit() const;
 
 private:
+    // The kBranchialOverlap keys.
+    void overlap_keys(wxf::WXFValueAssociation& rec);
     struct State;
     std::unique_ptr<State> s_;
 };
@@ -200,6 +248,10 @@ public:
     }
     // One association per started step with a population, in step order.
     wxf::WXFValue reply();
+    // "StepStatisticsMatrixLimit"; set before the first step starts.
+    void set_matrix_limit(uint32_t limit) { matrix_limit_ = limit; }
+    // After reply: (step, states) for each step whose matrices were over the limit.
+    std::vector<std::pair<uint32_t, uint32_t>> matrices_over_limit() const;
 
 private:
     bool weight_by_classes_;
@@ -208,6 +260,7 @@ private:
     Submit submit_;
     DeviceRows device_rows_;
     uint32_t device_min_states_;
+    uint32_t matrix_limit_ = kMatrixLimitDefault;
     std::vector<uint32_t> initial_;
     bool have_initial_ = false;
     std::map<uint32_t, std::unique_ptr<Step>> steps_;
@@ -216,10 +269,14 @@ private:
 // The reply of `inputs`, built by StepStatisticsJobs on a job system of the host's hardware
 // threads, for a reply whose run had no host engine (the GPU backend). A step of at least
 // `device_min_states` states has its overlap rows counted by `device_rows` when it can.
+// `over_limit`, when given, receives StepStatisticsJobs::matrices_over_limit.
 wxf::WXFValue step_statistics_on_host(std::map<uint32_t, StepInput> inputs,
                                       bool weight_by_classes, uint32_t which,
                                       StepStatisticsJobs::DeviceRows device_rows = nullptr,
-                                      uint32_t device_min_states = 0);
+                                      uint32_t device_min_states = 0,
+                                      uint32_t matrix_limit = kMatrixLimitDefault,
+                                      std::vector<std::pair<uint32_t, uint32_t>>* over_limit =
+                                          nullptr);
 
 }  // namespace stats
 }  // namespace HG_NAMESPACE

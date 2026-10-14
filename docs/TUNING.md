@@ -293,3 +293,9 @@ The C1 gate is `mono_check` with no violation at the 5% band for the throttle; t
 | Stats builds only | `kClaimRing` 8192, `kClaimRingWorkers` 64 (`parallel_evolution.hpp:1278-1279`, inside `#if HG_ENGINE_STATS`), `kSilentWitness`, `kDrainProbes`, `kMaxTimedThreads`, `kAllocSites`, counter slot counts |
 
 Board H6 lists `kClaimRing` and `kClaimRingWorkers` as per-host tuning; both exist only in stats builds and have no effect on a release run.
+
+## 4. Quiet-box queue
+
+Wall-clock checks measured by instruction counts only, to run when the box is quiet.
+
+- **The overlap rows with the state matrices.** `hg_evolve` on rule A from an 8 x 8 grid, 10 steps, `"MaxStatesPerStep" -> 400`, `"StepStatistics"`, `"StepStatisticsBranchial" -> All`, at 1, 4 and 16 workers, master against the commit that adds `"StepStatisticsMatrices"`, 6 interleaved runs each. Expected: equal within the spread (callgrind on `StateStatistics.BranchialMetricsDoNotDependOnTheRowSplit`: 290,543,143 -> 290,848,055 Ir). The same run with `"StepStatisticsMatrices" -> All` gives the cost of the matrices; expected below 2x the overlap-only run.

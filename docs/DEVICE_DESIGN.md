@@ -294,6 +294,10 @@ and finishes it, so the reply is the host's bytes:
    table in shared memory; a full table writes the pair as its own record. At the end of the row
    the warp appends its entries, with |A|, to a record buffer of 4M records; rows run in batches,
    and a batch whose records overflow the buffer runs again in halves.
+   With "StepStatisticsMatrices" each pair that shares an element also stores its shared count
+   in its own cell of a k (k - 1) / 2 triangle (`hgcommon::br_pair_index`), one store by the lane
+   that emits the pair. The edge rows of the edge-level matrices run first, over the states' edge
+   numbers, with this store only and no table.
 4. **Finish.** The host adds the records up per (key, |A|) and passes them to
    `BranchialStepWork::add_counts`, then runs `finish`, as the host route does. Integer sums
    commute, so the counts do not depend on which warp ran which row. A pair whose fields do not

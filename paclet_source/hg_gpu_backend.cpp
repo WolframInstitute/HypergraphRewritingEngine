@@ -1010,16 +1010,24 @@ std::vector<uint8_t> run_gpu_evolution_once(const GpuJob& request, const HostBri
         }
         // The overlap rows of a step of 2048 states or more run on the device
         // (hg_gpu::branchial_rows_device), one step at a time; a step that finds the device in
-        // use runs its rows on the host.
+        // use runs its rows on the host. The edge rows of the state matrices run first: they
+        // only write matrix cells, which the host's rows write again with the same values when
+        // the vertex rows then fall back to the host.
         std::atomic<bool> device_busy{false};
         auto device_rows = [&device_busy](hg::stats::BranchialStepWork& work) {
             if (device_busy.exchange(true, std::memory_order_acquire)) return false;
-            bool done = false;
+            bool done = true;
             try {
-                done = hg_gpu::branchial_rows_device(
-                    work.rows_view(),
-                    [&work](uint32_t distance, uint32_t size_a, uint32_t size_b, uint32_t shared,
-                            uint64_t n) { work.add_counts(distance, size_a, size_b, shared, n); });
+                if (uint32_t* cells = work.edge_shared())
+                    done = hg_gpu::branchial_rows_device(work.edge_rows_view(), nullptr, cells);
+                if (done && work.wants_vertex_rows())
+                    done = hg_gpu::branchial_rows_device(
+                        work.rows_view(),
+                        [&work](uint32_t distance, uint32_t size_a, uint32_t size_b,
+                                uint32_t shared, uint64_t n) {
+                            work.add_counts(distance, size_a, size_b, shared, n);
+                        },
+                        work.vertex_shared());
             } catch (...) {
                 device_busy.store(false, std::memory_order_release);
                 throw;
@@ -1027,10 +1035,16 @@ std::vector<uint8_t> run_gpu_evolution_once(const GpuJob& request, const HostBri
             device_busy.store(false, std::memory_order_release);
             return done;
         };
+        std::vector<std::pair<uint32_t, uint32_t>> over_limit;
         full_result.push_back({wxf::WXFValue("StepStatistics"),
                                hg::stats::step_statistics_on_host(
                                    std::move(inputs), job.step_statistics_by_class, which,
-                                   device_rows, 2048)});
+                                   device_rows, 2048, job.step_statistics_matrix_limit,
+                                   &over_limit)});
+        for (const auto& [step, states] : over_limit)
+            job.job_warnings.push_back(
+                {"StepStatistics", 1,
+                 hg::stats::matrix_limit_warning(step, states, job.step_statistics_matrix_limit)});
     }
 
     // GraphData for the requested *Graph properties, built through the SAME shared

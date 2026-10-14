@@ -9,7 +9,9 @@
    same from one state per class and the class's multiplicity, under quotient exploration and
    under full capture, with "StepStatisticsWeighting" -> "States" and "Classes", and with
    "StepStatisticsBranchial" -> All. Every key of every step must agree: integers exactly, reals
-   to 1e-9 relative.
+   to 1e-9 relative. The "StateMatrices" of "StepStatisticsMatrices" -> All, under
+   "CanonicalizeStates" None and Automatic, must list each step's state ids ascending and agree
+   with sgrStateMatrices on the listed states to 1e-9.
 
    The two metrics the Wolfram Function Repository defines are also checked against the
    repository's own functions on every connected state of every case with at least two
@@ -286,6 +288,28 @@ Do[
         "CanonicalizeStates" -> None, "StepStatisticsWeighting" -> "Classes"]},
       {"branchial", oracleBranchial, HGEvolve[rules, init, steps, "StepStatistics",
         "CanonicalizeStates" -> None, "StepStatisticsBranchial" -> All]}};
+    Do[
+      Module[{res = HGEvolve[rules, init, steps, {"States", "StepStatistics"},
+          "CanonicalizeStates" -> mode, "StepStatisticsMatrices" -> All], bad = {}, n = 0},
+        Do[
+          Module[{m = rec["StateMatrices"], ids, want, sts},
+            ids = Sort[DeleteDuplicates[#CanonicalId & /@ Select[Values[res["States"]],
+              #Step == rec["Step"] &]]];
+            If[MissingQ[m] || m["States"] =!= ids,
+              AppendTo[bad, {rec["Step"], "States", ids}],
+              sts = Lookup[res["States"], ids];
+              want = sgrStateMatrices[Union[Flatten[#Edges[[All, 2 ;;]]]] & /@ sts,
+                #Edges[[All, 2 ;;]] & /@ sts];
+              KeyValueMap[Function[{name, w},
+                If[!ArrayQ[m[name], 2, NumericQ] || Dimensions[m[name]] =!= Dimensions[w] ||
+                    Max[Abs[m[name] - w]/Map[Max[1, Abs[#]] &, w, {2}]] > 10^-9,
+                  AppendTo[bad, {rec["Step"], name}]]], want];
+              n++]],
+          {rec, res["StepStatistics"]}];
+        If[bad === {},
+          Print["PASS  ", name, " state matrices ", mode, ": ", n, " steps"],
+          failures++; Print["FAIL  ", name, " state matrices ", mode, ": ", Short[bad, 6]]]],
+      {mode, {None, Automatic}}];
     Do[
       Module[{want = r[[2]], got = normal[r[[3]]], diffs},
         diffs = If[!ListQ[got] || Length[got] =!= Length[want], {"step count", Length[got], Length[want]},
