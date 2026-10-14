@@ -1,4 +1,6 @@
 // GENMC-CALIBRATE: -DHG_CALIBRATE_DEQUE_POP_WITHOUT_CAS
+// GENMC-ARGS: --weak-cas-spurious-bound=1
+// GENMC-BOUND: weak CAS spurious-failure bound 1: 40 complete executions, K = 7 dropped (bounded, not exhaustive).
 // GenMC harness: the work-stealing deque never hands one item to two consumers.
 //
 // WHAT IS BEING PROVED. An owner pops from the back while a thief pops from the front, with
@@ -19,7 +21,7 @@
 // with one item pushed before the consumers start and one pop attempt each, no (head,tail)
 // pair recurs inside a popper's load-to-exchange window, so the tag is never what makes a
 // compare-exchange fail here. Measured, not argued -- freezing the tag at all four commit
-// sites leaves this harness passing in the same 6 executions. The tag has its own harness,
+// sites leaves this harness passing. The tag has its own harness,
 // deque_tag_defeats_aba, where freezing it does produce a violation.
 //
 // CALIBRATED. Committing the pop without winning the compare-exchange -- the double extraction

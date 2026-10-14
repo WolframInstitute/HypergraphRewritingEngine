@@ -1,4 +1,6 @@
 // GENMC-CALIBRATE: -DCALIBRATE_PLAIN_LINK
+// GENMC-ARGS: --weak-cas-spurious-bound=1
+// GENMC-BOUND: weak CAS spurious-failure bound 1: 363,984 complete executions, K = 259,015 dropped (bounded, not exhaustive).
 // GenMC harness: the tagged free-list hands every node to exactly one popper, across the
 // speculative link read.
 //

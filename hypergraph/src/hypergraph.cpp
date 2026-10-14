@@ -208,6 +208,10 @@ StateId Hypergraph::create_state(
     st.parent_state = parent_state;
     // CRITICAL: Release fence to ensure state data is visible
     std::atomic_thread_fence(std::memory_order_release);
+    if (index_states_by_step_.load(std::memory_order_relaxed)) {
+        states_by_step_.get(step);   // allocates the step's segment on first use
+        states_by_step_.find_extra(step)->push(sid, arena_);
+    }
     return sid;
 }
 
@@ -922,15 +926,31 @@ void Hypergraph::record_event_forms(EventId e) {
     event_forms_.emplace_at(e, arena_, f);
 }
 
-void Hypergraph::record_state_invariants(StateId sid, uint64_t hash,
-                                         const std::vector<uint32_t>* form) {
-    // One worker claims the hash and fills the cell; the others return without waiting.
+const hgcommon::StateInvariantRecord* Hypergraph::record_state_invariants(
+    StateId sid, uint64_t hash, const std::vector<uint32_t>* form, bool fill_pending) {
+    // One worker claims the hash and fills the cell; the others return without waiting, unless
+    // `fill_pending`, when they fill it as well and the first record published stays.
     const uint64_t key = hgcommon::avoid_reserved_keys(hash);
-    if (state_invariants_.lookup(key)) return;
-    auto* cell = static_cast<const hgcommon::StateInvariantRecord**>(
-        arena_.allocate_raw(sizeof(void*), alignof(void*)));
-    *cell = nullptr;
-    if (!state_invariants_.insert_if_absent(key, cell).second) return;
+    const hgcommon::StateInvariantRecord** cell = nullptr;
+    if (auto found = state_invariants_.lookup(key)) {
+        cell = *found;
+        const auto* have = hgcommon::atomic_ref<const hgcommon::StateInvariantRecord*>(*cell)
+                               .load(std::memory_order_acquire);
+        if (have || !fill_pending) return have;
+    } else {
+        cell = static_cast<const hgcommon::StateInvariantRecord**>(
+            arena_.allocate_raw(sizeof(void*), alignof(void*)));
+        *cell = nullptr;
+        auto claimed = state_invariants_.insert_if_absent(key, cell);
+        if (!claimed.second) {
+            if (!fill_pending) return nullptr;
+            cell = claimed.first;
+            if (const auto* have =
+                    hgcommon::atomic_ref<const hgcommon::StateInvariantRecord*>(*cell).load(
+                        std::memory_order_acquire))
+                return have;
+        }
+    }
     const SparseBitset& edges = states_[sid].edges;
     const uint32_t m = static_cast<uint32_t>(edges.count());
     auto mk = worker_scratch().mark();
@@ -970,8 +990,11 @@ void Hypergraph::record_state_invariants(StateId sid, uint64_t hash,
     auto* rec = hgcommon::si_record_write(
         arena_.allocate_raw(r.bytes(), alignof(hgcommon::StateInvariantRecord)), r);
     worker_scratch().release(mk);
-    hgcommon::atomic_ref<const hgcommon::StateInvariantRecord*>(*cell).store(
-        rec, std::memory_order_release);
+    const hgcommon::StateInvariantRecord* expected = nullptr;
+    if (hgcommon::atomic_ref<const hgcommon::StateInvariantRecord*>(*cell).compare_exchange_strong(
+            expected, rec, std::memory_order_acq_rel, std::memory_order_acquire))
+        return rec;
+    return expected;
 }
 
 // Under an event identity mode: the event's signature values, claimed; a duplicate records the

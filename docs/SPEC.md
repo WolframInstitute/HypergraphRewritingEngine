@@ -396,11 +396,14 @@ state's own vertices, so under `"CanonicalizeStates" -> Full` the run warns and 
 out; under `Automatic` a state stands for its identical edge lists.
 
 Cost: the pair pass visits every two states that share a vertex through an inverted index, rows
-split over the host threads, and counts pairs per (|A|, |B|, n11, distance), so every pairwise
-value is computed once per distinct count tuple; the pairs that share nothing are counted per
-(|A|, |B|) from the size histogram. With `"Graph"`, each row adds one breadth-first search of
-its branchial component, the cost of `BranchialDistance`. Both engines' replies run this pass
-on the host from the states and branchial pairs, through `hgcommon/branchial_overlap_core.hpp`.
+split over up to one job per worker, and counts pairs per (|A|, |B|, n11, distance), so every
+pairwise value is computed once per distinct count tuple; the pairs that share nothing are
+counted per (|A|, |B|) from the size histogram. With `"Graph"`, each row adds one breadth-first
+search of its branchial component, the cost of `BranchialDistance`. Both engines' replies run
+this pass on host job-system workers from the states and branchial pairs, through
+`hgcommon/branchial_rows_core.hpp` and `hgcommon/branchial_overlap_core.hpp` (ARCHITECTURE.md,
+"StepStatistics in the job system"); the GPU engine's reply counts the rows of a step of 2048
+states or more on the device.
 *(Gate: `reference/verify_state_statistics.wls`: the engine against
 `reference/StateGeometryReference.wl`, an independent Wolfram Language implementation, on the
 corpus and on random rules; the two Function Repository metrics against ResourceFunction itself.

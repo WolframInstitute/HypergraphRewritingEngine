@@ -1,5 +1,5 @@
 // GENMC-LINK: engine
-// GENMC-ARGS: --disable-estimation
+// GENMC-ARGS: --disable-estimation --weak-cas-spurious-total=1
 // GENMC-DEFINES: -DHG_SEGMENTED_ARRAY_MAX_SEGMENTS=8 -DHG_SEGMENTED_ARRAY_MAX_SHIFT=4 -DHG_CONCURRENT_MAP_INITIAL_CAPACITY=16 -DHG_JOB_QUEUE_CAPACITY=16 -DHG_JOB_INJECTOR_CAPACITY=64 -DHG_MAX_ARENA_WORKERS=8 -DHG_KEY_SET_SHARDS=4 -DHG_MAX_PATTERN_EDGES=4 -DHG_ARENA_BLOCK_SIZE=512
 // GENMC-CALIBRATE: -DHG_HARNESS_CALIBRATE_END
 //
@@ -11,8 +11,7 @@
 // engine code past construction that touches shared state -- the rule table the workers will
 // read. Measured: 19,477 lines after prune, and the rung at which the interpreter used to stop.
 //
-// No --unroll, for the reason engine_construct.cpp gives. Measured on the v0.19 fork: 1768
-// complete executions, no error, 101 s.
+// No --unroll, and the same spurious-failure bound, for the reasons engine_construct.cpp gives.
 #include "hypergraph/hypergraph.hpp"
 #include "hypergraph/parallel_evolution.hpp"
 #include "hypergraph/pattern.hpp"

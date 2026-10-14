@@ -1,5 +1,6 @@
 // GENMC-LINK: job_system
-// GENMC-ARGS: --unroll=64 --disable-estimation
+// GENMC-ARGS: --unroll=64 --disable-estimation --weak-cas-spurious-bound=1
+// GENMC-BOUND: weak CAS spurious-failure bound 1: 2,288 complete executions, K = 345 dropped (bounded, not exhaustive).
 // GENMC-DEFINES: -DHG_JOB_QUEUE_CAPACITY=4 -DHG_JOB_INJECTOR_CAPACITY=16 -DHG_JOB_MAX_POOLS=4 -DHG_JOB_CHUNK_SLOTS=4 -DHG_JOB_ERROR_MESSAGE_CAP=32
 // GENMC-CALIBRATE: -DHG_ERROR_WAIT_EARLY
 //

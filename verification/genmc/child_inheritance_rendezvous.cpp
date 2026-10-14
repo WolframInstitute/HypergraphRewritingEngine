@@ -28,7 +28,8 @@
 // fence: each side can then read the other as absent and no inheritance runs. -DCALIBRATE_RELAXED_DRAINED stores and loads `drained`
 // relaxed: a child that sees it set need not see the parent's stored match.
 //
-// GENMC-ARGS: --disable-estimation
+// GENMC-ARGS: --disable-estimation --weak-cas-spurious-bound=1
+// GENMC-BOUND: weak CAS spurious-failure bound 1: 48 complete executions, K = 6 dropped (bounded, not exhaustive).
 // GENMC-EXPECT: pass
 // GENMC-CALIBRATE: -DCALIBRATE_NO_FENCE
 // GENMC-CALIBRATE: -DCALIBRATE_RELAXED_DRAINED

@@ -22,6 +22,7 @@
 #include "hgcommon/canonical_form_core.hpp"
 #include "hgcommon/token_core.hpp"
 #include "hgcommon/state_invariants_core.hpp"
+#include "hgcommon/depth_join.hpp"
 #include "lock_free_list.hpp"
 #include "causal_graph.hpp"
 #include "concurrent_map.hpp"
@@ -154,6 +155,9 @@ class Hypergraph {
     std::atomic<bool> record_raw_counts_only_{false};
     std::atomic<bool> record_multiplicities_{false};
     std::atomic<bool> record_state_invariants_{false};
+    // Each step's raw states, newest first, filled by create_state while index_states_by_step_.
+    std::atomic<bool> index_states_by_step_{false};
+    hgcommon::GrowingDepthSlots<LockFreeList<StateId>> states_by_step_;
 
     // A state's edge-orbit table and canonical rank table are State::edge_orbits and
     // State::edge_ranks. The orbits are computed once at state canonicalization in quotient mode
@@ -1361,7 +1365,11 @@ public:
     void record_event_forms(EventId e);
     // The invariants of class `hash` into state_invariants_, from state `sid` and its IR canonical
     // form `form` (computed here when null), on the calling worker when this call claims the hash.
-    void record_state_invariants(StateId sid, uint64_t hash, const std::vector<uint32_t>* form);
+    // With `fill_pending`, a hash another worker claimed and has not yet filled is computed here
+    // too and published by compare-and-swap. Returns the published record, or null when this call
+    // left the hash to its claimer.
+    const hgcommon::StateInvariantRecord* record_state_invariants(
+        StateId sid, uint64_t hash, const std::vector<uint32_t>* form, bool fill_pending = false);
     // Event `e`'s identity, claimed in canonical_event_map_ on its signature values. The Event is
     // stored before the call; a key hit compares against the class's first event. The claim's
     // key is the event's reported signature.
@@ -1784,6 +1792,25 @@ public:
         return cell ? hgcommon::atomic_ref<const hgcommon::StateInvariantRecord*>(**cell)
                           .load(std::memory_order_acquire)
                     : nullptr;
+    }
+    // The same during the run, for raw state `sid` of class `hash`: a record the class's
+    // claiming worker has not yet published (it can be running at a deeper step) is computed on
+    // the calling thread from `sid`. The record is a function of the class, so both copies are
+    // the same.
+    const hgcommon::StateInvariantRecord* state_invariants_of(StateId sid, uint64_t hash) {
+        if (const auto* r = state_invariants(hash)) return r;
+        return record_state_invariants(sid, hash, nullptr, /*fill_pending=*/true);
+    }
+
+    // Keep each step's raw states in a list as create_state publishes them. Set before evolving.
+    void set_index_states_by_step(bool on) {
+        index_states_by_step_.store(on, std::memory_order_relaxed);
+    }
+    // f(sid) for every raw state created at `step` while the index was on, newest first. Reads
+    // what is visible: complete once nothing can still create a state at the step.
+    template <class F>
+    void for_each_state_at_step(uint32_t step, F&& f) const {
+        if (const auto* list = states_by_step_.find_extra(step)) list->for_each(f);
     }
 
     // Create a genesis event for an initial state.

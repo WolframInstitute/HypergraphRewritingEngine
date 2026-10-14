@@ -2283,6 +2283,8 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         }
         ps.step_cand->reset_and_clear(&clears);
         clears.add(ps.step_words, sizeof(uint32_t) * 2u, 0);
+        // The batch above was flushed before this block, so these two clears are launched here.
+        clears.flush();
         cand_v = ps.step_cand->view();
         step_sel = StepSelectScratch{ps.step_rank, ps.step_idx, ps.step_words, ps.step_cap};
         if (!dsk.step_cap_counts_matches && state_mode != CanonicalizationMode::None) {

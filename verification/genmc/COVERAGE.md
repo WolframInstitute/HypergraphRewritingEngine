@@ -11,7 +11,10 @@ engine's call graph without a run that names the site.
 
 Every harness below except quotient_capture_composition reaches a verdict on the v0.19 fork
 with no execution cut at an unroll bound, and every harness carries `// GENMC-CALIBRATE:` cells
-that the checker catches (`HG_GENMC_CALIBRATE=1 run.sh`). Seven reach theirs under sequential
+that the checker catches (`HG_GENMC_CALIBRATE=1 run.sh`). The 23 harnesses that run a weak
+compare-exchange have verdicts bounded on spurious failures (N per thread and address, or M per
+execution); `docs/VERIFICATION_STATUS.md` ("Weak CAS bounds") lists each bound and K, the
+spurious-failure options it dropped. Seven reach theirs under sequential
 consistency with a context bound (listed under "Bounds" below): engine_evolve,
 keyed_intern_once, keyed_twin_rendezvous, quotient_capture_frame, quotient_capture_register and
 the two 3-thread harnesses. quotient_capture_composition runs to the end of main (its
@@ -44,7 +47,7 @@ harness. The park protocol is checked on its spin backend, which waits on the sa
 | P11 LockFreeList push/iterate | 21 | lock_free_list_completeness (2), lock_free_list_pairs_meet_once (2), lock_free_list_three_meet_once (3) |
 | P11 branchial pair recording (`CausalGraph::record_branchial_overlaps`: push, walk the entries before, lowest shared edge) | 2 | branchial_pair_once (2) |
 | P12 SegmentedArray segment creation and publication, and the look-ahead election (`ahead_` exchange, 813f22c8) | 6 | segmented_array_published_read (3; index 1 of a two-element segment elects the creation of segment 1, one candidate), causal_in_edge_order (2), engine_* (inferred). The scattered trigger (`set_scattered`, b591bd1d) is set by no harness; it moves only the index that triggers the election |
-| P13 arena: cursor, shared bump, block chain, construction fences | 49 | arena_cursor_vs_shared_disjoint (2), arena_worker_index_exclusive (2), engine_* |
+| P13 arena: cursor, shared bump, block chain, construction fences | 49 | arena_cursor_vs_shared_disjoint (2), arena_high_water_max (2), arena_worker_index_exclusive (2), engine_* |
 | P14 arena block pool (tagged Treiber stack) | 10 | block_pool_exactly_once (2) on `hgcommon/pool_core.hpp`; the engine's instance is `!HG_VERIFICATION` |
 | P18 DepthJoin settle cascade and report baton | 25 | depth_report_order (2) |
 | P19 explore depth relax and child registration | 3 | depth_relax_child_registration (2) |
@@ -67,11 +70,11 @@ harness. The park protocol is checked on its spin backend, which waits on the sa
 | P35-P37, P39 bitset count cache, published-id marks, phase timing slot, id counters | 28 | engine_* (inferred) |
 
 `engine_*` is engine_construct, engine_rule and engine_evolve: the composed engine with two
-workers and main. engine_construct and engine_rule are exhaustive (1768 executions each) and
-reach construction, rule setup, worker start, parking and shutdown; the matching, rewriting and
-registration points are reached only by engine_evolve, which is partial: its verdict (38
-executions, no errors) is under sequential consistency with one context switch, and its RC11
-exploration gave no verdict in 83 minutes.
+workers and main. engine_construct and engine_rule reach construction, rule setup, worker
+start, parking and shutdown, with at most one spurious failure per execution; the matching,
+rewriting and registration points are reached only by engine_evolve, which is partial: its
+verdict is under sequential consistency with one context switch and one spurious failure per
+execution, and its RC11 exploration gave no verdict in 83 minutes.
 
 ## Harnesses that run a copy of the protocol
 
@@ -104,8 +107,7 @@ sequence is the harness's, and the stop-cut and `resume_pending` branches of
 
 ## Bounds that limit what a harness reaches
 
-- engine_evolve checks sequential consistency with 1 context switch (38 executions, 332
-  blocked): its RC11 exploration gave no verdict in 83 minutes, and its transform needs more
+- engine_evolve checks sequential consistency with 1 context switch: its RC11 exploration gave no verdict in 83 minutes, and its transform needs more
   than 12,000 MB of address space (run with HG_GENMC_MEM_MB=16000).
 - keyed_intern_once checks sequential consistency with 4 context switches: its RC11 exploration
   gave no verdict in 2,770 s. keyed_twin_rendezvous checks sequential consistency with 1 context

@@ -28,7 +28,8 @@
 // interleaving where both pushes precede both scans is then a sum of two. A harness that
 // cannot fail proves nothing.
 //
-// GENMC-ARGS: --disable-estimation
+// GENMC-ARGS: --disable-estimation --weak-cas-spurious-bound=1
+// GENMC-BOUND: weak CAS spurious-failure bound 1: 44 complete executions, K = 30 dropped (bounded, not exhaustive).
 // GENMC-EXPECT: pass
 // GENMC-CALIBRATE: -DHG_CALIBRATE_LIST_WALK_FROM_HEAD
 //
