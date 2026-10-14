@@ -18,6 +18,7 @@
 #include "hg_gpu/quotient_expansion.hpp"
 #include "hg_gpu/content_hash.hpp"
 #include "hg_gpu/cuda_check.hpp"
+#include "hg_gpu/device_probe.hpp"
 
 #include <cuda_runtime.h>
 
@@ -1768,13 +1769,7 @@ uint32_t default_persistent_grid() {
         const long v = std::atol(env);
         if (v > 0) { cached = static_cast<uint32_t>(v); return cached; }
     }
-    int sms = 0;
-    if (cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, 0) != cudaSuccess ||
-        sms <= 0) {
-        cudaGetLastError();   // do not leave a sticky status behind for the next launch
-        sms = 32;             // a plausible small device; the caller's floor still applies
-    }
-    cached = static_cast<uint32_t>(sms) * 8u;
+    cached = static_cast<uint32_t>(usable_device().sm_count) * 8u;
     return cached;
 }
 
@@ -1806,16 +1801,8 @@ size_t persistent_kernels_stack_bytes() {
 uint64_t device_resident_threads() {
     static uint64_t cached = 0;
     if (cached) return cached;
-    int sms = 0, per_sm = 0;
-    if (cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, 0) != cudaSuccess ||
-        cudaDeviceGetAttribute(&per_sm, cudaDevAttrMaxThreadsPerMultiProcessor, 0) !=
-            cudaSuccess ||
-        sms <= 0 || per_sm <= 0) {
-        cudaGetLastError();   // do not leave a sticky status behind for the next launch
-        sms = 32;
-        per_sm = 2048;        // the largest any supported architecture holds
-    }
-    cached = static_cast<uint64_t>(sms) * static_cast<uint64_t>(per_sm);
+    const DeviceProbe& p = usable_device();
+    cached = static_cast<uint64_t>(p.sm_count) * static_cast<uint64_t>(p.max_threads_per_sm);
     return cached;
 }
 

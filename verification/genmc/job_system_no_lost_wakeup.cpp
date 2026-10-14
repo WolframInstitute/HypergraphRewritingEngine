@@ -1,46 +1,55 @@
 // GENMC-LINK: job_system
-// GENMC-ARGS: --check-liveness
+// GENMC-ARGS: --check-liveness --disable-ipr --disable-sr
 // GENMC-CALIBRATE: -DHG_PARK_GATE_WEAK_ORDERS
+// GENMC-CALIBRATE: -DHG_PARK_GATE_SEARCH_LEAVE_AFTER_BARRIER
+// GENMC-CALIBRATE: -DHG_PARK_GATE_SEARCH_LEAVE_LATE
 //
-// GenMC harness: a worker that parks is always woken, so no submitted job is left unclaimed.
+// --disable-ipr --disable-sr: the submitter's store of the job flag and a worker's claiming exchange are two
+// writes with no order between them, which is the push and the claim themselves. GenMC reports
+// that as "unordered writes" and stops when in-place revisiting or symmetry reduction is on.
 //
-// IT INCLUDES THE PROTOCOL, and drives it. Until hgcommon/park_gate.hpp existed this was a
-// TRANSCRIPTION -- the two sides copied out of JobSystem's worker loop with the same memory
-// orders, and a comment asking the next reader to re-read both sides together whenever either
-// changed. A harness maintained that way verifies the transcription, and stops describing the
-// engine the moment the engine moves. Driving the real ParkGate cannot drift.
+// GenMC harness: a worker that parks is always woken, so no submitted job is left unclaimed --
+// under the searching-worker throttle, where a submit skips its wake while a worker searches.
 //
-// It could not include the old shape for a real reason: the protocol lived inside a worker loop
-// that spawns its own threads and blocks in a futex. That is still true of JobSystem -- measured,
-// constructing one prunes to 2,659 lines and verifies, starting one prunes to 8,952 and segfaults
-// GenMC v0.17.0 -- which is why the protocol is a unit and not checked in place.
+// IT INCLUDES THE PROTOCOL, and drives it: hgcommon/park_gate.hpp, the header JobSystem's worker
+// loop and submit path call. The protocol is a unit and not checked inside a running JobSystem
+// because starting one prunes to 8,952 lines and segfaulted GenMC v0.17.0.
 //
-// WHAT IS BEING PROVED. wake_one SKIPS the wake when the idle count reads zero, and that is safe
-// only because of what the two sides do in which order:
+// WHAT IS BEING PROVED. wake_one SKIPS the wake when the idle count reads zero, or when a worker
+// is searching and the submitter's backlog is at most twice the searchers. Each skip is safe only
+// because of the order on both sides:
 //
-//     the submitter  publishes the job, then reads the idle count
-//     the worker     announces itself idle, then takes one last look for work
+//     the submitter  publishes the job, passes the barrier, reads the idle and searching counts
+//     the worker     leaves the searching count, announces itself idle, passes the barrier,
+//                    takes one last look for work
 //
-// Each writes one location and reads the other, so at least one must observe the other -- a
-// guarantee under sequential consistency and NOT under acquire/release, where both may read stale
-// and both conclude there is nothing to do. A failure is a worker asleep with a job queued and
-// nobody left to wake it: the engine hangs.
+// Each side writes one location and reads the other, so at least one must observe the other -- a
+// guarantee under sequential consistency and NOT under acquire/release. A failure is a worker
+// asleep with a job queued and nobody left to wake it: the engine hangs.
+//
+// THE SHAPE. Two workers run JobSystem's idle path in a loop -- search_begin, one steal attempt,
+// then search_found or park_unless -- until the job is claimed; the claimer releases the other
+// worker with wake_all. The submitter is a thread that is not a worker, so its backlog is zero.
+// The interleaving the throttle adds is one worker parked (idle) and the other counted as a
+// searcher when the submit reads the counts: the submit skips its wake, and the searcher must
+// find the job, by its steal or by its last look. Two workers searching at once also exercises
+// the bound (the second is Declined and goes to the last look). search_found is called with
+// `more` false: its wake adds a worker and no property rests on it.
 //
 // HOW PARKING IS REPRESENTED. Under HG_PARK_VERIFICATION park_if_equal spins on the word instead
 // of entering a futex, which is a conforming park -- the contract permits spurious return and
 // every caller re-tests -- and it is something the checker can see. A wake that never comes is
 // then a loop that never exits, which --check-liveness reports.
 //
-// CALIBRATED. The property rests entirely on the seq_cst pairing, so that is what the calibration
-// removes: HG_HARNESS_DEFINES=-DHG_PARK_GATE_WEAK_ORDERS drops both sides to release/acquire and
-// the checker reports a non-terminating spinloop. The counterexample is store buffering exactly as
-// described above -- the submitter reads the idle count as its initial zero while the worker reads
-// the work flag as its initial zero, both stale -- so the submitter skips the wake and the worker
-// parks with the job queued.
+// CALIBRATED, three ways, each reported as a non-terminating spinloop:
+//   HG_PARK_GATE_WEAK_ORDERS                 both sides at release/acquire, no barrier
+//   HG_PARK_GATE_SEARCH_LEAVE_AFTER_BARRIER  the searcher leaves the count after the barrier, so
+//                                            the submit can read it as searching while its last
+//                                            look misses the job (RC11 only)
+//   HG_PARK_GATE_SEARCH_LEAVE_LATE           the searcher leaves the count after its last look
 //
-// WHAT IS BOUNDED. One worker, one submitter, one job, one domain. Two workers contending for one
-// job is a different question (which one claims it) and is not what the wake protocol is about;
-// the per-domain fallback is the subject of the _domains harness beside this one.
+// WHAT IS BOUNDED. Two workers, one submitter, one job, one domain. The per-domain fallback is the
+// subject of the _domains harness beside this one.
 #include "hgcommon/park_gate.hpp"
 
 #include <atomic>
@@ -54,45 +63,61 @@ namespace {
 hgcommon::ParkGate::Domain g_domains[1];
 hgcommon::ParkGate        g_gate;
 
-// Stands for "a job is reachable in some deque". The deque itself is verified separately and its
-// internals are not what this protocol turns on.
-std::atomic<bool> g_work_available{false};
+// Stands for "a job is reachable in some deque"; exchange is the claim. The deque itself is
+// verified separately and its internals are not what this protocol turns on.
+std::atomic<bool> g_job{false};
+std::atomic<int>  g_claims{0};
 
-bool g_worker_got_work = false;
+bool take() {
+    if (!g_job.exchange(false, std::memory_order_acq_rel)) return false;
+    g_claims.fetch_add(1, std::memory_order_release);
+    return true;
+}
 
 void* worker(void*) {
-    // look() is the worker's last exhaustive search; keep_waiting() is false once it must leave.
-    // Neither is part of the protocol, which is why the gate takes them from the caller.
-    auto look = [] { return g_work_available.load(std::memory_order_acquire); };
-    const bool took = g_gate.park_unless(0, look, [] { return true; });
-
-    // Either it found the job on its last look, or it parked and was woken to find it there.
-    g_worker_got_work = took || g_work_available.load(std::memory_order_acquire);
+    using Search = hgcommon::ParkGate::Search;
+    bool woken = false;
+    while (g_claims.load(std::memory_order_acquire) == 0) {
+        const Search s = g_gate.search_begin(woken);
+        bool got = s != Search::Declined && take();
+        if (got) {
+            if (s == Search::Counted) g_gate.search_found(0, /*more=*/false);
+        } else {
+            // The last look is take(); keep_waiting is false once the job has been claimed.
+            got = g_gate.park_unless(0, s == Search::Counted, [] { return take(); },
+                                     [] { return g_claims.load(std::memory_order_acquire) == 0; });
+        }
+        if (got) {
+            g_gate.wake_all();   // release the other worker
+            break;
+        }
+        woken = true;
+    }
     return nullptr;
 }
 
 void* submitter(void*) {
-    // The push comes first: wake_one's barrier sits between it and the read of the idle counts.
-    g_work_available.store(true, std::memory_order_release);
-    g_gate.wake_one(0);
+    // The push comes first: wake_one's barrier sits between it and the reads of the counts.
+    g_job.store(true, std::memory_order_release);
+    g_gate.wake_one(0);  // not a worker: backlog 0
     return nullptr;
 }
 
 }  // namespace
 
 int main() {
-    g_gate.seat(g_domains, 1);
+    g_gate.seat(g_domains, 1, /*workers=*/2, /*throttled=*/true);
 
-    pthread_t w, s;
-    pthread_create(&w, nullptr, worker, nullptr);
+    pthread_t w0, w1, s;
+    pthread_create(&w0, nullptr, worker, nullptr);
+    pthread_create(&w1, nullptr, worker, nullptr);
     pthread_create(&s, nullptr, submitter, nullptr);
-    pthread_join(w, nullptr);
     pthread_join(s, nullptr);
+    // A lost wakeup leaves the job unclaimed with both workers spinning in their parks, which the
+    // liveness check reports.
+    pthread_join(w0, nullptr);
+    pthread_join(w1, nullptr);
 
-    // Reaching here at all is most of the property: a lost wakeup leaves the worker spinning and
-    // the join never completes, which the liveness check reports.
-    //
-    // The rest is that the worker did not wake to an empty world.
-    assert(g_worker_got_work);
+    assert(g_claims.load(std::memory_order_relaxed) == 1);
     return 0;
 }

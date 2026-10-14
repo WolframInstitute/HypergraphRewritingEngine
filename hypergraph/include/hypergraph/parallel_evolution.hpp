@@ -1255,6 +1255,10 @@ public:
     // Job system diagnostics
     size_t pending_jobs() const;
     size_t job_system_park_waits() const;
+#if HG_ENGINE_STATS
+    // The job system's wake, steal and search counters for the last evolve() (docs/TUNING.md 2.4).
+    job_system::JobSystem<EvolutionJobType>::SchedulerCounters scheduler_counters() const;
+#endif
     // Workers that asked to bind to a CPU and were refused. Zero when nothing was pinned.
     size_t worker_pin_failures() const;
     size_t executing_jobs() const;

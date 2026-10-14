@@ -71,7 +71,7 @@ and K are in "Weak CAS bounds" below.
 |---|---|
 | injector deque, tagged head/tail CAS | `deque_no_double_extraction` (2), `deque_tag_defeats_aba` (2) |
 | work-stealing deque | `work_stealing_deque_no_double_take` (3) |
-| park/wake (`hgcommon/park_gate.hpp`) | `job_system_no_lost_wakeup` (2), `job_system_no_lost_wakeup_domains` (2) |
+| park/wake and the searching-worker throttle (`hgcommon/park_gate.hpp`) | `job_system_no_lost_wakeup` (4), `job_system_no_lost_wakeup_domains` (4) |
 | job system error wait | `job_system_error_wait` (2) |
 | ConcurrentMap | `concurrent_map_agreement` (2), `concurrent_map_resize` (2), `concurrent_map_repeated_offer` (2), `concurrent_map_double_growth_2t` (2), `concurrent_map_double_growth_3t` (3, SC, 4 context switches), `map_lookup_during_growth` (2), `map_lookup_during_double_growth` (3), `map_insert_existing_during_double_growth` (2) |
 | ConcurrentKeySet | `key_set_exactly_once` (2), `key_set_exactly_once_3t` (3, SC, 1 context switch), `key_set_enumeration` (2), `key_set_contains_during_growth` (2), `key_set_contains_during_double_growth` (3), `key_set_distinct_keys_across_growth` (2), `key_set_insert_existing_during_double_growth` (3) |

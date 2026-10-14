@@ -28,6 +28,8 @@
 // it.
 
 #include <cstddef>
+#include <cstdint>
+#include <string>
 #include <vector>
 
 namespace HG_NAMESPACE {
@@ -135,6 +137,67 @@ std::vector<unsigned> cache_domains_of(const std::vector<unsigned>& cpus);
 // EMPTY means "unknown", never "none": macOS has no mask to read, and the caller then uses
 // every CPU.
 std::vector<unsigned> allowed_cpus();
+
+// THE HOST AS THE OPERATING SYSTEM DESCRIBES IT, read once per process. performance_cpus(),
+// cache_domains_of() and default_worker_cpus() are answered from this struct, and every tuning
+// value derived from the host reads it rather than querying the platform again.
+//
+//   Linux    /sys/devices/system/cpu/{online, cpuN/topology, cpuN/cache/indexK, cpuN/cpu_capacity},
+//            /sys/devices/cpu_core/cpus (Intel hybrid P-cores), CPUID leaf 0x1A when the hybrid
+//            bit is set and sysfs has no core-type list, /proc/meminfo,
+//            /sys/kernel/mm/transparent_hugepage/hpage_pmd_size.
+//   Windows  GetLogicalProcessorInformationEx(RelationProcessorCore, RelationCache),
+//            GlobalMemoryStatusEx, GetLargePageMinimum; processor group 0 only, the reach of
+//            SetThreadAffinityMask.
+//   macOS    sysctl hw.logicalcpu, hw.physicalcpu, hw.perflevel{0,1}.physicalcpu, hw.l2cachesize,
+//            hw.l3cachesize, hw.memsize. No per-CPU entries: macOS has no CPU index to bind to.
+//
+// Under WSL sysfs presents the hypervisor's vCPU layout (an i9-14900K appears as 16 cores x 2
+// threads, one L3, no core types). The struct reports that layout and sets `virtualised`.
+struct HostCpu {
+    unsigned cpu = 0;            // logical CPU index
+    unsigned core = 0;           // dense physical core id
+    unsigned llc = 0;            // dense last-level cache domain id; 0 when cache_known is false
+    unsigned core_class = 0;     // 0 = fastest class; larger is slower; all 0 on a homogeneous part
+    bool first_thread = false;   // the lowest-numbered logical CPU of its core
+    bool allowed = false;        // in this process's affinity mask (true when the mask is unknown)
+};
+
+struct HostTopology {
+    std::string model;                    // CPU brand string; empty when unreadable
+    std::vector<HostCpu> cpus;            // every online logical CPU, ascending by index
+    unsigned logical_cpus = 0;
+    unsigned physical_cores = 0;
+    unsigned smt_width = 1;               // most logical CPUs on one core
+    unsigned core_classes = 1;            // distinct core classes; 2 on an Intel hybrid part
+    unsigned performance_cores = 0;       // physical cores of class 0
+    bool cache_known = false;             // the llc ids are read from the platform
+    std::vector<uint64_t> llc_bytes;      // size of each last-level cache domain
+    uint64_t l2_bytes = 0;                // L2 of the first class-0 core; 0 when unreadable
+    uint64_t total_bytes = 0;             // physical memory
+    uint64_t available_bytes = 0;         // at the time of the probe
+    uint64_t huge_page_bytes = 0;         // 0 when the platform has none
+    bool virtualised = false;             // WSL: the layout above is the hypervisor's
+
+    // Position of logical CPU `cpu` in `cpus`, or -1.
+    int index_of(unsigned cpu) const;
+};
+
+const HostTopology& host_topology();
+
+// THE CPUS A WORKER POOL BINDS TO WHEN THE CALLER NAMES NONE, in worker order, or EMPTY for
+// "leave placement to the operating system".
+//
+// The set is performance_cpus() (every CPU on a homogeneous part) intersected with
+// allowed_cpus(), ordered by last-level cache domain so that worker i+1 shares worker i's cache
+// until a domain is full. Empty when binding is unsupported, when fewer than two CPUs remain, or
+// when every remaining CPU shares one cache: with one cache placement changes nothing.
+//
+// Measured on an EPYC 9174F (eight two-core L3 instances): two unplaced workers on different
+// instances cost 2.7x against two that share one, and four corpus workloads came in at 0.73x to
+// 0.97x at two workers (1.43x to 1.78x on a part with one L3). Stacking workers on the performance cores rather than spilling onto efficiency cores
+// measured 46 ms against 66 ms at 24 workers on an i9-14900K (fork-join microbenchmark).
+std::vector<unsigned> default_worker_cpus();
 
 }  // namespace common
 }  // namespace HG_NAMESPACE

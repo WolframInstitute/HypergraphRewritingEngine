@@ -622,6 +622,117 @@ TEST(JobSystemSingleWorker, RunsEveryJobIncludingNestedSubmissions) {
     js.shutdown();
 }
 
+// The scheduler counters (stats builds only; scheduler_counters() does not exist otherwise) over
+// a nested fan-out on 8 workers: every job is counted once, a failed steal is a subset of the
+// attempts, nothing runs inline with queues this size, and the searcher high-water mark is a
+// worker count.
+TEST(JobSystemCounters, SchedulerCountersAreConsistent) {
+    job_system::JobSystem<TestJobType> js(8);
+    js.start();
+    std::atomic<int> ran{0};
+    for (int i = 0; i < 64; ++i) {
+        js.submit(job_system::make_job([&] {
+            ++ran;
+            for (int k = 0; k < 16; ++k)
+                js.submit(job_system::make_job([&] { ++ran; }, TestJobType::GRAPHICS));
+        }, TestJobType::GRAPHICS));
+    }
+    js.wait_for_completion();
+    const auto c = js.scheduler_counters();
+    js.shutdown();
+    std::cout << "[          ] jobs=" << c.jobs_executed << " stolen=" << c.jobs_stolen
+              << " wakes=" << c.wakes_issued << " wakes_empty=" << c.wakes_empty
+              << " steal_attempts=" << c.steal_attempts << " steal_failures=" << c.steal_failures
+              << " parks=" << c.parks << " searching_max=" << c.searching_max << "\n";
+    EXPECT_EQ(ran.load(), 64 + 64 * 16);
+    EXPECT_EQ(c.jobs_executed, static_cast<size_t>(ran.load()));
+    EXPECT_LE(c.jobs_stolen, c.jobs_executed);
+    EXPECT_LE(c.steal_failures, c.steal_attempts);
+    EXPECT_LE(c.wakes_empty, c.parks);
+    EXPECT_EQ(c.inline_runs, 0u);
+    EXPECT_GE(c.searching_max, 0);
+    EXPECT_LE(c.searching_max, 8);
+    EXPECT_LE(c.workers_with_jobs, 8u);
+    EXPECT_GE(c.busiest_worker_jobs, c.idlest_worker_jobs);
+}
+
+// The park domains of workers bound to CPUs split each cache by tier: two SMT siblings never
+// share a park word, and every worker's submits wake from the domain of its cache that holds the
+// first hardware threads. Four workers on the first four CPUs; on a machine whose CPUs 0-3 are
+// two SMT pairs (WSL on the i9-14900K: 0-1 and 2-3) that is two domains.
+TEST(JobSystemAffinity, ParkDomainsSeparateSmtSiblings) {
+    if (!hgcommon::affinity_supported()) GTEST_SKIP() << "no thread binding on this platform";
+    const hgcommon::HostTopology& t = hgcommon::host_topology();
+    std::vector<unsigned> cpus;
+    for (const auto& c : t.cpus) if (c.allowed && cpus.size() < 4) cpus.push_back(c.cpu);
+    if (cpus.size() < 4) GTEST_SKIP() << "fewer than four allowed CPUs";
+    job_system::JobSystem<TestJobType> js(4);
+    js.set_worker_cpus(cpus);
+    js.start();
+    std::atomic<int> ran{0};
+    for (int i = 0; i < 64; ++i)
+        js.submit(job_system::make_job([&] { ++ran; }, TestJobType::GRAPHICS));
+    js.wait_for_completion();
+    EXPECT_EQ(ran.load(), 64);
+    EXPECT_EQ(js.pin_failures(), 0u);
+    const std::vector<unsigned> cache = hgcommon::cache_domains_of(cpus);
+    std::cout << "[          ] park domains: " << js.park_domains() << " for cpus";
+    for (size_t i = 0; i < 4; ++i)
+        std::cout << " " << cpus[i] << "->" << js.worker_park_domain(i) << "(home "
+                  << js.worker_wake_home(i) << ")";
+    std::cout << "\n";
+    for (size_t i = 0; i < 4; ++i) {
+        const auto& ci = t.cpus[static_cast<size_t>(t.index_of(cpus[i]))];
+        EXPECT_LT(js.worker_park_domain(i), js.park_domains());
+        EXPECT_LE(js.worker_wake_home(i), js.worker_park_domain(i))
+            << "a submit must wake from its cache's first domain";
+        if (ci.first_thread && ci.core_class == 0)
+            EXPECT_EQ(js.worker_wake_home(i), js.worker_park_domain(i))
+                << "the first thread of a fastest-class core parks in its cache's first domain";
+        for (size_t j = 0; j < 4; ++j) {
+            const auto& cj = t.cpus[static_cast<size_t>(t.index_of(cpus[j]))];
+            if (i != j && ci.core == cj.core)
+                EXPECT_NE(js.worker_park_domain(i), js.worker_park_domain(j))
+                    << "SMT siblings " << cpus[i] << " and " << cpus[j] << " share a park word";
+            if (!cache.empty() && cache[i] == cache[j])
+                EXPECT_EQ(js.worker_wake_home(i), js.worker_wake_home(j))
+                    << "workers sharing a cache wake from different domains";
+        }
+    }
+    js.shutdown();
+}
+
+// HG_TUNE_WAKE_POLICY=per-submit selects the per-submit policy; unset is the throttle.
+TEST(JobSystemWakePolicy, EnvironmentSelectsThePolicy) {
+#if defined(_WIN32)
+    GTEST_SKIP() << "setenv is POSIX";
+#else
+    {
+        job_system::JobSystem<TestJobType> js(2);
+        js.start();
+        EXPECT_TRUE(js.wake_throttled());
+        js.shutdown();
+    }
+    ::setenv("HG_TUNE_WAKE_POLICY", "per-submit", 1);
+    {
+        job_system::JobSystem<TestJobType> js(2);
+        js.start();
+        EXPECT_FALSE(js.wake_throttled());
+        std::atomic<int> ran{0};
+        for (int i = 0; i < 64; ++i)
+            js.submit(job_system::make_job([&] {
+                ++ran;
+                for (int k = 0; k < 4; ++k)
+                    js.submit(job_system::make_job([&] { ++ran; }, TestJobType::GRAPHICS));
+            }, TestJobType::GRAPHICS));
+        js.wait_for_completion();
+        EXPECT_EQ(ran.load(), 64 * 5);
+        js.shutdown();
+    }
+    ::unsetenv("HG_TUNE_WAKE_POLICY");
+#endif
+}
+
 // A SUBMIT THAT FINDS EVERY QUEUE FULL RUNS THE JOB ON THE SUBMITTING THREAD, and that thread
 // need not be one of the workers: evolve_more seeds a continuation from its caller's thread, out
 // of resume lists it built in that thread's scratch arena. A job run there must leave the arena
@@ -1018,6 +1129,57 @@ TEST(JobSystemAffinity, CacheDomainsPartitionTheCpusAsked) {
     }
 }
 
+// The probe describes THIS machine, so the test prints it and checks the fields agree with each
+// other. On the i9-14900K under WSL it reports 32 logical CPUs, 16 cores x 2, one class, one
+// 36 MB L3, 2 MB L2, virtualised; on bare metal the same part has 24 cores in two classes.
+TEST(JobSystemAffinity, HostTopologyIsSelfConsistent) {
+    const hgcommon::HostTopology& t = hgcommon::host_topology();
+    EXPECT_EQ(&t, &hgcommon::host_topology()) << "the probe is read once and cached";
+    std::cout << "[          ] host: " << t.model << "; " << t.logical_cpus << " logical, "
+              << t.physical_cores << " cores, SMT " << t.smt_width << ", " << t.core_classes
+              << " class(es), " << t.performance_cores << " performance cores, "
+              << t.llc_bytes.size() << " LLC domain(s) of "
+              << (t.llc_bytes.empty() ? 0 : t.llc_bytes[0] >> 10) << " KB, L2 " << (t.l2_bytes >> 10)
+              << " KB, memory " << (t.total_bytes >> 20) << " MB (" << (t.available_bytes >> 20)
+              << " MB available), huge page " << (t.huge_page_bytes >> 10) << " KB"
+              << (t.virtualised ? ", virtualised" : "") << "\n";
+#if defined(__linux__) || defined(_WIN32)
+    ASSERT_FALSE(t.cpus.empty());
+    EXPECT_EQ(t.logical_cpus, t.cpus.size());
+    EXPECT_EQ(t.logical_cpus, std::thread::hardware_concurrency());
+    EXPECT_GT(t.total_bytes, 0u);
+    EXPECT_GT(t.available_bytes, 0u);
+    EXPECT_LE(t.available_bytes, t.total_bytes);
+#endif
+    unsigned firsts = 0;
+    std::set<unsigned> cores, llcs;
+    for (size_t i = 0; i < t.cpus.size(); ++i) {
+        const auto& e = t.cpus[i];
+        if (i) EXPECT_LT(t.cpus[i - 1].cpu, e.cpu) << "cpus are listed ascending";
+        EXPECT_EQ(t.index_of(e.cpu), static_cast<int>(i));
+        EXPECT_LT(e.core_class, t.core_classes);
+        firsts += e.first_thread ? 1u : 0u;
+        cores.insert(e.core);
+        llcs.insert(e.llc);
+    }
+    if (!t.cpus.empty()) {
+        EXPECT_EQ(firsts, t.physical_cores) << "one first thread per physical core";
+        EXPECT_EQ(cores.size(), t.physical_cores);
+        EXPECT_EQ(*cores.rbegin() + 1, t.physical_cores) << "core ids are dense from zero";
+        EXPECT_LE(t.physical_cores * 1u, t.logical_cpus);
+        EXPECT_GE(t.physical_cores * t.smt_width, t.logical_cpus);
+        EXPECT_LE(t.performance_cores, t.physical_cores);
+        EXPECT_GE(t.performance_cores, 1u);
+        if (t.cache_known) {
+            EXPECT_EQ(llcs.size(), t.llc_bytes.size());
+            for (uint64_t b : t.llc_bytes) EXPECT_GT(b, 0u);
+        }
+    }
+    const std::vector<unsigned> p = hgcommon::performance_cpus();
+    EXPECT_EQ(p.empty(), t.core_classes < 2);
+    if (!p.empty()) EXPECT_EQ(p.size(), t.performance_cores);
+}
+
 TEST(JobSystemAffinity, StealsPreferAVictimSharingTheThiefsCache) {
     // A machine with one cache across every core has nothing to prefer, and most machines the
     // suite runs on are that machine -- so the grouping is STATED here rather than queried.
@@ -1080,9 +1242,8 @@ TEST(JobSystemAffinity, StatedDomainsThatGroupNothingLeaveTheDrawUndivided) {
 // one last-level cache the workers are pinned domain-major, so the domain map the engine reads
 // is the topology it runs on; on a machine with one cache domain, or one the OS cannot
 // describe, nothing is pinned and placement is the OS's. Either way no worker leaves the
-// process's CPU mask and no binding is refused. The branch is decided from the same two
-// queries the default reads, so the test states the contract on every machine rather than
-// passing only where the default happens to pin nothing.
+// process's CPU mask and no binding is refused. The pool's placement must equal
+// hgcommon::default_worker_cpus(), and the properties of that list are checked on every machine.
 TEST(JobSystemAffinity, DefaultPlacementFollowsTheTopology) {
     job_system::JobSystem<TestJobType> js(4);
     js.start();
@@ -1093,28 +1254,18 @@ TEST(JobSystemAffinity, DefaultPlacementFollowsTheTopology) {
     EXPECT_EQ(ran.load(), 32);
     EXPECT_EQ(js.pin_failures(), 0u) << "a default placement must never be refused";
 
-    std::vector<unsigned> cpus = hgcommon::performance_cpus();
-    if (cpus.empty())
-        for (unsigned c = 0; c < std::thread::hardware_concurrency(); ++c) cpus.push_back(c);
+    const std::vector<unsigned> expected = hgcommon::default_worker_cpus();
+    EXPECT_EQ(js.worker_cpus(), expected) << "the pool places its workers by default_worker_cpus()";
     const std::vector<unsigned> allowed = hgcommon::allowed_cpus();
-    if (!allowed.empty()) {
-        std::vector<unsigned> kept;
-        for (unsigned c : cpus)
-            if (std::find(allowed.begin(), allowed.end(), c) != allowed.end()) kept.push_back(c);
-        cpus = kept;
-    }
-    const std::vector<unsigned> dom = hgcommon::cache_domains_of(cpus);
-    bool many = false;
-    if (hgcommon::affinity_supported() && cpus.size() >= 2 && dom.size() == cpus.size())
-        for (size_t i = 1; i < dom.size(); ++i) if (dom[i] != dom[0]) { many = true; break; }
-
-    if (!many) {
-        EXPECT_TRUE(js.worker_cpus().empty()) << "one cache domain: placement decides nothing";
-    } else {
-        EXPECT_EQ(js.worker_cpus().size(), cpus.size()) << "every allowed CPU is placed once";
-        for (unsigned c : js.worker_cpus())
-            EXPECT_NE(std::find(cpus.begin(), cpus.end(), c), cpus.end())
-                << "worker CPU " << c << " is outside the allowed set";
+    for (unsigned c : js.worker_cpus())
+        EXPECT_TRUE(allowed.empty() || std::find(allowed.begin(), allowed.end(), c) != allowed.end())
+            << "worker CPU " << c << " is outside the allowed set";
+    const std::vector<unsigned> dom = hgcommon::cache_domains_of(js.worker_cpus());
+    for (size_t i = 1; i < dom.size(); ++i)
+        EXPECT_LE(dom[i - 1], dom[i]) << "the placement is not domain-major";
+    if (!js.worker_cpus().empty()) {
+        std::set<unsigned> d(dom.begin(), dom.end());
+        EXPECT_GT(d.size(), 1u) << "a single cache domain must leave placement to the OS";
     }
     js.shutdown();
 }

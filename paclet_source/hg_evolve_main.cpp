@@ -33,8 +33,10 @@ namespace hgffi = HG_NAMESPACE::ffi;
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 #include <exception>
 
@@ -345,7 +347,7 @@ int run_serve_socket(const HostBridge& host_in, const char* portfile) {
 // an unrecognised argument, so a caller who guessed wrong is told what the choices are rather
 // than left to infer them from a WXF parse failure.
 static const char* const kUsage =
-    "usage: hg_evolve [--serve | --serve-socket [PORTFILE]] [--version] [--help]\n"
+    "usage: hg_evolve [--serve | --serve-socket [PORTFILE]] [--version] [--print-tuning] [--help]\n"
     "\n"
     "  (no arguments)          one-shot: read one WXF job from stdin, write the WXF result to\n"
     "                          stdout. Progress on stderr.\n"
@@ -354,7 +356,87 @@ static const char* const kUsage =
     "  --serve-socket [FILE]   worker over a loopback TCP socket; with FILE, write the\n"
     "                          OS-assigned port number there once it is listening.\n"
     "  --version               print the build stamp (commit and variant) and exit.\n"
+    "  --print-tuning          print the host (and device) probe and the values derived from\n"
+    "                          it, with the source of each, and exit.\n"
     "  --help, -h              print this and exit.\n";
+
+namespace {
+
+std::string mib(uint64_t bytes) {
+    char buf[64];
+    std::snprintf(buf, sizeof buf, "%.1f MB", static_cast<double>(bytes) / (1024.0 * 1024.0));
+    return buf;
+}
+
+// The probes and the tuning values derived from them. Every line names the value's source.
+void print_tuning() {
+    const hgcommon::HostTopology& t = hgcommon::host_topology();
+    std::printf("host.model              %s\n", t.model.empty() ? "(unknown)" : t.model.c_str());
+    std::printf("host.logical_cpus       %u\n", t.logical_cpus);
+    std::printf("host.physical_cores     %u\n", t.physical_cores);
+    std::printf("host.smt_width          %u\n", t.smt_width);
+    std::printf("host.core_classes       %u\n", t.core_classes);
+    std::printf("host.performance_cores  %u\n", t.performance_cores);
+    std::printf("host.llc_domains        %zu%s\n", t.llc_bytes.size(),
+                t.cache_known ? "" : " (cache topology not published)");
+    for (size_t d = 0; d < t.llc_bytes.size(); ++d) {
+        unsigned n = 0;
+        for (const auto& e : t.cpus) n += e.llc == d ? 1u : 0u;
+        std::printf("host.llc[%zu]             %s, %u logical CPUs\n", d, mib(t.llc_bytes[d]).c_str(), n);
+    }
+    std::printf("host.l2_per_core        %s\n", mib(t.l2_bytes).c_str());
+    std::printf("host.memory_total       %s\n", mib(t.total_bytes).c_str());
+    std::printf("host.memory_available   %s\n", mib(t.available_bytes).c_str());
+    std::printf("host.huge_page          %s\n", mib(t.huge_page_bytes).c_str());
+    std::printf("host.virtualised        %s\n", t.virtualised ? "yes (WSL: the layout is the hypervisor's)" : "no");
+    std::string classes;
+    for (const auto& e : t.cpus) classes += e.core_class == 0 ? 'P' : 'E';
+    if (t.core_classes > 1) std::printf("host.cpu_classes        %s\n", classes.c_str());
+
+    std::printf("workers                 %u  (std::thread::hardware_concurrency)\n",
+                std::thread::hardware_concurrency());
+    const std::vector<unsigned> placed = hgcommon::default_worker_cpus();
+    if (placed.empty()) {
+        std::printf("worker_placement        operating system  (default_worker_cpus: %s)\n",
+                    !hgcommon::affinity_supported() ? "no thread binding on this platform"
+                    : !t.cache_known                ? "cache topology not published"
+                                                    : "one cache domain");
+    } else {
+        std::string list;
+        for (unsigned c : placed) list += (list.empty() ? "" : ",") + std::to_string(c);
+        std::printf("worker_placement        %s  (default_worker_cpus, domain-major)\n", list.c_str());
+    }
+#ifdef HG_GPU_BACKEND
+    namespace hgg = HG_NAMESPACE::gpu;
+    const hgg::DeviceProbe& p = hgg::probe_device();
+    std::printf("gpu.usable              %s\n", p.usable ? "yes" : ("no: " + p.reason).c_str());
+    std::printf("gpu.name                %s\n", p.name.c_str());
+    std::printf("gpu.compute_capability  %d.%d\n", p.major, p.minor);
+    std::printf("gpu.driver_version      %d.%d\n", p.driver_version / 1000, (p.driver_version % 1000) / 10);
+    std::printf("gpu.runtime_version     %d.%d\n", p.runtime_version / 1000, (p.runtime_version % 1000) / 10);
+    std::printf("gpu.sm_count            %d\n", p.sm_count);
+    std::printf("gpu.max_threads_per_sm  %d\n", p.max_threads_per_sm);
+    std::printf("gpu.max_blocks_per_sm   %d\n", p.max_blocks_per_sm);
+    std::printf("gpu.regs_per_sm         %d\n", p.regs_per_sm);
+    std::printf("gpu.shared_per_sm       %llu B\n", static_cast<unsigned long long>(p.shared_per_sm));
+    std::printf("gpu.shared_per_block    %llu B (opt-in)\n",
+                static_cast<unsigned long long>(p.shared_per_block_optin));
+    std::printf("gpu.l2                  %s\n", mib(p.l2_bytes).c_str());
+    std::printf("gpu.persisting_l2_max   %s\n", mib(p.persisting_l2_max).c_str());
+    std::printf("gpu.memory_total        %s\n", mib(p.total_bytes).c_str());
+    if (p.usable) {
+        std::printf("gpu.persistent_grid     %u  (%s)\n", hgg::default_persistent_grid(),
+                    std::getenv("HG_GPU_PERSISTENT_BLOCKS") ? "HG_GPU_PERSISTENT_BLOCKS"
+                                                            : "sm_count x 8");
+        std::printf("gpu.resident_threads    %llu  (sm_count x max_threads_per_sm)\n",
+                    static_cast<unsigned long long>(hgg::device_resident_threads()));
+        std::printf("gpu.memory_cap          %s  (90%% of memory_total)\n",
+                    mib(hgg::resolved_memory_cap(0)).c_str());
+    }
+#endif
+}
+
+}  // namespace
 
 int main(int argc, char** argv) {
     // This thread reads jobs and builds replies, and a reply can be most of a job's time (the
@@ -376,6 +458,10 @@ int main(int argc, char** argv) {
             // is how the stamp itself is ground-truthed against the scanner.
             std::fputs(hgffi::kBuildStamp, stdout);
             std::fputc('\n', stdout);
+            return 0;
+        }
+        if (std::strcmp(argv[i], "--print-tuning") == 0) {
+            print_tuning();
             return 0;
         }
         if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {

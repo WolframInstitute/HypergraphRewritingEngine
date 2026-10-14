@@ -120,6 +120,14 @@ Device, `hg_gpu::DeviceProbe` (`gpu/include/hg_gpu/device_probe.hpp`), filled fr
 
 Both structs print through one flag: `hg_evolve --print-tuning` (and `hg_evolve_gpu --print-tuning`) writes every derived value with its source, so a report from another machine carries its settings.
 
+**Implemented.** `host_topology()` lists every online CPU with its dense core id, core class and LLC id; `performance_cpus()`, `cache_domains_of()` and `default_worker_cpus()` (the job system's default placement) read it. On Linux, Intel hybrid parts without `/sys/devices/cpu_core` fall back to CPUID leaf 0x1A when CPUID.07H:EDX[15] is set. macOS fills counts, caches and memory from `sysctl` and has no per-CPU entries. `DeviceProbe` carries the fields above plus driver and runtime versions; `usable_device()` throws when the probe failed, and `default_persistent_grid`, `device_resident_threads` and `resolved_memory_cap` read it. Readings on the i9-14900K and RTX 4090:
+
+| Source | Reading |
+|---|---|
+| WSL (`hg_evolve --print-tuning`) | 32 logical, 16 cores x 2, one class, one 36 MB L3, 2 MB L2, `virtualised`; placement left to the OS (one cache domain). `lscpu` reports the same layout. CPUID leaf 0x1A reads 0 on every vCPU and the hybrid bit is clear. |
+| Windows (the same reader, cross-compiled with MinGW) | 32 logical, 24 cores, 2 classes, 8 performance cores (CPUs 0-15, SMT), 16 efficiency cores (CPUs 16-31), one 36 MB L3, 2 MB L2 |
+| `hg_evolve_gpu --print-tuning` | RTX 4090, cc 8.9, 128 SMs, 1536 threads and 24 blocks per SM, 65536 registers and 100 KB shared memory per SM, 72 MB L2, 49.5 MB persisting L2, 24564 MB; grid 1024, 196,608 resident threads, memory cap 22,107 MB. `nvidia-smi` reports cc 8.9 and 24564 MiB. |
+
 ### 2.2 Knob scheme
 
 **Proposed.** One option, `"Tuning" -> <|name -> value, ...|>`, carried in the job to `hg_evolve` and to the C++ entry points as a `TuningOverrides` struct; one environment variable per name, `HG_TUNE_<NAME>`, read once by the probe for the standalone tools. An override replaces the derived value and is echoed by `--print-tuning`. `HG_GPU_PERSISTENT_BLOCKS` stays as an alias of `HG_TUNE_GPU_BLOCKS`. Compile-time macros stay for the sizes the model checker shrinks. A separate `"Threads" -> n` option exposes the worker count, the one knob a general user needs.
@@ -193,6 +201,72 @@ No thread waits on another: a submit never blocks, a searching worker never wait
 | `searching_max` | no (with the mechanism) | largest number of simultaneous searchers |
 
 Derived per run: wakes per job, `wakes_empty / wakes_issued`, failed steals per job, parks per job, and the max/min worker share of `jobs_executed`. Counts depend on the schedule, so each configuration runs 5 times and the report gives medians and ranges. Rows: multirule d7 quotient, bigpath n128 d3 quotient, cycle4 d6 full, wolftri d6 full, wpp d7 full, at 16 and 32 workers, before and after the mechanism. Expected direction if the mechanism is right: at 32 workers wakes per job and failed steals per job fall to near their 16-worker values, and on the narrow rows the number of workers with a non-zero share falls below 32. Callgrind Ir at 16 and 32 workers confirms that the throttle removes no work. Wall clock on a quiet box (the C1 gate, mono_check over 1..32) decides adoption; the losing policy is deleted in the same commit.
+
+**Implemented: the counters.** `JobSystem::scheduler_counters()` and `ParallelEvolutionEngine::scheduler_counters()` exist only in stats builds. `wakes_issued` counts `unpark_one` calls (one `FUTEX_WAKE` each on Linux), whether or not a worker was asleep. `wakes_empty` counts a return from a park followed by another park with no job run between. `steal_attempts` counts victim deque reads in the search and in the last look before a park. `searching_max` is the high-water mark of workers between an empty own deque and either a job or the idle announcement. `bench_cpu_evolve` prints one `sched:` line per evolve.
+
+**Baseline (current scheduler).** `HG_BENCH_CANON_ONLY=<1 quotient, 0 full> HG_BENCH_LARGE_N=128 bench_cpu_evolve <depth> 5 <threads> <workload>`, stats build, 5 evolves, medians with [min-max]; bench default record set, so these runs are not the paclet jobs of `.scratch/bench_rc2`:
+
+| Row | Workers | Jobs | Wakes | Wakes empty | Steal attempts | Failed steals | Parks | Searching max | Inline |
+|---|---|---|---|---|---|---|---|---|---|
+| multirule d7 q | 16 | 335 | 207 [92-255] | 12 [2-30] | 3,227 | 3,053 [1,466-3,543] | 66 | 2 | 0 |
+| multirule d7 q | 32 | 370 | 248 [167-300] | 22 [12-35] | 9,047 | 8,751 [8,148-12,150] | 103 | 2 | 0 |
+| bigpath n128 d3 q | 16 | 1,419 | 555 [402-1,407] | 4 [0-16] | 6,179 | 5,174 [5,089-6,750] | 47 | 2 | 0 |
+| bigpath n128 d3 q | 32 | 1,424 | 577 [396-1,536] | 22 [5-71] | 18,211 | 17,098 [14,897-23,754] | 115 | 2 | 0 |
+| cycle4 d6 f | 16 | 99,002 | 21,025 [224-41,776] | 10 [3-14] | 18,097 | 12,396 [11,289-70,887] | 56 | 3 | 0 |
+| cycle4 d6 f | 32 | 99,002 | 53,681 [6,263-54,309] | 47 [14-60] | 58,192 | 46,238 [39,924-160,199] | 149 | 4 | 0 |
+| wpp d8 q | 16 | 629,980 | 12,572 [338-16,812] | 5 [1-12] | 798,308 | 745,475 [576,491-1,014,882] | 41 | 6 | 61,218 [41,475-73,832] |
+| wpp d8 q | 32 | 627,092 | 34,339 [588-41,374] | 3 [2-23] | 899,250 | 867,187 [565,664-1,279,965] | 71 | 7 | 2 [0-66,556] |
+
+Failed steals per job, 16 to 32 workers: multirule 9.3 to 23.0, bigpath 3.7 to 10.5, cycle4 0.13 to 0.47, wpp 1.18 to 1.38. Wakes exceed parks by 3x (multirule) to 480x (wpp at 32). A park is woken at most once, so at least wakes minus parks `FUTEX_WAKE` calls found no sleeper: the idle count (`park_gate.hpp:138-153`) covers a worker from its announcement until its park has returned, and every submit in that window signals. wpp d8 quotient at 16 workers runs 41,475 to 73,832 jobs inline (a worker's 4,096-slot deque and the 32,768-slot injector both full), so the H17-H21 row's expectation of zero inline runs does not hold there.
+
+**Implemented: the throttle.** `hgcommon::ParkGate` (`common/include/hgcommon/park_gate.hpp`) carries the searching count on its own line, and `JobSystem` drives it:
+
+- A worker with an empty deque calls `search_begin`: counted as a searcher, or declined past `max(1, busy / 2)` searchers unless its last park returned (a woken worker always searches). A declined worker takes the last look and parks.
+- `wake_one` skips the wake while a worker searches, unless the submitter's own deque holds more than twice the searchers. A thread that is not a worker has backlog 0.
+- `search_found`: the last searcher out wakes one more worker when a worker is idle and the queue it took from still holds work: at least two jobs in a worker's deque, whose owner takes the next one itself, or any job in the injector.
+- `park_unless` takes a counted searcher out of the count before the idle announcement, so the barrier orders the decrement against the submitter's read.
+- Park domains are (cache, tier) pairs; tier is 0 for the first hardware thread of a fastest-class core, 1 for its sibling, 2 and 3 for the next class. A submit wakes from its cache's first domain. Workers are bound only on multi-cache parts or when the caller names CPUs, so on the i9-14900K under WSL and on bare metal with its one L3 there is one tier.
+
+Measuring the specified mechanism alone on this box, interleaved with the step-2 binary, showed failed steals per job at 32 workers unchanged or higher (bigpath 10.5 to 15.2, multirule 23.0 to 26.9) and no fall in empty wakes. Two changes to the steal search remove the failed reads:
+
+- **Awake mask.** Bit i is clear from worker i's idle announcement until its park returns, the span in which its deque is empty (only the owner pushes to it, and it found the deque empty before announcing). `steal_work` reads each awake worker's deque once, from a starting worker upward. Pools over 64 workers keep the random draw. The last look before a park still reads every deque.
+- **Starting victim.** The search starts at the worker's last successful victim, or after a park at the wake hint (the worker whose submit signalled, or the deque a chaining searcher found work in).
+
+**After.** Same command as the baseline, the step-2 binary (f8334d8a) and this one alternating process by process, 6 rounds of 5 evolves (n = 30 each), medians:
+
+| Row | Workers | Failed steals per job, before / after | Empty wakes, before / after | Wakes, before / after |
+|---|---|---|---|---|
+| multirule d7 q | 16 | 8.10 / 4.59 | 13 / 13 | 98 / 122 |
+| multirule d7 q | 32 | 30.47 / 18.24 | 28.5 [7-58] / 31 [5-53] | 301 / 360 |
+| bigpath n128 d3 q | 16 | 3.70 / 0.91 | 3 / 4.5 | 185 / 234 |
+| bigpath n128 d3 q | 32 | 16.11 / 4.23 | 66.5 [4-104] / 28.5 [4-95] | 487 / 755 |
+| cycle4 d6 f | 16 | 0.13 / 0.01 | 2 / 1 | 652 / 210 |
+| cycle4 d6 f | 32 | 0.41 / 0.07 | 40.5 [1-193] / 34 [2-104] | 31,260 / 39,646 |
+| wpp d8 q | 16 | 1.09 / 0.82 | 3 / 4 | 4,162 / 5,575 |
+| wpp d8 q | 32 | 1.89 / 1.69 | 4 [2-103] / 4 [0-41] | 30,098 / 31,436 |
+
+Failed steals per job fall on every row at both counts, by 11% (wpp at 32) to 92% (cycle4 at 16). Empty wakes at 32 fall on bigpath and cycle4 and do not move on multirule (a second interleaved run: 28 to 26) or wpp (4 in about 30,000 wakes). Total wakes rise on the narrow rows: the chain wakes add to the submit wakes. Job and state counts are identical (`CausalDeterminism.*`, `SamplingReproducibility.*` at 1, 2, 8, 16 and 32 threads pass under both policies).
+
+Proof: `verification/genmc/job_system_no_lost_wakeup{,_domains}.cpp` drive two looping workers, a submitter that is not a worker, and a caller that stops them, through the real header, with calibrations `HG_PARK_GATE_SEARCH_LEAVE_AFTER_BARRIER` (RC11 only) and `HG_PARK_GATE_SEARCH_LEAVE_LATE`; `verification/tla/Quiescence.tla` adds the searching state with `NoLostWakeup` and the cells `MCQuiescencePerSubmit`, `MCQuiescenceThreeWorkers` and `MCQuiescenceSearchLeaveLate` (VIOLATION).
+
+**Wall-clock A/B on a quiet box (deferred).** `HG_TUNE_WAKE_POLICY=per-submit` restores the per-submit wake; the awake mask and the starting victim apply under both policies. Build `bench_cpu_evolve` in a stats-OFF release directory (`build_linux`), then for each row interleave the two policies process by process:
+
+    cmake --build build_linux --target bench_cpu_evolve -j4
+    mkdir -p .scratch/c1
+    T=$(seq -s, 1 32)
+    for round in 1 2 3 4 5; do
+      for policy in throttled per-submit; do
+        for row in "multirule 7 1" "bigpath 3 1" "cycle4 6 0" "wolftri 6 0" "wpp 7 0" "wpp 8 1"; do
+          set -- $row
+          HG_TUNE_WAKE_POLICY=$policy HG_BENCH_CANON_ONLY=$3 HG_BENCH_LARGE_N=128 \
+            build_linux/bench_cpu_evolve $2 15 $T $1 > .scratch/c1/mono_${policy}_$1_d$2_q$3_r$round.log
+        done
+      done
+    done
+    python3 tools/dev/mono_check.py .scratch/c1/mono_throttled_*.log
+    python3 tools/dev/mono_check.py .scratch/c1/mono_per-submit_*.log
+
+The C1 gate is `mono_check` with no violation at the 5% band for the throttle; the policy with the lower median at 16 and 32 workers on each row is kept and the other is deleted with the `HG_TUNE_WAKE_POLICY` switch.
 
 ### 2.5 Order of implementation
 

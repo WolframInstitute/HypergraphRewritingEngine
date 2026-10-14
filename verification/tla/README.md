@@ -29,10 +29,11 @@ Run (needs `~/tla/tla2tools.jar`, any Java ≥ 11):
 `run.sh` checks each cell against the verdict its own `.cfg` declares on line 1
 (`Expected: PASS` or `Expected: VIOLATION`) and exits non-zero on a mismatch. It
 is registered as the `tla_cells` ctest, and skips rather than fails
-where Java or `tla2tools.jar` is absent. **Six of the thirteen cells must
+where Java or `tla2tools.jar` is absent. **Seven of the sixteen cells must
 VIOLATE** — `MCMatchForwardingRegisterBroken`,
 `MCMatchForwardingResumeClaimBroken`, `MCDepthRelaxationBroken`,
-`MCDepthRelaxationSteeredBroken`, `MCQuiescenceLateSubmit` and
+`MCDepthRelaxationSteeredBroken`, `MCQuiescenceLateSubmit`,
+`MCQuiescenceSearchLeaveLate` and
 `MCQuotientContinuationNoBlocked` — and a spec edit that turns one of those into a pass
 has disabled a calibration, which is the case a results table cannot catch and
 the runner can.
@@ -82,7 +83,41 @@ no sampling (a run that samples turns forwarding off); no stop and resume (the
 resume_pending guard is gated by
 MatchCompleteness.AStoppedRunContinuedMatchesOneRunUnderRepetition).
 
-Second target (#80): quiescence liveness — not yet modeled.
+---
+
+## `Quiescence` — termination detection and no lost wakeup under the throttle
+
+`Quiescence.tla` models `JobSystem`'s submit, worker idle path and `is_quiescent()`, from
+`job_system/include/job_system/job_system.hpp` and `common/include/hgcommon/park_gate.hpp`:
+a submit pushes and then decides whether to wake (skipped while a worker searches, unless the
+submitter's own deque holds more than twice the searchers); a worker with an empty deque counts
+itself as a searcher or declines (a free choice, so every bound is covered), steals or gives up,
+leaves the searching count, announces itself idle, samples the park word, takes an exhaustive
+look and parks; a wake moves the park word and unblocks one sleeping worker; a searcher that
+found work may wake one more. The caller is a thread that is not a worker: it seeds the run
+through the injector, then waits and runs the termination check.
+
+Properties: `NoPrematureQuiescence` (the check never reports done while work remains),
+`NoLostWakeup` (no job is queued while every worker is blocked in its park and the caller is not
+between a push and its wake decision) and `CountsExact` (the searching and idle counts equal the
+workers in those states).
+
+| cell | throttle | searcher leaves the count | other | verdict | distinct states |
+|---|---|---|---|---|---|
+| MCQuiescence | yes | before the last look | 2 workers | PASS | 133,615 |
+| MCQuiescenceThreeWorkers | yes | before the last look | 3 workers | PASS | 5,126,291 |
+| MCQuiescencePerSubmit | no | before the last look | 2 workers | PASS | 131,061 |
+| MCQuiescenceBroken | yes | before the last look | scan omits `jobs_executing` | PASS | 133,615 |
+| MCQuiescenceLateSubmit | yes | before the last look | a job completes before submitting its child | **VIOLATED** (`NoPrematureQuiescence`) | stops at the first counterexample |
+| MCQuiescenceSearchLeaveLate | yes | after the last look | 2 workers | **VIOLATED** (`NoLostWakeup`) | stops at the first counterexample |
+
+The `SearchLeaveLate` counterexample: worker 2 parks; worker 1 searches, finds nothing,
+announces itself idle and takes its last look while still counted; the caller pushes, reads two
+idle workers and one searcher and skips its wake; worker 1 leaves the count and parks. Both
+workers sleep with the job in the injector.
+
+Model scope: sequentially consistent memory (the barrier pairing under RC11 is
+`verification/genmc/job_system_no_lost_wakeup{,_domains}.cpp`); one park domain; MaxJobs 4.
 
 ---
 
