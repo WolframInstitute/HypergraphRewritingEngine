@@ -4716,7 +4716,10 @@ TEST(WxfSerializationPin, TuningOverridesReachTheEngine) {
             w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
             w.write(std::string("Tuning"));
             w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-            w.write_varint(2);
+            w.write_varint(3);
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("CausalSetCapacity"));
+            w.write(int64_t{2048});
             w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
             w.write(std::string("NoSuchName"));
             w.write(int64_t{7});
@@ -4730,13 +4733,16 @@ TEST(WxfSerializationPin, TuningOverridesReachTheEngine) {
     parser.read_association([&](const std::string& k, wxf::Parser& vp) {
         if (k != "Device") { vp.skip_value(); return; }
         vp.read_association([&](const std::string& f, wxf::Parser& fp) {
-            if (f == "Threads" || f == "MemoryCap") device[f] = fp.read<int64_t>();
+            if (f == "Threads" || f == "MemoryCap" || f == "CausalSetCapacity")
+                device[f] = fp.read<int64_t>();
             else fp.skip_value();
         });
     });
     EXPECT_EQ(device["Threads"], 3);
 #ifdef HG_GPU_BACKEND
     EXPECT_EQ(device["MemoryCap"], int64_t{3} << 30);
+#else
+    EXPECT_EQ(device["CausalSetCapacity"], 2048);
 #endif
     EXPECT_TRUE(reply_mentions(out, "NoSuchName"));
     EXPECT_GT(read_int_key(out, "NumStates"), 0);

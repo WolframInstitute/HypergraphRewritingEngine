@@ -1,6 +1,7 @@
 #pragma once
 #include "hgcommon/core.hpp"
 #include "hgcommon/namespace.hpp"
+#include "hgcommon/tuning.hpp"
 
 #include <atomic>
 #include <exception>
@@ -702,6 +703,8 @@ private:
     // a step, or under step_cap_counts_matches_ (MatchesPerStep) the N lowest-ranked transitions.
     size_t max_states_per_step_{0};
     bool step_cap_counts_matches_{false};
+    hgcommon::TuningOverrides tuning_;
+    size_t causal_set_capacity_{0};
     // Keep at most this many of a state's own transitions per RULE (0 = all). Chosen at the
     // state's drain by spine_rank, not by arrival: arrival order depends on the schedule, and a
     // cap by arrival is what max_states_per_step_ already is.
@@ -1068,6 +1071,19 @@ public:
     double exploration_probability() const;
     size_t max_successor_states_per_parent() const;
     size_t max_states_per_step() const;
+
+    // Expert overrides of derived tuning values (hgcommon/tuning.hpp), read at each evolve().
+    // A name left unset takes HG_TUNE_<NAME> or the derived value.
+    void set_tuning(const hgcommon::TuningOverrides& tuning);
+    // H5 (docs/TUNING.md): slots per shard of the first table of the two causal sets. With a step
+    // cap of `step_cap` transitions or successor states, the keys are at most
+    // (1 + steps x step_cap) x `max_lhs`, and a shard gets that over shards at load 0.75, as a
+    // power of two from 1024 to 65536. Without a cap: 8192 when `available_bytes` is above 4 GB,
+    // else 1024.
+    static size_t derived_causal_set_capacity(size_t steps, size_t step_cap, size_t max_lhs,
+                                              uint64_t available_bytes);
+    // The value the last evolve() used.
+    size_t causal_set_capacity() const { return causal_set_capacity_; }
     // At most k of each state's matches per rule, chosen by seeded rank when the state's matching
     // completes (its drain), so the kept set is the same at any worker count. 0 keeps all. A run
     // with k > 0 turns match forwarding off: a forwarded match arrives after the drain and could
@@ -1475,6 +1491,8 @@ private:
     //   presentations) and a warning recorded; Automatic -> the reconstruction runs under BOTH
     //   exploration strategies, so their observables agree by construction.
     void configure_identity_and_quotient();
+    // Resolves the tuning values of this evolve() (causal set capacity) and applies them.
+    void configure_tuning();
 
 
     // Quotient exploration: canonical transitions discovered so far, parent canonical

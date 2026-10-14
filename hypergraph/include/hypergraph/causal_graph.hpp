@@ -247,6 +247,11 @@ public:
     // event is registered.
     void set_arena(ConcurrentHeterogeneousArena* arena);
 
+    // Slots per shard of the first table of the two causal sets (seen_causal_triples_,
+    // seen_causal_event_pairs_). Single-threaded setup, before the first causal edge.
+    void set_causal_set_capacity(size_t per_shard);
+    static constexpr size_t causal_set_shards() { return ShardedKeySet<uint64_t>::shards(); }
+
     // =========================================================================
     // Edge Causal Tracking
     // =========================================================================

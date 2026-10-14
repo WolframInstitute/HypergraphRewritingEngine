@@ -119,6 +119,7 @@ void ParallelEvolutionEngine::evolve(
     max_steps_ = steps;
     should_stop_.store(false, std::memory_order_relaxed);
     configure_identity_and_quotient();
+    configure_tuning();
     reset_depth_join();
     begin_match_epochs();
 
@@ -230,6 +231,7 @@ void ParallelEvolutionEngine::evolve(
     max_steps_ = steps;
     should_stop_.store(false, std::memory_order_relaxed);
     configure_identity_and_quotient();
+    configure_tuning();
 
     reset_depth_join();
     begin_match_epochs();
@@ -2498,6 +2500,43 @@ double ParallelEvolutionEngine::exploration_probability() const { return explora
 size_t ParallelEvolutionEngine::max_successor_states_per_parent() const { return max_successor_states_per_parent_; }
 
 size_t ParallelEvolutionEngine::max_states_per_step() const { return max_states_per_step_; }
+
+void ParallelEvolutionEngine::set_tuning(const hgcommon::TuningOverrides& tuning) {
+    tuning_ = tuning;
+}
+
+size_t ParallelEvolutionEngine::derived_causal_set_capacity(size_t steps, size_t step_cap,
+                                                            size_t max_lhs,
+                                                            uint64_t available_bytes) {
+    constexpr size_t kMin = 1024, kMax = 65536;
+    if (step_cap == 0) return available_bytes > (uint64_t{4} << 30) ? 8192 : kMin;
+    // Keys at most (1 + steps x cap) x max_lhs; a shard takes its share at load 0.75.
+    const double keys = (1.0 + static_cast<double>(steps) * static_cast<double>(step_cap)) *
+                        static_cast<double>(std::max<size_t>(1, max_lhs));
+    const double per_shard =
+        keys / (static_cast<double>(CausalGraph::causal_set_shards()) * 0.75);
+    size_t n = kMin;
+    while (n < kMax && static_cast<double>(n) < per_shard) n <<= 1;
+    return n;
+}
+
+void ParallelEvolutionEngine::configure_tuning() {
+    size_t max_lhs = 1;
+    for (const RewriteRule& r : rules_) max_lhs = std::max<size_t>(max_lhs, r.num_lhs_edges);
+#if defined(HG_VERIFICATION)
+    // The model checker cannot execute getenv or read /proc; the harnesses keep the set's own
+    // working capacity.
+    causal_set_capacity_ = ConcurrentKeySet<uint64_t>::WORKING_CAPACITY;
+    (void)max_lhs;
+#else
+    causal_set_capacity_ = static_cast<size_t>(hgcommon::tuned(
+        tuning_, hgcommon::Tune::CausalSetCapacity, [&] {
+            return derived_causal_set_capacity(max_steps_, max_states_per_step_, max_lhs,
+                                               hgcommon::host_topology().available_bytes);
+        }));
+#endif
+    hg_->causal_graph().set_causal_set_capacity(causal_set_capacity_);
+}
 
 void ParallelEvolutionEngine::set_matches_per_state_rule(size_t k) { matches_per_state_rule_ = k; }
 

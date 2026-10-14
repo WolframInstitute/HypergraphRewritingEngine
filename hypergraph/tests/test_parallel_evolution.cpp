@@ -289,3 +289,41 @@ TEST(EvolutionBounds, RuleBuilder_VectorOverload_OverMaxArity_Throws) {
     std::vector<uint8_t> huge(MAX_ARITY + 1, 0);
     EXPECT_THROW(make_rule(0).lhs(huge), std::length_error);
 }
+
+// H5 (docs/TUNING.md): the causal sets' first table size. Without a step cap it is 8192 above
+// 4 GB of available memory and 1024 below; with a cap it follows the key bound. The relation is
+// the same at every capacity and thread count.
+TEST(ParallelEvolution, CausalSetCapacityChangesNoRelation) {
+    EXPECT_EQ(ParallelEvolutionEngine::derived_causal_set_capacity(5, 0, 2, uint64_t{8} << 30), 8192u);
+    EXPECT_EQ(ParallelEvolutionEngine::derived_causal_set_capacity(5, 0, 2, uint64_t{2} << 30), 1024u);
+    EXPECT_EQ(ParallelEvolutionEngine::derived_causal_set_capacity(5, 10, 2, uint64_t{8} << 30), 1024u);
+    // (1 + 100 x 1000) x 3 keys over 64 shards at 0.75: 6250 per shard, so 8192.
+    EXPECT_EQ(ParallelEvolutionEngine::derived_causal_set_capacity(100, 1000, 3, 0), 8192u);
+    EXPECT_EQ(ParallelEvolutionEngine::derived_causal_set_capacity(1u << 20, 1u << 20, 16, 0), 65536u);
+
+    std::vector<std::vector<VertexId>> initial = {{0, 1}, {1, 2}, {2, 0}};
+    size_t ref_causal = 0, ref_pairs = 0, ref_events = 0;
+    bool first = true;
+    for (size_t capacity : {size_t{0}, size_t{1}, size_t{1024}, size_t{65536}}) {
+        for (size_t threads : {1, 4, 32}) {
+            Hypergraph hg;
+            ParallelEvolutionEngine engine(&hg, threads);
+            hgcommon::TuningOverrides t;
+            if (capacity) t.set(hgcommon::Tune::CausalSetCapacity, static_cast<int64_t>(capacity));
+            engine.set_tuning(t);
+            engine.add_rule(par_two_edge_rule());
+            engine.evolve(initial, 4);
+            if (capacity) EXPECT_EQ(engine.causal_set_capacity(), capacity);
+            if (first) {
+                ref_causal = hg.num_causal_edges();
+                ref_pairs = hg.num_causal_event_pairs();
+                ref_events = engine.num_events();
+                EXPECT_GT(ref_pairs, 0u);
+                first = false;
+            }
+            EXPECT_EQ(hg.num_causal_edges(), ref_causal) << capacity << " / " << threads;
+            EXPECT_EQ(hg.num_causal_event_pairs(), ref_pairs) << capacity << " / " << threads;
+            EXPECT_EQ(engine.num_events(), ref_events) << capacity << " / " << threads;
+        }
+    }
+}

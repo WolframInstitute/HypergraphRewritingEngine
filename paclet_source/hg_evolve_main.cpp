@@ -25,6 +25,7 @@
 #include "hgcommon/affinity.hpp"
 #include "hgcommon/tuning.hpp"
 #include "hypergraph/arena.hpp"
+#include "hypergraph/parallel_evolution.hpp"   // derived_causal_set_capacity
 #include "job_system/job_pool.hpp"
 #ifdef HG_GPU_BACKEND
 #include "hg_gpu/device_probe.hpp"
@@ -402,6 +403,19 @@ void print_tuning() {
                 hgcommon::tuning_env().get(hgcommon::Tune::Threads)
                     ? "HG_TUNE_THREADS"
                     : "logical CPUs this process may use; \"Threads\" per job");
+    {
+        hgcommon::TuneSource src;
+        const int64_t cap = hgcommon::tuned(hgcommon::TuningOverrides{},
+                                            hgcommon::Tune::CausalSetCapacity, [&] {
+            return HG_NAMESPACE::engine::ParallelEvolutionEngine::derived_causal_set_capacity(
+                0, 0, 1, t.available_bytes);
+        }, &src);
+        std::printf("causal_set_capacity     %lld per shard  (%s)\n", static_cast<long long>(cap),
+                    src == hgcommon::TuneSource::Environment
+                        ? "HG_TUNE_CAUSAL_SET_CAPACITY"
+                        : "run without a step cap: 8192 above 4 GB available, else 1024; a step "
+                          "cap sizes it from the key bound");
+    }
     const std::vector<unsigned> placed = hgcommon::default_worker_cpus();
     if (placed.empty()) {
         std::printf("worker_placement        operating system  (default_worker_cpus: %s)\n",

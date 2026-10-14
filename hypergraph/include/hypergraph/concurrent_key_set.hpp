@@ -171,6 +171,10 @@ public:
     ConcurrentKeySet(const ConcurrentKeySet&) = delete;
     ConcurrentKeySet& operator=(const ConcurrentKeySet&) = delete;
 
+    // The size the first growth jumps to. Single-threaded setup, as set_arena is; a set that has
+    // already grown keeps doubling from where it is.
+    void set_working_capacity(size_t n) { working_capacity_ = n; }
+
     void set_arena(ConcurrentHeterogeneousArena* arena) {
         arena_ = arena;
         Table* old = table_.load(std::memory_order_relaxed);
@@ -670,6 +674,11 @@ public:
     void set_arena(ConcurrentHeterogeneousArena* arena) {
         for (Shard& s : shard_) s.set_arena(arena);
     }
+    // Each shard's first growth jumps to `n` slots.
+    void set_working_capacity(size_t n) {
+        for (Shard& s : shard_) s.set_working_capacity(n);
+    }
+    static constexpr size_t shards() { return SHARDS; }
 
     ShardedKeySet(const ShardedKeySet&) = delete;
     ShardedKeySet& operator=(const ShardedKeySet&) = delete;

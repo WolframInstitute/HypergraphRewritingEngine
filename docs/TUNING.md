@@ -288,6 +288,10 @@ The C1 gate is `mono_check` with no violation at the 5% band for the throttle; t
 9. D22 L2 persistence window; D13 grid-stride helper; D12 block sizes.
 10. H16 cache-line constant, H14 arena block from the huge page size, H23 malloc arenas (after C24), H9/H10 shard counts.
 
+### 2.6 Implemented rows
+
+**H5 causal set capacity.** `ParallelEvolutionEngine::configure_tuning` sets, at each `evolve()`, the first table size of the two causal sets (`CausalGraph::set_causal_set_capacity`): `"Tuning" -> <|"CausalSetCapacity" -> n|>`, `HG_TUNE_CAUSAL_SET_CAPACITY`, or `derived_causal_set_capacity`. With a step cap N the keys are at most (1 + steps x N) x the largest left-hand side, and a shard takes that over 64 shards at load 0.75, as a power of two from 1024 to 65536; without a cap the value is 8192 when `MemAvailable` is above 4 GB, else 1024. Model-checked harnesses keep 1024. The `"Device"` reply of the CPU engine reports `"CausalSetCapacity"`. Measured on the i9-14900K, stats build, one evolve at one thread, 1024 against 8192 on the same binary through the override: callgrind Ir cycle4 depth 6 full 1,738,356,884 -> 1,718,747,106 (-1.13%), multirule depth 6 full 2,639,556,621 -> 2,598,951,896 (-1.54%); peak RSS multirule depth 3 full 15.4 -> 18.9 MB (3 runs each, spread 0.2 MB). Test: `ParallelEvolution.CausalSetCapacityChangesNoRelation` (causal edges, causal pairs and events equal at 1, 1024, 65536 and the default, at 1, 4 and 32 threads).
+
 ## 3. Constants that are not tuning
 
 | Kind | Constants |
@@ -300,3 +304,17 @@ The C1 gate is `mono_check` with no violation at the 5% band for the throttle; t
 | Stats builds only | `kClaimRing` 8192, `kClaimRingWorkers` 64 (`parallel_evolution.hpp:1278-1279`, inside `#if HG_ENGINE_STATS`), `kSilentWitness`, `kDrainProbes`, `kMaxTimedThreads`, `kAllocSites`, counter slot counts |
 
 Board H6 lists `kClaimRing` and `kClaimRingWorkers` as per-host tuning; both exist only in stats builds and have no effect on a release run.
+
+## 4. Quiet-box queue
+
+Wall-clock checks that need a quiet machine. Each names the binary, the rows, the command and the expected direction. Build `bench_cpu_evolve` in a stats-OFF release directory (`build_linux`) and `bench_gpu_evolve` in `build_gpu`; run each pair of arms interleaved process by process, 5 rounds, and compare medians.
+
+**H5 causal set capacity.** Arms `HG_TUNE_CAUSAL_SET_CAPACITY=1024` and unset (8192 on a machine with more than 4 GB available). Rows: multirule depth 6 and 7, cycle4 depth 6, wpp depth 7, all full (`HG_BENCH_CANON_ONLY=0`), at 1, 16 and 32 threads.
+
+    for round in 1 2 3 4 5; do for cap in 1024 ""; do for row in "multirule 6" "multirule 7" "cycle4 6" "wpp 7"; do
+      set -- $row
+      HG_TUNE_CAUSAL_SET_CAPACITY=$cap HG_BENCH_CANON_ONLY=0 build_linux/bench_cpu_evolve $2 15 1,16,32 $1 \
+        > .scratch/h5/cap${cap:-default}_$1_d$2_r$round.log
+    done; done; done
+
+Expected: the default at most equal to 1024 on every row (the instruction count falls 1.1-1.5% at one thread).

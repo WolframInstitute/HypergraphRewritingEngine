@@ -987,6 +987,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         }
         hypergraph::Hypergraph& hg = holder->hypergraph();
         hypergraph::ParallelEvolutionEngine& engine = holder->engine();
+        if (!held_session) engine.set_tuning(req.tuning);
 
         // D16: a held verb takes its identity from the SESSION, not from its own envelope.
         if (held_session) read_back_session_identity(req, hg, engine);
@@ -2118,6 +2119,8 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             device.push_back({wxf::WXFValue("Type"), wxf::WXFValue("CPU")});
             device.push_back({wxf::WXFValue("Threads"),
                               wxf::WXFValue(static_cast<int64_t>(engine.num_threads()))});
+            device.push_back({wxf::WXFValue("CausalSetCapacity"),
+                              wxf::WXFValue(static_cast<int64_t>(engine.causal_set_capacity()))});
             full_result.push_back({wxf::WXFValue("Device"), wxf::WXFValue(device)});
         }
 
