@@ -1,6 +1,7 @@
 #ifdef HG_GPU_BACKEND
 
 #include "hg_gpu_backend.hpp"
+#include <algorithm>
 
 #include "hg_gpu/device_probe.hpp"
 #include "hg_gpu/evolve.hpp"
@@ -201,11 +202,38 @@ struct HeldSession {
 };
 HeldSession held;
 
+// Reuse one device Engine across every job this process handles. The
+// persistent worker processes many HGEvolve calls in one process, and the
+// per-call Engine allocation dominates small/medium runs, so amortizing it
+// is 6-12x on interactive workloads. Jobs run serially through the worker, so
+// a process-lifetime evolver is safe; the one-shot binary just uses it once.
+// A job reuses the engine when the engine's config covers the job (PersistentEvolver::run).
+hg_gpu::PersistentEvolver& process_evolver() {
+    static hg_gpu::PersistentEvolver evolver;
+    return evolver;
+}
+
+std::vector<uint8_t> run_gpu_evolution_once(const GpuJob& request, const HostBridge& host);
+
 }  // namespace
 
 uint64_t gpu_session_handle() { return held.handle; }
 
+// A job that throws leaves the worker as a fresh one would be: the evolver drops its engine
+// and storage and the device is reset (PersistentEvolver::release_after_failure), unless a
+// session is held, whose states live on that engine.
 std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& host) {
+    try {
+        return run_gpu_evolution_once(request, host);
+    } catch (...) {
+        if (held.handle == 0) process_evolver().release_after_failure();
+        throw;
+    }
+}
+
+namespace {
+
+std::vector<uint8_t> run_gpu_evolution_once(const GpuJob& request, const HostBridge& host) {
     GpuJob job = request;
     if ((job.session_op == "Step" || job.session_op == "Query") && held.handle != 0 &&
         job.session_handle == held.handle) {
@@ -217,13 +245,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
     }
     hg_gpu::EvolveInput in = build_input(job);
 
-    // Reuse one device Engine across every job this process handles. The
-    // persistent worker processes many HGEvolve calls in one process, and the
-    // per-call Engine allocation dominates small/medium runs, so amortizing it
-    // is 6-12x on interactive workloads. Jobs run serially through the worker, so
-    // a process-lifetime evolver is safe; the one-shot binary just uses it once.
-    // A job reuses the engine when the engine's config covers the job (PersistentEvolver::run).
-    static hg_gpu::PersistentEvolver evolver;
+    hg_gpu::PersistentEvolver& evolver = process_evolver();
 
     const std::string& op = job.session_op;
     const bool is_open  = (op == "Open");
@@ -1297,14 +1319,29 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
             held.frontier_eff.push_back(eff);
             if (seen.insert(eff).second) frontier.push_back(wxf::WXFValue(eff));
         }
-        full_result.push_back({wxf::WXFValue("Frontier"), wxf::WXFValue(frontier)});
+        full_result.push_back({wxf::WXFValue("Frontier"), wxf::WXFValue(std::move(frontier))});
         full_result.push_back({wxf::WXFValue("Session"),
                                wxf::WXFValue(static_cast<int64_t>(held.handle))});
     }
-    writer.write(wxf::WXFValue(full_result));
-    evolver.recycle(std::move(result));
+    writer.write(wxf::WXFValue(std::move(full_result)));
     undelivered_open.armed = false;
-    return writer.data();
+    // An engine that could not be built at the grown size ends the run partial; the worker then
+    // goes back to a fresh worker's footprint, as after a throw (run_gpu_evolution).
+    const bool grow_failed =
+        std::any_of(result.warnings.begin(), result.warnings.end(),
+                    [](const hg_gpu::OverflowWarning& w) {
+                        return w.kind == hg_gpu::ErrorKind::kDeviceOutOfMemory;
+                    });
+    if (grow_failed && held.handle == 0) {
+        std::vector<uint8_t> out = writer.release_data();
+        result = hg_gpu::EvolveResult{};
+        evolver.release_after_failure();
+        return out;
+    }
+    evolver.recycle(std::move(result));
+    return writer.release_data();
 }
+
+}  // namespace
 
 #endif  // HG_GPU_BACKEND

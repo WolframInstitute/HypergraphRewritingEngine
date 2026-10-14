@@ -712,6 +712,12 @@ public:
     // The evolver holds that storage until the next run.
     void recycle(EvolveResult&& done);
 
+    // After a job that failed: drop the engine and the recycled storage and reset the device,
+    // so the process holds what a fresh worker holds and the next run builds from the job's own
+    // config. A failed growth leaves the driver's address-space reservations for the larger
+    // engine in place until the context is reset (measured: 4.3 GB of VSZ).
+    void release_after_failure();
+
 private:
     std::unique_ptr<Engine> engine_;
     EngineConfig            cfg_{};

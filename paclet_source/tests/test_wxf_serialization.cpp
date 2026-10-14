@@ -3733,6 +3733,36 @@ TEST(GpuBinaryGate, PerStateCapsHoldPastTheSharedMemoryBuffer) {
     worker_stop(w);
 }
 
+// A job that fails in the GPU worker leaves the worker as a fresh one: the evolver drops its
+// engine and the device is reset (PersistentEvolver::release_after_failure), and the next job
+// gives the counts it gave before the failure. The failure is a word that is not a verb.
+TEST(GpuBinaryGate, AFailedJobLeavesTheWorkerFresh) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    const char* counts[] = {"NumStates", "NumEvents", "NumCausalEdges", "NumBranchialEdges"};
+    const auto job = build_input_with_op(4, "Evolve", 0, true, {}, [&](wxf::Writer& ww) {
+        put_str_list_option(ww, "RequestedData", {counts[0], counts[1], counts[2], counts[3]});
+    }, 1);
+    const auto before = worker_call(w, job);
+    ASSERT_FALSE(before.empty()) << w.last_error;
+    EXPECT_GT(read_int_key(before, "NumStates"), 1);
+    EXPECT_TRUE(worker_call(w, build_input_with_op(4, "Reticulate")).empty());
+    EXPECT_NE(w.last_error.find("not a verb"), std::string::npos) << w.last_error;
+    for (int i = 0; i < 2; ++i) {
+        const auto after = worker_call(w, job);
+        ASSERT_FALSE(after.empty()) << w.last_error;
+        for (const char* k : counts) EXPECT_EQ(read_int_key(after, k), read_int_key(before, k)) << k;
+    }
+    worker_stop(w);
+}
+
 // Both devices report the same warnings: quotient exploration or Automatic event identity
 // without Full state canonicalization, and an option value the parser skips.
 TEST(GpuBinaryGate, WarningsAgreeAcrossDevices) {

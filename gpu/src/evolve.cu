@@ -1243,6 +1243,16 @@ PersistentEvolver::SessionRun PersistentEvolver::run_session(const EvolveInput& 
 
 void PersistentEvolver::recycle(EvolveResult&& done) { spare_.adopt_storage(done); }
 
+void PersistentEvolver::release_after_failure() {
+    engine_.reset();
+    has_engine_ = false;
+    cfg_ = EngineConfig{};
+    spare_ = EvolveResult{};
+    cudaDeviceSynchronize();
+    cudaDeviceReset();
+    cudaGetLastError();
+}
+
 // The live engine's config widened to cover `own`, an input's own config: each capacity field is
 // the larger of the two, and each setting (key masks, replay and keyed limits, launch bounds) is
 // the input's. A replay group left at 0 sizes itself from max_events; it stays 0 when both are 0
