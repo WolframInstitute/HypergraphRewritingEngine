@@ -340,15 +340,15 @@ The class hashes of the first seed:
 hashesA = Sort @ Lookup["CanonicalHash"] @ Values @ HGEvolve[rule, init, 5, "States", "CanonicalizeStates" -> Full, "TransitionRate" -> 0.5, "RandomSeed" -> 1, "IncludeCanonicalHashes" -> True]
 ```
 
-<!-- => {-6704850690037478777, -6276439087999122262, -5742333305762982118, -5669361067642602358, -5239938230783464623, -1453811750045434078, 5293164704559906130, 7197693678543408660, 7499371674364276414, 8367264973557672493, 8839991810862101748} -->
+<!-- => {-6704850690037478777, -6276439087999122262, -5742333305762982118, -5669361067642602358, -5239938230783464623, 7197693678543408660, 8367264973557672493, 8839991810862101748} -->
 
 The class hashes of the second seed:
 
 ```wl
-hashesB = Sort @ Lookup["CanonicalHash"] @ Values @ HGEvolve[rule, init, 5, "States", "CanonicalizeStates" -> Full, "TransitionRate" -> 0.5, "RandomSeed" -> 2, "IncludeCanonicalHashes" -> True]
+hashesB = Sort @ Lookup["CanonicalHash"] @ Values @ HGEvolve[rule, init, 5, "States", "CanonicalizeStates" -> Full, "TransitionRate" -> 0.5, "RandomSeed" -> 10, "IncludeCanonicalHashes" -> True]
 ```
 
-<!-- => {-6704850690037478777, -5769831544623873690, -5742333305762982118, -5669361067642602358, 4195566678071382530, 5293164704559906130, 7197693678543408660, 7499371674364276414, 8367264973557672493, 8839991810862101748} -->
+<!-- => {-6704850690037478777, -5769831544623873690, -5742333305762982118, -5669361067642602358, -5239938230783464623, -1453811750045434078, 4195566678071382530, 5293164704559906130, 7499371674364276414, 8367264973557672493, 8839991810862101748} -->
 
 The number of classes in each run, and in both:
 
@@ -356,7 +356,7 @@ The number of classes in each run, and in both:
 {Length[hashesA], Length[hashesB], Length[Intersection[hashesA, hashesB]]}
 ```
 
-<!-- => {11, 10, 8} -->
+<!-- => {8, 11, 6} -->
 
 Together the two runs have the 13 classes of the full system at five steps:
 
