@@ -2190,6 +2190,8 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         HostBridge host;
 
         std::vector<uint8_t> out = run_rewriting_core(wxf_bytes, host);
+        // The kernel process outlives the call: the evolution's pooled pages go back now.
+        hypergraph::arena_release_pooled_pages(hypergraph::kPooledBytesKeptBetweenJobs);
 
         mint out_dims[1] = {static_cast<mint>(out.size())};
         MNumericArray result_array;

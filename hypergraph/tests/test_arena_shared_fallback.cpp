@@ -2,8 +2,10 @@
 
 #include "hypergraph/arena.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <thread>
 #include <vector>
@@ -84,6 +86,49 @@ TEST(ArenaSharedFallback, CursorAndSharedAllocationsNeverOverlap) {
     EXPECT_EQ(corrupted, 0u)
         << corrupted << " allocations were written by more than one thread, so two callers were "
         << "given the same bytes -- the shared bump path and a worker cursor bumped one block";
+}
+
+#if defined(__linux__)
+size_t resident_bytes() {
+    long pages = 0, resident = 0;
+    if (FILE* f = std::fopen("/proc/self/statm", "r")) {
+        if (std::fscanf(f, "%ld %ld", &pages, &resident) != 2) resident = 0;
+        std::fclose(f);
+    }
+    return static_cast<size_t>(resident) * 4096u;
+}
+#endif
+
+// A block back in the pool keeps its pages until arena_release_pooled_pages gives them back;
+// the block taken next from the pool is then zero without being filled. One 23 MB request, a
+// size class no other test in the binary asks for.
+TEST(ArenaPool, ReleasedPooledPagesComeBackZero) {
+    constexpr size_t kBytes = size_t{23} << 20;
+    {
+        ConcurrentHeterogeneousArena a;
+        void* p = a.allocate_raw(kBytes, 64, nullptr);
+        std::memset(p, 0xAB, kBytes);
+    }
+#if defined(__linux__)
+    const size_t before = resident_bytes();
+#endif
+    const size_t released = hg::engine::arena_release_pooled_pages(0);
+#if defined(__linux__) || defined(_WIN32)
+    EXPECT_GE(released, kBytes - (size_t{1} << 20));
+#endif
+#if defined(__linux__)
+    EXPECT_GE(before - std::min(before, resident_bytes()), kBytes - (size_t{1} << 20));
+#endif
+    ConcurrentHeterogeneousArena b;
+    bool zero = false;
+    auto* q = static_cast<const unsigned char*>(b.allocate_raw(kBytes, 64, &zero));
+#if defined(__linux__) || defined(_WIN32)
+    EXPECT_TRUE(zero) << "the released block was not reported zero";
+#endif
+    size_t nonzero = 0;
+    if (zero)
+        for (size_t i = 0; i < kBytes; ++i) nonzero += q[i] != 0;
+    EXPECT_EQ(nonzero, 0u);
 }
 
 }  // namespace

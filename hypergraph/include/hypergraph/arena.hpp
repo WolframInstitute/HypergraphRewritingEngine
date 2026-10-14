@@ -434,6 +434,9 @@ private:
         // hash tables use to skip their fills; one below it fills as value-initialisation
         // requires. Capacity under HG_VERIFICATION, where a block is operator new.
         size_t dirty_end;
+        // Windows: bytes from release_start(this) decommitted while the block sat in the pool,
+        // committed again when it is taken. Zero otherwise.
+        size_t decommitted;
         // allocate_raw aligns an offset into data[], so an alignment up to kMaxAlign holds in
         // memory only because data[] is itself kMaxAlign-aligned. std::max_align_t is 8 bytes
         // under MSVC and 16 under GCC and Clang, so it does not give that alignment.
@@ -444,7 +447,16 @@ private:
         static Block* create(size_t data_capacity);
         static void   release(Block* block);
         static void   pool_push(std::atomic<uint64_t>& head, Block* block);
+        // The first page boundary after the header: where release_pages starts.
+        static uintptr_t release_start(const Block* block);
+        // Give the pages of a block nobody holds back to the OS; bytes released.
+        static size_t release_pages(Block* block);
     };
+
+public:
+    // Give the pages of the blocks in the process-wide pool back to the OS, keeping each
+    // mapping. Bytes released. See arena_release_pooled_pages.
+    static size_t release_pooled_pages(size_t keep_bytes);
 
 public:
     // The pool's link accessors over Block::prev, atomic because a rival popper reads the
@@ -548,6 +560,16 @@ size_t arena_block_bytes_live();
 size_t arena_block_bytes_high_water();
 // The same high-water for the recycling (per-worker scratch) arenas alone.
 size_t arena_scratch_block_bytes_high_water();
+// A released block stays mapped in the process-wide pool for the next arena to take, so a
+// process that ran one large evolution keeps that evolution's pages resident. This gives the
+// pages of the pooled blocks back to the OS (Linux and Windows), except for up to `keep_bytes`
+// of used bytes in the smallest size classes, and returns the bytes released; a released block
+// taken afterwards faults its pages in again. hg_evolve --serve calls it after each job.
+size_t arena_release_pooled_pages(size_t keep_bytes);
+// What a long-lived process keeps pooled between jobs: 64 MB. Measured on the A3 torus job
+// family through hg_evolve --serve at 4 threads: releasing everything after each 1-step job
+// cost 0.8 ms of re-faulting on a 7 ms job; the kept bytes cover a small job's whole working set.
+inline constexpr size_t kPooledBytesKeptBetweenJobs = size_t{64} << 20;
 #if HG_ENGINE_STATS
 // Stats builds: bytes and calls per allocation site (the engine function that asked), the
 // largest first. Addresses are symbolised with addr2line against the binary.

@@ -19,6 +19,7 @@
 #include "hg_core.hpp"
 #include "hgcommon/build_stamp.hpp"
 #include "hgcommon/affinity.hpp"
+#include "hypergraph/arena.hpp"
 
 namespace HG_NAMESPACE { namespace ffi { extern const char kBuildStamp[]; } }  // hypergraph_ffi.cpp
 namespace hgffi = HG_NAMESPACE::ffi;
@@ -42,6 +43,9 @@ using socket_t = SOCKET;
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
 using socket_t = int;
 #define INVALID_SOCKET (-1)
 #define HG_CLOSESOCK ::close
@@ -154,6 +158,18 @@ int run_one_shot(const HostBridge& host) {
     }
 }
 
+// A finished job's arena blocks sit in the process-wide pool, resident, until an arena takes
+// them again (hypergraph/arena.hpp). A worker stays alive between jobs, so after each job it
+// gives the pooled pages back: a large job's peak is not held by an idle worker. The job's
+// engine threads have exited, and glibc keeps what they freed in their malloc arenas until
+// malloc_trim returns it.
+void release_job_memory() {
+    hypergraph::arena_release_pooled_pages(hypergraph::kPooledBytesKeptBetweenJobs);
+#if defined(__GLIBC__)
+    malloc_trim(0);
+#endif
+}
+
 int run_serve(const HostBridge& host_in) {
     HostBridge host = host_in;
     host.progress = [](const std::string& m) { write_progress_frame(m); };
@@ -172,6 +188,7 @@ int run_serve(const HostBridge& host_in) {
         } catch (const std::exception& e) {
             write_error_frame(e.what());
         }
+        release_job_memory();
     }
     return 0;
 }
@@ -280,9 +297,11 @@ int run_serve_socket(const HostBridge& host_in, const char* portfile) {
         try {
             out = run_rewriting_core(job, host);
         } catch (const std::exception& e) {
+            release_job_memory();
             if (!send_error_frame(e.what())) break;
             continue;
         }
+        release_job_memory();
         uint8_t hdr[8];
         const uint64_t olen = out.size();
         frame_header(olen, hdr);

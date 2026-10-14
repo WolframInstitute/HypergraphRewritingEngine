@@ -285,6 +285,16 @@ ConcurrentHeterogeneousArena::Block::create(size_t data_capacity) {
         while (uint64_t node = hgcommon::pool_core_pop(ops)) {
             Block* b = reinterpret_cast<Block*>(node);
             if (b->capacity < data_capacity) { hgcommon::pool_core_push(ops, node); break; }
+#if defined(_WIN32)
+            if (b->decommitted) {
+                void* from = reinterpret_cast<void*>(Block::release_start(b));
+                if (!VirtualAlloc(from, b->decommitted, MEM_COMMIT, PAGE_READWRITE)) {
+                    hgcommon::pool_core_push(ops, node);
+                    throw std::bad_alloc();
+                }
+                b->decommitted = 0;
+            }
+#endif
             ops.link_store(node, 0);
             b->next = nullptr;
             b->offset.store(0, std::memory_order_relaxed);
@@ -319,6 +329,7 @@ ConcurrentHeterogeneousArena::Block::create(size_t data_capacity) {
     block->capacity = data_capacity;
     block->map_base = map_base;
     block->map_len  = map_len;
+    block->decommitted = 0;
 #if defined(HG_VERIFICATION)
     block->dirty_end = data_capacity;
 #else
@@ -354,6 +365,84 @@ void ConcurrentHeterogeneousArena::Block::pool_push(std::atomic<uint64_t>& head,
     BlockPoolOps ops{head};
     hgcommon::pool_core_push(ops, reinterpret_cast<uint64_t>(block));
 #endif
+}
+
+uintptr_t ConcurrentHeterogeneousArena::Block::release_start(const Block* block) {
+    constexpr uintptr_t kPage = 4096;
+    return (reinterpret_cast<uintptr_t>(block->data) + kPage - 1) & ~(kPage - 1);
+}
+
+// The whole pages of a pooled block from the first page boundary after its header to the end of
+// the bytes it ever used (dirty_end); bytes past dirty_end were never touched and hold no page.
+// Linux zero-fills the pages on the next touch; Windows decommits them, and Block::create
+// commits them again, zero, when the block is next taken from the pool. The used bytes outside
+// those pages -- the rest of the header's page and a partial last page -- are zeroed here, so
+// the block goes back with dirty_end 0. Elsewhere nothing is released.
+size_t ConcurrentHeterogeneousArena::Block::release_pages(Block* block) {
+#if defined(HG_VERIFICATION)
+    (void)block;
+    return 0;
+#else
+    constexpr uintptr_t kPage = 4096;
+    const uintptr_t data  = reinterpret_cast<uintptr_t>(block->data);
+    const uintptr_t dirty = data + (std::min)(block->dirty_end, block->capacity);
+    const uintptr_t start = release_start(block);
+    const uintptr_t end   = (std::min)((dirty + kPage - 1) & ~(kPage - 1),
+                                     (data + block->capacity) & ~(kPage - 1));
+    if (end <= start) return 0;
+    const size_t len = end - start;
+#if defined(_WIN32)
+    if (block->decommitted) return 0;
+    if (!VirtualFree(reinterpret_cast<void*>(start), len, MEM_DECOMMIT)) return 0;
+    block->decommitted = len;
+#elif defined(__linux__)
+    if (::madvise(reinterpret_cast<void*>(start), len, MADV_DONTNEED) != 0) return 0;
+#endif
+#if defined(_WIN32) || defined(__linux__)
+    std::memset(block->data, 0, start - data);
+    if (dirty > end) std::memset(reinterpret_cast<void*>(end), 0, dirty - end);
+    block->dirty_end = 0;
+    return len;
+#else
+    (void)len;
+    return 0;
+#endif
+#endif
+}
+
+// Every pooled block is popped, its pages released unless it falls inside `keep_bytes` of used
+// bytes, smallest size class first, and pushed again. The mapping and the header stay, so a
+// rival popper that reads a block's link meanwhile reads mapped memory, and pops and pushes are
+// the pool's own lock-free ones: this may run beside any arena.
+size_t ConcurrentHeterogeneousArena::release_pooled_pages(size_t keep_bytes) {
+#if defined(HG_VERIFICATION)
+    (void)keep_bytes;
+    return 0;
+#else
+    size_t released = 0, kept = 0;
+    for (int c = 0; c < kPoolClasses; ++c) {
+        BlockPoolOps ops{g_block_pool[c]};
+        Block* taken = nullptr;
+        while (uint64_t node = hgcommon::pool_core_pop(ops)) {
+            Block* b = reinterpret_cast<Block*>(node);
+            b->next = taken;
+            taken = b;
+        }
+        while (taken) {
+            Block* b = taken;
+            taken = b->next;
+            b->next = nullptr;
+            if (kept + b->dirty_end <= keep_bytes) kept += b->dirty_end;
+            else released += Block::release_pages(b);
+            hgcommon::pool_core_push(ops, reinterpret_cast<uint64_t>(b));
+        }
+    }
+    return released;
+#endif
+}
+
+size_t arena_release_pooled_pages(size_t keep_bytes) {
+    return ConcurrentHeterogeneousArena::release_pooled_pages(keep_bytes);
 }
 
 // Bump this worker's private cursor. On overflow, grab a fresh block sized for the request and
