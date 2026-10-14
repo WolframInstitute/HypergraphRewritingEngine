@@ -1,8 +1,8 @@
 // Expect: Attempt to access non-allocated memory
 // A compare_exchange_weak retry loop whose failure path dereferences the value the CAS returned,
 // with nobody else writing the word. Only a spurious failure enters that path, and it returns the
-// expected value, null. The load after the CAS runs only on a failure, so the checker keeps the
-// CAS weak and reports the null dereference.
+// expected value, null. The checker explores the spurious failure and reports the null
+// dereference.
 #include <pthread.h>
 #include <atomic>
 
