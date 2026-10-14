@@ -1983,13 +1983,12 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // the multiplicities come from the engine's count; under full capture every raw state is
         // present and counts once.
         if (req.include_step_statistics) {
-            // Each class's invariants, recorded by the worker that created the class.
-            std::vector<hg::stats::StepPoint> points;
-            std::unordered_map<uint64_t, const hgcommon::StateInvariantRecord*> class_invariants;
-            std::map<uint32_t, uint64_t> events;
-            std::map<uint32_t, std::map<int64_t, uint64_t>> rule_counts;
+            // Each step's classes, with the invariants recorded by the worker that created each
+            // class, its events, and its branchial input.
+            std::map<uint32_t, hg::stats::StepInput> inputs;
             const uint32_t n_pub = hg.num_published_states();
             if (hg.quotient_multiplicity()) {
+                std::vector<hg::stats::StepPoint> points;
                 std::unordered_map<uint64_t, std::map<int64_t, uint64_t>> matches_by_rule;
                 hg.for_each_class_multiplicity([&](uint64_t h, uint32_t d, uint64_t m) {
                     points.push_back({d, h, m});
@@ -2000,33 +1999,35 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                     });
                 });
                 for (const auto& p : points)
-                    class_invariants.emplace(p.class_hash, hg.state_invariants(p.class_hash));
+                    hg::stats::add_class(inputs[p.step], p.class_hash, p.weight,
+                                         hg.state_invariants(p.class_hash));
+                std::map<uint32_t, uint64_t> events;
+                std::map<uint32_t, std::map<int64_t, uint64_t>> rule_counts;
                 hg::stats::events_from_multiplicities(points, matches_by_rule,
                                                       static_cast<uint32_t>(req.steps), events,
                                                       rule_counts);
+                for (const auto& [step, n] : events) inputs[step].events = n;
+                for (auto& [step, by_rule] : rule_counts) inputs[step].rule_counts = std::move(by_rule);
             } else {
                 for (uint32_t sid = 0; sid < n_pub; ++sid) {
                     const hypergraph::State& st = hg.get_state(sid);
                     if (st.id == hypergraph::INVALID_ID) continue;
                     const uint64_t h = hg.get_or_compute_canonical_hash(sid);
-                    points.push_back({st.step, h, 1});
-                    auto& r = class_invariants[h];
-                    if (!r) r = hg.state_invariants(h);
+                    hg::stats::add_class(inputs[st.step], h, 1, hg.state_invariants(h));
                 }
                 const uint32_t n_ev = hg.num_published_events();
                 for (uint32_t eid = 0; eid < n_ev; ++eid) {
                     const hypergraph::Event& ev = hg.get_event(eid);
                     if (ev.id == hypergraph::INVALID_ID || hg.is_genesis_event(eid)) continue;
                     if (ev.output_state == hypergraph::INVALID_ID) continue;
-                    const uint32_t step = hg.get_state(ev.output_state).step;
-                    ++events[step];
-                    ++rule_counts[step][static_cast<int64_t>(ev.rule_index)];
+                    hg::stats::StepInput& in = inputs[hg.get_state(ev.output_state).step];
+                    ++in.events;
+                    ++in.rule_counts[static_cast<int64_t>(ev.rule_index)];
                 }
             }
             // "StepStatisticsBranchial": per step, the branchial graph on the step's states and
             // the vertex overlap of its raw states (admitted_branchial).
             const uint32_t which = admitted_branchial(req);
-            std::map<uint32_t, wxf::WXFValueAssociation> branchial_keys;
             if (which) {
                 std::vector<std::pair<uint32_t, uint32_t>> pairs;
                 if (which & hg::stats::kBranchialGraph)
@@ -2034,7 +2035,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                         if (hg.is_genesis_event(be.event1) || hg.is_genesis_event(be.event2)) continue;
                         pairs.emplace_back(be.event1, be.event2);
                     }
-                const auto bsteps = hgmarshal::branchial_steps(
+                auto bsteps = hgmarshal::branchial_steps(
                     which, n_pub,
                     [&](uint32_t sid) { return hg.get_state(sid).id != hypergraph::INVALID_ID; },
                     [&](uint32_t sid) { return static_cast<int64_t>(hg.get_canonical_state(sid)); },
@@ -2049,14 +2050,14 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                     pairs,
                     [&](uint32_t eid) { return static_cast<uint32_t>(hg.get_event(eid).output_state); },
                     static_cast<int>(req.steps));
-                branchial_keys = hg::stats::branchial_step_metrics(bsteps, which);
+                for (auto& [step, b] : bsteps) inputs[step].branchial = std::move(b);
             }
-            full_result.push_back({wxf::WXFValue("StepStatistics"),
-                                   hg::stats::step_statistics(
-                                       points, class_invariants, events, rule_counts,
-                                       hg::stats::StepStatisticsOptions{
-                                           req.step_statistics_by_class,
-                                           which ? &branchial_keys : nullptr})});
+            hg::stats::StepStatisticsJobs jobs(
+                req.step_statistics_by_class, which, engine.num_threads(),
+                [&engine](std::function<void()> f) { engine.submit_side_job(std::move(f)); });
+            for (auto& [step, in] : inputs) jobs.submit(step, std::move(in));
+            engine.wait_side_jobs();
+            full_result.push_back({wxf::WXFValue("StepStatistics"), jobs.reply()});
         }
 
         // GlobalEdges -> List of all edges created during evolution

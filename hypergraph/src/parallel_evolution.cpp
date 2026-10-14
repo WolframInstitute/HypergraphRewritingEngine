@@ -2403,6 +2403,21 @@ size_t ParallelEvolutionEngine::num_threads() const { return num_threads_; }
 
 bool ParallelEvolutionEngine::is_serial() const { return mode_ == ExecutionMode::Serial; }
 
+void ParallelEvolutionEngine::submit_side_job(std::function<void()> fn) {
+    // A latched error has stopped the workers, so nothing queued would run.
+    if (last_error() != job_system::ErrorType::None) { fn(); return; }
+    job_system_->submit(
+        job_system::make_job<EvolutionJobType>(std::move(fn), EvolutionJobType::SIDE));
+}
+
+void ParallelEvolutionEngine::wait_side_jobs() {
+    const bool clean = last_error() == job_system::ErrorType::None;
+    job_system_->wait_for_completion();
+    // An error the run already reported is not reported twice.
+    if (clean) raise_worker_error();
+    std::atomic_thread_fence(std::memory_order_acquire);
+}
+
 size_t ParallelEvolutionEngine::num_states() const { return hg_ ? hg_->num_states() : 0; }
 
 size_t ParallelEvolutionEngine::num_canonical_states() const { return hg_ ? hg_->num_canonical_states() : 0; }

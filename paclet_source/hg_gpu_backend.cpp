@@ -899,40 +899,48 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
     // StepStatistics: as on the host (hypergraph_ffi.cpp), from the multiplicities under
     // quotient exploration and from every raw state under full capture.
     if (job.include_step_statistics) {
-        std::vector<hg::stats::StepPoint> points;
-        std::unordered_map<uint64_t, const hgcommon::StateInvariantRecord*> class_invariants;
-        std::map<uint32_t, uint64_t> events;
-        std::map<uint32_t, std::map<int64_t, uint64_t>> rule_counts;
+        std::map<uint32_t, hg::stats::StepInput> inputs;
         // Each class's record, written on the device by the warp that created the class.
+        std::unordered_map<uint64_t, const hgcommon::StateInvariantRecord*> class_invariants;
         auto take_record = [&](const hg_gpu::CanonicalState& st) {
             auto& r = class_invariants[state_hash[st.id]];
             if (!r) r = result.invariants(st);
+            return r;
         };
         if (!result.class_multiplicities.empty()) {
             for (const auto& st : result.states)
                 if (st.id != hg_gpu::INVALID_ID) take_record(st);
+            std::vector<hg::stats::StepPoint> points;
             for (const auto& p : result.class_multiplicities)
                 points.push_back({p.depth, p.class_hash, p.multiplicity});
+            for (const auto& p : points) {
+                const auto r = class_invariants.find(p.class_hash);
+                hg::stats::add_class(inputs[p.step], p.class_hash, p.weight,
+                                     r == class_invariants.end() ? nullptr : r->second);
+            }
             std::unordered_map<uint64_t, std::map<int64_t, uint64_t>> matches_by_rule;
             for (const auto& c : result.class_rule_matches)
                 matches_by_rule[c.class_hash][static_cast<int64_t>(c.rule)] += c.count;
+            std::map<uint32_t, uint64_t> events;
+            std::map<uint32_t, std::map<int64_t, uint64_t>> rule_counts;
             hg::stats::events_from_multiplicities(points, matches_by_rule,
                                                   static_cast<uint32_t>(run_steps), events,
                                                   rule_counts);
+            for (const auto& [step, n] : events) inputs[step].events = n;
+            for (auto& [step, by_rule] : rule_counts) inputs[step].rule_counts = std::move(by_rule);
         } else {
             for (const auto& st : result.states) {
                 const auto it = state_step.find(st.id);
                 const uint32_t step = it == state_step.end() ? 0u : it->second;
-                points.push_back({step, state_hash[st.id], 1});
-                take_record(st);
+                hg::stats::add_class(inputs[step], state_hash[st.id], 1, take_record(st));
             }
             for (const auto& e : result.events) {
-                ++events[e.step];
-                ++rule_counts[e.step][static_cast<int64_t>(e.rule)];
+                hg::stats::StepInput& at = inputs[e.step];
+                ++at.events;
+                ++at.rule_counts[static_cast<int64_t>(e.rule)];
             }
         }
         // "StepStatisticsBranchial": from the device's branchial pairs and state contents.
-        std::map<uint32_t, wxf::WXFValueAssociation> branchial_keys;
         const uint32_t which = job.step_statistics_branchial;
         if (which) {
             std::unordered_map<hg_gpu::EventId, hg_gpu::StateId> output_of;
@@ -941,7 +949,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
             if (which & hg::stats::kBranchialGraph)
                 for (const auto& b : result.branchial_edges)
                     pairs.emplace_back(static_cast<uint32_t>(b.a), static_cast<uint32_t>(b.b));
-            const auto bsteps = hgmarshal::branchial_steps(
+            auto bsteps = hgmarshal::branchial_steps(
                 which, static_cast<uint32_t>(result.states.size()),
                 [&](uint32_t sid) { return result.states[sid].id != hg_gpu::INVALID_ID; },
                 [&](uint32_t sid) { return rep_of(sid); },
@@ -960,14 +968,11 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
                     return it == output_of.end() ? 0u : static_cast<uint32_t>(it->second);
                 },
                 static_cast<int>(run_steps));
-            branchial_keys = hg::stats::branchial_step_metrics(bsteps, which);
+            for (auto& [step, b] : bsteps) inputs[step].branchial = std::move(b);
         }
         full_result.push_back({wxf::WXFValue("StepStatistics"),
-                               hg::stats::step_statistics(
-                                   points, class_invariants, events, rule_counts,
-                                   hg::stats::StepStatisticsOptions{job.step_statistics_by_class,
-                                                                    which ? &branchial_keys
-                                                                          : nullptr})});
+                               hg::stats::step_statistics_on_host(
+                                   std::move(inputs), job.step_statistics_by_class, which)});
     }
 
     // GraphData for the requested *Graph properties, built through the SAME shared

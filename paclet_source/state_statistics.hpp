@@ -9,10 +9,12 @@
 // Every invariant is isomorphism-invariant, so a step's population is summarised from one
 // representative per class weighted by the class's multiplicity, and no raw state is built.
 // The invariants are hgcommon::state_invariants (state_invariants_core.hpp), computed by each
-// engine as it creates a class; step_statistics reads one record per class.
+// engine as it creates a class; step_record reads one record per class.
 
 #include <cstdint>
+#include <functional>
 #include <map>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
@@ -101,33 +103,105 @@ struct BranchialStep {
 // Which per-step branchial metrics a request asks for ("StepStatisticsBranchial").
 enum : uint32_t { kBranchialGraph = 1u, kBranchialOverlap = 2u };
 
-// The per-step keys of the branchial metrics for each step, from its BranchialStep: with
+// The vertices of step 0's states (S0), sorted and distinct, which
+// "InitialStateMutualInformation" reads at every step.
+std::vector<uint32_t> initial_vertices(const BranchialStep& step0);
+
+// The per-step keys of the branchial metrics of one step, from its BranchialStep: with
 // kBranchialGraph "BranchialDegree", "BranchialDistance", "BranchialComponents" and
 // "BranchialDimension" (absent when undefined); with kBranchialOverlap "StateOverlap",
-// "StateCosineSimilarity", "StateMutualInformation", "InitialStateMutualInformation",
-// "VertexSharpness", "BranchEntropy", "EdgeSharpness" and "EdgeBranchEntropy"; with both,
-// "OverlapByBranchialDistance". "InitialStateMutualInformation" reads step 0's vertex sets.
-std::map<uint32_t, wxf::WXFValueAssociation> branchial_step_metrics(
-    const std::map<uint32_t, BranchialStep>& steps, uint32_t which);
+// "StateCosineSimilarity", "StateMutualInformation", "InitialStateMutualInformation" (when
+// `initial` is given), "VertexSharpness", "BranchEntropy", "EdgeSharpness" and
+// "EdgeBranchEntropy"; with both, "OverlapByBranchialDistance".
+//
+// Built in three calls so the overlap rows can run on several workers: prepare(max_parts), then
+// rows(p) for every p < parts(), concurrently and in any order, then finish(). The row counts
+// are merged in key order, so the keys do not depend on which part ran which row.
+class BranchialStepWork {
+public:
+    BranchialStepWork(BranchialStep step, uint32_t which, const std::vector<uint32_t>* initial);
+    ~BranchialStepWork();
+    BranchialStepWork(const BranchialStepWork&) = delete;
+    BranchialStepWork& operator=(const BranchialStepWork&) = delete;
 
-// How a step's population is weighted, and keys appended to each step's record.
-struct StepStatisticsOptions {
-    // False: each class stands for its raw states ("StepStatisticsWeighting" -> "States").
-    // True: each class counts once ("Classes").
-    bool weight_by_classes = false;
-    const std::map<uint32_t, wxf::WXFValueAssociation>* extra = nullptr;
+    // The graph metrics, and the overlap pass's index; the rows are split into at most
+    // `max_parts` parts, one per 64 states.
+    void prepare(size_t max_parts);
+    size_t parts() const;
+    void rows(size_t part);
+    wxf::WXFValueAssociation finish();
+
+private:
+    struct State;
+    std::unique_ptr<State> s_;
 };
 
-// The "StepStatistics" reply: one association per step, in step order, with the keys of the
-// probes' per-step record that a class and its multiplicity determine. `class_invariants` holds
-// each class's record; a class without one reads as the state with no edges. `events` and
-// `rule_counts` hold the raw events whose output state is at a step, in total and per rule index.
-wxf::WXFValue step_statistics(
-    const std::vector<StepPoint>& points,
-    const std::unordered_map<uint64_t, const hgcommon::StateInvariantRecord*>& class_invariants,
-    const std::map<uint32_t, uint64_t>& events,
-    const std::map<uint32_t, std::map<int64_t, uint64_t>>& rule_counts,
-    const StepStatisticsOptions& options = {});
+// One class of a step's population: `weight` raw states (saturating at 2^63 - 1) and the class's
+// record, null reading as the state with no edges.
+struct StepClass {
+    uint64_t weight = 0;
+    const hgcommon::StateInvariantRecord* record = nullptr;
+};
+
+// One step's input to its record: its classes by canonical hash, the raw events whose output
+// state is at the step, in total and per rule index, and its BranchialStep.
+struct StepInput {
+    std::map<uint64_t, StepClass> classes;
+    uint64_t events = 0;
+    std::map<int64_t, uint64_t> rule_counts;
+    BranchialStep branchial;
+};
+
+// Adds `weight` raw states of class `hash` with record `record` to `in`.
+void add_class(StepInput& in, uint64_t hash, uint64_t weight,
+               const hgcommon::StateInvariantRecord* record);
+
+// The keys of the probes' per-step record that the step's classes and their weights determine,
+// in reply order. `weight_by_classes`: each class counts once ("StepStatisticsWeighting" ->
+// "Classes"); otherwise it stands for its raw states ("States").
+wxf::WXFValueAssociation step_record(uint32_t step, const StepInput& in, bool weight_by_classes);
+
+// THE "StepStatistics" REPLY, built by jobs. submit(step, input) hands a step's record to the
+// caller's job system: one job pools the classes (step_record), one builds the branchial graph
+// and prepares the overlap pass, and the overlap rows run as up to `workers` jobs, the last of
+// which writes the step's branchial keys. reply() concatenates the finished records.
+//
+// A step is reserved by one thread at a time, at most once, and then started from any thread with
+// its input, so the input can be gathered in a job. With the overlap metrics, step 0's start
+// returns before any other step's start begins (every step reads step 0's vertices). reply is
+// called after every started job has finished.
+class StepStatisticsJobs {
+public:
+    using Submit = std::function<void(std::function<void()>)>;
+    struct Step;
+    StepStatisticsJobs(bool weight_by_classes, uint32_t which, size_t workers, Submit submit);
+    ~StepStatisticsJobs();
+    StepStatisticsJobs(const StepStatisticsJobs&) = delete;
+    StepStatisticsJobs& operator=(const StepStatisticsJobs&) = delete;
+
+    // Null when `step` was reserved before.
+    Step* reserve(uint32_t step);
+    void start(Step* slot, StepInput in);
+    void submit(uint32_t step, StepInput in) {
+        if (Step* s = reserve(step)) start(s, std::move(in));
+    }
+    // One association per started step with a population, in step order.
+    wxf::WXFValue reply();
+
+private:
+    bool weight_by_classes_;
+    uint32_t which_;
+    size_t workers_;
+    Submit submit_;
+    std::vector<uint32_t> initial_;
+    bool have_initial_ = false;
+    std::map<uint32_t, std::unique_ptr<Step>> steps_;
+};
+
+// The reply of `inputs`, built by StepStatisticsJobs on a job system of the host's hardware
+// threads, for a reply whose run had no host engine (the GPU backend).
+wxf::WXFValue step_statistics_on_host(std::map<uint32_t, StepInput> inputs,
+                                      bool weight_by_classes, uint32_t which);
 
 }  // namespace stats
 }  // namespace HG_NAMESPACE

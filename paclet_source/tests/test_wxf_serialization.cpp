@@ -3801,6 +3801,40 @@ bool bytes_contain(const std::vector<uint8_t>& bytes, const std::string& s) {
     return std::search(bytes.begin(), bytes.end(), s.begin(), s.end()) != bytes.end();
 }
 
+// Each step's branchial keys through hg::stats::BranchialStepWork, the overlap rows split into at
+// most `parts` parts run on this thread in reverse order. Step 0's vertices are S0.
+std::map<uint32_t, wxf::WXFValueAssociation> branchial_keys(
+    const std::map<uint32_t, hg::stats::BranchialStep>& steps, uint32_t which, size_t parts = 4) {
+    std::vector<uint32_t> initial;
+    const bool have_initial = steps.count(0) != 0;
+    if (have_initial) initial = hg::stats::initial_vertices(steps.at(0));
+    std::map<uint32_t, wxf::WXFValueAssociation> out;
+    for (const auto& [step, s] : steps) {
+        hg::stats::BranchialStepWork work(s, which, have_initial ? &initial : nullptr);
+        work.prepare(parts);
+        for (size_t p = work.parts(); p-- > 0;) work.rows(p);
+        out[step] = work.finish();
+    }
+    return out;
+}
+
+// The "StepStatistics" reply of a population given as points, built by
+// hg::stats::StepStatisticsJobs with every job run on this thread.
+wxf::WXFValue pooled_steps(
+    const std::vector<hg::stats::StepPoint>& points,
+    const std::unordered_map<uint64_t, const hgcommon::StateInvariantRecord*>& recs,
+    bool by_class) {
+    std::map<uint32_t, hg::stats::StepInput> inputs;
+    for (const auto& p : points) {
+        const auto r = recs.find(p.class_hash);
+        hg::stats::add_class(inputs[p.step], p.class_hash, p.weight,
+                             r == recs.end() ? nullptr : r->second);
+    }
+    hg::stats::StepStatisticsJobs jobs(by_class, 0, 1, [](std::function<void()> f) { f(); });
+    for (auto& [step, in] : inputs) jobs.submit(step, std::move(in));
+    return jobs.reply();
+}
+
 }  // namespace
 
 // The per-step branchial metrics of one step worked by hand: states 10 and 11 joined (the pair
@@ -3811,7 +3845,7 @@ TEST(StateStatistics, BranchialStepMetricsOfASmallStep) {
     s.nodes = {10, 11, 12};
     s.pairs = {{10, 11}, {11, 10}, {12, 12}};
     s.vertex_sets = {{0, 1, 2, 5}, {0, 1, 2, 6}, {7}};
-    const auto out = hg::stats::branchial_step_metrics(
+    const auto out = branchial_keys(
         {{1u, s}}, hg::stats::kBranchialGraph | hg::stats::kBranchialOverlap);
     ASSERT_EQ(out.size(), 1u);
     const wxf::WXFValue rec(out.at(1));
@@ -3847,7 +3881,7 @@ TEST(StateStatistics, PairwiseInitialAndEdgeMetricsOfASmallStep) {
     s1.pairs = {{10, 11}};
     s1.vertex_sets = {{0, 1, 2, 5}, {0, 1, 2, 6}, {7}};
     s1.edge_sets = {{100, 101}, {100, 102}, {103}};
-    const auto out = hg::stats::branchial_step_metrics(
+    const auto out = branchial_keys(
         {{0u, s0}, {1u, s1}}, hg::stats::kBranchialGraph | hg::stats::kBranchialOverlap);
     const wxf::WXFValue rec(out.at(1));
     // One cell p log2(p / (pa pb)) of a 2x2 table over u elements.
@@ -3905,7 +3939,7 @@ TEST(StateStatistics, OverlapByBranchialDistanceCountsDisjointPairsOfAComponent)
     s.pairs = {{20, 21}, {22, 21}};
     s.vertex_sets = {{0, 1}, {1, 2}, {2, 3}};
     s.edge_sets = {{0}, {1}, {2}};
-    const auto both = hg::stats::branchial_step_metrics(
+    const auto both = branchial_keys(
         {{1u, s}}, hg::stats::kBranchialGraph | hg::stats::kBranchialOverlap);
     const wxf::WXFValue rec(both.at(1));
     const auto& per =
@@ -3921,17 +3955,17 @@ TEST(StateStatistics, OverlapByBranchialDistanceCountsDisjointPairsOfAComponent)
     EXPECT_EQ(number_at(*assoc_at(rec, "StateOverlap"), "N"), 3);
     EXPECT_DOUBLE_EQ(number_at(*assoc_at(rec, "StateOverlap"), "Mean"), 2.0 / 9.0);
     const wxf::WXFValue overlap_only(
-        hg::stats::branchial_step_metrics({{1u, s}}, hg::stats::kBranchialOverlap).at(1));
+        branchial_keys({{1u, s}}, hg::stats::kBranchialOverlap).at(1));
     EXPECT_EQ(assoc_at(overlap_only, "OverlapByBranchialDistance"), nullptr);
     EXPECT_NE(assoc_at(overlap_only, "StateMutualInformation"), nullptr);
     const wxf::WXFValue graph_only(
-        hg::stats::branchial_step_metrics({{1u, s}}, hg::stats::kBranchialGraph).at(1));
+        branchial_keys({{1u, s}}, hg::stats::kBranchialGraph).at(1));
     EXPECT_EQ(assoc_at(graph_only, "OverlapByBranchialDistance"), nullptr);
     EXPECT_EQ(assoc_at(graph_only, "EdgeSharpness"), nullptr);
 }
 
-// The branchial values are functions of counts and read the same from any thread split: a step
-// of 300 states (rows split over several threads) gives the same record on every run.
+// The branchial values are functions of counts and read the same from any row split: a step of
+// 300 states gives the same record with its rows in 1, 2, 3 or 5 parts.
 TEST(StateStatistics, BranchialMetricsDoNotDependOnTheRowSplit) {
     hg::stats::BranchialStep s;
     for (uint32_t i = 0; i < 300; ++i) {
@@ -3941,15 +3975,15 @@ TEST(StateStatistics, BranchialMetricsDoNotDependOnTheRowSplit) {
         if (i) s.pairs.push_back({i - 1, i});
     }
     const uint32_t all = hg::stats::kBranchialGraph | hg::stats::kBranchialOverlap;
-    auto bytes = [&](wxf::WXFValue& v) {
-        v = wxf::WXFValue(hg::stats::branchial_step_metrics({{1u, s}}, all).at(1));
+    auto bytes = [&](wxf::WXFValue& v, size_t parts) {
+        v = wxf::WXFValue(branchial_keys({{1u, s}}, all, parts).at(1));
         wxf::Writer w;
         w.write(v);
         return w.release_data();
     };
     wxf::WXFValue first, again;
-    const auto expected = bytes(first);
-    for (int run = 0; run < 3; ++run) EXPECT_EQ(bytes(again), expected);
+    const auto expected = bytes(first, 1);
+    for (size_t parts : {2, 3, 5}) EXPECT_EQ(bytes(again, parts), expected) << parts;
     EXPECT_EQ(number_at(*assoc_at(first, "StateMutualInformation"), "N"), 300 * 299 / 2);
 }
 
@@ -3961,8 +3995,8 @@ TEST(StateStatistics, WeightingByClassesCountsEachClassOnce) {
         {1, hg::stats::invariant_record({{1, 2}}, s1)},
         {2, hg::stats::invariant_record({{1, 2}, {2, 3}}, s2)}};
     auto vertex_count = [&](bool by_class) {
-        const wxf::WXFValue steps = hg::stats::step_statistics(
-            points, edges, {}, {}, hg::stats::StepStatisticsOptions{by_class, nullptr});
+        const wxf::WXFValue steps = pooled_steps(
+            points, edges, by_class);
         const auto& first = std::get<wxf::WXFValueList>(steps.data).at(0);
         EXPECT_EQ(number_at(first, "RawStates"), 4);
         return *assoc_at(*assoc_at(first, "Invariants"), "VertexCount");
@@ -3985,8 +4019,8 @@ TEST(StateStatistics, VertexInvariantsPoolTheVerticesOfAStep) {
         {1, hg::stats::invariant_record({{1, 2}, {2, 3}, {3, 4}}, s1)},
         {2, hg::stats::invariant_record({{1, 2}, {2, 3}, {3, 4}, {4, 1}}, s2)}};
     auto step = [&](bool by_class) {
-        const wxf::WXFValue steps = hg::stats::step_statistics(
-            points, recs, {}, {}, hg::stats::StepStatisticsOptions{by_class, nullptr});
+        const wxf::WXFValue steps = pooled_steps(
+            points, recs, by_class);
         return std::get<wxf::WXFValueList>(steps.data).at(0);
     };
     const wxf::WXFValue states = step(false), classes = step(true);
