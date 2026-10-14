@@ -1,5 +1,5 @@
 // GENMC-LINK: engine
-// GENMC-ARGS: --disable-estimation --sc --bound=1 --bound-type=context
+// GENMC-ARGS: --disable-estimation --sc --bound=1 --bound-type=context --weak-cas-spurious-total=1
 // GENMC-DEFINES: -DHG_SEGMENTED_ARRAY_MAX_SEGMENTS=8 -DHG_SEGMENTED_ARRAY_MAX_SHIFT=4 -DHG_CONCURRENT_MAP_INITIAL_CAPACITY=16 -DHG_JOB_QUEUE_CAPACITY=16 -DHG_JOB_INJECTOR_CAPACITY=64 -DHG_MAX_ARENA_WORKERS=8 -DHG_KEY_SET_SHARDS=4 -DHG_MAX_PATTERN_EDGES=4 -DHG_ARENA_BLOCK_SIZE=512
 // GENMC-CALIBRATE: -DHG_HARNESS_CALIBRATE_END
 //
@@ -48,18 +48,17 @@
 //                               and the verdict of the property arm under that bound covers
 //                               only the prefix the bound allows.
 //
-// WHAT IS BOUNDED. No --unroll: the workers' spin loops become assumes, the weak compare-exchange
-// retry loops are handled by the checker's stutter pass, and every other loop is finite, so no
-// execution is cut. The bound is the workload: the threads, rule, initial edges and steps of the
+// WHAT IS BOUNDED. No --unroll: the workers' spin loops become assumes and every other loop is
+// finite, so no execution is cut. Weak compare-exchanges fail spuriously at most once per
+// execution over all threads (--weak-cas-spurious-total=1, as engine_construct.cpp gives). The
+// rest of the bound is the workload: the threads, rule, initial edges and steps of the
 // arm. The module is the fully inlined engine; the checker's passes end at 9.8M instructions and
 // take about 15 minutes, so a run is saved with --output-llvm-after=<file>.bc once per arm.
 //
-// MEASURED on the v0.19 fork, default arm. RC11: 23,548 complete executions explored in 83
-// minutes (4.7 per second, 23,167 events each, real rewrites by two workers), no error, and no
-// verdict. Sequential consistency with 1 context switch (`--sc --bound=1 --bound-type=context`,
-// the arm's GENMC-ARGS): no errors, 38 complete executions (all past the bound) and 332 blocked
-// ones, 695 s with the transform, which needs more than 12,000 MB of address space (16,000
-// used). -DHG_HARNESS_CALIBRATE_END is reported at that bound.
+// MEASURED, default arm. RC11 gave no verdict in 83 minutes (23,548 complete executions, 23,167
+// events each, real rewrites by two workers, no error). The arm's GENMC-ARGS check sequential
+// consistency with 1 context switch; the result at those bounds is the GENMC-BOUND line. The
+// transform needs more than 12,000 MB of address space (run with HG_GENMC_MEM_MB=16000).
 #include "hypergraph/hypergraph.hpp"
 #include "hypergraph/parallel_evolution.hpp"
 #include "hypergraph/pattern.hpp"
