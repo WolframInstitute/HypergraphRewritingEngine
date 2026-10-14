@@ -1998,20 +1998,23 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             std::map<uint32_t, std::map<int64_t, uint64_t>> rule_counts;
             const uint32_t n_pub = hg.num_published_states();
             if (hg.quotient_multiplicity()) {
+                // Keyed by the expansion each point replays (qc_expansion_key).
                 std::unordered_map<uint64_t, std::map<int64_t, uint64_t>> matches_by_rule;
                 hg.for_each_class_multiplicity([&](uint64_t h, uint32_t d, uint64_t m) {
                     points.push_back({d, h, m});
-                    if (matches_by_rule.count(h)) return;
-                    auto& by_rule = matches_by_rule[h];
-                    hg.for_each_expansion_match(h, [&](const hypergraph::SlotMatch& sm) {
+                    const uint64_t key = hg.qc_expansion_key(h, d);
+                    if (matches_by_rule.count(key)) return;
+                    auto& by_rule = matches_by_rule[key];
+                    hg.for_each_expansion_match(h, d, [&](const hypergraph::SlotMatch& sm) {
                         ++by_rule[static_cast<int64_t>(sm.rule)];
                     });
                 });
                 for (const auto& p : points)
                     class_invariants.emplace(p.class_hash, hg.state_invariants(p.class_hash));
-                hg::stats::events_from_multiplicities(points, matches_by_rule,
-                                                      static_cast<uint32_t>(req.steps), events,
-                                                      rule_counts);
+                hg::stats::events_from_multiplicities(
+                    points, matches_by_rule,
+                    hgcommon::qc_expansions_by_depth(effective_max_states_per_step(req)),
+                    static_cast<uint32_t>(req.steps), events, rule_counts);
             } else {
                 for (uint32_t sid = 0; sid < n_pub; ++sid) {
                     const hypergraph::State& st = hg.get_state(sid);

@@ -144,6 +144,9 @@ class Hypergraph {
     // Whether every Full state computes its edge-orbit table at creation because the run's
     // transition key reads it (hgcommon::transition_key_reads_orbits).
     std::atomic<bool> transition_orbits_{false};
+    // Whether the reconstruction keeps one expansion per (class, depth) rather than per class
+    // (hgcommon::qc_expansion_key): set under MaxStatesPerStep.
+    std::atomic<bool> qc_by_depth_{false};
     std::atomic<bool> record_causal_{true};
     std::atomic<bool> record_branchial_{true};
     std::atomic<bool> record_state_events_{true};
@@ -679,8 +682,8 @@ class Hypergraph {
         void push(uint64_t class_hash, uint32_t depth);
         bool pop(uint64_t& class_hash, uint32_t& depth);
         template <class F>
-        void for_each_match(uint64_t class_hash, F&& f) {
-            hg.for_each_expansion_match(class_hash, f);
+        void for_each_match(uint64_t class_hash, uint32_t depth, F&& f) {
+            hg.for_each_expansion_match(class_hash, depth, f);
         }
         void fence();
     };
@@ -1450,11 +1453,11 @@ public:
     // Apply the stored match `m` to every instance in list `list` of (from, depth).
     void qc_apply_list(const SlotMatch* m, uint64_t from, uint32_t depth, uint32_t list);
 
-    // Visit every match of the expanded representative of the canonical state `from_hash`,
-    // in slots and undeduplicated -- the input to the per-instance raw reconstruction.
+    // Visit every match of the expanded representative of the canonical state `from_hash` at
+    // `depth`, in slots and undeduplicated -- the input to the per-instance raw reconstruction.
     template <typename F>
-    void for_each_expansion_match(uint64_t from_hash, F&& f) const {
-        auto r = qc_expansion_.lookup(from_hash);
+    void for_each_expansion_match(uint64_t from_hash, uint32_t depth, F&& f) const {
+        auto r = qc_expansion_.lookup(qc_expansion_key(from_hash, depth));
         if (r.has_value()) (*r)->list.for_each([&](const SlotMatch& m) { f(m); });
     }
 
@@ -1758,6 +1761,15 @@ public:
     // by the evolution engine before evolving; read when minting causal edge keys.
     void set_quotient_causal(bool q);
     void set_transition_orbits(bool on) { transition_orbits_.store(on, std::memory_order_relaxed); }
+    void set_quotient_expansions_by_depth(bool on) {
+        qc_by_depth_.store(on, std::memory_order_relaxed);
+    }
+    // The key class `class_hash`'s expansion at `depth` is stored under
+    // (hgcommon::qc_expansion_key).
+    uint64_t qc_expansion_key(uint64_t class_hash, uint32_t depth) const {
+        return hgcommon::qc_expansion_key(class_hash, depth,
+                                          qc_by_depth_.load(std::memory_order_relaxed));
+    }
     bool quotient_causal() const;
 
     // Which artifacts this run builds. Set before evolving and read by the workers, so the

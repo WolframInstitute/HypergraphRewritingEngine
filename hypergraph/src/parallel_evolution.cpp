@@ -1474,6 +1474,7 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
 
     hg_->set_quotient_causal(qc);
     hg_->set_transition_orbits(hgcommon::transition_key_reads_orbits(full_states, sampling_active()));
+    hg_->set_quotient_expansions_by_depth(hgcommon::qc_expansions_by_depth(max_states_per_step_));
     hg_->set_reads_rank_tuples(hgcommon::run_reads_rank_tuples(
         hg_->event_signature_keys(), transition_rate_,
         static_cast<uint32_t>(rule_weights_.size()),

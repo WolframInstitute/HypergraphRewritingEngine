@@ -1656,7 +1656,7 @@ void Hypergraph::quotient_redrive_point(uint64_t state_hash, uint32_t depth) {
     }
     if (!quotient_replay()) return;
     for_each_instance_at(state_hash, depth, [&](const QcInstance& inst) {
-        for_each_expansion_match(state_hash, [&](const SlotMatch& m) {
+        for_each_expansion_match(state_hash, depth, [&](const SlotMatch& m) {
             qc_apply(inst, m, state_hash, depth);
         });
     });
@@ -1782,7 +1782,7 @@ void Hypergraph::qc_add_instance(uint64_t state_hash, uint32_t depth,
     QcExpansion* xp = nullptr;
     if (static_cast<int>(depth) < maxs) {
         uint32_t class_matches = 0;
-        if (auto xr = qc_expansion_.lookup(state_hash)) {
+        if (auto xr = qc_expansion_.lookup(qc_expansion_key(state_hash, depth))) {
             xp = *xr;
             class_matches = xp->n.load(std::memory_order_acquire);
         }
@@ -1831,7 +1831,7 @@ void Hypergraph::qc_add_instance(uint64_t state_hash, uint32_t depth,
     // sides. The push above is this side's publish; the partner is in qc_capture_expansion.
     hgcommon::rendezvous_barrier<hgcommon::rv::QuotientInstanceMatch>();
     if (!xp) {
-        if (auto xr = qc_expansion_.lookup(state_hash)) xp = *xr;
+        if (auto xr = qc_expansion_.lookup(qc_expansion_key(state_hash, depth))) xp = *xr;
     }
     if (xp) xp->list.for_each([&](const SlotMatch& m) { qc_apply(inst, m, state_hash, depth); });
 }
@@ -1962,9 +1962,14 @@ void Hypergraph::qc_capture_expansion(EventId e) {
         return;
     }
     const uint64_t from = get_state(ev.input_state).canonical_hash;
+    // The input state's depth: the reconstruction's instances of it stand at its step. Read only
+    // when expansions are kept per depth (qc_expansion_key), which is under full capture.
+    const uint32_t from_depth = get_state(ev.input_state).step;
+    const bool by_depth = qc_by_depth_.load(std::memory_order_relaxed);
+    const uint64_t xkey = qc_expansion_key(from, from_depth);
 
     const uint64_t claim = static_cast<uint64_t>(ev.input_state) + 1;
-    auto rep = qc_expansion_rep_.insert_if_absent(from, claim);
+    auto rep = qc_expansion_rep_.insert_if_absent(xkey, claim);
     if (!rep.second && rep.first != claim) {         // a different raw state owns this class
         HG_STAT(qc_capture_not_rep_.fetch_add(1, std::memory_order_relaxed));
         return;
@@ -2029,11 +2034,11 @@ void Hypergraph::qc_capture_expansion(EventId e) {
     if (hgcommon::event_keys_mark_edges(event_signature_keys_)) m.forms = event_forms_[e];
 
     QcExpansion* xp;
-    auto r = qc_expansion_.lookup(from);
+    auto r = qc_expansion_.lookup(xkey);
     if (r.has_value()) xp = *r;
     else {
         auto* nx = arena_.template create<QcExpansion>();
-        auto ins = qc_expansion_.insert_if_absent(from, nx);
+        auto ins = qc_expansion_.insert_if_absent(xkey, nx);
         xp = ins.second ? nx : ins.first;
     }
     m.local = xp->n.fetch_add(1, std::memory_order_acq_rel);
@@ -2052,21 +2057,23 @@ void Hypergraph::qc_capture_expansion(EventId e) {
         xp->pairs.fetch_add(b, std::memory_order_relaxed);
     }
     if (mult) {
-        // b_j, then ready, then the mass already standing at this class at every depth.
-        // Partner: the run in qm_drain.
+        // b_j, then ready, then the mass already standing at this class at every depth the
+        // expansion serves. Partner: the run in qm_drain.
         qm_overlaps_.insert_if_absent(static_cast<uint64_t>(m.id) + 1, b + 1);
         // The list's copy: the pass may keep a reference to the match (claim_replay_event).
         qm_cascade([&](QmCtx& c) {
             c.fence();
             const uint32_t depths = qc_depth_bound(c.max_steps());
-            for (uint32_t d = 0; d < depths; ++d)
+            for (uint32_t d = by_depth ? from_depth : 0; d < depths; ++d) {
                 hgcommon::qm_pass(c, node->value, from, d);
+                if (by_depth) break;
+            }
         });
     }
     if (!quotient_replay()) return;
 
     // Match side of the rendezvous: replay this newly-captured match against every instance
-    // already standing at this state, at every depth. Publish (the push above) before the
+    // already standing at this state, at every depth the expansion serves. Publish (the push above) before the
     // scan, so a concurrent instance and match cannot both miss each other. The per-pair claim
     // in qc_apply makes the overlap harmless.
     hgcommon::rendezvous_barrier<hgcommon::rv::QuotientInstanceMatch>();
@@ -2079,7 +2086,8 @@ void Hypergraph::qc_capture_expansion(EventId e) {
     const int maxs = static_cast<int>(qc_depth_bound(static_cast<uint32_t>(
         std::max(0, qc_max_steps_.load(std::memory_order_relaxed)))));
     bool ran_one = false;
-    for (int d = 0; d < maxs; ++d) {
+    for (int d = by_depth ? static_cast<int>(from_depth) : 0; d < maxs; ++d) {
+        if (by_depth && d != static_cast<int>(from_depth)) break;
         const QcInstanceShards* ri = qc_instances_at(from, static_cast<uint32_t>(d));
         if (!ri) continue;
         for (uint32_t l = 0; l < kInstLists; ++l) {
@@ -2887,10 +2895,11 @@ bool Hypergraph::is_full_canonicalization() const {
 
 uint64_t Hypergraph::num_reconstructed_branchial() const {
     // Sum over the points below the step bound of W(c, d) * B(c) (hgcommon::qm_branchial_add):
-    // W the multiplicity when the cascade ran, else the replay's instance count.
+    // W the multiplicity when the cascade ran, else the replay's instance count; B(c) read from
+    // the expansion the point replays (qc_expansion_key).
     const uint32_t steps = static_cast<uint32_t>(qc_max_steps_.load(std::memory_order_relaxed));
-    auto pairs_of = [&](uint64_t class_hash) -> uint64_t {
-        auto r = qc_expansion_.lookup(class_hash);
+    auto pairs_of = [&](uint64_t class_hash, uint32_t depth) -> uint64_t {
+        auto r = qc_expansion_.lookup(qc_expansion_key(class_hash, depth));
         return r.has_value() ? (*r)->pairs.load(std::memory_order_relaxed) : 0;
     };
     uint64_t total = 0;
@@ -2898,14 +2907,15 @@ uint64_t Hypergraph::num_reconstructed_branchial() const {
         qm_points_.for_each([&](uint64_t, QmPoint* p) {
             if (p->depth < steps)
                 total = hgcommon::qm_branchial_add(
-                    total, p->mass.load(std::memory_order_acquire), pairs_of(p->class_hash));
+                    total, p->mass.load(std::memory_order_acquire),
+                    pairs_of(p->class_hash, p->depth));
         });
     } else if (quotient_replay()) {
         qc_instances_.for_each([&](uint64_t, QcInstanceShards* sh) {
             if (sh->depth >= steps) return;
             uint64_t n = 0;
             sh->for_each([&](const QcInstance&) { ++n; });
-            total = hgcommon::qm_branchial_add(total, n, pairs_of(sh->class_hash));
+            total = hgcommon::qm_branchial_add(total, n, pairs_of(sh->class_hash, sh->depth));
         });
     }
     return total;

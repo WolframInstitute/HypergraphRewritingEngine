@@ -1207,7 +1207,7 @@ TEST(CanonicalEventCount, DeviceReplaysTheClassFrameExpansion) {
         for (uint32_t sid = 0; sid < hg.num_published_states(); ++sid) {
             const uint64_t h = hg.get_state(sid).canonical_hash;
             if (!seen.insert(h).second) continue;
-            hg.for_each_expansion_match(h, [&](const hypergraph::SlotMatch&) { ++host_matches; });
+            hg.for_each_expansion_match(h, 0, [&](const hypergraph::SlotMatch&) { ++host_matches; });
         }
         const size_t host_raw = hg.num_reconstructed_raw_events();
         const size_t host_ids = hg.num_reconstructed_events();
@@ -1780,6 +1780,46 @@ TEST(Sampling, CapTiesAreKeptWholeOnBothEngines) {
     }
 }
 
+// Under MaxStatesPerStep the reconstruction keeps one expansion per (class, depth)
+// (hgcommon::qc_expansion_key), on both engines: Full states, Automatic events, rules whose
+// classes recur at several depths, caps 1, 2, 3 and 5 over 5 steps. The host's reconstruction
+// equals its raw rewrites (SamplingReproducibility.StepCapReconstructionMatchesTheRawRewrites);
+// the device's equals the host's.
+TEST(Sampling, StepCapReconstructionIsTheSameOnBothEngines) {
+    struct Case {
+        const char* name;
+        std::vector<hg_gpu::RewriteRule> rules;
+        std::vector<std::vector<hg_gpu::VertexId>> init;
+    };
+    const std::vector<Case> cases = {
+        {"flip", {rule({{0, 1}}, {{1, 0}})}, {{0u, 1u}, {1u, 2u}, {2u, 0u}}},
+        {"shortcut", {rule({{0, 1}, {1, 2}}, {{0, 2}, {2, 1}})},
+         {{0u, 1u}, {1u, 2u}, {2u, 0u}, {0u, 0u}}},
+        {"two_rules", {rule({{0, 1}}, {{1, 0}}), rule({{0, 1}, {1, 2}}, {{0, 2}, {1, 1}})},
+         {{0u, 1u}, {1u, 2u}, {2u, 0u}, {2u, 3u}}},
+    };
+    for (const auto& c : cases) {
+        for (uint32_t k : {1u, 2u, 3u, 5u}) {
+            Workload w;
+            w.name = std::string(c.name) + " MaxStatesPerStep " + std::to_string(k);
+            w.rules = c.rules;
+            w.initial_states = {c.init};
+            w.num_steps = 5;
+            w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+            w.event_canon_mode = hg_gpu::EventCanonicalizationMode::Automatic;
+            w.transitive_reduction = false;
+            w.max_states_per_step = k;
+            const NormalizedResult cpu = run_cpu(w);
+            const NormalizedResult gpu = run_gpu(w);
+            EXPECT_EQ(gpu.canonical_state_hashes, cpu.canonical_state_hashes) << w.name;
+            EXPECT_EQ(gpu.num_events, cpu.num_events) << w.name;
+            EXPECT_EQ(gpu.observable_causal, cpu.observable_causal) << w.name;
+            EXPECT_EQ(gpu.recon_causal, cpu.recon_causal) << w.name;
+            EXPECT_EQ(gpu.observable_branchial, cpu.observable_branchial) << w.name;
+        }
+    }
+}
+
 // A left-hand edge of arity 1 to 16, all variables distinct and with one repeat, matches the
 // same edges on both engines, through the state's slice and through the large-state path
 // (slice_scan_max_edges 1). The data edges are all distinct, all one vertex, and half repeated.
@@ -2250,7 +2290,7 @@ TEST(RecordSet, ClassMultiplicitiesMatchTheHost) {
         std::set<uint64_t> classes;
         for (const auto& [k, m] : host) classes.insert(k.second);
         for (uint64_t h : classes)
-            hg.for_each_expansion_match(h, [&](const hypergraph::SlotMatch& sm) {
+            hg.for_each_expansion_match(h, 0, [&](const hypergraph::SlotMatch& sm) {
                 ++host_rules[{h, static_cast<uint32_t>(sm.rule)}];
             });
 
@@ -2266,7 +2306,7 @@ TEST(RecordSet, ClassMultiplicitiesMatchTheHost) {
             for (const auto& p : r.class_multiplicities) dev[{p.depth, p.class_hash}] += p.multiplicity;
             EXPECT_EQ(dev, host) << w.name << " replay=" << replay;
             std::map<std::pair<uint64_t, uint32_t>, uint64_t> dev_rules;
-            for (const auto& c : r.class_rule_matches) dev_rules[{c.class_hash, c.rule}] += c.count;
+            for (const auto& c : r.class_rule_matches) dev_rules[{c.expansion_key, c.rule}] += c.count;
             // The device lists every captured class; the host's list above holds the classes
             // with a multiplicity, which are the ones a statistic reads.
             for (const auto& [k, n] : host_rules)

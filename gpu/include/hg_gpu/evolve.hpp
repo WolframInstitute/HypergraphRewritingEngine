@@ -150,9 +150,10 @@ struct ClassMultiplicity {
     uint64_t multiplicity;
 };
 
-// How many of a class's captured matches apply a rule.
+// How many of an expansion's captured matches apply a rule. The expansion key is the class hash,
+// or under MaxStatesPerStep the (class, depth) key (hgcommon::qc_expansion_key).
 struct ClassRuleMatches {
-    uint64_t class_hash;
+    uint64_t expansion_key;
     uint32_t rule;
     uint64_t count;
 };

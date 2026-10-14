@@ -245,7 +245,10 @@ full input classification including cyclic (recurrent) rules. The raw quantities
 skeleton does not explore are recovered by an online, lock-free, non-phasic reconstruction: each
 class retains its representative's expansion as slot-named matches, and raw instances are
 replayed forward over the depth-unrolled skeleton, minting one raw event per (instance, match)
-claim. The replay is off the scheduler's critical path.
+claim. The replay is off the scheduler's critical path. Under `MaxStatesPerStep` (full capture
+with Automatic event identity) a class keeps different transitions at different depths, so each
+(class, depth) retains its own expansion, captured from a raw state at that depth
+(`hgcommon::qc_expansion_key`).
 
 *(Gates: `cost_matrix` — oracle-exact on every corpus row, states/events/causal/branchial;
 `RelationCoherence.QuotientServesFullCapturesNumbers`; `QuotientReconstruction.*` including a

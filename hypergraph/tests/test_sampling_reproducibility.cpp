@@ -780,3 +780,49 @@ TEST(SamplingReproducibility, CapsAndDrawsUnderQuotientExplorationMatchFullCaptu
         }
     }
 }
+
+// Under full capture with Full states and Automatic event identity, the causal and branchial
+// relations come from the quotient reconstruction. Under MaxStatesPerStep a class keeps different
+// transitions at different depths, and the reconstruction gives the relations of the raw
+// rewrites, which None event identity reports directly: equal raw events, unreduced causal pairs
+// and branchial pairs, at 1 and 4 workers. Rules whose classes recur at several depths.
+TEST(SamplingReproducibility, StepCapReconstructionMatchesTheRawRewrites) {
+    struct Case {
+        const char* name;
+        std::vector<RewriteRule> rules;
+        std::vector<std::vector<VertexId>> init;
+    };
+    const std::vector<Case> cases = {
+        {"flip", {make_rule(0).lhs({0, 1}).rhs({1, 0}).build()}, {{0u, 1u}, {1u, 2u}, {2u, 0u}}},
+        {"shortcut",
+         {make_rule(0).lhs({0, 1}).lhs({1, 2}).rhs({0, 2}).rhs({2, 1}).build()},
+         {{0u, 1u}, {1u, 2u}, {2u, 0u}, {0u, 0u}}},
+        {"two_rules",
+         {make_rule(0).lhs({0, 1}).rhs({1, 0}).build(),
+          make_rule(1).lhs({0, 1}).lhs({1, 2}).rhs({0, 2}).rhs({1, 1}).build()},
+         {{0u, 1u}, {1u, 2u}, {2u, 0u}, {2u, 3u}}},
+    };
+    for (const auto& c : cases) {
+        for (size_t k : {size_t(1), size_t(2), size_t(3), size_t(5)}) {
+            auto run = [&](hgcommon::EventSignatureKeys keys, size_t threads) {
+                Hypergraph hg;
+                hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+                hg.set_event_signature_keys(keys);
+                ParallelEvolutionEngine e(&hg, threads);
+                e.set_transitive_reduction(false);
+                for (const auto& r : c.rules) e.add_rule(r);
+                e.set_max_states_per_step(k);
+                e.evolve(c.init, 5);
+                const uint64_t raw = keys == hgcommon::EVENT_SIG_NONE
+                                         ? hg.num_events() : hg.num_reconstructed_raw_events();
+                return std::array<uint64_t, 4>{hg.num_canonical_states(), raw,
+                                               hg.observable_num_causal_pairs(false),
+                                               hg.observable_num_branchial()};
+            };
+            const auto raw = run(hgcommon::EVENT_SIG_NONE, 1);
+            for (size_t threads : {size_t(1), size_t(4)})
+                EXPECT_EQ(run(hgcommon::EVENT_SIG_AUTOMATIC, threads), raw)
+                    << c.name << " MaxStatesPerStep " << k << " threads " << threads;
+        }
+    }
+}
