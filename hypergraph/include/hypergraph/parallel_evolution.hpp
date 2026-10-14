@@ -732,6 +732,8 @@ private:
     // rather than through this hook.
     std::function<void(StateId, uint32_t)> on_state_matches_complete_;
     std::atomic<size_t> states_drained_{0};
+    // MaxStatesPerStep candidates the drains added to their steps' lists (cap_at_drain).
+    std::atomic<size_t> step_candidates_offered_{0};
 
     // Per-depth join, derived from the per-state one above. Its slots are allocated as depths
     // are reached (hgcommon::GrowingDepthSlots), so a run's storage follows the depth it reaches
@@ -976,6 +978,7 @@ public:
     MatchTaskCounts match_task_counts(StateId state);
 #if HG_ENGINE_STATS
     size_t states_drained() const;
+    size_t step_candidates_offered() const;
 #endif
 
     // Matches this state has accepted so far. Read inside the drain callback it is that state's

@@ -914,8 +914,16 @@ void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
                                       return ranked_tied(cands[a], cands[b]);
                                   }));
     if (max_states_per_step_ != 0) {
-        if (auto* list = step_candidates(step))
-            for (size_t i = 0; i < n; ++i) list->push(cands[i], hg_->arena());
+        // A candidate the step keeps has fewer than N candidates of the whole step ranked
+        // strictly below it, so fewer than N of its own state's. The state's first N and the
+        // ones tied with its N-th therefore hold every candidate select_step can keep.
+        const size_t m = static_cast<size_t>(hgcommon::cap_keep_count(
+            n, max_states_per_step_,
+            [&](uint64_t a, uint64_t b) { return ranked_tied(cands[a], cands[b]); }));
+        if (auto* list = step_candidates(step)) {
+            for (size_t i = 0; i < m; ++i) list->push(cands[i], hg_->arena());
+            HG_STAT(step_candidates_offered_.fetch_add(m, std::memory_order_relaxed));
+        }
         return;
     }
     for (size_t i = 0; i < n; ++i) submit_rewrite_task(*cands[i].match, step);
@@ -2370,6 +2378,9 @@ bool ParallelEvolutionEngine::depth_signal_available() const { return !explore_f
 
 #if HG_ENGINE_STATS
 size_t ParallelEvolutionEngine::states_drained() const { return states_drained_.load(std::memory_order_relaxed); }
+size_t ParallelEvolutionEngine::step_candidates_offered() const {
+    return step_candidates_offered_.load(std::memory_order_relaxed);
+}
 #endif
 
 

@@ -639,6 +639,22 @@ TEST(SamplingReproducibility, StepCapTiesDoNotDependOnTheSchedule) {
     EXPECT_EQ(seen.size(), 1u);
 }
 
+// Under MaxStatesPerStep N a state offers its step at most its N lowest-ranked transitions plus
+// the ones tied with the N-th. Rule {{x,y},{y,z}} -> {{x,z},{y,z},{z,w}} has 4 matches on
+// {{0,1},{1,2},{2,3},{3,4},{1,5}}, whose automorphism group is trivial, so no two transitions
+// tie: cap 2 offers 2 candidates and keeps 2 transitions, at 1 and 16 threads.
+TEST(SamplingReproducibility, StepCapOffersOnlyTheStatesLowestRankedTransitions) {
+    for (unsigned threads : {1u, 16u}) {
+        Hypergraph hg;
+        ParallelEvolutionEngine e(&hg, threads);
+        e.add_rule(make_rule(0).lhs({0, 1}).lhs({1, 2}).rhs({0, 2}).rhs({1, 2}).rhs({2, 3}).build());
+        e.set_max_states_per_step(2);
+        e.evolve(std::vector<std::vector<VertexId>>{{0u, 1u}, {1u, 2u}, {2u, 3u}, {3u, 4u}, {1u, 5u}}, 1);
+        EXPECT_EQ(e.step_candidates_offered(), 2u) << threads << " threads";
+        EXPECT_EQ(hg.num_events(), 2u) << threads << " threads";
+    }
+}
+
 // The per-state caps and MaxStatesPerStep under the reconstruction route (Full states,
 // Automatic events): the causal count is the same at every thread count. Rule
 // {{4,1}} -> {{5,6},{4,1}} from {{5,4},{1,4}}, 2 steps.
