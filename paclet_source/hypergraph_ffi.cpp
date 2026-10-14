@@ -359,7 +359,7 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                                 // Requires CanonicalizeStates -> Full to have any effect
                                 req.explore_from_canonical_states_only = value;
                             } else if (option_key == "UniformRandom") {
-                                // With MatchesPerStep, a per-step cap by arrival order
+                                // With MatchesPerStep, a step's N lowest-ranked transitions
                                 req.uniform_random = value;
                             } else {
                                 // AN OPTION THIS BUILD DOES NOT KNOW IS NAMED, NOT DROPPED.
@@ -487,13 +487,16 @@ static void refuse_invalid_input(const hgffi::ParsedJob& req) {
     }
 }
 
-// "MatchesPerStep" IS MaxStatesPerStep under another name, and only when "UniformRandom" selects
-// arrival-order capping -- which is what the host does, applying it after the plain option so it
-// wins. Spelled once here so the two devices cannot disagree about which of the two options took
+// The step cap in force. "MatchesPerStep" applies with "UniformRandom" and replaces
+// "MaxStatesPerStep": it keeps a step's N lowest-ranked transitions (step_cap_counts_matches),
+// where MaxStatesPerStep keeps the transitions into the step's N lowest-ranked successor states.
+// Spelled once here so the two devices cannot disagree about which of the two options took
 // effect; the CPU engine setup and the GpuJob both ask this.
+static bool step_cap_counts_matches(const hgffi::ParsedJob& req) {
+    return req.uniform_random && req.matches_per_step > 0;
+}
 static size_t effective_max_states_per_step(const hgffi::ParsedJob& req) {
-    if (req.uniform_random && req.matches_per_step > 0) return req.matches_per_step;
-    return req.max_states_per_step;
+    return step_cap_counts_matches(req) ? req.matches_per_step : req.max_states_per_step;
 }
 
 // The "StepStatisticsBranchial" metrics a run computes, on either engine: none under
@@ -592,6 +595,7 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
         job.step_statistics_by_class = req.step_statistics_by_class;
         job.include_device = req.include_device;
         job.step_statistics_branchial = branchial;
+        job.step_cap_counts_matches = step_cap_counts_matches(req);
         if (req.show_progress) {
             core_progress(host, "HGEvolve: Starting GPU evolution...");
         }
@@ -637,7 +641,8 @@ static void configure_and_evolve(hgffi::ParsedJob& req, hypergraph::Hypergraph& 
     // The seed of every sampling draw; 0 (RandomSeed -> Automatic) is a seed like any other.
     engine.set_random_seed(req.random_seed);
     engine.set_max_successor_states_per_parent(req.max_successor_states_per_parent);
-    engine.set_max_states_per_step(effective_max_states_per_step(req));
+    if (step_cap_counts_matches(req)) engine.set_matches_per_step(req.matches_per_step);
+    else engine.set_max_states_per_step(req.max_states_per_step);
     engine.set_matches_per_state_rule(req.matches_per_state_rule);
     engine.set_genesis_events(req.show_genesis_events);
     engine.set_explore_from_canonical_states_only(req.explore_from_canonical_states_only);
@@ -733,12 +738,6 @@ static void configure_and_evolve(hgffi::ParsedJob& req, hypergraph::Hypergraph& 
     }
     auto evolution_start = std::chrono::steady_clock::now();
 
-    // MatchesPerStep is a per-DEPTH count, and a count over a depth cannot be sampled
-    // without a barrier. What the step-synchronised path actually did with it was stop
-    // applying once that many states existed for the step -- a cap by arrival order, which
-    // MaxStatesPerStep already delivers with no barrier at all. So it maps to the cap it
-    // always was, and the uniformity it used to claim moves to TransitionRate, which is a
-    // rate and needs no depth to be defined over.
     engine.evolve(initial_states, static_cast<size_t>(req.steps));
 
     if (req.show_progress) {
@@ -898,6 +897,14 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 req.ffi_warnings.push_back({"QuotientNeedsFull", 1,
                     "\"CanonicalizeEvents\" -> Automatic needs \"CanonicalizeStates\" -> Full. "
                     "Without it the causal relation is computed from the individual edges."});
+        }
+        if (!held_session && req.explore_from_canonical_states_only &&
+            !hgcommon::quotient_exploration_applies(true, true, effective_max_states_per_step(req))) {
+            req.ffi_warnings.push_back({"QuotientStepCap", 1,
+                "\"ExploreFromCanonicalStatesOnly\" -> True does not apply with "
+                "\"MaxStatesPerStep\" or with \"UniformRandom\" and \"MatchesPerStep\": every "
+                "state is expanded."});
+            req.explore_from_canonical_states_only = false;
         }
 
 #ifdef HG_GPU_BACKEND
@@ -1992,20 +1999,23 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             std::map<uint32_t, std::map<int64_t, uint64_t>> rule_counts;
             const uint32_t n_pub = hg.num_published_states();
             if (hg.quotient_multiplicity()) {
+                // Keyed by the expansion each point replays (qc_expansion_key).
                 std::unordered_map<uint64_t, std::map<int64_t, uint64_t>> matches_by_rule;
                 hg.for_each_class_multiplicity([&](uint64_t h, uint32_t d, uint64_t m) {
                     points.push_back({d, h, m});
-                    if (matches_by_rule.count(h)) return;
-                    auto& by_rule = matches_by_rule[h];
-                    hg.for_each_expansion_match(h, [&](const hypergraph::SlotMatch& sm) {
+                    const uint64_t key = hg.qc_expansion_key(h, d);
+                    if (matches_by_rule.count(key)) return;
+                    auto& by_rule = matches_by_rule[key];
+                    hg.for_each_expansion_match(h, d, [&](const hypergraph::SlotMatch& sm) {
                         ++by_rule[static_cast<int64_t>(sm.rule)];
                     });
                 });
                 for (const auto& p : points)
                     class_invariants.emplace(p.class_hash, hg.state_invariants(p.class_hash));
-                hg::stats::events_from_multiplicities(points, matches_by_rule,
-                                                      static_cast<uint32_t>(req.steps), events,
-                                                      rule_counts);
+                hg::stats::events_from_multiplicities(
+                    points, matches_by_rule,
+                    hgcommon::qc_expansions_by_depth(effective_max_states_per_step(req)),
+                    static_cast<uint32_t>(req.steps), events, rule_counts);
             } else {
                 for (uint32_t sid = 0; sid < n_pub; ++sid) {
                     const hypergraph::State& st = hg.get_state(sid);

@@ -13,6 +13,7 @@
 #include "hgcommon/content_core.hpp"
 #include "state_statistics.hpp"
 #include "hgcommon/quotient_multiplicity_core.hpp"
+#include "hgcommon/quotient_causal_core.hpp"
 #include "hgcommon/branchial_overlap_core.hpp"
 
 #include <algorithm>
@@ -1054,11 +1055,11 @@ std::map<uint32_t, wxf::WXFValueAssociation> branchial_step_metrics(
 void events_from_multiplicities(
     const std::vector<StepPoint>& points,
     const std::unordered_map<uint64_t, std::map<int64_t, uint64_t>>& matches_by_rule,
-    uint32_t steps, std::map<uint32_t, uint64_t>& events,
+    bool by_depth, uint32_t steps, std::map<uint32_t, uint64_t>& events,
     std::map<uint32_t, std::map<int64_t, uint64_t>>& rule_counts) {
     for (const auto& p : points) {
         if (p.step >= steps) continue;
-        auto it = matches_by_rule.find(p.class_hash);
+        auto it = matches_by_rule.find(hgcommon::qc_expansion_key(p.class_hash, p.step, by_depth));
         if (it == matches_by_rule.end()) continue;
         for (const auto& [rule, k] : it->second) {
             const uint64_t w = hgcommon::qm_sat_mul(p.weight, k);

@@ -44,7 +44,8 @@ __global__ void k_qe_count_branchial(const __grid_constant__ DeviceState ds, con
         const uint32_t n = qe.qm_cursor[0] < qe.qm_capacity ? qe.qm_cursor[0] : qe.qm_capacity;
         for (uint32_t p = tid; p < n; p += stride) {
             if (qe.qm_point_depth[p] >= steps) continue;
-            const auto r = qe.rep.lookup(qe.qm_point_class[p]);
+            const auto r = qe.rep.lookup(
+                qe_expansion_key(ds, qe.qm_point_class[p], qe.qm_point_depth[p]));
             if (!r.found || r.value - 1u >= qe.class_nmatch_cap) continue;
             const uint64_t b = qe.class_pairs[r.value - 1u];
             if (b) local = hgcommon::qm_branchial_add(local, qe.qm_mass[p], b);
@@ -56,6 +57,10 @@ __global__ void k_qe_count_branchial(const __grid_constant__ DeviceState ds, con
             if (!b) continue;
             const uint64_t h = ds.state_canonical_hash[c];
             for (uint32_t d = 0; d < steps; ++d) {
+                // The instances that replay c's expansion: under MaxStatesPerStep those at the
+                // depth c's expansion holds (qe_expansion_key).
+                const auto rep = qe.rep.lookup(qe_expansion_key(ds, h, d));
+                if (!rep.found || rep.value - 1u != c) continue;
                 uint64_t count = 0;
                 qe_for_each_instance(qe, h, d, [&](const DeviceQcInstance&) { ++count; });
                 local = hgcommon::qm_branchial_add(local, count, b);
@@ -250,7 +255,7 @@ void QeState::class_multiplicities_host(std::vector<ClassMultiplicity>& points,
     matches_.copy_to_host(recs);
     std::map<std::pair<uint64_t, uint32_t>, uint64_t> count;
     for (const auto& r : refs)
-        if (r.value.record < recs.size()) ++count[{r.value.from_hash, recs[r.value.record].rule}];
+        if (r.value.record < recs.size()) ++count[{r.value.from_key, recs[r.value.record].rule}];
     for (const auto& [k, c] : count) matches.push_back({k.first, k.second, c});
 }
 

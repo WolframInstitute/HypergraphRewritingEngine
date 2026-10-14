@@ -411,16 +411,18 @@ DeviceState EngineState::device() const {
         d.sampling_seed                    = sampling_seed_;
         d.exploration_probability          = exploration_probability_;
         d.max_states_per_step              = max_states_per_step_;
+        d.step_cap_counts_matches          = step_cap_counts_matches_ ? 1u : 0u;
         d.step_pending                     = states_per_step_;
         d.step_slots                       = states_per_step_slots_;
         d.max_successor_states_per_parent  = max_succ_per_parent_;
         d.matches_per_state_rule           = matches_per_state_rule_;
         d.num_rules                        = num_rules_;
-        // The orbit arrays stay allocated after a quotient run; a later run of this engine on
-        // another route sees null, as a fresh engine does (transition_key_device keys on orbits
-        // whenever the pointer is set).
-        d.state_edge_orbit        = quotient_causal_ ? state_edge_orbit_ : nullptr;
-        d.state_num_orbits        = quotient_causal_ ? state_num_orbits_ : nullptr;
+        // The orbit arrays stay allocated after a run that used them; a later run of this engine
+        // that does not sees null, as a fresh engine does (every state computes orbits, and
+        // transition_key_device keys on them, whenever the pointer is set).
+        const bool orbits = quotient_causal_ || transition_orbits_;
+        d.state_edge_orbit        = orbits ? state_edge_orbit_ : nullptr;
+        d.state_num_orbits        = orbits ? state_num_orbits_ : nullptr;
         d.keyed                   = KeyedView{};
         d.keyed.state_token_sum   = keyed_token_sum_;
         d.keyed.state_first_new_edge = keyed_first_new_edge_;

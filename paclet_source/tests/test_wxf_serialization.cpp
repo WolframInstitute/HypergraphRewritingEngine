@@ -3460,7 +3460,8 @@ TEST(GpuBinaryGate, StepStatisticsAgreeAcrossDevices) {
 // option of hgJobOptions: the last, the branching rule from two loops at 5 steps with
 // TransitionRate 0.25 and RandomSeed 7, is {11, 10, 9, 2} on the CPU. Then each sampling and cap
 // option under CanonicalizeStates None, Automatic, Full and Full with quotient exploration, at
-// three seeds. The four counts agree on every job.
+// three seeds. The four counts agree on every job, and quotient exploration gives the counts of
+// full capture.
 TEST(GpuBinaryGate, SamplingAndCapsKeepTheSameTransitionsOnBothDevices) {
     {
         std::ifstream probe(gpu_binary_path(), std::ios::binary);
@@ -3553,14 +3554,24 @@ TEST(GpuBinaryGate, SamplingAndCapsKeepTheSameTransitionsOnBothDevices) {
     struct Mode { const char* states; const char* ecso; };
     const Mode modes[] = {{"Full", "True"}, {"None", "False"}, {"Automatic", "False"},
                           {"Full", "False"}};
+    // Quotient exploration (modes[0]) and full capture (modes[3]) under Full states give the same
+    // counts (docs/SPEC.md §5.4); the devices agree with each other on each.
+    auto quotient_matches_full = [&](const std::vector<std::vector<uint8_t>>& by_mode,
+                                     const std::string& at) {
+        for (const char* k : counts)
+            EXPECT_EQ(read_int_key(by_mode[0], k), read_int_key(by_mode[3], k))
+                << at << " " << k << ": quotient exploration against full capture";
+    };
     for (const Option& o : options) {
         for (int64_t rs : {int64_t{7}, int64_t{1}, int64_t{12345}}) {
+            std::vector<std::vector<uint8_t>> by_mode;
+            std::string at;
             for (const Mode& m : modes) {
-                const std::string at = std::string(o.key) + " " +
+                at = std::string(o.key) + " " +
                     (o.integer != 0 ? std::to_string(o.integer) : std::to_string(o.real)) +
                     " CanonicalizeStates " + m.states + " ExploreFromCanonicalStatesOnly " +
                     m.ecso + " RandomSeed " + std::to_string(rs);
-                agree(build_input(seed, lhs, rhs, 5, [&](wxf::Writer& ww) {
+                by_mode.push_back(agree(build_input(seed, lhs, rhs, 5, [&](wxf::Writer& ww) {
                     put_str_list_option(ww, "RequestedData",
                                         {counts[0], counts[1], counts[2], counts[3]});
                     sym(ww, "CanonicalizeStates", m.states);
@@ -3570,8 +3581,26 @@ TEST(GpuBinaryGate, SamplingAndCapsKeepTheSameTransitionsOnBothDevices) {
                     else if (o.integer != 0) ww.write(o.integer);
                     else ww.write(o.real);
                     key(ww, "RandomSeed"); ww.write(rs);
-                }, 5), at);
+                }, 5), at));
             }
+            quotient_matches_full(by_mode, at);
+        }
+    }
+    // "MatchesPerStep" with "UniformRandom": a step's N lowest-ranked transitions.
+    for (int64_t rs : {int64_t{7}, int64_t{1}, int64_t{12345}}) {
+        for (const Mode& m : modes) {
+            const std::string at = std::string("MatchesPerStep 2 CanonicalizeStates ") + m.states +
+                                   " ExploreFromCanonicalStatesOnly " + m.ecso + " RandomSeed " +
+                                   std::to_string(rs);
+            agree(build_input(seed, lhs, rhs, 5, [&](wxf::Writer& ww) {
+                put_str_list_option(ww, "RequestedData",
+                                    {counts[0], counts[1], counts[2], counts[3]});
+                sym(ww, "CanonicalizeStates", m.states);
+                sym(ww, "ExploreFromCanonicalStatesOnly", m.ecso);
+                sym(ww, "UniformRandom", "True");
+                key(ww, "MatchesPerStep"); ww.write(int64_t{2});
+                key(ww, "RandomSeed"); ww.write(rs);
+            }, 6), at);
         }
     }
     // A rule whose join order differs from its authored order ({2,1} at position 2 is bound
@@ -3587,12 +3616,14 @@ TEST(GpuBinaryGate, SamplingAndCapsKeepTheSameTransitionsOnBothDevices) {
     };
     for (const Option& o : dup_options) {
         for (int64_t rs : {int64_t{7}, int64_t{1}, int64_t{718832434}}) {
+            std::vector<std::vector<uint8_t>> by_mode;
+            std::string at;
             for (const Mode& m : modes) {
-                const std::string at = std::string("authored order ") + o.key + " " +
+                at = std::string("authored order ") + o.key + " " +
                     (o.integer != 0 ? std::to_string(o.integer) : std::to_string(o.real)) +
                     " CanonicalizeStates " + m.states + " ExploreFromCanonicalStatesOnly " +
                     m.ecso + " RandomSeed " + std::to_string(rs);
-                agree(build_input(dup_init, dup_lhs, dup_rhs, 1, [&](wxf::Writer& ww) {
+                by_mode.push_back(agree(build_input(dup_init, dup_lhs, dup_rhs, 1, [&](wxf::Writer& ww) {
                     put_str_list_option(ww, "RequestedData",
                                         {counts[0], counts[1], counts[2], counts[3]});
                     sym(ww, "CanonicalizeStates", m.states);
@@ -3601,8 +3632,9 @@ TEST(GpuBinaryGate, SamplingAndCapsKeepTheSameTransitionsOnBothDevices) {
                     if (o.integer != 0) ww.write(o.integer);
                     else ww.write(o.real);
                     key(ww, "RandomSeed"); ww.write(rs);
-                }, 5), at);
+                }, 5), at));
             }
+            quotient_matches_full(by_mode, at);
         }
     }
     worker_stop(w);
@@ -4330,6 +4362,30 @@ TEST(FfiInput, QuotientNeedsFullNamesTheOptionTheJobSet) {
         put_str_option(w, "CanonicalizeStates", "Full");
     }), host));
     EXPECT_TRUE(full.empty());
+}
+
+// ExploreFromCanonicalStatesOnly is not applied with MaxStatesPerStep: the reply warns
+// (QuotientStepCap) and its counts are the counts of full capture.
+TEST(FfiInput, QuotientExplorationIsNotAppliedWithAStepCap) {
+    HostBridge host;
+    auto job = [](bool ecso) {
+        return build_input(kSeed, kLhs, kRhs, 3, [&](wxf::Writer& w) {
+            put_str_list_option(w, "RequestedData", {"NumStates", "NumEvents", "NumCausalEdges"});
+            put_str_option(w, "CanonicalizeStates", "Full");
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("MaxStatesPerStep"));
+            w.write(int64_t{2});
+            put_str_option(w, "ExploreFromCanonicalStatesOnly", ecso ? "True" : "False");
+        }, 4);
+    };
+    const auto quotient = run_rewriting_core(job(true), host);
+    const auto full = run_rewriting_core(job(false), host);
+    const auto ctx = warning_contexts(quotient);
+    ASSERT_EQ(ctx.size(), 1u);
+    EXPECT_NE(ctx[0].find("does not apply with \"MaxStatesPerStep\""), std::string::npos);
+    EXPECT_TRUE(warning_contexts(full).empty());
+    for (const char* k : {"NumStates", "NumEvents", "NumCausalEdges"})
+        EXPECT_EQ(read_int_key(quotient, k), read_int_key(full, k)) << k;
 }
 
 // A counts-only request under CanonicalizeStates -> Full counts the isomorphism classes on either
