@@ -374,6 +374,14 @@ rented box that does.
   rebuild whatever it last checked out and report that as the commit under measurement.
 - **`evidence.sh`** -- the evidence report, including the four device sanitizers, each scoped in a
   comment to what it actually sees (racecheck is shared memory only).
+- **`worker_fuzz.py`** -- the random job-sequence fuzz, a local gate (CONTRIBUTING.md, Test). One
+  `hg_evolve_gpu --serve` worker answers every job of the run and is compared with `hg_evolve` on
+  the CPU; StepStatistics is compared between devices and between 1, 4 and 16 CPU workers;
+  counts-only replies are compared with full ones on both devices. Unknown findings are shrunk to
+  a minimal job (or, for a worker leak, a minimal job sequence) and fail the run; open board
+  defects are listed in its `KNOWN` table. Every child runs under `RLIMIT_AS`.
+- **`wxf_mini.py`** -- the WXF encoder and decoder `worker_fuzz.py` builds jobs and reads replies
+  with.
 
 ## `verification/` -- model checking and toolchain cells
 

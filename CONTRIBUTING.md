@@ -49,6 +49,18 @@ GPU (when built with `-DBUILD_GPU=ON`):
 ./build/gpu_ffi_tests            # FFI serialization tests answered by the GPU
 ```
 
+Worker-sequence fuzz (needs both binaries and a GPU; a local gate, not run in CI). It sends
+random jobs to one `hg_evolve_gpu --serve` worker and compares each reply with `hg_evolve`, the
+StepStatistics of both devices and of 1, 4 and 16 CPU workers, and counts-only replies with full
+ones. The default budget is 200 cases from seed 1000; run it at every commit batch that touches
+the engine, the FFI or the GPU backend. A nonzero exit means an unknown finding, shrunk to a
+minimal job under `.scratch/worker_fuzz/`.
+
+```bash
+python3 tools/dev/worker_fuzz.py                   # 200 cases, seed 1000
+python3 tools/dev/worker_fuzz.py --cases 5000 --minutes 60 --seed 5000
+```
+
 Paclet (needs a Wolfram Engine): `reference/verify_paclet.wls` loads the local paclet
 and checks `HGEvolve` against the golden corpus.
 
