@@ -10,10 +10,10 @@
 NotebookFileLineBreakTest
 NotebookFileLineBreakTest
 NotebookDataPosition[       154,          7]
-NotebookDataLength[    130589,       3210]
-NotebookOptionsPosition[    119878,       2990]
-NotebookOutlinePosition[    120844,       3017]
-CellTagsIndexPosition[    120801,       3014]
+NotebookDataLength[    133634,       3288]
+NotebookOptionsPosition[    122424,       3058]
+NotebookOutlinePosition[    123390,       3085]
+CellTagsIndexPosition[    123347,       3082]
 WindowFrame->Normal*)
 
 (* Beginning of Notebook Content *)
@@ -246,10 +246,10 @@ Cell[BoxData[
  GraphicsBox[
   NamespaceBox["NetworkGraphics",
    DynamicModuleBox[{Typeset`graph = HoldComplete[
-     Graph[{0, 1, 3, 4, 6, 7, 8, 10, 11, 
-      15}, {{{1, 2}, {1, 2}, {2, 3}, {2, 4}, {2, 3}, {3, 5}, {3, 6}, {3, 7}, {
-       3, 5}, {3, 8}, {4, 9}, {3, 6}, {2, 4}, {3, 7}, {4, 10}, {3, 8}, {4, 
-       9}, {4, 9}, {4, 9}, {4, 10}, {4, 10}, {4, 10}}, 
+     Graph[{0, 1, 3, 5, 6, 7, 9, 10, 16, 
+      17}, {{{1, 2}, {1, 2}, {2, 3}, {2, 3}, {3, 4}, {2, 5}, {3, 6}, {2, 5}, {
+       3, 7}, {3, 8}, {3, 4}, {3, 7}, {3, 6}, {5, 9}, {3, 8}, {5, 9}, {5, 
+       10}, {5, 9}, {5, 10}, {5, 10}, {5, 9}, {5, 10}}, 
        Null, {<|"EventId" -> 0|>, <|"EventId" -> 1|>, <|"EventId" -> 2|>, <|
         "EventId" -> 3|>, <|"EventId" -> 4|>, <|"EventId" -> 5|>, <|
         "EventId" -> 6|>, <|"EventId" -> 7|>, <|"EventId" -> 8|>, <|
@@ -259,129 +259,128 @@ Cell[BoxData[
         "EventId" -> 18|>, <|"EventId" -> 19|>, <|"EventId" -> 20|>, <|
         "EventId" -> 21|>}}, {
       AspectRatio -> Rational[1, 2], 
-       EdgeLabels -> {DirectedEdge[3, 8, <|"EventId" -> 13|>] -> Placed[
-           Row[{"Event ", 13}], Tooltip], 
-         DirectedEdge[3, 6, <|"EventId" -> 5|>] -> Placed[
-           Row[{"Event ", 5}], Tooltip], 
-         DirectedEdge[4, 11, <|"EventId" -> 16|>] -> Placed[
-           Row[{"Event ", 16}], Tooltip], 
-         DirectedEdge[3, 7, <|"EventId" -> 6|>] -> Placed[
+       EdgeLabels -> {DirectedEdge[3, 7, <|"EventId" -> 6|>] -> Placed[
            Row[{"Event ", 6}], Tooltip], 
-         DirectedEdge[3, 7, <|"EventId" -> 11|>] -> Placed[
-           Row[{"Event ", 11}], Tooltip], 
-         DirectedEdge[4, 15, <|"EventId" -> 20|>] -> Placed[
-           Row[{"Event ", 20}], Tooltip], 
-         DirectedEdge[3, 8, <|"EventId" -> 7|>] -> Placed[
+         DirectedEdge[6, 17, <|"EventId" -> 16|>] -> Placed[
+           Row[{"Event ", 16}], Tooltip], 
+         DirectedEdge[3, 5, <|"EventId" -> 4|>] -> Placed[
+           Row[{"Event ", 4}], Tooltip], 
+         DirectedEdge[1, 6, <|"EventId" -> 7|>] -> Placed[
            Row[{"Event ", 7}], Tooltip], 
-         DirectedEdge[1, 4, <|"EventId" -> 3|>] -> Placed[
-           Row[{"Event ", 3}], Tooltip], 
-         DirectedEdge[4, 15, <|"EventId" -> 19|>] -> Placed[
-           Row[{"Event ", 19}], Tooltip], 
-         DirectedEdge[4, 11, <|"EventId" -> 10|>] -> Placed[
-           Row[{"Event ", 10}], Tooltip], 
-         DirectedEdge[3, 6, <|"EventId" -> 8|>] -> Placed[
-           Row[{"Event ", 8}], Tooltip], 
+         DirectedEdge[6, 16, <|"EventId" -> 15|>] -> Placed[
+           Row[{"Event ", 15}], Tooltip], 
+         DirectedEdge[6, 16, <|"EventId" -> 13|>] -> Placed[
+           Row[{"Event ", 13}], Tooltip], 
+         DirectedEdge[1, 6, <|"EventId" -> 5|>] -> Placed[
+           Row[{"Event ", 5}], Tooltip], 
+         DirectedEdge[3, 9, <|"EventId" -> 11|>] -> Placed[
+           Row[{"Event ", 11}], Tooltip], 
+         DirectedEdge[3, 7, <|"EventId" -> 12|>] -> Placed[
+           Row[{"Event ", 12}], Tooltip], 
          DirectedEdge[0, 1, <|"EventId" -> 0|>] -> Placed[
            Row[{"Event ", 0}], Tooltip], 
-         DirectedEdge[1, 3, <|"EventId" -> 4|>] -> Placed[
-           Row[{"Event ", 4}], Tooltip], 
+         DirectedEdge[3, 9, <|"EventId" -> 8|>] -> Placed[
+           Row[{"Event ", 8}], Tooltip], 
          DirectedEdge[1, 3, <|"EventId" -> 2|>] -> Placed[
            Row[{"Event ", 2}], Tooltip], 
-         DirectedEdge[4, 11, <|"EventId" -> 17|>] -> Placed[
+         DirectedEdge[3, 10, <|"EventId" -> 14|>] -> Placed[
+           Row[{"Event ", 14}], Tooltip], 
+         DirectedEdge[6, 16, <|"EventId" -> 17|>] -> Placed[
            Row[{"Event ", 17}], Tooltip], 
-         DirectedEdge[1, 4, <|"EventId" -> 12|>] -> Placed[
-           Row[{"Event ", 12}], Tooltip], 
+         DirectedEdge[3, 5, <|"EventId" -> 10|>] -> Placed[
+           Row[{"Event ", 10}], Tooltip], 
+         DirectedEdge[6, 16, <|"EventId" -> 20|>] -> Placed[
+           Row[{"Event ", 20}], Tooltip], 
          DirectedEdge[0, 1, <|"EventId" -> 1|>] -> Placed[
            Row[{"Event ", 1}], Tooltip], 
-         DirectedEdge[3, 10, <|"EventId" -> 15|>] -> Placed[
-           Row[{"Event ", 15}], Tooltip], 
-         DirectedEdge[4, 11, <|"EventId" -> 18|>] -> Placed[
+         DirectedEdge[1, 3, <|"EventId" -> 3|>] -> Placed[
+           Row[{"Event ", 3}], Tooltip], 
+         DirectedEdge[6, 17, <|"EventId" -> 18|>] -> Placed[
            Row[{"Event ", 18}], Tooltip], 
-         DirectedEdge[4, 15, <|"EventId" -> 14|>] -> Placed[
-           Row[{"Event ", 14}], Tooltip], 
-         DirectedEdge[4, 15, <|"EventId" -> 21|>] -> Placed[
+         DirectedEdge[6, 17, <|"EventId" -> 21|>] -> Placed[
            Row[{"Event ", 21}], Tooltip], 
+         DirectedEdge[6, 17, <|"EventId" -> 19|>] -> Placed[
+           Row[{"Event ", 19}], Tooltip], 
          DirectedEdge[3, 10, <|"EventId" -> 9|>] -> Placed[
            Row[{"Event ", 9}], Tooltip]}, 
-       EdgeStyle -> {DirectedEdge[4, 11, <|"EventId" -> 18|>] -> Directive[
+       EdgeStyle -> {DirectedEdge[3, 10, <|"EventId" -> 14|>] -> Directive[
+           GrayLevel[0.5], 
+           Arrowheads[Small]], DirectedEdge[3, 5, <|"EventId" -> 4|>] -> 
+         Directive[
+           GrayLevel[0.5], 
+           Arrowheads[Small]], DirectedEdge[6, 16, <|"EventId" -> 13|>] -> 
+         Directive[
            GrayLevel[0.5], 
            Arrowheads[Small]], DirectedEdge[3, 7, <|"EventId" -> 6|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[Small]], DirectedEdge[4, 11, <|"EventId" -> 17|>] -> 
+           Arrowheads[Small]], DirectedEdge[6, 17, <|"EventId" -> 21|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[Small]], DirectedEdge[3, 8, <|"EventId" -> 7|>] -> 
-         Directive[
-           GrayLevel[0.5], 
-           Arrowheads[Small]], DirectedEdge[4, 15, <|"EventId" -> 21|>] -> 
-         Directive[
-           GrayLevel[0.5], 
-           Arrowheads[Small]], DirectedEdge[1, 3, <|"EventId" -> 4|>] -> 
+           Arrowheads[Small]], DirectedEdge[6, 16, <|"EventId" -> 20|>] -> 
          Directive[
            GrayLevel[0.5], 
            Arrowheads[Small]], DirectedEdge[0, 1, <|"EventId" -> 0|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[Small]], DirectedEdge[4, 15, <|"EventId" -> 19|>] -> 
+           Arrowheads[Small]], DirectedEdge[6, 17, <|"EventId" -> 19|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[Small]], DirectedEdge[4, 11, <|"EventId" -> 16|>] -> 
+           Arrowheads[Small]], DirectedEdge[6, 17, <|"EventId" -> 18|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[Small]], DirectedEdge[3, 6, <|"EventId" -> 8|>] -> 
+           Arrowheads[Small]], DirectedEdge[6, 16, <|"EventId" -> 15|>] -> 
          Directive[
            GrayLevel[0.5], 
            Arrowheads[Small]], DirectedEdge[3, 10, <|"EventId" -> 9|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[Small]], DirectedEdge[1, 4, <|"EventId" -> 3|>] -> 
+           Arrowheads[Small]], DirectedEdge[1, 6, <|"EventId" -> 5|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[Small]], DirectedEdge[3, 10, <|"EventId" -> 15|>] -> 
+           Arrowheads[Small]], DirectedEdge[3, 9, <|"EventId" -> 8|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[Small]], DirectedEdge[4, 15, <|"EventId" -> 14|>] -> 
+           Arrowheads[Small]], DirectedEdge[1, 3, <|"EventId" -> 3|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[Small]], DirectedEdge[3, 7, <|"EventId" -> 11|>] -> 
+           Arrowheads[Small]], DirectedEdge[3, 9, <|"EventId" -> 11|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[Small]], DirectedEdge[3, 8, <|"EventId" -> 13|>] -> 
+           Arrowheads[Small]], DirectedEdge[3, 5, <|"EventId" -> 10|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[Small]], DirectedEdge[3, 6, <|"EventId" -> 5|>] -> 
+           Arrowheads[Small]], DirectedEdge[6, 17, <|"EventId" -> 16|>] -> 
+         Directive[
+           GrayLevel[0.5], 
+           Arrowheads[Small]], DirectedEdge[3, 7, <|"EventId" -> 12|>] -> 
+         Directive[
+           GrayLevel[0.5], 
+           Arrowheads[Small]], DirectedEdge[6, 16, <|"EventId" -> 17|>] -> 
          Directive[
            GrayLevel[0.5], 
            Arrowheads[Small]], DirectedEdge[1, 3, <|"EventId" -> 2|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[Small]], DirectedEdge[1, 4, <|"EventId" -> 12|>] -> 
-         Directive[
-           GrayLevel[0.5], 
            Arrowheads[Small]], DirectedEdge[0, 1, <|"EventId" -> 1|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[Small]], DirectedEdge[4, 11, <|"EventId" -> 10|>] -> 
-         Directive[
-           GrayLevel[0.5], 
-           Arrowheads[Small]], DirectedEdge[4, 15, <|"EventId" -> 20|>] -> 
+           Arrowheads[Small]], DirectedEdge[1, 6, <|"EventId" -> 7|>] -> 
          Directive[
            GrayLevel[0.5], 
            Arrowheads[Small]]}, GraphLayout -> "LayeredDigraphEmbedding", 
-       ImageSize -> 400, VertexLabels -> {10 -> Placed[
+       ImageSize -> 400, VertexLabels -> {9 -> Placed[
+           Column[{
+             Row[{
+               Style["State", Bold]}], 
+             
+             Grid[{{"Id:", 9}, {"Step:", 3}}, Alignment -> Left, 
+              Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip], 10 -> Placed[
            Column[{
              Row[{
                Style["State", Bold]}], 
              
              Grid[{{"Id:", 10}, {"Step:", 3}}, Alignment -> Left, 
-              Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip], 4 -> 
-         Placed[
-           Column[{
-             Row[{
-               Style["State", Bold]}], 
-             
-             Grid[{{"Id:", 4}, {"Step:", 2}}, Alignment -> Left, 
               Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip], 7 -> 
          Placed[
            Column[{
@@ -396,13 +395,12 @@ Cell[BoxData[
                Style["State", Bold]}], 
              
              Grid[{{"Id:", 0}, {"Step:", 0}}, Alignment -> Left, 
-              Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip], 8 -> 
-         Placed[
+              Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip], 16 -> Placed[
            Column[{
              Row[{
                Style["State", Bold]}], 
              
-             Grid[{{"Id:", 8}, {"Step:", 3}}, Alignment -> Left, 
+             Grid[{{"Id:", 16}, {"Step:", 3}}, Alignment -> Left, 
               Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip], 3 -> 
          Placed[
            Column[{
@@ -417,25 +415,26 @@ Cell[BoxData[
                Style["State", Bold]}], 
              
              Grid[{{"Id:", 1}, {"Step:", 1}}, Alignment -> Left, 
-              Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip], 11 -> Placed[
+              Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip], 5 -> 
+         Placed[
            Column[{
              Row[{
                Style["State", Bold]}], 
              
-             Grid[{{"Id:", 11}, {"Step:", 3}}, Alignment -> Left, 
+             Grid[{{"Id:", 5}, {"Step:", 3}}, Alignment -> Left, 
               Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip], 6 -> 
          Placed[
            Column[{
              Row[{
                Style["State", Bold]}], 
              
-             Grid[{{"Id:", 6}, {"Step:", 3}}, Alignment -> Left, 
-              Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip], 15 -> Placed[
+             Grid[{{"Id:", 6}, {"Step:", 2}}, Alignment -> Left, 
+              Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip], 17 -> Placed[
            Column[{
              Row[{
                Style["State", Bold]}], 
              
-             Grid[{{"Id:", 15}, {"Step:", 3}}, Alignment -> Left, 
+             Grid[{{"Id:", 17}, {"Step:", 3}}, Alignment -> Left, 
               Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip]}, 
        VertexStyle -> {1 -> Directive[
            RGBColor[0.368417, 0.506779, 0.709798], 
@@ -443,25 +442,25 @@ Cell[BoxData[
             RGBColor[0.2, 0.3, 0.5]]], 3 -> Directive[
            RGBColor[0.368417, 0.506779, 0.709798], 
            EdgeForm[
-            RGBColor[0.2, 0.3, 0.5]]], 15 -> Directive[
+            RGBColor[0.2, 0.3, 0.5]]], 16 -> Directive[
+           RGBColor[0.368417, 0.506779, 0.709798], 
+           EdgeForm[
+            RGBColor[0.2, 0.3, 0.5]]], 9 -> Directive[
            RGBColor[0.368417, 0.506779, 0.709798], 
            EdgeForm[
             RGBColor[0.2, 0.3, 0.5]]], 10 -> Directive[
            RGBColor[0.368417, 0.506779, 0.709798], 
            EdgeForm[
-            RGBColor[0.2, 0.3, 0.5]]], 4 -> Directive[
-           RGBColor[0.368417, 0.506779, 0.709798], 
-           EdgeForm[
-            RGBColor[0.2, 0.3, 0.5]]], 8 -> Directive[
-           RGBColor[0.368417, 0.506779, 0.709798], 
-           EdgeForm[
             RGBColor[0.2, 0.3, 0.5]]], 7 -> Directive[
+           RGBColor[0.368417, 0.506779, 0.709798], 
+           EdgeForm[
+            RGBColor[0.2, 0.3, 0.5]]], 5 -> Directive[
            RGBColor[0.368417, 0.506779, 0.709798], 
            EdgeForm[
             RGBColor[0.2, 0.3, 0.5]]], 0 -> Directive[
            RGBColor[0.368417, 0.506779, 0.709798], 
            EdgeForm[
-            RGBColor[0.2, 0.3, 0.5]]], 11 -> Directive[
+            RGBColor[0.2, 0.3, 0.5]]], 17 -> Directive[
            RGBColor[0.368417, 0.506779, 0.709798], 
            EdgeForm[
             RGBColor[0.2, 0.3, 0.5]]], 6 -> Directive[
@@ -508,16 +507,6 @@ Cell[BoxData[
             BezierCurveBox[{{0., 1.6666666666666667`}, {-1.1370339559859273`, 
              1.5788814943662344`}, {-2., 0.8333333333333334}}], 
             0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "4"}, "RowDefault"]],
-         Annotation[#, 
-          Row[{"Event ", 4}], "Tooltip"]& ], 
-        TagBox[
-         TooltipBox[
-          {GrayLevel[0.5], Arrowheads[Small], 
-           ArrowBox[
-            BezierCurveBox[{{0., 1.6666666666666667`}, {0.1370339559859302, 
-             1.250000000000001}, {0., 0.8333333333333334}}], 
-            0.043048128342245986`]},
           TemplateBox[{"\"Event \"", "3"}, "RowDefault"]],
          Annotation[#, 
           Row[{"Event ", 3}], "Tooltip"]& ], 
@@ -525,18 +514,9 @@ Cell[BoxData[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[Small], 
            ArrowBox[
-            BezierCurveBox[{{0., 1.6666666666666667`}, {-0.1370339559859302, 
+            BezierCurveBox[{{0., 1.6666666666666667`}, {0.1370339559859302, 
              1.250000000000001}, {0., 0.8333333333333334}}], 
             0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "12"}, "RowDefault"]],
-         Annotation[#, 
-          Row[{"Event ", 12}], "Tooltip"]& ], 
-        TagBox[
-         TooltipBox[
-          {GrayLevel[0.5], Arrowheads[Small], 
-           ArrowBox[
-            BezierCurveBox[{{-2., 0.8333333333333334}, {-2.8629660440140676`, 
-             0.08778517230043342}, {-4., 0.}}], 0.043048128342245986`]},
           TemplateBox[{"\"Event \"", "5"}, "RowDefault"]],
          Annotation[#, 
           Row[{"Event ", 5}], "Tooltip"]& ], 
@@ -544,11 +524,30 @@ Cell[BoxData[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[Small], 
            ArrowBox[
+            BezierCurveBox[{{0., 1.6666666666666667`}, {-0.1370339559859302, 
+             1.250000000000001}, {0., 0.8333333333333334}}], 
+            0.043048128342245986`]},
+          TemplateBox[{"\"Event \"", "7"}, "RowDefault"]],
+         Annotation[#, 
+          Row[{"Event ", 7}], "Tooltip"]& ], 
+        TagBox[
+         TooltipBox[
+          {GrayLevel[0.5], Arrowheads[Small], 
+           ArrowBox[
+            BezierCurveBox[{{-2., 0.8333333333333334}, {-2.8629660440140676`, 
+             0.08778517230043342}, {-4., 0.}}], 0.043048128342245986`]},
+          TemplateBox[{"\"Event \"", "4"}, "RowDefault"]],
+         Annotation[#, 
+          Row[{"Event ", 4}], "Tooltip"]& ], 
+        TagBox[
+         TooltipBox[
+          {GrayLevel[0.5], Arrowheads[Small], 
+           ArrowBox[
             BezierCurveBox[{{-2., 0.8333333333333334}, {-3.1370339559859297`, 
              0.7455481610328994}, {-4., 0.}}], 0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "8"}, "RowDefault"]],
+          TemplateBox[{"\"Event \"", "10"}, "RowDefault"]],
          Annotation[#, 
-          Row[{"Event ", 8}], "Tooltip"]& ], 
+          Row[{"Event ", 10}], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[Small], 
@@ -564,27 +563,27 @@ Cell[BoxData[
            ArrowBox[
             BezierCurveBox[{{-2., 0.8333333333333334}, {-2.637033955985933, 
              0.5811074138497844}, {-3., 0.}}], 0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "11"}, "RowDefault"]],
+          TemplateBox[{"\"Event \"", "12"}, "RowDefault"]],
          Annotation[#, 
-          Row[{"Event ", 11}], "Tooltip"]& ], 
+          Row[{"Event ", 12}], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[Small], 
            ArrowBox[
             BezierCurveBox[{{-2., 0.8333333333333334}, {-1.8629660440140665`, 
              0.41666666666666774`}, {-2., 0.}}], 0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "7"}, "RowDefault"]],
+          TemplateBox[{"\"Event \"", "8"}, "RowDefault"]],
          Annotation[#, 
-          Row[{"Event ", 7}], "Tooltip"]& ], 
+          Row[{"Event ", 8}], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[Small], 
            ArrowBox[
             BezierCurveBox[{{-2., 0.8333333333333334}, {-2.137033955985929, 
              0.41666666666667046`}, {-2., 0.}}], 0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "13"}, "RowDefault"]],
+          TemplateBox[{"\"Event \"", "11"}, "RowDefault"]],
          Annotation[#, 
-          Row[{"Event ", 13}], "Tooltip"]& ], 
+          Row[{"Event ", 11}], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[Small], 
@@ -600,27 +599,27 @@ Cell[BoxData[
            ArrowBox[
             BezierCurveBox[{{-2., 0.8333333333333334}, {-1.6370339559859366`, 
              0.2522259194835528}, {-1., 0.}}], 0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "15"}, "RowDefault"]],
+          TemplateBox[{"\"Event \"", "14"}, "RowDefault"]],
          Annotation[#, 
-          Row[{"Event ", 15}], "Tooltip"]& ], 
+          Row[{"Event ", 14}], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[Small], 
            ArrowBox[
             BezierCurveBox[{{0., 0.8333333333333334}, {0.13703395598593043`, 
              0.41666666666666696`}, {0., 0.}}], 0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "10"}, "RowDefault"]],
+          TemplateBox[{"\"Event \"", "13"}, "RowDefault"]],
          Annotation[#, 
-          Row[{"Event ", 10}], "Tooltip"]& ], 
+          Row[{"Event ", 13}], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[Small], 
            ArrowBox[
             BezierCurveBox[{{0., 0.8333333333333334}, {0.045815558039429355`, 
              0.4166666666666527}, {0., 0.}}], 0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "16"}, "RowDefault"]],
+          TemplateBox[{"\"Event \"", "15"}, "RowDefault"]],
          Annotation[#, 
-          Row[{"Event ", 16}], "Tooltip"]& ], 
+          Row[{"Event ", 15}], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[Small], 
@@ -636,6 +635,24 @@ Cell[BoxData[
            ArrowBox[
             BezierCurveBox[{{0., 0.8333333333333334}, {-0.13703395598593043`, 
              0.41666666666666696`}, {0., 0.}}], 0.043048128342245986`]},
+          TemplateBox[{"\"Event \"", "20"}, "RowDefault"]],
+         Annotation[#, 
+          Row[{"Event ", 20}], "Tooltip"]& ], 
+        TagBox[
+         TooltipBox[
+          {GrayLevel[0.5], Arrowheads[Small], 
+           ArrowBox[
+            BezierCurveBox[{{0., 0.8333333333333334}, {0.6370339559859294, 
+             0.581107413849784}, {1., 0.}}], 0.043048128342245986`]},
+          TemplateBox[{"\"Event \"", "16"}, "RowDefault"]],
+         Annotation[#, 
+          Row[{"Event ", 16}], "Tooltip"]& ], 
+        TagBox[
+         TooltipBox[
+          {GrayLevel[0.5], Arrowheads[Small], 
+           ArrowBox[
+            BezierCurveBox[{{0., 0.8333333333333334}, {0.5458155580394476, 
+             0.4716453363139634}, {1., 0.}}], 0.043048128342245986`]},
           TemplateBox[{"\"Event \"", "18"}, "RowDefault"]],
          Annotation[#, 
           Row[{"Event ", 18}], "Tooltip"]& ], 
@@ -643,29 +660,11 @@ Cell[BoxData[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[Small], 
            ArrowBox[
-            BezierCurveBox[{{0., 0.8333333333333334}, {0.6370339559859294, 
-             0.581107413849784}, {1., 0.}}], 0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "14"}, "RowDefault"]],
-         Annotation[#, 
-          Row[{"Event ", 14}], "Tooltip"]& ], 
-        TagBox[
-         TooltipBox[
-          {GrayLevel[0.5], Arrowheads[Small], 
-           ArrowBox[
-            BezierCurveBox[{{0., 0.8333333333333334}, {0.5458155580394476, 
-             0.4716453363139634}, {1., 0.}}], 0.043048128342245986`]},
+            BezierCurveBox[{{0., 0.8333333333333334}, {0.45418444196058044`, 
+             0.3616879970193483}, {1., 0.}}], 0.043048128342245986`]},
           TemplateBox[{"\"Event \"", "19"}, "RowDefault"]],
          Annotation[#, 
           Row[{"Event ", 19}], "Tooltip"]& ], 
-        TagBox[
-         TooltipBox[
-          {GrayLevel[0.5], Arrowheads[Small], 
-           ArrowBox[
-            BezierCurveBox[{{0., 0.8333333333333334}, {0.45418444196058044`, 
-             0.3616879970193483}, {1., 0.}}], 0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "20"}, "RowDefault"]],
-         Annotation[#, 
-          Row[{"Event ", 20}], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[Small], 
@@ -769,6 +768,35 @@ Cell[BoxData[
         TagBox[
          TooltipBox[
           {RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[
+           0.2, 0.3, 0.5]], DiskBox[{-4., 0.}, 0.043048128342245986]},
+          TagBox[
+           GridBox[{{
+              TemplateBox[{
+                StyleBox["\"State\"", Bold, StripOnInput -> False]}, 
+               "RowDefault"]}, {
+              TagBox[
+               
+               GridBox[{{"\"Id:\"", "5"}, {"\"Step:\"", "3"}}, 
+                GridBoxAlignment -> {"Columns" -> {{Left}}}, AutoDelete -> 
+                False, GridBoxItemSize -> {
+                 "Columns" -> {{Automatic}}, "Rows" -> {{Automatic}}}, 
+                GridBoxSpacings -> {"Columns" -> {{1}}, "Rows" -> {{0.5}}}], 
+               "Grid"]}}, GridBoxAlignment -> {"Columns" -> {{Left}}}, 
+            DefaultBaseStyle -> "Column", 
+            GridBoxItemSize -> {
+             "Columns" -> {{Automatic}}, "Rows" -> {{Automatic}}}, 
+            GridBoxSpacings -> {
+             "Columns" -> {{Automatic}}, "Rows" -> {{0.5}}}], "Column"]],
+         Annotation[#, 
+          Column[{
+            Row[{
+              Style["State", Bold]}], 
+            
+            Grid[{{"Id:", 5}, {"Step:", 3}}, Alignment -> Left, 
+             Spacings -> {1, 0.5}]}, Spacings -> 0.5], "Tooltip"]& ], 
+        TagBox[
+         TooltipBox[
+          {RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[
            0.2, 0.3, 0.5]], 
            DiskBox[{0., 0.8333333333333334}, 0.043048128342245986]},
           TagBox[
@@ -778,7 +806,7 @@ Cell[BoxData[
                "RowDefault"]}, {
               TagBox[
                
-               GridBox[{{"\"Id:\"", "4"}, {"\"Step:\"", "2"}}, 
+               GridBox[{{"\"Id:\"", "6"}, {"\"Step:\"", "2"}}, 
                 GridBoxAlignment -> {"Columns" -> {{Left}}}, AutoDelete -> 
                 False, GridBoxItemSize -> {
                  "Columns" -> {{Automatic}}, "Rows" -> {{Automatic}}}, 
@@ -794,36 +822,7 @@ Cell[BoxData[
             Row[{
               Style["State", Bold]}], 
             
-            Grid[{{"Id:", 4}, {"Step:", 2}}, Alignment -> Left, 
-             Spacings -> {1, 0.5}]}, Spacings -> 0.5], "Tooltip"]& ], 
-        TagBox[
-         TooltipBox[
-          {RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[
-           0.2, 0.3, 0.5]], DiskBox[{-4., 0.}, 0.043048128342245986]},
-          TagBox[
-           GridBox[{{
-              TemplateBox[{
-                StyleBox["\"State\"", Bold, StripOnInput -> False]}, 
-               "RowDefault"]}, {
-              TagBox[
-               
-               GridBox[{{"\"Id:\"", "6"}, {"\"Step:\"", "3"}}, 
-                GridBoxAlignment -> {"Columns" -> {{Left}}}, AutoDelete -> 
-                False, GridBoxItemSize -> {
-                 "Columns" -> {{Automatic}}, "Rows" -> {{Automatic}}}, 
-                GridBoxSpacings -> {"Columns" -> {{1}}, "Rows" -> {{0.5}}}], 
-               "Grid"]}}, GridBoxAlignment -> {"Columns" -> {{Left}}}, 
-            DefaultBaseStyle -> "Column", 
-            GridBoxItemSize -> {
-             "Columns" -> {{Automatic}}, "Rows" -> {{Automatic}}}, 
-            GridBoxSpacings -> {
-             "Columns" -> {{Automatic}}, "Rows" -> {{0.5}}}], "Column"]],
-         Annotation[#, 
-          Column[{
-            Row[{
-              Style["State", Bold]}], 
-            
-            Grid[{{"Id:", 6}, {"Step:", 3}}, Alignment -> Left, 
+            Grid[{{"Id:", 6}, {"Step:", 2}}, Alignment -> Left, 
              Spacings -> {1, 0.5}]}, Spacings -> 0.5], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
@@ -865,7 +864,7 @@ Cell[BoxData[
                "RowDefault"]}, {
               TagBox[
                
-               GridBox[{{"\"Id:\"", "8"}, {"\"Step:\"", "3"}}, 
+               GridBox[{{"\"Id:\"", "9"}, {"\"Step:\"", "3"}}, 
                 GridBoxAlignment -> {"Columns" -> {{Left}}}, AutoDelete -> 
                 False, GridBoxItemSize -> {
                  "Columns" -> {{Automatic}}, "Rows" -> {{Automatic}}}, 
@@ -881,7 +880,7 @@ Cell[BoxData[
             Row[{
               Style["State", Bold]}], 
             
-            Grid[{{"Id:", 8}, {"Step:", 3}}, Alignment -> Left, 
+            Grid[{{"Id:", 9}, {"Step:", 3}}, Alignment -> Left, 
              Spacings -> {1, 0.5}]}, Spacings -> 0.5], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
@@ -923,7 +922,7 @@ Cell[BoxData[
                "RowDefault"]}, {
               TagBox[
                
-               GridBox[{{"\"Id:\"", "11"}, {"\"Step:\"", "3"}}, 
+               GridBox[{{"\"Id:\"", "16"}, {"\"Step:\"", "3"}}, 
                 GridBoxAlignment -> {"Columns" -> {{Left}}}, AutoDelete -> 
                 False, GridBoxItemSize -> {
                  "Columns" -> {{Automatic}}, "Rows" -> {{Automatic}}}, 
@@ -939,7 +938,7 @@ Cell[BoxData[
             Row[{
               Style["State", Bold]}], 
             
-            Grid[{{"Id:", 11}, {"Step:", 3}}, Alignment -> Left, 
+            Grid[{{"Id:", 16}, {"Step:", 3}}, Alignment -> Left, 
              Spacings -> {1, 0.5}]}, Spacings -> 0.5], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
@@ -952,7 +951,7 @@ Cell[BoxData[
                "RowDefault"]}, {
               TagBox[
                
-               GridBox[{{"\"Id:\"", "15"}, {"\"Step:\"", "3"}}, 
+               GridBox[{{"\"Id:\"", "17"}, {"\"Step:\"", "3"}}, 
                 GridBoxAlignment -> {"Columns" -> {{Left}}}, AutoDelete -> 
                 False, GridBoxItemSize -> {
                  "Columns" -> {{Automatic}}, "Rows" -> {{Automatic}}}, 
@@ -968,7 +967,7 @@ Cell[BoxData[
             Row[{
               Style["State", Bold]}], 
             
-            Grid[{{"Id:", 15}, {"Step:", 3}}, Alignment -> Left, 
+            Grid[{{"Id:", 17}, {"Step:", 3}}, Alignment -> Left, 
              Spacings -> {1, 0.5}]}, Spacings -> 0.5], "Tooltip"]& ]}}],
      MouseAppearanceTag["NetworkGraphics"]],
     AllowKernelInitialization->False]],
@@ -1008,9 +1007,9 @@ Cell[BoxData[
   NamespaceBox["NetworkGraphics",
    DynamicModuleBox[{Typeset`graph = HoldComplete[
      Graph[{0, 1, 3, 5, 7, 9, 10, 13, 15, 
-      18}, {{{1, 2}, {1, 2}, {2, 3}, {2, 3}, {2, 4}, {2, 4}, {4, 5}, {4, 5}, {
+      19}, {{{1, 2}, {1, 2}, {2, 3}, {2, 3}, {2, 4}, {2, 4}, {4, 5}, {4, 5}, {
        4, 6}, {4, 7}, {4, 6}, {4, 7}, {4, 8}, {4, 8}, {3, 9}, {3, 9}, {3, 
-       9}, {3, 10}, {3, 9}, {3, 10}, {3, 10}, {3, 10}}, 
+       9}, {3, 9}, {3, 10}, {3, 10}, {3, 10}, {3, 10}}, 
        Null, {<|"EventId" -> 0|>, <|"EventId" -> 1|>, <|"EventId" -> 2|>, <|
         "EventId" -> 3|>, <|"EventId" -> 4|>, <|"EventId" -> 5|>, <|
         "EventId" -> 6|>, <|"EventId" -> 7|>, <|"EventId" -> 8|>, <|
@@ -1022,40 +1021,40 @@ Cell[BoxData[
       AspectRatio -> Rational[1, 2], 
        EdgeLabels -> {DirectedEdge[1, 5, <|"EventId" -> 4|>] -> Placed[
            Row[{"Event ", 4}], Tooltip], 
-         DirectedEdge[3, 15, <|"EventId" -> 18|>] -> Placed[
-           Row[{"Event ", 18}], Tooltip], 
          DirectedEdge[5, 10, <|"EventId" -> 11|>] -> Placed[
            Row[{"Event ", 11}], Tooltip], 
          DirectedEdge[3, 15, <|"EventId" -> 15|>] -> Placed[
            Row[{"Event ", 15}], Tooltip], 
          DirectedEdge[5, 13, <|"EventId" -> 12|>] -> Placed[
            Row[{"Event ", 12}], Tooltip], 
-         DirectedEdge[3, 18, <|"EventId" -> 21|>] -> Placed[
-           Row[{"Event ", 21}], Tooltip], 
          DirectedEdge[5, 13, <|"EventId" -> 13|>] -> Placed[
            Row[{"Event ", 13}], Tooltip], 
-         DirectedEdge[3, 18, <|"EventId" -> 20|>] -> Placed[
-           Row[{"Event ", 20}], Tooltip], 
          DirectedEdge[5, 10, <|"EventId" -> 9|>] -> Placed[
            Row[{"Event ", 9}], Tooltip], 
+         DirectedEdge[3, 19, <|"EventId" -> 21|>] -> Placed[
+           Row[{"Event ", 21}], Tooltip], 
          DirectedEdge[1, 5, <|"EventId" -> 5|>] -> Placed[
            Row[{"Event ", 5}], Tooltip], 
          DirectedEdge[0, 1, <|"EventId" -> 0|>] -> Placed[
            Row[{"Event ", 0}], Tooltip], 
+         DirectedEdge[3, 19, <|"EventId" -> 20|>] -> Placed[
+           Row[{"Event ", 20}], Tooltip], 
          DirectedEdge[5, 7, <|"EventId" -> 6|>] -> Placed[
            Row[{"Event ", 6}], Tooltip], 
-         DirectedEdge[3, 18, <|"EventId" -> 17|>] -> Placed[
+         DirectedEdge[3, 15, <|"EventId" -> 17|>] -> Placed[
            Row[{"Event ", 17}], Tooltip], 
          DirectedEdge[1, 3, <|"EventId" -> 2|>] -> Placed[
            Row[{"Event ", 2}], Tooltip], 
          DirectedEdge[5, 9, <|"EventId" -> 10|>] -> Placed[
            Row[{"Event ", 10}], Tooltip], 
-         DirectedEdge[3, 18, <|"EventId" -> 19|>] -> Placed[
+         DirectedEdge[3, 19, <|"EventId" -> 19|>] -> Placed[
            Row[{"Event ", 19}], Tooltip], 
          DirectedEdge[5, 7, <|"EventId" -> 7|>] -> Placed[
            Row[{"Event ", 7}], Tooltip], 
          DirectedEdge[5, 9, <|"EventId" -> 8|>] -> Placed[
            Row[{"Event ", 8}], Tooltip], 
+         DirectedEdge[3, 19, <|"EventId" -> 18|>] -> Placed[
+           Row[{"Event ", 18}], Tooltip], 
          DirectedEdge[0, 1, <|"EventId" -> 1|>] -> Placed[
            Row[{"Event ", 1}], Tooltip], 
          DirectedEdge[1, 3, <|"EventId" -> 3|>] -> Placed[
@@ -1069,7 +1068,10 @@ Cell[BoxData[
            Arrowheads[Small]], DirectedEdge[5, 10, <|"EventId" -> 9|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[Small]], DirectedEdge[3, 15, <|"EventId" -> 18|>] -> 
+           Arrowheads[Small]], DirectedEdge[3, 15, <|"EventId" -> 17|>] -> 
+         Directive[
+           GrayLevel[0.5], 
+           Arrowheads[Small]], DirectedEdge[3, 19, <|"EventId" -> 20|>] -> 
          Directive[
            GrayLevel[0.5], 
            Arrowheads[Small]], DirectedEdge[1, 5, <|"EventId" -> 4|>] -> 
@@ -1093,10 +1095,7 @@ Cell[BoxData[
            Arrowheads[Small]], DirectedEdge[3, 15, <|"EventId" -> 16|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[Small]], DirectedEdge[3, 18, <|"EventId" -> 20|>] -> 
-         Directive[
-           GrayLevel[0.5], 
-           Arrowheads[Small]], DirectedEdge[3, 18, <|"EventId" -> 19|>] -> 
+           Arrowheads[Small]], DirectedEdge[3, 19, <|"EventId" -> 18|>] -> 
          Directive[
            GrayLevel[0.5], 
            Arrowheads[Small]], DirectedEdge[5, 13, <|"EventId" -> 13|>] -> 
@@ -1114,16 +1113,16 @@ Cell[BoxData[
            Arrowheads[Small]], DirectedEdge[5, 7, <|"EventId" -> 6|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[Small]], DirectedEdge[3, 18, <|"EventId" -> 17|>] -> 
+           Arrowheads[Small]], DirectedEdge[3, 19, <|"EventId" -> 19|>] -> 
+         Directive[
+           GrayLevel[0.5], 
+           Arrowheads[Small]], DirectedEdge[3, 19, <|"EventId" -> 21|>] -> 
          Directive[
            GrayLevel[0.5], 
            Arrowheads[Small]], DirectedEdge[1, 3, <|"EventId" -> 2|>] -> 
          Directive[
            GrayLevel[0.5], 
            Arrowheads[Small]], DirectedEdge[0, 1, <|"EventId" -> 1|>] -> 
-         Directive[
-           GrayLevel[0.5], 
-           Arrowheads[Small]], DirectedEdge[3, 18, <|"EventId" -> 21|>] -> 
          Directive[
            GrayLevel[0.5], 
            Arrowheads[Small]], DirectedEdge[5, 10, <|"EventId" -> 11|>] -> 
@@ -1162,12 +1161,6 @@ Cell[BoxData[
                Style["State", Bold]}], 
              
              Grid[{{"Id:", 13}, {"Step:", 3}}, Alignment -> Left, 
-              Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip], 18 -> Placed[
-           Column[{
-             Row[{
-               Style["State", Bold]}], 
-             
-             Grid[{{"Id:", 18}, {"Step:", 3}}, Alignment -> Left, 
               Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip], 3 -> 
          Placed[
            Column[{
@@ -1182,6 +1175,12 @@ Cell[BoxData[
                Style["State", Bold]}], 
              
              Grid[{{"Id:", 1}, {"Step:", 1}}, Alignment -> Left, 
+              Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip], 19 -> Placed[
+           Column[{
+             Row[{
+               Style["State", Bold]}], 
+             
+             Grid[{{"Id:", 19}, {"Step:", 3}}, Alignment -> Left, 
               Spacings -> {1, 0.5}]}, Spacings -> 0.5], Tooltip], 5 -> 
          Placed[
            Column[{
@@ -1214,13 +1213,13 @@ Cell[BoxData[
             RGBColor[0.2, 0.3, 0.5]]], 7 -> Directive[
            RGBColor[0.368417, 0.506779, 0.709798], 
            EdgeForm[
+            RGBColor[0.2, 0.3, 0.5]]], 19 -> Directive[
+           RGBColor[0.368417, 0.506779, 0.709798], 
+           EdgeForm[
             RGBColor[0.2, 0.3, 0.5]]], 5 -> Directive[
            RGBColor[0.368417, 0.506779, 0.709798], 
            EdgeForm[
             RGBColor[0.2, 0.3, 0.5]]], 0 -> Directive[
-           RGBColor[0.368417, 0.506779, 0.709798], 
-           EdgeForm[
-            RGBColor[0.2, 0.3, 0.5]]], 18 -> Directive[
            RGBColor[0.368417, 0.506779, 0.709798], 
            EdgeForm[
             RGBColor[0.2, 0.3, 0.5]]], 13 -> Directive[
@@ -1323,18 +1322,18 @@ Cell[BoxData[
            ArrowBox[
             BezierCurveBox[{{0., 0.8333333333333334}, {-0.13703395598593043`, 
              0.41666666666666696`}, {0., 0.}}], 0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "18"}, "RowDefault"]],
+          TemplateBox[{"\"Event \"", "17"}, "RowDefault"]],
          Annotation[#, 
-          Row[{"Event ", 18}], "Tooltip"]& ], 
+          Row[{"Event ", 17}], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[Small], 
            ArrowBox[
             BezierCurveBox[{{0., 0.8333333333333334}, {0.6370339559859294, 
              0.581107413849784}, {1., 0.}}], 0.043048128342245986`]},
-          TemplateBox[{"\"Event \"", "17"}, "RowDefault"]],
+          TemplateBox[{"\"Event \"", "18"}, "RowDefault"]],
          Annotation[#, 
-          Row[{"Event ", 17}], "Tooltip"]& ], 
+          Row[{"Event ", 18}], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[Small], 
@@ -1710,7 +1709,7 @@ Cell[BoxData[
                "RowDefault"]}, {
               TagBox[
                
-               GridBox[{{"\"Id:\"", "18"}, {"\"Step:\"", "3"}}, 
+               GridBox[{{"\"Id:\"", "19"}, {"\"Step:\"", "3"}}, 
                 GridBoxAlignment -> {"Columns" -> {{Left}}}, AutoDelete -> 
                 False, GridBoxItemSize -> {
                  "Columns" -> {{Automatic}}, "Rows" -> {{Automatic}}}, 
@@ -1726,7 +1725,7 @@ Cell[BoxData[
             Row[{
               Style["State", Bold]}], 
             
-            Grid[{{"Id:", 18}, {"Step:", 3}}, Alignment -> Left, 
+            Grid[{{"Id:", 19}, {"Step:", 3}}, Alignment -> Left, 
              Spacings -> {1, 0.5}]}, Spacings -> 0.5], "Tooltip"]& ]}}],
      MouseAppearanceTag["NetworkGraphics"]],
     AllowKernelInitialization->False]],
@@ -2005,8 +2004,8 @@ Cell[BoxData[
   NamespaceBox["NetworkGraphics",
    DynamicModuleBox[{Typeset`graph = HoldComplete[
      Graph[{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 
-      10}, {{{1, 2}, {2, 3}, {3, 4}, {4, 5}, {4, 6}, {4, 7}, {5, 8}, {6, 9}, {
-       5, 10}, {7, 11}}, 
+      10}, {{{1, 2}, {2, 3}, {3, 4}, {4, 5}, {4, 6}, {4, 7}, {5, 8}, {5, 9}, {
+       7, 10}, {6, 11}}, 
        Null, {<|"EventId" -> 0|>, <|"EventId" -> 1|>, <|"EventId" -> 2|>, <|
         "EventId" -> 3|>, <|"EventId" -> 4|>, <|"EventId" -> 5|>, <|
         "EventId" -> 6|>, <|"EventId" -> 7|>, <|"EventId" -> 8|>, <|
@@ -2014,36 +2013,30 @@ Cell[BoxData[
       AspectRatio -> Rational[1, 2], 
        EdgeLabels -> {DirectedEdge[0, 1, <|"EventId" -> 0|>] -> Placed[
            Row[{"Event ", 0}], Tooltip], 
+         DirectedEdge[5, 10, <|"EventId" -> 9|>] -> Placed[
+           Row[{"Event ", 9}], Tooltip], 
          DirectedEdge[2, 3, <|"EventId" -> 2|>] -> Placed[
            Row[{"Event ", 2}], Tooltip], 
          DirectedEdge[1, 2, <|"EventId" -> 1|>] -> Placed[
            Row[{"Event ", 1}], Tooltip], 
-         DirectedEdge[4, 9, <|"EventId" -> 8|>] -> Placed[
-           Row[{"Event ", 8}], Tooltip], 
          DirectedEdge[3, 4, <|"EventId" -> 3|>] -> Placed[
            Row[{"Event ", 3}], Tooltip], 
          DirectedEdge[3, 6, <|"EventId" -> 5|>] -> Placed[
            Row[{"Event ", 5}], Tooltip], 
-         DirectedEdge[5, 8, <|"EventId" -> 7|>] -> Placed[
-           Row[{"Event ", 7}], Tooltip], 
          DirectedEdge[4, 7, <|"EventId" -> 6|>] -> Placed[
            Row[{"Event ", 6}], Tooltip], 
-         DirectedEdge[6, 10, <|"EventId" -> 9|>] -> Placed[
-           Row[{"Event ", 9}], Tooltip], 
+         DirectedEdge[6, 9, <|"EventId" -> 8|>] -> Placed[
+           Row[{"Event ", 8}], Tooltip], 
+         DirectedEdge[4, 8, <|"EventId" -> 7|>] -> Placed[
+           Row[{"Event ", 7}], Tooltip], 
          DirectedEdge[3, 5, <|"EventId" -> 4|>] -> Placed[
            Row[{"Event ", 4}], Tooltip]}, 
-       EdgeStyle -> {DirectedEdge[5, 8, <|"EventId" -> 7|>] -> Directive[
-           GrayLevel[0.5], 
-           Arrowheads[Small]], DirectedEdge[4, 9, <|"EventId" -> 8|>] -> 
-         Directive[
-           GrayLevel[0.5], 
-           Arrowheads[Small]], DirectedEdge[3, 5, <|"EventId" -> 4|>] -> 
-         Directive[
+       EdgeStyle -> {DirectedEdge[3, 5, <|"EventId" -> 4|>] -> Directive[
            GrayLevel[0.5], 
            Arrowheads[Small]], DirectedEdge[0, 1, <|"EventId" -> 0|>] -> 
          Directive[
            GrayLevel[0.5], 
-           Arrowheads[Small]], DirectedEdge[6, 10, <|"EventId" -> 9|>] -> 
+           Arrowheads[Small]], DirectedEdge[6, 9, <|"EventId" -> 8|>] -> 
          Directive[
            GrayLevel[0.5], 
            Arrowheads[Small]], DirectedEdge[2, 3, <|"EventId" -> 2|>] -> 
@@ -2056,6 +2049,12 @@ Cell[BoxData[
          Directive[
            GrayLevel[0.5], 
            Arrowheads[Small]], DirectedEdge[4, 7, <|"EventId" -> 6|>] -> 
+         Directive[
+           GrayLevel[0.5], 
+           Arrowheads[Small]], DirectedEdge[5, 10, <|"EventId" -> 9|>] -> 
+         Directive[
+           GrayLevel[0.5], 
+           Arrowheads[Small]], DirectedEdge[4, 8, <|"EventId" -> 7|>] -> 
          Directive[
            GrayLevel[0.5], 
            Arrowheads[Small]], DirectedEdge[1, 2, <|"EventId" -> 1|>] -> 
@@ -2209,14 +2208,14 @@ Cell[BoxData[
         TagBox[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[Small], 
-           ArrowBox[{{0., 0.6}, {0., 0.3}}, 0.030239520958083826`]},
+           ArrowBox[{{0., 0.6}, {1., 0.3}}, 0.030239520958083826`]},
           TemplateBox[{"\"Event \"", "4"}, "RowDefault"]],
          Annotation[#, 
           Row[{"Event ", 4}], "Tooltip"]& ], 
         TagBox[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[Small], 
-           ArrowBox[{{0., 0.6}, {1., 0.3}}, 0.030239520958083826`]},
+           ArrowBox[{{0., 0.6}, {0., 0.3}}, 0.030239520958083826`]},
           TemplateBox[{"\"Event \"", "5"}, "RowDefault"]],
          Annotation[#, 
           Row[{"Event ", 5}], "Tooltip"]& ], 
@@ -2231,13 +2230,6 @@ Cell[BoxData[
          TooltipBox[
           {GrayLevel[0.5], Arrowheads[Small], 
            ArrowBox[{{-1., 0.3}, {-1., 0.}}, 0.030239520958083826`]},
-          TemplateBox[{"\"Event \"", "8"}, "RowDefault"]],
-         Annotation[#, 
-          Row[{"Event ", 8}], "Tooltip"]& ], 
-        TagBox[
-         TooltipBox[
-          {GrayLevel[0.5], Arrowheads[Small], 
-           ArrowBox[{{0., 0.3}, {0., 0.}}, 0.030239520958083826`]},
           TemplateBox[{"\"Event \"", "7"}, "RowDefault"]],
          Annotation[#, 
           Row[{"Event ", 7}], "Tooltip"]& ], 
@@ -2247,7 +2239,14 @@ Cell[BoxData[
            ArrowBox[{{1., 0.3}, {1., 0.}}, 0.030239520958083826`]},
           TemplateBox[{"\"Event \"", "9"}, "RowDefault"]],
          Annotation[#, 
-          Row[{"Event ", 9}], "Tooltip"]& ]}, 
+          Row[{"Event ", 9}], "Tooltip"]& ], 
+        TagBox[
+         TooltipBox[
+          {GrayLevel[0.5], Arrowheads[Small], 
+           ArrowBox[{{0., 0.3}, {0., 0.}}, 0.030239520958083826`]},
+          TemplateBox[{"\"Event \"", "8"}, "RowDefault"]],
+         Annotation[#, 
+          Row[{"Event ", 8}], "Tooltip"]& ]}, 
        {Hue[0.6, 0.5, 1.], EdgeForm[{GrayLevel[0], Opacity[0.7]}], 
         TagBox[
          TooltipBox[
@@ -2398,7 +2397,7 @@ Cell[BoxData[
         TagBox[
          TooltipBox[
           {RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[
-           0.2, 0.3, 0.5]], DiskBox[{0., 0.3}, 0.030239520958083826]},
+           0.2, 0.3, 0.5]], DiskBox[{1., 0.3}, 0.030239520958083826]},
           TagBox[
            GridBox[{{
               TemplateBox[{
@@ -2427,7 +2426,7 @@ Cell[BoxData[
         TagBox[
          TooltipBox[
           {RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[
-           0.2, 0.3, 0.5]], DiskBox[{1., 0.3}, 0.030239520958083826]},
+           0.2, 0.3, 0.5]], DiskBox[{0., 0.3}, 0.030239520958083826]},
           TagBox[
            GridBox[{{
               TemplateBox[{
@@ -2485,7 +2484,7 @@ Cell[BoxData[
         TagBox[
          TooltipBox[
           {RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[
-           0.2, 0.3, 0.5]], DiskBox[{0., 0.}, 0.030239520958083826]},
+           0.2, 0.3, 0.5]], DiskBox[{-1., 0.}, 0.030239520958083826]},
           TagBox[
            GridBox[{{
               TemplateBox[{
@@ -2514,7 +2513,7 @@ Cell[BoxData[
         TagBox[
          TooltipBox[
           {RGBColor[0.368417, 0.506779, 0.709798], EdgeForm[RGBColor[
-           0.2, 0.3, 0.5]], DiskBox[{-1., 0.}, 0.030239520958083826]},
+           0.2, 0.3, 0.5]], DiskBox[{0., 0.}, 0.030239520958083826]},
           TagBox[
            GridBox[{{
               TemplateBox[{
@@ -2776,7 +2775,9 @@ Cell["When no GPU engine is available", "Section",
  CellID->1892712309,ExpressionUUID->"46632a09-cc5f-b0ef-6e10-cc52e5eb0235"],
 
 Cell[TextData[{
- "Where the paclet has no GPU engine for the platform, ",
+ "The GPU engine needs an NVIDIA GPU of compute capability 7.5, 8.0, 8.6, 8.9 \
+or 9.0 and NVIDIA driver 580 or newer. Where the paclet has no GPU engine for \
+the platform, or the machine has no usable NVIDIA GPU, ",
  Cell[BoxData[
   RowBox[{"\"\<TargetDevice\>\"", " ", "->", " ", "\"\<GPU\>\""}]], 
   "InlineFormula",
@@ -2787,27 +2788,94 @@ Cell[TextData[{
   RowBox[{"HGEvolve", "::", "gpudev"}]], "InlineFormula",
   FontSize->0.9 Inherited,ExpressionUUID->
   "25a0bfbe-b1d4-2428-535f-36fbc0668f72"],
- " and the evolution runs on the CPU."
+ ", which names the reason, and the evolution runs on the CPU. The reason is \
+one of: no GPU engine binary, no CUDA-capable device, no NVIDIA driver, a \
+driver too old for the engine, or a compute capability the engine has no code \
+for. It is kept for the Wolfram Language session, so later GPU evaluations \
+and sessions go to the CPU with the same message."
 }], "Text",
  CellID->787969749,ExpressionUUID->"04786d0e-016a-d127-2c07-8568b01ca00d"],
+
+Cell[TextData[{
+ Cell[BoxData[
+  RowBox[{"\"\<TargetDevice\>\"", " ", "->", " ", 
+   RowBox[{"{", 
+    RowBox[{"\"\<GPU\>\"", ",", " ", 
+     RowBox[{"\"\<Strict\>\"", " ", "->", " ", "True"}]}], "}"}]}]], 
+  "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "2d15b43a-cd49-5244-5b2a-2e67e4fc20ae"],
+ " gives ",
+ Cell[BoxData["$Failed"], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "2d1ff276-b82a-c3ca-5b24-f43039dc9110"],
+ " with the message ",
+ Cell[BoxData[
+  RowBox[{"HGEvolve", "::", "nogpu"}]], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "14fd1512-f616-8834-3c82-8d5f83a0db1e"],
+ " instead of running on the CPU."
+}], "Text",
+ CellID->525088789,ExpressionUUID->"66c67103-72a1-9427-0efe-696d0755ff0d"],
+
+Cell[TextData[{
+ "The ",
+ Cell[BoxData["\"\<Device\>\""], "InlineFormula",
+  FontSize->0.9 Inherited,ExpressionUUID->
+  "48c794f4-84f6-2bfc-78fc-0dbe2c8379c6"],
+ " property names the device that ran an evolution, with the name and compute \
+capability of the GPU:"
+}], "Text",
+ CellID->357930410,ExpressionUUID->"58ee7ecb-1370-1005-0896-7795a605636f"],
+
+Cell[CellGroupData[{
+
+Cell[BoxData[
+ RowBox[{
+  RowBox[{"HGEvolve", "[", 
+   RowBox[{
+    RowBox[{"{", 
+     RowBox[{
+      RowBox[{"{", 
+       RowBox[{"{", 
+        RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], " ", "->", " ", 
+      RowBox[{"{", 
+       RowBox[{
+        RowBox[{"{", 
+         RowBox[{"1", ",", " ", "3"}], "}"}], ",", " ", 
+        RowBox[{"{", 
+         RowBox[{"3", ",", " ", "2"}], "}"}]}], "}"}]}], "}"}], ",", " ", 
+    RowBox[{"{", 
+     RowBox[{"{", 
+      RowBox[{"1", ",", " ", "2"}], "}"}], "}"}], ",", " ", "3", ",", 
+    " ", "\"\<Device\>\"", ",", " ", 
+    RowBox[{"\"\<TargetDevice\>\"", " ", "->", " ", "\"\<GPU\>\""}]}], "]"}], 
+  "[", "\"\<Type\>\"", "]"}]], "Input",
+ CellLabel->"In[16]:= ",
+ CellID->713683853,ExpressionUUID->"11d04a92-cbef-a8a5-47e0-63dfed9bfa8f"],
+
+Cell[BoxData["\<\"GPU\"\>"], "Output",
+ CellLabel->"Out[16]= ",
+ CellID->578787918,ExpressionUUID->"7d9821c9-0e61-bc6d-2ba7-b893ab1506b7"]
+}, Open  ]],
 
 Cell[TextData[{
  "A value other than ",
  Cell[BoxData["\"\<CPU\>\""], "InlineFormula",
   FontSize->0.9 Inherited,ExpressionUUID->
-  "2d15b43a-cd49-5244-5b2a-2e67e4fc20ae"],
+  "3181a460-bc62-f1ee-67be-3e4a3514c334"],
  " or ",
  Cell[BoxData["\"\<GPU\>\""], "InlineFormula",
   FontSize->0.9 Inherited,ExpressionUUID->
-  "2d1ff276-b82a-c3ca-5b24-f43039dc9110"],
+  "3937e1d4-04c3-e55a-68cc-f89ead77cfa0"],
  " issues ",
  Cell[BoxData[
   RowBox[{"HGEvolve", "::", "baddev"}]], "InlineFormula",
   FontSize->0.9 Inherited,ExpressionUUID->
-  "14fd1512-f616-8834-3c82-8d5f83a0db1e"],
+  "6b45e796-37a7-eecc-197a-fed04253b416"],
  ", and the evolution runs on the CPU:"
 }], "Text",
- CellID->525088789,ExpressionUUID->"66c67103-72a1-9427-0efe-696d0755ff0d"],
+ CellID->115301326,ExpressionUUID->"5e187950-8ca2-2ab2-0638-711a25577898"],
 
 Cell[CellGroupData[{
 
@@ -2831,8 +2899,8 @@ Cell[BoxData[
    " ", "\"\<NumStates\>\"", ",", " ", 
    RowBox[{"\"\<TargetDevice\>\"", " ", "->", " ", "\"\<TPU\>\""}]}], 
   "]"}]], "Input",
- CellLabel->"In[16]:= ",
- CellID->1509916714,ExpressionUUID->"48c794f4-84f6-2bfc-78fc-0dbe2c8379c6"],
+ CellLabel->"In[17]:= ",
+ CellID->624853398,ExpressionUUID->"250a2d7c-9b81-05b0-5309-c5261e346f9a"],
 
 Cell[BoxData[
  RowBox[{
@@ -2846,18 +2914,18 @@ Cell[BoxData[
     RowBox[{"use", " ", "\<\"CPU\"\>", " ", "or", " ", 
      RowBox[{"\<\"GPU\"\>", ".", " ", "Using"}], " ", 
      RowBox[{"CPU", "."}]}]}]}]}]], "Message", "MSG",
- CellID->132257103,ExpressionUUID->"58ee7ecb-1370-1005-0896-7795a605636f"],
+ CellID->1464567144,ExpressionUUID->"15a9104d-5625-6af3-4356-8a1763d038d9"],
 
 Cell[BoxData["10"], "Output",
- CellLabel->"Out[16]= ",
- CellID->64812107,ExpressionUUID->"11d04a92-cbef-a8a5-47e0-63dfed9bfa8f"]
+ CellLabel->"Out[17]= ",
+ CellID->854168915,ExpressionUUID->"58c17d8b-1b7e-6f79-08ff-74d59e0b3243"]
 }, Open  ]],
 
 Cell[CellGroupData[{
 
 Cell["Related Guides", "TutorialMoreAboutSection",
  CellChangeTimes->{{3.843042384656711*^9, 3.843042386024461*^9}},
- CellID->23220180,ExpressionUUID->"7d9821c9-0e61-bc6d-2ba7-b893ab1506b7"],
+ CellID->23220180,ExpressionUUID->"43821c38-6720-b4f9-71b1-966212da1ec3"],
 
 Cell[TextData[Cell[BoxData[
  TemplateBox[{
@@ -2868,15 +2936,15 @@ HypergraphRewriting"},
   "RefLinkPlain",
   BaseStyle->{
    "InlineFormula"}]], \
-"InlineFormula",ExpressionUUID->"3181a460-bc62-f1ee-67be-3e4a3514c334"]], \
+"InlineFormula",ExpressionUUID->"341c54d9-3079-6bba-5c24-4d83410c3980"]], \
 "TutorialMoreAbout",
- CellID->578787918,ExpressionUUID->"3937e1d4-04c3-e55a-68cc-f89ead77cfa0"]
+ CellID->41412554,ExpressionUUID->"1dbf9c2b-d84a-d79b-4b44-1674d9fcbde1"]
 }, Open  ]],
 
 Cell[CellGroupData[{
 
 Cell["Related Tech Notes", "RelatedTutorialsSection",
- CellID->415694126,ExpressionUUID->"6b45e796-37a7-eecc-197a-fed04253b416"],
+ CellID->415694126,ExpressionUUID->"0f449897-1a0e-51e7-357b-11d19fbb23cd"],
 
 Cell[TextData[{
  Cell[BoxData[
@@ -2886,7 +2954,7 @@ Cell[TextData[{
     "paclet:WolframInstitute/HypergraphRewriteEngine/tutorial/GettingStarted"},
    "RefLinkPlain",
    BaseStyle->{"InlineFormula"}]], "InlineFormula",ExpressionUUID->
-  "5e187950-8ca2-2ab2-0638-711a25577898"],
+  "6d5a63ab-93b9-14f3-1b7a-7af5264c7ed9"],
  " \[FilledVerySmallSquare] ",
  Cell[BoxData[
   TemplateBox[{
@@ -2896,7 +2964,7 @@ Cell[TextData[{
 SamplingAndPruning"},
    "RefLinkPlain",
    BaseStyle->{"InlineFormula"}]], "InlineFormula",ExpressionUUID->
-  "250a2d7c-9b81-05b0-5309-c5261e346f9a"],
+  "5077c06e-c394-b43c-000c-da4bf6261f06"],
  " \[FilledVerySmallSquare] ",
  Cell[BoxData[
   TemplateBox[{
@@ -2905,86 +2973,86 @@ SamplingAndPruning"},
     "paclet:WolframInstitute/HypergraphRewriteEngine/tutorial/Sessions"},
    "RefLinkPlain",
    BaseStyle->{"InlineFormula"}]], "InlineFormula",ExpressionUUID->
-  "15a9104d-5625-6af3-4356-8a1763d038d9"]
+  "07359582-e823-44a1-2eca-0cef89d62e8b"]
 }], "RelatedTutorials",
- CellID->1339473503,ExpressionUUID->"58c17d8b-1b7e-6f79-08ff-74d59e0b3243"]
+ CellID->1147471427,ExpressionUUID->"7c239bd0-3ff5-3b18-25d0-129ab9818662"]
 }, Open  ]]
 }, Open  ]],
 
 Cell[CellGroupData[{
 
 Cell["Metadata", "MetadataSection",
- CellID->311882160,ExpressionUUID->"43821c38-6720-b4f9-71b1-966212da1ec3"],
+ CellID->311882160,ExpressionUUID->"68c76573-72ce-0c1a-18fd-7d3d077b5760"],
 
 Cell[TextData[{
  "New in: ",
  Cell["XX", "HistoryData",
-  CellTags->"New",ExpressionUUID->"341c54d9-3079-6bba-5c24-4d83410c3980"],
+  CellTags->"New",ExpressionUUID->"6184d2f2-049e-728e-17bb-cbbcad2b40d4"],
  " | Modified in: ",
  Cell[" ", "HistoryData",
-  CellTags->"Modified",ExpressionUUID->"1dbf9c2b-d84a-d79b-4b44-1674d9fcbde1"],
+  CellTags->"Modified",ExpressionUUID->"4fd967ef-5008-0b29-75e7-7ec961bd5673"],
  " | Obsolete in: ",
  Cell[" ", "HistoryData",
   CellTags->"Obsolete",ExpressionUUID->
-  "0f449897-1a0e-51e7-357b-11d19fbb23cd"]
+  "19bb1c5e-57ab-6e36-4f58-9618625e351c"]
 }], "History",
- CellID->341476719,ExpressionUUID->"6d5a63ab-93b9-14f3-1b7a-7af5264c7ed9"],
+ CellID->341476719,ExpressionUUID->"5c8dcc56-7aa9-964a-04b2-e6107f5dfc90"],
 
 Cell[CellGroupData[{
 
 Cell["Categorization", "CategorizationSection",
- CellID->1122911449,ExpressionUUID->"5077c06e-c394-b43c-000c-da4bf6261f06"],
+ CellID->1122911449,ExpressionUUID->"30baa1c8-66ad-75e0-6059-389213585fca"],
 
 Cell["Tutorial", "Categorization",
  CellLabel->"Entity Type",
- CellID->686433507,ExpressionUUID->"07359582-e823-44a1-2eca-0cef89d62e8b"],
+ CellID->686433507,ExpressionUUID->"52535901-cb26-8b9c-0261-516aeed0d9e6"],
 
 Cell["WolframInstitute/HypergraphRewriteEngine", "Categorization",
  CellLabel->"Paclet Name",
- CellID->605800465,ExpressionUUID->"7c239bd0-3ff5-3b18-25d0-129ab9818662"],
+ CellID->605800465,ExpressionUUID->"323a4b1c-b138-a791-63da-6359c0b20dfb"],
 
 Cell["HypergraphRewriting`", "Categorization",
  CellLabel->"Context",
- CellID->468444828,ExpressionUUID->"68c76573-72ce-0c1a-18fd-7d3d077b5760"],
+ CellID->468444828,ExpressionUUID->"7421cf44-a1ac-4319-1dde-e721d0592e63"],
 
 Cell["\<\
 WolframInstitute/HypergraphRewriteEngine/tutorial/GPUEvolution\
 \>", "Categorization",
  CellLabel->"URI",
- CellID->955925492,ExpressionUUID->"6184d2f2-049e-728e-17bb-cbbcad2b40d4"]
+ CellID->955925492,ExpressionUUID->"511b3347-8d7d-ab60-0738-ab212409f64a"]
 }, Closed]],
 
 Cell[CellGroupData[{
 
 Cell["Keywords", "KeywordsSection",
- CellID->1427428552,ExpressionUUID->"4fd967ef-5008-0b29-75e7-7ec961bd5673"],
+ CellID->1427428552,ExpressionUUID->"36c19c85-764d-0b01-5efe-15ef03f8566b"],
 
 Cell["GPU", "Keywords",
- CellID->1251852827,ExpressionUUID->"19bb1c5e-57ab-6e36-4f58-9618625e351c"],
+ CellID->1251852827,ExpressionUUID->"6815cd54-0cd7-196f-182a-e51ea5626bb5"],
 
 Cell["CUDA", "Keywords",
- CellID->1251852827,ExpressionUUID->"5c8dcc56-7aa9-964a-04b2-e6107f5dfc90"],
+ CellID->1251852827,ExpressionUUID->"519775d4-d545-25f2-07ad-6c91dcf18fd8"],
 
 Cell["TargetDevice", "Keywords",
- CellID->1251852827,ExpressionUUID->"30baa1c8-66ad-75e0-6059-389213585fca"],
+ CellID->1251852827,ExpressionUUID->"5900aac7-5263-773e-0f3f-43a167165a04"],
 
 Cell["hypergraph", "Keywords",
- CellID->1251852827,ExpressionUUID->"52535901-cb26-8b9c-0261-516aeed0d9e6"],
+ CellID->1251852827,ExpressionUUID->"06ecfdb3-2197-c9b0-2e93-f4fd50239b9a"],
 
 Cell["multiway", "Keywords",
- CellID->1251852827,ExpressionUUID->"323a4b1c-b138-a791-63da-6359c0b20dfb"],
+ CellID->1251852827,ExpressionUUID->"12d95fcb-3316-2212-42e7-569546a37178"],
 
 Cell["rewriting", "Keywords",
- CellID->1251852827,ExpressionUUID->"7421cf44-a1ac-4319-1dde-e721d0592e63"],
+ CellID->1251852827,ExpressionUUID->"733995c2-f5bf-78ee-22c6-0caffc4a4a34"],
 
 Cell["parity", "Keywords",
- CellID->1251852827,ExpressionUUID->"511b3347-8d7d-ab60-0738-ab212409f64a"],
+ CellID->1251852827,ExpressionUUID->"4f8ab258-7e7f-0723-7589-34027b0a6a09"],
 
 Cell["session", "Keywords",
- CellID->1251852827,ExpressionUUID->"36c19c85-764d-0b01-5efe-15ef03f8566b"],
+ CellID->1251852827,ExpressionUUID->"6b12ee74-9953-131d-1921-003e18e67e67"],
 
 Cell["Wolfram physics", "Keywords",
- CellID->1251852827,ExpressionUUID->"6815cd54-0cd7-196f-182a-e51ea5626bb5"]
+ CellID->1251852827,ExpressionUUID->"65262d3c-fccc-1dc6-0cdd-c579f579672c"]
 }, Closed]]
 }, Open  ]]
 },
@@ -3003,7 +3071,7 @@ CellContext->CellGroup,
 FrontEndVersion->"15.0 for Microsoft Windows (64-bit) (July 2, 2026)",
 StyleDefinitions->FrontEnd`FileName[{"Wolfram"}, "TechNotePageStylesExt.nb", 
   CharacterEncoding -> "UTF-8"],
-ExpressionUUID->"519775d4-d545-25f2-07ad-6c91dcf18fd8"
+ExpressionUUID->"5e157ee2-48da-d240-062b-77cc696ca0aa"
 ]
 (* End of Notebook Content *)
 
@@ -3017,198 +3085,208 @@ CellTagsIndex->{}
 (*NotebookFileOutline
 Notebook[{
 Cell[CellGroupData[{
-Cell[576, 22, 112, 1, 70, "Title",ExpressionUUID->"5900aac7-5263-773e-0f3f-43a167165a04",
+Cell[576, 22, 112, 1, 70, "Title",ExpressionUUID->"78287f93-0f12-7c52-2828-76ddaaa746b8",
  CellID->509267359],
-Cell[690, 25, 1207, 31, 70, "Text",ExpressionUUID->"06ecfdb3-2197-c9b0-2e93-f4fd50239b9a",
+Cell[690, 25, 1207, 31, 70, "Text",ExpressionUUID->"08285353-0e0e-39f8-3828-4b1dabb88bc2",
  CellID->329621944],
-Cell[1869, 58, 114, 1, 70, "Section",ExpressionUUID->"12d95fcb-3316-2212-42e7-569546a37178",
+Cell[1869, 58, 114, 1, 70, "Section",ExpressionUUID->"1daed7d3-93e8-7698-4b55-ce9d259d5ce2",
  CellID->515379898],
-Cell[1985, 61, 120, 1, 70, "Text",ExpressionUUID->"733995c2-f5bf-78ee-22c6-0caffc4a4a34",
+Cell[1985, 61, 120, 1, 70, "Text",ExpressionUUID->"187adc3d-3961-76c2-4819-d667b8145c28",
  CellID->604760901],
 Cell[CellGroupData[{
-Cell[2129, 66, 1042, 31, 70, "Input",ExpressionUUID->"4f8ab258-7e7f-0723-7589-34027b0a6a09",
+Cell[2129, 66, 1042, 31, 70, "Input",ExpressionUUID->"641c78eb-7f03-7846-0c24-71b57ab64aac",
  CellID->214672358],
-Cell[3143, 99, 224, 5, 70, "Output",ExpressionUUID->"6b12ee74-9953-131d-1921-003e18e67e67",
+Cell[3143, 99, 224, 5, 70, "Output",ExpressionUUID->"5bfcc75d-c21d-6fb0-0983-df06f7a8359a",
  CellID->985978867]
 }, Open  ]],
-Cell[3377, 107, 287, 5, 70, "Text",ExpressionUUID->"65262d3c-fccc-1dc6-0cdd-c579f579672c",
+Cell[3377, 107, 287, 5, 70, "Text",ExpressionUUID->"112ae6ec-4b5c-6ad2-4729-ffb66ee93838",
  CellID->448336599],
-Cell[3662, 114, 127, 1, 70, "Section",ExpressionUUID->"5e157ee2-48da-d240-062b-77cc696ca0aa",
+Cell[3662, 114, 127, 1, 70, "Section",ExpressionUUID->"6121b9de-dddd-aca8-10de-309bd469f6f2",
  CellID->970785311],
-Cell[3791, 117, 339, 7, 70, "Text",ExpressionUUID->"78287f93-0f12-7c52-2828-76ddaaa746b8",
+Cell[3791, 117, 339, 7, 70, "Text",ExpressionUUID->"30209679-023a-ee91-61df-0823b7ccb4fb",
  CellID->1377816002],
 Cell[CellGroupData[{
-Cell[4148, 128, 1556, 43, 70, "Input",ExpressionUUID->"08285353-0e0e-39f8-3828-4b1dabb88bc2",
+Cell[4148, 128, 1556, 43, 70, "Input",ExpressionUUID->"29bc1606-c22d-409d-5f43-8863f7d812e7",
  CellID->293863717],
-Cell[5664, 173, 392, 10, 70, "Output",ExpressionUUID->"1daed7d3-93e8-7698-4b55-ce9d259d5ce2",
+Cell[5664, 173, 392, 10, 70, "Output",ExpressionUUID->"7bf1e1bf-5b3e-c64b-298e-f8f95ec8ac91",
  CellID->1063680002]
 }, Open  ]],
-Cell[6061, 186, 133, 1, 70, "Text",ExpressionUUID->"187adc3d-3961-76c2-4819-d667b8145c28",
+Cell[6061, 186, 133, 1, 70, "Text",ExpressionUUID->"3119d855-3ffd-7401-6726-d21fb9885f6b",
  CellID->1641200340],
-Cell[6196, 189, 1038, 31, 70, "Input",ExpressionUUID->"641c78eb-7f03-7846-0c24-71b57ab64aac",
+Cell[6196, 189, 1038, 31, 70, "Input",ExpressionUUID->"62a6d1b5-4e36-fa69-125d-c8ff6bc0c8b3",
  CellID->1424533854],
-Cell[7206, 222, 184, 4, 70, "Text",ExpressionUUID->"5bfcc75d-c21d-6fb0-0983-df06f7a8359a",
+Cell[7206, 222, 184, 4, 70, "Text",ExpressionUUID->"7c41cdc9-5ab3-1ef5-247e-e4935f4664df",
  CellID->535457321],
 Cell[CellGroupData[{
-Cell[7411, 230, 557, 12, 70, "Input",ExpressionUUID->"112ae6ec-4b5c-6ad2-4729-ffb66ee93838",
+Cell[7411, 230, 557, 12, 70, "Input",ExpressionUUID->"51fce014-dca1-0630-0783-fa51d5546d1a",
  CellID->1129727236],
-Cell[7959, 244, 32663, 735, 70, "Output",ExpressionUUID->"6121b9de-dddd-aca8-10de-309bd469f6f2",
+Cell[7959, 244, 32652, 734, 70, "Output",ExpressionUUID->"657c1c65-980e-511d-1303-964f19bb2067",
  CellID->1769442689]
 }, Open  ]],
-Cell[39902, 982, 243, 4, 70, "Text",ExpressionUUID->"30209679-023a-ee91-61df-0823b7ccb4fb",
+Cell[39892, 981, 243, 4, 70, "Text",ExpressionUUID->"0f15dbd5-5f35-596c-352a-d29f5ac02bb6",
  CellID->299517738],
 Cell[CellGroupData[{
-Cell[40166, 990, 638, 13, 70, "Input",ExpressionUUID->"29bc1606-c22d-409d-5f43-8863f7d812e7",
+Cell[40156, 989, 638, 13, 70, "Input",ExpressionUUID->"7e9b7e66-629a-1114-26b9-7040172f607e",
  CellID->1064655499],
-Cell[40794, 1005, 32633, 732, 70, "Output",ExpressionUUID->"7bf1e1bf-5b3e-c64b-298e-f8f95ec8ac91",
+Cell[40784, 1004, 32633, 732, 70, "Output",ExpressionUUID->"585a51e6-774f-2dd2-087a-48c002fa7738",
  CellID->1899575801]
 }, Open  ]],
 Cell[CellGroupData[{
-Cell[72732, 1742, 655, 17, 70, "Input",ExpressionUUID->"3119d855-3ffd-7401-6726-d21fb9885f6b",
+Cell[72722, 1741, 655, 17, 70, "Input",ExpressionUUID->"1d7c0b5b-c40c-ea6a-4b03-a304edbeb8b0",
  CellID->187047899],
-Cell[73373, 1761, 295, 8, 70, "Output",ExpressionUUID->"62a6d1b5-4e36-fa69-125d-c8ff6bc0c8b3",
+Cell[73363, 1760, 295, 8, 70, "Output",ExpressionUUID->"370294fd-9e49-2d35-5d31-0da71bfc741f",
  CellID->892924660]
 }, Open  ]],
-Cell[73675, 1772, 139, 1, 70, "Text",ExpressionUUID->"7c41cdc9-5ab3-1ef5-247e-e4935f4664df",
+Cell[73665, 1771, 139, 1, 70, "Text",ExpressionUUID->"2845529c-454d-b13b-587b-4bc66cf90001",
  CellID->436346740],
 Cell[CellGroupData[{
-Cell[73838, 1777, 779, 20, 70, "Input",ExpressionUUID->"51fce014-dca1-0630-0783-fa51d5546d1a",
+Cell[73828, 1776, 779, 20, 70, "Input",ExpressionUUID->"7519012f-e657-215b-2326-988893e273a1",
  CellID->1121994668],
-Cell[74600, 1799, 385, 10, 70, "Output",ExpressionUUID->"657c1c65-980e-511d-1303-964f19bb2067",
+Cell[74590, 1798, 385, 10, 70, "Output",ExpressionUUID->"594776df-9e75-d16a-0f7d-6f991b01a3b0",
  CellID->1558301098]
 }, Open  ]],
-Cell[74990, 1812, 429, 10, 70, "Text",ExpressionUUID->"0f15dbd5-5f35-596c-352a-d29f5ac02bb6",
+Cell[74980, 1811, 429, 10, 70, "Text",ExpressionUUID->"6405505f-4b92-3bd6-0c3b-4a196e24893c",
  CellID->1735808809],
 Cell[CellGroupData[{
-Cell[75434, 1826, 883, 22, 70, "Input",ExpressionUUID->"7e9b7e66-629a-1114-26b9-7040172f607e",
+Cell[75424, 1825, 883, 22, 70, "Input",ExpressionUUID->"6878c7f8-419e-9db5-1807-dea27028e79f",
  CellID->372695887],
-Cell[76298, 1850, 384, 10, 70, "Output",ExpressionUUID->"585a51e6-774f-2dd2-087a-48c002fa7738",
+Cell[76288, 1849, 384, 10, 70, "Output",ExpressionUUID->"48a3d607-c312-9dd3-7850-c860f6a4e739",
  CellID->507457312]
 }, Open  ]],
-Cell[76687, 1863, 115, 1, 70, "Section",ExpressionUUID->"1d7c0b5b-c40c-ea6a-4b03-a304edbeb8b0",
+Cell[76677, 1862, 115, 1, 70, "Section",ExpressionUUID->"539491e8-328f-8d7b-01ab-08b2473bd441",
  CellID->1164297175],
-Cell[76804, 1866, 1011, 22, 70, "Text",ExpressionUUID->"370294fd-9e49-2d35-5d31-0da71bfc741f",
+Cell[76794, 1865, 1011, 22, 70, "Text",ExpressionUUID->"7fcf59b5-a5ca-2155-25f5-50fecc7f73bf",
  CellID->632614636],
-Cell[77796, 1890, 217, 4, 70, "Text",ExpressionUUID->"2845529c-454d-b13b-587b-4bc66cf90001",
+Cell[77786, 1889, 217, 4, 70, "Text",ExpressionUUID->"023f49e2-a747-9723-33c5-60cfd2f3fa09",
  CellID->1689610856],
 Cell[CellGroupData[{
-Cell[78034, 1898, 1695, 46, 70, "Input",ExpressionUUID->"7519012f-e657-215b-2326-988893e273a1",
+Cell[78024, 1897, 1695, 46, 70, "Input",ExpressionUUID->"21aa1c49-e16c-f406-57a9-9612901edf6c",
  CellID->1772006941],
-Cell[79686, 1946, 373, 10, 70, "Output",ExpressionUUID->"594776df-9e75-d16a-0f7d-6f991b01a3b0",
+Cell[79676, 1945, 373, 10, 70, "Output",ExpressionUUID->"289b85cd-827f-9a9c-58b8-1c97370be8e6",
  CellID->163441777]
 }, Open  ]],
 Cell[CellGroupData[{
-Cell[80086, 1961, 1489, 39, 70, "Input",ExpressionUUID->"6405505f-4b92-3bd6-0c3b-4a196e24893c",
+Cell[80076, 1960, 1489, 39, 70, "Input",ExpressionUUID->"12f3dbee-abc4-6375-4280-d2cbce714e5f",
  CellID->1939205009],
-Cell[81539, 2002, 25265, 577, 70, "Output",ExpressionUUID->"6878c7f8-419e-9db5-1807-dea27028e79f",
+Cell[81529, 2001, 25265, 577, 70, "Output",ExpressionUUID->"7ed5da6f-a344-b859-26ea-dc48d6f60aa3",
  CellID->1468078176]
 }, Open  ]],
-Cell[106242, 2582, 801, 19, 70, "Text",ExpressionUUID->"48a3d607-c312-9dd3-7850-c860f6a4e739",
+Cell[106232, 2581, 801, 19, 70, "Text",ExpressionUUID->"2cfa2c34-ef50-7d46-5499-c6718ae547ac",
  CellID->1930159659],
-Cell[107027, 2603, 116, 1, 70, "Section",ExpressionUUID->"539491e8-328f-8d7b-01ab-08b2473bd441",
+Cell[107017, 2602, 116, 1, 70, "Section",ExpressionUUID->"362a4e41-4988-041f-5e2a-602b683d6f65",
  CellID->1113655915],
-Cell[107145, 2606, 675, 16, 70, "Text",ExpressionUUID->"7fcf59b5-a5ca-2155-25f5-50fecc7f73bf",
+Cell[107135, 2605, 675, 16, 70, "Text",ExpressionUUID->"01ed6b92-5a5f-fa78-3792-82dc5febc942",
  CellID->1606118752],
 Cell[CellGroupData[{
-Cell[107829, 2626, 976, 28, 70, "Input",ExpressionUUID->"023f49e2-a747-9723-33c5-60cfd2f3fa09",
+Cell[107819, 2625, 976, 28, 70, "Input",ExpressionUUID->"107fa29c-d013-1000-4004-3bd9e1a6636a",
  CellID->98218265],
-Cell[108780, 2656, 130, 2, 70, "Output",ExpressionUUID->"21aa1c49-e16c-f406-57a9-9612901edf6c",
+Cell[108770, 2655, 130, 2, 70, "Output",ExpressionUUID->"6798df62-4cc7-e4e1-0da7-d74c6573cecb",
  CellID->941128874]
 }, Open  ]],
-Cell[108923, 2661, 121, 1, 70, "Text",ExpressionUUID->"289b85cd-827f-9a9c-58b8-1c97370be8e6",
+Cell[108913, 2660, 121, 1, 70, "Text",ExpressionUUID->"49f5450b-e8d1-97dd-7f8b-5d548965fd27",
  CellID->339082558],
 Cell[CellGroupData[{
-Cell[109068, 2666, 253, 5, 70, "Input",ExpressionUUID->"12f3dbee-abc4-6375-4280-d2cbce714e5f",
+Cell[109058, 2665, 253, 5, 70, "Input",ExpressionUUID->"2570a8a5-7a6f-59e7-530f-410f7f1a2bcd",
  CellID->920878945],
-Cell[109319, 2673, 177, 4, 70, "Output",ExpressionUUID->"7ed5da6f-a344-b859-26ea-dc48d6f60aa3",
+Cell[109309, 2672, 177, 4, 70, "Output",ExpressionUUID->"0b990c23-b656-01a6-39a6-a58cc3e3538c",
  CellID->653644383]
 }, Open  ]],
-Cell[109507, 2680, 135, 1, 70, "Text",ExpressionUUID->"2cfa2c34-ef50-7d46-5499-c6718ae547ac",
+Cell[109497, 2679, 135, 1, 70, "Text",ExpressionUUID->"52243646-2fbd-210e-03db-a8204a487054",
  CellID->443736588],
 Cell[CellGroupData[{
-Cell[109666, 2685, 334, 7, 70, "Input",ExpressionUUID->"362a4e41-4988-041f-5e2a-602b683d6f65",
+Cell[109656, 2684, 334, 7, 70, "Input",ExpressionUUID->"1acd7f4d-3da3-7753-4af3-7717b4565db9",
  CellID->112567220],
-Cell[109996, 2694, 131, 2, 70, "Output",ExpressionUUID->"01ed6b92-5a5f-fa78-3792-82dc5febc942",
+Cell[109986, 2693, 131, 2, 70, "Output",ExpressionUUID->"062d91f0-6326-41c0-2fd2-08ba16d3132a",
  CellID->1126185936]
 }, Open  ]],
-Cell[110140, 2699, 358, 8, 70, "Text",ExpressionUUID->"107fa29c-d013-1000-4004-3bd9e1a6636a",
+Cell[110130, 2698, 358, 8, 70, "Text",ExpressionUUID->"1ac7f74a-ce09-be58-4afc-ef17ebbd04a2",
  CellID->1742646261],
 Cell[CellGroupData[{
-Cell[110515, 2711, 474, 12, 70, "Input",ExpressionUUID->"6798df62-4cc7-e4e1-0da7-d74c6573cecb",
+Cell[110505, 2710, 474, 12, 70, "Input",ExpressionUUID->"6f6ad260-8ee1-565a-1569-d44a2a943ca0",
  CellID->285826620],
-Cell[110980, 2725, 179, 4, 70, "Output",ExpressionUUID->"49f5450b-e8d1-97dd-7f8b-5d548965fd27",
+Cell[110970, 2724, 179, 4, 70, "Output",ExpressionUUID->"612fd791-c81e-86f2-10d4-cedae9a8ecd8",
  CellID->993903248]
 }, Open  ]],
-Cell[111170, 2732, 177, 3, 70, "Input",ExpressionUUID->"2570a8a5-7a6f-59e7-530f-410f7f1a2bcd",
+Cell[111160, 2731, 177, 3, 70, "Input",ExpressionUUID->"26dca2d1-2715-746d-4ee3-3b9b52a05eb7",
  CellID->1939141443],
-Cell[111347, 2737, 101, 1, 70, "Section",ExpressionUUID->"0b990c23-b656-01a6-39a6-a58cc3e3538c",
+Cell[111337, 2736, 101, 1, 70, "Section",ExpressionUUID->"296a77cd-8fa3-dd44-5f6a-6e972a57a7ae",
  CellID->5047578],
-Cell[111450, 2740, 1348, 32, 70, "Text",ExpressionUUID->"52243646-2fbd-210e-03db-a8204a487054",
+Cell[111440, 2739, 1348, 32, 70, "Text",ExpressionUUID->"6b853673-18d0-d9fa-19ba-a83d996aabc0",
  CellID->15008895],
-Cell[112769, 2774, 127, 1, 70, "Section",ExpressionUUID->"1acd7f4d-3da3-7753-4af3-7717b4565db9",
+Cell[112759, 2773, 127, 1, 70, "Section",ExpressionUUID->"25b5b884-ef74-61b3-534a-31e18a013399",
  CellID->1892712309],
-Cell[112898, 2777, 586, 14, 70, "Text",ExpressionUUID->"062d91f0-6326-41c0-2fd2-08ba16d3132a",
+Cell[112888, 2776, 1076, 20, 70, "Text",ExpressionUUID->"574a2197-51ef-7938-7d49-b8d1679a4802",
  CellID->787969749],
-Cell[113473, 2793, 629, 16, 70, "Text",ExpressionUUID->"1ac7f74a-ce09-be58-4afc-ef17ebbd04a2",
+Cell[113947, 2798, 775, 20, 70, "Text",ExpressionUUID->"6e85e9ed-427b-8528-16ba-00b7770fec72",
  CellID->525088789],
+Cell[114705, 2820, 359, 8, 70, "Text",ExpressionUUID->"73b76025-96bb-3fff-214d-798f234f85c5",
+ CellID->357930410],
 Cell[CellGroupData[{
-Cell[114111, 2813, 751, 21, 70, "Input",ExpressionUUID->"6f6ad260-8ee1-565a-1569-d44a2a943ca0",
- CellID->1509916714],
-Cell[114844, 2836, 505, 12, 70, "Message",ExpressionUUID->"612fd791-c81e-86f2-10d4-cedae9a8ecd8",
- CellID->132257103],
-Cell[115340, 2850, 130, 2, 70, "Output",ExpressionUUID->"26dca2d1-2715-746d-4ee3-3b9b52a05eb7",
- CellID->64812107]
-}, Open  ]],
-Cell[CellGroupData[{
-Cell[115505, 2857, 192, 2, 70, "TutorialMoreAboutSection",ExpressionUUID->"296a77cd-8fa3-dd44-5f6a-6e972a57a7ae",
- CellID->23220180],
-Cell[115698, 2861, 414, 11, 70, "TutorialMoreAbout",ExpressionUUID->"6b853673-18d0-d9fa-19ba-a83d996aabc0",
+Cell[115081, 2832, 804, 22, 70, "Input",ExpressionUUID->"31f4c073-8ff6-126f-678b-da3d298360b5",
+ CellID->713683853],
+Cell[115866, 2856, 140, 2, 70, "Output",ExpressionUUID->"72ff7667-e560-b2c0-2285-68408c1a002a",
  CellID->578787918]
 }, Open  ]],
+Cell[116019, 2861, 629, 16, 70, "Text",ExpressionUUID->"7c9be80e-0554-61c1-24b8-0268ace1332b",
+ CellID->115301326],
 Cell[CellGroupData[{
-Cell[116138, 2877, 129, 1, 70, "RelatedTutorialsSection",ExpressionUUID->"25b5b884-ef74-61b3-534a-31e18a013399",
+Cell[116657, 2881, 750, 21, 70, "Input",ExpressionUUID->"106b7ad8-6378-599b-4069-7382160d2be1",
+ CellID->624853398],
+Cell[117389, 2904, 506, 12, 70, "Message",ExpressionUUID->"7e6f7c7a-fa8f-2da1-2615-7627ff3a778b",
+ CellID->1464567144],
+Cell[117886, 2918, 131, 2, 70, "Output",ExpressionUUID->"304452a4-201b-d64c-607c-4b0e51afbc96",
+ CellID->854168915]
+}, Open  ]],
+Cell[CellGroupData[{
+Cell[118052, 2925, 192, 2, 70, "TutorialMoreAboutSection",ExpressionUUID->"6beff1f8-c64a-83a6-1994-e8a5f3fcd18c",
+ CellID->23220180],
+Cell[118245, 2929, 413, 11, 70, "TutorialMoreAbout",ExpressionUUID->"4b5b9263-9199-4e16-7978-144d202c157c",
+ CellID->41412554]
+}, Open  ]],
+Cell[CellGroupData[{
+Cell[118684, 2945, 129, 1, 70, "RelatedTutorialsSection",ExpressionUUID->"475d7054-346c-a3cc-6d63-6a1ebd1ef116",
  CellID->415694126],
-Cell[116269, 2880, 1061, 29, 70, "RelatedTutorials",ExpressionUUID->"574a2197-51ef-7938-7d49-b8d1679a4802",
- CellID->1339473503]
+Cell[118815, 2948, 1061, 29, 70, "RelatedTutorials",ExpressionUUID->"2ef71510-aa09-eca9-568c-8d5dcfbdb6f3",
+ CellID->1147471427]
 }, Open  ]]
 }, Open  ]],
 Cell[CellGroupData[{
-Cell[117350, 2915, 111, 1, 70, "MetadataSection",ExpressionUUID->"6e85e9ed-427b-8528-16ba-00b7770fec72",
+Cell[119896, 2983, 111, 1, 70, "MetadataSection",ExpressionUUID->"3343f580-98d5-e31c-6170-ecea1961ce66",
  CellID->311882160],
-Cell[117463, 2918, 488, 12, 70, "History",ExpressionUUID->"73b76025-96bb-3fff-214d-798f234f85c5",
+Cell[120009, 2986, 488, 12, 70, "History",ExpressionUUID->"20a7420b-376a-b23f-505d-6455421c0105",
  CellID->341476719],
 Cell[CellGroupData[{
-Cell[117964, 2934, 124, 1, 70, "CategorizationSection",ExpressionUUID->"31f4c073-8ff6-126f-678b-da3d298360b5",
+Cell[120510, 3002, 124, 1, 70, "CategorizationSection",ExpressionUUID->"6af863a9-1098-c609-1a98-7af3a112ad53",
  CellID->1122911449],
-Cell[118090, 2937, 138, 2, 70, "Categorization",ExpressionUUID->"72ff7667-e560-b2c0-2285-68408c1a002a",
+Cell[120636, 3005, 138, 2, 70, "Categorization",ExpressionUUID->"055bc2ad-6b92-a3be-3378-dbf70e24f184",
  CellID->686433507],
-Cell[118229, 2941, 170, 2, 70, "Categorization",ExpressionUUID->"7c9be80e-0554-61c1-24b8-0268ace1332b",
+Cell[120775, 3009, 170, 2, 70, "Categorization",ExpressionUUID->"2b0fb60e-2211-365f-5934-286857a59ca5",
  CellID->605800465],
-Cell[118400, 2945, 146, 2, 70, "Categorization",ExpressionUUID->"106b7ad8-6378-599b-4069-7382160d2be1",
+Cell[120946, 3013, 146, 2, 70, "Categorization",ExpressionUUID->"201a2509-bdd9-2fa1-5039-bd53346c758b",
  CellID->468444828],
-Cell[118547, 2949, 194, 4, 70, "Categorization",ExpressionUUID->"7e6f7c7a-fa8f-2da1-2615-7627ff3a778b",
+Cell[121093, 3017, 194, 4, 70, "Categorization",ExpressionUUID->"7085d256-6adc-aa08-20ba-d4100f6ef952",
  CellID->955925492]
 }, Closed]],
 Cell[CellGroupData[{
-Cell[118774, 2958, 112, 1, 70, "KeywordsSection",ExpressionUUID->"304452a4-201b-d64c-607c-4b0e51afbc96",
+Cell[121320, 3026, 112, 1, 70, "KeywordsSection",ExpressionUUID->"5f932952-49a5-d34f-05a0-c11c6851a195",
  CellID->1427428552],
-Cell[118888, 2961, 100, 1, 70, "Keywords",ExpressionUUID->"6beff1f8-c64a-83a6-1994-e8a5f3fcd18c",
+Cell[121434, 3029, 100, 1, 70, "Keywords",ExpressionUUID->"160f17c4-d31a-fe19-3e34-8ea1e6acc563",
  CellID->1251852827],
-Cell[118990, 2964, 101, 1, 70, "Keywords",ExpressionUUID->"4b5b9263-9199-4e16-7978-144d202c157c",
+Cell[121536, 3032, 101, 1, 70, "Keywords",ExpressionUUID->"10beb8bd-bdb6-ee93-4045-31e73440b4f9",
  CellID->1251852827],
-Cell[119093, 2967, 109, 1, 70, "Keywords",ExpressionUUID->"475d7054-346c-a3cc-6d63-6a1ebd1ef116",
+Cell[121639, 3035, 109, 1, 70, "Keywords",ExpressionUUID->"3fdc991b-fead-14b0-65e3-1144fb587e9a",
  CellID->1251852827],
-Cell[119204, 2970, 107, 1, 70, "Keywords",ExpressionUUID->"2ef71510-aa09-eca9-568c-8d5dcfbdb6f3",
+Cell[121750, 3038, 107, 1, 70, "Keywords",ExpressionUUID->"3657d2c5-05c0-ac85-5e6c-cbafac7af6ef",
  CellID->1251852827],
-Cell[119313, 2973, 105, 1, 70, "Keywords",ExpressionUUID->"3343f580-98d5-e31c-6170-ecea1961ce66",
+Cell[121859, 3041, 105, 1, 70, "Keywords",ExpressionUUID->"0642d375-09f3-9942-2e71-cb3faf87eba8",
  CellID->1251852827],
-Cell[119420, 2976, 106, 1, 70, "Keywords",ExpressionUUID->"20a7420b-376a-b23f-505d-6455421c0105",
+Cell[121966, 3044, 106, 1, 70, "Keywords",ExpressionUUID->"0651775d-2bad-791b-2e6f-6f074e584861",
  CellID->1251852827],
-Cell[119528, 2979, 103, 1, 70, "Keywords",ExpressionUUID->"6af863a9-1098-c609-1a98-7af3a112ad53",
+Cell[122074, 3047, 103, 1, 70, "Keywords",ExpressionUUID->"63b9e3d6-2298-231e-1146-fa9057128e64",
  CellID->1251852827],
-Cell[119633, 2982, 104, 1, 70, "Keywords",ExpressionUUID->"055bc2ad-6b92-a3be-3378-dbf70e24f184",
+Cell[122179, 3050, 104, 1, 70, "Keywords",ExpressionUUID->"67c13665-f813-2f11-0dfe-a84ef9a6727b",
  CellID->1251852827],
-Cell[119739, 2985, 112, 1, 70, "Keywords",ExpressionUUID->"2b0fb60e-2211-365f-5934-286857a59ca5",
+Cell[122285, 3053, 112, 1, 70, "Keywords",ExpressionUUID->"4c440104-ea8a-4285-747b-99618f3f10ef",
  CellID->1251852827]
 }, Closed]]
 }, Open  ]]
