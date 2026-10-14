@@ -1829,8 +1829,10 @@ struct WorkerPipes {
 // Each worker has its own FIFO pair, and the test's ends are close-on-exec: a second worker
 // forked while the first is live would otherwise inherit the first's write end, and the first
 // would never see end of input when the test closes it. A nonzero `address_space` caps the
-// worker's RLIMIT_AS in bytes.
-bool worker_start(WorkerPipes& w, const std::string& exe, uint64_t address_space = 0) {
+// worker's RLIMIT_AS in bytes. A non-null `cuda_visible_devices` sets CUDA_VISIBLE_DEVICES for the
+// worker.
+bool worker_start(WorkerPipes& w, const std::string& exe, uint64_t address_space = 0,
+                  const char* cuda_visible_devices = nullptr) {
     static int next_worker = 0;
     w.dir = std::string(HG_SOURCE_DIR) + "/.gpu_gate_fifo." + std::to_string(::getpid()) + "." +
             std::to_string(next_worker++);
@@ -1853,6 +1855,7 @@ bool worker_start(WorkerPipes& w, const std::string& exe, uint64_t address_space
             const struct rlimit lim = {address_space, address_space};
             ::setrlimit(RLIMIT_AS, &lim);
         }
+        if (cuda_visible_devices) ::setenv("CUDA_VISIBLE_DEVICES", cuda_visible_devices, 1);
         ::execl(exe.c_str(), exe.c_str(), "--serve", (char*)nullptr);
         ::_exit(127);
     }
@@ -3266,6 +3269,59 @@ TEST(GpuBinaryGate, MalformedInputsAreRefusedAlikeOnBothDevices) {
     EXPECT_TRUE(reply_mentions(gpu, "OptionSkipped"));
     EXPECT_EQ(read_int_key(gpu, "NumStates"), read_int_key(cpu, "NumStates"));
     worker_stop(w);
+}
+
+// With no visible device (CUDA_VISIBLE_DEVICES empty) the GPU worker answers every job with an
+// error frame "no usable GPU: no CUDA-capable device is detected" and stays alive, and the
+// one-shot mode exits with kNoUsableDeviceExit and the same line on stderr. Before the device
+// probe the worker died at its first CUDA call: "match kernel attributes: no CUDA-capable device
+// is detected".
+TEST(GpuBinaryGate, NoUsableDeviceIsAStructuredRefusal) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    const std::string expected =
+        std::string(kNoUsableDevicePrefix) + "no CUDA-capable device is detected";
+    auto counts = [](wxf::Writer& ww) { put_str_list_option(ww, "RequestedData", {"NumStates"}); };
+    const auto job = build_input_with_op(2, "Evolve", 0, true, {}, counts, 1);
+
+    WorkerPipes w;
+    ASSERT_TRUE(worker_start(w, gpu_binary_path(), 0, ""));
+    for (int i = 0; i < 2; ++i) {
+        EXPECT_TRUE(worker_call(w, job).empty());
+        EXPECT_EQ(w.last_error, expected) << "job " << i;
+    }
+    worker_stop(w);
+
+    int in_pipe[2], err_pipe[2];
+    ASSERT_EQ(::pipe(in_pipe), 0);
+    ASSERT_EQ(::pipe(err_pipe), 0);
+    const pid_t pid = ::fork();
+    ASSERT_GE(pid, 0);
+    if (pid == 0) {
+        ::dup2(in_pipe[0], 0);
+        ::dup2(err_pipe[1], 2);
+        ::close(in_pipe[1]);
+        ::close(err_pipe[0]);
+        ::setenv("CUDA_VISIBLE_DEVICES", "", 1);
+        const std::string exe = gpu_binary_path();
+        ::execl(exe.c_str(), exe.c_str(), (char*)nullptr);
+        ::_exit(127);
+    }
+    ::close(in_pipe[0]);
+    ::close(err_pipe[1]);
+    EXPECT_EQ(::write(in_pipe[1], job.data(), job.size()), static_cast<ssize_t>(job.size()));
+    ::close(in_pipe[1]);
+    std::string err;
+    char buf[512];
+    for (ssize_t r; (r = ::read(err_pipe[0], buf, sizeof(buf))) > 0;) err.append(buf, r);
+    ::close(err_pipe[0]);
+    int status = 0;
+    ::waitpid(pid, &status, 0);
+    ASSERT_TRUE(WIFEXITED(status));
+    EXPECT_EQ(WEXITSTATUS(status), kNoUsableDeviceExit);
+    EXPECT_NE(err.find(expected), std::string::npos) << err;
 }
 
 // ExploreFromCanonicalStatesOnly needs Full states: under Automatic it is refused with the

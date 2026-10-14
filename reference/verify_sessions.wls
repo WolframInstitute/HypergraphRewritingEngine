@@ -128,6 +128,64 @@ Module[{saved = HypergraphRewriting`Private`$HypergraphEngineBinaryGPU, sg, msgs
         sg[[1]]["Device"] === "CPU"];
   If[Head[sg] === HGSessionObject, HGSessionClose[sg]]];
 
+(* No usable device. The GPU binary runs with CUDA_VISIBLE_DEVICES=-1, so its device probe finds
+   no device and it refuses every job. HGEvolve and HGSessionOpen then run on the CPU with one
+   HGEvolve::gpudev naming the reason, a later GPU call does not start the GPU binary again, and
+   {"GPU", "Strict" -> True} gives $Failed with HGEvolve::nogpu. Each case starts from a kernel
+   that has not yet seen the GPU fail, so the refusal is found by the job itself. *)
+If[!TrueQ[HypergraphRewriting`Private`hgGpuBinaryAvailableQ[]],
+  Print["SKIP  no-device leg: no GPU binary for ", $SystemID],
+  Module[{saved = Environment["CUDA_VISIBLE_DEVICES"], fresh, r1, r2, m1, m2, starts, st, ms, sg,
+          sm},
+    fresh[] := (HypergraphRewriting`Private`hgWorkerKill["GPU"];
+                HypergraphRewriting`Private`$hgGpuUnavailable = None);
+    SetEnvironment["CUDA_VISIBLE_DEVICES" -> "-1"];
+
+    fresh[];
+    m1 = Block[{$MessageList = {}},
+      r1 = HGEvolve[rules, init, 3, prop, "TargetDevice" -> "GPU"]; $MessageList];
+    check["no device: HGEvolve gives the CPU result with one HGEvolve::gpudev  " <> ToString[m1],
+          r1 === oneShot[[4]] && m1 === {HoldForm[HGEvolve::gpudev]}];
+    check["the reason names the missing device  " <>
+          ToString[HypergraphRewriting`Private`$hgGpuUnavailable],
+          StringQ[HypergraphRewriting`Private`$hgGpuUnavailable] &&
+          StringContainsQ[HypergraphRewriting`Private`$hgGpuUnavailable,
+                          "no CUDA-capable device"]];
+    starts = HypergraphRewriting`Private`$hgWorkerStarts;
+    m2 = Block[{$MessageList = {}},
+      r2 = HGEvolve[rules, init, 3, prop, "TargetDevice" -> "GPU"]; $MessageList];
+    check["a later GPU call runs on the CPU with the message and starts no worker",
+          r2 === oneShot[[4]] && m2 === {HoldForm[HGEvolve::gpudev]} &&
+          HypergraphRewriting`Private`$hgWorkerStarts === starts &&
+          !KeyExistsQ[HypergraphRewriting`Private`$hgWorkerProc, "GPU"]];
+
+    fresh[];
+    ms = Block[{$MessageList = {}},
+      st = HGEvolve[rules, init, 3, prop, "TargetDevice" -> {"GPU", "Strict" -> True}];
+      $MessageList];
+    check["no device, Strict: $Failed with one HGEvolve::nogpu  " <> ToString[ms],
+          st === $Failed && ms === {HoldForm[HGEvolve::nogpu]}];
+    ms = Block[{$MessageList = {}},
+      st = HGEvolve[rules, init, 3, prop, "TargetDevice" -> {"GPU", "Strict" -> True}];
+      $MessageList];
+    check["a later Strict call fails without starting the GPU binary",
+          st === $Failed && ms === {HoldForm[HGEvolve::nogpu]} &&
+          !KeyExistsQ[HypergraphRewriting`Private`$hgWorkerProc, "GPU"]];
+
+    fresh[];
+    sm = Block[{$MessageList = {}},
+      sg = HGSessionOpen[rules, init, prop, "TargetDevice" -> "GPU"]; $MessageList];
+    check["no device: a GPU session opens on the CPU with one HGEvolve::gpudev  " <> ToString[sm],
+          Head[sg] === HGSessionObject && sg[[1]]["Device"] === "CPU" &&
+          sm === {HoldForm[HGEvolve::gpudev]}];
+    If[Head[sg] === HGSessionObject,
+      check["the session steps on the CPU", HGSessionStep[sg, 3] === oneShot[[4]]];
+      HGSessionClose[sg]];
+
+    If[StringQ[saved], SetEnvironment["CUDA_VISIBLE_DEVICES" -> saved],
+                       SetEnvironment["CUDA_VISIBLE_DEVICES" -> None]];
+    fresh[]]];
+
 (* Quotient exploration: a session stepped k times equals one evolve of depth k. The Open
    evolves 0 steps, so the root's expansion is deferred to the first Step. *)
 Module[{qopts = {"CanonicalizeStates" -> Full, "ExploreFromCanonicalStatesOnly" -> True}, qOne, sq},

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- `"TargetDevice" -> "GPU"` on a machine with no usable NVIDIA GPU (no device, no driver, a
+  driver older than the engine needs, or a compute capability the engine has no code for) runs
+  on the CPU and issues `HGEvolve::gpudev` naming the reason. It gave `$Failed` with
+  `HGEvolve::enginefail` in rc2. The reason is kept for the Wolfram Language session, so later
+  GPU calls and sessions go straight to the CPU.
+- `"TargetDevice" -> {"GPU", "Strict" -> True}` gives `$Failed` with `HGEvolve::nogpu` where the
+  GPU cannot be used.
+
 ## v1.0.0-rc2 (2026-10-09)
 
 User-visible changes since v1.0.0-rc1. The paclet version is 1.0.0, as in rc1.

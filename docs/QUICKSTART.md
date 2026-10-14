@@ -69,8 +69,9 @@ list.
   `None` keeps every state distinct; `Automatic` uses a fast content hash; `Full` is
   exact isomorphism (identifies all isomorphic states). Default `None`.
 - `"TargetDevice" -> "CPU" | "GPU"` — run on the CPU (default) or, where a GPU build
-  is bundled, the GPU (like `NetTrain`). Falls back to CPU with a message if no GPU
-  binary is present.
+  is bundled, the GPU (like `NetTrain`). Falls back to CPU with `HGEvolve::gpudev` if no GPU
+  binary is present or the machine has no usable NVIDIA GPU;
+  `{"GPU", "Strict" -> True}` fails with `HGEvolve::nogpu` instead.
 - `"CausalTransitiveReduction" -> True | False` — reduce the causal graph to its
   transitive reduction (default `True`).
 - `"ExploreFromCanonicalStatesOnly" -> True | False` — quotient exploration: expand

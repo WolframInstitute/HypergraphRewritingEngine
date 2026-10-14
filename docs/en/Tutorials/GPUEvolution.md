@@ -156,7 +156,9 @@ The GPU engine sizes its memory pools before a run, from the number of steps and
 
 ## When no GPU engine is available
 
-Where the paclet has no GPU engine for the platform, `"TargetDevice" -> "GPU"` issues the message `HGEvolve::gpudev` and the evolution runs on the CPU.
+The GPU engine needs an NVIDIA GPU of compute capability 7.5, 8.0, 8.6, 8.9 or 9.0 and NVIDIA driver 580 or newer. Where the paclet has no GPU engine for the platform, or the machine has no usable NVIDIA GPU, `"TargetDevice" -> "GPU"` issues the message `HGEvolve::gpudev`, which names the reason, and the evolution runs on the CPU. The reason is one of: no GPU engine binary, no CUDA-capable device, no NVIDIA driver, a driver too old for the engine, or a compute capability the engine has no code for. It is kept for the Wolfram Language session, so later GPU evaluations and sessions go to the CPU with the same message.
+
+`"TargetDevice" -> {"GPU", "Strict" -> True}` gives `$Failed` with the message `HGEvolve::nogpu` instead of running on the CPU.
 
 A value other than `"CPU"` or `"GPU"` issues `HGEvolve::baddev`, and the evolution runs on the CPU:
 

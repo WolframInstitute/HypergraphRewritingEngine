@@ -25,7 +25,7 @@ Options[HGEvolve] = {
   "TransitionRate" -> 1.0,  (* Keep each transition with this probability, drawn independently from the transition's own isomorphism-invariant identity and RandomSeed. Reproducible at any thread count and on either device, and it carries the spine guarantee: a state whose every draw failed still keeps its minimum-key transition, so a sparse sample reaches full depth instead of going extinct. ExplorationProbability thins STATES and has no spine. Applies on both devices: the host engine and the device matcher call the same draw and spine. *)
   "RuleWeights" -> {},  (* Per-rule multipliers on "TransitionRate", in rule order. {} weights every rule equally. A short list is a partial override: rules past its end take 1. Composes with the rate rather than replacing it, so "TransitionRate" -> 1 with weights {1, 0} still samples \[LongDash] rule 2 is dropped and rule 1 is untouched. Applies on both devices; the weights are uploaded with the run. *)
   "ExploreFromCanonicalStatesOnly" -> False,  (* Only explore from canonical state representatives *)
-  "TargetDevice" -> "CPU",  (* "CPU" | "GPU" (like NetTrain[]). "GPU" runs the bundled hg_evolve_gpu binary when present, else falls back to CPU with a message. The GPU engine honors CanonicalizeStates (None | Automatic | Full) and its state counts match the CPU's in every mode. *)
+  "TargetDevice" -> "CPU",  (* "CPU" | "GPU" | {"GPU", "Strict" -> True} (like NetTrain[]). "GPU" runs the bundled hg_evolve_gpu binary; when the binary is missing or the machine has no usable NVIDIA device, the call runs on the CPU with HGEvolve::gpudev. {"GPU", "Strict" -> True} returns $Failed with HGEvolve::nogpu instead. The GPU engine honors CanonicalizeStates (None | Automatic | Full) and its state counts match the CPU's in every mode. *)
   "ShowProgress" -> False,
   "ShowGenesisEvents" -> False,
   "DebugFFI" -> False,
@@ -169,16 +169,27 @@ hgEngineAvailableQ[] := hgCpuBinaryAvailableQ[] || hgGpuBinaryAvailableQ[] ||
    recovered with ToCharacterCode[..., "ISO8859-1"]. *)
 (* The engine runs with a clean environment except for HG_*-prefixed variables, which are the
    engine's own instrument/debug channel (e.g. HG_FFI_PAYLOAD_FILE writes a per-key wire-size
-   breakdown, HG_GPU_DBG_TIME prints phase attribution). *)
+   breakdown, HG_GPU_DBG_TIME prints phase attribution), and CUDA_*-prefixed variables
+   (CUDA_VISIBLE_DEVICES selects the device), which the persistent worker inherits too. *)
 hgEngineEnvironment[] := Association @ Select[
   Normal @ GetEnvironment[],
-  StringQ[First[#]] && StringStartsQ[First[#], "HG_"] &];
+  StringQ[First[#]] && StringStartsQ[First[#], "HG_" | "CUDA_"] &];
 
-hgRunEngineBinary[exe_String, wxfBytes_ByteArray] := Module[{proc, outStr, stderr},
+(* A GPU binary with no usable device refuses every job with a message starting with this prefix
+   (kNoUsableDevicePrefix in paclet_source/hg_core.hpp): an error frame from the worker, or exit
+   code 3 and a stderr line from the one-shot mode. *)
+$hgNoDevicePrefix = "no usable GPU: ";
+hgNoDeviceQ[msg_String] := StringStartsQ[msg, $hgNoDevicePrefix];
+hgNoDeviceQ[_] := False;
+
+hgRunEngineBinary[exe_String, wxfBytes_ByteArray] := Module[{proc, outStr, stderr, noDevice},
   proc = RunProcess[{exe}, All, wxfBytes, ProcessEnvironment -> hgEngineEnvironment[]];
   If[!AssociationQ[proc],
     Message[HGEvolve::enginefail, "spawn"]; Return[$Failed]];
   stderr = proc["StandardError"];
+  noDevice = If[StringQ[stderr],
+    SelectFirst[StringTrim /@ StringSplit[stderr, "\n"], hgNoDeviceQ, None], None];
+  If[proc["ExitCode"] === 3 && StringQ[noDevice], Return[hgEngineError[noDevice]]];
   If[StringQ[stderr] && StringTrim[stderr] =!= "",
     Message[HGEvolve::enginemsg, StringTrim[stderr]]];
   outStr = proc["StandardOutput"];
@@ -317,24 +328,68 @@ hgWorkerTry[device_, wxfBytes_ByteArray] := Module[{payload, written, done = Fal
     True, payload]
 ];
 
-(* The device a call runs on, from the TargetDevice it asked for: "GPU" when the GPU binary is
-   present, else "CPU" with HGEvolve::gpudev; anything but "CPU" or "GPU" runs on the CPU with
-   HGEvolve::baddev. HGEvolve and HGSessionOpen resolve once and pass the result on. *)
+(* None, or the reason the GPU cannot run jobs in this kernel: set the first time a GPU binary
+   reports no usable device, and read by every later "GPU" call, which then goes to the CPU
+   without starting the GPU binary again. *)
+$hgGpuUnavailable = None;
+
+(* True inside a call made with TargetDevice -> {"GPU", "Strict" -> True}. *)
+$hgGpuStrict = False;
+
+hgGpuStrictQ[{"GPU", opts___}] := TrueQ[Lookup[Flatten[{opts}], "Strict", False]];
+hgGpuStrictQ[_] := False;
+
+(* Why a "GPU" call cannot run on the GPU, or None. *)
+hgGpuUnavailableReason[] := Which[
+  !hgGpuBinaryAvailableQ[],
+    "no GPU engine binary (hg_evolve_gpu) is present for " <> $SystemID,
+  StringQ[$hgGpuUnavailable], $hgGpuUnavailable,
+  True, None];
+
+(* Report that the GPU cannot run this call: HGEvolve::gpudev and True (run on the CPU), or under
+   $hgGpuStrict HGEvolve::nogpu and False (fail). *)
+hgGpuFallbackQ[reason_String] :=
+  If[TrueQ[$hgGpuStrict],
+    Message[HGEvolve::nogpu, reason]; False,
+    Message[HGEvolve::gpudev, reason]; True];
+
+(* A GPU binary refused a job for want of a usable device: record the reason for the kernel, stop
+   the GPU worker, and report. Returns what hgGpuFallbackQ returns. *)
+hgGpuRefused[msg_String] := (
+  $hgGpuUnavailable = StringDrop[msg, StringLength[$hgNoDevicePrefix]];
+  hgWorkerKill["GPU"];
+  hgGpuFallbackQ[$hgGpuUnavailable]);
+
+(* The device a call runs on, from the TargetDevice it asked for: "GPU" unless the GPU is known
+   to be unavailable (hgGpuUnavailableReason), in which case "CPU" with HGEvolve::gpudev, or
+   $Failed with HGEvolve::nogpu under {"GPU", "Strict" -> True}; anything else runs on the CPU
+   with HGEvolve::baddev. HGEvolve and HGSessionOpen resolve once and pass the result on, and
+   run the job inside Block[{$hgGpuStrict = hgGpuStrictQ[requested]}, ...]. *)
 hgResolveDevice[requested_] := Switch[requested,
   "CPU", "CPU",
-  "GPU", If[hgGpuBinaryAvailableQ[], "GPU", Message[HGEvolve::gpudev, $SystemID]; "CPU"],
+  "GPU" | {"GPU", (_Rule | _RuleDelayed) ...},
+    Block[{$hgGpuStrict = hgGpuStrictQ[requested]},
+      With[{reason = hgGpuUnavailableReason[]},
+        Which[reason === None, "GPU", hgGpuFallbackQ[reason], "CPU", True, $Failed]]],
   _, Message[HGEvolve::baddev, requested]; "CPU"];
 
 (* Route a serialized job to the engine: the persistent socket worker for `dev` (a resolved
    device) when available, otherwise a one-shot RunProcess of the same binary, otherwise the
-   in-process LibraryLink. *)
+   in-process LibraryLink. A GPU binary that reports no usable device sends the job to the CPU
+   (hgGpuRefused). *)
 hgCallEngine[wxfBytes_, dev_:"CPU"] := Module[{r},
   r = hgWorkerTry[dev, wxfBytes];
   If[ByteArrayQ[r], Return[r]];
+  If[MatchQ[r, hgEngineError[_?hgNoDeviceQ]],
+    Return[If[hgGpuRefused[First[r]], hgCallEngine[wxfBytes, "CPU"], $Failed]]];
   If[MatchQ[r, hgEngineError[_String]],
     Message[HGEvolve::enginemsg, First[r]]; Return[$Failed]];
   Which[
-    dev === "GPU", hgRunEngineBinary[$HypergraphEngineBinaryGPU, wxfBytes],
+    dev === "GPU",
+      r = hgRunEngineBinary[$HypergraphEngineBinaryGPU, wxfBytes];
+      If[MatchQ[r, hgEngineError[_?hgNoDeviceQ]],
+        If[hgGpuRefused[First[r]], hgCallEngine[wxfBytes, "CPU"], $Failed],
+        r],
     StringQ[$HypergraphEngineBinary] && FileExistsQ[$HypergraphEngineBinary],
       hgRunEngineBinary[$HypergraphEngineBinary, wxfBytes],
     True, performRewriting[wxfBytes]
@@ -402,7 +457,8 @@ HGEvolve::badinit = "`1` is not a hypergraph or a list of hypergraphs. A hypergr
 HGEvolve::steps = "The number of steps `1` is not a non-negative integer.";
 HGEvolve::unknownprop = "Unknown property(s): `1`. Valid properties are: States, Events, CausalEdges, BranchialEdges, StatesGraph, CausalGraph, BranchialGraph, EvolutionGraph, their Structure variants, GlobalEdges, StateBitvectors, All.";
 HGEvolve::missingdata = "FFI did not return requested data: `1`. This indicates a bug in the FFI layer.";
-HGEvolve::gpudev = "TargetDevice -> \"GPU\" requested but no GPU engine binary (hg_evolve_gpu) is present for `1`; evaluating on the CPU. Build the paclet with BUILD_GPU to include it.";
+HGEvolve::gpudev = "TargetDevice -> \"GPU\" requested but the GPU cannot be used: `1`. Evaluating on the CPU.";
+HGEvolve::nogpu = "TargetDevice -> {\"GPU\", \"Strict\" -> True} requested but the GPU cannot be used: `1`.";
 HGEvolve::noengine = "This paclet carries no engine for `1`: LibraryResources/`1` holds neither an hg_evolve binary nor a HypergraphRewriting library. Build the paclet for this platform, or install one that was.";
 HGEvolve::badmultiedge = "\"MultiedgeStyle\" -> `1` is not valid; use Automatic or \"Merged\". Using Automatic.";
 HGEvolve::baddev = "TargetDevice -> `1` is not valid; use \"CPU\" or \"GPU\". Using CPU.";
@@ -1154,6 +1210,12 @@ hgSendJob[inputData_Association, device_, sessionQ_, worker_ : None] := Module[{
    If[TrueQ[sessionQ],
     Module[{dev = device, r},
       r = hgWorkerTry[dev, wxfBytes];
+      (* A GPU binary with no usable device: the Open goes to the CPU worker. HGSessionOpen reads
+         $hgGpuUnavailable afterwards to record the session's device as "CPU". *)
+      If[MatchQ[r, hgEngineError[_?hgNoDeviceQ]],
+        If[!hgGpuRefused[First[r]], Return[$Failed]];
+        dev = "CPU";
+        r = hgWorkerTry[dev, wxfBytes]];
       (* $hgWorkerBroken is LATCHED, and it is latched for the FALLBACK path's benefit: there a
          dead worker only means "stop paying to retry", because a one-shot RunProcess answers
          the same job correctly. A session has no fallback, so the same latch turns one
@@ -1331,6 +1393,7 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
   ];
 
   device = hgResolveDevice[OptionValue["TargetDevice"]];
+  If[device === $Failed, Return[$Failed]];
   (* Every option of Graph given to the call goes to the graph a graph property returns
      (ImageSize, AspectRatio, VertexLabels, GraphLayout, ...); the engine never reads them. *)
   graphOptions = FilterRules[Flatten[{opts}], Options[Graph]];
@@ -1353,14 +1416,15 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
   |>;
 
   (* Run and interpret. Everything from here is shared with the session verbs (hgRunJob). *)
-  hgRunJob[inputData, device, props, propertyWasList, <|
-    "RequestedData"        -> requiredData,
-    "GraphOptions"         -> graphOptions,
-    "CanonicalizeStates"   -> canonicalizeStates,
-    "CanonicalizeEvents"   -> canonicalizeEvents,
-    "ColorByRule"          -> OptionValue["ColorByRule"],
-    "MultiedgeStyle"       -> OptionValue["MultiedgeStyle"],
-    "DebugFFI"             -> OptionValue["DebugFFI"]|>]
+  Block[{$hgGpuStrict = hgGpuStrictQ[OptionValue["TargetDevice"]]},
+    hgRunJob[inputData, device, props, propertyWasList, <|
+      "RequestedData"        -> requiredData,
+      "GraphOptions"         -> graphOptions,
+      "CanonicalizeStates"   -> canonicalizeStates,
+      "CanonicalizeEvents"   -> canonicalizeEvents,
+      "ColorByRule"          -> OptionValue["ColorByRule"],
+      "MultiedgeStyle"       -> OptionValue["MultiedgeStyle"],
+      "DebugFFI"             -> OptionValue["DebugFFI"]|>]]
 ]
 
 (* ============================================================================ *)
@@ -1414,6 +1478,7 @@ HGSessionOpen[rules_List, initialEdges_List,
   If[requiredData === $Failed, Return[$Failed]];
   graphProperties = Select[props, StringMatchQ[#, "*Graph*"] &];
   device = hgResolveDevice[OptionValue["TargetDevice"]];
+  If[device === $Failed, Return[$Failed]];
 
   (* The session's own record of how to interpret every later reply. A Step is not an HGEvolve
      call and has no OptionsPattern to read, so these are resolved once, here, and carried by the
@@ -1440,8 +1505,11 @@ HGSessionOpen[rules_List, initialEdges_List,
   inputData = <|"InitialStates" -> initialStatesData, "Rules" -> rulesAssoc,
                 "Steps" -> 0, "Options" -> options, "Op" -> "Open"|>;
 
-  reply = hgSendJob[inputData, device, True];
+  reply = Block[{$hgGpuStrict = hgGpuStrictQ[OptionValue["TargetDevice"]]},
+    hgSendJob[inputData, device, True]];
   If[!AssociationQ[reply], Return[$Failed]];
+  (* The GPU binary reported no usable device during this Open, so the CPU worker holds it. *)
+  If[device === "GPU" && StringQ[$hgGpuUnavailable], device = "CPU"];
   handle = Lookup[reply, "Session", Missing[]];
   If[!IntegerQ[handle] || handle === 0, Message[HGSessionOpen::nohandle]; Return[$Failed]];
 
