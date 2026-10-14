@@ -177,12 +177,16 @@ struct EmitCtl {
     unsigned long long* s_min_rank;
     uint32_t*           s_survived;
     // kParentCount: the rule and the edges (kMaxPatternEdges, by pattern position) of each
-    // recorded rank. kParentEmit: the kept transitions' rules and edges (keep_n of them) and a
-    // bit each, cleared by the one emission of the transition.
+    // recorded rank. kParentEmit: the kept transitions' ranks, rules and edges (keep_n of them),
+    // their indices in rank order (s_by_rank) and a bit each, cleared by the one emission of the
+    // transition.
     uint16_t*           s_rules = nullptr;
     EdgeId*             s_edges = nullptr;
     uint32_t*           s_keep_quota = nullptr;
     uint32_t            keep_n = 0;
+    const uint32_t*     s_by_rank = nullptr;
+    // kCapCount, kParentCount: how many entries the buffers hold.
+    uint32_t            capacity = kDrainCapBuffer;
 };
 
 // Not inlined: it is called from the join's innermost completion callback, which is
@@ -199,7 +203,7 @@ __device__ __noinline__ bool emit_admit(const DeviceState& ds, StateId state_id,
     switch (c.mode) {
     case EmitMode::kCapCount: {
         const uint32_t at = atomicAdd(c.s_seen, 1u);
-        if (at < kDrainCapBuffer) c.s_ranks[at] = r;
+        if (at < c.capacity) c.s_ranks[at] = r;
         else atomicExch(c.s_overflow, 1u);
         return false;
     }
@@ -218,7 +222,7 @@ __device__ __noinline__ bool emit_admit(const DeviceState& ds, StateId state_id,
         return r == c.threshold;
     case EmitMode::kParentCount: {
         const uint32_t at = atomicAdd(c.s_seen, 1u);
-        if (at < kDrainCapBuffer) {
+        if (at < c.capacity) {
             c.s_ranks[at] = r;
             c.s_rules[at] = static_cast<uint16_t>(rid);
             for (uint8_t i = 0; i < kMaxPatternEdges; ++i)
@@ -228,9 +232,17 @@ __device__ __noinline__ bool emit_admit(const DeviceState& ds, StateId state_id,
         }
         return false;
     }
-    case EmitMode::kParentEmit:
-        // The kept transition with this rule and these edges, emitted once.
-        for (uint32_t i = 0; i < c.keep_n; ++i) {
+    case EmitMode::kParentEmit: {
+        // The kept transition with this rule and these edges, emitted once: found among the
+        // candidates of its rank, by binary search over s_by_rank.
+        uint32_t lo = 0, hi = c.keep_n;
+        while (lo < hi) {
+            const uint32_t mid = lo + (hi - lo) / 2u;
+            if (c.s_ranks[c.s_by_rank[mid]] < r) lo = mid + 1u;
+            else hi = mid;
+        }
+        for (uint32_t j = lo; j < c.keep_n && c.s_ranks[c.s_by_rank[j]] == r; ++j) {
+            const uint32_t i = c.s_by_rank[j];
             if (c.s_rules[i] != rid) continue;
             bool same = true;
             for (uint8_t k = 0; k < kMaxPatternEdges && same; ++k)
@@ -240,6 +252,7 @@ __device__ __noinline__ bool emit_admit(const DeviceState& ds, StateId state_id,
             return (atomicAnd(c.s_keep_quota + (i >> 5), ~bit) & bit) != 0u;
         }
         return false;
+    }
     }
     return false;
 }
@@ -292,14 +305,100 @@ __device__ __noinline__ void match_state_rule_pass(
         run_dfs_from_root(ds.state_edge_ids[sl0.offset + i]);
 }
 
+// The block's spill slot holding at least `words`, for every thread of the block: claimed by
+// thread 0 from the block's arena when the slot is smaller. Null when there is no slot
+// (kDrainCapBufferFull recorded) or the arena cannot hold it (kIRArenaExhausted recorded, which
+// grow-and-retry doubles).
+__device__ __noinline__ uint32_t* claim_spill(const DeviceState& ds, const SuccessorCtx* succ,
+                                              uint64_t words) {
+    __shared__ uint32_t* s_spill;
+    if (threadIdx.x == 0) {
+        s_spill = nullptr;
+        if (!succ || !succ->spill) {
+            ds.errors.record(ErrorKind::kDrainCapBufferFull);
+        } else if (*succ->spill_words >= words) {
+            s_spill = *succ->spill;
+        } else if (uint32_t* p = DeviceArena::View(succ->arena).claim(words)) {
+            *succ->spill = p;
+            *succ->spill_words = words;
+            s_spill = p;
+        } else {
+            ds.errors.record(ErrorKind::kIRArenaExhausted);
+        }
+    }
+    __syncthreads();
+    uint32_t* p = s_spill;
+    __syncthreads();
+    return p;
+}
+
+// The candidate arrays of MaxSuccessorStatesPerParent: in shared memory and the block's
+// SuccessorScratch for up to kDrainCapBuffer candidates, else carved from a spill buffer of
+// exactly the state's count.
+struct ParentBuffers {
+    uint64_t*                    ranks;   // the candidate's own rank
+    uint16_t*                    rules;
+    uint8_t*                     kept;
+    uint32_t*                    quota;
+    EdgeId*                      edges;   // kMaxPatternEdges per candidate, by pattern position
+    hgcommon::SuccessorIdentity* id;
+    uint64_t*                    srank;   // the rank of the candidate's successor
+    uint32_t*                    order;
+    uint8_t*                     lead;
+    uint32_t                     capacity;
+};
+
+// Words of a spill buffer for n candidates, and its carving. Every array starts on an even word.
+__device__ __forceinline__ uint64_t even_words(uint64_t bytes) { return ((bytes + 7u) / 8u) * 2u; }
+__device__ __forceinline__ uint64_t parent_spill_words(uint32_t n) {
+    return even_words(8ull * n) * 2u + even_words(2ull * n) + even_words(1ull * n) * 2u +
+           even_words(4ull * ((n + 31u) / 32u)) + even_words(4ull * n * kMaxPatternEdges) +
+           even_words(sizeof(hgcommon::SuccessorIdentity) * uint64_t{n}) + even_words(4ull * n);
+}
+__device__ __forceinline__ ParentBuffers parent_spill_buffers(uint32_t* p, uint32_t n) {
+    ParentBuffers b{};
+    auto take = [&](uint64_t bytes) { uint32_t* at = p; p += even_words(bytes); return at; };
+    b.ranks = reinterpret_cast<uint64_t*>(take(8ull * n));
+    b.srank = reinterpret_cast<uint64_t*>(take(8ull * n));
+    b.rules = reinterpret_cast<uint16_t*>(take(2ull * n));
+    b.kept  = reinterpret_cast<uint8_t*>(take(1ull * n));
+    b.lead  = reinterpret_cast<uint8_t*>(take(1ull * n));
+    b.quota = take(4ull * ((n + 31u) / 32u));
+    b.edges = reinterpret_cast<EdgeId*>(take(4ull * n * kMaxPatternEdges));
+    b.id    = reinterpret_cast<hgcommon::SuccessorIdentity*>(
+        take(sizeof(hgcommon::SuccessorIdentity) * uint64_t{n}));
+    b.order = take(4ull * n);
+    b.capacity = n;
+    return b;
+}
+
+// One counting pass of every rule into `b`: each transition's rank, rule and edges.
+__device__ __forceinline__ void parent_count_pass(
+        const DeviceState& ds, const DeviceRule* rules, StateId state_id, uint32_t step,
+        typename Pool<MatchRecord>::DeviceView out, uint32_t* s_seen, uint32_t* s_overflow,
+        const ParentBuffers& b) {
+    if (threadIdx.x == 0) { *s_seen = 0; *s_overflow = 0; }
+    __syncthreads();
+    EmitCtl count{EmitMode::kParentCount, 0u, 0u, s_seen, s_overflow, b.ranks, nullptr,
+                  nullptr};
+    count.s_rules = b.rules;
+    count.s_edges = b.edges;
+    count.capacity = b.capacity;
+    for (uint32_t r = 0; r < ds.num_rules; ++r)
+        match_state_rule_pass(ds, rules, state_id, r, step, out, &count);
+    __syncthreads();
+}
+
 // MaxSuccessorStatesPerParent, in the block of the state's rule 0, over every rule: the host's
 // cap_at_drain. The first pass ranks every transition of the state and records its rule and
-// edges; the block then keeps the transitions with fewer than cap_k of their rule ranked strictly
-// below them under MatchesPerStateRule (hgcommon::cap_keeps), and of those the transitions into
-// the parent_k lowest-ranked successor states (hgcommon::successor_ranks, then rank_cut over one
-// rank per successor, as keep_lowest_successors on the host); the second pass emits each kept
-// transition once, found by its rule and edges. No draw is applied to the kept transitions, as on
-// the host.
+// edges, in shared memory and the block's scratch, or when the state has more than
+// kDrainCapBuffer transitions, again into a spill buffer of exactly that many. The block then
+// keeps the transitions ranked at or below their rule's MatchesPerStateRule cut (hgcommon::
+// rank_cut_where per rule: fewer than cap_k of the rule rank strictly below them), and of those
+// the transitions into the parent_k lowest-ranked successor states (hgcommon::successor_ranks,
+// then rank_cut over one rank per successor, as keep_lowest_successors on the host); the second
+// pass emits each kept transition once, found by its rank, rule and edges. No draw is applied
+// to the kept transitions, as on the host.
 __device__ __noinline__ void match_state_parent_capped(
         const DeviceState& ds, const DeviceRule* rules, StateId state_id, uint32_t step,
         typename Pool<MatchRecord>::DeviceView out, uint32_t* s_seen, uint32_t* s_overflow,
@@ -321,85 +420,90 @@ __device__ __noinline__ void match_state_parent_capped(
         return;
     }
     const size_t base = size_t(blockIdx.x) * kDrainCapBuffer;
-    EdgeId* s_edges = scratch->edges + base * kMaxPatternEdges;
-    hgcommon::SuccessorIdentity* id = scratch->id + base;
-    uint64_t* srank = scratch->rank + base;
-    uint32_t* order = scratch->order + base;
-    uint8_t* lead = scratch->lead + base;
+    ParentBuffers b{s_ranks, s_rules, s_kept, s_quota, scratch->edges + base * kMaxPatternEdges,
+                    scratch->id + base, scratch->rank + base, scratch->order + base,
+                    scratch->lead + base, kDrainCapBuffer};
 
-    if (threadIdx.x == 0) { *s_seen = 0; *s_overflow = 0; *s_keep_n = 0; }
-    for (uint32_t w = threadIdx.x; w < kDrainCapBuffer / 32u; w += blockDim.x) s_quota[w] = 0u;
-    __syncthreads();
-    EmitCtl count{EmitMode::kParentCount, 0u, 0u, s_seen, s_overflow, s_ranks, nullptr,
-                  nullptr};
-    count.s_rules = s_rules;
-    count.s_edges = s_edges;
-    for (uint32_t r = 0; r < ds.num_rules; ++r)
-        match_state_rule_pass(ds, rules, state_id, r, step, out, &count);
-    __syncthreads();
-
+    parent_count_pass(ds, rules, state_id, step, out, s_seen, s_overflow, b);
     if (*s_overflow) {
-        // More transitions than the buffer can rank: the kept set cannot be identified, so every
-        // transition is emitted rather than a wrong k. Recorded, which puts the run under the
-        // engine's partial-result contract.
-        if (threadIdx.x == 0) ds.errors.record(ErrorKind::kDrainCapBufferFull);
+        const uint32_t total = *s_seen;
         __syncthreads();
-        for (uint32_t r = 0; r < ds.num_rules; ++r)
-            match_state_rule_pass(ds, rules, state_id, r, step, out, nullptr);
-        return;
+        uint32_t* spill = claim_spill(ds, succ, parent_spill_words(total));
+        if (spill) {
+            b = parent_spill_buffers(spill, total);
+            parent_count_pass(ds, rules, state_id, step, out, s_seen, s_overflow, b);
+        }
+        if (!spill || *s_overflow) {
+            // No buffer holds the state's transitions (recorded by claim_spill): every
+            // transition is emitted, under the engine's partial-result contract.
+            if (threadIdx.x == 0 && spill) ds.errors.record(ErrorKind::kDrainCapBufferFull);
+            __syncthreads();
+            for (uint32_t r = 0; r < ds.num_rules; ++r)
+                match_state_rule_pass(ds, rules, state_id, r, step, out, nullptr);
+            return;
+        }
     }
     const uint32_t n = *s_seen;
-    // Kept by MatchesPerStateRule: fewer than cap_k of its rule rank strictly below it.
-    for (uint32_t i = threadIdx.x; i < n; i += blockDim.x) {
-        uint32_t below = 0;
-        if (cap_k != 0u)
-            for (uint32_t j = 0; j < n; ++j)
-                if (s_rules[j] == s_rules[i] && s_ranks[j] < s_ranks[i]) ++below;
-        s_kept[i] = (cap_k == 0u || hgcommon::cap_keeps(below, cap_k)) ? 1u : 0u;
-    }
-    __syncthreads();
-    // The kept candidates, compacted in place by one thread: each lands at or before its slot.
+    // Kept by MatchesPerStateRule: ranked at or below the rule's cut, by one thread.
     if (threadIdx.x == 0) {
+        for (uint32_t i = 0; i < n; ++i) b.kept[i] = 1u;
+        if (cap_k != 0u) {
+            for (uint32_t r = 0; r < ds.num_rules; ++r) {
+                const hgcommon::RankCut cut = hgcommon::rank_cut_where(
+                    n, cap_k, [&](uint32_t i) { return b.ranks[i]; },
+                    [&](uint32_t i) { return b.rules[i] == r; });
+                for (uint32_t i = 0; i < n; ++i)
+                    if (b.rules[i] == r && !hgcommon::rank_cut_keeps(cut, b.ranks[i]))
+                        b.kept[i] = 0u;
+            }
+        }
+        // The kept candidates, compacted in place: each lands at or before its slot.
         uint32_t w = 0;
         for (uint32_t i = 0; i < n; ++i) {
-            if (!s_kept[i]) continue;
-            s_ranks[w] = s_ranks[i];
-            s_rules[w] = s_rules[i];
+            if (!b.kept[i]) continue;
+            b.ranks[w] = b.ranks[i];
+            b.rules[w] = b.rules[i];
             for (uint8_t k = 0; k < kMaxPatternEdges; ++k)
-                s_edges[w * kMaxPatternEdges + k] = s_edges[i * kMaxPatternEdges + k];
+                b.edges[w * kMaxPatternEdges + k] = b.edges[i * kMaxPatternEdges + k];
             ++w;
         }
         *s_keep_n = w;
+        for (uint32_t q = 0; q < (w + 31u) / 32u; ++q) b.quota[q] = 0u;
     }
     __syncthreads();
     const uint32_t m = *s_keep_n;
     // Each candidate's successor, on the whole warp (a Full successor's hash runs on it).
     for (uint32_t i = 0; i < m; ++i) {
         hgcommon::SuccessorIdentity sid{0, 1};
-        if (!successor_identity_device(ds, rules[s_rules[i]], state_id,
-                                       s_edges + i * kMaxPatternEdges, *succ, sid))
+        if (!successor_identity_device(ds, rules[b.rules[i]], state_id,
+                                       b.edges + i * kMaxPatternEdges, *succ, sid))
             sid = hgcommon::SuccessorIdentity{0, 1};
-        if (threadIdx.x == 0) id[i] = sid;
+        if (threadIdx.x == 0) b.id[i] = sid;
     }
     __syncthreads();
-    // The successor cut, by one thread: one rank per successor into s_ranks' front (the
-    // candidates' own ranks are in srank by then), rank_cut over them, and a keep bit per
-    // candidate whose successor is at or below the cut.
+    // The successor cut, by one thread: rank_cut over one rank per successor, a keep bit per
+    // candidate whose successor is at or below it, and the candidates in rank order for the
+    // emission's lookup.
     if (threadIdx.x == 0) {
-        hgcommon::successor_ranks(s_ranks, id, m, order, srank, lead);
-        uint32_t g = 0;
+        hgcommon::successor_ranks(b.ranks, b.id, m, b.order, b.srank, b.lead);
+        const hgcommon::RankCut cut = hgcommon::rank_cut_where(
+            m, parent_k, [&](uint32_t i) { return b.srank[i]; },
+            [&](uint32_t i) { return b.lead[i] != 0u; });
         for (uint32_t i = 0; i < m; ++i)
-            if (lead[i]) s_ranks[g++] = srank[i];
-        const hgcommon::RankCut cut = hgcommon::rank_cut(s_ranks, g, parent_k);
-        for (uint32_t i = 0; i < m; ++i)
-            if (hgcommon::rank_cut_keeps(cut, srank[i])) s_quota[i >> 5] |= 1u << (i & 31u);
+            if (hgcommon::rank_cut_keeps(cut, b.srank[i])) b.quota[i >> 5] |= 1u << (i & 31u);
+        for (uint32_t i = 0; i < m; ++i) b.order[i] = i;
+        hgcommon::ir_heapsort_idx(b.order, m, [&](uint32_t x, uint32_t y) {
+            if (b.ranks[x] != b.ranks[y]) return b.ranks[x] < b.ranks[y] ? -1 : 1;
+            return x < y ? -1 : (x > y ? 1 : 0);
+        });
     }
     __syncthreads();
-    EmitCtl keep{EmitMode::kParentEmit, 0u, 0u, nullptr, nullptr, nullptr, nullptr, nullptr};
-    keep.s_rules = s_rules;
-    keep.s_edges = s_edges;
-    keep.s_keep_quota = s_quota;
+    EmitCtl keep{EmitMode::kParentEmit, 0u, 0u, nullptr, nullptr, b.ranks, nullptr, nullptr};
+    keep.s_rules = b.rules;
+    keep.s_edges = b.edges;
+    keep.s_keep_quota = b.quota;
     keep.keep_n = m;
+    keep.s_by_rank = b.order;
     for (uint32_t r = 0; r < ds.num_rules; ++r)
         match_state_rule_pass(ds, rules, state_id, r, step, out, &keep);
 }
@@ -511,25 +615,42 @@ __device__ void match_state_rule(const DeviceState& ds,
     if (threadIdx.x == 0) { s_seen = 0; s_overflow = 0; s_threshold = ~0ULL; }
     __syncthreads();
 
-    const EmitCtl count{EmitMode::kCapCount, cap_k, ~0ULL, &s_seen, &s_overflow, s_ranks,
-                        nullptr, nullptr};
+    EmitCtl count{EmitMode::kCapCount, cap_k, ~0ULL, &s_seen, &s_overflow, s_ranks,
+                  nullptr, nullptr};
     match_state_rule_pass(ds, rules, state_id, rid, step, out, &count);
     __syncthreads();
 
+    // More matches than shared memory ranks: counted again into a spill buffer of exactly
+    // that many (claim_spill records why when there is none).
+    uint64_t* ranks = s_ranks;
+    bool spilled = false;
+    if (s_overflow) {
+        const uint32_t total = s_seen;
+        __syncthreads();
+        if (uint32_t* spill = claim_spill(ds, succ, 2ull * total)) {
+            ranks = reinterpret_cast<uint64_t*>(spill);
+            if (threadIdx.x == 0) { s_seen = 0; s_overflow = 0; }
+            __syncthreads();
+            count.s_ranks = ranks;
+            count.capacity = total;
+            match_state_rule_pass(ds, rules, state_id, rid, step, out, &count);
+            __syncthreads();
+            spilled = true;
+        }
+    }
+
     if (threadIdx.x == 0) {
-        const uint32_t n = s_seen < kDrainCapBuffer ? s_seen : kDrainCapBuffer;
         if (s_overflow) {
-            // More matches than the buffer can rank: the k-th smallest cannot be identified, so
-            // the cap is NOT applied to this pair rather than applied to the wrong k. Recorded,
-            // which puts the run under the engine's partial-result contract instead of silently
-            // returning a differently-sampled answer.
-            ds.errors.record(ErrorKind::kDrainCapBufferFull);
+            // No buffer holds the pair's matches: the cap is NOT applied to this pair rather than
+            // applied to the wrong k, and the run is under the engine's partial-result contract
+            // (claim_spill recorded why).
+            if (spilled) ds.errors.record(ErrorKind::kDrainCapBufferFull);
             s_threshold = ~0ULL;
             s_cut_all = 1u;
         } else {
             // The k-th smallest rank counted with multiplicity (hgcommon::rank_cut); every match
             // ranked at or below it is kept.
-            const hgcommon::RankCut cut = hgcommon::rank_cut(s_ranks, n, cap_k);
+            const hgcommon::RankCut cut = hgcommon::rank_cut(ranks, s_seen, cap_k);
             s_threshold = cut.rank;
             s_cut_all = cut.all ? 1u : 0u;
         }

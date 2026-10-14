@@ -92,10 +92,13 @@ DeviceRule make_device_rule(const RewriteRule& rule);
 // exactly these threads, so every scheduler that calls it must launch with this shape.
 constexpr uint32_t kMatchBlockThreads = 32;
 
-// How many of ONE (state, rule) pair's matches the per-(state, rule) cap can rank at once.
-// 512 x 8 bytes = 4 KB of shared memory, taken only by a block that is capping. Beyond it the
-// k-th smallest rank cannot be identified, so the cap is skipped and the run records
-// kDrainCapBufferFull rather than applying the cap to the wrong k.
+// How many candidates of one (state, rule) pair, or of one state under
+// MaxSuccessorStatesPerParent, a capping block ranks in shared memory and its scratch. 512 x 8
+// bytes = 4 KB of shared memory, taken only by a block that is capping. A pair or state with more
+// is counted, given a spill buffer of exactly its count from the block's arena
+// (SuccessorCtx::spill), and ranked again there; an arena too small records kIRArenaExhausted,
+// which grow-and-retry doubles. A scheduler without a SuccessorCtx records kDrainCapBufferFull
+// and leaves the pair uncapped.
 constexpr uint32_t kDrainCapBuffer = 512;
 
 // Publish a filled record: the release store that makes everything written before it visible
@@ -122,6 +125,10 @@ struct SuccessorCtx {
     DeviceArena::View    arena;
     uint32_t**           slot;
     uint64_t*            slot_words;
+    // The block's spill slot, claimed from `arena` and reused while large enough: the
+    // candidates of a cap whose pair or state has more than kDrainCapBuffer of them.
+    uint32_t**           spill = nullptr;
+    uint64_t*            spill_words = nullptr;
 };
 
 // Per-block scratch of MaxSuccessorStatesPerParent: kDrainCapBuffer candidates of one state, each

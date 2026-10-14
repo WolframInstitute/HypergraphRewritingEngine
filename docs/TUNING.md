@@ -90,7 +90,7 @@ The paclet has no worker-count option: `CpuEngineHolder` is built with `hardware
 | D17 | pool sizes (`config_from_input`) | growth 4^steps capped at 32; edges max(2^20, n x growth x 512); states max(2^17, n x growth x 32); causal 8x events, triples 16x, pairs 8x, branchial 8x/16x, `branchial_index_buckets` 2^20 | `gpu/src/evolve.cu:44-117` | device bytes and per-run clears against grow-and-retry reruns (D78, C11): bigpath n256 d3 quotient asks 524,288 states for 769 |
 | D18 | grow-and-retry | 8 doublings, 3 first-attempt halvings, 1/6 headroom | `evolve.cu:996`, `:1026`, `estimated_device_bytes` | retries against overallocation |
 | D19 | `EngineConfig` defaults | `ir_arena_share_words` 65536, `slice_scan_max_edges` 256, `keyed_claim_limit` 1024, `event_canon_slots` 2^16, `match_dedup_slots` 2^16 | `gpu/include/hg_gpu/evolve.hpp:400-470` | capacities with overflow recording and retry |
-| D20 | `kDrainCapBuffer` | 512 matches, 4 KB shared memory | `match.hpp:98` | a cap past 512 is skipped and recorded (`kDrainCapBufferFull`) |
+| D20 | `kDrainCapBuffer` | 512 matches, 4 KB shared memory | `match.hpp:98` | a pair or state past 512 is ranked again in a spill buffer of its exact count from the block's IR arena (`SuccessorCtx::spill`); a short arena records `kIRArenaExhausted`, which grow-and-retry doubles |
 | D21 | `kQeInstShards` | 16 | `quotient_expansion.hpp:364` | device mirror of H10 |
 | D22 | L2 | not queried; no access policy window | none | hot claim maps compete with streaming pools for L2 |
 

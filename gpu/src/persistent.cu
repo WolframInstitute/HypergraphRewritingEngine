@@ -1196,6 +1196,8 @@ __global__ void k_persistent_evolve(
     // canonicalization together: the leader claims, every lane addresses the same slot.
     __shared__ uint32_t* ir_slot;
     __shared__ uint64_t  ir_slot_words;
+    __shared__ uint32_t* spill_slot;      // SuccessorCtx::spill
+    __shared__ uint64_t  spill_slot_words;
     __shared__ MatchWorkItem mitem;
     __shared__ uint32_t task_base;
     __shared__ uint32_t task_count;
@@ -1259,13 +1261,17 @@ __global__ void k_persistent_evolve(
     // accumulators reset so nothing is double counted.
     uint32_t records_since_flush = 0;
 
-    if (threadIdx.x == 0) { ir_slot = nullptr; ir_slot_words = 0; stalled = false; }
+    if (threadIdx.x == 0) {
+        ir_slot = nullptr; ir_slot_words = 0; stalled = false;
+        spill_slot = nullptr; spill_slot_words = 0;
+    }
     tile_slot[threadIdx.x] = nullptr;
     tile_slot_words[threadIdx.x] = 0;
     __syncthreads();
     // The successor caps' hashes run on the block's IR slot, between the block's other uses of
     // it.
-    const SuccessorCtx succ_ctx{state_mode, arena, &ir_slot, &ir_slot_words};
+    const SuccessorCtx succ_ctx{state_mode, arena, &ir_slot, &ir_slot_words, &spill_slot,
+                                &spill_slot_words};
 
     // The warp canonicalises the child in the child_* shared words (its kept edges copied) and
     // registers it: the class-frame capture on every lane, identity and depth on thread 0.

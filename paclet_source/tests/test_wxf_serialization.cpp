@@ -3680,6 +3680,59 @@ TEST(GpuBinaryGate, SamplingAndCapsKeepTheSameTransitionsOnBothDevices) {
     worker_stop(w);
 }
 
+// The per-state caps hold however many matches a state has. Rule {{3},{5}} -> {} on n copies of
+// {1} has n(n-1) matches in one state: 552 at n = 24 and 1560 at n = 40, past the 512 a capping
+// block ranks in shared memory (hg_gpu::kDrainCapBuffer). Under MatchesPerStateRule 4,
+// MaxSuccessorStatesPerParent 4 and both, with None and Full states, 1 step, the device gives the
+// host's counts (worker_fuzz seed 4293: the device kept all 552).
+TEST(GpuBinaryGate, PerStateCapsHoldPastTheSharedMemoryBuffer) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    CpuWorker host;
+    ASSERT_TRUE(host.ok) << "could not start hg_evolve --serve";
+    const char* counts[] = {"NumStates", "NumEvents", "NumCausalEdges", "NumBranchialEdges"};
+    struct Caps { int64_t per_rule, per_parent; };
+    for (int n : {24, 40}) {
+        StateList init(1);
+        for (int i = 0; i < n; ++i) init[0].push_back({1});
+        for (const char* mode : {"None", "Full"}) {
+            for (Caps c : {Caps{4, 0}, Caps{0, 4}, Caps{4, 4}}) {
+                const auto job = build_input(init, {{3}, {5}}, {}, 1, [&](wxf::Writer& ww) {
+                    put_str_option(ww, "CanonicalizeStates", mode);
+                    ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                    ww.write(std::string("CanonicalizeEvents"));
+                    ww.write_symbol("None");
+                    ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                    ww.write(std::string("MatchesPerStateRule"));
+                    ww.write(c.per_rule);
+                    ww.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                    ww.write(std::string("MaxSuccessorStatesPerParent"));
+                    ww.write(c.per_parent);
+                    put_str_list_option(ww, "RequestedData",
+                                        {counts[0], counts[1], counts[2], counts[3]});
+                }, 5);
+                const std::string at = "n " + std::to_string(n) + " " + mode + " caps " +
+                                       std::to_string(c.per_rule) + "/" +
+                                       std::to_string(c.per_parent);
+                const auto cpu = host(job);
+                const auto gpu = worker_call(w, job);
+                ASSERT_FALSE(cpu.empty()) << at;
+                ASSERT_FALSE(gpu.empty()) << at << ": " << w.last_error;
+                for (const char* k : counts)
+                    EXPECT_EQ(read_int_key(gpu, k), read_int_key(cpu, k)) << at << " " << k;
+            }
+        }
+    }
+    worker_stop(w);
+}
+
 // Both devices report the same warnings: quotient exploration or Automatic event identity
 // without Full state canonicalization, and an option value the parser skips.
 TEST(GpuBinaryGate, WarningsAgreeAcrossDevices) {

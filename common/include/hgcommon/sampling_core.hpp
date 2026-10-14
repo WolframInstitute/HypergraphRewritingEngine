@@ -88,18 +88,23 @@ struct RankCut {
 
 HG_HD inline bool rank_cut_keeps(RankCut c, uint64_t rank) { return c.all || rank <= c.rank; }
 
-HG_HD inline RankCut rank_cut(const uint64_t* ranks, uint32_t n, uint32_t k) {
-    if (n <= k) return RankCut{~0ULL, true};
+// rank_cut over the entries i < n with take(i), entry i's rank being rank_at(i).
+template <class RankAt, class Take>
+HG_HD inline RankCut rank_cut_where(uint32_t n, uint32_t k, RankAt&& rank_at, Take&& take) {
+    uint32_t taken = 0;
+    for (uint32_t i = 0; i < n; ++i) taken += take(i) ? 1u : 0u;
+    if (taken <= k) return RankCut{~0ULL, true};
     uint32_t below = 0;
     uint64_t floor = 0;
     bool have_floor = false;
     for (;;) {
         // The next distinct rank above the floor, and how many entries hold it. One exists:
-        // `below` < k < n.
+        // `below` < k < taken.
         uint64_t next = 0;
         uint32_t count = 0;
         for (uint32_t i = 0; i < n; ++i) {
-            const uint64_t r = ranks[i];
+            if (!take(i)) continue;
+            const uint64_t r = rank_at(i);
             if (have_floor && r <= floor) continue;
             if (count == 0 || r < next) { next = r; count = 1; }
             else if (r == next) ++count;
@@ -109,6 +114,11 @@ HG_HD inline RankCut rank_cut(const uint64_t* ranks, uint32_t n, uint32_t k) {
         floor = next;
         have_floor = true;
     }
+}
+
+HG_HD inline RankCut rank_cut(const uint64_t* ranks, uint32_t n, uint32_t k) {
+    return rank_cut_where(n, k, [&](uint32_t i) { return ranks[i]; },
+                          [](uint32_t) { return true; });
 }
 
 // The ExplorationProbability coin: whether a state is expanded, drawn on an isomorphism-invariant
