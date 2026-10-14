@@ -443,6 +443,21 @@ void print_tuning() {
 }  // namespace
 
 int main(int argc, char** argv) {
+#if defined(__GLIBC__)
+    // Fixed thresholds instead of glibc's sliding ones. glibc raises the mmap threshold after a
+    // large block is freed (to 32 MB at most) and the trim threshold with it (to twice that), and
+    // a worker thread's malloc arena gives its top back only above the trim threshold, which
+    // malloc_trim does not lower. Measured after the A3 job through --serve at 32 workers: 586
+    // MB free in the threads' arenas stayed resident.
+    mallopt(M_MMAP_THRESHOLD, 1 << 20);
+    mallopt(M_TRIM_THRESHOLD, 1 << 20);
+    // Two malloc arenas, not up to eight per core. glibc gives a thread a new arena when the ones
+    // it tries are locked, so the count follows the schedule, and each reserves 64 MB of address
+    // space. The engine allocates its work from its own arenas (hypergraph/arena.hpp), so malloc
+    // is off the hot path. Measured on wpp depth 8 under quotient exploration at 32 workers:
+    // VmPeak 6024 MB -> 4039 MB, VmHWM unchanged (2574 -> 2561 MB median of 6).
+    mallopt(M_ARENA_MAX, 2);
+#endif
     // This thread reads jobs and builds replies, and a reply can be most of a job's time (the
     // reconstructed counts and relations). The engine's workers exempt themselves; this is the
     // one other thread that computes.
