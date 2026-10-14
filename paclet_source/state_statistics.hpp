@@ -24,6 +24,9 @@
 #include "wxf.hpp"
 
 namespace HG_NAMESPACE {
+namespace marshal {
+class HostJobs;   // graph_marshal.hpp
+}  // namespace marshal
 namespace stats {
 
 struct StateInvariants {
@@ -213,10 +216,10 @@ private:
     std::map<uint32_t, std::unique_ptr<Step>> steps_;
 };
 
-// The reply of `inputs`, built by StepStatisticsJobs on a job system of the host's hardware
-// threads, for a reply whose run had no host engine (the GPU backend). A step of at least
-// `device_min_states` states has its overlap rows counted by `device_rows` when it can.
-wxf::WXFValue step_statistics_on_host(std::map<uint32_t, StepInput> inputs,
+// The reply of `inputs`, built by StepStatisticsJobs on `host`, for a reply whose run had no host
+// engine (the GPU backend). A step of at least `device_min_states` states has its overlap rows
+// counted by `device_rows` when it can.
+wxf::WXFValue step_statistics_on_host(marshal::HostJobs& host, std::map<uint32_t, StepInput> inputs,
                                       bool weight_by_classes, uint32_t which,
                                       StepStatisticsJobs::DeviceRows device_rows = nullptr,
                                       uint32_t device_min_states = 0);

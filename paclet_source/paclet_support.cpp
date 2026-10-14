@@ -481,6 +481,47 @@ wxf::WXFValue warning_record(const std::string& kind, int64_t count, const std::
     return wxf::WXFValue(wa);
 }
 
+namespace {
+enum class HostReplyJob { Reply };
+}  // namespace
+
+struct HostJobs::Impl {
+    job_system::JobSystem<HostReplyJob> system{std::thread::hardware_concurrency()};
+};
+
+HostJobs::HostJobs() : impl_(std::make_unique<Impl>()) { impl_->system.start(); }
+
+HostJobs::~HostJobs() = default;
+
+size_t HostJobs::workers() const { return impl_->system.get_num_workers(); }
+
+void HostJobs::submit(std::function<void()> fn) {
+    impl_->system.submit(job_system::make_job<HostReplyJob>(std::move(fn), HostReplyJob::Reply));
+}
+
+void HostJobs::wait() {
+    impl_->system.wait_for_completion();
+    if (impl_->system.has_error())
+        throw std::runtime_error(std::string("a reply job failed in a worker: ") +
+                                 impl_->system.get_error_message());
+    std::atomic_thread_fence(std::memory_order_acquire);
+}
+
+ParallelFor HostJobs::parallel_for() {
+    return [this](size_t n, const std::function<void(size_t)>& body) {
+        if (n == 0) return;
+        for (size_t i = 1; i < n; ++i) submit([&body, i] { body(i); });
+        std::exception_ptr first;
+        try {
+            body(0);
+        } catch (...) {
+            first = std::current_exception();
+        }
+        wait();
+        if (first) std::rethrow_exception(first);
+    };
+}
+
 GraphPropertyNeeds graph_property_needs(const std::vector<std::string>& properties) {
     GraphPropertyNeeds n;
     for (const std::string& p : properties) {
@@ -1532,28 +1573,16 @@ void StepStatisticsJobs::start(Step* s, StepInput in) {
     });
 }
 
-namespace {
-enum class HostStatsJob { Step };
-}  // namespace
-
-wxf::WXFValue step_statistics_on_host(std::map<uint32_t, StepInput> inputs,
+wxf::WXFValue step_statistics_on_host(marshal::HostJobs& host, std::map<uint32_t, StepInput> inputs,
                                       bool weight_by_classes, uint32_t which,
                                       StepStatisticsJobs::DeviceRows device_rows,
                                       uint32_t device_min_states) {
-    job_system::JobSystem<HostStatsJob> system(std::thread::hardware_concurrency());
-    system.start();
     StepStatisticsJobs jobs(
-        weight_by_classes, which, system.get_num_workers(),
-        [&system](std::function<void()> f) {
-            system.submit(job_system::make_job<HostStatsJob>(std::move(f), HostStatsJob::Step));
-        },
+        weight_by_classes, which, host.workers(),
+        [&host](std::function<void()> f) { host.submit(std::move(f)); },
         std::move(device_rows), device_min_states);
     for (auto& [step, in] : inputs) jobs.submit(step, std::move(in));
-    system.wait_for_completion();
-    if (system.has_error())
-        throw std::runtime_error(std::string("StepStatistics failed in a worker: ") +
-                                 system.get_error_message());
-    std::atomic_thread_fence(std::memory_order_acquire);
+    host.wait();
     return jobs.reply();
 }
 

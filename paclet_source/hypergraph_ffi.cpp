@@ -973,6 +973,19 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // is the raw state that won the dedup claim, and its own step depends on the schedule.
         // The least steps are computed on first use, after the evolution.
         std::vector<uint32_t> class_min_step;
+        // Builds class_min_step under Full, once. reported_step reads it from several workers
+        // during a graph build, which calls this first.
+        auto ensure_class_min_step = [&]() {
+            if (!full_canonicalization || !class_min_step.empty()) return;
+            const uint32_t n = hg.num_published_states();
+            class_min_step.assign(n ? n : 1, UINT32_MAX);
+            for (uint32_t s = 0; s < n; ++s) {
+                const hypergraph::State& st = hg.get_state(s);
+                if (st.id == hypergraph::INVALID_ID) continue;
+                const uint32_t cls = hg.get_canonical_state(s);
+                if (cls < n && st.step < class_min_step[cls]) class_min_step[cls] = st.step;
+            }
+        };
         auto reported_step = [&](uint32_t sid) -> uint32_t {
             const uint32_t own = hg.get_state(sid).step;
             if (!full_canonicalization) return own;
@@ -982,16 +995,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             const uint32_t c = hg.get_canonical_state(sid);
             const uint32_t depth = engine.explore_from_canonical_states_only()
                                        ? hg.explore_depth_of(c) : hgcommon::kExploreNoDepth;
-            if (depth == hgcommon::kExploreNoDepth && class_min_step.empty()) {
-                const uint32_t n = hg.num_published_states();
-                class_min_step.assign(n ? n : 1, UINT32_MAX);
-                for (uint32_t s = 0; s < n; ++s) {
-                    const hypergraph::State& st = hg.get_state(s);
-                    if (st.id == hypergraph::INVALID_ID) continue;
-                    const uint32_t cls = hg.get_canonical_state(s);
-                    if (cls < n && st.step < class_min_step[cls]) class_min_step[cls] = st.step;
-                }
-            }
+            if (depth == hgcommon::kExploreNoDepth) ensure_class_min_step();
             const uint32_t least = c < class_min_step.size() ? class_min_step[c] : UINT32_MAX;
             return hgmarshal::reported_state_step(true, depth, least, own);
         };
@@ -1660,88 +1664,39 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                                         : static_cast<int64_t>(e.canonical_event_id);
             };
 
-            // Helper: Serialize state edges as list of {edgeId, v1, v2, ...}
-            // When CanonicalizeStates is Full, emits IR-canonicalized edges
-            // Memoized by state, because the same state's edges are asked for once as a state
-            // and again by EVERY event that enters or leaves it: S + 2E calls over S distinct
-            // states. Under Full each call ran a whole IR canonicalization, so an evolution with
-            // more events than states paid for the same state's canonical form many times over.
-            //
-            // The cache holds what the frame is about to carry anyway, and stays empty for the
-            // Structure properties, which serialize ids and steps and never ask for edges.
-            std::unordered_map<uint32_t, wxf::WXFValueList> state_edges_memo;
-            auto build_state_edges = [&](hypergraph::StateId sid) -> wxf::WXFValueList {
-                wxf::WXFValueList edge_list;
-                if (full_canonicalization) {
-                    std::vector<std::vector<hypergraph::VertexId>> edge_vecs;
-                    hg.get_state(sid).edges.for_each([&](hypergraph::EdgeId eid) {
-                        const hypergraph::Edge& edge = hg.get_edge(eid);
-                        edge_vecs.emplace_back(edge.vertices, edge.vertices + edge.arity);
-                    });
-                    if (!edge_vecs.empty()) {
-                        hypergraph::IRCanonicalizer ir;
-                        auto canon_result = ir.canonicalize_edges(edge_vecs);
-                        int64_t edge_idx = 0;
-                        for (const auto& canon_edge : canon_result.canonical_form.edges) {
-                            wxf::WXFValueList e;
-                            e.push_back(wxf::WXFValue(edge_idx++));
-                            for (auto v : canon_edge)
-                                e.push_back(wxf::WXFValue(static_cast<int64_t>(v)));
-                            edge_list.push_back(wxf::WXFValue(e));
-                        }
-                    }
-                } else {
-                    hg.get_state(sid).edges.for_each([&](hypergraph::EdgeId eid) {
-                        const hypergraph::Edge& edge = hg.get_edge(eid);
-                        wxf::WXFValueList e;
-                        e.push_back(wxf::WXFValue(static_cast<int64_t>(eid)));
-                        for (uint8_t i = 0; i < edge.arity; ++i)
-                            e.push_back(wxf::WXFValue(static_cast<int64_t>(edge.vertices[i])));
-                        edge_list.push_back(wxf::WXFValue(e));
-                    });
-                }
-                return edge_list;
+            // A styled graph's payloads (hgmarshal::GraphStateFields, GraphEventFields). These
+            // run on several workers at once, so the lazy tables they read are built first.
+            if (req.canonicalize_states_mode == "Automatic") content_index();
+            ensure_class_min_step();
+            // A state's edges as stored, each as its edge id and vertices; under Full its IR
+            // canonical form, numbered from 0 (hgmarshal::state_record_edges).
+            auto state_edges = [&](hypergraph::StateId sid,
+                                   std::vector<std::pair<int64_t, std::vector<uint32_t>>>& out) {
+                hg.get_state(sid).edges.for_each([&](hypergraph::EdgeId eid) {
+                    const hypergraph::Edge& edge = hg.get_edge(eid);
+                    out.emplace_back(static_cast<int64_t>(eid),
+                                     std::vector<uint32_t>(edge.vertices, edge.vertices + edge.arity));
+                });
+                hgmarshal::state_record_edges(full_canonicalization, out);
             };
-            auto serialize_state_edges = [&](hypergraph::StateId sid) -> const wxf::WXFValueList& {
-                auto it = state_edges_memo.find(sid);
-                if (it == state_edges_memo.end())
-                    it = state_edges_memo.emplace(sid, build_state_edges(sid)).first;
-                return it->second;
+            auto state_fields = [&](hypergraph::StateId sid, hgmarshal::GraphStateFields& f) {
+                f.id = static_cast<int64_t>(sid);
+                f.canonical_id = static_cast<int64_t>(hg.get_canonical_state(sid));
+                f.step = static_cast<int64_t>(reported_step(sid));
             };
-
-            // Helper: Serialize state data for tooltips
-            auto serialize_state_data = [&](hypergraph::StateId sid) -> wxf::WXFValueAssociation {
-                wxf::WXFValueAssociation d;
-                d.push_back({wxf::WXFValue("Id"), wxf::WXFValue(static_cast<int64_t>(sid))});
-                d.push_back({wxf::WXFValue("CanonicalId"), wxf::WXFValue(static_cast<int64_t>(hg.get_canonical_state(sid)))});
-                const uint32_t step = reported_step(sid);
-                d.push_back({wxf::WXFValue("Step"), wxf::WXFValue(static_cast<int64_t>(step))});
-                d.push_back({wxf::WXFValue("Edges"), wxf::WXFValue(serialize_state_edges(sid))});
-                d.push_back({wxf::WXFValue("IsInitial"), wxf::WXFValue(step == 0)});
-                return d;
-            };
-
-            // Helper: Serialize event data for tooltips
-            auto serialize_event_data = [&](hypergraph::EventId eid) -> wxf::WXFValueAssociation {
+            auto event_fields = [&](hypergraph::EventId eid, hgmarshal::GraphEventFields& f) {
                 const hypergraph::Event& e = hg.get_event(eid);
-                wxf::WXFValueAssociation d;
-                d.push_back({wxf::WXFValue("Id"), wxf::WXFValue(static_cast<int64_t>(eid))});
-                d.push_back({wxf::WXFValue("CanonicalId"), wxf::WXFValue(get_effective_event_id(eid))});
-                d.push_back({wxf::WXFValue("RuleIndex"), wxf::WXFValue(static_cast<int64_t>(e.rule_index))});
-                d.push_back({wxf::WXFValue("InputState"), wxf::WXFValue(static_cast<int64_t>(e.input_state))});
-                d.push_back({wxf::WXFValue("OutputState"), wxf::WXFValue(static_cast<int64_t>(e.output_state))});
-                // Consumed/produced edges
-                wxf::WXFValueList consumed, produced;
+                f.id = static_cast<int64_t>(eid);
+                f.canonical_id = get_effective_event_id(eid);
+                f.rule = static_cast<int64_t>(e.rule_index);
+                f.input = static_cast<int64_t>(e.input_state);
+                f.output = static_cast<int64_t>(e.output_state);
                 for (uint8_t i = 0; i < e.num_consumed; ++i)
-                    consumed.push_back(wxf::WXFValue(static_cast<int64_t>(e.consumed_edges[i])));
+                    f.consumed.push_back(static_cast<int64_t>(e.consumed_edges[i]));
                 for (uint8_t i = 0; i < e.num_produced; ++i)
-                    produced.push_back(wxf::WXFValue(static_cast<int64_t>(e.produced_edges[i])));
-                d.push_back({wxf::WXFValue("ConsumedEdges"), wxf::WXFValue(consumed)});
-                d.push_back({wxf::WXFValue("ProducedEdges"), wxf::WXFValue(produced)});
-                // For styled rendering: include input/output state edges
-                d.push_back({wxf::WXFValue("InputStateEdges"), wxf::WXFValue(serialize_state_edges(e.input_state))});
-                d.push_back({wxf::WXFValue("OutputStateEdges"), wxf::WXFValue(serialize_state_edges(e.output_state))});
-                return d;
+                    f.produced.push_back(static_cast<int64_t>(e.produced_edges[i]));
+                f.input_raw = e.input_state;
+                f.output_raw = e.output_state;
             };
 
             // Helper: Check if event should be included
@@ -1766,8 +1721,10 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 std::function<int64_t(hypergraph::StateId)> eff_state;
                 std::function<int64_t(hypergraph::EventId)> eff_event;
                 std::function<bool(hypergraph::EventId)> valid_event;
-                std::function<wxf::WXFValueAssociation(hypergraph::StateId)> state_data;
-                std::function<wxf::WXFValueAssociation(hypergraph::EventId)> event_data;
+                std::function<void(hypergraph::StateId, hgmarshal::GraphStateFields&)> state_data;
+                std::function<void(hypergraph::StateId,
+                                   std::vector<std::pair<int64_t, std::vector<uint32_t>>>&)> edges_of;
+                std::function<void(hypergraph::EventId, hgmarshal::GraphEventFields&)> event_data;
                 // What the CALLER's property list asked for, from graph_property_needs. This is
                 // not the same question as what the run recorded: the engine may prove a relation
                 // empty from the rules alone and skip the work, and then a requested property is
@@ -1787,7 +1744,11 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 bool state_valid(uint32_t sid) const { return hg.get_state(sid).id != hypergraph::INVALID_ID; }
                 int64_t effective_state_id(uint32_t sid) const { return eff_state(sid); }
                 uint32_t state_step(uint32_t sid) const { return hg.get_state(sid).step; }
-                wxf::WXFValueAssociation serialize_state_data(uint32_t sid) const { return state_data(sid); }
+                void state_fields(uint32_t sid, hgmarshal::GraphStateFields& f) const { state_data(sid, f); }
+                void state_edges(uint32_t sid,
+                                 std::vector<std::pair<int64_t, std::vector<uint32_t>>>& out) const {
+                    edges_of(sid, out);
+                }
                 // Under the reconstruction an "event id" is one of the replay's applications.
                 // The scan bound, the validity test and the identity all follow from that, so
                 // the marshaller builds its graph over the reconstruction without knowing.
@@ -1831,18 +1792,20 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                     const auto* c = hg.reconstructed_event_content(eid);
                     return c ? hg.class_frame_state(c->to_class) : hypergraph::INVALID_ID;
                 }
-                wxf::WXFValueAssociation serialize_event_data(uint32_t eid) const {
-                    if (!recon.active) return event_data(eid);
-                    if (genesis_id(eid)) return event_data(eid - recon.id_bound);
+                bool event_fields(uint32_t eid, hgmarshal::GraphEventFields& f) const {
+                    if (!recon.active) { event_data(eid, f); return true; }
+                    if (genesis_id(eid)) { event_data(eid - recon.id_bound, f); return true; }
                     // What the reconstruction holds and no more: the identity, the rule, and the
                     // endpoint classes as their frame states. A reconstructed event has no
-                    // consumed/produced edge lists -- the replay mints an id and materialises
-                    // nothing -- so claiming any would be inventing them.
+                    // consumed/produced edge lists: the replay mints an id and materialises
+                    // nothing.
                     const auto* c = hg.reconstructed_event_content(eid);
-                    return hgmarshal::reconstructed_event_data(
-                        effective_event_id(eid), static_cast<int64_t>(c ? c->rule : 0),
-                        effective_state_id(event_input_state(eid)),
-                        effective_state_id(event_output_state(eid)));
+                    f.reconstructed = true;
+                    f.id = effective_event_id(eid);
+                    f.rule = static_cast<int64_t>(c ? c->rule : 0);
+                    f.input = effective_state_id(event_input_state(eid));
+                    f.output = effective_state_id(event_output_state(eid));
+                    return true;
                 }
                 std::vector<std::pair<uint32_t, uint32_t>> causal_event_pairs() const {
                     // A property the request derivation did not anticipate would be handed an
@@ -1902,7 +1865,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             };
             CpuGraphSource gsrc{hg, recon, recon_event_key, req.show_genesis_events,
                 get_effective_state_id, get_effective_event_id, is_valid_event,
-                serialize_state_data, serialize_event_data,
+                state_fields, state_edges, event_fields,
                 gneeds.causal, gneeds.branchial, recon_genesis_pairs};
             hgmarshal::GraphOptions gopts;
             gopts.edge_deduplication = req.edge_deduplication;
@@ -1932,9 +1895,26 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 }
             }
             if (held_session && !req.delivery_delta) holder->delivery_cursor().reset();
+            // The graph's chunks run as side jobs on the engine's workers, idle after the run;
+            // the calling thread runs chunk 0 and then waits for the rest.
+            const hgmarshal::ParallelFor on_workers =
+                [&engine](size_t n, const std::function<void(size_t)>& body) {
+                    if (n == 0) return;
+                    for (size_t i = 1; i < n; ++i)
+                        engine.submit_side_job([&body, i] { body(i); });
+                    std::exception_ptr first;
+                    try {
+                        body(0);
+                    } catch (...) {
+                        first = std::current_exception();
+                    }
+                    engine.wait_side_jobs();
+                    if (first) std::rethrow_exception(first);
+                };
             full_result.push_back(
                 {wxf::WXFValue("GraphData"),
-                 hgmarshal::build_graph_data(gsrc, req.graph_properties, gopts, cursor)});
+                 hgmarshal::build_graph_data(gsrc, req.graph_properties, gopts, cursor,
+                                             on_workers)});
         }
 
         // Only include counts when requested

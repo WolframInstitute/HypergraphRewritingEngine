@@ -37,6 +37,7 @@
 #endif
 #include "hgcommon/core.hpp"
 #include "paclet_source/graph_marshal.hpp"
+#include "job_system/job_system.hpp"
 
 // Pin test for the FFI WXF serialization (run_rewriting_core), the LibraryLink /
 // standalone-binary output contract. This path has no wolframscript-free coverage
@@ -4700,4 +4701,191 @@ TEST(WxfSerializationPin, ACountsOnlyFullRunCountsTheClasses) {
     const int64_t with_states = run({"NumStates", "States"});
     EXPECT_GT(with_states, 1);
     EXPECT_EQ(counts_only, with_states);
+}
+
+// =============================================================================
+// The streamed graph marshaller (hgmarshal::build_graph_data)
+// =============================================================================
+
+namespace {
+
+namespace hgm = HG_NAMESPACE::marshal;
+
+// A multiway of `n` states and `m` events with fixed contents: event e goes from state e % n to
+// state (e * 7 + 1) % n, every event e > 0 is caused by e - 1, every third by e - 3 as well, and
+// every seventh by e - 1 twice; events 2k and 2k + 1 are branchial. Event 5 has no payload, as a
+// device event missing from the reply.
+struct SyntheticGraphSource {
+    uint32_t n, m;
+    uint32_t num_states() const { return n; }
+    bool state_valid(uint32_t sid) const { return sid % 11 != 10; }
+    int64_t effective_state_id(uint32_t sid) const { return sid / 2; }
+    uint32_t state_step(uint32_t sid) const { return sid % 5; }
+    void state_fields(uint32_t sid, hgm::GraphStateFields& f) const {
+        f.id = sid;
+        f.canonical_id = sid / 2;
+        f.step = sid % 5;
+    }
+    void state_edges(uint32_t sid, std::vector<std::pair<int64_t, std::vector<uint32_t>>>& out) const {
+        for (uint32_t k = 0; k < sid % 4; ++k) out.push_back({k, {sid, k, sid + k * 300}});
+    }
+    uint32_t num_raw_events() const { return m; }
+    bool is_valid_event(uint32_t eid) const { return eid % 13 != 12; }
+    int64_t effective_event_id(uint32_t eid) const { return eid; }
+    uint32_t event_input_state(uint32_t eid) const { return eid % n; }
+    uint32_t event_output_state(uint32_t eid) const { return (eid * 7 + 1) % n; }
+    bool event_fields(uint32_t eid, hgm::GraphEventFields& f) const {
+        if (eid == 5) return false;
+        f.reconstructed = eid % 17 == 3;
+        f.id = eid;
+        f.canonical_id = eid;
+        f.rule = eid % 3;
+        f.input = event_input_state(eid);
+        f.output = event_output_state(eid);
+        f.consumed = {static_cast<int64_t>(eid), static_cast<int64_t>(eid) + 1};
+        f.produced = {static_cast<int64_t>(eid) + 2};
+        f.input_raw = event_input_state(eid);
+        f.output_raw = event_output_state(eid);
+        return true;
+    }
+    std::vector<std::pair<uint32_t, uint32_t>> causal_event_pairs() const {
+        std::vector<std::pair<uint32_t, uint32_t>> out;
+        for (uint32_t e = 1; e < m; ++e) {
+            out.push_back({e - 1, e});
+            if (e % 3 == 0) out.push_back({e - 3, e});
+            if (e % 7 == 0) out.push_back({e - 1, e});
+        }
+        return out;
+    }
+    std::vector<std::pair<uint32_t, uint32_t>> branchial_event_pairs() const {
+        std::vector<std::pair<uint32_t, uint32_t>> out;
+        for (uint32_t e = 0; e + 1 < m; e += 2) out.push_back({e, e + 1});
+        return out;
+    }
+};
+
+const std::vector<std::string> kAllGraphs = {
+    "StatesGraph", "CausalGraph", "BranchialGraph", "EvolutionGraph", "EvolutionCausalGraph",
+    "EvolutionBranchialGraph", "EvolutionCausalBranchialGraph", "StatesGraphStructure",
+    "CausalGraphStructure", "BranchialGraphStructure", "EvolutionCausalBranchialGraphStructure"};
+
+std::vector<uint8_t> graph_bytes(const SyntheticGraphSource& src, const hgm::ParallelFor& par,
+                                 bool dedup) {
+    hgm::GraphOptions opts;
+    opts.edge_deduplication = dedup;
+    wxf::Writer w;
+    w.write(hgm::build_graph_data(src, kAllGraphs, opts, nullptr, par));
+    return w.release_data();
+}
+
+enum class GraphTestJob { Chunk };
+
+// A ParallelFor on a job system of `threads` workers, the calling thread running body(0).
+struct ThreadsFor {
+    job_system::JobSystem<GraphTestJob> system;
+    explicit ThreadsFor(size_t threads) : system(threads) { system.start(); }
+    hgm::ParallelFor get() {
+        return [this](size_t n, const std::function<void(size_t)>& body) {
+            for (size_t i = 1; i < n; ++i)
+                system.submit(job_system::make_job<GraphTestJob>([&body, i] { body(i); },
+                                                                 GraphTestJob::Chunk));
+            if (n) body(0);
+            system.wait_for_completion();
+        };
+    }
+};
+
+// Two states and two events of SyntheticGraphSource: event 0 (0 -> 1) and event 5 (1 -> 0),
+// which has no payload.
+struct TwoStateSource : SyntheticGraphSource {
+    TwoStateSource() : SyntheticGraphSource{2, 6} {}
+    bool state_valid(uint32_t) const { return true; }
+    int64_t effective_state_id(uint32_t sid) const { return sid; }
+    bool is_valid_event(uint32_t eid) const { return eid == 0 || eid == 5; }
+};
+
+}  // namespace
+
+TEST(WxfEncoded, WritesItsBytesVerbatimAtItsPosition) {
+    wxf::WXFValueAssociation inner;
+    inner.push_back({wxf::WXFValue("A"), wxf::WXFValue(int64_t{300})});
+    inner.push_back({wxf::WXFValue("B"), wxf::WXFValue(wxf::WXFValueList{wxf::WXFValue(1.5)})});
+    wxf::Writer enc;
+    enc.write(wxf::WXFValue(inner));
+    wxf::WXFValueAssociation direct, spliced;
+    direct.push_back({wxf::WXFValue("x"), wxf::WXFValue(int64_t{1})});
+    spliced = direct;
+    direct.push_back({wxf::WXFValue("y"), wxf::WXFValue(inner)});
+    spliced.push_back({wxf::WXFValue("y"), wxf::WXFValue(wxf::Encoded{enc.release_data()})});
+    wxf::Writer a, b;
+    a.write(wxf::WXFValue(direct));
+    b.write(wxf::WXFValue(spliced));
+    EXPECT_EQ(a.data(), b.data());
+}
+
+// A StatesGraph of two states and two events, against the value tree spelled out: the state
+// payloads, one event payload, and the edge of the event with no payload, which has no Data key.
+TEST(GraphMarshalStream, StatesGraphMatchesItsValueTree) {
+    const TwoStateSource two;
+    hgm::GraphOptions opts;
+    wxf::Writer got;
+    got.write(hgm::build_graph_data(two, {"StatesGraph"}, opts));
+
+    using V = wxf::WXFValue;
+    using L = wxf::WXFValueList;
+    using A = wxf::WXFValueAssociation;
+    auto edges_of = [&](uint32_t sid) {
+        L l;
+        std::vector<std::pair<int64_t, std::vector<uint32_t>>> e;
+        two.state_edges(sid, e);
+        for (const auto& [first, vs] : e) {
+            L one{V(first)};
+            for (uint32_t v : vs) one.push_back(V(static_cast<int64_t>(v)));
+            l.push_back(V(one));
+        }
+        return V(l);
+    };
+    auto state = [&](uint32_t sid) {
+        return V(A{{V("Id"), V(int64_t(sid))}, {V("CanonicalId"), V(int64_t(sid / 2))},
+                   {V("Step"), V(int64_t(sid % 5))}, {V("Edges"), edges_of(sid)},
+                   {V("IsInitial"), V(int64_t(sid % 5 == 0))}});
+    };
+    const V event0(A{{V("Id"), V(int64_t{0})}, {V("CanonicalId"), V(int64_t{0})},
+                     {V("RuleIndex"), V(int64_t{0})}, {V("InputState"), V(int64_t{0})},
+                     {V("OutputState"), V(int64_t{1})},
+                     {V("ConsumedEdges"), V(L{V(int64_t{0}), V(int64_t{1})})},
+                     {V("ProducedEdges"), V(L{V(int64_t{2})})},
+                     {V("InputStateEdges"), edges_of(0)}, {V("OutputStateEdges"), edges_of(1)}});
+    const L edges{
+        V(A{{V("From"), V(int64_t{0})}, {V("To"), V(int64_t{1})}, {V("Type"), V("Directed")},
+            {V("Data"), event0}}),
+        V(A{{V("From"), V(int64_t{1})}, {V("To"), V(int64_t{0})}, {V("Type"), V("Directed")}})};
+    const A graph{{V("IsDelta"), V(int64_t{0})},
+                  {V("Vertices"), V(L{V(int64_t{0}), V(int64_t{1})})},
+                  {V("Edges"), V(edges)},
+                  {V("VertexData"), V(A{{V(int64_t{0}), state(0)}, {V(int64_t{1}), state(1)}})}};
+    wxf::Writer want;
+    want.write(V(A{{V("StatesGraph"), V(graph)}}));
+    EXPECT_EQ(got.data(), want.data());
+}
+
+// Every graph over 2,000 states and 3,000 events (several chunks each), at 1, 2, 8 and 16
+// workers and with the chunks run in reverse order, equals the serial build byte for byte.
+TEST(GraphMarshalStream, BytesIndependentOfThreadsAndChunkOrder) {
+    const SyntheticGraphSource src{2000, 3000};
+    for (bool dedup : {true, false}) {
+        const std::vector<uint8_t> serial = graph_bytes(src, hgm::serial_for, dedup);
+        ASSERT_GT(serial.size(), 100000u);
+        const std::vector<uint8_t> reversed = graph_bytes(
+            src,
+            [](size_t n, const std::function<void(size_t)>& body) {
+                for (size_t i = n; i-- > 0;) body(i);
+            },
+            dedup);
+        EXPECT_EQ(serial, reversed);
+        for (size_t threads : {size_t{1}, size_t{2}, size_t{8}, size_t{16}}) {
+            ThreadsFor pool(threads);
+            EXPECT_EQ(serial, graph_bytes(src, pool.get(), dedup)) << threads << " threads";
+        }
+    }
 }
