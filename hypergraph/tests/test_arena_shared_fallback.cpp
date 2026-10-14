@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <thread>
+#include <utility>
 #include <vector>
 
 // THE TWO ALLOCATION DISCIPLINES MUST NEVER BUMP ONE BLOCK.
@@ -89,20 +90,20 @@ TEST(ArenaSharedFallback, CursorAndSharedAllocationsNeverOverlap) {
 }
 
 #if defined(__linux__)
-size_t resident_bytes() {
+// Pages mapped and pages resident, from /proc/self/statm, in bytes.
+std::pair<size_t, size_t> mapped_and_resident() {
     long pages = 0, resident = 0;
     if (FILE* f = std::fopen("/proc/self/statm", "r")) {
-        if (std::fscanf(f, "%ld %ld", &pages, &resident) != 2) resident = 0;
+        if (std::fscanf(f, "%ld %ld", &pages, &resident) != 2) pages = resident = 0;
         std::fclose(f);
     }
-    return static_cast<size_t>(resident) * 4096u;
+    return {static_cast<size_t>(pages) * 4096u, static_cast<size_t>(resident) * 4096u};
 }
 #endif
 
-// A block back in the pool keeps its pages until arena_release_pooled_pages gives them back;
-// the block taken next from the pool is then zero without being filled. One 23 MB request, a
-// size class no other test in the binary asks for.
-TEST(ArenaPool, ReleasedPooledPagesComeBackZero) {
+// A block back in the pool stays mapped until arena_trim_block_pool unmaps it; an arena then
+// maps afresh, and its bytes are reported zero. One 23 MB request.
+TEST(ArenaPool, TrimUnmapsPooledBlocks) {
     constexpr size_t kBytes = size_t{23} << 20;
     {
         ConcurrentHeterogeneousArena a;
@@ -110,24 +111,20 @@ TEST(ArenaPool, ReleasedPooledPagesComeBackZero) {
         std::memset(p, 0xAB, kBytes);
     }
 #if defined(__linux__)
-    const size_t before = resident_bytes();
+    const auto before = mapped_and_resident();
 #endif
-    const size_t released = hg::engine::arena_release_pooled_pages(0);
-#if defined(__linux__) || defined(_WIN32)
-    EXPECT_GE(released, kBytes - (size_t{1} << 20));
-#endif
+    EXPECT_GE(hg::engine::arena_trim_block_pool(0), kBytes);
 #if defined(__linux__)
-    EXPECT_GE(before - std::min(before, resident_bytes()), kBytes - (size_t{1} << 20));
+    const auto after = mapped_and_resident();
+    EXPECT_GE(before.first - std::min(before.first, after.first), kBytes);
+    EXPECT_GE(before.second - std::min(before.second, after.second), kBytes - (size_t{1} << 20));
 #endif
     ConcurrentHeterogeneousArena b;
     bool zero = false;
     auto* q = static_cast<const unsigned char*>(b.allocate_raw(kBytes, 64, &zero));
-#if defined(__linux__) || defined(_WIN32)
-    EXPECT_TRUE(zero) << "the released block was not reported zero";
-#endif
+    EXPECT_TRUE(zero) << "a fresh mapping was not reported zero";
     size_t nonzero = 0;
-    if (zero)
-        for (size_t i = 0; i < kBytes; ++i) nonzero += q[i] != 0;
+    for (size_t i = 0; i < kBytes; ++i) nonzero += q[i] != 0;
     EXPECT_EQ(nonzero, 0u);
 }
 

@@ -173,13 +173,13 @@ int run_one_shot(const HostBridge& host) {
     }
 }
 
-// A finished job's arena blocks sit in the process-wide pool, resident, until an arena takes
-// them again (hypergraph/arena.hpp). A worker stays alive between jobs, so after each job it
-// gives the pooled pages back: a large job's peak is not held by an idle worker. The job's
-// engine threads have exited, and glibc keeps what they freed in their malloc arenas until
-// malloc_trim returns it.
+// A finished job's arena blocks sit in the process-wide pool, mapped and resident, until an
+// arena takes them again (hypergraph/arena.hpp). A worker stays alive between jobs, so after each
+// job it unmaps the pooled blocks beyond 64 MB, which needs the pool quiescent: the job's engine
+// threads have exited, or wait idle for a held session's next verb. glibc keeps what those
+// threads freed in their malloc arenas until malloc_trim returns it.
 void release_job_memory() {
-    hypergraph::arena_release_pooled_pages(hypergraph::kPooledBytesKeptBetweenJobs);
+    hypergraph::arena_trim_block_pool(hypergraph::kPooledBytesKeptBetweenJobs);
 #if defined(__GLIBC__)
     malloc_trim(0);
 #endif
