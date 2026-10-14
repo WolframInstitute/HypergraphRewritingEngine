@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstddef>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <unordered_map>
@@ -652,6 +653,36 @@ TEST(SamplingReproducibility, StepCapOffersOnlyTheStatesLowestRankedTransitions)
         e.evolve(std::vector<std::vector<VertexId>>{{0u, 1u}, {1u, 2u}, {2u, 3u}, {3u, 4u}, {1u, 5u}}, 1);
         EXPECT_EQ(e.step_candidates_offered(), 2u) << threads << " threads";
         EXPECT_EQ(hg.num_events(), 2u) << threads << " threads";
+    }
+}
+
+// Under MaxStatesPerStep a step's match storage is deleted when the next step settles, so at
+// most two steps' matches exist at once, and the result equals a continuable run's, which keeps
+// every match. Rule {{x,y},{y,z}} -> {{x,z},{y,z},{z,w}} from {{0,1},{1,2},{2,3},{3,4},{1,5}},
+// cap 3, 8 steps, at 1 and 16 threads.
+TEST(SamplingReproducibility, StepCapMatchStorageIsReleasedStepByStep) {
+    auto run = [](unsigned threads, bool continuable, Hypergraph& hg) {
+        auto e = std::make_unique<ParallelEvolutionEngine>(&hg, threads);
+        e->add_rule(make_rule(0).lhs({0, 1}).lhs({1, 2}).rhs({0, 2}).rhs({1, 2}).rhs({2, 3}).build());
+        e->set_max_states_per_step(3);
+        e->set_continuable(continuable);
+        e->evolve(std::vector<std::vector<VertexId>>{{0u, 1u}, {1u, 2u}, {2u, 3u}, {3u, 4u}, {1u, 5u}}, 8);
+        return e;
+    };
+    for (unsigned threads : {1u, 16u}) {
+        Hypergraph hg_kept, hg_released;
+        auto kept = run(threads, true, hg_kept);
+        auto released = run(threads, false, hg_released);
+        EXPECT_EQ(kept->match_epochs_created(), 0u) << threads << " threads";
+        EXPECT_EQ(released->match_epochs_created(), 8u) << threads << " threads";
+        EXPECT_GE(released->match_epochs_retired(), 6u) << threads << " threads";
+        EXPECT_LE(released->match_epochs_live_max(), 2u) << threads << " threads";
+        EXPECT_EQ(hg_released.num_states(), hg_kept.num_states()) << threads << " threads";
+        EXPECT_EQ(hg_released.num_events(), hg_kept.num_events()) << threads << " threads";
+        EXPECT_EQ(hg_released.observable_num_causal_edges(), hg_kept.observable_num_causal_edges())
+            << threads << " threads";
+        EXPECT_EQ(causal_fingerprint(hg_released), causal_fingerprint(hg_kept))
+            << threads << " threads";
     }
 }
 

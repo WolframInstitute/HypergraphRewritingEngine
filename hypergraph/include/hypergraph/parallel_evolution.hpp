@@ -393,8 +393,8 @@ public:
     // is not lock-free on this target -- it links against __atomic_load_16 and takes a lock.
     // The engine is lock-free throughout, so the map stores an 8-byte pointer to an
     // arena-resident record instead.
-    ConcurrentMap<uint64_t, const MatchRecord*, MATCH_MAP_EMPTY, MATCH_MAP_LOCKED>
-        seen_match_hashes_;
+    using SeenMatchMap = ConcurrentMap<uint64_t, const MatchRecord*, MATCH_MAP_EMPTY, MATCH_MAP_LOCKED>;
+    SeenMatchMap seen_match_hashes_;
 
     // Probes attempted before a collision is treated as unresolvable. A single collision is
     // already astronomically unlikely; needing this many consecutive ones is not a scenario that
@@ -444,10 +444,18 @@ public:
 
     template <typename MakeStable>
     bool claim_match(uint64_t h, const MatchRecord& rec, MakeStable&& make_stable) {
+        return claim_match_in(seen_match_hashes_, h, rec, make_stable);
+    }
+
+    // claim_match against `seen`: seen_match_hashes_, or the dedup set of a match epoch.
+    template <typename MakeStable>
+    bool claim_match_in(SeenMatchMap& seen, uint64_t h, const MatchRecord& rec,
+                        MakeStable&& make_stable) {
         // The storage face hgcommon::dedup_claim drives: which set, which probe-key derivation,
         // which content comparison, which counters move. Nothing here decides anything.
         struct Ops {
             ParallelEvolutionEngine* self;
+            SeenMatchMap&            seen;
             uint64_t                 h;
             const MatchRecord&       rec;
             MakeStable&              make;
@@ -457,9 +465,9 @@ public:
             uint64_t probe_key(uint32_t n) const { return dedup_probe_key(h, n); }
 
             hgcommon::ProbeState probe(uint64_t key) const {
-                auto seen = self->seen_match_hashes_.lookup(key);
-                if (!seen) return hgcommon::ProbeState::Miss;
-                if (*seen && match_records_equal(**seen, rec))
+                auto found = seen.lookup(key);
+                if (!found) return hgcommon::ProbeState::Miss;
+                if (*found && match_records_equal(**found, rec))
                     return hgcommon::ProbeState::Duplicate;
                 return hgcommon::ProbeState::Collision;
             }
@@ -473,7 +481,7 @@ public:
             }
 
             hgcommon::ClaimState offer(uint64_t key) {
-                auto [existing, inserted] = self->seen_match_hashes_.insert_if_absent(key, stable);
+                auto [existing, inserted] = seen.insert_if_absent(key, stable);
                 if (inserted) return hgcommon::ClaimState::Won;
                 if (existing && match_records_equal(*existing, rec)) {
                     HG_STAT(self->dedup_allocs_wasted_.fetch_add(1, std::memory_order_relaxed));
@@ -489,7 +497,7 @@ public:
                 HG_STAT(self->dedup_probe_exhaustions_.fetch_add(1, std::memory_order_relaxed));
             }
         };
-        Ops ops{this, h, rec, make_stable};
+        Ops ops{this, seen, h, rec, make_stable};
         return hgcommon::dedup_claim(ops);
     }
 
@@ -755,10 +763,51 @@ private:
     struct RankedMatch {
         uint64_t rank;
         uint64_t key;
-        const MatchRecord* match;   // in the state's stored list, which outlives the run
+        const MatchRecord* match;   // in the state's stored list
     };
-    // Each depth's slot carries that step's MaxStatesPerStep candidates (select_step).
-    hgcommon::DepthJoinT<hgcommon::GrowingDepthSlots<LockFreeList<RankedMatch>>> depth_join_;
+
+    // MATCH STORAGE BY STEP. When match_epochs_on_ is set, everything a match task at step t
+    // allocates for its matches -- each new match's MatchCore and stable MatchRecord, the dedup
+    // entry, the state's stored list and its nodes, the step's MaxStatesPerStep candidates and a
+    // wide state's chunk array -- lives in step t's epoch, which is deleted when step t + 1
+    // settles. Every reader of that memory is a task booked at t (the state's match tasks and
+    // drain, and the rewrites submitted at the drain or on arrival) or at t + 1 (select_step and
+    // its rewrites), and step t + 1 settles only after all of them have finished. A match
+    // epoch's dedup set holds only step t's matches: the dedup key includes the source state,
+    // and a state's match tasks all run at one step.
+    static constexpr size_t kMatchEpochBlockBytes = 256 * 1024;
+    struct MatchEpoch {
+        ConcurrentHeterogeneousArena arena{kMatchEpochBlockBytes};
+        SeenMatchMap seen{SeenMatchMap::LAZY_INITIAL_CAPACITY, &arena};
+    };
+    // A depth's per-step datum: its MaxStatesPerStep candidates (select_step) and its match
+    // epoch, created by the first task that needs it.
+    struct DepthExtra {
+        LockFreeList<RankedMatch> candidates;
+        std::atomic<MatchEpoch*> epoch{nullptr};
+        ~DepthExtra() { delete epoch.load(std::memory_order_acquire); }
+    };
+    hgcommon::DepthJoinT<hgcommon::GrowingDepthSlots<DepthExtra>> depth_join_;
+    // Set at evolve() when no continuation is recorded, matches are not forwarded (a forwarded
+    // record points at a MatchCore found steps earlier), the depth join runs and the forwarding
+    // validator is off. Off, matches live in the hypergraph's arena and seen_match_hashes_.
+    bool match_epochs_on_{false};
+    void begin_match_epochs();
+    // Step t's epoch, created on first use; null when match epochs are off or depth t has no slot.
+    MatchEpoch* match_epoch(uint32_t step);
+    ConcurrentHeterogeneousArena& match_arena(uint32_t step);
+    SeenMatchMap& seen_matches(uint32_t step);
+    // Delete step t's epoch and empty its candidate list (depth_settled of t + 1).
+    void retire_match_epoch(uint32_t step);
+    // Empty a depth's candidate list and delete its epoch; true when there was one. Quiescent
+    // for that depth: no task reads or allocates in it.
+    bool drop_match_epoch(DepthExtra& x);
+    // Stats builds: epochs created, epochs deleted at their successor's settle, and the most
+    // alive at once.
+    std::atomic<size_t> match_epochs_created_{0};
+    std::atomic<size_t> match_epochs_retired_{0};
+    std::atomic<size_t> match_epochs_live_{0};
+    std::atomic<size_t> match_epochs_live_max_{0};
     // Whether the depth join runs: for the caller's hook where the arrival invariant it needs
     // holds (see the note on set_on_depth_complete), and always under MaxStatesPerStep.
     bool depth_signal_available_{false};
@@ -979,6 +1028,9 @@ public:
 #if HG_ENGINE_STATS
     size_t states_drained() const;
     size_t step_candidates_offered() const;
+    size_t match_epochs_created() const;
+    size_t match_epochs_retired() const;
+    size_t match_epochs_live_max() const;
 #endif
 
     // Matches this state has accepted so far. Read inside the drain callback it is that state's
@@ -1194,10 +1246,12 @@ public:
 
 private:
     // Helper: Get or create the match list for a state (thread-safe)
-    LockFreeList<MatchRecord>* get_or_create_state_matches(StateId state);
+    LockFreeList<MatchRecord>* get_or_create_state_matches(StateId state,
+                                                           ConcurrentHeterogeneousArena& arena);
 
-    // Helper: Store a match for a state (for later forwarding)
-    void store_match_for_state(StateId state, MatchRecord& match);
+    // Store a match on its state, in match_arena(step): `step` is the step of the state's match
+    // tasks.
+    void store_match_for_state(StateId state, MatchRecord& match, uint32_t step);
 
     // Helper: Get or create the children list for a state (thread-safe)
     LockFreeList<ChildInfo>* get_or_create_state_children(StateId state);
@@ -1346,7 +1400,8 @@ private:
     // releases when it finishes, so the rewrites it submits land on a step that has not settled.
     // Nothing waits: the selection is a task the join's report submits.
     LockFreeList<RankedMatch>* step_candidates(uint32_t step) const {
-        return depth_join_.storage().find_extra(step);
+        DepthExtra* x = depth_join_.storage().find_extra(step);
+        return x ? &x->candidates : nullptr;
     }
     void select_step(uint32_t step);
     // The join's report of a settled depth: the per-step selection, then the caller's hook.

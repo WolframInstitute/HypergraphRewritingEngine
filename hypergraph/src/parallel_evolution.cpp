@@ -118,6 +118,7 @@ void ParallelEvolutionEngine::evolve(
     should_stop_.store(false, std::memory_order_relaxed);
     configure_identity_and_quotient();
     reset_depth_join();
+    begin_match_epochs();
 
     // Create initial state
     std::vector<EdgeId> edge_ids;
@@ -229,6 +230,7 @@ void ParallelEvolutionEngine::evolve(
     configure_identity_and_quotient();
 
     reset_depth_join();
+    begin_match_epochs();
 
     // Create all initial states, then submit them: every initial class is recorded
     // (note_initial_class) before any task can read the record.
@@ -306,6 +308,10 @@ void ParallelEvolutionEngine::finalize_evolution() {
     // CRITICAL: Acquire fence to ensure all writes from worker threads are visible
     // This pairs with release semantics of atomic operations in worker threads
     std::atomic_thread_fence(std::memory_order_acquire);
+
+    // The steps the run ended on never settle past their successor, so their epochs go here.
+    if (match_epochs_on_)
+        depth_join_.storage().for_each_extra([this](DepthExtra& x) { drop_match_epoch(x); });
 
     // Emit visualization event for evolution completion
 #ifdef HYPERGRAPH_ENABLE_VISUALIZATION
@@ -405,7 +411,8 @@ void ParallelEvolutionEngine::note_initial_class(StateId raw_state) {
     initial_classes_.push_back(hg_->get_or_compute_canonical_hash(raw_state));
 }
 
-LockFreeList<MatchRecord>* ParallelEvolutionEngine::get_or_create_state_matches(StateId state) {
+LockFreeList<MatchRecord>* ParallelEvolutionEngine::get_or_create_state_matches(
+        StateId state, ConcurrentHeterogeneousArena& arena) {
     const uint64_t key = id_key(state);
 
     // First, try to look up existing list
@@ -415,7 +422,7 @@ LockFreeList<MatchRecord>* ParallelEvolutionEngine::get_or_create_state_matches(
     }
 
     // Need to create - allocate new list from arena
-    auto* new_list = hg_->arena().template create<LockFreeList<MatchRecord>>();
+    auto* new_list = arena.template create<LockFreeList<MatchRecord>>();
 
     // Try to insert - if another thread beat us, use theirs
     auto [existing, inserted] = state_matches_.insert_if_absent(key, new_list);
@@ -426,12 +433,14 @@ LockFreeList<MatchRecord>* ParallelEvolutionEngine::get_or_create_state_matches(
 
 void ParallelEvolutionEngine::store_match_for_state(
     StateId state,
-    MatchRecord& match
+    MatchRecord& match,
+    uint32_t step
 ) {
     // Read at this state's drain, by inherit_from_parent for each child and by the drain's cap
     // and spine. The drain is ordered after every store through the MatchJoin counters.
-    LockFreeList<MatchRecord>* list = get_or_create_state_matches(state);
-    list->push(match, hg_->arena());
+    ConcurrentHeterogeneousArena& arena = match_arena(step);
+    LockFreeList<MatchRecord>* list = get_or_create_state_matches(state, arena);
+    list->push(match, arena);
 
     // A match becomes findable on a state exactly here, whichever delivery
     // brought it, so this is the one place a renderer can be told about every
@@ -554,7 +563,7 @@ void ParallelEvolutionEngine::inherit_from_parent(StateId parent, const ChildInf
                 })) return;
             HG_STAT(total_matches_found_.fetch_add(1, std::memory_order_relaxed));
             HG_STAT(stats_.mine().matches_forwarded.bump(1));
-            store_match_for_state(child.child_state, forwarded);
+            store_match_for_state(child.child_state, forwarded, child_step);
             submit_rewrite_task(forwarded, child_step);
         });
     }
@@ -723,7 +732,7 @@ void ParallelEvolutionEngine::dispatch_expansion(StateId state, uint32_t step,
 
     // Wide state. The match records outlive this frame, so they move to the arena; every
     // chunk then reads one shared immutable array.
-    MatchRecord* shared = hg_->arena().template allocate_array<MatchRecord>(count);
+    MatchRecord* shared = match_arena(step).template allocate_array<MatchRecord>(count);
     for (size_t i = 0; i < count; ++i) shared[i] = matches[i];
 
     // Submit the tail first and keep the head for this thread. The submitted chunks are
@@ -921,7 +930,7 @@ void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
             n, max_states_per_step_,
             [&](uint64_t a, uint64_t b) { return ranked_tied(cands[a], cands[b]); }));
         if (auto* list = step_candidates(step)) {
-            for (size_t i = 0; i < m; ++i) list->push(cands[i], hg_->arena());
+            for (size_t i = 0; i < m; ++i) list->push(cands[i], match_arena(step));
             HG_STAT(step_candidates_offered_.fetch_add(m, std::memory_order_relaxed));
         }
         return;
@@ -958,6 +967,8 @@ void ParallelEvolutionEngine::select_step(uint32_t step) {
 }
 
 void ParallelEvolutionEngine::depth_settled(uint32_t depth) {
+    // Step depth - 1's tasks and its selection's rewrites have all finished (see MatchEpoch).
+    if (match_epochs_on_ && depth >= 1) retire_match_epoch(depth - 1);
     if (max_states_per_step_ != 0 && depth + 1 < depth_join_.depths() &&
         depth_join_.arrived(depth)) {
         // Runs on step depth + 1's hold, pushed when the first task arrived at this depth, and
@@ -1314,7 +1325,64 @@ void ParallelEvolutionEngine::reset_depth_join() {
                               max_states_per_step_ != 0;
     const size_t depths = std::min<size_t>(max_steps_ + 2, std::numeric_limits<uint32_t>::max());
     depth_join_.seat(static_cast<uint32_t>(depths));
-    depth_join_.storage().for_each_extra([](LockFreeList<RankedMatch>& l) { l.reset(); });
+    depth_join_.storage().for_each_extra([this](DepthExtra& x) { drop_match_epoch(x); });
+    match_epochs_on_ = false;
+}
+
+// Called by evolve() after reset_depth_join, with no task live.
+void ParallelEvolutionEngine::begin_match_epochs() {
+    match_epochs_on_ = !continuable_ && !enable_match_forwarding_ && depth_signal_available_ &&
+                       !validate_match_forwarding_;
+}
+
+ParallelEvolutionEngine::MatchEpoch* ParallelEvolutionEngine::match_epoch(uint32_t step) {
+    if (!match_epochs_on_) return nullptr;
+    DepthExtra* x = depth_join_.storage().find_extra(step);
+    if (!x) return nullptr;
+    MatchEpoch* e = x->epoch.load(std::memory_order_acquire);
+    if (e) return e;
+    // First use of step `step`: install one, and a thread that loses deletes its own.
+    auto* fresh = new MatchEpoch();
+    if (x->epoch.compare_exchange_strong(e, fresh, std::memory_order_acq_rel,
+                                         std::memory_order_acquire)) {
+        HG_STAT(match_epochs_created_.fetch_add(1, std::memory_order_relaxed));
+        HG_STAT({
+            const size_t live = match_epochs_live_.fetch_add(1, std::memory_order_relaxed) + 1;
+            size_t seen = match_epochs_live_max_.load(std::memory_order_relaxed);
+            while (live > seen &&
+                   !match_epochs_live_max_.compare_exchange_weak(seen, live,
+                                                                 std::memory_order_relaxed)) {}
+        });
+        return fresh;
+    }
+    delete fresh;
+    return e;
+}
+
+ConcurrentHeterogeneousArena& ParallelEvolutionEngine::match_arena(uint32_t step) {
+    MatchEpoch* e = match_epoch(step);
+    return e ? e->arena : hg_->arena();
+}
+
+ParallelEvolutionEngine::SeenMatchMap& ParallelEvolutionEngine::seen_matches(uint32_t step) {
+    MatchEpoch* e = match_epoch(step);
+    return e ? e->seen : seen_match_hashes_;
+}
+
+void ParallelEvolutionEngine::retire_match_epoch(uint32_t step) {
+    DepthExtra* x = depth_join_.storage().find_extra(step);
+    if (!x) return;
+    [[maybe_unused]] const bool dropped = drop_match_epoch(*x);
+    HG_STAT(if (dropped) match_epochs_retired_.fetch_add(1, std::memory_order_relaxed));
+}
+
+bool ParallelEvolutionEngine::drop_match_epoch(DepthExtra& x) {
+    x.candidates.reset();
+    MatchEpoch* e = x.epoch.exchange(nullptr, std::memory_order_acq_rel);
+    if (!e) return false;
+    delete e;
+    HG_STAT(match_epochs_live_.fetch_sub(1, std::memory_order_relaxed));
+    return true;
 }
 
 // Under MaxStatesPerStep step s's selection runs on a hold at s + 1 (depth_settled), pushed by
@@ -1809,10 +1877,11 @@ void ParallelEvolutionEngine::execute_match_task(
         // produced edges k times, once anchored on each), so they are answered by a lookup
         // first and never reach the promotion.
         uint64_t h = match.hash();
-        if (!claim_match(h, match, [&] {
+        if (!claim_match_in(seen_matches(step), h, match, [&] {
                 // Reached only when the match may be new, so a duplicate never promotes.
-                match.core = hg_->arena().template create<MatchCore>(core_tmp);
-                return hg_->arena().template create<MatchRecord>(match);
+                ConcurrentHeterogeneousArena& arena = match_arena(step);
+                match.core = arena.template create<MatchCore>(core_tmp);
+                return arena.template create<MatchRecord>(match);
             })) {
             HG_STAT(rejected_duplicates_.fetch_add(1, std::memory_order_relaxed));
             return;
@@ -1824,7 +1893,7 @@ void ParallelEvolutionEngine::execute_match_task(
 
         DEBUG_LOG("NEW state=%u rule=%u hash=%lu step=%u", state, rule_index, h, step);
 
-        if (records_own_matches() && !batched_matching_) store_match_for_state(state, match);
+        if (records_own_matches() && !batched_matching_) store_match_for_state(state, match, step);
 
         // Thin this transition. Same reason forwarding above is unaffected: dropping the
         // transition (S -> S') does not drop the match, and the same match at a different
@@ -1912,7 +1981,7 @@ void ParallelEvolutionEngine::execute_match_task(
     // Phase 2: Store all matches, then spawn all REWRITEs (BATCHED MODE ONLY)
     if (batched_matching_) {
         if (records_own_matches()) {
-            for (size_t i = 0; i < batch.size(); ++i) store_match_for_state(state, batch[i]);
+            for (size_t i = 0; i < batch.size(); ++i) store_match_for_state(state, batch[i], step);
         }
 
         dispatch_expansion(state, step, batch.data(), batch.size());
@@ -2201,10 +2270,11 @@ bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRe
     uint64_t h = match.hash();
     // Content dedup, with the same shape as the other claim sites: answer a true duplicate from
     // a lookup so it costs no arena, and only promote when the match may be new.
-    if (!claim_match(h, match, [&] {
+    if (!claim_match_in(seen_matches(data.step), h, match, [&] {
             // Reached only when the match may be new, so a duplicate never promotes.
-            match.core = hg_->arena().template create<MatchCore>(core_tmp);
-            return hg_->arena().template create<MatchRecord>(match);
+            ConcurrentHeterogeneousArena& arena = match_arena(data.step);
+            match.core = arena.template create<MatchCore>(core_tmp);
+            return arena.template create<MatchRecord>(match);
         })) {
         HG_STAT(rejected_duplicates_.fetch_add(1, std::memory_order_relaxed));
         HG_STAT(match_join_for(data.state)->trace.fetch_or(128u, std::memory_order_relaxed));
@@ -2220,7 +2290,7 @@ bool ParallelEvolutionEngine::complete_match(const ExpandTaskData& data, MatchRe
 
     DEBUG_LOG("SINK state=%u rule=%u hash=%lu step=%u", data.state, data.rule_index, h, data.step);
 
-    if (records_own_matches()) store_match_for_state(data.state, match);
+    if (records_own_matches()) store_match_for_state(data.state, match, data.step);
 
     // Thinned out: the caller gets nothing to expand. Returning false here is not "duplicate"
     // -- it is "not yours to rewrite", which is the same instruction to the caller.
@@ -2380,6 +2450,15 @@ bool ParallelEvolutionEngine::depth_signal_available() const { return !explore_f
 size_t ParallelEvolutionEngine::states_drained() const { return states_drained_.load(std::memory_order_relaxed); }
 size_t ParallelEvolutionEngine::step_candidates_offered() const {
     return step_candidates_offered_.load(std::memory_order_relaxed);
+}
+size_t ParallelEvolutionEngine::match_epochs_created() const {
+    return match_epochs_created_.load(std::memory_order_relaxed);
+}
+size_t ParallelEvolutionEngine::match_epochs_retired() const {
+    return match_epochs_retired_.load(std::memory_order_relaxed);
+}
+size_t ParallelEvolutionEngine::match_epochs_live_max() const {
+    return match_epochs_live_max_.load(std::memory_order_relaxed);
 }
 #endif
 
