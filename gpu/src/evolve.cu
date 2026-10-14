@@ -10,6 +10,7 @@
 #include "hg_gpu/cuda_check.hpp"
 #include "hg_gpu/device_probe.hpp"
 #include "hgcommon/quotient_route.hpp"
+#include "hgcommon/tuning.hpp"
 
 #include <cuda_runtime.h>
 
@@ -988,7 +989,9 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
 // over.
 uint64_t resolved_memory_cap(uint64_t requested) {
     if (requested != 0) return requested;
-    return static_cast<uint64_t>(static_cast<double>(usable_device().total_bytes) * 0.90);
+    return static_cast<uint64_t>(hgcommon::tuned(hgcommon::TuningOverrides{}, hgcommon::Tune::GpuMemoryLimit, [] {
+        return static_cast<uint64_t>(static_cast<double>(usable_device().total_bytes) * 0.90);
+    }));
 }
 
 template <class Attempt>

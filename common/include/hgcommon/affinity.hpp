@@ -199,5 +199,10 @@ const HostTopology& host_topology();
 // measured 46 ms against 66 ms at 24 workers on an i9-14900K (fork-join microbenchmark).
 std::vector<unsigned> default_worker_cpus();
 
+// THE WORKER COUNT WHEN THE CALLER NAMES NONE: HG_TUNE_THREADS when set, else the logical CPUs this
+// process may run on (all of them where the platform lists none), at most `derived_cap`. The cap
+// applies to the derived count only.
+unsigned default_worker_count(unsigned derived_cap = ~0u);
+
 }  // namespace common
 }  // namespace HG_NAMESPACE

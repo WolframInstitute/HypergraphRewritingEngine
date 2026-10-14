@@ -125,6 +125,9 @@ struct GpuJob {
     // The step cap counts transitions ("MatchesPerStep") rather than successor states. Set after
     // the job is built.
     bool step_cap_counts_matches = false;
+    // "Threads": the host workers of the reply's StepStatistics; 0 is the default count
+    // (hgcommon::default_worker_count). Set after the job is built.
+    unsigned threads = 0;
 };
 
 // Run the job on the GPU (hg_gpu::evolve) and marshal the result into the same

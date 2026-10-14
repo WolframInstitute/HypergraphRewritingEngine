@@ -26,6 +26,8 @@ Options[HGEvolve] = {
   "RuleWeights" -> {},  (* Per-rule multipliers on "TransitionRate", in rule order. {} weights every rule equally. A short list is a partial override: rules past its end take 1. Composes with the rate rather than replacing it, so "TransitionRate" -> 1 with weights {1, 0} still samples \[LongDash] rule 2 is dropped and rule 1 is untouched. Applies on both devices; the weights are uploaded with the run. *)
   "ExploreFromCanonicalStatesOnly" -> False,  (* Only explore from canonical state representatives *)
   "TargetDevice" -> "CPU",  (* "CPU" | "GPU" | {"GPU", "Strict" -> True} (like NetTrain[]). "GPU" runs the bundled hg_evolve_gpu binary; when the binary is missing or the machine has no usable NVIDIA device, the call runs on the CPU with HGEvolve::gpudev. {"GPU", "Strict" -> True} returns $Failed with HGEvolve::nogpu instead. The GPU engine honors CanonicalizeStates (None | Automatic | Full) and its state counts match the CPU's in every mode. *)
+  "Threads" -> Automatic,  (* Worker threads of the CPU engine. Automatic: HG_TUNE_THREADS when set, else one per logical CPU this process may use. *)
+  "Tuning" -> <||>,  (* Expert overrides of derived tuning values, by name (docs/TUNING.md); an unknown name is skipped with HGEvolve::warn. *)
   "ShowProgress" -> False,
   "ShowGenesisEvents" -> False,
   "DebugFFI" -> False,
@@ -1119,6 +1121,8 @@ hgJobOptions[ov_, requiredData_, graphProperties_] := Module[{branchialStepValue
     (* The seed the sampling draws use. Automatic draws one from the kernel's random generator,
        as RandomSeeding -> Automatic does, so SeedRandom makes an unseeded call repeatable. *)
     "RandomSeed" -> Replace[ov["RandomSeed"], Automatic :> RandomInteger[{0, 2^62}]],
+    "Threads" -> Replace[ov["Threads"], Automatic -> 0],
+    "Tuning" -> ov["Tuning"],
     "ExploreFromCanonicalStatesOnly" -> ov["ExploreFromCanonicalStatesOnly"],
     "ShowProgress" -> ov["ShowProgress"],
     "ShowGenesisEvents" -> ov["ShowGenesisEvents"],

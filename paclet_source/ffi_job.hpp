@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "hgcommon/quotient_multiplicity_core.hpp"
+#include "hgcommon/tuning.hpp"
 #include "hypergraph/types.hpp"
 
 namespace HG_NAMESPACE {
@@ -75,6 +76,9 @@ struct ParsedJob {
     bool explore_from_canonical_states_only = false;  // Exploration deduplication
     // ir_verification and return_canonical_states are derived from state_canon_mode == Full
     uint64_t random_seed = 0;     // 0: a fresh seed per run; nonzero fixes the sample
+    // "Threads" and "Tuning": the expert overrides of the derived tuning values
+    // (hgcommon/tuning.hpp). Unset names take HG_TUNE_* or the derived value.
+    hgcommon::TuningOverrides tuning;
     // With matches_per_step, the N lowest-ranked transitions of each step ("MatchesPerStep"
     // replaces "MaxStatesPerStep"); without it matches_per_step has no effect.
     bool uniform_random = false;

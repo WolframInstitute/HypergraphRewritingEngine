@@ -1,4 +1,5 @@
 #include "hgcommon/affinity.hpp"
+#include "hgcommon/tuning.hpp"
 
 // The affinity body, and the platform headers it calls into. affinity.hpp names only the backend
 // SELECTION, so a translation unit that pins parses <cstddef> rather than windows.h or sched.h.
@@ -587,6 +588,17 @@ std::vector<unsigned> default_worker_cpus() {
     packed.reserve(kept.size());
     for (size_t i : idx) packed.push_back(kept[i]);
     return packed;
+}
+
+unsigned default_worker_count(unsigned derived_cap) {
+    return static_cast<unsigned>(tuned(TuningOverrides{}, Tune::Threads, [&] {
+        const HostTopology& t = host_topology();
+        unsigned n = 0;
+        for (const auto& e : t.cpus) n += e.allowed ? 1u : 0u;
+        if (n == 0) n = t.logical_cpus;
+        if (n == 0) n = std::thread::hardware_concurrency();
+        return std::max(1u, std::min(n, derived_cap));
+    }));
 }
 
 }  // namespace common

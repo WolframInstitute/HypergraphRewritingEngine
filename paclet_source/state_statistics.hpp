@@ -213,13 +213,14 @@ private:
     std::map<uint32_t, std::unique_ptr<Step>> steps_;
 };
 
-// The reply of `inputs`, built by StepStatisticsJobs on a job system of the host's hardware
-// threads, for a reply whose run had no host engine (the GPU backend). A step of at least
-// `device_min_states` states has its overlap rows counted by `device_rows` when it can.
+// The reply of `inputs`, built by StepStatisticsJobs on a job system of `threads` workers (0 is
+// hgcommon::default_worker_count), for a reply whose run had no host engine (the GPU backend). A
+// step of at least `device_min_states` states has its overlap rows counted by `device_rows` when
+// it can.
 wxf::WXFValue step_statistics_on_host(std::map<uint32_t, StepInput> inputs,
                                       bool weight_by_classes, uint32_t which,
                                       StepStatisticsJobs::DeviceRows device_rows = nullptr,
-                                      uint32_t device_min_states = 0);
+                                      uint32_t device_min_states = 0, unsigned threads = 0);
 
 }  // namespace stats
 }  // namespace HG_NAMESPACE

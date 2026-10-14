@@ -939,7 +939,7 @@ public:
                        bool serial = false)
         : injector_(HG_JOB_INJECTOR_CAPACITY),
           num_threads_(serial ? 0
-                              : (num_threads == 0 ? std::thread::hardware_concurrency()
+                              : (num_threads == 0 ? hgcommon::default_worker_count()
                                                   : num_threads)),
           queue_capacity_(queue_capacity == 0 ? HG_JOB_QUEUE_CAPACITY : queue_capacity),
           serial_(serial) {

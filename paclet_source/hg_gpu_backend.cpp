@@ -4,6 +4,7 @@
 #include <algorithm>
 
 #include "hg_gpu/device_probe.hpp"
+#include "hgcommon/affinity.hpp"   // default_worker_count
 #include "hg_gpu/evolve.hpp"
 #include "hg_gpu/branchial_rows.hpp"
 #include "hgcommon/quotient_replay_core.hpp"
@@ -899,6 +900,12 @@ std::vector<uint8_t> run_gpu_evolution_once(const GpuJob& request, const HostBri
         device.push_back({wxf::WXFValue("ComputeCapability"),
                           wxf::WXFValue(std::to_string(probe.major) + "." +
                                         std::to_string(probe.minor))});
+        device.push_back({wxf::WXFValue("MemoryCap"),
+                          wxf::WXFValue(static_cast<int64_t>(
+                              hg_gpu::resolved_memory_cap(in.max_device_memory_bytes)))});
+        device.push_back({wxf::WXFValue("Threads"),
+                          wxf::WXFValue(static_cast<int64_t>(
+                              job.threads ? job.threads : hgcommon::default_worker_count()))});
         full_result.push_back({wxf::WXFValue("Device"), wxf::WXFValue(device)});
     }
 
@@ -1030,7 +1037,7 @@ std::vector<uint8_t> run_gpu_evolution_once(const GpuJob& request, const HostBri
         full_result.push_back({wxf::WXFValue("StepStatistics"),
                                hg::stats::step_statistics_on_host(
                                    std::move(inputs), job.step_statistics_by_class, which,
-                                   device_rows, 2048)});
+                                   device_rows, 2048, job.threads)});
     }
 
     // GraphData for the requested *Graph properties, built through the SAME shared

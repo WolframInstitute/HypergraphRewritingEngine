@@ -156,7 +156,7 @@ void DeliveryCursor::reset() { by_property_.clear(); }
 // =============================================================================
 
 CpuEngineHolder::CpuEngineHolder(bool continuable, unsigned threads)
-    : engine_(&hg_, threads ? threads : 1u) {
+    : engine_(&hg_, threads) {
     engine_.set_continuable(continuable);
 }
 
@@ -1539,8 +1539,8 @@ enum class HostStatsJob { Step };
 wxf::WXFValue step_statistics_on_host(std::map<uint32_t, StepInput> inputs,
                                       bool weight_by_classes, uint32_t which,
                                       StepStatisticsJobs::DeviceRows device_rows,
-                                      uint32_t device_min_states) {
-    job_system::JobSystem<HostStatsJob> system(std::thread::hardware_concurrency());
+                                      uint32_t device_min_states, unsigned threads) {
+    job_system::JobSystem<HostStatsJob> system(threads);
     system.start();
     StepStatisticsJobs jobs(
         weight_by_classes, which, system.get_num_workers(),

@@ -208,6 +208,32 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                             req.matches_per_state_rule = read_cap();
                         } else if (option_key == "RandomSeed") {
                             req.random_seed = static_cast<uint64_t>(option_parser.read<int64_t>());
+                        } else if (option_key == "Threads") {
+                            // 0 is Automatic: HG_TUNE_THREADS or the derived count.
+                            const int64_t n = option_parser.read<int64_t>();
+                            if (n != 0) req.tuning.set(hgcommon::Tune::Threads, n);
+                        } else if (option_key == "Tuning") {
+                            // Each key is read on its own, so one bad entry is skipped with a
+                            // warning and the others apply.
+                            option_parser.read_association([&](const std::string& name,
+                                                               wxf::Parser& p) {
+                                const size_t at = p.position();
+                                try {
+                                    const auto t = hgcommon::TuningOverrides::by_option(name);
+                                    if (!t || *t == hgcommon::Tune::Threads)
+                                        throw std::runtime_error(
+                                            "'" + name + "' is not a tuning name; the names are " +
+                                            hgcommon::TuningOverrides::option_names(
+                                                hgcommon::Tune::Threads));
+                                    req.tuning.set(*t, p.read<int64_t>());
+                                } catch (const std::exception& e) {
+                                    p.seek(at);
+                                    p.skip_value();
+                                    req.ffi_warnings.push_back(
+                                        {"OptionSkipped", 1, "Tuning entry ignored: " +
+                                                                 std::string(e.what())});
+                                }
+                            });
                         } else if (option_key == "ExplorationProbability") {
                             req.exploration_probability = finite(option_parser.read<double>());
                         } else if (option_key == "TransitionRate") {
@@ -565,7 +591,8 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
             req.explore_from_canonical_states_only,
             req.exploration_probability,
             req.random_seed,
-            0,  // max_device_memory_bytes: default (90% VRAM) resolved by the GPU engine
+            // 0: HG_TUNE_GPU_MEMORY_LIMIT or the derived cap (resolved_memory_cap).
+            static_cast<uint64_t>(req.tuning.get(hgcommon::Tune::GpuMemoryLimit).value_or(0)),
             req.transition_rate,
             req.rule_weights,
             effective_max_states_per_step(req),
@@ -598,6 +625,7 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
         };
         job.step_statistics_by_class = req.step_statistics_by_class;
         job.include_device = req.include_device;
+        job.threads = static_cast<unsigned>(req.tuning.get(hgcommon::Tune::Threads).value_or(0));
         job.step_statistics_branchial = branchial;
         job.step_cap_counts_matches = step_cap_counts_matches(req);
         if (req.show_progress) {
@@ -952,7 +980,9 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                     " is not held by this binary's engine");
         } else {
             engine_holder =
-                std::make_unique<hgffi::CpuEngineHolder>(/*continuable=*/opening_session);
+                std::make_unique<hgffi::CpuEngineHolder>(
+                    /*continuable=*/opening_session,
+                    static_cast<unsigned>(req.tuning.get(hgcommon::Tune::Threads).value_or(0)));
             holder = engine_holder.get();
         }
         hypergraph::Hypergraph& hg = holder->hypergraph();
@@ -2086,6 +2116,8 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         if (req.include_device) {
             wxf::WXFValueAssociation device;
             device.push_back({wxf::WXFValue("Type"), wxf::WXFValue("CPU")});
+            device.push_back({wxf::WXFValue("Threads"),
+                              wxf::WXFValue(static_cast<int64_t>(engine.num_threads()))});
             full_result.push_back({wxf::WXFValue("Device"), wxf::WXFValue(device)});
         }
 

@@ -59,7 +59,8 @@ ParallelEvolutionEngine::ParallelEvolutionEngine(Hypergraph* hg, size_t num_thre
     // there would be a lie to anything sizing itself from num_threads().
     , num_threads_(mode == ExecutionMode::Serial
                        ? 1
-                       : (num_threads > 0 ? num_threads : std::thread::hardware_concurrency()))
+                       : (num_threads > 0 ? num_threads
+                                         : hgcommon::default_worker_count(MAX_ARENA_WORKERS)))
     , mode_(mode)
 {
     // Route every engine map's table storage through the hypergraph arena (no malloc,

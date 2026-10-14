@@ -23,6 +23,7 @@
 #include "hg_core.hpp"
 #include "hgcommon/build_stamp.hpp"
 #include "hgcommon/affinity.hpp"
+#include "hgcommon/tuning.hpp"
 #include "hypergraph/arena.hpp"
 #include "job_system/job_pool.hpp"
 #ifdef HG_GPU_BACKEND
@@ -397,8 +398,10 @@ void print_tuning() {
     for (const auto& e : t.cpus) classes += e.core_class == 0 ? 'P' : 'E';
     if (t.core_classes > 1) std::printf("host.cpu_classes        %s\n", classes.c_str());
 
-    std::printf("workers                 %u  (std::thread::hardware_concurrency)\n",
-                std::thread::hardware_concurrency());
+    std::printf("workers                 %u  (%s)\n", hgcommon::default_worker_count(HG_NAMESPACE::engine::MAX_ARENA_WORKERS),
+                hgcommon::tuning_env().get(hgcommon::Tune::Threads)
+                    ? "HG_TUNE_THREADS"
+                    : "logical CPUs this process may use; \"Threads\" per job");
     const std::vector<unsigned> placed = hgcommon::default_worker_cpus();
     if (placed.empty()) {
         std::printf("worker_placement        operating system  (default_worker_cpus: %s)\n",
@@ -434,8 +437,10 @@ void print_tuning() {
                                                             : "sm_count x 8");
         std::printf("gpu.resident_threads    %llu  (sm_count x max_threads_per_sm)\n",
                     static_cast<unsigned long long>(hgg::device_resident_threads()));
-        std::printf("gpu.memory_cap          %s  (90%% of memory_total)\n",
-                    mib(hgg::resolved_memory_cap(0)).c_str());
+        std::printf("gpu.memory_cap          %s  (%s)\n", mib(hgg::resolved_memory_cap(0)).c_str(),
+                    hgcommon::tuning_env().get(hgcommon::Tune::GpuMemoryLimit)
+                        ? "HG_TUNE_GPU_MEMORY_LIMIT"
+                        : "90%% of memory_total; \"Tuning\" -> GPUMemoryLimit per job");
     }
 #endif
 }

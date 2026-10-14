@@ -4701,3 +4701,43 @@ TEST(WxfSerializationPin, ACountsOnlyFullRunCountsTheClasses) {
     EXPECT_GT(with_states, 1);
     EXPECT_EQ(counts_only, with_states);
 }
+
+// "Threads" and the "Tuning" association reach the engine that runs the job: the "Device" reply
+// reports the worker count and, on the GPU, the memory cap. An unknown tuning name is skipped
+// with an OptionSkipped warning and the other entries still apply.
+TEST(WxfSerializationPin, TuningOverridesReachTheEngine) {
+    HostBridge host;
+    const auto out = run_rewriting_core(build_input(kSeed, kLhs, kRhs, 3,
+        [&](wxf::Writer& w) {
+            put_str_list_option(w, "RequestedData", {"Device", "NumStates"});
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("Threads"));
+            w.write(int64_t{3});
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("Tuning"));
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+            w.write_varint(2);
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("NoSuchName"));
+            w.write(int64_t{7});
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("GPUMemoryLimit"));
+            w.write(int64_t{3} << 30);
+        }, 3), host);
+    std::map<std::string, int64_t> device;
+    wxf::Parser parser(out);
+    parser.skip_header();
+    parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+        if (k != "Device") { vp.skip_value(); return; }
+        vp.read_association([&](const std::string& f, wxf::Parser& fp) {
+            if (f == "Threads" || f == "MemoryCap") device[f] = fp.read<int64_t>();
+            else fp.skip_value();
+        });
+    });
+    EXPECT_EQ(device["Threads"], 3);
+#ifdef HG_GPU_BACKEND
+    EXPECT_EQ(device["MemoryCap"], int64_t{3} << 30);
+#endif
+    EXPECT_TRUE(reply_mentions(out, "NoSuchName"));
+    EXPECT_GT(read_int_key(out, "NumStates"), 0);
+}
