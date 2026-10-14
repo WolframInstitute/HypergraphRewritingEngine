@@ -8,6 +8,7 @@
 #include "hg_gpu/persistent.hpp"
 #include "hg_gpu/rewrite.hpp"
 #include "hg_gpu/cuda_check.hpp"
+#include "hg_gpu/device_probe.hpp"
 #include "hgcommon/quotient_route.hpp"
 
 #include <cuda_runtime.h>
@@ -978,17 +979,9 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
 // qe_events reaches 288,768 and the applied pool 577,536, and the run reported needing at least
 // 354,113 / 402,555 / 390,638 more slots across its attempts: short by one doubling, three times
 // over.
-// The device-memory ceiling: explicit request, else 90% of total VRAM; 0 when the total cannot be
-// read. The total does not change, so it is queried once per process.
-static uint64_t resolved_memory_cap(uint64_t requested) {
+uint64_t resolved_memory_cap(uint64_t requested) {
     if (requested != 0) return requested;
-    static const uint64_t total_vram = [] {
-        size_t freeB = 0, totalB = 0;
-        const bool ok = cudaMemGetInfo(&freeB, &totalB) == cudaSuccess;
-        cudaGetLastError();  // clear any sticky status from the query
-        return ok ? static_cast<uint64_t>(totalB) : uint64_t{0};
-    }();
-    return static_cast<uint64_t>(static_cast<double>(total_vram) * 0.90);
+    return static_cast<uint64_t>(static_cast<double>(usable_device().total_bytes) * 0.90);
 }
 
 template <class Attempt>

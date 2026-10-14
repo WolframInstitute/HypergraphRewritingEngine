@@ -1018,6 +1018,57 @@ TEST(JobSystemAffinity, CacheDomainsPartitionTheCpusAsked) {
     }
 }
 
+// The probe describes THIS machine, so the test prints it and checks the fields agree with each
+// other. On the i9-14900K under WSL it reports 32 logical CPUs, 16 cores x 2, one class, one
+// 36 MB L3, 2 MB L2, virtualised; on bare metal the same part has 24 cores in two classes.
+TEST(JobSystemAffinity, HostTopologyIsSelfConsistent) {
+    const hgcommon::HostTopology& t = hgcommon::host_topology();
+    EXPECT_EQ(&t, &hgcommon::host_topology()) << "the probe is read once and cached";
+    std::cout << "[          ] host: " << t.model << "; " << t.logical_cpus << " logical, "
+              << t.physical_cores << " cores, SMT " << t.smt_width << ", " << t.core_classes
+              << " class(es), " << t.performance_cores << " performance cores, "
+              << t.llc_bytes.size() << " LLC domain(s) of "
+              << (t.llc_bytes.empty() ? 0 : t.llc_bytes[0] >> 10) << " KB, L2 " << (t.l2_bytes >> 10)
+              << " KB, memory " << (t.total_bytes >> 20) << " MB (" << (t.available_bytes >> 20)
+              << " MB available), huge page " << (t.huge_page_bytes >> 10) << " KB"
+              << (t.virtualised ? ", virtualised" : "") << "\n";
+#if defined(__linux__) || defined(_WIN32)
+    ASSERT_FALSE(t.cpus.empty());
+    EXPECT_EQ(t.logical_cpus, t.cpus.size());
+    EXPECT_EQ(t.logical_cpus, std::thread::hardware_concurrency());
+    EXPECT_GT(t.total_bytes, 0u);
+    EXPECT_GT(t.available_bytes, 0u);
+    EXPECT_LE(t.available_bytes, t.total_bytes);
+#endif
+    unsigned firsts = 0;
+    std::set<unsigned> cores, llcs;
+    for (size_t i = 0; i < t.cpus.size(); ++i) {
+        const auto& e = t.cpus[i];
+        if (i) EXPECT_LT(t.cpus[i - 1].cpu, e.cpu) << "cpus are listed ascending";
+        EXPECT_EQ(t.index_of(e.cpu), static_cast<int>(i));
+        EXPECT_LT(e.core_class, t.core_classes);
+        firsts += e.first_thread ? 1u : 0u;
+        cores.insert(e.core);
+        llcs.insert(e.llc);
+    }
+    if (!t.cpus.empty()) {
+        EXPECT_EQ(firsts, t.physical_cores) << "one first thread per physical core";
+        EXPECT_EQ(cores.size(), t.physical_cores);
+        EXPECT_EQ(*cores.rbegin() + 1, t.physical_cores) << "core ids are dense from zero";
+        EXPECT_LE(t.physical_cores * 1u, t.logical_cpus);
+        EXPECT_GE(t.physical_cores * t.smt_width, t.logical_cpus);
+        EXPECT_LE(t.performance_cores, t.physical_cores);
+        EXPECT_GE(t.performance_cores, 1u);
+        if (t.cache_known) {
+            EXPECT_EQ(llcs.size(), t.llc_bytes.size());
+            for (uint64_t b : t.llc_bytes) EXPECT_GT(b, 0u);
+        }
+    }
+    const std::vector<unsigned> p = hgcommon::performance_cpus();
+    EXPECT_EQ(p.empty(), t.core_classes < 2);
+    if (!p.empty()) EXPECT_EQ(p.size(), t.performance_cores);
+}
+
 TEST(JobSystemAffinity, StealsPreferAVictimSharingTheThiefsCache) {
     // A machine with one cache across every core has nothing to prefer, and most machines the
     // suite runs on are that machine -- so the grouping is STATED here rather than queried.
@@ -1080,9 +1131,8 @@ TEST(JobSystemAffinity, StatedDomainsThatGroupNothingLeaveTheDrawUndivided) {
 // one last-level cache the workers are pinned domain-major, so the domain map the engine reads
 // is the topology it runs on; on a machine with one cache domain, or one the OS cannot
 // describe, nothing is pinned and placement is the OS's. Either way no worker leaves the
-// process's CPU mask and no binding is refused. The branch is decided from the same two
-// queries the default reads, so the test states the contract on every machine rather than
-// passing only where the default happens to pin nothing.
+// process's CPU mask and no binding is refused. The pool's placement must equal
+// hgcommon::default_worker_cpus(), and the properties of that list are checked on every machine.
 TEST(JobSystemAffinity, DefaultPlacementFollowsTheTopology) {
     job_system::JobSystem<TestJobType> js(4);
     js.start();
@@ -1093,28 +1143,18 @@ TEST(JobSystemAffinity, DefaultPlacementFollowsTheTopology) {
     EXPECT_EQ(ran.load(), 32);
     EXPECT_EQ(js.pin_failures(), 0u) << "a default placement must never be refused";
 
-    std::vector<unsigned> cpus = hgcommon::performance_cpus();
-    if (cpus.empty())
-        for (unsigned c = 0; c < std::thread::hardware_concurrency(); ++c) cpus.push_back(c);
+    const std::vector<unsigned> expected = hgcommon::default_worker_cpus();
+    EXPECT_EQ(js.worker_cpus(), expected) << "the pool places its workers by default_worker_cpus()";
     const std::vector<unsigned> allowed = hgcommon::allowed_cpus();
-    if (!allowed.empty()) {
-        std::vector<unsigned> kept;
-        for (unsigned c : cpus)
-            if (std::find(allowed.begin(), allowed.end(), c) != allowed.end()) kept.push_back(c);
-        cpus = kept;
-    }
-    const std::vector<unsigned> dom = hgcommon::cache_domains_of(cpus);
-    bool many = false;
-    if (hgcommon::affinity_supported() && cpus.size() >= 2 && dom.size() == cpus.size())
-        for (size_t i = 1; i < dom.size(); ++i) if (dom[i] != dom[0]) { many = true; break; }
-
-    if (!many) {
-        EXPECT_TRUE(js.worker_cpus().empty()) << "one cache domain: placement decides nothing";
-    } else {
-        EXPECT_EQ(js.worker_cpus().size(), cpus.size()) << "every allowed CPU is placed once";
-        for (unsigned c : js.worker_cpus())
-            EXPECT_NE(std::find(cpus.begin(), cpus.end(), c), cpus.end())
-                << "worker CPU " << c << " is outside the allowed set";
+    for (unsigned c : js.worker_cpus())
+        EXPECT_TRUE(allowed.empty() || std::find(allowed.begin(), allowed.end(), c) != allowed.end())
+            << "worker CPU " << c << " is outside the allowed set";
+    const std::vector<unsigned> dom = hgcommon::cache_domains_of(js.worker_cpus());
+    for (size_t i = 1; i < dom.size(); ++i)
+        EXPECT_LE(dom[i - 1], dom[i]) << "the placement is not domain-major";
+    if (!js.worker_cpus().empty()) {
+        std::set<unsigned> d(dom.begin(), dom.end());
+        EXPECT_GT(d.size(), 1u) << "a single cache domain must leave placement to the OS";
     }
     js.shutdown();
 }

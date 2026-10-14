@@ -400,49 +400,16 @@ private:
         bool dbg = false;
         HG_STAT(dbg = std::getenv("HG_DBG_PLACEMENT") != nullptr);
         if (!worker_cpus_.empty()) return;        // a caller that named CPUs gets exactly those
-        if (!hgcommon::affinity_supported()) return;
-        // performance_cpus() names the fast cores of a HETEROGENEOUS part and is empty on a
-        // homogeneous one -- measured: it returns zero CPUs on an EPYC 9174F, where every core is
-        // the same and the question it answers does not arise. Empty therefore means "no core is
-        // preferable", not "no core is usable", so the fallback is every core.
-        // STACKING THE FAST CORES BEATS SPILLING ONTO THE SLOW ONES, measured, so a worker
-        // count beyond the performance set shares those cores through the modulo below rather
-        // than taking efficiency cores. A/B on a 14900K (8 P-cores), fork-join microbenchmark,
-        // one binary, quiet: stacked 46 ms at 24 workers against 66 ms spilled across all 24
-        // cores; 69 against 69 at 16; ~65 either way at 32. The slow cores add contention on
-        // the shared queues faster than they add work.
-        std::vector<unsigned> cpus = hgcommon::performance_cpus();
-        if (cpus.empty()) {
-            const unsigned hw = std::thread::hardware_concurrency();
-            for (unsigned c = 0; c < hw; ++c) cpus.push_back(c);
-        }
-        // Only CPUs this process was given. A taskset mask is inherited, not enforced, so a
-        // worker pinned by index would otherwise leave the caller's allowance -- and a caller
-        // confining the engine to four CPUs would get sixteen workers spread over the machine.
-        const std::vector<unsigned> allowed = hgcommon::allowed_cpus();
-        if (!allowed.empty()) {
-            std::vector<unsigned> kept;
-            for (unsigned c : cpus)
-                if (std::find(allowed.begin(), allowed.end(), c) != allowed.end()) kept.push_back(c);
-            cpus = std::move(kept);
-        }
-        if (cpus.size() < 2) return;
-        const std::vector<unsigned> dom = hgcommon::cache_domains_of(cpus);
-        if (dom.size() != cpus.size()) return;
-        bool many = false;
-        for (size_t i = 1; i < dom.size(); ++i) if (dom[i] != dom[0]) { many = true; break; }
-        if (!many) return;                        // one shared cache: placement decides nothing
-        std::vector<size_t> idx(cpus.size());
-        for (size_t i = 0; i < idx.size(); ++i) idx[i] = i;
-        std::stable_sort(idx.begin(), idx.end(),
-                         [&](size_t a, size_t b) { return dom[a] < dom[b]; });
-        std::vector<unsigned> packed;
-        packed.reserve(cpus.size());
-        for (size_t i : idx) packed.push_back(cpus[i]);
+        // The rule is hgcommon::default_worker_cpus(): the performance cores (every core on a
+        // homogeneous part) this process is allowed, domain-major, or empty when one cache covers
+        // them all. A worker count beyond that set shares it through the modulo in worker_loop.
+        std::vector<unsigned> packed = hgcommon::default_worker_cpus();
+        if (packed.empty()) return;
         if (dbg) {
+            const std::vector<unsigned> dom = hgcommon::cache_domains_of(packed);
             std::fprintf(stderr, "[placement] worker cpus, domain-major:");
             for (size_t i = 0; i < packed.size() && i < 8; ++i)
-                std::fprintf(stderr, " %u(d%u)", packed[i], dom[idx[i]]);
+                std::fprintf(stderr, " %u(d%u)", packed[i], dom[i]);
             std::fprintf(stderr, "%s (%zu cpus)\n", packed.size() > 8 ? " ..." : "", packed.size());
         }
         worker_cpus_ = std::move(packed);

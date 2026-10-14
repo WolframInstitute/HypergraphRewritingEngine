@@ -2,6 +2,7 @@
 
 #include <cuda_runtime.h>
 
+#include <stdexcept>
 #include <string>
 
 // CMAKE_CUDA_ARCHITECTURES of this build with commas, e.g. "75,80,86,89,90,100,120"
@@ -69,6 +70,14 @@ DeviceProbe run_probe() {
             p.name = prop.name;
             p.major = prop.major;
             p.minor = prop.minor;
+            p.sm_count = prop.multiProcessorCount;
+            p.max_threads_per_sm = prop.maxThreadsPerMultiProcessor;
+            p.max_blocks_per_sm = prop.maxBlocksPerMultiProcessor;
+            p.regs_per_sm = prop.regsPerMultiprocessor;
+            p.shared_per_sm = prop.sharedMemPerMultiprocessor;
+            p.shared_per_block_optin = prop.sharedMemPerBlockOptin;
+            p.l2_bytes = static_cast<uint64_t>(prop.l2CacheSize);
+            p.persisting_l2_max = static_cast<uint64_t>(prop.persistingL2CacheMaxSize);
             cudaFuncAttributes attrs{};
             const cudaError_t image_err =
                 cudaFuncGetAttributes(&attrs, reinterpret_cast<const void*>(&k_device_probe));
@@ -80,9 +89,15 @@ DeviceProbe run_probe() {
                            ")";
             } else if (image_err != cudaSuccess) {
                 p.reason = cudaGetErrorString(image_err);
+            } else {
+                size_t free_b = 0, total_b = 0;
+                if (cudaMemGetInfo(&free_b, &total_b) == cudaSuccess)
+                    p.total_bytes = static_cast<uint64_t>(total_b);
             }
         }
     }
+    cudaDriverGetVersion(&p.driver_version);
+    cudaRuntimeGetVersion(&p.runtime_version);
     cudaGetLastError();  // the failed calls above leave a non-sticky error behind
     p.usable = p.reason.empty();
     return p;
@@ -93,6 +108,12 @@ DeviceProbe run_probe() {
 const DeviceProbe& probe_device() {
     static const DeviceProbe probe = run_probe();
     return probe;
+}
+
+const DeviceProbe& usable_device() {
+    const DeviceProbe& p = probe_device();
+    if (!p.usable) throw std::runtime_error("no usable GPU: " + p.reason);
+    return p;
 }
 
 }  // namespace gpu

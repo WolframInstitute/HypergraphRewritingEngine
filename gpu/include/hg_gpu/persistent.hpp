@@ -17,6 +17,7 @@
 
 #include "hg_gpu/explore_depth.hpp"
 #include "hg_gpu/device_arena.hpp"
+#include "hg_gpu/device_probe.hpp"
 #include "hg_gpu/engine_state.hpp"
 #include "hg_gpu/exploration.hpp"
 #include "hg_gpu/ir_canon.hpp"
@@ -105,18 +106,8 @@ PersistentRunStats run_persistent_match_rewrite(EngineState& engine,
 //   per state from a device arena sized from that state's own counts
 //   (state_exact_hash_device). Arena exhaustion is a capacity overflow: recorded, partial work
 //   returned, never a coarser hash that would merge non-isomorphic states.
-// Blocks a persistent kernel launches when the caller does not choose: eight per SM.
 //
-// A persistent kernel's blocks do not retire and get replaced -- they live for the whole
-// evolution -- so the grid IS the worker count. Exposed because the IR arena has to be sized
-// from the same number: each resident worker holds its own slot, so arena demand scales with the
-// grid, and a caller sizing the arena off the state budget alone starves it as soon as the grid
-// grows. See gpu/src/persistent.cu for the sweep behind eight-per-SM.
-uint32_t default_persistent_grid();
-
-// Threads the device can hold resident: SMs x maximum threads per SM. The driver reserves the
-// per-thread stack (cudaLimitStackSize) for this many threads, whatever grid is launched.
-uint64_t device_resident_threads();
+// default_persistent_grid() and device_resident_threads() are declared in device_probe.hpp.
 
 // The largest per-thread stack (cudaFuncAttributes::localSizeBytes) among this file's kernels.
 size_t persistent_kernels_stack_bytes();

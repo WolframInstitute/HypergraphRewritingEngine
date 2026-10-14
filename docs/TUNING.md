@@ -120,6 +120,14 @@ Device, `hg_gpu::DeviceProbe` (`gpu/include/hg_gpu/device_probe.hpp`), filled fr
 
 Both structs print through one flag: `hg_evolve --print-tuning` (and `hg_evolve_gpu --print-tuning`) writes every derived value with its source, so a report from another machine carries its settings.
 
+**Implemented.** `host_topology()` lists every online CPU with its dense core id, core class and LLC id; `performance_cpus()`, `cache_domains_of()` and `default_worker_cpus()` (the job system's default placement) read it. On Linux, Intel hybrid parts without `/sys/devices/cpu_core` fall back to CPUID leaf 0x1A when CPUID.07H:EDX[15] is set. macOS fills counts, caches and memory from `sysctl` and has no per-CPU entries. `DeviceProbe` carries the fields above plus driver and runtime versions; `usable_device()` throws when the probe failed, and `default_persistent_grid`, `device_resident_threads` and `resolved_memory_cap` read it. Readings on the i9-14900K and RTX 4090:
+
+| Source | Reading |
+|---|---|
+| WSL (`hg_evolve --print-tuning`) | 32 logical, 16 cores x 2, one class, one 36 MB L3, 2 MB L2, `virtualised`; placement left to the OS (one cache domain). `lscpu` reports the same layout. CPUID leaf 0x1A reads 0 on every vCPU and the hybrid bit is clear. |
+| Windows (the same reader, cross-compiled with MinGW) | 32 logical, 24 cores, 2 classes, 8 performance cores (CPUs 0-15, SMT), 16 efficiency cores (CPUs 16-31), one 36 MB L3, 2 MB L2 |
+| `hg_evolve_gpu --print-tuning` | RTX 4090, cc 8.9, 128 SMs, 1536 threads and 24 blocks per SM, 65536 registers and 100 KB shared memory per SM, 72 MB L2, 49.5 MB persisting L2, 24564 MB; grid 1024, 196,608 resident threads, memory cap 22,107 MB. `nvidia-smi` reports cc 8.9 and 24564 MiB. |
+
 ### 2.2 Knob scheme
 
 **Proposed.** One option, `"Tuning" -> <|name -> value, ...|>`, carried in the job to `hg_evolve` and to the C++ entry points as a `TuningOverrides` struct; one environment variable per name, `HG_TUNE_<NAME>`, read once by the probe for the standalone tools. An override replaces the derived value and is echoed by `--print-tuning`. `HG_GPU_PERSISTENT_BLOCKS` stays as an alias of `HG_TUNE_GPU_BLOCKS`. Compile-time macros stay for the sizes the model checker shrinks. A separate `"Threads" -> n` option exposes the worker count, the one knob a general user needs.
