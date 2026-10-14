@@ -170,8 +170,9 @@ Boundary + tooling:
   are weighted by the multiplicity count (`Hypergraph::quotient_multiplicity`), every step's
   jobs are submitted when the run ends. A session's steps, and steps the depth join did not
   report, are submitted the same way at the reply. The reply then concatenates finished
-  records. The GPU backend runs the same jobs on a host job system after the device run; the
-  device port of the branchial pass is DEVICE_DESIGN.md 4.8.
+  records. The GPU backend runs the same jobs on a host job system after the device run, and
+  counts the overlap rows of a step of 2048 states or more on the device with the same row body
+  (`hgcommon::br_row`; DEVICE_DESIGN.md 4.8).
 - **The GPU mirrors the CPU algorithms.** Never drop a CPU data structure in a kernel
   without justification (an inverted-index skip once cost 200x).
 

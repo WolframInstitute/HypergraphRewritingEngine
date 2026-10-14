@@ -277,31 +277,32 @@ search runs one event per lane, and its scratch comes from per-warp slices.
 ### 4.8 StepStatistics branchial pass
 
 On the host the pass runs per step as job-system jobs (ARCHITECTURE.md, "StepStatistics in the
-job system"). The device port keeps the host's decomposition and its integer counts, so the reply
-stays the host's bytes:
+job system"). The GPU backend counts the overlap rows of a step of 2048 states or more on the
+device (`hg_gpu::branchial_rows_device`, gpu/src/branchial_rows.cu); the host prepares the step
+and finishes it, so the reply is the host's bytes:
 
-1. **Holders.** Per step, the (vertex, state) pairs of the step's states, sorted by vertex with
-   a segmented radix sort, give each vertex's holders in state order (CSR). Edge numbers come from
-   the same sort on the edge's vertex list hash, confirmed by comparing the lists.
-2. **Rows.** One warp per row `a`. The lanes walk `a`'s vertices and, for each, the holders above
-   `a`, adding 1 per (a, b) into a per-warp open-addressed table keyed by `b` in shared memory
-   (spilling to a global slice when a row has more than the table holds). The table's entries
-   are the row's shared-vertex counts, the host's `count[b]`.
-3. **Distances.** With "Graph", the same warp runs a breadth-first search from `a` over the
-   step's branchial adjacency (CSR, built once per step), frontier in a per-warp global slice,
-   one lane per frontier vertex; the visited marks are a per-warp epoch array so nothing is
-   cleared between rows.
-4. **Counting.** Each pair adds 1 under its `PairCounts` key (distance, |A|, |B|, shared). The
-   warp first merges its pairs in a shared-memory tally (the host's `RowTally`), then adds each
-   distinct key's count into a global hash table with one `atomicAdd` per key. Integer addition
-   commutes, so the table's contents do not depend on which warp ran which row.
-5. **Finish.** The host reads the table, orders the keys, and runs the same finish code as the
-   host route (`stats::BranchialStepWork::finish`); the summaries are over distinct keys, a
-   few thousand per step on wpp d7.
+1. **Index.** `stats::BranchialStepWork::prepare` builds the step in compressed rows
+   (`hgcommon::BrStep`): each state's vertices as dense numbers, each vertex's holders in state
+   order, and with "Graph" the branchial adjacency and the state-node maps. These are uploaded.
+2. **Rows.** One warp per row, taken from a row counter, runs `hgcommon::br_row` with `IrTile`,
+   the body the host's parts run with `IrSerial`: the lanes split each holder list above the row
+   (shared counts by `atomicAdd` into the warp's slice of a count array) and each breadth-first
+   level of the row's component (distances claimed by `atomicCAS`). A warp's slices (count and
+   touched by states, distance and queue by graph nodes) are cleared by the row that used them.
+   The warps that fit in a quarter of the free device memory run, up to 16 per SM.
+3. **Counting.** Each pair adds 1 under its key (distance, |B|, shared) in the warp's 512-slot
+   table in shared memory; a full table writes the pair as its own record. At the end of the row
+   the warp appends its entries, with |A|, to a record buffer of 4M records; rows run in batches,
+   and a batch whose records overflow the buffer runs again in halves.
+4. **Finish.** The host adds the records up per (key, |A|) and passes them to
+   `BranchialStepWork::add_counts`, then runs `finish`, as the host route does. Integer sums
+   commute, so the counts do not depend on which warp ran which row. A pair whose fields do not
+   fit the key (distance 2^16, or 2^24 vertices) sends the step back to the host rows, as does a
+   step that finds the device in use by another step's rows.
 
-The graph metrics (degree, distance, components, dimension) take the same per-source BFS and are
-counted per distance the same way. The work per step is the host's: one BFS per row plus the
-inverted-index walk, spread over warps instead of host workers.
+The graph metrics (degree, distance, components, dimension) stay in the host's `prepare`, which
+with the index is 172,949,942 of 15,383,108,429 instructions on the CPU engine's wpp d6 run with
+"StepStatisticsBranchial" All (callgrind).
 
 ## 5. Expected effect, by the rules they come from
 

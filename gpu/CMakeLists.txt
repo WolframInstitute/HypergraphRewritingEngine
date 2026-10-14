@@ -35,6 +35,7 @@ add_library(hg_gpu STATIC
     src/persistent.cu
     src/rewrite.cu
     src/content_hash.cu
+    src/branchial_rows.cu
 )
 
 

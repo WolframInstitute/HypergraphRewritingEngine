@@ -3,6 +3,7 @@
 #include "hg_gpu_backend.hpp"
 
 #include "hg_gpu/evolve.hpp"
+#include "hg_gpu/branchial_rows.hpp"
 #include "hgcommon/quotient_replay_core.hpp"
 #include "hypergraph/ir_canonicalization.hpp"
 #include "wxf.hpp"
@@ -11,6 +12,7 @@
 #include "session.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -970,9 +972,29 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
                 static_cast<int>(run_steps));
             for (auto& [step, b] : bsteps) inputs[step].branchial = std::move(b);
         }
+        // The overlap rows of a step of 2048 states or more run on the device
+        // (hg_gpu::branchial_rows_device), one step at a time; a step that finds the device in
+        // use runs its rows on the host.
+        std::atomic<bool> device_busy{false};
+        auto device_rows = [&device_busy](hg::stats::BranchialStepWork& work) {
+            if (device_busy.exchange(true, std::memory_order_acquire)) return false;
+            bool done = false;
+            try {
+                done = hg_gpu::branchial_rows_device(
+                    work.rows_view(),
+                    [&work](uint32_t distance, uint32_t size_a, uint32_t size_b, uint32_t shared,
+                            uint64_t n) { work.add_counts(distance, size_a, size_b, shared, n); });
+            } catch (...) {
+                device_busy.store(false, std::memory_order_release);
+                throw;
+            }
+            device_busy.store(false, std::memory_order_release);
+            return done;
+        };
         full_result.push_back({wxf::WXFValue("StepStatistics"),
                                hg::stats::step_statistics_on_host(
-                                   std::move(inputs), job.step_statistics_by_class, which)});
+                                   std::move(inputs), job.step_statistics_by_class, which,
+                                   device_rows, 2048)});
     }
 
     // GraphData for the requested *Graph properties, built through the SAME shared

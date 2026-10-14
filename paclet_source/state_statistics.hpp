@@ -20,6 +20,7 @@
 
 #include "hgcommon/state_invariants_core.hpp"
 #include "hgcommon/state_geometry_core.hpp"
+#include "hgcommon/branchial_rows_core.hpp"
 #include "wxf.hpp"
 
 namespace HG_NAMESPACE {
@@ -129,6 +130,12 @@ public:
     void prepare(size_t max_parts);
     size_t parts() const;
     void rows(size_t part);
+    // The overlap pass's index in compressed rows, from prepare until finish, for row counts
+    // made elsewhere (hgcommon::br_row on the device), which add_counts adds in place of rows():
+    // `n` pairs under (distance, |A|, |B|, shared). One thread at a time.
+    const hgcommon::BrStep& rows_view() const;
+    void add_counts(uint32_t distance, uint32_t size_a, uint32_t size_b, uint32_t shared,
+                    uint64_t n);
     wxf::WXFValueAssociation finish();
 
 private:
@@ -173,8 +180,12 @@ wxf::WXFValueAssociation step_record(uint32_t step, const StepInput& in, bool we
 class StepStatisticsJobs {
 public:
     using Submit = std::function<void(std::function<void()>)>;
+    // The row counts of a prepared step made off the host (BranchialStepWork::add_counts): true
+    // when every pair was added, false when nothing was and the rows run as jobs.
+    using DeviceRows = std::function<bool(BranchialStepWork&)>;
     struct Step;
-    StepStatisticsJobs(bool weight_by_classes, uint32_t which, size_t workers, Submit submit);
+    StepStatisticsJobs(bool weight_by_classes, uint32_t which, size_t workers, Submit submit,
+                       DeviceRows device_rows = nullptr, uint32_t device_min_states = 0);
     ~StepStatisticsJobs();
     StepStatisticsJobs(const StepStatisticsJobs&) = delete;
     StepStatisticsJobs& operator=(const StepStatisticsJobs&) = delete;
@@ -193,15 +204,20 @@ private:
     uint32_t which_;
     size_t workers_;
     Submit submit_;
+    DeviceRows device_rows_;
+    uint32_t device_min_states_;
     std::vector<uint32_t> initial_;
     bool have_initial_ = false;
     std::map<uint32_t, std::unique_ptr<Step>> steps_;
 };
 
 // The reply of `inputs`, built by StepStatisticsJobs on a job system of the host's hardware
-// threads, for a reply whose run had no host engine (the GPU backend).
+// threads, for a reply whose run had no host engine (the GPU backend). A step of at least
+// `device_min_states` states has its overlap rows counted by `device_rows` when it can.
 wxf::WXFValue step_statistics_on_host(std::map<uint32_t, StepInput> inputs,
-                                      bool weight_by_classes, uint32_t which);
+                                      bool weight_by_classes, uint32_t which,
+                                      StepStatisticsJobs::DeviceRows device_rows = nullptr,
+                                      uint32_t device_min_states = 0);
 
 }  // namespace stats
 }  // namespace HG_NAMESPACE

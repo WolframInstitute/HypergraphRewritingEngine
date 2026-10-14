@@ -14,6 +14,8 @@
 #include "state_statistics.hpp"
 #include "hgcommon/quotient_multiplicity_core.hpp"
 #include "hgcommon/branchial_overlap_core.hpp"
+#include "hgcommon/branchial_rows_core.hpp"
+#include "hgcommon/ir_core.hpp"
 #include "job_system/job_system.hpp"
 
 #include <algorithm>
@@ -998,8 +1000,11 @@ struct BranchialStepWork::State {
     std::vector<std::vector<uint32_t>> sets, edge_sets;
     std::vector<int64_t> ids;
     std::map<uint32_t, std::vector<uint32_t>> holders;   // vertex -> the states holding it
-    std::vector<uint32_t> to_graph, from_graph;
-    std::vector<std::vector<const std::vector<uint32_t>*>> row_holders;
+    // The step in compressed rows (hgcommon::BrStep): vertices numbered densely in `holders`
+    // order.
+    std::vector<uint32_t> size, row_off, row_vert, hold_off, hold, adj_off, adj, to_graph,
+        from_graph;
+    hgcommon::BrStep view;
     std::vector<std::unordered_map<PairCounts, uint64_t, PairCountsHash>> part;
     std::atomic<uint32_t> next_row{0};
 
@@ -1042,72 +1047,122 @@ void BranchialStepWork::prepare(size_t max_parts) {
         w.edge_sets.push_back(std::move(e));
         w.ids.push_back(id);
     }
-    const size_t k = w.sets.size();
+    const uint32_t k = static_cast<uint32_t>(w.sets.size());
     for (uint32_t i = 0; i < k; ++i)
         for (uint32_t v : w.sets[i]) w.holders[v].push_back(i);
-    // A state's index in the branchial graph, and back.
+    std::unordered_map<uint32_t, uint32_t> dense;
+    dense.reserve(w.holders.size());
+    w.hold_off.push_back(0);
+    for (const auto& [v, hs] : w.holders) {
+        dense.emplace(v, static_cast<uint32_t>(dense.size()));
+        w.hold.insert(w.hold.end(), hs.begin(), hs.end());
+        w.hold_off.push_back(static_cast<uint32_t>(w.hold.size()));
+    }
+    w.row_off.push_back(0);
+    for (uint32_t a = 0; a < k; ++a) {
+        w.size.push_back(static_cast<uint32_t>(w.sets[a].size()));
+        for (uint32_t v : w.sets[a]) w.row_vert.push_back(dense.at(v));
+        w.row_off.push_back(static_cast<uint32_t>(w.row_vert.size()));
+    }
+    hgcommon::BrStep& view = w.view;
+    view.k = k;
+    view.size = w.size.data();
+    view.row_off = w.row_off.data();
+    view.row_vert = w.row_vert.data();
+    view.hold_off = w.hold_off.data();
+    view.hold = w.hold.data();
+    view.vertices = static_cast<uint32_t>(w.holders.size());
+    // A state's node in the branchial graph, and back.
     if (const BranchialGraph* graph = w.graph_or_null()) {
-        w.from_graph.assign(graph->ids.size(), UINT32_MAX);
+        const uint32_t n = static_cast<uint32_t>(graph->ids.size());
+        w.from_graph.assign(n, hgcommon::BR_NONE);
         for (uint32_t i = 0; i < k; ++i) {
             const auto it = std::lower_bound(graph->ids.begin(), graph->ids.end(), w.ids[i]);
             const uint32_t x = it != graph->ids.end() && *it == w.ids[i]
                                    ? static_cast<uint32_t>(it - graph->ids.begin())
-                                   : UINT32_MAX;
+                                   : hgcommon::BR_NONE;
             w.to_graph.push_back(x);
-            if (x != UINT32_MAX) w.from_graph[x] = i;
+            if (x != hgcommon::BR_NONE) w.from_graph[x] = i;
         }
+        w.adj_off.push_back(0);
+        for (uint32_t x = 0; x < n; ++x) {
+            w.adj.insert(w.adj.end(), graph->adj[x].begin(), graph->adj[x].end());
+            w.adj_off.push_back(static_cast<uint32_t>(w.adj.size()));
+        }
+        view.n = n;
+        view.adj_off = w.adj_off.data();
+        view.adj = w.adj.data();
+        view.to_graph = w.to_graph.data();
+        view.from_graph = w.from_graph.data();
     }
-    w.row_holders.resize(k);
-    for (uint32_t a = 0; a < k; ++a)
-        for (uint32_t v : w.sets[a]) w.row_holders[a].push_back(&w.holders[v]);
     w.part.resize(std::min<size_t>(k / 64 + 1, std::max<size_t>(1, max_parts)));
 }
 
 size_t BranchialStepWork::parts() const { return s_->part.size(); }
 
+const hgcommon::BrStep& BranchialStepWork::rows_view() const { return s_->view; }
+
+void BranchialStepWork::add_counts(uint32_t distance, uint32_t size_a, uint32_t size_b,
+                                   uint32_t shared, uint64_t n) {
+    s_->part.at(0)[PairCounts{distance, std::min(size_a, size_b), std::max(size_a, size_b),
+                              shared}] += n;
+}
+
+namespace {
+
+// hgcommon::br_row's scratch on one host worker: plain memory and a RowTally per row.
+struct HostRowCtx {
+    std::vector<uint32_t> count_v, touched_v, queue_v;
+    std::vector<int32_t> dist_v;
+    uint32_t* count;
+    uint32_t* touched;
+    int32_t* dist;
+    uint32_t* queue;
+    uint32_t touched_n = 0, queue_n = 0;
+    uint32_t* n_touched = &touched_n;
+    uint32_t* n_queue = &queue_n;
+    uint32_t size_a = 0;
+    RowTally tally;
+    std::unordered_map<PairCounts, uint64_t, PairCountsHash>* counted;
+
+    HostRowCtx(const hgcommon::BrStep& s, std::unordered_map<PairCounts, uint64_t, PairCountsHash>& c)
+        : count_v(s.k, 0), touched_v(s.k), queue_v(s.n), dist_v(s.n, -1), counted(&c) {
+        count = count_v.data();
+        touched = touched_v.data();
+        dist = dist_v.data();
+        queue = queue_v.data();
+    }
+    template <class T> T ld(const T* p) const { return *p; }
+    template <class T> void st(T* p, T v) const { *p = v; }
+    uint32_t add_count(uint32_t b) { return count[b]++; }
+    bool claim_dist(uint32_t x, int32_t d) {
+        if (dist[x] >= 0) return false;
+        dist[x] = d;
+        return true;
+    }
+    uint32_t push(uint32_t* counter) { return (*counter)++; }
+    void emit(uint32_t distance, uint32_t size_b, uint32_t shared) {
+        if (RowTally::fits(distance, size_b, shared))
+            tally.add(RowTally::key(distance, size_b, shared));
+        else
+            ++(*counted)[PairCounts{distance, std::min(size_a, size_b), std::max(size_a, size_b),
+                                    shared}];
+    }
+};
+
+}  // namespace
+
 void BranchialStepWork::rows(size_t t) {
     State& w = *s_;
-    const BranchialGraph* graph = w.graph_or_null();
-    const uint32_t k = static_cast<uint32_t>(w.sets.size());
+    const hgcommon::BrStep& s = w.view;
     auto& counted = w.part[t];
-    auto counts_of = [](uint32_t x, uint32_t y, uint32_t both, uint32_t distance) {
-        return PairCounts{distance, std::min(x, y), std::max(x, y), both};
-    };
-    std::vector<uint32_t> count(k, 0), touched, queue;
-    std::vector<int32_t> dist(graph ? graph->ids.size() : 0, -1);
-    RowTally tally;
-    for (uint32_t a; (a = w.next_row.fetch_add(1, std::memory_order_relaxed)) < k;) {
-        const uint32_t size_a = static_cast<uint32_t>(w.sets[a].size());
-        auto pair = [&](uint32_t b, uint32_t distance) {
-            const uint32_t size_b = static_cast<uint32_t>(w.sets[b].size());
-            if (RowTally::fits(distance, size_b, count[b]))
-                tally.add(RowTally::key(distance, size_b, count[b]));
-            else
-                ++counted[counts_of(size_a, size_b, count[b], distance)];
-        };
-        for (const auto* hs : w.row_holders[a])
-            for (auto it = std::upper_bound(hs->begin(), hs->end(), a); it != hs->end(); ++it)
-                if (count[*it]++ == 0) touched.push_back(*it);
-        queue.clear();
-        if (graph && w.to_graph[a] != UINT32_MAX) {
-            queue.push_back(w.to_graph[a]);
-            dist[w.to_graph[a]] = 0;
-            for (size_t i = 0; i < queue.size(); ++i)
-                for (uint32_t x : graph->adj[queue[i]])
-                    if (dist[x] < 0) { dist[x] = dist[queue[i]] + 1; queue.push_back(x); }
-            for (uint32_t x : queue) {
-                const uint32_t b = w.from_graph[x];
-                if (b != UINT32_MAX && b > a) pair(b, static_cast<uint32_t>(dist[x]));
-            }
-        }
-        for (uint32_t b : touched) {
-            pair(b, 0);
-            count[b] = 0;
-        }
-        for (uint32_t x : queue) dist[x] = -1;
-        touched.clear();
-        tally.drain([&](uint32_t distance, uint32_t size_b, uint32_t both, uint64_t n) {
-            counted[counts_of(size_a, size_b, both, distance)] += n;
+    HostRowCtx c(s, counted);
+    for (uint32_t a; (a = w.next_row.fetch_add(1, std::memory_order_relaxed)) < s.k;) {
+        c.size_a = s.size[a];
+        hgcommon::br_row(c, s, a, hgcommon::IrSerial{});
+        c.tally.drain([&](uint32_t distance, uint32_t size_b, uint32_t both, uint64_t n) {
+            counted[PairCounts{distance, std::min(c.size_a, size_b), std::max(c.size_a, size_b),
+                               both}] += n;
         });
     }
 }
@@ -1417,9 +1472,11 @@ struct StepStatisticsJobs::Step {
 };
 
 StepStatisticsJobs::StepStatisticsJobs(bool weight_by_classes, uint32_t which, size_t workers,
-                                       Submit submit)
+                                       Submit submit, DeviceRows device_rows,
+                                       uint32_t device_min_states)
     : weight_by_classes_(weight_by_classes), which_(which), workers_(workers ? workers : 1),
-      submit_(std::move(submit)) {}
+      submit_(std::move(submit)), device_rows_(std::move(device_rows)),
+      device_min_states_(device_min_states) {}
 
 StepStatisticsJobs::~StepStatisticsJobs() = default;
 
@@ -1458,7 +1515,9 @@ void StepStatisticsJobs::start(Step* s, StepInput in) {
                 s->work.reset();
             }
         };
-        if (n == 0) {
+        // No overlap rows, or rows counted off the host.
+        if (n == 0 || (device_rows_ && s->work->rows_view().k >= device_min_states_ &&
+                       device_rows_(*s->work))) {
             s->branchial = s->work->finish();
             s->work.reset();
             return;
@@ -1474,14 +1533,17 @@ enum class HostStatsJob { Step };
 }  // namespace
 
 wxf::WXFValue step_statistics_on_host(std::map<uint32_t, StepInput> inputs,
-                                      bool weight_by_classes, uint32_t which) {
+                                      bool weight_by_classes, uint32_t which,
+                                      StepStatisticsJobs::DeviceRows device_rows,
+                                      uint32_t device_min_states) {
     job_system::JobSystem<HostStatsJob> system(std::thread::hardware_concurrency());
     system.start();
-    StepStatisticsJobs jobs(weight_by_classes, which, system.get_num_workers(),
-                            [&system](std::function<void()> f) {
-                                system.submit(job_system::make_job<HostStatsJob>(
-                                    std::move(f), HostStatsJob::Step));
-                            });
+    StepStatisticsJobs jobs(
+        weight_by_classes, which, system.get_num_workers(),
+        [&system](std::function<void()> f) {
+            system.submit(job_system::make_job<HostStatsJob>(std::move(f), HostStatsJob::Step));
+        },
+        std::move(device_rows), device_min_states);
     for (auto& [step, in] : inputs) jobs.submit(step, std::move(in));
     system.wait_for_completion();
     if (system.has_error())

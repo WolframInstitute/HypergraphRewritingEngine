@@ -32,6 +32,9 @@
 #include "paclet_source/hg_core.hpp"
 #include "paclet_source/state_statistics.hpp"
 #include "paclet_source/cpu_engine_holder.hpp"
+#ifdef HG_GPU_BACKEND
+#include "hg_gpu/branchial_rows.hpp"
+#endif
 #include "hgcommon/core.hpp"
 #include "paclet_source/graph_marshal.hpp"
 
@@ -3371,6 +3374,42 @@ TEST(GpuBinaryGate, StepStatisticsAgreeAcrossDevices) {
     worker_stop(w);
 }
 
+// A step of 2048 states or more has its overlap rows counted on the device
+// (hg_gpu::branchial_rows_device), and the reply is still the CPU's bytes: rule
+// {{x,y},{x,z}} -> {{x,y},{x,w},{y,w},{z,w}} from {{1,2},{1,3}} at 6 steps, whose step 6 has
+// 14792 states, with "StepStatisticsBranchial" All under both weightings.
+TEST(GpuBinaryGate, DeviceBranchialRowsGiveTheCpuStepStatistics) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    CpuWorker host;
+    ASSERT_TRUE(host.ok) << "could not start hg_evolve --serve";
+    for (const char* weighting : {"States", "Classes"}) {
+        auto opts = [weighting](wxf::Writer& ww) {
+            put_str_list_option(ww, "RequestedData", {"StepStatistics"});
+            put_str_list_option(ww, "StepStatisticsBranchial", {"Graph", "Overlap"});
+            put_str_option(ww, "StepStatisticsWeighting", weighting);
+        };
+        const auto job = session_envelope({{{1, 2}, {1, 3}}}, {{1, 2}, {1, 3}},
+                                          {{1, 2}, {1, 4}, {2, 4}, {3, 4}}, 6, "Evolve", 0, true,
+                                          {}, opts, 3, false);
+        const auto cpu = host(job);
+        const auto gpu = worker_call(w, job);
+        ASSERT_FALSE(gpu.empty()) << w.last_error;
+        const auto c = value_bytes(cpu, "StepStatistics");
+        ASSERT_FALSE(c.empty()) << weighting;
+        EXPECT_TRUE(reply_mentions(c, "OverlapByBranchialDistance")) << weighting;
+        EXPECT_EQ(c, value_bytes(gpu, "StepStatistics")) << weighting;
+    }
+    worker_stop(w);
+}
+
 // The sampling and cap options keep the same transitions on both devices, through one worker
 // that has run other jobs. First the GPUEvolution tutorial's calls in its order, sent with every
 // option of hgJobOptions: the last, the branching rule from two loops at 5 steps with
@@ -3987,6 +4026,44 @@ TEST(StateStatistics, BranchialMetricsDoNotDependOnTheRowSplit) {
     for (size_t parts : {2, 3, 5}) EXPECT_EQ(bytes(again, parts), expected) << parts;
     EXPECT_EQ(number_at(*assoc_at(first, "StateMutualInformation"), "N"), 300 * 299 / 2);
 }
+
+#ifdef HG_GPU_BACKEND
+// The overlap rows counted on the device (hg_gpu::branchial_rows_device) give the record the
+// host's rows give, on steps of 300 and 5000 states with a branchial path and with the graph
+// metrics off. With 5000 states some vertices are held by 2500 states, so a row's holder walk
+// spans many warps' worth of lanes.
+TEST(StateStatistics, DeviceRowsGiveTheHostRecord) {
+    for (const uint32_t k : {300u, 5000u})
+        for (const uint32_t which : {uint32_t{hg::stats::kBranchialOverlap},
+                                     uint32_t{hg::stats::kBranchialGraph | hg::stats::kBranchialOverlap}}) {
+            hg::stats::BranchialStep s;
+            for (uint32_t i = 0; i < k; ++i) {
+                s.nodes.push_back(i);
+                s.vertex_sets.push_back({i % 2, 2 + i % 7, 9 + i % 11, 20 + i % 13, 40 + i});
+                s.edge_sets.push_back({i % 5, 5 + i % 9, 14 + i});
+                if (i && i % 17) s.pairs.push_back({i - 1, i});
+            }
+            auto bytes = [](const wxf::WXFValueAssociation& rec) {
+                wxf::Writer w;
+                w.write(wxf::WXFValue(rec));
+                return w.release_data();
+            };
+            hg::stats::BranchialStepWork host(s, which, nullptr);
+            host.prepare(4);
+            for (size_t p = 0; p < host.parts(); ++p) host.rows(p);
+            const auto want = bytes(host.finish());
+            hg::stats::BranchialStepWork device(s, which, nullptr);
+            device.prepare(4);
+            const bool ran = hg_gpu::branchial_rows_device(
+                device.rows_view(),
+                [&device](uint32_t d, uint32_t sa, uint32_t sb, uint32_t sh, uint64_t n) {
+                    device.add_counts(d, sa, sb, sh, n);
+                });
+            if (!ran) GTEST_SKIP() << "no usable device";
+            EXPECT_EQ(bytes(device.finish()), want) << "k " << k << " which " << which;
+        }
+}
+#endif
 
 // "StepStatistics" under full capture, from hgffi::StepStatisticsCollector on rule
 // {{x,y},{x,z}} -> {{x,y},{x,w},{y,w},{z,w}} from {{0,1},{0,2}} at 5 steps: the reply's bytes at
