@@ -3840,6 +3840,30 @@ TEST(GpuBinaryGate, SessionStepStatisticsAgreeWithOneEvolve) {
 }
 #endif  // _WIN32
 
+// A record stores the arities and slot degrees as runs of equal values, so its size does not grow
+// with the state's edges and vertices when their values repeat. A 12 x 12 directed torus (288
+// binary edges, 144 vertices of slot degree 4): one arity run and one degree run, 16 bytes past
+// the distributions and the ball, and the sequences read back whole.
+TEST(StateStatistics, RecordStoresSequencesAsRuns) {
+    std::vector<std::vector<uint32_t>> torus;
+    for (uint32_t i = 0; i < 12; ++i)
+        for (uint32_t j = 0; j < 12; ++j) {
+            torus.push_back({i * 12 + j, ((i + 1) % 12) * 12 + j});
+            torus.push_back({i * 12 + j, i * 12 + (j + 1) % 12});
+        }
+    std::vector<uint64_t> storage;
+    const hgcommon::StateInvariantRecord& rec = *hg::stats::invariant_record(torus, storage);
+    EXPECT_EQ(rec.num_edges, 288u);
+    EXPECT_EQ(rec.num_vertices, 144u);
+    EXPECT_EQ(rec.num_arity_runs, 1u);
+    EXPECT_EQ(rec.num_degree_runs, 1u);
+    EXPECT_EQ(storage.size() * 8,
+              hgcommon::StateInvariantRecord::bytes(1, 1, rec.num_ball, rec.num_distributions));
+    const auto inv = hg::stats::state_invariants(torus);
+    EXPECT_EQ(inv.arities, std::vector<int64_t>(288, 2));
+    EXPECT_EQ(inv.degree_sequence, std::vector<int64_t>(144, 4));
+}
+
 // The per-state invariants on states whose values are worked by hand.
 TEST(StateStatistics, InvariantsOfSmallStates) {
     using hg::stats::state_invariants;

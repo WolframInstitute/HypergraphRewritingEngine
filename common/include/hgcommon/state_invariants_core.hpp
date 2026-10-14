@@ -40,10 +40,18 @@ struct StateInvariantValues {
     double largest_component_fraction = 0.0;  // that component's vertices / vertex_count
 };
 
+// The number of runs of equal values in a[0..n).
+HG_HD inline uint32_t si_runs(const uint32_t* a, uint32_t n) {
+    uint32_t runs = 0;
+    for (uint32_t i = 0; i < n; ++i) runs += (i == 0 || a[i] != a[i - 1]) ? 1u : 0u;
+    return runs;
+}
+
 // One state's invariants and geometry (state_geometry_core.hpp) as stored per class: the values,
 // then num_distributions per-vertex distributions (SgDistribution, SG_DISTS of them or none),
-// num_ball ball-growth dimensions (doubles), num_edges arities ascending and num_vertices slot
-// degrees descending (uint32 words), directly after the record.
+// num_ball ball-growth dimensions (doubles), and the num_edges arities ascending and num_vertices
+// slot degrees descending as (value, count) runs (uint32 word pairs), directly after the record.
+// The runs give back the sorted sequences, which is what "StepStatistics" reads.
 struct StateInvariantRecord {
     StateInvariantValues v;
     SgGeometry g;
@@ -51,19 +59,34 @@ struct StateInvariantRecord {
     uint32_t num_vertices = 0;
     uint32_t num_ball = 0;
     uint32_t num_distributions = 0;
+    uint32_t num_arity_runs = 0;
+    uint32_t num_degree_runs = 0;
     HG_HD const SgDistribution* distributions() const {
         return reinterpret_cast<const SgDistribution*>(this + 1);
     }
     HG_HD const double* ball() const {
         return reinterpret_cast<const double*>(distributions() + num_distributions);
     }
-    HG_HD const uint32_t* arities() const {
+    HG_HD const uint32_t* arity_runs() const {
         return reinterpret_cast<const uint32_t*>(ball() + num_ball);
     }
-    HG_HD const uint32_t* degrees() const { return arities() + num_edges; }
-    HG_HD static uint64_t bytes(uint32_t m, uint32_t n, uint32_t nball, uint32_t ndist) {
+    HG_HD const uint32_t* degree_runs() const { return arity_runs() + 2 * num_arity_runs; }
+    // f(value) for each arity, ascending.
+    template <class F> HG_HD void for_each_arity(F&& f) const {
+        const uint32_t* r = arity_runs();
+        for (uint32_t i = 0; i < num_arity_runs; ++i)
+            for (uint32_t k = 0; k < r[2 * i + 1]; ++k) f(r[2 * i]);
+    }
+    // f(value) for each slot degree, descending.
+    template <class F> HG_HD void for_each_degree(F&& f) const {
+        const uint32_t* r = degree_runs();
+        for (uint32_t i = 0; i < num_degree_runs; ++i)
+            for (uint32_t k = 0; k < r[2 * i + 1]; ++k) f(r[2 * i]);
+    }
+    HG_HD static uint64_t bytes(uint32_t arity_runs, uint32_t degree_runs, uint32_t nball,
+                                uint32_t ndist) {
         return (sizeof(StateInvariantRecord) + sizeof(SgDistribution) * uint64_t{ndist} +
-                8 * uint64_t{nball} + 4 * (uint64_t{m} + n) + 7) &
+                8 * uint64_t{nball} + 8 * (uint64_t{arity_runs} + degree_runs) + 7) &
                ~uint64_t{7};
     }
 };
@@ -357,7 +380,10 @@ struct SiResult {
     const uint32_t* arities = nullptr;
     const uint32_t* degrees = nullptr;
     uint32_t m = 0, n = 0, nball = 0;
-    HG_HD uint64_t bytes() const { return StateInvariantRecord::bytes(m, n, nball, SG_DISTS); }
+    HG_HD uint64_t bytes() const {
+        return StateInvariantRecord::bytes(si_runs(arities, m), si_runs(degrees, n), nball,
+                                           SG_DISTS);
+    }
 };
 
 // The invariants (state_invariants) and the geometry (sg_state_geometry) of goff/gverts/gm, the
@@ -423,8 +449,21 @@ HG_HD inline StateInvariantRecord* si_record_write(void* mem, const SiResult& r)
     double* b = reinterpret_cast<double*>(d + SG_DISTS);
     for (uint32_t i = 0; i < r.nball; ++i) b[i] = r.ball[i];
     uint32_t* w = reinterpret_cast<uint32_t*>(b + r.nball);
-    for (uint32_t i = 0; i < r.m; ++i) w[i] = r.arities[i];
-    for (uint32_t i = 0; i < r.n; ++i) w[r.m + i] = r.degrees[i];
+    auto write_runs = [&](const uint32_t* a, uint32_t n) {
+        uint32_t runs = 0;
+        for (uint32_t i = 0; i < n; ++i) {
+            if (i == 0 || a[i] != a[i - 1]) {
+                w[0] = a[i];
+                w[1] = 0;
+                w += 2;
+                ++runs;
+            }
+            ++w[-1];
+        }
+        return runs;
+    };
+    rec->num_arity_runs = write_runs(r.arities, r.m);
+    rec->num_degree_runs = write_runs(r.degrees, r.n);
     return rec;
 }
 

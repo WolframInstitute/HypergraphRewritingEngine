@@ -544,8 +544,8 @@ StateInvariants state_invariants(const std::vector<std::vector<uint32_t>>& edges
     StateInvariants r;
     r.vertex_count = v.vertex_count;
     r.edge_count = v.edge_count;
-    r.arities.assign(rec.arities(), rec.arities() + rec.num_edges);
-    r.degree_sequence.assign(rec.degrees(), rec.degrees() + rec.num_vertices);
+    rec.for_each_arity([&](uint32_t a) { r.arities.push_back(a); });
+    rec.for_each_degree([&](uint32_t d) { r.degree_sequence.push_back(d); });
     r.max_degree = v.max_degree;
     r.mean_degree = v.mean_degree;
     r.two_section_edge_count = v.two_section_edge_count;
@@ -1385,8 +1385,11 @@ wxf::WXFValueAssociation step_record(uint32_t step, const StepInput& in, bool we
         inc_diameter.push_back({double(s.incidence_diameter), w});
         inc_mean_distance.push_back({s.incidence_mean_distance, w});
         largest_fraction.push_back({s.largest_component_fraction, w});
-        const std::vector<int64_t> arities(r.arities(), r.arities() + r.num_edges);
-        const std::vector<int64_t> degrees(r.degrees(), r.degrees() + r.num_vertices);
+        std::vector<int64_t> arities, degrees;
+        arities.reserve(r.num_edges);
+        degrees.reserve(r.num_vertices);
+        r.for_each_arity([&](uint32_t a) { arities.push_back(a); });
+        r.for_each_degree([&](uint32_t d) { degrees.push_back(d); });
         for (int64_t a : arities) arity_hist[a] = hgcommon::qm_sat_add(arity_hist[a], w);
         for (int64_t d : degrees) degree_hist[d] = hgcommon::qm_sat_add(degree_hist[d], w);
         arity_sig_hist[arities] = hgcommon::qm_sat_add(arity_sig_hist[arities], w);

@@ -2438,8 +2438,11 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
             ASSERT_EQ(a->num_edges, b->num_edges) << w.name;
             ASSERT_EQ(a->num_vertices, b->num_vertices) << w.name;
             ASSERT_EQ(a->num_ball, b->num_ball) << w.name;
-            EXPECT_TRUE(std::equal(a->arities(), a->arities() + a->num_edges + a->num_vertices,
-                                   b->arities()))
+            ASSERT_EQ(a->num_arity_runs, b->num_arity_runs) << w.name;
+            ASSERT_EQ(a->num_degree_runs, b->num_degree_runs) << w.name;
+            EXPECT_TRUE(std::equal(a->arity_runs(),
+                                   a->arity_runs() + 2 * (a->num_arity_runs + a->num_degree_runs),
+                                   b->arity_runs()))
                 << w.name;
             EXPECT_EQ(a->g.defined, b->g.defined) << w.name;
             EXPECT_EQ(a->g.vertex_count, b->g.vertex_count) << w.name;
