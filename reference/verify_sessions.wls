@@ -136,7 +136,7 @@ Module[{saved = HypergraphRewriting`Private`$HypergraphEngineBinaryGPU, sg, msgs
 If[!TrueQ[HypergraphRewriting`Private`hgGpuBinaryAvailableQ[]],
   Print["SKIP  no-device leg: no GPU binary for ", $SystemID],
   Module[{saved = Environment["CUDA_VISIBLE_DEVICES"], fresh, r1, r2, m1, m2, starts, st, ms, sg,
-          sm},
+          sm, d},
     fresh[] := (HypergraphRewriting`Private`hgWorkerKill["GPU"];
                 HypergraphRewriting`Private`$hgGpuUnavailable = None);
     SetEnvironment["CUDA_VISIBLE_DEVICES" -> "-1"];
@@ -158,6 +158,8 @@ If[!TrueQ[HypergraphRewriting`Private`hgGpuBinaryAvailableQ[]],
           r2 === oneShot[[4]] && m2 === {HoldForm[HGEvolve::gpudev]} &&
           HypergraphRewriting`Private`$hgWorkerStarts === starts &&
           !KeyExistsQ[HypergraphRewriting`Private`$hgWorkerProc, "GPU"]];
+    check["the Device property says CPU",
+          HGEvolve[rules, init, 1, "Device", "TargetDevice" -> "GPU"] === <|"Type" -> "CPU"|>];
 
     fresh[];
     ms = Block[{$MessageList = {}},
@@ -184,7 +186,12 @@ If[!TrueQ[HypergraphRewriting`Private`hgGpuBinaryAvailableQ[]],
 
     If[StringQ[saved], SetEnvironment["CUDA_VISIBLE_DEVICES" -> saved],
                        SetEnvironment["CUDA_VISIBLE_DEVICES" -> None]];
-    fresh[]]];
+    fresh[];
+    d = Quiet[HGEvolve[rules, init, 1, "Device", "TargetDevice" -> "GPU"], HGEvolve::gpudev];
+    Print["device: ", d];
+    check["the Device property names the GPU or the CPU",
+          MatchQ[d, <|"Type" -> "CPU"|> |
+                    <|"Type" -> "GPU", "Name" -> _String, "ComputeCapability" -> _String|>]]]];
 
 (* Quotient exploration: a session stepped k times equals one evolve of depth k. The Open
    evolves 0 steps, so the root's expansion is deferred to the first Step. *)

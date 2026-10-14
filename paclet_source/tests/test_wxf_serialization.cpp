@@ -3324,6 +3324,35 @@ TEST(GpuBinaryGate, NoUsableDeviceIsAStructuredRefusal) {
     EXPECT_NE(err.find(expected), std::string::npos) << err;
 }
 
+// "Device" in RequestedData names the device that ran the job: <|"Type" -> "GPU", "Name" -> ...,
+// "ComputeCapability" -> "8.9"|> from the GPU binary, <|"Type" -> "CPU"|> from the CPU binary.
+TEST(GpuBinaryGate, TheDeviceComponentNamesTheDevice) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    auto device = [](wxf::Writer& ww) {
+        put_str_list_option(ww, "RequestedData", {"NumStates", "Device"});
+    };
+    const auto job = build_input_with_op(2, "Evolve", 0, true, {}, device, 1);
+    WorkerPipes w;
+    ASSERT_TRUE(worker_start(w, gpu_binary_path()));
+    const auto gpu = worker_call(w, job);
+    worker_stop(w);
+    if (gpu.empty()) GTEST_SKIP() << "no usable device: " << w.last_error;
+    EXPECT_TRUE(reply_mentions(gpu, "Device"));
+    EXPECT_TRUE(reply_mentions(gpu, "GPU"));
+    EXPECT_TRUE(reply_mentions(gpu, "ComputeCapability"));
+
+    if (!CpuWorker::built()) GTEST_SKIP() << "hg_evolve is not built here";
+    CpuWorker host;
+    ASSERT_TRUE(host.ok) << "could not start hg_evolve --serve";
+    const auto cpu = host(job);
+    EXPECT_TRUE(reply_mentions(cpu, "Device"));
+    EXPECT_TRUE(reply_mentions(cpu, "CPU"));
+    EXPECT_FALSE(reply_mentions(cpu, "ComputeCapability"));
+}
+
 // ExploreFromCanonicalStatesOnly needs Full states: under Automatic it is refused with the
 // QuotientNeedsFull warning and every state is expanded, on both devices, so the counts are the
 // counts without it. Rule {{1,2}} -> {{2,1},{2,1},{1,1,1,1}} from {{1,1},{2,2},{2,2}} at three

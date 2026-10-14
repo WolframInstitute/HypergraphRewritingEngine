@@ -9,6 +9,8 @@
   GPU calls and sessions go straight to the CPU.
 - `"TargetDevice" -> {"GPU", "Strict" -> True}` gives `$Failed` with `HGEvolve::nogpu` where the
   GPU cannot be used.
+- The `"Device"` property names the device that ran an evolution, with the name and compute
+  capability of the GPU.
 
 ## v1.0.0-rc2 (2026-10-09)
 

@@ -430,6 +430,8 @@ propertyRequirementsBase = <|
   "StateBitvectors" -> {"StateBitvectors"},
   (* Debug/All *)
   "Debug" -> {"NumStates", "NumEvents", "NumCausalEdges", "NumBranchialEdges"},
+  (* The device that ran the evolution *)
+  "Device" -> {"Device"},
   "All" -> {"States", "Events", "CausalEdges", "BranchialEdges", "NumStates", "NumEvents", "NumCausalEdges", "NumBranchialEdges"}
 |>;
 
@@ -1660,6 +1662,8 @@ getProperty[prop_, states_, events_, causalEdges_, branchialEdges_, branchialSta
       "NumCausalEdges" -> wxfData["NumCausalEdges"],
       "NumBranchialEdges" -> wxfData["NumBranchialEdges"]
     |>,
+    (* <|"Type" -> "CPU"|>, or <|"Type" -> "GPU", "Name" -> ..., "ComputeCapability" -> "8.9"|> *)
+    "Device", Lookup[wxfData, "Device", Missing["NotAvailable"]],
     "All", Module[{result = wxfData},
       result
     ],

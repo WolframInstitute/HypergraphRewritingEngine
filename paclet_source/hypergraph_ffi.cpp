@@ -257,6 +257,7 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                                 else if (comp == "StepStatistics") req.include_step_statistics = true;
                                 else if (comp == "GlobalEdges") req.include_global_edges = true;
                                 else if (comp == "StateBitvectors") req.include_state_bitvectors = true;
+                                else if (comp == "Device") req.include_device = true;
                             }
                         } else if (option_key == "CanonicalizeEvents") {
                             // None, Full, Automatic, "Positional", or a list of components. An
@@ -589,6 +590,7 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
             req.ffi_warnings,
         };
         job.step_statistics_by_class = req.step_statistics_by_class;
+        job.include_device = req.include_device;
         job.step_statistics_branchial = branchial;
         if (req.show_progress) {
             core_progress(host, "HGEvolve: Starting GPU evolution...");
@@ -2076,6 +2078,12 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 global_edges.push_back(wxf::WXFValue(std::move(edge_data)));
             }
             full_result.push_back(std::make_pair(wxf::WXFValue("GlobalEdges"), wxf::WXFValue(std::move(global_edges))));
+        }
+
+        if (req.include_device) {
+            wxf::WXFValueAssociation device;
+            device.push_back({wxf::WXFValue("Type"), wxf::WXFValue("CPU")});
+            full_result.push_back({wxf::WXFValue("Device"), wxf::WXFValue(device)});
         }
 
         // StateBitvectors -> Association[state_id -> List of edge IDs present in that state]

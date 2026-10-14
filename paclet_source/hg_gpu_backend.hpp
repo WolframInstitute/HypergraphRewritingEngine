@@ -119,6 +119,9 @@ struct GpuJob {
     // "StepStatisticsBranchial": stats::kBranchial* bits, as admitted for this run. Set after the
     // job is built.
     uint32_t step_statistics_branchial = 0;
+    // "Device" in RequestedData: the reply names the device's name and compute capability. Set
+    // after the job is built.
+    bool include_device = false;
 };
 
 // Run the job on the GPU (hg_gpu::evolve) and marshal the result into the same

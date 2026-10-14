@@ -160,6 +160,14 @@ The GPU engine needs an NVIDIA GPU of compute capability 7.5, 8.0, 8.6, 8.9 or 9
 
 `"TargetDevice" -> {"GPU", "Strict" -> True}` gives `$Failed` with the message `HGEvolve::nogpu` instead of running on the CPU.
 
+The `"Device"` property names the device that ran an evolution, with the name and compute capability of the GPU:
+
+```wl
+HGEvolve[{{{1, 2}} -> {{1, 3}, {3, 2}}}, {{1, 2}}, 3, "Device", "TargetDevice" -> "GPU"]["Type"]
+```
+
+<!-- => "GPU" -->
+
 A value other than `"CPU"` or `"GPU"` issues `HGEvolve::baddev`, and the evolution runs on the CPU:
 
 ```wl

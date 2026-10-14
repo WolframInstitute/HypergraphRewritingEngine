@@ -2,6 +2,7 @@
 
 #include "hg_gpu_backend.hpp"
 
+#include "hg_gpu/device_probe.hpp"
 #include "hg_gpu/evolve.hpp"
 #include "hgcommon/quotient_replay_core.hpp"
 #include "hypergraph/ir_canonicalization.hpp"
@@ -862,6 +863,17 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
         }
         full_result.push_back({wxf::WXFValue("StateBitvectors"),
                                wxf::WXFValue(state_bitvectors)});
+    }
+
+    if (job.include_device) {
+        const hg_gpu::DeviceProbe& probe = hg_gpu::probe_device();
+        wxf::WXFValueAssociation device;
+        device.push_back({wxf::WXFValue("Type"), wxf::WXFValue("GPU")});
+        device.push_back({wxf::WXFValue("Name"), wxf::WXFValue(hgmarshal::valid_utf8(probe.name))});
+        device.push_back({wxf::WXFValue("ComputeCapability"),
+                          wxf::WXFValue(std::to_string(probe.major) + "." +
+                                        std::to_string(probe.minor))});
+        full_result.push_back({wxf::WXFValue("Device"), wxf::WXFValue(device)});
     }
 
     if (job.include_num_states) {

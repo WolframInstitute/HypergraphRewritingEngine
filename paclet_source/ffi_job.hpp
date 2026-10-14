@@ -106,6 +106,7 @@ struct ParsedJob {
     uint32_t step_statistics_branchial = 0; // "StepStatisticsBranchial": stats::kBranchial* bits
     bool include_global_edges = false;      // All edges created during evolution
     bool include_state_bitvectors = false;  // State edge sets as lists of edge IDs
+    bool include_device = false;            // "Device": which device ran the job
 
     // GraphProperties option for graph-ready data output (list of properties)
     std::vector<std::string> graph_properties;  // e.g., {"StatesGraph", "CausalGraphStructure"}
