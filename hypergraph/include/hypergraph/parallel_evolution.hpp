@@ -208,6 +208,7 @@ enum class EvolutionJobType {
     REWRITE,    // Apply a contiguous RANGE of one state's matches
     REDRIVE,    // Expand one quotient point that a previous run's depth bound left standing
     QC_APPLY,   // Apply a captured match to one (depth, list) unit of its class's instances
+    SIDE,       // A caller's job on the engine's workers (submit_side_job)
 };
 
 // A contiguous range of one state's matches, applied by a single task.
@@ -1051,6 +1052,13 @@ public:
     size_t num_threads() const;
     // Serial runs execute every job on the calling thread and spawn nothing.
     bool is_serial() const;
+
+    // Runs `fn` as a job on this engine's workers. Submitted during a run (from a worker, a
+    // depth report or a state hook), it is part of the run and evolve() returns after it;
+    // submitted between runs, wait_side_jobs() returns after it. An exception from `fn` ends
+    // the run as a worker error does.
+    void submit_side_job(std::function<void()> fn);
+    void wait_side_jobs();
     size_t num_states() const;
     size_t num_canonical_states() const;
     size_t num_events() const;

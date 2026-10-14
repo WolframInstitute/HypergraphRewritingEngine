@@ -274,6 +274,65 @@ search runs one event per lane, and its scratch comes from per-warp slices.
   keyed by exact 64-bit values, which cannot carry an epoch.
 - The run's counters and results are read back in one batch, as now.
 
+### 4.8 StepStatistics branchial pass
+
+On the host the pass runs per step as job-system jobs (ARCHITECTURE.md, "StepStatistics in the
+job system"). The GPU backend counts the overlap rows of a step of 2048 states or more on the
+device (`hg_gpu::branchial_rows_device`, gpu/src/branchial_rows.cu); the host prepares the step
+and finishes it, so the reply is the host's bytes:
+
+1. **Index.** `stats::BranchialStepWork::prepare` builds the step in compressed rows
+   (`hgcommon::BrStep`): each state's vertices as dense numbers, each vertex's holders in state
+   order, and with "Graph" the branchial adjacency and the state-node maps. These are uploaded.
+2. **Rows.** One warp per row, taken from a row counter, runs `hgcommon::br_row` with `IrTile`,
+   the body the host's parts run with `IrSerial`: the lanes split each holder list above the row
+   (shared counts by `atomicAdd` into the warp's slice of a count array) and each breadth-first
+   level of the row's component (distances claimed by `atomicCAS`). A warp's slices (count and
+   touched by states, distance and queue by graph nodes) are cleared by the row that used them.
+   The warps that fit in a quarter of the free device memory run, up to 16 per SM.
+3. **Counting.** Each pair adds 1 under its key (distance, |B|, shared) in the warp's 512-slot
+   table in shared memory; a full table writes the pair as its own record. At the end of the row
+   the warp appends its entries, with |A|, to a record buffer of 4M records; rows run in batches,
+   and a batch whose records overflow the buffer runs again in halves.
+4. **Finish.** The host adds the records up per (key, |A|) and passes them to
+   `BranchialStepWork::add_counts`, then runs `finish`, as the host route does. Integer sums
+   commute, so the counts do not depend on which warp ran which row. A pair whose fields do not
+   fit the key (distance 2^16, or 2^24 vertices) sends the step back to the host rows, as does a
+   step that finds the device in use by another step's rows.
+
+The graph metrics (degree, distance, components, dimension) stay in the host's `prepare`, which
+with the index is 172,949,942 of 15,383,108,429 instructions on the CPU engine's wpp d6 run with
+"StepStatisticsBranchial" All (callgrind).
+
+**Proposal: pooling on the device (not built).** `stats::step_record` pools a step's classes in
+`long double`, summing in class-hash order, and the device has no 80-bit type, so the device
+cannot give the host's current bytes. The proposal changes the host's arithmetic to one the
+device computes exactly, and changes the reply's low bits once, on both engines:
+
+1. **Integers stay integers.** Raw states, class counts, weights, histogram weights and N are
+   saturating `uint64` sums, already order-independent.
+2. **Exact sums.** Every floating sum (Σ w v and Σ w v² per invariant, the four power sums and 32
+   bins of each `SgDistribution`, the entropy terms) goes into a per-step superaccumulator: a
+   fixed-point integer of 33 64-bit limbs spanning the double exponent range, each product `w v`
+   split exactly into limbs and added with `atomicAdd` per limb (host: plain adds), with the
+   carries normalised once when the step is read. The sum is exact, so it does not depend on
+   arrival order, thread count or engine, and it is rounded to double once.
+3. **Moments from exact sums.** Mean, variance (N Σ w v² - (Σ w v)², exact before the one
+   rounding), skewness and kurtosis are computed from the exact sums; the per-term logarithms
+   are `hgcommon::dm_log2`, which host and device already compute alike.
+4. **Medians and histograms.** Each step keeps a map from value to weight per invariant
+   (`atomicAdd` on the weight); the median and the rounded histogram are one ordered scan of the
+   map's keys when the step is read. The key order is the values' order, so the scan does not
+   depend on insertion order.
+
+Each class contributes when its weight is known, by its weight or by a weight delta, so the
+same accumulators serve full capture (weight 1 per raw state, added at creation) and the
+multiplicity count (each `qm_credit` delta times the class's values): the pooling becomes online
+under quotient exploration too, with only the read at the end. Storage per step is about 140
+accumulators of 264 bytes plus the value maps. The gate is a reply byte-identical between
+engines and across thread counts, and every value within a relative 1e-12 of today's on the
+corpus.
+
 ## 5. Expected effect, by the rules they come from
 
 | Change | What it removes |
