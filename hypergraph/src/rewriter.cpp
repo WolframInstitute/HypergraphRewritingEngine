@@ -121,7 +121,7 @@ RewriteResult Rewriter::apply(
     auto [canonical_id, raw_id, was_new] = hg_->create_or_get_canonical_state(
         std::move(new_edges),
         output_step,
-        INVALID_ID,  // Will be updated when event is created
+        event_id,    // created below with this state as its output
         input_state,
         matched_edges, num_matched,
         result.produced_edges, result.num_produced,

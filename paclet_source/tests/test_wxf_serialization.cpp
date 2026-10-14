@@ -31,6 +31,7 @@
 #include "wxf.hpp"
 #include "paclet_source/hg_core.hpp"
 #include "paclet_source/state_statistics.hpp"
+#include "paclet_source/cpu_engine_holder.hpp"
 #include "hgcommon/core.hpp"
 #include "paclet_source/graph_marshal.hpp"
 
@@ -3985,6 +3986,83 @@ TEST(StateStatistics, BranchialMetricsDoNotDependOnTheRowSplit) {
     const auto expected = bytes(first, 1);
     for (size_t parts : {2, 3, 5}) EXPECT_EQ(bytes(again, parts), expected) << parts;
     EXPECT_EQ(number_at(*assoc_at(first, "StateMutualInformation"), "N"), 300 * 299 / 2);
+}
+
+// "StepStatistics" under full capture, from hgffi::StepStatisticsCollector on rule
+// {{x,y},{x,z}} -> {{x,y},{x,w},{y,w},{z,w}} from {{0,1},{0,2}} at 5 steps: the reply's bytes at
+// `threads` workers, and the number of steps closed after the run. `online` closes steps as the
+// engine reports their depths; otherwise every step is closed after the run. `recurrent` adds
+// {{x,y},{y,z}} -> {{x,z}}, so a class can recur at a later step. Without `record_in_run` the
+// engine records no class record and the collector computes each one.
+std::pair<std::vector<uint8_t>, uint32_t> collected_step_statistics(
+    size_t threads, uint32_t which, bool by_class, bool online, size_t step_cap,
+    bool recurrent = false, bool record_in_run = true) {
+    hypergraph::Hypergraph hg;
+    hypergraph::ParallelEvolutionEngine engine(&hg, threads);
+    hgcommon::RecordSet rs;
+    rs.causal = false;
+    rs.branchial = (which & hg::stats::kBranchialGraph) != 0;
+    rs.state_events = false;
+    rs.state_invariants = record_in_run;
+    hg.set_record_set(rs);
+    engine.set_max_states_per_step(step_cap);
+    engine.add_rule(hypergraph::make_rule(0)
+                        .lhs({0, 1})
+                        .lhs({0, 2})
+                        .rhs({0, 1})
+                        .rhs({0, 3})
+                        .rhs({1, 3})
+                        .rhs({2, 3})
+                        .build());
+    if (recurrent)
+        engine.add_rule(hypergraph::make_rule(1).lhs({0, 1}).lhs({1, 2}).rhs({0, 2}).build());
+    hgffi::StepStatisticsCollector collector(hg, engine, which, by_class, 5);
+    if (online) collector.attach(step_cap != 0);
+    engine.evolve(std::vector<std::vector<hypergraph::VertexId>>{{0u, 1u}, {0u, 2u}}, 5);
+    const wxf::WXFValue reply = collector.finish();
+    wxf::Writer w;
+    w.write(reply);
+    return {w.release_data(), collector.closed_at_finish()};
+}
+
+// The reply is the same bytes at 1, 2, 8 and 16 threads under each weighting and each
+// "StepStatisticsBranchial" setting, and the same whether the steps are closed during the run or
+// after it. During the run every step is closed by the engine's depth reports, so the reply
+// builds no record; under "MaxStatesPerStep" the last step's states are selected on the depth
+// past the budget, which no task reaches, so that step is closed after the run.
+TEST(StateStatistics, CollectedStepStatisticsDoNotDependOnTheThreadCount) {
+    const uint32_t graph = hg::stats::kBranchialGraph, overlap = hg::stats::kBranchialOverlap;
+    for (const size_t cap : {size_t{0}, size_t{4}})
+        for (const uint32_t which : {0u, graph, overlap, graph | overlap})
+            for (const bool by_class : {false, true}) {
+                const auto after = collected_step_statistics(4, which, by_class, false, cap);
+                ASSERT_FALSE(after.first.empty());
+                EXPECT_EQ(after.second, 6u) << which;
+                for (const size_t threads : {1, 2, 8, 16}) {
+                    const auto during = collected_step_statistics(threads, which, by_class, true, cap);
+                    EXPECT_EQ(during.first, after.first)
+                        << "threads " << threads << " which " << which << " by_class " << by_class
+                        << " cap " << cap;
+                    EXPECT_LE(during.second, cap ? 1u : 0u) << "threads " << threads;
+                }
+            }
+    // A class recurring at a later step: its record can be claimed by a worker at the later
+    // step before the earlier step closes, and the step's job then computes it
+    // (Hypergraph::state_invariants_of). That computed record gives the same reply as the
+    // record its claiming worker writes.
+    for (const bool by_class : {false, true}) {
+        const auto after = collected_step_statistics(4, graph | overlap, by_class, false, 0, true);
+        EXPECT_EQ(
+            collected_step_statistics(4, graph | overlap, by_class, false, 0, true, false).first,
+            after.first);
+        for (const size_t threads : {1, 2, 8, 16})
+            for (int run = 0; run < 4; ++run) {
+                const auto during =
+                    collected_step_statistics(threads, graph | overlap, by_class, true, 0, true);
+                EXPECT_EQ(during.first, after.first) << "threads " << threads;
+                EXPECT_EQ(during.second, 0u) << "threads " << threads;
+            }
+    }
 }
 
 // "StepStatisticsWeighting" -> "Classes" counts a class once; "States" counts its raw states.

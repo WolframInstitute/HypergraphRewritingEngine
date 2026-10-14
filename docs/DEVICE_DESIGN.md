@@ -274,6 +274,35 @@ search runs one event per lane, and its scratch comes from per-warp slices.
   keyed by exact 64-bit values, which cannot carry an epoch.
 - The run's counters and results are read back in one batch, as now.
 
+### 4.8 StepStatistics branchial pass
+
+On the host the pass runs per step as job-system jobs (ARCHITECTURE.md, "StepStatistics in the
+job system"). The device port keeps the host's decomposition and its integer counts, so the reply
+stays the host's bytes:
+
+1. **Holders.** Per step, the (vertex, state) pairs of the step's states, sorted by vertex with
+   a segmented radix sort, give each vertex's holders in state order (CSR). Edge numbers come from
+   the same sort on the edge's vertex list hash, confirmed by comparing the lists.
+2. **Rows.** One warp per row `a`. The lanes walk `a`'s vertices and, for each, the holders above
+   `a`, adding 1 per (a, b) into a per-warp open-addressed table keyed by `b` in shared memory
+   (spilling to a global slice when a row has more than the table holds). The table's entries
+   are the row's shared-vertex counts, the host's `count[b]`.
+3. **Distances.** With "Graph", the same warp runs a breadth-first search from `a` over the
+   step's branchial adjacency (CSR, built once per step), frontier in a per-warp global slice,
+   one lane per frontier vertex; the visited marks are a per-warp epoch array so nothing is
+   cleared between rows.
+4. **Counting.** Each pair adds 1 under its `PairCounts` key (distance, |A|, |B|, shared). The
+   warp first merges its pairs in a shared-memory tally (the host's `RowTally`), then adds each
+   distinct key's count into a global hash table with one `atomicAdd` per key. Integer addition
+   commutes, so the table's contents do not depend on which warp ran which row.
+5. **Finish.** The host reads the table, orders the keys, and runs the same finish code as the
+   host route (`stats::BranchialStepWork::finish`); the summaries are over distinct keys, a
+   few thousand per step on wpp d7.
+
+The graph metrics (degree, distance, components, dimension) take the same per-source BFS and are
+counted per distance the same way. The work per step is the host's: one BFS per row plus the
+inverted-index walk, spread over warps instead of host workers.
+
 ## 5. Expected effect, by the rules they come from
 
 | Change | What it removes |

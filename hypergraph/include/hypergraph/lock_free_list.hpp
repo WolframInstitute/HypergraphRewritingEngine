@@ -125,6 +125,17 @@ public:
         }
     }
 
+    // Every value linked since `since`, newest first, where `since` is a head an earlier call
+    // returned (null for every value). Returns the head it started from. Push only prepends, so
+    // `since` is on the chain from any later head.
+    template<typename F>
+    const Node* for_each_since(const Node* since, F&& f) const {
+        const Node* head = head_.load(std::memory_order_acquire);
+        std::atomic_thread_fence(std::memory_order_acquire);
+        for (const Node* n = head; n != since; n = n->prev) f(n->value);
+        return head;
+    }
+
     // Every node linked STRICTLY BEFORE `mine`, newest first.
     //
     // This is what lets two pushers meet exactly once. If each scans only the nodes older than

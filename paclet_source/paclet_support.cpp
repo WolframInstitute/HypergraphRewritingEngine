@@ -182,6 +182,166 @@ std::vector<hgcommon::StateId> CpuEngineHolder::frontier() const {
     return out;
 }
 
+// =============================================================================
+// StepStatisticsCollector
+// =============================================================================
+
+StepStatisticsCollector::StepStatisticsCollector(hypergraph::Hypergraph& hg,
+                                                 hypergraph::ParallelEvolutionEngine& engine,
+                                                 uint32_t which, bool by_class, int steps)
+    : hg_(hg), engine_(engine), which_(which), steps_(steps),
+      jobs_(by_class, which, engine.num_threads(),
+            [&engine](std::function<void()> f) { engine.submit_side_job(std::move(f)); }) {}
+
+StepStatisticsCollector::~StepStatisticsCollector() {
+    if (attached_) {
+        engine_.set_on_depth_complete(nullptr);
+        hg_.set_index_states_by_step(false);
+    }
+}
+
+void StepStatisticsCollector::attach(bool step_cap) {
+    attached_ = true;
+    indexed_ = true;
+    hg_.set_index_states_by_step(true);
+    engine_.set_on_depth_complete([this, step_cap](uint32_t depth) {
+        if (inactive_) return;
+        // A run whose classes are weighted by the multiplicity count has its weights only when
+        // the run ends; the engine decides that before its first task.
+        if (hg_.quotient_multiplicity()) {
+            inactive_ = true;
+            indexed_ = false;
+            hg_.set_index_states_by_step(false);
+            return;
+        }
+        // The report runs inside a task's completion, where an exception cannot propagate;
+        // finish() rethrows it.
+        try {
+            close_through(step_cap ? depth - 1 : depth);
+        } catch (...) {
+            if (!failed_) failed_ = std::current_exception();
+        }
+    });
+}
+
+wxf::WXFValue StepStatisticsCollector::finish(std::map<uint32_t, stats::StepInput>* weighted) {
+    if (attached_) engine_.set_on_depth_complete(nullptr);
+    if (failed_) std::rethrow_exception(failed_);
+    weighted_ = weighted;
+    if (!indexed_) {
+        const uint32_t n_pub = hg_.num_published_states();
+        for (uint32_t sid = 0; sid < n_pub; ++sid) {
+            const hypergraph::State& st = hg_.get_state(sid);
+            if (st.id == hypergraph::INVALID_ID) continue;
+            if (st.step >= by_step_.size()) by_step_.resize(st.step + 1);
+            by_step_[st.step].push_back(sid);
+        }
+    }
+    // A step with no state ends the run's steps: every state at s + 1 comes from one at s.
+    uint32_t end = next_;
+    while (!states_at(end).empty()) ++end;
+    if (end > next_) {
+        closed_at_finish_ = end - next_;
+        close_through(end - 1);
+    }
+    engine_.wait_side_jobs();
+    return jobs_.reply();
+}
+
+// Closes steps next_..last, from one thread at a time: the depth join's reporter, or the caller
+// of finish once the run is over.
+void StepStatisticsCollector::close_through(uint32_t last) {
+    if (last < next_ || last == UINT32_MAX) return;
+    if (which_ & stats::kBranchialGraph) take_pairs();
+    for (; next_ <= last; ++next_) {
+        const uint32_t s = next_;
+        stats::StepStatisticsJobs::Step* slot = jobs_.reserve(s);
+        std::vector<std::pair<int64_t, int64_t>> pairs;
+        if (auto it = pairs_.find(s); it != pairs_.end()) {
+            pairs = std::move(it->second);
+            pairs_.erase(it);
+        }
+        // Step 0 is started here: every later step reads its vertices.
+        if (s == 0) {
+            jobs_.start(slot, gather(0, std::move(pairs)));
+            continue;
+        }
+        engine_.submit_side_job([this, slot, s, p = std::move(pairs)]() mutable {
+            jobs_.start(slot, gather(s, std::move(p)));
+        });
+    }
+}
+
+// The branchial state pairs recorded since the last call, by step.
+void StepStatisticsCollector::take_pairs() {
+    std::vector<std::pair<uint32_t, uint32_t>> events;
+    hg_.causal_graph().for_each_branchial_edge_since(
+        cursor_, [&](const hypergraph::BranchialEdge& be) {
+            if (hg_.is_genesis_event(be.event1) || hg_.is_genesis_event(be.event2)) return;
+            events.emplace_back(be.event1, be.event2);
+        });
+    marshal::branchial_step_pairs(
+        events,
+        [&](uint32_t eid) { return static_cast<uint32_t>(hg_.get_event(eid).output_state); },
+        [&](uint32_t sid) { return static_cast<int64_t>(hg_.get_canonical_state(sid)); },
+        [&](uint32_t sid) { return hg_.get_state(sid).step; }, steps_,
+        [&](uint32_t step, int64_t a, int64_t b) { pairs_[step].emplace_back(a, b); });
+}
+
+std::vector<uint32_t> StepStatisticsCollector::states_at(uint32_t step) const {
+    std::vector<uint32_t> sids;
+    if (indexed_) {
+        hg_.for_each_state_at_step(step, [&](hypergraph::StateId sid) { sids.push_back(sid); });
+        std::sort(sids.begin(), sids.end());
+    } else if (step < by_step_.size()) {
+        sids = by_step_[step];
+    }
+    return sids;
+}
+
+// Step `step`'s classes, with each class's record, and the events into the step, each the
+// creating event of one of its raw states; or, with weighted inputs from finish, the step's entry
+// there (read by this step's job only). Then the step's branchial input, the states in id order.
+stats::StepInput StepStatisticsCollector::gather(uint32_t step,
+                                                 std::vector<std::pair<int64_t, int64_t>> pairs) {
+    stats::StepInput in;
+    if (weighted_) {
+        if (auto it = weighted_->find(step); it != weighted_->end()) in = std::move(it->second);
+        in.branchial = {};
+    }
+    marshal::ListNumbers edge_number;
+    std::vector<uint32_t> flat;
+    auto contents = [&](uint32_t sid, std::vector<uint32_t>& vs) {
+        hg_.get_state(sid).edges.for_each([&](hypergraph::EdgeId eid) {
+            const auto& e = hg_.get_edge(eid);
+            vs.push_back(e.arity);
+            vs.insert(vs.end(), e.vertices, e.vertices + e.arity);
+        });
+    };
+    for (uint32_t sid : states_at(step)) {
+        const hypergraph::State& st = hg_.get_state(sid);
+        if (st.id == hypergraph::INVALID_ID) continue;
+        if (!weighted_) {
+            const uint64_t h = hg_.get_or_compute_canonical_hash(sid);
+            stats::add_class(in, h, 1, hg_.state_invariants_of(sid, h));
+            const hypergraph::EventId e = st.parent_event;
+            if (e != hypergraph::INVALID_ID && !hg_.is_genesis_event(e)) {
+                const hypergraph::Event& ev = hg_.get_event(e);
+                if (ev.id != hypergraph::INVALID_ID && ev.output_state == sid) {
+                    ++in.events;
+                    ++in.rule_counts[static_cast<int64_t>(ev.rule_index)];
+                }
+            }
+        }
+        if (which_)
+            marshal::branchial_step_state(which_, sid,
+                                          static_cast<int64_t>(hg_.get_canonical_state(sid)),
+                                          contents, edge_number, flat, in.branchial);
+    }
+    in.branchial.pairs = std::move(pairs);
+    return in;
+}
+
 }  // namespace ffi
 
 namespace marshal {

@@ -499,17 +499,21 @@ static size_t effective_max_states_per_step(const hgffi::ParsedJob& req) {
 // ExploreFromCanonicalStatesOnly, and no overlap under Full states, since a Full class has no
 // vertices of its own. Each one left out is warned about. Both engines call this with the request
 // alone, so the admission cannot depend on which engine-internal route the run took.
-static uint32_t admitted_branchial(hgffi::ParsedJob& req) {
+// The "StepStatisticsBranchial" bits the run computes; with `warn`, a warning for each one the
+// options rule out.
+static uint32_t admitted_branchial(hgffi::ParsedJob& req, bool warn = true) {
     uint32_t which = req.include_step_statistics ? req.step_statistics_branchial : 0u;
     if (which && req.explore_from_canonical_states_only) {
-        req.ffi_warnings.push_back({"StepStatistics", 1,
-            "StepStatisticsBranchial is not computed under ExploreFromCanonicalStatesOnly"});
+        if (warn)
+            req.ffi_warnings.push_back({"StepStatistics", 1,
+                "StepStatisticsBranchial is not computed under ExploreFromCanonicalStatesOnly"});
         which = 0;
     }
     if ((which & hg::stats::kBranchialOverlap) && req.canonicalize_states_mode == "Full") {
-        req.ffi_warnings.push_back({"StepStatistics", 1,
-            "the StepStatisticsBranchial overlap metrics need CanonicalizeStates None or "
-            "Automatic"});
+        if (warn)
+            req.ffi_warnings.push_back({"StepStatistics", 1,
+                "the StepStatisticsBranchial overlap metrics need CanonicalizeStates None or "
+                "Automatic"});
         which &= ~hg::stats::kBranchialOverlap;
     }
     return which;
@@ -1003,6 +1007,18 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // unfolding otherwise dominates a quotient run: 99.57% of all cycles on multirule at
         // depth 6, growing 14.6x per depth step while the canonical answer grows 1.17x.
         const hypergraph::RecordSet record = hgmarshal::record_set_for(req, gneeds);
+
+        // "StepStatistics" under full capture: a one-shot run builds each step's record as the
+        // engine closes the step. A session's steps are built at the reply, since a later Step
+        // extends the run.
+        std::unique_ptr<hgffi::StepStatisticsCollector> step_statistics;
+        if (req.include_step_statistics && !req.explore_from_canonical_states_only) {
+            step_statistics = std::make_unique<hgffi::StepStatisticsCollector>(
+                hg, engine, admitted_branchial(req, /*warn=*/false), req.step_statistics_by_class,
+                static_cast<int>(req.steps));
+            if (!opening_session && !held_session)
+                step_statistics->attach(effective_max_states_per_step(req) != 0);
+        }
 
         if (!held_session) configure_and_evolve(req, hg, engine, record, host);
 
@@ -1981,13 +1997,19 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // StepStatistics -> per step, the population of raw states summarised from one state per
         // class and the class's multiplicity (state_statistics.hpp). Under quotient exploration
         // the multiplicities come from the engine's count; under full capture every raw state is
-        // present and counts once.
+        // present and counts once. Both build each step's record in jobs on the engine's
+        // workers; under full capture StepStatisticsCollector has submitted most of them during
+        // the run.
         if (req.include_step_statistics) {
-            // Each step's classes, with the invariants recorded by the worker that created each
-            // class, its events, and its branchial input.
-            std::map<uint32_t, hg::stats::StepInput> inputs;
-            const uint32_t n_pub = hg.num_published_states();
-            if (hg.quotient_multiplicity()) {
+            // "StepStatisticsBranchial": per step, the branchial graph on the step's states and
+            // the vertex overlap of its raw states (admitted_branchial).
+            const uint32_t which = admitted_branchial(req);
+            // Under the multiplicity count each step's classes, with the invariants recorded by
+            // the worker that created each class, and its events come from the count, which is
+            // final only when the run is.
+            const bool by_count = hg.quotient_multiplicity();
+            std::map<uint32_t, hg::stats::StepInput> weighted;
+            if (by_count) {
                 std::vector<hg::stats::StepPoint> points;
                 std::unordered_map<uint64_t, std::map<int64_t, uint64_t>> matches_by_rule;
                 hg.for_each_class_multiplicity([&](uint64_t h, uint32_t d, uint64_t m) {
@@ -1999,65 +2021,35 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                     });
                 });
                 for (const auto& p : points)
-                    hg::stats::add_class(inputs[p.step], p.class_hash, p.weight,
+                    hg::stats::add_class(weighted[p.step], p.class_hash, p.weight,
                                          hg.state_invariants(p.class_hash));
                 std::map<uint32_t, uint64_t> events;
                 std::map<uint32_t, std::map<int64_t, uint64_t>> rule_counts;
                 hg::stats::events_from_multiplicities(points, matches_by_rule,
                                                       static_cast<uint32_t>(req.steps), events,
                                                       rule_counts);
-                for (const auto& [step, n] : events) inputs[step].events = n;
-                for (auto& [step, by_rule] : rule_counts) inputs[step].rule_counts = std::move(by_rule);
+                for (const auto& [step, n] : events) weighted[step].events = n;
+                for (auto& [step, by_rule] : rule_counts)
+                    weighted[step].rule_counts = std::move(by_rule);
+            }
+            wxf::WXFValue reply;
+            if (by_count && !which) {
+                hg::stats::StepStatisticsJobs jobs(
+                    req.step_statistics_by_class, which, engine.num_threads(),
+                    [&engine](std::function<void()> f) { engine.submit_side_job(std::move(f)); });
+                for (auto& [step, in] : weighted) jobs.submit(step, std::move(in));
+                engine.wait_side_jobs();
+                reply = jobs.reply();
             } else {
-                for (uint32_t sid = 0; sid < n_pub; ++sid) {
-                    const hypergraph::State& st = hg.get_state(sid);
-                    if (st.id == hypergraph::INVALID_ID) continue;
-                    const uint64_t h = hg.get_or_compute_canonical_hash(sid);
-                    hg::stats::add_class(inputs[st.step], h, 1, hg.state_invariants(h));
-                }
-                const uint32_t n_ev = hg.num_published_events();
-                for (uint32_t eid = 0; eid < n_ev; ++eid) {
-                    const hypergraph::Event& ev = hg.get_event(eid);
-                    if (ev.id == hypergraph::INVALID_ID || hg.is_genesis_event(eid)) continue;
-                    if (ev.output_state == hypergraph::INVALID_ID) continue;
-                    hg::stats::StepInput& in = inputs[hg.get_state(ev.output_state).step];
-                    ++in.events;
-                    ++in.rule_counts[static_cast<int64_t>(ev.rule_index)];
-                }
+                // The states give each step's classes and events, or with the count only its
+                // branchial input.
+                if (!step_statistics)
+                    step_statistics = std::make_unique<hgffi::StepStatisticsCollector>(
+                        hg, engine, which, req.step_statistics_by_class,
+                        static_cast<int>(req.steps));
+                reply = step_statistics->finish(by_count ? &weighted : nullptr);
             }
-            // "StepStatisticsBranchial": per step, the branchial graph on the step's states and
-            // the vertex overlap of its raw states (admitted_branchial).
-            const uint32_t which = admitted_branchial(req);
-            if (which) {
-                std::vector<std::pair<uint32_t, uint32_t>> pairs;
-                if (which & hg::stats::kBranchialGraph)
-                    for (const auto& be : hg.causal_graph().get_branchial_edges()) {
-                        if (hg.is_genesis_event(be.event1) || hg.is_genesis_event(be.event2)) continue;
-                        pairs.emplace_back(be.event1, be.event2);
-                    }
-                auto bsteps = hgmarshal::branchial_steps(
-                    which, n_pub,
-                    [&](uint32_t sid) { return hg.get_state(sid).id != hypergraph::INVALID_ID; },
-                    [&](uint32_t sid) { return static_cast<int64_t>(hg.get_canonical_state(sid)); },
-                    [&](uint32_t sid) { return hg.get_state(sid).step; },
-                    [&](uint32_t sid, std::vector<uint32_t>& vs) {
-                        hg.get_state(sid).edges.for_each([&](hypergraph::EdgeId eid) {
-                            const auto& e = hg.get_edge(eid);
-                            vs.push_back(e.arity);
-                            vs.insert(vs.end(), e.vertices, e.vertices + e.arity);
-                        });
-                    },
-                    pairs,
-                    [&](uint32_t eid) { return static_cast<uint32_t>(hg.get_event(eid).output_state); },
-                    static_cast<int>(req.steps));
-                for (auto& [step, b] : bsteps) inputs[step].branchial = std::move(b);
-            }
-            hg::stats::StepStatisticsJobs jobs(
-                req.step_statistics_by_class, which, engine.num_threads(),
-                [&engine](std::function<void()> f) { engine.submit_side_job(std::move(f)); });
-            for (auto& [step, in] : inputs) jobs.submit(step, std::move(in));
-            engine.wait_side_jobs();
-            full_result.push_back({wxf::WXFValue("StepStatistics"), jobs.reply()});
+            full_result.push_back({wxf::WXFValue("StepStatistics"), std::move(reply)});
         }
 
         // GlobalEdges -> List of all edges created during evolution
