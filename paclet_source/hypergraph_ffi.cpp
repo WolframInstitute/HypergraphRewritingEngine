@@ -2106,10 +2106,11 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
 
                 state_bitvectors.push_back(std::make_pair(
                     wxf::WXFValue(static_cast<int64_t>(sid)),
-                    wxf::WXFValue(edge_ids)
+                    wxf::WXFValue(std::move(edge_ids))
                 ));
             }
-            full_result.push_back(std::make_pair(wxf::WXFValue("StateBitvectors"), wxf::WXFValue(state_bitvectors)));
+            full_result.push_back(std::make_pair(wxf::WXFValue("StateBitvectors"),
+                                                 wxf::WXFValue(std::move(state_bitvectors))));
         }
 
         // Warning trail (engine warnings + analysis refusals). A warning marks a partial result

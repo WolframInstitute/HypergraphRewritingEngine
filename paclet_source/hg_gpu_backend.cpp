@@ -851,7 +851,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
             wxf::WXFValueList edge_data;
             edge_data.push_back(wxf::WXFValue(static_cast<int64_t>(eid)));
             for (auto v : vs) edge_data.push_back(wxf::WXFValue(static_cast<int64_t>(v)));
-            global_edges.push_back(wxf::WXFValue(edge_data));
+            global_edges.push_back(wxf::WXFValue(std::move(edge_data)));
         }
         full_result.push_back({wxf::WXFValue("GlobalEdges"), wxf::WXFValue(std::move(global_edges))});
     }
@@ -863,10 +863,10 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
                 edge_ids.push_back(wxf::WXFValue(static_cast<int64_t>(eid)));
             }
             state_bitvectors.push_back({wxf::WXFValue(static_cast<int64_t>(st.id)),
-                                        wxf::WXFValue(edge_ids)});
+                                        wxf::WXFValue(std::move(edge_ids))});
         }
         full_result.push_back({wxf::WXFValue("StateBitvectors"),
-                               wxf::WXFValue(state_bitvectors)});
+                               wxf::WXFValue(std::move(state_bitvectors))});
     }
 
     if (job.include_device) {
@@ -1035,13 +1035,13 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
                 for (const auto& ce : canon.canonical_form.edges) {
                     wxf::WXFValueList ed; ed.push_back(wxf::WXFValue(idx++));
                     for (auto v : ce) ed.push_back(wxf::WXFValue(static_cast<int64_t>(v)));
-                    edge_list.push_back(wxf::WXFValue(ed));
+                    edge_list.push_back(wxf::WXFValue(std::move(ed)));
                 }
             } else {
                 for (const auto& ce : result.edges_of(*it->second)) {
                     wxf::WXFValueList ed; ed.push_back(wxf::WXFValue(idx++));
                     for (auto v : ce) ed.push_back(wxf::WXFValue(static_cast<int64_t>(v)));
-                    edge_list.push_back(wxf::WXFValue(ed));
+                    edge_list.push_back(wxf::WXFValue(std::move(ed)));
                 }
             }
             return edge_list;
@@ -1198,7 +1198,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
                 d.push_back({wxf::WXFValue("InputState"), wxf::WXFValue(static_cast<int64_t>(genesis_state_id))});
                 d.push_back({wxf::WXFValue("OutputState"), wxf::WXFValue(static_cast<int64_t>(root))});
                 d.push_back({wxf::WXFValue("ConsumedEdges"), wxf::WXFValue(wxf::WXFValueList{})});
-                d.push_back({wxf::WXFValue("ProducedEdges"), wxf::WXFValue(produced)});
+                d.push_back({wxf::WXFValue("ProducedEdges"), wxf::WXFValue(std::move(produced))});
                 d.push_back({wxf::WXFValue("InputStateEdges"), wxf::WXFValue(wxf::WXFValueList{})});
                 d.push_back({wxf::WXFValue("OutputStateEdges"), wxf::WXFValue(serialize_edges(root))});
                 return d;
@@ -1220,8 +1220,8 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
             d.push_back({wxf::WXFValue("RuleIndex"), wxf::WXFValue(static_cast<int64_t>(e.rule))});
             d.push_back({wxf::WXFValue("InputState"), wxf::WXFValue(static_cast<int64_t>(e.input_state))});
             d.push_back({wxf::WXFValue("OutputState"), wxf::WXFValue(static_cast<int64_t>(e.output_state))});
-            d.push_back({wxf::WXFValue("ConsumedEdges"), wxf::WXFValue(consumed)});
-            d.push_back({wxf::WXFValue("ProducedEdges"), wxf::WXFValue(produced)});
+            d.push_back({wxf::WXFValue("ConsumedEdges"), wxf::WXFValue(std::move(consumed))});
+            d.push_back({wxf::WXFValue("ProducedEdges"), wxf::WXFValue(std::move(produced))});
             d.push_back({wxf::WXFValue("InputStateEdges"), wxf::WXFValue(serialize_edges(e.input_state))});
             d.push_back({wxf::WXFValue("OutputStateEdges"), wxf::WXFValue(serialize_edges(e.output_state))});
             return d;

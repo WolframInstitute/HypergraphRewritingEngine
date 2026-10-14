@@ -364,7 +364,7 @@ public:
         wxf::WXFValueList l;
         l.reserve(v.size());
         for (int64_t x : v) l.push_back(wxf::WXFValue(x));
-        a_.push_back({wxf::WXFValue(key), wxf::WXFValue(l)});
+        a_.push_back({wxf::WXFValue(key), wxf::WXFValue(std::move(l))});
     }
     void edges(const char* key,
                const std::vector<std::pair<int64_t, std::vector<uint32_t>>>& e) {
@@ -374,9 +374,9 @@ public:
             wxf::WXFValueList ed;
             ed.push_back(wxf::WXFValue(id));
             for (uint32_t v : verts) ed.push_back(wxf::WXFValue(static_cast<int64_t>(v)));
-            l.push_back(wxf::WXFValue(ed));
+            l.push_back(wxf::WXFValue(std::move(ed)));
         }
-        a_.push_back({wxf::WXFValue(key), wxf::WXFValue(l)});
+        a_.push_back({wxf::WXFValue(key), wxf::WXFValue(std::move(l))});
     }
     wxf::WXFValueAssociation take() { return std::move(a_); }
 private:
