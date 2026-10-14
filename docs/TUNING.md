@@ -202,6 +202,23 @@ No thread waits on another: a submit never blocks, a searching worker never wait
 
 Derived per run: wakes per job, `wakes_empty / wakes_issued`, failed steals per job, parks per job, and the max/min worker share of `jobs_executed`. Counts depend on the schedule, so each configuration runs 5 times and the report gives medians and ranges. Rows: multirule d7 quotient, bigpath n128 d3 quotient, cycle4 d6 full, wolftri d6 full, wpp d7 full, at 16 and 32 workers, before and after the mechanism. Expected direction if the mechanism is right: at 32 workers wakes per job and failed steals per job fall to near their 16-worker values, and on the narrow rows the number of workers with a non-zero share falls below 32. Callgrind Ir at 16 and 32 workers confirms that the throttle removes no work. Wall clock on a quiet box (the C1 gate, mono_check over 1..32) decides adoption; the losing policy is deleted in the same commit.
 
+**Implemented: the counters.** `JobSystem::scheduler_counters()` and `ParallelEvolutionEngine::scheduler_counters()` exist only in stats builds. `wakes_issued` counts `unpark_one` calls (one `FUTEX_WAKE` each on Linux), whether or not a worker was asleep. `wakes_empty` counts a return from a park followed by another park with no job run between. `steal_attempts` counts victim deque reads in the search and in the last look before a park. `searching_max` is the high-water mark of workers between an empty own deque and either a job or the idle announcement. `bench_cpu_evolve` prints one `sched:` line per evolve.
+
+**Baseline (current scheduler).** `HG_BENCH_CANON_ONLY=<1 quotient, 0 full> HG_BENCH_LARGE_N=128 bench_cpu_evolve <depth> 5 <threads> <workload>`, stats build, 5 evolves, medians with [min-max]; bench default record set, so these runs are not the paclet jobs of `.scratch/bench_rc2`:
+
+| Row | Workers | Jobs | Wakes | Wakes empty | Steal attempts | Failed steals | Parks | Searching max | Inline |
+|---|---|---|---|---|---|---|---|---|---|
+| multirule d7 q | 16 | 335 | 207 [92-255] | 12 [2-30] | 3,227 | 3,053 [1,466-3,543] | 66 | 2 | 0 |
+| multirule d7 q | 32 | 370 | 248 [167-300] | 22 [12-35] | 9,047 | 8,751 [8,148-12,150] | 103 | 2 | 0 |
+| bigpath n128 d3 q | 16 | 1,419 | 555 [402-1,407] | 4 [0-16] | 6,179 | 5,174 [5,089-6,750] | 47 | 2 | 0 |
+| bigpath n128 d3 q | 32 | 1,424 | 577 [396-1,536] | 22 [5-71] | 18,211 | 17,098 [14,897-23,754] | 115 | 2 | 0 |
+| cycle4 d6 f | 16 | 99,002 | 21,025 [224-41,776] | 10 [3-14] | 18,097 | 12,396 [11,289-70,887] | 56 | 3 | 0 |
+| cycle4 d6 f | 32 | 99,002 | 53,681 [6,263-54,309] | 47 [14-60] | 58,192 | 46,238 [39,924-160,199] | 149 | 4 | 0 |
+| wpp d8 q | 16 | 629,980 | 12,572 [338-16,812] | 5 [1-12] | 798,308 | 745,475 [576,491-1,014,882] | 41 | 6 | 61,218 [41,475-73,832] |
+| wpp d8 q | 32 | 627,092 | 34,339 [588-41,374] | 3 [2-23] | 899,250 | 867,187 [565,664-1,279,965] | 71 | 7 | 2 [0-66,556] |
+
+Failed steals per job, 16 to 32 workers: multirule 9.3 to 23.0, bigpath 3.7 to 10.5, cycle4 0.13 to 0.47, wpp 1.18 to 1.38. Wakes exceed parks by 3x (multirule) to 480x (wpp at 32). A park is woken at most once, so at least wakes minus parks `FUTEX_WAKE` calls found no sleeper: the idle count (`park_gate.hpp:138-153`) covers a worker from its announcement until its park has returned, and every submit in that window signals. wpp d8 quotient at 16 workers runs 41,475 to 73,832 jobs inline (a worker's 4,096-slot deque and the 32,768-slot injector both full), so the H17-H21 row's expectation of zero inline runs does not hold there.
+
 ### 2.5 Order of implementation
 
 1. Host and device probes (2.1) and `--print-tuning`. Every later row reads them.

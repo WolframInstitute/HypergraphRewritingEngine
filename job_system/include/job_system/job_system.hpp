@@ -26,6 +26,7 @@
 #include <hgcommon/affinity.hpp>
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <hgcommon/core.hpp>  // splitmix64 -- the steal victim draw
@@ -142,6 +143,14 @@ private:
         // ratio to jobs_stolen is how a run reports whether the locality preference found
         // anything to prefer, rather than it being assumed from the topology.
         std::atomic<size_t> jobs_stolen_near{0};
+#if HG_ENGINE_STATS
+        // Scheduler counters (SchedulerCounters), written by this worker only.
+        std::atomic<size_t> wakes_issued{0};      // parked workers this worker's submits signalled
+        std::atomic<size_t> wakes_empty{0};       // returns from a park followed by another park, no job between
+        std::atomic<size_t> steal_attempts{0};    // victim deque reads
+        std::atomic<size_t> steal_failures{0};    // of those, the ones that took nothing
+        bool woke = false;                        // returned from a park and has not run a job since
+#endif
         // The cache domain this worker parks on and submits into. Written once by
         // build_domain_map before any worker thread exists, read-only thereafter.
         unsigned domain = 0;
@@ -163,7 +172,7 @@ private:
     //
     // BOTH EMPTY means there is no grouping worth preferring -- an unreadable topology, a
     // machine whose cores all share one cache, or a set where no two workers share one -- and
-    // find_work then draws from the whole pool, which is what it does on such a machine anyway.
+    // steal_work then draws from the whole pool, which is what it does on such a machine anyway.
     std::vector<unsigned> peer_begin_;
     std::vector<unsigned> peers_;
     // A caller-stated domain per worker, which start() uses in place of asking the platform.
@@ -187,6 +196,16 @@ private:
     std::atomic<size_t> double_executions_{0};
     std::atomic<size_t> abandoned_at_quiescence_{0};
     std::atomic<size_t> abandoned_already_run_{0};
+#if HG_ENGINE_STATS
+    // Scheduler counters that are not per worker: wakes signalled by submits from threads that
+    // are not workers, jobs run on the submitting thread because both queues were full, and the
+    // number of workers searching for work (own deque empty, neither running a job nor announced
+    // idle) with its high-water mark.
+    std::atomic<size_t> wakes_issued_off_worker_{0};
+    std::atomic<size_t> inline_runs_{0};
+    alignas(64) std::atomic<int> stat_searching_{0};
+    std::atomic<int> stat_searching_max_{0};
+#endif
     size_t queue_capacity_;
     std::atomic<bool> is_running_{false};
 
@@ -348,7 +367,16 @@ private:
         return (t_sys_ == this && t_worker_ != nullptr) ? t_worker_->domain : 0u;
     }
 
-    void wake_one_worker() { park_gate_.wake_one(current_worker_domain()); }
+    void wake_one_worker() {
+        const bool woke = park_gate_.wake_one(current_worker_domain());
+        (void)woke;
+        HG_STAT(if (woke) {
+            if (t_sys_ == this && t_worker_ != nullptr)
+                t_worker_->wakes_issued.fetch_add(1, std::memory_order_relaxed);
+            else
+                wakes_issued_off_worker_.fetch_add(1, std::memory_order_relaxed);
+        });
+    }
 
     void wake_all_workers() { park_gate_.wake_all(); }
 
@@ -475,23 +503,45 @@ private:
         }
     }
 
-    // Exhaustive version, used only immediately before parking. find_work picks victims at
+    // Exhaustive version, used only immediately before parking. steal_work picks victims at
     // RANDOM with a bounded number of attempts, so it can come back empty while a deque still
     // holds work -- fine when the caller loops, but not as the basis for going to sleep. The
     // park has no timeout to wake it for a retry, so a worker must establish that there is
     // genuinely nothing anywhere before it waits.
     JobRaw find_work_exhaustive(WorkerData* data) {
         if (JobRaw j = data->deque.pop()) return j;
+        [[maybe_unused]] size_t attempts = 0;
+        JobRaw found = nullptr;
         for (auto& w : workers_) {
             if (w.get() == data) continue;
+            HG_STAT(++attempts);
             if (JobRaw j = w->deque.steal()) {
                 HG_STAT(data->jobs_stolen.fetch_add(1, std::memory_order_relaxed));
-                return j;
+                found = j;
+                break;
             }
         }
+        HG_STAT(count_steals(data, attempts, found != nullptr));
+        if (found) return found;
         if (auto opt = injector_.try_pop_front()) return *opt;
         return nullptr;
     }
+
+#if HG_ENGINE_STATS
+    // One update per search rather than one per victim: the attempts are counted in a register.
+    static void count_steals(WorkerData* data, size_t attempts, bool took) {
+        if (attempts == 0) return;
+        data->steal_attempts.fetch_add(attempts, std::memory_order_relaxed);
+        data->steal_failures.fetch_add(attempts - (took ? 1 : 0), std::memory_order_relaxed);
+    }
+    void stat_search_enter() {
+        const int now = stat_searching_.fetch_add(1, std::memory_order_relaxed) + 1;
+        int seen = stat_searching_max_.load(std::memory_order_relaxed);
+        while (now > seen &&
+               !stat_searching_max_.compare_exchange_weak(seen, now, std::memory_order_relaxed)) {}
+    }
+    void stat_search_leave() { stat_searching_.fetch_sub(1, std::memory_order_relaxed); }
+#endif
 
     // The steal victim is drawn by advancing a per-worker splitmix64 state, which is one
     // multiply-shift chain over a single uint64. std::mt19937 was 2.5 KB of state per worker,
@@ -515,17 +565,20 @@ private:
     // It stays a PREFERENCE. Near victims are tried, then the draw widens to the whole pool: an
     // idle core costs more than a distant line, so a thief never declines a far steal it could
     // have taken.
-    JobRaw find_work(WorkerData* data, uint64_t& rng, size_t self) {
-        if (JobRaw j = data->deque.pop()) return j;            // own work (LIFO)
+    // The search after the own deque came back empty: near victims, random victims, the injector.
+    JobRaw steal_work(WorkerData* data, uint64_t& rng, size_t self) {
         size_t n = workers_.size();
+        [[maybe_unused]] size_t attempts = 0;
         if (!peer_begin_.empty()) {                             // near victims first
             const unsigned lo = peer_begin_[self];
             const unsigned span = peer_begin_[self + 1] - lo;
             for (unsigned attempt = 0; attempt < span; ++attempt) {
                 WorkerData* victim = workers_[peers_[lo + hgcommon::splitmix64(++rng) % span]].get();
+                HG_STAT(++attempts);
                 if (JobRaw j = victim->deque.steal_if_nonempty()) {
                     HG_STAT(data->jobs_stolen.fetch_add(1, std::memory_order_relaxed));
                     HG_STAT(data->jobs_stolen_near.fetch_add(1, std::memory_order_relaxed));
+                    HG_STAT(count_steals(data, attempts, true));
                     return j;
                 }
             }
@@ -534,12 +587,15 @@ private:
             for (size_t attempt = 0; attempt < n; ++attempt) {
                 WorkerData* victim = workers_[hgcommon::splitmix64(++rng) % n].get();
                 if (victim == data) continue;
+                HG_STAT(++attempts);
                 if (JobRaw j = victim->deque.steal_if_nonempty()) {
                     HG_STAT(data->jobs_stolen.fetch_add(1, std::memory_order_relaxed));
+                    HG_STAT(count_steals(data, attempts, true));
                     return j;
                 }
             }
         }
+        HG_STAT(count_steals(data, attempts, false));
         if (auto opt = injector_.try_pop_front()) return *opt;  // external work
         return nullptr;
     }
@@ -625,8 +681,17 @@ private:
         uint64_t rng = static_cast<uint64_t>(index) * 2654435761ull + 1ull;
 
         while (true) {
-            if (JobRaw job = find_work(data, rng, index)) {
+            if (JobRaw job = data->deque.pop()) {               // own work (LIFO)
+                HG_STAT(data->woke = false);
                 run_job(data, job);
+                continue;
+            }
+            HG_STAT(stat_search_enter());
+            JobRaw stolen = steal_work(data, rng, index);
+            HG_STAT(stat_search_leave());
+            if (stolen) {
+                HG_STAT(data->woke = false);
+                run_job(data, stolen);
                 continue;
             }
             if (error_type_.load(std::memory_order_acquire) != ErrorType::None) break;
@@ -656,16 +721,24 @@ private:
             // look, which is what the barrier pairing in wake_one needs. The two callables are
             // the caller's -- where work is found, and whether this worker must leave -- and are
             // no part of the protocol.
+            [[maybe_unused]] bool parked = false;
             if (JobRaw job = park_gate_.park_unless(
                     data->domain,
                     [&] { return find_work_exhaustive(data); },
                     [&] {
-                        return error_type_.load(std::memory_order_acquire) == ErrorType::None &&
-                               !data->stop.load(std::memory_order_acquire);
+                        const bool keep = error_type_.load(std::memory_order_acquire) == ErrorType::None &&
+                                          !data->stop.load(std::memory_order_acquire);
+                        HG_STAT(if (keep) {
+                            if (data->woke) data->wakes_empty.fetch_add(1, std::memory_order_relaxed);
+                            parked = true;
+                        });
+                        return keep;
                     })) {
+                HG_STAT(data->woke = false);
                 run_job(data, job);
                 continue;
             }
+            HG_STAT(data->woke = parked);
             if (error_type_.load(std::memory_order_acquire) != ErrorType::None) break;
             if (data->stop.load(std::memory_order_acquire)) break;
         }
@@ -712,6 +785,7 @@ private:
         // recycles as usual.
         if (serial_) {
             if (injector_.try_push_back(raw)) return;
+            HG_STAT(inline_runs_.fetch_add(1, std::memory_order_relaxed));
             run_inline_(nullptr, raw);
             return;
         }
@@ -745,6 +819,7 @@ private:
             return;
         }
         // Both full. Run it here (run_inline_).
+        HG_STAT(inline_runs_.fetch_add(1, std::memory_order_relaxed));
         run_inline_(on_worker ? t_worker_ : nullptr, raw);
     }
 
@@ -839,6 +914,19 @@ public:
         for (size_t i = 0; i < workers_.size(); ++i) {
             workers_[i]->stop.store(false, std::memory_order_relaxed);
         }
+#if HG_ENGINE_STATS
+        for (auto& w : workers_) {
+            w->wakes_issued.store(0, std::memory_order_relaxed);
+            w->wakes_empty.store(0, std::memory_order_relaxed);
+            w->steal_attempts.store(0, std::memory_order_relaxed);
+            w->steal_failures.store(0, std::memory_order_relaxed);
+            w->woke = false;
+        }
+        wakes_issued_off_worker_.store(0, std::memory_order_relaxed);
+        inline_runs_.store(0, std::memory_order_relaxed);
+        stat_searching_.store(0, std::memory_order_relaxed);
+        stat_searching_max_.store(0, std::memory_order_relaxed);
+#endif
         workers_entered_.store(0, std::memory_order_relaxed);
         workers_exited_.store(0, std::memory_order_relaxed);
         ensure_default_cpu_order();               // before the map: the map is derived from it
@@ -1055,6 +1143,46 @@ public:
         }
         return SystemStatistics{total_executed, total_stolen, 0, total_near};
     }
+
+#if HG_ENGINE_STATS
+    // The scheduler's idle-side traffic over one start(): docs/TUNING.md 2.4.
+    struct SchedulerCounters {
+        size_t jobs_executed = 0;
+        size_t jobs_stolen = 0;
+        size_t wakes_issued = 0;     // parked workers signalled by submits
+        size_t wakes_empty = 0;      // a worker returned from a park and parked again with no job between
+        size_t steal_attempts = 0;   // victim deque reads
+        size_t steal_failures = 0;   // of those, the ones that took nothing
+        size_t inline_runs = 0;      // jobs run on the submitter because both queues were full
+        size_t parks = 0;            // park calls
+        int searching_max = 0;       // most workers searching at once
+        size_t busiest_worker_jobs = 0;
+        size_t idlest_worker_jobs = 0;
+        size_t workers_with_jobs = 0;
+    };
+
+    SchedulerCounters scheduler_counters() const {
+        SchedulerCounters c;
+        c.idlest_worker_jobs = workers_.empty() ? 0 : SIZE_MAX;
+        for (const auto& w : workers_) {
+            const size_t ran = w->jobs_executed.load(std::memory_order_relaxed);
+            c.jobs_executed += ran;
+            c.jobs_stolen += w->jobs_stolen.load(std::memory_order_relaxed);
+            c.wakes_issued += w->wakes_issued.load(std::memory_order_relaxed);
+            c.wakes_empty += w->wakes_empty.load(std::memory_order_relaxed);
+            c.steal_attempts += w->steal_attempts.load(std::memory_order_relaxed);
+            c.steal_failures += w->steal_failures.load(std::memory_order_relaxed);
+            c.busiest_worker_jobs = std::max(c.busiest_worker_jobs, ran);
+            c.idlest_worker_jobs = std::min(c.idlest_worker_jobs, ran);
+            c.workers_with_jobs += ran != 0 ? 1u : 0u;
+        }
+        c.wakes_issued += wakes_issued_off_worker_.load(std::memory_order_relaxed);
+        c.inline_runs = inline_runs_.load(std::memory_order_relaxed);
+        c.parks = park_gate_.park_waits();
+        c.searching_max = stat_searching_max_.load(std::memory_order_relaxed);
+        return c;
+    }
+#endif
 
     // Whether the steal path is preferring cache-local victims on this machine, and how many
     // workers the average thief has near it. Zero means the undivided draw is in use.

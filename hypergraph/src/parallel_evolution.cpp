@@ -2439,6 +2439,13 @@ size_t ParallelEvolutionEngine::pending_jobs() const { return job_system_ ? job_
 
 size_t ParallelEvolutionEngine::job_system_park_waits() const { return job_system_ ? job_system_->park_waits() : 0; }
 
+#if HG_ENGINE_STATS
+job_system::JobSystem<EvolutionJobType>::SchedulerCounters ParallelEvolutionEngine::scheduler_counters() const {
+    return job_system_ ? job_system_->scheduler_counters()
+                       : job_system::JobSystem<EvolutionJobType>::SchedulerCounters{};
+}
+#endif
+
 size_t ParallelEvolutionEngine::worker_pin_failures() const {
     return job_system_ ? job_system_->pin_failures() : 0;
 }

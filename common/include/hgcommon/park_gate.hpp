@@ -88,31 +88,33 @@ public:
     size_t park_waits() const { return park_waits_.load(std::memory_order_relaxed); }
 
     // The submitter's side. The caller pushes the job immediately before calling this, so the
-    // barrier sits between the push and the read of the idle counts.
-    void wake_one(unsigned home) {
+    // barrier sits between the push and the read of the idle counts. Returns whether a parked
+    // worker was signalled.
+    bool wake_one(unsigned home) {
         HG_PG_BARRIER();
-        if (idle_.load(HG_PG_OBSERVE) <= 0) return;
-        if (n_ == 0) return;
+        if (idle_.load(HG_PG_OBSERVE) <= 0) return false;
+        if (n_ == 0) return false;
         if (home >= n_) home = 0;
 
         // The submitter's own domain first: a job pushed here is warm here.
         if (dom_[home].idle.load(HG_PG_OBSERVE) > 0) {
             dom_[home].seq.fetch_add(1, std::memory_order_release);
             unpark_one(dom_[home].seq);
-            return;
+            return true;
         }
         // FALLING BACK TO THE OTHER DOMAINS IS WHAT KEEPS THIS FROM BEING A LOST WAKEUP. A job
         // whose own domain has nobody idle must still reach whoever is.
 #if defined(HG_PARK_GATE_NO_REMOTE_SCAN)
-        return;   // calibration only; see the note on HG_PARK_GATE_WEAK_ORDERS above
+        return false;   // calibration only; see the note on HG_PARK_GATE_WEAK_ORDERS above
 #else
         for (uint32_t d = 0; d < n_; ++d) {
             const uint32_t k = (home + 1 + d) % n_;
             if (dom_[k].idle.load(HG_PG_OBSERVE) <= 0) continue;
             dom_[k].seq.fetch_add(1, std::memory_order_release);
             unpark_one(dom_[k].seq);
-            return;
+            return true;
         }
+        return false;
 #endif
     }
 

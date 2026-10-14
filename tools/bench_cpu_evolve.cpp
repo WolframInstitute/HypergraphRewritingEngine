@@ -402,6 +402,18 @@ int main(int argc, char** argv) {
                             per.size(), events, keys, classes);
             }
 #if HG_ENGINE_STATS
+            // The scheduler's idle-side traffic (docs/TUNING.md 2.4). Counts depend on the
+            // schedule, so a comparison takes medians over iterations.
+            {
+                const auto c = e.scheduler_counters();
+                std::printf("  sched: threads=%d jobs=%zu stolen=%zu wakes=%zu wakes_empty=%zu "
+                            "steal_attempts=%zu steal_failures=%zu inline=%zu parks=%zu "
+                            "searching_max=%d workers_with_jobs=%zu busiest=%zu idlest=%zu\n",
+                            threads, c.jobs_executed, c.jobs_stolen, c.wakes_issued,
+                            c.wakes_empty, c.steal_attempts, c.steal_failures, c.inline_runs,
+                            c.parks, c.searching_max, c.workers_with_jobs,
+                            c.busiest_worker_jobs, c.idlest_worker_jobs);
+            }
             std::printf("  keyed: twin_reuses=%llu active=%d\n", (unsigned long long)g.twin_reuses(),
                         int(g.keyed_active()));
 #else

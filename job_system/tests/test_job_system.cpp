@@ -622,6 +622,40 @@ TEST(JobSystemSingleWorker, RunsEveryJobIncludingNestedSubmissions) {
     js.shutdown();
 }
 
+// The scheduler counters (stats builds only; scheduler_counters() does not exist otherwise) over
+// a nested fan-out on 8 workers: every job is counted once, a failed steal is a subset of the
+// attempts, nothing runs inline with queues this size, and the searcher high-water mark is a
+// worker count.
+TEST(JobSystemCounters, SchedulerCountersAreConsistent) {
+    job_system::JobSystem<TestJobType> js(8);
+    js.start();
+    std::atomic<int> ran{0};
+    for (int i = 0; i < 64; ++i) {
+        js.submit(job_system::make_job([&] {
+            ++ran;
+            for (int k = 0; k < 16; ++k)
+                js.submit(job_system::make_job([&] { ++ran; }, TestJobType::GRAPHICS));
+        }, TestJobType::GRAPHICS));
+    }
+    js.wait_for_completion();
+    const auto c = js.scheduler_counters();
+    js.shutdown();
+    std::cout << "[          ] jobs=" << c.jobs_executed << " stolen=" << c.jobs_stolen
+              << " wakes=" << c.wakes_issued << " wakes_empty=" << c.wakes_empty
+              << " steal_attempts=" << c.steal_attempts << " steal_failures=" << c.steal_failures
+              << " parks=" << c.parks << " searching_max=" << c.searching_max << "\n";
+    EXPECT_EQ(ran.load(), 64 + 64 * 16);
+    EXPECT_EQ(c.jobs_executed, static_cast<size_t>(ran.load()));
+    EXPECT_LE(c.jobs_stolen, c.jobs_executed);
+    EXPECT_LE(c.steal_failures, c.steal_attempts);
+    EXPECT_LE(c.wakes_empty, c.parks);
+    EXPECT_EQ(c.inline_runs, 0u);
+    EXPECT_GE(c.searching_max, 0);
+    EXPECT_LE(c.searching_max, 8);
+    EXPECT_LE(c.workers_with_jobs, 8u);
+    EXPECT_GE(c.busiest_worker_jobs, c.idlest_worker_jobs);
+}
+
 // A SUBMIT THAT FINDS EVERY QUEUE FULL RUNS THE JOB ON THE SUBMITTING THREAD, and that thread
 // need not be one of the workers: evolve_more seeds a continuation from its caller's thread, out
 // of resume lists it built in that thread's scratch arena. A job run there must leave the arena

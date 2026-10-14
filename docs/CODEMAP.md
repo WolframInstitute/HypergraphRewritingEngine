@@ -220,7 +220,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`ir_canonicalization.hpp`)
 ## `job_system/include/job_system/` + `lockfree_deque/include/lockfree_deque/`
 
 - **`job.hpp`** -- `Job<JobType>` (abstract), `FunctionJob<>`, `make_job()`, `ScheduleMode`, `CompatibilityAwareJob<>`
-- **`job_system.hpp`** -- `JobSystem<JobType>` (the scheduler: per-worker Chase-Lev deques + shared injector, `submit`/`start`/`shutdown`/`wait_for_completion`, `set_on_job_complete` scratch recycle), nested `WorkerData`/`SystemStatistics`; `ErrorType`
+- **`job_system.hpp`** -- `JobSystem<JobType>` (the scheduler: per-worker Chase-Lev deques + shared injector, `submit`/`start`/`shutdown`/`wait_for_completion`, `set_on_job_complete` scratch recycle), nested `WorkerData`/`SystemStatistics`; `ErrorType`; in stats builds `SchedulerCounters`/`scheduler_counters()` (wakes, empty wakes, steal attempts and failures, inline runs, parks, most searchers at once), printed per evolve by `bench_cpu_evolve` as `sched:`
   - a WORKER never blocks pushing to the injector (`try_push_back`, else run the job inline): a worker parked in a push cannot pop, so all workers parked there would wedge the system. The inline path passes `recycle_scratch=false`, since the outer job on the same stack still holds live scratch allocations.
 - **`job_pool.hpp`** -- `JobSlotPool`: fixed-size job slots recycled through a per-thread free list (`SlotHeader`, `TlsGuard`), so submitting a job does not allocate on the hot path. Bodies in `job_system/src/job_pool.cpp`
 - **`work_stealing_deque.hpp`** -- `WorkStealingDeque<T>` (bounded Chase-Lev; owner `push`/`pop`, thief `steal`)
