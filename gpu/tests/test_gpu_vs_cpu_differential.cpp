@@ -65,6 +65,8 @@ struct Workload {
     std::vector<double> rule_weights;
     uint64_t random_seed = 0;
     uint32_t max_states_per_step = 0;
+    // max_states_per_step counts transitions (MatchesPerStep) rather than successor states.
+    bool     step_cap_counts_matches = false;
     uint32_t max_successor_states_per_parent = 0;
     uint32_t matches_per_state_rule = 0;
     double   exploration_probability = 1.0;
@@ -219,7 +221,8 @@ NormalizedResult run_cpu(const Workload& w) {
     engine.set_transition_rate(w.transition_rate);
     if (!w.rule_weights.empty()) engine.set_rule_weights(w.rule_weights);
     engine.set_random_seed(w.random_seed);
-    engine.set_max_states_per_step(w.max_states_per_step);
+    if (w.step_cap_counts_matches) engine.set_matches_per_step(w.max_states_per_step);
+    else engine.set_max_states_per_step(w.max_states_per_step);
     engine.set_max_successor_states_per_parent(w.max_successor_states_per_parent);
     engine.set_matches_per_state_rule(w.matches_per_state_rule);
     engine.set_exploration_probability(w.exploration_probability);
@@ -383,6 +386,7 @@ hg_gpu::EvolveInput make_input(const Workload& w) {
     in.rule_weights = w.rule_weights;
     in.exploration_seed = w.random_seed;
     in.max_states_per_step = w.max_states_per_step;
+    in.step_cap_counts_matches = w.step_cap_counts_matches;
     in.max_successor_states_per_parent = w.max_successor_states_per_parent;
     in.matches_per_state_rule = w.matches_per_state_rule;
     in.exploration_probability = w.exploration_probability;
@@ -893,9 +897,8 @@ std::vector<Workload> build_corpus() {
         .num_steps = 5,
         .explore_from_canonical_states_only = true,
     });
-    // Sampled quotient run whose draws fail at every state, so the spine carries each step, and
-    // whose spine transitions tie under the orbit key (fuzz seed 201768). Both engines break the
-    // tie on the full-capture key (hgcommon::spine_before).
+    // Sampled quotient run whose draws fail at every state, so the spine carries each step, from
+    // a state with automorphic transitions (fuzz seed 201768).
     ws.push_back({
         .name = "quotient_sampled_spine_ties",
         .rules = {rule({{4, 3, 5, 2}}, {{3, 5}, {5, 4}, {4, 4}}),
@@ -1208,7 +1211,7 @@ TEST(CanonicalEventCount, DeviceReplaysTheClassFrameExpansion) {
         for (uint32_t sid = 0; sid < hg.num_published_states(); ++sid) {
             const uint64_t h = hg.get_state(sid).canonical_hash;
             if (!seen.insert(h).second) continue;
-            hg.for_each_expansion_match(h, [&](const hypergraph::SlotMatch&) { ++host_matches; });
+            hg.for_each_expansion_match(h, 0, [&](const hypergraph::SlotMatch&) { ++host_matches; });
         }
         const size_t host_raw = hg.num_reconstructed_raw_events();
         const size_t host_ids = hg.num_reconstructed_events();
@@ -1606,14 +1609,16 @@ TEST(Sampling, RuleWeightsAgreeAcrossEngines) {
 }
 
 // THE TWO HARD BOUNDS HOLD ON THE DEVICE: each binds something, and each leaves more than the root,
-// since a run that faulted returns nothing and would satisfy any upper bound.
+// since a run that faulted returns nothing and would satisfy any upper bound. Automatic states:
+// each subdivision makes a state of its own (it creates a vertex), where under Full every
+// subdivision of a path makes the one longer path and both caps keep every transition.
 TEST(Sampling, DeviceHonoursTheHardBounds) {
     Workload base;
     base.name = "bounds";
     base.rules = {rule({{0, 1}}, {{0, 2}, {2, 1}})};
     base.initial_states = {{{0u, 1u}}};
     base.num_steps = 6;
-    base.canon_mode = hg_gpu::CanonicalizationMode::Full;
+    base.canon_mode = hg_gpu::CanonicalizationMode::Automatic;
 
     const size_t uncapped = run_gpu(base).raw_states;
     ASSERT_GT(uncapped, 4u) << "the uncapped run is too small for a cap to bind";
@@ -1778,6 +1783,101 @@ TEST(Sampling, CapTiesAreKeptWholeOnBothEngines) {
         EXPECT_EQ(seen.size(), 1u) << w.name << " max_states_per_step " << w.max_states_per_step
                                    << " per_parent " << w.max_successor_states_per_parent
                                    << " per_rule " << w.matches_per_state_rule;
+    }
+}
+
+// MaxSuccessorStatesPerParent and MaxStatesPerStep count distinct successor states, and
+// MatchesPerStep transitions, the same on both engines: rules where several transitions make one
+// successor ({{x,y}} -> {} from a path, {{x}} -> {} from {{1},{1},{2}}) and growth rules, under
+// None, Automatic and Full states, at three seeds. States, events, causal and branchial pairs
+// equal the host's.
+TEST(Sampling, SuccessorCapsAreTheSameOnBothEngines) {
+    struct Case {
+        const char* name;
+        std::vector<hg_gpu::RewriteRule> rules;
+        std::vector<std::vector<hg_gpu::VertexId>> init;
+        uint32_t steps;
+    };
+    const std::vector<Case> cases = {
+        {"delete-path", {rule({{0, 1}}, {})}, {{1u, 2u}, {2u, 3u}, {3u, 4u}}, 2},
+        {"delete-unit", {rule({{0}}, {})}, {{1u}, {1u}, {2u}}, 2},
+        {"loops", {rule({{0, 1}, {0, 2}}, {{0, 1}, {0, 3}, {1, 3}, {2, 3}})},
+         {{0u, 1u}, {0u, 2u}, {1u, 2u}}, 3},
+        {"grow-join", {rule({{0, 1}}, {{0, 1}, {1, 2}}), rule({{0, 1}, {1, 2}}, {{0, 2}})},
+         {{0u, 1u}, {0u, 2u}, {1u, 2u}}, 3},
+    };
+    struct Cap { uint32_t per_parent, per_step; bool matches; };
+    const Cap caps[] = {{1, 0, false}, {2, 0, false}, {0, 1, false}, {0, 2, false},
+                        {2, 2, false}, {0, 2, true}};
+    for (const auto& c : cases) {
+        for (auto mode : {hg_gpu::CanonicalizationMode::None,
+                          hg_gpu::CanonicalizationMode::Automatic,
+                          hg_gpu::CanonicalizationMode::Full}) {
+            for (const Cap& cap : caps) {
+                for (uint64_t seed : {uint64_t(7), uint64_t(1), uint64_t(12345)}) {
+                    Workload w;
+                    w.name = std::string(c.name) + " mode " + std::to_string(int(mode)) +
+                             " per_parent " + std::to_string(cap.per_parent) + " per_step " +
+                             std::to_string(cap.per_step) + (cap.matches ? " matches" : "") +
+                             " seed " + std::to_string(seed);
+                    w.rules = c.rules;
+                    w.initial_states = {c.init};
+                    w.num_steps = c.steps;
+                    w.canon_mode = mode;
+                    w.random_seed = seed;
+                    w.max_successor_states_per_parent = cap.per_parent;
+                    w.max_states_per_step = cap.per_step;
+                    w.step_cap_counts_matches = cap.matches;
+                    const NormalizedResult cpu = run_cpu(w);
+                    const NormalizedResult gpu = run_gpu(w);
+                    EXPECT_EQ(gpu.canonical_state_hashes, cpu.canonical_state_hashes) << w.name;
+                    EXPECT_EQ(gpu.raw_states, cpu.raw_states) << w.name;
+                    EXPECT_EQ(gpu.num_events, cpu.num_events) << w.name;
+                    EXPECT_EQ(gpu.observable_causal, cpu.observable_causal) << w.name;
+                    EXPECT_EQ(gpu.observable_branchial, cpu.observable_branchial) << w.name;
+                }
+            }
+        }
+    }
+}
+
+// Under MaxStatesPerStep the reconstruction keeps one expansion per (class, depth)
+// (hgcommon::qc_expansion_key), on both engines: Full states, Automatic events, rules whose
+// classes recur at several depths, caps 1, 2, 3 and 5 over 5 steps. The host's reconstruction
+// equals its raw rewrites (SamplingReproducibility.StepCapReconstructionMatchesTheRawRewrites);
+// the device's equals the host's.
+TEST(Sampling, StepCapReconstructionIsTheSameOnBothEngines) {
+    struct Case {
+        const char* name;
+        std::vector<hg_gpu::RewriteRule> rules;
+        std::vector<std::vector<hg_gpu::VertexId>> init;
+    };
+    const std::vector<Case> cases = {
+        {"flip", {rule({{0, 1}}, {{1, 0}})}, {{0u, 1u}, {1u, 2u}, {2u, 0u}}},
+        {"shortcut", {rule({{0, 1}, {1, 2}}, {{0, 2}, {2, 1}})},
+         {{0u, 1u}, {1u, 2u}, {2u, 0u}, {0u, 0u}}},
+        {"two_rules", {rule({{0, 1}}, {{1, 0}}), rule({{0, 1}, {1, 2}}, {{0, 2}, {1, 1}})},
+         {{0u, 1u}, {1u, 2u}, {2u, 0u}, {2u, 3u}}},
+    };
+    for (const auto& c : cases) {
+        for (uint32_t k : {1u, 2u, 3u, 5u}) {
+            Workload w;
+            w.name = std::string(c.name) + " MaxStatesPerStep " + std::to_string(k);
+            w.rules = c.rules;
+            w.initial_states = {c.init};
+            w.num_steps = 5;
+            w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+            w.event_canon_mode = hg_gpu::EventCanonicalizationMode::Automatic;
+            w.transitive_reduction = false;
+            w.max_states_per_step = k;
+            const NormalizedResult cpu = run_cpu(w);
+            const NormalizedResult gpu = run_gpu(w);
+            EXPECT_EQ(gpu.canonical_state_hashes, cpu.canonical_state_hashes) << w.name;
+            EXPECT_EQ(gpu.num_events, cpu.num_events) << w.name;
+            EXPECT_EQ(gpu.observable_causal, cpu.observable_causal) << w.name;
+            EXPECT_EQ(gpu.recon_causal, cpu.recon_causal) << w.name;
+            EXPECT_EQ(gpu.observable_branchial, cpu.observable_branchial) << w.name;
+        }
     }
 }
 
@@ -2251,7 +2351,7 @@ TEST(RecordSet, ClassMultiplicitiesMatchTheHost) {
         std::set<uint64_t> classes;
         for (const auto& [k, m] : host) classes.insert(k.second);
         for (uint64_t h : classes)
-            hg.for_each_expansion_match(h, [&](const hypergraph::SlotMatch& sm) {
+            hg.for_each_expansion_match(h, 0, [&](const hypergraph::SlotMatch& sm) {
                 ++host_rules[{h, static_cast<uint32_t>(sm.rule)}];
             });
 
@@ -2267,7 +2367,7 @@ TEST(RecordSet, ClassMultiplicitiesMatchTheHost) {
             for (const auto& p : r.class_multiplicities) dev[{p.depth, p.class_hash}] += p.multiplicity;
             EXPECT_EQ(dev, host) << w.name << " replay=" << replay;
             std::map<std::pair<uint64_t, uint32_t>, uint64_t> dev_rules;
-            for (const auto& c : r.class_rule_matches) dev_rules[{c.class_hash, c.rule}] += c.count;
+            for (const auto& c : r.class_rule_matches) dev_rules[{c.expansion_key, c.rule}] += c.count;
             // The device lists every captured class; the host's list above holds the classes
             // with a multiplicity, which are the ones a statistic reads.
             for (const auto& [k, n] : host_rules)

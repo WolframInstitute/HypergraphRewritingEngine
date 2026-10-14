@@ -70,7 +70,9 @@
 //   void     push(uint64_t class_hash, uint32_t depth);
 //   bool     pop(uint64_t& class_hash, uint32_t& depth);   the shallowest queued point; clears
 //                                                           its flag
-//   template <class F> void for_each_match(uint64_t class_hash, F&& f);
+//   template <class F> void for_each_match(uint64_t class_hash, uint32_t depth, F&& f);
+//                              the matches of the expansion of (class_hash, depth)
+//                              (qc_expansion_key)
 //   void     fence();
 
 #include <cstdint>
@@ -183,7 +185,7 @@ HG_HD void qm_drain(Ctx& c) {
     uint32_t d = 0;
     while (c.pop(h, d)) {
         c.fence();
-        c.for_each_match(h, [&](const typename Ctx::Match& m) { qm_pass(c, m, h, d); });
+        c.for_each_match(h, d, [&](const typename Ctx::Match& m) { qm_pass(c, m, h, d); });
     }
 }
 

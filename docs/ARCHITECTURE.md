@@ -200,9 +200,9 @@ well-defined; `docs/SPEC.md` §5 states which options are samplers and which are
   and the seed — never a worker's RNG — so the sampled subgraph is the same at every worker
   count and on either device, and reproducible for a fixed seed.
 - **The spine.** Below the branching factor a fixed rate makes the sampled evolution go
-  extinct, so a state whose draws all failed keeps its transition with the smallest seeded rank
-  (`hgcommon::transition_rank`). Under the quotient reconstruction automorphic transitions share
-  a rank, and the tie goes to the smallest full-capture rank (`hgcommon::spine_before`). The host
+  extinct, so a state whose draws all failed keeps its transitions with the smallest seeded rank
+  (`hgcommon::transition_rank`). Under Full states the key reads the matched edges' orbits, so
+  automorphic transitions share the rank and are kept together. The host
   decides it at the state's drain (`spine_at_drain`), the device in the block that matches all of
   the state's rules (`match_state_rule`).
 - **The per-state match-task join.** Matching one state is a tree of tasks, so no single task

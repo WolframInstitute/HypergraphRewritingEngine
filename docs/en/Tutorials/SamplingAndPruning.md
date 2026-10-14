@@ -12,7 +12,7 @@ RelatedTutorials: [GettingStarted]
 
 The number of states of a multiway system grows quickly with the number of steps. [HGEvolve]() has two kinds of options that limit it:
 
-- caps, `"MaxSuccessorStatesPerParent"`, `"MaxStatesPerStep"`, `"UniformRandom"` with `"MatchesPerStep"`, and `"MatchesPerStateRule"`, which keep the lowest-ranked transitions;
+- caps, `"MaxSuccessorStatesPerParent"`, `"MaxStatesPerStep"`, `"UniformRandom"` with `"MatchesPerStep"`, and `"MatchesPerStateRule"`, which keep the lowest-ranked successor states or transitions;
 - samples, `"TransitionRate"` with `"RuleWeights"`, and `"ExplorationProbability"`, which keep each transition or state with a probability.
 
 Both draw from the identity of each transition or state and the `"RandomSeed"`, so they keep the same states on every run with the same seed, at any thread count.
@@ -78,7 +78,7 @@ A run that sets no `"RandomSeed"` and is capped by arrival order or thinned by `
 
 ## Caps
 
-`"MaxSuccessorStatesPerParent"`, `"MaxStatesPerStep"` and `"UniformRandom"` with `"MatchesPerStep"` keep the lowest-ranked transitions: of each state, once its matching is complete, or of each step, once the step's matching is complete. A transition not kept is not taken.
+`"MaxSuccessorStatesPerParent"` and `"MaxStatesPerStep"` keep the lowest-ranked successor states, with every transition into them: of each state, once its matching is complete, or of each step, once the step's matching is complete. Successor states are the states as `"CanonicalizeStates"` identifies them; under the default `None` every transition makes its own state. `"UniformRandom"` with `"MatchesPerStep"` keeps the lowest-ranked transitions of each step. A transition not kept is not taken.
 
 ### Successors per parent
 
@@ -108,13 +108,13 @@ HGEvolve[rule, init, 4, "NumStates", "MaxSuccessorStatesPerParent" -> 2, "Random
 
 ### States per step
 
-`"MaxStatesPerStep" -> 3` keeps the three lowest-ranked transitions of each step, together with any that tie with the third, so the choice does not depend on the order the work is done in. Step 1 has two states, so the cap applies from step 2:
+`"MaxStatesPerStep" -> 3` keeps the three lowest-ranked successor states of each step, together with any that tie with the third, so the choice does not depend on the order the work is done in. Step 1 has two states, so the cap applies from step 2:
 
 ```wl
 HGEvolve[rule, init, 3, "StatesGraphStructure", "MaxStatesPerStep" -> 3, "RandomSeed" -> 3, AspectRatio -> 1/2]
 ```
 
-!["MaxStatesPerStep" -> 3 keeps the three lowest-ranked transitions of each step, together with any that tie with the third, so the choice does not depend on the order the work is done in.](../images/SamplingAndPruning/SamplingAndPruning-10.png)
+!["MaxStatesPerStep" -> 3 keeps the three lowest-ranked successor states of each step, together with any that tie with the third, so the choice does not depend on the order the work is done in.](../images/SamplingAndPruning/SamplingAndPruning-10.png)
 
 At four steps:
 
@@ -134,7 +134,7 @@ Sort @ Tally @ Lookup["Step"] @ Values @ HGEvolve[rule, init, 4, "States", "MaxS
 
 ### Matches per step
 
-`"UniformRandom" -> True` with `"MatchesPerStep" -> 3` is `"MaxStatesPerStep" -> 3` under another name, and gives the same count:
+`"UniformRandom" -> True` with `"MatchesPerStep" -> 3` keeps the three lowest-ranked transitions of each step. Under the default `"CanonicalizeStates" -> None` every transition makes its own state, so it keeps what `"MaxStatesPerStep" -> 3` keeps:
 
 ```wl
 {HGEvolve[rule, init, 4, "NumStates", "MaxStatesPerStep" -> 3, "RandomSeed" -> 3], HGEvolve[rule, init, 4, "NumStates", "UniformRandom" -> True, "MatchesPerStep" -> 3, "RandomSeed" -> 3]}
@@ -340,15 +340,15 @@ The class hashes of the first seed:
 hashesA = Sort @ Lookup["CanonicalHash"] @ Values @ HGEvolve[rule, init, 5, "States", "CanonicalizeStates" -> Full, "TransitionRate" -> 0.5, "RandomSeed" -> 1, "IncludeCanonicalHashes" -> True]
 ```
 
-<!-- => {-6704850690037478777, -6276439087999122262, -5742333305762982118, -5669361067642602358, -5239938230783464623, -1453811750045434078, 5293164704559906130, 7197693678543408660, 7499371674364276414, 8367264973557672493, 8839991810862101748} -->
+<!-- => {-6704850690037478777, -6276439087999122262, -5742333305762982118, -5669361067642602358, -5239938230783464623, 7197693678543408660, 8367264973557672493, 8839991810862101748} -->
 
 The class hashes of the second seed:
 
 ```wl
-hashesB = Sort @ Lookup["CanonicalHash"] @ Values @ HGEvolve[rule, init, 5, "States", "CanonicalizeStates" -> Full, "TransitionRate" -> 0.5, "RandomSeed" -> 2, "IncludeCanonicalHashes" -> True]
+hashesB = Sort @ Lookup["CanonicalHash"] @ Values @ HGEvolve[rule, init, 5, "States", "CanonicalizeStates" -> Full, "TransitionRate" -> 0.5, "RandomSeed" -> 10, "IncludeCanonicalHashes" -> True]
 ```
 
-<!-- => {-6704850690037478777, -5769831544623873690, -5742333305762982118, -5669361067642602358, 4195566678071382530, 5293164704559906130, 7197693678543408660, 7499371674364276414, 8367264973557672493, 8839991810862101748} -->
+<!-- => {-6704850690037478777, -5769831544623873690, -5742333305762982118, -5669361067642602358, -5239938230783464623, -1453811750045434078, 4195566678071382530, 5293164704559906130, 7499371674364276414, 8367264973557672493, 8839991810862101748} -->
 
 The number of classes in each run, and in both:
 
@@ -356,7 +356,7 @@ The number of classes in each run, and in both:
 {Length[hashesA], Length[hashesB], Length[Intersection[hashesA, hashesB]]}
 ```
 
-<!-- => {11, 10, 8} -->
+<!-- => {8, 11, 6} -->
 
 Together the two runs have the 13 classes of the full system at five steps:
 

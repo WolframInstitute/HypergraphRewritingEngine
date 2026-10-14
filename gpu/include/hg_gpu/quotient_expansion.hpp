@@ -96,10 +96,10 @@ struct QeMatchView {
     __device__ const hgcommon::EventMarkedForms* marked_forms() const { return nullptr; }
 };
 
-// A captured match reference, bucketed by from_hash; the node carries its exact hash so the
-// walkers can filter a shared bucket.
+// A captured match reference, bucketed by the key of the expansion it belongs to
+// (qe_expansion_key); the node carries the key so the walkers can filter a shared bucket.
 struct QeMatchRef {
-    uint64_t from_hash;
+    uint64_t from_key;
     uint32_t record;
 };
 
@@ -185,7 +185,7 @@ constexpr uint32_t kQeReachTable = 128;   // power of two
 
 struct QeView {
     typename Pool<DeviceSlotMatch>::DeviceView          matches;
-    typename LockFreeList<QeMatchRef>::DeviceView       by_from;   // bucket(from_hash)
+    typename LockFreeList<QeMatchRef>::DeviceView       by_from;   // bucket(expansion key)
 
     typename Pool<DeviceQcInstance>::DeviceView         instances;
     // The instances recorded at the depth bound, which a raised bound has to drive: the device
@@ -346,7 +346,7 @@ __device__ inline void qe_task_append(const DeviceState& ds, QeView qe, uint64_t
 __device__ inline void qe_drive_instance(const DeviceState& ds, QeView qe, uint32_t rec,
                                          uint64_t state_hash, uint32_t depth);
 __device__ inline void qe_drive_match(const DeviceState& ds, QeView qe, uint32_t match_rec,
-                                      uint64_t from_hash);
+                                      uint64_t from_hash, uint32_t depth);
 __device__ inline QeWork qe_work_for(const DeviceState& ds, QeView qe, uint32_t slice);
 __device__ __forceinline__ uint32_t qe_alloc_words(const DeviceState& ds, QeView qe, uint32_t n);
 
@@ -479,11 +479,19 @@ __device__ inline uint32_t qe_frame_slot_of(const DeviceState& ds, QeView qe, ui
 // Walk the captured matches of one class. The bucket is shared, so the exact hash on each node
 // is what selects this class's records out of it.
 template <typename F>
-__device__ inline void qe_for_each_match_from(QeView qe, uint64_t from_hash, F&& f) {
-    qe.by_from.for_each(qe_bucket(from_hash, qe.by_from.num_keys), [&](const QeMatchRef& r) {
-        if (r.from_hash != from_hash) return;
+__device__ inline void qe_for_each_match_from(QeView qe, uint64_t key, F&& f) {
+    qe.by_from.for_each(qe_bucket(key, qe.by_from.num_keys), [&](const QeMatchRef& r) {
+        if (r.from_key != key) return;
         f(qe.matches.at(r.record));
     });
+}
+
+// The key class `class_hash`'s expansion at `depth` is stored under: the host's
+// Hypergraph::qc_expansion_key.
+__device__ __forceinline__ uint64_t qe_expansion_key(const DeviceState& ds, uint64_t class_hash,
+                                                     uint32_t depth) {
+    return hgcommon::qc_expansion_key(class_hash, depth,
+                                      hgcommon::qc_expansions_by_depth(ds.max_states_per_step));
 }
 
 // A replay application's event class, the host's Hypergraph::claim_replay_event: the run
@@ -657,8 +665,9 @@ struct DeviceQmCtx {
         return true;
     }
     template <class F>
-    __device__ void for_each_match(uint64_t class_hash, F&& f) {
-        qe_for_each_match_from(qe, class_hash, [&](const DeviceSlotMatch& m) {
+    __device__ void for_each_match(uint64_t class_hash, uint32_t depth, F&& f) {
+        qe_for_each_match_from(qe, qe_expansion_key(ds, class_hash, depth),
+                               [&](const DeviceSlotMatch& m) {
             f(QeMatchView(m, qe.arr_words));
         });
     }
@@ -678,13 +687,13 @@ __device__ inline __noinline__ void qe_seed_multiplicity(const DeviceState& ds, 
 // The capture side of the multiplicity count: b_j over the matches linked into the class's
 // bucket before this one, then ready, then the mass already standing at the class at every
 // depth. The host's branch in Hypergraph::qc_capture_expansion.
-// b_j: the matches of class `from` linked into the bucket before `at` whose consumed slots
-// overlap `consumed`.
-__device__ inline uint32_t qe_overlaps_before(QeView qe, uint64_t from, uint32_t at,
+// b_j: the matches of the expansion `key` linked into the bucket before `at` whose consumed
+// slots overlap `consumed`.
+__device__ inline uint32_t qe_overlaps_before(QeView qe, uint64_t key, uint32_t at,
                                               const uint32_t* consumed, uint32_t nc) {
     uint32_t b = 0;
     qe.by_from.for_each_before(at, [&](const QeMatchRef& r) {
-        if (r.from_hash != from) return;
+        if (r.from_key != key) return;
         if (hgcommon::qr_consumed_overlap(consumed, nc, QeMatchView(qe.matches.at(r.record), qe.arr_words)))
             ++b;
     });
@@ -692,7 +701,8 @@ __device__ inline uint32_t qe_overlaps_before(QeView qe, uint64_t from, uint32_t
 }
 
 __device__ inline __noinline__ void qe_capture_multiplicity(const DeviceState& ds, QeView qe, const DeviceSlotMatch& m,
-                                               uint64_t from, uint32_t b, QeWork& work) {
+                                               uint64_t from, uint32_t depth, uint32_t b,
+                                               QeWork& work) {
     if (qe.qm_overlaps.insert_if_absent(static_cast<uint64_t>(m.id) + 1u, b + 1u).overflowed) {
         ds.errors.record(ErrorKind::kQcNodes);
         return;
@@ -700,7 +710,12 @@ __device__ inline __noinline__ void qe_capture_multiplicity(const DeviceState& d
     DeviceQmCtx c{ds, qe, work};
     c.fence();
     const QeMatchView v(m, qe.arr_words);
-    for (uint32_t d = 0; d < qe.max_steps; ++d) hgcommon::qm_pass(c, v, from, d);
+    // Every depth the expansion serves: all of them, or under MaxStatesPerStep its own.
+    if (hgcommon::qc_expansions_by_depth(ds.max_states_per_step)) {
+        if (depth < qe.max_steps) hgcommon::qm_pass(c, v, from, depth);
+    } else {
+        for (uint32_t d = 0; d < qe.max_steps; ++d) hgcommon::qm_pass(c, v, from, d);
+    }
     hgcommon::qm_drain(c);
 }
 
@@ -756,13 +771,14 @@ __device__ inline void qe_capture_expansion(const DeviceState& ds, QeView qe,
 
     const uint64_t from = ds.state_canonical_hash[parent];
     const uint64_t to   = ds.state_canonical_hash[child];
+    const uint64_t xkey = qe_expansion_key(ds, from, depth);
 
     // One raw state's matches define the class's expansion; every later parent of the same class
     // drops out here, so the record is a property of the CLASS and not of the schedule.
     uint32_t go = 0;
     if (lane == 0) {
         const uint32_t claim = static_cast<uint32_t>(parent) + 1u;
-        const auto won = qe.rep.insert_if_absent(from, claim);
+        const auto won = qe.rep.insert_if_absent(xkey, claim);
         if (won.overflowed) ds.errors.record(ErrorKind::kQcNodes);
         if (won.value == claim) {
             go = 1;
@@ -897,7 +913,7 @@ __device__ inline void qe_capture_expansion(const DeviceState& ds, QeView qe,
         m.runsig_step = hgcommon::QR_NO_STEP;
 
         const uint32_t at =
-            qe.by_from.push(qe_bucket(from, qe.by_from.num_keys), QeMatchRef{from, rec});
+            qe.by_from.push(qe_bucket(xkey, qe.by_from.num_keys), QeMatchRef{xkey, rec});
         if (at == INVALID_ID) {
             ds.errors.record(ErrorKind::kQcNodes);
             return UINT32_MAX;
@@ -905,18 +921,18 @@ __device__ inline void qe_capture_expansion(const DeviceState& ds, QeView qe,
 
         // b_j into the class's B(c) whenever branchial pairs are counted (QeState::count_branchial).
         if (qe.multiplicity || (qe.replay && ds.record_branchial)) {
-            const uint32_t b = qe_overlaps_before(qe, from, at, consumed, nc);
+            const uint32_t b = qe_overlaps_before(qe, xkey, at, consumed, nc);
             if (b && static_cast<uint32_t>(parent) < qe.class_nmatch_cap)
                 atomicAdd(&qe.class_pairs[parent], static_cast<unsigned long long>(b));
             if (qe.multiplicity) {
                 QeWork work = qe_work_for(ds, qe, work_slice);
-                qe_capture_multiplicity(ds, qe, m, from, b, work);
+                qe_capture_multiplicity(ds, qe, m, from, depth, b, work);
             }
         }
         return rec;
     }();
     published = __shfl_sync(0xffffffffu, published, 0);
-    if (published != UINT32_MAX && qe.replay) qe_drive_match(ds, qe, published, from);
+    if (published != UINT32_MAX && qe.replay) qe_drive_match(ds, qe, published, from, depth);
 }
 
 // Reserve `n` words of the expansion arena. Returns UINT32_MAX when the arena is exhausted,
@@ -976,7 +992,7 @@ __device__ inline uint32_t qe_add_instance(const DeviceState& ds, QeView qe, uin
     // Claim words only for an instance that will be expanded; one at the bound claims nothing.
     if (depth < qe.max_steps) {
         uint32_t class_matches = 0;
-        const auto rep = qe.rep.lookup(state_hash);
+        const auto rep = qe.rep.lookup(qe_expansion_key(ds, state_hash, depth));
         if (rep.found && rep.value - 1u < qe.class_nmatch_cap) {
             cuda::atomic_ref<uint32_t, cuda::thread_scope_device> n(qe.class_nmatch[rep.value - 1u]);
             class_matches = n.load(cuda::memory_order_acquire);
@@ -1065,24 +1081,27 @@ __device__ inline void qe_drive_instance(const DeviceState& ds, QeView qe, uint3
     // Published before scanning; pairs with the fence on the match side so a concurrent
     // instance and match cannot both miss each other.
     __threadfence();
-    qe.by_from.for_each(qe_bucket(state_hash, qe.by_from.num_keys), [&](const QeMatchRef& r) {
-        if (r.from_hash == state_hash) qe_task_append(ds, qe, state_hash, rec, depth, r.record);
+    const uint64_t key = qe_expansion_key(ds, state_hash, depth);
+    qe.by_from.for_each(qe_bucket(key, qe.by_from.num_keys), [&](const QeMatchRef& r) {
+        if (r.from_key == key) qe_task_append(ds, qe, state_hash, rec, depth, r.record);
     });
 }
 
 // Match side of the rendezvous: a task per instance already standing at this class, at every
-// depth it could stand at.
+// depth the match's expansion serves: all of them, or under MaxStatesPerStep `depth`.
 // Called by every lane of the capturing warp after lane 0 pushed the match to by_from. Lane 0
 // fences after that push and the warp synchronizes before any lane scans, so each scan follows
 // the publish and the fence, as the instance side's does. Each lane walks every 32nd
 // (depth, shard) list.
 __device__ inline void qe_drive_match(const DeviceState& ds, QeView qe, uint32_t match_rec,
-                                      uint64_t from_hash) {
+                                      uint64_t from_hash, uint32_t depth) {
     if ((threadIdx.x & 31u) == 0) __threadfence();
     __syncwarp();
+    const bool by_depth = hgcommon::qc_expansions_by_depth(ds.max_states_per_step);
     const uint32_t units = qe.max_steps * kQeInstShards;
     for (uint32_t u = threadIdx.x & 31u; u < units; u += 32u) {
         const uint32_t d = u / kQeInstShards;
+        if (by_depth && d != depth) continue;
         const uint64_t key = qe_inst_key(from_hash, d);
         if (!qe_inst_shard_first(key, u % kQeInstShards, qe.by_key.num_keys)) continue;
         qe.by_key.for_each(qe_inst_bucket(qe, key, u % kQeInstShards), [&](const QeInstRef& r) {

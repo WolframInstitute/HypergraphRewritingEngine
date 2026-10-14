@@ -280,7 +280,9 @@ TEST(EvolutionLimits, MatchesPerStateRuleBoundsEveryStatesRewritesPerRule) {
     };
     auto run = [](size_t k, size_t threads, bool stepped) {
         Hypergraph hg;
-        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        // None states: every match has its own key, so the cap keeps exactly k. Under Full the
+        // key reads edge orbits, and automorphic matches tie and are kept together (SPEC §5).
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::None);
         hg.set_event_signature_keys(hgcommon::EVENT_SIG_NONE);   // one event per rewrite
         ParallelEvolutionEngine e(&hg, threads);
         // {{x,y},{x,z}} -> {{x,z},{x,w},{y,w},{z,w}}

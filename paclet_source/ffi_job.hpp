@@ -75,14 +75,14 @@ struct ParsedJob {
     bool explore_from_canonical_states_only = false;  // Exploration deduplication
     // ir_verification and return_canonical_states are derived from state_canon_mode == Full
     uint64_t random_seed = 0;     // 0: a fresh seed per run; nonzero fixes the sample
-    // With matches_per_step, a cap by ARRIVAL ORDER on the states kept per step. Not a uniform
-    // draw: transition_rate is that. Kept because callers depend on the option name.
+    // With matches_per_step, the N lowest-ranked transitions of each step ("MatchesPerStep"
+    // replaces "MaxStatesPerStep"); without it matches_per_step has no effect.
     bool uniform_random = false;
     size_t matches_per_step = 0;  // The cap above (0 = all)
     // Keep k of a state's own matches per RULE, chosen at that state's drain by the transition's
-    // own rank. 0 keeps all. Distinct from max_successor_states_per_parent, which caps CHILDREN
-    // per parent regardless of which rule produced them, and from matches_per_step, which caps
-    // by arrival order.
+    // own rank. 0 keeps all. Distinct from max_successor_states_per_parent, which keeps the
+    // transitions into a state's k lowest-ranked successor states whichever rule makes them, and
+    // from matches_per_step, which counts a step's transitions.
     size_t matches_per_state_rule = 0;
 
     // Data selection flags - which components to include in output
@@ -106,6 +106,7 @@ struct ParsedJob {
     uint32_t step_statistics_branchial = 0; // "StepStatisticsBranchial": stats::kBranchial* bits
     bool include_global_edges = false;      // All edges created during evolution
     bool include_state_bitvectors = false;  // State edge sets as lists of edge IDs
+    bool include_device = false;            // "Device": which device ran the job
 
     // GraphProperties option for graph-ready data output (list of properties)
     std::vector<std::string> graph_properties;  // e.g., {"StatesGraph", "CausalGraphStructure"}

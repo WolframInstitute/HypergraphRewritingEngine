@@ -323,17 +323,7 @@ __device__ AppliedMatch apply_one_match(const DeviceState& ds,
     //    (binding[i] read inconsistently across iterations of the RHS
     //    construction loop — see M6.4 debugging session).
     volatile VertexId binding[kMaxVars];
-    #pragma unroll
-    for (uint32_t v = 0; v < kMaxVars; ++v) binding[v] = INVALID_ID;
-    for (uint8_t p = 0; p < rule.num_lhs_edges; ++p) {
-        EdgeId dedge = m.matched_edges[p];
-        if (dedge == INVALID_ID) continue;
-        const Edge& e = ds.edge_pool.at(dedge);
-        for (uint8_t i = 0; i < rule.lhs[p].arity && i < e.arity; ++i) {
-            uint8_t v = rule.lhs[p].vars[i];
-            binding[v] = ds.vertex_pool.at(e.vertex_offset + i);
-        }
-    }
+    bind_matched_vertices(ds, rule, m.matched_edges, binding);
 
     // -------------------------------------------------------------------
     // Reservation: state, event, edges, CSR slice, vertex slots, fresh vertex ids. A claim that

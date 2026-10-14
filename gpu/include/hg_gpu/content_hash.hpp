@@ -29,16 +29,21 @@ struct DeviceContentCursor {
         : ds(d), sl(sid < d.max_states ? d.state_edge_slices[sid] : StateEdgeSlice{}),
           live(d.edge_pool.size()) {}
 
-    __device__ bool next(uint32_t& arity, const uint32_t*& vertices) {
+    __device__ bool next(EdgeId& id, uint32_t& arity, const uint32_t*& vertices) {
         while (k < sl.count) {
             const EdgeId eid = ds.state_edge_ids[sl.offset + k++];
             if (eid >= live || eid >= ds.edge_pool.capacity) continue;
             const Edge& e = ds.edge_pool.at(eid);
+            id = eid;
             arity = e.arity;
             vertices = &ds.vertex_pool.at(e.vertex_offset);
             return true;
         }
         return false;
+    }
+    __device__ bool next(uint32_t& arity, const uint32_t*& vertices) {
+        EdgeId id = INVALID_ID;
+        return next(id, arity, vertices);
     }
 };
 

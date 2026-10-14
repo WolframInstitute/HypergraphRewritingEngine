@@ -10,6 +10,10 @@
 //     for the GPU backend, the CUDA context is created once and reused across
 //     jobs instead of ~700 ms per invocation.
 //
+// hg_evolve_gpu probes its device at startup (hg_gpu::probe_device). Without a usable device it
+// refuses every job with kNoUsableDevicePrefix + the reason (hg_core.hpp): an error frame in the
+// worker modes, a stderr line and exit code kNoUsableDeviceExit in the one-shot mode.
+//
 // `--version` prints the build stamp (hgcommon/build_stamp.hpp) and exits, ahead of any transport
 // setup, so it answers on a machine with no GPU and no peer.
 //
@@ -20,6 +24,9 @@
 #include "hgcommon/build_stamp.hpp"
 #include "hgcommon/affinity.hpp"
 #include "hypergraph/arena.hpp"
+#ifdef HG_GPU_BACKEND
+#include "hg_gpu/device_probe.hpp"
+#endif
 
 namespace HG_NAMESPACE { namespace ffi { extern const char kBuildStamp[]; } }  // hypergraph_ffi.cpp
 namespace hgffi = HG_NAMESPACE::ffi;
@@ -94,6 +101,10 @@ constexpr uint64_t kProgressFrameBit = 1ull << 63;
 // it as hgEngineError[message].
 constexpr uint64_t kErrorFrameBit = 1ull << 62;
 
+// Empty, or kNoUsableDevicePrefix + reason when this is the GPU binary and its device probe failed
+// at startup. When set, every job is refused with this message.
+std::string g_no_device;
+
 // The 8-byte little-endian header of a frame of `len` bytes.
 void frame_header(uint64_t len, uint8_t hdr[8]) {
     for (int i = 0; i < 8; ++i) hdr[i] = static_cast<uint8_t>(len >> (8 * i));
@@ -147,6 +158,10 @@ int run_one_shot(const HostBridge& host) {
             input.insert(input.end(), buf, buf + n);
         }
     }
+    if (!g_no_device.empty()) {
+        std::fprintf(stderr, "%s\n", g_no_device.c_str());
+        return kNoUsableDeviceExit;
+    }
     try {
         std::vector<uint8_t> out = run_rewriting_core(input, host);
         if (!out.empty()) std::fwrite(out.data(), 1, out.size(), reply());
@@ -181,6 +196,10 @@ int run_serve(const HostBridge& host_in) {
         if (!read_exact(len, job)) {
             std::fprintf(stderr, "HGEvolve: truncated job frame\n");
             return 1;
+        }
+        if (!g_no_device.empty()) {
+            write_error_frame(g_no_device);
+            continue;
         }
         try {
             std::vector<uint8_t> out = run_rewriting_core(job, host);
@@ -293,6 +312,10 @@ int run_serve_socket(const HostBridge& host_in, const char* portfile) {
         }                                           // but the client decides whether to retry
         job.resize(static_cast<size_t>(len));
         if (len && !sock_recv_exact(conn, job.data(), static_cast<size_t>(len))) break;
+        if (!g_no_device.empty()) {
+            if (!send_error_frame(g_no_device)) break;
+            continue;
+        }
         std::vector<uint8_t> out;
         try {
             out = run_rewriting_core(job, host);
@@ -377,6 +400,15 @@ int main(int argc, char** argv) {
     }
 
     take_reply_stream();
+
+#ifdef HG_GPU_BACKEND
+    // Checked before any job, so a machine without a usable device gets one message naming the
+    // reason instead of a CUDA error from the first kernel call.
+    {
+        const auto& probe = HG_NAMESPACE::gpu::probe_device();
+        if (!probe.usable) g_no_device = std::string(kNoUsableDevicePrefix) + probe.reason;
+    }
+#endif
 
     HostBridge host;
     host.progress = [](const std::string& m) {

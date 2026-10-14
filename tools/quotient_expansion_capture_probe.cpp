@@ -80,7 +80,7 @@ static void check(const WL& w){
     for(int k=0;k<w.steps;++k){
         std::vector<Inst> next;
         for(const Inst& I : cur){
-            hg.for_each_expansion_match(I.hash, [&](const SlotMatch& m){
+            hg.for_each_expansion_match(I.hash, 0, [&](const SlotMatch& m){
                 if(m.from_slots != I.prod.size()) { bounds_ok = false; return; }
                 uint32_t ev=(uint32_t)esig.size();
                 esig.push_back(te_of(I.hash, m.to_hash, m.rule));

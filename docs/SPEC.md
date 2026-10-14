@@ -152,26 +152,37 @@ exact configuration. Sampling and capping options refine this as follows:
 - **`TransitionRate`** (with `RuleWeights`) keeps each transition with the given probability,
   drawn from the transition's isomorphism-invariant identity and the seed — so the sampled
   subgraph is the same at every worker count and on either device, and reproducible for a fixed
-  `RandomSeed`. A spine keeps the state's transition with the smallest seeded rank when none of
-  its draws passed, so a fixed rate below the branching factor thins rather than extinguishes.
-  Under quotient exploration, transitions tied on that rank are ordered by their full-capture
-  rank, so the spine keeps the transition full capture keeps. A
+  `RandomSeed`. A spine keeps the state's transitions with the smallest seeded rank when none of
+  its draws passed, so a fixed rate below the branching factor thins rather than extinguishes. A
   run under it matches every state in full (match forwarding off), so the draw and the spine see
   all of the state's transitions.
 - **`ExplorationProbability`** samples **per canonical state**, keyed the same way.
 - **`MatchesPerStateRule`** caps each state's transitions per rule, chosen at the state's drain
   by the same invariant key — schedule-independent. A run under it matches every state in full
   (match forwarding off), so the drain chooses from all of the state's matches.
-- **`MaxSuccessorStatesPerParent`** keeps the k lowest-ranked of a state's own transitions, chosen
-  at the state's drain; **`MaxStatesPerStep`** keeps the N lowest-ranked transitions of a step,
-  chosen once the step's matching is complete. The rank is the same invariant key, so both are
+- **`MaxSuccessorStatesPerParent`** keeps the transitions out of a state into its k lowest-ranked
+  successor states, chosen at the state's drain; **`MaxStatesPerStep`** keeps the transitions of a
+  step into the step's N lowest-ranked successor states, chosen once the step's matching is
+  complete. Both count distinct successor STATES under the state identity in force (§4.1):
+  under `None` every transition makes its own state, so both count transitions; under
+  `Automatic` two transitions make one state when the edge lists of the states they make are
+  identical (a transition that creates a vertex makes its own state); under `Full` when those
+  states are isomorphic. A successor's rank is the smallest rank among the transitions into it,
+  and every transition into a kept successor is kept (`hgcommon::SuccessorIdentity`,
+  `hgcommon::successor_ranks`). Successors are told apart by their 64-bit identity hash (the
+  content hash under `Automatic`, the canonical hash under `Full`), computed before the rewrite
+  runs (`hgcommon::SuccessorCursor`). **`MatchesPerStep`** (with `UniformRandom -> True`) keeps
+  the N lowest-ranked transitions of a step and replaces `MaxStatesPerStep`. All three are
   schedule-independent, and a transition not kept is not taken (no event, no state).
-- **Ties at a cap's cut are kept.** Transitions with equal rank and key are automorphic, and every
-  cap (per rule, per state, per step) keeps all of them when the k-th kept one is among them
-  (`hgcommon::cap_keep_count`), so the kept set does not depend on list order. Under the
-  quotient reconstruction the key reads the matched edges' automorphism orbits, so automorphic
-  transitions tie there as well.
-  `UniformRandom -> True` with `MatchesPerStep` is `MaxStatesPerStep` under another name.
+- **The key.** A transition's key is the input state's canonical hash, the rule, and one
+  coordinate per matched edge: under `Full` states the edge's automorphism orbit, otherwise its
+  canonical rank (`canonical_transition_key`, `transition_key_device`). Under `Full` states
+  automorphic transitions share the key, so every draw, cap and spine keeps a set that the
+  state's automorphisms map onto itself, and the quotient reconstruction (§5.4) replays the same
+  set onto every raw state of the class.
+- **Ties at a cap's cut are kept.** Every cap (per rule, per state, per step) keeps all the
+  transitions, or successor states, tied with the k-th kept one (`hgcommon::cap_keep_count`,
+  `hgcommon::rank_cut`), so the kept set does not depend on list order.
 
 *(Gates: `SamplingReproducibility.*` — same states at every worker count, reproducible per seed;
 `CausalDeterminism.*` at 1–32 threads.)*
@@ -232,7 +243,10 @@ graphs follow §5.2's one-relation rule.
 shortest depth, rather than once per raw isomorphic copy — the expensive work (matching,
 canonicalization) is paid O(canonical states) times instead of O(raw states). It requires `Full`
 state canonicalization (its machinery is defined over canonical classes and their edge orbits)
-and is refused with a warning otherwise. **It is a performance mode, never a semantic one.**
+and is refused with a warning otherwise. It is also refused with a warning (`QuotientStepCap`)
+under `MaxStatesPerStep` and `MatchesPerStep`: a step cap chooses among the transitions of a step,
+and quotient exploration expands one raw state per class, at the class's shortest depth only.
+**It is a performance mode, never a semantic one.**
 
 **Contract: every observable under quotient equals the same observable under full capture, in the
 same cell** — states, events, causal (count, list, graph), branchial, and the reduction — on the
@@ -240,7 +254,10 @@ full input classification including cyclic (recurrent) rules. The raw quantities
 skeleton does not explore are recovered by an online, lock-free, non-phasic reconstruction: each
 class retains its representative's expansion as slot-named matches, and raw instances are
 replayed forward over the depth-unrolled skeleton, minting one raw event per (instance, match)
-claim. The replay is off the scheduler's critical path.
+claim. The replay is off the scheduler's critical path. Under `MaxStatesPerStep` (full capture
+with Automatic event identity) a class keeps different transitions at different depths, so each
+(class, depth) retains its own expansion, captured from a raw state at that depth
+(`hgcommon::qc_expansion_key`).
 
 *(Gates: `cost_matrix` — oracle-exact on every corpus row, states/events/causal/branchial;
 `RelationCoherence.QuotientServesFullCapturesNumbers`; `QuotientReconstruction.*` including a
