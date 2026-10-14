@@ -70,20 +70,6 @@ HG_HD inline uint64_t transition_rank(uint64_t transition_key, uint64_t random_s
     return x ^ (x >> 31);
 }
 
-// THE SPINE'S ORDER. When every draw of a state fails, the spine keeps the one transition with
-// the smallest (rank, tie). `rank` is transition_rank of the run's transition key; `tie` is
-// transition_rank of the key over the raw state's own edge ranks, the key full capture ranks by.
-// Under the quotient reconstruction the run's key reads edge orbits, so automorphic transitions
-// share a rank and the tie selects one of them; outside it the two keys are equal.
-struct SpineKey {
-    uint64_t rank;
-    uint64_t tie;
-};
-
-HG_HD inline bool spine_before(SpineKey a, SpineKey b) {
-    return a.rank < b.rank || (a.rank == b.rank && a.tie < b.tie);
-}
-
 // Whether a cap of k keeps a candidate that `below` candidates rank strictly below. Over a
 // rank-sorted list these are the cap_keep_count(total, k, equal rank) first entries: the first k
 // and every entry tied with the k-th. transition_rank is a bijection of the transition key, so
@@ -176,6 +162,15 @@ HG_HD inline bool sampling_active(double transition_rate, const double* weights,
     for (uint32_t i = 0; weights != nullptr && i < num_weights; ++i)
         if (weights[i] < 1.0) return true;
     return false;
+}
+
+// Whether a run's transition key reads the matched edges' automorphism orbits, and so whether
+// every state computes its orbit table. Under Full states a draw or a cap keys on orbits
+// (canonical_transition_key, transition_key_device): automorphic transitions share the key, so
+// the kept set is invariant under the state's automorphisms, which the quotient reconstruction
+// needs to replay it onto every instance of the class.
+HG_HD inline bool transition_key_reads_orbits(bool full_states, bool sampling) {
+    return full_states && sampling;
 }
 
 }  // namespace common

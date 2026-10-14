@@ -151,16 +151,14 @@ struct MatchJoinCtx {
 //   kCapEmit    emit ranks at or below the cut               } smallest ranks of the pair, ties kept
 //   kDraw       emit the matches that survive their draw; record the state's minimum rank
 //               and whether any match survived
-//   kSpineTie   under the quotient reconstruction, record the smallest tie key among the matches
-//               at that minimum (hgcommon::SpineKey)
-//   kSpineEmit  emit the one match at the smallest (rank, tie)
+//   kSpineEmit  emit the matches whose rank is that minimum
 //   kParentCount  record each match's rank and rule, emit nothing   } the per-state cap: the k
 //   kParentEmit   emit a match while its rank's quota remains       } lowest-ranked transitions
 // The rank is hgcommon::transition_rank and the draw hgcommon::transition_survives, both keyed
 // on transition_key_device: the host's cap_at_drain, transition_survives and spine_at_drain
 // call the same functions on the same key.
 enum class EmitMode : uint8_t {
-    kCapCount, kCapEmit, kDraw, kSpineTie, kSpineEmit, kParentCount, kParentEmit
+    kCapCount, kCapEmit, kDraw, kSpineEmit, kParentCount, kParentEmit
 };
 
 struct EmitCtl {
@@ -169,7 +167,6 @@ struct EmitCtl {
     uint64_t            threshold;    // kCapEmit: the cut rank; kSpineEmit: the minimum
     uint32_t*           s_seen;
     uint32_t*           s_overflow;
-    uint32_t*           s_emitted;
     uint64_t*           s_ranks;
     unsigned long long* s_min_rank;
     uint32_t*           s_survived;
@@ -179,14 +176,10 @@ struct EmitCtl {
     const uint64_t*     s_keep_rank = nullptr;
     uint32_t*           s_keep_quota = nullptr;
     uint32_t            keep_n = 0;
-    // kSpineEmit under the quotient reconstruction: the smallest tie key among the matches at
-    // the minimum rank (kSpineTie's reduction).
-    uint64_t            tie = 0;
 };
 
 // Not inlined: it is called from the join's innermost completion callback, which is
 // instantiated per rule shape, and inlined there ptxas ran out of memory assembling this file.
-// The emitted-count check settles rank ties, so a pass never admits more than it allows.
 __device__ __noinline__ bool emit_admit(const DeviceState& ds, StateId state_id, RuleId rid,
                                         const uint8_t* pattern, const EdgeId* matched,
                                         uint8_t depth, const EmitCtl& c) {
@@ -213,25 +206,9 @@ __device__ __noinline__ bool emit_admit(const DeviceState& ds, StateId state_id,
         atomicExch(c.s_survived, 1u);
         return true;
     }
-    case EmitMode::kSpineTie:
-        if (r == c.threshold) {
-            const uint64_t tie = hgcommon::transition_rank(
-                transition_key_device(ds, state_id, rid, edges, depth, false), ds.sampling_seed);
-            atomicMin(c.s_min_rank, static_cast<unsigned long long>(tie));
-        }
-        return false;
-    case EmitMode::kSpineEmit: {
-        if (r != c.threshold) return false;
-        if (ds.state_edge_orbit) {
-            // The match at the smallest (rank, tie), hgcommon::spine_before, as on the host.
-            const hgcommon::SpineKey mine{r, hgcommon::transition_rank(
-                transition_key_device(ds, state_id, rid, edges, depth, false), ds.sampling_seed)};
-            const hgcommon::SpineKey best{c.threshold, c.tie};
-            if (hgcommon::spine_before(best, mine)) return false;
-        }
-        // Equal (rank, tie) is one transition reached twice; it is emitted once.
-        return atomicAdd(c.s_emitted, 1u) == 0u;
-    }
+    case EmitMode::kSpineEmit:
+        // Every match at the minimum rank: under Full states automorphic transitions share it.
+        return r == c.threshold;
     case EmitMode::kParentCount: {
         const uint32_t at = atomicAdd(c.s_seen, 1u);
         if (at < kDrainCapBuffer) {
@@ -322,8 +299,8 @@ __device__ __noinline__ void match_state_parent_capped(
     if (threadIdx.x == 0) { *s_seen = 0; *s_overflow = 0; *s_keep_n = 0; }
     for (uint32_t w = threadIdx.x; w < kDrainCapBuffer / 32u; w += blockDim.x) s_quota[w] = 0u;
     __syncthreads();
-    EmitCtl count{EmitMode::kParentCount, 0u, 0u, s_seen, s_overflow, nullptr,
-                  s_ranks, nullptr, nullptr};
+    EmitCtl count{EmitMode::kParentCount, 0u, 0u, s_seen, s_overflow, s_ranks, nullptr,
+                  nullptr};
     count.s_rules = s_rules;
     for (uint32_t r = 0; r < ds.num_rules; ++r)
         match_state_rule_pass(ds, rules, state_id, r, step, out, &count);
@@ -368,8 +345,7 @@ __device__ __noinline__ void match_state_parent_capped(
         for (uint32_t i = 0; i < w; ++i) s_quota[i >> 5] |= 1u << (i & 31u);
     }
     __syncthreads();
-    EmitCtl keep{EmitMode::kParentEmit, 0u, 0u, nullptr, nullptr, nullptr, nullptr, nullptr,
-                 nullptr};
+    EmitCtl keep{EmitMode::kParentEmit, 0u, 0u, nullptr, nullptr, nullptr, nullptr, nullptr};
     keep.s_keep_rank = s_ranks;
     keep.s_keep_quota = s_quota;
     keep.keep_n = *s_keep_n;
@@ -387,7 +363,7 @@ __device__ __noinline__ void match_state_parent_capped(
 //
 // Under sampling without the cap, the block of rule 0 matches EVERY rule of the state and the
 // blocks of the other rules do nothing. The spine chooses among all of a state's transitions:
-// when none survives its draw, the one with the smallest rank is emitted. That needs the whole
+// when none survives its draw, the ones with the smallest rank are emitted. That needs the whole
 // state in one block.
 __device__ void match_state_rule(const DeviceState& ds,
                                  const DeviceRule* rules,
@@ -408,7 +384,7 @@ __device__ void match_state_rule(const DeviceState& ds,
 
     __shared__ uint32_t s_seen;
     __shared__ uint32_t s_overflow;
-    __shared__ uint32_t s_emitted;
+    __shared__ uint32_t s_keep_n;
     __shared__ uint32_t s_survived;
     __shared__ uint64_t s_threshold;
     __shared__ uint32_t s_cut_all;
@@ -418,45 +394,32 @@ __device__ void match_state_rule(const DeviceState& ds,
     if (parent_k != 0u) {
         if (rid == 0u)
             match_state_parent_capped(ds, rules, state_id, step, out, &s_seen, &s_overflow,
-                                      &s_emitted, s_ranks);
+                                      &s_keep_n, s_ranks);
         return;
     }
 
     if (cap_k == 0u) {
         if (rid != 0u) return;
-        if (threadIdx.x == 0) { s_emitted = 0; s_survived = 0; s_min_rank = ~0ULL; }
+        if (threadIdx.x == 0) { s_survived = 0; s_min_rank = ~0ULL; }
         __syncthreads();
-        const EmitCtl draw{EmitMode::kDraw, 0u, 0u, nullptr, nullptr, nullptr, nullptr,
-                           &s_min_rank, &s_survived};
+        const EmitCtl draw{EmitMode::kDraw, 0u, 0u, nullptr, nullptr, nullptr, &s_min_rank,
+                           &s_survived};
         for (uint32_t r = 0; r < ds.num_rules; ++r)
             match_state_rule_pass(ds, rules, state_id, r, step, out, &draw);
         __syncthreads();
         if (s_survived != 0u || s_min_rank == ~0ULL) return;
-        EmitCtl spine{EmitMode::kSpineEmit, 0u, s_min_rank, nullptr, nullptr, &s_emitted,
-                      nullptr, nullptr, nullptr};
-        if (ds.state_edge_orbit) {
-            // Automorphic transitions share an orbit rank: reduce the tie key over the matches
-            // at the minimum first, so the emitted one does not depend on which lane is first.
-            __shared__ unsigned long long s_min_tie;
-            if (threadIdx.x == 0) s_min_tie = ~0ULL;
-            __syncthreads();
-            const EmitCtl tie{EmitMode::kSpineTie, 0u, s_min_rank, nullptr, nullptr, nullptr,
-                              nullptr, &s_min_tie, nullptr};
-            for (uint32_t r = 0; r < ds.num_rules; ++r)
-                match_state_rule_pass(ds, rules, state_id, r, step, out, &tie);
-            __syncthreads();
-            spine.tie = s_min_tie;
-        }
+        const EmitCtl spine{EmitMode::kSpineEmit, 0u, s_min_rank, nullptr, nullptr, nullptr,
+                            nullptr, nullptr};
         for (uint32_t r = 0; r < ds.num_rules; ++r)
             match_state_rule_pass(ds, rules, state_id, r, step, out, &spine);
         return;
     }
 
-    if (threadIdx.x == 0) { s_seen = 0; s_overflow = 0; s_emitted = 0; s_threshold = ~0ULL; }
+    if (threadIdx.x == 0) { s_seen = 0; s_overflow = 0; s_threshold = ~0ULL; }
     __syncthreads();
 
-    const EmitCtl count{EmitMode::kCapCount, cap_k, ~0ULL, &s_seen, &s_overflow, &s_emitted,
-                        s_ranks, nullptr, nullptr};
+    const EmitCtl count{EmitMode::kCapCount, cap_k, ~0ULL, &s_seen, &s_overflow, s_ranks,
+                        nullptr, nullptr};
     match_state_rule_pass(ds, rules, state_id, rid, step, out, &count);
     __syncthreads();
 
@@ -481,7 +444,7 @@ __device__ void match_state_rule(const DeviceState& ds,
     __syncthreads();
 
     const EmitCtl keep{EmitMode::kCapEmit, s_cut_all, s_threshold, &s_seen, &s_overflow,
-                       &s_emitted, s_ranks, nullptr, nullptr};
+                       s_ranks, nullptr, nullptr};
     match_state_rule_pass(ds, rules, state_id, rid, step, out, &keep);
 }
 

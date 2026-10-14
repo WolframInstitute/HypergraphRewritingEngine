@@ -5,6 +5,15 @@
 namespace HG_NAMESPACE {
 namespace common {
 
+// Whether quotient exploration runs when it is requested. It needs Full states. It does not run
+// under MaxStatesPerStep: the step cap chooses among every transition of a step, raw copies
+// included, and quotient exploration expands one raw state per class, at the class's shortest
+// depth only. The FFI warns when it turns a request off.
+constexpr bool quotient_exploration_applies(bool requested, bool full_states,
+                                            uint64_t max_states_per_step) {
+    return requested && full_states && max_states_per_step == 0;
+}
+
 // Whether a run asks for the quotient reconstruction: exploring canonical states only, or the
 // Automatic event identity, whose edge ranks are read in the frame of the state's isomorphism
 // class. Positional identity reads ranks in each state's own labeling and does not ask for it.

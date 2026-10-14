@@ -374,8 +374,9 @@ Hypergraph::CanonicalStateResult Hypergraph::create_or_get_canonical_state(
         default:
             // In quotient mode compute the edge-orbit table and take the canonical hash
             // from the same IR canonicalization (the quotient causal reconstruction needs
-            // the orbits; there is no extra canon pass). Otherwise just the dedup hash.
-            if (quotient)
+            // the orbits; there is no extra canon pass). The same when the run's transition key
+            // reads orbits. Otherwise just the dedup hash.
+            if (quotient || transition_orbits_.load(std::memory_order_relaxed))
                 // WARM FILL. Suppressed by HG_CALIBRATE_ORBIT_CACHE_COLD so that every capture
                 // misses and rebuilds, which is how the rebuild path gets exercised at all --
                 // it is unreachable on a run whose cache is always warm, and an unexercised

@@ -141,6 +141,9 @@ class Hypergraph {
     // set, causal edges are keyed by canonical edge orbit so attribution is schedule-
     // independent across the labelings by which parents reach one canonical state.
     std::atomic<bool> quotient_causal_{false};
+    // Whether every Full state computes its edge-orbit table at creation because the run's
+    // transition key reads it (hgcommon::transition_key_reads_orbits).
+    std::atomic<bool> transition_orbits_{false};
     std::atomic<bool> record_causal_{true};
     std::atomic<bool> record_branchial_{true};
     std::atomic<bool> record_state_events_{true};
@@ -1754,6 +1757,7 @@ public:
     // Whether causal edges are keyed by canonical edge orbit (quotient exploration). Set
     // by the evolution engine before evolving; read when minting causal edge keys.
     void set_quotient_causal(bool q);
+    void set_transition_orbits(bool on) { transition_orbits_.store(on, std::memory_order_relaxed); }
     bool quotient_causal() const;
 
     // Which artifacts this run builds. Set before evolving and read by the workers, so the

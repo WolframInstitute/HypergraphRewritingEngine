@@ -797,19 +797,18 @@ MatchJoin* ParallelEvolutionEngine::match_join_for(StateId state) {
 }
 
 uint64_t ParallelEvolutionEngine::canonical_transition_key(StateId state,
-                                                          const MatchRecord& match,
-                                                          bool by_orbit) {
+                                                          const MatchRecord& match) {
     const State& s = hg_->get_state(state);
     const uint64_t input_hash = hg_->get_or_compute_canonical_hash(state);
     uint32_t ranks[MAX_PATTERN_EDGES];
     const uint8_t n = match.num_edges();
 
-    // Under the quotient reconstruction one raw state per class defines the class's expansion
-    // (qc_capture_expansion), and which one is the schedule's choice. Keyed on the matched edges'
-    // automorphism ORBITS, automorphic transitions share a key, so a cap keeps or drops them
-    // together (hgcommon::cap_keep_count) and the kept set is the same from every raw state of
-    // the class. Ranks break ties within an orbit by the raw state's edge order.
-    if (by_orbit && hg_->quotient_causal()) {
+    // Under Full states the key reads the matched edges' automorphism orbit ids, on both
+    // exploration routes. Automorphic transitions share the key, so every cap, draw and spine
+    // keeps an Aut-invariant set. The quotient reconstruction replays a class's expansion onto
+    // each instance through an identification that is fixed only up to an automorphism, so a
+    // kept set that is not Aut-invariant would differ from full capture's.
+    if (hg_->state_canonicalization_mode() == StateCanonicalizationMode::Full) {
         if (const EdgeOrbitTable* orb = hg_->edge_orbits(state)) {
             for (uint8_t i = 0; i < n && i < MAX_PATTERN_EDGES; ++i)
                 ranks[i] = orb->orbit_of(match.matched_edges()[i]);
@@ -970,25 +969,16 @@ void ParallelEvolutionEngine::spine_at_drain(StateId state, uint32_t step, Match
     auto stored = state_matches_.lookup(id_key(state));
     if (!stored.has_value()) return;
 
-    // The own-minimum's records are in the stored list (every site stores before drawing). Under
-    // the quotient reconstruction automorphic transitions share the minimum rank, so the record
-    // kept is the smallest by hgcommon::spine_before, as on the device.
-    bool found = false;
-    MatchRecord best{};
-    hgcommon::SpineKey best_key{};
+    // The own-minimum's records are in the stored list (every site stores before drawing). Every
+    // record at the minimum rank is kept: under Full states automorphic transitions share it.
+    uint64_t kept = 0;
     (*stored)->for_each([&](const MatchRecord& m) {
         if (m.is_forwarded) return;   // own_min_key is fed by own draws only
         if (spine_rank(canonical_transition_key(state, m)) != want) return;
-        const hgcommon::SpineKey k{want, spine_rank(canonical_transition_key(state, m, false))};
-        if (!found || hgcommon::spine_before(k, best_key)) {
-            found = true; best = m; best_key = k;
-        }
+        if (kept++ == 0) join->mark_own_spawned();
+        submit_rewrite_task(m, step);
     });
-    if (!found) return;
-
-    HG_STAT(stats_.mine().spine_forced.bump(1));
-    join->mark_own_spawned();
-    submit_rewrite_task(best, step);
+    if (kept) HG_STAT(stats_.mine().spine_forced.bump(kept));
 }
 
 
@@ -1409,8 +1399,10 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
     const bool full_states =
         hg_->state_canonicalization_mode() == StateCanonicalizationMode::Full;
     // Quotient exploration is defined over Full classes (docs/SPEC.md §5.4) and is not applied
-    // under None or Automatic: every state is expanded. The FFI reports it (QuotientNeedsFull).
-    if (!full_states) explore_from_canonical_states_only_ = false;
+    // under None or Automatic states or under MaxStatesPerStep: every state is expanded. The FFI
+    // reports it (QuotientNeedsFull, QuotientStepCap).
+    explore_from_canonical_states_only_ = hgcommon::quotient_exploration_applies(
+        explore_from_canonical_states_only_, full_states, max_states_per_step_);
     const bool qc = full_states &&
                     hgcommon::quotient_route_requested(explore_from_canonical_states_only_,
                                                        hg_->positional_event_identity(),
@@ -1481,6 +1473,7 @@ void ParallelEvolutionEngine::configure_identity_and_quotient() {
     }
 
     hg_->set_quotient_causal(qc);
+    hg_->set_transition_orbits(hgcommon::transition_key_reads_orbits(full_states, sampling_active()));
     hg_->set_reads_rank_tuples(hgcommon::run_reads_rank_tuples(
         hg_->event_signature_keys(), transition_rate_,
         static_cast<uint32_t>(rule_weights_.size()),

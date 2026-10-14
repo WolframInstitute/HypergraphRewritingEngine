@@ -893,9 +893,8 @@ std::vector<Workload> build_corpus() {
         .num_steps = 5,
         .explore_from_canonical_states_only = true,
     });
-    // Sampled quotient run whose draws fail at every state, so the spine carries each step, and
-    // whose spine transitions tie under the orbit key (fuzz seed 201768). Both engines break the
-    // tie on the full-capture key (hgcommon::spine_before).
+    // Sampled quotient run whose draws fail at every state, so the spine carries each step, from
+    // a state with automorphic transitions (fuzz seed 201768).
     ws.push_back({
         .name = "quotient_sampled_spine_ties",
         .rules = {rule({{4, 3, 5, 2}}, {{3, 5}, {5, 4}, {4, 4}}),

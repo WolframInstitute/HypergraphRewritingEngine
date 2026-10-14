@@ -897,6 +897,14 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                     "\"CanonicalizeEvents\" -> Automatic needs \"CanonicalizeStates\" -> Full. "
                     "Without it the causal relation is computed from the individual edges."});
         }
+        if (!held_session && req.explore_from_canonical_states_only &&
+            !hgcommon::quotient_exploration_applies(true, true, effective_max_states_per_step(req))) {
+            req.ffi_warnings.push_back({"QuotientStepCap", 1,
+                "\"ExploreFromCanonicalStatesOnly\" -> True does not apply with "
+                "\"MaxStatesPerStep\" or with \"UniformRandom\" and \"MatchesPerStep\": every "
+                "state is expanded."});
+            req.explore_from_canonical_states_only = false;
+        }
 
 #ifdef HG_GPU_BACKEND
         // One session per worker across both engines (D7): an Open is refused while the other

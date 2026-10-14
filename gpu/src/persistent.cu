@@ -316,7 +316,7 @@ __device__ inline void session_frontier_append(const DeviceState& ds, const Sess
 __global__ void k_seed_root_hashes(const __grid_constant__ DeviceState ds, const StateId* roots, uint32_t num_roots,
                                    DedupMap::DeviceView map, CanonicalizationMode state_mode,
                                    bool need_exact, bool need_ranks, DeviceArena::View arena,
-                                   QcView qc, QeView qe, ExploreView ev,
+                                   QeView qe, ExploreView ev,
                                    typename Pool<uint32_t>::DeviceView forms,
                                    DedupMap::DeviceView exact_map, uint32_t max_steps,
                                    SessionView sess) {
@@ -336,7 +336,7 @@ __global__ void k_seed_root_hashes(const __grid_constant__ DeviceState ds, const
     {
         const ExactHashStatus st =
             state_key_device(ds, sid, state_mode, arena, slot, slot_words, key, need_ranks,
-                             qc.enabled != 0, &form, &form_words);
+                             ds.state_edge_orbit != nullptr, &form, &form_words);
         if (st != ExactHashStatus::kOk) {
             ds.errors.record(error_kind_for(st));
             return;
@@ -1230,9 +1230,9 @@ __global__ void k_persistent_evolve(
         if (child_sid != INVALID_ID)
             id = canonicalise_child(ds, child_sid, child_event, child_parent, child_keyed,
                                     state_mode, event_keys, need_ranks, need_exact,
-                                    qc.enabled != 0, dedup, arena, ir_slot, ir_slot_words,
-                                    dedup_map, exact_map, event_map, forms, ready, acc_irkey,
-                                    acc_evkey, IrWarpAll{});
+                                    ds.state_edge_orbit != nullptr, dedup, arena, ir_slot,
+                                    ir_slot_words, dedup_map, exact_map, event_map, forms, ready,
+                                    acc_irkey, acc_evkey, IrWarpAll{});
         if (id.capture) {
             const unsigned long long s3 = (threadIdx.x == 0) ? clock64() : 0;
             qe_capture_expansion(ds, qe, child_parent, child_sid, child_event, child_rule,
@@ -1416,7 +1416,8 @@ __global__ void k_persistent_evolve(
                 ChildIdentity id{};
                 if (sid != INVALID_ID)
                     id = canonicalise_child(ds, sid, evt, parent, keyed, state_mode, event_keys,
-                                            need_ranks, need_exact, qc.enabled != 0, dedup, arena,
+                                            need_ranks, need_exact,
+                                            ds.state_edge_orbit != nullptr, dedup, arena,
                                             tile_slot[tile], tile_slot_words[tile], dedup_map,
                                             exact_map, event_map, forms, ready, acc_irkey,
                                             acc_evkey, Tile);
@@ -2262,7 +2263,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                                         dsv.max_successor_states_per_parent,
                                         dsv.max_states_per_step) |
                                          explore_reads_ranks(dsv, dedup, state_mode))),
-            pool_v, qc, qe, ev, forms_v, exact_v, max_steps, sess_v);
+            pool_v, qe, ev, forms_v, exact_v, max_steps, sess_v);
     }
 
     // MaxStatesPerStep: every step from 1 holds its token (the previous step's selection), then
