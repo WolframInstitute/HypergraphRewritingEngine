@@ -161,9 +161,12 @@ TEST(RepeatedGridInvocation, TwentyTimesWL) {
     // exploration, hence arena bytes vary but the canonical counts do not). RSS is an
     // inherently non-deterministic coarse leak guard, kept loose so it never flakes
     // while still catching a real per-invocation arena leak.
-    size_t initial_mem = get_memory_usage_kb();
+    // Measured from after the first run, which fills what the process keeps for the next: the
+    // arena block pool, each worker's malloc arena and job-slot pool (about 300 MB at 32
+    // workers).
     GridResult baseline = run_grid_evolution(10, 100, 100);
     EXPECT_GT(baseline.canonical_states, 0u);
+    size_t initial_mem = get_memory_usage_kb();
 
     for (int i = 1; i < 20; ++i) {
         GridResult r = run_grid_evolution(10, 100, 100);
