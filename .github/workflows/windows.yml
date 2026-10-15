@@ -24,7 +24,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # A scheduled run of the commit the last scheduled run tested runs nothing else.
+  unchanged:
+    uses: ./.github/workflows/unchanged.yml
+    with:
+      workflow: windows.yml
+
   windows-tests:
+    needs: unchanged
+    if: needs.unchanged.outputs.skip != 'true'
     runs-on: windows-latest
     timeout-minutes: 60
     steps:

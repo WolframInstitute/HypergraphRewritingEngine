@@ -1,0 +1,42 @@
+name: Unchanged since the last scheduled run
+
+# Called first by each scheduled workflow (ci.yml, windows.yml, gpu.yml). On a scheduled run,
+# `skip` is true when the commit equals the head commit of that workflow's last completed
+# scheduled run, and the caller's jobs then do not run. On any other event `skip` is false.
+on:
+  workflow_call:
+    inputs:
+      workflow:
+        description: the calling workflow's file name, e.g. ci.yml
+        required: true
+        type: string
+    outputs:
+      skip:
+        description: "'true' when this scheduled run would test the commit the last one tested"
+        value: ${{ jobs.compare.outputs.skip }}
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    outputs:
+      skip: ${{ steps.last.outputs.skip }}
+    steps:
+      - id: last
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          WORKFLOW: ${{ inputs.workflow }}
+        run: |
+          skip=false
+          if [ "$EVENT" = schedule ]; then
+            last=$(gh api "repos/$REPO/actions/workflows/$WORKFLOW/runs?event=schedule&status=completed&per_page=1" \
+                     --jq '.workflow_runs[0].head_sha // ""')
+            echo "this commit $SHA, last scheduled run's commit ${last:-none}"
+            if [ "$last" = "$SHA" ]; then skip=true; fi
+          fi
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
