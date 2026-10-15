@@ -249,6 +249,13 @@ under `MaxStatesPerStep` and `MatchesPerStep`: a step cap chooses among the tran
 and quotient exploration expands one raw state per class, at the class's shortest depth only.
 **It is a performance mode, never a semantic one.**
 
+A class reached first along a longer path has its depth lowered when a shorter path arrives
+(`hgcommon::explore_try_lower`). A lowering is at most the step budget less one, and no smaller
+bound holds for every schedule, since the shorter path's rewrite can run last. The largest
+lowering measured over the oracle corpus is 2 (`OracleCorpus.DepthLoweringIsBoundedByTheStepBudget`).
+So no depth is complete before the run is, and a run under quotient exploration gives no
+per-depth completion signal.
+
 **Contract: every observable under quotient equals the same observable under full capture, in the
 same cell** — states, events, causal (count, list, graph), branchial, and the reduction — on the
 full input classification including cyclic (recurrent) rules. The raw quantities the compressed

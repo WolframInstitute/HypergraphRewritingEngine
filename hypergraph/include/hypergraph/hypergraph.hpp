@@ -781,6 +781,9 @@ class Hypergraph {
     // Full mode: keys of canonical_form_map_ found holding a state with a different canonical
     // form (stats builds). Each one moved a state to its next probe key.
     std::atomic<uint64_t> canonical_key_collisions_{0};
+    // Quotient exploration: the largest amount by which a later, shorter path lowered a state's
+    // depth (stats builds).
+    std::atomic<uint32_t> explore_depth_max_lowering_{0};
     // ANDed into the canonical hash before it becomes the first probe key. All ones except in
     // tests, which narrow it so that non-isomorphic states share keys.
     uint64_t canonical_key_mask_{~uint64_t{0}};
@@ -1195,6 +1198,12 @@ public:
     // later shorter path to the parent pulls the child's subtree into budget even after the
     // parent was first expanded at a deeper claim depth.
     uint32_t explore_depth_of(StateId canonical_id) const;
+#if HG_ENGINE_STATS
+    // The largest depth lowering seen this run (explore_depth_max_lowering_).
+    uint32_t explore_depth_max_lowering() const {
+        return explore_depth_max_lowering_.load(std::memory_order_relaxed);
+    }
+#endif
 
     // Number of unique canonical states
     // Uses count_unique() for accurate counting after evolution completes,

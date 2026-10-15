@@ -1043,8 +1043,17 @@ Hypergraph::CanonicalClaim Hypergraph::claim_event(EventId e, const uint64_t* va
 
 bool Hypergraph::explore_depth_cas(StateId canonical_id, uint32_t& expected, uint32_t desired) {
     hgcommon::atomic_ref<uint32_t> known(states_[canonical_id].explore_depth);
-    return known.compare_exchange_weak(expected, desired, std::memory_order_acq_rel,
-                                       std::memory_order_acquire);
+    const bool lowered = known.compare_exchange_weak(expected, desired, std::memory_order_acq_rel,
+                                                     std::memory_order_acquire);
+#if HG_ENGINE_STATS
+    if (lowered && expected != hgcommon::kExploreNoDepth) {
+        const uint32_t by = expected - desired;
+        uint32_t seen = explore_depth_max_lowering_.load(std::memory_order_relaxed);
+        while (by > seen && !explore_depth_max_lowering_.compare_exchange_weak(
+                                seen, by, std::memory_order_relaxed)) {}
+    }
+#endif
+    return lowered;
 }
 
 bool Hypergraph::try_lower_explore_depth(StateId canonical_id, uint32_t depth) {

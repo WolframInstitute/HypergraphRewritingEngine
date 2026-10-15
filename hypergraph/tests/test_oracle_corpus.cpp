@@ -1621,3 +1621,29 @@ TEST(OracleCorpus, APerStepCapIsReproducibleAcrossWorkerCounts) {
         }
     }
 }
+
+#if HG_ENGINE_STATS
+// Under quotient exploration a class first reached along a longer path has its depth lowered
+// when a shorter path arrives (hgcommon::explore_try_lower). A lowering is at most the step
+// budget less one: an arrival writes a depth of at most the budget, and a lowered state is not
+// an initial state, so its new depth is at least 1. Measured per corpus case at the measurement
+// depth, 1 and 32 workers.
+TEST(OracleCorpus, DepthLoweringIsBoundedByTheStepBudget) {
+    uint32_t corpus_max = 0;
+    for (const auto& c : oracle::corpus()) {
+        for (unsigned threads : {1u, 32u}) {
+            Hypergraph hg;
+            hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+            ParallelEvolutionEngine e(&hg, threads);
+            e.set_explore_from_canonical_states_only(true);
+            for (const auto& r : c.rules) e.add_rule(r);
+            e.evolve(c.init, c.measure_steps);
+            const uint32_t m = hg.explore_depth_max_lowering();
+            EXPECT_LT(m, static_cast<uint32_t>(std::max(c.measure_steps, 1))) << c.name;
+            if (m > corpus_max) corpus_max = m;
+            if (m) std::printf("  %s threads %u: depth lowered by up to %u\n", c.name, threads, m);
+        }
+    }
+    std::printf("corpus maximum depth lowering: %u\n", corpus_max);
+}
+#endif
