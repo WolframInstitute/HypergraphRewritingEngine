@@ -163,7 +163,8 @@ exact configuration. Sampling and capping options refine this as follows:
 - **`MaxSuccessorStatesPerParent`** keeps the transitions out of a state into its k lowest-ranked
   successor states, chosen at the state's drain; **`MaxStatesPerStep`** keeps the transitions of a
   step into the step's N lowest-ranked successor states, chosen once the step's matching is
-  complete. Both count distinct successor STATES under the state identity in force (§4.1):
+  complete. The depth join signals that completion; no step waits on a barrier, and later steps
+  run while it completes. Both count distinct successor STATES under the state identity in force (§4.1):
   under `None` every transition makes its own state, so both count transitions; under
   `Automatic` two transitions make one state when the edge lists of the states they make are
   identical (a transition that creates a vertex makes its own state); under `Full` when those

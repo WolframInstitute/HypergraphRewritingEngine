@@ -5,6 +5,7 @@
 #include <array>
 #include <chrono>
 #include <cstddef>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -1020,5 +1021,45 @@ TEST(SamplingReproducibility, StepCapReconstructionMatchesTheRawRewrites) {
                 EXPECT_EQ(run(hgcommon::EVENT_SIG_AUTOMATIC, threads), raw)
                     << c.name << " MaxStatesPerStep " << k << " threads " << threads;
         }
+    }
+}
+
+// Every sampling and capping option chooses the same transitions at 1, 4 and 32 workers. The
+// per-state choices complete at the state's drain and the per-step choices when the step's
+// matching completes (the depth join), with no barrier between steps (SPEC §5, sampling and
+// capping). Rule {{x,y},{x,z}} -> {{x,y},{x,w},{y,w},{z,w}} from {{1,2},{1,3}}, 4 steps, each
+// option alone; compared by the isomorphism-invariant causal fingerprint.
+TEST(SamplingReproducibility, EverySamplingOptionChoosesTheSameTransitionsAt1And4And32Workers) {
+    struct Option {
+        const char* name;
+        std::function<void(ParallelEvolutionEngine&)> set;
+    };
+    const std::vector<Option> options = {
+        {"TransitionRate 0.5", [](ParallelEvolutionEngine& e) {
+             e.set_random_seed(7); e.set_transition_rate(0.5); }},
+        {"ExplorationProbability 0.5", [](ParallelEvolutionEngine& e) {
+             e.set_random_seed(7); e.set_exploration_probability(0.5); }},
+        {"MatchesPerStateRule 2", [](ParallelEvolutionEngine& e) {
+             e.set_random_seed(7); e.set_matches_per_state_rule(2); }},
+        {"MaxSuccessorStatesPerParent 2", [](ParallelEvolutionEngine& e) {
+             e.set_max_successor_states_per_parent(2); }},
+        {"MaxStatesPerStep 5", [](ParallelEvolutionEngine& e) { e.set_max_states_per_step(5); }},
+        {"MatchesPerStep 5", [](ParallelEvolutionEngine& e) {
+             e.set_random_seed(7); e.set_matches_per_step(5); }},
+    };
+    for (const Option& o : options) {
+        auto run = [&](size_t threads) {
+            Hypergraph hg;
+            ParallelEvolutionEngine e(&hg, threads);
+            e.add_rule(make_rule(0).lhs({0, 1}).lhs({0, 2})
+                           .rhs({0, 1}).rhs({0, 3}).rhs({1, 3}).rhs({2, 3}).build());
+            o.set(e);
+            e.evolve(std::vector<std::vector<VertexId>>{{1u, 2u}, {1u, 3u}}, 4);
+            return causal_fingerprint(hg);
+        };
+        const auto one = run(1);
+        ASSERT_FALSE(one.empty()) << o.name;
+        for (size_t threads : {size_t(4), size_t(32)})
+            EXPECT_EQ(run(threads), one) << o.name << " at " << threads << " workers";
     }
 }
