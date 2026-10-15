@@ -157,11 +157,12 @@ class Hypergraph {
     std::atomic<bool> record_state_invariants_{false};
     std::atomic<bool> record_relation_lists_{true};
     std::atomic<bool> record_event_lists_{true};
-    // From the record set (hgcommon::qr_publishes_applications, qr_keeps_event_content): the
-    // replay publishes each application to qc_inst_applied_, and keeps each event's content in
-    // qc_event_sig_.
+    // From the record set (hgcommon::qr_publishes_applications, qr_keeps_event_content,
+    // qr_keeps_causal_pairs): the replay publishes each application to qc_inst_applied_, keeps
+    // each event's content in qc_event_sig_, and keeps each causal pair in qc_causal_pairs_.
     std::atomic<bool> qc_publish_applied_{true};
     std::atomic<bool> qc_keep_content_{true};
+    std::atomic<bool> qc_keep_pairs_{true};
     // Each step's raw states, newest first, filled by create_state while index_states_by_step_.
     std::atomic<bool> index_states_by_step_{false};
     hgcommon::GrowingDepthSlots<LockFreeList<StateId>> states_by_step_;
@@ -492,12 +493,6 @@ class Hypergraph {
                 for (uint32_t i = 0; i < n; ++i) f(c->v[i]);
             }
         }
-        size_t size() const {
-            size_t n = 0;
-            for (const QcPairChunk* c = head.load(std::memory_order_acquire); c; c = c->prev)
-                n += c->n.load(std::memory_order_acquire);
-            return n;
-        }
     };
     QcPairList qc_causal_pairs_[MAX_ARENA_WORKERS];
     LockFreeList<uint64_t> qc_causal_pairs_outside_;
@@ -506,11 +501,6 @@ class Hypergraph {
     void qc_causal_pairs_for_each(F&& f) const {
         for (const QcPairList& l : qc_causal_pairs_) l.for_each(f);
         qc_causal_pairs_outside_.for_each(f);
-    }
-    size_t qc_causal_pairs_count() const {
-        size_t n = qc_causal_pairs_outside_.size();
-        for (const QcPairList& l : qc_causal_pairs_) n += l.size();
-        return n;
     }
     // Isomorphism-invariant signature per reconstructed event: fnv(from hash, to hash, rule).
     // Reconstructed events carry no Event record, so this is the only description they have --

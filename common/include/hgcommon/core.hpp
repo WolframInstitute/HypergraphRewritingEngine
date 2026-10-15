@@ -267,6 +267,12 @@ HG_HD inline bool qr_keeps_event_content(const RecordSet& r) {
     return r.relation_lists || r.event_lists;
 }
 
+// Whether the replay keeps each distinct causal pair, read by the unreduced causal enumeration;
+// the pair count is kept in every run.
+HG_HD inline bool qr_keeps_causal_pairs(const RecordSet& r) {
+    return r.relation_lists;
+}
+
 // Whether two record sets ask for the same relations. A session continuation must record what
 // its opening call recorded: both engines refuse one that does not.
 HG_HD inline bool same_record_set(const RecordSet& a, const RecordSet& b) {

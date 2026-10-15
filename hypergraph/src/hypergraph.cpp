@@ -1854,13 +1854,14 @@ void Hypergraph::qc_record_causal(uint32_t producer, uint32_t consumer, bool dis
     // NO DEDUP STRUCTURE, and none is needed. `consumer` is the event this application just
     // minted, so the pair cannot repeat across applications; within this one the caller has
     // already marked the adjacent repeats, which are the only other way it can repeat.
-    // Appending to this worker's own list touches no line another worker reads.
+    // Appending to this worker's own list touches no line another worker reads. The count is
+    // kept in every run; the list only when the pairs are enumerated (qc_keep_pairs_).
     if (!distinct_pair) return;
+    qc_count(qc_ctr_, &QcCounterSlot::causal_pairs);
+    if (!qc_keep_pairs_.load(std::memory_order_relaxed)) return;
     const int w = arena_worker_index();
     if (w >= 0) qc_causal_pairs_[w].push(qc_pair_key(producer, consumer), arena_);
     else qc_causal_pairs_outside_.push(qc_pair_key(producer, consumer), arena_);
-    HG_STAT(qc_count(qc_ctr_, &QcCounterSlot::causal_pairs));
-
 }
 
 void Hypergraph::qc_apply(const QcInstance& inst, const SlotMatch& m, uint64_t state_hash,
@@ -2343,7 +2344,7 @@ size_t Hypergraph::num_reconstructed_causal_edges() const {
 
 size_t Hypergraph::num_reconstructed_causal_pairs(bool transitively_reduced) const {
     if (transitively_reduced) return qc_ctr_total(&QcCounterSlot::reduced_pairs);
-    return qc_causal_pairs_count();
+    return qc_ctr_total(&QcCounterSlot::causal_pairs);
 }
 
 
@@ -2732,6 +2733,7 @@ void Hypergraph::set_record_set(RecordSet r) {
     qc_publish_applied_.store(hgcommon::qr_publishes_applications(r.branchial, r.relation_lists),
                               std::memory_order_relaxed);
     qc_keep_content_.store(hgcommon::qr_keeps_event_content(r), std::memory_order_relaxed);
+    qc_keep_pairs_.store(hgcommon::qr_keeps_causal_pairs(r), std::memory_order_relaxed);
 }
 
 RecordSet Hypergraph::record_set() const {
