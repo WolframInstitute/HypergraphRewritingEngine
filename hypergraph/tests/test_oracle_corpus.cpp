@@ -854,7 +854,7 @@ TEST(OracleCorpus, CountsOnlyReplayKeepsNoApplicationsOrContent) {
         size_t contents = 0;
         hg.for_each_reconstructed_raw_triple([&](uint64_t) { ++contents; });
         size_t pairs_listed = 0;
-        hg.for_each_reconstructed_causal_as(false, [](uint32_t e) { return e; },
+        hg.for_each_reconstructed_causal_as(false, [](uint32_t id) { return id; },
                                             [&](uint64_t, uint64_t) { ++pairs_listed; });
         return Counts{hg.observable_num_events(), hg.observable_num_branchial(),
                       hg.observable_num_causal_pairs(false), hg.observable_num_causal_pairs(true),
