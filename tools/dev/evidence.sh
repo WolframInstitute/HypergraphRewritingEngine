@@ -152,6 +152,12 @@ run_or_skip "Device unit suite" \
     "test -x $GPU_BUILD/hg_gpu_tests && nvidia-smi" \
     "$GPU_BUILD/hg_gpu_tests"
 
+# The FFI against the device: the host's job and session tests run by the GPU worker. CI has no
+# GPU, so this leg is the only place they run.
+run_or_skip "FFI on the device" \
+    "test -x $GPU_BUILD/gpu_ffi_tests && nvidia-smi" \
+    "$GPU_BUILD/gpu_ffi_tests"
+
 # THE FOUR DEVICE SANITIZERS, EACH SCOPED TO WHAT IT ACTUALLY SEES. memcheck is out-of-bounds
 # and misaligned device accesses; initcheck is reads of uninitialised device memory; synccheck
 # is illegal __syncthreads/__syncwarp use; racecheck is SHARED-MEMORY hazards ONLY -- it does
