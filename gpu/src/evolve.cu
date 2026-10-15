@@ -1168,7 +1168,14 @@ void GpuSession::set_frontier_host(const StateId* ids, const uint32_t* steps, ui
     impl_->state.set_frontier_host(ids, steps, n);
 }
 
-PersistentEvolver::PersistentEvolver()  = default;
+// The runtime is initialised before the evolver is constructed, so the runtime's exit handler is
+// registered first and runs after the evolver's destructor. An evolver with static storage
+// constructed before the first CUDA call is otherwise destroyed after the driver has shut down,
+// and its cudaFree calls fail with "driver shutting down". cudaFree(nullptr) initialises the
+// runtime and frees nothing; its error, on a host without a device, is cleared.
+PersistentEvolver::PersistentEvolver() {
+    if (cudaFree(nullptr) != cudaSuccess) (void)cudaGetLastError();
+}
 PersistentEvolver::~PersistentEvolver() = default;
 
 // A session run REFUSES to rebuild the engine. run() below may replace engine_ -- when the
