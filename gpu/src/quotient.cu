@@ -108,6 +108,9 @@ QeState::QeState(bool on, const QeEntries& n): matches_(on ? n.classes : 1u),
           on_(on) {
       try {
         HG_CUDA_CHECK(cudaMalloc(&arr_, sizeof(uint32_t) * arr_cap_), "QeState arr alloc");
+        // Zeroed once: after an overflowing allocation the readback copies the arena up to its
+        // capacity, past the last allocation written (reconstructed_pairs_host).
+        HG_CUDA_CHECK(cudaMemset(arr_, 0, sizeof(uint32_t) * arr_cap_), "QeState arr init");
         // THE SCALARS IN ONE BLOCK, so the host reads them in ONE transfer.
         //
         // Each of these was its own cudaMalloc and each accessor its own synchronous cudaMemcpy
@@ -170,9 +173,11 @@ void QeState::clear() {
         // The per-event arrays are written below the raw event counter, so the previous run's
         // count bounds what this clear has to cover; the first clear, from the constructor,
         // covers them in full.
+        // Read only after a clear has written the counters.
         uint32_t prev[kNumCounters] = {};
-        HG_CUDA_CHECK(cudaMemcpy(prev, counters_, sizeof(prev), cudaMemcpyDeviceToHost),
-                      "QeState counters read for clear");
+        if (cleared_once_)
+            HG_CUDA_CHECK(cudaMemcpy(prev, counters_, sizeof(prev), cudaMemcpyDeviceToHost),
+                          "QeState counters read for clear");
         const uint32_t events = !cleared_once_ || prev[3] > event_sig_capacity_
                                     ? event_sig_capacity_ : prev[3];
 
