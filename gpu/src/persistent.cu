@@ -1587,14 +1587,18 @@ __global__ void k_persistent_evolve(
                     }
                 }
                 __syncthreads();
+                // Read once, before the barrier below. Thread 0 writes the flag for the next
+                // rule as soon as it passes that barrier; a lane reading it after the barrier
+                // can see the next rule's value and enter the step-selection branch alone.
+                const bool inline_rule = run_rule_inline;
                 const unsigned long long tA =
-                    (threadIdx.x == 0 && run_rule_inline) ? clock64() : 0;
-                if (run_rule_inline)
+                    (threadIdx.x == 0 && inline_rule) ? clock64() : 0;
+                if (inline_rule)
                     match_state_rule(ds, rules, child_sid, r, child_step, match_out, &succ_ctx,
                                      &succ_scratch);
                 __syncthreads();
-                if (threadIdx.x == 0 && run_rule_inline) acc_match += clock64() - tA;
-                if (run_rule_inline && ds.max_states_per_step != 0u) {
+                if (threadIdx.x == 0 && inline_rule) acc_match += clock64() - tA;
+                if (inline_rule && ds.max_states_per_step != 0u) {
                     __shared__ uint32_t s_inline_sel;
                     if (threadIdx.x == 0) s_inline_sel = step_release(ds, child_step, 1u);
                     __syncthreads();
