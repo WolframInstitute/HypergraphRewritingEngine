@@ -558,6 +558,38 @@ TEST(WxfSerializationPin, GenesisEventsAreOnePerInitialStateUnderEveryIdentity) 
     }
 }
 
+// A key list compares the consumed and produced edges as marked forms (docs/SPEC.md 4.2), also
+// when it names exactly Automatic's five components. The two applications of
+// {{1},{2}} -> {{2,3},{2,3},{2}} to {{2},{4}} consume every edge, produce isomorphic states with
+// every produced edge marked, and are one event (reference/MultiwayReference.wl).
+TEST(WxfSerializationPin, AKeyListOfAutomaticsComponentsComparesMarkedForms) {
+    HostBridge host;
+    auto events = [&](const std::function<void(wxf::Writer&)>& identity) {
+        const auto out = run_rewriting_core(
+            build_input({{{2}, {4}}}, {{1}, {2}}, {{2, 3}, {2, 3}, {2}}, 1,
+                        [&](wxf::Writer& w) {
+                            put_str_option(w, "CanonicalizeStates", "Full");
+                            identity(w);
+                            put_str_list_option(w, "RequestedData", {"NumEvents"});
+                        },
+                        3),
+            host);
+        return read_int_key(out, "NumEvents");
+    };
+    EXPECT_EQ(events([](wxf::Writer& w) {
+                  put_str_list_option(w, "CanonicalizeEvents",
+                                      {"InputState", "OutputState", "Step", "ConsumedEdges",
+                                       "ProducedEdges"});
+              }),
+              1);
+    EXPECT_EQ(events([](wxf::Writer& w) {
+                  put_str_list_option(w, "CanonicalizeEvents",
+                                      {"InputState", "OutputState", "Step", "ConsumedEdges",
+                                       "ProducedEdges", "Rule"});
+              }),
+              1);
+}
+
 TEST(WxfSerializationPin, AskingForLessDoesNotAnswerLess) {
     HostBridge host;
 

@@ -32,6 +32,10 @@ enum EventSignatureKey : uint8_t {
     EventKey_Rule           = 1 << 3,
     EventKey_ConsumedEdges  = 1 << 4,  // the consumed edges (event_keys_mark_edges)
     EventKey_ProducedEdges  = 1 << 5,  // the produced edges (event_keys_mark_edges)
+    // Not a component: the consumed and produced edges enter as canonical ranks. Set by the
+    // Automatic preset only, so a key list naming Automatic's five components compares marked
+    // forms.
+    EventKey_Ranks          = 1 << 6,
 };
 
 using EventSignatureKeys = uint8_t;
@@ -41,7 +45,7 @@ constexpr EventSignatureKeys EVENT_SIG_FULL =
     EventKey_InputState | EventKey_OutputState;
 constexpr EventSignatureKeys EVENT_SIG_AUTOMATIC =
     EventKey_InputState | EventKey_OutputState | EventKey_Step |
-    EventKey_ConsumedEdges | EventKey_ProducedEdges;
+    EventKey_ConsumedEdges | EventKey_ProducedEdges | EventKey_Ranks;
 
 // The identity of a transition BEFORE it is applied: which state, which rule, which edges.
 //
@@ -77,7 +81,7 @@ constexpr EventSignatureKeys EVENT_SIG_TRANSITION =
 // endpoint states counts the same events on either route, at any thread count.
 HG_HD inline bool event_keys_mark_edges(EventSignatureKeys keys) {
     return (keys & (EventKey_ConsumedEdges | EventKey_ProducedEdges)) != 0 &&
-           keys != EVENT_SIG_AUTOMATIC;
+           (keys & EventKey_Ranks) == 0;
 }
 
 // The two marked forms of one event: [0] the input state with the consumed edges marked, [1] the
