@@ -618,16 +618,14 @@ std::vector<uint8_t> run_gpu_evolution_once(const GpuJob& request, const HostBri
             static_cast<hg_gpu::EventId>(std::max<uint64_t>(
                 result.reconstructed_raw_events, result.reconstructed_event_signature.size())));
     // The reconstruction's genesis pairs as (root index, application), one per (genesis event,
-    // reported identity of the application), as the host deduplicates them.
+    // application), as full capture pairs them.
     std::vector<std::pair<size_t, uint32_t>> recon_genesis;
     if (recon_ran && job.show_genesis_events) {
         std::unordered_map<hg_gpu::StateId, size_t> root_index;
         for (size_t i = 0; i < genesis_roots.size(); ++i) root_index.emplace(genesis_roots[i], i);
-        std::set<std::pair<size_t, int64_t>> seen;
         for (const auto& [root, ev] : result.reconstructed_genesis_pairs) {
             auto it = root_index.find(root);
-            if (it == root_index.end()) continue;
-            if (seen.insert({it->second, recon_id(ev)}).second) recon_genesis.emplace_back(it->second, ev);
+            if (it != root_index.end()) recon_genesis.emplace_back(it->second, ev);
         }
     }
     // Every application the replay minted has content; under an event identity it must also

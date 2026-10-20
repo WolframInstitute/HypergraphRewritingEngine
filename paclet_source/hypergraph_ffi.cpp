@@ -1297,17 +1297,13 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                     });
         }
         // Under ShowGenesisEvents the reconstruction's causal pairs from the genesis events
-        // (Hypergraph::reconstructed_genesis_pairs), one per (genesis event, reported identity of
-        // the application). A genesis event is reported under id recon.id_bound + its event id,
-        // as "Events" lists it.
+        // (Hypergraph::reconstructed_genesis_pairs), one per (genesis event, application), as
+        // full capture pairs them. A genesis event is reported under id recon.id_bound + its
+        // event id, as "Events" lists it.
         std::vector<std::pair<hypergraph::EventId, uint32_t>> recon_genesis_pairs;
-        if (recon.active && req.show_genesis_events) {
-            std::set<std::pair<hypergraph::EventId, uint64_t>> seen;
-            for (const auto& [g, ev] : hg.reconstructed_genesis_pairs(
-                     hg.causal_graph().transitive_reduction_enabled()))
-                if (seen.insert({g, recon_event_key(ev)}).second)
-                    recon_genesis_pairs.emplace_back(g, ev);
-        }
+        if (recon.active && req.show_genesis_events)
+            recon_genesis_pairs = hg.reconstructed_genesis_pairs(
+                hg.causal_graph().transitive_reduction_enabled());
 
         // Events -> Association[event_id -> event record]: every event, not only canonical ones,
         // so the caller can merge by CanonicalId and keep each event's own endpoints.

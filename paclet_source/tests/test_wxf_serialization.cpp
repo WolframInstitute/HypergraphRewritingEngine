@@ -523,6 +523,40 @@ TEST(WxfSerializationPin, InitialStatesShareOneVertexNumbering) {
     EXPECT_EQ(automatic_states({{{1, 2}}, {{1, 2}}}), 1);
 }
 
+// Under ShowGenesisEvents each initial state has its own genesis event under every event
+// identity, and a genesis event is paired with every application that consumed an initial edge,
+// on full capture and under quotient exploration alike (docs/SPEC.md 5.2).
+TEST(WxfSerializationPin, GenesisEventsAreOnePerInitialStateUnderEveryIdentity) {
+    HostBridge host;
+    auto run = [&](const StateList& seed, const EdgeList& lhs, const EdgeList& rhs, int64_t steps,
+                   const char* events, bool quotient, const char* key) {
+        const auto out = run_rewriting_core(
+            build_input(seed, lhs, rhs, steps,
+                        [&](wxf::Writer& w) {
+                            for (auto [k, v] : {std::pair<const char*, const char*>{"CanonicalizeStates", "Full"},
+                                                {"CanonicalizeEvents", events},
+                                                {"ShowGenesisEvents", "True"},
+                                                {"ExploreFromCanonicalStatesOnly", quotient ? "True" : "False"}}) {
+                                w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                                w.write(std::string(k));
+                                w.write_symbol(v);
+                            }
+                            put_str_list_option(w, "RequestedData", {"NumEvents", "NumCausalEdges"});
+                        },
+                        5),
+            host);
+        return read_int_key(out, key);
+    };
+    for (bool quotient : {false, true}) {
+        SCOPED_TRACE(quotient ? "quotient exploration" : "full capture");
+        // Two isomorphic roots: 2 event classes under Full and one genesis event per root.
+        EXPECT_EQ(run({{{1, 2}}, {{3, 4}}}, {{1, 2}}, {{1, 3}, {3, 2}}, 2, "Full", quotient, "NumEvents"), 4);
+        // Two applications of one class consume the root's edges: two genesis pairs
+        // (reference/MultiwayReference.wl with "GenesisEvents" -> True).
+        EXPECT_EQ(run({{{1}, {1}}}, {{1}, {1}}, {{1}}, 3, "Full", quotient, "NumCausalEdges"), 2);
+    }
+}
+
 TEST(WxfSerializationPin, AskingForLessDoesNotAnswerLess) {
     HostBridge host;
 

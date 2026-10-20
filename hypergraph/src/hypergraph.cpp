@@ -1317,15 +1317,16 @@ EventId Hypergraph::create_genesis_event(StateId initial_state, const EdgeId* ed
     EdgeId* produced = arena_.allocate_array<EdgeId>(num_edges);
     std::memcpy(produced, edges, num_edges * sizeof(EdgeId));
 
-    // Directly construct event at slot eid using emplace_at; its identity is claimed like every
-    // other event's.
+    // A genesis event is its own event under every event identity: one per initial state
+    // (docs/SPEC.md 5.2), as the quotient reconstruction and the device count them.
     events_.emplace_at(eid, arena_, eid, genesis, initial_state,
                        static_cast<RuleIndex>(-1),
                        nullptr, 0,  // consumed_edges (none)
                        produced, num_edges,  // produced_edges
                        INVALID_ID);
     record_event_forms(eid);
-    assign_event_identity(eid);
+    if (event_signature_keys_ != EVENT_SIG_NONE)
+        canonical_event_count_.fetch_add(1, std::memory_order_relaxed);
     note_published_event(eid);
 
     // CRITICAL: Release fence
