@@ -415,9 +415,11 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
             else if (key == "Session") {
                 req.session_handle = static_cast<uint64_t>(value_parser.read<int64_t>());
             }
-            // The frontier states a `Step` expands, by effective id. Absent means all of them.
+            // The frontier states a `Step` expands, by effective id. Absent means all of them;
+            // an empty list means none.
             else if (key == "From") {
                 req.session_from = value_parser.read<std::vector<int64_t>>();
+                req.session_from_given = true;
             }
             // "Delta" sends only what this session has not been sent; anything else is a full
             // delivery, which also resets the record.
@@ -757,6 +759,13 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
     try {
         hgffi::ParsedJob req;
         parse_job(wxf_bytes, host, req);
+
+        // A Step from an empty "From" list names no frontier state: it expands nothing and
+        // answers as a Query, on either device.
+        if (req.session_op == "Step" && req.session_from_given && req.session_from.empty()) {
+            req.session_op = "Query";
+            req.steps = 0;
+        }
 
         // A NEGATIVE VERTEX IS REFUSED WHEREVER IT APPEARS, and this is the one place that
         // decides it for both devices: both renumber req.initial_states_raw through

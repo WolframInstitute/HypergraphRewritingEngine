@@ -151,6 +151,7 @@ struct ParsedJob {
     // RETAINS the rest, so the unselected branches stay resumable -- steering narrows what runs
     // next, never what remains reachable.
     std::vector<int64_t> session_from;
+    bool session_from_given = false;   // "From" was sent; with an empty list a Step expands nothing
 
     // `Delivery -> "Delta"`: send only what this session has not already been sent. Default is a
     // full delivery, which is what an `Evolve` can only be and what a session asks for to

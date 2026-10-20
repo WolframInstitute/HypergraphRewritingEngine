@@ -328,12 +328,13 @@ std::vector<uint8_t> session_envelope(const StateList& seed, const EdgeList& lhs
                                       int64_t session, bool with_rules,
                                       const std::vector<int64_t>& from,
                                       const std::function<void(wxf::Writer&)>& opts,
-                                      uint64_t n_opts, bool delta) {
+                                      uint64_t n_opts, bool delta, bool send_empty_from = false) {
     wxf::Writer w;
     w.write_header();
 
+    const bool send_from = !from.empty() || send_empty_from;
     w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-    w.write_varint(4 + (session ? 1 : 0) + (with_rules ? 1 : 0) + (from.empty() ? 0 : 1) +
+    w.write_varint(4 + (session ? 1 : 0) + (with_rules ? 1 : 0) + (send_from ? 1 : 0) +
                    (delta ? 1 : 0));
 
     if (delta) {
@@ -372,7 +373,7 @@ std::vector<uint8_t> session_envelope(const StateList& seed, const EdgeList& lhs
     w.write(std::string("Op"));
     w.write(op);
 
-    if (!from.empty()) {
+    if (send_from) {
         w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
         w.write(std::string("From"));
         w.write(from);
@@ -1817,6 +1818,32 @@ TEST(WxfSerializationPin, ASessionServesStepStatisticsItsOpenDidNotName) {
         ASSERT_FALSE(want.empty()) << "quotient=" << quotient;
         EXPECT_EQ(value_bytes(queried, "StepStatistics"), want) << "quotient=" << quotient;
     }
+}
+
+// A Step with "From" -> {} names no frontier state and expands nothing.
+TEST(WxfSerializationPin, AStepFromNoStateExpandsNothing) {
+    auto opts = [](wxf::Writer& w) {
+        put_str_list_option(w, "RequestedData", {"NumStates", "NumEvents"});
+    };
+    auto job = [&](int64_t steps, const std::string& op, int64_t session, bool empty_from) {
+        return session_envelope(kBranchSeed, kBranchLhs, kBranchRhs, steps, op, session,
+                                op == "Open", {}, opts, 1, false, empty_from);
+    };
+    HostBridge host;
+    const int64_t handle = read_int_key(run_rewriting_core(job(0, "Open", 0, false), host), "Session");
+    ASSERT_NE(handle, 0);
+    const auto one = run_rewriting_core(job(1, "Step", handle, false), host);
+    const auto none = run_rewriting_core(job(1, "Step", handle, true), host);
+    const auto two = run_rewriting_core(job(1, "Step", handle, false), host);
+    run_rewriting_core(job(0, "Close", handle, false), host);
+    ASSERT_GT(read_int_key(one, "NumEvents"), 0);
+    EXPECT_EQ(read_int_key(none, "NumEvents"), read_int_key(one, "NumEvents"));
+    EXPECT_EQ(read_int_key(none, "NumStates"), read_int_key(one, "NumStates"));
+    // The frontier it left is the one the next Step expands.
+    const auto direct = run_rewriting_core(
+        session_envelope(kBranchSeed, kBranchLhs, kBranchRhs, 2, "Evolve", 0, true, {}, opts, 1, false),
+        host);
+    EXPECT_EQ(read_int_key(two, "NumEvents"), read_int_key(direct, "NumEvents"));
 }
 
 // A value of an identity option the engine does not recognise is reported as OptionSkipped,
