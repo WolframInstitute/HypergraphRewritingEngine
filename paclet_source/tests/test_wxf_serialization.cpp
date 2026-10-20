@@ -590,6 +590,42 @@ TEST(WxfSerializationPin, AKeyListOfAutomaticsComponentsComparesMarkedForms) {
               1);
 }
 
+// Automatic event identity ranks the edges of {{1},{2}} by the sorted vertex numbering on both
+// devices: {{1},{2}} -> {{1},{2}} and {{1},{2}} -> {{2},{1}} give four events in one step, two
+// per rule, none shared between the rules.
+TEST(WxfSerializationPin, AutomaticRanksComeFromTheSortedVertexNumbering) {
+    HostBridge host;
+    wxf::Writer w;
+    w.write_header();
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+    w.write_varint(4);
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("InitialStates"));
+    w.write(StateList{{{1}, {2}}});
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("Rules"));
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+    w.write_varint(2);
+    for (auto [name, rhs] : {std::pair<const char*, EdgeList>{"r0", {{1}, {2}}}, {"r1", {{2}, {1}}}}) {
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string(name));
+        w.write_function("Rule", 2);
+        w.write(EdgeList{{1}, {2}});
+        w.write(rhs);
+    }
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("Steps"));
+    w.write(int64_t{1});
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("Options"));
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+    w.write_varint(3);
+    put_str_option(w, "CanonicalizeStates", "Full");
+    put_str_option(w, "CanonicalizeEvents", "Automatic");
+    put_str_list_option(w, "RequestedData", {"NumEvents"});
+    EXPECT_EQ(read_int_key(run_rewriting_core(w.release_data(), host), "NumEvents"), 4);
+}
+
 TEST(WxfSerializationPin, AskingForLessDoesNotAnswerLess) {
     HostBridge host;
 

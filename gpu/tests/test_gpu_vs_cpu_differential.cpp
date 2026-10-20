@@ -1338,6 +1338,32 @@ TEST(CanonicalEventCount, ModesVsCpu) {
         << "no event mode merged anything on this workload, so the comparison is vacuous";
 }
 
+// The replay's frame slots come from each raw state's edge-orbit ranks
+// (Hypergraph::qc_frame_slots), and those ranks are read from the same sorted vertex numbering
+// on both devices. {{1},{2}} -> {{1},{2}} and {{1},{2}} -> {{2},{1}} on {{1},{2}}: the four
+// applications differ only in which automorphic labelling ranks their edges. 1 step: 4 events
+// on both devices (the host gave 2 when its orbit ranks numbered vertices in encounter order).
+TEST(CanonicalEventCount, AutomaticAcrossTwoRulesWithOneSymmetricState) {
+    for (bool quotient : {false, true}) {
+        for (uint32_t steps : {1u, 2u}) {
+            Workload w;
+            w.name = std::string("two_rules_swap_") + (quotient ? "quotient" : "full") +
+                     std::to_string(steps);
+            w.rules = {rule({{0}, {1}}, {{0}, {1}}), rule({{0}, {1}}, {{1}, {0}})};
+            w.initial_state = {{0u}, {1u}};
+            w.num_steps = steps;
+            w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+            w.event_canon_mode = hg_gpu::EventCanonicalizationMode::Automatic;
+            w.explore_from_canonical_states_only = quotient;
+            NormalizedResult cpu = run_cpu(w);
+            NormalizedResult gpu = run_gpu(w);
+            EXPECT_EQ(gpu.raw_events, cpu.raw_events) << w.name;
+            EXPECT_EQ(gpu.num_events, cpu.num_events) << w.name;
+            if (steps == 1) EXPECT_EQ(cpu.num_events, 4u) << w.name;
+        }
+    }
+}
+
 // EVERY STATE EDGE ID NAMES AN EDGE IN THE TABLE, AND THAT EDGE'S VERTICES ARE IN THE POOL.
 //
 // A state's edges are read through its ids into the global edge table and the vertex pool, the

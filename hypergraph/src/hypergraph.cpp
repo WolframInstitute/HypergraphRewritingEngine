@@ -1574,23 +1574,19 @@ uint64_t ir_hash_and_orbits(const SegmentedArray<Edge>& edge_table,
     auto* ea   = static_cast<uint8_t*>(worker_scratch().allocate_raw(n, alignof(uint8_t)));
     auto* eoff = static_cast<uint32_t*>(worker_scratch().allocate_raw(sizeof(uint32_t) * n, alignof(uint32_t)));
     auto* ev   = static_cast<uint32_t*>(worker_scratch().allocate_raw(sizeof(uint32_t) * total_occ, alignof(uint32_t)));
-    // Local vertex indices in encounter order. The core's result does not depend on the order
-    // they are assigned in: the only place an index is read as a value is the initial
-    // partition's tie-break, which orders vertices WITHIN a cell, and no output reads
-    // within-cell order.
-    ScratchIdMap local(total_occ * 2);
-    uint32_t n_verts = 0;
+    // Local vertex indices by the shared rule (hgcommon::ir_renumber_sorted): the within-cell
+    // tie-break reads them, so they select which automorphic labelling gives the edge ranks,
+    // and the device's ranks come from the same numbering.
     uint32_t occ = 0;
     for (uint32_t i = 0; i < n; ++i) {
         const Edge& e = edge_table[ids[i]];
         eoff[i] = occ;
         ea[i] = e.arity;
-        for (uint8_t j = 0; j < e.arity; ++j) {
-            uint32_t idx;
-            if (local.find_or_insert(static_cast<uint32_t>(e.vertices[j]), n_verts, idx)) ++n_verts;
-            ev[occ++] = idx;
-        }
+        for (uint8_t j = 0; j < e.arity; ++j) ev[occ++] = static_cast<uint32_t>(e.vertices[j]);
     }
+    auto* verts = static_cast<uint32_t*>(
+        worker_scratch().allocate_raw(sizeof(uint32_t) * (total_occ ? total_occ : 1), alignof(uint32_t)));
+    const uint32_t n_verts = hgcommon::ir_renumber_sorted(ev, occ, verts);
 
     // The static rungs, then the true bound: a search individualises at most one vertex per
     // level, so n_verts + 1 admits every state -- a maximal-symmetry star needs a level per
