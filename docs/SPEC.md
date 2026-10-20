@@ -163,7 +163,8 @@ exact configuration. Sampling and capping options refine this as follows:
 - **`MaxSuccessorStatesPerParent`** keeps the transitions out of a state into its k lowest-ranked
   successor states, chosen at the state's drain; **`MaxStatesPerStep`** keeps the transitions of a
   step into the step's N lowest-ranked successor states, chosen once the step's matching is
-  complete. Both count distinct successor STATES under the state identity in force (§4.1):
+  complete. The depth join signals that completion and submits the choice as a task; no worker
+  waits on a barrier for it. Both count distinct successor STATES under the state identity in force (§4.1):
   under `None` every transition makes its own state, so both count transitions; under
   `Automatic` two transitions make one state when the edge lists of the states they make are
   identical (a transition that creates a vertex makes its own state); under `Full` when those
@@ -247,6 +248,13 @@ and is refused with a warning otherwise. It is also refused with a warning (`Quo
 under `MaxStatesPerStep` and `MatchesPerStep`: a step cap chooses among the transitions of a step,
 and quotient exploration expands one raw state per class, at the class's shortest depth only.
 **It is a performance mode, never a semantic one.**
+
+A class reached first along a longer path has its depth lowered when a shorter path arrives
+(`hgcommon::explore_try_lower`). A lowering is at most the step budget less one, and no smaller
+bound holds for every schedule, since the shorter path's rewrite can run last. The largest
+lowering measured over the oracle corpus is 2 (`OracleCorpus.DepthLoweringIsBoundedByTheStepBudget`).
+So no depth is complete before the run is, and a run under quotient exploration gives no
+per-depth completion signal.
 
 **Contract: every observable under quotient equals the same observable under full capture, in the
 same cell** — states, events, causal (count, list, graph), branchial, and the reduction — on the

@@ -32,7 +32,15 @@ concurrency:
 # (reference/verify_paclet.wls) needs a Wolfram Engine + a macOS/Windows leg -- both
 # tracked as follow-ups.
 jobs:
+  # A scheduled run of the commit the last scheduled run tested runs nothing else.
+  unchanged:
+    uses: ./.github/workflows/unchanged.yml
+    with:
+      workflow: ci.yml
+
   linux-tests:
+    needs: unchanged
+    if: needs.unchanged.outputs.skip != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -268,6 +276,8 @@ jobs:
   # tables/, so the submission could not compile at the other end. Both are the kind of thing a
   # build catches immediately and a human catches at the worst moment.
   paper:
+    needs: unchanged
+    if: needs.unchanged.outputs.skip != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

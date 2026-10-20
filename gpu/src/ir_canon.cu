@@ -492,6 +492,9 @@ __device__ void record_state_invariants_device(const DeviceState& ds, StateId si
         if (at + words > ds.invariant_pool_words) {
             ds.errors.record(ErrorKind::kStateInvariantsFull);
         } else {
+            // The record leaves some bytes of its words unwritten (compute-sanitizer initcheck),
+            // and the readback copies the used words whole, so its words are zeroed first.
+            for (uint64_t w = 0; w < words; ++w) ds.invariant_pool[at + w] = 0;
             hgcommon::si_record_write(ds.invariant_pool + at, r);
             ds.state_invariant_at[sid] = static_cast<uint32_t>(at);
         }

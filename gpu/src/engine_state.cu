@@ -214,6 +214,11 @@ EngineState::EngineState(EngineConfig cfg): cfg_(cfg)
         HG_CUDA_CHECK(cudaMalloc(&event_consumed_,
               sizeof(EdgeId) * uint64_t(cfg_.max_events) * event_consumed_stride(cfg_)),
               "EngineState event_consumed alloc");
+        // Filled with INVALID_ID once: an event writes only its rule's left-hand-side count of
+        // its stride, an abandoned event none, and the readback copies whole strides.
+        HG_CUDA_CHECK(cudaMemset(event_consumed_, 0xFF,
+              sizeof(EdgeId) * uint64_t(cfg_.max_events) * event_consumed_stride(cfg_)),
+              "EngineState event_consumed init");
         // One reachability slice per persistent block, taken by whichever thread needs one
         // (rewrite.cu is_reachable_preds). The visited table is masked, so the scale is rounded
         // up to a power of two.

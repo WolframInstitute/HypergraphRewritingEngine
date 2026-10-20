@@ -2758,6 +2758,57 @@ TEST(WxfSerializationPin, SessionFrontierIdsAreStatesKeys) {
     }
 }
 
+// The same invariant after every one-step Step, with the second step steered by "From" to the
+// lowest frontier id, under Full with and without quotient exploration and under Automatic.
+TEST(WxfSerializationPin, SteeredSessionFrontierIdsAreStatesKeys) {
+    struct Mode { const char* states; bool quotient; };
+    for (const Mode mode : {Mode{"Full", false}, Mode{"Full", true}, Mode{"Automatic", false}}) {
+        auto job = [&](int64_t steps, const std::string& op, int64_t session,
+                       const std::vector<int64_t>& from) {
+            return session_envelope(kBranchSeed, kBranchLhs, kBranchRhs, steps, op, session,
+                                    op == "Open", from, [&](wxf::Writer& w) {
+                put_str_list_option(w, "RequestedData", {"States"});
+                put_str_option(w, "CanonicalizeStates", mode.states);
+                if (mode.quotient) put_str_option(w, "ExploreFromCanonicalStatesOnly", "True");
+            }, mode.quotient ? 3 : 2, false);
+        };
+        auto states_keys = [](const std::vector<uint8_t>& out) {
+            std::set<int64_t> keys;
+            wxf::Parser parser(out);
+            parser.skip_header();
+            parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+                if (k != "States") { vp.skip_value(); return; }
+                vp.read_association_generic([&](wxf::Parser& kp, wxf::Parser& rp) {
+                    keys.insert(kp.read<int64_t>());
+                    rp.skip_value();
+                });
+            });
+            return keys;
+        };
+        for (int rep = 0; rep < 10; ++rep) {
+            HostBridge host;
+            const auto opened = run_rewriting_core(job(0, "Open", 0, {}), host);
+            const int64_t handle = read_int_key(opened, "Session");
+            ASSERT_NE(handle, 0) << mode.states;
+            std::vector<int64_t> frontier = read_int_list_key(opened, "Frontier");
+            for (int step = 1; step <= 4; ++step) {
+                std::vector<int64_t> from;
+                if (step == 2 && !frontier.empty())
+                    from = {*std::min_element(frontier.begin(), frontier.end())};
+                const auto stepped = run_rewriting_core(job(1, "Step", handle, from), host);
+                const auto keys = states_keys(stepped);
+                frontier = read_int_list_key(stepped, "Frontier");
+                ASSERT_FALSE(frontier.empty()) << mode.states << " step " << step;
+                for (int64_t f : frontier)
+                    EXPECT_TRUE(keys.count(f))
+                        << mode.states << (mode.quotient ? " quotient" : "") << " run " << rep
+                        << " step " << step << ": frontier id " << f << " is not a States key";
+            }
+            run_rewriting_core(job(0, "Close", handle, {}), host);
+        }
+    }
+}
+
 #ifndef _WIN32
 // Positional event identity has no device mode, so the GPU binary runs such a job on its CPU
 // engine and says so; the counts are the CPU engine's. A session opened that way is served by the

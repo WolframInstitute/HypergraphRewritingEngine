@@ -828,6 +828,69 @@ TEST(OracleCorpus, MultiplicityCountsMatchTheReplay) {
     EXPECT_GT(compared, 0u);
 }
 
+// A replay whose relations and events are read only as counts (RecordSet::relation_lists and
+// event_lists off) keeps no per-instance application lists, no per-event content and no causal
+// pair list, and its counts equal those of a run that keeps them. Causal is on, so the replay
+// runs rather than the multiplicity path. Per corpus case under quotient exploration, identity
+// None and Automatic, at 1 and 8 threads.
+TEST(OracleCorpus, CountsOnlyReplayKeepsNoApplicationsOrContent) {
+    struct Counts { uint64_t events, branchial; size_t causal, reduced, instances,
+                    applied_lists, contents, pairs_listed; };
+    auto run = [](const oracle::Case& c, hgcommon::EventSignatureKeys keys, unsigned threads,
+                  bool lists) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        hg.set_event_signature_keys(keys);
+        RecordSet rs{true, true, false};
+        rs.raw_events = true;
+        rs.raw_counts_only = !lists;
+        rs.relation_lists = lists;
+        rs.event_lists = lists;
+        hg.set_record_set(rs);
+        ParallelEvolutionEngine e(&hg, threads);
+        e.set_explore_from_canonical_states_only(true);
+        for (const auto& r : c.rules) e.add_rule(r);
+        e.evolve(c.init, c.measure_steps);
+        size_t contents = 0;
+        hg.for_each_reconstructed_raw_triple([&](uint64_t) { ++contents; });
+        size_t pairs_listed = 0;
+        hg.for_each_reconstructed_causal_as(false, [](uint32_t id) { return id; },
+                                            [&](uint64_t, uint64_t) { ++pairs_listed; });
+        return Counts{hg.observable_num_events(), hg.observable_num_branchial(),
+                      hg.observable_num_causal_pairs(false), hg.observable_num_causal_pairs(true),
+                      hg.num_reconstructed_instances(), hg.applied_shape().size(), contents,
+                      pairs_listed};
+    };
+    size_t compared = 0;
+    for (hgcommon::EventSignatureKeys keys : {hgcommon::EVENT_SIG_NONE, hgcommon::EVENT_SIG_AUTOMATIC}) {
+        for (unsigned threads : {1u, 8u}) {
+            for (const auto& c : oracle::corpus()) {
+                const Counts with = run(c, keys, threads, true);
+                const Counts without = run(c, keys, threads, false);
+                const std::string at = std::string(c.name) + " keys=" + std::to_string(keys) +
+                                       " threads=" + std::to_string(threads);
+                EXPECT_EQ(without.events, with.events) << at;
+                EXPECT_EQ(without.branchial, with.branchial) << at;
+                EXPECT_EQ(without.causal, with.causal) << at;
+                EXPECT_EQ(without.reduced, with.reduced) << at;
+                EXPECT_EQ(without.instances, with.instances) << at;
+                EXPECT_EQ(without.applied_lists, 0u) << at;
+                EXPECT_EQ(without.contents, 0u) << at;
+                EXPECT_EQ(without.pairs_listed, 0u) << at;
+                EXPECT_EQ(with.pairs_listed, with.causal) << at;
+                if (with.branchial) {
+                    EXPECT_GT(with.applied_lists, 0u) << at;
+                    ++compared;
+                }
+                if (with.events) {
+                    EXPECT_GT(with.contents, 0u) << at;
+                }
+            }
+        }
+    }
+    EXPECT_GT(compared, 0u);
+}
+
 // The multiplicity of a class at a depth is the number of raw states of that class at that step
 // of the unfolding. The reference is a full-capture run with no state identification, whose
 // states are the raw states; each is grouped by (step, canonical hash). The quotient run counts
@@ -1564,3 +1627,29 @@ TEST(OracleCorpus, APerStepCapIsReproducibleAcrossWorkerCounts) {
         }
     }
 }
+
+#if HG_ENGINE_STATS
+// Under quotient exploration a class first reached along a longer path has its depth lowered
+// when a shorter path arrives (hgcommon::explore_try_lower). A lowering is at most the step
+// budget less one: an arrival writes a depth of at most the budget, and a lowered state is not
+// an initial state, so its new depth is at least 1. Measured per corpus case at the measurement
+// depth, 1 and 32 workers.
+TEST(OracleCorpus, DepthLoweringIsBoundedByTheStepBudget) {
+    uint32_t corpus_max = 0;
+    for (const auto& c : oracle::corpus()) {
+        for (unsigned threads : {1u, 32u}) {
+            Hypergraph hg;
+            hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+            ParallelEvolutionEngine e(&hg, threads);
+            e.set_explore_from_canonical_states_only(true);
+            for (const auto& r : c.rules) e.add_rule(r);
+            e.evolve(c.init, c.measure_steps);
+            const uint32_t m = hg.explore_depth_max_lowering();
+            EXPECT_LT(m, static_cast<uint32_t>(std::max(c.measure_steps, 1))) << c.name;
+            if (m > corpus_max) corpus_max = m;
+            if (m) std::printf("  %s threads %u: depth lowered by up to %u\n", c.name, threads, m);
+        }
+    }
+    std::printf("corpus maximum depth lowering: %u\n", corpus_max);
+}
+#endif

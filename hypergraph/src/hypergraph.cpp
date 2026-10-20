@@ -1043,8 +1043,17 @@ Hypergraph::CanonicalClaim Hypergraph::claim_event(EventId e, const uint64_t* va
 
 bool Hypergraph::explore_depth_cas(StateId canonical_id, uint32_t& expected, uint32_t desired) {
     hgcommon::atomic_ref<uint32_t> known(states_[canonical_id].explore_depth);
-    return known.compare_exchange_weak(expected, desired, std::memory_order_acq_rel,
-                                       std::memory_order_acquire);
+    const bool lowered = known.compare_exchange_weak(expected, desired, std::memory_order_acq_rel,
+                                                     std::memory_order_acquire);
+#if HG_ENGINE_STATS
+    if (lowered && expected != hgcommon::kExploreNoDepth) {
+        const uint32_t by = expected - desired;
+        uint32_t seen = explore_depth_max_lowering_.load(std::memory_order_relaxed);
+        while (by > seen && !explore_depth_max_lowering_.compare_exchange_weak(
+                                seen, by, std::memory_order_relaxed)) {}
+    }
+#endif
+    return lowered;
 }
 
 bool Hypergraph::try_lower_explore_depth(StateId canonical_id, uint32_t depth) {
@@ -1842,13 +1851,14 @@ void Hypergraph::qc_record_causal(uint32_t producer, uint32_t consumer, bool dis
     // NO DEDUP STRUCTURE, and none is needed. `consumer` is the event this application just
     // minted, so the pair cannot repeat across applications; within this one the caller has
     // already marked the adjacent repeats, which are the only other way it can repeat.
-    // Appending to this worker's own list touches no line another worker reads.
+    // Appending to this worker's own list touches no line another worker reads. The count is
+    // kept in every run; the list only when the pairs are enumerated (qc_keep_pairs_).
     if (!distinct_pair) return;
+    qc_count(qc_ctr_, &QcCounterSlot::causal_pairs);
+    if (!qc_keep_pairs_.load(std::memory_order_relaxed)) return;
     const int w = arena_worker_index();
     if (w >= 0) qc_causal_pairs_[w].push(qc_pair_key(producer, consumer), arena_);
     else qc_causal_pairs_outside_.push(qc_pair_key(producer, consumer), arena_);
-    HG_STAT(qc_count(qc_ctr_, &QcCounterSlot::causal_pairs));
-
 }
 
 void Hypergraph::qc_apply(const QcInstance& inst, const SlotMatch& m, uint64_t state_hash,
@@ -2331,7 +2341,7 @@ size_t Hypergraph::num_reconstructed_causal_edges() const {
 
 size_t Hypergraph::num_reconstructed_causal_pairs(bool transitively_reduced) const {
     if (transitively_reduced) return qc_ctr_total(&QcCounterSlot::reduced_pairs);
-    return qc_causal_pairs_count();
+    return qc_ctr_total(&QcCounterSlot::causal_pairs);
 }
 
 
@@ -2715,6 +2725,12 @@ void Hypergraph::set_record_set(RecordSet r) {
     record_raw_counts_only_.store(r.raw_counts_only, std::memory_order_relaxed);
     record_multiplicities_.store(r.multiplicities, std::memory_order_relaxed);
     record_state_invariants_.store(r.state_invariants, std::memory_order_relaxed);
+    record_relation_lists_.store(r.relation_lists, std::memory_order_relaxed);
+    record_event_lists_.store(r.event_lists, std::memory_order_relaxed);
+    qc_publish_applied_.store(hgcommon::qr_publishes_applications(r.branchial, r.relation_lists),
+                              std::memory_order_relaxed);
+    qc_keep_content_.store(hgcommon::qr_keeps_event_content(r), std::memory_order_relaxed);
+    qc_keep_pairs_.store(hgcommon::qr_keeps_causal_pairs(r), std::memory_order_relaxed);
 }
 
 RecordSet Hypergraph::record_set() const {
@@ -2724,7 +2740,9 @@ RecordSet Hypergraph::record_set() const {
                      record_raw_events_.load(std::memory_order_relaxed),
                      record_raw_counts_only_.load(std::memory_order_relaxed),
                      record_multiplicities_.load(std::memory_order_relaxed),
-                     record_state_invariants_.load(std::memory_order_relaxed)};
+                     record_state_invariants_.load(std::memory_order_relaxed),
+                     record_relation_lists_.load(std::memory_order_relaxed),
+                     record_event_lists_.load(std::memory_order_relaxed)};
 }
 
 // The per-state event list and the branchial pair relation are recorded independently: they feed
@@ -2833,6 +2851,7 @@ uint32_t Hypergraph::alloc_event_id(uint32_t above) {
 
 void Hypergraph::QrCtx::record_content(uint32_t ev, uint64_t from_class, uint64_t to_class,
                                        uint32_t rule) {
+    if (!hg.qc_keep_content_.load(std::memory_order_relaxed)) return;
     hg.qc_event_sig_.emplace_at(Hypergraph::qc_ev_slot(ev), hg.arena_,
                                 QcEventContent{from_class, to_class, rule, 1u});
 }
@@ -2908,7 +2927,7 @@ bool Hypergraph::QrCtx::want_causal() const {
     return hg.record_causal_.load(std::memory_order_relaxed);
 }
 bool Hypergraph::QrCtx::want_branchial() const {
-    return hg.record_branchial_.load(std::memory_order_relaxed);
+    return hg.qc_publish_applied_.load(std::memory_order_relaxed);
 }
 
 uint32_t Hypergraph::QrCtx::producer_at(const QcInstance& inst, uint32_t slot) const {
