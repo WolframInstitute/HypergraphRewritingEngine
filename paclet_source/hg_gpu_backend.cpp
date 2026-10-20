@@ -94,25 +94,8 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
         ++rule_index;
     }
 
-    // Initial-state vertices are LABELS, not variables, and are remapped to dense ids exactly as
-    // the CPU FFI's per-state canonical numbering does. Every one of them is non-negative:
-    // run_rewriting_core refuses a negative vertex before it chooses a device, so the two paths
-    // cannot answer one request differently.
-    for (const auto& state : job.initial_states) {
-        std::unordered_map<int64_t, hg_gpu::VertexId> vmap;
-        hg_gpu::VertexId next = 0;
-        std::vector<std::vector<hg_gpu::VertexId>> edges;
-        for (const auto& edge : state) {
-            std::vector<hg_gpu::VertexId> e;
-            for (int64_t v : edge) {
-                auto it = vmap.find(v);
-                if (it == vmap.end()) { vmap[v] = next; e.push_back(next); ++next; }
-                else e.push_back(it->second);
-            }
-            if (!e.empty()) edges.push_back(std::move(e));
-        }
-        if (!edges.empty()) in.initial_states.push_back(std::move(edges));
-    }
+    // Initial-state vertices are labels, renumbered by the rule the CPU engine uses.
+    in.initial_states = hgffi::dense_initial_states<hg_gpu::VertexId>(job.initial_states);
 
     in.num_steps = static_cast<uint32_t>(std::max(0, job.steps));
     // State dedup / class collapse is done host-side in the marshaller, keyed by the

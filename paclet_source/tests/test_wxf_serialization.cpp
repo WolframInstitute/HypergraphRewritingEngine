@@ -499,6 +499,30 @@ TEST(WxfSerializationPin, ANegativeInitialStateVertexIsRefused) {
     EXPECT_GT(read_int_key(ok, "NumStates"), 1);
 }
 
+// One vertex numbering serves every initial state, so a label names one vertex in all of them.
+// Under CanonicalizeStates -> Automatic, {{1,3},{3,3}} and {{11,12},{12,12}} are two states with
+// different edge lists (reference/MultiwayReference.wl "Content"), and {{1,2}} and {{2,1}} too.
+TEST(WxfSerializationPin, InitialStatesShareOneVertexNumbering) {
+    HostBridge host;
+    auto automatic_states = [&](const StateList& seed) {
+        const auto out = run_rewriting_core(
+            build_input(seed, {{1, 2}}, {{2, 1}}, 0,
+                        [](wxf::Writer& w) {
+                            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                            w.write(std::string("CanonicalizeStates"));
+                            w.write_symbol("Automatic");
+                            put_str_list_option(w, "RequestedData", {"NumStates"});
+                        },
+                        2),
+            host);
+        return read_int_key(out, "NumStates");
+    };
+    EXPECT_EQ(automatic_states({{{1, 3}, {3, 3}}, {{11, 12}, {12, 12}}}), 2);
+    EXPECT_EQ(automatic_states({{{1, 2}}, {{2, 1}}}), 2);
+    // The same labels are the same state.
+    EXPECT_EQ(automatic_states({{{1, 2}}, {{1, 2}}}), 1);
+}
+
 TEST(WxfSerializationPin, AskingForLessDoesNotAnswerLess) {
     HostBridge host;
 

@@ -692,47 +692,11 @@ static void configure_and_evolve(hgffi::ParsedJob& req, hypergraph::Hypergraph& 
     }
 
 
-    // Convert all initial states to vectors of edges
-    // Multiple initial states are supported for exploring the full multiway system
-    // CRITICAL: Each initial state gets CANONICAL vertex numbering (starting from 0)
-    // This ensures isomorphic initial states like {{0,0},{0,0}} and {{1,1},{1,1}}
-    // get the SAME internal representation and thus the SAME canonical hash.
-    // The engine handles multiplicity - if the same canonical state appears multiple
-    // times, it spawns MATCH tasks for each instance.
-    std::vector<std::vector<std::vector<hypergraph::VertexId>>> initial_states;
+    // GeodesicSources are given in the user's labels; initial_vertex_map translates them at the
+    // geodesic block (initial vertices keep their engine ids through the evolution).
     std::unordered_map<int64_t, hypergraph::VertexId> initial_vertex_map;
-
-    for (const auto& state_raw : req.initial_states_raw) {
-        // Create a per-state vertex mapping: input_vertex -> canonical_vertex
-        // Always start from 0 for canonical form
-        std::unordered_map<int64_t, hypergraph::VertexId> vertex_map;
-        hypergraph::VertexId next_vertex = 0;
-
-        std::vector<std::vector<hypergraph::VertexId>> state_edges;
-        for (const auto& edge : state_raw) {
-            std::vector<hypergraph::VertexId> edge_vertices;
-            for (int64_t v : edge) {
-                // Every vertex here is non-negative: run_rewriting_core refuses a negative one
-                // before either device is chosen, so this renumbering sees only labels it can
-                // map.
-                auto it = vertex_map.find(v);
-                if (it == vertex_map.end()) {
-                    vertex_map[v] = next_vertex;
-                    edge_vertices.push_back(next_vertex);
-                    next_vertex++;
-                } else {
-                    edge_vertices.push_back(it->second);
-                }
-            }
-            state_edges.push_back(std::move(edge_vertices));
-        }
-        // GeodesicSources are given in the USER'S labels; the engine sees only the dense
-        // renumbering above. Keep the first state's map so the sources can be translated at
-        // the geodesic block (initial vertices keep their engine ids through the evolution, so
-        // the translation stays valid on evolved states).
-        if (initial_states.empty()) initial_vertex_map = vertex_map;
-        initial_states.push_back(std::move(state_edges));
-    }
+    const auto initial_states =
+        hgffi::dense_initial_states<hypergraph::VertexId>(req.initial_states_raw, &initial_vertex_map);
 
     // Run the evolution. Abort is a process kill by the parent, so there is
     // no cooperative abort; progress (when requested) is reported through the
@@ -795,9 +759,9 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         parse_job(wxf_bytes, host, req);
 
         // A NEGATIVE VERTEX IS REFUSED WHEREVER IT APPEARS, and this is the one place that
-        // decides it for both devices: the CPU path renumbers req.initial_states_raw itself and
-        // the GPU job holds a reference to the same vectors, so a check in either alone lets the
-        // other answer differently for one request. The rule parser refuses a negative on its
+        // decides it for both devices: both renumber req.initial_states_raw through
+        // hgffi::dense_initial_states, so a check in either alone lets the other answer
+        // differently for one request. The rule parser refuses a negative on its
         // own side, and an initial state is held to the same convention rather than a second
         // one. Silently dropping such a vertex evolves a hypergraph the caller did not write.
         for (size_t si = 0; si < req.initial_states_raw.size(); ++si) {
