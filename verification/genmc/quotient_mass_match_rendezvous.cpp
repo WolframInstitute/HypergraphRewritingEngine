@@ -141,7 +141,7 @@ struct Ctx {
         return true;
     }
     bool held = false;
-    template <class F> void for_each_match(uint64_t h, F&& f) { if (h == kC) f(g_j); }
+    template <class F> void for_each_match(uint64_t h, uint32_t, F&& f) { if (h == kC) f(g_j); }
     void fence() {
 #if !defined(CALIBRATE_NO_FENCE)
         hgcommon::rendezvous_barrier<hgcommon::rv::QuotientMassMatch>();
