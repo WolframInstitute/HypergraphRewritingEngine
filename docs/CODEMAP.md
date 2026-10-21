@@ -382,7 +382,7 @@ rented box that does.
   comment to what it actually sees (racecheck is shared memory only).
 - **`worker_fuzz.py`** -- the random job-sequence fuzz, a local gate (CONTRIBUTING.md, Test). One
   `hg_evolve_gpu --serve` worker answers every job of the run and is compared with `hg_evolve` on
-  the CPU; StepStatistics is compared between devices and between 1, 4 and 16 CPU workers;
+  the CPU; StepStatistics is compared between devices and between 1, 4, 16, 32 and one seed-chosen count of CPU workers;
   counts-only replies are compared with full ones on both devices. Unknown findings are shrunk to
   a minimal job (or, for a worker leak, a minimal job sequence) and fail the run; open board
   defects are listed in its `KNOWN` table. Every child runs under `RLIMIT_AS`.

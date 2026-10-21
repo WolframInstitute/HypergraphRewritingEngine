@@ -51,7 +51,7 @@ GPU (when built with `-DBUILD_GPU=ON`):
 
 Worker-sequence fuzz (needs both binaries and a GPU; a local gate, not run in CI). It sends
 random jobs to one `hg_evolve_gpu --serve` worker and compares each reply with `hg_evolve`, the
-StepStatistics of both devices and of 1, 4 and 16 CPU workers, and counts-only replies with full
+StepStatistics of both devices and of 1, 4, 16, 32 and one seed-chosen count of CPU workers, and counts-only replies with full
 ones. The default budget is 200 cases from seed 1000; run it at every commit batch that touches
 the engine, the FFI or the GPU backend. A nonzero exit means an unknown finding, shrunk to a
 minimal job under `.scratch/worker_fuzz/`.

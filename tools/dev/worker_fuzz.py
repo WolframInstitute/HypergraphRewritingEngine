@@ -9,8 +9,8 @@ Each case is a random rule set, initial states, step count and option set. Per c
                 in a fresh GPU process: if the fresh process agrees with the CPU, the finding is a
                 worker leak and the job sequence is minimised; otherwise the case is minimised.
   (b) stats     When "StepStatistics" is requested, the CPU and GPU-worker StepStatistics must be
-                equal. On the CPU, the full fingerprint and StepStatistics at 1 and 16 threads
-                must equal the 4-thread ones.
+                equal. On the CPU, the full fingerprint and StepStatistics at 1, 16 and 32
+                threads and at one count from 2 to 31 must equal the 4-thread ones.
   (c) counts    A counts-only request (RequestedData = Num* only) must give the Num* of the full
                 reply, on the CPU and on the GPU worker.
 
@@ -78,18 +78,41 @@ def build_shim(out):
 
 
 # ---------------------------------------------------------------- generation
-def gen_rule(rng):
+def gen_rule(rng, wide=False):
+    """A random rule. `wide` draws edge arities up to MAX_ARITY (16)."""
+    arity = (lambda: rng.choice([1, 2, rng.randint(3, 16)])) if wide else (lambda: rng.choice([1, 2, 2, 2, 3, 3, 4]))
     nl = rng.choice([1, 1, 2, 2, 2, 3])
     pool = list(range(1, rng.randint(1, 5) + 1))
-    lhs = [[rng.choice(pool) for _ in range(rng.choice([1, 2, 2, 2, 3, 3, 4]))] for _ in range(nl)]
+    lhs = [[rng.choice(pool) for _ in range(arity())] for _ in range(nl)]
     lv = sorted({v for e in lhs for v in e})
     fresh = list(range(max(lv) + 1, max(lv) + 1 + rng.randint(0, 2)))
-    rhs = [[rng.choice(lv + fresh) for _ in range(rng.choice([1, 2, 2, 2, 3, 3, 4]))]
+    rhs = [[rng.choice(lv + fresh) for _ in range(arity())]
            for _ in range(rng.choice([0, 1, 1, 2, 2, 3, 3, 4]))]
     return [lhs, rhs]
 
 
+def symmetric_state(rng):
+    """A state with a large automorphism group: complete digraph, cycle, star, grid or torus."""
+    n = rng.randint(3, 6)
+    kind = rng.randint(1, 5)
+    if kind == 1:
+        return [[i, j] for i in range(1, n + 1) for j in range(1, n + 1) if i != j]
+    if kind == 2:
+        return [[i, i % n + 1] for i in range(1, n + 1)]
+    if kind == 3:
+        return [[1, i] for i in range(2, n + 2)]
+    w, h = rng.randint(2, 4), rng.randint(2, 4)
+    v = lambda x, y: y * w + x + 1
+    if kind == 4:
+        return ([[v(x, y), v(x + 1, y)] for y in range(h) for x in range(w - 1)] +
+                [[v(x, y), v(x, y + 1)] for y in range(h - 1) for x in range(w)])
+    return ([[v(x, y), v((x + 1) % w, y)] for y in range(h) for x in range(w)] +
+            [[v(x, y), v(x, (y + 1) % h)] for y in range(h) for x in range(w)])
+
+
 def gen_state(rng, arities, large):
+    if rng.random() < 0.08:
+        return symmetric_state(rng)
     n_edges = rng.randint(15, 50) if large else rng.randint(1, 6)
     nv = max(1, int(n_edges * rng.uniform(0.5, 1.5))) if large else rng.randint(1, 5)
     return [[rng.randint(1, nv) for _ in range(rng.choice(arities) if rng.random() < 0.85 else rng.randint(1, 4))]
@@ -115,6 +138,8 @@ def gen_options(rng):
         o["ExploreFromCanonicalStatesOnly"] = Sym("True")
     if rng.random() < 0.3:
         o["CausalTransitiveReduction"] = Sym("False")
+    if rng.random() < 0.15:
+        o["ShowGenesisEvents"] = Sym("True")
     sampled = False
     if rng.random() < 0.2:
         o["MaxStatesPerStep"] = rng.randint(1, 20); sampled = True
@@ -135,7 +160,10 @@ def gen_options(rng):
 
 def gen_case(seed):
     rng = random.Random(seed)
-    rules = [gen_rule(rng) for _ in range(rng.choice([1, 1, 2, 2, 3]))]
+    wide = rng.random() < 0.1
+    rules = [gen_rule(rng, wide) for _ in range(rng.choice([1, 1, 2, 2, 3]))]
+    if rng.random() < 0.08:
+        rules.append(copy.deepcopy(rules[0]))   # two identical rules
     arities = [len(e) for r in rules for e in r[0]]
     large = rng.random() < 0.12
     inits = [gen_state(rng, arities, large) for _ in range(1 if rng.random() < 0.85 else rng.randint(2, 3))]
@@ -490,7 +518,8 @@ def check_case(case, worker, budget_s):
     has_ss = "StepStatistics" in opts["RequestedData"]
     if has_ss and stats_of(c4) != stats_of(g):
         out.append({"kind": "stats_gpu", "check": "stats_gpu", "cpu": stats_of(c4)[:800], "gpu": stats_of(g)[:800]})
-    for th in (1, 16):
+    # 1, 16 and 32 workers, and one count from 2..31 chosen by the seed
+    for th in (1, 16, 32, 2 + case["seed"] % 30):
         r = run_cpu(job_bytes(case), th)
         if r["rc"] != 0:
             out.append({"kind": "threads", "check": f"cpu{th}", "what": f"error at {th} threads", "err": str(r.get("err"))[-400:]})
