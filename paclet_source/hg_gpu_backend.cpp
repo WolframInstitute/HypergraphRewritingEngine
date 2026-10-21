@@ -943,6 +943,10 @@ std::vector<uint8_t> run_gpu_evolution_once(const GpuJob& request, const HostBri
             for (const auto& [step, n] : events) inputs[step].events = n;
             for (auto& [step, by_rule] : rule_counts) inputs[step].rule_counts = std::move(by_rule);
         } else {
+            // Every class's record first: only the state that created the class wrote one, and
+            // its id need not be the lowest of the class.
+            for (const auto& st : result.states)
+                if (st.id != hg_gpu::INVALID_ID) take_record(st);
             for (const auto& st : result.states) {
                 const auto it = state_step.find(st.id);
                 const uint32_t step = it == state_step.end() ? 0u : it->second;

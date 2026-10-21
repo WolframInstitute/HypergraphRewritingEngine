@@ -676,6 +676,50 @@ TEST(WxfSerializationPin, StepStatisticsLeaveOutTheGenesisState) {
     EXPECT_EQ(stats(true), without);
 }
 
+// "StepStatistics" under full capture is the same on every run. On the device only the state
+// that creates an isomorphism class writes the class's record, and which state that is depends
+// on the schedule; a state summarised before its class's record was found counted as an empty
+// state (tools/dev/worker_fuzz.py seed 4627: 4 of 30 runs differed at step 3).
+TEST(WxfSerializationPin, StepStatisticsAreTheSameOnEveryRun) {
+    HostBridge host;
+    auto job = [] {
+        wxf::Writer w;
+        w.write_header();
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        w.write_varint(4);
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("InitialStates"));
+        w.write(StateList{{{1, 3}, {3, 3, 3}}});
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Rules"));
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        w.write_varint(3);
+        const std::pair<EdgeList, EdgeList> rules[] = {
+            {{{2, 3, 4}}, {}}, {{{2, 3, 3}}, {{2, 2, 2}}}, {{{2, 1}}, {{2, 4}, {2, 1}, {2, 1}}}};
+        for (size_t i = 0; i < 3; ++i) {
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write("r" + std::to_string(i));
+            w.write_function("Rule", 2);
+            w.write(rules[i].first);
+            w.write(rules[i].second);
+        }
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Steps"));
+        w.write(int64_t{4});
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Options"));
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        w.write_varint(1);
+        put_str_list_option(w, "RequestedData",
+                            {"NumEvents", "NumCausalEdges", "NumBranchialEdges", "StepStatistics"});
+        return w.release_data();
+    }();
+    const auto first = value_bytes(run_rewriting_core(job, host), "StepStatistics");
+    ASSERT_FALSE(first.empty());
+    for (int i = 0; i < 100; ++i)
+        ASSERT_EQ(value_bytes(run_rewriting_core(job, host), "StepStatistics"), first) << "run " << i;
+}
+
 TEST(WxfSerializationPin, AskingForLessDoesNotAnswerLess) {
     HostBridge host;
 
