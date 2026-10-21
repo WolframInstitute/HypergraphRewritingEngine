@@ -383,7 +383,12 @@ std::vector<uint8_t> run_gpu_evolution_once(const GpuJob& request, const HostBri
     // job's own step count, which is 0 for a Query. The host does the same (engine.max_steps()).
     const int run_steps = (is_step || is_query) ? static_cast<int>(held.steps_done) : job.steps;
 
-    hypergraph::IRCanonicalizer ir;
+    // The host workers that build the reply's sections, started by the first of them.
+    std::optional<hgmarshal::HostJobs> host_jobs;
+    auto reply_jobs = [&]() -> hgmarshal::HostJobs& {
+        if (!host_jobs) host_jobs.emplace();
+        return *host_jobs;
+    };
 
     // Group the GPU states by the requested canonicalization mode, mirroring the CPU:
     //   None      -> every state is distinct (per-provenance / tree mode, no grouping)
@@ -404,14 +409,27 @@ std::vector<uint8_t> run_gpu_evolution_once(const GpuJob& request, const HostBri
     // only for the outputs that read it.
     const bool host_ir = canon_mode != hg_gpu::CanonicalizationMode::Full &&
                          (job.include_canonical_hashes || job.include_step_statistics);
-    for (const auto& s : result.states) {
+    // The host IR hashes, one per state the device left without one, computed by the reply jobs.
+    std::vector<uint64_t> host_hash;
+    if (host_ir) {
+        host_hash.assign(result.states.size(), 0);
+        wxf::Writer unused;
+        hgmarshal::write_items(unused, result.states.size(), reply_jobs().parallel_for(),
+                               [&](wxf::Writer&, size_t i) {
+            const hg_gpu::CanonicalState& s = result.states[i];
+            if (s.id != hg_gpu::INVALID_ID && !s.exact_hash)
+                host_hash[i] = hypergraph::IRCanonicalizer{}.compute_canonical_hash(result.edges_of(s));
+        });
+    }
+    for (size_t si = 0; si < result.states.size(); ++si) {
+        const hg_gpu::CanonicalState& s = result.states[si];
         // A state slot a failed rewrite claimed (a partial result) reads back with id INVALID_ID.
         if (s.id == hg_gpu::INVALID_ID) continue;
         state_hash[s.id] = hgmarshal::reported_state_hash(
             s.edge_count == 0,
             canon_mode == hg_gpu::CanonicalizationMode::Full ? s.canonical_hash
             : s.exact_hash ? s.exact_hash
-            : host_ir ? ir.compute_canonical_hash(result.edges_of(s)) : 0);
+            : host_ir ? host_hash[si] : 0);
         state_by_id[s.id] = &s;
         // Automatic groups by the key THE DEVICE DEDUPLICATED WITH. CanonicalState::canonical_hash
         // carries what state_key_device wrote for the requested mode, so under Automatic it is
@@ -546,12 +564,6 @@ std::vector<uint8_t> run_gpu_evolution_once(const GpuJob& request, const HostBri
     }
 
     wxf::WXFValueAssociation full_result;
-    // The host workers that build StepStatistics and the graphs, started by the first of them.
-    std::optional<hgmarshal::HostJobs> host_jobs;
-    auto reply_jobs = [&]() -> hgmarshal::HostJobs& {
-        if (!host_jobs) host_jobs.emplace();
-        return *host_jobs;
-    };
 
     if (job.include_states) {
         // (edge id, vertices) for each of the state's edges.
