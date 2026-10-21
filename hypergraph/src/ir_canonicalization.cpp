@@ -25,8 +25,7 @@ struct CoreForm {
 
 // The shared core, over one state's edges, escalating the individualization depth.
 //
-// Local vertex indices are assigned by SORTED-UNIQUE order of the caller's vertex ids; see the
-// note at the numbering below for why that choice is load-bearing.
+// Local vertex indices are assigned in order of first appearance (hgcommon::ir_renumber_encounter).
 uint64_t ir_core_call(const SVec<SVec<VertexId>>& edges,
                       uint32_t* rank, uint32_t* orbit, uint32_t* klass,
                       CoreForm* form_out = nullptr) {
@@ -43,7 +42,7 @@ uint64_t ir_core_call(const SVec<SVec<VertexId>>& edges,
     HG_THREAD_LOCAL(std::vector<uint8_t>, ea);
     HG_THREAD_LOCAL(std::vector<uint32_t>, eoff);
     HG_THREAD_LOCAL(std::vector<uint32_t>, ev);
-    HG_THREAD_LOCAL(std::vector<uint32_t>, sorted);
+    HG_THREAD_LOCAL(std::vector<uint32_t>, orig);
     ea.clear(); eoff.clear(); ev.clear();
     ea.reserve(n_edges); eoff.reserve(n_edges);
     for (const auto& e : edges) {
@@ -51,26 +50,25 @@ uint64_t ir_core_call(const SVec<SVec<VertexId>>& edges,
         ea.push_back(static_cast<uint8_t>(e.size()));
         for (VertexId v : e) ev.push_back(static_cast<uint32_t>(v));
     }
-    // SORTED-UNIQUE vertex order, not encounter order, and the difference is not cosmetic.
-    // The canonical labelling of a state with a nontrivial automorphism group is a COSET, and
-    // the core's within-cell tie-break is what picks one representative out of it. That
-    // tie-break reads the vertex NUMBERING, so two numberings pick two different
-    // representatives -- each internally valid, agreeing on the canonical HASH, and
-    // disagreeing about which edge holds which RANK. Measured: encounter order differs from
-    // this on 103 of the equivalence probe's 4063 states, all of them the symmetric ones.
-    // This class's callers expect the sorted convention, which is what build_adjacency used.
+    // Local vertex indices by the shared rule (hgcommon::ir_renumber_encounter). The canonical
+    // labelling of a state with a nontrivial automorphism group is a coset, and the core's
+    // within-cell tie-break reads the numbering to pick one member, which fixes the edge RANKS.
+    // `raw` keeps the caller's ids so `orig_vertex` can map each local index back.
     const uint32_t total_occ = static_cast<uint32_t>(ev.size());
-    sorted.assign(ev.begin(), ev.end());
+    HG_THREAD_LOCAL(std::vector<uint32_t>, raw);
+    raw.assign(ev.begin(), ev.end());
+    orig.resize(total_occ);
     const uint32_t n_verts =
-        total_occ ? hgcommon::ir_renumber_sorted(ev.data(), total_occ, sorted.data()) : 0;
-    sorted.resize(n_verts);
+        total_occ ? hgcommon::ir_renumber_encounter(ev.data(), total_occ, orig.data()) : 0;
+    orig.resize(n_verts);
+    for (uint32_t o = 0; o < total_occ; ++o) orig[ev[o]] = raw[o];
 
     uint32_t* out_form = nullptr;
     uint32_t* out_label = nullptr;
     if (form_out) {
         form_out->form.assign(hgcommon::ir_canonical_form_words(n_edges, total_occ), 0u);
         form_out->vertex_label.assign(n_verts, 0u);
-        form_out->orig_vertex.assign(sorted.begin(), sorted.end());
+        form_out->orig_vertex.assign(orig.begin(), orig.end());
         form_out->n_verts = n_verts;
         out_form = form_out->form.data();
         out_label = form_out->vertex_label.data();

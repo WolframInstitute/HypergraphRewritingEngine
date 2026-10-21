@@ -1321,7 +1321,7 @@ TEST(CanonicalEventCount, ModesVsCpu) {
         // within-cell tie-break, which reads the vertex numbering it was handed. The device
         // numbered vertices in encounter order while the host numbered them by sorted id, the
         // two picked different coset representatives, and the GPU reported 19 against the CPU's
-        // 15 (f72ed00). Both flatteners now number by sorted id.
+        // 15 (f72ed00). Both flatteners number by first appearance (hgcommon::ir_renumber_encounter).
         //
         // So this is an equality and not a printed number. A rank-keyed identity that agrees
         // across devices is the whole claim; if it regresses, the coset is being chosen by
@@ -1339,10 +1339,11 @@ TEST(CanonicalEventCount, ModesVsCpu) {
 }
 
 // The replay's frame slots come from each raw state's edge-orbit ranks
-// (Hypergraph::qc_frame_slots), and those ranks are read from the same sorted vertex numbering
-// on both devices. {{1},{2}} -> {{1},{2}} and {{1},{2}} -> {{2},{1}} on {{1},{2}}: the four
-// applications differ only in which automorphic labelling ranks their edges. 1 step: 4 events
-// on both devices (the host gave 2 when its orbit ranks numbered vertices in encounter order).
+// (Hypergraph::qc_frame_slots), and those ranks are read from one vertex numbering on both
+// devices (hgcommon::ir_renumber_encounter). {{1},{2}} -> {{1},{2}} and {{1},{2}} -> {{2},{1}}
+// on {{1},{2}}: the four applications differ only in which automorphic labelling ranks their
+// edges. Wolfram/Multicomputation's MultiwaySystem counts 2 Automatic events at 1 step and 4 at
+// 2 steps, and so do both devices.
 TEST(CanonicalEventCount, AutomaticAcrossTwoRulesWithOneSymmetricState) {
     for (bool quotient : {false, true}) {
         for (uint32_t steps : {1u, 2u}) {
@@ -1359,7 +1360,7 @@ TEST(CanonicalEventCount, AutomaticAcrossTwoRulesWithOneSymmetricState) {
             NormalizedResult gpu = run_gpu(w);
             EXPECT_EQ(gpu.raw_events, cpu.raw_events) << w.name;
             EXPECT_EQ(gpu.num_events, cpu.num_events) << w.name;
-            if (steps == 1) EXPECT_EQ(cpu.num_events, 4u) << w.name;
+            EXPECT_EQ(cpu.num_events, steps == 1 ? 2u : 4u) << w.name;
         }
     }
 }

@@ -129,6 +129,20 @@ class-frame resolution is defined over edge-orbit tables, which the `Full` state
 under `None`/`Automatic` state modes the engine computes event identities exactly (§4.1) but
 resolves ranks through the raw path, and says so in a run warning.
 
+**Which labelling gives the ranks.** On a state with a nontrivial automorphism group the
+canonical labelling is one of several, and the IR search picks it with a tie-break that reads
+the state's vertex numbering. Both engines number a state's vertices in order of first
+appearance, reading its edges in the state's order (the parent's surviving edges in the
+parent's order, then the produced edges in right-side order) and each edge's positions in
+order (`hgcommon::ir_renumber_encounter`). The numbering is a function of the state's
+derivation, so the ranks are the same at every worker count and on both devices.
+`MultiwaySystem` breaks the same ties on its own token and vertex names: a produced edge takes
+the token of the edge it replaces, and fresh vertices are named in its evaluation order. No
+numbering of the engine's state reproduces those names: `{{1,1}} -> {{1,2}}` from
+`{{1,1},{1,1}}` gives 4 `MultiwaySystem` `Automatic` events at 2 steps and 3 on both engines,
+because its two step-2 events differ only in those names (`reference/compare_multiwaysystem.wls
+--engine` lists the counts on its corpus).
+
 **`Positional` reproduces the upstream `MultiwaySystem` `Automatic` convention**, and is retained
 as an explicitly-labeled parity mode — never described as canonical. Upstream identifies events
 by *which representative isomorphism* the state canonicalizer returned, and that canonicalizer

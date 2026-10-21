@@ -590,10 +590,10 @@ TEST(WxfSerializationPin, AKeyListOfAutomaticsComponentsComparesMarkedForms) {
               1);
 }
 
-// Automatic event identity ranks the edges of {{1},{2}} by the sorted vertex numbering on both
-// devices: {{1},{2}} -> {{1},{2}} and {{1},{2}} -> {{2},{1}} give four events in one step, two
-// per rule, none shared between the rules.
-TEST(WxfSerializationPin, AutomaticRanksComeFromTheSortedVertexNumbering) {
+// Automatic event identity ranks the edges of {{1},{2}} by first appearance on both devices
+// (hgcommon::ir_renumber_encounter): {{1},{2}} -> {{1},{2}} and {{1},{2}} -> {{2},{1}} give two
+// events in one step, as Wolfram/Multicomputation's MultiwaySystem counts them.
+TEST(WxfSerializationPin, AutomaticRanksComeFromTheFirstAppearanceNumbering) {
     HostBridge host;
     wxf::Writer w;
     w.write_header();
@@ -623,7 +623,7 @@ TEST(WxfSerializationPin, AutomaticRanksComeFromTheSortedVertexNumbering) {
     put_str_option(w, "CanonicalizeStates", "Full");
     put_str_option(w, "CanonicalizeEvents", "Automatic");
     put_str_list_option(w, "RequestedData", {"NumEvents"});
-    EXPECT_EQ(read_int_key(run_rewriting_core(w.release_data(), host), "NumEvents"), 4);
+    EXPECT_EQ(read_int_key(run_rewriting_core(w.release_data(), host), "NumEvents"), 2);
 }
 
 // MatchesPerStep counts transitions also when MaxSuccessorStatesPerParent is set (docs/SPEC.md 5).

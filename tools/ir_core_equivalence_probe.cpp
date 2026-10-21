@@ -40,8 +40,8 @@
 using hypergraph::VertexId;
 using Edges = std::vector<std::vector<VertexId>>;
 
-// Flatten to the core's convention: local indices are the rank of each vertex in the
-// sorted-unique vertex set, which is exactly how the host canonicalizer indexes them.
+// Flatten to the core's convention: local indices by hgcommon::ir_renumber_encounter, as the
+// host canonicalizer indexes them.
 struct Flat {
     std::vector<uint8_t> ea;
     std::vector<uint32_t> eoff, ev;
@@ -50,21 +50,14 @@ struct Flat {
 
 static Flat flatten(const Edges& edges) {
     Flat f;
-    std::vector<VertexId> verts;
-    for (const auto& e : edges) for (VertexId v : e) verts.push_back(v);
-    std::sort(verts.begin(), verts.end());
-    verts.erase(std::unique(verts.begin(), verts.end()), verts.end());
-    f.n_verts = static_cast<uint32_t>(verts.size());
     for (const auto& e : edges) {
         f.eoff.push_back(static_cast<uint32_t>(f.ev.size()));
         f.ea.push_back(static_cast<uint8_t>(e.size()));
-        for (VertexId v : e) {
-            const uint32_t idx = static_cast<uint32_t>(
-                std::lower_bound(verts.begin(), verts.end(), v) - verts.begin());
-            f.ev.push_back(idx);
-        }
+        for (VertexId v : e) f.ev.push_back(static_cast<uint32_t>(v));
     }
     f.total_occ = static_cast<uint32_t>(f.ev.size());
+    std::vector<uint32_t> scratch(f.total_occ ? f.total_occ : 1);
+    f.n_verts = hgcommon::ir_renumber_encounter(f.ev.data(), f.total_occ, scratch.data());
     return f;
 }
 

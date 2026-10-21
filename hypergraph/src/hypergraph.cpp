@@ -906,7 +906,7 @@ uint64_t Hypergraph::marked_form_hash(StateId s, const EdgeId* marked, uint8_t n
     }
     const uint32_t occ = static_cast<uint32_t>(ev.size());
     SVec<uint32_t> verts(occ);
-    uint32_t n_verts = hgcommon::ir_renumber_sorted(ev.data(), occ, verts.data());
+    uint32_t n_verts = hgcommon::ir_renumber_encounter(ev.data(), occ, verts.data());
     auto is_marked = [&](uint32_t e) { return mark[e] != 0; };
     ev.resize(occ + hgcommon::ir_colour_extra_occ(ea.data(), n, is_marked));
     const uint32_t total_occ =
@@ -1118,14 +1118,9 @@ uint64_t Hypergraph::cache_state_edge_ranks(StateId state_id, const SparseBitset
             ea.push_back(static_cast<uint8_t>(edge_vectors[i].size()));
             for (VertexId v : edge_vectors[i]) ev.push_back(v);
         }
-        SVec<uint32_t> verts(ev.begin(), ev.end());
-        std::sort(verts.begin(), verts.end());
-        verts.erase(std::unique(verts.begin(), verts.end()), verts.end());
-        const uint32_t n_verts = static_cast<uint32_t>(verts.size());
-        for (uint32_t& x : ev)
-            x = static_cast<uint32_t>(std::lower_bound(verts.begin(), verts.end(), x) - verts.begin());
-
         const uint32_t total_occ = static_cast<uint32_t>(ev.size());
+        SVec<uint32_t> verts(total_occ ? total_occ : 1);
+        const uint32_t n_verts = hgcommon::ir_renumber_encounter(ev.data(), total_occ, verts.data());
         SVec<uint32_t> ranks(n);
         bool ok = false;
         uint32_t* form = nullptr;
@@ -1583,9 +1578,9 @@ uint64_t ir_hash_and_orbits(const SegmentedArray<Edge>& edge_table,
     auto* ea   = static_cast<uint8_t*>(worker_scratch().allocate_raw(n, alignof(uint8_t)));
     auto* eoff = static_cast<uint32_t*>(worker_scratch().allocate_raw(sizeof(uint32_t) * n, alignof(uint32_t)));
     auto* ev   = static_cast<uint32_t*>(worker_scratch().allocate_raw(sizeof(uint32_t) * total_occ, alignof(uint32_t)));
-    // Local vertex indices by the shared rule (hgcommon::ir_renumber_sorted): the within-cell
-    // tie-break reads them, so they select which automorphic labelling gives the edge ranks,
-    // and the device's ranks come from the same numbering.
+    // Local vertex indices by the shared rule (hgcommon::ir_renumber_encounter): the within-cell
+    // tie-break reads them, so they select which automorphic labelling gives the edge ranks the
+    // quotient frame and Automatic event identity read, on both engines.
     uint32_t occ = 0;
     for (uint32_t i = 0; i < n; ++i) {
         const Edge& e = edge_table[ids[i]];
@@ -1595,7 +1590,7 @@ uint64_t ir_hash_and_orbits(const SegmentedArray<Edge>& edge_table,
     }
     auto* verts = static_cast<uint32_t*>(
         worker_scratch().allocate_raw(sizeof(uint32_t) * (total_occ ? total_occ : 1), alignof(uint32_t)));
-    const uint32_t n_verts = hgcommon::ir_renumber_sorted(ev, occ, verts);
+    const uint32_t n_verts = hgcommon::ir_renumber_encounter(ev, occ, verts);
 
     // The static rungs, then the true bound: a search individualises at most one vertex per
     // level, so n_verts + 1 admits every state -- a maximal-symmetry star needs a level per

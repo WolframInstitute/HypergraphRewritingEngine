@@ -16,11 +16,9 @@
 // our brute-force oracle's states and Full-identity columns agreeing on every
 // row as the depth anchor. They are external facts, not regression snapshots.
 //
-// The Positional expectations ARE engine snapshots: positional identity depends
-// on the canonicalizer's tie-break, so no external oracle can anchor it
-// (measured: our own oracle's like-named column differs, 25 vs 23, where
-// tie-breaks differ). Pinning them detects unintended change; it cannot certify
-// correctness, and nothing can.
+// The Positional expectations are engine snapshots: positional identity depends
+// on the canonicalizer's tie-break (hgcommon::ir_renumber_encounter). On these
+// four workloads they equal the authority's Automatic counts.
 // =============================================================================
 
 namespace {
@@ -40,17 +38,17 @@ std::vector<Case> cases() {
     std::vector<Case> c;
     c.push_back({"wolfram-2to4",
         {make_rule(0).lhs({0,1}).lhs({1,2}).rhs({0,1}).rhs({1,3}).rhs({3,2}).rhs({2,0}).build()},
-        {{0,1},{1,2}}, 4, 86, 87});
+        {{0,1},{1,2}}, 4, 86, 86});
     c.push_back({"WPP",
         {make_rule(0).lhs({0,1}).lhs({0,2}).rhs({0,1}).rhs({0,3}).rhs({1,3}).rhs({2,3}).build()},
-        {{0,1},{0,2}}, 4, 52, 54});
+        {{0,1},{0,2}}, 4, 52, 52});
     c.push_back({"binary-growth",
         {make_rule(0).lhs({0,1}).rhs({0,2}).rhs({2,1}).build()},
         {{0,1}}, 4, 10, 10});
     c.push_back({"two-rules-overlap",
         {make_rule(0).lhs({0,1}).rhs({0,2}).rhs({2,1}).build(),
          make_rule(1).lhs({0,1}).rhs({1,2}).rhs({2,0}).build()},
-        {{0,1}}, 3, 21, 23});
+        {{0,1}}, 3, 21, 21});
     return c;
 }
 
