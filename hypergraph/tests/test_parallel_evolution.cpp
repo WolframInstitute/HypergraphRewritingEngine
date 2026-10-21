@@ -327,3 +327,43 @@ TEST(ParallelEvolution, CausalSetCapacityChangesNoRelation) {
         }
     }
 }
+
+// H4 (docs/TUNING.md): the rewrite task size. The derived size is ceil(count / workers) from 4
+// to 64; a run gives the same states, events and causal edges at every chunk size and thread
+// count. The rule has a one-edge left-hand side, so a scan task hands a state's whole match set
+// to one expansion and the chunking applies.
+TEST(ParallelEvolution, ExpandChunkChangesNoResult) {
+    EXPECT_EQ(ParallelEvolutionEngine::derived_expand_chunk(3, 32), 4u);
+    EXPECT_EQ(ParallelEvolutionEngine::derived_expand_chunk(100, 32), 4u);
+    EXPECT_EQ(ParallelEvolutionEngine::derived_expand_chunk(200, 32), 7u);
+    EXPECT_EQ(ParallelEvolutionEngine::derived_expand_chunk(100, 1), 64u);
+    EXPECT_EQ(ParallelEvolutionEngine::derived_expand_chunk(30, 1), 30u);
+    EXPECT_EQ(ParallelEvolutionEngine::derived_expand_chunk(30, 0), 30u);
+
+    std::vector<std::vector<VertexId>> initial;
+    for (VertexId v = 0; v < 40; ++v) initial.push_back({v, v + 1});
+    size_t ref_states = 0, ref_events = 0, ref_causal = 0;
+    bool first = true;
+    for (size_t chunk : {size_t{0}, size_t{1}, size_t{16}, size_t{64}}) {
+        for (size_t threads : {1, 4, 32}) {
+            Hypergraph hg;
+            hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+            ParallelEvolutionEngine engine(&hg, threads);
+            hgcommon::TuningOverrides t;
+            if (chunk) t.set(hgcommon::Tune::ExpandChunk, static_cast<int64_t>(chunk));
+            engine.set_tuning(t);
+            engine.add_rule(par_simple_rule());
+            engine.evolve(initial, 2);
+            if (first) {
+                ref_states = hg.num_canonical_states();
+                ref_events = engine.num_events();
+                ref_causal = hg.num_causal_event_pairs();
+                EXPECT_GT(ref_events, 40u);
+                first = false;
+            }
+            EXPECT_EQ(hg.num_canonical_states(), ref_states) << chunk << " / " << threads;
+            EXPECT_EQ(engine.num_events(), ref_events) << chunk << " / " << threads;
+            EXPECT_EQ(hg.num_causal_event_pairs(), ref_causal) << chunk << " / " << threads;
+        }
+    }
+}

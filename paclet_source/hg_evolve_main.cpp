@@ -416,6 +416,14 @@ void print_tuning() {
                         : "run without a step cap: 8192 above 4 GB available, else 1024; a step "
                           "cap sizes it from the key bound");
     }
+    if (const auto fixed = hgcommon::tuning_env().get(hgcommon::Tune::ExpandChunk))
+        std::printf("expand_chunk            %lld matches  (HG_TUNE_EXPAND_CHUNK)\n",
+                    static_cast<long long>(*fixed));
+    else
+        std::printf("expand_chunk            ceil(matches / workers), 4 to 64; %zu for a 64-match "
+                    "state at the default workers\n",
+                    HG_NAMESPACE::engine::ParallelEvolutionEngine::derived_expand_chunk(
+                        64, hgcommon::default_worker_count(HG_NAMESPACE::engine::MAX_ARENA_WORKERS)));
     const std::vector<unsigned> placed = hgcommon::default_worker_cpus();
     if (placed.empty()) {
         std::printf("worker_placement        operating system  (default_worker_cpus: %s)\n",

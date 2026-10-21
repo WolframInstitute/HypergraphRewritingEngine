@@ -292,6 +292,19 @@ The C1 gate is `mono_check` with no violation at the 5% band for the throttle; t
 
 **H5 causal set capacity.** `ParallelEvolutionEngine::configure_tuning` sets, at each `evolve()`, the first table size of the two causal sets (`CausalGraph::set_causal_set_capacity`): `"Tuning" -> <|"CausalSetCapacity" -> n|>`, `HG_TUNE_CAUSAL_SET_CAPACITY`, or `derived_causal_set_capacity`. With a step cap N the keys are at most (1 + steps x N) x the largest left-hand side, and a shard takes that over 64 shards at load 0.75, as a power of two from 1024 to 65536; without a cap the value is 8192 when `MemAvailable` is above 4 GB, else 1024. Model-checked harnesses keep 1024. The `"Device"` reply of the CPU engine reports `"CausalSetCapacity"`. Measured on the i9-14900K, stats build, one evolve at one thread, 1024 against 8192 on the same binary through the override: callgrind Ir cycle4 depth 6 full 1,738,356,884 -> 1,718,747,106 (-1.13%), multirule depth 6 full 2,639,556,621 -> 2,598,951,896 (-1.54%); peak RSS multirule depth 3 full 15.4 -> 18.9 MB (3 runs each, spread 0.2 MB). Test: `ParallelEvolution.CausalSetCapacityChangesNoRelation` (causal edges, causal pairs and events equal at 1, 1024, 65536 and the default, at 1, 4 and 32 threads).
 
+**H4 expand chunk.** `dispatch_expansion` splits a state's match set into tasks of `derived_expand_chunk(count, workers)` = ceil(count / workers) from 4 to 64 matches, or the fixed `"Tuning" -> <|"ExpandChunk" -> n|>` / `HG_TUNE_EXPAND_CHUNK`. The set reaches one expansion when a scan task completes every match of a one-edge left-hand side; a rule with more edges completes its matches one at a time, which the chunk size does not change. Job counts, `bench_cpu_evolve` stats build, 16 against the derived size on the same binary through the override (instruction counts at more than one thread are not used: valgrind serialises the threads and the idle loops then dominate):
+
+| Row | Workers | Jobs, 16 / derived | Wakes, 16 / derived |
+|---|---|---|---|
+| binary depth 6 full | 1 | 308 / 308 | 1 / 1 |
+| binary depth 6 full | 4 | 308 / 452 | 16 / 23 |
+| binary depth 6 full | 16 | 308 / 452 | 53 / 74 |
+| binary depth 6 full | 32 | 308 / 452 | 201 / 203 |
+| arimix depth 5 full | 4 | 459 / 579 | 19 / 413 |
+| arimix depth 5 full | 32 | 459 / 579 | 164 / 441 |
+
+States on these rows hold at most 7 matches, so at 4 or more workers the derived size splits a 5-to-7-match state into tasks of 4 where 16 ran it inline; at one worker the job counts are equal. Test: `ParallelEvolution.ExpandChunkChangesNoResult` (the derivation's cases; canonical states, events and causal pairs equal at chunk sizes 1, 16, 64 and derived, at 1, 4 and 32 threads).
+
 ## 3. Constants that are not tuning
 
 | Kind | Constants |
@@ -318,3 +331,15 @@ Wall-clock checks that need a quiet machine. Each names the binary, the rows, th
     done; done; done
 
 Expected: the default at most equal to 1024 on every row (the instruction count falls 1.1-1.5% at one thread).
+
+**H4 expand chunk.** Arms `HG_TUNE_EXPAND_CHUNK=16` and unset. Rows with one-edge left-hand sides: binary depth 8 and 10, arimix depth 6, allfour depth 5, multirule depth 7, full and quotient, at 4, 16 and 32 threads; bigpath n128 depth 3 quotient as a row the chunk does not reach.
+
+    for round in 1 2 3 4 5; do for chunk in 16 ""; do for row in "binary 8" "binary 10" "arimix 6" "allfour 5" "multirule 7"; do
+      set -- $row
+      for q in 0 1; do
+        HG_TUNE_EXPAND_CHUNK=$chunk HG_BENCH_CANON_ONLY=$q build_linux/bench_cpu_evolve $2 15 4,16,32 $1 \
+          > .scratch/h4/chunk${chunk:-derived}_$1_d$2_q${q}_r$round.log
+      done
+    done; done; done
+
+Expected: the derived size at most equal to 16 at 16 and 32 workers. If 16 is lower on a row, the floor of 4 is the term to raise.

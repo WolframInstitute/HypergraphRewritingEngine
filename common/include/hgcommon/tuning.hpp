@@ -11,6 +11,7 @@
 // Name, environment variable, unit, consumer:
 //   Threads            HG_TUNE_THREADS               workers   ParallelEvolutionEngine, JobSystem
 //   CausalSetCapacity  HG_TUNE_CAUSAL_SET_CAPACITY   slots     ParallelEvolutionEngine (causal sets, per shard)
+//   ExpandChunk        HG_TUNE_EXPAND_CHUNK          matches   ParallelEvolutionEngine (rewrite task size)
 //   GPUMemoryLimit     HG_TUNE_GPU_MEMORY_LIMIT      bytes     resolved_memory_cap
 
 #include <array>
@@ -27,6 +28,7 @@ namespace common {
 enum class Tune : uint8_t {
     Threads,
     CausalSetCapacity,
+    ExpandChunk,
     GpuMemoryLimit,
     kCount
 };
@@ -40,6 +42,7 @@ struct TuneInfo {
 inline constexpr std::array<TuneInfo, static_cast<size_t>(Tune::kCount)> kTuneInfo{{
     {"Threads", "HG_TUNE_THREADS", 1},
     {"CausalSetCapacity", "HG_TUNE_CAUSAL_SET_CAPACITY", 1},
+    {"ExpandChunk", "HG_TUNE_EXPAND_CHUNK", 1},
     {"GPUMemoryLimit", "HG_TUNE_GPU_MEMORY_LIMIT", 1},
 }};
 

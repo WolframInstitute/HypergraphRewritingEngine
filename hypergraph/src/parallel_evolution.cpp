@@ -726,7 +726,8 @@ void ParallelEvolutionEngine::dispatch_expansion(StateId state, uint32_t step,
     // Whole-state gates, checked once here rather than once per match. execute_rewrite_task
     // still does the reserving check per child, so this is a filter, not the decision.
 
-    if (count <= kExpandChunkSize) {
+    const size_t chunk_size = expand_chunk_for(count);
+    if (count <= chunk_size) {
         // Everything on this thread: no arena copy, no job, and the parent's data is already
         // in this core's cache from the matching that produced these records.
         ExpandChunk chunk{matches, 0, static_cast<uint32_t>(count), step};
@@ -741,12 +742,12 @@ void ParallelEvolutionEngine::dispatch_expansion(StateId state, uint32_t step,
 
     // Submit the tail first and keep the head for this thread. The submitted chunks are
     // available to steal while this one runs, so the wide case both spreads and stays warm.
-    for (size_t begin = kExpandChunkSize; begin < count; begin += kExpandChunkSize) {
-        const size_t end = std::min(begin + kExpandChunkSize, count);
+    for (size_t begin = chunk_size; begin < count; begin += chunk_size) {
+        const size_t end = std::min(begin + chunk_size, count);
         submit_expand_chunk(ExpandChunk{shared, static_cast<uint32_t>(begin),
                                         static_cast<uint32_t>(end), step});
     }
-    execute_expand_chunk(ExpandChunk{shared, 0, kExpandChunkSize, step});
+    execute_expand_chunk(ExpandChunk{shared, 0, static_cast<uint32_t>(chunk_size), step});
 }
 
 void ParallelEvolutionEngine::submit_scan_task(const ScanTaskData& data) {
@@ -2520,6 +2521,15 @@ size_t ParallelEvolutionEngine::derived_causal_set_capacity(size_t steps, size_t
     return n;
 }
 
+size_t ParallelEvolutionEngine::derived_expand_chunk(size_t count, size_t workers) {
+    workers = std::max<size_t>(1, workers);
+    return std::clamp<size_t>((count + workers - 1) / workers, 4, 64);
+}
+
+size_t ParallelEvolutionEngine::expand_chunk_for(size_t count) const {
+    return expand_chunk_fixed_ ? expand_chunk_fixed_ : derived_expand_chunk(count, num_threads_);
+}
+
 void ParallelEvolutionEngine::configure_tuning() {
     size_t max_lhs = 1;
     for (const RewriteRule& r : rules_) max_lhs = std::max<size_t>(max_lhs, r.num_lhs_edges);
@@ -2527,8 +2537,11 @@ void ParallelEvolutionEngine::configure_tuning() {
     // The model checker cannot execute getenv or read /proc; the harnesses keep the set's own
     // working capacity.
     causal_set_capacity_ = ConcurrentKeySet<uint64_t>::WORKING_CAPACITY;
+    expand_chunk_fixed_ = 0;
     (void)max_lhs;
 #else
+    expand_chunk_fixed_ = static_cast<size_t>(
+        hgcommon::tuned(tuning_, hgcommon::Tune::ExpandChunk, [] { return 0; }));
     causal_set_capacity_ = static_cast<size_t>(hgcommon::tuned(
         tuning_, hgcommon::Tune::CausalSetCapacity, [&] {
             return derived_causal_set_capacity(max_steps_, max_states_per_step_, max_lhs,

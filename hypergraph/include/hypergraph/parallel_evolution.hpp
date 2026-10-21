@@ -1084,6 +1084,12 @@ public:
                                               uint64_t available_bytes);
     // The value the last evolve() used.
     size_t causal_set_capacity() const { return causal_set_capacity_; }
+    // H4 (docs/TUNING.md): matches per rewrite task for a state with `count` matches on
+    // `workers` workers. ceil(count / workers) from 4 to 64, so a wide state spreads over the
+    // workers and each task still amortises its cost over at least 4 children of one parent. The
+    // chunking decides which worker rewrites a match, not which children or events exist. The
+    // "ExpandChunk" override fixes the size.
+    static size_t derived_expand_chunk(size_t count, size_t workers);
     // At most k of each state's matches per rule, chosen by seeded rank when the state's matching
     // completes (its drain), so the kept set is the same at any worker count. 0 keeps all. A run
     // with k > 0 turns match forwarding off: a forwarded match arrives after the drain and could
@@ -1329,9 +1335,10 @@ private:
     void dispatch_expansion(StateId state, uint32_t step, const MatchRecord* matches,
                             size_t count);
 
-    // Matches per chunk. Small enough that a wide state still spreads across workers, large
-    // enough that the per-task cost is amortised over a run of children that share a parent.
-    static constexpr size_t kExpandChunkSize = 16;
+    // The chunk size for `count` matches: the fixed "ExpandChunk" override (expand_chunk_fixed_)
+    // or derived_expand_chunk(count, num_threads_).
+    size_t expand_chunk_for(size_t count) const;
+    size_t expand_chunk_fixed_{0};
     void submit_scan_task(const ScanTaskData& data);
 
     void submit_expand_task(const ExpandTaskData& data);
@@ -1491,7 +1498,8 @@ private:
     //   presentations) and a warning recorded; Automatic -> the reconstruction runs under BOTH
     //   exploration strategies, so their observables agree by construction.
     void configure_identity_and_quotient();
-    // Resolves the tuning values of this evolve() (causal set capacity) and applies them.
+    // Resolves the tuning values of this evolve() (causal set capacity, expand chunk) and applies
+    // them.
     void configure_tuning();
 
 
