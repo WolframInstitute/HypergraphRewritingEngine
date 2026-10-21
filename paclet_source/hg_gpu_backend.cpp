@@ -6,6 +6,7 @@
 #include "hg_gpu/device_probe.hpp"
 #include "hg_gpu/evolve.hpp"
 #include "hg_gpu/branchial_rows.hpp"
+#include "hg_gpu/step_pool.hpp"
 #include "hgcommon/quotient_replay_core.hpp"
 #include "hgcommon/quotient_causal_core.hpp"
 #include "hypergraph/ir_canonicalization.hpp"
@@ -30,6 +31,37 @@ namespace {
 
 // A genesis event's "RuleIndex": the host's RuleIndex(-1), a 16-bit rule index.
 constexpr int64_t kGenesisRuleIndex = 0xFFFF;
+
+// Class points from which "StepStatistics" pools on the device.
+constexpr size_t kDevicePoolMinClasses = 1024;
+
+// Every step's pool made on the device from its classes (hg_gpu::step_pool_device), each class's
+// record a word offset into `pool`, and stored as the step's device_part. Nothing changes when
+// the device cannot: the host then pools.
+void device_step_pool(const std::vector<uint64_t>& pool, bool weight_by_classes,
+                      std::map<uint32_t, hg::stats::StepInput>& inputs) {
+    std::vector<hg_gpu::StepPoolPoint> points;
+    uint32_t steps = 0;
+    for (const auto& [step, in] : inputs) {
+        steps = std::max(steps, step + 1);
+        for (const auto& [hash, c] : in.classes) {
+            const uint64_t word =
+                c.record ? static_cast<uint64_t>(reinterpret_cast<const uint64_t*>(c.record) - pool.data())
+                         : UINT64_MAX;
+            points.push_back({step, word, weight_by_classes ? 1 : c.weight, c.weight});
+        }
+    }
+    std::vector<std::vector<hgcommon::SpEntry>> entries;
+    std::vector<hg_gpu::StepPoolTotals> totals;
+    if (!hg_gpu::step_pool_device(pool, points, steps, entries, totals)) return;
+    for (auto& [step, in] : inputs) {
+        if (in.classes.empty()) continue;
+        auto part = std::make_unique<hg::stats::PoolPart>();
+        part->entries = std::move(entries[step]);
+        for (uint32_t k = 0; k < hgcommon::SG_DISTS; ++k) part->dist[k] = totals[step][k];
+        in.device_part = std::move(part);
+    }
+}
 
 // Build a hg_gpu::EvolveInput from the parsed job. Rule vertices double as
 // pattern-variable indices; each initial state's vertices are remapped to
@@ -1015,6 +1047,13 @@ std::vector<uint8_t> run_gpu_evolution_once(const GpuJob& request, const HostBri
                 static_cast<int>(run_steps));
             for (auto& [step, b] : bsteps) inputs[step].branchial = std::move(b);
         }
+        // The pool of a run of kDevicePoolMinClasses class points or more is made on the device
+        // (hg_gpu::step_pool_device); the host then reads the classes for the signature
+        // histograms only.
+        size_t class_points = 0;
+        for (const auto& [step, step_in] : inputs) class_points += step_in.classes.size();
+        if (class_points >= kDevicePoolMinClasses && !result.invariant_pool.empty())
+            device_step_pool(result.invariant_pool, job.step_statistics_by_class, inputs);
         // The overlap rows of a step of 2048 states or more run on the device
         // (hg_gpu::branchial_rows_device), one step at a time; a step that finds the device in
         // use runs its rows on the host.

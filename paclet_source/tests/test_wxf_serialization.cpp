@@ -5,6 +5,7 @@
 #include <cstring>
 #include <cstdint>
 #include <map>
+#include <random>
 #include <set>
 #include <utility>
 #include <cstdio>
@@ -34,6 +35,7 @@
 #include "paclet_source/cpu_engine_holder.hpp"
 #ifdef HG_GPU_BACKEND
 #include "hg_gpu/branchial_rows.hpp"
+#include "hg_gpu/step_pool.hpp"
 #endif
 #include "hgcommon/core.hpp"
 #include "paclet_source/graph_marshal.hpp"
@@ -4889,3 +4891,141 @@ TEST(GraphMarshalStream, BytesIndependentOfThreadsAndChunkOrder) {
         }
     }
 }
+
+// =============================================================================
+// The "StepStatistics" pool (hgcommon/step_pool_core.hpp)
+// =============================================================================
+
+namespace {
+
+// `n` classes over two steps: random small states (1 to 7 edges of arity 1 to 3 over up to 6
+// vertices), their records in one word pool, and random weights up to 50.
+struct PoolFixture {
+    std::vector<uint64_t> pool;
+    struct Class {
+        uint32_t step;
+        uint64_t hash;
+        uint64_t word;
+        uint64_t weight;
+    };
+    std::vector<Class> classes;
+
+    explicit PoolFixture(size_t n) {
+        std::mt19937_64 rng(20261014);
+        std::vector<uint64_t> storage;
+        for (size_t i = 0; i < n; ++i) {
+            std::vector<std::vector<uint32_t>> edges(1 + rng() % 7);
+            for (auto& e : edges) {
+                e.resize(1 + rng() % 3);
+                for (auto& v : e) v = static_cast<uint32_t>(rng() % 6);
+            }
+            hg::stats::invariant_record(edges, storage);
+            const uint64_t word = pool.size();
+            pool.insert(pool.end(), storage.begin(), storage.end());
+            classes.push_back({static_cast<uint32_t>(i % 2), 1000 + i, word, 1 + rng() % 50});
+        }
+    }
+    const hgcommon::StateInvariantRecord* record(const Class& c) const {
+        return reinterpret_cast<const hgcommon::StateInvariantRecord*>(pool.data() + c.word);
+    }
+    std::map<uint32_t, hg::stats::StepInput> inputs() const {
+        std::map<uint32_t, hg::stats::StepInput> in;
+        for (const Class& c : classes) hg::stats::add_class(in[c.step], c.hash, c.weight, record(c));
+        return in;
+    }
+};
+
+std::vector<uint8_t> value_bytes(const wxf::WXFValue& v) {
+    wxf::Writer w;
+    w.write(v);
+    return w.release_data();
+}
+
+enum class PoolTestJob { Job };
+
+}  // namespace
+
+// A step's record from its pool made by one part on this thread equals the record made by
+// StepStatisticsJobs, which pools 256 classes per job and merges one slot per job, at 1, 2, 8
+// and 16 workers, under both weightings.
+TEST(StateStatistics, PoolDoesNotDependOnTheClassSplitOrTheThreadCount) {
+    const PoolFixture fx(1500);
+    for (bool by_class : {false, true}) {
+        wxf::WXFValueList serial;
+        for (auto& [step, in] : fx.inputs())
+            serial.push_back(wxf::WXFValue(hg::stats::step_record(step, in, by_class)));
+        const std::vector<uint8_t> want = value_bytes(wxf::WXFValue(serial));
+        for (size_t threads : {size_t{1}, size_t{2}, size_t{8}, size_t{16}}) {
+            job_system::JobSystem<PoolTestJob> system(threads);
+            system.start();
+            hg::stats::StepStatisticsJobs jobs(by_class, 0, threads, [&](std::function<void()> f) {
+                system.submit(job_system::make_job<PoolTestJob>(std::move(f), PoolTestJob::Job));
+            });
+            for (auto& [step, in] : fx.inputs()) jobs.submit(step, std::move(in));
+            system.wait_for_completion();
+            EXPECT_EQ(want, value_bytes(jobs.reply())) << threads << " threads, by_class " << by_class;
+        }
+    }
+}
+
+// The order of a slot's values does not reach the record: two classes added in either order, or
+// one class carrying both weights, give one summary.
+TEST(StateStatistics, PoolSummariesReadValuesInKeyOrder) {
+    std::vector<uint64_t> a, b;
+    const auto* ra = hg::stats::invariant_record({{1, 2}, {2, 3}, {3, 1}}, a);
+    const auto* rb = hg::stats::invariant_record({{1, 2}, {2, 3}, {3, 4}, {4, 5}}, b);
+    auto record = [](std::vector<std::pair<const hgcommon::StateInvariantRecord*, uint64_t>> cls) {
+        hg::stats::StepInput in;
+        uint64_t hash = 1;
+        for (auto [r, w] : cls) hg::stats::add_class(in, hash++, w, r);
+        return value_bytes(wxf::WXFValue(
+            *assoc_at(wxf::WXFValue(hg::stats::step_record(0, in, false)), "Invariants")));
+    };
+    EXPECT_EQ(record({{ra, 3}, {rb, 5}}), record({{rb, 5}, {ra, 3}}));
+    EXPECT_EQ(record({{ra, 1}, {ra, 2}, {rb, 5}}), record({{ra, 3}, {rb, 5}}));
+}
+
+#ifdef HG_GPU_BACKEND
+// The device's pool (hg_gpu::step_pool_device) of every class equals the host's
+// (stats::pool_classes), entry for entry and total for total, and the record finished from it is
+// the host's bytes.
+TEST(StateStatistics, DevicePoolEqualsTheHostPool) {
+    const PoolFixture fx(3000);
+    for (bool by_class : {false, true}) {
+        std::vector<hg_gpu::StepPoolPoint> points;
+        for (const auto& c : fx.classes)
+            points.push_back({c.step, c.word, by_class ? 1 : c.weight, c.weight});
+        points.push_back({1, UINT64_MAX, by_class ? 1u : 4u, 4});   // the state with no edges
+        std::vector<std::vector<hgcommon::SpEntry>> entries;
+        std::vector<hg_gpu::StepPoolTotals> totals;
+        ASSERT_TRUE(hg_gpu::step_pool_device(fx.pool, points, 2, entries, totals));
+        auto inputs = fx.inputs();
+        hg::stats::add_class(inputs[1], 1, 4, nullptr);
+        for (auto& [step, in] : inputs) {
+            std::vector<const hg::stats::StepClass*> cls;
+            for (const auto& [h, c] : in.classes) cls.push_back(&c);
+            hg::stats::PoolPart host;
+            hg::stats::pool_classes(cls.data(), cls.size(), by_class, true, host);
+            ASSERT_EQ(host.entries.size(), entries[step].size()) << "step " << step;
+            for (size_t i = 0; i < host.entries.size(); ++i) {
+                EXPECT_EQ(host.entries[i].slot, entries[step][i].slot);
+                EXPECT_EQ(host.entries[i].key, entries[step][i].key);
+                EXPECT_EQ(host.entries[i].weight, entries[step][i].weight);
+            }
+            for (uint32_t k = 0; k < hgcommon::SG_DISTS; ++k) {
+                EXPECT_EQ(host.dist[k].n, totals[step][k].n);
+                EXPECT_EQ(host.dist[k].min_key, totals[step][k].min_key);
+                EXPECT_EQ(host.dist[k].max_key, totals[step][k].max_key);
+                for (uint32_t b = 0; b < hgcommon::SG_DIST_BINS; ++b)
+                    EXPECT_EQ(host.dist[k].bins[b], totals[step][k].bins[b]);
+            }
+            const std::vector<uint8_t> want =
+                value_bytes(wxf::WXFValue(hg::stats::step_record(step, in, by_class)));
+            in.device_part = std::make_unique<hg::stats::PoolPart>();
+            in.device_part->entries = entries[step];
+            for (uint32_t k = 0; k < hgcommon::SG_DISTS; ++k) in.device_part->dist[k] = totals[step][k];
+            EXPECT_EQ(want, value_bytes(wxf::WXFValue(hg::stats::step_record(step, in, by_class))));
+        }
+    }
+}
+#endif

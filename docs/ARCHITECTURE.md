@@ -150,12 +150,15 @@ Boundary + tooling:
   in a push cannot pop. Election among concurrent participants must key on a CLAIM,
   never on an id ordering that is not the visibility ordering.
 - **StepStatistics in the job system.** Each step's record is built by jobs on the
-  engine's workers: one pools the step's classes (`stats::step_record`), one builds the
-  step's branchial graph and its metrics, and the overlap rows are split over up to one job
-  per worker, the last of which merges the row counts in key order and writes the overlap
-  keys. A step's record is the same function of its classes and counts whichever job ran
-  which part, so the reply is byte-identical at any thread count and on either engine; the
-  pooling keeps its long-double sums in class-hash order, which is what makes the bytes match.
+  engine's workers. The step's classes are pooled by one job per 256 classes
+  (`stats::pool_classes`): each class adds weighted (slot, value) entries and integer totals
+  (`hgcommon::sp_add_class`, `hgcommon/step_pool_core.hpp`), and equal entries add their
+  weights. The pool is merged and summarised by one job per slot (`stats::StepPoolFinish`),
+  which reads each slot's values in ascending order. One job builds the step's branchial graph
+  and its metrics, and the overlap rows are split over up to one job per worker, the last of
+  which merges the row counts in key order and writes the overlap keys. A step's record is a
+  function of its pool and counts, which are the same whichever job ran which part, so the reply
+  is byte-identical at any thread count and on either engine.
   Under full capture a step's jobs are submitted when its depth settles (the engine's depth
   join, `set_on_depth_complete`), during the run: the step's raw states are in a per-step
   list the hypergraph fills as it creates them, and its branchial pairs are taken from the
@@ -170,9 +173,10 @@ Boundary + tooling:
   are weighted by the multiplicity count (`Hypergraph::quotient_multiplicity`), every step's
   jobs are submitted when the run ends. A session's steps, and steps the depth join did not
   report, are submitted the same way at the reply. The reply then concatenates finished
-  records. The GPU backend runs the same jobs on a host job system after the device run, and
-  counts the overlap rows of a step of 2048 states or more on the device with the same row body
-  (`hgcommon::br_row`; DEVICE_DESIGN.md 4.8).
+  records. The GPU backend runs the same jobs on a host job system after the device run. It
+  makes the pool of a run of 1024 classes or more on the device with the same class body
+  (`hg_gpu::step_pool_device`), and counts the overlap rows of a step of 2048 states or more on
+  the device with the same row body (`hgcommon::br_row`; DEVICE_DESIGN.md 4.8).
 - **The GPU mirrors the CPU algorithms.** Never drop a CPU data structure in a kernel
   without justification (an inverted-index skip once cost 200x).
 
