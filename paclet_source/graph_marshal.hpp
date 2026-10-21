@@ -78,6 +78,7 @@
 #include <memory>
 #include <functional>
 #include <algorithm>
+#include <array>
 #include <string_view>
 
 namespace HG_NAMESPACE {
@@ -333,8 +334,7 @@ inline BranchialStateEdgeSet branchial_state_edges_all_siblings(
 void push_branchial_state_edges(wxf::WXFValueAssociation& result,
                                 const BranchialStateEdgeSet& set);
 
-// THE "States" AND "Events" RECORDS, one schema for both engines. The host streams its reply
-// into a wxf::Writer (StreamRecordSink); the GPU backend builds a value tree (ValueRecordSink).
+// THE "States" AND "Events" RECORDS, one schema for both engines, written into a wxf::Writer.
 // A sink writes one association: begin(n), then n fields.
 class StreamRecordSink {
 public:
@@ -365,33 +365,6 @@ private:
         w_.write(std::string(k));
     }
     wxf::Writer& w_;
-};
-
-class ValueRecordSink {
-public:
-    void begin(std::size_t fields) { a_.clear(); a_.reserve(fields); }
-    void i64(const char* key, int64_t v) { a_.push_back({wxf::WXFValue(key), wxf::WXFValue(v)}); }
-    void i64_list(const char* key, const std::vector<int64_t>& v) {
-        wxf::WXFValueList l;
-        l.reserve(v.size());
-        for (int64_t x : v) l.push_back(wxf::WXFValue(x));
-        a_.push_back({wxf::WXFValue(key), wxf::WXFValue(std::move(l))});
-    }
-    void edges(const char* key,
-               const std::vector<std::pair<int64_t, std::vector<uint32_t>>>& e) {
-        wxf::WXFValueList l;
-        l.reserve(e.size());
-        for (const auto& [id, verts] : e) {
-            wxf::WXFValueList ed;
-            ed.push_back(wxf::WXFValue(id));
-            for (uint32_t v : verts) ed.push_back(wxf::WXFValue(static_cast<int64_t>(v)));
-            l.push_back(wxf::WXFValue(std::move(ed)));
-        }
-        a_.push_back({wxf::WXFValue(key), wxf::WXFValue(std::move(l))});
-    }
-    wxf::WXFValueAssociation take() { return std::move(a_); }
-private:
-    wxf::WXFValueAssociation a_;
 };
 
 struct StateRecordIds {
@@ -444,6 +417,36 @@ using ParallelFor = std::function<void(size_t n, const std::function<void(size_t
 
 inline void serial_for(size_t n, const std::function<void(size_t)>& body) {
     for (size_t i = 0; i < n; ++i) body(i);
+}
+
+// Appends item(w, i) for every i < n to `out` in order of i, the items written by `par` in
+// chunks of 256, each chunk into its own buffer.
+inline void write_items(wxf::Writer& out, size_t n, const ParallelFor& par,
+                        const std::function<void(wxf::Writer&, size_t)>& item) {
+    constexpr size_t kItems = 256;
+    std::vector<wxf::Writer> chunk((n + kItems - 1) / kItems);
+    par(chunk.size(), [&](size_t c) {
+        const size_t end = std::min(n, (c + 1) * kItems);
+        for (size_t i = c * kItems; i < end; ++i) item(chunk[c], i);
+    });
+    for (const wxf::Writer& w : chunk) out.append(w.data());
+}
+
+// A list of records, row i as <|keys[0] -> rows[i][0], ...|>, written by `par` (write_items).
+template <size_t N>
+wxf::WXFValue record_list(const std::vector<std::array<int64_t, N>>& rows,
+                          const std::array<const char*, N>& keys, const ParallelFor& par) {
+    wxf::Writer w;
+    w.write_function("List", rows.size());
+    write_items(w, rows.size(), par, [&](wxf::Writer& out, size_t i) {
+        out.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        out.write_varint(N);
+        for (size_t k = 0; k < N; ++k) {
+            out.write_key(keys[k]);
+            out.write(rows[i][k]);
+        }
+    });
+    return wxf::WXFValue(wxf::Encoded{w.release_data()});
 }
 
 // A job system on the host's hardware threads, for a reply whose run had no host engine (the

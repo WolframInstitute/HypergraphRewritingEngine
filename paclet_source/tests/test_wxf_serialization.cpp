@@ -5327,3 +5327,26 @@ TEST(StateStatistics, DevicePoolEqualsTheHostPool) {
     }
 }
 #endif
+
+// hgmarshal::record_list, which writes the CausalEdges and BranchialEdges lists, equals the value
+// tree of the same records, and gives the same bytes at 1, 2, 8 and 16 workers.
+TEST(GraphMarshalStream, RecordListMatchesItsValueTreeAtEveryThreadCount) {
+    std::vector<std::array<int64_t, 4>> rows;
+    for (int64_t i = 0; i < 5000; ++i) rows.push_back({i, i * 7 - 3, i << 20, -i});
+    wxf::WXFValueList tree;
+    for (const auto& r : rows)
+        tree.push_back(wxf::WXFValue(wxf::WXFValueAssociation{
+            {wxf::WXFValue("From"), wxf::WXFValue(r[0])},
+            {wxf::WXFValue("To"), wxf::WXFValue(r[1])},
+            {wxf::WXFValue("RawFrom"), wxf::WXFValue(r[2])},
+            {wxf::WXFValue("RawTo"), wxf::WXFValue(r[3])}}));
+    const std::vector<uint8_t> want = value_bytes(wxf::WXFValue(tree));
+    EXPECT_EQ(want, value_bytes(hgm::record_list(rows, {"From", "To", "RawFrom", "RawTo"},
+                                                 hgm::serial_for)));
+    for (size_t threads : {size_t{1}, size_t{2}, size_t{8}, size_t{16}}) {
+        ThreadsFor pool(threads);
+        EXPECT_EQ(want, value_bytes(hgm::record_list(rows, {"From", "To", "RawFrom", "RawTo"},
+                                                     pool.get())))
+            << threads << " threads";
+    }
+}

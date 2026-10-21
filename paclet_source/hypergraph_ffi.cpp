@@ -1203,6 +1203,29 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         wxf::Writer sections;
         std::size_t streamed_top_sections = 0;
 
+        // The reply's sections are written in chunks by side jobs on the engine's workers, idle
+        // after the evolution; the calling thread runs chunk 0 and then waits for the rest. The
+        // tables the record writers read lazily are built first.
+        const hgmarshal::ParallelFor on_workers =
+            [&engine](size_t n, const std::function<void(size_t)>& body) {
+                if (n == 0) return;
+                for (size_t i = 1; i < n; ++i)
+                    engine.submit_side_job([&body, i] { body(i); });
+                std::exception_ptr first;
+                try {
+                    body(0);
+                } catch (...) {
+                    first = std::current_exception();
+                }
+                engine.wait_side_jobs();
+                if (first) std::rethrow_exception(first);
+            };
+        if (req.include_states || req.include_events || req.include_events_minimal ||
+            !req.graph_properties.empty()) {
+            if (req.canonicalize_states_mode == "Automatic" || req.include_states) content_index();
+            ensure_class_min_step();
+        }
+
         // States -> Association[state id -> state record] (hgmarshal::write_state_record): every
         // state, or under Full one per class. CanonicalId is shared by isomorphic states and
         // ContentStateId by states of equal content.
@@ -1235,8 +1258,10 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             sections.write_byte(static_cast<uint8_t>(wxf::Token::Association));
             sections.write_varint(emit_sids.size());
 
-            hgmarshal::StreamRecordSink sink(sections);
-            for (uint32_t sid : emit_sids) {
+            hgmarshal::write_items(sections, emit_sids.size(), on_workers,
+                                   [&](wxf::Writer& out, size_t item) {
+                const uint32_t sid = emit_sids[item];
+                hgmarshal::StreamRecordSink sink(out);
                 const hypergraph::State& state = hg.get_state(sid);
                 std::vector<std::pair<int64_t, std::vector<uint32_t>>> edges;
                 edges.reserve(state.edges.count());
@@ -1264,8 +1289,8 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                     exact_hash = hgmarshal::reported_state_hash(edges.empty(), exact_hash);
                 }
                 // Association key: raw state id.
-                sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-                sections.write(static_cast<int64_t>(sid));
+                out.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                out.write(static_cast<int64_t>(sid));
                 // A hash with the top bit set surfaces as a negative integer (the cast is
                 // bijective, so equality and grouping are preserved).
                 hgmarshal::write_state_record(sink,
@@ -1276,7 +1301,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                         static_cast<int64_t>(reported_step(sid)),
                         req.include_canonical_hashes, static_cast<int64_t>(exact_hash)},
                     full_canonicalization, std::move(edges));
-            }
+            });
             ++streamed_top_sections;
         }
 
@@ -1342,22 +1367,25 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 sections.write(std::string("Events"));
                 sections.write_byte(static_cast<uint8_t>(wxf::Token::Association));
                 sections.write_varint(apps.size() + genesis.size());
-                hgmarshal::StreamRecordSink sink(sections);
                 const std::vector<int64_t> none;
-                for (uint32_t e : apps) {
+                hgmarshal::write_items(sections, apps.size(), on_workers,
+                                       [&](wxf::Writer& w, size_t item) {
+                    const uint32_t e = apps[item];
+                    hgmarshal::StreamRecordSink sink(w);
                     const hypergraph::QcEventContent& c = *hg.reconstructed_event_content(e);
                     const auto dense = recon.dense_of_sig.find(recon_event_key(e));
                     const int64_t in = get_effective_state_id(hg.class_frame_state(c.from_class));
                     const int64_t out = get_effective_state_id(hg.class_frame_state(c.to_class));
-                    sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-                    sections.write(static_cast<int64_t>(e));
+                    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                    w.write(static_cast<int64_t>(e));
                     hgmarshal::write_event_record(sink,
                         hgmarshal::EventRecordIds{
                             static_cast<int64_t>(e),
                             dense == recon.dense_of_sig.end() ? static_cast<int64_t>(e) : dense->second,
                             static_cast<int64_t>(c.rule), in, out, in, out},
                         minimal, none, none);
-                }
+                });
+                hgmarshal::StreamRecordSink sink(sections);
                 std::vector<int64_t> produced;
                 for (uint32_t eid : genesis) {
                     const hypergraph::Event& event = hg.get_event(eid);
@@ -1394,14 +1422,17 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 sections.write_byte(static_cast<uint8_t>(wxf::Token::Association));
                 sections.write_varint(emit_eids.size());
 
-                hgmarshal::StreamRecordSink sink(sections);
-                std::vector<int64_t> consumed, produced;
-                for (uint32_t eid : emit_eids) {
+                hgmarshal::write_items(sections, emit_eids.size(), on_workers,
+                                       [&](wxf::Writer& w, size_t item) {
+                    const uint32_t eid = emit_eids[item];
+                    hgmarshal::StreamRecordSink sink(w);
                     const hypergraph::Event& event = hg.get_event(eid);
-                    consumed.assign(event.consumed_edges, event.consumed_edges + event.num_consumed);
-                    produced.assign(event.produced_edges, event.produced_edges + event.num_produced);
-                    sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-                    sections.write(static_cast<int64_t>(eid));
+                    const std::vector<int64_t> consumed(event.consumed_edges,
+                                                        event.consumed_edges + event.num_consumed);
+                    const std::vector<int64_t> produced(event.produced_edges,
+                                                        event.produced_edges + event.num_produced);
+                    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                    w.write(static_cast<int64_t>(eid));
                     hgmarshal::write_event_record(sink,
                         hgmarshal::EventRecordIds{
                             static_cast<int64_t>(eid),
@@ -1413,7 +1444,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                             static_cast<int64_t>(hg.get_canonical_state(event.input_state)),
                             static_cast<int64_t>(hg.get_canonical_state(event.output_state))},
                         minimal, consumed, produced);
-                }
+                });
                 ++streamed_top_sections;
             }
         }
@@ -1423,7 +1454,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // Deduplicated by RAW (producer, consumer) pairs to remove internal duplication
         // but preserving all unique raw relationships (which may share canonical endpoints)
         if (req.include_causal_edges) {
-            wxf::WXFValueList causal_edges;
+            std::vector<std::array<int64_t, 4>> causal_edges;   // From, To, RawFrom, RawTo
             // Under the reconstruction the raw relation exists nowhere else: the rewriter
             // routes causal registration through the quotient machinery, so the stored edges
             // are the canonical skeleton, not the raw pairs this list carries ("the raw
@@ -1455,24 +1486,12 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                     hg.causal_graph().transitive_reduction_enabled(),
                     [](uint32_t e) { return e; },
                     [&](uint64_t p, uint64_t c) {
-                        wxf::WXFValueAssociation edge_data;
-                        edge_data.push_back({wxf::WXFValue("From"), wxf::WXFValue(dense_id(p))});
-                        edge_data.push_back({wxf::WXFValue("To"), wxf::WXFValue(dense_id(c))});
-                        edge_data.push_back({wxf::WXFValue("RawFrom"),
-                                             wxf::WXFValue(static_cast<int64_t>(p))});
-                        edge_data.push_back({wxf::WXFValue("RawTo"),
-                                             wxf::WXFValue(static_cast<int64_t>(c))});
-                        causal_edges.push_back(wxf::WXFValue(std::move(edge_data)));
+                        causal_edges.push_back({dense_id(p), dense_id(c), static_cast<int64_t>(p),
+                                                static_cast<int64_t>(c)});
                     });
                 for (const auto& [g, ev] : recon_genesis_pairs) {
                     const int64_t from = static_cast<int64_t>(recon.id_bound) + g;
-                    wxf::WXFValueAssociation edge_data;
-                    edge_data.push_back({wxf::WXFValue("From"), wxf::WXFValue(from)});
-                    edge_data.push_back({wxf::WXFValue("To"), wxf::WXFValue(dense_id(ev))});
-                    edge_data.push_back({wxf::WXFValue("RawFrom"), wxf::WXFValue(from)});
-                    edge_data.push_back({wxf::WXFValue("RawTo"),
-                                         wxf::WXFValue(static_cast<int64_t>(ev))});
-                    causal_edges.push_back(wxf::WXFValue(std::move(edge_data)));
+                    causal_edges.push_back({from, dense_id(ev), from, static_cast<int64_t>(ev)});
                 }
             } else {
             auto causal_edge_vec = hg.causal_graph().get_causal_edges();
@@ -1493,31 +1512,27 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 }
 
                 // Deduplicate by RAW event pair
-                auto raw_pair = std::make_pair(edge.producer, edge.consumer);
-                if (seen_raw_pairs.count(raw_pair)) continue;
-                seen_raw_pairs.insert(raw_pair);
+                if (!seen_raw_pairs.insert(std::make_pair(edge.producer, edge.consumer)).second) continue;
 
-                // Map to canonical event IDs for output (also include raw for flexibility)
-                hypergraph::EventId canonical_from = hg.get_canonical_event(edge.producer);
-                hypergraph::EventId canonical_to = hg.get_canonical_event(edge.consumer);
-
-                wxf::WXFValueAssociation edge_data;
-                edge_data.push_back({wxf::WXFValue("From"), wxf::WXFValue(static_cast<int64_t>(canonical_from))});
-                edge_data.push_back({wxf::WXFValue("To"), wxf::WXFValue(static_cast<int64_t>(canonical_to))});
-                // Also include raw event IDs for when event canonicalization is disabled
-                edge_data.push_back({wxf::WXFValue("RawFrom"), wxf::WXFValue(static_cast<int64_t>(edge.producer))});
-                edge_data.push_back({wxf::WXFValue("RawTo"), wxf::WXFValue(static_cast<int64_t>(edge.consumer))});
-                causal_edges.push_back(wxf::WXFValue(std::move(edge_data)));
+                // Canonical event ids for the graph, raw ids for when event canonicalization is
+                // off.
+                causal_edges.push_back({static_cast<int64_t>(hg.get_canonical_event(edge.producer)),
+                                        static_cast<int64_t>(hg.get_canonical_event(edge.consumer)),
+                                        static_cast<int64_t>(edge.producer),
+                                        static_cast<int64_t>(edge.consumer)});
             }
             }
-            full_result.push_back({wxf::WXFValue("CausalEdges"), wxf::WXFValue(std::move(causal_edges))});
+            full_result.push_back({wxf::WXFValue("CausalEdges"),
+                                   hgmarshal::record_list(causal_edges,
+                                                          {"From", "To", "RawFrom", "RawTo"},
+                                                          on_workers)});
         }
 
         // BranchialEdges -> List of {From -> canonical_event_id, To -> canonical_event_id}
         // For Evolution*Branchial graphs where event vertices need canonical IDs
         // NO deduplication - multiplicity matters for branchial edges
         if (req.include_branchial_edges) {
-            wxf::WXFValueList branchial_edges;
+            std::vector<std::array<int64_t, 2>> branchial_edges;
             // Same routing as the causal list above, for the same reason.
             if (hg.quotient_reconstruction()) {
                 // The reported identity: the run signature when an event signature is in
@@ -1539,12 +1554,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 };
                 hg.for_each_reconstructed_branchial_as(
                     [](uint32_t e) { return e; },
-                    [&](uint64_t a, uint64_t b) {
-                        wxf::WXFValueAssociation edge_data;
-                        edge_data.push_back({wxf::WXFValue("From"), wxf::WXFValue(dense_id(a))});
-                        edge_data.push_back({wxf::WXFValue("To"), wxf::WXFValue(dense_id(b))});
-                        branchial_edges.push_back(wxf::WXFValue(std::move(edge_data)));
-                    });
+                    [&](uint64_t a, uint64_t b) { branchial_edges.push_back({dense_id(a), dense_id(b)}); });
             } else {
             auto branchial_edge_vec = hg.causal_graph().get_branchial_edges();
             for (const auto& edge : branchial_edge_vec) {
@@ -1554,16 +1564,13 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                     continue;
                 }
                 // Map to canonical event IDs
-                hypergraph::EventId canonical_from = hg.get_canonical_event(edge.event1);
-                hypergraph::EventId canonical_to = hg.get_canonical_event(edge.event2);
-
-                wxf::WXFValueAssociation edge_data;
-                edge_data.push_back({wxf::WXFValue("From"), wxf::WXFValue(static_cast<int64_t>(canonical_from))});
-                edge_data.push_back({wxf::WXFValue("To"), wxf::WXFValue(static_cast<int64_t>(canonical_to))});
-                branchial_edges.push_back(wxf::WXFValue(std::move(edge_data)));
+                branchial_edges.push_back({static_cast<int64_t>(hg.get_canonical_event(edge.event1)),
+                                           static_cast<int64_t>(hg.get_canonical_event(edge.event2))});
             }
             }
-            full_result.push_back({wxf::WXFValue("BranchialEdges"), wxf::WXFValue(std::move(branchial_edges))});
+            full_result.push_back({wxf::WXFValue("BranchialEdges"),
+                                   hgmarshal::record_list(branchial_edges, {"From", "To"},
+                                                          on_workers)});
         }
 
         // BranchialStateEdges / BranchialStateEdgesAllSiblings -> the state-endpoint projection
@@ -1633,10 +1640,8 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                                         : static_cast<int64_t>(e.canonical_event_id);
             };
 
-            // A styled graph's payloads (hgmarshal::GraphStateFields, GraphEventFields). These
-            // run on several workers at once, so the lazy tables they read are built first.
-            if (req.canonicalize_states_mode == "Automatic") content_index();
-            ensure_class_min_step();
+            // A styled graph's payloads (hgmarshal::GraphStateFields, GraphEventFields), run on
+            // several workers at once.
             // A state's edges as stored, each as its edge id and vertices; under Full its IR
             // canonical form, numbered from 0 (hgmarshal::state_record_edges).
             auto state_edges = [&](hypergraph::StateId sid,
@@ -1864,22 +1869,6 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 }
             }
             if (held_session && !req.delivery_delta) holder->delivery_cursor().reset();
-            // The graph's chunks run as side jobs on the engine's workers, idle after the run;
-            // the calling thread runs chunk 0 and then waits for the rest.
-            const hgmarshal::ParallelFor on_workers =
-                [&engine](size_t n, const std::function<void(size_t)>& body) {
-                    if (n == 0) return;
-                    for (size_t i = 1; i < n; ++i)
-                        engine.submit_side_job([&body, i] { body(i); });
-                    std::exception_ptr first;
-                    try {
-                        body(0);
-                    } catch (...) {
-                        first = std::current_exception();
-                    }
-                    engine.wait_side_jobs();
-                    if (first) std::rethrow_exception(first);
-                };
             full_result.push_back(
                 {wxf::WXFValue("GraphData"),
                  hgmarshal::build_graph_data(gsrc, req.graph_properties, gopts, cursor,
@@ -2016,20 +2005,20 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // GlobalEdges -> List of all edges created during evolution
         // Each edge is {edge_id, v1, v2, ...}
         if (req.include_global_edges) {
-            wxf::WXFValueList global_edges;
-            uint32_t num_edges = hg.num_edges();
-            for (uint32_t eid = 0; eid < num_edges; ++eid) {
-                const hypergraph::Edge& edge = hg.get_edge(eid);
-                if (edge.id == hypergraph::INVALID_ID) continue;
-
-                wxf::WXFValueList edge_data;
-                edge_data.push_back(wxf::WXFValue(static_cast<int64_t>(eid)));
-                for (uint8_t i = 0; i < edge.arity; ++i) {
-                    edge_data.push_back(wxf::WXFValue(static_cast<int64_t>(edge.vertices[i])));
-                }
-                global_edges.push_back(wxf::WXFValue(std::move(edge_data)));
-            }
-            full_result.push_back(std::make_pair(wxf::WXFValue("GlobalEdges"), wxf::WXFValue(std::move(global_edges))));
+            std::vector<uint32_t> ids;
+            const uint32_t num_edges = hg.num_edges();
+            for (uint32_t eid = 0; eid < num_edges; ++eid)
+                if (hg.get_edge(eid).id != hypergraph::INVALID_ID) ids.push_back(eid);
+            wxf::Writer w;
+            w.write_function("List", ids.size());
+            hgmarshal::write_items(w, ids.size(), on_workers, [&](wxf::Writer& out, size_t i) {
+                const hypergraph::Edge& edge = hg.get_edge(ids[i]);
+                out.write_function("List", edge.arity + 1u);
+                out.write(static_cast<int64_t>(ids[i]));
+                for (uint8_t k = 0; k < edge.arity; ++k) out.write(static_cast<int64_t>(edge.vertices[k]));
+            });
+            full_result.push_back({wxf::WXFValue("GlobalEdges"),
+                                   wxf::WXFValue(wxf::Encoded{w.release_data()})});
         }
 
         if (req.include_device) {
@@ -2041,25 +2030,22 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         // StateBitvectors -> Association[state_id -> List of edge IDs present in that state]
         // Represents each state's edge set (the bitvector) as a list of edge indices
         if (req.include_state_bitvectors) {
-            wxf::WXFValueAssociation state_bitvectors;
-            uint32_t num_states = hg.num_published_states();
-            for (uint32_t sid = 0; sid < num_states; ++sid) {
-                const hypergraph::State& state = hg.get_state(sid);
-                if (state.id == hypergraph::INVALID_ID) continue;
-
-                // Convert SparseBitset to list of edge IDs
-                wxf::WXFValueList edge_ids;
-                state.edges.for_each([&](hypergraph::EdgeId eid) {
-                    edge_ids.push_back(wxf::WXFValue(static_cast<int64_t>(eid)));
-                });
-
-                state_bitvectors.push_back(std::make_pair(
-                    wxf::WXFValue(static_cast<int64_t>(sid)),
-                    wxf::WXFValue(std::move(edge_ids))
-                ));
-            }
-            full_result.push_back(std::make_pair(wxf::WXFValue("StateBitvectors"),
-                                                 wxf::WXFValue(std::move(state_bitvectors))));
+            std::vector<uint32_t> sids;
+            const uint32_t num_states = hg.num_published_states();
+            for (uint32_t sid = 0; sid < num_states; ++sid)
+                if (hg.get_state(sid).id != hypergraph::INVALID_ID) sids.push_back(sid);
+            wxf::Writer w;
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+            w.write_varint(sids.size());
+            hgmarshal::write_items(w, sids.size(), on_workers, [&](wxf::Writer& out, size_t i) {
+                const hypergraph::State& state = hg.get_state(sids[i]);
+                out.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                out.write(static_cast<int64_t>(sids[i]));
+                out.write_function("List", state.edges.count());
+                state.edges.for_each([&](hypergraph::EdgeId eid) { out.write(static_cast<int64_t>(eid)); });
+            });
+            full_result.push_back({wxf::WXFValue("StateBitvectors"),
+                                   wxf::WXFValue(wxf::Encoded{w.release_data()})});
         }
 
         // Warning trail (engine warnings + analysis refusals). A warning marks a partial result
