@@ -5,12 +5,12 @@ Title: Science with Step Statistics
 Context: HypergraphRewriting`
 Paclet: WolframInstitute/HypergraphRewriteEngine
 URI: WolframInstitute/HypergraphRewriteEngine/tutorial/ScienceWithStepStatistics
-Keywords: [hypergraph, multiway, step statistics, dimension, curvature, Ollivier-Ricci, Moran's I, Brill-Lindquist, torus, branchial, mutual information, tutorial]
+Keywords: [hypergraph, multiway, step statistics, dimension, curvature, Ollivier-Ricci, Moran's I, Brill-Lindquist, torus, branchial, mutual information, matrix, spectral embedding, tutorial]
 RelatedGuides: [HypergraphRewriting]
 RelatedTutorials: [GettingStarted, InitialConditions, SamplingAndPruning]
 ---
 
-`"StepStatistics"` gives one association per step of an evolution, with counts of states and classes, summaries of per-state invariants, distributions over vertices and, on request, measures of the branchial graph and of the overlap between states. The [HGEvolve]() reference page defines every key. This tutorial uses them to answer six questions about rules of the Wolfram Physics Project. Every number plotted comes from the engine.
+`"StepStatistics"` gives one association per step of an evolution, with counts of states and classes, summaries of per-state invariants, distributions over vertices and, on request, measures of the branchial graph, the overlap between states and state x state matrices. The [HGEvolve]() reference page defines every key. This tutorial uses them to answer eight questions about rules of the Wolfram Physics Project. Every number plotted comes from the engine.
 
 Each plot reads one key of every step with this function:
 
@@ -222,3 +222,54 @@ ListLinePlot[Table[KeyValueMap[{#1, #2["Mean"]} &, branches[[s + 1]]["OverlapByB
 ```
 
 !["OverlapByBranchialDistance" gives, for each branchial distance d, the summary of the Jaccard index of the vertex sets of the pairs of states at distance d.](../images/ScienceWithStepStatistics/ScienceWithStepStatistics-25.png)
+
+## Mutual information between states
+
+How much does each state at a step tell about each other state? `"StepStatisticsMatrices"` adds `"StateMatrices"` to each step: the step's state ids and a state x state matrix for each measure asked for. The rule adds a square on every path of two edges, from two self-loops. `"MatchesPerStep" -> 10` keeps 10 states at each step:
+
+```wl
+square = {{a, b}, {b, c}} -> {{a, b}, {b, c}, {c, d}, {d, a}};
+pairs = HGEvolve[square, {{0, 0}, {0, 0}}, 10, "StepStatistics", "UniformRandom" -> True, "MatchesPerStep" -> 10, "RandomSeed" -> 1, "StepStatisticsMatrices" -> All];
+Keys[Last[pairs]["StateMatrices"]]
+```
+
+<!-- => {"States", "StateOverlap", "StateCosineSimilarity", "StateMutualInformation", "StateEdgeOverlap", "StateEdgeCosineSimilarity", "StateEdgeMutualInformation"} -->
+
+The mutual information in bits between every two states, as vertex sets, at steps 1 to 10. Row and column i are the i-th id of `"States"`, row 1 at the top, and the diagonal is the entropy of each state:
+
+```wl
+Grid[Partition[Table[ArrayPlot[pairs[[s + 1]]["StateMatrices", "StateMutualInformation"], ColorFunction -> "TemperatureMap", Frame -> True, PlotLabel -> "step " <> ToString[s], ImageSize -> 140], {s, 1, 10}], 5]]
+```
+
+![The mutual information in bits between every two states, as vertex sets, at steps 1 to 10.](../images/ScienceWithStepStatistics/ScienceWithStepStatistics-27.png)
+
+The same at step 10 over vertex sets and over edge sets, and the cosine similarity of the vertex sets:
+
+```wl
+With[{m = Last[pairs]["StateMatrices"]}, Grid[{MapThread[ArrayPlot[m[#1], ColorFunction -> "TemperatureMap", Frame -> True, PlotLabel -> #2, PlotLegends -> Automatic, ImageSize -> 200] &, {{"StateMutualInformation", "StateEdgeMutualInformation", "StateCosineSimilarity"}, {"vertex mutual information", "edge mutual information", "cosine similarity"}}]}, Spacings -> 2]]
+```
+
+![The same at step 10 over vertex sets and over edge sets, and the cosine similarity of the vertex sets](../images/ScienceWithStepStatistics/ScienceWithStepStatistics-28.png)
+
+## Curvature on a spectral embedding
+
+Where on a state does the curvature sit, and how does it move as the state grows? `"IncludeVertexCurvature" -> True` adds `"VertexCurvature"` to each state record: each vertex with a neighbour and its Ollivier-Ricci curvature. `"MatchesPerStep" -> 1` follows one history of rule A from the grid:
+
+```wl
+history = HGEvolve[ruleA, <|"Type" -> "Grid", "Width" -> 8, "Height" -> 8, "Seed" -> 1|>, 30, "States", "UniformRandom" -> True, "MatchesPerStep" -> 1, "RandomSeed" -> 1, "IncludeVertexCurvature" -> True];
+Length[history]
+```
+
+<!-- => 31 -->
+
+The graph of a state joins the consecutive vertices of each hyperedge; `Rest` drops the edge id at the front of each edge. `GraphEmbedding` with `"SpectralEmbedding"` places each vertex at the coordinates of three eigenvectors of the graph Laplacian, and each point is coloured by the vertex's curvature from blue (the state's lowest) to red (its highest):
+
+```wl
+stateGraph[state_] := Graph[UndirectedEdge @@@ DeleteDuplicates[Sort /@ Select[Catenate[Partition[#, 2, 1] & /@ (Rest /@ state["Edges"])], #[[1]] =!= #[[2]] &]]];
+embedding[state_] := With[{g = stateGraph[state]}, Graphics3D[{PointSize[0.025], Point[GraphEmbedding[g, "SpectralEmbedding", 3], VertexColors -> (ColorData["TemperatureMap"][Rescale[#, MinMax[Values[state["VertexCurvature"]]]]] & /@ Lookup[state["VertexCurvature"], VertexList[g], 0])]}, Boxed -> True, PlotLabel -> "step " <> ToString[state["Step"]], ImageSize -> 220]];
+Row[embedding[SelectFirst[Values[history], Function[st, st["Step"] == #]]] & /@ {0, 15, 30}, Spacer[10]]
+```
+
+![The graph of a state joins the consecutive vertices of each hyperedge; Rest drops the edge id at the front of each edge.](../images/ScienceWithStepStatistics/ScienceWithStepStatistics-30.png)
+
+In a notebook, `ListAnimate[embedding /@ SortBy[Values[history], #Step &]]` shows every step as an animation.

@@ -454,8 +454,10 @@ matrices up to a renumbering of the states. The admission is `"Overlap"`'s.
 
 Cost: n11 for every two states that share an element comes from the overlap pass's rows (one
 pass over the vertex sets, one over the edge sets), each pair writing its own cell of a
-k (k - 1) / 2 triangle; the device writes the cells of a step of 2048 states or more. Building
-the reply is O(k²) per matrix.
+k (k - 1) / 2 triangle. After its count the same row job, or on the device the same warp,
+computes its row's values (`hgcommon::bo_matrix_row`): O(k) per row and matrix, O(k²) per matrix
+over the step's rows. The device runs the rows of a step of 2048 states or more. The reply copies
+each matrix as a packed array.
 *(Gate: `reference/verify_state_statistics.wls`: the engine against
 `reference/StateGeometryReference.wl`, an independent Wolfram Language implementation, on the
 corpus and on random rules; the two Function Repository metrics against ResourceFunction itself.
