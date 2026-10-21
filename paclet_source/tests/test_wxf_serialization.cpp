@@ -2034,6 +2034,63 @@ TEST(WxfSerializationPin, AnUnrecognisedIdentityValueIsReported) {
     }
 }
 
+// "IncludeVertexCurvature" through the request: every state record has "VertexCurvature", one
+// entry per vertex of the record's edges with a neighbour, under None and under Full (where the
+// record lists the canonical form and the curvature is of that form). Without the option no
+// record has it.
+TEST(WxfSerializationPin, IncludeVertexCurvatureAddsAKeyToEachStateRecord) {
+    auto run = [](const char* states, const char* include) {
+        auto opts = [=](wxf::Writer& w) {
+            put_str_list_option(w, "RequestedData", {"States"});
+            put_str_option(w, "CanonicalizeStates", states);
+            put_str_option(w, "IncludeVertexCurvature", include);
+        };
+        HostBridge host;
+        return run_rewriting_core(branch_job(3, "Evolve", 0, opts, 3), host);
+    };
+    for (const char* mode : {"None", "Full"}) {
+        const auto out = run(mode, "True");
+        size_t records = 0, with_entries = 0;
+        const auto states_bytes = value_bytes(out, "States");
+        wxf::Parser p(states_bytes);
+        p.read_association_generic([&](wxf::Parser& kp, wxf::Parser& vp) {
+            kp.skip_value();
+            std::vector<std::pair<int64_t, std::vector<uint32_t>>> edges;
+            std::vector<std::pair<int64_t, double>> curvature;
+            bool has = false;
+            vp.read_association([&](const std::string& k, wxf::Parser& fp) {
+                if (k == "Edges") {
+                    for (const auto& e : fp.read<std::vector<std::vector<int64_t>>>()) {
+                        std::vector<uint32_t> vs;
+                        for (size_t i = 1; i < e.size(); ++i) vs.push_back(static_cast<uint32_t>(e[i]));
+                        edges.push_back({e[0], vs});
+                    }
+                } else if (k == "VertexCurvature") {
+                    has = true;
+                    fp.read_association_generic([&](wxf::Parser& v, wxf::Parser& x) {
+                        const int64_t vertex = v.read<int64_t>();
+                        curvature.push_back({vertex, x.read<double>()});
+                    });
+                } else {
+                    fp.skip_value();
+                }
+            });
+            EXPECT_TRUE(has) << mode;
+            const hg::stats::VertexCurvature want = hg::stats::vertex_curvature(edges);
+            ASSERT_EQ(curvature.size(), want.size()) << mode;
+            for (size_t i = 0; i < want.size(); ++i) {
+                EXPECT_EQ(curvature[i].first, int64_t(want[i].first)) << mode;
+                EXPECT_EQ(curvature[i].second, want[i].second) << mode;
+            }
+            ++records;
+            with_entries += !want.empty();
+        });
+        EXPECT_GT(records, 1u) << mode;
+        EXPECT_GT(with_entries, 0u) << mode;
+    }
+    EXPECT_FALSE(reply_mentions(run("None", "False"), "VertexCurvature"));
+}
+
 // "StepStatisticsMatrices" and "StepStatisticsMatrixLimit" through the request: the matrices
 // asked for reach each step's record, a step above the limit warns and has none, Full states
 // warn and give none, and a name that is not a matrix is reported as OptionSkipped.
@@ -2448,6 +2505,67 @@ TEST(GpuBinaryGate, StepStatisticsBranchialIsAdmittedAlikeOnBothDevices) {
         EXPECT_EQ(reply_mentions(host, "not computed under ExploreFromCanonicalStatesOnly"),
                   reply_mentions(device, "not computed under ExploreFromCanonicalStatesOnly"))
             << what;
+    }
+    worker_stop(w);
+}
+
+// "IncludeVertexCurvature" gives the same curvatures from the CPU and the GPU binaries: per state
+// record, the sorted list of its k_v, compared as a multiset over the records (the two devices
+// number the states in their own creation order).
+TEST(GpuBinaryGate, VertexCurvatureAgreesOnBothDevices) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    if (!CpuWorker::built()) GTEST_SKIP() << "hg_evolve is not built here";
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    CpuWorker cpu;
+    ASSERT_TRUE(cpu.ok);
+    auto curvatures = [](const std::vector<uint8_t>& out) {
+        std::multiset<std::vector<double>> all;
+        const auto bytes = value_bytes(out, "States");
+        wxf::Parser p(bytes);
+        p.read_association_generic([&](wxf::Parser& kp, wxf::Parser& vp) {
+            kp.skip_value();
+            std::vector<double> k;
+            vp.read_association([&](const std::string& key, wxf::Parser& fp) {
+                if (key != "VertexCurvature") {
+                    fp.skip_value();
+                    return;
+                }
+                fp.read_association_generic([&](wxf::Parser& v, wxf::Parser& x) {
+                    v.skip_value();
+                    k.push_back(x.read<double>());
+                });
+            });
+            std::sort(k.begin(), k.end());
+            all.insert(k);
+        });
+        return all;
+    };
+    for (const char* states : {"None", "Full"}) {
+        const auto job = build_input({{{1, 2}, {2, 3}, {3, 1}}}, {{1, 2}, {2, 3}},
+                                     {{1, 2}, {2, 4}, {4, 3}, {3, 1}}, 3,
+                                     [&](wxf::Writer& o) {
+                                         put_str_list_option(o, "RequestedData", {"States"});
+                                         put_str_option(o, "CanonicalizeStates", states);
+                                         put_str_option(o, "IncludeVertexCurvature", "True");
+                                     },
+                                     3);
+        const auto host = cpu(job);
+        const auto device = worker_call(w, job);
+        ASSERT_FALSE(host.empty()) << cpu.w.last_error;
+        if (device.empty()) {
+            worker_stop(w);
+            GTEST_SKIP() << "the worker returned no result (no usable device?)";
+        }
+        const auto want = curvatures(host);
+        EXPECT_GT(want.size(), 3u) << states;
+        EXPECT_EQ(curvatures(device), want) << states;
     }
     worker_stop(w);
 }
@@ -5017,6 +5135,21 @@ TEST(StateStatistics, CollectedStateMatricesDoNotDependOnTheThreadCount) {
             EXPECT_EQ(matrix_rows(during.first), want) << "threads " << threads << " cap " << cap;
         }
     }
+}
+
+// The per-vertex curvature k_v of a state worked by hand. The path 1-2-3-4: k is 1/2, 1/4, 1/4,
+// 1/2 (VertexInvariantsPoolTheVerticesOfAStep). The cycle 1-2-3-4-1: 1/2 at every vertex. A
+// vertex with no neighbour (7 in a unary edge, 8 in a self-loop) has no entry.
+TEST(StateStatistics, VertexCurvatureOfAPathAndACycle) {
+    using E = std::vector<std::pair<int64_t, std::vector<uint32_t>>>;
+    const E path = {{0, {1, 2}}, {1, {2, 3}}, {2, {3, 4}}, {3, {7}}, {4, {8, 8}}};
+    const E cycle = {{0, {1, 2}}, {1, {2, 3}}, {2, {3, 4}}, {3, {4, 1}}};
+    EXPECT_EQ(hg::stats::vertex_curvature(path),
+              (hg::stats::VertexCurvature{{1, 0.5}, {2, 0.25}, {3, 0.25}, {4, 0.5}}));
+    EXPECT_EQ(hg::stats::vertex_curvature(cycle),
+              (hg::stats::VertexCurvature{{1, 0.5}, {2, 0.5}, {3, 0.5}, {4, 0.5}}));
+    EXPECT_TRUE(hg::stats::vertex_curvature(E{{0, {5}}}).empty());
+    EXPECT_TRUE(hg::stats::vertex_curvature(E{}).empty());
 }
 
 // "StepStatisticsWeighting" -> "Classes" counts a class once; "States" counts its raw states.

@@ -765,20 +765,44 @@ struct NestedEdges {
     uint32_t at(uint32_t i, uint32_t k) const { return (*e)[i][k]; }
 };
 
+// A "States" record's edges as the same EdgeList.
+struct RecordEdgeList {
+    const std::vector<std::pair<int64_t, std::vector<uint32_t>>>* e;
+    uint32_t count() const { return static_cast<uint32_t>(e->size()); }
+    uint32_t arity(uint32_t i) const { return static_cast<uint32_t>((*e)[i].second.size()); }
+    uint32_t at(uint32_t i, uint32_t k) const { return (*e)[i].second[k]; }
+};
+
 // sg_state_geometry with a buffer that grows to what the call reports it needs.
 template <class EdgeList>
 hgcommon::SgGeometry geometry_with_scratch(const EdgeList& el, std::vector<double>& ball,
-                                           uint32_t want) {
+                                           uint32_t want, double* vertex_curvature = nullptr) {
     static thread_local std::vector<unsigned char> scratch(1 << 16);
     hgcommon::SgGeometry g;
     size_t needed = 0;
     while (!hgcommon::sg_state_geometry(el, scratch.data(), scratch.size(), g, ball.data(),
-                                        static_cast<uint32_t>(ball.size()), needed, want))
+                                        static_cast<uint32_t>(ball.size()), needed, want,
+                                        hgcommon::IrSerial{}, nullptr, 0, nullptr,
+                                        vertex_curvature))
         scratch.resize(std::max(needed, scratch.size() * 2));
     return g;
 }
 
 }  // namespace
+
+VertexCurvature vertex_curvature(const std::vector<std::pair<int64_t, std::vector<uint32_t>>>& edges) {
+    // The geometry numbers the vertices in ascending id order.
+    std::vector<uint32_t> verts;
+    for (const auto& e : edges) verts.insert(verts.end(), e.second.begin(), e.second.end());
+    std::sort(verts.begin(), verts.end());
+    verts.erase(std::unique(verts.begin(), verts.end()), verts.end());
+    std::vector<double> k(verts.size() + 1), ball(verts.size() + 1);
+    geometry_with_scratch(RecordEdgeList{&edges}, ball, hgcommon::SG_OLLIVIER, k.data());
+    VertexCurvature out;
+    for (size_t i = 0; i < verts.size(); ++i)
+        if (!std::isnan(k[i])) out.emplace_back(verts[i], k[i]);
+    return out;
+}
 
 StateGeometry state_geometry(const std::vector<std::vector<uint32_t>>& edges) {
     StateGeometry r;

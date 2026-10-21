@@ -31,6 +31,7 @@ Options[HGEvolve] = {
   "ShowProgress" -> False,
   "ShowGenesisEvents" -> False,
   "DebugFFI" -> False,
+  "IncludeVertexCurvature" -> False,  (* True: each state record has "VertexCurvature", each vertex with a neighbour -> its Ollivier-Ricci curvature *)
   "IncludeCanonicalHashes" -> False,  (* True: include per-state IR canonical hash ("CanonicalHash"); stable across runs, for fusing pruned runs by isomorphism class *)
   "StepStatisticsWeighting" -> "States",  (* "States": each class of a step counts as its raw states; "Classes": each class counts once *)
   "StepStatisticsBranchial" -> None,  (* None, "Graph", "Overlap", a list of them, or All: the per-step branchial metrics "StepStatistics" adds *)
@@ -1131,6 +1132,7 @@ hgJobOptions[ov_, requiredData_, graphProperties_] := Module[{branchialStepValue
     "BranchialStep" -> branchialStepValue,  (* 0=All, positive=1-based step, negative=from end *)
     "EdgeDeduplication" -> ov["EdgeDeduplication"],
     "IncludeCanonicalHashes" -> ov["IncludeCanonicalHashes"],
+    "IncludeVertexCurvature" -> ov["IncludeVertexCurvature"],
     "StepStatisticsWeighting" -> ov["StepStatisticsWeighting"],
     "StepStatisticsBranchial" -> Flatten[{Replace[ov["StepStatisticsBranchial"],
       {None -> {}, All -> {"Graph", "Overlap"}}]}],

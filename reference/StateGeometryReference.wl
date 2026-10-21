@@ -23,6 +23,7 @@ sgrVertexDimensions::usage = "sgrVertexDimensions[g] gives each vertex's own Hau
 sgrBranchialGraphMetrics::usage = "sgrBranchialGraphMetrics[nodes, pairs] gives the per-step branchial graph metrics for a step's states and its branchial state pairs.";
 sgrOverlapMetrics::usage = "sgrOverlapMetrics[vertexSets, edgeLists, initial] gives the per-step overlap values for a step's states, each given as its vertex set and its list of edges (each edge its vertex list); initial is the vertex set of step 0's states.";
 sgrOverlapByDistance::usage = "sgrOverlapByDistance[vertexSets, distanceMatrix] gives, for each finite branchial distance d > 0, the Jaccard index of every two states at distance d.";
+sgrVertexCurvature::usage = "sgrVertexCurvature[edges] gives, for each vertex of the state's graph with a neighbour, ascending, the mean Ollivier-Ricci curvature of its edges.";
 sgrStateMatrices::usage = "sgrStateMatrices[vertexSets, edgeLists] gives the six state x state matrices of a step's states in the given order: the Jaccard index, the cosine similarity and the mutual information of every two states, over their vertex sets and over their edge sets (each edge its vertex list).";
 
 Begin["`Private`"];
@@ -160,6 +161,14 @@ sgrOverlapByDistance[vertexSets_List, dm_] := Module[
         With[{w = Length[Union[sets[[i]], sets[[j]]]]},
           If[w == 0, 0., N[Length[Intersection[sets[[i]], sets[[j]]]]/w]]]},
       {i, k}, {j, i + 1, k}], 1], #[[1]] =!= Infinity &], First -> Last]]];
+
+sgrVertexCurvature[edges_List] := Module[{g = sgrStateGraph[edges], vs, dm, index, k},
+  vs = VertexList[g];
+  If[EdgeCount[g] == 0, Return[<||>]];
+  dm = GraphDistanceMatrix[g]; index = AssociationThread[vs -> Range[Length[vs]]];
+  k = Association[Sort[List @@ #] -> ollivierEdge[g, dm, index, #[[1]], #[[2]]] & /@ EdgeList[g]];
+  KeySort[Association[# -> N[Mean[k[Sort[{#, w}]] & /@ AdjacencyList[g, #]]] & /@
+    Select[vs, VertexDegree[g, #] > 0 &]]]];
 
 sgrStateMatrices[vertexSets_List, edgeLists_List] := Module[{level, v, e},
   level[sets0_] := Module[{sets = DeleteDuplicates /@ sets0, u},

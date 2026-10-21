@@ -507,16 +507,19 @@ HG_HD inline double sg_degree_entropy_of(const SgGraph& g, const uint32_t* vs, u
 // G' is `largest` (largest_n vertex indices of G, ascending) when G is disconnected, and G when
 // it is connected; with no `largest` a disconnected G has no G'. `dists`, when given, receives
 // the SG_DISTS per-vertex distributions under SG_VERTEX_DISTRIBUTIONS, written by the leader.
+// `vertex_curvature`, when given, receives k_v for each vertex index v of G (the vertices in
+// ascending id order), NaN for a vertex with no neighbour, written by the leader.
 template <class Par = IrSerial>
 HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& out,
                                  double* ball_dimension, uint32_t ball_capacity,
                                  uint32_t want = ~0u, Par par = Par{},
                                  const uint32_t* largest = nullptr, uint32_t largest_n = 0,
-                                 SgDistribution* dists = nullptr) {
+                                 SgDistribution* dists = nullptr,
+                                 double* vertex_curvature = nullptr) {
     const bool want_local = (want & (SG_DEGREE_ENTROPY | SG_MUTUAL_INFORMATION)) != 0;
     const bool want_dists = dists != nullptr && (want & SG_VERTEX_DISTRIBUTIONS) != 0;
-    const bool want_vertex_ollivier =
-        want_dists || (want & (SG_OLLIVIER_MORAN | SG_OLLIVIER_DEGREE)) != 0;
+    const bool want_vertex_ollivier = want_dists || vertex_curvature != nullptr ||
+                                      (want & (SG_OLLIVIER_MORAN | SG_OLLIVIER_DEGREE)) != 0;
     const bool want_sub = want_dists || (want & SG_LARGEST_DIMENSION) != 0;
     const uint32_t n = g.n;
     const uint32_t L = par.width(), me = par.rank();
@@ -710,6 +713,9 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
                     if (g.degree(v)) sg_dist_add(dists[SG_DIST_OLLIVIER], SG_DIST_OLLIVIER, ollv[v]);
         }
     }
+    if (vertex_curvature && par.leader())
+        for (uint32_t v = 0; v < n; ++v)
+            vertex_curvature[v] = g.edges && g.degree(v) ? ollv[v] : ::nan("");
     if (connected && par.leader()) {
         uint64_t ecc_total = 0;
         for (uint32_t v = 0; v < n; ++v) ecc_total += ecc[v];
@@ -856,14 +862,15 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
 // false with `needed` set to the bytes that would have sufficed for the stage reached; a caller
 // that grows its buffer to `needed` and calls again either succeeds or learns the next stage's
 // need. Every lane of the policy calls it with the same arguments and gets the same verdict and
-// `needed`; the leader builds G and `out` is the leader's. `largest`, `largest_n` and `dists`
-// are sg_geometry_of's.
+// `needed`; the leader builds G and `out` is the leader's. `largest`, `largest_n`, `dists` and
+// `vertex_curvature` are sg_geometry_of's.
 template <class EdgeList, class Par = IrSerial>
 HG_HD bool sg_state_geometry(const EdgeList& el, unsigned char* scratch, size_t capacity,
                              SgGeometry& out, double* ball_dimension, uint32_t ball_capacity,
                              size_t& needed, uint32_t want = ~0u, Par par = Par{},
                              const uint32_t* largest = nullptr, uint32_t largest_n = 0,
-                             SgDistribution* dists = nullptr) {
+                             SgDistribution* dists = nullptr,
+                             double* vertex_curvature = nullptr) {
     SgArena arena;
     arena.base = scratch;
     arena.capacity = capacity;
@@ -892,7 +899,7 @@ HG_HD bool sg_state_geometry(const EdgeList& el, unsigned char* scratch, size_t 
     arena.used = static_cast<size_t>(par.bcast64(arena.used));
     const size_t built = arena.used;
     if (!sg_geometry_of(g, arena, out, ball_dimension, ball_capacity, want, par, largest,
-                        largest_n, dists)) {
+                        largest_n, dists, vertex_curvature)) {
         needed = built + sg_metric_bytes(g.n, g.max_degree, g.edges, par.width());
         return false;
     }

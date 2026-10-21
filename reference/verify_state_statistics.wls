@@ -11,7 +11,8 @@
    "StepStatisticsBranchial" -> All. Every key of every step must agree: integers exactly, reals
    to 1e-9 relative. The "StateMatrices" of "StepStatisticsMatrices" -> All, under
    "CanonicalizeStates" None and Automatic, must list each step's state ids ascending and agree
-   with sgrStateMatrices on the listed states to 1e-9.
+   with sgrStateMatrices on the listed states to 1e-9. With "IncludeVertexCurvature" -> True
+   each state's "VertexCurvature" must agree with sgrVertexCurvature to 1e-9.
 
    The two metrics the Wolfram Function Repository defines are also checked against the
    repository's own functions on every connected state of every case with at least two
@@ -310,6 +311,15 @@ Do[
           Print["PASS  ", name, " state matrices ", mode, ": ", n, " steps"],
           failures++; Print["FAIL  ", name, " state matrices ", mode, ": ", Short[bad, 6]]]],
       {mode, {None, Automatic}}];
+    Module[{res = HGEvolve[rules, init, steps, "States", "CanonicalizeStates" -> None,
+        "IncludeVertexCurvature" -> True], bad},
+      bad = Select[Values[res], Module[{want = sgrVertexCurvature[#Edges[[All, 2 ;;]]],
+          got = #VertexCurvature},
+        !AssociationQ[got] || Keys[got] =!= Keys[want] ||
+          (Length[want] > 0 && Max[Abs[Values[got] - Values[want]]] > 10^-9)] &];
+      If[bad === {},
+        Print["PASS  ", name, " vertex curvature: ", Length[res], " states"],
+        failures++; Print["FAIL  ", name, " vertex curvature: ", Short[bad[[1]], 6]]]];
     Do[
       Module[{want = r[[2]], got = normal[r[[3]]], diffs},
         diffs = If[!ListQ[got] || Length[got] =!= Length[want], {"step count", Length[got], Length[want]},

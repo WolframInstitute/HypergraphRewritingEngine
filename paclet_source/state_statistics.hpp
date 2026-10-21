@@ -96,6 +96,13 @@ struct StateGeometry {
 
 StateGeometry state_geometry(const std::vector<std::vector<uint32_t>>& edges);
 
+// (vertex, k_v) for each vertex of a state's graph with a neighbour, ascending, from the state's
+// edges as a "States" record lists them ((edge id, vertices)): k_v is the mean Ollivier-Ricci
+// curvature of v's edges (hgcommon/state_geometry_core.hpp), the value "VertexInvariants" pools
+// as "OllivierRicciCurvature".
+using VertexCurvature = std::vector<std::pair<uint32_t, double>>;
+VertexCurvature vertex_curvature(const std::vector<std::pair<int64_t, std::vector<uint32_t>>>& edges);
+
 // One step's states and branchial pairs, for the per-step branchial metrics. `nodes` are the
 // step's states by effective id; `pairs` the branchial state pairs whose first event's output
 // state is at the step; for the overlap metrics, `vertex_sets[i]` the engine's vertex ids of

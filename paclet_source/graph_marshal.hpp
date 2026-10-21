@@ -359,6 +359,16 @@ public:
             for (uint32_t v : verts) w_.write(static_cast<int64_t>(v));
         }
     }
+    void vertex_reals(const char* key, const std::vector<std::pair<uint32_t, double>>& kv) {
+        key_(key);
+        w_.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        w_.write_varint(kv.size());
+        for (const auto& [v, x] : kv) {
+            w_.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w_.write(static_cast<int64_t>(v));
+            w_.write(x);
+        }
+    }
 private:
     void key_(const char* k) {
         w_.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
@@ -371,19 +381,21 @@ struct StateRecordIds {
     int64_t id, canonical_id, content_id, step;
     bool    with_hash;
     int64_t hash;
+    bool    with_curvature = false;   // "IncludeVertexCurvature"
 };
 
 // A "States" record. `edges` is the state's edges as (edge id, vertices). Under Full the record
 // carries the state's IR canonical form, its edges numbered from 0 in canonical order; otherwise
 // the edges as stored, under the edge ids an event's ConsumedEdges and ProducedEdges name.
-// IsInitial is the 0/1 integer a WXFValue(bool) stores.
+// IsInitial is the 0/1 integer a WXFValue(bool) stores. With r.with_curvature the record has
+// "VertexCurvature" (stats::vertex_curvature of the edges the record lists).
 void state_record_edges(bool full,
                         std::vector<std::pair<int64_t, std::vector<uint32_t>>>& edges);
 template <class Sink>
 void write_state_record(Sink& s, const StateRecordIds& r, bool full,
                         std::vector<std::pair<int64_t, std::vector<uint32_t>>> edges) {
     state_record_edges(full, edges);
-    s.begin(r.with_hash ? 7u : 6u);
+    s.begin((r.with_hash ? 7u : 6u) + (r.with_curvature ? 1u : 0u));
     s.i64("Id", r.id);
     s.i64("CanonicalId", r.canonical_id);
     s.i64("ContentStateId", r.content_id);
@@ -391,6 +403,7 @@ void write_state_record(Sink& s, const StateRecordIds& r, bool full,
     s.edges("Edges", edges);
     s.i64("IsInitial", r.step == 0 ? 1 : 0);
     if (r.with_hash) s.i64("CanonicalHash", r.hash);
+    if (r.with_curvature) s.vertex_reals("VertexCurvature", stats::vertex_curvature(edges));
 }
 
 // The fields of a state vertex's payload in a styled graph. The payload is <|Id, CanonicalId,

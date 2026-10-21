@@ -121,6 +121,8 @@ struct GpuJob {
     uint32_t step_statistics_branchial = 0;
     // "StepStatisticsMatrixLimit". Set after the job is built.
     uint32_t step_statistics_matrix_limit = HG_NAMESPACE::stats::kMatrixLimitDefault;
+    // "IncludeVertexCurvature". Set after the job is built.
+    bool include_vertex_curvature = false;
     // "Device" in RequestedData: the reply names the device's name and compute capability. Set
     // after the job is built.
     bool include_device = false;

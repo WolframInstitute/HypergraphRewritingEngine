@@ -370,6 +370,13 @@ quantiles are histogram quantiles: the bin holding the fraction q of the weight,
 the bin between its edges clipped to [`Min`, `Max`]. `Histogram` maps each non-empty bin's lower
 edge to its weight.
 
+**Per-vertex curvature.** With `"IncludeVertexCurvature" -> True` each `"States"` record has
+`VertexCurvature`, an association from each vertex of the record's edges that has a neighbour in
+G, ascending, to k_v. It is computed from the edges the record lists, so under
+`"CanonicalizeStates" -> Full` it belongs to the canonical form. The values are those
+`VertexInvariants` pools, from the same function (`hgcommon::sg_geometry_of`). Both engines'
+replies compute them while writing the records, which host jobs write in chunks of 256 states.
+
 The radius, the per-radius dimensions and the Ricci scalar take one breadth-first search per
 vertex; the per-vertex dimensions used by `FisherInformation` and `LargestComponentDimension`
 take a second, and K_v a third, to depth R'; k_v, `OllivierMoranI` and

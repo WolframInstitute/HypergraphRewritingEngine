@@ -139,6 +139,7 @@ struct ParsedJob {
     uint32_t step_statistics_branchial = 0; // "StepStatisticsBranchial" and "StepStatisticsMatrices":
                                             // stats::kBranchial* and kMatrix* bits
     uint32_t step_statistics_matrix_limit = stats::kMatrixLimitDefault;  // "StepStatisticsMatrixLimit"
+    bool include_vertex_curvature = false;  // "IncludeVertexCurvature": "VertexCurvature" per state
     bool include_global_edges = false;      // All edges created during evolution
     bool include_state_bitvectors = false;  // State edge sets as lists of edge IDs
     bool include_device = false;            // "Device": which device ran the job

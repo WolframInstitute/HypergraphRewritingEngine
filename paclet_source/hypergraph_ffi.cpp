@@ -248,6 +248,9 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                         } else if (option_key == "EdgeDeduplication") {
                             std::string symbol = option_parser.read<std::string>();
                             req.edge_deduplication = (symbol == "True");
+                        } else if (option_key == "IncludeVertexCurvature") {
+                            req.include_vertex_curvature =
+                                option_parser.read<std::string>() == "True";
                         } else if (option_key == "IncludeCanonicalHashes") {
                             std::string symbol = option_parser.read<std::string>();
                             req.include_canonical_hashes = (symbol == "True");
@@ -665,6 +668,7 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
             job.l2_persist_limit = static_cast<uint64_t>(*l2);
         job.step_statistics_branchial = branchial;
         job.step_statistics_matrix_limit = req.step_statistics_matrix_limit;
+        job.include_vertex_curvature = req.include_vertex_curvature;
         job.step_cap_counts_matches = step_cap_counts_matches(req);
         if (req.show_progress) {
             core_progress(host, "HGEvolve: Starting GPU evolution...");
@@ -1367,7 +1371,8 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                         static_cast<int64_t>(hg.get_canonical_state(sid)),
                         static_cast<int64_t>(content_hash_to_id.at(state_content_hashes[sid])),
                         static_cast<int64_t>(reported_step(sid)),
-                        req.include_canonical_hashes, static_cast<int64_t>(exact_hash)},
+                        req.include_canonical_hashes, static_cast<int64_t>(exact_hash),
+                        req.include_vertex_curvature},
                     full_canonicalization, std::move(edges));
             });
             ++streamed_top_sections;

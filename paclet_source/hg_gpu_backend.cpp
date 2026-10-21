@@ -615,7 +615,8 @@ std::vector<uint8_t> run_gpu_evolution_once(const GpuJob& request, const HostBri
                     static_cast<int64_t>(s), rep_of(s),
                     content_id.at(listed_hash[i]),
                     static_cast<int64_t>(reported_step(s)),
-                    job.include_canonical_hashes, static_cast<int64_t>(state_hash.at(s))},
+                    job.include_canonical_hashes, static_cast<int64_t>(state_hash.at(s)),
+                    job.include_vertex_curvature},
                 canon_mode == hg_gpu::CanonicalizationMode::Full, record_edges(s));
         });
         full_result.push_back({wxf::WXFValue("States"), wxf::WXFValue(wxf::Encoded{w.release_data()})});
