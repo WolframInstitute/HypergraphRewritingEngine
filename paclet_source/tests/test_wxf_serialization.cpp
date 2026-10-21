@@ -655,6 +655,27 @@ TEST(WxfSerializationPin, MatchesPerStepCountsTransitionsUnderAPerParentCap) {
     EXPECT_EQ(events(true), 1);
 }
 
+// The genesis events' input state is not a state of the evolution (docs/SPEC.md 5.2), so
+// "StepStatistics" is the same with and without ShowGenesisEvents.
+TEST(WxfSerializationPin, StepStatisticsLeaveOutTheGenesisState) {
+    HostBridge host;
+    auto stats = [&](bool genesis) {
+        return value_bytes(
+            run_rewriting_core(
+                build_input({{{1, 2}}}, {{1, 2}}, {{1, 3}, {3, 2}}, 2,
+                            [&](wxf::Writer& w) {
+                                put_str_option(w, "ShowGenesisEvents", genesis ? "True" : "False");
+                                put_str_list_option(w, "RequestedData", {"StepStatistics"});
+                            },
+                            2),
+                host),
+            "StepStatistics");
+    };
+    const auto without = stats(false);
+    ASSERT_FALSE(without.empty());
+    EXPECT_EQ(stats(true), without);
+}
+
 TEST(WxfSerializationPin, AskingForLessDoesNotAnswerLess) {
     HostBridge host;
 
