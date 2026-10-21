@@ -921,6 +921,10 @@ void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
     if (k != 0 || (max_states_per_step_ != 0 && !step_cap_counts_matches_))
         for (RankedMatch& c : cands) c.succ = successor_identity(state, *c.match);
     if (k != 0) keep_lowest_successors(cands, k);
+    // MatchesPerStep counts transitions: each candidate is its own successor in the step's cut,
+    // whatever identity the per-parent cut above read.
+    if (step_cap_counts_matches_)
+        for (RankedMatch& c : cands) c.succ = {0, 1};
     if (max_states_per_step_ != 0) {
         // When every candidate is its own successor (None states, a fresh vertex under
         // Automatic, or MatchesPerStep), select_step keeps a candidate exactly when fewer than N

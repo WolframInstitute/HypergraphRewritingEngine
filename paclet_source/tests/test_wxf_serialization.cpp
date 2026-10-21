@@ -626,6 +626,35 @@ TEST(WxfSerializationPin, AutomaticRanksComeFromTheSortedVertexNumbering) {
     EXPECT_EQ(read_int_key(run_rewriting_core(w.release_data(), host), "NumEvents"), 4);
 }
 
+// MatchesPerStep counts transitions also when MaxSuccessorStatesPerParent is set (docs/SPEC.md 5).
+// {{1,1}} -> {} on {{2,2},{2,2}} under Automatic states makes two transitions into one state;
+// MatchesPerStep -> 1 keeps one of them, and a per-parent cap of 4 keeps both of them.
+TEST(WxfSerializationPin, MatchesPerStepCountsTransitionsUnderAPerParentCap) {
+    HostBridge host;
+    auto events = [&](bool per_parent) {
+        const auto out = run_rewriting_core(
+            build_input({{{2, 2}, {2, 2}}}, {{1, 1}}, {}, 1,
+                        [&](wxf::Writer& w) {
+                            put_str_option(w, "CanonicalizeStates", "Automatic");
+                            put_str_option(w, "UniformRandom", "True");
+                            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                            w.write(std::string("MatchesPerStep"));
+                            w.write(int64_t{1});
+                            if (per_parent) {
+                                w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                                w.write(std::string("MaxSuccessorStatesPerParent"));
+                                w.write(int64_t{4});
+                            }
+                            put_str_list_option(w, "RequestedData", {"NumEvents"});
+                        },
+                        per_parent ? 5 : 4),
+            host);
+        return read_int_key(out, "NumEvents");
+    };
+    EXPECT_EQ(events(false), 1);
+    EXPECT_EQ(events(true), 1);
+}
+
 TEST(WxfSerializationPin, AskingForLessDoesNotAnswerLess) {
     HostBridge host;
 
