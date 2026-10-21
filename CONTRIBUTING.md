@@ -61,6 +61,20 @@ python3 tools/dev/worker_fuzz.py                   # 200 cases, seed 1000
 python3 tools/dev/worker_fuzz.py --cases 5000 --minutes 60 --seed 5000
 ```
 
+Reference corpus gate (needs the Wolfram Engine and, for the GPU half, a GPU; a local gate, not
+run in CI). `tools/dev/oracle_gate.sh` runs `reference/oracle_fuzz.wls` on seeds 0-41, three
+cases of each of its 14 case classes on both devices against `reference/MultiwayReference.wl`,
+then `worker_fuzz.py` at its default budget; about 7 minutes. On WSL it uses the newest Windows
+Wolfram Engine and the Windows binaries (`./build_windows_msvc.sh`), elsewhere `wolframscript`
+on PATH and this platform's binaries. Run it at every commit batch that touches the engine, the
+FFI, the paclet or the reference. A nonzero exit means a difference; the fuzz lists it in
+`.scratch/oracle_gate/fuzz_0_41/disc.txt`. Longer runs: `ORACLE_SEEDS="100 1159"`;
+docs/VERIFICATION_STATUS.md ("Reference corpus coverage") lists what each case class covers.
+
+```bash
+tools/dev/oracle_gate.sh
+```
+
 Paclet (needs a Wolfram Engine): `reference/verify_paclet.wls` loads the local paclet
 and checks `HGEvolve` against the golden corpus.
 

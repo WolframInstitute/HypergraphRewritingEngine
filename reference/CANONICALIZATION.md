@@ -13,6 +13,7 @@ hypergraphs (vertex relabeling; within-edge order preserved; multiplicity preser
 | Reference option `"StateCanonicalization"` | Meaning | Engine `StateCanonicalizationMode` | Paclet option `"CanonicalizeStates"` | MultiwaySystem `"CanonicalStateFunction"` |
 |---|---|---|---|---|
 | `"Canonical"` (default) | merge isomorphic states (exact, IR) | `Full` | `Full` / `True` | `"CanonicalHypergraph"` |
+| `"Content"` | merge states whose edge lists are equal, edges in creation order | `Automatic` | `Automatic` | — |
 | `"None"` | keep all states distinct | `None` | `None` / `False` | `Identity` |
 
 The exact canonicalizer is McKay-style individualization–refinement (IR) in the engine;

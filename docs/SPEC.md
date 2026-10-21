@@ -75,7 +75,7 @@ Which states are the same node.
 | value | two states are one node iff | dedup key |
 |---|---|---|
 | `None` (default) | never — every raw state is its own node | the state's own id |
-| `Automatic` | their edge multisets are identical under a content ordering (**not** isomorphism-invariant) | content-ordered hash, with the content words compared on a key hit |
+| `Automatic` | their edge lists are identical, edges in creation order and vertices by their labels (**not** isomorphism-invariant) | content-ordered hash, with the content words compared on a key hit |
 | `Full` | they are isomorphic as ordered hypergraphs (vertex relabeling; within-edge order and multiplicity preserved) | the canonical hash, with the canonical forms compared on a key hit |
 
 The canonical form is McKay-style individualization–refinement (IR). The **reported** per-state
@@ -207,7 +207,8 @@ An edge instance carries the identity of the event that produced it (its **produ
 initial edge's producer is its root's genesis event. There is a causal pair `p → c` whenever
 event `c` **consumes an edge that event `p` produced**. `ShowGenesisEvents` (default off) decides
 whether pairs involving genesis events are part of the observable relation. With it, each initial
-state has one genesis event (`"RuleIndex"` 65535), counted in `NumEvents`, and a pair `g → c` for
+state has one genesis event (`"RuleIndex"` 65535), its own event under every event identity and
+counted in `NumEvents`, and a pair `g → c` for
 every event `c` that consumed an edge of `g`'s initial state (under `CausalTransitiveReduction`,
 only those that consumed no produced edge); its input state is not one of `"States"`. Both
 exploration routes give the same events and pairs.

@@ -386,6 +386,9 @@ rented box that does.
   counts-only replies are compared with full ones on both devices. Unknown findings are shrunk to
   a minimal job (or, for a worker leak, a minimal job sequence) and fail the run; open board
   defects are listed in its `KNOWN` table. Every child runs under `RLIMIT_AS`.
+- **`oracle_gate.sh`** -- the reference corpus gate (CONTRIBUTING.md, Test): `reference/oracle_fuzz.wls`
+  on a fixed seed range against a hash-named copy of the paclet, then `worker_fuzz.py` at its
+  default budget.
 - **`wxf_mini.py`** -- the WXF encoder and decoder `worker_fuzz.py` builds jobs and reads replies
   with.
 
