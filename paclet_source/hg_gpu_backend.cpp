@@ -183,6 +183,9 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
     in.max_successor_states_per_parent = cap32(job.max_successor_states_per_parent);
     in.matches_per_state_rule = cap32(job.matches_per_state_rule);
     in.max_device_memory_bytes = job.max_device_memory_bytes;
+    in.persistent_blocks = job.persistent_blocks;
+    in.lane_backlog = job.lane_backlog;
+    in.l2_persist_limit = job.l2_persist_limit;
     return in;
 }
 
@@ -928,6 +931,16 @@ std::vector<uint8_t> run_gpu_evolution_once(const GpuJob& request, const HostBri
         device.push_back({wxf::WXFValue("MemoryCap"),
                           wxf::WXFValue(static_cast<int64_t>(
                               hg_gpu::resolved_memory_cap(in.max_device_memory_bytes)))});
+        {
+            const hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
+            device.push_back({wxf::WXFValue("Blocks"),
+                              wxf::WXFValue(static_cast<int64_t>(hg_gpu::persistent_grid_of(cfg)))});
+            device.push_back({wxf::WXFValue("Backlog"),
+                              wxf::WXFValue(static_cast<int64_t>(hg_gpu::lane_backlog_of(cfg)))});
+            device.push_back({wxf::WXFValue("L2Persist"),
+                              wxf::WXFValue(static_cast<int64_t>(
+                                  hg_gpu::l2_persist_limit_of(cfg.l2_persist_limit)))});
+        }
         device.push_back({wxf::WXFValue("Threads"),
                           wxf::WXFValue(static_cast<int64_t>(
                               job.threads ? job.threads : hgcommon::default_worker_count()))});

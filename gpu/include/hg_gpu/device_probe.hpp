@@ -45,8 +45,9 @@ const DeviceProbe& probe_device();
 // Read by every value derived from the device's properties.
 const DeviceProbe& usable_device();
 
-// Blocks a persistent kernel launches when the caller does not choose: eight per SM, or
-// HG_GPU_PERSISTENT_BLOCKS when set (gpu/src/persistent.cu).
+// Blocks a persistent kernel launches when the caller does not choose: SMs x min(
+// persistent_blocks_per_sm(), persistent_blocks_per_sm_plateau()), or HG_TUNE_GPU_BLOCKS
+// (HG_GPU_PERSISTENT_BLOCKS) when set (gpu/src/persistent.cu).
 //
 // A persistent kernel's blocks do not retire and get replaced -- they live for the whole
 // evolution -- so the grid IS the worker count. Exposed because the IR arena has to be sized
@@ -54,10 +55,30 @@ const DeviceProbe& usable_device();
 // grid, and a caller sizing the arena off the state budget alone starves it as soon as the grid
 // grows. See gpu/src/persistent.cu for the sweep behind eight-per-SM.
 uint32_t default_persistent_grid();
+// Blocks of k_persistent_evolve one SM holds resident (cudaOccupancyMaxActiveBlocksPerMultiprocessor
+// at kMatchBlockThreads threads). Read once.
+uint32_t persistent_blocks_per_sm();
+// Blocks per SM at which the grid sweep of an architecture plateaus: 8 on cc 8.9, and 8 for an
+// architecture whose sweep has not run.
+uint32_t persistent_blocks_per_sm_plateau(int major, int minor);
 
 // Threads the device can hold resident: SMs x maximum threads per SM. The driver reserves the
 // per-thread stack (cudaLimitStackSize) for this many threads, whatever grid is launched.
 uint64_t device_resident_threads();
+
+// D13 (docs/TUNING.md): the blocks a grid-stride kernel of `block` threads launches over `n`
+// items: ceil(n / block), at most the blocks the device holds resident, at least 1.
+uint32_t grid_stride_blocks(uint64_t n, uint32_t block);
+
+// D22 (docs/TUNING.md): the bytes of an L2 access policy window over `window_bytes` of device
+// memory, or 0 for no window. A window needs compute capability 8.0 or above and fits both
+// DeviceProbe::persisting_l2_max and the limit: `limit` unless ~0, else HG_TUNE_GPU_L2_PERSIST,
+// else persisting_l2_max (0 turns windows off). The persisting set-aside
+// (cudaLimitPersistingL2CacheSize) is set to the window.
+uint64_t l2_persist_bytes(uint64_t window_bytes, uint64_t limit = ~uint64_t{0});
+// The window limit of l2_persist_bytes: 0 below compute capability 8.0, else
+// min(persisting_l2_max, `limit` unless ~0, else HG_TUNE_GPU_L2_PERSIST or persisting_l2_max).
+uint64_t l2_persist_limit_of(uint64_t limit = ~uint64_t{0});
 
 // The device-memory ceiling of a run: `requested` when non-zero, else HG_TUNE_GPU_MEMORY_LIMIT
 // when set, else memory_cap_of(90% of DeviceProbe::total_bytes, free + `held_bytes`), with free

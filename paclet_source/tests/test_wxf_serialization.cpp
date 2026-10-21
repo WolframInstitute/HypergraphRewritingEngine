@@ -5017,7 +5017,16 @@ TEST(WxfSerializationPin, TuningOverridesReachTheEngine) {
             w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
             w.write(std::string("Tuning"));
             w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-            w.write_varint(3);
+            w.write_varint(6);
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("GPUL2Persist"));
+            w.write(int64_t{0});
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("GPUBlocks"));
+            w.write(int64_t{256});
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("GPUBacklog"));
+            w.write(int64_t{12});
             w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
             w.write(std::string("CausalSetCapacity"));
             w.write(int64_t{2048});
@@ -5034,7 +5043,8 @@ TEST(WxfSerializationPin, TuningOverridesReachTheEngine) {
     parser.read_association([&](const std::string& k, wxf::Parser& vp) {
         if (k != "Device") { vp.skip_value(); return; }
         vp.read_association([&](const std::string& f, wxf::Parser& fp) {
-            if (f == "Threads" || f == "MemoryCap" || f == "CausalSetCapacity")
+            if (f == "Threads" || f == "MemoryCap" || f == "CausalSetCapacity" || f == "Blocks" ||
+                f == "Backlog" || f == "L2Persist")
                 device[f] = fp.read<int64_t>();
             else fp.skip_value();
         });
@@ -5042,11 +5052,20 @@ TEST(WxfSerializationPin, TuningOverridesReachTheEngine) {
     EXPECT_EQ(device["Threads"], 3);
 #ifdef HG_GPU_BACKEND
     EXPECT_EQ(device["MemoryCap"], int64_t{3} << 30);
+    EXPECT_EQ(device["Blocks"], 256);
+    EXPECT_EQ(device["Backlog"], 12);
+    ASSERT_TRUE(device.count("L2Persist"));
+    EXPECT_EQ(device["L2Persist"], 0);
 #else
     EXPECT_EQ(device["CausalSetCapacity"], 2048);
 #endif
     EXPECT_TRUE(reply_mentions(out, "NoSuchName"));
     EXPECT_GT(read_int_key(out, "NumStates"), 0);
+    // The overrides change no count.
+    const auto plain = run_rewriting_core(build_input(kSeed, kLhs, kRhs, 3,
+        [&](wxf::Writer& w) { put_str_list_option(w, "RequestedData", {"NumStates", "NumEvents"}); },
+        1), host);
+    EXPECT_EQ(read_int_key(out, "NumStates"), read_int_key(plain, "NumStates"));
 }
 
 // =============================================================================

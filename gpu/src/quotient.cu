@@ -1,5 +1,6 @@
 #include "hg_gpu/quotient_causal.hpp"
 #include "hg_gpu/quotient_expansion.hpp"
+#include "hg_gpu/device_probe.hpp"   // grid_stride_blocks
 
 // The HOST bodies of the two quotient state objects: allocation, clear, the counter readbacks
 // and the view() calls that hand a device-side struct to a kernel. The DP and the replay
@@ -73,7 +74,10 @@ __global__ void k_qe_count_branchial(const __grid_constant__ DeviceState ds, con
 void qe_count_branchial(const DeviceState& ds, const QeView& qe, bool multiplicity) {
     HG_CUDA_CHECK(cudaMemsetAsync(qe.qm_counts + 1, 0, sizeof(unsigned long long)),
                   "QeState branchial count clear");
-    k_qe_count_branchial<<<1024, 128>>>(ds, qe, multiplicity ? 1u : 0u);
+    constexpr uint32_t block = 128;
+    const uint32_t grid =
+        grid_stride_blocks(multiplicity ? qe.qm_capacity : qe.class_nmatch_cap, block);
+    k_qe_count_branchial<<<grid, block>>>(ds, qe, multiplicity ? 1u : 0u);
     HG_CUDA_CHECK(cudaGetLastError(), "QeState branchial count launch");
 }
 

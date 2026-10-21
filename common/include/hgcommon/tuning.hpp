@@ -12,7 +12,12 @@
 //   Threads            HG_TUNE_THREADS               workers   ParallelEvolutionEngine, JobSystem
 //   CausalSetCapacity  HG_TUNE_CAUSAL_SET_CAPACITY   slots     ParallelEvolutionEngine (causal sets, per shard)
 //   ExpandChunk        HG_TUNE_EXPAND_CHUNK          matches   ParallelEvolutionEngine (rewrite task size)
+//   GPUBlocks          HG_TUNE_GPU_BLOCKS            blocks    default_persistent_grid
+//   GPUBacklog         HG_TUNE_GPU_BACKLOG           records   lane_backlog_of
 //   GPUMemoryLimit     HG_TUNE_GPU_MEMORY_LIMIT      bytes     resolved_memory_cap
+//   GPUL2Persist       HG_TUNE_GPU_L2_PERSIST        bytes     l2_persist_bytes (0: no window)
+//
+// HG_GPU_PERSISTENT_BLOCKS is read as HG_TUNE_GPU_BLOCKS when the latter is unset.
 
 #include <array>
 #include <cstdint>
@@ -29,7 +34,10 @@ enum class Tune : uint8_t {
     Threads,
     CausalSetCapacity,
     ExpandChunk,
+    GpuBlocks,
+    GpuBacklog,
     GpuMemoryLimit,
+    GpuL2Persist,
     kCount
 };
 
@@ -43,7 +51,10 @@ inline constexpr std::array<TuneInfo, static_cast<size_t>(Tune::kCount)> kTuneIn
     {"Threads", "HG_TUNE_THREADS", 1},
     {"CausalSetCapacity", "HG_TUNE_CAUSAL_SET_CAPACITY", 1},
     {"ExpandChunk", "HG_TUNE_EXPAND_CHUNK", 1},
+    {"GPUBlocks", "HG_TUNE_GPU_BLOCKS", 1},
+    {"GPUBacklog", "HG_TUNE_GPU_BACKLOG", 1},
     {"GPUMemoryLimit", "HG_TUNE_GPU_MEMORY_LIMIT", 1},
+    {"GPUL2Persist", "HG_TUNE_GPU_L2_PERSIST", 0},
 }};
 
 inline const TuneInfo& tune_info(Tune t) { return kTuneInfo[static_cast<size_t>(t)]; }
@@ -96,6 +107,7 @@ inline const TuningOverrides& tuning_env() {
         for (size_t i = 0; i < kTuneInfo.size(); ++i) {
             const Tune t = static_cast<Tune>(i);
             const char* v = std::getenv(kTuneInfo[i].env);
+            if (!v && t == Tune::GpuBlocks) v = std::getenv("HG_GPU_PERSISTENT_BLOCKS");
             if (!v || !*v) continue;
             char* end = nullptr;
             const long long x = std::strtoll(v, &end, 10);

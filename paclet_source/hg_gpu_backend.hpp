@@ -128,6 +128,11 @@ struct GpuJob {
     // "Threads": the host workers that build the reply; 0 is the default count
     // (hgcommon::default_worker_count). Set after the job is built.
     unsigned threads = 0;
+    // "Tuning" -> GPUBlocks and GPUBacklog; 0 is the derived value. Set after the job is built.
+    uint32_t persistent_blocks = 0;
+    uint32_t lane_backlog = 0;
+    // "Tuning" -> GPUL2Persist; ~0 is the derived value. Set after the job is built.
+    uint64_t l2_persist_limit = ~uint64_t{0};
 };
 
 // Run the job on the GPU (hg_gpu::evolve) and marshal the result into the same

@@ -106,6 +106,8 @@ EngineConfig config_from_input(const EvolveInput& in) {
 
     if (in.slice_scan_max_edges) cfg.slice_scan_max_edges = in.slice_scan_max_edges;
     if (in.max_blocks_per_launch) cfg.max_blocks_per_launch = in.max_blocks_per_launch;
+    cfg.persistent_grid = in.persistent_blocks;
+    cfg.lane_backlog = in.lane_backlog;
 
     const uint64_t expected_events = expected_states;
     cfg.max_events             = field(expected_events);
@@ -131,6 +133,7 @@ EngineConfig config_from_input(const EvolveInput& in) {
     cfg.keyed_rewrites         = in.keyed_rewrites;
     cfg.keyed_claim_limit      = in.keyed_claim_limit;
     cfg.keyed_sum_mask         = in.keyed_sum_mask;
+    cfg.l2_persist_limit       = in.l2_persist_limit;
     auto widen = [](uint16_t& f, size_t n) {
         f = static_cast<uint16_t>(std::max<size_t>(f, std::min<size_t>(n, 0xFFFFu)));
     };
@@ -391,12 +394,12 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     // each take a reachability slice on first need, from a table with one entry per lane.
     if (qe_multiplicity) {
         const uint32_t drivers =
-            default_persistent_grid() > static_cast<uint32_t>(roots.size())
-                ? default_persistent_grid()
+            persistent_grid_of(cfg) > static_cast<uint32_t>(roots.size())
+                ? persistent_grid_of(cfg)
                 : static_cast<uint32_t>(roots.size());
         qe_state_->ensure_work(drivers, in.num_steps, cfg.descent_work_scale);
     }
-    if (qe_replay) qe_state_->ensure_lanes(default_persistent_grid() * kMatchBlockThreads);
+    if (qe_replay) qe_state_->ensure_lanes(persistent_grid_of(cfg) * kMatchBlockThreads);
     const bool qe_event_content = qc_route && qe_replay && in.materialize_events;
     if (qe_event_content) qe_state_->ensure_event_content();
     const bool qe_publish_applied =
@@ -472,7 +475,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         // state budget. Exhaustion is a recorded capacity overflow (kIRArenaExhausted, which the
         // wrapper can grow and retry), never a coarser hash.
         DeviceArena& arena = engine.ir_arena(
-            persistent_arena_words(cfg.ir_arena_share_words, default_persistent_grid()));
+            persistent_arena_words(cfg.ir_arena_share_words, persistent_grid_of(cfg)));
 
         auto t_kern_start = std::chrono::steady_clock::now();
         PersistentEvolveStats st = run_persistent_evolve(
@@ -972,13 +975,13 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     }
     // The multiplicity queues at their minimum per-driver size (256 items), which
     // descent_work_scale multiplies; a deep run's queues are larger still.
-    b += u64(default_persistent_grid()) * 256u * u64(cfg.descent_work_scale) *
+    b += u64(persistent_grid_of(cfg)) * 256u * u64(cfg.descent_work_scale) *
          sizeof(QeWorkItem);
     // Reachability scratch and its busy words.
-    b += u64(default_persistent_grid()) * 4u *
+    b += u64(persistent_grid_of(cfg)) * 4u *
          (u64(EngineState::tr_scratch_scale_of(cfg)) *
               (EngineState::kTrScratchStack + EngineState::kTrScratchVisited) + 1u);
-    b += u64(default_persistent_grid()) * u64(cfg.survivor_scratch) * 8u;    // survivor scratch
+    b += u64(persistent_grid_of(cfg)) * u64(cfg.survivor_scratch) * 8u;    // survivor scratch
     // The claim maps: states and exact hashes at two slots per state, event signatures at two
     // per event (persistent.cu reuse_map).
     b += map_bytes(u64(cfg.max_states) * 2) * 2 + map_bytes(u64(cfg.max_events) * 2);
@@ -1167,6 +1170,20 @@ static EvolveResult run_with_growth(EngineConfig cfg, uint64_t mem_cap, Attempt&
             error_kind_name(first_grew), attempt_no + 2, kMaxRetries + 1);
     }
     return EvolveResult{};  // unreachable: every iteration returns or continues
+}
+
+uint32_t persistent_grid_of(const EngineConfig& cfg) {
+    return cfg.persistent_grid ? cfg.persistent_grid : default_persistent_grid();
+}
+
+uint32_t derived_lane_backlog(uint32_t grid) { return std::max<uint32_t>(8u, grid / 16u); }
+
+uint32_t lane_backlog_of(const EngineConfig& cfg) {
+    if (cfg.lane_backlog) return cfg.lane_backlog;
+    return static_cast<uint32_t>(hgcommon::tuned(hgcommon::TuningOverrides{},
+                                                 hgcommon::Tune::GpuBacklog, [&] {
+        return derived_lane_backlog(persistent_grid_of(cfg));
+    }));
 }
 
 EngineConfig initial_config(const EvolveInput& in, uint64_t mem_cap) {

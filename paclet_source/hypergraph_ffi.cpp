@@ -628,6 +628,12 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
         job.step_statistics_by_class = req.step_statistics_by_class;
         job.include_device = req.include_device;
         job.threads = static_cast<unsigned>(req.tuning.get(hgcommon::Tune::Threads).value_or(0));
+        job.persistent_blocks =
+            static_cast<uint32_t>(req.tuning.get(hgcommon::Tune::GpuBlocks).value_or(0));
+        job.lane_backlog =
+            static_cast<uint32_t>(req.tuning.get(hgcommon::Tune::GpuBacklog).value_or(0));
+        if (const auto l2 = req.tuning.get(hgcommon::Tune::GpuL2Persist))
+            job.l2_persist_limit = static_cast<uint64_t>(*l2);
         job.step_statistics_branchial = branchial;
         job.step_cap_counts_matches = step_cap_counts_matches(req);
         if (req.show_progress) {

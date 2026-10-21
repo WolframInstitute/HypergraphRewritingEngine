@@ -5,6 +5,7 @@
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 
@@ -66,8 +67,30 @@ TEST(HgGpuSmoke, DeviceProbeMatchesTheAttributeQueries) {
 
     EXPECT_EQ(hg_gpu::device_resident_threads(),
               (uint64_t)p.sm_count * (uint64_t)p.max_threads_per_sm);
-    if (!std::getenv("HG_GPU_PERSISTENT_BLOCKS"))
-        EXPECT_EQ(hg_gpu::default_persistent_grid(), (uint32_t)p.sm_count * 8u);
+    EXPECT_GE(hg_gpu::persistent_blocks_per_sm(), 1u);
+    if (!std::getenv("HG_GPU_PERSISTENT_BLOCKS") && !std::getenv("HG_TUNE_GPU_BLOCKS"))
+        EXPECT_EQ(hg_gpu::default_persistent_grid(),
+                  (uint32_t)p.sm_count * std::min(hg_gpu::persistent_blocks_per_sm(), 8u));
+    EXPECT_EQ(hg_gpu::derived_lane_backlog(1024), 64u);
+    EXPECT_EQ(hg_gpu::derived_lane_backlog(32), 8u);
+    hg_gpu::EngineConfig cfg;
+    cfg.persistent_grid = 256;
+    EXPECT_EQ(hg_gpu::persistent_grid_of(cfg), 256u);
+    if (!std::getenv("HG_TUNE_GPU_BACKLOG")) EXPECT_EQ(hg_gpu::lane_backlog_of(cfg), 16u);
+    cfg.lane_backlog = 5;
+    EXPECT_EQ(hg_gpu::lane_backlog_of(cfg), 5u);
+    // D13: one block at least, ceil(n / block) below the resident threads, capped there.
+    EXPECT_EQ(hg_gpu::grid_stride_blocks(0, 256), 1u);
+    EXPECT_EQ(hg_gpu::grid_stride_blocks(1000, 256), 4u);
+    EXPECT_EQ(hg_gpu::grid_stride_blocks(uint64_t{1} << 40, 256),
+              (uint32_t)(hg_gpu::device_resident_threads() / 256));
+    // D22: no window below cc 8.0 or past the persisting maximum; an explicit 0 turns it off.
+    const uint64_t l2max = p.major >= 8 ? p.persisting_l2_max : 0;
+    EXPECT_EQ(hg_gpu::l2_persist_limit_of(uint64_t{1} << 40), l2max);
+    EXPECT_EQ(hg_gpu::l2_persist_limit_of(0), 0u);
+    EXPECT_EQ(hg_gpu::l2_persist_bytes(4096, 0), 0u);
+    EXPECT_EQ(hg_gpu::l2_persist_bytes(l2max + 1, uint64_t{1} << 40), 0u);
+    if (l2max >= 4096) EXPECT_EQ(hg_gpu::l2_persist_bytes(4096, uint64_t{1} << 40), 4096u);
     // The derived cap is at most 90% of total and at most free - 256 MB.
     const uint64_t ninety = (uint64_t)((double)p.total_bytes * 0.90);
     if (!std::getenv("HG_TUNE_GPU_MEMORY_LIMIT")) {

@@ -19,9 +19,11 @@
 #include "hg_gpu/content_hash.hpp"
 #include "hg_gpu/cuda_check.hpp"
 #include "hg_gpu/device_probe.hpp"
+#include "hgcommon/tuning.hpp"
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <stdexcept>
@@ -745,9 +747,6 @@ __global__ void k_persistent_match_rewrite(
     }
 }
 
-// The readable records below which a block claims one at a time: a short backlog is spread over
-// the grid, where a batch would leave the other blocks idle.
-constexpr uint32_t kLaneBatchBacklog = 64;
 // The records a batch claims: up to kBatchRecords, and up to 32 once the block has found work in
 // kDeepStreak consecutive iterations. A batch's children are canonicalised on tiles of
 // min(kMaxTile, the largest power of two at most 32 / records) lanes: 32 records run one per
@@ -1309,7 +1308,7 @@ __global__ void k_persistent_evolve(
         // Rewrite first: it drains what matching produced, and letting the pool run ahead
         // unboundedly is what makes it overflow. A block claims one record; when the IR slots of
         // more children like it fit the block's region (ir_slot_shape at max_edge_arity),
-        // kLaneBatchBacklog records are readable and the block found work in its last
+        // ds.lane_backlog records are readable and the block found work in its last
         // kBatchBusyStreak iterations, it claims up to kBatchRecords - 1 more in one exchange, or
         // 31 after kDeepStreak. A short burst spreads over the grid. The record is read only after
         // it is claimed.
@@ -1330,8 +1329,11 @@ __global__ void k_persistent_evolve(
                 const uint64_t fit = need ? region_words / need : 32u;
                 if (fit > 1u && busy_streak >= kBatchBusyStreak) {
                     const bool deep = busy_streak >= kDeepStreak;
-                    const auto more = [fit, deep](uint32_t, uint32_t available) {
-                        if (available < kLaneBatchBacklog) return 0u;
+                    // Below the backlog a short burst is spread over the grid, where a batch
+                    // would leave the other blocks idle (lane_backlog_of).
+                    const uint32_t backlog = ds.lane_backlog;
+                    const auto more = [fit, deep, backlog](uint32_t, uint32_t available) {
+                        if (available < backlog) return 0u;
                         const uint64_t cap = deep ? 32u : kBatchRecords;
                         return static_cast<uint32_t>((fit < cap ? fit : cap) - 1u);
                     };
@@ -1764,16 +1766,40 @@ void ring_seq_ramp_device(uint64_t* seq, uint32_t n) {
 //
 // Quotient causal is orbit-keyed (quotient_causal.hpp), so the causal set is the same at every
 // grid (tools/quotient_causal_probe_gpu holds it constant, and equal to the CPU's).
+// Blocks per SM the measured plateau sits at, by compute capability: 8 on 8.9 (the sweep above).
+// An architecture without its own sweep takes 8 until one runs.
+uint32_t persistent_blocks_per_sm_plateau(int major, int minor) {
+    (void)major;
+    (void)minor;
+    return 8u;
+}
+
+uint32_t persistent_blocks_per_sm() {
+    static uint32_t cached = 0;
+    if (cached) return cached;
+    int occ = 0;
+    HG_CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+                      &occ, k_persistent_evolve, static_cast<int>(kMatchBlockThreads), 0),
+                  "k_persistent_evolve occupancy");
+    cached = static_cast<uint32_t>(occ);
+    return cached;
+}
+
+// D1 (docs/TUNING.md): SMs x min(the blocks of k_persistent_evolve one SM holds, the plateau of
+// the architecture), or HG_TUNE_GPU_BLOCKS (HG_GPU_PERSISTENT_BLOCKS) when set. Read once.
+// Everything grid-derived (worker count, IR arena slots) reads EngineConfig::persistent_grid
+// through persistent_grid_of, which falls back to this.
 uint32_t default_persistent_grid() {
     static uint32_t cached = 0;
     if (cached) return cached;
-    // Measurement override, read once. Everything grid-derived (worker count, IR arena slots)
-    // funnels through this function, so an override scales all of it consistently.
-    if (const char* env = std::getenv("HG_GPU_PERSISTENT_BLOCKS")) {
-        const long v = std::atol(env);
-        if (v > 0) { cached = static_cast<uint32_t>(v); return cached; }
-    }
-    cached = static_cast<uint32_t>(usable_device().sm_count) * 8u;
+    cached = static_cast<uint32_t>(hgcommon::tuned(hgcommon::TuningOverrides{},
+                                                   hgcommon::Tune::GpuBlocks, [] {
+        const DeviceProbe& p = usable_device();
+        const uint32_t per_sm = std::max<uint32_t>(
+            1u, std::min(persistent_blocks_per_sm(),
+                         persistent_blocks_per_sm_plateau(p.major, p.minor)));
+        return static_cast<uint32_t>(p.sm_count) * per_sm;
+    }));
     return cached;
 }
 
@@ -1808,6 +1834,51 @@ uint64_t device_resident_threads() {
     const DeviceProbe& p = usable_device();
     cached = static_cast<uint64_t>(p.sm_count) * static_cast<uint64_t>(p.max_threads_per_sm);
     return cached;
+}
+
+uint64_t l2_persist_limit_of(uint64_t limit_override) {
+    const DeviceProbe& p = usable_device();
+    if (p.major < 8) return 0;
+    const uint64_t asked =
+        limit_override != ~uint64_t{0}
+            ? limit_override
+            : static_cast<uint64_t>(hgcommon::tuned(hgcommon::TuningOverrides{},
+                                                    hgcommon::Tune::GpuL2Persist,
+                                                    [&] { return p.persisting_l2_max; }));
+    return std::min<uint64_t>(p.persisting_l2_max, asked);
+}
+
+uint64_t l2_persist_bytes(uint64_t window_bytes, uint64_t limit_override) {
+    const uint64_t limit = l2_persist_limit_of(limit_override);
+    if (limit == 0 || window_bytes == 0) return 0;
+    static int max_window = -1;
+    if (max_window < 0) {
+        int dev = 0;
+        if (cudaGetDevice(&dev) != cudaSuccess ||
+            cudaDeviceGetAttribute(&max_window, cudaDevAttrMaxAccessPolicyWindowSize, dev) !=
+                cudaSuccess) {
+            cudaGetLastError();
+            max_window = 0;
+        }
+    }
+    if (window_bytes > limit || window_bytes > static_cast<uint64_t>(max_window)) return 0;
+    // The set-aside is resized only when the window changes; a device that refuses it runs
+    // without the window.
+    static uint64_t set_aside = 0;
+    if (set_aside != window_bytes) {
+        if (cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, window_bytes) != cudaSuccess) {
+            cudaGetLastError();
+            return 0;
+        }
+        set_aside = window_bytes;
+    }
+    return window_bytes;
+}
+
+uint32_t grid_stride_blocks(uint64_t n, uint32_t block) {
+    const uint64_t need = (n + block - 1) / block;
+    const uint64_t resident = device_resident_threads() / block;
+    return static_cast<uint32_t>(std::max<uint64_t>(1u, std::min(need, resident)));
 }
 
 // A launch's ring, dedup maps and detector. Built on first use at the sizes the launch asks for
@@ -1997,7 +2068,7 @@ PersistentRunStats run_persistent_match_rewrite(EngineState& engine,
     term.mark_pushed_host(kRoleMatch, num_items);
 
     // Block 0 is the detector, so at least two blocks are needed for any work to happen.
-    const uint32_t grid_req = blocks ? blocks : default_persistent_grid();
+    const uint32_t grid_req = blocks ? blocks : persistent_grid_of(engine.config());
     const uint32_t grid = grid_req < 2 ? 2 : grid_req;
     k_persistent_match_rewrite<<<grid, kMatchBlockThreads>>>(
         engine.device(), sc.rules, match_q.view(), scratch_matches.view(),
@@ -2106,7 +2177,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
     // The walk's frames: one per level it can descend, per block. A frame is pushed only for a
     // state the walk lowered, one level deeper than the last, and only states under the budget
     // have children, so max_steps + 2 bounds a walk.
-    const uint32_t grid_req = blocks ? blocks : default_persistent_grid();
+    const uint32_t grid_req = blocks ? blocks : persistent_grid_of(engine.config());
     const uint32_t grid = grid_req < 2 ? 2 : grid_req;
     // The arena is one region per block, from its start, and the pool behind them: a block's IR
     // scratch is its region, laid out anew for every claim (a single record takes it whole, a
@@ -2334,7 +2405,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         // default stream, so it completes before the frontier below is expanded; the replay's
         // rendezvous makes the order of the two irrelevant to the answer.
         const uint32_t slices = qe.multiplicity ? qe.work_slices
-                                                : default_persistent_grid() * kMatchBlockThreads;
+                                                : persistent_grid_of(engine.config()) * kMatchBlockThreads;
         if (qe.enabled && (qe.replay || qe.multiplicity) && slices) {
             const uint32_t rblock = 64;
             k_qe_redrive<<<(slices + rblock - 1) / rblock, rblock>>>(engine.device(), qe,
@@ -2394,15 +2465,40 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         std::fprintf(stderr, "[persistent setup] dedup_maps=%.2f allocs=%.2f seed=%.2f (ms)\n",
                      t_maps, t_alloc, t_seed);
 
-    k_persistent_evolve<<<grid, kMatchBlockThreads>>>(
+    // D22 (docs/TUNING.md): the state claim map is read by every child's dedup claim; when it
+    // fits the persisting part of L2 it is kept there for the launch (l2_persist_bytes).
+    const DedupMap::DeviceView state_map = session ? sess_v.states : canonical_owner->view();
+    const uint64_t state_map_bytes =
+        uint64_t(state_map.capacity) * sizeof(*state_map.slots);
+    const uint64_t persist =
+        l2_persist_bytes(state_map_bytes, engine.config().l2_persist_limit);
+    cudaLaunchConfig_t launch{};
+    launch.gridDim = dim3(grid);
+    launch.blockDim = dim3(kMatchBlockThreads);
+    cudaLaunchAttribute window[1];
+    if (persist) {
+        window[0].id = cudaLaunchAttributeAccessPolicyWindow;
+        window[0].val.accessPolicyWindow.base_ptr = state_map.slots;
+        window[0].val.accessPolicyWindow.num_bytes = state_map_bytes;
+        window[0].val.accessPolicyWindow.hitRatio = 1.0f;
+        window[0].val.accessPolicyWindow.hitProp = cudaAccessPropertyPersisting;
+        window[0].val.accessPolicyWindow.missProp = cudaAccessPropertyStreaming;
+        launch.attrs = window;
+        launch.numAttrs = 1;
+    }
+    HG_CUDA_CHECK(cudaLaunchKernelEx(
+        &launch, k_persistent_evolve,
         dsk, d_rules, num_rules, match_q.view(), scratch_matches.view(),
         d_cursor, d_rewrites_done,
-        session ? sess_v.states : canonical_owner->view(), dedup,
+        state_map, dedup,
         max_steps, state_mode, event_keys,
         session ? sess_v.events : owned_event_ids->view(), exact_v,
         pool_v, term.view(), qc, qe, d_phase_cycles, sess_v, ev, forms_v, ready_v,
-        arena.view().base, region_words, cand_v, step_sel, succ_scratch);
+        arena.view().base, region_words, cand_v, step_sel, succ_scratch),
+        "persistent evolve launch");
     HG_CUDA_CHECK(cudaDeviceSynchronize(), "persistent evolve sync");
+    // The persisting lines go back to normal lines for the kernels after this one.
+    if (persist) HG_CUDA_CHECK(cudaCtxResetPersistingL2Cache(), "persisting L2 reset");
     stats.explore_depth = ev.depth;
     if (!read_stats) return stats;
 
@@ -2463,7 +2559,7 @@ __global__ void k_expand_log_clear(ExploreView v) {
 // The regions go to `batch` when one is given, flushed after this launch; otherwise they are
 // cleared here.
 void explore_reset_async(const ExploreView& v, bool full, ClearBatch* batch) {
-    k_expand_log_clear<<<64, 256>>>(v);
+    k_expand_log_clear<<<grid_stride_blocks(v.expand.items.capacity, 256), 256>>>(v);
     ClearBatch own;
     ClearBatch& b = batch ? *batch : own;
     b.add(v.expand.items.counter, sizeof(uint32_t), 0);
