@@ -180,6 +180,29 @@ Boundary + tooling:
 - **The GPU mirrors the CPU algorithms.** Never drop a CPU data structure in a kernel
   without justification (an inverted-index skip once cost 200x).
 
+## Where each analysis runs
+
+Every property and option of `HGEvolve` (docs/en/ReferencePages/Symbols/HGEvolve.md), with where it is computed, on which threads, whether during the evolution or after it, and where the GPU engine computes it. "Calling thread" is the thread that runs the job (`run_rewriting_core`, `run_gpu_evolution_once`); "workers" are the engine's job-system workers; "reply jobs" are side jobs on the engine's workers on the CPU engine (`submit_side_job`) and jobs on a `hgmarshal::HostJobs` per reply on the GPU engine. Instruction counts are callgrind totals at 4 workers on the job named.
+
+| Analysis | Code | Threads | When | GPU engine | Instructions |
+|---|---|---|---|---|---|
+| Per-state record: the 25 invariants, geometry, vertex distributions and ball-growth dimensions | `hgcommon::state_record` (state_invariants_core.hpp, state_geometry_core.hpp), `Hypergraph::record_state_invariants` (hypergraph.cpp) | workers, the one that creates the class | during evolution | device, the warp that creates the class (`record_state_invariants_device`, ir_canon.cu) | wpp d8 quotient StepStatistics: 118.5e9 of 149.0e9 |
+| StepStatistics pool and summaries (`Invariants`, `VertexInvariants`, histograms, `BallGrowthDimension`, multiplicities, entropy) | `stats::pool_classes`, `stats::StepPoolFinish` (paclet_support.cpp), `hgcommon::sp_add_class` (step_pool_core.hpp) | reply jobs: one per 256 classes, one per slot | full capture: as each step's depth settles; quotient exploration and sessions: after evolution | pool on the device for 1024 classes or more (`step_pool_device`, step_pool.cu), summaries in reply jobs | wpp d7 quotient StepStatistics: 0.46e9 of 10.25e9 |
+| `StepStatisticsBranchial` | `stats::BranchialStepWork` (paclet_support.cpp), `hgcommon::br_row` | reply jobs: one per step for the graph metrics, up to one per worker for the overlap rows | as the pool | overlap rows of a step of 2048 states or more on the device (`branchial_rows_device`) | wpp d6 Automatic, Graph and Overlap: 15.38e9, of which the overlap rows 14.0e9 in up to one job per worker and the graph metrics and index 0.17e9 |
+| Causal relation and its transitive reduction | `CausalGraph::add_causal_edge` (causal_graph.cpp), online reachability | workers, in the rewrite task | during evolution | device rewrite kernel (rewrite.cu) | part of the evolution |
+| Branchial relation | rewriter.cpp, causal_graph.cpp | workers | during evolution | device | part of the evolution |
+| Quotient reconstruction of raw events and relations | `hgcommon::qr_apply` (quotient_replay_core.hpp) through `Hypergraph::qc_apply` | workers | during evolution; the reconstructed lists are read after it on the calling thread | device replay (`qe_apply`), pairs read back on the host | part of the evolution |
+| `StatesGraph`, `CausalGraph`, `BranchialGraph`, `Evolution*Graph` and the `Structure` variants | `hgmarshal::build_graph_data` (graph_marshal.hpp) | vertex and edge choice on the calling thread; payloads, edge lists and records in reply jobs, 256 per job | after evolution | the same code in reply jobs | wpp d7 quotient StatesGraph and CausalGraph: 6.55e9; the calling thread's share of the reply 1.15e9 |
+| `States` (with `CanonicalHash`), `Events` | hypergraph_ffi.cpp, hg_gpu_backend.cpp with `hgmarshal::write_state_record`, `write_event_record`, `write_items` | reply jobs, 256 records per job; under Full each state's IR canonical form, and under None and Automatic its `CanonicalHash`, in its job | after evolution | the same in reply jobs; the host IR hashes of a None or Automatic run in reply jobs | with the next row |
+| `CausalEdges`, `BranchialEdges`, `GlobalEdges`, `StateBitvectors` | `hgmarshal::record_list`, `write_items` | pair lists on the calling thread, records in reply jobs | after evolution | the same | wpp d6 Full, every record section: 0.74e9, of which the calling thread 0.10e9 |
+| `EventClasses` | the Wolfram kernel groups `"Events"` (HypergraphRewriting.wl) | kernel | after the reply | as the CPU | none in the engine |
+| `NumStates`, `NumEvents`, `NumCausalEdges`, `NumBranchialEdges`, `Debug` | counters and multiplicity sums | calling thread | after evolution | host, from the downloaded result | under 1e6 |
+| `Device` | build stamp and `probe_device` | calling thread | after evolution | host | under 1e6 |
+| The reply's WXF bytes | `wxf::Writer`; record sections arrive as bytes (`wxf::Encoded`) and are copied | calling thread | after evolution | host | one copy of the reply |
+| Sessions: `Step`, `Query`, deltas | `CpuEngineHolder::extend`; the delivery cursor in `build_graph_data` | workers for the step; the cursor's record on the calling thread | the step runs as an evolution; the delta after it | GPU session step on the device | as the evolution and the graph rows |
+
+These run on the calling thread after evolution: the choice of a graph's vertices and edges and the delivery cursor's record, the relation lists' pair choice, the per-step inputs of StepStatistics under quotient exploration and in sessions (`for_each_class_multiplicity`, `events_from_multiplicities`) and on the GPU engine (the class lists and `branchial_steps`), and the final copy of the reply's bytes.
+
 ## Sessions
 
 The FFI serves four verbs over an opaque session — `Open`, `Step`, `Query`, `Close` — beside the

@@ -394,6 +394,8 @@ rented box that does.
   default budget.
 - **`wxf_mini.py`** -- the WXF encoder and decoder `worker_fuzz.py` builds jobs and reads replies
   with.
+- **`reply_jobs.py`** -- writes the `hg_evolve` jobs that ARCHITECTURE.md ("Where each analysis
+  runs") and TUNING.md ("Quiet-box queue") measure, as WXF files.
 
 ## `verification/` -- model checking and toolchain cells
 

@@ -293,3 +293,21 @@ The C1 gate is `mono_check` with no violation at the 5% band for the throttle; t
 | Stats builds only | `kClaimRing` 8192, `kClaimRingWorkers` 64 (`parallel_evolution.hpp:1278-1279`, inside `#if HG_ENGINE_STATS`), `kSilentWitness`, `kDrainProbes`, `kMaxTimedThreads`, `kAllocSites`, counter slot counts |
 
 Board H6 lists `kClaimRing` and `kClaimRingWorkers` as per-host tuning; both exist only in stats builds and have no effect on a release run.
+
+## 4. Quiet-box queue
+
+Wall-clock checks that need a quiet box. Each names the command, the jobs and the direction the instruction counts predict. The jobs are written by `tools/dev/reply_jobs.py`; the worker count is set with the `get_nprocs` shim that `tools/dev/worker_fuzz.py` compiles into its output directory as `nprocs_shim.so` (`SHIM` below), through `HG_FUZZ_NPROCS`.
+
+**Q1. Replies written by parallel chunks.** In a stats-OFF release directory, at the commit before 36780be6 and at HEAD, five runs per worker count, interleaved:
+
+    python3 tools/dev/reply_jobs.py .scratch/jobs
+    for t in 1 4 16 32; do for r in 1 2 3 4 5; do for j in wpp_d7_q_graphs wpp_d7_q_structure wpp_d6_full_evograph wpp_d6_full_all; do
+      /usr/bin/time -f "$j $t %e %M" env HG_FUZZ_NPROCS=$t LD_PRELOAD=$SHIM \
+        paclet/LibraryResources/Linux-x86-64/hg_evolve < .scratch/jobs/$j.wxf > /dev/null
+    done; done; done
+
+Expected: the time after evolution falls as workers are added, and at one worker it is no higher than before. Callgrind at 4 workers: wpp_d7_q_graphs 12.31e9 to 6.55e9 instructions, wpp_d6_full_all 0.98e9 to 0.74e9.
+
+**Q2. StepStatistics pooled in jobs.** The same loop on wpp_d7_q_stats, wpp_d8_q_stats and wpp_d6_auto_stats_all, before and after e95879f2. Expected: the time after evolution falls as workers are added; the last step's pooling, one job before, runs as one job per 256 classes and one per slot.
+
+**Q3. StepStatistics pooled on the device.** `hg_evolve_gpu` on wpp_d8_q_stats, before and after e95879f2, five runs each, with `nvidia-smi` read before and after every run to confirm no other process uses the GPU. Expected: the host time after the device run falls.
