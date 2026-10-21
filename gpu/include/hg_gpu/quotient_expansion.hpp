@@ -1,4 +1,5 @@
 #pragma once
+#include <memory>
 #include <unordered_map>
 #include "hgcommon/namespace.hpp"
 //
@@ -321,6 +322,9 @@ struct QeView {
     // place of the replay when the raw events and branchial pairs are read only as counts. The
     // host's quotient_multiplicity_. Set only together with `replay`.
     uint32_t  multiplicity = 0;
+    // The replay pushes each application to inst_applied for the branchial enumeration
+    // (hgcommon::qr_publishes_applications). Off, inst_applied is empty.
+    uint32_t  publish_applied = 0;
     // (class, depth) point key -> index + 1 into qm_mass / qm_queued.
     DedupMap::DeviceView qm_points;
     // (match id, depth) key -> index + 1 into qm_consumed_cells.
@@ -1229,7 +1233,7 @@ struct DeviceQrCtx {
         if (c.won) atomicAdd(qe.num_canon, 1u);
     }
     __device__ bool want_causal() const    { return ds.record_causal != 0; }
-    __device__ bool want_branchial() const { return ds.record_branchial != 0; }
+    __device__ bool want_branchial() const { return qe.publish_applied != 0; }
     __device__ uint32_t producer_at(const DeviceQcInstance& inst, uint32_t slot) const {
         return hgcommon::qr_producer_of(*this, &inst, slot);
     }
@@ -1465,6 +1469,9 @@ public:
     // The per-event input class, output class and rule arrays, allocated on first use and kept
     // across runs like the multiplicity queues.
     void ensure_event_content();
+    // The per-instance application lists (QeView::inst_applied), allocated by the first run that
+    // publishes applications and kept across runs.
+    void ensure_applied();
     // The first raw-event-count entries of those arrays.
     void reconstructed_event_content_host(std::vector<uint64_t>& from_class,
                                           std::vector<uint64_t>& to_class,
@@ -1478,7 +1485,7 @@ public:
                                           std::vector<std::pair<uint32_t, uint32_t>>& out);
 
     QeView view(uint32_t max_steps, EventSignatureKeys keys,
-                bool replay, bool multiplicity, bool event_content);
+                bool replay, bool multiplicity, bool event_content, bool publish_applied);
 
 private:
 
@@ -1506,7 +1513,10 @@ private:
     // False until the first clear(), which covers the per-event arrays in full; later clears
     // cover the prefix below the previous run's raw event count.
     bool                      cleared_once_ = false;
-    LockFreeList<QeAppliedMatch> inst_applied_;
+    // Created by ensure_applied, by the first run that publishes applications.
+    std::unique_ptr<LockFreeList<QeAppliedMatch>> inst_applied_;
+    uint32_t                  applied_buckets_ = 1;
+    uint32_t                  applied_nodes_   = 1;
     uint32_t*                 inst_next_id_ = nullptr;
     uint32_t*                 next_raw_event_ = nullptr;
     uint32_t                  id_limit_       = hgcommon::QR_ID_LIMIT;

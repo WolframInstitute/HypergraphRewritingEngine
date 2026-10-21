@@ -21,9 +21,13 @@
 #include "hgcommon/state_invariants_core.hpp"
 #include "hgcommon/state_geometry_core.hpp"
 #include "hgcommon/branchial_rows_core.hpp"
+#include "hgcommon/step_pool_core.hpp"
 #include "wxf.hpp"
 
 namespace HG_NAMESPACE {
+namespace marshal {
+class HostJobs;   // graph_marshal.hpp
+}  // namespace marshal
 namespace stats {
 
 struct StateInvariants {
@@ -152,28 +156,71 @@ struct StepClass {
     const hgcommon::StateInvariantRecord* record = nullptr;
 };
 
+using PoolEntry = hgcommon::SpEntry;
+
+// A part of a step's pool, made by one job or by the device: its entries, sorted by (slot, key)
+// with equal keys merged once sort_part has run; its distribution totals; and the histograms of
+// arity lists and degree sequences, keyed by the list.
+struct PoolPart {
+    std::vector<PoolEntry> entries;
+    hgcommon::SpDistTotals dist[hgcommon::SG_DISTS];
+    std::map<std::vector<int64_t>, uint64_t> arity_signatures, degree_sequences;
+};
+
+// Sorts `part`'s entries by (slot, key) and merges equal keys.
+void sort_part(PoolPart& part);
+
 // One step's input to its record: its classes by canonical hash, the raw events whose output
-// state is at the step, in total and per rule index, and its BranchialStep.
+// state is at the step, in total and per rule index, and its BranchialStep. `device_part`, when
+// set, holds the pool entries and totals of every class, made on the device; the classes then
+// give the signature histograms only.
 struct StepInput {
     std::map<uint64_t, StepClass> classes;
     uint64_t events = 0;
     std::map<int64_t, uint64_t> rule_counts;
     BranchialStep branchial;
+    std::unique_ptr<PoolPart> device_part;
 };
 
 // Adds `weight` raw states of class `hash` with record `record` to `in`.
 void add_class(StepInput& in, uint64_t hash, uint64_t weight,
                const hgcommon::StateInvariantRecord* record);
 
-// The keys of the probes' per-step record that the step's classes and their weights determine,
-// in reply order. `weight_by_classes`: each class counts once ("StepStatisticsWeighting" ->
-// "Classes"); otherwise it stands for its raw states ("States").
+// Adds classes[0..n) to `part` and sorts it (sort_part); with `entries` false, only the
+// signature histograms. Under `weight_by_classes` ("StepStatisticsWeighting" -> "Classes") each
+// class counts once; otherwise it stands for its raw states ("States").
+void pool_classes(const StepClass* const* classes, size_t n, bool weight_by_classes, bool entries,
+                  PoolPart& part);
+
+// The keys of the probes' per-step record that a step's pool determines, in reply order, built
+// in three calls so the merge can run on several workers: run(t) for every t < tasks(), in any
+// order and concurrently, then record(). Each task merges one slot's entries over the parts and
+// summarises them in key order, so the record does not depend on how the classes were split.
+class StepPoolFinish {
+public:
+    StepPoolFinish(uint32_t step, std::vector<PoolPart> parts, uint64_t events,
+                   std::map<int64_t, uint64_t> rule_counts);
+    ~StepPoolFinish();
+    StepPoolFinish(const StepPoolFinish&) = delete;
+    StepPoolFinish& operator=(const StepPoolFinish&) = delete;
+    size_t tasks() const;
+    void run(size_t task);
+    wxf::WXFValueAssociation record();
+
+private:
+    struct State;
+    std::unique_ptr<State> s_;
+};
+
+// The record of `in` on the calling thread: one part, every task, the record.
 wxf::WXFValueAssociation step_record(uint32_t step, const StepInput& in, bool weight_by_classes);
 
 // THE "StepStatistics" REPLY, built by jobs. submit(step, input) hands a step's record to the
-// caller's job system: one job pools the classes (step_record), one builds the branchial graph
-// and prepares the overlap pass, and the overlap rows run as up to `workers` jobs, the last of
-// which writes the step's branchial keys. reply() concatenates the finished records.
+// caller's job system: the step's classes are pooled by one job per 256 classes (pool_classes),
+// the pool is merged and summarised by one job per slot (StepPoolFinish), one job builds the
+// branchial graph and prepares the overlap pass, and the overlap rows run as up to `workers`
+// jobs, the last of which writes the step's branchial keys. reply() concatenates the finished
+// records.
 //
 // A step is reserved by one thread at a time, at most once, and then started from any thread with
 // its input, so the input can be gathered in a job. With the overlap metrics, step 0's start
@@ -211,16 +258,17 @@ private:
     std::vector<uint32_t> initial_;
     bool have_initial_ = false;
     std::map<uint32_t, std::unique_ptr<Step>> steps_;
+
+    void pool(Step* s);
 };
 
-// The reply of `inputs`, built by StepStatisticsJobs on a job system of `threads` workers (0 is
-// hgcommon::default_worker_count), for a reply whose run had no host engine (the GPU backend). A
-// step of at least `device_min_states` states has its overlap rows counted by `device_rows` when
-// it can.
-wxf::WXFValue step_statistics_on_host(std::map<uint32_t, StepInput> inputs,
+// The reply of `inputs`, built by StepStatisticsJobs on `host`, for a reply whose run had no host
+// engine (the GPU backend). A step of at least `device_min_states` states has its overlap rows
+// counted by `device_rows` when it can.
+wxf::WXFValue step_statistics_on_host(marshal::HostJobs& host, std::map<uint32_t, StepInput> inputs,
                                       bool weight_by_classes, uint32_t which,
                                       StepStatisticsJobs::DeviceRows device_rows = nullptr,
-                                      uint32_t device_min_states = 0, unsigned threads = 0);
+                                      uint32_t device_min_states = 0);
 
 }  // namespace stats
 }  // namespace HG_NAMESPACE

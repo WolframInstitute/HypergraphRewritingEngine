@@ -18,16 +18,10 @@ namespace gpu {
 
 namespace {
 
-// Flatten a state's CSR slice to the core's convention: local vertex indices assigned in SORTED
-// VERTEX ID order, which is what the host does. Returns false if the state exceeds the slot's
-// bounds.
-//
-// The numbering is load-bearing and encounter order is NOT sufficient. It yields the same HASH,
-// because the hash is taken over the winning canonical form, but it does not yield the same
-// RANKS: on a state with a nontrivial automorphism group the canonical labelling is a COSET, and
-// the core's within-cell tie-break is what picks a representative out of it. That tie-break reads
-// the vertex numbering, so two numberings pick two different representatives -- each internally
-// valid, and disagreeing about which edge holds which rank.
+// Flatten a state's CSR slice to the core's convention: local vertex indices by the shared rule
+// hgcommon::ir_renumber_encounter, as on the host. Returns false if the state exceeds the slot's
+// bounds. The numbering decides which automorphic labelling gives the edge RANKS (the hash does
+// not depend on it), so both engines read the same one.
 //
 // `flat_to_slot`, when non-null, receives the CSR slot each flattened edge came from, which is
 // what lets a caller scatter the core's per-edge ranks back onto the slice.
@@ -76,10 +70,9 @@ __device__ bool flatten_state(const DeviceState& ds, StateId sid, uint32_t* slot
             if (!ok) break;
         }
 
-        // SORTED-UNIQUE renumbering through the shared rule (hgcommon::ir_renumber_sorted); the
-        // convention note lives there. verts_local is sized cap_verts = total_occ + 1, so it
-        // holds one copy of every occurrence as the helper's scratch.
-        if (ok) n_verts = hgcommon::ir_renumber_sorted(ev, total_occ, verts_local);
+        // Renumbering by the shared rule (hgcommon::ir_renumber_encounter). verts_local is sized
+        // cap_verts = total_occ + 1, so it holds one word per occurrence as the helper's scratch.
+        if (ok) n_verts = hgcommon::ir_renumber_encounter(ev, total_occ, verts_local);
     }
     par.sync();
     ok        = par.bcast(ok);
@@ -116,7 +109,7 @@ __device__ bool flatten_cursor(const Cursor& start, uint32_t* slot, const IrSlot
                 ev[total_occ++] = v[p];
             }
         }
-        if (ok) n_verts = hgcommon::ir_renumber_sorted(ev, total_occ, verts_local);
+        if (ok) n_verts = hgcommon::ir_renumber_encounter(ev, total_occ, verts_local);
     }
     par.sync();
     ok        = par.bcast(ok);
@@ -492,6 +485,9 @@ __device__ void record_state_invariants_device(const DeviceState& ds, StateId si
         if (at + words > ds.invariant_pool_words) {
             ds.errors.record(ErrorKind::kStateInvariantsFull);
         } else {
+            // The record leaves some bytes of its words unwritten (compute-sanitizer initcheck),
+            // and the readback copies the used words whole, so its words are zeroed first.
+            for (uint64_t w = 0; w < words; ++w) ds.invariant_pool[at + w] = 0;
             hgcommon::si_record_write(ds.invariant_pool + at, r);
             ds.state_invariant_at[sid] = static_cast<uint32_t>(at);
         }

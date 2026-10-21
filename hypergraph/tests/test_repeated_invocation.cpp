@@ -7,6 +7,7 @@
 #include "hypergraph/hypergraph.hpp"
 #include "hypergraph/parallel_evolution.hpp"
 #include "hypergraph/pattern.hpp"
+#include "hgcommon/build_stamp.hpp"
 
 using namespace hypergraph;
 
@@ -158,14 +159,13 @@ TEST(RepeatedGridInvocation, FiveTimesWL) {
 TEST(RepeatedGridInvocation, TwentyTimesWL) {
     // The deterministic invariant is the CANONICAL result: repeated invocations must
     // reproduce it exactly (parallel scheduling + pruning perturb only the raw
-    // exploration, hence arena bytes vary but the canonical counts do not). RSS is an
-    // inherently non-deterministic coarse leak guard, kept loose so it never flakes
-    // while still catching a real per-invocation arena leak.
-    // Measured from after the first run, which fills what the process keeps for the next: the
-    // arena block pool, each worker's malloc arena and job-slot pool (about 300 MB at 32
-    // workers).
+    // exploration, hence arena bytes vary but the canonical counts do not). RSS is the
+    // leak guard. Both readings are taken after arena_trim_block_pool(0), so the 200-360 MB of
+    // pooled arena blocks a run leaves for the next one are not counted. Measured from after the first run,
+    // which fills each worker's malloc arena and job-slot pool.
     GridResult baseline = run_grid_evolution(10, 100, 100);
     EXPECT_GT(baseline.canonical_states, 0u);
+    arena_trim_block_pool(0);
     size_t initial_mem = get_memory_usage_kb();
 
     for (int i = 1; i < 20; ++i) {
@@ -174,10 +174,14 @@ TEST(RepeatedGridInvocation, TwentyTimesWL) {
         EXPECT_EQ(r.events, baseline.events) << "run " << i << " events diverged";
     }
 
+    arena_trim_block_pool(0);
     size_t final_mem = get_memory_usage_kb();
-    // A real per-invocation leak would retain ~1 arena/run (~46 MB x 19 ~= 870 MB);
-    // bounded allocator fragmentation stays far below. Signed (RSS may end lower).
-    EXPECT_LT((int64_t)final_mem - (int64_t)initial_mem, (int64_t)500000)
+    // Measured growth over the 19 runs: under 1 MB (release, 32 workers). A leak above
+    // 3.4 MB per run fails. Signed (RSS may end lower). ASan's free quarantine (92 MB here) and
+    // TSan's sync-object metadata for atomics (800 MB here) are not engine memory, so the
+    // bound holds in builds without them; LSan checks leaks under ASan.
+    if (HG_BUILD_STAMP_ASAN[0] == '1' || HG_BUILD_STAMP_TSAN[0] == '1') return;
+    EXPECT_LT((int64_t)final_mem - (int64_t)initial_mem, (int64_t)65536)
         << "RSS grew " << ((int64_t)final_mem - (int64_t)initial_mem) << " KB across 20 runs";
 }
 

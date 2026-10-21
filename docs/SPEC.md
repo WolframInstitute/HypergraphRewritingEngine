@@ -75,7 +75,7 @@ Which states are the same node.
 | value | two states are one node iff | dedup key |
 |---|---|---|
 | `None` (default) | never — every raw state is its own node | the state's own id |
-| `Automatic` | their edge multisets are identical under a content ordering (**not** isomorphism-invariant) | content-ordered hash, with the content words compared on a key hit |
+| `Automatic` | their edge lists are identical, edges in creation order and vertices by their labels (**not** isomorphism-invariant) | content-ordered hash, with the content words compared on a key hit |
 | `Full` | they are isomorphic as ordered hypergraphs (vertex relabeling; within-edge order and multiplicity preserved) | the canonical hash, with the canonical forms compared on a key hit |
 
 The canonical form is McKay-style individualization–refinement (IR). The **reported** per-state
@@ -129,6 +129,20 @@ class-frame resolution is defined over edge-orbit tables, which the `Full` state
 under `None`/`Automatic` state modes the engine computes event identities exactly (§4.1) but
 resolves ranks through the raw path, and says so in a run warning.
 
+**Which labelling gives the ranks.** On a state with a nontrivial automorphism group the
+canonical labelling is one of several, and the IR search picks it with a tie-break that reads
+the state's vertex numbering. Both engines number a state's vertices in order of first
+appearance, reading its edges in the state's order (the parent's surviving edges in the
+parent's order, then the produced edges in right-side order) and each edge's positions in
+order (`hgcommon::ir_renumber_encounter`). The numbering is a function of the state's
+derivation, so the ranks are the same at every worker count and on both devices.
+`MultiwaySystem` breaks the same ties on its own token and vertex names: a produced edge takes
+the token of the edge it replaces, and fresh vertices are named in its evaluation order. No
+numbering of the engine's state reproduces those names: `{{1,1}} -> {{1,2}}` from
+`{{1,1},{1,1}}` gives 4 `MultiwaySystem` `Automatic` events at 2 steps and 3 on both engines,
+because its two step-2 events differ only in those names (`reference/compare_multiwaysystem.wls
+--engine` lists the counts on its corpus).
+
 **`Positional` reproduces the upstream `MultiwaySystem` `Automatic` convention**, and is retained
 as an explicitly-labeled parity mode — never described as canonical. Upstream identifies events
 by *which representative isomorphism* the state canonicalizer returned, and that canonicalizer
@@ -163,7 +177,8 @@ exact configuration. Sampling and capping options refine this as follows:
 - **`MaxSuccessorStatesPerParent`** keeps the transitions out of a state into its k lowest-ranked
   successor states, chosen at the state's drain; **`MaxStatesPerStep`** keeps the transitions of a
   step into the step's N lowest-ranked successor states, chosen once the step's matching is
-  complete. Both count distinct successor STATES under the state identity in force (§4.1):
+  complete. The depth join signals that completion and submits the choice as a task; no worker
+  waits on a barrier for it. Both count distinct successor STATES under the state identity in force (§4.1):
   under `None` every transition makes its own state, so both count transitions; under
   `Automatic` two transitions make one state when the edge lists of the states they make are
   identical (a transition that creates a vertex makes its own state); under `Full` when those
@@ -206,7 +221,8 @@ An edge instance carries the identity of the event that produced it (its **produ
 initial edge's producer is its root's genesis event. There is a causal pair `p → c` whenever
 event `c` **consumes an edge that event `p` produced**. `ShowGenesisEvents` (default off) decides
 whether pairs involving genesis events are part of the observable relation. With it, each initial
-state has one genesis event (`"RuleIndex"` 65535), counted in `NumEvents`, and a pair `g → c` for
+state has one genesis event (`"RuleIndex"` 65535), its own event under every event identity and
+counted in `NumEvents`, and a pair `g → c` for
 every event `c` that consumed an edge of `g`'s initial state (under `CausalTransitiveReduction`,
 only those that consumed no produced edge); its input state is not one of `"States"`. Both
 exploration routes give the same events and pairs.
@@ -247,6 +263,13 @@ and is refused with a warning otherwise. It is also refused with a warning (`Quo
 under `MaxStatesPerStep` and `MatchesPerStep`: a step cap chooses among the transitions of a step,
 and quotient exploration expands one raw state per class, at the class's shortest depth only.
 **It is a performance mode, never a semantic one.**
+
+A class reached first along a longer path has its depth lowered when a shorter path arrives
+(`hgcommon::explore_try_lower`). A lowering is at most the step budget less one, and no smaller
+bound holds for every schedule, since the shorter path's rewrite can run last. The largest
+lowering measured over the oracle corpus is 2 (`OracleCorpus.DepthLoweringIsBoundedByTheStepBudget`).
+So no depth is complete before the run is, and a run under quotient exploration gives no
+per-depth completion signal.
 
 **Contract: every observable under quotient equals the same observable under full capture, in the
 same cell** — states, events, causal (count, list, graph), branchial, and the reduction — on the

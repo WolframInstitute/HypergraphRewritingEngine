@@ -144,6 +144,8 @@ const char* continuation_mismatch(const EvolveInput& open, const EvolveInput& in
         return "explore_from_canonical_states_only";
     // The per-event content arrays are written as events are minted, only when this is set.
     if (open.materialize_events != in.materialize_events) return "materialize_events";
+    // The applications the branchial enumeration reads are published only when this is set.
+    if (open.materialize_relations != in.materialize_relations) return "materialize_relations";
     return nullptr;
 }
 
@@ -221,6 +223,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         opening_.transitive_reduction = in.transitive_reduction;
         opening_.explore_from_canonical_states_only = in.explore_from_canonical_states_only;
         opening_.materialize_events = in.materialize_events;
+        opening_.materialize_relations = in.materialize_relations;
     } else if (const char* what = continuation_mismatch(opening_, in)) {
         throw std::invalid_argument(std::string("a session continuation must use the opening "
                                                 "call's ") + what);
@@ -373,9 +376,14 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     if (qe_replay) qe_state_->ensure_lanes(default_persistent_grid() * kMatchBlockThreads);
     const bool qe_event_content = qc_route && qe_replay && in.materialize_events;
     if (qe_event_content) qe_state_->ensure_event_content();
+    const bool qe_publish_applied =
+        qc_route && qe_replay &&
+        hgcommon::qr_publishes_applications(in.record.branchial, in.materialize_relations);
+    if (qe_publish_applied) qe_state_->ensure_applied();
     qe_state_->set_id_limit(in.replay_id_limit);
     QeView qe_view = qe_state_->view(in.num_steps, event_keys_for(in.event_canonicalization),
-                                     qe_replay, qe_multiplicity, qe_event_content);
+                                     qe_replay, qe_multiplicity, qe_event_content,
+                                     qe_publish_applied);
 
     double t_qcsetup = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_qcsetup_start).count();
@@ -1163,7 +1171,14 @@ void GpuSession::set_frontier_host(const StateId* ids, const uint32_t* steps, ui
     impl_->state.set_frontier_host(ids, steps, n);
 }
 
-PersistentEvolver::PersistentEvolver()  = default;
+// The runtime is initialised before the evolver is constructed, so the runtime's exit handler is
+// registered first and runs after the evolver's destructor. An evolver with static storage
+// constructed before the first CUDA call is otherwise destroyed after the driver has shut down,
+// and its cudaFree calls fail with "driver shutting down". cudaFree(nullptr) initialises the
+// runtime and frees nothing; its error, on a host without a device, is cleared.
+PersistentEvolver::PersistentEvolver() {
+    if (cudaFree(nullptr) != cudaSuccess) (void)cudaGetLastError();
+}
 PersistentEvolver::~PersistentEvolver() = default;
 
 // A session run REFUSES to rebuild the engine. run() below may replace engine_ -- when the

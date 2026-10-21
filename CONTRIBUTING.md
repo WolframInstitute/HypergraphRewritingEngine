@@ -51,7 +51,7 @@ GPU (when built with `-DBUILD_GPU=ON`):
 
 Worker-sequence fuzz (needs both binaries and a GPU; a local gate, not run in CI). It sends
 random jobs to one `hg_evolve_gpu --serve` worker and compares each reply with `hg_evolve`, the
-StepStatistics of both devices and of 1, 4 and 16 CPU workers, and counts-only replies with full
+StepStatistics of both devices and of 1, 4, 16, 32 and one seed-chosen count of CPU workers, and counts-only replies with full
 ones. The default budget is 200 cases from seed 1000; run it at every commit batch that touches
 the engine, the FFI or the GPU backend. A nonzero exit means an unknown finding, shrunk to a
 minimal job under `.scratch/worker_fuzz/`.
@@ -59,6 +59,20 @@ minimal job under `.scratch/worker_fuzz/`.
 ```bash
 python3 tools/dev/worker_fuzz.py                   # 200 cases, seed 1000
 python3 tools/dev/worker_fuzz.py --cases 5000 --minutes 60 --seed 5000
+```
+
+Reference corpus gate (needs the Wolfram Engine and, for the GPU half, a GPU; a local gate, not
+run in CI). `tools/dev/oracle_gate.sh` runs `reference/oracle_fuzz.wls` on seeds 0-41, three
+cases of each of its 14 case classes on both devices against `reference/MultiwayReference.wl`,
+then `worker_fuzz.py` at its default budget; about 7 minutes. On WSL it uses the newest Windows
+Wolfram Engine and the Windows binaries (`./build_windows_msvc.sh`), elsewhere `wolframscript`
+on PATH and this platform's binaries. Run it at every commit batch that touches the engine, the
+FFI, the paclet or the reference. A nonzero exit means a difference; the fuzz lists it in
+`.scratch/oracle_gate/fuzz_0_41/disc.txt`. Longer runs: `ORACLE_SEEDS="100 1159"`;
+docs/VERIFICATION_STATUS.md ("Reference corpus coverage") lists what each case class covers.
+
+```bash
+tools/dev/oracle_gate.sh
 ```
 
 Paclet (needs a Wolfram Engine): `reference/verify_paclet.wls` loads the local paclet

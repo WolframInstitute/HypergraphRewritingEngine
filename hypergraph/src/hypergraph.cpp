@@ -907,7 +907,7 @@ uint64_t Hypergraph::marked_form_hash(StateId s, const EdgeId* marked, uint8_t n
     }
     const uint32_t occ = static_cast<uint32_t>(ev.size());
     SVec<uint32_t> verts(occ);
-    uint32_t n_verts = hgcommon::ir_renumber_sorted(ev.data(), occ, verts.data());
+    uint32_t n_verts = hgcommon::ir_renumber_encounter(ev.data(), occ, verts.data());
     auto is_marked = [&](uint32_t e) { return mark[e] != 0; };
     ev.resize(occ + hgcommon::ir_colour_extra_occ(ea.data(), n, is_marked));
     const uint32_t total_occ =
@@ -1044,8 +1044,17 @@ Hypergraph::CanonicalClaim Hypergraph::claim_event(EventId e, const uint64_t* va
 
 bool Hypergraph::explore_depth_cas(StateId canonical_id, uint32_t& expected, uint32_t desired) {
     hgcommon::atomic_ref<uint32_t> known(states_[canonical_id].explore_depth);
-    return known.compare_exchange_weak(expected, desired, std::memory_order_acq_rel,
-                                       std::memory_order_acquire);
+    const bool lowered = known.compare_exchange_weak(expected, desired, std::memory_order_acq_rel,
+                                                     std::memory_order_acquire);
+#if HG_ENGINE_STATS
+    if (lowered && expected != hgcommon::kExploreNoDepth) {
+        const uint32_t by = expected - desired;
+        uint32_t seen = explore_depth_max_lowering_.load(std::memory_order_relaxed);
+        while (by > seen && !explore_depth_max_lowering_.compare_exchange_weak(
+                                seen, by, std::memory_order_relaxed)) {}
+    }
+#endif
+    return lowered;
 }
 
 bool Hypergraph::try_lower_explore_depth(StateId canonical_id, uint32_t depth) {
@@ -1110,14 +1119,9 @@ uint64_t Hypergraph::cache_state_edge_ranks(StateId state_id, const SparseBitset
             ea.push_back(static_cast<uint8_t>(edge_vectors[i].size()));
             for (VertexId v : edge_vectors[i]) ev.push_back(v);
         }
-        SVec<uint32_t> verts(ev.begin(), ev.end());
-        std::sort(verts.begin(), verts.end());
-        verts.erase(std::unique(verts.begin(), verts.end()), verts.end());
-        const uint32_t n_verts = static_cast<uint32_t>(verts.size());
-        for (uint32_t& x : ev)
-            x = static_cast<uint32_t>(std::lower_bound(verts.begin(), verts.end(), x) - verts.begin());
-
         const uint32_t total_occ = static_cast<uint32_t>(ev.size());
+        SVec<uint32_t> verts(total_occ ? total_occ : 1);
+        const uint32_t n_verts = hgcommon::ir_renumber_encounter(ev.data(), total_occ, verts.data());
         SVec<uint32_t> ranks(n);
         bool ok = false;
         uint32_t* form = nullptr;
@@ -1318,15 +1322,16 @@ EventId Hypergraph::create_genesis_event(StateId initial_state, const EdgeId* ed
     EdgeId* produced = arena_.allocate_array<EdgeId>(num_edges);
     std::memcpy(produced, edges, num_edges * sizeof(EdgeId));
 
-    // Directly construct event at slot eid using emplace_at; its identity is claimed like every
-    // other event's.
+    // A genesis event is its own event under every event identity: one per initial state
+    // (docs/SPEC.md 5.2), as the quotient reconstruction and the device count them.
     events_.emplace_at(eid, arena_, eid, genesis, initial_state,
                        static_cast<RuleIndex>(-1),
                        nullptr, 0,  // consumed_edges (none)
                        produced, num_edges,  // produced_edges
                        INVALID_ID);
     record_event_forms(eid);
-    assign_event_identity(eid);
+    if (event_signature_keys_ != EVENT_SIG_NONE)
+        canonical_event_count_.fetch_add(1, std::memory_order_relaxed);
     note_published_event(eid);
 
     // CRITICAL: Release fence
@@ -1574,23 +1579,19 @@ uint64_t ir_hash_and_orbits(const SegmentedArray<Edge>& edge_table,
     auto* ea   = static_cast<uint8_t*>(worker_scratch().allocate_raw(n, alignof(uint8_t)));
     auto* eoff = static_cast<uint32_t*>(worker_scratch().allocate_raw(sizeof(uint32_t) * n, alignof(uint32_t)));
     auto* ev   = static_cast<uint32_t*>(worker_scratch().allocate_raw(sizeof(uint32_t) * total_occ, alignof(uint32_t)));
-    // Local vertex indices in encounter order. The core's result does not depend on the order
-    // they are assigned in: the only place an index is read as a value is the initial
-    // partition's tie-break, which orders vertices WITHIN a cell, and no output reads
-    // within-cell order.
-    ScratchIdMap local(total_occ * 2);
-    uint32_t n_verts = 0;
+    // Local vertex indices by the shared rule (hgcommon::ir_renumber_encounter): the within-cell
+    // tie-break reads them, so they select which automorphic labelling gives the edge ranks the
+    // quotient frame and Automatic event identity read, on both engines.
     uint32_t occ = 0;
     for (uint32_t i = 0; i < n; ++i) {
         const Edge& e = edge_table[ids[i]];
         eoff[i] = occ;
         ea[i] = e.arity;
-        for (uint8_t j = 0; j < e.arity; ++j) {
-            uint32_t idx;
-            if (local.find_or_insert(static_cast<uint32_t>(e.vertices[j]), n_verts, idx)) ++n_verts;
-            ev[occ++] = idx;
-        }
+        for (uint8_t j = 0; j < e.arity; ++j) ev[occ++] = static_cast<uint32_t>(e.vertices[j]);
     }
+    auto* verts = static_cast<uint32_t*>(
+        worker_scratch().allocate_raw(sizeof(uint32_t) * (total_occ ? total_occ : 1), alignof(uint32_t)));
+    const uint32_t n_verts = hgcommon::ir_renumber_encounter(ev, occ, verts);
 
     // The static rungs, then the true bound: a search individualises at most one vertex per
     // level, so n_verts + 1 admits every state -- a maximal-symmetry star needs a level per
@@ -1846,13 +1847,14 @@ void Hypergraph::qc_record_causal(uint32_t producer, uint32_t consumer, bool dis
     // NO DEDUP STRUCTURE, and none is needed. `consumer` is the event this application just
     // minted, so the pair cannot repeat across applications; within this one the caller has
     // already marked the adjacent repeats, which are the only other way it can repeat.
-    // Appending to this worker's own list touches no line another worker reads.
+    // Appending to this worker's own list touches no line another worker reads. The count is
+    // kept in every run; the list only when the pairs are enumerated (qc_keep_pairs_).
     if (!distinct_pair) return;
+    qc_count(qc_ctr_, &QcCounterSlot::causal_pairs);
+    if (!qc_keep_pairs_.load(std::memory_order_relaxed)) return;
     const int w = arena_worker_index();
     if (w >= 0) qc_causal_pairs_[w].push(qc_pair_key(producer, consumer), arena_);
     else qc_causal_pairs_outside_.push(qc_pair_key(producer, consumer), arena_);
-    HG_STAT(qc_count(qc_ctr_, &QcCounterSlot::causal_pairs));
-
 }
 
 void Hypergraph::qc_apply(const QcInstance& inst, const SlotMatch& m, uint64_t state_hash,
@@ -2335,7 +2337,7 @@ size_t Hypergraph::num_reconstructed_causal_edges() const {
 
 size_t Hypergraph::num_reconstructed_causal_pairs(bool transitively_reduced) const {
     if (transitively_reduced) return qc_ctr_total(&QcCounterSlot::reduced_pairs);
-    return qc_causal_pairs_count();
+    return qc_ctr_total(&QcCounterSlot::causal_pairs);
 }
 
 
@@ -2717,6 +2719,12 @@ void Hypergraph::set_record_set(RecordSet r) {
     record_raw_counts_only_.store(r.raw_counts_only, std::memory_order_relaxed);
     record_multiplicities_.store(r.multiplicities, std::memory_order_relaxed);
     record_state_invariants_.store(r.state_invariants, std::memory_order_relaxed);
+    record_relation_lists_.store(r.relation_lists, std::memory_order_relaxed);
+    record_event_lists_.store(r.event_lists, std::memory_order_relaxed);
+    qc_publish_applied_.store(hgcommon::qr_publishes_applications(r.branchial, r.relation_lists),
+                              std::memory_order_relaxed);
+    qc_keep_content_.store(hgcommon::qr_keeps_event_content(r), std::memory_order_relaxed);
+    qc_keep_pairs_.store(hgcommon::qr_keeps_causal_pairs(r), std::memory_order_relaxed);
 }
 
 RecordSet Hypergraph::record_set() const {
@@ -2726,7 +2734,9 @@ RecordSet Hypergraph::record_set() const {
                      record_raw_events_.load(std::memory_order_relaxed),
                      record_raw_counts_only_.load(std::memory_order_relaxed),
                      record_multiplicities_.load(std::memory_order_relaxed),
-                     record_state_invariants_.load(std::memory_order_relaxed)};
+                     record_state_invariants_.load(std::memory_order_relaxed),
+                     record_relation_lists_.load(std::memory_order_relaxed),
+                     record_event_lists_.load(std::memory_order_relaxed)};
 }
 
 // The per-state event list and the branchial pair relation are recorded independently: they feed
@@ -2835,6 +2845,7 @@ uint32_t Hypergraph::alloc_event_id(uint32_t above) {
 
 void Hypergraph::QrCtx::record_content(uint32_t ev, uint64_t from_class, uint64_t to_class,
                                        uint32_t rule) {
+    if (!hg.qc_keep_content_.load(std::memory_order_relaxed)) return;
     hg.qc_event_sig_.emplace_at(Hypergraph::qc_ev_slot(ev), hg.arena_,
                                 QcEventContent{from_class, to_class, rule, 1u});
 }
@@ -2910,7 +2921,7 @@ bool Hypergraph::QrCtx::want_causal() const {
     return hg.record_causal_.load(std::memory_order_relaxed);
 }
 bool Hypergraph::QrCtx::want_branchial() const {
-    return hg.record_branchial_.load(std::memory_order_relaxed);
+    return hg.qc_publish_applied_.load(std::memory_order_relaxed);
 }
 
 uint32_t Hypergraph::QrCtx::producer_at(const QcInstance& inst, uint32_t slot) const {

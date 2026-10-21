@@ -304,34 +304,27 @@ The graph metrics (degree, distance, components, dimension) stay in the host's `
 with the index is 172,949,942 of 15,383,108,429 instructions on the CPU engine's wpp d6 run with
 "StepStatisticsBranchial" All (callgrind).
 
-**Proposal: pooling on the device (not built).** `stats::step_record` pools a step's classes in
-`long double`, summing in class-hash order, and the device has no 80-bit type, so the device
-cannot give the host's current bytes. The proposal changes the host's arithmetic to one the
-device computes exactly, and changes the reply's low bits once, on both engines:
+**Pooling.** A step's pool is a multiset of weighted (slot, value) entries and integer totals
+(`hgcommon/step_pool_core.hpp`). `hgcommon::sp_add_class` lists one class's entries: its 25
+invariants, its ball-growth dimensions, the four power sums of each per-vertex distribution,
+its arities and degrees, and its multiplicity; the totals are the distributions' vertex counts
+and bins (saturating sums) and extremes. Equal (slot, value) entries add their weights,
+saturating at 2^63 - 1. Every operation commutes, so the pool does not depend on which thread
+added which class. `stats::StepPoolFinish` reads each slot's values in ascending order: the
+summaries, the multiplicity header and entropy, and the distributions' moments are sums taken in
+that order, in `long double`, on the host, for both engines.
 
-1. **Integers stay integers.** Raw states, class counts, weights, histogram weights and N are
-   saturating `uint64` sums, already order-independent.
-2. **Exact sums.** Every floating sum (Σ w v and Σ w v² per invariant, the four power sums and 32
-   bins of each `SgDistribution`, the entropy terms) goes into a per-step superaccumulator: a
-   fixed-point integer of 33 64-bit limbs spanning the double exponent range, each product `w v`
-   split exactly into limbs and added with `atomicAdd` per limb (host: plain adds), with the
-   carries normalised once when the step is read. The sum is exact, so it does not depend on
-   arrival order, thread count or engine, and it is rounded to double once.
-3. **Moments from exact sums.** Mean, variance (N Σ w v² - (Σ w v)², exact before the one
-   rounding), skewness and kurtosis are computed from the exact sums; the per-term logarithms
-   are `hgcommon::dm_log2`, which host and device already compute alike.
-4. **Medians and histograms.** Each step keeps a map from value to weight per invariant
-   (`atomicAdd` on the weight); the median and the rounded histogram are one ordered scan of the
-   map's keys when the step is read. The key order is the values' order, so the scan does not
-   depend on insertion order.
-
-Each class contributes when its weight is known, by its weight or by a weight delta, so the
-same accumulators serve full capture (weight 1 per raw state, added at creation) and the
-multiplicity count (each `qm_credit` delta times the class's values): the pooling becomes online
-under quotient exploration too, with only the read at the end. Storage per step is about 140
-accumulators of 264 bytes plus the value maps. The gate is a reply byte-identical between
-engines and across thread counts, and every value within a relative 1e-12 of today's on the
-corpus.
+On the host the classes are pooled by one job per 256 classes and each slot is merged by its own
+job. On the device (`hg_gpu::step_pool_device`, gpu/src/step_pool.cu) one thread per class runs
+`sp_add_class` with a sink that writes its entries at the class's offset (a prefix sum of entry
+counts the host takes with the same function) and adds the totals with saturating
+compare-and-swap loops and `atomicMin`/`atomicMax`. The entries are sorted by value and then,
+stably, by (step, slot) with CUB radix sorts, and equal entries are merged with
+`cub::DeviceReduce::ReduceByKey` and a saturating sum. The host reads the merged entries back and
+finishes each step from them; the histograms of arity lists and degree sequences are taken on
+the host from the classes. The GPU backend pools on the device for a run of 1024 classes or
+more. The record is the host's bytes: `StateStatistics.DevicePoolEqualsTheHostPool` compares the
+two pools entry for entry and the finished records byte for byte.
 
 ## 5. Expected effect, by the rules they come from
 

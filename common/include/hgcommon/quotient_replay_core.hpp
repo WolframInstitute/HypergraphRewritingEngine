@@ -50,7 +50,9 @@
 //   void     record_runsig(uint32_t ev, const Match& m, uint64_t from_class, uint32_t out_step);
 //                                          the run signature of `m` applied: a function of the
 //                                          three (qr_signature_values)
-//   bool     want_causal() const;  bool want_branchial() const;
+//   bool     want_causal() const;
+//   bool     want_branchial() const;      publish_applied is called: hgcommon::
+//                                          qr_publishes_applications
 //   uint32_t producer_at(const Instance&, uint32_t slot) const;   NO_PRODUCER when none; the
 //                                          Ctx answers it with qr_producer_of below
 //   void     record_causal(uint32_t producer, uint32_t consumer, bool distinct_pair);

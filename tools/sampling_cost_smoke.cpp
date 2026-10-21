@@ -16,6 +16,7 @@
 #include "hypergraph/parallel_evolution.hpp"
 #include "hgcommon/build_stamp.hpp"
 #include <cstring>
+#include <exception>
 
 #include <chrono>
 #include <cstdio>
@@ -66,7 +67,7 @@ static void cap_address_space() {
 #endif
 }
 
-int main(int argc, char** argv) {
+static int run(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     // The configuration this binary was built with (hgcommon/build_stamp.hpp): first line of
     // every run, alone on `--build-info`, which rich_sweep.sh gates on before it measures.
@@ -413,4 +414,16 @@ int main(int argc, char** argv) {
                 discarded_table_bytes(), discarded_table_count(),
                 installed_table_bytes(), installed_table_count());
     return 0;
+}
+
+// An exception that leaves run() -- the engine's "evolution failed in a worker" for an out-of-memory
+// worker, or a thread that cannot be created under the address-space cap -- ends the run with
+// its message and exit status 3, so a sweep records the row as failed.
+int main(int argc, char** argv) {
+    try {
+        return run(argc, argv);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "sampling_cost_smoke: %s\n", e.what());
+        return 3;
+    }
 }

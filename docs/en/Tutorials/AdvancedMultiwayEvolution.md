@@ -203,7 +203,7 @@ The number of events at three steps under each setting:
 Table[HGEvolve[rule, init, 3, "NumEvents", "CanonicalizeStates" -> Full, "CanonicalizeEvents" -> mode], {mode, {None, Full, Automatic, "Positional"}}]
 ```
 
-<!-- => {18, 7, 10, 11} -->
+<!-- => {18, 7, 10, 10} -->
 
 `Automatic` needs `"CanonicalizeStates" -> Full`, which computes the canonical labelings. The `"Positional"` identity depends on the labeling the canonicalizer picks for each state, so it is reproducible for fixed inputs but changes when the initial state is relabeled.
 

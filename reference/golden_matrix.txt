@@ -4,10 +4,10 @@
 #
 # case state_mode event_mode quotient steps states events causal pairs branchial fingerprint provenance
 binary-growth None None 0 3 10 9 8 8 0 1788233283849222415 oracle
-binary-growth None Automatic 0 3 10 8 8 8 0 1788233283849222415 oracle
+binary-growth None Automatic 0 3 10 6 8 8 0 1788233283849222415 oracle
 binary-growth None Full 0 3 10 5 8 8 0 1788233283849222415 oracle
 binary-growth Automatic None 0 3 10 9 8 8 0 1788233283849222415 oracle
-binary-growth Automatic Automatic 0 3 10 8 8 8 0 1788233283849222415 oracle
+binary-growth Automatic Automatic 0 3 10 6 8 8 0 1788233283849222415 oracle
 binary-growth Automatic Full 0 3 10 5 8 8 0 1788233283849222415 oracle
 binary-growth Full None 0 3 6 9 8 8 0 1788233283849222415 oracle
 binary-growth Full None 1 3 6 9 8 8 0 1788233283849222415 pin
@@ -100,10 +100,10 @@ arity3-growth Full Automatic 1 3 9 9 8 8 0 16816539812081329223 pin
 arity3-growth Full Full 0 3 9 9 8 8 0 16816539812081329223 oracle
 arity3-growth Full Full 1 3 9 9 8 8 0 16816539812081329223 pin
 disconnected-lhs None None 0 3 15 14 24 12 7 12440295456896617789 oracle
-disconnected-lhs None Automatic 0 3 15 10 24 12 7 12440295456896617789 oracle
+disconnected-lhs None Automatic 0 3 15 6 24 12 7 12440295456896617789 oracle
 disconnected-lhs None Full 0 3 15 1 24 12 7 12440295456896617789 oracle
 disconnected-lhs Automatic None 0 3 8 14 24 12 7 12440295456896617789 oracle
-disconnected-lhs Automatic Automatic 0 3 8 10 24 12 7 12440295456896617789 oracle
+disconnected-lhs Automatic Automatic 0 3 8 6 24 12 7 12440295456896617789 oracle
 disconnected-lhs Automatic Full 0 3 8 1 24 12 7 12440295456896617789 oracle
 disconnected-lhs Full None 0 3 1 14 24 12 7 12440295456896617789 oracle
 disconnected-lhs Full None 1 3 1 14 24 12 7 12440295456896617789 pin
@@ -172,10 +172,10 @@ arity1-with-binary Full Automatic 1 3 2 1 0 0 0 142906470849220759 pin
 arity1-with-binary Full Full 0 3 2 1 0 0 0 142906470849220759 oracle
 arity1-with-binary Full Full 1 3 2 1 0 0 0 142906470849220759 pin
 cycle4-automorphic None None 0 3 145 144 216 152 144 10445203333365064554 oracle
-cycle4-automorphic None Automatic 0 3 145 15 216 152 144 10445203333365064554 oracle
+cycle4-automorphic None Automatic 0 3 145 19 216 152 144 10445203333365064554 oracle
 cycle4-automorphic None Full 0 3 145 3 216 152 144 10445203333365064554 oracle
 cycle4-automorphic Automatic None 0 3 145 144 216 152 144 10445203333365064554 oracle
-cycle4-automorphic Automatic Automatic 0 3 145 15 216 152 144 10445203333365064554 oracle
+cycle4-automorphic Automatic Automatic 0 3 145 19 216 152 144 10445203333365064554 oracle
 cycle4-automorphic Automatic Full 0 3 145 3 216 152 144 10445203333365064554 oracle
 cycle4-automorphic Full None 0 3 4 144 216 152 144 10445203333365064554 oracle
 cycle4-automorphic Full None 1 3 4 144 216 152 144 10445203333365064554 pin
@@ -184,10 +184,10 @@ cycle4-automorphic Full Automatic 1 3 4 15 216 152 144 10445203333365064554 pin
 cycle4-automorphic Full Full 0 3 4 3 216 152 144 10445203333365064554 oracle
 cycle4-automorphic Full Full 1 3 4 3 216 152 144 10445203333365064554 pin
 star4-automorphic None None 0 2 25 24 8 8 0 12160558704083269668 oracle
-star4-automorphic None Automatic 0 2 25 12 8 8 0 12160558704083269668 oracle
+star4-automorphic None Automatic 0 2 25 9 8 8 0 12160558704083269668 oracle
 star4-automorphic None Full 0 2 25 4 8 8 0 12160558704083269668 oracle
 star4-automorphic Automatic None 0 2 25 24 8 8 0 12160558704083269668 oracle
-star4-automorphic Automatic Automatic 0 2 25 12 8 8 0 12160558704083269668 oracle
+star4-automorphic Automatic Automatic 0 2 25 9 8 8 0 12160558704083269668 oracle
 star4-automorphic Automatic Full 0 2 25 4 8 8 0 12160558704083269668 oracle
 star4-automorphic Full None 0 2 5 24 8 8 0 12160558704083269668 oracle
 star4-automorphic Full None 1 2 5 24 8 8 0 12160558704083269668 pin

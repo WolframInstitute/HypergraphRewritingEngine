@@ -447,6 +447,20 @@ quotient 1942 -> 1634 at one thread and 334 -> 152 at 32. The two few-class quot
   16 and 32 threads within spread or better; peak RSS of a small run +5.7 MB (cycle4 d4 full
   10.3 -> 16.0 MB), cost_matrix arena 233.3 -> 278.7 MB, large runs within 2%. A time-for-
   footprint trade, not landed; `.scratch/opt/patches/causal_set_wc8192_trade.patch`.
+- **Keyed rewrites without their token cache.** The footprint keyed rewrites add is the edge
+  token cache (8 B per edge), the rewrite records and the twin claim map. Peak RSS and arena
+  bytes, bench_cpu_evolve full multiway, keyed on against off (`HG_BENCH_KEYED=0`), HEAD
+  3ee16fe4: wpp d7 one thread 181,360 against 177,036 KB peak, arena used 156.5 against
+  152.8 MB (+2.4%); wpp d7 32 threads 340-370 against 381-388 MB peak, wpp d8 32 threads
+  2,701-2,971 against 2,650-2,861 MB (within the run-to-run spread); cycle4 d7 and multiroot d6
+  one thread equal to 0.1 MB. A time-for-footprint trade (twin runs -2.9 to -12.3% time,
+  41482595), kept.
+- **A variable-length MatchCore.** MatchCore is 200 B for every match (EdgeId[16] and a
+  VariableBinding of 32 slots); a two-edge rule with four variables needs about 40. Its share of
+  the arena at the peak (massif --pages-as-heap, mapped bytes, HEAD 3ee16fe4, stats off):
+  bench_cpu_evolve wpp d7 one thread 6.4 of 360.9 MB (1.8%, `complete_match`); hg_evolve (f48862f3) wpp
+  d8 quotient counts-only 83.5 of 4,457.8 MB (1.9%). Removing four fifths of it saves under
+  1.5%, against a change to every reader of `binding()` and `matched_edges()`. Not landed.
 - **RewriteRule's zero-fill.** The 7.2 M instructions in `RewriteRule::RewriteRule` are 386
   constructions by the benchmark's corpus generator; the engine constructs one per rule.
   Not an engine cost.

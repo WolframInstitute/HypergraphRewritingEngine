@@ -320,9 +320,25 @@ Board H6 lists `kClaimRing` and `kClaimRingWorkers` as per-host tuning; both exi
 
 ## 4. Quiet-box queue
 
-Wall-clock checks that need a quiet machine. Each names the binary, the rows, the command and the expected direction. Build `bench_cpu_evolve` in a stats-OFF release directory (`build_linux`) and `bench_gpu_evolve` in `build_gpu`; run each pair of arms interleaved process by process, 5 rounds, and compare medians.
+Wall-clock checks that need a quiet box. Each names the command, the jobs and the direction the instruction counts predict. The jobs are written by `tools/dev/reply_jobs.py`; the worker count is set with the `get_nprocs` shim that `tools/dev/worker_fuzz.py` compiles into its output directory as `nprocs_shim.so` (`SHIM` below), through `HG_FUZZ_NPROCS`.
 
-**H5 causal set capacity.** Arms `HG_TUNE_CAUSAL_SET_CAPACITY=1024` and unset (8192 on a machine with more than 4 GB available). Rows: multirule depth 6 and 7, cycle4 depth 6, wpp depth 7, all full (`HG_BENCH_CANON_ONLY=0`), at 1, 16 and 32 threads.
+**Q1. Replies written by parallel chunks.** In a stats-OFF release directory, at the commit before 36780be6 and at HEAD, five runs per worker count, interleaved:
+
+    python3 tools/dev/reply_jobs.py .scratch/jobs
+    for t in 1 4 16 32; do for r in 1 2 3 4 5; do for j in wpp_d7_q_graphs wpp_d7_q_structure wpp_d6_full_evograph wpp_d6_full_all; do
+      /usr/bin/time -f "$j $t %e %M" env HG_FUZZ_NPROCS=$t LD_PRELOAD=$SHIM \
+        paclet/LibraryResources/Linux-x86-64/hg_evolve < .scratch/jobs/$j.wxf > /dev/null
+    done; done; done
+
+Expected: the time after evolution falls as workers are added, and at one worker it is no higher than before. Callgrind at 4 workers: wpp_d7_q_graphs 12.31e9 to 6.55e9 instructions, wpp_d6_full_all 0.98e9 to 0.74e9.
+
+**Q2. StepStatistics pooled in jobs.** The same loop on wpp_d7_q_stats, wpp_d8_q_stats and wpp_d6_auto_stats_all, before and after e95879f2. Expected: the time after evolution falls as workers are added; the last step's pooling, one job before, runs as one job per 256 classes and one per slot.
+
+**Q3. StepStatistics pooled on the device.** `hg_evolve_gpu` on wpp_d8_q_stats, before and after e95879f2, five runs each, with `nvidia-smi` read before and after every run to confirm no other process uses the GPU. Expected: the host time after the device run falls.
+
+The tuning rows below use `bench_cpu_evolve` from a stats-OFF release directory (`build_linux`) and `bench_gpu_evolve` from `build_gpu`; each pair of arms runs interleaved process by process, 5 rounds, and medians are compared.
+
+**Q4. H5 causal set capacity.** Arms `HG_TUNE_CAUSAL_SET_CAPACITY=1024` and unset (8192 on a machine with more than 4 GB available). Rows: multirule depth 6 and 7, cycle4 depth 6, wpp depth 7, all full (`HG_BENCH_CANON_ONLY=0`), at 1, 16 and 32 threads.
 
     for round in 1 2 3 4 5; do for cap in 1024 ""; do for row in "multirule 6" "multirule 7" "cycle4 6" "wpp 7"; do
       set -- $row
@@ -332,7 +348,7 @@ Wall-clock checks that need a quiet machine. Each names the binary, the rows, th
 
 Expected: the default at most equal to 1024 on every row (the instruction count falls 1.1-1.5% at one thread).
 
-**H4 expand chunk.** Arms `HG_TUNE_EXPAND_CHUNK=16` and unset. Rows with one-edge left-hand sides: binary depth 8 and 10, arimix depth 6, allfour depth 5, multirule depth 7, full and quotient, at 4, 16 and 32 threads; bigpath n128 depth 3 quotient as a row the chunk does not reach.
+**Q5. H4 expand chunk.** Arms `HG_TUNE_EXPAND_CHUNK=16` and unset. Rows with one-edge left-hand sides: binary depth 8 and 10, arimix depth 6, allfour depth 5, multirule depth 7, full and quotient, at 4, 16 and 32 threads; bigpath n128 depth 3 quotient as a row the chunk does not reach.
 
     for round in 1 2 3 4 5; do for chunk in 16 ""; do for row in "binary 8" "binary 10" "arimix 6" "allfour 5" "multirule 7"; do
       set -- $row
