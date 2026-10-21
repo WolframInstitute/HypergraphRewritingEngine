@@ -39,6 +39,7 @@ seedFrom = ToExpression[args[[4]]]; seedTo = ToExpression[args[[5]]];
 useGPU = If[Length[args] >= 6, args[[6]] =!= "0", True];
 useAuth = Length[args] >= 7 && args[[7]] === "1";
 minutes = If[Length[args] >= 8, ToExpression[args[[8]]], 0];
+verbose = Length[args] >= 9 && args[[9]] === "verbose";
 refDir = DirectoryName[$InputFileName];
 tStart = AbsoluteTime[];
 
@@ -173,7 +174,8 @@ genCase[seed_] := Module[{cls, arities, rules, init, nv, roots, steps, named = N
       init = Check[Quiet[HypergraphRewriting`Private`hgInitialEdges[named[[1]],
         Append[named[[2]], "RandomSeed" -> seed]]], {{1, 2}}]
   ];
-  If[init === {} || !ListQ[init], init = {{1, 2}}];
+  (* a generated condition with no edges is refused by HGEvolve (HGEvolve::emptyic) *)
+  If[init === {} || !ListQ[init], init = {{1, 2}}; named = None];
   roots = {init};
   If[cls === "multiroot",
     Do[AppendTo[roots, Switch[RandomInteger[{1, 3}],
@@ -220,9 +222,12 @@ refRun[c_] := Module[{s = c["maxSteps"], ref = $Aborted, t, cap = If[c["class"] 
 ];
 
 (* The event count of the reference under an identity, with or without the genesis events. *)
-refEvents[r_, identity_, genesis_] := Module[{res = r["ref"]},
-  res["Events"] = If[genesis, Join[r["gen"], r["real"]], r["real"]];
-  EventCount[res, identity]];
+(* Memoised per case: evCache is cleared when a case starts. *)
+evCache = <||>;
+refEvents[r_, identity_, genesis_] := Lookup[evCache, Key[{identity, genesis}],
+  evCache[{identity, genesis}] = Module[{res = r["ref"]},
+    res["Events"] = If[genesis, Join[r["gen"], r["real"]], r["real"]];
+    EventCount[res, identity]]];
 
 authRun[c_, s_] := If[!useAuth, Missing["off"], TimeConstrained[Quiet[Module[{multi, mk},
   multi = Wolfram`Multicomputation`MultiwaySystem[(#[[1]] -> #[[2]]) & /@ c["rules"], c["roots"]];
@@ -444,14 +449,17 @@ nHard = 0; nCases = 0;
 Do[
   If[minutes > 0 && AbsoluteTime[] - tStart > 60 minutes, Print["budget reached before seed ", seed]; Break[]];
   Module[{c = genCase[seed], r, s, auth, res = {}, discs = {}, amber = {}, t0 = AbsoluteTime[]},
+    evCache = <||>; cfCache = <||>;
     r = refRun[c];
+    If[verbose, Print["  reference ", Round[AbsoluteTime[] - t0, 0.01], " s"]];
     If[r === $Aborted,
       logLine[resFile, ToString[<|"seed" -> seed, "skip" -> "reference too slow", "case" -> c|>, InputForm]];
       Print["seed ", seed, " ", c["class"], " SKIP"]; Continue[]];
     s = r["steps"];
     auth = authRun[c, s];
     Do[
-      Module[{e = engRun[c, s, cfgOpts[cfg]], d, am},
+      Module[{t1 = AbsoluteTime[], e = engRun[c, s, cfgOpts[cfg]], d, am},
+        If[verbose, Print["  ", cfg, " ", Round[AbsoluteTime[] - t1, 0.01], " s ", Lookup[e, countKeys, e]]];
         {d, am} = compare[r, auth, cfg, e];
         amber = Join[amber, am];
         AppendTo[res, {cfg, KeyDrop[e, "canon"], d}];
@@ -464,12 +472,13 @@ Do[
           If[Length[DeleteDuplicates[vals[[All, 2]]]] > 1,
             AppendTo[discs, {"inconsistent", cell[[1, 1, {1, 2, 4, 5}]], vals}]]],
         {cell, cells}]];
-    discs = Join[discs,
-      causalGraphCheck[c, r, s, RandomChoice[{None, Full}]],
-      capChecks[c, r, s],
-      sessionChecks[c, r, s],
-      presentationChecks[c, s, res],
-      namedChecks[c, s, res]];
+    Do[
+      Module[{t1 = AbsoluteTime[]},
+        discs = Join[discs, check[[2]][]];
+        If[verbose, Print["  ", check[[1]], " ", Round[AbsoluteTime[] - t1, 0.01], " s"]]],
+      {check, {{"causalGraph", causalGraphCheck[c, r, s, RandomChoice[{None, Full}]] &},
+        {"caps", capChecks[c, r, s] &}, {"sessions", sessionChecks[c, r, s] &},
+        {"presentation", presentationChecks[c, s, res] &}, {"named", namedChecks[c, s, res] &}}}];
     nCases++;
     If[discs =!= {}, nHard++];
     logLine[resFile, ToString[<|"seed" -> seed, "case" -> c, "steps" -> s, "rawEvents" -> Length[r["real"]],
