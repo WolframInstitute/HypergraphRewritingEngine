@@ -68,6 +68,16 @@ TEST(HgGpuSmoke, DeviceProbeMatchesTheAttributeQueries) {
               (uint64_t)p.sm_count * (uint64_t)p.max_threads_per_sm);
     if (!std::getenv("HG_GPU_PERSISTENT_BLOCKS"))
         EXPECT_EQ(hg_gpu::default_persistent_grid(), (uint32_t)p.sm_count * 8u);
-    EXPECT_EQ(hg_gpu::resolved_memory_cap(0), (uint64_t)((double)p.total_bytes * 0.90));
+    // The derived cap is at most 90% of total and at most free - 256 MB.
+    const uint64_t ninety = (uint64_t)((double)p.total_bytes * 0.90);
+    if (!std::getenv("HG_TUNE_GPU_MEMORY_LIMIT")) {
+        const uint64_t cap = hg_gpu::resolved_memory_cap(0);
+        EXPECT_LE(cap, ninety);
+        EXPECT_LE(cap, (uint64_t)free_b);
+        EXPECT_GE(hg_gpu::resolved_memory_cap(0, uint64_t{1} << 40), ninety);
+    }
+    EXPECT_EQ(hg_gpu::memory_cap_of(ninety, uint64_t{1} << 40), ninety);
+    EXPECT_EQ(hg_gpu::memory_cap_of(ninety, uint64_t{1} << 30), (uint64_t{1} << 30) - (uint64_t{256} << 20));
+    EXPECT_EQ(hg_gpu::memory_cap_of(ninety, uint64_t{100} << 20), 1u);
     EXPECT_EQ(hg_gpu::resolved_memory_cap(12345), 12345u);
 }

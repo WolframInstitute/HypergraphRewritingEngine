@@ -459,10 +459,13 @@ void print_tuning() {
                                                             : "sm_count x 8");
         std::printf("gpu.resident_threads    %llu  (sm_count x max_threads_per_sm)\n",
                     static_cast<unsigned long long>(hgg::device_resident_threads()));
-        std::printf("gpu.memory_cap          %s  (%s)\n", mib(hgg::resolved_memory_cap(0)).c_str(),
+        const uint64_t cap = hgg::resolved_memory_cap(0);
+        std::printf("gpu.memory_cap          %s  (%s)\n", mib(cap).c_str(),
                     hgcommon::tuning_env().get(hgcommon::Tune::GpuMemoryLimit)
                         ? "HG_TUNE_GPU_MEMORY_LIMIT"
-                        : "90%% of memory_total; \"Tuning\" -> GPUMemoryLimit per job");
+                        : "min(90% of memory_total, free - 256 MB); \"Tuning\" -> GPUMemoryLimit per job");
+        std::printf("gpu.initial_budget      %s  (memory_cap / 4: the first engine of a run)\n",
+                    mib(cap / 4).c_str());
     }
 #endif
 }

@@ -59,9 +59,15 @@ uint32_t default_persistent_grid();
 // per-thread stack (cudaLimitStackSize) for this many threads, whatever grid is launched.
 uint64_t device_resident_threads();
 
-// The device-memory ceiling of a run: `requested` when non-zero, else 90% of
-// DeviceProbe::total_bytes (gpu/src/evolve.cu).
-uint64_t resolved_memory_cap(uint64_t requested);
+// The device-memory ceiling of a run: `requested` when non-zero, else HG_TUNE_GPU_MEMORY_LIMIT
+// when set, else memory_cap_of(90% of DeviceProbe::total_bytes, free + `held_bytes`), with free
+// from cudaMemGetInfo at the call. `held_bytes` is device memory the caller holds and frees before
+// it builds the run's engine (gpu/src/evolve.cu).
+uint64_t resolved_memory_cap(uint64_t requested, uint64_t held_bytes = 0);
+
+// min(ninety_of_total, available - 256 MB), at least 1 (0 is no cap): memory other processes hold
+// is not counted on.
+uint64_t memory_cap_of(uint64_t ninety_of_total, uint64_t available);
 
 }  // namespace gpu
 }  // namespace HG_NAMESPACE

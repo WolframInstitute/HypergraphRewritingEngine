@@ -605,6 +605,10 @@ struct SessionView;
 // estimate is answered by grow-and-retry, which logs the config that worked.
 EngineConfig config_from_input(const EvolveInput& input);
 
+// The config a run starts from: config_from_input scaled to at most a quarter of `mem_cap` (0 is
+// no cap). A run that outgrows it grows and retries up to the cap.
+EngineConfig initial_config(const EvolveInput& input, uint64_t mem_cap);
+
 // Conservative estimate of the device memory an engine built from `cfg` will
 // allocate, in bytes. Used to enforce EvolveInput::max_device_memory_bytes
 // before construction. Monotonic in every capacity field.
