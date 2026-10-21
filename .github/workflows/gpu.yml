@@ -29,7 +29,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # A scheduled run of the commit the last scheduled run tested runs nothing else.
+  unchanged:
+    uses: ./.github/workflows/unchanged.yml
+    with:
+      workflow: gpu.yml
+
   gpu-compile:                        # free: build-only, no GPU
+    needs: unchanged
+    if: needs.unchanged.outputs.skip != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

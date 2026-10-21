@@ -8,10 +8,10 @@
    Design goals (deliberately simple, "no tricks, no indexes"):
      - Every match is found by exhaustive search over edge tuples.
      - State canonicalization is exact: color refinement to an equitable
-       partition, then exhaustive lexicographic-minimum relabeling over all
-       within-cell permutations. This is at least as capable as the engine's
-       nauty-style individualization-refinement (it finds the true canonical
-       form; it is only slower on highly symmetric graphs).
+       partition, then the lexicographic-minimum relabeling over all
+       within-cell permutations (up to $ExhaustiveLabelings of them) or over the
+       leaves of an individualization-refinement search without automorphism
+       pruning (above it).
      - Multiway expansion is generation-based with global canonical dedup:
        step k expands the states first reached at generation k-1; equal
        (canonical) states are merged across the whole evolution.
@@ -43,8 +43,18 @@ CanonicalForm::usage =
 hyperedges: canonicalEdges uses vertex labels 0..n-1 in lexicographically minimal \
 order; labeling is the chosen Association originalVertex -> label.";
 
+EventSignature::usage =
+  "EventSignature[event, identity] gives the identity value of one event of a MultiwayEvolve \
+result. identity is None, \"States\", \"AutomaticPositional\", \"AutomaticCanonical\" or a \
+list of the keys \"InputState\", \"OutputState\", \"Step\", \"Rule\", \"ConsumedEdges\", \
+\"ProducedEdges\".";
+
+EventCount::usage =
+  "EventCount[result, identity, k] counts the distinct EventSignature values of the events of \
+result at steps up to k.";
+
 CanonicalForm::big =
-  "Automorphism cell product `1` exceeds the search cap; canonical form may not be exact.";
+  "The canonical labelling search passed `1` leaves.";
 
 Begin["`Private`"];
 
@@ -56,7 +66,11 @@ Begin["`Private`"];
 (* Equitable color refinement. `ecol` is a per-edge color (used to mark consumed/
    produced edges for the principled event canonicalization); pass all-equal for a
    plain hypergraph. Returns Association vertex -> integer color rank. *)
-refineColors[edges_, verts_, ecol_] := Module[
+refineColors[edges_, verts_, ecol_] := refineColors[edges, verts, ecol, None];
+
+(* `init` is None or an Association vertex -> orderable value that seeds the colouring; the
+   individualisation search passes the current colouring with one vertex split off. *)
+refineColors[edges_, verts_, ecol_, init_] := Module[
   {incid, color, sig, distinct, rmap, nColors, prevN = -1},
 
   (* incidences[v] = list of {position, arity, edgeColor, edgeIndex} for every slot v fills *)
@@ -69,7 +83,9 @@ refineColors[edges_, verts_, ecol_] := Module[
   ];
 
   (* initial color: sorted multiset of {position, arity, edgeColor} over incidences *)
-  color = AssociationMap[Sort[incid[#][[All, {1, 2, 3}]]] &, verts];
+  color = If[init === None,
+    AssociationMap[Sort[incid[#][[All, {1, 2, 3}]]] &, verts],
+    AssociationMap[{init[#], Sort[incid[#][[All, {1, 2, 3}]]]} &, verts]];
 
   (* iterate until the number of color classes stabilizes *)
   While[True,
@@ -102,6 +118,28 @@ refineColors[edges_, verts_, ecol_] := Module[
 (* Exact canonical form: lex-min relabeling over within-cell perms.    *)
 (* ------------------------------------------------------------------ *)
 
+(* Up to this many within-cell labelings the form is the lex-minimum over all of them. Above
+   it, the candidates are the leaves of the individualisation-refinement tree: individualise
+   each vertex of the first non-singleton cell in turn, refine, recurse. Both candidate sets
+   are isomorphism-invariant and the choice between them depends only on the refined cells, so
+   either gives a complete invariant; the tree has n leaves on an n-cycle where the cell
+   product has n!. *)
+$ExhaustiveLabelings = 40320;
+$MaxLeaves = 500000;
+
+irLeaves[edges_, verts_, ecol_, color0_] := Module[{search, nLeaves = 0},
+  search[col_] := Module[{cells = GatherBy[SortBy[verts, col], col], target},
+    target = SelectFirst[cells, Length[#] > 1 &, None];
+    If[target === None,
+      nLeaves++;
+      If[nLeaves === $MaxLeaves + 1, Message[CanonicalForm::big, $MaxLeaves]];
+      {Flatten[cells]},
+      Join @@ (Function[v,
+        search[refineColors[edges, verts, ecol,
+          AssociationMap[{col[#], If[# === v, 0, 1]} &, verts]]]] /@ target)]];
+  search[color0]
+];
+
 CanonicalForm[edges_] := CanonicalForm[edges, ConstantArray[0, Length[edges]]];
 
 CanonicalForm[edges_, ecol_] := Module[
@@ -114,16 +152,17 @@ CanonicalForm[edges_, ecol_] := Module[
   (* cells in increasing color order; permute within each cell only *)
   cells = GatherBy[SortBy[verts, color], color];
   nLab = Times @@ (Factorial[Length[#]] & /@ cells);
-  If[nLab > 500000, Message[CanonicalForm::big, nLab]];
 
   (* each canonical edge is {edgeColor, relabeled vertices} *)
-  candidates = Function[choice,
-    Module[{order = Flatten[choice], lmap, relabeled},
+  candidates = Function[order,
+    Module[{lmap, relabeled},
       lmap = AssociationThread[order -> Range[0, Length[order] - 1]];
       relabeled = Sort[MapThread[{#2, Map[lmap, #1]} &, {edges, ecol}]];
       {relabeled, lmap}
     ]
-  ] /@ Tuples[Permutations /@ cells];
+  ] /@ If[nLab <= $ExhaustiveLabelings,
+    Flatten /@ Tuples[Permutations /@ cells],
+    irLeaves[edges, verts, ecol, color]];
 
   (* min by canonical (colored) edge list, tie-broken by the label vector for determinism *)
   best = First[
@@ -173,11 +212,12 @@ findMatches[lhs_, state_] := Module[{res = {}, recurse},
    count under every convention; "EventCanonicalization"/"EventEdgeIdentity" select
    which one is echoed as the primary "events" field. *)
 Options[MultiwayEvolve] = {
-  "StateCanonicalization" -> "Canonical",      (* "Canonical" (merge isomorphic) | "None" *)
+  "StateCanonicalization" -> "Canonical",      (* "Canonical" (merge isomorphic) | "Content" (merge equal edge lists, edges in creation order) | "None" *)
   "EventCanonicalization" -> "None",           (* "None" | "States" (=Full) | "Automatic" *)
   "EventEdgeIdentity" -> "Positional",         (* "Positional" (MultiwaySystem) | "Canonical" (IR merge) *)
   "TransitiveReduction" -> True,
   "FullCapture" -> True,
+  "GenesisEvents" -> False,                    (* True: one genesis event per root, producing the root's edges *)
   "Roots" -> None                              (* None: single `init`. A list of edge-lists: seed each as a distinct root. *)
 };
 
@@ -220,13 +260,49 @@ eventSigAutomaticCanonical[ev_] := Module[{inN, outN, np, inCol, outCol},
   {First[CanonicalForm[ev["inContents"], inCol]], First[CanonicalForm[ev["outContents"], outCol]], ev["step"]}
 ];
 
+(* A key list (SPEC 4.2): "ConsumedEdges" is the input state with the consumed edges marked,
+   "ProducedEdges" the output state with the produced edges marked. *)
+eventSigKeys[ev_, keys_List] := Module[{inN, outN, np, comp},
+  inN = Length[ev["inContents"]]; outN = Length[ev["outContents"]];
+  np = Length[ev["producedContents"]];
+  comp["InputState"] := First[CanonicalForm[ev["inContents"]]];
+  comp["OutputState"] := First[CanonicalForm[ev["outContents"]]];
+  comp["Step"] := ev["step"];
+  comp["Rule"] := ev["rule"];
+  comp["ConsumedEdges"] := First[CanonicalForm[ev["inContents"],
+    ReplacePart[ConstantArray[0, inN], (# -> 1) & /@ ev["consumed"]]]];
+  comp["ProducedEdges"] := First[CanonicalForm[ev["outContents"],
+    Join[ConstantArray[0, outN - np], ConstantArray[1, np]]]];
+  {#, comp[#]} & /@ Sort[DeleteDuplicates[keys]]
+];
+
+(* The signature of an event under an identity: None, "States", "AutomaticPositional",
+   "AutomaticCanonical" or a key list. A genesis event is its own event under every identity
+   (SPEC 5.2: one genesis event per initial state). *)
+EventSignature[ev_, identity_] := Which[
+  TrueQ[ev["genesis"]], {"genesis", ev["id"]},
+  identity === None, ev["id"],
+  identity === "States", eventSigStates[ev],
+  identity === "AutomaticPositional", eventSigAutomaticPositional[ev],
+  identity === "AutomaticCanonical", eventSigAutomaticCanonical[ev],
+  ListQ[identity], eventSigKeys[ev, identity],
+  True, $Failed];
+
+(* The number of events of a MultiwayEvolve result up to step k (default: all) under an identity. *)
+EventCount[res_Association, identity_, k_ : Infinity] :=
+  Length[DeleteDuplicates[EventSignature[#, identity] & /@ Select[res["Events"], #["step"] <= k &]]];
+
 MultiwayEvolve[rules0_, init_, steps_, OptionsPattern[]] := Module[
-  {rules, canonStates, trCausal, fullCapture, evCanon, evEdge, primaryKey,
+  {rules, stateMode, trCausal, fullCapture, evCanon, evEdge, primaryKey, genesis,
    eventCounter = 0, sidCounter = 0, freshCounter,
    statesByCanon = <||>, repEdges = <||>, sidStep = <||>, canonOf = <||>, currentStep,
    events = {}, causal = {}, branchial = {}, frontier, mkState, eStep, perStep},
 
-  canonStates = OptionValue["StateCanonicalization"] =!= "None" && OptionValue["StateCanonicalization"] =!= False;
+  stateMode = Switch[OptionValue["StateCanonicalization"],
+    "None" | False | None, "None",
+    "Content", "Content",
+    _, "Canonical"];
+  genesis = TrueQ[OptionValue["GenesisEvents"]];
   trCausal = OptionValue["TransitiveReduction"] =!= False;
   fullCapture = OptionValue["FullCapture"] =!= False;
   evCanon = OptionValue["EventCanonicalization"];
@@ -245,8 +321,10 @@ MultiwayEvolve[rules0_, init_, steps_, OptionsPattern[]] := Module[
     ]
   ] /@ rules0;
 
+  (* fresh vertices are integers above every integer vertex of the roots; a symbolic vertex
+     cannot equal an integer *)
   freshCounter = With[{allInit = If[OptionValue["Roots"] === None, {init}, OptionValue["Roots"]]},
-    If[Flatten[allInit] === {}, 1, Max[Flatten[allInit]] + 1]];
+    Max[Append[Cases[Flatten[allInit], _Integer], 0]] + 1];
 
   (* create a state node from an instance list {{contents, producerEvent}, ...}.
      With FullCapture, every output is its own node (the multiway forest of raw
@@ -254,7 +332,10 @@ MultiwayEvolve[rules0_, init_, steps_, OptionsPattern[]] := Module[
      Without FullCapture, isomorphic states are merged into one expanded node
      (the deduplicated multiway graph). *)
   mkState[instList_] := Module[{contents = instList[[All, 1]], cf, sid},
-    cf = If[canonStates, First[CanonicalForm[contents]], contents];
+    cf = Switch[stateMode,
+      "Canonical", First[CanonicalForm[contents]],
+      "Content", contents,
+      _, {"raw", sidCounter + 1}];
     If[! fullCapture && KeyExistsQ[statesByCanon, cf],
       {statesByCanon[cf], False},
       sidCounter++; sid = sidCounter;
@@ -269,9 +350,18 @@ MultiwayEvolve[rules0_, init_, steps_, OptionsPattern[]] := Module[
      isomorphic roots merge iff FullCapture is off. *)
   currentStep = 0;
   With[{roots = If[OptionValue["Roots"] === None, {init}, OptionValue["Roots"]]},
-    (mkState[{#, 0} & /@ #]) & /@ roots
+    Do[
+      If[genesis,
+        (* the genesis event produces the root's edges; its id is the producer of each *)
+        Module[{eid = ++eventCounter, sid},
+          sid = First[mkState[{#, eid} & /@ root]];
+          AppendTo[events, <|"id" -> eid, "genesis" -> True, "rule" -> 0, "in" -> 0, "out" -> sid,
+            "consumed" -> {}, "step" -> 0, "inContents" -> {}, "outContents" -> root,
+            "consumedContents" -> {}, "producedContents" -> root|>]],
+        mkState[{#, 0} & /@ root]],
+      {root, roots}]
   ];
-  frontier = Range[sidCounter];
+  frontier = DeleteDuplicates[Range[sidCounter]];
 
   Do[
     currentStep = stepNum;
@@ -340,9 +430,9 @@ MultiwayEvolve[rules0_, init_, steps_, OptionsPattern[]] := Module[
         "states" -> Length[DeleteDuplicates[canonOf /@ Select[Range[sidCounter], sidStep[#] <= k &]]],
         (* event counts under each canonicalization convention, surfaced side by side *)
         "eventsNone" -> Length[evK],
-        "eventsStates" -> Length[DeleteDuplicates[eventSigStates /@ evK]],
-        "eventsAutomaticPositional" -> Length[DeleteDuplicates[eventSigAutomaticPositional /@ evK]],
-        "eventsAutomaticCanonical" -> Length[DeleteDuplicates[eventSigAutomaticCanonical /@ evK]],
+        "eventsStates" -> Length[DeleteDuplicates[EventSignature[#, "States"] & /@ evK]],
+        "eventsAutomaticPositional" -> Length[DeleteDuplicates[EventSignature[#, "AutomaticPositional"] & /@ evK]],
+        "eventsAutomaticCanonical" -> Length[DeleteDuplicates[EventSignature[#, "AutomaticCanonical"] & /@ evK]],
         "causal" -> caK,
         "branchial" -> brK
       |>;
@@ -355,8 +445,13 @@ MultiwayEvolve[rules0_, init_, steps_, OptionsPattern[]] := Module[
     "PerStep" -> perStep,
     "NumStates" -> sidCounter,
     "NumEventsRaw" -> eventCounter,
+    (* one entry per state node: the node's identity key under the state mode, and its edges *)
+    "StateKeys" -> canonOf,
+    "StateContents" -> (#[[All, 1]] & /@ repEdges),
     "Events" -> events,
     "Causal" -> DeleteDuplicates[causal],
+    (* one {producer, consumer} entry per consumed edge instance *)
+    "CausalInstances" -> causal,
     "Branchial" -> DeleteDuplicates[branchial]
   |>
 ];

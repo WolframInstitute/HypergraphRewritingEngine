@@ -331,12 +331,13 @@ std::vector<uint8_t> session_envelope(const StateList& seed, const EdgeList& lhs
                                       int64_t session, bool with_rules,
                                       const std::vector<int64_t>& from,
                                       const std::function<void(wxf::Writer&)>& opts,
-                                      uint64_t n_opts, bool delta) {
+                                      uint64_t n_opts, bool delta, bool send_empty_from = false) {
     wxf::Writer w;
     w.write_header();
 
+    const bool send_from = !from.empty() || send_empty_from;
     w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-    w.write_varint(4 + (session ? 1 : 0) + (with_rules ? 1 : 0) + (from.empty() ? 0 : 1) +
+    w.write_varint(4 + (session ? 1 : 0) + (with_rules ? 1 : 0) + (send_from ? 1 : 0) +
                    (delta ? 1 : 0));
 
     if (delta) {
@@ -375,7 +376,7 @@ std::vector<uint8_t> session_envelope(const StateList& seed, const EdgeList& lhs
     w.write(std::string("Op"));
     w.write(op);
 
-    if (!from.empty()) {
+    if (send_from) {
         w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
         w.write(std::string("From"));
         w.write(from);
@@ -500,6 +501,226 @@ TEST(WxfSerializationPin, ANegativeInitialStateVertexIsRefused) {
         build_input_requesting(3, "Evolve", props, 0, true, false, kSeed), host);
     ASSERT_FALSE(ok.empty());
     EXPECT_GT(read_int_key(ok, "NumStates"), 1);
+}
+
+// One vertex numbering serves every initial state, so a label names one vertex in all of them.
+// Under CanonicalizeStates -> Automatic, {{1,3},{3,3}} and {{11,12},{12,12}} are two states with
+// different edge lists (reference/MultiwayReference.wl "Content"), and {{1,2}} and {{2,1}} too.
+TEST(WxfSerializationPin, InitialStatesShareOneVertexNumbering) {
+    HostBridge host;
+    auto automatic_states = [&](const StateList& seed) {
+        const auto out = run_rewriting_core(
+            build_input(seed, {{1, 2}}, {{2, 1}}, 0,
+                        [](wxf::Writer& w) {
+                            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                            w.write(std::string("CanonicalizeStates"));
+                            w.write_symbol("Automatic");
+                            put_str_list_option(w, "RequestedData", {"NumStates"});
+                        },
+                        2),
+            host);
+        return read_int_key(out, "NumStates");
+    };
+    EXPECT_EQ(automatic_states({{{1, 3}, {3, 3}}, {{11, 12}, {12, 12}}}), 2);
+    EXPECT_EQ(automatic_states({{{1, 2}}, {{2, 1}}}), 2);
+    // The same labels are the same state.
+    EXPECT_EQ(automatic_states({{{1, 2}}, {{1, 2}}}), 1);
+}
+
+// Under ShowGenesisEvents each initial state has its own genesis event under every event
+// identity, and a genesis event is paired with every application that consumed an initial edge,
+// on full capture and under quotient exploration alike (docs/SPEC.md 5.2).
+TEST(WxfSerializationPin, GenesisEventsAreOnePerInitialStateUnderEveryIdentity) {
+    HostBridge host;
+    auto run = [&](const StateList& seed, const EdgeList& lhs, const EdgeList& rhs, int64_t steps,
+                   const char* events, bool quotient, const char* key) {
+        const auto out = run_rewriting_core(
+            build_input(seed, lhs, rhs, steps,
+                        [&](wxf::Writer& w) {
+                            for (auto [k, v] : {std::pair<const char*, const char*>{"CanonicalizeStates", "Full"},
+                                                {"CanonicalizeEvents", events},
+                                                {"ShowGenesisEvents", "True"},
+                                                {"ExploreFromCanonicalStatesOnly", quotient ? "True" : "False"}}) {
+                                w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                                w.write(std::string(k));
+                                w.write_symbol(v);
+                            }
+                            put_str_list_option(w, "RequestedData", {"NumEvents", "NumCausalEdges"});
+                        },
+                        5),
+            host);
+        return read_int_key(out, key);
+    };
+    for (bool quotient : {false, true}) {
+        SCOPED_TRACE(quotient ? "quotient exploration" : "full capture");
+        // Two isomorphic roots: 2 event classes under Full and one genesis event per root.
+        EXPECT_EQ(run({{{1, 2}}, {{3, 4}}}, {{1, 2}}, {{1, 3}, {3, 2}}, 2, "Full", quotient, "NumEvents"), 4);
+        // Two applications of one class consume the root's edges: two genesis pairs
+        // (reference/MultiwayReference.wl with "GenesisEvents" -> True).
+        EXPECT_EQ(run({{{1}, {1}}}, {{1}, {1}}, {{1}}, 3, "Full", quotient, "NumCausalEdges"), 2);
+    }
+}
+
+// A key list compares the consumed and produced edges as marked forms (docs/SPEC.md 4.2), also
+// when it names exactly Automatic's five components. The two applications of
+// {{1},{2}} -> {{2,3},{2,3},{2}} to {{2},{4}} consume every edge, produce isomorphic states with
+// every produced edge marked, and are one event (reference/MultiwayReference.wl).
+TEST(WxfSerializationPin, AKeyListOfAutomaticsComponentsComparesMarkedForms) {
+    HostBridge host;
+    auto events = [&](const std::function<void(wxf::Writer&)>& identity) {
+        const auto out = run_rewriting_core(
+            build_input({{{2}, {4}}}, {{1}, {2}}, {{2, 3}, {2, 3}, {2}}, 1,
+                        [&](wxf::Writer& w) {
+                            put_str_option(w, "CanonicalizeStates", "Full");
+                            identity(w);
+                            put_str_list_option(w, "RequestedData", {"NumEvents"});
+                        },
+                        3),
+            host);
+        return read_int_key(out, "NumEvents");
+    };
+    EXPECT_EQ(events([](wxf::Writer& w) {
+                  put_str_list_option(w, "CanonicalizeEvents",
+                                      {"InputState", "OutputState", "Step", "ConsumedEdges",
+                                       "ProducedEdges"});
+              }),
+              1);
+    EXPECT_EQ(events([](wxf::Writer& w) {
+                  put_str_list_option(w, "CanonicalizeEvents",
+                                      {"InputState", "OutputState", "Step", "ConsumedEdges",
+                                       "ProducedEdges", "Rule"});
+              }),
+              1);
+}
+
+// Automatic event identity ranks the edges of {{1},{2}} by first appearance on both devices
+// (hgcommon::ir_renumber_encounter): {{1},{2}} -> {{1},{2}} and {{1},{2}} -> {{2},{1}} give two
+// events in one step, as Wolfram/Multicomputation's MultiwaySystem counts them.
+TEST(WxfSerializationPin, AutomaticRanksComeFromTheFirstAppearanceNumbering) {
+    HostBridge host;
+    wxf::Writer w;
+    w.write_header();
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+    w.write_varint(4);
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("InitialStates"));
+    w.write(StateList{{{1}, {2}}});
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("Rules"));
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+    w.write_varint(2);
+    for (auto [name, rhs] : {std::pair<const char*, EdgeList>{"r0", {{1}, {2}}}, {"r1", {{2}, {1}}}}) {
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string(name));
+        w.write_function("Rule", 2);
+        w.write(EdgeList{{1}, {2}});
+        w.write(rhs);
+    }
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("Steps"));
+    w.write(int64_t{1});
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("Options"));
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+    w.write_varint(3);
+    put_str_option(w, "CanonicalizeStates", "Full");
+    put_str_option(w, "CanonicalizeEvents", "Automatic");
+    put_str_list_option(w, "RequestedData", {"NumEvents"});
+    EXPECT_EQ(read_int_key(run_rewriting_core(w.release_data(), host), "NumEvents"), 2);
+}
+
+// MatchesPerStep counts transitions also when MaxSuccessorStatesPerParent is set (docs/SPEC.md 5).
+// {{1,1}} -> {} on {{2,2},{2,2}} under Automatic states makes two transitions into one state;
+// MatchesPerStep -> 1 keeps one of them, and a per-parent cap of 4 keeps both of them.
+TEST(WxfSerializationPin, MatchesPerStepCountsTransitionsUnderAPerParentCap) {
+    HostBridge host;
+    auto events = [&](bool per_parent) {
+        const auto out = run_rewriting_core(
+            build_input({{{2, 2}, {2, 2}}}, {{1, 1}}, {}, 1,
+                        [&](wxf::Writer& w) {
+                            put_str_option(w, "CanonicalizeStates", "Automatic");
+                            put_str_option(w, "UniformRandom", "True");
+                            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                            w.write(std::string("MatchesPerStep"));
+                            w.write(int64_t{1});
+                            if (per_parent) {
+                                w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                                w.write(std::string("MaxSuccessorStatesPerParent"));
+                                w.write(int64_t{4});
+                            }
+                            put_str_list_option(w, "RequestedData", {"NumEvents"});
+                        },
+                        per_parent ? 5 : 4),
+            host);
+        return read_int_key(out, "NumEvents");
+    };
+    EXPECT_EQ(events(false), 1);
+    EXPECT_EQ(events(true), 1);
+}
+
+// The genesis events' input state is not a state of the evolution (docs/SPEC.md 5.2), so
+// "StepStatistics" is the same with and without ShowGenesisEvents.
+TEST(WxfSerializationPin, StepStatisticsLeaveOutTheGenesisState) {
+    HostBridge host;
+    auto stats = [&](bool genesis) {
+        return value_bytes(
+            run_rewriting_core(
+                build_input({{{1, 2}}}, {{1, 2}}, {{1, 3}, {3, 2}}, 2,
+                            [&](wxf::Writer& w) {
+                                put_str_option(w, "ShowGenesisEvents", genesis ? "True" : "False");
+                                put_str_list_option(w, "RequestedData", {"StepStatistics"});
+                            },
+                            2),
+                host),
+            "StepStatistics");
+    };
+    const auto without = stats(false);
+    ASSERT_FALSE(without.empty());
+    EXPECT_EQ(stats(true), without);
+}
+
+// "StepStatistics" under full capture is the same on every run. On the device only the state
+// that creates an isomorphism class writes the class's record, and which state that is depends
+// on the schedule; a state summarised before its class's record was found counted as an empty
+// state (tools/dev/worker_fuzz.py seed 4627: 4 of 30 runs differed at step 3).
+TEST(WxfSerializationPin, StepStatisticsAreTheSameOnEveryRun) {
+    HostBridge host;
+    auto job = [] {
+        wxf::Writer w;
+        w.write_header();
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        w.write_varint(4);
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("InitialStates"));
+        w.write(StateList{{{1, 3}, {3, 3, 3}}});
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Rules"));
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        w.write_varint(3);
+        const std::pair<EdgeList, EdgeList> rules[] = {
+            {{{2, 3, 4}}, {}}, {{{2, 3, 3}}, {{2, 2, 2}}}, {{{2, 1}}, {{2, 4}, {2, 1}, {2, 1}}}};
+        for (size_t i = 0; i < 3; ++i) {
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write("r" + std::to_string(i));
+            w.write_function("Rule", 2);
+            w.write(rules[i].first);
+            w.write(rules[i].second);
+        }
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Steps"));
+        w.write(int64_t{4});
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Options"));
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        w.write_varint(1);
+        put_str_list_option(w, "RequestedData",
+                            {"NumEvents", "NumCausalEdges", "NumBranchialEdges", "StepStatistics"});
+        return w.release_data();
+    }();
+    const auto first = value_bytes(run_rewriting_core(job, host), "StepStatistics");
+    ASSERT_FALSE(first.empty());
+    for (int i = 0; i < 100; ++i)
+        ASSERT_EQ(value_bytes(run_rewriting_core(job, host), "StepStatistics"), first) << "run " << i;
 }
 
 TEST(WxfSerializationPin, AskingForLessDoesNotAnswerLess) {
@@ -1764,6 +1985,32 @@ TEST(WxfSerializationPin, ASessionServesStepStatisticsItsOpenDidNotName) {
     }
 }
 
+// A Step with "From" -> {} names no frontier state and expands nothing.
+TEST(WxfSerializationPin, AStepFromNoStateExpandsNothing) {
+    auto opts = [](wxf::Writer& w) {
+        put_str_list_option(w, "RequestedData", {"NumStates", "NumEvents"});
+    };
+    auto job = [&](int64_t steps, const std::string& op, int64_t session, bool empty_from) {
+        return session_envelope(kBranchSeed, kBranchLhs, kBranchRhs, steps, op, session,
+                                op == "Open", {}, opts, 1, false, empty_from);
+    };
+    HostBridge host;
+    const int64_t handle = read_int_key(run_rewriting_core(job(0, "Open", 0, false), host), "Session");
+    ASSERT_NE(handle, 0);
+    const auto one = run_rewriting_core(job(1, "Step", handle, false), host);
+    const auto none = run_rewriting_core(job(1, "Step", handle, true), host);
+    const auto two = run_rewriting_core(job(1, "Step", handle, false), host);
+    run_rewriting_core(job(0, "Close", handle, false), host);
+    ASSERT_GT(read_int_key(one, "NumEvents"), 0);
+    EXPECT_EQ(read_int_key(none, "NumEvents"), read_int_key(one, "NumEvents"));
+    EXPECT_EQ(read_int_key(none, "NumStates"), read_int_key(one, "NumStates"));
+    // The frontier it left is the one the next Step expands.
+    const auto direct = run_rewriting_core(
+        session_envelope(kBranchSeed, kBranchLhs, kBranchRhs, 2, "Evolve", 0, true, {}, opts, 1, false),
+        host);
+    EXPECT_EQ(read_int_key(two, "NumEvents"), read_int_key(direct, "NumEvents"));
+}
+
 // A value of an identity option the engine does not recognise is reported as OptionSkipped,
 // naming the value, and the run uses the default. A WL symbol Positional arrives with its
 // context, as Global`Positional, and is one such value.
@@ -2605,6 +2852,57 @@ TEST(WxfSerializationPin, SessionFrontierIdsAreStatesKeys) {
             EXPECT_TRUE(keys.count(f)) << "run " << rep << ": frontier id " << f
                                        << " is not a States key";
         run_rewriting_core(job(0, "Close", handle), host);
+    }
+}
+
+// The same invariant after every one-step Step, with the second step steered by "From" to the
+// lowest frontier id, under Full with and without quotient exploration and under Automatic.
+TEST(WxfSerializationPin, SteeredSessionFrontierIdsAreStatesKeys) {
+    struct Mode { const char* states; bool quotient; };
+    for (const Mode mode : {Mode{"Full", false}, Mode{"Full", true}, Mode{"Automatic", false}}) {
+        auto job = [&](int64_t steps, const std::string& op, int64_t session,
+                       const std::vector<int64_t>& from) {
+            return session_envelope(kBranchSeed, kBranchLhs, kBranchRhs, steps, op, session,
+                                    op == "Open", from, [&](wxf::Writer& w) {
+                put_str_list_option(w, "RequestedData", {"States"});
+                put_str_option(w, "CanonicalizeStates", mode.states);
+                if (mode.quotient) put_str_option(w, "ExploreFromCanonicalStatesOnly", "True");
+            }, mode.quotient ? 3 : 2, false);
+        };
+        auto states_keys = [](const std::vector<uint8_t>& out) {
+            std::set<int64_t> keys;
+            wxf::Parser parser(out);
+            parser.skip_header();
+            parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+                if (k != "States") { vp.skip_value(); return; }
+                vp.read_association_generic([&](wxf::Parser& kp, wxf::Parser& rp) {
+                    keys.insert(kp.read<int64_t>());
+                    rp.skip_value();
+                });
+            });
+            return keys;
+        };
+        for (int rep = 0; rep < 10; ++rep) {
+            HostBridge host;
+            const auto opened = run_rewriting_core(job(0, "Open", 0, {}), host);
+            const int64_t handle = read_int_key(opened, "Session");
+            ASSERT_NE(handle, 0) << mode.states;
+            std::vector<int64_t> frontier = read_int_list_key(opened, "Frontier");
+            for (int step = 1; step <= 4; ++step) {
+                std::vector<int64_t> from;
+                if (step == 2 && !frontier.empty())
+                    from = {*std::min_element(frontier.begin(), frontier.end())};
+                const auto stepped = run_rewriting_core(job(1, "Step", handle, from), host);
+                const auto keys = states_keys(stepped);
+                frontier = read_int_list_key(stepped, "Frontier");
+                ASSERT_FALSE(frontier.empty()) << mode.states << " step " << step;
+                for (int64_t f : frontier)
+                    EXPECT_TRUE(keys.count(f))
+                        << mode.states << (mode.quotient ? " quotient" : "") << " run " << rep
+                        << " step " << step << ": frontier id " << f << " is not a States key";
+            }
+            run_rewriting_core(job(0, "Close", handle, {}), host);
+        }
     }
 }
 

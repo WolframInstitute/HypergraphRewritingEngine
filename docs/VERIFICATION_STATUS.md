@@ -253,6 +253,66 @@ host's quiescence rests on one precondition, that a job submits its children bef
 `MCQuiescenceLateSubmit` breaks it and TLC reports the violation. The models assume sequentially
 consistent memory; the RC11 orderings of the same protocols are the GenMC harnesses'.
 
+## Reference corpus coverage
+
+The engine's results are compared with `reference/MultiwayReference.wl`, this project's
+brute-force evolver, which `reference/compare_multiwaysystem.wls` cross-checks against the
+`Wolfram/Multicomputation` `MultiwaySystem`. The instruments:
+
+- **OF**: `reference/oracle_fuzz.wls`, HGEvolve on the CPU and GPU against the reference, about
+  100 calls per case. Run on Windows Wolfram 15.0: seeds 100-1159, 1053 cases, 81004 raw
+  reference events; seeds 0-41 in the local gate.
+- **WF**: `tools/dev/worker_fuzz.py`, `hg_evolve` against one `hg_evolve_gpu --serve` worker,
+  CPU at 1, 4, 16, 32 and one seed-chosen count of workers, counts-only against full replies.
+  5072 cases, seeds 1000-6071.
+- **GM**: `reference/golden_matrix.txt` (all_tests `GoldenMatrix`), 17 corpus workloads x 3 state
+  modes x 3 event modes, quotient rows under Full.
+- **OC**: all_tests `OracleCorpus.*` and `FeatureMatrix.*` on `reference/oracle_corpus.hpp`.
+- **GC**: `reference/golden_corpus.wl` through `verify_paclet.wls` and `verify_paclet_gpu.wls`,
+  12 cases.
+- **SS**: `reference/verify_state_statistics.wls` against `StateGeometryReference.wl`.
+- **SE**: `reference/verify_sessions.wls`.
+
+OF draws its case class from the seed, 14 classes, 75 or 76 cases each in the run above. Every
+OF case runs every option row below.
+
+| class | instrument | cases |
+|---|---|---|
+| random rules, arity 1-3, 1-3 rules, 1-4 left edges, 0-4 right edges | OF, WF, GC | 75, 5072, 12 |
+| arity 4-16 and mixed arities | OF (class `arity`), WF, OC (`arity4-growth`, `mixed-arity-*`, `arity3-to-2`) | 75, 450, 4 |
+| unary edges | OF (`unary`), OC (`arity1-with-binary`) | 76, 1 |
+| self-loops and repeated vertices in a pattern | OF (`selfloop`), OC (`self-loop`), GC (3 cases) | 76, 1, 3 |
+| disconnected left side | OF (`disconnected`), OC (`disconnected-lhs`) | 76, 1 |
+| empty right side, delete-only rules, states emptied | OF (`deleteOnly`) | 76 |
+| identical rules, rules equal up to renaming | OF (`identical`), WF | 76, 424 |
+| cyclic and recurrent rules | OF (`cyclic`) | 76 |
+| non-confluent rule pairs | OF (`nonconfluent`), GC (`TC4`, `TC5`) | 76, 2 |
+| several roots, isomorphic or sharing labels | OF (`multiroot`), WF, OC (`FeatureMatrix.MultipleInitialStates*`) | 76, 740 |
+| complete digraphs, cycles, stars, grids, tori | OF (`symmetric`), WF (one state in twelve), OC (`cycle4-automorphic`, `star4-automorphic`) | 76, one WF initial state in twelve, 2 |
+| named initial conditions (Grid, Grid with holes, Cylinder, Torus, Sphere, Klein, Mobius, Minkowski, BrillLindquist, Poisson, Uniform) | OF (`named`: the name against its edge list and the reference) | 76 |
+| large states (12-30 edges) | OF (`large`), WF (15-50 edges) | 68 (6 skipped: reference over 30 s), 698 |
+| symbolic vertices, packed arrays | OF (`symbolic`, and packed arrays in 30% of cases), `verify_paclet.wls` | 75 |
+| presentation: relabelled and permuted roots, renamed and permuted rules, labels near 2^32 | OF (every case except `named`) | 977 |
+| CanonicalizeStates None, Automatic, Full | OF (every case), WF, GM | 1053, 5072, 17 x 3 |
+| ExploreFromCanonicalStatesOnly (and its refusal under None and Automatic) | OF, WF, OC (`QuotientMatchesFullClosure*`) | 1053, 1196 |
+| CanonicalizeEvents None, Full, Automatic | OF (Automatic under Full: between the marked-form and raw counts), WF, GM | 1053, 5072, 17 x 3 |
+| CanonicalizeEvents key lists | OF (3 random lists per case, exact against the marked forms), WF, OC (`CustomEventKeySets*`) | 1053, 1008 |
+| CanonicalizeEvents "Positional" | OF (amber against the reference's Positional count), WF | 1053, 259 |
+| CausalTransitiveReduction on and off | OF, WF | 1053, 1485 |
+| ShowGenesisEvents | OF (20 configurations per case), WF | 1053, 760 |
+| EdgeDeduplication (causal graph edges) | OF (one event identity per case) | 1053 |
+| MaxStatesPerStep, MaxSuccessorStatesPerParent, MatchesPerStateRule, TransitionRate, ExplorationProbability, RuleWeights, UniformRandom/MatchesPerStep, RandomSeed | OF (a non-binding cap equals the uncapped run; a binding cap agrees across devices and quotient and does not exceed the uncapped counts), WF, OC (`APerParentCap*`, `APerStepCap*`) | 1053, 3055 |
+| StepStatistics, weightings, branchial "Graph" and "Overlap" | SS, WF (devices and worker counts) | SS corpus, 3095 |
+| sessions: open, step, steer ("From", including {}), query, delta, close | OF (whole steps and a split step against the reference), SE, OC (`Continuing*`, `Steer*`) | 1053, SE corpus |
+| TargetDevice CPU and GPU | OF (every case, both), WF, GC | 1053, 5072, 12 |
+| worker counts 1 to 32 | WF (1, 4, 16, 32, one of 2-31), OC (`DeterministicAcrossThreadCounts`) | 5072 |
+
+No reference meaning exists for which transitions a binding cap or a sampling draw keeps: the
+rank is the engine's transition key (docs/SPEC.md 5), so OF checks the properties listed above.
+`Positional` and Automatic events under None or Automatic states read each raw state's own
+labeling (docs/SPEC.md 4.2); their counts are compared with the reference's Positional count as
+amber, and 11 of the 1053 cases differ from it.
+
 ## Open items
 
 - **Bounded spurious failures.** Every harness that runs a weak compare-exchange has K > 0 at its

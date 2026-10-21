@@ -555,9 +555,12 @@ hgcommon::RecordSet record_set_for(const Job& job, const GraphPropertyNeeds& g) 
     r.raw_counts_only = reads_raw_counts_only(job, g);
     r.multiplicities = job.include_step_statistics;
     r.state_invariants = job.include_step_statistics;
+    r.relation_lists = job.include_causal_edges || job.include_branchial_edges || g.causal ||
+                       g.branchial;
+    r.event_lists = job.include_events || job.include_events_minimal || g.events;
     if (job.session_op == "Open")
         r.causal = r.branchial = r.state_events = r.raw_events = r.multiplicities =
-            r.state_invariants = true;
+            r.state_invariants = r.relation_lists = r.event_lists = true;
     return r;
 }
 

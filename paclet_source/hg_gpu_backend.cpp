@@ -127,25 +127,8 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
         ++rule_index;
     }
 
-    // Initial-state vertices are LABELS, not variables, and are remapped to dense ids exactly as
-    // the CPU FFI's per-state canonical numbering does. Every one of them is non-negative:
-    // run_rewriting_core refuses a negative vertex before it chooses a device, so the two paths
-    // cannot answer one request differently.
-    for (const auto& state : job.initial_states) {
-        std::unordered_map<int64_t, hg_gpu::VertexId> vmap;
-        hg_gpu::VertexId next = 0;
-        std::vector<std::vector<hg_gpu::VertexId>> edges;
-        for (const auto& edge : state) {
-            std::vector<hg_gpu::VertexId> e;
-            for (int64_t v : edge) {
-                auto it = vmap.find(v);
-                if (it == vmap.end()) { vmap[v] = next; e.push_back(next); ++next; }
-                else e.push_back(it->second);
-            }
-            if (!e.empty()) edges.push_back(std::move(e));
-        }
-        if (!edges.empty()) in.initial_states.push_back(std::move(edges));
-    }
+    // Initial-state vertices are labels, renumbered by the rule the CPU engine uses.
+    in.initial_states = hgffi::dense_initial_states<hg_gpu::VertexId>(job.initial_states);
 
     in.num_steps = static_cast<uint32_t>(std::max(0, job.steps));
     // State dedup / class collapse is done host-side in the marshaller, keyed by the
@@ -166,15 +149,10 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
         const hgmarshal::GraphPropertyNeeds gneeds =
             hgmarshal::graph_property_needs(job.graph_properties);
         in.record = hgmarshal::record_set_for(job, gneeds);
-        // The reconstructed relations as pair vectors: read by "CausalEdges", "BranchialEdges"
-        // and the graphs over them; a session may be asked for either later. A counts-only
-        // request keeps this off.
-        in.materialize_relations = job.include_causal_edges || job.include_branchial_edges ||
-                                   gneeds.causal || gneeds.branchial ||
-                                   job.session_op == "Open";
-        // The reconstructed applications as events and graph vertices: read by "Events" and by
-        // every graph over events; a session may be asked for either later.
-        in.materialize_events = job.include_events || gneeds.events || job.session_op == "Open";
+        // The reconstructed relations as pair vectors and the applications as events: the
+        // record set's enumerations (RecordSet::relation_lists, event_lists).
+        in.materialize_relations = in.record.relation_lists;
+        in.materialize_events = in.record.event_lists;
         // The reconstruction's genesis pairs: read by every reply that shows genesis events.
         in.genesis_pairs = job.show_genesis_events;
         // State contents: read by the state records, event records (their input and output
@@ -674,16 +652,14 @@ std::vector<uint8_t> run_gpu_evolution_once(const GpuJob& request, const HostBri
             static_cast<hg_gpu::EventId>(std::max<uint64_t>(
                 result.reconstructed_raw_events, result.reconstructed_event_signature.size())));
     // The reconstruction's genesis pairs as (root index, application), one per (genesis event,
-    // reported identity of the application), as the host deduplicates them.
+    // application), as full capture pairs them.
     std::vector<std::pair<size_t, uint32_t>> recon_genesis;
     if (recon_ran && job.show_genesis_events) {
         std::unordered_map<hg_gpu::StateId, size_t> root_index;
         for (size_t i = 0; i < genesis_roots.size(); ++i) root_index.emplace(genesis_roots[i], i);
-        std::set<std::pair<size_t, int64_t>> seen;
         for (const auto& [root, ev] : result.reconstructed_genesis_pairs) {
             auto it = root_index.find(root);
-            if (it == root_index.end()) continue;
-            if (seen.insert({it->second, recon_id(ev)}).second) recon_genesis.emplace_back(it->second, ev);
+            if (it != root_index.end()) recon_genesis.emplace_back(it->second, ev);
         }
     }
     // Every application the replay minted has content; under an event identity it must also
@@ -1006,6 +982,10 @@ std::vector<uint8_t> run_gpu_evolution_once(const GpuJob& request, const HostBri
             for (const auto& [step, n] : events) inputs[step].events = n;
             for (auto& [step, by_rule] : rule_counts) inputs[step].rule_counts = std::move(by_rule);
         } else {
+            // Every class's record first: only the state that created the class wrote one, and
+            // its id need not be the lowest of the class.
+            for (const auto& st : result.states)
+                if (st.id != hg_gpu::INVALID_ID) take_record(st);
             for (const auto& st : result.states) {
                 const auto it = state_step.find(st.id);
                 const uint32_t step = it == state_step.end() ? 0u : it->second;

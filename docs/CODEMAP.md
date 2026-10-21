@@ -45,7 +45,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`ir_canonicalization.hpp`)
 
 - **`phase_timing.hpp`** -- where a run's cycles go, by phase, on the HOST. The device has had this since the persistent kernel (per-block `clock64` deltas summed at exit into `PersistentEvolveStats`); the host had no equivalent, and the substitutes are wrong here -- a wall-clock timer cannot see inside a run where every worker is in some phase at once, and a sampling profiler attributes to the symbol rather than to the phase a symbol serves. `Phase` (the enum the buckets are named by), `PhaseTimer` (RAII, scoped to a phase), `phase_cycles()`, `phase_timing_compiled()`. Compiled out unless asked for, and when it is out `PhaseTimer` is an empty object with no counter read and no branch, so the instrumented and shipping builds are the same code. Read by `bench_cpu_evolve`, which prints the per-phase split beside its timings.
 
-- **`core.hpp`** -- id typedefs, structural limits, integer hash primitives and the small-run sort both canonicalizers use (`HG_HD` host/device); `RecordSet`, and `same_record_set`, by which both engines refuse a session continuation that records something else.
+- **`core.hpp`** -- id typedefs, structural limits, integer hash primitives and the small-run sort both canonicalizers use (`HG_HD` host/device); `RecordSet`, and `same_record_set`, by which both engines refuse a session continuation that records something else; `qr_publishes_applications` (both engines), `qr_keeps_event_content` and `qr_keeps_causal_pairs` (host), by which the replay keeps the per-instance applications, the per-event content and the causal pair list only when a request enumerates relations or events (`RecordSet::relation_lists`, `event_lists`).
   - id aliases `VertexId`/`EdgeId`/`StateId`/`EventId`/`MatchId`, `INVALID_ID`; limits `MAX_ARITY`/`MAX_PATTERN_EDGES`/`MAX_VARS`
   - `HG_INLINE` -- force-inline, for functions whose inlining must not track unrelated code size
   - `mix64()` (Murmur3 finalizer), `fnv_hash()` (FNV-1a combine), `splitmix64()` (commutative-sum finalizer), `isort_u64()` (small-run insertion sort -- both canonicalizers sort per-vertex signature multisets and the device has no `std::sort`)
@@ -156,7 +156,7 @@ matcher (`pattern_matcher.hpp`) and canonicalization (`ir_canonicalization.hpp`)
 ## `hypergraph/src/` -- core engine (out-of-line implementations)
 
 - **`hypergraph.cpp`** -- `Hypergraph` methods: creation + index registration, `create_or_get_canonical_state` dedup, event creation/canonicalization, hashing, edge-correspondence dispatch.
-- **`ir_canonicalization.cpp`** -- the adapter from this project's edge lists to `hgcommon/ir_core.hpp`: `ir_core_call` (sorted-unique vertex numbering, depth and generator escalation) + the public hash/canonicalize entries built on it.
+- **`ir_canonicalization.cpp`** -- the adapter from this project's edge lists to `hgcommon/ir_core.hpp`: `ir_core_call` (first-appearance vertex numbering, `hgcommon::ir_renumber_encounter`; depth and generator escalation) + the public hash/canonicalize entries built on it.
 - **`causal_graph.cpp`** -- `CausalGraph` methods: lazy slot/list creation, producer/consumer rendezvous, `add_causal_edge`/`record_reduced_edge`/`add_branchial_edge`, `is_reachable` (the backward walk over KEPT predecessors that decides whether a pair is bypassed), `get_causal_edges`/`get_branchial_edges` export.
 - **`parallel_evolution.cpp`** -- the engine's implementation: `evolve` loops, the `execute_*`/`submit_*` task engine, match forwarding, pruning/quotient bookkeeping, and match epochs (`begin_match_epochs`, `match_epoch`, `retire_match_epoch`): with no forwarding, no continuation and the depth join running, a step's match storage lives in that step's `MatchEpoch` and is deleted when the next step settles.
 - **`rule_analysis.cpp`** -- the rule facts' bodies: `lhs_is_connected`, `lhs_is_acyclic` (GYO), `lhs_edge_cover`, `analyze_rule`, `can_branch`, `analyze_rules`. They run once per rule at registration and once per run at configure time, so they are here rather than in the header every engine translation unit parses.
@@ -286,7 +286,8 @@ implementation is written `MultiwayReference` and the directory `reference/`.
 
 - **`oracle_corpus.hpp`** -- the shared measurement substrate: `corpus()` (the named rule cases spanning the rule-type space -- single/mixed arity, productive/idempotent/reductive, self-loop, disconnected LHS, multi-rule, automorphic), `Case`/`Counts`/`LatticeCounts`, the engine drivers `engine_full_count`/`engine_counts`, and the brute-force isomorphism oracle `brute_force_iso_count`/`brute_canonical`/`content_canonical`, which is INDEPENDENT of the engine's WL and IR. One source of truth for what is tested and how it is checked, used by the oracle gate and by `tools/cost_matrix.cpp`
 - **`golden_matrix.hpp`** -- the cached identity matrix: every corpus workload across every identity mode, each `Row` carrying the `Provenance` that says what checked it. The brute-force oracle is `O(V! * E log E)` and the WL reference needs wolframscript, so neither runs on every build; caching the expected values lets the gate compare in milliseconds. `event_keys_from_name`/`state_mode_from_name`
-- **`MultiwayReference.wl`** -- brute-force ground-truth oracle: `MultiwayEvolve`, `CanonicalForm` (refinement + lex-min), helpers `refineColors`/`findMatches`/`eventSig*`
+- **`MultiwayReference.wl`** -- brute-force ground-truth oracle: `MultiwayEvolve` (state modes `"Canonical"`, `"Content"` and `"None"`, `"GenesisEvents"`, several roots), `CanonicalForm` (refinement, then the lex-min over within-cell labelings or, above 40320 of them, over the leaves of an individualization search), `EventSignature`/`EventCount` (every event identity: None, Full, both Automatic conventions and key lists), helpers `refineColors`/`findMatches`/`eventSig*`
+- **`oracle_fuzz.wls`** -- the random differential fuzz of `HGEvolve` on both devices against `MultiwayReference.wl`: 14 case classes chosen by the seed, every state and event identity, quotient exploration, reduction, genesis events, causal graph edges under `EdgeDeduplication`, caps and sampling, sessions, named initial conditions and presentation invariance; `tools/dev/oracle_gate.sh` runs a fixed seed range of it
 - **`golden_corpus.wl`** -- `hgGoldenCases`: 12 named cases with expected `{states, rawEvents, causal, branchial}`
 - **`verify_paclet.wls` / `verify_paclet_gpu.wls`** -- load the local paclet, check `HGEvolve` against the golden corpus (CPU; GPU via `TargetDevice->"GPU"`)
 - **`verify_sessions.wls`** -- the session verbs' LIFETIME (open, refuse a second open, step, close, reopen), with every prefix depth compared against an independent one-shot `HGEvolve`
@@ -384,10 +385,13 @@ rented box that does.
   comment to what it actually sees (racecheck is shared memory only).
 - **`worker_fuzz.py`** -- the random job-sequence fuzz, a local gate (CONTRIBUTING.md, Test). One
   `hg_evolve_gpu --serve` worker answers every job of the run and is compared with `hg_evolve` on
-  the CPU; StepStatistics is compared between devices and between 1, 4 and 16 CPU workers;
+  the CPU; StepStatistics is compared between devices and between 1, 4, 16, 32 and one seed-chosen count of CPU workers;
   counts-only replies are compared with full ones on both devices. Unknown findings are shrunk to
   a minimal job (or, for a worker leak, a minimal job sequence) and fail the run; open board
   defects are listed in its `KNOWN` table. Every child runs under `RLIMIT_AS`.
+- **`oracle_gate.sh`** -- the reference corpus gate (CONTRIBUTING.md, Test): `reference/oracle_fuzz.wls`
+  on a fixed seed range against a hash-named copy of the paclet, then `worker_fuzz.py` at its
+  default budget.
 - **`wxf_mini.py`** -- the WXF encoder and decoder `worker_fuzz.py` builds jobs and reads replies
   with.
 

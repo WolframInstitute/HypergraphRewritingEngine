@@ -299,6 +299,11 @@ std::vector<uint32_t> StepStatisticsCollector::states_at(uint32_t step) const {
     } else if (step < by_step_.size()) {
         sids = by_step_[step];
     }
+    // The genesis events' input state stands before the initial states and is not one of them.
+    if (step == 0)
+        sids.erase(std::remove_if(sids.begin(), sids.end(),
+                                  [&](uint32_t sid) { return hg_.is_genesis_state(sid); }),
+                   sids.end());
     return sids;
 }
 

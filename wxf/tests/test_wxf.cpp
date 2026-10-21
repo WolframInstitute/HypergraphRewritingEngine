@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "../wxf/wxf.hpp"
 #include "test_helpers.hpp"
+#include <hgcommon/build_stamp.hpp>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -1191,6 +1192,10 @@ void copy_list_under_cap() {
 }  // namespace
 
 TEST(WxfValueCopy, BadAllocDuringCopyThrows) {
+    // ASan and TSan allocators do not throw bad_alloc on a failed mmap under the lowered
+    // RLIMIT_AS: the copy completes or the process aborts.
+    if (HG_BUILD_STAMP_ASAN[0] == '1' || HG_BUILD_STAMP_TSAN[0] == '1')
+        GTEST_SKIP() << "ASan and TSan do not throw bad_alloc under a lowered RLIMIT_AS";
     GTEST_FLAG_SET(death_test_style, "threadsafe");
     EXPECT_EXIT(copy_list_under_cap(), ::testing::ExitedWithCode(0), "");
 }
