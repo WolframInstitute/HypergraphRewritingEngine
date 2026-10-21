@@ -524,3 +524,32 @@ TEST(CapacityOverflow, TheRingCapacityHasABound) {
     EXPECT_EQ(hg_gpu::persistent_ring_capacity(1u << 31), 1u << 31);
     EXPECT_THROW(hg_gpu::persistent_ring_capacity((1ull << 31) + 1), std::length_error);
 }
+
+// A step cap that counts transitions bounds the state and event pools (config_from_input), and a
+// run under it completes on its first attempt with the counts of an uncapped config. A cap that
+// keeps successor states under Full bounds nothing.
+TEST(CapacityOverflow, AStepCapThatCountsTransitionsBoundsThePools) {
+    hg_gpu::EvolveInput in = growing_input(4);
+    const hg_gpu::EngineConfig guess = hg_gpu::config_from_input(in);
+    in.max_states_per_step = 3;
+    in.step_cap_counts_matches = true;
+    const hg_gpu::EngineConfig capped = hg_gpu::config_from_input(in);
+    EXPECT_EQ(capped.max_states, 1u << 10);
+    EXPECT_EQ(capped.max_events, 1u << 10);
+    EXPECT_LT(capped.max_edges, guess.max_edges);
+    EXPECT_EQ(capped.branchial_index_buckets, 1u << 12);
+    hg_gpu::EvolveInput by_succ = in;
+    by_succ.step_cap_counts_matches = false;
+    EXPECT_EQ(hg_gpu::config_from_input(by_succ).max_states, guess.max_states);
+
+    hg_gpu::EvolveResult wide;
+    {
+        hg_gpu::Engine engine(guess);
+        wide = engine.run(in);
+    }
+    const hg_gpu::EvolveResult first = hg_gpu::evolve(in);
+    EXPECT_TRUE(wide.warnings.empty());
+    EXPECT_TRUE(first.warnings.empty());
+    EXPECT_EQ(first.states.size(), wide.states.size());
+    EXPECT_EQ(first.events.size(), wide.events.size());
+}

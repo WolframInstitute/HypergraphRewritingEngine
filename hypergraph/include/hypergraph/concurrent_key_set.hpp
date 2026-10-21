@@ -1,5 +1,6 @@
 #pragma once
 #include "hgcommon/core.hpp"
+#include "hgcommon/cache_line.hpp"
 #include "hgcommon/namespace.hpp"
 
 #include <atomic>
@@ -170,6 +171,10 @@ public:
 
     ConcurrentKeySet(const ConcurrentKeySet&) = delete;
     ConcurrentKeySet& operator=(const ConcurrentKeySet&) = delete;
+
+    // The size the first growth jumps to. Single-threaded setup, as set_arena is; a set that has
+    // already grown keeps doubling from where it is.
+    void set_working_capacity(size_t n) { working_capacity_ = n; }
 
     void set_arena(ConcurrentHeterogeneousArena* arena) {
         arena_ = arena;
@@ -608,7 +613,7 @@ private:
     ConcurrentHeterogeneousArena* arena_;
     size_t working_capacity_ = WORKING_CAPACITY;
 
-    alignas(64) std::atomic<size_t> count_;
+    alignas(hgcommon::kDestructiveLine) std::atomic<size_t> count_;
     // The growth ticket; see insert. Not a lock -- a thread that fails to take it proceeds to its
     // probe without waiting, and the re-drive on an exhausted run is not ticketed at all.
     std::atomic<bool> growing_{false};
@@ -670,6 +675,11 @@ public:
     void set_arena(ConcurrentHeterogeneousArena* arena) {
         for (Shard& s : shard_) s.set_arena(arena);
     }
+    // Each shard's first growth jumps to `n` slots.
+    void set_working_capacity(size_t n) {
+        for (Shard& s : shard_) s.set_working_capacity(n);
+    }
+    static constexpr size_t shards() { return SHARDS; }
 
     ShardedKeySet(const ShardedKeySet&) = delete;
     ShardedKeySet& operator=(const ShardedKeySet&) = delete;

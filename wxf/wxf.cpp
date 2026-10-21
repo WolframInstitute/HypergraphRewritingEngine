@@ -610,16 +610,32 @@ void Writer::write_real64(double value) {
     }
 }
 
-void Writer::write_string(const std::string& value) {
+void Writer::write_string(std::string_view value) {
     write_byte(static_cast<uint8_t>(Token::String));
     write_varint(value.size());
     data_.insert(data_.end(), value.begin(), value.end());
 }
 
-void Writer::write_symbol(const std::string& value) {
+void Writer::write_symbol(std::string_view value) {
     write_byte(static_cast<uint8_t>(Token::Symbol));
     write_varint(value.size());
     data_.insert(data_.end(), value.begin(), value.end());
+}
+
+void Writer::write_key(std::string_view key) {
+    if (key.size() >= 0x80) {
+        write_byte(static_cast<uint8_t>(Token::Rule));
+        write_string(key);
+        return;
+    }
+    // A key below 128 bytes has a one-byte length: the entry start is one append.
+    const size_t at = data_.size();
+    data_.resize(at + 3 + key.size());
+    uint8_t* p = data_.data() + at;
+    p[0] = static_cast<uint8_t>(Token::Rule);
+    p[1] = static_cast<uint8_t>(Token::String);
+    p[2] = static_cast<uint8_t>(key.size());
+    std::memcpy(p + 3, key.data(), key.size());
 }
 
 void Writer::write_binary_string(const std::vector<uint8_t>& value) {
@@ -628,37 +644,39 @@ void Writer::write_binary_string(const std::vector<uint8_t>& value) {
     data_.insert(data_.end(), value.begin(), value.end());
 }
 
-void Writer::write_packed_reals(const PackedReals& value) {
+void Writer::write_packed_reals(const std::vector<size_t>& dims, const double* values) {
+    if (dims.empty()) throw TypeError("a packed array has rank 1 or more");
     size_t count = 1;
-    for (size_t d : value.dims) count *= d;
-    if (value.dims.empty() || count != value.values.size())
-        throw TypeError("packed array dimensions do not match its element count");
+    for (size_t d : dims) count *= d;
     if (count == 0) {
         // The leading dimensions as lists, down to the first zero.
         std::function<void(size_t)> lists = [&](size_t level) {
-            const size_t n = value.dims[level];
+            const size_t n = dims[level];
             write_function("List", n);
-            if (n) for (size_t i = 0; i < n; ++i) lists(level + 1);
+            for (size_t i = 0; i < n; ++i) lists(level + 1);
         };
         lists(0);
         return;
     }
     write_byte(static_cast<uint8_t>(Token::PackedArray));
     write_byte(0x23);   // Real64
-    write_varint(value.dims.size());
-    for (size_t d : value.dims) write_varint(d);
+    write_varint(dims.size());
+    for (size_t d : dims) write_varint(d);
+    const size_t at = data_.size();
+    data_.resize(at + 8 * count);
     uint16_t endian_test = 1;
     const bool is_little_endian = (*reinterpret_cast<uint8_t*>(&endian_test) == 1);
-    for (double x : value.values) {
+    for (size_t i = 0; i < count; ++i) {
+        double x = values[i];
         if (x == 0.0) x = 0.0;   // -0.0 as 0.0, as write_real64 writes it
         uint64_t bits;
         std::memcpy(&bits, &x, 8);
         if (!is_little_endian) bits = wxf_bswap64(bits);
-        for (int i = 0; i < 8; i++) write_byte(static_cast<uint8_t>((bits >> (i * 8)) & 0xFF));
+        std::memcpy(data_.data() + at + 8 * i, &bits, 8);
     }
 }
 
-void Writer::write_function(const std::string& head, size_t arg_count) {
+void Writer::write_function(std::string_view head, size_t arg_count) {
     write_byte(static_cast<uint8_t>(Token::Function));
     write_varint(arg_count);
     write_symbol(head);
@@ -727,6 +745,16 @@ void Writer::append(const std::vector<uint8_t>& bytes) {
     data_.insert(data_.end(), bytes.begin(), bytes.end());
 }
 
+void Writer::append(const uint8_t* bytes, size_t n) {
+    data_.insert(data_.end(), bytes, bytes + n);
+}
+
+void Writer::truncate(size_t n) {
+    if (n < data_.size()) data_.resize(n);
+}
+
+void Writer::set_byte(size_t at, uint8_t value) { data_.at(at) = value; }
+
 // =============================================================================
 // Writer::write<WXFValue>
 // =============================================================================
@@ -751,6 +779,8 @@ void Writer::write<WXFValue>(const WXFValue& value) {
                 write(k);
                 write(val);
             }
+        } else if constexpr (std::is_same_v<T, Encoded>) {
+            append(v.bytes);
         } else {
             write(v);  // Use generic write for primitives
         }

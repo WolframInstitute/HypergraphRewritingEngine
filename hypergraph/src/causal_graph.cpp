@@ -253,6 +253,11 @@ bool CausalGraph::transitive_reduction_enabled() const {
     return transitive_reduction_enabled_.load(std::memory_order_relaxed);
 }
 
+void CausalGraph::set_causal_set_capacity(size_t per_shard) {
+    seen_causal_triples_.set_working_capacity(per_shard);
+    seen_causal_event_pairs_.set_working_capacity(per_shard);
+}
+
 void CausalGraph::set_arena(ConcurrentHeterogeneousArena* arena) {
     arena_ = arena;
     seen_causal_triples_.set_arena(arena);

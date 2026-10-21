@@ -132,6 +132,13 @@ Both structs print through one flag: `hg_evolve --print-tuning` (and `hg_evolve_
 
 **Proposed.** One option, `"Tuning" -> <|name -> value, ...|>`, carried in the job to `hg_evolve` and to the C++ entry points as a `TuningOverrides` struct; one environment variable per name, `HG_TUNE_<NAME>`, read once by the probe for the standalone tools. An override replaces the derived value and is echoed by `--print-tuning`. `HG_GPU_PERSISTENT_BLOCKS` stays as an alias of `HG_TUNE_GPU_BLOCKS`. Compile-time macros stay for the sizes the model checker shrinks. A separate `"Threads" -> n` option exposes the worker count, the one knob a general user needs.
 
+**Implemented.** `hgcommon::TuningOverrides` (`common/include/hgcommon/tuning.hpp`) holds the names; `hgcommon::tuned(job, name, derive)` resolves a value as the job's override, else `HG_TUNE_<NAME>`, else the derived default, and every consumer calls it. The FFI reads `"Threads"` (0 is `Automatic`) and `"Tuning"` into `ParsedJob::tuning`; a `"Tuning"` entry with an unknown name or a value below the name's minimum is skipped with an `OptionSkipped` warning and the other entries apply. The C++ entry points take the values as their own arguments (`ParallelEvolutionEngine` `num_threads`, `EvolveInput::max_device_memory_bytes`), where 0 is the derived default. The `"Device"` reply reports the values a run used: `"Threads"` on both engines, `"MemoryCap"` on the GPU. Test: `WxfSerializationPin.TuningOverridesReachTheEngine` (all_tests and gpu_ffi_tests).
+
+| Name | Environment | Consumer | Derived default |
+|---|---|---|---|
+| `"Threads"` (its own option) | `HG_TUNE_THREADS` | `ParallelEvolutionEngine`, `JobSystem`, the GPU reply's StepStatistics | `hgcommon::default_worker_count()`: the logical CPUs the process may run on (`sched_getaffinity`, `GetProcessAffinityMask`), at most `MAX_ARENA_WORKERS` for the engine |
+| `GPUMemoryLimit` | `HG_TUNE_GPU_MEMORY_LIMIT` | `resolved_memory_cap` | D16 |
+
 ### 2.3 Derivations
 
 Notation. Host: `L` allowed logical CPUs, `C` physical cores among them, `P` performance-class physical cores (equal to `C` on homogeneous parts), `D` LLC domains, `LLC` bytes per domain, `M` available bytes, `HP` huge page bytes, `W` workers, `A` active workers (C1). Device: `G` SMs, `T` max threads per SM, `B` max blocks per SM, `Bocc` occupancy-limited blocks per SM for a kernel, `L2`, `V` total VRAM, `F` free VRAM, `cc` compute capability.
@@ -281,6 +288,37 @@ The C1 gate is `mono_check` with no violation at the 5% band for the throttle; t
 9. D22 L2 persistence window; D13 grid-stride helper; D12 block sizes.
 10. H16 cache-line constant, H14 arena block from the huge page size, H23 malloc arenas (after C24), H9/H10 shard counts.
 
+### 2.6 Implemented rows
+
+**H5 causal set capacity.** `ParallelEvolutionEngine::configure_tuning` sets, at each `evolve()`, the first table size of the two causal sets (`CausalGraph::set_causal_set_capacity`): `"Tuning" -> <|"CausalSetCapacity" -> n|>`, `HG_TUNE_CAUSAL_SET_CAPACITY`, or `derived_causal_set_capacity`. With a step cap N the keys are at most (1 + steps x N) x the largest left-hand side, and a shard takes that over 64 shards at load 0.75, as a power of two from 1024 to 65536; without a cap the value is 8192 when `MemAvailable` is above 4 GB, else 1024. Model-checked harnesses keep 1024. The `"Device"` reply of the CPU engine reports `"CausalSetCapacity"`. Measured on the i9-14900K, stats build, one evolve at one thread, 1024 against 8192 on the same binary through the override: callgrind Ir cycle4 depth 6 full 1,738,356,884 -> 1,718,747,106 (-1.13%), multirule depth 6 full 2,639,556,621 -> 2,598,951,896 (-1.54%); peak RSS multirule depth 3 full 15.4 -> 18.9 MB (3 runs each, spread 0.2 MB). Test: `ParallelEvolution.CausalSetCapacityChangesNoRelation` (causal edges, causal pairs and events equal at 1, 1024, 65536 and the default, at 1, 4 and 32 threads).
+
+**H4 expand chunk.** `dispatch_expansion` splits a state's match set into tasks of `derived_expand_chunk(count, workers)` = ceil(count / workers) from 4 to 64 matches, or the fixed `"Tuning" -> <|"ExpandChunk" -> n|>` / `HG_TUNE_EXPAND_CHUNK`. The set reaches one expansion when a scan task completes every match of a one-edge left-hand side; a rule with more edges completes its matches one at a time, which the chunk size does not change. Job counts, `bench_cpu_evolve` stats build, 16 against the derived size on the same binary through the override (instruction counts at more than one thread are not used: valgrind serialises the threads and the idle loops then dominate):
+
+| Row | Workers | Jobs, 16 / derived | Wakes, 16 / derived |
+|---|---|---|---|
+| binary depth 6 full | 1 | 308 / 308 | 1 / 1 |
+| binary depth 6 full | 4 | 308 / 452 | 16 / 23 |
+| binary depth 6 full | 16 | 308 / 452 | 53 / 74 |
+| binary depth 6 full | 32 | 308 / 452 | 201 / 203 |
+| arimix depth 5 full | 4 | 459 / 579 | 19 / 413 |
+| arimix depth 5 full | 32 | 459 / 579 | 164 / 441 |
+
+States on these rows hold at most 7 matches, so at 4 or more workers the derived size splits a 5-to-7-match state into tasks of 4 where 16 ran it inline; at one worker the job counts are equal. Test: `ParallelEvolution.ExpandChunkChangesNoResult` (the derivation's cases; canonical states, events and causal pairs equal at chunk sizes 1, 16, 64 and derived, at 1, 4 and 32 threads).
+
+**D16 memory cap.** `resolved_memory_cap` is `"Tuning" -> <|"GPUMemoryLimit" -> n|>`, `HG_TUNE_GPU_MEMORY_LIMIT`, or `memory_cap_of(90% of total, free + held - 256 MB)` with free from `cudaMemGetInfo` at each run; held is the live engine's pools on a `PersistentEvolver` (freed before a larger engine is built; the device stack stays). On the RTX 4090 with 1,152 MiB used by other processes: 22,107 MB (90% of total is the smaller term). Test: `test_smoke`.
+
+**D17 pools.** A step cap that counts transitions (`"MatchesPerStep"`, or `"MaxStatesPerStep"` under `CanonicalizeStates -> None`) bounds events at steps x cap and raw states at roots + events, and `config_from_input` takes at most twice that for states, events and edges (2^10 states, 2^12 edges at least). `"MaxStatesPerStep"` under `Automatic` or `Full` keeps every transition into a kept successor state, so it bounds nothing. The first engine of a run is fitted to a quarter of the cap (`initial_config`; 5,527 MB on the RTX 4090); grow-and-retry continues to the cap. `branchial_index_buckets` is one per four events, a power of two from 2^12 to 2^20 (2^15 at the 2^17-event floor, against 2^20 before). The previous call's size on a `PersistentEvolver` is the live engine's config, which `covering_config` starts from. `HG_GPU_DBG_TIME` prints each attempt's config. Measured: a 3-transition cap at 4 steps sizes 2^10 states and events against 2^17 (`CapacityOverflow.AStepCapThatCountsTransitionsBoundsThePools`, which also runs it to completion on the first attempt); grow-and-retry attempts over `gpu_differential_tests`: 15, the same 15 as master.
+
+**D1 persistent grid and D3 backlog.** `default_persistent_grid` is SMs x min(`persistent_blocks_per_sm()`, the architecture's plateau), or `HG_TUNE_GPU_BLOCKS` (`HG_GPU_PERSISTENT_BLOCKS`); `persistent_blocks_per_sm()` is `cudaOccupancyMaxActiveBlocksPerMultiprocessor` of `k_persistent_evolve` at 32 threads, and the plateau is 8 per SM for every architecture (8.9 measured, the rest until their sweep runs). A run's grid is `EngineConfig::persistent_grid` (`"Tuning" -> <|"GPUBlocks" -> n|>`), read through `persistent_grid_of` by the launch, the IR arena, the reachability and survivor scratch, the replay lanes and the memory estimate. The backlog is `DeviceState::lane_backlog` = `lane_backlog_of(cfg)`: `"GPUBacklog"`, `HG_TUNE_GPU_BACKLOG`, or max(8, grid / 16). On the RTX 4090: occupancy 8 blocks per SM, plateau 8, grid 1024, backlog 64, the values the constants held. The `"Device"` reply of the GPU reports `"Blocks"` and `"Backlog"`; `WxfSerializationPin.TuningOverridesReachTheEngine` runs at grid 256 and backlog 12 and gives the counts of the default run.
+
+**D13 fixed grids.** `grid_stride_blocks(n, block)` = ceil(n / block), at most the device's resident threads over `block`, at least 1. `k_qe_count_branchial` (1024 x 128 before), `k_expand_log_clear` (64 x 256) and `k_clear_regions` (up to 1024 x 256 per region) use it; on the RTX 4090 the cap is 768 blocks of 256 and 1,536 of 128. Test: `test_smoke`.
+
+**D22 L2 window.** On compute capability 8.0 and above, the `k_persistent_evolve` launch (`cudaLaunchKernelEx`) carries an access policy window over the state claim map with hit property persisting, when the map's bytes are at most `l2_persist_limit_of`: `"GPUL2Persist"`, `HG_TUNE_GPU_L2_PERSIST`, or `persisting_l2_max` (49.5 MB on the RTX 4090; `0` turns the window off). The persisting set-aside is set to the window's bytes and the persisting lines are reset after the kernel. At the default 2^17 states the map is 2^18 slots of 16 B, 4 MB. The `"Device"` reply reports `"L2Persist"`. The hit rate needs `ncu` and is in the quiet-box queue.
+
+**D12 block sizes (refuted).** `cudaOccupancyMaxPotentialBlockSize` was measured on every one-shot kernel the differential corpus launches (`HG_GPU_DBG_TIME`, RTX 4090): theoretical occupancy at its block size against the fixed one, `k_clear_slots` 768 / 256: 1.00 / 1.00, `k_gather_keys` 768 / 256: 1.00 / 1.00, `k_init_indices` 768 / 128: 1.00 / 1.00, `k_seed_frontier` 768 / 128: 1.00 / 1.00, `k_seq_ramp` 768 / 256: 1.00 / 1.00, `k_qe_redrive` 256 / 64: 0.17 / 0.17, `k_seed_root_hashes` 256 / 64: 0.17 / 0.17. No kernel gains occupancy, so the fixed sizes stay.
+
+**H16 cache line.** `hgcommon::kDestructiveLine` (`common/include/hgcommon/cache_line.hpp`) is 128 bytes on Apple aarch64 and 64 elsewhere, `HG_DESTRUCTIVE_LINE` at compile time overrides it, and the 37 `alignas` sites of per-thread data in `common/`, `hypergraph/`, `job_system/` and `lockfree_deque/`, `ConcurrentMap`'s table line and the arena's largest alignment (`kMaxAlign`) read it. On x86-64 the value is 64, the constant every site held, so the layout of every type is unchanged. Check: the engine, job system and FFI sources compile with `-DHG_DESTRUCTIVE_LINE=128` (clang `-fsyntax-only`); test `CacheLine.EveryPerThreadSlotIsOneConstantAligned`.
+
 ## 3. Constants that are not tuning
 
 | Kind | Constants |
@@ -296,6 +334,48 @@ Board H6 lists `kClaimRing` and `kClaimRingWorkers` as per-host tuning; both exi
 
 ## 4. Quiet-box queue
 
-Wall-clock checks measured by instruction counts only, to run when the box is quiet.
+Wall-clock checks that need a quiet box. Each names the command, the jobs and the direction the instruction counts predict. The jobs are written by `tools/dev/reply_jobs.py`; the worker count is set with the `get_nprocs` shim that `tools/dev/worker_fuzz.py` compiles into its output directory as `nprocs_shim.so` (`SHIM` below), through `HG_FUZZ_NPROCS`.
 
-- **The overlap rows with the state matrices.** `hg_evolve` on rule A from an 8 x 8 grid, 10 steps, `"MaxStatesPerStep" -> 400`, `"StepStatistics"`, `"StepStatisticsBranchial" -> All`, at 1, 4 and 16 workers, master against the commit that adds `"StepStatisticsMatrices"`, 6 interleaved runs each. Expected: equal within the spread (callgrind on `StateStatistics.BranchialMetricsDoNotDependOnTheRowSplit`: 290,543,143 -> 290,848,055 Ir). The same run with `"StepStatisticsMatrices" -> All` gives the cost of the matrices; expected below 2x the overlap-only run.
+**Q1. Replies written by parallel chunks.** In a stats-OFF release directory, at the commit before 36780be6 and at HEAD, five runs per worker count, interleaved:
+
+    python3 tools/dev/reply_jobs.py .scratch/jobs
+    for t in 1 4 16 32; do for r in 1 2 3 4 5; do for j in wpp_d7_q_graphs wpp_d7_q_structure wpp_d6_full_evograph wpp_d6_full_all; do
+      /usr/bin/time -f "$j $t %e %M" env HG_FUZZ_NPROCS=$t LD_PRELOAD=$SHIM \
+        paclet/LibraryResources/Linux-x86-64/hg_evolve < .scratch/jobs/$j.wxf > /dev/null
+    done; done; done
+
+Expected: the time after evolution falls as workers are added, and at one worker it is no higher than before. Callgrind at 4 workers: wpp_d7_q_graphs 12.31e9 to 6.55e9 instructions, wpp_d6_full_all 0.98e9 to 0.74e9.
+
+**Q2. StepStatistics pooled in jobs.** The same loop on wpp_d7_q_stats, wpp_d8_q_stats and wpp_d6_auto_stats_all, before and after e95879f2. Expected: the time after evolution falls as workers are added; the last step's pooling, one job before, runs as one job per 256 classes and one per slot.
+
+**Q3. StepStatistics pooled on the device.** `hg_evolve_gpu` on wpp_d8_q_stats, before and after e95879f2, five runs each, with `nvidia-smi` read before and after every run to confirm no other process uses the GPU. Expected: the host time after the device run falls.
+
+The tuning rows below use `bench_cpu_evolve` from a stats-OFF release directory (`build_linux`) and `bench_gpu_evolve` from `build_gpu`; each pair of arms runs interleaved process by process, 5 rounds, and medians are compared.
+
+**Q4. H5 causal set capacity.** Arms `HG_TUNE_CAUSAL_SET_CAPACITY=1024` and unset (8192 on a machine with more than 4 GB available). Rows: multirule depth 6 and 7, cycle4 depth 6, wpp depth 7, all full (`HG_BENCH_CANON_ONLY=0`), at 1, 16 and 32 threads.
+
+    for round in 1 2 3 4 5; do for cap in 1024 ""; do for row in "multirule 6" "multirule 7" "cycle4 6" "wpp 7"; do
+      set -- $row
+      HG_TUNE_CAUSAL_SET_CAPACITY=$cap HG_BENCH_CANON_ONLY=0 build_linux/bench_cpu_evolve $2 15 1,16,32 $1 \
+        > .scratch/h5/cap${cap:-default}_$1_d$2_r$round.log
+    done; done; done
+
+Expected: the default at most equal to 1024 on every row (the instruction count falls 1.1-1.5% at one thread).
+
+**Q5. H4 expand chunk.** Arms `HG_TUNE_EXPAND_CHUNK=16` and unset. Rows with one-edge left-hand sides: binary depth 8 and 10, arimix depth 6, allfour depth 5, multirule depth 7, full and quotient, at 4, 16 and 32 threads; bigpath n128 depth 3 quotient as a row the chunk does not reach.
+
+    for round in 1 2 3 4 5; do for chunk in 16 ""; do for row in "binary 8" "binary 10" "arimix 6" "allfour 5" "multirule 7"; do
+      set -- $row
+      for q in 0 1; do
+        HG_TUNE_EXPAND_CHUNK=$chunk HG_BENCH_CANON_ONLY=$q build_linux/bench_cpu_evolve $2 15 4,16,32 $1 \
+          > .scratch/h4/chunk${chunk:-derived}_$1_d$2_q${q}_r$round.log
+      done
+    done; done; done
+
+Expected: the derived size at most equal to 16 at 16 and 32 workers. If 16 is lower on a row, the floor of 4 is the term to raise.
+
+**Q6. D16/D17 first engine.** `build_gpu/bench_gpu_evolve` at the commit before 705dfc8c and at HEAD, five runs each, interleaved, `nvidia-smi` read before and after every run: rows wpp depth 2, 3 and 7, bigpath n256 depth 3 quotient, and a capped row (`"MatchesPerStep" -> 4` with `"UniformRandom"`, depth 20) through `hg_evolve_gpu`; then wpp depth 7 again with another process holding 8 GB of VRAM. Expected: the capped row and the small rows at most equal (smaller pools and clears); no first-attempt failure with VRAM held.
+
+**Q7. D1/D3/D22 launch.** `HG_TUNE_GPU_L2_PERSIST=0` against unset, and `HG_TUNE_GPU_BLOCKS` 512, 1024 and 2048, on `build_gpu/bench_gpu_evolve 7 5 2` and wpp depth 8 quotient, five runs each, interleaved, `nvidia-smi` read before and after every run. Expected: the window at most equal to no window; the grid minimum at 1024 as in the sweep at `persistent.cu`. `ncu --metrics lts__t_sector_hit_rate.pct` on `k_persistent_evolve` with and without the window gives the L2 hit rate (only with the GPU otherwise idle and a kernel under a second).
+
+**Q8. The overlap rows with the state matrices.** `hg_evolve` on rule A from an 8 x 8 grid, 10 steps, `"MaxStatesPerStep" -> 400`, `"StepStatistics"`, `"StepStatisticsBranchial" -> All`, at 1, 4 and 16 workers, master against the commit that adds `"StepStatisticsMatrices"`, 6 interleaved runs each. Expected: equal within the spread (callgrind on `StateStatistics.BranchialMetricsDoNotDependOnTheRowSplit`: 290,543,143 -> 290,848,055 Ir). The same run with `"StepStatisticsMatrices" -> All` gives the cost of the matrices; expected below 2x the overlap-only run.

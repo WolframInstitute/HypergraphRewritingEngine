@@ -1,5 +1,6 @@
 #pragma once
 #include "hgcommon/namespace.hpp"
+#include "hgcommon/cache_line.hpp"
 
 #include <atomic>
 #include <cassert>
@@ -159,7 +160,7 @@ public:
         // the allocation, so it holds whatever the base alignment is -- ::operator new gives only
         // max_align_t -- and the three ::operator delete sites keep freeing the address they were
         // given.
-        static constexpr size_t kLine = 64;
+        static constexpr size_t kLine = hgcommon::kDestructiveLine;
         static size_t round_capacity(size_t cap) {
             size_t actual = 1;
             while (actual < cap) actual <<= 1;
@@ -975,7 +976,7 @@ private:
     // The size the first growth jumps to; see the constructor.
     size_t working_capacity_ = DEFAULT_INITIAL_CAPACITY;
 
-    alignas(64) std::atomic<size_t> count_;
+    alignas(hgcommon::kDestructiveLine) std::atomic<size_t> count_;
     // The growth ticket; see insert_if_absent. Not a lock -- a thread that fails to take it
     // proceeds without waiting, and the probe-exhaustion backstop is not ticketed at all.
     std::atomic<bool> growing_{false};

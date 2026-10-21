@@ -59,7 +59,8 @@ ParallelEvolutionEngine::ParallelEvolutionEngine(Hypergraph* hg, size_t num_thre
     // there would be a lie to anything sizing itself from num_threads().
     , num_threads_(mode == ExecutionMode::Serial
                        ? 1
-                       : (num_threads > 0 ? num_threads : std::thread::hardware_concurrency()))
+                       : (num_threads > 0 ? num_threads
+                                         : hgcommon::default_worker_count(MAX_ARENA_WORKERS)))
     , mode_(mode)
 {
     // Route every engine map's table storage through the hypergraph arena (no malloc,
@@ -118,6 +119,7 @@ void ParallelEvolutionEngine::evolve(
     max_steps_ = steps;
     should_stop_.store(false, std::memory_order_relaxed);
     configure_identity_and_quotient();
+    configure_tuning();
     reset_depth_join();
     begin_match_epochs();
 
@@ -229,6 +231,7 @@ void ParallelEvolutionEngine::evolve(
     max_steps_ = steps;
     should_stop_.store(false, std::memory_order_relaxed);
     configure_identity_and_quotient();
+    configure_tuning();
 
     reset_depth_join();
     begin_match_epochs();
@@ -723,7 +726,8 @@ void ParallelEvolutionEngine::dispatch_expansion(StateId state, uint32_t step,
     // Whole-state gates, checked once here rather than once per match. execute_rewrite_task
     // still does the reserving check per child, so this is a filter, not the decision.
 
-    if (count <= kExpandChunkSize) {
+    const size_t chunk_size = expand_chunk_for(count);
+    if (count <= chunk_size) {
         // Everything on this thread: no arena copy, no job, and the parent's data is already
         // in this core's cache from the matching that produced these records.
         ExpandChunk chunk{matches, 0, static_cast<uint32_t>(count), step};
@@ -738,12 +742,12 @@ void ParallelEvolutionEngine::dispatch_expansion(StateId state, uint32_t step,
 
     // Submit the tail first and keep the head for this thread. The submitted chunks are
     // available to steal while this one runs, so the wide case both spreads and stays warm.
-    for (size_t begin = kExpandChunkSize; begin < count; begin += kExpandChunkSize) {
-        const size_t end = std::min(begin + kExpandChunkSize, count);
+    for (size_t begin = chunk_size; begin < count; begin += chunk_size) {
+        const size_t end = std::min(begin + chunk_size, count);
         submit_expand_chunk(ExpandChunk{shared, static_cast<uint32_t>(begin),
                                         static_cast<uint32_t>(end), step});
     }
-    execute_expand_chunk(ExpandChunk{shared, 0, kExpandChunkSize, step});
+    execute_expand_chunk(ExpandChunk{shared, 0, static_cast<uint32_t>(chunk_size), step});
 }
 
 void ParallelEvolutionEngine::submit_scan_task(const ScanTaskData& data) {
@@ -921,6 +925,10 @@ void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
     if (k != 0 || (max_states_per_step_ != 0 && !step_cap_counts_matches_))
         for (RankedMatch& c : cands) c.succ = successor_identity(state, *c.match);
     if (k != 0) keep_lowest_successors(cands, k);
+    // MatchesPerStep counts transitions: each candidate is its own successor in the step's cut,
+    // whatever identity the per-parent cut above read.
+    if (step_cap_counts_matches_)
+        for (RankedMatch& c : cands) c.succ = {0, 1};
     if (max_states_per_step_ != 0) {
         // When every candidate is its own successor (None states, a fresh vertex under
         // Automatic, or MatchesPerStep), select_step keeps a candidate exactly when fewer than N
@@ -2497,6 +2505,55 @@ double ParallelEvolutionEngine::exploration_probability() const { return explora
 size_t ParallelEvolutionEngine::max_successor_states_per_parent() const { return max_successor_states_per_parent_; }
 
 size_t ParallelEvolutionEngine::max_states_per_step() const { return max_states_per_step_; }
+
+void ParallelEvolutionEngine::set_tuning(const hgcommon::TuningOverrides& tuning) {
+    tuning_ = tuning;
+}
+
+size_t ParallelEvolutionEngine::derived_causal_set_capacity(size_t steps, size_t step_cap,
+                                                            size_t max_lhs,
+                                                            uint64_t available_bytes) {
+    constexpr size_t kMin = 1024, kMax = 65536;
+    if (step_cap == 0) return available_bytes > (uint64_t{4} << 30) ? 8192 : kMin;
+    // Keys at most (1 + steps x cap) x max_lhs; a shard takes its share at load 0.75.
+    const double keys = (1.0 + static_cast<double>(steps) * static_cast<double>(step_cap)) *
+                        static_cast<double>(std::max<size_t>(1, max_lhs));
+    const double per_shard =
+        keys / (static_cast<double>(CausalGraph::causal_set_shards()) * 0.75);
+    size_t n = kMin;
+    while (n < kMax && static_cast<double>(n) < per_shard) n <<= 1;
+    return n;
+}
+
+size_t ParallelEvolutionEngine::derived_expand_chunk(size_t count, size_t workers) {
+    workers = std::max<size_t>(1, workers);
+    return std::clamp<size_t>((count + workers - 1) / workers, 4, 64);
+}
+
+size_t ParallelEvolutionEngine::expand_chunk_for(size_t count) const {
+    return expand_chunk_fixed_ ? expand_chunk_fixed_ : derived_expand_chunk(count, num_threads_);
+}
+
+void ParallelEvolutionEngine::configure_tuning() {
+    size_t max_lhs = 1;
+    for (const RewriteRule& r : rules_) max_lhs = std::max<size_t>(max_lhs, r.num_lhs_edges);
+#if defined(HG_VERIFICATION)
+    // The model checker cannot execute getenv or read /proc; the harnesses keep the set's own
+    // working capacity.
+    causal_set_capacity_ = ConcurrentKeySet<uint64_t>::WORKING_CAPACITY;
+    expand_chunk_fixed_ = 0;
+    (void)max_lhs;
+#else
+    expand_chunk_fixed_ = static_cast<size_t>(
+        hgcommon::tuned(tuning_, hgcommon::Tune::ExpandChunk, [] { return 0; }));
+    causal_set_capacity_ = static_cast<size_t>(hgcommon::tuned(
+        tuning_, hgcommon::Tune::CausalSetCapacity, [&] {
+            return derived_causal_set_capacity(max_steps_, max_states_per_step_, max_lhs,
+                                               hgcommon::host_topology().available_bytes);
+        }));
+#endif
+    hg_->causal_graph().set_causal_set_capacity(causal_set_capacity_);
+}
 
 void ParallelEvolutionEngine::set_matches_per_state_rule(size_t k) { matches_per_state_rule_ = k; }
 

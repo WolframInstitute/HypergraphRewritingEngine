@@ -9,7 +9,8 @@
 // warp appends the table's entries to a global record buffer; the host adds them up per key,
 // which is the host route's merge, so the counts do not depend on which warp ran which row. For
 // the state matrices each pair's shared count goes to its own cell (hgcommon::br_pair_index),
-// written by the one lane that emits the pair.
+// written by the one lane that emits the pair, and after the row the warp's lanes fill the row's
+// matrix cells (hgcommon::bo_matrix_row), which the host copies back.
 
 #include <algorithm>
 #include <map>
@@ -93,7 +94,7 @@ __global__ void k_branchial_rows(hgcommon::BrStep s, uint32_t row_end, uint32_t*
                                  uint32_t* count, uint32_t* touched, int32_t* dist,
                                  uint32_t* queue, uint32_t* counters, BrRecord* out,
                                  uint32_t* out_n, uint32_t out_cap, uint32_t* wide,
-                                 uint32_t* cells, bool tally) {
+                                 uint32_t* cells, bool tally, hgcommon::BoMatrices mat) {
     __shared__ unsigned long long keys[kWarpsPerBlock][kTallySlots];
     __shared__ uint32_t counts[kWarpsPerBlock][kTallySlots];
     const uint32_t lane = threadIdx.x & 31u, wib = threadIdx.x >> 5;
@@ -130,6 +131,10 @@ __global__ void k_branchial_rows(hgcommon::BrStep s, uint32_t row_end, uint32_t*
         c.row = a;
         hgcommon::br_row(c, s, a, par);
         __syncwarp();
+        if (mat.k) {
+            hgcommon::bo_matrix_row(mat, a, lane, 32);
+            __syncwarp();
+        }
         for (uint32_t i = lane; i < kTallySlots; i += 32) {
             const unsigned long long key = keys[wib][i];
             if (key == kEmptyKey) continue;
@@ -156,7 +161,7 @@ T* device_copy(const T* host, size_t n, std::vector<void*>& owned) {
 bool branchial_rows_device(
     const hgcommon::BrStep& s,
     const std::function<void(uint32_t, uint32_t, uint32_t, uint32_t, uint64_t)>& add,
-    uint32_t* shared_cells) {
+    hgcommon::BoMatrices* matrices) {
     const bool tally = static_cast<bool>(add);
     int devices = 0;
     if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0) {
@@ -178,9 +183,13 @@ bool branchial_rows_device(
         (s.to_graph ? 4ull * ((s.n + 1) + s.adj_off[s.n] + s.k + s.n) : 0ull);
     const uint64_t warp_bytes = 4ull * (2ull * s.k + 2ull * s.n + 2);
     const uint32_t out_cap = tally ? 1u << 22 : 1u;
-    const uint64_t cells = shared_cells ? uint64_t{s.k} * (s.k ? s.k - 1 : 0) / 2 : 0;
+    const uint64_t cells = matrices ? uint64_t{s.k} * (s.k ? s.k - 1 : 0) / 2 : 0;
+    uint32_t asked = 0;
+    if (matrices)
+        for (double* m : matrices->m) asked += m != nullptr;
+    const uint64_t cell_bytes = 4 * cells + 8ull * asked * s.k * s.k;
     const uint64_t budget = free_bytes / 4;
-    const uint64_t fixed = step_bytes + out_cap * sizeof(BrRecord) + 4 * cells;
+    const uint64_t fixed = step_bytes + out_cap * sizeof(BrRecord) + cell_bytes;
     if (fixed + warp_bytes * 32 > budget) return false;
     const uint64_t fit = (budget - fixed) / warp_bytes;
     const uint64_t want = static_cast<uint64_t>(prop.multiProcessorCount) * 16;
@@ -226,10 +235,20 @@ bool branchial_rows_device(
     HG_CUDA_CHECK(cudaMalloc(&out, static_cast<size_t>(out_cap) * sizeof(BrRecord)), "cudaMalloc");
     owned.push_back(out);
     uint32_t* d_cells = nullptr;
-    if (cells) {
-        HG_CUDA_CHECK(cudaMalloc(&d_cells, cells * 4), "cudaMalloc");
+    hgcommon::BoMatrices dm;
+    if (matrices) {
+        HG_CUDA_CHECK(cudaMalloc(&d_cells, std::max<uint64_t>(cells, 1) * 4), "cudaMalloc");
         owned.push_back(d_cells);
-        HG_CUDA_CHECK(cudaMemset(d_cells, 0, cells * 4), "cudaMemset");
+        HG_CUDA_CHECK(cudaMemset(d_cells, 0, std::max<uint64_t>(cells, 1) * 4), "cudaMemset");
+        dm.k = s.k;
+        dm.size = d.size;
+        dm.shared = d_cells;
+        dm.universe = matrices->universe;
+        for (uint32_t kind = 0; kind < 3; ++kind) {
+            if (!matrices->m[kind]) continue;
+            HG_CUDA_CHECK(cudaMalloc(&dm.m[kind], 8ull * s.k * s.k), "cudaMalloc");
+            owned.push_back(dm.m[kind]);
+        }
     }
     HG_CUDA_CHECK(cudaMemset(count, 0, std::max<size_t>(wk, 1) * 4), "cudaMemset");
     HG_CUDA_CHECK(cudaMemset(dist, 0xFF, std::max<size_t>(wn, 1) * 4), "cudaMemset");
@@ -247,7 +266,7 @@ bool branchial_rows_device(
         HG_CUDA_CHECK(cudaMemcpy(misc, start, sizeof(start), cudaMemcpyHostToDevice), "cudaMemcpy");
         k_branchial_rows<<<warps / kWarpsPerBlock, 32 * kWarpsPerBlock>>>(
             d, end, misc, count, touched, dist, queue, counters, out, misc + 1, out_cap, misc + 2,
-            d_cells, tally);
+            d_cells, tally, dm);
         HG_CUDA_CHECK(cudaGetLastError(), "k_branchial_rows");
         uint32_t got[3];
         HG_CUDA_CHECK(cudaMemcpy(got, misc, sizeof(got), cudaMemcpyDeviceToHost), "cudaMemcpy");
@@ -270,9 +289,12 @@ bool branchial_rows_device(
     // A pair whose fields do not fit a key (a distance of 2^16 or more, or a state of 2^24
     // vertices) is not representable here; such a step runs on the host.
     if (wide_total) return false;
-    if (cells)
-        HG_CUDA_CHECK(cudaMemcpy(shared_cells, d_cells, cells * 4, cudaMemcpyDeviceToHost),
-                      "cudaMemcpy");
+    if (matrices)
+        for (uint32_t kind = 0; kind < 3; ++kind)
+            if (matrices->m[kind])
+                HG_CUDA_CHECK(cudaMemcpy(matrices->m[kind], dm.m[kind], 8ull * s.k * s.k,
+                                         cudaMemcpyDeviceToHost),
+                              "cudaMemcpy");
     for (const auto& [ks, n] : summed) {
         const unsigned long long key = ks.first;
         add(static_cast<uint32_t>(key >> 48), ks.second,

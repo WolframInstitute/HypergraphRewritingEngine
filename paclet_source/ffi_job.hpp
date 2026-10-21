@@ -16,10 +16,12 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "hgcommon/quotient_multiplicity_core.hpp"
+#include "hgcommon/tuning.hpp"
 #include "hypergraph/types.hpp"
 #include "state_statistics.hpp"
 
@@ -46,6 +48,33 @@ inline void append_saturation_warnings(bool events_requested, uint64_t num_event
         out.push_back({"CountSaturated", 1, hgcommon::QM_EVENTS_SATURATED_MESSAGE});
     if (branchial_requested && hgcommon::qm_count_saturated(num_branchial))
         out.push_back({"CountSaturated", 1, hgcommon::QM_BRANCHIAL_SATURATED_MESSAGE});
+}
+
+// The initial states with their vertex labels renumbered to dense ids 0, 1, 2, ... in order of
+// first appearance, with one map for all the states, so a label names the same vertex in every
+// initial state. Both engines take their initial states from here. `labels`, when given,
+// receives the map. Every label is non-negative (refused before a device is chosen).
+template <class VertexIdT>
+std::vector<std::vector<std::vector<VertexIdT>>> dense_initial_states(
+    const std::vector<std::vector<std::vector<int64_t>>>& raw,
+    std::unordered_map<int64_t, VertexIdT>* labels = nullptr) {
+    std::unordered_map<int64_t, VertexIdT> map;
+    std::vector<std::vector<std::vector<VertexIdT>>> out;
+    out.reserve(raw.size());
+    for (const auto& state : raw) {
+        std::vector<std::vector<VertexIdT>> edges;
+        edges.reserve(state.size());
+        for (const auto& edge : state) {
+            std::vector<VertexIdT> e;
+            e.reserve(edge.size());
+            for (int64_t v : edge)
+                e.push_back(map.try_emplace(v, static_cast<VertexIdT>(map.size())).first->second);
+            edges.push_back(std::move(e));
+        }
+        out.push_back(std::move(edges));
+    }
+    if (labels) *labels = std::move(map);
+    return out;
 }
 
 struct ParsedJob {
@@ -76,6 +105,9 @@ struct ParsedJob {
     bool explore_from_canonical_states_only = false;  // Exploration deduplication
     // ir_verification and return_canonical_states are derived from state_canon_mode == Full
     uint64_t random_seed = 0;     // 0: a fresh seed per run; nonzero fixes the sample
+    // "Threads" and "Tuning": the expert overrides of the derived tuning values
+    // (hgcommon/tuning.hpp). Unset names take HG_TUNE_* or the derived value.
+    hgcommon::TuningOverrides tuning;
     // With matches_per_step, the N lowest-ranked transitions of each step ("MatchesPerStep"
     // replaces "MaxStatesPerStep"); without it matches_per_step has no effect.
     bool uniform_random = false;
@@ -126,6 +158,7 @@ struct ParsedJob {
     // RETAINS the rest, so the unselected branches stay resumable -- steering narrows what runs
     // next, never what remains reachable.
     std::vector<int64_t> session_from;
+    bool session_from_given = false;   // "From" was sent; with an empty list a Step expands nothing
 
     // `Delivery -> "Delta"`: send only what this session has not already been sent. Default is a
     // full delivery, which is what an `Evolve` can only be and what a session asks for to

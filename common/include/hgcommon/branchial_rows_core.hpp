@@ -9,7 +9,8 @@
 // ascending), and with the branchial graph every b > a in a's component, sharing or not, with its
 // distance. Each pair is emitted once as (distance, b, |B|, shared): distance 0 for every pair that
 // shares a vertex, and its distance d > 0 for every pair of one component. The caller counts the
-// emissions per key, or keeps each pair's shared count for the state matrices; |A| is the row's.
+// emissions per key, or keeps each pair's shared count for the state matrices, which
+// bo_matrix_row then turns into the row's matrix cells; |A| is the row's.
 // The same rows over the states' edge numbers in place of their vertices give the shared edges.
 //
 // The lanes of the policy (IrSerial on the host, IrTile on the device) split each holder list and
@@ -30,6 +31,7 @@
 
 #include <stdint.h>
 
+#include "hgcommon/branchial_overlap_core.hpp"
 #include "hgcommon/core.hpp"
 
 namespace HG_NAMESPACE {
@@ -57,6 +59,46 @@ struct BrStep {
 // The cell of pair a < b in a step's upper triangle of k states, row by row: k (k - 1) / 2 cells.
 HG_HD inline uint64_t br_pair_index(uint32_t k, uint32_t a, uint32_t b) {
     return uint64_t{a} * k - uint64_t{a} * (a + 1) / 2 + (b - a - 1);
+}
+
+// The state matrices of one level (vertex sets or edge sets) of a step's k states: `shared` holds
+// the k (k - 1) / 2 shared counts by br_pair_index, `size` each state's size, `universe` |U|, and
+// m[kind] is a k x k row-major array (kind 0 the overlap, 1 the cosine, 2 the mutual information)
+// or null when that matrix is not asked for.
+struct BoMatrices {
+    uint32_t k = 0;
+    const uint32_t* size = nullptr;
+    const uint32_t* shared = nullptr;
+    uint64_t universe = 0;
+    double* m[3] = {nullptr, nullptr, nullptr};
+};
+
+// One pair's value of `kind` from n11 and the two sizes, taken as (smaller, larger): the key the
+// overlap summaries read, so a cell equals the value its summary counts.
+HG_HD inline double bo_pair_value(uint32_t kind, uint32_t both, uint32_t a, uint32_t b,
+                                  uint64_t universe) {
+    const uint32_t lo = a < b ? a : b, hi = a < b ? b : a;
+    if (kind == 0) return bo_jaccard_of_union(both, uint64_t{lo} + hi - both);
+    if (kind == 1) return bo_cosine(both, lo, hi);
+    return bo_mutual_information(both, lo, hi, universe);
+}
+
+// Row a of the state matrices, once row a's shared counts are in x.shared: the cell (a, a) and,
+// for every b > a, the cells (a, b) and (b, a), each pair's value computed once. Lane `lane` of
+// `lanes` takes every lanes-th b. No other row writes these cells.
+HG_HD inline void bo_matrix_row(const BoMatrices& x, uint32_t a, uint32_t lane, uint32_t lanes) {
+    const uint32_t sa = x.size[a];
+    for (uint32_t kind = 0; kind < 3; ++kind) {
+        double* m = x.m[kind];
+        if (!m) continue;
+        if (lane == 0) m[uint64_t{a} * x.k + a] = bo_pair_value(kind, sa, sa, sa, x.universe);
+        for (uint32_t b = a + 1 + lane; b < x.k; b += lanes) {
+            const double v = bo_pair_value(kind, x.shared[br_pair_index(x.k, a, b)], sa,
+                                           x.size[b], x.universe);
+            m[uint64_t{a} * x.k + b] = v;
+            m[uint64_t{b} * x.k + a] = v;
+        }
+    }
 }
 
 // The first index in hs[0..len) whose value is above a; hs ascending.

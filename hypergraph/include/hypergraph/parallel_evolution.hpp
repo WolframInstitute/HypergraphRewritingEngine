@@ -1,6 +1,8 @@
 #pragma once
 #include "hgcommon/core.hpp"
+#include "hgcommon/cache_line.hpp"
 #include "hgcommon/namespace.hpp"
+#include "hgcommon/tuning.hpp"
 
 #include <atomic>
 #include <exception>
@@ -165,7 +167,7 @@ struct EvolutionStats {
         size_t get() const { return v.load(std::memory_order_relaxed); }
     };
 
-    struct alignas(64) Slot {
+    struct alignas(hgcommon::kDestructiveLine) Slot {
 #define HG_DECL_COUNTER(name) Counter name;
         HG_EVOLUTION_COUNTERS(HG_DECL_COUNTER)
 #undef HG_DECL_COUNTER
@@ -702,6 +704,8 @@ private:
     // a step, or under step_cap_counts_matches_ (MatchesPerStep) the N lowest-ranked transitions.
     size_t max_states_per_step_{0};
     bool step_cap_counts_matches_{false};
+    hgcommon::TuningOverrides tuning_;
+    size_t causal_set_capacity_{0};
     // Keep at most this many of a state's own transitions per RULE (0 = all). Chosen at the
     // state's drain by spine_rank, not by arrival: arrival order depends on the schedule, and a
     // cap by arrival is what max_states_per_step_ already is.
@@ -841,10 +845,10 @@ private:
 
     // Statistics (atomics for thread-safety)
     // Four hot counters in 32 bytes would share a line; one each (see EvolutionStats).
-    alignas(64) std::atomic<size_t> total_matches_found_{0};
-    alignas(64) std::atomic<size_t> total_rewrites_{0};
-    alignas(64) std::atomic<size_t> total_events_{0};
-    alignas(64) std::atomic<size_t> rejected_duplicates_{0};
+    alignas(hgcommon::kDestructiveLine) std::atomic<size_t> total_matches_found_{0};
+    alignas(hgcommon::kDestructiveLine) std::atomic<size_t> total_rewrites_{0};
+    alignas(hgcommon::kDestructiveLine) std::atomic<size_t> total_events_{0};
+    alignas(hgcommon::kDestructiveLine) std::atomic<size_t> rejected_duplicates_{0};
 
     // Evolution statistics
 #if HG_ENGINE_STATS
@@ -1068,6 +1072,25 @@ public:
     double exploration_probability() const;
     size_t max_successor_states_per_parent() const;
     size_t max_states_per_step() const;
+
+    // Expert overrides of derived tuning values (hgcommon/tuning.hpp), read at each evolve().
+    // A name left unset takes HG_TUNE_<NAME> or the derived value.
+    void set_tuning(const hgcommon::TuningOverrides& tuning);
+    // H5 (docs/TUNING.md): slots per shard of the first table of the two causal sets. With a step
+    // cap of `step_cap` transitions or successor states, the keys are at most
+    // (1 + steps x step_cap) x `max_lhs`, and a shard gets that over shards at load 0.75, as a
+    // power of two from 1024 to 65536. Without a cap: 8192 when `available_bytes` is above 4 GB,
+    // else 1024.
+    static size_t derived_causal_set_capacity(size_t steps, size_t step_cap, size_t max_lhs,
+                                              uint64_t available_bytes);
+    // The value the last evolve() used.
+    size_t causal_set_capacity() const { return causal_set_capacity_; }
+    // H4 (docs/TUNING.md): matches per rewrite task for a state with `count` matches on
+    // `workers` workers. ceil(count / workers) from 4 to 64, so a wide state spreads over the
+    // workers and each task still amortises its cost over at least 4 children of one parent. The
+    // chunking decides which worker rewrites a match, not which children or events exist. The
+    // "ExpandChunk" override fixes the size.
+    static size_t derived_expand_chunk(size_t count, size_t workers);
     // At most k of each state's matches per rule, chosen by seeded rank when the state's matching
     // completes (its drain), so the kept set is the same at any worker count. 0 keeps all. A run
     // with k > 0 turns match forwarding off: a forwarded match arrives after the drain and could
@@ -1313,9 +1336,10 @@ private:
     void dispatch_expansion(StateId state, uint32_t step, const MatchRecord* matches,
                             size_t count);
 
-    // Matches per chunk. Small enough that a wide state still spreads across workers, large
-    // enough that the per-task cost is amortised over a run of children that share a parent.
-    static constexpr size_t kExpandChunkSize = 16;
+    // The chunk size for `count` matches: the fixed "ExpandChunk" override (expand_chunk_fixed_)
+    // or derived_expand_chunk(count, num_threads_).
+    size_t expand_chunk_for(size_t count) const;
+    size_t expand_chunk_fixed_{0};
     void submit_scan_task(const ScanTaskData& data);
 
     void submit_expand_task(const ExpandTaskData& data);
@@ -1475,6 +1499,9 @@ private:
     //   presentations) and a warning recorded; Automatic -> the reconstruction runs under BOTH
     //   exploration strategies, so their observables agree by construction.
     void configure_identity_and_quotient();
+    // Resolves the tuning values of this evolve() (causal set capacity, expand chunk) and applies
+    // them.
+    void configure_tuning();
 
 
     // Quotient exploration: canonical transitions discovered so far, parent canonical

@@ -3,6 +3,7 @@
 
 #include <vector>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <functional>
 #include <memory>
@@ -94,15 +95,15 @@ class Writer;
 #endif
 struct WXFValue;
 
-// A packed array of reals: `dims` (rank 1 or more) and the elements in row-major order. Written
-// as a WXF PackedArray of Real64.
-struct PackedReals {
-    std::vector<size_t> dims;
-    std::vector<double> values;
-};
-
 using WXFValueList = std::vector<WXFValue>;
 using WXFValueAssociation = std::vector<std::pair<WXFValue, WXFValue>>;  // Key-value pairs, keys can be any expression
+
+// One expression already written as WXF bytes (no header). A Writer copies the bytes verbatim, so
+// a section built by a byte-level writer sits in a value tree at its own position. The Parser
+// never produces one.
+struct Encoded {
+    std::vector<uint8_t> bytes;
+};
 
 struct WXFValue {
     using Data = std::variant<
@@ -113,7 +114,7 @@ struct WXFValue {
         std::vector<uint8_t>,     // BinaryString
         WXFValueList,             // List of values
         WXFValueAssociation,      // Association (arbitrary keys and values)
-        PackedReals               // PackedArray of Real64
+        Encoded                   // An expression already written as WXF bytes
     >;
     Data data;
 
@@ -326,12 +327,15 @@ public:
     void write_int32(int32_t value);
     void write_int64(int64_t value);
     void write_real64(double value);
-    void write_string(const std::string& value);
-    void write_symbol(const std::string& value);
+    void write_string(std::string_view value);
+    void write_symbol(std::string_view value);
+    // A Rule token and the string key: the start of one association entry.
+    void write_key(std::string_view key);
     void write_binary_string(const std::vector<uint8_t>& value);
-    // A PackedArray of Real64; an array with a zero dimension as nested empty lists, which a
+    // A PackedArray of Real64 of dimensions `dims` (rank 1 or more) from `values` in row-major
+    // order, -0.0 written as 0.0; an array with a zero dimension as nested empty lists, which a
     // packed array cannot hold.
-    void write_packed_reals(const PackedReals& value);
+    void write_packed_reals(const std::vector<size_t>& dims, const double* values);
 
     // Template-based generic writer
     template<typename T>
@@ -341,7 +345,7 @@ public:
     template<typename MapType>
     void write_association(const MapType& map);
 
-    void write_function(const std::string& head, size_t arg_count);
+    void write_function(std::string_view head, size_t arg_count);
 
     // Data access
     const std::vector<uint8_t>& data() const noexcept;
@@ -359,6 +363,12 @@ public:
     // sections have been streamed into a scratch Writer: write the association
     // header, append the streamed section bytes, then emit the remaining pairs.
     void append(const std::vector<uint8_t>& bytes);
+    void append(const uint8_t* bytes, size_t n);
+
+    // Drops every byte from position n on.
+    void truncate(size_t n);
+    // Overwrites the byte at position `at`, which is below size().
+    void set_byte(size_t at, uint8_t value);
 };
 
 // Template implementations
@@ -496,8 +506,6 @@ void Writer::write(const T& value) {
         write_string(value);
     } else if constexpr (std::is_same_v<T, std::vector<uint8_t>>) {
         write_binary_string(value);
-    } else if constexpr (std::is_same_v<T, PackedReals>) {
-        write_packed_reals(value);
     } else if constexpr (is_vector_v<T>) {
         // Generic vector support - recursive template
         write_function("List", value.size());

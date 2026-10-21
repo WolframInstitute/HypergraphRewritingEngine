@@ -1,5 +1,6 @@
 #pragma once
 #include "hgcommon/namespace.hpp"
+#include "hgcommon/cache_line.hpp"
 
 #include <atomic>
 #include <memory>
@@ -113,8 +114,8 @@ class CausalGraph {
     // Causal edges (producer -> consumer) and branchial edges (event <-> event with a shared
     // input), one list per worker on its own cache line: a single list put every recorded edge
     // of every worker on one compare-and-swap. Read after the run, over all the lists.
-    struct alignas(64) CausalEdgeList { LockFreeList<CausalEdge> list; };
-    struct alignas(64) BranchialEdgeList { LockFreeList<BranchialEdge> list; };
+    struct alignas(hgcommon::kDestructiveLine) CausalEdgeList { LockFreeList<CausalEdge> list; };
+    struct alignas(hgcommon::kDestructiveLine) BranchialEdgeList { LockFreeList<BranchialEdge> list; };
     std::unique_ptr<CausalEdgeList[]> causal_edges_ =
         std::make_unique<CausalEdgeList[]>(MAX_ARENA_WORKERS);
     std::unique_ptr<BranchialEdgeList[]> branchial_edges_ =
@@ -214,7 +215,7 @@ private:
     // The three counts, one cache line per worker and summed when read: incremented once per
     // causal edge, causal pair and branchial edge, as shared atomics they put every rewrite on
     // one line. Hypergraph::QcCounterSlot does the same for the replay's counts.
-    struct alignas(64) CountSlot {
+    struct alignas(hgcommon::kDestructiveLine) CountSlot {
         size_t causal_edges = 0;         // per-edge causal relationships
         size_t causal_event_pairs = 0;   // unique event pairs with a causal relationship
         size_t branchial_edges = 0;
@@ -246,6 +247,11 @@ public:
     // storage onto the arena (no malloc). Single-threaded setup only, before any
     // event is registered.
     void set_arena(ConcurrentHeterogeneousArena* arena);
+
+    // Slots per shard of the first table of the two causal sets (seen_causal_triples_,
+    // seen_causal_event_pairs_). Single-threaded setup, before the first causal edge.
+    void set_causal_set_capacity(size_t per_shard);
+    static constexpr size_t causal_set_shards() { return ShardedKeySet<uint64_t>::shards(); }
 
     // =========================================================================
     // Edge Causal Tracking

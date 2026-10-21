@@ -15,7 +15,9 @@
 // header-only surface shared by the engine and the CUDA port with no target of its own, so there
 // is no object file these could go in that both sides already link.
 
+#include <atomic>
 #include <cstdint>
+#include <version>
 
 #include "hgcommon/core.hpp"
 
@@ -127,6 +129,25 @@ inline int clz64(uint64_t x) {
 
 // Index of the highest set bit, i.e. floor(log2(x)). Undefined for x == 0.
 inline int floor_log2_64(uint64_t x) { return 63 - clz64(x); }
+
+// Raises `a` to at least `v`: one atomic max read-modify-write, skipped when `a` already holds v
+// or more. `order` applies to the write. C++26 fetch_max where the library has it, Clang's
+// __atomic_fetch_max otherwise (the GenMC models compile with Clang, so the checker sees one
+// RMW). GCC and MSVC have neither; their path is a compare-exchange loop, which is also what
+// x86-64 executes for the other two, since the ISA has no atomic max.
+template <class T>
+inline void atomic_raise(std::atomic<T>& a, T v, std::memory_order order = std::memory_order_relaxed) {
+    if (a.load(std::memory_order_relaxed) >= v) return;
+#if defined(__cpp_lib_atomic_min_max)
+    a.fetch_max(v, order);
+#elif defined(__clang__)
+    static_assert(sizeof(std::atomic<T>) == sizeof(T) && std::atomic<T>::is_always_lock_free);
+    __atomic_fetch_max(reinterpret_cast<T*>(&a), v, static_cast<int>(order));
+#else
+    T cur = a.load(std::memory_order_relaxed);
+    while (cur < v && !a.compare_exchange_weak(cur, v, order, std::memory_order_relaxed)) {}
+#endif
+}
 
 }  // namespace common
 }  // namespace HG_NAMESPACE

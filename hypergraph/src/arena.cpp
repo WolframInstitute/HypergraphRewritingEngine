@@ -73,8 +73,7 @@ static std::atomic<size_t> g_scratch_block_bytes{0};
 static std::atomic<size_t> g_scratch_block_bytes_high_water{0};
 static void note_block_grab(std::atomic<size_t>& live, std::atomic<size_t>& high_water, size_t bytes) {
     const size_t now = live.fetch_add(bytes, std::memory_order_relaxed) + bytes;
-    size_t hw = high_water.load(std::memory_order_relaxed);
-    while (now > hw && !high_water.compare_exchange_weak(hw, now, std::memory_order_relaxed)) {}
+    hgcommon::atomic_raise(high_water, now);
 }
 
 ConcurrentHeterogeneousArena::~ConcurrentHeterogeneousArena() {
@@ -530,7 +529,7 @@ ConcurrentHeterogeneousArena::Block*
 ConcurrentHeterogeneousArena::grab_block(size_t cap) {
     Block* new_block = Block::create(cap);
     if (recycle_) note_block_grab(g_scratch_block_bytes, g_scratch_block_bytes_high_water, sizeof(Block) + cap);
-    note_block_grab(block_bytes_, block_bytes_high_water_, sizeof(Block) + cap);
+    block_bytes_.fetch_add(sizeof(Block) + cap, std::memory_order_relaxed);
 
     Block* old_head = head_.load(std::memory_order_acquire);
     do {

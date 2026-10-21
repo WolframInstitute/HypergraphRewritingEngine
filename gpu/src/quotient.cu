@@ -1,5 +1,6 @@
 #include "hg_gpu/quotient_causal.hpp"
 #include "hg_gpu/quotient_expansion.hpp"
+#include "hg_gpu/device_probe.hpp"   // grid_stride_blocks
 
 // The HOST bodies of the two quotient state objects: allocation, clear, the counter readbacks
 // and the view() calls that hand a device-side struct to a kernel. The DP and the replay
@@ -73,7 +74,10 @@ __global__ void k_qe_count_branchial(const __grid_constant__ DeviceState ds, con
 void qe_count_branchial(const DeviceState& ds, const QeView& qe, bool multiplicity) {
     HG_CUDA_CHECK(cudaMemsetAsync(qe.qm_counts + 1, 0, sizeof(unsigned long long)),
                   "QeState branchial count clear");
-    k_qe_count_branchial<<<1024, 128>>>(ds, qe, multiplicity ? 1u : 0u);
+    constexpr uint32_t block = 128;
+    const uint32_t grid =
+        grid_stride_blocks(multiplicity ? qe.qm_capacity : qe.class_nmatch_cap, block);
+    k_qe_count_branchial<<<grid, block>>>(ds, qe, multiplicity ? 1u : 0u);
     HG_CUDA_CHECK(cudaGetLastError(), "QeState branchial count launch");
 }
 
@@ -101,12 +105,16 @@ QeState::QeState(bool on, const QeEntries& n): matches_(on ? n.classes : 1u),
           qm_consumed_(on ? n.classes * 2u : 8u),
           qm_overlaps_(on ? n.classes * 2u : 8u),
           qm_capacity_(on ? n.classes : 1u),
-          inst_applied_(on ? qe_list_buckets(n.events) : 1u, on ? n.events * 2u : 1u),
+          applied_buckets_(on ? qe_list_buckets(n.events) : 1u),
+          applied_nodes_(on ? n.events * 2u : 1u),
           frame_(on ? n.classes * 2u : 8u),
           arr_cap_(on ? n.words : 1u),
           on_(on) {
       try {
         HG_CUDA_CHECK(cudaMalloc(&arr_, sizeof(uint32_t) * arr_cap_), "QeState arr alloc");
+        // Zeroed once: after an overflowing allocation the readback copies the arena up to its
+        // capacity, past the last allocation written (reconstructed_pairs_host).
+        HG_CUDA_CHECK(cudaMemset(arr_, 0, sizeof(uint32_t) * arr_cap_), "QeState arr init");
         // THE SCALARS IN ONE BLOCK, so the host reads them in ONE transfer.
         //
         // Each of these was its own cudaMalloc and each accessor its own synchronous cudaMemcpy
@@ -169,9 +177,11 @@ void QeState::clear() {
         // The per-event arrays are written below the raw event counter, so the previous run's
         // count bounds what this clear has to cover; the first clear, from the constructor,
         // covers them in full.
+        // Read only after a clear has written the counters.
         uint32_t prev[kNumCounters] = {};
-        HG_CUDA_CHECK(cudaMemcpy(prev, counters_, sizeof(prev), cudaMemcpyDeviceToHost),
-                      "QeState counters read for clear");
+        if (cleared_once_)
+            HG_CUDA_CHECK(cudaMemcpy(prev, counters_, sizeof(prev), cudaMemcpyDeviceToHost),
+                          "QeState counters read for clear");
         const uint32_t events = !cleared_once_ || prev[3] > event_sig_capacity_
                                     ? event_sig_capacity_ : prev[3];
 
@@ -198,7 +208,7 @@ void QeState::clear() {
         qm_overlaps_.clear(&batch);
         // The masses, cells and flags are zeroed by whoever claims them; only the counts restart.
         batch.add(qm_words_ + 2ull * qm_capacity_, sizeof(unsigned long long) * 2u, 0);
-        inst_applied_.clear(0xFFFFFFFFu, &batch);
+        if (inst_applied_) inst_applied_->clear(0xFFFFFFFFu, &batch);
         batch.add(class_nmatch_, sizeof(uint32_t) * class_nmatch_cap_, 0);
         batch.add(class_pairs_, sizeof(unsigned long long) * class_nmatch_cap_, 0);
         batch.add(event_kept_, sizeof(uint32_t) * kQeKeptStride * size_t(events), 0);
@@ -376,7 +386,7 @@ void QeState::reconstructed_pairs_host(std::vector<std::pair<uint64_t, uint64_t>
         // Grouped by instance and paired by hgcommon::qr_instance_branchial_pairs, the function
         // the host engine's readback calls.
         std::vector<LockFreeList<QeAppliedMatch>::Node> nodes;
-        inst_applied_.copy_nodes_to_host(nodes);
+        if (inst_applied_) inst_applied_->copy_nodes_to_host(nodes);
         // The arena prefix the run filled, not its capacity.
         uint32_t used = 0;
         HG_CUDA_CHECK(cudaMemcpy(&used, cursor_, sizeof(uint32_t), cudaMemcpyDeviceToHost),
@@ -458,6 +468,11 @@ void QeState::ensure_event_content() {
                       "QeState event to-class alloc");
         HG_CUDA_CHECK(cudaMalloc(&event_rule_, sizeof(uint32_t) * event_sig_capacity_),
                       "QeState event rule alloc");
+}
+
+void QeState::ensure_applied() {
+    if (inst_applied_ || !on_) return;
+    inst_applied_ = std::make_unique<LockFreeList<QeAppliedMatch>>(applied_buckets_, applied_nodes_);
 }
 
 void QeState::reconstructed_event_content_host(std::vector<uint64_t>& from_class,
@@ -551,7 +566,7 @@ void QeState::reconstructed_genesis_pairs_host(bool reduced,
 }
 
 QeView QeState::view(uint32_t max_steps, EventSignatureKeys keys,
-                bool replay, bool multiplicity, bool event_content) {
+                bool replay, bool multiplicity, bool event_content, bool publish_applied) {
         QeView q{};
         q.matches      = matches_.view();
         q.by_from      = by_from_.view();
@@ -573,7 +588,8 @@ QeView QeState::view(uint32_t max_steps, EventSignatureKeys keys,
         q.event_from_class = event_content ? event_from_class_ : nullptr;
         q.event_to_class   = event_content ? event_to_class_ : nullptr;
         q.event_rule       = event_content ? event_rule_ : nullptr;
-        q.inst_applied     = inst_applied_.view();
+        if (inst_applied_) q.inst_applied = inst_applied_->view();
+        q.publish_applied  = (on_ && replay && publish_applied && inst_applied_) ? 1u : 0u;
         q.causal_pairs   = causal_pairs_.view();
         q.num_causal_pairs = num_causal_pairs_;
         q.num_causal_edges = num_causal_edges_;

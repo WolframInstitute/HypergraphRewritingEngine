@@ -1,5 +1,6 @@
 #pragma once
 #include "hgcommon/core.hpp"
+#include "hgcommon/cache_line.hpp"
 #include "hgcommon/namespace.hpp"
 
 #include <cstdint>
@@ -61,7 +62,7 @@ class Hypergraph {
     // The owning worker writes its mark with a release store and readers load it with acquire,
     // so a read while workers run is not a data race. A thread that is not a worker publishes
     // through the atomics.
-    struct alignas(64) PublishedMark {
+    struct alignas(hgcommon::kDestructiveLine) PublishedMark {
         uint32_t states = 0;
         uint32_t events = 0;
     };
@@ -155,6 +156,14 @@ class Hypergraph {
     std::atomic<bool> record_raw_counts_only_{false};
     std::atomic<bool> record_multiplicities_{false};
     std::atomic<bool> record_state_invariants_{false};
+    std::atomic<bool> record_relation_lists_{true};
+    std::atomic<bool> record_event_lists_{true};
+    // From the record set (hgcommon::qr_publishes_applications, qr_keeps_event_content,
+    // qr_keeps_causal_pairs): the replay publishes each application to qc_inst_applied_, keeps
+    // each event's content in qc_event_sig_, and keeps each causal pair in qc_causal_pairs_.
+    std::atomic<bool> qc_publish_applied_{true};
+    std::atomic<bool> qc_keep_content_{true};
+    std::atomic<bool> qc_keep_pairs_{true};
     // Each step's raw states, newest first, filled by create_state while index_states_by_step_.
     std::atomic<bool> index_states_by_step_{false};
     hgcommon::GrowingDepthSlots<LockFreeList<StateId>> states_by_step_;
@@ -284,10 +293,10 @@ class Hypergraph {
     // quotient, 348,615 classes: arena 2,658 -> 2,509 MB).
     static constexpr uint32_t kInstShards = 8;
     static constexpr uint32_t kInstLists = kInstShards + 1;
-    struct alignas(64) QcInstanceShard {
+    struct alignas(hgcommon::kDestructiveLine) QcInstanceShard {
         LockFreeList<QcInstance> list;
     };
-    struct alignas(64) QcInstanceShards {
+    struct alignas(hgcommon::kDestructiveLine) QcInstanceShards {
         QcInstanceShard first;
         std::atomic<QcInstanceShard*> more{nullptr};
         uint64_t class_hash = 0;
@@ -355,10 +364,10 @@ class Hypergraph {
     // (qc_inst_blocks_ is read on every instance) would otherwise be reloaded after each refill
     // by another worker (multirule depth 7 quotient, 16 threads: 31% of qc_add_instance's
     // samples on the load of qc_inst_blocks_).
-    alignas(64) std::atomic<uint64_t> qc_next_instance_{0};
-    alignas(64) std::atomic<uint64_t> qc_instances_made_outside_{0};
+    alignas(hgcommon::kDestructiveLine) std::atomic<uint64_t> qc_next_instance_{0};
+    alignas(hgcommon::kDestructiveLine) std::atomic<uint64_t> qc_instances_made_outside_{0};
     static constexpr uint32_t kIdBlock = 64;
-    struct alignas(64) IdBlock {
+    struct alignas(hgcommon::kDestructiveLine) IdBlock {
         uint32_t next = 0;
         uint32_t end = 0;
         uint64_t made = 0;
@@ -379,9 +388,9 @@ class Hypergraph {
     // summed. 64-bit so that it cannot wrap; ids at or past qc_id_limit_ are refused
     // (alloc_event_id).
     // Alone on its line, for the reason qc_next_instance_ is.
-    alignas(64) std::atomic<uint64_t> qc_next_raw_event_{0};
+    alignas(hgcommon::kDestructiveLine) std::atomic<uint64_t> qc_next_raw_event_{0};
     // hgcommon::QR_ID_LIMIT except in tests (set_replay_id_limit); ids refused at it.
-    alignas(64) uint32_t qc_id_limit_ = hgcommon::QR_ID_LIMIT;
+    alignas(hgcommon::kDestructiveLine) uint32_t qc_id_limit_ = hgcommon::QR_ID_LIMIT;
     std::atomic<uint64_t> qc_ids_refused_{0};
     std::atomic<uint64_t> qc_captures_dropped_{0};
     // An id counter read as a bound on the ids it issued.
@@ -462,7 +471,7 @@ class Hypergraph {
         QcPairChunk* prev = nullptr;
         uint64_t v[kCap];
     };
-    struct alignas(64) QcPairList {
+    struct alignas(hgcommon::kDestructiveLine) QcPairList {
         std::atomic<QcPairChunk*> head{nullptr};
         template <typename Arena>
         void push(uint64_t key, Arena& arena) {
@@ -485,12 +494,6 @@ class Hypergraph {
                 for (uint32_t i = 0; i < n; ++i) f(c->v[i]);
             }
         }
-        size_t size() const {
-            size_t n = 0;
-            for (const QcPairChunk* c = head.load(std::memory_order_acquire); c; c = c->prev)
-                n += c->n.load(std::memory_order_acquire);
-            return n;
-        }
     };
     QcPairList qc_causal_pairs_[MAX_ARENA_WORKERS];
     LockFreeList<uint64_t> qc_causal_pairs_outside_;
@@ -499,11 +502,6 @@ class Hypergraph {
     void qc_causal_pairs_for_each(F&& f) const {
         for (const QcPairList& l : qc_causal_pairs_) l.for_each(f);
         qc_causal_pairs_outside_.for_each(f);
-    }
-    size_t qc_causal_pairs_count() const {
-        size_t n = qc_causal_pairs_outside_.size();
-        for (const QcPairList& l : qc_causal_pairs_) n += l.size();
-        return n;
     }
     // Isomorphism-invariant signature per reconstructed event: fnv(from hash, to hash, rule).
     // Reconstructed events carry no Event record, so this is the only description they have --
@@ -556,13 +554,13 @@ class Hypergraph {
     // reads them to decide anything, so a per-worker sum changes no output -- where per-worker
     // event id BLOCKS changed which raw event represents an identity and broke three gates.
     // ONE LINE PER WORKER, HOLDING EVERY COUNTER THAT WORKER BUMPS -- not one padded array per
-    // counter. Five separate alignas(64) arrays of MAX_ARENA_WORKERS entries is 80 KB of member
+    // counter. Five separate line-aligned arrays of MAX_ARENA_WORKERS entries is 80 KB of member
     // data for 40 bytes of counters per worker, and Hypergraph is stack-allocated by several
     // probes: at 399 KB it overflowed the 1 MB default stack on Windows and
     // ctest's quotient_reconstruction died with SEGFAULT. Packed this way the same separation
     // costs 16 KB, because the point was never a line per COUNTER -- it was a line per WORKER,
     // so that two workers never share one.
-    struct alignas(64) QcCounterSlot {
+    struct alignas(hgcommon::kDestructiveLine) QcCounterSlot {
         size_t causal_edges = 0;
         size_t causal_pairs = 0;
         size_t applications = 0;   // reconstruction applications this worker performed
@@ -774,6 +772,9 @@ class Hypergraph {
     // Full mode: keys of canonical_form_map_ found holding a state with a different canonical
     // form (stats builds). Each one moved a state to its next probe key.
     std::atomic<uint64_t> canonical_key_collisions_{0};
+    // Quotient exploration: the largest amount by which a later, shorter path lowered a state's
+    // depth (stats builds).
+    std::atomic<uint32_t> explore_depth_max_lowering_{0};
     // ANDed into the canonical hash before it becomes the first probe key. All ones except in
     // tests, which narrow it so that non-isomorphic states share keys.
     uint64_t canonical_key_mask_{~uint64_t{0}};
@@ -1188,6 +1189,12 @@ public:
     // later shorter path to the parent pulls the child's subtree into budget even after the
     // parent was first expanded at a deeper claim depth.
     uint32_t explore_depth_of(StateId canonical_id) const;
+#if HG_ENGINE_STATS
+    // The largest depth lowering seen this run (explore_depth_max_lowering_).
+    uint32_t explore_depth_max_lowering() const {
+        return explore_depth_max_lowering_.load(std::memory_order_relaxed);
+    }
+#endif
 
     // Number of unique canonical states
     // Uses count_unique() for accurate counting after evolution completes,

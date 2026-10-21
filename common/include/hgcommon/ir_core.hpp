@@ -298,16 +298,19 @@ HG_HD inline void ir_build_occurrences(
 }
 
 // -----------------------------------------------------------------------------------------
-// SORTED-UNIQUE dense renumbering of ev[0..occ) in place. `verts` is caller scratch of at
-// least occ words; on return its first (returned) words are the distinct raw ids ascending,
-// and every ev[i] is that array's index of its raw id. One rule for both engines: the host's
-// canonicalizer entry sorted a vector and the device's flattening deduplicated by linear scan
-// and insertion-sorted -- the scan and the sort were both quadratic in a state's occurrence
-// count, and two bodies of one convention drift. The convention itself (sorted, not
-// encounter order) is load-bearing: the within-cell tie-break reads the numbering, so it
-// selects which coset representative the canonical labelling is, and the RANKS the two
-// engines exchange must come from the same numbering.
-HG_HD inline uint32_t ir_renumber_sorted(uint32_t* ev, uint32_t occ, uint32_t* verts) {
+// The vertex numbering of every flattener on both engines: ev[0..occ) is renumbered in place to
+// 0, 1, 2, ... in order of first appearance, reading the state's edges in its own order and each
+// edge's positions in order. Returns the number of distinct vertices. `verts` is caller scratch
+// of at least occ words; its contents on return are not meaningful.
+//
+// The within-cell tie-break reads this numbering, so it selects which automorphic labelling
+// gives the edge ranks that Automatic and Positional event identity read (docs/SPEC.md 4.2).
+// First appearance follows the state's edge order, which its derivation fixes (survivors in
+// the parent's order, then the produced edges in right-side order), so the ranks do not depend
+// on the vertex ids a run assigned.
+//
+// O(occ log occ): a heapsort of the ids, a binary search per occurrence, then one pass.
+HG_HD inline uint32_t ir_renumber_encounter(uint32_t* ev, uint32_t occ, uint32_t* verts) {
     struct U32Cmp {
         HG_HD int operator()(uint32_t a, uint32_t b) const {
             return a < b ? -1 : (a > b ? 1 : 0);
@@ -318,6 +321,7 @@ HG_HD inline uint32_t ir_renumber_sorted(uint32_t* ev, uint32_t occ, uint32_t* v
     uint32_t n = 0;
     for (uint32_t i = 0; i < occ; ++i)
         if (n == 0 || verts[i] != verts[n - 1]) verts[n++] = verts[i];
+    // ev[o] := the index of its id among the sorted distinct ids.
     for (uint32_t o = 0; o < occ; ++o) {
         uint32_t lo = 0, hi = n;
         while (lo < hi) {
@@ -325,6 +329,13 @@ HG_HD inline uint32_t ir_renumber_sorted(uint32_t* ev, uint32_t occ, uint32_t* v
             if (verts[mid] < ev[o]) lo = mid + 1; else hi = mid;
         }
         ev[o] = lo;
+    }
+    // verts[s] := the first-appearance number of sorted index s.
+    for (uint32_t s = 0; s < n; ++s) verts[s] = UINT32_MAX;
+    uint32_t next = 0;
+    for (uint32_t o = 0; o < occ; ++o) {
+        if (verts[ev[o]] == UINT32_MAX) verts[ev[o]] = next++;
+        ev[o] = verts[ev[o]];
     }
     return n;
 }

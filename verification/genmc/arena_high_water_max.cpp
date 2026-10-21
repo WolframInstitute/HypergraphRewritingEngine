@@ -1,24 +1,24 @@
 // GenMC harness: the arena's byte high-water mark ends at the largest live total.
 //
-// THE CODE. note_block_grab (hypergraph/src/arena.cpp) adds a block's bytes to a live counter
-// with fetch_add and raises the high-water mark to the new total with a compare_exchange_weak
-// retry loop:
+// THE CODE. note_block_grab (hypergraph/src/arena.cpp) adds a block's bytes to a process-wide live
+// counter with fetch_add and raises the process-wide high-water mark to the new total with
+// hgcommon::atomic_raise (common/include/hgcommon/portable_intrinsics.hpp):
 //     const size_t now = live.fetch_add(bytes, relaxed) + bytes;
-//     size_t hw = high_water.load(relaxed);
-//     while (now > hw && !high_water.compare_exchange_weak(hw, now, relaxed)) {}
-// Every block grab runs it twice (the process total and the arena's own), so it is the weak CAS
-// a harness of the allocator meets most often. This harness checks the loop on its own, with
-// its spurious failures explored; arena_cursor_vs_shared_disjoint checks the allocator.
+//     if (high_water.load(relaxed) >= now) return;
+//     __atomic_fetch_max(&high_water, now, relaxed);      // Clang; fetch_max under C++26
+// The harness compiles with Clang, so the checker sees one atomic max read-modify-write and no
+// retry loop, and the exploration is exhaustive. An arena's own block count only grows until its
+// destructor, so it has no separate mark.
 //
 // THE PROPERTY. Two threads each record one grab of a different size. No block is freed, so the
 // largest live total is the sum, and the mark must end equal to it: a raise lost to the other
 // thread's raise leaves the smaller total.
 //
 // CALIBRATION. -DCALIBRATE_LOAD_STORE_MAX raises the mark with a load, a compare and a store,
-// the max without the retry; the checker must report the lost raise.
+// the max without the read-modify-write; the checker must report the lost raise.
 //
-// GENMC-ARGS: --disable-estimation --weak-cas-spurious-bound=2
-// GENMC-BOUND: weak CAS spurious-failure bound 2: 87 complete executions, K = 32 dropped (bounded, not exhaustive).
+// GENMC-ARGS: --disable-estimation
+// GENMC-BOUND: exhaustive for two threads with one grab each.
 // GENMC-EXPECT: pass
 // GENMC-CALIBRATE: -DCALIBRATE_LOAD_STORE_MAX
 //

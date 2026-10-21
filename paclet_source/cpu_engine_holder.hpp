@@ -40,9 +40,9 @@ namespace ffi {
 class CpuEngineHolder : public EngineHolder {
 public:
     // `continuable` records the frontier so extend() has something to resume from. Pass false
-    // for a one-shot job, which is what every caller that names no session is.
-    explicit CpuEngineHolder(bool continuable,
-                             unsigned threads = std::thread::hardware_concurrency());
+    // for a one-shot job, which is what every caller that names no session is. `threads` 0 is
+    // the engine's default (hgcommon::default_worker_count).
+    explicit CpuEngineHolder(bool continuable, unsigned threads = 0);
 
     hypergraph::Hypergraph& hypergraph();
     hypergraph::ParallelEvolutionEngine& engine();

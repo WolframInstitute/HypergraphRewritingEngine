@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "hypergraph/arena.hpp"
+#include "hgcommon/portable_intrinsics.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -126,6 +127,34 @@ TEST(ArenaPool, TrimUnmapsPooledBlocks) {
     size_t nonzero = 0;
     for (size_t i = 0; i < kBytes; ++i) nonzero += q[i] != 0;
     EXPECT_EQ(nonzero, 0u);
+}
+
+// hgcommon::atomic_raise never lowers the value, and 16 threads raising one word each to their
+// own values leave the largest.
+TEST(AtomicRaise, EndsAtTheLargestValue) {
+    std::atomic<uint64_t> a{10};
+    hgcommon::atomic_raise(a, uint64_t{5});
+    EXPECT_EQ(a.load(), 10u);
+    hgcommon::atomic_raise(a, uint64_t{12});
+    EXPECT_EQ(a.load(), 12u);
+    std::atomic<uint64_t> shared{0};
+    std::vector<std::thread> ts;
+    for (uint64_t t = 0; t < 16; ++t)
+        ts.emplace_back([&shared, t] {
+            for (uint64_t i = 0; i < 10000; ++i) hgcommon::atomic_raise(shared, t * 10000 + i);
+        });
+    for (auto& t : ts) t.join();
+    EXPECT_EQ(shared.load(), 15u * 10000 + 9999);
+}
+
+// An arena's block bytes count every block it grabbed, and the process-wide high-water mark is at
+// least that while the arena lives.
+TEST(ArenaBlockBytes, ProcessHighWaterCoversALiveArena) {
+    ConcurrentHeterogeneousArena a;
+    const size_t before = a.block_bytes();
+    a.allocate_raw(size_t{3} << 20, 64, nullptr);
+    EXPECT_GT(a.block_bytes(), before + (size_t{3} << 20) - 1);
+    EXPECT_GE(hg::engine::arena_block_bytes_high_water(), a.block_bytes());
 }
 
 }  // namespace

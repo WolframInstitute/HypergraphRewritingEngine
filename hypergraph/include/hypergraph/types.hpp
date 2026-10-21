@@ -1,5 +1,6 @@
 #pragma once
 #include "hgcommon/namespace.hpp"
+#include "hgcommon/cache_line.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -256,9 +257,9 @@ struct GlobalCounters {
     // takes its fresh vertices and its edges in ONE increment (alloc_edges_and_vertices). Each
     // field only grows, and the edge field cannot carry into the vertex field because an edge id
     // is 32 bits.
-    alignas(64) std::atomic<uint64_t> next_edge_vertex{0};
-    alignas(64) std::atomic<StateId> next_state{0};
-    alignas(64) std::atomic<EventId> next_event{0};
+    alignas(hgcommon::kDestructiveLine) std::atomic<uint64_t> next_edge_vertex{0};
+    alignas(hgcommon::kDestructiveLine) std::atomic<StateId> next_state{0};
+    alignas(hgcommon::kDestructiveLine) std::atomic<EventId> next_event{0};
 
     static constexpr uint64_t kVertexOne = uint64_t(1) << 32;
     static EdgeId edge_field(uint64_t w) { return static_cast<EdgeId>(w & 0xFFFFFFFFu); }

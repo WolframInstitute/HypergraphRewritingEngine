@@ -10,6 +10,7 @@
 #include "hg_gpu/cuda_check.hpp"
 #include "hg_gpu/device_probe.hpp"
 #include "hgcommon/quotient_route.hpp"
+#include "hgcommon/tuning.hpp"
 
 #include <cuda_runtime.h>
 
@@ -64,10 +65,27 @@ EngineConfig config_from_input(const EvolveInput& in) {
     // to: a 32,768-edge root at three steps asks for 2^30 edges and 2^32 vertex slots. A config
     // past the device is scaled to it by fit_config_to_cap.
     auto field = [](uint64_t v) { return static_cast<uint32_t>(std::min<uint64_t>(v, 1ull << 31)); };
-    const uint64_t expected_edges  =
+    uint64_t expected_edges  =
         std::max<uint64_t>(1u << 20, static_cast<uint64_t>(n_init) * growth * 512u);
-    const uint64_t expected_states =
+    uint64_t expected_states =
         std::max<uint64_t>(1u << 17, static_cast<uint64_t>(n_init) * growth * 32u);
+    // A step cap that counts transitions bounds the events: at most `cap` per step, and one raw
+    // state per event. "MaxStatesPerStep" counts transitions under CanonicalizeStates None and
+    // with "MatchesPerStep"; otherwise a kept successor state takes every transition into it, so
+    // the events have no bound from the cap. The bound is doubled for the candidates a step
+    // matches before its selection (the match pool is 8 records per state slot), and a run past
+    // it grows and retries.
+    if (in.max_states_per_step != 0 &&
+        (in.step_cap_counts_matches || in.canonicalization == CanonicalizationMode::None)) {
+        const uint64_t roots = std::max<uint64_t>(1u, in.initial_states.size());
+        const uint64_t events = static_cast<uint64_t>(steps) * in.max_states_per_step;
+        const uint64_t bound = std::max<uint64_t>(1u << 10, 2u * (roots + events));
+        uint64_t rhs = 1;
+        for (const auto& r : in.rules) rhs = std::max<uint64_t>(rhs, r.rhs.size());
+        expected_states = std::min(expected_states, bound);
+        expected_edges = std::min(expected_edges,
+                                  std::max<uint64_t>(1u << 12, 2u * (n_init * roots + events * rhs)));
+    }
 
     cfg.max_edges              = field(expected_edges);
     cfg.max_states             = field(expected_states);
@@ -88,6 +106,8 @@ EngineConfig config_from_input(const EvolveInput& in) {
 
     if (in.slice_scan_max_edges) cfg.slice_scan_max_edges = in.slice_scan_max_edges;
     if (in.max_blocks_per_launch) cfg.max_blocks_per_launch = in.max_blocks_per_launch;
+    cfg.persistent_grid = in.persistent_blocks;
+    cfg.lane_backlog = in.lane_backlog;
 
     const uint64_t expected_events = expected_states;
     cfg.max_events             = field(expected_events);
@@ -97,7 +117,13 @@ EngineConfig config_from_input(const EvolveInput& in) {
     cfg.causal_pair_slots      = field(expected_events * 8u);
     cfg.branchial_pair_slots   = field(expected_events * 16u);
     cfg.edge_consumer_nodes    = field(expected_edges * 4u);
-    cfg.branchial_index_buckets = 1u << 20;
+    // One bucket per four events, a power of two from 2^12 to 2^20. An event pushes one entry
+    // per consumed edge, and a push walks its bucket.
+    {
+        uint64_t b = 1u << 12;
+        while (b < expected_events / 4u && b < (1u << 20)) b <<= 1;
+        cfg.branchial_index_buckets = static_cast<uint32_t>(b);
+    }
     cfg.branchial_index_nodes   = field(expected_events * 4u);
     // One preds node per unique kept causal pair; kept pairs are a subset of causal pairs.
     cfg.tr_preds_nodes         = field(expected_events * 8u);
@@ -107,6 +133,7 @@ EngineConfig config_from_input(const EvolveInput& in) {
     cfg.keyed_rewrites         = in.keyed_rewrites;
     cfg.keyed_claim_limit      = in.keyed_claim_limit;
     cfg.keyed_sum_mask         = in.keyed_sum_mask;
+    cfg.l2_persist_limit       = in.l2_persist_limit;
     auto widen = [](uint16_t& f, size_t n) {
         f = static_cast<uint16_t>(std::max<size_t>(f, std::min<size_t>(n, 0xFFFFu)));
     };
@@ -143,6 +170,8 @@ const char* continuation_mismatch(const EvolveInput& open, const EvolveInput& in
         return "explore_from_canonical_states_only";
     // The per-event content arrays are written as events are minted, only when this is set.
     if (open.materialize_events != in.materialize_events) return "materialize_events";
+    // The applications the branchial enumeration reads are published only when this is set.
+    if (open.materialize_relations != in.materialize_relations) return "materialize_relations";
     return nullptr;
 }
 
@@ -220,6 +249,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         opening_.transitive_reduction = in.transitive_reduction;
         opening_.explore_from_canonical_states_only = in.explore_from_canonical_states_only;
         opening_.materialize_events = in.materialize_events;
+        opening_.materialize_relations = in.materialize_relations;
     } else if (const char* what = continuation_mismatch(opening_, in)) {
         throw std::invalid_argument(std::string("a session continuation must use the opening "
                                                 "call's ") + what);
@@ -364,17 +394,22 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     // each take a reachability slice on first need, from a table with one entry per lane.
     if (qe_multiplicity) {
         const uint32_t drivers =
-            default_persistent_grid() > static_cast<uint32_t>(roots.size())
-                ? default_persistent_grid()
+            persistent_grid_of(cfg) > static_cast<uint32_t>(roots.size())
+                ? persistent_grid_of(cfg)
                 : static_cast<uint32_t>(roots.size());
         qe_state_->ensure_work(drivers, in.num_steps, cfg.descent_work_scale);
     }
-    if (qe_replay) qe_state_->ensure_lanes(default_persistent_grid() * kMatchBlockThreads);
+    if (qe_replay) qe_state_->ensure_lanes(persistent_grid_of(cfg) * kMatchBlockThreads);
     const bool qe_event_content = qc_route && qe_replay && in.materialize_events;
     if (qe_event_content) qe_state_->ensure_event_content();
+    const bool qe_publish_applied =
+        qc_route && qe_replay &&
+        hgcommon::qr_publishes_applications(in.record.branchial, in.materialize_relations);
+    if (qe_publish_applied) qe_state_->ensure_applied();
     qe_state_->set_id_limit(in.replay_id_limit);
     QeView qe_view = qe_state_->view(in.num_steps, event_keys_for(in.event_canonicalization),
-                                     qe_replay, qe_multiplicity, qe_event_content);
+                                     qe_replay, qe_multiplicity, qe_event_content,
+                                     qe_publish_applied);
 
     double t_qcsetup = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_qcsetup_start).count();
@@ -440,7 +475,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         // state budget. Exhaustion is a recorded capacity overflow (kIRArenaExhausted, which the
         // wrapper can grow and retry), never a coarser hash.
         DeviceArena& arena = engine.ir_arena(
-            persistent_arena_words(cfg.ir_arena_share_words, default_persistent_grid()));
+            persistent_arena_words(cfg.ir_arena_share_words, persistent_grid_of(cfg)));
 
         auto t_kern_start = std::chrono::steady_clock::now();
         PersistentEvolveStats st = run_persistent_evolve(
@@ -940,13 +975,13 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     }
     // The multiplicity queues at their minimum per-driver size (256 items), which
     // descent_work_scale multiplies; a deep run's queues are larger still.
-    b += u64(default_persistent_grid()) * 256u * u64(cfg.descent_work_scale) *
+    b += u64(persistent_grid_of(cfg)) * 256u * u64(cfg.descent_work_scale) *
          sizeof(QeWorkItem);
     // Reachability scratch and its busy words.
-    b += u64(default_persistent_grid()) * 4u *
+    b += u64(persistent_grid_of(cfg)) * 4u *
          (u64(EngineState::tr_scratch_scale_of(cfg)) *
               (EngineState::kTrScratchStack + EngineState::kTrScratchVisited) + 1u);
-    b += u64(default_persistent_grid()) * u64(cfg.survivor_scratch) * 8u;    // survivor scratch
+    b += u64(persistent_grid_of(cfg)) * u64(cfg.survivor_scratch) * 8u;    // survivor scratch
     // The claim maps: states and exact hashes at two slots per state, event signatures at two
     // per event (persistent.cu reuse_map).
     b += map_bytes(u64(cfg.max_states) * 2) * 2 + map_bytes(u64(cfg.max_events) * 2);
@@ -986,9 +1021,24 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
 // qe_events reaches 288,768 and the applied pool 577,536, and the run reported needing at least
 // 354,113 / 402,555 / 390,638 more slots across its attempts: short by one doubling, three times
 // over.
-uint64_t resolved_memory_cap(uint64_t requested) {
+uint64_t resolved_memory_cap(uint64_t requested, uint64_t held_bytes) {
     if (requested != 0) return requested;
-    return static_cast<uint64_t>(static_cast<double>(usable_device().total_bytes) * 0.90);
+    return static_cast<uint64_t>(hgcommon::tuned(hgcommon::TuningOverrides{}, hgcommon::Tune::GpuMemoryLimit, [&] {
+        const uint64_t ninety =
+            static_cast<uint64_t>(static_cast<double>(usable_device().total_bytes) * 0.90);
+        size_t free_b = 0, total_b = 0;
+        if (cudaMemGetInfo(&free_b, &total_b) != cudaSuccess) {
+            cudaGetLastError();
+            return ninety;
+        }
+        return memory_cap_of(ninety, free_b + held_bytes);
+    }));
+}
+
+uint64_t memory_cap_of(uint64_t ninety_of_total, uint64_t available) {
+    constexpr uint64_t kReserve = uint64_t{256} << 20;
+    // At least one byte: a cap of 0 means no cap.
+    return std::max<uint64_t>(1u, std::min(ninety_of_total, available > kReserve ? available - kReserve : 0u));
 }
 
 template <class Attempt>
@@ -1014,8 +1064,16 @@ static EvolveResult run_with_growth(EngineConfig cfg, uint64_t mem_cap, Attempt&
     EvolveResult best;
     int first_shrinks = 0;
 
+    static const bool dbg_config = std::getenv("HG_GPU_DBG_TIME") != nullptr;
     for (int attempt_no = 0; attempt_no <= kMaxRetries; ++attempt_no) {
         EvolveResult result;
+        if (dbg_config)
+            std::fprintf(stderr,
+                         "[hg_gpu config] attempt %d: ~%llu MB, cap %llu MB, states %u, events %u, "
+                         "edges %u\n",
+                         attempt_no + 1, (unsigned long long)(estimated_device_bytes(cfg) >> 20),
+                         (unsigned long long)(mem_cap >> 20), cfg.max_states, cfg.max_events,
+                         cfg.max_edges);
         try {
             result = attempt(cfg);
         } catch (const std::exception& e) {
@@ -1114,9 +1172,30 @@ static EvolveResult run_with_growth(EngineConfig cfg, uint64_t mem_cap, Attempt&
     return EvolveResult{};  // unreachable: every iteration returns or continues
 }
 
+uint32_t persistent_grid_of(const EngineConfig& cfg) {
+    return cfg.persistent_grid ? cfg.persistent_grid : default_persistent_grid();
+}
+
+uint32_t derived_lane_backlog(uint32_t grid) { return std::max<uint32_t>(8u, grid / 16u); }
+
+uint32_t lane_backlog_of(const EngineConfig& cfg) {
+    if (cfg.lane_backlog) return cfg.lane_backlog;
+    return static_cast<uint32_t>(hgcommon::tuned(hgcommon::TuningOverrides{},
+                                                 hgcommon::Tune::GpuBacklog, [&] {
+        return derived_lane_backlog(persistent_grid_of(cfg));
+    }));
+}
+
+EngineConfig initial_config(const EvolveInput& in, uint64_t mem_cap) {
+    EngineConfig cfg = config_from_input(in);
+    if (mem_cap != 0) fit_config_to_cap(cfg, mem_cap / 4);
+    return cfg;
+}
+
 EvolveResult evolve(const EvolveInput& in) {
     // A fresh engine per attempt: the pools are re-allocated at the new sizes.
-    return run_with_growth(config_from_input(in), in.max_device_memory_bytes,
+    const uint64_t mem_cap = resolved_memory_cap(in.max_device_memory_bytes);
+    return run_with_growth(initial_config(in, mem_cap), mem_cap,
                            [&](const EngineConfig& cfg) {
                                // The estimate is below the real allocation, so a config it
                                // already places past the free memory cannot fit; stopping here
@@ -1160,7 +1239,14 @@ void GpuSession::set_frontier_host(const StateId* ids, const uint32_t* steps, ui
     impl_->state.set_frontier_host(ids, steps, n);
 }
 
-PersistentEvolver::PersistentEvolver()  = default;
+// The runtime is initialised before the evolver is constructed, so the runtime's exit handler is
+// registered first and runs after the evolver's destructor. An evolver with static storage
+// constructed before the first CUDA call is otherwise destroyed after the driver has shut down,
+// and its cudaFree calls fail with "driver shutting down". cudaFree(nullptr) initialises the
+// runtime and frees nothing; its error, on a host without a device, is cleared.
+PersistentEvolver::PersistentEvolver() {
+    if (cudaFree(nullptr) != cudaSuccess) (void)cudaGetLastError();
+}
 PersistentEvolver::~PersistentEvolver() = default;
 
 // A session run REFUSES to rebuild the engine. run() below may replace engine_ -- when the
@@ -1299,8 +1385,16 @@ static EngineConfig covering_config(const EngineConfig& live, const EngineConfig
 // sit at the memory cap with a pool smaller than this input needs (a previous job that overflowed
 // to the cap), and grow-and-retry cannot grow it.
 EvolveResult PersistentEvolver::run(const EvolveInput& in) {
-    const EngineConfig own = config_from_input(in);
-    const uint64_t mem_cap = resolved_memory_cap(in.max_device_memory_bytes);
+    // The live engine's pools are freed before a larger engine is built, so they count as
+    // available. The device stack is reserved for the context and stays.
+    const uint64_t held =
+        has_engine_ ? estimated_device_bytes(cfg_) -
+                          std::min(estimated_device_bytes(cfg_),
+                                   static_cast<uint64_t>(EngineState::device_stack_bytes()) *
+                                       device_resident_threads())
+                    : 0;
+    const uint64_t mem_cap = resolved_memory_cap(in.max_device_memory_bytes, held);
+    const EngineConfig own = initial_config(in, mem_cap);
     EngineConfig start = own;
     if (has_engine_) {
         const EngineConfig cover = covering_config(cfg_, own);

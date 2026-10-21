@@ -27,14 +27,20 @@
 //   bool     state_valid(uint32_t sid) const;
 //   int64_t  effective_state_id(uint32_t sid) const;   // canonical/content/raw per mode
 //   uint32_t state_step(uint32_t sid) const;
-//   wxf::WXFValueAssociation serialize_state_data(uint32_t sid) const;
+//   // A styled graph's state payload (GraphStateFields) and the state's edges, each as its
+//   // first number and its vertices. Called from several threads at once.
+//   void state_fields(uint32_t sid, GraphStateFields& f) const;
+//   void state_edges(uint32_t sid,
+//                    std::vector<std::pair<int64_t, std::vector<uint32_t>>>& out) const;
 //
 //   uint32_t num_raw_events() const;             // scan bound for raw event ids
 //   bool     is_valid_event(uint32_t eid) const; // false for genesis unless shown
 //   int64_t  effective_event_id(uint32_t eid) const;
 //   uint32_t event_input_state(uint32_t eid) const;
 //   uint32_t event_output_state(uint32_t eid) const;
-//   wxf::WXFValueAssociation serialize_event_data(uint32_t eid) const;
+//   // A styled graph's event payload (GraphEventFields); false when there is none, which
+//   // writes the empty association. Called from several threads at once.
+//   bool event_fields(uint32_t eid, GraphEventFields& f) const;
 //
 //   // (producer, consumer) raw event-id pairs, genesis already filtered, with
 //   // per-shared-hyperedge multiplicity preserved (edge_deduplication uses it).
@@ -68,6 +74,12 @@
 #include <utility>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
+#include <memory>
+#include <functional>
+#include <algorithm>
+#include <array>
+#include <string_view>
 
 namespace HG_NAMESPACE {
 namespace marshal {
@@ -322,8 +334,7 @@ inline BranchialStateEdgeSet branchial_state_edges_all_siblings(
 void push_branchial_state_edges(wxf::WXFValueAssociation& result,
                                 const BranchialStateEdgeSet& set);
 
-// THE "States" AND "Events" RECORDS, one schema for both engines. The host streams its reply
-// into a wxf::Writer (StreamRecordSink); the GPU backend builds a value tree (ValueRecordSink).
+// THE "States" AND "Events" RECORDS, one schema for both engines, written into a wxf::Writer.
 // A sink writes one association: begin(n), then n fields.
 class StreamRecordSink {
 public:
@@ -356,33 +367,6 @@ private:
     wxf::Writer& w_;
 };
 
-class ValueRecordSink {
-public:
-    void begin(std::size_t fields) { a_.clear(); a_.reserve(fields); }
-    void i64(const char* key, int64_t v) { a_.push_back({wxf::WXFValue(key), wxf::WXFValue(v)}); }
-    void i64_list(const char* key, const std::vector<int64_t>& v) {
-        wxf::WXFValueList l;
-        l.reserve(v.size());
-        for (int64_t x : v) l.push_back(wxf::WXFValue(x));
-        a_.push_back({wxf::WXFValue(key), wxf::WXFValue(std::move(l))});
-    }
-    void edges(const char* key,
-               const std::vector<std::pair<int64_t, std::vector<uint32_t>>>& e) {
-        wxf::WXFValueList l;
-        l.reserve(e.size());
-        for (const auto& [id, verts] : e) {
-            wxf::WXFValueList ed;
-            ed.push_back(wxf::WXFValue(id));
-            for (uint32_t v : verts) ed.push_back(wxf::WXFValue(static_cast<int64_t>(v)));
-            l.push_back(wxf::WXFValue(std::move(ed)));
-        }
-        a_.push_back({wxf::WXFValue(key), wxf::WXFValue(std::move(l))});
-    }
-    wxf::WXFValueAssociation take() { return std::move(a_); }
-private:
-    wxf::WXFValueAssociation a_;
-};
-
 struct StateRecordIds {
     int64_t id, canonical_id, content_id, step;
     bool    with_hash;
@@ -409,17 +393,81 @@ void write_state_record(Sink& s, const StateRecordIds& r, bool full,
     if (r.with_hash) s.i64("CanonicalHash", r.hash);
 }
 
-// A reconstructed application's data in a graph: its identity, rule and endpoint states. It has
-// no edge lists, since the reconstruction materialises none.
-inline wxf::WXFValueAssociation reconstructed_event_data(int64_t id, int64_t rule, int64_t input,
-                                                         int64_t output) {
-    wxf::WXFValueAssociation d;
-    d.push_back({wxf::WXFValue("Id"), wxf::WXFValue(id)});
-    d.push_back({wxf::WXFValue("RuleIndex"), wxf::WXFValue(rule)});
-    d.push_back({wxf::WXFValue("InputState"), wxf::WXFValue(input)});
-    d.push_back({wxf::WXFValue("OutputState"), wxf::WXFValue(output)});
-    return d;
+// The fields of a state vertex's payload in a styled graph. The payload is <|Id, CanonicalId,
+// Step, Edges, IsInitial|>, with IsInitial 1 at step 0.
+struct GraphStateFields {
+    int64_t id = 0, canonical_id = 0, step = 0;
+};
+
+// The fields of an event's payload in a styled graph. A materialised event's payload is <|Id,
+// CanonicalId, RuleIndex, InputState, OutputState, ConsumedEdges, ProducedEdges,
+// InputStateEdges, OutputStateEdges|>, the last two the edges of states `input_raw` and
+// `output_raw`. A reconstructed application's is <|Id, RuleIndex, InputState, OutputState|>: the
+// reconstruction materialises no edge lists.
+struct GraphEventFields {
+    bool reconstructed = false;
+    int64_t id = 0, canonical_id = 0, rule = 0, input = 0, output = 0;
+    std::vector<int64_t> consumed, produced;
+    uint32_t input_raw = 0, output_raw = 0;
+};
+
+// Runs body(i) for every i < n, on any threads and in any order, and returns after every call
+// has returned.
+using ParallelFor = std::function<void(size_t n, const std::function<void(size_t)>& body)>;
+
+inline void serial_for(size_t n, const std::function<void(size_t)>& body) {
+    for (size_t i = 0; i < n; ++i) body(i);
 }
+
+// Appends item(w, i) for every i < n to `out` in order of i, the items written by `par` in
+// chunks of 256, each chunk into its own buffer.
+inline void write_items(wxf::Writer& out, size_t n, const ParallelFor& par,
+                        const std::function<void(wxf::Writer&, size_t)>& item) {
+    constexpr size_t kItems = 256;
+    std::vector<wxf::Writer> chunk((n + kItems - 1) / kItems);
+    par(chunk.size(), [&](size_t c) {
+        const size_t end = std::min(n, (c + 1) * kItems);
+        for (size_t i = c * kItems; i < end; ++i) item(chunk[c], i);
+    });
+    for (const wxf::Writer& w : chunk) out.append(w.data());
+}
+
+// A list of records, row i as <|keys[0] -> rows[i][0], ...|>, written by `par` (write_items).
+template <size_t N>
+wxf::WXFValue record_list(const std::vector<std::array<int64_t, N>>& rows,
+                          const std::array<const char*, N>& keys, const ParallelFor& par) {
+    wxf::Writer w;
+    w.write_function("List", rows.size());
+    write_items(w, rows.size(), par, [&](wxf::Writer& out, size_t i) {
+        out.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        out.write_varint(N);
+        for (size_t k = 0; k < N; ++k) {
+            out.write_key(keys[k]);
+            out.write(rows[i][k]);
+        }
+    });
+    return wxf::WXFValue(wxf::Encoded{w.release_data()});
+}
+
+// A job system of `threads` workers (0 is hgcommon::default_worker_count), for a reply whose run
+// had no host engine (the GPU backend). Started on construction, stopped on destruction.
+class HostJobs {
+public:
+    explicit HostJobs(unsigned threads = 0);
+    ~HostJobs();
+    HostJobs(const HostJobs&) = delete;
+    HostJobs& operator=(const HostJobs&) = delete;
+    size_t workers() const;
+    void submit(std::function<void()> fn);
+    // Returns after every submitted job has run; throws when a job threw.
+    void wait();
+    // Runs on the workers and the calling thread, which runs body(0).
+    ParallelFor parallel_for();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
 
 struct EventRecordIds {
     int64_t id, canonical_id, rule, input, output, canonical_input, canonical_output;
@@ -510,24 +558,199 @@ hgcommon::RecordSet record_set_for(const Job& job, const GraphPropertyNeeds& g) 
     r.raw_counts_only = reads_raw_counts_only(job, g);
     r.multiplicities = job.include_step_statistics;
     r.state_invariants = job.include_step_statistics;
+    r.relation_lists = job.include_causal_edges || job.include_branchial_edges || g.causal ||
+                       g.branchial;
+    r.event_lists = job.include_events || job.include_events_minimal || g.events;
     if (job.session_op == "Open")
         r.causal = r.branchial = r.state_events = r.raw_events = r.multiplicities =
-            r.state_invariants = true;
+            r.state_invariants = r.relation_lists = r.event_lists = true;
     return r;
 }
 
-// Build the "GraphData" association: property name -> <|Vertices, Edges, VertexData|>.
+namespace graph_detail {
+
+// A graph vertex or edge endpoint: the integer `id` (tag 0), or the list {"S", id} or {"E", id}.
+struct End {
+    char tag = 0;
+    int64_t id = 0;
+};
+
+inline void write_end(wxf::Writer& w, const End& e) {
+    if (e.tag) {
+        w.write_function("List", 2);
+        w.write_string(std::string_view(&e.tag, 1));
+    }
+    w.write(e.id);
+}
+
+enum class EdgeType : uint8_t { Directed, Causal, Branchial, StateEvent, EventState };
+
+inline std::string_view edge_type_name(EdgeType t) {
+    switch (t) {
+        case EdgeType::Directed:   return "Directed";
+        case EdgeType::Causal:     return "Causal";
+        case EdgeType::Branchial:  return "Branchial";
+        case EdgeType::StateEvent: return "StateEvent";
+        case EdgeType::EventState: return "EventState";
+    }
+    return "";
+}
+
+// An edge's "Data": an event's payload; <|EventId -> a|>; <|ProducerEvent -> a, ConsumerEvent
+// -> b|> with EdgeIndex -> c when `indexed`; <|State1 -> a, State2 -> b|>; <|Event1 -> a, Event2
+// -> b|>.
+enum class EdgeData : uint8_t { EventPayload, EventId, Causal, States, Events };
+
+struct Edge {
+    End from, to;
+    EdgeType type = EdgeType::Directed;
+    EdgeData data = EdgeData::EventId;
+    bool indexed = false;
+    int64_t a = 0, b = 0, c = 0;
+    uint32_t payload = 0;   // EventPayload: the index of the event among the payload events
+};
+
+struct Vertex {
+    End key;
+    bool event = false;
+    uint32_t raw = 0;
+    uint32_t payload = 0;   // an event vertex of a styled graph: its index among the payload events
+};
+
+struct SentKey {
+    int64_t from, to;
+    uint32_t type, index;
+    bool operator==(const SentKey& o) const {
+        return from == o.from && to == o.to && type == o.type && index == o.index;
+    }
+};
+
+struct SentKeyHash {
+    size_t operator()(const SentKey& k) const {
+        uint64_t h = static_cast<uint64_t>(k.from) * 0x9E3779B97F4A7C15ull;
+        h ^= static_cast<uint64_t>(k.to) + 0x632BE59BD9B4E019ull + (h << 6) + (h >> 2);
+        h ^= (static_cast<uint64_t>(k.type) << 32 | k.index) + 0x94D049BB133111EBull + (h << 6) +
+             (h >> 2);
+        return static_cast<size_t>(h ^ (h >> 31));
+    }
+};
+
+// Items per job when a graph's vertices and edges are written in parallel.
+inline constexpr size_t kChunk = 256;
+
+inline size_t chunks(size_t n) { return (n + kChunk - 1) / kChunk; }
+
+// The edge lists of the states a graph's payloads name, each written once as WXF bytes: a List
+// of {first, v1, v2, ...} as Source::state_edges gives them.
+class EdgeMemo {
+public:
+    // Writes the lists of `sids` not written before. Slots are assigned on the calling thread;
+    // the lists are written by `par`.
+    template <class Source>
+    void add(const Source& src, std::vector<uint32_t> sids, const ParallelFor& par) {
+        std::sort(sids.begin(), sids.end());
+        sids.erase(std::unique(sids.begin(), sids.end()), sids.end());
+        std::vector<uint32_t> fresh;
+        for (uint32_t sid : sids)
+            if (slot_of_.emplace(sid, static_cast<uint32_t>(bytes_.size() + fresh.size())).second)
+                fresh.push_back(sid);
+        if (fresh.empty()) return;
+        const size_t base = bytes_.size();
+        bytes_.resize(base + fresh.size());
+        par(chunks(fresh.size()), [&](size_t c) {
+            std::vector<std::pair<int64_t, std::vector<uint32_t>>> edges;
+            const size_t end = std::min(fresh.size(), (c + 1) * kChunk);
+            for (size_t i = c * kChunk; i < end; ++i) {
+                edges.clear();
+                src.state_edges(fresh[i], edges);
+                wxf::Writer w;
+                w.write_function("List", edges.size());
+                for (const auto& [first, verts] : edges) {
+                    w.write_function("List", verts.size() + 1);
+                    w.write(first);
+                    for (uint32_t v : verts) w.write(static_cast<int64_t>(v));
+                }
+                bytes_[base + i] = w.release_data();
+            }
+        });
+    }
+    const std::vector<uint8_t>& of(uint32_t sid) const { return bytes_[slot_of_.at(sid)]; }
+
+private:
+    std::unordered_map<uint32_t, uint32_t> slot_of_;
+    std::vector<std::vector<uint8_t>> bytes_;
+};
+
+inline void write_association_header(wxf::Writer& w, size_t n) {
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+    w.write_varint(n);
+}
+
+inline void write_state_payload(wxf::Writer& w, const GraphStateFields& f,
+                                const std::vector<uint8_t>& edges) {
+    write_association_header(w, 5);
+    w.write_key("Id");          w.write(f.id);
+    w.write_key("CanonicalId"); w.write(f.canonical_id);
+    w.write_key("Step");        w.write(f.step);
+    w.write_key("Edges");       w.append(edges);
+    w.write_key("IsInitial");   w.write(static_cast<int64_t>(f.step == 0));
+}
+
+inline void write_int_list(wxf::Writer& w, const std::vector<int64_t>& v) {
+    w.write_function("List", v.size());
+    for (int64_t x : v) w.write(x);
+}
+
+// An event's payload, or the empty association when the source has none for it.
+inline void write_event_payload(wxf::Writer& w, const GraphEventFields& f, bool present,
+                                const EdgeMemo& memo) {
+    if (!present) { write_association_header(w, 0); return; }
+    if (f.reconstructed) {
+        write_association_header(w, 4);
+        w.write_key("Id");          w.write(f.id);
+        w.write_key("RuleIndex");   w.write(f.rule);
+        w.write_key("InputState");  w.write(f.input);
+        w.write_key("OutputState"); w.write(f.output);
+        return;
+    }
+    write_association_header(w, 9);
+    w.write_key("Id");               w.write(f.id);
+    w.write_key("CanonicalId");      w.write(f.canonical_id);
+    w.write_key("RuleIndex");        w.write(f.rule);
+    w.write_key("InputState");       w.write(f.input);
+    w.write_key("OutputState");      w.write(f.output);
+    w.write_key("ConsumedEdges");    write_int_list(w, f.consumed);
+    w.write_key("ProducedEdges");    write_int_list(w, f.produced);
+    w.write_key("InputStateEdges");  w.append(memo.of(f.input_raw));
+    w.write_key("OutputStateEdges"); w.append(memo.of(f.output_raw));
+}
+
+}  // namespace graph_detail
+
+// Build the "GraphData" association: property name -> <|IsDelta, Vertices, Edges, VertexData|>,
+// written as WXF bytes and returned as one wxf::Encoded value.
+//
+// Each property is built in three passes. The vertex and edge lists, and the cursor's record,
+// are chosen on the calling thread. The payload fields and the payload states' edge lists are
+// then computed by `par`, and the vertices and edges are written by `par` in chunks of
+// graph_detail::kChunk, each chunk into its own buffer. The buffers are joined in chunk order, so
+// the bytes do not depend on which thread wrote which chunk.
 template <typename Source>
 wxf::WXFValue build_graph_data(const Source& src,
                                const std::vector<std::string>& graph_properties,
                                const GraphOptions& opts,
-                               ffi::DeliveryCursor* cursor = nullptr) {
-    wxf::WXFValueAssociation all_graph_data;
+                               ffi::DeliveryCursor* cursor = nullptr,
+                               const ParallelFor& par = serial_for) {
+    using namespace graph_detail;
+    wxf::Writer out;
+    write_association_header(out, graph_properties.size());
+    EdgeMemo memo;
 
     for (const std::string& graph_property : graph_properties) {
-        wxf::WXFValueList vertices;
-        wxf::WXFValueList edges;
-        wxf::WXFValueAssociation vertex_data;
+        std::vector<Vertex> vertices;
+        std::vector<Edge> edges;
+        // The events whose payload a styled graph writes: event vertices and states-graph edges.
+        std::vector<uint32_t> payload_events;
 
         const bool is_states    = graph_property.rfind("States", 0) == 0;
         const bool is_causal    = graph_property.rfind("Causal", 0) == 0;
@@ -536,13 +759,9 @@ wxf::WXFValue build_graph_data(const Source& src,
         const GraphPropertyNeeds needs = graph_property_needs(graph_property);
         const bool has_causal    = is_evolution && needs.causal;
         const bool has_branchial = is_evolution && needs.branchial;
-        // Structure variants are TOPOLOGY: their vertex payloads carry ids and steps, never
-        // hypergraph contents (edge lists, bindings, consumed/produced sets). The Wolfram side
-        // renders them with plain styles and id-level tooltips, so shipping the contents would
-        // buy nothing and costs the bulk of the frame on content-heavy evolutions. The lean
-        // shapes keep the fields the front end keys on: a state carries Id and Step, an event
-        // carries Id and its endpoint state ids (InputState doubles as the state/event vertex
-        // discriminator), a states-graph edge carries the event id its tooltip names.
+        // Structure variants carry ids and steps and no hypergraph contents: a state carries Id
+        // and Step, an event Id and its endpoint state ids (InputState marks an event vertex),
+        // and a states-graph edge the event id its tooltip names.
         const bool is_structure = graph_property.find("Structure") != std::string::npos;
         // A branchial graph read at a step counted from the end (a negative BranchialStep, the
         // default for BranchialGraph) shows a later step after each Step, so it does not only
@@ -553,34 +772,15 @@ wxf::WXFValue build_graph_data(const Source& src,
         const bool delivered_before =
             cur != nullptr && cur->delivered_before(graph_property);
 
-        auto lean_state_data = [&](uint32_t raw_sid) {
-            wxf::WXFValueAssociation d;
-            d.push_back({wxf::WXFValue("Id"), wxf::WXFValue(src.effective_state_id(raw_sid))});
-            d.push_back({wxf::WXFValue("Step"),
-                         wxf::WXFValue(static_cast<int64_t>(src.state_step(raw_sid)))});
-            return d;
+        auto payload_of = [&](uint32_t raw_eid) {
+            payload_events.push_back(raw_eid);
+            return static_cast<uint32_t>(payload_events.size() - 1);
         };
-        auto lean_event_data = [&](uint32_t raw_eid) {
-            wxf::WXFValueAssociation d;
-            d.push_back({wxf::WXFValue("Id"), wxf::WXFValue(src.effective_event_id(raw_eid))});
-            d.push_back({wxf::WXFValue("InputState"),
-                         wxf::WXFValue(src.effective_state_id(src.event_input_state(raw_eid)))});
-            d.push_back({wxf::WXFValue("OutputState"),
-                         wxf::WXFValue(src.effective_state_id(src.event_output_state(raw_eid)))});
-            return d;
+        auto add_state_vertex = [&](End key, uint32_t raw) {
+            vertices.push_back(Vertex{key, false, raw, 0});
         };
-        auto state_payload = [&](uint32_t raw_sid) {
-            return is_structure ? lean_state_data(raw_sid) : src.serialize_state_data(raw_sid);
-        };
-        auto event_payload = [&](uint32_t raw_eid) {
-            return is_structure ? lean_event_data(raw_eid) : src.serialize_event_data(raw_eid);
-        };
-        auto states_edge_payload = [&](uint32_t raw_eid) {
-            if (!is_structure) return src.serialize_event_data(raw_eid);
-            wxf::WXFValueAssociation d;
-            d.push_back({wxf::WXFValue("EventId"),
-                         wxf::WXFValue(src.effective_event_id(raw_eid))});
-            return d;
+        auto add_event_vertex = [&](End key, uint32_t raw) {
+            vertices.push_back(Vertex{key, true, raw, is_structure ? 0u : payload_of(raw)});
         };
 
         // A vertex is emitted when the cursor has not seen it at this REVISION. A state's
@@ -594,209 +794,320 @@ wxf::WXFValue build_graph_data(const Source& src,
         // un-deduplicated causal case, where N edges share a pair -- its index among them. A
         // one-shot build and a session's cursor both record the exact tuple, so raw events that
         // share an event identity share one edge on either path.
-        std::set<std::tuple<int64_t, int64_t, uint32_t, uint32_t>> sent_edges;
+        std::unordered_set<SentKey, SentKeyHash> sent_edges;
         auto send_edge = [&](int64_t from, int64_t to, uint32_t type_tag, uint32_t index) {
             if (cur != nullptr) return cur->take_edge(graph_property, from, to, type_tag, index);
-            return sent_edges.emplace(from, to, type_tag, index).second;
+            return sent_edges.insert(SentKey{from, to, type_tag, index}).second;
         };
 
-        auto add_graph_edge = [&](wxf::WXFValue from, wxf::WXFValue to, const std::string& type,
-                                  wxf::WXFValueAssociation data = {}) {
-            wxf::WXFValueAssociation edge;
-            edge.reserve(4);
-            edge.push_back({wxf::WXFValue("From"), std::move(from)});
-            edge.push_back({wxf::WXFValue("To"), std::move(to)});
-            edge.push_back({wxf::WXFValue("Type"), wxf::WXFValue(type)});
-            if (!data.empty()) edge.push_back({wxf::WXFValue("Data"), wxf::WXFValue(std::move(data))});
-            edges.push_back(wxf::WXFValue(std::move(edge)));
+        // The lowest raw id of each effective id, in effective-id order.
+        auto lowest_by_effective = [](std::vector<std::pair<int64_t, uint32_t>>& eff_raw) {
+            std::sort(eff_raw.begin(), eff_raw.end());
+            eff_raw.erase(std::unique(eff_raw.begin(), eff_raw.end(),
+                                      [](const auto& x, const auto& y) { return x.first == y.first; }),
+                          eff_raw.end());
         };
 
-        // Causal edges: dedup to unique (producer, consumer) pairs; with
-        // edge_deduplication off, keep one edge per shared hyperedge (multiplicity).
-        // A unique EdgeIndex on the duplicates stops Graph[] from collapsing them.
+        // Causal edges: one per (producer, consumer) pair in pair order; with
+        // edge_deduplication off, one per shared hyperedge, the duplicates told apart by
+        // EdgeIndex so Graph[] does not merge them.
         auto add_causal_edges = [&]() {
-            std::map<std::pair<int64_t, int64_t>, size_t> pair_counts;
-            for (const auto& [producer, consumer] : src.causal_event_pairs()) {
-                int64_t from = src.effective_event_id(producer);
-                int64_t to   = src.effective_event_id(consumer);
-                pair_counts[{from, to}]++;
-            }
-            for (const auto& [pair, count] : pair_counts) {
-                wxf::WXFValueList from_tag = {wxf::WXFValue("E"), wxf::WXFValue(pair.first)};
-                wxf::WXFValueList to_tag   = {wxf::WXFValue("E"), wxf::WXFValue(pair.second)};
-                size_t num_edges = opts.edge_deduplication ? 1 : count;
+            std::vector<std::pair<int64_t, int64_t>> pairs;
+            for (const auto& [producer, consumer] : src.causal_event_pairs())
+                pairs.emplace_back(src.effective_event_id(producer), src.effective_event_id(consumer));
+            std::sort(pairs.begin(), pairs.end());
+            for (size_t i = 0; i < pairs.size();) {
+                size_t j = i;
+                while (j < pairs.size() && pairs[j] == pairs[i]) ++j;
+                const auto [from, to] = pairs[i];
+                const size_t num_edges = opts.edge_deduplication ? 1 : j - i;
                 for (size_t k = 0; k < num_edges; ++k) {
-                    if (!send_edge(pair.first, pair.second, kEdgeCausal,
-                                   static_cast<uint32_t>(k))) continue;
-                    wxf::WXFValueAssociation causal_data;
-                    causal_data.push_back({wxf::WXFValue("ProducerEvent"), wxf::WXFValue(pair.first)});
-                    causal_data.push_back({wxf::WXFValue("ConsumerEvent"), wxf::WXFValue(pair.second)});
-                    if (num_edges > 1)
-                        causal_data.push_back({wxf::WXFValue("EdgeIndex"), wxf::WXFValue(static_cast<int64_t>(k))});
-                    add_graph_edge(wxf::WXFValue(from_tag), wxf::WXFValue(to_tag), "Causal", std::move(causal_data));
+                    if (!send_edge(from, to, kEdgeCausal, static_cast<uint32_t>(k))) continue;
+                    Edge e;
+                    e.from = End{'E', from};
+                    e.to = End{'E', to};
+                    e.type = EdgeType::Causal;
+                    e.data = EdgeData::Causal;
+                    e.indexed = num_edges > 1;
+                    e.a = from;
+                    e.b = to;
+                    e.c = static_cast<int64_t>(k);
+                    edges.push_back(e);
                 }
+                i = j;
             }
         };
 
         if (is_states) {
-            std::map<int64_t, uint32_t> state_verts;
-            for (uint32_t sid = 0; sid < src.num_states(); ++sid) {
-                if (!src.state_valid(sid)) continue;
-                int64_t eff = src.effective_state_id(sid);
-                if (!state_verts.count(eff)) state_verts[eff] = sid;
-            }
-            for (auto& [eff, raw] : state_verts) {
-                if (!send_vertex(eff, src.state_step(raw))) continue;
-                vertices.push_back(wxf::WXFValue(eff));
-                vertex_data.push_back({wxf::WXFValue(eff), wxf::WXFValue(state_payload(raw))});
-            }
+            std::vector<std::pair<int64_t, uint32_t>> state_verts;
+            for (uint32_t sid = 0; sid < src.num_states(); ++sid)
+                if (src.state_valid(sid)) state_verts.emplace_back(src.effective_state_id(sid), sid);
+            lowest_by_effective(state_verts);
+            for (const auto& [eff, raw] : state_verts)
+                if (send_vertex(eff, src.state_step(raw))) add_state_vertex(End{0, eff}, raw);
             for (uint32_t eid = 0; eid < src.num_raw_events(); ++eid) {
                 if (!src.is_valid_event(eid)) continue;
                 const int64_t in  = src.effective_state_id(src.event_input_state(eid));
-                const int64_t out = src.effective_state_id(src.event_output_state(eid));
+                const int64_t out_ = src.effective_state_id(src.event_output_state(eid));
                 // Keyed by the EVENT as well as the endpoints: two distinct events can join the
                 // same pair of states, and a states-graph edge carries the event id its tooltip
                 // names, so collapsing them would drop an edge a full delivery emits.
-                if (!send_edge(in, out, kEdgeDirected,
-                               static_cast<uint32_t>(src.effective_event_id(eid))))
-                    continue;
-                add_graph_edge(wxf::WXFValue(in), wxf::WXFValue(out),
-                               "Directed", states_edge_payload(eid));
+                const int64_t eff_eid = src.effective_event_id(eid);
+                if (!send_edge(in, out_, kEdgeDirected, static_cast<uint32_t>(eff_eid))) continue;
+                Edge e;
+                e.from = End{0, in};
+                e.to = End{0, out_};
+                e.type = EdgeType::Directed;
+                if (is_structure) {
+                    e.data = EdgeData::EventId;
+                    e.a = eff_eid;
+                } else {
+                    e.data = EdgeData::EventPayload;
+                    e.payload = payload_of(eid);
+                }
+                edges.push_back(e);
             }
         }
         else if (is_causal) {
-            std::map<int64_t, uint32_t> event_verts;
-            for (uint32_t eid = 0; eid < src.num_raw_events(); ++eid) {
-                if (!src.is_valid_event(eid)) continue;
-                int64_t eff = src.effective_event_id(eid);
-                if (!event_verts.count(eff)) event_verts[eff] = eid;
-            }
-            for (auto& [eff, raw] : event_verts) {
-                if (!send_vertex(eff, kEventRevision)) continue;
-                wxf::WXFValueList tag = {wxf::WXFValue("E"), wxf::WXFValue(eff)};
-                vertices.push_back(wxf::WXFValue(tag));
-                vertex_data.push_back({wxf::WXFValue(std::move(tag)), wxf::WXFValue(event_payload(raw))});
-            }
+            std::vector<std::pair<int64_t, uint32_t>> event_verts;
+            for (uint32_t eid = 0; eid < src.num_raw_events(); ++eid)
+                if (src.is_valid_event(eid)) event_verts.emplace_back(src.effective_event_id(eid), eid);
+            lowest_by_effective(event_verts);
+            for (const auto& [eff, raw] : event_verts)
+                if (send_vertex(eff, kEventRevision)) add_event_vertex(End{'E', eff}, raw);
             add_causal_edges();
         }
         else if (is_branchial) {
             bool filter_by_step = false;
-            uint32_t target_step = branchial_target_step(opts.branchial_step, opts.steps, filter_by_step);
-
+            const uint32_t target_step =
+                branchial_target_step(opts.branchial_step, opts.steps, filter_by_step);
             std::map<int64_t, uint32_t> state_verts;
-            auto pairs = src.branchial_event_pairs();
+            const auto pairs = src.branchial_event_pairs();
             for (const auto& [e1, e2] : pairs) {
                 if (filter_by_step && src.state_step(src.event_output_state(e1)) != target_step) continue;
-                int64_t s1 = src.effective_state_id(src.event_output_state(e1));
-                int64_t s2 = src.effective_state_id(src.event_output_state(e2));
-                if (!state_verts.count(s1)) state_verts[s1] = src.event_output_state(e1);
-                if (!state_verts.count(s2)) state_verts[s2] = src.event_output_state(e2);
+                const int64_t s1 = src.effective_state_id(src.event_output_state(e1));
+                const int64_t s2 = src.effective_state_id(src.event_output_state(e2));
+                state_verts.emplace(s1, src.event_output_state(e1));
+                state_verts.emplace(s2, src.event_output_state(e2));
             }
-            for (auto& [eff, raw] : state_verts) {
-                if (!send_vertex(eff, src.state_step(raw))) continue;
-                vertices.push_back(wxf::WXFValue(eff));
-                vertex_data.push_back({wxf::WXFValue(eff), wxf::WXFValue(state_payload(raw))});
-            }
+            for (const auto& [eff, raw] : state_verts)
+                if (send_vertex(eff, src.state_step(raw))) add_state_vertex(End{0, eff}, raw);
             // Every pair is an edge (multiplicity is meaning, see above): its index is the
             // number of earlier pairs between the same two states in the same order, which a
             // session's cursor sees unchanged as the pair list grows.
             std::map<std::pair<int64_t, int64_t>, uint32_t> occurrence;
             for (const auto& [e1, e2] : pairs) {
                 if (filter_by_step && src.state_step(src.event_output_state(e1)) != target_step) continue;
-                int64_t s1 = src.effective_state_id(src.event_output_state(e1));
-                int64_t s2 = src.effective_state_id(src.event_output_state(e2));
+                const int64_t s1 = src.effective_state_id(src.event_output_state(e1));
+                const int64_t s2 = src.effective_state_id(src.event_output_state(e2));
                 if (!send_edge(s1, s2, kEdgeBranchialState, occurrence[{s1, s2}]++)) continue;
-                wxf::WXFValueAssociation branchial_data;
-                branchial_data.push_back({wxf::WXFValue("State1"), wxf::WXFValue(s1)});
-                branchial_data.push_back({wxf::WXFValue("State2"), wxf::WXFValue(s2)});
-                add_graph_edge(wxf::WXFValue(s1), wxf::WXFValue(s2), "Branchial", std::move(branchial_data));
+                Edge e;
+                e.from = End{0, s1};
+                e.to = End{0, s2};
+                e.type = EdgeType::Branchial;
+                e.data = EdgeData::States;
+                e.a = s1;
+                e.b = s2;
+                edges.push_back(e);
             }
         }
         else if (is_evolution) {
-            std::set<int64_t> state_ids;
             std::map<int64_t, uint32_t> raw_states;
-            std::map<int64_t, uint32_t> event_verts;
+            std::vector<std::pair<int64_t, uint32_t>> event_verts;
             for (uint32_t eid = 0; eid < src.num_raw_events(); ++eid) {
                 if (!src.is_valid_event(eid)) continue;
-                int64_t in_id  = src.effective_state_id(src.event_input_state(eid));
-                int64_t out_id = src.effective_state_id(src.event_output_state(eid));
-                if (!raw_states.count(in_id))  raw_states[in_id]  = src.event_input_state(eid);
-                if (!raw_states.count(out_id)) raw_states[out_id] = src.event_output_state(eid);
-                state_ids.insert(in_id);
-                state_ids.insert(out_id);
-                int64_t eff = src.effective_event_id(eid);
-                if (!event_verts.count(eff)) event_verts[eff] = eid;
+                raw_states.emplace(src.effective_state_id(src.event_input_state(eid)),
+                                   src.event_input_state(eid));
+                raw_states.emplace(src.effective_state_id(src.event_output_state(eid)),
+                                   src.event_output_state(eid));
+                event_verts.emplace_back(src.effective_event_id(eid), eid);
             }
+            lowest_by_effective(event_verts);
             // The two vertex kinds share one id space here (both are tagged), so a state and an
             // event with the same number must not collide in the record: states are offset.
-            for (int64_t sid : state_ids) {
-                if (!send_vertex(kStateVertexBias + sid, src.state_step(raw_states[sid]))) continue;
-                wxf::WXFValueList tag = {wxf::WXFValue("S"), wxf::WXFValue(sid)};
-                vertices.push_back(wxf::WXFValue(tag));
-                vertex_data.push_back({wxf::WXFValue(std::move(tag)), wxf::WXFValue(state_payload(raw_states[sid]))});
-            }
-            for (auto& [eff, raw] : event_verts) {
-                if (!send_vertex(eff, kEventRevision)) continue;
-                wxf::WXFValueList tag = {wxf::WXFValue("E"), wxf::WXFValue(eff)};
-                vertices.push_back(wxf::WXFValue(tag));
-                vertex_data.push_back({wxf::WXFValue(std::move(tag)), wxf::WXFValue(event_payload(raw))});
-            }
+            for (const auto& [sid, raw] : raw_states)
+                if (send_vertex(kStateVertexBias + sid, src.state_step(raw)))
+                    add_state_vertex(End{'S', sid}, raw);
+            for (const auto& [eff, raw] : event_verts)
+                if (send_vertex(eff, kEventRevision)) add_event_vertex(End{'E', eff}, raw);
             for (uint32_t eid = 0; eid < src.num_raw_events(); ++eid) {
                 if (!src.is_valid_event(eid)) continue;
-                int64_t eff_eid = src.effective_event_id(eid);
-                wxf::WXFValueList s_in  = {wxf::WXFValue("S"), wxf::WXFValue(src.effective_state_id(src.event_input_state(eid)))};
-                wxf::WXFValueList s_out = {wxf::WXFValue("S"), wxf::WXFValue(src.effective_state_id(src.event_output_state(eid)))};
-                wxf::WXFValueList e_tag = {wxf::WXFValue("E"), wxf::WXFValue(eff_eid)};
-                wxf::WXFValueAssociation edge_data;
-                edge_data.push_back({wxf::WXFValue("EventId"), wxf::WXFValue(eff_eid)});
+                const int64_t eff_eid = src.effective_event_id(eid);
                 const int64_t in_id  = src.effective_state_id(src.event_input_state(eid));
                 const int64_t out_id = src.effective_state_id(src.event_output_state(eid));
-                if (send_edge(in_id, eff_eid, kEdgeStateEvent, 0))
-                    add_graph_edge(wxf::WXFValue(s_in), wxf::WXFValue(e_tag), "StateEvent", edge_data);
-                if (send_edge(eff_eid, out_id, kEdgeEventState, 0))
-                    add_graph_edge(wxf::WXFValue(std::move(e_tag)), wxf::WXFValue(std::move(s_out)),
-                                   "EventState", std::move(edge_data));
+                Edge e;
+                e.data = EdgeData::EventId;
+                e.a = eff_eid;
+                if (send_edge(in_id, eff_eid, kEdgeStateEvent, 0)) {
+                    e.from = End{'S', in_id};
+                    e.to = End{'E', eff_eid};
+                    e.type = EdgeType::StateEvent;
+                    edges.push_back(e);
+                }
+                if (send_edge(eff_eid, out_id, kEdgeEventState, 0)) {
+                    e.from = End{'E', eff_eid};
+                    e.to = End{'S', out_id};
+                    e.type = EdgeType::EventState;
+                    edges.push_back(e);
+                }
             }
             if (has_causal) add_causal_edges();
             if (has_branchial) {
                 bool filter_by_step = false;
-                uint32_t target_step = branchial_target_step(opts.branchial_step, opts.steps, filter_by_step);
+                const uint32_t target_step =
+                    branchial_target_step(opts.branchial_step, opts.steps, filter_by_step);
                 for (const auto& [e1, e2] : src.branchial_event_pairs()) {
                     if (filter_by_step && src.state_step(src.event_output_state(e1)) != target_step) continue;
-                    int64_t from = src.effective_event_id(e1);
-                    int64_t to   = src.effective_event_id(e2);
+                    const int64_t from = src.effective_event_id(e1);
+                    const int64_t to   = src.effective_event_id(e2);
                     if (!send_edge(from, to, kEdgeBranchialEvent, 0)) continue;
-                    wxf::WXFValueList from_tag = {wxf::WXFValue("E"), wxf::WXFValue(from)};
-                    wxf::WXFValueList to_tag   = {wxf::WXFValue("E"), wxf::WXFValue(to)};
-                    wxf::WXFValueAssociation branchial_data;
-                    branchial_data.push_back({wxf::WXFValue("Event1"), wxf::WXFValue(from)});
-                    branchial_data.push_back({wxf::WXFValue("Event2"), wxf::WXFValue(to)});
-                    add_graph_edge(wxf::WXFValue(std::move(from_tag)), wxf::WXFValue(std::move(to_tag)),
-                                   "Branchial", std::move(branchial_data));
+                    Edge e;
+                    e.from = End{'E', from};
+                    e.to = End{'E', to};
+                    e.type = EdgeType::Branchial;
+                    e.data = EdgeData::Events;
+                    e.a = from;
+                    e.b = to;
+                    edges.push_back(e);
                 }
             }
         }
 
-        wxf::WXFValueAssociation graph_data;
-        // WHETHER THIS IS A WHOLE GRAPH OR AN INCREMENT, stated rather than inferred. A caller
-        // cannot tell from the content: an increment that happens to contain every vertex looks
-        // exactly like a full delivery, and a delta over an unchanged graph is empty, which looks
-        // exactly like a system with nothing in it. The FIRST delta for a property is marked
-        // False, because a cursor that has not seen the property emits everything.
-        // As an INTEGER, which is this wire's boolean convention (`IsInitial` on a state is
-        // written the same way). WXFValue has no bool overload, so writing one here silently
-        // selects the integer constructor anyway -- stating it is the difference between a
-        // convention and an accident.
-        graph_data.push_back(
-            {wxf::WXFValue("IsDelta"),
-             wxf::WXFValue(static_cast<int64_t>(cur != nullptr && delivered_before))});
-        graph_data.push_back({wxf::WXFValue("Vertices"), wxf::WXFValue(std::move(vertices))});
-        graph_data.push_back({wxf::WXFValue("Edges"), wxf::WXFValue(std::move(edges))});
-        graph_data.push_back({wxf::WXFValue("VertexData"), wxf::WXFValue(std::move(vertex_data))});
-        all_graph_data.push_back({wxf::WXFValue(graph_property), wxf::WXFValue(std::move(graph_data))});
+        // The payload fields, then the edge lists of the states they name.
+        std::vector<GraphStateFields> state_fields;
+        std::vector<GraphEventFields> event_fields;
+        std::vector<uint8_t> event_present;
+        if (!is_structure) {
+            state_fields.resize(vertices.size());
+            event_fields.resize(payload_events.size());
+            event_present.assign(payload_events.size(), 0);
+            const size_t vc = chunks(vertices.size());
+            par(vc + chunks(payload_events.size()), [&](size_t t) {
+                if (t < vc) {
+                    const size_t end = std::min(vertices.size(), (t + 1) * kChunk);
+                    for (size_t i = t * kChunk; i < end; ++i)
+                        if (!vertices[i].event) src.state_fields(vertices[i].raw, state_fields[i]);
+                    return;
+                }
+                t -= vc;
+                const size_t end = std::min(payload_events.size(), (t + 1) * kChunk);
+                for (size_t i = t * kChunk; i < end; ++i)
+                    event_present[i] = src.event_fields(payload_events[i], event_fields[i]) ? 1 : 0;
+            });
+            std::vector<uint32_t> named;
+            for (const Vertex& v : vertices)
+                if (!v.event) named.push_back(v.raw);
+            for (size_t i = 0; i < event_fields.size(); ++i)
+                if (event_present[i] && !event_fields[i].reconstructed) {
+                    named.push_back(event_fields[i].input_raw);
+                    named.push_back(event_fields[i].output_raw);
+                }
+            memo.add(src, std::move(named), par);
+        }
+
+        const size_t vc = chunks(vertices.size()), ec = chunks(edges.size());
+        std::vector<wxf::Writer> vertex_list(vc), vertex_data(vc), edge_list(ec);
+        par(vc + ec, [&](size_t t) {
+            if (t < vc) {
+                wxf::Writer& vl = vertex_list[t];
+                wxf::Writer& vd = vertex_data[t];
+                const size_t end = std::min(vertices.size(), (t + 1) * kChunk);
+                for (size_t i = t * kChunk; i < end; ++i) {
+                    const Vertex& v = vertices[i];
+                    write_end(vl, v.key);
+                    vd.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                    write_end(vd, v.key);
+                    if (!is_structure) {
+                        if (v.event)
+                            write_event_payload(vd, event_fields[v.payload],
+                                                event_present[v.payload] != 0, memo);
+                        else
+                            write_state_payload(vd, state_fields[i], memo.of(v.raw));
+                    } else if (v.event) {
+                        write_association_header(vd, 3);
+                        vd.write_key("Id");          vd.write(src.effective_event_id(v.raw));
+                        vd.write_key("InputState");
+                        vd.write(src.effective_state_id(src.event_input_state(v.raw)));
+                        vd.write_key("OutputState");
+                        vd.write(src.effective_state_id(src.event_output_state(v.raw)));
+                    } else {
+                        write_association_header(vd, 2);
+                        vd.write_key("Id");   vd.write(src.effective_state_id(v.raw));
+                        vd.write_key("Step"); vd.write(static_cast<int64_t>(src.state_step(v.raw)));
+                    }
+                }
+                return;
+            }
+            t -= vc;
+            wxf::Writer& w = edge_list[t];
+            const size_t end = std::min(edges.size(), (t + 1) * kChunk);
+            for (size_t i = t * kChunk; i < end; ++i) {
+                const Edge& e = edges[i];
+                w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+                const size_t count_at = w.size();
+                w.write_varint(4);
+                w.write_key("From"); write_end(w, e.from);
+                w.write_key("To");   write_end(w, e.to);
+                w.write_key("Type"); w.write_string(edge_type_name(e.type));
+                const size_t data_at = w.size();
+                w.write_key("Data");
+                switch (e.data) {
+                    case EdgeData::EventPayload: {
+                        const size_t payload_at = w.size();
+                        write_event_payload(w, event_fields[e.payload],
+                                            event_present[e.payload] != 0, memo);
+                        // An empty payload is no Data key.
+                        if (w.size() - payload_at == 2 && w.data()[payload_at + 1] == 0) {
+                            w.truncate(data_at);
+                            w.set_byte(count_at, 3);
+                        }
+                        break;
+                    }
+                    case EdgeData::EventId:
+                        write_association_header(w, 1);
+                        w.write_key("EventId"); w.write(e.a);
+                        break;
+                    case EdgeData::Causal:
+                        write_association_header(w, e.indexed ? 3 : 2);
+                        w.write_key("ProducerEvent"); w.write(e.a);
+                        w.write_key("ConsumerEvent"); w.write(e.b);
+                        if (e.indexed) { w.write_key("EdgeIndex"); w.write(e.c); }
+                        break;
+                    case EdgeData::States:
+                        write_association_header(w, 2);
+                        w.write_key("State1"); w.write(e.a);
+                        w.write_key("State2"); w.write(e.b);
+                        break;
+                    case EdgeData::Events:
+                        write_association_header(w, 2);
+                        w.write_key("Event1"); w.write(e.a);
+                        w.write_key("Event2"); w.write(e.b);
+                        break;
+                }
+            }
+        });
+
+        // WHETHER THIS IS A WHOLE GRAPH OR AN INCREMENT, stated rather than inferred: an
+        // increment that contains every vertex and a full delivery have the same content, and so
+        // do an empty delta and an empty system. The FIRST delta for a property is marked 0,
+        // because a cursor that has not seen the property emits everything. As an integer, this
+        // wire's boolean convention (`IsInitial` on a state is written the same way).
+        out.write_key(graph_property);
+        write_association_header(out, 4);
+        out.write_key("IsDelta");
+        out.write(static_cast<int64_t>(cur != nullptr && delivered_before));
+        out.write_key("Vertices");
+        out.write_function("List", vertices.size());
+        for (const wxf::Writer& w : vertex_list) out.append(w.data());
+        out.write_key("Edges");
+        out.write_function("List", edges.size());
+        for (const wxf::Writer& w : edge_list) out.append(w.data());
+        out.write_key("VertexData");
+        write_association_header(out, vertices.size());
+        for (const wxf::Writer& w : vertex_data) out.append(w.data());
     }
 
-    return wxf::WXFValue(std::move(all_graph_data));
+    return wxf::WXFValue(wxf::Encoded{out.release_data()});
 }
 
 }  // namespace marshal

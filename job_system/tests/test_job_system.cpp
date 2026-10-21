@@ -10,9 +10,11 @@
 #include <thread>
 #include <hgcommon/park.hpp>
 #include <hgcommon/affinity.hpp>
+#include <hgcommon/build_stamp.hpp>
 #if defined(__linux__)
 #  include <pthread.h>
 #  include <sched.h>
+#  include <sys/resource.h>
 #endif
 #include <mutex>
 #include <iostream>
@@ -20,7 +22,6 @@
 #include <memory>
 #include <stdexcept>
 #include <cstdlib>
-#include <sys/resource.h>
 
 enum class TestJobType {
     GRAPHICS,
@@ -1273,12 +1274,13 @@ TEST(JobSystemAffinity, DefaultPlacementFollowsTheTopology) {
 // A worker that cannot be created makes start() throw, after the workers already running are
 // stopped and joined; the JobSystem is then destroyed without std::terminate. The address-space
 // limit is lowered to the current usage plus 64 MB, so 64 workers with 8 MB stacks cannot all
-// be created.
+// be created. The test reads /proc/self/status and lowers RLIMIT_AS, which only Linux enforces,
+// so it is built on Linux only. ASan and TSan map their own memory per thread and abort the
+// process when that mmap fails under the lowered limit, so the test skips under both.
+#if defined(__linux__)
 TEST(JobSystemStart, AFailedSpawnThrowsAndLeavesNoRunningWorker) {
-#if !defined(__linux__)
-    // The test reads /proc/self/status and lowers RLIMIT_AS, which only Linux enforces.
-    GTEST_SKIP() << "needs /proc and an enforced RLIMIT_AS (Linux)";
-#endif
+    if (HG_BUILD_STAMP_ASAN[0] == '1' || HG_BUILD_STAMP_TSAN[0] == '1')
+        GTEST_SKIP() << "ASan and TSan abort on a failed mmap under a lowered RLIMIT_AS";
     struct rlimit old{};
     ASSERT_EQ(getrlimit(RLIMIT_AS, &old), 0);
     size_t vm_kb = 0;
@@ -1303,3 +1305,4 @@ TEST(JobSystemStart, AFailedSpawnThrowsAndLeavesNoRunningWorker) {
     ASSERT_EQ(setrlimit(RLIMIT_AS, &old), 0);
     EXPECT_TRUE(threw);
 }
+#endif

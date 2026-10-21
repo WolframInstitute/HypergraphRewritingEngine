@@ -13,14 +13,15 @@ namespace HG_NAMESPACE {
 namespace gpu {
 
 // add(distance, size_a, size_b, shared, n) for each count, in no particular order; the counts of
-// one key may arrive in several calls. An empty `add` counts nothing. `shared_cells`, when given,
-// receives each pair's shared count at distance 0 in its hgcommon::br_pair_index cell, the other
-// cells 0. False, with nothing added or written, when no device is usable or the step's scratch
-// does not fit in a quarter of the free device memory.
+// one key may arrive in several calls. An empty `add` counts nothing. `matrices`, when given,
+// receives each asked-for state matrix (m[kind] not null, a host array of k x k) of the step's
+// rows, filled on the device by hgcommon::bo_matrix_row from the rows' shared counts; its size
+// and shared fields are not read. False, with nothing added or written, when no device is usable
+// or the step's scratch does not fit in a quarter of the free device memory.
 bool branchial_rows_device(
     const hgcommon::BrStep& step,
     const std::function<void(uint32_t, uint32_t, uint32_t, uint32_t, uint64_t)>& add,
-    uint32_t* shared_cells = nullptr);
+    hgcommon::BoMatrices* matrices = nullptr);
 
 }  // namespace gpu
 }  // namespace HG_NAMESPACE

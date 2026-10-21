@@ -1,5 +1,6 @@
 #pragma once
 #include "hgcommon/namespace.hpp"
+#include "hgcommon/cache_line.hpp"
 #include "hypergraph/zero_value_init.hpp"
 #include "hypergraph/atomic_compat.hpp"
 
@@ -220,7 +221,7 @@ public:
     ConcurrentHeterogeneousArena& operator=(ConcurrentHeterogeneousArena&&) = delete;
 
     // The largest alignment create and allocate_array give: Block::data's.
-    static constexpr size_t kMaxAlign = 64;
+    static constexpr size_t kMaxAlign = hgcommon::kDestructiveLine;
     // Allocate and construct a new T
     template<typename T, typename... Args>
     T* create(Args&&... args) {
@@ -388,10 +389,10 @@ public:
 
     // Statistics
     size_t bytes_allocated() const;
-    // Bytes of blocks this arena holds, and the most it has held: its share of the resident
-    // set, against bytes_allocated() which is what the blocks contain.
+    // Bytes of blocks this arena holds: its share of the resident set, against bytes_allocated()
+    // which is what the blocks contain. An arena frees its blocks only in its destructor, so this
+    // is also the most it has held.
     size_t block_bytes() const { return block_bytes_.load(std::memory_order_relaxed); }
-    size_t block_bytes_high_water() const { return block_bytes_high_water_.load(std::memory_order_relaxed); }
 
     // Stack-discipline checkpoint into a recycling scratch arena. mark() captures the
     // current position; release(m) rewinds to it, reclaiming everything allocated
@@ -437,7 +438,7 @@ private:
         // allocate_raw aligns an offset into data[], so an alignment up to kMaxAlign holds in
         // memory only because data[] is itself kMaxAlign-aligned. std::max_align_t is 8 bytes
         // under MSVC and 16 under GCC and Clang, so it does not give that alignment.
-        alignas(64) char data[];
+        alignas(hgcommon::kDestructiveLine) char data[];
 
         // A block from the process-wide pool of released blocks when one of the size class
         // is there, else a fresh mapping. release() returns it to the pool.
@@ -471,7 +472,7 @@ private:
     // cursor, so the offset is a plain integer (no atomic) — the source of the
     // fast path's freedom from contention. Padded to a cache line so cursors of
     // different workers never share one.
-    struct alignas(64) LocalCursor {
+    struct alignas(hgcommon::kDestructiveLine) LocalCursor {
         Block* block = nullptr;   // this worker's current bump block
         size_t offset = 0;        // bump position within block->data
         size_t capacity = 0;      // cached block->capacity
@@ -520,7 +521,6 @@ private:
     size_t block_size_;
     bool recycle_;
     std::atomic<size_t> block_bytes_{0};
-    std::atomic<size_t> block_bytes_high_water_{0};
     std::atomic<Block*> head_{nullptr};
     std::atomic<Block*> current_block_{nullptr};
     std::atomic<DestructorNode*> destructor_head_;

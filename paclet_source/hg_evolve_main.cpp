@@ -23,10 +23,13 @@
 #include "hg_core.hpp"
 #include "hgcommon/build_stamp.hpp"
 #include "hgcommon/affinity.hpp"
+#include "hgcommon/tuning.hpp"
 #include "hypergraph/arena.hpp"
+#include "hypergraph/parallel_evolution.hpp"   // derived_causal_set_capacity
 #include "job_system/job_pool.hpp"
 #ifdef HG_GPU_BACKEND
 #include "hg_gpu/device_probe.hpp"
+#include "hg_gpu/evolve.hpp"   // lane_backlog_of
 #endif
 
 namespace HG_NAMESPACE { namespace ffi { extern const char kBuildStamp[]; } }  // hypergraph_ffi.cpp
@@ -397,8 +400,31 @@ void print_tuning() {
     for (const auto& e : t.cpus) classes += e.core_class == 0 ? 'P' : 'E';
     if (t.core_classes > 1) std::printf("host.cpu_classes        %s\n", classes.c_str());
 
-    std::printf("workers                 %u  (std::thread::hardware_concurrency)\n",
-                std::thread::hardware_concurrency());
+    std::printf("workers                 %u  (%s)\n", hgcommon::default_worker_count(HG_NAMESPACE::engine::MAX_ARENA_WORKERS),
+                hgcommon::tuning_env().get(hgcommon::Tune::Threads)
+                    ? "HG_TUNE_THREADS"
+                    : "logical CPUs this process may use; \"Threads\" per job");
+    {
+        hgcommon::TuneSource src;
+        const int64_t cap = hgcommon::tuned(hgcommon::TuningOverrides{},
+                                            hgcommon::Tune::CausalSetCapacity, [&] {
+            return HG_NAMESPACE::engine::ParallelEvolutionEngine::derived_causal_set_capacity(
+                0, 0, 1, t.available_bytes);
+        }, &src);
+        std::printf("causal_set_capacity     %lld per shard  (%s)\n", static_cast<long long>(cap),
+                    src == hgcommon::TuneSource::Environment
+                        ? "HG_TUNE_CAUSAL_SET_CAPACITY"
+                        : "run without a step cap: 8192 above 4 GB available, else 1024; a step "
+                          "cap sizes it from the key bound");
+    }
+    if (const auto fixed = hgcommon::tuning_env().get(hgcommon::Tune::ExpandChunk))
+        std::printf("expand_chunk            %lld matches  (HG_TUNE_EXPAND_CHUNK)\n",
+                    static_cast<long long>(*fixed));
+    else
+        std::printf("expand_chunk            ceil(matches / workers), 4 to 64; %zu for a 64-match "
+                    "state at the default workers\n",
+                    HG_NAMESPACE::engine::ParallelEvolutionEngine::derived_expand_chunk(
+                        64, hgcommon::default_worker_count(HG_NAMESPACE::engine::MAX_ARENA_WORKERS)));
     const std::vector<unsigned> placed = hgcommon::default_worker_cpus();
     if (placed.empty()) {
         std::printf("worker_placement        operating system  (default_worker_cpus: %s)\n",
@@ -429,13 +455,37 @@ void print_tuning() {
     std::printf("gpu.persisting_l2_max   %s\n", mib(p.persisting_l2_max).c_str());
     std::printf("gpu.memory_total        %s\n", mib(p.total_bytes).c_str());
     if (p.usable) {
+        std::printf("gpu.blocks_per_sm       %u  (k_persistent_evolve occupancy at 32 threads)\n",
+                    hgg::persistent_blocks_per_sm());
+        std::printf("gpu.plateau_per_sm      %u  (grid sweep of cc %d.%d)\n",
+                    hgg::persistent_blocks_per_sm_plateau(p.major, p.minor), p.major, p.minor);
         std::printf("gpu.persistent_grid     %u  (%s)\n", hgg::default_persistent_grid(),
-                    std::getenv("HG_GPU_PERSISTENT_BLOCKS") ? "HG_GPU_PERSISTENT_BLOCKS"
-                                                            : "sm_count x 8");
+                    hgcommon::tuning_env().get(hgcommon::Tune::GpuBlocks)
+                        ? "HG_TUNE_GPU_BLOCKS / HG_GPU_PERSISTENT_BLOCKS"
+                        : "sm_count x min(blocks_per_sm, plateau_per_sm); \"Tuning\" -> GPUBlocks per job");
+        {
+            const hgg::EngineConfig cfg{};
+            std::printf("gpu.lane_backlog        %u  (%s)\n", hgg::lane_backlog_of(cfg),
+                        hgcommon::tuning_env().get(hgcommon::Tune::GpuBacklog)
+                            ? "HG_TUNE_GPU_BACKLOG"
+                            : "max(8, persistent_grid / 16); \"Tuning\" -> GPUBacklog per job");
+        }
+        std::printf("gpu.l2_persist_limit    %s  (%s)\n", mib(hgg::l2_persist_limit_of()).c_str(),
+                    hgcommon::tuning_env().get(hgcommon::Tune::GpuL2Persist)
+                        ? "HG_TUNE_GPU_L2_PERSIST"
+                        : "persisting_l2_max on cc >= 8.0: the state claim map is kept in L2 "
+                          "when it is at most this; \"Tuning\" -> GPUL2Persist per job");
+        std::printf("gpu.grid_stride_cap     %u blocks of 256  (resident_threads / 256)\n",
+                    hgg::grid_stride_blocks(~uint64_t{0} >> 1, 256));
         std::printf("gpu.resident_threads    %llu  (sm_count x max_threads_per_sm)\n",
                     static_cast<unsigned long long>(hgg::device_resident_threads()));
-        std::printf("gpu.memory_cap          %s  (90%% of memory_total)\n",
-                    mib(hgg::resolved_memory_cap(0)).c_str());
+        const uint64_t cap = hgg::resolved_memory_cap(0);
+        std::printf("gpu.memory_cap          %s  (%s)\n", mib(cap).c_str(),
+                    hgcommon::tuning_env().get(hgcommon::Tune::GpuMemoryLimit)
+                        ? "HG_TUNE_GPU_MEMORY_LIMIT"
+                        : "min(90% of memory_total, free - 256 MB); \"Tuning\" -> GPUMemoryLimit per job");
+        std::printf("gpu.initial_budget      %s  (memory_cap / 4: the first engine of a run)\n",
+                    mib(cap / 4).c_str());
     }
 #endif
 }

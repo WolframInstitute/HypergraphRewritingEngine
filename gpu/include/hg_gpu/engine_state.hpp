@@ -95,6 +95,8 @@ struct DeviceState {
     uint32_t* step_pending;                     // [step_slots] = [max_steps + 2]
     uint32_t  step_slots;
     uint32_t  max_successor_states_per_parent;
+    // Readable match records below which a persistent block claims one at a time (lane_backlog_of).
+    uint32_t  lane_backlog;
     // Kept per (state, rule), chosen by rank at the point one block has found every match for
     // that pair -- the device's drain. 0 is unlimited.
     uint32_t  matches_per_state_rule;

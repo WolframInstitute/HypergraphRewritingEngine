@@ -120,6 +120,10 @@ struct EvolveInput {
 
     // Override for EngineConfig::max_blocks_per_launch (0 keeps the default).
     uint32_t max_blocks_per_launch = 0;
+    // EngineConfig::persistent_grid and lane_backlog ("Tuning" -> GPUBlocks, GPUBacklog); 0 takes
+    // HG_TUNE_GPU_BLOCKS / HG_TUNE_GPU_BACKLOG or the derived value.
+    uint32_t persistent_blocks = 0;
+    uint32_t lane_backlog = 0;
 
     // Hard ceiling on device memory the engine may allocate, in bytes. The
     // one-shot evolve() stops its grow-and-retry before a config's estimated
@@ -144,6 +148,8 @@ struct EvolveInput {
     uint32_t keyed_claim_limit = 1024;
     // Test lever (EngineConfig::keyed_sum_mask): narrows the twin claim key.
     uint64_t keyed_sum_mask = ~uint64_t{0};
+    // EngineConfig::l2_persist_limit ("Tuning" -> GPUL2Persist).
+    uint64_t l2_persist_limit = ~uint64_t{0};
 };
 
 // One (class, depth) point of the multiplicity count: m raw states of the class at the depth.
@@ -413,6 +419,9 @@ struct EngineConfig {
     uint64_t event_key_mask       = ~uint64_t{0};
     // Test lever: the twin claim key is the token sum ANDed with this.
     uint64_t keyed_sum_mask       = ~uint64_t{0};
+    // The most bytes of L2 access policy window a run keeps (l2_persist_bytes); ~0 takes
+    // HG_TUNE_GPU_L2_PERSIST or DeviceProbe::persisting_l2_max, 0 turns the window off.
+    uint64_t l2_persist_limit     = ~uint64_t{0};
     // 8-byte words of "StepStatistics" records (RecordSet::state_invariants): one
     // hgcommon::StateInvariantRecord per class, and at least half a record's fixed bytes per
     // state slot (EngineState::invariant_pool_words). Allocated only when the run records them; grown on
@@ -530,6 +539,10 @@ struct EngineConfig {
     // kIRDepthExceeded, which grow-and-retry answers by doubling THIS -- the device never keys
     // a state by a coarser hash, because a coarser key MERGES non-isomorphic states.
     uint32_t ir_depth = 8;
+    // The persistent grid and the lane batch backlog (docs/TUNING.md D1, D3). 0 takes the derived
+    // value: persistent_grid_of and lane_backlog_of read them.
+    uint32_t persistent_grid = 0;
+    uint32_t lane_backlog = 0;
     // The largest edge arity the run can hold (initial edges and every rule's right-hand side);
     // 0 when unknown, read as kMaxArity. Bounds a state's vertex occurrences by edges x this.
     uint16_t max_edge_arity = 0;
@@ -604,6 +617,18 @@ struct SessionView;
 // pre-dedup state-blow-up for the worst step. A workload that outgrows the
 // estimate is answered by grow-and-retry, which logs the config that worked.
 EngineConfig config_from_input(const EvolveInput& input);
+
+// The persistent grid of a run on `cfg`: cfg.persistent_grid, or default_persistent_grid().
+uint32_t persistent_grid_of(const EngineConfig& cfg);
+// D3 (docs/TUNING.md): the readable records below which a persistent block claims one record at
+// a time. cfg.lane_backlog, else HG_TUNE_GPU_BACKLOG, else derived_lane_backlog of the grid.
+uint32_t lane_backlog_of(const EngineConfig& cfg);
+// max(8, grid / 16): 64 at grid 1024, the measured point.
+uint32_t derived_lane_backlog(uint32_t grid);
+
+// The config a run starts from: config_from_input scaled to at most a quarter of `mem_cap` (0 is
+// no cap). A run that outgrows it grows and retries up to the cap.
+EngineConfig initial_config(const EvolveInput& input, uint64_t mem_cap);
 
 // Conservative estimate of the device memory an engine built from `cfg` will
 // allocate, in bytes. Used to enforce EvolveInput::max_device_memory_bytes

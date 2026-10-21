@@ -5,6 +5,7 @@
 #include <cstring>
 #include <cstdint>
 #include <map>
+#include <random>
 #include <set>
 #include <utility>
 #include <cstdio>
@@ -34,9 +35,11 @@
 #include "paclet_source/cpu_engine_holder.hpp"
 #ifdef HG_GPU_BACKEND
 #include "hg_gpu/branchial_rows.hpp"
+#include "hg_gpu/step_pool.hpp"
 #endif
 #include "hgcommon/core.hpp"
 #include "paclet_source/graph_marshal.hpp"
+#include "job_system/job_system.hpp"
 
 // Pin test for the FFI WXF serialization (run_rewriting_core), the LibraryLink /
 // standalone-binary output contract. This path has no wolframscript-free coverage
@@ -328,12 +331,13 @@ std::vector<uint8_t> session_envelope(const StateList& seed, const EdgeList& lhs
                                       int64_t session, bool with_rules,
                                       const std::vector<int64_t>& from,
                                       const std::function<void(wxf::Writer&)>& opts,
-                                      uint64_t n_opts, bool delta) {
+                                      uint64_t n_opts, bool delta, bool send_empty_from = false) {
     wxf::Writer w;
     w.write_header();
 
+    const bool send_from = !from.empty() || send_empty_from;
     w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-    w.write_varint(4 + (session ? 1 : 0) + (with_rules ? 1 : 0) + (from.empty() ? 0 : 1) +
+    w.write_varint(4 + (session ? 1 : 0) + (with_rules ? 1 : 0) + (send_from ? 1 : 0) +
                    (delta ? 1 : 0));
 
     if (delta) {
@@ -372,7 +376,7 @@ std::vector<uint8_t> session_envelope(const StateList& seed, const EdgeList& lhs
     w.write(std::string("Op"));
     w.write(op);
 
-    if (!from.empty()) {
+    if (send_from) {
         w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
         w.write(std::string("From"));
         w.write(from);
@@ -497,6 +501,226 @@ TEST(WxfSerializationPin, ANegativeInitialStateVertexIsRefused) {
         build_input_requesting(3, "Evolve", props, 0, true, false, kSeed), host);
     ASSERT_FALSE(ok.empty());
     EXPECT_GT(read_int_key(ok, "NumStates"), 1);
+}
+
+// One vertex numbering serves every initial state, so a label names one vertex in all of them.
+// Under CanonicalizeStates -> Automatic, {{1,3},{3,3}} and {{11,12},{12,12}} are two states with
+// different edge lists (reference/MultiwayReference.wl "Content"), and {{1,2}} and {{2,1}} too.
+TEST(WxfSerializationPin, InitialStatesShareOneVertexNumbering) {
+    HostBridge host;
+    auto automatic_states = [&](const StateList& seed) {
+        const auto out = run_rewriting_core(
+            build_input(seed, {{1, 2}}, {{2, 1}}, 0,
+                        [](wxf::Writer& w) {
+                            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                            w.write(std::string("CanonicalizeStates"));
+                            w.write_symbol("Automatic");
+                            put_str_list_option(w, "RequestedData", {"NumStates"});
+                        },
+                        2),
+            host);
+        return read_int_key(out, "NumStates");
+    };
+    EXPECT_EQ(automatic_states({{{1, 3}, {3, 3}}, {{11, 12}, {12, 12}}}), 2);
+    EXPECT_EQ(automatic_states({{{1, 2}}, {{2, 1}}}), 2);
+    // The same labels are the same state.
+    EXPECT_EQ(automatic_states({{{1, 2}}, {{1, 2}}}), 1);
+}
+
+// Under ShowGenesisEvents each initial state has its own genesis event under every event
+// identity, and a genesis event is paired with every application that consumed an initial edge,
+// on full capture and under quotient exploration alike (docs/SPEC.md 5.2).
+TEST(WxfSerializationPin, GenesisEventsAreOnePerInitialStateUnderEveryIdentity) {
+    HostBridge host;
+    auto run = [&](const StateList& seed, const EdgeList& lhs, const EdgeList& rhs, int64_t steps,
+                   const char* events, bool quotient, const char* key) {
+        const auto out = run_rewriting_core(
+            build_input(seed, lhs, rhs, steps,
+                        [&](wxf::Writer& w) {
+                            for (auto [k, v] : {std::pair<const char*, const char*>{"CanonicalizeStates", "Full"},
+                                                {"CanonicalizeEvents", events},
+                                                {"ShowGenesisEvents", "True"},
+                                                {"ExploreFromCanonicalStatesOnly", quotient ? "True" : "False"}}) {
+                                w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                                w.write(std::string(k));
+                                w.write_symbol(v);
+                            }
+                            put_str_list_option(w, "RequestedData", {"NumEvents", "NumCausalEdges"});
+                        },
+                        5),
+            host);
+        return read_int_key(out, key);
+    };
+    for (bool quotient : {false, true}) {
+        SCOPED_TRACE(quotient ? "quotient exploration" : "full capture");
+        // Two isomorphic roots: 2 event classes under Full and one genesis event per root.
+        EXPECT_EQ(run({{{1, 2}}, {{3, 4}}}, {{1, 2}}, {{1, 3}, {3, 2}}, 2, "Full", quotient, "NumEvents"), 4);
+        // Two applications of one class consume the root's edges: two genesis pairs
+        // (reference/MultiwayReference.wl with "GenesisEvents" -> True).
+        EXPECT_EQ(run({{{1}, {1}}}, {{1}, {1}}, {{1}}, 3, "Full", quotient, "NumCausalEdges"), 2);
+    }
+}
+
+// A key list compares the consumed and produced edges as marked forms (docs/SPEC.md 4.2), also
+// when it names exactly Automatic's five components. The two applications of
+// {{1},{2}} -> {{2,3},{2,3},{2}} to {{2},{4}} consume every edge, produce isomorphic states with
+// every produced edge marked, and are one event (reference/MultiwayReference.wl).
+TEST(WxfSerializationPin, AKeyListOfAutomaticsComponentsComparesMarkedForms) {
+    HostBridge host;
+    auto events = [&](const std::function<void(wxf::Writer&)>& identity) {
+        const auto out = run_rewriting_core(
+            build_input({{{2}, {4}}}, {{1}, {2}}, {{2, 3}, {2, 3}, {2}}, 1,
+                        [&](wxf::Writer& w) {
+                            put_str_option(w, "CanonicalizeStates", "Full");
+                            identity(w);
+                            put_str_list_option(w, "RequestedData", {"NumEvents"});
+                        },
+                        3),
+            host);
+        return read_int_key(out, "NumEvents");
+    };
+    EXPECT_EQ(events([](wxf::Writer& w) {
+                  put_str_list_option(w, "CanonicalizeEvents",
+                                      {"InputState", "OutputState", "Step", "ConsumedEdges",
+                                       "ProducedEdges"});
+              }),
+              1);
+    EXPECT_EQ(events([](wxf::Writer& w) {
+                  put_str_list_option(w, "CanonicalizeEvents",
+                                      {"InputState", "OutputState", "Step", "ConsumedEdges",
+                                       "ProducedEdges", "Rule"});
+              }),
+              1);
+}
+
+// Automatic event identity ranks the edges of {{1},{2}} by first appearance on both devices
+// (hgcommon::ir_renumber_encounter): {{1},{2}} -> {{1},{2}} and {{1},{2}} -> {{2},{1}} give two
+// events in one step, as Wolfram/Multicomputation's MultiwaySystem counts them.
+TEST(WxfSerializationPin, AutomaticRanksComeFromTheFirstAppearanceNumbering) {
+    HostBridge host;
+    wxf::Writer w;
+    w.write_header();
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+    w.write_varint(4);
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("InitialStates"));
+    w.write(StateList{{{1}, {2}}});
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("Rules"));
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+    w.write_varint(2);
+    for (auto [name, rhs] : {std::pair<const char*, EdgeList>{"r0", {{1}, {2}}}, {"r1", {{2}, {1}}}}) {
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string(name));
+        w.write_function("Rule", 2);
+        w.write(EdgeList{{1}, {2}});
+        w.write(rhs);
+    }
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("Steps"));
+    w.write(int64_t{1});
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+    w.write(std::string("Options"));
+    w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+    w.write_varint(3);
+    put_str_option(w, "CanonicalizeStates", "Full");
+    put_str_option(w, "CanonicalizeEvents", "Automatic");
+    put_str_list_option(w, "RequestedData", {"NumEvents"});
+    EXPECT_EQ(read_int_key(run_rewriting_core(w.release_data(), host), "NumEvents"), 2);
+}
+
+// MatchesPerStep counts transitions also when MaxSuccessorStatesPerParent is set (docs/SPEC.md 5).
+// {{1,1}} -> {} on {{2,2},{2,2}} under Automatic states makes two transitions into one state;
+// MatchesPerStep -> 1 keeps one of them, and a per-parent cap of 4 keeps both of them.
+TEST(WxfSerializationPin, MatchesPerStepCountsTransitionsUnderAPerParentCap) {
+    HostBridge host;
+    auto events = [&](bool per_parent) {
+        const auto out = run_rewriting_core(
+            build_input({{{2, 2}, {2, 2}}}, {{1, 1}}, {}, 1,
+                        [&](wxf::Writer& w) {
+                            put_str_option(w, "CanonicalizeStates", "Automatic");
+                            put_str_option(w, "UniformRandom", "True");
+                            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                            w.write(std::string("MatchesPerStep"));
+                            w.write(int64_t{1});
+                            if (per_parent) {
+                                w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                                w.write(std::string("MaxSuccessorStatesPerParent"));
+                                w.write(int64_t{4});
+                            }
+                            put_str_list_option(w, "RequestedData", {"NumEvents"});
+                        },
+                        per_parent ? 5 : 4),
+            host);
+        return read_int_key(out, "NumEvents");
+    };
+    EXPECT_EQ(events(false), 1);
+    EXPECT_EQ(events(true), 1);
+}
+
+// The genesis events' input state is not a state of the evolution (docs/SPEC.md 5.2), so
+// "StepStatistics" is the same with and without ShowGenesisEvents.
+TEST(WxfSerializationPin, StepStatisticsLeaveOutTheGenesisState) {
+    HostBridge host;
+    auto stats = [&](bool genesis) {
+        return value_bytes(
+            run_rewriting_core(
+                build_input({{{1, 2}}}, {{1, 2}}, {{1, 3}, {3, 2}}, 2,
+                            [&](wxf::Writer& w) {
+                                put_str_option(w, "ShowGenesisEvents", genesis ? "True" : "False");
+                                put_str_list_option(w, "RequestedData", {"StepStatistics"});
+                            },
+                            2),
+                host),
+            "StepStatistics");
+    };
+    const auto without = stats(false);
+    ASSERT_FALSE(without.empty());
+    EXPECT_EQ(stats(true), without);
+}
+
+// "StepStatistics" under full capture is the same on every run. On the device only the state
+// that creates an isomorphism class writes the class's record, and which state that is depends
+// on the schedule; a state summarised before its class's record was found counted as an empty
+// state (tools/dev/worker_fuzz.py seed 4627: 4 of 30 runs differed at step 3).
+TEST(WxfSerializationPin, StepStatisticsAreTheSameOnEveryRun) {
+    HostBridge host;
+    auto job = [] {
+        wxf::Writer w;
+        w.write_header();
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        w.write_varint(4);
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("InitialStates"));
+        w.write(StateList{{{1, 3}, {3, 3, 3}}});
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Rules"));
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        w.write_varint(3);
+        const std::pair<EdgeList, EdgeList> rules[] = {
+            {{{2, 3, 4}}, {}}, {{{2, 3, 3}}, {{2, 2, 2}}}, {{{2, 1}}, {{2, 4}, {2, 1}, {2, 1}}}};
+        for (size_t i = 0; i < 3; ++i) {
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write("r" + std::to_string(i));
+            w.write_function("Rule", 2);
+            w.write(rules[i].first);
+            w.write(rules[i].second);
+        }
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Steps"));
+        w.write(int64_t{4});
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Options"));
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        w.write_varint(1);
+        put_str_list_option(w, "RequestedData",
+                            {"NumEvents", "NumCausalEdges", "NumBranchialEdges", "StepStatistics"});
+        return w.release_data();
+    }();
+    const auto first = value_bytes(run_rewriting_core(job, host), "StepStatistics");
+    ASSERT_FALSE(first.empty());
+    for (int i = 0; i < 100; ++i)
+        ASSERT_EQ(value_bytes(run_rewriting_core(job, host), "StepStatistics"), first) << "run " << i;
 }
 
 TEST(WxfSerializationPin, AskingForLessDoesNotAnswerLess) {
@@ -1761,6 +1985,32 @@ TEST(WxfSerializationPin, ASessionServesStepStatisticsItsOpenDidNotName) {
     }
 }
 
+// A Step with "From" -> {} names no frontier state and expands nothing.
+TEST(WxfSerializationPin, AStepFromNoStateExpandsNothing) {
+    auto opts = [](wxf::Writer& w) {
+        put_str_list_option(w, "RequestedData", {"NumStates", "NumEvents"});
+    };
+    auto job = [&](int64_t steps, const std::string& op, int64_t session, bool empty_from) {
+        return session_envelope(kBranchSeed, kBranchLhs, kBranchRhs, steps, op, session,
+                                op == "Open", {}, opts, 1, false, empty_from);
+    };
+    HostBridge host;
+    const int64_t handle = read_int_key(run_rewriting_core(job(0, "Open", 0, false), host), "Session");
+    ASSERT_NE(handle, 0);
+    const auto one = run_rewriting_core(job(1, "Step", handle, false), host);
+    const auto none = run_rewriting_core(job(1, "Step", handle, true), host);
+    const auto two = run_rewriting_core(job(1, "Step", handle, false), host);
+    run_rewriting_core(job(0, "Close", handle, false), host);
+    ASSERT_GT(read_int_key(one, "NumEvents"), 0);
+    EXPECT_EQ(read_int_key(none, "NumEvents"), read_int_key(one, "NumEvents"));
+    EXPECT_EQ(read_int_key(none, "NumStates"), read_int_key(one, "NumStates"));
+    // The frontier it left is the one the next Step expands.
+    const auto direct = run_rewriting_core(
+        session_envelope(kBranchSeed, kBranchLhs, kBranchRhs, 2, "Evolve", 0, true, {}, opts, 1, false),
+        host);
+    EXPECT_EQ(read_int_key(two, "NumEvents"), read_int_key(direct, "NumEvents"));
+}
+
 // A value of an identity option the engine does not recognise is reported as OptionSkipped,
 // naming the value, and the run uses the default. A WL symbol Positional arrives with its
 // context, as Global`Positional, and is one such value.
@@ -2707,6 +2957,57 @@ TEST(WxfSerializationPin, SessionFrontierIdsAreStatesKeys) {
             EXPECT_TRUE(keys.count(f)) << "run " << rep << ": frontier id " << f
                                        << " is not a States key";
         run_rewriting_core(job(0, "Close", handle), host);
+    }
+}
+
+// The same invariant after every one-step Step, with the second step steered by "From" to the
+// lowest frontier id, under Full with and without quotient exploration and under Automatic.
+TEST(WxfSerializationPin, SteeredSessionFrontierIdsAreStatesKeys) {
+    struct Mode { const char* states; bool quotient; };
+    for (const Mode mode : {Mode{"Full", false}, Mode{"Full", true}, Mode{"Automatic", false}}) {
+        auto job = [&](int64_t steps, const std::string& op, int64_t session,
+                       const std::vector<int64_t>& from) {
+            return session_envelope(kBranchSeed, kBranchLhs, kBranchRhs, steps, op, session,
+                                    op == "Open", from, [&](wxf::Writer& w) {
+                put_str_list_option(w, "RequestedData", {"States"});
+                put_str_option(w, "CanonicalizeStates", mode.states);
+                if (mode.quotient) put_str_option(w, "ExploreFromCanonicalStatesOnly", "True");
+            }, mode.quotient ? 3 : 2, false);
+        };
+        auto states_keys = [](const std::vector<uint8_t>& out) {
+            std::set<int64_t> keys;
+            wxf::Parser parser(out);
+            parser.skip_header();
+            parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+                if (k != "States") { vp.skip_value(); return; }
+                vp.read_association_generic([&](wxf::Parser& kp, wxf::Parser& rp) {
+                    keys.insert(kp.read<int64_t>());
+                    rp.skip_value();
+                });
+            });
+            return keys;
+        };
+        for (int rep = 0; rep < 10; ++rep) {
+            HostBridge host;
+            const auto opened = run_rewriting_core(job(0, "Open", 0, {}), host);
+            const int64_t handle = read_int_key(opened, "Session");
+            ASSERT_NE(handle, 0) << mode.states;
+            std::vector<int64_t> frontier = read_int_list_key(opened, "Frontier");
+            for (int step = 1; step <= 4; ++step) {
+                std::vector<int64_t> from;
+                if (step == 2 && !frontier.empty())
+                    from = {*std::min_element(frontier.begin(), frontier.end())};
+                const auto stepped = run_rewriting_core(job(1, "Step", handle, from), host);
+                const auto keys = states_keys(stepped);
+                frontier = read_int_list_key(stepped, "Frontier");
+                ASSERT_FALSE(frontier.empty()) << mode.states << " step " << step;
+                for (int64_t f : frontier)
+                    EXPECT_TRUE(keys.count(f))
+                        << mode.states << (mode.quotient ? " quotient" : "") << " run " << rep
+                        << " step " << step << ": frontier id " << f << " is not a States key";
+            }
+            run_rewriting_core(job(0, "Close", handle, {}), host);
+        }
     }
 }
 
@@ -4358,9 +4659,24 @@ TEST(StateStatistics, BranchialMetricsDoNotDependOnTheRowSplit) {
 
 namespace {
 
-// Row-major k x k matrix `name` of a "StateMatrices" association.
-const wxf::PackedReals& matrix_at(const wxf::WXFValue& m, const std::string& name) {
-    return std::get<wxf::PackedReals>(assoc_at(m, name)->data);
+// A "StateMatrices" value (WXF bytes) read back: its "States" and each matrix, in key order.
+struct ReadMatrices {
+    std::vector<int64_t> states;
+    std::vector<std::pair<std::string, std::vector<std::vector<double>>>> m;
+    const std::vector<std::vector<double>>* at(const std::string& name) const {
+        for (const auto& [k, v] : m)
+            if (k == name) return &v;
+        return nullptr;
+    }
+};
+ReadMatrices read_matrices(const wxf::WXFValue& v) {
+    ReadMatrices r;
+    wxf::Parser p(std::get<wxf::Encoded>(v.data).bytes);
+    p.read_association([&](const std::string& k, wxf::Parser& vp) {
+        if (k == "States") r.states = vp.read<std::vector<int64_t>>();
+        else r.m.push_back({k, vp.read<std::vector<std::vector<double>>>()});
+    });
+    return r;
 }
 
 uint32_t all_matrices() { return hg::stats::kBranchialMatrices; }
@@ -4384,12 +4700,11 @@ TEST(StateStatistics, StateMatricesOfASmallStep) {
     s.edge_sets = {{103}, {100, 101}, {100, 102}};
     const auto out = branchial_keys({{1u, s}}, all_matrices() | hg::stats::kBranchialOverlap);
     const wxf::WXFValue rec(out.at(1));
-    const wxf::WXFValue* m = assoc_at(rec, "StateMatrices");
-    ASSERT_NE(m, nullptr);
+    ASSERT_NE(assoc_at(rec, "StateMatrices"), nullptr);
+    const ReadMatrices m = read_matrices(*assoc_at(rec, "StateMatrices"));
     // The states ascending by id, whatever order the step listed them in.
-    const auto& ids = std::get<wxf::WXFValueList>(assoc_at(*m, "States")->data);
-    ASSERT_EQ(ids.size(), 3u);
-    for (size_t i = 0; i < 3; ++i) EXPECT_EQ(std::get<int64_t>(ids[i].data), int64_t(10 + i));
+    EXPECT_EQ(m.states, (std::vector<int64_t>{10, 11, 12}));
+    ASSERT_EQ(m.m.size(), 6u);
     auto cell = [](double n, double na, double nb, double u) {
         return n == 0 ? 0.0 : n / u * std::log2(n * u / (na * nb));
     };
@@ -4411,28 +4726,33 @@ TEST(StateStatistics, StateMatricesOfASmallStep) {
     };
     EXPECT_NEAR(mi(3, 4, 4, 6), 1.5 * std::log2(3.0) - 7.0 / 3.0, 1e-15);
     EXPECT_NEAR(mi(4, 4, 4, 6), std::log2(3.0) - 2.0 / 3.0, 1e-15);   // H(2/3)
-    for (const auto& [name, values] : want) {
-        ASSERT_NE(assoc_at(*m, name), nullptr) << name;
-        const wxf::PackedReals& got = matrix_at(*m, name);
-        ASSERT_EQ(got.dims, (std::vector<size_t>{3, 3})) << name;
-        for (size_t i = 0; i < 9; ++i) EXPECT_NEAR(got.values[i], values[i], 1e-15) << name << i;
-        for (size_t a = 0; a < 3; ++a)
-            for (size_t b = 0; b < 3; ++b)
-                EXPECT_EQ(got.values[a * 3 + b], got.values[b * 3 + a]) << name;
+    for (size_t n = 0; n < want.size(); ++n) {
+        const auto& [name, values] = want[n];
+        EXPECT_EQ(m.m[n].first, name);
+        const auto* got = m.at(name);
+        ASSERT_NE(got, nullptr) << name;
+        ASSERT_EQ(got->size(), 3u) << name;
+        for (size_t a = 0; a < 3; ++a) {
+            ASSERT_EQ((*got)[a].size(), 3u) << name;
+            for (size_t b = 0; b < 3; ++b) {
+                EXPECT_NEAR((*got)[a][b], values[a * 3 + b], 1e-15) << name << a << b;
+                EXPECT_EQ((*got)[a][b], (*got)[b][a]) << name;
+            }
+        }
     }
     // The off-diagonal cells are the values the summaries read: their mean is the summary's.
     for (const char* name : {"StateOverlap", "StateCosineSimilarity", "StateMutualInformation"}) {
-        const wxf::PackedReals& got = matrix_at(*m, name);
-        EXPECT_NEAR((got.values[1] + got.values[2] + got.values[5]) / 3,
-                    number_at(*assoc_at(rec, name), "Mean"), 1e-15)
+        const auto& g = *m.at(name);
+        EXPECT_NEAR((g[0][1] + g[0][2] + g[1][2]) / 3, number_at(*assoc_at(rec, name), "Mean"),
+                    1e-15)
             << name;
     }
     // Only the matrices asked for, after "States".
     const wxf::WXFValue one(branchial_keys(
         {{1u, s}}, hg::stats::kMatrixStateEdgeMutualInformation).at(1));
-    const auto& keys = std::get<wxf::WXFValueAssociation>(assoc_at(one, "StateMatrices")->data);
-    ASSERT_EQ(keys.size(), 2u);
-    EXPECT_EQ(std::get<std::string>(keys[1].first.data), "StateEdgeMutualInformation");
+    const ReadMatrices m1 = read_matrices(*assoc_at(one, "StateMatrices"));
+    ASSERT_EQ(m1.m.size(), 1u);
+    EXPECT_EQ(m1.m[0].first, "StateEdgeMutualInformation");
     EXPECT_EQ(assoc_at(one, "StateOverlap"), nullptr);
 }
 
@@ -4488,11 +4808,12 @@ TEST(StateStatistics, StateMatricesDoNotDependOnTheRowSplit) {
     }
 }
 
-// The packed matrix is a WXF PackedArray of Real64 (0xC1 0x23), rank 2, and reads back as the
-// nested lists; a zero dimension is written as lists.
+// Writer::write_packed_reals gives a WXF PackedArray of Real64 (0xC1 0x23), rank 2, which reads
+// back as the nested lists, -0.0 as 0.0; a zero dimension is written as lists.
 TEST(StateStatistics, PackedRealsAreAPackedArray) {
+    const double values[4] = {1.0, -0.0, 0.5, 2.0};
     wxf::Writer w;
-    w.write(wxf::WXFValue(wxf::PackedReals{{2, 2}, {1.0, -0.0, 0.5, 2.0}}));
+    w.write_packed_reals({2, 2}, values);
     const auto bytes = w.release_data();
     ASSERT_GE(bytes.size(), 4u);
     EXPECT_EQ(bytes[0], 0xC1);
@@ -4503,7 +4824,7 @@ TEST(StateStatistics, PackedRealsAreAPackedArray) {
     EXPECT_EQ(back, (std::vector<std::vector<double>>{{1.0, 0.0}, {0.5, 2.0}}));
     EXPECT_FALSE(std::signbit(back[0][1]));
     wxf::Writer e;
-    e.write(wxf::WXFValue(wxf::PackedReals{{0, 3}, {}}));
+    e.write_packed_reals({0, 3}, nullptr);
     wxf::Parser q(e.data());
     EXPECT_TRUE(q.read<std::vector<std::vector<double>>>().empty());
 }
@@ -4573,17 +4894,17 @@ TEST(StateStatistics, DeviceRowsGiveTheHostStateMatrices) {
             const auto want = bytes(host.finish());
             hg::stats::BranchialStepWork device(s, which, nullptr, k);
             device.prepare(4);
-            ASSERT_NE(device.vertex_shared(), nullptr);
-            ASSERT_NE(device.edge_shared(), nullptr);
+            ASSERT_NE(device.vertex_matrices(), nullptr);
+            ASSERT_NE(device.edge_matrices(), nullptr);
             bool ran = hg_gpu::branchial_rows_device(device.edge_rows_view(), nullptr,
-                                                     device.edge_shared());
+                                                     device.edge_matrices());
             if (!ran) GTEST_SKIP() << "no usable device";
             ran = hg_gpu::branchial_rows_device(
                 device.rows_view(),
                 [&device](uint32_t d, uint32_t sa, uint32_t sb, uint32_t sh, uint64_t n) {
                     device.add_counts(d, sa, sb, sh, n);
                 },
-                device.vertex_shared());
+                device.vertex_matrices());
             ASSERT_TRUE(ran);
             EXPECT_EQ(bytes(device.finish()), want) << "k " << k << " which " << which;
         }
@@ -5032,4 +5353,417 @@ TEST(WxfSerializationPin, ACountsOnlyFullRunCountsTheClasses) {
     const int64_t with_states = run({"NumStates", "States"});
     EXPECT_GT(with_states, 1);
     EXPECT_EQ(counts_only, with_states);
+}
+
+// "Threads" and the "Tuning" association reach the engine that runs the job: the "Device" reply
+// reports the worker count and, on the GPU, the memory cap. An unknown tuning name is skipped
+// with an OptionSkipped warning and the other entries still apply.
+TEST(WxfSerializationPin, TuningOverridesReachTheEngine) {
+    HostBridge host;
+    const auto out = run_rewriting_core(build_input(kSeed, kLhs, kRhs, 3,
+        [&](wxf::Writer& w) {
+            put_str_list_option(w, "RequestedData", {"Device", "NumStates"});
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("Threads"));
+            w.write(int64_t{3});
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("Tuning"));
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+            w.write_varint(6);
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("GPUL2Persist"));
+            w.write(int64_t{0});
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("GPUBlocks"));
+            w.write(int64_t{256});
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("GPUBacklog"));
+            w.write(int64_t{12});
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("CausalSetCapacity"));
+            w.write(int64_t{2048});
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("NoSuchName"));
+            w.write(int64_t{7});
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("GPUMemoryLimit"));
+            w.write(int64_t{3} << 30);
+        }, 3), host);
+    std::map<std::string, int64_t> device;
+    wxf::Parser parser(out);
+    parser.skip_header();
+    parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+        if (k != "Device") { vp.skip_value(); return; }
+        vp.read_association([&](const std::string& f, wxf::Parser& fp) {
+            if (f == "Threads" || f == "MemoryCap" || f == "CausalSetCapacity" || f == "Blocks" ||
+                f == "Backlog" || f == "L2Persist")
+                device[f] = fp.read<int64_t>();
+            else fp.skip_value();
+        });
+    });
+    EXPECT_EQ(device["Threads"], 3);
+#ifdef HG_GPU_BACKEND
+    EXPECT_EQ(device["MemoryCap"], int64_t{3} << 30);
+    EXPECT_EQ(device["Blocks"], 256);
+    EXPECT_EQ(device["Backlog"], 12);
+    ASSERT_TRUE(device.count("L2Persist"));
+    EXPECT_EQ(device["L2Persist"], 0);
+#else
+    EXPECT_EQ(device["CausalSetCapacity"], 2048);
+#endif
+    EXPECT_TRUE(reply_mentions(out, "NoSuchName"));
+    EXPECT_GT(read_int_key(out, "NumStates"), 0);
+    // The overrides change no count.
+    const auto plain = run_rewriting_core(build_input(kSeed, kLhs, kRhs, 3,
+        [&](wxf::Writer& w) { put_str_list_option(w, "RequestedData", {"NumStates", "NumEvents"}); },
+        1), host);
+    EXPECT_EQ(read_int_key(out, "NumStates"), read_int_key(plain, "NumStates"));
+}
+
+// =============================================================================
+// The streamed graph marshaller (hgmarshal::build_graph_data)
+// =============================================================================
+
+namespace {
+
+namespace hgm = HG_NAMESPACE::marshal;
+
+// A multiway of `n` states and `m` events with fixed contents: event e goes from state e % n to
+// state (e * 7 + 1) % n, every event e > 0 is caused by e - 1, every third by e - 3 as well, and
+// every seventh by e - 1 twice; events 2k and 2k + 1 are branchial. Event 5 has no payload, as a
+// device event missing from the reply.
+struct SyntheticGraphSource {
+    uint32_t n, m;
+    uint32_t num_states() const { return n; }
+    bool state_valid(uint32_t sid) const { return sid % 11 != 10; }
+    int64_t effective_state_id(uint32_t sid) const { return sid / 2; }
+    uint32_t state_step(uint32_t sid) const { return sid % 5; }
+    void state_fields(uint32_t sid, hgm::GraphStateFields& f) const {
+        f.id = sid;
+        f.canonical_id = sid / 2;
+        f.step = sid % 5;
+    }
+    void state_edges(uint32_t sid, std::vector<std::pair<int64_t, std::vector<uint32_t>>>& out) const {
+        for (uint32_t k = 0; k < sid % 4; ++k) out.push_back({k, {sid, k, sid + k * 300}});
+    }
+    uint32_t num_raw_events() const { return m; }
+    bool is_valid_event(uint32_t eid) const { return eid % 13 != 12; }
+    int64_t effective_event_id(uint32_t eid) const { return eid; }
+    uint32_t event_input_state(uint32_t eid) const { return eid % n; }
+    uint32_t event_output_state(uint32_t eid) const { return (eid * 7 + 1) % n; }
+    bool event_fields(uint32_t eid, hgm::GraphEventFields& f) const {
+        if (eid == 5) return false;
+        f.reconstructed = eid % 17 == 3;
+        f.id = eid;
+        f.canonical_id = eid;
+        f.rule = eid % 3;
+        f.input = event_input_state(eid);
+        f.output = event_output_state(eid);
+        f.consumed = {static_cast<int64_t>(eid), static_cast<int64_t>(eid) + 1};
+        f.produced = {static_cast<int64_t>(eid) + 2};
+        f.input_raw = event_input_state(eid);
+        f.output_raw = event_output_state(eid);
+        return true;
+    }
+    std::vector<std::pair<uint32_t, uint32_t>> causal_event_pairs() const {
+        std::vector<std::pair<uint32_t, uint32_t>> out;
+        for (uint32_t e = 1; e < m; ++e) {
+            out.push_back({e - 1, e});
+            if (e % 3 == 0) out.push_back({e - 3, e});
+            if (e % 7 == 0) out.push_back({e - 1, e});
+        }
+        return out;
+    }
+    std::vector<std::pair<uint32_t, uint32_t>> branchial_event_pairs() const {
+        std::vector<std::pair<uint32_t, uint32_t>> out;
+        for (uint32_t e = 0; e + 1 < m; e += 2) out.push_back({e, e + 1});
+        return out;
+    }
+};
+
+const std::vector<std::string> kAllGraphs = {
+    "StatesGraph", "CausalGraph", "BranchialGraph", "EvolutionGraph", "EvolutionCausalGraph",
+    "EvolutionBranchialGraph", "EvolutionCausalBranchialGraph", "StatesGraphStructure",
+    "CausalGraphStructure", "BranchialGraphStructure", "EvolutionCausalBranchialGraphStructure"};
+
+std::vector<uint8_t> graph_bytes(const SyntheticGraphSource& src, const hgm::ParallelFor& par,
+                                 bool dedup) {
+    hgm::GraphOptions opts;
+    opts.edge_deduplication = dedup;
+    wxf::Writer w;
+    w.write(hgm::build_graph_data(src, kAllGraphs, opts, nullptr, par));
+    return w.release_data();
+}
+
+enum class GraphTestJob { Chunk };
+
+// A ParallelFor on a job system of `threads` workers, the calling thread running body(0).
+struct ThreadsFor {
+    job_system::JobSystem<GraphTestJob> system;
+    explicit ThreadsFor(size_t threads) : system(threads) { system.start(); }
+    hgm::ParallelFor get() {
+        return [this](size_t n, const std::function<void(size_t)>& body) {
+            for (size_t i = 1; i < n; ++i)
+                system.submit(job_system::make_job<GraphTestJob>([&body, i] { body(i); },
+                                                                 GraphTestJob::Chunk));
+            if (n) body(0);
+            system.wait_for_completion();
+        };
+    }
+};
+
+// Two states and two events of SyntheticGraphSource: event 0 (0 -> 1) and event 5 (1 -> 0),
+// which has no payload.
+struct TwoStateSource : SyntheticGraphSource {
+    TwoStateSource() : SyntheticGraphSource{2, 6} {}
+    bool state_valid(uint32_t) const { return true; }
+    int64_t effective_state_id(uint32_t sid) const { return sid; }
+    bool is_valid_event(uint32_t eid) const { return eid == 0 || eid == 5; }
+};
+
+}  // namespace
+
+TEST(WxfEncoded, WritesItsBytesVerbatimAtItsPosition) {
+    wxf::WXFValueAssociation inner;
+    inner.push_back({wxf::WXFValue("A"), wxf::WXFValue(int64_t{300})});
+    inner.push_back({wxf::WXFValue("B"), wxf::WXFValue(wxf::WXFValueList{wxf::WXFValue(1.5)})});
+    wxf::Writer enc;
+    enc.write(wxf::WXFValue(inner));
+    wxf::WXFValueAssociation direct, spliced;
+    direct.push_back({wxf::WXFValue("x"), wxf::WXFValue(int64_t{1})});
+    spliced = direct;
+    direct.push_back({wxf::WXFValue("y"), wxf::WXFValue(inner)});
+    spliced.push_back({wxf::WXFValue("y"), wxf::WXFValue(wxf::Encoded{enc.release_data()})});
+    wxf::Writer a, b;
+    a.write(wxf::WXFValue(direct));
+    b.write(wxf::WXFValue(spliced));
+    EXPECT_EQ(a.data(), b.data());
+}
+
+// A StatesGraph of two states and two events, against the value tree spelled out: the state
+// payloads, one event payload, and the edge of the event with no payload, which has no Data key.
+TEST(GraphMarshalStream, StatesGraphMatchesItsValueTree) {
+    const TwoStateSource two;
+    hgm::GraphOptions opts;
+    wxf::Writer got;
+    got.write(hgm::build_graph_data(two, {"StatesGraph"}, opts));
+
+    using V = wxf::WXFValue;
+    using L = wxf::WXFValueList;
+    using A = wxf::WXFValueAssociation;
+    auto edges_of = [&](uint32_t sid) {
+        L l;
+        std::vector<std::pair<int64_t, std::vector<uint32_t>>> e;
+        two.state_edges(sid, e);
+        for (const auto& [first, vs] : e) {
+            L one{V(first)};
+            for (uint32_t v : vs) one.push_back(V(static_cast<int64_t>(v)));
+            l.push_back(V(one));
+        }
+        return V(l);
+    };
+    auto state = [&](uint32_t sid) {
+        return V(A{{V("Id"), V(int64_t(sid))}, {V("CanonicalId"), V(int64_t(sid / 2))},
+                   {V("Step"), V(int64_t(sid % 5))}, {V("Edges"), edges_of(sid)},
+                   {V("IsInitial"), V(int64_t(sid % 5 == 0))}});
+    };
+    const V event0(A{{V("Id"), V(int64_t{0})}, {V("CanonicalId"), V(int64_t{0})},
+                     {V("RuleIndex"), V(int64_t{0})}, {V("InputState"), V(int64_t{0})},
+                     {V("OutputState"), V(int64_t{1})},
+                     {V("ConsumedEdges"), V(L{V(int64_t{0}), V(int64_t{1})})},
+                     {V("ProducedEdges"), V(L{V(int64_t{2})})},
+                     {V("InputStateEdges"), edges_of(0)}, {V("OutputStateEdges"), edges_of(1)}});
+    const L edges{
+        V(A{{V("From"), V(int64_t{0})}, {V("To"), V(int64_t{1})}, {V("Type"), V("Directed")},
+            {V("Data"), event0}}),
+        V(A{{V("From"), V(int64_t{1})}, {V("To"), V(int64_t{0})}, {V("Type"), V("Directed")}})};
+    const A graph{{V("IsDelta"), V(int64_t{0})},
+                  {V("Vertices"), V(L{V(int64_t{0}), V(int64_t{1})})},
+                  {V("Edges"), V(edges)},
+                  {V("VertexData"), V(A{{V(int64_t{0}), state(0)}, {V(int64_t{1}), state(1)}})}};
+    wxf::Writer want;
+    want.write(V(A{{V("StatesGraph"), V(graph)}}));
+    EXPECT_EQ(got.data(), want.data());
+}
+
+// Every graph over 2,000 states and 3,000 events (several chunks each), at 1, 2, 8 and 16
+// workers and with the chunks run in reverse order, equals the serial build byte for byte.
+TEST(GraphMarshalStream, BytesIndependentOfThreadsAndChunkOrder) {
+    const SyntheticGraphSource src{2000, 3000};
+    for (bool dedup : {true, false}) {
+        const std::vector<uint8_t> serial = graph_bytes(src, hgm::serial_for, dedup);
+        ASSERT_GT(serial.size(), 100000u);
+        const std::vector<uint8_t> reversed = graph_bytes(
+            src,
+            [](size_t n, const std::function<void(size_t)>& body) {
+                for (size_t i = n; i-- > 0;) body(i);
+            },
+            dedup);
+        EXPECT_EQ(serial, reversed);
+        for (size_t threads : {size_t{1}, size_t{2}, size_t{8}, size_t{16}}) {
+            ThreadsFor pool(threads);
+            EXPECT_EQ(serial, graph_bytes(src, pool.get(), dedup)) << threads << " threads";
+        }
+    }
+}
+
+// =============================================================================
+// The "StepStatistics" pool (hgcommon/step_pool_core.hpp)
+// =============================================================================
+
+namespace {
+
+// `n` classes over two steps: random small states (1 to 7 edges of arity 1 to 3 over up to 6
+// vertices), their records in one word pool, and random weights up to 50.
+struct PoolFixture {
+    std::vector<uint64_t> pool;
+    struct Class {
+        uint32_t step;
+        uint64_t hash;
+        uint64_t word;
+        uint64_t weight;
+    };
+    std::vector<Class> classes;
+
+    explicit PoolFixture(size_t n) {
+        std::mt19937_64 rng(20261014);
+        std::vector<uint64_t> storage;
+        for (size_t i = 0; i < n; ++i) {
+            std::vector<std::vector<uint32_t>> edges(1 + rng() % 7);
+            for (auto& e : edges) {
+                e.resize(1 + rng() % 3);
+                for (auto& v : e) v = static_cast<uint32_t>(rng() % 6);
+            }
+            hg::stats::invariant_record(edges, storage);
+            const uint64_t word = pool.size();
+            pool.insert(pool.end(), storage.begin(), storage.end());
+            classes.push_back({static_cast<uint32_t>(i % 2), 1000 + i, word, 1 + rng() % 50});
+        }
+    }
+    const hgcommon::StateInvariantRecord* record(const Class& c) const {
+        return reinterpret_cast<const hgcommon::StateInvariantRecord*>(pool.data() + c.word);
+    }
+    std::map<uint32_t, hg::stats::StepInput> inputs() const {
+        std::map<uint32_t, hg::stats::StepInput> in;
+        for (const Class& c : classes) hg::stats::add_class(in[c.step], c.hash, c.weight, record(c));
+        return in;
+    }
+};
+
+std::vector<uint8_t> value_bytes(const wxf::WXFValue& v) {
+    wxf::Writer w;
+    w.write(v);
+    return w.release_data();
+}
+
+enum class PoolTestJob { Job };
+
+}  // namespace
+
+// A step's record from its pool made by one part on this thread equals the record made by
+// StepStatisticsJobs, which pools 256 classes per job and merges one slot per job, at 1, 2, 8
+// and 16 workers, under both weightings.
+TEST(StateStatistics, PoolDoesNotDependOnTheClassSplitOrTheThreadCount) {
+    const PoolFixture fx(1500);
+    for (bool by_class : {false, true}) {
+        wxf::WXFValueList serial;
+        for (auto& [step, in] : fx.inputs())
+            serial.push_back(wxf::WXFValue(hg::stats::step_record(step, in, by_class)));
+        const std::vector<uint8_t> want = value_bytes(wxf::WXFValue(serial));
+        for (size_t threads : {size_t{1}, size_t{2}, size_t{8}, size_t{16}}) {
+            job_system::JobSystem<PoolTestJob> system(threads);
+            system.start();
+            hg::stats::StepStatisticsJobs jobs(by_class, 0, threads, [&](std::function<void()> f) {
+                system.submit(job_system::make_job<PoolTestJob>(std::move(f), PoolTestJob::Job));
+            });
+            for (auto& [step, in] : fx.inputs()) jobs.submit(step, std::move(in));
+            system.wait_for_completion();
+            EXPECT_EQ(want, value_bytes(jobs.reply())) << threads << " threads, by_class " << by_class;
+        }
+    }
+}
+
+// The order of a slot's values does not reach the record: two classes added in either order, or
+// one class carrying both weights, give one summary.
+TEST(StateStatistics, PoolSummariesReadValuesInKeyOrder) {
+    std::vector<uint64_t> a, b;
+    const auto* ra = hg::stats::invariant_record({{1, 2}, {2, 3}, {3, 1}}, a);
+    const auto* rb = hg::stats::invariant_record({{1, 2}, {2, 3}, {3, 4}, {4, 5}}, b);
+    auto record = [](std::vector<std::pair<const hgcommon::StateInvariantRecord*, uint64_t>> cls) {
+        hg::stats::StepInput in;
+        uint64_t hash = 1;
+        for (auto [r, w] : cls) hg::stats::add_class(in, hash++, w, r);
+        return value_bytes(wxf::WXFValue(
+            *assoc_at(wxf::WXFValue(hg::stats::step_record(0, in, false)), "Invariants")));
+    };
+    EXPECT_EQ(record({{ra, 3}, {rb, 5}}), record({{rb, 5}, {ra, 3}}));
+    EXPECT_EQ(record({{ra, 1}, {ra, 2}, {rb, 5}}), record({{ra, 3}, {rb, 5}}));
+}
+
+#ifdef HG_GPU_BACKEND
+// The device's pool (hg_gpu::step_pool_device) of every class equals the host's
+// (stats::pool_classes), entry for entry and total for total, and the record finished from it is
+// the host's bytes.
+TEST(StateStatistics, DevicePoolEqualsTheHostPool) {
+    const PoolFixture fx(3000);
+    for (bool by_class : {false, true}) {
+        std::vector<hg_gpu::StepPoolPoint> points;
+        for (const auto& c : fx.classes)
+            points.push_back({c.step, c.word, by_class ? 1 : c.weight, c.weight});
+        points.push_back({1, UINT64_MAX, by_class ? 1u : 4u, 4});   // the state with no edges
+        std::vector<std::vector<hgcommon::SpEntry>> entries;
+        std::vector<hg_gpu::StepPoolTotals> totals;
+        ASSERT_TRUE(hg_gpu::step_pool_device(fx.pool, points, 2, entries, totals));
+        auto inputs = fx.inputs();
+        hg::stats::add_class(inputs[1], 1, 4, nullptr);
+        for (auto& [step, in] : inputs) {
+            std::vector<const hg::stats::StepClass*> cls;
+            for (const auto& [h, c] : in.classes) cls.push_back(&c);
+            hg::stats::PoolPart host;
+            hg::stats::pool_classes(cls.data(), cls.size(), by_class, true, host);
+            ASSERT_EQ(host.entries.size(), entries[step].size()) << "step " << step;
+            for (size_t i = 0; i < host.entries.size(); ++i) {
+                EXPECT_EQ(host.entries[i].slot, entries[step][i].slot);
+                EXPECT_EQ(host.entries[i].key, entries[step][i].key);
+                EXPECT_EQ(host.entries[i].weight, entries[step][i].weight);
+            }
+            for (uint32_t k = 0; k < hgcommon::SG_DISTS; ++k) {
+                EXPECT_EQ(host.dist[k].n, totals[step][k].n);
+                EXPECT_EQ(host.dist[k].min_key, totals[step][k].min_key);
+                EXPECT_EQ(host.dist[k].max_key, totals[step][k].max_key);
+                for (uint32_t b = 0; b < hgcommon::SG_DIST_BINS; ++b)
+                    EXPECT_EQ(host.dist[k].bins[b], totals[step][k].bins[b]);
+            }
+            const std::vector<uint8_t> want =
+                value_bytes(wxf::WXFValue(hg::stats::step_record(step, in, by_class)));
+            in.device_part = std::make_unique<hg::stats::PoolPart>();
+            in.device_part->entries = entries[step];
+            for (uint32_t k = 0; k < hgcommon::SG_DISTS; ++k) in.device_part->dist[k] = totals[step][k];
+            EXPECT_EQ(want, value_bytes(wxf::WXFValue(hg::stats::step_record(step, in, by_class))));
+        }
+    }
+}
+#endif
+
+// hgmarshal::record_list, which writes the CausalEdges and BranchialEdges lists, equals the value
+// tree of the same records, and gives the same bytes at 1, 2, 8 and 16 workers.
+TEST(GraphMarshalStream, RecordListMatchesItsValueTreeAtEveryThreadCount) {
+    std::vector<std::array<int64_t, 4>> rows;
+    for (int64_t i = 0; i < 5000; ++i) rows.push_back({i, i * 7 - 3, i << 20, -i});
+    wxf::WXFValueList tree;
+    for (const auto& r : rows)
+        tree.push_back(wxf::WXFValue(wxf::WXFValueAssociation{
+            {wxf::WXFValue("From"), wxf::WXFValue(r[0])},
+            {wxf::WXFValue("To"), wxf::WXFValue(r[1])},
+            {wxf::WXFValue("RawFrom"), wxf::WXFValue(r[2])},
+            {wxf::WXFValue("RawTo"), wxf::WXFValue(r[3])}}));
+    const std::vector<uint8_t> want = value_bytes(wxf::WXFValue(tree));
+    EXPECT_EQ(want, value_bytes(hgm::record_list(rows, {"From", "To", "RawFrom", "RawTo"},
+                                                 hgm::serial_for)));
+    for (size_t threads : {size_t{1}, size_t{2}, size_t{8}, size_t{16}}) {
+        ThreadsFor pool(threads);
+        EXPECT_EQ(want, value_bytes(hgm::record_list(rows, {"From", "To", "RawFrom", "RawTo"},
+                                                     pool.get())))
+            << threads << " threads";
+    }
 }

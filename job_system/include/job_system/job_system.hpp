@@ -1,5 +1,6 @@
 #pragma once
 #include "hgcommon/namespace.hpp"
+#include "hgcommon/cache_line.hpp"
 
 #include <job_system/job.hpp>
 #include <job_system/work_stealing_deque.hpp>
@@ -282,11 +283,11 @@ private:
     // whose bit is set. Written twice per park, read once per search; pools of more than 64
     // workers do not use it. A stale bit costs one read of an empty deque or one missed victim,
     // and the last look before a park reads every deque regardless.
-    alignas(64) std::atomic<uint64_t> awake_mask_{0};
+    alignas(hgcommon::kDestructiveLine) std::atomic<uint64_t> awake_mask_{0};
     // THE WAKE HINT: the index of the worker whose submit last signalled a parked worker, or of
     // the deque a chaining searcher found work in (the worker count for the injector). A woken
     // worker's search reads that deque first. Written once per signal, read once per wake.
-    alignas(64) std::atomic<unsigned> wake_hint_{0};
+    alignas(hgcommon::kDestructiveLine) std::atomic<unsigned> wake_hint_{0};
 
     std::atomic<ErrorType> error_type_{ErrorType::None};
 
@@ -939,7 +940,7 @@ public:
                        bool serial = false)
         : injector_(HG_JOB_INJECTOR_CAPACITY),
           num_threads_(serial ? 0
-                              : (num_threads == 0 ? std::thread::hardware_concurrency()
+                              : (num_threads == 0 ? hgcommon::default_worker_count()
                                                   : num_threads)),
           queue_capacity_(queue_capacity == 0 ? HG_JOB_QUEUE_CAPACITY : queue_capacity),
           serial_(serial) {

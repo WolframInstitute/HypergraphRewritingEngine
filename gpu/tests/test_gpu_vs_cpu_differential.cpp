@@ -1321,7 +1321,7 @@ TEST(CanonicalEventCount, ModesVsCpu) {
         // within-cell tie-break, which reads the vertex numbering it was handed. The device
         // numbered vertices in encounter order while the host numbered them by sorted id, the
         // two picked different coset representatives, and the GPU reported 19 against the CPU's
-        // 15 (f72ed00). Both flatteners now number by sorted id.
+        // 15 (f72ed00). Both flatteners number by first appearance (hgcommon::ir_renumber_encounter).
         //
         // So this is an equality and not a printed number. A rank-keyed identity that agrees
         // across devices is the whole claim; if it regresses, the coset is being chosen by
@@ -1336,6 +1336,33 @@ TEST(CanonicalEventCount, ModesVsCpu) {
     // nothing, which is precisely the state this gate exists to detect.
     EXPECT_GT(merged_somewhere, 0u)
         << "no event mode merged anything on this workload, so the comparison is vacuous";
+}
+
+// The replay's frame slots come from each raw state's edge-orbit ranks
+// (Hypergraph::qc_frame_slots), and those ranks are read from one vertex numbering on both
+// devices (hgcommon::ir_renumber_encounter). {{1},{2}} -> {{1},{2}} and {{1},{2}} -> {{2},{1}}
+// on {{1},{2}}: the four applications differ only in which automorphic labelling ranks their
+// edges. Wolfram/Multicomputation's MultiwaySystem counts 2 Automatic events at 1 step and 4 at
+// 2 steps, and so do both devices.
+TEST(CanonicalEventCount, AutomaticAcrossTwoRulesWithOneSymmetricState) {
+    for (bool quotient : {false, true}) {
+        for (uint32_t steps : {1u, 2u}) {
+            Workload w;
+            w.name = std::string("two_rules_swap_") + (quotient ? "quotient" : "full") +
+                     std::to_string(steps);
+            w.rules = {rule({{0}, {1}}, {{0}, {1}}), rule({{0}, {1}}, {{1}, {0}})};
+            w.initial_state = {{0u}, {1u}};
+            w.num_steps = steps;
+            w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+            w.event_canon_mode = hg_gpu::EventCanonicalizationMode::Automatic;
+            w.explore_from_canonical_states_only = quotient;
+            NormalizedResult cpu = run_cpu(w);
+            NormalizedResult gpu = run_gpu(w);
+            EXPECT_EQ(gpu.raw_events, cpu.raw_events) << w.name;
+            EXPECT_EQ(gpu.num_events, cpu.num_events) << w.name;
+            EXPECT_EQ(cpu.num_events, steps == 1 ? 2u : 4u) << w.name;
+        }
+    }
 }
 
 // EVERY STATE EDGE ID NAMES AN EDGE IN THE TABLE, AND THAT EDGE'S VERTICES ARE IN THE POOL.

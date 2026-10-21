@@ -267,8 +267,8 @@ TEST_F(IRCanonicalizationTest, AreIsomorphicMethod) {
 
 namespace {
 
-// Flatten a heap edge list to the shared core's convention (local vertex ids assigned in
-// sorted original-id order, the engines' rule) and run ir_canonical_hash with orbit and
+// Flatten a heap edge list for the shared core (local vertex ids assigned in
+// sorted original-id order; orbits do not depend on the numbering) and run ir_canonical_hash with orbit and
 // class outputs, retrying deeper exactly as the engines do.
 uint64_t shared_core_orbits(const std::vector<std::vector<hypergraph::VertexId>>& edges,
                             std::vector<uint32_t>& orbit, std::vector<uint32_t>& klass) {
@@ -455,7 +455,7 @@ uint64_t marked_hash(const std::vector<std::vector<hypergraph::VertexId>>& edges
     }
     const uint32_t occ = static_cast<uint32_t>(ev.size());
     std::vector<uint32_t> verts(occ);
-    uint32_t n = hgcommon::ir_renumber_sorted(ev.data(), occ, verts.data());
+    uint32_t n = hgcommon::ir_renumber_encounter(ev.data(), occ, verts.data());
     auto is_marked = [&](uint32_t i) { return marked.count(i) != 0; };
     ev.resize(occ + hgcommon::ir_colour_extra_occ(ea.data(), e, is_marked));
     const uint32_t total = hgcommon::ir_colour_pad(ea.data(), eoff.data(), ev.data(), e, occ, n,

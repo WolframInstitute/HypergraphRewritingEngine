@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include "hypergraph/parallel_evolution.hpp"
 #include "hypergraph/rewriter.hpp"
+#include "hgcommon/park_gate.hpp"
+#include "hgcommon/cache_line.hpp"
 #include <set>
 #include <chrono>
 
@@ -288,4 +290,93 @@ TEST(EvolutionBounds, RuleBuilder_OverMaxPatternEdges_Throws) {
 TEST(EvolutionBounds, RuleBuilder_VectorOverload_OverMaxArity_Throws) {
     std::vector<uint8_t> huge(MAX_ARITY + 1, 0);
     EXPECT_THROW(make_rule(0).lhs(huge), std::length_error);
+}
+
+// H5 (docs/TUNING.md): the causal sets' first table size. Without a step cap it is 8192 above
+// 4 GB of available memory and 1024 below; with a cap it follows the key bound. The relation is
+// the same at every capacity and thread count.
+TEST(ParallelEvolution, CausalSetCapacityChangesNoRelation) {
+    EXPECT_EQ(ParallelEvolutionEngine::derived_causal_set_capacity(5, 0, 2, uint64_t{8} << 30), 8192u);
+    EXPECT_EQ(ParallelEvolutionEngine::derived_causal_set_capacity(5, 0, 2, uint64_t{2} << 30), 1024u);
+    EXPECT_EQ(ParallelEvolutionEngine::derived_causal_set_capacity(5, 10, 2, uint64_t{8} << 30), 1024u);
+    // (1 + 100 x 1000) x 3 keys over 64 shards at 0.75: 6250 per shard, so 8192.
+    EXPECT_EQ(ParallelEvolutionEngine::derived_causal_set_capacity(100, 1000, 3, 0), 8192u);
+    EXPECT_EQ(ParallelEvolutionEngine::derived_causal_set_capacity(1u << 20, 1u << 20, 16, 0), 65536u);
+
+    std::vector<std::vector<VertexId>> initial = {{0, 1}, {1, 2}, {2, 0}};
+    size_t ref_causal = 0, ref_pairs = 0, ref_events = 0;
+    bool first = true;
+    for (size_t capacity : {size_t{0}, size_t{1}, size_t{1024}, size_t{65536}}) {
+        for (size_t threads : {1, 4, 32}) {
+            Hypergraph hg;
+            ParallelEvolutionEngine engine(&hg, threads);
+            hgcommon::TuningOverrides t;
+            if (capacity) t.set(hgcommon::Tune::CausalSetCapacity, static_cast<int64_t>(capacity));
+            engine.set_tuning(t);
+            engine.add_rule(par_two_edge_rule());
+            engine.evolve(initial, 4);
+            if (capacity) EXPECT_EQ(engine.causal_set_capacity(), capacity);
+            if (first) {
+                ref_causal = hg.num_causal_edges();
+                ref_pairs = hg.num_causal_event_pairs();
+                ref_events = engine.num_events();
+                EXPECT_GT(ref_pairs, 0u);
+                first = false;
+            }
+            EXPECT_EQ(hg.num_causal_edges(), ref_causal) << capacity << " / " << threads;
+            EXPECT_EQ(hg.num_causal_event_pairs(), ref_pairs) << capacity << " / " << threads;
+            EXPECT_EQ(engine.num_events(), ref_events) << capacity << " / " << threads;
+        }
+    }
+}
+
+// H4 (docs/TUNING.md): the rewrite task size. The derived size is ceil(count / workers) from 4
+// to 64; a run gives the same states, events and causal edges at every chunk size and thread
+// count. The rule has a one-edge left-hand side, so a scan task hands a state's whole match set
+// to one expansion and the chunking applies.
+TEST(ParallelEvolution, ExpandChunkChangesNoResult) {
+    EXPECT_EQ(ParallelEvolutionEngine::derived_expand_chunk(3, 32), 4u);
+    EXPECT_EQ(ParallelEvolutionEngine::derived_expand_chunk(100, 32), 4u);
+    EXPECT_EQ(ParallelEvolutionEngine::derived_expand_chunk(200, 32), 7u);
+    EXPECT_EQ(ParallelEvolutionEngine::derived_expand_chunk(100, 1), 64u);
+    EXPECT_EQ(ParallelEvolutionEngine::derived_expand_chunk(30, 1), 30u);
+    EXPECT_EQ(ParallelEvolutionEngine::derived_expand_chunk(30, 0), 30u);
+
+    std::vector<std::vector<VertexId>> initial;
+    for (VertexId v = 0; v < 40; ++v) initial.push_back({v, v + 1});
+    size_t ref_states = 0, ref_events = 0, ref_causal = 0;
+    bool first = true;
+    for (size_t chunk : {size_t{0}, size_t{1}, size_t{16}, size_t{64}}) {
+        for (size_t threads : {1, 4, 32}) {
+            Hypergraph hg;
+            hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+            ParallelEvolutionEngine engine(&hg, threads);
+            hgcommon::TuningOverrides t;
+            if (chunk) t.set(hgcommon::Tune::ExpandChunk, static_cast<int64_t>(chunk));
+            engine.set_tuning(t);
+            engine.add_rule(par_simple_rule());
+            engine.evolve(initial, 2);
+            if (first) {
+                ref_states = hg.num_canonical_states();
+                ref_events = engine.num_events();
+                ref_causal = hg.num_causal_event_pairs();
+                EXPECT_GT(ref_events, 40u);
+                first = false;
+            }
+            EXPECT_EQ(hg.num_canonical_states(), ref_states) << chunk << " / " << threads;
+            EXPECT_EQ(engine.num_events(), ref_events) << chunk << " / " << threads;
+            EXPECT_EQ(hg.num_causal_event_pairs(), ref_causal) << chunk << " / " << threads;
+        }
+    }
+}
+
+// H16 (docs/TUNING.md): one cache-line constant aligns every per-thread slot. 64 bytes here;
+// 128 on Apple aarch64 (the sources compile with HG_DESTRUCTIVE_LINE=128).
+TEST(CacheLine, EveryPerThreadSlotIsOneConstantAligned) {
+#if defined(__x86_64__) || (defined(__aarch64__) && !defined(__APPLE__))
+    EXPECT_EQ(hgcommon::kDestructiveLine, 64u);
+#endif
+    EXPECT_EQ(alignof(hgcommon::ParkGate::Domain), hgcommon::kDestructiveLine);
+    EXPECT_EQ(sizeof(hgcommon::ParkGate::Domain) % hgcommon::kDestructiveLine, 0u);
+    EXPECT_EQ(ConcurrentHeterogeneousArena::kMaxAlign, hgcommon::kDestructiveLine);
 }

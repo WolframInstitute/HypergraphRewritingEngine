@@ -1,5 +1,6 @@
 #include "hg_gpu/engine_state.hpp"
-#include "hg_gpu/persistent.hpp"   // default_persistent_grid
+#include "hg_gpu/persistent.hpp"
+#include "hg_gpu/device_probe.hpp"   // grid_stride_blocks
 #include "hg_gpu/device_arena.hpp"
 #include "hg_gpu/match.hpp"
 #include "hg_gpu/vertex_inverted_index.hpp"
@@ -112,8 +113,7 @@ void ClearBatch::flush() {
     uint64_t most = 0;
     for (uint32_t i = 0; i < set_.n; ++i) most = std::max<uint64_t>(most, set_.r[i].bytes / 4u);
     constexpr uint32_t block = 256;
-    const uint32_t x = static_cast<uint32_t>(
-        std::min<uint64_t>(std::max<uint64_t>((most + block - 1) / block, 1), 1024));
+    const uint32_t x = grid_stride_blocks(most, block);
     k_clear_regions<<<dim3(x, set_.n), block>>>(set_);
     HG_CUDA_CHECK(cudaGetLastError(), "ClearBatch launch");
     set_.n = 0;
@@ -214,11 +214,16 @@ EngineState::EngineState(EngineConfig cfg): cfg_(cfg)
         HG_CUDA_CHECK(cudaMalloc(&event_consumed_,
               sizeof(EdgeId) * uint64_t(cfg_.max_events) * event_consumed_stride(cfg_)),
               "EngineState event_consumed alloc");
+        // Filled with INVALID_ID once: an event writes only its rule's left-hand-side count of
+        // its stride, an abandoned event none, and the readback copies whole strides.
+        HG_CUDA_CHECK(cudaMemset(event_consumed_, 0xFF,
+              sizeof(EdgeId) * uint64_t(cfg_.max_events) * event_consumed_stride(cfg_)),
+              "EngineState event_consumed init");
         // One reachability slice per persistent block, taken by whichever thread needs one
         // (rewrite.cu is_reachable_preds). The visited table is masked, so the scale is rounded
         // up to a power of two.
         cfg_.tr_scratch_scale = tr_scratch_scale_of(cfg_);
-        tr_scratch_slots_ = default_persistent_grid();
+        tr_scratch_slots_ = persistent_grid_of(cfg_);
         HG_CUDA_CHECK(cudaMalloc(&tr_scratch_, sizeof(uint32_t) * tr_scratch_slots_ *
                                                    (kTrScratchStack + kTrScratchVisited) *
                                                    cfg_.tr_scratch_scale),
@@ -415,6 +420,7 @@ DeviceState EngineState::device() const {
         d.step_pending                     = states_per_step_;
         d.step_slots                       = states_per_step_slots_;
         d.max_successor_states_per_parent  = max_succ_per_parent_;
+        d.lane_backlog                     = lane_backlog_of(cfg_);
         d.matches_per_state_rule           = matches_per_state_rule_;
         d.num_rules                        = num_rules_;
         // The orbit arrays stay allocated after a run that used them; a later run of this engine
