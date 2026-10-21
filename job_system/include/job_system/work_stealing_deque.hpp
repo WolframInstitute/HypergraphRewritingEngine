@@ -1,5 +1,6 @@
 #pragma once
 #include "hgcommon/namespace.hpp"
+#include "hgcommon/cache_line.hpp"
 #include "hgcommon/rendezvous.hpp"
 
 #include <atomic>
@@ -34,8 +35,8 @@ class WorkStealingDeque {
 
     const std::size_t capacity_;
     const std::int64_t mask_;
-    alignas(64) std::atomic<std::int64_t> top_{0};      // stolen end (thieves)
-    alignas(64) std::atomic<std::int64_t> bottom_{0};   // owner end
+    alignas(hgcommon::kDestructiveLine) std::atomic<std::int64_t> top_{0};      // stolen end (thieves)
+    alignas(hgcommon::kDestructiveLine) std::atomic<std::int64_t> bottom_{0};   // owner end
     std::vector<std::atomic<T>> buffer_;
 
 public:

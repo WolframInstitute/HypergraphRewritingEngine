@@ -1,5 +1,6 @@
 #pragma once
 #include "hgcommon/core.hpp"
+#include "hgcommon/cache_line.hpp"
 #include "hgcommon/namespace.hpp"
 //
 // THE PARK/WAKE HANDSHAKE: a worker with nothing to do sleeps, and a submitter wakes one.
@@ -83,7 +84,7 @@ public:
     // ONE CACHE LINE PER DOMAIN. Every submit reads these and every park writes them, so two
     // domains sharing a line would reintroduce between domains exactly the sharing that splitting
     // by domain exists to remove.
-    struct alignas(64) Domain {
+    struct alignas(hgcommon::kDestructiveLine) Domain {
         std::atomic<uint32_t> seq{0};
         std::atomic<int>      idle{0};
     };
@@ -273,10 +274,10 @@ private:
     int      workers_ = 1;
     bool     throttled_ = true;
     // The GLOBAL idle count, which is what lets a submit skip the per-domain scan entirely.
-    alignas(64) std::atomic<int> idle_{0};
+    alignas(hgcommon::kDestructiveLine) std::atomic<int> idle_{0};
     std::atomic<size_t> park_waits_{0};
     // Read by every submit and written by every search: its own line.
-    alignas(64) std::atomic<int> searching_{0};
+    alignas(hgcommon::kDestructiveLine) std::atomic<int> searching_{0};
 #if HG_ENGINE_STATS
     std::atomic<int> searching_max_{0};
 #endif

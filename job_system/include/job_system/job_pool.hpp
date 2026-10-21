@@ -1,5 +1,6 @@
 #pragma once
 #include "hgcommon/namespace.hpp"
+#include "hgcommon/cache_line.hpp"
 
 #include <atomic>
 #include <cstddef>
@@ -97,7 +98,7 @@ private:
     static JobSlotPool* tls_pool();
 
     void* local_free_head_ = nullptr;                                  // owner-thread only
-    alignas(64) std::atomic<void*> foreign_free_head_{nullptr};        // cross-thread frees
+    alignas(hgcommon::kDestructiveLine) std::atomic<void*> foreign_free_head_{nullptr};        // cross-thread frees
     char* chunk_list_head_ = nullptr;                                  // freed by trim_retired_pools
     int registry_slot_ = -1;                                           // home slot, or -1
 

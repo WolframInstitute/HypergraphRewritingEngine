@@ -1,5 +1,6 @@
 #pragma once
 #include "hgcommon/core.hpp"
+#include "hgcommon/cache_line.hpp"
 #include "hgcommon/namespace.hpp"
 //
 // THE DEPTH JOIN: deciding that a depth of a breadth-first exploration can receive no more work,
@@ -42,7 +43,7 @@ namespace common {
 // 64-byte line at the natural 16-byte size. Depths run CONCURRENTLY by construction, so those
 // four counters are written by different threads at the same time and the line ping-pongs
 // between cores for no reason: nothing reads a neighbour's field.
-struct alignas(64) DepthSlot {
+struct alignas(hgcommon::kDestructiveLine) DepthSlot {
     std::atomic<size_t>  live{0};       // tasks and holds pushed at this depth, minus those done
     std::atomic<uint8_t> complete{0};
     std::atomic<uint8_t> arrived{0};    // a task was pushed here (push)
@@ -69,7 +70,7 @@ struct NoDepthExtra {};
 template <class Extra = NoDepthExtra>
 class GrowingDepthSlots {
 public:
-    struct alignas(64) Entry { DepthSlot slot; Extra extra; };
+    struct alignas(hgcommon::kDestructiveLine) Entry { DepthSlot slot; Extra extra; };
     static constexpr uint32_t kSegments = 27;
 
     GrowingDepthSlots() {

@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include "hypergraph/parallel_evolution.hpp"
 #include "hypergraph/rewriter.hpp"
+#include "hgcommon/park_gate.hpp"
+#include "hgcommon/cache_line.hpp"
 #include <set>
 #include <chrono>
 
@@ -366,4 +368,15 @@ TEST(ParallelEvolution, ExpandChunkChangesNoResult) {
             EXPECT_EQ(hg.num_causal_event_pairs(), ref_causal) << chunk << " / " << threads;
         }
     }
+}
+
+// H16 (docs/TUNING.md): one cache-line constant aligns every per-thread slot. 64 bytes here;
+// 128 on Apple aarch64 (the sources compile with HG_DESTRUCTIVE_LINE=128).
+TEST(CacheLine, EveryPerThreadSlotIsOneConstantAligned) {
+#if defined(__x86_64__) || (defined(__aarch64__) && !defined(__APPLE__))
+    EXPECT_EQ(hgcommon::kDestructiveLine, 64u);
+#endif
+    EXPECT_EQ(alignof(hgcommon::ParkGate::Domain), hgcommon::kDestructiveLine);
+    EXPECT_EQ(sizeof(hgcommon::ParkGate::Domain) % hgcommon::kDestructiveLine, 0u);
+    EXPECT_EQ(ConcurrentHeterogeneousArena::kMaxAlign, hgcommon::kDestructiveLine);
 }

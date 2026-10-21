@@ -1,5 +1,6 @@
 #pragma once
 #include "hgcommon/namespace.hpp"
+#include "hgcommon/cache_line.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -101,7 +102,7 @@ private:
 
     const std::uint32_t capacity_;
     const std::uint32_t mask_;
-    alignas(64) std::atomic<std::uint64_t> ht_{0};   // packed {tag, head, tail}
+    alignas(hgcommon::kDestructiveLine) std::atomic<std::uint64_t> ht_{0};   // packed {tag, head, tail}
     std::vector<std::atomic<Slot>> buffer_;
 
     bool is_full(std::uint64_t v) const {

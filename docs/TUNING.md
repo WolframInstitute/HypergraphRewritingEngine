@@ -305,6 +305,8 @@ The C1 gate is `mono_check` with no violation at the 5% band for the throttle; t
 
 States on these rows hold at most 7 matches, so at 4 or more workers the derived size splits a 5-to-7-match state into tasks of 4 where 16 ran it inline; at one worker the job counts are equal. Test: `ParallelEvolution.ExpandChunkChangesNoResult` (the derivation's cases; canonical states, events and causal pairs equal at chunk sizes 1, 16, 64 and derived, at 1, 4 and 32 threads).
 
+**H16 cache line.** `hgcommon::kDestructiveLine` (`common/include/hgcommon/cache_line.hpp`) is 128 bytes on Apple aarch64 and 64 elsewhere, `HG_DESTRUCTIVE_LINE` at compile time overrides it, and the 37 `alignas` sites of per-thread data in `common/`, `hypergraph/`, `job_system/` and `lockfree_deque/`, `ConcurrentMap`'s table line and the arena's largest alignment (`kMaxAlign`) read it. On x86-64 the value is 64, the constant every site held, so the layout of every type is unchanged. Check: the engine, job system and FFI sources compile with `-DHG_DESTRUCTIVE_LINE=128` (clang `-fsyntax-only`); test `CacheLine.EveryPerThreadSlotIsOneConstantAligned`.
+
 ## 3. Constants that are not tuning
 
 | Kind | Constants |

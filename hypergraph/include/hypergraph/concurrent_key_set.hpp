@@ -1,5 +1,6 @@
 #pragma once
 #include "hgcommon/core.hpp"
+#include "hgcommon/cache_line.hpp"
 #include "hgcommon/namespace.hpp"
 
 #include <atomic>
@@ -612,7 +613,7 @@ private:
     ConcurrentHeterogeneousArena* arena_;
     size_t working_capacity_ = WORKING_CAPACITY;
 
-    alignas(64) std::atomic<size_t> count_;
+    alignas(hgcommon::kDestructiveLine) std::atomic<size_t> count_;
     // The growth ticket; see insert. Not a lock -- a thread that fails to take it proceeds to its
     // probe without waiting, and the re-drive on an exhausted run is not ticketed at all.
     std::atomic<bool> growing_{false};

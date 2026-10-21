@@ -1,5 +1,6 @@
 #pragma once
 #include "hgcommon/namespace.hpp"
+#include "hgcommon/cache_line.hpp"
 
 #include <cstdint>
 
@@ -64,15 +65,15 @@ enum class Phase : uint32_t {
 
 // One cache line per phase per worker, so two workers never share a line and the counters
 // cannot manufacture the contention they are measuring.
-struct alignas(64) PhaseSlot {
+struct alignas(hgcommon::kDestructiveLine) PhaseSlot {
     uint64_t cycles[static_cast<uint32_t>(Phase::Count)] = {};
 };
-// alignas(64) already makes sizeof a multiple of 64 -- a type's size is always a multiple of its
+// The alignas already makes sizeof a multiple of the line -- a type's size is always a multiple of its
 // alignment -- so the slot occupies whole lines without a padding member, and the assertion is
 // what says so rather than a comment. A hand-computed `64 - (8*Count) % 64` filler cannot state
 // it: at Count == 8 that expression is 64, which appends a whole dead line to every one of the
 // 256 slots at the exact point the counters start needing a second line anyway.
-static_assert(sizeof(PhaseSlot) % 64 == 0,
+static_assert(sizeof(PhaseSlot) % hgcommon::kDestructiveLine == 0,
               "a PhaseSlot must occupy whole cache lines, so two threads never share one");
 
 inline constexpr uint32_t kMaxTimedThreads = 256;

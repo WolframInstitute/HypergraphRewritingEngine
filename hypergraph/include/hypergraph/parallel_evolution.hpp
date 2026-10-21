@@ -1,5 +1,6 @@
 #pragma once
 #include "hgcommon/core.hpp"
+#include "hgcommon/cache_line.hpp"
 #include "hgcommon/namespace.hpp"
 #include "hgcommon/tuning.hpp"
 
@@ -166,7 +167,7 @@ struct EvolutionStats {
         size_t get() const { return v.load(std::memory_order_relaxed); }
     };
 
-    struct alignas(64) Slot {
+    struct alignas(hgcommon::kDestructiveLine) Slot {
 #define HG_DECL_COUNTER(name) Counter name;
         HG_EVOLUTION_COUNTERS(HG_DECL_COUNTER)
 #undef HG_DECL_COUNTER
@@ -844,10 +845,10 @@ private:
 
     // Statistics (atomics for thread-safety)
     // Four hot counters in 32 bytes would share a line; one each (see EvolutionStats).
-    alignas(64) std::atomic<size_t> total_matches_found_{0};
-    alignas(64) std::atomic<size_t> total_rewrites_{0};
-    alignas(64) std::atomic<size_t> total_events_{0};
-    alignas(64) std::atomic<size_t> rejected_duplicates_{0};
+    alignas(hgcommon::kDestructiveLine) std::atomic<size_t> total_matches_found_{0};
+    alignas(hgcommon::kDestructiveLine) std::atomic<size_t> total_rewrites_{0};
+    alignas(hgcommon::kDestructiveLine) std::atomic<size_t> total_events_{0};
+    alignas(hgcommon::kDestructiveLine) std::atomic<size_t> rejected_duplicates_{0};
 
     // Evolution statistics
 #if HG_ENGINE_STATS
