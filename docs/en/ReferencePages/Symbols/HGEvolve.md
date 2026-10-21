@@ -61,7 +61,7 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 | `"StateBitvectors"` | an association from each state id to the ids of the hyperedges the state holds |
 | `"StepStatistics"` | for each step, statistics of the states at that step |
 | `"Debug"` | an association of the four counts |
-| `"Device"` | the device that ran the evolution, an association with the key `"Type"` (`"CPU"` or `"GPU"`) and, for the GPU, `"Name"` and `"ComputeCapability"` |
+| `"Device"` | the device that ran the evolution and the tuning values it used, an association with the keys `"Type"` (`"CPU"` or `"GPU"`) and `"Threads"`; on the CPU `"CausalSetCapacity"`; on the GPU `"Name"`, `"ComputeCapability"`, `"MemoryCap"`, `"Blocks"`, `"Backlog"` and `"L2Persist"` |
 | `"All"` | an association of the states, the events, the two relations and the four counts, with a `"Warnings"` key when the run warns |
 
 - A list of properties gives an association keyed by the property names, computed from one evolution.
@@ -143,6 +143,8 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 | `"ShowGenesisEvents"` | `False` | whether the events that create the initial states are part of the result |
 | `"ColorByRule"` | `False` | whether a styled graph colors each transition by the rule that fired it, with a legend |
 | `"MultiedgeStyle"` | `Automatic` | `Automatic` draws one edge per event or pair; `"Merged"` draws edges with the same endpoints as one edge |
+| `"Threads"` | `Automatic` | the number of worker threads; `Automatic` uses one per logical CPU the kernel process may run on |
+| `"Tuning"` | `<\|\|>` | expert overrides of derived tuning values, by name |
 | `"ShowProgress"` | `False` | whether to print the engine's progress |
 | `"DebugFFI"` | `False` | whether to print what is requested from the engine and what it returns |
 
@@ -154,6 +156,7 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 - `"MaxSuccessorStatesPerParent"` and `"MaxStatesPerStep"` count successor states as `"CanonicalizeStates"` identifies them: under `None` every transition makes its own state, under `Automatic` transitions that make identical edge lists make one state, and under `Full` transitions that make isomorphic states make one state. A successor state ranks by the lowest rank of the transitions into it, and every transition into a kept successor state is kept. `"MatchesPerStateRule"` and `"MatchesPerStep"` count transitions.
 - `"TransitionRate"` keeps a state's lowest-keyed transitions when every draw at that state failed, so a sparse sample reaches the requested depth. `"ExplorationProbability"` does not.
 - Without a `"RandomSeed"` each call draws a new seed, as other random functions do; give `"RandomSeed"` or call `SeedRandom` first to repeat a sampled run.
+- `"Threads"` and `"Tuning"` change how fast an evolution runs and how much memory it takes; the states, events and relations are the same at every setting. `"Tuning"` takes an association of names and integers: `"CausalSetCapacity"` (the first table size, per shard, of the CPU engine's causal relation sets), `"ExpandChunk"` (the matches of one state rewritten per task on the CPU), `"GPUBlocks"` (the blocks of the GPU's persistent kernel), `"GPUBacklog"` (the waiting matches below which a GPU block takes one at a time), `"GPUMemoryLimit"` (the bytes of device memory a GPU evolution may use) and `"GPUL2Persist"` (the bytes of L2 cache the GPU keeps for its state table; `0` keeps none). A name it does not list is skipped with the message `HGEvolve::warn`. The environment variables `HG_TUNE_THREADS`, `HG_TUNE_CAUSAL_SET_CAPACITY`, `HG_TUNE_EXPAND_CHUNK`, `HG_TUNE_GPU_BLOCKS`, `HG_TUNE_GPU_BACKLOG`, `HG_TUNE_GPU_MEMORY_LIMIT` and `HG_TUNE_GPU_L2_PERSIST` set the same values for every evolution of the engine process; an option given to [HGEvolve]() takes precedence.
 - `"TargetDevice" -> "GPU"` runs the evolution on the GPU engine bundled for the platform, which gives the same states, events and relations as the CPU. The GPU engine needs an NVIDIA GPU of compute capability 7.5, 8.0, 8.6, 8.9 or 9.0 and NVIDIA driver 580 or newer. Where no GPU engine is bundled, or the machine has no usable NVIDIA GPU, the message `HGEvolve::gpudev` names the reason and the evolution runs on the CPU. The result is kept for the Wolfram Language session, so later GPU evaluations go to the CPU with the same message. `"TargetDevice" -> {"GPU", "Strict" -> True}` gives `$Failed` with the message `HGEvolve::nogpu` instead. An evolution whose result is partial, such as a GPU evolution that reaches a capacity limit, issues `HGEvolve::overflow` with the reason and gives the partial result.
 - A generated initial condition is named by *init*: `"Grid"`, `"Cylinder"`, `"Torus"`, `"Sphere"`, `"Klein"`, `"Mobius"`, `"Sprinkling"` (also `"Minkowski"`), `"BrillLindquist"`, `"Poisson"` or `"Uniform"`. The same names go in the `"Type"` key of an association, where the other keys shape the instance and take precedence over the options below.
 - The initial-condition options are:
@@ -1255,14 +1258,14 @@ chain = {{1, 2}} -> {{1, 3}, {3, 2}};
 
 ---
 
-The `"Device"` property names the device that ran the evolution. On the GPU it also gives the name and compute capability of the card:
+The `"Device"` property names the device that ran the evolution and the tuning values it used. On the GPU it also gives the name and compute capability of the card:
 
 ```wl
 chain = {{1, 2}} -> {{1, 3}, {3, 2}};
 Keys /@ {HGEvolve[chain, {{1, 2}}, 3, "Device", "TargetDevice" -> "GPU"], HGEvolve[chain, {{1, 2}}, 3, "Device"]}
 ```
 
-<!-- => {{"Type", "Name", "ComputeCapability"}, {"Type"}} -->
+<!-- => {{"Type", "Name", "ComputeCapability", "MemoryCap", "Blocks", "Backlog", "L2Persist", "Threads"}, {"Type", "Threads", "CausalSetCapacity"}} -->
 
 ### "RandomSeed"
 
@@ -1374,6 +1377,39 @@ EdgeCount[HGEvolve[chain, {{1, 2}}, 5, "StatesGraph", "CanonicalizeStates" -> Fu
 
 <!-- => 5 -->
 
+### "Threads"
+
+The number of worker threads. The result is the same at every count:
+
+```wl
+chain = {{1, 2}} -> {{1, 3}, {3, 2}};
+{HGEvolve[chain, {{1, 2}}, 6, "NumStates", "Threads" -> 1], HGEvolve[chain, {{1, 2}}, 6, "NumStates", "Threads" -> 4]}
+```
+
+<!-- => {874, 874} -->
+
+---
+
+The `"Device"` property gives the count a run used:
+
+```wl
+chain = {{1, 2}} -> {{1, 3}, {3, 2}};
+HGEvolve[chain, {{1, 2}}, 3, "Device", "Threads" -> 2]["Threads"]
+```
+
+<!-- => 2 -->
+
+### "Tuning"
+
+An override replaces the derived value, which the `"Device"` property reports:
+
+```wl
+chain = {{1, 2}} -> {{1, 3}, {3, 2}};
+HGEvolve[chain, {{1, 2}}, 3, "Device", "Tuning" -> <|"CausalSetCapacity" -> 2048|>]["CausalSetCapacity"]
+```
+
+<!-- => 2048 -->
+
 ### "ShowProgress"
 
 With `True`, the engine's progress is printed; the result is unchanged:
@@ -1405,7 +1441,7 @@ chain = {{1, 2}} -> {{1, 3}, {3, 2}};
 HGEvolve[chain, {{1, 2}}, 3, "StatesGraphStructure", AspectRatio -> 1/3, ImageSize -> 300]
 ```
 
-![Every option of Graph goes to the graph a graph property returns, and a value given in the call replaces the default](../../images/HGEvolve/HGEvolve-134.png)
+![Every option of Graph goes to the graph a graph property returns, and a value given in the call replaces the default](../../images/HGEvolve/HGEvolve-137.png)
 
 ```wl
 Options[HGEvolve[chain, {{1, 2}}, 3, "StatesGraphStructure", AspectRatio -> 1/3], AspectRatio]
@@ -1420,7 +1456,7 @@ triangle = {{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}};
 HGEvolve[triangle, {{1, 2}, {1, 3}}, 2, "StatesGraphStructure", VertexLabels -> Automatic, AspectRatio -> 1/2]
 ```
 
-![VertexLabels shows the state ids of a Structure graph](../../images/HGEvolve/HGEvolve-136.png)
+![VertexLabels shows the state ids of a Structure graph](../../images/HGEvolve/HGEvolve-139.png)
 
 ### "GridWidth"
 
@@ -1575,7 +1611,7 @@ HGEvolve[triangle, <|"Type" -> "Sprinkling", "Density" -> 12, "Seed" -> 1|>, 1, 
 HGEvolve[triangle, <|"Type" -> "Sprinkling", "Density" -> 12, "Seed" -> 1|>, 1, "StatesGraphStructure", ImageSize -> 450, AspectRatio -> 1/2]
 ```
 
-![One step of the triangle rule closes a triangle over each pair of links with the same first vertex, and reaches 43 states](../../images/HGEvolve/HGEvolve-151.png)
+![One step of the triangle rule closes a triangle over each pair of links with the same first vertex, and reaches 43 states](../../images/HGEvolve/HGEvolve-154.png)
 
 Two steps reach 239 states up to isomorphism:
 
@@ -1729,7 +1765,7 @@ A styled graph draws every state, so a styled picture of a large evolution is sl
 HGEvolve[{{1, 2}, {1, 3}} -> {{1, 2}, {1, 4}, {2, 4}, {3, 4}}, {{1, 2}, {1, 3}}, 4, "StatesGraphStructure", "CanonicalizeStates" -> Full, ImageSize -> 450, AspectRatio -> 1/2]
 ```
 
-![A styled graph draws every state, so a styled picture of a large evolution is slow to render and hard to read.](../../images/HGEvolve/HGEvolve-167.png)
+![A styled graph draws every state, so a styled picture of a large evolution is slow to render and hard to read.](../../images/HGEvolve/HGEvolve-170.png)
 
 ---
 
