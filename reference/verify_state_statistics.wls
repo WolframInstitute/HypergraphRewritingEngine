@@ -296,8 +296,13 @@ Do[
           Module[{m = rec["StateMatrices"], ids, want, sts},
             ids = Sort[DeleteDuplicates[#CanonicalId & /@ Select[Values[res["States"]],
               #Step == rec["Step"] &]]];
-            If[MissingQ[m] || m["States"] =!= ids,
+            Which[
+              (* Above "StepStatisticsMatrixLimit" (1000) a step has no matrices. *)
+              Length[ids] > 1000,
+              If[!MissingQ[m], AppendTo[bad, {rec["Step"], "over the limit", Length[ids]}]],
+              MissingQ[m] || m["States"] =!= ids,
               AppendTo[bad, {rec["Step"], "States", ids}],
+              True,
               sts = Lookup[res["States"], ids];
               want = sgrStateMatrices[Union[Flatten[#Edges[[All, 2 ;;]]]] & /@ sts,
                 #Edges[[All, 2 ;;]] & /@ sts];
