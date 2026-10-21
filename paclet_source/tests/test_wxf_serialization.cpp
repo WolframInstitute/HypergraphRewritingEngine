@@ -4874,6 +4874,26 @@ TEST(StateStatistics, StateMatricesOfASmallStep) {
     EXPECT_EQ(assoc_at(one, "StateOverlap"), nullptr);
 }
 
+// A step of one state has 1 x 1 matrices: the overlap and the cosine 1, the mutual information
+// 0 (the state is U), over vertices and over edges, with and without the overlap keys. The step
+// has no pair, so its triangle of shared counts is empty.
+TEST(StateStatistics, StateMatricesOfOneState) {
+    hg::stats::BranchialStep s;
+    s.nodes = {4};
+    s.vertex_sets = {{0, 1, 2}};
+    s.edge_sets = {{7, 8}};
+    for (const uint32_t which : {all_matrices(), all_matrices() | hg::stats::kBranchialOverlap}) {
+        const wxf::WXFValue rec(branchial_keys({{1u, s}}, which).at(1));
+        ASSERT_NE(assoc_at(rec, "StateMatrices"), nullptr) << which;
+        const ReadMatrices m = read_matrices(*assoc_at(rec, "StateMatrices"));
+        EXPECT_EQ(m.states, (std::vector<int64_t>{4}));
+        ASSERT_EQ(m.m.size(), 6u);
+        for (size_t i = 0; i < 6; ++i)
+            EXPECT_EQ(m.m[i].second, (std::vector<std::vector<double>>{{i % 3 == 2 ? 0.0 : 1.0}}))
+                << m.m[i].first << " which " << which;
+    }
+}
+
 // A step above "StepStatisticsMatrixLimit" has no "StateMatrices" and reports its state count;
 // a step at the limit has them.
 TEST(StateStatistics, StateMatricesRespectTheLimit) {

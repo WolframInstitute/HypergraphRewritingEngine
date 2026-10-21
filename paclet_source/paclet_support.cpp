@@ -1119,7 +1119,7 @@ struct BranchialStepWork::State {
         return (which & kBranchialGraph) ? &graph : nullptr;
     }
     bool vertex_rows() const {
-        return (which & kBranchialOverlap) || !vertex_shared.empty();
+        return (which & kBranchialOverlap) || vertex_matrices.k != 0;
     }
 };
 
@@ -1218,7 +1218,7 @@ void BranchialStepWork::prepare(size_t max_parts) {
         view.to_graph = w.to_graph.data();
         view.from_graph = w.from_graph.data();
     }
-    if (w.vertex_rows() || !w.edge_shared.empty())
+    if (w.vertex_rows() || w.edge_matrices.k != 0)
         w.part.resize(std::min<size_t>(k / 64 + 1, std::max<size_t>(1, max_parts)));
 }
 
@@ -1229,11 +1229,11 @@ const hgcommon::BrStep& BranchialStepWork::rows_view() const { return s_->view; 
 bool BranchialStepWork::wants_vertex_rows() const { return s_->vertex_rows(); }
 
 hgcommon::BoMatrices* BranchialStepWork::vertex_matrices() {
-    return s_->vertex_shared.empty() ? nullptr : &s_->vertex_matrices;
+    return s_->vertex_matrices.k ? &s_->vertex_matrices : nullptr;
 }
 
 hgcommon::BoMatrices* BranchialStepWork::edge_matrices() {
-    return s_->edge_shared.empty() ? nullptr : &s_->edge_matrices;
+    return s_->edge_matrices.k ? &s_->edge_matrices : nullptr;
 }
 
 const hgcommon::BrStep& BranchialStepWork::edge_rows_view() const { return s_->edge_view; }
@@ -1332,11 +1332,11 @@ void BranchialStepWork::rows(size_t t) {
     const hgcommon::BrStep& s = w.view;
     auto& counted = w.part[t];
     const uint32_t vertex_rows = w.vertex_rows() ? s.k : 0;
-    const uint32_t edge_rows = w.edge_shared.empty() ? 0 : w.edge_view.k;
+    const uint32_t edge_rows = w.edge_matrices.k ? w.edge_view.k : 0;
     uint32_t r = w.next_row.fetch_add(1, std::memory_order_relaxed);
     if (r < vertex_rows) {
-        uint32_t* cells = w.vertex_shared.empty() ? nullptr : w.vertex_shared.data();
-        if (!cells) {
+        uint32_t* cells = w.vertex_shared.data();
+        if (!w.vertex_matrices.k) {
             HostRowCtx<false, true> c(s, counted, nullptr);
             r = run_rows(c, s, 0, vertex_rows, r, w.next_row, counted, nullptr);
         } else if (w.which & kBranchialOverlap) {
