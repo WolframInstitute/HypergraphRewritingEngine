@@ -146,7 +146,7 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 | `"ShowProgress"` | `False` | whether to print the engine's progress |
 | `"DebugFFI"` | `False` | whether to print what is requested from the engine and what it returns |
 
-- `"CanonicalizeStates"` is applied while the evolution runs, so it also determines which states are expanded. `Automatic` identifies states whose edge lists are identical. This is finer than isomorphism: two isomorphic states with different vertex names stay separate. The vertices of each initial state are numbered from 0 separately, so two initial states that differ only in vertex names are one state under `Automatic`.
+- `"CanonicalizeStates"` is applied while the evolution runs, so it also determines which states are expanded. `Automatic` identifies states whose edge lists are identical. This is finer than isomorphism: two isomorphic states with different vertex names stay separate. Initial states keep their own vertex names, so two initial states that differ only in vertex names are two states under `Automatic`.
 - `"CanonicalizeEvents"` builds an event's identity from isomorphism-invariant components. `Full` uses the canonical input and output states. `Automatic` also uses the step and the canonical positions of the consumed and produced edges within the state's isomorphism class; it needs `"CanonicalizeStates" -> Full`. `"Positional"` uses the same components with positions read from each state's own vertex labels, as the Wolfram Multicomputation paclet does. A list of any of `"InputState"`, `"OutputState"`, `"Step"`, `"Rule"`, `"ConsumedEdges"` and `"ProducedEdges"` selects the components; in a list, `"ConsumedEdges"` is the input state with the consumed edges marked and `"ProducedEdges"` the output state with the produced edges marked, each up to isomorphism. A list runs on the CPU engine under `TargetDevice -> "GPU"`.
 - With `"ExploreFromCanonicalStatesOnly" -> True`, every property is the same as under full exploration; only the cost of the evolution changes. It needs `"CanonicalizeStates" -> Full`, and it is not applied with `"MaxStatesPerStep"` or with `"UniformRandom"` and `"MatchesPerStep"`.
 - `"MaxSuccessorStatesPerParent"`, `"MaxStatesPerStep"`, `"UniformRandom"` with `"MatchesPerStep"`, `"MatchesPerStateRule"`, `"TransitionRate"` and `"ExplorationProbability"` choose from the identity of each transition or state together with `"RandomSeed"`, so the same seed keeps the same states at any thread count and on either device. A transition a cap does not keep is not taken.
@@ -782,13 +782,13 @@ HGEvolve[chain, {{{1, 2}}, {{1, 2}}}, 1, "NumStates", "CanonicalizeStates" -> Au
 
 <!-- => 3 -->
 
-So are two initial states that differ only in their vertex names, since the vertices of each initial state are numbered from 0 separately:
+Two initial states that differ only in their vertex names stay separate:
 
 ```wl
 HGEvolve[chain, {{{1, 2}}, {{5, 6}}}, 1, "NumStates", "CanonicalizeStates" -> Automatic]
 ```
 
-<!-- => 3 -->
+<!-- => 4 -->
 
 ---
 
@@ -1676,14 +1676,13 @@ Table[HGEvolve[chain, {{1, 2}}, 2, "NumEvents", "CanonicalizeStates" -> Full, "C
 
 <!-- => {3, 3} -->
 
-They differ on three steps of the triangle rule, where the positions of the edges depend on the vertex labels:
+They differ when the positions of identical edges depend on the vertex labels, as on three steps of this rule:
 
 ```wl
-triangle = {{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}};
-Table[HGEvolve[triangle, {{1, 2}, {1, 3}}, 3, "NumEvents", "CanonicalizeStates" -> Full, "CanonicalizeEvents" -> id], {id, {"Positional", Automatic}}]
+Table[HGEvolve[{{2}} -> {{2}, {2}}, {{2}, {1}, {1}}, 3, "NumEvents", "CanonicalizeStates" -> Full, "CanonicalizeEvents" -> id], {id, {"Positional", Automatic}}]
 ```
 
-<!-- => {11, 10} -->
+<!-- => {23, 21} -->
 
 ---
 
