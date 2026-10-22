@@ -1386,11 +1386,25 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
             // identity -> vertex id; read by "Events" and the graphs, so built only for those.
             std::unordered_map<uint64_t, int64_t> dense_of_sig;
             uint32_t id_bound = 0;   // every application id is below it; ids can have gaps
+            // Under ShowGenesisEvents the engine's genesis events, ascending: the i-th is reported
+            // under hgmarshal::genesis_event_id(i), and inside the graph source at id_bound + its
+            // event id.
+            std::vector<uint32_t> genesis;
+            int64_t genesis_reported(uint32_t g) const {
+                return hgmarshal::genesis_event_id(static_cast<size_t>(
+                    std::lower_bound(genesis.begin(), genesis.end(), g) - genesis.begin()));
+            }
         };
         ReconEvents recon;
         if (hg.quotient_reconstruction()) {
             recon.active = true;
             recon.id_bound = hg.reconstructed_event_id_bound();
+            if (req.show_genesis_events) {
+                const uint32_t n = hg.num_published_events();
+                for (uint32_t eid = 0; eid < n; ++eid)
+                    if (hg.get_event(eid).id != hypergraph::INVALID_ID && hg.is_genesis_event(eid))
+                        recon.genesis.push_back(eid);
+            }
             if (req.include_events || req.include_events_minimal || !req.graph_properties.empty())
                 hg.for_each_reconstructed_event(
                     [&](uint32_t dense, uint32_t raw, const hypergraph::QcEventContent&) {
@@ -1399,8 +1413,8 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
         }
         // Under ShowGenesisEvents the reconstruction's causal pairs from the genesis events
         // (Hypergraph::reconstructed_genesis_pairs), one per (genesis event, application), as
-        // full capture pairs them. A genesis event is reported under id recon.id_bound + its
-        // event id, as "Events" lists it.
+        // full capture pairs them. A genesis event is reported under recon.genesis_reported, as
+        // "Events" lists it.
         std::vector<std::pair<hypergraph::EventId, uint32_t>> recon_genesis_pairs;
         if (recon.active && req.show_genesis_events)
             recon_genesis_pairs = hg.reconstructed_genesis_pairs(
@@ -1421,11 +1435,7 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                 std::vector<uint32_t> apps;
                 for (uint32_t e = 0; e < recon.id_bound; ++e)
                     if (hg.reconstructed_event_content(e)) apps.push_back(e);
-                std::vector<uint32_t> genesis;
-                if (req.show_genesis_events)
-                    for (uint32_t eid = 0; eid < num_raw_events; ++eid)
-                        if (hg.get_event(eid).id != hypergraph::INVALID_ID && hg.is_genesis_event(eid))
-                            genesis.push_back(eid);
+                const std::vector<uint32_t>& genesis = recon.genesis;
                 sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
                 sections.write(std::string("Events"));
                 sections.write_byte(static_cast<uint8_t>(wxf::Token::Association));
@@ -1454,11 +1464,11 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                     const hypergraph::Event& event = hg.get_event(eid);
                     produced.assign(event.produced_edges, event.produced_edges + event.num_produced);
                     sections.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-                    sections.write(static_cast<int64_t>(recon.id_bound + eid));
+                    const int64_t gid = recon.genesis_reported(eid);
+                    sections.write(gid);
                     hgmarshal::write_event_record(sink,
                         hgmarshal::EventRecordIds{
-                            static_cast<int64_t>(recon.id_bound + eid),
-                            static_cast<int64_t>(recon.id_bound + eid),
+                            gid, gid,
                             static_cast<int64_t>(event.rule_index),
                             static_cast<int64_t>(event.input_state),
                             static_cast<int64_t>(event.output_state),
@@ -1553,7 +1563,7 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                                                 static_cast<int64_t>(c)});
                     });
                 for (const auto& [g, ev] : recon_genesis_pairs) {
-                    const int64_t from = static_cast<int64_t>(recon.id_bound) + g;
+                    const int64_t from = recon.genesis_reported(g);
                     causal_edges.push_back({from, dense_id(ev), from, static_cast<int64_t>(ev)});
                 }
             } else {
@@ -1810,7 +1820,7 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                 }
                 int64_t effective_event_id(uint32_t eid) const {
                     if (!recon.active) return eff_event(eid);
-                    if (genesis_id(eid)) return static_cast<int64_t>(eid);
+                    if (genesis_id(eid)) return recon.genesis_reported(eid - recon.id_bound);
                     auto it = recon.dense_of_sig.find(key(eid));
                     return it == recon.dense_of_sig.end() ? -1 : it->second;
                 }
@@ -1831,7 +1841,11 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                 }
                 bool event_fields(uint32_t eid, hgmarshal::GraphEventFields& f) const {
                     if (!recon.active) { event_data(eid, f); return true; }
-                    if (genesis_id(eid)) { event_data(eid - recon.id_bound, f); return true; }
+                    if (genesis_id(eid)) {
+                        event_data(eid - recon.id_bound, f);
+                        f.id = f.canonical_id = recon.genesis_reported(eid - recon.id_bound);
+                        return true;
+                    }
                     // What the reconstruction holds and no more: the identity, the rule, and the
                     // endpoint classes as their frame states. A reconstructed event has no
                     // consumed/produced edge lists: the replay mints an id and materialises
@@ -1914,20 +1928,10 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
             // online transitive reduction, final for an event when the event is applied
             // (hgcommon/quotient_replay_core.hpp), and the event vertex ids follow the replay's
             // raw event order (Hypergraph::for_each_reconstructed_event).
-            // On that route a genesis event is reported at the replay's id bound plus its event
-            // id, which moves with each Step, so with ShowGenesisEvents the graphs are delivered
-            // whole and the reply says so.
-            const bool genesis_moves = recon.active && req.show_genesis_events;
+            // A genesis event keeps its id across Steps (hgmarshal::genesis_event_id).
             hgffi::DeliveryCursor* cursor = nullptr;
-            if (held_session && req.delivery_delta && !genesis_moves)
-                cursor = &holder->delivery_cursor();
+            if (held_session && req.delivery_delta) cursor = &holder->delivery_cursor();
             if (held_session && !cursor) holder->delivery_cursor().reset();
-            if (held_session && req.delivery_delta && genesis_moves)
-                req.ffi_warnings.push_back(
-                    {"OptionSkipped", 1,
-                     "Delivery -> \"Delta\" with ShowGenesisEvents is not served on the quotient "
-                     "reconstruction: a genesis event's id moves with each Step. This reply "
-                     "carries the whole graph."});
             full_result.push_back(
                 {wxf::WXFValue("GraphData"),
                  hgmarshal::build_graph_data(gsrc, req.graph_properties, gopts, cursor,

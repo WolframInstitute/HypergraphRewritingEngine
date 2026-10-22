@@ -262,6 +262,38 @@ Module[{qopts = {"CanonicalizeStates" -> Full, "ExploreFromCanonicalStatesOnly" 
   check["quotient: Delta delivery is served without HGEvolve::warn", !warned];
   HGSessionClose[sB]];
 
+(* With "ShowGenesisEvents" -> True the genesis events keep their ids across Steps, so the Delta
+   graphs equal the Full ones on both routes and both devices, with no HGEvolve::warn. The GPU leg
+   is skipped without a usable device. *)
+Module[{grules = {{{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}}, ginit = {{1, 2}, {1, 3}},
+    props = {"CausalGraphStructure", "EvolutionCausalGraphStructure"}, shape, lists, run, gpuOk},
+  shape[g_] := {VertexCount[#], EdgeCount[#]} & /@ g;
+  (* Vertex and edge lists are compared within one session: raw ids are run-local (SPEC 5.1). *)
+  lists[g_] := {Sort[VertexList[#]], Sort[EdgeList[#]]} & /@ g;
+  run[device_, explore_] := Module[{opts, sA, sB, gFull, gDelta, last, whole, warned = False,
+      label = device <> If[explore, " quotient", " full capture"]},
+    opts = {"CanonicalizeStates" -> Full, "ExploreFromCanonicalStatesOnly" -> explore,
+            "ShowGenesisEvents" -> True, "TargetDevice" -> device};
+    sA = HGSessionOpen[grules, ginit, props, Sequence @@ opts];
+    gFull = Table[shape[HGSessionStep[sA, 1]], {3}];
+    HGSessionClose[sA];
+    sB = HGSessionOpen[grules, ginit, props, Sequence @@ opts];
+    gDelta = Table[last = Check[HGSessionStep[sB, 1, Automatic, "Delivery" -> "Delta"],
+        warned = True; $Failed, HGEvolve::warn]; shape[last], {3}];
+    whole = HGSessionQuery[sB];
+    HGSessionClose[sB];
+    check[label <> ", genesis events: Delta gives the SAME graphs as Full  " <> ToString[gDelta],
+          gDelta === gFull];
+    check[label <> ", genesis events: the merged Delta graphs have the vertices and edges of a Full Query",
+          lists[last] === lists[whole]];
+    check[label <> ", genesis events: Delta is served without HGEvolve::warn", !warned]];
+  run["CPU", True];
+  run["CPU", False];
+  gpuOk = Quiet[Check[HGEvolve[grules, ginit, 1, "NumStates", "TargetDevice" -> "GPU"]; True, False]];
+  If[TrueQ[gpuOk],
+    run["GPU", True]; run["GPU", False],
+    Print["SKIP  device genesis Delta leg: no usable GPU on this machine"]]];
+
 (* A property the session's Open did not name is SERVED, not warned about. A session exists to be
    continued and queried in ways its Open cannot anticipate, so it records everything and a later
    Step or Query for an artifact Open never mentioned is answered like any other. The warning this

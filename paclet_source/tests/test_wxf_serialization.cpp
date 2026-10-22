@@ -4746,20 +4746,13 @@ TEST(Session, ADeltaIsAnIncrement) {
     }
 }
 
-// "Delivery" -> "Delta" with "ShowGenesisEvents". Where a genesis event's id is taken above the
-// run's ids (the device on both routes, the host on the quotient reconstruction) it moves with
-// each Step, and the graphs are delivered whole with OptionSkipped; otherwise (the host's full
-// capture) each Step's reply is an increment. Either way the deliveries merged give the graph a
-// full Query gives. On the reconstruction the host's increments left each Step's moved genesis
-// vertices and edges in the merged graph.
+// A quotient or full-capture session with "ShowGenesisEvents" -> True, stepped three times with
+// "Delivery" -> "Delta": each Step's delivery is an increment (no vertex or edge the caller already
+// holds is sent again), and the merged deliveries equal a full Query's vertices, edges and vertex
+// data. A genesis event and the genesis state keep their ids across Steps.
 TEST(Session, ADeltaWithGenesisEvents) {
     for (const char* explore : {"True", "False"}) {
         SCOPED_TRACE(std::string("ExploreFromCanonicalStatesOnly ") + explore);
-#ifdef HG_GPU_BACKEND
-        const bool whole = true;
-#else
-        const bool whole = std::string(explore) == "True";
-#endif
         HostBridge host;
         const std::vector<std::string> props = {"CausalGraph", "EvolutionCausalGraph"};
         auto opts = [&](wxf::Writer& w) {
@@ -4776,17 +4769,24 @@ TEST(Session, ADeltaWithGenesisEvents) {
         const int64_t h = read_int_key(opened, "Session");
         ASSERT_GT(h, 0);
         std::map<std::string, DeliveredGraph> merged;
-        for (const auto& p : props) merged[p] = delivered_graph(opened, p);
+        // The first Step's delivery stands alone (the Open's graph is not recorded by the
+        // session's cursor); every later one is an increment on what came before.
         for (int step = 0; step < 3; ++step) {
             const auto out = run_rewriting_core(job(1, "Step", h, true), host);
-            EXPECT_EQ(reply_mentions(out, "OptionSkipped"), whole) << "step " << step;
+            EXPECT_FALSE(reply_mentions(out, "OptionSkipped")) << "step " << step;
             for (const auto& p : props) {
                 DeliveredGraph d = delivered_graph(out, p);
-                if (whole) EXPECT_EQ(d.is_delta, 0) << p << " step " << step;
+                if (step > 0) EXPECT_EQ(d.is_delta, 1) << p << " step " << step;
                 DeliveredGraph& m = merged[p];
                 if (d.is_delta != 1) m = DeliveredGraph{};
+                for (const auto& v : d.vertices)
+                    EXPECT_EQ(m.vertices.count(v), 0u) << p << " step " << step << " resent a vertex";
+                for (const auto& e : d.edges)
+                    EXPECT_EQ(m.edges.count(e), 0u) << p << " step " << step << " resent an edge";
+                EXPECT_FALSE(d.vertices.empty() && d.edges.empty()) << p << " step " << step;
                 m.vertices.insert(d.vertices.begin(), d.vertices.end());
                 m.edges.insert(d.edges.begin(), d.edges.end());
+                for (auto& [k, v] : d.vertex_data) m.vertex_data[k] = v;
             }
         }
         const auto full = run_rewriting_core(job(0, "Query", h, false), host);
@@ -4795,6 +4795,7 @@ TEST(Session, ADeltaWithGenesisEvents) {
             const DeliveredGraph& m = merged[p];
             EXPECT_EQ(m.vertices, f.vertices) << p;
             EXPECT_EQ(m.edges, f.edges) << p;
+            EXPECT_EQ(m.vertex_data, f.vertex_data) << p;
         }
         run_rewriting_core(job(0, "Close", h, false), host);
     }

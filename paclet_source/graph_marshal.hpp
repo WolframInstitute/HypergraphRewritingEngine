@@ -132,6 +132,14 @@ struct GraphOptions {
     int  steps = 0;                   // total evolution steps (for the from-end branchial_step)
 };
 
+// The ids a reply gives the genesis events and the genesis state (docs/SPEC.md §5.2) where the
+// engine holds no genesis event of its own: the reconstruction's applications and the GPU engine.
+// Every engine id is below 2^32, so these collide with none, and a session's Steps leave them
+// unchanged. Genesis event i belongs to the i-th initial state.
+constexpr int64_t kGenesisIdBase = int64_t{1} << 32;
+constexpr int64_t kGenesisStateId = kGenesisIdBase;
+inline int64_t genesis_event_id(size_t i) { return kGenesisIdBase + static_cast<int64_t>(i); }
+
 // Resolve branchial_step into an absolute target step (0 means "no filter").
 uint32_t branchial_target_step(int branchial_step, int steps, bool& filter_by_step);
 

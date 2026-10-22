@@ -530,8 +530,9 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
     // event's output beyond what already consumes the initial state -- so it is built from the
     // result rather than by the device, and costs a run that does not ask for it nothing.
     //
-    // Ids are taken ABOVE every id the device issued, so a genesis event and a real one can
-    // never collide in the association the caller receives.
+    // Inside this reply the genesis state and events take ids above every id the device issued;
+    // the caller is told hgmarshal::kGenesisStateId and hgmarshal::genesis_event_id(i), which no
+    // device id reaches and which a session's Steps leave unchanged.
     std::vector<hg_gpu::StateId> genesis_roots;
     std::unordered_map<hg_gpu::EdgeId, size_t> initial_edge_root;   // edge -> index in roots
     hg_gpu::StateId genesis_state_id = 0;
@@ -808,16 +809,16 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
             // 65535 is the host's RuleIndex(-1), "no rule applied", which is what produced these
             // edges.
             const hg_gpu::StateId root = genesis_roots[i];
-            const int64_t gid = static_cast<int64_t>(first_genesis_event + i);
+            const int64_t gid = hgmarshal::genesis_event_id(i);
             for (auto pe : result.edge_ids(*state_by_id.at(root)))
                 produced.push_back(static_cast<int64_t>(pe));
             out.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
             out.write(gid);
             hgmarshal::write_event_record(sink,
                 hgmarshal::EventRecordIds{gid, gid, kGenesisRuleIndex,
-                                          static_cast<int64_t>(genesis_state_id),
+                                          hgmarshal::kGenesisStateId,
                                           static_cast<int64_t>(root),
-                                          static_cast<int64_t>(genesis_state_id), rep_of(root)},
+                                          hgmarshal::kGenesisStateId, rep_of(root)},
                 job.include_events_minimal, consumed, produced);
         });
         full_result.push_back({wxf::WXFValue("Events"), wxf::WXFValue(wxf::Encoded{w.release_data()})});
@@ -848,7 +849,7 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
                 causal.push_back({recon_id(p), recon_id(c), static_cast<int64_t>(p),
                                   static_cast<int64_t>(c)});
             for (const auto& [root, ev] : recon_genesis) {
-                const int64_t from = static_cast<int64_t>(first_genesis_event + root);
+                const int64_t from = hgmarshal::genesis_event_id(root);
                 causal.push_back({from, recon_id(ev), from, static_cast<int64_t>(ev)});
             }
         }
@@ -867,8 +868,8 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
             const uint64_t key = (static_cast<uint64_t>(from) << 32) | to;
             if (!seen.insert(key).second) continue;
             if (job.include_causal_edges)
-                causal.push_back({static_cast<int64_t>(from), static_cast<int64_t>(to),
-                                  static_cast<int64_t>(from), static_cast<int64_t>(to)});
+                causal.push_back({hgmarshal::genesis_event_id(root), static_cast<int64_t>(to),
+                                  hgmarshal::genesis_event_id(root), static_cast<int64_t>(to)});
         }
         num_causal = static_cast<int64_t>(seen.size());
     }
@@ -1322,13 +1323,13 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
             return is_genesis_state(sid) || state_by_id.find(sid) != state_by_id.end();
         };
         gsrc.eff_state_ = [&](uint32_t sid) {
-            return is_genesis_state(sid) ? static_cast<int64_t>(sid) : rep_of(sid);
+            return is_genesis_state(sid) ? hgmarshal::kGenesisStateId : rep_of(sid);
         };
         gsrc.step_ = [&](uint32_t sid) { return is_genesis_state(sid) ? 0u : step_of(sid); };
         gsrc.state_data_ = [&](uint32_t sid, hgmarshal::GraphStateFields& f) {
             f.id = static_cast<int64_t>(sid);
             if (is_genesis_state(sid)) {
-                f.canonical_id = static_cast<int64_t>(sid);
+                f.id = f.canonical_id = hgmarshal::kGenesisStateId;
                 f.step = 0;
                 return;
             }
@@ -1354,7 +1355,8 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
             return event_by_id.find(eid) != event_by_id.end();
         };
         gsrc.eff_event_ = [&](uint32_t eid) -> int64_t {
-            return is_genesis_event(eid) ? static_cast<int64_t>(eid) : eff_event(eid);
+            return is_genesis_event(eid) ? hgmarshal::genesis_event_id(eid - first_genesis_event)
+                                         : eff_event(eid);
         };
         // A reconstructed application's endpoints are the states standing for its classes.
         gsrc.in_state_ = [&](uint32_t eid) -> uint32_t {
@@ -1370,10 +1372,9 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
                 const hg_gpu::StateId root = genesis_roots[eid - first_genesis_event];
                 for (auto pe : result.edge_ids(*state_by_id.at(root)))
                     f.produced.push_back(static_cast<int64_t>(pe));
-                f.id = static_cast<int64_t>(eid);
-                f.canonical_id = static_cast<int64_t>(eid);
+                f.id = f.canonical_id = hgmarshal::genesis_event_id(eid - first_genesis_event);
                 f.rule = kGenesisRuleIndex;
-                f.input = static_cast<int64_t>(genesis_state_id);
+                f.input = hgmarshal::kGenesisStateId;
                 f.output = static_cast<int64_t>(root);
                 f.input_raw = genesis_state_id;
                 f.output_raw = root;
@@ -1425,19 +1426,12 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
         gopts.edge_deduplication = job.edge_deduplication;
         gopts.branchial_step = job.branchial_step;
         gopts.steps = run_steps;
-        // DELTA DELIVERY is a held session's (Step or Query), as on the host. A genesis event's
-        // id is taken above the run's ids, so it moves with each Step; with ShowGenesisEvents
-        // the graphs are delivered whole, and the reply says so.
+        // DELTA DELIVERY is a held session's (Step or Query), as on the host.
         const bool held_verb =
             (job.session_op == "Step" || job.session_op == "Query") && held.handle != 0;
         hgffi::DeliveryCursor* cursor = nullptr;
-        if (held_verb && job.delivery_delta && !job.show_genesis_events) cursor = &held.cursor;
+        if (held_verb && job.delivery_delta) cursor = &held.cursor;
         if (held_verb && !cursor) held.cursor.reset();
-        if (held_verb && job.delivery_delta && job.show_genesis_events)
-            job.job_warnings.push_back(
-                {"OptionSkipped", 1,
-                 "Delivery -> \"Delta\" with ShowGenesisEvents is not served by the GPU engine: "
-                 "a genesis event's id moves with each Step. This reply carries the whole graph."});
         full_result.push_back({wxf::WXFValue("GraphData"),
                                hgmarshal::build_graph_data(gsrc, job.graph_properties, gopts, cursor,
                                                            reply_jobs().parallel_for())});

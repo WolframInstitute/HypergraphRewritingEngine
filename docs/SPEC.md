@@ -225,7 +225,12 @@ state has one genesis event (`"RuleIndex"` 65535), its own event under every eve
 counted in `NumEvents`, and a pair `g → c` for
 every event `c` that consumed an edge of `g`'s initial state (under `CausalTransitiveReduction`,
 only those that consumed no produced edge); its input state is not one of `"States"`. Both
-exploration routes give the same events and pairs.
+exploration routes give the same events and pairs. Under full capture the CPU engine reports a
+genesis event under its own event id; on the reconstruction route (§5.4) and on the GPU engine,
+the genesis event of the i-th initial state is reported under 2^32 + i and the GPU engine's
+genesis state under 2^32 (`hgmarshal::genesis_event_id`). Every engine id is below 2^32, and a
+session's Steps leave these ids unchanged, so `"Delivery" -> "Delta"` serves the genesis events
+as increments.
 
 **Transitive reduction (`CausalTransitiveReduction`, default on)** applies to the causal relation
 *only* (never states, events, or branchial), and removes a pair `p → c` when a longer directed
