@@ -438,8 +438,13 @@ states or more on the device.
 **`StepStatistics` state matrices.** `"StepStatisticsMatrices"` names any of six state x state
 matrices, which each step's record gives under `StateMatrices`: an association whose `States`
 lists the step's state ids ascending (the ids of `"States"`, under the run's state identity) and
-which holds each matrix asked for as a k x k packed array of reals, row and column i for the
-i-th state. `StateOverlap`, `StateCosineSimilarity` and `StateMutualInformation` hold, for every
+which holds each matrix asked for as a k x k array of reals, row and column i for the i-th
+state. The overlap and the cosine of a level (vertex or edge) are a `SparseArray` with implicit
+value `0.` when fewer than half of the step's k (k - 1) / 2 pairs share an element, and a packed
+array otherwise; the mutual information, nonzero for two disjoint states, is always a packed
+array. Below half, the `SparseArray` is under 6 k² + O(k) bytes in WXF against 8 k² (a real and a
+column index of at most 4 bytes per nonzero), and its kernel `ByteCount` is about the packed
+array's or less (16 bytes per nonzero against 8 per cell). `StateOverlap`, `StateCosineSimilarity` and `StateMutualInformation` hold, for every
 two states, the value the summary of the same name summarises; `StateEdgeOverlap`,
 `StateEdgeCosineSimilarity` and `StateEdgeMutualInformation` are the same three with each state
 as its set of edges (an edge is its ordered list of vertex ids, as for `EdgeSharpness`) and U the
@@ -458,8 +463,9 @@ Cost: n11 for every two states that share an element comes from the overlap pass
 pass over the vertex sets, one over the edge sets), each pair writing its own cell of a
 k (k - 1) / 2 triangle. After its count the same row job, or on the device the same warp,
 computes its row's values (`hgcommon::bo_matrix_row`): O(k) per row and matrix, O(k²) per matrix
-over the step's rows. The device runs the rows of a step of 2048 states or more. The reply copies
-each matrix as a packed array.
+over the step's rows. The device runs the rows of a step of 2048 states or more. The reply writes
+each matrix from the filled k x k array (`Writer::write_packed_reals` or
+`Writer::write_sparse_reals`), the same bytes for either device.
 *(Gate: `reference/verify_state_statistics.wls`: the engine against
 `reference/StateGeometryReference.wl`, an independent Wolfram Language implementation, on the
 corpus and on random rules; the two Function Repository metrics against ResourceFunction itself.

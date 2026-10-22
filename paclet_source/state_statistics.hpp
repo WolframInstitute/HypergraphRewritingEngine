@@ -143,6 +143,18 @@ constexpr const char* kMatrixNames[6] = {
 // The kMatrix* bit of a "StepStatisticsMatrices" name; 0 for any other string.
 uint32_t matrix_bit(const std::string& name);
 
+// Whether the overlap and cosine matrices of one level (hgcommon::BoMatrices of a step's k
+// states) go out as a SparseArray: fewer than half of the k (k - 1) / 2 state pairs share an
+// element, read from the overlap's nonzero cells above the diagonal (the cosine's when the
+// overlap is not asked for; the two are nonzero on the same pairs). Below half, the SparseArray
+// takes under 6 k² + O(k) bytes in WXF against 8 k² for the packed array (a real and a column
+// index of at most 4 bytes per nonzero), and about the packed array's bytes or fewer in the
+// kernel (16 per nonzero against 8 per cell). Measured on Wolfram 15.0 at k = 1000: at half the
+// pairs the SparseArray is 0.63 of the packed array in WXF and 1.002 of it by ByteCount; at a
+// tenth, 0.13 and 0.20. False with neither matrix or with fewer than 2 states. The mutual
+// information is nonzero for disjoint states and is always a packed array.
+bool sparse_matrices(const hgcommon::BoMatrices& x);
+
 // The bytes the matrices `which` of a step of k states take while they are built: per matrix its
 // k x k reals and their dense WXF copy, 16 k^2; per level (vertex, edge) its k (k - 1) / 2
 // shared counts, 2 k (k - 1). UINT64_MAX above 2^28 states.

@@ -2385,6 +2385,46 @@ TEST(GpuBinaryGate, AWorkerJobSequenceMatchesTheCpuJobByJob) {
 
 namespace {
 
+// A state matrix read back: a packed array of reals, or a SparseArray (Writer::write_sparse_reals)
+// expanded to its rows; `sparse`, when given, says which.
+std::vector<std::vector<double>> read_real_matrix(wxf::Parser& p, bool* sparse = nullptr) {
+    const size_t at = p.position();
+    try {
+        auto m = p.read<std::vector<std::vector<double>>>();
+        if (sparse) *sparse = false;
+        return m;
+    } catch (const wxf::WXFException&) {
+        p.seek(at);
+    }
+    std::vector<std::vector<double>> m;
+    p.read_function([&](const std::string& head, size_t n, wxf::Parser& fp) {
+        EXPECT_EQ(head, "SparseArray");
+        EXPECT_EQ(n, 4u);
+        EXPECT_EQ(fp.read<std::string>(), "Automatic");
+        const auto dims = fp.read<std::vector<int64_t>>();
+        const double implicit = fp.read<double>();
+        std::vector<int64_t> row_ptr;
+        std::vector<std::vector<int64_t>> col;
+        std::vector<double> vals;
+        fp.read_function([&](const std::string&, size_t, wxf::Parser& lp) {
+            EXPECT_EQ(lp.read<int64_t>(), 1);
+            lp.read_function([&](const std::string&, size_t, wxf::Parser& qp) {
+                row_ptr = qp.read<std::vector<int64_t>>();
+                col = qp.read<std::vector<std::vector<int64_t>>>();
+            });
+            vals = lp.read<std::vector<double>>();
+        });
+        EXPECT_EQ(dims.size(), 2u);
+        EXPECT_EQ(implicit, 0.0);
+        m.assign(dims[0], std::vector<double>(dims[1], implicit));
+        for (size_t r = 0; r + 1 < row_ptr.size(); ++r)
+            for (int64_t j = row_ptr[r]; j < row_ptr[r + 1]; ++j)
+                m[r][col.at(j).at(0) - 1] = vals.at(j);
+    });
+    if (sparse) *sparse = true;
+    return m;
+}
+
 // Per step, for each state matrix of a "StepStatistics" reply (its bytes), the multiset of rows,
 // each as its diagonal cell and its cells sorted: the matrix up to a renumbering of the states.
 using MatrixRows = std::multiset<std::vector<double>>;
@@ -2404,7 +2444,7 @@ std::vector<std::map<std::string, MatrixRows>> matrix_rows(const std::vector<uin
                         mp.skip_value();
                         return;
                     }
-                    const auto m = mp.read<std::vector<std::vector<double>>>();
+                    const auto m = read_real_matrix(mp);
                     for (size_t a = 0; a < m.size(); ++a) {
                         std::vector<double> row = m[a];
                         std::sort(row.begin(), row.end());
@@ -4784,10 +4824,12 @@ TEST(StateStatistics, BranchialMetricsDoNotDependOnTheRowSplit) {
 
 namespace {
 
-// A "StateMatrices" value (WXF bytes) read back: its "States" and each matrix, in key order.
+// A "StateMatrices" value (WXF bytes) read back: its "States" and each matrix, in key order, and
+// whether each was a SparseArray.
 struct ReadMatrices {
     std::vector<int64_t> states;
     std::vector<std::pair<std::string, std::vector<std::vector<double>>>> m;
+    std::vector<bool> sparse;
     const std::vector<std::vector<double>>* at(const std::string& name) const {
         for (const auto& [k, v] : m)
             if (k == name) return &v;
@@ -4798,8 +4840,13 @@ ReadMatrices read_matrices(const wxf::WXFValue& v) {
     ReadMatrices r;
     wxf::Parser p(std::get<wxf::Encoded>(v.data).bytes);
     p.read_association([&](const std::string& k, wxf::Parser& vp) {
-        if (k == "States") r.states = vp.read<std::vector<int64_t>>();
-        else r.m.push_back({k, vp.read<std::vector<std::vector<double>>>()});
+        if (k == "States") {
+            r.states = vp.read<std::vector<int64_t>>();
+            return;
+        }
+        bool sparse = false;
+        r.m.push_back({k, read_real_matrix(vp, &sparse)});
+        r.sparse.push_back(sparse);
     });
     return r;
 }
@@ -4865,6 +4912,9 @@ TEST(StateStatistics, StateMatricesOfASmallStep) {
             }
         }
     }
+    // One of the 3 pairs shares a vertex and one shares an edge, under half: the overlap and the
+    // cosine of both levels are SparseArrays, the mutual information packed arrays.
+    EXPECT_EQ(m.sparse, (std::vector<bool>{true, true, false, true, true, false}));
     // The off-diagonal cells are the values the summaries read: their mean is the summary's.
     for (const char* name : {"StateOverlap", "StateCosineSimilarity", "StateMutualInformation"}) {
         const auto& g = *m.at(name);
@@ -4879,6 +4929,33 @@ TEST(StateStatistics, StateMatricesOfASmallStep) {
     ASSERT_EQ(m1.m.size(), 1u);
     EXPECT_EQ(m1.m[0].first, "StateEdgeMutualInformation");
     EXPECT_EQ(assoc_at(one, "StateOverlap"), nullptr);
+}
+
+// The overlap and the cosine of a level are SparseArrays when fewer than half of the step's pairs
+// share an element (hg::stats::sparse_matrices). Of the 6 pairs of 4 states, 2 sharing gives
+// SparseArrays and 3 packed arrays; each level decides for itself.
+TEST(StateStatistics, StateMatricesAreSparseBelowHalfThePairs) {
+    for (const bool three : {false, true}) {
+        hg::stats::BranchialStep s;
+        s.nodes = {1, 2, 3, 4};
+        // Vertices: (1,2) share 0 and (3,4) share 1; with `three`, (1,3) also share 9.
+        s.vertex_sets = {{0, 9}, {0}, {1, three ? 9u : 8u}, {1}};
+        // Edges: only (1,2) share one.
+        s.edge_sets = {{5}, {5}, {6}, {7}};
+        const wxf::WXFValue rec(branchial_keys({{1u, s}}, all_matrices()).at(1));
+        const ReadMatrices m = read_matrices(*assoc_at(rec, "StateMatrices"));
+        EXPECT_EQ(m.sparse, (std::vector<bool>{!three, !three, false, true, true, false}))
+            << three;
+        // Either form reads back as the cells of the matrix.
+        const auto& overlap = *m.at("StateOverlap");
+        EXPECT_EQ(overlap[0][1], 0.5);
+        EXPECT_EQ(overlap[0][2], three ? 1.0 / 3 : 0.0);
+        EXPECT_EQ(overlap[1][3], 0.0);
+        EXPECT_EQ(overlap[3][3], 1.0);
+        EXPECT_EQ(m.at("StateEdgeCosineSimilarity")->at(1).at(0), 1.0);
+    }
+    hgcommon::BoMatrices none;
+    EXPECT_FALSE(hg::stats::sparse_matrices(none));
 }
 
 // A step of one state has 1 x 1 matrices: the overlap and the cosine 1, the mutual information
@@ -4956,6 +5033,7 @@ TEST(StateStatistics, StateMatricesDoNotDependOnTheRowSplit) {
         };
         const auto expected = bytes(1);
         EXPECT_TRUE(bytes_contain(expected, "StateEdgeMutualInformation"));
+        EXPECT_TRUE(bytes_contain(expected, "SparseArray"));
         for (size_t parts : {2, 3, 5}) EXPECT_EQ(bytes(parts), expected) << parts;
     }
 }
@@ -5060,6 +5138,8 @@ TEST(StateStatistics, DeviceRowsGiveTheHostStateMatrices) {
                 device.vertex_matrices());
             ASSERT_TRUE(ran);
             EXPECT_EQ(bytes(device.finish()), want) << "k " << k << " which " << which;
+            // The edge sets share an element on under half of the pairs: SparseArrays.
+            EXPECT_TRUE(bytes_contain(want, "SparseArray")) << k;
         }
     }
 }

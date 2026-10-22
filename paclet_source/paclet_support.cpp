@@ -1357,13 +1357,29 @@ void BranchialStepWork::rows(size_t t) {
 
 namespace {
 
+}  // namespace
+
+bool sparse_matrices(const hgcommon::BoMatrices& x) {
+    const double* m = x.m[0] ? x.m[0] : x.m[1];
+    if (!m || x.k < 2) return false;
+    const uint64_t k = x.k;
+    uint64_t sharing = 0;
+    for (uint64_t a = 0; a < k; ++a)
+        for (uint64_t b = a + 1; b < k; ++b) sharing += m[a * k + b] != 0.0;
+    return 2 * sharing < k * (k - 1) / 2;
+}
+
+namespace {
+
 // "StateMatrices" as WXF bytes: "States", then each asked-for matrix, row and column i for the
-// i-th state, copied from the arrays the rows filled.
+// i-th state, copied from the arrays the rows filled: the overlap and the cosine of a level as a
+// SparseArray when sparse_matrices, every other matrix as a packed array.
 wxf::WXFValue state_matrices(uint32_t which, const std::vector<int64_t>& ids,
                              const hgcommon::BoMatrices& vertex, const hgcommon::BoMatrices& edge) {
     const size_t k = ids.size();
     uint32_t asked = 0;
     for (uint32_t i = 0; i < 6; ++i) asked += (which >> (2 + i)) & 1u;
+    const bool sparse[2] = {sparse_matrices(vertex), sparse_matrices(edge)};
     wxf::Writer w;
     w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
     w.write_varint(1 + asked);
@@ -1373,7 +1389,9 @@ wxf::WXFValue state_matrices(uint32_t which, const std::vector<int64_t>& ids,
     for (uint32_t i = 0; i < 6; ++i) {
         if (!(which & (kMatrixStateOverlap << i))) continue;
         w.write_key(kMatrixNames[i]);
-        w.write_packed_reals({k, k}, (i < 3 ? vertex : edge).m[i % 3]);
+        const double* m = (i < 3 ? vertex : edge).m[i % 3];
+        if (i % 3 != 2 && sparse[i / 3]) w.write_sparse_reals(k, k, m);
+        else w.write_packed_reals({k, k}, m);
     }
     return wxf::WXFValue(wxf::Encoded{w.release_data()});
 }

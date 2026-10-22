@@ -618,6 +618,72 @@ TEST_F(WXFTest, PackedRankTwoArrayDecodesRowMajor) {
               (std::vector<std::vector<int64_t>>{{1, -2}, {300, 4}}));
 }
 
+// Writer::write_sparse_reals and write_packed_integers give the bytes Wolfram 15.0's
+// BinarySerialize gives (header removed) for SparseArray[{{1, 1} -> 1., {2, 3} -> 0.5}, {3, 3}, 0.],
+// SparseArray[{}, {2, 2}, 0.] and the 300 x 300 identity of reals (Integer16 dimensions, row
+// pointers and column indices).
+TEST_F(WXFTest, SparseRealsMatchBinarySerialize) {
+    auto head = [](std::vector<uint8_t> dims) {
+        std::vector<uint8_t> b = {0x66, 0x04, 0x73, 0x0b};
+        for (char c : std::string("SparseArray")) b.push_back(static_cast<uint8_t>(c));
+        b.insert(b.end(), {0x73, 0x09});
+        for (char c : std::string("Automatic")) b.push_back(static_cast<uint8_t>(c));
+        b.insert(b.end(), dims.begin(), dims.end());
+        b.insert(b.end(), {0x72, 0, 0, 0, 0, 0, 0, 0, 0, 0x66, 0x03, 0x73, 0x04, 'L', 'i', 's', 't',
+                           0x43, 0x01, 0x66, 0x02, 0x73, 0x04, 'L', 'i', 's', 't'});
+        return b;
+    };
+    auto real = [](std::vector<uint8_t>& b, double x) {
+        uint8_t raw[8];
+        std::memcpy(raw, &x, 8);
+        b.insert(b.end(), raw, raw + 8);
+    };
+    {
+        const double m[9] = {1, 0, 0, 0, 0, 0.5, 0, 0, 0};
+        auto want = head({0xc1, 0x00, 0x01, 0x02, 0x03, 0x03});
+        want.insert(want.end(), {0xc1, 0x00, 0x01, 0x04, 0, 1, 2, 2, 0xc1, 0x00, 0x02, 0x02, 0x01,
+                                 1, 3, 0xc1, 0x23, 0x01, 0x02});
+        real(want, 1.0);
+        real(want, 0.5);
+        wxf::Writer w;
+        w.write_sparse_reals(3, 3, m);
+        EXPECT_EQ(w.data(), want);
+    }
+    {
+        const double m[4] = {0, 0, -0.0, 0};
+        auto want = head({0xc1, 0x00, 0x01, 0x02, 0x02, 0x02});
+        want.insert(want.end(), {0xc1, 0x00, 0x01, 0x03, 0, 0, 0, 0x66, 0x00, 0x73, 0x04, 'L', 'i',
+                                 's', 't', 0x66, 0x00, 0x73, 0x04, 'L', 'i', 's', 't'});
+        wxf::Writer w;
+        w.write_sparse_reals(2, 2, m);
+        EXPECT_EQ(w.data(), want);
+    }
+    {
+        std::vector<double> m(300 * 300, 0.0);
+        for (size_t i = 0; i < 300; ++i) m[i * 300 + i] = 1.0;
+        auto want = head({0xc1, 0x01, 0x01, 0x02, 0x2c, 0x01, 0x2c, 0x01});
+        want.insert(want.end(), {0xc1, 0x01, 0x01, 0xad, 0x02});
+        for (int i = 0; i <= 300; ++i) want.insert(want.end(), {uint8_t(i & 0xff), uint8_t(i >> 8)});
+        want.insert(want.end(), {0xc1, 0x01, 0x02, 0xac, 0x02, 0x01});
+        for (int i = 1; i <= 300; ++i) want.insert(want.end(), {uint8_t(i & 0xff), uint8_t(i >> 8)});
+        want.insert(want.end(), {0xc1, 0x23, 0x01, 0xac, 0x02});
+        for (int i = 0; i < 300; ++i) real(want, 1.0);
+        wxf::Writer w;
+        w.write_sparse_reals(300, 300, m.data());
+        EXPECT_EQ(w.data(), want);
+    }
+    // The narrowest integer type: Integer8 to Integer64 by range, negatives included.
+    for (const auto& [v, type] : std::vector<std::pair<int64_t, uint8_t>>{
+             {127, 0x00}, {-128, 0x00}, {128, 0x01}, {-32769, 0x02}, {int64_t{1} << 31, 0x03}}) {
+        wxf::Writer w;
+        w.write_packed_integers({1}, &v);
+        ASSERT_GE(w.data().size(), 2u);
+        EXPECT_EQ(w.data()[1], type) << v;
+        wxf::Parser p(w.data());
+        EXPECT_EQ(p.read<std::vector<int64_t>>(), std::vector<int64_t>{v});
+    }
+}
+
 // A List of packed states: each state is a rank-2 array inside the List the outer level reads,
 // which is what BinarySerialize gives for {{{1,2},{2,3}}, {{1,2}}}.
 TEST_F(WXFTest, ListOfPackedArraysDecodes) {

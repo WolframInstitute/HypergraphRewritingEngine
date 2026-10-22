@@ -676,6 +676,67 @@ void Writer::write_packed_reals(const std::vector<size_t>& dims, const double* v
     }
 }
 
+void Writer::write_packed_integers(const std::vector<size_t>& dims, const int64_t* values) {
+    if (dims.empty()) throw TypeError("a packed array has rank 1 or more");
+    size_t count = 1;
+    for (size_t d : dims) count *= d;
+    if (count == 0) {
+        std::function<void(size_t)> lists = [&](size_t level) {
+            const size_t n = dims[level];
+            write_function("List", n);
+            for (size_t i = 0; i < n; ++i) lists(level + 1);
+        };
+        lists(0);
+        return;
+    }
+    int64_t lo = 0, hi = 0;
+    for (size_t i = 0; i < count; ++i) {
+        lo = std::min(lo, values[i]);
+        hi = std::max(hi, values[i]);
+    }
+    uint8_t type = 0x03;
+    size_t width = 8;
+    if (lo >= INT8_MIN && hi <= INT8_MAX) { type = 0x00; width = 1; }
+    else if (lo >= INT16_MIN && hi <= INT16_MAX) { type = 0x01; width = 2; }
+    else if (lo >= INT32_MIN && hi <= INT32_MAX) { type = 0x02; width = 4; }
+    write_byte(static_cast<uint8_t>(Token::PackedArray));
+    write_byte(type);
+    write_varint(dims.size());
+    for (size_t d : dims) write_varint(d);
+    const size_t at = data_.size();
+    data_.resize(at + width * count);
+    uint8_t* p = data_.data() + at;
+    for (size_t i = 0; i < count; ++i) {
+        const uint64_t bits = static_cast<uint64_t>(values[i]);
+        for (size_t b = 0; b < width; ++b) p[width * i + b] = static_cast<uint8_t>(bits >> (8 * b));
+    }
+}
+
+void Writer::write_sparse_reals(size_t rows, size_t cols, const double* dense) {
+    std::vector<int64_t> row_ptr(rows + 1, 0), col;
+    std::vector<double> vals;
+    for (size_t r = 0; r < rows; ++r) {
+        for (size_t c = 0; c < cols; ++c) {
+            const double x = dense[r * cols + c];
+            if (x == 0.0) continue;
+            col.push_back(static_cast<int64_t>(c + 1));
+            vals.push_back(x);
+        }
+        row_ptr[r + 1] = static_cast<int64_t>(col.size());
+    }
+    const int64_t dims[2] = {static_cast<int64_t>(rows), static_cast<int64_t>(cols)};
+    write_function("SparseArray", 4);
+    write_symbol("Automatic");
+    write_packed_integers({2}, dims);
+    write_real64(0.0);
+    write_function("List", 3);
+    write(int64_t{1});
+    write_function("List", 2);
+    write_packed_integers({rows + 1}, row_ptr.data());
+    write_packed_integers({col.size(), 1}, col.data());
+    write_packed_reals({vals.size()}, vals.data());
+}
+
 void Writer::write_function(std::string_view head, size_t arg_count) {
     write_byte(static_cast<uint8_t>(Token::Function));
     write_varint(arg_count);

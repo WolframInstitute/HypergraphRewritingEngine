@@ -336,6 +336,14 @@ public:
     // order, -0.0 written as 0.0; an array with a zero dimension as nested empty lists, which a
     // packed array cannot hold.
     void write_packed_reals(const std::vector<size_t>& dims, const double* values);
+    // A PackedArray of integers of dimensions `dims` (rank 1 or more) from `values` in row-major
+    // order, in the narrowest of Integer8, 16, 32 and 64 that holds every value, as
+    // BinarySerialize writes one; an array with a zero dimension as nested empty lists.
+    void write_packed_integers(const std::vector<size_t>& dims, const int64_t* values);
+    // SparseArray[Automatic, {rows, cols}, 0., {1, {row pointers, column indices}, values}] of
+    // the row-major `dense`: every cell other than 0.0 explicit, in row order, the implicit value
+    // 0. (the form BinarySerialize gives a SparseArray of reals).
+    void write_sparse_reals(size_t rows, size_t cols, const double* dense);
 
     // Template-based generic writer
     template<typename T>

@@ -11,7 +11,9 @@
    "StepStatisticsBranchial" -> All. Every key of every step must agree: integers exactly, reals
    to 1e-9 relative. The "StateMatrices" of "StepStatisticsMatrices" -> All, under
    "CanonicalizeStates" None and Automatic, must list each step's state ids ascending and agree
-   with sgrStateMatrices on the listed states to 1e-9. With "IncludeVertexCurvature" -> True
+   with sgrStateMatrices on the listed states to 1e-9; the overlap and the cosine of a level must
+   be a SparseArray exactly when fewer than half of the step's pairs share an element, every
+   other matrix a packed array. With "IncludeVertexCurvature" -> True
    each state's "VertexCurvature" must agree with sgrVertexCurvature to 1e-9.
 
    The two metrics the Wolfram Function Repository defines are also checked against the
@@ -289,6 +291,13 @@ Do[
         "CanonicalizeStates" -> None, "StepStatisticsWeighting" -> "Classes"]},
       {"branchial", oracleBranchial, HGEvolve[rules, init, steps, "StepStatistics",
         "CanonicalizeStates" -> None, "StepStatisticsBranchial" -> All]}};
+    (* The overlap and the cosine of a level are a SparseArray when fewer than half of the
+       k (k - 1) / 2 pairs share an element; every other matrix is a packed array. *)
+    sparseMatrixQ[name_, want_] := Module[{o = want[If[StringContainsQ[name, "Edge"],
+        "StateEdgeOverlap", "StateOverlap"]], k},
+      k = Length[o];
+      !StringContainsQ[name, "MutualInformation"] && k >= 2 &&
+        2 Total[Unitize[Flatten[UpperTriangularize[o, 1]]]] < k (k - 1)/2];
     Do[
       Module[{res = HGEvolve[rules, init, steps, {"States", "StepStatistics"},
           "CanonicalizeStates" -> mode, "StepStatisticsMatrices" -> All], bad = {}, n = 0},
@@ -306,7 +315,10 @@ Do[
               KeyValueMap[Function[{name, w},
                 If[!ArrayQ[m[name], 2, NumericQ] || Dimensions[m[name]] =!= Dimensions[w] ||
                     Max[Abs[m[name] - w]/Map[Max[1, Abs[#]] &, w, {2}]] > 10^-9,
-                  AppendTo[bad, {rec["Step"], name}]]], want];
+                  AppendTo[bad, {rec["Step"], name}]];
+                If[(Head[m[name]] === SparseArray) =!= sparseMatrixQ[name, want] ||
+                    (Head[m[name]] =!= SparseArray && !Developer`PackedArrayQ[m[name]]),
+                  AppendTo[bad, {rec["Step"], name, "form", Head[m[name]]}]]], want];
               n++]],
           {rec, res["StepStatistics"]}];
         If[bad === {},
