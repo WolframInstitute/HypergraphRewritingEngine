@@ -79,6 +79,13 @@ __device__ inline __noinline__ uint64_t transition_key_device(const DeviceState&
                                      ranks, n, /*produced_ranks=*/nullptr, 0);
 }
 
+// Publish state `sid`'s canonical hash. A keyed twin reads it while it is written
+// (keyed_hash_or_follow); every other reader follows the state's publication.
+__device__ inline void publish_canonical_hash(const DeviceState& ds, StateId sid, uint64_t h) {
+    cuda::atomic_ref<uint64_t, cuda::thread_scope_device>(ds.state_canonical_hash[sid])
+        .store(h, cuda::memory_order_relaxed);
+}
+
 // The canonical state `sid` merges into: `sid` itself when it is the first arrival of its key
 // (or dedup is off), the first arrival's id otherwise. `fresh` when `sid` is its own canonical.
 struct StateIdentity {

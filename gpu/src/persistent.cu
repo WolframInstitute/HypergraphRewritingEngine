@@ -414,7 +414,7 @@ __global__ void k_seed_root_hashes(const __grid_constant__ DeviceState ds, const
         claim = state_claim_content(ds, sid, key, map);
         key = claim.key;
     }
-    ds.state_canonical_hash[sid] = key;
+    publish_canonical_hash(ds, sid, key);
 
     // The exact hash is a SECOND quantity, and only in Full mode is it the same one. Computed
     // here only if an event identity or a transition key will read it (run_needs_exact_hash).
@@ -897,7 +897,7 @@ __device__ __forceinline__ ChildIdentity canonicalise_child(
             }
             // Publish before anything reads it: a transition OUT of this state needs it as an
             // input hash, and that read happens on another block.
-            ds.state_canonical_hash[sid] = h;
+            publish_canonical_hash(ds, sid, h);
 
             if (need_exact) {
                 if (ex_st != ExactHashStatus::kOk) {

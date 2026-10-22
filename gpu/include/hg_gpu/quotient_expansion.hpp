@@ -618,7 +618,8 @@ struct DeviceQmCtx {
         const auto r = qe.qm_points.lookup(
             hgcommon::avoid_reserved_keys(hgcommon::qc_key(class_hash, depth, 0u)));
         if (!r.found || r.value == 0) return 0;
-        return *reinterpret_cast<volatile unsigned long long*>(&qe.qm_mass[r.value - 1u]);
+        return cuda::atomic_ref<unsigned long long, cuda::thread_scope_device>(
+                   qe.qm_mass[r.value - 1u]).load(cuda::memory_order_relaxed);
     }
     __device__ void add_mass(uint64_t class_hash, uint32_t depth, uint64_t delta) {
         const uint32_t p = point(class_hash, depth);
@@ -628,7 +629,8 @@ struct DeviceQmCtx {
     __device__ uint64_t consumed(const QeMatchView& m, uint32_t depth) {
         const auto r = qe.qm_consumed.lookup(hgcommon::qr_apply_key(m.id, depth));
         if (!r.found || r.value == 0) return 0;
-        return *reinterpret_cast<volatile unsigned long long*>(&qe.qm_consumed_cells[r.value - 1u]);
+        return cuda::atomic_ref<unsigned long long, cuda::thread_scope_device>(
+                   qe.qm_consumed_cells[r.value - 1u]).load(cuda::memory_order_relaxed);
     }
     __device__ bool advance(const QeMatchView& m, uint32_t depth, uint64_t& expected,
                             uint64_t desired) {

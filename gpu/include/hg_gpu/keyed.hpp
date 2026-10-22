@@ -35,7 +35,8 @@ enum : uint32_t { KEYED_OFF = 0, KEYED_ARMED = 1, KEYED_INTERNING = 2 };
 constexpr uint32_t kKeyedNoNewEdge = 0xFFFFFFFEu;
 
 __device__ inline uint32_t keyed_load(const uint32_t* p) {
-    return *reinterpret_cast<const volatile uint32_t*>(p);
+    return cuda::atomic_ref<const uint32_t, cuda::thread_scope_device>(*p).load(
+        cuda::memory_order_relaxed);
 }
 
 __device__ inline uint32_t keyed_rid_of(const DeviceState& ds, EventId ev) {
@@ -131,8 +132,8 @@ __device__ inline uint64_t keyed_edge_token(const DeviceState& ds, EdgeId e) {
 
 // The token sum of state `s`, computed over its edges on first use; 0 when a token is 0.
 __device__ inline uint64_t keyed_state_sum(const DeviceState& ds, StateId s) {
-    volatile uint64_t* slot = ds.keyed.state_token_sum + s;
-    uint64_t sum = *slot;
+    cuda::atomic_ref<uint64_t, cuda::thread_scope_device> slot(ds.keyed.state_token_sum[s]);
+    uint64_t sum = slot.load(cuda::memory_order_relaxed);
     if (sum != 0) return sum;
     const StateEdgeSlice sl = ds.state_edge_slices[s];
     for (uint32_t i = 0; i < sl.count; ++i) {
@@ -141,7 +142,7 @@ __device__ inline uint64_t keyed_state_sum(const DeviceState& ds, StateId s) {
         sum += hgcommon::token_term(t);
     }
     sum = hgcommon::token_sum_nonzero(sum);
-    *slot = sum;
+    slot.store(sum, cuda::memory_order_relaxed);
     return sum;
 }
 
@@ -190,7 +191,7 @@ enum class TwinResult : uint32_t {
 // Pushes event `ev` (whose child waits) onto twin `t`'s follower stack; false when the stack is
 // closed, and the twin's hash, if it has one, is then published.
 __device__ inline bool keyed_follow(const DeviceState& ds, StateId t, EventId ev) {
-    uint32_t head = *reinterpret_cast<const volatile uint32_t*>(ds.keyed.follow_head + t);
+    uint32_t head = keyed_load(ds.keyed.follow_head + t);
     for (;;) {
         if (head == FOLLOW_CLOSED) {
             __threadfence();
@@ -202,6 +203,24 @@ __device__ inline bool keyed_follow(const DeviceState& ds, StateId t, EventId ev
         if (prev == head) return true;
         head = prev;
     }
+}
+
+// Twin `t`'s canonical hash, read while it may be publishing (publish_canonical_hash); 0 when
+// not published yet. A child with the hash unpublished waits on the twin's stack when
+// `may_follow` (`following` set, 0 returned), or reads the hash the twin published before it
+// closed the stack (verification/gpumc/keyed_follow_rendezvous.cpp).
+__device__ inline uint64_t keyed_hash_or_follow(const DeviceState& ds, StateId t, EventId ev,
+                                                bool may_follow, bool& following) {
+    following = false;
+    const cuda::atomic_ref<const uint64_t, cuda::thread_scope_device> hash(
+        ds.state_canonical_hash[t]);
+    uint64_t th = hash.load(cuda::memory_order_relaxed);
+    if (th != 0) return th;
+    if (may_follow && keyed_follow(ds, t, ev)) {
+        following = true;
+        return 0;
+    }
+    return hash.load(cuda::memory_order_relaxed);
 }
 
 // The twin check for state `child`, made by event `ev` from `parent` with `keyed` from
@@ -225,7 +244,8 @@ __device__ inline TwinResult keyed_take_twin(const DeviceState& ds, StateId chil
         tokens[i] = keyed_edge_token(ds, event_consumed_edge(ds, x, i));
     const uint64_t sum = hgcommon::child_token_sum(keyed_state_sum(ds, parent), tokens,
                                                    x.num_consumed, rid, x.num_produced);
-    *reinterpret_cast<volatile uint64_t*>(k.state_token_sum + child) = sum;
+    cuda::atomic_ref<uint64_t, cuda::thread_scope_device>(k.state_token_sum[child])
+        .store(sum, cuda::memory_order_relaxed);
     if (sum == 0 || !(keyed & hgcommon::REWRITE_TWIN_CANDIDATE)) return TwinResult::kNone;
 
     // The token index over a candidate twin's edges and, for the i-th edge of the child, the
@@ -273,13 +293,9 @@ __device__ inline TwinResult keyed_take_twin(const DeviceState& ds, StateId chil
     const StateId t = c.canonical;
     TwinResult result = TwinResult::kNone;
     if (t != child && t != INVALID_ID) {
-        uint64_t th = *reinterpret_cast<const volatile uint64_t*>(ds.state_canonical_hash + t);
-        // Not published yet: wait on the twin's stack, or, when the twin has closed it since,
-        // read the hash it published before closing.
-        if (th == 0) {
-            if (may_follow && keyed_follow(ds, t, ev)) result = TwinResult::kFollowing;
-            else th = *reinterpret_cast<const volatile uint64_t*>(ds.state_canonical_hash + t);
-        }
+        bool following = false;
+        const uint64_t th = keyed_hash_or_follow(ds, t, ev, may_follow, following);
+        if (following) result = TwinResult::kFollowing;
         if (th != 0) {
             __threadfence();   // the twin's tables were written before its hash was published
             const auto r = states.lookup(th);
@@ -322,7 +338,7 @@ __device__ inline void keyed_close_followers(const DeviceState& ds, StateId sid,
     uint32_t e = atomicExch(ds.keyed.follow_head + sid, FOLLOW_CLOSED);
     __threadfence();   // each follower linked its next before the exchange that pushed it
     while (e != FOLLOW_EMPTY && e != FOLLOW_CLOSED) {
-        const uint32_t next = *reinterpret_cast<const volatile uint32_t*>(ds.keyed.follow_next + e);
+        const uint32_t next = keyed_load(ds.keyed.follow_next + e);
         // The ring holds max_states entries and a child waits on one twin, so it has room.
         if (!ready.try_push(e)) ds.errors.record(ErrorKind::kScratchOverflow);
         e = next;
