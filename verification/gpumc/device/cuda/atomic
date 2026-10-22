@@ -50,8 +50,18 @@ public:
     }
     HG_GPUMC_INLINE T fetch_add(T v, memory_order o = memory_order_seq_cst) const {
         T* p = p_;
+#if defined(HG_GPUMC_CALIBRATE_SPLIT_RMW)
+        // The calibration's add: a load, then a separate store.
+        scope();
+        const T old = __atomic_load_n(p, __ATOMIC_RELAXED);
+        scope();
+        __atomic_store_n(p, static_cast<T>(old + v), __ATOMIC_RELAXED);
+        (void)o;
+        return old;
+#else
         scope();
         return __atomic_fetch_add(p, v, o);
+#endif
     }
     HG_GPUMC_INLINE T fetch_sub(T v, memory_order o = memory_order_seq_cst) const {
         T* p = p_;

@@ -42,19 +42,19 @@ harness (each header lists what it transcribes); no point is counted on their ac
 | D14c replay run signatures (`qe_claim_runsig`) | 5 | 5 | runsig_claim_once |
 | D14d multiplicity cascade (`DeviceQmCtx`, `qe_capture_multiplicity`, `qe_seed_multiplicity`, `qe_redrive`) | 9 | 9 | mass_match_rendezvous, saturating_totals |
 | D14e replay capture (`qe_capture_expansion`'s match recording, `qe_alloc_words`) | 13 | 2 | replay_claim_once (`qe_alloc_words`) |
-| D14f replay event ids (`DeviceQrCtx::mint_event`) | 2 | 0 | |
+| D14f replay event ids (`DeviceQrCtx::mint_event`) | 2 | 2 | bounded_appends_once |
 | D14g replay kept producers (`DeviceQrCtx::record_kept`) | 1 | 0 | |
 | D14h replay branchial count (`k_qe_count_branchial`) | 3 | 3 | branchial_count_block |
 | D15 IR on a warp (`ir_core.hpp`, `ir_canon.cu`, `IrTile`, `canonicalise_child`'s broadcasts) | 54 | 0 | |
 | D16 branchial rows (`k_branchial_rows`, `br_row`) | 24 | 24 | branchial_rows_warp |
-| D17 session frontier append (`session_frontier_append`) | 1 | 0 | |
+| D17 session frontier append (`session_frontier_append`) | 1 | 1 | bounded_appends_once |
 | D18 persistent kernel blocks (`k_persistent_match`, `k_persistent_match_rewrite`, `k_persistent_evolve`: shared state, barriers, broadcasts, idle backoff) | 104 | 13 | exit_uniform (`k_persistent_match_rewrite`) |
 | D19 diagnostic counters (phase cycles, rewrite sub-phase cycles, signature fallbacks, canonical event count, alignment tallies, causal and canon totals, `k_measure_states` maxima) | 24 | 0 | |
 | D20 match block cap, draw and parent cap (`emit_admit`, `match_state_rule`, `match_state_parent_capped`, `claim_spill`) | 38 | 17 | match_drain_block |
 | D21 state geometry, invariants and vertex curvature (`state_geometry_core.hpp`, `state_invariants_core.hpp`, `record_state_invariants_device`, `k_vertex_curvature`) | 31 | 0 | |
 | D22 error counters (`DeviceErrors::record`) | 2 | 0 | |
 
-Covered: 213 of 466 points. 15 protocols are covered in full, 6 in part, 8 not at all.
+Covered: 216 of 466 points. 17 protocols are covered in full, 6 in part, 6 not at all.
 
 ## Not covered
 
@@ -70,9 +70,8 @@ Covered: 213 of 466 points. 15 protocols are covered in full, 6 in part, 8 not a
 | D09 content claim, event identity claim, root depth seeding, 5 | `state_claim_content` (Automatic states), the event identity claim's record fence (`event_identity.hpp`) and `k_seed_root_hashes`' depth seeding are not run. |
 | D12 TR scratch slot lock, 2 | `is_reachable_preds` takes a scratch slot only when the local search visits more than 512 events; a harness needs a predecessor chain longer than that. |
 | D11 `keyed_after_rewrite`, 2 | The switch from armed to interning and its interning call are not run; keyed_intern_once runs `keyed_event_rid`, the same interning. |
-| D14f replay event ids, 2 | A relaxed fetch-and-add below `replay_id_limit`; no harness runs `mint_event`. |
 | D22 error counters, 2 | A relaxed load, then a relaxed fetch-and-add when the counter is 0; the host reads the counters after the kernel. Every harness asserts its counters stay 0, so none runs `record`. |
-| D14g, D17, 2 | `record_kept`'s fence and `session_frontier_append` (a relaxed fetch-and-add; the host reads min(count, capacity) after the kernel) are not run. |
+| D14g, 1 | `record_kept`'s fence is not run. |
 
 ## Bounds that limit what a harness reaches
 

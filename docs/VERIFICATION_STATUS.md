@@ -205,7 +205,7 @@ checker reports the redundant pair.
 
 ## GPUMC
 
-24 harnesses under `verification/gpumc/`, 22 of them on the device's own code: `run.sh` compiles
+25 harnesses under `verification/gpumc/`, 23 of them on the device's own code: `run.sh` compiles
 a copy of `gpu/` with launch configurations deleted, and `verification/gpumc/device/` maps CUDA's
 atomics, `cuda::atomic_ref`, fences, barriers, warp collectives and thread indices onto GPUMC's
 threads, scopes and work-group barriers. `evolve_ring_termination` and `replay_task_termination`
@@ -214,8 +214,8 @@ harness declares its cells (`// GPUMC-CELL: name PASS|FAIL|BLOCKED defines -- gp
 `run.sh cells` fails on a verdict that differs; it is the `gpumc_cells` ctest. Every harness has
 a calibration cell that must FAIL: `HG_GPUMC_CALIBRATE_NO_THREADFENCE` (every `__threadfence` a
 no-op), `HG_GPUMC_CALIBRATE_SPLIT_RMW` (atomicAdd, atomicMin, atomicMax, atomicCAS and the
-`atomic_ref` exchanges a load and a separate store), or a harness's own reordering.
-`verification/gpumc/COVERAGE.md` maps the device's 466 concurrency points to 29 protocols: 213
+`atomic_ref` exchanges and fetch_add a load and a separate store), or a harness's own reordering.
+`verification/gpumc/COVERAGE.md` maps the device's 466 concurrency points to 29 protocols: 216
 points are covered.
 
 The checker is the CAV 2025 artifact with six fixes (`verification/gpumc/checker/build.sh`, image
@@ -234,6 +234,7 @@ C math, external-call arguments). Each fix has a checker cell.
 | `work_log_exactly_once` | `WorkLogView` | every entry handed out once | 38 | split_rmw FAIL |
 | `match_records_exactly_once` | `persistent.cu` `claim_next_record[s]` | every match record claimed once | 34 | split_rmw FAIL |
 | `counter_claims_disjoint` | `coalesced_add`, `coalesced_bounded_claim`, `DeviceArena::claim` | claims are disjoint and within the limit | 10, 2, 6 | split_rmw FAIL (each) |
+| `bounded_appends_once` | `session_frontier_append`, `DeviceQrCtx::mint_event` | each slot and id handed out once; refusal past the limit is reported | 216 | split_rmw FAIL |
 | `saturating_totals` | `saturating_add` | no update lost; the sum stops at `QM_SATURATED` | 6, 6 | split_rmw FAIL |
 | `hash_insert_elects_one` | `ConcurrentMap::DeviceView` | one inserter elected, its value stored | 9 | split_rmw FAIL |
 | `depth_relax_child_registration` | `persistent.cu` `DeviceExploreCtx` | a child never strands at a stale depth and is logged once | 11 | no_threadfence FAIL |
@@ -377,7 +378,7 @@ amber, and 11 of the 1053 cases differ from it.
 - **Worker index reuse.** Under `HG_VERIFICATION` the arena's worker index comes from a counter
   that never releases, and `arena_worker_index_exclusive` holds its indices. Release and
   re-acquire are not checked.
-- **Device points not covered.** `verification/gpumc/COVERAGE.md` lists 253 of the device's 466
+- **Device points not covered.** `verification/gpumc/COVERAGE.md` lists 250 of the device's 466
   concurrency points that no GPUMC harness runs, with the reason for each. The largest groups:
   `k_persistent_evolve`'s block body (91; `evolve_ring_termination` runs its loop's accounting
   transcribed), the IR on a warp (54), and the geometry, invariants and curvature code (31), on

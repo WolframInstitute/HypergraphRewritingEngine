@@ -29,9 +29,9 @@
 // synchronisation; a volatile access is non-atomic here as well.
 //
 // CALIBRATIONS of the engine's own code. HG_GPUMC_CALIBRATE_NO_THREADFENCE makes every
-// __threadfence() a no-op. HG_GPUMC_CALIBRATE_SPLIT_RMW makes atomicAdd, atomicMin, atomicMax
-// and atomicCAS a load and a separate store, so two threads can both take the value either one
-// read.
+// __threadfence() a no-op. HG_GPUMC_CALIBRATE_SPLIT_RMW makes atomicAdd, atomicMin, atomicMax,
+// atomicCAS and cuda::atomic_ref's compare-exchanges and fetch_add a load and a separate store,
+// so two threads can both take the value either one read.
 #include <pthread.h>
 
 #include <cstdint>
