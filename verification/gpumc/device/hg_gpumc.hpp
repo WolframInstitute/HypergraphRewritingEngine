@@ -17,8 +17,10 @@
 //
 // WARP COLLECTIVES. A shuffle, ballot or match writes the calling lane's value to a per-block
 // slot, waits at the block barrier, reads, and waits again. A block of N harness threads is a warp
-// of N lanes: __activemask() is the full mask when N > 1 and one lane when N = 1, and a source
-// lane at or past N reads lane N - 1, which is the lane a full-warp scan or broadcast reads last.
+// of N lanes: __activemask() is the full mask when N > 1 and one lane when N = 1. The kernels
+// stride their loops by 32 lanes, so a harness gives every loop at most N items. A shuffle from a
+// lane at or past N reads lane N - 1 (the lane a full-warp scan or broadcast reads last); a
+// shuffle-down from such a lane gives 0 (an idle lane of a reduction).
 //
 // __shared__ is a static: one copy per program. A harness that runs a function declaring
 // __shared__ variables runs it on one block at a time.
@@ -112,12 +114,14 @@ inline T shfl(T v, unsigned src, unsigned width) {
     return from_bits<T>(r);
 }
 
+// A source past lane 31 returns the caller's value, as on the device. A source between the block's
+// last lane and 31 is a lane the model leaves out, which in a warp reduction is idle: it gives 0.
 template <class T>
 inline T shfl_down(T v, unsigned delta) {
     const unsigned src = t_lane + delta;
     g_slot[t_block][t_lane] = to_bits(v);
     block_barrier();
-    const uint64_t r = g_slot[t_block][src < lanes() ? src : t_lane];
+    const uint64_t r = src >= 32 ? g_slot[t_block][t_lane] : src < lanes() ? g_slot[t_block][src] : 0;
     block_barrier();
     return from_bits<T>(r);
 }

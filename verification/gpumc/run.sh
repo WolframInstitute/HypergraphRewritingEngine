@@ -20,8 +20,9 @@
 # function directly, as one CUDA thread of the block it entered. device/genmc_libc.hpp is included
 # first: it completes GPUMC's C library headers for libstdc++, whose header directories (copied
 # into the image) come ahead of GPUMC's, and compiles the host code of an included .cu without
-# exceptions. A harness that includes gpu/src/persistent.cu passes --disable-function-inliner:
-# GPUMC's inliner did not finish on k_persistent_evolve in 10 minutes.
+# exceptions. FP contraction is off: the interpreter has no fused multiply-add. A harness that
+# includes gpu/src/persistent.cu passes --disable-function-inliner: GPUMC's inliner did not
+# finish on k_persistent_evolve in 10 minutes.
 #
 # CELLS. Each harness lists its cells in comment lines of the form
 #
@@ -53,7 +54,7 @@ EOF
     exit 2
 fi
 
-CFLAGS="-std=c++17 -fno-exceptions -fdeclspec -Wno-dangling-else"
+CFLAGS="-std=c++17 -fno-exceptions -fdeclspec -ffp-contract=off -Wno-dangling-else"
 CFLAGS+=" -I /opt/hg-stdcxx -I /opt/hg-stdcxx-target"
 CFLAGS+=" -include /src/verification/gpumc/device/genmc_libc.hpp -I /src/verification/gpumc/device"
 CFLAGS+=" -I /tmp/gpu/include -I /tmp/gpu/src -I /src/common/include"

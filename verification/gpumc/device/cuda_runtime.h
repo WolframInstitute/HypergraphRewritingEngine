@@ -44,6 +44,32 @@ inline cudaError_t cudaGetDevice(int* d) {
     *d = 0;
     return cudaSuccess;
 }
+inline cudaError_t cudaGetDeviceCount(int* n) {
+    *n = 1;
+    return cudaSuccess;
+}
+inline cudaError_t cudaDeviceReset() { return cudaSuccess; }
+inline cudaError_t cudaStreamSynchronize(cudaStream_t) { return cudaSuccess; }
+inline cudaError_t cudaMallocHost(void**, size_t) { return cudaSuccess; }
+template <class T>
+inline cudaError_t cudaMallocHost(T**, size_t) { return cudaSuccess; }
+inline cudaError_t cudaFreeHost(void*) { return cudaSuccess; }
+inline cudaError_t cudaDriverGetVersion(int* v) {
+    *v = 0;
+    return cudaSuccess;
+}
+inline cudaError_t cudaRuntimeGetVersion(int* v) {
+    *v = 0;
+    return cudaSuccess;
+}
+struct cudaDeviceProp {
+    char name[256] = {};
+    int major = 0, minor = 0, multiProcessorCount = 0, maxThreadsPerMultiProcessor = 0;
+    int maxBlocksPerMultiProcessor = 0, regsPerMultiprocessor = 0, l2CacheSize = 0;
+    int persistingL2CacheMaxSize = 0;
+    size_t sharedMemPerBlockOptin = 0, sharedMemPerMultiprocessor = 0;
+};
+inline cudaError_t cudaGetDeviceProperties(cudaDeviceProp*, int) { return cudaSuccess; }
 
 enum cudaDeviceAttr { cudaDevAttrMaxAccessPolicyWindowSize, cudaDevAttrMultiProcessorCount };
 inline cudaError_t cudaDeviceGetAttribute(int* v, cudaDeviceAttr, int) {
@@ -100,8 +126,12 @@ inline cudaError_t cudaLaunchKernelEx(const cudaLaunchConfig_t*, F, A&&...) {
     return cudaSuccess;
 }
 
-// A load through the L2: a plain load here.
+// A load and a store through the L2: plain accesses here.
 template <class T>
 inline T __ldcg(const T* p) {
     return *p;
+}
+template <class T>
+inline void __stcg(T* p, T v) {
+    *p = v;
 }
