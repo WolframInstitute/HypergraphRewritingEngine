@@ -32,7 +32,7 @@ harness (each header lists what it transcribes); no point is counted on their ac
 | D06 concurrent map (`ConcurrentMap::DeviceView` insert and lookup) | 7 | 7 | hash_insert_elects_one, and every harness on a map |
 | D07 lock-free list (`LockFreeList` push, warp push chain, walks) | 11 | 11 | replay_rendezvous_device, depth_relax_child_registration |
 | D08 exploration depth (`DeviceExploreCtx`, `ExploreView::claim`) | 5 | 5 | depth_relax_child_registration |
-| D09 state identity claims and hash publication (`keyed_claim_device`, `state_claim_form`, `state_claim_content`, `publish_canonical_hash`, the event identity claim, root seeding) | 9 | 4 | form_claim_classes, keyed_follow_rendezvous, keyed_twin_take |
+| D09 state identity claims and hash publication (`keyed_claim_device`, `state_claim_form`, `state_claim_content`, `publish_canonical_hash`, the event identity claim, root seeding) | 9 | 5 | form_claim_classes, content_claim_classes, keyed_follow_rendezvous, keyed_twin_take |
 | D10 keyed twins (`keyed_take_twin`, `keyed_follow`, `keyed_hash_or_follow`, `keyed_close_followers`, `keyed_note_claim`) | 16 | 16 | keyed_twin_take, keyed_follow_rendezvous |
 | D11 keyed rewrite interning (`keyed_event_rid`, `keyed_intern_event`, `keyed_state_sum`, `keyed_after_rewrite`) | 6 | 4 | keyed_intern_once, keyed_twin_take |
 | D12 causal rendezvous (`register_as_producer`, `register_as_consumer`, `add_causal_edge`, `is_reachable_preds`) | 3 | 1 | causal_rendezvous_device |
@@ -54,7 +54,7 @@ harness (each header lists what it transcribes); no point is counted on their ac
 | D21 state geometry, invariants and vertex curvature (`state_geometry_core.hpp`, `state_invariants_core.hpp`, `record_state_invariants_device`, `k_vertex_curvature`) | 31 | 0 | |
 | D22 error counters (`DeviceErrors::record`) | 2 | 0 | |
 
-Covered: 216 of 466 points. 17 protocols are covered in full, 6 in part, 6 not at all.
+Covered: 217 of 466 points. 17 protocols are covered in full, 6 in part, 6 not at all.
 
 ## Not covered
 
@@ -67,7 +67,7 @@ Covered: 216 of 466 points. 17 protocols are covered in full, 6 in part, 6 not a
 | D20 parent cap and spill, 21 | match_drain_block runs the per-(state, rule) cap and the draw; MaxSuccessorStatesPerParent's passes (`kParentCount`, `kParentEmit`'s quota bits) and the spill claim are not run. |
 | D14e replay capture, 11 | No harness runs `qe_capture_expansion`'s match recording (the warp's ballots and shuffles, the match id and local counters, the class pair total). replay_rendezvous_device starts from a recorded match. |
 | D13 rewrite emission, 6 | No harness runs `apply_one_match`. Its reservations are D05's `coalesced_*` calls and its rendezvous D12's functions. |
-| D09 content claim, event identity claim, root depth seeding, 5 | `state_claim_content` (Automatic states), the event identity claim's record fence (`event_identity.hpp`) and `k_seed_root_hashes`' depth seeding are not run. |
+| D09 event identity claim, root depth seeding, 4 | The event identity claim's record fence (`event_identity.hpp`) and `k_seed_root_hashes`' depth seeding are not run. |
 | D12 TR scratch slot lock, 2 | `is_reachable_preds` takes a scratch slot only when the local search visits more than 512 events; a harness needs a predecessor chain longer than that. |
 | D11 `keyed_after_rewrite`, 2 | The switch from armed to interning and its interning call are not run; keyed_intern_once runs `keyed_event_rid`, the same interning. |
 | D22 error counters, 2 | A relaxed load, then a relaxed fetch-and-add when the counter is 0; the host reads the counters after the kernel. Every harness asserts its counters stay 0, so none runs `record`. |
