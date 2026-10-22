@@ -80,18 +80,26 @@ public:
     }
     HG_GPUMC_INLINE bool compare_exchange_strong(T& e, T d, memory_order s,
                                                  memory_order f) const {
+#if defined(HG_GPUMC_CALIBRATE_SPLIT_RMW)
+        return split_exchange(e, d, s, f);
+#else
         T* p = p_;
         scope();
         return __atomic_compare_exchange_n(p, &e, d, false, s, f);
+#endif
     }
     HG_GPUMC_INLINE bool compare_exchange_strong(T& e, T d,
                                                  memory_order o = memory_order_seq_cst) const {
         return compare_exchange_strong(e, d, o, failure_order_of(o));
     }
     HG_GPUMC_INLINE bool compare_exchange_weak(T& e, T d, memory_order s, memory_order f) const {
+#if defined(HG_GPUMC_CALIBRATE_SPLIT_RMW)
+        return split_exchange(e, d, s, f);
+#else
         T* p = p_;
         scope();
         return __atomic_compare_exchange_n(p, &e, d, true, s, f);
+#endif
     }
     HG_GPUMC_INLINE bool compare_exchange_weak(T& e, T d,
                                                memory_order o = memory_order_seq_cst) const {
@@ -99,6 +107,26 @@ public:
     }
 
 private:
+#if defined(HG_GPUMC_CALIBRATE_SPLIT_RMW)
+    // The calibration's compare-exchange: a load, then a separate store when it matched.
+    HG_GPUMC_INLINE bool split_exchange(T& e, T d, memory_order s, memory_order f) const {
+        T* p = p_;
+        scope();
+        const T seen = __atomic_load_n(p, f);
+        if (seen != e) {
+            e = seen;
+            return false;
+        }
+        scope();
+        if (s == memory_order_acq_rel || s == memory_order_release)
+            __atomic_store_n(p, d, __ATOMIC_RELEASE);
+        else if (s == memory_order_seq_cst)
+            __atomic_store_n(p, d, __ATOMIC_SEQ_CST);
+        else
+            __atomic_store_n(p, d, __ATOMIC_RELAXED);
+        return true;
+    }
+#endif
     HG_GPUMC_INLINE static void scope() {
         if (S == thread_scope_block) __VERIFIER_memory_scope_work_group();
         else __VERIFIER_memory_scope_device();

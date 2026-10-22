@@ -1,170 +1,87 @@
-// GPUMC harness: two threads inserting the same key elect exactly one inserter, and it is the
-// one whose value is stored.
+// GPUMC harness: threads inserting the same key into the device map elect exactly one inserter,
+// and the stored value is that thread's; a thread's lookup after its insert finds the key.
 //
-// Runs hgcommon/hash_insert_core.hpp ITSELF -- the same hash_insert_claim body
-// gpu/include/hg_gpu/hash_table.hpp drives -- rather than a model of it.
+// Runs gpu/include/hg_gpu/hash_table.hpp's ConcurrentMap::DeviceView::insert_if_absent (the
+// hgcommon::hash_insert_claim body over the device's key and value exchanges) and lookup
+// themselves, with the device's atomics (verification/gpumc/device).
 //
-// WHY GPUMC RATHER THAN GenMC. The table is shared between CTAs and every access is at DEVICE
-// scope. Scoped-RC11 admits behaviours RC11 does not, so GenMC would check a program the device
-// does not run and call the map proved.
+// WHY BOTH HALVES. `inserted` is not a courtesy flag: the device marks an event CANONICAL on it
+// and points every later event at the STORED value, and qe.applied gates an APPLICATION on it.
+// One thread reporting inserted while another's value stands gives one signature two canonical
+// events.
 //
-// WHAT IS BEING PROVED, and why both halves matter. `inserted` is not a courtesy flag: the device
-// marks an event CANONICAL on it and points every later event at the STORED value, and
-// qe.applied gates an APPLICATION on it. So two things have to hold together --
+// THE BOUND. Three threads in three blocks, the same key, distinct 32-bit values, a map of two
+// slots: the election, and a probe that can pass a slot another thread holds.
 //
-//   exactly one of the threads is told inserted, and
-//   the value that is stored is that thread's
-//
-// -- because a run in which one thread reports inserted while another's value stands gives one
-// signature two canonical events, and neither half alone forbids it.
-//
-// THE SHAPE THAT BREAKS IT. Electing on the KEY exchange instead of the value exchange. That
-// elects one thread too, but a different one: the key winner can lose the value exchange, and
-// then it reports inserted while carrying a stranger's value while the value's owner reports
-// not-inserted. -DCALIBRATE_ELECT_ON_KEY makes claim_key's winner the inserter and the checker
-// must report the stored value disagreeing with the elected thread's.
-//
-// The values are 64-bit words; the device's are 32-bit ids. The election does not depend on
-// the width.
-//
-// THE BOUND. One slot, two threads, the same key, distinct values. That is the smallest shape
-// containing the election: with one slot the probe cannot wander, so what is left is exactly the
-// two exchanges and which thread wins each. Distinct values are what make "whose value stood"
-// answerable at all -- most real callers offer a constant presence marker, under which every
-// thread's value matches and the question cannot be posed.
+// CALIBRATION. -DHG_GPUMC_CALIBRATE_SPLIT_RMW makes every compare-exchange a load and a separate
+// store; the checker must report two inserters or a stored value that is not the inserter's.
 // GPUMC-CELL: clean PASS
-// GPUMC-CELL: elect_on_key FAIL -DCALIBRATE_ELECT_ON_KEY
+// GPUMC-CELL: split_rmw FAIL -DHG_GPUMC_CALIBRATE_SPLIT_RMW
 
-#include "hgcommon/hash_insert_core.hpp"
+#include "hg_gpumc.hpp"
+#include "hg_gpu/hash_table.hpp"
 
 #include <cassert>
 #include <cstdint>
 #include <pthread.h>
 
-extern "C" {
-void __VERIFIER_memory_scope_device();
-void __VERIFIER_thread_local_id(int);
-void __VERIFIER_thread_group_id(int);
-void __VERIFIER_thread_global_id(int);
-void __VERIFIER_thread_kernel_id(int);
-}
-
 namespace {
 
-constexpr uint32_t kCap = 1;
-constexpr uint32_t kThreads = 2;
+namespace g = HG_NAMESPACE::gpu;
+using Map = g::ConcurrentMap<uint64_t, uint32_t>;
+
+constexpr uint32_t kSlots = 2;
+constexpr uint32_t kThreads = 3;
 constexpr uint64_t kKey = 7;
-constexpr uint32_t kEmpty = 0;
-constexpr uint64_t kUnpublished = ~uint64_t{0};
 
-uint64_t g_keys[kCap];
-uint64_t g_values[kCap];
+g::MapSlot<uint64_t, uint32_t> g_slots[kSlots];
+uint32_t g_saturated;
+uint32_t g_offered[kThreads];
+bool g_inserted[kThreads];
+uint32_t g_returned[kThreads];
+bool g_found[kThreads];
+uint32_t g_found_value[kThreads];
 
-bool     g_inserted[kThreads];
-uint64_t g_offered[kThreads];
+Map::DeviceView map() { return {g_slots, kSlots, kSlots - 1, &g_saturated}; }
 
-uint64_t kload(uint64_t* a) {
-    __VERIFIER_memory_scope_device();
-    return __atomic_load_n(a, __ATOMIC_ACQUIRE);
-}
-bool kcas(uint64_t* a, uint64_t* expected, uint64_t desired) {
-    __VERIFIER_memory_scope_device();
-    return __atomic_compare_exchange_n(a, expected, desired, /*weak=*/false,
-                                       __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
-}
-uint64_t vload(uint64_t* a) {
-    __VERIFIER_memory_scope_device();
-    return __atomic_load_n(a, __ATOMIC_ACQUIRE);
-}
-bool vcas(uint64_t* a, uint64_t* expected, uint64_t desired) {
-    __VERIFIER_memory_scope_device();
-    return __atomic_compare_exchange_n(a, expected, desired, /*weak=*/false,
-                                       __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
-}
-
-struct Ops {
-    uint64_t value;
-    uint64_t stood = 0;
-
-    uint32_t capacity() const { return kCap; }
-    uint32_t initial_slot() const { return 0; }
-    uint32_t next_slot(uint32_t s) const { return (s + 1) % kCap; }
-
-    hgcommon::KeyState key_state(uint32_t s) const {
-        const uint64_t cur = kload(&g_keys[s]);
-        if (cur == kKey)   return hgcommon::KeyState::Ours;
-        if (cur == kEmpty) return hgcommon::KeyState::Empty;
-        return hgcommon::KeyState::Other;
-    }
-
-    bool claim_key(uint32_t s) {
-        uint64_t expected = kEmpty;
-        const bool won = kcas(&g_keys[s], &expected, kKey);
-#if defined(CALIBRATE_ELECT_ON_KEY)
-        if (won) elected_on_key = true;
-#endif
-        return won;
-    }
-
-    hgcommon::InsertOutcome offer_value(uint32_t s) {
-#if defined(CALIBRATE_ELECT_ON_KEY)
-        // THE DEFECT: the key winner is called the inserter. It still offers its value, and it
-        // still loses that exchange to whoever got there first -- so the thread reporting
-        // inserted and the thread whose value stands are two different threads.
-        uint64_t expect_v = kUnpublished;
-        if (!vcas(&g_values[s], &expect_v, value)) stood = expect_v;
-        return elected_on_key ? hgcommon::InsertOutcome::Inserted
-                              : hgcommon::InsertOutcome::Present;
-#else
-        uint64_t expect_v = kUnpublished;
-        if (vcas(&g_values[s], &expect_v, value))
-            return hgcommon::InsertOutcome::Inserted;
-        stood = expect_v;
-        return hgcommon::InsertOutcome::Present;
-#endif
-    }
-
-#if defined(CALIBRATE_ELECT_ON_KEY)
-    bool elected_on_key = false;
-#endif
-};
-
-void* worker(void* arg) {
-    const long id = reinterpret_cast<long>(arg);
-    __VERIFIER_thread_global_id(static_cast<int>(id));
-    __VERIFIER_thread_local_id(0);
-    __VERIFIER_thread_group_id(static_cast<int>(id));
-    __VERIFIER_thread_kernel_id(0);
-
-    // Distinct, and neither is the unpublished sentinel, so "whose value stood" has an answer.
-    const uint64_t value = static_cast<uint64_t>(id) + 1;
-    Ops ops{value};
-    const hgcommon::InsertOutcome outcome = hgcommon::hash_insert_claim(ops);
-
-    g_offered[id] = value;
-    g_inserted[id] = (outcome == hgcommon::InsertOutcome::Inserted);
+void* inserter(void* arg) {
+    const unsigned id = static_cast<unsigned>(reinterpret_cast<long>(arg));
+    hg_gpumc::enter(id, 0);
+    g_offered[id] = 10 + id;
+    const Map::DeviceView m = map();
+    const auto r = m.insert_if_absent(kKey, g_offered[id]);
+    assert(!r.overflowed && "a two-slot map with one key overflowed");
+    g_inserted[id] = r.inserted;
+    g_returned[id] = r.value;
+    const auto l = m.lookup(kKey);
+    g_found[id] = l.found;
+    g_found_value[id] = l.value;
     return nullptr;
 }
 
 }  // namespace
 
 int main() {
-    for (uint32_t i = 0; i < kCap; ++i) { g_keys[i] = kEmpty; g_values[i] = kUnpublished; }
-
+    const unsigned lanes[kThreads] = {1, 1, 1};
+    hg_gpumc::launch(kThreads, lanes);
+    // ConcurrentMap::clear: every key EMPTY, every value UNPUBLISHED.
+    for (uint32_t s = 0; s < kSlots; ++s) g_slots[s] = {0, Map::DeviceView::UNPUBLISHED};
     pthread_t t[kThreads];
     for (long i = 0; i < static_cast<long>(kThreads); ++i)
-        pthread_create(&t[i], nullptr, worker, reinterpret_cast<void*>(i));
+        pthread_create(&t[i], nullptr, inserter, reinterpret_cast<void*>(i));
     for (uint32_t i = 0; i < kThreads; ++i) pthread_join(t[i], nullptr);
 
-    uint32_t winners = 0;
-    long winner = -1;
+    uint32_t winners = 0, winner = 0;
     for (uint32_t i = 0; i < kThreads; ++i)
         if (g_inserted[i]) { ++winners; winner = i; }
-
     assert(winners == 1 && "the key was inserted by no thread, or by more than one");
-    // The elected thread must be the one whose value is stored. Without this the count alone is
-    // satisfied by electing on the key exchange, which is a different thread.
-    assert(g_values[0] == g_offered[winner] &&
-           "the thread told it inserted is not the one whose value stands");
+    const auto stood = map().lookup(kKey);
+    assert(stood.found && stood.value == g_offered[winner] &&
+           "the stored value is not the inserter's");
+    for (uint32_t i = 0; i < kThreads; ++i) {
+        assert(g_returned[i] == g_offered[winner] && "an insert returned a value that did not stand");
+        assert(g_found[i] && g_found_value[i] == g_offered[winner] &&
+               "a lookup after the thread's own insert missed the key");
+    }
     return 0;
 }
