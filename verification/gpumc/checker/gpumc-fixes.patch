@@ -1,0 +1,453 @@
+diff -u a/src/Execution.cpp b/src/Execution.cpp
+--- a/src/Execution.cpp
++++ b/src/Execution.cpp
+@@ -1594,7 +1594,7 @@
+ 			I.getSuccessOrdering(), nextPos(), ptr,		\
+ 			size, atyp, GV_TO_SVAL(cmpVal, typ),		\
+ 			GV_TO_SVAL(newVal, typ), getWriteAttr(I)), &*lDeps); \
+-		cmpRes = ret == GV_TO_SVAL(cmpVal, typ).signExtendBottom(size * 8); \
++		cmpRes = SVal(ret.eqBottom(GV_TO_SVAL(cmpVal, typ), size * 8)); \
+ 		if (!getCurThr().isBlocked() && cmpRes) {		\
+ 			auto sDeps = makeEventDeps(getDataDeps(getCurThr().id, I.getPointerOperand()), \
+ 						   getDataDeps(getCurThr().id, I.getNewValOperand()), \
+diff -u a/src/GenMCDriver.cpp b/src/GenMCDriver.cpp
+--- a/src/GenMCDriver.cpp
++++ b/src/GenMCDriver.cpp
+@@ -1715,7 +1715,7 @@
+ 		if (llvm::isa<FaiReadLabel>(lab) && g.isStoreReadBySettledRMW(s, lab->getAddr(), before))
+ 			return true;
+ 		if (auto *rLab = llvm::dyn_cast<CasReadLabel>(lab)) {
+-			if (oldVal == rLab->getExpected() &&
++			if (oldVal.eqBottom(rLab->getExpected(), rLab->getAccess().getSize().getBits()) &&
+ 			    g.isStoreReadBySettledRMW(s, rLab->getAddr(), before))
+ 				return true;
+ 		}
+@@ -2338,6 +2338,25 @@
+ 			--v[i];
+ 	return v;
+ }
++/* Records the race between two accesses at source locations a and b (line, file) once, under
++ * "file:line" of each, whatever file each access is in. */
++template <class Loc>
++static void recordRaceAt(GenMCDriver::Result &result, const std::string &scopes,
++			 const Loc &a, const Loc &b)
++{
++	auto where = [](const Loc &l) {
++		std::string f = l.second;
++		Parser::stripSlashes(f);
++		return f + ":" + std::to_string(l.first);
++	};
++	auto ka = where(a), kb = where(b);
++	if (result.races.count(std::make_pair(ka, kb)) || result.races.count(std::make_pair(kb, ka)))
++		return;
++	result.races[std::make_pair(ka, kb)] = scopes;
++	WARN("Reporting Race (" + ka + ", " + kb + ")\n");
++	++result.racecount;
++}
++
+ void GenMCDriver::reportRace(Event pos, Event confEvent /* = INIT */)
+ {	
+ 	auto &g = getGraph();
+@@ -2411,20 +2430,7 @@
+ 		auto &pair1 = thr1.prefixLOC[e1.index];
+ 		auto &pair2 = thr2.prefixLOC[e2.index];
+ 		if(pair1.first && pair2.first) {
+-			std::string f1 = pair1.second;
+-			std::string f2 = pair1.second;
+-			std::string inputFile = getConf()->inputFile;
+-			Parser::stripSlashes(f1);
+-			Parser::stripSlashes(f2);
+-			Parser::stripSlashes(inputFile);
+-			if (f1 != inputFile || f2 != inputFile)
+-				return;
+-			if(result.races.find(std::make_pair(pair1.first,pair2.first)) == result.races.end() 
+-				&& result.races.find(std::make_pair(pair2.first,pair1.first)) == result.races.end()) {
+-				result.races[std::make_pair(pair1.first,pair2.first)]="["+scope1+","+scope2+"]";
+-				WARN("Report Race (L. " + to_string(pair1.first) + ", L." + to_string(pair2.first)+")\n");
+-				++result.racecount;
+-			}
++			recordRaceAt(result, "[" + scope1 + "," + scope2 + "]", pair1, pair2);
+ 		}
+ 	}
+ 	
+@@ -2501,20 +2507,7 @@
+ 			auto &pair1 = thr1.prefixLOC[e1.index];
+ 			auto &pair2 = thr2.prefixLOC[e2.index];
+ 			if(pair1.first && pair2.first) {
+-				std::string f1 = pair1.second;
+-				std::string f2 = pair1.second;
+-				std::string inputFile = getConf()->inputFile;
+-				Parser::stripSlashes(f1);
+-				Parser::stripSlashes(f2);
+-				Parser::stripSlashes(inputFile);
+-				if (f1 != inputFile || f2 != inputFile)
+-					return;
+-				if(result.races.find(std::make_pair(pair1.first,pair2.first)) == result.races.end() 
+-					&& result.races.find(std::make_pair(pair2.first,pair1.first)) == result.races.end()) {
+-					result.races[std::make_pair(pair1.first,pair2.first)]="["+scope1+","+scope2+"]";
+-					WARN("Reporting Race (L. " + to_string(pair1.first) + ", L." + to_string(pair2.first)+")\n");
+-					++result.racecount;
+-				}
++				recordRaceAt(result, "[" + scope1 + "," + scope2 + "]", pair1, pair2);
+ 			}
+ 		}
+ 	}
+@@ -3005,7 +2998,7 @@
+ 	if (!llvm::isa<CasReadLabel>(rLab) && !llvm::isa<FaiReadLabel>(rLab))
+ 		return nullptr;
+ 	if (auto *casLab = llvm::dyn_cast<CasReadLabel>(rLab)) {
+-		if (getReadValue(rLab) != casLab->getExpected())
++		if (!getReadValue(rLab).eqBottom(casLab->getExpected(), casLab->getAccess().getSize().getBits()))
+ 			return nullptr;
+ 	}
+ 
+diff -u a/src/GenMCDriver.hpp b/src/GenMCDriver.hpp
+--- a/src/GenMCDriver.hpp
++++ b/src/GenMCDriver.hpp
+@@ -92,7 +92,7 @@
+ 		unsigned explored;        /* Number of complete executions explored */
+ 		unsigned exploredBlocked; /* Number of blocked executions explored */
+ 		unsigned exploredMoot;
+-		std::map<std::pair<int,int>,std::string> races; /*Stores the races*/
++		std::map<std::pair<std::string,std::string>,std::string> races; /*Stores the races*/
+ 		unsigned racecount;
+ 		unsigned esize=0;
+ #ifdef ENABLE_GENMC_DEBUG
+diff -u a/src/PromoteMemIntrinsicPass.cpp b/src/PromoteMemIntrinsicPass.cpp
+--- a/src/PromoteMemIntrinsicPass.cpp
++++ b/src/PromoteMemIntrinsicPass.cpp
+@@ -32,6 +32,8 @@
+ #include <llvm/IR/IRBuilder.h>
+ #include <llvm/IR/Module.h>
+ #include <llvm/IR/Type.h>
++#include <llvm/IR/DataLayout.h>
++#include <llvm/IR/Operator.h>
+ 
+ using namespace llvm;
+ 
+@@ -41,10 +43,15 @@
+ 	// au.addRequired<FunctionInlinerPass>();
+ }
+ 
++/* An operand whose object type is known: a global, an alloca, a GEP (an instruction or a
++ * constant expression), or any other typed pointer (an argument, a loaded pointer, a call's
++ * result), whose pointee type is the object's. */
+ bool isPromotableMemIntrinsicOperand(Value *op)
+ {
+-	// Constant to capture MemSet too
+-	return isa<Constant>(op) || isa<AllocaInst>(op) || isa<GetElementPtrInst>(op);
++	if (isa<GlobalVariable>(op) || isa<AllocaInst>(op) || isa<GEPOperator>(op))
++		return true;
++	auto *pt = dyn_cast<PointerType>(op->getType());
++	return pt && !pt->isOpaque() && pt->getPointerElementType()->isSized();
+ }
+ 
+ Type *getPromotionGEPType(Value *op)
+@@ -54,47 +61,116 @@
+ 		return v->getValueType();
+ 	else if (auto *ai = dyn_cast<AllocaInst>(op))
+ 		return ai->getAllocatedType();
+-	else if (auto *gepi = dyn_cast<GetElementPtrInst>(op))
+-		return gepi->getResultElementType();
++	else if (auto *gepo = dyn_cast<GEPOperator>(op))
++		return gepo->getResultElementType();
++	else if (auto *pt = dyn_cast<PointerType>(op->getType()))
++		return pt->getPointerElementType();
+ 	else
+ 		BUG();
+ }
+ 
+-void promoteMemCpy(IRBuilder<> &builder, Value *dst, Value *src,
++/* Promotion walks the leaves of one object type `typ` (the "base" type) and copies or fills
++ * each leaf that lies inside the first `len` bytes. The base is the destination's type, or the
++ * source's when only the source's size is the copy's length; the other operand is read or
++ * written through a cast of its pointer to the base type: memcpy copies bytes. A leaf that
++ * straddles `len` makes the intrinsic unpromotable (promoteMemIntrinsic's dry run). */
++/* The pointer naming the object an intrinsic's operand points into: along the operand's chain
++ * of pointer casts, the global, alloca or GEP the chain starts from, or else the first pointer
++ * whose pointee is not a byte (a malloc'd object is an i8* cast to its type, and stripping every
++ * cast would leave the i8*). */
++static Value *objectPointer(Value *raw)
++{
++	Value *typed = nullptr;
++	Value *v = raw;
++	for (;;) {
++		if (isa<GlobalVariable>(v) || isa<AllocaInst>(v) || isa<GEPOperator>(v))
++			return v;
++		auto *pt = dyn_cast<PointerType>(v->getType());
++		if (!typed && pt && !pt->isOpaque() && pt->getPointerElementType()->isSized() &&
++		    !pt->getPointerElementType()->isIntegerTy(8))
++			typed = v;
++		auto *bc = dyn_cast<BitCastOperator>(v);
++		if (!bc)
++			return typed ? typed : v;
++		v = bc->getOperand(0);
++	}
++}
++
++static Value *castTo(IRBuilder<> &builder, Value *p, Type *typ)
++{
++	auto *want = PointerType::get(typ, p->getType()->getPointerAddressSpace());
++	return p->getType() == want ? p : builder.CreateBitCast(p, want, "memintr.cast");
++}
++
++void promoteMemCpy(IRBuilder<> &builder, Type *base, Value *dst, Value *src,
+ 		   const std::vector<Value *> &args, Type *typ)
+ {
+-	Value *srcGEP = builder.CreateInBoundsGEP(getPromotionGEPType(src),
+-						  src, args, "memcpy.src.gep");
+-	Value *dstGEP = builder.CreateInBoundsGEP(getPromotionGEPType(dst),
+-						  dst, args, "memcpy.dst.gep");
++	Value *srcGEP = builder.CreateInBoundsGEP(base, castTo(builder, src, base), args,
++						  "memcpy.src.gep");
++	Value *dstGEP = builder.CreateInBoundsGEP(base, castTo(builder, dst, base), args,
++						  "memcpy.dst.gep");
+ 	Value *srcLoad = builder.CreateLoad(typ, srcGEP, "memcpy.src.load");
+-	Value *dstStore = builder.CreateStore(srcLoad, dstGEP);
+-	return;
++	builder.CreateStore(srcLoad, dstGEP);
+ }
+ 
+-void promoteMemSet(IRBuilder<> &builder, Value *dst, Value *argVal,
++/* An integer leaf is filled with the fill byte repeated over its width. A leaf that is not an
++ * integer is stored as its null value; tryPromoteMemSet promotes such a memset only when it
++ * fills with zero. */
++void promoteMemSet(IRBuilder<> &builder, Type *base, Value *dst, Value *argVal,
+ 		   const std::vector<Value *> &args, Type *typ)
+ {
+-	BUG_ON(!typ->isIntegerTy());
+ 	BUG_ON(!isa<ConstantInt>(argVal));
+ 
+-	long int ival = dyn_cast<ConstantInt>(argVal)->getSExtValue();
+-	Value *val = Constant::getIntegerValue(typ, APInt(typ->getIntegerBitWidth(), ival));
++	uint64_t byte = dyn_cast<ConstantInt>(argVal)->getZExtValue() & 0xff;
++	Value *val = nullptr;
++	if (typ->isIntegerTy()) {
++		auto bits = typ->getIntegerBitWidth();
++		APInt v(bits, 0);
++		for (auto b = 0u; b < bits; b += 8)
++			v |= APInt(bits, byte).shl(b);
++		val = Constant::getIntegerValue(typ, v);
++	} else {
++		BUG_ON(byte != 0);
++		val = Constant::getNullValue(typ);
++	}
+ 
+-	Value *dstGEP = builder.CreateInBoundsGEP(getPromotionGEPType(dst),
+-						  dst, args, "memset.dst.gep");
+-	Value *dstStore = builder.CreateStore(val, dstGEP);
+-	return;
++	Value *dstGEP = builder.CreateInBoundsGEP(base, castTo(builder, dst, base), args,
++						  "memset.dst.gep");
++	builder.CreateStore(val, dstGEP);
+ }
+ 
++bool allLeavesInteger(Type *typ)
++{
++	if (auto *AT = dyn_cast<ArrayType>(typ))
++		return allLeavesInteger(AT->getElementType());
++	if (auto *ST = dyn_cast<StructType>(typ)) {
++		for (auto *e : ST->elements())
++			if (!allLeavesInteger(e))
++				return false;
++		return true;
++	}
++	return typ->isIntegerTy();
++}
++
++/* Calls promoteFun on every leaf of `typ` (at byte `off` of the base object) inside the first
++ * `len` bytes. False when a leaf straddles `len` or a type cannot be walked; with `dry` set,
++ * nothing is called and only that answer is computed. */
+ template<typename F>
+-void promoteMemIntrinsic(Type *typ, std::vector<Value *> &args, F&& promoteFun)
++bool promoteMemIntrinsic(const DataLayout &DL, Type *typ, uint64_t off, uint64_t len,
++			 std::vector<Value *> &args, bool dry, F&& promoteFun)
+ {
+ 	auto *i32Ty = IntegerType::getInt32Ty(typ->getContext());
+ 
+-	if(!isa<StructType>(typ) && !isa<ArrayType>(typ) && !isa<VectorType>(typ)) {
+-		promoteFun(typ, args);
+-		return;
++	if (!isa<StructType>(typ) && !isa<ArrayType>(typ)) {
++		if (isa<VectorType>(typ) || !typ->isSized())
++			return false;
++		if (off >= len)
++			return true;
++		if (off + DL.getTypeStoreSize(typ) > len)
++			return false;
++		if (!dry)
++			promoteFun(typ, args);
++		return true;
+ 	}
+ 
+ 	if (ArrayType *AT = dyn_cast<ArrayType>(typ)) {
+@@ -103,22 +179,33 @@
+ #else
+ 		auto n = AT->getArrayNumElements();
+ #endif
+-		for (auto i = 0u; i < n; i++) {
+-			args.push_back(Constant::getIntegerValue(i32Ty, APInt(32, i)));
+-			promoteMemIntrinsic(AT->getElementType(), args, promoteFun);
+-			args.pop_back();
+-		}
+-	} else if (StructType *ST = dyn_cast<StructType>(typ)) {
+-		auto i = 0u;
+-		for (auto it = ST->element_begin(); i < ST->getNumElements(); ++it, ++i) {
++		auto step = DL.getTypeAllocSize(AT->getElementType());
++		for (auto i = 0u; i < n && off + i * step < len; i++) {
+ 			args.push_back(Constant::getIntegerValue(i32Ty, APInt(32, i)));
+-			promoteMemIntrinsic(*it, args, promoteFun);
++			bool ok = promoteMemIntrinsic(DL, AT->getElementType(), off + i * step, len,
++						      args, dry, promoteFun);
+ 			args.pop_back();
++			if (!ok)
++				return false;
+ 		}
+-	} else {
+-		BUG();
++		return true;
++	}
++	StructType *ST = dyn_cast<StructType>(typ);
++	if (ST->isOpaque())
++		return false;
++	auto *SL = DL.getStructLayout(ST);
++	for (auto i = 0u; i < ST->getNumElements(); ++i) {
++		auto eoff = off + SL->getElementOffset(i);
++		if (eoff >= len)
++			break;
++		args.push_back(Constant::getIntegerValue(i32Ty, APInt(32, i)));
++		bool ok = promoteMemIntrinsic(DL, ST->getElementType(i), eoff, len, args, dry,
++					      promoteFun);
++		args.pop_back();
++		if (!ok)
++			return false;
+ 	}
+-	return;
++	return true;
+ }
+ 
+ bool canPromoteMemIntrinsic(MemIntrinsic *MI)
+@@ -150,8 +237,8 @@
+ 	if (auto *MC = dyn_cast<MemCpyInst>(MI))
+ 		BUG_ON(MC->getSourceAddressSpace() != MC->getDestAddressSpace());
+ 
+-	if (!isPromotableMemIntrinsicOperand(MI->getDest()) ||
+-	    (isa<MemCpyInst>(MI) && !isPromotableMemIntrinsicOperand(dyn_cast<MemCpyInst>(MI)->getSource()))) {
++	if (!isPromotableMemIntrinsicOperand(objectPointer(MI->getRawDest())) ||
++	    (isa<MemCpyInst>(MI) && !isPromotableMemIntrinsicOperand(objectPointer(dyn_cast<MemCpyInst>(MI)->getRawSource())))) {
+ 		WARN_ONCE("memintr-dst", "Cannot promote intrinsic due to opaque operand type pointer!" \
+ 			  "Skipping...\n");
+ 		return false;
+@@ -172,20 +259,34 @@
+ 	if (!canPromoteMemIntrinsic(MI))
+ 		return false;
+ 
+-	auto *dst = MI->getDest();
+-	auto *src = MI->getSource();
++	auto *dst = objectPointer(MI->getRawDest());
++	auto *src = objectPointer(MI->getRawSource());
+ 
+ 	auto *i64Ty = IntegerType::getInt64Ty(MI->getContext());
+ 	auto *nullInt = Constant::getNullValue(i64Ty);
+ 	auto *dstTyp = getPromotionGEPType(dst);
+-	BUG_ON(!dstTyp);
++	auto *srcTyp = getPromotionGEPType(src);
++	BUG_ON(!dstTyp || !srcTyp);
+ 
+-	IRBuilder<> builder(MI);
++	/* The base type: the destination's, unless only the source's size is the length. */
++	auto &DL = M.getDataLayout();
++	auto len = dyn_cast<ConstantInt>(MI->getLength())->getLimitedValue();
++	auto sizeOf = [&](Type *t) { return t->isSized() ? DL.getTypeAllocSize(t) : 0; };
++	Type *base = dstTyp;
++	if (sizeOf(dstTyp) != len && sizeOf(srcTyp) == len)
++		base = srcTyp;
+ 	std::vector<Value *> args = { nullInt };
++	auto none = [](Type *, const std::vector<Value *> &) {};
++	if (sizeOf(base) < len || !promoteMemIntrinsic(DL, base, 0, len, args, true, none)) {
++		errs() << "WARNING: memcpy of " << len << " bytes in " << MI->getFunction()->getName()
++		       << " is not promoted; executing it is an error.\n";
++		return false;
++	}
+ 
+-	promoteMemIntrinsic(dstTyp, args,
++	IRBuilder<> builder(MI);
++	promoteMemIntrinsic(DL, base, 0, len, args, false,
+ 			    [&](Type *typ, const std::vector<Value *> &args)
+-			    { promoteMemCpy(builder, dst, src, args, typ); });
++			    { promoteMemCpy(builder, base, dst, src, args, typ); });
+ 	promoted.push_back(MI);
+ 	return true;
+ }
+@@ -195,7 +296,7 @@
+ 	if (!canPromoteMemIntrinsic(MS))
+ 		return false;
+ 
+-	auto *dst = MS->getDest();
++	auto *dst = objectPointer(MS->getRawDest());
+ 	auto *val = MS->getValue();
+ 
+ 	auto *i64Ty = IntegerType::getInt64Ty(MS->getContext());
+@@ -203,12 +304,25 @@
+ 	auto *dstTyp = getPromotionGEPType(dst);
+ 	BUG_ON(!dstTyp);
+ 
+-	IRBuilder<> builder(MS);
++	/* A constant fill byte over leaves inside the length; a leaf that is not an integer can
++	 * only be filled with zero. */
++	auto &DL = M.getDataLayout();
++	auto len = dyn_cast<ConstantInt>(MS->getLength())->getLimitedValue();
++	auto *fill = dyn_cast<ConstantInt>(val);
+ 	std::vector<Value *> args = { nullInt };
++	auto none = [](Type *, const std::vector<Value *> &) {};
++	if (!fill || !dstTyp->isSized() || DL.getTypeAllocSize(dstTyp) < len ||
++	    ((fill->getZExtValue() & 0xff) != 0 && !allLeavesInteger(dstTyp)) ||
++	    !promoteMemIntrinsic(DL, dstTyp, 0, len, args, true, none)) {
++		errs() << "WARNING: memset of " << len << " bytes in " << MS->getFunction()->getName()
++		       << " is not promoted; executing it is an error.\n";
++		return false;
++	}
+ 
+-	promoteMemIntrinsic(dstTyp, args,
++	IRBuilder<> builder(MS);
++	promoteMemIntrinsic(DL, dstTyp, 0, len, args, false,
+ 			    [&](Type *typ, const std::vector<Value *> &args)
+-			    { promoteMemSet(builder, dst, val, args, typ); });
++			    { promoteMemSet(builder, dstTyp, dst, val, args, typ); });
+ 	promoted.push_back(MS);
+ 	return true;
+ }
+diff -u a/src/SVal.hpp b/src/SVal.hpp
+--- a/src/SVal.hpp
++++ b/src/SVal.hpp
+@@ -74,6 +74,16 @@
+ 	inline bool operator==(const SVal &v) const {
+ 		return v.value == value;
+ 	}
++
++	/* True when the bottom B bits of the two values are equal. A store keeps
++	 * its value zero-extended and an atomic add or sub keeps it sign-extended,
++	 * so a compare-exchange compares at its access width. */
++	bool eqBottom(const SVal &v, unsigned b) const {
++		if (b >= width)
++			return v.value == value;
++		const Value m = (Value(1) << b) - 1;
++		return (v.value & m) == (value & m);
++	}
+ 	inline bool operator!=(const SVal &v) const {
+ 		return !(*this == v);
+ 	}
+diff -u a/src/main.cpp b/src/main.cpp
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -104,8 +104,8 @@
+ 		llvm::outs() << "\nRaces Detected: ";
+ 		if(!res.races.empty())
+ 		for(auto it=res.races.begin() ; it != res.races.end() ; it++){
+-			llvm::outs() << "\n\t[L." << it->first.first;
+-			llvm::outs() << "\tL." << it->first.second << "]-";
++			llvm::outs() << "\n\t[" << it->first.first;
++			llvm::outs() << "\t" << it->first.second << "]-";
+ 			llvm::outs() << it->second;
+ 			
+ 		}
