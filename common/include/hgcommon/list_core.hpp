@@ -14,10 +14,9 @@
 // one is older.
 //
 // THE STORAGE HALF IS THE CALLER'S: how the head word and a node's next field are read and
-// exchanged, and AT WHAT SCOPE. That is what differs between the device (cuda::atomic_ref at
-// thread_scope_device) and a checker (annotated __atomic builtins), and it is why the rule is
-// separable at all -- verification/gpumc/replay_rendezvous_meets.cpp runs this body under
-// scoped-RC11. Ctx supplies:
+// exchanged, and AT WHAT SCOPE (the device: cuda::atomic_ref at thread_scope_device).
+// verification/gpumc/replay_rendezvous_device.cpp runs the device's list, through this body,
+// under scoped-RC11. Ctx supplies:
 //
 //   uint32_t invalid() const                       the tail marker
 //   uint32_t head_load_relaxed() const
