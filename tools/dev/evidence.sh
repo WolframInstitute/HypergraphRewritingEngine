@@ -158,20 +158,13 @@ run_or_skip "FFI on the device" \
     "test -x $GPU_BUILD/gpu_ffi_tests && nvidia-smi" \
     "$GPU_BUILD/gpu_ffi_tests"
 
-# THE FOUR DEVICE SANITIZERS, EACH SCOPED TO WHAT IT ACTUALLY SEES. memcheck is out-of-bounds
-# and misaligned device accesses; initcheck is reads of uninitialised device memory; synccheck
-# is illegal __syncthreads/__syncwarp use; racecheck is SHARED-MEMORY hazards ONLY -- it does
-# not see races on global memory, which is where this engine's lock-free device structures
-# live, and only two files under gpu/ use __shared__ at all. A clean racecheck is therefore a
-# statement about a small surface, and the device map's global-memory election is checked by
-# gpu_differential_tests, not here.
-# compute-sanitizer needs /usr/lib/wsl/lib on PATH under WSL, which this script exports above;
-# without it the tool reports "Unable to find injection library" and exits non-zero.
+# The four device sanitizers over the three GPU suites, as the release gate runs them
+# (tools/dev/release_gate.sh states what each tool sees).
 CS=${COMPUTE_SANITIZER:-/usr/local/cuda/bin/compute-sanitizer}
 for cs_tool in memcheck initcheck synccheck racecheck; do
     run_or_skip "Device sanitizer: $cs_tool" \
         "test -x $GPU_BUILD/hg_gpu_tests && test -x $CS && nvidia-smi" \
-        "$CS" --tool "$cs_tool" --error-exitcode 9 "$GPU_BUILD/hg_gpu_tests"
+        env HG_GPU_BUILD="$GPU_BUILD" tools/dev/release_gate.sh sanitizers "$cs_tool"
 done
 
 # Reads a built object, so it needs no GPU and no run -- the only leg here that

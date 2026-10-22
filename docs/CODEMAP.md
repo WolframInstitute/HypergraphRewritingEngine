@@ -386,8 +386,11 @@ rented box that does.
   driver that pulls each phase's artifacts as soon as it returns. A bare branch name resolves to
   `origin/<name>`: `git fetch` does not advance a local branch, so a reused clone would otherwise
   rebuild whatever it last checked out and report that as the commit under measurement.
-- **`evidence.sh`** -- the evidence report, including the four device sanitizers, each scoped in a
-  comment to what it actually sees (racecheck is shared memory only).
+- **`evidence.sh`** -- the evidence report; its device sanitizer legs call `release_gate.sh`.
+- **`release_gate.sh`** -- the release gate, run once per release candidate: compute-sanitizer
+  (memcheck, initcheck, synccheck, racecheck) over `hg_gpu_tests`, `gpu_differential_tests` and
+  `gpu_ffi_tests`, every GPUMC cell with the long ones, every GenMC harness, every TLC
+  configuration. The header states what each sanitizer sees (racecheck is shared memory only).
 - **`worker_fuzz.py`** -- the random job-sequence fuzz, a local gate (CONTRIBUTING.md, Test). One
   `hg_evolve_gpu --serve` worker answers every job of the run and is compared with `hg_evolve` on
   the CPU; StepStatistics is compared between devices and between 1, 4, 16, 32 and one seed-chosen count of CPU workers;
