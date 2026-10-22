@@ -387,12 +387,13 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                             req.step_statistics_branchial =
                                 (req.step_statistics_branchial & ~hg::stats::kBranchialMatrices) | bits;
                         } else if (option_key == "StepStatisticsMatrixLimit") {
+                            // Bytes; 0 is Automatic.
                             const int64_t v = option_parser.read<int64_t>();
-                            if (v < 1 || v > UINT32_MAX)
+                            if (v < 0)
                                 throw std::runtime_error(
-                                    "StepStatisticsMatrixLimit is a positive integer, got " +
+                                    "StepStatisticsMatrixLimit is a byte count or Automatic, got " +
                                     std::to_string(v));
-                            req.step_statistics_matrix_limit = static_cast<uint32_t>(v);
+                            req.step_statistics_matrix_limit = static_cast<uint64_t>(v);
                         } else if (option_key == "GraphProperties") {
                             // Graph properties for graph-ready data output (list)
                             req.graph_properties = option_parser.read<std::vector<std::string>>();
@@ -2076,8 +2077,9 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                 for (const auto& [step, states] : step_statistics->matrices_over_limit())
                     req.ffi_warnings.push_back(
                         {"StepStatistics", 1,
-                         hg::stats::matrix_limit_warning(step, states,
-                                                         req.step_statistics_matrix_limit)});
+                         hg::stats::matrix_limit_warning(
+                             step, states, which,
+                             hg::stats::matrix_limit_bytes(req.step_statistics_matrix_limit))});
             }
             full_result.push_back({wxf::WXFValue("StepStatistics"), std::move(reply)});
         }

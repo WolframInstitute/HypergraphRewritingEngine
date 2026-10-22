@@ -447,9 +447,11 @@ union of the step's edge sets. A pair's value is computed once from (n11, the sm
 larger size) and written to both cells, so the matrix is symmetric bit for bit and its cells above
 the diagonal are the values the summaries read. The diagonal is each state against itself: 1 for
 the overlap and the cosine (0 for an empty state), and for the mutual information the entropy in
-bits of membership in the state over U. A step with more states than
-`"StepStatisticsMatrixLimit"` (default 1000) has no `StateMatrices`, and the run warns with the
-step and its state count. State ids are numbered by the run (§5.1), so two runs give the same
+bits of membership in the state over U. `"StepStatisticsMatrixLimit"` bounds the bytes a step's
+matrices take while they are built: 16 k² per matrix (its reals and their reply) and 2 k (k - 1)
+per level (vertex, edge) for the shared counts. `Automatic`, the default, is a quarter of the
+host's available memory as the process reads it at its first run. A step that needs more has no
+`StateMatrices`, and the run warns with the step, its state count and the bytes. State ids are numbered by the run (§5.1), so two runs give the same
 matrices up to a renumbering of the states. The admission is `"Overlap"`'s.
 
 Cost: n11 for every two states that share an element comes from the overlap pass's rows (one

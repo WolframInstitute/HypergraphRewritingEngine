@@ -1101,7 +1101,9 @@ std::vector<uint8_t> run_gpu_evolution_once(const GpuJob& request, const HostBri
         for (const auto& [step, states] : over_limit)
             job.job_warnings.push_back(
                 {"StepStatistics", 1,
-                 hg::stats::matrix_limit_warning(step, states, job.step_statistics_matrix_limit)});
+                 hg::stats::matrix_limit_warning(
+                     step, states, which,
+                     hg::stats::matrix_limit_bytes(job.step_statistics_matrix_limit))});
     }
 
     // GraphData for the requested *Graph properties, built through the SAME shared

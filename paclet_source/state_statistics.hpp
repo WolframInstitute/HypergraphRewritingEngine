@@ -143,11 +143,18 @@ constexpr const char* kMatrixNames[6] = {
 // The kMatrix* bit of a "StepStatisticsMatrices" name; 0 for any other string.
 uint32_t matrix_bit(const std::string& name);
 
-// "StepStatisticsMatrixLimit": the most states a step may have for its "StateMatrices".
-constexpr uint32_t kMatrixLimitDefault = 1000;
+// The bytes the matrices `which` of a step of k states take while they are built: per matrix its
+// k x k reals and their dense WXF copy, 16 k^2; per level (vertex, edge) its k (k - 1) / 2
+// shared counts, 2 k (k - 1). UINT64_MAX above 2^28 states.
+uint64_t matrix_bytes(uint32_t k, uint32_t which);
 
-// The warning for a step whose `states` states are above `limit`.
-std::string matrix_limit_warning(uint32_t step, uint32_t states, uint32_t limit);
+// "StepStatisticsMatrixLimit" as given (bytes; 0 is Automatic) to bytes: Automatic is a quarter
+// of the host's available memory at the process's probe (hgcommon::host_topology()), the
+// fraction branchial_rows_device takes of the free device memory.
+uint64_t matrix_limit_bytes(uint64_t option);
+
+// The warning for a step of `states` states whose matrices `which` need more than `limit` bytes.
+std::string matrix_limit_warning(uint32_t step, uint32_t states, uint32_t which, uint64_t limit);
 
 // The vertices of step 0's states (S0), sorted and distinct, which
 // "InitialStateMutualInformation" reads at every step.
@@ -159,7 +166,8 @@ std::vector<uint32_t> initial_vertices(const BranchialStep& step0);
 // "StateCosineSimilarity", "StateMutualInformation", "InitialStateMutualInformation" (when
 // `initial` is given), "VertexSharpness", "BranchEntropy", "EdgeSharpness" and
 // "EdgeBranchEntropy"; with both, "OverlapByBranchialDistance"; with kMatrix* bits
-// "StateMatrices", when the step has at most `matrix_limit` states.
+// "StateMatrices", when they need at most `matrix_limit` bytes (matrix_bytes; 0 is Automatic,
+// matrix_limit_bytes).
 //
 // Built in three calls so the overlap rows can run on several workers: prepare(max_parts), then
 // rows(p) for every p < parts(), concurrently and in any order, then finish(). The row counts
@@ -167,7 +175,7 @@ std::vector<uint32_t> initial_vertices(const BranchialStep& step0);
 class BranchialStepWork {
 public:
     BranchialStepWork(BranchialStep step, uint32_t which, const std::vector<uint32_t>* initial,
-                      uint32_t matrix_limit = kMatrixLimitDefault);
+                      uint64_t matrix_limit = 0);
     ~BranchialStepWork();
     BranchialStepWork(const BranchialStepWork&) = delete;
     BranchialStepWork& operator=(const BranchialStepWork&) = delete;
@@ -301,8 +309,8 @@ public:
     }
     // One association per started step with a population, in step order.
     wxf::WXFValue reply();
-    // "StepStatisticsMatrixLimit"; set before the first step starts.
-    void set_matrix_limit(uint32_t limit) { matrix_limit_ = limit; }
+    // "StepStatisticsMatrixLimit" in bytes, 0 for Automatic; set before the first step starts.
+    void set_matrix_limit(uint64_t limit) { matrix_limit_ = limit; }
     // After reply: (step, states) for each step whose matrices were over the limit.
     std::vector<std::pair<uint32_t, uint32_t>> matrices_over_limit() const;
 
@@ -313,7 +321,7 @@ private:
     Submit submit_;
     DeviceRows device_rows_;
     uint32_t device_min_states_;
-    uint32_t matrix_limit_ = kMatrixLimitDefault;
+    uint64_t matrix_limit_ = 0;
     std::vector<uint32_t> initial_;
     bool have_initial_ = false;
     std::map<uint32_t, std::unique_ptr<Step>> steps_;
@@ -329,7 +337,7 @@ wxf::WXFValue step_statistics_on_host(marshal::HostJobs& host, std::map<uint32_t
                                       bool weight_by_classes, uint32_t which,
                                       StepStatisticsJobs::DeviceRows device_rows = nullptr,
                                       uint32_t device_min_states = 0,
-                                      uint32_t matrix_limit = kMatrixLimitDefault,
+                                      uint64_t matrix_limit = 0,
                                       std::vector<std::pair<uint32_t, uint32_t>>* over_limit =
                                           nullptr);
 

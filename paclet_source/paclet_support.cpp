@@ -16,6 +16,7 @@
 #include "hgcommon/quotient_causal_core.hpp"
 #include "hgcommon/branchial_overlap_core.hpp"
 #include "hgcommon/branchial_rows_core.hpp"
+#include "hgcommon/affinity.hpp"
 #include "hgcommon/ir_core.hpp"
 #include "job_system/job_system.hpp"
 
@@ -1089,7 +1090,7 @@ struct BranchialStepWork::State {
     BranchialStep step;
     uint32_t which;
     const std::vector<uint32_t>* initial;
-    uint32_t matrix_limit;
+    uint64_t matrix_limit;
     BranchialGraph graph;
     wxf::WXFValueAssociation graph_keys;
     // The overlap pass.
@@ -1124,12 +1125,12 @@ struct BranchialStepWork::State {
 };
 
 BranchialStepWork::BranchialStepWork(BranchialStep step, uint32_t which,
-                                     const std::vector<uint32_t>* initial, uint32_t matrix_limit)
+                                     const std::vector<uint32_t>* initial, uint64_t matrix_limit)
     : s_(new State) {
     s_->step = std::move(step);
     s_->which = which;
     s_->initial = initial;
-    s_->matrix_limit = matrix_limit;
+    s_->matrix_limit = matrix_limit_bytes(matrix_limit);
 }
 
 BranchialStepWork::~BranchialStepWork() = default;
@@ -1164,7 +1165,7 @@ void BranchialStepWork::prepare(size_t max_parts) {
     hgcommon::BrStep& view = w.view;
     w.rows.build(w.sets, w.holders, view);
     if (w.which & kBranchialMatrices) {
-        if (k > w.matrix_limit) {
+        if (matrix_bytes(k, w.which) > w.matrix_limit) {
             w.over_limit = k;
         } else {
             const size_t cells = static_cast<size_t>(k) * (k - (k ? 1 : 0)) / 2;
@@ -1385,10 +1386,26 @@ uint32_t matrix_bit(const std::string& name) {
     return 0;
 }
 
-std::string matrix_limit_warning(uint32_t step, uint32_t states, uint32_t limit) {
-    return "StepStatisticsMatrices: step " + std::to_string(step) + " has " +
-           std::to_string(states) + " states, above StepStatisticsMatrixLimit " +
-           std::to_string(limit) + "; its StateMatrices are not returned";
+uint64_t matrix_bytes(uint32_t k, uint32_t which) {
+    if (k > (1u << 28)) return UINT64_MAX;
+    uint64_t matrices = 0, levels = 0;
+    for (uint32_t i = 0; i < 6; ++i) matrices += (which >> (2 + i)) & 1u;
+    levels += (which & kMatrixVertex) != 0;
+    levels += (which & kMatrixEdge) != 0;
+    const uint64_t kk = uint64_t{k} * k;
+    return matrices * 16 * kk + levels * 2 * (kk - k);
+}
+
+uint64_t matrix_limit_bytes(uint64_t option) {
+    return option ? option : hgcommon::host_topology().available_bytes / 4;
+}
+
+std::string matrix_limit_warning(uint32_t step, uint32_t states, uint32_t which, uint64_t limit) {
+    return "StepStatisticsMatrices: the StateMatrices of step " + std::to_string(step) + " (" +
+           std::to_string(states) + " states) need " +
+           std::to_string(matrix_bytes(states, which)) +
+           " bytes, above StepStatisticsMatrixLimit " + std::to_string(limit) +
+           "; they are not returned";
 }
 
 wxf::WXFValueAssociation BranchialStepWork::finish() {
@@ -1979,7 +1996,7 @@ void StepStatisticsJobs::pool(Step* s) {
 wxf::WXFValue step_statistics_on_host(marshal::HostJobs& host, std::map<uint32_t, StepInput> inputs,
                                       bool weight_by_classes, uint32_t which,
                                       StepStatisticsJobs::DeviceRows device_rows,
-                                      uint32_t device_min_states, uint32_t matrix_limit,
+                                      uint32_t device_min_states, uint64_t matrix_limit,
                                       std::vector<std::pair<uint32_t, uint32_t>>* over_limit) {
     StepStatisticsJobs jobs(
         weight_by_classes, which, host.workers(),

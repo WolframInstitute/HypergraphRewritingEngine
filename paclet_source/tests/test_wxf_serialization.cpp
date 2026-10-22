@@ -37,6 +37,7 @@
 #include "hg_gpu/branchial_rows.hpp"
 #include "hg_gpu/step_pool.hpp"
 #endif
+#include "hgcommon/affinity.hpp"
 #include "hgcommon/core.hpp"
 #include "paclet_source/graph_marshal.hpp"
 #include "job_system/job_system.hpp"
@@ -2107,17 +2108,23 @@ TEST(WxfSerializationPin, StepStatisticsMatricesOptions) {
         HostBridge host;
         return run_rewriting_core(branch_job(3, "Evolve", 0, opts, 4), host);
     };
-    const auto all = run("None", {"StateMutualInformation", "StateEdgeOverlap"}, 1000);
+    const auto all = run("None", {"StateMutualInformation", "StateEdgeOverlap"}, 0);
     EXPECT_TRUE(reply_mentions(all, "StateMatrices"));
     EXPECT_TRUE(reply_mentions(all, "StateEdgeOverlap"));
     EXPECT_FALSE(reply_mentions(all, "StateCosineSimilarity"));
     EXPECT_FALSE(reply_mentions(all, "Warnings"));
     const auto capped = run("Automatic", {"StateMutualInformation"}, 2);
-    EXPECT_TRUE(reply_mentions(capped, "above StepStatisticsMatrixLimit 2"));
-    const auto full = run("Full", {"StateMutualInformation"}, 1000);
+    EXPECT_TRUE(reply_mentions(capped, "above StepStatisticsMatrixLimit 2;"));
+    // 0 is Automatic: the matrices of these small steps fit.
+    const auto automatic = run("None", {"StateMutualInformation"}, 0);
+    EXPECT_TRUE(reply_mentions(automatic, "StateMatrices"));
+    EXPECT_FALSE(reply_mentions(automatic, "Warnings"));
+    const auto negative = run("None", {"StateMutualInformation"}, -1);
+    EXPECT_TRUE(reply_mentions(negative, "StepStatisticsMatrixLimit is a byte count or Automatic"));
+    const auto full = run("Full", {"StateMutualInformation"}, 0);
     EXPECT_TRUE(reply_mentions(full, "StepStatisticsMatrices needs CanonicalizeStates"));
     EXPECT_FALSE(reply_mentions(full, "StateMatrices"));
-    const auto bad = run("None", {"Overlap"}, 1000);
+    const auto bad = run("None", {"Overlap"}, 0);
     EXPECT_TRUE(reply_mentions(bad, "OptionSkipped"));
     EXPECT_TRUE(reply_mentions(bad, "StepStatisticsMatrices 'Overlap'"));
 }
@@ -4894,27 +4901,34 @@ TEST(StateStatistics, StateMatricesOfOneState) {
     }
 }
 
-// A step above "StepStatisticsMatrixLimit" has no "StateMatrices" and reports its state count;
-// a step at the limit has them.
+// "StepStatisticsMatrixLimit" is in bytes (hg::stats::matrix_bytes): a step of 3 states with all
+// six matrices needs 6 x 16 x 9 + 2 x 2 x 6 = 888 bytes, so it has no "StateMatrices" under a
+// limit of 887 and reports its state count, and has them under 888. 0 is Automatic, a quarter of
+// the available memory.
 TEST(StateStatistics, StateMatricesRespectTheLimit) {
     hg::stats::BranchialStep s;
     s.nodes = {10, 11, 12};
     s.vertex_sets = {{0, 1}, {1, 2}, {2, 3}};
     s.edge_sets = {{0}, {1}, {2}};
-    for (const uint32_t limit : {2u, 3u}) {
+    EXPECT_EQ(hg::stats::matrix_bytes(3, all_matrices()), 888u);
+    EXPECT_EQ(hg::stats::matrix_bytes(3, hg::stats::kMatrixStateEdgeOverlap), 144u + 12u);
+    EXPECT_EQ(hg::stats::matrix_bytes(1u << 29, all_matrices()), UINT64_MAX);
+    for (const uint64_t limit : {887u, 888u, 0u}) {
         hg::stats::BranchialStepWork work(s, all_matrices(), nullptr, limit);
         work.prepare(2);
         for (size_t p = 0; p < work.parts(); ++p) work.rows(p);
         const wxf::WXFValue rec(work.finish());
-        EXPECT_EQ(assoc_at(rec, "StateMatrices") != nullptr, limit == 3) << limit;
-        EXPECT_EQ(work.matrices_over_limit(), limit == 3 ? 0u : 3u) << limit;
+        EXPECT_EQ(assoc_at(rec, "StateMatrices") != nullptr, limit != 887) << limit;
+        EXPECT_EQ(work.matrices_over_limit(), limit != 887 ? 0u : 3u) << limit;
     }
-    EXPECT_EQ(hg::stats::matrix_limit_warning(4, 1500, 1000),
-              "StepStatisticsMatrices: step 4 has 1500 states, above StepStatisticsMatrixLimit "
-              "1000; its StateMatrices are not returned");
+    EXPECT_EQ(hg::stats::matrix_limit_bytes(0), hgcommon::host_topology().available_bytes / 4);
+    EXPECT_EQ(hg::stats::matrix_limit_bytes(5), 5u);
+    EXPECT_EQ(hg::stats::matrix_limit_warning(4, 1500, all_matrices(), 1000),
+              "StepStatisticsMatrices: the StateMatrices of step 4 (1500 states) need 224994000 "
+              "bytes, above StepStatisticsMatrixLimit 1000; they are not returned");
     hg::stats::StepStatisticsJobs jobs(false, all_matrices(), 1,
                                        [](std::function<void()> f) { f(); });
-    jobs.set_matrix_limit(2);
+    jobs.set_matrix_limit(887);
     hg::stats::StepInput in;
     hg::stats::add_class(in, 1, 3, nullptr);
     in.branchial = s;
@@ -5026,11 +5040,12 @@ TEST(StateStatistics, DeviceRowsGiveTheHostStateMatrices) {
                 w.write(wxf::WXFValue(rec));
                 return w.release_data();
             };
-            hg::stats::BranchialStepWork host(s, which, nullptr, k);
+            const uint64_t limit = hg::stats::matrix_bytes(k, which);
+            hg::stats::BranchialStepWork host(s, which, nullptr, limit);
             host.prepare(4);
             for (size_t p = 0; p < host.parts(); ++p) host.rows(p);
             const auto want = bytes(host.finish());
-            hg::stats::BranchialStepWork device(s, which, nullptr, k);
+            hg::stats::BranchialStepWork device(s, which, nullptr, limit);
             device.prepare(4);
             ASSERT_NE(device.vertex_matrices(), nullptr);
             ASSERT_NE(device.edge_matrices(), nullptr);
@@ -5055,11 +5070,13 @@ TEST(StateStatistics, DeviceRowsGiveTheHostStateMatrices) {
 // `threads` workers, and the number of steps closed after the run. `online` closes steps as the
 // engine reports their depths; otherwise every step is closed after the run. `recurrent` adds
 // {{x,y},{y,z}} -> {{x,z}}, so a class can recur at a later step. Without `record_in_run` the
-// engine records no class record and the collector computes each one.
+// engine records no class record and the collector computes each one. `matrix_limit` is
+// "StepStatisticsMatrixLimit" in bytes, 0 for Automatic.
 std::pair<std::vector<uint8_t>, uint32_t> collected_step_statistics(
     size_t threads, uint32_t which, bool by_class, bool online, size_t step_cap,
     bool recurrent = false, bool record_in_run = true,
-    std::vector<std::pair<uint32_t, uint32_t>>* over_limit = nullptr) {
+    std::vector<std::pair<uint32_t, uint32_t>>* over_limit = nullptr,
+    uint64_t matrix_limit = 0) {
     hypergraph::Hypergraph hg;
     hypergraph::ParallelEvolutionEngine engine(&hg, threads);
     hgcommon::RecordSet rs;
@@ -5080,6 +5097,7 @@ std::pair<std::vector<uint8_t>, uint32_t> collected_step_statistics(
     if (recurrent)
         engine.add_rule(hypergraph::make_rule(1).lhs({0, 1}).lhs({1, 2}).rhs({0, 2}).build());
     hgffi::StepStatisticsCollector collector(hg, engine, which, by_class, 5);
+    collector.set_matrix_limit(matrix_limit);
     if (online) collector.attach(step_cap != 0);
     engine.evolve(std::vector<std::vector<hypergraph::VertexId>>{{0u, 1u}, {0u, 2u}}, 5);
     const wxf::WXFValue reply = collector.finish();
@@ -5133,14 +5151,15 @@ TEST(StateStatistics, CollectedStepStatisticsDoNotDependOnTheThreadCount) {
 // The state matrices at 1, 2, 8 and 16 threads, under full capture with the overlap and graph
 // keys, closed during the run and after it. The states are numbered by the run, so the matrices
 // are compared up to a renumbering of the states. Every step has its six matrices except the
-// steps reported over the limit of 1000 states.
+// steps reported over a limit of the bytes of 1000 states.
 TEST(StateStatistics, CollectedStateMatricesDoNotDependOnTheThreadCount) {
     const uint32_t which = hg::stats::kBranchialMatrices | hg::stats::kBranchialGraph |
                            hg::stats::kBranchialOverlap;
+    const uint64_t limit = hg::stats::matrix_bytes(1000, which);
     for (const size_t cap : {size_t{0}, size_t{4}}) {
         std::vector<std::pair<uint32_t, uint32_t>> over;
         const auto after =
-            collected_step_statistics(4, which, false, false, cap, false, true, &over);
+            collected_step_statistics(4, which, false, false, cap, false, true, &over, limit);
         const auto want = matrix_rows(after.first);
         ASSERT_EQ(want.size(), 6u);
         for (uint32_t step = 0; step < want.size(); ++step) {
@@ -5151,7 +5170,8 @@ TEST(StateStatistics, CollectedStateMatricesDoNotDependOnTheThreadCount) {
         }
         EXPECT_EQ(over.size(), cap ? 0u : 1u);
         for (const size_t threads : {1, 2, 8, 16}) {
-            const auto during = collected_step_statistics(threads, which, false, true, cap);
+            const auto during = collected_step_statistics(threads, which, false, true, cap, false,
+                                                          true, nullptr, limit);
             EXPECT_EQ(matrix_rows(during.first), want) << "threads " << threads << " cap " << cap;
         }
     }

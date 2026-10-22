@@ -36,7 +36,7 @@ Options[HGEvolve] = {
   "StepStatisticsWeighting" -> "States",  (* "States": each class of a step counts as its raw states; "Classes": each class counts once *)
   "StepStatisticsBranchial" -> None,  (* None, "Graph", "Overlap", a list of them, or All: the per-step branchial metrics "StepStatistics" adds *)
   "StepStatisticsMatrices" -> None,  (* None, a matrix name, a list of them, or All: the state x state matrices "StepStatistics" adds under "StateMatrices" *)
-  "StepStatisticsMatrixLimit" -> 1000,  (* the most states a step may have for its "StateMatrices"; a step with more warns and has none *)
+  "StepStatisticsMatrixLimit" -> Automatic,  (* the most bytes a step's "StateMatrices" may take while they are built; a step that needs more warns and has none. Automatic: a quarter of the available memory *)
   "BranchialStep" -> Automatic,  (* Automatic: BranchialGraph->-1 (final), Evolution*Branchial*->All; or explicit: -1, All, 1-based step *)
   "EdgeDeduplication" -> True,  (* True: one edge per event pair; False: N edges for N shared hypergraph edges *)
   "UniformRandom" -> False,  (* True: with "MatchesPerStep", keep that many transitions per step, the lowest-ranked: "MaxStatesPerStep" under another name. "TransitionRate" is the uniform sampler. *)
@@ -1139,7 +1139,7 @@ hgJobOptions[ov_, requiredData_, graphProperties_] := Module[{branchialStepValue
     "StepStatisticsMatrices" -> Flatten[{Replace[ov["StepStatisticsMatrices"],
       {None -> {}, All -> {"StateOverlap", "StateCosineSimilarity", "StateMutualInformation",
         "StateEdgeOverlap", "StateEdgeCosineSimilarity", "StateEdgeMutualInformation"}}]}],
-    "StepStatisticsMatrixLimit" -> ov["StepStatisticsMatrixLimit"],
+    "StepStatisticsMatrixLimit" -> Replace[ov["StepStatisticsMatrixLimit"], Automatic -> 0],
     "RequestedData" -> requiredData,
     "GraphProperties" -> graphProperties,  (* List of graph properties for FFI to generate *)
     (* Uniform random evolution mode *)

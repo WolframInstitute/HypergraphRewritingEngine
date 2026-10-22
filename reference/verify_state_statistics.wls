@@ -297,9 +297,6 @@ Do[
             ids = Sort[DeleteDuplicates[#CanonicalId & /@ Select[Values[res["States"]],
               #Step == rec["Step"] &]]];
             Which[
-              (* Above "StepStatisticsMatrixLimit" (1000) a step has no matrices. *)
-              Length[ids] > 1000,
-              If[!MissingQ[m], AppendTo[bad, {rec["Step"], "over the limit", Length[ids]}]],
               MissingQ[m] || m["States"] =!= ids,
               AppendTo[bad, {rec["Step"], "States", ids}],
               True,

@@ -14,7 +14,8 @@
 - `"StepStatisticsMatrices"` adds `"StateMatrices"` to each `"StepStatistics"` step: the step's
   state ids and, for each matrix asked for, the state x state matrix of the overlap, the cosine
   similarity or the mutual information of the states' vertex sets or edge sets, as packed arrays.
-  A step with more states than `"StepStatisticsMatrixLimit"` (default 1000) has none and warns.
+  A step whose matrices need more bytes than `"StepStatisticsMatrixLimit"` (default `Automatic`,
+  a quarter of the available memory) has none and warns.
 - `"IncludeVertexCurvature" -> True` adds `"VertexCurvature"` to each state record: each vertex
   with a neighbour and its Ollivier-Ricci curvature.
 
