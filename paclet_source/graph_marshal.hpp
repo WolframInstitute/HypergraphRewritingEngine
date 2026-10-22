@@ -834,6 +834,15 @@ wxf::WXFValue build_graph_data(const Source& src,
             if (cur != nullptr) return cur->take_edge(graph_property, from, to, type_tag, index);
             return sent_edges.insert(SentKey{from, to, type_tag, index}).second;
         };
+        // An edge whose tuple is distinct from every other this property emits by construction
+        // (the causal and branchial edges below: each (from, to) group indexes its own edges)
+        // is recorded only by a cursor.
+        auto send_unique_edge = [&](int64_t from, int64_t to, uint32_t type_tag, uint32_t index) {
+            return cur == nullptr || cur->take_edge(graph_property, from, to, type_tag, index);
+        };
+        // The source's id bounds, read once.
+        const uint32_t num_states = src.num_states();
+        const uint32_t num_events = src.num_raw_events();
 
         // The lowest raw id of each effective id, in effective-id order.
         auto lowest_by_effective = [](std::vector<std::pair<int64_t, uint32_t>>& eff_raw) {
@@ -857,7 +866,7 @@ wxf::WXFValue build_graph_data(const Source& src,
                 const auto [from, to] = pairs[i];
                 const size_t num_edges = opts.edge_deduplication ? 1 : j - i;
                 for (size_t k = 0; k < num_edges; ++k) {
-                    if (!send_edge(from, to, kEdgeCausal, static_cast<uint32_t>(k))) continue;
+                    if (!send_unique_edge(from, to, kEdgeCausal, static_cast<uint32_t>(k))) continue;
                     Edge e;
                     e.from = End{'E', from};
                     e.to = End{'E', to};
@@ -875,12 +884,12 @@ wxf::WXFValue build_graph_data(const Source& src,
 
         if (is_states) {
             std::vector<std::pair<int64_t, uint32_t>> state_verts;
-            for (uint32_t sid = 0; sid < src.num_states(); ++sid)
+            for (uint32_t sid = 0; sid < num_states; ++sid)
                 if (src.state_valid(sid)) state_verts.emplace_back(src.effective_state_id(sid), sid);
             lowest_by_effective(state_verts);
             for (const auto& [eff, raw] : state_verts)
                 if (send_vertex(eff, src.state_step(raw))) add_state_vertex(End{0, eff}, raw);
-            for (uint32_t eid = 0; eid < src.num_raw_events(); ++eid) {
+            for (uint32_t eid = 0; eid < num_events; ++eid) {
                 if (!src.is_valid_event(eid)) continue;
                 const int64_t in  = src.effective_state_id(src.event_input_state(eid));
                 const int64_t out_ = src.effective_state_id(src.event_output_state(eid));
@@ -905,7 +914,7 @@ wxf::WXFValue build_graph_data(const Source& src,
         }
         else if (is_causal) {
             std::vector<std::pair<int64_t, uint32_t>> event_verts;
-            for (uint32_t eid = 0; eid < src.num_raw_events(); ++eid)
+            for (uint32_t eid = 0; eid < num_events; ++eid)
                 if (src.is_valid_event(eid)) event_verts.emplace_back(src.effective_event_id(eid), eid);
             lowest_by_effective(event_verts);
             for (const auto& [eff, raw] : event_verts)
@@ -935,7 +944,8 @@ wxf::WXFValue build_graph_data(const Source& src,
                 if (filter_by_step && src.state_step(src.event_output_state(e1)) != target_step) continue;
                 const int64_t s1 = src.effective_state_id(src.event_output_state(e1));
                 const int64_t s2 = src.effective_state_id(src.event_output_state(e2));
-                if (!send_edge(s1, s2, kEdgeBranchialState, occurrence[{s1, s2}]++)) continue;
+                if (!send_unique_edge(s1, s2, kEdgeBranchialState, occurrence[{s1, s2}]++))
+                    continue;
                 Edge e;
                 e.from = End{0, s1};
                 e.to = End{0, s2};
@@ -949,7 +959,7 @@ wxf::WXFValue build_graph_data(const Source& src,
         else if (is_evolution) {
             std::map<int64_t, uint32_t> raw_states;
             std::vector<std::pair<int64_t, uint32_t>> event_verts;
-            for (uint32_t eid = 0; eid < src.num_raw_events(); ++eid) {
+            for (uint32_t eid = 0; eid < num_events; ++eid) {
                 if (!src.is_valid_event(eid)) continue;
                 raw_states.emplace(src.effective_state_id(src.event_input_state(eid)),
                                    src.event_input_state(eid));
@@ -965,7 +975,7 @@ wxf::WXFValue build_graph_data(const Source& src,
                     add_state_vertex(End{'S', sid}, raw);
             for (const auto& [eff, raw] : event_verts)
                 if (send_vertex(eff, kEventRevision)) add_event_vertex(End{'E', eff}, raw);
-            for (uint32_t eid = 0; eid < src.num_raw_events(); ++eid) {
+            for (uint32_t eid = 0; eid < num_events; ++eid) {
                 if (!src.is_valid_event(eid)) continue;
                 const int64_t eff_eid = src.effective_event_id(eid);
                 const int64_t in_id  = src.effective_state_id(src.event_input_state(eid));
@@ -1002,7 +1012,7 @@ wxf::WXFValue build_graph_data(const Source& src,
                 std::sort(pairs.begin(), pairs.end());
                 pairs.erase(std::unique(pairs.begin(), pairs.end()), pairs.end());
                 for (const auto& [from, to] : pairs) {
-                    if (!send_edge(from, to, kEdgeBranchialEvent, 0)) continue;
+                    if (!send_unique_edge(from, to, kEdgeBranchialEvent, 0)) continue;
                     Edge e;
                     e.from = End{'E', from};
                     e.to = End{'E', to};
