@@ -2,8 +2,9 @@
 # Build gpumc_docker:hg-fixes, the image verification/gpumc/run.sh uses: the CAV 2025 GPUMC artifact
 # (gpumc_docker:latest, loaded by `docker load`) with gpumc-fixes.patch applied.
 #
-# gpumc-fixes.patch carries three fixes. Each has a test in this directory, run by
-# `verification/gpumc/run.sh cells cas_width memcpy_promotion race_in_header`.
+# gpumc-fixes.patch carries five fixes. Each has a test in this directory, run by
+# `verification/gpumc/run.sh cells cas_width memcpy_promotion race_in_header struct_return
+# barrier_divergence`.
 #
 # Compare-exchange width (Execution.cpp, GenMCDriver.cpp, SVal.hpp). GPUMC 0.9 compared a
 # compare-exchange's read value against the expected value sign-extended from the access width,
@@ -32,6 +33,18 @@
 # header was dropped, and the rest of the execution ran on a corrupted state (later assertions
 # unreported, accesses to unallocated memory, crashes). Every race is recorded under the file and
 # line of both accesses, and the state is restored. checker/race_in_header.cpp checks it.
+#
+# Stack aggregates (LLVMModule.cpp). The x86-64 ABI returns a struct of 16 bytes or less in
+# registers: the callee stores its fields to a stack temporary and loads it as one integer, which
+# GPUMC reported as a mixed-size access (a 128-bit load of a 64-bit store) on every map insert
+# (gpu/include/hg_gpu/hash_table.hpp, InsertResult). SROA runs before mem2reg, so such temporaries
+# become registers. checker/struct_return.cpp checks it.
+#
+# Barrier divergence (GenMCDriver.cpp, isExecutionBlocked). GPUMC reported a divergence whenever an
+# execution ended with a thread waiting at a barrier, including executions it had cut short itself
+# (a block-mate blocked by its spin-loop assume). A thread waiting at a barrier is reported when a
+# thread of its work group has finished, since the barrier can then never complete.
+# checker/barrier_divergence.cpp checks both cases.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 docker image inspect gpumc_docker:latest >/dev/null

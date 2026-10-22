@@ -13,7 +13,35 @@ diff -u a/src/Execution.cpp b/src/Execution.cpp
 diff -u a/src/GenMCDriver.cpp b/src/GenMCDriver.cpp
 --- a/src/GenMCDriver.cpp
 +++ b/src/GenMCDriver.cpp
-@@ -1715,7 +1715,7 @@
+@@ -454,12 +454,24 @@
+ 				   return bLab || thr.isBlocked(); });
+ 	// if(status) WARN("Blocked Execution - Divergence Occured\n");
+ 	if(!getConf()->disableBarrierDivergence){
++		/* A thread waiting at a barrier diverges when a thread of its work group has finished:
++		 * the barrier can then never complete. One waiting while a block-mate is blocked
++		 * elsewhere (a spin loop or an assume where exploration stops) is not reported. */
+ 		std::vector<int> barrierBlocked;
+ 		for (auto thrIt = EE->threads_begin(), thrE = EE->threads_end(); thrIt != thrE; ++thrIt) {
+ 		auto *bLab = llvm::dyn_cast<BlockLabel>(getGraph().getLastThreadLabel(thrIt->id));
+-		if (thrIt->getBlockageType() == BlockageType::Barrier ||
+-		    (bLab && bLab->getType() == BlockageType::Barrier))
+-			barrierBlocked.push_back(thrIt->id);
++		if (!(thrIt->getBlockageType() == BlockageType::Barrier ||
++		      (bLab && bLab->getType() == BlockageType::Barrier)))
++			continue;
++		for (auto u = EE->threads_begin(); u != thrE; ++u) {
++			if (u->id == thrIt->id || u->id == 0 || u->group_id != thrIt->group_id ||
++			    u->kernel_id != thrIt->kernel_id)
++				continue;
++			if (llvm::isa<ThreadFinishLabel>(getGraph().getLastThreadLabel(u->id))) {
++				barrierBlocked.push_back(thrIt->id);
++				break;
++			}
++		}
+ 		}
+ 		if (!barrierBlocked.empty()){
+ 			auto *bLab = (getGraph().getLastThreadLabel(barrierBlocked.back()));
+@@ -1715,7 +1727,7 @@
  		if (llvm::isa<FaiReadLabel>(lab) && g.isStoreReadBySettledRMW(s, lab->getAddr(), before))
  			return true;
  		if (auto *rLab = llvm::dyn_cast<CasReadLabel>(lab)) {
@@ -22,7 +50,7 @@ diff -u a/src/GenMCDriver.cpp b/src/GenMCDriver.cpp
  			    g.isStoreReadBySettledRMW(s, rLab->getAddr(), before))
  				return true;
  		}
-@@ -2338,6 +2338,25 @@
+@@ -2338,6 +2350,25 @@
  			--v[i];
  	return v;
  }
@@ -48,7 +76,7 @@ diff -u a/src/GenMCDriver.cpp b/src/GenMCDriver.cpp
  void GenMCDriver::reportRace(Event pos, Event confEvent /* = INIT */)
  {	
  	auto &g = getGraph();
-@@ -2411,20 +2430,7 @@
+@@ -2411,20 +2442,7 @@
  		auto &pair1 = thr1.prefixLOC[e1.index];
  		auto &pair2 = thr2.prefixLOC[e2.index];
  		if(pair1.first && pair2.first) {
@@ -70,7 +98,7 @@ diff -u a/src/GenMCDriver.cpp b/src/GenMCDriver.cpp
  		}
  	}
  	
-@@ -2501,20 +2507,7 @@
+@@ -2501,20 +2519,7 @@
  			auto &pair1 = thr1.prefixLOC[e1.index];
  			auto &pair2 = thr2.prefixLOC[e2.index];
  			if(pair1.first && pair2.first) {
@@ -92,7 +120,7 @@ diff -u a/src/GenMCDriver.cpp b/src/GenMCDriver.cpp
  			}
  		}
  	}
-@@ -3005,7 +2998,7 @@
+@@ -3005,7 +3010,7 @@
  	if (!llvm::isa<CasReadLabel>(rLab) && !llvm::isa<FaiReadLabel>(rLab))
  		return nullptr;
  	if (auto *casLab = llvm::dyn_cast<CasReadLabel>(rLab)) {
@@ -113,6 +141,21 @@ diff -u a/src/GenMCDriver.hpp b/src/GenMCDriver.hpp
  		unsigned racecount;
  		unsigned esize=0;
  #ifdef ENABLE_GENMC_DEBUG
+diff -u a/src/LLVMModule.cpp b/src/LLVMModule.cpp
+--- a/src/LLVMModule.cpp
++++ b/src/LLVMModule.cpp
+@@ -157,6 +157,11 @@
+ 		OptPM.add(createIntrinsicLoweringPass(mod));
+ 		if (conf->castElimination)
+ 			OptPM.add(createEliminateCastsPass());
++		/* SROA first: an aggregate on the stack read or written through another type (a struct
++		 * returned by value in registers is stored as its fields and loaded as one integer) is
++		 * split into registers, where mem2reg alone leaves it in memory and the load reads one
++		 * field's write at the wrong width (a mixed-size access). */
++		OptPM.add(llvm::createSROAPass());
+ 		OptPM.add(llvm::createPromoteMemoryToRegisterPass());
+ 		OptPM.add(llvm::createDeadArgEliminationPass());
+ 		OptPM.add(createLocalSimplifyCFGPass());
 diff -u a/src/PromoteMemIntrinsicPass.cpp b/src/PromoteMemIntrinsicPass.cpp
 --- a/src/PromoteMemIntrinsicPass.cpp
 +++ b/src/PromoteMemIntrinsicPass.cpp
