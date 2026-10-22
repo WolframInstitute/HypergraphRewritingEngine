@@ -33,8 +33,12 @@ static uint32_t qe_list_buckets(uint32_t max_events) {
 
 // Each table is sized from its group in `n` (EngineConfig::qe_class_entries and the four after
 // it), and its overflow reports that group's kind.
-// One thread per multiplicity point, or per class with replay instances; each sums its terms
-// locally and adds once.
+
+// The block width of k_qe_count_branchial.
+constexpr uint32_t kCountBranchialBlock = 128;
+
+// One thread per multiplicity point, or per replay instance (a node of the instance lists); each
+// sums its terms locally, and each block adds its sum once.
 __global__ void k_qe_count_branchial(const __grid_constant__ DeviceState ds, const QeView qe,
                                      uint32_t multiplicity) {
     const uint32_t steps = qe.max_steps;
@@ -52,31 +56,40 @@ __global__ void k_qe_count_branchial(const __grid_constant__ DeviceState ds, con
             if (b) local = hgcommon::qm_branchial_add(local, qe.qm_mass[p], b);
         }
     } else {
-        // A class's representative is a raw state, so its index is a state id.
-        for (uint32_t c = tid; c < qe.class_nmatch_cap; c += stride) {
-            const uint64_t b = qe.class_pairs[c];
-            if (!b) continue;
-            const uint64_t h = ds.state_canonical_hash[c];
-            for (uint32_t d = 0; d < steps; ++d) {
-                // The instances that replay c's expansion: under MaxStatesPerStep those at the
-                // depth c's expansion holds (qe_expansion_key).
-                const auto rep = qe.rep.lookup(qe_expansion_key(ds, h, d));
-                if (!rep.found || rep.value - 1u != c) continue;
-                uint64_t count = 0;
-                qe_for_each_instance(qe, h, d, [&](const DeviceQcInstance&) { ++count; });
-                local = hgcommon::qm_branchial_add(local, count, b);
-            }
+        // Each instance adds B of the class whose expansion it replays: the class representative
+        // (a raw state, so its index is a state id) holding the instance's (class, depth)
+        // expansion key, which under MaxStatesPerStep is the depth's own (qe_expansion_key).
+        const uint32_t n = qe.by_key.pool.size();
+        for (uint32_t i = tid; i < n; i += stride) {
+            const QeInstRef r = qe.by_key.pool.at(i).value;
+            if (r.depth >= steps) continue;
+            const auto rep = qe.rep.lookup(qe_expansion_key(ds, r.hash, r.depth));
+            if (!rep.found || rep.value - 1u >= qe.class_nmatch_cap) continue;
+            const uint64_t b = qe.class_pairs[rep.value - 1u];
+            if (b) local = hgcommon::qm_branchial_add(local, 1u, b);
         }
     }
-    if (local) qe_qm_add(&qe.qm_counts[1], local);
+    // One saturating add on the count per block: the block's terms are summed warp by warp and
+    // then across the block's warps, so the count's compare-exchange loop runs once per block.
+    for (uint32_t o = 16; o > 0; o >>= 1)
+        local = hgcommon::qm_sat_add(local, __shfl_down_sync(0xffffffffu, local, o));
+    __shared__ unsigned long long warp_sum[kCountBranchialBlock / 32];
+    if ((threadIdx.x & 31u) == 0) warp_sum[threadIdx.x >> 5] = local;
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        uint64_t sum = 0;
+        for (uint32_t w = 0; w < kCountBranchialBlock / 32; ++w)
+            sum = hgcommon::qm_sat_add(sum, warp_sum[w]);
+        if (sum) qe_qm_add(&qe.qm_counts[1], sum);
+    }
 }
 
 void qe_count_branchial(const DeviceState& ds, const QeView& qe, bool multiplicity) {
     HG_CUDA_CHECK(cudaMemsetAsync(qe.qm_counts + 1, 0, sizeof(unsigned long long)),
                   "QeState branchial count clear");
-    constexpr uint32_t block = 128;
+    constexpr uint32_t block = kCountBranchialBlock;
     const uint32_t grid =
-        grid_stride_blocks(multiplicity ? qe.qm_capacity : qe.class_nmatch_cap, block);
+        grid_stride_blocks(multiplicity ? qe.qm_capacity : qe.by_key.pool.capacity, block);
     k_qe_count_branchial<<<grid, block>>>(ds, qe, multiplicity ? 1u : 0u);
     HG_CUDA_CHECK(cudaGetLastError(), "QeState branchial count launch");
 }

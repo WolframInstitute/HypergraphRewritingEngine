@@ -131,11 +131,13 @@ struct DeviceQcInstance {
     uint32_t claims = kQeNoClaims;
 };
 
-// An instance reference bucketed by key(hash, depth); the node carries the exact key so a
-// shared bucket can be filtered, exactly as QeMatchRef does for the matches.
+// An instance reference bucketed by key(hash, depth); the node carries the class and depth so a
+// shared bucket can be filtered, as QeMatchRef does for the matches, and so a pass over the node
+// pool can read each instance's point (k_qe_count_branchial).
 struct QeInstRef {
-    uint64_t key;
+    uint64_t hash;
     uint32_t record;
+    uint32_t depth;
 };
 
 // One application recorded against the instance it expanded. The consumed slots are carried by
@@ -1030,7 +1032,7 @@ __device__ inline uint32_t qe_add_instance(const DeviceState& ds, QeView qe, uin
     const uint64_t key = qe_inst_key(state_hash, depth);
     if (qe.by_key.push(qe_inst_bucket(qe, key, (blockIdx.x * blockDim.x + threadIdx.x) &
                                                    (kQeInstShards - 1u)),
-                       QeInstRef{key, rec}) == INVALID_ID)
+                       QeInstRef{state_hash, rec, depth}) == INVALID_ID)
         ds.errors.record(ErrorKind::kQeInstancesFull);
     return rec;
 }
@@ -1072,17 +1074,17 @@ __device__ inline void qe_seed_root_instance(const DeviceState& ds, QeView qe, S
     qe_drive_instance(ds, qe, rec, h, 0u);
 }
 
-// Visit every instance recorded for `state_hash` at `depth`.
+// Visit the instances of `state_hash` at `depth` in one shard's bucket, as QeInstRef; nothing
+// when an earlier shard of the same key takes the same bucket, so a walk over every shard visits
+// each instance once.
 template <typename F>
-__device__ inline void qe_for_each_instance(QeView qe, uint64_t state_hash, uint32_t depth,
-                                            F&& f) {
+__device__ inline void qe_for_each_instance_in_shard(QeView qe, uint64_t state_hash,
+                                                     uint32_t depth, uint32_t shard, F&& f) {
     const uint64_t key = qe_inst_key(state_hash, depth);
-    for (uint32_t s = 0; s < kQeInstShards; ++s) {
-        if (!qe_inst_shard_first(key, s, qe.by_key.num_keys)) continue;
-        qe.by_key.for_each(qe_inst_bucket(qe, key, s), [&](const QeInstRef& r) {
-            if (r.key == key) f(qe.instances.at(r.record));
-        });
-    }
+    if (!qe_inst_shard_first(key, shard, qe.by_key.num_keys)) return;
+    qe.by_key.for_each(qe_inst_bucket(qe, key, shard), [&](const QeInstRef& r) {
+        if (r.hash == state_hash && r.depth == depth) f(r);
+    });
 }
 
 // The storage face hgcommon/quotient_replay_core.hpp drives. WHERE an instance's lineage, an
@@ -1130,10 +1132,9 @@ __device__ inline void qe_drive_match(const DeviceState& ds, QeView qe, uint32_t
     for (uint32_t u = threadIdx.x & 31u; u < units; u += 32u) {
         const uint32_t d = u / kQeInstShards;
         if (by_depth && d != depth) continue;
-        const uint64_t key = qe_inst_key(from_hash, d);
-        if (!qe_inst_shard_first(key, u % kQeInstShards, qe.by_key.num_keys)) continue;
-        qe.by_key.for_each(qe_inst_bucket(qe, key, u % kQeInstShards), [&](const QeInstRef& r) {
-            if (r.key == key) qe_task_append(ds, qe, from_hash, r.record, d, match_rec);
+        qe_for_each_instance_in_shard(qe, from_hash, d, u % kQeInstShards,
+                                      [&](const QeInstRef& r) {
+            qe_task_append(ds, qe, from_hash, r.record, d, match_rec);
         });
     }
 }
@@ -1371,7 +1372,7 @@ struct DeviceQrCtx {
         // One shard per warp, so the warp's children of one class link with one exchange.
         child.bucket = qe_inst_bucket(qe, key, (blockIdx.x * blockDim.x + threadIdx.x) / 32u &
                                                    (kQeInstShards - 1u));
-        child.node = qe.by_key.claim_node(QeInstRef{key, rec});
+        child.node = qe.by_key.claim_node(QeInstRef{m.to_hash, rec, depth + 1u});
         if (child.node == Pool<typename LockFreeList<QeInstRef>::Node>::kInvalid)
             ds.errors.record(ErrorKind::kQeInstancesFull);
     }

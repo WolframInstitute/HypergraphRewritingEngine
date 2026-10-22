@@ -28,13 +28,15 @@ __global__ void k_alloc_words(const __grid_constant__ DeviceState ds, hg_gpu::Qe
 }
 
 // Push one instance reference for `key` into the bucket of `shard`, then count the instances
-// qe_for_each_instance visits for (hash, depth).
+// qe_for_each_instance_in_shard visits over every shard of (hash, depth).
 __global__ void k_count_one_instance(hg_gpu::QeView qe, uint64_t hash, uint32_t depth,
                                      uint32_t shard, uint32_t* out) {
     const uint64_t key = hg_gpu::qe_inst_key(hash, depth);
-    qe.by_key.push(hg_gpu::qe_inst_bucket(qe, key, shard), hg_gpu::QeInstRef{key, 0u});
+    qe.by_key.push(hg_gpu::qe_inst_bucket(qe, key, shard), hg_gpu::QeInstRef{hash, 0u, depth});
     uint32_t n = 0;
-    hg_gpu::qe_for_each_instance(qe, hash, depth, [&](const hg_gpu::DeviceQcInstance&) { ++n; });
+    for (uint32_t s = 0; s < hg_gpu::kQeInstShards; ++s)
+        hg_gpu::qe_for_each_instance_in_shard(qe, hash, depth, s,
+                                              [&](const hg_gpu::QeInstRef&) { ++n; });
     *out = n;
 }
 
@@ -244,9 +246,10 @@ TEST(QuotientExpansion, ArenaAllocationNearTheCursorWrapIsRefused) {
 }
 
 
-// Two shards of one (class, depth) key can hash to one bucket. qe_for_each_instance -- what the
-// device's branchial count walks -- takes each bucket once: an instance in a shared bucket is
-// visited once, not once per shard that maps there.
+// Two shards of one (class, depth) key can hash to one bucket. A walk over every shard with
+// qe_for_each_instance_in_shard -- what a captured match's scan does (qe_drive_match) -- takes
+// each bucket once: an instance in a shared bucket is visited once, not once per shard that maps
+// there.
 TEST(QuotientExpansion, AnInstanceInABucketTwoShardsShareIsVisitedOnce) {
     hg_gpu::QeState qe(/*on=*/true, hg_gpu::QeEntries{1, 1, 1, 1, 16});
     const hg_gpu::QeView v = qe.view(/*max_steps=*/1, hgcommon::EVENT_SIG_NONE,
