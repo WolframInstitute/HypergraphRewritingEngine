@@ -53,10 +53,16 @@
 // verifies clean, because every push happens inside an expand entry not yet booked done, and
 // the detector cannot see both counts balanced between the push and its booking.
 //
-// THE CURSOR IS 64-BIT because the checker cannot complete a 32-bit compare-exchange
-// (hash_insert_elects_one.cpp records the measurement); the kernel's cursor is a 32-bit word.
+// The cursor is a 64-bit word; the kernel's is 32-bit. The protocol does not depend on the
+// width.
 //
 // HOW A SCOPE IS EXPRESSED: __VERIFIER_memory_scope_device() before the access it qualifies.
+
+// GPUMC-CELL: one_rule_two_steps PASS
+// GPUMC-CELL: three_rules_one_step PASS -DHG_RULES=3 -DHG_MAX_STEPS=1
+// GPUMC-CELL: push_then_book PASS -DCALIBRATE_PUSH_THEN_BOOK
+// GPUMC-CELL: done_before_push FAIL -DCALIBRATE_DONE_BEFORE_PUSH
+// GPUMC-CELL: one_slot BLOCKED -DCALIBRATE_ONE_SLOT -DHG_RULES=2 -DHG_MAX_STEPS=1
 
 #include "hgcommon/ring_core.hpp"
 #include "hgcommon/termination_core.hpp"

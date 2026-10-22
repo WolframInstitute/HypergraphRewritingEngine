@@ -33,8 +33,13 @@
 // and the quiescent assertion must fire.
 //
 // HOW A SCOPE IS EXPRESSED: __VERIFIER_memory_scope_device() before the access it qualifies.
-// The cursor is 64-bit because this GPUMC build cannot complete a 32-bit compare-exchange
-// (hash_insert_elects_one.cpp).
+// The cursor is a 64-bit word; the kernel's is 32-bit. The protocol does not depend on the
+// width.
+
+// GPUMC-CELL: one_worker PASS
+// GPUMC-CELL: done_before_run FAIL -DCALIBRATE_DONE_BEFORE_RUN
+// GPUMC-CELL: record_before_capture FAIL -DCALIBRATE_RECORD_BEFORE_CAPTURE
+// GPUMC-CELL-LONG: two_workers PASS -DHG_WORKERS=2
 
 #include "hgcommon/termination_core.hpp"
 

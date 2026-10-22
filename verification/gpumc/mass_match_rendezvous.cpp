@@ -18,11 +18,13 @@
 // __threadfence() is cuda::atomic_thread_fence(memory_order_seq_cst, thread_scope_device), and
 // that is what the fence below is: a seq_cst fence preceded by the device-scope annotation.
 //
-// Words are 64-bit: a 32-bit compare-exchange always reports failure in this GPUMC build (see
-// run.sh). The device's queued flag is 32-bit and is only exchanged, never compared.
+// The words are 64-bit; the device's queued flag is 32-bit and is only exchanged.
 //
 // CALIBRATED. -DCALIBRATE_NO_FENCE makes the fence a no-op, and the checker must report mass
 // that j never passes on.
+// GPUMC-CELL: clean PASS
+// GPUMC-CELL: no_fence FAIL -DCALIBRATE_NO_FENCE
+
 #include "hgcommon/quotient_multiplicity_core.hpp"
 
 #include <cassert>

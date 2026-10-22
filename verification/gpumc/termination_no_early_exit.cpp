@@ -28,6 +28,9 @@
 // THE BOUND. One worker, one child, one detector, and a stagnation budget of three rounds so every
 // execution terminates. That is the smallest shape containing the window: the child's push must be
 // able to land on either side of the detector's two snapshots.
+// GPUMC-CELL: clean PASS
+// GPUMC-CELL: complete_then_push FAIL -DCALIBRATE_COMPLETE_THEN_PUSH
+
 #include "hgcommon/termination_core.hpp"
 
 #include <cassert>

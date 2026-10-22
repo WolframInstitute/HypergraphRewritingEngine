@@ -33,6 +33,11 @@
 // (hgcommon::list_push_chain) and fences; after the second barrier lane A walks the match list.
 // The barriers are transcribed as above. The property is A's: A sees the match, or the match
 // side sees A's instance. With -DCALIBRATE_NO_FENCE the checker must report both missing.
+// GPUMC-CELL: own_lane PASS
+// GPUMC-CELL: warp_chain PASS -DWARP_CHAIN
+// GPUMC-CELL: no_fence FAIL -DCALIBRATE_NO_FENCE
+// GPUMC-CELL: warp_chain_no_fence FAIL -DWARP_CHAIN -DCALIBRATE_NO_FENCE
+
 #include "hgcommon/list_core.hpp"
 
 #include <cassert>

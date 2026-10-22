@@ -24,19 +24,17 @@
 // not-inserted. -DCALIBRATE_ELECT_ON_KEY makes claim_key's winner the inserter and the checker
 // must report the stored value disagreeing with the elected thread's.
 //
-// THE VALUES ARE 64-BIT BECAUSE THE CHECKER CANNOT DO A 32-BIT ONE. Measured: with uint32_t
-// values, every compare-exchange on the value word reports failure while reading exactly the
-// expected value -- the trace shows the CAS read and no CAS write -- so no execution completes
-// and the run reports "the key was inserted by no thread". The key CAS beside it, on a uint64_t,
-// succeeds under the same orders. The device's values are 32-bit ids; the width is the checker's
-// constraint and not the protocol's, and the election does not depend on it. A future harness
-// that sees a CAS fail against its own expected value should suspect this before the code.
+// The values are 64-bit words; the device's are 32-bit ids. The election does not depend on
+// the width.
 //
 // THE BOUND. One slot, two threads, the same key, distinct values. That is the smallest shape
 // containing the election: with one slot the probe cannot wander, so what is left is exactly the
 // two exchanges and which thread wins each. Distinct values are what make "whose value stood"
 // answerable at all -- most real callers offer a constant presence marker, under which every
 // thread's value matches and the question cannot be posed.
+// GPUMC-CELL: clean PASS
+// GPUMC-CELL: elect_on_key FAIL -DCALIBRATE_ELECT_ON_KEY
+
 #include "hgcommon/hash_insert_core.hpp"
 
 #include <cassert>

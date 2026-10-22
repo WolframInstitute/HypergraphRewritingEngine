@@ -23,8 +23,11 @@
 // stranded at the parent's old depth plus one.
 //
 // HOW A SCOPE IS EXPRESSED: __VERIFIER_memory_scope_device() before the access it qualifies.
-// The list heads and depths are 64-bit words because this GPUMC build cannot complete a 32-bit
-// compare-exchange (hash_insert_elects_one.cpp); the device's are 32-bit.
+// The list heads and depths are 64-bit words; the device's are 32-bit. The protocol does not
+// depend on the width.
+
+// GPUMC-CELL: clean PASS
+// GPUMC-CELL: no_fence FAIL -DCALIBRATE_NO_FENCE
 
 #include "hgcommon/explore_depth_core.hpp"
 #include "hgcommon/list_core.hpp"

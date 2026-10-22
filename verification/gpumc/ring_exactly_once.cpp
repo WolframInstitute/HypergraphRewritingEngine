@@ -26,6 +26,9 @@
 // in which two reservers can contend for one slot AND the ring can wrap, which are the two things
 // the sequence numbers exist to separate. Capacity two rather than one so a wrap is reachable
 // while both slots can be live at once.
+// GPUMC-CELL: clean PASS
+// GPUMC-CELL: bump_cursor FAIL -DCALIBRATE_BUMP_CURSOR
+
 #include "hgcommon/ring_core.hpp"
 
 #include <cassert>
