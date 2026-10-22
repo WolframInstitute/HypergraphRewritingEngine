@@ -1814,6 +1814,43 @@ TEST(GraphPropertySurface, EveryPropertyInEveryModeOnBranchingAndNonBranchingRul
     }
 }
 
+// The branchial edges of an evolution graph are one per unordered pair of events, so their
+// number does not depend on which event of a pair the run numbered first. Rule
+// {{x,x},{x,y}} -> {{x,x},{x,y},{y,y},{y,z}} from {{0,0},{0,1}}, 4 steps, Full states with
+// Automatic events (the quotient route in full capture, whose application ids follow the
+// schedule): the count at 1, 2 and 8 workers, five runs each, is one number. The two-run
+// difference measured before: 108 to 190 branchial edges.
+TEST(GraphPropertySurface, EvolutionGraphBranchialEdgesDoNotDependOnTheSchedule) {
+    const StateList seed = {{{0, 0}, {0, 1}}};
+    const EdgeList lhs = {{0, 0}, {0, 1}};
+    const EdgeList rhs = {{0, 0}, {0, 1}, {1, 1}, {1, 2}};
+    const std::vector<uint8_t> tag = {0x53, 0x09, 'B', 'r', 'a', 'n', 'c', 'h', 'i', 'a', 'l'};
+    std::set<size_t> counts;
+    for (const int64_t threads : {1, 2, 8})
+        for (int run = 0; run < 5; ++run) {
+            HostBridge host;
+            const auto out = run_rewriting_core(build_input(seed, lhs, rhs, 4,
+                [&](wxf::Writer& w) {
+                    put_str_list_option(w, "RequestedData", {});
+                    put_str_list_option(w, "GraphProperties", {"EvolutionCausalBranchialGraph"});
+                    put_str_option(w, "CanonicalizeStates", "Full");
+                    put_str_option(w, "CanonicalizeEvents", "Automatic");
+                    w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+                    w.write(std::string("Threads"));
+                    w.write(threads);
+                }, 5), host);
+            size_t n = 0;
+            for (auto it = out.begin(); (it = std::search(it, out.end(), tag.begin(), tag.end())) !=
+                                        out.end();
+                 ++it)
+                ++n;
+            counts.insert(n);
+        }
+    EXPECT_EQ(counts.size(), 1u) << "branchial edge counts: " << *counts.begin() << " to "
+                                 << *counts.rbegin();
+    EXPECT_GT(*counts.begin(), 0u);
+}
+
 // The graph a caller receives has the vertices the counts promise.
 //
 // A property can return a well-formed but WRONG graph, which the surface test above cannot

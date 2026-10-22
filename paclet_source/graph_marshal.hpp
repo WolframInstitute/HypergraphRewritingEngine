@@ -974,10 +974,17 @@ wxf::WXFValue build_graph_data(const Source& src,
                 bool filter_by_step = false;
                 const uint32_t target_step =
                     branchial_target_step(opts.branchial_step, opts.steps, filter_by_step);
+                // One edge per unordered pair of event vertices, lower id first, in pair order.
+                std::vector<std::pair<int64_t, int64_t>> pairs;
                 for (const auto& [e1, e2] : src.branchial_event_pairs()) {
                     if (filter_by_step && src.state_step(src.event_output_state(e1)) != target_step) continue;
-                    const int64_t from = src.effective_event_id(e1);
-                    const int64_t to   = src.effective_event_id(e2);
+                    const int64_t a = src.effective_event_id(e1);
+                    const int64_t b = src.effective_event_id(e2);
+                    pairs.emplace_back(std::min(a, b), std::max(a, b));
+                }
+                std::sort(pairs.begin(), pairs.end());
+                pairs.erase(std::unique(pairs.begin(), pairs.end()), pairs.end());
+                for (const auto& [from, to] : pairs) {
                     if (!send_edge(from, to, kEdgeBranchialEvent, 0)) continue;
                     Edge e;
                     e.from = End{'E', from};
