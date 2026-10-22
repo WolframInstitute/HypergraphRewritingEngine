@@ -110,8 +110,8 @@ __host__ __device__ __forceinline__ uint64_t qe_inst_key(uint64_t state_hash, ui
     return hgcommon::qc_key(state_hash, depth, 0u);
 }
 // One raw occurrence of a canonical class, at one depth, recorded by its lineage: the parent
-// instance's record, the record of the match that made it and that match's event, or
-// kQeNoParent for a root. A slot's producing event is hgcommon::qr_producer_of over it.
+// instance's record, the child source table of the match that made it and that match's event,
+// or kQeNoParent for a root. A slot's producing event is hgcommon::qr_producer_of over it.
 //
 // Slots rather than edge ids is the whole point: the class's captured matches are in frame
 // slots, so an instance built from any raw state of the class replays them without knowing
@@ -122,7 +122,9 @@ struct DeviceQcInstance {
     uint32_t id = 0;           // dense; the replay's (instance, match) claim keys on it
     uint32_t nslots = 0;
     uint32_t parent = kQeNoParent;
-    uint32_t via = 0;
+    // The arr_words offset of the making match's child source table (QeMatchView::child_source),
+    // nslots entries; 0 for a root.
+    uint32_t sources = 0;
     uint32_t event = 0;        // a root instance: its initial state's StateId (genesis pairs)
     // The first block of the instance's claim chain (hgcommon::qr_claim_chain) in the expansion
     // arena: the next block's offset (kQeNoClaims for none), the block's 64-bit claim words, then
@@ -977,11 +979,11 @@ __device__ __forceinline__ uint32_t qe_new_claim_block(const DeviceState& ds, Qe
 }
 
 // Write the record of one instance of `state_hash` at `depth`, made from instance record
-// `parent` by match record `via`, whose event is `event`; a root has parent kQeNoParent and
-// `event` its initial state's StateId. Not yet in its (class, depth) list: qe_add_instance or
-// qe_publish_child links it. UINT32_MAX when it cannot be recorded.
+// `parent` by the match whose child source table is at `sources` and whose event is `event`; a
+// root has parent kQeNoParent and `event` its initial state's StateId. Not yet in its (class,
+// depth) list: qe_add_instance or qe_publish_child links it. UINT32_MAX when it cannot be recorded.
 __device__ inline uint32_t qe_record_instance(const DeviceState& ds, QeView qe, uint64_t state_hash,
-                                              uint32_t depth, uint32_t parent, uint32_t via,
+                                              uint32_t depth, uint32_t parent, uint32_t sources,
                                               uint32_t event, uint32_t nslots) {
     if (!qe.enabled || depth > qe.max_steps) return UINT32_MAX;
 
@@ -997,7 +999,7 @@ __device__ inline uint32_t qe_record_instance(const DeviceState& ds, QeView qe, 
     }
     inst.nslots      = nslots;
     inst.parent      = parent;
-    inst.via         = via;
+    inst.sources     = sources;
     inst.event       = event;
     inst.claims      = kQeNoClaims;
     // Claim words only for an instance that will be expanded; one at the bound claims nothing.
@@ -1024,10 +1026,10 @@ __device__ inline uint32_t qe_record_instance(const DeviceState& ds, QeView qe, 
 // of Hypergraph::qc_add_instance. The seeding and redrive paths, which run outside the replay's
 // warps.
 __device__ inline uint32_t qe_add_instance(const DeviceState& ds, QeView qe, uint64_t state_hash,
-                                           uint32_t depth, uint32_t parent, uint32_t via,
+                                           uint32_t depth, uint32_t parent, uint32_t sources,
                                            uint32_t event, uint32_t nslots) {
     const uint32_t rec =
-        qe_record_instance(ds, qe, state_hash, depth, parent, via, event, nslots);
+        qe_record_instance(ds, qe, state_hash, depth, parent, sources, event, nslots);
     if (rec == UINT32_MAX) return rec;
     // Published only after the record is complete: a walker that reaches the reference must not
     // find a half-written instance.
@@ -1267,11 +1269,11 @@ struct DeviceQrCtx {
     __device__ uint32_t producer_at(const DeviceQcInstance& inst, uint32_t slot) const {
         return hgcommon::qr_producer_of(*this, &inst, slot);
     }
-    // hgcommon::qr_producer_of's face, over instance records.
+    // hgcommon::qr_producer_of's face, over instance records. A level reads the instance record
+    // and one word of its making match's child source table (DeviceQcInstance::sources).
     __device__ bool lineage_root(const DeviceQcInstance* n) const { return n->parent == kQeNoParent; }
     __device__ uint32_t lineage_source(const DeviceQcInstance* n, uint32_t slot) const {
-        const QeMatchView m(qe.matches.at(n->via), qe.arr_words);
-        return slot < m.to_slots ? m.child_source(slot) : hgcommon::QR_SOURCE_NONE;
+        return slot < n->nslots ? qe.arr_words[n->sources + slot] : hgcommon::QR_SOURCE_NONE;
     }
     __device__ uint32_t lineage_event(const DeviceQcInstance* n) const { return n->event; }
     __device__ const DeviceQcInstance* lineage_parent(const DeviceQcInstance* n) const {
@@ -1370,9 +1372,10 @@ struct DeviceQrCtx {
     __device__ __forceinline__ void descend(const QeMatchView& m, uint32_t depth, uint32_t ev,
                                             const DeviceQcInstance& parent) {
         const uint32_t prec = static_cast<uint32_t>(&parent - qe.instances.data);
-        const uint32_t mrec = static_cast<uint32_t>(m.src - qe.matches.data);
+        const uint32_t sources = static_cast<uint32_t>(m.w - qe.arr_words) + m.num_consumed +
+                                 m.num_produced + 2u * m.num_survivors;
         const uint32_t rec =
-            qe_record_instance(ds, qe, m.to_hash, depth + 1u, prec, mrec, ev, m.to_slots);
+            qe_record_instance(ds, qe, m.to_hash, depth + 1u, prec, sources, ev, m.to_slots);
         if (rec == UINT32_MAX) return;
         const uint64_t key = qe_inst_key(m.to_hash, depth + 1u);
         child.rec = rec;

@@ -544,29 +544,20 @@ void QeState::reconstructed_event_content_host(std::vector<uint64_t>& from_class
 
 namespace {
 
-// hgcommon::qr_producer_of's face over the copied records. A record whose match or
-// parent lies past the copy, or whose slot arrays lie past the filled arena, ends the
-// walk at "no producer".
+// hgcommon::qr_producer_of's face over the copied records. A record whose parent lies past the
+// copy, or whose child source table lies past the filled arena, ends the walk at "no producer".
 struct GenesisCtx {
     const DeviceQcInstance* inst;
     size_t n_inst;
-    const DeviceSlotMatch* matches;
-    size_t n_matches;
     const uint32_t* words;
     size_t n_words;
-    __host__ __device__ bool readable(const DeviceSlotMatch& m) const {
-        const uint64_t end = uint64_t{m.arr_offset} + m.num_consumed + m.num_produced +
-                             2ull * m.num_survivors + m.to_slots;
-        return end <= n_words;
-    }
     __host__ __device__ bool lineage_root(const DeviceQcInstance* n) const {
         return n->parent == kQeNoParent || n->parent >= n_inst ||
-               n->via >= n_matches || !readable(matches[n->via]);
+               uint64_t{n->sources} + n->nslots > n_words;
     }
     __host__ __device__ uint32_t lineage_source(const DeviceQcInstance* n,
                                                 uint32_t slot) const {
-        const QeMatchView m(matches[n->via], words);
-        return slot < m.to_slots ? m.child_source(slot) : hgcommon::QR_SOURCE_NONE;
+        return slot < n->nslots ? words[n->sources + slot] : hgcommon::QR_SOURCE_NONE;
     }
     __host__ __device__ uint32_t lineage_event(const DeviceQcInstance* n) const {
         return n->event;
@@ -598,14 +589,24 @@ void QeState::reconstructed_genesis_pairs_host(bool reduced,
             HG_CUDA_CHECK(cudaMemcpy(words.data(), arr_, sizeof(uint32_t) * used,
                                      cudaMemcpyDeviceToHost), "QeState arr read");
 
-        const GenesisCtx c{inst.data(), inst.size(), matches.data(), matches.size(),
-                           words.data(), words.size()};
+        const GenesisCtx c{inst.data(), inst.size(), words.data(), words.size()};
+        // The match that made an instance, by the offset of its child source table.
+        std::unordered_map<uint32_t, uint32_t> match_of_sources;
+        for (uint32_t i = 0; i < matches.size(); ++i) {
+            const DeviceSlotMatch& m = matches[i];
+            match_of_sources.emplace(m.arr_offset + m.num_consumed + m.num_produced +
+                                         2u * m.num_survivors, i);
+        }
 
         for (const DeviceQcInstance& n : inst) {
             if (c.lineage_root(&n)) continue;
             const DeviceQcInstance* root = hgcommon::qr_lineage_root(c, &n);
             if (root->parent != kQeNoParent) continue;   // a lineage cut short by the copy
-            const QeMatchView m(matches[n.via], words.data());
+            const auto via = match_of_sources.find(n.sources);
+            if (via == match_of_sources.end()) continue;
+            const DeviceSlotMatch& made = matches[via->second];
+            if (uint64_t{made.arr_offset} + made.num_consumed > words.size()) continue;
+            const QeMatchView m(made, words.data());
             const DeviceQcInstance* parent = inst.data() + n.parent;
             if (hgcommon::qr_genesis_paired(c, parent, m, reduced))
                 out.emplace_back(root->event, n.event);
