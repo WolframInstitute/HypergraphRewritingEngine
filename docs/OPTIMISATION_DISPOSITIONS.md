@@ -532,6 +532,19 @@ variants.
   gave the count one thread per class, walking every instance of the class: on multirule d7 eight
   threads walked 2,173,624 list nodes. One thread per node of the instance pool, summed per block
   before one saturating add: at most 12 nodes per thread on 196,608 resident threads.
+- **Causal pairs stored only when read back** (611c7a5d). Every distinct pair went into the
+  causal pair map though only the relation readback reads it; the host stores the list only
+  then. Lane cycles over the six rows below, two rounds each (1e9): `record_causal` multirule d7
+  49.2 -> 2.4, wpp d6 0.134 -> 0.011, bigpath d3 5.6 -> 0.35, cycle4 d6 1.46 -> 0.074, allfour
+  d5 2.96 -> 0.19, wolftri d5 0.032 -> 0.003; the applications multirule 163.6 -> 123.9, wpp
+  0.600 -> 0.483, bigpath 905 -> 846, cycle4 4.86 -> 3.39, allfour 10.16 -> 7.72, wolftri 0.146
+  -> 0.115; the warp's link wait multirule 108.6 -> 83.1.
+- **The producer walk reads one table word per level** (901ed39d). An instance records its making
+  match's child source table offset in place of the match record index, so a lineage level is
+  the instance record and one word. The walk (claim to mint): multirule 48.6 -> 42.1, wpp 0.172
+  -> 0.133, bigpath 282 -> 196, cycle4 1.17 -> 1.03, allfour 2.70 -> 2.14, wolftri 0.040 ->
+  0.031; the applications multirule 123.9 -> 112.8, allfour 7.72 -> 7.02, cycle4 3.39 -> 3.45
+  (within its round-to-round spread, 3.23-4.46). The record stays 24 bytes.
 
 ### REFUTED
 
@@ -547,10 +560,25 @@ variants.
   cycle4 d6 equal, bigpath d3 42.6e9 -> 31.9e9; `descend` rose on every row (multirule 9.9e9 ->
   24.3e9 lane cycles). Not landed.
 
+- **A warp's claim bits of one word combined into one fetch_or** (`__match_any_sync` on the word,
+  `__reduce_or_sync`, the lowest lane per bit wins; checked by a GPUMC harness, clean 2
+  executions and its calibration arm failing). The tasks of one instance are appended
+  consecutively, so a warp's claims mostly share a word. `claim` lane cycles rose on every row
+  (1e9): multirule d7 13.3 -> 23.5, wpp d6 0.042 -> 0.077, bigpath d3 445 -> 458, cycle4 d6 0.29
+  -> 0.59, allfour d5 1.22 -> 1.38, wolftri d5 0.012 -> 0.021. Not landed; the harness and its
+  header went with it.
+- **The host's producer walk for all of an application's slots at once** (one lineage walk
+  resolving every consumed slot per level, `qr_producers_of`). Callgrind, `bench_cpu_evolve`, one
+  thread: multirule d7 2,481,394,656 -> 2,715,580,531 Ir (+9.4%), wpp d7 2,009,187,058 ->
+  2,047,056,706, bigpath d3 13,917,109,547 -> 15,646,070,361 (+12.4%), cycle4 d6 111,049,495 ->
+  119,500,637, allfour d5 1,003,516,615 -> 1,016,918,844, wolftri d5 60,828,971 -> 61,357,941.
+  Not landed on either engine (one body).
+
 ### OPEN, with the measurement
 
-- After the warp-linked children, the replay's lane cycles on multirule d7 are 1.55e11 in the
-  applications (`record_causal` 27%, `producer_at` 17%, `claim` 8%, `redundant` 7%, `descend` 6%,
-  `mint` 5%) and 1.02e11 waiting at the warp's link for its slowest lane. The device time against
+- After 611c7a5d and 901ed39d, the replay's lane cycles on multirule d7 are 1.13e11 in the
+  applications (the producer walk 37%, `redundant` 13%, `claim` 10%, `descend` 9%, `mint` 9%)
+  and 0.79e11 waiting at the warp's link for its slowest lane. bigpath d3 spends 0.36-0.39e12 of
+  its 0.81e12 in `claim`, 23,000 cycles per application. The device time against
   the host's at 16 threads is in TUNING.md §4, Q11.
 
