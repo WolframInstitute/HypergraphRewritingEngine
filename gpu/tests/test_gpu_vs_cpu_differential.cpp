@@ -2849,6 +2849,8 @@ TEST(QuotientReconstruction, EachReplayGroupReportsAndGrowsAlone) {
     w.explore_from_canonical_states_only = true;
     hg_gpu::EvolveInput in = make_input(w);
     in.record = hgcommon::RecordSet{true, true, true};
+    // The causal pairs are stored only when they are read back.
+    in.materialize_relations = true;
     const auto ref = hg_gpu::evolve(in);
     ASSERT_TRUE(ref.warnings.empty());
     ASSERT_GT(ref.reconstructed_raw_events, 200u);
@@ -2887,6 +2889,39 @@ TEST(QuotientReconstruction, EachReplayGroupReportsAndGrowsAlone) {
         EXPECT_EQ(got.reconstructed_causal_pairs, ref.reconstructed_causal_pairs) << g.name;
         EXPECT_EQ(got.reconstructed_branchial, ref.reconstructed_branchial) << g.name;
     }
+}
+
+// A run that reads the causal relation as counts stores no causal pair, as on the host
+// (Hypergraph::qc_record_causal): with the pair table starved at 8 entries it gives no
+// kQePairsFull and the counts of a run with room.
+TEST(QuotientReconstruction, CountsOnlyStoresNoCausalPair) {
+    Workload w;
+    w.name = "growshrink3";
+    w.rules = {rule({{0, 1}, {0, 2}}, {{0, 1}, {0, 3}, {1, 3}, {2, 3}}),
+               rule({{0, 1}, {1, 2}}, {{0, 2}}),
+               rule({{0, 1}}, {{0, 2}, {2, 1}})};
+    w.initial_state = {{0u, 1u}, {0u, 2u}};
+    w.num_steps = 4;
+    w.canon_mode = hg_gpu::CanonicalizationMode::Full;
+    w.explore_from_canonical_states_only = true;
+    hg_gpu::EvolveInput in = make_input(w);
+    in.record = hgcommon::RecordSet{true, true, true};
+    in.materialize_relations = false;
+    const auto ref = hg_gpu::evolve(in);
+    ASSERT_TRUE(ref.warnings.empty());
+    ASSERT_GT(ref.reconstructed_causal_pairs, 64u);
+    hg_gpu::EngineConfig cfg = hg_gpu::config_from_input(in);
+    cfg.qe_pair_entries = 8;
+    hg_gpu::EvolveResult got;
+    {
+        hg_gpu::Engine engine(cfg);
+        got = engine.run(in);
+    }
+    for (const auto& x : got.warnings)
+        EXPECT_NE(x.kind, hg_gpu::ErrorKind::kQePairsFull) << "a counts-only run stored pairs";
+    EXPECT_EQ(got.reconstructed_causal_pairs, ref.reconstructed_causal_pairs);
+    EXPECT_EQ(got.reconstructed_causal_pairs_reduced, ref.reconstructed_causal_pairs_reduced);
+    EXPECT_EQ(got.reconstructed_causal_edges, ref.reconstructed_causal_edges);
 }
 
 // A class's per-class arrays are indexed by its representative, a raw state, so they cover every

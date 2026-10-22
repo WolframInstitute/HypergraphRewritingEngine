@@ -189,7 +189,8 @@ TEST(QuotientExpansion, ReducedReadbackAfterArenaOverflowReadsOnlyTheArena) {
     hg_gpu::QeState qe(/*on=*/true, hg_gpu::QeEntries{1, 1, 1, 1, 16});   // an arena of 16 words
     const hg_gpu::QeView v = qe.view(/*max_steps=*/1, hgcommon::EVENT_SIG_NONE,
                                      /*replay=*/true, /*multiplicity=*/false,
-                                     /*event_content=*/false, /*publish_applied=*/false);
+                                     /*event_content=*/false, /*publish_applied=*/false,
+                                     /*keep_pairs=*/false);
     ASSERT_EQ(v.arr_capacity, 16u);
 
     // Raw event 0 kept four producers: three inline, the fourth spilled to arena word 0.
@@ -228,7 +229,8 @@ TEST(QuotientExpansion, ArenaAllocationNearTheCursorWrapIsRefused) {
     hg_gpu::QeState qe(/*on=*/true, hg_gpu::QeEntries{1, 1, 1, 1, 16});   // an arena of 16 words
     const hg_gpu::QeView v = qe.view(/*max_steps=*/1, hgcommon::EVENT_SIG_NONE,
                                      /*replay=*/true, /*multiplicity=*/false,
-                                     /*event_content=*/false, /*publish_applied=*/false);
+                                     /*event_content=*/false, /*publish_applied=*/false,
+                                     /*keep_pairs=*/false);
     ASSERT_EQ(v.arr_capacity, 16u);
     const uint32_t near_wrap = 0xFFFFFFF0u;
     ASSERT_EQ(cudaMemcpy(v.arr_cursor, &near_wrap, sizeof(near_wrap), cudaMemcpyHostToDevice),
@@ -254,7 +256,8 @@ TEST(QuotientExpansion, AnInstanceInABucketTwoShardsShareIsVisitedOnce) {
     hg_gpu::QeState qe(/*on=*/true, hg_gpu::QeEntries{1, 1, 1, 1, 16});
     const hg_gpu::QeView v = qe.view(/*max_steps=*/1, hgcommon::EVENT_SIG_NONE,
                                      /*replay=*/true, /*multiplicity=*/false,
-                                     /*event_content=*/false, /*publish_applied=*/false);
+                                     /*event_content=*/false, /*publish_applied=*/false,
+                                     /*keep_pairs=*/false);
     const uint32_t buckets = v.by_key.num_keys;
     uint64_t hash = 0;
     uint32_t shard = 0;   // a shard whose bucket an earlier shard of the same key also takes

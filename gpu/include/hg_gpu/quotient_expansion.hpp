@@ -228,6 +228,9 @@ struct QeView {
     // `num_causal_edges` counts every consumed-edge occurrence, so a pair joined by several
     // edges is one pair and several edges -- the two the host reports separately.
     DedupMap::DeviceView causal_pairs;
+    // `causal_pairs` holds the pairs only when they are read back (hgcommon::
+    // qr_keeps_causal_pairs, EvolveInput::materialize_relations); the count is kept in every run.
+    uint32_t keep_pairs = 0;
     uint32_t* num_causal_pairs;
     uint32_t* num_causal_edges;
     // Per raw event, the producers the online transitive reduction kept (qr_apply, through
@@ -1280,6 +1283,12 @@ struct DeviceQrCtx {
         // the caller has already decided that, and the map is left to answer the question it is
         // actually here for -- whether some OTHER application recorded this pair.
         if (!distinct_pair) return;
+        // `consumer` was minted for this application, so a distinct pair is new: without the
+        // readback the count is all that is kept, as on the host (Hypergraph::qc_record_causal).
+        if (!qe.keep_pairs) {
+            ++causal_pairs_seen;
+            return;
+        }
         const uint64_t pk = hgcommon::id_key(producer, consumer);
         const auto r = qe.causal_pairs.insert_if_absent(pk, 1u);
         if (r.overflowed) ds.errors.record(ErrorKind::kQePairsFull);
@@ -1532,7 +1541,8 @@ public:
                                           std::vector<std::pair<uint32_t, uint32_t>>& out);
 
     QeView view(uint32_t max_steps, EventSignatureKeys keys,
-                bool replay, bool multiplicity, bool event_content, bool publish_applied);
+                bool replay, bool multiplicity, bool event_content, bool publish_applied,
+                bool keep_pairs);
 
 private:
 

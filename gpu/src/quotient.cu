@@ -613,7 +613,8 @@ void QeState::reconstructed_genesis_pairs_host(bool reduced,
 }
 
 QeView QeState::view(uint32_t max_steps, EventSignatureKeys keys,
-                bool replay, bool multiplicity, bool event_content, bool publish_applied) {
+                bool replay, bool multiplicity, bool event_content, bool publish_applied,
+                bool keep_pairs) {
         QeView q{};
         q.matches      = matches_.view();
         q.by_from      = by_from_.view();
@@ -638,6 +639,7 @@ QeView QeState::view(uint32_t max_steps, EventSignatureKeys keys,
         if (inst_applied_) q.inst_applied = inst_applied_->view();
         q.publish_applied  = (on_ && replay && publish_applied && inst_applied_) ? 1u : 0u;
         q.causal_pairs   = causal_pairs_.view();
+        q.keep_pairs     = keep_pairs ? 1u : 0u;
         q.num_causal_pairs = num_causal_pairs_;
         q.num_causal_edges = num_causal_edges_;
         q.event_kept       = event_kept_;

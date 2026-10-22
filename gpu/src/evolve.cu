@@ -409,7 +409,7 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
     qe_state_->set_id_limit(in.replay_id_limit);
     QeView qe_view = qe_state_->view(in.num_steps, event_keys_for(in.event_canonicalization),
                                      qe_replay, qe_multiplicity, qe_event_content,
-                                     qe_publish_applied);
+                                     qe_publish_applied, in.materialize_relations);
 
     double t_qcsetup = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t_qcsetup_start).count();
