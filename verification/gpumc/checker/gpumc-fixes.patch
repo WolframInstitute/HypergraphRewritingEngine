@@ -10,6 +10,63 @@ diff -u a/src/Execution.cpp b/src/Execution.cpp
  		if (!getCurThr().isBlocked() && cmpRes) {		\
  			auto sDeps = makeEventDeps(getDataDeps(getCurThr().id, I.getPointerOperand()), \
  						   getDataDeps(getCurThr().id, I.getNewValOperand()), \
+@@ -4666,6 +4666,13 @@
+ 		 * the signature for printf might contain var_args (and thus it might be
+ 		 * distance(arg_begin(), arg_end()) < ArgVals.size()), so we just
+ 		 * check whether .PointerVal is non-null and hope for the best */
++		/* A declared parameter that is not a pointer (a double whose bits look like a
++		 * static address) is passed as it is. */
++		auto *FT = F->getFunctionType();
++		if (i < FT->getNumParams() && !FT->getParamType(i)->isPointerTy()) {
++			result.push_back(ArgVals[i]);
++			continue;
++		}
+ 		if (GVTOP(ArgVals[i]) && SAddr(GVTOP(ArgVals[i])).isStatic()) {
+ 			auto transAddr = PTOGV(getStaticAddr(GVTOP(ArgVals[i])));
+ 			result.push_back(transAddr);
+diff -u a/src/ExternalFunctions.cpp b/src/ExternalFunctions.cpp
+--- a/src/ExternalFunctions.cpp
++++ b/src/ExternalFunctions.cpp
+@@ -553,8 +553,39 @@
+   return GV;
+ }
+ 
++// The C library's math functions on double and float, computed by the host's: they read and write
++// no memory, so they need no events. IntrinsicLoweringPass lowers llvm.sqrt, llvm.floor and the
++// other floating-point intrinsics to calls to these.
++#define HG_MATH1(name)                                                              \
++  static GenericValue lle_X_##name(FunctionType *, const std::vector<GenericValue> &A) { \
++    GenericValue GV; GV.DoubleVal = std::name(A[0].DoubleVal); return GV;          \
++  }                                                                                 \
++  static GenericValue lle_X_##name##f(FunctionType *, const std::vector<GenericValue> &A) { \
++    GenericValue GV; GV.FloatVal = std::name(A[0].FloatVal); return GV;            \
++  }
++#define HG_MATH2(name)                                                              \
++  static GenericValue lle_X_##name(FunctionType *, const std::vector<GenericValue> &A) { \
++    GenericValue GV; GV.DoubleVal = std::name(A[0].DoubleVal, A[1].DoubleVal); return GV; \
++  }                                                                                 \
++  static GenericValue lle_X_##name##f(FunctionType *, const std::vector<GenericValue> &A) { \
++    GenericValue GV; GV.FloatVal = std::name(A[0].FloatVal, A[1].FloatVal); return GV; \
++  }
++HG_MATH1(sqrt) HG_MATH1(cbrt) HG_MATH1(floor) HG_MATH1(ceil) HG_MATH1(trunc) HG_MATH1(round)
++HG_MATH1(rint) HG_MATH1(nearbyint) HG_MATH1(log) HG_MATH1(log2) HG_MATH1(log10) HG_MATH1(log1p)
++HG_MATH1(exp) HG_MATH1(exp2) HG_MATH1(expm1) HG_MATH1(sin) HG_MATH1(cos) HG_MATH1(fabs)
++HG_MATH2(pow) HG_MATH2(copysign) HG_MATH2(fmin) HG_MATH2(fmax) HG_MATH2(atan2) HG_MATH2(hypot)
++#undef HG_MATH1
++#undef HG_MATH2
++
+ void Interpreter::initializeExternalFunctions() {
+   sys::ScopedLock Writer(*FunctionsLock);
++#define HG_MATH(name) FuncNames["lle_X_" #name] = lle_X_##name; \
++                      FuncNames["lle_X_" #name "f"] = lle_X_##name##f;
++  HG_MATH(sqrt) HG_MATH(cbrt) HG_MATH(floor) HG_MATH(ceil) HG_MATH(trunc) HG_MATH(round)
++  HG_MATH(rint) HG_MATH(nearbyint) HG_MATH(log) HG_MATH(log2) HG_MATH(log10) HG_MATH(log1p)
++  HG_MATH(exp) HG_MATH(exp2) HG_MATH(expm1) HG_MATH(sin) HG_MATH(cos) HG_MATH(fabs)
++  HG_MATH(pow) HG_MATH(copysign) HG_MATH(fmin) HG_MATH(fmax) HG_MATH(atan2) HG_MATH(hypot)
++#undef HG_MATH
+   FuncNames["lle_X_atexit"]       = lle_X_atexit;
+   FuncNames["lle_X_exit"]         = lle_X_exit;
+   FuncNames["lle_X_abort"]        = lle_X_abort;
 diff -u a/src/GenMCDriver.cpp b/src/GenMCDriver.cpp
 --- a/src/GenMCDriver.cpp
 +++ b/src/GenMCDriver.cpp
@@ -141,6 +198,51 @@ diff -u a/src/GenMCDriver.hpp b/src/GenMCDriver.hpp
  		unsigned racecount;
  		unsigned esize=0;
  #ifdef ENABLE_GENMC_DEBUG
+diff -u a/src/IntrinsicLoweringPass.cpp b/src/IntrinsicLoweringPass.cpp
+--- a/src/IntrinsicLoweringPass.cpp
++++ b/src/IntrinsicLoweringPass.cpp
+@@ -51,6 +51,41 @@
+ 			I->eraseFromParent();
+ 			modified = true;
+ 			break;
++		case llvm::Intrinsic::fma:
++		case llvm::Intrinsic::fmuladd: {
++			/* a * b + c as a multiply and an add: the interpreter has no fused
++			 * multiply-add, and LowerIntrinsicCall aborts on one. */
++			llvm::IRBuilder<> builder(I);
++			auto *prod = builder.CreateFMul(I->getArgOperand(0), I->getArgOperand(1));
++			auto *sum = builder.CreateFAdd(prod, I->getArgOperand(2));
++			I->replaceAllUsesWith(sum);
++			I->eraseFromParent();
++			modified = true;
++			break;
++		}
++		case llvm::Intrinsic::fabs:
++		case llvm::Intrinsic::minnum:
++		case llvm::Intrinsic::maxnum: {
++			/* A call to the C library function, which the interpreter computes
++			 * (ExternalFunctions.cpp); LowerIntrinsicCall aborts on these. */
++			const char *base = I->getIntrinsicID() == llvm::Intrinsic::fabs ? "fabs" :
++					   I->getIntrinsicID() == llvm::Intrinsic::minnum ? "fmin" : "fmax";
++			auto *ty = I->getType();
++			if (!ty->isFloatTy() && !ty->isDoubleTy()) {
++				IL->LowerIntrinsicCall(I);
++				modified = true;
++				break;
++			}
++			std::string name = std::string(base) + (ty->isFloatTy() ? "f" : "");
++			std::vector<llvm::Type *> params(I->arg_size(), ty);
++			auto FC = M.getOrInsertFunction(name, llvm::FunctionType::get(ty, params, false));
++			std::vector<llvm::Value *> args(I->arg_begin(), I->arg_end());
++			auto *call = llvm::CallInst::Create(FC, args, "", I);
++			I->replaceAllUsesWith(call);
++			I->eraseFromParent();
++			modified = true;
++			break;
++		}
+ 		case llvm::Intrinsic::trap: {
+ 			/* Lower calls to @llvm.trap to abort() calls */
+ 			auto FC = M.getOrInsertFunction("abort", llvm::Type::getVoidTy(M.getContext()));
 diff -u a/src/LLVMModule.cpp b/src/LLVMModule.cpp
 --- a/src/LLVMModule.cpp
 +++ b/src/LLVMModule.cpp

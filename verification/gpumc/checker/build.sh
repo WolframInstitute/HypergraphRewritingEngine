@@ -2,9 +2,9 @@
 # Build gpumc_docker:hg-fixes, the image verification/gpumc/run.sh uses: the CAV 2025 GPUMC artifact
 # (gpumc_docker:latest, loaded by `docker load`) with gpumc-fixes.patch applied.
 #
-# gpumc-fixes.patch carries five fixes. Each has a test in this directory, run by
+# gpumc-fixes.patch carries six changes. Each has a test in this directory, run by
 # `verification/gpumc/run.sh cells cas_width memcpy_promotion race_in_header struct_return
-# barrier_divergence`.
+# barrier_divergence float_math`.
 #
 # Compare-exchange width (Execution.cpp, GenMCDriver.cpp, SVal.hpp). GPUMC 0.9 compared a
 # compare-exchange's read value against the expected value sign-extended from the access width,
@@ -45,6 +45,17 @@
 # (a block-mate blocked by its spin-loop assume). A thread waiting at a barrier is reported when a
 # thread of its work group has finished, since the barrier can then never complete.
 # checker/barrier_divergence.cpp checks both cases.
+#
+# Floating point (IntrinsicLoweringPass.cpp, ExternalFunctions.cpp). GPUMC aborted on llvm.fma,
+# llvm.fmuladd and llvm.fabs ("Code generator does not support intrinsic function"), and stopped on
+# a call to sqrt, floor or any other C math function. fma and fmuladd become a multiply and an
+# add; fabs, minnum and maxnum become calls to fabs, fmin and fmax; and the interpreter computes the
+# C library's math functions (sqrt, cbrt, floor, ceil, trunc, round, rint, nearbyint, log, log2,
+# log10, log1p, exp, exp2, expm1, sin, cos, fabs, pow, copysign, fmin, fmax, atan2, hypot) on
+# double and float. An external call's declared non-pointer argument is passed as it is: the
+# interpreter took any argument whose bits read as a static address for a pointer, which a
+# negative double does (-2.25 is 0xC002...), and stopped at getStaticAddr. checker/float_math.cpp
+# checks both.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 docker image inspect gpumc_docker:latest >/dev/null
