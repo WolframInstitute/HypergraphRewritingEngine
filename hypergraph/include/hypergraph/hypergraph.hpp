@@ -1434,6 +1434,12 @@ public:
     // for_each_quotient_blocked_point and drive each point with quotient_redrive_point.
     int raise_quotient_max_steps(int max_steps);
 
+    // Gives up every worker's block of replay event and instance ids, so the ids a continuation
+    // mints lie above every id minted before it. An earlier reply's reconstructed event ids
+    // (dense, in raw event order: for_each_reconstructed_event) then keep their events. Called
+    // between evolve calls, with no worker running.
+    void close_replay_id_blocks();
+
     // The points that the OLD bound made terminal: reached, their producers and instances
     // recorded, and every transition out of them declined by the bound. Under the raised bound
     // they are ordinary interior points and each is one independent unit of work.

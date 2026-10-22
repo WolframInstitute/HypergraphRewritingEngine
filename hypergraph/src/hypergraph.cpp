@@ -1740,6 +1740,13 @@ int Hypergraph::raise_quotient_max_steps(int max_steps) {
     return old;
 }
 
+void Hypergraph::close_replay_id_blocks() {
+    for (int i = 0; i < MAX_ARENA_WORKERS; ++i) {
+        qc_event_blocks_[i].next = qc_event_blocks_[i].end;
+        qc_inst_blocks_[i].next = qc_inst_blocks_[i].end;
+    }
+}
+
 void Hypergraph::quotient_redrive_point(uint64_t state_hash, uint32_t depth) {
     // The point stood at the old bound, so its mass was not passed on and its instances never
     // met a match. With the bound already raised, driving it restarts the cascade, and the

@@ -1174,6 +1174,9 @@ void ParallelEvolutionEngine::evolve_more(size_t additional_steps,
     // different depths.
     const int quotient_old_bound = hg_->raise_quotient_max_steps(static_cast<int>(
         std::min<size_t>(max_steps_, static_cast<size_t>((std::numeric_limits<int>::max)()))));
+    // The continuation's replay ids lie above every earlier one, so the event ids an earlier
+    // reply served keep their events.
+    hg_->close_replay_id_blocks();
     // Whether the run being continued was stopped (a limit or request_stop). Only a stop defers
     // one state's matching more than once, so only then is the resumed frontier de-duplicated.
     const bool after_stop = should_stop_.load(std::memory_order_relaxed);

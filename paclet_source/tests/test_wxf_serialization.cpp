@@ -4598,6 +4598,94 @@ TEST(Session, ADeltaBranchialGraphAtTheFinalStepIsDeliveredWhole) {
     run_rewriting_core(branch_job(0, "Close", h, opts, 2), host);
 }
 
+namespace {
+
+// One property's GraphData from a reply: IsDelta, each vertex record by its key's bytes, and the
+// set of edge records' bytes.
+struct DeliveredGraph {
+    int64_t is_delta = -1;
+    std::map<std::vector<uint8_t>, std::vector<uint8_t>> vertex_data;
+    std::set<std::vector<uint8_t>> vertices, edges;
+};
+DeliveredGraph delivered_graph(const std::vector<uint8_t>& out, const std::string& prop) {
+    DeliveredGraph g;
+    auto element_bytes = [](wxf::Parser& p) {
+        const size_t at = p.position();
+        p.skip_value();
+        return std::vector<uint8_t>(p.data() + at, p.data() + p.position());
+    };
+    wxf::Parser parser(out);
+    parser.skip_header();
+    parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+        if (k != "GraphData") { vp.skip_value(); return; }
+        vp.read_association([&](const std::string& name, wxf::Parser& gp) {
+            if (name != prop) { gp.skip_value(); return; }
+            gp.read_association([&](const std::string& field, wxf::Parser& fp) {
+                if (field == "IsDelta") {
+                    g.is_delta = fp.read<int64_t>();
+                } else if (field == "Vertices" || field == "Edges") {
+                    fp.read_function([&](const std::string&, size_t n, wxf::Parser& ep) {
+                        for (size_t i = 0; i < n; ++i)
+                            (field == "Vertices" ? g.vertices : g.edges).insert(element_bytes(ep));
+                    });
+                } else if (field == "VertexData") {
+                    fp.read_association_generic([&](wxf::Parser& kp, wxf::Parser& dp) {
+                        auto key = element_bytes(kp);
+                        g.vertex_data[std::move(key)] = element_bytes(dp);
+                    });
+                } else {
+                    fp.skip_value();
+                }
+            });
+        });
+    });
+    return g;
+}
+
+}  // namespace
+
+// A Step keeps the graph the session served: each CausalGraph edge and event record of a Step's
+// reply is in the next Step's, under quotient exploration and in full capture with Full states.
+// The replay mints event ids from per-worker blocks; a block left part-used by one Step gave the
+// next Step's events ids below other workers' earlier ones, which renumbered the dense event ids
+// (Hypergraph::for_each_reconstructed_event). On {{1,2},{1,3}} -> {{1,2},{1,3},{2,3}} from
+// {{1,2},{1,3}} at the default worker count, the fourth Step lost 56 of the third's 72 edges and
+// changed 62 event records; at one worker none.
+TEST(Session, AStepKeepsTheGraphItServed) {
+    for (const char* explore : {"True", "False"}) {
+        HostBridge host;
+        auto opts = [&](wxf::Writer& w) {
+            put_str_list_option(w, "GraphProperties", {"CausalGraph"});
+            put_str_option(w, "CanonicalizeStates", "Full");
+            put_str_option(w, "ExploreFromCanonicalStatesOnly", explore);
+        };
+        auto job = [&](int64_t steps, const char* op, int64_t h) {
+            return session_envelope(kBranchSeed, kBranchLhs, kBranchRhs, steps, op, h,
+                                    std::string(op) == "Open", {}, opts, 3, false);
+        };
+        const auto opened = run_rewriting_core(job(1, "Open", 0), host);
+        const int64_t h = read_int_key(opened, "Session");
+        ASSERT_GT(h, 0);
+        DeliveredGraph prev = delivered_graph(opened, "CausalGraph");
+        for (int step = 1; step <= 4; ++step) {
+            const auto out = run_rewriting_core(job(1, "Step", h), host);
+            const DeliveredGraph g = delivered_graph(out, "CausalGraph");
+            size_t gone = 0, changed = 0;
+            for (const auto& e : prev.edges) gone += g.edges.count(e) == 0;
+            for (const auto& [k, v] : prev.vertex_data) {
+                const auto it = g.vertex_data.find(k);
+                changed += it == g.vertex_data.end() || it->second != v;
+            }
+            EXPECT_EQ(gone, 0u) << "explore " << explore << " step " << step;
+            EXPECT_EQ(changed, 0u) << "explore " << explore << " step " << step;
+            EXPECT_GE(g.edges.size(), prev.edges.size()) << "explore " << explore;
+            prev = g;
+        }
+        EXPECT_GT(prev.edges.size(), 100u) << "explore " << explore;
+        run_rewriting_core(job(0, "Close", h), host);
+    }
+}
+
 // The branchial graph keeps every branchial pair as an edge, so with all steps shown its edge
 // count is NumBranchialEdges. Under CanonicalizeStates -> Full sibling pairs reach the same two
 // classes, and a repeated pair in the same order was sent once while one in the other order was
