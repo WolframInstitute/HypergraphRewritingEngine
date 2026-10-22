@@ -159,7 +159,7 @@ If[!TrueQ[HypergraphRewriting`Private`hgGpuBinaryAvailableQ[]],
           HypergraphRewriting`Private`$hgWorkerStarts === starts &&
           !KeyExistsQ[HypergraphRewriting`Private`$hgWorkerProc, "GPU"]];
     check["the Device property says CPU",
-          HGEvolve[rules, init, 1, "Device", "TargetDevice" -> "GPU"] === <|"Type" -> "CPU"|>];
+          Lookup[HGEvolve[rules, init, 1, "Device", "TargetDevice" -> "GPU"], "Type"] === "CPU"];
 
     fresh[];
     ms = Block[{$MessageList = {}},
@@ -190,7 +190,7 @@ If[!TrueQ[HypergraphRewriting`Private`hgGpuBinaryAvailableQ[]],
     d = Quiet[HGEvolve[rules, init, 1, "Device", "TargetDevice" -> "GPU"], HGEvolve::gpudev];
     Print["device: ", d];
     check["the Device property names the GPU or the CPU",
-          MatchQ[d, <|"Type" -> "CPU"|> |
+          MatchQ[KeyTake[d, {"Type", "Name", "ComputeCapability"}], <|"Type" -> "CPU"|> |
                     <|"Type" -> "GPU", "Name" -> _String, "ComputeCapability" -> _String|>]]]];
 
 (* Quotient exploration: a session stepped k times equals one evolve of depth k. The Open
