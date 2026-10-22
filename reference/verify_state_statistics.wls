@@ -103,9 +103,13 @@ entropyBits[counts_List] := Module[{p = N[counts/Total[counts]]}, -Total[p Log2[
 geometryKeys = {"GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
   "WolframRicciCurvatureScalar", "OllivierRicciCurvature", "DegreeEntropy", "LocalEntropy",
   "MutualInformation", "FisherInformation", "LargestComponentDimension", "LocalDimensionMax",
-  "LocalDimensionStandardDeviation", "OllivierMoranI", "OllivierDegreeCorrelation"};
+  "LocalDimensionStandardDeviation", "OllivierMoranI", "OllivierDegreeCorrelation",
+  "BallDimension", "BallScalarCurvature", "RiemannianBallDimension",
+  "RiemannianBallScalarCurvature", "SphereDimension", "SphereScalarCurvature"};
 
-vertexDistributions = {"LocalDimension", "OllivierRicciCurvature", "WolframRicciCurvatureScalar"};
+vertexDistributions = {"LocalDimension", "OllivierRicciCurvature", "WolframRicciCurvatureScalar",
+  "BallDimension", "BallScalarCurvature", "RiemannianBallDimension",
+  "RiemannianBallScalarCurvature", "SphereDimension", "SphereScalarCurvature"};
 
 (* The branchial keys of one step from the raw run: the step's states, the branchial pairs
    whose first event's output state is at the step, each state's vertex set and edges, and the

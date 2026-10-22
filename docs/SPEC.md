@@ -378,6 +378,38 @@ quantiles are histogram quantiles: the bin holding the fraction q of the weight,
 the bin between its edges clipped to [`Min`, `Max`]. `Histogram` maps each non-empty bin's lower
 edge to its weight.
 
+**`StepStatistics` volume growth.** Six more `Invariants` entries and six more `VertexInvariants`
+distributions fit the growth of balls and spheres about each vertex v of G' (the largest
+component above). For r = 0..ecc(v), A(r) = \|S(v, r)\| counts the vertices at distance r,
+V(r) = \|B(v, r)\| is the counting measure of the ball, and W(r), the Riemannian measure, counts
+the vertices of B(v, r) whose neighbours all lie in B(v, r). Each profile is cut at p, the
+largest r at which A(r) is greatest. The quotients of a profile f are q(r) = (log f(r+1) -
+log f(r)) / (log(r+1) - log r) for r = 1..p-1, so k = p - 1 of them. A fit regresses q on
+x = r(r+1) by least squares, q = c1 + c2 x, over a window of radii. With k < 5 the window is
+1..k. Otherwise e(i, j) is the residual standard error of the regression over i..j,
+sqrt(max(Σq² - (Σq - b Σx) Σq / m - b Σxq, 0) / (m - 2)) with m = j - i + 1 and b = (m Σxq -
+Σx Σq) / (m Σx² - (Σx)²), each sum over i..j. The tolerance is max(2 Q, 10^-10), with Q the
+ceil((k-4)/4)-th smallest e over the k - 4 windows of 5 radii. The window is the longest i..j
+with e(i, j) <= tolerance, the leftmost of equal length, or 1..k when none is. The ball probe
+reads the dimension c1 and the scalar curvature -3(c1 + 2) c2. The sphere probe reads the
+dimension c1 + 1 and the scalar curvature -3(c1 + 1) c2.
+
+| Entry | Profile and probe |
+|---|---|
+| `BallDimension`, `BallScalarCurvature` | V by the ball probe |
+| `RiemannianBallDimension`, `RiemannianBallScalarCurvature` | W by the ball probe |
+| `SphereDimension`, `SphereScalarCurvature` | A by the sphere probe |
+
+A vertex has a fit when k >= 2, that is when p >= 3. Each entry of `Invariants` is the mean over
+the vertices of G' with a fit, and is undefined when none has one. Each distribution of
+`VertexInvariants` holds the values of those vertices, with 32 bins over [0, 8) for the
+dimensions and over [-24, 8) for the scalar curvatures. These are the definitions of the
+Infrageometry paclet's `VolumeGrowthObservables` and `DimensionCurvatureFit` with the
+`Automatic` window. The breadth-first search from each vertex that the radius takes also gives
+A, V and W: the search counts each vertex u at h(u), which is dist(v, u) + 1 when u has a
+neighbour farther from v and dist(v, u) otherwise, and W(r) is the number of vertices with
+h(u) <= r. Each fit takes O(k²) for its window.
+
 **Per-vertex curvature.** With `"IncludeVertexCurvature" -> True` each `"States"` record has
 `VertexCurvature`, an association from each vertex of the record's edges that has a neighbour in
 G, ascending, to k_v. It is computed from the edges the record lists, so under

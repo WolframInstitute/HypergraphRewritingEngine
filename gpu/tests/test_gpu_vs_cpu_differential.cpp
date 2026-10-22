@@ -2409,7 +2409,7 @@ TEST(RecordSet, ClassMultiplicitiesMatchTheHost) {
 // without sampling or caps, under quotient exploration, bit for bit.
 TEST(RecordSet, ClassInvariantsMatchTheHost) {
     auto same = [](double a, double b) { return std::memcmp(&a, &b, sizeof a) == 0; };
-    size_t compared = 0;
+    size_t compared = 0, with_growth = 0;
     for (Workload w : build_corpus()) {
         if (w.num_steps == 0) continue;
         if (w.transition_rate != 1.0 || !w.rule_weights.empty() || w.max_states_per_step != 0 ||
@@ -2488,6 +2488,9 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
                   &hgcommon::SgGeometry::ollivier_moran_i,
                   &hgcommon::SgGeometry::ollivier_degree_correlation})
                 EXPECT_TRUE(same(a->g.*f, b->g.*f)) << w.name << " " << a->g.*f << " " << b->g.*f;
+            for (uint32_t k = 0; k < hgcommon::SG_GROWTH_VALUES; ++k)
+                EXPECT_TRUE(same(a->g.growth[k], b->g.growth[k])) << w.name << " growth " << k;
+            if (a->g.defined & hgcommon::SG_VOLUME_GROWTH) ++with_growth;
             for (uint32_t k = 0; k < a->num_ball; ++k)
                 EXPECT_TRUE(same(a->ball()[k], b->ball()[k])) << w.name;
             // The per-vertex distributions, byte for byte.
@@ -2500,6 +2503,8 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
         }
     }
     EXPECT_GT(compared, 0u);
+    EXPECT_GT(with_growth, 0u);
+    std::printf("[ RecordSet ] %zu classes, %zu with a volume-growth fit\n", compared, with_growth);
 }
 
 TEST(RecordSet, DeviceSkipsOnlyWhatItWasNotAskedFor) {

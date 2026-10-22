@@ -48,7 +48,12 @@
 //   K_v                        Wolfram-Ricci scalar of v in G': mean over r = 1..R' of
 //                              6(D+2)/r^2 (1 - |B(v,r)| Gamma(D/2+1) / (pi^(D/2) r^D)), D the
 //                              LargestComponentDimension
-// The per-vertex values d_v (over G'), k_v (over G) and K_v (over G') are kept as SgDistribution
+//   growth[0..6)               volume growth (sg_growth_of): the means over the vertices of G'
+//                              with a fit of the dimension and scalar curvature fitted to the
+//                              ball sizes, to the Riemannian measures of the balls and to the
+//                              sphere sizes about the vertex
+// The per-vertex values d_v (over G'), k_v (over G), K_v (over G') and the six volume-growth
+// values (over the vertices of G' with a fit) are kept as SgDistribution
 // summaries: count, min, max, the sums of x, x^2, x^3 and x^4 in double-double (det_math.hpp),
 // and a histogram of SG_DIST_BINS
 // equal bins over a fixed range per quantity (sg_dist_range); a value outside the range counts in
@@ -214,23 +219,42 @@ HG_HD bool sg_build(const EdgeList& el, SgArena& arena, SgGraph& g) {
 // vertex on entry and again on return. `layer[d]`, when given, receives the number of vertices
 // at distance d for d = 0..depth reached. Returns the depth reached (the eccentricity of s when
 // max_depth is not reached first); `reached` receives the number of vertices found.
+//
+// `inner`, when given with max_depth UINT32_MAX, receives at index h the number of vertices u
+// with h(u) = h, where h(u) is dist(u) + 1 when u has a neighbour at dist(u) + 1 and dist(u)
+// otherwise. B(s, r) holds exactly the vertices u with h(u) <= r whose neighbours all lie in
+// B(s, r), so the Riemannian measure of B(s, r) is the sum of inner[0..r].
 HG_HD inline uint32_t sg_bfs(const SgGraph& g, uint32_t s, int32_t* dist, uint32_t* queue,
-                             uint32_t* layer, uint32_t max_depth, uint32_t& reached) {
+                             uint32_t* layer, uint32_t max_depth, uint32_t& reached,
+                             uint32_t* inner = nullptr) {
     uint32_t head = 0, tail = 0;
     queue[tail++] = s;
     dist[s] = 0;
     uint32_t depth = 0;
     if (layer) layer[0] = 0;
+    if (inner) { inner[0] = 0; inner[1] = 0; }
     while (head < tail) {
         const uint32_t u = queue[head++];
         const uint32_t du = static_cast<uint32_t>(dist[u]);
-        if (du > depth) { depth = du; if (layer) layer[depth] = 0; }
+        if (du > depth) {
+            depth = du;
+            if (layer) layer[depth] = 0;
+            if (inner) inner[depth + 1] = 0;
+        }
         if (layer) ++layer[du];
         if (du == max_depth) continue;
+        uint32_t outward = 0;
         for (uint32_t e = g.off[u]; e < g.off[u + 1]; ++e) {
             const uint32_t w = g.nbr[e];
-            if (dist[w] < 0) { dist[w] = static_cast<int32_t>(du + 1); queue[tail++] = w; }
+            if (dist[w] < 0) {
+                dist[w] = static_cast<int32_t>(du + 1);
+                queue[tail++] = w;
+                outward = 1;
+            } else if (dist[w] == static_cast<int32_t>(du + 1)) {
+                outward = 1;
+            }
         }
+        if (inner) ++inner[du + outward];
     }
     reached = tail;
     return depth;
@@ -377,6 +401,7 @@ enum : uint32_t {
     SG_OLLIVIER_MORAN = 1u << 8,         // ollivier_moran_i: G has an edge, k not constant
     SG_OLLIVIER_DEGREE = 1u << 9,        // ollivier_degree_correlation: k and deg not constant
     SG_VERTEX_DISTRIBUTIONS = 1u << 10,  // `want` only: write the per-vertex distributions
+    SG_VOLUME_GROWTH = 1u << 11,         // the six growth_* means: a vertex of G' has a fit
 };
 
 // The per-vertex distributions of a state, in this order.
@@ -384,16 +409,31 @@ enum : uint32_t {
     SG_DIST_LOCAL_DIMENSION = 0,         // d_v over G'
     SG_DIST_OLLIVIER = 1,                // k_v over the vertices of G with a neighbour
     SG_DIST_RICCI = 2,                   // K_v over G'
-    SG_DISTS = 3,
+    SG_DIST_BALL_DIMENSION = 3,          // the volume-growth fits of the vertices of G' with one:
+    SG_DIST_BALL_CURVATURE = 4,          //   counting ball dimension and scalar curvature,
+    SG_DIST_RIEMANNIAN_DIMENSION = 5,    //   Riemannian ball dimension and scalar curvature,
+    SG_DIST_RIEMANNIAN_CURVATURE = 6,
+    SG_DIST_SPHERE_DIMENSION = 7,        //   sphere dimension and scalar curvature
+    SG_DIST_SPHERE_CURVATURE = 8,
+    SG_DISTS = 9,
 };
 constexpr uint32_t SG_DIST_BINS = 32;
+
+// The volume-growth fits in SG_DIST order from SG_DIST_BALL_DIMENSION: per probe and measure, the
+// dimension then the scalar curvature.
+constexpr uint32_t SG_GROWTH_VALUES = 6;
 
 // Histogram range [lo, hi) of a distribution; the bin width (hi - lo) / SG_DIST_BINS is a power
 // of two times 1 or 3, so a value's bin is one exact subtraction and one division.
 HG_HD inline void sg_dist_range(uint32_t which, double& lo, double& hi) {
-    if (which == SG_DIST_LOCAL_DIMENSION) { lo = 0.0; hi = 8.0; }
-    else if (which == SG_DIST_OLLIVIER) { lo = -2.0; hi = 1.0; }
-    else { lo = -24.0; hi = 8.0; }
+    if (which == SG_DIST_LOCAL_DIMENSION || which == SG_DIST_BALL_DIMENSION ||
+        which == SG_DIST_RIEMANNIAN_DIMENSION || which == SG_DIST_SPHERE_DIMENSION) {
+        lo = 0.0; hi = 8.0;
+    } else if (which == SG_DIST_OLLIVIER) {
+        lo = -2.0; hi = 1.0;
+    } else {
+        lo = -24.0; hi = 8.0;
+    }
 }
 
 // A per-vertex distribution: the count, extremes, sum[k] + sum_lo[k] = the sum of x^(k+1) in
@@ -454,7 +494,13 @@ struct SgGeometry {
     double local_dimension_sd = 0.0;
     double ollivier_moran_i = 0.0;
     double ollivier_degree_correlation = 0.0;
+    // Means over the vertices of G' with a volume-growth fit, in SG_DIST order from
+    // SG_DIST_BALL_DIMENSION.
+    double growth[SG_GROWTH_VALUES] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
 };
+
+// Doubles of scratch sg_growth_fit takes for k quotients.
+HG_HD inline size_t sg_fit_doubles(size_t k) { return 7 * (k + 1); }
 
 // Bytes of one lane's transport scratch, a multiple of 8.
 HG_HD inline size_t sg_transport_stride(size_t max_degree) {
@@ -469,16 +515,23 @@ HG_HD inline uint32_t sg_transport_lanes(size_t max_degree, uint32_t lanes) {
 }
 
 // Bytes sg_geometry_of takes for a graph of n vertices, the given maximum degree and edge count,
-// on `lanes` lanes. Per lane and per vertex: dist, dist2, queue, queue2, mark, layer and counts
-// (4 bytes each) and the log term (8 bytes). Per vertex: the eccentricity (4 bytes), and the
-// dimension, local entropy, mutual information, Fisher term, log sum, ball sum, vertex
-// curvature, vertex Ricci scalar and the two per-radius Ricci coefficients (8 bytes each). Per
-// edge: the Ollivier curvature (8 bytes). Then the transport lanes' scratch, and 8 bytes of
-// alignment per array.
-HG_HD inline size_t sg_metric_bytes(size_t n, size_t max_degree, size_t edges, uint32_t lanes) {
+// on `lanes` lanes, computing `want`. Per lane and per vertex: dist, dist2, queue, queue2, mark,
+// layer and counts (4 bytes each) and the log term (8 bytes). Per vertex: the eccentricity (4
+// bytes), and the dimension, local entropy, mutual information, Fisher term, log sum, ball sum,
+// vertex curvature, vertex Ricci scalar and the two per-radius Ricci coefficients (8 bytes
+// each). Per edge: the Ollivier curvature (8 bytes). Then the transport lanes' scratch, and 8
+// bytes of alignment per array. SG_VOLUME_GROWTH adds per lane and per vertex the shells and the
+// Riemannian counts (4 bytes each) and the fit scratch (56 bytes), and per vertex the six fits.
+HG_HD inline size_t sg_metric_bytes(size_t n, size_t max_degree, size_t edges, uint32_t lanes,
+                                    uint32_t want = ~0u) {
     const size_t n1 = n + 1;
-    return 64 + size_t{lanes} * n1 * (7 * 4 + 8) + n1 * 4 + 10 * n1 * 8 + 8 * (edges + 1) +
-           sg_transport_lanes(max_degree, lanes) * sg_transport_stride(max_degree) + 24 * 8;
+    size_t bytes = 64 + size_t{lanes} * n1 * (7 * 4 + 8) + n1 * 4 + 10 * n1 * 8 +
+                   8 * (edges + 1) +
+                   sg_transport_lanes(max_degree, lanes) * sg_transport_stride(max_degree) + 24 * 8;
+    if (want & SG_VOLUME_GROWTH)
+        bytes += size_t{lanes} * (n1 * 2 * 4 + sg_fit_doubles(n) * 8) +
+                 SG_GROWTH_VALUES * n1 * 8 + 4 * 8;
+    return bytes;
 }
 
 // Shannon entropy in bits of a distribution given as counts over `total`.
@@ -499,6 +552,108 @@ HG_HD inline double sg_degree_entropy_of(const SgGraph& g, const uint32_t* vs, u
     return h;
 }
 
+// VOLUME GROWTH (docs/SPEC.md, "StepStatistics volume growth"). The log-difference quotient of a
+// profile f at radius r is q(r) = (log f(r+1) - log f(r)) / (log(r+1) - log r), r = 1..k. A fit
+// regresses q on x = r(r+1) by least squares, q = c1 + c2 x, over a window of radii: the ball
+// probe gives the dimension c1 and the scalar curvature -3(c1+2)c2, the sphere probe the
+// dimension c1 + 1 and the scalar curvature -3(c1+1)c2. For k < 5 the window is 1..k. Otherwise
+// e(i, j) is the residual standard error of the regression over i..j, tol = max(2 Q, 1e-10)
+// with Q the ceil((k-4)/4)-th smallest e over the k - 4 windows of 5 radii, and the window is
+// the longest i..j with e(i, j) <= tol, the leftmost of equal length, or 1..k when none is.
+enum : uint32_t { SG_PROBE_BALL = 0, SG_PROBE_SPHERE = 1 };
+
+// The fit of the quotients s[1..k] (s holds sg_fit_doubles(k) doubles); false when k < 2.
+HG_HD inline bool sg_growth_fit(double* s, uint32_t k, uint32_t probe, double& dim,
+                                double& curv) {
+    if (k < 2) return false;
+    double* q = s;
+    double* px = q + (k + 1);
+    double* pxx = px + (k + 1);
+    double* pq = pxx + (k + 1);
+    double* pqq = pq + (k + 1);
+    double* pxq = pqq + (k + 1);
+    double* e = pxq + (k + 1);
+    px[0] = pxx[0] = pq[0] = pqq[0] = pxq[0] = 0.0;
+    for (uint32_t r = 1; r <= k; ++r) {
+        const double x = static_cast<double>(r) * static_cast<double>(r + 1);
+        px[r] = px[r - 1] + x;
+        pxx[r] = pxx[r - 1] + dm_mul(x, x);
+        pq[r] = pq[r - 1] + q[r];
+        pqq[r] = pqq[r - 1] + dm_mul(q[r], q[r]);
+        pxq[r] = pxq[r - 1] + dm_mul(x, q[r]);
+    }
+    auto rse = [&](uint32_t i, uint32_t j) {
+        const double m = static_cast<double>(j - i + 1);
+        const double ax = px[j] - px[i - 1], axx = pxx[j] - pxx[i - 1];
+        const double aq = pq[j] - pq[i - 1], aqq = pqq[j] - pqq[i - 1], axq = pxq[j] - pxq[i - 1];
+        const double b = (dm_mul(m, axq) - dm_mul(ax, aq)) / (dm_mul(m, axx) - dm_mul(ax, ax));
+        const double ss = aqq - dm_mul(aq - dm_mul(b, ax), aq) / m - dm_mul(b, axq);
+        return ::sqrt((ss > 0.0 ? ss : 0.0) / (m - 2.0));
+    };
+    uint32_t lo = 1, hi = k;
+    if (k >= 5) {
+        const uint32_t w = k - 4;
+        for (uint32_t i = 1; i <= w; ++i) e[i - 1] = rse(i, i + 4);
+        sg_sort(e, w);
+        double tol = 2.0 * e[(w + 3) / 4 - 1];
+        if (!(tol > 1e-10)) tol = 1e-10;
+        bool found = false;
+        for (uint32_t len = k; len >= 5 && !found; --len)
+            for (uint32_t i = 1; i + len - 1 <= k; ++i)
+                if (rse(i, i + len - 1) <= tol) {
+                    lo = i;
+                    hi = i + len - 1;
+                    found = true;
+                    break;
+                }
+    }
+    double m = 0.0, sx = 0.0, sxx = 0.0, sq = 0.0, sxq = 0.0;
+    for (uint32_t r = lo; r <= hi; ++r) {
+        const double x = static_cast<double>(r) * static_cast<double>(r + 1);
+        m += 1.0;
+        sx += x;
+        sxx += dm_mul(x, x);
+        sq += q[r];
+        sxq += dm_mul(x, q[r]);
+    }
+    const double den = dm_mul(m, sxx) - dm_mul(sx, sx);
+    const double c2 = (dm_mul(m, sxq) - dm_mul(sx, sq)) / den;
+    const double c1 = (dm_mul(sxx, sq) - dm_mul(sx, sxq)) / den;
+    if (probe == SG_PROBE_BALL) {
+        dim = c1;
+        curv = dm_mul(dm_mul(-3.0, c1 + 2.0), c2);
+    } else {
+        dim = c1 + 1.0;
+        curv = dm_mul(dm_mul(-3.0, c1 + 1.0), c2);
+    }
+    return true;
+}
+
+// The volume-growth values of a vertex of eccentricity `ecc` into out[0..SG_GROWTH_VALUES), in
+// SG_DIST order from SG_DIST_BALL_DIMENSION, NaN when undefined. The profiles, r = 0..ecc, are
+// the shells A(r) = |S(v, r)| (`shell`), the balls V(r) = |B(v, r)| (`ball`) and the Riemannian
+// measures W(r) (`riem`). Each is cut at p, the largest r at which A(r) is greatest, and fitted
+// over its quotients at r = 1..p-1: V and W by the ball probe, A by the sphere probe. Undefined
+// when p < 3. `s` holds sg_fit_doubles(ecc) doubles.
+HG_HD inline void sg_growth_of(const uint32_t* shell, const uint32_t* ball, const uint32_t* riem,
+                               uint32_t ecc, double* s, double* out) {
+    uint32_t p = 0;
+    for (uint32_t r = 1; r <= ecc; ++r)
+        if (shell[r] >= shell[p]) p = r;
+    for (uint32_t i = 0; i < SG_GROWTH_VALUES; ++i) out[i] = ::nan("");
+    if (p < 3) return;
+    const uint32_t k = p - 1;
+    const uint32_t* profile[3] = {ball, riem, shell};
+    for (uint32_t which = 0; which < 3; ++which) {
+        const uint32_t* f = profile[which];
+        for (uint32_t r = 1; r <= k; ++r)
+            s[r] = (dm_log(static_cast<double>(f[r + 1])) - dm_log(static_cast<double>(f[r]))) /
+                   (dm_log(r + 1.0) - dm_log(static_cast<double>(r)));
+        sg_growth_fit(s, k, which == 2 ? SG_PROBE_SPHERE : SG_PROBE_BALL, out[2 * which],
+                      out[2 * which + 1]);
+    }
+}
+
 // Computes the geometry of G already built in `arena`. `ball_dimension` receives the mean
 // over vertices of the ball-growth term at r = 1..R in entries 0..R-1, up to `ball_capacity`
 // entries. `want` is a mask of the SG_* values to compute: the radius and eccentricity are
@@ -517,13 +672,18 @@ HG_HD inline double sg_degree_entropy_of(const SgGraph& g, const uint32_t* vs, u
 // the SG_DISTS per-vertex distributions under SG_VERTEX_DISTRIBUTIONS, written by the leader.
 // `vertex_curvature`, when given, receives k_v for each vertex index v of G (the vertices in
 // ascending id order), NaN for a vertex with no neighbour, written by the leader.
+// `vertex_values`, when given with SG_VOLUME_GROWTH, receives the volume-growth values of each
+// vertex index v of G at [k n + v] for k < SG_GROWTH_VALUES, in SG_DIST order from
+// SG_DIST_BALL_DIMENSION, NaN for a vertex outside G' or without a fit, written by the leader.
 template <class Par = IrSerial>
 HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& out,
                                  double* ball_dimension, uint32_t ball_capacity,
                                  uint32_t want = ~0u, Par par = Par{},
                                  const uint32_t* largest = nullptr, uint32_t largest_n = 0,
                                  SgDistribution* dists = nullptr,
-                                 double* vertex_curvature = nullptr) {
+                                 double* vertex_curvature = nullptr,
+                                 double* vertex_values = nullptr) {
+    const bool want_growth = (want & SG_VOLUME_GROWTH) != 0;
     const bool want_local = (want & (SG_DEGREE_ENTROPY | SG_MUTUAL_INFORMATION)) != 0;
     const bool want_dists = dists != nullptr && (want & SG_VERTEX_DISTRIBUTIONS) != 0;
     const bool want_vertex_ollivier = want_dists || vertex_curvature != nullptr ||
@@ -563,6 +723,13 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
     double* ric_a = arena.take<double>(n1);                // per r: 6(D+2)/r^2
     double* ric_p = arena.take<double>(n1);                // per r: r^D
     uint64_t* transport_all = arena.take<uint64_t>(TL * tstride / 8);
+    // Volume growth: per lane the shells, the Riemannian counts and the fit scratch; per vertex
+    // the fits, value k of vertex v at growth_v[k n1 + v].
+    const size_t fit_stride = sg_fit_doubles(n);
+    uint32_t* shell_all = want_growth ? arena.take<uint32_t>(L * n1) : nullptr;
+    uint32_t* inner_all = want_growth ? arena.take<uint32_t>(L * n1) : nullptr;
+    double* fit_all = want_growth ? arena.take<double>(L * fit_stride) : nullptr;
+    double* growth_v = want_growth ? arena.take<double>(SG_GROWTH_VALUES * n1) : nullptr;
     if (arena.failed) return false;
     int32_t* dist = dist_all + me * n1;
     int32_t* dist2 = dist2_all + me * n1;
@@ -583,15 +750,25 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
         const uint32_t v = base + me;
         if (v < n) {
             uint32_t reached = 0;
-            const uint32_t e = sg_bfs(g, v, dist, queue, layer, UINT32_MAX, reached);
+            uint32_t* shell = want_growth ? shell_all + me * n1 : nullptr;
+            uint32_t* inner = want_growth ? inner_all + me * n1 : nullptr;
+            const uint32_t e = sg_bfs(g, v, dist, queue, layer, UINT32_MAX, reached, inner);
             if (v == 0) connected = reached == n ? 1u : 0u;
             ecc[v] = e;
+            if (want_growth)
+                for (uint32_t r = 0; r <= e; ++r) shell[r] = layer[r];
             uint32_t ball = 1;
             for (uint32_t r = 1; r <= e; ++r) {
                 const uint32_t next = ball + layer[r];
                 term[r] = dm_log(static_cast<double>(next)) - dm_log(static_cast<double>(ball));
                 layer[r] = next;
                 ball = next;
+            }
+            if (want_growth) {
+                for (uint32_t r = 1; r <= e; ++r) inner[r] += inner[r - 1];
+                double fits[SG_GROWTH_VALUES];
+                sg_growth_of(shell, layer, inner, e, fit_all + me * fit_stride, fits);
+                for (uint32_t k = 0; k < SG_GROWTH_VALUES; ++k) growth_v[k * n1 + v] = fits[k];
             }
             if (!want_local) {
                 sg_bfs_clear(dist, queue, reached);
@@ -736,6 +913,31 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
     const uint32_t* sub = connected ? nullptr : largest;
     const uint32_t ns = connected ? n : (largest ? largest_n : 0u);
     auto vat = [&](uint32_t i) { return sub ? sub[i] : i; };
+    if (want_growth && par.leader()) {
+        // The six fits over the vertices of G' with one, in vertex order.
+        uint32_t fitted = 0;
+        for (uint32_t k = 0; k < SG_GROWTH_VALUES; ++k) {
+            double sum = 0.0;
+            fitted = 0;
+            for (uint32_t i = 0; i < ns; ++i) {
+                const double x = growth_v[k * n1 + vat(i)];
+                if (x != x) continue;
+                sum += x;
+                ++fitted;
+                if (want_dists)
+                    sg_dist_add(dists[SG_DIST_BALL_DIMENSION + k], SG_DIST_BALL_DIMENSION + k, x);
+            }
+            if (fitted) out.growth[k] = sum / fitted;
+        }
+        if (fitted) out.defined |= SG_VOLUME_GROWTH;
+        if (vertex_values) {
+            for (uint32_t k = 0; k < SG_GROWTH_VALUES; ++k)
+                for (uint32_t v = 0; v < n; ++v) vertex_values[k * n + v] = ::nan("");
+            for (uint32_t k = 0; k < SG_GROWTH_VALUES; ++k)
+                for (uint32_t i = 0; i < ns; ++i)
+                    vertex_values[k * n + vat(i)] = growth_v[k * n1 + vat(i)];
+        }
+    }
     uint32_t Rs = UINT32_MAX;
     for (uint32_t i = 0; i < ns; ++i) if (ecc[vat(i)] < Rs) Rs = ecc[vat(i)];
     const bool whole = connected && radius > 0 && (want & (SG_HAUSDORFF | SG_RICCI | SG_FISHER));
@@ -870,15 +1072,16 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
 // false with `needed` set to the bytes that would have sufficed for the stage reached; a caller
 // that grows its buffer to `needed` and calls again either succeeds or learns the next stage's
 // need. Every lane of the policy calls it with the same arguments and gets the same verdict and
-// `needed`; the leader builds G and `out` is the leader's. `largest`, `largest_n`, `dists` and
-// `vertex_curvature` are sg_geometry_of's.
+// `needed`; the leader builds G and `out` is the leader's. `largest`, `largest_n`, `dists`,
+// `vertex_curvature` and `vertex_values` are sg_geometry_of's.
 template <class EdgeList, class Par = IrSerial>
 HG_HD bool sg_state_geometry(const EdgeList& el, unsigned char* scratch, size_t capacity,
                              SgGeometry& out, double* ball_dimension, uint32_t ball_capacity,
                              size_t& needed, uint32_t want = ~0u, Par par = Par{},
                              const uint32_t* largest = nullptr, uint32_t largest_n = 0,
                              SgDistribution* dists = nullptr,
-                             double* vertex_curvature = nullptr) {
+                             double* vertex_curvature = nullptr,
+                             double* vertex_values = nullptr) {
     SgArena arena;
     arena.base = scratch;
     arena.capacity = capacity;
@@ -896,7 +1099,7 @@ HG_HD bool sg_state_geometry(const EdgeList& el, unsigned char* scratch, size_t 
     }
     par.sync();
     if (!par.bcast(built_ok)) {
-        needed = sg_build_bytes(slots, pairs) + sg_metric_bytes(slots, 0, 0, par.width());
+        needed = sg_build_bytes(slots, pairs) + sg_metric_bytes(slots, 0, 0, par.width(), want);
         return false;
     }
     g.n = par.bcast(g.n);
@@ -907,8 +1110,8 @@ HG_HD bool sg_state_geometry(const EdgeList& el, unsigned char* scratch, size_t 
     arena.used = static_cast<size_t>(par.bcast64(arena.used));
     const size_t built = arena.used;
     if (!sg_geometry_of(g, arena, out, ball_dimension, ball_capacity, want, par, largest,
-                        largest_n, dists, vertex_curvature)) {
-        needed = built + sg_metric_bytes(g.n, g.max_degree, g.edges, par.width());
+                        largest_n, dists, vertex_curvature, vertex_values)) {
+        needed = built + sg_metric_bytes(g.n, g.max_degree, g.edges, par.width(), want);
         return false;
     }
     needed = arena.used;

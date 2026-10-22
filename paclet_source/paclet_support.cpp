@@ -1645,6 +1645,19 @@ const InvariantSlot kInvariantSlots[hgcommon::SP_NUM_INVARIANTS] = {
     {"LocalDimensionStandardDeviation", 0.01, false},
     {"OllivierMoranI", 0.01, false},
     {"OllivierDegreeCorrelation", 0.01, false},
+    {"BallDimension", 0.01, false},
+    {"BallScalarCurvature", 0.01, false},
+    {"RiemannianBallDimension", 0.01, false},
+    {"RiemannianBallScalarCurvature", 0.01, false},
+    {"SphereDimension", 0.01, false},
+    {"SphereScalarCurvature", 0.01, false},
+};
+
+// The "VertexInvariants" names of the per-vertex distributions, in hgcommon::SG_DIST order.
+const char* const kDistNames[hgcommon::SG_DISTS] = {
+    "LocalDimension",          "OllivierRicciCurvature",        "WolframRicciCurvatureScalar",
+    "BallDimension",           "BallScalarCurvature",           "RiemannianBallDimension",
+    "RiemannianBallScalarCurvature", "SphereDimension",         "SphereScalarCurvature",
 };
 
 // The host's sink for hgcommon::sp_add_class: entries appended, totals added.
@@ -1899,12 +1912,8 @@ wxf::WXFValueAssociation StepPoolFinish::record() {
         invs.push_back({wxf::WXFValue(kInvariantSlots[t].name), std::move(s.out[t])});
     rec.push_back({wxf::WXFValue("Invariants"), wxf::WXFValue(std::move(invs))});
     wxf::WXFValueAssociation vertex_invs;
-    vertex_invs.push_back({wxf::WXFValue("LocalDimension"),
-                           std::move(s.out[kTaskDist + hgcommon::SG_DIST_LOCAL_DIMENSION])});
-    vertex_invs.push_back({wxf::WXFValue("OllivierRicciCurvature"),
-                           std::move(s.out[kTaskDist + hgcommon::SG_DIST_OLLIVIER])});
-    vertex_invs.push_back({wxf::WXFValue("WolframRicciCurvatureScalar"),
-                           std::move(s.out[kTaskDist + hgcommon::SG_DIST_RICCI])});
+    for (uint32_t k = 0; k < hgcommon::SG_DISTS; ++k)
+        vertex_invs.push_back({wxf::WXFValue(kDistNames[k]), std::move(s.out[kTaskDist + k])});
     rec.push_back({wxf::WXFValue("VertexInvariants"), wxf::WXFValue(std::move(vertex_invs))});
     rec.push_back({wxf::WXFValue("ArityHistogram"), std::move(s.out[kTaskArity])});
     rec.push_back({wxf::WXFValue("AritySignatureHistogram"), std::move(s.out[kTaskAritySignatures])});
