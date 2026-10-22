@@ -1054,11 +1054,19 @@ std::vector<uint8_t> run_gpu_evolution_once(const GpuJob& request, const HostBri
             std::vector<hg::stats::StepPoint> points;
             for (const auto& p : result.class_multiplicities)
                 points.push_back({p.depth, p.class_hash, p.multiplicity});
-            for (const auto& p : points) {
-                const auto r = class_invariants.find(p.class_hash);
-                hg::stats::add_class(inputs[p.step], p.class_hash, p.weight,
-                                     r == class_invariants.end() ? nullptr : r->second);
-            }
+            // Each step's classes are added in its own reply job, in point order.
+            using Points = std::vector<const hg::stats::StepPoint*>;
+            std::map<uint32_t, Points> by_step;
+            for (const auto& p : points) by_step[p.step].push_back(&p);
+            std::vector<std::pair<hg::stats::StepInput*, const Points*>> step_jobs;
+            for (const auto& [step, ps] : by_step) step_jobs.emplace_back(&inputs[step], &ps);
+            reply_jobs().parallel_for()(step_jobs.size(), [&](size_t i) {
+                for (const hg::stats::StepPoint* p : *step_jobs[i].second) {
+                    const auto r = class_invariants.find(p->class_hash);
+                    hg::stats::add_class(*step_jobs[i].first, p->class_hash, p->weight,
+                                         r == class_invariants.end() ? nullptr : r->second);
+                }
+            });
             std::unordered_map<uint64_t, std::map<int64_t, uint64_t>> matches_by_rule;
             for (const auto& c : result.class_rule_matches)
                 matches_by_rule[c.expansion_key][static_cast<int64_t>(c.rule)] += c.count;
@@ -1088,8 +1096,14 @@ std::vector<uint8_t> run_gpu_evolution_once(const GpuJob& request, const HostBri
         // "StepStatisticsBranchial": from the device's branchial pairs and state contents.
         const uint32_t which = job.step_statistics_branchial;
         if (which) {
-            std::unordered_map<hg_gpu::EventId, hg_gpu::StateId> output_of;
-            for (const auto& e : result.events) output_of[e.id] = e.output_state;
+            // Each event's output state by event id; kNoOutput for an id with no event.
+            constexpr uint32_t kNoOutput = UINT32_MAX;
+            std::vector<uint32_t> output_of;
+            for (const auto& e : result.events) {
+                if (e.id == hg_gpu::INVALID_ID) continue;
+                if (e.id >= output_of.size()) output_of.resize(size_t{e.id} + 1, kNoOutput);
+                output_of[e.id] = static_cast<uint32_t>(e.output_state);
+            }
             std::vector<std::pair<uint32_t, uint32_t>> pairs;
             if (which & hg::stats::kBranchialGraph)
                 for (const auto& b : result.branchial_edges)
@@ -1109,10 +1123,10 @@ std::vector<uint8_t> run_gpu_evolution_once(const GpuJob& request, const HostBri
                 },
                 pairs,
                 [&](uint32_t eid) {
-                    const auto it = output_of.find(eid);
-                    return it == output_of.end() ? 0u : static_cast<uint32_t>(it->second);
+                    return eid < output_of.size() && output_of[eid] != kNoOutput ? output_of[eid]
+                                                                                 : 0u;
                 },
-                static_cast<int>(run_steps));
+                static_cast<int>(run_steps), reply_jobs().parallel_for());
             for (auto& [step, b] : bsteps) inputs[step].branchial = std::move(b);
         }
         // The pool of a run of kDevicePoolMinClasses class points or more is made on the device

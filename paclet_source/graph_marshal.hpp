@@ -221,6 +221,14 @@ private:
     std::vector<uint32_t> pool_, offset_of_, slots_;
 };
 
+// Runs body(i) for every i < n, on any threads and in any order, and returns after every call
+// has returned.
+using ParallelFor = std::function<void(size_t n, const std::function<void(size_t)>& body)>;
+
+inline void serial_for(size_t n, const std::function<void(size_t)>& body) {
+    for (size_t i = 0; i < n; ++i) body(i);
+}
+
 // "StepStatisticsBranchial": one state of a step (stats::BranchialStepWork), for both engines,
 // appended to `b`: its id `effective`, and with kBranchialContents its vertex ids and edge
 // numbers from `contents_of(sid, out)`, which appends each of the state's edges as its arity and
@@ -273,26 +281,38 @@ void branchial_step_pairs(const std::vector<std::pair<uint32_t, uint32_t>>& pair
 
 // Every step's BranchialStep: the states are the ids below `num_states` that `valid` admits,
 // each at `step_of(sid)` (branchial_step_state), and with kBranchialGraph the pairs of `pairs`
-// (branchial_step_pairs).
+// (branchial_step_pairs). The states are grouped by step on the calling thread; `par` then runs
+// one job per step, each numbering its own step's edges, and one job for the pairs. The four
+// functions are called from those jobs.
 template <class Valid, class Effective, class StepOf, class ContentsOf, class OutputStateOf>
 std::map<uint32_t, stats::BranchialStep> branchial_steps(
         uint32_t which, uint32_t num_states, Valid&& valid, Effective&& effective,
         StepOf&& step_of, ContentsOf&& contents_of,
         const std::vector<std::pair<uint32_t, uint32_t>>& pairs, OutputStateOf&& output_state_of,
-        int steps) {
+        int steps, const ParallelFor& par = serial_for) {
+    std::map<uint32_t, std::vector<uint32_t>> by_step;
+    for (uint32_t sid = 0; sid < num_states; ++sid)
+        if (valid(sid)) by_step[step_of(sid)].push_back(sid);
     std::map<uint32_t, stats::BranchialStep> out;
-    ListNumbers edge_number;
-    std::vector<uint32_t> flat;
-    for (uint32_t sid = 0; sid < num_states; ++sid) {
-        if (!valid(sid)) continue;
-        branchial_step_state(which, sid, effective(sid), contents_of, edge_number, flat,
-                             out[step_of(sid)]);
-    }
-    if (which & stats::kBranchialGraph)
-        branchial_step_pairs(pairs, output_state_of, effective, step_of, steps,
-                             [&](uint32_t step, int64_t a, int64_t b) {
-                                 out[step].pairs.emplace_back(a, b);
-                             });
+    std::vector<std::pair<const std::vector<uint32_t>*, stats::BranchialStep*>> step_jobs;
+    for (const auto& [step, sids] : by_step) step_jobs.emplace_back(&sids, &out[step]);
+    const bool with_pairs = (which & stats::kBranchialGraph) != 0;
+    std::vector<std::tuple<uint32_t, int64_t, int64_t>> step_pairs;
+    par(step_jobs.size() + (with_pairs ? 1 : 0), [&](size_t i) {
+        if (i == step_jobs.size()) {
+            branchial_step_pairs(pairs, output_state_of, effective, step_of, steps,
+                                 [&](uint32_t step, int64_t a, int64_t b) {
+                                     step_pairs.emplace_back(step, a, b);
+                                 });
+            return;
+        }
+        ListNumbers edge_number;
+        std::vector<uint32_t> flat;
+        stats::BranchialStep& b = *step_jobs[i].second;
+        for (uint32_t sid : *step_jobs[i].first)
+            branchial_step_state(which, sid, effective(sid), contents_of, edge_number, flat, b);
+    });
+    for (const auto& [step, a, b] : step_pairs) out[step].pairs.emplace_back(a, b);
     return out;
 }
 
@@ -428,14 +448,6 @@ struct GraphEventFields {
     std::vector<int64_t> consumed, produced;
     uint32_t input_raw = 0, output_raw = 0;
 };
-
-// Runs body(i) for every i < n, on any threads and in any order, and returns after every call
-// has returned.
-using ParallelFor = std::function<void(size_t n, const std::function<void(size_t)>& body)>;
-
-inline void serial_for(size_t n, const std::function<void(size_t)>& body) {
-    for (size_t i = 0; i < n; ++i) body(i);
-}
 
 // Appends item(w, i) for every i < n to `out` in order of i, the items written by `par` in
 // chunks of 256, each chunk into its own buffer.

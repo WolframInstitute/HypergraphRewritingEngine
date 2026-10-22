@@ -5573,6 +5573,53 @@ TEST(StateStatistics, DeviceVertexCurvatureEqualsTheHost) {
 }
 #endif
 
+// hgmarshal::branchial_steps on host jobs gives the BranchialSteps it gives on the calling
+// thread: 3000 states over 6 steps, with contents and with the branchial pairs.
+TEST(StateStatistics, BranchialStepsInJobsEqualTheSerialOnes) {
+    constexpr uint32_t kStates = 3000;
+    uint64_t x = 0x2545F4914F6CDD1Dull;
+    auto next = [&x](uint32_t n) {
+        x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+        return static_cast<uint32_t>(x % n);
+    };
+    std::vector<std::vector<uint32_t>> contents(kStates);   // arity, vertices, arity, ...
+    std::vector<uint32_t> step(kStates), output(2 * kStates);
+    for (uint32_t s = 0; s < kStates; ++s) {
+        step[s] = next(6);
+        for (uint32_t e = next(8); e > 0; --e) {
+            const uint32_t k = 1 + next(3);
+            contents[s].push_back(k);
+            for (uint32_t i = 0; i < k; ++i) contents[s].push_back(next(400));
+        }
+    }
+    for (auto& o : output) o = next(kStates);
+    std::vector<std::pair<uint32_t, uint32_t>> pairs;
+    for (uint32_t i = 0; i + 1 < output.size(); i += 2) pairs.emplace_back(i, i + 1);
+    const uint32_t which = hg::stats::kBranchialGraph | hg::stats::kBranchialOverlap;
+    auto run = [&](const hgmarshal::ParallelFor& par) {
+        return hgmarshal::branchial_steps(
+            which, kStates, [](uint32_t s) { return s % 11 != 3; },
+            [](uint32_t s) { return static_cast<int64_t>(s / 2); },
+            [&](uint32_t s) { return step[s]; },
+            [&](uint32_t s, std::vector<uint32_t>& out) {
+                out.insert(out.end(), contents[s].begin(), contents[s].end());
+            },
+            pairs, [&](uint32_t e) { return output[e]; }, 6, par);
+    };
+    const auto serial = run(hgmarshal::serial_for);
+    hgmarshal::HostJobs jobs(4);
+    const auto parallel = run(jobs.parallel_for());
+    ASSERT_EQ(serial.size(), parallel.size());
+    for (const auto& [s, b] : serial) {
+        const hg::stats::BranchialStep& p = parallel.at(s);
+        EXPECT_EQ(b.nodes, p.nodes) << "step " << s;
+        EXPECT_EQ(b.pairs, p.pairs) << "step " << s;
+        EXPECT_EQ(b.vertex_sets, p.vertex_sets) << "step " << s;
+        EXPECT_EQ(b.edge_sets, p.edge_sets) << "step " << s;
+        EXPECT_FALSE(b.nodes.empty());
+    }
+}
+
 // "StepStatisticsWeighting" -> "Classes" counts a class once; "States" counts its raw states.
 TEST(StateStatistics, WeightingByClassesCountsEachClassOnce) {
     const std::vector<hg::stats::StepPoint> points = {{0, 1, 3}, {0, 2, 1}};
