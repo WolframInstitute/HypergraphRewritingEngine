@@ -91,6 +91,39 @@ public:
             return idx;
         }
 
+        // A node holding `value`, not yet linked into any list; kInvalid when the pool is full.
+        __device__ uint32_t claim_node(const T& value) const {
+            const uint32_t idx = pool.claim();
+            if (idx != Pool<Node>::kInvalid) pool.at(idx).value = value;
+            return idx;
+        }
+
+        // WARP-AGGREGATED PUSH. Called by all 32 lanes of a warp; a lane with no node passes
+        // kInvalid. The lanes pushing to one key link their nodes in lane order and the highest
+        // of them prepends the chain with one exchange (hgcommon::list_push_chain), so a warp
+        // makes one exchange per distinct key where a push per lane makes 32. Each lane fences
+        // after writing its link and the warp synchronises before the exchange, so a walker
+        // that acquires the head sees every node of the chain. The pushing lane fences after
+        // the exchange and the warp synchronises again, so a lane's scan after this call
+        // follows its node's publication and a fence, as after push().
+        __device__ void push_warp(uint32_t key, uint32_t node) const {
+            const uint32_t lane = threadIdx.x & 31u;
+            const bool has = node != Pool<Node>::kInvalid && key < num_keys;
+            const uint32_t peers = __match_any_sync(0xffffffffu, has ? key : 0xFFFFFFFFu);
+            const uint32_t above = peers & ~((2u << lane) - 1u);
+            const uint32_t next = __shfl_sync(0xffffffffu, node, above ? __ffs(above) - 1 : lane);
+            const uint32_t first = __shfl_sync(0xffffffffu, node, __ffs(peers) - 1);
+            if (has && above) pool.at(node).next = next;
+            __threadfence();
+            __syncwarp();
+            if (has && !above) {
+                Ops ops{this, key};
+                hgcommon::list_push_chain(ops, first, node);
+                __threadfence();
+            }
+            __syncwarp();
+        }
+
         __device__ uint32_t head_index(uint32_t key) const {
             if (key >= num_keys) return Pool<Node>::kInvalid;
             cuda::atomic_ref<uint32_t, cuda::thread_scope_device> href(heads[key]);

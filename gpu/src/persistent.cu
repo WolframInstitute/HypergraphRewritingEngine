@@ -1653,19 +1653,23 @@ __global__ void k_persistent_evolve(
         }
 
         // REPLAY TASKS, a warp at a time (QeView::tasks). Lane 0 claims up to 32 consecutive
-        // tasks with one CAS on the cursor, each lane runs one, and lane 0 books how many ran
-        // after every lane's work, its appends included, is fenced. The block is one warp.
+        // tasks with one CAS on the cursor, each lane runs one, the warp links the child
+        // instances with one exchange per (class, depth) list (qe_publish_child), and lane 0
+        // books how many ran after every lane's work, its appends included, is fenced. The
+        // block is one warp.
         if (qe.enabled && qe.replay) {
             if (threadIdx.x == 0) task_count = qe.tasks.claim(kMatchBlockThreads, task_base);
             __syncthreads();
             if (task_count) {
                 const unsigned long long tQ = (threadIdx.x == 0) ? clock64() : 0;
+                QeChild child;
                 if (threadIdx.x < task_count) {
                     const QeTask& t = qe.tasks.await(task_base + threadIdx.x);
                     qe_apply(ds, qe, qe.instances.at(t.rec), qe.matches.at(t.match), t.hash,
-                             t.depth);
-                    __threadfence();
+                             t.depth, child);
                 }
+                qe_publish_child(ds, qe, child);
+                __threadfence();
                 __syncthreads();
                 if (threadIdx.x == 0) {
                     qe.tasks.book(task_count);

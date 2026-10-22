@@ -212,7 +212,7 @@ memory orders and scopes.
 | `termination_no_early_exit` | `termination_core.hpp` | the detector never takes the quiescent exit while work is owed | 2,265 executions, clean |
 | `ring_exactly_once` | `ring_core.hpp` | no ring item is handed to two consumers, none is invented | 8 complete, 14 blocked, clean |
 | `hash_insert_elects_one` | `hash_insert_core.hpp` | exactly one thread is told `inserted`, and the stored value is that thread's | 4 executions, clean |
-| `replay_rendezvous_meets` | `list_core.hpp` | an instance and a match arriving at once never both miss each other | 3 executions, clean |
+| `replay_rendezvous_meets` | `list_core.hpp` | an instance and a match arriving at once never both miss each other, with the instance pushed by its own lane and (`-DWARP_CHAIN`) by another lane of its warp as a chain | 3 executions each, clean |
 | `mass_match_rendezvous` | `quotient_multiplicity_core.hpp` | class mass passes across each match exactly once | 160 executions, clean |
 | `replay_task_termination` | `term_detect_loop` | no quiescent exit while a replay task is claimed, unrun or owed | 174,129 executions (1 worker), 272,243,862 (2 workers), clean |
 | `depth_relax_child_registration` | `explore_depth_core.hpp` | a child never strands at a stale depth | 9 executions, clean |

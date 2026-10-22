@@ -25,6 +25,14 @@
 //
 // CALIBRATED. -DCALIBRATE_NO_FENCE removes both fences, leaving the acq_rel exchange and the
 // acquire head load, and the checker must report both walks missing.
+//
+// THE WARP-CHAIN ARM, -DWARP_CHAIN: the replay's warps link their child instances with
+// LockFreeList::DeviceView::push_warp (qe_publish_child). The instance side is then two lanes of
+// one warp: lane A recorded the instance whose pair is checked and links its node to lane B's;
+// both fence and meet at the warp barrier; lane B prepends the chain A -> B with one exchange
+// (hgcommon::list_push_chain) and fences; after the second barrier lane A walks the match list.
+// The barriers are transcribed as above. The property is A's: A sees the match, or the match
+// side sees A's instance. With -DCALIBRATE_NO_FENCE the checker must report both missing.
 #include "hgcommon/list_core.hpp"
 
 #include <cassert>
@@ -45,7 +53,8 @@ namespace {
 constexpr uint32_t kInvalid = 0xFFFFFFFFu;
 constexpr uint32_t kNodes = 4;
 
-// Two lists over one node pool: index 0 is the instance node, index 1 the match node.
+// Two lists over one node pool: index 0 is the instance node, index 1 the match node, index 2
+// the second lane's instance node under WARP_CHAIN.
 struct Node { uint32_t value; uint32_t next; };
 Node     g_nodes[kNodes];
 uint32_t g_head_inst = kInvalid;
@@ -78,14 +87,53 @@ struct Ops {
 bool g_inst_saw_match = false;
 bool g_match_saw_inst = false;
 
+#if defined(WARP_CHAIN)
+uint32_t g_chain_linked = 0;   // first barrier: lane A's link is written and fenced
+uint32_t g_chain_pushed = 0;   // second barrier: lane B's exchange and fence are done
+
+void* chain_lane(void*) {
+    __VERIFIER_thread_global_id(3); __VERIFIER_thread_local_id(1);
+    __VERIFIER_thread_group_id(0);  __VERIFIER_thread_kernel_id(0);
+    g_nodes[2].value = 33;
+#if !defined(CALIBRATE_NO_FENCE)
+    threadfence();
+#endif
+    for (;;) {
+        __VERIFIER_memory_scope_work_group();
+        if (__atomic_load_n(&g_chain_linked, __ATOMIC_ACQUIRE)) break;
+    }
+    Ops mine{&g_head_inst};
+    hgcommon::list_push_chain(mine, 0, 2);
+#if !defined(CALIBRATE_NO_FENCE)
+    threadfence();
+#endif
+    __VERIFIER_memory_scope_work_group();
+    __atomic_store_n(&g_chain_pushed, 1u, __ATOMIC_RELEASE);
+    return nullptr;
+}
+#endif
+
 void* instance_side(void*) {
     __VERIFIER_thread_global_id(0); __VERIFIER_thread_local_id(0);
     __VERIFIER_thread_group_id(0);  __VERIFIER_thread_kernel_id(0);
     g_nodes[0].value = 11;
+#if defined(WARP_CHAIN)
+    g_nodes[0].next = 2;
+#if !defined(CALIBRATE_NO_FENCE)
+    threadfence();
+#endif
+    __VERIFIER_memory_scope_work_group();
+    __atomic_store_n(&g_chain_linked, 1u, __ATOMIC_RELEASE);
+    for (;;) {
+        __VERIFIER_memory_scope_work_group();
+        if (__atomic_load_n(&g_chain_pushed, __ATOMIC_ACQUIRE)) break;
+    }
+#else
     Ops mine{&g_head_inst};
     hgcommon::list_push(mine, 0);
 #if !defined(CALIBRATE_NO_FENCE)
     threadfence();
+#endif
 #endif
     Ops theirs{&g_head_match};
     // LockFreeList::DeviceView::for_each: an empty head by a relaxed load returns.
@@ -131,9 +179,16 @@ int main() {
     pthread_create(&a, nullptr, instance_side, nullptr);
     pthread_create(&b, nullptr, match_side, nullptr);
     pthread_create(&c, nullptr, match_lane, nullptr);
+#if defined(WARP_CHAIN)
+    pthread_t d;
+    pthread_create(&d, nullptr, chain_lane, nullptr);
+#endif
     pthread_join(a, nullptr);
     pthread_join(b, nullptr);
     pthread_join(c, nullptr);
+#if defined(WARP_CHAIN)
+    pthread_join(d, nullptr);
+#endif
     // AT LEAST ONE side sees the other; both missing is the dropped pair.
     assert((g_inst_saw_match || g_match_saw_inst) && "instance and match both missed each other");
     return 0;

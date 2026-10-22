@@ -362,9 +362,10 @@ __host__ __device__ __forceinline__ uint32_t qe_bucket(uint64_t h, uint32_t num_
     return static_cast<uint32_t>(h % (num_keys ? num_keys : 1u));
 }
 
-// A (class, depth) key's instance list is split over kQeInstShards buckets; a pusher takes the
-// shard of its lane across the grid and a scanner walks all of them. Every lane of a warp
-// creates instances, so a shard per block would put a warp's lanes on one list head.
+// A (class, depth) key's instance list is split over kQeInstShards buckets and a scanner walks
+// all of them. The replay's warps take the shard of their warp across the grid and link a
+// warp's children of one key as one chain (qe_publish_child); a single-lane pusher takes the
+// shard of its lane.
 constexpr uint32_t kQeInstShards = 16;
 __host__ __device__ __forceinline__ uint32_t qe_inst_bucket_of(uint64_t key, uint32_t shard,
                                                               uint32_t num_keys) {
@@ -970,12 +971,13 @@ __device__ __forceinline__ uint32_t qe_new_claim_block(const DeviceState& ds, Qe
     return off;
 }
 
-// Record one instance of `state_hash` at `depth`, made from instance record `parent` by match
-// record `via`, whose event is `event`; a root has parent kQeNoParent and `event` its initial
-// state's StateId. The device twin of Hypergraph::qc_add_instance.
-__device__ inline uint32_t qe_add_instance(const DeviceState& ds, QeView qe, uint64_t state_hash,
-                                           uint32_t depth, uint32_t parent, uint32_t via,
-                                           uint32_t event, uint32_t nslots) {
+// Write the record of one instance of `state_hash` at `depth`, made from instance record
+// `parent` by match record `via`, whose event is `event`; a root has parent kQeNoParent and
+// `event` its initial state's StateId. Not yet in its (class, depth) list: qe_add_instance or
+// qe_publish_child links it. UINT32_MAX when it cannot be recorded.
+__device__ inline uint32_t qe_record_instance(const DeviceState& ds, QeView qe, uint64_t state_hash,
+                                              uint32_t depth, uint32_t parent, uint32_t via,
+                                              uint32_t event, uint32_t nslots) {
     if (!qe.enabled || depth > qe.max_steps) return UINT32_MAX;
 
     const uint32_t rec = qe.instances.claim();
@@ -1010,7 +1012,18 @@ __device__ inline uint32_t qe_add_instance(const DeviceState& ds, QeView qe, uin
         if (b == Pool<QeWorkItem>::kInvalid) ds.errors.record(ErrorKind::kQeInstancesFull);
         else qe.blocked.at(b) = QeWorkItem{state_hash, rec, depth};
     }
+    return rec;
+}
 
+// Record one instance and link it into its (class, depth) list, from one lane: the device twin
+// of Hypergraph::qc_add_instance. The seeding and redrive paths, which run outside the replay's
+// warps.
+__device__ inline uint32_t qe_add_instance(const DeviceState& ds, QeView qe, uint64_t state_hash,
+                                           uint32_t depth, uint32_t parent, uint32_t via,
+                                           uint32_t event, uint32_t nslots) {
+    const uint32_t rec =
+        qe_record_instance(ds, qe, state_hash, depth, parent, via, event, nslots);
+    if (rec == UINT32_MAX) return rec;
     // Published only after the record is complete: a walker that reaches the reference must not
     // find a half-written instance.
     __threadfence();
@@ -1021,6 +1034,17 @@ __device__ inline uint32_t qe_add_instance(const DeviceState& ds, QeView qe, uin
         ds.errors.record(ErrorKind::kQeInstancesFull);
     return rec;
 }
+
+// A child instance a replay application recorded, waiting for its warp to link it
+// (qe_publish_child). `node` is its list node, kInvalid when none could be claimed; `rec` is
+// UINT32_MAX when the lane made no child.
+struct QeChild {
+    uint32_t rec    = UINT32_MAX;
+    uint32_t node   = Pool<typename LockFreeList<QeInstRef>::Node>::kInvalid;
+    uint32_t bucket = 0;
+    uint32_t depth  = 0;
+    uint64_t hash   = 0;
+};
 
 // The root instance of a class: every slot's edge came with the initial state, so no event
 // produced any of them. Claims the class frame first, so the root's slots and the expansion
@@ -1067,7 +1091,7 @@ __device__ inline void qe_for_each_instance(QeView qe, uint64_t state_hash, uint
 // which is the body the host runs too.
 __device__ __forceinline__ void qe_apply(const DeviceState& ds, QeView qe, const DeviceQcInstance& inst,
                                          const DeviceSlotMatch& m, uint64_t state_hash,
-                                         uint32_t depth);
+                                         uint32_t depth, QeChild& child);
 
 // Append one application to the task log and publish it. A full log is a capacity overflow,
 // reported and grown by the retry ladder, as every other replay pool's.
@@ -1135,6 +1159,8 @@ struct DeviceQrCtx {
     // The caller's copies outlive this object.
     const DeviceState& ds;
     QeView& qe;
+    // Where descend leaves the child instance for the warp to link (qe_publish_child).
+    QeChild& child;
 
     // COUNTED INTO LOCALS AND PUBLISHED ONCE, when this context is destroyed at the end of the
     // application it was made for. Incremented in place each is one global atomicAdd per
@@ -1336,19 +1362,37 @@ struct DeviceQrCtx {
         const uint32_t prec = static_cast<uint32_t>(&parent - qe.instances.data);
         const uint32_t mrec = static_cast<uint32_t>(m.src - qe.matches.data);
         const uint32_t rec =
-            qe_add_instance(ds, qe, m.to_hash, depth + 1u, prec, mrec, ev, m.to_slots);
+            qe_record_instance(ds, qe, m.to_hash, depth + 1u, prec, mrec, ev, m.to_slots);
         if (rec == UINT32_MAX) return;
-        // The child's applications are tasks, which any warp's lanes run.
-        qe_drive_instance(ds, qe, rec, m.to_hash, depth + 1u);
+        const uint64_t key = qe_inst_key(m.to_hash, depth + 1u);
+        child.rec = rec;
+        child.hash = m.to_hash;
+        child.depth = depth + 1u;
+        // One shard per warp, so the warp's children of one class link with one exchange.
+        child.bucket = qe_inst_bucket(qe, key, (blockIdx.x * blockDim.x + threadIdx.x) / 32u &
+                                                   (kQeInstShards - 1u));
+        child.node = qe.by_key.claim_node(QeInstRef{key, rec});
+        if (child.node == Pool<typename LockFreeList<QeInstRef>::Node>::kInvalid)
+            ds.errors.record(ErrorKind::kQeInstancesFull);
     }
 };
 
 __device__ __forceinline__ void qe_apply(const DeviceState& ds, QeView qe, const DeviceQcInstance& inst,
                                          const DeviceSlotMatch& m, uint64_t state_hash,
-                                         uint32_t depth) {
+                                         uint32_t depth, QeChild& child) {
     if (!qe.enabled || depth >= qe.max_steps) return;
-    DeviceQrCtx c{ds, qe};
+    DeviceQrCtx c{ds, qe, child};
     hgcommon::qr_apply(c, inst, QeMatchView(m, qe.arr_words), state_hash, depth);
+}
+
+// Link the children a warp's applications recorded and drive them. Called by all 32 lanes after
+// their applications; a lane with no child passes a default QeChild. Each child is in its list,
+// with a fence after, before its lane scans the class's matches (qe_drive_instance), as on the
+// one-lane path.
+__device__ __forceinline__ void qe_publish_child(const DeviceState& ds, QeView qe,
+                                                 const QeChild& child) {
+    qe.by_key.push_warp(child.bucket, child.node);
+    if (child.rec != UINT32_MAX) qe_drive_instance(ds, qe, child.rec, child.hash, child.depth);
 }
 
 // The branchial count of a run, after it: sum over the points below qe.max_steps of

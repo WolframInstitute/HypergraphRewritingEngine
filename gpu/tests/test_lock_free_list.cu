@@ -201,4 +201,65 @@ TEST(LockFreeList, ConcurrentPushesNoLostNodes) {
     EXPECT_EQ(all_seen.size(), kThreads);
 }
 
+// Each lane of every warp claims a node for keys[tid], or none where keys[tid] is kNoKey, and the
+// warp links them with push_warp.
+constexpr uint32_t kNoKey = 0xFFFFFFFFu;
+__global__ void k_push_warp(List::DeviceView v, const uint32_t* keys, const uint32_t* values,
+                            uint32_t n) {
+    const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const bool has = tid < n && keys[tid] != kNoKey;
+    const uint32_t node = has ? v.claim_node(values[tid]) : hg_gpu::Pool<List::Node>::kInvalid;
+    v.push_warp(has ? keys[tid] : 0u, node);
+}
+
+// push_warp links every node once, under its own key, whatever mix of keys and empty lanes a
+// warp holds: 4096 lanes over 5 keys, every seventh lane without a node.
+TEST(LockFreeList, WarpPushLinksEveryNodeOnceUnderItsKey) {
+    constexpr uint32_t kKeys = 5;
+    constexpr uint32_t kThreads = 4096;
+    List list(kKeys, kThreads);
+
+    std::vector<uint32_t> keys(kThreads);
+    std::vector<uint32_t> vals(kThreads);
+    uint32_t pushed = 0;
+    for (uint32_t i = 0; i < kThreads; ++i) {
+        keys[i] = i % 7 == 6 ? kNoKey : (i * 2654435761u >> 7) % kKeys;
+        vals[i] = i + 1;
+        if (keys[i] != kNoKey) ++pushed;
+    }
+    uint32_t* d_keys = nullptr; cudaMalloc(&d_keys, sizeof(uint32_t) * kThreads);
+    uint32_t* d_vals = nullptr; cudaMalloc(&d_vals, sizeof(uint32_t) * kThreads);
+    cudaMemcpy(d_keys, keys.data(), sizeof(uint32_t) * kThreads, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_vals, vals.data(), sizeof(uint32_t) * kThreads, cudaMemcpyHostToDevice);
+    k_push_warp<<<kThreads / 32, 32>>>(list.view(), d_keys, d_vals, kThreads);
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+    EXPECT_EQ(list.pool_used_host(), pushed);
+
+    std::vector<uint32_t> walk_keys(kKeys);
+    for (uint32_t i = 0; i < kKeys; ++i) walk_keys[i] = i;
+    const uint32_t per_key_cap = kThreads;
+    uint32_t* d_walk = nullptr; cudaMalloc(&d_walk, sizeof(uint32_t) * kKeys);
+    cudaMemcpy(d_walk, walk_keys.data(), sizeof(uint32_t) * kKeys, cudaMemcpyHostToDevice);
+    uint32_t* d_counts = nullptr; cudaMalloc(&d_counts, sizeof(uint32_t) * kKeys);
+    uint32_t* d_flat   = nullptr; cudaMalloc(&d_flat,   sizeof(uint32_t) * kKeys * per_key_cap);
+    k_collect<<<1, kKeys>>>(list.view(), d_walk, d_counts, d_flat, per_key_cap, kKeys);
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+    std::vector<uint32_t> counts(kKeys);
+    cudaMemcpy(counts.data(), d_counts, sizeof(uint32_t) * kKeys, cudaMemcpyDeviceToHost);
+    std::vector<uint32_t> flat(kKeys * per_key_cap);
+    cudaMemcpy(flat.data(), d_flat, sizeof(uint32_t) * kKeys * per_key_cap, cudaMemcpyDeviceToHost);
+    cudaFree(d_keys); cudaFree(d_vals); cudaFree(d_walk); cudaFree(d_counts); cudaFree(d_flat);
+
+    std::unordered_set<uint32_t> all_seen;
+    for (uint32_t k = 0; k < kKeys; ++k) {
+        ASSERT_LE(counts[k], per_key_cap);
+        for (uint32_t i = 0; i < counts[k]; ++i) {
+            const uint32_t v = flat[k * per_key_cap + i];
+            EXPECT_EQ(keys[v - 1], k) << "value " << v << " under key " << k;
+            EXPECT_TRUE(all_seen.insert(v).second) << "value " << v << " seen twice";
+        }
+    }
+    EXPECT_EQ(all_seen.size(), pushed);
+}
+
 }  // namespace

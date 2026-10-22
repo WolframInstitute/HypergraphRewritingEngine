@@ -33,14 +33,22 @@
 namespace HG_NAMESPACE {
 namespace common {
 
+// A chain of nodes already linked first -> ... -> last, prepended with one exchange: `last` is
+// linked in front of the head read and `first` installed. A single node is the chain
+// (node, node).
 template <class Ctx>
-HG_HD void list_push(Ctx& ctx, uint32_t node) {
+HG_HD void list_push_chain(Ctx& ctx, uint32_t first, uint32_t last) {
     uint32_t prev = ctx.head_load_relaxed();
     for (;;) {
-        ctx.set_next(node, prev);
-        if (ctx.head_cas(prev, node)) return;
+        ctx.set_next(last, prev);
+        if (ctx.head_cas(prev, first)) return;
         // prev was refreshed by the failed exchange; relink and retry.
     }
+}
+
+template <class Ctx>
+HG_HD void list_push(Ctx& ctx, uint32_t node) {
+    list_push_chain(ctx, node, node);
 }
 
 // Every node from the head, most recent first.
