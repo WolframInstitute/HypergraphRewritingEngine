@@ -1,0 +1,278 @@
+// The per-state measures of hgcommon/state_geometry_core.hpp defined in docs/SPEC.md
+// ("StepStatistics volume growth" and the sections after it), on graphs with known values.
+// The known values are those of the Infrageometry paclet's tests (VolumeGrowthTests.wlt and the
+// others named at each test). reference/verify_state_statistics.wls checks the same functions,
+// through "StepStatistics", against reference/StateGeometryReference.wl on random states.
+
+#include <gtest/gtest.h>
+
+#include "hgcommon/state_geometry_core.hpp"
+
+#include <cmath>
+#include <cstdint>
+#include <vector>
+
+namespace {
+
+using hgcommon::SgGeometry;
+
+struct Edges {
+    std::vector<std::vector<uint32_t>> e;
+    uint32_t count() const { return static_cast<uint32_t>(e.size()); }
+    uint32_t arity(uint32_t i) const { return static_cast<uint32_t>(e[i].size()); }
+    uint32_t at(uint32_t i, uint32_t k) const { return e[i][k]; }
+};
+
+// One state's geometry with its per-vertex values: value k of vertex index v (the vertices in
+// ascending id order) at vv[k n + v].
+struct Measured {
+    SgGeometry g;
+    std::vector<double> vv;
+    uint32_t n = 0;
+    double at(uint32_t k, uint32_t v) const { return vv[k * n + v]; }
+};
+
+Measured measure(std::vector<std::vector<uint32_t>> edges) {
+    Edges el{std::move(edges)};
+    Measured r;
+    std::vector<unsigned char> scratch(16);
+    std::vector<double> ball(256);
+    size_t slots = 0, pairs = 0;
+    hgcommon::sg_sizes(el, slots, pairs);
+    r.vv.assign(hgcommon::SG_GROWTH_VALUES * slots, 0.0);
+    size_t needed = 0;
+    while (!hgcommon::sg_state_geometry(el, scratch.data(), scratch.size(), r.g, ball.data(),
+                                        static_cast<uint32_t>(ball.size()), needed, ~0u,
+                                        hgcommon::IrSerial{}, nullptr, 0, nullptr, nullptr,
+                                        r.vv.data())) {
+        EXPECT_GT(needed, scratch.size());
+        scratch.resize(needed);
+    }
+    r.n = r.g.vertex_count;
+    r.vv.resize(hgcommon::SG_GROWTH_VALUES * r.n);
+    return r;
+}
+
+// Vertex ids 1..; a w x h grid, optionally wrapped into a torus.
+std::vector<std::vector<uint32_t>> grid(uint32_t w, uint32_t h, bool torus = false) {
+    std::vector<std::vector<uint32_t>> e;
+    auto id = [&](uint32_t i, uint32_t j) { return (i % w) * h + (j % h) + 1; };
+    for (uint32_t i = 0; i < w; ++i)
+        for (uint32_t j = 0; j < h; ++j) {
+            if (torus || i + 1 < w) e.push_back({id(i, j), id(i + 1, j)});
+            if (torus || j + 1 < h) e.push_back({id(i, j), id(i, j + 1)});
+        }
+    return e;
+}
+
+std::vector<std::vector<uint32_t>> cycle(uint32_t n) {
+    std::vector<std::vector<uint32_t>> e;
+    for (uint32_t i = 0; i < n; ++i) e.push_back({i + 1, (i + 1) % n + 1});
+    return e;
+}
+
+std::vector<std::vector<uint32_t>> hypercube(uint32_t d) {
+    std::vector<std::vector<uint32_t>> e;
+    for (uint32_t v = 0; v < (1u << d); ++v)
+        for (uint32_t b = 0; b < d; ++b)
+            if (!(v & (1u << b))) e.push_back({v + 1, (v | (1u << b)) + 1});
+    return e;
+}
+
+std::vector<std::vector<uint32_t>> petersen() {
+    std::vector<std::vector<uint32_t>> e;
+    for (uint32_t i = 0; i < 5; ++i) {
+        e.push_back({i + 1, (i + 1) % 5 + 1});           // outer cycle
+        e.push_back({i + 6, (i + 2) % 5 + 6});           // inner pentagram
+        e.push_back({i + 1, i + 6});                     // spokes
+    }
+    return e;
+}
+
+// The graph of a state, built once, with a search's per-radius counts from vertex index s.
+struct Profiles {
+    std::vector<uint32_t> shell, ball, riem;
+};
+
+Profiles profiles(std::vector<std::vector<uint32_t>> edges, uint32_t s) {
+    Edges el{std::move(edges)};
+    size_t slots = 0, pairs = 0;
+    hgcommon::sg_sizes(el, slots, pairs);
+    std::vector<unsigned char> mem(hgcommon::sg_build_bytes(slots, pairs));
+    hgcommon::SgArena arena;
+    arena.base = mem.data();
+    arena.capacity = mem.size();
+    hgcommon::SgGraph g;
+    EXPECT_TRUE(hgcommon::sg_build(el, arena, g));
+    std::vector<int32_t> dist(g.n + 1, -1);
+    std::vector<uint32_t> queue(g.n + 1), layer(g.n + 1), inner(g.n + 2);
+    uint32_t reached = 0;
+    const uint32_t e = hgcommon::sg_bfs(g, s, dist.data(), queue.data(), layer.data(), UINT32_MAX,
+                                        reached, inner.data());
+    Profiles p;
+    uint32_t b = 0, w = 0;
+    for (uint32_t r = 0; r <= e; ++r) {
+        b += layer[r];
+        w += inner[r];
+        p.shell.push_back(layer[r]);
+        p.ball.push_back(b);
+        p.riem.push_back(w);
+    }
+    return p;
+}
+
+constexpr uint32_t kBallD = 0, kBallR = 1, kRiemD = 2, kRiemR = 3, kSphD = 4, kSphR = 5;
+
+}  // namespace
+
+// VolumeGrowthTests.wlt "InfraBall-two-measures-Petersen": counting {1, 4, 10}, Riemannian
+// {0, 1, 10} about a vertex of the Petersen graph.
+TEST(StateMeasures, PetersenTwoMeasures) {
+    const Profiles p = profiles(petersen(), 0);
+    EXPECT_EQ(p.ball, (std::vector<uint32_t>{1, 4, 10}));
+    EXPECT_EQ(p.riem, (std::vector<uint32_t>{0, 1, 10}));
+}
+
+// "InfraBall-two-measures-Ehrhart-Z2-Z3": on Z^2 the counting measure of B(v, r) is
+// 2r^2 + 2r + 1 and the Riemannian measure that of radius r - 1; on Z^3 4r^3/3 + 2r^2 + 8r/3 + 1.
+TEST(StateMeasures, LatticeBallsAreEhrhartPolynomials) {
+    const Profiles p = profiles(grid(11, 11), 60);   // the centre of 11 x 11
+    for (uint32_t r = 1; r <= 4; ++r) {
+        EXPECT_EQ(p.ball[r], 2 * r * r + 2 * r + 1);
+        EXPECT_EQ(p.riem[r], 2 * (r - 1) * (r - 1) + 2 * (r - 1) + 1);
+    }
+    std::vector<std::vector<uint32_t>> cube;
+    auto id = [](uint32_t i, uint32_t j, uint32_t k) { return (i * 9 + j) * 9 + k + 1; };
+    for (uint32_t i = 0; i < 9; ++i)
+        for (uint32_t j = 0; j < 9; ++j)
+            for (uint32_t k = 0; k < 9; ++k) {
+                if (i + 1 < 9) cube.push_back({id(i, j, k), id(i + 1, j, k)});
+                if (j + 1 < 9) cube.push_back({id(i, j, k), id(i, j + 1, k)});
+                if (k + 1 < 9) cube.push_back({id(i, j, k), id(i, j, k + 1)});
+            }
+    const Profiles c = profiles(cube, id(4, 4, 4) - 1);
+    auto z3 = [](uint32_t r) { return (4 * r * r * r + 6 * r * r + 8 * r + 3) / 3; };
+    for (uint32_t r = 1; r <= 3; ++r) {
+        EXPECT_EQ(c.ball[r], z3(r));
+        EXPECT_EQ(c.riem[r], z3(r - 1));
+    }
+}
+
+// "InfraBall-two-measures-triangular-honeycomb": 3r^2 + 3r + 1 and 1 + 3r(r+1)/2, the
+// Riemannian measures one radius earlier. The triangular lattice is the grid with one diagonal
+// per square; the honeycomb is the brick wall, the grid with every other vertical edge.
+TEST(StateMeasures, TriangularAndHoneycombBalls) {
+    const uint32_t w = 21;
+    auto id = [&](uint32_t i, uint32_t j) { return i * w + j + 1; };
+    std::vector<std::vector<uint32_t>> tri, hex;
+    for (uint32_t i = 0; i < w; ++i)
+        for (uint32_t j = 0; j < w; ++j) {
+            if (i + 1 < w) { tri.push_back({id(i, j), id(i + 1, j)}); hex.push_back({id(i, j), id(i + 1, j)}); }
+            if (j + 1 < w) {
+                tri.push_back({id(i, j), id(i, j + 1)});
+                if ((i + j) % 2 == 0) hex.push_back({id(i, j), id(i, j + 1)});
+            }
+            if (i + 1 < w && j > 0) tri.push_back({id(i, j), id(i + 1, j - 1)});
+        }
+    const Profiles t = profiles(tri, id(10, 10) - 1);
+    const Profiles h = profiles(hex, id(10, 10) - 1);
+    for (uint32_t r = 1; r <= 5; ++r) {
+        EXPECT_EQ(t.ball[r], 3 * r * r + 3 * r + 1);
+        EXPECT_EQ(t.riem[r], 3 * r * r - 3 * r + 1);
+        EXPECT_EQ(h.ball[r], 1 + 3 * r * (r + 1) / 2);
+        EXPECT_EQ(h.riem[r], 1 + 3 * r * (r - 1) / 2);
+    }
+}
+
+// "LogDifferenceQuotients-power-law-exponent" and "DimensionCurvatureFit-recovers-exact-line":
+// a ball profile r^3 has every quotient 3, so the ball probe reads d = 3 and R = 0; the
+// quotients 2 - 0.1 r(r+1), r = 1..10, give d = 2 and R = -3 (2 + 2)(-0.1) = 1.2.
+TEST(StateMeasures, FitRecoversExactProfiles) {
+    std::vector<uint32_t> shell(21), cube(21);
+    for (uint32_t r = 0; r <= 20; ++r) {
+        shell[r] = r + 1;   // rising, so the profiles are not cut
+        cube[r] = r * r * r;
+    }
+    std::vector<double> s(hgcommon::sg_fit_doubles(20));
+    double out[hgcommon::SG_GROWTH_VALUES];
+    hgcommon::sg_growth_of(shell.data(), cube.data(), cube.data(), 20, s.data(), out);
+    EXPECT_NEAR(out[kBallD], 3.0, 1e-9);
+    EXPECT_NEAR(out[kBallR], 0.0, 1e-8);
+
+    for (uint32_t r = 1; r <= 10; ++r) s[r] = 2.0 - 0.1 * r * (r + 1);
+    double d = 0.0, R = 0.0;
+    ASSERT_TRUE(hgcommon::sg_growth_fit(s.data(), 10, hgcommon::SG_PROBE_BALL, d, R));
+    EXPECT_NEAR(d, 2.0, 1e-9);
+    EXPECT_NEAR(R, 1.2, 1e-9);
+    EXPECT_FALSE(hgcommon::sg_growth_fit(s.data(), 1, hgcommon::SG_PROBE_BALL, d, R));
+}
+
+// "VolumeGrowthObservables-P5-sphere-exact-line": at an end of P5 every shell has one vertex, so
+// the sphere probe reads n = 1 and S = 0. The shells of the other vertices peak at r = 1 or 2
+// and leave at most one quotient: no fit.
+TEST(StateMeasures, PathSphereProbe) {
+    const Measured m = measure({{1, 2}, {2, 3}, {3, 4}, {4, 5}});
+    EXPECT_NEAR(m.at(kSphD, 0), 1.0, 1e-12);
+    EXPECT_NEAR(m.at(kSphR, 0), 0.0, 1e-12);
+    for (uint32_t v = 1; v <= 3; ++v) {
+        EXPECT_TRUE(std::isnan(m.at(kSphD, v)));
+        EXPECT_TRUE(std::isnan(m.at(kBallD, v)));
+    }
+    ASSERT_TRUE(m.g.defined & hgcommon::SG_VOLUME_GROWTH);
+    EXPECT_NEAR(m.g.growth[kSphD], 1.0, 1e-12);
+    EXPECT_EQ(m.g.growth[kBallD], m.at(kBallD, 0));
+}
+
+// "VolumeGrowthObservables-C40-cycle": the sphere probe reads n = 1 and S = 0, the Riemannian
+// ball probe d within 0.15 of 1 and R within 0.01 of 0. "two-measures-bracket-the-dimension":
+// the counting ball probe reads d below 1 and the Riemannian one above.
+TEST(StateMeasures, CycleOfForty) {
+    const Measured m = measure(cycle(40));
+    ASSERT_TRUE(m.g.defined & hgcommon::SG_VOLUME_GROWTH);
+    EXPECT_NEAR(m.g.growth[kSphD], 1.0, 1e-8);
+    EXPECT_NEAR(m.g.growth[kSphR], 0.0, 1e-8);
+    EXPECT_LT(std::fabs(m.g.growth[kRiemD] - 1.0), 0.15);
+    EXPECT_LT(std::fabs(m.g.growth[kRiemR]), 0.01);
+    EXPECT_LT(m.g.growth[kBallD], 1.0);
+    EXPECT_GT(m.g.growth[kRiemD], 1.0);
+    for (uint32_t v = 0; v < 40; ++v) EXPECT_EQ(m.at(kRiemD, v), m.at(kRiemD, 0));
+}
+
+// "VolumeGrowthObservables-grid2D-sphere-flat", "grid2D-ball-flat",
+// "ball-sphere-dimension-agreement-flat" and the bracket: the centre of the 15 x 15 grid.
+TEST(StateMeasures, FlatGridCentre) {
+    const Measured m = measure(grid(15, 15));
+    const uint32_t c = 7 * 15 + 7;
+    EXPECT_LT(std::fabs(m.at(kSphD, c) - 2.0), 1e-6);
+    EXPECT_LT(std::fabs(m.at(kSphR, c)), 1e-6);
+    EXPECT_LT(std::fabs(m.at(kRiemR, c)), 0.1);
+    EXPECT_LT(std::fabs(m.at(kRiemD, c) - m.at(kSphD, c)), 0.4);
+    EXPECT_LT(m.at(kBallD, c), 2.0);
+    EXPECT_GT(m.at(kRiemD, c), 2.0);
+}
+
+// "VolumeGrowthObservables-torus-window-before-wrap" and "torus-sphere-flat" on the 20 x 20
+// torus, every vertex alike: |d - 2| < 0.35 and |R| < 0.1 by the Riemannian ball, d within 0.05
+// of 2 and S = 0 by the sphere; the counting ball reads below 2 and the Riemannian above.
+TEST(StateMeasures, FlatTorus) {
+    const Measured m = measure(grid(20, 20, true));
+    EXPECT_LT(std::fabs(m.g.growth[kRiemD] - 2.0), 0.35);
+    EXPECT_LT(std::fabs(m.g.growth[kRiemR]), 0.1);
+    EXPECT_LT(std::fabs(m.g.growth[kSphD] - 2.0), 0.05);
+    EXPECT_LT(std::fabs(m.g.growth[kSphR]), 1e-6);
+    EXPECT_LT(m.g.growth[kBallD], 2.0);
+    EXPECT_GT(m.g.growth[kRiemD], 2.0);
+}
+
+// "VolumeGrowthObservables-Q8-sphere-positive-curvature": the Hamming cube Q8 reads S > 0.
+TEST(StateMeasures, HypercubeSpherePositive) {
+    const Measured m = measure(hypercube(8));
+    ASSERT_TRUE(m.g.defined & hgcommon::SG_VOLUME_GROWTH);
+    EXPECT_GT(m.g.growth[kSphR], 0.0);
+}
+
+// A state with no vertex of eccentricity 3 or more has no fit.
+TEST(StateMeasures, SmallStatesHaveNoGrowthFit) {
+    EXPECT_FALSE(measure({{1, 2}, {2, 3}, {3, 1}}).g.defined & hgcommon::SG_VOLUME_GROWTH);
+    EXPECT_FALSE(measure({{1, 2}, {2, 3}}).g.defined & hgcommon::SG_VOLUME_GROWTH);
+}

@@ -27,6 +27,7 @@ sgrVertexCurvature::usage = "sgrVertexCurvature[edges] gives, for each vertex of
 sgrLargestIncidenceComponent::usage = "sgrLargestIncidenceComponent[edges] gives the incidence graph of a state (a node {\"v\", x} per vertex and {\"e\", i} per edge), its connected components, and the largest one: the most nodes, then the greatest diameter, then the greatest mean distance, then the most vertices.";
 sgrVertexInvariants::usage = "sgrVertexInvariants[edges] gives the per-vertex values \"VertexInvariants\" pools for one state: \"LocalDimension\" (d_v over the largest component G'), \"OllivierRicciCurvature\" (k_v over the vertices with a neighbour) and \"WolframRicciCurvatureScalar\" (K_v over G'), each a list of numbers of 50 digits or exact rationals.";
 sgrPooledDistribution::usage = "sgrPooledDistribution[values, name] gives the summary \"VertexInvariants\" reports for the pooled values of the distribution name: N, Mean, StandardDeviation, Min, Max, Median, Q1, Q3, P10, P90, Skewness, Kurtosis and the 32-bin Histogram.";
+sgrVolumeGrowth::usage = "sgrVolumeGrowth[g, v] gives the six volume-growth values of vertex v of graph g (BallDimension, BallScalarCurvature, RiemannianBallDimension, RiemannianBallScalarCurvature, SphereDimension, SphereScalarCurvature), or Missing[] when v has no fit.";
 sgrStateMatrices::usage = "sgrStateMatrices[vertexSets, edgeLists] gives the six state x state matrices of a step's states in the given order: the Jaccard index, the cosine similarity and the mutual information of every two states, over their vertex sets and over their edge sets (each edge its vertex list).";
 
 Begin["`Private`"];
@@ -65,10 +66,50 @@ ollivierEdge[g_Graph, dm_, index_, x_, y_] := Module[
   sol = LinearProgramming[cost, eqs, rhs];
   1 - cost . sol];
 
-geometryNames = {"GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
+growthNames = {"BallDimension", "BallScalarCurvature", "RiemannianBallDimension",
+  "RiemannianBallScalarCurvature", "SphereDimension", "SphereScalarCurvature"};
+
+geometryNames = Join[{"GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
   "WolframRicciCurvatureScalar", "OllivierRicciCurvature", "DegreeEntropy", "LocalEntropy",
   "MutualInformation", "FisherInformation", "LargestComponentDimension", "LocalDimensionMax",
-  "LocalDimensionStandardDeviation", "OllivierMoranI", "OllivierDegreeCorrelation"};
+  "LocalDimensionStandardDeviation", "OllivierMoranI", "OllivierDegreeCorrelation"},
+  growthNames];
+
+(* Volume growth (docs/SPEC.md, "StepStatistics volume growth"). The profiles come from one
+   GraphDistance per vertex; the Riemannian measure counts, by its definition, the vertices of
+   the ball whose neighbours all lie in the ball. Each window's fit is LeastSquares on the
+   window's points, and its residual standard error the norm of the residuals. *)
+growthFit[q_List, probe_] := Module[{k = Length[q], x, fit, rse, windows, tol, sel, c1, c2},
+  If[k < 2, Return[Missing[]]];
+  x = N[Range[k] (Range[k] + 1)];
+  fit[i_, j_] := LeastSquares[Transpose[{ConstantArray[1., j - i + 1], x[[i ;; j]]}], q[[i ;; j]]];
+  rse[i_, j_] := Module[{c = fit[i, j]},
+    Sqrt[Total[(q[[i ;; j]] - (c[[1]] + c[[2]] x[[i ;; j]]))^2]/(j - i - 1)]];
+  sel = If[k < 5, {1, k},
+    tol = Max[2 Sort[Table[rse[i, i + 4], {i, k - 4}]][[Ceiling[(k - 4)/4]]], 10.^-10];
+    windows = Catenate[Table[{i, i + len - 1}, {len, k, 5, -1}, {i, 1, k - len + 1}]];
+    SelectFirst[windows, rse @@ # <= tol &, {1, k}]];
+  {c1, c2} = fit @@ sel;
+  If[probe === "Ball", {c1, -3 (c1 + 2) c2}, {c1 + 1, -3 (c1 + 1) c2}]];
+
+sgrVolumeGrowth[g_Graph, v_] := Module[{d = GraphDistance[g, v], vs = VertexList[g], within, e,
+    shell, ball, riem, p, q},
+  within = Pick[vs, Thread[d < Infinity]];
+  d = AssociationThread[vs -> d];
+  e = Max[Lookup[d, within]];
+  shell = Table[Count[Lookup[d, within], r], {r, 0, e}];
+  ball = Accumulate[shell];
+  riem = Table[Count[within, u_ /; d[u] <= r && AllTrue[AdjacencyList[g, u], d[#] <= r &]],
+    {r, 0, e}];
+  p = Last[Flatten[Position[shell, Max[shell]]]] - 1;
+  If[p < 3, Return[Missing[]]];
+  q[f_] := Table[(Log[N[f[[r + 2]]]] - Log[N[f[[r + 1]]]])/(Log[r + 1.] - Log[N[r]]), {r, 1, p - 1}];
+  Join[growthFit[q[ball], "Ball"], growthFit[q[riem], "Ball"], growthFit[q[shell], "Sphere"]]];
+
+(* Each vertex of G' with a fit: vertex -> its six values. *)
+growthOfLargest[edges_List] := Module[{g = sgrStateGraph[edges], gp},
+  gp = Cases[sgrLargestIncidenceComponent[edges]["Largest"], {"v", x_} :> x];
+  DeleteMissing[AssociationMap[sgrVolumeGrowth[g, #] &, Sort[gp]]]];
 
 sgrLargestIncidenceComponent[edges_List] := Module[{vertices, m, incEdges, g, comps},
   vertices = Union[Flatten[edges]]; m = Length[edges];
@@ -106,16 +147,21 @@ largestComponentGeometry[edges_List] := Module[{g = sgrStateGraph[edges], gp, vs
     "Ricci" -> Association[# -> Mean[Table[
       6 (D + 2)/r^2 (1 - ball[gp, #, r] Gamma[D/2 + 1]/(Pi^(D/2) r^D)), {r, R}]] & /@ vs]|>];
 
-sgrVertexInvariants[edges_List] := Module[{g = sgrStateGraph[edges], lc},
+sgrVertexInvariants[edges_List] := Module[{g = sgrStateGraph[edges], lc, growth},
   lc = largestComponentGeometry[edges];
-  <|"LocalDimension" -> If[MissingQ[lc], {}, Values[lc["Dimensions"]]],
+  growth = Values[growthOfLargest[edges]];
+  Join[<|"LocalDimension" -> If[MissingQ[lc], {}, Values[lc["Dimensions"]]],
     "OllivierRicciCurvature" -> Values[vertexCurvatureExact[g, edgeCurvatures[g]]],
-    "WolframRicciCurvatureScalar" -> If[MissingQ[lc], {}, Values[lc["Ricci"]]]|>];
+    "WolframRicciCurvatureScalar" -> If[MissingQ[lc], {}, Values[lc["Ricci"]]]|>,
+    AssociationThread[growthNames -> If[growth === {}, ConstantArray[{}, 6], Transpose[growth]]]]];
 
 (* The per-vertex distributions' fixed ranges [lo, hi), each cut into 32 equal bins; a value
    outside counts in the end bin. *)
 distributionRange = <|"LocalDimension" -> {0, 8}, "OllivierRicciCurvature" -> {-2, 1},
-  "WolframRicciCurvatureScalar" -> {-24, 8}|>;
+  "WolframRicciCurvatureScalar" -> {-24, 8}, "BallDimension" -> {0, 8},
+  "BallScalarCurvature" -> {-24, 8}, "RiemannianBallDimension" -> {0, 8},
+  "RiemannianBallScalarCurvature" -> {-24, 8}, "SphereDimension" -> {0, 8},
+  "SphereScalarCurvature" -> {-24, 8}|>;
 
 sgrPooledDistribution[values_List, name_String] := Module[
   {n = Length[values], lo, hi, w, bin, counts, mn, mx, quantile, out},
@@ -194,7 +240,9 @@ sgrStateGeometry[edges_List] := Module[
     "LocalDimensionStandardDeviation" -> If[MissingQ[lc], Missing[],
       N[Sqrt[Mean[(Values[lc["Dimensions"]] - lc["D"])^2]]]],
     "OllivierMoranI" -> moran,
-    "OllivierDegreeCorrelation" -> corr|>];
+    "OllivierDegreeCorrelation" -> corr,
+    Sequence @@ With[{growth = Values[growthOfLargest[edges]]},
+      Thread[growthNames -> If[growth === {}, ConstantArray[Missing[], 6], Mean[growth]]]]|>];
 
 sgrBallGrowth[edges_List] := Module[{g = sgrStateGraph[edges], R},
   If[!connectedQ[g] || VertexCount[g] < 2, Return[{}]];
