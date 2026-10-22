@@ -7,6 +7,7 @@
 #include <map>
 #include <random>
 #include <set>
+#include <unordered_map>
 #include <utility>
 #include <cstdio>
 #include <cstdlib>
@@ -6560,4 +6561,29 @@ TEST(GraphMarshalStream, RecordListMatchesItsValueTreeAtEveryThreadCount) {
                                                      pool.get())))
             << threads << " threads";
     }
+}
+
+// U64Index against std::unordered_map::emplace: the first value inserted for a key is kept,
+// every key is found after the table grows, and the keys 0 and ~0 are stored like any other.
+TEST(GraphMarshalIndex, U64IndexKeepsTheFirstValueOfEveryKey) {
+    std::mt19937_64 rng(7);
+    std::vector<uint64_t> keys = {0ull, ~0ull, 1ull};
+    for (int i = 0; i < 20000; ++i) keys.push_back(rng() % 5000);
+    for (uint64_t k = 1ull << 32; k < (1ull << 32) + 3000; ++k) keys.push_back(k);
+    hgm::U64Index index;
+    std::unordered_map<uint64_t, uint32_t> want;
+    for (size_t i = 0; i < keys.size(); ++i) {
+        bool fresh = false;
+        const uint32_t got = index.emplace(keys[i], static_cast<uint32_t>(i), fresh);
+        const auto [it, inserted] = want.emplace(keys[i], static_cast<uint32_t>(i));
+        ASSERT_EQ(fresh, inserted) << i;
+        ASSERT_EQ(got, it->second) << i;
+    }
+    EXPECT_EQ(index.size(), want.size());
+    for (const auto& [k, v] : want) {
+        const uint32_t* found = index.find(k);
+        ASSERT_NE(found, nullptr) << k;
+        EXPECT_EQ(*found, v) << k;
+    }
+    EXPECT_EQ(index.find(5001), nullptr);
 }

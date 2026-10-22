@@ -229,6 +229,56 @@ private:
     std::vector<uint32_t> pool_, offset_of_, slots_;
 };
 
+// A map from 64-bit keys to 32-bit values in one open-addressed table. A key keeps the first
+// value inserted for it. Any key and any value can be stored.
+class U64Index {
+public:
+    explicit U64Index(size_t expected = 0) {
+        size_t n = 64;
+        while (n < 2 * expected) n *= 2;
+        slots_.assign(n, 0);
+        keys_.reserve(expected);
+        values_.reserve(expected);
+    }
+    // The value stored for `key`: `value` when the key was absent, with `inserted` set.
+    uint32_t emplace(uint64_t key, uint32_t value, bool& inserted) {
+        if ((keys_.size() + 1) * 2 > slots_.size()) grow();
+        size_t i = hash(key) & (slots_.size() - 1);
+        for (; slots_[i]; i = (i + 1) & (slots_.size() - 1)) {
+            if (keys_[slots_[i] - 1] == key) {
+                inserted = false;
+                return values_[slots_[i] - 1];
+            }
+        }
+        keys_.push_back(key);
+        values_.push_back(value);
+        slots_[i] = static_cast<uint32_t>(keys_.size());
+        inserted = true;
+        return value;
+    }
+    // The value stored for `key`, or nullptr.
+    const uint32_t* find(uint64_t key) const {
+        for (size_t i = hash(key) & (slots_.size() - 1); slots_[i]; i = (i + 1) & (slots_.size() - 1))
+            if (keys_[slots_[i] - 1] == key) return &values_[slots_[i] - 1];
+        return nullptr;
+    }
+    size_t size() const { return keys_.size(); }
+
+private:
+    // Keys that are state ids or packed id pairs are consecutive, so they are mixed.
+    static size_t hash(uint64_t k) { return static_cast<size_t>(hgcommon::splitmix64(k)); }
+    void grow() {
+        slots_.assign(slots_.size() * 2, 0);
+        for (uint32_t n = 0; n < keys_.size(); ++n) {
+            size_t i = hash(keys_[n]) & (slots_.size() - 1);
+            while (slots_[i]) i = (i + 1) & (slots_.size() - 1);
+            slots_[i] = n + 1;
+        }
+    }
+    std::vector<uint64_t> keys_;
+    std::vector<uint32_t> values_, slots_;
+};
+
 // Runs body(i) for every i < n, on any threads and in any order, and returns after every call
 // has returned.
 using ParallelFor = std::function<void(size_t n, const std::function<void(size_t)>& body)>;

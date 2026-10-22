@@ -413,11 +413,16 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
     //   Full      -> IR isomorphism class
     // The class representative (first-seen id) is the stable handle emitted. state_hash always
     // holds the IR canonical hash so the optional CanonicalHash output is available in any mode.
+    //
+    // The per-state tables are vectors indexed by state id: result.states[i].id is i, or
+    // INVALID_ID for a slot a failed rewrite claimed (a partial result).
     const hg_gpu::CanonicalizationMode canon_mode = in.canonicalization;
-    std::unordered_map<uint64_t, hg_gpu::StateId> hash_to_rep;
-    std::unordered_map<hg_gpu::StateId, hg_gpu::StateId> state_to_rep;
-    std::unordered_map<hg_gpu::StateId, uint64_t> state_hash;
-    std::unordered_map<hg_gpu::StateId, const hg_gpu::CanonicalState*> state_by_id;
+    const size_t n_states = result.states.size();
+    auto valid_state = [&](hg_gpu::StateId s) {
+        return s < n_states && result.states[s].id != hg_gpu::INVALID_ID;
+    };
+    std::vector<uint64_t> state_hash(n_states, 0);
+    std::vector<hg_gpu::StateId> state_rep(n_states, hg_gpu::INVALID_ID);
     std::vector<hg_gpu::StateId> class_reps;
     // Under Full the device's key IS the exact isomorphism hash, from the same ir_core the host
     // runs, so it is read rather than recomputed. Under None and Automatic the device key is not
@@ -438,16 +443,23 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
                 host_hash[i] = hypergraph::IRCanonicalizer{}.compute_canonical_hash(result.edges_of(s));
         });
     }
-    for (size_t si = 0; si < result.states.size(); ++si) {
+    // Under None every state is its own class. Otherwise a class's representative is its first
+    // state, found through one open-addressed table keyed by the class key.
+    hgmarshal::U64Index rep_of_key(canon_mode == hg_gpu::CanonicalizationMode::None ? 0 : n_states);
+    for (size_t si = 0; si < n_states; ++si) {
         const hg_gpu::CanonicalState& s = result.states[si];
         // A state slot a failed rewrite claimed (a partial result) reads back with id INVALID_ID.
         if (s.id == hg_gpu::INVALID_ID) continue;
-        state_hash[s.id] = hgmarshal::reported_state_hash(
+        state_hash[si] = hgmarshal::reported_state_hash(
             s.edge_count == 0,
             canon_mode == hg_gpu::CanonicalizationMode::Full ? s.canonical_hash
             : s.exact_hash ? s.exact_hash
             : host_ir ? host_hash[si] : 0);
-        state_by_id[s.id] = &s;
+        if (canon_mode == hg_gpu::CanonicalizationMode::None) {
+            state_rep[si] = s.id;
+            class_reps.push_back(s.id);
+            continue;
+        }
         // Automatic groups by the key THE DEVICE DEDUPLICATED WITH. CanonicalState::canonical_hash
         // carries what state_key_device wrote for the requested mode, so under Automatic it is
         // the content hash the evolution itself used. Recomputing content identity here would be
@@ -460,62 +472,62 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
         // silent loss. This is the EMPTY=0 collision class that has bitten four maps here.
         const uint64_t auto_key = s.canonical_hash != 0 ? s.canonical_hash
                                                         : static_cast<uint64_t>(s.id);
-        uint64_t key =
-            canon_mode == hg_gpu::CanonicalizationMode::None      ? static_cast<uint64_t>(s.id) :
-            canon_mode == hg_gpu::CanonicalizationMode::Automatic ? auto_key
-                                                                  : state_hash[s.id];
-        auto it = hash_to_rep.find(key);
-        if (it == hash_to_rep.end()) {
-            hash_to_rep[key] = s.id;
-            state_to_rep[s.id] = s.id;
-            class_reps.push_back(s.id);
-        } else {
-            state_to_rep[s.id] = it->second;
-        }
+        const uint64_t key =
+            canon_mode == hg_gpu::CanonicalizationMode::Automatic ? auto_key : state_hash[si];
+        bool fresh = false;
+        state_rep[si] = rep_of_key.emplace(key, s.id, fresh);
+        if (fresh) class_reps.push_back(s.id);
     }
     auto rep_of = [&](hg_gpu::StateId s) -> int64_t {
-        auto it = state_to_rep.find(s);
-        return static_cast<int64_t>(it == state_to_rep.end() ? s : it->second);
+        return static_cast<int64_t>(valid_state(s) ? state_rep[s] : s);
     };
 
-    // Per-state producing step + is-initial (a root is no event's output_state).
-    std::unordered_map<hg_gpu::StateId, uint32_t> state_step;
-    std::unordered_set<hg_gpu::StateId> is_output;
-    for (const auto& e : result.events) {
-        auto it = state_step.find(e.output_state);
-        if (it == state_step.end() || e.step < it->second) state_step[e.output_state] = e.step;
-        is_output.insert(e.output_state);
+    // Each state's producing step, the least over the events into it, for the outputs that read
+    // it. kNoStep marks a state no event produces: an initial state.
+    constexpr uint32_t kNoStep = UINT32_MAX;
+    std::vector<uint32_t> state_step;
+    if (job.include_states || job.show_genesis_events || job.include_step_statistics ||
+        job.include_branchial_state_edges || job.include_branchial_state_edges_all_siblings ||
+        !job.graph_properties.empty()) {
+        state_step.assign(n_states, kNoStep);
+        for (const auto& e : result.events) {
+            if (e.output_state >= state_step.size())
+                state_step.resize(size_t{e.output_state} + 1, kNoStep);
+            state_step[e.output_state] = std::min(state_step[e.output_state], e.step);
+        }
     }
+    auto is_output = [&](hg_gpu::StateId s) {
+        return s < state_step.size() && state_step[s] != kNoStep;
+    };
 
     // The Step a state record and its graph vertex data report (hgmarshal::reported_state_step,
     // the host's rule): under Full the class's explore depth under quotient exploration, the
     // least of its states' steps otherwise; outside Full the state's own step.
     const bool full_states = canon_mode == hg_gpu::CanonicalizationMode::Full;
     auto own_step = [&](hg_gpu::StateId s) -> uint32_t {
-        auto it = state_step.find(s);
-        return it == state_step.end() ? 0u : it->second;
+        return is_output(s) ? state_step[s] : 0u;
     };
-    std::unordered_map<hg_gpu::StateId, uint32_t> class_least, class_depth;   // by class rep
-    if (full_states) {
-        for (const auto& st : result.states) {
+    // By class representative: the least own step of the class's states, UINT32_MAX for none, and
+    // under quotient exploration the least explore depth, kExploreNoDepth for none.
+    std::vector<uint32_t> class_least, class_depth;
+    if (full_states && (job.include_states || !job.graph_properties.empty())) {
+        class_least.assign(n_states, UINT32_MAX);
+        class_depth.assign(n_states, hgcommon::kExploreNoDepth);
+        for (size_t si = 0; si < n_states; ++si) {
+            const hg_gpu::CanonicalState& st = result.states[si];
             if (st.id == hg_gpu::INVALID_ID) continue;
-            const auto rep = static_cast<hg_gpu::StateId>(rep_of(st.id));
-            auto [it, fresh] = class_least.emplace(rep, own_step(st.id));
-            if (!fresh) it->second = std::min(it->second, own_step(st.id));
-            if (!job.explore_from_canonical_states_only ||
-                st.explore_depth == hgcommon::kExploreNoDepth)
-                continue;
-            auto [jt, first] = class_depth.emplace(rep, st.explore_depth);
-            if (!first) jt->second = std::min(jt->second, st.explore_depth);
+            const hg_gpu::StateId rep = state_rep[si];
+            class_least[rep] = std::min(class_least[rep], own_step(st.id));
+            if (job.explore_from_canonical_states_only)
+                class_depth[rep] = std::min(class_depth[rep], st.explore_depth);
         }
     }
     auto reported_step = [&](hg_gpu::StateId s) -> uint32_t {
         const auto rep = static_cast<hg_gpu::StateId>(rep_of(s));
-        const auto d = class_depth.find(rep);
-        const auto l = class_least.find(rep);
+        const bool known = rep < class_least.size();
         return hgmarshal::reported_state_step(
-            full_states, d == class_depth.end() ? hgcommon::kExploreNoDepth : d->second,
-            l == class_least.end() ? UINT32_MAX : l->second, own_step(s));
+            full_states, known ? class_depth[rep] : hgcommon::kExploreNoDepth,
+            known ? class_least[rep] : UINT32_MAX, own_step(s));
     };
 
     // GENESIS EVENTS, SYNTHESISED HERE BECAUSE THE DEVICE HAS NONE.
@@ -547,7 +559,7 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
 
         for (const auto& st : result.states) {
             if (st.id == hg_gpu::INVALID_ID) continue;
-            if (is_output.count(st.id)) continue;            // produced by an event: not a root
+            if (is_output(st.id)) continue;           // produced by an event: not a root
             const size_t at = genesis_roots.size();
             genesis_roots.push_back(st.id);
             for (auto eid : result.edge_ids(st)) initial_edge_root[eid] = at;
@@ -586,7 +598,7 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
     if (job.include_states) {
         // (edge id, vertices) for each of the state's edges.
         auto record_edges = [&](hg_gpu::StateId s) {
-            const hg_gpu::CanonicalState& st = *state_by_id.at(s);
+            const hg_gpu::CanonicalState& st = result.states[s];
             const hg_gpu::EdgeSpan ids = result.edge_ids(st);
             std::vector<std::pair<int64_t, std::vector<uint32_t>>> edges;
             edges.reserve(st.num_edges);
@@ -675,7 +687,7 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
                 static_cast<int64_t>(s), rep_of(s),
                 content_id.at(listed_hash[i]),
                 static_cast<int64_t>(reported_step(s)),
-                job.include_canonical_hashes, static_cast<int64_t>(state_hash.at(s)),
+                job.include_canonical_hashes, static_cast<int64_t>(state_hash[s]),
                 curvature};
             // The kept edges are already the record's (under Full, the canonical form).
             if (curvature) {
@@ -721,16 +733,21 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
     };
     // The state that stands for each class the reconstruction names: a replayed application's
     // input and output classes are canonical hashes, and these states are "States" keys.
-    std::unordered_map<uint64_t, int64_t> state_of_class;
-    for (const auto& st : result.states) state_of_class.emplace(st.canonical_hash, rep_of(st.id));
-    auto class_state = [&](uint64_t h) -> int64_t {
-        auto it = state_of_class.find(h);
-        return it == state_of_class.end() ? -1 : it->second;
-    };
     // The reconstruction's applications with their classes and rules, when read back. The graphs
     // are drawn over them whenever present, as on the host, and "Events" lists them, so the
     // relations' ids join with it.
     const bool recon_content = recon_ran && !result.reconstructed_event_from_class.empty();
+    // Read only through the applications' classes, so built only when they were read back.
+    hgmarshal::U64Index state_of_class(recon_content ? n_states : 0);
+    if (recon_content) {
+        bool fresh = false;
+        for (const auto& st : result.states)
+            state_of_class.emplace(st.canonical_hash, static_cast<uint32_t>(rep_of(st.id)), fresh);
+    }
+    auto class_state = [&](uint64_t h) -> int64_t {
+        const uint32_t* s = state_of_class.find(h);
+        return s ? static_cast<int64_t>(*s) : -1;
+    };
     const bool recon_events = recon_content;
     // "Events" and the relations are then keyed by application id or by identity, every one
     // below the count of applications, so genesis ids start there, as the host's start at its id
@@ -810,7 +827,7 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
             // edges.
             const hg_gpu::StateId root = genesis_roots[i];
             const int64_t gid = hgmarshal::genesis_event_id(i);
-            for (auto pe : result.edge_ids(*state_by_id.at(root)))
+            for (auto pe : result.edge_ids(result.states[root]))
                 produced.push_back(static_cast<int64_t>(pe));
             out.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
             out.write(gid);
@@ -827,18 +844,24 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
     // An event's id under the event identity in force: its canonical event, or itself. From and To
     // of the causal and branchial lists carry it and RawFrom/RawTo the raw ids, as on the host
     // (Hypergraph::get_canonical_event).
-    std::unordered_map<uint32_t, uint32_t> canonical_event;
-    for (const auto& e : result.events)
-        if (e.id != hg_gpu::INVALID_ID && e.canonical_id != hg_gpu::INVALID_ID)
-            canonical_event.emplace(e.id, e.canonical_id);
+    // Indexed by event id, INVALID_ID for an event with no canonical event; read by the device's
+    // own causal and branchial lists.
+    std::vector<uint32_t> canonical_event;
+    if (!recon_ran && (job.include_causal_edges || job.include_branchial_edges)) {
+        for (const auto& e : result.events) {
+            if (e.id == hg_gpu::INVALID_ID || e.canonical_id == hg_gpu::INVALID_ID) continue;
+            if (e.id >= canonical_event.size())
+                canonical_event.resize(size_t{e.id} + 1, hg_gpu::INVALID_ID);
+            if (canonical_event[e.id] == hg_gpu::INVALID_ID) canonical_event[e.id] = e.canonical_id;
+        }
+    }
     auto event_id_of = [&](uint32_t raw) -> int64_t {
-        auto it = canonical_event.find(raw);
-        return static_cast<int64_t>(it == canonical_event.end() ? raw : it->second);
+        const bool known = raw < canonical_event.size() && canonical_event[raw] != hg_gpu::INVALID_ID;
+        return static_cast<int64_t>(known ? canonical_event[raw] : raw);
     };
 
     // CausalEdges: dedup by raw (from,to), matching the FFI. The deduped count feeds
-    // NumCausalEdges and must be computed even when the edge list itself is not requested
-    // (e.g. the counts-only "Debug" property), so the count matches the CPU in every case.
+    // NumCausalEdges, which a reply can request without the edge list.
     int64_t num_causal = 0;
     std::vector<std::array<int64_t, 4>> causal;   // From, To, RawFrom, RawTo
     if (recon_ran) {
@@ -854,11 +877,16 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
             }
         }
         num_causal = static_cast<int64_t>(raw.size() + recon_genesis.size());
-    } else {
-        std::unordered_set<uint64_t> seen;
+    } else if (job.include_causal_edges || job.include_num_causal_edges) {
+        hgmarshal::U64Index seen(result.causal_edges.size() + genesis_causal.size());
+        bool fresh = false;
+        auto first_time = [&](uint64_t key) {
+            seen.emplace(key, 0, fresh);
+            return fresh;
+        };
         for (const auto& c : result.causal_edges) {
             uint64_t key = (static_cast<uint64_t>(c.from) << 32) | static_cast<uint32_t>(c.to);
-            if (!seen.insert(key).second) continue;
+            if (!first_time(key)) continue;
             if (job.include_causal_edges)
                 causal.push_back({event_id_of(c.from), event_id_of(c.to),
                                   static_cast<int64_t>(c.from), static_cast<int64_t>(c.to)});
@@ -866,7 +894,7 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
         for (const auto& [root, to] : genesis_causal) {
             const uint32_t from = static_cast<uint32_t>(first_genesis_event + root);
             const uint64_t key = (static_cast<uint64_t>(from) << 32) | to;
-            if (!seen.insert(key).second) continue;
+            if (!first_time(key)) continue;
             if (job.include_causal_edges)
                 causal.push_back({hgmarshal::genesis_event_id(root), static_cast<int64_t>(to),
                                   hgmarshal::genesis_event_id(root), static_cast<int64_t>(to)});
@@ -902,19 +930,19 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
     // No genesis filter: the device mints no genesis event, which is why ShowGenesisEvents
     // carries its own advisory rather than being applied here.
     if (job.include_branchial_state_edges || job.include_branchial_state_edges_all_siblings) {
-        std::unordered_map<hg_gpu::EventId, hg_gpu::StateId> ev_out;
-        ev_out.reserve(result.events.size());
-        for (const auto& e : result.events) ev_out[e.id] = e.output_state;
-
+        // Each event's output state by event id; kNoOutput for an id with no event.
+        constexpr uint32_t kNoOutput = UINT32_MAX;
+        std::vector<uint32_t> ev_out;
+        for (const auto& e : result.events) {
+            if (e.id == hg_gpu::INVALID_ID) continue;
+            if (e.id >= ev_out.size()) ev_out.resize(size_t{e.id} + 1, kNoOutput);
+            ev_out[e.id] = e.output_state;
+        }
         const auto out_state_of = [&](uint32_t eid) -> uint32_t {
-            auto it = ev_out.find(eid);
-            return it == ev_out.end() ? 0u : it->second;
+            return eid < ev_out.size() && ev_out[eid] != kNoOutput ? ev_out[eid] : 0u;
         };
         const auto canonical_of = [&](uint32_t sid) { return rep_of(sid); };
-        const auto step_of = [&](uint32_t sid) -> uint32_t {
-            auto it = state_step.find(sid);
-            return it == state_step.end() ? 0u : it->second;
-        };
+        const auto step_of = [&](uint32_t sid) -> uint32_t { return own_step(sid); };
         hgmarshal::GraphOptions bse_opts;
         bse_opts.branchial_step = job.branchial_step;
         bse_opts.steps = run_steps;
@@ -1051,9 +1079,24 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
     if (job.include_step_statistics) {
         std::map<uint32_t, hg::stats::StepInput> inputs;
         // Each class's record, written on the device by the warp that created the class.
-        std::unordered_map<uint64_t, const hgcommon::StateInvariantRecord*> class_invariants;
+        // class_record_at maps a class hash to its index in class_records.
+        hgmarshal::U64Index class_record_at(class_reps.size());
+        std::vector<const hgcommon::StateInvariantRecord*> class_records;
+        class_records.reserve(class_reps.size());
+        auto class_record = [&](uint64_t hash) -> const hgcommon::StateInvariantRecord* {
+            const uint32_t* at = class_record_at.find(hash);
+            return at ? class_records[*at] : nullptr;
+        };
+        // A state slot a failed rewrite claimed has hash 0.
+        auto hash_of = [&](const hg_gpu::CanonicalState& st) -> uint64_t {
+            return valid_state(st.id) ? state_hash[st.id] : 0u;
+        };
         auto take_record = [&](const hg_gpu::CanonicalState& st) {
-            auto& r = class_invariants[state_hash[st.id]];
+            bool fresh = false;
+            const uint32_t at = class_record_at.emplace(
+                hash_of(st), static_cast<uint32_t>(class_records.size()), fresh);
+            if (fresh) class_records.push_back(nullptr);
+            const hgcommon::StateInvariantRecord*& r = class_records[at];
             if (!r) r = result.invariants(st);
             return r;
         };
@@ -1071,9 +1114,8 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
             for (const auto& [step, ps] : by_step) step_jobs.emplace_back(&inputs[step], &ps);
             reply_jobs().parallel_for()(step_jobs.size(), [&](size_t i) {
                 for (const hg::stats::StepPoint* p : *step_jobs[i].second) {
-                    const auto r = class_invariants.find(p->class_hash);
                     hg::stats::add_class(*step_jobs[i].first, p->class_hash, p->weight,
-                                         r == class_invariants.end() ? nullptr : r->second);
+                                         class_record(p->class_hash));
                 }
             });
             std::unordered_map<uint64_t, std::map<int64_t, uint64_t>> matches_by_rule;
@@ -1104,11 +1146,8 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
             // its id need not be the lowest of the class.
             for (const auto& st : result.states)
                 if (st.id != hg_gpu::INVALID_ID) take_record(st);
-            for (const auto& st : result.states) {
-                const auto it = state_step.find(st.id);
-                const uint32_t step = it == state_step.end() ? 0u : it->second;
-                hg::stats::add_class(inputs[step], state_hash[st.id], 1, take_record(st));
-            }
+            for (const auto& st : result.states)
+                hg::stats::add_class(inputs[own_step(st.id)], hash_of(st), 1, take_record(st));
             for (const auto& e : result.events) {
                 hg::stats::StepInput& at = inputs[e.step];
                 ++at.events;
@@ -1204,30 +1243,36 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
     // graph structure. The adapter exposes the device result as effective (class-rep)
     // ids plus CPU-matching vertex tooltips.
     if (!job.graph_properties.empty()) {
-        std::unordered_map<hg_gpu::EventId, const hg_gpu::Event*> event_by_id;
+        // Each event's index in result.events by event id, the last event with that id;
+        // kNoEvent for an id with no event.
+        constexpr uint32_t kNoEvent = UINT32_MAX;
+        std::vector<uint32_t> event_index;
         uint32_t max_state = 0, max_event = 0;
         for (const auto& s : result.states) max_state = std::max<uint32_t>(max_state, s.id);
-        for (const auto& e : result.events) {
-            event_by_id[e.id] = &e;
-            max_event = std::max<uint32_t>(max_event, e.id);
+        for (size_t i = 0; i < result.events.size(); ++i) {
+            const hg_gpu::EventId id = result.events[i].id;
+            max_event = std::max<uint32_t>(max_event, id);
+            if (id == hg_gpu::INVALID_ID) continue;
+            if (id >= event_index.size()) event_index.resize(size_t{id} + 1, kNoEvent);
+            event_index[id] = static_cast<uint32_t>(i);
         }
+        auto event_at = [&](hg_gpu::EventId eid) -> const hg_gpu::Event* {
+            return eid < event_index.size() && event_index[eid] != kNoEvent
+                       ? &result.events[event_index[eid]] : nullptr;
+        };
         const bool full = (canon_mode == hg_gpu::CanonicalizationMode::Full);
 
         // A state's edges numbered from 0 in stored order; under Full its IR canonical form
         // (hgmarshal::state_record_edges).
         auto state_edges_of = [&](hg_gpu::StateId sid,
                                   std::vector<std::pair<int64_t, std::vector<uint32_t>>>& out) {
-            auto it = state_by_id.find(sid);
-            if (it == state_by_id.end()) return;
+            if (!valid_state(sid)) return;
             int64_t idx = 0;
-            for (const auto& ce : result.edges_of(*it->second))
+            for (const auto& ce : result.edges_of(result.states[sid]))
                 out.emplace_back(idx++, std::vector<uint32_t>(ce.begin(), ce.end()));
             hgmarshal::state_record_edges(full, out);
         };
-        auto step_of = [&](hg_gpu::StateId sid) -> uint32_t {
-            auto it = state_step.find(sid);
-            return it == state_step.end() ? 0u : it->second;
-        };
+        auto step_of = [&](hg_gpu::StateId sid) -> uint32_t { return own_step(sid); };
         // THE EVENT IDENTITY THE COUNT USES, when the reconstruction ran.
         //
         // observable_num_events reports the reconstruction's distinct identities. Mapping a
@@ -1260,10 +1305,9 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
                 return it == dense_of_sig.end() ? -1 : it->second;
             }
             if (job.state_canon_mode == 0 || job.event_canon_mode == 0) return static_cast<int64_t>(eid);
-            auto it = event_by_id.find(eid);
-            if (it == event_by_id.end() || it->second->canonical_id == hg_gpu::INVALID_ID)
-                return static_cast<int64_t>(eid);
-            return static_cast<int64_t>(it->second->canonical_id);
+            const hg_gpu::Event* e = event_at(eid);
+            if (!e || e->canonical_id == hg_gpu::INVALID_ID) return static_cast<int64_t>(eid);
+            return static_cast<int64_t>(e->canonical_id);
         };
 
         struct GpuGraphSource {
@@ -1320,7 +1364,7 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
                                   genesis_end)
                             : std::max<uint32_t>(max_event + 1, genesis_end);
         gsrc.state_valid_ = [&](uint32_t sid) {
-            return is_genesis_state(sid) || state_by_id.find(sid) != state_by_id.end();
+            return is_genesis_state(sid) || valid_state(sid);
         };
         gsrc.eff_state_ = [&](uint32_t sid) {
             return is_genesis_state(sid) ? hgmarshal::kGenesisStateId : rep_of(sid);
@@ -1352,7 +1396,7 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
                            result.reconstructed_event_signature[eid] != 0ull;
                 return dense_of_sig.count(sig_of_event(eid)) != 0;
             }
-            return event_by_id.find(eid) != event_by_id.end();
+            return event_at(eid) != nullptr;
         };
         gsrc.eff_event_ = [&](uint32_t eid) -> int64_t {
             return is_genesis_event(eid) ? hgmarshal::genesis_event_id(eid - first_genesis_event)
@@ -1362,15 +1406,19 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
         gsrc.in_state_ = [&](uint32_t eid) -> uint32_t {
             if (is_genesis_event(eid)) return genesis_state_id;
             if (recon_content) return static_cast<uint32_t>(class_state(result.reconstructed_event_from_class[eid]));
-            auto it = event_by_id.find(eid); return it == event_by_id.end() ? 0u : it->second->input_state; };
+            const hg_gpu::Event* e = event_at(eid);
+            return e ? e->input_state : 0u;
+        };
         gsrc.out_state_ = [&](uint32_t eid) -> uint32_t {
             if (is_genesis_event(eid)) return genesis_roots[eid - first_genesis_event];
             if (recon_content) return static_cast<uint32_t>(class_state(result.reconstructed_event_to_class[eid]));
-            auto it = event_by_id.find(eid); return it == event_by_id.end() ? 0u : it->second->output_state; };
+            const hg_gpu::Event* e = event_at(eid);
+            return e ? e->output_state : 0u;
+        };
         gsrc.event_data_ = [&](uint32_t eid, hgmarshal::GraphEventFields& f) -> bool {
             if (is_genesis_event(eid)) {
                 const hg_gpu::StateId root = genesis_roots[eid - first_genesis_event];
-                for (auto pe : result.edge_ids(*state_by_id.at(root)))
+                for (auto pe : result.edge_ids(result.states[root]))
                     f.produced.push_back(static_cast<int64_t>(pe));
                 f.id = f.canonical_id = hgmarshal::genesis_event_id(eid - first_genesis_event);
                 f.rule = kGenesisRuleIndex;
@@ -1388,9 +1436,9 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
                 f.output = class_state(result.reconstructed_event_to_class[eid]);
                 return true;
             }
-            auto eit = event_by_id.find(eid);
-            if (eit == event_by_id.end()) return false;
-            const hg_gpu::Event& e = *eit->second;
+            const hg_gpu::Event* ep = event_at(eid);
+            if (!ep) return false;
+            const hg_gpu::Event& e = *ep;
             for (auto c : result.consumed_of(e)) f.consumed.push_back(static_cast<int64_t>(c));
             for (auto p : result.produced_of(e)) f.produced.push_back(static_cast<int64_t>(p));
             f.id = static_cast<int64_t>(eid);
