@@ -14,7 +14,9 @@
    with sgrStateMatrices on the listed states to 1e-9; the overlap and the cosine of a level must
    be a SparseArray exactly when fewer than half of the step's pairs share an element, every
    other matrix a packed array. With "IncludeVertexCurvature" -> True
-   each state's "VertexCurvature" must agree with sgrVertexCurvature to 1e-9.
+   each state's "VertexCurvature" must agree with sgrVertexCurvature to 1e-9. "VertexInvariants"
+   is pooled by sgrPooledDistribution from sgrVertexInvariants of each state of the step,
+   weighted as "Invariants" is.
 
    The two metrics the Wolfram Function Repository defines are also checked against the
    repository's own functions on every connected state of every case with at least two
@@ -60,23 +62,20 @@ cheapInvariants[edges_List] := Module[{vs, flat, vertices, n, m, arities, degSeq
     "TwoSectionEdgeCount" ->
       Length[DeleteDuplicates[Sort /@ Catenate[Subsets[DeleteDuplicates[#], {2}] & /@ vs]]]|>];
 
-graphInvariants[edges_List] := Module[
-  {vs, vertices, n, m, incEdges, g, comps, c, largest, sub, cheap},
+(* Memoised on the edges' vertex lists. *)
+graphInvariants[edges_List] := graphInvariantsOf[edges[[All, 2 ;;]]];
+graphInvariantsOf[vs_List] := graphInvariantsOf[vs] = Module[
+  {edges = Prepend[#, 0] & /@ vs, vertices, n, m, incEdges, g, comps, c, largest, sub, cheap, lc},
   cheap = cheapInvariants[edges];
-  vs = edges[[All, 2 ;;]];
   vertices = Union[Flatten[vs]]; n = Length[vertices]; m = Length[edges];
-  incEdges = DeleteDuplicates[Catenate[MapIndexed[
-    Function[{v, i}, UndirectedEdge[{"e", First[i]}, {"v", #}] & /@ DeleteDuplicates[v]], vs]]];
-  g = Graph[Join[{"v", #} & /@ vertices, {"e", #} & /@ Range[m]], incEdges];
-  comps = ConnectedComponents[g]; c = Length[comps];
-  (* The largest component: most nodes, then the greatest diameter, then the greatest mean
-     distance, then the most vertices. The probes took the first of the equally large ones in
-     ConnectedComponents order, which depends on the vertex labels; this is the probes' rule
-     made an isomorphism invariant, which a per-class computation requires. *)
-  largest = First[MaximalBy[comps, {Length[#],
-    If[Length[#] <= 1, 0, GraphDiameter[Subgraph[g, #]]],
-    If[Length[#] <= 1, 0., N[MeanGraphDistance[Subgraph[g, #]]]],
-    Count[#, {"v", _}]} &]];
+  (* The largest component (sgrLargestIncidenceComponent): most nodes, then the greatest
+     diameter, then the greatest mean distance, then the most vertices. The probes took the
+     first of the equally large ones in ConnectedComponents order, which depends on the vertex
+     labels; this is the probes' rule made an isomorphism invariant, which a per-class
+     computation requires. *)
+  lc = sgrLargestIncidenceComponent[vs];
+  {g, incEdges, comps, largest} = Lookup[lc, {"Graph", "IncidenceEdges", "Components", "Largest"}];
+  c = Length[comps];
   sub = If[c == 1, g, Subgraph[g, largest]];
   <|"Components" -> c,
     "CycleRank" -> cheap["TwoSectionEdgeCount"] - n + c,
@@ -85,9 +84,13 @@ graphInvariants[edges_List] := Module[
     "IncidenceMeanDistance" -> If[VertexCount[sub] <= 1, 0., N[MeanGraphDistance[sub]]],
     "LargestComponentFraction" -> If[n == 0, 0., N[Count[largest, {"v", _}]/n]]|>];
 
-(* The geometry of a state from its record's edges, memoised on the edge list. *)
-geometry[edges_List] := geometry[edges] = sgrStateGeometry[edges[[All, 2 ;;]]];
-ballGrowth[edges_List] := ballGrowth[edges] = sgrBallGrowth[edges[[All, 2 ;;]]];
+(* The geometry of a state from its record's edges, memoised on the edges' vertex lists. *)
+geometry[edges_List] := geometryOf[edges[[All, 2 ;;]]];
+geometryOf[vs_List] := geometryOf[vs] = sgrStateGeometry[vs];
+vertexValues[edges_List] := vertexValuesOf[edges[[All, 2 ;;]]];
+vertexValuesOf[vs_List] := vertexValuesOf[vs] = sgrVertexInvariants[vs];
+ballGrowth[edges_List] := ballGrowthOf[edges[[All, 2 ;;]]];
+ballGrowthOf[vs_List] := ballGrowthOf[vs] = sgrBallGrowth[vs];
 
 summary[values_List, round_ : 1] := If[values === {}, <|"N" -> 0|>,
   <|"N" -> Length[values], "Mean" -> N[Mean[values]],
@@ -99,7 +102,10 @@ entropyBits[counts_List] := Module[{p = N[counts/Total[counts]]}, -Total[p Log2[
 
 geometryKeys = {"GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
   "WolframRicciCurvatureScalar", "OllivierRicciCurvature", "DegreeEntropy", "LocalEntropy",
-  "MutualInformation", "FisherInformation"};
+  "MutualInformation", "FisherInformation", "LargestComponentDimension", "LocalDimensionMax",
+  "LocalDimensionStandardDeviation", "OllivierMoranI", "OllivierDegreeCorrelation"};
+
+vertexDistributions = {"LocalDimension", "OllivierRicciCurvature", "WolframRicciCurvatureScalar"};
 
 (* The branchial keys of one step from the raw run: the step's states, the branchial pairs
    whose first event's output state is at the step, each state's vertex set and edges, and the
@@ -139,11 +145,12 @@ oracleSteps[res_Association, byClass_ : False, branchial_ : False] := Module[
   pairsByStep = If[branchial,
     GroupBy[{outOf[#From], outOf[#To]} & /@ res["BranchialEdges"], stepOf[First[#]] &], <||>];
   KeyValueMap[Function[{k, sts},
-    Module[{pop, cheap, ginv, geo, balls, mult, classes, evIds, rec},
+    Module[{pop, cheap, ginv, geo, vvals, balls, mult, classes, evIds, rec},
       pop = If[byClass, DeleteDuplicatesBy[sts, #CanonicalHash &], sts];
       cheap = cheapInvariants[#Edges] & /@ pop;
       ginv = graphInvariants[#Edges] & /@ pop;
       geo = geometry[#Edges] & /@ pop;
+      vvals = vertexValues[#Edges] & /@ pop;
       balls = ballGrowth[#Edges] & /@ pop;
       mult = Values[Counts[Lookup[sts, "CanonicalHash"]]]; classes = Length[mult];
       evIds = Keys[Select[eventStep, # == k &]];
@@ -168,6 +175,8 @@ oracleSteps[res_Association, byClass_ : False, branchial_ : False] := Module[
           "LargestComponentFraction" -> summary[Lookup[ginv, "LargestComponentFraction"], 0.01]|>,
           AssociationMap[summary[DeleteMissing[Lookup[geo, #]], If[# === "GraphRadius", 1, 0.01]] &,
             geometryKeys]],
+        "VertexInvariants" -> AssociationMap[
+          sgrPooledDistribution[Catenate[Lookup[vvals, #]], #] &, vertexDistributions],
         "ArityHistogram" -> KeySort[Counts[Catenate[Lookup[cheap, "Arities"]]]],
         "AritySignatureHistogram" -> KeySort[Counts[Lookup[cheap, "Arities"]]],
         "DegreeHistogram" -> KeySort[Counts[Catenate[Lookup[cheap, "DegreeSequence"]]]],

@@ -24,6 +24,9 @@ sgrBranchialGraphMetrics::usage = "sgrBranchialGraphMetrics[nodes, pairs] gives 
 sgrOverlapMetrics::usage = "sgrOverlapMetrics[vertexSets, edgeLists, initial] gives the per-step overlap values for a step's states, each given as its vertex set and its list of edges (each edge its vertex list); initial is the vertex set of step 0's states.";
 sgrOverlapByDistance::usage = "sgrOverlapByDistance[vertexSets, distanceMatrix] gives, for each finite branchial distance d > 0, the Jaccard index of every two states at distance d.";
 sgrVertexCurvature::usage = "sgrVertexCurvature[edges] gives, for each vertex of the state's graph with a neighbour, ascending, the mean Ollivier-Ricci curvature of its edges.";
+sgrLargestIncidenceComponent::usage = "sgrLargestIncidenceComponent[edges] gives the incidence graph of a state (a node {\"v\", x} per vertex and {\"e\", i} per edge), its connected components, and the largest one: the most nodes, then the greatest diameter, then the greatest mean distance, then the most vertices.";
+sgrVertexInvariants::usage = "sgrVertexInvariants[edges] gives the per-vertex values \"VertexInvariants\" pools for one state: \"LocalDimension\" (d_v over the largest component G'), \"OllivierRicciCurvature\" (k_v over the vertices with a neighbour) and \"WolframRicciCurvatureScalar\" (K_v over G'), each a list of numbers of 50 digits or exact rationals.";
+sgrPooledDistribution::usage = "sgrPooledDistribution[values, name] gives the summary \"VertexInvariants\" reports for the pooled values of the distribution name: N, Mean, StandardDeviation, Min, Max, Median, Q1, Q3, P10, P90, Skewness, Kurtosis and the 32-bin Histogram.";
 sgrStateMatrices::usage = "sgrStateMatrices[vertexSets, edgeLists] gives the six state x state matrices of a step's states in the given order: the Jaccard index, the cosine similarity and the mutual information of every two states, over their vertex sets and over their edge sets (each edge its vertex list).";
 
 Begin["`Private`"];
@@ -62,15 +65,94 @@ ollivierEdge[g_Graph, dm_, index_, x_, y_] := Module[
   sol = LinearProgramming[cost, eqs, rhs];
   1 - cost . sol];
 
+geometryNames = {"GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
+  "WolframRicciCurvatureScalar", "OllivierRicciCurvature", "DegreeEntropy", "LocalEntropy",
+  "MutualInformation", "FisherInformation", "LargestComponentDimension", "LocalDimensionMax",
+  "LocalDimensionStandardDeviation", "OllivierMoranI", "OllivierDegreeCorrelation"};
+
+sgrLargestIncidenceComponent[edges_List] := Module[{vertices, m, incEdges, g, comps},
+  vertices = Union[Flatten[edges]]; m = Length[edges];
+  incEdges = DeleteDuplicates[Catenate[MapIndexed[
+    Function[{v, i}, UndirectedEdge[{"e", First[i]}, {"v", #}] & /@ DeleteDuplicates[v]], edges]]];
+  g = Graph[Join[{"v", #} & /@ vertices, {"e", #} & /@ Range[m]], incEdges];
+  comps = ConnectedComponents[g];
+  <|"Graph" -> g, "IncidenceEdges" -> incEdges, "Components" -> comps,
+    "Largest" -> If[comps === {}, {}, First[MaximalBy[comps, {Length[#],
+      If[Length[#] <= 1, 0, GraphDiameter[Subgraph[g, #]]],
+      If[Length[#] <= 1, 0., N[MeanGraphDistance[Subgraph[g, #]]]],
+      Count[#, {"v", _}]} &]]]|>];
+
+(* The exact Ollivier-Ricci curvature of each edge of G, keyed by its sorted endpoints. *)
+edgeCurvatures[g_Graph] := Module[{vs = VertexList[g], dm, index},
+  If[EdgeCount[g] == 0, Return[<||>]];
+  dm = GraphDistanceMatrix[g]; index = AssociationThread[vs -> Range[Length[vs]]];
+  Association[Sort[List @@ #] -> ollivierEdge[g, dm, index, #[[1]], #[[2]]] & /@ EdgeList[g]]];
+
+(* k_v, exact: the mean curvature of v's edges, for each vertex of G with a neighbour, ascending. *)
+vertexCurvatureExact[g_Graph, kE_Association] := KeySort[Association[Function[v,
+  v -> Mean[Function[w, kE[Sort[{v, w}]]] /@ AdjacencyList[g, v]]] /@
+    Select[VertexList[g], VertexDegree[g, #] > 0 &]]];
+
+(* G', d_v over G' (50 digits), D and K_v over G' (50 digits); Missing[] when G' has fewer than
+   2 vertices. *)
+largestComponentGeometry[edges_List] := Module[{g = sgrStateGraph[edges], gp, vs, R, dv, D},
+  gp = Subgraph[g, Cases[sgrLargestIncidenceComponent[edges]["Largest"], {"v", x_} :> x]];
+  vs = VertexList[gp];
+  If[Length[vs] < 2, Return[Missing[]]];
+  R = GraphRadius[gp];
+  dv = Association[# -> N[Mean[Table[term[gp, #, r], {r, R}]], 50] & /@ vs];
+  D = Mean[Values[dv]];
+  <|"Dimensions" -> dv, "D" -> D,
+    "Ricci" -> Association[# -> Mean[Table[
+      6 (D + 2)/r^2 (1 - ball[gp, #, r] Gamma[D/2 + 1]/(Pi^(D/2) r^D)), {r, R}]] & /@ vs]|>];
+
+sgrVertexInvariants[edges_List] := Module[{g = sgrStateGraph[edges], lc},
+  lc = largestComponentGeometry[edges];
+  <|"LocalDimension" -> If[MissingQ[lc], {}, Values[lc["Dimensions"]]],
+    "OllivierRicciCurvature" -> Values[vertexCurvatureExact[g, edgeCurvatures[g]]],
+    "WolframRicciCurvatureScalar" -> If[MissingQ[lc], {}, Values[lc["Ricci"]]]|>];
+
+(* The per-vertex distributions' fixed ranges [lo, hi), each cut into 32 equal bins; a value
+   outside counts in the end bin. *)
+distributionRange = <|"LocalDimension" -> {0, 8}, "OllivierRicciCurvature" -> {-2, 1},
+  "WolframRicciCurvatureScalar" -> {-24, 8}|>;
+
+sgrPooledDistribution[values_List, name_String] := Module[
+  {n = Length[values], lo, hi, w, bin, counts, mn, mx, quantile, out},
+  If[n == 0, Return[<|"N" -> 0|>]];
+  {lo, hi} = distributionRange[name]; w = (hi - lo)/32;
+  (* A value within 10^-30 of a bin edge (d_v of 50 digits whose exact value is the edge, as
+     (Log[9] - Log[4])/(Log[3] - Log[2]) = 2) is on the edge and opens the bin above it. *)
+  bin[x_] := Module[{y = (x - lo)/w, k},
+    k = Round[y];
+    Clip[If[Abs[y - k] < 10^-30, k, Floor[y]], {0, 31}]];
+  counts = Counts[bin /@ values];
+  mn = Min[values]; mx = Max[values];
+  (* The bin holding the fraction q of the values, linear inside it from its lower edge to its
+     upper edge, the edges clipped to [Min, Max]; the first bin starts at Min and the last ends
+     at Max, since they hold the values outside the range. *)
+  quantile[q_] := Module[{t = q n, seen = 0, c, a, z},
+    Catch[
+      Do[c = Lookup[counts, b, 0];
+        If[c == 0 || seen + c < t, seen += c; Continue[]];
+        a = If[b == 0, mn, Max[lo + b w, mn]];
+        z = If[b == 31, mx, Min[lo + (b + 1) w, mx]];
+        Throw[Min[Max[a + (t - seen)/c (z - a), mn], mx]], {b, 0, 31}];
+      mx]];
+  out = <|"N" -> n, "Mean" -> N[Mean[values]],
+    "StandardDeviation" -> If[n > 1, N[StandardDeviation[values]], 0.],
+    "Min" -> N[mn], "Max" -> N[mx], "Median" -> N[quantile[1/2]], "Q1" -> N[quantile[1/4]],
+    "Q3" -> N[quantile[3/4]], "P10" -> N[quantile[1/10]], "P90" -> N[quantile[9/10]]|>;
+  If[mn != mx, out["Skewness"] = N[Skewness[values]]; out["Kurtosis"] = N[Kurtosis[values]]];
+  out["Histogram"] = Association[N[lo + # w] -> counts[#] & /@ Sort[Keys[counts]]];
+  out];
+
 sgrStateGeometry[edges_List] := Module[
-  {g, n, conn, R, vs, dims, d, ricci, dm, index, ollivier, local, mi, fisher, b2},
+  {g, n, conn, R, vs, dims, d, ricci, dm, index, ollivier, local, mi, fisher, b2, kE, kv, lc,
+   moran, corr},
   g = sgrStateGraph[edges];
   vs = VertexList[g]; n = Length[vs];
-  If[n == 0, Return[<|"GraphRadius" -> Missing[], "MeanEccentricity" -> Missing[],
-    "WolframHausdorffDimension" -> Missing[], "WolframRicciCurvatureScalar" -> Missing[],
-    "OllivierRicciCurvature" -> Missing[], "DegreeEntropy" -> Missing[],
-    "LocalEntropy" -> Missing[], "MutualInformation" -> Missing[],
-    "FisherInformation" -> Missing[]|>]];
+  If[n == 0, Return[AssociationMap[Missing[] &, geometryNames]]];
   conn = ConnectedGraphQ[g];
   R = If[conn, GraphRadius[g], Infinity];
   b2[v_] := VertexOutComponent[g, v, 2];
@@ -80,9 +162,16 @@ sgrStateGeometry[edges_List] := Module[
       N[Mean[Function[v, Mean[Function[w, Module[{bv = b2[v], bw = b2[w], both, uni},
         both = Length[Intersection[bv, bw]]; uni = Length[Union[bv, bw]];
         Max[0, Log2[both uni/(Length[bv] Length[bw])]]]] /@ AdjacencyList[g, v]]] /@ withNbr]]]];
-  dm = GraphDistanceMatrix[g]; index = AssociationThread[vs -> Range[n]];
-  ollivier = If[EdgeCount[g] == 0, Missing[],
-    N[Mean[ollivierEdge[g, dm, index, #[[1]], #[[2]]] & /@ EdgeList[g]]]];
+  kE = edgeCurvatures[g];
+  ollivier = If[EdgeCount[g] == 0, Missing[], N[Mean[Values[kE]]]];
+  (* Moran's I of k_v over the edges of G, and the correlation of k_v with the degree, over the
+     vertices with a neighbour; undefined when k_v (or the degree) is the same at each. *)
+  kv = vertexCurvatureExact[g, kE];
+  {moran, corr} = If[EdgeCount[g] == 0 || Min[kv] == Max[kv], {Missing[], Missing[]},
+    Module[{z = kv - Mean[kv], degs = VertexDegree[g, #] & /@ Keys[kv]},
+      {N[Length[kv]/EdgeCount[g] Total[z[#[[1]]] z[#[[2]]] & /@ EdgeList[g]]/Total[Values[z]^2]],
+       If[Min[degs] == Max[degs], Missing[], N[Correlation[Values[kv], degs]]]}]];
+  lc = largestComponentGeometry[edges];
   If[conn && R >= 1,
     dims = sgrVertexDimensions[g];
     d = N[Mean[Values[dims]]];
@@ -100,7 +189,13 @@ sgrStateGeometry[edges_List] := Module[
     "DegreeEntropy" -> degreeEntropy[g, vs],
     "LocalEntropy" -> local,
     "MutualInformation" -> mi,
-    "FisherInformation" -> fisher|>];
+    "FisherInformation" -> fisher,
+    "LargestComponentDimension" -> If[MissingQ[lc], Missing[], N[lc["D"]]],
+    "LocalDimensionMax" -> If[MissingQ[lc], Missing[], N[Max[Values[lc["Dimensions"]]]]],
+    "LocalDimensionStandardDeviation" -> If[MissingQ[lc], Missing[],
+      N[Sqrt[Mean[(Values[lc["Dimensions"]] - lc["D"])^2]]]],
+    "OllivierMoranI" -> moran,
+    "OllivierDegreeCorrelation" -> corr|>];
 
 sgrBallGrowth[edges_List] := Module[{g = sgrStateGraph[edges], R},
   If[!connectedQ[g] || VertexCount[g] < 2, Return[{}]];
@@ -162,13 +257,8 @@ sgrOverlapByDistance[vertexSets_List, dm_] := Module[
           If[w == 0, 0., N[Length[Intersection[sets[[i]], sets[[j]]]]/w]]]},
       {i, k}, {j, i + 1, k}], 1], #[[1]] =!= Infinity &], First -> Last]]];
 
-sgrVertexCurvature[edges_List] := Module[{g = sgrStateGraph[edges], vs, dm, index, k},
-  vs = VertexList[g];
-  If[EdgeCount[g] == 0, Return[<||>]];
-  dm = GraphDistanceMatrix[g]; index = AssociationThread[vs -> Range[Length[vs]]];
-  k = Association[Sort[List @@ #] -> ollivierEdge[g, dm, index, #[[1]], #[[2]]] & /@ EdgeList[g]];
-  KeySort[Association[Function[v, v -> N[Mean[Function[w, k[Sort[{v, w}]]] /@
-    AdjacencyList[g, v]]]] /@ Select[vs, VertexDegree[g, #] > 0 &]]]];
+sgrVertexCurvature[edges_List] := Module[{g = sgrStateGraph[edges]},
+  N[vertexCurvatureExact[g, edgeCurvatures[g]]]];
 
 sgrStateMatrices[vertexSets_List, edgeLists_List] := Module[{level, v, e},
   level[sets0_] := Module[{sets = DeleteDuplicates /@ sets0, u},
