@@ -31,6 +31,7 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <memory>
 #include <stdexcept>
 #include <vector>
 
@@ -247,8 +248,10 @@ TEST(CapacityOverflow, AnEngineThatDoesNotFitStopsAndReports) {
     ASSERT_GT(free_b, leave);
     void* hog = nullptr;
     ASSERT_EQ(cudaMalloc(&hog, free_b - leave), cudaSuccess);
+    // Freed when evolve throws as well: a leaked hog leaves every later test of the process
+    // without device memory.
+    const std::unique_ptr<void, cudaError_t (*)(void*)> hog_owner(hog, cudaFree);
     const hg_gpu::EvolveResult r = hg_gpu::evolve(growing_input(3));
-    cudaFree(hog);
     bool oom = false;
     for (const auto& w : r.warnings) oom = oom || w.kind == hg_gpu::ErrorKind::kDeviceOutOfMemory;
     EXPECT_TRUE(oom);
