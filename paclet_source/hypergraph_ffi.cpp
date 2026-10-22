@@ -2032,9 +2032,17 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                         ++by_rule[static_cast<int64_t>(sm.rule)];
                     });
                 });
-                for (const auto& p : points)
-                    hg::stats::add_class(weighted[p.step], p.class_hash, p.weight,
-                                         hg.state_invariants(p.class_hash));
+                // Each step's classes are added in a job of their own, in point order.
+                using Points = std::vector<const hg::stats::StepPoint*>;
+                std::map<uint32_t, Points> by_step;
+                for (const auto& p : points) by_step[p.step].push_back(&p);
+                std::vector<std::pair<hg::stats::StepInput*, const Points*>> step_jobs;
+                for (const auto& [step, ps] : by_step) step_jobs.emplace_back(&weighted[step], &ps);
+                on_workers(step_jobs.size(), [&](size_t i) {
+                    for (const hg::stats::StepPoint* p : *step_jobs[i].second)
+                        hg::stats::add_class(*step_jobs[i].first, p->class_hash, p->weight,
+                                             hg.state_invariants(p->class_hash));
+                });
                 std::map<uint32_t, uint64_t> events;
                 std::map<uint32_t, std::map<int64_t, uint64_t>> rule_counts;
                 hg::stats::events_from_multiplicities(
