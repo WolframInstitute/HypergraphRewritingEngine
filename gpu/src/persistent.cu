@@ -105,11 +105,15 @@ __device__ inline bool explore_admits(const DeviceState& ds, StateId canonical) 
                                       ds.exploration_probability);
 }
 
-// True when this release brings step d's count to zero.
+// True when this release brings step d's count to zero. The fence before the subtraction
+// publishes the released work's effects; the fence after the last one makes the selection's reads
+// see every released unit's candidates (verification/gpumc/step_selection_once.cpp).
 __device__ inline bool step_release(const DeviceState& ds, uint32_t d, uint32_t n) {
     if (ds.max_states_per_step == 0u || d >= ds.step_slots) return false;
-    __threadfence();   // the released work's effects before the count that admits the selection
-    return atomicSub(&ds.step_pending[d], n) == n;
+    __threadfence();
+    if (atomicSub(&ds.step_pending[d], n) != n) return false;
+    __threadfence();
+    return true;
 }
 
 // The steps below the first one with work hold tokens nothing would release: their selections
@@ -142,11 +146,20 @@ __device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
     // one starts, so a step's scan covers what was produced since the selection before it.
     __shared__ uint32_t s_next_start;
     const uint32_t start = sel.words[1];
-    const uint32_t n = min(*cand.counter, cand.capacity);
+    // Seeded entries of later steps claim candidate slots while this scan runs.
+    const uint32_t n = min(cuda::atomic_ref<uint32_t, cuda::thread_scope_device>(*cand.counter)
+                               .load(cuda::memory_order_relaxed),
+                           cand.capacity);
     if (tid == 0) { sel.words[0] = 0u; s_next_start = n; }
     __syncthreads();
     for (uint32_t i = start + tid; i < n; i += nt) {
         const MatchRecord& r = cand.at(i);
+        // Every unit of step s publishes its records before it releases, so a record still being
+        // written belongs to a later step: the next scan starts at or below it.
+        if (!match_published(r)) {
+            atomicMin(&s_next_start, i);
+            continue;
+        }
         if (r.step != s) {
             if (r.step > s) atomicMin(&s_next_start, i);
             continue;
