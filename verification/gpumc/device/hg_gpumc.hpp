@@ -26,8 +26,9 @@
 // Plain loads and stores are non-atomic, so GPUMC reports a race on any that conflict without
 // synchronisation; a volatile access is non-atomic here as well.
 //
-// HG_GPUMC_CALIBRATE_NO_THREADFENCE makes every __threadfence() a no-op: a calibration that
-// removes the engine's device-scope fences.
+// CALIBRATIONS of the engine's own code. HG_GPUMC_CALIBRATE_NO_THREADFENCE makes every
+// __threadfence() a no-op. HG_GPUMC_CALIBRATE_SPLIT_RMW makes atomicAdd and atomicCAS a load and a
+// separate store, so two threads can both take the value either one read.
 #include <pthread.h>
 
 #include <cstdint>
@@ -84,18 +85,19 @@ inline void block_barrier() {
     pthread_barrier_wait(&g_bar[t_block]);
 }
 
+// A collective's value as one 64-bit word, by conversion: a byte copy into a wider word would be
+// a mixed-size access, which GPUMC refuses.
 template <class T>
 inline uint64_t to_bits(T v) {
-    static_assert(sizeof(T) <= 8, "a warp collective moves at most 8 bytes");
-    uint64_t b = 0;
-    std::memcpy(&b, &v, sizeof(T));
-    return b;
+    static_assert(std::is_integral<T>::value || std::is_enum<T>::value || std::is_pointer<T>::value,
+                  "a warp collective moves an integer, an enum or a pointer");
+    if constexpr (std::is_pointer<T>::value) return reinterpret_cast<uint64_t>(v);
+    else return static_cast<uint64_t>(v);
 }
 template <class T>
 inline T from_bits(uint64_t b) {
-    T v;
-    std::memcpy(&v, &b, sizeof(T));
-    return v;
+    if constexpr (std::is_pointer<T>::value) return reinterpret_cast<T>(b);
+    else return static_cast<T>(b);
 }
 
 inline unsigned lane_of(unsigned src) { return src < lanes() ? src : lanes() - 1; }
@@ -207,7 +209,22 @@ inline const hg_gpumc::GridDim gridDim{};
         __VERIFIER_memory_scope_work_group();                       \
         return builtin(a, static_cast<T>(v), __ATOMIC_RELAXED);     \
     }
+#if defined(HG_GPUMC_CALIBRATE_SPLIT_RMW)
+template <class T, class U>
+HG_GPUMC_INLINE T atomicAdd(T* a, U v) {
+    __VERIFIER_memory_scope_device();
+    const T old = __atomic_load_n(a, __ATOMIC_RELAXED);
+    __VERIFIER_memory_scope_device();
+    __atomic_store_n(a, static_cast<T>(old + static_cast<T>(v)), __ATOMIC_RELAXED);
+    return old;
+}
+template <class T, class U>
+HG_GPUMC_INLINE T atomicAdd_block(T* a, U v) {
+    return atomicAdd(a, v);
+}
+#else
 HG_GPUMC_RMW(atomicAdd, __atomic_fetch_add)
+#endif
 HG_GPUMC_RMW(atomicSub, __atomic_fetch_sub)
 HG_GPUMC_RMW(atomicOr, __atomic_fetch_or)
 HG_GPUMC_RMW(atomicAnd, __atomic_fetch_and)
@@ -225,10 +242,20 @@ HG_GPUMC_INLINE T atomicExch(T* a, U v) {
 template <class T, class U, class V>
 HG_GPUMC_INLINE T atomicCAS(T* a, U expected, V desired) {
     T e = static_cast<T>(expected);
+#if defined(HG_GPUMC_CALIBRATE_SPLIT_RMW)
+    __VERIFIER_memory_scope_device();
+    const T seen = __atomic_load_n(a, __ATOMIC_RELAXED);
+    if (seen == e) {
+        __VERIFIER_memory_scope_device();
+        __atomic_store_n(a, static_cast<T>(desired), __ATOMIC_RELAXED);
+    }
+    return seen;
+#else
     __VERIFIER_memory_scope_device();
     __atomic_compare_exchange_n(a, &e, static_cast<T>(desired), false, __ATOMIC_RELAXED,
                                 __ATOMIC_RELAXED);
     return e;
+#endif
 }
 
 HG_GPUMC_INLINE void __threadfence() {

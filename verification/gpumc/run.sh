@@ -4,6 +4,7 @@
 #   verification/gpumc/run.sh <harness> [-D... ] [-- gpumc args]   one run, GPUMC's own output
 #   verification/gpumc/run.sh cells [harness[:cell]...]             cells checked (default: all)
 #   verification/gpumc/run.sh list                                   every cell, not run
+#   verification/gpumc/run.sh stop                                   kill every run.sh container
 #
 # GPUMC is a stateless model checker for scoped-RC11, the GPU memory model: threads are grouped
 # into CTAs and an access carries a scope. It is a fork of GenMC 0.9 on LLVM 14 and runs from a
@@ -58,9 +59,12 @@ CFLAGS+=" -include /src/verification/gpumc/device/genmc_libc.hpp -I /src/verific
 CFLAGS+=" -I /tmp/gpu/include -I /tmp/gpu/src -I /src/common/include"
 
 # run_raw <harness path relative to ROOT> <defines> <gpumc args>: GPUMC's output on stdout.
+# Containers are named hg-gpumc-<pid>-<n>. Killing run.sh (or the docker client under it) leaves
+# GPUMC running in its container; HG_GPUMC_TIMEOUT runs inside the container, and `run.sh stop`
+# kills every container run.sh started.
 run_raw() {
     local src="$1" defs="$2" gargs="$3"
-    docker run --rm -v "$ROOT:/src:ro" --entrypoint /bin/sh "$IMAGE" -c "
+    docker run --rm --name "hg-gpumc-$$-$RANDOM" -v "$ROOT:/src:ro" --entrypoint /bin/sh "$IMAGE" -c "
         cp -r /src/gpu /tmp/gpu &&
         find /tmp/gpu \( -name '*.cu' -o -name '*.hpp' \) -exec sed -i -E 's/<<<[^;]*>>>//g' {} + &&
         timeout ${HG_GPUMC_TIMEOUT:-0} genmc $gargs -- $CFLAGS $defs /src/$src
@@ -112,13 +116,13 @@ run_cells() {
             execs="$(echo "$out" | sed -n 's/^Number of complete executions explored: //p' | tail -1)"
             if [ $rc -eq 124 ]; then
                 verdict=TIMEOUT
-            elif echo "$out" | grep -q "^Races Detected"; then
+            elif grep -q "^Races Detected" <<< "$out"; then
                 verdict=FAIL
-            elif [ $rc -eq 0 ] && echo "$out" | grep -q "No errors were detected" && [ "${execs:-0}" -gt 0 ]; then
+            elif [ $rc -eq 0 ] && grep -q "No errors were detected" <<< "$out" && [ "${execs:-0}" -gt 0 ]; then
                 verdict=PASS
-            elif [ $rc -eq 0 ] && echo "$out" | grep -q "No errors were detected"; then
+            elif [ $rc -eq 0 ] && grep -q "No errors were detected" <<< "$out"; then
                 verdict=BLOCKED
-            elif echo "$out" | grep -qE "Error detected|Assertion violation|Race detected|race"; then
+            elif grep -qE "Error detected|Assertion violation|Race detected|race" <<< "$out"; then
                 verdict=FAIL
             else
                 verdict="ERROR($rc)"
@@ -138,6 +142,10 @@ case "${1:-}" in
     "")
         sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
         exit 2 ;;
+    stop)
+        ids="$(docker ps -q --filter name=hg-gpumc-)"
+        [ -n "$ids" ] && docker kill $ids
+        exit 0 ;;
     list)
         for f in "$HERE"/*.cpp "$HERE"/checker/*.cpp; do
             p="${f#$ROOT/}"
