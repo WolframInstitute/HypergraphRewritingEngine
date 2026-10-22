@@ -5573,6 +5573,25 @@ TEST(StateStatistics, DeviceVertexCurvatureEqualsTheHost) {
 }
 #endif
 
+// hgmarshal::parallel_sort on host jobs gives std::sort's order: 300,007 pairs with repeats, and
+// a vector below the parallel threshold.
+TEST(GraphMarshal, ParallelSortEqualsTheSerialSort) {
+    uint64_t x = 0x9E3779B97F4A7C15ull;
+    std::vector<std::pair<int64_t, uint32_t>> v(300007);
+    for (auto& e : v) {
+        x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+        e = {static_cast<int64_t>(x % 50000) - 25000, static_cast<uint32_t>(x >> 40) % 7};
+    }
+    auto want = v;
+    std::sort(want.begin(), want.end());
+    hgmarshal::HostJobs jobs(4);
+    hgmarshal::parallel_sort(v, jobs.parallel_for());
+    EXPECT_EQ(v, want);
+    std::vector<std::pair<int64_t, int64_t>> small = {{3, 1}, {1, 2}, {3, 0}, {1, 2}};
+    hgmarshal::parallel_sort(small, jobs.parallel_for());
+    EXPECT_EQ(small, (std::vector<std::pair<int64_t, int64_t>>{{1, 2}, {1, 2}, {3, 0}, {3, 1}}));
+}
+
 // hgmarshal::branchial_steps on host jobs gives the BranchialSteps it gives on the calling
 // thread: 3000 states over 6 steps, with contents and with the branchial pairs.
 TEST(StateStatistics, BranchialStepsInJobsEqualTheSerialOnes) {

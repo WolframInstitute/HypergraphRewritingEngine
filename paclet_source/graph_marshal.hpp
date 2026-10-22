@@ -449,6 +449,44 @@ struct GraphEventFields {
     uint32_t input_raw = 0, output_raw = 0;
 };
 
+// Sorts `v` ascending. Above kParallelSortMin elements, kParallelSortRuns runs are sorted by
+// `par` and merged pairwise in rounds, each round's merges also by `par`. The run count does not
+// depend on the threads, and the element type's order is total, so the result is std::sort's.
+constexpr size_t kParallelSortMin = size_t{1} << 16;
+constexpr size_t kParallelSortRuns = 16;
+template <class T>
+void parallel_sort(std::vector<T>& v, const ParallelFor& par) {
+    const size_t n = v.size();
+    if (n < kParallelSortMin) {
+        std::sort(v.begin(), v.end());
+        return;
+    }
+    std::vector<size_t> bound(kParallelSortRuns + 1);
+    for (size_t r = 0; r <= kParallelSortRuns; ++r) bound[r] = n * r / kParallelSortRuns;
+    par(kParallelSortRuns, [&](size_t r) {
+        std::sort(v.begin() + static_cast<std::ptrdiff_t>(bound[r]),
+                  v.begin() + static_cast<std::ptrdiff_t>(bound[r + 1]));
+    });
+    std::vector<T> buf(n);
+    std::vector<T>* from = &v;
+    std::vector<T>* to = &buf;
+    for (size_t width = 1; width < kParallelSortRuns; width *= 2) {
+        const size_t merges = (kParallelSortRuns + 2 * width - 1) / (2 * width);
+        par(merges, [&](size_t m) {
+            const size_t lo = bound[std::min(kParallelSortRuns, 2 * width * m)];
+            const size_t mid = bound[std::min(kParallelSortRuns, 2 * width * m + width)];
+            const size_t hi = bound[std::min(kParallelSortRuns, 2 * width * (m + 1))];
+            std::merge(from->begin() + static_cast<std::ptrdiff_t>(lo),
+                       from->begin() + static_cast<std::ptrdiff_t>(mid),
+                       from->begin() + static_cast<std::ptrdiff_t>(mid),
+                       from->begin() + static_cast<std::ptrdiff_t>(hi),
+                       to->begin() + static_cast<std::ptrdiff_t>(lo));
+        });
+        std::swap(from, to);
+    }
+    if (from != &v) v.swap(*from);
+}
+
 // Appends item(w, i) for every i < n to `out` in order of i, the items written by `par` in
 // chunks of 256, each chunk into its own buffer.
 inline void write_items(wxf::Writer& out, size_t n, const ParallelFor& par,
@@ -845,8 +883,8 @@ wxf::WXFValue build_graph_data(const Source& src,
         const uint32_t num_events = src.num_raw_events();
 
         // The lowest raw id of each effective id, in effective-id order.
-        auto lowest_by_effective = [](std::vector<std::pair<int64_t, uint32_t>>& eff_raw) {
-            std::sort(eff_raw.begin(), eff_raw.end());
+        auto lowest_by_effective = [&](std::vector<std::pair<int64_t, uint32_t>>& eff_raw) {
+            parallel_sort(eff_raw, par);
             eff_raw.erase(std::unique(eff_raw.begin(), eff_raw.end(),
                                       [](const auto& x, const auto& y) { return x.first == y.first; }),
                           eff_raw.end());
@@ -859,7 +897,7 @@ wxf::WXFValue build_graph_data(const Source& src,
             std::vector<std::pair<int64_t, int64_t>> pairs;
             for (const auto& [producer, consumer] : src.causal_event_pairs())
                 pairs.emplace_back(src.effective_event_id(producer), src.effective_event_id(consumer));
-            std::sort(pairs.begin(), pairs.end());
+            parallel_sort(pairs, par);
             for (size_t i = 0; i < pairs.size();) {
                 size_t j = i;
                 while (j < pairs.size() && pairs[j] == pairs[i]) ++j;
@@ -1009,7 +1047,7 @@ wxf::WXFValue build_graph_data(const Source& src,
                     const int64_t b = src.effective_event_id(e2);
                     pairs.emplace_back(std::min(a, b), std::max(a, b));
                 }
-                std::sort(pairs.begin(), pairs.end());
+                parallel_sort(pairs, par);
                 pairs.erase(std::unique(pairs.begin(), pairs.end()), pairs.end());
                 for (const auto& [from, to] : pairs) {
                     if (!send_unique_edge(from, to, kEdgeBranchialEvent, 0)) continue;
