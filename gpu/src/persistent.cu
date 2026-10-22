@@ -559,6 +559,15 @@ __device__ __forceinline__ uint32_t readable_records(
     return claimed < found.capacity ? claimed : found.capacity;
 }
 
+// Lane 0's reading of the exit flag, on every lane. A worker loop's iterations are separated by
+// __syncthreads, which is defined only when every lane leaves the loop at the same iteration, and
+// lanes reading the flag each for themselves can disagree. The worker blocks are one warp
+// (kMatchBlockThreads) (verification/gpumc/exit_uniform.cpp).
+__device__ __forceinline__ bool block_exit_requested(
+        const typename TerminationDetector::DeviceView& term) {
+    return __shfl_sync(0xFFFFFFFFu, term.exit_requested() ? 1u : 0u, 0) != 0u;
+}
+
 // Spin budgets. Nothing in a correct run reaches them -- the detector fires and the workers
 // leave -- so hitting one means a DEFECT, and that is exactly why they exist.
 //
@@ -751,7 +760,7 @@ __global__ void k_persistent_match_rewrite(
         // role may still be producing -- so only the detector decides. Backed off, because a
         // grid of idle blocks re-polling the cursor words in a tight loop starves the blocks
         // holding work of memory bandwidth.
-        if (term.exit_requested()) return;
+        if (block_exit_requested(term)) return;
         if (threadIdx.x == 0) {
             __nanosleep(idle_ns);
             if (idle_ns < 4096u) idle_ns <<= 1;
@@ -1697,7 +1706,7 @@ __global__ void k_persistent_evolve(
             }
         }
 
-        if (term.exit_requested()) { flush_cycles(); return; }
+        if (block_exit_requested(term)) { flush_cycles(); return; }
         // Idle, and the detector has not released us. Counted, because a worker that can
         // neither find work nor be told to stop is the same defect from the other side.
         //
