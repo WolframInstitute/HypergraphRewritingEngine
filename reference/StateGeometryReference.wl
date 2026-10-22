@@ -167,8 +167,8 @@ sgrVertexCurvature[edges_List] := Module[{g = sgrStateGraph[edges], vs, dm, inde
   If[EdgeCount[g] == 0, Return[<||>]];
   dm = GraphDistanceMatrix[g]; index = AssociationThread[vs -> Range[Length[vs]]];
   k = Association[Sort[List @@ #] -> ollivierEdge[g, dm, index, #[[1]], #[[2]]] & /@ EdgeList[g]];
-  KeySort[Association[# -> N[Mean[k[Sort[{#, w}]] & /@ AdjacencyList[g, #]]] & /@
-    Select[vs, VertexDegree[g, #] > 0 &]]]];
+  KeySort[Association[Function[v, v -> N[Mean[Function[w, k[Sort[{v, w}]]] /@
+    AdjacencyList[g, v]]]] /@ Select[vs, VertexDegree[g, #] > 0 &]]]];
 
 sgrStateMatrices[vertexSets_List, edgeLists_List] := Module[{level, v, e},
   level[sets0_] := Module[{sets = DeleteDuplicates /@ sets0, u},

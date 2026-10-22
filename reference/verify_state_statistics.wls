@@ -313,8 +313,9 @@ Do[
               want = sgrStateMatrices[Union[Flatten[#Edges[[All, 2 ;;]]]] & /@ sts,
                 #Edges[[All, 2 ;;]] & /@ sts];
               KeyValueMap[Function[{name, w},
-                If[!ArrayQ[m[name], 2, NumericQ] || Dimensions[m[name]] =!= Dimensions[w] ||
-                    Max[Abs[m[name] - w]/Map[Max[1, Abs[#]] &, w, {2}]] > 10^-9,
+                If[!TrueQ[ArrayQ[m[name], 2, NumericQ] && ArrayQ[w, 2, NumericQ] &&
+                    Dimensions[m[name]] === Dimensions[w] &&
+                    Max[Abs[m[name] - w]/Map[Max[1, Abs[#]] &, w, {2}]] <= 10^-9],
                   AppendTo[bad, {rec["Step"], name}]];
                 If[(Head[m[name]] === SparseArray) =!= sparseMatrixQ[name, want] ||
                     (Head[m[name]] =!= SparseArray && !Developer`PackedArrayQ[m[name]]),
@@ -327,10 +328,11 @@ Do[
       {mode, {None, Automatic}}];
     Module[{res = HGEvolve[rules, init, steps, "States", "CanonicalizeStates" -> None,
         "IncludeVertexCurvature" -> True], bad},
+      (* A comparison that does not evaluate to True fails. *)
       bad = Select[Values[res], Module[{want = sgrVertexCurvature[#Edges[[All, 2 ;;]]],
           got = #VertexCurvature},
-        !AssociationQ[got] || Keys[got] =!= Keys[want] ||
-          (Length[want] > 0 && Max[Abs[Values[got] - Values[want]]] > 10^-9)] &];
+        !TrueQ[AssociationQ[got] && VectorQ[Values[want], NumericQ] && Keys[got] === Keys[want] &&
+          (Length[want] == 0 || Max[Abs[Values[got] - Values[want]]] <= 10^-9)]] &];
       If[bad === {},
         Print["PASS  ", name, " vertex curvature: ", Length[res], " states"],
         failures++; Print["FAIL  ", name, " vertex curvature: ", Short[bad[[1]], 6]]]];
