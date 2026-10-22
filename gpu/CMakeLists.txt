@@ -37,6 +37,7 @@ add_library(hg_gpu STATIC
     src/content_hash.cu
     src/branchial_rows.cu
     src/step_pool.cu
+    src/vertex_curvature.cu
     src/device_probe.cu
 )
 # The probe's message names the architectures this build carries kernels for. Commas, because a

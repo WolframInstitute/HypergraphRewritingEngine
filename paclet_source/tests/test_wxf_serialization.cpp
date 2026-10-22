@@ -36,6 +36,7 @@
 #ifdef HG_GPU_BACKEND
 #include "hg_gpu/branchial_rows.hpp"
 #include "hg_gpu/step_pool.hpp"
+#include "hg_gpu/vertex_curvature.hpp"
 #endif
 #include "hgcommon/affinity.hpp"
 #include "hgcommon/core.hpp"
@@ -5459,6 +5460,69 @@ TEST(StateStatistics, VertexCurvatureOfAPathAndACycle) {
     EXPECT_TRUE(hg::stats::vertex_curvature(E{{0, {5}}}).empty());
     EXPECT_TRUE(hg::stats::vertex_curvature(E{}).empty());
 }
+
+#ifdef HG_GPU_BACKEND
+// hg_gpu::vertex_curvature_device gives stats::vertex_curvature's values bit for bit: the path
+// and cycle above, a state with no edges, and 40 pseudo-random states of 1 to 400 edges of
+// arity 1 to 3 over up to 150 vertices, self-loops included, the larger ones past the device's
+// first scratch slice.
+TEST(StateStatistics, DeviceVertexCurvatureEqualsTheHost) {
+    using E = std::vector<std::pair<int64_t, std::vector<uint32_t>>>;
+    std::vector<E> states = {
+        {{0, {1, 2}}, {1, {2, 3}}, {2, {3, 4}}, {3, {7}}, {4, {8, 8}}},
+        {{0, {1, 2}}, {1, {2, 3}}, {2, {3, 4}}, {3, {4, 1}}},
+        {}};
+    uint64_t x = 0x9E3779B97F4A7C15ull;
+    auto next = [&x](uint32_t n) {
+        x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+        return static_cast<uint32_t>(x % n);
+    };
+    for (uint32_t s = 0; s < 40; ++s) {
+        const uint32_t m = 1 + next(s < 30 ? 60 : 400);
+        const uint32_t n = 2 + next(150);
+        E edges;
+        for (uint32_t e = 0; e < m; ++e) {
+            std::vector<uint32_t> v(1 + next(3));
+            for (auto& u : v) u = 10 + next(n);
+            edges.emplace_back(e, std::move(v));
+        }
+        states.push_back(std::move(edges));
+    }
+    std::vector<uint32_t> state_edges{0}, edge_verts{0}, verts, vertex_count;
+    std::vector<std::vector<uint32_t>> ids(states.size());
+    for (size_t i = 0; i < states.size(); ++i) {
+        for (const auto& e : states[i]) {
+            verts.insert(verts.end(), e.second.begin(), e.second.end());
+            edge_verts.push_back(static_cast<uint32_t>(verts.size()));
+            ids[i].insert(ids[i].end(), e.second.begin(), e.second.end());
+        }
+        state_edges.push_back(static_cast<uint32_t>(edge_verts.size() - 1));
+        std::sort(ids[i].begin(), ids[i].end());
+        ids[i].erase(std::unique(ids[i].begin(), ids[i].end()), ids[i].end());
+        vertex_count.push_back(static_cast<uint32_t>(ids[i].size()));
+    }
+    std::vector<double> k;
+    std::vector<uint64_t> k_off;
+    std::vector<uint8_t> done;
+    if (!hg_gpu::vertex_curvature_device(state_edges, edge_verts, verts, vertex_count, k, k_off,
+                                         done))
+        GTEST_SKIP() << "no usable device";
+    for (size_t i = 0; i < states.size(); ++i) {
+        ASSERT_TRUE(done[i]) << "state " << i;
+        hg::stats::VertexCurvature got;
+        for (size_t j = 0; j < ids[i].size(); ++j)
+            if (!std::isnan(k[k_off[i] + j])) got.emplace_back(ids[i][j], k[k_off[i] + j]);
+        const hg::stats::VertexCurvature want = hg::stats::vertex_curvature(states[i]);
+        ASSERT_EQ(got.size(), want.size()) << "state " << i;
+        for (size_t j = 0; j < want.size(); ++j) {
+            EXPECT_EQ(got[j].first, want[j].first) << "state " << i;
+            EXPECT_EQ(std::memcmp(&got[j].second, &want[j].second, sizeof(double)), 0)
+                << "state " << i << " vertex " << want[j].first << ": " << got[j].second
+                << " against " << want[j].second;
+        }
+    }
+}
+#endif
 
 // "StepStatisticsWeighting" -> "Classes" counts a class once; "States" counts its raw states.
 TEST(StateStatistics, WeightingByClassesCountsEachClassOnce) {

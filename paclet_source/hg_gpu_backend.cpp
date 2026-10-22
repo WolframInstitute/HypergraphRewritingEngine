@@ -8,6 +8,7 @@
 #include "hg_gpu/evolve.hpp"
 #include "hg_gpu/branchial_rows.hpp"
 #include "hg_gpu/step_pool.hpp"
+#include "hg_gpu/vertex_curvature.hpp"
 #include "hgcommon/quotient_replay_core.hpp"
 #include "hgcommon/quotient_causal_core.hpp"
 #include "hypergraph/ir_canonicalization.hpp"
@@ -18,6 +19,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <optional>
 #include <cstdint>
 #include <functional>
@@ -594,14 +596,61 @@ std::vector<uint8_t> run_gpu_evolution_once(const GpuJob& request, const HostBri
         const hgmarshal::ParallelFor par = reply_jobs().parallel_for();
         std::vector<int64_t> listed(emit.size());
         std::vector<uint64_t> listed_hash(emit.size());
+        // With "IncludeVertexCurvature" each record's edges (under Full its canonical form) are
+        // kept, with its vertices ascending, so the curvatures can run on the device before the
+        // records are written.
+        const bool curvature = job.include_vertex_curvature;
+        const bool full = canon_mode == hg_gpu::CanonicalizationMode::Full;
+        std::vector<std::vector<std::pair<int64_t, std::vector<uint32_t>>>> kept(
+            curvature ? emit.size() : 0);
+        std::vector<std::vector<uint32_t>> kept_vertices(curvature ? emit.size() : 0);
         {
             wxf::Writer unused;
             hgmarshal::write_items(unused, emit.size(), par, [&](wxf::Writer&, size_t i) {
                 listed[i] = static_cast<int64_t>(emit[i]);
-                listed_hash[i] = hgmarshal::content_hash_of(record_edges(emit[i]));
+                auto edges = record_edges(emit[i]);
+                listed_hash[i] = hgmarshal::content_hash_of(edges);
+                if (!curvature) return;
+                hgmarshal::state_record_edges(full, edges);
+                std::vector<uint32_t>& vs = kept_vertices[i];
+                for (const auto& e : edges) vs.insert(vs.end(), e.second.begin(), e.second.end());
+                std::sort(vs.begin(), vs.end());
+                vs.erase(std::unique(vs.begin(), vs.end()), vs.end());
+                kept[i] = std::move(edges);
             });
         }
         const auto content_id = hgmarshal::lowest_id_by_content(listed, listed_hash);
+        // The curvatures of the kept edges: hg_gpu::vertex_curvature_device, and on the host
+        // (stats::vertex_curvature) for a state the device could not take.
+        std::vector<hg::stats::VertexCurvature> curvatures(curvature ? emit.size() : 0);
+        if (curvature) {
+            std::vector<uint32_t> state_edges{0}, edge_verts{0}, verts, vertex_count;
+            for (size_t i = 0; i < emit.size(); ++i) {
+                for (const auto& e : kept[i]) {
+                    verts.insert(verts.end(), e.second.begin(), e.second.end());
+                    edge_verts.push_back(static_cast<uint32_t>(verts.size()));
+                }
+                state_edges.push_back(static_cast<uint32_t>(edge_verts.size() - 1));
+                vertex_count.push_back(static_cast<uint32_t>(kept_vertices[i].size()));
+            }
+            std::vector<double> k;
+            std::vector<uint64_t> k_off;
+            std::vector<uint8_t> done;
+            if (!hg_gpu::vertex_curvature_device(state_edges, edge_verts, verts, vertex_count, k,
+                                                 k_off, done))
+                done.assign(emit.size(), 0);
+            wxf::Writer unused;
+            hgmarshal::write_items(unused, emit.size(), par, [&](wxf::Writer&, size_t i) {
+                if (!done[i]) {
+                    curvatures[i] = hg::stats::vertex_curvature(kept[i]);
+                    return;
+                }
+                for (size_t j = 0; j < kept_vertices[i].size(); ++j) {
+                    const double v = k[k_off[i] + j];
+                    if (!std::isnan(v)) curvatures[i].emplace_back(kept_vertices[i][j], v);
+                }
+            });
+        }
         wxf::Writer w;
         w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
         w.write_varint(emit.size());
@@ -610,14 +659,19 @@ std::vector<uint8_t> run_gpu_evolution_once(const GpuJob& request, const HostBri
             out.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
             out.write(static_cast<int64_t>(s));
             hgmarshal::StreamRecordSink sink(out);
-            hgmarshal::write_state_record(sink,
-                hgmarshal::StateRecordIds{
-                    static_cast<int64_t>(s), rep_of(s),
-                    content_id.at(listed_hash[i]),
-                    static_cast<int64_t>(reported_step(s)),
-                    job.include_canonical_hashes, static_cast<int64_t>(state_hash.at(s)),
-                    job.include_vertex_curvature},
-                canon_mode == hg_gpu::CanonicalizationMode::Full, record_edges(s));
+            hgmarshal::StateRecordIds ids{
+                static_cast<int64_t>(s), rep_of(s),
+                content_id.at(listed_hash[i]),
+                static_cast<int64_t>(reported_step(s)),
+                job.include_canonical_hashes, static_cast<int64_t>(state_hash.at(s)),
+                curvature};
+            // The kept edges are already the record's (under Full, the canonical form).
+            if (curvature) {
+                ids.curvature = &curvatures[i];
+                hgmarshal::write_state_record(sink, ids, false, std::move(kept[i]));
+            } else {
+                hgmarshal::write_state_record(sink, ids, full, record_edges(s));
+            }
         });
         full_result.push_back({wxf::WXFValue("States"), wxf::WXFValue(wxf::Encoded{w.release_data()})});
     }

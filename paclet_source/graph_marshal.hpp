@@ -382,13 +382,16 @@ struct StateRecordIds {
     bool    with_hash;
     int64_t hash;
     bool    with_curvature = false;   // "IncludeVertexCurvature"
+    // The curvature already computed for the record's edges (the GPU engine computes it on the
+    // device); null computes it here.
+    const stats::VertexCurvature* curvature = nullptr;
 };
 
 // A "States" record. `edges` is the state's edges as (edge id, vertices). Under Full the record
 // carries the state's IR canonical form, its edges numbered from 0 in canonical order; otherwise
 // the edges as stored, under the edge ids an event's ConsumedEdges and ProducedEdges name.
 // IsInitial is the 0/1 integer a WXFValue(bool) stores. With r.with_curvature the record has
-// "VertexCurvature" (stats::vertex_curvature of the edges the record lists).
+// "VertexCurvature" (stats::vertex_curvature of the edges the record lists, or r.curvature).
 void state_record_edges(bool full,
                         std::vector<std::pair<int64_t, std::vector<uint32_t>>>& edges);
 template <class Sink>
@@ -403,7 +406,9 @@ void write_state_record(Sink& s, const StateRecordIds& r, bool full,
     s.edges("Edges", edges);
     s.i64("IsInitial", r.step == 0 ? 1 : 0);
     if (r.with_hash) s.i64("CanonicalHash", r.hash);
-    if (r.with_curvature) s.vertex_reals("VertexCurvature", stats::vertex_curvature(edges));
+    if (r.with_curvature)
+        s.vertex_reals("VertexCurvature",
+                       r.curvature ? *r.curvature : stats::vertex_curvature(edges));
 }
 
 // The fields of a state vertex's payload in a styled graph. The payload is <|Id, CanonicalId,
