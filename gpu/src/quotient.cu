@@ -312,7 +312,8 @@ void QeState::class_multiplicities_host(std::vector<ClassMultiplicity>& points,
     }
     for (const auto& [key, ms] : by_key)
         hgcommon::qm_expansion_state_pairs(
-            static_cast<uint32_t>(ms.size()), [&](uint32_t k) -> const HostMatch& { return ms[k]; },
+            static_cast<uint32_t>(ms.size()),
+            [&ms = ms](uint32_t k) -> const HostMatch& { return ms[k]; },
             [&, key = key](uint64_t a, uint64_t b) { state_pairs->push_back({key, a, b}); });
 }
 
