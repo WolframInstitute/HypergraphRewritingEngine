@@ -1,5 +1,6 @@
 #include "hg_gpu/step_pool.hpp"
 #include "hg_gpu/cuda_check.hpp"
+#include "hg_gpu/saturating.hpp"
 
 // The device side of docs/DEVICE_DESIGN.md 4.8's pooling: one thread per class point runs
 // hgcommon::sp_add_class, writing its entries at the point's offset (a prefix sum of the entry
@@ -35,15 +36,6 @@ struct SatAdd {
     __device__ uint64_t operator()(uint64_t a, uint64_t b) const { return hgcommon::qm_sat_add(a, b); }
 };
 
-__device__ inline void sat_add(uint64_t* p, uint64_t v) {
-    auto* q = reinterpret_cast<unsigned long long*>(p);
-    unsigned long long seen = *q, assumed;
-    do {
-        assumed = seen;
-        seen = atomicCAS(q, assumed, static_cast<unsigned long long>(hgcommon::qm_sat_add(assumed, v)));
-    } while (seen != assumed);
-}
-
 struct DeviceSink {
     uint64_t step_slot_base;   // step << 32
     uint64_t* step_slot;
@@ -58,13 +50,15 @@ struct DeviceSink {
         ++at;
     }
     __device__ void dist(uint32_t k, uint64_t n, uint64_t min_key, uint64_t max_key) {
-        sat_add(&totals[k].n, n);
+        saturating_add(reinterpret_cast<unsigned long long*>(&totals[k].n), n);
         atomicMin(reinterpret_cast<unsigned long long*>(&totals[k].min_key),
                   static_cast<unsigned long long>(min_key));
         atomicMax(reinterpret_cast<unsigned long long*>(&totals[k].max_key),
                   static_cast<unsigned long long>(max_key));
     }
-    __device__ void bin(uint32_t k, uint32_t b, uint64_t n) { sat_add(&totals[k].bins[b], n); }
+    __device__ void bin(uint32_t k, uint32_t b, uint64_t n) {
+        saturating_add(reinterpret_cast<unsigned long long*>(&totals[k].bins[b]), n);
+    }
 };
 
 struct CountSink {

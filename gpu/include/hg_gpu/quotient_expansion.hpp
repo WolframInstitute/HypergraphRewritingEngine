@@ -29,6 +29,7 @@
 #include "hg_gpu/cuda_check.hpp"
 #include "hg_gpu/exploration.hpp"   // DedupMap
 #include "hg_gpu/work_log.hpp"      // the replay's task log
+#include "hg_gpu/saturating.hpp"     // saturating_add -- the multiplicity counts
 #include "hgcommon/core.hpp"        // sort_u64
 #include "hgcommon/slot_core.hpp"  // slot_rank -- the frame-slot rule, shared with the host
 #include "hgcommon/quotient_replay_core.hpp"  // qr_apply -- the replay, and the identity it mints
@@ -570,17 +571,6 @@ __device__ inline QeRunsigClaim qe_claim_runsig(const DeviceState& ds, const QeV
     return {c.key, c.fresh};
 }
 
-// The saturating add of hgcommon::qm_sat_add on a device counter.
-__device__ inline void qe_qm_add(unsigned long long* counter, uint64_t delta) {
-    unsigned long long old = *reinterpret_cast<volatile unsigned long long*>(counter);
-    for (;;) {
-        const unsigned long long next = hgcommon::qm_sat_add(old, delta);
-        const unsigned long long seen = atomicCAS(counter, old, next);
-        if (seen == old) return;
-        old = seen;
-    }
-}
-
 // The storage face hgcommon/quotient_multiplicity_core.hpp drives; the host's
 // Hypergraph::QmCtx. The cascade queue is this driver's descent slice, kept as a heap on depth.
 struct DeviceQmCtx {
@@ -633,7 +623,7 @@ struct DeviceQmCtx {
     __device__ void add_mass(uint64_t class_hash, uint32_t depth, uint64_t delta) {
         const uint32_t p = point(class_hash, depth);
         if (p == UINT32_MAX) return;
-        qe_qm_add(&qe.qm_mass[p], delta);
+        saturating_add(&qe.qm_mass[p], delta);
     }
     __device__ uint64_t consumed(const QeMatchView& m, uint32_t depth) {
         const auto r = qe.qm_consumed.lookup(hgcommon::qr_apply_key(m.id, depth));
@@ -650,7 +640,7 @@ struct DeviceQmCtx {
         return false;
     }
     __device__ void count(uint64_t events) {
-        qe_qm_add(&qe.qm_counts[0], events);
+        saturating_add(&qe.qm_counts[0], events);
     }
     __device__ hgcommon::EventSignatureKeys keys() const { return qe.keys; }
     __device__ void note_signature(const QeMatchView& m, uint64_t from_class, uint32_t out_step) {

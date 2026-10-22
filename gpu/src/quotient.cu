@@ -80,7 +80,7 @@ __global__ void k_qe_count_branchial(const __grid_constant__ DeviceState ds, con
         uint64_t sum = 0;
         for (uint32_t w = 0; w < kCountBranchialBlock / 32; ++w)
             sum = hgcommon::qm_sat_add(sum, warp_sum[w]);
-        if (sum) qe_qm_add(&qe.qm_counts[1], sum);
+        if (sum) saturating_add(&qe.qm_counts[1], sum);
     }
 }
 
