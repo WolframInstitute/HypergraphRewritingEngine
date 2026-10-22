@@ -243,6 +243,25 @@ Module[{gFull, gDelta, sA, sB},
         Module[{g = HGSessionQuery[sB]}, {VertexCount[g], EdgeCount[g]}] === Last[gFull]];
   HGSessionClose[sB]];
 
+(* The same on the quotient reconstruction route, on a rule whose quotient session reaches
+   hundreds of events: the merged Delta graph equals the Full one at every depth, with no
+   HGEvolve::warn. *)
+Module[{qopts = {"CanonicalizeStates" -> Full, "ExploreFromCanonicalStatesOnly" -> True},
+    qrules = {{{1, 2}, {1, 3}} -> {{1, 2}, {1, 3}, {2, 3}}}, qinit = {{1, 2}, {1, 3}},
+    props = {"CausalGraphStructure", "EvolutionCausalGraphStructure"}, shape, gFull, gDelta,
+    sA, sB, warned = False},
+  shape[g_] := {VertexCount[#], EdgeCount[#]} & /@ g;
+  sA = HGSessionOpen[qrules, qinit, props, Sequence @@ qopts];
+  gFull = Table[shape[HGSessionStep[sA, 1]], {maxDepth}];
+  HGSessionClose[sA];
+  sB = HGSessionOpen[qrules, qinit, props, Sequence @@ qopts];
+  gDelta = Table[shape[Check[HGSessionStep[sB, 1, Automatic, "Delivery" -> "Delta"],
+      warned = True; $Failed, HGEvolve::warn]], {maxDepth}];
+  check["quotient: Delta delivery gives the SAME graphs as Full at every depth  " <>
+        ToString[gDelta], gDelta === gFull && Last[Last[gFull]][[2]] > 100];
+  check["quotient: Delta delivery is served without HGEvolve::warn", !warned];
+  HGSessionClose[sB]];
+
 (* A property the session's Open did not name is SERVED, not warned about. A session exists to be
    continued and queried in ways its Open cannot anticipate, so it records everything and a later
    Step or Query for an artifact Open never mentioned is answered like any other. The warning this

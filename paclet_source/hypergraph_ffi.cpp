@@ -1920,28 +1920,13 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             gopts.branchial_step = req.branchial_step;
             gopts.steps = req.steps;
             // DELTA DELIVERY is a session's, because only a session has a record of what it has
-            // already been sent. An `Evolve` has no history to be a delta against.
-            //
-            // REFUSED ON THE QUOTIENT RECONSTRUCTION ROUTE, and reported rather than silently
-            // downgraded. There the causal relation is REDUCED ON READ -- the stored base is a
-            // set and a DAG's transitive reduction is unique -- so an edge already SERVED can
-            // drop out of the reduction once a later path makes it redundant. A delta has no way
-            // to say "withdraw that edge", so the caller's merged graph would keep an edge the
-            // engine no longer serves. Retraction entries would fix it; until they exist the
-            // route delivers in full.
+            // already been sent. An `Evolve` has no history to be a delta against. On the quotient
+            // reconstruction route a Step only adds vertices and edges: the causal relation is the
+            // online transitive reduction, final for an event when the event is applied
+            // (hgcommon/quotient_replay_core.hpp), and the event vertex ids follow the replay's
+            // raw event order (Hypergraph::for_each_reconstructed_event).
             hgffi::DeliveryCursor* cursor = nullptr;
-            if (held_session && req.delivery_delta) {
-                if (recon.active) {
-                    req.ffi_warnings.push_back(
-                        {"OptionSkipped", 1,
-                         "Delivery -> \"Delta\" is not served on the quotient reconstruction "
-                         "route: its causal relation is reduced on read, so an edge already sent "
-                         "can leave the reduction, and a delta cannot withdraw one. This reply "
-                         "carries the whole graph."});
-                } else {
-                    cursor = &holder->delivery_cursor();
-                }
-            }
+            if (held_session && req.delivery_delta) cursor = &holder->delivery_cursor();
             if (held_session && !req.delivery_delta) holder->delivery_cursor().reset();
             full_result.push_back(
                 {wxf::WXFValue("GraphData"),

@@ -4686,6 +4686,69 @@ TEST(Session, AStepKeepsTheGraphItServed) {
     }
 }
 
+// "Delivery" -> "Delta" on the quotient reconstruction route: after the first delivery each
+// Step's reply is an increment (IsDelta 1, no OptionSkipped), and the increments merged into the
+// first delivery are the whole graph a full Query then gives, vertex records included.
+TEST(Session, ADeltaOnTheQuotientReconstructionIsAnIncrement) {
+#ifdef HG_GPU_BACKEND
+    GTEST_SKIP() << "the device delivers every graph whole under Delta";
+#endif
+    HostBridge host;
+    const std::vector<std::string> props = {"EvolutionCausalGraph", "CausalGraph", "StatesGraph",
+                                            "CausalGraphStructure"};
+    auto opts = [&](wxf::Writer& w) {
+        put_str_list_option(w, "GraphProperties", props);
+        put_str_option(w, "CanonicalizeStates", "Full");
+        put_str_option(w, "ExploreFromCanonicalStatesOnly", "True");
+    };
+    auto job = [&](int64_t steps, const char* op, int64_t h, bool delta) {
+        return session_envelope(kBranchSeed, kBranchLhs, kBranchRhs, steps, op, h,
+                                std::string(op) == "Open", {}, opts, 3, delta);
+    };
+    const auto opened = run_rewriting_core(job(1, "Open", 0, true), host);
+    const int64_t h = read_int_key(opened, "Session");
+    ASSERT_GT(h, 0);
+    std::map<std::string, DeliveredGraph> merged;
+    for (const auto& p : props) merged[p] = delivered_graph(opened, p);
+    for (int step = 0; step < 4; ++step) {
+        const auto out = run_rewriting_core(job(1, "Step", h, true), host);
+        EXPECT_FALSE(reply_mentions(out, "OptionSkipped")) << "step " << step;
+        for (const auto& p : props) {
+            DeliveredGraph d = delivered_graph(out, p);
+            // The Open's reply was not a session delivery, so the first Step's is whole.
+            EXPECT_EQ(d.is_delta, step == 0 ? 0 : 1) << p << " step " << step;
+            DeliveredGraph& m = merged[p];
+            if (d.is_delta != 1) m = DeliveredGraph{};
+            m.vertices.insert(d.vertices.begin(), d.vertices.end());
+            m.edges.insert(d.edges.begin(), d.edges.end());
+            for (auto& [k, v] : d.vertex_data) m.vertex_data[k] = v;
+        }
+    }
+    const auto full = run_rewriting_core(job(0, "Query", h, false), host);
+    auto missing = [](const auto& from, const auto& in) {
+        size_t n = 0;
+        for (const auto& x : from) n += in.count(x) == 0;
+        return n;
+    };
+    for (const auto& p : props) {
+        const DeliveredGraph f = delivered_graph(full, p);
+        const DeliveredGraph& m = merged[p];
+        EXPECT_EQ(f.is_delta, 0) << p;
+        EXPECT_GT(f.edges.size(), 0u) << p;
+        EXPECT_EQ(missing(m.vertices, f.vertices), 0u) << p << ": delivered, not in the graph";
+        EXPECT_EQ(missing(f.vertices, m.vertices), 0u) << p << ": in the graph, not delivered";
+        EXPECT_EQ(missing(m.edges, f.edges), 0u) << p << ": delivered, not in the graph";
+        EXPECT_EQ(missing(f.edges, m.edges), 0u) << p << ": in the graph, not delivered";
+        size_t records = 0;
+        for (const auto& [k, v] : f.vertex_data) {
+            const auto it = m.vertex_data.find(k);
+            records += it == m.vertex_data.end() || it->second != v;
+        }
+        EXPECT_EQ(records, 0u) << p << ": vertex records that differ from the graph's";
+    }
+    run_rewriting_core(job(0, "Close", h, false), host);
+}
+
 // The branchial graph keeps every branchial pair as an edge, so with all steps shown its edge
 // count is NumBranchialEdges. Under CanonicalizeStates -> Full sibling pairs reach the same two
 // classes, and a repeated pair in the same order was sent once while one in the other order was
