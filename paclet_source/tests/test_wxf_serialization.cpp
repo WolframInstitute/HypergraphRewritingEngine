@@ -4750,6 +4750,60 @@ TEST(Session, ADeltaOnTheQuotientReconstructionIsAnIncrement) {
     run_rewriting_core(job(0, "Close", h, false), host);
 }
 
+// "Delivery" -> "Delta" with "ShowGenesisEvents". Where a genesis event's id is taken above the
+// run's ids (the device on both routes, the host on the quotient reconstruction) it moves with
+// each Step, and the graphs are delivered whole with OptionSkipped; otherwise (the host's full
+// capture) each Step's reply is an increment. Either way the deliveries merged give the graph a
+// full Query gives. On the reconstruction the host's increments left each Step's moved genesis
+// vertices and edges in the merged graph.
+TEST(Session, ADeltaWithGenesisEvents) {
+    for (const char* explore : {"True", "False"}) {
+        SCOPED_TRACE(std::string("ExploreFromCanonicalStatesOnly ") + explore);
+#ifdef HG_GPU_BACKEND
+        const bool whole = true;
+#else
+        const bool whole = std::string(explore) == "True";
+#endif
+        HostBridge host;
+        const std::vector<std::string> props = {"CausalGraph", "EvolutionCausalGraph"};
+        auto opts = [&](wxf::Writer& w) {
+            put_str_list_option(w, "GraphProperties", props);
+            put_str_option(w, "CanonicalizeStates", "Full");
+            put_str_option(w, "ExploreFromCanonicalStatesOnly", explore);
+            put_str_option(w, "ShowGenesisEvents", "True");
+        };
+        auto job = [&](int64_t steps, const char* op, int64_t h, bool delta) {
+            return session_envelope(kBranchSeed, kBranchLhs, kBranchRhs, steps, op, h,
+                                    std::string(op) == "Open", {}, opts, 4, delta);
+        };
+        const auto opened = run_rewriting_core(job(1, "Open", 0, true), host);
+        const int64_t h = read_int_key(opened, "Session");
+        ASSERT_GT(h, 0);
+        std::map<std::string, DeliveredGraph> merged;
+        for (const auto& p : props) merged[p] = delivered_graph(opened, p);
+        for (int step = 0; step < 3; ++step) {
+            const auto out = run_rewriting_core(job(1, "Step", h, true), host);
+            EXPECT_EQ(reply_mentions(out, "OptionSkipped"), whole) << "step " << step;
+            for (const auto& p : props) {
+                DeliveredGraph d = delivered_graph(out, p);
+                if (whole) EXPECT_EQ(d.is_delta, 0) << p << " step " << step;
+                DeliveredGraph& m = merged[p];
+                if (d.is_delta != 1) m = DeliveredGraph{};
+                m.vertices.insert(d.vertices.begin(), d.vertices.end());
+                m.edges.insert(d.edges.begin(), d.edges.end());
+            }
+        }
+        const auto full = run_rewriting_core(job(0, "Query", h, false), host);
+        for (const auto& p : props) {
+            const DeliveredGraph f = delivered_graph(full, p);
+            const DeliveredGraph& m = merged[p];
+            EXPECT_EQ(m.vertices, f.vertices) << p;
+            EXPECT_EQ(m.edges, f.edges) << p;
+        }
+        run_rewriting_core(job(0, "Close", h, false), host);
+    }
+}
+
 // The branchial graph keeps every branchial pair as an edge, so with all steps shown its edge
 // count is NumBranchialEdges. Under CanonicalizeStates -> Full sibling pairs reach the same two
 // classes, and a repeated pair in the same order was sent once while one in the other order was

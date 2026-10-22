@@ -1925,9 +1925,20 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             // online transitive reduction, final for an event when the event is applied
             // (hgcommon/quotient_replay_core.hpp), and the event vertex ids follow the replay's
             // raw event order (Hypergraph::for_each_reconstructed_event).
+            // On that route a genesis event is reported at the replay's id bound plus its event
+            // id, which moves with each Step, so with ShowGenesisEvents the graphs are delivered
+            // whole and the reply says so.
+            const bool genesis_moves = recon.active && req.show_genesis_events;
             hgffi::DeliveryCursor* cursor = nullptr;
-            if (held_session && req.delivery_delta) cursor = &holder->delivery_cursor();
-            if (held_session && !req.delivery_delta) holder->delivery_cursor().reset();
+            if (held_session && req.delivery_delta && !genesis_moves)
+                cursor = &holder->delivery_cursor();
+            if (held_session && !cursor) holder->delivery_cursor().reset();
+            if (held_session && req.delivery_delta && genesis_moves)
+                req.ffi_warnings.push_back(
+                    {"OptionSkipped", 1,
+                     "Delivery -> \"Delta\" with ShowGenesisEvents is not served on the quotient "
+                     "reconstruction: a genesis event's id moves with each Step. This reply "
+                     "carries the whole graph."});
             full_result.push_back(
                 {wxf::WXFValue("GraphData"),
                  hgmarshal::build_graph_data(gsrc, req.graph_properties, gopts, cursor,
