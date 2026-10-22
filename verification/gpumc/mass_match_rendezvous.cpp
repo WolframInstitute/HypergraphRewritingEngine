@@ -112,7 +112,7 @@ struct Ctx {
         expected = seen;
         return false;
     }
-    void count(uint64_t e, uint64_t) { sat_add(&g_events, e); }
+    void count(uint64_t e) { sat_add(&g_events, e); }
     hgcommon::EventSignatureKeys keys() const { return hgcommon::EVENT_SIG_NONE; }
     uint32_t frame_step(uint64_t, uint32_t f) const { return f; }
     void note_signature(const Match&, uint64_t, uint32_t) {}
@@ -125,7 +125,7 @@ struct Ctx {
         exch_dev(&g_queued_c, 0);
         return true;
     }
-    template <class F> void for_each_match(uint64_t h, F&& f) { if (h == kC) f(g_j); }
+    template <class F> void for_each_match(uint64_t h, uint32_t, F&& f) { if (h == kC) f(g_j); }
     void fence() { threadfence(); }
 };
 
