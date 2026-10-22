@@ -2721,6 +2721,7 @@ void Hypergraph::set_record_set(RecordSet r) {
     record_state_invariants_.store(r.state_invariants, std::memory_order_relaxed);
     record_relation_lists_.store(r.relation_lists, std::memory_order_relaxed);
     record_event_lists_.store(r.event_lists, std::memory_order_relaxed);
+    record_explored_branchial_.store(r.explored_branchial, std::memory_order_relaxed);
     qc_publish_applied_.store(hgcommon::qr_publishes_applications(r.branchial, r.relation_lists),
                               std::memory_order_relaxed);
     qc_keep_content_.store(hgcommon::qr_keeps_event_content(r), std::memory_order_relaxed);
@@ -2736,7 +2737,8 @@ RecordSet Hypergraph::record_set() const {
                      record_multiplicities_.load(std::memory_order_relaxed),
                      record_state_invariants_.load(std::memory_order_relaxed),
                      record_relation_lists_.load(std::memory_order_relaxed),
-                     record_event_lists_.load(std::memory_order_relaxed)};
+                     record_event_lists_.load(std::memory_order_relaxed),
+                     record_explored_branchial_.load(std::memory_order_relaxed)};
 }
 
 // The per-state event list and the branchial pair relation are recorded independently: they feed

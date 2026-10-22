@@ -253,7 +253,19 @@ struct RecordSet {
     // Under quotient exploration each reconstructed event's (from class, to class, rule) is kept
     // only when this or relation_lists is on (wpp depth 8 quotient: 180 MB).
     bool event_lists = true;
+    // The branchial pairs of the explored events, in the engine's own store (the host's
+    // CausalGraph, the device's branchial list). Off the quotient route that store is the
+    // branchial relation. On it the relation comes from the replay, and only
+    // "BranchialStateEdges" reads the store (records_explored_branchial).
+    bool explored_branchial = true;
 };
+
+// Whether a rewrite records its event's branchial pairs in the engine's own store: whenever
+// branchial is on, except on the quotient route (`quotient_route`) without explored_branchial.
+// Both engines call this.
+HG_HD inline bool records_explored_branchial(const RecordSet& r, bool quotient_route) {
+    return r.branchial && (!quotient_route || r.explored_branchial);
+}
 
 // Whether the replay publishes each application for the branchial enumeration
 // (hgcommon::qr_apply's want_branchial). Both engines call this.
@@ -280,7 +292,7 @@ HG_HD inline bool same_record_set(const RecordSet& a, const RecordSet& b) {
            a.state_events == b.state_events && a.raw_events == b.raw_events &&
            a.raw_counts_only == b.raw_counts_only && a.multiplicities == b.multiplicities &&
            a.state_invariants == b.state_invariants && a.relation_lists == b.relation_lists &&
-           a.event_lists == b.event_lists;
+           a.event_lists == b.event_lists && a.explored_branchial == b.explored_branchial;
 }
 
 

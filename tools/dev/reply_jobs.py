@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Write the hg_evolve jobs that docs/ARCHITECTURE.md ("Where each analysis runs") and
-docs/TUNING.md ("Quiet-box queue") measure, as WXF files in a directory.
+docs/TUNING.md ("Quiet-box queue") measure, and the wpp depth 8 quotient jobs whose peak RSS
+the explored-branchial store is measured on, as WXF files in a directory.
 
     python3 tools/dev/reply_jobs.py .scratch/jobs
     hg_evolve < .scratch/jobs/wpp_d7_q_graphs.wxf > reply.wxf
@@ -38,6 +39,10 @@ JOBS = {
                                      "StepStatisticsBranchial": ["Graph", "Overlap"]}),
     "wpp_d7_q_stats": job(7, dict(Q, RequestedData=["StepStatistics"])),
     "wpp_d8_q_stats": job(8, dict(Q, RequestedData=["StepStatistics"])),
+    "wpp_d8_q_counts": job(8, dict(Q, RequestedData=["NumStates", "NumEvents", "NumCausalEdges",
+                                                     "NumBranchialEdges"])),
+    "wpp_d8_q_branchial": job(8, dict(Q, RequestedData=["NumBranchialEdges"],
+                                      GraphProperties=["BranchialGraphStructure"])),
 }
 
 out = sys.argv[1]

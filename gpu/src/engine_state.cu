@@ -464,6 +464,8 @@ DeviceState EngineState::device() const {
         d.maintain_indices        = maintain_indices_ ? 1u : 0u;
         d.record_causal           = record_.causal ? 1u : 0u;
         d.record_branchial        = record_.branchial ? 1u : 0u;
+        d.record_explored_branchial =
+            hgcommon::records_explored_branchial(record_, quotient_causal_) ? 1u : 0u;
         d.record_invariants       = (record_.state_invariants && state_invariant_at_) ? 1u : 0u;
         d.state_invariant_at      = state_invariant_at_;
         d.invariant_pool          = invariant_pool_;

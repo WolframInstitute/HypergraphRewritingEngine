@@ -191,6 +191,8 @@ struct DeviceState {
     uint32_t replay_id_limit;
     uint32_t record_causal;
     uint32_t record_branchial;
+    // hgcommon::records_explored_branchial: the rewrite registers its event's branchial pairs.
+    uint32_t record_explored_branchial;
     // "StepStatistics" (RecordSet::state_invariants): each class's record, written by the warp
     // that creates the class (record_state_invariants_device) into invariant_pool at an offset
     // claimed from invariant_pool_used, in 8-byte words; state_invariant_at[sid] is that offset,
@@ -245,7 +247,7 @@ struct DeviceState {
     // Quotient route: when set, apply_one_match SKIPS the raw-edge producer/consumer
     // rendezvous; the replay reconstructs the relations (quotient_expansion.hpp), which is
     // schedule-independent where the raw rendezvous under quotient is not. Branchial
-    // registration stays on either way, as on the host.
+    // registration follows record_explored_branchial, as on the host.
     bool quotient_causal;
 
     // Index maintenance is lazy. Small states are matched by scanning their own

@@ -574,9 +574,14 @@ hgcommon::RecordSet record_set_for(const Job& job, const GraphPropertyNeeds& g) 
     r.relation_lists = job.include_causal_edges || job.include_branchial_edges || g.causal ||
                        g.branchial;
     r.event_lists = job.include_events || job.include_events_minimal || g.events;
+    // On the quotient route the explored events' own branchial pairs are read by the branchial
+    // state view and by the "StepStatisticsBranchial" steps of a full-capture run (Full states
+    // with Automatic events); the other branchial outputs read the replay.
+    r.explored_branchial = job.include_branchial_state_edges ||
+                           (job.include_step_statistics && job.step_statistics_branchial != 0);
     if (job.session_op == "Open")
         r.causal = r.branchial = r.state_events = r.raw_events = r.multiplicities =
-            r.state_invariants = r.relation_lists = r.event_lists = true;
+            r.state_invariants = r.relation_lists = r.event_lists = r.explored_branchial = true;
     return r;
 }
 

@@ -891,6 +891,52 @@ TEST(OracleCorpus, CountsOnlyReplayKeepsNoApplicationsOrContent) {
     EXPECT_GT(compared, 0u);
 }
 
+// On the quotient route the branchial relation comes from the replay, so the explored events'
+// own branchial pairs (the CausalGraph's store) are recorded only with
+// RecordSet::explored_branchial. Without it the store is empty and the observable branchial count
+// equals the count with it. Per corpus case under quotient exploration and under Full states with
+// Automatic events in full capture, at 1 and 8 threads.
+TEST(OracleCorpus, QuotientRouteRecordsExploredBranchialOnlyWhenAsked) {
+    auto run = [](const oracle::Case& c, bool explore, unsigned threads, bool explored) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        hg.set_event_signature_keys(explore ? hgcommon::EVENT_SIG_NONE
+                                            : hgcommon::EVENT_SIG_AUTOMATIC);
+        RecordSet rs{false, true, false};
+        rs.raw_events = true;
+        rs.explored_branchial = explored;
+        hg.set_record_set(rs);
+        ParallelEvolutionEngine e(&hg, threads);
+        e.set_explore_from_canonical_states_only(explore);
+        for (const auto& r : c.rules) e.add_rule(r);
+        e.evolve(c.init, c.measure_steps);
+        EXPECT_TRUE(hg.quotient_reconstruction()) << c.name;
+        return std::pair<uint64_t, size_t>{hg.observable_num_branchial(),
+                                           hg.causal_graph().num_branchial_edges()};
+    };
+    size_t stored = 0;
+    for (bool explore : {true, false})
+        for (unsigned threads : {1u, 8u})
+            for (const auto& c : oracle::corpus()) {
+                const auto with = run(c, explore, threads, true);
+                const auto without = run(c, explore, threads, false);
+                const std::string at = std::string(c.name) + (explore ? " quotient" : " full") +
+                                       " threads=" + std::to_string(threads);
+                EXPECT_EQ(without.first, with.first) << at;
+                EXPECT_EQ(without.second, 0u) << at;
+                stored += with.second;
+            }
+    EXPECT_GT(stored, 0u);
+    // Off the quotient route the store is the relation, explored_branchial or not.
+    RecordSet off{false, true, false};
+    off.explored_branchial = false;
+    EXPECT_TRUE(hgcommon::records_explored_branchial(off, false));
+    EXPECT_FALSE(hgcommon::records_explored_branchial(off, true));
+    off.branchial = false;
+    off.explored_branchial = true;
+    EXPECT_FALSE(hgcommon::records_explored_branchial(off, false));
+}
+
 // The multiplicity of a class at a depth is the number of raw states of that class at that step
 // of the unfolding. The reference is a full-capture run with no state identification, whose
 // states are the raw states; each is grouped by (step, canonical hash). The quotient run counts

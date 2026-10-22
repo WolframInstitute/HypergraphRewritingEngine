@@ -206,7 +206,7 @@ RewriteResult Rewriter::apply(
     if (rec.state_events) {
         hg_->record_state_event(result.event, input_state);
     }
-    if (rec.branchial) {
+    if (hgcommon::records_explored_branchial(rec, hg_->quotient_causal())) {
         hg_->record_branchial_overlaps(result.event, input_state, matched_edges, num_matched);
     }
 

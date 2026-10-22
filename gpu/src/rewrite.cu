@@ -550,8 +550,8 @@ __device__ AppliedMatch apply_one_match(const DeviceState& ds,
 
     // Under the quotient route the raw-edge rendezvous is off: the replay reconstructs the
     // relations (quotient_expansion.hpp), so which raw child wins the canonical slot does not
-    // decide them. Mirrors the rewriter.cpp gate. Branchial registration below stays on either
-    // way, as on the host.
+    // decide them. Mirrors the rewriter.cpp gate. Branchial registration below follows
+    // record_explored_branchial, as on the host.
     if (!ds.quotient_causal) {
     // 8. Causal rendezvous — producer side (our produced edges).
     const CausalViews causal(ds);
@@ -599,7 +599,7 @@ __device__ AppliedMatch apply_one_match(const DeviceState& ds,
     const unsigned long long t_causal = clock64();
 
     // 10. Branchial scan: our sibling events in the same input state.
-    if (ds.record_branchial)
+    if (ds.record_explored_branchial)
         register_branchial(ds, my_event, m.state_id, m.matched_edges, rule.num_lhs_edges);
 
     if (sub) {

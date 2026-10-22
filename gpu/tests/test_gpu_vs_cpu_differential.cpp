@@ -2573,6 +2573,17 @@ TEST(RecordSet, DeviceSkipsOnlyWhatItWasNotAskedFor) {
             << w.name << ": dropping branchial changed the causal relation";
         EXPECT_EQ(no_b.states.size(), all.states.size())
             << w.name << ": dropping branchial moved the states";
+
+        // RecordSet::explored_branchial off: on the quotient route the explored events' own
+        // pairs are not registered and the relation is the replay's; off it they are the
+        // relation and are registered either way (hgcommon::records_explored_branchial).
+        hgcommon::RecordSet no_explored{true, true, true};
+        no_explored.explored_branchial = false;
+        const auto no_e = run(no_explored);
+        EXPECT_EQ(no_e.branchial_edges.empty(), c.quotient) << w.name;
+        EXPECT_EQ(branchial_size(no_e), branchial_size(all)) << w.name;
+        EXPECT_EQ(no_e.observable_num_branchial(), all.observable_num_branchial()) << w.name;
+        EXPECT_FALSE(all.branchial_edges.empty()) << w.name;
     }
 }
 

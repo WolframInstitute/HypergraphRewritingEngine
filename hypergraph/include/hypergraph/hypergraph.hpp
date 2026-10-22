@@ -158,6 +158,7 @@ class Hypergraph {
     std::atomic<bool> record_state_invariants_{false};
     std::atomic<bool> record_relation_lists_{true};
     std::atomic<bool> record_event_lists_{true};
+    std::atomic<bool> record_explored_branchial_{true};
     // From the record set (hgcommon::qr_publishes_applications, qr_keeps_event_content,
     // qr_keeps_causal_pairs): the replay publishes each application to qc_inst_applied_, keeps
     // each event's content in qc_event_sig_, and keeps each causal pair in qc_causal_pairs_.
