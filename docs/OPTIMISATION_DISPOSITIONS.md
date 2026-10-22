@@ -481,8 +481,6 @@ quotient 1942 -> 1634 at one thread and 334 -> 152 at 32. The two few-class quot
 - Twin check (same_tokens, edge_token): 7-13% of one-thread full-multiway instructions. Comparing
   only the edges the two states do not share would skip the token reads of the shared ones,
   and with them the zero-token and repeated-token checks the test makes today.
-- GPU quotient replay: multirule d7 quotient takes 206 ms on the device against 23 ms on 16 CPU
-  threads, all of it in the persistent kernel's replay phase (DEVICE_DESIGN 4.6.3).
 - Paclet replies with graphs: a wpp depth 7 quotient job asking for States, Events, CausalEdges,
   StatesGraph and CausalGraph took about 2.0 s, 98% of its samples on the main thread building
   WXFValue trees and writing them (malloc/free about 30% of that thread); the engine's part is
@@ -510,3 +508,49 @@ quotient 1942 -> 1634 at one thread and 334 -> 152 at 32. The two few-class quot
   d8 quotient 3,272 then 5,430-5,748 ms -> 341 then 263 ms; the graph reply 3,704 then 6,528
   ms -> 1,833 then 1,845 ms.
   The ClangCL toolset is not installed on this box, so clang-cl was not measured.
+
+## rc3: the device quotient replay (2026-10-22)
+
+Instrument: temporary clock64 counters around each part of `qe_apply` (per lane, summed over the
+warp with shuffles and added once per warp step) and around the persistent kernel's replay branch
+(lane 0), on `bench_gpu_evolve <steps> 3 1 <workload>`, quotient, all records, counts only, RTX
+4090. Counts, not times: the box was not quiet. Branch cycles are the sum over warp steps of lane
+0's cycles across the replay branch; lane cycles are summed over lanes. Every row's reconstructed
+counts (causal edges, causal pairs, reduced pairs, branchial, instances) are equal across all
+variants.
+
+### CLOSED
+
+- **Child instances linked by their warp** (60e4e9f6). The push of each child instance onto its
+  (class, depth) list took 9.89e12 of the applications' 10.07e12 lane cycles on multirule d7: 16
+  list heads per (class, depth) shared by every lane of the grid. Each warp now links its
+  children of one list as one chain with one exchange (`push_warp`). Branch cycles: multirule d7
+  438.6e9 -> 8.67e9, bigpath d3 2,567e9 -> 42.6e9, cycle4 d6 6.86e9 -> 0.285e9, wpp d7 2.76e9 ->
+  2.59e9. 128 shards with one head per line measured no lower (multirule 10.3e9); after the change
+  the warp's wait at `push_warp` is the wait for its slowest lane.
+- **The replay's branchial count per instance node, one add per block.** `k_qe_count_branchial`
+  gave the count one thread per class, walking every instance of the class: on multirule d7 eight
+  threads walked 2,173,624 list nodes. One thread per node of the instance pool, summed per block
+  before one saturating add: at most 12 nodes per thread on 196,608 resident threads.
+
+### REFUTED
+
+- **Causal pairs appended to a log, with no dedup map.** A pair cannot repeat across
+  applications (the consumer is minted for the application), so the map's dedup is unused. With a
+  log claimed once per application, `record_causal` fell from 43.4e9 to 1.0e9 lane cycles on
+  multirule d7, and the branch cycles moved +8% (multirule, 8.67e9 -> 9.4e9), +36% (bigpath),
+  +15% (cycle4) and -31% (wpp): the time moved to the single-address atomics that follow it.
+  Not landed.
+- **Shared counters added once per group of converged lanes** (`cooperative_groups::
+  coalesced_threads`, for the event id, the instance record, id and claim block, the list node
+  and the task slot). Branch cycles: multirule d7 8.67e9 -> 11.1e9, wpp d7 2.59e9 -> 2.83e9,
+  cycle4 d6 equal, bigpath d3 42.6e9 -> 31.9e9; `descend` rose on every row (multirule 9.9e9 ->
+  24.3e9 lane cycles). Not landed.
+
+### OPEN, with the measurement
+
+- After the warp-linked children, the replay's lane cycles on multirule d7 are 1.55e11 in the
+  applications (`record_causal` 27%, `producer_at` 17%, `claim` 8%, `redundant` 7%, `descend` 6%,
+  `mint` 5%) and 1.02e11 waiting at the warp's link for its slowest lane. The device time against
+  the host's at 16 threads is in TUNING.md §4, Q11.
+
