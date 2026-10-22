@@ -848,5 +848,48 @@ void Writer::write<WXFValue>(const WXFValue& value) {
     }, value.data);
 }
 
+Pieces Pieces::of(std::vector<uint8_t> bytes) {
+    Pieces p;
+    p.parts.push_back(std::move(bytes));
+    return p;
+}
+
+size_t Pieces::size() const {
+    size_t n = 0;
+    for (const auto& part : parts) n += part.size();
+    return n;
+}
+
+std::vector<uint8_t> Pieces::join() && {
+    if (parts.size() == 1) return std::move(parts.front());
+    std::vector<uint8_t> out;
+    out.reserve(size());
+    for (const auto& part : parts) out.insert(out.end(), part.begin(), part.end());
+    return out;
+}
+
+Pieces association_pieces(std::vector<uint8_t> prefix, size_t prefix_entries,
+                          WXFValueAssociation&& entries) {
+    Pieces p;
+    Writer w;
+    w.write_header();
+    w.write_byte(static_cast<uint8_t>(Token::Association));
+    w.write_varint(prefix_entries + entries.size());
+    p.parts.push_back(w.release_data());
+    if (!prefix.empty()) p.parts.push_back(std::move(prefix));
+    for (auto& [key, value] : entries) {
+        w.write_byte(static_cast<uint8_t>(Token::Rule));
+        w.write(key);
+        if (auto* e = std::get_if<Encoded>(&value.data)) {
+            p.parts.push_back(w.release_data());
+            p.parts.push_back(std::move(e->bytes));
+        } else {
+            w.write(value);
+        }
+    }
+    if (w.size()) p.parts.push_back(w.release_data());
+    return p;
+}
+
 }  // namespace wxf
 }  // namespace HG_NAMESPACE

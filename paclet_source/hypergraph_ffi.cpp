@@ -592,7 +592,7 @@ static uint32_t admitted_branchial(hgffi::ParsedJob& req, bool warn = true) {
 // this file owns. Extracted for that reason -- run_rewriting_core's remaining length is the
 // CPU path, and this block was never part of it.
 
-static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge& host) {
+static wxf::Pieces run_gpu_job(hgffi::ParsedJob& req, const HostBridge& host) {
         // Sessions are served on the device: SessionState carries the identity maps and the
         // budget's frontier across calls, and run_session refuses to rebuild the engine. The
         // verb rides on the job and the backend answers it. The device applies the transition
@@ -667,7 +667,7 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
         if (req.show_progress) {
             core_progress(host, "HGEvolve: Starting GPU evolution...");
         }
-        std::vector<uint8_t> out = run_gpu_evolution(job, host);
+        wxf::Pieces out = run_gpu_evolution(job, host);
         if (req.show_progress) {
             core_progress(host, "HGEvolve: GPU evolution complete.");
         }
@@ -818,6 +818,11 @@ static void read_back_session_identity(hgffi::ParsedJob& req, const hypergraph::
 
 std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                                         const HostBridge& host) {
+    return run_rewriting_core_pieces(wxf_bytes, host).join();
+}
+
+wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
+                                      const HostBridge& host) {
     try {
         hgffi::ParsedJob req;
         parse_job(wxf_bytes, host, req);
@@ -887,10 +892,10 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
 #ifdef HG_GPU_BACKEND
             if (!on_cpu) return run_gpu_job(req, host);
             worker_session().close(req.session_handle);
-            return hgmarshal::session_ack(hgffi::SessionSlot::kNoSession);
+            return wxf::Pieces::of(hgmarshal::session_ack(hgffi::SessionSlot::kNoSession));
 #else
             worker_session().close(req.session_handle);
-            return hgmarshal::session_ack(hgffi::SessionSlot::kNoSession);
+            return wxf::Pieces::of(hgmarshal::session_ack(hgffi::SessionSlot::kNoSession));
 #endif
         }
 
@@ -1203,9 +1208,6 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         }
 
         // Build WXF output - only include requested data components
-        wxf::Writer wxf_writer;
-        wxf_writer.write_header();
-
         wxf::WXFValueAssociation full_result;
 
         // An `Open` retains the engine, and the reply has to carry the handle -- a session the
@@ -2140,39 +2142,34 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
             full_result.push_back({wxf::WXFValue("Warnings"), wxf::WXFValue(warn)});
         }
 
-        // Write the final top-level association: the streamed States/Events section
-        // blobs spliced ahead of the assembled remaining pairs. An Association is a
-        // flat concatenation of key->value entries, so emitting the header with the
-        // combined count, appending the pre-serialized section bytes, then writing
-        // each full_result pair yields the same byte stream as one combined value
-        // tree — without materializing the O(states+events) tree.
-        wxf_writer.reserve(1024 + sections.size()
-                           + 128 * static_cast<std::size_t>(full_result.size()));
-        wxf_writer.write_byte(static_cast<uint8_t>(wxf::Token::Association));
-        wxf_writer.write_varint(streamed_top_sections + full_result.size());
-        wxf_writer.append(sections.data());
-        for (const auto& [key, value] : full_result) {
-            wxf_writer.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
-            wxf_writer.write(key);
-            wxf_writer.write(value);
-        }
-        std::vector<uint8_t> wxf_data = wxf_writer.release_data();
-
         // Wire-size instrument: per-top-level-key serialized bytes, written to the file
         // HG_FFI_PAYLOAD_FILE names. Each value is re-serialized into a throwaway writer, so
         // the cost exists only when the instrument is on; the streamed States/Events sections
         // are reported as one line (they never pass through full_result).
-        if (const char* payload_file = std::getenv("HG_FFI_PAYLOAD_FILE")) {
+        const char* payload_file = std::getenv("HG_FFI_PAYLOAD_FILE");
+        std::vector<std::pair<std::string, size_t>> payload_sizes;
+        if (payload_file)
+            for (const auto& [key, value] : full_result) {
+                wxf::Writer wv;
+                wv.write(value);
+                payload_sizes.emplace_back(
+                    key.holds<std::string>() ? key.get<std::string>() : std::string("?"),
+                    wv.release_data().size());
+            }
+        const size_t sections_bytes = sections.size();
+
+        // The final top-level association: the streamed States/Events section bytes ahead of
+        // the remaining pairs, as pieces (wxf::association_pieces) whose concatenation is the
+        // reply, so the transport writes each section's bytes where they were built.
+        wxf::Pieces reply = wxf::association_pieces(sections.release_data(),
+                                                    streamed_top_sections, std::move(full_result));
+
+        if (payload_file) {
             if (std::FILE* pf = std::fopen(payload_file, "w")) {
-                std::fprintf(pf, "TOTAL\t%zu\n", wxf_data.size());
-                std::fprintf(pf, "States+Events(streamed)\t%zu\n", sections.size());
-                for (const auto& [key, value] : full_result) {
-                    wxf::Writer wv;
-                    wv.write(value);
-                    const std::string name =
-                        key.holds<std::string>() ? key.get<std::string>() : std::string("?");
-                    std::fprintf(pf, "%s\t%zu\n", name.c_str(), wv.release_data().size());
-                }
+                std::fprintf(pf, "TOTAL\t%zu\n", reply.size());
+                std::fprintf(pf, "States+Events(streamed)\t%zu\n", sections_bytes);
+                for (const auto& [name, n] : payload_sizes)
+                    std::fprintf(pf, "%s\t%zu\n", name.c_str(), n);
                 std::fclose(pf);
             }
         }
@@ -2182,7 +2179,7 @@ std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
         }
 
         undelivered_open.handle = 0;
-        return wxf_data;
+        return reply;
 
     } catch (const wxf::TypeError& e) {
         throw std::runtime_error(hgmarshal::valid_utf8(std::string("WXF TypeError: ") + e.what()));
@@ -2219,7 +2216,7 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
 
         HostBridge host;
 
-        std::vector<uint8_t> out = run_rewriting_core(wxf_bytes, host);
+        const wxf::Pieces out = run_rewriting_core_pieces(wxf_bytes, host);
         // The kernel process outlives the call: the evolution's pooled blocks are unmapped now.
         hypergraph::arena_trim_block_pool(hypergraph::kPooledBytesKeptBetweenJobs);
         HG_NAMESPACE::jobs::JobSlotPool::trim_retired_pools();
@@ -2230,8 +2227,13 @@ EXTERN_C DLLEXPORT int performRewriting(WolframLibraryData libData, mint argc, M
         if (err != LIBRARY_NO_ERROR) {
             return err;
         }
-        void* result_data = libData->numericarrayLibraryFunctions->MNumericArray_getData(result_array);
-        std::memcpy(result_data, out.data(), out.size());
+        auto* result_data = static_cast<uint8_t*>(
+            libData->numericarrayLibraryFunctions->MNumericArray_getData(result_array));
+        for (const auto& part : out.parts) {
+            if (part.empty()) continue;
+            std::memcpy(result_data, part.data(), part.size());
+            result_data += part.size();
+        }
         MArgument_setMNumericArray(res, result_array);
         return LIBRARY_NO_ERROR;
 

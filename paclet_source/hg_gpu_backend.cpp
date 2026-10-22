@@ -233,7 +233,7 @@ hg_gpu::PersistentEvolver& process_evolver() {
     return evolver;
 }
 
-std::vector<uint8_t> run_gpu_evolution_once(const GpuJob& request, const HostBridge& host);
+wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host);
 
 }  // namespace
 
@@ -242,7 +242,7 @@ uint64_t gpu_session_handle() { return held.handle; }
 // A job that throws leaves the worker as a fresh one would be: the evolver drops its engine
 // and storage and the device is reset (PersistentEvolver::release_after_failure), unless a
 // session is held, whose states live on that engine.
-std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& host) {
+wxf::Pieces run_gpu_evolution(const GpuJob& request, const HostBridge& host) {
     try {
         return run_gpu_evolution_once(request, host);
     } catch (...) {
@@ -253,7 +253,7 @@ std::vector<uint8_t> run_gpu_evolution(const GpuJob& request, const HostBridge& 
 
 namespace {
 
-std::vector<uint8_t> run_gpu_evolution_once(const GpuJob& request, const HostBridge& host) {
+wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host) {
     GpuJob job = request;
     if ((job.session_op == "Step" || job.session_op == "Query") && held.handle != 0 &&
         job.session_handle == held.handle) {
@@ -286,7 +286,7 @@ std::vector<uint8_t> run_gpu_evolution_once(const GpuJob& request, const HostBri
     if (is_close) {
         held.state.reset();
         held = HeldSession{};
-        return hgmarshal::session_ack(0);
+        return wxf::Pieces::of(hgmarshal::session_ack(0));
     }
 
     hg_gpu::EvolveResult result;
@@ -1446,8 +1446,6 @@ std::vector<uint8_t> run_gpu_evolution_once(const GpuJob& request, const HostBri
         full_result.push_back({wxf::WXFValue("Warnings"), wxf::WXFValue(warn)});
     }
 
-    wxf::Writer writer;
-    writer.write_header();
     // A session's result names the session, so the caller can Step it. Same key the CPU emits,
     // because a caller cannot tell which device answered and must not have to.
     if (held.handle != 0 && (is_open || is_step || is_query)) {
@@ -1469,7 +1467,7 @@ std::vector<uint8_t> run_gpu_evolution_once(const GpuJob& request, const HostBri
         full_result.push_back({wxf::WXFValue("Session"),
                                wxf::WXFValue(static_cast<int64_t>(held.handle))});
     }
-    writer.write(wxf::WXFValue(std::move(full_result)));
+    wxf::Pieces reply = wxf::association_pieces({}, 0, std::move(full_result));
     undelivered_open.armed = false;
     // An engine that could not be built at the grown size ends the run partial; the worker then
     // goes back to a fresh worker's footprint, as after a throw (run_gpu_evolution).
@@ -1479,13 +1477,12 @@ std::vector<uint8_t> run_gpu_evolution_once(const GpuJob& request, const HostBri
                         return w.kind == hg_gpu::ErrorKind::kDeviceOutOfMemory;
                     });
     if (grow_failed && held.handle == 0) {
-        std::vector<uint8_t> out = writer.release_data();
         result = hg_gpu::EvolveResult{};
         evolver.release_after_failure();
-        return out;
+        return reply;
     }
     evolver.recycle(std::move(result));
-    return writer.release_data();
+    return reply;
 }
 
 }  // namespace

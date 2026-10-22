@@ -421,6 +421,53 @@ TEST_F(WXFTest, Association) {
     EXPECT_TRUE(test_wolfram_roundtrip(writer.data()));
 }
 
+// association_pieces joined gives the bytes of the one association a Writer writes: a prefix of
+// two entries already written, then entries whose values are an Encoded expression, an integer
+// and a list. Each Encoded value is a run of its own; an empty prefix and no entries give the
+// header and an empty association.
+TEST_F(WXFTest, AssociationPiecesJoinToTheAssociation) {
+    wxf::Writer prefix;
+    prefix.write_key("A");
+    prefix.write(int64_t{1});
+    prefix.write_key("B");
+    prefix.write(std::string("two"));
+    wxf::Writer encoded;
+    encoded.write_function("List", 2);
+    encoded.write(int64_t{7});
+    encoded.write(int64_t{8});
+    const std::vector<uint8_t> enc = encoded.data();
+
+    wxf::Writer want;
+    want.write_header();
+    want.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+    want.write_varint(5);
+    want.append(prefix.data());
+    want.write_key("C");
+    want.append(enc);
+    want.write_key("D");
+    want.write(int64_t{-3});
+    want.write_key("E");
+    want.write(wxf::WXFValue(wxf::WXFValueList{wxf::WXFValue(int64_t{4})}));
+
+    wxf::WXFValueAssociation entries;
+    entries.push_back({wxf::WXFValue(std::string("C")), wxf::WXFValue(wxf::Encoded{enc})});
+    entries.push_back({wxf::WXFValue(std::string("D")), wxf::WXFValue(int64_t{-3})});
+    entries.push_back({wxf::WXFValue(std::string("E")),
+                       wxf::WXFValue(wxf::WXFValueList{wxf::WXFValue(int64_t{4})})});
+    wxf::Pieces p = wxf::association_pieces(prefix.data(), 2, std::move(entries));
+    EXPECT_EQ(p.size(), want.size());
+    bool encoded_run = false;
+    for (const auto& part : p.parts) encoded_run = encoded_run || part == enc;
+    EXPECT_TRUE(encoded_run);
+    EXPECT_EQ(std::move(p).join(), want.data());
+
+    wxf::Writer empty;
+    empty.write_header();
+    empty.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+    empty.write_varint(0);
+    EXPECT_EQ(wxf::association_pieces({}, 0, {}).join(), empty.data());
+}
+
 TEST_F(WXFTest, AssociationWithArbitraryKeys) {
     // Test Wolfram Language-generated WXF with complex arbitrary keys
     std::vector<uint8_t> wolfram_language_wxf = {

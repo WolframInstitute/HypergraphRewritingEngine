@@ -131,11 +131,12 @@ bool read_exact(size_t n, std::vector<uint8_t>& out) {
     return true;
 }
 
-void write_frame(const std::vector<uint8_t>& payload) {
+void write_frame(const HG_NAMESPACE::wxf::Pieces& payload) {
     uint8_t hdr[8];
     frame_header(static_cast<uint64_t>(payload.size()), hdr);
     std::fwrite(hdr, 1, 8, reply());
-    if (!payload.empty()) std::fwrite(payload.data(), 1, payload.size(), reply());
+    for (const auto& part : payload.parts)
+        if (!part.empty()) std::fwrite(part.data(), 1, part.size(), reply());
     std::fflush(reply());
 }
 
@@ -169,8 +170,9 @@ int run_one_shot(const HostBridge& host) {
         return kNoUsableDeviceExit;
     }
     try {
-        std::vector<uint8_t> out = run_rewriting_core(input, host);
-        if (!out.empty()) std::fwrite(out.data(), 1, out.size(), reply());
+        const HG_NAMESPACE::wxf::Pieces out = run_rewriting_core_pieces(input, host);
+        for (const auto& part : out.parts)
+            if (!part.empty()) std::fwrite(part.data(), 1, part.size(), reply());
         std::fflush(reply());
         return 0;
     } catch (const std::exception& e) {
@@ -211,8 +213,7 @@ int run_serve(const HostBridge& host_in) {
             continue;
         }
         try {
-            std::vector<uint8_t> out = run_rewriting_core(job, host);
-            write_frame(out);
+            write_frame(run_rewriting_core_pieces(job, host));
         } catch (const std::exception& e) {
             write_error_frame(e.what());
         }
@@ -325,9 +326,9 @@ int run_serve_socket(const HostBridge& host_in, const char* portfile) {
             if (!send_error_frame(g_no_device)) break;
             continue;
         }
-        std::vector<uint8_t> out;
+        HG_NAMESPACE::wxf::Pieces out;
         try {
-            out = run_rewriting_core(job, host);
+            out = run_rewriting_core_pieces(job, host);
         } catch (const std::exception& e) {
             release_job_memory();
             if (!send_error_frame(e.what())) break;
@@ -335,10 +336,15 @@ int run_serve_socket(const HostBridge& host_in, const char* portfile) {
         }
         release_job_memory();
         uint8_t hdr[8];
-        const uint64_t olen = out.size();
-        frame_header(olen, hdr);
+        frame_header(static_cast<uint64_t>(out.size()), hdr);
         if (!sock_send_all(conn, hdr, 8)) break;
-        if (olen && !sock_send_all(conn, out.data(), out.size())) break;
+        bool sent = true;
+        for (const auto& part : out.parts)
+            if (!part.empty() && !sock_send_all(conn, part.data(), part.size())) {
+                sent = false;
+                break;
+            }
+        if (!sent) break;
     }
     HG_CLOSESOCK(conn);
     HG_CLOSESOCK(listener);

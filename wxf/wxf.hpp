@@ -568,6 +568,23 @@ void Writer::write_association(const MapType& map) {
 template<>
 void Writer::write<WXFValue>(const WXFValue& value);
 
+// A WXF expression as consecutive byte runs whose concatenation is its bytes, so a large run
+// built elsewhere reaches the transport without being copied into one buffer.
+struct Pieces {
+    std::vector<std::vector<uint8_t>> parts;
+    // One run.
+    static Pieces of(std::vector<uint8_t> bytes);
+    size_t size() const;
+    // The runs joined into one buffer.
+    std::vector<uint8_t> join() &&;
+};
+
+// A WXF header and one association: the `prefix_entries` entries already written in `prefix`,
+// then `entries`. The value of an entry that is Encoded becomes a run of its own, moved out of
+// `entries`; the other bytes are written into the runs between them.
+Pieces association_pieces(std::vector<uint8_t> prefix, size_t prefix_entries,
+                          WXFValueAssociation&& entries);
+
 // Convenience functions for common operations
 template<typename T>
 std::vector<uint8_t> serialize(const T& value) {

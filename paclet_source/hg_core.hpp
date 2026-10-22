@@ -5,6 +5,8 @@
 #include <string>
 #include <functional>
 
+#include "wxf.hpp"   // wxf::Pieces
+
 // The bridge through which the host-agnostic evolution core reports progress.
 // The callback may be empty. There is no cooperative abort: the standalone
 // binary is aborted by the parent killing the process.
@@ -28,3 +30,7 @@ inline constexpr int kNoUsableDeviceExit = 3;
 // LibraryLink performRewriting contract. Throws std::exception on error.
 std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
                                         const HostBridge& host);
+// The same reply as consecutive byte runs (wxf::Pieces): each large section is a run of its
+// own, written by the transport without being joined first.
+HG_NAMESPACE::wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
+                                                    const HostBridge& host);

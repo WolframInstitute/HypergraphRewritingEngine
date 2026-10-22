@@ -149,7 +149,7 @@ struct GpuJob {
 // space, states are grouped by their host-recomputed IR canonical hash and one
 // entry is emitted per class; events stay raw so multiplicity (and counts)
 // match the CPU. Throws std::exception on error.
-std::vector<uint8_t> run_gpu_evolution(const GpuJob& job, const HostBridge& host);
+HG_NAMESPACE::wxf::Pieces run_gpu_evolution(const GpuJob& job, const HostBridge& host);
 
 // The handle of the device session this process holds, or 0.
 uint64_t gpu_session_handle();
