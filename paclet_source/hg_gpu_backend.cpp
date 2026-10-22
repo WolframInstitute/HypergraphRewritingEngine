@@ -66,6 +66,13 @@ void device_step_pool(const std::vector<uint64_t>& pool, bool weight_by_classes,
     }
 }
 
+// "StepStatisticsBranchial" -> "Graph" under quotient exploration: read from each expansion's
+// branchial pairs as output classes (hg::stats::branchial_from_multiplicities).
+bool reads_expansion_state_pairs(const GpuJob& job) {
+    return job.include_step_statistics && job.explore_from_canonical_states_only &&
+           (job.step_statistics_branchial & hg::stats::kBranchialGraph);
+}
+
 // Build a hg_gpu::EvolveInput from the parsed job. Rule vertices double as
 // pattern-variable indices; each initial state's vertices are remapped to
 // 0..n-1 (matching the FFI, so isomorphic roots share a representation).
@@ -158,6 +165,7 @@ hg_gpu::EvolveInput build_input(const GpuJob& job) {
         in.materialize_events = in.record.event_lists;
         // The reconstruction's genesis pairs: read by every reply that shows genesis events.
         in.genesis_pairs = job.show_genesis_events;
+        in.expansion_state_pairs = reads_expansion_state_pairs(job);
         // State contents: read by the state records, event records (their input and output
         // states), every graph (vertex data), step statistics, a host-computed CanonicalHash,
         // genesis events, the branchial state views, "GlobalEdges" and "StateBitvectors"; a
@@ -1077,6 +1085,19 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
                 static_cast<uint32_t>(run_steps), events, rule_counts);
             for (const auto& [step, n] : events) inputs[step].events = n;
             for (auto& [step, by_rule] : rule_counts) inputs[step].rule_counts = std::move(by_rule);
+            if (reads_expansion_state_pairs(job)) {
+                hg::stats::ExpansionStatePairs state_pairs;
+                for (const auto& p : result.expansion_state_pairs)
+                    state_pairs[p.expansion_key].emplace_back(p.a, p.b);
+                std::vector<std::vector<std::pair<uint64_t, uint64_t>>*> lists;
+                for (auto& [key, list] : state_pairs) lists.push_back(&list);
+                reply_jobs().parallel_for()(lists.size(), [&](size_t i) {
+                    hg::stats::unique_state_pairs(*lists[i]);
+                });
+                hg::stats::branchial_from_multiplicities(
+                    points, state_pairs, hgcommon::qc_expansions_by_depth(job.max_states_per_step),
+                    static_cast<uint32_t>(run_steps), inputs);
+            }
         } else {
             // Every class's record first: only the state that created the class wrote one, and
             // its id need not be the lowest of the class.
@@ -1095,7 +1116,7 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
         }
         // "StepStatisticsBranchial": from the device's branchial pairs and state contents.
         const uint32_t which = job.step_statistics_branchial;
-        if (which) {
+        if (which && !job.explore_from_canonical_states_only) {
             // Each event's output state by event id; kNoOutput for an id with no event.
             constexpr uint32_t kNoOutput = UINT32_MAX;
             std::vector<uint32_t> output_of;

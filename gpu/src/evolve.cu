@@ -543,7 +543,9 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         out.reconstructed_causal_edges = qc_counts.causal_edges;
         out.reconstructed_branchial = qc_counts.qm_branchial;
         if (qc_route && in.record.multiplicities)
-            qe_state_->class_multiplicities_host(out.class_multiplicities, out.class_rule_matches);
+            qe_state_->class_multiplicities_host(
+                out.class_multiplicities, out.class_rule_matches,
+                in.expansion_state_pairs ? &out.expansion_state_pairs : nullptr);
         // The relations are read back for a caller that will read the pairs. A counts-only run
         // reads the run identities and takes the causal counts from the replay's counters
         // (num_causal_pairs, num_reduced_pairs), as the host engine does.

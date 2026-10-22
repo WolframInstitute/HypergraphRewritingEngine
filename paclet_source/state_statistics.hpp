@@ -87,6 +87,24 @@ void events_from_multiplicities(
     bool by_depth, uint32_t steps, std::map<uint32_t, uint64_t>& events,
     std::map<uint32_t, std::map<int64_t, uint64_t>>& rule_counts);
 
+struct StepInput;
+
+// The output-class pairs of each expansion's branchial pairs (hgcommon::qm_expansion_state_pairs),
+// by expansion key, each pair once.
+using ExpansionStatePairs = std::unordered_map<uint64_t, std::vector<std::pair<uint64_t, uint64_t>>>;
+
+// Sorts `pairs` with each pair's smaller class first and removes repeats.
+void unique_state_pairs(std::vector<std::pair<uint64_t, uint64_t>>& pairs);
+
+// "StepStatisticsBranchial" -> "Graph" for a quotient run, from its multiplicities: each step's
+// BranchialStep has the step's classes as its states, each named by its canonical hash, and as
+// its pairs the output classes of the branchial pairs of the raw states one step earlier, read
+// from `state_pairs` by expansion key (as events_from_multiplicities reads its matches). This is
+// full capture's branchial graph of the step with each state named by its class.
+void branchial_from_multiplicities(const std::vector<StepPoint>& points,
+                                   const ExpansionStatePairs& state_pairs, bool by_depth,
+                                   uint32_t steps, std::map<uint32_t, StepInput>& inputs);
+
 // The geometry of one state (hgcommon/state_geometry_core.hpp): the values and the ball-growth
 // dimension at r = 1..R.
 struct StateGeometry {

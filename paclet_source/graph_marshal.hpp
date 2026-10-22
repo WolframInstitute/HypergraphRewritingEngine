@@ -613,16 +613,21 @@ bool reads_raw_counts_only(const Job& job, const GraphPropertyNeeds& g) {
 template <typename Job>
 hgcommon::RecordSet record_set_for(const Job& job, const GraphPropertyNeeds& g) {
     hgcommon::RecordSet r;
+    // The "StepStatisticsBranchial" steps of a full-capture run read the events and their
+    // branchial pairs; under quotient exploration they read the class expansions.
+    const bool step_branchial = job.include_step_statistics &&
+                                job.step_statistics_branchial != 0 &&
+                                !job.explore_from_canonical_states_only;
     r.causal = job.include_causal_edges || job.include_num_causal_edges || g.causal ||
                job.show_progress;
     r.branchial = job.include_branchial_edges || job.include_num_branchial_edges ||
                   job.include_branchial_state_edges || g.branchial || job.show_progress ||
-                  (job.include_step_statistics && job.step_statistics_branchial != 0);
+                  step_branchial;
     r.state_events = job.include_branchial_state_edges_all_siblings;
     r.raw_events = job.include_events || job.include_events_minimal || job.include_num_events ||
                    job.include_branchial_state_edges ||
                    job.include_branchial_state_edges_all_siblings || g.events || job.show_progress ||
-                   (job.include_step_statistics && job.step_statistics_branchial != 0);
+                   step_branchial;
     r.raw_counts_only = reads_raw_counts_only(job, g);
     r.multiplicities = job.include_step_statistics;
     r.state_invariants = job.include_step_statistics;
@@ -633,7 +638,7 @@ hgcommon::RecordSet record_set_for(const Job& job, const GraphPropertyNeeds& g) 
     // state view and by the "StepStatisticsBranchial" steps of a full-capture run (Full states
     // with Automatic events); the other branchial outputs read the replay.
     r.explored_branchial = job.include_branchial_state_edges ||
-                           (job.include_step_statistics && job.step_statistics_branchial != 0);
+                           step_branchial;
     if (job.session_op == "Open")
         r.causal = r.branchial = r.state_events = r.raw_events = r.multiplicities =
             r.state_invariants = r.relation_lists = r.event_lists = r.explored_branchial = true;

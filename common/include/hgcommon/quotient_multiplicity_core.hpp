@@ -111,6 +111,22 @@ HG_HD inline uint64_t qm_branchial_add(uint64_t total, uint64_t weight, uint64_t
     return qm_sat_add(total, qm_sat_mul(weight, class_pairs));
 }
 
+// The branchial pairs of one class expansion as pairs of output classes: f(a.to_hash, b.to_hash)
+// for every two of its n matches a before b whose consumed slots overlap (qr_consumed_overlap),
+// B(c) calls in all. Every raw state of the class applies every match of the expansion, so these
+// are the output-state classes of every raw state's branchial pairs. `at(i)` gives match i, with
+// to_hash, num_consumed, consumed(j) and consumed_ptr().
+template <class At, class F>
+HG_HD void qm_expansion_state_pairs(uint32_t n, At&& at, F&& f) {
+    for (uint32_t j = 1; j < n; ++j) {
+        const auto& b = at(j);
+        for (uint32_t i = 0; i < j; ++i) {
+            const auto& a = at(i);
+            if (qr_consumed_overlap(b.consumed_ptr(), b.num_consumed, a)) f(a.to_hash, b.to_hash);
+        }
+    }
+}
+
 // The cascade queue: a binary min-heap on `depth` over the caller's array. T has a `depth`
 // field; `n` counts the elements including the one being pushed, or before the pop.
 template <class T>

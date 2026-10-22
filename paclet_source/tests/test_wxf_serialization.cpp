@@ -42,6 +42,7 @@
 #include "hgcommon/core.hpp"
 #include "paclet_source/graph_marshal.hpp"
 #include "job_system/job_system.hpp"
+#include "reference/oracle_corpus.hpp"
 
 // Pin test for the FFI WXF serialization (run_rewriting_core), the LibraryLink /
 // standalone-binary output contract. This path has no wolframscript-free coverage
@@ -5756,6 +5757,131 @@ TEST(StateStatistics, VertexInvariantMomentsOfANarrowDistribution) {
     EXPECT_NEAR(number_at(*oll, "StandardDeviation"), std::sqrt(m2 * 450 / 449), 1e-15);
     EXPECT_NEAR(number_at(*oll, "Skewness"), m3 / std::pow(m2, 1.5), 1e-12);
     EXPECT_NEAR(number_at(*oll, "Kurtosis"), 2.5, 1e-12);
+}
+
+// "StepStatisticsBranchial" -> "Graph" under "ExploreFromCanonicalStatesOnly" gives the keys full
+// capture gives under "CanonicalizeStates" -> Full, step by step, on every oracle corpus case at
+// its oracle depth. Both runs are asked for the overlap keys too, which Full leaves out on both
+// routes with the same warning.
+TEST(StateStatistics, BranchialGraphUnderQuotientEqualsFullCapture) {
+    auto input = [](const oracle::Case& c, bool quotient) {
+        wxf::Writer w;
+        w.write_header();
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        w.write_varint(4);
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("InitialStates"));
+        EdgeList init;
+        for (const auto& e : c.init) {
+            Edge edge;
+            for (const auto v : e) edge.push_back(static_cast<int64_t>(v) + 1);
+            init.push_back(std::move(edge));
+        }
+        w.write(StateList{init});
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Rules"));
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        w.write_varint(c.rules.size());
+        auto side = [](const auto* edges, uint8_t n) {
+            EdgeList out;
+            for (uint8_t i = 0; i < n; ++i) {
+                Edge edge;
+                for (uint8_t k = 0; k < edges[i].arity; ++k)
+                    edge.push_back(static_cast<int64_t>(edges[i].vars[k]) + 1);
+                out.push_back(std::move(edge));
+            }
+            return out;
+        };
+        for (size_t i = 0; i < c.rules.size(); ++i) {
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write("r" + std::to_string(i));
+            w.write_function("Rule", 2);
+            w.write(side(c.rules[i].lhs, c.rules[i].num_lhs_edges));
+            w.write(side(c.rules[i].rhs, c.rules[i].num_rhs_edges));
+        }
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Steps"));
+        w.write(static_cast<int64_t>(c.oracle_steps));
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Options"));
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        w.write_varint(4);
+        put_str_list_option(w, "RequestedData", {"StepStatistics"});
+        put_str_option(w, "CanonicalizeStates", "Full");
+        put_str_list_option(w, "StepStatisticsBranchial", {"Graph", "Overlap"});
+        put_str_option(w, "ExploreFromCanonicalStatesOnly", quotient ? "True" : "False");
+        return w.release_data();
+    };
+    size_t steps_with_edges = 0;
+    for (const auto& c : oracle::corpus()) {
+        HostBridge host;
+        const auto full = run_rewriting_core(input(c, false), host);
+        const auto quotient = run_rewriting_core(input(c, true), host);
+        const auto rows = branchial_record_bytes(full);
+        ASSERT_FALSE(rows.empty()) << c.name;
+        for (const auto& row : rows) {
+            ASSERT_GE(row.size(), 3u) << c.name;
+            EXPECT_EQ(row[0].first, "BranchialDegree") << c.name;
+        }
+        EXPECT_EQ(branchial_record_bytes(quotient), rows) << c.name;
+        EXPECT_FALSE(reply_mentions(quotient, "not computed under ExploreFromCanonicalStatesOnly"))
+            << c.name;
+        EXPECT_TRUE(reply_mentions(quotient, "overlap metrics need CanonicalizeStates")) << c.name;
+        for (const auto& row : rows)
+            for (const auto& [k, v] : row)
+                if (k == "BranchialDimension") ++steps_with_edges;
+    }
+    // Some step of the corpus has a branchial component of two or more states.
+    EXPECT_GT(steps_with_edges, 0u);
+
+    // A Query of a quotient session that does not repeat "ExploreFromCanonicalStatesOnly" is
+    // served under the session's exploration: every single-rule corpus case, opened and stepped
+    // to its oracle depth.
+    auto opts = [](bool with_explore) {
+        return [with_explore](wxf::Writer& w) {
+            put_str_list_option(w, "RequestedData", {"StepStatistics"});
+            put_str_option(w, "CanonicalizeStates", "Full");
+            put_str_list_option(w, "StepStatisticsBranchial", {"Graph"});
+            if (with_explore) put_str_option(w, "ExploreFromCanonicalStatesOnly", "True");
+        };
+    };
+    auto side = [](const auto* edges, uint8_t n) {
+        EdgeList out;
+        for (uint8_t i = 0; i < n; ++i) {
+            Edge edge;
+            for (uint8_t k = 0; k < edges[i].arity; ++k)
+                edge.push_back(static_cast<int64_t>(edges[i].vars[k]) + 1);
+            out.push_back(std::move(edge));
+        }
+        return out;
+    };
+    for (const auto& c : oracle::corpus()) {
+        if (c.rules.size() != 1) continue;
+        EdgeList init;
+        for (const auto& e : c.init) {
+            Edge edge;
+            for (const auto v : e) edge.push_back(static_cast<int64_t>(v) + 1);
+            init.push_back(std::move(edge));
+        }
+        const EdgeList lhs = side(c.rules[0].lhs, c.rules[0].num_lhs_edges);
+        const EdgeList rhs = side(c.rules[0].rhs, c.rules[0].num_rhs_edges);
+        auto job = [&](int64_t steps, const std::string& op, int64_t h, bool explore) {
+            return session_envelope(StateList{init}, lhs, rhs, steps, op, h,
+                                    op == "Evolve" || op == "Open", {}, opts(explore),
+                                    explore ? 4 : 3, false);
+        };
+        HostBridge host;
+        const auto direct = run_rewriting_core(job(c.oracle_steps, "Evolve", 0, true), host);
+        const int64_t handle = read_int_key(run_rewriting_core(job(0, "Open", 0, true), host),
+                                            "Session");
+        ASSERT_NE(handle, 0) << c.name;
+        run_rewriting_core(job(c.oracle_steps, "Step", handle, true), host);
+        const auto queried = run_rewriting_core(job(0, "Query", handle, false), host);
+        run_rewriting_core(job(0, "Close", handle, false), host);
+        const auto want = branchial_record_bytes(direct);
+        ASSERT_FALSE(want.empty()) << c.name;
+        EXPECT_EQ(branchial_record_bytes(queried), want) << c.name;
+    }
 }
 
 // Through the FFI: the options are read, the branchial keys appear under None and Automatic, and

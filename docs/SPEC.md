@@ -391,9 +391,7 @@ are defined from random walks or chosen source vertices, and their shortest-path
 eccentricity.
 
 **`StepStatistics` branchial metrics.** With `"StepStatisticsBranchial"`, each step's record
-gains per-step keys. Neither kind is computed under `"ExploreFromCanonicalStatesOnly" -> True`,
-which stores one state per class; the run warns instead. Both devices compute them and give
-the same reply.
+gains per-step keys. Both devices compute them and give the same reply.
 
 `"Graph"`: the branchial graph of step s has the step's states (by the run's state identity) as
 vertices, and joins the output states of every branchial pair whose first event's output state
@@ -403,6 +401,12 @@ summary of the distances between every two states in one component, `BranchialCo
 number of components, and `BranchialDimension` the `WolframHausdorffDimension` of the largest
 component (most states, then the greatest dimension), absent when that component has fewer than
 2 states.
+Under `"ExploreFromCanonicalStatesOnly" -> True` the graph of step s has the classes at step s
+as vertices and joins the output classes of every two overlapping matches of each class at step
+s - 1 (`hgcommon::qm_expansion_state_pairs`). Every raw state of a class applies every match of
+the class, so this is the full-capture graph under `"CanonicalizeStates" -> Full`, and the keys
+are equal. *(Gate: `StateStatistics.BranchialGraphUnderQuotientEqualsFullCapture`, every oracle
+corpus case, both engines.)*
 
 `"Overlap"`: each state at the step is its set of vertices. The engine gives a new vertex a new
 id, so two states share a vertex exactly when both inherited it from a common ancestor, and the

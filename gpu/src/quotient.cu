@@ -251,9 +251,11 @@ QeState::Counters QeState::counters_from(const uint32_t* v, const unsigned long 
 uint32_t QeState::num_matches_host() { return matches_.size_host(); }
 
 void QeState::class_multiplicities_host(std::vector<ClassMultiplicity>& points,
-                                        std::vector<ClassRuleMatches>& matches) {
+                                        std::vector<ClassRuleMatches>& matches,
+                                        std::vector<ExpansionStatePair>* state_pairs) {
     points.clear();
     matches.clear();
+    if (state_pairs) state_pairs->clear();
     uint32_t cursor = 0;
     HG_CUDA_CHECK(cudaMemcpy(&cursor, counters_ + 10, sizeof(uint32_t), cudaMemcpyDeviceToHost),
                   "QeState multiplicity cursor read");
@@ -280,6 +282,38 @@ void QeState::class_multiplicities_host(std::vector<ClassMultiplicity>& points,
     for (const auto& r : refs)
         if (r.value.record < recs.size()) ++count[{r.value.from_key, recs[r.value.record].rule}];
     for (const auto& [k, c] : count) matches.push_back({k.first, k.second, c});
+    if (!state_pairs) return;
+
+    // Each expansion's matches with their consumed slots, read from the slot arena.
+    struct HostMatch {
+        uint64_t to_hash;
+        uint32_t num_consumed;
+        const uint32_t* slots;
+        __host__ __device__ uint32_t consumed(uint32_t j) const { return slots[j]; }
+        __host__ __device__ const uint32_t* consumed_ptr() const { return slots; }
+    };
+    size_t words = 0;
+    for (const auto& r : refs)
+        if (r.value.record < recs.size()) {
+            const DeviceSlotMatch& m = recs[r.value.record];
+            words = std::max<size_t>(words, size_t{m.arr_offset} + m.num_consumed);
+        }
+    words = std::min<size_t>(words, arr_cap_);
+    std::vector<uint32_t> arr(words);
+    if (words)
+        HG_CUDA_CHECK(cudaMemcpy(arr.data(), arr_, sizeof(uint32_t) * words,
+                                 cudaMemcpyDeviceToHost), "QeState expansion slot read");
+    std::map<uint64_t, std::vector<HostMatch>> by_key;
+    for (const auto& r : refs) {
+        if (r.value.record >= recs.size()) continue;
+        const DeviceSlotMatch& m = recs[r.value.record];
+        if (size_t{m.arr_offset} + m.num_consumed > words) continue;
+        by_key[r.value.from_key].push_back({m.to_hash, m.num_consumed, arr.data() + m.arr_offset});
+    }
+    for (const auto& [key, ms] : by_key)
+        hgcommon::qm_expansion_state_pairs(
+            static_cast<uint32_t>(ms.size()), [&](uint32_t k) -> const HostMatch& { return ms[k]; },
+            [&, key = key](uint64_t a, uint64_t b) { state_pairs->push_back({key, a, b}); });
 }
 
 uint32_t QeState::num_raw_events_host() {

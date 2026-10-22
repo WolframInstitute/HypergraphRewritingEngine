@@ -1451,9 +1451,11 @@ public:
     uint32_t num_matches_host();
 
     // The multiplicity count's (class, depth, m) points with m > 0, and each class's captured
-    // matches per rule as (class, rule, count). Read after the run.
+    // matches per rule as (class, rule, count). With `state_pairs`, each expansion's branchial
+    // pairs as output classes (hgcommon::qm_expansion_state_pairs). Read after the run.
     void class_multiplicities_host(std::vector<ClassMultiplicity>& points,
-                                   std::vector<ClassRuleMatches>& matches);
+                                   std::vector<ClassRuleMatches>& matches,
+                                   std::vector<ExpansionStatePair>* state_pairs = nullptr);
 
     // Raw events the replay minted: one per (instance, match) application. The host's
     // qc_next_raw_event_, and the number a quotient run reports as its raw event count.

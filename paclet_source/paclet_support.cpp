@@ -1581,6 +1581,27 @@ void events_from_multiplicities(
     }
 }
 
+void unique_state_pairs(std::vector<std::pair<uint64_t, uint64_t>>& pairs) {
+    for (auto& [a, b] : pairs)
+        if (a > b) std::swap(a, b);
+    std::sort(pairs.begin(), pairs.end());
+    pairs.erase(std::unique(pairs.begin(), pairs.end()), pairs.end());
+}
+
+void branchial_from_multiplicities(const std::vector<StepPoint>& points,
+                                   const ExpansionStatePairs& state_pairs, bool by_depth,
+                                   uint32_t steps, std::map<uint32_t, StepInput>& inputs) {
+    for (const auto& p : points) {
+        inputs[p.step].branchial.nodes.push_back(static_cast<int64_t>(p.class_hash));
+        if (p.step >= steps) continue;
+        auto it = state_pairs.find(hgcommon::qc_expansion_key(p.class_hash, p.step, by_depth));
+        if (it == state_pairs.end()) continue;
+        auto& to = inputs[p.step + 1].branchial.pairs;
+        for (const auto& [a, b] : it->second)
+            to.emplace_back(static_cast<int64_t>(a), static_cast<int64_t>(b));
+    }
+}
+
 void add_class(StepInput& in, uint64_t hash, uint64_t weight,
                const hgcommon::StateInvariantRecord* record) {
     if (!weight) return;

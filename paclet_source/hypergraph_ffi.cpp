@@ -555,19 +555,12 @@ static size_t effective_max_states_per_step(const hgffi::ParsedJob& req) {
 }
 
 // The "StepStatisticsBranchial" and "StepStatisticsMatrices" metrics a run computes, on either
-// engine: none under ExploreFromCanonicalStatesOnly, and no overlap or matrices under Full
-// states, since a Full class has no vertices of its own. Each one left out is warned about. Both
-// engines call this with the request alone, so the admission cannot depend on which
-// engine-internal route the run took. With `warn`, a warning for each one the options rule out.
+// engine: no overlap or matrices under Full states, since a Full class has no vertices of its
+// own. Each one left out is warned about. Both engines call this with the request alone, so the
+// admission cannot depend on which engine-internal route the run took. With `warn`, a warning
+// for each one the options rule out.
 static uint32_t admitted_branchial(hgffi::ParsedJob& req, bool warn = true) {
     uint32_t which = req.include_step_statistics ? req.step_statistics_branchial : 0u;
-    if (which && req.explore_from_canonical_states_only) {
-        if (warn)
-            req.ffi_warnings.push_back({"StepStatistics", 1,
-                "StepStatisticsBranchial and StepStatisticsMatrices are not computed under "
-                "ExploreFromCanonicalStatesOnly"});
-        which = 0;
-    }
     if ((which & hg::stats::kBranchialOverlap) && req.canonicalize_states_mode == "Full") {
         if (warn)
             req.ffi_warnings.push_back({"StepStatistics", 1,
@@ -814,6 +807,7 @@ static void read_back_session_identity(hgffi::ParsedJob& req, const hypergraph::
     req.event_signature_keys = hg.event_signature_keys();
     req.positional_event_identity = hg.positional_event_identity();
     req.show_genesis_events = engine.genesis_events();
+    req.explore_from_canonical_states_only = engine.explore_from_canonical_states_only();
 }
 
 std::vector<uint8_t> run_rewriting_core(const std::vector<uint8_t>& wxf_bytes,
@@ -2021,19 +2015,45 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
             // final only when the run is.
             const bool by_count = hg.quotient_multiplicity();
             std::map<uint32_t, hg::stats::StepInput> weighted;
+            // Under quotient exploration the branchial graphs come from the class expansions.
+            const bool quotient_graph = by_count && req.explore_from_canonical_states_only &&
+                                        (which & hg::stats::kBranchialGraph);
             if (by_count) {
                 std::vector<hg::stats::StepPoint> points;
                 // Keyed by the expansion each point replays (qc_expansion_key).
                 std::unordered_map<uint64_t, std::map<int64_t, uint64_t>> matches_by_rule;
+                hg::stats::ExpansionStatePairs state_pairs;
+                std::vector<std::vector<const hypergraph::SlotMatch*>> expansions;
+                std::vector<std::vector<std::pair<uint64_t, uint64_t>>*> expansion_pairs;
                 hg.for_each_class_multiplicity([&](uint64_t h, uint32_t d, uint64_t m) {
                     points.push_back({d, h, m});
                     const uint64_t key = hg.qc_expansion_key(h, d);
                     if (matches_by_rule.count(key)) return;
                     auto& by_rule = matches_by_rule[key];
+                    if (quotient_graph) {
+                        expansions.emplace_back();
+                        expansion_pairs.push_back(&state_pairs[key]);
+                    }
                     hg.for_each_expansion_match(h, d, [&](const hypergraph::SlotMatch& sm) {
                         ++by_rule[static_cast<int64_t>(sm.rule)];
+                        if (quotient_graph) expansions.back().push_back(&sm);
                     });
                 });
+                if (quotient_graph) {
+                    on_workers(expansions.size(), [&](size_t i) {
+                        const auto& ms = expansions[i];
+                        auto& out = *expansion_pairs[i];
+                        hgcommon::qm_expansion_state_pairs(
+                            static_cast<uint32_t>(ms.size()),
+                            [&](uint32_t k) -> const hypergraph::SlotMatch& { return *ms[k]; },
+                            [&](uint64_t a, uint64_t b) { out.emplace_back(a, b); });
+                        hg::stats::unique_state_pairs(out);
+                    });
+                    hg::stats::branchial_from_multiplicities(
+                        points, state_pairs,
+                        hgcommon::qc_expansions_by_depth(effective_max_states_per_step(req)),
+                        static_cast<uint32_t>(req.steps), weighted);
+                }
                 // Each step's classes are added in a job of their own, in point order.
                 using Points = std::vector<const hg::stats::StepPoint*>;
                 std::map<uint32_t, Points> by_step;
@@ -2056,7 +2076,7 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                     weighted[step].rule_counts = std::move(by_rule);
             }
             wxf::WXFValue reply;
-            if (by_count && !which) {
+            if (by_count && (!which || quotient_graph)) {
                 hg::stats::StepStatisticsJobs jobs(
                     req.step_statistics_by_class, which, engine.num_threads(),
                     [&engine](std::function<void()> f) { engine.submit_side_job(std::move(f)); });

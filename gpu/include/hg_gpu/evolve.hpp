@@ -61,6 +61,9 @@ struct EvolveInput {
     // The reconstruction's genesis pairs, for a caller that shows genesis events
     // (EvolveResult::reconstructed_genesis_pairs).
     bool genesis_pairs = false;
+    // With record.multiplicities: each expansion's branchial pairs as pairs of output classes
+    // (EvolveResult::expansion_state_pairs).
+    bool expansion_state_pairs = false;
     // Read back the state-edge arrays (EvolveResult::state_edge_ids, edge_records, vertex_pool).
     // Off, a state carries its id and hash and no edges, and the four copies are skipped.
     bool materialize_state_edges = true;
@@ -165,6 +168,13 @@ struct ClassRuleMatches {
     uint64_t expansion_key;
     uint32_t rule;
     uint64_t count;
+};
+
+// One branchial pair of an expansion's matches as its two output classes
+// (hgcommon::qm_expansion_state_pairs).
+struct ExpansionStatePair {
+    uint64_t expansion_key;
+    uint64_t a, b;
 };
 
 // A run of ids in a buffer the result owns: one edge's vertices, or an event's edges.
@@ -383,6 +393,8 @@ struct EvolveResult {
     // and each class's matches per rule (QeState::class_multiplicities_host).
     std::vector<ClassMultiplicity> class_multiplicities;
     std::vector<ClassRuleMatches> class_rule_matches;
+    // With EvolveInput::expansion_state_pairs: every expansion's pairs (QeState::class_multiplicities_host).
+    std::vector<ExpansionStatePair> expansion_state_pairs;
 
     uint32_t frame_alignments = 0;
     uint32_t frame_align_failures = 0;
