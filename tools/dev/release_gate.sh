@@ -14,10 +14,23 @@
 # (reads of uninitialised device memory), synccheck (illegal __syncthreads and __syncwarp use) and
 # racecheck (shared-memory hazards only: the engine's global-memory protocols are GPUMC's, see
 # verification/gpumc/COVERAGE.md). Each runs over hg_gpu_tests, gpu_differential_tests and
-# gpu_ffi_tests (or the suites $HG_GPU_SUITES names) from $HG_GPU_BUILD (default build_gpu)
-# with --error-exitcode, so a report fails
-# the leg. compute-sanitizer needs /usr/lib/wsl/lib on PATH under WSL ("Unable to find injection
-# library" otherwise); this script adds it. The suites run under ulimit -v 48000000.
+# gpu_ffi_tests (or the suites $HG_GPU_SUITES names) from $HG_GPU_BUILD (default build_gpu) with
+# --error-exitcode, so a report fails the leg. compute-sanitizer needs /usr/lib/wsl/lib on PATH
+# under WSL ("Unable to find injection library" otherwise); this script adds it.
+#
+# Address space: ulimit -v 96000000. initcheck reserves host address space for the device memory
+# it tracks, and under 48000000 hg::gpu::evolve's host allocations throw std::bad_alloc.
+#
+# Tests the sanitizers cannot run, left out of every sanitizer leg:
+#   CapacityOverflow.AnEngineThatDoesNotFitStopsAndReports, CapacityOverflow.TheEstimateCovers
+#   TheAllocation: both size device allocations from cudaMemGetInfo, which counts the
+#   sanitizer's own device memory (under racecheck the allocation sized from the query fails;
+#   under initcheck the measured engine exceeds its estimate by 38 MB).
+#   GpuBinaryGate.NoUsableDeviceIsAStructuredRefusal: its worker hides the device with
+#   CUDA_VISIBLE_DEVICES; started under the sanitizer, the worker answers the job it must refuse.
+#   gpu_ffi_tests' kernels run in worker processes, so the sanitizer follows child processes.
+# API errors are not reported: CapacityOverflow.AFailedEngineConstructionReturnsItsDeviceMemory
+# provokes cudaMalloc failures and checks them.
 #
 # GPUMC needs docker and the gpumc_docker:hg-fixes image (verification/gpumc/checker/build.sh);
 # GenMC needs the checker verification/genmc/run.sh names; TLC needs a JVM and tla2tools.jar.
@@ -28,6 +41,9 @@ GPU_BUILD="${HG_GPU_BUILD:-build_gpu}"
 LOGS="${HG_RELEASE_LOGS:-release_gate_logs}"
 CS="${COMPUTE_SANITIZER:-/usr/local/cuda/bin/compute-sanitizer}"
 read -r -a SUITES <<< "${HG_GPU_SUITES:-hg_gpu_tests gpu_differential_tests gpu_ffi_tests}"
+UNSANITIZABLE="CapacityOverflow.AnEngineThatDoesNotFitStopsAndReports"
+UNSANITIZABLE+=":CapacityOverflow.TheEstimateCoversTheAllocation"
+UNSANITIZABLE+=":GpuBinaryGate.NoUsableDeviceIsAStructuredRefusal"
 export PATH="$PATH:/usr/lib/wsl/lib"
 mkdir -p "$LOGS"
 fail=0
@@ -50,9 +66,9 @@ sanitizers() {
     for t in "${tools[@]}"; do
         for s in "${SUITES[@]}"; do
             [ -x "$GPU_BUILD/$s" ] || { echo "FAIL  $t-$s: $GPU_BUILD/$s not built"; fail=1; continue; }
-            # API errors are not reported: CapacityOverflow.AFailedEngineConstructionReturnsIts
-            # DeviceMemory provokes cudaMalloc failures and checks them.
-            leg "$t-$s" bash -c "ulimit -v 48000000; exec \"$CS\" --tool $t --report-api-errors no --error-exitcode 9 \"$GPU_BUILD/$s\""
+            leg "$t-$s" bash -c "ulimit -v 96000000; exec \"$CS\" --tool $t \
+                --report-api-errors no --target-processes all --error-exitcode 9 \
+                \"$GPU_BUILD/$s\" --gtest_filter=-$UNSANITIZABLE"
         done
     done
 }
