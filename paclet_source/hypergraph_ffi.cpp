@@ -593,14 +593,6 @@ static uint32_t admitted_branchial(hgffi::ParsedJob& req, bool warn = true) {
 // CPU path, and this block was never part of it.
 
 static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge& host) {
-        // The device numbers genesis events after the run's raw events, so their ids move with
-        // every Step and a delivery cursor keyed on ids would leave stale vertices in the
-        // caller's merged graph. Graphs are delivered whole, and the caller is told.
-        if (req.delivery_delta && !req.graph_properties.empty())
-            req.ffi_warnings.push_back(
-                {"OptionSkipped", 1,
-                 "Delivery -> \"Delta\" is not served by the GPU engine: its event ids are not "
-                 "stable across Steps. This reply carries the whole graph."});
         // Sessions are served on the device: SessionState carries the identity maps and the
         // budget's frontier across calls, and run_session refuses to rebuild the engine. The
         // verb rides on the job and the backend answers it. The device applies the transition
@@ -670,6 +662,7 @@ static std::vector<uint8_t> run_gpu_job(hgffi::ParsedJob& req, const HostBridge&
         job.step_statistics_branchial = branchial;
         job.step_statistics_matrix_limit = req.step_statistics_matrix_limit;
         job.include_vertex_curvature = req.include_vertex_curvature;
+        job.delivery_delta = req.delivery_delta;
         job.step_cap_counts_matches = step_cap_counts_matches(req);
         if (req.show_progress) {
             core_progress(host, "HGEvolve: Starting GPU evolution...");

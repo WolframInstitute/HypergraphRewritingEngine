@@ -123,6 +123,9 @@ struct GpuJob {
     uint64_t step_statistics_matrix_limit = 0;
     // "IncludeVertexCurvature". Set after the job is built.
     bool include_vertex_curvature = false;
+    // "Delivery" -> "Delta": a held session's graphs carry what the session has not been sent.
+    // Set after the job is built.
+    bool delivery_delta = false;
     // "Device" in RequestedData: the reply names the device's name and compute capability. Set
     // after the job is built.
     bool include_device = false;

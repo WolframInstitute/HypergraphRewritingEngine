@@ -216,6 +216,9 @@ struct HeldSession {
     bool show_genesis_events = false;
     bool transitive_reduction = true;
     bool explore_from_canonical_states_only = false;
+    // What the session's graph replies have sent (hgffi::DeliveryCursor), for "Delivery" ->
+    // "Delta".
+    hgffi::DeliveryCursor cursor;
 };
 HeldSession held;
 
@@ -1387,8 +1390,21 @@ std::vector<uint8_t> run_gpu_evolution_once(const GpuJob& request, const HostBri
         gopts.edge_deduplication = job.edge_deduplication;
         gopts.branchial_step = job.branchial_step;
         gopts.steps = run_steps;
+        // DELTA DELIVERY is a held session's (Step or Query), as on the host. A genesis event's
+        // id is taken above the run's ids, so it moves with each Step; with ShowGenesisEvents
+        // the graphs are delivered whole, and the reply says so.
+        const bool held_verb =
+            (job.session_op == "Step" || job.session_op == "Query") && held.handle != 0;
+        hgffi::DeliveryCursor* cursor = nullptr;
+        if (held_verb && job.delivery_delta && !job.show_genesis_events) cursor = &held.cursor;
+        if (held_verb && !cursor) held.cursor.reset();
+        if (held_verb && job.delivery_delta && job.show_genesis_events)
+            job.job_warnings.push_back(
+                {"OptionSkipped", 1,
+                 "Delivery -> \"Delta\" with ShowGenesisEvents is not served by the GPU engine: "
+                 "a genesis event's id moves with each Step. This reply carries the whole graph."});
         full_result.push_back({wxf::WXFValue("GraphData"),
-                               hgmarshal::build_graph_data(gsrc, job.graph_properties, gopts, nullptr,
+                               hgmarshal::build_graph_data(gsrc, job.graph_properties, gopts, cursor,
                                                            reply_jobs().parallel_for())});
     }
 
