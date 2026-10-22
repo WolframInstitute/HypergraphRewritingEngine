@@ -676,11 +676,12 @@ wxf::WXFValue summary_value(const Summary& s, bool integral) {
 
 // One step's per-vertex distribution, from its pool: the vertex count and bins of the classes'
 // hgcommon::SgDistribution summaries, each weighted by its class's weight, their extremes, and
-// sum[j] the weighted sum of the classes' power sums j, added in key order.
+// sum[j] the weighted sum of the classes' power sums j as a double-double, added in key order.
 struct PooledDistribution {
     uint32_t which = 0;
     uint64_t n = 0;
-    long double weight = 0, sum[4] = {0, 0, 0, 0};
+    long double weight = 0;
+    hgcommon::DmDD sum[4];
     double min = 0.0, max = 0.0;
     long double bins[hgcommon::SG_DIST_BINS] = {};
 
@@ -708,17 +709,27 @@ wxf::WXFValue pooled_value(const PooledDistribution& p) {
     auto put = [&](const char* k, double v) { a.push_back({wxf::WXFValue(k), wxf::WXFValue(v)}); };
     a.push_back({wxf::WXFValue("N"), wxf::WXFValue(static_cast<int64_t>(p.n))});
     if (p.n == 0) return wxf::WXFValue(a);
-    const long double N = p.weight, mean = p.sum[0] / N;
-    const long double e2 = p.sum[1] / N, e3 = p.sum[2] / N, e4 = p.sum[3] / N;
-    long double m2 = 0, m3 = 0, m4 = 0;
+    // The central moments from the power sums, in double-double (hgcommon::DmDD).
+    using hgcommon::DmDD;
+    const auto add = hgcommon::dm_dd_add;
+    const auto sub = hgcommon::dm_dd_sub;
+    const auto mul = hgcommon::dm_dd_mul;
+    const auto div = hgcommon::dm_dd_div;
+    const DmDD N = hgcommon::dm_dd_of(p.n), mean = div(p.sum[0], N);
+    const DmDD e2 = div(p.sum[1], N), e3 = div(p.sum[2], N), e4 = div(p.sum[3], N);
+    const DmDD mean2 = mul(mean, mean);
+    const DmDD c2{2.0, 0.0}, c3{3.0, 0.0}, c4{4.0, 0.0}, c6{6.0, 0.0};
+    DmDD m2, m3, m4;
     if (p.min != p.max) {
-        m2 = e2 - mean * mean;
-        m3 = e3 - 3 * mean * e2 + 2 * mean * mean * mean;
-        m4 = e4 - 4 * mean * e3 + 6 * mean * mean * e2 - 3 * mean * mean * mean * mean;
-        if (m2 < 0) m2 = 0;
+        m2 = sub(e2, mean2);
+        m3 = add(sub(e3, mul(c3, mul(mean, e2))), mul(c2, mul(mean2, mean)));
+        m4 = sub(add(sub(e4, mul(c4, mul(mean, e3))), mul(c6, mul(mean2, e2))),
+                 mul(c3, mul(mean2, mean2)));
+        if (m2.hi < 0) m2 = DmDD{};
     }
-    put("Mean", static_cast<double>(mean));
-    put("StandardDeviation", N > 1 ? static_cast<double>(std::sqrt(m2 * N / (N - 1))) : 0.0);
+    put("Mean", mean.hi);
+    put("StandardDeviation",
+        p.n > 1 ? std::sqrt(div(mul(m2, N), sub(N, DmDD{1.0, 0.0})).hi) : 0.0);
     put("Min", p.min);
     put("Max", p.max);
     put("Median", p.quantile(0.5L));
@@ -726,9 +737,9 @@ wxf::WXFValue pooled_value(const PooledDistribution& p) {
     put("Q3", p.quantile(0.75L));
     put("P10", p.quantile(0.1L));
     put("P90", p.quantile(0.9L));
-    if (m2 > 0) {
-        put("Skewness", static_cast<double>(m3 / (m2 * std::sqrt(m2))));
-        put("Kurtosis", static_cast<double>(m4 / (m2 * m2)));
+    if (m2.hi > 0) {
+        put("Skewness", div(m3, m2).hi / std::sqrt(m2.hi));
+        put("Kurtosis", div(m4, mul(m2, m2)).hi);
     }
     double lo = 0.0, hi = 0.0;
     hgcommon::sg_dist_range(p.which, lo, hi);
@@ -1793,10 +1804,16 @@ struct StepPoolFinish::State {
             p.max = hgcommon::sp_value_of(t.max_key);
             for (uint32_t b = 0; b < hgcommon::SG_DIST_BINS; ++b)
                 p.bins[b] = static_cast<long double>(t.bins[b]);
+            // Each power sum's high doubles, then its low doubles, each times its weight.
             for (uint32_t j = 0; j < 4; ++j)
-                for (const auto& [key, w] : slot(hgcommon::SP_DIST_SUM + 4 * k + j))
-                    p.sum[j] += static_cast<long double>(hgcommon::sp_value_of(key)) *
-                                static_cast<long double>(w);
+                for (uint32_t half = 0; half < 2; ++half) {
+                    const uint32_t at = hgcommon::SP_DIST_SUM + 8 * k + 2 * j + half;
+                    for (const auto& [key, w] : slot(at)) {
+                        const hgcommon::DmDD v{hgcommon::sp_value_of(key), 0.0};
+                        p.sum[j] = hgcommon::dm_dd_add(
+                            p.sum[j], hgcommon::dm_dd_mul(v, hgcommon::dm_dd_of(w)));
+                    }
+                }
         }
         return pooled_value(p);
     }

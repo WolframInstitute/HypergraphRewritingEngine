@@ -310,7 +310,8 @@ with the index is 172,949,942 of 15,383,108,429 instructions on the CPU engine's
 
 **Pooling.** A step's pool is a multiset of weighted (slot, value) entries and integer totals
 (`hgcommon/step_pool_core.hpp`). `hgcommon::sp_add_class` lists one class's entries: its 25
-invariants, its ball-growth dimensions, the four power sums of each per-vertex distribution,
+invariants, its ball-growth dimensions, the four power sums of each per-vertex distribution
+(each as its high and its low double),
 its arities and degrees, and its multiplicity; the totals are the distributions' vertex counts
 and bins (saturating sums) and extremes. Equal (slot, value) entries add their weights,
 saturating at 2^63 - 1. Every operation commutes, so the pool does not depend on which thread

@@ -5381,6 +5381,53 @@ TEST(StateStatistics, VertexInvariantsPoolTheVerticesOfAStep) {
     EXPECT_EQ(number_at(*assoc_at(invs, "OllivierDegreeCorrelation"), "N"), 3);
 }
 
+// The moments of a pooled distribution whose spread is small against its mean. Rule
+// {{x,y},{y,z}} -> {{x,z},{z,w},{x,w},{y,w}} from {{0,0},{0,0}}, 4 steps, every raw state: step
+// 4's k_v are 5/12 (90 vertices), 7/16 (180) and 31/72 (180), mean 0.4306 and standard deviation
+// 0.0076 (reference/verify_state_statistics.wls, CorpusLoops). The exact kurtosis is 5/2;
+// from double power sums the engine gave 2.4999999967.
+TEST(StateStatistics, VertexInvariantMomentsOfANarrowDistribution) {
+    hypergraph::Hypergraph hg;
+    hypergraph::ParallelEvolutionEngine engine(&hg, 4);
+    hgcommon::RecordSet rs;
+    rs.causal = false;
+    rs.branchial = false;
+    rs.state_events = false;
+    rs.state_invariants = true;
+    hg.set_record_set(rs);
+    engine.add_rule(hypergraph::make_rule(0)
+                        .lhs({0, 1})
+                        .lhs({1, 2})
+                        .rhs({0, 2})
+                        .rhs({2, 3})
+                        .rhs({0, 3})
+                        .rhs({1, 3})
+                        .build());
+    hgffi::StepStatisticsCollector collector(hg, engine, 0, false, 4);
+    engine.evolve(std::vector<std::vector<hypergraph::VertexId>>{{0u, 0u}, {0u, 0u}}, 4);
+    const wxf::WXFValue reply = collector.finish();
+    const wxf::WXFValue* oll = nullptr;
+    for (const auto& step : std::get<wxf::WXFValueList>(reply.data))
+        if (number_at(step, "Step") == 4)
+            oll = assoc_at(*assoc_at(step, "VertexInvariants"), "OllivierRicciCurvature");
+    ASSERT_NE(oll, nullptr);
+    ASSERT_EQ(number_at(*oll, "N"), 450);
+    // Two-pass central moments of the exact values.
+    const std::pair<double, int> values[3] = {{5.0 / 12, 90}, {7.0 / 16, 180}, {31.0 / 72, 180}};
+    double mean = 0, m2 = 0, m3 = 0, m4 = 0;
+    for (const auto& [x, c] : values) mean += c * x / 450;
+    for (const auto& [x, c] : values) {
+        m2 += c * std::pow(x - mean, 2) / 450;
+        m3 += c * std::pow(x - mean, 3) / 450;
+        m4 += c * std::pow(x - mean, 4) / 450;
+    }
+    EXPECT_NEAR(m4 / (m2 * m2), 2.5, 1e-13);
+    EXPECT_NEAR(number_at(*oll, "Mean"), mean, 1e-15);
+    EXPECT_NEAR(number_at(*oll, "StandardDeviation"), std::sqrt(m2 * 450 / 449), 1e-15);
+    EXPECT_NEAR(number_at(*oll, "Skewness"), m3 / std::pow(m2, 1.5), 1e-12);
+    EXPECT_NEAR(number_at(*oll, "Kurtosis"), 2.5, 1e-12);
+}
+
 // Through the FFI: the options are read, the branchial keys appear under None and Automatic, and
 // under Full the overlap keys are left out with a warning. The branchial keys count each state
 // once, so "StepStatisticsWeighting" leaves them unchanged.

@@ -49,7 +49,8 @@
 //                              6(D+2)/r^2 (1 - |B(v,r)| Gamma(D/2+1) / (pi^(D/2) r^D)), D the
 //                              LargestComponentDimension
 // The per-vertex values d_v (over G'), k_v (over G) and K_v (over G') are kept as SgDistribution
-// summaries: count, min, max, the sums of x, x^2, x^3 and x^4, and a histogram of SG_DIST_BINS
+// summaries: count, min, max, the sums of x, x^2, x^3 and x^4 in double-double (det_math.hpp),
+// and a histogram of SG_DIST_BINS
 // equal bins over a fixed range per quantity (sg_dist_range); a value outside the range counts in
 // the end bin.
 //
@@ -395,14 +396,16 @@ HG_HD inline void sg_dist_range(uint32_t which, double& lo, double& hi) {
     else { lo = -24.0; hi = 8.0; }
 }
 
-// A per-vertex distribution: the count, extremes, sum[k] = sum of x^(k+1) in vertex order, and
-// the histogram.
+// A per-vertex distribution: the count, extremes, sum[k] + sum_lo[k] = the sum of x^(k+1) in
+// vertex order as a double-double (each power exact, each addition dm_dd_add), and the
+// histogram.
 struct SgDistribution {
     uint32_t count = 0;
     uint32_t reserved = 0;
     double min = 0.0;
     double max = 0.0;
     double sum[4] = {0.0, 0.0, 0.0, 0.0};
+    double sum_lo[4] = {0.0, 0.0, 0.0, 0.0};
     uint32_t bins[SG_DIST_BINS] = {};
 };
 
@@ -418,11 +421,13 @@ HG_HD inline uint32_t sg_dist_bin(uint32_t which, double x) {
 HG_HD inline void sg_dist_add(SgDistribution& d, uint32_t which, double x) {
     if (d.count == 0 || x < d.min) d.min = x;
     if (d.count == 0 || x > d.max) d.max = x;
-    const double x2 = dm_mul(x, x);
-    d.sum[0] += x;
-    d.sum[1] += x2;
-    d.sum[2] += dm_mul(x2, x);
-    d.sum[3] += dm_mul(x2, x2);
+    const DmDD x2 = dm_two_prod(x, x);
+    const DmDD power[4] = {DmDD{x, 0.0}, x2, dm_dd_mul(x2, DmDD{x, 0.0}), dm_dd_mul(x2, x2)};
+    for (uint32_t k = 0; k < 4; ++k) {
+        const DmDD s = dm_dd_add(DmDD{d.sum[k], d.sum_lo[k]}, power[k]);
+        d.sum[k] = s.hi;
+        d.sum_lo[k] = s.lo;
+    }
     ++d.bins[sg_dist_bin(which, x)];
     ++d.count;
 }

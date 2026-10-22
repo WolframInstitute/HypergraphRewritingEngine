@@ -3,8 +3,9 @@
 // WHAT ONE CLASS ADDS TO ITS STEP'S "StepStatistics" POOL, one body for host and device.
 //
 // A step's pool is a multiset of (slot, key, weight) entries and a few integer totals. A slot is
-// one pooled quantity (an invariant, the ball-growth dimension at a radius, a power sum of a
-// per-vertex distribution, an arity, a degree, a class's multiplicity); the key is the value,
+// one pooled quantity (an invariant, the ball-growth dimension at a radius, the high or low
+// double of a power sum of a per-vertex distribution, an arity, a degree, a class's
+// multiplicity); the key is the value,
 // and the weight is how many raw states (or classes, under "StepStatisticsWeighting" ->
 // "Classes") carry it. Equal (slot, key) entries add their weights, saturating at 2^63 - 1, and
 // the totals add or take extremes. Every operation commutes, so the pool is the same whichever
@@ -33,8 +34,9 @@ enum : uint32_t {
     SP_ARITY = 25,               // a hyperedge's arity
     SP_DEGREE = 26,              // a vertex's slot degree
     SP_MULTIPLICITY = 27,        // a class's raw state count, weight 1 per class
-    SP_DIST_SUM = 28,            // distribution k's sum of x^(j+1): slot 28 + 4 k + j
-    SP_BALL = 28 + 4 * SG_DISTS, // the ball-growth dimension at radius r: slot SP_BALL + r - 1
+    SP_DIST_SUM = 28,            // distribution k's sum of x^(j+1): slot 28 + 8 k + 2 j for its
+                                 // high double, + 1 for its low double
+    SP_BALL = 28 + 8 * SG_DISTS, // the ball-growth dimension at radius r: slot SP_BALL + r - 1
 };
 
 HG_HD inline bool sp_integer_slot(uint32_t slot) {
@@ -129,7 +131,10 @@ HG_HD inline void sp_add_class(const StateInvariantRecord& r, uint64_t w, uint64
         const SgDistribution& d = r.distributions()[k];
         if (d.count == 0) continue;
         sink.dist(k, qm_sat_mul(d.count, w), sp_key_of(d.min), sp_key_of(d.max));
-        for (uint32_t j = 0; j < 4; ++j) put(SP_DIST_SUM + 4 * k + j, d.sum[j]);
+        for (uint32_t j = 0; j < 4; ++j) {
+            put(SP_DIST_SUM + 8 * k + 2 * j, d.sum[j]);
+            put(SP_DIST_SUM + 8 * k + 2 * j + 1, d.sum_lo[j]);
+        }
         for (uint32_t b = 0; b < SG_DIST_BINS; ++b)
             if (d.bins[b]) sink.bin(k, b, qm_sat_mul(d.bins[b], w));
     }

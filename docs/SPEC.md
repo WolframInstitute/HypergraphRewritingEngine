@@ -363,9 +363,11 @@ weighted as in `Invariants`, into three distributions: `LocalDimension` (d_v ove
 Each has `N`, `Mean`, `StandardDeviation` (N - 1), `Min`, `Max`, `Median`, `Q1`, `Q3`, `P10`,
 `P90`, `Skewness` (m3 / m2^(3/2)), `Kurtosis` (m4 / m2^2, not excess; both absent when every
 value is the same) and `Histogram`. Each state stores its count, minimum, maximum, the sums of
-x, x^2, x^3 and x^4, and 32 equal bins over a fixed range: [0, 8) for `LocalDimension`,
+x, x^2, x^3 and x^4 as double-double pairs (about 106 bits; each power exact), and 32 equal bins
+over a fixed range: [0, 8) for `LocalDimension`,
 [-2, 1) for `OllivierRicciCurvature` and [-24, 8) for `WolframRicciCurvatureScalar`, a value
-outside the range counting in the end bin. Pooling adds these, so the moments are exact and the
+outside the range counting in the end bin. Pooling adds these and forms the central moments in
+double-double, so the moments are exact to double precision and the
 quantiles are histogram quantiles: the bin holding the fraction q of the weight, linear inside
 the bin between its edges clipped to [`Min`, `Max`]. `Histogram` maps each non-empty bin's lower
 edge to its weight.
