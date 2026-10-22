@@ -29,8 +29,9 @@
 // synchronisation; a volatile access is non-atomic here as well.
 //
 // CALIBRATIONS of the engine's own code. HG_GPUMC_CALIBRATE_NO_THREADFENCE makes every
-// __threadfence() a no-op. HG_GPUMC_CALIBRATE_SPLIT_RMW makes atomicAdd and atomicCAS a load and a
-// separate store, so two threads can both take the value either one read.
+// __threadfence() a no-op. HG_GPUMC_CALIBRATE_SPLIT_RMW makes atomicAdd, atomicMin, atomicMax
+// and atomicCAS a load and a separate store, so two threads can both take the value either one
+// read.
 #include <pthread.h>
 
 #include <cstdint>
@@ -233,8 +234,28 @@ HG_GPUMC_RMW(atomicSub, __atomic_fetch_sub)
 HG_GPUMC_RMW(atomicOr, __atomic_fetch_or)
 HG_GPUMC_RMW(atomicAnd, __atomic_fetch_and)
 HG_GPUMC_RMW(atomicXor, __atomic_fetch_xor)
+#if defined(HG_GPUMC_CALIBRATE_SPLIT_RMW)
+#define HG_GPUMC_SPLIT_MINMAX(name, keep_old)                                          \
+    template <class T, class U>                                                       \
+    HG_GPUMC_INLINE T name(T* a, U v) {                                               \
+        __VERIFIER_memory_scope_device();                                             \
+        const T old = __atomic_load_n(a, __ATOMIC_RELAXED);                           \
+        const T val = static_cast<T>(v);                                              \
+        __VERIFIER_memory_scope_device();                                             \
+        __atomic_store_n(a, (keep_old) ? old : val, __ATOMIC_RELAXED);                \
+        return old;                                                                   \
+    }                                                                                 \
+    template <class T, class U>                                                       \
+    HG_GPUMC_INLINE T name##_block(T* a, U v) {                                       \
+        return name(a, v);                                                            \
+    }
+HG_GPUMC_SPLIT_MINMAX(atomicMin, old <= val)
+HG_GPUMC_SPLIT_MINMAX(atomicMax, old >= val)
+#undef HG_GPUMC_SPLIT_MINMAX
+#else
 HG_GPUMC_RMW(atomicMin, __atomic_fetch_min)
 HG_GPUMC_RMW(atomicMax, __atomic_fetch_max)
+#endif
 #undef HG_GPUMC_RMW
 
 template <class T, class U>
