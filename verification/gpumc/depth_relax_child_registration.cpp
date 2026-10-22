@@ -1,156 +1,78 @@
-// GPUMC harness: on the device, a child never strands at a stale depth when its parent is
-// relaxed concurrently.
+// GPUMC harness: on the device, a child never strands at a stale depth when its parent is relaxed
+// concurrently, and every state lowered under the budget is claimed and logged for expansion.
 //
-// THE PROTOCOL. hgcommon/explore_depth_core.hpp, the body both engines call, driven over the
-// device's face (gpu/src/persistent.cu DeviceExploreCtx): child lists are
-// gpu/include/hg_gpu/lock_free_list.hpp's (hgcommon/list_core.hpp push with a relaxed head load
-// and an ACQ_REL exchange, walks from an acquire head load), depths are device-scope atomics with
-// ACQ_REL compare-exchange and acquire loads, and the fence is __threadfence(), a seq_cst fence
-// at device scope. The two threads are in different blocks.
+// Runs hgcommon/explore_depth_core.hpp's explore_register_child, explore_try_lower and
+// explore_relax over gpu/src/persistent.cu's DeviceExploreCtx itself -- the child lists
+// (LockFreeList), the depth words, the expansion claim (ExploreView::claim) and the expand log
+// (WorkLogView::append) -- with the device's atomics and fences (verification/gpumc/device).
 //
 //   registrar (explore_register_child)          relaxer (explore_try_lower, explore_relax)
 //     push the child into the parent's list       lower the parent's depth
 //     __threadfence                               __threadfence
 //     read the parent's depth                     walk the parent's child list
 //
-// THE PROPERTY. The child ends at one past the parent's lowered depth, whichever side wins.
-// verification/genmc/depth_relax_child_registration.cpp checks the same core over the host's
-// list under RC11.
+// THE SHAPE. Two blocks of one thread: parent state 0 at depth 3 and its child 1, registered by
+// one block while the other lowers the parent to depth 1. The budget is 10 steps.
 //
-// THE BOUND. Two threads, one parent, one child, one relaxation.
+// THE PROPERTY. The child ends at depth 2 (one past the parent's lowered depth), whichever side
+// lowers it, and it is claimed once and logged once for expansion, at the depth it had when it
+// was claimed (2, or 4 when the registrar claims it before the relaxation). No access races.
+// verification/genmc/depth_relax_child_registration.cpp checks the core over the host's list
+// under RC11.
 //
-// CALIBRATION. -DCALIBRATE_NO_FENCE makes the fence a no-op; the checker must report the child
-// stranded at the parent's old depth plus one.
-//
-// HOW A SCOPE IS EXPRESSED: __VERIFIER_memory_scope_device() before the access it qualifies.
-// The list heads and depths are 64-bit words; the device's are 32-bit. The protocol does not
-// depend on the width.
+// CALIBRATION. -DHG_GPUMC_CALIBRATE_NO_THREADFENCE makes the fences no-ops; the checker must report
+// the child stranded at the parent's old depth plus one.
+// GPUMC-CELL: clean PASS -- --disable-function-inliner
+// GPUMC-CELL: no_threadfence FAIL -DHG_GPUMC_CALIBRATE_NO_THREADFENCE -- --disable-function-inliner
 
-// GPUMC-CELL: clean PASS
-// GPUMC-CELL: no_fence FAIL -DCALIBRATE_NO_FENCE
-
-#include "hgcommon/explore_depth_core.hpp"
-#include "hgcommon/list_core.hpp"
+#include "hg_gpumc.hpp"
+#include "persistent.cu"
 
 #include <cassert>
 #include <cstdint>
+#include <new>
 #include <pthread.h>
-
-extern "C" {
-void __VERIFIER_memory_scope_device();
-void __VERIFIER_thread_local_id(int);
-void __VERIFIER_thread_group_id(int);
-void __VERIFIER_thread_global_id(int);
-void __VERIFIER_thread_kernel_id(int);
-}
 
 namespace {
 
-constexpr uint32_t kInvalid   = 0xFFFFFFFFu;
-constexpr uint32_t kParent    = 0;
-constexpr uint32_t kChild     = 1;
-constexpr uint32_t kOldDepth  = 5;
-constexpr uint32_t kNewDepth  = 2;
+namespace g = HG_NAMESPACE::gpu;
+using Node = g::LockFreeList<g::StateId>::Node;
 
-struct Node { uint32_t value; uint32_t next; };
-Node     g_nodes[2];
-uint32_t g_next_node;               // node claims, as the list's pool claims them
-uint64_t g_head[2]  = {kInvalid, kInvalid};
-uint64_t g_depth[2] = {kOldDepth, hgcommon::kExploreNoDepth};
+constexpr uint32_t kParent = 0, kChild = 1;
+constexpr uint32_t kOldDepth = 3, kNewDepth = 1, kBudget = 10;
 
-uint64_t load64_dev(uint64_t* a, int order) {
-    __VERIFIER_memory_scope_device();
-    return __atomic_load_n(a, order);
+g::DeviceState* g_ds;
+g::ExploreView* g_ev;
+g::SessionView* g_sess;
+uint32_t g_depth[2] = {kOldDepth, hgcommon::kExploreNoDepth};
+uint32_t g_claimed[2] = {1, 0};   // the parent is claimed already
+Node g_nodes[4];
+uint32_t g_nodes_n;
+uint32_t g_heads[2] = {g::INVALID_ID, g::INVALID_ID};
+g::ExpandEntry g_expand[4];
+uint32_t g_expand_n, g_expand_cursor, g_expand_done;
+uint32_t g_frame_node[2 * 4], g_frame_depth[2 * 4];
+uint32_t g_errors[g::DeviceErrors::kMaxKinds];
+
+g::DeviceExploreCtx ctx(unsigned block) {
+    return g::DeviceExploreCtx{*g_ds, *g_ev, *g_sess, kBudget, g_frame_node + 4 * block,
+                               g_frame_depth + 4 * block, 4, false};
 }
-bool cas64_dev(uint64_t* a, uint64_t* expected, uint64_t desired, int success, int failure) {
-    __VERIFIER_memory_scope_device();
-    return __atomic_compare_exchange_n(a, expected, desired, /*weak=*/false, success, failure);
-}
-uint32_t add32_dev(uint32_t* a, uint32_t n) {
-    __VERIFIER_memory_scope_device();
-    return __atomic_fetch_add(a, n, __ATOMIC_RELAXED);
-}
-void threadfence() {
-#if !defined(CALIBRATE_NO_FENCE)
-    __VERIFIER_memory_scope_device();
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
-#endif
-}
-
-// LockFreeList<T>::DeviceView::Ops.
-struct ListOps {
-    uint64_t* head;
-    uint32_t invalid() const { return kInvalid; }
-    uint32_t head_load_relaxed() const {
-        return static_cast<uint32_t>(load64_dev(head, __ATOMIC_RELAXED));
-    }
-    uint32_t head_load_acquire() const {
-        return static_cast<uint32_t>(load64_dev(head, __ATOMIC_ACQUIRE));
-    }
-    bool head_cas(uint32_t& expected, uint32_t desired) {
-        uint64_t e = expected;
-        const bool ok = cas64_dev(head, &e, desired, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
-        expected = static_cast<uint32_t>(e);
-        return ok;
-    }
-    void set_next(uint32_t node, uint32_t next) { g_nodes[node].next = next; }
-    uint32_t next_of(uint32_t node) const { return g_nodes[node].next; }
-};
-
-// DeviceExploreCtx, with a fixed frame store and no expansion.
-struct Ctx {
-    using Node = uint32_t;
-    uint32_t frame_node[4];
-    uint32_t frame_depth[4];
-    uint32_t frames = 0;
-
-    uint32_t depth_load(uint32_t s) const {
-        return static_cast<uint32_t>(load64_dev(&g_depth[s], __ATOMIC_ACQUIRE));
-    }
-    bool depth_cas(uint32_t s, uint32_t& expected, uint32_t desired) {
-        uint64_t e = expected;
-        const bool ok = cas64_dev(&g_depth[s], &e, desired, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
-        expected = static_cast<uint32_t>(e);
-        return ok;
-    }
-    void children_push(uint32_t parent, uint32_t child) {
-        const uint32_t idx = add32_dev(&g_next_node, 1u);
-        g_nodes[idx].value = child;
-        ListOps ops{&g_head[parent]};
-        hgcommon::list_push(ops, idx);
-    }
-    Node children_head(uint32_t s) const { return ListOps{&g_head[s]}.head_load_acquire(); }
-    static bool children_end(Node n) { return n == kInvalid; }
-    uint32_t children_value(Node n) const { return g_nodes[n].value; }
-    Node children_next(Node n) const { return g_nodes[n].next; }
-    void fence() const { threadfence(); }
-    void admit(uint32_t, uint32_t) {}
-    bool frame_push(Node at, uint32_t d) {
-        if (frames == 4) return false;
-        frame_node[frames] = at; frame_depth[frames] = d; ++frames;
-        return true;
-    }
-    bool frame_top(Node*& at, uint32_t& d) {
-        if (frames == 0) return false;
-        at = &frame_node[frames - 1]; d = frame_depth[frames - 1];
-        return true;
-    }
-    void frame_pop() { --frames; }
-};
 
 void* registrar(void*) {
-    __VERIFIER_thread_global_id(0); __VERIFIER_thread_local_id(0);
-    __VERIFIER_thread_group_id(0);  __VERIFIER_thread_kernel_id(0);
-    Ctx c;
+    hg_gpumc::enter(0, 0);
+    g::DeviceExploreCtx c = ctx(0);
     const uint32_t d = hgcommon::explore_register_child(c, kParent, kChild, kOldDepth + 1u);
-    if (d != hgcommon::kExploreNoDepth) hgcommon::explore_relax(c, kChild, d);
+    if (d != hgcommon::kExploreNoDepth) {
+        c.admit(kChild, d);
+        hgcommon::explore_relax(c, kChild, d);
+    }
     return nullptr;
 }
 
 void* relaxer(void*) {
-    __VERIFIER_thread_global_id(1); __VERIFIER_thread_local_id(0);
-    __VERIFIER_thread_group_id(1);  __VERIFIER_thread_kernel_id(0);
-    Ctx c;
+    hg_gpumc::enter(1, 0);
+    g::DeviceExploreCtx c = ctx(1);
     if (hgcommon::explore_try_lower(c, kParent, kNewDepth))
         hgcommon::explore_relax(c, kParent, kNewDepth);
     return nullptr;
@@ -159,12 +81,36 @@ void* relaxer(void*) {
 }  // namespace
 
 int main() {
+    const unsigned lanes[2] = {1, 1};
+    hg_gpumc::launch(2, lanes);
+    // On the heap: GPUMC's static allocator places a struct of this size wrongly.
+    g_ds = new (malloc(sizeof(g::DeviceState))) g::DeviceState{};
+    g_ds->errors.counters = g_errors;
+    g_sess = new (malloc(sizeof(g::SessionView))) g::SessionView{};
+    g_ev = new (malloc(sizeof(g::ExploreView))) g::ExploreView{};
+    g_ev->depth = g_depth;
+    g_ev->claimed = g_claimed;
+    g_ev->children = {{g_nodes, &g_nodes_n, 4}, g_heads, 2};
+    g_ev->expand.items = {g_expand, &g_expand_n, 4};
+    g_ev->expand.cursor = &g_expand_cursor;
+    g_ev->expand.done = &g_expand_done;
+    g_ev->max_states = 2;
+
     pthread_t a, b;
     pthread_create(&a, nullptr, registrar, nullptr);
     pthread_create(&b, nullptr, relaxer, nullptr);
     pthread_join(a, nullptr);
     pthread_join(b, nullptr);
-    assert(load64_dev(&g_depth[kChild], __ATOMIC_ACQUIRE) == kNewDepth + 1u &&
+
+    assert(g_depth[kChild] == kNewDepth + 1u &&
            "the child stranded at a depth its parent no longer has");
+    assert(g_claimed[kChild] == 1u);
+
+    for (uint32_t i = 0; i < g_expand_n; ++i) {
+        assert(g_expand[i].state == kChild && g_expand[i].depth >= kNewDepth + 1u);
+
+    }
+    assert(g_expand_n == 1 && "the child was not logged for expansion exactly once");
+    for (uint32_t k = 0; k < g::DeviceErrors::kMaxKinds; ++k) assert(g_errors[k] == 0u);
     return 0;
 }
