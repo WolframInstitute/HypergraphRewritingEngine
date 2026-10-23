@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "hypergraph/parallel_evolution.hpp"
+#include "hgcommon/state_cost_core.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1063,3 +1064,80 @@ TEST(SamplingReproducibility, EverySamplingOptionChoosesTheSameTransitionsAt1And
             EXPECT_EQ(run(threads), one) << o.name << " at " << threads << " workers";
     }
 }
+
+// "StateCost" (hgcommon/state_cost_core.hpp). The interpreter on fixed values: each operation, a
+// statistic with no value, NaN, and program validation.
+TEST(StateCost, InterpreterEvaluatesEveryOperation) {
+    using namespace hgcommon;
+    StateInvariantValues v;
+    v.vertex_count = 9;
+    v.edge_count = 4;
+    v.mean_degree = 2.5;
+    SgGeometry g;
+    g.defined = SG_RADIUS;
+    g.radius = 3;
+    g.mean_eccentricity = 2.0;
+    auto prog = [](std::initializer_list<std::pair<uint8_t, double>> ops) {
+        StateCost c;
+        for (const auto& [op, arg] : ops) {
+            c.op[c.n] = op;
+            c.arg[c.n] = arg;
+            ++c.n;
+        }
+        return c;
+    };
+    auto eval = [&](StateCost c) {
+        EXPECT_TRUE(state_cost_validate(c));
+        return state_cost_eval(c, v, g);
+    };
+    // |VertexCount - 12| + 0.5 EdgeCount = 3 + 2.
+    EXPECT_EQ(eval(prog({{SC_STAT, 0}, {SC_CONST, 12}, {SC_SUB, 0}, {SC_ABS, 0}, {SC_CONST, 0.5},
+                         {SC_STAT, 1}, {SC_MUL, 0}, {SC_ADD, 0}})),
+              5.0);
+    EXPECT_EQ(eval(prog({{SC_STAT, 0}, {SC_STAT, 1}, {SC_DIV, 0}})), 9.0 / 4.0);
+    EXPECT_EQ(eval(prog({{SC_STAT, 0}, {SC_STAT, 1}, {SC_MIN, 0}})), 4.0);
+    EXPECT_EQ(eval(prog({{SC_STAT, 0}, {SC_STAT, 1}, {SC_MAX, 0}})), 9.0);
+    EXPECT_EQ(eval(prog({{SC_STAT, 0}, {SC_NEG, 0}})), -9.0);
+    EXPECT_EQ(eval(prog({{SC_STAT, 0}, {SC_SQRT, 0}})), 3.0);
+    EXPECT_EQ(eval(prog({{SC_CONST, -2}, {SC_POW, 3}})), -8.0);
+    EXPECT_EQ(eval(prog({{SC_STAT, 1}, {SC_POW, -2}})), 1.0 / 16.0);
+    EXPECT_NEAR(eval(prog({{SC_STAT, 3}, {SC_POW, 0.5}})), std::sqrt(2.5), 1e-15);
+    EXPECT_NEAR(eval(prog({{SC_STAT, 0}, {SC_LOG, 0}})), std::log(9.0), 1e-15);
+    EXPECT_NEAR(eval(prog({{SC_CONST, 1}, {SC_EXP, 0}})), std::exp(1.0), 1e-15);
+    // GraphRadius (slot 11) is defined; WolframHausdorffDimension (slot 13) is not.
+    EXPECT_EQ(eval(prog({{SC_STAT, 11}})), 3.0);
+    EXPECT_EQ(eval(prog({{SC_STAT, 13}, {SC_CONST, 1}, {SC_ADD, 0}})), HUGE_VAL);
+    // NaN and the root of a negative number are +Infinity.
+    EXPECT_EQ(eval(prog({{SC_CONST, -1}, {SC_SQRT, 0}})), HUGE_VAL);
+    EXPECT_EQ(eval(prog({{SC_CONST, -1}, {SC_LOG, 0}})), HUGE_VAL);
+    EXPECT_EQ(eval(prog({{SC_CONST, 0}, {SC_CONST, 0}, {SC_DIV, 0}})), HUGE_VAL);
+    // The measures of the statistics read.
+    StateCost m = prog({{SC_STAT, 25}, {SC_STAT, 11}, {SC_ADD, 0}});
+    ASSERT_TRUE(state_cost_validate(m));
+    EXPECT_EQ(m.measures, SG_VOLUME_GROWTH | SG_RADIUS);
+    // Malformed programs.
+    StateCost bad = prog({{SC_ADD, 0}});
+    EXPECT_FALSE(state_cost_validate(bad));
+    bad = prog({{SC_CONST, 1}, {SC_CONST, 2}});
+    EXPECT_FALSE(state_cost_validate(bad));
+    bad = prog({{SC_STAT, 42}});
+    EXPECT_FALSE(state_cost_validate(bad));
+    bad = prog({{SC_STAT, 1.5}});
+    EXPECT_FALSE(state_cost_validate(bad));
+    bad = prog({{SC_OPS, 0}});
+    EXPECT_FALSE(state_cost_validate(bad));
+}
+
+// The cost order: (cost, successor rank) ascending, equal pairs at one position.
+TEST(StateCost, CostOrderRanksByCostThenSuccessorRank) {
+    const uint64_t cost[6] = {hgcommon::state_cost_key(2.0), hgcommon::state_cost_key(-1.0),
+                              hgcommon::state_cost_key(2.0), hgcommon::state_cost_key(HUGE_VAL),
+                              hgcommon::state_cost_key(-1.0), hgcommon::state_cost_key(2.0)};
+    const uint64_t srank[6] = {7, 9, 3, 1, 9, 7};
+    uint32_t order[6];
+    uint64_t out[6];
+    hgcommon::cost_successor_ranks(cost, srank, 6, order, out);
+    const uint64_t want[6] = {2, 0, 1, 3, 0, 2};
+    for (int i = 0; i < 6; ++i) EXPECT_EQ(out[i], want[i]) << i;
+}
+

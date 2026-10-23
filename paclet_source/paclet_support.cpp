@@ -1759,6 +1759,69 @@ constexpr size_t kTaskBall = kTaskDist + size_t{hgcommon::SG_DISTS};
 
 }  // namespace
 
+int invariant_slot(const std::string& name) {
+    for (uint32_t t = 0; t < hgcommon::SP_NUM_INVARIANTS; ++t)
+        if (name == kInvariantSlots[t].name) return static_cast<int>(t);
+    return -1;
+}
+
+hgcommon::StateCost compile_state_cost(const std::vector<std::string>& code,
+                                       const std::vector<double>& constants) {
+    hgcommon::StateCost c;
+    if (code.empty()) return c;
+    if (code.size() > hgcommon::SC_MAX_OPS)
+        throw std::runtime_error("StateCost has " + std::to_string(code.size()) +
+                                 " operations; at most " +
+                                 std::to_string(hgcommon::SC_MAX_OPS) + " are supported");
+    static const std::pair<const char*, uint8_t> kOps[] = {
+        {"Plus", hgcommon::SC_ADD},  {"Subtract", hgcommon::SC_SUB}, {"Times", hgcommon::SC_MUL},
+        {"Divide", hgcommon::SC_DIV}, {"Min", hgcommon::SC_MIN},     {"Max", hgcommon::SC_MAX},
+        {"Minus", hgcommon::SC_NEG}, {"Abs", hgcommon::SC_ABS},      {"Sqrt", hgcommon::SC_SQRT},
+        {"Log", hgcommon::SC_LOG},   {"Exp", hgcommon::SC_EXP},
+    };
+    size_t next = 0;
+    auto constant = [&](const std::string& tok) {
+        if (next >= constants.size())
+            throw std::runtime_error("StateCost: \"" + tok + "\" has no value in Constants");
+        const double v = constants[next++];
+        if (!std::isfinite(v))
+            throw std::runtime_error("StateCost: a constant is not a finite real number");
+        return v;
+    };
+    for (const std::string& tok : code) {
+        const uint32_t i = c.n++;
+        if (tok == "Const") {
+            c.op[i] = hgcommon::SC_CONST;
+            c.arg[i] = constant(tok);
+            continue;
+        }
+        if (tok == "Power") {
+            c.op[i] = hgcommon::SC_POW;
+            c.arg[i] = constant(tok);
+            continue;
+        }
+        bool found = false;
+        for (const auto& [name, op] : kOps)
+            if (tok == name) {
+                c.op[i] = op;
+                found = true;
+                break;
+            }
+        if (found) continue;
+        const int slot = invariant_slot(tok);
+        if (slot < 0)
+            throw std::runtime_error("StateCost: \"" + tok +
+                                     "\" is not a statistic of \"Invariants\" or an operation");
+        c.op[i] = hgcommon::SC_STAT;
+        c.arg[i] = slot;
+    }
+    if (next != constants.size())
+        throw std::runtime_error("StateCost: Constants has values no operation reads");
+    if (!hgcommon::state_cost_validate(c))
+        throw std::runtime_error("StateCost: the operations do not form one expression");
+    return c;
+}
+
 void sort_part(PoolPart& part) {
     std::vector<PoolEntry>& e = part.entries;
     if (e.empty()) return;

@@ -6246,6 +6246,26 @@ TEST(FfiInput, QuotientExplorationIsNotAppliedWithAStepCap) {
         EXPECT_EQ(read_int_key(quotient, k), read_int_key(full, k)) << k;
 }
 
+// "StateCost": the paclet's postfix program (hg::stats::compile_state_cost), and its refusals.
+TEST(FfiInput, StateCostCompilesNamesAndRefusesTheRest) {
+    const hgcommon::StateCost c = hg::stats::compile_state_cost(
+        {"BallDimension", "Const", "Plus", "Abs", "VertexCount", "Power", "Plus"}, {-3.0, 2.0});
+    ASSERT_EQ(c.n, 7u);
+    EXPECT_EQ(c.op[0], hgcommon::SC_STAT);
+    EXPECT_EQ(c.arg[0], 25.0);
+    EXPECT_EQ(c.op[1], hgcommon::SC_CONST);
+    EXPECT_EQ(c.arg[1], -3.0);
+    EXPECT_EQ(c.op[5], hgcommon::SC_POW);
+    EXPECT_EQ(c.arg[5], 2.0);
+    EXPECT_EQ(c.measures, hgcommon::SG_VOLUME_GROWTH);
+    EXPECT_EQ(hg::stats::compile_state_cost({}, {}).n, 0u);
+    EXPECT_THROW(hg::stats::compile_state_cost({"NoSuchStatistic"}, {}), std::runtime_error);
+    EXPECT_THROW(hg::stats::compile_state_cost({"Const"}, {}), std::runtime_error);
+    EXPECT_THROW(hg::stats::compile_state_cost({"VertexCount"}, {1.0}), std::runtime_error);
+    EXPECT_THROW(hg::stats::compile_state_cost({"VertexCount", "EdgeCount"}, {}),
+                 std::runtime_error);
+}
+
 // A counts-only request under CanonicalizeStates -> Full counts the isomorphism classes on either
 // device. The GPU reply read every state as empty when no state contents were requested (their
 // edge counts were not read back), so every state fell into one class and NumStates was 1.

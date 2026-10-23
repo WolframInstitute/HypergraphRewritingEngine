@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <string>
 #include <map>
 #include <memory>
 #include <unordered_map>
@@ -22,6 +23,7 @@
 #include "hgcommon/state_geometry_core.hpp"
 #include "hgcommon/branchial_rows_core.hpp"
 #include "hgcommon/step_pool_core.hpp"
+#include "hgcommon/state_cost_core.hpp"
 #include "wxf.hpp"
 
 namespace HG_NAMESPACE {
@@ -171,6 +173,18 @@ constexpr const char* kMatrixNames[6] = {
 
 // The kMatrix* bit of a "StepStatisticsMatrices" name; 0 for any other string.
 uint32_t matrix_bit(const std::string& name);
+
+// "StateCost": the "Invariants" slot (hgcommon::sp_invariant) of a statistic name; -1 for any
+// other string.
+int invariant_slot(const std::string& name);
+
+// "StateCost": the program (hgcommon::StateCost) of a postfix expression. `code` holds one token
+// per operation: a statistic name (invariant_slot), "Const" (the next value of `constants`),
+// "Plus", "Subtract", "Times", "Divide", "Min", "Max", "Minus", "Abs", "Sqrt", "Log", "Exp" or
+// "Power" (raises the top to the next value of `constants`). Empty `code` is no cost. Throws
+// std::runtime_error naming the defect.
+hgcommon::StateCost compile_state_cost(const std::vector<std::string>& code,
+                                       const std::vector<double>& constants);
 
 // Whether the overlap and cosine matrices of one level (hgcommon::BoMatrices of a step's k
 // states) go out as a SparseArray: fewer than half of the k (k - 1) / 2 state pairs share an
