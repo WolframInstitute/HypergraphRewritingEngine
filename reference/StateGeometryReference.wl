@@ -30,6 +30,7 @@ sgrPooledDistribution::usage = "sgrPooledDistribution[values, name] gives the su
 sgrVolumeGrowth::usage = "sgrVolumeGrowth[g, v] gives the six volume-growth values of vertex v of graph g (BallDimension, BallScalarCurvature, RiemannianBallDimension, RiemannianBallScalarCurvature, SphereDimension, SphereScalarCurvature), or Missing[] when v has no fit.";
 sgrLogGeodesicCount::usage = "sgrLogGeodesicCount[edges] gives, for d = 1..D, the mean over the ordered pairs of vertices at distance d of the natural logarithm of their number of shortest paths, or {} for a state with no edge.";
 sgrEdgeInvariants::usage = "sgrEdgeInvariants[edges] gives the per-edge values \"EdgeInvariants\" pools for one state: \"NonLazyOllivierRicciCurvature\", the curvature of each edge of the state's graph with the walk of idleness 0, as exact rationals.";
+sgrCombinatorial::usage = "sgrCombinatorial[edges] gives the EulerCharacteristic, RimFraction and CombinatorialCurvatureTotal of a state, and \"Curvatures\", 1 - k/6 for each vertex whose link is a k-cycle, ascending by vertex.";
 sgrStateMatrices::usage = "sgrStateMatrices[vertexSets, edgeLists] gives the six state x state matrices of a step's states in the given order: the Jaccard index, the cosine similarity and the mutual information of every two states, over their vertex sets and over their edge sets (each edge its vertex list).";
 
 Begin["`Private`"];
@@ -83,6 +84,25 @@ nonLazyCurvatures[g_Graph] := Module[{vs = VertexList[g], dm, index},
 sgrEdgeInvariants[edges_List] := <|"NonLazyOllivierRicciCurvature" ->
   nonLazyCurvatures[sgrStateGraph[edges]]|>;
 
+(* Combinatorial curvature (docs/SPEC.md, "StepStatistics combinatorial curvature"): the link
+   of v is the subgraph on v's neighbours, a k-cycle when it has k >= 3 vertices, each of link
+   degree 2, and is connected. The triangles are FindCycle's cycles of length 3. *)
+linkCycleLength[g_Graph, v_] := Module[{link = Subgraph[g, AdjacencyList[g, v]]},
+  If[VertexCount[link] >= 3 && ConnectedGraphQ[link] && Union[VertexDegree[link]] === {2},
+    VertexCount[link], Missing[]]];
+
+sgrCombinatorial[edges_List] := Module[{g = sgrStateGraph[edges], vs, n, ks, cyc},
+  vs = VertexList[g]; n = Length[vs];
+  If[n == 0, Return[<|"EulerCharacteristic" -> Missing[], "RimFraction" -> Missing[],
+    "CombinatorialCurvatureTotal" -> Missing[], "Curvatures" -> {}|>]];
+  ks = linkCycleLength[g, #] & /@ Sort[vs];
+  cyc = DeleteMissing[ks];
+  <|"EulerCharacteristic" -> n - EdgeCount[g] + Length[FindCycle[g, {3}, All]],
+    "RimFraction" -> If[AllTrue[vs, FindCycle[{g, #}, {3}, 1] =!= {} &],
+      N[Count[ks, _Missing]/n], Missing[]],
+    "CombinatorialCurvatureTotal" -> If[cyc === {}, Missing[], N[Total[1 - cyc/6]]],
+    "Curvatures" -> (1 - cyc/6)|>];
+
 growthNames = {"BallDimension", "BallScalarCurvature", "RiemannianBallDimension",
   "RiemannianBallScalarCurvature", "SphereDimension", "SphereScalarCurvature"};
 
@@ -113,7 +133,8 @@ geodesicValues[edges_List] := geodesicValues[edges] = Module[{pairs = geodesicPa
         {d, Max[pairs[[All, 1]]]}]|>]];
 
 sgrLogGeodesicCount[edges_List] := N[geodesicValues[edges]["LogGeodesicCount"]];
-geometryNames = Join[{"NonLazyOllivierRicciCurvature", "GeodeticFraction", "SegmentEntropy", "GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
+geometryNames = Join[{"EulerCharacteristic", "RimFraction", "CombinatorialCurvatureTotal",
+  "NonLazyOllivierRicciCurvature", "GeodeticFraction", "SegmentEntropy", "GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
   "WolframRicciCurvatureScalar", "OllivierRicciCurvature", "DegreeEntropy", "LocalEntropy",
   "MutualInformation", "FisherInformation", "LargestComponentDimension", "LocalDimensionMax",
   "LocalDimensionStandardDeviation", "OllivierMoranI", "OllivierDegreeCorrelation"},
@@ -197,7 +218,8 @@ sgrVertexInvariants[edges_List] := Module[{g = sgrStateGraph[edges], lc, growth}
   Join[<|"LocalDimension" -> If[MissingQ[lc], {}, Values[lc["Dimensions"]]],
     "OllivierRicciCurvature" -> Values[vertexCurvatureExact[g, edgeCurvatures[g]]],
     "WolframRicciCurvatureScalar" -> If[MissingQ[lc], {}, Values[lc["Ricci"]]]|>,
-    AssociationThread[growthNames -> If[growth === {}, ConstantArray[{}, 6], Transpose[growth]]]]];
+    AssociationThread[growthNames -> If[growth === {}, ConstantArray[{}, 6], Transpose[growth]]],
+    <|"CombinatorialCurvature" -> sgrCombinatorial[edges]["Curvatures"]|>]];
 
 (* The per-vertex distributions' fixed ranges [lo, hi), each cut into 32 equal bins; a value
    outside counts in the end bin. *)
@@ -205,7 +227,8 @@ distributionRange = <|"LocalDimension" -> {0, 8}, "OllivierRicciCurvature" -> {-
   "WolframRicciCurvatureScalar" -> {-24, 8}, "BallDimension" -> {0, 8},
   "BallScalarCurvature" -> {-24, 8}, "RiemannianBallDimension" -> {0, 8},
   "RiemannianBallScalarCurvature" -> {-24, 8}, "SphereDimension" -> {0, 8},
-  "SphereScalarCurvature" -> {-24, 8}, "NonLazyOllivierRicciCurvature" -> {-2, 1}|>;
+  "SphereScalarCurvature" -> {-24, 8}, "NonLazyOllivierRicciCurvature" -> {-2, 1},
+  "CombinatorialCurvature" -> {-7, 1}|>;
 
 sgrPooledDistribution[values_List, name_String] := Module[
   {n = Length[values], lo, hi, w, bin, counts, mn, mx, quantile, out},
@@ -285,6 +308,9 @@ sgrStateGeometry[edges_List] := Module[
       N[Sqrt[Mean[(Values[lc["Dimensions"]] - lc["D"])^2]]]],
     "OllivierMoranI" -> moran,
     "OllivierDegreeCorrelation" -> corr,
+    "EulerCharacteristic" -> sgrCombinatorial[edges]["EulerCharacteristic"],
+    "RimFraction" -> sgrCombinatorial[edges]["RimFraction"],
+    "CombinatorialCurvatureTotal" -> sgrCombinatorial[edges]["CombinatorialCurvatureTotal"],
     "NonLazyOllivierRicciCurvature" -> With[{k = nonLazyCurvatures[g]},
       If[k === {}, Missing[], N[Mean[k]]]],
     "GeodeticFraction" -> geodesicValues[edges]["GeodeticFraction"],

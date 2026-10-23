@@ -110,13 +110,15 @@ geometryKeys = {"GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
   "LocalDimensionStandardDeviation", "OllivierMoranI", "OllivierDegreeCorrelation",
   "BallDimension", "BallScalarCurvature", "RiemannianBallDimension",
   "RiemannianBallScalarCurvature", "SphereDimension", "SphereScalarCurvature",
-  "GeodeticFraction", "SegmentEntropy", "NonLazyOllivierRicciCurvature"};
+  "GeodeticFraction", "SegmentEntropy", "NonLazyOllivierRicciCurvature", "EulerCharacteristic",
+  "RimFraction", "CombinatorialCurvatureTotal"};
 
 edgeDistributions = {"NonLazyOllivierRicciCurvature"};
 
 vertexDistributions = {"LocalDimension", "OllivierRicciCurvature", "WolframRicciCurvatureScalar",
   "BallDimension", "BallScalarCurvature", "RiemannianBallDimension",
-  "RiemannianBallScalarCurvature", "SphereDimension", "SphereScalarCurvature"};
+  "RiemannianBallScalarCurvature", "SphereDimension", "SphereScalarCurvature",
+  "CombinatorialCurvature"};
 
 (* The branchial keys of one step from the raw run: the step's states, the branchial pairs
    whose first event's output state is at the step, each state's vertex set and edges, and the
@@ -186,7 +188,7 @@ oracleSteps[res_Association, byClass_ : False, branchial_ : False] := Module[
           "IncidenceDiameter" -> summary[Lookup[ginv, "IncidenceDiameter"]],
           "IncidenceMeanDistance" -> summary[Lookup[ginv, "IncidenceMeanDistance"], 0.01],
           "LargestComponentFraction" -> summary[Lookup[ginv, "LargestComponentFraction"], 0.01]|>,
-          AssociationMap[summary[DeleteMissing[Lookup[geo, #]], If[# === "GraphRadius", 1, 0.01]] &,
+          AssociationMap[summary[DeleteMissing[Lookup[geo, #]], If[MemberQ[{"GraphRadius", "EulerCharacteristic"}, #], 1, 0.01]] &,
             geometryKeys]],
         "VertexInvariants" -> AssociationMap[
           sgrPooledDistribution[Catenate[Lookup[vvals, #]], #] &, vertexDistributions],

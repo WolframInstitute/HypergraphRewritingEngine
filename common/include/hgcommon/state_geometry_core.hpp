@@ -24,6 +24,10 @@
 //   OllivierRicciCurvature     mean over edges x-y of 1 - W1(m_x, m_y), m_x = 1/2 at x and
 //                              1/(2 deg x) at each neighbour; W1 is the exact transport cost
 //   NonLazyOllivierRicciCurvature  the same with m_x = 1/deg x at each neighbour, none at x
+//   EulerCharacteristic        V - E + T, T the triangles of G
+//   RimFraction                the fraction of vertices whose link (the subgraph on their
+//                              neighbours) is not a cycle, when every vertex lies on a triangle
+//   CombinatorialCurvatureTotal  the sum of 1 - k/6 over the vertices whose link is a k-cycle
 //   GraphRadius, MeanEccentricity
 //   DegreeEntropy              Shannon entropy in bits of the degree distribution
 //   LocalEntropy               mean over v of the degree entropy over B(v, 2)
@@ -418,6 +422,9 @@ enum : uint32_t {
     SG_VOLUME_GROWTH = 1u << 11,         // the six growth_* means: a vertex of G' has a fit
     SG_GEODESIC = 1u << 12,              // geodetic_fraction, segment_entropy: G has an edge
     SG_NONLAZY_OLLIVIER = 1u << 13,      // nonlazy_ollivier: G has an edge
+    SG_EULER = 1u << 14,                 // euler_characteristic: n >= 1
+    SG_RIM = 1u << 15,                   // rim_fraction: every vertex lies on a triangle
+    SG_CYCLE_CURVATURE = 1u << 16,       // cycle_curvature_total: a vertex's link is a cycle
 };
 
 // The per-vertex distributions of a state, in this order.
@@ -432,13 +439,17 @@ enum : uint32_t {
     SG_DIST_SPHERE_DIMENSION = 7,        //   sphere dimension and scalar curvature
     SG_DIST_SPHERE_CURVATURE = 8,
     SG_DIST_NONLAZY_OLLIVIER = 9,        // kappa0 over the edges of G
-    SG_DISTS = 10,
+    SG_DIST_CYCLE_CURVATURE = 10,        // 1 - k/6 over the vertices whose link is a k-cycle
+    SG_DISTS = 11,
 };
 constexpr uint32_t SG_DIST_BINS = 32;
 
 // The volume-growth fits in SG_DIST order from SG_DIST_BALL_DIMENSION: per probe and measure, the
 // dimension then the scalar curvature.
 constexpr uint32_t SG_GROWTH_VALUES = 6;
+// The per-vertex values sg_geometry_of writes to `vertex_values`: the volume-growth fits, then
+// the combinatorial curvature.
+constexpr uint32_t SG_VERTEX_VALUES = SG_GROWTH_VALUES + 1;
 
 // Histogram range [lo, hi) of a distribution; the bin width (hi - lo) / SG_DIST_BINS is a power
 // of two times 1 or 3, so a value's bin is one exact subtraction and one division.
@@ -448,6 +459,8 @@ HG_HD inline void sg_dist_range(uint32_t which, double& lo, double& hi) {
         lo = 0.0; hi = 8.0;
     } else if (which == SG_DIST_OLLIVIER || which == SG_DIST_NONLAZY_OLLIVIER) {
         lo = -2.0; hi = 1.0;
+    } else if (which == SG_DIST_CYCLE_CURVATURE) {
+        lo = -7.0; hi = 1.0;
     } else {
         lo = -24.0; hi = 8.0;
     }
@@ -521,6 +534,11 @@ struct SgGeometry {
     uint32_t geodesic_radii = 0;         // D: entries written to the log-geodesic-count output
     uint32_t reserved = 0;
     double nonlazy_ollivier = 0.0;       // the mean over edges of the idleness-0 curvature
+    // V - E + T, T the triangles of G; the fraction of vertices whose link is not a cycle; the sum
+    // of 1 - k/6 over the vertices whose link is a k-cycle.
+    double euler_characteristic = 0.0;
+    double rim_fraction = 0.0;
+    double cycle_curvature_total = 0.0;
 };
 
 // Doubles of scratch sg_growth_fit takes for k quotients.
@@ -546,7 +564,8 @@ HG_HD inline uint32_t sg_transport_lanes(size_t max_degree, uint32_t lanes) {
 // each). Per edge: the Ollivier curvature (8 bytes). Then the transport lanes' scratch, and 8
 // bytes of alignment per array. SG_VOLUME_GROWTH adds per lane and per vertex the shells and the
 // Riemannian counts (4 bytes each) and the fit scratch (56 bytes), and per vertex the six fits.
-// SG_NONLAZY_OLLIVIER adds per edge the idleness-0 curvature (8 bytes).
+// SG_NONLAZY_OLLIVIER adds per edge the idleness-0 curvature (8 bytes). SG_EULER, SG_RIM and
+// SG_CYCLE_CURVATURE add per vertex its triangle count (4 bytes) and its curvature (8 bytes).
 // SG_GEODESIC adds per lane and per vertex the path counts, their log sums and the per-distance
 // log sums (8 bytes each), and per vertex the one-path count (4 bytes), the entropy sum and the
 // pooled per-distance log sums and pair counts (8 bytes each).
@@ -561,6 +580,7 @@ HG_HD inline size_t sg_metric_bytes(size_t n, size_t max_degree, size_t edges, u
                  SG_GROWTH_VALUES * n1 * 8 + 4 * 8;
     if (want & SG_GEODESIC) bytes += size_t{lanes} * n1 * 3 * 8 + n1 * (4 + 3 * 8) + 5 * 8;
     if (want & SG_NONLAZY_OLLIVIER) bytes += 8 * (edges + 1) + 8;
+    if (want & (SG_EULER | SG_RIM | SG_CYCLE_CURVATURE)) bytes += n1 * (4 + 8) + 2 * 8;
     return bytes;
 }
 
@@ -580,6 +600,43 @@ HG_HD inline double sg_degree_entropy_of(const SgGraph& g, const uint32_t* vs, u
         if (counts[d]) { h += sg_entropy_term(counts[d], k); counts[d] = 0; }
     }
     return h;
+}
+
+// THE LINK of v, the subgraph of G on v's neighbours. `twice_triangles` receives the sum over the
+// neighbours u of |N(u) n N(v)|, twice the triangles at v. Returns k when the link is a k-cycle
+// (k >= 3 vertices, each with two link neighbours, connected), else 0.
+HG_HD inline uint32_t sg_link_cycle(const SgGraph& g, uint32_t v, uint32_t& twice_triangles) {
+    // The link neighbours of u: the common neighbours of u and v, ascending; f(w) for each.
+    auto common = [&](uint32_t u, auto&& f) {
+        uint32_t i = g.off[u], j = g.off[v], c = 0;
+        while (i < g.off[u + 1] && j < g.off[v + 1]) {
+            if (g.nbr[i] == g.nbr[j]) { f(g.nbr[i]); ++c; ++i; ++j; }
+            else if (g.nbr[i] < g.nbr[j]) ++i;
+            else ++j;
+        }
+        return c;
+    };
+    const uint32_t k = g.degree(v);
+    twice_triangles = 0;
+    bool two = true;
+    for (uint32_t e = g.off[v]; e < g.off[v + 1]; ++e) {
+        const uint32_t c = common(g.nbr[e], [](uint32_t) {});
+        twice_triangles += c;
+        if (c != 2) two = false;
+    }
+    if (!two || k < 3) return 0;
+    // Every link vertex has two link neighbours, so the link is disjoint cycles: walk the one
+    // through the first neighbour and compare its length with k.
+    const uint32_t first = g.nbr[g.off[v]];
+    uint32_t prev = first, at = first, steps = 0;
+    do {
+        uint32_t next = UINT32_MAX;
+        common(at, [&](uint32_t w) { if (next == UINT32_MAX && (w != prev || steps == 0)) next = w; });
+        prev = at;
+        at = next;
+        ++steps;
+    } while (at != first && steps <= k);
+    return steps == k ? k : 0;
 }
 
 // VOLUME GROWTH (docs/SPEC.md, "StepStatistics volume growth"). The log-difference quotient of a
@@ -702,9 +759,11 @@ HG_HD inline void sg_growth_of(const uint32_t* shell, const uint32_t* ball, cons
 // the SG_DISTS per-vertex distributions under SG_VERTEX_DISTRIBUTIONS, written by the leader.
 // `vertex_curvature`, when given, receives k_v for each vertex index v of G (the vertices in
 // ascending id order), NaN for a vertex with no neighbour, written by the leader.
-// `vertex_values`, when given with SG_VOLUME_GROWTH, receives the volume-growth values of each
-// vertex index v of G at [k n + v] for k < SG_GROWTH_VALUES, in SG_DIST order from
-// SG_DIST_BALL_DIMENSION, NaN for a vertex outside G' or without a fit, written by the leader.
+// `vertex_values`, when given, receives SG_VERTEX_VALUES values of each vertex index v of G at
+// [k n + v], written by the leader: with SG_VOLUME_GROWTH for k < SG_GROWTH_VALUES the
+// volume-growth values in SG_DIST order from SG_DIST_BALL_DIMENSION, NaN for a vertex outside G'
+// or without a fit, and with SG_EULER, SG_RIM or SG_CYCLE_CURVATURE for k = SG_GROWTH_VALUES the
+// combinatorial curvature, NaN for a vertex whose link is not a cycle.
 // `log_geodesic`, with SG_GEODESIC, receives in entries 0..D-1, up to `log_geodesic_capacity`
 // entries, the mean over the ordered pairs at distance d = 1..D of ln sigma, D the largest
 // eccentricity; out.geodesic_radii is D.
@@ -779,6 +838,11 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
     double* lnsig_sum = want_geodesic ? arena.take<double>(n1) : nullptr;
     uint64_t* pair_sum = want_geodesic ? arena.take<uint64_t>(n1) : nullptr;
     double* oll0 = want_nonlazy ? arena.take<double>(size_t{g.edges} + 1) : nullptr;
+    // Combinatorial curvature: per vertex twice its triangles and 1 - k/6 (NaN when the link is
+    // not a cycle).
+    const bool want_comb = (want & (SG_EULER | SG_RIM | SG_CYCLE_CURVATURE)) != 0;
+    uint32_t* tri2_v = want_comb ? arena.take<uint32_t>(n1) : nullptr;
+    double* kappa_v = want_comb ? arena.take<double>(n1) : nullptr;
     if (arena.failed) return false;
     int32_t* dist = dist_all + me * n1;
     int32_t* dist2 = dist2_all + me * n1;
@@ -1011,6 +1075,43 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
             if (want_dists)
                 for (uint32_t v = 0; v < n; ++v)
                     if (g.degree(v)) sg_dist_add(dists[SG_DIST_OLLIVIER], SG_DIST_OLLIVIER, ollv[v]);
+        }
+    }
+    if (want_comb) {
+        for (uint32_t v = me; v < n; v += L) {
+            const uint32_t k = sg_link_cycle(g, v, tri2_v[v]);
+            kappa_v[v] = k ? 1.0 - static_cast<double>(k) / 6.0 : ::nan("");
+        }
+        par.sync();
+        if (par.leader()) {
+            uint64_t tri2 = 0;
+            uint32_t rim = 0, cycles = 0;
+            bool on_triangle = true;
+            double total = 0.0;
+            for (uint32_t v = 0; v < n; ++v) {
+                tri2 += tri2_v[v];
+                if (!tri2_v[v]) on_triangle = false;
+                if (kappa_v[v] != kappa_v[v]) { ++rim; continue; }
+                total += kappa_v[v];
+                ++cycles;
+                if (want_dists)
+                    sg_dist_add(dists[SG_DIST_CYCLE_CURVATURE], SG_DIST_CYCLE_CURVATURE, kappa_v[v]);
+            }
+            out.euler_characteristic = static_cast<double>(static_cast<int64_t>(n) -
+                                                           static_cast<int64_t>(g.edges) +
+                                                           static_cast<int64_t>(tri2 / 6));
+            out.defined |= SG_EULER;
+            if (on_triangle) {
+                out.rim_fraction = static_cast<double>(rim) / static_cast<double>(n);
+                out.defined |= SG_RIM;
+            }
+            if (cycles) {
+                out.cycle_curvature_total = total;
+                out.defined |= SG_CYCLE_CURVATURE;
+            }
+            if (vertex_values)
+                for (uint32_t v = 0; v < n; ++v)
+                    vertex_values[SG_GROWTH_VALUES * n + v] = kappa_v[v];
         }
     }
     if (vertex_curvature && par.leader())

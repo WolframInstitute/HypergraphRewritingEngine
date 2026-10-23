@@ -449,6 +449,25 @@ and the 32 bins over [-2, 1) of the `VertexInvariants` distributions. These are 
 of the Infrageometry paclet's `OllivierRicciCurvature`, whose tests give 2/3 on every edge of
 K4 and 0 on every edge of P5 and C6.
 
+**`StepStatistics` combinatorial curvature.** The link of a vertex v is the subgraph of G induced
+by the neighbours of v. The link is a k-cycle when it has k >= 3 vertices, each joined to exactly
+two others in the link, and is connected. A vertex whose link is a k-cycle has the combinatorial
+curvature κ_v = 1 - k/6, so 2π κ_v is the angle defect of k equilateral triangles about v. T is
+the number of triangles of G.
+
+| Entry | Definition | Undefined when |
+|---|---|---|
+| `EulerCharacteristic` | V - E + T, with V and E the vertices and edges of G | G is empty |
+| `RimFraction` | the fraction of the vertices of G whose link is not a cycle | some vertex lies on no triangle |
+| `CombinatorialCurvatureTotal` | the sum of κ_v over the vertices whose link is a cycle | no vertex has a cycle as its link |
+
+For a closed triangulated surface every link is a cycle, `RimFraction` is 0 and
+`CombinatorialCurvatureTotal` equals `EulerCharacteristic` (the discrete Gauss-Bonnet theorem):
+2 for the icosahedron and the octahedron, 0 for a triangulated torus. `VertexInvariants` gains
+`CombinatorialCurvature`, κ_v over the vertices whose link is a cycle, with 32 bins over
+[-7, 1). Each vertex's link takes |N(u) ∩ N(v)| for each neighbour u, by merging the two sorted
+neighbour lists, and a walk around the link: O(Σ_v Σ_{u ~ v} (deg u + deg v)) per state.
+
 **Per-vertex curvature.** With `"IncludeVertexCurvature" -> True` each `"States"` record has
 `VertexCurvature`, an association from each vertex of the record's edges that has a neighbour in
 G, ascending, to k_v. It is computed from the edges the record lists, so under
