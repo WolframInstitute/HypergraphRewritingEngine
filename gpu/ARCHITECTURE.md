@@ -36,7 +36,9 @@ the successor items back, until a termination detector observes a stable empty s
   of n N / blocks anchors (2 on a 162-edge torus at N = 10, 44 on a 112-edge grid at N = 400),
   and an uncapped state into parts of 32 when fewer items wait than the grid has blocks. Each
   block copies a state of at most `slice_scan_max_edges` edges into shared memory and scans the
-  copy. The parts emit the same matches on any grid.
+  copy. The parts emit the same matches on any grid, and each emitted candidate of a step
+  carries its rank (`StepSelectScratch::cand_rank`), so the step's selection reads the ranks and
+  finds the N-th smallest a byte at a time.
 - **Plain grid-stride persistent blocks, not cooperative launch.** A cooperative grid exists to
   provide a device-wide barrier, and a barrier is the thing this model removes; cooperative
   launch also caps the grid at simultaneous residency for no gain here.

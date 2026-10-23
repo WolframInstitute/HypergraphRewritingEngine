@@ -94,7 +94,16 @@ struct StepSelectScratch {
     // The successor identities the selections have computed, read by the termination detector
     // as progress (RewriteDetectorCtx::work_progress). Null when nothing reads it.
     uint32_t* progress = nullptr;
+    // [cap] each candidate's transition_rank_device at its candidate-pool index, written by the
+    // matching that emits it when match_state_rule_splits holds (match_state_rule's out_rank).
+    uint64_t* cand_rank = nullptr;
 };
+
+// The candidate ranks match_state_rule writes as it emits: the selection scratch's when the
+// passes split, null otherwise.
+__device__ inline uint64_t* emit_rank_sink(const DeviceState& ds, const StepSelectScratch& sel) {
+    return ds.max_states_per_step != 0u && match_state_rule_splits(ds) ? sel.cand_rank : nullptr;
+}
 
 __device__ inline void step_book(const DeviceState& ds, uint32_t d, uint32_t n) {
     if (ds.max_states_per_step != 0u && d < ds.step_slots) atomicAdd(&ds.step_pending[d], n);
@@ -191,12 +200,17 @@ __device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
             if (r.step > s) atomicMin(&s_next_start, i);
             continue;
         }
-        EdgeId edges[kMaxPatternEdges];
-        for (uint32_t k = 0; k < kMaxPatternEdges; ++k) edges[k] = r.matched_edges[k];
-        const uint64_t key = transition_key_device(ds, r.state_id, r.rule_id, edges, r.num_edges);
+        uint64_t rank;
+        if (const uint64_t* cr = emit_rank_sink(ds, sel)) {
+            rank = cr[i];
+        } else {
+            EdgeId edges[kMaxPatternEdges];
+            for (uint32_t k = 0; k < kMaxPatternEdges; ++k) edges[k] = r.matched_edges[k];
+            rank = transition_rank_device(ds, r.state_id, r.rule_id, edges, r.num_edges);
+        }
         const uint32_t at = atomicAdd(&sel.words[0], 1u);
         if (at < sel.cap) {
-            sel.rank[at] = hgcommon::transition_rank(key, ds.sampling_seed);
+            sel.rank[at] = rank;
             sel.idx[at] = i;
         }
     }
@@ -240,23 +254,28 @@ __device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
     hgcommon::RankCut cut{~0ULL, true};
     uint32_t take = m;
     if (groups > cap_n) {
+        // The N-th smallest rank, a byte at a time from the top: each pass counts the entries
+        // under the prefix found so far by their next byte, and takes the byte whose bin holds
+        // the N-th of them.
+        __shared__ uint32_t s_hist[256];
         if (tid == 0) { s_prefix = 0; s_remaining = cap_n; }
         uint64_t mask = 0;
-        for (int bit = 63; bit >= 0; --bit) {
-            const uint64_t b = 1ULL << bit;
-            if (tid == 0) s_cnt = 0;
+        for (int shift = 56; shift >= 0; shift -= 8) {
+            for (uint32_t b = tid; b < 256u; b += nt) s_hist[b] = 0u;
             __syncthreads();
             const uint64_t prefix = s_prefix;
-            uint32_t local = 0;
             for (uint32_t i = tid; i < m; i += nt) {
                 if (by_succ && !sel.lead[i]) continue;   // one entry per successor
                 const uint64_t r = sel.rank[i];
-                if ((r & mask) == prefix && !(r & b)) ++local;
+                if ((r & mask) == prefix) atomicAdd(&s_hist[(r >> shift) & 0xFFu], 1u);
             }
-            atomicAdd(&s_cnt, local);
             __syncthreads();
-            if (tid == 0 && s_remaining > s_cnt) { s_remaining -= s_cnt; s_prefix |= b; }
-            mask |= b;
+            if (tid == 0) {
+                uint32_t b = 0;
+                while (b < 255u && s_remaining > s_hist[b]) s_remaining -= s_hist[b++];
+                s_prefix |= uint64_t{b} << shift;
+            }
+            mask |= uint64_t{0xFFu} << shift;
             __syncthreads();
         }
         cut = hgcommon::RankCut{s_prefix, false};   // the N-th smallest rank
@@ -1676,7 +1695,8 @@ __global__ void k_persistent_evolve(
                     const uint32_t r = k / parts;
                     const unsigned long long tA = (threadIdx.x == 0) ? clock64() : 0;
                     match_state_rule(ds, rules, child_sid, r, child_step, match_out, &succ_ctx,
-                                     &succ_scratch, k - r * parts, parts);
+                                     &succ_scratch, k - r * parts, parts,
+                                     emit_rank_sink(ds, step_sel));
                     __syncthreads();
                     if (threadIdx.x == 0) acc_match += clock64() - tA;
                     if (ds.max_states_per_step != 0u) {
@@ -1712,7 +1732,8 @@ __global__ void k_persistent_evolve(
         if (have) {
             const unsigned long long tA = (threadIdx.x == 0) ? clock64() : 0;
             match_state_rule(ds, rules, mitem.state_id, mitem.rule_id, mitem.step, match_out,
-                             &succ_ctx, &succ_scratch, mitem.part, mitem.parts);
+                             &succ_ctx, &succ_scratch, mitem.part, mitem.parts,
+                             emit_rank_sink(ds, step_sel));
             __syncthreads();
             if (ds.max_states_per_step != 0u) {
                 __shared__ uint32_t s_item_sel;
@@ -2016,6 +2037,7 @@ struct EngineState::PersistentScratch {
     std::unique_ptr<Pool<MatchRecord>> step_cand;
     uint64_t* step_rank = nullptr;
     uint32_t* step_idx = nullptr;
+    uint64_t* step_cand_rank = nullptr;
     uint32_t* step_words = nullptr;
     uint32_t* step_progress = nullptr;
     uint32_t  step_cap = 0;
@@ -2053,6 +2075,7 @@ struct EngineState::PersistentScratch {
         free_succ();
         if (step_rank) cudaFree(step_rank);
         if (step_idx) cudaFree(step_idx);
+        if (step_cand_rank) cudaFree(step_cand_rank);
         if (step_words) cudaFree(step_words);
         if (step_progress) cudaFree(step_progress);
         if (explore_frames) cudaFree(explore_frames);
@@ -2460,10 +2483,13 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
             ps.step_cand = std::make_unique<Pool<MatchRecord>>(cap);
             if (ps.step_rank) cudaFree(ps.step_rank);
             if (ps.step_idx) cudaFree(ps.step_idx);
+            if (ps.step_cand_rank) cudaFree(ps.step_cand_rank);
             if (!ps.step_words)
                 HG_CUDA_CHECK(cudaMalloc(&ps.step_words, sizeof(uint32_t) * 2u), "step words");
             HG_CUDA_CHECK(cudaMalloc(&ps.step_rank, sizeof(uint64_t) * cap), "step ranks");
             HG_CUDA_CHECK(cudaMalloc(&ps.step_idx, sizeof(uint32_t) * cap), "step indices");
+            HG_CUDA_CHECK(cudaMalloc(&ps.step_cand_rank, sizeof(uint64_t) * cap),
+                          "step candidate ranks");
             ps.step_cap = cap;
         }
         ps.step_cand->reset_and_clear(&clears);
@@ -2476,6 +2502,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         cand_v = ps.step_cand->view();
         step_sel = StepSelectScratch{ps.step_rank, ps.step_idx, ps.step_words, ps.step_cap};
         step_sel.progress = ps.step_progress;
+        step_sel.cand_rank = ps.step_cand_rank;
         if (!dsk.step_cap_counts_matches && state_mode != CanonicalizationMode::None) {
             if (ps.step_succ_cap != cap) {
                 ps.free_step_succ();

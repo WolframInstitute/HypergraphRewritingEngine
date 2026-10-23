@@ -58,9 +58,14 @@ using FrameMap = ConcurrentMap<uint64_t, uint64_t>;
 // callback, which is instantiated through a template per rule shape; inlined there it
 // carried event_signature's whole body into the DFS and ptxas ran out of memory
 // assembling match.cu. One call per completed match is not the cost that matters here.
+//
+// `staged_ids` non-null is a copy of the state's slice ids in slice order (`staged_count` of
+// them, in shared memory), searched for the edges' positions in place of the slice.
 __device__ inline __noinline__ uint64_t transition_key_device(const DeviceState& ds, StateId state_id,
                                                  RuleId rule_id, const EdgeId* matched_edges,
-                                                 uint8_t num_edges) {
+                                                 uint8_t num_edges,
+                                                 const EdgeId* staged_ids = nullptr,
+                                                 uint32_t staged_count = 0) {
     // Under Full states with a draw or a cap the run computes every state's edge orbits
     // (hgcommon::transition_key_reads_orbits) and the key reads them, as the host's
     // canonical_transition_key does: automorphic transitions share the key, so the kept set is
@@ -70,13 +75,32 @@ __device__ inline __noinline__ uint64_t transition_key_device(const DeviceState&
     uint8_t n = 0;
     for (uint8_t i = 0; i < num_edges && n < kMaxPatternEdges; ++i) {
         if (matched_edges[i] == INVALID_ID) continue;
-        const uint32_t pos = state_edge_index(ds, state_id, matched_edges[i]);
+        uint32_t pos;
+        if (staged_ids) {
+            pos = slice_position(staged_ids, StateEdgeSlice{0, staged_count}, matched_edges[i]);
+            if (pos != UINT32_MAX) pos += ds.state_edge_slices[state_id].offset;
+        } else {
+            pos = state_edge_index(ds, state_id, matched_edges[i]);
+        }
         ranks[n++] = (pos == UINT32_MAX) ? UINT32_MAX : coord[pos];
     }
     return hgcommon::event_signature(hgcommon::EVENT_SIG_TRANSITION,
                                      ds.state_exact_hash[state_id],
                                      /*output_state_hash=*/0, /*step=*/0, rule_id,
                                      ranks, n, /*produced_ranks=*/nullptr, 0);
+}
+
+// The transition's rank: hgcommon::transition_rank of transition_key_device under the run's
+// sampling seed.
+__device__ inline uint64_t transition_rank_device(const DeviceState& ds, StateId state_id,
+                                                  RuleId rule_id, const EdgeId* matched_edges,
+                                                  uint8_t num_edges,
+                                                  const EdgeId* staged_ids = nullptr,
+                                                  uint32_t staged_count = 0) {
+    return hgcommon::transition_rank(
+        transition_key_device(ds, state_id, rule_id, matched_edges, num_edges, staged_ids,
+                              staged_count),
+        ds.sampling_seed);
 }
 
 // Publish state `sid`'s canonical hash. A keyed twin reads it while it is written

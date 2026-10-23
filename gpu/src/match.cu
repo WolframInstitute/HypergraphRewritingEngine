@@ -365,11 +365,13 @@ __device__ __noinline__ bool emit_admit(const DeviceState& ds, StateId state_id,
 // same reason as emit_admit: a lambda called twice instantiated the whole DFS twice and ptxas
 // ran out of memory. `ctl` null emits every match. `stage` is the state's edges in shared memory
 // or an empty stage. The pass anchors part `part` of `parts` equal ranges of the state's slice
-// (match_split_root_begin).
+// (match_split_root_begin). A non-null `out_rank` receives each emitted record's
+// transition_rank_device at the record's index in `out`.
 __device__ __noinline__ void match_state_rule_pass(
         const DeviceState& ds, const DeviceRule* rules, StateId state_id, uint32_t rid, uint32_t step,
         typename Pool<MatchRecord>::DeviceView out, const EmitCtl* ctl,
-        const MatchStage& stage = MatchStage{}, uint32_t part = 0, uint32_t parts = 1) {
+        const MatchStage& stage = MatchStage{}, uint32_t part = 0, uint32_t parts = 1,
+        uint64_t* out_rank = nullptr) {
     const DeviceRule& rule = rules[rid];
 
     if (rule.num_lhs_edges == 0) return;
@@ -386,13 +388,18 @@ __device__ __noinline__ void match_state_rule_pass(
             ds.errors.record(ErrorKind::kMatchPoolFull);
             return;
         }
+        EdgeId edges[kMaxPatternEdges];
+        for (uint8_t i = 0; i < kMaxPatternEdges; ++i) edges[i] = INVALID_ID;
+        for (uint8_t d = 0; d < st.depth; ++d) edges[st.pattern[d]] = st.matched[d];
+        if (out_rank)
+            out_rank[idx] = transition_rank_device(ds, state_id, rid, edges, st.depth,
+                                                   stage.count ? stage.ids : nullptr, stage.count);
         MatchRecord& m = out.at(idx);
         m.rule_id   = rid;
         m.state_id  = state_id;
         m.step      = step;
         m.num_edges = st.depth;
-        for (uint8_t i = 0; i < kMaxPatternEdges; ++i) m.matched_edges[i] = INVALID_ID;
-        for (uint8_t d = 0; d < st.depth; ++d) m.matched_edges[st.pattern[d]] = st.matched[d];
+        for (uint8_t i = 0; i < kMaxPatternEdges; ++i) m.matched_edges[i] = edges[i];
         publish_match(m);
     };
 
@@ -681,7 +688,7 @@ __device__ void match_state_rule(const DeviceState& ds,
                                  typename Pool<MatchRecord>::DeviceView out,
                                  const SuccessorCtx* succ,
                                  const SuccessorScratch* scratch,
-                                 uint32_t part, uint32_t parts) {
+                                 uint32_t part, uint32_t parts, uint64_t* out_rank) {
     const uint32_t cap_k = ds.matches_per_state_rule;
     const uint32_t parent_k = ds.max_successor_states_per_parent;
     // The block's match buffer: the state's staged edges when no cap ranks candidates, the
@@ -689,7 +696,8 @@ __device__ void match_state_rule(const DeviceState& ds,
     __shared__ uint64_t s_buf[kMatchSharedWords];
     if (match_state_rule_splits(ds)) {
         const MatchStage stage = stage_state_edges(ds, rules[rid], state_id, s_buf, sizeof(s_buf));
-        match_state_rule_pass(ds, rules, state_id, rid, step, out, nullptr, stage, part, parts);
+        match_state_rule_pass(ds, rules, state_id, rid, step, out, nullptr, stage, part, parts,
+                              out_rank);
         return;
     }
 

@@ -189,14 +189,16 @@ __device__ bool successor_identity_device(const DeviceState& ds, const DeviceRul
 // second copy of it. `succ` and `scratch` serve MaxSuccessorStatesPerParent under Automatic and
 // Full states; a scheduler that passes null for them records kScratchOverflow when the cap
 // needs them. When match_state_rule_splits(ds) holds, the call matches part `part` of `parts`
-// (match_split_root_begin), and the parts of a pair together emit each of its matches once;
-// otherwise `parts` must be 1.
+// (match_split_root_begin), and the parts of a pair together emit each of its matches once,
+// each with its transition_rank_device at its index in `out` when `out_rank` is non-null;
+// otherwise `parts` must be 1 and `out_rank` is not written.
 __device__ void match_state_rule(const DeviceState& ds, const DeviceRule* rules,
                                  StateId state_id, uint32_t rid, uint32_t step,
                                  typename Pool<MatchRecord>::DeviceView out,
                                  const SuccessorCtx* succ = nullptr,
                                  const SuccessorScratch* scratch = nullptr,
-                                 uint32_t part = 0, uint32_t parts = 1);
+                                 uint32_t part = 0, uint32_t parts = 1,
+                                 uint64_t* out_rank = nullptr);
 
 // Run the match kernel for (state_id, all rules), populating out_matches.
 // Returns the number of matches written. `step` is stamped on every record.
