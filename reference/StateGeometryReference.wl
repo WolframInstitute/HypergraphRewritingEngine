@@ -36,6 +36,7 @@ sgrParticle::usage = "sgrParticle[edges] gives the per-vertex clustering coeffic
 sgrTopology::usage = "sgrTopology[edges] gives CliqueBetti0, CliqueBetti1, CliqueBetti2 (the Betti numbers over GF(2) of the clique complex of the state's graph) and RipsBetti1 (of the clique complex of its square).";
 sgrMetricTensorGap::usage = "sgrMetricTensorGap[edges] gives the mean, over the centre vertices p of the largest component of radius R, of the gap between the values of the metric tensor on the sphere of radius Floor[R/2] about p and max(cos Theta, 0), or Missing[] when R < 2.";
 sgrHolonomy::usage = "sgrHolonomy[edges] gives HolonomyTriangle and HolonomySquare, the mean holonomy angles at r = 1 of the triangles and of the chordless 4-cycles of the state's graph, each Missing[] when there is no such face or a vertex has degree above 6.";
+sgrAlignment::usage = "sgrAlignment[edges] gives AlignmentMoment1..3, the principal moments over the total mass of the inertia of the largest component's spectral embedding (Laplacian eigenvectors 2..4) weighted by |K_v| + 1/100, each Missing[] when the component has fewer than 4 or more than 256 vertices or the fourth and fifth Laplacian eigenvalues are within 10^-6 relative.";
 sgrStateMatrices::usage = "sgrStateMatrices[vertexSets, edgeLists] gives the six state x state matrices of a step's states in the given order: the Jaccard index, the cosine similarity and the mutual information of every two states, over their vertex sets and over their edge sets (each edge its vertex list).";
 
 Begin["`Private`"];
@@ -156,7 +157,8 @@ geodesicValues[edges_List, rule_String] := geodesicValues[edges, rule] = Module[
 
 sgrLogGeodesicCount[edges_List] := N[geodesicValues[edges]["LogGeodesicCount"]];
 geometryNames = Join[{"CliqueBetti0", "CliqueBetti1", "CliqueBetti2", "RipsBetti1",
-  "MetricTensorGap", "HolonomyTriangle", "HolonomySquare", "DimensionGradientCurvature", "ClusteringCoefficient", "LocalEulerExcess", "TopologicalCharge",
+  "MetricTensorGap", "HolonomyTriangle", "HolonomySquare", "AlignmentMoment1", "AlignmentMoment2",
+  "AlignmentMoment3", "DimensionGradientCurvature", "ClusteringCoefficient", "LocalEulerExcess", "TopologicalCharge",
   "TopologicalChargeMax", "EulerCharacteristic", "RimFraction", "CombinatorialCurvatureTotal",
   "NonLazyOllivierRicciCurvature", "GeodeticFraction", "SegmentEntropy", "GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
   "WolframRicciCurvatureScalar", "OllivierRicciCurvature", "DegreeEntropy", "LocalEntropy",
@@ -427,6 +429,28 @@ sgrHolonomy[edges_List] := Module[{g = sgrStateGraph[edges], vs, dm, dist, angle
   <|"HolonomyTriangle" -> If[tris === {}, Missing[], N[Mean[face /@ tris]]],
     "HolonomySquare" -> If[sqs === {}, Missing[], N[Mean[face /@ sqs]]]|>];
 
+(* Branch alignment (docs/SPEC.md, "StepStatistics branch alignment"): the Laplacian of G' by
+   Eigensystem at 40 digits, the vertex Ricci scalars of largestComponentGeometry as masses. *)
+sgrAlignment[edges_List] := Module[{lc = largestComponentGeometry[edges], gp, vs, n, lap, vals,
+    vecs, ord, x, m, c, inertia, none},
+  none = <|"AlignmentMoment1" -> Missing[], "AlignmentMoment2" -> Missing[],
+    "AlignmentMoment3" -> Missing[]|>;
+  If[MissingQ[lc], Return[none]];
+  gp = largestComponentGraph[edges];
+  vs = VertexList[gp]; n = Length[vs];
+  If[n < 4 || n > 256, Return[none]];
+  lap = N[Normal[KirchhoffMatrix[gp]], 40];
+  {vals, vecs} = Eigensystem[lap];
+  ord = Ordering[vals];
+  If[n >= 5 && vals[[ord[[5]]]] - vals[[ord[[4]]]] <= 10^-6 Abs[vals[[ord[[5]]]]], Return[none]];
+  x = Transpose[Normalize /@ vecs[[ord[[2 ;; 4]]]]];
+  m = (Abs[lc["Ricci"][#]] + 1/100) & /@ vs;
+  c = Total[m x]/Total[m];
+  inertia = Total[MapThread[#1 ((#2 - c).(#2 - c) IdentityMatrix[3] -
+      Outer[Times, #2 - c, #2 - c]) &, {m, x}]];
+  AssociationThread[{"AlignmentMoment1", "AlignmentMoment2", "AlignmentMoment3"} ->
+    N[ReverseSort[Eigenvalues[inertia]]/Total[m]]]];
+
 sgrStateGeometry[edges_List] := Module[
   {g, n, conn, R, vs, dims, d, ricci, dm, index, ollivier, local, mi, fisher, b2, kE, kv, lc,
    moran, corr},
@@ -489,6 +513,7 @@ sgrStateGeometry[edges_List] := Module[
     Sequence @@ Normal[sgrTopology[edges]],
     "MetricTensorGap" -> sgrMetricTensorGap[edges],
     Sequence @@ Normal[sgrHolonomy[edges]],
+    Sequence @@ Normal[sgrAlignment[edges]],
     "GeodeticFraction" -> geodesicValues[edges]["GeodeticFraction"],
     "SegmentEntropy" -> N[geodesicValues[edges]["SegmentEntropy"]],
     Sequence @@ With[{growth = Values[growthOfLargest[edges]]},

@@ -1637,6 +1637,7 @@ uint32_t measure_bits(const std::string& name) {
     if (name == "Topology") return hgcommon::SG_TOPOLOGY;
     if (name == "MetricTensor") return hgcommon::SG_METRIC_TENSOR;
     if (name == "Holonomy") return hgcommon::SG_HOLONOMY;
+    if (name == "BranchAlignment") return hgcommon::SG_BRANCH_ALIGNMENT;
     if (name == "Equilibrium") return kMeasureEquilibrium;
     if (name == "Branchial") return kMeasureBranchial;
     return 0;
@@ -1710,6 +1711,9 @@ const InvariantSlot kInvariantSlots[hgcommon::SP_NUM_INVARIANTS] = {
     {"MetricTensorGap", 0.01, false, hgcommon::SG_METRIC_TENSOR},
     {"HolonomyTriangle", 0.01, false, hgcommon::SG_HOLONOMY},
     {"HolonomySquare", 0.01, false, hgcommon::SG_HOLONOMY},
+    {"AlignmentMoment1", 0.01, false, hgcommon::SG_BRANCH_ALIGNMENT},
+    {"AlignmentMoment2", 0.01, false, hgcommon::SG_BRANCH_ALIGNMENT},
+    {"AlignmentMoment3", 0.01, false, hgcommon::SG_BRANCH_ALIGNMENT},
 };
 
 // The names of the distributions in hgcommon::SG_DIST order, and whether each pools edges

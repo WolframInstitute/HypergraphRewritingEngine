@@ -195,3 +195,19 @@ TEST(StateTopology, ScratchGrowsOncePerStage) {
         EXPECT_LE(calls, 4u);
     }
 }
+
+// The path P6 has distinct Laplacian eigenvalues, so its moments are defined and descending. The
+// cycle C8 has mu4 = mu5, and the triangle has fewer than 4 vertices: both are undefined.
+TEST(StateTopology, BranchAlignmentMoments) {
+    std::vector<std::vector<uint32_t>> path;
+    for (uint32_t i = 1; i < 6; ++i) path.push_back({i, i + 1});
+    const SgGeometry p = measure(path, hgcommon::SG_BRANCH_ALIGNMENT);
+    ASSERT_TRUE(p.defined & hgcommon::SG_BRANCH_ALIGNMENT);
+    EXPECT_GE(p.alignment_moment[0], p.alignment_moment[1]);
+    EXPECT_GE(p.alignment_moment[1], p.alignment_moment[2]);
+    EXPECT_GT(p.alignment_moment[2], 0.0);
+    EXPECT_FALSE(measure(cycle(8), hgcommon::SG_BRANCH_ALIGNMENT).defined &
+                 hgcommon::SG_BRANCH_ALIGNMENT);
+    EXPECT_FALSE(measure(cycle(3), hgcommon::SG_BRANCH_ALIGNMENT).defined &
+                 hgcommon::SG_BRANCH_ALIGNMENT);
+}

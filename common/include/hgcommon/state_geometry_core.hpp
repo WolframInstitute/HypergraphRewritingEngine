@@ -463,6 +463,7 @@ enum : uint32_t {
     SG_METRIC_TENSOR = 1u << 20,         // metric_tensor_gap: R' >= 2
     SG_HOLONOMY = 1u << 21,              // holonomy_triangle: a triangle, max degree <= 6
     SG_HOLONOMY_SQUARE = 1u << 22,       // `defined` only: holonomy_square (SG_HOLONOMY's family)
+    SG_BRANCH_ALIGNMENT = 1u << 23,      // alignment_moment: 4 <= |G'| <= 256, mu4 < mu5
 };
 
 // "StepStatisticsMeasures": the `want` bits of each measure family. SG_MEASURES_BASE is the set
@@ -472,7 +473,7 @@ constexpr uint32_t SG_COMBINATORIAL = SG_EULER | SG_RIM | SG_CYCLE_CURVATURE;
 constexpr uint32_t SG_MEASURES_ALL = SG_MEASURES_BASE | SG_VOLUME_GROWTH | SG_GEODESIC |
                                      SG_NONLAZY_OLLIVIER | SG_COMBINATORIAL | SG_PARTICLE |
                                      SG_DIMENSION_GRADIENT | SG_TOPOLOGY | SG_METRIC_TENSOR |
-                                     SG_HOLONOMY;
+                                     SG_HOLONOMY | SG_BRANCH_ALIGNMENT;
 
 // The per-vertex distributions of a state, in this order.
 enum : uint32_t {
@@ -622,6 +623,9 @@ struct SgGeometry {
     double metric_tensor_gap = 0.0;
     double holonomy_triangle = 0.0;
     double holonomy_square = 0.0;
+    // The principal moments of the curvature-weighted inertia of G''s spectral embedding over
+    // the total mass, descending (state_alignment_core.hpp).
+    double alignment_moment[3] = {0.0, 0.0, 0.0};
 };
 
 // Doubles of scratch sg_growth_fit takes for k quotients.
@@ -670,6 +674,12 @@ HG_HD inline size_t sg_metric_bytes(size_t n, size_t max_degree, size_t edges, u
     // The counting scratch of state_topology_core.hpp's st_families_of: four arrays of n + 1
     // words.
     if (want & (SG_TOPOLOGY | SG_METRIC_TENSOR | SG_HOLONOMY)) bytes += 4 * (n1 * 4 + 8);
+    // The branch alignment's Laplacian and eigenvalues (state_alignment_core.hpp, at most 256
+    // vertices) and its vertex index.
+    if (want & SG_BRANCH_ALIGNMENT) {
+        const size_t k = n < 256 ? n : 256;
+        bytes += 8 * (k * k + 3 * k + 3) + 4 * n1 + 2 * 8;
+    }
     return bytes;
 }
 
@@ -834,6 +844,7 @@ HG_HD inline void sg_growth_of(const uint32_t* shell, const uint32_t* ball, cons
 }  // namespace HG_NAMESPACE
 
 #include "hgcommon/state_topology_core.hpp"
+#include "hgcommon/state_alignment_core.hpp"
 
 namespace HG_NAMESPACE {
 namespace common {
@@ -886,7 +897,9 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
     const bool want_vertex_ollivier = want_dists || vertex_curvature != nullptr ||
                                       (want & (SG_OLLIVIER_MORAN | SG_OLLIVIER_DEGREE)) != 0;
     const bool want_gradient = (want & SG_DIMENSION_GRADIENT) != 0;
-    const bool want_sub = want_dists || (want & SG_LARGEST_DIMENSION) != 0 || want_gradient;
+    const bool want_alignment = (want & SG_BRANCH_ALIGNMENT) != 0;
+    const bool want_sub = want_dists || (want & SG_LARGEST_DIMENSION) != 0 || want_gradient ||
+                          want_alignment;
     const uint32_t n = g.n;
     const uint32_t L = par.width(), me = par.rank();
     if (par.leader()) {
@@ -1385,9 +1398,11 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
             out.dimension_gradient = lap_total / ns;
             out.defined |= SG_DIMENSION_GRADIENT;
         }
-        if (want_dists) {
-            for (uint32_t i = 0; i < ns; ++i)
-                sg_dist_add(dists[SG_DIST_LOCAL_DIMENSION], SG_DIST_LOCAL_DIMENSION, dimv[vat(i)]);
+        if (want_dists || want_alignment) {
+            if (want_dists)
+                for (uint32_t i = 0; i < ns; ++i)
+                    sg_dist_add(dists[SG_DIST_LOCAL_DIMENSION], SG_DIST_LOCAL_DIMENSION,
+                                dimv[vat(i)]);
             // The per-radius coefficients of K_v at D = the LargestComponentDimension.
             const double c = dm_tgamma(mean / 2.0 + 1.0) / dm_pow(pi, mean / 2.0);
             for (uint32_t r = 1; r <= R; ++r) {
@@ -1400,7 +1415,7 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
     }
 
     // PASS 3: K_v for the vertices of G', from each vertex's balls to radius R'.
-    if (part && want_dists) {
+    if (part && (want_dists || want_alignment)) {
         par.sync();
         const double c = ric_a[0];
         for (uint32_t i = me; i < ns; i += L) {
@@ -1417,9 +1432,24 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
             ricv[v] = s / R;
         }
         par.sync();
-        if (par.leader())
+        if (par.leader() && want_dists)
             for (uint32_t i = 0; i < ns; ++i)
                 sg_dist_add(dists[SG_DIST_RICCI], SG_DIST_RICCI, ricv[vat(i)]);
+    }
+    // Branch alignment from K_v, on the leader (state_alignment_core.hpp).
+    if (part && want_alignment) {
+        double* sa = arena.take<double>(sa_alignment_doubles(ns));
+        uint32_t* sa_index = arena.take<uint32_t>(n1);
+        if (arena.failed) return false;
+        if (par.leader()) {
+            for (uint32_t v = 0; v < n; ++v) sa_index[v] = ST_NONE;
+            double moments[3] = {0.0, 0.0, 0.0};
+            if (sa_alignment_of(g, vat, ns, ricv, sa, sa_index, moments)) {
+                for (uint32_t k = 0; k < 3; ++k) out.alignment_moment[k] = moments[k];
+                out.defined |= SG_BRANCH_ALIGNMENT;
+            }
+        }
+        par.sync();
     }
 
     if (!whole || !(want & SG_FISHER)) return true;

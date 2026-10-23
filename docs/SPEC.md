@@ -401,6 +401,7 @@ list adds the families it names:
 | `"MetricTensor"` | `MetricTensorGap` | metric tensor |
 | `"Holonomy"` | `HolonomyTriangle`, `HolonomySquare` | holonomy |
 | `"Equilibrium"` | the per-step key `Equilibrium` | equilibrium |
+| `"BranchAlignment"` | `AlignmentMoment1`, `AlignmentMoment2`, `AlignmentMoment3` | branch alignment |
 | `"Branchial"` | the `Branchial` volume-growth and curvature keys, with `"StepStatisticsBranchial"` `"Graph"` | branchial metrics |
 
 A family that is not requested is not computed: each class's record carries the request
@@ -570,6 +571,16 @@ Infrageometry's tests give 1 on the octahedron's triangles, 0 on the triangles o
 | `Equilibrated` | `True` when the run has at least 50 steps up to and including s and `OverallStability` >= 0.95 |
 
 hypergraph_viz computes the scores once, for the last step, in single precision, and includes the mean branchial sharpness. Here every step has its scores, in double precision, and the sharpness is left out: it needs `"StepStatisticsBranchial"` `"Overlap"`, and hypergraph_viz gives it stability 1 when it is not computed. hypergraph_viz's degree entropy and vertex count are those of the union of the step's states. Here they are the means over the step's states, weighted as `Invariants` is. A step's scores read only the records of the steps before it, so they are computed as each step's record is made (`StepStatisticsJobs::close_equilibrium`): a step whose predecessor has its scores computes its own, then its successor's when that record is made. The cost is O(20) per step.
+
+**`StepStatistics` branch alignment.** The family `"BranchAlignment"` adds `AlignmentMoment1`, `AlignmentMoment2` and `AlignmentMoment3`: hypergraph_viz's curvature-weighted moment of inertia of a spectral embedding (hypergraph_viz@0fb63e5:blackhole/src/branch_alignment.cpp:29-205 and 410-516), as the paclet's former options `"BranchAlignment"` and `"BranchAlignmentMethod" -> "WolframRicci"` computed it. With L = D - A the Laplacian of G' and 0 = μ1 <= μ2 <= ... its eigenvalues, a vertex v of G' sits at x_v = (u2(v), u3(v), u4(v)), u_k the unit eigenvector of μ_k. Its mass is m_v = \|K_v\| + 1/100, K_v the Ricci scalar of v from `VertexInvariants` `WolframRicciCurvatureScalar`. With c = Σ m_v x_v / Σ m_v, the inertia tensor is I = Σ m_v (\|x_v - c\|² 1 - (x_v - c)(x_v - c)^T), and the entries are its eigenvalues σ1 >= σ2 >= σ3 divided by Σ m_v.
+
+| Entry | Definition | Undefined when |
+|---|---|---|
+| `AlignmentMoment1`, `AlignmentMoment2`, `AlignmentMoment3` | σ1, σ2, σ3 over Σ m_v | G' has fewer than 4 or more than 256 vertices, or μ5 - μ4 <= 10^-6 μ5 |
+
+The eigenvectors u2, u3, u4 are fixed up to an orthogonal change of basis of their span when μ4 < μ5. Such a change rotates every x_v, and the eigenvalues of I do not change, so the entries are the same for isomorphic states. When μ4 = μ5 the span is not determined by G', and the entries are undefined. With every K_v = 0 the masses are equal, Σ x_v x_v^T is the identity, and each entry is 2/n' for n' vertices of G'.
+
+hypergraph_viz finds the eigenvectors by 100 steps of power iteration from pseudo-random vectors in single precision. Here L is diagonalised in double precision: Householder reduction to a tridiagonal matrix, then the implicit QL iteration with at most 60 iterations per eigenvalue, then Jacobi rotations on the 3 x 3 tensor. The cost is O(n'³) time and n'² doubles for n' vertices of G', on one thread of the state's record. hypergraph_viz's per-vertex output (the projections on the principal axes, oriented by curvature) is not an entry: an axis of a repeated σ has no fixed direction.
 
 **Per-vertex curvature.** With `"IncludeVertexCurvature" -> True` each `"States"` record has
 `VertexCurvature`, an association from each vertex of the record's edges that has a neighbour in
