@@ -30,6 +30,8 @@
 //   CombinatorialCurvatureTotal  the sum of 1 - k/6 over the vertices whose link is a k-cycle
 //   ClusteringCoefficient, LocalEulerExcess, TopologicalCharge, TopologicalChargeMax
 //                              hypergraph_viz's particle measures (docs/SPEC.md)
+//   DimensionGradientCurvature  the mean over G' of L_v = the mean over the neighbours u of v
+//                              of d_u - d_v
 //   GraphRadius, MeanEccentricity
 //   DegreeEntropy              Shannon entropy in bits of the degree distribution
 //   LocalEntropy               mean over v of the degree entropy over B(v, 2)
@@ -428,6 +430,7 @@ enum : uint32_t {
     SG_RIM = 1u << 15,                   // rim_fraction: every vertex lies on a triangle
     SG_CYCLE_CURVATURE = 1u << 16,       // cycle_curvature_total: a vertex's link is a cycle
     SG_PARTICLE = 1u << 17,              // clustering, euler_excess, charge, charge_max: n >= 1
+    SG_DIMENSION_GRADIENT = 1u << 18,    // dimension_gradient: |G'| >= 2
 };
 
 // The per-vertex distributions of a state, in this order.
@@ -445,7 +448,8 @@ enum : uint32_t {
     SG_DIST_CYCLE_CURVATURE = 10,        // 1 - k/6 over the vertices whose link is a k-cycle
     SG_DIST_CLUSTERING = 11,             // C_v over the vertices of G
     SG_DIST_CHARGE = 12,                 // q_v over the vertices of G
-    SG_DISTS = 13,
+    SG_DIST_DIMENSION_GRADIENT = 13,     // L_v over G'
+    SG_DISTS = 14,
 };
 constexpr uint32_t SG_DIST_BINS = 32;
 
@@ -453,8 +457,9 @@ constexpr uint32_t SG_DIST_BINS = 32;
 // dimension then the scalar curvature.
 constexpr uint32_t SG_GROWTH_VALUES = 6;
 // The per-vertex values sg_geometry_of writes to `vertex_values`: the volume-growth fits, then
-// the combinatorial curvature, the clustering coefficient, the Euler excess and the charge.
-constexpr uint32_t SG_VERTEX_VALUES = SG_GROWTH_VALUES + 4;
+// the combinatorial curvature, the clustering coefficient, the Euler excess, the charge and the
+// dimension-gradient curvature.
+constexpr uint32_t SG_VERTEX_VALUES = SG_GROWTH_VALUES + 5;
 
 // Histogram range [lo, hi) of a distribution; the bin width (hi - lo) / SG_DIST_BINS is a power
 // of two times 1 or 3, so a value's bin is one exact subtraction and one division.
@@ -470,6 +475,8 @@ HG_HD inline void sg_dist_range(uint32_t which, double& lo, double& hi) {
         lo = 0.0; hi = 1.0;
     } else if (which == SG_DIST_CHARGE) {
         lo = 0.0; hi = 16.0;
+    } else if (which == SG_DIST_DIMENSION_GRADIENT) {
+        lo = -8.0; hi = 8.0;
     } else {
         lo = -24.0; hi = 8.0;
     }
@@ -554,6 +561,7 @@ struct SgGeometry {
     double euler_excess = 0.0;
     double charge = 0.0;
     double charge_max = 0.0;
+    double dimension_gradient = 0.0;     // the mean over G' of L_v, the Laplacian of d_v
 };
 
 // Doubles of scratch sg_growth_fit takes for k quotients.
@@ -783,7 +791,8 @@ HG_HD inline void sg_growth_of(const uint32_t* shell, const uint32_t* ball, cons
 // or without a fit, with SG_EULER, SG_RIM or SG_CYCLE_CURVATURE for k = SG_GROWTH_VALUES the
 // combinatorial curvature, NaN for a vertex whose link is not a cycle, and with SG_PARTICLE for
 // k = SG_GROWTH_VALUES + 1, + 2 and + 3 the clustering coefficient, the Euler excess and the
-// topological charge.
+// topological charge, and with SG_DIMENSION_GRADIENT for k = SG_GROWTH_VALUES + 4 L_v, NaN for
+// a vertex outside G'.
 // `log_geodesic`, with SG_GEODESIC, receives in entries 0..D-1, up to `log_geodesic_capacity`
 // entries, the mean over the ordered pairs at distance d = 1..D of ln sigma, D the largest
 // eccentricity; out.geodesic_radii is D.
@@ -805,7 +814,8 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
     const bool want_dists = dists != nullptr && (want & SG_VERTEX_DISTRIBUTIONS) != 0;
     const bool want_vertex_ollivier = want_dists || vertex_curvature != nullptr ||
                                       (want & (SG_OLLIVIER_MORAN | SG_OLLIVIER_DEGREE)) != 0;
-    const bool want_sub = want_dists || (want & SG_LARGEST_DIMENSION) != 0;
+    const bool want_gradient = (want & SG_DIMENSION_GRADIENT) != 0;
+    const bool want_sub = want_dists || (want & SG_LARGEST_DIMENSION) != 0 || want_gradient;
     const uint32_t n = g.n;
     const uint32_t L = par.width(), me = par.rank();
     if (par.leader()) {
@@ -814,6 +824,8 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
         out.edge_count = g.edges;
         if (dists)
             for (uint32_t k = 0; k < SG_DISTS; ++k) dists[k] = SgDistribution{};
+        if (vertex_values)
+            for (size_t i = 0; i < size_t{SG_VERTEX_VALUES} * n; ++i) vertex_values[i] = ::nan("");
     }
     if (n == 0) return true;
     const size_t n1 = size_t{n} + 1;
@@ -1215,13 +1227,10 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
             if (fitted) out.growth[k] = sum / fitted;
         }
         if (fitted) out.defined |= SG_VOLUME_GROWTH;
-        if (vertex_values) {
-            for (uint32_t k = 0; k < SG_GROWTH_VALUES; ++k)
-                for (uint32_t v = 0; v < n; ++v) vertex_values[k * n + v] = ::nan("");
+        if (vertex_values)
             for (uint32_t k = 0; k < SG_GROWTH_VALUES; ++k)
                 for (uint32_t i = 0; i < ns; ++i)
                     vertex_values[k * n + vat(i)] = growth_v[k * n1 + vat(i)];
-        }
     }
     uint32_t Rs = UINT32_MAX;
     for (uint32_t i = 0; i < ns; ++i) if (ecc[vat(i)] < Rs) Rs = ecc[vat(i)];
@@ -1285,6 +1294,23 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
         out.local_dimension_max = top;
         out.local_dimension_sd = ::sqrt(sq / ns);
         out.defined |= SG_LARGEST_DIMENSION;
+        if (want_gradient) {
+            // L_v = the mean over the neighbours u of v of d_u - d_v; every vertex of G' has a
+            // neighbour, and its neighbours lie in G'.
+            double lap_total = 0.0;
+            for (uint32_t i = 0; i < ns; ++i) {
+                const uint32_t v = vat(i);
+                double s = 0.0;
+                for (uint32_t k = g.off[v]; k < g.off[v + 1]; ++k) s += dimv[g.nbr[k]] - dimv[v];
+                const double lap = s / g.degree(v);
+                lap_total += lap;
+                if (want_dists)
+                    sg_dist_add(dists[SG_DIST_DIMENSION_GRADIENT], SG_DIST_DIMENSION_GRADIENT, lap);
+                if (vertex_values) vertex_values[(SG_GROWTH_VALUES + 4) * n + v] = lap;
+            }
+            out.dimension_gradient = lap_total / ns;
+            out.defined |= SG_DIMENSION_GRADIENT;
+        }
         if (want_dists) {
             for (uint32_t i = 0; i < ns; ++i)
                 sg_dist_add(dists[SG_DIST_LOCAL_DIMENSION], SG_DIST_LOCAL_DIMENSION, dimv[vat(i)]);

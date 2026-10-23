@@ -112,14 +112,15 @@ geometryKeys = {"GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
   "RiemannianBallScalarCurvature", "SphereDimension", "SphereScalarCurvature",
   "GeodeticFraction", "SegmentEntropy", "NonLazyOllivierRicciCurvature", "EulerCharacteristic",
   "RimFraction", "CombinatorialCurvatureTotal", "ClusteringCoefficient", "LocalEulerExcess",
-  "TopologicalCharge", "TopologicalChargeMax"};
+  "TopologicalCharge", "TopologicalChargeMax", "DimensionGradientCurvature"};
 
 edgeDistributions = {"NonLazyOllivierRicciCurvature"};
 
 vertexDistributions = {"LocalDimension", "OllivierRicciCurvature", "WolframRicciCurvatureScalar",
   "BallDimension", "BallScalarCurvature", "RiemannianBallDimension",
   "RiemannianBallScalarCurvature", "SphereDimension", "SphereScalarCurvature",
-  "CombinatorialCurvature", "ClusteringCoefficient", "TopologicalCharge"};
+  "CombinatorialCurvature", "ClusteringCoefficient", "TopologicalCharge",
+  "DimensionGradientCurvature"};
 
 (* The branchial keys of one step from the raw run: the step's states, the branchial pairs
    whose first event's output state is at the step, each state's vertex set and edges, and the
