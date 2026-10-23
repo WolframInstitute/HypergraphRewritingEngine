@@ -2492,7 +2492,9 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
                   &hgcommon::SgGeometry::nonlazy_ollivier,
                   &hgcommon::SgGeometry::euler_characteristic,
                   &hgcommon::SgGeometry::rim_fraction,
-                  &hgcommon::SgGeometry::cycle_curvature_total})
+                  &hgcommon::SgGeometry::cycle_curvature_total,
+                  &hgcommon::SgGeometry::clustering, &hgcommon::SgGeometry::euler_excess,
+                  &hgcommon::SgGeometry::charge, &hgcommon::SgGeometry::charge_max})
                 EXPECT_TRUE(same(a->g.*f, b->g.*f)) << w.name << " " << a->g.*f << " " << b->g.*f;
             for (uint32_t k = 0; k < hgcommon::SG_GROWTH_VALUES; ++k)
                 EXPECT_TRUE(same(a->g.growth[k], b->g.growth[k])) << w.name << " growth " << k;

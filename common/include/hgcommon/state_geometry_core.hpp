@@ -28,6 +28,8 @@
 //   RimFraction                the fraction of vertices whose link (the subgraph on their
 //                              neighbours) is not a cycle, when every vertex lies on a triangle
 //   CombinatorialCurvatureTotal  the sum of 1 - k/6 over the vertices whose link is a k-cycle
+//   ClusteringCoefficient, LocalEulerExcess, TopologicalCharge, TopologicalChargeMax
+//                              hypergraph_viz's particle measures (docs/SPEC.md)
 //   GraphRadius, MeanEccentricity
 //   DegreeEntropy              Shannon entropy in bits of the degree distribution
 //   LocalEntropy               mean over v of the degree entropy over B(v, 2)
@@ -425,6 +427,7 @@ enum : uint32_t {
     SG_EULER = 1u << 14,                 // euler_characteristic: n >= 1
     SG_RIM = 1u << 15,                   // rim_fraction: every vertex lies on a triangle
     SG_CYCLE_CURVATURE = 1u << 16,       // cycle_curvature_total: a vertex's link is a cycle
+    SG_PARTICLE = 1u << 17,              // clustering, euler_excess, charge, charge_max: n >= 1
 };
 
 // The per-vertex distributions of a state, in this order.
@@ -440,7 +443,9 @@ enum : uint32_t {
     SG_DIST_SPHERE_CURVATURE = 8,
     SG_DIST_NONLAZY_OLLIVIER = 9,        // kappa0 over the edges of G
     SG_DIST_CYCLE_CURVATURE = 10,        // 1 - k/6 over the vertices whose link is a k-cycle
-    SG_DISTS = 11,
+    SG_DIST_CLUSTERING = 11,             // C_v over the vertices of G
+    SG_DIST_CHARGE = 12,                 // q_v over the vertices of G
+    SG_DISTS = 13,
 };
 constexpr uint32_t SG_DIST_BINS = 32;
 
@@ -448,8 +453,8 @@ constexpr uint32_t SG_DIST_BINS = 32;
 // dimension then the scalar curvature.
 constexpr uint32_t SG_GROWTH_VALUES = 6;
 // The per-vertex values sg_geometry_of writes to `vertex_values`: the volume-growth fits, then
-// the combinatorial curvature.
-constexpr uint32_t SG_VERTEX_VALUES = SG_GROWTH_VALUES + 1;
+// the combinatorial curvature, the clustering coefficient, the Euler excess and the charge.
+constexpr uint32_t SG_VERTEX_VALUES = SG_GROWTH_VALUES + 4;
 
 // Histogram range [lo, hi) of a distribution; the bin width (hi - lo) / SG_DIST_BINS is a power
 // of two times 1 or 3, so a value's bin is one exact subtraction and one division.
@@ -461,6 +466,10 @@ HG_HD inline void sg_dist_range(uint32_t which, double& lo, double& hi) {
         lo = -2.0; hi = 1.0;
     } else if (which == SG_DIST_CYCLE_CURVATURE) {
         lo = -7.0; hi = 1.0;
+    } else if (which == SG_DIST_CLUSTERING) {
+        lo = 0.0; hi = 1.0;
+    } else if (which == SG_DIST_CHARGE) {
+        lo = 0.0; hi = 16.0;
     } else {
         lo = -24.0; hi = 8.0;
     }
@@ -539,6 +548,12 @@ struct SgGeometry {
     double euler_characteristic = 0.0;
     double rim_fraction = 0.0;
     double cycle_curvature_total = 0.0;
+    // The means over the vertices of G of the clustering coefficient C_v, the local Euler excess
+    // x_v and the topological charge q_v, and the largest q_v.
+    double clustering = 0.0;
+    double euler_excess = 0.0;
+    double charge = 0.0;
+    double charge_max = 0.0;
 };
 
 // Doubles of scratch sg_growth_fit takes for k quotients.
@@ -564,8 +579,9 @@ HG_HD inline uint32_t sg_transport_lanes(size_t max_degree, uint32_t lanes) {
 // each). Per edge: the Ollivier curvature (8 bytes). Then the transport lanes' scratch, and 8
 // bytes of alignment per array. SG_VOLUME_GROWTH adds per lane and per vertex the shells and the
 // Riemannian counts (4 bytes each) and the fit scratch (56 bytes), and per vertex the six fits.
-// SG_NONLAZY_OLLIVIER adds per edge the idleness-0 curvature (8 bytes). SG_EULER, SG_RIM and
-// SG_CYCLE_CURVATURE add per vertex its triangle count (4 bytes) and its curvature (8 bytes).
+// SG_NONLAZY_OLLIVIER adds per edge the idleness-0 curvature (8 bytes). SG_EULER, SG_RIM,
+// SG_CYCLE_CURVATURE and SG_PARTICLE add per vertex its triangle count (4 bytes) and its
+// curvature (8 bytes), and SG_PARTICLE its Euler excess (8 bytes).
 // SG_GEODESIC adds per lane and per vertex the path counts, their log sums and the per-distance
 // log sums (8 bytes each), and per vertex the one-path count (4 bytes), the entropy sum and the
 // pooled per-distance log sums and pair counts (8 bytes each).
@@ -580,7 +596,9 @@ HG_HD inline size_t sg_metric_bytes(size_t n, size_t max_degree, size_t edges, u
                  SG_GROWTH_VALUES * n1 * 8 + 4 * 8;
     if (want & SG_GEODESIC) bytes += size_t{lanes} * n1 * 3 * 8 + n1 * (4 + 3 * 8) + 5 * 8;
     if (want & SG_NONLAZY_OLLIVIER) bytes += 8 * (edges + 1) + 8;
-    if (want & (SG_EULER | SG_RIM | SG_CYCLE_CURVATURE)) bytes += n1 * (4 + 8) + 2 * 8;
+    if (want & (SG_EULER | SG_RIM | SG_CYCLE_CURVATURE | SG_PARTICLE))
+        bytes += n1 * (4 + 8) + 2 * 8;
+    if (want & SG_PARTICLE) bytes += n1 * 8 + 8;
     return bytes;
 }
 
@@ -762,8 +780,10 @@ HG_HD inline void sg_growth_of(const uint32_t* shell, const uint32_t* ball, cons
 // `vertex_values`, when given, receives SG_VERTEX_VALUES values of each vertex index v of G at
 // [k n + v], written by the leader: with SG_VOLUME_GROWTH for k < SG_GROWTH_VALUES the
 // volume-growth values in SG_DIST order from SG_DIST_BALL_DIMENSION, NaN for a vertex outside G'
-// or without a fit, and with SG_EULER, SG_RIM or SG_CYCLE_CURVATURE for k = SG_GROWTH_VALUES the
-// combinatorial curvature, NaN for a vertex whose link is not a cycle.
+// or without a fit, with SG_EULER, SG_RIM or SG_CYCLE_CURVATURE for k = SG_GROWTH_VALUES the
+// combinatorial curvature, NaN for a vertex whose link is not a cycle, and with SG_PARTICLE for
+// k = SG_GROWTH_VALUES + 1, + 2 and + 3 the clustering coefficient, the Euler excess and the
+// topological charge.
 // `log_geodesic`, with SG_GEODESIC, receives in entries 0..D-1, up to `log_geodesic_capacity`
 // entries, the mean over the ordered pairs at distance d = 1..D of ln sigma, D the largest
 // eccentricity; out.geodesic_radii is D.
@@ -840,9 +860,12 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
     double* oll0 = want_nonlazy ? arena.take<double>(size_t{g.edges} + 1) : nullptr;
     // Combinatorial curvature: per vertex twice its triangles and 1 - k/6 (NaN when the link is
     // not a cycle).
-    const bool want_comb = (want & (SG_EULER | SG_RIM | SG_CYCLE_CURVATURE)) != 0;
+    const bool want_particle = (want & SG_PARTICLE) != 0;
+    const bool want_comb = (want & (SG_EULER | SG_RIM | SG_CYCLE_CURVATURE)) != 0 || want_particle;
     uint32_t* tri2_v = want_comb ? arena.take<uint32_t>(n1) : nullptr;
     double* kappa_v = want_comb ? arena.take<double>(n1) : nullptr;
+    // Particle measures: per vertex the Euler excess of B(v, 3).
+    double* excess_v = want_particle ? arena.take<double>(n1) : nullptr;
     if (arena.failed) return false;
     int32_t* dist = dist_all + me * n1;
     int32_t* dist2 = dist2_all + me * n1;
@@ -910,6 +933,21 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
                 double fits[SG_GROWTH_VALUES];
                 sg_growth_of(shell, layer, inner, e, fit_all + me * fit_stride, fits);
                 for (uint32_t k = 0; k < SG_GROWTH_VALUES; ++k) growth_v[k * n1 + v] = fits[k];
+            }
+            if (want_particle) {
+                // B(v, 3), the queue's prefix at distance at most 3, with V vertices and E edges:
+                // the excess of E over the planar bound P = 3V - 6 (V(V-1)/2 for V < 3), over P.
+                uint32_t b3 = 0;
+                uint64_t ends = 0;
+                for (; b3 < reached && dist[queue[b3]] <= 3; ++b3) {
+                    const uint32_t u = queue[b3];
+                    for (uint32_t k = g.off[u]; k < g.off[u + 1]; ++k)
+                        if (dist[g.nbr[k]] >= 0 && dist[g.nbr[k]] <= 3) ++ends;
+                }
+                const int64_t V = b3, E = static_cast<int64_t>(ends / 2);
+                const int64_t P = V < 3 ? V * (V - 1) / 2 : 3 * V - 6;
+                excess_v[v] = P > 0 && E > P ? static_cast<double>(E - P) / static_cast<double>(P)
+                                             : 0.0;
             }
             if (!want_local) {
                 sg_bfs_clear(dist, queue, reached);
@@ -1112,6 +1150,37 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
             if (vertex_values)
                 for (uint32_t v = 0; v < n; ++v)
                     vertex_values[SG_GROWTH_VALUES * n + v] = kappa_v[v];
+            if (want_particle) {
+                // C_v = t_v / (deg (deg - 1) / 2), 0 below degree 2; q_v = log2(max(1, deg))
+                // (1 - C_v) + 10 x_v.
+                double c_sum = 0.0, x_sum = 0.0, q_sum = 0.0, q_max = 0.0;
+                for (uint32_t v = 0; v < n; ++v) {
+                    const uint32_t d = g.degree(v);
+                    const double c = d < 2 ? 0.0
+                                           : static_cast<double>(tri2_v[v]) /
+                                                 (static_cast<double>(d) * static_cast<double>(d - 1));
+                    const double q = dm_mul(dm_log2(d > 1 ? static_cast<double>(d) : 1.0), 1.0 - c) +
+                                     dm_mul(10.0, excess_v[v]);
+                    c_sum += c;
+                    x_sum += excess_v[v];
+                    q_sum += q;
+                    if (v == 0 || q > q_max) q_max = q;
+                    if (want_dists) {
+                        sg_dist_add(dists[SG_DIST_CLUSTERING], SG_DIST_CLUSTERING, c);
+                        sg_dist_add(dists[SG_DIST_CHARGE], SG_DIST_CHARGE, q);
+                    }
+                    if (vertex_values) {
+                        vertex_values[(SG_GROWTH_VALUES + 1) * n + v] = c;
+                        vertex_values[(SG_GROWTH_VALUES + 2) * n + v] = excess_v[v];
+                        vertex_values[(SG_GROWTH_VALUES + 3) * n + v] = q;
+                    }
+                }
+                out.clustering = c_sum / n;
+                out.euler_excess = x_sum / n;
+                out.charge = q_sum / n;
+                out.charge_max = q_max;
+                out.defined |= SG_PARTICLE;
+            }
         }
     }
     if (vertex_curvature && par.leader())
