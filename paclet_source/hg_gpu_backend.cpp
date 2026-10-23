@@ -243,6 +243,24 @@ hg_gpu::PersistentEvolver& process_evolver() {
 
 wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host);
 
+// The host workers that build replies, kept across jobs: started by the first reply that needs
+// them, started again when a job asks for a different worker count, and dropped after a job that
+// throws, because a failed reply job leaves its error set in the job system.
+struct ReplyWorkers {
+    std::unique_ptr<hgmarshal::HostJobs> jobs;
+    unsigned threads = 0;
+};
+ReplyWorkers reply_workers;
+
+hgmarshal::HostJobs& reply_workers_for(unsigned threads) {
+    if (!reply_workers.jobs || reply_workers.threads != threads) {
+        reply_workers.jobs.reset();
+        reply_workers.jobs = std::make_unique<hgmarshal::HostJobs>(threads);
+        reply_workers.threads = threads;
+    }
+    return *reply_workers.jobs;
+}
+
 }  // namespace
 
 uint64_t gpu_session_handle() { return held.handle; }
@@ -255,6 +273,7 @@ wxf::Pieces run_gpu_evolution(const GpuJob& request, const HostBridge& host) {
         return run_gpu_evolution_once(request, host);
     } catch (...) {
         if (held.handle == 0) process_evolver().release_after_failure();
+        reply_workers.jobs.reset();
         throw;
     }
 }
@@ -400,12 +419,8 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
     // job's own step count, which is 0 for a Query. The host does the same (engine.max_steps()).
     const int run_steps = (is_step || is_query) ? static_cast<int>(held.steps_done) : job.steps;
 
-    // The host workers that build the reply's sections, started by the first of them.
-    std::optional<hgmarshal::HostJobs> host_jobs;
-    auto reply_jobs = [&]() -> hgmarshal::HostJobs& {
-        if (!host_jobs) host_jobs.emplace(job.threads);
-        return *host_jobs;
-    };
+    // The host workers that build the reply's sections (reply_workers_for).
+    auto reply_jobs = [&]() -> hgmarshal::HostJobs& { return reply_workers_for(job.threads); };
 
     // Group the GPU states by the requested canonicalization mode, mirroring the CPU:
     //   None      -> every state is distinct (per-provenance / tree mode, no grouping)
