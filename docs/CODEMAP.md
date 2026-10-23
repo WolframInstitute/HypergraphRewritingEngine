@@ -319,6 +319,13 @@ rented box that does.
   stamps the commit, the machine MEASURED on and (when they differ) the machine the table was
   generated on. One `cost_matrix` run is shared by every table quoting it: they used to invoke it
   separately and disagreed on `multi-rule`, which is nondeterministic there.
+- **`gpu_end_to_end.wls`** -- the release gate's CPU against GPU check through the paclet: twelve
+  workloads, a warm call and three timed calls per device (minimum), CPU/GPU per workload, and
+  exit status 1 when a ratio is below 1, the results differ or the GPU result is partial.
+  `--agree-only` checks the results without timing. It runs `quiet_check.sh` first and exits
+  with status 2 on a busy machine.
+- **`quiet_check.sh`** -- exit 0 when the Windows CPU, the GPU and the WSL run queue are under
+  their limits (5%, 5% and 100 W, load 1.0), read over about 10 s.
 - **`corpus_depth_plan.py`** -- picks, per generated workload, the depth whose work lands closest
   to a target in log space, from a `bench_cpu_evolve corpusgrow` run. The corpus spans four orders
   of magnitude in work at a fixed depth, so one depth for all of it measures the large workloads
