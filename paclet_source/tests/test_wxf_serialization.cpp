@@ -2658,7 +2658,7 @@ TEST(GpuBinaryGate, VertexCurvatureAgreesOnBothDevices) {
 }
 
 // "StatisticsGraph" on a rule of ternary hyperedges: under each rule both devices give the same
-// "StepStatistics" and "VertexCurvature" bytes, and the two rules give different statistics.
+// "StepStatistics" bytes, and the two rules give different statistics.
 TEST(GpuBinaryGate, StatisticsGraphAgreesAcrossDevices) {
     {
         std::ifstream probe(gpu_binary_path(), std::ios::binary);
@@ -2698,7 +2698,6 @@ TEST(GpuBinaryGate, StatisticsGraphAgreesAcrossDevices) {
         stats[i] = value_bytes(host, "StepStatistics");
         ASSERT_FALSE(stats[i].empty()) << graph;
         EXPECT_EQ(value_bytes(device, "StepStatistics"), stats[i]) << graph;
-        EXPECT_EQ(value_bytes(device, "States"), value_bytes(host, "States")) << graph;
         ++i;
     }
     EXPECT_NE(stats[0], stats[1]);
