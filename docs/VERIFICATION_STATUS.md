@@ -272,9 +272,9 @@ cursor, the multiplicity cells and the keyed words (48ef4ee8); the saturating ad
 | memcheck | 0 errors (108 tests, before the exclusions; the 8 reports were the intended cudaMalloc failures, which the gate no longer reports) | 0 errors (77 tests, 4 shards) | 0 errors (131 tests, 3 shards) |
 | initcheck | 0 errors (106 tests, 2 shards) | 0 errors (77 tests, 3 shards) | 0 errors (131 tests, 2 shards) |
 | synccheck | 0 errors (108 tests) | 0 errors (77 tests, 3 shards) | 0 errors (131 tests, 2 shards) |
-| racecheck | 0 hazards (106 tests, 4 shards) | not run yet | 0 hazards on 14 of 16 shards (114 tests); shards 1 and 10 did not finish in 590 s |
+| racecheck | 0 hazards (106 tests, 4 shards) | 0 hazards (77 tests, 16 shards; the 4 tests of an unfinished shard run alone) | 0 hazards on 127 tests; 3 run no device code; `GpuBinaryGate.SamplingAndCapsKeepTheSameTransitionsOnBothDevices` did not finish in 590 s |
 
-racecheck sees shared-memory hazards only. Under racecheck one persistent-kernel test of gpu_ffi_tests takes 149 s.
+racecheck sees shared-memory hazards only. Under racecheck `GpuBinaryGate.StateStepIsTheClassStepOnBothDevices` takes 391 s.
 
 ## TLA+
 
