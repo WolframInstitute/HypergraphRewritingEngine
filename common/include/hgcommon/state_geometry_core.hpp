@@ -456,15 +456,18 @@ enum : uint32_t {
     SG_CYCLE_CURVATURE = 1u << 16,       // cycle_curvature_total: a vertex's link is a cycle
     SG_PARTICLE = 1u << 17,              // clustering, euler_excess, charge, charge_max: n >= 1
     SG_DIMENSION_GRADIENT = 1u << 18,    // dimension_gradient: |G'| >= 2
+    SG_GEODESIC_BUNDLE = 1u << 19,       // proper_time, proper_time_variance, bundle_spread,
+                                         // geodesic_curvature: G has an edge
 };
 
 // "StepStatisticsMeasures": the `want` bits of each measure family. SG_MEASURES_BASE is the set
 // computed without the option.
 constexpr uint32_t SG_MEASURES_BASE = (1u << 11) - 1;
 constexpr uint32_t SG_COMBINATORIAL = SG_EULER | SG_RIM | SG_CYCLE_CURVATURE;
+constexpr uint32_t SG_GEODESIC_ANALYSIS = SG_GEODESIC_BUNDLE;
 constexpr uint32_t SG_MEASURES_ALL = SG_MEASURES_BASE | SG_VOLUME_GROWTH | SG_GEODESIC |
                                      SG_NONLAZY_OLLIVIER | SG_COMBINATORIAL | SG_PARTICLE |
-                                     SG_DIMENSION_GRADIENT;
+                                     SG_DIMENSION_GRADIENT | SG_GEODESIC_ANALYSIS;
 
 // The per-vertex distributions of a state, in this order.
 enum : uint32_t {
@@ -606,6 +609,14 @@ struct SgGeometry {
     double charge = 0.0;
     double charge_max = 0.0;
     double dimension_gradient = 0.0;     // the mean over G' of L_v, the Laplacian of d_v
+    // Over the ordered pairs (v, t) of distinct vertices joined by a path: the mean and the
+    // population variance of d(v, t), the mean over the pairs of the standard deviation of
+    // d(x, t) over the neighbours x of v, and the mean over the pairs of the mean of
+    // d(x, t) - d(v, t) over the same neighbours.
+    double proper_time = 0.0;
+    double proper_time_variance = 0.0;
+    double bundle_spread = 0.0;
+    double geodesic_curvature = 0.0;
 };
 
 // Doubles of scratch sg_growth_fit takes for k quotients.
@@ -637,6 +648,8 @@ HG_HD inline uint32_t sg_transport_lanes(size_t max_degree, uint32_t lanes) {
 // SG_GEODESIC adds per lane and per vertex the path counts, their log sums and the per-distance
 // log sums (8 bytes each), and per vertex the one-path count (4 bytes), the entropy sum and the
 // pooled per-distance log sums and pair counts (8 bytes each).
+// SG_GEODESIC_BUNDLE adds per vertex the target count (4 bytes) and the sums of d, d^2, the
+// bundle curvature and the bundle spread over its targets (8 bytes each).
 HG_HD inline size_t sg_metric_bytes(size_t n, size_t max_degree, size_t edges, uint32_t lanes,
                                     uint32_t want = ~0u) {
     const size_t n1 = n + 1;
@@ -651,6 +664,7 @@ HG_HD inline size_t sg_metric_bytes(size_t n, size_t max_degree, size_t edges, u
     if (want & (SG_EULER | SG_RIM | SG_CYCLE_CURVATURE | SG_PARTICLE))
         bytes += n1 * (4 + 8) + 2 * 8;
     if (want & SG_PARTICLE) bytes += n1 * 8 + 8;
+    if (want & SG_GEODESIC_BUNDLE) bytes += n1 * (4 + 4 * 8) + 5 * 8;
     return bytes;
 }
 
@@ -922,6 +936,14 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
     double* kappa_v = want_comb ? arena.take<double>(n1) : nullptr;
     // Particle measures: per vertex the Euler excess of B(v, 3).
     double* excess_v = want_particle ? arena.take<double>(n1) : nullptr;
+    // Geodesic bundles: per vertex t, over the vertices v its search reaches, the count, the sums
+    // of d(v, t) and d(v, t)^2, and the sums of the bundle curvature and spread toward t.
+    const bool want_bundle = (want & SG_GEODESIC_BUNDLE) != 0;
+    uint32_t* bundle_pairs = want_bundle ? arena.take<uint32_t>(n1) : nullptr;
+    uint64_t* bundle_d = want_bundle ? arena.take<uint64_t>(n1) : nullptr;
+    uint64_t* bundle_d2 = want_bundle ? arena.take<uint64_t>(n1) : nullptr;
+    double* bundle_curv = want_bundle ? arena.take<double>(n1) : nullptr;
+    double* bundle_spread = want_bundle ? arena.take<double>(n1) : nullptr;
     if (arena.failed) return false;
     int32_t* dist = dist_all + me * n1;
     int32_t* dist2 = dist2_all + me * n1;
@@ -1005,6 +1027,36 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
                 excess_v[v] = P > 0 && E > P ? static_cast<double>(E - P) / static_cast<double>(P)
                                              : 0.0;
             }
+            if (want_bundle) {
+                // Each vertex u reached from v is the source of a bundle toward v: its
+                // neighbours x have proper times d(x, v) = d(u, v) + e_x, e_x in {-1, 0, 1}.
+                // With k = deg u, s1 = sum e_x and s2 = sum e_x^2, the bundle curvature is
+                // s1 / k and the spread sqrt(k s2 - s1^2) / k (docs/SPEC.md, "StepStatistics
+                // geodesic analysis").
+                uint64_t sd = 0, sd2 = 0;
+                double curv = 0.0, spread = 0.0;
+                for (uint32_t i = 1; i < reached; ++i) {
+                    const uint32_t u = queue[i];
+                    const int32_t du = dist[u];
+                    int64_t s1 = 0, s2 = 0;
+                    for (uint32_t k = g.off[u]; k < g.off[u + 1]; ++k) {
+                        const int64_t ex = dist[g.nbr[k]] - du;
+                        s1 += ex;
+                        s2 += ex * ex;
+                    }
+                    const double k = static_cast<double>(g.degree(u));
+                    sd += static_cast<uint64_t>(du);
+                    sd2 += static_cast<uint64_t>(du) * static_cast<uint64_t>(du);
+                    curv += static_cast<double>(s1) / k;
+                    spread += ::sqrt(static_cast<double>(
+                                  static_cast<int64_t>(g.degree(u)) * s2 - s1 * s1)) / k;
+                }
+                bundle_pairs[v] = reached - 1;
+                bundle_d[v] = sd;
+                bundle_d2[v] = sd2;
+                bundle_curv[v] = curv;
+                bundle_spread[v] = spread;
+            }
             if (!want_local) {
                 sg_bfs_clear(dist, queue, reached);
             } else {
@@ -1048,6 +1100,30 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
     connected = par.bcast(connected);
     uint32_t radius = UINT32_MAX;
     for (uint32_t v = 0; v < n; ++v) if (ecc[v] < radius) radius = ecc[v];
+    if (want_bundle && par.leader()) {
+        // Sums in vertex order; the variance from the exact integer sums of d and d^2.
+        uint64_t pairs = 0, sd = 0, sd2 = 0;
+        double curv = 0.0, spread = 0.0;
+        for (uint32_t v = 0; v < n; ++v) {
+            pairs += bundle_pairs[v];
+            sd += bundle_d[v];
+            sd2 += bundle_d2[v];
+            curv += bundle_curv[v];
+            spread += bundle_spread[v];
+        }
+        if (pairs) {
+            const double p = static_cast<double>(pairs);
+            out.proper_time = static_cast<double>(sd) / p;
+            // (P sum d^2 - (sum d)^2) / P^2, the numerator in double-double.
+            const DmDD a = dm_two_prod(p, static_cast<double>(sd2));
+            const DmDD b = dm_two_prod(static_cast<double>(sd), static_cast<double>(sd));
+            const DmDD num = dm_dd_add(a, DmDD{-b.hi, -b.lo});
+            out.proper_time_variance = (num.hi + num.lo) / dm_mul(p, p);
+            out.bundle_spread = spread / p;
+            out.geodesic_curvature = curv / p;
+            out.defined |= SG_GEODESIC_BUNDLE;
+        }
+    }
     if (want_geodesic && par.leader()) {
         uint32_t top = 0;
         for (uint32_t v = 0; v < n; ++v) if (ecc[v] > top) top = ecc[v];

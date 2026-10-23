@@ -562,3 +562,51 @@ TEST(StateMeasures, StatisticsGraphRules) {
     const Measured m = measure({{1, 2, 3}});
     EXPECT_EQ(m.g.edge_count, 2u);
 }
+
+// docs/SPEC.md "StepStatistics geodesic analysis". P3: the 6 ordered pairs have d = 1, 1, 1, 1,
+// 2, 2: mean 4/3, variance 2 - 16/9 = 2/9. An end v has one neighbour, one step closer to every
+// target: curvature -1, spread 0. The middle has one neighbour closer and one farther from
+// either end: curvature 0, spread 1. Over the pairs: curvature -4/6, spread 2/6.
+TEST(StateMeasures, PathOfThreeGeodesicBundles) {
+    const Measured m = measure({{1, 2}, {2, 3}});
+    ASSERT_TRUE(m.g.defined & hgcommon::SG_GEODESIC_BUNDLE);
+    EXPECT_NEAR(m.g.proper_time, 4.0 / 3.0, 1e-15);
+    EXPECT_NEAR(m.g.proper_time_variance, 2.0 / 9.0, 1e-15);
+    EXPECT_NEAR(m.g.geodesic_curvature, -2.0 / 3.0, 1e-15);
+    EXPECT_NEAR(m.g.bundle_spread, 1.0 / 3.0, 1e-15);
+}
+
+// C4: toward a neighbour t, v has t (one step closer) and the antipode of t (one step farther):
+// curvature 0, spread 1. Toward the antipode both neighbours are one step closer: curvature -1,
+// spread 0. Over the 12 pairs: curvature -4/12, spread 8/12, mean d 16/12, variance 2/9.
+TEST(StateMeasures, CycleOfFourGeodesicBundles) {
+    const Measured m = measure(cycle(4));
+    EXPECT_NEAR(m.g.proper_time, 4.0 / 3.0, 1e-15);
+    EXPECT_NEAR(m.g.proper_time_variance, 2.0 / 9.0, 1e-15);
+    EXPECT_NEAR(m.g.geodesic_curvature, -1.0 / 3.0, 1e-15);
+    EXPECT_NEAR(m.g.bundle_spread, 2.0 / 3.0, 1e-15);
+}
+
+// The star K1,3. From the centre toward a leaf t: t is one step closer and the other two leaves
+// one step farther, s1 = 1, s2 = 3: curvature 1/3, spread sqrt(3 * 3 - 1) / 3. From a leaf toward
+// any target the one neighbour is one step closer: curvature -1, spread 0. The 12 pairs: 3 from
+// the centre, 9 from a leaf. Mean d = 18/12, variance 30/12 - 9/4 = 1/4.
+TEST(StateMeasures, StarGeodesicBundles) {
+    const Measured m = measure({{1, 2}, {1, 3}, {1, 4}});
+    EXPECT_NEAR(m.g.proper_time, 1.5, 1e-15);
+    EXPECT_NEAR(m.g.proper_time_variance, 0.25, 1e-15);
+    EXPECT_NEAR(m.g.geodesic_curvature, (1.0 - 9.0) / 12.0, 1e-15);
+    EXPECT_NEAR(m.g.bundle_spread, std::sqrt(8.0) / 12.0, 1e-15);
+}
+
+// No pair joined by a path: undefined. Two components count the pairs inside each: two disjoint
+// edges have 4 pairs at d = 1, each a single neighbour one step closer.
+TEST(StateMeasures, GeodesicBundlesWithoutPairs) {
+    EXPECT_FALSE(measure({{1}, {2}}).g.defined & hgcommon::SG_GEODESIC_BUNDLE);
+    const Measured two = measure({{1, 2}, {3, 4}});
+    ASSERT_TRUE(two.g.defined & hgcommon::SG_GEODESIC_BUNDLE);
+    EXPECT_EQ(two.g.proper_time, 1.0);
+    EXPECT_EQ(two.g.proper_time_variance, 0.0);
+    EXPECT_EQ(two.g.geodesic_curvature, -1.0);
+    EXPECT_EQ(two.g.bundle_spread, 0.0);
+}

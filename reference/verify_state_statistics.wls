@@ -118,7 +118,8 @@ geometryKeys = {"GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
   "RiemannianBallScalarCurvature", "SphereDimension", "SphereScalarCurvature",
   "GeodeticFraction", "SegmentEntropy", "NonLazyOllivierRicciCurvature", "EulerCharacteristic",
   "RimFraction", "CombinatorialCurvatureTotal", "ClusteringCoefficient", "LocalEulerExcess",
-  "TopologicalCharge", "TopologicalChargeMax", "DimensionGradientCurvature"};
+  "TopologicalCharge", "TopologicalChargeMax", "DimensionGradientCurvature",
+  "GeodesicProperTime", "GeodesicProperTimeVariance", "GeodesicBundleSpread", "GeodesicCurvature"};
 
 edgeDistributions = {"NonLazyOllivierRicciCurvature"};
 

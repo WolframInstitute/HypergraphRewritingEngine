@@ -1633,6 +1633,7 @@ uint32_t measure_bits(const std::string& name) {
     if (name == "Combinatorial") return hgcommon::SG_COMBINATORIAL;
     if (name == "Particles") return hgcommon::SG_PARTICLE;
     if (name == "DimensionGradient") return hgcommon::SG_DIMENSION_GRADIENT;
+    if (name == "GeodesicAnalysis") return hgcommon::SG_GEODESIC_ANALYSIS;
     if (name == "Branchial") return kMeasureBranchial;
     return 0;
 }
@@ -1698,6 +1699,10 @@ const InvariantSlot kInvariantSlots[hgcommon::SP_NUM_INVARIANTS] = {
     {"TopologicalCharge", 0.01, false, hgcommon::SG_PARTICLE},
     {"TopologicalChargeMax", 0.01, false, hgcommon::SG_PARTICLE},
     {"DimensionGradientCurvature", 0.01, false, hgcommon::SG_DIMENSION_GRADIENT},
+    {"GeodesicProperTime", 0.01, false, hgcommon::SG_GEODESIC_ANALYSIS},
+    {"GeodesicProperTimeVariance", 0.01, false, hgcommon::SG_GEODESIC_ANALYSIS},
+    {"GeodesicBundleSpread", 0.01, false, hgcommon::SG_GEODESIC_ANALYSIS},
+    {"GeodesicCurvature", 0.01, false, hgcommon::SG_GEODESIC_ANALYSIS},
 };
 
 // The names of the distributions in hgcommon::SG_DIST order, and whether each pools edges

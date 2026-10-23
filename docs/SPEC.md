@@ -397,6 +397,7 @@ list adds the families it names:
 | `"Combinatorial"` | `EulerCharacteristic`, `RimFraction`, `CombinatorialCurvatureTotal`, `CombinatorialCurvature` | combinatorial curvature |
 | `"Particles"` | `ClusteringCoefficient`, `LocalEulerExcess`, `TopologicalCharge`, `TopologicalChargeMax`, their two distributions | particle measures |
 | `"DimensionGradient"` | `DimensionGradientCurvature` and its distribution | dimension-gradient curvature |
+| `"GeodesicAnalysis"` | `GeodesicProperTime`, `GeodesicProperTimeVariance`, `GeodesicBundleSpread`, `GeodesicCurvature` | geodesic analysis |
 | `"Branchial"` | the `Branchial` volume-growth and curvature keys, with `"StepStatisticsBranchial"` `"Graph"` | branchial metrics |
 
 A family that is not requested is not computed: each class's record carries the request
@@ -524,6 +525,39 @@ L_v > 0.
 
 `VertexInvariants` gains `DimensionGradientCurvature`, L_v over G', with 32 bins over [-8, 8).
 It takes O(\|E\|) after the local dimensions.
+
+**`StepStatistics` geodesic analysis.** The geodesic measures of hypergraph_viz
+(`hypergraph_viz@0fb63e5:blackhole/src/geodesic_analysis.cpp`), defined on shortest paths over
+every pair of vertices. A geodesic is a shortest path of G, and its proper time is its number
+of edges. The pairs below are the ordered pairs (v, t) of distinct vertices of one component of
+G. The geodesic bundle of a pair is the set of geodesics from the neighbours x of v to t. The
+proper time of the geodesics from x is τ_x = d(x, t), which is d(v, t) - 1, d(v, t) or
+d(v, t) + 1.
+
+| Entry | Definition | Undefined when |
+|---|---|---|
+| `GeodesicProperTime` | the mean of d(v, t) over the pairs | G has no edge |
+| `GeodesicProperTimeVariance` | the population variance of d(v, t) over the pairs | G has no edge |
+| `GeodesicBundleSpread` | the mean over the pairs of the population standard deviation of τ_x over the neighbours x of v | G has no edge |
+| `GeodesicCurvature` | the mean over the pairs of the mean of τ_x - d(v, t) over the neighbours x of v | G has no edge |
+
+`GeodesicCurvature` is the mean of the graph Laplacian at v of the distance to t. A vertex of
+degree k in a tree has one neighbour closer to t and k - 1 farther, so its term is (k - 2)/k.
+P3 has `GeodesicCurvature` -2/3 and `GeodesicBundleSpread` 1/3, and C4 has -1/3 and 2/3. The
+breadth-first search from each vertex t that the radius takes gives d(x, t) for every vertex
+x, so the four entries add O(\|E\|) to each search.
+
+hypergraph_viz traces each path as a self-avoiding random walk of up to 50 steps from a seed
+taken from the clock (`hypergraph_viz@0fb63e5:blackhole/src/geodesic_analysis.cpp:141`), so
+its paths are not shortest paths and its values differ between runs. A bundle there is the
+source and up to four vertices within distance 2, in the order of the vertex list
+(`hypergraph_viz@0fb63e5:blackhole/src/geodesic_analysis.cpp:272`). Its spread is the mean
+distance between the walks' end points
+(`hypergraph_viz@0fb63e5:blackhole/src/geodesic_analysis.cpp:361`), and its curvature is
+(length - d(source, end)) / d(source, end)
+(`hypergraph_viz@0fb63e5:blackhole/src/geodesic_analysis.cpp:408`), which is 0 for every
+shortest path. The definitions above take every neighbour of v, every pair and every
+geodesic, so each value is an isomorphism invariant of the state.
 
 **Per-vertex curvature.** With `"IncludeVertexCurvature" -> True` each `"States"` record has
 `VertexCurvature`, an association from each vertex of the record's edges that has a neighbour in

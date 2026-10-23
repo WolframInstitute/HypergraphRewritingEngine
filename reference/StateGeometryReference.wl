@@ -30,6 +30,7 @@ sgrVertexInvariants::usage = "sgrVertexInvariants[edges] gives the per-vertex va
 sgrPooledDistribution::usage = "sgrPooledDistribution[values, name] gives the summary \"VertexInvariants\" reports for the pooled values of the distribution name: N, Mean, StandardDeviation, Min, Max, Median, Q1, Q3, P10, P90, Skewness, Kurtosis and the 32-bin Histogram.";
 sgrVolumeGrowth::usage = "sgrVolumeGrowth[g, v] gives the six volume-growth values of vertex v of graph g (BallDimension, BallScalarCurvature, RiemannianBallDimension, RiemannianBallScalarCurvature, SphereDimension, SphereScalarCurvature), or Missing[] when v has no fit.";
 sgrLogGeodesicCount::usage = "sgrLogGeodesicCount[edges] gives, for d = 1..D, the mean over the ordered pairs of vertices at distance d of the natural logarithm of their number of shortest paths, or {} for a state with no edge.";
+sgrGeodesicBundle::usage = "sgrGeodesicBundle[edges] gives the GeodesicProperTime, GeodesicProperTimeVariance, GeodesicBundleSpread and GeodesicCurvature of a state, each Missing[] for a state with no edge.";
 sgrEdgeInvariants::usage = "sgrEdgeInvariants[edges] gives the per-edge values \"EdgeInvariants\" pools for one state: \"NonLazyOllivierRicciCurvature\", the curvature of each edge of the state's graph with the walk of idleness 0, as exact rationals.";
 sgrCombinatorial::usage = "sgrCombinatorial[edges] gives the EulerCharacteristic, RimFraction and CombinatorialCurvatureTotal of a state, and \"Curvatures\", 1 - k/6 for each vertex whose link is a k-cycle, ascending by vertex.";
 sgrParticle::usage = "sgrParticle[edges] gives the per-vertex clustering coefficients, Euler excesses and topological charges of a state, ascending by vertex, as exact numbers.";
@@ -152,7 +153,27 @@ geodesicValues[edges_List, rule_String] := geodesicValues[edges, rule] = Module[
         {d, Max[pairs[[All, 1]]]}]|>]];
 
 sgrLogGeodesicCount[edges_List] := N[geodesicValues[edges]["LogGeodesicCount"]];
-geometryNames = Join[{"DimensionGradientCurvature", "ClusteringCoefficient", "LocalEulerExcess", "TopologicalCharge",
+
+(* Geodesic analysis (docs/SPEC.md, "StepStatistics geodesic analysis"), exact from
+   GraphDistanceMatrix: over the ordered pairs (v, t) of distinct vertices in one component, the
+   proper times tau_x = d(x, t) of the neighbours x of v. *)
+geodesicBundleNames = {"GeodesicProperTime", "GeodesicProperTimeVariance",
+  "GeodesicBundleSpread", "GeodesicCurvature"};
+sgrGeodesicBundle[edges_List] := Module[{g = sgrStateGraph[edges], vs, dm, nb, pairs},
+  vs = VertexList[g];
+  If[EdgeCount[g] == 0, Return[AssociationMap[Missing[] &, geodesicBundleNames]]];
+  dm = GraphDistanceMatrix[g];
+  nb = AssociationThread[Range[Length[vs]] -> (Flatten[Position[vs, #] & /@ AdjacencyList[g, #]] & /@ vs)];
+  pairs = Catenate[Table[If[v == t || dm[[v, t]] === Infinity, Nothing,
+      Module[{tau = dm[[nb[v], t]]},
+        {dm[[v, t]], Sqrt[Mean[tau^2] - Mean[tau]^2], Mean[tau] - dm[[v, t]]}]],
+    {v, Length[vs]}, {t, Length[vs]}]];
+  <|"GeodesicProperTime" -> N[Mean[pairs[[All, 1]]], 20],
+    "GeodesicProperTimeVariance" -> N[Mean[pairs[[All, 1]]^2] - Mean[pairs[[All, 1]]]^2, 20],
+    "GeodesicBundleSpread" -> N[Mean[pairs[[All, 2]]], 20],
+    "GeodesicCurvature" -> N[Mean[pairs[[All, 3]]], 20]|>];
+
+geometryNames = Join[geodesicBundleNames, {"DimensionGradientCurvature", "ClusteringCoefficient", "LocalEulerExcess", "TopologicalCharge",
   "TopologicalChargeMax", "EulerCharacteristic", "RimFraction", "CombinatorialCurvatureTotal",
   "NonLazyOllivierRicciCurvature", "GeodeticFraction", "SegmentEntropy", "GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
   "WolframRicciCurvatureScalar", "OllivierRicciCurvature", "DegreeEntropy", "LocalEntropy",
@@ -352,6 +373,7 @@ sgrStateGeometry[edges_List] := Module[
       If[k === {}, Missing[], N[Mean[k]]]],
     "GeodeticFraction" -> geodesicValues[edges]["GeodeticFraction"],
     "SegmentEntropy" -> N[geodesicValues[edges]["SegmentEntropy"]],
+    Sequence @@ Normal[N[sgrGeodesicBundle[edges]]],
     Sequence @@ With[{growth = Values[growthOfLargest[edges]]},
       Thread[growthNames -> If[growth === {}, ConstantArray[Missing[], 6], Mean[growth]]]]|>];
 

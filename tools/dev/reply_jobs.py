@@ -38,6 +38,8 @@ JOBS = {
                                      "RequestedData": ["StepStatistics"],
                                      "StepStatisticsBranchial": ["Graph", "Overlap"]}),
     "wpp_d7_q_stats": job(7, dict(Q, RequestedData=["StepStatistics"])),
+    "wpp_d7_q_stats_geodesic": job(7, dict(Q, RequestedData=["StepStatistics"],
+                                           StepStatisticsMeasures=["GeodesicAnalysis"])),
     "wpp_d6_none_curv": job(6, {"CanonicalizeStates": Sym("None"), "RequestedData": ["States"],
                                 "IncludeVertexCurvature": Sym("True")}),
     "wpp_d7_full_curv": job(7, {"CanonicalizeStates": Sym("Full"), "RequestedData": ["States"],
