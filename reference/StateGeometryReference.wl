@@ -364,15 +364,30 @@ sgrBranchialGraphMetrics[nodes_List, pairs_List] := Module[
   dm = GraphDistanceMatrix[g];
   dists = Select[Flatten[Table[dm[[i, j]], {i, Length[nodes]}, {j, i + 1, Length[nodes]}]],
     # =!= Infinity &];
-  (* The largest component: most states, then the greatest dimension. *)
+  (* The largest component: most states, then the greatest dimension, then the least state. *)
   dim[c_] := If[Length[c] < 2, Missing[],
     Mean[Values[sgrVertexDimensions[Subgraph[g, c]]]]];
-  largest = MaximalBy[comps, {Length[#], Replace[dim[#], _Missing -> -Infinity]} &];
+  largest = MaximalBy[SortBy[comps, Min],
+    {Length[#], Replace[dim[#], _Missing -> -Infinity]} &];
   <|"Degrees" -> (VertexDegree[g, #] & /@ nodes),
     "Distances" -> dists,
     "DistanceMatrix" -> dm,
     "Components" -> Length[comps],
-    "Dimension" -> If[largest === {}, Missing[], dim[First[largest]]]|>];
+    "Dimension" -> If[largest === {}, Missing[], dim[First[largest]]],
+    "Measures" -> If[largest === {} || Length[First[largest]] < 2, <||>,
+      branchialMeasures[Subgraph[g, First[largest]]]]|>];
+
+(* The volume growth and the two Ollivier-Ricci curvatures of a connected branchial component. *)
+branchialMeasures[c_Graph] := Module[{growth, vs = VertexList[c], dm, index},
+  growth = DeleteMissing[sgrVolumeGrowth[c, #] & /@ vs];
+  dm = GraphDistanceMatrix[c]; index = AssociationThread[vs -> Range[Length[vs]]];
+  Join[
+    If[growth === {}, <||>,
+      AssociationThread[("Branchial" <> #) & /@ growthNames -> Mean[growth]]],
+    <|"BranchialOllivierRicciCurvature" ->
+        N[Mean[ollivierEdge[c, dm, index, #[[1]], #[[2]]] & /@ EdgeList[c]]],
+      "BranchialNonLazyOllivierRicciCurvature" ->
+        N[Mean[nonLazyEdge[c, dm, index, #[[1]], #[[2]]] & /@ EdgeList[c]]]|>]];
 
 (* The mutual information in bits of the indicators of two sets of sizes a and b sharing n11
    elements, inside a universe of u elements. *)

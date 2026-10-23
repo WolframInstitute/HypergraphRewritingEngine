@@ -4932,11 +4932,36 @@ TEST(StateStatistics, BranchialStepMetricsOfASmallStep) {
     EXPECT_EQ(number_at(*assoc_at(rec, "BranchialDistance"), "Max"), 1);
     EXPECT_EQ(number_at(rec, "BranchialComponents"), 2);
     EXPECT_DOUBLE_EQ(number_at(rec, "BranchialDimension"), 1.0);   // K2: log 2 / log 2
+    // K2: the lazy walks put half on each end (curvature 1), the non-lazy walks swap the ends
+    // (0); no state has eccentricity 3, so no volume-growth key.
+    EXPECT_DOUBLE_EQ(number_at(rec, "BranchialOllivierRicciCurvature"), 1.0);
+    EXPECT_DOUBLE_EQ(number_at(rec, "BranchialNonLazyOllivierRicciCurvature"), 0.0);
+    EXPECT_EQ(assoc_at(rec, "BranchialSphereDimension"), nullptr);
     EXPECT_EQ(number_at(*assoc_at(rec, "StateOverlap"), "N"), 3);
     EXPECT_DOUBLE_EQ(number_at(*assoc_at(rec, "StateOverlap"), "Mean"), 0.2);
     EXPECT_EQ(number_at(*assoc_at(rec, "VertexSharpness"), "N"), 6);
     EXPECT_DOUBLE_EQ(number_at(*assoc_at(rec, "VertexSharpness"), "Mean"), 0.75);
     EXPECT_DOUBLE_EQ(number_at(*assoc_at(rec, "BranchEntropy"), "Mean"), 0.5);
+}
+
+// A step whose branchial graph is the cycle of 8 states: every shell up to the antipode has two
+// states, so the sphere probe reads dimension 1 and scalar curvature 0, and both Ollivier-Ricci
+// curvatures of a long cycle are 0.
+TEST(StateStatistics, BranchialCycleMeasures) {
+    hg::stats::BranchialStep s;
+    for (int64_t i = 0; i < 8; ++i) {
+        s.nodes.push_back(20 + i);
+        s.pairs.push_back({20 + i, 20 + (i + 1) % 8});
+        s.vertex_sets.push_back({static_cast<uint32_t>(i)});
+    }
+    const auto out = branchial_keys({{1u, s}}, hg::stats::kBranchialGraph);
+    ASSERT_EQ(out.size(), 1u);
+    const wxf::WXFValue rec(out.at(1));
+    EXPECT_NEAR(number_at(rec, "BranchialSphereDimension"), 1.0, 1e-12);
+    EXPECT_NEAR(number_at(rec, "BranchialSphereScalarCurvature"), 0.0, 1e-12);
+    EXPECT_NE(assoc_at(rec, "BranchialRiemannianBallDimension"), nullptr);
+    EXPECT_DOUBLE_EQ(number_at(rec, "BranchialOllivierRicciCurvature"), 0.0);
+    EXPECT_DOUBLE_EQ(number_at(rec, "BranchialNonLazyOllivierRicciCurvature"), 0.0);
 }
 
 // The pairwise, initial-state and edge metrics of the same step worked by hand. Step 0 is one

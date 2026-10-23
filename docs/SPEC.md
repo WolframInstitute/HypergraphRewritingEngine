@@ -527,8 +527,14 @@ is at step s (the rule of `"BranchialStateEdges"`); a pair of one state with its
 nothing. `BranchialDegree` is the summary of the vertex degrees, `BranchialDistance` the
 summary of the distances between every two states in one component, `BranchialComponents` the
 number of components, and `BranchialDimension` the `WolframHausdorffDimension` of the largest
-component (most states, then the greatest dimension), absent when that component has fewer than
-2 states.
+component (most states, then the greatest dimension, then the least state id), absent when that
+component has fewer than 2 states. The same component, as the graph G of "StepStatistics volume
+growth", gives `BranchialBallDimension`, `BranchialBallScalarCurvature`,
+`BranchialRiemannianBallDimension`, `BranchialRiemannianBallScalarCurvature`,
+`BranchialSphereDimension` and `BranchialSphereScalarCurvature` (the means over its vertices
+with a fit, absent when none has one), `BranchialOllivierRicciCurvature` (the mean
+`OllivierRicciCurvature` of its edges) and `BranchialNonLazyOllivierRicciCurvature` (the mean
+non-lazy curvature of its edges).
 Under `"ExploreFromCanonicalStatesOnly" -> True` the graph of step s has the classes at step s
 as vertices and joins the output classes of every two overlapping matches of each class at step
 s - 1 (`hgcommon::qm_expansion_state_pairs`). Every raw state of a class applies every match of

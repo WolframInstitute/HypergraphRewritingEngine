@@ -928,6 +928,7 @@ void branchial_graph_metrics(const BranchialGraph& graph, wxf::WXFValueAssociati
     bool have = false;
     double best = 0.0;
     std::vector<double> ball(most + 1);
+    std::vector<std::pair<uint32_t, uint32_t>> chosen;   // the largest component's edges
     for (const auto& c : members) {
         if (c.size() != most || most < 2) continue;
         std::vector<uint32_t> local(n, 0);
@@ -950,9 +951,27 @@ void branchial_graph_metrics(const BranchialGraph& graph, wxf::WXFValueAssociati
         if ((g.defined & hgcommon::SG_HAUSDORFF) && (!have || g.hausdorff_dimension > best)) {
             best = g.hausdorff_dimension;
             have = true;
+            chosen = std::move(sub);
         }
     }
-    if (have) rec.push_back({wxf::WXFValue("BranchialDimension"), wxf::WXFValue(best)});
+    if (!have) return;
+    rec.push_back({wxf::WXFValue("BranchialDimension"), wxf::WXFValue(best)});
+    // The volume growth and the two Ollivier-Ricci curvatures of the same component.
+    const hgcommon::SgGeometry g = geometry_with_scratch(
+        BranchialEdges{&chosen, static_cast<uint32_t>(most)}, ball,
+        hgcommon::SG_VOLUME_GROWTH | hgcommon::SG_OLLIVIER | hgcommon::SG_NONLAZY_OLLIVIER);
+    if (g.defined & hgcommon::SG_VOLUME_GROWTH) {
+        static const char* const kGrowth[hgcommon::SG_GROWTH_VALUES] = {
+            "BranchialBallDimension", "BranchialBallScalarCurvature",
+            "BranchialRiemannianBallDimension", "BranchialRiemannianBallScalarCurvature",
+            "BranchialSphereDimension", "BranchialSphereScalarCurvature"};
+        for (uint32_t k = 0; k < hgcommon::SG_GROWTH_VALUES; ++k)
+            rec.push_back({wxf::WXFValue(kGrowth[k]), wxf::WXFValue(g.growth[k])});
+    }
+    rec.push_back({wxf::WXFValue("BranchialOllivierRicciCurvature"),
+                   wxf::WXFValue(g.ollivier_ricci)});
+    rec.push_back({wxf::WXFValue("BranchialNonLazyOllivierRicciCurvature"),
+                   wxf::WXFValue(g.nonlazy_ollivier)});
 }
 
 // The summaries of 1/k and log2 k over the ids held by k states, one value per id, from the
