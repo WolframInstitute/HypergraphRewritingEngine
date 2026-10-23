@@ -28,6 +28,7 @@ sgrLargestIncidenceComponent::usage = "sgrLargestIncidenceComponent[edges] gives
 sgrVertexInvariants::usage = "sgrVertexInvariants[edges] gives the per-vertex values \"VertexInvariants\" pools for one state: \"LocalDimension\" (d_v over the largest component G'), \"OllivierRicciCurvature\" (k_v over the vertices with a neighbour) and \"WolframRicciCurvatureScalar\" (K_v over G'), each a list of numbers of 50 digits or exact rationals.";
 sgrPooledDistribution::usage = "sgrPooledDistribution[values, name] gives the summary \"VertexInvariants\" reports for the pooled values of the distribution name: N, Mean, StandardDeviation, Min, Max, Median, Q1, Q3, P10, P90, Skewness, Kurtosis and the 32-bin Histogram.";
 sgrVolumeGrowth::usage = "sgrVolumeGrowth[g, v] gives the six volume-growth values of vertex v of graph g (BallDimension, BallScalarCurvature, RiemannianBallDimension, RiemannianBallScalarCurvature, SphereDimension, SphereScalarCurvature), or Missing[] when v has no fit.";
+sgrLogGeodesicCount::usage = "sgrLogGeodesicCount[edges] gives, for d = 1..D, the mean over the ordered pairs of vertices at distance d of the natural logarithm of their number of shortest paths, or {} for a state with no edge.";
 sgrStateMatrices::usage = "sgrStateMatrices[vertexSets, edgeLists] gives the six state x state matrices of a step's states in the given order: the Jaccard index, the cosine similarity and the mutual information of every two states, over their vertex sets and over their edge sets (each edge its vertex list).";
 
 Begin["`Private`"];
@@ -69,7 +70,34 @@ ollivierEdge[g_Graph, dm_, index_, x_, y_] := Module[
 growthNames = {"BallDimension", "BallScalarCurvature", "RiemannianBallDimension",
   "RiemannianBallScalarCurvature", "SphereDimension", "SphereScalarCurvature"};
 
-geometryNames = Join[{"GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
+(* Geodesic multiplicity (docs/SPEC.md, "StepStatistics geodesic multiplicity"). sigma(p, q) is
+   the (p, q) entry of A^d with d = d(p, q), and the segment's density at w is
+   sigma(p, w) sigma(w, q) over the vertices w with d(p, w) + d(w, q) = d. Each ordered pair of
+   distinct vertices joined by a path gives {d, sigma, H}. *)
+geodesicPairs[g_Graph] := Module[{vs = VertexList[g], n, a, dm, powers, top, sigma},
+  n = Length[vs];
+  If[EdgeCount[g] == 0, Return[{}]];
+  a = Normal[AdjacencyMatrix[g]];
+  dm = GraphDistanceMatrix[g];
+  top = Max[Cases[Flatten[dm], _Integer]];
+  powers = NestList[#.a &, IdentityMatrix[n], top];
+  sigma[x_, y_] := powers[[dm[[x, y]] + 1, x, y]];
+  Catenate[Table[If[p == q || dm[[p, q]] === Infinity, Nothing,
+      Module[{d = dm[[p, q]], rho},
+        rho = sigma[p, #] sigma[#, q] & /@ Select[Range[n], dm[[p, #]] + dm[[#, q]] == d &];
+        {d, sigma[p, q], -Total[(rho/Total[rho]) Log2[rho/Total[rho]]]}]],
+    {p, n}, {q, n}]]];
+
+geodesicValues[edges_List] := geodesicValues[edges] = Module[{pairs = geodesicPairs[sgrStateGraph[edges]]},
+  If[pairs === {},
+    <|"GeodeticFraction" -> Missing[], "SegmentEntropy" -> Missing[], "LogGeodesicCount" -> {}|>,
+    <|"GeodeticFraction" -> N[Count[pairs[[All, 2]], 1]/Length[pairs]],
+      "SegmentEntropy" -> N[Mean[pairs[[All, 3]]], 20],
+      "LogGeodesicCount" -> Table[N[Mean[Log[Select[pairs, #[[1]] == d &][[All, 2]]]], 20],
+        {d, Max[pairs[[All, 1]]]}]|>]];
+
+sgrLogGeodesicCount[edges_List] := N[geodesicValues[edges]["LogGeodesicCount"]];
+geometryNames = Join[{"GeodeticFraction", "SegmentEntropy", "GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
   "WolframRicciCurvatureScalar", "OllivierRicciCurvature", "DegreeEntropy", "LocalEntropy",
   "MutualInformation", "FisherInformation", "LargestComponentDimension", "LocalDimensionMax",
   "LocalDimensionStandardDeviation", "OllivierMoranI", "OllivierDegreeCorrelation"},
@@ -241,6 +269,8 @@ sgrStateGeometry[edges_List] := Module[
       N[Sqrt[Mean[(Values[lc["Dimensions"]] - lc["D"])^2]]]],
     "OllivierMoranI" -> moran,
     "OllivierDegreeCorrelation" -> corr,
+    "GeodeticFraction" -> geodesicValues[edges]["GeodeticFraction"],
+    "SegmentEntropy" -> N[geodesicValues[edges]["SegmentEntropy"]],
     Sequence @@ With[{growth = Values[growthOfLargest[edges]]},
       Thread[growthNames -> If[growth === {}, ConstantArray[Missing[], 6], Mean[growth]]]]|>];
 

@@ -224,15 +224,21 @@ HG_HD bool sg_build(const EdgeList& el, SgArena& arena, SgGraph& g) {
 // with h(u) = h, where h(u) is dist(u) + 1 when u has a neighbour at dist(u) + 1 and dist(u)
 // otherwise. B(s, r) holds exactly the vertices u with h(u) <= r whose neighbours all lie in
 // B(s, r), so the Riemannian measure of B(s, r) is the sum of inner[0..r].
+//
+// `sigma` and `acc`, when given, receive for each vertex q found sigma[q] = sigma(s, q), the
+// number of shortest paths from s to q, and acc[q] = the sum over those paths of the sum over
+// their vertices w of log2 sigma(s, w). Both are doubles: sigma is exact below 2^53.
 HG_HD inline uint32_t sg_bfs(const SgGraph& g, uint32_t s, int32_t* dist, uint32_t* queue,
                              uint32_t* layer, uint32_t max_depth, uint32_t& reached,
-                             uint32_t* inner = nullptr) {
+                             uint32_t* inner = nullptr, double* sigma = nullptr,
+                             double* acc = nullptr) {
     uint32_t head = 0, tail = 0;
     queue[tail++] = s;
     dist[s] = 0;
     uint32_t depth = 0;
     if (layer) layer[0] = 0;
     if (inner) { inner[0] = 0; inner[1] = 0; }
+    if (sigma) { sigma[s] = 1.0; acc[s] = 0.0; }
     while (head < tail) {
         const uint32_t u = queue[head++];
         const uint32_t du = static_cast<uint32_t>(dist[u]);
@@ -242,6 +248,8 @@ HG_HD inline uint32_t sg_bfs(const SgGraph& g, uint32_t s, int32_t* dist, uint32
             if (inner) inner[depth + 1] = 0;
         }
         if (layer) ++layer[du];
+        // sigma[u] is final here: every neighbour of u at distance du - 1 left the queue earlier.
+        if (sigma && du > 0) acc[u] += dm_mul(sigma[u], dm_log2(sigma[u]));
         if (du == max_depth) continue;
         uint32_t outward = 0;
         for (uint32_t e = g.off[u]; e < g.off[u + 1]; ++e) {
@@ -250,8 +258,10 @@ HG_HD inline uint32_t sg_bfs(const SgGraph& g, uint32_t s, int32_t* dist, uint32
                 dist[w] = static_cast<int32_t>(du + 1);
                 queue[tail++] = w;
                 outward = 1;
+                if (sigma) { sigma[w] = sigma[u]; acc[w] = acc[u]; }
             } else if (dist[w] == static_cast<int32_t>(du + 1)) {
                 outward = 1;
+                if (sigma) { sigma[w] += sigma[u]; acc[w] += acc[u]; }
             }
         }
         if (inner) ++inner[du + outward];
@@ -402,6 +412,7 @@ enum : uint32_t {
     SG_OLLIVIER_DEGREE = 1u << 9,        // ollivier_degree_correlation: k and deg not constant
     SG_VERTEX_DISTRIBUTIONS = 1u << 10,  // `want` only: write the per-vertex distributions
     SG_VOLUME_GROWTH = 1u << 11,         // the six growth_* means: a vertex of G' has a fit
+    SG_GEODESIC = 1u << 12,              // geodetic_fraction, segment_entropy: G has an edge
 };
 
 // The per-vertex distributions of a state, in this order.
@@ -497,6 +508,12 @@ struct SgGeometry {
     // Means over the vertices of G' with a volume-growth fit, in SG_DIST order from
     // SG_DIST_BALL_DIMENSION.
     double growth[SG_GROWTH_VALUES] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    // Over the ordered pairs (p, q) of distinct vertices joined by a path: the fraction with one
+    // shortest path, and the mean entropy of the shortest paths' vertex density.
+    double geodetic_fraction = 0.0;
+    double segment_entropy = 0.0;
+    uint32_t geodesic_radii = 0;         // D: entries written to the log-geodesic-count output
+    uint32_t reserved = 0;
 };
 
 // Doubles of scratch sg_growth_fit takes for k quotients.
@@ -522,6 +539,9 @@ HG_HD inline uint32_t sg_transport_lanes(size_t max_degree, uint32_t lanes) {
 // each). Per edge: the Ollivier curvature (8 bytes). Then the transport lanes' scratch, and 8
 // bytes of alignment per array. SG_VOLUME_GROWTH adds per lane and per vertex the shells and the
 // Riemannian counts (4 bytes each) and the fit scratch (56 bytes), and per vertex the six fits.
+// SG_GEODESIC adds per lane and per vertex the path counts, their log sums and the per-distance
+// log sums (8 bytes each), and per vertex the one-path count (4 bytes), the entropy sum and the
+// pooled per-distance log sums and pair counts (8 bytes each).
 HG_HD inline size_t sg_metric_bytes(size_t n, size_t max_degree, size_t edges, uint32_t lanes,
                                     uint32_t want = ~0u) {
     const size_t n1 = n + 1;
@@ -531,6 +551,7 @@ HG_HD inline size_t sg_metric_bytes(size_t n, size_t max_degree, size_t edges, u
     if (want & SG_VOLUME_GROWTH)
         bytes += size_t{lanes} * (n1 * 2 * 4 + sg_fit_doubles(n) * 8) +
                  SG_GROWTH_VALUES * n1 * 8 + 4 * 8;
+    if (want & SG_GEODESIC) bytes += size_t{lanes} * n1 * 3 * 8 + n1 * (4 + 3 * 8) + 5 * 8;
     return bytes;
 }
 
@@ -675,6 +696,9 @@ HG_HD inline void sg_growth_of(const uint32_t* shell, const uint32_t* ball, cons
 // `vertex_values`, when given with SG_VOLUME_GROWTH, receives the volume-growth values of each
 // vertex index v of G at [k n + v] for k < SG_GROWTH_VALUES, in SG_DIST order from
 // SG_DIST_BALL_DIMENSION, NaN for a vertex outside G' or without a fit, written by the leader.
+// `log_geodesic`, with SG_GEODESIC, receives in entries 0..D-1, up to `log_geodesic_capacity`
+// entries, the mean over the ordered pairs at distance d = 1..D of ln sigma, D the largest
+// eccentricity; out.geodesic_radii is D.
 template <class Par = IrSerial>
 HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& out,
                                  double* ball_dimension, uint32_t ball_capacity,
@@ -682,8 +706,11 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
                                  const uint32_t* largest = nullptr, uint32_t largest_n = 0,
                                  SgDistribution* dists = nullptr,
                                  double* vertex_curvature = nullptr,
-                                 double* vertex_values = nullptr) {
+                                 double* vertex_values = nullptr,
+                                 double* log_geodesic = nullptr,
+                                 uint32_t log_geodesic_capacity = 0) {
     const bool want_growth = (want & SG_VOLUME_GROWTH) != 0;
+    const bool want_geodesic = (want & SG_GEODESIC) != 0;
     const bool want_local = (want & (SG_DEGREE_ENTROPY | SG_MUTUAL_INFORMATION)) != 0;
     const bool want_dists = dists != nullptr && (want & SG_VERTEX_DISTRIBUTIONS) != 0;
     const bool want_vertex_ollivier = want_dists || vertex_curvature != nullptr ||
@@ -730,6 +757,16 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
     uint32_t* inner_all = want_growth ? arena.take<uint32_t>(L * n1) : nullptr;
     double* fit_all = want_growth ? arena.take<double>(L * fit_stride) : nullptr;
     double* growth_v = want_growth ? arena.take<double>(SG_GROWTH_VALUES * n1) : nullptr;
+    // Geodesic multiplicity: per lane the path counts, their log sums and the per-distance sums
+    // of ln sigma; per vertex the targets reached by one path and the entropy sum; per distance
+    // the pooled sums of ln sigma and the pair counts.
+    double* sigma_all = want_geodesic ? arena.take<double>(L * n1) : nullptr;
+    double* acc_all = want_geodesic ? arena.take<double>(L * n1) : nullptr;
+    double* dsum_all = want_geodesic ? arena.take<double>(L * n1) : nullptr;
+    uint32_t* ones_v = want_geodesic ? arena.take<uint32_t>(n1) : nullptr;
+    double* ent_v = want_geodesic ? arena.take<double>(n1) : nullptr;
+    double* lnsig_sum = want_geodesic ? arena.take<double>(n1) : nullptr;
+    uint64_t* pair_sum = want_geodesic ? arena.take<uint64_t>(n1) : nullptr;
     if (arena.failed) return false;
     int32_t* dist = dist_all + me * n1;
     int32_t* dist2 = dist2_all + me * n1;
@@ -740,7 +777,11 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
     uint32_t* counts = counts_all + me * n1;
     double* term = term_all + me * n1;
     for (size_t i = 0; i < n1; ++i) { dist[i] = -1; dist2[i] = -1; mark[i] = 0; counts[i] = 0; }
-    par.fan(static_cast<uint32_t>(n1), [&](uint32_t i) { log_sum[i] = 0.0; ball_sum[i] = 0; });
+    par.fan(static_cast<uint32_t>(n1), [&](uint32_t i) {
+        log_sum[i] = 0.0;
+        ball_sum[i] = 0;
+        if (want_geodesic) { lnsig_sum[i] = 0.0; pair_sum[i] = 0; }
+    });
 
     // PASS 1: every vertex's balls, eccentricity, local entropy and mutual information, L
     // vertices per round. After each round the round's terms enter log_sum and ball_sum in
@@ -752,9 +793,33 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
             uint32_t reached = 0;
             uint32_t* shell = want_growth ? shell_all + me * n1 : nullptr;
             uint32_t* inner = want_growth ? inner_all + me * n1 : nullptr;
-            const uint32_t e = sg_bfs(g, v, dist, queue, layer, UINT32_MAX, reached, inner);
+            double* sigma = want_geodesic ? sigma_all + me * n1 : nullptr;
+            double* acc = want_geodesic ? acc_all + me * n1 : nullptr;
+            const uint32_t e = sg_bfs(g, v, dist, queue, layer, UINT32_MAX, reached, inner,
+                                      sigma, acc);
             if (v == 0) connected = reached == n ? 1u : 0u;
             ecc[v] = e;
+            if (want_geodesic) {
+                // Over the targets q of v: the count with one shortest path, the sums of
+                // ln sigma(v, q) by distance, and the sum of log2 t - 2 acc(v, q) / t with
+                // t = (d + 1) sigma(v, q). Summed over every v, the last is the sum of H over
+                // the ordered pairs (docs/SPEC.md, "StepStatistics geodesic multiplicity").
+                double* dsum = dsum_all + me * n1;
+                for (uint32_t r = 1; r <= e; ++r) dsum[r] = 0.0;
+                uint32_t ones = 0;
+                double ent = 0.0;
+                for (uint32_t i = 1; i < reached; ++i) {
+                    const uint32_t q = queue[i];
+                    const uint32_t d = static_cast<uint32_t>(dist[q]);
+                    const double s = sigma[q];
+                    if (s == 1.0) ++ones;
+                    dsum[d] += dm_log(s);
+                    const double t = dm_mul(static_cast<double>(d + 1), s);
+                    ent += dm_log2(t) - dm_mul(2.0, acc[q]) / t;
+                }
+                ones_v[v] = ones;
+                ent_v[v] = ent;
+            }
             if (want_growth)
                 for (uint32_t r = 0; r <= e; ++r) shell[r] = layer[r];
             uint32_t ball = 1;
@@ -803,12 +868,35 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
                 if (r > ecc[base + i]) continue;
                 log_sum[r] += term_all[i * n1 + r];
                 ball_sum[r] += layer_all[i * n1 + r];
+                if (want_geodesic) {
+                    lnsig_sum[r] += dsum_all[i * n1 + r];
+                    pair_sum[r] += layer_all[i * n1 + r] - layer_all[i * n1 + r - 1];
+                }
             }
         par.sync();
     }
     connected = par.bcast(connected);
     uint32_t radius = UINT32_MAX;
     for (uint32_t v = 0; v < n; ++v) if (ecc[v] < radius) radius = ecc[v];
+    if (want_geodesic && par.leader()) {
+        uint32_t top = 0;
+        for (uint32_t v = 0; v < n; ++v) if (ecc[v] > top) top = ecc[v];
+        uint64_t pairs = 0, ones = 0;
+        double ent = 0.0;
+        for (uint32_t v = 0; v < n; ++v) {
+            ones += ones_v[v];
+            ent += ent_v[v];
+        }
+        for (uint32_t d = 1; d <= top; ++d) pairs += pair_sum[d];
+        if (pairs) {
+            out.geodetic_fraction = static_cast<double>(ones) / static_cast<double>(pairs);
+            out.segment_entropy = ent / static_cast<double>(pairs);
+            out.geodesic_radii = top;
+            out.defined |= SG_GEODESIC;
+            for (uint32_t d = 1; d <= top && d <= log_geodesic_capacity; ++d)
+                log_geodesic[d - 1] = lnsig_sum[d] / static_cast<double>(pair_sum[d]);
+        }
+    }
     if (par.leader()) {
         uint32_t* all = queue;
         for (uint32_t i = 0; i < n; ++i) all[i] = i;
@@ -1073,7 +1161,8 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
 // that grows its buffer to `needed` and calls again either succeeds or learns the next stage's
 // need. Every lane of the policy calls it with the same arguments and gets the same verdict and
 // `needed`; the leader builds G and `out` is the leader's. `largest`, `largest_n`, `dists`,
-// `vertex_curvature` and `vertex_values` are sg_geometry_of's.
+// `vertex_curvature`, `vertex_values`, `log_geodesic` and `log_geodesic_capacity` are
+// sg_geometry_of's.
 template <class EdgeList, class Par = IrSerial>
 HG_HD bool sg_state_geometry(const EdgeList& el, unsigned char* scratch, size_t capacity,
                              SgGeometry& out, double* ball_dimension, uint32_t ball_capacity,
@@ -1081,7 +1170,8 @@ HG_HD bool sg_state_geometry(const EdgeList& el, unsigned char* scratch, size_t 
                              const uint32_t* largest = nullptr, uint32_t largest_n = 0,
                              SgDistribution* dists = nullptr,
                              double* vertex_curvature = nullptr,
-                             double* vertex_values = nullptr) {
+                             double* vertex_values = nullptr, double* log_geodesic = nullptr,
+                             uint32_t log_geodesic_capacity = 0) {
     SgArena arena;
     arena.base = scratch;
     arena.capacity = capacity;
@@ -1110,7 +1200,8 @@ HG_HD bool sg_state_geometry(const EdgeList& el, unsigned char* scratch, size_t 
     arena.used = static_cast<size_t>(par.bcast64(arena.used));
     const size_t built = arena.used;
     if (!sg_geometry_of(g, arena, out, ball_dimension, ball_capacity, want, par, largest,
-                        largest_n, dists, vertex_curvature, vertex_values)) {
+                        largest_n, dists, vertex_curvature, vertex_values, log_geodesic,
+                        log_geodesic_capacity)) {
         needed = built + sg_metric_bytes(g.n, g.max_degree, g.edges, par.width(), want);
         return false;
     }
