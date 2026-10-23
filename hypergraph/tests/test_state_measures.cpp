@@ -40,7 +40,7 @@ Measured measure(std::vector<std::vector<uint32_t>> edges) {
     std::vector<double> ball(256);
     size_t slots = 0, pairs = 0;
     hgcommon::sg_sizes(el, slots, pairs);
-    r.vv.assign(hgcommon::SG_GROWTH_VALUES * slots, 0.0);
+    r.vv.assign(hgcommon::SG_VERTEX_VALUES * slots, 0.0);
     r.log_geodesic.assign(slots + 1, 0.0);
     size_t needed = 0;
     while (!hgcommon::sg_state_geometry(el, scratch.data(), scratch.size(), r.g, ball.data(),
@@ -52,7 +52,7 @@ Measured measure(std::vector<std::vector<uint32_t>> edges) {
         scratch.resize(needed);
     }
     r.n = r.g.vertex_count;
-    r.vv.resize(hgcommon::SG_GROWTH_VALUES * r.n);
+    r.vv.resize(hgcommon::SG_VERTEX_VALUES * r.n);
     r.log_geodesic.resize(r.g.geodesic_radii);
     return r;
 }
@@ -378,4 +378,102 @@ TEST(StateMeasures, NonLazyOllivierFixtures) {
     EXPECT_NEAR(p3.g.ollivier_ricci, 0.5, 1e-15);
     EXPECT_EQ(p3.g.nonlazy_ollivier, 0.0);
     EXPECT_FALSE(measure({{1}, {2}}).g.defined & hgcommon::SG_NONLAZY_OLLIVIER);
+}
+
+namespace {
+
+// The icosahedron: a top vertex, two rings of five and a bottom vertex.
+std::vector<std::vector<uint32_t>> icosahedron() {
+    std::vector<std::vector<uint32_t>> e;
+    for (uint32_t i = 0; i < 5; ++i) {
+        const uint32_t u = 2 + i, un = 2 + (i + 1) % 5, l = 7 + i, ln = 7 + (i + 1) % 5;
+        e.push_back({1, u});
+        e.push_back({u, un});
+        e.push_back({l, ln});
+        e.push_back({u, l});
+        e.push_back({u, ln});
+        e.push_back({l, 12});
+    }
+    return e;
+}
+
+// The wheel: a hub joined to every vertex of a k-cycle.
+std::vector<std::vector<uint32_t>> wheel(uint32_t k) {
+    std::vector<std::vector<uint32_t>> e;
+    for (uint32_t i = 0; i < k; ++i) {
+        e.push_back({1, i + 2});
+        e.push_back({i + 2, (i + 1) % k + 2});
+    }
+    return e;
+}
+
+constexpr uint32_t kKappa = hgcommon::SG_GROWTH_VALUES;
+
+}  // namespace
+
+// TessellationGraphsTests.wlt "TessellationGenus-icosahedron-sphere" (chi = 2): every link of
+// the icosahedron is a 5-cycle, so each vertex has 1 - 5/6 and the twelve sum to chi = 2. The
+// octahedron's links are 4-cycles: six times 1/3 is 2.
+TEST(StateMeasures, ClosedSurfacesSatisfyGaussBonnet) {
+    const Measured ico = measure(icosahedron());
+    ASSERT_EQ(ico.g.edge_count, 30u);
+    ASSERT_TRUE(ico.g.defined & hgcommon::SG_EULER);
+    EXPECT_EQ(ico.g.euler_characteristic, 2.0);
+    ASSERT_TRUE(ico.g.defined & hgcommon::SG_RIM);
+    EXPECT_EQ(ico.g.rim_fraction, 0.0);
+    ASSERT_TRUE(ico.g.defined & hgcommon::SG_CYCLE_CURVATURE);
+    EXPECT_NEAR(ico.g.cycle_curvature_total, 2.0, 1e-14);
+    for (uint32_t v = 0; v < 12; ++v) EXPECT_NEAR(ico.at(kKappa, v), 1.0 / 6.0, 1e-15);
+
+    std::vector<std::vector<uint32_t>> octa;
+    for (uint32_t a = 1; a <= 6; ++a)
+        for (uint32_t b = a + 1; b <= 6; ++b)
+            if (!(a % 2 == 1 && b == a + 1)) octa.push_back({a, b});   // K6 less a matching
+    const Measured o = measure(octa);
+    EXPECT_EQ(o.g.euler_characteristic, 2.0);
+    EXPECT_NEAR(o.g.cycle_curvature_total, 2.0, 1e-14);
+}
+
+// "TessellationGenus-torus-genus-1": a triangulated 6 x 6 torus has chi = 0, every link a
+// 6-cycle and curvature 0 at every vertex.
+TEST(StateMeasures, TriangulatedTorusIsFlat) {
+    const uint32_t w = 6;
+    auto id = [&](uint32_t i, uint32_t j) { return (i % w) * w + (j % w) + 1; };
+    std::vector<std::vector<uint32_t>> e;
+    for (uint32_t i = 0; i < w; ++i)
+        for (uint32_t j = 0; j < w; ++j) {
+            e.push_back({id(i, j), id(i + 1, j)});
+            e.push_back({id(i, j), id(i, j + 1)});
+            e.push_back({id(i, j), id(i + 1, j + 1)});
+        }
+    const Measured m = measure(e);
+    EXPECT_EQ(m.g.euler_characteristic, 0.0);
+    EXPECT_EQ(m.g.rim_fraction, 0.0);
+    EXPECT_EQ(m.g.cycle_curvature_total, 0.0);
+}
+
+// "TessellationCurvature-flat-hyperbolic-spherical": a vertex with seven triangles about it has
+// curvature below 0, with six 0, with five above 0. The hub of a wheel has a k-cycle as its link
+// and each rim vertex a path, so the rim fraction is k / (k + 1).
+TEST(StateMeasures, CurvatureSignsAndRim) {
+    const double want[3] = {1.0 / 6.0, 0.0, -1.0 / 6.0};
+    for (uint32_t k = 5; k <= 7; ++k) {
+        const Measured m = measure(wheel(k));
+        ASSERT_TRUE(m.g.defined & hgcommon::SG_CYCLE_CURVATURE) << k;
+        EXPECT_NEAR(m.g.cycle_curvature_total, want[k - 5], 1e-15) << k;
+        EXPECT_NEAR(m.g.rim_fraction, static_cast<double>(k) / (k + 1), 1e-15) << k;
+        EXPECT_EQ(m.g.euler_characteristic, 1.0) << k;   // (k + 1) - 2k + k
+        EXPECT_TRUE(std::isnan(m.at(kKappa, 1))) << k;
+    }
+    // A vertex whose link is two triangles lies on the rim; the other six have a triangle as
+    // their link and 1 - 3/6 each.
+    const Measured two = measure({{1, 2}, {1, 3}, {1, 4}, {1, 5}, {1, 6}, {1, 7}, {2, 3}, {3, 4},
+                                  {4, 2}, {5, 6}, {6, 7}, {7, 5}});
+    EXPECT_TRUE(std::isnan(two.at(kKappa, 0)));
+    EXPECT_NEAR(two.g.cycle_curvature_total, 3.0, 1e-15);
+    EXPECT_NEAR(two.g.rim_fraction, 1.0 / 7.0, 1e-15);
+    // C5 has no triangle: no rim fraction, and chi = 5 - 5 + 0.
+    const Measured c5 = measure(cycle(5));
+    EXPECT_FALSE(c5.g.defined & hgcommon::SG_RIM);
+    EXPECT_EQ(c5.g.euler_characteristic, 0.0);
 }
