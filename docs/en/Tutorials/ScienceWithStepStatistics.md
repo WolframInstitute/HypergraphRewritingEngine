@@ -10,7 +10,7 @@ RelatedGuides: [HypergraphRewriting]
 RelatedTutorials: [GettingStarted, InitialConditions, SamplingAndPruning]
 ---
 
-`"StepStatistics"` gives one association per step of an evolution, with counts of states and classes, summaries of per-state invariants, distributions over vertices and, on request, measures of the branchial graph, the overlap between states and state x state matrices. The [HGEvolve]() reference page defines every key. This tutorial uses them to answer eight questions about rules of the Wolfram Physics Project. Every number plotted comes from the engine.
+`"StepStatistics"` gives one association per step of an evolution, with counts of states and classes, summaries of per-state invariants, distributions over vertices and, on request, measures of the branchial graph, the overlap between states and state x state matrices. The [HGEvolve]() reference page defines every key. This tutorial uses them to answer questions about rules of the Wolfram Physics Project and about the continuum limits studied by the Infrageometry program. Every number plotted comes from the engine.
 
 Each plot reads one key of every step with this function:
 
@@ -273,3 +273,114 @@ Row[embedding[SelectFirst[Values[history], Function[st, st["Step"] == #]]] & /@ 
 ![The graph of a state joins the consecutive vertices of each hyperedge; Rest drops the edge id at the front of each edge.](../images/ScienceWithStepStatistics/ScienceWithStepStatistics-30.png)
 
 In a notebook, `ListAnimate[embedding /@ SortBy[Values[history], #Step &]]` shows every step as an animation.
+
+## Two readings of dimension
+
+The Infrageometry program reads the dimension of a graph from the growth of its balls. The counting measure counts every vertex of a ball. The Riemannian measure counts only the vertices whose neighbours all lie in the ball. On square grids of width 8 to 32 the counting reading rises from 1.29 to 1.63, and the Riemannian reading falls from 2.15 to 1.89, crossing 2 between widths 16 and 24. `"StepStatisticsMeasures" -> All` adds both readings and the other measures of this tutorial's remaining sections. The helper `zeroStep` gives the statistics of a generated state without any evolution:
+
+```wl
+zeroStep[spec_] := First[HGEvolve[ruleA, spec, 0, "StepStatistics", "StepStatisticsMeasures" -> All]];
+grids = Table[{n, zeroStep[<|"Type" -> "Grid", "Width" -> n, "Height" -> n, "Seed" -> 1|>]}, {n, {8, 12, 16, 24, 32}}];
+ListLinePlot[{Table[{p[[1]], p[[2]]["Invariants", "BallDimension", "Mean"]}, {p, grids}], Table[{p[[1]], p[[2]]["Invariants", "RiemannianBallDimension", "Mean"]}, {p, grids}]}, PlotMarkers -> Automatic, AxesLabel -> {"grid width", "dimension"}, PlotLegends -> {"counting measure", "Riemannian measure"}, GridLines -> {None, {2}}, ImageSize -> 400]
+```
+
+![The Infrageometry program reads the dimension of a graph from the growth of its balls.](../images/ScienceWithStepStatistics/ScienceWithStepStatistics-31.png)
+
+## Curvature of a flat surface under refinement
+
+A torus is flat. Its scalar curvature from ball growth stays between -0.04 and -0.10 for resolutions 6 to 18 and does not approach 0 over this range:
+
+```wl
+ListLinePlot[Table[{k, zeroStep[<|"Type" -> "Torus", "Resolution" -> k, "Seed" -> 1|>]["Invariants", "BallScalarCurvature", "Mean"]}, {k, {6, 9, 12, 15, 18}}], PlotMarkers -> Automatic, AxesLabel -> {"resolution", "scalar curvature"}, GridLines -> {None, {0}}, ImageSize -> 400]
+```
+
+![A torus is flat.](../images/ScienceWithStepStatistics/ScienceWithStepStatistics-32.png)
+
+## Curvature readings near two black holes
+
+The evolutions of the section on free space and a gravitational field, run again with every measure, compare three readings of curvature: ball growth, sphere growth, and the transport curvature of edges with no idleness:
+
+```wl
+measured[spec_] := HGEvolve[ruleA, spec, 40, "StepStatistics", "UniformRandom" -> True, "MatchesPerStep" -> 10, "RandomSeed" -> 1, "StepStatisticsMeasures" -> All];
+grTorus = measured[<|"Type" -> "Torus", "Resolution" -> 9, "Seed" -> 1|>];
+grHoles = measured[<|"Type" -> "BrillLindquist", "Density" -> 80, "Separation" -> 6., "BoxX" -> {-10., 10.}, "BoxY" -> {-10., 10.}, "EdgeThreshold" -> 3.5, "Seed" -> 1|>];
+GraphicsRow[Table[ListLinePlot[{perStep[grTorus, "Invariants", key, "Mean"], perStep[grHoles, "Invariants", key, "Mean"]}, AxesLabel -> {"step", None}, PlotLabel -> key, PlotLegends -> {"torus", "Brill-Lindquist"}], {key, {"BallScalarCurvature", "SphereScalarCurvature", "NonLazyOllivierRicciCurvature"}}], ImageSize -> 800]
+```
+
+![The evolutions of the section on free space and a gravitational field, run again with every measure, compare three readings of curvature: ball growth, sphere growth, and the transport curvature of edges with no idleness](../images/ScienceWithStepStatistics/ScienceWithStepStatistics-33.png)
+
+The spread of the edge curvature over all edges of all states at a step falls if evolution smooths curvature:
+
+```wl
+ListLinePlot[{perStep[grTorus, "EdgeInvariants", "NonLazyOllivierRicciCurvature", "StandardDeviation"], perStep[grHoles, "EdgeInvariants", "NonLazyOllivierRicciCurvature", "StandardDeviation"]}, AxesLabel -> {"step", "standard deviation"}, PlotLegends -> {"torus", "Brill-Lindquist"}, ImageSize -> 400]
+```
+
+![The spread of the edge curvature over all edges of all states at a step falls if evolution smooths curvature](../images/ScienceWithStepStatistics/ScienceWithStepStatistics-34.png)
+
+## Curvature of generated surfaces
+
+A sphere is positively curved, and a torus and a Klein bottle are flat. A cylinder and a Mobius strip have a boundary. The table lists each generated surface's ball dimension and its scalar curvature from ball growth and from sphere growth:
+
+```wl
+Grid[Prepend[Table[With[{s = zeroStep[<|"Type" -> t, "Resolution" -> 12, "Height" -> 12, "Seed" -> 1|>]}, {t, s["Invariants", "BallDimension", "Mean"], s["Invariants", "BallScalarCurvature", "Mean"], s["Invariants", "SphereScalarCurvature", "Mean"]}], {t, {"Sphere", "Torus", "Klein", "Cylinder", "Mobius"}}], {"surface", "ball dimension", "ball curvature", "sphere curvature"}], Frame -> All]
+```
+
+## The dimension of a causal set
+
+A sprinkling places random points in a box of Minkowski spacetime and joins causally related points. The dimensions read from graph distances differ from the spacetime dimension, because the undirected graph of causal links loses the time order that fixes the dimension of a causal set:
+
+```wl
+Grid[Prepend[Table[With[{s = zeroStep[<|"Type" -> "Sprinkling", "SpatialDim" -> k, "Density" -> 250, "Seed" -> 1|>]}, {k + 1, s["Invariants", "BallDimension", "Mean"], s["Invariants", "RiemannianBallDimension", "Mean"], s["Invariants", "SphereDimension", "Mean"]}], {k, {1, 2, 3}}], {"spacetime dimension", "ball (counting)", "ball (Riemannian)", "sphere"}], Frame -> All]
+```
+
+## Shortest paths and the continuum
+
+Two points of a continuum have one shortest path, and two vertices of a lattice have exponentially many. The fraction of vertex pairs joined by one shortest path rises if evolution makes space more like a continuum:
+
+```wl
+ListLinePlot[{perStep[grTorus, "Invariants", "GeodeticFraction", "Mean"], perStep[grHoles, "Invariants", "GeodeticFraction", "Mean"]}, AxesLabel -> {"step", "geodetic fraction"}, PlotLegends -> {"torus", "Brill-Lindquist"}, ImageSize -> 400]
+```
+
+![Two points of a continuum have one shortest path, and two vertices of a lattice have exponentially many.](../images/ScienceWithStepStatistics/ScienceWithStepStatistics-37.png)
+
+## Which rules grow a space of finite dimension?
+
+The Infrageometry paclet uses three Wolfram models as substrates. Each runs for 300 steps of one random match per step, which follows a single history, with every two vertices of a hyperedge joined. A dimension that levels off marks a space of finite dimension:
+
+```wl
+survey = <|"wm6655" -> {{{1, 2}, {1, 3}} -> {{1, 2}, {1, 4}, {2, 4}, {3, 4}}, {{1, 1}, {1, 1}}}, "wm8619" -> {{{1, 2, 2}, {1, 3, 4}} -> {{4, 5, 5}, {5, 3, 2}, {1, 2, 5}}, {{1, 1, 1}, {1, 1, 1}}}, "wm1811" -> {{{1, 1, 2}, {1, 3, 4}} -> {{4, 4, 3}, {2, 5, 3}, {2, 5, 3}}, {{1, 1, 1}, {1, 1, 1}}}|>;
+history1[{rule_, init_}] := HGEvolve[rule, init, 300, "StepStatistics", "UniformRandom" -> True, "MatchesPerStep" -> 1, "RandomSeed" -> 1, "StatisticsGraph" -> "AllPairs", "StepStatisticsMeasures" -> {"VolumeGrowth"}];
+ListLinePlot[KeyValueMap[Callout[perStep[history1[#2], "Invariants", "BallDimension", "Mean"], #1] &, survey], AxesLabel -> {"step", "ball dimension"}, ImageSize -> 500]
+```
+
+![The Infrageometry paclet uses three Wolfram models as substrates.](../images/ScienceWithStepStatistics/ScienceWithStepStatistics-38.png)
+
+## Particle-like defects
+
+A topological charge measures how far the neighbourhood of a vertex departs from a flat disc. A large charge that persists over many steps is a candidate for a particle-like structure:
+
+```wl
+ListLinePlot[{perStep[grTorus, "Invariants", "TopologicalChargeMax", "Mean"], perStep[grHoles, "Invariants", "TopologicalChargeMax", "Mean"]}, AxesLabel -> {"step", "largest charge"}, PlotLegends -> {"torus", "Brill-Lindquist"}, ImageSize -> 400]
+```
+
+![A topological charge measures how far the neighbourhood of a vertex departs from a flat disc.](../images/ScienceWithStepStatistics/ScienceWithStepStatistics-39.png)
+
+## The geometry of branchial space
+
+The branchial graph of a step joins states with a common ancestor. The plots show the dimension of its largest component and that component's Ollivier-Ricci curvature with no idleness:
+
+```wl
+qm = HGEvolve[{{1, 2}, {1, 3}} -> {{1, 2}, {1, 4}, {2, 4}, {3, 4}}, {{1, 2}, {1, 3}}, 5, "StepStatistics", "StepStatisticsBranchial" -> "Graph", "StepStatisticsMeasures" -> All];
+GraphicsRow[{ListLinePlot[Cases[perStep[qm, "BranchialDimension"], {_, _?NumericQ}], PlotMarkers -> Automatic, AxesLabel -> {"step", "branchial dimension"}], ListLinePlot[Cases[perStep[qm, "BranchialNonLazyOllivierRicciCurvature"], {_, _?NumericQ}], PlotMarkers -> Automatic, AxesLabel -> {"step", "branchial curvature"}, GridLines -> {None, {0}}]}, ImageSize -> 600]
+```
+
+![The branchial graph of a step joins states with a common ancestor.](../images/ScienceWithStepStatistics/ScienceWithStepStatistics-40.png)
+
+## Two graph conventions for hyperedges
+
+With `"StatisticsGraph" -> "Consecutive"`, the default, a hyperedge {a, b, c} gives the graph edges a-b and b-c. With `"StatisticsGraph" -> "AllPairs"` it also gives a-c, as the Infrageometry paclet does:
+
+```wl
+ternary = {{1, 2, 3}} -> {{1, 2, 4}, {2, 4, 3}};
+Table[{conv, Last[HGEvolve[ternary, {{1, 1, 1}}, 8, "StepStatistics", "StatisticsGraph" -> conv, "StepStatisticsMeasures" -> All]]["Invariants", "BallDimension", "Mean"]}, {conv, {"Consecutive", "AllPairs"}}]
+```
