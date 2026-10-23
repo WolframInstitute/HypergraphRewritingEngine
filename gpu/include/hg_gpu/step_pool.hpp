@@ -28,11 +28,16 @@ using StepPoolTotals = std::array<hgcommon::SpDistTotals, hgcommon::SG_DISTS>;
 
 // The pool of every step below `steps`: entries[s] sorted by (slot, key) with equal keys merged,
 // and totals[s]. False, with nothing written, when no device is usable or the pool does not fit
-// in a quarter of the free device memory.
+// in a quarter of the free device memory. The device arrays come from one buffer kept for the
+// process, so calls are serial (the GPU worker's reply thread is the one caller).
 bool step_pool_device(const std::vector<uint64_t>& record_pool,
                       const std::vector<StepPoolPoint>& points, uint32_t steps,
                       std::vector<std::vector<hgcommon::SpEntry>>& entries,
                       std::vector<StepPoolTotals>& totals);
+
+// Frees step_pool_device's buffer. Called before a device reset, which would leave the buffer's
+// address invalid (PersistentEvolver::release_after_failure).
+void release_step_pool_scratch();
 
 }  // namespace gpu
 }  // namespace HG_NAMESPACE

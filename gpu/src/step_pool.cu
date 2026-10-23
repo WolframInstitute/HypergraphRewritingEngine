@@ -99,9 +99,31 @@ __global__ void k_gather_u64(const uint64_t* in, const uint32_t* perm, uint64_t 
 
 constexpr uint32_t kThreads = 256;
 
+// The device buffer step_pool_device carves its arrays from, kept for the process and grown to
+// the largest call. release_step_pool_scratch frees it.
+struct PoolScratch {
+    unsigned char* data = nullptr;
+    size_t bytes = 0;
+};
+PoolScratch g_pool_scratch;
+
+unsigned char* pool_scratch(size_t bytes) {
+    if (g_pool_scratch.bytes < bytes) {
+        release_step_pool_scratch();
+        HG_CUDA_CHECK(cudaMalloc(&g_pool_scratch.data, bytes), "step pool scratch alloc");
+        g_pool_scratch.bytes = bytes;
+    }
+    return g_pool_scratch.data;
+}
+
 uint32_t blocks(uint64_t n) { return static_cast<uint32_t>((n + kThreads - 1) / kThreads); }
 
 }  // namespace
+
+void release_step_pool_scratch() {
+    if (g_pool_scratch.data) cudaFree(g_pool_scratch.data);
+    g_pool_scratch = PoolScratch{};
+}
 
 bool step_pool_device(const std::vector<uint64_t>& record_pool,
                       const std::vector<StepPoolPoint>& points, uint32_t steps,
@@ -165,45 +187,58 @@ bool step_pool_device(const std::vector<uint64_t>& record_pool,
                           std::max(sort_bytes, reduce_bytes) + 64;
     if (need > free_bytes / 4) return false;
 
-    std::vector<void*> owned;
-    struct Free {
-        std::vector<void*>& p;
-        ~Free() { for (void* x : p) cudaFree(x); }
-    } free_all{owned};
-    auto alloc = [&](size_t bytes) {
-        void* d = nullptr;
-        HG_CUDA_CHECK(cudaMalloc(&d, std::max<size_t>(bytes, 1)), "cudaMalloc");
-        owned.push_back(d);
-        return d;
+    // Every device array is a 256-byte aligned range of one buffer kept across calls
+    // (pool_scratch). The inputs lead it, and the host packs them in the same layout, so they go
+    // over in one copy.
+    size_t at = 0;
+    auto carve = [&at](size_t bytes) {
+        const size_t o = at;
+        at += (std::max<size_t>(bytes, 1) + 255) & ~size_t{255};
+        return o;
     };
-    auto* d_pool = static_cast<uint64_t*>(alloc(8 * host_pool.size()));
-    auto* d_points = static_cast<StepPoolPoint*>(alloc(sizeof(StepPoolPoint) * points.size()));
-    auto* d_offset = static_cast<uint64_t*>(alloc(8 * offset.size()));
-    auto* d_totals = static_cast<hgcommon::SpDistTotals*>(
-        alloc(sizeof(hgcommon::SpDistTotals) * steps * hgcommon::SG_DISTS));
-    auto* d_step_slot = static_cast<uint64_t*>(alloc(8 * n));
-    auto* d_key = static_cast<uint64_t*>(alloc(8 * n));
-    auto* d_weight = static_cast<uint64_t*>(alloc(8 * n));
-    auto* d_sorted_a = static_cast<uint64_t*>(alloc(8 * n));
-    auto* d_sorted_b = static_cast<uint64_t*>(alloc(8 * n));
-    auto* d_iota = static_cast<uint32_t*>(alloc(4 * n));
-    auto* d_perm1 = static_cast<uint32_t*>(alloc(4 * n));
-    auto* d_perm2 = static_cast<uint32_t*>(alloc(4 * n));
-    auto* d_keys = static_cast<PoolKey*>(alloc(sizeof(PoolKey) * n));
-    auto* d_unique = static_cast<PoolKey*>(alloc(sizeof(PoolKey) * n));
-    auto* d_weight_sorted = static_cast<uint64_t*>(alloc(8 * n));
-    auto* d_merged = static_cast<uint64_t*>(alloc(8 * n));
-    auto* d_runs = static_cast<int*>(alloc(sizeof(int)));
-    void* d_temp = alloc(std::max(sort_bytes, reduce_bytes));
+    const size_t totals_n = static_cast<size_t>(steps) * hgcommon::SG_DISTS;
+    const size_t o_pool = carve(8 * host_pool.size());
+    const size_t o_points = carve(sizeof(StepPoolPoint) * points.size());
+    const size_t o_offset = carve(8 * offset.size());
+    const size_t o_totals = carve(sizeof(hgcommon::SpDistTotals) * totals_n);
+    const size_t o_iota = carve(4 * n);
+    const size_t inputs = at;
+    const size_t o_step_slot = carve(8 * n), o_key = carve(8 * n), o_weight = carve(8 * n);
+    const size_t o_sorted_a = carve(8 * n), o_sorted_b = carve(8 * n);
+    const size_t o_perm1 = carve(4 * n), o_perm2 = carve(4 * n);
+    const size_t o_keys = carve(sizeof(PoolKey) * n), o_unique = carve(sizeof(PoolKey) * n);
+    const size_t o_weight_sorted = carve(8 * n), o_merged = carve(8 * n);
+    const size_t o_runs = carve(sizeof(int));
+    const size_t o_temp = carve(std::max(sort_bytes, reduce_bytes));
+    unsigned char* d = pool_scratch(at);
+    auto* d_pool = reinterpret_cast<uint64_t*>(d + o_pool);
+    auto* d_points = reinterpret_cast<StepPoolPoint*>(d + o_points);
+    auto* d_offset = reinterpret_cast<uint64_t*>(d + o_offset);
+    auto* d_totals = reinterpret_cast<hgcommon::SpDistTotals*>(d + o_totals);
+    auto* d_iota = reinterpret_cast<uint32_t*>(d + o_iota);
+    auto* d_step_slot = reinterpret_cast<uint64_t*>(d + o_step_slot);
+    auto* d_key = reinterpret_cast<uint64_t*>(d + o_key);
+    auto* d_weight = reinterpret_cast<uint64_t*>(d + o_weight);
+    auto* d_sorted_a = reinterpret_cast<uint64_t*>(d + o_sorted_a);
+    auto* d_sorted_b = reinterpret_cast<uint64_t*>(d + o_sorted_b);
+    auto* d_perm1 = reinterpret_cast<uint32_t*>(d + o_perm1);
+    auto* d_perm2 = reinterpret_cast<uint32_t*>(d + o_perm2);
+    auto* d_keys = reinterpret_cast<PoolKey*>(d + o_keys);
+    auto* d_unique = reinterpret_cast<PoolKey*>(d + o_unique);
+    auto* d_weight_sorted = reinterpret_cast<uint64_t*>(d + o_weight_sorted);
+    auto* d_merged = reinterpret_cast<uint64_t*>(d + o_merged);
+    auto* d_runs = reinterpret_cast<int*>(d + o_runs);
+    void* d_temp = d + o_temp;
 
-    std::vector<hgcommon::SpDistTotals> init(static_cast<size_t>(steps) * hgcommon::SG_DISTS);
-    std::vector<uint32_t> iota(n);
-    std::iota(iota.begin(), iota.end(), 0u);
-    HG_CUDA_CHECK(cudaMemcpy(d_pool, host_pool.data(), 8 * host_pool.size(), cudaMemcpyHostToDevice), "cudaMemcpy");
-    HG_CUDA_CHECK(cudaMemcpy(d_points, points.data(), sizeof(StepPoolPoint) * points.size(), cudaMemcpyHostToDevice), "cudaMemcpy");
-    HG_CUDA_CHECK(cudaMemcpy(d_offset, offset.data(), 8 * offset.size(), cudaMemcpyHostToDevice), "cudaMemcpy");
-    HG_CUDA_CHECK(cudaMemcpy(d_totals, init.data(), sizeof(hgcommon::SpDistTotals) * init.size(), cudaMemcpyHostToDevice), "cudaMemcpy");
-    HG_CUDA_CHECK(cudaMemcpy(d_iota, iota.data(), 4 * n, cudaMemcpyHostToDevice), "cudaMemcpy");
+    std::vector<unsigned char> packed(inputs, 0);
+    std::memcpy(packed.data() + o_pool, host_pool.data(), 8 * host_pool.size());
+    std::memcpy(packed.data() + o_points, points.data(), sizeof(StepPoolPoint) * points.size());
+    std::memcpy(packed.data() + o_offset, offset.data(), 8 * offset.size());
+    const std::vector<hgcommon::SpDistTotals> init(totals_n);
+    std::memcpy(packed.data() + o_totals, init.data(), sizeof(hgcommon::SpDistTotals) * totals_n);
+    uint32_t* iota = reinterpret_cast<uint32_t*>(packed.data() + o_iota);
+    std::iota(iota, iota + n, 0u);
+    HG_CUDA_CHECK(cudaMemcpy(d, packed.data(), inputs, cudaMemcpyHostToDevice), "cudaMemcpy");
 
     k_step_pool_emit<<<blocks(points.size()), kThreads>>>(d_pool, none_word, d_points, d_offset,
                                                          points.size(), d_step_slot, d_key,

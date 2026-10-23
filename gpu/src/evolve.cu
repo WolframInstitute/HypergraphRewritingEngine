@@ -7,6 +7,7 @@
 #include "hg_gpu/match.hpp"
 #include "hg_gpu/persistent.hpp"
 #include "hg_gpu/rewrite.hpp"
+#include "hg_gpu/step_pool.hpp"
 #include "hg_gpu/cuda_check.hpp"
 #include "hg_gpu/device_probe.hpp"
 #include "hgcommon/quotient_route.hpp"
@@ -1356,6 +1357,7 @@ void PersistentEvolver::release_after_failure() {
     cfg_ = EngineConfig{};
     spare_ = EvolveResult{};
     cudaDeviceSynchronize();
+    release_step_pool_scratch();
     cudaDeviceReset();
     cudaGetLastError();
 }
