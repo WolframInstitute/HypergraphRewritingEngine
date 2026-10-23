@@ -30,6 +30,13 @@ the successor items back, until a termination detector observes a stable empty s
   carries depth on its tasks. There are no phases and no per-step barrier: the observable
   contract is schedule-independent because states and events are keyed by canonical identity,
   not because production is synchronised.
+- **A state with few peers is matched by many blocks.** When no cap ranks a state's matches
+  (`match_state_rule_splits`), its item is split into parts over equal ranges of its anchor
+  edges (`match_parts_of`): under `MaxStatesPerStep` N, a state of n edges is split into parts
+  of n N / blocks anchors (2 on a 162-edge torus at N = 10, 44 on a 112-edge grid at N = 400),
+  and an uncapped state into parts of 32 when fewer items wait than the grid has blocks. Each
+  block copies a state of at most `slice_scan_max_edges` edges into shared memory and scans the
+  copy. The parts emit the same matches on any grid.
 - **Plain grid-stride persistent blocks, not cooperative launch.** A cooperative grid exists to
   provide a device-wide barrier, and a barrier is the thing this model removes; cooperative
   launch also caps the grid at simultaneous residency for no gain here.

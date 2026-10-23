@@ -108,6 +108,30 @@ __device__ inline bool explore_admits(const DeviceState& ds, StateId canonical) 
                                       ds.exploration_probability);
 }
 
+// How many match items state `sid` is split into per rule (match_state_rule's parts). A thread's
+// join runs divergent from its warp's other threads, so a block's time grows with the anchors it
+// holds, while each item adds a queue round trip and a copy of the state's edges. Under
+// MaxStatesPerStep a step holds at most that many states, and the parts spread their anchors
+// over the grid's blocks: count x MaxStatesPerStep / blocks anchors per part, at least one
+// (torus9, 162 edges, 10 states: 2; grid8, 112 edges, 400 states: 44). Without it, a state is
+// split into parts of kMatchBlockThreads anchors when fewer match items wait (`queued`) than the
+// grid has blocks, and is one item otherwise. The parts emit the same matches whatever their
+// number.
+__device__ inline uint32_t match_parts_of(const DeviceState& ds, StateId sid, uint32_t queued) {
+    if (!match_state_rule_splits(ds) || sid >= ds.max_states) return 1u;
+    const uint32_t n = ds.state_edge_slices[sid].count;
+    uint64_t anchors;
+    if (ds.max_states_per_step != 0u) {
+        anchors = (uint64_t{n} * ds.max_states_per_step + gridDim.x - 1u) / gridDim.x;
+    } else {
+        if (queued >= gridDim.x) return 1u;
+        anchors = kMatchBlockThreads;
+    }
+    if (anchors == 0u) anchors = 1u;
+    const uint64_t p = (n + anchors - 1u) / anchors;
+    return p < 1u ? 1u : (p > 0xFFFFu ? 0xFFFFu : static_cast<uint32_t>(p));
+}
+
 // True when this release brings step d's count to zero. The fence before the subtraction
 // publishes the released work's effects; the fence after the last one makes the selection's reads
 // see every released unit's candidates (verification/gpumc/step_selection_once.cpp).
@@ -1270,10 +1294,10 @@ __global__ void k_persistent_evolve(
     __shared__ uint64_t surv_shared[kLocalSurvivors];
     __shared__ uint32_t expand_base;
     __shared__ uint32_t expand_count;
+    __shared__ uint32_t expand_parts;
     __shared__ uint32_t record_base;
     __shared__ uint32_t record_count;
     __shared__ StateId  record_sid;
-    __shared__ bool     run_rule_inline;
     __shared__ bool     stalled;
     uint32_t idle_spins = 0;
     uint32_t idle_ns    = 64;   // thread 0's backoff state; reset whenever work is found
@@ -1614,51 +1638,55 @@ __global__ void k_persistent_evolve(
                 const ExpandEntry& e = ev.expand.await(expand_base);
                 child_sid  = e.state;
                 child_step = e.depth;
-                step_book(ds, child_step, num_rules);
+                expand_parts = match_parts_of(ds, child_sid, match_q.size_approx());
+                step_book(ds, child_step, num_rules * expand_parts);
             }
         }
         __syncthreads();
         if (expand_count) {
-            for (uint32_t r = 0; r < num_rules; ++r) {
-                if (threadIdx.x == 0) {
+            // The items, a lane each: (rule, part) for item k. The block is one warp.
+            const uint32_t parts = expand_parts;
+            const uint32_t n_items = num_rules * parts;
+            for (uint32_t base = 0; base < n_items; base += blockDim.x) {
+                const uint32_t batch = min(n_items - base, blockDim.x);
+                if (threadIdx.x == 0) term.mark_pushed(kRoleMatch, batch);
+                __syncthreads();
+                bool full = false;
+                if (threadIdx.x < batch) {
+                    const uint32_t k = base + threadIdx.x;
                     MatchWorkItem it;
                     it.state_id = child_sid;
-                    it.rule_id  = r;
+                    it.rule_id  = k / parts;
                     it.step     = child_step;
-                    term.mark_pushed(kRoleMatch);
-                    run_rule_inline = !match_q.try_push(it);
-                    if (run_rule_inline) {
-                        // Full queue. The producers here are the same workers that consume,
-                        // so waiting for room would be waiting on ourselves -- job_system.hpp
-                        // solves it the same way, by running the item on the pusher. It
-                        // terminates because matching only writes to the match pool, never
-                        // back into this ring.
-                        //
-                        // The item never entered the queue, so its completion is booked here
-                        // and the block runs it below; leaving it counted as outstanding
-                        // would stall termination forever.
-                        term.mark_completed(kRoleMatch);
-                    }
+                    it.part     = static_cast<uint16_t>(k % parts);
+                    it.parts    = static_cast<uint16_t>(parts);
+                    // Full queue. The producers here are the same workers that consume, so
+                    // waiting for room would be waiting on ourselves -- job_system.hpp solves it
+                    // the same way, by running the item on the pusher. It terminates because
+                    // matching only writes to the match pool, never back into this ring.
+                    //
+                    // The item never entered the queue, so its completion is booked here and
+                    // the block runs it below; leaving it counted as outstanding would stall
+                    // termination forever.
+                    full = !match_q.try_push(it);
+                    if (full) term.mark_completed(kRoleMatch);
                 }
-                __syncthreads();
-                // Read once, before the barrier below. Thread 0 writes the flag for the next
-                // rule as soon as it passes that barrier; a lane reading it after the barrier
-                // can see the next rule's value and enter the step-selection branch alone.
-                const bool inline_rule = run_rule_inline;
-                const unsigned long long tA =
-                    (threadIdx.x == 0 && inline_rule) ? clock64() : 0;
-                if (inline_rule)
+                for (uint32_t inl = __ballot_sync(0xFFFFFFFFu, full); inl; inl &= inl - 1u) {
+                    const uint32_t k = base + __ffs(inl) - 1u;
+                    const uint32_t r = k / parts;
+                    const unsigned long long tA = (threadIdx.x == 0) ? clock64() : 0;
                     match_state_rule(ds, rules, child_sid, r, child_step, match_out, &succ_ctx,
-                                     &succ_scratch);
-                __syncthreads();
-                if (threadIdx.x == 0 && inline_rule) acc_match += clock64() - tA;
-                if (inline_rule && ds.max_states_per_step != 0u) {
-                    __shared__ uint32_t s_inline_sel;
-                    if (threadIdx.x == 0) s_inline_sel = step_release(ds, child_step, 1u);
+                                     &succ_scratch, k - r * parts, parts);
                     __syncthreads();
-                    if (s_inline_sel)
-                        run_step_selections(ds, child_step, cand, found, step_sel, rules,
-                                            &succ_ctx);
+                    if (threadIdx.x == 0) acc_match += clock64() - tA;
+                    if (ds.max_states_per_step != 0u) {
+                        __shared__ uint32_t s_inline_sel;
+                        if (threadIdx.x == 0) s_inline_sel = step_release(ds, child_step, 1u);
+                        __syncthreads();
+                        if (s_inline_sel)
+                            run_step_selections(ds, child_step, cand, found, step_sel, rules,
+                                                &succ_ctx);
+                    }
                 }
             }
             if (ds.max_states_per_step != 0u) {
@@ -1684,7 +1712,7 @@ __global__ void k_persistent_evolve(
         if (have) {
             const unsigned long long tA = (threadIdx.x == 0) ? clock64() : 0;
             match_state_rule(ds, rules, mitem.state_id, mitem.rule_id, mitem.step, match_out,
-                             &succ_ctx, &succ_scratch);
+                             &succ_ctx, &succ_scratch, mitem.part, mitem.parts);
             __syncthreads();
             if (ds.max_states_per_step != 0u) {
                 __shared__ uint32_t s_item_sel;
