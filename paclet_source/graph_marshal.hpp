@@ -641,6 +641,7 @@ hgcommon::RecordSet record_set_for(const Job& job, const GraphPropertyNeeds& g) 
     r.multiplicities = job.include_step_statistics;
     r.state_invariants = job.include_step_statistics;
     r.statistics_graph = job.statistics_graph;
+    r.statistics_measures = job.statistics_measures & hgcommon::SG_MEASURES_ALL;
     r.relation_lists = job.include_causal_edges || job.include_branchial_edges || g.causal ||
                        g.branchial;
     r.event_lists = job.include_events || job.include_events_minimal || g.events;

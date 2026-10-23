@@ -114,7 +114,7 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 | `"LocalDimensionMax"`, `"LocalDimensionStandardDeviation"` | the maximum and the population standard deviation of d_v over the largest component |
 | `"OllivierMoranI"` | Moran's I of the vertex curvature k_v (the mean Ollivier curvature of v's edges) over the graph's edges; undefined when k_v is the same at every vertex |
 | `"OllivierDegreeCorrelation"` | the correlation of k_v with the vertex degree; undefined when either is the same at every vertex |
-| `"BallDimension"`, `"BallScalarCurvature"` | the dimension and scalar curvature fitted to the growth of the ball sizes about each vertex of the largest component, averaged over the vertices with a fit |
+| `"BallDimension"`, `"BallScalarCurvature"` (with `"StepStatisticsMeasures"`, as the entries below) | the dimension and scalar curvature fitted to the growth of the ball sizes about each vertex of the largest component, averaged over the vertices with a fit |
 | `"RiemannianBallDimension"`, `"RiemannianBallScalarCurvature"` | the same fit to the growth of the Riemannian measure of the balls: the vertices of a ball whose neighbours all lie in the ball |
 | `"SphereDimension"`, `"SphereScalarCurvature"` | the same fit to the growth of the spheres, the vertices at each distance |
 | `"GeodeticFraction"` | the fraction of the ordered pairs of vertices joined by a path that are joined by exactly one shortest path. Undefined for a state with no edge |
@@ -157,6 +157,7 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 | `"IncludeCanonicalHashes"` | `False` | whether each state record has a `"CanonicalHash"` |
 | `"IncludeVertexCurvature"` | `False` | whether each state record has a `"VertexCurvature"` |
 | `"StepStatisticsWeighting"` | `"States"` | how `"StepStatistics"` counts a class: `"States"` (once per state in the class) or `"Classes"` (once) |
+| `"StepStatisticsMeasures"` | `Automatic` | the families of geometry entries `"StepStatistics"` adds: `Automatic` (none), `All`, or a list of `"VolumeGrowth"`, `"Geodesics"`, `"EdgeCurvature"`, `"Combinatorial"`, `"Particles"`, `"DimensionGradient"` and `"Branchial"` (which needs `"StepStatisticsBranchial"` `"Graph"`) |
 | `"StatisticsGraph"` | `"Consecutive"` | the graph of a state that the geometry entries of `"StepStatistics"` and `"VertexCurvature"` read: `"Consecutive"` joins the consecutive vertices of each hyperedge, `"AllPairs"` joins every two vertices of a hyperedge |
 | `"StepStatisticsBranchial"` | `None` | the per-step branchial metrics `"StepStatistics"` adds: `None`, `"Graph"`, `"Overlap"`, a list of them, or `All` |
 | `"StepStatisticsMatrices"` | `None` | the state x state matrices `"StepStatistics"` adds under `"StateMatrices"`: `None`, a matrix name, a list of them, or `All` |

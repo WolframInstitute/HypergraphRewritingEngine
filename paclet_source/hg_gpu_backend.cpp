@@ -1190,7 +1190,8 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
                                hg::stats::step_statistics_on_host(
                                    reply_jobs(), std::move(inputs), job.step_statistics_by_class,
                                    which, device_rows, 2048, job.step_statistics_matrix_limit,
-                                   &over_limit)});
+                                   &over_limit,
+                                   hgcommon::SG_MEASURES_BASE | job.statistics_measures)});
         for (const auto& [step, states] : over_limit)
             job.job_warnings.push_back(
                 {"StepStatistics", 1,
