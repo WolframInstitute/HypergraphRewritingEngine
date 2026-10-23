@@ -276,7 +276,7 @@ In a notebook, `ListAnimate[embedding /@ SortBy[Values[history], #Step &]]` show
 
 ## Two readings of dimension
 
-The Infrageometry program reads the dimension of a graph from the growth of its balls. The counting measure counts every vertex of a ball and reads the dimension from below. The Riemannian measure counts only the vertices whose neighbours all lie in the ball and reads the dimension from above. `"StepStatisticsMeasures" -> All` adds both readings and the other measures of this tutorial's remaining sections. The helper `zeroStep` gives the statistics of a generated state without any evolution:
+The Infrageometry program reads the dimension of a graph from the growth of its balls. The counting measure counts every vertex of a ball. The Riemannian measure counts only the vertices whose neighbours all lie in the ball. On square grids of width 8 to 32 the counting reading rises from 1.29 to 1.63, and the Riemannian reading falls from 2.15 to 1.89, crossing 2 between widths 16 and 24. `"StepStatisticsMeasures" -> All` adds both readings and the other measures of this tutorial's remaining sections. The helper `zeroStep` gives the statistics of a generated state without any evolution:
 
 ```wl
 zeroStep[spec_] := First[HGEvolve[ruleA, spec, 0, "StepStatistics", "StepStatisticsMeasures" -> All]];
@@ -288,13 +288,13 @@ ListLinePlot[{Table[{p[[1]], p[[2]]["Invariants", "BallDimension", "Mean"]}, {p,
 
 ## Curvature of a flat surface under refinement
 
-A torus is flat, so its scalar curvature from ball growth should approach 0 as the resolution increases:
+A torus is flat. Its scalar curvature from ball growth stays between -0.04 and -0.10 for resolutions 6 to 18 and does not approach 0 over this range:
 
 ```wl
 ListLinePlot[Table[{k, zeroStep[<|"Type" -> "Torus", "Resolution" -> k, "Seed" -> 1|>]["Invariants", "BallScalarCurvature", "Mean"]}, {k, {6, 9, 12, 15, 18}}], PlotMarkers -> Automatic, AxesLabel -> {"resolution", "scalar curvature"}, GridLines -> {None, {0}}, ImageSize -> 400]
 ```
 
-![A torus is flat, so its scalar curvature from ball growth should approach 0 as the resolution increases](../images/ScienceWithStepStatistics/ScienceWithStepStatistics-32.png)
+![A torus is flat.](../images/ScienceWithStepStatistics/ScienceWithStepStatistics-32.png)
 
 ## Curvature readings near two black holes
 
@@ -371,7 +371,7 @@ The branchial graph of a step joins states with a common ancestor. The plots sho
 
 ```wl
 qm = HGEvolve[{{1, 2}, {1, 3}} -> {{1, 2}, {1, 4}, {2, 4}, {3, 4}}, {{1, 2}, {1, 3}}, 5, "StepStatistics", "StepStatisticsBranchial" -> "Graph", "StepStatisticsMeasures" -> All];
-GraphicsRow[{ListLinePlot[Cases[perStep[qm, "BranchialDimension", "Mean"], {_, _?NumericQ}], PlotMarkers -> Automatic, AxesLabel -> {"step", "branchial dimension"}], ListLinePlot[Cases[perStep[qm, "BranchialNonLazyOllivierRicciCurvature", "Mean"], {_, _?NumericQ}], PlotMarkers -> Automatic, AxesLabel -> {"step", "branchial curvature"}, GridLines -> {None, {0}}]}, ImageSize -> 600]
+GraphicsRow[{ListLinePlot[Cases[perStep[qm, "BranchialDimension"], {_, _?NumericQ}], PlotMarkers -> Automatic, AxesLabel -> {"step", "branchial dimension"}], ListLinePlot[Cases[perStep[qm, "BranchialNonLazyOllivierRicciCurvature"], {_, _?NumericQ}], PlotMarkers -> Automatic, AxesLabel -> {"step", "branchial curvature"}, GridLines -> {None, {0}}]}, ImageSize -> 600]
 ```
 
 ![The branchial graph of a step joins states with a common ancestor.](../images/ScienceWithStepStatistics/ScienceWithStepStatistics-40.png)
