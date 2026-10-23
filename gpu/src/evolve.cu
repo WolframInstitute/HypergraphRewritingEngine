@@ -491,9 +491,10 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
         if (explore) d_explore_depth = st.explore_depth;
 
         auto t_recon_start = std::chrono::steady_clock::now();
-        // Branchial pairs are counted from the points after the run (qe_count_branchial).
+        // Branchial pairs are counted from the points after the run (qe_count_branchial), for a
+        // caller that records the branchial relation (RecordSet::branchial).
         const bool qe_branchial =
-            qc_route && (qe_multiplicity || (qe_replay && in.record.branchial));
+            qc_route && in.record.branchial && (qe_multiplicity || qe_replay);
         if (qe_branchial) qe_count_branchial(engine.device(), qe_view, qe_multiplicity);
         // Every scalar the result needs, in one batch: the engine's counter block, the error
         // counters, and on the reconstruction route the QeState counters, its multiplicity
@@ -541,7 +542,8 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
                    : qc_counts.canon_events);
         out.reconstructed_causal_pairs = qc_counts.causal_pairs;
         out.reconstructed_causal_edges = qc_counts.causal_edges;
-        out.reconstructed_branchial = qc_counts.qm_branchial;
+        // qm_counts[1] holds the count only when this run cleared and counted it.
+        out.reconstructed_branchial = qe_branchial ? qc_counts.qm_branchial : 0u;
         if (qc_route && in.record.multiplicities)
             qe_state_->class_multiplicities_host(
                 out.class_multiplicities, out.class_rule_matches,
