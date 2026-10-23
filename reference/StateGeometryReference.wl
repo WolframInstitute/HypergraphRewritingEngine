@@ -34,6 +34,7 @@ sgrEdgeInvariants::usage = "sgrEdgeInvariants[edges] gives the per-edge values \
 sgrCombinatorial::usage = "sgrCombinatorial[edges] gives the EulerCharacteristic, RimFraction and CombinatorialCurvatureTotal of a state, and \"Curvatures\", 1 - k/6 for each vertex whose link is a k-cycle, ascending by vertex.";
 sgrParticle::usage = "sgrParticle[edges] gives the per-vertex clustering coefficients, Euler excesses and topological charges of a state, ascending by vertex, as exact numbers.";
 sgrTopology::usage = "sgrTopology[edges] gives CliqueBetti0, CliqueBetti1, CliqueBetti2 (the Betti numbers over GF(2) of the clique complex of the state's graph) and RipsBetti1 (of the clique complex of its square).";
+sgrMetricTensorGap::usage = "sgrMetricTensorGap[edges] gives the mean, over the centre vertices p of the largest component of radius R, of the gap between the values of the metric tensor on the sphere of radius Floor[R/2] about p and max(cos Theta, 0), or Missing[] when R < 2.";
 sgrStateMatrices::usage = "sgrStateMatrices[vertexSets, edgeLists] gives the six state x state matrices of a step's states in the given order: the Jaccard index, the cosine similarity and the mutual information of every two states, over their vertex sets and over their edge sets (each edge its vertex list).";
 
 Begin["`Private`"];
@@ -154,7 +155,7 @@ geodesicValues[edges_List, rule_String] := geodesicValues[edges, rule] = Module[
 
 sgrLogGeodesicCount[edges_List] := N[geodesicValues[edges]["LogGeodesicCount"]];
 geometryNames = Join[{"CliqueBetti0", "CliqueBetti1", "CliqueBetti2", "RipsBetti1",
- "DimensionGradientCurvature", "ClusteringCoefficient", "LocalEulerExcess", "TopologicalCharge",
+  "MetricTensorGap", "DimensionGradientCurvature", "ClusteringCoefficient", "LocalEulerExcess", "TopologicalCharge",
   "TopologicalChargeMax", "EulerCharacteristic", "RimFraction", "CombinatorialCurvatureTotal",
   "NonLazyOllivierRicciCurvature", "GeodeticFraction", "SegmentEntropy", "GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
   "WolframRicciCurvatureScalar", "OllivierRicciCurvature", "DegreeEntropy", "LocalEntropy",
@@ -327,6 +328,42 @@ sgrTopology[edges_List] := Module[{g = sgrStateGraph[edges], b, rips},
   <|"CliqueBetti0" -> b[[1]], "CliqueBetti1" -> b[[2]], "CliqueBetti2" -> b[[3]],
     "RipsBetti1" -> rips[[2]]|>];
 
+(* The metric tensor gap (docs/SPEC.md, "StepStatistics metric tensor"). The tensor follows
+   Infrageometry's InfraMetricTensor with "SelectCoordinate" -> Min
+   (Infrageometry@ffa5fe4:Kernel/RiemannianInfrageometry/InfraMetricTensor.wl:10-27): over the
+   sphere S of radius r about p, T[v, w] is the least d(p, u) over the u of the interval
+   I(p, w) nearest v, over r. The gap integrates |F_r(t) - (1 - ArcCos[t]/Pi)| over [0, 1]
+   numerically, split at the steps of F_r and at the point where the two cross. *)
+metricTensorValues[g_Graph, p_, r_Integer] := Module[{vs = VertexList[g], dm, dp, S},
+  dm = GraphDistanceMatrix[g];
+  dp = dm[[VertexIndex[g, p]]];
+  S = Flatten[Position[dp, r]];
+  Catenate[Table[Module[{iw = Select[Range[Length[vs]], dp[[#]] + dm[[#, w]] == r &], near},
+      near = MinimalBy[iw, dm[[v, #]] &];
+      Min[dp[[near]]]/r], {v, S}, {w, S}]]];
+
+metricTensorGap[values_List] := Module[{r, cdf, F, cuts},
+  F[t_] := 1 - ArcCos[t]/Pi;
+  cdf[t_] := Count[values, x_ /; x <= t]/Length[values];
+  r = Denominator[Union[values, {1}]];
+  cuts = Union[Range[0, 1, 1/LCM @@ r]];
+  Total[Function[{a, b}, Module[{c = cdf[a], ts},
+      ts = -Cos[Pi c];
+      If[a < ts < b,
+        NIntegrate[Abs[c - F[t]], {t, a, ts, b}, WorkingPrecision -> 30, PrecisionGoal -> 20],
+        NIntegrate[Abs[c - F[t]], {t, a, b}, WorkingPrecision -> 30, PrecisionGoal -> 20]]]] @@@
+    Partition[cuts, 2, 1]]];
+
+largestComponentGraph[edges_List] := Subgraph[sgrStateGraph[edges],
+  Cases[sgrLargestIncidenceComponent[edges]["Largest"], {"v", x_} :> x]];
+
+sgrMetricTensorGap[edges_List] := Module[{lc = largestComponentGraph[edges], R, centre},
+  If[MissingQ[lc] || VertexCount[lc] < 2, Return[Missing[]]];
+  R = GraphRadius[lc];
+  If[R < 2, Return[Missing[]]];
+  centre = GraphCenter[lc];
+  N[Mean[metricTensorGap[metricTensorValues[lc, #, Floor[R/2]]] & /@ centre]]];
+
 sgrStateGeometry[edges_List] := Module[
   {g, n, conn, R, vs, dims, d, ricci, dm, index, ollivier, local, mi, fisher, b2, kE, kv, lc,
    moran, corr},
@@ -387,6 +424,7 @@ sgrStateGeometry[edges_List] := Module[
     "NonLazyOllivierRicciCurvature" -> With[{k = nonLazyCurvatures[g]},
       If[k === {}, Missing[], N[Mean[k]]]],
     Sequence @@ Normal[sgrTopology[edges]],
+    "MetricTensorGap" -> sgrMetricTensorGap[edges],
     "GeodeticFraction" -> geodesicValues[edges]["GeodeticFraction"],
     "SegmentEntropy" -> N[geodesicValues[edges]["SegmentEntropy"]],
     Sequence @@ With[{growth = Values[growthOfLargest[edges]]},

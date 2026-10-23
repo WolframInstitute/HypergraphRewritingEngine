@@ -460,6 +460,7 @@ enum : uint32_t {
     SG_PARTICLE = 1u << 17,              // clustering, euler_excess, charge, charge_max: n >= 1
     SG_DIMENSION_GRADIENT = 1u << 18,    // dimension_gradient: |G'| >= 2
     SG_TOPOLOGY = 1u << 19,              // clique_betti, rips_betti1: n >= 1
+    SG_METRIC_TENSOR = 1u << 20,         // metric_tensor_gap: R' >= 2
 };
 
 // "StepStatisticsMeasures": the `want` bits of each measure family. SG_MEASURES_BASE is the set
@@ -468,7 +469,7 @@ constexpr uint32_t SG_MEASURES_BASE = (1u << 11) - 1;
 constexpr uint32_t SG_COMBINATORIAL = SG_EULER | SG_RIM | SG_CYCLE_CURVATURE;
 constexpr uint32_t SG_MEASURES_ALL = SG_MEASURES_BASE | SG_VOLUME_GROWTH | SG_GEODESIC |
                                      SG_NONLAZY_OLLIVIER | SG_COMBINATORIAL | SG_PARTICLE |
-                                     SG_DIMENSION_GRADIENT | SG_TOPOLOGY;
+                                     SG_DIMENSION_GRADIENT | SG_TOPOLOGY | SG_METRIC_TENSOR;
 
 // The per-vertex distributions of a state, in this order.
 enum : uint32_t {
@@ -611,9 +612,10 @@ struct SgGeometry {
     double charge_max = 0.0;
     double dimension_gradient = 0.0;     // the mean over G' of L_v, the Laplacian of d_v
     // b0, b1, b2 of the clique complex of G and b1 of its Vietoris-Rips complex at r = 1, over
-    // GF(2) (state_topology_core.hpp).
+    // GF(2); the metric tensor gap (state_topology_core.hpp).
     double clique_betti[3] = {0.0, 0.0, 0.0};
     double rips_betti1 = 0.0;
+    double metric_tensor_gap = 0.0;
 };
 
 // Doubles of scratch sg_growth_fit takes for k quotients.
@@ -661,7 +663,7 @@ HG_HD inline size_t sg_metric_bytes(size_t n, size_t max_degree, size_t edges, u
     if (want & SG_PARTICLE) bytes += n1 * 8 + 8;
     // The counting scratch of state_topology_core.hpp's st_families_of: four arrays of n + 1
     // words.
-    if (want & (SG_TOPOLOGY)) bytes += 4 * (n1 * 4 + 8);
+    if (want & (SG_TOPOLOGY | SG_METRIC_TENSOR)) bytes += 4 * (n1 * 4 + 8);
     return bytes;
 }
 
@@ -1273,7 +1275,7 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
     const uint32_t* sub = connected ? nullptr : largest;
     const uint32_t ns = connected ? n : (largest ? largest_n : 0u);
     auto vat = [&](uint32_t i) { return sub ? sub[i] : i; };
-    if ((want & (SG_TOPOLOGY)) &&
+    if ((want & (SG_TOPOLOGY | SG_METRIC_TENSOR)) &&
         !st_families_of(g, arena, out, want, par, ecc, sub, ns))
         return false;
     if (want_growth && par.leader()) {

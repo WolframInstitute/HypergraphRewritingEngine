@@ -1,9 +1,9 @@
 #pragma once
-// TOPOLOGY OF A STATE'S GRAPH G, one body for the host and the device.
+// TOPOLOGY AND METRIC TENSOR OF A STATE'S GRAPH G, one body for the host and the device.
 // state_geometry_core.hpp includes this file after SgGeometry, and sg_geometry_of calls
 // st_families_of after its eccentricity pass; this file reads SgGraph, SgArena, sg_bfs,
-// sg_bfs_clear, sg_sort, sg_adjacent and sg_short_distance from there. The definition is in docs/SPEC.md under "StepStatistics
-// topology";
+// sg_bfs_clear, sg_sort, sg_adjacent and sg_short_distance from there. The definitions are in docs/SPEC.md under "StepStatistics
+// topology" and "StepStatistics metric tensor";
 // reference/StateGeometryReference.wl computes the same values independently.
 //
 // BETTI NUMBERS over GF(2). For a graph H with c = |E| - |V| + b0 independent cycles, the
@@ -246,6 +246,152 @@ HG_HD inline bool st_square_graph(const SgGraph& g, SgArena& arena, SgGraph& h) 
     return true;
 }
 
+// THE METRIC TENSOR GAP of p at scale r (docs/SPEC.md). `counts` receives, for k = 0..r, the
+// number of ordered pairs (v, w) of S_r(p) with T[v, w] = k / r; the gap is
+// the integral over [0, 1] of |F_r(t) - (1 - arccos(t) / pi)|, F_r the distribution function of
+// the values. F_r is constant on each [k/r, (k+1)/r); with G(t) = t - (t arccos t - sqrt(1 - t^2)
+// + 1) / pi the integral of 1 - arccos(t) / pi from 0, each piece is exact up to rounding.
+HG_HD inline double st_gap_of(const uint64_t* counts, uint32_t r) {
+    uint64_t total = 0;
+    for (uint32_t k = 0; k <= r; ++k) total += counts[k];
+    const double inv_pi = 1.0 / kDmPi;
+    auto F = [&](double t) { return 1.0 - dm_mul(dm_acos01(t), inv_pi); };
+    auto G = [&](double t) {
+        const double s = ::sqrt(1.0 - dm_mul(t, t));
+        return t - dm_mul(dm_mul(t, dm_acos01(t)) - s + 1.0, inv_pi);
+    };
+    double gap = 0.0;
+    uint64_t cum = 0;
+    for (uint32_t k = 0; k < r; ++k) {
+        cum += counts[k];
+        const double c = static_cast<double>(cum) / static_cast<double>(total);
+        const double a = static_cast<double>(k) / r, b = static_cast<double>(k + 1) / r;
+        const double ga = G(a), gb = G(b);
+        double piece = 0.0;
+        if (c <= F(a)) {
+            piece = (gb - ga) - dm_mul(c, b - a);
+        } else if (c >= F(b)) {
+            piece = dm_mul(c, b - a) - (gb - ga);
+        } else {
+            // F(t*) = c at t* = -cos(pi c); arccos t* = pi (1 - c), sqrt(1 - t*^2) = sin(pi c).
+            double sn = 0.0, cs = 0.0;
+            dm_sincos_pi(c, sn, cs);
+            const double ts = -cs;
+            const double gs = ts - dm_mul(dm_mul(dm_mul(ts, kDmPi), 1.0 - c) - sn + 1.0, inv_pi);
+            piece = dm_mul(c, ts - a) - (gs - ga) + (gb - gs) - dm_mul(c, b - ts);
+        }
+        gap += piece;
+    }
+    return gap;
+}
+
+// The mean over the centre vertices p of G' (eccentricity R' in G') of the metric tensor gap of
+// p at r = floor(R' / 2); `ecc` holds each vertex's eccentricity in its component and G' is the
+// sub_n vertices of `sub`, or every vertex when `sub` is null. Every lane calls it; the leader's
+// `gap` is the result, `defined` 0 when R' < 2. False when the arena is short.
+template <class Par>
+HG_HD bool st_metric_tensor_gap(const SgGraph& g, SgArena& arena, const uint32_t* ecc,
+                                const uint32_t* sub, uint32_t sub_n, Par par, double& gap,
+                                uint32_t& defined) {
+    const uint32_t n = g.n, L = par.width(), me = par.rank();
+    defined = 0;
+    gap = 0.0;
+    uint32_t R = ST_NONE;
+    for (uint32_t i = 0; i < sub_n; ++i)
+        if (ecc[sub ? sub[i] : i] < R) R = ecc[sub ? sub[i] : i];
+    if (sub_n < 2 || R < 2) return true;
+    const uint32_t r = R / 2;
+    const size_t n1 = size_t{n} + 1;
+    int32_t* dp = arena.take<int32_t>(n1);
+    uint32_t* sphere = arena.take<uint32_t>(n1);
+    uint32_t* queue_all = arena.take<uint32_t>(L * n1);
+    uint32_t* interval_all = arena.take<uint32_t>(L * n1);
+    if (arena.failed) return false;
+    // The largest sphere over the centres sizes the distance rows.
+    uint32_t s_max = 0;
+    if (par.leader()) {
+        for (uint32_t v = 0; v < n; ++v) dp[v] = -1;
+        for (uint32_t i = 0; i < sub_n; ++i) {
+            const uint32_t p = sub ? sub[i] : i;
+            if (ecc[p] != R) continue;
+            uint32_t reached = 0;
+            sg_bfs(g, p, dp, queue_all, nullptr, r, reached);
+            uint32_t s = 0;
+            for (uint32_t k = 0; k < reached; ++k)
+                if (static_cast<uint32_t>(dp[queue_all[k]]) == r) ++s;
+            if (s > s_max) s_max = s;
+            sg_bfs_clear(dp, queue_all, reached);
+        }
+    }
+    s_max = par.bcast(s_max);
+    int32_t* rows = arena.take<int32_t>(static_cast<size_t>(s_max) * n1);
+    uint64_t* counts = arena.take<uint64_t>(static_cast<size_t>(s_max) * (r + 1) + 1);
+    uint64_t* total = arena.take<uint64_t>(size_t{r} + 1);
+    if (arena.failed) return false;
+    double sum = 0.0;
+    uint32_t centres = 0;
+    for (uint32_t i = 0; i < sub_n; ++i) {
+        const uint32_t p = sub ? sub[i] : i;
+        if (ecc[p] != R) continue;
+        uint32_t s = 0;
+        if (par.leader()) {
+            for (uint32_t v = 0; v < n; ++v) dp[v] = -1;
+            uint32_t reached = 0;
+            sg_bfs(g, p, dp, queue_all, nullptr, UINT32_MAX, reached);
+            for (uint32_t v = 0; v < n; ++v)
+                if (dp[v] == static_cast<int32_t>(r)) sphere[s++] = v;
+        }
+        par.sync();
+        s = par.bcast(s);
+        // The distances from each sphere vertex, one row each.
+        for (uint32_t j = me; j < s; j += L) {
+            int32_t* row = rows + static_cast<size_t>(j) * n1;
+            for (uint32_t v = 0; v < n; ++v) row[v] = -1;
+            uint32_t reached = 0;
+            sg_bfs(g, sphere[j], row, queue_all + me * n1, nullptr, UINT32_MAX, reached);
+        }
+        par.sync();
+        // Column w: I(p, w) = {u : d(p, u) + d(u, w) = r}; for each v the least d(p, u) over the
+        // u of I(p, w) nearest v.
+        for (uint32_t wi = me; wi < s; wi += L) {
+            const int32_t* dw = rows + static_cast<size_t>(wi) * n1;
+            uint32_t* interval = interval_all + me * n1;
+            uint32_t in = 0;
+            for (uint32_t u = 0; u < n; ++u)
+                if (dp[u] >= 0 && dp[u] + dw[u] == static_cast<int32_t>(r)) interval[in++] = u;
+            uint64_t* cnt = counts + static_cast<size_t>(wi) * (r + 1);
+            for (uint32_t k = 0; k <= r; ++k) cnt[k] = 0;
+            for (uint32_t vi = 0; vi < s; ++vi) {
+                const int32_t* dv = rows + static_cast<size_t>(vi) * n1;
+                int32_t best = INT32_MAX, foot = INT32_MAX;
+                for (uint32_t k = 0; k < in; ++k) {
+                    const uint32_t u = interval[k];
+                    if (dv[u] < best || (dv[u] == best && dp[u] < foot)) {
+                        best = dv[u];
+                        foot = dp[u];
+                    }
+                }
+                ++cnt[foot];
+            }
+        }
+        par.sync();
+        if (par.leader()) {
+            for (uint32_t k = 0; k <= r; ++k) total[k] = 0;
+            for (uint32_t wi = 0; wi < s; ++wi)
+                for (uint32_t k = 0; k <= r; ++k)
+                    total[k] += counts[static_cast<size_t>(wi) * (r + 1) + k];
+            sum += st_gap_of(total, r);
+            ++centres;
+        }
+        par.sync();
+    }
+    if (par.leader()) {
+        gap = sum / centres;
+        defined = 1;
+    }
+    return true;
+}
+
 // Bytes of arena an array of n elements of `size` bytes takes at most, alignment included.
 HG_HD inline size_t st_array(size_t n, size_t size) { return n * size + 8; }
 
@@ -319,10 +465,33 @@ HG_HD inline size_t st_families_bytes(const SgGraph& g, uint32_t want, uint32_t 
         bytes += st_array(n1, 4) * 2 + st_array(2 * E2 + 1, 4) +
                  st_betti_bytes(n, E2, E2 - n + b0, T2, 0, false);
     }
+    if (want & SG_METRIC_TENSOR) {
+        uint32_t R = ST_NONE;
+        for (uint32_t i = 0; i < ns; ++i)
+            if (ecc[sub ? sub[i] : i] < R) R = ecc[sub ? sub[i] : i];
+        if (ns >= 2 && R >= 2) {
+            const uint32_t r = R / 2;
+            size_t s_max = 0;
+            for (uint32_t i = 0; i < ns; ++i) {
+                const uint32_t p = sub ? sub[i] : i;
+                if (ecc[p] != R) continue;
+                uint32_t reached = 0;
+                sg_bfs(g, p, dist, queue, nullptr, r, reached);
+                size_t s = 0;
+                for (uint32_t k = 0; k < reached; ++k)
+                    if (static_cast<uint32_t>(dist[queue[k]]) == r) ++s;
+                if (s > s_max) s_max = s;
+                sg_bfs_clear(dist, queue, reached);
+            }
+            bytes += 2 * st_array(n1, 4) + 2 * st_array(lanes * n1, 4) +
+                     st_array(s_max * n1, 4) + st_array(s_max * (r + 1) + 1, 8) +
+                     st_array(size_t{r} + 1, 8);
+        }
+    }
     return bytes;
 }
 
-// The requested families of `want` (SG_TOPOLOGY) into `out`,
+// The requested families of `want` (SG_TOPOLOGY, SG_METRIC_TENSOR) into `out`,
 // written by the leader, from sg_geometry_of's eccentricities and G' (`sub`, `ns`). Every lane
 // calls it and gets the same verdict and arena use. False when the arena is short.
 template <class Par>
@@ -374,6 +543,15 @@ HG_HD bool st_families_of(const SgGraph& g, SgArena& arena, SgGeometry& out, uin
         if (!par.bcast(ok)) {
             arena.failed = true;
             return false;
+        }
+    }
+    if (want & SG_METRIC_TENSOR) {
+        double gap = 0.0;
+        uint32_t defined = 0;
+        if (!st_metric_tensor_gap(g, arena, ecc, sub, ns, par, gap, defined)) return false;
+        if (par.leader() && defined) {
+            out.metric_tensor_gap = gap;
+            out.defined |= SG_METRIC_TENSOR;
         }
     }
     par.sync();

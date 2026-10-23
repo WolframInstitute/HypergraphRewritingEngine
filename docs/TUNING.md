@@ -399,3 +399,7 @@ Expected: the derived size at most equal to 16 at 16 and 32 workers. If 16 is lo
     wolframscript -file tools/dev/gpu_end_to_end.wls C:\Temp\hg_paclet_<md5 of hg_evolve_gpu.exe>
 
 Expected from the counters: CPU/GPU at or above 1 on the counts and quotient workloads (Linux worker, warm job: wpp d8 quotient counts 0.28 s against 0.40 s on the CPU worker, wolfram 5 counts 0.05 s against 0.41 s), below 1 on torus9 and grid8 statistics (device time 0.49 s and 0.38 s against 0.13 s and 0.31 s per CPU job), and the wolfram 6 canonical and wpp 9 quotient counts partial on the GPU (device memory).
+
+## 5. Open speed items
+
+**S1. The metric tensor gap on states with many centre vertices.** `MetricTensorGap` ("StepStatisticsMeasures" `"MetricTensor"`, `st_metric_tensor_gap` in `common/include/hgcommon/state_topology_core.hpp`) is the mean over every centre vertex of the largest component. Each centre p takes one breadth-first search from each vertex of its sphere S_r(p), then O(\|S\|² V) for the intervals. On the 32 x 32 square torus all 1024 vertices are centres with \|S\| = 64, and the family took 403 ms against 9 ms for the base geometry of the same state (host, best of 3, 2026-10-23, scratch probe). On a random ternary state of 1000 hyperedges it took 0.09 ms. Centres in one orbit of the state's automorphism group have equal gaps.

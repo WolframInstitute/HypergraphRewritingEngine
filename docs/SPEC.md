@@ -398,6 +398,7 @@ list adds the families it names:
 | `"Particles"` | `ClusteringCoefficient`, `LocalEulerExcess`, `TopologicalCharge`, `TopologicalChargeMax`, their two distributions | particle measures |
 | `"DimensionGradient"` | `DimensionGradientCurvature` and its distribution | dimension-gradient curvature |
 | `"Topology"` | `CliqueBetti0`, `CliqueBetti1`, `CliqueBetti2`, `RipsBetti1` | topology |
+| `"MetricTensor"` | `MetricTensorGap` | metric tensor |
 | `"Branchial"` | the `Branchial` volume-growth and curvature keys, with `"StepStatisticsBranchial"` `"Graph"` | branchial metrics |
 
 A family that is not requested is not computed: each class's record carries the request
@@ -538,6 +539,14 @@ It takes O(\|E\|) after the local dimensions.
 G and G² have the same components, so b0 of the Vietoris-Rips complex is `CliqueBetti0`. The octahedron gives (1, 0, 1), a cycle of 4 or more vertices (1, 1, 0) and a triangulated torus (1, 2, 1). `RipsBetti1` is 0 on the 6-cycle, whose square is the octahedron, and 1 on the 8-cycle.
 
 The computation is Gaussian elimination over GF(2). A breadth-first spanning forest of the complex's graph leaves c = E - V + b0 edges outside it, and a cycle is fixed by its coefficients on those c edges. Each triangle's boundary, as a c-bit row, is reduced against the rows already kept, each kept row pivoting on its highest bit, so rank ∂2 is the number of rows kept and b1 = c - rank ∂2. The tetrahedra's boundaries are reduced the same way as T-bit rows over the triangles. An elimination stops when its rank reaches the dimension of the space (c, or T - rank ∂2), so it keeps at most min(c, T) and min(T - rank ∂2, Q) rows. The cost is at most O(T min(c, T) c / 64 + Q min(T, Q) T / 64) word operations, and the memory min(c, T) c / 8 + min(T, Q) T / 8 bytes. The Vietoris-Rips complex costs the same on G², which has up to V Δ² / 2 edges for the largest degree Δ.
+
+**`StepStatistics` metric tensor.** The family `"MetricTensor"` adds `MetricTensorGap`. Infrageometry's `InfraMetricTensor[G, p, r]` with `"SelectCoordinate" -> Min` (Infrageometry@ffa5fe4:Kernel/RiemannianInfrageometry/InfraMetricTensor.wl:10-27) is a matrix over S_r(p), the vertices at distance r from p. T[v, w] = d(p, u) / r, with u the vertex of the interval I(p, w) = {u : d(p, u) + d(u, w) = r} nearest v, and the least d(p, u) among the nearest. Its entries lie in {0, 1/r, ..., 1}. Infrageometry's tutorial (Infrageometry@ffa5fe4:docs/Tutorials/MetricTensorTutorial.md:211-247) compares the values over all ordered pairs (v, w) with max(cos Θ, 0) for Θ uniform on [0, π], whose distribution function on [0, 1] is F(t) = 1 - arccos(t) / π. The gap of p at r is the integral over [0, 1] of |F_r(t) - F(t)|, with F_r the distribution function of the |S_r(p)|² entries.
+
+| Entry | Definition | Undefined when |
+|---|---|---|
+| `MetricTensorGap` | the mean of the gap of p at r = ⌊R'/2⌋ over the centre vertices p of G', those of eccentricity R' | R' < 2, R' the radius of G' |
+
+The tutorial reads the first vertex of `GraphCenter`, which depends on the vertex numbering. The mean over every centre vertex is the same for isomorphic states. The tutorial integrates by the midpoint rule on 1000 points. Here F_r is constant on each [k/r, (k+1)/r), and each piece is integrated in closed form with G(t) = t - (t arccos t - sqrt(1 - t²) + 1) / π, the integral of F from 0, split at t* = -cos(π c) where F crosses the constant c. On the 5 x 5 grid the centre is the middle vertex, r = 2, T[v, w] = 1 - d(v, w)/4 on the 8 vertices of S_2, and the gap is 0.0935618363. Each centre takes one breadth-first search from p and one from each vertex of S_r(p), then O(|S|² V): O(C (|S| (V + E) + |S|² V)) for C centre vertices.
 
 **Per-vertex curvature.** With `"IncludeVertexCurvature" -> True` each `"States"` record has
 `VertexCurvature`, an association from each vertex of the record's edges that has a neighbour in

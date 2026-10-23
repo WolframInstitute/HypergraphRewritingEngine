@@ -1,5 +1,5 @@
-// The topology family of hgcommon/state_topology_core.hpp (docs/SPEC.md, "StepStatistics
-// topology") on graphs with known values.
+// The topology and metric tensor families of hgcommon/state_topology_core.hpp (docs/SPEC.md,
+// "StepStatistics topology" and "StepStatistics metric tensor") on graphs with known values.
 // reference/verify_state_statistics.wls checks the same values, through "StepStatistics",
 // against reference/StateGeometryReference.wl.
 
@@ -23,7 +23,7 @@ struct Edges {
 };
 
 constexpr uint32_t kFamilies =
-    hgcommon::SG_TOPOLOGY;
+    hgcommon::SG_TOPOLOGY | hgcommon::SG_METRIC_TENSOR;
 
 // The geometry under `want`, from a 16-byte buffer grown to what each call reports. `calls`
 // receives the number of calls.
@@ -92,6 +92,20 @@ void expect_betti(const SgGeometry& g, double b0, double b1, double b2, double r
 
 }  // namespace
 
+TEST(StateTopology, DetMathTrigonometryWithinOneUlpScale) {
+    double worst = 0.0;
+    for (int i = 0; i <= 4096; ++i) {
+        const double t = i / 4096.0;
+        double s = 0.0, c = 0.0;
+        hgcommon::dm_sincos_pi(t, s, c);
+        worst = std::fmax(worst, std::fabs(hgcommon::dm_acos01(t) - std::acos(t)));
+        worst = std::fmax(worst, std::fabs(s - std::sin(M_PI * t)));
+        worst = std::fmax(worst, std::fabs(c - std::cos(M_PI * t)));
+    }
+    EXPECT_LE(worst, 1e-15);
+    EXPECT_EQ(hgcommon::dm_acos01(1.0), 0.0);
+}
+
 // The clique complex of K3 is a filled triangle, of a cycle of 4 or more vertices a circle, of
 // the octahedron a sphere and of a triangulated torus a torus.
 TEST(StateTopology, BettiNumbersOfKnownComplexes) {
@@ -112,11 +126,39 @@ TEST(StateTopology, BettiNumbersOfKnownComplexes) {
     EXPECT_FALSE(measure({}).defined & hgcommon::SG_TOPOLOGY);
 }
 
+// On the 5 x 5 grid the centre is the middle vertex, R' = 4 and r = 2. On S_2 the tensor is
+// 1 - d(v, w)/4 (Infrageometry@ffa5fe4:Tests/RiemannianInfrageometry/InfraMetricTensorTests.wlt:
+// "InfraMetricTensor-grid-shell"); the gap is checked here against the midpoint rule on 2^21
+// points.
+TEST(StateTopology, MetricTensorGapOfTheGrid) {
+    const SgGeometry g = measure(grid(5, 5));
+    ASSERT_TRUE(g.defined & hgcommon::SG_METRIC_TENSOR);
+    // The 8 vertices at distance 2 from (2, 2), and their pairwise grid distances.
+    const int pts[8][2] = {{0, 2}, {1, 1}, {1, 3}, {2, 0}, {2, 4}, {3, 1}, {3, 3}, {4, 2}};
+    std::vector<double> values;
+    for (auto& a : pts)
+        for (auto& b : pts)
+            values.push_back(1.0 - (std::abs(a[0] - b[0]) + std::abs(a[1] - b[1])) / 4.0);
+    const int N = 1 << 21;
+    double acc = 0.0;
+    for (int i = 0; i < N; ++i) {
+        const double t = (i + 0.5) / N;
+        double F = 0.0;
+        for (double x : values) F += x <= t ? 1.0 : 0.0;
+        acc += std::fabs(F / values.size() - (1.0 - std::acos(t) / M_PI));
+    }
+    EXPECT_NEAR(g.metric_tensor_gap, acc / N, 1e-9);
+    // R' < 2: undefined.
+    EXPECT_FALSE(measure(cycle(3)).defined & hgcommon::SG_METRIC_TENSOR);
+}
+
 // A family not requested is not computed.
 TEST(StateTopology, OnlyRequestedFamilies) {
     const SgGeometry g = measure(octahedron(), hgcommon::SG_MEASURES_BASE);
-    EXPECT_FALSE(g.defined & hgcommon::SG_TOPOLOGY);
-    EXPECT_TRUE(measure(octahedron(), hgcommon::SG_TOPOLOGY).defined & hgcommon::SG_TOPOLOGY);
+    EXPECT_FALSE(g.defined & (hgcommon::SG_TOPOLOGY | hgcommon::SG_METRIC_TENSOR));
+    const SgGeometry t = measure(octahedron(), hgcommon::SG_TOPOLOGY);
+    EXPECT_TRUE(t.defined & hgcommon::SG_TOPOLOGY);
+    EXPECT_FALSE(t.defined & hgcommon::SG_METRIC_TENSOR);
 }
 
 // The device grows a record's scratch at most 3 times (record_state_invariants_device): the
