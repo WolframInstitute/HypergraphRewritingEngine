@@ -5,10 +5,17 @@
 #   tools/dev/release_gate.sh gpumc                  every GPUMC cell, the long cells included
 #   tools/dev/release_gate.sh genmc                  every GenMC harness and calibration
 #   tools/dev/release_gate.sh tla                    every TLC configuration
-#   tools/dev/release_gate.sh all                    the four, in that order
+#   tools/dev/release_gate.sh gpu_e2e                the paclet's CPU against GPU timing check
+#   tools/dev/release_gate.sh all                    the five, in that order
 #
 # Exit status is 0 when every leg passed and 1 otherwise; each leg prints PASS or FAIL with its
 # log under $HG_RELEASE_LOGS (default release_gate_logs/).
+#
+# GPU_E2E runs tools/dev/gpu_end_to_end.wls through Windows wolframscript ($WOLFRAMSCRIPT) on the
+# paclet in $HG_E2E_PACLET, a Windows path to a fresh copy of the paclet with the release's Windows
+# binaries. The script refuses to time on a busy machine (tools/dev/quiet_check.sh), and the
+# refusal fails the leg, as does a workload with CPU/GPU below 1, differing results or a partial
+# GPU result.
 #
 # SANITIZERS. The tools are memcheck (out-of-bounds and misaligned device accesses), initcheck
 # (reads of uninitialised device memory), synccheck (illegal __syncthreads and __syncwarp use) and
@@ -73,8 +80,15 @@ sanitizers() {
     done
 }
 
+gpu_e2e() {
+    local ws="${WOLFRAMSCRIPT:-/mnt/c/Program Files/Wolfram Research/Wolfram/15.0/wolframscript.exe}"
+    [ -n "${HG_E2E_PACLET:-}" ] || { echo "FAIL  gpu_e2e: HG_E2E_PACLET is not set"; fail=1; return; }
+    leg gpu_e2e "$ws" -file "$(wslpath -w "$ROOT/tools/dev/gpu_end_to_end.wls")" "$HG_E2E_PACLET"
+}
+
 case "${1:-}" in
     sanitizers) shift; sanitizers "$@" ;;
+    gpu_e2e) gpu_e2e ;;
     gpumc) leg gpumc env HG_GPUMC_LONG=1 verification/gpumc/run.sh cells ;;
     genmc) leg genmc verification/genmc/run.sh all ;;
     tla)   leg tla verification/tla/run.sh ;;
@@ -83,6 +97,7 @@ case "${1:-}" in
         leg gpumc env HG_GPUMC_LONG=1 verification/gpumc/run.sh cells
         leg genmc verification/genmc/run.sh all
         leg tla verification/tla/run.sh
+        gpu_e2e
         ;;
     *) sed -n '2,9p' "$0"; exit 2 ;;
 esac
