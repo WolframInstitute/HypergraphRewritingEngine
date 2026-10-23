@@ -2657,6 +2657,97 @@ TEST(GpuBinaryGate, VertexCurvatureAgreesOnBothDevices) {
     worker_stop(w);
 }
 
+// The BranchialGraph of wpp {{1,2},{1,3}} -> {{1,2},{1,4},{2,4},{3,4}} at 5 steps under Full
+// states is the same multigraph on both devices: the multiset of its edges, each an unordered
+// pair of its two states' canonical hashes, is equal. Each edge names its lower state id first,
+// so the edge data does not depend on the order in which a device paired the two events (on
+// 9a23eb34, 417 of the CPU's 1484 edges and 245 of the GPU's named the higher id first).
+TEST(GpuBinaryGate, BranchialGraphIsTheSameMultigraphOnBothDevices) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    if (!CpuWorker::built()) GTEST_SKIP() << "hg_evolve is not built here";
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    CpuWorker cpu;
+    ASSERT_TRUE(cpu.ok);
+    // The edges as hash pairs, and how many edges name the higher state id first.
+    struct Edges {
+        std::multiset<std::pair<int64_t, int64_t>> pairs;
+        size_t high_first = 0;
+    };
+    auto edges = [](const std::vector<uint8_t>& out) {
+        Edges r;
+        std::map<int64_t, int64_t> hash_of;
+        std::vector<std::pair<int64_t, int64_t>> ends;
+        wxf::Parser parser(out);
+        parser.skip_header();
+        parser.read_association([&](const std::string& k, wxf::Parser& vp) {
+            if (k == "States") {
+                vp.read_association_generic([&](wxf::Parser& kp, wxf::Parser& valp) {
+                    const int64_t id = kp.read<int64_t>();
+                    valp.read_association([&](const std::string& fk, wxf::Parser& fvp) {
+                        if (fk == "CanonicalHash") hash_of[id] = fvp.read<int64_t>();
+                        else fvp.skip_value();
+                    });
+                });
+            } else if (k == "GraphData") {
+                vp.read_association([&](const std::string&, wxf::Parser& gp) {
+                    gp.read_association([&](const std::string& gk, wxf::Parser& ep) {
+                        if (gk != "Edges") { ep.skip_value(); return; }
+                        ep.read_function([&](const std::string&, size_t n, wxf::Parser& lp) {
+                            for (size_t i = 0; i < n; ++i) {
+                                int64_t from = -1, to = -1;
+                                lp.read_association([&](const std::string& fk, wxf::Parser& fvp) {
+                                    if (fk == "From") from = fvp.read<int64_t>();
+                                    else if (fk == "To") to = fvp.read<int64_t>();
+                                    else fvp.skip_value();
+                                });
+                                ends.emplace_back(from, to);
+                            }
+                        });
+                    });
+                });
+            } else {
+                vp.skip_value();
+            }
+        });
+        for (const auto& [a, b] : ends) {
+            if (a > b) ++r.high_first;
+            const int64_t ha = hash_of.at(a), hb = hash_of.at(b);
+            r.pairs.insert({std::min(ha, hb), std::max(ha, hb)});
+        }
+        return r;
+    };
+    const auto job = build_input({{{1, 2}, {1, 3}}}, {{1, 2}, {1, 3}},
+                                 {{1, 2}, {1, 4}, {2, 4}, {3, 4}}, 5,
+                                 [&](wxf::Writer& o) {
+                                     put_str_list_option(o, "RequestedData", {"States"});
+                                     put_str_option(o, "CanonicalizeStates", "Full");
+                                     put_str_option(o, "IncludeCanonicalHashes", "True");
+                                     put_str_list_option(o, "GraphProperties",
+                                                         {"BranchialGraphStructure"});
+                                 },
+                                 4);
+    const auto host = cpu(job);
+    const auto device = worker_call(w, job);
+    ASSERT_FALSE(host.empty()) << cpu.w.last_error;
+    if (device.empty()) {
+        worker_stop(w);
+        GTEST_SKIP() << "the worker returned no result (no usable device?)";
+    }
+    const Edges h = edges(host), d = edges(device);
+    EXPECT_GT(h.pairs.size(), 1000u);
+    EXPECT_EQ(d.pairs, h.pairs);
+    EXPECT_EQ(h.high_first, 0u);
+    EXPECT_EQ(d.high_first, 0u);
+    worker_stop(w);
+}
+
 // "StatisticsGraph" on a rule of ternary hyperedges: under each rule both devices give the same
 // "StepStatistics" bytes, and the two rules give different statistics.
 TEST(GpuBinaryGate, StatisticsGraphAgreesAcrossDevices) {
@@ -5046,8 +5137,12 @@ TEST(StateStatistics, MeasuresFamiliesSelectTheKeys) {
     EXPECT_EQ(keys(*assoc_at(particles, "Invariants")).size(), 29u);
     EXPECT_EQ(keys(*assoc_at(particles, "VertexInvariants")).size(), 5u);
     EXPECT_NE(assoc_at(*assoc_at(particles, "Invariants"), "TopologicalCharge"), nullptr);
+    const wxf::WXFValue topology(hg::stats::step_record(
+        1, in, false, hgcommon::SG_MEASURES_BASE | hg::stats::measure_bits("Topology")));
+    EXPECT_EQ(keys(*assoc_at(topology, "Invariants")).size(), 29u);
+    EXPECT_NE(assoc_at(*assoc_at(topology, "Invariants"), "RipsBetti1"), nullptr);
     const wxf::WXFValue all(hg::stats::step_record(1, in, false, hgcommon::SG_MEASURES_ALL));
-    EXPECT_EQ(keys(*assoc_at(all, "Invariants")).size(), 52u);
+    EXPECT_EQ(keys(*assoc_at(all, "Invariants")).size(), 62u);
     EXPECT_NE(assoc_at(all, "EdgeInvariants"), nullptr);
     EXPECT_NE(assoc_at(all, "LogGeodesicCount"), nullptr);
     EXPECT_EQ(hg::stats::measure_bits("Branchial"), hg::stats::kMeasureBranchial);
@@ -6523,7 +6618,7 @@ TEST(GraphMarshalStream, BytesIndependentOfThreadsAndChunkOrder) {
 
 namespace {
 
-// `n` classes over two steps: random small states (1 to 7 edges of arity 1 to 3 over up to 6
+// `n` classes over `steps` steps (two by default): random small states (1 to 7 edges of arity 1 to 3 over up to 6
 // vertices), their records in one word pool, and random weights up to 50.
 struct PoolFixture {
     std::vector<uint64_t> pool;
@@ -6535,7 +6630,7 @@ struct PoolFixture {
     };
     std::vector<Class> classes;
 
-    explicit PoolFixture(size_t n) {
+    explicit PoolFixture(size_t n, uint32_t steps = 2) {
         std::mt19937_64 rng(20261014);
         std::vector<uint64_t> storage;
         for (size_t i = 0; i < n; ++i) {
@@ -6547,7 +6642,7 @@ struct PoolFixture {
             hg::stats::invariant_record(edges, storage);
             const uint64_t word = pool.size();
             pool.insert(pool.end(), storage.begin(), storage.end());
-            classes.push_back({static_cast<uint32_t>(i % 2), 1000 + i, word, 1 + rng() % 50});
+            classes.push_back({static_cast<uint32_t>(i % steps), 1000 + i, word, 1 + rng() % 50});
         }
     }
     const hgcommon::StateInvariantRecord* record(const Class& c) const {
@@ -6590,6 +6685,37 @@ TEST(StateStatistics, PoolDoesNotDependOnTheClassSplitOrTheThreadCount) {
             system.wait_for_completion();
             EXPECT_EQ(want, value_bytes(jobs.reply())) << threads << " threads, by_class " << by_class;
         }
+    }
+}
+
+// "StepStatisticsMeasures" "Equilibrium": each step's scores are computed as its record is made,
+// in whatever order the jobs finish, and the reply is the bytes of the run on one thread at 1, 2,
+// 8 and 16 workers. Step k's window holds min(k + 1, 20) steps.
+TEST(StateStatistics, EquilibriumDoesNotDependOnTheThreadCount) {
+    const PoolFixture fx(1500, 30);
+    const uint32_t measures = hgcommon::SG_MEASURES_BASE | hg::stats::kMeasureEquilibrium;
+    hg::stats::StepStatisticsJobs inline_jobs(false, 0, 1, [](std::function<void()> f) { f(); });
+    inline_jobs.set_measures(measures);
+    for (auto& [step, in] : fx.inputs()) inline_jobs.submit(step, std::move(in));
+    const wxf::WXFValue serial = inline_jobs.reply();
+    const auto& steps = std::get<wxf::WXFValueList>(serial.data);
+    ASSERT_FALSE(steps.empty());
+    for (size_t k = 0; k < steps.size(); ++k) {
+        const wxf::WXFValue* eq = assoc_at(steps[k], "Equilibrium");
+        ASSERT_NE(eq, nullptr) << k;
+        EXPECT_EQ(number_at(*eq, "Window"), static_cast<double>(std::min<size_t>(k + 1, 20)));
+    }
+    const std::vector<uint8_t> want = value_bytes(serial);
+    for (size_t threads : {size_t{1}, size_t{2}, size_t{8}, size_t{16}}) {
+        job_system::JobSystem<PoolTestJob> system(threads);
+        system.start();
+        hg::stats::StepStatisticsJobs jobs(false, 0, threads, [&](std::function<void()> f) {
+            system.submit(job_system::make_job<PoolTestJob>(std::move(f), PoolTestJob::Job));
+        });
+        jobs.set_measures(measures);
+        for (auto& [step, in] : fx.inputs()) jobs.submit(step, std::move(in));
+        system.wait_for_completion();
+        EXPECT_EQ(want, value_bytes(jobs.reply())) << threads << " threads";
     }
 }
 

@@ -4,7 +4,7 @@
    Each workload runs through the paclet on "TargetDevice" -> "CPU" and on "TargetDevice" -> "GPU".
    Each device gets one warm call, then three timed calls, and the minimum of the three is kept.
    The script prints CPU time, GPU time and CPU/GPU per workload, and whether the two results are
-   equal. A GPU result that carries a partial-result warning (HGEvolve::overflow) is reported as
+   the same up to the run's state and event ids (sameUpToIds). A GPU result that carries a partial-result warning (HGEvolve::overflow) is reported as
    partial.
 
    tools/dev/quiet_check.sh runs first. On a busy machine the script prints the readings and exits
@@ -61,6 +61,42 @@ workloads = {
 };
 workloads = Select[workloads, StringContainsQ[#[[1]], filter] &];
 
+(* Whether two results are the same up to the run's state and event ids. Numbers, strings and
+   lists compare exactly. Associations compare key by key. Graphs compare up to relabelling with
+   multiplicity: each edge of multiplicity m becomes m paths of length 2 through new vertices (a
+   loop m triangles), and each original vertex gets three new leaves, so an isomorphism of the
+   encoded simple graphs maps original vertices to original vertices and is an isomorphism of the
+   multigraphs. Each edge keeps its own direction. A difference is reported by the path of keys
+   that leads to it. *)
+encodeGraph[g_Graph] := Module[{vs = VertexList[g], es = EdgeList[g], directed, n, idx, edges, k},
+  directed = DirectedGraphQ[g];
+  n = Length[vs];
+  idx = AssociationThread[vs -> Range[n]];
+  k = n;
+  edges = Join[
+    Flatten[Table[{If[directed, DirectedEdge, UndirectedEdge][i, ++k]}, {i, n}, {3}]],
+    Flatten[Table[With[{h = If[Head[e] === DirectedEdge, DirectedEdge, UndirectedEdge],
+        u = idx[e[[1]]],
+        v = idx[e[[2]]]},
+        If[u === v, k += 2; {h[u, k - 1], h[k - 1, k], h[k, u]}, ++k; {h[u, k], h[k, v]}]],
+      {e, es}]]];
+  Graph[Range[k], edges]];
+sameUpToIds[a_Graph, b_Graph, path_] := Module[{ok},
+  ok = VertexCount[a] === VertexCount[b] && EdgeCount[a] === EdgeCount[b] &&
+    DirectedGraphQ[a] === DirectedGraphQ[b] &&
+    IsomorphicGraphQ[encodeGraph[a], encodeGraph[b]];
+  If[!ok, Print["  differs at ", path, ": graphs with ", {VertexCount[a], EdgeCount[a]}, " and ",
+      {VertexCount[b], EdgeCount[b]}, " vertices and edges are not isomorphic with multiplicity"]];
+  ok];
+sameUpToIds[a_Association, b_Association, path_] :=
+  If[Sort[Keys[a]] =!= Sort[Keys[b]],
+    Print["  differs at ", path, ": keys ", Complement[Keys[a], Keys[b]], " ",
+      Complement[Keys[b], Keys[a]]]; False,
+    And @@ (sameUpToIds[a[#], b[#], Append[path, #]] & /@ Keys[a])];
+sameUpToIds[a_List, b_List, path_] /; Length[a] === Length[b] && a =!= b :=
+  And @@ MapThread[sameUpToIds[#1, #2, Append[path, #3]] &, {a, b, Range[Length[a]]}];
+sameUpToIds[a_, b_, path_] := If[a === b, True, Print["  differs at ", path]; False];
+
 (* One call: {seconds, result, partial} with partial True when HGEvolve::overflow was issued.
    Quiet suppresses the printing of the message, and Check still sets partial. *)
 call[w_, d_] := Block[{$device = d},
@@ -81,7 +117,7 @@ Do[
             If[d === "GPU" && c[[3]], partial = True]], {If[agreeOnly, 1, 3]}];
         best[d] = Min[ts]; res[d] = r], {d, {"CPU", "GPU"}}];
     ratio = best["CPU"]/best["GPU"];
-    same = res["CPU"] === res["GPU"];
+    same = sameUpToIds[res["CPU"], res["GPU"], {name}];
     If[(ratio < 1 && !agreeOnly) || !same || partial, failed = True];
     Print[StringPadRight[name, 26], " | ", fmt[best["CPU"], 3], " | ", fmt[best["GPU"], 3],
       " | ", fmt[ratio, 2], " | ", same, " | ", partial]],

@@ -101,6 +101,31 @@ constexpr uint32_t kMatchBlockThreads = 32;
 // and leaves the pair uncapped.
 constexpr uint32_t kDrainCapBuffer = 512;
 
+// The 64-bit words of a match block's shared buffer: under a cap, kDrainCapBuffer ranks, rules,
+// keep bytes and quota bits; without one, the state's staged edges (5,696 bytes, 438 edges of
+// arity 2).
+constexpr uint32_t kMatchSharedWords =
+    kDrainCapBuffer + kDrainCapBuffer / 4u + kDrainCapBuffer / 8u + kDrainCapBuffer / 64u;
+
+// True when match_state_rule emits every match of a (state, rule) pair as found: no
+// per-(state, rule) cap, no per-parent cap and no draw. Only then can a pair's matching be split
+// into parts over ranges of its anchor candidates, since no pass needs the whole pair.
+__device__ __forceinline__ bool match_state_rule_splits(const DeviceState& ds) {
+    // No draw applies where a cap chooses: under MaxStatesPerStep every transition is a candidate
+    // of its step, as on the host.
+    const bool sampling = (ds.transition_rate < 1.0 || ds.num_rule_weights != 0u) &&
+                          ds.max_states_per_step == 0u;
+    return ds.matches_per_state_rule == 0u && ds.max_successor_states_per_parent == 0u &&
+           !sampling;
+}
+
+// The first anchor (an index into the state's slice of `count` edges) of part `part` of
+// `parts`; part `parts` gives `count`. The parts cover the slice once, in order.
+__host__ __device__ __forceinline__ uint32_t match_split_root_begin(uint32_t count, uint32_t part,
+                                                                    uint32_t parts) {
+    return static_cast<uint32_t>(uint64_t{count} * part / parts);
+}
+
 // Publish a filled record: the release store that makes everything written before it visible
 // to a consumer that observes the flag.
 __device__ __forceinline__ void publish_match(MatchRecord& m) {
@@ -163,12 +188,17 @@ __device__ bool successor_identity_device(const DeviceState& ds, const DeviceRul
 // scheduler in another translation unit drives this implementation rather than growing a
 // second copy of it. `succ` and `scratch` serve MaxSuccessorStatesPerParent under Automatic and
 // Full states; a scheduler that passes null for them records kScratchOverflow when the cap
-// needs them.
+// needs them. When match_state_rule_splits(ds) holds, the call matches part `part` of `parts`
+// (match_split_root_begin), and the parts of a pair together emit each of its matches once,
+// each with its transition_rank_device at its index in `out` when `out_rank` is non-null;
+// otherwise `parts` must be 1 and `out_rank` is not written.
 __device__ void match_state_rule(const DeviceState& ds, const DeviceRule* rules,
                                  StateId state_id, uint32_t rid, uint32_t step,
                                  typename Pool<MatchRecord>::DeviceView out,
                                  const SuccessorCtx* succ = nullptr,
-                                 const SuccessorScratch* scratch = nullptr);
+                                 const SuccessorScratch* scratch = nullptr,
+                                 uint32_t part = 0, uint32_t parts = 1,
+                                 uint64_t* out_rank = nullptr);
 
 // Run the match kernel for (state_id, all rules), populating out_matches.
 // Returns the number of matches written. `step` is stamped on every record.

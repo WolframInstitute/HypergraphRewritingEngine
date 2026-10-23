@@ -91,7 +91,19 @@ struct StepSelectScratch {
     uint64_t* srank = nullptr;
     uint32_t* order = nullptr;
     uint8_t*  lead = nullptr;
+    // The successor identities the selections have computed, read by the termination detector
+    // as progress (RewriteDetectorCtx::work_progress). Null when nothing reads it.
+    uint32_t* progress = nullptr;
+    // [cap] each candidate's transition_rank_device at its candidate-pool index, written by the
+    // matching that emits it when match_state_rule_splits holds (match_state_rule's out_rank).
+    uint64_t* cand_rank = nullptr;
 };
+
+// The candidate ranks match_state_rule writes as it emits: the selection scratch's when the
+// passes split, null otherwise.
+__device__ inline uint64_t* emit_rank_sink(const DeviceState& ds, const StepSelectScratch& sel) {
+    return ds.max_states_per_step != 0u && match_state_rule_splits(ds) ? sel.cand_rank : nullptr;
+}
 
 __device__ inline void step_book(const DeviceState& ds, uint32_t d, uint32_t n) {
     if (ds.max_states_per_step != 0u && d < ds.step_slots) atomicAdd(&ds.step_pending[d], n);
@@ -103,6 +115,30 @@ __device__ inline bool explore_admits(const DeviceState& ds, StateId canonical) 
     return ds.exploration_probability >= 1.0 ||
            hgcommon::explore_survives(ds.state_canonical_hash[canonical], ds.sampling_seed,
                                       ds.exploration_probability);
+}
+
+// How many match items state `sid` is split into per rule (match_state_rule's parts). A thread's
+// join runs divergent from its warp's other threads, so a block's time grows with the anchors it
+// holds, while each item adds a queue round trip and a copy of the state's edges. Under
+// MaxStatesPerStep a step holds at most that many states, and the parts spread their anchors
+// over the grid's blocks: count x MaxStatesPerStep / blocks anchors per part, at least one
+// (torus9, 162 edges, 10 states: 2; grid8, 112 edges, 400 states: 44). Without it, a state is
+// split into parts of kMatchBlockThreads anchors when fewer match items wait (`queued`) than the
+// grid has blocks, and is one item otherwise. The parts emit the same matches whatever their
+// number.
+__device__ inline uint32_t match_parts_of(const DeviceState& ds, StateId sid, uint32_t queued) {
+    if (!match_state_rule_splits(ds) || sid >= ds.max_states) return 1u;
+    const uint32_t n = ds.state_edge_slices[sid].count;
+    uint64_t anchors;
+    if (ds.max_states_per_step != 0u) {
+        anchors = (uint64_t{n} * ds.max_states_per_step + gridDim.x - 1u) / gridDim.x;
+    } else {
+        if (queued >= gridDim.x) return 1u;
+        anchors = kMatchBlockThreads;
+    }
+    if (anchors == 0u) anchors = 1u;
+    const uint64_t p = (n + anchors - 1u) / anchors;
+    return p < 1u ? 1u : (p > 0xFFFFu ? 0xFFFFu : static_cast<uint32_t>(p));
 }
 
 // True when this release brings step d's count to zero. The fence before the subtraction
@@ -164,12 +200,17 @@ __device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
             if (r.step > s) atomicMin(&s_next_start, i);
             continue;
         }
-        EdgeId edges[kMaxPatternEdges];
-        for (uint32_t k = 0; k < kMaxPatternEdges; ++k) edges[k] = r.matched_edges[k];
-        const uint64_t key = transition_key_device(ds, r.state_id, r.rule_id, edges, r.num_edges);
+        uint64_t rank;
+        if (const uint64_t* cr = emit_rank_sink(ds, sel)) {
+            rank = cr[i];
+        } else {
+            EdgeId edges[kMaxPatternEdges];
+            for (uint32_t k = 0; k < kMaxPatternEdges; ++k) edges[k] = r.matched_edges[k];
+            rank = transition_rank_device(ds, r.state_id, r.rule_id, edges, r.num_edges);
+        }
         const uint32_t at = atomicAdd(&sel.words[0], 1u);
         if (at < sel.cap) {
-            sel.rank[at] = hgcommon::transition_rank(key, ds.sampling_seed);
+            sel.rank[at] = rank;
             sel.idx[at] = i;
         }
     }
@@ -188,7 +229,12 @@ __device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
             if (!successor_identity_device(ds, rules[r.rule_id], r.state_id, r.matched_edges,
                                            *succ, sid))
                 sid = hgcommon::SuccessorIdentity{0, 1};
-            if (tid == 0) sel.id[j] = sid;
+            if (tid == 0) {
+                sel.id[j] = sid;
+                if (sel.progress)
+                    cuda::atomic_ref<uint32_t, cuda::thread_scope_device>(*sel.progress)
+                        .fetch_add(1u, cuda::memory_order_relaxed);
+            }
         }
         __syncthreads();
         if (tid == 0) {
@@ -208,23 +254,28 @@ __device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
     hgcommon::RankCut cut{~0ULL, true};
     uint32_t take = m;
     if (groups > cap_n) {
+        // The N-th smallest rank, a byte at a time from the top: each pass counts the entries
+        // under the prefix found so far by their next byte, and takes the byte whose bin holds
+        // the N-th of them.
+        __shared__ uint32_t s_hist[256];
         if (tid == 0) { s_prefix = 0; s_remaining = cap_n; }
         uint64_t mask = 0;
-        for (int bit = 63; bit >= 0; --bit) {
-            const uint64_t b = 1ULL << bit;
-            if (tid == 0) s_cnt = 0;
+        for (int shift = 56; shift >= 0; shift -= 8) {
+            for (uint32_t b = tid; b < 256u; b += nt) s_hist[b] = 0u;
             __syncthreads();
             const uint64_t prefix = s_prefix;
-            uint32_t local = 0;
             for (uint32_t i = tid; i < m; i += nt) {
                 if (by_succ && !sel.lead[i]) continue;   // one entry per successor
                 const uint64_t r = sel.rank[i];
-                if ((r & mask) == prefix && !(r & b)) ++local;
+                if ((r & mask) == prefix) atomicAdd(&s_hist[(r >> shift) & 0xFFu], 1u);
             }
-            atomicAdd(&s_cnt, local);
             __syncthreads();
-            if (tid == 0 && s_remaining > s_cnt) { s_remaining -= s_cnt; s_prefix |= b; }
-            mask |= b;
+            if (tid == 0) {
+                uint32_t b = 0;
+                while (b < 255u && s_remaining > s_hist[b]) s_remaining -= s_hist[b++];
+                s_prefix |= uint64_t{b} << shift;
+            }
+            mask |= uint64_t{0xFFu} << shift;
             __syncthreads();
         }
         cut = hgcommon::RankCut{s_prefix, false};   // the N-th smallest rank
@@ -1116,6 +1167,7 @@ __global__ void k_persistent_evolve(
             const WorkLogView<QeTask>*                tasks;
             const WorkLogView<ExpandEntry>*           expands;
             const WorkLogView<RecordEntry>*           records;
+            const uint32_t*                           select_progress;   // null without a step cap
 
             HG_DEV uint32_t num_roles() const { return term.num_roles; }
             HG_DEV uint32_t max_stagnant_rounds() const { return kMaxDetectorRounds; }
@@ -1136,11 +1188,20 @@ __global__ void k_persistent_evolve(
                 if (tasks) n += tasks->done_count();
                 return n;
             }
-            // The replay's raw events: the work a block does inline with no role booking it.
+            // The work a block does inline with no role booking it: the replay's raw events and
+            // the step selections' successor identities (one selection of MaxStatesPerStep under
+            // Full states computes about a million on an 8 x 8 torus, on one warp).
             HG_DEV uint64_t work_progress() const {
-                if (!replay_events) return 0;
-                cuda::atomic_ref<const uint32_t, cuda::thread_scope_device> r(*replay_events);
-                return r.load(cuda::memory_order_relaxed);
+                uint64_t n = 0;
+                if (replay_events) {
+                    cuda::atomic_ref<const uint32_t, cuda::thread_scope_device> r(*replay_events);
+                    n += r.load(cuda::memory_order_relaxed);
+                }
+                if (select_progress) {
+                    cuda::atomic_ref<const uint32_t, cuda::thread_scope_device> r(*select_progress);
+                    n += r.load(cuda::memory_order_relaxed);
+                }
+                return n;
             }
             HG_DEV void backoff_long() const { __nanosleep(4000); }
             HG_DEV void backoff_short() const { __nanosleep(2000); }
@@ -1215,7 +1276,8 @@ __global__ void k_persistent_evolve(
             }
         } dctx{term, found, rewrites_done, ds, phase_cycles,
                qe.enabled ? qe.next_raw_event : nullptr,
-               (qe.enabled && qe.replay) ? &qe.tasks : nullptr, &ev.expand, &ev.records};
+               (qe.enabled && qe.replay) ? &qe.tasks : nullptr, &ev.expand, &ev.records,
+               step_sel.progress};
 
         hgcommon::term_detect_loop(dctx, p1, c1, p2, c2);
         return;
@@ -1251,10 +1313,10 @@ __global__ void k_persistent_evolve(
     __shared__ uint64_t surv_shared[kLocalSurvivors];
     __shared__ uint32_t expand_base;
     __shared__ uint32_t expand_count;
+    __shared__ uint32_t expand_parts;
     __shared__ uint32_t record_base;
     __shared__ uint32_t record_count;
     __shared__ StateId  record_sid;
-    __shared__ bool     run_rule_inline;
     __shared__ bool     stalled;
     uint32_t idle_spins = 0;
     uint32_t idle_ns    = 64;   // thread 0's backoff state; reset whenever work is found
@@ -1595,51 +1657,56 @@ __global__ void k_persistent_evolve(
                 const ExpandEntry& e = ev.expand.await(expand_base);
                 child_sid  = e.state;
                 child_step = e.depth;
-                step_book(ds, child_step, num_rules);
+                expand_parts = match_parts_of(ds, child_sid, match_q.size_approx());
+                step_book(ds, child_step, num_rules * expand_parts);
             }
         }
         __syncthreads();
         if (expand_count) {
-            for (uint32_t r = 0; r < num_rules; ++r) {
-                if (threadIdx.x == 0) {
+            // The items, a lane each: (rule, part) for item k. The block is one warp.
+            const uint32_t parts = expand_parts;
+            const uint32_t n_items = num_rules * parts;
+            for (uint32_t base = 0; base < n_items; base += blockDim.x) {
+                const uint32_t batch = min(n_items - base, blockDim.x);
+                if (threadIdx.x == 0) term.mark_pushed(kRoleMatch, batch);
+                __syncthreads();
+                bool full = false;
+                if (threadIdx.x < batch) {
+                    const uint32_t k = base + threadIdx.x;
                     MatchWorkItem it;
                     it.state_id = child_sid;
-                    it.rule_id  = r;
+                    it.rule_id  = k / parts;
                     it.step     = child_step;
-                    term.mark_pushed(kRoleMatch);
-                    run_rule_inline = !match_q.try_push(it);
-                    if (run_rule_inline) {
-                        // Full queue. The producers here are the same workers that consume,
-                        // so waiting for room would be waiting on ourselves -- job_system.hpp
-                        // solves it the same way, by running the item on the pusher. It
-                        // terminates because matching only writes to the match pool, never
-                        // back into this ring.
-                        //
-                        // The item never entered the queue, so its completion is booked here
-                        // and the block runs it below; leaving it counted as outstanding
-                        // would stall termination forever.
-                        term.mark_completed(kRoleMatch);
-                    }
+                    it.part     = static_cast<uint16_t>(k % parts);
+                    it.parts    = static_cast<uint16_t>(parts);
+                    // Full queue. The producers here are the same workers that consume, so
+                    // waiting for room would be waiting on ourselves -- job_system.hpp solves it
+                    // the same way, by running the item on the pusher. It terminates because
+                    // matching only writes to the match pool, never back into this ring.
+                    //
+                    // The item never entered the queue, so its completion is booked here and
+                    // the block runs it below; leaving it counted as outstanding would stall
+                    // termination forever.
+                    full = !match_q.try_push(it);
+                    if (full) term.mark_completed(kRoleMatch);
                 }
-                __syncthreads();
-                // Read once, before the barrier below. Thread 0 writes the flag for the next
-                // rule as soon as it passes that barrier; a lane reading it after the barrier
-                // can see the next rule's value and enter the step-selection branch alone.
-                const bool inline_rule = run_rule_inline;
-                const unsigned long long tA =
-                    (threadIdx.x == 0 && inline_rule) ? clock64() : 0;
-                if (inline_rule)
+                for (uint32_t inl = __ballot_sync(0xFFFFFFFFu, full); inl; inl &= inl - 1u) {
+                    const uint32_t k = base + __ffs(inl) - 1u;
+                    const uint32_t r = k / parts;
+                    const unsigned long long tA = (threadIdx.x == 0) ? clock64() : 0;
                     match_state_rule(ds, rules, child_sid, r, child_step, match_out, &succ_ctx,
-                                     &succ_scratch);
-                __syncthreads();
-                if (threadIdx.x == 0 && inline_rule) acc_match += clock64() - tA;
-                if (inline_rule && ds.max_states_per_step != 0u) {
-                    __shared__ uint32_t s_inline_sel;
-                    if (threadIdx.x == 0) s_inline_sel = step_release(ds, child_step, 1u);
+                                     &succ_scratch, k - r * parts, parts,
+                                     emit_rank_sink(ds, step_sel));
                     __syncthreads();
-                    if (s_inline_sel)
-                        run_step_selections(ds, child_step, cand, found, step_sel, rules,
-                                            &succ_ctx);
+                    if (threadIdx.x == 0) acc_match += clock64() - tA;
+                    if (ds.max_states_per_step != 0u) {
+                        __shared__ uint32_t s_inline_sel;
+                        if (threadIdx.x == 0) s_inline_sel = step_release(ds, child_step, 1u);
+                        __syncthreads();
+                        if (s_inline_sel)
+                            run_step_selections(ds, child_step, cand, found, step_sel, rules,
+                                                &succ_ctx);
+                    }
                 }
             }
             if (ds.max_states_per_step != 0u) {
@@ -1665,7 +1732,8 @@ __global__ void k_persistent_evolve(
         if (have) {
             const unsigned long long tA = (threadIdx.x == 0) ? clock64() : 0;
             match_state_rule(ds, rules, mitem.state_id, mitem.rule_id, mitem.step, match_out,
-                             &succ_ctx, &succ_scratch);
+                             &succ_ctx, &succ_scratch, mitem.part, mitem.parts,
+                             emit_rank_sink(ds, step_sel));
             __syncthreads();
             if (ds.max_states_per_step != 0u) {
                 __shared__ uint32_t s_item_sel;
@@ -1969,7 +2037,9 @@ struct EngineState::PersistentScratch {
     std::unique_ptr<Pool<MatchRecord>> step_cand;
     uint64_t* step_rank = nullptr;
     uint32_t* step_idx = nullptr;
+    uint64_t* step_cand_rank = nullptr;
     uint32_t* step_words = nullptr;
+    uint32_t* step_progress = nullptr;
     uint32_t  step_cap = 0;
     // MaxStatesPerStep counting successor states: StepSelectScratch's id, srank, order and lead,
     // step_succ_cap entries each.
@@ -2005,7 +2075,9 @@ struct EngineState::PersistentScratch {
         free_succ();
         if (step_rank) cudaFree(step_rank);
         if (step_idx) cudaFree(step_idx);
+        if (step_cand_rank) cudaFree(step_cand_rank);
         if (step_words) cudaFree(step_words);
+        if (step_progress) cudaFree(step_progress);
         if (explore_frames) cudaFree(explore_frames);
         if (keyed_words) cudaFree(keyed_words);
     }
@@ -2411,18 +2483,26 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
             ps.step_cand = std::make_unique<Pool<MatchRecord>>(cap);
             if (ps.step_rank) cudaFree(ps.step_rank);
             if (ps.step_idx) cudaFree(ps.step_idx);
+            if (ps.step_cand_rank) cudaFree(ps.step_cand_rank);
             if (!ps.step_words)
                 HG_CUDA_CHECK(cudaMalloc(&ps.step_words, sizeof(uint32_t) * 2u), "step words");
             HG_CUDA_CHECK(cudaMalloc(&ps.step_rank, sizeof(uint64_t) * cap), "step ranks");
             HG_CUDA_CHECK(cudaMalloc(&ps.step_idx, sizeof(uint32_t) * cap), "step indices");
+            HG_CUDA_CHECK(cudaMalloc(&ps.step_cand_rank, sizeof(uint64_t) * cap),
+                          "step candidate ranks");
             ps.step_cap = cap;
         }
         ps.step_cand->reset_and_clear(&clears);
         clears.add(ps.step_words, sizeof(uint32_t) * 2u, 0);
-        // The batch above was flushed before this block, so these two clears are launched here.
+        if (!ps.step_progress)
+            HG_CUDA_CHECK(cudaMalloc(&ps.step_progress, sizeof(uint32_t)), "step progress");
+        clears.add(ps.step_progress, sizeof(uint32_t), 0);
+        // The batch above was flushed before this block, so these clears are launched here.
         clears.flush();
         cand_v = ps.step_cand->view();
         step_sel = StepSelectScratch{ps.step_rank, ps.step_idx, ps.step_words, ps.step_cap};
+        step_sel.progress = ps.step_progress;
+        step_sel.cand_rank = ps.step_cand_rank;
         if (!dsk.step_cap_counts_matches && state_mode != CanonicalizationMode::None) {
             if (ps.step_succ_cap != cap) {
                 ps.free_step_succ();

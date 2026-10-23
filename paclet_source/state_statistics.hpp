@@ -18,6 +18,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "hgcommon/equilibrium_core.hpp"
 #include "hgcommon/state_invariants_core.hpp"
 #include "hgcommon/state_geometry_core.hpp"
 #include "hgcommon/branchial_rows_core.hpp"
@@ -162,6 +163,8 @@ enum : uint32_t {
 // "StepStatisticsMeasures": the family of each name as hgcommon::sg_geometry_of `want` bits, and
 // kMeasureBranchial for "Branchial"; 0 for any other name.
 constexpr uint32_t kMeasureBranchial = 1u << 30;
+// "Equilibrium": each step's stability scores over the steps before it (hgcommon/equilibrium_core.hpp).
+constexpr uint32_t kMeasureEquilibrium = 1u << 29;
 uint32_t measure_bits(const std::string& name);
 
 // The "StepStatisticsMatrices" names, in kMatrix* bit order from kMatrixStateOverlap.
@@ -312,6 +315,9 @@ public:
     size_t tasks() const;
     void run(size_t task);
     wxf::WXFValueAssociation record();
+    // The step's means of the equilibrium series (hgcommon::EQ_DIMENSION, EQ_DEGREE_ENTROPY,
+    // EQ_SIZE), 0 for an invariant no state has; call after every task, before record.
+    void equilibrium_series(double* out) const;
 
 private:
     struct State;
@@ -373,8 +379,12 @@ private:
     std::vector<uint32_t> initial_;
     bool have_initial_ = false;
     std::map<uint32_t, std::unique_ptr<Step>> steps_;
+    Step* last_reserved_ = nullptr;
 
     void pool(Step* s);
+    // Marks `s` closed and computes the equilibrium scores of every closed step whose
+    // predecessor has its scores, from `s` on.
+    void close_equilibrium(Step* s);
 };
 
 // The reply of `inputs`, built by StepStatisticsJobs on `host`, for a reply whose run had no host

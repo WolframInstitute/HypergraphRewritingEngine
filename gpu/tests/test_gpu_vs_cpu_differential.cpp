@@ -70,6 +70,8 @@ struct Workload {
     uint32_t max_successor_states_per_parent = 0;
     uint32_t matches_per_state_rule = 0;
     double   exploration_probability = 1.0;
+    // Forwarded to EvolveInput::persistent_blocks (0 keeps the default grid).
+    uint32_t persistent_blocks = 0;
     // Collapse isomorphic initial states under quotient exploration (default off).
 };
 
@@ -390,6 +392,7 @@ hg_gpu::EvolveInput make_input(const Workload& w) {
     in.max_successor_states_per_parent = w.max_successor_states_per_parent;
     in.matches_per_state_rule = w.matches_per_state_rule;
     in.exploration_probability = w.exploration_probability;
+    in.persistent_blocks = w.persistent_blocks;
     return in;
 }
 
@@ -1943,6 +1946,46 @@ TEST(Matching, EveryArityMatchesTheSameEdgesAcrossEngines) {
     }
 }
 
+// A state's matching is split into parts over ranges of its anchor edges, and the number of parts
+// follows the grid (match_parts_of): one part on a grid of one block, up to one part per anchor
+// on the default grid. Every grid keeps the host's transitions, on an 8 x 8 directed torus (128
+// edges) under MaxStatesPerStep and MatchesPerStep with None states, and uncapped with Full
+// states. MaxStatesPerStep under Full states keeps every transition into the N lowest successor
+// classes, and the torus's symmetry ties about a thousand of them at each step: step 1 has
+// 1,012,224 candidates, each a successor IR on the selecting warp.
+TEST(Matching, SplitMatchingKeepsTheHostsTransitionsOnEveryGrid) {
+    Workload w;
+    w.name = "torus8";
+    w.rules = {rule({{0, 1}, {1, 2}, {2, 3}, {3, 4}}, {{1, 5}, {5, 4}, {3, 0}, {0, 5}})};
+    std::vector<std::vector<hg_gpu::VertexId>> torus;
+    for (uint32_t i = 0; i < 8; ++i)
+        for (uint32_t j = 0; j < 8; ++j) {
+            torus.push_back({i * 8 + j, ((i + 1) % 8) * 8 + j});
+            torus.push_back({i * 8 + j, i * 8 + (j + 1) % 8});
+        }
+    w.initial_state = torus;
+    w.random_seed = 0x5EED;
+    for (int variant = 0; variant < 3; ++variant) {
+        Workload v = w;
+        v.canon_mode = variant == 2 ? hg_gpu::CanonicalizationMode::Full
+                                    : hg_gpu::CanonicalizationMode::None;
+        v.num_steps = variant == 2 ? 1 : 5;
+        if (variant < 2) v.max_states_per_step = 3;
+        v.step_cap_counts_matches = variant == 1;
+        const NormalizedResult cpu = run_cpu(v);
+        for (const uint32_t blocks : {1u, 7u, 128u, 0u}) {
+            Workload g = v;
+            g.persistent_blocks = blocks;
+            const NormalizedResult gpu = run_gpu(g);
+            EXPECT_GT(gpu.event_keys.size(), 0u) << "variant " << variant << " grid " << blocks;
+            EXPECT_EQ(cpu.canonical_state_hashes, gpu.canonical_state_hashes)
+                << "variant " << variant << " grid " << blocks << ": different states";
+            EXPECT_EQ(cpu.event_keys, gpu.event_keys)
+                << "variant " << variant << " grid " << blocks << ": different transitions";
+        }
+    }
+}
+
 // MaxSuccessorStatesPerParent keeps the k lowest-ranked transitions of each state on both engines:
 // the host at the state's drain, the device in the block that matches every rule of the state. A
 // transition not kept is not taken on either. Before the device took the same choice, the host
@@ -2410,8 +2453,8 @@ TEST(RecordSet, ClassMultiplicitiesMatchTheHost) {
 // rules.
 TEST(RecordSet, ClassInvariantsMatchTheHost) {
     auto same = [](double a, double b) { return std::memcmp(&a, &b, sizeof a) == 0; };
-    size_t compared = 0, with_growth = 0, with_bundle = 0, with_lensing = 0, with_rotation = 0,
-           ternary = 0;
+    size_t compared = 0, with_growth = 0, ternary = 0, with_gap = 0, with_holonomy = 0, with_alignment = 0;
+    size_t with_bundle = 0, with_lensing = 0, with_rotation = 0;
     for (const uint32_t graph : {hgcommon::SG_GRAPH_CONSECUTIVE, hgcommon::SG_GRAPH_ALL_PAIRS})
     for (Workload w : build_corpus()) {
         if (w.num_steps == 0) continue;
@@ -2503,6 +2546,9 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
                   &hgcommon::SgGeometry::clustering, &hgcommon::SgGeometry::euler_excess,
                   &hgcommon::SgGeometry::charge, &hgcommon::SgGeometry::charge_max,
                   &hgcommon::SgGeometry::dimension_gradient,
+                  &hgcommon::SgGeometry::rips_betti1, &hgcommon::SgGeometry::metric_tensor_gap,
+                  &hgcommon::SgGeometry::holonomy_triangle,
+                  &hgcommon::SgGeometry::holonomy_square,
                   &hgcommon::SgGeometry::proper_time,
                   &hgcommon::SgGeometry::proper_time_variance,
                   &hgcommon::SgGeometry::bundle_spread,
@@ -2514,6 +2560,13 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
                   &hgcommon::SgGeometry::rotation_exponent,
                   &hgcommon::SgGeometry::rotation_residual})
                 EXPECT_TRUE(same(a->g.*f, b->g.*f)) << w.name << " " << a->g.*f << " " << b->g.*f;
+            for (uint32_t k = 0; k < 3; ++k) {
+                EXPECT_TRUE(same(a->g.clique_betti[k], b->g.clique_betti[k])) << w.name;
+                EXPECT_TRUE(same(a->g.alignment_moment[k], b->g.alignment_moment[k])) << w.name;
+            }
+            if (a->g.defined & hgcommon::SG_BRANCH_ALIGNMENT) ++with_alignment;
+            if (a->g.defined & hgcommon::SG_METRIC_TENSOR) ++with_gap;
+            if (a->g.defined & (hgcommon::SG_HOLONOMY | hgcommon::SG_HOLONOMY_SQUARE)) ++with_holonomy;
             for (uint32_t k = 0; k < hgcommon::SG_GROWTH_VALUES; ++k)
                 EXPECT_TRUE(same(a->g.growth[k], b->g.growth[k])) << w.name << " growth " << k;
             if (a->g.defined & hgcommon::SG_VOLUME_GROWTH) ++with_growth;
@@ -2546,6 +2599,12 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
     EXPECT_GT(with_lensing, 0u);
     EXPECT_GT(with_rotation, 0u);
     EXPECT_GT(ternary, 0u);
+    EXPECT_GT(with_gap, 0u);
+    EXPECT_GT(with_holonomy, 0u);
+    EXPECT_GT(with_alignment, 0u);
+    std::printf("[ RecordSet ] %zu classes with a branch alignment\n", with_alignment);
+    std::printf("[ RecordSet ] %zu classes with a metric tensor gap, %zu with a holonomy angle\n",
+                with_gap, with_holonomy);
     std::printf("[ RecordSet ] %zu classes, %zu with a volume-growth fit, %zu with a hyperedge of "
                 "3 or more vertices under AllPairs\n",
                 compared, with_growth, ternary);

@@ -105,6 +105,9 @@ struct SgArena {
     size_t capacity = 0;
     size_t used = 0;
     bool failed = false;
+    // Bytes the stages that size their arrays from the graph take or ask for
+    // (state_topology_core.hpp), beyond sg_metric_bytes; a failed call's `needed` adds them.
+    size_t extra = 0;
 
     template <class T>
     HG_HD T* take(size_t n) {
@@ -456,10 +459,15 @@ enum : uint32_t {
     SG_CYCLE_CURVATURE = 1u << 16,       // cycle_curvature_total: a vertex's link is a cycle
     SG_PARTICLE = 1u << 17,              // clustering, euler_excess, charge, charge_max: n >= 1
     SG_DIMENSION_GRADIENT = 1u << 18,    // dimension_gradient: |G'| >= 2
-    SG_GEODESIC_BUNDLE = 1u << 19,       // proper_time, proper_time_variance, bundle_spread,
+    SG_TOPOLOGY = 1u << 19,              // clique_betti, rips_betti1: n >= 1
+    SG_METRIC_TENSOR = 1u << 20,         // metric_tensor_gap: R' >= 2
+    SG_HOLONOMY = 1u << 21,              // holonomy_triangle: a triangle, max degree <= 6
+    SG_HOLONOMY_SQUARE = 1u << 22,       // `defined` only: holonomy_square (SG_HOLONOMY's family)
+    SG_BRANCH_ALIGNMENT = 1u << 23,      // alignment_moment: 4 <= |G'| <= 256, mu4 < mu5
+    SG_GEODESIC_BUNDLE = 1u << 24,       // proper_time, proper_time_variance, bundle_spread,
                                          // geodesic_curvature: G has an edge
-    SG_LENSING = 1u << 20,               // lensing_*: a pair of G' passes near the centre, M > 0
-    SG_ROTATION = 1u << 21,              // orbital_velocity, rotation_*: R_C >= 2
+    SG_LENSING = 1u << 25,               // lensing_*: a pair of G' passes near the centre, M > 0
+    SG_ROTATION = 1u << 26,              // orbital_velocity, rotation_*: R_C >= 2
 };
 
 // "StepStatisticsMeasures": the `want` bits of each measure family. SG_MEASURES_BASE is the set
@@ -469,7 +477,8 @@ constexpr uint32_t SG_COMBINATORIAL = SG_EULER | SG_RIM | SG_CYCLE_CURVATURE;
 constexpr uint32_t SG_GEODESIC_ANALYSIS = SG_GEODESIC_BUNDLE | SG_LENSING | SG_ROTATION;
 constexpr uint32_t SG_MEASURES_ALL = SG_MEASURES_BASE | SG_VOLUME_GROWTH | SG_GEODESIC |
                                      SG_NONLAZY_OLLIVIER | SG_COMBINATORIAL | SG_PARTICLE |
-                                     SG_DIMENSION_GRADIENT | SG_GEODESIC_ANALYSIS;
+                                     SG_DIMENSION_GRADIENT | SG_TOPOLOGY | SG_METRIC_TENSOR |
+                                     SG_HOLONOMY | SG_BRANCH_ALIGNMENT | SG_GEODESIC_ANALYSIS;
 
 // The per-vertex distributions of a state, in this order.
 enum : uint32_t {
@@ -632,6 +641,17 @@ struct SgGeometry {
     double rotation_residual = 0.0;
     uint32_t rotation_radii = 0;         // R_C: entries written to the rotation-curve output
     uint32_t reserved2 = 0;
+    // b0, b1, b2 of the clique complex of G and b1 of its Vietoris-Rips complex at r = 1, over
+    // GF(2); the metric tensor gap; the mean holonomy angles of the triangles and of the
+    // chordless 4-cycles (state_topology_core.hpp).
+    double clique_betti[3] = {0.0, 0.0, 0.0};
+    double rips_betti1 = 0.0;
+    double metric_tensor_gap = 0.0;
+    double holonomy_triangle = 0.0;
+    double holonomy_square = 0.0;
+    // The principal moments of the curvature-weighted inertia of G''s spectral embedding over
+    // the total mass, descending (state_alignment_core.hpp).
+    double alignment_moment[3] = {0.0, 0.0, 0.0};
 };
 
 // Doubles of scratch sg_growth_fit takes for k quotients.
@@ -689,6 +709,15 @@ HG_HD inline size_t sg_metric_bytes(size_t n, size_t max_degree, size_t edges, u
     if (want & (SG_LENSING | SG_ROTATION)) bytes += 2 * 8 + n1 * (2 * 4) + 3 * 8;
     if (want & SG_LENSING) bytes += size_t{lanes} * n1 * (4 * 4) + n1 * (4 + 3 * 8) + 8 * 8;
     if (want & SG_ROTATION) bytes += n1 * (2 * 4 + 8) + 3 * 8;
+    // The counting scratch of state_topology_core.hpp's st_families_of: four arrays of n + 1
+    // words.
+    if (want & (SG_TOPOLOGY | SG_METRIC_TENSOR | SG_HOLONOMY)) bytes += 4 * (n1 * 4 + 8);
+    // The branch alignment's Laplacian and eigenvalues (state_alignment_core.hpp, at most 256
+    // vertices) and its vertex index.
+    if (want & SG_BRANCH_ALIGNMENT) {
+        const size_t k = n < 256 ? n : 256;
+        bytes += 8 * (k * k + 3 * k + 3) + 4 * n1 + 2 * 8;
+    }
     return bytes;
 }
 
@@ -849,6 +878,15 @@ HG_HD inline void sg_growth_of(const uint32_t* shell, const uint32_t* ball, cons
     }
 }
 
+}  // namespace common
+}  // namespace HG_NAMESPACE
+
+#include "hgcommon/state_topology_core.hpp"
+#include "hgcommon/state_alignment_core.hpp"
+
+namespace HG_NAMESPACE {
+namespace common {
+
 // Computes the geometry of G already built in `arena`. `ball_dimension` receives the mean
 // over vertices of the ball-growth term at r = 1..R in entries 0..R-1, up to `ball_capacity`
 // entries. `want` is a mask of the SG_* values to compute: the radius and eccentricity are
@@ -904,8 +942,9 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
     const bool want_lensing = (want & SG_LENSING) != 0;
     const bool want_rotation = (want & SG_ROTATION) != 0;
     const bool want_centre = want_lensing || want_rotation;
+    const bool want_alignment = (want & SG_BRANCH_ALIGNMENT) != 0;
     const bool want_sub = want_dists || (want & SG_LARGEST_DIMENSION) != 0 || want_gradient ||
-                          want_centre;
+                          want_centre || want_alignment;
     const uint32_t n = g.n;
     const uint32_t L = par.width(), me = par.rank();
     if (par.leader()) {
@@ -1381,6 +1420,9 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
     const uint32_t* sub = connected ? nullptr : largest;
     const uint32_t ns = connected ? n : (largest ? largest_n : 0u);
     auto vat = [&](uint32_t i) { return sub ? sub[i] : i; };
+    if ((want & (SG_TOPOLOGY | SG_METRIC_TENSOR | SG_HOLONOMY)) &&
+        !st_families_of(g, arena, out, want, par, ecc, sub, ns))
+        return false;
     if (want_growth && par.leader()) {
         // The six fits over the vertices of G' with one, in vertex order.
         uint32_t fitted = 0;
@@ -1482,9 +1524,11 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
             out.dimension_gradient = lap_total / ns;
             out.defined |= SG_DIMENSION_GRADIENT;
         }
-        if (want_dists) {
-            for (uint32_t i = 0; i < ns; ++i)
-                sg_dist_add(dists[SG_DIST_LOCAL_DIMENSION], SG_DIST_LOCAL_DIMENSION, dimv[vat(i)]);
+        if (want_dists || want_alignment) {
+            if (want_dists)
+                for (uint32_t i = 0; i < ns; ++i)
+                    sg_dist_add(dists[SG_DIST_LOCAL_DIMENSION], SG_DIST_LOCAL_DIMENSION,
+                                dimv[vat(i)]);
             // The per-radius coefficients of K_v at D = the LargestComponentDimension.
             const double c = dm_tgamma(mean / 2.0 + 1.0) / dm_pow(pi, mean / 2.0);
             for (uint32_t r = 1; r <= R; ++r) {
@@ -1684,7 +1728,7 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
     }
 
     // PASS 3: K_v for the vertices of G', from each vertex's balls to radius R'.
-    if (part && want_dists) {
+    if (part && (want_dists || want_alignment)) {
         par.sync();
         const double c = ric_a[0];
         for (uint32_t i = me; i < ns; i += L) {
@@ -1701,9 +1745,24 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
             ricv[v] = s / R;
         }
         par.sync();
-        if (par.leader())
+        if (par.leader() && want_dists)
             for (uint32_t i = 0; i < ns; ++i)
                 sg_dist_add(dists[SG_DIST_RICCI], SG_DIST_RICCI, ricv[vat(i)]);
+    }
+    // Branch alignment from K_v, on the leader (state_alignment_core.hpp).
+    if (part && want_alignment) {
+        double* sa = arena.take<double>(sa_alignment_doubles(ns));
+        uint32_t* sa_index = arena.take<uint32_t>(n1);
+        if (arena.failed) return false;
+        if (par.leader()) {
+            for (uint32_t v = 0; v < n; ++v) sa_index[v] = ST_NONE;
+            double moments[3] = {0.0, 0.0, 0.0};
+            if (sa_alignment_of(g, vat, ns, ricv, sa, sa_index, moments)) {
+                for (uint32_t k = 0; k < 3; ++k) out.alignment_moment[k] = moments[k];
+                out.defined |= SG_BRANCH_ALIGNMENT;
+            }
+        }
+        par.sync();
     }
 
     if (!whole || !(want & SG_FISHER)) return true;
@@ -1787,6 +1846,7 @@ HG_HD bool sg_state_geometry(const EdgeList& el, unsigned char* scratch, size_t 
                         largest_n, dists, vertex_curvature, vertex_values, log_geodesic,
                         log_geodesic_capacity, rotation_curve, rotation_capacity)) {
         needed = built + sg_metric_bytes(g.n, g.max_degree, g.edges, par.width(), want);
+        needed += arena.extra;
         return false;
     }
     needed = arena.used;
