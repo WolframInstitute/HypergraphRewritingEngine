@@ -100,7 +100,7 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 
 - `"ArityHistogram"` and `"DegreeHistogram"` count the hyperedges by arity and the vertices by degree over the step's states. `"AritySignatureHistogram"` and `"DegreeSequenceHistogram"` count the states by their list of hyperedge arities and by their degree sequence. All four are weighted as `"Invariants"` is.
 
-- The geometry entries of `"Invariants"` are computed on a state's graph: its vertices, with an edge between consecutive vertices of each hyperedge. A state where an entry is undefined is left out of that entry, so `"N"` counts the states where it is defined.
+- The geometry entries of `"Invariants"` are computed on a state's graph: its vertices, with an edge between consecutive vertices of each hyperedge, or between every two vertices of a hyperedge under `"StatisticsGraph" -> "AllPairs"`. A state where an entry is undefined is left out of that entry, so `"N"` counts the states where it is defined.
 
 |   |   |
 |---|---|
@@ -157,6 +157,7 @@ RelatedTutorials: [GettingStarted, AdvancedMultiwayEvolution, SamplingAndPruning
 | `"IncludeCanonicalHashes"` | `False` | whether each state record has a `"CanonicalHash"` |
 | `"IncludeVertexCurvature"` | `False` | whether each state record has a `"VertexCurvature"` |
 | `"StepStatisticsWeighting"` | `"States"` | how `"StepStatistics"` counts a class: `"States"` (once per state in the class) or `"Classes"` (once) |
+| `"StatisticsGraph"` | `"Consecutive"` | the graph of a state that the geometry entries of `"StepStatistics"` and `"VertexCurvature"` read: `"Consecutive"` joins the consecutive vertices of each hyperedge, `"AllPairs"` joins every two vertices of a hyperedge |
 | `"StepStatisticsBranchial"` | `None` | the per-step branchial metrics `"StepStatistics"` adds: `None`, `"Graph"`, `"Overlap"`, a list of them, or `All` |
 | `"StepStatisticsMatrices"` | `None` | the state x state matrices `"StepStatistics"` adds under `"StateMatrices"`: `None`, a matrix name, a list of them, or `All` |
 | `"StepStatisticsMatrixLimit"` | `Automatic` | the most bytes a step's `"StateMatrices"` may take while they are built; `Automatic` is a quarter of the available memory |

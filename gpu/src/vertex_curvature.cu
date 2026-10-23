@@ -35,7 +35,7 @@ __global__ void k_vertex_curvature(const uint32_t* state_edges, const uint32_t* 
                                    const uint32_t* verts, const uint32_t* todo, uint32_t ntodo,
                                    uint32_t* next, unsigned char* scratch, uint64_t slice,
                                    double* k, const uint64_t* k_off, uint8_t* done,
-                                   uint64_t* need) {
+                                   uint64_t* need, uint32_t graph) {
     const uint32_t lane = threadIdx.x & 31u;
     const uint64_t warp = static_cast<uint64_t>(blockIdx.x) * kWarpsPerBlock + (threadIdx.x >> 5);
     unsigned char* mine = scratch + warp * slice;
@@ -51,7 +51,8 @@ __global__ void k_vertex_curvature(const uint32_t* state_edges, const uint32_t* 
         size_t needed = 0;
         const bool ok = hgcommon::sg_state_geometry(el, mine, slice, g, nullptr, 0, needed,
                                                     hgcommon::SG_OLLIVIER, par, nullptr, 0,
-                                                    nullptr, k + k_off[s]);
+                                                    nullptr, k + k_off[s], nullptr, nullptr, 0,
+                                                    graph);
         if (lane == 0) {
             if (ok) done[s] = 1;
             else need[s] = needed;
@@ -78,7 +79,7 @@ bool vertex_curvature_device(const std::vector<uint32_t>& state_edges,
                              const std::vector<uint32_t>& verts,
                              const std::vector<uint32_t>& vertex_count,
                              std::vector<double>& k, std::vector<uint64_t>& k_off,
-                             std::vector<uint8_t>& done) {
+                             std::vector<uint8_t>& done, uint32_t graph) {
     const uint32_t states = static_cast<uint32_t>(vertex_count.size());
     k_off.assign(states + 1, 0);
     for (uint32_t s = 0; s < states; ++s) k_off[s + 1] = k_off[s] + vertex_count[s];
@@ -117,7 +118,8 @@ bool vertex_curvature_device(const std::vector<uint32_t>& state_edges,
 
     // The first slice holds a state of 64 edges of arity 2 at maximum degree 8; each later pass
     // takes the largest size a state reported.
-    uint64_t slice = hgcommon::sg_build_bytes(128, 64) + hgcommon::sg_metric_bytes(128, 8, 64, 32);
+    uint64_t slice = hgcommon::sg_build_bytes(128, 64) +
+                     hgcommon::sg_metric_bytes(128, 8, 64, 32, hgcommon::SG_OLLIVIER);
     std::vector<uint32_t> todo(states);
     for (uint32_t s = 0; s < states; ++s) todo[s] = s;
     const uint64_t budget = free_bytes / 4;
@@ -137,7 +139,7 @@ bool vertex_curvature_device(const std::vector<uint32_t>& state_edges,
         HG_CUDA_CHECK(cudaMemset(d_next, 0, sizeof(uint32_t)), "cudaMemset");
         k_vertex_curvature<<<static_cast<uint32_t>(warps / kWarpsPerBlock), 32 * kWarpsPerBlock>>>(
             d_state_edges, d_edge_verts, d_verts, d_todo, static_cast<uint32_t>(todo.size()),
-            d_next, d_scratch, slice, d_k, d_k_off, d_done, d_need);
+            d_next, d_scratch, slice, d_k, d_k_off, d_done, d_need, graph);
         HG_CUDA_CHECK(cudaGetLastError(), "k_vertex_curvature");
         HG_CUDA_CHECK(cudaMemcpy(done.data(), d_done, states, cudaMemcpyDeviceToHost),
                       "cudaMemcpy");

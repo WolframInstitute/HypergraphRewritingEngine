@@ -330,13 +330,17 @@ class m(c, d) times.
 
 **`StepStatistics` geometry.** Fourteen more `Invariants` entries, each an isomorphism invariant of
 a state, computed by `common/include/hgcommon/state_geometry_core.hpp`. A state's graph G is
-the undirected simple graph on the state's vertices with an edge between the consecutive
-vertices of each hyperedge ({a, b, c} gives a-b and b-c); self-loops are dropped and a
-repeated pair is one edge. B(v, r) is the set of vertices at distance at most r from v, so
-|B(v, 0)| = 1, and R is the graph radius of G. For a hyperedge of three or more vertices G differs
-from the graph of the Infrageometry paclet's InfraSubstrate, which joins every two vertices of a
-hyperedge (ResourceFunction["HypergraphToGraph"], from SetReplace's HypergraphToGraph.m). A
-binary state has the same graph in both. A state for which a value is undefined is left
+the undirected simple graph on the state's vertices whose edges join the vertices of each
+hyperedge by the rule of the option `"StatisticsGraph"`. Under `"Consecutive"`, the default,
+the consecutive vertices of each hyperedge are joined ({a, b, c} gives a-b and b-c). Under
+`"AllPairs"` every two vertices of a hyperedge are joined ({a, b, c} gives a-b, a-c and b-c).
+Self-loops are dropped and a repeated pair is one edge. Both rules give the same components, and
+the same graph for a state whose hyperedges have at most two vertices. Every value of this
+section and of the sections after it that reads G uses the chosen rule, on both devices, and
+so does `VertexCurvature`. B(v, r) is the set of vertices at distance at most r from v, so
+|B(v, 0)| = 1, and R is the graph radius of G. `"AllPairs"` is the graph of the Infrageometry
+paclet's InfraSubstrate (ResourceFunction["HypergraphToGraph"], the distance-preserving method of
+SetReplace's HypergraphToGraph.m). A state for which a value is undefined is left
 out of that entry's summary, so its `N` counts the states where it is defined.
 
 | Entry | Definition | Undefined when |

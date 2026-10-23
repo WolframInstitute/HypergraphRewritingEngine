@@ -258,6 +258,10 @@ struct RecordSet {
     // branchial relation. On it the relation comes from the replay, and only
     // "BranchialStateEdges" reads the store (records_explored_branchial).
     bool explored_branchial = true;
+    // The rule that joins the vertices of a hyperedge in the graph of the per-state geometry
+    // ("StatisticsGraph"): 0 consecutive vertices, 1 every two vertices (SG_GRAPH_*,
+    // state_geometry_core.hpp).
+    uint32_t statistics_graph = 0;
 };
 
 // Whether a rewrite records its event's branchial pairs in the engine's own store: whenever
