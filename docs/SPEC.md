@@ -487,6 +487,19 @@ topological charge is q_v = log2(max(1, deg v)) (1 - C_v) + 10 x_v.
 combinatorial curvature, and B(v, 3) from the breadth-first search of each vertex that the radius
 takes.
 
+**`StepStatistics` dimension-gradient curvature.** hypergraph_viz's dimension-gradient
+curvature (blackhole/src/curvature_analysis.cpp) is the graph Laplacian of the local dimension:
+for a vertex v of G', L_v is the mean over the neighbours u of v of d_u - d_v, with d_v the local
+dimension of `LargestComponentDimension`. A vertex whose neighbours have higher dimensions has
+L_v > 0.
+
+| Entry | Definition | Undefined when |
+|---|---|---|
+| `DimensionGradientCurvature` | the mean of L_v over the vertices of G' | as `LargestComponentDimension` |
+
+`VertexInvariants` gains `DimensionGradientCurvature`, L_v over G', with 32 bins over [-8, 8).
+It takes O(\|E\|) after the local dimensions.
+
 **Per-vertex curvature.** With `"IncludeVertexCurvature" -> True` each `"States"` record has
 `VertexCurvature`, an association from each vertex of the record's edges that has a neighbour in
 G, ascending, to k_v. It is computed from the edges the record lists, so under

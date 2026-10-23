@@ -147,7 +147,7 @@ geodesicValues[edges_List] := geodesicValues[edges] = Module[{pairs = geodesicPa
         {d, Max[pairs[[All, 1]]]}]|>]];
 
 sgrLogGeodesicCount[edges_List] := N[geodesicValues[edges]["LogGeodesicCount"]];
-geometryNames = Join[{"ClusteringCoefficient", "LocalEulerExcess", "TopologicalCharge",
+geometryNames = Join[{"DimensionGradientCurvature", "ClusteringCoefficient", "LocalEulerExcess", "TopologicalCharge",
   "TopologicalChargeMax", "EulerCharacteristic", "RimFraction", "CombinatorialCurvatureTotal",
   "NonLazyOllivierRicciCurvature", "GeodeticFraction", "SegmentEntropy", "GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
   "WolframRicciCurvatureScalar", "OllivierRicciCurvature", "DegreeEntropy", "LocalEntropy",
@@ -227,6 +227,14 @@ largestComponentGeometry[edges_List] := Module[{g = sgrStateGraph[edges], gp, vs
     "Ricci" -> Association[# -> Mean[Table[
       6 (D + 2)/r^2 (1 - ball[gp, #, r] Gamma[D/2 + 1]/(Pi^(D/2) r^D)), {r, R}]] & /@ vs]|>];
 
+(* L_v over G': the mean over v's neighbours of d_u - d_v, with the 50-digit d_v of
+   largestComponentGeometry. *)
+dimensionGradient[edges_List] := Module[{g = sgrStateGraph[edges], lc},
+  lc = largestComponentGeometry[edges];
+  If[MissingQ[lc], Return[{}]];
+  Function[v, Mean[(lc["Dimensions"][#] - lc["Dimensions"][v]) & /@ AdjacencyList[g, v]]] /@
+    Keys[lc["Dimensions"]]];
+
 sgrVertexInvariants[edges_List] := Module[{g = sgrStateGraph[edges], lc, growth},
   lc = largestComponentGeometry[edges];
   growth = Values[growthOfLargest[edges]];
@@ -236,7 +244,8 @@ sgrVertexInvariants[edges_List] := Module[{g = sgrStateGraph[edges], lc, growth}
     AssociationThread[growthNames -> If[growth === {}, ConstantArray[{}, 6], Transpose[growth]]],
     <|"CombinatorialCurvature" -> sgrCombinatorial[edges]["Curvatures"],
       "ClusteringCoefficient" -> If[VertexCount[g] == 0, {}, sgrParticle[edges][[1]]],
-      "TopologicalCharge" -> If[VertexCount[g] == 0, {}, N[sgrParticle[edges][[3]], 30]]|>]];
+      "TopologicalCharge" -> If[VertexCount[g] == 0, {}, N[sgrParticle[edges][[3]], 30]],
+      "DimensionGradientCurvature" -> dimensionGradient[edges]|>]];
 
 (* The per-vertex distributions' fixed ranges [lo, hi), each cut into 32 equal bins; a value
    outside counts in the end bin. *)
@@ -246,7 +255,7 @@ distributionRange = <|"LocalDimension" -> {0, 8}, "OllivierRicciCurvature" -> {-
   "RiemannianBallScalarCurvature" -> {-24, 8}, "SphereDimension" -> {0, 8},
   "SphereScalarCurvature" -> {-24, 8}, "NonLazyOllivierRicciCurvature" -> {-2, 1},
   "CombinatorialCurvature" -> {-7, 1}, "ClusteringCoefficient" -> {0, 1},
-  "TopologicalCharge" -> {0, 16}|>;
+  "TopologicalCharge" -> {0, 16}, "DimensionGradientCurvature" -> {-8, 8}|>;
 
 sgrPooledDistribution[values_List, name_String] := Module[
   {n = Length[values], lo, hi, w, bin, counts, mn, mx, quantile, out},
@@ -329,6 +338,8 @@ sgrStateGeometry[edges_List] := Module[
     Sequence @@ With[{pv = sgrParticle[edges]},
       Thread[{"ClusteringCoefficient", "LocalEulerExcess", "TopologicalCharge"} -> N[Mean /@ pv]]],
     "TopologicalChargeMax" -> N[Max[sgrParticle[edges][[3]]]],
+    "DimensionGradientCurvature" -> With[{l = dimensionGradient[edges]},
+      If[l === {}, Missing[], N[Mean[l]]]],
     "EulerCharacteristic" -> sgrCombinatorial[edges]["EulerCharacteristic"],
     "RimFraction" -> sgrCombinatorial[edges]["RimFraction"],
     "CombinatorialCurvatureTotal" -> sgrCombinatorial[edges]["CombinatorialCurvatureTotal"],

@@ -507,3 +507,22 @@ TEST(StateMeasures, ParticleMeasures) {
     EXPECT_NEAR(w5.at(hgcommon::SG_GROWTH_VALUES + 1, 0), 0.5, 1e-15);
     EXPECT_NEAR(w5.at(hgcommon::SG_GROWTH_VALUES + 1, 1), 2.0 / 3.0, 1e-15);
 }
+
+// hypergraph_viz curvature_analysis.cpp compute_dimension_gradient_curvature: L_v is the mean
+// over v's neighbours of d_u - d_v. On P4 the ends have d = 1 and the middle vertices
+// d_mid = (log 3 / log 2 + (log 4 - log 3) / (log 3 - log 2)) / 2, so an end has d_mid - 1 and a
+// middle vertex (1 - d_mid) / 2, and the mean is (d_mid - 1) / 4. On a cycle every d_v is equal.
+TEST(StateMeasures, DimensionGradientCurvature) {
+    const double d_mid = (std::log(3.0) / std::log(2.0) +
+                          (std::log(4.0) - std::log(3.0)) / (std::log(3.0) - std::log(2.0))) / 2;
+    const Measured p4 = measure({{1, 2}, {2, 3}, {3, 4}});
+    ASSERT_TRUE(p4.g.defined & hgcommon::SG_DIMENSION_GRADIENT);
+    EXPECT_NEAR(p4.at(hgcommon::SG_GROWTH_VALUES + 4, 0), d_mid - 1.0, 1e-14);
+    EXPECT_NEAR(p4.at(hgcommon::SG_GROWTH_VALUES + 4, 1), (1.0 - d_mid) / 2, 1e-14);
+    EXPECT_NEAR(p4.g.dimension_gradient, (d_mid - 1.0) / 4, 1e-14);
+    EXPECT_EQ(measure(cycle(9)).g.dimension_gradient, 0.0);
+    // A disconnected state given no largest component has no G' and no values.
+    const Measured two = measure({{1, 2}, {2, 3}, {3, 4}, {7, 8}});
+    EXPECT_FALSE(two.g.defined & hgcommon::SG_DIMENSION_GRADIENT);
+    EXPECT_TRUE(std::isnan(two.at(hgcommon::SG_GROWTH_VALUES + 4, 4)));
+}
