@@ -287,6 +287,8 @@ TEST(CapacityOverflow, TheEstimateCoversTheAllocation) {
     base.qe_class_entries = base.qe_instance_entries = base.qe_event_entries =
         base.qe_pair_entries = 1u << 16;
     base.qe_word_entries = 1u << 20;
+    // The match pool is given too, so growing max_states moves only the state tables.
+    base.max_matches = hg_gpu::match_pool_records(base);
     // The first engine of the process also reserves the device stack for every resident
     // thread, and the reservation stays for the process; it is added back below.
     (void)allocated(base);
@@ -334,6 +336,31 @@ TEST(CapacityOverflow, TheEstimateCoversTheAllocation) {
         std::printf("%-22s per entry: allocated %.1f B, estimated %.1f B\n", g.name, per, per_est);
         EXPECT_LE(d_bytes, d_est) << g.name;
     }
+    // The match pool, a 64-bit field, by the same measurement.
+    {
+        hg_gpu::EngineConfig big = base;
+        const uint64_t grow = std::min<uint64_t>(std::max<uint64_t>(base.max_matches * 7u, 1u << 22),
+                                                 1u << 25);
+        big.max_matches = base.max_matches + grow;
+        const int64_t d_bytes = allocated(big) - base_raw;
+        const int64_t d_est = static_cast<int64_t>(hg_gpu::estimated_device_bytes(big)) - base_est;
+        std::printf("%-22s per entry: allocated %.1f B, estimated %.1f B\n", "max_matches",
+                    double(d_bytes) / double(grow), double(d_est) / double(grow));
+        EXPECT_LE(d_bytes, d_est) << "max_matches";
+    }
+}
+
+// A match pool overflow grows the match pool alone: the state, event, edge and vertex pools keep
+// their sizes.
+TEST(CapacityOverflow, TheMatchPoolGrowsAlone) {
+    hg_gpu::EngineConfig cfg;
+    const hg_gpu::EngineConfig before = cfg;
+    ASSERT_TRUE(hg_gpu::grow_config_for(cfg, hg_gpu::ErrorKind::kMatchPoolFull));
+    EXPECT_EQ(hg_gpu::match_pool_records(cfg), 2 * hg_gpu::match_pool_records(before));
+    EXPECT_EQ(cfg.max_states, before.max_states);
+    EXPECT_EQ(cfg.max_events, before.max_events);
+    EXPECT_EQ(cfg.max_edges, before.max_edges);
+    EXPECT_EQ(cfg.max_vertex_slots, before.max_vertex_slots);
 }
 
 // A replay group's overflow doubles that group from its resolved size and leaves the others.

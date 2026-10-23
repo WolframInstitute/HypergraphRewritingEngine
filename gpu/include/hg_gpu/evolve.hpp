@@ -439,6 +439,10 @@ struct EngineConfig {
     // state slot (EngineState::invariant_pool_words). Allocated only when the run records them; grown on
     // kStateInvariantsFull.
     uint64_t state_invariant_words = uint64_t{1} << 20;
+    // Match records (match_pool_records): the rewrite pool, and under MaxStatesPerStep each step's
+    // candidates as well. 0 sizes it at 8 records per state slot. kMatchPoolFull grows it alone.
+    // 64 bits wide so the struct has no padding (PersistentEvolver::run compares configs bytewise).
+    uint64_t max_matches          = 0;
     uint32_t max_edges            = 1u << 16;   // 65K edge slots
     uint32_t max_vertices         = 1u << 16;   // 65K vertex IDs (atomic counter ceiling)
     uint32_t max_vertex_slots     = 1u << 18;   // 256K flat vertex-tuple slots (avg arity ≤ 4)
@@ -632,6 +636,9 @@ EngineConfig config_from_input(const EvolveInput& input);
 
 // The persistent grid of a run on `cfg`: cfg.persistent_grid, or default_persistent_grid().
 uint32_t persistent_grid_of(const EngineConfig& cfg);
+// The match pool's records on `cfg`: cfg.max_matches, or 8 per state slot when it is 0, at most
+// 2^31.
+uint32_t match_pool_records(const EngineConfig& cfg);
 // D3 (docs/TUNING.md): the readable records below which a persistent block claims one record at
 // a time. cfg.lane_backlog, else HG_TUNE_GPU_BACKLOG, else derived_lane_backlog of the grid.
 uint32_t lane_backlog_of(const EngineConfig& cfg);

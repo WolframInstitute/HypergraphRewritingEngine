@@ -194,8 +194,7 @@ struct Engine::Impl {
     explicit Impl(EngineConfig cfg)
         : cfg_(cfg)
         , state_(cfg)
-        , matches_(static_cast<uint32_t>(
-              std::min<uint64_t>(uint64_t{cfg.max_states} * 8u, 1ull << 31)))
+        , matches_(match_pool_records(cfg))
     {}
 
     void reset() {
@@ -722,14 +721,30 @@ EvolveResult Engine::Impl::run(const EvolveInput& in, SessionView* session,
 // Returns true if growth was applied; false for kinds that have no
 // retryable config (kScratchOverflow is a kernel-internal limit and can't
 // be grown by reconfiguring pools).
-// The pools a run fills in proportion to its size: states, events, edges and vertices, and the
-// match pool, which is sized from max_states. When one overflows the run was cut short, so the
-// others' needs were never reached and they overflow on the next attempts in turn (wpp depth 7:
-// state, event, state, edge -- five attempts). They grow together, once per attempt.
+// The pools a run fills in proportion to its size: states, events, edges and vertices. When one
+// overflows the run was cut short, so the others' needs were never reached and they overflow on
+// the next attempts in turn (wpp depth 7: state, event, state, edge -- five attempts). They grow
+// together, once per attempt. The match pool grows alone (grow_match_pool).
 bool is_size_pool(ErrorKind kind) {
     return kind == ErrorKind::kStatePoolFull || kind == ErrorKind::kEventPoolFull ||
-           kind == ErrorKind::kEdgePoolFull || kind == ErrorKind::kVertexPoolFull ||
-           kind == ErrorKind::kMatchPoolFull;
+           kind == ErrorKind::kEdgePoolFull || kind == ErrorKind::kVertexPoolFull;
+}
+
+uint32_t match_pool_records(const EngineConfig& cfg) {
+    const uint64_t n = cfg.max_matches ? uint64_t{cfg.max_matches} : uint64_t{cfg.max_states} * 8u;
+    return static_cast<uint32_t>(std::min<uint64_t>(n, 1ull << 31));
+}
+
+// The match pool after `refused` claims failed: at least twice its records, and at least the
+// next power of two above records + refused, at most 2^31. Under MaxStatesPerStep a step's
+// candidates all claim records before the step is selected, so the refused count of the step
+// that overflowed is its shortfall.
+void grow_match_pool(EngineConfig& cfg, uint32_t refused) {
+    const uint64_t have = match_pool_records(cfg);
+    uint64_t want = 1;
+    while (want < have + refused) want <<= 1;
+    cfg.max_matches =
+        static_cast<uint32_t>(std::min<uint64_t>(std::max(2 * have, want), 1ull << 31));
 }
 
 bool grow_config_for(EngineConfig& cfg, ErrorKind kind);
@@ -788,10 +803,7 @@ bool grow_config_for(EngineConfig& cfg, ErrorKind kind) {
             dbl(cfg.max_branchial_edges);
             return true;
         case ErrorKind::kMatchPoolFull:
-            // Match pool sized as cfg.max_states * 8 in Engine::Impl ctor;
-            // bumping max_states grows both. Edge growth also helps because
-            // each match uses bounded RHS edges.
-            dbl(cfg.max_states);
+            grow_match_pool(cfg, 0);
             return true;
         // Retryable, and it must be: a full dedup map cannot decide whether a state has been
         // seen, so the run keeps states it might have merged and reports an over-complete answer.
@@ -927,6 +939,11 @@ void fit_config_to_cap(EngineConfig& cfg, uint64_t cap) {
     sc(cfg.branchial_pair_slots, 1u<<12); sc(cfg.edge_consumer_nodes, 1u<<12);
     sc(cfg.branchial_index_nodes, 1u<<12);sc(cfg.tr_preds_nodes, 1u<<12);
     sc(cfg.canonical_form_words, 1u<<14);
+    if (cfg.max_matches) {
+        uint32_t m = match_pool_records(cfg);
+        sc(m, 1u<<13);
+        cfg.max_matches = m;
+    }
 }
 
 uint64_t estimated_device_bytes(const EngineConfig& cfg) {
@@ -997,7 +1014,7 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
              map_bytes(u64(cfg.max_states) * 2);
     }
     b += map_bytes(cfg.match_dedup_slots) + map_bytes(cfg.event_canon_slots);
-    b += u64(cfg.max_states)          * 8 * 76;     // matches pool (max_states*8 records ~76B)
+    b += u64(match_pool_records(cfg)) * 76;         // match pool (records ~76B)
     b += u64(cfg.max_states)          * 16;         // d_frontier + d_next_frontier + state_canonical_hash
     b += u64(cfg.max_states)          * 8;          // the state record log (RecordEntry)
 
@@ -1121,6 +1138,12 @@ static EvolveResult run_with_growth(EngineConfig cfg, uint64_t mem_cap, Attempt&
         ErrorKind first_grew = ErrorKind::kCount;
         bool size_grown = false;
         for (const auto& w : result.warnings) {
+            if (w.kind == ErrorKind::kMatchPoolFull) {
+                grow_match_pool(cfg, w.count);
+                if (!any_retryable) first_grew = w.kind;
+                any_retryable = true;
+                continue;
+            }
             if (is_size_pool(w.kind)) {
                 if (!size_grown) grow_size_pools(cfg);
                 size_grown = true;
@@ -1349,6 +1372,9 @@ static EngineConfig covering_config(const EngineConfig& live, const EngineConfig
     widen(&EngineConfig::max_vertices);
     widen(&EngineConfig::max_vertex_slots);
     widen(&EngineConfig::max_states);
+    c.max_matches = (live.max_matches == 0 && own.max_matches == 0)
+                        ? 0u
+                        : std::max(match_pool_records(live), match_pool_records(own));
     widen(&EngineConfig::max_state_edge_total);
     widen(&EngineConfig::inverted_pool);
     widen(&EngineConfig::canonical_form_words);
