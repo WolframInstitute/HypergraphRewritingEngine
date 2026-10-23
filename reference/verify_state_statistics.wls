@@ -27,7 +27,8 @@
    The cases are the fixed corpus below and random rules (genCase, the generator of the
    oracle fuzz) for the seeds given on the command line.
 
-   Run: wolframscript -file reference/verify_state_statistics.wls [seedFrom seedTo]
+   Run: wolframscript -file reference/verify_state_statistics.wls [seedFrom seedTo [cases]]
+   with cases the fixed cases to run, by name and separated by commas, or none.
    Setting HG_VERIFY_LINUX_ENGINE to the Linux path of an hg_evolve binary runs every HGEvolve
    call through wsl.exe on that binary, so a Windows kernel checks a Linux build.
    Output: one PASS/FAIL line per case and route, then STATE STATISTICS VERIFIED or FAILED. *)
@@ -300,6 +301,9 @@ genCase[seed_] := Module[{arities, nR, rules, init, nv},
 
 seeds = If[Length[$ScriptCommandLine] >= 3,
   Range[ToExpression[$ScriptCommandLine[[2]]], ToExpression[$ScriptCommandLine[[3]]]], {}];
+(* A fourth argument names the fixed cases to run, separated by commas; "none" runs none. *)
+If[Length[$ScriptCommandLine] >= 4,
+  cases = Select[cases, MemberQ[StringSplit[$ScriptCommandLine[[4]], ","], #[[1]]] &]];
 (* A random case whose raw run exceeds 400 states is cut to fewer steps. *)
 randomCases = DeleteCases[Table[Module[{c = genCase[s], n},
     While[c[[4]] >= 1 &&
