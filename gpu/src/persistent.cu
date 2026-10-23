@@ -91,6 +91,9 @@ struct StepSelectScratch {
     uint64_t* srank = nullptr;
     uint32_t* order = nullptr;
     uint8_t*  lead = nullptr;
+    // The successor identities the selections have computed, read by the termination detector
+    // as progress (RewriteDetectorCtx::work_progress). Null when nothing reads it.
+    uint32_t* progress = nullptr;
 };
 
 __device__ inline void step_book(const DeviceState& ds, uint32_t d, uint32_t n) {
@@ -188,7 +191,12 @@ __device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
             if (!successor_identity_device(ds, rules[r.rule_id], r.state_id, r.matched_edges,
                                            *succ, sid))
                 sid = hgcommon::SuccessorIdentity{0, 1};
-            if (tid == 0) sel.id[j] = sid;
+            if (tid == 0) {
+                sel.id[j] = sid;
+                if (sel.progress)
+                    cuda::atomic_ref<uint32_t, cuda::thread_scope_device>(*sel.progress)
+                        .fetch_add(1u, cuda::memory_order_relaxed);
+            }
         }
         __syncthreads();
         if (tid == 0) {
@@ -1116,6 +1124,7 @@ __global__ void k_persistent_evolve(
             const WorkLogView<QeTask>*                tasks;
             const WorkLogView<ExpandEntry>*           expands;
             const WorkLogView<RecordEntry>*           records;
+            const uint32_t*                           select_progress;   // null without a step cap
 
             HG_DEV uint32_t num_roles() const { return term.num_roles; }
             HG_DEV uint32_t max_stagnant_rounds() const { return kMaxDetectorRounds; }
@@ -1136,11 +1145,20 @@ __global__ void k_persistent_evolve(
                 if (tasks) n += tasks->done_count();
                 return n;
             }
-            // The replay's raw events: the work a block does inline with no role booking it.
+            // The work a block does inline with no role booking it: the replay's raw events and
+            // the step selections' successor identities (one selection of MaxStatesPerStep under
+            // Full states computes about a million on an 8 x 8 torus, on one warp).
             HG_DEV uint64_t work_progress() const {
-                if (!replay_events) return 0;
-                cuda::atomic_ref<const uint32_t, cuda::thread_scope_device> r(*replay_events);
-                return r.load(cuda::memory_order_relaxed);
+                uint64_t n = 0;
+                if (replay_events) {
+                    cuda::atomic_ref<const uint32_t, cuda::thread_scope_device> r(*replay_events);
+                    n += r.load(cuda::memory_order_relaxed);
+                }
+                if (select_progress) {
+                    cuda::atomic_ref<const uint32_t, cuda::thread_scope_device> r(*select_progress);
+                    n += r.load(cuda::memory_order_relaxed);
+                }
+                return n;
             }
             HG_DEV void backoff_long() const { __nanosleep(4000); }
             HG_DEV void backoff_short() const { __nanosleep(2000); }
@@ -1215,7 +1233,8 @@ __global__ void k_persistent_evolve(
             }
         } dctx{term, found, rewrites_done, ds, phase_cycles,
                qe.enabled ? qe.next_raw_event : nullptr,
-               (qe.enabled && qe.replay) ? &qe.tasks : nullptr, &ev.expand, &ev.records};
+               (qe.enabled && qe.replay) ? &qe.tasks : nullptr, &ev.expand, &ev.records,
+               step_sel.progress};
 
         hgcommon::term_detect_loop(dctx, p1, c1, p2, c2);
         return;
@@ -1970,6 +1989,7 @@ struct EngineState::PersistentScratch {
     uint64_t* step_rank = nullptr;
     uint32_t* step_idx = nullptr;
     uint32_t* step_words = nullptr;
+    uint32_t* step_progress = nullptr;
     uint32_t  step_cap = 0;
     // MaxStatesPerStep counting successor states: StepSelectScratch's id, srank, order and lead,
     // step_succ_cap entries each.
@@ -2006,6 +2026,7 @@ struct EngineState::PersistentScratch {
         if (step_rank) cudaFree(step_rank);
         if (step_idx) cudaFree(step_idx);
         if (step_words) cudaFree(step_words);
+        if (step_progress) cudaFree(step_progress);
         if (explore_frames) cudaFree(explore_frames);
         if (keyed_words) cudaFree(keyed_words);
     }
@@ -2419,10 +2440,14 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
         }
         ps.step_cand->reset_and_clear(&clears);
         clears.add(ps.step_words, sizeof(uint32_t) * 2u, 0);
-        // The batch above was flushed before this block, so these two clears are launched here.
+        if (!ps.step_progress)
+            HG_CUDA_CHECK(cudaMalloc(&ps.step_progress, sizeof(uint32_t)), "step progress");
+        clears.add(ps.step_progress, sizeof(uint32_t), 0);
+        // The batch above was flushed before this block, so these clears are launched here.
         clears.flush();
         cand_v = ps.step_cand->view();
         step_sel = StepSelectScratch{ps.step_rank, ps.step_idx, ps.step_words, ps.step_cap};
+        step_sel.progress = ps.step_progress;
         if (!dsk.step_cap_counts_matches && state_mode != CanonicalizationMode::None) {
             if (ps.step_succ_cap != cap) {
                 ps.free_step_succ();
