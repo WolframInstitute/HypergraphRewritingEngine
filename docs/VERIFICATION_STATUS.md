@@ -263,6 +263,19 @@ still being written (356bce77); worker blocks read the exit flag per lane before
 cursor, the multiplicity cells and the keyed words (48ef4ee8); the saturating add had two bodies
 (920d27a8); `quotient.cu` did not compile under clang's C++17 (84e54324).
 
+### Device sanitizers
+
+`tools/dev/release_gate.sh sanitizers` runs compute-sanitizer memcheck, initcheck, synccheck and racecheck over hg_gpu_tests, gpu_differential_tests and gpu_ffi_tests. Three tests are left out of every sanitizer leg; the script header gives the reason for each. One run of the gate, split into gtest shards of at most 590 s each:
+
+| tool | hg_gpu_tests | gpu_differential_tests | gpu_ffi_tests |
+|---|---|---|---|
+| memcheck | 0 errors (108 tests, before the exclusions; the 8 reports were the intended cudaMalloc failures, which the gate no longer reports) | 0 errors (77 tests, 4 shards) | 0 errors (131 tests, 3 shards) |
+| initcheck | 0 errors (106 tests, 2 shards) | 0 errors (77 tests, 3 shards) | 0 errors (131 tests, 2 shards) |
+| synccheck | 0 errors (108 tests) | 0 errors (77 tests, 3 shards) | 0 errors (131 tests, 2 shards) |
+| racecheck | 0 hazards (106 tests, 4 shards) | not run yet | 0 hazards on 14 of 16 shards (114 tests); shards 1 and 10 did not finish in 590 s |
+
+racecheck sees shared-memory hazards only. Under racecheck one persistent-kernel test of gpu_ffi_tests takes 149 s.
+
 ## TLA+
 
 Five modules under `verification/tla/` (`MCMatchForwarding.tla` instantiates `MatchForwarding.tla`
