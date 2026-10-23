@@ -339,7 +339,7 @@ the same graph for a state whose hyperedges have at most two vertices. Every val
 section and of the sections after it that reads G uses the chosen rule, on both devices, and
 so does `VertexCurvature`. B(v, r) is the set of vertices at distance at most r from v, so
 |B(v, 0)| = 1, and R is the graph radius of G. `"AllPairs"` is the graph of the Infrageometry
-paclet's InfraSubstrate (ResourceFunction["HypergraphToGraph"], the distance-preserving method of
+paclet's InfraSubstrate (Infrageometry@ffa5fe4:InfraGeometry/Kernel/InfraSubstrates/InfraSubstrate.wl:108, ResourceFunction["HypergraphToGraph"], the distance-preserving method of
 SetReplace's HypergraphToGraph.m). A state for which a value is undefined is left
 out of that entry's summary, so its `N` counts the states where it is defined.
 
@@ -494,7 +494,7 @@ For a closed triangulated surface every link is a cycle, `RimFraction` is 0 and
 neighbour lists, and a walk around the link: O(Σ_v Σ_{u ~ v} (deg u + deg v)) per state.
 
 **`StepStatistics` particle measures.** The measures of hypergraph_viz's particle detection
-(blackhole/src/particle_detection.cpp), per vertex v of G. The clustering coefficient C_v is the
+(hypergraph_viz@0fb63e5:blackhole/src/particle_detection.cpp:145-251), per vertex v of G. The clustering coefficient C_v is the
 number of triangles at v over deg v (deg v - 1) / 2, and 0 for a vertex of degree below 2. The
 Euler excess x_v compares the E edges among the V vertices of B(v, 3) with the planar bound
 P = 3V - 6 (V(V - 1)/2 when V < 3): x_v = (E - P) / P when E > P, and 0 otherwise. The
@@ -513,7 +513,7 @@ combinatorial curvature, and B(v, 3) from the breadth-first search of each verte
 takes.
 
 **`StepStatistics` dimension-gradient curvature.** hypergraph_viz's dimension-gradient
-curvature (blackhole/src/curvature_analysis.cpp) is the graph Laplacian of the local dimension:
+curvature (hypergraph_viz@0fb63e5:blackhole/src/curvature_analysis.cpp:211-266) is the graph Laplacian of the local dimension:
 for a vertex v of G', L_v is the mean over the neighbours u of v of d_u - d_v, with d_v the local
 dimension of `LargestComponentDimension`. A vertex whose neighbours have higher dimensions has
 L_v > 0.

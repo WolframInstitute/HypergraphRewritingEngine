@@ -1,6 +1,7 @@
 // The per-state measures of hgcommon/state_geometry_core.hpp defined in docs/SPEC.md
 // ("StepStatistics volume growth" and the sections after it), on graphs with known values.
-// The known values are those of the Infrageometry paclet's tests (VolumeGrowthTests.wlt and the
+// The known values are those of the Infrageometry paclet's tests at Infrageometry@ffa5fe4
+// (InfraGeometry/Tests: VolumeGrowthTests.wlt and the
 // others named at each test). reference/verify_state_statistics.wls checks the same functions,
 // through "StepStatistics", against reference/StateGeometryReference.wl on random states.
 
