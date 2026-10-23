@@ -991,7 +991,11 @@ const hgcommon::StateInvariantRecord* Hypergraph::record_state_invariants(
     for (;;) {
         auto* scratch = static_cast<unsigned char*>(worker_scratch().allocate_raw(bytes, 8));
         uint64_t needed = 0;
-        if (hgcommon::state_record(off, verts, m, goff, gverts, gm, scratch, bytes, needed, r))
+        if (hgcommon::state_record(off, verts, m, goff, gverts, gm, scratch, bytes, needed, r,
+                                   hgcommon::IrSerial{},
+                                   statistics_graph_.load(std::memory_order_relaxed),
+                                   hgcommon::SG_MEASURES_BASE |
+                                       statistics_measures_.load(std::memory_order_relaxed)))
             break;
         bytes = needed > bytes ? needed : 2 * bytes;
     }
@@ -2726,6 +2730,8 @@ void Hypergraph::set_record_set(RecordSet r) {
     record_raw_counts_only_.store(r.raw_counts_only, std::memory_order_relaxed);
     record_multiplicities_.store(r.multiplicities, std::memory_order_relaxed);
     record_state_invariants_.store(r.state_invariants, std::memory_order_relaxed);
+    statistics_graph_.store(r.statistics_graph, std::memory_order_relaxed);
+    statistics_measures_.store(r.statistics_measures, std::memory_order_relaxed);
     record_relation_lists_.store(r.relation_lists, std::memory_order_relaxed);
     record_event_lists_.store(r.event_lists, std::memory_order_relaxed);
     record_explored_branchial_.store(r.explored_branchial, std::memory_order_relaxed);
@@ -2736,7 +2742,7 @@ void Hypergraph::set_record_set(RecordSet r) {
 }
 
 RecordSet Hypergraph::record_set() const {
-    return RecordSet{record_causal_.load(std::memory_order_relaxed),
+    RecordSet r{record_causal_.load(std::memory_order_relaxed),
                      record_branchial_.load(std::memory_order_relaxed),
                      record_state_events_.load(std::memory_order_relaxed),
                      record_raw_events_.load(std::memory_order_relaxed),
@@ -2746,6 +2752,9 @@ RecordSet Hypergraph::record_set() const {
                      record_relation_lists_.load(std::memory_order_relaxed),
                      record_event_lists_.load(std::memory_order_relaxed),
                      record_explored_branchial_.load(std::memory_order_relaxed)};
+    r.statistics_graph = statistics_graph_.load(std::memory_order_relaxed);
+    r.statistics_measures = statistics_measures_.load(std::memory_order_relaxed);
+    return r;
 }
 
 // The per-state event list and the branchial pair relation are recorded independently: they feed

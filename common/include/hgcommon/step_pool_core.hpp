@@ -3,9 +3,9 @@
 // WHAT ONE CLASS ADDS TO ITS STEP'S "StepStatistics" POOL, one body for host and device.
 //
 // A step's pool is a multiset of (slot, key, weight) entries and a few integer totals. A slot is
-// one pooled quantity (an invariant, the ball-growth dimension at a radius, the high or low
-// double of a power sum of a per-vertex distribution, an arity, a degree, a class's
-// multiplicity); the key is the value,
+// one pooled quantity (an invariant, the ball-growth dimension at a radius, the mean log
+// geodesic count at a distance, the high or low double of a power sum of a per-vertex
+// distribution, an arity, a degree, a class's multiplicity); the key is the value,
 // and the weight is how many raw states (or classes, under "StepStatisticsWeighting" ->
 // "Classes") carry it. Equal (slot, key) entries add their weights, saturating at 2^63 - 1, and
 // the totals add or take extremes. Every operation commutes, so the pool is the same whichever
@@ -29,14 +29,16 @@ namespace common {
 // The slots. Slots below SP_MULTIPLICITY and from SP_DIST_SUM on hold doubles as sp_key_of
 // keys; SP_ARITY, SP_DEGREE and SP_MULTIPLICITY hold integers as themselves.
 enum : uint32_t {
-    SP_INVARIANTS = 0,           // the 25 "Invariants" in reply order, slots 0..24
-    SP_NUM_INVARIANTS = 25,
-    SP_ARITY = 25,               // a hyperedge's arity
-    SP_DEGREE = 26,              // a vertex's slot degree
-    SP_MULTIPLICITY = 27,        // a class's raw state count, weight 1 per class
-    SP_DIST_SUM = 28,            // distribution k's sum of x^(j+1): slot 28 + 8 k + 2 j for its
-                                 // high double, + 1 for its low double
-    SP_BALL = 28 + 8 * SG_DISTS, // the ball-growth dimension at radius r: slot SP_BALL + r - 1
+    SP_INVARIANTS = 0,           // the 42 "Invariants" in reply order, slots 0..41
+    SP_NUM_INVARIANTS = 42,
+    SP_ARITY = SP_NUM_INVARIANTS,        // a hyperedge's arity
+    SP_DEGREE = SP_NUM_INVARIANTS + 1,   // a vertex's slot degree
+    SP_MULTIPLICITY = SP_NUM_INVARIANTS + 2,  // a class's raw state count, weight 1 per class
+    SP_DIST_SUM = SP_NUM_INVARIANTS + 3, // distribution k's sum of x^(j+1): slot SP_DIST_SUM +
+                                         // 8 k + 2 j for its high double, + 1 for its low double
+    SP_BALL = SP_DIST_SUM + 8 * SG_DISTS,  // the ball-growth dimension at radius r: slot
+                                           // SP_BALL + 2 (r - 1); the mean log geodesic count
+                                           // at distance d: slot SP_BALL + 2 (d - 1) + 1
 };
 
 HG_HD inline bool sp_integer_slot(uint32_t slot) {
@@ -119,6 +121,23 @@ HG_HD inline void sp_add_class(const StateInvariantRecord& r, uint64_t w, uint64
     }
     if (g.defined & SG_OLLIVIER_MORAN) put(23, g.ollivier_moran_i);
     if (g.defined & SG_OLLIVIER_DEGREE) put(24, g.ollivier_degree_correlation);
+    if (g.defined & SG_VOLUME_GROWTH)
+        for (uint32_t k = 0; k < SG_GROWTH_VALUES; ++k) put(25 + k, g.growth[k]);
+    if (g.defined & SG_GEODESIC) {
+        put(31, g.geodetic_fraction);
+        put(32, g.segment_entropy);
+    }
+    if (g.defined & SG_NONLAZY_OLLIVIER) put(33, g.nonlazy_ollivier);
+    if (g.defined & SG_EULER) put(34, g.euler_characteristic);
+    if (g.defined & SG_RIM) put(35, g.rim_fraction);
+    if (g.defined & SG_CYCLE_CURVATURE) put(36, g.cycle_curvature_total);
+    if (g.defined & SG_PARTICLE) {
+        put(37, g.clustering);
+        put(38, g.euler_excess);
+        put(39, g.charge);
+        put(40, g.charge_max);
+    }
+    if (g.defined & SG_DIMENSION_GRADIENT) put(41, g.dimension_gradient);
 
     const uint32_t* ar = r.arity_runs();
     for (uint32_t i = 0; i < r.num_arity_runs; ++i)
@@ -138,7 +157,8 @@ HG_HD inline void sp_add_class(const StateInvariantRecord& r, uint64_t w, uint64
         for (uint32_t b = 0; b < SG_DIST_BINS; ++b)
             if (d.bins[b]) sink.bin(k, b, qm_sat_mul(d.bins[b], w));
     }
-    for (uint32_t b = 0; b < r.num_ball; ++b) put(SP_BALL + b, r.ball()[b]);
+    for (uint32_t b = 0; b < r.num_ball; ++b) put(SP_BALL + 2 * b, r.ball()[b]);
+    for (uint32_t d = 0; d < r.num_geodesic; ++d) put(SP_BALL + 2 * d + 1, r.geodesic()[d]);
 }
 
 }  // namespace common

@@ -2657,6 +2657,53 @@ TEST(GpuBinaryGate, VertexCurvatureAgreesOnBothDevices) {
     worker_stop(w);
 }
 
+// "StatisticsGraph" on a rule of ternary hyperedges: under each rule both devices give the same
+// "StepStatistics" bytes, and the two rules give different statistics.
+TEST(GpuBinaryGate, StatisticsGraphAgreesAcrossDevices) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    if (!CpuWorker::built()) GTEST_SKIP() << "hg_evolve is not built here";
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    CpuWorker cpu;
+    ASSERT_TRUE(cpu.ok);
+    std::vector<uint8_t> stats[2];
+    int i = 0;
+    for (const char* graph : {"Consecutive", "AllPairs"}) {
+        const auto job = build_input({{{1, 2, 3}}}, {{1, 2, 3}}, {{1, 2, 4}, {4, 3, 2}}, 4,
+                                     [&](wxf::Writer& o) {
+                                         put_str_list_option(o, "RequestedData",
+                                                             {"States", "StepStatistics"});
+                                         put_str_option(o, "CanonicalizeStates", "Full");
+                                         put_str_option(o, "IncludeVertexCurvature", "True");
+                                         put_str_option(o, "StatisticsGraph", graph);
+                                         put_str_list_option(
+                                             o, "StepStatisticsMeasures",
+                                             {"VolumeGrowth", "Geodesics", "EdgeCurvature",
+                                              "Combinatorial", "Particles", "DimensionGradient"});
+                                     },
+                                     5);
+        const auto host = cpu(job);
+        const auto device = worker_call(w, job);
+        ASSERT_FALSE(host.empty()) << cpu.w.last_error;
+        if (device.empty()) {
+            worker_stop(w);
+            GTEST_SKIP() << "the worker returned no result (no usable device?)";
+        }
+        stats[i] = value_bytes(host, "StepStatistics");
+        ASSERT_FALSE(stats[i].empty()) << graph;
+        EXPECT_EQ(value_bytes(device, "StepStatistics"), stats[i]) << graph;
+        ++i;
+    }
+    EXPECT_NE(stats[0], stats[1]);
+    worker_stop(w);
+}
+
 // A quotient session opened for counts serves the relation lists a later Step asks for: the Open
 // records everything a session may be asked later, the lists included.
 void quotient_relation_list_options(wxf::Writer& w) {
@@ -4469,7 +4516,8 @@ TEST(StateStatistics, RecordStoresSequencesAsRuns) {
     EXPECT_EQ(rec.num_arity_runs, 1u);
     EXPECT_EQ(rec.num_degree_runs, 1u);
     EXPECT_EQ(storage.size() * 8,
-              hgcommon::StateInvariantRecord::bytes(1, 1, rec.num_ball, rec.num_distributions));
+              hgcommon::StateInvariantRecord::bytes(1, 1, rec.num_ball, rec.num_distributions,
+                                                    rec.num_geodesic));
     const auto inv = hg::stats::state_invariants(torus);
     EXPECT_EQ(inv.arities, std::vector<int64_t>(288, 2));
     EXPECT_EQ(inv.degree_sequence, std::vector<int64_t>(144, 4));
@@ -4922,7 +4970,8 @@ TEST(StateStatistics, BranchialStepMetricsOfASmallStep) {
     s.pairs = {{10, 11}, {11, 10}, {12, 12}};
     s.vertex_sets = {{0, 1, 2, 5}, {0, 1, 2, 6}, {7}};
     const auto out = branchial_keys(
-        {{1u, s}}, hg::stats::kBranchialGraph | hg::stats::kBranchialOverlap);
+        {{1u, s}}, hg::stats::kBranchialGraph | hg::stats::kBranchialOverlap |
+                       hg::stats::kBranchialMeasures);
     ASSERT_EQ(out.size(), 1u);
     const wxf::WXFValue rec(out.at(1));
     ASSERT_NE(assoc_at(rec, "BranchialDegree"), nullptr);
@@ -4932,11 +4981,76 @@ TEST(StateStatistics, BranchialStepMetricsOfASmallStep) {
     EXPECT_EQ(number_at(*assoc_at(rec, "BranchialDistance"), "Max"), 1);
     EXPECT_EQ(number_at(rec, "BranchialComponents"), 2);
     EXPECT_DOUBLE_EQ(number_at(rec, "BranchialDimension"), 1.0);   // K2: log 2 / log 2
+    // K2: the lazy walks put half on each end (curvature 1), the non-lazy walks swap the ends
+    // (0); no state has eccentricity 3, so no volume-growth key.
+    EXPECT_DOUBLE_EQ(number_at(rec, "BranchialOllivierRicciCurvature"), 1.0);
+    EXPECT_DOUBLE_EQ(number_at(rec, "BranchialNonLazyOllivierRicciCurvature"), 0.0);
+    EXPECT_EQ(assoc_at(rec, "BranchialSphereDimension"), nullptr);
     EXPECT_EQ(number_at(*assoc_at(rec, "StateOverlap"), "N"), 3);
     EXPECT_DOUBLE_EQ(number_at(*assoc_at(rec, "StateOverlap"), "Mean"), 0.2);
     EXPECT_EQ(number_at(*assoc_at(rec, "VertexSharpness"), "N"), 6);
     EXPECT_DOUBLE_EQ(number_at(*assoc_at(rec, "VertexSharpness"), "Mean"), 0.75);
     EXPECT_DOUBLE_EQ(number_at(*assoc_at(rec, "BranchEntropy"), "Mean"), 0.5);
+}
+
+// A step whose branchial graph is the cycle of 8 states: every shell up to the antipode has two
+// states, so the sphere probe reads dimension 1 and scalar curvature 0, and both Ollivier-Ricci
+// curvatures of a long cycle are 0.
+TEST(StateStatistics, BranchialCycleMeasures) {
+    hg::stats::BranchialStep s;
+    for (int64_t i = 0; i < 8; ++i) {
+        s.nodes.push_back(20 + i);
+        s.pairs.push_back({20 + i, 20 + (i + 1) % 8});
+        s.vertex_sets.push_back({static_cast<uint32_t>(i)});
+    }
+    const auto out =
+        branchial_keys({{1u, s}}, hg::stats::kBranchialGraph | hg::stats::kBranchialMeasures);
+    ASSERT_EQ(out.size(), 1u);
+    const wxf::WXFValue rec(out.at(1));
+    // Without kBranchialMeasures the step has the graph keys only.
+    const wxf::WXFValue plain(branchial_keys({{1u, s}}, hg::stats::kBranchialGraph).at(1));
+    EXPECT_NE(assoc_at(plain, "BranchialDimension"), nullptr);
+    EXPECT_EQ(assoc_at(plain, "BranchialSphereDimension"), nullptr);
+    EXPECT_EQ(assoc_at(plain, "BranchialOllivierRicciCurvature"), nullptr);
+    EXPECT_NEAR(number_at(rec, "BranchialSphereDimension"), 1.0, 1e-12);
+    EXPECT_NEAR(number_at(rec, "BranchialSphereScalarCurvature"), 0.0, 1e-12);
+    EXPECT_NE(assoc_at(rec, "BranchialRiemannianBallDimension"), nullptr);
+    EXPECT_DOUBLE_EQ(number_at(rec, "BranchialOllivierRicciCurvature"), 0.0);
+    EXPECT_DOUBLE_EQ(number_at(rec, "BranchialNonLazyOllivierRicciCurvature"), 0.0);
+}
+
+// "StepStatisticsMeasures": a step's record has a family's keys only when the family is asked
+// for. The record of a state computed with every family gives, under the base set, the 25
+// "Invariants" and 3 "VertexInvariants" of the base set and no "EdgeInvariants" or
+// "LogGeodesicCount"; under "Particles" the 4 particle entries and its 2 distributions more.
+TEST(StateStatistics, MeasuresFamiliesSelectTheKeys) {
+    std::vector<uint64_t> storage;
+    const hgcommon::StateInvariantRecord* rec =
+        hg::stats::invariant_record({{1, 2}, {2, 3}, {3, 4}, {4, 5}, {5, 1}}, storage);
+    hg::stats::StepInput in;
+    hg::stats::add_class(in, 7, 1, rec);
+    auto keys = [](const wxf::WXFValue& a) {
+        std::vector<std::string> k;
+        for (const auto& [key, v] : std::get<wxf::WXFValueAssociation>(a.data))
+            k.push_back(std::get<std::string>(key.data));
+        return k;
+    };
+    const wxf::WXFValue base(hg::stats::step_record(1, in, false));
+    EXPECT_EQ(keys(*assoc_at(base, "Invariants")).size(), 25u);
+    EXPECT_EQ(keys(*assoc_at(base, "VertexInvariants")).size(), 3u);
+    EXPECT_EQ(assoc_at(base, "EdgeInvariants"), nullptr);
+    EXPECT_EQ(assoc_at(base, "LogGeodesicCount"), nullptr);
+    const wxf::WXFValue particles(hg::stats::step_record(
+        1, in, false, hgcommon::SG_MEASURES_BASE | hg::stats::measure_bits("Particles")));
+    EXPECT_EQ(keys(*assoc_at(particles, "Invariants")).size(), 29u);
+    EXPECT_EQ(keys(*assoc_at(particles, "VertexInvariants")).size(), 5u);
+    EXPECT_NE(assoc_at(*assoc_at(particles, "Invariants"), "TopologicalCharge"), nullptr);
+    const wxf::WXFValue all(hg::stats::step_record(1, in, false, hgcommon::SG_MEASURES_ALL));
+    EXPECT_EQ(keys(*assoc_at(all, "Invariants")).size(), 42u);
+    EXPECT_NE(assoc_at(all, "EdgeInvariants"), nullptr);
+    EXPECT_NE(assoc_at(all, "LogGeodesicCount"), nullptr);
+    EXPECT_EQ(hg::stats::measure_bits("Branchial"), hg::stats::kMeasureBranchial);
+    EXPECT_EQ(hg::stats::measure_bits("Curvature"), 0u);
 }
 
 // The pairwise, initial-state and edge metrics of the same step worked by hand. Step 0 is one

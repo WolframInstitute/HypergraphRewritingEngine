@@ -324,16 +324,23 @@ vertices. *(Gate: `reference/verify_state_statistics.wls`, against the definitio
 Wolfram Language from a raw run.)*
 
 With `"StepStatisticsWeighting" -> "Classes"` each class at a step counts once in `Invariants`,
-`BallGrowthDimension` and the pooled histograms; `RawStates`, `Classes`, the multiplicities,
+`BallGrowthDimension`, `LogGeodesicCount` and the pooled histograms; `RawStates`, `Classes`, the multiplicities,
 the class entropy, `Events` and `RuleCounts` are unchanged. The default `"States"` counts each
 class m(c, d) times.
 
 **`StepStatistics` geometry.** Fourteen more `Invariants` entries, each an isomorphism invariant of
 a state, computed by `common/include/hgcommon/state_geometry_core.hpp`. A state's graph G is
-the undirected simple graph on the state's vertices with an edge between the consecutive
-vertices of each hyperedge ({a, b, c} gives a-b and b-c); self-loops are dropped and a
-repeated pair is one edge. B(v, r) is the set of vertices at distance at most r from v, so
-|B(v, 0)| = 1, and R is the graph radius of G. A state for which a value is undefined is left
+the undirected simple graph on the state's vertices whose edges join the vertices of each
+hyperedge by the rule of the option `"StatisticsGraph"`. Under `"Consecutive"`, the default,
+the consecutive vertices of each hyperedge are joined ({a, b, c} gives a-b and b-c). Under
+`"AllPairs"` every two vertices of a hyperedge are joined ({a, b, c} gives a-b, a-c and b-c).
+Self-loops are dropped and a repeated pair is one edge. Both rules give the same components, and
+the same graph for a state whose hyperedges have at most two vertices. Every value of this
+section and of the sections after it that reads G uses the chosen rule, on both devices, and
+so does `VertexCurvature`. B(v, r) is the set of vertices at distance at most r from v, so
+|B(v, 0)| = 1, and R is the graph radius of G. `"AllPairs"` is the graph of the Infrageometry
+paclet's InfraSubstrate (Infrageometry@ffa5fe4:InfraGeometry/Kernel/InfraSubstrates/InfraSubstrate.wl:108, ResourceFunction["HypergraphToGraph"], the distance-preserving method of
+SetReplace's HypergraphToGraph.m). A state for which a value is undefined is left
 out of that entry's summary, so its `N` counts the states where it is defined.
 
 | Entry | Definition | Undefined when |
@@ -371,11 +378,152 @@ value is the same) and `Histogram`. Each state stores its count, minimum, maximu
 x, x^2, x^3 and x^4 as double-double pairs (about 106 bits; each power exact), and 32 equal bins
 over a fixed range: [0, 8) for `LocalDimension`,
 [-2, 1) for `OllivierRicciCurvature` and [-24, 8) for `WolframRicciCurvatureScalar`, a value
-outside the range counting in the end bin. Pooling adds these and forms the central moments in
+outside the range counting in the end bin. A value less than 10^-9 bin widths below a bin's
+lower edge counts in that bin. Pooling adds these and forms the central moments in
 double-double, so the moments are exact to double precision and the
 quantiles are histogram quantiles: the bin holding the fraction q of the weight, linear inside
 the bin between its edges clipped to [`Min`, `Max`]. `Histogram` maps each non-empty bin's lower
 edge to its weight.
+
+**`StepStatistics` measure families.** The option `"StepStatisticsMeasures"` adds families of
+keys to the geometry above. `Automatic`, the default, adds none. `All` adds every family, and a
+list adds the families it names:
+
+| Family | Keys | Section |
+|---|---|---|
+| `"VolumeGrowth"` | the six ball and sphere dimensions and scalar curvatures, in `Invariants` and `VertexInvariants` | volume growth |
+| `"Geodesics"` | `GeodeticFraction`, `SegmentEntropy`, `LogGeodesicCount` | geodesic multiplicity |
+| `"EdgeCurvature"` | `NonLazyOllivierRicciCurvature`, `EdgeInvariants` | non-lazy Ollivier-Ricci curvature |
+| `"Combinatorial"` | `EulerCharacteristic`, `RimFraction`, `CombinatorialCurvatureTotal`, `CombinatorialCurvature` | combinatorial curvature |
+| `"Particles"` | `ClusteringCoefficient`, `LocalEulerExcess`, `TopologicalCharge`, `TopologicalChargeMax`, their two distributions | particle measures |
+| `"DimensionGradient"` | `DimensionGradientCurvature` and its distribution | dimension-gradient curvature |
+| `"Branchial"` | the `Branchial` volume-growth and curvature keys, with `"StepStatisticsBranchial"` `"Graph"` | branchial metrics |
+
+A family that is not requested is not computed: each class's record carries the request
+(`hgcommon::RecordSet::statistics_measures`, the `want` bits of `sg_geometry_of`) on both
+devices, and a record keeps the distributions through the last one a requested family writes.
+
+**`StepStatistics` volume growth.** Six more `Invariants` entries and six more `VertexInvariants`
+distributions fit the growth of balls and spheres about each vertex v of G' (the largest
+component above). For r = 0..ecc(v), A(r) = \|S(v, r)\| counts the vertices at distance r,
+V(r) = \|B(v, r)\| is the counting measure of the ball, and W(r), the Riemannian measure, counts
+the vertices of B(v, r) whose neighbours all lie in B(v, r). Each profile is cut at p, the
+largest r at which A(r) is greatest. The quotients of a profile f are q(r) = (log f(r+1) -
+log f(r)) / (log(r+1) - log r) for r = 1..p-1, so k = p - 1 of them. A fit regresses q on
+x = r(r+1) by least squares, q = c1 + c2 x, over a window of radii. With k < 5 the window is
+1..k. Otherwise e(i, j) is the residual standard error of the regression over i..j,
+sqrt(max(Σq² - (Σq - b Σx) Σq / m - b Σxq, 0) / (m - 2)) with m = j - i + 1 and b = (m Σxq -
+Σx Σq) / (m Σx² - (Σx)²), each sum over i..j. The tolerance is max(2 Q, 10^-10), with Q the
+ceil((k-4)/4)-th smallest e over the k - 4 windows of 5 radii. The window is the longest i..j
+with e(i, j) <= tolerance, the leftmost of equal length, or 1..k when none is. The ball probe
+reads the dimension c1 and the scalar curvature -3(c1 + 2) c2. The sphere probe reads the
+dimension c1 + 1 and the scalar curvature -3(c1 + 1) c2.
+
+| Entry | Profile and probe |
+|---|---|
+| `BallDimension`, `BallScalarCurvature` | V by the ball probe |
+| `RiemannianBallDimension`, `RiemannianBallScalarCurvature` | W by the ball probe |
+| `SphereDimension`, `SphereScalarCurvature` | A by the sphere probe |
+
+A vertex has a fit when k >= 2, that is when p >= 3. Each entry of `Invariants` is the mean over
+the vertices of G' with a fit, and is undefined when none has one. Each distribution of
+`VertexInvariants` holds the values of those vertices, with 32 bins over [0, 8) for the
+dimensions and over [-24, 8) for the scalar curvatures. These are the definitions of the
+Infrageometry paclet's `VolumeGrowthObservables` and `DimensionCurvatureFit` with the
+`Automatic` window. The breadth-first search from each vertex that the radius takes also gives
+A, V and W: the search counts each vertex u at h(u), which is dist(v, u) + 1 when u has a
+neighbour farther from v and dist(v, u) otherwise, and W(r) is the number of vertices with
+h(u) <= r. Each fit takes O(k²) for its window.
+
+**`StepStatistics` geodesic multiplicity.** For two distinct vertices p, q of one component of
+G at distance d, σ(p, q) is the number of shortest paths from p to q. A vertex w lies on one of
+them when d(p, w) + d(w, q) = d, and ρ(w) = σ(p, w) σ(w, q) of them pass through it, so the
+sum of ρ over those vertices is (d + 1) σ(p, q). The segment entropy of the pair is the entropy
+in bits of ρ normalised to sum 1: H(p, q) = -Σ_w (ρ(w) / Σρ) log2(ρ(w) / Σρ). An edge has
+H = 1. The pairs below are the ordered pairs (p, q) of distinct vertices joined by a path.
+
+| Entry | Definition | Undefined when |
+|---|---|---|
+| `GeodeticFraction` | the fraction of the pairs with σ(p, q) = 1 | G has no edge |
+| `SegmentEntropy` | the mean of H(p, q) over the pairs | G has no edge |
+
+The per-step key `LogGeodesicCount` maps each distance d to the summary, over the states with a
+pair at distance d, of the mean of ln σ(p, q) over the pairs at distance d. σ(p, q) is the
+(p, q) entry of A^d, A the adjacency matrix of G (the Infrageometry paclet's
+`ShortestPathMultiplicityMatrix`). The breadth-first search from each vertex p that the radius
+takes counts the paths: σ(p, p) = 1, and σ(p, w) is the sum of σ(p, u) over the neighbours u of
+w with d(p, u) = d(p, w) - 1. The same search sums a(p, w), the sum over the shortest paths from
+p to w of the sum of log2 σ(p, x) over their vertices x: a(p, w) is σ(p, w) log2 σ(p, w) plus
+the sum of a(p, u) over the same neighbours u. Σ_w ρ(w) log2 ρ(w) = a(p, q) + a(q, p), so the
+sum of H over the pairs is the sum over the pairs of log2((d + 1) σ(p, q)) - 2 a(p, q) / ((d +
+1) σ(p, q)), and each term comes from p's search. σ is a double, exact below 2^53.
+
+**`StepStatistics` non-lazy Ollivier-Ricci curvature.** `OllivierRicciCurvature` uses the walk of
+idleness 1/2: m_x puts 1/2 on x. The non-lazy curvature of an edge x-y uses idleness 0: μ_x puts
+1/deg x on each neighbour of x and nothing on x, and κ0(x, y) = 1 - W1(μ_x, μ_y), W1 the
+optimal transport cost under the graph distance. W1 is solved as for `OllivierRicciCurvature`,
+with the masses scaled to integers by deg x deg y. κ0 lies in [-2, 1].
+
+| Entry | Definition | Undefined when |
+|---|---|---|
+| `NonLazyOllivierRicciCurvature` | the mean of κ0 over the edges of G | G has no edge |
+
+The per-step key `EdgeInvariants` pools the edges of every state at the step, each state weighted
+as in `Invariants`, into the distribution `NonLazyOllivierRicciCurvature` of κ0, with the keys
+and the 32 bins over [-2, 1) of the `VertexInvariants` distributions. These are the definitions
+of the Infrageometry paclet's `OllivierRicciCurvature`, whose tests give 2/3 on every edge of
+K4 and 0 on every edge of P5 and C6.
+
+**`StepStatistics` combinatorial curvature.** The link of a vertex v is the subgraph of G induced
+by the neighbours of v. The link is a k-cycle when it has k >= 3 vertices, each joined to exactly
+two others in the link, and is connected. A vertex whose link is a k-cycle has the combinatorial
+curvature κ_v = 1 - k/6, so 2π κ_v is the angle defect of k equilateral triangles about v. T is
+the number of triangles of G.
+
+| Entry | Definition | Undefined when |
+|---|---|---|
+| `EulerCharacteristic` | V - E + T, with V and E the vertices and edges of G | G is empty |
+| `RimFraction` | the fraction of the vertices of G whose link is not a cycle | some vertex lies on no triangle |
+| `CombinatorialCurvatureTotal` | the sum of κ_v over the vertices whose link is a cycle | no vertex has a cycle as its link |
+
+For a closed triangulated surface every link is a cycle, `RimFraction` is 0 and
+`CombinatorialCurvatureTotal` equals `EulerCharacteristic` (the discrete Gauss-Bonnet theorem):
+2 for the icosahedron and the octahedron, 0 for a triangulated torus. `VertexInvariants` gains
+`CombinatorialCurvature`, κ_v over the vertices whose link is a cycle, with 32 bins over
+[-7, 1). Each vertex's link takes |N(u) ∩ N(v)| for each neighbour u, by merging the two sorted
+neighbour lists, and a walk around the link: O(Σ_v Σ_{u ~ v} (deg u + deg v)) per state.
+
+**`StepStatistics` particle measures.** The measures of hypergraph_viz's particle detection
+(hypergraph_viz@0fb63e5:blackhole/src/particle_detection.cpp:145-251), per vertex v of G. The clustering coefficient C_v is the
+number of triangles at v over deg v (deg v - 1) / 2, and 0 for a vertex of degree below 2. The
+Euler excess x_v compares the E edges among the V vertices of B(v, 3) with the planar bound
+P = 3V - 6 (V(V - 1)/2 when V < 3): x_v = (E - P) / P when E > P, and 0 otherwise. The
+topological charge is q_v = log2(max(1, deg v)) (1 - C_v) + 10 x_v.
+
+| Entry | Definition | Undefined when |
+|---|---|---|
+| `ClusteringCoefficient` | the mean of C_v over the vertices of G | G is empty |
+| `LocalEulerExcess` | the mean of x_v | G is empty |
+| `TopologicalCharge` | the mean of q_v | G is empty |
+| `TopologicalChargeMax` | the largest q_v | G is empty |
+
+`VertexInvariants` gains `ClusteringCoefficient` (32 bins over [0, 1)) and `TopologicalCharge`
+(32 bins over [0, 16)), over the vertices of G. The triangles come from the links of the
+combinatorial curvature, and B(v, 3) from the breadth-first search of each vertex that the radius
+takes.
+
+**`StepStatistics` dimension-gradient curvature.** hypergraph_viz's dimension-gradient
+curvature (hypergraph_viz@0fb63e5:blackhole/src/curvature_analysis.cpp:211-266) is the graph Laplacian of the local dimension:
+for a vertex v of G', L_v is the mean over the neighbours u of v of d_u - d_v, with d_v the local
+dimension of `LargestComponentDimension`. A vertex whose neighbours have higher dimensions has
+L_v > 0.
+
+| Entry | Definition | Undefined when |
+|---|---|---|
+| `DimensionGradientCurvature` | the mean of L_v over the vertices of G' | as `LargestComponentDimension` |
+
+`VertexInvariants` gains `DimensionGradientCurvature`, L_v over G', with 32 bins over [-8, 8).
+It takes O(\|E\|) after the local dimensions.
 
 **Per-vertex curvature.** With `"IncludeVertexCurvature" -> True` each `"States"` record has
 `VertexCurvature`, an association from each vertex of the record's edges that has a neighbour in
@@ -404,8 +552,14 @@ is at step s (the rule of `"BranchialStateEdges"`); a pair of one state with its
 nothing. `BranchialDegree` is the summary of the vertex degrees, `BranchialDistance` the
 summary of the distances between every two states in one component, `BranchialComponents` the
 number of components, and `BranchialDimension` the `WolframHausdorffDimension` of the largest
-component (most states, then the greatest dimension), absent when that component has fewer than
-2 states.
+component (most states, then the greatest dimension, then the least state id), absent when that
+component has fewer than 2 states. The same component, as the graph G of "StepStatistics volume
+growth", gives `BranchialBallDimension`, `BranchialBallScalarCurvature`,
+`BranchialRiemannianBallDimension`, `BranchialRiemannianBallScalarCurvature`,
+`BranchialSphereDimension` and `BranchialSphereScalarCurvature` (the means over its vertices
+with a fit, absent when none has one), `BranchialOllivierRicciCurvature` (the mean
+`OllivierRicciCurvature` of its edges) and `BranchialNonLazyOllivierRicciCurvature` (the mean
+non-lazy curvature of its edges).
 Under `"ExploreFromCanonicalStatesOnly" -> True` the graph of step s has the classes at step s
 as vertices and joins the output classes of every two overlapping matches of each class at step
 s - 1 (`hgcommon::qm_expansion_state_pairs`). Every raw state of a class applies every match of

@@ -2406,10 +2406,12 @@ TEST(RecordSet, ClassMultiplicitiesMatchTheHost) {
 }
 
 // Each class's "StepStatistics" record on the device equals the host's on every corpus workload
-// without sampling or caps, under quotient exploration, bit for bit.
+// without sampling or caps, under quotient exploration, bit for bit, under both "StatisticsGraph"
+// rules.
 TEST(RecordSet, ClassInvariantsMatchTheHost) {
     auto same = [](double a, double b) { return std::memcmp(&a, &b, sizeof a) == 0; };
-    size_t compared = 0;
+    size_t compared = 0, with_growth = 0, ternary = 0;
+    for (const uint32_t graph : {hgcommon::SG_GRAPH_CONSECUTIVE, hgcommon::SG_GRAPH_ALL_PAIRS})
     for (Workload w : build_corpus()) {
         if (w.num_steps == 0) continue;
         if (w.transition_rate != 1.0 || !w.rule_weights.empty() || w.max_states_per_step != 0 ||
@@ -2424,6 +2426,8 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
         rs.raw_events = false;
         rs.multiplicities = true;
         rs.state_invariants = true;
+        rs.statistics_graph = graph;
+        rs.statistics_measures = hgcommon::SG_MEASURES_ALL;
         hg.set_record_set(rs);
         hypergraph::ParallelEvolutionEngine pe(&hg, 1);
         pe.set_explore_from_canonical_states_only(true);
@@ -2448,6 +2452,8 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
         in.record.raw_events = false;
         in.record.multiplicities = true;
         in.record.state_invariants = true;
+        in.record.statistics_graph = graph;
+        in.record.statistics_measures = hgcommon::SG_MEASURES_ALL;
         const hg_gpu::EvolveResult r = hg_gpu::evolve(in);
         std::map<uint64_t, const hgcommon::StateInvariantRecord*> dev;
         for (const auto& s : r.states)
@@ -2486,10 +2492,28 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
                   &hgcommon::SgGeometry::local_dimension_max,
                   &hgcommon::SgGeometry::local_dimension_sd,
                   &hgcommon::SgGeometry::ollivier_moran_i,
-                  &hgcommon::SgGeometry::ollivier_degree_correlation})
+                  &hgcommon::SgGeometry::ollivier_degree_correlation,
+                  &hgcommon::SgGeometry::geodetic_fraction,
+                  &hgcommon::SgGeometry::segment_entropy,
+                  &hgcommon::SgGeometry::nonlazy_ollivier,
+                  &hgcommon::SgGeometry::euler_characteristic,
+                  &hgcommon::SgGeometry::rim_fraction,
+                  &hgcommon::SgGeometry::cycle_curvature_total,
+                  &hgcommon::SgGeometry::clustering, &hgcommon::SgGeometry::euler_excess,
+                  &hgcommon::SgGeometry::charge, &hgcommon::SgGeometry::charge_max,
+                  &hgcommon::SgGeometry::dimension_gradient})
                 EXPECT_TRUE(same(a->g.*f, b->g.*f)) << w.name << " " << a->g.*f << " " << b->g.*f;
+            for (uint32_t k = 0; k < hgcommon::SG_GROWTH_VALUES; ++k)
+                EXPECT_TRUE(same(a->g.growth[k], b->g.growth[k])) << w.name << " growth " << k;
+            if (a->g.defined & hgcommon::SG_VOLUME_GROWTH) ++with_growth;
+            bool wide = false;
+            a->for_each_arity([&](uint32_t k) { wide = wide || k >= 3; });
+            if (wide && graph == hgcommon::SG_GRAPH_ALL_PAIRS) ++ternary;
             for (uint32_t k = 0; k < a->num_ball; ++k)
                 EXPECT_TRUE(same(a->ball()[k], b->ball()[k])) << w.name;
+            ASSERT_EQ(a->num_geodesic, b->num_geodesic) << w.name;
+            for (uint32_t k = 0; k < a->num_geodesic; ++k)
+                EXPECT_TRUE(same(a->geodesic()[k], b->geodesic()[k])) << w.name;
             // The per-vertex distributions, byte for byte.
             ASSERT_EQ(a->num_distributions, b->num_distributions) << w.name;
             EXPECT_EQ(std::memcmp(a->distributions(), b->distributions(),
@@ -2500,6 +2524,11 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
         }
     }
     EXPECT_GT(compared, 0u);
+    EXPECT_GT(with_growth, 0u);
+    EXPECT_GT(ternary, 0u);
+    std::printf("[ RecordSet ] %zu classes, %zu with a volume-growth fit, %zu with a hyperedge of "
+                "3 or more vertices under AllPairs\n",
+                compared, with_growth, ternary);
 }
 
 TEST(RecordSet, DeviceSkipsOnlyWhatItWasNotAskedFor) {
