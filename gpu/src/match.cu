@@ -567,9 +567,12 @@ __device__ void step_cost_one(const DeviceState& ds, const DeviceRule* rules,
     const DeviceRule& rule = rules[m.rule_id];
     hgcommon::SuccessorIdentity id{0, 1};
     uint64_t key = 0;
-    bool ok = successor_cost_device(ds, rule, m.state_id, m.matched_edges, ctx, key,
-                                    full_id ? &id : nullptr);
-    if (ok && by_succ && !full_id)
+    const bool costed = ds.state_cost != nullptr;
+    bool ok = true;
+    if (costed)
+        ok = successor_cost_device(ds, rule, m.state_id, m.matched_edges, ctx, key,
+                                   full_id ? &id : nullptr);
+    if (ok && by_succ && (!costed || !full_id))
         ok = successor_identity_device(ds, rule, m.state_id, m.matched_edges, ctx, id);
     if (ok && (threadIdx.x & 31u) == 0) {
         ctx.cand_cost[i] = key;
@@ -635,14 +638,14 @@ __device__ void match_state_rule(const DeviceState& ds,
     // of its step, as on the host.
     const bool sampling = (ds.transition_rate < 1.0 || ds.num_rule_weights != 0u) &&
                           ds.max_states_per_step == 0u;
-    // "StateCost": each candidate this call emits goes to the cost log, whose entries idle
+    // Under a step cap, each candidate this call emits goes to the cost log, whose entries idle
     // blocks run (step_cost_one) before the step's selection.
     WorkLogView<CostEntry> cost_log =
         succ != nullptr ? succ->cost_log : WorkLogView<CostEntry>{};
-    WorkLogView<CostEntry>* costs = ds.state_cost != nullptr && ds.max_states_per_step != 0u &&
-                                            succ != nullptr && succ->cand_ready != nullptr
-                                        ? &cost_log
-                                        : nullptr;
+    WorkLogView<CostEntry>* costs =
+        ds.max_states_per_step != 0u && succ != nullptr && succ->cand_ready != nullptr
+            ? &cost_log
+            : nullptr;
     if (cap_k == 0u && parent_k == 0u && !sampling) {
         match_state_rule_pass(ds, rules, state_id, rid, step, out, nullptr, costs);
         return;

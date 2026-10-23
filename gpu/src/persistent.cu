@@ -94,7 +94,7 @@ struct StepSelectScratch {
     // "StateCost": each candidate's successor cost key. With it, srank and order are allocated
     // whatever the cap counts.
     uint64_t* cost = nullptr;
-    // "StateCost": SuccessorCtx::cand_cost, cand_id, cand_ready and cost_log.
+    // SuccessorCtx::cand_cost, cand_id, cand_ready and cost_log (step_cost_one).
     uint64_t*                    cand_cost = nullptr;
     hgcommon::SuccessorIdentity* cand_id = nullptr;
     uint32_t*                    cand_ready = nullptr;
@@ -191,9 +191,9 @@ __device__ __noinline__ void select_step(const DeviceState& ds, uint32_t s,
     const bool by_succ = !ds.step_cap_counts_matches && sel.id != nullptr && succ != nullptr &&
                          succ->mode != CanonicalizationMode::None;
     const bool costed = ds.state_cost != nullptr && sel.cost != nullptr && succ != nullptr;
-    // "StateCost": the identities and costs the emitting warps computed (step_cost_emitted); a
+    // The identities and costs idle blocks computed from the cost log (step_cost_one); a
     // candidate without them is computed here.
-    const uint32_t* ready = costed ? succ->cand_ready : nullptr;
+    const uint32_t* ready = succ != nullptr ? succ->cand_ready : nullptr;
     __shared__ uint32_t s_groups;
     if (by_succ) {
         for (uint32_t j = 0; j < m; ++j) {
@@ -1790,9 +1790,9 @@ __global__ void k_persistent_evolve(
             }
         }
 
-        // "StateCost" (StepSelectScratch::cost_log): one candidate's successor identity and cost
-        // per block (step_cost_one). Each entry is booked on its step, and the release that brings
-        // the step to zero runs the step's selection on this block.
+        // The cost log (StepSelectScratch::cost_log): one candidate's successor identity, and under
+        // "StateCost" its cost, per block (step_cost_one). Each entry is booked on its step, and the
+        // release that brings the step to zero runs the step's selection on this block.
         if (step_sel.cand_ready) {
             __shared__ uint32_t cost_count;
             __shared__ uint32_t cost_cand;
@@ -2095,7 +2095,7 @@ struct EngineState::PersistentScratch {
     uint32_t* step_order = nullptr;
     uint8_t*  step_lead = nullptr;
     uint64_t* step_cost = nullptr;   // "StateCost": StepSelectScratch::cost
-    // "StateCost": StepSelectScratch::cand_cost, cand_id and cand_ready, step_succ_cap each,
+    // StepSelectScratch::cand_cost, cand_id and cand_ready, step_succ_cap each,
     // and the cost log (its entries, then its cursor and done words).
     uint64_t*                    cand_cost = nullptr;
     hgcommon::SuccessorIdentity* cand_id = nullptr;
@@ -2569,7 +2569,7 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
                               "step successor leads");
                 ps.step_succ_cap = cap;
             }
-            if (costed && !ps.step_cost) {
+            if (!ps.step_cost) {
                 HG_CUDA_CHECK(cudaMalloc(&ps.step_cost, sizeof(uint64_t) * cap),
                               "step successor costs");
                 HG_CUDA_CHECK(cudaMalloc(&ps.cand_cost, sizeof(uint64_t) * cap),
@@ -2585,8 +2585,10 @@ PersistentEvolveStats run_persistent_evolve(EngineState& engine,
             step_sel.srank = ps.step_srank;
             step_sel.order = ps.step_order;
             step_sel.lead = ps.step_lead;
-            if (costed) {
-                step_sel.cost = ps.step_cost;
+            // The successor identities, and under "StateCost" the costs, are computed by idle
+            // blocks from the cost log (step_cost_one).
+            {
+                if (costed) step_sel.cost = ps.step_cost;
                 step_sel.cand_cost = ps.cand_cost;
                 step_sel.cand_id = ps.cand_id;
                 step_sel.cand_ready = ps.cand_ready;

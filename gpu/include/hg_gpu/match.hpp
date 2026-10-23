@@ -143,8 +143,9 @@ struct SuccessorCtx {
     // candidates of a cap whose pair or state has more than kDrainCapBuffer of them.
     uint32_t**           spill = nullptr;
     uint64_t*            spill_words = nullptr;
-    // "StateCost" under a step cap, indexed by candidate-pool index: each candidate's successor
-    // cost key and identity, and 1 once both are written (step_cost_one). Null otherwise.
+    // Under a step cap that counts successor states or reads a cost, indexed by candidate-pool
+    // index: each candidate's successor identity and cost key, and 1 once both are written
+    // (step_cost_one). Null otherwise.
     uint64_t*                    cand_cost = nullptr;
     hgcommon::SuccessorIdentity* cand_id = nullptr;
     uint32_t*                    cand_ready = nullptr;
@@ -190,8 +191,9 @@ __device__ bool successor_cost_device(const DeviceState& ds, const DeviceRule& r
                                       const SuccessorCtx& ctx, uint64_t& out,
                                       hgcommon::SuccessorIdentity* full_id = nullptr);
 
-// "StateCost": the successor identity and cost of the candidate out[i] into ctx.cand_id,
-// ctx.cand_cost and ctx.cand_ready, on the calling warp. A candidate whose form or record could
+// The successor identity of the candidate out[i] (when the step cap counts successor states)
+// and, under "StateCost", its cost, into ctx.cand_id, ctx.cand_cost and ctx.cand_ready, on the
+// calling warp. A candidate whose form or record could
 // not be computed is left unready, and the step's selection computes it.
 __device__ void step_cost_one(const DeviceState& ds, const DeviceRule* rules,
                               typename Pool<MatchRecord>::DeviceView out, const SuccessorCtx& ctx,
