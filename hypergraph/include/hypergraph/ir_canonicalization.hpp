@@ -30,7 +30,10 @@ public:
     // hash tables are never allocated. Tools/tests that query those maps pass true.
     CanonicalizationResult canonicalize_edges(const SVec<SVec<VertexId>>& edges,
                                               bool want_inverse_maps = false) const;
-    uint64_t compute_canonical_hash(const SVec<SVec<VertexId>>& edges) const;
+    // `out_form`, when given, receives the IR canonical form (hgcommon::ir_canonical_hash's flat
+    // [arity, v0, v1, ...] per edge in canonical order); empty for no edges.
+    uint64_t compute_canonical_hash(const SVec<SVec<VertexId>>& edges,
+                                    std::vector<uint32_t>* out_form = nullptr) const;
 
     // Canonical hash, plus for each input edge the index of its canonical edge
     // CONTENT class: edges that canonicalize to the same vertex tuple share a class,

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "hypergraph/parallel_evolution.hpp"
+#include "hypergraph/ir_canonicalization.hpp"
 #include "hgcommon/state_cost_core.hpp"
 
 #include <algorithm>
@@ -1141,3 +1142,229 @@ TEST(StateCost, CostOrderRanksByCostThenSuccessorRank) {
     for (int i = 0; i < 6; ++i) EXPECT_EQ(out[i], want[i]) << i;
 }
 
+namespace {
+// The cost the tests guide by, over "Invariants" slots below 11 (state_invariants):
+// -IncidenceMeanDistance + 0.001 TwoSectionEdgeCount + 0.01 VertexCount.
+hgcommon::StateCost test_cost() {
+    using namespace hgcommon;
+    // Slots 9, 4 and 0 (step_pool_core.hpp, sp_invariant).
+    const std::pair<uint8_t, double> ops[] = {{SC_STAT, 9},   {SC_NEG, 0},   {SC_CONST, 0.001},
+                                              {SC_STAT, 4},   {SC_MUL, 0},   {SC_ADD, 0},
+                                              {SC_CONST, 0.01}, {SC_STAT, 0}, {SC_MUL, 0},
+                                              {SC_ADD, 0}};
+    StateCost c;
+    for (const auto& [op, arg] : ops) {
+        c.op[c.n] = op;
+        c.arg[c.n] = arg;
+        ++c.n;
+    }
+    state_cost_validate(c);
+    return c;
+}
+
+// test_cost of a state from its raw edges, through state_invariants alone (no canonical form).
+double raw_cost(const std::vector<std::vector<VertexId>>& edges) {
+    std::vector<uint32_t> off{0}, verts;
+    for (const auto& e : edges) {
+        for (VertexId x : e) verts.push_back(x);
+        off.push_back(static_cast<uint32_t>(verts.size()));
+    }
+    const uint32_t m = static_cast<uint32_t>(edges.size());
+    const uint32_t S = off[m];
+    std::vector<uint32_t> scratch(hgcommon::si_scratch_words(S, m, 1) + 1), ar(m + 1),
+        deg(S + 1);
+    hgcommon::StateInvariantValues v;
+    hgcommon::state_invariants(off.data(), verts.data(), m, scratch.data(), v, ar.data(),
+                               deg.data());
+    hgcommon::SgGeometry g;
+    return hgcommon::state_cost_eval(test_cost(), v, g);
+}
+
+std::vector<std::vector<VertexId>> edges_of(const Hypergraph& hg, StateId s) {
+    std::vector<std::vector<VertexId>> out;
+    hg.get_state_edges(s).for_each([&](EdgeId e) {
+        const Edge& x = hg.get_edge(e);
+        out.emplace_back(x.vertices, x.vertices + x.arity);
+    });
+    return out;
+}
+
+uint64_t class_of(const std::vector<std::vector<VertexId>>& edges) {
+    return IRCanonicalizer{}.compute_canonical_hash(edges);
+}
+
+struct CostRun {
+    size_t states = 0, events = 0;
+    uint64_t causal = 0, branchial = 0;
+    // Per step from 1: the kept transitions' successor classes (Full, Automatic) or each kept
+    // transition's successor (None), with its edges.
+    std::map<uint32_t, std::vector<std::vector<std::vector<VertexId>>>> kept;
+    std::map<uint32_t, std::vector<std::vector<std::vector<VertexId>>>> parents;
+    bool operator==(const CostRun& o) const {
+        return std::tie(states, events, causal, branchial) ==
+               std::tie(o.states, o.events, o.causal, o.branchial);
+    }
+};
+
+CostRun run_cost_beam(StateCanonicalizationMode mode, const std::vector<RewriteRule>& rules,
+                      const std::vector<std::vector<VertexId>>& init, size_t steps, size_t n,
+                      bool matches, size_t threads, uint64_t seed, bool records) {
+    Hypergraph hg;
+    hg.set_state_canonicalization_mode(mode);
+    if (records) {
+        RecordSet rs;
+        rs.state_invariants = true;
+        hg.set_record_set(rs);
+    }
+    ParallelEvolutionEngine e(&hg, threads);
+    for (const auto& r : rules) e.add_rule(r);
+    if (matches) e.set_matches_per_step(n);
+    else e.set_max_states_per_step(n);
+    e.set_state_cost(test_cost());
+    e.set_random_seed(seed);
+    e.evolve(init, steps);
+    CostRun r{hg.num_states(), hg.num_events(), hg.observable_num_causal_edges(),
+              hg.observable_num_branchial(), {}, {}};
+    std::map<uint32_t, std::set<StateId>> seen_parent, seen_child;
+    for (uint32_t ev = 0; ev < hg.num_published_events(); ++ev) {
+        const Event& x = hg.get_event(ev);
+        if (x.id == INVALID_ID || hg.is_genesis_event(ev)) continue;
+        const uint32_t step = hg.get_state(x.output_state).step;
+        const StateId out = mode == StateCanonicalizationMode::None
+                                ? x.output_state
+                                : hg.get_canonical_state(x.output_state);
+        const StateId in = mode == StateCanonicalizationMode::None
+                               ? x.input_state
+                               : hg.get_canonical_state(x.input_state);
+        if (seen_child[step].insert(out).second) r.kept[step].push_back(edges_of(hg, out));
+        if (seen_parent[step].insert(in).second) r.parents[step].push_back(edges_of(hg, in));
+    }
+    return r;
+}
+
+// Every successor of `parents` under `rules`, from an uncapped one-step run of each: the
+// successor classes (by canonical hash) or, under None, each transition's successor.
+std::vector<std::vector<std::vector<VertexId>>> all_successors(
+    StateCanonicalizationMode mode, const std::vector<RewriteRule>& rules,
+    const std::vector<std::vector<std::vector<VertexId>>>& parents) {
+    std::vector<std::vector<std::vector<VertexId>>> out;
+    std::set<uint64_t> classes;
+    for (const auto& p : parents) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::None);
+        ParallelEvolutionEngine e(&hg, 1);
+        for (const auto& r : rules) e.add_rule(r);
+        e.evolve(p, 1);
+        for (uint32_t ev = 0; ev < hg.num_published_events(); ++ev) {
+            const Event& x = hg.get_event(ev);
+            if (x.id == INVALID_ID || hg.is_genesis_event(ev)) continue;
+            auto edges = edges_of(hg, x.output_state);
+            if (mode == StateCanonicalizationMode::None || classes.insert(class_of(edges)).second)
+                out.push_back(std::move(edges));
+        }
+    }
+    return out;
+}
+}  // namespace
+
+// A cost-guided step cap keeps the transitions into the N lowest-cost successors of each step.
+// The check is independent of the engine's selection: every successor of the kept parents comes
+// from an uncapped one-step run, its cost from state_invariants on its raw edges, and each kept
+// successor costs no more than each successor left out. Under Full and Automatic the count is of
+// distinct successors, under None and under MatchesPerStep of transitions. The run is the same
+// at 1, 4 and 16 workers, and with and without each class's record kept.
+TEST(SamplingReproducibility, StepCapByCostKeepsTheLowestCostSuccessors) {
+    const std::vector<RewriteRule> rules = {
+        make_rule(0).lhs({0, 1}).lhs({0, 2}).rhs({0, 1}).rhs({0, 3}).rhs({1, 3}).rhs({2, 3})
+            .build(),
+        make_rule(1).lhs({0, 1}).rhs({0, 1}).rhs({1, 2}).build()};
+    const std::vector<std::vector<VertexId>> init = {{0, 1}, {0, 2}, {1, 2}};
+    using M = StateCanonicalizationMode;
+    for (M mode : {M::Full, M::Automatic, M::None}) {
+        for (bool matches : {false, true}) {
+            if (matches && mode != M::Full) continue;
+            for (size_t n : {size_t(1), size_t(3)}) {
+                const CostRun one = run_cost_beam(mode, rules, init, 3, n, matches, 1, 5, false);
+                const std::string where = "mode " + std::to_string(static_cast<int>(mode)) +
+                                          " matches " + std::to_string(matches) + " N " +
+                                          std::to_string(n);
+                ASSERT_FALSE(one.kept.empty()) << where;
+                for (const auto& [step, kept] : one.kept) {
+                    const auto all = all_successors(matches ? M::None : mode, rules,
+                                                    step == 1 ? std::vector<std::vector<
+                                                                    std::vector<VertexId>>>{init}
+                                                              : one.kept.at(step - 1));
+                    std::vector<double> kept_cost, all_cost;
+                    for (const auto& k : kept) kept_cost.push_back(raw_cost(k));
+                    for (const auto& a : all) all_cost.push_back(raw_cost(a));
+                    std::sort(all_cost.begin(), all_cost.end());
+                    // Under MatchesPerStep two transitions can make one class, so the classes
+                    // kept number at most N. Under Automatic the successors counted are the
+                    // distinct edge lists, at least as many as the classes.
+                    if (matches || mode == M::Automatic)
+                        EXPECT_LE(kept.size(), n) << where << " step " << step;
+                    if (mode == M::Automatic)
+                        EXPECT_GE(kept.size(), std::min(n, all.size())) << where << " step " << step;
+                    if (!matches && mode != M::Automatic)
+                        EXPECT_EQ(kept.size(), std::min(n, all.size())) << where << " step " << step;
+                    const double worst = *std::max_element(kept_cost.begin(), kept_cost.end());
+                    const size_t take = std::min(n, all_cost.size());
+                    EXPECT_LE(worst, all_cost[take - 1]) << where << " step " << step;
+                }
+                for (size_t threads : {size_t(4), size_t(16)})
+                    EXPECT_TRUE(run_cost_beam(mode, rules, init, 3, n, matches, threads, 5,
+                                              false) == one)
+                        << where << " threads " << threads;
+                EXPECT_TRUE(run_cost_beam(mode, rules, init, 3, n, matches, 4, 5, true) == one)
+                    << where << " with records";
+            }
+        }
+    }
+}
+
+// A cost over geometry statistics (BallDimension, BallScalarCurvature, MeanEccentricity) gives
+// one run whether the class records are kept with every measure family or the cost computes only
+// the measures it reads, at 1 and 4 workers.
+TEST(SamplingReproducibility, StepCapByCostDoesNotDependOnTheRecordedMeasures) {
+    using namespace hgcommon;
+    // |BallDimension - 2| + 0.1 BallScalarCurvature + 0.01 MeanEccentricity.
+    const std::pair<uint8_t, double> ops[] = {
+        {SC_STAT, 25}, {SC_CONST, 2}, {SC_SUB, 0}, {SC_ABS, 0}, {SC_CONST, 0.1}, {SC_STAT, 26},
+        {SC_MUL, 0},   {SC_ADD, 0},   {SC_CONST, 0.01}, {SC_STAT, 12}, {SC_MUL, 0}, {SC_ADD, 0}};
+    StateCost cost;
+    for (const auto& [op, arg] : ops) {
+        cost.op[cost.n] = op;
+        cost.arg[cost.n] = arg;
+        ++cost.n;
+    }
+    ASSERT_TRUE(state_cost_validate(cost));
+    const RewriteRule rule = make_rule(0).lhs({0, 1}).lhs({0, 2})
+                                 .rhs({0, 1}).rhs({0, 3}).rhs({1, 3}).rhs({2, 3}).build();
+    auto run = [&](size_t threads, bool records, bool costed = true) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        RecordSet rs;
+        rs.state_invariants = records;
+        rs.statistics_measures = records ? SG_MEASURES_ALL : cost.measures;
+        hg.set_record_set(rs);
+        ParallelEvolutionEngine e(&hg, threads);
+        e.add_rule(rule);
+        e.set_max_states_per_step(2);
+        if (costed) e.set_state_cost(cost);
+        e.set_random_seed(3);
+        e.evolve({{0, 1}, {0, 2}, {1, 2}, {2, 3}}, 4);
+        std::multiset<uint64_t> classes;
+        for (uint32_t ev = 0; ev < hg.num_published_events(); ++ev) {
+            const Event& x = hg.get_event(ev);
+            if (x.id == INVALID_ID || hg.is_genesis_event(ev)) continue;
+            classes.insert(hg.get_state(hg.get_canonical_state(x.output_state)).canonical_hash);
+        }
+        return classes;
+    };
+    const auto one = run(1, false);
+    ASSERT_FALSE(one.empty());
+    EXPECT_NE(run(1, false, false), one) << "the cost chose the classes the ranks choose";
+    EXPECT_EQ(run(4, false), one);
+    EXPECT_EQ(run(1, true), one);
+    EXPECT_EQ(run(4, true), one);
+}

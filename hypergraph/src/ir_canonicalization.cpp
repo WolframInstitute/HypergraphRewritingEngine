@@ -191,7 +191,8 @@ bool IRCanonicalizer::are_isomorphic(
 
 
 uint64_t IRCanonicalizer::compute_canonical_hash(
-    const SVec<SVec<VertexId>>& edges) const {
+    const SVec<SVec<VertexId>>& edges, std::vector<uint32_t>* out_form) const {
+    if (out_form) out_form->clear();
     // ZERO, not EMPTY_STATE_CANONICAL_HASH. This entry point's empty-set convention is 0, and
     // it is load-bearing: the value is a dedup key, so changing it moves which states merge
     // and therefore the event counts. An earlier rewrite of this file returned
@@ -203,7 +204,14 @@ uint64_t IRCanonicalizer::compute_canonical_hash(
     // over 4063 corpus states, on the hash, the canonical form, and the per-edge rank, class
     // and orbit arrays.
     auto scratch_mark = worker_scratch().mark();
-    const uint64_t hash = ir_core_call(edges, nullptr, nullptr, nullptr);
+    uint64_t hash = 0;
+    if (out_form) {
+        CoreForm cf;
+        hash = ir_core_call(edges, nullptr, nullptr, nullptr, &cf);
+        if (cf.ok) out_form->swap(cf.form);
+    } else {
+        hash = ir_core_call(edges, nullptr, nullptr, nullptr);
+    }
     worker_scratch().release(scratch_mark);
     return hash;
 }

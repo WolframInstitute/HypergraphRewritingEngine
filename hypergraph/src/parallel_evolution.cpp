@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <functional>
 #include <limits>
 #include <numeric>
@@ -922,8 +923,10 @@ void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
     std::vector<RankedMatch> cands;
     drain_candidates(state, cands);
     const size_t k = max_successor_states_per_parent_;
-    if (k != 0 || (max_states_per_step_ != 0 && !step_cap_counts_matches_))
-        for (RankedMatch& c : cands) c.succ = successor_identity(state, *c.match);
+    const bool costed = max_states_per_step_ != 0 && hgcommon::state_cost_active(state_cost_);
+    if (k != 0 || (max_states_per_step_ != 0 && !step_cap_counts_matches_) || costed)
+        for (RankedMatch& c : cands)
+            c.succ = successor_identity(state, *c.match, costed ? &c.cost : nullptr);
     if (k != 0) keep_lowest_successors(cands, k);
     // MatchesPerStep counts transitions: each candidate is its own successor in the step's cut,
     // whatever identity the per-parent cut above read.
@@ -938,7 +941,7 @@ void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
         // own ranks do not bound it, and then every candidate is offered.
         bool all_unique = true;
         for (const RankedMatch& c : cands) all_unique = all_unique && c.succ.unique != 0;
-        if (all_unique) keep_lowest_successors(cands, max_states_per_step_);
+        if (all_unique) keep_lowest_successors(cands, max_states_per_step_, costed);
         if (auto* list = step_candidates(step)) {
             for (const RankedMatch& c : cands) list->push(c, match_arena(step));
             HG_STAT(step_candidates_offered_.fetch_add(cands.size(), std::memory_order_relaxed));
@@ -950,10 +953,20 @@ void ParallelEvolutionEngine::cap_at_drain(StateId state, uint32_t step) {
 }
 
 hgcommon::SuccessorIdentity ParallelEvolutionEngine::successor_identity(StateId state,
-                                                                       const MatchRecord& m) {
+                                                                       const MatchRecord& m,
+                                                                       uint64_t* cost) {
     const StateCanonicalizationMode mode = hg_->state_canonicalization_mode();
-    if (mode == StateCanonicalizationMode::None) return {0, 1};
     const RewriteRule& rule = rules_[m.rule_index()];
+    if (cost) {
+        // The cost reads the successor's canonical form, which under Full states is also its
+        // identity.
+        HG_THREAD_LOCAL(std::vector<uint32_t>, form);
+        const uint64_t h = hg_->successor_canonical_hash(state, m.matched_edges(), m.num_edges(),
+                                                         rule, m.binding().bindings, &form);
+        *cost = successor_cost(h, form);
+        if (mode == StateCanonicalizationMode::Full) return {h, 0};
+    }
+    if (mode == StateCanonicalizationMode::None) return {0, 1};
     if (mode == StateCanonicalizationMode::Automatic) {
         // A fresh vertex is in no other state.
         if (hgcommon::num_fresh_variables(rule.new_var_mask()) != 0) return {0, 1};
@@ -966,7 +979,16 @@ hgcommon::SuccessorIdentity ParallelEvolutionEngine::successor_identity(StateId 
             0};
 }
 
-void ParallelEvolutionEngine::keep_lowest_successors(std::vector<RankedMatch>& cands, size_t k) {
+uint64_t ParallelEvolutionEngine::successor_cost(uint64_t hash,
+                                                const std::vector<uint32_t>& form) {
+    const uint64_t key = hgcommon::avoid_reserved_keys(hash ^ state_cost_fingerprint_);
+    if (const auto have = state_costs_.lookup(key)) return *have;
+    const uint64_t c = hgcommon::state_cost_key(hg_->state_cost_of_form(state_cost_, form));
+    return state_costs_.insert_if_absent(key, c).first;
+}
+
+void ParallelEvolutionEngine::keep_lowest_successors(std::vector<RankedMatch>& cands, size_t k,
+                                                     bool costed) {
     const uint32_t n = static_cast<uint32_t>(cands.size());
     if (n == 0 || k == 0) return;
     std::vector<uint64_t> rank(n), succ_rank(n);
@@ -976,6 +998,13 @@ void ParallelEvolutionEngine::keep_lowest_successors(std::vector<RankedMatch>& c
     for (uint32_t i = 0; i < n; ++i) { rank[i] = cands[i].rank; id[i] = cands[i].succ; }
     hgcommon::successor_ranks(rank.data(), id.data(), n, order.data(), succ_rank.data(),
                               lead.data());
+    if (costed) {
+        std::vector<uint64_t> cost(n);
+        for (uint32_t i = 0; i < n; ++i) cost[i] = cands[i].cost;
+        hgcommon::cost_successor_ranks(cost.data(), succ_rank.data(), n, order.data(),
+                                       rank.data());
+        succ_rank.swap(rank);
+    }
     // One rank per successor; the k-th smallest is the cut (hgcommon::rank_cut, by selection).
     std::vector<uint64_t> per_succ;
     for (uint32_t i = 0; i < n; ++i)
@@ -1002,7 +1031,7 @@ void ParallelEvolutionEngine::select_step(uint32_t step) {
     std::vector<RankedMatch> cands;
     list->for_each([&](const RankedMatch& c) { cands.push_back(c); });
     list->reset();
-    keep_lowest_successors(cands, max_states_per_step_);
+    keep_lowest_successors(cands, max_states_per_step_, hgcommon::state_cost_active(state_cost_));
     for (const RankedMatch& c : cands) submit_rewrite_task(*c.match, step, step + 1);
     if (!cands.empty()) HG_STAT(stats_.mine().spine_forced.bump(cands.size()));
 }
@@ -2736,6 +2765,20 @@ void ParallelEvolutionEngine::set_max_states_per_step(size_t max) {
 void ParallelEvolutionEngine::set_matches_per_step(size_t max) {
     max_states_per_step_ = max;
     step_cap_counts_matches_ = true;
+}
+
+void ParallelEvolutionEngine::set_state_cost(const hgcommon::StateCost& cost) {
+    state_cost_ = cost;
+    // The cost cache's keys mix in the program, so a session call with another program
+    // computes its own costs.
+    uint64_t f = hgcommon::splitmix64(cost.n);
+    for (uint32_t i = 0; i < cost.n; ++i) {
+        uint64_t bits = 0;
+        std::memcpy(&bits, &cost.arg[i], sizeof bits);
+        f = hgcommon::splitmix64(f ^ cost.op[i]);
+        f = hgcommon::splitmix64(f ^ bits);
+    }
+    state_cost_fingerprint_ = f;
 }
 
 void ParallelEvolutionEngine::set_random_seed(uint64_t seed) { random_seed_ = seed; }

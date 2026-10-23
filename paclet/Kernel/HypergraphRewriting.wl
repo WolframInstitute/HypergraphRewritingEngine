@@ -21,6 +21,7 @@ Options[HGEvolve] = {
   "CausalTransitiveReduction" -> True,
   "MaxSuccessorStatesPerParent" -> 0,
   "MaxStatesPerStep" -> 0,
+  "StateCost" -> None,  (* None, or a pure function of "Invariants" statistic names, such as (Abs[#BallDimension - 3] &): with "MaxStatesPerStep" (or "UniformRandom" and "MatchesPerStep") each step keeps its successor states of lowest cost, the successor rank breaking ties *)
   "ExplorationProbability" -> 1.0,
   "TransitionRate" -> 1.0,  (* Keep each transition with this probability, drawn independently from the transition's own isomorphism-invariant identity and RandomSeed. Reproducible at any thread count and on either device, and it carries the spine guarantee: a state whose every draw failed still keeps its minimum-key transition, so a sparse sample reaches full depth instead of going extinct. ExplorationProbability thins STATES and has no spine. Applies on both devices: the host engine and the device matcher call the same draw and spine. *)
   "RuleWeights" -> {},  (* Per-rule multipliers on "TransitionRate", in rule order. {} weights every rule equally. A short list is a partial override: rules past its end take 1. Composes with the rate rather than replacing it, so "TransitionRate" -> 1 with weights {1, 0} still samples \[LongDash] rule 2 is dropped and rule 1 is untouched. Applies on both devices; the weights are uploaded with the run. *)
@@ -475,6 +476,7 @@ HGEvolve::enginemsg = "Engine binary reported: `1`";
 HGEvolve::enginefail = "Engine binary exited with code `1` and produced no result.";
 HGEvolve::overflow = "The engine returned a PARTIAL result (`1`; `2` occurrence(s)): `3`";
 HGEvolve::warn = "The engine returned warnings (`1`): `2`";
+HGEvolve::statecost = "\"StateCost\" -> `1` is not supported: `2`. A cost is a pure function of \"Invariants\" statistic names (such as #BallDimension) built from real numbers, +, -, *, /, Abs, Min, Max, Sqrt, Log, Exp and powers with a constant exponent.";
 
 (* ============================================================================ *)
 (* Graph Creation Helpers *)
@@ -1111,8 +1113,43 @@ hgBranchialStepValue[setting_, graphProperties_List] := Replace[setting, {
                   StringMatchQ[First[graphProperties], "*Evolution*Branchial*"], 0, -1],
   All -> 0}];
 
-hgJobOptions[ov_, requiredData_, graphProperties_] := Module[{branchialStepValue},
+(* "StateCost": the cost function as the engine's postfix program, <|"Code" -> tokens,
+   "Constants" -> reals|> (hg::stats::compile_state_cost). A token is a statistic name, "Const"
+   (the next constant), or an operation; "Power" raises to the next constant. The engine refuses an
+   unknown statistic name. $Failed, with HGEvolve::statecost, for anything else. *)
+hgStateCostProgram[None] := <|"Code" -> {}, "Constants" -> {}|>;
+hgStateCostProgram[f : Function[_]] := Module[{body, emit, out},
+  body = First[f /. Slot[name_String] :> hgStat[name]];
+  emit[x_?NumericQ] := If[TrueQ[Im[N[x]] == 0],
+    Sow["Const", "c"]; Sow[N[Re[x]], "k"],
+    Throw["the constant " <> ToString[x, InputForm] <> " is not real", hgStateCost]];
+  emit[hgStat[name_String]] := Sow[name, "c"];
+  emit[Plus[a_, b__]] := (emit[a]; Scan[(emit[#]; Sow["Plus", "c"]) &, {b}]);
+  emit[Times[-1, a_]] := (emit[a]; Sow["Minus", "c"]);
+  emit[Times[a_, b__]] := (emit[a]; Scan[(emit[#]; Sow["Times", "c"]) &, {b}]);
+  emit[Min[a_, b__]] := (emit[a]; Scan[(emit[#]; Sow["Min", "c"]) &, {b}]);
+  emit[Max[a_, b__]] := (emit[a]; Scan[(emit[#]; Sow["Max", "c"]) &, {b}]);
+  emit[Power[E, a_]] := (emit[a]; Sow["Exp", "c"]);
+  emit[Power[a_, 1/2]] := (emit[a]; Sow["Sqrt", "c"]);
+  emit[Power[a_, n_?NumericQ]] := If[TrueQ[Im[N[n]] == 0],
+    emit[a]; Sow["Power", "c"]; Sow[N[n], "k"],
+    Throw["the exponent " <> ToString[n, InputForm] <> " is not real", hgStateCost]];
+  emit[Abs[a_]] := (emit[a]; Sow["Abs", "c"]);
+  emit[Log[a_]] := (emit[a]; Sow["Log", "c"]);
+  emit[Log[b_?NumericQ, a_]] := emit[Log[a] / N[Log[b]]];
+  emit[e_] := Throw[ToString[e /. hgStat[name_] :> Slot[name], InputForm] <> " is not a supported term",
+    hgStateCost];
+  out = Catch[Reap[emit[body], {"c", "k"}], hgStateCost];
+  If[StringQ[out], Message[HGEvolve::statecost, f, out]; Return[$Failed, Module]];
+  <|"Code" -> Flatten[out[[2, 1]]], "Constants" -> N[Flatten[out[[2, 2]]]]|>
+];
+hgStateCostProgram[other_] := (Message[HGEvolve::statecost, other, "it is not None or a pure function"];
+  $Failed);
+
+hgJobOptions[ov_, requiredData_, graphProperties_] := Module[{branchialStepValue, stateCost},
   branchialStepValue = hgBranchialStepValue[ov["BranchialStep"], graphProperties];
+  stateCost = hgStateCostProgram[ov["StateCost"]];
+  If[stateCost === $Failed, Return[$Failed, Module]];
 
   <|
     "CanonicalizeStates" -> ov["CanonicalizeStates"],
@@ -1120,6 +1157,7 @@ hgJobOptions[ov_, requiredData_, graphProperties_] := Module[{branchialStepValue
     "CausalTransitiveReduction" -> ov["CausalTransitiveReduction"],
     "MaxSuccessorStatesPerParent" -> ov["MaxSuccessorStatesPerParent"],
     "MaxStatesPerStep" -> ov["MaxStatesPerStep"],
+    "StateCost" -> stateCost,
     "ExplorationProbability" -> N[ov["ExplorationProbability"]],
     "TransitionRate" -> N[ov["TransitionRate"]],
     "RuleWeights" -> N[ov["RuleWeights"]],
@@ -1418,6 +1456,7 @@ HGEvolve[rules_List, initialEdges_List, steps_Integer,
      (ImageSize, AspectRatio, VertexLabels, GraphLayout, ...); the engine never reads them. *)
   graphOptions = FilterRules[Flatten[{opts}], Options[Graph]];
   options = hgJobOptions[OptionValue[#] &, requiredData, graphProperties];
+  If[options === $Failed, Return[$Failed]];
 
   (* Normalize rules: convert symbolic vertices to integers if needed *)
   normalizedRules = normalizeRules[rules];
@@ -1516,6 +1555,7 @@ HGSessionOpen[rules_List, initialEdges_List,
 
   options = hgJobOptions[OptionValue[{HGSessionOpen, Graph}, {opts}, #] &, requiredData,
                          graphProperties];
+  If[options === $Failed, Return[$Failed]];
 
   normalizedRules = normalizeRules[rules];
   rulesAssoc = Association[

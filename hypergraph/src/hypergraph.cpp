@@ -959,54 +959,61 @@ const hgcommon::StateInvariantRecord* Hypergraph::record_state_invariants(
                 return have;
         }
     }
-    const SparseBitset& edges = states_[sid].edges;
-    const uint32_t m = static_cast<uint32_t>(edges.count());
-    auto mk = worker_scratch().mark();
-    auto* off = static_cast<uint32_t*>(
-        worker_scratch().allocate_raw((m + 1) * sizeof(uint32_t), alignof(uint32_t)));
-    uint32_t slots = 0, i = 0;
-    edges.for_each([&](EdgeId eid) { off[i++] = slots; slots += get_edge(eid).arity; });
-    off[m] = slots;
-    auto* verts = static_cast<uint32_t*>(
-        worker_scratch().allocate_raw((slots + 1) * sizeof(uint32_t), alignof(uint32_t)));
-    i = 0;
-    edges.for_each([&](EdgeId eid) {
-        const Edge& e = get_edge(eid);
-        for (uint8_t k = 0; k < e.arity; ++k) verts[off[i] + k] = e.vertices[k];
-        ++i;
-    });
     HG_THREAD_LOCAL(std::vector<uint32_t>, own_form);
     if (!form) {
-        compute_canonical_hash(edges, &own_form);
+        compute_canonical_hash(states_[sid].edges, &own_form);
         form = &own_form;
     }
-    const uint32_t form_words = static_cast<uint32_t>(form->size());
-    auto* goff = static_cast<uint32_t*>(
-        worker_scratch().allocate_raw((form_words + 2) * sizeof(uint32_t), alignof(uint32_t)));
-    auto* gverts = static_cast<uint32_t*>(
-        worker_scratch().allocate_raw((form_words + 1) * sizeof(uint32_t), alignof(uint32_t)));
-    const uint32_t gm = hgcommon::si_form_csr(form->data(), form_words, goff, gverts);
-    uint64_t bytes = hgcommon::si_record_bytes_hint(slots, m, 1);
+    const hgcommon::StateInvariantRecord* rec = invariant_record_of_form(*form);
+    const hgcommon::StateInvariantRecord* expected = nullptr;
+    if (hgcommon::atomic_ref<const hgcommon::StateInvariantRecord*>(*cell).compare_exchange_strong(
+            expected, rec, std::memory_order_acq_rel, std::memory_order_acquire))
+        return rec;
+    return expected;
+}
+
+const hgcommon::StateInvariantRecord* Hypergraph::invariant_record_of_form(
+    const std::vector<uint32_t>& form) {
+    const uint32_t words = static_cast<uint32_t>(form.size());
+    auto mk = worker_scratch().mark();
+    uint64_t bytes = hgcommon::si_form_csr_bytes(words) + hgcommon::si_record_bytes_hint(words, words, 1);
     hgcommon::SiResult r;
     for (;;) {
         auto* scratch = static_cast<unsigned char*>(worker_scratch().allocate_raw(bytes, 8));
         uint64_t needed = 0;
-        if (hgcommon::state_record(off, verts, m, goff, gverts, gm, scratch, bytes, needed, r,
-                                   hgcommon::IrSerial{},
-                                   statistics_graph_.load(std::memory_order_relaxed),
-                                   hgcommon::SG_MEASURES_BASE |
-                                       statistics_measures_.load(std::memory_order_relaxed)))
+        if (hgcommon::state_record_of_form(form.data(), words, scratch, bytes, needed, r,
+                                           hgcommon::IrSerial{},
+                                           statistics_graph_.load(std::memory_order_relaxed),
+                                           hgcommon::SG_MEASURES_BASE |
+                                               statistics_measures_.load(std::memory_order_relaxed)))
             break;
         bytes = needed > bytes ? needed : 2 * bytes;
     }
     auto* rec = hgcommon::si_record_write(
         arena_.allocate_raw(r.bytes(), alignof(hgcommon::StateInvariantRecord)), r);
     worker_scratch().release(mk);
-    const hgcommon::StateInvariantRecord* expected = nullptr;
-    if (hgcommon::atomic_ref<const hgcommon::StateInvariantRecord*>(*cell).compare_exchange_strong(
-            expected, rec, std::memory_order_acq_rel, std::memory_order_acquire))
-        return rec;
-    return expected;
+    return rec;
+}
+
+double Hypergraph::state_cost_of_form(const hgcommon::StateCost& cost,
+                                      const std::vector<uint32_t>& form) {
+    const uint32_t words = static_cast<uint32_t>(form.size());
+    auto mk = worker_scratch().mark();
+    uint64_t bytes = hgcommon::si_form_csr_bytes(words) + hgcommon::si_record_bytes_hint(words, words, 1);
+    hgcommon::SiResult r;
+    for (;;) {
+        auto* scratch = static_cast<unsigned char*>(worker_scratch().allocate_raw(bytes, 8));
+        uint64_t needed = 0;
+        if (hgcommon::state_record_of_form(form.data(), words, scratch, bytes, needed, r,
+                                           hgcommon::IrSerial{},
+                                           statistics_graph_.load(std::memory_order_relaxed),
+                                           cost.measures))
+            break;
+        bytes = needed > bytes ? needed : 2 * bytes;
+    }
+    const double c = hgcommon::state_cost_eval(cost, r.v, r.g);
+    worker_scratch().release(mk);
+    return c;
 }
 
 // Under an event identity mode: the event's signature values, claimed; a duplicate records the
@@ -1517,7 +1524,8 @@ uint64_t Hypergraph::successor_content_hash(StateId parent, const EdgeId* consum
 
 uint64_t Hypergraph::successor_canonical_hash(StateId parent, const EdgeId* consumed,
                                               uint8_t num_consumed, const RewriteRule& rule,
-                                              const VertexId* binding) const {
+                                              const VertexId* binding,
+                                              std::vector<uint32_t>* out_form) const {
     auto mk = worker_scratch().mark();
     uint64_t h = 0;
     {
@@ -1533,7 +1541,7 @@ uint64_t Hypergraph::successor_canonical_hash(StateId parent, const EdgeId* cons
         uint32_t arity = 0;
         const uint32_t* v = nullptr;
         while (c.next(arity, v)) edges.emplace_back(v, v + arity);
-        h = IRCanonicalizer{}.compute_canonical_hash(edges);
+        h = IRCanonicalizer{}.compute_canonical_hash(edges, out_form);
     }
     worker_scratch().release(mk);
     return h;

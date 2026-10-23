@@ -6266,6 +6266,43 @@ TEST(FfiInput, StateCostCompilesNamesAndRefusesTheRest) {
                  std::runtime_error);
 }
 
+// "StateCost" through the job: an unknown name refuses the job, a cost without a step cap is
+// dropped with a warning, and a cost with one evolves.
+TEST(FfiInput, StateCostRefusesABadProgramAndNeedsAStepCap) {
+    auto put_cost = [](wxf::Writer& w, const std::vector<std::string>& code,
+                       const std::vector<double>& k) {
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("StateCost"));
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Association));
+        w.write_varint(2);
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Code"));
+        w.write(code);
+        w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+        w.write(std::string("Constants"));
+        w.write(k);
+    };
+    EXPECT_NE(run_error(job_with_option([&](wxf::Writer& w) { put_cost(w, {"Nope"}, {}); }))
+                  .find("\"Nope\" is not a statistic"),
+              std::string::npos);
+    HostBridge host;
+    const auto uncapped = run_rewriting_core(
+        job_with_option([&](wxf::Writer& w) { put_cost(w, {"VertexCount"}, {}); }), host);
+    const auto ctx = warning_contexts(uncapped);
+    ASSERT_EQ(ctx.size(), 1u);
+    EXPECT_NE(ctx[0].find("\"StateCost\" applies with \"MaxStatesPerStep\""), std::string::npos);
+    const auto capped = run_rewriting_core(
+        build_input(kSeed, kLhs, kRhs, 3, [&](wxf::Writer& w) {
+            put_str_list_option(w, "RequestedData", {"NumStates"});
+            w.write_byte(static_cast<uint8_t>(wxf::Token::Rule));
+            w.write(std::string("MaxStatesPerStep"));
+            w.write(int64_t{1});
+            put_cost(w, {"VertexCount", "Minus"}, {});
+        }, 3), host);
+    EXPECT_TRUE(warning_contexts(capped).empty());
+    EXPECT_EQ(read_int_key(capped, "NumStates"), 4);
+}
+
 // A counts-only request under CanonicalizeStates -> Full counts the isomorphism classes on either
 // device. The GPU reply read every state as empty when no state contents were requested (their
 // edge counts were not read back), so every state fell into one class and NumStates was 1.

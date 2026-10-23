@@ -704,6 +704,12 @@ private:
     // a step, or under step_cap_counts_matches_ (MatchesPerStep) the N lowest-ranked transitions.
     size_t max_states_per_step_{0};
     bool step_cap_counts_matches_{false};
+    // "StateCost": the step cap keeps the lowest-cost successors (hgcommon::state_cost_core.hpp).
+    // Each class's cost, by canonical hash mixed with state_cost_fingerprint_, is computed once
+    // (successor_cost).
+    hgcommon::StateCost state_cost_{};
+    uint64_t state_cost_fingerprint_{0};
+    ConcurrentMap<uint64_t, uint64_t> state_costs_;
     hgcommon::TuningOverrides tuning_;
     size_t causal_set_capacity_{0};
     // Keep at most this many of a state's own transitions per RULE (0 = all). Chosen at the
@@ -775,6 +781,8 @@ private:
         // The state the transition makes, which the successor caps count by
         // (successor_identity); its own unless a cap counts successors.
         hgcommon::SuccessorIdentity succ{0, 1};
+        // Under "StateCost", the successor's cost (hgcommon::state_cost_key); 0 otherwise.
+        uint64_t cost = 0;
     };
 
     // MATCH STORAGE BY STEP. When match_epochs_on_ is set, everything a match task at step t
@@ -949,6 +957,10 @@ public:
     // MatchesPerStep: the N lowest-ranked transitions of each step. Replaces a
     // set_max_states_per_step cap; the two share the step's selection.
     void set_matches_per_step(size_t max);
+    // "StateCost": the step cap (set_max_states_per_step, set_matches_per_step) keeps the
+    // successors of lowest cost under `cost`, the successor rank breaking ties. A program with
+    // n == 0 ranks by the successor rank alone.
+    void set_state_cost(const hgcommon::StateCost& cost);
     // Seed for the keyed draws (exploration_probability, transition_rate, the spine and the
     // matches_per_state_rule ranking) and for the rule-order shuffle. 0 is an ordinary seed for
     // the keyed draws, so their sample repeats run to run; only the rule-order shuffle draws
@@ -1434,11 +1446,18 @@ private:
     }
     void drain_candidates(StateId state, std::vector<RankedMatch>& out);
     // The identity of the state `match` makes from `state` (hgcommon::SuccessorIdentity).
-    hgcommon::SuccessorIdentity successor_identity(StateId state, const MatchRecord& match);
+    // With `cost`, also the successor's cost (successor_cost) into *cost.
+    hgcommon::SuccessorIdentity successor_identity(StateId state, const MatchRecord& match,
+                                                   uint64_t* cost = nullptr);
+    // The cost key (hgcommon::state_cost_key) of the class with canonical hash `hash` and IR
+    // canonical form `form`, from state_costs_ or computed and added there.
+    uint64_t successor_cost(uint64_t hash, const std::vector<uint32_t>& form);
     // Keeps the candidates whose successor is among the k lowest-ranked successors, ties at the
     // cut kept, in their order (hgcommon::successor_ranks, then the k-th smallest successor
-    // rank, hgcommon::rank_cut).
-    static void keep_lowest_successors(std::vector<RankedMatch>& cands, size_t k);
+    // rank, hgcommon::rank_cut). With `costed`, successors rank by (cost, successor rank)
+    // (hgcommon::cost_successor_ranks).
+    static void keep_lowest_successors(std::vector<RankedMatch>& cands, size_t k,
+                                       bool costed = false);
     // At a state's drain: the chosen matches -- drain_candidates, and under
     // MaxSuccessorStatesPerParent only the k lowest-ranked of them -- are rewritten, or under
     // MaxStatesPerStep added to their step's candidates (step_candidates_).
