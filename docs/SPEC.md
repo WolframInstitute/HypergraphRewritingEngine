@@ -324,7 +324,7 @@ vertices. *(Gate: `reference/verify_state_statistics.wls`, against the definitio
 Wolfram Language from a raw run.)*
 
 With `"StepStatisticsWeighting" -> "Classes"` each class at a step counts once in `Invariants`,
-`BallGrowthDimension` and the pooled histograms; `RawStates`, `Classes`, the multiplicities,
+`BallGrowthDimension`, `LogGeodesicCount` and the pooled histograms; `RawStates`, `Classes`, the multiplicities,
 the class entropy, `Events` and `RuleCounts` are unchanged. The default `"States"` counts each
 class m(c, d) times.
 
@@ -409,6 +409,29 @@ Infrageometry paclet's `VolumeGrowthObservables` and `DimensionCurvatureFit` wit
 A, V and W: the search counts each vertex u at h(u), which is dist(v, u) + 1 when u has a
 neighbour farther from v and dist(v, u) otherwise, and W(r) is the number of vertices with
 h(u) <= r. Each fit takes O(k²) for its window.
+
+**`StepStatistics` geodesic multiplicity.** For two distinct vertices p, q of one component of
+G at distance d, σ(p, q) is the number of shortest paths from p to q. A vertex w lies on one of
+them when d(p, w) + d(w, q) = d, and ρ(w) = σ(p, w) σ(w, q) of them pass through it, so the
+sum of ρ over those vertices is (d + 1) σ(p, q). The segment entropy of the pair is the entropy
+in bits of ρ normalised to sum 1: H(p, q) = -Σ_w (ρ(w) / Σρ) log2(ρ(w) / Σρ). An edge has
+H = 1. The pairs below are the ordered pairs (p, q) of distinct vertices joined by a path.
+
+| Entry | Definition | Undefined when |
+|---|---|---|
+| `GeodeticFraction` | the fraction of the pairs with σ(p, q) = 1 | G has no edge |
+| `SegmentEntropy` | the mean of H(p, q) over the pairs | G has no edge |
+
+The per-step key `LogGeodesicCount` maps each distance d to the summary, over the states with a
+pair at distance d, of the mean of ln σ(p, q) over the pairs at distance d. σ(p, q) is the
+(p, q) entry of A^d, A the adjacency matrix of G (the Infrageometry paclet's
+`ShortestPathMultiplicityMatrix`). The breadth-first search from each vertex p that the radius
+takes counts the paths: σ(p, p) = 1, and σ(p, w) is the sum of σ(p, u) over the neighbours u of
+w with d(p, u) = d(p, w) - 1. The same search sums a(p, w), the sum over the shortest paths from
+p to w of the sum of log2 σ(p, x) over their vertices x: a(p, w) is σ(p, w) log2 σ(p, w) plus
+the sum of a(p, u) over the same neighbours u. Σ_w ρ(w) log2 ρ(w) = a(p, q) + a(q, p), so the
+sum of H over the pairs is the sum over the pairs of log2((d + 1) σ(p, q)) - 2 a(p, q) / ((d +
+1) σ(p, q)), and each term comes from p's search. σ is a double, exact below 2^53.
 
 **Per-vertex curvature.** With `"IncludeVertexCurvature" -> True` each `"States"` record has
 `VertexCurvature`, an association from each vertex of the record's edges that has a neighbour in

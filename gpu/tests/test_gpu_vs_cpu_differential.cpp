@@ -2486,13 +2486,18 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
                   &hgcommon::SgGeometry::local_dimension_max,
                   &hgcommon::SgGeometry::local_dimension_sd,
                   &hgcommon::SgGeometry::ollivier_moran_i,
-                  &hgcommon::SgGeometry::ollivier_degree_correlation})
+                  &hgcommon::SgGeometry::ollivier_degree_correlation,
+                  &hgcommon::SgGeometry::geodetic_fraction,
+                  &hgcommon::SgGeometry::segment_entropy})
                 EXPECT_TRUE(same(a->g.*f, b->g.*f)) << w.name << " " << a->g.*f << " " << b->g.*f;
             for (uint32_t k = 0; k < hgcommon::SG_GROWTH_VALUES; ++k)
                 EXPECT_TRUE(same(a->g.growth[k], b->g.growth[k])) << w.name << " growth " << k;
             if (a->g.defined & hgcommon::SG_VOLUME_GROWTH) ++with_growth;
             for (uint32_t k = 0; k < a->num_ball; ++k)
                 EXPECT_TRUE(same(a->ball()[k], b->ball()[k])) << w.name;
+            ASSERT_EQ(a->num_geodesic, b->num_geodesic) << w.name;
+            for (uint32_t k = 0; k < a->num_geodesic; ++k)
+                EXPECT_TRUE(same(a->geodesic()[k], b->geodesic()[k])) << w.name;
             // The per-vertex distributions, byte for byte.
             ASSERT_EQ(a->num_distributions, b->num_distributions) << w.name;
             EXPECT_EQ(std::memcmp(a->distributions(), b->distributions(),

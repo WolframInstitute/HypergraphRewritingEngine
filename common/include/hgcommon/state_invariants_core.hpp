@@ -49,8 +49,9 @@ HG_HD inline uint32_t si_runs(const uint32_t* a, uint32_t n) {
 
 // One state's invariants and geometry (state_geometry_core.hpp) as stored per class: the values,
 // then num_distributions per-vertex distributions (SgDistribution, SG_DISTS of them or none),
-// num_ball ball-growth dimensions (doubles), and the num_edges arities ascending and num_vertices
-// slot degrees descending as (value, count) runs (uint32 word pairs), directly after the record.
+// num_ball ball-growth dimensions and num_geodesic mean log geodesic counts (doubles), and the
+// num_edges arities ascending and num_vertices slot degrees descending as (value, count) runs
+// (uint32 word pairs), directly after the record.
 // The runs give back the sorted sequences, which is what "StepStatistics" reads.
 struct StateInvariantRecord {
     StateInvariantValues v;
@@ -61,14 +62,17 @@ struct StateInvariantRecord {
     uint32_t num_distributions = 0;
     uint32_t num_arity_runs = 0;
     uint32_t num_degree_runs = 0;
+    uint32_t num_geodesic = 0;
+    uint32_t reserved = 0;
     HG_HD const SgDistribution* distributions() const {
         return reinterpret_cast<const SgDistribution*>(this + 1);
     }
     HG_HD const double* ball() const {
         return reinterpret_cast<const double*>(distributions() + num_distributions);
     }
+    HG_HD const double* geodesic() const { return ball() + num_ball; }
     HG_HD const uint32_t* arity_runs() const {
-        return reinterpret_cast<const uint32_t*>(ball() + num_ball);
+        return reinterpret_cast<const uint32_t*>(geodesic() + num_geodesic);
     }
     HG_HD const uint32_t* degree_runs() const { return arity_runs() + 2 * num_arity_runs; }
     // f(value) for each arity, ascending.
@@ -84,9 +88,10 @@ struct StateInvariantRecord {
             for (uint32_t k = 0; k < r[2 * i + 1]; ++k) f(r[2 * i]);
     }
     HG_HD static uint64_t bytes(uint32_t arity_runs, uint32_t degree_runs, uint32_t nball,
-                                uint32_t ndist) {
+                                uint32_t ndist, uint32_t ngeodesic) {
         return (sizeof(StateInvariantRecord) + sizeof(SgDistribution) * uint64_t{ndist} +
-                8 * uint64_t{nball} + 8 * (uint64_t{arity_runs} + degree_runs) + 7) &
+                8 * (uint64_t{nball} + ngeodesic) + 8 * (uint64_t{arity_runs} + degree_runs) +
+                7) &
                ~uint64_t{7};
     }
 };
@@ -342,11 +347,12 @@ struct SiCsrEdges {
 };
 
 // Scratch bytes state_record needs before the geometry: the invariants' words, the three output
-// arrays, the per-vertex distributions and the ball-growth dimensions.
+// arrays, the per-vertex distributions, the ball-growth dimensions and the mean log geodesic
+// counts.
 HG_HD inline uint64_t si_record_fixed_bytes(uint32_t slots, uint32_t m, uint32_t lanes) {
     const uint64_t words = si_scratch_words(slots, m, lanes) + m + 2 * uint64_t{slots} + 1;
     return ((4 * words + 7) & ~uint64_t{7}) + sizeof(SgDistribution) * SG_DISTS +
-           8 * (uint64_t{slots} + 1);
+           2 * 8 * (uint64_t{slots} + 1);
 }
 
 // A first scratch size for state_record: the geometry's graph and its metrics at maximum degree 8.
@@ -377,12 +383,13 @@ struct SiResult {
     SgGeometry g;
     const SgDistribution* dists = nullptr;
     const double* ball = nullptr;
+    const double* geodesic = nullptr;
     const uint32_t* arities = nullptr;
     const uint32_t* degrees = nullptr;
-    uint32_t m = 0, n = 0, nball = 0;
+    uint32_t m = 0, n = 0, nball = 0, ngeodesic = 0;
     HG_HD uint64_t bytes() const {
         return StateInvariantRecord::bytes(si_runs(arities, m), si_runs(degrees, n), nball,
-                                           SG_DISTS);
+                                           SG_DISTS, ngeodesic);
     }
 };
 
@@ -404,7 +411,8 @@ HG_HD inline bool state_record(const uint32_t* off, const uint32_t* /*verts*/, u
     uint32_t* arrays = words + siw;
     uint32_t* largest = arrays + m + S + 1;
     const uint64_t fixed = si_record_fixed_bytes(S, m, par.width());
-    double* ball = reinterpret_cast<double*>(scratch + fixed - 8 * (uint64_t{S} + 1));
+    double* geodesic = reinterpret_cast<double*>(scratch + fixed - 8 * (uint64_t{S} + 1));
+    double* ball = geodesic - (uint64_t{S} + 1);
     auto* dists = reinterpret_cast<SgDistribution*>(reinterpret_cast<unsigned char*>(ball) -
                                                     sizeof(SgDistribution) * SG_DISTS);
     if (fixed > capacity) {
@@ -416,7 +424,8 @@ HG_HD inline bool state_record(const uint32_t* off, const uint32_t* /*verts*/, u
     uint64_t need = 0;
     size_t geo_need = 0;
     if (!sg_state_geometry(SiCsrEdges{goff, gverts, gm}, scratch + fixed, capacity - fixed, r.g,
-                           ball, S + 1, geo_need, ~0u, par, largest, largest_n, dists))
+                           ball, S + 1, geo_need, ~0u, par, largest, largest_n, dists, nullptr,
+                           nullptr, geodesic, S + 1))
         need = fixed + geo_need;
     par.sync();
     if (need) {
@@ -431,6 +440,8 @@ HG_HD inline bool state_record(const uint32_t* off, const uint32_t* /*verts*/, u
         r.m = gm;
         r.n = static_cast<uint32_t>(r.v.vertex_count);
         r.nball = r.g.ball_radii;
+        r.geodesic = geodesic;
+        r.ngeodesic = r.g.geodesic_radii;
     }
     return true;
 }
@@ -443,12 +454,16 @@ HG_HD inline StateInvariantRecord* si_record_write(void* mem, const SiResult& r)
     rec->num_edges = r.m;
     rec->num_vertices = r.n;
     rec->num_ball = r.nball;
+    rec->num_geodesic = r.ngeodesic;
+    rec->reserved = 0;
     rec->num_distributions = SG_DISTS;
     auto* d = reinterpret_cast<SgDistribution*>(rec + 1);
     for (uint32_t k = 0; k < SG_DISTS; ++k) d[k] = r.dists[k];
     double* b = reinterpret_cast<double*>(d + SG_DISTS);
     for (uint32_t i = 0; i < r.nball; ++i) b[i] = r.ball[i];
-    uint32_t* w = reinterpret_cast<uint32_t*>(b + r.nball);
+    double* gd = b + r.nball;
+    for (uint32_t i = 0; i < r.ngeodesic; ++i) gd[i] = r.geodesic[i];
+    uint32_t* w = reinterpret_cast<uint32_t*>(gd + r.ngeodesic);
     auto write_runs = [&](const uint32_t* a, uint32_t n) {
         uint32_t runs = 0;
         for (uint32_t i = 0; i < n; ++i) {

@@ -91,6 +91,8 @@ vertexValues[edges_List] := vertexValuesOf[edges[[All, 2 ;;]]];
 vertexValuesOf[vs_List] := vertexValuesOf[vs] = sgrVertexInvariants[vs];
 ballGrowth[edges_List] := ballGrowthOf[edges[[All, 2 ;;]]];
 ballGrowthOf[vs_List] := ballGrowthOf[vs] = sgrBallGrowth[vs];
+logGeodesic[edges_List] := logGeodesicOf[edges[[All, 2 ;;]]];
+logGeodesicOf[vs_List] := logGeodesicOf[vs] = sgrLogGeodesicCount[vs];
 
 summary[values_List, round_ : 1] := If[values === {}, <|"N" -> 0|>,
   <|"N" -> Length[values], "Mean" -> N[Mean[values]],
@@ -105,7 +107,8 @@ geometryKeys = {"GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
   "MutualInformation", "FisherInformation", "LargestComponentDimension", "LocalDimensionMax",
   "LocalDimensionStandardDeviation", "OllivierMoranI", "OllivierDegreeCorrelation",
   "BallDimension", "BallScalarCurvature", "RiemannianBallDimension",
-  "RiemannianBallScalarCurvature", "SphereDimension", "SphereScalarCurvature"};
+  "RiemannianBallScalarCurvature", "SphereDimension", "SphereScalarCurvature",
+  "GeodeticFraction", "SegmentEntropy"};
 
 vertexDistributions = {"LocalDimension", "OllivierRicciCurvature", "WolframRicciCurvatureScalar",
   "BallDimension", "BallScalarCurvature", "RiemannianBallDimension",
@@ -149,13 +152,14 @@ oracleSteps[res_Association, byClass_ : False, branchial_ : False] := Module[
   pairsByStep = If[branchial,
     GroupBy[{outOf[#From], outOf[#To]} & /@ res["BranchialEdges"], stepOf[First[#]] &], <||>];
   KeyValueMap[Function[{k, sts},
-    Module[{pop, cheap, ginv, geo, vvals, balls, mult, classes, evIds, rec},
+    Module[{pop, cheap, ginv, geo, vvals, balls, geodesics, mult, classes, evIds, rec},
       pop = If[byClass, DeleteDuplicatesBy[sts, #CanonicalHash &], sts];
       cheap = cheapInvariants[#Edges] & /@ pop;
       ginv = graphInvariants[#Edges] & /@ pop;
       geo = geometry[#Edges] & /@ pop;
       vvals = vertexValues[#Edges] & /@ pop;
       balls = ballGrowth[#Edges] & /@ pop;
+      geodesics = logGeodesic[#Edges] & /@ pop;
       mult = Values[Counts[Lookup[sts, "CanonicalHash"]]]; classes = Length[mult];
       evIds = Keys[Select[eventStep, # == k &]];
       rec = <|"Step" -> k, "RawStates" -> Length[sts], "Classes" -> classes,
@@ -187,7 +191,10 @@ oracleSteps[res_Association, byClass_ : False, branchial_ : False] := Module[
         "DegreeSequenceHistogram" -> KeySort[Counts[Lookup[cheap, "DegreeSequence"]]],
         "BallGrowthDimension" -> Association[Table[
           r -> summary[Select[balls, Length[#] >= r &][[All, r]], 0.01],
-          {r, Max[0, Length /@ balls]}]]|>;
+          {r, Max[0, Length /@ balls]}]],
+        "LogGeodesicCount" -> Association[Table[
+          d -> summary[Select[geodesics, Length[#] >= d &][[All, d]], 0.01],
+          {d, Max[0, Length /@ geodesics]}]]|>;
       If[branchial, Join[rec, branchialKeys[sts, Lookup[pairsByStep, k, {}],
         Union[Flatten[#Edges[[All, 2 ;;]] & /@ Lookup[byStep, 0, {}]]]]], rec]]],
     byStep]];

@@ -28,6 +28,7 @@ struct Edges {
 struct Measured {
     SgGeometry g;
     std::vector<double> vv;
+    std::vector<double> log_geodesic;   // the mean ln sigma at d = 1..D
     uint32_t n = 0;
     double at(uint32_t k, uint32_t v) const { return vv[k * n + v]; }
 };
@@ -40,16 +41,19 @@ Measured measure(std::vector<std::vector<uint32_t>> edges) {
     size_t slots = 0, pairs = 0;
     hgcommon::sg_sizes(el, slots, pairs);
     r.vv.assign(hgcommon::SG_GROWTH_VALUES * slots, 0.0);
+    r.log_geodesic.assign(slots + 1, 0.0);
     size_t needed = 0;
     while (!hgcommon::sg_state_geometry(el, scratch.data(), scratch.size(), r.g, ball.data(),
                                         static_cast<uint32_t>(ball.size()), needed, ~0u,
                                         hgcommon::IrSerial{}, nullptr, 0, nullptr, nullptr,
-                                        r.vv.data())) {
+                                        r.vv.data(), r.log_geodesic.data(),
+                                        static_cast<uint32_t>(r.log_geodesic.size()))) {
         EXPECT_GT(needed, scratch.size());
         scratch.resize(needed);
     }
     r.n = r.g.vertex_count;
     r.vv.resize(hgcommon::SG_GROWTH_VALUES * r.n);
+    r.log_geodesic.resize(r.g.geodesic_radii);
     return r;
 }
 
@@ -89,9 +93,11 @@ std::vector<std::vector<uint32_t>> petersen() {
     return e;
 }
 
-// The graph of a state, built once, with a search's per-radius counts from vertex index s.
+// The graph of a state, built once, with a search's per-radius counts from vertex index s, and
+// each vertex's path count and log sum from s (0 for a vertex not reached).
 struct Profiles {
     std::vector<uint32_t> shell, ball, riem;
+    std::vector<double> sigma, acc;
 };
 
 Profiles profiles(std::vector<std::vector<uint32_t>> edges, uint32_t s) {
@@ -106,10 +112,12 @@ Profiles profiles(std::vector<std::vector<uint32_t>> edges, uint32_t s) {
     EXPECT_TRUE(hgcommon::sg_build(el, arena, g));
     std::vector<int32_t> dist(g.n + 1, -1);
     std::vector<uint32_t> queue(g.n + 1), layer(g.n + 1), inner(g.n + 2);
+    Profiles p;
+    p.sigma.assign(g.n + 1, 0.0);
+    p.acc.assign(g.n + 1, 0.0);
     uint32_t reached = 0;
     const uint32_t e = hgcommon::sg_bfs(g, s, dist.data(), queue.data(), layer.data(), UINT32_MAX,
-                                        reached, inner.data());
-    Profiles p;
+                                        reached, inner.data(), p.sigma.data(), p.acc.data());
     uint32_t b = 0, w = 0;
     for (uint32_t r = 0; r <= e; ++r) {
         b += layer[r];
@@ -275,4 +283,49 @@ TEST(StateMeasures, HypercubeSpherePositive) {
 TEST(StateMeasures, SmallStatesHaveNoGrowthFit) {
     EXPECT_FALSE(measure({{1, 2}, {2, 3}, {3, 1}}).g.defined & hgcommon::SG_VOLUME_GROWTH);
     EXPECT_FALSE(measure({{1, 2}, {2, 3}}).g.defined & hgcommon::SG_VOLUME_GROWTH);
+}
+
+// MetricAlgebraTests.wlt "ShortestPathMultiplicityMatrix-small-fixtures": one shortest path
+// along P5, two between antipodes of C4, six across the 3 x 3 grid, one along an edge of K5, one
+// from a vertex to itself, none across components.
+TEST(StateMeasures, ShortestPathCounts) {
+    EXPECT_EQ(profiles({{1, 2}, {2, 3}, {3, 4}, {4, 5}}, 0).sigma[4], 1.0);
+    const Profiles c4 = profiles(cycle(4), 0);
+    EXPECT_EQ(c4.sigma[2], 2.0);
+    EXPECT_EQ(profiles(grid(3, 3), 0).sigma[8], 6.0);
+    std::vector<std::vector<uint32_t>> k5;
+    for (uint32_t a = 1; a <= 5; ++a)
+        for (uint32_t b = a + 1; b <= 5; ++b) k5.push_back({a, b});
+    EXPECT_EQ(profiles(k5, 0).sigma[1], 1.0);
+    EXPECT_EQ(profiles({{1, 2}, {2, 3}, {3, 4}, {4, 5}}, 2).sigma[2], 1.0);
+    EXPECT_EQ(profiles({{1, 2}, {3, 4}}, 0).sigma[2], 0.0);
+    // The two paths 0-1-2 and 0-3-2 of C4 each have log2 sigma 0, 0, 1 along them.
+    EXPECT_EQ(c4.acc[2], 2.0);
+}
+
+// C4: 8 ordered pairs at distance 1 with one path and 4 at distance 2 with two. An edge's
+// density is 1, 1 (1 bit); an antipodal pair's is 2, 1, 1, 2 over 6.
+TEST(StateMeasures, CycleOfFourGeodesics) {
+    const Measured m = measure(cycle(4));
+    ASSERT_TRUE(m.g.defined & hgcommon::SG_GEODESIC);
+    EXPECT_NEAR(m.g.geodetic_fraction, 8.0 / 12.0, 1e-15);
+    const double h2 = (2.0 / 3.0) * std::log2(3.0) + (1.0 / 3.0) * std::log2(6.0);
+    EXPECT_NEAR(m.g.segment_entropy, (8.0 + 4.0 * h2) / 12.0, 1e-14);
+    ASSERT_EQ(m.log_geodesic.size(), 2u);
+    EXPECT_EQ(m.log_geodesic[0], 0.0);
+    EXPECT_NEAR(m.log_geodesic[1], std::log(2.0), 1e-15);
+}
+
+// P3: every pair has one path; the ends' segment has three vertices of density 1.
+TEST(StateMeasures, PathOfThreeGeodesics) {
+    const Measured m = measure({{1, 2}, {2, 3}});
+    EXPECT_EQ(m.g.geodetic_fraction, 1.0);
+    EXPECT_NEAR(m.g.segment_entropy, (4.0 + 2.0 * std::log2(3.0)) / 6.0, 1e-15);
+}
+
+// No edge, no pair: undefined.
+TEST(StateMeasures, NoEdgeHasNoGeodesics) {
+    const Measured m = measure({{1}, {2}});
+    EXPECT_FALSE(m.g.defined & hgcommon::SG_GEODESIC);
+    EXPECT_EQ(m.g.geodesic_radii, 0u);
 }
