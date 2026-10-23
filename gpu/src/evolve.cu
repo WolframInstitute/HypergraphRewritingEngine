@@ -999,6 +999,7 @@ uint64_t estimated_device_bytes(const EngineConfig& cfg) {
     b += map_bytes(cfg.match_dedup_slots) + map_bytes(cfg.event_canon_slots);
     b += u64(cfg.max_states)          * 8 * 76;     // matches pool (max_states*8 records ~76B)
     b += u64(cfg.max_states)          * 16;         // d_frontier + d_next_frontier + state_canonical_hash
+    b += u64(cfg.max_states)          * 8;          // the state record log (RecordEntry)
 
     // The device stack: EngineState's constructor sets cudaLimitStackSize, and the driver
     // reserves that per-thread size for every thread the device can hold resident, not for the

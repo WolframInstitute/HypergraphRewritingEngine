@@ -36,11 +36,19 @@ struct ExpandEntry {
     uint32_t published;
 };
 
+// A state whose "StepStatistics" record (record_state_invariants_device) an idle block computes.
+// Only the reply reads a record, so the state is registered and expanded without waiting for it.
+struct RecordEntry {
+    StateId  state;
+    uint32_t published;
+};
+
 struct ExploreView {
     uint32_t* depth   = nullptr;   // per state; hgcommon::kExploreNoDepth until reached
     uint32_t* claimed = nullptr;   // per state; 1 once claimed for expansion
     typename LockFreeList<StateId>::DeviceView children{};   // keyed by canonical state
     WorkLogView<ExpandEntry> expand{};
+    WorkLogView<RecordEntry> records{};   // at most one entry per state
     // The walk's frames: `frame_levels` per block, node and depth.
     uint32_t* frame_node  = nullptr;
     uint32_t* frame_depth = nullptr;
@@ -50,8 +58,8 @@ struct ExploreView {
     __device__ bool claim(StateId s) { return atomicCAS(&claimed[s], 0u, 1u) == 0u; }
 };
 
-// Stream-ordered reset through the view: the expand log (published flags, counter, cursor, done)
-// always; depths, claims and child lists as well when `full`.
+// Stream-ordered reset through the view: the expand and record logs (published flags, counters,
+// cursors, done counts) always; depths, claims and child lists as well when `full`.
 void explore_reset_async(const ExploreView& v, bool full, ClearBatch* batch = nullptr);
 
 // Host owner. Sized from the state and event budgets; a session keeps one across calls and a
@@ -66,16 +74,17 @@ public:
     uint32_t max_states() const { return max_states_; }
     uint32_t max_events() const { return max_events_; }
 
-    // Every state unreached and unclaimed, the lists and the log empty.
+    // Every state unreached and unclaimed, the lists and the logs empty.
     void clear(ClearBatch* batch = nullptr);
     ExploreView view() const;
 
 private:
     uint32_t                max_states_;
     uint32_t                max_events_;
-    uint32_t*               words_ = nullptr;   // depth, claimed, then the log's cursor and done
+    uint32_t*               words_ = nullptr;   // depth, claimed, then each log's cursor and done
     LockFreeList<StateId>   children_;
     Pool<ExpandEntry>       expand_;
+    Pool<RecordEntry>       records_;
 };
 
 }  // namespace gpu

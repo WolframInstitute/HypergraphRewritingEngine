@@ -193,10 +193,10 @@ struct DeviceState {
     uint32_t record_branchial;
     // hgcommon::records_explored_branchial: the rewrite registers its event's branchial pairs.
     uint32_t record_explored_branchial;
-    // "StepStatistics" (RecordSet::state_invariants): each class's record, written by the warp
-    // that creates the class (record_state_invariants_device) into invariant_pool at an offset
-    // claimed from invariant_pool_used, in 8-byte words; state_invariant_at[sid] is that offset,
-    // UINT32_MAX for a state that wrote none. Null and 0 when the run records none.
+    // "StepStatistics" (RecordSet::state_invariants): each class's record, written by the block
+    // that takes the class's record log entry (compute_state_record) into invariant_pool at an
+    // offset claimed from invariant_pool_used, in 8-byte words; state_invariant_at[sid] is that
+    // offset, UINT32_MAX for a state that wrote none. Null and 0 when the run records none.
     uint32_t  record_invariants;
     uint32_t* state_invariant_at;
     unsigned long long* invariant_pool;

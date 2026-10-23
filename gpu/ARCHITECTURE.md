@@ -100,6 +100,12 @@ that blocks consume at the top of the persistent loop, pushing one (state, rule)
 and matching an item on the block when the ring is full; roots and a session's resumed frontier
 enter the same log. The detector counts expand entries with the records.
 
+A state that creates its class under "StepStatistics" appends a `RecordEntry` to a second log,
+and a block with no other work computes the class's record from it (`compute_state_record`: the
+state's IR canonical form, then `record_state_invariants_device`). The state is registered and
+expanded without waiting for its record. The detector counts record entries as it counts expand
+entries.
+
 Its capture and replay are
 the host's, through the shared cores: each class retains its representative's expansion as
 slot-named matches, instances are replayed forward, and the reconstructed relations are read

@@ -1078,7 +1078,7 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
     // quotient exploration and from every raw state under full capture.
     if (job.include_step_statistics) {
         std::map<uint32_t, hg::stats::StepInput> inputs;
-        // Each class's record, written on the device by the warp that created the class.
+        // Each class's record, written on the device from the record log (compute_state_record).
         // class_record_at maps a class hash to its index in class_records.
         hgmarshal::U64Index class_record_at(class_reps.size());
         std::vector<const hgcommon::StateInvariantRecord*> class_records;

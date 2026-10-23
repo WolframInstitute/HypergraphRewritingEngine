@@ -395,8 +395,9 @@ __global__ void k_seed_root_hashes(const __grid_constant__ DeviceState ds, const
         claim = state_claim_form(ds, sid, key & ds.canonical_key_mask, form, form_words, map,
                                  forms);
         key = claim.key;
-        if (ds.record_invariants && claim.canonical == sid)
-            record_state_invariants_device(ds, sid, form, form_words, arena, slot, slot_words);
+        if (ds.record_invariants && claim.canonical == sid &&
+            !ev.records.append(RecordEntry{sid, 0u}))
+            ds.errors.record(ErrorKind::kStateInvariantsFull);
     } else if (automatic) {
         claim = state_claim_content(ds, sid, key, map);
         key = claim.key;
@@ -420,9 +421,9 @@ __global__ void k_seed_root_hashes(const __grid_constant__ DeviceState ds, const
             const StateClaim ec = state_claim_form(ds, sid, exact & ds.event_key_mask, eform,
                                                    eform_words, exact_map, forms);
             exact = ec.key;
-            if (ds.record_invariants && ec.canonical == sid)
-                record_state_invariants_device(ds, sid, eform, eform_words, arena, slot,
-                                               slot_words);
+            if (ds.record_invariants && ec.canonical == sid &&
+                !ev.records.append(RecordEntry{sid, 0u}))
+                ds.errors.record(ErrorKind::kStateInvariantsFull);
         }
         ds.state_exact_hash[sid] = exact;
     }
@@ -776,6 +777,23 @@ struct ChildIdentity {
     bool deferred = false;  // the child waits on a twin (kFollowing): its record is not done yet
 };
 
+// A RecordEntry's work, on the calling block's IR scratch: the state's IR canonical form
+// (state_exact_hash_device), then its record from that form (record_state_invariants_device).
+template <class Par>
+__device__ void compute_state_record(const DeviceState& ds, StateId sid, DeviceArena::View arena,
+                                     uint32_t*& slot, uint64_t& slot_words, Par par) {
+    uint64_t exact = 0;
+    uint32_t* form = nullptr;
+    uint32_t form_words = 0;
+    const ExactHashStatus st = state_exact_hash_device(ds, sid, arena, slot, slot_words, exact,
+                                                       false, false, &form, &form_words, par);
+    if (st != ExactHashStatus::kOk) {
+        if (par.leader()) ds.errors.record(error_kind_for(st));
+        return;
+    }
+    record_state_invariants_device(ds, sid, form, form_words, arena, slot, slot_words, par);
+}
+
 template <class Par>
 __device__ __forceinline__ ChildIdentity canonicalise_child(
         const DeviceState& ds, StateId sid, EventId evt, StateId parent, uint32_t keyed,
@@ -783,8 +801,8 @@ __device__ __forceinline__ ChildIdentity canonicalise_child(
         bool need_exact, bool want_orbits, bool dedup, DeviceArena::View arena, uint32_t*& slot,
         uint64_t& slot_words, DedupMap::DeviceView dedup_map, DedupMap::DeviceView exact_map,
         DedupMap::DeviceView event_map, typename Pool<uint32_t>::DeviceView forms,
-        typename RingBuffer<uint32_t>::DeviceView ready, unsigned long long& acc_irkey,
-        unsigned long long& acc_evkey, Par par) {
+        typename RingBuffer<uint32_t>::DeviceView ready, WorkLogView<RecordEntry>& records,
+        unsigned long long& acc_irkey, unsigned long long& acc_evkey, Par par) {
     const unsigned long long t1 = clock64();
     // Keyed rewrites (keyed.hpp): a child whose token set an earlier state holds takes that
     // state's canonical results and skips its IR, or, when they are not published yet and the child
@@ -829,10 +847,8 @@ __device__ __forceinline__ ChildIdentity canonicalise_child(
                                         false, &eform, &eform_words, par);
 
     uint32_t canonical = INVALID_ID, rep = INVALID_ID, fresh = 0, capture = 0, ok = 0;
-    // "StepStatistics": whether this state created its class's record, and the IR canonical form
-    // the record's geometry reads.
-    uint32_t want_record = 0, record_form_words = 0;
-    const uint32_t* record_form = nullptr;
+    // "StepStatistics": whether this state created its class's record.
+    uint32_t want_record = 0;
     if (par.leader()) {
         if (key_st != ExactHashStatus::kOk) {
             // The hash is the dedup KEY, so a state whose hash could not be computed is not
@@ -852,11 +868,7 @@ __device__ __forceinline__ ChildIdentity canonicalise_child(
             } else if (state_mode == CanonicalizationMode::Full) {
                 const StateClaim c = state_claim_form(ds, sid, h & ds.canonical_key_mask, form,
                                                       form_words, dedup_map, forms);
-                if (ds.record_invariants && c.canonical == sid) {
-                    want_record = 1;
-                    record_form = form;
-                    record_form_words = form_words;
-                }
+                if (ds.record_invariants && c.canonical == sid) want_record = 1;
                 h = c.key;
                 exact = h;
                 rep = c.canonical;
@@ -887,11 +899,7 @@ __device__ __forceinline__ ChildIdentity canonicalise_child(
                     const StateClaim ec = state_claim_form(ds, sid, exact & ds.event_key_mask,
                                                            eform, eform_words, exact_map, forms);
                     exact = ec.key;
-                    if (ds.record_invariants && ec.canonical == sid) {
-                        want_record = 1;
-                        record_form = eform;
-                        record_form_words = eform_words;
-                    }
+                    if (ds.record_invariants && ec.canonical == sid) want_record = 1;
                 }
                 ds.state_exact_hash[sid] = exact;
             }
@@ -914,13 +922,11 @@ __device__ __forceinline__ ChildIdentity canonicalise_child(
         if (keyed != 0 && ds.state_edge_slices[sid].count > kFollowEdges)
             keyed_close_followers(ds, sid, ready);
     }
-    if (ds.record_invariants && par.bcast(want_record)) {
-        record_form = reinterpret_cast<const uint32_t*>(
-            par.bcast64(reinterpret_cast<uint64_t>(record_form)));
-        record_form_words = par.bcast(record_form_words);
-        record_state_invariants_device(ds, sid, record_form, record_form_words, arena, slot,
-                                       slot_words, par);
-    }
+    // The class's record is computed by an idle block (compute_state_record), from this
+    // state's IR canonical form, so the child is registered without waiting for it.
+    if (ds.record_invariants && want_record && par.leader() &&
+        !records.append(RecordEntry{sid, 0u}))
+        ds.errors.record(ErrorKind::kStateInvariantsFull);
     ChildIdentity out;
     out.canonical = par.bcast(canonical);
     out.rep = par.bcast(rep);
@@ -1087,22 +1093,24 @@ __global__ void k_persistent_evolve(
             // The replay's task log (QeView::tasks); null without a replay.
             const WorkLogView<QeTask>*                tasks;
             const WorkLogView<ExpandEntry>*           expands;
+            const WorkLogView<RecordEntry>*           records;
 
             HG_DEV uint32_t num_roles() const { return term.num_roles; }
             HG_DEV uint32_t max_stagnant_rounds() const { return kMaxDetectorRounds; }
             HG_DEV bool snapshot(uint64_t* p, uint64_t* c) const {
                 return term.snapshot_quiescent(p, c);
             }
-            // Records, expand entries and replay tasks together. No consumed count can pass its
-            // produced count, so the sums are equal exactly when every pair is.
+            // Records, expand entries, state records and replay tasks together. No consumed
+            // count can pass its produced count, so the sums are equal exactly when every pair is.
             HG_DEV uint32_t produced() const {
-                uint32_t n = readable_records(found) + expands->readable();
+                uint32_t n = readable_records(found) + expands->readable() + records->readable();
                 if (tasks) n += tasks->readable();
                 return n;
             }
             HG_DEV uint32_t consumed() const {
                 cuda::atomic_ref<uint32_t, cuda::thread_scope_device> r(*rewrites_done);
-                uint32_t n = r.load(cuda::memory_order_acquire) + expands->done_count();
+                uint32_t n = r.load(cuda::memory_order_acquire) + expands->done_count() +
+                             records->done_count();
                 if (tasks) n += tasks->done_count();
                 return n;
             }
@@ -1185,7 +1193,7 @@ __global__ void k_persistent_evolve(
             }
         } dctx{term, found, rewrites_done, ds, phase_cycles,
                qe.enabled ? qe.next_raw_event : nullptr,
-               (qe.enabled && qe.replay) ? &qe.tasks : nullptr, &ev.expand};
+               (qe.enabled && qe.replay) ? &qe.tasks : nullptr, &ev.expand, &ev.records};
 
         hgcommon::term_detect_loop(dctx, p1, c1, p2, c2);
         return;
@@ -1221,6 +1229,9 @@ __global__ void k_persistent_evolve(
     __shared__ uint64_t surv_shared[kLocalSurvivors];
     __shared__ uint32_t expand_base;
     __shared__ uint32_t expand_count;
+    __shared__ uint32_t record_base;
+    __shared__ uint32_t record_count;
+    __shared__ StateId  record_sid;
     __shared__ bool     run_rule_inline;
     __shared__ bool     stalled;
     uint32_t idle_spins = 0;
@@ -1283,7 +1294,7 @@ __global__ void k_persistent_evolve(
                                     state_mode, event_keys, need_ranks, need_exact,
                                     ds.state_edge_orbit != nullptr, dedup, arena, ir_slot,
                                     ir_slot_words, dedup_map, exact_map, event_map, forms, ready,
-                                    acc_irkey, acc_evkey, IrWarpAll{});
+                                    ev.records, acc_irkey, acc_evkey, IrWarpAll{});
         if (id.capture) {
             const unsigned long long s3 = (threadIdx.x == 0) ? clock64() : 0;
             qe_capture_expansion(ds, qe, child_parent, child_sid, child_event, child_rule,
@@ -1473,8 +1484,8 @@ __global__ void k_persistent_evolve(
                                             need_ranks, need_exact,
                                             ds.state_edge_orbit != nullptr, dedup, arena,
                                             tile_slot[tile], tile_slot_words[tile], dedup_map,
-                                            exact_map, event_map, forms, ready, acc_irkey,
-                                            acc_evkey, Tile);
+                                            exact_map, event_map, forms, ready, ev.records,
+                                            acc_irkey, acc_evkey, Tile);
                 __syncwarp();
 
                 // The class frame's match record (qe_capture_expansion), every lane together,
@@ -1682,6 +1693,34 @@ __global__ void k_persistent_evolve(
                 __syncthreads();
                 continue;
             }
+        }
+
+        // STATE RECORDS (ExploreView::records), one per block, after every other kind of work:
+        // only the reply reads a record. Booked after the record is written and fenced.
+        if (threadIdx.x == 0) {
+            record_count = ev.records.claim(1u, record_base);
+            if (record_count) record_sid = ev.records.await(record_base).state;
+        }
+        __syncthreads();
+        if (record_count) {
+            const unsigned long long tR = (threadIdx.x == 0) ? clock64() : 0;
+            if (threadIdx.x == 0) {
+                ir_slot = regions + size_t(blockIdx.x) * region_words;
+                ir_slot_words = region_words;
+            }
+            __syncthreads();
+            compute_state_record(ds, record_sid, arena, ir_slot, ir_slot_words, IrWarpAll{});
+            __threadfence();
+            __syncthreads();
+            if (threadIdx.x == 0) {
+                ev.records.book(1u);
+                idle_ns = 64;
+                busy_streak += busy_streak < 255u ? 1u : 0u;
+                idle_spins = 0;
+                acc_canon += clock64() - tR;
+            }
+            __syncthreads();
+            continue;
         }
 
         if (term.exit_requested()) { flush_cycles(); return; }
@@ -2555,12 +2594,16 @@ uint64_t persistent_arena_words(uint32_t share_words, uint32_t holders) {
 
 // ---- ExploreState ------------------------------------------------------------------------
 
-// Zero the published flags of the entries the last launch appended; the counter is read on the
-// device, so the host never learns how many there were.
+// Zero the published flags of the entries the last launch appended to both logs; the counters
+// are read on the device, so the host never learns how many there were.
 __global__ void k_expand_log_clear(ExploreView v) {
     const uint32_t n = min(*v.expand.items.counter, v.expand.items.capacity);
-    for (uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x)
-        v.expand.items.at(i).published = 0u;
+    const uint32_t r = min(*v.records.items.counter, v.records.items.capacity);
+    for (uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; i < n || i < r;
+         i += gridDim.x * blockDim.x) {
+        if (i < n) v.expand.items.at(i).published = 0u;
+        if (i < r) v.records.items.at(i).published = 0u;
+    }
 }
 
 // The regions go to `batch` when one is given, flushed after this launch; otherwise they are
@@ -2571,6 +2614,8 @@ void explore_reset_async(const ExploreView& v, bool full, ClearBatch* batch) {
     ClearBatch& b = batch ? *batch : own;
     b.add(v.expand.items.counter, sizeof(uint32_t), 0);
     b.add(v.expand.cursor, sizeof(uint32_t) * 2u, 0);
+    b.add(v.records.items.counter, sizeof(uint32_t), 0);
+    b.add(v.records.cursor, sizeof(uint32_t) * 2u, 0);
     if (full) {
         b.add(v.depth, sizeof(uint32_t) * v.max_states, 0xFF);
         b.add(v.claimed, sizeof(uint32_t) * v.max_states, 0);
@@ -2589,12 +2634,14 @@ void explore_reset_async(const ExploreView& v, bool full, ClearBatch* batch) {
 
 ExploreState::ExploreState(uint32_t max_states, uint32_t max_events)
     : max_states_(max_states), max_events_(max_events),
-      children_(max_states, max_events), expand_(max_states) {
+      children_(max_states, max_events), expand_(max_states), records_(max_states) {
     try {
-        HG_CUDA_CHECK(cudaMalloc(&words_, sizeof(uint32_t) * (2ull * max_states + 2u)),
+        HG_CUDA_CHECK(cudaMalloc(&words_, sizeof(uint32_t) * (2ull * max_states + 4u)),
                       "explore words alloc");
         HG_CUDA_CHECK(cudaMemset(expand_.view().data, 0, sizeof(ExpandEntry) * size_t(max_states)),
                       "expand log init");
+        HG_CUDA_CHECK(cudaMemset(records_.view().data, 0, sizeof(RecordEntry) * size_t(max_states)),
+                      "record log init");
         clear();
     } catch (...) {
         HG_FREE_DEVICE(words_)
@@ -2614,6 +2661,9 @@ ExploreView ExploreState::view() const {
     v.expand.items  = expand_.view();
     v.expand.cursor = words_ + 2ull * max_states_;
     v.expand.done   = words_ + 2ull * max_states_ + 1u;
+    v.records.items  = records_.view();
+    v.records.cursor = words_ + 2ull * max_states_ + 2u;
+    v.records.done   = words_ + 2ull * max_states_ + 3u;
     v.max_states    = max_states_;
     return v;
 }
