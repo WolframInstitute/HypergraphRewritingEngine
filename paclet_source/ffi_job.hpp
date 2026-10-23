@@ -136,6 +136,8 @@ struct ParsedJob {
     bool include_num_branchial_edges = true;
     bool include_step_statistics = false;   // "StepStatistics" (state_statistics.hpp)
     bool step_statistics_by_class = false;  // "StepStatisticsWeighting" -> "Classes"
+    uint32_t statistics_graph = 0;          // "StatisticsGraph": 0 "Consecutive", 1 "AllPairs"
+    uint32_t statistics_measures = 0;       // "StepStatisticsMeasures": stats::measure_bits
     uint32_t step_statistics_branchial = 0; // "StepStatisticsBranchial" and "StepStatisticsMatrices":
                                             // stats::kBranchial* and kMatrix* bits
     uint64_t step_statistics_matrix_limit = 0;  // "StepStatisticsMatrixLimit": bytes, 0 Automatic

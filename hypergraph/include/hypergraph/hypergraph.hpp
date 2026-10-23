@@ -156,6 +156,8 @@ class Hypergraph {
     std::atomic<bool> record_raw_counts_only_{false};
     std::atomic<bool> record_multiplicities_{false};
     std::atomic<bool> record_state_invariants_{false};
+    std::atomic<uint32_t> statistics_graph_{0};   // RecordSet::statistics_graph
+    std::atomic<uint32_t> statistics_measures_{0};   // RecordSet::statistics_measures
     std::atomic<bool> record_relation_lists_{true};
     std::atomic<bool> record_event_lists_{true};
     std::atomic<bool> record_explored_branchial_{true};

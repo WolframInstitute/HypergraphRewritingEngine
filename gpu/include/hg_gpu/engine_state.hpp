@@ -198,6 +198,8 @@ struct DeviceState {
     // offset claimed from invariant_pool_used, in 8-byte words; state_invariant_at[sid] is that
     // offset, UINT32_MAX for a state that wrote none. Null and 0 when the run records none.
     uint32_t  record_invariants;
+    uint32_t  statistics_graph;   // RecordSet::statistics_graph (hgcommon::SG_GRAPH_*)
+    uint32_t  statistics_measures;   // RecordSet::statistics_measures
     uint32_t* state_invariant_at;
     unsigned long long* invariant_pool;
     unsigned long long* invariant_pool_used;

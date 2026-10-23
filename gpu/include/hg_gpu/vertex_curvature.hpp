@@ -16,13 +16,14 @@ namespace gpu {
 // distinct vertices of state s; its values go to k[k_off[s] .. k_off[s] + vertex_count[s]),
 // with k_off the prefix sum of vertex_count. `done[s]` is set for each state computed; a state
 // whose scratch does not fit the device budget is left for the caller. False, with nothing
-// computed, when no device is usable.
+// computed, when no device is usable. `graph` is the rule that builds each state's graph
+// (hgcommon::SG_GRAPH_*).
 bool vertex_curvature_device(const std::vector<uint32_t>& state_edges,
                              const std::vector<uint32_t>& edge_verts,
                              const std::vector<uint32_t>& verts,
                              const std::vector<uint32_t>& vertex_count,
                              std::vector<double>& k, std::vector<uint64_t>& k_off,
-                             std::vector<uint8_t>& done);
+                             std::vector<uint8_t>& done, uint32_t graph = 0);
 
 }  // namespace gpu
 }  // namespace HG_NAMESPACE

@@ -463,6 +463,7 @@ struct StateRecordIds {
     // The curvature already computed for the record's edges (the GPU engine computes it on the
     // device); null computes it here.
     const stats::VertexCurvature* curvature = nullptr;
+    uint32_t graph = 0;               // "StatisticsGraph" (hgcommon::SG_GRAPH_*)
 };
 
 // A "States" record. `edges` is the state's edges as (edge id, vertices). Under Full the record
@@ -486,7 +487,7 @@ void write_state_record(Sink& s, const StateRecordIds& r, bool full,
     if (r.with_hash) s.i64("CanonicalHash", r.hash);
     if (r.with_curvature)
         s.vertex_reals("VertexCurvature",
-                       r.curvature ? *r.curvature : stats::vertex_curvature(edges));
+                       r.curvature ? *r.curvature : stats::vertex_curvature(edges, r.graph));
 }
 
 // The fields of a state vertex's payload in a styled graph. The payload is <|Id, CanonicalId,
@@ -689,6 +690,8 @@ hgcommon::RecordSet record_set_for(const Job& job, const GraphPropertyNeeds& g) 
     r.raw_counts_only = reads_raw_counts_only(job, g);
     r.multiplicities = job.include_step_statistics;
     r.state_invariants = job.include_step_statistics;
+    r.statistics_graph = job.statistics_graph;
+    r.statistics_measures = job.statistics_measures & hgcommon::SG_MEASURES_ALL;
     r.relation_lists = job.include_causal_edges || job.include_branchial_edges || g.causal ||
                        g.branchial;
     r.event_lists = job.include_events || job.include_events_minimal || g.events;
