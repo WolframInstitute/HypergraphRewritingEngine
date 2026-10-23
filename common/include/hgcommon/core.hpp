@@ -299,7 +299,9 @@ HG_HD inline bool same_record_set(const RecordSet& a, const RecordSet& b) {
            a.state_events == b.state_events && a.raw_events == b.raw_events &&
            a.raw_counts_only == b.raw_counts_only && a.multiplicities == b.multiplicities &&
            a.state_invariants == b.state_invariants && a.relation_lists == b.relation_lists &&
-           a.event_lists == b.event_lists && a.explored_branchial == b.explored_branchial;
+           a.event_lists == b.event_lists && a.explored_branchial == b.explored_branchial &&
+           a.statistics_graph == b.statistics_graph &&
+           a.statistics_measures == b.statistics_measures;
 }
 
 

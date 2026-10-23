@@ -367,3 +367,33 @@ TEST(EvolutionLimits, MatchesPerStateRuleConsidersRulesPastAMachineWord) {
            "index 0, so which rules the drain considers depends on a fixed-width horizon "
            "rather than on the rule set";
 }
+
+// A continuation records what its opening call recorded (hgcommon::same_record_set). The
+// statistics graph and measures decide each class's record, so a continuation that changes
+// either is refused, and one that repeats them is accepted.
+TEST(EvolutionLimits, ContinuationRefusesAnotherStatisticsGraphOrMeasures) {
+    auto attempt = [](uint32_t graph, uint32_t measures) {
+        Hypergraph hg;
+        hg.set_state_canonicalization_mode(StateCanonicalizationMode::Full);
+        RecordSet rs;
+        rs.state_invariants = true;
+        hg.set_record_set(rs);
+        ParallelEvolutionEngine e(&hg, 1);
+        e.add_rule(create_growth_rule());
+        e.set_continuable(true);
+        e.evolve({{0, 1}}, 1);
+        RecordSet now = hg.record_set();
+        now.statistics_graph = graph;
+        now.statistics_measures = measures;
+        hg.set_record_set(now);
+        try {
+            e.evolve_more(1);
+        } catch (const std::invalid_argument&) {
+            return false;
+        }
+        return true;
+    };
+    EXPECT_TRUE(attempt(0, 0));
+    EXPECT_FALSE(attempt(hgcommon::SG_GRAPH_ALL_PAIRS, 0));
+    EXPECT_FALSE(attempt(0, hgcommon::SG_VOLUME_GROWTH));
+}
