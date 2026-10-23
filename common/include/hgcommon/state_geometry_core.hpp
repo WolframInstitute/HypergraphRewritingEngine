@@ -459,13 +459,14 @@ enum : uint32_t {
     SG_GEODESIC_BUNDLE = 1u << 19,       // proper_time, proper_time_variance, bundle_spread,
                                          // geodesic_curvature: G has an edge
     SG_LENSING = 1u << 20,               // lensing_*: a pair of G' passes near the centre, M > 0
+    SG_ROTATION = 1u << 21,              // orbital_velocity, rotation_*: R_C >= 2
 };
 
 // "StepStatisticsMeasures": the `want` bits of each measure family. SG_MEASURES_BASE is the set
 // computed without the option.
 constexpr uint32_t SG_MEASURES_BASE = (1u << 11) - 1;
 constexpr uint32_t SG_COMBINATORIAL = SG_EULER | SG_RIM | SG_CYCLE_CURVATURE;
-constexpr uint32_t SG_GEODESIC_ANALYSIS = SG_GEODESIC_BUNDLE | SG_LENSING;
+constexpr uint32_t SG_GEODESIC_ANALYSIS = SG_GEODESIC_BUNDLE | SG_LENSING | SG_ROTATION;
 constexpr uint32_t SG_MEASURES_ALL = SG_MEASURES_BASE | SG_VOLUME_GROWTH | SG_GEODESIC |
                                      SG_NONLAZY_OLLIVIER | SG_COMBINATORIAL | SG_PARTICLE |
                                      SG_DIMENSION_GRADIENT | SG_GEODESIC_ANALYSIS;
@@ -623,6 +624,14 @@ struct SgGeometry {
     double lensing_deflection = 0.0;
     double lensing_impact = 0.0;
     double lensing_ratio = 0.0;
+    // The rotation curve about C: v(r) = L(r) / (2 pi r) for r = 1..R_C, L(r) the vertices of the
+    // largest component of the shell at distance r from C. The mean of v, and the slope and the
+    // root mean square residual of the least squares fit of ln v on ln r.
+    double orbital_velocity = 0.0;
+    double rotation_exponent = 0.0;
+    double rotation_residual = 0.0;
+    uint32_t rotation_radii = 0;         // R_C: entries written to the rotation-curve output
+    uint32_t reserved2 = 0;
 };
 
 // Doubles of scratch sg_growth_fit takes for k quotients.
@@ -655,11 +664,13 @@ HG_HD inline uint32_t sg_transport_lanes(size_t max_degree, uint32_t lanes) {
 // log sums (8 bytes each), and per vertex the one-path count (4 bytes), the entropy sum and the
 // pooled per-distance log sums and pair counts (8 bytes each).
 // SG_GEODESIC_BUNDLE adds per vertex the target count (4 bytes) and the sums of d, d^2, the
-// bundle curvature and the bundle spread over its targets (8 bytes each). SG_LENSING adds the
-// centre's largest dimension and the diameter of G' (8 bytes each), per vertex the distance to
-// the centre and the centre search's queue (4 bytes each), per lane and per vertex the impact
-// parameters, the distances through the centre, a queue and the centre's vertices (4 bytes each),
-// and per vertex the near-pair count (4 bytes) and the sums of b, δ and the ratio (8 bytes each).
+// bundle curvature and the bundle spread over its targets (8 bytes each). SG_LENSING and
+// SG_ROTATION add the centre's largest dimension and the diameter of G' (8 bytes each), and per
+// vertex the distance to the centre and the centre search's queue (4 bytes each). SG_LENSING
+// adds per lane and per vertex the impact parameters, the distances through the centre, a queue
+// and the centre's vertices (4 bytes each), and per vertex the near-pair count (4 bytes) and the
+// sums of b, δ and the ratio (8 bytes each). SG_ROTATION adds per radius the orbit size and the
+// mark of the shell search (4 bytes each) and the velocity (8 bytes).
 HG_HD inline size_t sg_metric_bytes(size_t n, size_t max_degree, size_t edges, uint32_t lanes,
                                     uint32_t want = ~0u) {
     const size_t n1 = n + 1;
@@ -675,8 +686,9 @@ HG_HD inline size_t sg_metric_bytes(size_t n, size_t max_degree, size_t edges, u
         bytes += n1 * (4 + 8) + 2 * 8;
     if (want & SG_PARTICLE) bytes += n1 * 8 + 8;
     if (want & SG_GEODESIC_BUNDLE) bytes += n1 * (4 + 4 * 8) + 5 * 8;
-    if (want & SG_LENSING)
-        bytes += 2 * 8 + n1 * (2 * 4) + size_t{lanes} * n1 * (4 * 4) + n1 * (4 + 3 * 8) + 8 * 8;
+    if (want & (SG_LENSING | SG_ROTATION)) bytes += 2 * 8 + n1 * (2 * 4) + 3 * 8;
+    if (want & SG_LENSING) bytes += size_t{lanes} * n1 * (4 * 4) + n1 * (4 + 3 * 8) + 8 * 8;
+    if (want & SG_ROTATION) bytes += n1 * (2 * 4 + 8) + 3 * 8;
     return bytes;
 }
 
@@ -866,6 +878,8 @@ HG_HD inline void sg_growth_of(const uint32_t* shell, const uint32_t* ball, cons
 // `log_geodesic`, with SG_GEODESIC, receives in entries 0..D-1, up to `log_geodesic_capacity`
 // entries, the mean over the ordered pairs at distance d = 1..D of ln sigma, D the largest
 // eccentricity; out.geodesic_radii is D.
+// `rotation_curve`, with SG_ROTATION, receives in entries 0..R_C-1, up to `rotation_capacity`
+// entries, the orbital velocity v(r) at r = 1..R_C; out.rotation_radii is R_C.
 template <class Par = IrSerial>
 HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& out,
                                  double* ball_dimension, uint32_t ball_capacity,
@@ -875,7 +889,9 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
                                  double* vertex_curvature = nullptr,
                                  double* vertex_values = nullptr,
                                  double* log_geodesic = nullptr,
-                                 uint32_t log_geodesic_capacity = 0) {
+                                 uint32_t log_geodesic_capacity = 0,
+                                 double* rotation_curve = nullptr,
+                                 uint32_t rotation_capacity = 0) {
     const bool want_growth = (want & SG_VOLUME_GROWTH) != 0;
     const bool want_geodesic = (want & SG_GEODESIC) != 0;
     const bool want_nonlazy = (want & SG_NONLAZY_OLLIVIER) != 0;
@@ -886,7 +902,8 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
                                       (want & (SG_OLLIVIER_MORAN | SG_OLLIVIER_DEGREE)) != 0;
     const bool want_gradient = (want & SG_DIMENSION_GRADIENT) != 0;
     const bool want_lensing = (want & SG_LENSING) != 0;
-    const bool want_centre = want_lensing;
+    const bool want_rotation = (want & SG_ROTATION) != 0;
+    const bool want_centre = want_lensing || want_rotation;
     const bool want_sub = want_dists || (want & SG_LARGEST_DIMENSION) != 0 || want_gradient ||
                           want_centre;
     const uint32_t n = g.n;
@@ -974,6 +991,10 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
     uint64_t* lens_bsum = want_lensing ? arena.take<uint64_t>(n1) : nullptr;
     double* lens_dsum = want_lensing ? arena.take<double>(n1) : nullptr;
     double* lens_rsum = want_lensing ? arena.take<double>(n1) : nullptr;
+    // Rotation: per radius the orbit size and the velocity; per vertex the shell search's mark.
+    uint32_t* orbit_len = want_rotation ? arena.take<uint32_t>(n1) : nullptr;
+    double* orbit_v = want_rotation ? arena.take<double>(n1) : nullptr;
+    uint32_t* orbit_mark = want_rotation ? arena.take<uint32_t>(n1) : nullptr;
     if (arena.failed) return false;
     int32_t* dist = dist_all + me * n1;
     int32_t* dist2 = dist2_all + me * n1;
@@ -1599,6 +1620,68 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
             }
         }
     }
+    // ROTATION CURVE: the leader finds the components of each shell S_r = {u : d(u, C) = r} by a
+    // search inside the shell, keeps the largest per radius, and fits ln v(r) on ln r.
+    if (part && want_rotation && par.leader()) {
+        uint32_t rc = 0;
+        for (uint32_t i = 0; i < ns; ++i) {
+            const uint32_t u = vat(i);
+            if (static_cast<uint32_t>(centre_d[u]) > rc) rc = static_cast<uint32_t>(centre_d[u]);
+            orbit_mark[u] = 0;
+        }
+        for (uint32_t r = 0; r <= rc; ++r) orbit_len[r] = 0;
+        for (uint32_t i = 0; i < ns; ++i) {
+            const uint32_t u0 = vat(i);
+            const int32_t r = centre_d[u0];
+            if (r == 0 || orbit_mark[u0]) continue;
+            uint32_t head = 0, tail = 0;
+            centre_q[tail++] = u0;
+            orbit_mark[u0] = 1;
+            while (head < tail) {
+                const uint32_t u = centre_q[head++];
+                for (uint32_t k = g.off[u]; k < g.off[u + 1]; ++k) {
+                    const uint32_t w = g.nbr[k];
+                    if (centre_d[w] == r && !orbit_mark[w]) {
+                        orbit_mark[w] = 1;
+                        centre_q[tail++] = w;
+                    }
+                }
+            }
+            if (tail > orbit_len[r]) orbit_len[r] = tail;
+        }
+        if (rc >= 2) {
+            const double two_pi = 6.28318530717958647692;
+            double sv = 0.0, sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0;
+            for (uint32_t r = 1; r <= rc; ++r) {
+                const double v = static_cast<double>(orbit_len[r]) /
+                                 dm_mul(two_pi, static_cast<double>(r));
+                orbit_v[r] = v;
+                const double x = dm_log(static_cast<double>(r)), y = dm_log(v);
+                sv += v;
+                sx += x;
+                sy += y;
+                sxx += dm_mul(x, x);
+                sxy += dm_mul(x, y);
+            }
+            const double m = static_cast<double>(rc);
+            const double slope =
+                (dm_mul(m, sxy) - dm_mul(sx, sy)) / (dm_mul(m, sxx) - dm_mul(sx, sx));
+            const double icpt = (sy - dm_mul(slope, sx)) / m;
+            double ss = 0.0;
+            for (uint32_t r = 1; r <= rc; ++r) {
+                const double e = dm_log(orbit_v[r]) - icpt -
+                                 dm_mul(slope, dm_log(static_cast<double>(r)));
+                ss += dm_mul(e, e);
+            }
+            out.orbital_velocity = sv / m;
+            out.rotation_exponent = slope;
+            out.rotation_residual = ::sqrt(ss / m);
+            out.rotation_radii = rc;
+            out.defined |= SG_ROTATION;
+            for (uint32_t r = 1; r <= rc && r <= rotation_capacity; ++r)
+                rotation_curve[r - 1] = orbit_v[r];
+        }
+    }
 
     // PASS 3: K_v for the vertices of G', from each vertex's balls to radius R'.
     if (part && want_dists) {
@@ -1659,9 +1742,9 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
 // that grows its buffer to `needed` and calls again either succeeds or learns the next stage's
 // need. Every lane of the policy calls it with the same arguments and gets the same verdict and
 // `needed`; the leader builds G and `out` is the leader's. `largest`, `largest_n`, `dists`,
-// `vertex_curvature`, `vertex_values`, `log_geodesic` and `log_geodesic_capacity` are
-// sg_geometry_of's; `graph` is the rule that builds G (SG_GRAPH_CONSECUTIVE or
-// SG_GRAPH_ALL_PAIRS).
+// `vertex_curvature`, `vertex_values`, `log_geodesic`, `log_geodesic_capacity`,
+// `rotation_curve` and `rotation_capacity` are sg_geometry_of's; `graph` is the rule that builds
+// G (SG_GRAPH_CONSECUTIVE or SG_GRAPH_ALL_PAIRS).
 template <class EdgeList, class Par = IrSerial>
 HG_HD bool sg_state_geometry(const EdgeList& el, unsigned char* scratch, size_t capacity,
                              SgGeometry& out, double* ball_dimension, uint32_t ball_capacity,
@@ -1671,7 +1754,8 @@ HG_HD bool sg_state_geometry(const EdgeList& el, unsigned char* scratch, size_t 
                              double* vertex_curvature = nullptr,
                              double* vertex_values = nullptr, double* log_geodesic = nullptr,
                              uint32_t log_geodesic_capacity = 0,
-                             uint32_t graph = SG_GRAPH_CONSECUTIVE) {
+                             uint32_t graph = SG_GRAPH_CONSECUTIVE,
+                             double* rotation_curve = nullptr, uint32_t rotation_capacity = 0) {
     SgArena arena;
     arena.base = scratch;
     arena.capacity = capacity;
@@ -1701,7 +1785,7 @@ HG_HD bool sg_state_geometry(const EdgeList& el, unsigned char* scratch, size_t 
     const size_t built = arena.used;
     if (!sg_geometry_of(g, arena, out, ball_dimension, ball_capacity, want, par, largest,
                         largest_n, dists, vertex_curvature, vertex_values, log_geodesic,
-                        log_geodesic_capacity)) {
+                        log_geodesic_capacity, rotation_curve, rotation_capacity)) {
         needed = built + sg_metric_bytes(g.n, g.max_degree, g.edges, par.width(), want);
         return false;
     }

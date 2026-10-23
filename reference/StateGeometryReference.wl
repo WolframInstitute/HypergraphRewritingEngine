@@ -32,6 +32,8 @@ sgrVolumeGrowth::usage = "sgrVolumeGrowth[g, v] gives the six volume-growth valu
 sgrLogGeodesicCount::usage = "sgrLogGeodesicCount[edges] gives, for d = 1..D, the mean over the ordered pairs of vertices at distance d of the natural logarithm of their number of shortest paths, or {} for a state with no edge.";
 sgrGeodesicBundle::usage = "sgrGeodesicBundle[edges] gives the GeodesicProperTime, GeodesicProperTimeVariance, GeodesicBundleSpread and GeodesicCurvature of a state, each Missing[] for a state with no edge.";
 sgrLensing::usage = "sgrLensing[edges] gives the LensingDeflection, LensingImpactParameter and LensingDeflectionRatio of a state, each Missing[] when no pair of the largest component passes near the centre.";
+sgrRotationCurve::usage = "sgrRotationCurve[edges] gives the orbital velocities v(r), r = 1..R_C, about the vertices of greatest local dimension, or {} when R_C < 2.";
+sgrRotation::usage = "sgrRotation[edges] gives the OrbitalVelocity, RotationCurveExponent and RotationCurveResidual of a state, each Missing[] when R_C < 2.";
 sgrEdgeInvariants::usage = "sgrEdgeInvariants[edges] gives the per-edge values \"EdgeInvariants\" pools for one state: \"NonLazyOllivierRicciCurvature\", the curvature of each edge of the state's graph with the walk of idleness 0, as exact rationals.";
 sgrCombinatorial::usage = "sgrCombinatorial[edges] gives the EulerCharacteristic, RimFraction and CombinatorialCurvatureTotal of a state, and \"Curvatures\", 1 - k/6 for each vertex whose link is a k-cycle, ascending by vertex.";
 sgrParticle::usage = "sgrParticle[edges] gives the per-vertex clustering coefficients, Euler excesses and topological charges of a state, ascending by vertex, as exact numbers.";
@@ -199,7 +201,28 @@ sgrLensing[edges_List] := Module[{g = sgrStateGraph[edges], lc, gp, top, cs, dm,
       "LensingImpactParameter" -> N[Mean[pairs[[All, 1]]], 20],
       "LensingDeflectionRatio" -> N[Mean[pairs[[All, 2]] (pairs[[All, 1]] + 1)/top], 20]|>]];
 
-geometryNames = Join[geodesicBundleNames, lensingNames, {"DimensionGradientCurvature", "ClusteringCoefficient", "LocalEulerExcess", "TopologicalCharge",
+(* Rotation curve (docs/SPEC.md, "StepStatistics geodesic analysis"): about the same centre C,
+   L(r) the vertex count of the largest connected component of the shell at distance r, v(r) =
+   L(r) / (2 Pi r) for r = 1..R_C, and the least squares line of Log[v] on Log[r]. *)
+rotationNames = {"OrbitalVelocity", "RotationCurveExponent", "RotationCurveResidual"};
+sgrRotationCurve[edges_List] := Module[{g = sgrStateGraph[edges], lc, gp, top, cs, dc, rc},
+  lc = largestComponentGeometry[edges];
+  If[MissingQ[lc], Return[{}]];
+  gp = Keys[lc["Dimensions"]]; top = Max[Values[lc["Dimensions"]]];
+  cs = Select[gp, lc["Dimensions"][#] >= top - 10^-9 &];
+  dc = AssociationMap[Function[u, Min[GraphDistance[g, u, #] & /@ cs]], gp];
+  rc = Max[Values[dc]];
+  If[rc < 2, Return[{}]];
+  Table[Max[Length /@ ConnectedComponents[Subgraph[g, Keys[Select[dc, # == r &]]]]]/(2 Pi r),
+    {r, rc}]];
+sgrRotation[edges_List] := Module[{v = sgrRotationCurve[edges], x, y, n, a},
+  If[v === {}, Return[AssociationMap[Missing[] &, rotationNames]]];
+  x = N[Log[Range[Length[v]]], 30]; y = N[Log[v], 30];
+  {a, n} = LeastSquares[Transpose[{ConstantArray[1, Length[v]], x}], y];
+  <|"OrbitalVelocity" -> N[Mean[v], 20], "RotationCurveExponent" -> N[n, 20],
+    "RotationCurveResidual" -> N[Sqrt[Mean[(y - a - n x)^2]], 20]|>];
+
+geometryNames = Join[geodesicBundleNames, lensingNames, rotationNames, {"DimensionGradientCurvature", "ClusteringCoefficient", "LocalEulerExcess", "TopologicalCharge",
   "TopologicalChargeMax", "EulerCharacteristic", "RimFraction", "CombinatorialCurvatureTotal",
   "NonLazyOllivierRicciCurvature", "GeodeticFraction", "SegmentEntropy", "GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
   "WolframRicciCurvatureScalar", "OllivierRicciCurvature", "DegreeEntropy", "LocalEntropy",
@@ -401,6 +424,7 @@ sgrStateGeometry[edges_List] := Module[
     "SegmentEntropy" -> N[geodesicValues[edges]["SegmentEntropy"]],
     Sequence @@ Normal[N[sgrGeodesicBundle[edges]]],
     Sequence @@ Normal[N[sgrLensing[edges]]],
+    Sequence @@ Normal[N[sgrRotation[edges]]],
     Sequence @@ With[{growth = Values[growthOfLargest[edges]]},
       Thread[growthNames -> If[growth === {}, ConstantArray[Missing[], 6], Mean[growth]]]]|>];
 

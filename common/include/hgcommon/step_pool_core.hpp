@@ -29,16 +29,18 @@ namespace common {
 // The slots. Slots below SP_MULTIPLICITY and from SP_DIST_SUM on hold doubles as sp_key_of
 // keys; SP_ARITY, SP_DEGREE and SP_MULTIPLICITY hold integers as themselves.
 enum : uint32_t {
-    SP_INVARIANTS = 0,           // the 49 "Invariants" in reply order, slots 0..48
-    SP_NUM_INVARIANTS = 49,
+    SP_INVARIANTS = 0,           // the 52 "Invariants" in reply order, slots 0..51
+    SP_NUM_INVARIANTS = 52,
     SP_ARITY = SP_NUM_INVARIANTS,        // a hyperedge's arity
     SP_DEGREE = SP_NUM_INVARIANTS + 1,   // a vertex's slot degree
     SP_MULTIPLICITY = SP_NUM_INVARIANTS + 2,  // a class's raw state count, weight 1 per class
     SP_DIST_SUM = SP_NUM_INVARIANTS + 3, // distribution k's sum of x^(j+1): slot SP_DIST_SUM +
                                          // 8 k + 2 j for its high double, + 1 for its low double
     SP_BALL = SP_DIST_SUM + 8 * SG_DISTS,  // the ball-growth dimension at radius r: slot
-                                           // SP_BALL + 2 (r - 1); the mean log geodesic count
-                                           // at distance d: slot SP_BALL + 2 (d - 1) + 1
+                                           // SP_BALL + 3 (r - 1); the mean log geodesic count
+                                           // at distance d: slot SP_BALL + 3 (d - 1) + 1; the
+                                           // orbital velocity at radius r: SP_BALL + 3 (r - 1) + 2
+    SP_SERIES = 3,                         // the per-radius series interleaved from SP_BALL
 };
 
 HG_HD inline bool sp_integer_slot(uint32_t slot) {
@@ -149,6 +151,11 @@ HG_HD inline void sp_add_class(const StateInvariantRecord& r, uint64_t w, uint64
         put(47, g.lensing_impact);
         put(48, g.lensing_ratio);
     }
+    if (g.defined & SG_ROTATION) {
+        put(49, g.orbital_velocity);
+        put(50, g.rotation_exponent);
+        put(51, g.rotation_residual);
+    }
 
     const uint32_t* ar = r.arity_runs();
     for (uint32_t i = 0; i < r.num_arity_runs; ++i)
@@ -168,8 +175,11 @@ HG_HD inline void sp_add_class(const StateInvariantRecord& r, uint64_t w, uint64
         for (uint32_t b = 0; b < SG_DIST_BINS; ++b)
             if (d.bins[b]) sink.bin(k, b, qm_sat_mul(d.bins[b], w));
     }
-    for (uint32_t b = 0; b < r.num_ball; ++b) put(SP_BALL + 2 * b, r.ball()[b]);
-    for (uint32_t d = 0; d < r.num_geodesic; ++d) put(SP_BALL + 2 * d + 1, r.geodesic()[d]);
+    for (uint32_t b = 0; b < r.num_ball; ++b) put(SP_BALL + SP_SERIES * b, r.ball()[b]);
+    for (uint32_t d = 0; d < r.num_geodesic; ++d)
+        put(SP_BALL + SP_SERIES * d + 1, r.geodesic()[d]);
+    for (uint32_t k = 0; k < r.num_rotation; ++k)
+        put(SP_BALL + SP_SERIES * k + 2, r.rotation()[k]);
 }
 
 }  // namespace common

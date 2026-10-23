@@ -30,6 +30,7 @@ struct Measured {
     SgGeometry g;
     std::vector<double> vv;
     std::vector<double> log_geodesic;   // the mean ln sigma at d = 1..D
+    std::vector<double> rotation;       // the orbital velocity at r = 1..R_C
     uint32_t n = 0;
     double at(uint32_t k, uint32_t v) const { return vv[k * n + v]; }
 };
@@ -43,18 +44,22 @@ Measured measure(std::vector<std::vector<uint32_t>> edges) {
     hgcommon::sg_sizes(el, slots, pairs);
     r.vv.assign(hgcommon::SG_VERTEX_VALUES * slots, 0.0);
     r.log_geodesic.assign(slots + 1, 0.0);
+    r.rotation.assign(slots + 1, 0.0);
     size_t needed = 0;
     while (!hgcommon::sg_state_geometry(el, scratch.data(), scratch.size(), r.g, ball.data(),
                                         static_cast<uint32_t>(ball.size()), needed, ~0u,
                                         hgcommon::IrSerial{}, nullptr, 0, nullptr, nullptr,
                                         r.vv.data(), r.log_geodesic.data(),
-                                        static_cast<uint32_t>(r.log_geodesic.size()))) {
+                                        static_cast<uint32_t>(r.log_geodesic.size()),
+                                        hgcommon::SG_GRAPH_CONSECUTIVE, r.rotation.data(),
+                                        static_cast<uint32_t>(r.rotation.size()))) {
         EXPECT_GT(needed, scratch.size());
         scratch.resize(needed);
     }
     r.n = r.g.vertex_count;
     r.vv.resize(hgcommon::SG_VERTEX_VALUES * r.n);
     r.log_geodesic.resize(r.g.geodesic_radii);
+    r.rotation.resize(r.g.rotation_radii);
     return r;
 }
 
@@ -655,4 +660,46 @@ TEST(StateMeasures, LensingWithAdjacentTiedCentres) {
                                 {2, 12}});
     ASSERT_TRUE(m.g.defined & hgcommon::SG_LENSING);
     EXPECT_EQ(m.g.lensing_deflection, 0.0);
+}
+
+// Rotation curve of P5 about C = {3}: the shells are {2, 4} and {1, 5}, two vertices with no
+// edge between them, so L(1) = L(2) = 1, v(r) = 1 / (2 pi r), the exponent -1 with no residual and
+// the mean velocity (1/(2 pi) + 1/(4 pi)) / 2 = 3 / (8 pi).
+TEST(StateMeasures, PathOfFiveRotationCurve) {
+    const double pi = 3.14159265358979323846;
+    const Measured m = measure({{1, 2}, {2, 3}, {3, 4}, {4, 5}});
+    ASSERT_TRUE(m.g.defined & hgcommon::SG_ROTATION);
+    ASSERT_EQ(m.rotation.size(), 2u);
+    EXPECT_NEAR(m.rotation[0], 1.0 / (2.0 * pi), 1e-15);
+    EXPECT_NEAR(m.rotation[1], 1.0 / (4.0 * pi), 1e-15);
+    EXPECT_NEAR(m.g.rotation_exponent, -1.0, 1e-14);
+    EXPECT_NEAR(m.g.rotation_residual, 0.0, 1e-7);
+    EXPECT_NEAR(m.g.orbital_velocity, 3.0 / (8.0 * pi), 1e-15);
+}
+
+// A hexagonal patch of radius 3 of the triangular lattice: the centre alone has the largest
+// local dimension, and the shell at distance r is a cycle of 6r vertices, so v(r) = 3 / pi at
+// r = 1, 2, 3: a flat curve, exponent 0. A cycle has every d_v equal, so C is every vertex and
+// no shell exists: no rotation curve.
+TEST(StateMeasures, HexagonalPatchRotationCurve) {
+    const double pi = 3.14159265358979323846;
+    std::vector<std::vector<uint32_t>> e;
+    auto id = [](int q, int r) { return static_cast<uint32_t>((q + 3) * 7 + (r + 3) + 1); };
+    auto in = [](int q, int r) {
+        return q >= -3 && q <= 3 && r >= -3 && r <= 3 && q + r >= -3 && q + r <= 3;
+    };
+    for (int q = -3; q <= 3; ++q)
+        for (int r = -3; r <= 3; ++r) {
+            if (!in(q, r)) continue;
+            const int dq[3] = {1, 0, -1}, dr[3] = {0, 1, 1};
+            for (int k = 0; k < 3; ++k)
+                if (in(q + dq[k], r + dr[k])) e.push_back({id(q, r), id(q + dq[k], r + dr[k])});
+        }
+    const Measured m = measure(e);
+    ASSERT_TRUE(m.g.defined & hgcommon::SG_ROTATION);
+    ASSERT_EQ(m.rotation.size(), 3u);
+    for (double v : m.rotation) EXPECT_NEAR(v, 3.0 / pi, 1e-15);
+    EXPECT_NEAR(m.g.rotation_exponent, 0.0, 1e-14);
+    EXPECT_NEAR(m.g.orbital_velocity, 3.0 / pi, 1e-15);
+    EXPECT_FALSE(measure(cycle(8)).g.defined & hgcommon::SG_ROTATION);
 }

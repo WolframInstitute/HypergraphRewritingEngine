@@ -4518,7 +4518,7 @@ TEST(StateStatistics, RecordStoresSequencesAsRuns) {
     EXPECT_EQ(rec.num_degree_runs, 1u);
     EXPECT_EQ(storage.size() * 8,
               hgcommon::StateInvariantRecord::bytes(1, 1, rec.num_ball, rec.num_distributions,
-                                                    rec.num_geodesic));
+                                                    rec.num_geodesic, rec.num_rotation));
     const auto inv = hg::stats::state_invariants(torus);
     EXPECT_EQ(inv.arities, std::vector<int64_t>(288, 2));
     EXPECT_EQ(inv.degree_sequence, std::vector<int64_t>(144, 4));
@@ -5047,7 +5047,7 @@ TEST(StateStatistics, MeasuresFamiliesSelectTheKeys) {
     EXPECT_EQ(keys(*assoc_at(particles, "VertexInvariants")).size(), 5u);
     EXPECT_NE(assoc_at(*assoc_at(particles, "Invariants"), "TopologicalCharge"), nullptr);
     const wxf::WXFValue all(hg::stats::step_record(1, in, false, hgcommon::SG_MEASURES_ALL));
-    EXPECT_EQ(keys(*assoc_at(all, "Invariants")).size(), 49u);
+    EXPECT_EQ(keys(*assoc_at(all, "Invariants")).size(), 52u);
     EXPECT_NE(assoc_at(all, "EdgeInvariants"), nullptr);
     EXPECT_NE(assoc_at(all, "LogGeodesicCount"), nullptr);
     EXPECT_EQ(hg::stats::measure_bits("Branchial"), hg::stats::kMeasureBranchial);

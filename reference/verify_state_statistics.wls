@@ -102,6 +102,9 @@ ballGrowthOf[vs_List, rule_String] := ballGrowthOf[vs, rule] = sgrBallGrowth[vs]
 logGeodesic[edges_List] := logGeodesicOf[edges[[All, 2 ;;]]];
 logGeodesicOf[vs_List] := logGeodesicOf[vs, sgrStatisticsGraph];
 logGeodesicOf[vs_List, rule_String] := logGeodesicOf[vs, rule] = sgrLogGeodesicCount[vs];
+rotationCurve[edges_List] := rotationCurveOf[edges[[All, 2 ;;]]];
+rotationCurveOf[vs_List] := rotationCurveOf[vs, sgrStatisticsGraph];
+rotationCurveOf[vs_List, rule_String] := rotationCurveOf[vs, rule] = N[sgrRotationCurve[vs], 20];
 
 summary[values_List, round_ : 1] := If[values === {}, <|"N" -> 0|>,
   <|"N" -> Length[values], "Mean" -> N[Mean[values]],
@@ -121,7 +124,8 @@ geometryKeys = {"GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
   "RimFraction", "CombinatorialCurvatureTotal", "ClusteringCoefficient", "LocalEulerExcess",
   "TopologicalCharge", "TopologicalChargeMax", "DimensionGradientCurvature",
   "GeodesicProperTime", "GeodesicProperTimeVariance", "GeodesicBundleSpread", "GeodesicCurvature",
-  "LensingDeflection", "LensingImpactParameter", "LensingDeflectionRatio"};
+  "LensingDeflection", "LensingImpactParameter", "LensingDeflectionRatio", "OrbitalVelocity",
+  "RotationCurveExponent", "RotationCurveResidual"};
 
 edgeDistributions = {"NonLazyOllivierRicciCurvature"};
 
@@ -170,7 +174,8 @@ oracleSteps[res_Association, byClass_ : False, branchial_ : False] := Module[
   pairsByStep = If[branchial,
     GroupBy[{outOf[#From], outOf[#To]} & /@ res["BranchialEdges"], stepOf[First[#]] &], <||>];
   KeyValueMap[Function[{k, sts},
-    Module[{pop, cheap, ginv, geo, vvals, evals, balls, geodesics, mult, classes, evIds, rec},
+    Module[{pop, cheap, ginv, geo, vvals, evals, balls, geodesics, rotations, mult, classes,
+        evIds, rec},
       pop = If[byClass, DeleteDuplicatesBy[sts, #CanonicalHash &], sts];
       cheap = cheapInvariants[#Edges] & /@ pop;
       ginv = graphInvariants[#Edges] & /@ pop;
@@ -179,6 +184,7 @@ oracleSteps[res_Association, byClass_ : False, branchial_ : False] := Module[
       evals = edgeValues[#Edges] & /@ pop;
       balls = ballGrowth[#Edges] & /@ pop;
       geodesics = logGeodesic[#Edges] & /@ pop;
+      rotations = rotationCurve[#Edges] & /@ pop;
       mult = Values[Counts[Lookup[sts, "CanonicalHash"]]]; classes = Length[mult];
       evIds = Keys[Select[eventStep, # == k &]];
       rec = <|"Step" -> k, "RawStates" -> Length[sts], "Classes" -> classes,
@@ -215,7 +221,10 @@ oracleSteps[res_Association, byClass_ : False, branchial_ : False] := Module[
           {r, Max[0, Length /@ balls]}]],
         "LogGeodesicCount" -> Association[Table[
           d -> summary[Select[geodesics, Length[#] >= d &][[All, d]], 0.01],
-          {d, Max[0, Length /@ geodesics]}]]|>;
+          {d, Max[0, Length /@ geodesics]}]],
+        "RotationCurve" -> Association[Table[
+          r -> summary[Select[rotations, Length[#] >= r &][[All, r]], 0.01],
+          {r, Max[0, Length /@ rotations]}]]|>;
       If[branchial, Join[rec, branchialKeys[sts, Lookup[pairsByStep, k, {}],
         Union[Flatten[#Edges[[All, 2 ;;]] & /@ Lookup[byStep, 0, {}]]]]], rec]]],
     byStep]];

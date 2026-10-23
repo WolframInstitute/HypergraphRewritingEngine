@@ -1706,6 +1706,9 @@ const InvariantSlot kInvariantSlots[hgcommon::SP_NUM_INVARIANTS] = {
     {"LensingDeflection", 0.01, false, hgcommon::SG_GEODESIC_ANALYSIS},
     {"LensingImpactParameter", 0.01, false, hgcommon::SG_GEODESIC_ANALYSIS},
     {"LensingDeflectionRatio", 0.01, false, hgcommon::SG_GEODESIC_ANALYSIS},
+    {"OrbitalVelocity", 0.01, false, hgcommon::SG_GEODESIC_ANALYSIS},
+    {"RotationCurveExponent", 0.01, false, hgcommon::SG_GEODESIC_ANALYSIS},
+    {"RotationCurveResidual", 0.01, false, hgcommon::SG_GEODESIC_ANALYSIS},
 };
 
 // The names of the distributions in hgcommon::SG_DIST order, and whether each pools edges
@@ -1823,8 +1826,9 @@ struct StepPoolFinish::State {
     std::vector<PoolPart> parts;
     uint64_t events = 0;
     std::map<int64_t, uint64_t> rule_counts;
-    uint32_t ball_radii = 0;
-    uint32_t geodesic_radii = 0;
+    // The radii present in each per-radius series: ball dimension, log geodesic count, orbital
+    // velocity (hgcommon::SP_BALL).
+    uint32_t radii[hgcommon::SP_SERIES] = {0, 0, 0};
     uint32_t measures = hgcommon::SG_MEASURES_BASE;
     std::vector<wxf::WXFValue> out;   // one per task
     wxf::WXFValueAssociation header;  // Step .. ClassEntropyNormalized
@@ -1951,19 +1955,20 @@ StepPoolFinish::StepPoolFinish(uint32_t step, std::vector<PoolPart> parts, uint6
     s_->parts = std::move(parts);
     s_->events = events;
     s_->rule_counts = std::move(rule_counts);
-    // Every class with a ball dimension at radius r has one at each smaller radius, so the
-    // radii present are 1..R for the greatest ball slot of any part; the same holds for the
-    // geodesic distances. The two series interleave from SP_BALL, ball slots even.
+    // Every class with a value at radius r in a series has one at each smaller radius, so the
+    // radii present are 1..R for the greatest slot of the series in any part. The series
+    // interleave from SP_BALL with stride SP_SERIES.
+    constexpr uint32_t S = hgcommon::SP_SERIES;
     for (const PoolPart& p : s_->parts) {
-        bool seen[2] = {false, false};
+        bool seen[S] = {false, false, false};
+        uint32_t found = 0;
         for (auto it = p.entries.rbegin(); it != p.entries.rend() && it->slot >= hgcommon::SP_BALL;
              ++it) {
             const uint32_t at = it->slot - hgcommon::SP_BALL;
-            if (seen[at % 2]) continue;
-            seen[at % 2] = true;
-            uint32_t& radii = at % 2 ? s_->geodesic_radii : s_->ball_radii;
-            radii = std::max(radii, at / 2 + 1);
-            if (seen[0] && seen[1]) break;
+            if (seen[at % S]) continue;
+            seen[at % S] = true;
+            s_->radii[at % S] = std::max(s_->radii[at % S], at / S + 1);
+            if (++found == S) break;
         }
     }
     s_->out.resize(tasks());
@@ -1972,7 +1977,7 @@ StepPoolFinish::StepPoolFinish(uint32_t step, std::vector<PoolPart> parts, uint6
 StepPoolFinish::~StepPoolFinish() = default;
 
 size_t StepPoolFinish::tasks() const {
-    return kTaskBall + s_->ball_radii + s_->geodesic_radii;
+    return kTaskBall + s_->radii[0] + s_->radii[1] + s_->radii[2];
 }
 
 void StepPoolFinish::run(size_t t) {
@@ -1990,12 +1995,13 @@ void StepPoolFinish::run(size_t t) {
         s.out[t] = s.signatures(t == kTaskAritySignatures);
     } else if (t < kTaskBall) {
         s.out[t] = s.distribution(static_cast<uint32_t>(t - kTaskDist));
-    } else if (t < kTaskBall + s.ball_radii) {
-        s.out[t] = s.summary(static_cast<uint32_t>(hgcommon::SP_BALL + 2 * (t - kTaskBall)), 0.01,
-                             false);
     } else {
-        const size_t d = t - kTaskBall - s.ball_radii;
-        s.out[t] = s.summary(static_cast<uint32_t>(hgcommon::SP_BALL + 2 * d + 1), 0.01, false);
+        // The series' tasks in order: series k's radius r at kTaskBall + radii[0..k) + r.
+        size_t r = t - kTaskBall;
+        uint32_t k = 0;
+        while (r >= s.radii[k]) r -= s.radii[k++];
+        s.out[t] = s.summary(
+            static_cast<uint32_t>(hgcommon::SP_BALL + hgcommon::SP_SERIES * r + k), 0.01, false);
     }
 }
 
@@ -2021,16 +2027,20 @@ wxf::WXFValueAssociation StepPoolFinish::record() {
     rec.push_back({wxf::WXFValue("AritySignatureHistogram"), std::move(s.out[kTaskAritySignatures])});
     rec.push_back({wxf::WXFValue("DegreeHistogram"), std::move(s.out[kTaskDegree])});
     rec.push_back({wxf::WXFValue("DegreeSequenceHistogram"), std::move(s.out[kTaskDegreeSequences])});
-    wxf::WXFValueAssociation balls;
-    for (uint32_t r = 0; r < s.ball_radii; ++r)
-        balls.push_back({wxf::WXFValue(static_cast<int64_t>(r + 1)), std::move(s.out[kTaskBall + r])});
-    rec.push_back({wxf::WXFValue("BallGrowthDimension"), wxf::WXFValue(std::move(balls))});
-    wxf::WXFValueAssociation geodesic;
-    for (uint32_t d = 0; d < s.geodesic_radii; ++d)
-        geodesic.push_back({wxf::WXFValue(static_cast<int64_t>(d + 1)),
-                            std::move(s.out[kTaskBall + s.ball_radii + d])});
+    // Series k's summaries keyed by radius from 1.
+    auto series = [&](uint32_t k) {
+        size_t at = kTaskBall;
+        for (uint32_t j = 0; j < k; ++j) at += s.radii[j];
+        wxf::WXFValueAssociation a;
+        for (uint32_t r = 0; r < s.radii[k]; ++r)
+            a.push_back({wxf::WXFValue(static_cast<int64_t>(r + 1)), std::move(s.out[at + r])});
+        return wxf::WXFValue(std::move(a));
+    };
+    rec.push_back({wxf::WXFValue("BallGrowthDimension"), series(0)});
     if (requested(hgcommon::SG_GEODESIC, s.measures))
-        rec.push_back({wxf::WXFValue("LogGeodesicCount"), wxf::WXFValue(std::move(geodesic))});
+        rec.push_back({wxf::WXFValue("LogGeodesicCount"), series(1)});
+    if (requested(hgcommon::SG_GEODESIC_ANALYSIS, s.measures))
+        rec.push_back({wxf::WXFValue("RotationCurve"), series(2)});
     return rec;
 }
 

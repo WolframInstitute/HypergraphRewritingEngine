@@ -397,7 +397,7 @@ list adds the families it names:
 | `"Combinatorial"` | `EulerCharacteristic`, `RimFraction`, `CombinatorialCurvatureTotal`, `CombinatorialCurvature` | combinatorial curvature |
 | `"Particles"` | `ClusteringCoefficient`, `LocalEulerExcess`, `TopologicalCharge`, `TopologicalChargeMax`, their two distributions | particle measures |
 | `"DimensionGradient"` | `DimensionGradientCurvature` and its distribution | dimension-gradient curvature |
-| `"GeodesicAnalysis"` | `GeodesicProperTime`, `GeodesicProperTimeVariance`, `GeodesicBundleSpread`, `GeodesicCurvature`, `LensingDeflection`, `LensingImpactParameter`, `LensingDeflectionRatio` | geodesic analysis |
+| `"GeodesicAnalysis"` | `GeodesicProperTime`, `GeodesicProperTimeVariance`, `GeodesicBundleSpread`, `GeodesicCurvature`, `LensingDeflection`, `LensingImpactParameter`, `LensingDeflectionRatio`, `OrbitalVelocity`, `RotationCurveExponent`, `RotationCurveResidual`, `RotationCurve` | geodesic analysis |
 | `"Branchial"` | the `Branchial` volume-growth and curvature keys, with `"StepStatisticsBranchial"` `"Graph"` | branchial metrics |
 
 A family that is not requested is not computed: each class's record carries the request
@@ -592,6 +592,38 @@ paths with a deflection above 0 (`hypergraph_viz@0fb63e5:blackhole/src/geodesic_
 Here C holds every vertex of greatest dimension, D' is the diameter of G', and every near pair
 counts. The prediction M / (b + 1) is hypergraph_viz's
 (`hypergraph_viz@0fb63e5:blackhole/src/geodesic_analysis.cpp:774`).
+
+The rotation entries use the same centre C. The shell S_r is the set of vertices u of G' with
+d(u, C) = r, for r = 1..R_C, R_C the largest d(u, C) over G'. The orbit at radius r is the
+largest connected component of the subgraph of G induced on S_r, L(r) is its number of
+vertices, and the orbital velocity is v(r) = L(r) / (2π r). A least squares fit of
+ln v(r) = a + n ln r over r = 1..R_C gives the exponent n.
+
+| Entry | Definition | Undefined when |
+|---|---|---|
+| `OrbitalVelocity` | the mean of v(r) over r = 1..R_C | R_C < 2 |
+| `RotationCurveExponent` | n | R_C < 2 |
+| `RotationCurveResidual` | the root mean square of ln v(r) - a - n ln r over r = 1..R_C | R_C < 2 |
+
+The per-step key `RotationCurve` maps each radius r to the summary, over the states with
+R_C >= 2 and r <= R_C, of v(r), weighted as `Invariants`. On P5 the shells {2, 4} and {1, 5}
+have no edge, so v(r) = 1/(2π r) and n = -1. On a hexagonal patch of the triangular lattice the
+shell at distance r about the centre is a cycle of 6r vertices, so v(r) = 3/π and n = 0. The
+shells' components take one search over G' after the search from C.
+
+hypergraph_viz traces an orbit as a greedy walk through the shell from its first vertex in
+vertex-list order, stopping at the first vertex with no unvisited shell neighbour
+(`hypergraph_viz@0fb63e5:blackhole/src/rotation_analysis.cpp:85`), and averages four identical
+walks per radius over r = 2..20 (`hypergraph_viz@0fb63e5:blackhole/src/rotation_analysis.cpp:264`).
+Here the orbit is the largest component of the shell, which holds every walk through it, and
+the radii are 1..R_C. The fit is hypergraph_viz's
+(`hypergraph_viz@0fb63e5:blackhole/src/rotation_analysis.cpp:168`). hypergraph_viz's flatness
+score is not ported. The score is the largest 1 / (1 + 10 \|v(r+1) - v(r-1)\| / 2) over the
+interior radii, with a curve called flat above 0.1
+(`hypergraph_viz@0fb63e5:blackhole/src/rotation_analysis.cpp:226`). The factor 10 and the
+threshold 0.1 have no derivation in the source, and the largest value over the radii describes
+the flattest stretch of the curve, not the curve. `RotationCurveExponent` is 0 for a flat
+curve.
 
 **Per-vertex curvature.** With `"IncludeVertexCurvature" -> True` each `"States"` record has
 `VertexCurvature`, an association from each vertex of the record's edges that has a neighbour in
