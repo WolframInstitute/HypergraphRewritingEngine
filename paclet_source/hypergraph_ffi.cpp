@@ -362,6 +362,12 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                             else if (w == "Classes") req.step_statistics_by_class = true;
                             else throw std::runtime_error(
                                 "StepStatisticsWeighting '" + w + "' is not States or Classes");
+                        } else if (option_key == "StatisticsGraph") {
+                            const std::string w = option_parser.read<std::string>();
+                            if (w == "Consecutive") req.statistics_graph = hgcommon::SG_GRAPH_CONSECUTIVE;
+                            else if (w == "AllPairs") req.statistics_graph = hgcommon::SG_GRAPH_ALL_PAIRS;
+                            else throw std::runtime_error(
+                                "StatisticsGraph '" + w + "' is not Consecutive or AllPairs");
                         } else if (option_key == "StepStatisticsBranchial") {
                             uint32_t bits = 0;
                             for (const auto& k : option_parser.read<std::vector<std::string>>()) {
@@ -655,6 +661,7 @@ static wxf::Pieces run_gpu_job(hgffi::ParsedJob& req, const HostBridge& host) {
         job.step_statistics_branchial = branchial;
         job.step_statistics_matrix_limit = req.step_statistics_matrix_limit;
         job.include_vertex_curvature = req.include_vertex_curvature;
+        job.statistics_graph = req.statistics_graph;
         job.delivery_delta = req.delivery_delta;
         job.step_cap_counts_matches = step_cap_counts_matches(req);
         if (req.show_progress) {
@@ -1362,7 +1369,7 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                         static_cast<int64_t>(content_hash_to_id.at(state_content_hashes[sid])),
                         static_cast<int64_t>(reported_step(sid)),
                         req.include_canonical_hashes, static_cast<int64_t>(exact_hash),
-                        req.include_vertex_curvature},
+                        req.include_vertex_curvature, nullptr, req.statistics_graph},
                     full_canonicalization, std::move(edges));
             });
             ++streamed_top_sections;

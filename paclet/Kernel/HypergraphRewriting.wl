@@ -34,6 +34,7 @@ Options[HGEvolve] = {
   "IncludeVertexCurvature" -> False,  (* True: each state record has "VertexCurvature", each vertex with a neighbour -> its Ollivier-Ricci curvature *)
   "IncludeCanonicalHashes" -> False,  (* True: include per-state IR canonical hash ("CanonicalHash"); stable across runs, for fusing pruned runs by isomorphism class *)
   "StepStatisticsWeighting" -> "States",  (* "States": each class of a step counts as its raw states; "Classes": each class counts once *)
+  "StatisticsGraph" -> "Consecutive",  (* the graph of a state's geometry statistics: "Consecutive" joins consecutive vertices of each hyperedge, "AllPairs" every two vertices *)
   "StepStatisticsBranchial" -> None,  (* None, "Graph", "Overlap", a list of them, or All: the per-step branchial metrics "StepStatistics" adds *)
   "StepStatisticsMatrices" -> None,  (* None, a matrix name, a list of them, or All: the state x state matrices "StepStatistics" adds under "StateMatrices" *)
   "StepStatisticsMatrixLimit" -> Automatic,  (* the most bytes a step's "StateMatrices" may take while they are built; a step that needs more warns and has none. Automatic: a quarter of the available memory *)
@@ -1134,6 +1135,7 @@ hgJobOptions[ov_, requiredData_, graphProperties_] := Module[{branchialStepValue
     "IncludeCanonicalHashes" -> ov["IncludeCanonicalHashes"],
     "IncludeVertexCurvature" -> ov["IncludeVertexCurvature"],
     "StepStatisticsWeighting" -> ov["StepStatisticsWeighting"],
+    "StatisticsGraph" -> ov["StatisticsGraph"],
     "StepStatisticsBranchial" -> Flatten[{Replace[ov["StepStatisticsBranchial"],
       {None -> {}, All -> {"Graph", "Overlap"}}]}],
     "StepStatisticsMatrices" -> Flatten[{Replace[ov["StepStatisticsMatrices"],

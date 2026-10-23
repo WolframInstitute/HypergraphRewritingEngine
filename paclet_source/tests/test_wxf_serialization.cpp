@@ -2656,6 +2656,49 @@ TEST(GpuBinaryGate, VertexCurvatureAgreesOnBothDevices) {
     worker_stop(w);
 }
 
+// "StatisticsGraph" on a rule of ternary hyperedges: under each rule both devices give the same
+// "StepStatistics" bytes, and the two rules give different statistics.
+TEST(GpuBinaryGate, StatisticsGraphAgreesAcrossDevices) {
+    {
+        std::ifstream probe(gpu_binary_path(), std::ios::binary);
+        if (!probe) GTEST_SKIP() << "hg_evolve_gpu is not built here";
+    }
+    if (!CpuWorker::built()) GTEST_SKIP() << "hg_evolve is not built here";
+    WorkerPipes w;
+    if (!worker_start(w, gpu_binary_path())) {
+        worker_stop(w);
+        GTEST_SKIP() << "could not start hg_evolve_gpu --serve";
+    }
+    CpuWorker cpu;
+    ASSERT_TRUE(cpu.ok);
+    std::vector<uint8_t> stats[2];
+    int i = 0;
+    for (const char* graph : {"Consecutive", "AllPairs"}) {
+        const auto job = build_input({{{1, 2, 3}}}, {{1, 2, 3}}, {{1, 2, 4}, {4, 3, 2}}, 4,
+                                     [&](wxf::Writer& o) {
+                                         put_str_list_option(o, "RequestedData",
+                                                             {"States", "StepStatistics"});
+                                         put_str_option(o, "CanonicalizeStates", "Full");
+                                         put_str_option(o, "IncludeVertexCurvature", "True");
+                                         put_str_option(o, "StatisticsGraph", graph);
+                                     },
+                                     4);
+        const auto host = cpu(job);
+        const auto device = worker_call(w, job);
+        ASSERT_FALSE(host.empty()) << cpu.w.last_error;
+        if (device.empty()) {
+            worker_stop(w);
+            GTEST_SKIP() << "the worker returned no result (no usable device?)";
+        }
+        stats[i] = value_bytes(host, "StepStatistics");
+        ASSERT_FALSE(stats[i].empty()) << graph;
+        EXPECT_EQ(value_bytes(device, "StepStatistics"), stats[i]) << graph;
+        ++i;
+    }
+    EXPECT_NE(stats[0], stats[1]);
+    worker_stop(w);
+}
+
 // A quotient session opened for counts serves the relation lists a later Step asks for: the Open
 // records everything a session may be asked later, the lists included.
 void quotient_relation_list_options(wxf::Writer& w) {

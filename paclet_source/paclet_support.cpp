@@ -551,7 +551,8 @@ namespace stats {
 // =============================================================================
 
 const hgcommon::StateInvariantRecord* invariant_record(
-    const std::vector<std::vector<uint32_t>>& edges, std::vector<uint64_t>& storage) {
+    const std::vector<std::vector<uint32_t>>& edges, std::vector<uint64_t>& storage,
+    uint32_t graph) {
     const uint32_t m = static_cast<uint32_t>(edges.size());
     std::vector<uint32_t> off(m + 1, 0), verts;
     for (uint32_t i = 0; i < m; ++i) {
@@ -579,7 +580,7 @@ const hgcommon::StateInvariantRecord* invariant_record(
         uint64_t needed = 0;
         if (hgcommon::state_record(off.data(), verts.data(), m, goff.data(), gverts.data(), gm,
                                    reinterpret_cast<unsigned char*>(scratch.data()), bytes,
-                                   needed, r))
+                                   needed, r, hgcommon::IrSerial{}, graph))
             break;
         bytes = needed > bytes ? needed : 2 * bytes;
     }
@@ -788,40 +789,42 @@ struct RecordEdgeList {
 // sg_state_geometry with a buffer that grows to what the call reports it needs.
 template <class EdgeList>
 hgcommon::SgGeometry geometry_with_scratch(const EdgeList& el, std::vector<double>& ball,
-                                           uint32_t want, double* vertex_curvature = nullptr) {
+                                           uint32_t want, double* vertex_curvature = nullptr,
+                                           uint32_t graph = hgcommon::SG_GRAPH_CONSECUTIVE) {
     static thread_local std::vector<unsigned char> scratch(1 << 16);
     hgcommon::SgGeometry g;
     size_t needed = 0;
     while (!hgcommon::sg_state_geometry(el, scratch.data(), scratch.size(), g, ball.data(),
                                         static_cast<uint32_t>(ball.size()), needed, want,
                                         hgcommon::IrSerial{}, nullptr, 0, nullptr,
-                                        vertex_curvature))
+                                        vertex_curvature, nullptr, nullptr, 0, graph))
         scratch.resize(std::max(needed, scratch.size() * 2));
     return g;
 }
 
 }  // namespace
 
-VertexCurvature vertex_curvature(const std::vector<std::pair<int64_t, std::vector<uint32_t>>>& edges) {
+VertexCurvature vertex_curvature(const std::vector<std::pair<int64_t, std::vector<uint32_t>>>& edges,
+                                 uint32_t graph) {
     // The geometry numbers the vertices in ascending id order.
     std::vector<uint32_t> verts;
     for (const auto& e : edges) verts.insert(verts.end(), e.second.begin(), e.second.end());
     std::sort(verts.begin(), verts.end());
     verts.erase(std::unique(verts.begin(), verts.end()), verts.end());
     std::vector<double> k(verts.size() + 1), ball(verts.size() + 1);
-    geometry_with_scratch(RecordEdgeList{&edges}, ball, hgcommon::SG_OLLIVIER, k.data());
+    geometry_with_scratch(RecordEdgeList{&edges}, ball, hgcommon::SG_OLLIVIER, k.data(), graph);
     VertexCurvature out;
     for (size_t i = 0; i < verts.size(); ++i)
         if (!std::isnan(k[i])) out.emplace_back(verts[i], k[i]);
     return out;
 }
 
-StateGeometry state_geometry(const std::vector<std::vector<uint32_t>>& edges) {
+StateGeometry state_geometry(const std::vector<std::vector<uint32_t>>& edges, uint32_t graph) {
     StateGeometry r;
     size_t slots = 0;
     for (const auto& e : edges) slots += e.size();
     r.ball_dimension.assign(slots + 1, 0.0);   // R < number of vertices <= slots
-    r.values = geometry_with_scratch(NestedEdges{&edges}, r.ball_dimension, ~0u);
+    r.values = geometry_with_scratch(NestedEdges{&edges}, r.ball_dimension, ~0u, nullptr, graph);
     r.ball_dimension.resize(r.values.ball_radii);
     return r;
 }

@@ -16,7 +16,8 @@
 
 BeginPackage["StateGeometryReference`"];
 
-sgrStateGraph::usage = "sgrStateGraph[edges] is the undirected simple graph of a state: its vertices, and an edge between the consecutive vertices of each hyperedge, without self-loops.";
+sgrStateGraph::usage = "sgrStateGraph[edges] is the undirected simple graph of a state: its vertices, and an edge between the consecutive vertices of each hyperedge (sgrStatisticsGraph \"Consecutive\") or between every two vertices of a hyperedge (\"AllPairs\"), without self-loops.";
+sgrStatisticsGraph::usage = "sgrStatisticsGraph is the rule of sgrStateGraph, the value of HGEvolve's \"StatisticsGraph\": \"Consecutive\" (the default) or \"AllPairs\". Every function of this package reads it.";
 sgrStateGeometry::usage = "sgrStateGeometry[edges] gives an association of the per-state geometry metrics; an undefined metric is Missing[].";
 sgrBallGrowth::usage = "sgrBallGrowth[edges] gives the per-radius ball-growth dimensions for r = 1..R, or {} when undefined.";
 sgrVertexDimensions::usage = "sgrVertexDimensions[g] gives each vertex's own Hausdorff dimension over r = 1..GraphRadius[g].";
@@ -36,10 +37,13 @@ sgrStateMatrices::usage = "sgrStateMatrices[vertexSets, edgeLists] gives the six
 
 Begin["`Private`"];
 
+sgrStatisticsGraph = "Consecutive";
+
 sgrStateGraph[edges_List] := Graph[
   Union[Flatten[edges]],
   UndirectedEdge @@@ DeleteDuplicates[Sort /@ Select[
-    Catenate[Partition[#, 2, 1] & /@ edges], #[[1]] =!= #[[2]] &]]];
+    Catenate[If[sgrStatisticsGraph === "AllPairs", Subsets[#, {2}], Partition[#, 2, 1]] & /@
+      edges], #[[1]] =!= #[[2]] &]]];
 
 ball[g_, v_, r_] := Length[VertexOutComponent[g, v, r]];
 
@@ -138,7 +142,8 @@ geodesicPairs[g_Graph] := Module[{vs = VertexList[g], n, a, dm, powers, top, sig
         {d, sigma[p, q], -Total[(rho/Total[rho]) Log2[rho/Total[rho]]]}]],
     {p, n}, {q, n}]]];
 
-geodesicValues[edges_List] := geodesicValues[edges] = Module[{pairs = geodesicPairs[sgrStateGraph[edges]]},
+geodesicValues[edges_List] := geodesicValues[edges, sgrStatisticsGraph];
+geodesicValues[edges_List, rule_String] := geodesicValues[edges, rule] = Module[{pairs = geodesicPairs[sgrStateGraph[edges]]},
   If[pairs === {},
     <|"GeodeticFraction" -> Missing[], "SegmentEntropy" -> Missing[], "LogGeodesicCount" -> {}|>,
     <|"GeodeticFraction" -> N[Count[pairs[[All, 2]], 1]/Length[pairs]],

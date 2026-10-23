@@ -86,15 +86,21 @@ graphInvariantsOf[vs_List] := graphInvariantsOf[vs] = Module[
 
 (* The geometry of a state from its record's edges, memoised on the edges' vertex lists. *)
 geometry[edges_List] := geometryOf[edges[[All, 2 ;;]]];
-geometryOf[vs_List] := geometryOf[vs] = sgrStateGeometry[vs];
+(* The memoised values are keyed by sgrStatisticsGraph as well as by the edges. *)
+geometryOf[vs_List] := geometryOf[vs, sgrStatisticsGraph];
+geometryOf[vs_List, rule_String] := geometryOf[vs, rule] = sgrStateGeometry[vs];
 vertexValues[edges_List] := vertexValuesOf[edges[[All, 2 ;;]]];
 edgeValues[edges_List] := edgeValuesOf[edges[[All, 2 ;;]]];
-edgeValuesOf[vs_List] := edgeValuesOf[vs] = sgrEdgeInvariants[vs];
-vertexValuesOf[vs_List] := vertexValuesOf[vs] = sgrVertexInvariants[vs];
+edgeValuesOf[vs_List] := edgeValuesOf[vs, sgrStatisticsGraph];
+edgeValuesOf[vs_List, rule_String] := edgeValuesOf[vs, rule] = sgrEdgeInvariants[vs];
+vertexValuesOf[vs_List] := vertexValuesOf[vs, sgrStatisticsGraph];
+vertexValuesOf[vs_List, rule_String] := vertexValuesOf[vs, rule] = sgrVertexInvariants[vs];
 ballGrowth[edges_List] := ballGrowthOf[edges[[All, 2 ;;]]];
-ballGrowthOf[vs_List] := ballGrowthOf[vs] = sgrBallGrowth[vs];
+ballGrowthOf[vs_List] := ballGrowthOf[vs, sgrStatisticsGraph];
+ballGrowthOf[vs_List, rule_String] := ballGrowthOf[vs, rule] = sgrBallGrowth[vs];
 logGeodesic[edges_List] := logGeodesicOf[edges[[All, 2 ;;]]];
-logGeodesicOf[vs_List] := logGeodesicOf[vs] = sgrLogGeodesicCount[vs];
+logGeodesicOf[vs_List] := logGeodesicOf[vs, sgrStatisticsGraph];
+logGeodesicOf[vs_List, rule_String] := logGeodesicOf[vs, rule] = sgrLogGeodesicCount[vs];
 
 summary[values_List, round_ : 1] := If[values === {}, <|"N" -> 0|>,
   <|"N" -> Length[values], "Mean" -> N[Mean[values]],
@@ -303,7 +309,8 @@ randomCases = DeleteCases[Table[Module[{c = genCase[s], n},
 failures = 0;
 allStates = {};
 Do[
-  Module[{name, rules, init, steps, raw, oracle, oracleClasses, oracleBranchial, routes},
+  Module[{name, rules, init, steps, raw, oracle, oracleClasses, oracleBranchial, oracleAllPairs,
+      routes},
     {name, rules, init, steps} = c;
     raw = HGEvolve[rules, init, steps, {"States", "Events", "BranchialEdges"},
       "CanonicalizeStates" -> None, "IncludeCanonicalHashes" -> True];
@@ -311,6 +318,7 @@ Do[
     oracle = normal[oracleSteps[raw]];
     oracleClasses = normal[oracleSteps[raw, True]];
     oracleBranchial = normal[oracleSteps[raw, False, True]];
+    oracleAllPairs = Block[{sgrStatisticsGraph = "AllPairs"}, normal[oracleSteps[raw]]];
     routes = {
       {"quotient", oracle, HGEvolve[rules, init, steps, "StepStatistics",
         "CanonicalizeStates" -> Full, "ExploreFromCanonicalStatesOnly" -> True]},
@@ -322,7 +330,12 @@ Do[
       {"classes, full capture", oracleClasses, HGEvolve[rules, init, steps, "StepStatistics",
         "CanonicalizeStates" -> None, "StepStatisticsWeighting" -> "Classes"]},
       {"branchial", oracleBranchial, HGEvolve[rules, init, steps, "StepStatistics",
-        "CanonicalizeStates" -> None, "StepStatisticsBranchial" -> All]}};
+        "CanonicalizeStates" -> None, "StepStatisticsBranchial" -> All]},
+      {"all pairs, quotient", oracleAllPairs, HGEvolve[rules, init, steps, "StepStatistics",
+        "CanonicalizeStates" -> Full, "ExploreFromCanonicalStatesOnly" -> True,
+        "StatisticsGraph" -> "AllPairs"]},
+      {"all pairs, full capture", oracleAllPairs, HGEvolve[rules, init, steps,
+        "StepStatistics", "CanonicalizeStates" -> None, "StatisticsGraph" -> "AllPairs"]}};
     (* The overlap and the cosine of a level are a SparseArray when fewer than half of the
        k (k - 1) / 2 pairs share an element; every other matrix is a packed array. *)
     sparseMatrixQ[name_, want_] := Module[{o = want[If[StringContainsQ[name, "Edge"],
@@ -358,16 +371,17 @@ Do[
           Print["PASS  ", name, " state matrices ", mode, ": ", n, " steps"],
           failures++; Print["FAIL  ", name, " state matrices ", mode, ": ", Short[bad, 6]]]],
       {mode, {None, Automatic}}];
-    Module[{res = HGEvolve[rules, init, steps, "States", "CanonicalizeStates" -> None,
-        "IncludeVertexCurvature" -> True], bad},
+    Do[Module[{res = HGEvolve[rules, init, steps, "States", "CanonicalizeStates" -> None,
+        "IncludeVertexCurvature" -> True, "StatisticsGraph" -> rule], bad},
       (* A comparison that does not evaluate to True fails. *)
-      bad = Select[Values[res], Module[{want = sgrVertexCurvature[#Edges[[All, 2 ;;]]],
-          got = #VertexCurvature},
+      bad = Select[Values[res], Module[{want = Block[{sgrStatisticsGraph = rule},
+            sgrVertexCurvature[#Edges[[All, 2 ;;]]]], got = #VertexCurvature},
         !TrueQ[AssociationQ[got] && VectorQ[Values[want], NumericQ] && Keys[got] === Keys[want] &&
           (Length[want] == 0 || Max[Abs[Values[got] - Values[want]]] <= 10^-9)]] &];
       If[bad === {},
-        Print["PASS  ", name, " vertex curvature: ", Length[res], " states"],
-        failures++; Print["FAIL  ", name, " vertex curvature: ", Short[bad[[1]], 6]]]];
+        Print["PASS  ", name, " vertex curvature ", rule, ": ", Length[res], " states"],
+        failures++; Print["FAIL  ", name, " vertex curvature ", rule, ": ", Short[bad[[1]], 6]]]],
+      {rule, {"Consecutive", "AllPairs"}}];
     Do[
       Module[{want = r[[2]], got = normal[r[[3]]], diffs},
         diffs = If[!ListQ[got] || Length[got] =!= Length[want], {"step count", Length[got], Length[want]},

@@ -649,12 +649,12 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
             std::vector<uint64_t> k_off;
             std::vector<uint8_t> done;
             if (!hg_gpu::vertex_curvature_device(state_edges, edge_verts, verts, vertex_count, k,
-                                                 k_off, done))
+                                                 k_off, done, job.statistics_graph))
                 done.assign(emit.size(), 0);
             wxf::Writer unused;
             hgmarshal::write_items(unused, emit.size(), par, [&](wxf::Writer&, size_t i) {
                 if (!done[i]) {
-                    curvatures[i] = hg::stats::vertex_curvature(kept[i]);
+                    curvatures[i] = hg::stats::vertex_curvature(kept[i], job.statistics_graph);
                     return;
                 }
                 for (size_t j = 0; j < kept_vertices[i].size(); ++j) {
@@ -676,7 +676,7 @@ wxf::Pieces run_gpu_evolution_once(const GpuJob& request, const HostBridge& host
                 content_id.at(listed_hash[i]),
                 static_cast<int64_t>(reported_step(s)),
                 job.include_canonical_hashes, static_cast<int64_t>(state_hash.at(s)),
-                curvature};
+                curvature, nullptr, job.statistics_graph};
             // The kept edges are already the record's (under Full, the canonical form).
             if (curvature) {
                 ids.curvature = &curvatures[i];

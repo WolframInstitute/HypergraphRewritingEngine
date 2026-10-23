@@ -399,12 +399,14 @@ struct SiResult {
 // vertex order, and a tie between components that the largest-component rule leaves goes to the
 // first in that order, so the canonical labelling makes every value one value per class. False
 // when the scratch is short, with `needed` set to a size to retry with; every lane returns the
-// same verdict and size. Both run on every lane of the policy; `r` is the leader's.
+// same verdict and size. Both run on every lane of the policy; `r` is the leader's. `graph`
+// is the rule that builds the geometry's graph (SG_GRAPH_CONSECUTIVE or SG_GRAPH_ALL_PAIRS).
 template <class Par = IrSerial>
 HG_HD inline bool state_record(const uint32_t* off, const uint32_t* /*verts*/, uint32_t m,
                                const uint32_t* goff, const uint32_t* gverts, uint32_t gm,
                                unsigned char* scratch, uint64_t capacity, uint64_t& needed,
-                               SiResult& r, Par par = Par{}) {
+                               SiResult& r, Par par = Par{},
+                               uint32_t graph = SG_GRAPH_CONSECUTIVE) {
     const uint32_t S = off[m];
     const uint64_t siw = si_scratch_words(S, m, par.width());
     uint32_t* words = reinterpret_cast<uint32_t*>(scratch);
@@ -425,7 +427,7 @@ HG_HD inline bool state_record(const uint32_t* off, const uint32_t* /*verts*/, u
     size_t geo_need = 0;
     if (!sg_state_geometry(SiCsrEdges{goff, gverts, gm}, scratch + fixed, capacity - fixed, r.g,
                            ball, S + 1, geo_need, ~0u, par, largest, largest_n, dists, nullptr,
-                           nullptr, geodesic, S + 1))
+                           nullptr, geodesic, S + 1, graph))
         need = fixed + geo_need;
     par.sync();
     if (need) {

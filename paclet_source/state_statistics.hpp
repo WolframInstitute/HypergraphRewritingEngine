@@ -53,9 +53,10 @@ struct StateInvariants {
 StateInvariants state_invariants(const std::vector<std::vector<uint32_t>>& edges);
 
 // The record of one state given as its edge list, computed on the calling thread and held in
-// `storage`.
+// `storage`, its geometry on the graph rule `graph` (hgcommon::SG_GRAPH_*).
 const hgcommon::StateInvariantRecord* invariant_record(
-    const std::vector<std::vector<uint32_t>>& edges, std::vector<uint64_t>& storage);
+    const std::vector<std::vector<uint32_t>>& edges, std::vector<uint64_t>& storage,
+    uint32_t graph = hgcommon::SG_GRAPH_CONSECUTIVE);
 
 // A summary of a weighted population of numbers: every value stands for `weight` raw states.
 // Mean, sample standard deviation (N - 1), min, max and median over the N = sum of weights
@@ -112,14 +113,16 @@ struct StateGeometry {
     std::vector<double> ball_dimension;
 };
 
-StateGeometry state_geometry(const std::vector<std::vector<uint32_t>>& edges);
+StateGeometry state_geometry(const std::vector<std::vector<uint32_t>>& edges,
+                             uint32_t graph = hgcommon::SG_GRAPH_CONSECUTIVE);
 
 // (vertex, k_v) for each vertex of a state's graph with a neighbour, ascending, from the state's
 // edges as a "States" record lists them ((edge id, vertices)): k_v is the mean Ollivier-Ricci
 // curvature of v's edges (hgcommon/state_geometry_core.hpp), the value "VertexInvariants" pools
-// as "OllivierRicciCurvature".
+// as "OllivierRicciCurvature", on the graph rule `graph` (hgcommon::SG_GRAPH_*).
 using VertexCurvature = std::vector<std::pair<uint32_t, double>>;
-VertexCurvature vertex_curvature(const std::vector<std::pair<int64_t, std::vector<uint32_t>>>& edges);
+VertexCurvature vertex_curvature(const std::vector<std::pair<int64_t, std::vector<uint32_t>>>& edges,
+                                 uint32_t graph = hgcommon::SG_GRAPH_CONSECUTIVE);
 
 // One step's states and branchial pairs, for the per-step branchial metrics. `nodes` are the
 // step's states by effective id; `pairs` the branchial state pairs whose first event's output

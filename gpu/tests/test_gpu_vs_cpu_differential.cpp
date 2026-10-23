@@ -2406,10 +2406,12 @@ TEST(RecordSet, ClassMultiplicitiesMatchTheHost) {
 }
 
 // Each class's "StepStatistics" record on the device equals the host's on every corpus workload
-// without sampling or caps, under quotient exploration, bit for bit.
+// without sampling or caps, under quotient exploration, bit for bit, under both "StatisticsGraph"
+// rules.
 TEST(RecordSet, ClassInvariantsMatchTheHost) {
     auto same = [](double a, double b) { return std::memcmp(&a, &b, sizeof a) == 0; };
-    size_t compared = 0, with_growth = 0;
+    size_t compared = 0, with_growth = 0, ternary = 0;
+    for (const uint32_t graph : {hgcommon::SG_GRAPH_CONSECUTIVE, hgcommon::SG_GRAPH_ALL_PAIRS})
     for (Workload w : build_corpus()) {
         if (w.num_steps == 0) continue;
         if (w.transition_rate != 1.0 || !w.rule_weights.empty() || w.max_states_per_step != 0 ||
@@ -2424,6 +2426,7 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
         rs.raw_events = false;
         rs.multiplicities = true;
         rs.state_invariants = true;
+        rs.statistics_graph = graph;
         hg.set_record_set(rs);
         hypergraph::ParallelEvolutionEngine pe(&hg, 1);
         pe.set_explore_from_canonical_states_only(true);
@@ -2448,6 +2451,7 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
         in.record.raw_events = false;
         in.record.multiplicities = true;
         in.record.state_invariants = true;
+        in.record.statistics_graph = graph;
         const hg_gpu::EvolveResult r = hg_gpu::evolve(in);
         std::map<uint64_t, const hgcommon::StateInvariantRecord*> dev;
         for (const auto& s : r.states)
@@ -2500,6 +2504,9 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
             for (uint32_t k = 0; k < hgcommon::SG_GROWTH_VALUES; ++k)
                 EXPECT_TRUE(same(a->g.growth[k], b->g.growth[k])) << w.name << " growth " << k;
             if (a->g.defined & hgcommon::SG_VOLUME_GROWTH) ++with_growth;
+            bool wide = false;
+            a->for_each_arity([&](uint32_t k) { wide = wide || k >= 3; });
+            if (wide && graph == hgcommon::SG_GRAPH_ALL_PAIRS) ++ternary;
             for (uint32_t k = 0; k < a->num_ball; ++k)
                 EXPECT_TRUE(same(a->ball()[k], b->ball()[k])) << w.name;
             ASSERT_EQ(a->num_geodesic, b->num_geodesic) << w.name;
@@ -2516,7 +2523,10 @@ TEST(RecordSet, ClassInvariantsMatchTheHost) {
     }
     EXPECT_GT(compared, 0u);
     EXPECT_GT(with_growth, 0u);
-    std::printf("[ RecordSet ] %zu classes, %zu with a volume-growth fit\n", compared, with_growth);
+    EXPECT_GT(ternary, 0u);
+    std::printf("[ RecordSet ] %zu classes, %zu with a volume-growth fit, %zu with a hyperedge of "
+                "3 or more vertices under AllPairs\n",
+                compared, with_growth, ternary);
 }
 
 TEST(RecordSet, DeviceSkipsOnlyWhatItWasNotAskedFor) {

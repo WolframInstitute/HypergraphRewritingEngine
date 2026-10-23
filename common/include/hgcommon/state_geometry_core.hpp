@@ -3,9 +3,11 @@
 // PER-STATE GEOMETRY OF A HYPERGRAPH STATE, one body for the host and the device.
 //
 // A state's graph G is the undirected simple graph whose vertices are the state's vertices and
-// whose edges join the consecutive vertices of each hyperedge: {a, b, c} gives a-b and b-c. A
-// self-loop is dropped and a repeated pair is one edge. A vertex that only appears in a unary
-// hyperedge, or only next to itself, is an isolated vertex of G. Hypergraph isomorphism keeps
+// whose edges join the vertices of each hyperedge by one of two rules ("StatisticsGraph"):
+// SG_GRAPH_CONSECUTIVE joins consecutive vertices, {a, b, c} giving a-b and b-c, and
+// SG_GRAPH_ALL_PAIRS joins every two vertices, {a, b, c} giving a-b, a-c and b-c. A self-loop
+// is dropped and a repeated pair is one edge. A vertex that only appears in a unary hyperedge,
+// or only next to itself, is an isolated vertex of G. Hypergraph isomorphism keeps
 // the order of the vertices inside each hyperedge, so every value here is an invariant of the
 // state's isomorphism class.
 //
@@ -156,18 +158,25 @@ HG_HD inline size_t sg_build_bytes(size_t slots, size_t pairs) {
     return 64 + 4 * slots + 8 * 2 * pairs + 4 * (slots + 1) + 4 * 2 * pairs + 32;
 }
 
+// The rule that joins the vertices of a hyperedge in G.
+enum : uint32_t {
+    SG_GRAPH_CONSECUTIVE = 0,   // vertex j and vertex j + 1
+    SG_GRAPH_ALL_PAIRS = 1,     // every two vertices
+};
+
 // An EdgeList supplies   uint32_t count() const;
 //                        uint32_t arity(uint32_t i) const;
 //                        uint32_t at(uint32_t i, uint32_t k) const;   vertex k of hyperedge i
 template <class EdgeList>
-HG_HD void sg_sizes(const EdgeList& el, size_t& slots, size_t& pairs) {
+HG_HD void sg_sizes(const EdgeList& el, size_t& slots, size_t& pairs,
+                    uint32_t graph = SG_GRAPH_CONSECUTIVE) {
     slots = 0;
     pairs = 0;
     const uint32_t m = el.count();
     for (uint32_t i = 0; i < m; ++i) {
-        const uint32_t k = el.arity(i);
+        const size_t k = el.arity(i);
         slots += k;
-        if (k > 1) pairs += k - 1;
+        if (k > 1) pairs += graph == SG_GRAPH_ALL_PAIRS ? k * (k - 1) / 2 : k - 1;
     }
 }
 
@@ -180,11 +189,12 @@ HG_HD inline uint32_t sg_index_of(const uint32_t* sorted, uint32_t n, uint32_t v
     return lo;
 }
 
-// Builds G from a state's hyperedges. False when the arena is short.
+// Builds G from a state's hyperedges under `graph`. False when the arena is short.
 template <class EdgeList>
-HG_HD bool sg_build(const EdgeList& el, SgArena& arena, SgGraph& g) {
+HG_HD bool sg_build(const EdgeList& el, SgArena& arena, SgGraph& g,
+                    uint32_t graph = SG_GRAPH_CONSECUTIVE) {
     size_t slots = 0, pairs = 0;
-    sg_sizes(el, slots, pairs);
+    sg_sizes(el, slots, pairs, graph);
     uint32_t* verts = arena.take<uint32_t>(slots);
     uint64_t* keys = arena.take<uint64_t>(2 * pairs);
     if (arena.failed) return false;
@@ -198,11 +208,14 @@ HG_HD bool sg_build(const EdgeList& el, SgArena& arena, SgGraph& g) {
     for (uint32_t i = 0; i < m; ++i) {
         const uint32_t k = el.arity(i);
         for (uint32_t j = 0; j + 1 < k; ++j) {
-            const uint64_t a = sg_index_of(verts, n, el.at(i, j));
-            const uint64_t b = sg_index_of(verts, n, el.at(i, j + 1));
-            if (a == b) continue;
-            keys[p++] = (a << 32) | b;
-            keys[p++] = (b << 32) | a;
+            const uint32_t last = graph == SG_GRAPH_ALL_PAIRS ? k - 1 : j + 1;
+            for (uint32_t l = j + 1; l <= last; ++l) {
+                const uint64_t a = sg_index_of(verts, n, el.at(i, j));
+                const uint64_t b = sg_index_of(verts, n, el.at(i, l));
+                if (a == b) continue;
+                keys[p++] = (a << 32) | b;
+                keys[p++] = (b << 32) | a;
+            }
         }
     }
     sg_sort(keys, p);
@@ -1397,7 +1410,8 @@ HG_HD inline bool sg_geometry_of(const SgGraph& g, SgArena& arena, SgGeometry& o
 // need. Every lane of the policy calls it with the same arguments and gets the same verdict and
 // `needed`; the leader builds G and `out` is the leader's. `largest`, `largest_n`, `dists`,
 // `vertex_curvature`, `vertex_values`, `log_geodesic` and `log_geodesic_capacity` are
-// sg_geometry_of's.
+// sg_geometry_of's; `graph` is the rule that builds G (SG_GRAPH_CONSECUTIVE or
+// SG_GRAPH_ALL_PAIRS).
 template <class EdgeList, class Par = IrSerial>
 HG_HD bool sg_state_geometry(const EdgeList& el, unsigned char* scratch, size_t capacity,
                              SgGeometry& out, double* ball_dimension, uint32_t ball_capacity,
@@ -1406,17 +1420,18 @@ HG_HD bool sg_state_geometry(const EdgeList& el, unsigned char* scratch, size_t 
                              SgDistribution* dists = nullptr,
                              double* vertex_curvature = nullptr,
                              double* vertex_values = nullptr, double* log_geodesic = nullptr,
-                             uint32_t log_geodesic_capacity = 0) {
+                             uint32_t log_geodesic_capacity = 0,
+                             uint32_t graph = SG_GRAPH_CONSECUTIVE) {
     SgArena arena;
     arena.base = scratch;
     arena.capacity = capacity;
     SgGraph g;
     size_t slots = 0, pairs = 0;
-    sg_sizes(el, slots, pairs);
+    sg_sizes(el, slots, pairs, graph);
     uint32_t built_ok = 1;
     uint64_t off_at = 0, nbr_at = 0;
     if (par.leader()) {
-        built_ok = sg_build(el, arena, g) ? 1u : 0u;
+        built_ok = sg_build(el, arena, g, graph) ? 1u : 0u;
         if (built_ok) {
             off_at = static_cast<uint64_t>(reinterpret_cast<const unsigned char*>(g.off) - scratch);
             nbr_at = static_cast<uint64_t>(reinterpret_cast<const unsigned char*>(g.nbr) - scratch);

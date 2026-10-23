@@ -526,3 +526,38 @@ TEST(StateMeasures, DimensionGradientCurvature) {
     EXPECT_FALSE(two.g.defined & hgcommon::SG_DIMENSION_GRADIENT);
     EXPECT_TRUE(std::isnan(two.at(hgcommon::SG_GROWTH_VALUES + 4, 4)));
 }
+
+// "StatisticsGraph": the hyperedge {1, 2, 3} is the path 1-2-3 under SG_GRAPH_CONSECUTIVE and the
+// triangle under SG_GRAPH_ALL_PAIRS. The path has curvature 1/2 on both edges and no triangle; the
+// triangle 3/4 on every edge, one triangle, and every link a single edge, so every vertex lies on
+// the rim. Both have Euler characteristic 1.
+TEST(StateMeasures, StatisticsGraphRules) {
+    Edges el{{{1, 2, 3}}};
+    auto geometry_of = [&](uint32_t graph) {
+        std::vector<unsigned char> scratch(16);
+        std::vector<double> ball(8);
+        SgGeometry g;
+        size_t needed = 0;
+        while (!hgcommon::sg_state_geometry(el, scratch.data(), scratch.size(), g, ball.data(), 8,
+                                            needed, ~0u, hgcommon::IrSerial{}, nullptr, 0,
+                                            nullptr, nullptr, nullptr, nullptr, 0, graph))
+            scratch.resize(needed);
+        return g;
+    };
+    const SgGeometry path = geometry_of(hgcommon::SG_GRAPH_CONSECUTIVE);
+    const SgGeometry tri = geometry_of(hgcommon::SG_GRAPH_ALL_PAIRS);
+    EXPECT_EQ(path.edge_count, 2u);
+    EXPECT_EQ(tri.edge_count, 3u);
+    EXPECT_NEAR(path.ollivier_ricci, 0.5, 1e-15);
+    EXPECT_NEAR(tri.ollivier_ricci, 0.75, 1e-15);
+    EXPECT_EQ(path.euler_characteristic, 1.0);
+    EXPECT_EQ(tri.euler_characteristic, 1.0);
+    EXPECT_FALSE(path.defined & hgcommon::SG_RIM);
+    ASSERT_TRUE(tri.defined & hgcommon::SG_RIM);
+    EXPECT_EQ(tri.rim_fraction, 1.0);
+    EXPECT_NEAR(path.mean_eccentricity, 5.0 / 3.0, 1e-15);
+    EXPECT_EQ(tri.mean_eccentricity, 1.0);
+    // The default is the consecutive rule.
+    const Measured m = measure({{1, 2, 3}});
+    EXPECT_EQ(m.g.edge_count, 2u);
+}
