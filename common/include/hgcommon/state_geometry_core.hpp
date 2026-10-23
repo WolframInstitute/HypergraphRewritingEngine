@@ -347,6 +347,18 @@ HG_HD inline double sg_ollivier_edge(const SgGraph& g, uint32_t x, uint32_t y,
     for (uint32_t j = 0; j < b; ++j) demand[j] = c && j == 0 ? dx * dy : dx;
     const uint64_t total = (lazy ? 2ull : 1ull) * dx * dy;
     uint64_t moved = 0, total_cost = 0;
+    // At a vertex in both supports the smaller of its two masses stays in place at cost 0. Some
+    // optimal plan leaves it there: under a metric, moving it out and other mass in costs no
+    // less. The shortest paths carry the remaining mass.
+    for (uint32_t i = 0; i < a; ++i)
+        for (uint32_t j = 0; j < b && supply[i]; ++j) {
+            if (cost[i * b + j] != 0 || !demand[j]) continue;
+            const uint32_t m = supply[i] < demand[j] ? supply[i] : demand[j];
+            supply[i] -= m;
+            demand[j] -= m;
+            flow[i * b + j] += m;
+            moved += m;
+        }
     // Node numbering: 0 source, 1..a the A points, a+1..a+b the B points, a+b+1 the sink.
     const uint32_t src = 0, sink = a + b + 1;
     const int32_t inf = INT32_MAX / 2;
