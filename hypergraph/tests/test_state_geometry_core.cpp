@@ -339,6 +339,9 @@ TEST(StateGeometryCore, DistributionBinsClampToTheRange) {
     EXPECT_EQ(hgcommon::sg_dist_bin(hgcommon::SG_DIST_OLLIVIER, 1.0), hgcommon::SG_DIST_BINS - 1);
     EXPECT_EQ(hgcommon::sg_dist_bin(hgcommon::SG_DIST_RICCI, -24.0), 0u);
     EXPECT_EQ(hgcommon::sg_dist_bin(hgcommon::SG_DIST_RICCI, -23.0), 1u);
+    // Within 1e-9 bin widths below an edge: the bin above. Further below: the bin below.
+    EXPECT_EQ(hgcommon::sg_dist_bin(hgcommon::SG_DIST_LOCAL_DIMENSION, 1.0 - 2e-16), 4u);
+    EXPECT_EQ(hgcommon::sg_dist_bin(hgcommon::SG_DIST_LOCAL_DIMENSION, 1.0 - 1e-9), 3u);
     EXPECT_EQ(hgcommon::sg_dist_bin(hgcommon::SG_DIST_LOCAL_DIMENSION, 100.0),
               hgcommon::SG_DIST_BINS - 1);
 }

@@ -371,7 +371,8 @@ value is the same) and `Histogram`. Each state stores its count, minimum, maximu
 x, x^2, x^3 and x^4 as double-double pairs (about 106 bits; each power exact), and 32 equal bins
 over a fixed range: [0, 8) for `LocalDimension`,
 [-2, 1) for `OllivierRicciCurvature` and [-24, 8) for `WolframRicciCurvatureScalar`, a value
-outside the range counting in the end bin. Pooling adds these and forms the central moments in
+outside the range counting in the end bin. A value less than 10^-9 bin widths below a bin's
+lower edge counts in that bin. Pooling adds these and forms the central moments in
 double-double, so the moments are exact to double precision and the
 quantiles are histogram quantiles: the bin holding the fraction q of the weight, linear inside
 the bin between its edges clipped to [`Min`, `Max`]. `Histogram` maps each non-empty bin's lower
