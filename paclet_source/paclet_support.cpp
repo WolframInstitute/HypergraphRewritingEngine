@@ -551,7 +551,8 @@ namespace stats {
 // =============================================================================
 
 const hgcommon::StateInvariantRecord* invariant_record(
-    const std::vector<std::vector<uint32_t>>& edges, std::vector<uint64_t>& storage) {
+    const std::vector<std::vector<uint32_t>>& edges, std::vector<uint64_t>& storage,
+    uint32_t graph) {
     const uint32_t m = static_cast<uint32_t>(edges.size());
     std::vector<uint32_t> off(m + 1, 0), verts;
     for (uint32_t i = 0; i < m; ++i) {
@@ -579,7 +580,7 @@ const hgcommon::StateInvariantRecord* invariant_record(
         uint64_t needed = 0;
         if (hgcommon::state_record(off.data(), verts.data(), m, goff.data(), gverts.data(), gm,
                                    reinterpret_cast<unsigned char*>(scratch.data()), bytes,
-                                   needed, r))
+                                   needed, r, hgcommon::IrSerial{}, graph))
             break;
         bytes = needed > bytes ? needed : 2 * bytes;
     }
@@ -788,40 +789,42 @@ struct RecordEdgeList {
 // sg_state_geometry with a buffer that grows to what the call reports it needs.
 template <class EdgeList>
 hgcommon::SgGeometry geometry_with_scratch(const EdgeList& el, std::vector<double>& ball,
-                                           uint32_t want, double* vertex_curvature = nullptr) {
+                                           uint32_t want, double* vertex_curvature = nullptr,
+                                           uint32_t graph = hgcommon::SG_GRAPH_CONSECUTIVE) {
     static thread_local std::vector<unsigned char> scratch(1 << 16);
     hgcommon::SgGeometry g;
     size_t needed = 0;
     while (!hgcommon::sg_state_geometry(el, scratch.data(), scratch.size(), g, ball.data(),
                                         static_cast<uint32_t>(ball.size()), needed, want,
                                         hgcommon::IrSerial{}, nullptr, 0, nullptr,
-                                        vertex_curvature))
+                                        vertex_curvature, nullptr, nullptr, 0, graph))
         scratch.resize(std::max(needed, scratch.size() * 2));
     return g;
 }
 
 }  // namespace
 
-VertexCurvature vertex_curvature(const std::vector<std::pair<int64_t, std::vector<uint32_t>>>& edges) {
+VertexCurvature vertex_curvature(const std::vector<std::pair<int64_t, std::vector<uint32_t>>>& edges,
+                                 uint32_t graph) {
     // The geometry numbers the vertices in ascending id order.
     std::vector<uint32_t> verts;
     for (const auto& e : edges) verts.insert(verts.end(), e.second.begin(), e.second.end());
     std::sort(verts.begin(), verts.end());
     verts.erase(std::unique(verts.begin(), verts.end()), verts.end());
     std::vector<double> k(verts.size() + 1), ball(verts.size() + 1);
-    geometry_with_scratch(RecordEdgeList{&edges}, ball, hgcommon::SG_OLLIVIER, k.data());
+    geometry_with_scratch(RecordEdgeList{&edges}, ball, hgcommon::SG_OLLIVIER, k.data(), graph);
     VertexCurvature out;
     for (size_t i = 0; i < verts.size(); ++i)
         if (!std::isnan(k[i])) out.emplace_back(verts[i], k[i]);
     return out;
 }
 
-StateGeometry state_geometry(const std::vector<std::vector<uint32_t>>& edges) {
+StateGeometry state_geometry(const std::vector<std::vector<uint32_t>>& edges, uint32_t graph) {
     StateGeometry r;
     size_t slots = 0;
     for (const auto& e : edges) slots += e.size();
     r.ball_dimension.assign(slots + 1, 0.0);   // R < number of vertices <= slots
-    r.values = geometry_with_scratch(NestedEdges{&edges}, r.ball_dimension, ~0u);
+    r.values = geometry_with_scratch(NestedEdges{&edges}, r.ball_dimension, ~0u, nullptr, graph);
     r.ball_dimension.resize(r.values.ball_radii);
     return r;
 }
@@ -882,7 +885,8 @@ BranchialGraph branchial_graph(const BranchialStep& s) {
 }
 
 // The branchial graph metrics of one step.
-void branchial_graph_metrics(const BranchialGraph& graph, wxf::WXFValueAssociation& rec) {
+void branchial_graph_metrics(const BranchialGraph& graph, wxf::WXFValueAssociation& rec,
+                             bool measures) {
     const uint32_t n = static_cast<uint32_t>(graph.ids.size());
     const auto& edges = graph.edges;
     const auto& adj = graph.adj;
@@ -928,6 +932,7 @@ void branchial_graph_metrics(const BranchialGraph& graph, wxf::WXFValueAssociati
     bool have = false;
     double best = 0.0;
     std::vector<double> ball(most + 1);
+    std::vector<std::pair<uint32_t, uint32_t>> chosen;   // the largest component's edges
     for (const auto& c : members) {
         if (c.size() != most || most < 2) continue;
         std::vector<uint32_t> local(n, 0);
@@ -950,9 +955,28 @@ void branchial_graph_metrics(const BranchialGraph& graph, wxf::WXFValueAssociati
         if ((g.defined & hgcommon::SG_HAUSDORFF) && (!have || g.hausdorff_dimension > best)) {
             best = g.hausdorff_dimension;
             have = true;
+            chosen = std::move(sub);
         }
     }
-    if (have) rec.push_back({wxf::WXFValue("BranchialDimension"), wxf::WXFValue(best)});
+    if (!have) return;
+    rec.push_back({wxf::WXFValue("BranchialDimension"), wxf::WXFValue(best)});
+    if (!measures) return;
+    // The volume growth and the two Ollivier-Ricci curvatures of the same component.
+    const hgcommon::SgGeometry g = geometry_with_scratch(
+        BranchialEdges{&chosen, static_cast<uint32_t>(most)}, ball,
+        hgcommon::SG_VOLUME_GROWTH | hgcommon::SG_OLLIVIER | hgcommon::SG_NONLAZY_OLLIVIER);
+    if (g.defined & hgcommon::SG_VOLUME_GROWTH) {
+        static const char* const kGrowth[hgcommon::SG_GROWTH_VALUES] = {
+            "BranchialBallDimension", "BranchialBallScalarCurvature",
+            "BranchialRiemannianBallDimension", "BranchialRiemannianBallScalarCurvature",
+            "BranchialSphereDimension", "BranchialSphereScalarCurvature"};
+        for (uint32_t k = 0; k < hgcommon::SG_GROWTH_VALUES; ++k)
+            rec.push_back({wxf::WXFValue(kGrowth[k]), wxf::WXFValue(g.growth[k])});
+    }
+    rec.push_back({wxf::WXFValue("BranchialOllivierRicciCurvature"),
+                   wxf::WXFValue(g.ollivier_ricci)});
+    rec.push_back({wxf::WXFValue("BranchialNonLazyOllivierRicciCurvature"),
+                   wxf::WXFValue(g.nonlazy_ollivier)});
 }
 
 // The summaries of 1/k and log2 k over the ids held by k states, one value per id, from the
@@ -1150,7 +1174,7 @@ void BranchialStepWork::prepare(size_t max_parts) {
     State& w = *s_;
     if (w.which & kBranchialGraph) {
         w.graph = branchial_graph(w.step);
-        branchial_graph_metrics(w.graph, w.graph_keys);
+        branchial_graph_metrics(w.graph, w.graph_keys, (w.which & kBranchialMeasures) != 0);
     }
     if (!(w.which & kBranchialContents)) return;
     const BranchialStep& s = w.step;
@@ -1602,6 +1626,17 @@ void branchial_from_multiplicities(const std::vector<StepPoint>& points,
     }
 }
 
+uint32_t measure_bits(const std::string& name) {
+    if (name == "VolumeGrowth") return hgcommon::SG_VOLUME_GROWTH;
+    if (name == "Geodesics") return hgcommon::SG_GEODESIC;
+    if (name == "EdgeCurvature") return hgcommon::SG_NONLAZY_OLLIVIER;
+    if (name == "Combinatorial") return hgcommon::SG_COMBINATORIAL;
+    if (name == "Particles") return hgcommon::SG_PARTICLE;
+    if (name == "DimensionGradient") return hgcommon::SG_DIMENSION_GRADIENT;
+    if (name == "Branchial") return kMeasureBranchial;
+    return 0;
+}
+
 void add_class(StepInput& in, uint64_t hash, uint64_t weight,
                const hgcommon::StateInvariantRecord* record) {
     if (!weight) return;
@@ -1618,6 +1653,7 @@ struct InvariantSlot {
     const char* name;
     double round;
     bool integral;
+    uint32_t family = 0;   // the "StepStatisticsMeasures" family (hgcommon::SG_* bits); 0: always
 };
 const InvariantSlot kInvariantSlots[hgcommon::SP_NUM_INVARIANTS] = {
     {"VertexCount", 1.0, true},
@@ -1645,7 +1681,53 @@ const InvariantSlot kInvariantSlots[hgcommon::SP_NUM_INVARIANTS] = {
     {"LocalDimensionStandardDeviation", 0.01, false},
     {"OllivierMoranI", 0.01, false},
     {"OllivierDegreeCorrelation", 0.01, false},
+    {"BallDimension", 0.01, false, hgcommon::SG_VOLUME_GROWTH},
+    {"BallScalarCurvature", 0.01, false, hgcommon::SG_VOLUME_GROWTH},
+    {"RiemannianBallDimension", 0.01, false, hgcommon::SG_VOLUME_GROWTH},
+    {"RiemannianBallScalarCurvature", 0.01, false, hgcommon::SG_VOLUME_GROWTH},
+    {"SphereDimension", 0.01, false, hgcommon::SG_VOLUME_GROWTH},
+    {"SphereScalarCurvature", 0.01, false, hgcommon::SG_VOLUME_GROWTH},
+    {"GeodeticFraction", 0.01, false, hgcommon::SG_GEODESIC},
+    {"SegmentEntropy", 0.01, false, hgcommon::SG_GEODESIC},
+    {"NonLazyOllivierRicciCurvature", 0.01, false, hgcommon::SG_NONLAZY_OLLIVIER},
+    {"EulerCharacteristic", 1.0, true, hgcommon::SG_COMBINATORIAL},
+    {"RimFraction", 0.01, false, hgcommon::SG_COMBINATORIAL},
+    {"CombinatorialCurvatureTotal", 0.01, false, hgcommon::SG_COMBINATORIAL},
+    {"ClusteringCoefficient", 0.01, false, hgcommon::SG_PARTICLE},
+    {"LocalEulerExcess", 0.01, false, hgcommon::SG_PARTICLE},
+    {"TopologicalCharge", 0.01, false, hgcommon::SG_PARTICLE},
+    {"TopologicalChargeMax", 0.01, false, hgcommon::SG_PARTICLE},
+    {"DimensionGradientCurvature", 0.01, false, hgcommon::SG_DIMENSION_GRADIENT},
 };
+
+// The names of the distributions in hgcommon::SG_DIST order, and whether each pools edges
+// ("EdgeInvariants") or vertices ("VertexInvariants").
+struct DistName {
+    const char* name;
+    bool edges;
+    uint32_t family;   // as InvariantSlot::family
+};
+const DistName kDistNames[hgcommon::SG_DISTS] = {
+    {"LocalDimension", false, 0},
+    {"OllivierRicciCurvature", false, 0},
+    {"WolframRicciCurvatureScalar", false, 0},
+    {"BallDimension", false, hgcommon::SG_VOLUME_GROWTH},
+    {"BallScalarCurvature", false, hgcommon::SG_VOLUME_GROWTH},
+    {"RiemannianBallDimension", false, hgcommon::SG_VOLUME_GROWTH},
+    {"RiemannianBallScalarCurvature", false, hgcommon::SG_VOLUME_GROWTH},
+    {"SphereDimension", false, hgcommon::SG_VOLUME_GROWTH},
+    {"SphereScalarCurvature", false, hgcommon::SG_VOLUME_GROWTH},
+    {"NonLazyOllivierRicciCurvature", true, hgcommon::SG_NONLAZY_OLLIVIER},
+    {"CombinatorialCurvature", false, hgcommon::SG_COMBINATORIAL},
+    {"ClusteringCoefficient", false, hgcommon::SG_PARTICLE},
+    {"TopologicalCharge", false, hgcommon::SG_PARTICLE},
+    {"DimensionGradientCurvature", false, hgcommon::SG_DIMENSION_GRADIENT},
+};
+
+// Whether the families `measures` request the family `family` (0: always).
+bool requested(uint32_t family, uint32_t measures) {
+    return family == 0 || (measures & family) == family;
+}
 
 // The host's sink for hgcommon::sp_add_class: entries appended, totals added.
 struct PartSink {
@@ -1665,7 +1747,8 @@ struct PartSink {
 };
 
 // Tasks of StepPoolFinish after the invariants: the header (multiplicities), the arity and
-// degree histograms, the two signature histograms, the distributions, then one per ball radius.
+// degree histograms, the two signature histograms, the distributions, then one per ball radius
+// and one per geodesic distance.
 constexpr size_t kTaskHeader = hgcommon::SP_NUM_INVARIANTS;
 constexpr size_t kTaskArity = kTaskHeader + 1;
 constexpr size_t kTaskDegree = kTaskHeader + 2;
@@ -1733,6 +1816,8 @@ struct StepPoolFinish::State {
     uint64_t events = 0;
     std::map<int64_t, uint64_t> rule_counts;
     uint32_t ball_radii = 0;
+    uint32_t geodesic_radii = 0;
+    uint32_t measures = hgcommon::SG_MEASURES_BASE;
     std::vector<wxf::WXFValue> out;   // one per task
     wxf::WXFValueAssociation header;  // Step .. ClassEntropyNormalized
 
@@ -1851,23 +1936,36 @@ struct StepPoolFinish::State {
 };
 
 StepPoolFinish::StepPoolFinish(uint32_t step, std::vector<PoolPart> parts, uint64_t events,
-                               std::map<int64_t, uint64_t> rule_counts)
+                               std::map<int64_t, uint64_t> rule_counts, uint32_t measures)
     : s_(std::make_unique<State>()) {
     s_->step = step;
+    s_->measures = measures;
     s_->parts = std::move(parts);
     s_->events = events;
     s_->rule_counts = std::move(rule_counts);
     // Every class with a ball dimension at radius r has one at each smaller radius, so the
-    // radii present are 1..R for the greatest ball slot of any part.
-    for (const PoolPart& p : s_->parts)
-        if (!p.entries.empty() && p.entries.back().slot >= hgcommon::SP_BALL)
-            s_->ball_radii = std::max(s_->ball_radii, p.entries.back().slot - hgcommon::SP_BALL + 1);
+    // radii present are 1..R for the greatest ball slot of any part; the same holds for the
+    // geodesic distances. The two series interleave from SP_BALL, ball slots even.
+    for (const PoolPart& p : s_->parts) {
+        bool seen[2] = {false, false};
+        for (auto it = p.entries.rbegin(); it != p.entries.rend() && it->slot >= hgcommon::SP_BALL;
+             ++it) {
+            const uint32_t at = it->slot - hgcommon::SP_BALL;
+            if (seen[at % 2]) continue;
+            seen[at % 2] = true;
+            uint32_t& radii = at % 2 ? s_->geodesic_radii : s_->ball_radii;
+            radii = std::max(radii, at / 2 + 1);
+            if (seen[0] && seen[1]) break;
+        }
+    }
     s_->out.resize(tasks());
 }
 
 StepPoolFinish::~StepPoolFinish() = default;
 
-size_t StepPoolFinish::tasks() const { return kTaskBall + s_->ball_radii; }
+size_t StepPoolFinish::tasks() const {
+    return kTaskBall + s_->ball_radii + s_->geodesic_radii;
+}
 
 void StepPoolFinish::run(size_t t) {
     State& s = *s_;
@@ -1884,8 +1982,12 @@ void StepPoolFinish::run(size_t t) {
         s.out[t] = s.signatures(t == kTaskAritySignatures);
     } else if (t < kTaskBall) {
         s.out[t] = s.distribution(static_cast<uint32_t>(t - kTaskDist));
+    } else if (t < kTaskBall + s.ball_radii) {
+        s.out[t] = s.summary(static_cast<uint32_t>(hgcommon::SP_BALL + 2 * (t - kTaskBall)), 0.01,
+                             false);
     } else {
-        s.out[t] = s.summary(static_cast<uint32_t>(hgcommon::SP_BALL + (t - kTaskBall)), 0.01, false);
+        const size_t d = t - kTaskBall - s.ball_radii;
+        s.out[t] = s.summary(static_cast<uint32_t>(hgcommon::SP_BALL + 2 * d + 1), 0.01, false);
     }
 }
 
@@ -1896,16 +1998,17 @@ wxf::WXFValueAssociation StepPoolFinish::record() {
     rec.push_back({wxf::WXFValue("RuleCounts"), count_association(s.rule_counts)});
     wxf::WXFValueAssociation invs;
     for (size_t t = 0; t < hgcommon::SP_NUM_INVARIANTS; ++t)
-        invs.push_back({wxf::WXFValue(kInvariantSlots[t].name), std::move(s.out[t])});
+        if (requested(kInvariantSlots[t].family, s.measures))
+            invs.push_back({wxf::WXFValue(kInvariantSlots[t].name), std::move(s.out[t])});
     rec.push_back({wxf::WXFValue("Invariants"), wxf::WXFValue(std::move(invs))});
-    wxf::WXFValueAssociation vertex_invs;
-    vertex_invs.push_back({wxf::WXFValue("LocalDimension"),
-                           std::move(s.out[kTaskDist + hgcommon::SG_DIST_LOCAL_DIMENSION])});
-    vertex_invs.push_back({wxf::WXFValue("OllivierRicciCurvature"),
-                           std::move(s.out[kTaskDist + hgcommon::SG_DIST_OLLIVIER])});
-    vertex_invs.push_back({wxf::WXFValue("WolframRicciCurvatureScalar"),
-                           std::move(s.out[kTaskDist + hgcommon::SG_DIST_RICCI])});
+    wxf::WXFValueAssociation vertex_invs, edge_invs;
+    for (uint32_t k = 0; k < hgcommon::SG_DISTS; ++k)
+        if (requested(kDistNames[k].family, s.measures))
+            (kDistNames[k].edges ? edge_invs : vertex_invs)
+                .push_back({wxf::WXFValue(kDistNames[k].name), std::move(s.out[kTaskDist + k])});
     rec.push_back({wxf::WXFValue("VertexInvariants"), wxf::WXFValue(std::move(vertex_invs))});
+    if (requested(hgcommon::SG_NONLAZY_OLLIVIER, s.measures))
+        rec.push_back({wxf::WXFValue("EdgeInvariants"), wxf::WXFValue(std::move(edge_invs))});
     rec.push_back({wxf::WXFValue("ArityHistogram"), std::move(s.out[kTaskArity])});
     rec.push_back({wxf::WXFValue("AritySignatureHistogram"), std::move(s.out[kTaskAritySignatures])});
     rec.push_back({wxf::WXFValue("DegreeHistogram"), std::move(s.out[kTaskDegree])});
@@ -1914,10 +2017,17 @@ wxf::WXFValueAssociation StepPoolFinish::record() {
     for (uint32_t r = 0; r < s.ball_radii; ++r)
         balls.push_back({wxf::WXFValue(static_cast<int64_t>(r + 1)), std::move(s.out[kTaskBall + r])});
     rec.push_back({wxf::WXFValue("BallGrowthDimension"), wxf::WXFValue(std::move(balls))});
+    wxf::WXFValueAssociation geodesic;
+    for (uint32_t d = 0; d < s.geodesic_radii; ++d)
+        geodesic.push_back({wxf::WXFValue(static_cast<int64_t>(d + 1)),
+                            std::move(s.out[kTaskBall + s.ball_radii + d])});
+    if (requested(hgcommon::SG_GEODESIC, s.measures))
+        rec.push_back({wxf::WXFValue("LogGeodesicCount"), wxf::WXFValue(std::move(geodesic))});
     return rec;
 }
 
-wxf::WXFValueAssociation step_record(uint32_t step, const StepInput& in, bool weight_by_classes) {
+wxf::WXFValueAssociation step_record(uint32_t step, const StepInput& in, bool weight_by_classes,
+                                     uint32_t measures) {
     std::vector<const StepClass*> classes;
     for (const auto& [h, c] : in.classes) classes.push_back(&c);
     std::vector<PoolPart> parts(1);
@@ -1926,7 +2036,7 @@ wxf::WXFValueAssociation step_record(uint32_t step, const StepInput& in, bool we
         parts.push_back(*in.device_part);
         sort_part(parts.back());
     }
-    StepPoolFinish finish(step, std::move(parts), in.events, in.rule_counts);
+    StepPoolFinish finish(step, std::move(parts), in.events, in.rule_counts, measures);
     for (size_t t = 0; t < finish.tasks(); ++t) finish.run(t);
     return finish.record();
 }
@@ -2038,7 +2148,7 @@ void StepStatisticsJobs::pool(Step* s) {
         }
         if (s->pool_remaining.fetch_sub(1, std::memory_order_acq_rel) != 1) return;
         s->finish = std::make_unique<StepPoolFinish>(s->step, std::move(s->parts), s->in.events,
-                                                     std::move(s->in.rule_counts));
+                                                     std::move(s->in.rule_counts), measures_);
         s->classes = {};
         s->in = StepInput{};
         const size_t n = s->finish->tasks();
@@ -2053,12 +2163,14 @@ wxf::WXFValue step_statistics_on_host(marshal::HostJobs& host, std::map<uint32_t
                                       bool weight_by_classes, uint32_t which,
                                       StepStatisticsJobs::DeviceRows device_rows,
                                       uint32_t device_min_states, uint64_t matrix_limit,
-                                      std::vector<std::pair<uint32_t, uint32_t>>* over_limit) {
+                                      std::vector<std::pair<uint32_t, uint32_t>>* over_limit,
+                                      uint32_t measures) {
     StepStatisticsJobs jobs(
         weight_by_classes, which, host.workers(),
         [&host](std::function<void()> f) { host.submit(std::move(f)); },
         std::move(device_rows), device_min_states);
     jobs.set_matrix_limit(matrix_limit);
+    jobs.set_measures(measures);
     for (auto& [step, in] : inputs) jobs.submit(step, std::move(in));
     host.wait();
     wxf::WXFValue reply = jobs.reply();

@@ -472,7 +472,8 @@ __device__ void record_state_invariants_device(const DeviceState& ds, StateId si
         gm = par.bcast(gm);
         uint64_t needed = 0;
         done = hgcommon::state_record(off, verts, m, goff, gverts, gm, scratch, bytes, needed, r,
-                                      par);
+                                      par, ds.statistics_graph,
+                                      hgcommon::SG_MEASURES_BASE | ds.statistics_measures);
         if (!done) bytes = needed > bytes ? needed : 2 * bytes;
     }
     if (!done) {

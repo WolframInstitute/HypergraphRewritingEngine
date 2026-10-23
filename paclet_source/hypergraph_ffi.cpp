@@ -362,6 +362,25 @@ static void parse_job(const std::vector<uint8_t>& wxf_bytes, const HostBridge& h
                             else if (w == "Classes") req.step_statistics_by_class = true;
                             else throw std::runtime_error(
                                 "StepStatisticsWeighting '" + w + "' is not States or Classes");
+                        } else if (option_key == "StatisticsGraph") {
+                            const std::string w = option_parser.read<std::string>();
+                            if (w == "Consecutive") req.statistics_graph = hgcommon::SG_GRAPH_CONSECUTIVE;
+                            else if (w == "AllPairs") req.statistics_graph = hgcommon::SG_GRAPH_ALL_PAIRS;
+                            else throw std::runtime_error(
+                                "StatisticsGraph '" + w + "' is not Consecutive or AllPairs");
+                        } else if (option_key == "StepStatisticsMeasures") {
+                            // Automatic is the empty list and All every name.
+                            uint32_t bits = 0;
+                            for (const auto& k : option_parser.read<std::vector<std::string>>()) {
+                                const uint32_t bit = hg::stats::measure_bits(k);
+                                if (!bit)
+                                    throw std::runtime_error(
+                                        "StepStatisticsMeasures '" + k + "' is not one of "
+                                        "VolumeGrowth, Geodesics, EdgeCurvature, Combinatorial, "
+                                        "Particles, DimensionGradient, Branchial");
+                                bits |= bit;
+                            }
+                            req.statistics_measures = bits;
                         } else if (option_key == "StepStatisticsBranchial") {
                             uint32_t bits = 0;
                             for (const auto& k : option_parser.read<std::vector<std::string>>()) {
@@ -574,6 +593,9 @@ static uint32_t admitted_branchial(hgffi::ParsedJob& req, bool warn = true) {
                 "StepStatisticsMatrices needs CanonicalizeStates None or Automatic"});
         which &= ~hg::stats::kBranchialMatrices;
     }
+    if ((which & hg::stats::kBranchialGraph) &&
+        (req.statistics_measures & hg::stats::kMeasureBranchial))
+        which |= hg::stats::kBranchialMeasures;
     return which;
 }
 
@@ -655,6 +677,8 @@ static wxf::Pieces run_gpu_job(hgffi::ParsedJob& req, const HostBridge& host) {
         job.step_statistics_branchial = branchial;
         job.step_statistics_matrix_limit = req.step_statistics_matrix_limit;
         job.include_vertex_curvature = req.include_vertex_curvature;
+        job.statistics_graph = req.statistics_graph;
+        job.statistics_measures = req.statistics_measures;
         job.delivery_delta = req.delivery_delta;
         job.step_cap_counts_matches = step_cap_counts_matches(req);
         if (req.show_progress) {
@@ -1067,6 +1091,7 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                 hg, engine, admitted_branchial(req, /*warn=*/false), req.step_statistics_by_class,
                 static_cast<int>(req.steps));
             step_statistics->set_matrix_limit(req.step_statistics_matrix_limit);
+            step_statistics->set_measures(hgcommon::SG_MEASURES_BASE | req.statistics_measures);
             if (!opening_session && !held_session)
                 step_statistics->attach(effective_max_states_per_step(req) != 0);
         }
@@ -1362,7 +1387,7 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                         static_cast<int64_t>(content_hash_to_id.at(state_content_hashes[sid])),
                         static_cast<int64_t>(reported_step(sid)),
                         req.include_canonical_hashes, static_cast<int64_t>(exact_hash),
-                        req.include_vertex_curvature},
+                        req.include_vertex_curvature, nullptr, req.statistics_graph},
                     full_canonicalization, std::move(edges));
             });
             ++streamed_top_sections;
@@ -2084,6 +2109,7 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                 hg::stats::StepStatisticsJobs jobs(
                     req.step_statistics_by_class, which, engine.num_threads(),
                     [&engine](std::function<void()> f) { engine.submit_side_job(std::move(f)); });
+                jobs.set_measures(hgcommon::SG_MEASURES_BASE | req.statistics_measures);
                 for (auto& [step, in] : weighted) jobs.submit(step, std::move(in));
                 engine.wait_side_jobs();
                 reply = jobs.reply();
@@ -2095,6 +2121,8 @@ wxf::Pieces run_rewriting_core_pieces(const std::vector<uint8_t>& wxf_bytes,
                         hg, engine, which, req.step_statistics_by_class,
                         static_cast<int>(req.steps));
                     step_statistics->set_matrix_limit(req.step_statistics_matrix_limit);
+                    step_statistics->set_measures(hgcommon::SG_MEASURES_BASE |
+                                                  req.statistics_measures);
                 }
                 reply = step_statistics->finish(by_count ? &weighted : nullptr);
                 for (const auto& [step, states] : step_statistics->matrices_over_limit())

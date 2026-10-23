@@ -86,11 +86,21 @@ graphInvariantsOf[vs_List] := graphInvariantsOf[vs] = Module[
 
 (* The geometry of a state from its record's edges, memoised on the edges' vertex lists. *)
 geometry[edges_List] := geometryOf[edges[[All, 2 ;;]]];
-geometryOf[vs_List] := geometryOf[vs] = sgrStateGeometry[vs];
+(* The memoised values are keyed by sgrStatisticsGraph as well as by the edges. *)
+geometryOf[vs_List] := geometryOf[vs, sgrStatisticsGraph];
+geometryOf[vs_List, rule_String] := geometryOf[vs, rule] = sgrStateGeometry[vs];
 vertexValues[edges_List] := vertexValuesOf[edges[[All, 2 ;;]]];
-vertexValuesOf[vs_List] := vertexValuesOf[vs] = sgrVertexInvariants[vs];
+edgeValues[edges_List] := edgeValuesOf[edges[[All, 2 ;;]]];
+edgeValuesOf[vs_List] := edgeValuesOf[vs, sgrStatisticsGraph];
+edgeValuesOf[vs_List, rule_String] := edgeValuesOf[vs, rule] = sgrEdgeInvariants[vs];
+vertexValuesOf[vs_List] := vertexValuesOf[vs, sgrStatisticsGraph];
+vertexValuesOf[vs_List, rule_String] := vertexValuesOf[vs, rule] = sgrVertexInvariants[vs];
 ballGrowth[edges_List] := ballGrowthOf[edges[[All, 2 ;;]]];
-ballGrowthOf[vs_List] := ballGrowthOf[vs] = sgrBallGrowth[vs];
+ballGrowthOf[vs_List] := ballGrowthOf[vs, sgrStatisticsGraph];
+ballGrowthOf[vs_List, rule_String] := ballGrowthOf[vs, rule] = sgrBallGrowth[vs];
+logGeodesic[edges_List] := logGeodesicOf[edges[[All, 2 ;;]]];
+logGeodesicOf[vs_List] := logGeodesicOf[vs, sgrStatisticsGraph];
+logGeodesicOf[vs_List, rule_String] := logGeodesicOf[vs, rule] = sgrLogGeodesicCount[vs];
 
 summary[values_List, round_ : 1] := If[values === {}, <|"N" -> 0|>,
   <|"N" -> Length[values], "Mean" -> N[Mean[values]],
@@ -103,9 +113,20 @@ entropyBits[counts_List] := Module[{p = N[counts/Total[counts]]}, -Total[p Log2[
 geometryKeys = {"GraphRadius", "MeanEccentricity", "WolframHausdorffDimension",
   "WolframRicciCurvatureScalar", "OllivierRicciCurvature", "DegreeEntropy", "LocalEntropy",
   "MutualInformation", "FisherInformation", "LargestComponentDimension", "LocalDimensionMax",
-  "LocalDimensionStandardDeviation", "OllivierMoranI", "OllivierDegreeCorrelation"};
+  "LocalDimensionStandardDeviation", "OllivierMoranI", "OllivierDegreeCorrelation",
+  "BallDimension", "BallScalarCurvature", "RiemannianBallDimension",
+  "RiemannianBallScalarCurvature", "SphereDimension", "SphereScalarCurvature",
+  "GeodeticFraction", "SegmentEntropy", "NonLazyOllivierRicciCurvature", "EulerCharacteristic",
+  "RimFraction", "CombinatorialCurvatureTotal", "ClusteringCoefficient", "LocalEulerExcess",
+  "TopologicalCharge", "TopologicalChargeMax", "DimensionGradientCurvature"};
 
-vertexDistributions = {"LocalDimension", "OllivierRicciCurvature", "WolframRicciCurvatureScalar"};
+edgeDistributions = {"NonLazyOllivierRicciCurvature"};
+
+vertexDistributions = {"LocalDimension", "OllivierRicciCurvature", "WolframRicciCurvatureScalar",
+  "BallDimension", "BallScalarCurvature", "RiemannianBallDimension",
+  "RiemannianBallScalarCurvature", "SphereDimension", "SphereScalarCurvature",
+  "CombinatorialCurvature", "ClusteringCoefficient", "TopologicalCharge",
+  "DimensionGradientCurvature"};
 
 (* The branchial keys of one step from the raw run: the step's states, the branchial pairs
    whose first event's output state is at the step, each state's vertex set and edges, and the
@@ -119,6 +140,7 @@ branchialKeys[sts_List, pairs_List, initial_List] := Module[{gm, ov, sets},
       "BranchialDistance" -> summary[gm["Distances"]],
       "BranchialComponents" -> gm["Components"]|>,
     If[MissingQ[gm["Dimension"]], <||>, <|"BranchialDimension" -> gm["Dimension"]|>],
+    gm["Measures"],
     <|"StateOverlap" -> summary[ov["StateOverlap"], 0.01],
       "StateCosineSimilarity" -> summary[ov["StateCosineSimilarity"], 0.01],
       "StateMutualInformation" -> summary[ov["StateMutualInformation"], 0.01],
@@ -145,13 +167,15 @@ oracleSteps[res_Association, byClass_ : False, branchial_ : False] := Module[
   pairsByStep = If[branchial,
     GroupBy[{outOf[#From], outOf[#To]} & /@ res["BranchialEdges"], stepOf[First[#]] &], <||>];
   KeyValueMap[Function[{k, sts},
-    Module[{pop, cheap, ginv, geo, vvals, balls, mult, classes, evIds, rec},
+    Module[{pop, cheap, ginv, geo, vvals, evals, balls, geodesics, mult, classes, evIds, rec},
       pop = If[byClass, DeleteDuplicatesBy[sts, #CanonicalHash &], sts];
       cheap = cheapInvariants[#Edges] & /@ pop;
       ginv = graphInvariants[#Edges] & /@ pop;
       geo = geometry[#Edges] & /@ pop;
       vvals = vertexValues[#Edges] & /@ pop;
+      evals = edgeValues[#Edges] & /@ pop;
       balls = ballGrowth[#Edges] & /@ pop;
+      geodesics = logGeodesic[#Edges] & /@ pop;
       mult = Values[Counts[Lookup[sts, "CanonicalHash"]]]; classes = Length[mult];
       evIds = Keys[Select[eventStep, # == k &]];
       rec = <|"Step" -> k, "RawStates" -> Length[sts], "Classes" -> classes,
@@ -173,17 +197,22 @@ oracleSteps[res_Association, byClass_ : False, branchial_ : False] := Module[
           "IncidenceDiameter" -> summary[Lookup[ginv, "IncidenceDiameter"]],
           "IncidenceMeanDistance" -> summary[Lookup[ginv, "IncidenceMeanDistance"], 0.01],
           "LargestComponentFraction" -> summary[Lookup[ginv, "LargestComponentFraction"], 0.01]|>,
-          AssociationMap[summary[DeleteMissing[Lookup[geo, #]], If[# === "GraphRadius", 1, 0.01]] &,
+          AssociationMap[summary[DeleteMissing[Lookup[geo, #]], If[MemberQ[{"GraphRadius", "EulerCharacteristic"}, #], 1, 0.01]] &,
             geometryKeys]],
         "VertexInvariants" -> AssociationMap[
           sgrPooledDistribution[Catenate[Lookup[vvals, #]], #] &, vertexDistributions],
+        "EdgeInvariants" -> AssociationMap[
+          sgrPooledDistribution[Catenate[Lookup[evals, #]], #] &, edgeDistributions],
         "ArityHistogram" -> KeySort[Counts[Catenate[Lookup[cheap, "Arities"]]]],
         "AritySignatureHistogram" -> KeySort[Counts[Lookup[cheap, "Arities"]]],
         "DegreeHistogram" -> KeySort[Counts[Catenate[Lookup[cheap, "DegreeSequence"]]]],
         "DegreeSequenceHistogram" -> KeySort[Counts[Lookup[cheap, "DegreeSequence"]]],
         "BallGrowthDimension" -> Association[Table[
           r -> summary[Select[balls, Length[#] >= r &][[All, r]], 0.01],
-          {r, Max[0, Length /@ balls]}]]|>;
+          {r, Max[0, Length /@ balls]}]],
+        "LogGeodesicCount" -> Association[Table[
+          d -> summary[Select[geodesics, Length[#] >= d &][[All, d]], 0.01],
+          {d, Max[0, Length /@ geodesics]}]]|>;
       If[branchial, Join[rec, branchialKeys[sts, Lookup[pairsByStep, k, {}],
         Union[Flatten[#Edges[[All, 2 ;;]] & /@ Lookup[byStep, 0, {}]]]]], rec]]],
     byStep]];
@@ -280,7 +309,8 @@ randomCases = DeleteCases[Table[Module[{c = genCase[s], n},
 failures = 0;
 allStates = {};
 Do[
-  Module[{name, rules, init, steps, raw, oracle, oracleClasses, oracleBranchial, routes},
+  Module[{name, rules, init, steps, raw, oracle, oracleClasses, oracleBranchial, oracleAllPairs,
+      routes},
     {name, rules, init, steps} = c;
     raw = HGEvolve[rules, init, steps, {"States", "Events", "BranchialEdges"},
       "CanonicalizeStates" -> None, "IncludeCanonicalHashes" -> True];
@@ -288,18 +318,32 @@ Do[
     oracle = normal[oracleSteps[raw]];
     oracleClasses = normal[oracleSteps[raw, True]];
     oracleBranchial = normal[oracleSteps[raw, False, True]];
+    oracleAllPairs = Block[{sgrStatisticsGraph = "AllPairs"}, normal[oracleSteps[raw]]];
     routes = {
-      {"quotient", oracle, HGEvolve[rules, init, steps, "StepStatistics",
+      {"quotient", oracle, HGEvolve[rules, init, steps, "StepStatistics", "StepStatisticsMeasures" -> All,
         "CanonicalizeStates" -> Full, "ExploreFromCanonicalStatesOnly" -> True]},
-      {"full capture", oracle, HGEvolve[rules, init, steps, "StepStatistics",
+      {"full capture", oracle, HGEvolve[rules, init, steps, "StepStatistics", "StepStatisticsMeasures" -> All,
         "CanonicalizeStates" -> None]},
-      {"classes, quotient", oracleClasses, HGEvolve[rules, init, steps, "StepStatistics",
+      {"classes, quotient", oracleClasses, HGEvolve[rules, init, steps, "StepStatistics", "StepStatisticsMeasures" -> All,
         "CanonicalizeStates" -> Full, "ExploreFromCanonicalStatesOnly" -> True,
         "StepStatisticsWeighting" -> "Classes"]},
-      {"classes, full capture", oracleClasses, HGEvolve[rules, init, steps, "StepStatistics",
+      {"classes, full capture", oracleClasses, HGEvolve[rules, init, steps, "StepStatistics", "StepStatisticsMeasures" -> All,
         "CanonicalizeStates" -> None, "StepStatisticsWeighting" -> "Classes"]},
-      {"branchial", oracleBranchial, HGEvolve[rules, init, steps, "StepStatistics",
-        "CanonicalizeStates" -> None, "StepStatisticsBranchial" -> All]}};
+      {"branchial", oracleBranchial, HGEvolve[rules, init, steps, "StepStatistics", "StepStatisticsMeasures" -> All,
+        "CanonicalizeStates" -> None, "StepStatisticsBranchial" -> All]},
+      {"all pairs, quotient", oracleAllPairs, HGEvolve[rules, init, steps, "StepStatistics", "StepStatisticsMeasures" -> All,
+        "CanonicalizeStates" -> Full, "ExploreFromCanonicalStatesOnly" -> True,
+        "StatisticsGraph" -> "AllPairs"]},
+      {"all pairs, full capture", oracleAllPairs, HGEvolve[rules, init, steps,
+        "StepStatistics", "StepStatisticsMeasures" -> All, "CanonicalizeStates" -> None, "StatisticsGraph" -> "AllPairs"]}};
+    (* Without "StepStatisticsMeasures" a step has the base keys only. *)
+    Module[{res = HGEvolve[rules, init, steps, "StepStatistics", "CanonicalizeStates" -> None],
+        extra},
+      extra = Select[res, KeyExistsQ[#, "EdgeInvariants"] || KeyExistsQ[#, "LogGeodesicCount"] ||
+          KeyExistsQ[#["Invariants"], "BallDimension"] ||
+          KeyExistsQ[#["VertexInvariants"], "CombinatorialCurvature"] &];
+      If[extra === {}, Print["PASS  ", name, " base keys: ", Length[res], " steps"],
+        failures++; Print["FAIL  ", name, " base keys: a step has a family's key"]]];
     (* The overlap and the cosine of a level are a SparseArray when fewer than half of the
        k (k - 1) / 2 pairs share an element; every other matrix is a packed array. *)
     sparseMatrixQ[name_, want_] := Module[{o = want[If[StringContainsQ[name, "Edge"],
@@ -335,16 +379,17 @@ Do[
           Print["PASS  ", name, " state matrices ", mode, ": ", n, " steps"],
           failures++; Print["FAIL  ", name, " state matrices ", mode, ": ", Short[bad, 6]]]],
       {mode, {None, Automatic}}];
-    Module[{res = HGEvolve[rules, init, steps, "States", "CanonicalizeStates" -> None,
-        "IncludeVertexCurvature" -> True], bad},
+    Do[Module[{res = HGEvolve[rules, init, steps, "States", "CanonicalizeStates" -> None,
+        "IncludeVertexCurvature" -> True, "StatisticsGraph" -> rule], bad},
       (* A comparison that does not evaluate to True fails. *)
-      bad = Select[Values[res], Module[{want = sgrVertexCurvature[#Edges[[All, 2 ;;]]],
-          got = #VertexCurvature},
+      bad = Select[Values[res], Module[{want = Block[{sgrStatisticsGraph = rule},
+            sgrVertexCurvature[#Edges[[All, 2 ;;]]]], got = #VertexCurvature},
         !TrueQ[AssociationQ[got] && VectorQ[Values[want], NumericQ] && Keys[got] === Keys[want] &&
           (Length[want] == 0 || Max[Abs[Values[got] - Values[want]]] <= 10^-9)]] &];
       If[bad === {},
-        Print["PASS  ", name, " vertex curvature: ", Length[res], " states"],
-        failures++; Print["FAIL  ", name, " vertex curvature: ", Short[bad[[1]], 6]]]];
+        Print["PASS  ", name, " vertex curvature ", rule, ": ", Length[res], " states"],
+        failures++; Print["FAIL  ", name, " vertex curvature ", rule, ": ", Short[bad[[1]], 6]]]],
+      {rule, {"Consecutive", "AllPairs"}}];
     Do[
       Module[{want = r[[2]], got = normal[r[[3]]], diffs},
         diffs = If[!ListQ[got] || Length[got] =!= Length[want], {"step count", Length[got], Length[want]},
